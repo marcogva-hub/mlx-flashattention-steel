@@ -1,0 +1,26 @@
+# Build
+build/
+dist/
+*.egg-info/
+*.so
+*.dylib
+_ext*.pyd
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Metal
+*.metallib
+*.air
