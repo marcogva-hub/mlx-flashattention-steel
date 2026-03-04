@@ -1,3 +1,12 @@
+/// AttentionKernelType.hpp — Enum for the three ccv-path attention kernel variants.
+///
+/// loopForward:         standard forward pass (Q × K^T → softmax → P × V)
+/// loopBackwardQuery:   backward dQ loop (parallelizes over Q rows)
+/// loopBackwardKeyValue: backward dK/dV loop (parallelizes over K/V cols)
+///
+/// Note: mlx-mfa uses the Python/SDPA backward for gradients (not these loops).
+/// The enum is retained for completeness with the ccv code path (f32 forward).
+
 #ifndef AttentionKernelType_hpp
 #define AttentionKernelType_hpp
 

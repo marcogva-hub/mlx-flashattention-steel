@@ -1,3 +1,13 @@
+/// AttentionKernel.hpp — Declarations for the ccv-derived attention shader generator.
+///
+/// AttentionKernel takes an AttentionKernelDescriptor (blocking params, dtype, head_dim,
+/// causal, kernel type) and emits a complete Metal shader source string.
+/// The generator supports forward, backward-query, and backward-kv loops.
+///
+/// Ported from liuliu/ccv lib/nnc/mfa/v2/AttentionKernel.cpp (Apache 2.0).
+/// mlx-mfa changes: transposeState fix (all false), causal backward masking,
+/// SEQUENCE_LENGTH unconditionally in head-offset expressions.
+
 #ifndef AttentionKernel_hpp
 #define AttentionKernel_hpp
 

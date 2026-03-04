@@ -1,3 +1,13 @@
+/// shader_cache.mm — Objective-C++ implementation of ShaderCache.
+///
+/// Uses native Metal API (NSError, MTLDevice, MTLLibrary) rather than
+/// metal-cpp to keep the ARC lifetime model simple.  All MTL objects are
+/// held as void* with __bridge_retained in the C++ map; they are released
+/// via __bridge_transfer when the cache is cleared.
+///
+/// Set env MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr
+/// (gated so zero overhead in production).
+
 #include "shader_cache.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"

@@ -1,3 +1,12 @@
+/// GEMMHeaders.hpp — Interface for the simdgroup GEMM header generator.
+///
+/// GEMMHeaders::generate() returns a Metal source string containing the
+/// simdgroup matrix-multiply utility functions (HGEMM half8x8, SGEMM float8x8)
+/// used by both the STEEL and ccv-derived attention kernels.
+///
+/// Source adapted from philipturner/metal-flash-attention (MIT).
+/// Copyright (c) 2024 Philip Turner.
+
 #ifndef GEMMHeaders_hpp
 #define GEMMHeaders_hpp
 

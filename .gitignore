@@ -2,6 +2,7 @@
 build/
 dist/
 *.egg-info/
+*.eggs/
 *.so
 *.dylib
 _ext*.pyd
@@ -9,6 +10,7 @@ _ext*.pyd
 # Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
 
@@ -16,14 +18,34 @@ venv/
 .vscode/
 .idea/
 *.swp
+*.swo
 *~
 
 # macOS
 .DS_Store
+._*
 
 # Metal
 *.metallib
 *.air
+*.metal-ar
+
+# Test / coverage artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+*.coverage
+
+# Environment
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# SSH keys / credentials (never commit)
+*.pub
+mfa-steel
+mfa-steel.pub
 
 # Debug / scratch artifacts
 *_shader.txt

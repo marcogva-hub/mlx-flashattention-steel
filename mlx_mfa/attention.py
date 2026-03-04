@@ -1,4 +1,23 @@
-"""Flash Attention for MLX using Metal Flash Attention kernels."""
+"""Flash Attention for MLX using Metal Flash Attention kernels.
+
+Public surface:
+    flash_attention(q, k, v, scale, causal, stream)  -- main entry point
+    is_mfa_available()                               -- extension health check
+    get_device_info()                                -- GPU family detection
+    get_supported_configs()                          -- supported (D, dtype) set
+
+Dispatch logic:
+    flash_attention → validate inputs
+                    → GQA tile if H_kv < H_q
+                    → _can_use_mfa?
+                      yes → _mfa_forward (STEEL kernel via custom_function)
+                      no  → _fallback_sdpa (mx.fast.scaled_dot_product_attention)
+
+Backward:
+    _make_mfa_custom registers a custom vjp that re-materialises gradients via
+    mx.vjp(_fallback_sdpa), bypassing the ccv C++ vjp path (which loses LSE).
+    See _sever_lazy_graph() for the buffer-aliasing fix required in that path.
+"""
 
 from __future__ import annotations
 

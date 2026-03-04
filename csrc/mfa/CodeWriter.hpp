@@ -1,3 +1,9 @@
+/// CodeWriter.hpp — Simple indented string builder for Metal shader emission.
+///
+/// AttentionKernel uses CodeWriter to accumulate Metal source line-by-line.
+/// Supports push/pop indent, blank lines, and raw string append.
+/// No dependencies beyond std::string and std::vector.
+
 #ifndef MFA_CODE_WRITER_HPP_
 #define MFA_CODE_WRITER_HPP_
 

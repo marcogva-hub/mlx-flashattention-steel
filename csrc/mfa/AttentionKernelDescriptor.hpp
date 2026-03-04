@@ -1,3 +1,11 @@
+/// AttentionKernelDescriptor.hpp — Parameter bundle for AttentionKernel shader generation.
+///
+/// Holds: head_dim, transposeState[3] (always false in mlx-mfa), block dimensions
+/// (block_q, block_k, block_d), GEMM precision flags (low_prec_inputs / inter),
+/// causal flag, and kernel type (forward / backwardQuery / backwardKV).
+///
+/// Ported from liuliu/ccv lib/nnc/mfa/v2/AttentionKernelDescriptor.hpp (Apache 2.0).
+
 #ifndef AttentionKernelDescriptor_hpp
 #define AttentionKernelDescriptor_hpp
 

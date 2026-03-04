@@ -1,3 +1,13 @@
+/// shader_cache.hpp — Thread-safe cache of compiled Metal pipeline states.
+///
+/// Metal shader compilation (newLibraryWithSource + newComputePipelineState)
+/// is ~10-50ms.  ShaderCache is a process-wide singleton that compiles each
+/// (KernelType, head_dim, block_dims, causal, dtype, m3_plus) combination
+/// once and caches the resulting id<MTLComputePipelineState> for reuse.
+///
+/// The cache uses void* with __bridge_retained so the Obj-C++ Metal objects
+/// are heap-managed outside the C++ type system (ARC-safe).
+
 #pragma once
 
 #include <cstdint>

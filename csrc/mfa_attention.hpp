@@ -1,3 +1,13 @@
+/// mfa_attention.hpp — MFAttention MLX Primitive declaration.
+///
+/// MFAttention wraps the Metal Flash Attention GPU kernel as an MLX
+/// Primitive, enabling lazy evaluation and autograd integration.
+///
+/// eval_gpu() dispatches either the STEEL cooperative kernel (f16/bf16,
+/// D=64/128/256) or the ccv-derived kernel (f32 fallback).  Backward
+/// gradients are computed via Python mx.vjp on the SDPA fallback — see
+/// attention.py:_make_mfa_custom for the reason the C++ vjp is bypassed.
+
 #pragma once
 
 #include <mlx/mlx.h>

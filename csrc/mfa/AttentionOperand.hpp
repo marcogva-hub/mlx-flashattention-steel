@@ -1,3 +1,16 @@
+/// AttentionOperand.hpp — Metal address-space helpers for attention operands.
+///
+/// AttentionOperand generates Metal source expressions for accessing Q, K, V,
+/// and O tensors stored in device memory.  It handles:
+///   - Batch stride: batch_offset = b * H * N * D
+///   - Head stride:  head_offset  = h * N * D   (unconditionally * SEQ_LEN)
+///   - Row stride:   row_offset   = n * D
+///   - apply_offset: row-major (leadingDimension = D, transposeState = false)
+///
+/// Ported from liuliu/ccv lib/nnc/mfa/v2/AttentionOperand.hpp (Apache 2.0).
+/// mlx-mfa change: head-offset expression always uses SEQUENCE_LENGTH regardless
+/// of transposeState (see CLAUDE.md "transposeState Fix").
+
 #ifndef AttentionOperand_hpp
 #define AttentionOperand_hpp
 

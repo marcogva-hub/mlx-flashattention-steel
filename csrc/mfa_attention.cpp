@@ -1,3 +1,20 @@
+/// mfa_attention.cpp — MFAttention Primitive implementation.
+///
+/// eval_gpu() routing:
+///   STEEL path (f16/bf16):  generate_steel_forward_source() → ShaderCache
+///   ccv path (f32 / legacy): generate_attention_source() → ShaderCache
+///
+/// The device architecture generation is read via mlx::core::metal and
+/// compared against gen >= 15 (M3+) to select block parameters.
+///
+/// Buffer layout (all kernels):
+///   buffer(0) = Q  [B × H × N × D], row-major, contiguous
+///   buffer(1) = K  [B × H × S × D], row-major, contiguous
+///   buffer(2) = V  [B × H × S × D], row-major, contiguous
+///   buffer(3) = O  [B × H × N × D], row-major, output
+///   buffer(4) = L  [B × H × N],     logsumexp (STEEL only, used for bwd)
+///   buffer(5) = params  (struct MFAttention::Params packed into bytes)
+
 #include "mfa_attention.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
