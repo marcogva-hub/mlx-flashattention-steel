@@ -116,6 +116,6 @@ jobs:
           COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -o '[0-9]\+')
           echo "Collected $COUNT tests"
           # Warn (not fail) if count deviates from expected
-          if [ "$COUNT" -lt 30 ]; then
-            echo "WARNING: Expected >= 30 tests, got $COUNT"
+          if [ "$COUNT" -lt 40 ]; then
+            echo "WARNING: Expected >= 40 tests, got $COUNT"
           fi
