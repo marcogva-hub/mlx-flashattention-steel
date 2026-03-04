@@ -21,6 +21,7 @@ class ShaderCache {
       AttentionForward = 0,
       AttentionBackwardDQ = 1,
       AttentionBackwardDKV = 2,
+      SteelForward = 3,       // STEEL-style cooperative forward kernel
     };
 
     KernelType type;

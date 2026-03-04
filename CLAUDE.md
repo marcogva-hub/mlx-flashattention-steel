@@ -236,3 +236,24 @@ string (e.g. "applegpu_g13s" → 13). **NOT** the `MTLGPUFamilyApple` enum value
 Correct threshold for M3+: `>= 15`. The old `>= 9` threshold was always true on all
 modern Apple Silicon (M1 has gen 13). Fixed in forward pass eval_gpu; backward passes
 also patched.
+
+## Output constraint — MANDATORY
+NEVER produce a monolithic response exceeding 20000 tokens.
+### Reading large files
+NEVER open an entire file without checking its size first. Before reading any source file:
+1. Run `wc -l <file>` to check line count
+2. If > 500 lines, NEVER read the whole file. Instead:
+   - Use `grep -n` to locate relevant sections
+   - Use `head -n` / `tail -n` to read specific portions
+   - Use `sed -n 'START,ENDp'` to extract targeted line ranges
+   - Read the file in chunks using view with line ranges
+3. If you need to understand a file's structure, use `grep -n "function\|class\|struct\|def \|void \|enum" <file>` first
+### Writing output
+For long tasks, systematically break down the work:
+1. Make ONE change (one fix, one file)
+2. Commit
+3. Test
+4. Briefly summarize what was done (~200 words max)
+5. Move to the next change
+NEVER write long recap reports at the end of a session.
+Summarize in 500 words maximum, using a table format when relevant.

@@ -1,5 +1,6 @@
 #include "mfa_attention.hpp"
 #include "mfa_shader_gen.hpp"
+#include "mfa_steel_fwd.hpp"
 #include "shader_cache.hpp"
 
 #include <mlx/utils.h>
@@ -38,103 +39,147 @@ void MFAttention::eval_gpu(
   int N = q.shape(2);
   int D = q.shape(3);
   int S = k.shape(2);
+  int Hk = k.shape(1); // KV heads (for GQA)
 
-  auto& out       = outputs[0]; // [B, H, N, D]  — same dtype as q
-  auto& logsumexp = outputs[1]; // [B, H, N]     — float32
+  auto& out       = outputs[0]; // [B, H, N, D]
+  auto& logsumexp = outputs[1]; // [B, H, N], float32
 
-  // Allocate output buffers.
   out.set_data(mlx::core::allocator::malloc(out.nbytes()));
   logsumexp.set_data(mlx::core::allocator::malloc(logsumexp.nbytes()));
 
-  // ── 1. Metal device & M3+ detection ────────────────────────────────────
+  // ── Device & dtype ──────────────────────────────────────────────────────
   auto& d = mlx::core::metal::device(stream().device);
-  // Apple GPU family 9+ = M3/M4 (preferAsyncCache) vs M1/M2 (preferAsyncLoad).
-  // get_architecture_gen() returns the GPU silicon generation extracted from
-  // the architecture string (e.g. "applegpu_g13s" → 13).
-  // 13=M1, 14=M2, 15=M3, 16=M4.  M3+ uses preferAsyncCache block params.
-  bool is_m3_plus = (d.get_architecture_gen() >= 15);
 
-  // ── 2. Dtype code (0=f16, 1=bf16, 2=f32) ────────────────────────────────
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
   else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else                                        dtype_code = 2;
 
-  bool low_prec_inputs = (dtype_code != 2);
+  // ── Route to ccv kernel when Steel register pressure is too high.
+  //  • f32 (dtype==2): simdgroup_matrix spills exceed 32 KB threadgroup limit.
+  //  Note: D=256 (f16/bf16) stays on STEEL despite register pressure because ccv
+  //  3D-blocking + async_copy fallback is slower than STEEL register spill on macOS 26.
+  if (dtype_code == 2) {
+    bool is_m3_plus = (d.get_architecture_gen() >= 15);
+    const bool low_prec_inter  = false;
+    const bool low_prec_inputs = false;
+    auto ccv_cfg = resolve_block_config(D, is_m3_plus, low_prec_inter, low_prec_inputs);
+    unsigned short bq = ccv_cfg.block_q, bk = ccv_cfg.block_k, bd = ccv_cfg.block_d;
+    unsigned short nw = bq / 8;
 
-  // ── 3. Blocking parameters (from ccv forward table) ──────────────────────
-  // low_prec_inter=false: always use the 'forward' blocking table (bk=80,
-  // bd=16 for M1/M2 D=128) even for f16/bf16.
-  //
-  // Rationale: on macOS 26+, disableAsyncCopy=true forces a software fallback
-  // that is O(elements_copied).  The 'forwardMixed' table (bk=128, bd=32)
-  // copies 4096 elements/tile vs 1280 for 'forward', causing a ~2× slowdown
-  // despite having ~1.6× fewer tiles.
-  //
-  // f16 MAD register precision (regP[Q/K/V]=FP16) is still active — it is
-  // controlled by low_prec_inputs in mfa_shader_gen.cpp independently of the
-  // tile-size choice here.
-  const bool low_prec_inter = false;
-  auto cfg = resolve_block_config(D, is_m3_plus, low_prec_inter,
-                                  low_prec_inputs);
-  unsigned short block_q = cfg.block_q;
-  unsigned short block_k = cfg.block_k;
-  unsigned short block_d = cfg.block_d;
-  unsigned short n_warps = block_q / 8; // SIMD groups per threadgroup
+    MFAParams fwd_p{};
+    fwd_p.R                = static_cast<uint32_t>(N);
+    fwd_p.C                = static_cast<uint32_t>(S);
+    fwd_p.Hq               = static_cast<uint32_t>(H);
+    fwd_p.H_Hk_ratio       = static_cast<uint32_t>(H / Hk);
+    fwd_p.dot_product_scale = params_.scale * static_cast<float>(M_LOG2E);
+    fwd_p.causal           = params_.causal ? 1u : 0u;
+    fwd_p.Q_batch_stride   = static_cast<uint32_t>(H  * N * D);
+    fwd_p.K_batch_stride   = static_cast<uint32_t>(Hk * S * D);
+    fwd_p.V_batch_stride   = static_cast<uint32_t>(Hk * S * D);
+    fwd_p.O_batch_stride   = static_cast<uint32_t>(H  * N * D);
 
-  // ── 4. Build kernel cache key ────────────────────────────────────────────
+    using KK = ShaderCache::KernelKey;
+    KK ccv_key{ KK::KernelType::AttentionForward,
+                D, (int)bq, (int)bk, (int)bd, (int)nw,
+                params_.causal, is_m3_plus, dtype_code };
+    void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
+    auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+    auto& enc = d.get_command_encoder(stream().index);
+    enc.set_compute_pipeline_state(pl);
+    enc.set_input_array(q,          0);
+    enc.set_input_array(k,          1);
+    enc.set_input_array(v,          2);
+    enc.set_output_array(out,       3);
+    enc.set_output_array(logsumexp, 4);
+    enc.set_bytes(fwd_p,           10);
+
+    uint32_t tiles = ((uint32_t)N + bq - 1u) / bq * (uint32_t)H * (uint32_t)B;
+    enc.dispatch_threadgroups(
+        MTL::Size::Make(tiles, 1, 1),
+        MTL::Size::Make(nw * 32u, 1, 1));
+    return;
+  }
+
+  // ── STEEL tile config (f16 / bf16) ───────────────────────────────────────
+  auto cfg = select_steel_block_config(D, /*is_low_prec=*/true);
+  int BQ = cfg.BQ;
+  int BK = cfg.BK;
+  int WM = cfg.WM;  // n_warps
+  int WN = cfg.WN;
+  int TGP_SIZE = WM * WN * 32;
+
+  // ── Kernel cache key ─────────────────────────────────────────────────────
   using KK = ShaderCache::KernelKey;
   KK key{
-    KK::KernelType::AttentionForward,
+    KK::KernelType::SteelForward,
     D,
-    (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
+    BQ, BK, D,   // block_d = full D (no sub-tiling in Steel)
+    WM,
     params_.causal,
-    is_m3_plus,
+    false,       // is_m3_plus unused for Steel kernel
     dtype_code
   };
 
-  // ── 5. Get (or compile) the Metal pipeline ───────────────────────────────
   void* raw_pipeline = ShaderCache::get().get_or_compile(key, d.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw_pipeline);
 
-  // ── 6. Build MFAParams (passed to kernel at buffer(10)) ─────────────────
-  // dot_product_scale = scale * log2(e) because the kernel uses exp2 not exp.
-  // Zero-initialize so unused backward stride fields are 0.
-  MFAParams mfa_params{};
-  mfa_params.R              = static_cast<uint32_t>(N);
-  mfa_params.C              = static_cast<uint32_t>(S);
-  mfa_params.Hq             = static_cast<uint32_t>(H);
-  mfa_params.H_Hk_ratio     = 1u; // MHA (Hq == Hk); GQA support in a later phase
-  mfa_params.dot_product_scale = params_.scale * static_cast<float>(M_LOG2E);
-  mfa_params.causal         = params_.causal ? 1u : 0u;
-  // Forward batch strides in elements (between consecutive batches).
-  // dO/dQ/dK/dV strides left as 0 — unused by the forward kernel.
-  mfa_params.Q_batch_stride = static_cast<uint32_t>(H * N * D);
-  mfa_params.K_batch_stride = static_cast<uint32_t>(H * S * D);
-  mfa_params.V_batch_stride = static_cast<uint32_t>(H * S * D);
-  mfa_params.O_batch_stride = static_cast<uint32_t>(H * N * D);
+  // ── Build MFASteelParams ─────────────────────────────────────────────────
+  int NQ = (N + BQ - 1) / BQ;
+  int NK = (S + BK - 1) / BK;
+  int NQ_aligned = (N % BQ == 0) ? NQ : NQ - 1;
+  int NK_aligned = (S % BK == 0) ? NK : NK - 1;
 
-  // ── 7. Encode dispatch ───────────────────────────────────────────────────
+  MFASteelParams sp{};
+  sp.B          = B;
+  sp.H          = H;
+  sp.D          = D;
+  sp.qL         = N;
+  sp.kL         = S;
+  sp.gqa_factor = H / Hk;
+  sp.scale      = params_.scale;
+  sp.NQ         = NQ;
+  sp.NK         = NK;
+  sp.NQ_aligned = NQ_aligned;
+  sp.NK_aligned = NK_aligned;
+  sp.qL_rem     = (N % BQ == 0) ? BQ : (N % BQ);
+  sp.kL_rem     = (S % BK == 0) ? BK : (S % BK);
+  sp.qL_off     = 0; // self-attention; cross-attn would offset query start
+
+  // Strides: [B, H, S] in elements (D=1 implicit)
+  sp.Q_strides[0] = (int64_t)H * N * D;
+  sp.Q_strides[1] = (int64_t)N * D;
+  sp.Q_strides[2] = (int64_t)D;
+  sp.K_strides[0] = (int64_t)Hk * S * D;
+  sp.K_strides[1] = (int64_t)S * D;
+  sp.K_strides[2] = (int64_t)D;
+  sp.V_strides[0] = (int64_t)Hk * S * D;
+  sp.V_strides[1] = (int64_t)S * D;
+  sp.V_strides[2] = (int64_t)D;
+  sp.O_strides[0] = (int64_t)H * N * D;
+  sp.O_strides[1] = (int64_t)N * D;
+  sp.O_strides[2] = (int64_t)D;
+  // L strides: [B, H] with per-head stride = N
+  sp.L_strides[0] = (int64_t)H * N;
+  sp.L_strides[1] = (int64_t)N;
+
+  // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = d.get_command_encoder(stream().index);
   enc.set_compute_pipeline_state(pipeline);
 
-  // Buffer indices match AttentionOperand::bufferIndex():
-  //   Q=0, K=1, V=2, O=3, L=4, MFAParams=10
+  // Buffers: Q=0, K=1, V=2, O=3, L=4, params=5
   enc.set_input_array(q,          0);
   enc.set_input_array(k,          1);
   enc.set_input_array(v,          2);
   enc.set_output_array(out,       3);
   enc.set_output_array(logsumexp, 4);
-  enc.set_bytes(mfa_params,       10); // buffer(10): avoids conflict with D at buffer(5)
+  enc.set_bytes(sp,               5);
 
-  // 1D flattened grid: the kernel decomposes gid.x into (q_tile, head, batch).
-  uint32_t num_q_tiles = (static_cast<uint32_t>(N) + block_q - 1u) / block_q;
-  uint32_t grid_x      = num_q_tiles
-                        * static_cast<uint32_t>(H)
-                        * static_cast<uint32_t>(B);
+  // 3D grid: (NQ, H, B) — each threadgroup handles one Q tile, one head, one batch
   enc.dispatch_threadgroups(
-      MTL::Size::Make(grid_x,              1, 1),   // grid
-      MTL::Size::Make(n_warps * 32u,       1, 1));  // threadgroup
+      MTL::Size::Make(NQ, H, B),
+      MTL::Size::Make(TGP_SIZE, 1, 1));
 }
 
 // =========================================================================

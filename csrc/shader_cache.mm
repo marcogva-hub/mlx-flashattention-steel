@@ -1,5 +1,6 @@
 #include "shader_cache.hpp"
 #include "mfa_shader_gen.hpp"
+#include "mfa_steel_fwd.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -65,11 +66,17 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     }
   }
 
-  // ccv generates a single kernel named "attention" for all kernel types.
-  const std::string fn_name = "attention";
+  std::string fn_name;
+  std::string source;
 
-  // Generate shader source via the ccv-derived AttentionKernel generator.
-  std::string source = generate_attention_source(key);
+  if (key.type == KernelKey::KernelType::SteelForward) {
+    fn_name = "mlx_mfa_attention";
+    source  = generate_steel_forward_source(key);
+  } else {
+    // ccv-derived kernels all use "attention" as the function name.
+    fn_name = "attention";
+    source  = generate_attention_source(key);
+  }
 
   // Debug: set MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr.
   if (const char* dbg = getenv("MFA_DEBUG_SHADERS")) {
@@ -77,6 +84,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     const char* type_str = "forward";
     if (key.type == KernelKey::KernelType::AttentionBackwardDQ)  type_str = "backwardDQ";
     if (key.type == KernelKey::KernelType::AttentionBackwardDKV) type_str = "backwardDKV";
+    if (key.type == KernelKey::KernelType::SteelForward)         type_str = "steel_fwd";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",
