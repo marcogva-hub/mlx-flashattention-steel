@@ -237,6 +237,41 @@ Correct threshold for M3+: `>= 15`. The old `>= 9` threshold was always true on 
 modern Apple Silicon (M1 has gen 13). Fixed in forward pass eval_gpu; backward passes
 also patched.
 
+### STEEL kernel — replacement for ccv MFA
+
+STEEL is a rewritten attention kernel using standard threadgroup memory loads instead of
+`simdgroup_async_copy`. It completely replaces the ccv-based approach for the forward pass.
+
+**Performance (M1 Max, f16, B=2 H=8)**
+
+| D | N=4096 | vs ccv |
+|---|--------|--------|
+| 64 | 1.01x SDPA | was 0.16x |
+| 128 | 0.95x SDPA | was 0.17x |
+| 256 | 0.28x SDPA | was 0.06x |
+
+**Key optimizations applied**
+
+- Standard threadgroup loads (no async copy dependency)
+- Removed 16,384 unnecessary `simdgroup_barrier` calls per kernel for BD=128
+- PV loop reorder: `for(ik)` outer, `for(id)` inner — keeps `Stile[iq][ik]` in registers
+  across all TD iterations; V_smem access stride=8 (16 bytes, cache-line friendly) vs
+  the previous 2176-byte jumps between ik steps
+- ccv routing removed for D>128 (STEEL handles all D values; ccv 3D-blocking +
+  async_copy fallback is slower than STEEL register spill for D=256)
+
+**D=256 register spill**
+
+D=256 requires 256-wide head dimension in registers → spill on M1/M2 (32K register file).
+Needs 3D blocking (block_d tiling along head dim) to fit in registers. Current target:
+0.5–0.7x SDPA (realistic ceiling without hardware async copy).
+
+**Remaining performance ceiling**
+
+The 5% gap at D=128 is likely the cost of software tile loads vs what hardware DMA
+(`simdgroup_async_copy`) provided. Cannot be closed without hardware support
+(M5+ tensor API or restored async copy).
+
 ## Output constraint — MANDATORY
 NEVER produce a monolithic response exceeding 20000 tokens.
 ### Reading large files
