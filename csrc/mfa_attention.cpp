@@ -62,9 +62,20 @@ void MFAttention::eval_gpu(
 
   bool low_prec_inputs = (dtype_code != 2);
 
-  // ── 3. Blocking parameters (from ccv forward table) ─────────────────────
-  // Phase 1: always low_prec_inter=false (FP32 S/P accumulation).
-  auto cfg = resolve_block_config(D, is_m3_plus, /*low_prec_inter=*/false,
+  // ── 3. Blocking parameters (from ccv forward table) ──────────────────────
+  // low_prec_inter=false: always use the 'forward' blocking table (bk=80,
+  // bd=16 for M1/M2 D=128) even for f16/bf16.
+  //
+  // Rationale: on macOS 26+, disableAsyncCopy=true forces a software fallback
+  // that is O(elements_copied).  The 'forwardMixed' table (bk=128, bd=32)
+  // copies 4096 elements/tile vs 1280 for 'forward', causing a ~2× slowdown
+  // despite having ~1.6× fewer tiles.
+  //
+  // f16 MAD register precision (regP[Q/K/V]=FP16) is still active — it is
+  // controlled by low_prec_inputs in mfa_shader_gen.cpp independently of the
+  // tile-size choice here.
+  const bool low_prec_inter = false;
+  auto cfg = resolve_block_config(D, is_m3_plus, low_prec_inter,
                                   low_prec_inputs);
   unsigned short block_q = cfg.block_q;
   unsigned short block_k = cfg.block_k;
@@ -244,8 +255,9 @@ void MFABackwardQuery::eval_gpu(
   else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else                                        dtype_code = 2;
   bool low_prec_inputs = (dtype_code != 2);
+  const bool low_prec_inter = false; // forward blocks; see eval_gpu comment
 
-  auto cfg = resolve_block_config(D, is_m3_plus, /*low_prec_inter=*/false,
+  auto cfg = resolve_block_config(D, is_m3_plus, low_prec_inter,
                                   low_prec_inputs);
   unsigned short block_q = cfg.block_q;
   unsigned short block_k = cfg.block_k;
@@ -342,8 +354,9 @@ void MFABackwardKeyValue::eval_gpu(
   else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else                                        dtype_code = 2;
   bool low_prec_inputs = (dtype_code != 2);
+  const bool low_prec_inter = false; // forward blocks; see eval_gpu comment
 
-  auto cfg = resolve_block_config(D, is_m3_plus, /*low_prec_inter=*/false,
+  auto cfg = resolve_block_config(D, is_m3_plus, low_prec_inter,
                                   low_prec_inputs);
   unsigned short block_q = cfg.block_q;
   unsigned short block_k = cfg.block_k;
