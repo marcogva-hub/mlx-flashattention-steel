@@ -252,10 +252,24 @@ std::string generate_attention_source(const ShaderCache::KernelKey& key) {
   AttentionOperands<bool> leadingDims;
 
   // ---- Async preferences ----
-  // M3+ uses preferAsyncCache=true (one-to-one thread-to-element reads).
-  // M1/M2 uses preferAsyncLoad=true (shared reads, async DMA).
-  bool preferAsyncCache = is_m3_plus;
-  bool preferAsyncLoad  = !is_m3_plus;
+  // Force the preferAsyncCache path for ALL GPU generations on macOS 26+.
+  //
+  // Background: the M1/M2 preferAsyncLoad path uses simdgroup_async_copy (AIR
+  // intrinsic air.simdgroup_async_copy_2d), which Apple removed from runtime
+  // Metal shader compilation in macOS 26. The M3+ preferAsyncCache path reads
+  // K/V directly from device memory per lane (simdgroup_matrix::load), which
+  // does not use the broken intrinsic and works on all Apple Silicon GPUs.
+  //
+  // With preferAsyncCache=true / preferAsyncLoad=false:
+  //   • K/V tiles: read from device memory per lane (no async DMA) — fast
+  //   • Q tiles:   still use the software async_copy fallback (one load per
+  //     head-dim slice), amortized over N/block_k K-tile iterations (~51× for
+  //     N=4096, block_k=80), so the Q cost is small compared to K/V.
+  //
+  // TODO: restore `preferAsyncCache = is_m3_plus` when Apple re-enables
+  //       hardware simdgroup_async_copy in Metal, or add MTLTensor path (M5+).
+  bool preferAsyncCache = true;   // was: is_m3_plus — direct device reads for K/V
+  bool preferAsyncLoad  = false;  // was: !is_m3_plus — disabled: broken DMA path
 
   // ---- Kernel type ----
   AttentionKernelType ktype;

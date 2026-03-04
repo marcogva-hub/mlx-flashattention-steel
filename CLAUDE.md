@@ -178,3 +178,61 @@ python benchmarks/bench_attention.py
 - [Draw Things blog](https://engineering.drawthings.ai/p/integrating-metal-flashattention-accelerating-the-heart-of-image-generation-in-the-apple-ecosystem-16a86142eb18) -- Production validation
 - [MLX custom Metal kernels](https://ml-explore.github.io/mlx/build/html/dev/custom_metal_kernels.html)
 - [MLX C++ extensions](https://ml-explore.github.io/mlx/build/html/dev/extensions.html)
+
+## Post-Phase 2 Technical Notes
+
+### simdgroup_async_copy — Definitive Status (macOS 26)
+
+`simdgroup_async_copy` is a private AIR intrinsic (`__asm("air.simdgroup_async_copy_2d...")`)
+that Apple removed from runtime Metal shader compilation in macOS 26. Confirmed by liuliu
+(ccv maintainer) on Apple Developer Forums. Not a regression — intentional removal.
+
+- **Metal 4 tensor API** (`MTLTensor`, cooperative tensors): M5+/A19+ only. Not available on M1–M4.
+- **MLX SDPA** runs at full speed on macOS 26 because it uses standard per-thread
+  threadgroup loads + `threadgroup_barrier`, not async DMA.
+
+### MFA tile load paths
+
+The kernel has three compile-time paths controlled by `preferAsyncCache` and `preferAsyncLoad`:
+
+| Path | preferAsyncCache | preferAsyncLoad | K/V load | Q load | macOS 26 status |
+|------|:---:|:---:|---|---|:---:|
+| M1/M2 original | false | true | simdgroup_async_copy DMA | simdgroup_async_copy | BROKEN |
+| M3+ (AsyncCache) | true | false | per-lane device reads | simdgroup_async_copy | WORKS |
+| software fallback | any | any | disableAsyncCopy=true loop | ditto | SLOW (~12×) |
+
+**Fix applied**: `mfa_shader_gen.cpp` forces `preferAsyncCache=true, preferAsyncLoad=false`
+for ALL GPU generations. K/V are read directly from device memory per lane — no async DMA.
+Q still goes through the software async_copy fallback, but Q is loaded only once per
+head-dim slice (8× for D=128, block_d=16), amortized over N/block_k ≈ 51 K-tile iterations.
+Total async_copy work reduced by ~86%.
+
+### Fix A/B results (pre-quick-win baseline)
+
+Fix B (f16 MAD GEMM via `regP[Q/K/V]=FP16` when `low_prec_inputs=true`) and Fix A
+(compile-time div/mod in the software fallback) had **no measurable performance impact**:
+127ms → 127ms. The tile-load bottleneck completely dominated.
+
+Key insight: `low_prec_inter` and `low_prec_inputs` are **decoupled** in `mfa_shader_gen.cpp`.
+`low_prec_inputs` controls `regP[Q/K/V]=FP16` (GEMM register precision, independent of tile size).
+`low_prec_inter` controls the blocking table (forward vs forwardMixed). Setting
+`low_prec_inter=true` for f16 caused a 53% regression because forwardMixed tiles
+(bk=128, bd=32 = 4096 elems/tile) are 2× larger than forward tiles (bk=80, bd=16 = 1280
+elems/tile), making the software async_copy fallback 2× slower. Fix: keep `low_prec_inter=false`
+(small tiles) while `low_prec_inputs=true` still gives f16 MAD GEMM.
+
+### is_m3_plus threshold
+
+Architecture gen from `get_architecture_gen()` returns the numeric suffix of the architecture
+string (e.g. "applegpu_g13s" → 13). **NOT** the `MTLGPUFamilyApple` enum value.
+
+| Gen | Chip |
+|-----|------|
+| 13 | M1 |
+| 14 | M2 |
+| 15 | M3 |
+| 16 | M4 |
+
+Correct threshold for M3+: `>= 15`. The old `>= 9` threshold was always true on all
+modern Apple Silicon (M1 has gen 13). Fixed in forward pass eval_gpu; backward passes
+also patched.

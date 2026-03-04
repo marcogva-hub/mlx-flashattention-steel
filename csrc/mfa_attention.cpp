@@ -248,7 +248,7 @@ void MFABackwardQuery::eval_gpu(
 
   // ── Device & dtype ─────────────────────────────────────────────────────
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 9);
+  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
@@ -347,7 +347,7 @@ void MFABackwardKeyValue::eval_gpu(
   dV.set_data(mlx::core::allocator::malloc(dV.nbytes()));
 
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 9);
+  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
