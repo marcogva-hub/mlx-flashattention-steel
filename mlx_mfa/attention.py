@@ -104,10 +104,10 @@ def flash_attention(
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
 
-    # --- Grouped Query Attention (GQA) support --------------------------------
-    # When H_kv < H_q (GQA / MQA), tile k and v to match H_q so the standard
-    # kernel sees H_q == H_kv.  This is correct and simple; native GQA without
-    # tiling is tracked as a future enhancement (Phase 5, H_Hk_ratio kernel param).
+    # --- Grouped Query Attention (GQA) validation ----------------------------
+    # The STEEL kernel supports native GQA: gqa_factor = H_q / H_kv is set in
+    # MFASteelParams and the shader maps Q head h → KV head h/gqa_factor.
+    # No mx.repeat needed — K/V are passed with their original H_kv heads.
     q_heads = q.shape[1]
     kv_heads = k.shape[1]
     if kv_heads != q_heads:
@@ -116,10 +116,6 @@ def flash_attention(
                 f"flash_attention GQA: q_heads ({q_heads}) must be divisible "
                 f"by kv_heads ({kv_heads})."
             )
-        ratio = q_heads // kv_heads
-        # k/v: [B, H_kv, S, D] → [B, H_q, S, D] via repeat along axis 1.
-        k = mx.repeat(k, ratio, axis=1)
-        v = mx.repeat(v, ratio, axis=1)
 
     if not _can_use_mfa(q, head_dim):
         return _fallback_sdpa(q, k, v, scale, causal, stream)

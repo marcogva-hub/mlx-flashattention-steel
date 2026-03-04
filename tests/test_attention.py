@@ -598,6 +598,89 @@ class TestBackwardEdge:
 
 
 # ---------------------------------------------------------------------------
+# Native GQA tests — requires C++ extension (STEEL kernel handles GQA natively)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestNativeGQA:
+    """Native GQA in STEEL kernel (no mx.repeat expansion)."""
+
+    @pytest.mark.parametrize("ratio,D", [(2, 128), (4, 128), (8, 128), (2, 64), (4, 64)])
+    def test_native_gqa_matches_repeat_ref(self, ratio, D):
+        """Native GQA result must match mx.repeat + dense SDPA reference."""
+        B, H_q, N = 1, 8, 256
+        H_kv = H_q // ratio
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(77 + ratio)
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        out_native = flash_attention(q, k, v, scale=scale)
+        # Reference via mx.repeat → dense SDPA
+        k_rep = mx.repeat(k, ratio, axis=1)
+        v_rep = mx.repeat(v, ratio, axis=1)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k_rep, v_rep, scale=scale)
+        mx.eval(out_native, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_native.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=1e-2,
+            err_msg=f"Native GQA ratio={ratio} D={D} mismatch"
+        )
+        assert list(out_native.shape) == [B, H_q, N, D]
+
+    @pytest.mark.parametrize("ratio", [2, 4, 8])
+    def test_native_gqa_causal(self, ratio):
+        """Native GQA with causal=True matches causal reference."""
+        B, H_q, N, D = 1, 8, 256, 128
+        H_kv = H_q // ratio
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(99 + ratio)
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        out_native = flash_attention(q, k, v, scale=scale, causal=True)
+        k_rep = mx.repeat(k, ratio, axis=1)
+        v_rep = mx.repeat(v, ratio, axis=1)
+        # Causal mask for reference
+        causal_m = mx.triu(mx.full((N, N), float("-inf"), dtype=mx.float16), k=1)
+        out_ref = mx.fast.scaled_dot_product_attention(
+            q, k_rep, v_rep, scale=scale, mask=causal_m)
+        mx.eval(out_native, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_native.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=1e-2,
+            err_msg=f"Native GQA causal ratio={ratio} mismatch"
+        )
+
+    def test_native_gqa_backward_finite(self):
+        """GQA backward (via SDPA vjp) must produce finite gradients."""
+        B, H_q, H_kv, N, D = 1, 4, 2, 64, 128
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(111)
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention(q_, k_, v_, scale=scale, causal=True))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert list(dq.shape) == [B, H_q,  N, D], "dQ shape wrong"
+        assert list(dk.shape) == [B, H_kv, N, D], "dK shape wrong (should be H_kv, not H_q)"
+        assert list(dv.shape) == [B, H_kv, N, D], "dV shape wrong"
+        assert np.all(np.isfinite(np.array(dq.astype(mx.float32)))), "dQ non-finite"
+        assert np.all(np.isfinite(np.array(dk.astype(mx.float32)))), "dK non-finite"
+        assert np.all(np.isfinite(np.array(dv.astype(mx.float32)))), "dV non-finite"
+
+
+# ---------------------------------------------------------------------------
 # Block-sparse attention tests
 # ---------------------------------------------------------------------------
 
