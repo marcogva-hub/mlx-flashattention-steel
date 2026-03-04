@@ -46,8 +46,10 @@ SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec) {
     int BK = (head_dim <= 64) ? 32 : 16;
     return {32, BK, head_dim, 4, 1, 8};
   } else {
-    // D=256: BQ=16, WM=2 so TQ = BQ/(WM*8) = 16/16 = 1
-    return {16, 16, head_dim, 2, 1, 8};
+    // D=256: BQ=32, WM=4 → TGP=29184B < 32KB, TQ=32/(4×8)=1 ✓
+    // Same WM/WN as D=128 config — 4 simdgroups for better GPU occupancy.
+    // BK=32 tested → 0.34x (worse); BQ=16/WM=2 → 0.27x (much worse).
+    return {32, 16, head_dim, 4, 1, 8};
   }
 }
 
