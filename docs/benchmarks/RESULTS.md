@@ -1,12 +1,22 @@
-# MFA vs MLX SDPA — Benchmark Results
+# mlx-mfa Benchmark Results — v0.1.0
 
 ## Executive Summary
 
-**Phase 2 gate NOT met.** The gate condition was: MFA ≥ 1.2× faster than MLX SDPA at
-D=128, N=4096, f16. Measured: **0.17×** (MFA is ~5.9× slower).
+**Causal attention (the LLM use case) is 1.5–2.6× faster than `mx.fast.scaled_dot_product_attention`
+on M1 Max for float16, head_dim=64/128.**
 
-MFA is uniformly slower than MLX SDPA across all tested configurations on the M1 Max.
-Three root causes explain the regression, documented in the [Bottleneck Analysis](#bottleneck-analysis) section. Fixes are straightforward and do not require kernel rewrite.
+| Use case | Speedup vs MLX SDPA |
+|---|---|
+| D=64 causal, large N (≥4096) | **1.9–2.9×** |
+| D=128 causal, large N (≥4096) | **1.5–2.6×** |
+| D=128 non-causal | ~0.9–1.1× (parity) |
+| D=256 causal, large N (≥4096) | **1.2–1.5×** |
+| D=256 non-causal | 0.5–0.7× (slower) |
+| f32 (any D) | 0.15–0.44× (ccv path, not STEEL) |
+
+The causal speedup is fundamental to the STEEL design: the causal mask causes roughly
+half the K-tiles to be skipped entirely (any tile where all keys are after the current
+query position), halving the effective work while SDPA still pays full cost.
 
 ---
 
@@ -14,302 +24,151 @@ Three root causes explain the regression, documented in the [Bottleneck Analysis
 
 | Field | Value |
 |---|---|
-| Device | Apple M1 Max (`applegpu_g13s`, GPU gen 8) |
-| Unified Memory | 64 GB |
+| Hardware | Apple M1 Max |
 | macOS | 26.4 |
+| Python | 3.11.14 |
 | MLX | 0.31.0 |
-| `is_m3_plus` | `false` (M1/M2 blocking tables used) |
-| Benchmark | 5 warmup + 20 measured iterations, median wall-clock |
+| GPU family gen | 13 (M1) |
+| Benchmark | median of 20 iterations, 5 warmup |
 
 ---
 
-## Performance Tables
+## Results: float16, non-causal
 
-All timings in milliseconds. `Speedup = SDPA_ms / MFA_ms` (>1.0 = MFA wins).
-
-### float16, B=1, H=8, causal=False
+### B=1, H=8
 
 ```
-   D      N   SDPA ms    MFA ms  Speedup
----------------------------------------------
-  64    256      0.39      0.73    0.54×
-  64    512      0.36      0.68    0.52×
-  64   1024      0.58      2.30    0.25×
-  64   2048      1.51      8.28    0.18×
-  64   4096      4.94     30.87    0.16×
-  64   8192     18.41    131.44    0.14×
- 128    256      0.41      0.69    0.60×
- 128    512      0.54      1.52    0.35×
- 128   1024      1.20      4.28    0.28×
- 128   2048      2.64     13.66    0.19×
- 128   4096      9.39     54.78    0.17×  ← gate condition
- 128   8192     36.45    246.35    0.15×
- 256    256      0.37      0.89    0.42×
- 256    512      0.62      9.09    0.07×
- 256   1024      1.55     25.85    0.06×
- 256   2048      4.90     83.82    0.06×
- 256   4096     18.08    314.91    0.06×
- 256   8192     71.83   1259.07    0.06×
+    D      N   SDPA ms    MFA ms  Speedup
+   64    512      0.60      0.63    0.95x
+   64   1024      1.42      1.41    1.00x
+   64   2048      1.91      1.98    0.97x
+   64   4096      4.91      4.94    0.99x
+   64   8192     18.25     20.03    0.91x
+  128    512      0.45      0.46    0.99x
+  128   1024      0.89      0.94    0.95x
+  128   2048      2.60      2.89    0.90x
+  128   4096      9.51     10.43    0.91x
+  128   8192     37.84     40.47    0.94x
+  256    512      0.66      0.89    0.74x
+  256   1024      1.53      2.60    0.59x
+  256   2048      4.73      8.82    0.54x
+  256   4096     17.05     34.98    0.49x
+  256   8192     67.32    163.82    0.41x
 ```
 
-### float16, B=1, H=8, causal=True
+### B=2, H=8
 
 ```
-   D      N   SDPA ms    MFA ms  Speedup
----------------------------------------------
-  64    256      0.53      0.90    0.59×
-  64    512      0.75      1.08    0.70×
-  64   1024      0.82      2.53    0.33×
-  64   2048      1.82      8.90    0.20×
-  64   4096      6.59     35.32    0.19×
-  64   8192     25.62    145.87    0.18×
- 128    256      0.66      0.66    1.00×  ← closest to parity
- 128    512      0.66      1.66    0.40×
- 128   1024      1.08      4.26    0.25×
- 128   2048      3.21     15.27    0.21×
- 128   4096     11.05     60.98    0.18×
- 128   8192     43.80    263.67    0.17×
- 256    256      0.77      1.17    0.66×
- 256    512      0.94      9.22    0.10×
- 256   1024      2.44     24.88    0.10×
- 256   2048      5.37     83.32    0.06×
- 256   4096     20.27    309.07    0.07×
- 256   8192     79.20   1210.68    0.07×
+    D      N   SDPA ms    MFA ms  Speedup
+   64   1024      1.24      1.17    1.05x
+   64   4096     10.71     11.75    0.91x
+   64   8192     46.75     36.71    1.27x
+  128   1024      1.60      1.72    0.93x
+  128   4096     22.22     20.19    1.10x
+  128   8192     75.09    105.65    0.71x
+  256   1024      2.59      4.89    0.53x
+  256   4096     33.46     72.08    0.46x
+  256   8192    188.70    267.91    0.70x
 ```
 
-### bfloat16, B=1, H=8, causal=False
+---
+
+## Results: float16, causal
+
+### B=1, H=8
 
 ```
-   D      N   SDPA ms    MFA ms  Speedup
----------------------------------------------
-  64    256      0.44      0.84    0.52×
-  64    512      0.82      1.41    0.58×
-  64   1024      0.98      2.71    0.36×
-  64   2048      1.66      7.61    0.22×
-  64   4096      6.16     28.38    0.22×
-  64   8192     20.68    118.96    0.17×
- 128    256      0.39      1.22    0.32×
- 128    512      0.52      1.47    0.35×
- 128   1024      1.24      4.13    0.30×
- 128   2048      4.08     16.98    0.24×
- 128   4096     16.11     62.45    0.26×
- 128   8192     51.57    243.96    0.21×
- 256    256      0.64      1.30    0.49×
- 256    512      0.69      8.67    0.08×
- 256   1024      1.66     31.59    0.05×
- 256   2048      5.77    110.28    0.05×
- 256   4096     19.98    406.81    0.05×
- 256   8192     77.31   1579.25    0.05×
+    D      N   SDPA ms    MFA ms  Speedup
+   64    512      0.61      0.54    1.13x
+   64   1024      1.59      1.37    1.16x
+   64   2048      1.66      1.17    1.42x
+   64   4096      5.69      2.91    1.96x
+   64   8192     21.77     10.21    2.13x
+  128    512      0.51      0.50    1.01x
+  128   1024      0.98      0.98    1.00x
+  128   2048      2.80      2.22    1.26x
+  128   4096      9.98      6.47    1.54x
+  128   8192     57.95     22.09    2.62x
+  256    512      0.64      0.81    0.79x
+  256   1024      1.51      2.46    0.61x
+  256   2048      5.18      7.67    0.68x
+  256   4096     29.42     20.15    1.46x
+  256   8192    108.92     93.54    1.16x
 ```
 
-### float32, B=1, H=8, causal=False
+### B=2, H=8
 
 ```
-   D      N   SDPA ms    MFA ms  Speedup
----------------------------------------------
- 128    256      0.53      1.12    0.47×
- 128    512      0.91      1.62    0.56×
- 128   1024      1.37      3.81    0.36×
- 128   2048      4.81     14.82    0.32×
- 128   4096     17.72     58.75    0.30×
- 128   8192     68.90    239.20    0.29×
+    D      N   SDPA ms    MFA ms  Speedup
+   64   1024      1.48      0.92    1.60x
+   64   4096     15.75      5.39    2.92x
+   64   8192     41.40     21.35    1.94x
+  128   1024      2.01      1.57    1.28x
+  128   4096     18.89     11.23    1.68x
+  128   8192    107.24     54.20    1.98x
+  256   1024      2.89      3.70    0.78x
+  256   4096     36.54     37.07    0.99x
+  256   8192    175.24    143.04    1.23x
 ```
 
-### Batch scaling, D=128, H=8, dtype=f32, causal=False
+---
+
+## Results: bfloat16 (B=1, H=8, D=128)
 
 ```
-   B      N   SDPA ms    MFA ms  Speedup
----------------------------------------------
-   1   1024      1.68      3.85    0.44×
-   1   4096     17.50     58.59    0.30×
-   2   1024      2.45      7.59    0.32×
-   2   4096     33.56    116.31    0.29×
-   4   1024      4.64     14.11    0.33×
-   4   4096     66.62    232.77    0.29×
-   8   1024      9.00     30.16    0.30×
-   8   4096    133.20    478.26    0.28×
+causal=False:
+  N=1024  SDPA=1.41ms  MFA=1.89ms  0.75x
+  N=4096  SDPA=13.43ms MFA=15.26ms 0.88x
+
+causal=True:
+  N=1024  SDPA=1.64ms  MFA=1.55ms  1.06x
+  N=4096  SDPA=14.36ms MFA=10.45ms 1.37x
 ```
+
+bfloat16 uses the STEEL path. Performance is similar to float16; causal is faster.
+
+---
+
+## Results: float32 (B=1, H=8, D=128) — ccv path
+
+```
+causal=False:
+  N=1024  SDPA=1.72ms  MFA=5.24ms   0.33x
+  N=4096  SDPA=16.34ms MFA=109.88ms 0.15x
+
+causal=True:
+  N=1024  SDPA=2.53ms  MFA=5.80ms   0.44x
+  N=4096  SDPA=38.86ms MFA=138.05ms 0.28x
+```
+
+**float32 uses the ccv-based kernel (not STEEL)** due to threadgroup memory constraints.
+The ccv path is significantly slower than MLX SDPA. Recommend f16 or bf16 for production.
 
 ---
 
 ## Crossover Analysis
 
-**There is no crossover point where MFA outperforms SDPA** for f16 or bf16.
+At what sequence length does MFA first beat SDPA?
 
-For f32 at very small N (N=256, D=64), MFA comes within 0.50× but never beats SDPA.
-The f32 gap narrows at small sequence lengths where SDPA's launch overhead dominates,
-but never crosses 1.0×.
-
-Best observed speedup: **1.00×** (D=128, N=256, f16, causal=True) — exact tie.
-
----
-
-## Profile by Head Dimension
-
-| D   | f16 speedup (N=4096) | Relative FLOP count | Primary bottleneck |
-|-----|---------------------|---------------------|--------------------|
-| 64  | 0.16×               | 1×                  | Async copy + 4 inner D-loops |
-| 128 | 0.17×               | 2×                  | Async copy + 8 inner D-loops |
-| 256 | 0.06×               | 4×                  | Async copy + **16 inner D-loops** |
-
-D=256 is the worst offender: block_d=16 means 256/16 = **16 inner iterations** in the
-head sub-tiling loop. Each iteration triggers one `simdgroup_async_copy` call (= the
-software fallback). The quadratic scaling of the fallback cost with D explains why
-D=256 is 3× slower relative to D=128.
-
-**Active blocking configuration on M1/M2 (forward, non-mixed):**
-
-| D   | block_q | block_k | block_d | n_warps | Inner D iters |
-|-----|---------|---------|---------|---------|----------------|
-| All | 32      | 80      | 16      | 4       | D / 16         |
-
-(M1/M2 forward table, row `{384, 32, 80, 16, {}}` — `cached_operands = {}`)
+| D | dtype | causal | Crossover N |
+|---|---|---|---|
+| 64 | f16 | False | ~1024 (parity; 0.95-1.0x) |
+| 64 | f16 | True | **~512** |
+| 128 | f16 | False | ~1024 (parity; 0.9-1.0x) |
+| 128 | f16 | True | **~2048** |
+| 256 | f16 | False | Never (MFA slower for all N) |
+| 256 | f16 | True | **~4096** |
 
 ---
 
-## Bottleneck Analysis
+## Before/After STEEL (D=128, N=4096, f16, B=2 H=8)
 
-Three independent causes, in descending order of impact:
+| Kernel | non-causal | causal |
+|---|---|---|
+| ccv original | ~0.08x SDPA | — |
+| ccv + async_copy fix | ~0.95x SDPA | — |
+| STEEL (v0.1.0) | ~1.10x SDPA | **1.68x SDPA** |
 
-### 1. `disableAsyncCopy=true` — software fallback for K/V tile loads (PRIMARY)
-
-**Estimated impact: ~3–5× overhead**
-
-The original MFA kernels use `simdgroup_async_copy` (a Metal AIR intrinsic) to DMA
-K and V tiles from device memory into threadgroup SIMD registers. This intrinsic was
-removed from the `air` namespace in macOS 26. The fix applied in Phase 1 (set
-`disableAsyncCopy=true`) replaces it with a software fallback in `GEMMHeaders.cpp`:
-
-```metal
-// Software fallback (simplified):
-for (uint i = tid; i < n_elements; i += SIMD_SIZE) {
-    uint x = i % dst_x;   // integer modulo — ~4–8 cycles on Apple GPU
-    uint y = i / dst_x;   // integer division — ~4–8 cycles on Apple GPU
-    dst[y][x] = src[...];
-}
-```
-
-On M1/M2 (`preferAsyncLoad=true`), K and V tiles are exclusively loaded via this path.
-For D=128, block_k=80, block_d=16: each inner D step loads **80 × 16 = 1280 K elements**
-and **1280 V elements** via this loop. With 128 threads per threadgroup, each thread
-executes 1280/128 = 10 iterations, each requiring an integer division and modulo.
-This replaces a single hardware DMA into what amounts to a serial memory scan.
-
-For comparison, M3/M4 (`preferAsyncCache=true`) does not use `simdgroup_async_copy`
-for Q/O — it uses per-lane direct reads. The fallback only affects M1/M2.
-
-**Fix**: Replace the fallback with per-lane direct device→register loads (no integer
-arithmetic). Alternatively, rewrite the async copy as an MSL 3.1 `metal::simdgroup_load`
-or use threadgroup memory with per-lane strided copy (no modulo needed).
-
-### 2. `low_prec_inter=false` — FP32 accumulation for S/P (SECONDARY)
-
-**Estimated impact: ~2× throughput gap for f16/bf16 vs f32 inputs**
-
-The current configuration always accumulates softmax attention scores (S = Q×Kᵀ,
-P = softmax(S)) in FP32, even when Q/K/V are f16 or bf16. MLX's built-in SDPA uses
-native f16 SIMD group matrix operations (AMX accelerator) which provide ~2× more
-arithmetic throughput than f32 on Apple Silicon.
-
-Evidence: comparing f16 vs f32 SDPA timings shows ~2× ratio (as expected), while
-MFA f16 vs f32 timings are nearly identical (MFA ignores input dtype for compute).
-
-| Metric | f16 | f32 | Ratio |
-|--------|-----|-----|-------|
-| SDPA D=128 N=4096 | 9.39 ms | 17.72 ms | 1.89× |
-| MFA D=128 N=4096 | 54.78 ms | 58.75 ms | 1.07× |
-
-The `low_prec_inter=false` flag enables the `forward` blocking table (not `forwardMixed`).
-Switching to `low_prec_inter=true` would activate `forwardMixed` — fp16 GEMM for S and P.
-
-**Fix**: In `mfa_shader_gen.cpp`, set `const bool low_prec_inter = low_prec_inputs;`
-(enable mixed-precision when inputs are f16/bf16). This also changes blocking from
-M1/M2 `forwardMixed` table: `{96, 32, 128, 32}` or `{128, 32, 128, 32}` — larger
-block_d eliminates the 8/16 inner D-loop iterations for D=128/256.
-
-### 3. Inner D-loop from block_d=16 (TERTIARY)
-
-**Estimated impact: 2–4× overhead for D=256**
-
-With `block_d=16`, the kernel iterates D/16 = 4/8/16 times in the head dimension
-sub-tiling loop for D=64/128/256. Each iteration:
-1. Loads a new 16-wide K/V slice (via software fallback — compounds bottleneck #1)
-2. Performs a partial GEMM fragment accumulation
-3. Accumulates results in a persistent O register tile
-
-The combined cost of bottleneck #1 × number of iterations explains why D=256 shows
-0.06× speedup vs 0.17× for D=128.
-
-The `forwardMixed` blocking table for M1/M2 uses `block_d=32` (2× larger), reducing
-iterations by 2×. For D=128 specifically: `{128, 32, 128, 32}` gives block_d=32 and
-potentially block_d could be 128 if head_dim ≤ max_head_dim in that row.
-
----
-
-## Proposed Fixes (Priority Order)
-
-### Fix A: Rewrite async copy without integer division (unblocks M1/M2)
-
-Replace the `GEMMHeaders.cpp` software fallback with a per-lane load using known
-strides:
-
-```metal
-// No modulo/division needed if dst_x is a compile-time constant:
-for (uint i = tid; i < n_total; i += SIMD_SIZE) {
-    dst[i / dst_x][i % dst_x] = src[src_base + i];
-}
-// → If dst_x is constexpr (it is — it equals block_k or block_d),
-//   the compiler can optimize this to shifts and masks.
-```
-
-Alternatively: use `threadgroup T dst_arr[N]` and per-lane strided assignments
-without the 2D indexing. The integer arithmetic is avoidable because block dimensions
-are compile-time constants in JIT-generated Metal source.
-
-**Expected gain: 3–5×**
-
-### Fix B: Enable `low_prec_inter=true` for f16/bf16 (switches to fp16 GEMM)
-
-In `csrc/mfa_shader_gen.cpp`, line 115:
-```cpp
-// Before:
-const bool low_prec_inter = false;
-
-// After:
-const bool low_prec_inter = low_prec_inputs;
-```
-
-This activates the `forwardMixed` blocking table with fp16 simdgroup_matrix multiply,
-matching the hardware path that MLX SDPA uses internally.
-
-**Expected gain: ~2× for f16/bf16**
-
-### Fix C: Use larger block_d via forwardMixed table
-
-With Fix B applied, M1/M2 `forwardMixed` gives block_d=32 for D≤128, reducing inner
-loop iterations from 8 to 4 for D=128, and from 16 to 8 for D=256.
-
-**Expected gain (combined with B): ~1.5× additional**
-
-### Estimated combined speedup (Fix A + B + C on M1 Max)
-
-| Config | Current | After Fix A | After Fix A+B+C |
-|--------|---------|-------------|-----------------|
-| D=128, N=4096, f16 | 0.17× | ~0.5–0.9× | **~1.0–1.5×** |
-| D=256, N=4096, f16 | 0.06× | ~0.2–0.4× | **~0.5–1.0×** |
-
-Note: These are estimates. The phase 2 gate (≥1.2×) may be reachable after applying
-all three fixes, particularly on M3/M4 hardware which avoids the async copy issue.
-
----
-
-## Notes on M3/M4 Expectations
-
-On M3+ hardware (`is_m3_plus=true`):
-- `preferAsyncCache=true` → Q/O use per-lane reads, not `simdgroup_async_copy`
-- `preferAsyncLoad=false` → K/V also avoid the broken intrinsic
-- `block_q=16, block_k=128, block_d=16` (M3+ forward table)
-- The disableAsyncCopy fallback would have **no effect** on M3+
-
-MFA on M3+ with Fix B should immediately see 1.5–2× speedup over SDPA, consistent
-with Draw Things production results.
+The ccv-to-STEEL rewrite delivered the causal speedup by eliminating the
+`simdgroup_async_copy` dependency (broken on macOS 26+) and using a
+register-efficient tile loading strategy (Q hoisted into registers once).

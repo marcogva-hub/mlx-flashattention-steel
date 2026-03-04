@@ -24,3 +24,11 @@ venv/
 # Metal
 *.metallib
 *.air
+
+# Debug / scratch artifacts
+*_shader.txt
+*_shader_dump.txt
+shader_dump.txt
+full_shader_dump.txt
+*.ll
+claude-code-prompt.md
