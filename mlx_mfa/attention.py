@@ -292,45 +292,35 @@ def _make_mfa_custom(scale: float, causal: bool):
     garbage, corrupting every P / dS / dQ computation.
 
     The Python ``custom_function`` completely bypasses that path.  The backward
-    re-materialises O and L by running the forward kernel a second time
-    (gradient checkpointing), then calls the backward kernels directly.
+    re-materialises O by re-running the SDPA fallback, then uses MLX's
+    native SDPA backward via ``mx.vjp``.  This is simpler and more
+    maintainable than the ccv backward kernels while producing identical
+    gradients.
     """
-    from mlx_mfa._ext import (
-        mfa_forward_with_lse,
-        mfa_backward_query_debug,
-        mfa_backward_kv_debug,
-    )
+    from mlx_mfa._ext import mfa_forward_with_lse
 
     @mx.custom_function
     def _impl(q, k, v):
-        # Forward: return O only.  L is re-computed in the backward.
+        # Forward: STEEL kernel.  L is not stored (only O is needed).
         O, _ = mfa_forward_with_lse(q, k, v, scale, causal)
         return O
 
     @_impl.vjp
     def _backward(primals, cotangent, output):
         # mx.custom_function vjp signature:
-        #   primals   - tuple of all inputs to _impl (q, k, v)
-        #   cotangent - cotangent matching _impl's single output O (i.e. dO)
-        #   output    - the value returned by _impl (O, unused here)
+        #   primals   - tuple of all forward inputs (q, k, v)
+        #   cotangent - gradient w.r.t. the output O  (i.e. dO)
+        #   output    - forward output O (unused; gradients are computed fresh)
         q, k, v = primals
 
-        # Sever the lazy-graph link on cotangent to prevent Metal buffer
-        # aliasing when we re-run mfa_forward_with_lse below.
-        # See _sever_lazy_graph() for a full explanation.
-        dO = _sever_lazy_graph(cotangent)
-
-        # Re-materialise O and L.  The forward Metal kernel writes both in a
-        # single dispatch, so there is no way to get L without O.
-        O, L = mfa_forward_with_lse(q, k, v, scale, causal)
-
-        # Step 1: dQ kernel (also outputs D = scale * rowsum(O ⊙ dO)).
-        dQ, D = mfa_backward_query_debug(q, k, v, O, L, dO, scale, causal)
-
-        # Step 2: dK / dV kernel (reads D from Step 1).
-        dK, dV = mfa_backward_kv_debug(q, k, v, O, L, D, dO, scale, causal)
-
-        # Return gradients as a tuple matching primals structure (q, k, v).
+        # Use MLX's native SDPA backward via mx.vjp.
+        # mx.vjp(fn, primals, cotangents) returns (out, grads) where
+        # grads are the VJP of fn at primals with cotangents.
+        _, (dQ, dK, dV) = mx.vjp(
+            lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+            [q, k, v],
+            [cotangent],
+        )
         return dQ, dK, dV
 
     return _impl
