@@ -233,6 +233,295 @@ def get_supported_configs() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Block-sparse block size lookup (mirrors select_steel_block_config in C++)
+# ---------------------------------------------------------------------------
+
+def _steel_block_config(head_dim: int) -> tuple[int, int]:
+    """Return (BQ, BK) for the STEEL kernel at the given head_dim.
+
+    Must stay in sync with select_steel_block_config() in mfa_steel_fwd.cpp.
+    """
+    if head_dim <= 64:
+        return (32, 32)
+    elif head_dim <= 128:
+        return (32, 16)
+    else:  # D=256
+        return (32, 16)
+
+
+# ---------------------------------------------------------------------------
+# Block-sparse mask helpers
+# ---------------------------------------------------------------------------
+
+def make_causal_block_mask(seq_len: int, head_dim: int = 128) -> mx.array:
+    """Block-causal mask: True where the K-block's last token index <= Q-block's first.
+
+    Args:
+        seq_len:  Sequence length.
+        head_dim: Head dimension (determines BQ, BK tile sizes).
+
+    Returns:
+        bool array [NQ_tiles, NK_tiles].  True = compute this block.
+
+    Example::
+
+        mask = make_causal_block_mask(512)
+        out = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _steel_block_config(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+    rows = mx.arange(NQ, dtype=mx.int32)
+    cols = mx.arange(NK, dtype=mx.int32)
+    # Block (q, k) is active when the k-block's first token <= q-block's last token
+    # i.e.  k_start <= q_end  ↔  k * BK <= (q+1) * BQ - 1
+    q_end  = (rows + 1) * BQ - 1          # [NQ]
+    k_start = cols * BK                    # [NK]
+    mask = k_start[None, :] <= q_end[:, None]  # [NQ, NK]
+    return mask
+
+
+def make_sliding_window_mask(
+    seq_len: int,
+    window_size: int,
+    head_dim: int = 128,
+    causal: bool = False,
+) -> mx.array:
+    """Sliding-window block mask: each Q-block attends to K-blocks within
+    +/- ``window_size`` tokens.
+
+    Args:
+        seq_len:     Sequence length.
+        window_size: Number of tokens on each side of the query block's centre
+                     that keys are visible from.
+        head_dim:    Head dimension (determines BQ, BK tile sizes).
+        causal:      If True, also apply causal masking (no future keys).
+
+    Returns:
+        bool array [NQ_tiles, NK_tiles].
+
+    Example::
+
+        # Each token sees 512 past + 512 future tokens
+        mask = make_sliding_window_mask(4096, window_size=512)
+        out  = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _steel_block_config(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+    rows = mx.arange(NQ, dtype=mx.int32)
+    cols = mx.arange(NK, dtype=mx.int32)
+
+    q_centre = rows * BQ + BQ // 2   # centre token of Q-block [NQ]
+    k_start  = cols * BK              # first token of K-block  [NK]
+    k_end    = k_start + BK - 1       # last token of K-block   [NK]
+
+    # K-block overlaps the [q_centre - window, q_centre + window] range
+    in_window = (k_end[None, :] >= q_centre[:, None] - window_size) & \
+                (k_start[None, :] <= q_centre[:, None] + window_size)
+
+    if causal:
+        q_end   = (rows + 1) * BQ - 1
+        k_start2 = cols * BK
+        in_window = in_window & (k_start2[None, :] <= q_end[:, None])
+
+    return in_window
+
+
+# ---------------------------------------------------------------------------
+# Block-sparse forward
+# ---------------------------------------------------------------------------
+
+def flash_attention_sparse(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    block_mask: mx.array,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Block-sparse Flash Attention.
+
+    Only computes attention for (Q-tile, K-tile) pairs where
+    ``block_mask[q_tile, k_tile] == True``.  Masked-out blocks
+    contribute zero weight (equivalent to -inf before softmax).
+
+    Args:
+        q:          Query   [B, H, N, D].  f16 or bf16 only.
+        k:          Key     [B, H, S, D].
+        v:          Value   [B, H, S, D].
+        block_mask: Boolean [NQ_tiles, NK_tiles].
+                    ``NQ_tiles = ceil(N / BQ)``, ``NK_tiles = ceil(S / BK)``
+                    where BQ, BK are from ``_steel_block_config(D)``.
+                    Use :func:`make_causal_block_mask` or
+                    :func:`make_sliding_window_mask` to generate.
+        scale:      Attention scale (default: 1/sqrt(D)).
+        causal:     Additional causal masking within the active blocks.
+        stream:     Optional MLX stream.
+
+    Returns:
+        Output [B, H, N, D].
+
+    Note — Backward pass:
+        Gradients are computed via dense SDPA + float block bias, which is
+        correct but does not benefit from sparsity (dense backward).
+        A native sparse backward is planned for a future release.
+
+    Example::
+
+        mask = make_sliding_window_mask(4096, window_size=512)
+        out  = flash_attention_sparse(q, k, v, mask)
+    """
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            "flash_attention_sparse expects 4-D tensors [batch, heads, seq, head_dim]"
+        )
+    B, H, N, D = q.shape
+    S = k.shape[2]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    if q.dtype not in (mx.float16, mx.bfloat16):
+        raise ValueError(
+            "flash_attention_sparse requires float16 or bfloat16; "
+            f"got {q.dtype}. For float32, use flash_attention() with a float mask."
+        )
+    if D not in _MFA_SUPPORTED_HDIMS:
+        raise ValueError(
+            f"flash_attention_sparse: head_dim must be in {_MFA_SUPPORTED_HDIMS}, "
+            f"got {D}"
+        )
+    if block_mask.ndim != 2:
+        raise ValueError(
+            "block_mask must be 2-D [NQ_tiles, NK_tiles]; "
+            f"got shape {list(block_mask.shape)}"
+        )
+
+    BQ, BK = _steel_block_config(D)
+    NQ_expected = (N + BQ - 1) // BQ
+    NK_expected = (S + BK - 1) // BK
+    if block_mask.shape[0] != NQ_expected or block_mask.shape[1] != NK_expected:
+        raise ValueError(
+            f"block_mask shape {list(block_mask.shape)} does not match "
+            f"expected [{NQ_expected}, {NK_expected}] "
+            f"for seq_len={N}/{S}, head_dim={D} (BQ={BQ}, BK={BK})"
+        )
+
+    if not _ext_available():
+        return _sparse_fallback_sdpa(q, k, v, block_mask, BQ, BK, scale, causal)
+
+    impl = _make_mfa_sparse_custom(scale, causal, block_mask)
+    q = mx.contiguous(q)
+    k = mx.contiguous(k)
+    v = mx.contiguous(v)
+    mask_uint8 = block_mask.astype(mx.uint8)
+    mask_uint8 = mx.contiguous(mask_uint8)
+    return impl(q, k, v, mask_uint8)
+
+
+def _make_mfa_sparse_custom(
+    scale: float,
+    causal: bool,
+    block_mask: mx.array,
+):
+    """Build a custom_function wrapping the sparse STEEL kernel."""
+    from mlx_mfa._ext import mfa_attention_sparse_forward  # noqa: F401
+
+    @mx.custom_function
+    def _impl(q, k, v, mask_uint8):
+        from mlx_mfa._ext import mfa_attention_sparse_forward as _fwd
+        from mlx_mfa._ext import mfa_forward_with_lse
+        O = _fwd(q, k, v, mask_uint8, scale, causal)
+        return O
+
+    @_impl.vjp
+    def _backward(primals, cotangent, output):
+        q, k, v, mask_uint8 = primals
+        # Build float additive bias from block_mask for SDPA gradient.
+        # dense backward: correct, but no sparsity speedup.
+        float_mask = _block_mask_to_float_bias(
+            block_mask, q.shape[2], k.shape[2], scale_q_dtype=q.dtype
+        )
+        if causal:
+            N, S = q.shape[2], k.shape[2]
+            causal_m = mx.triu(
+                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+            )
+            float_mask = float_mask + causal_m
+        _, (dQ, dK, dV) = mx.vjp(
+            lambda q, k, v: mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask=float_mask
+            ),
+            [q, k, v],
+            [cotangent],
+        )
+        return dQ, dK, dV, mx.zeros_like(mask_uint8)
+
+    return _impl
+
+
+def _block_mask_to_float_bias(
+    block_mask: mx.array,
+    seq_q: int,
+    seq_k: int,
+    scale_q_dtype: mx.Dtype = mx.float32,
+) -> mx.array:
+    """Expand a bool block_mask [NQ, NK] to a float additive bias [N, S].
+
+    True  → 0.0     (include in attention)
+    False → -inf    (mask out)
+    """
+    BQ, BK = block_mask.shape[0], block_mask.shape[1]
+    # Create a full float mask of shape [NQ*BQ, NK*BK] then slice to [N, S]
+    # block_mask is [NQ, NK] → repeat each element BQ/BK times
+    # Expand: [NQ, 1, NK, 1] → [NQ, BQ, NK, BK] → [NQ*BQ, NK*BK]
+    D = seq_q // block_mask.shape[0]   # BQ (approximate)
+    BQ_actual = (seq_q + block_mask.shape[0] - 1) // block_mask.shape[0]
+    BK_actual = (seq_k + block_mask.shape[1] - 1) // block_mask.shape[1]
+
+    # float: True→0, False→-inf
+    float_block = mx.where(block_mask, mx.array(0.0), mx.array(float("-inf")))
+    # Repeat each block element to cover BQ query rows and BK key cols
+    # Shape: [NQ, NK] → [NQ, 1, NK, 1] → [NQ, BQ, NK, BK] → [NQ*BQ, NK*BK]
+    float_block = float_block[:, None, :, None]  # [NQ, 1, NK, 1]
+    float_block = mx.broadcast_to(
+        float_block,
+        (block_mask.shape[0], BQ_actual, block_mask.shape[1], BK_actual)
+    )
+    # Reshape [NQ, BQ, NK, BK] → [NQ*BQ, NK*BK] via transpose + reshape
+    NQ, _, NK, _ = float_block.shape
+    float_block = mx.transpose(float_block, (0, 1, 2, 3))  # keep shape
+    float_block = float_block.reshape(NQ * BQ_actual, NK * BK_actual)
+    # Slice to actual [seq_q, seq_k]
+    float_bias = float_block[:seq_q, :seq_k]
+    return float_bias.astype(scale_q_dtype)
+
+
+def _sparse_fallback_sdpa(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    block_mask: mx.array,
+    BQ: int,
+    BK: int,
+    scale: float,
+    causal: bool,
+) -> mx.array:
+    """Dense SDPA fallback for flash_attention_sparse (used when C++ ext absent)."""
+    N, S = q.shape[2], k.shape[2]
+    float_bias = _block_mask_to_float_bias(block_mask, N, S, q.dtype)
+    if causal:
+        causal_m = mx.triu(
+            mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+        )
+        float_bias = float_bias + causal_m
+    return mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=scale, mask=float_bias
+    )
+
+
 # Internal helpers
 # ---------------------------------------------------------------------------
 

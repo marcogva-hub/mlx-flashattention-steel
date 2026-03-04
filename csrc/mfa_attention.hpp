@@ -28,9 +28,10 @@ namespace mlx_mfa {
 class MFAttention : public mlx::core::Primitive {
  public:
   struct Params {
-    int head_dim;  // D: 64, 128, or 256
-    float scale;   // Usually 1/sqrt(D)
-    bool causal;   // Causal (autoregressive) masking
+    int head_dim;       // D: 64, 128, or 256
+    float scale;        // Usually 1/sqrt(D)
+    bool causal;        // Causal (autoregressive) masking
+    bool has_block_mask; // Block-sparse: 4th input is uchar mask [NQ_tiles, NK_tiles]
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -45,7 +46,7 @@ class MFAttention : public mlx::core::Primitive {
   }
 
   /// Forward pass (GPU).
-  /// inputs:  Q [B,H,N,D], K [B,H,S,D], V [B,H,S,D]
+  /// inputs:  Q [B,H,N,D], K [B,H,S,D], V [B,H,S,D]  (+ optional block_mask)
   /// outputs: O [B,H,N,D], L [B,H,N] (logsumexp for backward)
   void eval_gpu(
       const std::vector<mlx::core::array>& inputs,
@@ -71,6 +72,17 @@ mlx::core::array mfa_attention_forward(
     const mlx::core::array& q,
     const mlx::core::array& k,
     const mlx::core::array& v,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
+/// Block-sparse forward pass.
+/// block_mask: uint8 array [NQ_tiles, NK_tiles].  1 = compute, 0 = skip.
+mlx::core::array mfa_attention_sparse_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& block_mask,
     float scale,
     bool causal,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);

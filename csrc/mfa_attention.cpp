@@ -45,11 +45,12 @@ MFAttention::MFAttention(mlx::core::Stream stream, Params params)
 void MFAttention::eval_gpu(
     const std::vector<mlx::core::array>& inputs,
     std::vector<mlx::core::array>& outputs) {
-  assert(inputs.size() == 3);
+  assert(inputs.size() == 3 || inputs.size() == 4);
 
   const auto& q = inputs[0]; // [B, H, N, D]
   const auto& k = inputs[1]; // [B, H, S, D]
   const auto& v = inputs[2]; // [B, H, S, D]
+  // inputs[3] = block_mask [NQ_tiles, NK_tiles] uint8, only when has_block_mask
 
   int B = q.shape(0);
   int H = q.shape(1);
@@ -99,7 +100,7 @@ void MFAttention::eval_gpu(
     using KK = ShaderCache::KernelKey;
     KK ccv_key{ KK::KernelType::AttentionForward,
                 D, (int)bq, (int)bk, (int)bd, (int)nw,
-                params_.causal, is_m3_plus, dtype_code };
+                params_.causal, /*sparse=*/false, is_m3_plus, dtype_code };
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
     auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -135,6 +136,7 @@ void MFAttention::eval_gpu(
     BQ, BK, D,   // block_d = full D (no sub-tiling in Steel)
     WM,
     params_.causal,
+    params_.has_block_mask,  // sparse variant when block_mask present
     false,       // is_m3_plus unused for Steel kernel
     dtype_code
   };
@@ -185,13 +187,16 @@ void MFAttention::eval_gpu(
   auto& enc = d.get_command_encoder(stream().index);
   enc.set_compute_pipeline_state(pipeline);
 
-  // Buffers: Q=0, K=1, V=2, O=3, L=4, params=5
+  // Buffers: Q=0, K=1, V=2, O=3, L=4, params=5, (block_mask=6 if sparse)
   enc.set_input_array(q,          0);
   enc.set_input_array(k,          1);
   enc.set_input_array(v,          2);
   enc.set_output_array(out,       3);
   enc.set_output_array(logsumexp, 4);
   enc.set_bytes(sp,               5);
+  if (params_.has_block_mask) {
+    enc.set_input_array(inputs[3], 6);
+  }
 
   // 3D grid: (NQ, H, B) — each threadgroup handles one Q tile, one head, one batch
   enc.dispatch_threadgroups(
@@ -346,7 +351,7 @@ void MFABackwardQuery::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDQ,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, is_m3_plus, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -445,7 +450,7 @@ void MFABackwardKeyValue::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDKV,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, is_m3_plus, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -479,9 +484,10 @@ void MFABackwardKeyValue::eval_gpu(
 bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
   auto* o = dynamic_cast<const MFAttention*>(&other);
   if (!o) return false;
-  return params_.head_dim == o->params_.head_dim &&
-         params_.scale    == o->params_.scale    &&
-         params_.causal   == o->params_.causal;
+  return params_.head_dim      == o->params_.head_dim      &&
+         params_.scale         == o->params_.scale         &&
+         params_.causal        == o->params_.causal        &&
+         params_.has_block_mask == o->params_.has_block_mask;
 }
 
 // =========================================================================
@@ -509,7 +515,7 @@ mlx::core::array mfa_attention_forward(
         "MFA: head_dim must be 64, 128, or 256, got " + std::to_string(D));
   }
 
-  MFAttention::Params params{D, scale, causal};
+  MFAttention::Params params{D, scale, causal, /*has_block_mask=*/false};
 
   auto out_shape  = q.shape();                      // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {
@@ -522,6 +528,57 @@ mlx::core::array mfa_attention_forward(
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
       {q, k, v});
+
+  return outputs[0];
+}
+
+// =========================================================================
+// Free function: mfa_attention_sparse_forward
+// =========================================================================
+
+mlx::core::array mfa_attention_sparse_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& block_mask,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
+    throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
+  }
+  if (block_mask.ndim() != 2) {
+    throw std::invalid_argument(
+        "MFA sparse: block_mask must be 2D [NQ_tiles, NK_tiles]");
+  }
+
+  int D = q.shape(3);
+  if (D != 64 && D != 128 && D != 256) {
+    throw std::invalid_argument(
+        "MFA sparse: head_dim must be 64, 128, or 256, got " +
+        std::to_string(D));
+  }
+
+  // Require f16/bf16 (sparse path is STEEL-only; f32 would need ccv update)
+  if (q.dtype() == mlx::core::float32) {
+    throw std::invalid_argument(
+        "MFA sparse: float32 is not supported; use float16 or bfloat16");
+  }
+
+  MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true};
+
+  auto out_shape  = q.shape();
+  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAttention>(s, params),
+      {q, k, v, block_mask});
 
   return outputs[0];
 }

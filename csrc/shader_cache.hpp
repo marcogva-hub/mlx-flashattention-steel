@@ -41,6 +41,7 @@ class ShaderCache {
     int  block_d;   // head sub-tile
     int  n_warps;   // SIMD groups per threadgroup
     bool causal;
+    bool sparse;     // true = block-sparse path (device uchar* block_mask at buffer(6))
     bool is_m3_plus; // GPUFamily(1009): preferAsyncCache vs preferAsyncLoad
     uint8_t dtype;   // 0=f16, 1=bf16, 2=f32
 

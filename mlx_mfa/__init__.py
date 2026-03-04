@@ -26,6 +26,9 @@ __version__ = "0.1.0"
 
 from mlx_mfa.attention import (
     flash_attention,
+    flash_attention_sparse,
+    make_causal_block_mask,
+    make_sliding_window_mask,
     is_mfa_available,
     get_device_info,
     get_supported_configs,
@@ -33,6 +36,9 @@ from mlx_mfa.attention import (
 
 __all__ = [
     "flash_attention",
+    "flash_attention_sparse",
+    "make_causal_block_mask",
+    "make_sliding_window_mask",
     "is_mfa_available",
     "get_device_info",
     "get_supported_configs",

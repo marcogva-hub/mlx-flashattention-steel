@@ -130,5 +130,22 @@ NB_MODULE(_ext, m) {
     return info;
   }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name.");
 
+  // --- Block-sparse forward ---
+  m.def("mfa_attention_sparse_forward",
+        [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
+           mlx::core::array block_mask,
+           float scale, bool causal,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> mlx::core::array {
+          return mlx_mfa::mfa_attention_sparse_forward(
+              q, k, v, block_mask, scale, causal, stream);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("causal"),
+        nb::arg("stream") = nb::none(),
+        "Block-sparse forward attention.\n"
+        "block_mask: uint8 [NQ_tiles, NK_tiles]. 1=compute, 0=skip.\n"
+        "Returns O [B, H, N, D]. Only f16/bf16 supported.");
+
   m.attr("__version__") = "0.1.0";
 }

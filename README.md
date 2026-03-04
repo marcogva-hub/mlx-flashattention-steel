@@ -134,6 +134,46 @@ info = get_device_info()
 
 Returns the set of (head_dim, dtype) configurations that use the MFA kernel.
 
+---
+
+### `flash_attention_sparse(q, k, v, block_mask, scale=None, causal=False, stream=None)`
+
+Block-sparse Flash Attention — only computes tiles where `block_mask[q_tile, k_tile] == True`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | `mx.array [B, H, N, D]` | Query. **float16 or bfloat16 only.** |
+| `k` | `mx.array [B, H, S, D]` | Key |
+| `v` | `mx.array [B, H, S, D]` | Value |
+| `block_mask` | `mx.array[bool] [NQ, NK]` | Active tile map. Use `make_causal_block_mask` or `make_sliding_window_mask`. |
+| `scale` | `float or None` | Attention scale. Defaults to `1/sqrt(D)` |
+| `causal` | `bool` | Additional token-level causal masking within active blocks |
+
+`NQ = ceil(N / BQ)`, `NK = ceil(S / BK)` where `(BQ, BK)` comes from `_steel_block_config(D)`.
+
+Raises `ValueError` for float32 input or wrong `block_mask` shape.
+
+> **Backward pass limitation:** Gradients are computed via dense `mx.fast.sdpa` with a float additive bias (correct, but no sparsity speedup in the backward). A native sparse backward is planned.
+
+### `make_causal_block_mask(seq_len, head_dim=128) -> mx.array`
+
+Returns a lower-triangular block mask `[NQ, NK]` (dtype `bool`) matching the STEEL tile size for `head_dim`. Combine with `causal=True` for exact token-level causal masking:
+
+```python
+mask = make_causal_block_mask(N, head_dim=128)
+out  = flash_attention_sparse(q, k, v, mask, causal=True)
+# Identical to flash_attention(q, k, v, causal=True) but skips upper triangle tiles.
+```
+
+### `make_sliding_window_mask(seq_len, window_size, head_dim=128, causal=False) -> mx.array`
+
+Returns a sliding-window block mask. Each Q-tile attends only to K-tiles within `window_size` tokens.
+
+```python
+mask = make_sliding_window_mask(4096, window_size=512)
+out  = flash_attention_sparse(q, k, v, mask)
+```
+
 ## Testing
 
 ```bash
@@ -153,7 +193,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: 41 tests total (6 fallback + 5 public API + 10 forward + 8 backward + 8 edge + 4 backward edge).
+Expected: 57 tests total (6 fallback + 5 public API + 10 forward + 8 backward + 8 edge + 4 backward edge + 6 sparse API + 10 sparse kernel).
 
 ## Supported Configurations
 
@@ -186,7 +226,9 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | 1.5 | Backward pass (full autograd) | Done |
 | 4   | Production-ready: GQA, public API, CI | Done |
 | 5   | STEEL forward kernel (1.5–2.9× causal) | **Done (v0.1.0)** |
+| B   | Block-sparse attention (`flash_attention_sparse`) | **Done (v0.2.0)** |
 | 6   | STEEL backward kernel | Planned |
+| 6   | Native sparse backward (no dense fallback) | Planned |
 | 6   | Native GQA kernel (no tiling) | Planned |
 | 6   | Flash Decoding for long contexts | Planned |
 

@@ -64,6 +64,7 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const int WM = key.n_warps;  // n_warps = BQ/8; for BQ=32,WM=4; BQ=16,WM=2
   const int WN = 1;
   const bool causal = key.causal;
+  const bool sparse = key.sparse;
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -456,6 +457,8 @@ struct MFAExpSubOp {
   ss << "    device MFA_DTYPE*       O    [[buffer(3)]],\n";
   ss << "    device float*           L    [[buffer(4)]],\n";
   ss << "    const constant MFASteelParams* p [[buffer(5)]],\n";
+  if (sparse)
+    ss << "    const device uchar* block_mask   [[buffer(6)]],\n";
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -585,6 +588,16 @@ struct MFAExpSubOp {
 
   // Main K/V loop
   ss << "  for (int kb = 0; kb < kb_lim; kb++) {\n";
+  // Block-sparse: skip K-tiles where block_mask[q_tile][kb] == 0.
+  // All threads in a threadgroup share tid.x and kb, so this is a
+  // uniform branch — no warp divergence, just skips the barriers and math.
+  if (sparse) {
+    ss << "    if (!block_mask[(int)tid.x * p->NK + kb]) {\n";
+    ss << "      loader_k.next();\n";
+    ss << "      loader_v.next();\n";
+    ss << "      continue;\n";
+    ss << "    }\n";
+  }
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
   ss << "    if (kb == p->NK_aligned) {\n";
   ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";

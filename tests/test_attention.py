@@ -17,8 +17,12 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from mlx_mfa import flash_attention, is_mfa_available, get_device_info, get_supported_configs
-from mlx_mfa.attention import _ext_available, _fallback_sdpa
+from mlx_mfa import (
+    flash_attention, flash_attention_sparse,
+    make_causal_block_mask, make_sliding_window_mask,
+    is_mfa_available, get_device_info, get_supported_configs,
+)
+from mlx_mfa.attention import _ext_available, _fallback_sdpa, _steel_block_config
 
 
 # ---------------------------------------------------------------------------
@@ -591,3 +595,182 @@ class TestBackwardEdge:
             atol=1e-4,
             err_msg="Partial argnum=0 dQ mismatch"
         )
+
+
+# ---------------------------------------------------------------------------
+# Block-sparse attention tests
+# ---------------------------------------------------------------------------
+
+def _ref_sparse_sdpa(q, k, v, block_mask, scale, causal=False):
+    """Reference: expand block_mask to token-level float bias, then dense SDPA."""
+    from mlx_mfa.attention import _block_mask_to_float_bias
+    N, S = q.shape[2], k.shape[2]
+    float_bias = _block_mask_to_float_bias(block_mask, N, S, q.dtype)
+    if causal:
+        causal_m = mx.triu(
+            mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+        )
+        float_bias = float_bias + causal_m
+    return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=float_bias)
+
+
+class TestSparseAttentionAPI:
+    """Tests for make_causal_block_mask, make_sliding_window_mask shapes."""
+
+    def test_causal_block_mask_shape(self):
+        for D in [64, 128, 256]:
+            BQ, BK = _steel_block_config(D)
+            N = 256
+            mask = make_causal_block_mask(N, head_dim=D)
+            NQ = (N + BQ - 1) // BQ
+            NK = (N + BK - 1) // BK
+            assert list(mask.shape) == [NQ, NK], f"D={D}: expected [{NQ},{NK}], got {list(mask.shape)}"
+            assert mask.dtype == mx.bool_
+
+    def test_sliding_window_mask_shape(self):
+        N, W = 512, 128
+        for D in [64, 128, 256]:
+            BQ, BK = _steel_block_config(D)
+            mask = make_sliding_window_mask(N, W, head_dim=D)
+            NQ = (N + BQ - 1) // BQ
+            NK = (N + BK - 1) // BK
+            assert list(mask.shape) == [NQ, NK]
+
+    def test_causal_block_mask_lower_triangular(self):
+        """Causal mask must be lower-triangular at block level."""
+        mask = make_causal_block_mask(256, head_dim=128)
+        arr = np.array(mask.astype(mx.uint8))
+        NQ, NK = arr.shape
+        for q in range(NQ):
+            for k in range(NK):
+                # k-block first token must be <= q-block last token
+                BQ, BK = _steel_block_config(128)
+                if k * BK > (q + 1) * BQ - 1:
+                    assert arr[q, k] == 0, f"Expected 0 at [{q},{k}]"
+
+    def test_sliding_window_all_true_when_window_ge_seq(self):
+        """Window >= seq_len → all blocks active."""
+        N, D = 128, 128
+        mask = make_sliding_window_mask(N, window_size=N * 2, head_dim=D)
+        assert mx.all(mask).item()
+
+    def test_sparse_api_rejects_f32(self):
+        B, H, N, D = 1, 2, 64, 64
+        q = mx.ones((B, H, N, D), dtype=mx.float32)
+        k, v = q, q
+        BQ, BK = _steel_block_config(D)
+        mask = mx.ones(((N + BQ - 1) // BQ, (N + BK - 1) // BK), dtype=mx.bool_)
+        with pytest.raises(ValueError, match="float16 or bfloat16"):
+            flash_attention_sparse(q, k, v, mask)
+
+    def test_sparse_api_rejects_wrong_mask_shape(self):
+        B, H, N, D = 1, 2, 64, 64
+        q = mx.ones((B, H, N, D), dtype=mx.float16)
+        k, v = q, q
+        wrong_mask = mx.ones((5, 5), dtype=mx.bool_)
+        with pytest.raises(ValueError, match="block_mask shape"):
+            flash_attention_sparse(q, k, v, wrong_mask)
+
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestSparseAttentionKernel:
+    """Tests requiring the C++ STEEL sparse kernel."""
+
+    @pytest.mark.parametrize("D", [64, 128, 256])
+    def test_all_true_mask_matches_dense(self, D):
+        """All-True block mask must produce identical result to dense forward."""
+        B, H, N = 1, 4, 128
+        q, k, v = random_qkv(B, H, N, D, seed=10)
+        scale = 1.0 / math.sqrt(D)
+
+        out_dense = flash_attention(q, k, v, scale=scale)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        all_true = mx.ones((NQ, NK), dtype=mx.bool_)
+        out_sparse = flash_attention_sparse(q, k, v, all_true, scale=scale)
+        mx.eval(out_dense, out_sparse)
+
+        np.testing.assert_allclose(
+            np.array(out_dense.astype(mx.float32)),
+            np.array(out_sparse.astype(mx.float32)),
+            atol=1e-3,
+            err_msg=f"D={D}: all-True sparse ≠ dense"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128, 256])
+    def test_causal_block_mask_with_causal_matches_dense_causal(self, D):
+        """Block-causal mask + causal=True must match flash_attention(causal=True)."""
+        B, H, N = 1, 4, 128
+        q, k, v = random_qkv(B, H, N, D, seed=20)
+        scale = 1.0 / math.sqrt(D)
+
+        mask = make_causal_block_mask(N, head_dim=D)
+        out_sparse = flash_attention_sparse(q, k, v, mask, scale=scale, causal=True)
+        out_dense  = flash_attention(q, k, v, scale=scale, causal=True)
+        mx.eval(out_sparse, out_dense)
+
+        np.testing.assert_allclose(
+            np.array(out_dense.astype(mx.float32)),
+            np.array(out_sparse.astype(mx.float32)),
+            atol=1e-3,
+            err_msg=f"D={D}: causal block+causal ≠ dense causal"
+        )
+
+    def test_sliding_window_matches_ref(self):
+        """Sliding-window mask output must match reference dense SDPA + float bias."""
+        B, H, N, D = 1, 4, 256, 128
+        q, k, v = random_qkv(B, H, N, D, seed=30)
+        scale = 1.0 / math.sqrt(D)
+        window = 64
+
+        mask = make_sliding_window_mask(N, window_size=window, head_dim=D)
+        out_sparse = flash_attention_sparse(q, k, v, mask, scale=scale)
+        out_ref    = _ref_sparse_sdpa(q, k, v, mask, scale)
+        mx.eval(out_sparse, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_sparse.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=5e-3,
+            err_msg="Sliding window sparse ≠ reference SDPA"
+        )
+
+    def test_all_false_mask_row_gives_nan_or_zero(self):
+        """A row where all K-tiles are masked: output should be 0 (empty softmax)."""
+        B, H, N, D = 1, 2, 64, 128
+        q, k, v = random_qkv(B, H, N, D, seed=40)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        # Only first Q-tile is active
+        mask = mx.zeros((NQ, NK), dtype=mx.bool_)
+        mask_active = mx.concatenate(
+            [mx.ones((1, NK), dtype=mx.bool_), mx.zeros((NQ - 1, NK), dtype=mx.bool_)],
+            axis=0
+        )
+        out = flash_attention_sparse(q, k, v, mask_active, scale=scale)
+        mx.eval(out)
+        # Second Q-tile rows should be 0 (no keys attended to)
+        second_tile = np.array(out[0, 0, BQ:, :].astype(mx.float32))
+        assert np.all(second_tile == 0.0) or np.all(np.isnan(second_tile)), \
+            "Expected 0 or NaN for fully masked rows"
+
+    @pytest.mark.parametrize("D", [128, 256])
+    def test_sparse_backward(self, D):
+        """Gradients from sparse attention must be finite (via dense SDPA backward)."""
+        B, H, N = 1, 2, 64
+        # Use float16 (the native sparse dtype); backward uses dense SDPA + float bias.
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=50)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = make_sliding_window_mask(N, window_size=32, head_dim=D)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention_sparse(q_, k_, v_, mask, scale=scale))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert np.all(np.isfinite(np.array(dq))), "dQ has non-finite values"
+        assert np.all(np.isfinite(np.array(dk))), "dK has non-finite values"
+        assert np.all(np.isfinite(np.array(dv))), "dV has non-finite values"

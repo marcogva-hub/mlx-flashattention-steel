@@ -40,6 +40,7 @@ bool ShaderCache::KernelKey::operator==(const KernelKey& other) const {
          block_d   == other.block_d   &&
          n_warps   == other.n_warps   &&
          causal    == other.causal    &&
+         sparse    == other.sparse    &&
          is_m3_plus == other.is_m3_plus &&
          dtype     == other.dtype;
 }
@@ -58,6 +59,7 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
   mix(static_cast<uint64_t>(k.block_d));
   mix(static_cast<uint64_t>(k.n_warps));
   mix(static_cast<uint64_t>(k.causal));
+  mix(static_cast<uint64_t>(k.sparse));
   mix(static_cast<uint64_t>(k.is_m3_plus));
   mix(static_cast<uint64_t>(k.dtype));
   return h;
