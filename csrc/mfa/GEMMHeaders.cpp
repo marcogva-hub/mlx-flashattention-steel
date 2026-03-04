@@ -257,11 +257,20 @@ namespace metal
         src_tile_dimensions = src_tile_dimensions.yx;
         dst_tile_dimensions = dst_tile_dimensions.yx;
       }
+      // Use compile-time dst_elements_per_row as the 2-D stride instead of the
+      // runtime dst_tile_dimensions.x.  When dst_elements_per_row is a power of
+      // two (always true for MFA block sizes 16/32/64), the compiler replaces
+      // the integer div/mod with a right-shift and a bitwise-AND — eliminating
+      // the expensive hardware integer-divide instructions.
+      // Partial tiles (where dst_tile_dimensions.x < dst_elements_per_row, e.g.
+      // at D-dimension boundaries) are handled by the x-bounds guard below.
       #pragma clang loop unroll(full)
-      for (ushort i = tid; i < dst_tile_dimensions.y * dst_tile_dimensions.x; i += threadgroup_size) {
-        const ushort x = i % dst_tile_dimensions.x;
-        const ushort y = i / dst_tile_dimensions.x;
-        dst[y * dst_elements_per_row + x] = y < src_tile_dimensions.y && x < src_tile_dimensions.x ? src[y * src_elements_per_row + x] : 0;
+      for (ushort i = tid; i < dst_tile_dimensions.y * dst_elements_per_row; i += threadgroup_size) {
+        const ushort x = i % dst_elements_per_row;   // compile-time constant → bit-op
+        const ushort y = i / dst_elements_per_row;   // compile-time constant → bit-op
+        if (x < dst_tile_dimensions.x) {
+          dst[y * dst_elements_per_row + x] = y < src_tile_dimensions.y && x < src_tile_dimensions.x ? src[y * src_elements_per_row + x] : T(0);
+        }
       }
     }
 
@@ -282,11 +291,17 @@ namespace metal
         src_tile_dimensions = src_tile_dimensions.yx;
         dst_tile_dimensions = dst_tile_dimensions.yx;
       }
+      // Use compile-time src_elements_per_row as the stride for the same
+      // reason as the load path above: allows the compiler to optimise the
+      // div and mod into bit operations when src_elements_per_row is a
+      // power of two.
       #pragma clang loop unroll(full)
-      for (ushort i = tid; i < dst_tile_dimensions.y * dst_tile_dimensions.x; i += threadgroup_size) {
-        const ushort x = i % dst_tile_dimensions.x;
-        const ushort y = i / dst_tile_dimensions.x;
-        dst[y * dst_elements_per_row + x] = src[y * src_elements_per_row + x];
+      for (ushort i = tid; i < dst_tile_dimensions.y * src_elements_per_row; i += threadgroup_size) {
+        const ushort x = i % src_elements_per_row;   // compile-time constant → bit-op
+        const ushort y = i / src_elements_per_row;   // compile-time constant → bit-op
+        if (x < dst_tile_dimensions.x) {
+          dst[y * dst_elements_per_row + x] = src[y * src_elements_per_row + x];
+        }
       }
     }
 
