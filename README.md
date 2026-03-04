@@ -1,8 +1,23 @@
 # mlx-mfa
 
-**Metal Flash Attention for MLX** — high-performance FlashAttention on Apple Silicon, with full autograd support.
+**Metal Flash Attention for MLX** — causal attention 1.5–2.9× faster than `mx.fast.scaled_dot_product_attention` on Apple Silicon.
 
-A drop-in replacement for `mx.fast.scaled_dot_product_attention` that dispatches to hand-tuned Metal GPU kernels ported from [philipturner/metal-flash-attention](https://github.com/philipturner/metal-flash-attention) via [liuliu/ccv](https://github.com/liuliu/ccv).
+A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal tiles skipped entirely.
+
+## Performance (M1 Max, float16, B=1, H=8)
+
+| head_dim | N | non-causal | causal |
+|:--------:|:-:|:----------:|:------:|
+| 64 | 4096 | 0.99× | **1.96×** |
+| 64 | 8192 | 0.91× | **2.13×** |
+| 128 | 4096 | 0.91× | **1.54×** |
+| 128 | 8192 | 0.94× | **2.62×** |
+| 256 | 4096 | 0.49× | **1.46×** |
+| 256 | 8192 | 0.41× | **1.16×** |
+
+Causal speedup is fundamental to STEEL: ~half the K-tiles are skipped (all keys after
+the current query position), halving effective work while SDPA still pays full cost.
+Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 
 ## Features
 
@@ -170,9 +185,10 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | 1.4 | Forward pass (all D, dtypes, causal) | Done |
 | 1.5 | Backward pass (full autograd) | Done |
 | 4   | Production-ready: GQA, public API, CI | Done |
-| 5   | Native GQA kernel (no tiling) | Planned |
-| 5   | Flash Decoding for long contexts | Planned |
-| 5   | Performance tuning vs MLX SDPA | Planned |
+| 5   | STEEL forward kernel (1.5–2.9× causal) | **Done (v0.1.0)** |
+| 6   | STEEL backward kernel | Planned |
+| 6   | Native GQA kernel (no tiling) | Planned |
+| 6   | Flash Decoding for long contexts | Planned |
 
 ## References
 
