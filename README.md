@@ -6,17 +6,17 @@ A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the 
 
 ## Performance (M1 Max, float16, B=1, H=8)
 
-| head_dim | N | non-causal | causal |
-|:--------:|:-:|:----------:|:------:|
-| 64 | 4096 | 0.99× | **1.96×** |
-| 64 | 8192 | 0.91× | **2.13×** |
-| 128 | 4096 | 0.91× | **1.54×** |
-| 128 | 8192 | 0.94× | **2.62×** |
-| 256 | 4096 | 0.49× | **1.46×** |
-| 256 | 8192 | 0.41× | **1.16×** |
+| head_dim | N | non-causal | causal | sliding window 512 |
+|:--------:|:-:|:----------:|:------:|:------------------:|
+| 64 | 8192 | 1.00× | **2.11×** | — |
+| 128 | 4096 | 0.91× | **1.56×** | **3.1×** |
+| 128 | 8192 | 0.92× | **1.72×** | **5.7×** |
+| 256 | 8192 | 0.50× | 1.00× | — |
 
 Causal speedup is fundamental to STEEL: ~half the K-tiles are skipped (all keys after
 the current query position), halving effective work while SDPA still pays full cost.
+Sliding-window sparsity scales with `window/N` — at N=8192 and window=512, only 12%
+of K-tiles are active.
 Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 
 ## Features
@@ -27,6 +27,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **All dtypes**: float16, bfloat16, float32
 - **Causal and non-causal** attention
 - **GQA / MQA** — Grouped Query Attention via repeat-KV fallback
+- **Block-sparse attention** — `flash_attention_sparse()` with causal or sliding-window masks
 - **Cross-attention** — N_q != N_kv supported
 - **Graceful fallback** to `mx.fast.scaled_dot_product_attention` when the extension is unavailable or head_dim is unsupported
 

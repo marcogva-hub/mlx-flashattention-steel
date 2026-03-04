@@ -147,5 +147,5 @@ NB_MODULE(_ext, m) {
         "block_mask: uint8 [NQ_tiles, NK_tiles]. 1=compute, 0=skip.\n"
         "Returns O [B, H, N, D]. Only f16/bf16 supported.");
 
-  m.attr("__version__") = "0.1.0";
+  m.attr("__version__") = "0.2.0";
 }

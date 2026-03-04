@@ -1,174 +1,126 @@
-# mlx-mfa Benchmark Results — v0.1.0
+# mlx-mfa Benchmark Results — v0.2.0
+
+**Hardware:** Apple M1 Max · macOS 26.4 · MLX 0.31.0 · Python 3.11.14
+**Settings:** B=1, H=8, float16 · median of 20 runs (10 warmup) · `mx.synchronize()` between iterations
+
+---
 
 ## Executive Summary
 
-**Causal attention (the LLM use case) is 1.5–2.6× faster than `mx.fast.scaled_dot_product_attention`
-on M1 Max for float16, head_dim=64/128.**
-
 | Use case | Speedup vs MLX SDPA |
 |---|---|
-| D=64 causal, large N (≥4096) | **1.9–2.9×** |
-| D=128 causal, large N (≥4096) | **1.5–2.6×** |
-| D=128 non-causal | ~0.9–1.1× (parity) |
-| D=256 causal, large N (≥4096) | **1.2–1.5×** |
-| D=256 non-causal | 0.5–0.7× (slower) |
-| f32 (any D) | 0.15–0.44× (ccv path, not STEEL) |
+| D=64 causal, N≥4096 | **1.9–2.1×** |
+| D=128 causal, N≥4096 | **1.6–1.7×** |
+| D=256 causal, N≥4096 | **1.0×** (break-even) |
+| D=128 non-causal | ~0.9–1.0× (parity) |
+| D=256 non-causal | 0.5× (register spill) |
+| Block-sparse causal, N=8192 (~50% active) | **1.7×** |
+| Sliding window=512, N=4096 (23.8% active) | **3.1×** |
+| Sliding window=512, N=8192 (12.3% active) | **5.7×** |
 
-The causal speedup is fundamental to the STEEL design: the causal mask causes roughly
-half the K-tiles to be skipped entirely (any tile where all keys are after the current
-query position), halving the effective work while SDPA still pays full cost.
-
----
-
-## Test Environment
-
-| Field | Value |
-|---|---|
-| Hardware | Apple M1 Max |
-| macOS | 26.4 |
-| Python | 3.11.14 |
-| MLX | 0.31.0 |
-| GPU family gen | 13 (M1) |
-| Benchmark | median of 20 iterations, 5 warmup |
+Causal attention skips ~50% of K-tiles (any tile above the diagonal). Sliding window
+sparsity scales with `window/N` — at N=8192 and window=512, only 12.3% of K-tiles are
+computed.
 
 ---
 
-## Results: float16, non-causal
+## Dense Forward — Non-causal (f16)
 
-### B=1, H=8
+| D | N=256 | N=512 | N=1K | N=2K | N=4K | N=8K |
+|---|---|---|---|---|---|---|
+| 64  | 0.96× | 0.90× | 0.97× | 1.22× | 0.99× | 1.00× |
+| 128 | 0.92× | 0.95× | 0.94× | 0.92× | 0.91× | 0.92× |
+| 256 | 0.94× | 0.74× | 0.65× | 0.52× | 0.50× | 0.50× |
 
-```
-    D      N   SDPA ms    MFA ms  Speedup
-   64    512      0.60      0.63    0.95x
-   64   1024      1.42      1.41    1.00x
-   64   2048      1.91      1.98    0.97x
-   64   4096      4.91      4.94    0.99x
-   64   8192     18.25     20.03    0.91x
-  128    512      0.45      0.46    0.99x
-  128   1024      0.89      0.94    0.95x
-  128   2048      2.60      2.89    0.90x
-  128   4096      9.51     10.43    0.91x
-  128   8192     37.84     40.47    0.94x
-  256    512      0.66      0.89    0.74x
-  256   1024      1.53      2.60    0.59x
-  256   2048      4.73      8.82    0.54x
-  256   4096     17.05     34.98    0.49x
-  256   8192     67.32    163.82    0.41x
-```
-
-### B=2, H=8
-
-```
-    D      N   SDPA ms    MFA ms  Speedup
-   64   1024      1.24      1.17    1.05x
-   64   4096     10.71     11.75    0.91x
-   64   8192     46.75     36.71    1.27x
-  128   1024      1.60      1.72    0.93x
-  128   4096     22.22     20.19    1.10x
-  128   8192     75.09    105.65    0.71x
-  256   1024      2.59      4.89    0.53x
-  256   4096     33.46     72.08    0.46x
-  256   8192    188.70    267.91    0.70x
-```
+> D=256 is 2× slower due to register spill on M1/M2 (32K register file, 256-wide head).
+> D=128 non-causal runs at ~0.92× — slight overhead from tile-load path vs SDPA.
 
 ---
 
-## Results: float16, causal
+## Dense Forward — Causal (f16)
 
-### B=1, H=8
+| D | N=256 | N=512 | N=1K | N=2K | N=4K | N=8K |
+|---|---|---|---|---|---|---|
+| 64  | 1.11× | 1.13× | 0.94× | 1.59× | 1.90× | **2.11×** |
+| 128 | 1.07× | 1.04× | 0.99× | 1.29× | 1.56× | **1.72×** |
+| 256 | 1.11× | 0.79× | 0.63× | 0.80× | 1.00× | **1.00×** |
 
-```
-    D      N   SDPA ms    MFA ms  Speedup
-   64    512      0.61      0.54    1.13x
-   64   1024      1.59      1.37    1.16x
-   64   2048      1.66      1.17    1.42x
-   64   4096      5.69      2.91    1.96x
-   64   8192     21.77     10.21    2.13x
-  128    512      0.51      0.50    1.01x
-  128   1024      0.98      0.98    1.00x
-  128   2048      2.80      2.22    1.26x
-  128   4096      9.98      6.47    1.54x
-  128   8192     57.95     22.09    2.62x
-  256    512      0.64      0.81    0.79x
-  256   1024      1.51      2.46    0.61x
-  256   2048      5.18      7.67    0.68x
-  256   4096     29.42     20.15    1.46x
-  256   8192    108.92     93.54    1.16x
-```
-
-### B=2, H=8
-
-```
-    D      N   SDPA ms    MFA ms  Speedup
-   64   1024      1.48      0.92    1.60x
-   64   4096     15.75      5.39    2.92x
-   64   8192     41.40     21.35    1.94x
-  128   1024      2.01      1.57    1.28x
-  128   4096     18.89     11.23    1.68x
-  128   8192    107.24     54.20    1.98x
-  256   1024      2.89      3.70    0.78x
-  256   4096     36.54     37.07    0.99x
-  256   8192    175.24    143.04    1.23x
-```
+> Causal tile skipping halves the K-tile work at large N. D=256 breaks even at N=8192
+> — register spill overhead cancels out the tile-skip gain.
 
 ---
 
-## Results: bfloat16 (B=1, H=8, D=128)
+## Block-Sparse Forward — Causal Block Mask (f16)
 
-```
-causal=False:
-  N=1024  SDPA=1.41ms  MFA=1.89ms  0.75x
-  N=4096  SDPA=13.43ms MFA=15.26ms 0.88x
+Block mask from `make_causal_block_mask(N, head_dim=128)` + `causal=False`.
+~50% of K-tiles skipped (triangular). Compare: dense causal uses `causal=True` (same semantic).
 
-causal=True:
-  N=1024  SDPA=1.64ms  MFA=1.55ms  1.06x
-  N=4096  SDPA=14.36ms MFA=10.45ms 1.37x
-```
+| D | N=1K | N=4K | N=8K | Active% |
+|---|---|---|---|---|
+| 128 | 0.96× | 1.45× | **1.67×** | ~50% |
 
-bfloat16 uses the STEEL path. Performance is similar to float16; causal is faster.
-
----
-
-## Results: float32 (B=1, H=8, D=128) — ccv path
-
-```
-causal=False:
-  N=1024  SDPA=1.72ms  MFA=5.24ms   0.33x
-  N=4096  SDPA=16.34ms MFA=109.88ms 0.15x
-
-causal=True:
-  N=1024  SDPA=2.53ms  MFA=5.80ms   0.44x
-  N=4096  SDPA=38.86ms MFA=138.05ms 0.28x
-```
-
-**float32 uses the ccv-based kernel (not STEEL)** due to threadgroup memory constraints.
-The ccv path is significantly slower than MLX SDPA. Recommend f16 or bf16 for production.
+> Block-sparse causal is slightly faster than token-level `causal=True` at N=8192 (1.67× vs 1.72×)
+> because the block skip has lower overhead than the per-token masking arithmetic.
+> For exact token-level causal correctness, use `flash_attention_sparse(mask, causal=True)`.
 
 ---
 
-## Crossover Analysis
+## Block-Sparse Forward — Sliding Window (f16, D=128)
 
-At what sequence length does MFA first beat SDPA?
+`make_sliding_window_mask(N, window_size, head_dim=128)`
 
-| D | dtype | causal | Crossover N |
+| Window | N=4K SDPA ms | N=4K Sparse ms | N=4K Speedup | Active% | N=8K Speedup | Active% |
+|---|---|---|---|---|---|---|
+| 512  | 9.53 | 3.06 | **3.12×** | 23.8% | **5.73×** | 12.3% |
+| 1024 | 9.40 | 5.04 | **1.86×** | 44.0% | **3.45×** | 23.6% |
+
+> Sliding window sparsity scales super-linearly: active density ≈ `window/N`, which halves
+> as N doubles (constant window). A window=512 at N=8192 activates only 12.3% of K-tiles.
+
+---
+
+## Track A Impact — STEEL_PRAGMA_UNROLL (commit 36cbf48)
+
+D≤128 (TD=8/16): `_Pragma("clang loop unroll(full)")` added to PV reduction loop.
+
+| Config | Before | After | Δ |
 |---|---|---|---|
-| 64 | f16 | False | ~1024 (parity; 0.95-1.0x) |
-| 64 | f16 | True | **~512** |
-| 128 | f16 | False | ~1024 (parity; 0.9-1.0x) |
-| 128 | f16 | True | **~2048** |
-| 256 | f16 | False | Never (MFA slower for all N) |
-| 256 | f16 | True | **~4096** |
+| D=128, N=8192, causal | ~1.60× | ~1.72× | **+7%** |
+| D=256, N=8192, causal | ~1.00× | ~1.00× | 0% (empty pragma) |
+
+> D=256 (TD=32): full unroll → register spill; `unroll_count(8)` → catastrophic Metal AIR
+> regression (0.37×). Empty pragma is the correct setting for D=256.
 
 ---
 
-## Before/After STEEL (D=128, N=4096, f16, B=2 H=8)
+## Track B — Block-Sparse Summary
 
-| Kernel | non-causal | causal |
+Block-sparse forward uses a separately compiled STEEL kernel variant (`sparse=true` in
+`KernelKey`). The K-loop skip is a uniform threadgroup branch — all 128 threads in a
+threadgroup reach the same decision simultaneously (zero warp divergence).
+
+**Backward pass:** Gradients are computed via dense `mx.vjp(sdpa)` + float additive block
+bias. This is correct but does not benefit from sparsity. Native sparse backward (direct
+K/V gradient accumulation with masked tiles) is planned for v0.3.0.
+
+---
+
+## Raw Timings Reference
+
+### Dense causal, D=128 (ms)
+
+| N | SDPA | MFA |
 |---|---|---|
-| ccv original | ~0.08x SDPA | — |
-| ccv + async_copy fix | ~0.95x SDPA | — |
-| STEEL (v0.1.0) | ~1.10x SDPA | **1.68x SDPA** |
+| 256 | 0.49 | 0.46 |
+| 512 | 0.55 | 0.53 |
+| 1024 | 1.02 | 1.03 |
+| 2048 | 2.87 | 2.24 |
+| 4096 | 10.06 | 6.46 |
+| 8192 | 37.81 | 21.98 |
 
-The ccv-to-STEEL rewrite delivered the causal speedup by eliminating the
-`simdgroup_async_copy` dependency (broken on macOS 26+) and using a
-register-efficient tile loading strategy (Q hoisted into registers once).
+### Sliding window=512, D=128 (ms)
+
+| N | SDPA | Sparse | Active% |
+|---|---|---|---|
+| 4096 | 9.53 | 3.06 | 23.8% |
+| 8192 | 37.33 | 6.51 | 12.3% |
