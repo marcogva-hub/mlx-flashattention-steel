@@ -74,8 +74,8 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
 
   // ── Preamble ────────────────────────────────────────────────────────────
   // STEEL_PRAGMA_UNROLL: full unroll only for D<=128 (TD=8/16).
-  // For D=256 (TD=32), full unroll causes register spill → slower.
-  const bool apply_unroll = (key.head_dim <= 128);
+  // For D=256 (TD=32), any unroll hint (full or count) causes register spill
+  // or catastrophic code bloat in the Metal AIR backend → slower.
   ss << R"MFA(
 #include <metal_stdlib>
 #include <metal_simdgroup>
@@ -85,7 +85,7 @@ using namespace metal;
 #define STEEL_CONST static constant constexpr const
 )MFA";
   ss << "#define STEEL_PRAGMA_UNROLL";
-  if (apply_unroll) ss << R"MFA( _Pragma("clang loop unroll(full)")
+  if (key.head_dim <= 128) ss << R"MFA( _Pragma("clang loop unroll(full)")
 )MFA";
   else ss << "\n";
   ss << "\n";

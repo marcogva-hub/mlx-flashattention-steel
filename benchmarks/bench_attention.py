@@ -10,7 +10,7 @@ from mlx_mfa import flash_attention
 from mlx_mfa.attention import _fallback_sdpa
 
 
-def benchmark_one(B, H, N, D, causal, dtype, n_warmup=5, n_iter=20):
+def benchmark_one(B, H, N, D, causal, dtype, n_warmup=10, n_iter=20):
     mx.random.seed(42)
     q = mx.random.normal(shape=(B, H, N, D)).astype(dtype)
     k = mx.random.normal(shape=(B, H, N, D)).astype(dtype)
@@ -22,9 +22,11 @@ def benchmark_one(B, H, N, D, causal, dtype, n_warmup=5, n_iter=20):
         ("mlx_sdpa", lambda: _fallback_sdpa(q, k, v, scale, causal)),
         ("mlx_mfa", lambda: flash_attention(q, k, v, scale=scale, causal=causal)),
     ]:
+        # Warmup: first call compiles Metal shaders and MLX compute graphs.
         for _ in range(n_warmup):
             out = fn()
             mx.eval(out)
+        mx.synchronize()
 
         times = []
         for _ in range(n_iter):
