@@ -29,13 +29,17 @@ def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         print("  [WARN] mlx-mfa requires macOS on Apple Silicon (arm64)")
 
-    # MLX
-    ok &= check("MLX", lambda: __import__("mlx").__version__)
+    # MLX (version lives on mlx.core since ≥0.19)
+    def check_mlx():
+        import mlx.core
+        return mlx.core.__version__
+    ok &= check("MLX", check_mlx)
 
-    # MLX include path
+    # MLX include path (mlx is a namespace pkg; use mlx.__path__)
     def check_mlx_headers():
         import mlx, os
-        inc = os.path.join(os.path.dirname(mlx.__file__), "include", "mlx", "mlx.h")
+        base = list(mlx.__path__)[0]  # site-packages/mlx/
+        inc = os.path.join(base, "include", "mlx", "array.h")
         assert os.path.exists(inc), f"Not found: {inc}"
         return inc
     ok &= check("MLX headers", check_mlx_headers)
@@ -43,10 +47,9 @@ def main():
     # MLX lib
     def check_mlx_lib():
         import mlx, os, glob
-        base = os.path.dirname(mlx.__file__)
-        libs = glob.glob(os.path.join(base, "lib", "libmlx*")) + \
-               glob.glob(os.path.join(base, "libmlx*"))
-        assert libs, f"No libmlx found in {base}"
+        base = list(mlx.__path__)[0]
+        libs = glob.glob(os.path.join(base, "lib", "libmlx*"))
+        assert libs, f"No libmlx found in {base}/lib/"
         return libs[0]
     ok &= check("MLX library", check_mlx_lib)
 

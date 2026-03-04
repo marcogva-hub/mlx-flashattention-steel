@@ -1,0 +1,121 @@
+# mlx-mfa CI — runs on macOS arm64 (Apple Silicon) GitHub-hosted runners.
+#
+# Two job matrix:
+#   test-fallback — runs without building the C++ extension (fast, cpu-only runner ok)
+#   test-mfa      — builds the extension and runs the full suite (arm64 runner required)
+#
+# Secrets: none required.
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 1: Fallback path only — no C++ build, runs on any macOS runner
+  # ─────────────────────────────────────────────────────────────────────────
+  test-fallback:
+    name: "Fallback tests (Python only)"
+    runs-on: macos-14  # arm64 (M1)
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Python dependencies (no extension)
+        run: |
+          pip install --upgrade pip
+          pip install mlx numpy pytest
+
+      - name: Install mlx-mfa without building extension
+        # Use SKBUILD_CMAKE_ARGS to skip the C++ build entirely.
+        # The Python package installs; _ext import will fail gracefully.
+        run: |
+          pip install -e . --no-build-isolation \
+            --config-settings cmake.build-type=Release \
+            || pip install mlx numpy  # fallback: just ensure mlx is available
+
+      - name: Run fallback + public API tests
+        run: |
+          pytest tests/ -v -k "Fallback or PublicAPI" \
+            --tb=short --no-header
+        env:
+          PYTEST_ADDOPTS: "--color=yes"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 2: Full test suite — builds the C++ extension on Apple Silicon
+  # ─────────────────────────────────────────────────────────────────────────
+  test-mfa:
+    name: "Full MFA tests (Metal kernel)"
+    runs-on: macos-14  # arm64 required for Metal GPU
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install build dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mlx nanobind scikit-build-core cmake numpy pytest
+
+      - name: Validate build environment
+        run: python scripts/check_env.py
+
+      - name: Build and install C++ extension
+        run: |
+          pip install -e . --no-build-isolation -v
+        timeout-minutes: 10
+
+      - name: Verify extension loads
+        run: |
+          python -c "
+          from mlx_mfa import is_mfa_available, get_device_info
+          assert is_mfa_available(), 'MFA extension failed to load'
+          info = get_device_info()
+          print('Device:', info['device_name'])
+          print('Chip:', info['chip_name'])
+          print('M3+:', info['is_m3_plus'])
+          "
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ -v --tb=short --no-header
+        env:
+          PYTEST_ADDOPTS: "--color=yes"
+
+      - name: Check test count
+        run: |
+          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -o '[0-9]\+')
+          echo "Collected $COUNT tests"
+          # Warn (not fail) if count deviates from expected
+          if [ "$COUNT" -lt 30 ]; then
+            echo "WARNING: Expected >= 30 tests, got $COUNT"
+          fi

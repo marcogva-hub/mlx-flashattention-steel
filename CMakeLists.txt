@@ -31,7 +31,7 @@ find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 # -- MLX (detect via Python — pip-installed MLX has no CMake config) --
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -c
-    "import mlx; import os; print(os.path.dirname(mlx.__file__))"
+    "import mlx; print(mlx.__path__[0])"
   OUTPUT_STRIP_TRAILING_WHITESPACE
   OUTPUT_VARIABLE MLX_PYTHON_DIR
   RESULT_VARIABLE MLX_PYTHON_RC
@@ -82,14 +82,22 @@ find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 set(MFA_SOURCES
   csrc/bindings.cpp
   csrc/mfa_attention.cpp
+  csrc/mfa_shader_gen.cpp
   csrc/shader_cache.mm
+  # ccv-derived Metal shader generator
+  csrc/mfa/AttentionKernel.cpp
+  csrc/mfa/AttentionKernelDescriptor.cpp
+  csrc/mfa/GEMMHeaders.cpp
+  csrc/mfa/CodeWriter.cpp
 )
 
-nanobind_add_module(_ext NB_STATIC ${MFA_SOURCES})
+nanobind_add_module(_ext NB_STATIC NB_DOMAIN "mlx" ${MFA_SOURCES})
 
 target_include_directories(_ext PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/csrc
+  ${CMAKE_CURRENT_SOURCE_DIR}/csrc/mfa
   ${MLX_INCLUDE_DIR}
+  ${MLX_INCLUDE_DIR}/metal_cpp   # metal-cpp: Metal/Metal.hpp
 )
 
 target_link_libraries(_ext PRIVATE

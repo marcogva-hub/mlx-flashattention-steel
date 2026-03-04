@@ -1,15 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <mutex>
 #include <string>
 #include <unordered_map>
-
-// Forward declare Metal types (avoid requiring metal-cpp in headers)
-#ifdef __OBJC__
-@protocol MTLDevice;
-@protocol MTLComputePipelineState;
-#else
-namespace MTL { class Device; class ComputePipelineState; }
-#endif
 
 namespace mlx_mfa {
 
@@ -17,7 +11,7 @@ namespace mlx_mfa {
 ///
 /// MFA generates Metal shaders at runtime (JIT) parameterized by
 /// head_dim, dtype, block dims, causal mask, device caps.
-/// Compilation is ~10-50ms so we cache results.
+/// Compilation is ~10-50ms so we cache results keyed by KernelKey.
 class ShaderCache {
  public:
   static ShaderCache& get();
@@ -30,14 +24,14 @@ class ShaderCache {
     };
 
     KernelType type;
-    int head_dim;
-    int block_q;
-    int block_k;
-    int block_d;
-    int n_warps;
+    int  head_dim;
+    int  block_q;   // parallelization block (8*n_warps)
+    int  block_k;   // traversal block
+    int  block_d;   // head sub-tile
+    int  n_warps;   // SIMD groups per threadgroup
     bool causal;
-    bool bf16_emulation;
-    uint8_t dtype;  // 0=f16, 1=bf16, 2=f32
+    bool is_m3_plus; // GPUFamily(1009): preferAsyncCache vs preferAsyncLoad
+    uint8_t dtype;   // 0=f16, 1=bf16, 2=f32
 
     bool operator==(const KernelKey& other) const;
   };
@@ -46,21 +40,23 @@ class ShaderCache {
     size_t operator()(const KernelKey& k) const;
   };
 
-  /// Get or compile a kernel. Thread-safe via simple mutex.
+  /// Get or compile a pipeline state. Thread-safe.
+  /// device: id<MTLDevice> as void* (ARC-unmanaged, caller keeps alive).
+  /// Returns: id<MTLComputePipelineState> as void* (__bridge_retained).
   void* get_or_compile(const KernelKey& key, void* device);
 
-  void clear();
+  void   clear();
   size_t size() const { return cache_.size(); }
 
  private:
   ShaderCache() = default;
 
-  std::string generate_shader_source(const KernelKey& key);
   void* compile_shader(
       const std::string& source,
       const std::string& function_name,
       void* device);
 
+  std::mutex mtx_;
   std::unordered_map<KernelKey, void*, KernelKeyHash> cache_;
 };
 

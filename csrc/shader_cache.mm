@@ -1,10 +1,13 @@
 #include "shader_cache.hpp"
+#include "mfa_shader_gen.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <stdexcept>
-#include <sstream>
 
 namespace mlx_mfa {
 
@@ -14,22 +17,24 @@ ShaderCache& ShaderCache::get() {
   return instance;
 }
 
-// KernelKey hashing and equality
+// ---------------------------------------------------------------------------
+// KernelKey equality and hash
+// ---------------------------------------------------------------------------
 
 bool ShaderCache::KernelKey::operator==(const KernelKey& other) const {
-  return type == other.type &&
-         head_dim == other.head_dim &&
-         block_q == other.block_q &&
-         block_k == other.block_k &&
-         block_d == other.block_d &&
-         n_warps == other.n_warps &&
-         causal == other.causal &&
-         bf16_emulation == other.bf16_emulation &&
-         dtype == other.dtype;
+  return type      == other.type      &&
+         head_dim  == other.head_dim  &&
+         block_q   == other.block_q   &&
+         block_k   == other.block_k   &&
+         block_d   == other.block_d   &&
+         n_warps   == other.n_warps   &&
+         causal    == other.causal    &&
+         is_m3_plus == other.is_m3_plus &&
+         dtype     == other.dtype;
 }
 
 size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
-  // FNV-1a hash (mirrors ccv_nnc_mfa_hash.hpp)
+  // FNV-1a mix
   size_t h = 14695981039346656037ULL;
   auto mix = [&h](uint64_t val) {
     h ^= val;
@@ -42,75 +47,57 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
   mix(static_cast<uint64_t>(k.block_d));
   mix(static_cast<uint64_t>(k.n_warps));
   mix(static_cast<uint64_t>(k.causal));
-  mix(static_cast<uint64_t>(k.bf16_emulation));
+  mix(static_cast<uint64_t>(k.is_m3_plus));
   mix(static_cast<uint64_t>(k.dtype));
   return h;
 }
 
-// get_or_compile
+// ---------------------------------------------------------------------------
+// get_or_compile (thread-safe)
+// ---------------------------------------------------------------------------
 
 void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
-  auto it = cache_.find(key);
-  if (it != cache_.end()) {
-    return it->second;
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
+      return it->second;
+    }
   }
 
-  auto source = generate_shader_source(key);
-  std::string fn_name;
-  switch (key.type) {
-    case KernelKey::KernelType::AttentionForward:
-      fn_name = "attention_forward"; break;
-    case KernelKey::KernelType::AttentionBackwardDQ:
-      fn_name = "attention_backward_dq"; break;
-    case KernelKey::KernelType::AttentionBackwardDKV:
-      fn_name = "attention_backward_dkv"; break;
+  // ccv generates a single kernel named "attention" for all kernel types.
+  const std::string fn_name = "attention";
+
+  // Generate shader source via the ccv-derived AttentionKernel generator.
+  std::string source = generate_attention_source(key);
+
+  // Debug: set MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr.
+  if (const char* dbg = getenv("MFA_DEBUG_SHADERS")) {
+    (void)dbg;
+    const char* type_str = "forward";
+    if (key.type == KernelKey::KernelType::AttentionBackwardDQ)  type_str = "backwardDQ";
+    if (key.type == KernelKey::KernelType::AttentionBackwardDKV) type_str = "backwardDKV";
+    fprintf(stderr,
+            "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
+            "%s\n=== END MFA Shader ===\n",
+            type_str, key.head_dim, key.block_q, key.block_k, key.block_d,
+            (int)key.is_m3_plus, (int)key.dtype,
+            source.c_str());
+    fflush(stderr);
   }
 
-  auto* pipeline = compile_shader(source, fn_name, device);
-  cache_[key] = pipeline;
+  void* pipeline = compile_shader(source, fn_name, device);
+
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    cache_.emplace(key, pipeline);
+  }
   return pipeline;
 }
 
-// JIT shader generation (placeholder)
-
-std::string ShaderCache::generate_shader_source(const KernelKey& key) {
-  // -------------------------------------------------------------------
-  // TODO(Phase 1.2): Port JIT generation from ccv source:
-  //   liuliu/ccv/lib/nnc/mfa/v2/  (kernel templates)
-  //   liuliu/ccv/lib/nnc/mfa/ccv_nnc_mfa_attention.cpp
-  //
-  // Key sections of generated shader:
-  //   1. Threadgroup memory: Q/K/V tiles, accumulators
-  //   2. Online softmax: m_i (running max), l_i (running sum)
-  //   3. Main loop over K/V tiles:
-  //      a. Load K tile (simdgroup_async_copy on A14+)
-  //      b. S = Q_tile @ K_tile^T (SIMD FMA)
-  //      c. Causal mask
-  //      d. Online softmax update
-  //      e. Load V tile
-  //      f. O += softmax(S) @ V_tile
-  //   4. Write O and logsumexp L
-  // -------------------------------------------------------------------
-
-  std::ostringstream oss;
-  oss << "// AUTO-GENERATED by mlx-mfa ShaderCache\n"
-      << "// D=" << key.head_dim
-      << " Bq=" << key.block_q
-      << " Bk=" << key.block_k
-      << " causal=" << key.causal
-      << " bf16_emu=" << key.bf16_emulation
-      << "\n\n"
-      << "#include <metal_stdlib>\n"
-      << "using namespace metal;\n\n"
-      << "// TODO: Full kernel (Phase 1.2)\n"
-      << "kernel void attention_forward() {\n"
-      << "  // Placeholder\n"
-      << "}\n";
-
-  return oss.str();
-}
-
-// Metal shader compilation (Objective-C Metal API)
+// ---------------------------------------------------------------------------
+// Metal compilation (Objective-C)
+// ---------------------------------------------------------------------------
 
 void* ShaderCache::compile_shader(
     const std::string& source,
@@ -122,12 +109,16 @@ void* ShaderCache::compile_shader(
 
     NSString* src = [NSString stringWithUTF8String:source.c_str()];
     MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    // Allow the compiler to see the full Metal standard library.
+    // 3.1+ required: bfloat4 vector type (bfloat scalar added in 3.0,
+    // bfloat2/4 vectors added in 3.1 / macOS 14).
+    opts.languageVersion = MTLLanguageVersion3_1;
 
     id<MTLLibrary> library = [device newLibraryWithSource:src
                                                   options:opts
                                                     error:&error];
     if (!library) {
-      std::string msg = "Metal compilation failed";
+      std::string msg = "MFA Metal compilation failed";
       if (error) {
         msg += ": ";
         msg += [[error localizedDescription] UTF8String];
@@ -139,13 +130,13 @@ void* ShaderCache::compile_shader(
     id<MTLFunction> function = [library newFunctionWithName:fnName];
     if (!function) {
       throw std::runtime_error(
-          "Metal function '" + function_name + "' not found");
+          "MFA Metal function '" + function_name + "' not found in library");
     }
 
     id<MTLComputePipelineState> pipeline =
         [device newComputePipelineStateWithFunction:function error:&error];
     if (!pipeline) {
-      std::string msg = "Pipeline creation failed";
+      std::string msg = "MFA pipeline creation failed";
       if (error) {
         msg += ": ";
         msg += [[error localizedDescription] UTF8String];
@@ -153,14 +144,18 @@ void* ShaderCache::compile_shader(
       throw std::runtime_error(msg);
     }
 
-    // Retain and return as void* (caller manages lifetime)
-    return (__bridge_retained void*)pipeline;
+    // Explicitly retain: caller owns the object; ShaderCache::clear() calls CFRelease.
+    // CFBridgingRetain works in both ARC and MRC (no-ARC) contexts.
+    return (void*)CFBridgingRetain(pipeline);
   }
 }
 
+// ---------------------------------------------------------------------------
 // clear
+// ---------------------------------------------------------------------------
 
 void ShaderCache::clear() {
+  std::lock_guard<std::mutex> lock(mtx_);
   for (auto& [_, pipeline] : cache_) {
     if (pipeline) {
       CFRelease(pipeline);

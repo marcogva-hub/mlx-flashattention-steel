@@ -110,9 +110,51 @@ auto outputs = array::make_arrays(
 ## Current status
 
 - Phase 1.1 DONE: scaffold, Python API with fallback, C++ skeleton
-- Phase 1.2 TODO: extract MFA kernels from ccv
-- Phase 1.3 TODO: decouple from ccv, wire into MLX
-- Phase 1.4 TODO: full forward (all D, dtypes, causal)
+- Phase 1.2 DONE: extract MFA kernels from ccv
+- Phase 1.3 DONE: decouple from ccv, wire into MLX
+- Phase 1.4 DONE: full forward (all D, dtypes, causal) — all 16 tests pass
+
+## Post-Phase 1 Technical Notes
+
+### transposeState Fix (Critical)
+
+The original ccv code sets `transposeState = true` for all operands. This was intended to
+compute head offsets as `head * D * seqLen`, but it also switched the inner GEMM to
+column-major addressing (`K[d, s]` instead of `K[s, d]`) with `seqLen` as leading
+dimension instead of `D`.
+
+Fix applied in two places:
+
+1. `csrc/mfa/AttentionKernel.cpp` `operandLocationWithHeadOffsetValue` — Both transposed
+   and non-transposed branches now unconditionally emit `* {{SEQUENCE_LENGTH}}` for head
+   offset. This decouples head-offset calculation from GEMM behavior.
+
+2. `csrc/mfa_shader_gen.cpp` — `transposeState[all] = false` so inner GEMMs use
+   `leadingDimension = headDimension` (D) and row-major `apply_offset`, correctly reading
+   `Q[n,d]` and `K[s,d]`.
+
+**DO NOT REVERT THIS FIX.** If backward kernels need transposed operands, handle via
+explicit tensor transpose in MLX before passing to the kernel, not via `transposeState`.
+
+### bfloat16 numpy conversion
+
+`numpy` PEP 3118 does not support `bfloat16`. When converting MLX bfloat16 arrays to
+numpy for testing, cast to float32 first within MLX:
+
+```python
+np.array(mlx_bf16_array.astype(mx.float32))
+```
+
+### Memory layout
+
+MLX arrays passed to `eval_gpu()` are expected to be contiguous in BHND layout.
+The kernel assumes:
+
+- `Q`: `[B, H, N, D]` row-major, leading dim = `D`
+- `K`: `[B, H, S, D]` row-major, leading dim = `D`
+- `V`: `[B, H, S, D]` row-major, leading dim = `D`
+
+If MLX passes non-contiguous arrays, they must be made contiguous before dispatch.
 
 ## Performance targets
 
