@@ -44,6 +44,13 @@ from mlx_mfa.masks import (
     make_segment_mask,
     make_causal_segment_mask,
     make_adaptive_window_mask,
+    make_lcsa_mask,
+    make_axial_spatial_mask,
+    make_axial_temporal_mask,
+    make_dilated_temporal_mask,
+    make_sink_window_mask,
+    make_reference_frame_mask,
+    make_cross_stream_mask,
 )
 
 __all__ = [
@@ -61,6 +68,13 @@ __all__ = [
     "make_segment_mask",
     "make_causal_segment_mask",
     "make_adaptive_window_mask",
+    "make_lcsa_mask",
+    "make_axial_spatial_mask",
+    "make_axial_temporal_mask",
+    "make_dilated_temporal_mask",
+    "make_sink_window_mask",
+    "make_reference_frame_mask",
+    "make_cross_stream_mask",
     # RoPE helpers
     "make_rope_3d_tables",
     # Utilities

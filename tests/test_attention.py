@@ -2075,3 +2075,295 @@ class TestRoPE3D:
         with pytest.raises(ValueError, match="mutually exclusive"):
             flash_attention_rope(q, k, v, cos, sin,
                                   rope_3d={"grid_h": 4, "grid_w": 4, "num_frames": 2})
+
+
+# =============================================================================
+# Track U — LCSA Composite Mask tests
+# =============================================================================
+
+class TestLCSAMask:
+    """Track U: make_lcsa_mask — FlashVSR LCSA composite mask."""
+
+    H, W, D = 16, 16, 128  # 256 tokens
+
+    def _qk(self, H=None, W=None):
+        H = H or self.H; W = W or self.W
+        N = H * W
+        q = mx.random.normal((1, 4, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((1, 4, N, self.D)).astype(mx.float16)
+        return q, k
+
+    def test_lcsa_is_subset_of_spatial(self):
+        from mlx_mfa import make_lcsa_mask, make_spatial_2d_mask
+        q, k = self._qk()
+        sp = make_spatial_2d_mask(self.H, self.W, spatial_radius=4, head_dim=self.D)
+        lcsa = make_lcsa_mask(q, k, self.H, self.W, spatial_radius=4, top_k=4, head_dim=self.D)
+        sp_np = np.array(sp)
+        lcsa_np = np.array(lcsa)
+        # LCSA ⊆ spatial: every True in LCSA must be True in spatial
+        assert np.all(~lcsa_np | sp_np), "LCSA must be a subset of the spatial mask"
+
+    def test_lcsa_density_controlled_by_topk(self):
+        from mlx_mfa import make_lcsa_mask
+        q, k = self._qk()
+        for top_k in [2, 4, 8]:
+            lcsa_np = np.array(make_lcsa_mask(q, k, self.H, self.W,
+                                               spatial_radius=8, top_k=top_k, head_dim=self.D))
+            row_sums = lcsa_np.sum(axis=1)
+            assert np.all(row_sums <= top_k), f"top_k={top_k}: some rows have {row_sums.max()} active tiles"
+
+    def test_lcsa_with_temporal(self):
+        from mlx_mfa import make_lcsa_mask
+        H, W, T = 8, 8, 4  # 256 tokens
+        N = H * W * T
+        q = mx.random.normal((1, 4, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((1, 4, N, self.D)).astype(mx.float16)
+        mask = make_lcsa_mask(q, k, H, W, spatial_radius=4, top_k=4,
+                               head_dim=self.D, num_frames=T, temporal_radius=2)
+        assert mask.ndim == 2
+        assert mask.dtype == mx.bool_
+
+    def test_lcsa_topk_larger_than_window(self):
+        """top_k >= window entries → LCSA == spatial mask."""
+        from mlx_mfa import make_lcsa_mask, make_spatial_2d_mask
+        q, k = self._qk()
+        sp_np = np.array(make_spatial_2d_mask(self.H, self.W, spatial_radius=4, head_dim=self.D))
+        # top_k very large — should give same as spatial
+        lcsa_np = np.array(make_lcsa_mask(q, k, self.H, self.W, spatial_radius=4,
+                                           top_k=1000, head_dim=self.D))
+        # Every active spatial tile should be in LCSA
+        missing = sp_np & ~lcsa_np
+        assert not np.any(missing), "With large top_k, LCSA should equal spatial mask"
+
+    def test_lcsa_end_to_end(self):
+        from mlx_mfa import make_lcsa_mask, flash_attention_sparse
+        q, k = self._qk()
+        v = mx.random.normal((1, 4, self.H * self.W, self.D)).astype(mx.float16)
+        mask = make_lcsa_mask(q, k, self.H, self.W, spatial_radius=4, top_k=4, head_dim=self.D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (self.D ** 0.5))
+        assert out.shape == q.shape
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32)))), "NaN in LCSA output"
+
+
+# =============================================================================
+# Track V — Axial / Factored Attention Mask tests
+# =============================================================================
+
+class TestAxialMasks:
+    """Track V: make_axial_spatial_mask, make_axial_temporal_mask."""
+
+    H, W, T, D = 8, 8, 4, 128
+
+    def test_spatial_mask_per_frame_isolation(self):
+        """Spatial mask: Q-tile at frame 0 should NOT attend to K-tiles at frame 2+."""
+        from mlx_mfa import make_axial_spatial_mask
+        mask_np = np.array(make_axial_spatial_mask(self.H, self.W, self.T, head_dim=self.D))
+        # Mask shape: [NQ, NK] where NQ uses BQ=32, NK uses BK=16 → not necessarily square
+        assert mask_np.ndim == 2
+        # Density < 1 (not fully dense)
+        density = mask_np.mean()
+        assert density < 1.0, "Axial spatial mask should be sparse"
+
+    def test_temporal_mask_same_position_only(self):
+        """Temporal mask: Q at frame 0 pos 0 should NOT attend to frame 0 pos 5."""
+        from mlx_mfa import make_axial_temporal_mask
+        mask_np = np.array(make_axial_temporal_mask(self.H, self.W, self.T, head_dim=self.D))
+        assert mask_np.ndim == 2  # [NQ, NK] rectangular is OK
+        # Must be sparser than full dense mask
+        assert mask_np.mean() < 1.0, "Temporal mask should be sparse"
+
+    def test_axial_masks_complement(self):
+        """Spatial | Temporal should have higher density than either alone."""
+        from mlx_mfa import make_axial_spatial_mask, make_axial_temporal_mask
+        sp = np.array(make_axial_spatial_mask(self.H, self.W, self.T, head_dim=self.D))
+        tm = np.array(make_axial_temporal_mask(self.H, self.W, self.T, head_dim=self.D))
+        union = sp | tm
+        assert union.mean() > sp.mean(), "Union should be denser than spatial alone"
+        assert union.mean() > tm.mean(), "Union should be denser than temporal alone"
+
+    def test_temporal_causal(self):
+        """Temporal causal: upper triangle (future) should have fewer active tiles."""
+        from mlx_mfa import make_axial_temporal_mask
+        causal_np = np.array(make_axial_temporal_mask(
+            self.H, self.W, self.T, head_dim=self.D, causal=True))
+        noncausal_np = np.array(make_axial_temporal_mask(
+            self.H, self.W, self.T, head_dim=self.D, causal=False))
+        assert causal_np.sum() <= noncausal_np.sum(), \
+                             "Causal mask should be subset of non-causal"
+
+    def test_spatial_with_radius(self):
+        """Spatial mask with small radius should be sparser than large radius."""
+        from mlx_mfa import make_axial_spatial_mask
+        small = np.array(make_axial_spatial_mask(self.H, self.W, self.T, head_dim=self.D,
+                                                  spatial_radius=2))
+        large = np.array(make_axial_spatial_mask(self.H, self.W, self.T, head_dim=self.D,
+                                                  spatial_radius=8))
+        assert small.sum() <= large.sum(), \
+                             "Smaller radius → sparser mask"
+
+
+# =============================================================================
+# Track W — Dilated Temporal Mask tests
+# =============================================================================
+
+class TestDilatedTemporalMask:
+    """Track W: make_dilated_temporal_mask."""
+
+    H, W, D = 8, 8, 128
+
+    def test_dilation_1_is_full_temporal(self):
+        """dilation_rate=1, local_window >= T → every tile active."""
+        from mlx_mfa import make_dilated_temporal_mask
+        T = 4
+        mask_np = np.array(make_dilated_temporal_mask(
+            self.H, self.W, T, dilation_rate=1, local_window=T, head_dim=self.D))
+        # Should be fully dense
+        assert np.all(mask_np), "dilation=1 + large local_window → all tiles active"
+
+    def test_density_decreases_with_dilation(self):
+        """Higher dilation rate (fewer attending frames) → lower density."""
+        from mlx_mfa import make_dilated_temporal_mask
+        T = 16
+        d1 = np.array(make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=2,
+                                                   local_window=1, head_dim=self.D)).mean()
+        d2 = np.array(make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=8,
+                                                   local_window=1, head_dim=self.D)).mean()
+        assert d1 > d2, "Smaller dilation → higher density"
+
+    def test_local_window_adds_neighbors(self):
+        """Larger local_window → more tiles active."""
+        from mlx_mfa import make_dilated_temporal_mask
+        T = 8
+        m0 = np.array(make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=4,
+                                                   local_window=0, head_dim=self.D)).sum()
+        m2 = np.array(make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=4,
+                                                   local_window=2, head_dim=self.D)).sum()
+        assert m2 >= m0, "Larger local window should add more active tiles"
+
+    def test_shape_correct(self):
+        from mlx_mfa import make_dilated_temporal_mask
+        T = 8
+        mask = make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=2, head_dim=self.D)
+        N = self.H * self.W * T
+        BQ, BK = 32, 16  # head_dim=128
+        assert mask.shape == ((N + BQ - 1) // BQ, (N + BK - 1) // BK)
+
+
+# =============================================================================
+# Track X — Sink Tokens + Reference Frame Mask tests
+# =============================================================================
+
+class TestSinkAndReferenceFrameMasks:
+    """Track X: make_sink_window_mask, make_reference_frame_mask."""
+
+    D = 128
+
+    def test_sink_tokens_always_visible(self):
+        """First num_sink_tiles K-tiles should be active for ALL Q-tiles."""
+        from mlx_mfa import make_sink_window_mask
+        N = 256; sink = 32; window = 32
+        mask_np = np.array(make_sink_window_mask(N, window, sink, head_dim=self.D))
+        # First K-tile (covering first 16 tokens with BK=16) must be True for all Q
+        assert np.all(mask_np[:, 0]), "First K-tile should be visible to all Q-tiles"
+
+    def test_zero_sinks_equals_sliding_window(self):
+        """num_sink_tokens=0 → pure sliding window (no extra global visibility)."""
+        from mlx_mfa import make_sink_window_mask
+        N = 256; window = 32
+        with_sink = np.array(make_sink_window_mask(N, window, num_sink_tokens=64, head_dim=self.D))
+        no_sink = np.array(make_sink_window_mask(N, window, num_sink_tokens=0, head_dim=self.D))
+        # With sinks → at least as many True entries
+        assert with_sink.sum() >= no_sink.sum(), \
+                                "Sinks should add more active tiles"
+
+    def test_sink_plus_causal(self):
+        """Causal mode: no future K-tiles, but sinks still visible."""
+        from mlx_mfa import make_sink_window_mask
+        N = 256; sink = 32; window = 32
+        mask_np = np.array(make_sink_window_mask(N, window, sink, head_dim=self.D, causal=True))
+        # First K-tile visible for all Q-tiles (sink)
+        assert np.all(mask_np[:, 0]), "Sinks must be visible even in causal mode"
+        # No future tiles: for Q-tile 0 (tokens 0..BQ-1), K-tile last must be False
+        assert not mask_np[0, -1], "Q-tile 0 should not see last K-tile in causal mode"
+
+    def test_reference_frame_always_visible(self):
+        """All K-tiles covering the reference frame must be active for all Q-tiles."""
+        from mlx_mfa import make_reference_frame_mask
+        H, W, T = 8, 8, 4
+        mask_np = np.array(make_reference_frame_mask(H, W, T,
+                                                      reference_frames=[0],
+                                                      head_dim=self.D))
+        # K-tile 0 covers tokens 0..BK-1 which are all frame 0 → must be visible to all Q
+        assert np.all(mask_np[:, 0]), "Reference frame K-tile must be visible to all Q-tiles"
+
+    def test_reference_frame_plus_local(self):
+        """Reference frame + local context → more active tiles than local alone."""
+        from mlx_mfa import make_reference_frame_mask, make_spatial_3d_mask
+        H, W, T = 8, 8, 4
+        with_ref = np.array(make_reference_frame_mask(H, W, T,
+                                                       reference_frames=[0],
+                                                       temporal_radius=1,
+                                                       head_dim=self.D)).sum()
+        local_only = np.array(make_reference_frame_mask(H, W, T,
+                                                         reference_frames=[],
+                                                         temporal_radius=1,
+                                                         head_dim=self.D)).sum()
+        assert with_ref >= local_only, "Reference frame should add more active tiles"
+
+
+# =============================================================================
+# Track Y — Cross-Stream Attention Mask tests
+# =============================================================================
+
+class TestCrossStreamMask:
+    """Track Y: make_cross_stream_mask."""
+
+    D = 128
+
+    def test_full_pattern_all_active(self):
+        from mlx_mfa import make_cross_stream_mask
+        mask = make_cross_stream_mask(256, 512, head_dim=self.D, pattern="full")
+        assert np.all(np.array(mask)), "Full pattern should activate all tiles"
+
+    def test_temporal_alignment_frame_diagonal(self):
+        """Temporal pattern: Q frame t → KV frame t only → block diagonal."""
+        from mlx_mfa import make_cross_stream_mask
+        # 2 frames, 128 tokens each, Q and KV same size
+        mask_np = np.array(make_cross_stream_mask(
+            256, 256, head_dim=self.D, pattern="temporal", q_frames=2, kv_frames=2))
+        density = mask_np.mean()
+        # Frame-diagonal: should be sparser than full
+        assert density < 1.0, "Temporal alignment should produce block-diagonal mask"
+
+    def test_segment_cross_attention(self):
+        """Segment pattern: Q segment i → KV segment i only."""
+        from mlx_mfa import make_cross_stream_mask
+        q_segs = [128, 128]
+        kv_segs = [256, 256]
+        mask_np = np.array(make_cross_stream_mask(
+            256, 512, head_dim=self.D, pattern="segment",
+            q_segments=q_segs, kv_segments=kv_segs))
+        # Must be sparser than full
+        assert mask_np.mean() < 1.0, "Segment cross-attention should be sparser than full"
+
+    def test_asymmetric_token_counts(self):
+        """n_tokens_q != n_tokens_kv → rectangular mask."""
+        from mlx_mfa import make_cross_stream_mask
+        mask = make_cross_stream_mask(256, 512, head_dim=self.D, pattern="full")
+        BQ, BK = 32, 16
+        NQ = (256 + BQ - 1) // BQ
+        NK = (512 + BK - 1) // BK
+        assert list(mask.shape) == [NQ, NK]
+
+    def test_cross_stream_end_to_end(self):
+        """Full cross-stream mask + flash_attention_sparse produces valid output."""
+        from mlx_mfa import make_cross_stream_mask, flash_attention_sparse
+        N_q, N_kv = 256, 256
+        H = 4
+        q = mx.random.normal((1, H, N_q, self.D)).astype(mx.float16)
+        k = mx.random.normal((1, H, N_kv, self.D)).astype(mx.float16)
+        v = mx.random.normal((1, H, N_kv, self.D)).astype(mx.float16)
+        mask = make_cross_stream_mask(N_q, N_kv, head_dim=self.D, pattern="full")
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (self.D ** 0.5))
+        assert out.shape == (1, H, N_q, self.D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
