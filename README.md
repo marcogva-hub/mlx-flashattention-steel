@@ -26,7 +26,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **All head dims**: 64, 128, 256
 - **All dtypes**: float16, bfloat16, float32
 - **Causal and non-causal** attention
-- **GQA / MQA** — Grouped Query Attention via repeat-KV fallback
+- **GQA / MQA** — Native Grouped Query Attention (no K/V expansion)
 - **Block-sparse attention** — `flash_attention_sparse()` with causal or sliding-window masks
 - **Cross-attention** — N_q != N_kv supported
 - **Graceful fallback** to `mx.fast.scaled_dot_product_attention` when the extension is unavailable or head_dim is unsupported
@@ -89,7 +89,7 @@ q  = mx.random.normal((1, Hq,  N, D))
 k  = mx.random.normal((1, Hkv, N, D))
 v  = mx.random.normal((1, Hkv, N, D))
 
-out = flash_attention(q, k, v)  # automatically tiles k/v to match Hq
+out = flash_attention(q, k, v)  # native GQA — no K/V expansion needed
 ```
 
 ## API Reference
@@ -175,6 +175,29 @@ mask = make_sliding_window_mask(4096, window_size=512)
 out  = flash_attention_sparse(q, k, v, mask)
 ```
 
+---
+
+## mlx-lm Integration
+
+Use STEEL attention with any mlx-lm model in two lines:
+
+```python
+from mlx_mfa.integrations.mlx_lm import patch_mlx_lm
+patch_mlx_lm()
+
+# All subsequent mlx-lm models automatically use STEEL attention
+from mlx_lm import load, generate
+model, tokenizer = load("mlx-community/Llama-3.2-3B-Instruct-4bit")
+generate(model, tokenizer, prompt="Hello world", verbose=True)
+```
+
+The patch transparently routes `mask="causal"` (prefill) and `mask=None` (decode) through
+the STEEL kernel. It falls back to the original mlx_lm SDPA for quantized KV caches,
+attention sinks, and unsupported configs. Call `unpatch_mlx_lm()` to restore.
+
+**Expected speedup:** 1.5–2.1× on causal prefill (D=128, f16); decode step is memory-bound
+so speedup is minimal there.
+
 ## Testing
 
 ```bash
@@ -194,7 +217,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: 57 tests total (6 fallback + 5 public API + 10 forward + 8 backward + 8 edge + 4 backward edge + 6 sparse API + 10 sparse kernel).
+Expected: 77 tests total (6 fallback + 5 public API + 10 forward + 8 backward + 8 edge + 4 backward edge + 6 sparse API + 10 sparse kernel + 9 native GQA + 11 mlx-lm integration).
 
 ## Supported Configurations
 
@@ -228,9 +251,10 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | 4   | Production-ready: GQA, public API, CI | Done |
 | 5   | STEEL forward kernel (1.5–2.9× causal) | **Done (v0.1.0)** |
 | B   | Block-sparse attention (`flash_attention_sparse`) | **Done (v0.2.0)** |
+| C   | Native GQA kernel (gqa_factor in STEEL, no mx.repeat) | **Done (v0.3.0)** |
+| D   | mlx-lm integration (`patch_mlx_lm`) | **Done (v0.3.0)** |
 | 6   | STEEL backward kernel | Planned |
 | 6   | Native sparse backward (no dense fallback) | Planned |
-| 6   | Native GQA kernel (no tiling) | Planned |
 | 6   | Flash Decoding for long contexts | Planned |
 
 ## References

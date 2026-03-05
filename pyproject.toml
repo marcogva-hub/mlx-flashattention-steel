@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-mfa"
-version = "0.2.0"
+version = "0.3.0"
 description = "Metal Flash Attention for MLX — causal attention 1.5-2.9x faster than SDPA on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
