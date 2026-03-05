@@ -81,11 +81,18 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   std::string fn_name;
   std::string source;
 
-  if (key.type == KernelKey::KernelType::SteelForward) {
+  using KT = KernelKey::KernelType;
+  if (key.type == KT::SteelForward) {
     fn_name = "mlx_mfa_attention";
     source  = generate_steel_forward_source(key);
+  } else if (key.type == KT::FlashDecodePartial) {
+    fn_name = "mlx_mfa_flash_decode_partial";
+    source  = generate_flash_decode_partial_source(key);
+  } else if (key.type == KT::FlashDecodeReduce) {
+    fn_name = "mlx_mfa_flash_decode_reduce";
+    source  = generate_flash_decode_reduce_source(key);
   } else {
-    // ccv-derived kernels all use "attention" as the function name.
+    // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
     source  = generate_attention_source(key);
   }
@@ -94,9 +101,11 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   if (const char* dbg = getenv("MFA_DEBUG_SHADERS")) {
     (void)dbg;
     const char* type_str = "forward";
-    if (key.type == KernelKey::KernelType::AttentionBackwardDQ)  type_str = "backwardDQ";
-    if (key.type == KernelKey::KernelType::AttentionBackwardDKV) type_str = "backwardDKV";
-    if (key.type == KernelKey::KernelType::SteelForward)         type_str = "steel_fwd";
+    if (key.type == KT::AttentionBackwardDQ)  type_str = "backwardDQ";
+    if (key.type == KT::AttentionBackwardDKV) type_str = "backwardDKV";
+    if (key.type == KT::SteelForward)         type_str = "steel_fwd";
+    if (key.type == KT::FlashDecodePartial)   type_str = "flash_decode_partial";
+    if (key.type == KT::FlashDecodeReduce)    type_str = "flash_decode_reduce";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",

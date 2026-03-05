@@ -31,7 +31,9 @@ class ShaderCache {
       AttentionForward = 0,
       AttentionBackwardDQ = 1,
       AttentionBackwardDKV = 2,
-      SteelForward = 3,       // STEEL-style cooperative forward kernel
+      SteelForward = 3,          // STEEL-style cooperative forward kernel
+      FlashDecodePartial = 4,    // Flash Decoding Phase 1: partial attn per split
+      FlashDecodeReduce  = 5,    // Flash Decoding Phase 2: LSE reduce over splits
     };
 
     KernelType type;

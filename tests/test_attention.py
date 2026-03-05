@@ -1106,3 +1106,177 @@ class TestSparseBackwardTiled:
         assert np.isfinite(float(loss_val)), "loss is not finite"
         assert np.all(np.isfinite(np.array(dq.astype(mx.float32)))), "dQ non-finite"
         assert np.all(np.isfinite(np.array(dk.astype(mx.float32)))), "dK non-finite"
+
+
+# ==========================================================================
+# Flash Decoding (Split-KV) — Track H
+# ==========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestFlashDecode:
+    """Flash Decoding (N_q ≤ 4, S ≥ 256) correctness vs. SDPA reference."""
+
+    def _ref(self, q, k, v, scale, causal):
+        """Standard SDPA reference (float32 accumulation)."""
+        q32 = q.astype(mx.float32)
+        k32 = k.astype(mx.float32)
+        v32 = v.astype(mx.float32)
+        scores = mx.matmul(q32, k32.swapaxes(-1, -2)) * scale
+        if causal:
+            B, H, N, S = q.shape[0], q.shape[1], q.shape[2], k.shape[2]
+            # Build causal mask: query i can attend to keys 0..(S-N+i)
+            q_pos = mx.arange(N)[:, None] + (S - N)   # [N, 1]
+            k_pos = mx.arange(S)[None, :]              # [1, S]
+            mask = (q_pos < k_pos).astype(mx.float32) * -1e9
+            scores = scores + mask[None, None, :, :]
+        probs = mx.softmax(scores, axis=-1)
+        out = mx.matmul(probs, v32)
+        mx.eval(out)
+        return out
+
+    @pytest.mark.parametrize("D", [64, 128, 256])
+    def test_decode_noncausal(self, D):
+        """N=1 decode, non-causal: Flash Decode should match SDPA within tol."""
+        B, H, N, S = 1, 8, 1, 512
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"D={D} non-causal max_err={max_err:.4f}"
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_decode_causal(self, D):
+        """N=1 causal decode: query attends to all keys (qL_off=S-1 with N=1)."""
+        B, H, N, S = 1, 8, 1, 512
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=True)
+        ref = self._ref(q, k, v, scale, causal=True)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"D={D} causal max_err={max_err:.4f}"
+
+    def test_decode_large_kv(self):
+        """N=1 with S=4096 — exercises many splits."""
+        D, S = 128, 4096
+        B, H, N = 2, 8, 1
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"S=4096 max_err={max_err:.4f}"
+
+    def test_decode_small_kv_boundary(self):
+        """S=256 is the activation threshold — should use Flash Decode."""
+        D, S = 64, 256
+        B, H, N = 1, 4, 1
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"S=256 boundary max_err={max_err:.4f}"
+
+    def test_decode_n4(self):
+        """N=4 (upper decode threshold)."""
+        D, S = 128, 512
+        B, H, N = 1, 8, 4
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"N=4 max_err={max_err:.4f}"
+
+    def test_decode_gqa(self):
+        """GQA (ratio 4:1) with Flash Decode."""
+        D, S = 64, 512
+        B, H_q, H_kv, N = 1, 8, 2, 1
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H_q, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        # Reference: expand kv to H_q heads
+        k_exp = mx.repeat(k, H_q // H_kv, axis=1)
+        v_exp = mx.repeat(v, H_q // H_kv, axis=1)
+        ref = self._ref(q, k_exp, v_exp, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"GQA max_err={max_err:.4f}"
+
+    def test_decode_bf16(self):
+        """bfloat16 Flash Decode."""
+        D, S = 64, 256
+        B, H, N = 1, 4, 1
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.bfloat16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.bfloat16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref.astype(mx.float32))
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.1, f"bf16 max_err={max_err:.4f}"
+
+    def test_no_flash_decode_n5(self):
+        """N=5 should NOT use Flash Decode (uses standard STEEL path)."""
+        D, S = 64, 512
+        B, H, N = 1, 4, 5
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+
+        out_np = np.array(out.astype(mx.float32))
+        ref_np = np.array(ref)
+        max_err = float(np.max(np.abs(out_np - ref_np)))
+        assert max_err < 0.05, f"N=5 (non-FD) max_err={max_err:.4f}"

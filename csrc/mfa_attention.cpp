@@ -130,6 +130,142 @@ void MFAttention::eval_gpu(
   if (force_gen_env) arch_gen_steel = std::atoi(force_gen_env);
   bool is_m3_plus_steel = (arch_gen_steel >= 15);
 
+  // ── Flash Decoding (Split-KV) path ──────────────────────────────────────
+  //
+  // At decode time (N_q ≤ 4) the standard grid (NQ, H, B) = (1, H, B) leaves
+  // most SMs idle.  Flash Decoding splits the KV sequence into num_splits
+  // chunks dispatched in parallel, then a tiny reduce kernel combines them.
+  //
+  // Activation: N ≤ 4 AND S ≥ 256 AND f16/bf16 (dtype_code != 2)
+  //             AND no block mask (sparse path keeps its own dispatch)
+  auto cfg_fd = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
+  const int BK_fd = cfg_fd.BK;
+  const bool use_flash_decode = (N <= 4 && S >= 256 && dtype_code != 2
+                                 && !params_.has_block_mask);
+  if (use_flash_decode) {
+    int num_splits = compute_num_splits(S, BK_fd);
+    auto cfg_s = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
+    int BQ_s = cfg_s.BQ;
+    int BK_s = cfg_s.BK;
+    int WM_s = cfg_s.WM;
+    int TGP_s = WM_s * cfg_s.WN * 32;
+
+    // ── Allocate scratch buffers pO and pL ─────────────────────────────────
+    size_t pO_size = (size_t)num_splits * B * H * N * D * (dtype_code == 2 ? 4 : 2);
+    size_t pL_size = (size_t)num_splits * B * H * N * sizeof(float);
+    auto pO_buf = mlx::core::allocator::malloc(pO_size);
+    auto pL_buf = mlx::core::allocator::malloc(pL_size);
+
+    // ── Build FlashDecodePartialParams ─────────────────────────────────────
+    int NQ_s = (N + BQ_s - 1) / BQ_s;
+    int NK_total = (S + BK_s - 1) / BK_s;
+    int NK_per_split = (NK_total + num_splits - 1) / num_splits;
+
+    FlashDecodePartialParams pp{};
+    pp.B = B; pp.H = H; pp.D = D;
+    pp.qL = N; pp.kL = S;
+    pp.gqa_factor = H / Hk;
+    pp.scale = params_.scale;
+    pp.NQ = NQ_s;
+    pp.NQ_aligned = (N % BQ_s == 0) ? NQ_s : NQ_s - 1;
+    pp.qL_rem     = (N % BQ_s == 0) ? BQ_s : (N % BQ_s);
+    pp.qL_off     = (params_.causal && N < S) ? (S - N) : 0;
+    pp.NK_total    = NK_total;
+    pp.NK_aligned  = (S % BK_s == 0) ? NK_total : NK_total - 1;
+    pp.kL_rem      = (S % BK_s == 0) ? BK_s : (S % BK_s);
+    pp.num_splits  = num_splits;
+    pp.NK_per_split = NK_per_split;
+    // Input strides
+    pp.Q_strides[0] = (int64_t)H  * N * D;
+    pp.Q_strides[1] = (int64_t)N  * D;
+    pp.Q_strides[2] = (int64_t)D;
+    pp.K_strides[0] = (int64_t)Hk * S * D;
+    pp.K_strides[1] = (int64_t)S  * D;
+    pp.K_strides[2] = (int64_t)D;
+    pp.V_strides[0] = (int64_t)Hk * S * D;
+    pp.V_strides[1] = (int64_t)S  * D;
+    pp.V_strides[2] = (int64_t)D;
+    // pO strides (split outermost): [num_splits, B, H, qL, D]
+    int64_t pO_head_stride  = (int64_t)N * D;
+    int64_t pO_batch_stride = (int64_t)H * N * D;
+    pp.pO_split_stride = (int64_t)B * H * N * D;
+    pp.pO_batch_stride = pO_batch_stride;
+    pp.pO_head_stride  = pO_head_stride;
+    // pL strides: [num_splits, B, H, qL]
+    pp.pL_split_stride = (int64_t)B * H * N;
+    pp.pL_batch_stride = (int64_t)H * N;
+    pp.pL_head_stride  = (int64_t)N;
+
+    // ── Build FlashDecodeReduceParams ──────────────────────────────────────
+    int reduce_tgp = std::min(D, 128);
+    FlashDecodeReduceParams rp{};
+    rp.B = B; rp.H = H; rp.D = D;
+    rp.qL = N;
+    rp.num_splits = num_splits;
+    rp.pO_split_stride = pp.pO_split_stride;
+    rp.pO_batch_stride = pp.pO_batch_stride;
+    rp.pO_head_stride  = pp.pO_head_stride;
+    rp.pL_split_stride = pp.pL_split_stride;
+    rp.pL_batch_stride = pp.pL_batch_stride;
+    rp.pL_head_stride  = pp.pL_head_stride;
+    rp.O_batch_stride  = (int64_t)H * N * D;
+    rp.O_head_stride   = (int64_t)N * D;
+    rp.L_batch_stride  = (int64_t)H * N;
+    rp.L_head_stride   = (int64_t)N;
+    rp.reduce_tgp_size = reduce_tgp;
+
+    // ── Compile Phase 1 and Phase 2 pipelines ─────────────────────────────
+    using KK = ShaderCache::KernelKey;
+    KK key_p1{
+      KK::KernelType::FlashDecodePartial,
+      D, BQ_s, BK_s, D, WM_s,
+      params_.causal, /*sparse=*/false, is_m3_plus_steel, dtype_code
+    };
+    KK key_p2{
+      KK::KernelType::FlashDecodeReduce,
+      D, 0, 0, 0, 0,
+      false, false, false, dtype_code
+    };
+    auto* pl_p1 = reinterpret_cast<MTL::ComputePipelineState*>(
+        ShaderCache::get().get_or_compile(key_p1, d.mtl_device()));
+    auto* pl_p2 = reinterpret_cast<MTL::ComputePipelineState*>(
+        ShaderCache::get().get_or_compile(key_p2, d.mtl_device()));
+
+    auto& enc = d.get_command_encoder(stream().index);
+
+    // ── Phase 1 dispatch ──────────────────────────────────────────────────
+    enc.set_compute_pipeline_state(pl_p1);
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 3, 0);
+    enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 4, 0);
+    enc.set_bytes(pp, 5);
+    enc.dispatch_threadgroups(
+        MTL::Size::Make((size_t)(NQ_s * num_splits), (size_t)H, (size_t)B),
+        MTL::Size::Make((size_t)TGP_s, 1, 1));
+
+    // ── Phase 2 dispatch ──────────────────────────────────────────────────
+    // Use barrier() (unconditional) — maybeInsertBarrier() is a no-op for
+    // raw MTL::Buffer* bindings since needs_barrier_ is only set by
+    // set_output_array(); Phase 1 writes pO/pL as set_buffer() buffers.
+    enc.barrier();
+    enc.set_compute_pipeline_state(pl_p2);
+    enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 0, 0);
+    enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 1, 0);
+    enc.set_output_array(out,       2);
+    enc.set_output_array(logsumexp, 3);
+    enc.set_bytes(rp, 4);
+    enc.dispatch_threadgroups(
+        MTL::Size::Make((size_t)N, (size_t)H, (size_t)B),
+        MTL::Size::Make((size_t)reduce_tgp, 1, 1));
+
+    // Release scratch buffers (Metal retains them until command buffer completes)
+    mlx::core::allocator::free(pO_buf);
+    mlx::core::allocator::free(pL_buf);
+    return;
+  }
+
   // ── STEEL tile config (f16 / bf16) ───────────────────────────────────────
   auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
   int BQ = cfg.BQ;
@@ -174,7 +310,10 @@ void MFAttention::eval_gpu(
   sp.NK_aligned = NK_aligned;
   sp.qL_rem     = (N % BQ == 0) ? BQ : (N % BQ);
   sp.kL_rem     = (S % BK == 0) ? BK : (S % BK);
-  sp.qL_off     = 0; // self-attention; cross-attn would offset query start
+  // For decode (N < S, causal), the first query row is at position S-N in the KV
+  // sequence.  qL_off shifts the causal window so key position k is visible
+  // to query row q when k <= q + qL_off.  For self-attention N==S → qL_off=0.
+  sp.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
 
   // Strides: [B, H, S] in elements (D=1 implicit)
   sp.Q_strides[0] = (int64_t)H * N * D;

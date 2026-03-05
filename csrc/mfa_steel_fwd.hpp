@@ -63,4 +63,84 @@ SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec,
 /// The source defines the kernel function "mlx_mfa_attention".
 std::string generate_steel_forward_source(const ShaderCache::KernelKey& key);
 
+// ── Flash Decoding (Split-KV) ─────────────────────────────────────────────
+//
+// Flash Decoding improves GPU utilization during autoregressive decode (N_q<=4)
+// by splitting the KV sequence into num_splits chunks dispatched in parallel.
+//
+// Phase 1 kernel ("mlx_mfa_flash_decode_partial"):
+//   Grid (NQ * num_splits, H, B) — each threadgroup covers one Q-tile of one KV split.
+//   Outputs: pO[num_splits, B, H, qL, D]  (normalized partial output)
+//            pL[num_splits, B, H, qL]     (log2-domain logsumexp per split)
+//
+// Phase 2 kernel ("mlx_mfa_flash_decode_reduce"):
+//   Grid (N, H, B) — one thread-column per query position, head, batch.
+//   Reads pO/pL and writes final O and L via log-sum-exp combining.
+
+/// Parameters for the Flash Decode Phase 1 (partial attention) kernel.
+/// Must exactly match the MFAFlashDecodePartialParams struct in Metal source.
+struct FlashDecodePartialParams {
+    // Tensor dimensions
+    int B, H, D;
+    int qL, kL;
+    int gqa_factor;
+    float scale;
+    // Q tile counts
+    int NQ, NQ_aligned;
+    int qL_rem;
+    int qL_off;          // query position offset for causal (S - N for decode)
+    // K (full sequence)
+    int NK_total;        // = ceil(kL / BK)
+    int NK_aligned;      // last fully-filled K-tile index
+    int kL_rem;          // kL % BK (0 if aligned)
+    // Split config
+    int num_splits;
+    int NK_per_split;    // K-tiles per split = ceil(NK_total / num_splits)
+    // Input strides: [B, H, seqLen] in elements
+    int64_t Q_strides[3];
+    int64_t K_strides[3];
+    int64_t V_strides[3];
+    // pO strides: [B, H, qL] per split (split offset computed separately)
+    int64_t pO_split_stride;   // B * H * qL * D
+    int64_t pO_batch_stride;   // H * qL * D
+    int64_t pO_head_stride;    // qL * D
+    // pL strides: [B, H, qL] per split
+    int64_t pL_split_stride;   // B * H * qL
+    int64_t pL_batch_stride;   // H * qL
+    int64_t pL_head_stride;    // qL
+};
+
+/// Parameters for the Flash Decode Phase 2 (reduce) kernel.
+struct FlashDecodeReduceParams {
+    int B, H, D;
+    int qL;
+    int num_splits;
+    // pO: [num_splits, B, H, qL, D]
+    int64_t pO_split_stride;
+    int64_t pO_batch_stride;
+    int64_t pO_head_stride;
+    // pL: [num_splits, B, H, qL]
+    int64_t pL_split_stride;
+    int64_t pL_batch_stride;
+    int64_t pL_head_stride;
+    // O: [B, H, qL, D]
+    int64_t O_batch_stride;
+    int64_t O_head_stride;
+    // L: [B, H, qL]
+    int64_t L_batch_stride;
+    int64_t L_head_stride;
+    // Reduce threadgroup size (= min(D, 128))
+    int reduce_tgp_size;
+};
+
+/// Compute the number of KV splits for Flash Decoding.
+/// Target: ~128 keys per split for good SM occupancy.
+int compute_num_splits(int kL, int BK);
+
+/// Generate Phase 1 Metal source for the Flash Decode partial kernel.
+std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& key);
+
+/// Generate Phase 2 Metal source for the Flash Decode reduce kernel.
+std::string generate_flash_decode_reduce_source(const ShaderCache::KernelKey& key);
+
 }  // namespace mlx_mfa
