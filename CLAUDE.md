@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+## MANDATORY — Git safety
+NEVER delete, move, or `rm -rf` the repository directory.
+ALWAYS `git push origin master` before starting any destructive operation.
+NEVER run `rm -rf` on any path containing the repo root.
+
 ## What is this project?
 
 mlx-mfa is a Python/C++ library that brings Metal Flash Attention (MFA) kernels to Apple's MLX framework. It exposes `flash_attention(q, k, v)` as a drop-in replacement for `mx.fast.scaled_dot_product_attention()`.
