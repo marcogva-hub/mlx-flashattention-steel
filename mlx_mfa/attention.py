@@ -337,6 +337,7 @@ def flash_attention_sparse(
     scale: Optional[float] = None,
     causal: bool = False,
     stream: Optional[mx.Stream] = None,
+    backward: str = "sdpa",
 ) -> mx.array:
     """Block-sparse Flash Attention.
 
@@ -408,7 +409,8 @@ def flash_attention_sparse(
     if not _ext_available():
         return _sparse_fallback_sdpa(q, k, v, block_mask, BQ, BK, scale, causal)
 
-    impl = _make_mfa_sparse_custom(scale, causal, block_mask)
+    impl = _make_mfa_sparse_custom(scale, causal, block_mask,
+                                    head_dim=D, backward=backward)
     q = mx.contiguous(q)
     k = mx.contiguous(k)
     v = mx.contiguous(v)
@@ -423,14 +425,22 @@ def _make_mfa_sparse_custom(
     scale: float,
     causal: bool,
     block_mask: mx.array,
+    head_dim: int = 128,
+    backward: str = "sdpa",
 ):
     """Build a custom_function wrapping the sparse STEEL kernel.
 
-    The forward returns (O, L) where L is the logsumexp [B, H, N].
-    L is saved as part of `output` in the vjp, ready for future native
-    sparse backward kernels (Track G.3-G.5).  Currently the backward uses
-    the dense SDPA path (correct but no sparsity speedup).
+    The forward returns (O, L) where L is the logsumexp [B, H, N, float32].
+    L is in log2 domain (STEEL convention: L = log2(e) * L_natural).
+
+    backward options:
+        "sdpa"         (default) — dense mx.fast.sdpa vjp; correct but O(N×S×D)
+        "sdpa_sparse"  — tiled Python sparse backward using saved L;
+                         O(nnz × BQ × BK × D), benefits large sparse configs
     """
+    import numpy as _np
+
+    BQ, BK = _steel_block_config(head_dim)
 
     @mx.custom_function
     def _impl(q, k, v, mask_uint8):
@@ -443,8 +453,17 @@ def _make_mfa_sparse_custom(
     def _backward(primals, cotangents, outputs):
         q, k, v, mask_uint8 = primals
         dO, _dL = cotangents  # dL is zero (L not consumed downstream)
-        # O, L available from outputs — reserved for Track G native backward.
-        # _O, _L = outputs
+        O, L    = outputs
+
+        if backward == "sdpa_sparse":
+            # Tiled sparse backward using saved L — skips inactive tiles.
+            D = q.shape[-1]
+            bq, bk = _steel_block_config(D)
+            block_mask_np = _np.array(block_mask.astype(mx.uint8))
+            dQ, dK, dV = _sparse_backward_tiled(
+                q, k, v, O, L, dO, block_mask_np, bq, bk, scale, causal
+            )
+            return dQ, dK, dV, mx.zeros_like(mask_uint8)
 
         # Dense SDPA backward (correct, no sparsity speedup).
         float_mask = _block_mask_to_float_bias(
@@ -526,6 +545,174 @@ def _sparse_fallback_sdpa(
     return mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=float_bias
     )
+
+
+# ---------------------------------------------------------------------------
+# Sparse tiled backward (G.2-G.5)
+# ---------------------------------------------------------------------------
+
+def _sparse_backward_tiled(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    O: mx.array,
+    L: mx.array,
+    dO: mx.array,
+    block_mask_np,      # numpy bool [NQ, NK] — pre-evaluated for Python loops
+    BQ: int,
+    BK: int,
+    scale: float,
+    causal: bool,
+) -> tuple:
+    """Tiled sparse backward using saved logsumexp L.
+
+    Skips inactive tiles for O(nnz × BQ × BK × D) work vs O(N × S × D)
+    for dense SDPA.  L is in log2 domain (STEEL kernel output convention):
+        P_ij = exp2(scale_log2 * QK^T_ij - L_i)
+             = exp(scale * QK^T_ij - L_natural_i)
+    where L_natural = L_log2 * ln(2).
+
+    Handles GQA (H_q != H_kv): K/V head index = q_head // gqa_factor.
+
+    Returns (dQ, dK, dV) in the input dtype of q / k / v.
+    """
+    import math as _math
+    import numpy as _np
+
+    B, H_q, N, D = q.shape
+    H_kv = k.shape[1]
+    S = k.shape[2]
+    NQ, NK = block_mask_np.shape
+
+    LN2 = _math.log(2)  # convert L_log2 → L_natural: L_natural = L_log2 * ln(2)
+
+    # D_scalar[b, h, i] = sum_d(dO[b,h,i,d] * O[b,h,i,d]) — query-row delta
+    D_scalar = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)  # [B, H_q, N]
+
+    # ── dQ: accumulate per Q-tile ───────────────────────────────────────────
+    dQ_tiles = []
+    for qi in range(NQ):
+        qi_s = qi * BQ
+        qi_e = min(qi_s + BQ, N)
+        Q_qi  = q[:, :, qi_s:qi_e, :].astype(mx.float32)   # [B, H_q, bq, D]
+        dO_qi = dO[:, :, qi_s:qi_e, :].astype(mx.float32)  # [B, H_q, bq, D]
+        L_qi  = L[:, :, qi_s:qi_e] * LN2                    # [B, H_q, bq] natural log
+        D_qi  = D_scalar[:, :, qi_s:qi_e]                   # [B, H_q, bq]
+
+        contribs = []
+        for kj in range(NK):
+            if not block_mask_np[qi, kj]:
+                continue
+            kj_s = kj * BK
+            kj_e = min(kj_s + BK, S)
+            # GQA: select the KV-head for each Q-head
+            # K has shape [B, H_kv, S, D]; broadcast over H_q via repeat
+            # Use direct indexing for efficiency (no reshape needed):
+            #   head_kv_idx = q_head_idx // gqa_factor — handled by taking
+            #   K slice [B, H_kv, kj_s:kj_e, D] and repeating to H_q
+            K_kj = k[:, :, kj_s:kj_e, :].astype(mx.float32)   # [B, H_kv, bk, D]
+            # Expand H_kv → H_q if GQA
+            if H_kv != H_q:
+                ratio = H_q // H_kv
+                K_kj = mx.repeat(K_kj, ratio, axis=1)          # [B, H_q, bk, D]
+
+            # S_tile [B, H_q, bq, bk]
+            S_tile = scale * mx.matmul(Q_qi, K_kj.swapaxes(-1, -2))
+            if causal:
+                row_ids = qi_s + mx.arange(qi_e - qi_s)         # [bq]
+                col_ids = kj_s + mx.arange(kj_e - kj_s)         # [bk]
+                causal_mask = col_ids[None, :] > row_ids[:, None]  # [bq, bk] bool
+                S_tile = mx.where(causal_mask, mx.array(float("-inf")), S_tile)
+
+            P_tile = mx.exp(S_tile - L_qi[:, :, :, None])       # [B, H_q, bq, bk]
+
+            # dP [B, H_q, bq, bk]
+            # need V_kj [B, H_q, bk, D]
+            V_kj = v[:, :, kj_s:kj_e, :].astype(mx.float32)
+            if H_kv != H_q:
+                V_kj = mx.repeat(V_kj, ratio, axis=1)
+            dP_tile = mx.matmul(dO_qi, V_kj.swapaxes(-1, -2))
+
+            dS_tile = P_tile * (dP_tile - D_qi[:, :, :, None])  # [B, H_q, bq, bk]
+
+            # dQ contribution: scale * dS @ K  [B, H_q, bq, D]
+            contribs.append(scale * mx.matmul(dS_tile, K_kj))
+
+        if contribs:
+            dQ_qi = sum(contribs[1:], contribs[0]).astype(q.dtype)
+        else:
+            dQ_qi = mx.zeros((B, H_q, qi_e - qi_s, D), dtype=q.dtype)
+        dQ_tiles.append(dQ_qi)
+
+    dQ = mx.concatenate(dQ_tiles, axis=2)  # [B, H_q, N, D]
+
+    # ── dK, dV: accumulate per K-tile ───────────────────────────────────────
+    dK_tiles, dV_tiles = [], []
+    for kj in range(NK):
+        kj_s = kj * BK
+        kj_e = min(kj_s + BK, S)
+        K_kj = k[:, :, kj_s:kj_e, :].astype(mx.float32)   # [B, H_kv, bk, D]
+        V_kj = v[:, :, kj_s:kj_e, :].astype(mx.float32)   # [B, H_kv, bk, D]
+
+        dk_contribs, dv_contribs = [], []
+        for qi in range(NQ):
+            if not block_mask_np[qi, kj]:
+                continue
+            qi_s = qi * BQ
+            qi_e = min(qi_s + BQ, N)
+            Q_qi  = q[:, :, qi_s:qi_e, :].astype(mx.float32)   # [B, H_q, bq, D]
+            dO_qi = dO[:, :, qi_s:qi_e, :].astype(mx.float32)
+            L_qi  = L[:, :, qi_s:qi_e] * LN2                    # [B, H_q, bq]
+            D_qi  = D_scalar[:, :, qi_s:qi_e]                   # [B, H_q, bq]
+
+            # Expand K_kj/V_kj to H_q for GQA
+            if H_kv != H_q:
+                ratio = H_q // H_kv
+                K_kj_h = mx.repeat(K_kj, ratio, axis=1)
+                V_kj_h = mx.repeat(V_kj, ratio, axis=1)
+            else:
+                K_kj_h, V_kj_h = K_kj, V_kj
+
+            S_tile = scale * mx.matmul(Q_qi, K_kj_h.swapaxes(-1, -2))
+            if causal:
+                row_ids = qi_s + mx.arange(qi_e - qi_s)
+                col_ids = kj_s + mx.arange(kj_e - kj_s)
+                causal_mask = col_ids[None, :] > row_ids[:, None]
+                S_tile = mx.where(causal_mask, mx.array(float("-inf")), S_tile)
+
+            P_tile  = mx.exp(S_tile - L_qi[:, :, :, None])      # [B, H_q, bq, bk]
+            dP_tile = mx.matmul(dO_qi, V_kj_h.swapaxes(-1, -2)) # [B, H_q, bq, bk]
+            dS_tile = P_tile * (dP_tile - D_qi[:, :, :, None])  # [B, H_q, bq, bk]
+
+            # dV: P^T @ dO → [B, H_q, bk, D]; sum over H_q groups for GQA
+            dV_contrib = mx.matmul(P_tile.swapaxes(-1, -2), dO_qi)  # [B, H_q, bk, D]
+            # dK: scale * dS^T @ Q → [B, H_q, bk, D]; sum over H_q groups for GQA
+            dK_contrib = scale * mx.matmul(dS_tile.swapaxes(-1, -2), Q_qi)  # [B, H_q, bk, D]
+
+            if H_kv != H_q:
+                # Collapse H_q → H_kv: sum over groups of (ratio) heads
+                ratio = H_q // H_kv
+                dV_contrib = dV_contrib.reshape(B, H_kv, ratio, kj_e - kj_s, D)
+                dV_contrib = mx.sum(dV_contrib, axis=2)          # [B, H_kv, bk, D]
+                dK_contrib = dK_contrib.reshape(B, H_kv, ratio, kj_e - kj_s, D)
+                dK_contrib = mx.sum(dK_contrib, axis=2)          # [B, H_kv, bk, D]
+
+            dv_contribs.append(dV_contrib)
+            dk_contribs.append(dK_contrib)
+
+        if dk_contribs:
+            dK_kj = sum(dk_contribs[1:], dk_contribs[0]).astype(k.dtype)
+            dV_kj = sum(dv_contribs[1:], dv_contribs[0]).astype(v.dtype)
+        else:
+            dK_kj = mx.zeros((B, H_kv, kj_e - kj_s, D), dtype=k.dtype)
+            dV_kj = mx.zeros((B, H_kv, kj_e - kj_s, D), dtype=v.dtype)
+        dK_tiles.append(dK_kj)
+        dV_tiles.append(dV_kj)
+
+    dK = mx.concatenate(dK_tiles, axis=2)  # [B, H_kv, S, D]
+    dV = mx.concatenate(dV_tiles, axis=2)  # [B, H_kv, S, D]
+
+    return dQ, dK, dV
 
 
 # Internal helpers
