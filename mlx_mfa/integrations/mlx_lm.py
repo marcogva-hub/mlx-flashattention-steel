@@ -20,7 +20,7 @@ Supported configs (use STEEL):
     - head_dim in {64, 128, 256}
     - dtype float16 or bfloat16
     - mask == "causal" or mask is None with single-token decode
-    - No quantized KV cache (cache.bits not set)
+    - Quantized KV cache (cache.bits set): K/V dequantized before STEEL
     - No attention sinks (sinks=None)
 
 All other cases fall back to the original mlx_lm SDPA transparently.
@@ -63,12 +63,36 @@ def _steel_sdpa(
     Falls back to the original mlx_lm SDPA otherwise.
 
     The ``cache`` parameter carries mlx_lm's KV cache object. When
-    ``cache.bits`` is set (quantized cache), we must use the original
-    quantized SDPA path — STEEL does not support quantized K/V.
+    ``cache.bits`` is set (quantized cache), mlx-lm passes ``keys`` and
+    ``values`` as ``(quantized_data, scales, biases)`` tuples.  We
+    dequantize them to plain float arrays so STEEL can run, preserving the
+    causal tile-skip speedup even for 4-bit models.
     """
-    # Quantized K/V cache or attention sinks: always fall back.
-    if sinks is not None or (cache is not None and hasattr(cache, "bits")):
+    # Attention sinks: always fall back (STEEL doesn't implement them).
+    if sinks is not None:
         return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
+
+    # Quantized KV cache: dequantize K/V then proceed to STEEL.
+    # mlx-lm passes keys/values as (quantized_data, scales, biases) tuples
+    # when cache.bits is set.  mx.dequantize returns float16/bf16 matching
+    # the query dtype.
+    if cache is not None and hasattr(cache, "bits") and cache.bits is not None:
+        try:
+            q_k_data, q_k_scales, q_k_biases = keys
+            q_v_data, q_v_scales, q_v_biases = values
+            keys = mx.dequantize(
+                q_k_data, q_k_scales, q_k_biases,
+                cache.group_size, cache.bits,
+                dtype=queries.dtype,
+            )
+            values = mx.dequantize(
+                q_v_data, q_v_scales, q_v_biases,
+                cache.group_size, cache.bits,
+                dtype=queries.dtype,
+            )
+        except Exception:
+            # Unexpected format (e.g., future quantization modes): fall back.
+            return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     D = queries.shape[-1]
     dtype = queries.dtype

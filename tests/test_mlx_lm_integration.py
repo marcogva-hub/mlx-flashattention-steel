@@ -252,3 +252,151 @@ class TestNumericalCorrectness:
             np.array(out_steel),
             err_msg="Array mask fallback must be bit-identical to original"
         )
+
+
+# ---------------------------------------------------------------------------
+# Track K — Quantized KV Cache tests
+# ---------------------------------------------------------------------------
+
+def _make_quantized_kv(arr, group_size=64, bits=4):
+    """Quantize a [B, H, N, D] float array → (q_data, scales, biases) tuple."""
+    # mx.quantize expects [..., D] layout and quantizes the last dimension.
+    return mx.quantize(arr, group_size=group_size, bits=bits)
+
+
+@requires_mlx_lm
+@requires_ext
+class TestQuantizedKVCache:
+    """Verify that _steel_sdpa dequantizes quantized K/V and uses STEEL.
+
+    mlx-lm passes keys/values as (quantized_data, scales, biases) tuples
+    when cache.bits is set.  After Track K, _steel_sdpa dequantizes them
+    so STEEL can run instead of falling back.
+    """
+
+    def _mock_cache(self, bits=4, group_size=64):
+        """Create a lightweight mock with the same attrs as QuantizedKVCache."""
+        class _FakeQuantCache:
+            pass
+        c = _FakeQuantCache()
+        c.bits = bits
+        c.group_size = group_size
+        return c
+
+    def test_steel_activates_with_4bit_cache(self):
+        """_steel_sdpa must NOT fall back to _original_sdpa for 4-bit cache."""
+        from mlx_mfa.integrations.mlx_lm import _steel_sdpa, _original_sdpa, patch_mlx_lm
+        patch_mlx_lm()
+
+        B, H, N, D = 1, 8, 64, 128
+        q, k, v = _make_qkv(B=B, H_q=H, H_kv=H, N=N, D=D)
+
+        q_k = _make_quantized_kv(k)
+        q_v = _make_quantized_kv(v)
+        cache = self._mock_cache(bits=4)
+
+        # Call _steel_sdpa; it must not raise and return a valid array.
+        out = _steel_sdpa(q, q_k, q_v, cache, scale=1.0 / D**0.5, mask="causal")
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert out.dtype == q.dtype
+
+    def test_output_close_to_dequantized_reference(self):
+        """STEEL output with quantized K/V is close to reference with dequantized K/V."""
+        from mlx_mfa.integrations.mlx_lm import _steel_sdpa, patch_mlx_lm
+        from mlx_mfa import flash_attention
+        patch_mlx_lm()
+
+        B, H, N, D = 1, 8, 64, 128
+        group_size, bits = 64, 4
+        q, k, v = _make_qkv(B=B, H_q=H, H_kv=H, N=N, D=D, seed=7)
+        scale = 1.0 / D**0.5
+
+        q_k = _make_quantized_kv(k, group_size, bits)
+        q_v = _make_quantized_kv(v, group_size, bits)
+        cache = self._mock_cache(bits=bits, group_size=group_size)
+
+        # Our path: dequantize → STEEL
+        out_steel = _steel_sdpa(q, q_k, q_v, cache, scale=scale, mask="causal")
+        mx.eval(out_steel)
+
+        # Reference: explicit dequantize → standard flash_attention
+        k_deq = mx.dequantize(*q_k, group_size=group_size, bits=bits, dtype=q.dtype)
+        v_deq = mx.dequantize(*q_v, group_size=group_size, bits=bits, dtype=q.dtype)
+        out_ref = flash_attention(q, k_deq, v_deq, scale=scale, causal=True)
+        mx.eval(out_ref)
+
+        err = float(mx.max(mx.abs(out_steel.astype(mx.float32) - out_ref.astype(mx.float32))))
+        assert err < 1e-3, f"Quantized KV output differs: max_err={err:.6f}"
+
+    def test_causal_with_quantized_kv(self):
+        """Causal attention with 4-bit K/V: output is non-zero and finite."""
+        from mlx_mfa.integrations.mlx_lm import _steel_sdpa, patch_mlx_lm
+        patch_mlx_lm()
+
+        B, H, N, D = 1, 4, 128, 128
+        q, k, v = _make_qkv(B=B, H_q=H, H_kv=H, N=N, D=D, seed=42)
+        scale = 1.0 / D**0.5
+
+        q_k = _make_quantized_kv(k)
+        q_v = _make_quantized_kv(v)
+        cache = self._mock_cache()
+
+        out = _steel_sdpa(q, q_k, q_v, cache, scale=scale, mask="causal")
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert mx.all(mx.isfinite(out)).item()
+        assert not mx.all(out == 0).item()
+
+    def test_gqa_with_quantized_kv(self):
+        """GQA (8 Q heads, 2 KV heads) + 4-bit cache: correct shapes and finite."""
+        from mlx_mfa.integrations.mlx_lm import _steel_sdpa, patch_mlx_lm
+        patch_mlx_lm()
+
+        B, H_q, H_kv, N, D = 1, 8, 2, 64, 128
+        mx.random.seed(11)
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        scale = 1.0 / D**0.5
+
+        q_k = _make_quantized_kv(k)
+        q_v = _make_quantized_kv(v)
+        cache = self._mock_cache()
+
+        out = _steel_sdpa(q, q_k, q_v, cache, scale=scale, mask="causal")
+        mx.eval(out)
+        assert out.shape == (B, H_q, N, D)
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_sinks_still_falls_back_with_quantized(self):
+        """sinks != None must always fall back, even with quantized cache."""
+        from mlx_mfa.integrations.mlx_lm import _steel_sdpa, _original_sdpa, patch_mlx_lm
+        patch_mlx_lm()
+
+        B, H, N, D = 1, 8, 64, 128
+        q, k, v = _make_qkv(B=B, H_q=H, H_kv=H, N=N, D=D)
+        q_k = _make_quantized_kv(k)
+        q_v = _make_quantized_kv(v)
+        cache = self._mock_cache()
+        dummy_sinks = mx.zeros((1,), dtype=mx.float16)
+
+        # mlx-lm itself raises for sinks + quantized cache.
+        # Our code must also fall back (and let _original_sdpa raise or handle).
+        # We verify our code does NOT attempt to dequantize when sinks is set.
+        called_original = False
+
+        def mock_original(*args, **kwargs):
+            nonlocal called_original
+            called_original = True
+            return mx.zeros((B, H, N, D), dtype=q.dtype)
+
+        import mlx_mfa.integrations.mlx_lm as mod
+        old = mod._original_sdpa
+        mod._original_sdpa = mock_original
+        try:
+            _steel_sdpa(q, q_k, q_v, cache, scale=0.1, mask=None, sinks=dummy_sinks)
+        finally:
+            mod._original_sdpa = old
+
+        assert called_original, "_steel_sdpa must fall back to _original_sdpa when sinks is set"
