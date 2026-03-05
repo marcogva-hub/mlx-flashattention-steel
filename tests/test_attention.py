@@ -2895,3 +2895,100 @@ class TestHeadDimVMismatch:
 
         with pytest.raises(ValueError, match="q and k must have the same head_dim"):
             flash_attention(q, k, v)
+
+
+# ---------------------------------------------------------------------------
+# Track AF — Fused KV cache append
+# ---------------------------------------------------------------------------
+
+class TestKVCacheAppend:
+    """Track AF: flash_attention_with_kv_cache."""
+
+    D = 64
+
+    def test_no_cache_equals_plain_attention(self):
+        """No cache → same output as flash_attention."""
+        from mlx_mfa import flash_attention, flash_attention_with_kv_cache
+
+        B, H, N, D = 1, 2, 16, self.D
+        mx.random.seed(100)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out1 = flash_attention(q, k, v, causal=True)
+        out2, k_up, v_up = flash_attention_with_kv_cache(q, k, v, causal=True)
+        mx.eval(out1, out2, k_up, v_up)
+
+        np.testing.assert_allclose(
+            np.array(out1), np.array(out2), atol=0, rtol=0,
+            err_msg="No-cache path diverges from flash_attention",
+        )
+        assert k_up.shape == (B, H, N, D), f"k_updated shape {k_up.shape}"
+        assert v_up.shape == (B, H, N, D), f"v_updated shape {v_up.shape}"
+
+    def test_with_cache_output_shape(self):
+        """Cache + 1 new token → output [B,H,1,D], cache grows by 1."""
+        from mlx_mfa import flash_attention_with_kv_cache
+
+        B, H, past, D = 1, 2, 32, self.D
+        mx.random.seed(101)
+        k_cache = mx.random.normal((B, H, past, D))
+        v_cache = mx.random.normal((B, H, past, D))
+        q_new = mx.random.normal((B, H, 1, D))
+        k_new = mx.random.normal((B, H, 1, D))
+        v_new = mx.random.normal((B, H, 1, D))
+
+        out, k_up, v_up = flash_attention_with_kv_cache(
+            q_new, k_new, v_new,
+            k_cache=k_cache, v_cache=v_cache,
+            causal=True,
+        )
+        mx.eval(out, k_up, v_up)
+
+        assert out.shape == (B, H, 1, D), f"output shape {out.shape}"
+        assert k_up.shape == (B, H, past + 1, D), f"k_updated shape {k_up.shape}"
+        assert v_up.shape == (B, H, past + 1, D), f"v_updated shape {v_up.shape}"
+        assert mx.all(mx.isfinite(out)).item(), "Output contains NaN/Inf"
+
+    def test_with_cache_matches_explicit_concat(self):
+        """Result equals explicit concat + flash_attention."""
+        from mlx_mfa import flash_attention, flash_attention_with_kv_cache
+
+        B, H, past, N, D = 1, 2, 16, 4, self.D
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(102)
+        q = mx.random.normal((B, H, N, D))
+        k_new = mx.random.normal((B, H, N, D))
+        v_new = mx.random.normal((B, H, N, D))
+        k_cache = mx.random.normal((B, H, past, D))
+        v_cache = mx.random.normal((B, H, past, D))
+
+        out_fused, k_up, v_up = flash_attention_with_kv_cache(
+            q, k_new, v_new,
+            k_cache=k_cache, v_cache=v_cache,
+            scale=scale, causal=True,
+        )
+        k_full = mx.concatenate([k_cache, k_new], axis=2)
+        v_full = mx.concatenate([v_cache, v_new], axis=2)
+        out_ref = flash_attention(q, k_full, v_full, scale=scale, causal=True)
+        mx.eval(out_fused, out_ref, k_up, v_up)
+
+        np.testing.assert_allclose(
+            np.array(out_fused), np.array(out_ref), atol=0, rtol=0,
+            err_msg="Fused KV cache result differs from explicit concat",
+        )
+
+    def test_mismatch_raises(self):
+        """Providing k_cache but not v_cache raises ValueError."""
+        from mlx_mfa import flash_attention_with_kv_cache
+
+        B, H, N, D = 1, 2, 4, self.D
+        mx.random.seed(103)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+        k_cache = mx.random.normal((B, H, 8, D))
+
+        with pytest.raises(ValueError, match="k_cache and v_cache must both"):
+            flash_attention_with_kv_cache(q, k, v, k_cache=k_cache, v_cache=None)

@@ -29,6 +29,7 @@ from mlx_mfa.attention import (
     flash_attention_rope,
     flash_attention_sparse,
     flash_attention_varlen,
+    flash_attention_with_kv_cache,
     make_causal_block_mask,
     make_sliding_window_mask,
     make_rope_3d_tables,
@@ -59,6 +60,7 @@ __all__ = [
     "flash_attention_rope",
     "flash_attention_sparse",
     "flash_attention_varlen",
+    "flash_attention_with_kv_cache",
     # Mask construction
     "make_causal_block_mask",
     "make_sliding_window_mask",
