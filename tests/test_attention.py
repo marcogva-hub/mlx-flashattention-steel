@@ -2622,3 +2622,110 @@ class TestALiBi:
             atol=2e-2, rtol=1e-2,
             err_msg="Falcon ALiBi (causal) diverges from reference",
         )
+
+
+# ---------------------------------------------------------------------------
+# Track AC — RoPE non-interleaved (GPT-NeoX style)
+# ---------------------------------------------------------------------------
+
+def _apply_rope_neox(x, cos, sin, offset=0):
+    """Reference Python RoPE using GPT-NeoX split-halves convention.
+
+    x: [B, H, N, D]
+    cos/sin: [max_len, D/2]
+    """
+    B, H, N, D = x.shape
+    half_D = D // 2
+    cos_n = cos[offset : offset + N, :]           # [N, D/2]
+    sin_n = sin[offset : offset + N, :]           # [N, D/2]
+    cos_bc = cos_n[None, None, :, :].astype(x.dtype)
+    sin_bc = sin_n[None, None, :, :].astype(x.dtype)
+    x0 = x[..., :half_D]   # first half
+    x1 = x[..., half_D:]   # second half
+    x0_rot = x0 * cos_bc - x1 * sin_bc
+    x1_rot = x0 * sin_bc + x1 * cos_bc
+    return mx.concatenate([x0_rot, x1_rot], axis=-1)
+
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not built")
+class TestRoPENonInterleaved:
+    """Track AC: RoPE non-interleaved (GPT-NeoX split-halves) mode."""
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_neox_matches_reference(self, D):
+        """interleaved=False output matches Python split-halves RoPE + SDPA."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N, S = 1, 4, 64, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+
+        out_mfa = flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                       causal=False, cache_seqlens=0,
+                                       interleaved=False)
+        q_rot = _apply_rope_neox(q, cos, sin, offset=0)
+        k_rot = _apply_rope_neox(k, cos, sin, offset=0)
+        ref = mx.fast.scaled_dot_product_attention(q_rot, k_rot, v, scale=scale)
+        mx.eval(out_mfa, ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-2, atol=1e-2,
+            err_msg=f"GPT-NeoX RoPE kernel mismatch at D={D}",
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_interleaved_vs_neox_differ(self, D):
+        """interleaved=True and interleaved=False produce different results."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N = 1, 4, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+
+        out_llama = flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                         causal=False, interleaved=True)
+        out_neox = flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                        causal=False, interleaved=False)
+        mx.eval(out_llama, out_neox)
+
+        max_diff = float(mx.max(mx.abs(
+            out_llama.astype(mx.float32) - out_neox.astype(mx.float32)
+        )))
+        assert max_diff > 1e-3, (
+            f"LLaMA and GPT-NeoX RoPE produced identical outputs at D={D} "
+            f"(max_diff={max_diff:.2e}) — kernel may not be branching correctly"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_neox_backward_finite(self, D):
+        """Backward through interleaved=False produces finite gradients."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N = 1, 2, 32
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(13)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(128, D)
+
+        def fwd(q, k, v):
+            return flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                        causal=True, interleaved=False).sum()
+
+        loss, grads = mx.value_and_grad(fwd, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(loss, *grads)
+
+        for name, g in zip(["dQ", "dK", "dV"], grads):
+            assert mx.all(mx.isfinite(g)).item(), \
+                f"GPT-NeoX backward: {name} contains NaN/Inf at D={D}"

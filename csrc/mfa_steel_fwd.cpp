@@ -75,9 +75,10 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const int WN = 1;
   const bool causal = key.causal;
   const bool sparse = key.sparse;
-  const bool is_m3_plus = key.is_m3_plus;
-  const bool has_rope    = key.has_rope;
-  const bool has_alibi   = key.has_alibi;
+  const bool is_m3_plus        = key.is_m3_plus;
+  const bool has_rope          = key.has_rope;
+  const bool rope_interleaved  = key.rope_interleaved; // true=LLaMA, false=GPT-NeoX
+  const bool has_alibi         = key.has_alibi;
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -618,11 +619,22 @@ struct MFAExpSubOp {
     ss << "      const int cos_idx = (qabs_base + row) * p->rope_cos_stride + pair;\n";
     ss << "      const float cos_v = rotary_cos[cos_idx];\n";
     ss << "      const float sin_v = rotary_sin[cos_idx];\n";
-    ss << "      const int si0 = row * LDQ + pair * 2;\n";
-    ss << "      const float q0 = (float)Qs[si0];\n";
-    ss << "      const float q1 = (float)Qs[si0 + 1];\n";
-    ss << "      Qs[si0]     = (T)(q0 * cos_v - q1 * sin_v);\n";
-    ss << "      Qs[si0 + 1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    if (rope_interleaved) {
+      // LLaMA-style: pairs are adjacent (d=2*pair, d=2*pair+1)
+      ss << "      const int si0 = row * LDQ + pair * 2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si0 + 1];\n";
+      ss << "      Qs[si0]     = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si0 + 1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    } else {
+      // GPT-NeoX style: pair d maps to d and d + D/2
+      ss << "      const int si0 = row * LDQ + pair;\n";
+      ss << "      const int si1 = row * LDQ + pair + MFA_BD/2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si1];\n";
+      ss << "      Qs[si0] = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    }
     ss << "    }\n";
     ss << "  }\n";
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
@@ -680,8 +692,15 @@ struct MFAExpSubOp {
     ss << "        const int cos_idx = (kabs_base + k_row) * p->rope_cos_stride + pair;\n";
     ss << "        const float cos_v = rotary_cos[cos_idx];\n";
     ss << "        const float sin_v = rotary_sin[cos_idx];\n";
-    ss << "        const int si0 = pair * 2       * LDK + k_row;\n";
-    ss << "        const int si1 = (pair * 2 + 1) * LDK + k_row;\n";
+    if (rope_interleaved) {
+      // LLaMA-style: K SRAM is transposed [d_col, k_row]; pair d maps to d*2, d*2+1
+      ss << "        const int si0 = pair * 2       * LDK + k_row;\n";
+      ss << "        const int si1 = (pair * 2 + 1) * LDK + k_row;\n";
+    } else {
+      // GPT-NeoX style: pair d maps to d, d+D/2 (column offsets in transposed K SRAM)
+      ss << "        const int si0 = pair              * LDK + k_row;\n";
+      ss << "        const int si1 = (pair + MFA_BD/2) * LDK + k_row;\n";
+    }
     ss << "        const float k0 = (float)Ks[si0];\n";
     ss << "        const float k1 = (float)Ks[si1];\n";
     ss << "        Ks[si0] = (T)(k0 * cos_v - k1 * sin_v);\n";

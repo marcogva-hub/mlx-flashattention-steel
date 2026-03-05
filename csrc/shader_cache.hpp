@@ -48,9 +48,10 @@ class ShaderCache {
     bool causal;
     bool sparse;     // true = block-sparse path (device uchar* block_mask at buffer(6))
     bool is_m3_plus; // GPUFamily(1009): preferAsyncCache vs preferAsyncLoad
-    bool has_rope;       // true = in-kernel RoPE fusion; rotary_cos/sin at buffer(7/8)
-    bool has_softcap;    // true = tanh softcapping (Gemma 2 / Grok); p->softcap > 0
-    bool has_alibi;      // true = ALiBi per-head bias; slopes at buffer(9)
+    bool has_rope;           // true = in-kernel RoPE fusion; rotary_cos/sin at buffer(7/8)
+    bool rope_interleaved;   // true = LLaMA-style (pair d*2,d*2+1); false = GPT-NeoX (d,d+D/2)
+    bool has_softcap;        // true = tanh softcapping (Gemma 2 / Grok); p->softcap > 0
+    bool has_alibi;          // true = ALiBi per-head bias; slopes at buffer(9)
     uint8_t dtype;       // 0=f16, 1=bf16, 2=f32
 
     bool operator==(const KernelKey& other) const;

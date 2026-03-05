@@ -160,10 +160,12 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"),
       nb::arg("causal"),
       nb::arg("cache_seqlens"),
+      nb::arg("interleaved") = true,
       nb::arg("stream") = nb::none(),
       "Flash Attention with in-kernel RoPE fusion.\n"
       "rotary_cos/sin: float32 [max_seq_len, D/2].\n"
       "cache_seqlens: KV cache length (absolute position of Q token 0).\n"
+      "interleaved: True=LLaMA pairs (d*2,d*2+1); False=GPT-NeoX (d,d+D/2).\n"
       "Only f16/bf16 supported.");
 
   // --- Block-sparse forward ---

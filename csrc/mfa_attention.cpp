@@ -105,7 +105,7 @@ void MFAttention::eval_gpu(
     KK ccv_key{ KK::KernelType::AttentionForward,
                 D, (int)bq, (int)bk, (int)bd, (int)nw,
                 params_.causal, /*sparse=*/false, is_m3_plus,
-                /*has_rope=*/false,
+                /*has_rope=*/false, /*rope_interleaved=*/false,
                 /*has_softcap=*/false, /*has_alibi=*/false,
                 dtype_code };
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
@@ -229,7 +229,7 @@ void MFAttention::eval_gpu(
       KK::KernelType::FlashDecodePartial,
       D, BQ_s, BK_s, D, WM_s,
       params_.causal, /*sparse=*/false, is_m3_plus_steel,
-      /*has_rope=*/false,
+      /*has_rope=*/false, /*rope_interleaved=*/true,
       params_.softcap > 0.0f,   // softcap variant
       params_.has_alibi,        // ALiBi position biases
       dtype_code
@@ -237,7 +237,7 @@ void MFAttention::eval_gpu(
     KK key_p2{
       KK::KernelType::FlashDecodeReduce,
       D, 0, 0, 0, 0,
-      false, false, false, /*has_rope=*/false,
+      false, false, false, /*has_rope=*/false, /*rope_interleaved=*/true,
       /*has_softcap=*/false, /*has_alibi=*/false,
       dtype_code
     };
@@ -303,9 +303,10 @@ void MFAttention::eval_gpu(
     params_.causal,
     params_.has_block_mask,  // sparse variant when block_mask present
     is_m3_plus_steel,        // separate compiled pipeline for M3+ configs
-    params_.has_rope,        // in-kernel RoPE fusion variant
-    params_.softcap > 0.0f,   // tanh softcapping variant
-    params_.has_alibi,        // ALiBi per-head position biases
+    params_.has_rope,           // in-kernel RoPE fusion variant
+    params_.rope_interleaved,   // true=LLaMA, false=GPT-NeoX
+    params_.softcap > 0.0f,    // tanh softcapping variant
+    params_.has_alibi,          // ALiBi per-head position biases
     dtype_code
   };
 
@@ -549,6 +550,7 @@ void MFABackwardQuery::eval_gpu(
     KK::KernelType::AttentionBackwardDQ,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
     params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
+    /*rope_interleaved=*/false,
     /*has_softcap=*/false, /*has_alibi=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
@@ -649,6 +651,7 @@ void MFABackwardKeyValue::eval_gpu(
     KK::KernelType::AttentionBackwardDKV,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
     params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
+    /*rope_interleaved=*/false,
     /*has_softcap=*/false, /*has_alibi=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
@@ -687,8 +690,9 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
          params_.scale          == o->params_.scale          &&
          params_.causal         == o->params_.causal         &&
          params_.has_block_mask == o->params_.has_block_mask &&
-         params_.has_rope       == o->params_.has_rope       &&
-         params_.cache_seqlens  == o->params_.cache_seqlens  &&
+         params_.has_rope          == o->params_.has_rope          &&
+         params_.rope_interleaved  == o->params_.rope_interleaved  &&
+         params_.cache_seqlens     == o->params_.cache_seqlens     &&
          params_.softcap        == o->params_.softcap        &&
          params_.has_alibi      == o->params_.has_alibi;
 }
@@ -721,7 +725,7 @@ mlx::core::array mfa_attention_forward(
 
   MFAttention::Params params{D, scale, causal,
       /*has_block_mask=*/false, /*has_rope=*/false,
-      /*cache_seqlens=*/0, softcap};
+      /*rope_interleaved=*/false, /*cache_seqlens=*/0, /*softcap=*/softcap};
 
   auto out_shape  = q.shape();                      // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {
@@ -854,6 +858,7 @@ mlx::core::array mfa_attention_rope_forward(
     float scale,
     bool causal,
     int cache_seqlens,
+    bool interleaved,
     std::optional<mlx::core::StreamOrDevice> stream) {
   auto s = stream.has_value()
       ? mlx::core::to_stream(stream.value())
@@ -881,6 +886,7 @@ mlx::core::array mfa_attention_rope_forward(
     D, scale, causal,
     /*has_block_mask=*/false,
     /*has_rope=*/true,
+    /*rope_interleaved=*/interleaved,
     /*cache_seqlens=*/cache_seqlens
   };
 
@@ -931,6 +937,7 @@ mlx::core::array mfa_attention_alibi_forward(
     D, scale, causal,
     /*has_block_mask=*/false,
     /*has_rope=*/false,
+    /*rope_interleaved=*/false,
     /*cache_seqlens=*/0,
     /*softcap=*/0.0f,
     /*has_alibi=*/true

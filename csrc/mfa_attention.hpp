@@ -32,8 +32,9 @@ class MFAttention : public mlx::core::Primitive {
     float scale;        // Usually 1/sqrt(D)
     bool causal;        // Causal (autoregressive) masking
     bool has_block_mask; // Block-sparse: 4th input is uchar mask [NQ_tiles, NK_tiles]
-    bool has_rope;       // RoPE fusion: rotary_cos/sin at last two inputs
-    int  cache_seqlens;  // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
+    bool has_rope;           // RoPE fusion: rotary_cos/sin at last two inputs
+    bool rope_interleaved;   // true = LLaMA (d*2,d*2+1); false = GPT-NeoX (d,d+D/2)
+    int  cache_seqlens;      // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
     float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     bool has_alibi;      // false = disabled; alibi_slopes at last input
   };
@@ -95,6 +96,7 @@ mlx::core::array mfa_attention_alibi_forward(
 /// Forward pass with in-kernel RoPE fusion.
 /// rotary_cos / rotary_sin: float32 [max_seq_len, D/2].
 /// cache_seqlens: position of Q token 0 in the full sequence (KV cache length).
+/// interleaved: true = LLaMA pairs (d*2, d*2+1); false = GPT-NeoX (d, d+D/2).
 mlx::core::array mfa_attention_rope_forward(
     const mlx::core::array& q,
     const mlx::core::array& k,
@@ -104,6 +106,7 @@ mlx::core::array mfa_attention_rope_forward(
     float scale,
     bool causal,
     int cache_seqlens,
+    bool interleaved = true,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Block-sparse forward pass.

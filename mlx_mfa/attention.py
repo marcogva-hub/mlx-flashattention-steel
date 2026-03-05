@@ -253,6 +253,7 @@ def flash_attention_rope(
     causal: bool = False,
     cache_seqlens: int = 0,
     rope_3d: Optional[dict] = None,
+    interleaved: bool = True,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Flash Attention with in-kernel RoPE (Rotary Position Embedding) fusion.
@@ -295,6 +296,9 @@ def flash_attention_rope(
         rope_3d: 3D RoPE config dict.  Required keys: ``grid_h``, ``grid_w``,
             ``num_frames``.  Optional: ``d_h``, ``d_w``, ``d_t``, ``theta``.
             When provided, ``rotary_cos``/``rotary_sin`` must be None.
+        interleaved: RoPE pairing mode.  ``True`` (default) = LLaMA style,
+            adjacent pairs ``(2i, 2i+1)``.  ``False`` = GPT-NeoX style,
+            split-halves ``(i, i+D/2)``.
         stream: MLX stream (GPU). Forwarded to fallback only.
 
     Returns:
@@ -340,12 +344,14 @@ def flash_attention_rope(
     # RoPE requires f16/bf16 on the STEEL path.
     # Fall back gracefully for f32 or unsupported head_dim.
     if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32:
-        q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin, offset=cache_seqlens)
-        k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin, offset=0)
+        q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                                offset=cache_seqlens, interleaved=interleaved)
+        k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
+                                offset=0, interleaved=interleaved)
         return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
 
     return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
-                             scale, causal, cache_seqlens)
+                             scale, causal, cache_seqlens, interleaved)
 
 
 def is_mfa_available() -> bool:
@@ -1253,19 +1259,28 @@ def _apply_rope_mlx(
     cos: mx.array,
     sin: mx.array,
     offset: int = 0,
+    interleaved: bool = True,
 ) -> mx.array:
     """Apply rotary position embeddings to *x* using MLX ops.
 
-    Operates on adjacent pairs ``(2i, 2i+1)`` in the head dimension::
+    Two pairing modes:
 
-        x_rot[2i]   = x[2i] * cos[pos][i] - x[2i+1] * sin[pos][i]
-        x_rot[2i+1] = x[2i] * sin[pos][i] + x[2i+1] * cos[pos][i]
+    * **interleaved** (LLaMA, default) — pairs are adjacent (2i, 2i+1)::
+
+        x_rot[2i]   = x[2i] * cos[i] - x[2i+1] * sin[i]
+        x_rot[2i+1] = x[2i] * sin[i] + x[2i+1] * cos[i]
+
+    * **non-interleaved** (GPT-NeoX) — first half and second half::
+
+        x_rot[i]       = x[i]       * cos[i] - x[i+D/2] * sin[i]
+        x_rot[i + D/2] = x[i] * sin[i] + x[i+D/2] * cos[i]
 
     Args:
-        x:      ``[B, H, N, D]``
-        cos:    ``float32 [max_seq_len, D/2]``
-        sin:    ``float32 [max_seq_len, D/2]``
-        offset: First token position (= cache_seqlens for Q, 0 for K).
+        x:           ``[B, H, N, D]``
+        cos:         ``float32 [max_seq_len, D/2]``
+        sin:         ``float32 [max_seq_len, D/2]``
+        offset:      First token position (= cache_seqlens for Q, 0 for K).
+        interleaved: True = LLaMA; False = GPT-NeoX.
 
     Returns:
         Rotated tensor, same shape and dtype as *x*.
@@ -1277,26 +1292,37 @@ def _apply_rope_mlx(
     cos_n = cos[offset : offset + N, :]   # [N, D/2], float32
     sin_n = sin[offset : offset + N, :]   # [N, D/2], float32
 
-    # Split x into even/odd pairs along the head dimension.
-    # x reshaped: [B, H, N, D/2, 2] → x[..., 0] and x[..., 1]
-    x_pairs = x.reshape(B, H, N, half_D, 2)
-    x0 = x_pairs[..., 0]   # [B, H, N, D/2]
-    x1 = x_pairs[..., 1]   # [B, H, N, D/2]
-
     # Broadcast cos/sin: [N, D/2] → [1, 1, N, D/2]
     cos_bc = cos_n[None, None, :, :].astype(x.dtype)
     sin_bc = sin_n[None, None, :, :].astype(x.dtype)
 
-    x0_rot = x0 * cos_bc - x1 * sin_bc
-    x1_rot = x0 * sin_bc + x1 * cos_bc
+    if interleaved:
+        # Split x into even/odd pairs along the head dimension.
+        # x reshaped: [B, H, N, D/2, 2] → x[..., 0] and x[..., 1]
+        x_pairs = x.reshape(B, H, N, half_D, 2)
+        x0 = x_pairs[..., 0]   # [B, H, N, D/2]
+        x1 = x_pairs[..., 1]   # [B, H, N, D/2]
 
-    # Re-interleave pairs: [B, H, N, D/2, 2] → [B, H, N, D]
-    x_rot = mx.stack([x0_rot, x1_rot], axis=-1)
-    return x_rot.reshape(B, H, N, D)
+        x0_rot = x0 * cos_bc - x1 * sin_bc
+        x1_rot = x0 * sin_bc + x1 * cos_bc
+
+        # Re-interleave pairs: [B, H, N, D/2, 2] → [B, H, N, D]
+        x_rot = mx.stack([x0_rot, x1_rot], axis=-1)
+        return x_rot.reshape(B, H, N, D)
+    else:
+        # GPT-NeoX: first half vs second half
+        x0 = x[..., :half_D]   # [B, H, N, D/2]
+        x1 = x[..., half_D:]   # [B, H, N, D/2]
+
+        x0_rot = x0 * cos_bc - x1 * sin_bc
+        x1_rot = x0 * sin_bc + x1 * cos_bc
+
+        return mx.concatenate([x0_rot, x1_rot], axis=-1)
 
 
 @functools.lru_cache(maxsize=32)
-def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int):
+def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int,
+                           interleaved: bool = True):
     """Return a custom-vjp MFA+RoPE forward function.
 
     The backward uses MLX's native autograd through a Python RoPE application
@@ -1311,7 +1337,8 @@ def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int):
     @mx.custom_function
     def _impl(q, k, v, rotary_cos, rotary_sin):
         O = mfa_attention_rope_forward(
-            q, k, v, rotary_cos, rotary_sin, scale, causal, cache_seqlens
+            q, k, v, rotary_cos, rotary_sin, scale, causal, cache_seqlens,
+            interleaved,
         )
         return O
 
@@ -1320,8 +1347,10 @@ def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int):
         q, k, v, rotary_cos, rotary_sin = primals
 
         def _fwd_with_rope(q, k, v):
-            q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin, offset=cache_seqlens)
-            k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin, offset=0)
+            q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                                    offset=cache_seqlens, interleaved=interleaved)
+            k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
+                                    offset=0, interleaved=interleaved)
             return _fallback_sdpa(q_rot, k_rot, v, scale, causal)
 
         _, (dQ, dK, dV) = mx.vjp(
@@ -1344,12 +1373,13 @@ def _mfa_rope_forward(
     scale: float,
     causal: bool,
     cache_seqlens: int,
+    interleaved: bool = True,
 ) -> mx.array:
     """Dispatch through the MFA+RoPE custom-vjp path."""
     q = mx.contiguous(q)
     k = mx.contiguous(k)
     v = mx.contiguous(v)
-    impl = _make_mfa_rope_custom(scale, causal, cache_seqlens)
+    impl = _make_mfa_rope_custom(scale, causal, cache_seqlens, interleaved)
     return impl(q, k, v, rotary_cos, rotary_sin)
 
 
