@@ -243,7 +243,7 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 
 ## Roadmap
 
-| Phase | Description | Status |
+| Track | Description | Status |
 |-------|-------------|--------|
 | 1.1 | Project scaffold | Done |
 | 1.2 | Extract MFA kernels from ccv | Done |
@@ -259,9 +259,14 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | G   | Sparse backward (tiled FA-2 dQ/dK/dV) | **Done (v0.4.0)** |
 | H   | Flash Decoding (split-KV, N≤4 decode) | **Done (v0.5.0)** |
 | I   | M5+ detection stub (gen≥17, is_m5_plus) | **Done (v0.5.0)** |
-| 6   | STEEL backward kernel | Planned |
-| 6   | Native sparse backward (no dense fallback) | Planned |
-| 6   | Metal 4 tensor API (M5+/A19+) | Planned |
+| K   | Quantized KV Cache (Q4/Q8 dequantize before STEEL) | **Done (v0.6.0)** |
+| L   | RoPE Fusion (in-kernel rotary embeddings, `flash_attention_rope`) | **Done (v0.6.0)** |
+| M   | Paged Attention design document (`docs/PAGED_ATTENTION_DESIGN.md`) | **Done (v0.6.0)** |
+| N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | Planned (v0.7.0) |
+| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v0.7.0) |
+| O   | Varlen prefill — packed `[total_tokens, H, D]` + `cu_seqlens` | Planned (v1.0) |
+| P   | Paged KV decode — block table gather, `PagedKVCache` Python allocator | Planned (v1.0) |
+| Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
 
 ## References
 
