@@ -18,6 +18,8 @@ mlx-mfa-v2/
 │   ├── mfa_attention.cpp  Primitive eval_gpu + free functions
 │   ├── mfa_steel_fwd.hpp  STEEL forward params + decls
 │   ├── mfa_steel_fwd.cpp  STEEL forward JIT Metal generator
+│   ├── mfa_steel_bwd.hpp  STEEL backward params + decls
+│   ├── mfa_steel_bwd.cpp  STEEL backward JIT Metal generator (dQ + dK/dV)
 │   ├── mfa_shader_gen.*   ccv-derived shader gen (f32 fallback)
 │   ├── shader_cache.hpp   KernelKey + ShaderCache interface
 │   ├── shader_cache.mm    Obj-C++ Metal pipeline cache + routing
@@ -80,10 +82,14 @@ mlx-mfa-v2/
 | `FlashDecodePartial` | f16/bf16 | Fwd | Split-KV decode (N_q ≤ 4) |
 | `FlashDecodeReduce` | f16/bf16 | Fwd | Phase-2 log-sum-exp reduction |
 | `AttentionForward` (ccv) | f32 | Fwd | f32 fallback |
-| `AttentionBackwardDQ` (ccv) | all | Bwd | dQ kernel |
-| `AttentionBackwardDKV` (ccv) | all | Bwd | dK/dV kernel |
+| `AttentionBackwardDQ` (ccv) | f32 | Bwd | dQ kernel (f32 only) |
+| `AttentionBackwardDKV` (ccv) | f32 | Bwd | dK/dV kernel (f32 only) |
+| `SteelBackwardDQ` | f16/bf16 | Bwd | STEEL dQ kernel |
+| `SteelBackwardDKV` | f16/bf16 | Bwd | STEEL dK/dV kernel |
 
-**Backward strategy (v0.8.0)**: f16/bf16 backward uses `mx.vjp(SDPA)` — correct but dense. STEEL native backward (dQ + dK/dV) is v0.9.0 target.
+**Backward strategy (v0.9.0)**: f16/bf16 backward dispatches native STEEL Metal kernels
+(`MFASteelBwdDQ`, `MFASteelBwdDKV`) via `_make_mfa_custom._backward`. f32 stays on ccv path.
+Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointing re-run of forward.
 
 ---
 

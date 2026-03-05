@@ -5,7 +5,12 @@ All notable changes to mlx-mfa are documented here.
 ## [0.9.0] — UNRELEASED
 
 ### Added
-<!-- Filled incrementally as tracks are completed -->
+- **Track BA/BB/BC: STEEL native backward** — `mx.grad(flash_attention)` now dispatches
+  native Metal STEEL backward kernels (`MFASteelBwdDQ`, `MFASteelBwdDKV`) for f16/bf16
+  instead of `mx.vjp(SDPA)`. 2-3× backward speedup on D=64/128. f32 stays on ccv path.
+  Key fixes: `Ktile[1,MFA_TK]` tile declaration (was 1×1, causing UB for ik>0) and
+  `_sever_lazy_graph(cotangent)` before gradient checkpointing re-run of forward
+  (prevents Metal buffer aliasing via lazy graph ancestry). 209 tests pass.
 
 ## [0.8.0] — 2026-03-05
 
