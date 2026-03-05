@@ -79,6 +79,29 @@ Block mask from `make_causal_block_mask(N, head_dim=128)` + `causal=False`.
 
 ---
 
+## Track F — M3/M4 Optimized Configs (commit 616f684)
+
+Architecture gen routing: `MFA_FORCE_GEN` env var overrides hardware detection.
+Separate `KernelKey` per gen → separate compiled Metal pipeline.
+
+| Config | M1/M2 | M3/M4 | Δ expected |
+|---|---|---|---|
+| D=128, BK | 16 | **32** | +5–15% (dynamic register alloc) |
+| D=256, UNROLL | none | **full** | +0–10% (pending M3+ measurement) |
+
+**M1 Max validation** (MFA_FORCE_GEN=15, NOT the actual M3+ speedup):
+
+| D | N | M1-config (BK=16) | M3-config (BK=32) | M1 ΔM3-code |
+|---|---|---|---|---|
+| 128 | 4096 | 1.54× | 1.51× | -2% (spill on M1, expected) |
+| 128 | 8192 | 1.78× | 1.69× | -5% (spill on M1, expected) |
+| 256 | 8192 | 1.01× | 0.94× | -7% (unroll spill on M1) |
+
+> M3+ speedup for BK=32/full-unroll can only be measured on M3/M4 hardware.
+> On M1/M2, the M3+ config is routed correctly and produces correct results (6 tests pass).
+
+---
+
 ## Track A Impact — STEEL_PRAGMA_UNROLL (commit 36cbf48)
 
 D≤128 (TD=8/16): `_Pragma("clang loop unroll(full)")` added to PV reduction loop.
