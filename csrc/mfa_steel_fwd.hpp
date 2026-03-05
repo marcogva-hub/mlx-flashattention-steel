@@ -56,7 +56,8 @@ struct SteelBlockConfig {
     int PAD;    // threadgroup bank-conflict padding per row
 };
 
-SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec);
+SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec,
+                                           bool is_m3_plus = false);
 
 /// Generate the complete Metal shader source for the STEEL-style forward kernel.
 /// The source defines the kernel function "mlx_mfa_attention".

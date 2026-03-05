@@ -27,6 +27,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace mlx_mfa {
@@ -120,8 +121,17 @@ void MFAttention::eval_gpu(
     return;
   }
 
+  // ── Architecture gen (STEEL f16/bf16 path) ──────────────────────────────
+  // MFA_FORCE_GEN overrides hardware detection for correctness testing:
+  //   MFA_FORCE_GEN=15  → treat as M3 (gen=15) even on M1 (gen=13)
+  //   MFA_FORCE_GEN=13  → treat as M1 even on M3 hardware
+  int arch_gen_steel = static_cast<int>(d.get_architecture_gen());
+  const char* force_gen_env = std::getenv("MFA_FORCE_GEN");
+  if (force_gen_env) arch_gen_steel = std::atoi(force_gen_env);
+  bool is_m3_plus_steel = (arch_gen_steel >= 15);
+
   // ── STEEL tile config (f16 / bf16) ───────────────────────────────────────
-  auto cfg = select_steel_block_config(D, /*is_low_prec=*/true);
+  auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
   int BQ = cfg.BQ;
   int BK = cfg.BK;
   int WM = cfg.WM;  // n_warps
@@ -137,7 +147,7 @@ void MFAttention::eval_gpu(
     WM,
     params_.causal,
     params_.has_block_mask,  // sparse variant when block_mask present
-    false,       // is_m3_plus unused for Steel kernel
+    is_m3_plus_steel,        // separate compiled pipeline for M3+ configs
     dtype_code
   };
 

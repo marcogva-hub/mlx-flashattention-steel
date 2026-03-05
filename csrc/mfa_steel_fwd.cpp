@@ -17,7 +17,8 @@ namespace mlx_mfa {
 // Tile config selection
 // ---------------------------------------------------------------------------
 
-SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec) {
+SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec,
+                                           bool is_m3_plus) {
   // STEEL tile config rules:
   //   TQ = BQ / (WM * 8)  must be >= 1  →  BQ >= WM * 8
   //   TGP_SIZE = WM * WN * 32
@@ -35,20 +36,29 @@ SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec) {
     }
   }
   // f16 / bf16 ─────────────────────────────────────────────────────────────
-  //   D=64  → BQ=32, BK=32, WM=4, WN=1
-  //   D=128 → BQ=32, BK=16, WM=4, WN=1
-  //   D=256 → BQ=16, BK=16, WM=2, WN=1  (BQ=16 ÷ (WM=2 × 8) = TQ=1)
   //
-  // Note: BK=32 for D=128 was tested and is SLOWER (0.71x vs 0.86x SDPA).
-  // Larger KV tiles increase per-thread load count; 128 threads × 32 elems
-  // hits worse stride patterns than 128 threads × 16 elems.
+  // M1/M2 (is_m3_plus=false):
+  //   D=64  → BQ=32, BK=32, WM=4 (TGP=~22KB)
+  //   D=128 → BQ=32, BK=16, WM=4 (TGP=~22KB)  BK=32 tested: 0.71x SDPA (worse)
+  //   D=256 → BQ=32, BK=16, WM=4 (TGP=29184B < 32KB)
+  //
+  // M3/M4 (is_m3_plus=true) — dynamic register allocation avoids peak spill:
+  //   D=64  → same as M1/M2 (already optimal at BK=32)
+  //   D=128 → BQ=32, BK=32, WM=4 (TGP=29696B < 32KB) — wider K tile, try larger
+  //   D=256 → same tile sizes; STEEL_PRAGMA_UNROLL enabled in shader gen
+  //
+  // Note: BQ=64 BK=32 D=128 = 41984B → exceeds 32 KB limit, rejected.
+  if (head_dim <= 64) {
+    // D=64: BK=32 optimal on all gens
+    return {32, 32, head_dim, 4, 1, 8};
+  }
   if (head_dim <= 128) {
-    int BK = (head_dim <= 64) ? 32 : 16;
+    int BK = (is_m3_plus) ? 32 : 16;
+    // M3+: BK=32 → TGP=29696B < 32KB, fewer K-iterations (may improve pipeline)
+    // M1/M2: BK=16 → tested; BK=32 gives 0.71x SDPA on M1 (register spill)
     return {32, BK, head_dim, 4, 1, 8};
   } else {
-    // D=256: BQ=32, WM=4 → TGP=29184B < 32KB, TQ=32/(4×8)=1 ✓
-    // Same WM/WN as D=128 config — 4 simdgroups for better GPU occupancy.
-    // BK=32 tested → 0.34x (worse); BQ=16/WM=2 → 0.27x (much worse).
+    // D=256: same tile sizes on all gens; M3+ enables unroll in shader source
     return {32, 16, head_dim, 4, 1, 8};
   }
 }
@@ -65,18 +75,24 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const int WN = 1;
   const bool causal = key.causal;
   const bool sparse = key.sparse;
+  const bool is_m3_plus = key.is_m3_plus;
 
   // dtype string for Metal
   const char* dtype_str = "half";
   if (key.dtype == 1)      dtype_str = "bfloat";
   else if (key.dtype == 2) dtype_str = "float";
 
+  // Architecture gen constant for conditional Metal code (13=M1,14=M2,15=M3,16=M4)
+  const int arch_gen = is_m3_plus ? 15 : 13;
+
   std::ostringstream ss;
 
   // ── Preamble ────────────────────────────────────────────────────────────
-  // STEEL_PRAGMA_UNROLL: full unroll only for D<=128 (TD=8/16).
-  // For D=256 (TD=32), any unroll hint (full or count) causes register spill
-  // or catastrophic code bloat in the Metal AIR backend → slower.
+  // STEEL_PRAGMA_UNROLL:
+  //   D<=128 (TD=8/16): full unroll on all gens — loop is short (8 or 16 iters).
+  //   D=256 (TD=32):
+  //     M1/M2: any unroll hint causes register spill or Metal AIR code bloat → empty.
+  //     M3/M4: dynamic register allocation handles peak pressure → full unroll.
   ss << R"MFA(
 #include <metal_stdlib>
 #include <metal_simdgroup>
@@ -85,8 +101,11 @@ using namespace metal;
 
 #define STEEL_CONST static constant constexpr const
 )MFA";
+  // ARCHITECTURE_GEN: injected as a compile-time constant for Metal shader code.
+  ss << "#define ARCHITECTURE_GEN " << arch_gen << "\n";
   ss << "#define STEEL_PRAGMA_UNROLL";
-  if (key.head_dim <= 128) ss << R"MFA( _Pragma("clang loop unroll(full)")
+  bool enable_unroll = (key.head_dim <= 128) || is_m3_plus;
+  if (enable_unroll) ss << R"MFA( _Pragma("clang loop unroll(full)")
 )MFA";
   else ss << "\n";
   ss << "\n";

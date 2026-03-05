@@ -857,3 +857,81 @@ class TestSparseAttentionKernel:
         assert np.all(np.isfinite(np.array(dq))), "dQ has non-finite values"
         assert np.all(np.isfinite(np.array(dk))), "dK has non-finite values"
         assert np.all(np.isfinite(np.array(dv))), "dV has non-finite values"
+
+
+# ---------------------------------------------------------------------------
+# Track F — M3+ config path tests (MFA_FORCE_GEN)
+# ---------------------------------------------------------------------------
+
+@requires_ext
+class TestM3M4Path:
+    """Verify M3+ blocking configs produce correct results.
+
+    Uses MFA_FORCE_GEN env var to override hardware detection in the C++ layer.
+    std::getenv is called at mx.eval() time (inside eval_gpu), so setting
+    os.environ before mx.eval() routes to a different compiled KernelKey.
+    Compares output against SDPA fallback on the same inputs.
+    """
+
+    def _flash_with_gen(self, q, k, v, scale, causal, gen_str):
+        """Run flash_attention with MFA_FORCE_GEN=gen_str, return np.array."""
+        import os
+        prev = os.environ.get("MFA_FORCE_GEN")
+        try:
+            os.environ["MFA_FORCE_GEN"] = gen_str
+            out = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out)  # eval_gpu reads MFA_FORCE_GEN here
+        finally:
+            if prev is None:
+                os.environ.pop("MFA_FORCE_GEN", None)
+            else:
+                os.environ["MFA_FORCE_GEN"] = prev
+        return np.array(out.astype(mx.float32))
+
+    def _sdpa_ref(self, q, k, v, scale, causal):
+        from mlx_mfa.attention import _fallback_sdpa
+        out = _fallback_sdpa(q, k, v, scale, causal)
+        mx.eval(out)
+        return np.array(out.astype(mx.float32))
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (128, 64,  True),
+        (128, 128, True),
+        (128, 64,  False),
+        (256, 64,  True),
+        (256, 128, True),
+    ])
+    def test_m3_config_matches_sdpa(self, D, N, causal):
+        """M3+ block config (gen=15) must match SDPA reference."""
+        mx.random.seed(7)
+        q = mx.random.normal((1, 8, N, D)).astype(mx.float16)
+        k = mx.random.normal((1, 8, N, D)).astype(mx.float16)
+        v = mx.random.normal((1, 8, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        out_m3  = self._flash_with_gen(q, k, v, scale, causal, "15")
+        out_ref = self._sdpa_ref(q, k, v, scale, causal)
+
+        np.testing.assert_allclose(
+            out_ref, out_m3, atol=1e-2,
+            err_msg=f"M3+ config (D={D},N={N},causal={causal}) != SDPA ref",
+        )
+
+    def test_m1_and_m3_configs_agree(self):
+        """M1 config (gen=13) and M3+ config (gen=15) must agree numerically."""
+        mx.random.seed(8)
+        D, N = 128, 64
+        q = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        k = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        v = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        out_m1 = self._flash_with_gen(q, k, v, scale, True, "13")
+        out_m3 = self._flash_with_gen(q, k, v, scale, True, "15")
+
+        np.testing.assert_allclose(
+            out_m1, out_m3, atol=1e-2,
+            err_msg="M1 (gen=13) and M3+ (gen=15) configs disagree for D=128",
+        )
