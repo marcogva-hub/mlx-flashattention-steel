@@ -35,6 +35,14 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **RoPE fusion** — `flash_attention_rope()` with 1D or 3D rotary embeddings (`make_rope_3d_tables`)
 - **Variable-length batching** — `flash_attention_varlen()` for packed sequences with `cu_seqlens`
 - **Video/VSR mask builders** — `make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_topk_spatial_mask`, `make_segment_mask`, `make_causal_segment_mask`, `make_adaptive_window_mask`
+- **Softcap** — `flash_attention(..., softcap=50.0)` applies `tanh(S/cap)*cap` before softmax (Gemma-style)
+- **ALiBi** — `flash_attention_alibi(q, k, v, slopes, ...)` for linear position biases without RoPE
+- **RoPE non-interleaved** — `flash_attention_rope(..., interleaved=False)` for GPT-NeoX split-halves layout
+- **Per-batch cache offsets** — `cache_seqlens` accepts `list[int]` or `mx.array` for heterogeneous batches
+- **D_v ≠ D_qk** — graceful fallback when value head_dim differs from query head_dim
+- **KV cache append** — `flash_attention_with_kv_cache(q, k_new, v_new, k_cache, v_cache)` → `(out, k, v)`
+- **Attention dropout** — `flash_attention(..., dropout_p=0.1)` for training
+- **Return attention weights** — `flash_attention(..., return_attn_weights=True)` → `(out, weights [B,H,N,S])`
 
 ## Requirements
 
@@ -99,22 +107,25 @@ out = flash_attention(q, k, v)  # native GQA — no K/V expansion needed
 
 ## API Reference
 
-### `flash_attention(q, k, v, scale=None, causal=False, stream=None)`
+### `flash_attention(q, k, v, scale=None, causal=False, softcap=0.0, dropout_p=0.0, return_attn_weights=False, stream=None)`
 
 Compute scaled dot-product attention.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `q` | `mx.array [B, H, N, D]` | Query tensor |
-| `k` | `mx.array [B, Hkv, S, D]` | Key tensor |
-| `v` | `mx.array [B, Hkv, S, D]` | Value tensor |
+| `k` | `mx.array [B, Hkv, S, D]` | Key tensor (GQA: Hkv divides H) |
+| `v` | `mx.array [B, Hkv, S, Dv]` | Value tensor (Dv may differ from D → SDPA fallback) |
 | `scale` | `float or None` | Attention scale. Defaults to `1/sqrt(D)` |
 | `causal` | `bool` | Apply causal masking |
+| `softcap` | `float` | Tanh softcapping factor `cap` (0.0 = disabled) |
+| `dropout_p` | `float` | Softmax dropout probability (0.0 = disabled; training only) |
+| `return_attn_weights` | `bool` | If True, returns `(output, attn_weights)` tuple |
 | `stream` | `mx.Stream or None` | MLX stream (honoured on fallback path) |
 
-Returns `mx.array [B, H, N, D]` in the same dtype as `q`.
+Returns `mx.array [B, H, N, D]` normally, or `(mx.array, mx.array [B, H, N, S])` when `return_attn_weights=True`.
 
-Raises `ValueError` if inputs are not 4-D, if `q/k/v` have mismatched `head_dim`, or if the GQA ratio is non-integer.
+Raises `ValueError` if inputs are not 4-D, if `q/k` have mismatched `head_dim`, or if the GQA ratio is non-integer.
 
 ### `is_mfa_available() -> bool`
 
@@ -270,15 +281,19 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | O   | Spatial 2D/3D block masks + segment masks + adaptive window | **Done (v0.7.0)** |
 | P   | Variable-length batching (`flash_attention_varlen`, split-concat) | **Done (v0.7.0)** |
 | R   | 3D RoPE table construction + `flash_attention_rope(rope_3d=...)` | **Done (v0.7.0)** |
-| U   | LCSA composite mask (FlashVSR) | Planned (v0.8.0) |
-| V   | Axial / factored attention masks | Planned (v0.8.0) |
-| W   | Dilated temporal mask | Planned (v0.8.0) |
-| X   | Sink tokens + reference frame masks | Planned (v0.8.0) |
-| Y   | Cross-stream mask (LTX-2 dual-stream DiT) | Planned (v0.8.0) |
-| AA  | Softcapping (Gemma 2 / Grok) | Planned (v0.8.0) |
-| AB  | ALiBi (Falcon, MPT, BLOOM) | Planned (v0.8.0) |
-| AC  | RoPE non-interleaved (GPT-NeoX) | Planned (v0.8.0) |
-| AF  | Fused KV cache append + attention | Planned (v0.8.0) |
+| U   | LCSA composite mask (FlashVSR) | **Done (v0.8.0)** |
+| V   | Axial / factored attention masks | **Done (v0.8.0)** |
+| W   | Dilated temporal mask | **Done (v0.8.0)** |
+| X   | Sink tokens + reference frame masks | **Done (v0.8.0)** |
+| Y   | Cross-stream mask (LTX-2 dual-stream DiT) | **Done (v0.8.0)** |
+| AA  | Softcapping (Gemma 2 / Grok) | **Done (v0.8.0)** |
+| AB  | ALiBi (Falcon, MPT, BLOOM) | **Done (v0.8.0)** |
+| AC  | RoPE non-interleaved (GPT-NeoX) | **Done (v0.8.0)** |
+| AD  | Per-batch cache_seqlens (list/array) | **Done (v0.8.0)** |
+| AE  | D_v ≠ D_qk graceful fallback | **Done (v0.8.0)** |
+| AF  | Fused KV cache append (`flash_attention_with_kv_cache`) | **Done (v0.8.0)** |
+| AG  | Attention dropout (training) | **Done (v0.8.0)** |
+| AH  | Return attention weights | **Done (v0.8.0)** |
 | PG  | Paged KV decode — block table gather, `PagedKVCache` allocator | Planned (v1.0) |
 | P   | Paged KV decode — block table gather, `PagedKVCache` Python allocator | Planned (v1.0) |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
