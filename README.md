@@ -32,6 +32,9 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **Cross-attention** — N_q != N_kv supported
 - **M5+ detection** — `is_m5_plus` flag in `get_device_info()`, reserved stub for Metal 4 tensor API (A19+)
 - **Graceful fallback** to `mx.fast.scaled_dot_product_attention` when the extension is unavailable or head_dim is unsupported
+- **RoPE fusion** — `flash_attention_rope()` with 1D or 3D rotary embeddings (`make_rope_3d_tables`)
+- **Variable-length batching** — `flash_attention_varlen()` for packed sequences with `cu_seqlens`
+- **Video/VSR mask builders** — `make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_topk_spatial_mask`, `make_segment_mask`, `make_causal_segment_mask`, `make_adaptive_window_mask`
 
 ## Requirements
 
@@ -219,7 +222,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: 77 tests total (6 fallback + 5 public API + 10 forward + 8 backward + 8 edge + 4 backward edge + 6 sparse API + 10 sparse kernel + 9 native GQA + 11 mlx-lm integration).
+Expected: 152 tests collected (45 active + 107 extension-gated/skipped without C++ build).
 
 ## Supported Configurations
 
@@ -262,9 +265,21 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | K   | Quantized KV Cache (Q4/Q8 dequantize before STEEL) | **Done (v0.6.0)** |
 | L   | RoPE Fusion (in-kernel rotary embeddings, `flash_attention_rope`) | **Done (v0.6.0)** |
 | M   | Paged Attention design document (`docs/PAGED_ATTENTION_DESIGN.md`) | **Done (v0.6.0)** |
-| N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | Planned (v0.7.0) |
-| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v0.7.0) |
-| O   | Varlen prefill — packed `[total_tokens, H, D]` + `cu_seqlens` | Planned (v1.0) |
+| N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | Planned (v0.9.0) |
+| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v0.9.0) |
+| O   | Spatial 2D/3D block masks + segment masks + adaptive window | **Done (v0.7.0)** |
+| P   | Variable-length batching (`flash_attention_varlen`, split-concat) | **Done (v0.7.0)** |
+| R   | 3D RoPE table construction + `flash_attention_rope(rope_3d=...)` | **Done (v0.7.0)** |
+| U   | LCSA composite mask (FlashVSR) | Planned (v0.8.0) |
+| V   | Axial / factored attention masks | Planned (v0.8.0) |
+| W   | Dilated temporal mask | Planned (v0.8.0) |
+| X   | Sink tokens + reference frame masks | Planned (v0.8.0) |
+| Y   | Cross-stream mask (LTX-2 dual-stream DiT) | Planned (v0.8.0) |
+| AA  | Softcapping (Gemma 2 / Grok) | Planned (v0.8.0) |
+| AB  | ALiBi (Falcon, MPT, BLOOM) | Planned (v0.8.0) |
+| AC  | RoPE non-interleaved (GPT-NeoX) | Planned (v0.8.0) |
+| AF  | Fused KV cache append + attention | Planned (v0.8.0) |
+| PG  | Paged KV decode — block table gather, `PagedKVCache` allocator | Planned (v1.0) |
 | P   | Paged KV decode — block table gather, `PagedKVCache` Python allocator | Planned (v1.0) |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
 

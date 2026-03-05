@@ -2,6 +2,27 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [0.7.0] — 2026-03-05
+
+### Added
+- **Track O: Spatial 2D/3D block masks** — `make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_topk_spatial_mask`
+- **Track P: Segment / document masks** — `make_segment_mask`, `make_causal_segment_mask`
+- **Track Q: Adaptive window mask** — `make_adaptive_window_mask` (SeedVSR2-style resolution-scaled windows)
+- **Track R: 3D RoPE table construction** — `make_rope_3d_tables` + `flash_attention_rope(rope_3d=...)` dict API
+- **Track S: Variable-length batching** — `flash_attention_varlen` (split-concat implementation)
+- **Track T: 4 benchmark scripts** — spatial masks, segment, varlen, 3D RoPE
+- Pure Python release — no Metal kernel changes
+- Tests: ~150 total
+
+
+## [0.6.0] — 2026-03-05
+
+### Added
+- **Track K: Quantized KV cache** — Q4/Q8 dequantized before STEEL kernel
+- **Track L: RoPE 1D fusion** — `flash_attention_rope()` with in-kernel rotary embeddings
+- **Track M: Paged Attention design doc** — `docs/PAGED_ATTENTION_DESIGN.md`
+
+
 ## [0.5.0] — 2026-03-05
 
 ### Added

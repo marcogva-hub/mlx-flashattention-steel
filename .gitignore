@@ -53,4 +53,6 @@ mfa-steel.pub
 shader_dump.txt
 full_shader_dump.txt
 *.ll
-claude-code-prompt.md
+claude-code-prompt*.md
+PROMPT_PHASE_*.md
+TODO.md

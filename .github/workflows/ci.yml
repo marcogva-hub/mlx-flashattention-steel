@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "dev"]
+    branches: ["master", "dev"]
   pull_request:
-    branches: ["main"]
+    branches: ["master"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -117,5 +117,5 @@ jobs:
           echo "Collected $COUNT tests"
           # Warn (not fail) if count deviates from expected
           if [ "$COUNT" -lt 40 ]; then
-            echo "WARNING: Expected >= 40 tests, got $COUNT"
+            echo "WARNING: Expected >= 100 tests, got $COUNT"
           fi
