@@ -2992,3 +2992,79 @@ class TestKVCacheAppend:
 
         with pytest.raises(ValueError, match="k_cache and v_cache must both"):
             flash_attention_with_kv_cache(q, k, v, k_cache=k_cache, v_cache=None)
+
+
+# ---------------------------------------------------------------------------
+# Track AG — Attention dropout fallback
+# ---------------------------------------------------------------------------
+
+class TestAttentionDropout:
+    """Track AG: dropout_p parameter on flash_attention."""
+
+    D = 64
+
+    def test_zero_dropout_matches_plain(self):
+        """dropout_p=0 produces same output as plain flash_attention."""
+        from mlx_mfa import flash_attention
+
+        B, H, N = 1, 2, 16
+        D = self.D
+        mx.random.seed(200)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out_plain = flash_attention(q, k, v, causal=False, dropout_p=0.0)
+        out_drop0 = flash_attention(q, k, v, causal=False)
+        mx.eval(out_plain, out_drop0)
+
+        np.testing.assert_allclose(
+            np.array(out_plain), np.array(out_drop0), atol=0, rtol=0,
+        )
+
+    def test_dropout_output_shape(self):
+        """dropout_p > 0 returns correct output shape."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 1, 2, 16, self.D
+        mx.random.seed(201)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out = flash_attention(q, k, v, causal=True, dropout_p=0.1)
+        mx.eval(out)
+
+        assert out.shape == (B, H, N, D), f"Bad output shape: {out.shape}"
+        assert mx.all(mx.isfinite(out)).item(), "Output contains NaN/Inf"
+
+    def test_dropout_differs_per_call(self):
+        """Two calls with dropout_p>0 produce different outputs (stochastic)."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 1, 4, 32, self.D
+        mx.random.seed(202)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out1 = flash_attention(q, k, v, causal=False, dropout_p=0.5)
+        out2 = flash_attention(q, k, v, causal=False, dropout_p=0.5)
+        mx.eval(out1, out2)
+
+        max_diff = float(mx.max(mx.abs(out1 - out2)).item())
+        assert max_diff > 0, "dropout_p=0.5 produced identical outputs on two calls"
+
+    def test_dropout_output_finite_causal(self):
+        """Causal + dropout_p > 0 produces finite outputs."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 2, 4, 24, self.D
+        mx.random.seed(203)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out = flash_attention(q, k, v, causal=True, dropout_p=0.3)
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item(), "Causal+dropout output contains NaN/Inf"

@@ -44,6 +44,7 @@ def flash_attention(
     causal: bool = False,
     softcap: float = 0.0,
     alibi_slopes: Optional[mx.array] = None,
+    dropout_p: float = 0.0,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Compute scaled dot-product attention using Metal Flash Attention.
@@ -73,6 +74,10 @@ def flash_attention(
             ``[H]`` with one slope per query head.  The bias added to score
             ``(i, j)`` for head ``h`` is ``alibi_slopes[h] * (j - i)``.
             Incompatible with ``softcap``; only f16/bf16 use the MFA kernel.
+        dropout_p: Dropout probability on attention weights (0 = disabled).
+            When > 0, the call falls back to a Python SDPA implementation —
+            the MFA Metal kernel does not support dropout.  Intended for
+            training only; pass 0.0 (default) for inference.
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
@@ -134,6 +139,10 @@ def flash_attention(
                 f"flash_attention GQA: q_heads ({q_heads}) must be divisible "
                 f"by kv_heads ({kv_heads})."
             )
+
+    # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
+    if dropout_p > 0.0:
+        return _dropout_sdpa(q, k, v, scale, causal, dropout_p)
 
     if not _can_use_mfa(q, head_dim) or v_dim_mismatch:
         if softcap != 0.0:
@@ -1080,6 +1089,57 @@ def _sparse_backward_tiled(
 
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _dropout_sdpa(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: float,
+    causal: bool,
+    dropout_p: float,
+) -> mx.array:
+    """Attention with dropout on the softmax weights (training-time fallback).
+
+    Computes the full attention score matrix, applies softmax, then drops
+    random entries of the attention weight matrix before the final matmul.
+
+    The dropout mask is sampled each call (no seed control — use
+    ``mx.random.seed`` before calling if reproducibility is needed).
+
+    Args:
+        q:         ``[B, H, N, D]``
+        k:         ``[B, H, S, D]``
+        v:         ``[B, H, S, D]``
+        scale:     Attention scale.
+        causal:    Apply causal masking.
+        dropout_p: Fraction of attention weights to zero out in ``[0, 1)``.
+
+    Returns:
+        Attention output ``[B, H, N, D]``, same dtype as q.
+    """
+    B, H, N, D = q.shape
+    S = k.shape[2]
+
+    # Attention scores: [B, H, N, S]
+    scores = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+
+    if causal:
+        # Upper-triangular -inf mask (use mx.where to avoid 0.0 * -inf = NaN).
+        idx_i = mx.arange(N, dtype=mx.int32)[:, None]
+        idx_j = mx.arange(S, dtype=mx.int32)[None, :]
+        causal_mask = (idx_j > idx_i + (S - N))[None, None, :, :]
+        scores = mx.where(causal_mask, float("-inf"), scores)
+
+    # Softmax over key dimension
+    probs = mx.softmax(scores.astype(mx.float32), axis=-1).astype(q.dtype)
+
+    # Dropout: zero random entries and rescale by 1/(1-p)
+    keep_mask = mx.random.uniform(shape=probs.shape) >= dropout_p
+    probs = probs * keep_mask.astype(q.dtype) / (1.0 - dropout_p)
+
+    # Weighted sum of values: [B, H, N, D]
+    return mx.matmul(probs, v)
 
 
 def _softcap_sdpa_ref(
