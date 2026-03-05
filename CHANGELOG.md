@@ -2,6 +2,39 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [0.8.0] — 2026-03-05
+
+### Added
+- **Track AA: Softcap** — `flash_attention(..., softcap=50.0)` applies `tanh(S/cap)*cap`
+  before softmax; fused into Metal STEEL kernel for f16/bf16, Python fallback for f32.
+- **Track AB: ALiBi** — `flash_attention_alibi(q, k, v, alibi_slopes, ...)` adds
+  per-head linear position biases (slope_h × (k_pos − q_pos)). Metal kernel fuses
+  bias into the QK tile accumulation; Python reference fallback included.
+- **Track AC: RoPE non-interleaved (GPT-NeoX)** — `flash_attention_rope(..., interleaved=False)`
+  supports split-halves RoPE layout `(d, d+D/2)` in addition to LLaMA adjacent pairs.
+  Metal kernel and Python `_apply_rope_mlx` both branch on `interleaved`.
+- **Track AD: Per-batch `cache_seqlens`** — `flash_attention_rope` now accepts
+  `cache_seqlens` as a `list[int]`, `mx.array`, or `int`. Per-element dispatch via
+  Python split-cat; MLX lazy eval fuses concurrent GPU dispatches.
+- **Track AE: Graceful D_v ≠ D_qk fallback** — When `v.shape[-1] != q.shape[-1]`,
+  routes to `mx.fast.scaled_dot_product_attention` instead of raising. K dimension
+  must still equal Q (raises `ValueError` otherwise).
+- **Track AF: `flash_attention_with_kv_cache`** — Fused KV cache append:
+  `(output, k_updated, v_updated) = flash_attention_with_kv_cache(q, k_new, v_new, k_cache, v_cache)`.
+  Concatenates along the sequence axis, dispatches one attention call.
+- **Track AG: Attention dropout** — `flash_attention(..., dropout_p=0.2)` drops
+  softmax weights during training. Uses `mx.where` causal masking to avoid
+  `0.0 × −inf = NaN` in the masked region.
+- **Track AH: Return attention weights** — `flash_attention(..., return_attn_weights=True)`
+  returns `(output, attn_weights)` where weights are the full softmax probability matrix
+  `[B, H, N, S]`. Compatible with softcap and dropout.
+- **Track Z: Benchmark scripts** — `benchmarks/bench_softcap_alibi.py` measures
+  softcap and ALiBi overhead vs SDPA baseline across four variants.
+- **Tests: 209 total** (up from 93 in v0.4.0)
+
+### Changed
+- `flash_attention_rope` now accepts `Union[int, mx.array, Sequence[int]]` for `cache_seqlens`
+
 ## [0.7.0] — 2026-03-05
 
 ### Added
