@@ -102,6 +102,55 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"), nb::arg("causal"),
       "Debug: returns (dK, dV) from MFABackwardKeyValue kernel directly.");
 
+  // STEEL backward: dispatches MFASteelBwdDQ + MFASteelBwdDKV.
+  // Args: q,k,v,O,L,dO — all pre-evaluated on GPU (caller owns L).
+  // scale, causal: forward hyperparameters.
+  // Returns: tuple (dQ, dK, dV).
+  // Only supports f16/bf16 with D<=128.
+  m.def("mfa_steel_backward",
+      [](const mlx::core::array& q,
+         const mlx::core::array& k,
+         const mlx::core::array& v,
+         const mlx::core::array& O,
+         const mlx::core::array& L,
+         const mlx::core::array& dO,
+         float scale, bool causal) {
+        auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        mlx_mfa::MFAttention::Params params{};
+        params.head_dim = q.shape(3);
+        params.scale    = scale;
+        params.causal   = causal;
+
+        // delta = rowsum(dO * O)  [B, H, N], float32.
+        // Note: the Metal kernel multiplies by p->scale internally when computing
+        // dS = scale * P * (dP - delta).  Do NOT pre-multiply by scale here.
+        auto dO_f32 = mlx::core::astype(dO, mlx::core::float32, s);
+        auto O_f32  = mlx::core::astype(O,  mlx::core::float32, s);
+        auto delta  = mlx::core::sum(
+                          mlx::core::multiply(dO_f32, O_f32, s),
+                          std::vector<int>{3}, false, s);
+
+        // dQ
+        auto bwd_q = mlx::core::array::make_arrays(
+            {q.shape()},
+            {q.dtype()},
+            std::make_shared<mlx_mfa::MFASteelBwdDQ>(s, params),
+            {q, k, v, O, L, dO, delta});
+
+        // dK, dV
+        auto bwd_kv = mlx::core::array::make_arrays(
+            {k.shape(), v.shape()},
+            {k.dtype(), v.dtype()},
+            std::make_shared<mlx_mfa::MFASteelBwdDKV>(s, params),
+            {q, k, v, O, L, delta, dO});
+
+        return nb::make_tuple(bwd_q[0], bwd_kv[0], bwd_kv[1]);
+      },
+      nb::arg("q"), nb::arg("k"), nb::arg("v"),
+      nb::arg("O"), nb::arg("L"), nb::arg("dO"),
+      nb::arg("scale"), nb::arg("causal"),
+      "STEEL backward: returns (dQ, dK, dV). f16/bf16, D<=128 only.");
+
   m.def("shader_cache_size", []() {
     return mlx_mfa::ShaderCache::get().size();
   }, "Number of cached Metal compute pipelines.");

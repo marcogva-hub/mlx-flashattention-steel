@@ -221,4 +221,92 @@ class MFABackwardKeyValue : public mlx::core::Primitive {
   Params params_;
 };
 
+// =========================================================================
+// MFASteelBwdDQ Primitive (STEEL native backward dQ)
+// =========================================================================
+
+/// STEEL native backward dQ kernel.
+///
+/// delta (= scale * rowsum(O⊙dO)) is precomputed by the caller as an MLX
+/// lazy array and passed as inputs[6].  The kernel reads it directly.
+///
+/// Inputs  (7):  Q [B,H,N,D], K [B,H,S,D], V [B,H,S,D],
+///               O [B,H,N,D]  (unused slot kept for API symmetry),
+///               L [B,H,N],   dO [B,H,N,D],  delta [B,H,N] (float32)
+/// Outputs (1):  dQ [B,H,N,D]  (same dtype as Q)
+class MFASteelBwdDQ : public mlx::core::Primitive {
+ public:
+  using Params = MFAttention::Params;
+
+  explicit MFASteelBwdDQ(mlx::core::Stream stream, Params params)
+      : mlx::core::Primitive(stream), params_(params) {}
+
+  const char* name() const override { return "MFASteelBwdDQ"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFASteelBwdDQ: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFASteelBwdDQ*>(&other);
+    if (!o) return false;
+    return params_.head_dim == o->params_.head_dim &&
+           params_.scale    == o->params_.scale    &&
+           params_.causal   == o->params_.causal;
+  }
+
+ private:
+  Params params_;
+};
+
+// =========================================================================
+// MFASteelBwdDKV Primitive (STEEL native backward dK/dV)
+// =========================================================================
+
+/// STEEL native backward dK/dV kernel.
+///
+/// delta (= scale * rowsum(O⊙dO)) is precomputed by the caller and passed
+/// as inputs[5].  The kernel reads it; dO is at inputs[6].
+///
+/// Inputs  (7):  Q [B,H,N,D], K [B,H,S,D], V [B,H,S,D],
+///               O [B,H,N,D]  (unused slot kept for API symmetry),
+///               L [B,H,N],   delta [B,H,N] (float32),  dO [B,H,N,D]
+/// Outputs (2):  dK [B,H,S,D],  dV [B,H,S,D]  (same dtype as K/V)
+class MFASteelBwdDKV : public mlx::core::Primitive {
+ public:
+  using Params = MFAttention::Params;
+
+  explicit MFASteelBwdDKV(mlx::core::Stream stream, Params params)
+      : mlx::core::Primitive(stream), params_(params) {}
+
+  const char* name() const override { return "MFASteelBwdDKV"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFASteelBwdDKV: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFASteelBwdDKV*>(&other);
+    if (!o) return false;
+    return params_.head_dim == o->params_.head_dim &&
+           params_.scale    == o->params_.scale    &&
+           params_.causal   == o->params_.causal;
+  }
+
+ private:
+  Params params_;
+};
+
 }  // namespace mlx_mfa

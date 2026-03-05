@@ -34,8 +34,10 @@ class ShaderCache {
       SteelForward = 3,          // STEEL-style cooperative forward kernel
       FlashDecodePartial = 4,    // Flash Decoding Phase 1: partial attn per split
       FlashDecodeReduce  = 5,    // Flash Decoding Phase 2: LSE reduce over splits
+      SteelBackwardDQ  = 6,      // STEEL native backward dQ (f16/bf16, D<=128)
+      SteelBackwardDKV = 7,      // STEEL native backward dK/dV (f16/bf16, D<=128)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 6,   // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 8,   // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

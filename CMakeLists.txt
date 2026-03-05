@@ -84,6 +84,7 @@ set(MFA_SOURCES
   csrc/mfa_attention.cpp
   csrc/mfa_shader_gen.cpp
   csrc/mfa_steel_fwd.cpp
+  csrc/mfa_steel_bwd.cpp
   csrc/shader_cache.mm
   # ccv-derived Metal shader generator
   csrc/mfa/AttentionKernel.cpp

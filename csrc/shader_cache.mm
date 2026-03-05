@@ -11,6 +11,7 @@
 #include "shader_cache.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
+#include "mfa_steel_bwd.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -99,6 +100,12 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::FlashDecodeReduce) {
     fn_name = "mlx_mfa_flash_decode_reduce";
     source  = generate_flash_decode_reduce_source(key);
+  } else if (key.type == KT::SteelBackwardDQ) {
+    fn_name = "mlx_mfa_bwd_dq";
+    source  = generate_steel_backward_dq_source(key);
+  } else if (key.type == KT::SteelBackwardDKV) {
+    fn_name = "mlx_mfa_bwd_dkv";
+    source  = generate_steel_backward_dkv_source(key);
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -114,6 +121,8 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SteelForward)         type_str = "steel_fwd";
     if (key.type == KT::FlashDecodePartial)   type_str = "flash_decode_partial";
     if (key.type == KT::FlashDecodeReduce)    type_str = "flash_decode_reduce";
+    if (key.type == KT::SteelBackwardDQ)      type_str = "steel_bwd_dq";
+    if (key.type == KT::SteelBackwardDKV)     type_str = "steel_bwd_dkv";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",
