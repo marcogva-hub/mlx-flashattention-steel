@@ -123,15 +123,116 @@ def flash_attention(
     return _mfa_forward(q, k, v, scale, causal, stream)
 
 
+def make_rope_3d_tables(
+    grid_h: int,
+    grid_w: int,
+    num_frames: int,
+    d_h: Optional[int] = None,
+    d_w: Optional[int] = None,
+    d_t: Optional[int] = None,
+    head_dim: int = 128,
+    theta: float = 10000.0,
+) -> tuple[mx.array, mx.array]:
+    """Build 3D RoPE cosine/sine tables for video attention.
+
+    Returns ``(cos, sin)`` of shape ``[N, D/2]`` where ``N = grid_h * grid_w *
+    num_frames``.  The D/2 pairs are split into three consecutive sub-bands:
+
+    * pairs ``[0, d_h/2)``:                  height axis, position = patch y
+    * pairs ``[d_h/2, d_h/2 + d_w/2)``:     width  axis, position = patch x
+    * pairs ``[d_h/2 + d_w/2, D/2)``:        temporal axis, position = frame t
+
+    Compatible with ``flash_attention_rope(..., rope_3d={...})``.
+
+    Args:
+        grid_h:    Number of patch rows (height // patch_size).
+        grid_w:    Number of patch columns (width // patch_size).
+        num_frames: Number of frames (or temporal patches).
+        d_h:       Head-dim elements for height axis (default: head_dim // 3).
+        d_w:       Head-dim elements for width axis (default: head_dim // 3).
+        d_t:       Head-dim elements for temporal axis (default: head_dim - d_h - d_w).
+        head_dim:  Total head dimension D.
+        theta:     RoPE base frequency (default 10000.0).
+
+    Returns:
+        Tuple ``(cos_table, sin_table)`` each ``float32 [N, D/2]``.
+
+    Example::
+
+        cos, sin = make_rope_3d_tables(32, 32, 16, head_dim=128)
+        out = flash_attention_rope(q, k, v, cos, sin, rope_3d={
+            'grid_h': 32, 'grid_w': 32, 'num_frames': 16})
+    """
+    import numpy as _np
+
+    if d_h is None:
+        # Round down to even
+        d_h = (head_dim // 3) & ~1
+    if d_w is None:
+        d_w = (head_dim // 3) & ~1
+    if d_t is None:
+        # Consume the remaining dimensions
+        d_t = head_dim - d_h - d_w
+        # Round down to even, let d_h absorb any remainder
+        if d_t % 2:
+            d_t -= 1
+            d_h += 1
+
+    # All sub-dims must be even (RoPE works on pairs)
+    if d_h % 2 or d_w % 2 or d_t % 2:
+        raise ValueError(
+            f"d_h, d_w, d_t must all be even. Got d_h={d_h}, d_w={d_w}, d_t={d_t}."
+        )
+
+    pHW = grid_h * grid_w
+    N = num_frames * pHW
+    D2 = (d_h + d_w + d_t) // 2  # == head_dim // 2
+
+    token_idx = _np.arange(N, dtype=_np.int64)
+    t = token_idx // pHW
+    spatial = token_idx % pHW
+    y = spatial // grid_w
+    x = spatial % grid_w
+
+    cos_table = _np.zeros((N, D2), dtype=_np.float32)
+    sin_table = _np.zeros((N, D2), dtype=_np.float32)
+
+    # Height axis — pairs [0, d_h//2)
+    j_h = _np.arange(d_h // 2, dtype=_np.float32)
+    freq_h = 1.0 / (theta ** (2.0 * j_h / d_h))
+    angles_h = y[:, None].astype(_np.float32) * freq_h[None, :]  # [N, d_h//2]
+    cos_table[:, :d_h // 2] = _np.cos(angles_h)
+    sin_table[:, :d_h // 2] = _np.sin(angles_h)
+
+    # Width axis — pairs [d_h//2, d_h//2 + d_w//2)
+    j_w = _np.arange(d_w // 2, dtype=_np.float32)
+    freq_w = 1.0 / (theta ** (2.0 * j_w / d_w))
+    angles_w = x[:, None].astype(_np.float32) * freq_w[None, :]  # [N, d_w//2]
+    off_w = d_h // 2
+    cos_table[:, off_w:off_w + d_w // 2] = _np.cos(angles_w)
+    sin_table[:, off_w:off_w + d_w // 2] = _np.sin(angles_w)
+
+    # Temporal axis — pairs [d_h//2 + d_w//2, D2)
+    j_t = _np.arange(d_t // 2, dtype=_np.float32)
+    freq_t = 1.0 / (theta ** (2.0 * j_t / d_t))
+    angles_t = t[:, None].astype(_np.float32) * freq_t[None, :]  # [N, d_t//2]
+    off_t = d_h // 2 + d_w // 2
+    cos_table[:, off_t:] = _np.cos(angles_t)
+    sin_table[:, off_t:] = _np.sin(angles_t)
+
+    return mx.array(cos_table), mx.array(sin_table)
+
+
 def flash_attention_rope(
     q: mx.array,
     k: mx.array,
     v: mx.array,
-    rotary_cos: mx.array,
-    rotary_sin: mx.array,
+    rotary_cos: Optional[mx.array] = None,
+    rotary_sin: Optional[mx.array] = None,
     scale: Optional[float] = None,
     causal: bool = False,
     cache_seqlens: int = 0,
+    rope_3d: Optional[dict] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Flash Attention with in-kernel RoPE (Rotary Position Embedding) fusion.
@@ -144,8 +245,18 @@ def flash_attention_rope(
         q_rot[2i]   = q[2i] * cos[pos][i] - q[2i+1] * sin[pos][i]
         q_rot[2i+1] = q[2i] * sin[pos][i] + q[2i+1] * cos[pos][i]
 
-    Q token positions: ``[cache_seqlens, cache_seqlens + N)``.
-    K token positions: ``[0, S)``.
+    **1D RoPE (LLM)**:
+        Pass ``rotary_cos`` and ``rotary_sin`` as ``float32 [max_seq_len, D/2]``.
+        Q positions: ``[cache_seqlens, cache_seqlens + N)``.
+        K positions: ``[0, S)``.
+
+    **3D RoPE (video)**:
+        Pass ``rope_3d`` dict with keys ``grid_h``, ``grid_w``, ``num_frames``
+        (and optionally ``d_h``, ``d_w``, ``d_t``, ``theta``).
+        Tables are built automatically via :func:`make_rope_3d_tables`.
+        Token layout assumed: ``(T, H, W)`` row-major, same as
+        :func:`make_spatial_3d_mask`.  K is also rotated.
+        Mutually exclusive with explicit ``rotary_cos``/``rotary_sin``.
 
     Falls back to a pure-MLX ``_apply_rope_mlx`` + SDPA when the C++
     extension is unavailable or when head_dim / dtype is unsupported.
@@ -154,12 +265,16 @@ def flash_attention_rope(
         q: ``[B, H, N, D]`` float16 or bfloat16.
         k: ``[B, H, S, D]`` float16 or bfloat16.
         v: ``[B, H, S, D]`` float16 or bfloat16.
-        rotary_cos: ``float32 [max_seq_len, D/2]`` — cosine table.
-        rotary_sin: ``float32 [max_seq_len, D/2]`` — sine table.
+        rotary_cos: ``float32 [max_seq_len, D/2]`` — cosine table (1D RoPE).
+        rotary_sin: ``float32 [max_seq_len, D/2]`` — sine table (1D RoPE).
         scale: Attention scale. Defaults to ``1 / sqrt(D)``.
         causal: Apply causal masking.
         cache_seqlens: KV cache length — absolute position of Q token 0.
             Use 0 for prefill, len(kv_cache) for autoregressive decode.
+            Only used in 1D mode.
+        rope_3d: 3D RoPE config dict.  Required keys: ``grid_h``, ``grid_w``,
+            ``num_frames``.  Optional: ``d_h``, ``d_w``, ``d_t``, ``theta``.
+            When provided, ``rotary_cos``/``rotary_sin`` must be None.
         stream: MLX stream (GPU). Forwarded to fallback only.
 
     Returns:
@@ -174,6 +289,33 @@ def flash_attention_rope(
     head_dim = q.shape[-1]
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
+
+    # --- 3D RoPE: build flat [N, D/2] tables from grid coordinates ---
+    if rope_3d is not None:
+        if rotary_cos is not None or rotary_sin is not None:
+            raise ValueError(
+                "rope_3d and rotary_cos/rotary_sin are mutually exclusive."
+            )
+        grid_h = rope_3d["grid_h"]
+        grid_w = rope_3d["grid_w"]
+        num_frames = rope_3d.get("num_frames", 1)
+        d_h = rope_3d.get("d_h", None)
+        d_w = rope_3d.get("d_w", None)
+        d_t = rope_3d.get("d_t", None)
+        theta = rope_3d.get("theta", 10000.0)
+        rotary_cos, rotary_sin = make_rope_3d_tables(
+            grid_h, grid_w, num_frames,
+            d_h=d_h, d_w=d_w, d_t=d_t,
+            head_dim=head_dim, theta=theta,
+        )
+        # 3D RoPE always starts at position 0 (spatial, not sequential)
+        cache_seqlens = 0
+
+    if rotary_cos is None or rotary_sin is None:
+        raise ValueError(
+            "flash_attention_rope requires either rotary_cos/rotary_sin (1D) "
+            "or rope_3d (3D) to be provided."
+        )
 
     # RoPE requires f16/bf16 on the STEEL path.
     # Fall back gracefully for f32 or unsupported head_dim.

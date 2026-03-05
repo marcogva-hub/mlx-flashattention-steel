@@ -1926,3 +1926,152 @@ class TestVarlenAttention:
             assert g is not None, f"Grad for {name} is None"
             assert g.shape == (B, H, N, D), f"Grad {name} shape mismatch"
             assert not bool(mx.any(mx.isnan(g))), f"NaN in grad {name}"
+
+
+# ============================================================================
+# Track R — 3D RoPE fusion
+# ============================================================================
+
+class TestRoPE3D:
+    """Tests for make_rope_3d_tables and flash_attention_rope(rope_3d=...)."""
+
+    def _ref_apply_3d_rope(self, x, cos_table, sin_table):
+        """Apply RoPE from [N, D/2] tables to [B, H, N, D] tensor in Python."""
+        # cos_table: [N, D/2], sin_table: [N, D/2]
+        # x: [B, H, N, D]
+        cos = cos_table[None, None, :, :]  # [1, 1, N, D/2]
+        sin = sin_table[None, None, :, :]  # [1, 1, N, D/2]
+        x0 = x[..., 0::2]  # [B, H, N, D/2]
+        x1 = x[..., 1::2]  # [B, H, N, D/2]
+        out = mx.zeros_like(x)
+        # Interleave cos/sin
+        rot_0 = x0 * cos - x1 * sin
+        rot_1 = x0 * sin + x1 * cos
+        # Re-interleave
+        out = mx.concatenate([rot_0, rot_1], axis=-1)
+        # out is [B, H, N, D] but with even indices first then odd
+        # Reshape and transpose to restore interleaved layout
+        B, H, N, D = x.shape
+        out = out.reshape(B, H, N, 2, D // 2)
+        out = mx.transpose(out, (0, 1, 2, 4, 3)).reshape(B, H, N, D)
+        return out
+
+    def test_table_shape(self):
+        """make_rope_3d_tables returns correct shape."""
+        from mlx_mfa import make_rope_3d_tables
+        grid_h, grid_w, T = 8, 8, 4
+        D = 128
+        cos, sin = make_rope_3d_tables(grid_h, grid_w, T, head_dim=D)
+        N = grid_h * grid_w * T
+        assert cos.shape == (N, D // 2), f"cos shape {cos.shape} != ({N}, {D//2})"
+        assert sin.shape == (N, D // 2)
+        assert cos.dtype == mx.float32
+
+    def test_table_no_nans(self):
+        """Tables contain no NaN or Inf values."""
+        from mlx_mfa import make_rope_3d_tables
+        cos, sin = make_rope_3d_tables(4, 4, 4, head_dim=128)
+        mx.eval(cos, sin)
+        assert not bool(mx.any(mx.isnan(cos))), "NaN in cos"
+        assert not bool(mx.any(mx.isnan(sin))), "NaN in sin"
+        assert not bool(mx.any(mx.isinf(cos))), "Inf in cos"
+
+    def test_table_d_split_sums_to_d(self):
+        """d_h + d_w + d_t == head_dim."""
+        from mlx_mfa import make_rope_3d_tables
+        D = 128
+        d_h, d_w = 42, 42
+        d_t = D - d_h - d_w
+        # Non-equal split (all even)
+        cos, sin = make_rope_3d_tables(4, 4, 2, d_h=d_h, d_w=d_w, d_t=d_t,
+                                        head_dim=D)
+        assert cos.shape == (4 * 4 * 2, D // 2)
+
+    def test_table_odd_split_raises(self):
+        """Odd d_h/d_w/d_t should raise ValueError."""
+        from mlx_mfa import make_rope_3d_tables
+        with pytest.raises(ValueError, match="even"):
+            make_rope_3d_tables(4, 4, 2, d_h=3, d_w=4, d_t=4, head_dim=11)
+
+    def test_rope_3d_via_explicit_tables(self):
+        """flash_attention_rope with explicit 3D tables matches Python RoPE."""
+        from mlx_mfa import make_rope_3d_tables, flash_attention_rope
+        B, H_heads, D = 1, 2, 64
+        grid_h, grid_w, T = 4, 4, 2
+        N = grid_h * grid_w * T
+
+        q = mx.random.normal((B, H_heads, N, D))
+        k = mx.random.normal((B, H_heads, N, D))
+        v = mx.random.normal((B, H_heads, N, D))
+        scale = 1.0 / D**0.5
+
+        cos, sin = make_rope_3d_tables(grid_h, grid_w, T, head_dim=D)
+
+        # Reference: Python RoPE then SDPA
+        q_rot = self._ref_apply_3d_rope(q, cos, sin)
+        k_rot = self._ref_apply_3d_rope(k, cos, sin)
+        ref = mx.fast.scaled_dot_product_attention(q_rot, k_rot, v, scale=scale)
+
+        # Flash attention with explicit cos/sin tables (treated as 1D tables by kernel)
+        out = flash_attention_rope(q, k, v, cos, sin, scale=scale)
+
+        mx.eval(out, ref)
+        diff = float(mx.abs(out - ref).max())
+        assert diff < 0.05, f"3D RoPE tables max diff too large: {diff}"
+
+    def test_rope_3d_dict_api(self):
+        """flash_attention_rope(rope_3d=...) builds tables automatically."""
+        from mlx_mfa import flash_attention_rope, make_rope_3d_tables
+        B, H_heads, D = 1, 2, 64
+        grid_h, grid_w, T = 4, 4, 2
+        N = grid_h * grid_w * T
+
+        q = mx.random.normal((B, H_heads, N, D))
+        k = mx.random.normal((B, H_heads, N, D))
+        v = mx.random.normal((B, H_heads, N, D))
+        scale = 1.0 / D**0.5
+
+        # Via explicit tables
+        cos, sin = make_rope_3d_tables(grid_h, grid_w, T, head_dim=D)
+        ref = flash_attention_rope(q, k, v, cos, sin, scale=scale)
+
+        # Via dict API
+        out = flash_attention_rope(q, k, v, scale=scale,
+                                    rope_3d={"grid_h": grid_h, "grid_w": grid_w,
+                                             "num_frames": T})
+        mx.eval(out, ref)
+        diff = float(mx.abs(out - ref).max())
+        assert diff < 1e-5, f"rope_3d dict API mismatch: {diff}"
+
+    def test_rope_3d_no_effect_when_none(self):
+        """No rope → plain flash_attention output."""
+        from mlx_mfa import flash_attention_rope, flash_attention
+        B, H_heads, D = 1, 2, 64
+        N = 32
+
+        q = mx.random.normal((B, H_heads, N, D))
+        k = mx.random.normal((B, H_heads, N, D))
+        v = mx.random.normal((B, H_heads, N, D))
+        scale = 1.0 / D**0.5
+
+        # Build identity RoPE (cos=1, sin=0)
+        import numpy as _np
+        cos_eye = mx.array(_np.ones((N, D // 2), dtype=_np.float32))
+        sin_eye = mx.array(_np.zeros((N, D // 2), dtype=_np.float32))
+
+        out_rope = flash_attention_rope(q, k, v, cos_eye, sin_eye, scale=scale)
+        out_plain = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_rope, out_plain)
+        diff = float(mx.abs(out_rope - out_plain).max())
+        assert diff < 1e-4, f"Identity RoPE should match plain attention: {diff}"
+
+    def test_rope_3d_exclusive_with_cos_sin(self):
+        """Providing both rope_3d and rotary_cos raises ValueError."""
+        from mlx_mfa import flash_attention_rope, make_rope_3d_tables
+        B, H, D = 1, 2, 64
+        N = 32
+        q = k = v = mx.zeros((B, H, N, D))
+        cos = sin = mx.zeros((N, D // 2))
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            flash_attention_rope(q, k, v, cos, sin,
+                                  rope_3d={"grid_h": 4, "grid_w": 4, "num_frames": 2})

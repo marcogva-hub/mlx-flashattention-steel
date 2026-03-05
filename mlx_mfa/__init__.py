@@ -31,6 +31,7 @@ from mlx_mfa.attention import (
     flash_attention_varlen,
     make_causal_block_mask,
     make_sliding_window_mask,
+    make_rope_3d_tables,
     is_mfa_available,
     get_device_info,
     get_supported_configs,
@@ -60,6 +61,8 @@ __all__ = [
     "make_segment_mask",
     "make_causal_segment_mask",
     "make_adaptive_window_mask",
+    # RoPE helpers
+    "make_rope_3d_tables",
     # Utilities
     "is_mfa_available",
     "get_device_info",
