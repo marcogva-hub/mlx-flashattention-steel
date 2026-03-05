@@ -35,6 +35,7 @@ class MFAttention : public mlx::core::Primitive {
     bool has_rope;       // RoPE fusion: rotary_cos/sin at last two inputs
     int  cache_seqlens;  // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
     float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
+    bool has_alibi;      // false = disabled; alibi_slopes at last input
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -78,6 +79,17 @@ mlx::core::array mfa_attention_forward(
     float scale,
     bool causal,
     float softcap = 0.0f,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
+/// Forward pass with ALiBi per-head position biases.
+/// alibi_slopes: float32 [H] (one scalar slope per query head).
+mlx::core::array mfa_attention_alibi_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& alibi_slopes,
+    float scale,
+    bool causal,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Forward pass with in-kernel RoPE fusion.

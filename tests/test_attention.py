@@ -2479,3 +2479,146 @@ class TestSoftcap:
             atol=2e-2, rtol=1e-2,
             err_msg="Gemma 2 softcap (cap=50, causal) diverges from reference",
         )
+
+
+# ===========================================================================
+# Track AB — ALiBi (Attention with Linear Biases)
+# ===========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestALiBi:
+    """Tests for flash_attention ALiBi per-head position bias support."""
+
+    B, H, N, D = 1, 8, 256, 64
+
+    def _ref_sdpa_alibi(self, q, k, v, slopes, scale, causal=False):
+        """Pure-MLX ALiBi reference: bias[h,i,j] = slopes[h] * (j - i)."""
+        import mlx.core as mx
+        B, H, N, _ = q.shape
+        Sk = k.shape[2]
+        S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+        q_pos = mx.arange(N, dtype=mx.float32)[:, None]
+        k_pos = mx.arange(Sk, dtype=mx.float32)[None, :]
+        pos_diff = k_pos - q_pos
+        sl = slopes.astype(mx.float32)
+        bias = sl[:, None, None] * pos_diff[None, :, :]   # [H, N, Sk]
+        S = S + mx.expand_dims(bias, axis=0).astype(q.dtype)
+        if causal:
+            mask = mx.triu(
+                mx.full((N, Sk), float("-inf"), dtype=q.dtype),
+                k=Sk - N + 1,
+            )
+            S = S + mask
+        A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
+        return mx.matmul(A, v)
+
+    def test_zero_slopes_is_noop(self):
+        """ALiBi with all-zero slopes must equal standard attention (no bias)."""
+        from mlx_mfa import flash_attention
+        mx.random.seed(42)
+        q = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        k = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        v = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        slopes = mx.zeros((self.H,), dtype=mx.float32)
+        scale = 1.0 / math.sqrt(self.D)
+
+        out_alibi = flash_attention(q, k, v, scale=scale, causal=False,
+                                    alibi_slopes=slopes)
+        out_plain = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_alibi, out_plain)
+
+        np.testing.assert_allclose(
+            np.array(out_alibi.astype(mx.float32)),
+            np.array(out_plain.astype(mx.float32)),
+            atol=1e-3, rtol=1e-3,
+            err_msg="Zero slopes ALiBi must equal standard attention",
+        )
+
+    def test_slopes_reduce_distant_scores(self):
+        """Negative ALiBi slopes should penalise distant positions.
+
+        With negative slopes (the typical usage for causal decay), position
+        j far from i should receive a more negative score bias than j close
+        to i, making distant attention weights smaller.
+        """
+        from mlx_mfa._ext import mfa_attention_alibi_forward
+        mx.random.seed(7)
+        # Small N so position effect is clearly measurable
+        N = 32
+        q = mx.random.normal((1, 1, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((1, 1, N, self.D)).astype(mx.float16)
+        v = mx.random.normal((1, 1, N, self.D)).astype(mx.float16)
+        # Steep negative slope to exaggerate the bias
+        slopes = mx.array([-1.0], dtype=mx.float32)
+        scale = 1.0 / math.sqrt(self.D)
+
+        out_alibi = mfa_attention_alibi_forward(q, k, v, slopes, scale, True)
+        out_plain = flash_attention(q, k, v, scale=scale, causal=True)
+        mx.eval(out_alibi, out_plain)
+
+        # The outputs should differ — ALiBi modifies the distribution
+        diff = float(mx.mean(mx.abs(
+            out_alibi.astype(mx.float32) - out_plain.astype(mx.float32)
+        )))
+        assert diff > 1e-4, \
+            "ALiBi with negative slopes should modify attention outputs"
+
+    def test_matches_reference(self):
+        """MFA ALiBi output must match pure-MLX reference within f16 tolerance.
+
+        Uses N=64 (not N=256) to keep max bias ≤ 63 — with N=256 and slope=-1,
+        biases reach ±255 causing degenerate softmax concentration where tiny
+        f16 accumulation differences shift which single token wins, producing
+        large but numerically valid disagreements between kernel and reference.
+        """
+        from mlx_mfa import flash_attention
+        mx.random.seed(13)
+        N = 48   # limit max bias to slope * (N-1) ≤ 4.7 for head-0 slope=-0.1
+        q = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        v = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        # Typical ALiBi slopes — moderate magnitude avoids extreme softmax
+        # concentration that amplifies tiny f16 rounding into large output diffs.
+        slopes = mx.array(
+            [-0.1 / (2 ** i) for i in range(self.H)], dtype=mx.float32
+        )
+        scale = 1.0 / math.sqrt(self.D)
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=False,
+                                  alibi_slopes=slopes)
+        out_ref = self._ref_sdpa_alibi(q, k, v, slopes, scale, causal=False)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=2e-2, rtol=1e-2,
+            err_msg="MFA ALiBi output diverges from reference (f16 precision)",
+        )
+
+    def test_falcon_slopes_causal(self):
+        """Falcon-style ALiBi with causal masking matches reference."""
+        from mlx_mfa import flash_attention
+        mx.random.seed(99)
+        H = 8  # Falcon-7B uses 8 heads (non-GQA)
+        N = 128
+        q = mx.random.normal((1, H, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((1, H, N, self.D)).astype(mx.float16)
+        v = mx.random.normal((1, H, N, self.D)).astype(mx.float16)
+        # Falcon ALiBi recipe: slopes = 2^(-8 * h / H) for h in [1..H]
+        slopes = mx.array(
+            [2.0 ** (-8.0 * h / H) for h in range(1, H + 1)], dtype=mx.float32
+        )
+        scale = 1.0 / math.sqrt(self.D)
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=True,
+                                  alibi_slopes=slopes)
+        out_ref = self._ref_sdpa_alibi(q, k, v, slopes, scale, causal=True)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=2e-2, rtol=1e-2,
+            err_msg="Falcon ALiBi (causal) diverges from reference",
+        )

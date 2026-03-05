@@ -132,6 +132,22 @@ NB_MODULE(_ext, m) {
     return info;
   }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name.");
 
+  // --- ALiBi-biased forward ---
+  m.def(
+      "mfa_attention_alibi_forward",
+      &mlx_mfa::mfa_attention_alibi_forward,
+      nb::arg("q"),
+      nb::arg("k"),
+      nb::arg("v"),
+      nb::arg("alibi_slopes"),
+      nb::arg("scale"),
+      nb::arg("causal"),
+      nb::arg("stream") = nb::none(),
+      "Flash Attention with ALiBi per-head linear position biases.\n"
+      "alibi_slopes: float32 [H], one slope per query head.\n"
+      "Bias = slope_h * (k_pos - q_pos) added before softmax.\n"
+      "Only f16/bf16 supported.");
+
   // --- RoPE-fused forward ---
   m.def(
       "mfa_attention_rope_forward",

@@ -76,7 +76,8 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const bool causal = key.causal;
   const bool sparse = key.sparse;
   const bool is_m3_plus = key.is_m3_plus;
-  const bool has_rope = key.has_rope;
+  const bool has_rope    = key.has_rope;
+  const bool has_alibi   = key.has_alibi;
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -489,6 +490,8 @@ struct MFAExpSubOp {
     ss << "    const device float* rotary_cos   [[buffer(7)]],\n";
     ss << "    const device float* rotary_sin   [[buffer(8)]],\n";
   }
+  if (has_alibi)
+    ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -725,6 +728,29 @@ struct MFAExpSubOp {
     ss << "        AccT s_nat = Stile.elems()[ii] * ln2;   // log2 → natural\n";
     ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
     ss << "        Stile.elems()[ii] = s_nat * log2e;       // natural → log2\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // ALiBi (Attention with Linear Biases) — per-head slope × (k_pos - q_pos)
+  // Added to scores in log2 domain: bias_log2 = slope * (k - q) * log2e
+  if (has_alibi) {
+    ss << "    // ALiBi: add per-head linear position bias to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int q_pos = (int)tid.x * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            Stile.frag_at(i, j)[jj] += slope * (float)(k_base + jj - q_pos);\n";
+    ss << "          }\n";
+    ss << "        }\n";
     ss << "      }\n";
     ss << "    }\n";
     ss << "\n";
@@ -1178,7 +1204,8 @@ std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& k
   const int TK = BK / 8;
   const int TQ = BQ / (WM * WN * 8);
 
-  const bool causal = key.causal;
+  const bool causal    = key.causal;
+  const bool has_alibi = key.has_alibi;
   const char* dtype_str = "half";
   if (key.dtype == 1)      dtype_str = "bfloat";
   else if (key.dtype == 2) dtype_str = "float";
@@ -1248,6 +1275,8 @@ struct MFAFlashDecodePartialParams {
   ss << "    device MFA_DTYPE*       pO [[buffer(3)]],\n";
   ss << "    device float*           pL [[buffer(4)]],\n";
   ss << "    const constant MFAFlashDecodePartialParams* p [[buffer(5)]],\n";
+  if (has_alibi)
+    ss << "    const device float* alibi_slopes [[buffer(6)]],\n";
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -1432,6 +1461,29 @@ struct MFAFlashDecodePartialParams {
     ss << "        AccT s_nat = Stile.elems()[ii] * ln2;   // log2 → natural\n";
     ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
     ss << "        Stile.elems()[ii] = s_nat * log2e;       // natural → log2\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // ALiBi per-head position bias (same formula as STEEL fwd)
+  if (has_alibi) {
+    ss << "    // ALiBi: add per-head linear position bias to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
+    // q_tile_id is already defined earlier in flash decode partial as (tid.x % NQ)
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int q_pos = (int)q_tile_id * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            Stile.frag_at(i, j)[jj] += slope * (float)(k_base + jj - q_pos);\n";
+    ss << "          }\n";
+    ss << "        }\n";
     ss << "      }\n";
     ss << "    }\n";
     ss << "\n";

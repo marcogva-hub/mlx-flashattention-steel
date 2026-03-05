@@ -230,8 +230,8 @@ void MFAttention::eval_gpu(
       D, BQ_s, BK_s, D, WM_s,
       params_.causal, /*sparse=*/false, is_m3_plus_steel,
       /*has_rope=*/false,
-      params_.softcap > 0.0f,  // softcap variant
-      /*has_alibi=*/false,
+      params_.softcap > 0.0f,   // softcap variant
+      params_.has_alibi,        // ALiBi position biases
       dtype_code
     };
     KK key_p2{
@@ -256,6 +256,10 @@ void MFAttention::eval_gpu(
     enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 3, 0);
     enc.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 4, 0);
     enc.set_bytes(pp, 5);
+    if (params_.has_alibi) {
+      // Flash Decode partial has no rope/block_mask: alibi_slopes is inputs[3]
+      enc.set_input_array(inputs[3], 6);
+    }
     enc.dispatch_threadgroups(
         MTL::Size::Make((size_t)(NQ_s * num_splits), (size_t)H, (size_t)B),
         MTL::Size::Make((size_t)TGP_s, 1, 1));
@@ -300,8 +304,8 @@ void MFAttention::eval_gpu(
     params_.has_block_mask,  // sparse variant when block_mask present
     is_m3_plus_steel,        // separate compiled pipeline for M3+ configs
     params_.has_rope,        // in-kernel RoPE fusion variant
-    params_.softcap > 0.0f,  // tanh softcapping variant
-    /*has_alibi=*/false,      // ALiBi not yet wired (Track AB)
+    params_.softcap > 0.0f,   // tanh softcapping variant
+    params_.has_alibi,        // ALiBi per-head position biases
     dtype_code
   };
 
@@ -357,8 +361,8 @@ void MFAttention::eval_gpu(
 
   // Optional features — must be set even when disabled (struct is zero-init'd
   // above but explicit assignment is clearer and guards against future refactors).
-  sp.softcap   = params_.softcap;   // 0.0 when disabled
-  sp.has_alibi = 0;                 // ALiBi not yet wired (Track AB)
+  sp.softcap   = params_.softcap;           // 0.0 when disabled
+  sp.has_alibi = params_.has_alibi ? 1 : 0;
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = d.get_command_encoder(stream().index);
@@ -381,6 +385,14 @@ void MFAttention::eval_gpu(
     int cos_idx = params_.has_block_mask ? 4 : 3;
     enc.set_input_array(inputs[cos_idx],     7);
     enc.set_input_array(inputs[cos_idx + 1], 8);
+  }
+  if (params_.has_alibi) {
+    // alibi_slopes [H] follows block_mask/rope in the input list.
+    // Dense + ALiBi (no block_mask, no rope): inputs[3]=alibi_slopes
+    int alibi_idx = 3
+        + (params_.has_block_mask ? 1 : 0)
+        + (params_.has_rope       ? 2 : 0);
+    enc.set_input_array(inputs[alibi_idx], 9);
   }
 
   // 3D grid: (NQ, H, B) — each threadgroup handles one Q tile, one head, one batch
@@ -677,7 +689,8 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
          params_.has_block_mask == o->params_.has_block_mask &&
          params_.has_rope       == o->params_.has_rope       &&
          params_.cache_seqlens  == o->params_.cache_seqlens  &&
-         params_.softcap        == o->params_.softcap;
+         params_.softcap        == o->params_.softcap        &&
+         params_.has_alibi      == o->params_.has_alibi;
 }
 
 // =========================================================================
@@ -881,6 +894,58 @@ mlx::core::array mfa_attention_rope_forward(
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
       {q, k, v, rotary_cos, rotary_sin});
+
+  return outputs[0];
+}
+
+// =========================================================================
+// Free function: mfa_attention_alibi_forward
+// =========================================================================
+
+mlx::core::array mfa_attention_alibi_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& alibi_slopes,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::invalid_argument("MFA alibi: expected 4D inputs [B, H, N, D]");
+
+  if (alibi_slopes.ndim() != 1)
+    throw std::invalid_argument(
+        "MFA alibi: alibi_slopes must be 1D [H]");
+
+  int D = q.shape(3);
+  if (D != 64 && D != 128 && D != 256)
+    throw std::invalid_argument(
+        "MFA alibi: head_dim must be 64, 128, or 256, got " +
+        std::to_string(D));
+
+  MFAttention::Params params{
+    D, scale, causal,
+    /*has_block_mask=*/false,
+    /*has_rope=*/false,
+    /*cache_seqlens=*/0,
+    /*softcap=*/0.0f,
+    /*has_alibi=*/true
+  };
+
+  auto out_shape  = q.shape();
+  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+
+  // inputs: [Q, K, V, alibi_slopes]
+  // Metal buffers: Q=0, K=1, V=2, O=3, L=4, params=5, alibi_slopes=9
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAttention>(s, params),
+      {q, k, v, alibi_slopes});
 
   return outputs[0];
 }

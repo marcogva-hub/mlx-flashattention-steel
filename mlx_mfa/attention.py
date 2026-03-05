@@ -43,6 +43,7 @@ def flash_attention(
     scale: Optional[float] = None,
     causal: bool = False,
     softcap: float = 0.0,
+    alibi_slopes: Optional[mx.array] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Compute scaled dot-product attention using Metal Flash Attention.
@@ -67,6 +68,11 @@ def flash_attention(
         softcap: Tanh softcapping factor (Gemma 2 / Grok style). When > 0,
             scores are capped via ``tanh(S / softcap) * softcap`` before
             softmax. Set to 0.0 (default) to disable.
+        alibi_slopes: Optional ALiBi per-head position biases (Press et al.,
+            2021). When not None, should be a 1-D float32 array of shape
+            ``[H]`` with one slope per query head.  The bias added to score
+            ``(i, j)`` for head ``h`` is ``alibi_slopes[h] * (j - i)``.
+            Incompatible with ``softcap``; only f16/bf16 use the MFA kernel.
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
@@ -124,7 +130,15 @@ def flash_attention(
     if not _can_use_mfa(q, head_dim):
         if softcap != 0.0:
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
+        if alibi_slopes is not None:
+            return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
         return _fallback_sdpa(q, k, v, scale, causal, stream)
+
+    # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
+    if alibi_slopes is not None:
+        if q.dtype == mx.float32:
+            return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
+        return _mfa_alibi_forward(q, k, v, alibi_slopes, scale, causal)
 
     return _mfa_forward(q, k, v, scale, causal, softcap, stream)
 
@@ -971,6 +985,54 @@ def _softcap_sdpa_ref(
     return mx.matmul(A, v)
 
 
+def _alibi_sdpa_ref(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    alibi_slopes: mx.array,
+    scale: float,
+    causal: bool,
+) -> mx.array:
+    """Reference SDPA with ALiBi per-head linear position biases (Press et al., 2021).
+
+    Used both as a fallback when MFA is unavailable / dtype is f32 and as the
+    differentiable backward oracle for the MFA ALiBi kernel path.
+
+    For head ``h``, the bias added to score ``(i, j)`` is::
+
+        bias[h, i, j] = alibi_slopes[h] * (j - i)
+
+    Because ``j - i <= 0`` for causal tokens (past keys are at lower indices),
+    ALiBi penalises distant positions, acting as a soft relative position bias
+    that degrades gracefully without position embedding tables.
+    """
+    B, H, N, _ = q.shape
+    Sk = k.shape[2]
+
+    # Raw scores: [B, H, N, Sk]
+    S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+
+    # Position indices: q_pos [N, 1], k_pos [1, Sk] → pos_diff [N, Sk]
+    q_pos = mx.arange(N, dtype=mx.float32)[:, None]
+    k_pos = mx.arange(Sk, dtype=mx.float32)[None, :]
+    pos_diff = k_pos - q_pos  # [N, Sk]
+
+    # slopes [H] → [H, 1, 1] * [1, N, Sk] → [H, N, Sk] → [1, H, N, Sk]
+    slopes = alibi_slopes.astype(mx.float32)
+    bias = (slopes[:, None, None] * pos_diff[None, :, :])  # [H, N, Sk]
+    bias = mx.expand_dims(bias, axis=0)                    # [1, H, N, Sk]
+
+    S = S + bias.astype(q.dtype)
+    if causal:
+        mask = mx.triu(
+            mx.full((N, Sk), float("-inf"), dtype=q.dtype),
+            k=Sk - N + 1,
+        )
+        S = S + mask
+    A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
+    return mx.matmul(A, v)
+
+
 def _can_use_mfa(q: mx.array, head_dim: int) -> bool:
     """Return True iff the MFA kernel can be dispatched for these inputs."""
     if head_dim not in _MFA_SUPPORTED_HDIMS:
@@ -1026,6 +1088,55 @@ def _sever_lazy_graph(arr: mx.array) -> mx.array:
     The pure-MLX add is preferred: no CPU round-trip, no bfloat16 numpy issue.
     """
     return arr + mx.zeros_like(arr)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_mfa_alibi_custom(scale: float, causal: bool):
+    """Return a custom-vjp MFA+ALiBi forward function for the given (scale, causal).
+
+    ``alibi_slopes`` is passed as an *extra* primal so that MLX's graph
+    carries it correctly.  Its gradient (d_slopes) is returned as zeros —
+    ALiBi slopes are a fixed hyperparameter, not a trained parameter.
+
+    The backward oracle is ``_alibi_sdpa_ref``: a pure-MLX reference SDPA
+    that MLX's autograd can differentiate through to obtain dQ/dK/dV.
+    """
+    from mlx_mfa._ext import mfa_attention_alibi_forward
+
+    @mx.custom_function
+    def _impl(q, k, v, alibi_slopes):
+        O = mfa_attention_alibi_forward(q, k, v, alibi_slopes, scale, causal)
+        return O
+
+    @_impl.vjp
+    def _backward(primals, cotangent, output):
+        q, k, v, alibi_slopes = primals
+        _, (dQ, dK, dV) = mx.vjp(
+            lambda q, k, v: _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal),
+            [q, k, v],
+            [cotangent],
+        )
+        # ALiBi slopes are not trainable; return zeros gradient.
+        d_slopes = mx.zeros_like(alibi_slopes)
+        return dQ, dK, dV, d_slopes
+
+    return _impl
+
+
+def _mfa_alibi_forward(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    alibi_slopes: mx.array,
+    scale: float,
+    causal: bool,
+) -> mx.array:
+    """Dispatch through the MFA+ALiBi custom-vjp path."""
+    q = mx.contiguous(q)
+    k = mx.contiguous(k)
+    v = mx.contiguous(v)
+    impl = _make_mfa_alibi_custom(scale, causal)
+    return impl(q, k, v, alibi_slopes)
 
 
 @functools.lru_cache(maxsize=64)
