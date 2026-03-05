@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from mlx_mfa import (
-    flash_attention, flash_attention_sparse,
+    flash_attention, flash_attention_rope, flash_attention_sparse,
     make_causal_block_mask, make_sliding_window_mask,
     is_mfa_available, get_device_info, get_supported_configs,
 )
@@ -1344,3 +1344,173 @@ class TestM5Detection:
         is_m5_plus = gen >= 17
         assert is_m3_plus is True, "M5 (gen=17) should be is_m3_plus=True"
         assert is_m5_plus is True, "M5 (gen=17) should be is_m5_plus=True"
+
+
+# ---------------------------------------------------------------------------
+# Track L: RoPE Fusion tests
+# ---------------------------------------------------------------------------
+
+def _make_rope_tables(max_len: int, head_dim: int, base: float = 10000.0):
+    """Build float32 [max_len, head_dim/2] cos/sin tables.
+
+    Uses the standard inverse-frequency formula::
+
+        theta_i = base^{-2i/D}   for i = 0, 1, ..., D/2 - 1
+        cos[pos, i] = cos(pos * theta_i)
+        sin[pos, i] = sin(pos * theta_i)
+    """
+    half_D = head_dim // 2
+    i = mx.arange(half_D, dtype=mx.float32)
+    inv_freq = 1.0 / (base ** (2.0 * i / head_dim))
+    positions = mx.arange(max_len, dtype=mx.float32)
+    # Outer product: [max_len, half_D]
+    angles = positions[:, None] * inv_freq[None, :]
+    return mx.cos(angles), mx.sin(angles)
+
+
+def _apply_rope_python(x, cos, sin, offset=0):
+    """Reference Python RoPE (interleaved pairs).
+
+    x: [B, H, N, D]
+    cos/sin: [max_len, D/2]
+    """
+    B, H, N, D = x.shape
+    half_D = D // 2
+    cos_n = cos[offset : offset + N, :]           # [N, D/2]
+    sin_n = sin[offset : offset + N, :]           # [N, D/2]
+    x_pairs = x.reshape(B, H, N, half_D, 2)
+    x0 = x_pairs[..., 0]
+    x1 = x_pairs[..., 1]
+    cos_bc = cos_n[None, None, :, :].astype(x.dtype)
+    sin_bc = sin_n[None, None, :, :].astype(x.dtype)
+    x0_rot = x0 * cos_bc - x1 * sin_bc
+    x1_rot = x0 * sin_bc + x1 * cos_bc
+    return mx.stack([x0_rot, x1_rot], axis=-1).reshape(B, H, N, D)
+
+
+@requires_ext
+class TestRoPEFusion:
+    """Tests for flash_attention_rope — in-kernel RoPE fusion.
+
+    Correctness: kernel result == (apply_rope_python + SDPA fallback).
+    """
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_rope_matches_python_reference(self, D):
+        """Fused RoPE kernel output matches Python RoPE + SDPA."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N, S = 1, 4, 64, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+
+        out_mfa = flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                       causal=False, cache_seqlens=0)
+        q_rot = _apply_rope_python(q, cos, sin, offset=0)
+        k_rot = _apply_rope_python(k, cos, sin, offset=0)
+        ref = mx.fast.scaled_dot_product_attention(q_rot, k_rot, v, scale=scale)
+        mx.eval(out_mfa, ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-2, atol=1e-2,
+            err_msg=f"RoPE mismatch at D={D}",
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_cache_seqlens_offset(self, D):
+        """cache_seqlens shifts Q positions (decode scenario)."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N, S = 1, 2, 4, 64   # N=4 simulates single-token decode
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(11)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, S, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+        cache_seqlens = 32   # Q tokens 0-3 are at absolute positions 32-35
+
+        out_mfa = flash_attention_rope(q, k, v, cos, sin, scale=scale,
+                                       causal=True,
+                                       cache_seqlens=cache_seqlens)
+        q_rot = _apply_rope_python(q, cos, sin, offset=cache_seqlens)
+        k_rot = _apply_rope_python(k, cos, sin, offset=0)
+        ref = mx.fast.scaled_dot_product_attention(
+            q_rot, k_rot, v, scale=scale,
+            mask=mx.triu(
+                mx.full((N, S), float("-inf"), dtype=mx.float16),
+                k=S - N + 1,
+            )
+        )
+        mx.eval(out_mfa, ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-2, atol=2e-2,
+            err_msg=f"RoPE cache_seqlens offset mismatch at D={D}",
+        )
+
+    def test_rope_fallback_for_float32(self):
+        """float32 inputs fall back to Python RoPE + SDPA (no error)."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N, D = 1, 2, 32, 64
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float32)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float32)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float32)
+        cos, sin = _make_rope_tables(128, D)
+
+        # Should not raise; fallback path applies RoPE in Python then calls SDPA
+        out = flash_attention_rope(q, k, v, cos, sin, scale=scale)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+
+    def test_rope_none_falls_back_to_regular_attention(self):
+        """With identity RoPE (cos=1, sin=0), result equals plain attention."""
+        from mlx_mfa import flash_attention, flash_attention_rope
+
+        B, H, N, D = 1, 2, 32, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(99)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+
+        # Identity rotation: cos=1, sin=0 everywhere → no rotation
+        cos_ones = mx.ones((N, D // 2), dtype=mx.float32)
+        sin_zeros = mx.zeros((N, D // 2), dtype=mx.float32)
+
+        out_rope = flash_attention_rope(q, k, v, cos_ones, sin_zeros, scale=scale)
+        out_plain = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_rope, out_plain)
+
+        np.testing.assert_allclose(
+            np.array(out_rope.astype(mx.float32)),
+            np.array(out_plain.astype(mx.float32)),
+            rtol=1e-2, atol=1e-3,
+            err_msg="Identity RoPE should match plain flash_attention",
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_rope_output_shape_and_dtype(self, D):
+        """Output has the same shape and dtype as Q."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N = 2, 4, 48
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+
+        out = flash_attention_rope(q, k, v, cos, sin, scale=1.0 / math.sqrt(D))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D), f"Expected {(B, H, N, D)}, got {out.shape}"
+        assert out.dtype == mx.float16, f"Expected float16, got {out.dtype}"

@@ -36,6 +36,9 @@ struct MFASteelParams {
     int qL_rem;        // elements in last Q block = qL % BQ  (0 if aligned)
     int kL_rem;        // elements in last K block = kL % BK
     int qL_off;        // query sequence offset for cross-attention (0 for self-attn)
+    // RoPE fusion params (only used when has_rope kernel variant is compiled)
+    int rope_q_base;   // absolute position of Q token 0 = cache_seqlens
+    int rope_cos_stride; // stride of rotary_cos along seq dim = D/2
     // Strides: [B, H, S] for Q/K/V/O  (D=1 stride is implicit)
     int64_t Q_strides[3];
     int64_t K_strides[3];

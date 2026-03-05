@@ -48,6 +48,7 @@ class ShaderCache {
     bool causal;
     bool sparse;     // true = block-sparse path (device uchar* block_mask at buffer(6))
     bool is_m3_plus; // GPUFamily(1009): preferAsyncCache vs preferAsyncLoad
+    bool has_rope;   // true = in-kernel RoPE fusion; rotary_cos/sin at buffer(7/8)
     uint8_t dtype;   // 0=f16, 1=bf16, 2=f32
 
     bool operator==(const KernelKey& other) const;

@@ -32,6 +32,8 @@ class MFAttention : public mlx::core::Primitive {
     float scale;        // Usually 1/sqrt(D)
     bool causal;        // Causal (autoregressive) masking
     bool has_block_mask; // Block-sparse: 4th input is uchar mask [NQ_tiles, NK_tiles]
+    bool has_rope;       // RoPE fusion: rotary_cos/sin at last two inputs
+    int  cache_seqlens;  // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -74,6 +76,20 @@ mlx::core::array mfa_attention_forward(
     const mlx::core::array& v,
     float scale,
     bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
+/// Forward pass with in-kernel RoPE fusion.
+/// rotary_cos / rotary_sin: float32 [max_seq_len, D/2].
+/// cache_seqlens: position of Q token 0 in the full sequence (KV cache length).
+mlx::core::array mfa_attention_rope_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& rotary_cos,
+    const mlx::core::array& rotary_sin,
+    float scale,
+    bool causal,
+    int cache_seqlens,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Block-sparse forward pass.

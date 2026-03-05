@@ -46,7 +46,10 @@ MFAttention::MFAttention(mlx::core::Stream stream, Params params)
 void MFAttention::eval_gpu(
     const std::vector<mlx::core::array>& inputs,
     std::vector<mlx::core::array>& outputs) {
-  assert(inputs.size() == 3 || inputs.size() == 4);
+  // 3 = dense (Q, K, V)
+  // 4 = sparse (Q, K, V, block_mask) or rope (Q, K, V, cos, sin) — 5 for rope
+  // 5 = rope (Q, K, V, rotary_cos, rotary_sin)
+  assert(inputs.size() >= 3 && inputs.size() <= 5);
 
   const auto& q = inputs[0]; // [B, H, N, D]
   const auto& k = inputs[1]; // [B, H, S, D]
@@ -101,7 +104,8 @@ void MFAttention::eval_gpu(
     using KK = ShaderCache::KernelKey;
     KK ccv_key{ KK::KernelType::AttentionForward,
                 D, (int)bq, (int)bk, (int)bd, (int)nw,
-                params_.causal, /*sparse=*/false, is_m3_plus, dtype_code };
+                params_.causal, /*sparse=*/false, is_m3_plus,
+                /*has_rope=*/false, dtype_code };
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
     auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -219,12 +223,13 @@ void MFAttention::eval_gpu(
     KK key_p1{
       KK::KernelType::FlashDecodePartial,
       D, BQ_s, BK_s, D, WM_s,
-      params_.causal, /*sparse=*/false, is_m3_plus_steel, dtype_code
+      params_.causal, /*sparse=*/false, is_m3_plus_steel,
+      /*has_rope=*/false, dtype_code
     };
     KK key_p2{
       KK::KernelType::FlashDecodeReduce,
       D, 0, 0, 0, 0,
-      false, false, false, dtype_code
+      false, false, false, /*has_rope=*/false, dtype_code
     };
     auto* pl_p1 = reinterpret_cast<MTL::ComputePipelineState*>(
         ShaderCache::get().get_or_compile(key_p1, d.mtl_device()));
@@ -284,6 +289,7 @@ void MFAttention::eval_gpu(
     params_.causal,
     params_.has_block_mask,  // sparse variant when block_mask present
     is_m3_plus_steel,        // separate compiled pipeline for M3+ configs
+    params_.has_rope,        // in-kernel RoPE fusion variant
     dtype_code
   };
 
@@ -315,6 +321,11 @@ void MFAttention::eval_gpu(
   // to query row q when k <= q + qL_off.  For self-attention N==S → qL_off=0.
   sp.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
 
+  // RoPE fusion: absolute position of Q token 0 and stride of cos/sin table.
+  // Both are zero when has_rope=false; the Metal kernel ignores them.
+  sp.rope_q_base     = params_.cache_seqlens;
+  sp.rope_cos_stride = D / 2;
+
   // Strides: [B, H, S] in elements (D=1 implicit)
   sp.Q_strides[0] = (int64_t)H * N * D;
   sp.Q_strides[1] = (int64_t)N * D;
@@ -345,6 +356,14 @@ void MFAttention::eval_gpu(
   enc.set_bytes(sp,               5);
   if (params_.has_block_mask) {
     enc.set_input_array(inputs[3], 6);
+  }
+  if (params_.has_rope) {
+    // rotary_cos and rotary_sin follow block_mask (if present) in the input list.
+    // Dense + RoPE: inputs[3]=cos, inputs[4]=sin
+    // Sparse + RoPE (not currently exposed): inputs[4]=cos, inputs[5]=sin
+    int cos_idx = params_.has_block_mask ? 4 : 3;
+    enc.set_input_array(inputs[cos_idx],     7);
+    enc.set_input_array(inputs[cos_idx + 1], 8);
   }
 
   // 3D grid: (NQ, H, B) — each threadgroup handles one Q tile, one head, one batch
@@ -500,7 +519,7 @@ void MFABackwardQuery::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDQ,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, /*sparse=*/false, is_m3_plus, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -599,7 +618,7 @@ void MFABackwardKeyValue::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDKV,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, /*sparse=*/false, is_m3_plus, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -633,10 +652,12 @@ void MFABackwardKeyValue::eval_gpu(
 bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
   auto* o = dynamic_cast<const MFAttention*>(&other);
   if (!o) return false;
-  return params_.head_dim      == o->params_.head_dim      &&
-         params_.scale         == o->params_.scale         &&
-         params_.causal        == o->params_.causal        &&
-         params_.has_block_mask == o->params_.has_block_mask;
+  return params_.head_dim       == o->params_.head_dim       &&
+         params_.scale          == o->params_.scale          &&
+         params_.causal         == o->params_.causal         &&
+         params_.has_block_mask == o->params_.has_block_mask &&
+         params_.has_rope       == o->params_.has_rope       &&
+         params_.cache_seqlens  == o->params_.cache_seqlens;
 }
 
 // =========================================================================
@@ -771,6 +792,74 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
       {q, k, v, block_mask});
 
   return {outputs[0], outputs[1]};  // O, L
+}
+
+// =========================================================================
+// Free function: mfa_attention_rope_forward
+// =========================================================================
+//
+// Forward pass with in-kernel RoPE fusion.
+//   rotary_cos / rotary_sin: float32 [max_seq_len, D/2].
+//   cache_seqlens: position of Q token 0 in the full sequence (KV cache length
+//                  for autoregressive decode; 0 for prefill).
+//
+// The RoPE rotation is applied in threadgroup SRAM immediately after loading
+// Q and K tiles — before the GEMM accumulation.  This fuses the rotary step
+// into the attention kernel and eliminates a separate elementwise pass.
+//
+// Only f16/bf16 is supported (STEEL path).  float32 raises an error.
+
+mlx::core::array mfa_attention_rope_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& rotary_cos,
+    const mlx::core::array& rotary_sin,
+    float scale,
+    bool causal,
+    int cache_seqlens,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
+    throw std::invalid_argument(
+        "MFA rope: expected 4D inputs [B, H, N, D]");
+  }
+
+  int D = q.shape(3);
+  if (D != 64 && D != 128 && D != 256) {
+    throw std::invalid_argument(
+        "MFA rope: head_dim must be 64, 128, or 256, got " +
+        std::to_string(D));
+  }
+
+  // RoPE fusion only on the STEEL path (f16/bf16).
+  if (q.dtype() == mlx::core::float32) {
+    throw std::invalid_argument(
+        "MFA rope: float32 is not supported; use float16 or bfloat16");
+  }
+
+  MFAttention::Params params{
+    D, scale, causal,
+    /*has_block_mask=*/false,
+    /*has_rope=*/true,
+    /*cache_seqlens=*/cache_seqlens
+  };
+
+  auto out_shape  = q.shape();
+  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+
+  // inputs: [Q, K, V, rotary_cos, rotary_sin]
+  // buffers in Metal: Q=0, K=1, V=2, O=3, L=4, params=5, cos=7, sin=8
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAttention>(s, params),
+      {q, k, v, rotary_cos, rotary_sin});
+
+  return outputs[0];
 }
 
 }  // namespace mlx_mfa

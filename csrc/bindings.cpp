@@ -130,6 +130,24 @@ NB_MODULE(_ext, m) {
     return info;
   }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name.");
 
+  // --- RoPE-fused forward ---
+  m.def(
+      "mfa_attention_rope_forward",
+      &mlx_mfa::mfa_attention_rope_forward,
+      nb::arg("q"),
+      nb::arg("k"),
+      nb::arg("v"),
+      nb::arg("rotary_cos"),
+      nb::arg("rotary_sin"),
+      nb::arg("scale"),
+      nb::arg("causal"),
+      nb::arg("cache_seqlens"),
+      nb::arg("stream") = nb::none(),
+      "Flash Attention with in-kernel RoPE fusion.\n"
+      "rotary_cos/sin: float32 [max_seq_len, D/2].\n"
+      "cache_seqlens: KV cache length (absolute position of Q token 0).\n"
+      "Only f16/bf16 supported.");
+
   // --- Block-sparse forward ---
   m.def("mfa_attention_sparse_forward",
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,

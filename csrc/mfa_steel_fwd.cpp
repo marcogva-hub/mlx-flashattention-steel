@@ -76,6 +76,7 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const bool causal = key.causal;
   const bool sparse = key.sparse;
   const bool is_m3_plus = key.is_m3_plus;
+  const bool has_rope = key.has_rope;
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -123,6 +124,9 @@ struct MFASteelParams {
   int qL_rem;
   int kL_rem;
   int qL_off;
+  // RoPE fusion params (present in all variants; unused when has_rope=false)
+  int rope_q_base;
+  int rope_cos_stride;
   long Q_strides[3];
   long K_strides[3];
   long V_strides[3];
@@ -478,6 +482,10 @@ struct MFAExpSubOp {
   ss << "    const constant MFASteelParams* p [[buffer(5)]],\n";
   if (sparse)
     ss << "    const device uchar* block_mask   [[buffer(6)]],\n";
+  if (has_rope) {
+    ss << "    const device float* rotary_cos   [[buffer(7)]],\n";
+    ss << "    const device float* rotary_sin   [[buffer(8)]],\n";
+  }
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -589,9 +597,32 @@ struct MFAExpSubOp {
   ss << "  } else {\n";
   ss << "    loader_q.load_unsafe();\n";
   ss << "  }\n";
+  // Q SRAM ready.  Optionally apply RoPE to Q in SRAM before register load.
+  // Each thread handles a non-overlapping slice of (Q_row, D_pair) tuples;
+  // no race conditions.  The existing barrier below synchronises writes.
+  ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  if (has_rope) {
+    ss << "  {\n";
+    ss << "    const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "    const int qabs_base = p->rope_q_base + (int)tid.x * MFA_BQ;\n";
+    ss << "    for (int ri = (int)local_id; ri < MFA_BQ * (MFA_BD/2);\n";
+    ss << "         ri += MFA_TGP_SIZE) {\n";
+    ss << "      const int row  = ri / (MFA_BD/2);\n";
+    ss << "      const int pair = ri % (MFA_BD/2);\n";
+    ss << "      const int cos_idx = (qabs_base + row) * p->rope_cos_stride + pair;\n";
+    ss << "      const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "      const float sin_v = rotary_sin[cos_idx];\n";
+    ss << "      const int si0 = row * LDQ + pair * 2;\n";
+    ss << "      const float q0 = (float)Qs[si0];\n";
+    ss << "      const float q1 = (float)Qs[si0 + 1];\n";
+    ss << "      Qs[si0]     = (T)(q0 * cos_v - q1 * sin_v);\n";
+    ss << "      Qs[si0 + 1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    ss << "    }\n";
+    ss << "  }\n";
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  }
   // Load Q from TGP into registers ONCE (key STEEL optimization: Q stays in
   // registers across all K-tile iterations; only K/V stream through TGP).
-  ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
   ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
   ss << "\n";
 
@@ -624,6 +655,34 @@ struct MFAExpSubOp {
   ss << "      loader_k.load_unsafe();\n";
   ss << "    }\n";
   ss << "\n";
+  // Optional RoPE fusion for K.
+  // K SRAM is transposed: element [k_row, d_col] stored at Ks[d_col*LDK+k_row].
+  // RoPE pair (d0=2*pair, d1=2*pair+1) maps to Ks[d0*LDK+k_row] / Ks[d1*LDK+k_row].
+  // Each thread handles a unique (pair, k_row) slice — no race conditions.
+  // A barrier before the RoPE block ensures all cooperative K-loader writes to
+  // SRAM are visible to every thread before any thread starts the RoPE reads.
+  // The second barrier (after Stile.clear()) protects the subsequent GEMM.
+  if (has_rope) {
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    {\n";
+    ss << "      const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "      const int kabs_base = kb * MFA_BK;\n";
+    ss << "      for (int ri = (int)local_id; ri < MFA_BK * (MFA_BD/2);\n";
+    ss << "           ri += MFA_TGP_SIZE) {\n";
+    ss << "        const int k_row = ri % MFA_BK;\n";
+    ss << "        const int pair  = ri / MFA_BK;\n";
+    ss << "        const int cos_idx = (kabs_base + k_row) * p->rope_cos_stride + pair;\n";
+    ss << "        const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "        const float sin_v = rotary_sin[cos_idx];\n";
+    ss << "        const int si0 = pair * 2       * LDK + k_row;\n";
+    ss << "        const int si1 = (pair * 2 + 1) * LDK + k_row;\n";
+    ss << "        const float k0 = (float)Ks[si0];\n";
+    ss << "        const float k1 = (float)Ks[si1];\n";
+    ss << "        Ks[si0] = (T)(k0 * cos_v - k1 * sin_v);\n";
+    ss << "        Ks[si1] = (T)(k0 * sin_v + k1 * cos_v);\n";
+    ss << "      }\n";
+    ss << "    }\n";
+  }
   // S = Q @ K^T  (Q is in registers; only K is loaded from TGP per DD slice)
   ss << "    Stile.clear();\n";
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
