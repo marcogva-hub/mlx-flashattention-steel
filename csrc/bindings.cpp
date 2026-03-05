@@ -147,5 +147,23 @@ NB_MODULE(_ext, m) {
         "block_mask: uint8 [NQ_tiles, NK_tiles]. 1=compute, 0=skip.\n"
         "Returns O [B, H, N, D]. Only f16/bf16 supported.");
 
+  // --- Block-sparse forward returning (O, L) for use by native backward ---
+  m.def("mfa_attention_sparse_forward_with_lse",
+        [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
+           mlx::core::array block_mask,
+           float scale, bool causal,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> std::pair<mlx::core::array, mlx::core::array> {
+          auto outs = mlx_mfa::mfa_attention_sparse_forward_with_lse(
+              q, k, v, block_mask, scale, causal, stream);
+          return {outs[0], outs[1]};
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("causal"),
+        nb::arg("stream") = nb::none(),
+        "Block-sparse forward returning (O, L) where L is logsumexp [B,H,N].\n"
+        "Used by the native sparse backward pass to avoid recomputation.\n"
+        "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
+
   m.attr("__version__") = "0.3.0";
 }

@@ -414,7 +414,9 @@ def flash_attention_sparse(
     v = mx.contiguous(v)
     mask_uint8 = block_mask.astype(mx.uint8)
     mask_uint8 = mx.contiguous(mask_uint8)
-    return impl(q, k, v, mask_uint8)
+    # _impl returns (O, L); public API returns only O.
+    O, _L = impl(q, k, v, mask_uint8)
+    return O
 
 
 def _make_mfa_sparse_custom(
@@ -422,21 +424,29 @@ def _make_mfa_sparse_custom(
     causal: bool,
     block_mask: mx.array,
 ):
-    """Build a custom_function wrapping the sparse STEEL kernel."""
-    from mlx_mfa._ext import mfa_attention_sparse_forward  # noqa: F401
+    """Build a custom_function wrapping the sparse STEEL kernel.
+
+    The forward returns (O, L) where L is the logsumexp [B, H, N].
+    L is saved as part of `output` in the vjp, ready for future native
+    sparse backward kernels (Track G.3-G.5).  Currently the backward uses
+    the dense SDPA path (correct but no sparsity speedup).
+    """
 
     @mx.custom_function
     def _impl(q, k, v, mask_uint8):
-        from mlx_mfa._ext import mfa_attention_sparse_forward as _fwd
-        from mlx_mfa._ext import mfa_forward_with_lse
-        O = _fwd(q, k, v, mask_uint8, scale, causal)
-        return O
+        # Returns (O, L) — L saved for backward via `output` parameter.
+        from mlx_mfa._ext import mfa_attention_sparse_forward_with_lse as _fwd
+        O, L = _fwd(q, k, v, mask_uint8, scale, causal)
+        return O, L
 
     @_impl.vjp
-    def _backward(primals, cotangent, output):
+    def _backward(primals, cotangents, outputs):
         q, k, v, mask_uint8 = primals
-        # Build float additive bias from block_mask for SDPA gradient.
-        # dense backward: correct, but no sparsity speedup.
+        dO, _dL = cotangents  # dL is zero (L not consumed downstream)
+        # O, L available from outputs — reserved for Track G native backward.
+        # _O, _L = outputs
+
+        # Dense SDPA backward (correct, no sparsity speedup).
         float_mask = _block_mask_to_float_bias(
             block_mask, q.shape[2], k.shape[2], scale_q_dtype=q.dtype
         )
@@ -451,7 +461,7 @@ def _make_mfa_sparse_custom(
                 q, k, v, scale=scale, mask=float_mask
             ),
             [q, k, v],
-            [cotangent],
+            [dO],
         )
         return dQ, dK, dV, mx.zeros_like(mask_uint8)
 

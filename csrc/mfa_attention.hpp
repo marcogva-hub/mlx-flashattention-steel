@@ -87,6 +87,17 @@ mlx::core::array mfa_attention_sparse_forward(
     bool causal,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
+/// Block-sparse forward returning (O, L) where L is logsumexp [B, H, N].
+/// Used by the native sparse backward to avoid gradient checkpointing.
+std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& block_mask,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
 // =========================================================================
 // MFABackwardQuery Primitive (Phase 3)
 // =========================================================================

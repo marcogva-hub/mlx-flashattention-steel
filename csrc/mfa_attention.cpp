@@ -593,4 +593,45 @@ mlx::core::array mfa_attention_sparse_forward(
   return outputs[0];
 }
 
+std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& block_mask,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
+  if (block_mask.ndim() != 2)
+    throw std::invalid_argument(
+        "MFA sparse: block_mask must be 2D [NQ_tiles, NK_tiles]");
+
+  int D = q.shape(3);
+  if (D != 64 && D != 128 && D != 256)
+    throw std::invalid_argument(
+        "MFA sparse: head_dim must be 64, 128, or 256, got " +
+        std::to_string(D));
+
+  if (q.dtype() == mlx::core::float32)
+    throw std::invalid_argument(
+        "MFA sparse: float32 is not supported; use float16 or bfloat16");
+
+  MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true};
+  auto out_shape = q.shape();
+  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAttention>(s, params),
+      {q, k, v, block_mask});
+
+  return {outputs[0], outputs[1]};  // O, L
+}
+
 }  // namespace mlx_mfa
