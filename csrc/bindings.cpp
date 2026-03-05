@@ -203,5 +203,5 @@ NB_MODULE(_ext, m) {
         "Used by the native sparse backward pass to avoid recomputation.\n"
         "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
 
-  m.attr("__version__") = "0.7.0";
+  m.attr("__version__") = "0.8.0";
 }
