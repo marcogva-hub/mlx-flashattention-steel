@@ -105,7 +105,9 @@ void MFAttention::eval_gpu(
     KK ccv_key{ KK::KernelType::AttentionForward,
                 D, (int)bq, (int)bk, (int)bd, (int)nw,
                 params_.causal, /*sparse=*/false, is_m3_plus,
-                /*has_rope=*/false, dtype_code };
+                /*has_rope=*/false,
+                /*has_softcap=*/false, /*has_alibi=*/false,
+                dtype_code };
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
     auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -200,6 +202,9 @@ void MFAttention::eval_gpu(
     pp.pL_batch_stride = (int64_t)H * N;
     pp.pL_head_stride  = (int64_t)N;
 
+    // Optional features
+    pp.softcap = params_.softcap;   // 0.0 when disabled
+
     // ── Build FlashDecodeReduceParams ──────────────────────────────────────
     int reduce_tgp = std::min(D, 128);
     FlashDecodeReduceParams rp{};
@@ -224,12 +229,17 @@ void MFAttention::eval_gpu(
       KK::KernelType::FlashDecodePartial,
       D, BQ_s, BK_s, D, WM_s,
       params_.causal, /*sparse=*/false, is_m3_plus_steel,
-      /*has_rope=*/false, dtype_code
+      /*has_rope=*/false,
+      params_.softcap > 0.0f,  // softcap variant
+      /*has_alibi=*/false,
+      dtype_code
     };
     KK key_p2{
       KK::KernelType::FlashDecodeReduce,
       D, 0, 0, 0, 0,
-      false, false, false, /*has_rope=*/false, dtype_code
+      false, false, false, /*has_rope=*/false,
+      /*has_softcap=*/false, /*has_alibi=*/false,
+      dtype_code
     };
     auto* pl_p1 = reinterpret_cast<MTL::ComputePipelineState*>(
         ShaderCache::get().get_or_compile(key_p1, d.mtl_device()));
@@ -290,6 +300,8 @@ void MFAttention::eval_gpu(
     params_.has_block_mask,  // sparse variant when block_mask present
     is_m3_plus_steel,        // separate compiled pipeline for M3+ configs
     params_.has_rope,        // in-kernel RoPE fusion variant
+    params_.softcap > 0.0f,  // tanh softcapping variant
+    /*has_alibi=*/false,      // ALiBi not yet wired (Track AB)
     dtype_code
   };
 
@@ -342,6 +354,11 @@ void MFAttention::eval_gpu(
   // L strides: [B, H] with per-head stride = N
   sp.L_strides[0] = (int64_t)H * N;
   sp.L_strides[1] = (int64_t)N;
+
+  // Optional features — must be set even when disabled (struct is zero-init'd
+  // above but explicit assignment is clearer and guards against future refactors).
+  sp.softcap   = params_.softcap;   // 0.0 when disabled
+  sp.has_alibi = 0;                 // ALiBi not yet wired (Track AB)
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = d.get_command_encoder(stream().index);
@@ -519,7 +536,8 @@ void MFABackwardQuery::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDQ,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
+    /*has_softcap=*/false, /*has_alibi=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -618,7 +636,8 @@ void MFABackwardKeyValue::eval_gpu(
   KK key{
     KK::KernelType::AttentionBackwardDKV,
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
-    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false, dtype_code
+    params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
+    /*has_softcap=*/false, /*has_alibi=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -657,7 +676,8 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
          params_.causal         == o->params_.causal         &&
          params_.has_block_mask == o->params_.has_block_mask &&
          params_.has_rope       == o->params_.has_rope       &&
-         params_.cache_seqlens  == o->params_.cache_seqlens;
+         params_.cache_seqlens  == o->params_.cache_seqlens  &&
+         params_.softcap        == o->params_.softcap;
 }
 
 // =========================================================================
@@ -670,6 +690,7 @@ mlx::core::array mfa_attention_forward(
     const mlx::core::array& v,
     float scale,
     bool causal,
+    float softcap,
     std::optional<mlx::core::StreamOrDevice> stream) {
   auto s = stream.has_value()
       ? mlx::core::to_stream(stream.value())
@@ -685,7 +706,9 @@ mlx::core::array mfa_attention_forward(
         "MFA: head_dim must be 64, 128, or 256, got " + std::to_string(D));
   }
 
-  MFAttention::Params params{D, scale, causal, /*has_block_mask=*/false};
+  MFAttention::Params params{D, scale, causal,
+      /*has_block_mask=*/false, /*has_rope=*/false,
+      /*cache_seqlens=*/0, softcap};
 
   auto out_shape  = q.shape();                      // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {

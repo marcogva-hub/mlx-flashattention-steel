@@ -34,6 +34,7 @@ class MFAttention : public mlx::core::Primitive {
     bool has_block_mask; // Block-sparse: 4th input is uchar mask [NQ_tiles, NK_tiles]
     bool has_rope;       // RoPE fusion: rotary_cos/sin at last two inputs
     int  cache_seqlens;  // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
+    float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -76,6 +77,7 @@ mlx::core::array mfa_attention_forward(
     const mlx::core::array& v,
     float scale,
     bool causal,
+    float softcap = 0.0f,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Forward pass with in-kernel RoPE fusion.

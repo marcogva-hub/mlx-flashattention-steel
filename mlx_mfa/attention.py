@@ -42,6 +42,7 @@ def flash_attention(
     v: mx.array,
     scale: Optional[float] = None,
     causal: bool = False,
+    softcap: float = 0.0,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Compute scaled dot-product attention using Metal Flash Attention.
@@ -63,6 +64,9 @@ def flash_attention(
         v: Value tensor of shape ``[batch, heads, kv_len, head_dim]``.
         scale: Attention scale factor. Defaults to ``1 / sqrt(head_dim)``.
         causal: Whether to apply causal (autoregressive) masking.
+        softcap: Tanh softcapping factor (Gemma 2 / Grok style). When > 0,
+            scores are capped via ``tanh(S / softcap) * softcap`` before
+            softmax. Set to 0.0 (default) to disable.
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
@@ -118,9 +122,11 @@ def flash_attention(
             )
 
     if not _can_use_mfa(q, head_dim):
+        if softcap != 0.0:
+            return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         return _fallback_sdpa(q, k, v, scale, causal, stream)
 
-    return _mfa_forward(q, k, v, scale, causal, stream)
+    return _mfa_forward(q, k, v, scale, causal, softcap, stream)
 
 
 def make_rope_3d_tables(
@@ -930,6 +936,41 @@ def _sparse_backward_tiled(
 # ---------------------------------------------------------------------------
 
 
+def _softcap_sdpa_ref(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: float,
+    causal: bool,
+    softcap: float,
+) -> mx.array:
+    """Reference SDPA with tanh softcapping (Gemma 2 / Grok style).
+
+    Used both as a fallback when MFA is unavailable and as the differentiable
+    backward oracle for the MFA softcap path.  The computation is::
+
+        S = Q @ K^T * scale
+        S = tanh(S / softcap) * softcap
+        if causal: S += upper-triangle(-inf) mask
+        A = softmax(S, axis=-1)
+        return A @ V
+    """
+    # Raw attention scores: [B, H, N, S]
+    S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+    # Tanh softcapping
+    S = mx.tanh(S / softcap) * softcap
+    if causal:
+        N, Sk = q.shape[2], k.shape[2]
+        mask = mx.triu(
+            mx.full((N, Sk), float("-inf"), dtype=q.dtype),
+            k=Sk - N + 1,
+        )
+        S = S + mask
+    # Softmax in float32 for numerical stability, then cast back
+    A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
+    return mx.matmul(A, v)
+
+
 def _can_use_mfa(q: mx.array, head_dim: int) -> bool:
     """Return True iff the MFA kernel can be dispatched for these inputs."""
     if head_dim not in _MFA_SUPPORTED_HDIMS:
@@ -987,9 +1028,9 @@ def _sever_lazy_graph(arr: mx.array) -> mx.array:
     return arr + mx.zeros_like(arr)
 
 
-@functools.lru_cache(maxsize=32)
-def _make_mfa_custom(scale: float, causal: bool):
-    """Return a custom-vjp MFA forward function for the given (scale, causal).
+@functools.lru_cache(maxsize=64)
+def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0):
+    """Return a custom-vjp MFA forward function for the given (scale, causal, softcap).
 
     ``lru_cache`` ensures the same Python function object (with its registered
     backward) is reused for identical hyperparameters, avoiding repeated
@@ -1004,17 +1045,19 @@ def _make_mfa_custom(scale: float, causal: bool):
     garbage, corrupting every P / dS / dQ computation.
 
     The Python ``custom_function`` completely bypasses that path.  The backward
-    re-materialises O by re-running the SDPA fallback, then uses MLX's
-    native SDPA backward via ``mx.vjp``.  This is simpler and more
-    maintainable than the ccv backward kernels while producing identical
-    gradients.
+    re-materialises O by re-running the SDPA fallback (or softcap reference
+    when softcap > 0), then uses MLX's native backward via ``mx.vjp``.
     """
-    from mlx_mfa._ext import mfa_forward_with_lse
+    from mlx_mfa._ext import mfa_attention_forward, mfa_forward_with_lse
 
     @mx.custom_function
     def _impl(q, k, v):
-        # Forward: STEEL kernel.  L is not stored (only O is needed).
-        O, _ = mfa_forward_with_lse(q, k, v, scale, causal)
+        if softcap == 0.0:
+            # Fast path: uses the debug binding that also returns L.
+            O, _ = mfa_forward_with_lse(q, k, v, scale, causal)
+        else:
+            # Softcap variant: dispatch C++ kernel with softcap parameter.
+            O = mfa_attention_forward(q, k, v, scale, causal, softcap)
         return O
 
     @_impl.vjp
@@ -1025,14 +1068,21 @@ def _make_mfa_custom(scale: float, causal: bool):
         #   output    - forward output O (unused; gradients are computed fresh)
         q, k, v = primals
 
-        # Use MLX's native SDPA backward via mx.vjp.
-        # mx.vjp(fn, primals, cotangents) returns (out, grads) where
-        # grads are the VJP of fn at primals with cotangents.
-        _, (dQ, dK, dV) = mx.vjp(
-            lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
-            [q, k, v],
-            [cotangent],
-        )
+        if softcap == 0.0:
+            # Use MLX's native SDPA backward via mx.vjp.
+            _, (dQ, dK, dV) = mx.vjp(
+                lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+                [q, k, v],
+                [cotangent],
+            )
+        else:
+            # Backward through tanh softcapping via the pure-MLX reference.
+            # mx.vjp correctly handles the chain rule through tanh(S/cap)*cap.
+            _, (dQ, dK, dV) = mx.vjp(
+                lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
+                [q, k, v],
+                [cotangent],
+            )
         return dQ, dK, dV
 
     return _impl
@@ -1044,6 +1094,7 @@ def _mfa_forward(
     v: mx.array,
     scale: float,
     causal: bool,
+    softcap: float = 0.0,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Dispatch through the MFA custom-vjp path.
@@ -1057,7 +1108,7 @@ def _mfa_forward(
     q = mx.contiguous(q)
     k = mx.contiguous(k)
     v = mx.contiguous(v)
-    impl = _make_mfa_custom(scale, causal)
+    impl = _make_mfa_custom(scale, causal, softcap)
     return impl(q, k, v)
 
 

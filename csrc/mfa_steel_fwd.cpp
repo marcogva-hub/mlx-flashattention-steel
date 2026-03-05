@@ -132,6 +132,9 @@ struct MFASteelParams {
   long V_strides[3];
   long O_strides[3];
   long L_strides[2];
+  // Optional features (appended for backward compat; defaults 0.0f / 0)
+  float softcap;   // 0.0 = disabled; >0 = tanh(S/cap)*cap before softmax
+  int   has_alibi; // 0 = disabled; 1 = ALiBi bias from buffer(9)
 };
 
 )MFA";
@@ -710,6 +713,23 @@ struct MFAExpSubOp {
   ss << "    }\n";
   ss << "\n";
 
+  // Softcapping (Gemma 2 / Grok) — operates in natural-log domain
+  if (key.has_softcap) {
+    ss << "    // Softcapping: tanh(S_nat / cap) * cap, convert log2 <-> natural\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      constexpr AccT ln2   = 0.6931471805599453f;\n";
+    ss << "      const AccT cap   = p->softcap;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+    ss << "        AccT s_nat = Stile.elems()[ii] * ln2;   // log2 → natural\n";
+    ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
+    ss << "        Stile.elems()[ii] = s_nat * log2e;       // natural → log2\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
   // K-boundary mask
   ss << "    // Mask padded K positions\n";
   ss << "    if (kb == p->NK_aligned) {\n";
@@ -1196,6 +1216,8 @@ struct MFAFlashDecodePartialParams {
   long pL_split_stride;
   long pL_batch_stride;
   long pL_head_stride;
+  // Optional features — appended at end for backward compatibility.
+  float softcap;
 };
 
 )MFAP";
@@ -1397,6 +1419,23 @@ struct MFAFlashDecodePartialParams {
   ss << "    for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++)\n";
   ss << "      Stile.elems()[ii] *= scale;\n";
   ss << "\n";
+
+  // Softcapping (Gemma 2 / Grok) — same log2↔natural conversion as STEEL fwd
+  if (key.has_softcap) {
+    ss << "    // Softcapping: tanh(S_nat / cap) * cap, convert log2 <-> natural\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      constexpr AccT ln2   = 0.6931471805599453f;\n";
+    ss << "      const AccT cap   = p->softcap;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+    ss << "        AccT s_nat = Stile.elems()[ii] * ln2;   // log2 → natural\n";
+    ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
+    ss << "        Stile.elems()[ii] = s_nat * log2e;       // natural → log2\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
 
   // Mask padding in last K-tile
   ss << "    if (kb == p->NK_aligned) {\n";

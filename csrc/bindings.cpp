@@ -24,9 +24,11 @@ NB_MODULE(_ext, m) {
       nb::arg("v"),
       nb::arg("scale"),
       nb::arg("causal"),
+      nb::arg("softcap") = 0.0f,
       nb::arg("stream") = nb::none(),
       "Flash Attention forward (Metal). "
-      "q/k/v: [B, H, N, D], float16/bfloat16/float32.");
+      "q/k/v: [B, H, N, D], float16/bfloat16/float32. "
+      "softcap: tanh softcapping factor (0.0 = disabled).");
 
   // Debug: returns (O, L) so L (logsumexp) can be inspected from Python.
   m.def("mfa_forward_with_lse",

@@ -2367,3 +2367,115 @@ class TestCrossStreamMask:
         out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (self.D ** 0.5))
         assert out.shape == (1, H, N_q, self.D)
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
+# =============================================================================
+# Track AA: Softcapping (Gemma 2 / Grok style)
+# =============================================================================
+
+class TestSoftcap:
+    """Tests for flash_attention(..., softcap=...) — Track AA."""
+
+    D = 128
+    B, H, N = 1, 4, 256
+
+    def _ref_sdpa_softcap(self, q, k, v, scale, causal, softcap):
+        """Pure-MLX reference SDPA with tanh softcapping."""
+        S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+        S = mx.tanh(S / softcap) * softcap
+        if causal:
+            Nq, Sk = q.shape[2], k.shape[2]
+            mask = mx.triu(
+                mx.full((Nq, Sk), float("-inf"), dtype=q.dtype),
+                k=Sk - Nq + 1,
+            )
+            S = S + mask
+        A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
+        return mx.matmul(A, v)
+
+    def test_softcap_zero_is_noop(self):
+        """softcap=0.0 must produce the same output as omitting softcap."""
+        from mlx_mfa import flash_attention
+        q = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        k = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        v = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        scale = 1.0 / math.sqrt(self.D)
+
+        out_default = flash_attention(q, k, v, scale=scale, causal=False)
+        out_zero    = flash_attention(q, k, v, scale=scale, causal=False, softcap=0.0)
+        mx.eval(out_default, out_zero)
+
+        np.testing.assert_allclose(
+            np.array(out_default.astype(mx.float32)),
+            np.array(out_zero.astype(mx.float32)),
+            atol=0.0, rtol=0.0,
+            err_msg="softcap=0.0 must be bit-identical to no softcap",
+        )
+
+    def test_softcap_reduces_extreme_scores(self):
+        """Scores with large magnitude must be compressed by tanh softcapping."""
+        from mlx_mfa import flash_attention
+        # Use a large scale so raw QK^T scores are large (>> softcap)
+        q = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float32)
+        k = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float32)
+        v = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float32)
+        big_scale = 10.0  # artificially large → raw scores will be huge
+
+        softcap = 50.0
+
+        # Reference: softcap applied → attention map softened
+        S_raw = (mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * big_scale)
+        S_cap = mx.tanh(S_raw / softcap) * softcap
+
+        mx.eval(S_raw, S_cap)
+        S_raw_np = np.array(S_raw)
+        S_cap_np = np.array(S_cap)
+
+        # After capping, max absolute score must be <= softcap
+        assert np.max(np.abs(S_cap_np)) <= softcap + 1e-4, (
+            f"Softcapped scores exceed cap: max={np.max(np.abs(S_cap_np)):.3f}"
+        )
+        # And the capped scores must differ from the raw ones (test the premise)
+        assert not np.allclose(S_raw_np, S_cap_np, atol=1e-3)
+
+    def test_softcap_matches_reference(self):
+        """MFA softcap output must match pure-MLX reference within f16 tolerance."""
+        from mlx_mfa import flash_attention
+        q = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        k = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        v = mx.random.normal((self.B, self.H, self.N, self.D)).astype(mx.float16)
+        scale = 1.0 / math.sqrt(self.D)
+        softcap = 50.0
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=False, softcap=softcap)
+        out_ref = self._ref_sdpa_softcap(q, k, v, scale, causal=False, softcap=softcap)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=2e-2, rtol=1e-2,
+            err_msg="MFA softcap output diverges from reference (f16 precision)",
+        )
+
+    def test_softcap_gemma2_value(self):
+        """Softcap=50 (Gemma 2 default) with causal mask matches reference."""
+        from mlx_mfa import flash_attention
+        # Smaller N to keep test fast; use causal=True (Gemma 2 typical)
+        N = 128
+        q = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        k = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        v = mx.random.normal((self.B, self.H, N, self.D)).astype(mx.float16)
+        scale = 1.0 / math.sqrt(self.D)
+        softcap = 50.0  # Gemma 2 default
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=True, softcap=softcap)
+        out_ref = self._ref_sdpa_softcap(q, k, v, scale, causal=True, softcap=softcap)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=2e-2, rtol=1e-2,
+            err_msg="Gemma 2 softcap (cap=50, causal) diverges from reference",
+        )

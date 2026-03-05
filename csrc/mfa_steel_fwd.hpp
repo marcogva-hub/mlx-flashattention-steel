@@ -46,6 +46,10 @@ struct MFASteelParams {
     int64_t O_strides[3];
     // L (logsumexp) strides: [B, H]  (qL=1 stride is implicit)
     int64_t L_strides[2];
+    // Optional features — appended at end for backward compatibility.
+    // Defaults: softcap=0.0f (disabled), has_alibi=0 (disabled).
+    float softcap;     // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
+    int   has_alibi;   // 0 = disabled; 1 = ALiBi per-head bias (buffer(9))
 };
 
 /// Select BQ/BK/BD/WM/WN based on head_dim and precision.
@@ -111,6 +115,8 @@ struct FlashDecodePartialParams {
     int64_t pL_split_stride;   // B * H * qL
     int64_t pL_batch_stride;   // H * qL
     int64_t pL_head_stride;    // qL
+    // Optional features — appended at end for backward compatibility.
+    float softcap;             // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
 };
 
 /// Parameters for the Flash Decode Phase 2 (reduce) kernel.
