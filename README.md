@@ -28,7 +28,9 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **Causal and non-causal** attention
 - **GQA / MQA** — Native Grouped Query Attention (no K/V expansion)
 - **Block-sparse attention** — `flash_attention_sparse()` with causal or sliding-window masks
+- **Flash Decoding** — split-KV parallelism for single-token decode (N≤4, S≥256); Phase 1 dispatches KV splits in parallel, Phase 2 reduces via log-sum-exp
 - **Cross-attention** — N_q != N_kv supported
+- **M5+ detection** — `is_m5_plus` flag in `get_device_info()`, reserved stub for Metal 4 tensor API (A19+)
 - **Graceful fallback** to `mx.fast.scaled_dot_product_attention` when the extension is unavailable or head_dim is unsupported
 
 ## Requirements
@@ -39,7 +41,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 | Python | 3.10+ |
 | MLX | >= 0.18.0 |
 | nanobind | >= 2.0 |
-| Apple Silicon | M1, M2, M3, M4 |
+| Apple Silicon | M1, M2, M3, M4 (M5+ stub) |
 
 ## Installation
 
@@ -253,9 +255,13 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | B   | Block-sparse attention (`flash_attention_sparse`) | **Done (v0.2.0)** |
 | C   | Native GQA kernel (gqa_factor in STEEL, no mx.repeat) | **Done (v0.3.0)** |
 | D   | mlx-lm integration (`patch_mlx_lm`) | **Done (v0.3.0)** |
+| F   | M3+ architecture routing (BK=32 for M3+) | **Done (v0.4.0)** |
+| G   | Sparse backward (tiled FA-2 dQ/dK/dV) | **Done (v0.4.0)** |
+| H   | Flash Decoding (split-KV, N≤4 decode) | **Done (v0.5.0)** |
+| I   | M5+ detection stub (gen≥17, is_m5_plus) | **Done (v0.5.0)** |
 | 6   | STEEL backward kernel | Planned |
 | 6   | Native sparse backward (no dense fallback) | Planned |
-| 6   | Flash Decoding for long contexts | Planned |
+| 6   | Metal 4 tensor API (M5+/A19+) | Planned |
 
 ## References
 

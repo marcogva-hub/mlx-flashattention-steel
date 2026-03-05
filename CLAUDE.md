@@ -114,10 +114,19 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-- Phase 1.1 DONE: scaffold, Python API with fallback, C++ skeleton
-- Phase 1.2 DONE: extract MFA kernels from ccv
-- Phase 1.3 DONE: decouple from ccv, wire into MLX
-- Phase 1.4 DONE: full forward (all D, dtypes, causal) — all 16 tests pass
+v0.5.0 in progress — 107 tests pass.
+
+| Track | Description | Status |
+|-------|-------------|--------|
+| 1.1–1.4 | Forward pass, ccv kernels | Done |
+| 1.5 | Backward via mx.vjp(SDPA) | Done |
+| 4 | GQA, public API, CI | Done |
+| A/B | STEEL kernel, D=256 block config | Done (v0.1.0) |
+| B | Block-sparse attention | Done (v0.2.0) |
+| C/D | Native GQA, mlx-lm integration | Done (v0.3.0) |
+| F/G | M3+ routing, sparse backward | Done (v0.4.0) |
+| H | Flash Decoding (split-KV) | Done (v0.5.0) |
+| I | M5+ detection stub | Done (v0.5.0) |
 
 ## Post-Phase 1 Technical Notes
 
@@ -183,6 +192,40 @@ python benchmarks/bench_attention.py
 - [Draw Things blog](https://engineering.drawthings.ai/p/integrating-metal-flashattention-accelerating-the-heart-of-image-generation-in-the-apple-ecosystem-16a86142eb18) -- Production validation
 - [MLX custom Metal kernels](https://ml-explore.github.io/mlx/build/html/dev/custom_metal_kernels.html)
 - [MLX C++ extensions](https://ml-explore.github.io/mlx/build/html/dev/extensions.html)
+
+## v0.5.0 Technical Notes
+
+### Flash Decoding (Track H)
+
+Two-phase split-KV decode for N_q ≤ 4 queries with S ≥ 256 KV (f16/bf16 only).
+Activated automatically in `eval_gpu()` when conditions are met.
+
+**Phase 1** (`mlx_mfa_flash_decode_partial`): Splits KV into `num_splits` chunks.
+Grid = `(NQ * num_splits, H, B)`. Outputs partial O/L to scratch buffers.
+
+**Phase 2** (`mlx_mfa_flash_decode_reduce`): Combines splits via exp2 LSE.
+Grid = `(N, H, B)`. Writes final O and logsumexp to MLX output arrays.
+
+**Critical fixes during development:**
+- `enc.barrier()` not `enc.maybeInsertBarrier()` between phases. The
+  `maybeInsertBarrier()` method is a no-op if `needs_barrier_` is false,
+  which is only set by `set_output_array()`. Raw `set_buffer()` calls for
+  scratch buffers never set this flag.
+- `qL_off = S - N` for causal decode (not 0). Query at position `i` must
+  see keys `0..(S - N + i)` — the K-loop start must be offset accordingly.
+- P@V loop: `for iq → for ik → for id` with V indexed as
+  `Vs[Vs_off + ik*8*LDV + id*8]` and `Stile.frag_at(iq, ik)`.
+
+**`compute_num_splits(kL, BK)`**: targets ≥2 K-tiles per split, capped at 32.
+
+### M5+ Detection Stub (Track I)
+
+`get_device_info()` now returns `is_m5_plus = (gen >= 17)`. Gen 17 = M5 family
+(A19 SoC with Metal 4 tensor API — `MTLTensor`, cooperative tensors). Not
+available on M1–M4. `TensorOpsForward` KernelType is reserved as a commented
+stub in `shader_cache.hpp` for when M5 hardware is available for implementation.
+
+`is_m5_plus` implies `is_m3_plus` (gen ≥ 17 ⊃ gen ≥ 15).
 
 ## Post-Phase 2 Technical Notes
 
