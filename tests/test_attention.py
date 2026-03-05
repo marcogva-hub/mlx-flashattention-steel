@@ -2729,3 +2729,93 @@ class TestRoPENonInterleaved:
         for name, g in zip(["dQ", "dK", "dV"], grads):
             assert mx.all(mx.isfinite(g)).item(), \
                 f"GPT-NeoX backward: {name} contains NaN/Inf at D={D}"
+
+
+# ---------------------------------------------------------------------------
+# Track AD — Per-batch cache_seqlens tensor
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not built")
+class TestPerBatchCacheSeqlens:
+    """Track AD: cache_seqlens as 1D array/list for per-batch RoPE offsets."""
+
+    D = 64
+
+    def _ref(self, q, k, v, cos, sin, cs_list, causal):
+        """Reference: per-batch loop with scalar cache_seqlens."""
+        from mlx_mfa import flash_attention_rope
+        chunks = [
+            flash_attention_rope(
+                q[b:b+1], k[b:b+1], v[b:b+1],
+                cos, sin, causal=causal,
+                cache_seqlens=cs_list[b],
+            )
+            for b in range(len(cs_list))
+        ]
+        return mx.concatenate(chunks, axis=0)
+
+    def test_list_matches_per_batch_ref(self):
+        """Passing a Python list equals per-batch scalar calls."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N = 4, 2, 32
+        D = self.D
+        mx.random.seed(22)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(256, D)
+        cs_list = [0, 16, 32, 64]
+
+        out_batch = flash_attention_rope(q, k, v, cos, sin,
+                                         cache_seqlens=cs_list, causal=False)
+        out_ref = self._ref(q, k, v, cos, sin, cs_list, causal=False)
+        mx.eval(out_batch, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_batch.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=0, rtol=0,
+            err_msg="Per-batch list cache_seqlens diverges from reference",
+        )
+
+    def test_array_matches_per_batch_ref(self):
+        """Passing an mx.array cache_seqlens equals per-batch scalar calls."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N = 3, 2, 16
+        D = self.D
+        mx.random.seed(33)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(128, D)
+        cs_arr = mx.array([0, 8, 24], dtype=mx.int32)
+        cs_list = [0, 8, 24]
+
+        out_batch = flash_attention_rope(q, k, v, cos, sin,
+                                         cache_seqlens=cs_arr, causal=True)
+        out_ref = self._ref(q, k, v, cos, sin, cs_list, causal=True)
+        mx.eval(out_batch, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_batch.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            atol=0, rtol=0,
+            err_msg="Per-batch mx.array cache_seqlens diverges from reference",
+        )
+
+    def test_length_mismatch_raises(self):
+        """cache_seqlens length != B raises ValueError."""
+        from mlx_mfa import flash_attention_rope
+
+        B, H, N, D = 2, 2, 16, 64
+        mx.random.seed(44)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(64, D)
+
+        with pytest.raises(ValueError, match="length.*must equal batch size"):
+            flash_attention_rope(q, k, v, cos, sin,
+                                  cache_seqlens=[0, 16, 32])  # len=3, B=2

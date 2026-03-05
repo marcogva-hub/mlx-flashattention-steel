@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import functools
 import math
-from typing import Optional
+from typing import Optional, Union, Sequence
 
 import mlx.core as mx
 
@@ -251,7 +251,7 @@ def flash_attention_rope(
     rotary_sin: Optional[mx.array] = None,
     scale: Optional[float] = None,
     causal: bool = False,
-    cache_seqlens: int = 0,
+    cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
     rope_3d: Optional[dict] = None,
     interleaved: bool = True,
     stream: Optional[mx.Stream] = None,
@@ -292,6 +292,8 @@ def flash_attention_rope(
         causal: Apply causal masking.
         cache_seqlens: KV cache length — absolute position of Q token 0.
             Use 0 for prefill, len(kv_cache) for autoregressive decode.
+            Can also be a 1D array/list of length ``B`` for per-batch offsets
+            (e.g. different decode positions in a batch).
             Only used in 1D mode.
         rope_3d: 3D RoPE config dict.  Required keys: ``grid_h``, ``grid_w``,
             ``num_frames``.  Optional: ``d_h``, ``d_w``, ``d_t``, ``theta``.
@@ -340,6 +342,28 @@ def flash_attention_rope(
             "flash_attention_rope requires either rotary_cos/rotary_sin (1D) "
             "or rope_3d (3D) to be provided."
         )
+
+    # Track AD: per-batch cache_seqlens — split along batch dim.
+    if not isinstance(cache_seqlens, int):
+        if isinstance(cache_seqlens, mx.array):
+            cs_list = [int(v) for v in cache_seqlens.tolist()]
+        else:
+            cs_list = [int(v) for v in cache_seqlens]
+        B = q.shape[0]
+        if len(cs_list) != B:
+            raise ValueError(
+                f"cache_seqlens length {len(cs_list)} must equal batch size B={B}"
+            )
+        chunks = [
+            flash_attention_rope(
+                q[b : b + 1], k[b : b + 1], v[b : b + 1],
+                rotary_cos, rotary_sin,
+                scale=scale, causal=causal, cache_seqlens=cs,
+                rope_3d=None, interleaved=interleaved, stream=stream,
+            )
+            for b, cs in enumerate(cs_list)
+        ]
+        return mx.concatenate(chunks, axis=0)
 
     # RoPE requires f16/bf16 on the STEEL path.
     # Fall back gracefully for f32 or unsupported head_dim.
