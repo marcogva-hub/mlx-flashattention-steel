@@ -2819,3 +2819,79 @@ class TestPerBatchCacheSeqlens:
         with pytest.raises(ValueError, match="length.*must equal batch size"):
             flash_attention_rope(q, k, v, cos, sin,
                                   cache_seqlens=[0, 16, 32])  # len=3, B=2
+
+
+# ---------------------------------------------------------------------------
+# Track AE — headdim_v != headdim_qk
+# ---------------------------------------------------------------------------
+
+class TestHeadDimVMismatch:
+    """Track AE: V may have a different head_dim than Q/K.
+
+    The MFA kernel requires equal head dims; the function falls back to SDPA.
+    """
+
+    def test_smaller_v_headdim(self):
+        """flash_attention with Dv < Dqk falls back to SDPA and returns Dv."""
+        from mlx_mfa import flash_attention
+
+        D_qk, D_v = 128, 64
+        mx.random.seed(55)
+        q = mx.random.normal((1, 4, 32, D_qk))
+        k = mx.random.normal((1, 4, 32, D_qk))
+        v = mx.random.normal((1, 4, 32, D_v))
+
+        out = flash_attention(q, k, v, causal=False)
+        mx.eval(out)
+
+        assert out.shape == (1, 4, 32, D_v), \
+            f"Expected shape (1,4,32,{D_v}), got {out.shape}"
+        assert mx.all(mx.isfinite(out)).item(), "Output contains NaN/Inf"
+
+    def test_larger_v_headdim(self):
+        """flash_attention with Dv > Dqk falls back to SDPA and returns Dv."""
+        from mlx_mfa import flash_attention
+
+        D_qk, D_v = 64, 128
+        mx.random.seed(66)
+        q = mx.random.normal((2, 2, 16, D_qk))
+        k = mx.random.normal((2, 2, 16, D_qk))
+        v = mx.random.normal((2, 2, 16, D_v))
+
+        out = flash_attention(q, k, v, causal=True)
+        mx.eval(out)
+
+        assert out.shape == (2, 2, 16, D_v), \
+            f"Expected shape (2,2,16,{D_v}), got {out.shape}"
+        assert mx.all(mx.isfinite(out)).item(), "Output contains NaN/Inf"
+
+    def test_matches_sdpa_reference(self):
+        """Dv != Dqk result matches mx.fast.scaled_dot_product_attention."""
+        from mlx_mfa import flash_attention
+
+        D_qk, D_v = 128, 64
+        scale = 1.0 / math.sqrt(D_qk)
+        mx.random.seed(77)
+        q = mx.random.normal((1, 2, 24, D_qk))
+        k = mx.random.normal((1, 2, 24, D_qk))
+        v = mx.random.normal((1, 2, 24, D_v))
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=False)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa), np.array(out_ref), atol=0, rtol=0,
+            err_msg="Dv!=Dqk fallback differs from SDPA reference",
+        )
+
+    def test_k_dim_mismatch_raises(self):
+        """K head_dim != Q head_dim must still raise ValueError."""
+        from mlx_mfa import flash_attention
+
+        q = mx.random.normal((1, 2, 8, 128))
+        k = mx.random.normal((1, 2, 8, 64))   # wrong K dim
+        v = mx.random.normal((1, 2, 8, 128))
+
+        with pytest.raises(ValueError, match="q and k must have the same head_dim"):
+            flash_attention(q, k, v)

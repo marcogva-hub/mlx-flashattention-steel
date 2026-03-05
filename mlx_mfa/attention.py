@@ -82,8 +82,10 @@ def flash_attention(
         in the same dtype as ``q``.
 
     Raises:
-        ValueError: If any input is not a 4-D tensor, or if q/k/v have
-            mismatched ``head_dim`` values.
+        ValueError: If any input is not a 4-D tensor, or if q and k have
+            mismatched ``head_dim`` values.  Note: v may have a different
+            ``head_dim`` than q/k (Track AE); the call falls back to SDPA
+            in that case.
 
     Example::
 
@@ -104,11 +106,17 @@ def flash_attention(
     q_dim = q.shape[-1]
     k_dim = k.shape[-1]
     v_dim = v.shape[-1]
-    if k_dim != q_dim or v_dim != q_dim:
+
+    # K must match Q for the attention score Q @ K^T.
+    if k_dim != q_dim:
         raise ValueError(
-            f"q, k, v must all have the same head_dim. "
-            f"Got q_dim={q_dim}, k_dim={k_dim}, v_dim={v_dim}."
+            f"q and k must have the same head_dim. "
+            f"Got q_dim={q_dim}, k_dim={k_dim}."
         )
+
+    # V may have a different head_dim (Track AE).  MFA kernel requires D_v==D_qk;
+    # fall back to SDPA when they differ — SDPA natively handles Dv != Dqk.
+    v_dim_mismatch = (v_dim != q_dim)
 
     head_dim = q_dim
     if scale is None:
@@ -127,7 +135,7 @@ def flash_attention(
                 f"by kv_heads ({kv_heads})."
             )
 
-    if not _can_use_mfa(q, head_dim):
+    if not _can_use_mfa(q, head_dim) or v_dim_mismatch:
         if softcap != 0.0:
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:
