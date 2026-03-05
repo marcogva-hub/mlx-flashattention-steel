@@ -935,3 +935,174 @@ class TestM3M4Path:
             out_m1, out_m3, atol=1e-2,
             err_msg="M1 (gen=13) and M3+ (gen=15) configs disagree for D=128",
         )
+
+
+# ---------------------------------------------------------------------------
+# Track G — Sparse backward (sdpa_sparse) tests
+# ---------------------------------------------------------------------------
+
+@requires_ext
+class TestSparseBackwardTiled:
+    """Verify backward='sdpa_sparse' (tiled Python backward with saved LSE).
+
+    All tests compare sdpa_sparse against sdpa (dense SDPA backward reference).
+    Both paths must agree to atol=2e-2 for f16.
+    """
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    def _grads(self, q, k, v, mask, scale, causal=False, backward="sdpa"):
+        """Return (dq, dk, dv) as np arrays for the given backward mode."""
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       causal=causal, backward=backward)
+            )
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        return (
+            np.array(dq.astype(mx.float32)),
+            np.array(dk.astype(mx.float32)),
+            np.array(dv.astype(mx.float32)),
+        )
+
+    # ── correctness against sdpa reference ──────────────────────────────────
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_sdpa_sparse_matches_sdpa_dense(self, D):
+        """sdpa_sparse gradients must match sdpa (dense) reference for all-true mask."""
+        B, H, N = 1, 4, 64
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=60)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((NQ, NK), dtype=mx.bool_)
+
+        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, backward="sdpa")
+        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale, backward="sdpa_sparse")
+
+        np.testing.assert_allclose(dq_ref, dq_sp,  atol=2e-2,
+                                    err_msg=f"D={D}: dQ sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dk_ref, dk_sp,  atol=2e-2,
+                                    err_msg=f"D={D}: dK sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dv_ref, dv_sp,  atol=2e-2,
+                                    err_msg=f"D={D}: dV sdpa_sparse != sdpa")
+
+    def test_sdpa_sparse_causal_matches_sdpa_dense(self):
+        """Causal sdpa_sparse must match causal sdpa reference."""
+        B, H, N, D = 1, 4, 64, 128
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=61)
+        scale = 1.0 / math.sqrt(D)
+        mask = make_causal_block_mask(N, head_dim=D)
+
+        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale,
+                                              causal=True, backward="sdpa")
+        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale,
+                                              causal=True, backward="sdpa_sparse")
+
+        np.testing.assert_allclose(dq_ref, dq_sp,  atol=2e-2,
+                                    err_msg="causal: dQ sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dk_ref, dk_sp,  atol=2e-2,
+                                    err_msg="causal: dK sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dv_ref, dv_sp,  atol=2e-2,
+                                    err_msg="causal: dV sdpa_sparse != sdpa")
+
+    def test_sdpa_sparse_sliding_window_matches_sdpa_dense(self):
+        """Sliding-window sdpa_sparse matches sdpa (dense) reference."""
+        B, H, N, D = 1, 4, 128, 128
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=62)
+        scale = 1.0 / math.sqrt(D)
+        mask = make_sliding_window_mask(N, window_size=32, head_dim=D)
+
+        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, backward="sdpa")
+        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale,
+                                              backward="sdpa_sparse")
+
+        np.testing.assert_allclose(dq_ref, dq_sp,  atol=2e-2,
+                                    err_msg="sliding: dQ sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dk_ref, dk_sp,  atol=2e-2,
+                                    err_msg="sliding: dK sdpa_sparse != sdpa")
+        np.testing.assert_allclose(dv_ref, dv_sp,  atol=2e-2,
+                                    err_msg="sliding: dV sdpa_sparse != sdpa")
+
+    # ── finite / shape tests ─────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_sdpa_sparse_gradients_finite(self, D):
+        """sdpa_sparse gradients must be finite (no NaN/Inf)."""
+        B, H, N = 1, 2, 64
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=63)
+        scale = 1.0 / math.sqrt(D)
+        mask = make_sliding_window_mask(N, window_size=32, head_dim=D)
+
+        dq, dk, dv = self._grads(q, k, v, mask, scale, backward="sdpa_sparse")
+        assert np.all(np.isfinite(dq)), f"D={D}: dQ has non-finite values"
+        assert np.all(np.isfinite(dk)), f"D={D}: dK has non-finite values"
+        assert np.all(np.isfinite(dv)), f"D={D}: dV has non-finite values"
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_sdpa_sparse_gradient_shapes(self, D):
+        """dQ/dK/dV shapes must match Q/K/V shapes."""
+        B, H, N = 1, 4, 64
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=64)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((NQ, NK), dtype=mx.bool_)
+
+        dq, dk, dv = self._grads(q, k, v, mask, scale, backward="sdpa_sparse")
+        assert list(dq.shape) == [B, H, N, D], f"dQ shape {dq.shape} != {[B,H,N,D]}"
+        assert list(dk.shape) == [B, H, N, D], f"dK shape {dk.shape} != {[B,H,N,D]}"
+        assert list(dv.shape) == [B, H, N, D], f"dV shape {dv.shape} != {[B,H,N,D]}"
+
+    # ── GQA sparse backward ──────────────────────────────────────────────────
+
+    def test_sdpa_sparse_gqa_shape_and_finite(self):
+        """GQA sdpa_sparse: dK/dV shapes must be [B, H_kv, S, D] and finite."""
+        B, H_q, H_kv, N, D = 1, 8, 2, 64, 128
+        mx.random.seed(65)
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((NQ, NK), dtype=mx.bool_)
+
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       backward="sdpa_sparse")
+            )
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+
+        assert list(dq.shape) == [B, H_q,  N, D], f"dQ shape {dq.shape}"
+        assert list(dk.shape) == [B, H_kv, N, D], f"dK shape {dk.shape}"
+        assert list(dv.shape) == [B, H_kv, N, D], f"dV shape {dv.shape}"
+        assert np.all(np.isfinite(np.array(dq.astype(mx.float32)))), "dQ non-finite"
+        assert np.all(np.isfinite(np.array(dk.astype(mx.float32)))), "dK non-finite"
+        assert np.all(np.isfinite(np.array(dv.astype(mx.float32)))), "dV non-finite"
+
+    # ── value_and_grad ───────────────────────────────────────────────────────
+
+    def test_sdpa_sparse_value_and_grad(self):
+        """mx.value_and_grad must work with sdpa_sparse backward."""
+        B, H, N, D = 1, 4, 64, 128
+        q, k, v = random_qkv(B, H, N, D, dtype=mx.float16, seed=66)
+        scale = 1.0 / math.sqrt(D)
+        mask = make_causal_block_mask(N, head_dim=D)
+
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       causal=True, backward="sdpa_sparse")
+            )
+        val_fn = mx.value_and_grad(loss, argnums=(0, 1, 2))
+        loss_val, (dq, dk, dv) = val_fn(q, k, v)
+        mx.eval(loss_val, dq, dk, dv)
+
+        assert np.isfinite(float(loss_val)), "loss is not finite"
+        assert np.all(np.isfinite(np.array(dq.astype(mx.float32)))), "dQ non-finite"
+        assert np.all(np.isfinite(np.array(dk.astype(mx.float32)))), "dK non-finite"
