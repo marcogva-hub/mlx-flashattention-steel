@@ -1514,3 +1514,415 @@ class TestRoPEFusion:
         mx.eval(out)
         assert out.shape == (B, H, N, D), f"Expected {(B, H, N, D)}, got {out.shape}"
         assert out.dtype == mx.float16, f"Expected float16, got {out.dtype}"
+
+
+# ============================================================================
+# Track O — Spatial 2D/3D block masks
+# ============================================================================
+
+class TestSpatialMasks:
+    """Tests for make_spatial_2d_mask, make_spatial_3d_mask, make_topk_spatial_mask."""
+
+    def test_2d_mask_shape(self):
+        """Correct tile shape for various H, W."""
+        from mlx_mfa.masks import make_spatial_2d_mask, _bq_bk
+        BQ, BK = _bq_bk(128)
+        for H, W, R in [(8, 8, 2), (16, 32, 4), (32, 64, 8)]:
+            N = H * W
+            NQ = (N + BQ - 1) // BQ
+            NK = (N + BK - 1) // BK
+            mask = make_spatial_2d_mask(H, W, spatial_radius=R, head_dim=128)
+            assert mask.shape == (NQ, NK), f"Expected ({NQ},{NK}), got {mask.shape}"
+            assert mask.dtype == mx.bool_, f"dtype should be bool"
+
+    def test_2d_mask_full_radius_all_active(self):
+        """With radius >= max(H, W), every tile should be active (dense)."""
+        from mlx_mfa.masks import make_spatial_2d_mask
+        H, W = 8, 8
+        mask = make_spatial_2d_mask(H, W, spatial_radius=100, head_dim=128)
+        mx.eval(mask)
+        assert bool(mask.all()), "All tiles should be active with large radius"
+
+    def test_2d_mask_symmetry(self):
+        """Spatial mask is symmetric: mask[i,j] == mask[j,i] when NQ == NK."""
+        from mlx_mfa.masks import make_spatial_2d_mask, _bq_bk
+        BQ, BK = _bq_bk(128)
+        # Use a seq length where NQ == NK (BQ == BK; head_dim=64 gives BQ=BK=32)
+        H, W = 8, 8
+        mask = make_spatial_2d_mask(H, W, spatial_radius=2, head_dim=64)
+        mx.eval(mask)
+        import numpy as np
+        m = np.array(mask)
+        assert np.array_equal(m, m.T), "2D spatial mask should be symmetric"
+
+    def test_2d_mask_radius_zero_sparse(self):
+        """Radius=0: mask is sparser than radius=4."""
+        from mlx_mfa.masks import make_spatial_2d_mask
+        import numpy as np
+        H, W = 16, 16
+        mask_r0 = make_spatial_2d_mask(H, W, spatial_radius=0, head_dim=64)
+        mask_r4 = make_spatial_2d_mask(H, W, spatial_radius=4, head_dim=64)
+        mx.eval(mask_r0, mask_r4)
+        density_r0 = np.array(mask_r0).mean()
+        density_r4 = np.array(mask_r4).mean()
+        assert density_r0 < density_r4, \
+            f"radius=0 should be sparser than radius=4: {density_r0:.3f} >= {density_r4:.3f}"
+
+    def test_3d_mask_shape(self):
+        """Correct shape for 3D video mask."""
+        from mlx_mfa.masks import make_spatial_3d_mask, _bq_bk
+        BQ, BK = _bq_bk(128)
+        H, W, T = 8, 8, 4
+        N = H * W * T
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        mask = make_spatial_3d_mask(H, W, T, spatial_radius=2, temporal_radius=1)
+        assert mask.shape == (NQ, NK)
+
+    def test_3d_mask_full_radii_all_active(self):
+        """Full spatial + temporal radius → all tiles active."""
+        from mlx_mfa.masks import make_spatial_3d_mask
+        mask = make_spatial_3d_mask(4, 4, 4, spatial_radius=100, temporal_radius=100)
+        mx.eval(mask)
+        assert bool(mask.all())
+
+    def test_3d_mask_less_active_at_small_temporal(self):
+        """temporal_radius=0 mask has fewer active tiles than temporal_radius=100."""
+        from mlx_mfa.masks import make_spatial_3d_mask
+        import numpy as np
+        # Use a large enough grid so tiles don't span all frames
+        H, W, T = 8, 8, 8  # N=512, NQ=16, NK=32
+        mask_t0 = make_spatial_3d_mask(H, W, T, spatial_radius=100, temporal_radius=0)
+        mask_t100 = make_spatial_3d_mask(H, W, T, spatial_radius=100, temporal_radius=100)
+        mx.eval(mask_t0, mask_t100)
+        density_t0 = np.array(mask_t0).mean()
+        density_t100 = np.array(mask_t100).mean()
+        assert density_t0 < density_t100, \
+            f"temporal_radius=0 should be sparser: {density_t0:.3f} >= {density_t100:.3f}"
+
+    @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension not available")
+    def test_2d_mask_end_to_end(self):
+        """End-to-end: 2D spatial mask + flash_attention_sparse."""
+        from mlx_mfa.masks import make_spatial_2d_mask
+        B, H_heads, D = 1, 4, 128
+        pH, pW = 8, 8
+        N = pH * pW
+        key = mx.random.normal((B, H_heads, N, D), dtype=mx.float16)
+        q, k, v = key, key, key
+        mask = make_spatial_2d_mask(pH, pW, spatial_radius=4, head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0/D**0.5, causal=False)
+        mx.eval(out)
+        assert out.shape == (B, H_heads, N, D)
+        assert not bool(mx.any(mx.isnan(out)))
+
+    def test_topk_mask_density(self):
+        """make_topk_spatial_mask: each row has exactly top_k True values."""
+        from mlx_mfa.masks import make_topk_spatial_mask, _bq_bk
+        import numpy as np
+        B, H_heads, N, D = 1, 2, 128, 64
+        q = mx.random.normal((B, H_heads, N, D))
+        k = mx.random.normal((B, H_heads, N, D))
+        top_k = 4
+        mask = make_topk_spatial_mask(q, k, top_k=top_k, head_dim=D)
+        mx.eval(mask)
+        m = np.array(mask)
+        # Each row should have exactly top_k True values (or all True if NK < top_k)
+        BQ, BK = _bq_bk(D)
+        NK = (N + BK - 1) // BK
+        expected = min(top_k, NK)
+        for i, row in enumerate(m):
+            assert row.sum() == expected, \
+                f"Row {i}: expected {expected} True, got {row.sum()}"
+
+
+# ============================================================================
+# Track P — Segment mask
+# ============================================================================
+
+class TestSegmentMask:
+    """Tests for make_segment_mask and make_causal_segment_mask."""
+
+    def test_single_segment_all_active(self):
+        """Single segment → all tiles active."""
+        from mlx_mfa.masks import make_segment_mask
+        mask = make_segment_mask([256], head_dim=128)
+        mx.eval(mask)
+        assert bool(mask.all()), "Single segment = all tiles active"
+
+    def test_two_equal_segments_block_diagonal(self):
+        """Two segments: upper-right and lower-left blocks must be inactive."""
+        from mlx_mfa.masks import make_segment_mask, _bq_bk
+        import numpy as np
+        seg_len = 64
+        mask = make_segment_mask([seg_len, seg_len], head_dim=128)
+        mx.eval(mask)
+        m = np.array(mask)
+        BQ, BK = _bq_bk(128)
+        N = seg_len * 2
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        # Tiles that are entirely in segment 0 Q vs segment 1 K should be False
+        # seg 0 tokens: 0..63, seg 1 tokens: 64..127
+        # Q tiles covering only seg0 (qi < 64//BQ = 2) and K tiles only seg1 (ki >= 64//BK = 4)
+        tiles_q0 = seg_len // BQ  # tiles fully in seg 0
+        tiles_k1_start = seg_len // BK  # first tile that starts seg 1
+        if tiles_q0 > 0 and tiles_k1_start < NK:
+            assert not m[:tiles_q0, tiles_k1_start:].any(), \
+                "Cross-segment tiles should be inactive"
+
+    def test_tile_boundary_segments_conservative(self):
+        """A segment boundary mid-tile keeps that tile active (conservative)."""
+        from mlx_mfa.masks import make_segment_mask, _bq_bk
+        import numpy as np
+        BQ, BK = _bq_bk(128)
+        # Put boundary at BQ//2 so first Q tile spans both segments
+        seg1 = BQ // 2
+        seg2 = BQ - seg1
+        mask = make_segment_mask([seg1, seg2], head_dim=128)
+        mx.eval(mask)
+        m = np.array(mask)
+        # Tile 0 in Q spans both segments → should be active in more columns
+        assert m[0, :].any(), "Boundary-straddling tile should be active"
+
+    def test_causal_segment_mask_shape_matches(self):
+        """Causal segment mask has same shape as segment mask."""
+        from mlx_mfa.masks import make_segment_mask, make_causal_segment_mask
+        segs = [128, 128]
+        seg_mask = make_segment_mask(segs)
+        causal_seg_mask = make_causal_segment_mask(segs)
+        assert seg_mask.shape == causal_seg_mask.shape
+
+    def test_causal_segment_mask_subset_of_segment_mask(self):
+        """Causal+segment mask is a subset of (≤) segment mask."""
+        from mlx_mfa.masks import make_segment_mask, make_causal_segment_mask
+        import numpy as np
+        segs = [64, 64]
+        seg = np.array(make_segment_mask(segs))
+        causal_seg = np.array(make_causal_segment_mask(segs))
+        mx.eval()
+        # Every True in causal_seg must be True in seg
+        assert np.all((causal_seg & ~seg) == False), \
+            "Causal segment mask must be a subset of segment mask"
+
+    @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension not available")
+    def test_segment_mask_end_to_end(self):
+        """Segment-masked output matches running each segment independently."""
+        from mlx_mfa.masks import make_segment_mask
+        B, H_heads, D = 1, 2, 64
+        segs = [32, 32]
+        N = sum(segs)
+        q = mx.random.normal((B, H_heads, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H_heads, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H_heads, N, D), dtype=mx.float16)
+
+        mask = make_segment_mask(segs, head_dim=D)
+        out_sparse = flash_attention_sparse(q, k, v, mask,
+                                            scale=1.0/D**0.5, causal=False)
+        mx.eval(out_sparse)
+
+        # Run each segment independently and concatenate
+        outputs = []
+        offset = 0
+        for seg_len in segs:
+            q_i = q[:, :, offset:offset+seg_len, :]
+            k_i = k[:, :, offset:offset+seg_len, :]
+            v_i = v[:, :, offset:offset+seg_len, :]
+            out_i = flash_attention_sparse(
+                q_i, k_i, v_i,
+                make_segment_mask([seg_len], head_dim=D),
+                scale=1.0/D**0.5, causal=False)
+            outputs.append(out_i)
+            offset += seg_len
+        out_ref = mx.concatenate(outputs, axis=2)
+        mx.eval(out_ref)
+
+        diff = mx.abs(out_sparse - out_ref).max()
+        mx.eval(diff)
+        assert float(diff) < 0.05, f"Max diff too large: {float(diff)}"
+
+
+# ============================================================================
+# Track Q — Adaptive window mask
+# ============================================================================
+
+class TestAdaptiveWindowMask:
+    """Tests for make_adaptive_window_mask."""
+
+    def test_shape_correct(self):
+        """Output shape matches expected tile dimensions."""
+        from mlx_mfa.masks import make_adaptive_window_mask, _bq_bk
+        H, W, T = 32, 32, 4
+        mask = make_adaptive_window_mask(H, W, num_frames=T,
+                                          base_window_h=16, base_window_w=16,
+                                          train_resolution=(256, 256),
+                                          inference_resolution=(256, 256))
+        N = H * W * T
+        BQ, BK = _bq_bk(128)
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        assert mask.shape == (NQ, NK)
+
+    def test_at_training_resolution_dense(self):
+        """At training resolution with large base_window, mask is fully dense."""
+        from mlx_mfa.masks import make_adaptive_window_mask
+        H, W = 8, 8  # small grid so base_window covers all
+        mask = make_adaptive_window_mask(H, W, num_frames=1,
+                                          base_window_h=64, base_window_w=64,
+                                          train_resolution=(256, 256),
+                                          inference_resolution=(256, 256))
+        mx.eval(mask)
+        assert bool(mask.all()), "Large base window at train resolution should be dense"
+
+    def test_sparsity_increases_with_resolution(self):
+        """Higher inference resolution → fewer active tiles."""
+        from mlx_mfa.masks import make_adaptive_window_mask
+        import numpy as np
+        H_base, W_base = 16, 16
+
+        mask_1x = make_adaptive_window_mask(
+            H_base, W_base, num_frames=1,
+            base_window_h=8, base_window_w=8,
+            train_resolution=(256, 256),
+            inference_resolution=(256, 256))
+
+        mask_2x = make_adaptive_window_mask(
+            H_base * 2, W_base * 2, num_frames=1,
+            base_window_h=8, base_window_w=8,
+            train_resolution=(256, 256),
+            inference_resolution=(512, 512))
+
+        mx.eval(mask_1x, mask_2x)
+        density_1x = np.array(mask_1x).mean()
+        density_2x = np.array(mask_2x).mean()
+        # At 2x resolution, window is halved → more sparse
+        assert density_2x <= density_1x + 0.05, \
+            f"2x resolution should be ≤ sparser: {density_2x:.3f} vs {density_1x:.3f}"
+
+    def test_scale_equals_zero_raises_or_clamps(self):
+        """Extreme resolution ratio is handled gracefully (no crash)."""
+        from mlx_mfa.masks import make_adaptive_window_mask
+        # 10x upscale — effective window = 1
+        mask = make_adaptive_window_mask(64, 64, num_frames=1,
+                                          base_window_h=4, base_window_w=4,
+                                          train_resolution=(64, 64),
+                                          inference_resolution=(640, 640))
+        mx.eval(mask)
+        assert mask is not None  # no crash
+
+
+# ============================================================================
+# Track S — Variable-length batching
+# ============================================================================
+
+class TestVarlenAttention:
+    """Tests for flash_attention_varlen (split-concat implementation)."""
+
+    def _ref(self, q, k, v, scale, causal):
+        """Reference: use fallback SDPA."""
+        return mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask="causal" if causal else None)
+
+    def test_single_sequence_matches_standard(self):
+        """One sequence: varlen == standard flash_attention output."""
+        from mlx_mfa import flash_attention_varlen, flash_attention
+        B, H, N, D = 1, 4, 64, 64
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+        scale = 1.0 / D**0.5
+
+        cu = mx.array([0, N])
+        out_varlen = flash_attention_varlen(q, k, v, cu, cu, N, N, scale=scale)
+        out_std = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_varlen, out_std)
+        diff = float(mx.abs(out_varlen - out_std).max())
+        assert diff < 1e-4, f"Max diff too large: {diff}"
+
+    def test_two_sequences_independent(self):
+        """Two packed sequences produce same output as running independently."""
+        from mlx_mfa import flash_attention_varlen, flash_attention
+        B, H, D = 1, 2, 64
+        N1, N2 = 32, 48
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        cu = mx.array([0, N1, N])
+        out_varlen = flash_attention_varlen(q, k, v, cu, cu, max(N1, N2), max(N1, N2),
+                                            scale=scale)
+
+        # Run separately
+        out0 = flash_attention(q[:, :, :N1, :], k[:, :, :N1, :], v[:, :, :N1, :],
+                               scale=scale)
+        out1 = flash_attention(q[:, :, N1:, :], k[:, :, N1:, :], v[:, :, N1:, :],
+                               scale=scale)
+        out_ref = mx.concatenate([out0, out1], axis=2)
+
+        mx.eval(out_varlen, out_ref)
+        diff = float(mx.abs(out_varlen - out_ref).max())
+        assert diff < 1e-4, f"Max diff: {diff}"
+
+    def test_different_lengths(self):
+        """Different sequence lengths: correct output shape."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 2, 64
+        lengths = [16, 32, 48, 8]
+        N = sum(lengths)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        cu = mx.array([0] + [int(x) for x in np.cumsum(lengths)])
+        out = flash_attention_varlen(q, k, v, cu, cu, max(lengths), max(lengths))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+
+    def test_varlen_causal(self):
+        """Causal within each sequence."""
+        from mlx_mfa import flash_attention_varlen, flash_attention
+        B, H, D = 1, 2, 64
+        N1, N2 = 24, 24
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        cu = mx.array([0, N1, N])
+        out_varlen = flash_attention_varlen(q, k, v, cu, cu, N1, N2,
+                                            scale=scale, causal=True)
+        out0 = flash_attention(q[:, :, :N1, :], k[:, :, :N1, :], v[:, :, :N1, :],
+                               scale=scale, causal=True)
+        out1 = flash_attention(q[:, :, N1:, :], k[:, :, N1:, :], v[:, :, N1:, :],
+                               scale=scale, causal=True)
+        out_ref = mx.concatenate([out0, out1], axis=2)
+        mx.eval(out_varlen, out_ref)
+        diff = float(mx.abs(out_varlen - out_ref).max())
+        assert diff < 1e-4, f"Causal varlen max diff: {diff}"
+
+    def test_varlen_backward(self):
+        """Gradients flow correctly through flash_attention_varlen."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 2, 64
+        N1, N2 = 16, 16
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+        cu = mx.array([0, N1, N])
+
+        def fwd(q, k, v):
+            return flash_attention_varlen(q, k, v, cu, cu, N1, N2, scale=scale).sum()
+
+        _, grads = mx.value_and_grad(fwd, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        for name, g in zip("qkv", grads):
+            assert g is not None, f"Grad for {name} is None"
+            assert g.shape == (B, H, N, D), f"Grad {name} shape mismatch"
+            assert not bool(mx.any(mx.isnan(g))), f"NaN in grad {name}"

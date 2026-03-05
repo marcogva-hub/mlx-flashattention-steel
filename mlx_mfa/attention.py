@@ -1047,3 +1047,79 @@ def _mfa_rope_forward(
     v = mx.contiguous(v)
     impl = _make_mfa_rope_custom(scale, causal, cache_seqlens)
     return impl(q, k, v, rotary_cos, rotary_sin)
+
+
+# ---------------------------------------------------------------------------
+# Track S — Variable-length batching (split-concat, v0.7.0)
+# ---------------------------------------------------------------------------
+
+def flash_attention_varlen(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    cu_seqlens_q: mx.array,
+    cu_seqlens_k: mx.array,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    block_mask: Optional[mx.array] = None,
+    stream: Optional[mx.StreamOrDevice] = None,
+) -> mx.array:
+    """Variable-length batched attention (split-concat implementation).
+
+    Multiple sequences of different lengths are packed into a single tensor
+    with ``B=1``.  Each sequence attends independently — no cross-sequence
+    attention.
+
+    Args:
+        q, k, v:         Packed tensors ``[1, H, total_tokens, D]``.
+        cu_seqlens_q:    Cumulative Q lengths, shape ``[num_seqs + 1]``.
+                         ``cu_seqlens_q[0] = 0``, ``cu_seqlens_q[-1] = total_q``.
+        cu_seqlens_k:    Cumulative KV lengths, shape ``[num_seqs + 1]``.
+        max_seqlen_q:    Maximum Q sequence length (used for validation only).
+        max_seqlen_k:    Maximum KV sequence length.
+        scale:           Attention scale.  Default: ``1/sqrt(D)``.
+        causal:          Causal masking within each sequence.
+        block_mask:      Optional block-sparse mask applied per sequence.
+                         If provided, must be valid for *each individual* sequence.
+        stream:          MLX stream/device.
+
+    Returns:
+        Output ``[1, H, total_q, D]``.
+
+    Example::
+
+        # Pack 3 clips: 64, 128, 96 tokens
+        cu_q = mx.array([0, 64, 192, 288])
+        cu_k = mx.array([0, 64, 192, 288])
+        out = flash_attention_varlen(q, k, v, cu_q, cu_k, 128, 128)
+    """
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+
+    # Convert cumulative lengths to Python ints for indexing
+    cu_q = [int(x) for x in cu_seqlens_q.tolist()]
+    cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
+    num_seqs = len(cu_q) - 1
+
+    if num_seqs == 0:
+        return q  # empty — return as-is
+
+    outputs = []
+    for i in range(num_seqs):
+        q_start, q_end = cu_q[i], cu_q[i + 1]
+        k_start, k_end = cu_k_list[i], cu_k_list[i + 1]
+
+        q_i = q[:, :, q_start:q_end, :]
+        k_i = k[:, :, k_start:k_end, :]
+        v_i = v[:, :, k_start:k_end, :]
+
+        kwargs: dict = {"scale": scale, "causal": causal, "stream": stream}
+        if block_mask is not None:
+            out_i = flash_attention_sparse(q_i, k_i, v_i, block_mask, **kwargs)
+        else:
+            out_i = flash_attention(q_i, k_i, v_i, **kwargs)
+        outputs.append(out_i)
+
+    return mx.concatenate(outputs, axis=2)

@@ -28,6 +28,7 @@ from mlx_mfa.attention import (
     flash_attention,
     flash_attention_rope,
     flash_attention_sparse,
+    flash_attention_varlen,
     make_causal_block_mask,
     make_sliding_window_mask,
     is_mfa_available,
@@ -35,12 +36,31 @@ from mlx_mfa.attention import (
     get_supported_configs,
 )
 
+from mlx_mfa.masks import (
+    make_spatial_2d_mask,
+    make_spatial_3d_mask,
+    make_topk_spatial_mask,
+    make_segment_mask,
+    make_causal_segment_mask,
+    make_adaptive_window_mask,
+)
+
 __all__ = [
+    # Core attention
     "flash_attention",
     "flash_attention_rope",
     "flash_attention_sparse",
+    "flash_attention_varlen",
+    # Mask construction
     "make_causal_block_mask",
     "make_sliding_window_mask",
+    "make_spatial_2d_mask",
+    "make_spatial_3d_mask",
+    "make_topk_spatial_mask",
+    "make_segment_mask",
+    "make_causal_segment_mask",
+    "make_adaptive_window_mask",
+    # Utilities
     "is_mfa_available",
     "get_device_info",
     "get_supported_configs",
