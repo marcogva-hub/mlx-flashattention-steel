@@ -1405,7 +1405,11 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0):
     re-materialises O by re-running the SDPA fallback (or softcap reference
     when softcap > 0), then uses MLX's native backward via ``mx.vjp``.
     """
-    from mlx_mfa._ext import mfa_attention_forward, mfa_forward_with_lse
+    from mlx_mfa._ext import (
+        mfa_attention_forward,
+        mfa_forward_with_lse,
+        mfa_steel_backward,
+    )
 
     @mx.custom_function
     def _impl(q, k, v):
@@ -1422,16 +1426,36 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0):
         # mx.custom_function vjp signature:
         #   primals   - tuple of all forward inputs (q, k, v)
         #   cotangent - gradient w.r.t. the output O  (i.e. dO)
-        #   output    - forward output O (unused; gradients are computed fresh)
+        #   output    - forward output O (unused; gradients computed fresh)
         q, k, v = primals
 
         if softcap == 0.0:
-            # Use MLX's native SDPA backward via mx.vjp.
-            _, (dQ, dK, dV) = mx.vjp(
-                lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
-                [q, k, v],
-                [cotangent],
+            # Route f16/bf16 D≤128 standard-MHA to STEEL backward kernels.
+            # Gradient checkpointing: re-run forward to recover L.
+            # Cost: ~1x forward pass — same as the SDPA re-run below.
+            D = q.shape[-1]
+            use_steel_bwd = (
+                q.dtype in (mx.float16, mx.bfloat16)
+                and D <= 128
+                and q.shape[1] == k.shape[1]  # standard MHA, no GQA
             )
+            if use_steel_bwd:
+                # Sever cotangent's lazy-graph ancestry before gradient checkpointing.
+                # cotangent = ones_like(O_fwd) inherits O_fwd's buffer ancestry.
+                # Re-running mfa_forward_with_lse can alias O_remat's output
+                # buffer with O_fwd's — _sever_lazy_graph() prevents this.
+                dO = _sever_lazy_graph(cotangent)
+                O_remat, L = mfa_forward_with_lse(q, k, v, scale, causal)
+                dQ, dK, dV = mfa_steel_backward(
+                    q, k, v, O_remat, L, dO, scale, causal
+                )
+            else:
+                # Fallback: SDPA backward (f32, D=256, or GQA inputs).
+                _, (dQ, dK, dV) = mx.vjp(
+                    lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+                    [q, k, v],
+                    [cotangent],
+                )
         else:
             # Backward through tanh softcapping via the pure-MLX reference.
             # mx.vjp correctly handles the chain rule through tanh(S/cap)*cap.

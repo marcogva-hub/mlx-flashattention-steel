@@ -18,6 +18,7 @@
 #include "mfa_attention.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
+#include "mfa_steel_bwd.hpp"
 #include "shader_cache.hpp"
 
 #include <mlx/utils.h>
@@ -436,39 +437,74 @@ std::vector<mlx::core::array> MFAttention::vjp(
   const auto& L = outputs[1];
 
   // cotangents[0] = dO (gradient of O, same shape and dtype as O)
-  // cotangents[1] = dL (gradient of L — always zero, safely ignored)
   const auto& dO = cotangents[0];
 
-  // D shape: [B, H, N], always float32.
   mlx::core::Shape d_shape = {q.shape(0), q.shape(1), q.shape(2)};
+  const int D_val = static_cast<int>(q.shape(3));
 
-  // Step 1: MFABackwardQuery → [dQ, D_computed]
-  // The Metal kernel computes D = scale * rowsum(O⊙dO) internally and
-  // writes it to outputs[1] (D_computed).  It does NOT read the D buffer.
-  auto bwd_q = mlx::core::array::make_arrays(
-      {q.shape(),         d_shape},
-      {q.dtype(),  mlx::core::float32},
-      std::make_shared<MFABackwardQuery>(stream(), params_),
-      {q, k, v, O, L, dO});
+  // Route f16/bf16 D≤128 standard-MHA (H_q==H_kv) to the STEEL backward
+  // kernels; fall back to ccv for f32, D=256, or GQA inputs.
+  const bool use_steel_bwd =
+      (q.dtype() != mlx::core::float32) &&
+      (D_val <= 128) &&
+      (q.shape(1) == k.shape(1));  // no GQA in STEEL bwd yet
 
-  const auto& dQ_arr   = bwd_q[0];  // [B,H,N,D], input dtype
-  const auto& D_kernel = bwd_q[1];  // [B,H,N], float32 = scale*rowsum(O⊙dO)
+  std::vector<mlx::core::array> all_grads;
 
-  // Step 2: MFABackwardKeyValue → [dK, dV]
-  // D_kernel is an output of Step 1; MLX will not run this primitive
-  // until D_kernel is fully materialized.
-  auto bwd_kv = mlx::core::array::make_arrays(
-      {k.shape(),  v.shape()},
-      {k.dtype(), v.dtype()},
-      std::make_shared<MFABackwardKeyValue>(stream(), params_),
-      {q, k, v, O, L, D_kernel, dO});
+  if (use_steel_bwd) {
+    // ---- STEEL backward path -----------------------------------------------
+    //
+    // delta = rowsum(dO * O)  [B, H, N], float32.
+    // NOTE: do NOT pre-multiply by scale here.  The Metal kernel computes
+    // dS = scale * P * (dP - delta), so delta must be the raw row-dot-product;
+    // adding scale here would double-scale the subtracted term.
+    // Computing this as a lazy MLX op lets the graph scheduler guarantee it
+    // is ready before both bwd kernels execute; no explicit buffer chain needed.
+    auto dO_f32    = mlx::core::astype(dO, mlx::core::float32, stream());
+    auto O_f32     = mlx::core::astype(O,  mlx::core::float32, stream());
+    auto dot_prod  = mlx::core::multiply(dO_f32, O_f32, stream());
+    auto delta     = mlx::core::sum(dot_prod, std::vector<int>{3}, false, stream());
 
-  const auto& dK_arr = bwd_kv[0];
-  const auto& dV_arr = bwd_kv[1];
+    // Step 1: STEEL dQ — grid (NQ, H, B), TGP = WM*32.
+    // Buffer layout: Q(0),K(1),V(2),O(3-unused),L(4),dO(5),delta(6),dQ(7),p(8)
+    auto bwd_q = mlx::core::array::make_arrays(
+        {q.shape()},
+        {q.dtype()},
+        std::make_shared<MFASteelBwdDQ>(stream(), params_),
+        {q, k, v, O, L, dO, delta});
 
-  // Return only the gradients for the requested inputs (argnums order).
-  // argnums maps {0→dQ, 1→dK, 2→dV}.
-  const std::vector<mlx::core::array> all_grads = {dQ_arr, dK_arr, dV_arr};
+    // Step 2: STEEL dKV — grid (NK, H, B), TGP = 32.
+    // Buffer layout: Q(0),K(1),V(2),O(3-unused),L(4),delta(5),dO(6),dK(7),dV(8),p(9)
+    auto bwd_kv = mlx::core::array::make_arrays(
+        {k.shape(), v.shape()},
+        {k.dtype(), v.dtype()},
+        std::make_shared<MFASteelBwdDKV>(stream(), params_),
+        {q, k, v, O, L, delta, dO});
+
+    all_grads = {bwd_q[0], bwd_kv[0], bwd_kv[1]};
+
+  } else {
+    // ---- Legacy ccv backward path ------------------------------------------
+    // Step 1: MFABackwardQuery → [dQ, D_computed]
+    auto bwd_q = mlx::core::array::make_arrays(
+        {q.shape(),         d_shape},
+        {q.dtype(),  mlx::core::float32},
+        std::make_shared<MFABackwardQuery>(stream(), params_),
+        {q, k, v, O, L, dO});
+
+    const auto& D_kernel = bwd_q[1];  // [B,H,N] f32, written by kernel
+
+    // Step 2: MFABackwardKeyValue → [dK, dV]
+    auto bwd_kv = mlx::core::array::make_arrays(
+        {k.shape(),  v.shape()},
+        {k.dtype(), v.dtype()},
+        std::make_shared<MFABackwardKeyValue>(stream(), params_),
+        {q, k, v, O, L, D_kernel, dO});
+
+    all_grads = {bwd_q[0], bwd_kv[0], bwd_kv[1]};
+  }
+
+  // Return only the gradients for the requested argnums (0→dQ, 1→dK, 2→dV).
   std::vector<mlx::core::array> result;
   result.reserve(argnums.size());
   for (int i : argnums) {
@@ -677,6 +713,203 @@ void MFABackwardKeyValue::eval_gpu(
   enc.dispatch_threadgroups(
       MTL::Size::Make(grid_dkv,      1, 1),
       MTL::Size::Make(n_warps * 32u, 1, 1));
+}
+
+// =========================================================================
+// MFASteelBwdDQ::eval_gpu
+// =========================================================================
+//
+// Dispatches the STEEL dQ backward kernel.
+// Grid: (NQ, H, B) — one threadgroup per Q-tile.
+//
+// Buffer assignments (match generated Metal source):
+//   Q(0), K(1), V(2), O(3-unused), L(4), dO(5), delta(6), dQ(7), params(8)
+
+void MFASteelBwdDQ::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  assert(inputs.size()  == 7);  // Q, K, V, O, L, dO, delta
+  assert(outputs.size() == 1);  // dQ
+
+  const auto& q     = inputs[0];  // [B, H, N, D]
+  const auto& k     = inputs[1];  // [B, H, S, D]
+  const auto& v     = inputs[2];  // [B, H, S, D]
+  const auto& o     = inputs[3];  // [B, H, N, D]  (bound but not read)
+  const auto& l     = inputs[4];  // [B, H, N], float32
+  const auto& dO    = inputs[5];  // [B, H, N, D]
+  const auto& delta = inputs[6];  // [B, H, N], float32
+
+  const int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
+  const int S = k.shape(2);
+
+  auto& dQ = outputs[0];
+  dQ.set_data(mlx::core::allocator::malloc(dQ.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code;
+  if (q.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else                                        dtype_code = 2;
+
+  const auto cfg = select_steel_block_config(D, /*is_low_prec=*/dtype_code != 2,
+                                             is_m3_plus);
+  const int BQ = cfg.BQ, BK = cfg.BK, BD = cfg.BD, WM = cfg.WM;
+  const int NQ = (N + BQ - 1) / BQ;
+  const int NK = (S + BK - 1) / BK;
+
+  MFASteelBackwardParams sp{};
+  sp.B            = B;   sp.H = H;   sp.D = D;
+  sp.qL           = N;   sp.kL = S;
+  sp.gqa_factor   = 1;
+  sp.scale        = params_.scale;
+  sp.scale_log2   = params_.scale * static_cast<float>(M_LOG2E);
+  sp.NQ           = NQ;  sp.NK = NK;
+  sp.NQ_aligned   = N / BQ;
+  sp.NK_aligned   = S / BK;
+  sp.qL_rem       = N % BQ;
+  sp.kL_rem       = S % BK;
+  sp.qL_off       = 0;
+  // Strides: [B_stride, H_stride, seq_stride] for each operand.
+  sp.Q_strides[0]  = (int64_t)H * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
+  sp.K_strides[0]  = (int64_t)H * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
+  sp.V_strides[0]  = (int64_t)H * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
+  sp.O_strides[0]  = (int64_t)H * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
+  sp.dO_strides[0] = (int64_t)H * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
+  sp.dQ_strides[0] = (int64_t)H * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
+  sp.dK_strides[0] = (int64_t)H * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
+  sp.dV_strides[0] = (int64_t)H * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
+  sp.L_strides[0]  = (int64_t)H * N;      sp.L_strides[1]  = N;
+
+  using KK = ShaderCache::KernelKey;
+  KK key{KK::KernelType::SteelBackwardDQ,
+         D, BQ, BK, BD, WM,
+         params_.causal, /*sparse=*/false, is_m3_plus,
+         /*has_rope=*/false, /*rope_interleaved=*/false,
+         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code};
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+  enc.set_input_array(q,     0);
+  enc.set_input_array(k,     1);
+  enc.set_input_array(v,     2);
+  enc.set_input_array(o,     3);  // declared in kernel; not read
+  enc.set_input_array(l,     4);
+  enc.set_input_array(dO,    5);
+  enc.set_input_array(delta, 6);
+  enc.set_output_array(dQ,   7);
+  enc.set_bytes(sp,          8);
+
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(NQ, H, B),
+      MTL::Size::Make(WM * 32, 1, 1));
+}
+
+// =========================================================================
+// MFASteelBwdDKV::eval_gpu
+// =========================================================================
+//
+// Dispatches the STEEL dK/dV backward kernel.
+// Grid: (NK, H, B) — one threadgroup per K/V-tile (WM=1, TGP=32).
+//
+// Buffer assignments (match generated Metal source):
+//   Q(0), K(1), V(2), O(3-unused), L(4), delta(5), dO(6),
+//   dK(7), dV(8), params(9)
+
+void MFASteelBwdDKV::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  assert(inputs.size()  == 7);  // Q, K, V, O, L, delta, dO
+  assert(outputs.size() == 2);  // dK, dV
+
+  const auto& q     = inputs[0];
+  const auto& k     = inputs[1];
+  const auto& v     = inputs[2];
+  const auto& o     = inputs[3];  // declared in kernel; not read
+  const auto& l     = inputs[4];
+  const auto& delta = inputs[5];  // [B, H, N], float32
+  const auto& dO    = inputs[6];
+
+  const int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
+  const int S = k.shape(2);
+
+  auto& dK = outputs[0];
+  auto& dV = outputs[1];
+  dK.set_data(mlx::core::allocator::malloc(dK.nbytes()));
+  dV.set_data(mlx::core::allocator::malloc(dV.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code;
+  if (q.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else                                        dtype_code = 2;
+
+  const auto cfg = select_steel_block_config(D, /*is_low_prec=*/dtype_code != 2,
+                                             is_m3_plus);
+  const int BQ = cfg.BQ, BK = cfg.BK, BD = cfg.BD;
+  const int NK = (S + BK - 1) / BK;
+  const int NQ = (N + BQ - 1) / BQ;
+  // dKV kernel hardcodes WM=1 (single simdgroup, no inter-warp race).
+  constexpr int WM_DKV = 1;
+
+  MFASteelBackwardParams sp{};
+  sp.B            = B;   sp.H = H;   sp.D = D;
+  sp.qL           = N;   sp.kL = S;
+  sp.gqa_factor   = 1;
+  sp.scale        = params_.scale;
+  sp.scale_log2   = params_.scale * static_cast<float>(M_LOG2E);
+  sp.NQ           = NQ;  sp.NK = NK;
+  sp.NQ_aligned   = N / BQ;
+  sp.NK_aligned   = S / BK;
+  sp.qL_rem       = N % BQ;
+  sp.kL_rem       = S % BK;
+  sp.qL_off       = 0;
+  sp.Q_strides[0]  = (int64_t)H * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
+  sp.K_strides[0]  = (int64_t)H * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
+  sp.V_strides[0]  = (int64_t)H * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
+  sp.O_strides[0]  = (int64_t)H * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
+  sp.dO_strides[0] = (int64_t)H * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
+  sp.dQ_strides[0] = (int64_t)H * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
+  sp.dK_strides[0] = (int64_t)H * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
+  sp.dV_strides[0] = (int64_t)H * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
+  sp.L_strides[0]  = (int64_t)H * N;      sp.L_strides[1]  = N;
+
+  using KK = ShaderCache::KernelKey;
+  KK key{KK::KernelType::SteelBackwardDKV,
+         D, BQ, BK, BD, WM_DKV,
+         params_.causal, /*sparse=*/false, is_m3_plus,
+         /*has_rope=*/false, /*rope_interleaved=*/false,
+         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code};
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+  enc.set_input_array(q,     0);
+  enc.set_input_array(k,     1);
+  enc.set_input_array(v,     2);
+  enc.set_input_array(o,     3);  // declared in kernel; not read
+  enc.set_input_array(l,     4);
+  enc.set_input_array(delta, 5);
+  enc.set_input_array(dO,    6);
+  enc.set_output_array(dK,   7);
+  enc.set_output_array(dV,   8);
+  enc.set_bytes(sp,          9);
+
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(NK, H, B),
+      MTL::Size::Make(WM_DKV * 32, 1, 1));
 }
 
 // =========================================================================
