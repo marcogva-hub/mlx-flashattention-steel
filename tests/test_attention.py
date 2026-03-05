@@ -3068,3 +3068,87 @@ class TestAttentionDropout:
         out = flash_attention(q, k, v, causal=True, dropout_p=0.3)
         mx.eval(out)
         assert mx.all(mx.isfinite(out)).item(), "Causal+dropout output contains NaN/Inf"
+
+
+# ---------------------------------------------------------------------------
+# Track AH — Return attention probabilities
+# ---------------------------------------------------------------------------
+
+class TestReturnAttnWeights:
+    """Track AH: return_attn_weights=True returns (output, weights)."""
+
+    D = 64
+
+    def test_returns_tuple(self):
+        """return_attn_weights=True returns a 2-tuple."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 1, 2, 8, self.D
+        mx.random.seed(300)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        result = flash_attention(q, k, v, causal=False, return_attn_weights=True)
+        assert isinstance(result, tuple) and len(result) == 2, \
+            f"Expected 2-tuple, got {type(result)}"
+
+    def test_output_shape_and_weights_shape(self):
+        """Shapes: output [B,H,N,D], weights [B,H,N,S]."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, S, D = 1, 4, 16, 24, self.D
+        mx.random.seed(301)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, S, D))
+        v = mx.random.normal((B, H, S, D))
+
+        out, weights = flash_attention(q, k, v, causal=False,
+                                        return_attn_weights=True)
+        mx.eval(out, weights)
+
+        assert out.shape == (B, H, N, D), f"output shape {out.shape}"
+        assert weights.shape == (B, H, N, S), f"weights shape {weights.shape}"
+        assert weights.dtype == mx.float32, f"weights dtype {weights.dtype}"
+
+    def test_weights_sum_to_one(self):
+        """Attention weights sum to 1 along the key dim."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 1, 2, 16, self.D
+        mx.random.seed(302)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        _, weights = flash_attention(q, k, v, causal=False,
+                                     return_attn_weights=True)
+        sums = weights.sum(axis=-1)  # [B, H, N]
+        mx.eval(sums)
+
+        np.testing.assert_allclose(
+            np.array(sums), np.ones_like(np.array(sums)),
+            atol=1e-5, rtol=1e-5,
+            err_msg="Attention weights do not sum to 1",
+        )
+
+    def test_output_matches_no_return(self):
+        """Output with return_attn_weights=True matches standard forward."""
+        from mlx_mfa import flash_attention
+
+        B, H, N, D = 1, 2, 16, self.D
+        mx.random.seed(303)
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out_plain = flash_attention(q, k, v, causal=True)
+        out_with_w, _ = flash_attention(q, k, v, causal=True,
+                                         return_attn_weights=True)
+        mx.eval(out_plain, out_with_w)
+
+        np.testing.assert_allclose(
+            np.array(out_plain), np.array(out_with_w),
+            atol=1e-5, rtol=1e-4,
+            err_msg="Output diverges when return_attn_weights=True",
+        )

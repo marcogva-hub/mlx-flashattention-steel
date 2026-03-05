@@ -45,8 +45,9 @@ def flash_attention(
     softcap: float = 0.0,
     alibi_slopes: Optional[mx.array] = None,
     dropout_p: float = 0.0,
+    return_attn_weights: bool = False,
     stream: Optional[mx.Stream] = None,
-) -> mx.array:
+):
     """Compute scaled dot-product attention using Metal Flash Attention.
 
     Drop-in replacement for ``mx.fast.scaled_dot_product_attention``.
@@ -78,13 +79,21 @@ def flash_attention(
             When > 0, the call falls back to a Python SDPA implementation —
             the MFA Metal kernel does not support dropout.  Intended for
             training only; pass 0.0 (default) for inference.
+        return_attn_weights: When True, also return the softmax attention
+            weight matrix ``[B, H, N, S]``.  Forces a Python SDPA fallback
+            (the MFA kernel does not expose intermediate probabilities).
+            Useful for attention visualization / debugging.
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
 
     Returns:
-        Attention output of shape ``[batch, heads, seq_len, head_dim]``,
-        in the same dtype as ``q``.
+        When ``return_attn_weights=False`` (default): attention output of
+        shape ``[batch, heads, seq_len, head_dim]`` in the same dtype as q.
+
+        When ``return_attn_weights=True``: a 2-tuple
+        ``(output, attn_weights)`` where ``output`` is ``[B, H, N, D]`` and
+        ``attn_weights`` is ``float32 [B, H, N, S]``.
 
     Raises:
         ValueError: If any input is not a 4-D tensor, or if q and k have
@@ -139,6 +148,11 @@ def flash_attention(
                 f"flash_attention GQA: q_heads ({q_heads}) must be divisible "
                 f"by kv_heads ({kv_heads})."
             )
+
+    # Track AH: return_attn_weights forces Python SDPA (MFA kernel
+    # does not expose intermediate softmax probabilities).
+    if return_attn_weights:
+        return _sdpa_with_weights(q, k, v, scale, causal, softcap, dropout_p)
 
     # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
     if dropout_p > 0.0:
@@ -1089,6 +1103,46 @@ def _sparse_backward_tiled(
 
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _sdpa_with_weights(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: float,
+    causal: bool,
+    softcap: float = 0.0,
+    dropout_p: float = 0.0,
+):
+    """SDPA returning (output, attn_weights [B,H,N,S]).
+
+    Used by Track AH (return_attn_weights=True).  Computes the full
+    attention score matrix so that the softmax probabilities are available.
+    """
+    B, H, N, D = q.shape
+    S = k.shape[2]
+
+    scores = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+
+    if softcap > 0.0:
+        scores = mx.tanh(scores / softcap) * softcap
+
+    if causal:
+        idx_i = mx.arange(N, dtype=mx.int32)[:, None]
+        idx_j = mx.arange(S, dtype=mx.int32)[None, :]
+        causal_mask = (idx_j > idx_i + (S - N))[None, None, :, :]
+        scores = mx.where(causal_mask, float("-inf"), scores)
+
+    probs = mx.softmax(scores.astype(mx.float32), axis=-1)   # [B,H,N,S] f32
+
+    if dropout_p > 0.0:
+        keep = mx.random.uniform(shape=probs.shape) >= dropout_p
+        probs_dropped = probs * keep / (1.0 - dropout_p)
+    else:
+        probs_dropped = probs
+
+    out = mx.matmul(probs_dropped.astype(q.dtype), v)
+    return out, probs                     # weights before dropout
 
 
 def _dropout_sdpa(
