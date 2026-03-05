@@ -184,23 +184,29 @@ def get_device_info() -> dict:
     #   14 → M2 family  (M2, M2 Pro, M2 Max, M2 Ultra)
     #   15 → M3 family  (M3, M3 Pro, M3 Max, M3 Ultra)
     #   16 → M4 family  (M4, M4 Pro, M4 Max)
+    #   17 → M5 family  (M5, M5 Pro, M5 Max — A19 / TBDR tensor ops)
     #
     # M3+ (gen >= 15) uses preferAsyncCache kernel params instead of
     # preferAsyncLoad, following the ccv blocking-parameter tables.
+    # M5+ (gen >= 17) exposes the Metal 4 tensor API (MTLTensor /
+    # cooperative tensors on A19+). Stub for future TensorOps kernels.
     _GEN_TO_CHIP = {
         13: "M1",
         14: "M2",
         15: "M3",
         16: "M4",
+        17: "M5",
     }
     gen = raw.get("gpu_family_gen")
     chip = _GEN_TO_CHIP.get(gen, f"Apple-g{gen}") if gen is not None else None
     is_m3_plus = (gen >= 15) if gen is not None else None
+    is_m5_plus = (gen >= 17) if gen is not None else None
 
     return {
         "device_name":         raw.get("device_name"),
         "gpu_family_gen":      gen,
         "is_m3_plus":          is_m3_plus,
+        "is_m5_plus":          is_m5_plus,
         "chip_name":           chip,
         "extension_available": True,
     }
