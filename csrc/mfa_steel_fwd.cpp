@@ -79,6 +79,7 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const bool has_rope          = key.has_rope;
   const bool rope_interleaved  = key.rope_interleaved; // true=LLaMA, false=GPT-NeoX
   const bool has_alibi         = key.has_alibi;
+  const bool has_window        = key.has_window;
   // Double-buffer: separate K_smem / V_smem so V-load can overlap K-GEMM
   // and K[n+1]-load can overlap P@V. Only valid when TGP budget allows:
   //   2*kv_s + Q_smem < 32KB → only D≤128. Also excluded: RoPE (modifies K_smem
@@ -140,8 +141,9 @@ struct MFASteelParams {
   long O_strides[3];
   long L_strides[2];
   // Optional features (appended for backward compat; defaults 0.0f / 0)
-  float softcap;   // 0.0 = disabled; >0 = tanh(S/cap)*cap before softmax
-  int   has_alibi; // 0 = disabled; 1 = ALiBi bias from buffer(9)
+  float softcap;    // 0.0 = disabled; >0 = tanh(S/cap)*cap before softmax
+  int   has_alibi;  // 0 = disabled; 1 = ALiBi bias from buffer(9)
+  int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
 };
 
 )MFA";
@@ -692,14 +694,34 @@ struct MFAExpSubOp {
   } else {
     ss << "  int kb_lim = p->NK;\n";
   }
+  // Sliding window: compute kb_start per Q-block (different qb → different window).
+  // kb_start skips all K-tiles entirely before the window boundary for the smallest row.
+  // kb_last_win: last tile that may have a window boundary for ANY row in this Q-block.
+  // Different rows have different window starts, so the boundary spans tiles
+  // [kb_start, kb_last_win].  Per-element masking must cover ALL of them.
+  if (has_window) {
+    ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "  int win_start = q_min - p->window_left;\n";
+    ss << "  int kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "  // Window boundary for largest row in block: q_min + BQ - 1 - window_left.\n";
+    ss << "  // If <= 0 all tiles are fully in-window → kb_last_win = -1 (no masking).\n";
+    ss << "  int kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                      ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  for (int _kf = 0; _kf < kb_start; _kf++) {\n";
+    ss << "    loader_k.next();\n";
+    ss << "    loader_v.next();\n";
+    ss << "  }\n";
+  } else {
+    ss << "  const int kb_start = 0;\n";
+  }
   ss << "\n";
 
-  // Double-buffer Phase 0: preload K[0] into K_smem before the loop so the
+  // Double-buffer Phase 0: preload K[kb_start] into K_smem before the loop so the
   // first iteration can immediately issue V[0]-load while computing Q@K[0]^T.
   if (double_buf) {
-    ss << "  // Phase 0 (double-buffer): preload K[0] into K_smem before the loop.\n";
-    ss << "  if (kb_lim > 0) {\n";
-    ss << "    if (0 == p->NK_aligned) {\n";
+    ss << "  // Phase 0 (double-buffer): preload K[kb_start] into K_smem.\n";
+    ss << "  if (kb_lim > kb_start) {\n";
+    ss << "    if (kb_start == p->NK_aligned) {\n";
     ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
     ss << "    } else {\n";
     ss << "      loader_k.load_unsafe();\n";
@@ -711,7 +733,7 @@ struct MFAExpSubOp {
   }
 
   // Main K/V loop
-  ss << "  for (int kb = 0; kb < kb_lim; kb++) {\n";
+  ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   // Block-sparse: skip K-tiles where block_mask[q_tile][kb] == 0.
   // All threads in a threadgroup share tid.x and kb, so this is a
   // uniform branch — no warp divergence, just skips the barriers and math.
@@ -892,6 +914,30 @@ struct MFAExpSubOp {
     ss << "    }\n";
     ss << "\n";
   }
+  // Sliding window left boundary: mask k < q - window_left for all tiles in the
+  // boundary zone [kb_start, kb_last_win].  Different rows within the Q-block have
+  // their window boundaries in different K-tiles, so we must check all boundary tiles.
+  if (has_window) {
+    ss << "    // Window left boundary: mask k < q - window_left\n";
+    ss << "    // Apply for all tiles in [kb_start, kb_last_win] (per-element check).\n";
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
 
   // Load V while doing softmax.
   // !double_buf: V shares KV_smem with K, so K-GEMM must finish (barrier) before
@@ -907,19 +953,31 @@ struct MFAExpSubOp {
     ss << "\n";
   }
 
-  // Online softmax update
-  ss << "    // Online softmax\n";
+  // Online softmax update (NaN-safe version).
+  // When all tile elements for row i are masked (-INFINITY), new_max[i] stays -inf.
+  // naive: factor = exp2(-inf - (-inf)) = exp2(nan) = nan → corrupts accumulation.
+  // Fix: when new_max[i] has not improved (still -inf), use factor=1 and a finite
+  // sentinel for ExpSubOp so exp2(-inf - 0) = 0 (no contribution, no NaN).
+  ss << "    // Online softmax (NaN-safe: handles all-masked tiles)\n";
   ss << "    AccT new_max[MFA_ROWS_PT];\n";
   ss << "    AccT factor[MFA_ROWS_PT];\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) new_max[i] = max_score[i];\n";
   ss << "    Stile.template row_reduce<MFAMaxOp>(new_max);\n";
-  ss << "    Stile.template row_bin_op<MFAExpSubOp>(new_max);\n";
+  ss << "    // Compute factor and update max_score; use finite sentinel for ExpSubOp.\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
-  ss << "      factor[i] = fast::exp2(max_score[i] - new_max[i]);\n";
-  ss << "      max_score[i] = new_max[i];\n";
+  ss << "      if (new_max[i] > max_score[i]) {\n";
+  ss << "        factor[i] = fast::exp2(max_score[i] - new_max[i]);\n";
+  ss << "        max_score[i] = new_max[i];\n";
+  ss << "      } else {\n";
+  ss << "        factor[i] = 1.0f;\n";
+  ss << "        // If max_score is -inf (no valid element seen), use sentinel 0 so\n";
+  ss << "        // exp2(-inf - 0) = 0 (correct zero contribution, no NaN).\n";
+  ss << "        new_max[i] = metal::isinf(max_score[i]) ? (AccT)0.0f : max_score[i];\n";
+  ss << "      }\n";
   ss << "    }\n";
+  ss << "    Stile.template row_bin_op<MFAExpSubOp>(new_max);\n";
   ss << "    AccT sum_tmp[MFA_ROWS_PT] = {0};\n";
   ss << "    Stile.template row_reduce<MFASumOp>(sum_tmp);\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -1339,6 +1397,7 @@ std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& k
 
   const bool causal    = key.causal;
   const bool has_alibi = key.has_alibi;
+  const bool has_window = key.has_window;
   const char* dtype_str = "half";
   if (key.dtype == 1)      dtype_str = "bfloat";
   else if (key.dtype == 2) dtype_str = "float";
@@ -1528,8 +1587,8 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // K-loop bounds: [kb_start, kb_lim) where kb_lim respects causal + split end
-  ss << "  const int kb_start = (int)split_id * p->NK_per_split;\n";
-  ss << "  const int kb_end   = min(kb_start + p->NK_per_split, p->NK_total);\n";
+  ss << "  const int kb_split_start = (int)split_id * p->NK_per_split;\n";
+  ss << "  const int kb_end   = min(kb_split_start + p->NK_per_split, p->NK_total);\n";
   if (causal) {
     // qL_off positions the query globally; causal mask: col <= row
     ss << "  const int q_max    = (int)q_tile_id * MFA_BQ + p->qL_off + MFA_BQ;\n";
@@ -1538,10 +1597,19 @@ struct MFAFlashDecodePartialParams {
   } else {
     ss << "  const int kb_lim   = kb_end;\n";
   }
+  // Sliding window: clamp kb_start to skip tiles before the window boundary.
+  if (has_window) {
+    ss << "  const int q_min     = (int)q_tile_id * MFA_BQ + p->qL_off;\n";
+    ss << "  const int win_start = q_min - p->window_left;\n";
+    ss << "  const int kb_window_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "  const int kb_start = max(kb_split_start, kb_window_start);\n";
+  } else {
+    ss << "  const int kb_start = kb_split_start;\n";
+  }
   ss << "\n";
 
   // Advance K/V loaders to kb_start
-  ss << "  // Advance K/V loaders past the splits before ours.\n";
+  ss << "  // Advance K/V loaders to kb_start (split offset + window offset).\n";
   ss << "  for (int kb = 0; kb < kb_start; kb++) {\n";
   ss << "    loader_k.next();\n";
   ss << "    loader_v.next();\n";
@@ -1652,6 +1720,26 @@ struct MFAFlashDecodePartialParams {
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if (row < (col + jj))\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+  // Window left boundary mask for flash decode partial
+  if (has_window) {
+    ss << "    if (kb == kb_start && kb_start > kb_split_start) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = (int)q_tile_id * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb_start * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
     ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";

@@ -4015,3 +4015,114 @@ class TestVarlenPacked:
         mx.eval(out)
         assert list(out.shape) == [1, H_q, total, D]
         assert mx.all(mx.isfinite(out)).item()
+
+
+# ===========================================================================
+# Track FB — Native sliding window attention (STEEL kernel window_left)
+# ===========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension required")
+class TestSlidingWindow:
+    """Tests for flash_attention(window_size=(left, right)) native STEEL path.
+
+    The STEEL kernel skips entire K-tiles before the window boundary
+    (``kb_start = max(0, (q_min - window_left) / BK)``), then applies a
+    per-element mask for the first partial tile.  Results must match a dense
+    SDPA reference with an equivalent window mask.
+    """
+
+    def _ref_window(self, q, k, v, scale, causal, window_left):
+        """Reference SDPA with explicit window mask.
+
+        Matches the STEEL kernel's qL_off logic: query positions are offset by
+        (S-N) only when causal=True and N<S; otherwise queries start at position 0.
+        """
+        N, S = q.shape[2], k.shape[2]
+        q_off = (S - N) if (causal and N < S) else 0
+        q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]  # [N,1]
+        k_idx = mx.arange(S, dtype=mx.int32)[None, :]                  # [1,S]
+        in_win = k_idx >= q_idx - window_left
+        if causal:
+            in_win = in_win & (k_idx <= q_idx)
+        mask = mx.where(in_win,
+                        mx.zeros((N, S), dtype=q.dtype),
+                        mx.full((N, S), float("-inf"), dtype=q.dtype))
+        return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.parametrize("causal", [False, True])
+    def test_window_matches_ref(self, D, causal):
+        """Native window output matches masked SDPA reference (f16)."""
+        B, H, N, S = 1, 4, 256, 512
+        scale = 1.0 / math.sqrt(D)
+        window_left = 64
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=causal,
+                                  window_size=(window_left, 0))
+        out_ref = self._ref_window(q, k, v, scale, causal, window_left)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            rtol=1e-2, atol=5e-3,
+            err_msg=f"Window mismatch D={D} causal={causal}",
+        )
+
+    def test_window_disabled_matches_standard(self):
+        """window_size=None (default) gives same result as without window."""
+        B, H, N, D = 1, 4, 256, 128
+        scale = 1.0 / math.sqrt(D)
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+
+        out_no_window  = flash_attention(q, k, v, scale=scale)
+        out_none_window = flash_attention(q, k, v, scale=scale, window_size=None)
+        mx.eval(out_no_window, out_none_window)
+
+        np.testing.assert_allclose(
+            np.array(out_no_window.astype(mx.float32)),
+            np.array(out_none_window.astype(mx.float32)),
+            rtol=0, atol=0,
+        )
+
+    def test_window_output_is_finite(self):
+        """Window output must contain no NaN or Inf."""
+        B, H, N, D = 2, 4, 512, 128
+        scale = 1.0 / math.sqrt(D)
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        out = flash_attention(q, k, v, scale=scale, causal=True,
+                              window_size=(128, 0))
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item(), "Window output contains NaN/Inf"
+
+    def test_window_fallback_for_f32(self):
+        """f32 dtype falls back to masked SDPA (no MFA window kernel for f32)."""
+        B, H, N, D = 1, 4, 64, 64
+        scale = 1.0 / math.sqrt(D)
+        window_left = 32
+        q = mx.random.normal((B, H, N, D))
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+
+        out_fa = flash_attention(q, k, v, scale=scale, causal=True,
+                                 window_size=(window_left, 0))
+        # Reference: exact masked SDPA
+        N2, S2 = q.shape[2], k.shape[2]
+        q_idx = mx.arange(S2 - N2, S2, dtype=mx.int32)[:, None]
+        k_idx = mx.arange(S2, dtype=mx.int32)[None, :]
+        in_win = (k_idx >= q_idx - window_left) & (k_idx <= q_idx)
+        mask = mx.where(in_win,
+                        mx.zeros((N2, S2), dtype=q.dtype),
+                        mx.full((N2, S2), float("-inf"), dtype=q.dtype))
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        mx.eval(out_fa, out_ref)
+        np.testing.assert_allclose(
+            np.array(out_fa), np.array(out_ref), rtol=1e-5, atol=1e-5,
+        )
