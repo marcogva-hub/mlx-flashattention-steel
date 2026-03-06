@@ -4445,3 +4445,56 @@ class TestReturnLSE:
         q, k, v = random_qkv(B, H, N, D)
         with pytest.raises(ValueError, match="mutually exclusive"):
             flash_attention(q, k, v, return_attn_weights=True, return_lse=True)
+
+
+# ---------------------------------------------------------------------------
+# Track FX-2: cache_batch_idx in flash_attention_kvcache
+# ---------------------------------------------------------------------------
+
+class TestCacheBatchIdx:
+    """Tests for flash_attention_kvcache(cache_batch_idx=...)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    def test_cache_batch_idx_matches_explicit_gather(self):
+        """cache_batch_idx gather must equal manually indexing the cache pool."""
+        from mlx_mfa import flash_attention_kvcache
+        pool_size, H, S, D = 8, 2, 32, 64
+        B = 3  # only 3 of 8 pool slots are active
+        mx.random.seed(5)
+        k_pool = mx.random.normal((pool_size, H, S, D)).astype(mx.float16)
+        v_pool = mx.random.normal((pool_size, H, S, D)).astype(mx.float16)
+        q = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        # Pick 3 non-contiguous slots
+        idx = mx.array([2, 5, 7], dtype=mx.int32)
+
+        # Explicit gather: select from pool manually, then attend
+        k_sel = k_pool[idx]  # [B, H, S, D]
+        v_sel = v_pool[idx]
+        ref = flash_attention_kvcache(q, k_sel, v_sel, causal=True)
+
+        # cache_batch_idx path
+        out = flash_attention_kvcache(q, k_pool, v_pool,
+                                      cache_batch_idx=idx, causal=True)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_cache_batch_idx_output_shape(self):
+        """Output shape must be [B, H, N, D] with cache_batch_idx."""
+        from mlx_mfa import flash_attention_kvcache
+        pool_size, H, S, D = 4, 2, 16, 64
+        B = 2
+        k_pool = mx.zeros((pool_size, H, S, D), dtype=mx.float16)
+        v_pool = mx.zeros((pool_size, H, S, D), dtype=mx.float16)
+        q = mx.zeros((B, H, 1, D), dtype=mx.float16)
+        idx = mx.array([0, 3], dtype=mx.int32)
+        out = flash_attention_kvcache(q, k_pool, v_pool,
+                                      cache_batch_idx=idx, causal=False)
+        mx.eval(out)
+        assert out.shape == (B, H, 1, D)

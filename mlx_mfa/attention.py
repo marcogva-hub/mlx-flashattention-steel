@@ -796,6 +796,8 @@ def flash_attention_kvcache(
     rotary_sin: Optional[mx.array] = None,
     cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
     interleaved: bool = True,
+    # Track FX-2: continuous batching — map logical batch → cache pool slot
+    cache_batch_idx: Optional[mx.array] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Unified KV-cache attention — dense and paged modes in one call.
@@ -866,6 +868,14 @@ def flash_attention_kvcache(
                         Used as the RoPE offset for Q.  Typically ``past_len``.
         interleaved:    RoPE pairing mode: ``True`` = LLaMA (default), ``False``
                         = GPT-NeoX split-halves.
+        cache_batch_idx: ``int32 [B]`` — optional batch→cache-pool index for
+                        continuous batching.  When provided, ``k_cache`` and
+                        ``v_cache`` are treated as a *pool* of shape
+                        ``[pool_size, H_kv, S, D]`` (or compatible), and row
+                        ``i`` of the logical batch selects
+                        ``k_cache[cache_batch_idx[i]]``.  Allows multiple
+                        logical requests to share a single large cache tensor
+                        without copying.  Dense mode only.
         stream:         MLX stream.
 
     Returns:
@@ -951,6 +961,13 @@ def flash_attention_kvcache(
             "flash_attention_kvcache: k_cache and v_cache must be provided in "
             "dense mode (use block_table to enable paged mode)."
         )
+
+    # Track FX-2: cache_batch_idx — select per-request slots from a pool.
+    # k_cache / v_cache have shape [pool_size, H_kv, S, D].
+    # After indexing: [B, H_kv, S, D] — same as the standard dense layout.
+    if cache_batch_idx is not None:
+        k_cache = k_cache[cache_batch_idx]
+        v_cache = v_cache[cache_batch_idx]
 
     # RoPE in dense mode: use fused kernel when possible.
     if _has_rope:
