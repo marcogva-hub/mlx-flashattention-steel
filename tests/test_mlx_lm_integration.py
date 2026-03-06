@@ -400,3 +400,197 @@ class TestQuantizedKVCache:
             mod._original_sdpa = old
 
         assert called_original, "_steel_sdpa must fall back to _original_sdpa when sinks is set"
+
+
+# ---------------------------------------------------------------------------
+# Track GB: verbose, get_patch_stats, check_model_compatibility
+# ---------------------------------------------------------------------------
+
+@requires_mlx_lm
+class TestPatchMLXLMVerbose:
+    """GB.1 — verbose parameter on patch_mlx_lm."""
+
+    def test_verbose_true_returns_bool(self, capsys):
+        from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
+        try:
+            result = patch_mlx_lm(verbose=True)
+            assert isinstance(result, bool)
+        finally:
+            unpatch_mlx_lm()
+
+    def test_verbose_false_silent(self, capsys):
+        from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
+        try:
+            patch_mlx_lm(verbose=False)
+            captured = capsys.readouterr()
+            assert captured.out == "", "verbose=False must produce no stdout output"
+        finally:
+            unpatch_mlx_lm()
+
+    def test_verbose_true_prints_message(self, capsys):
+        from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
+        try:
+            patch_mlx_lm(verbose=True)
+            captured = capsys.readouterr()
+            if _ext_ok:
+                # Extension available → should print the confirmation message
+                assert "[mlx-mfa]" in captured.out
+            # Extension unavailable → may print warning (or nothing)
+        finally:
+            unpatch_mlx_lm()
+
+    def test_idempotent_does_not_reprint(self, capsys):
+        from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
+        try:
+            patch_mlx_lm(verbose=True)
+            capsys.readouterr()  # consume first print
+            patch_mlx_lm(verbose=True)  # second call must be a no-op
+            captured = capsys.readouterr()
+            assert captured.out == "", "idempotent second patch must not print"
+        finally:
+            unpatch_mlx_lm()
+
+
+@requires_mlx_lm
+class TestGetPatchStats:
+    """GB.2 — get_patch_stats() tracks forward/steel/fallback calls."""
+
+    def test_returns_dict_with_expected_keys(self):
+        from mlx_mfa.integrations.mlx_lm import get_patch_stats
+        stats = get_patch_stats()
+        assert isinstance(stats, dict)
+        for key in ("forward_calls", "steel_calls", "fallback_calls", "steel_ratio"):
+            assert key in stats, f"missing key: {key}"
+
+    def test_zero_before_any_call(self):
+        from mlx_mfa.integrations.mlx_lm import get_patch_stats, patch_mlx_lm, unpatch_mlx_lm
+        try:
+            patch_mlx_lm(verbose=False)
+            stats = get_patch_stats()
+            assert stats["forward_calls"] == 0
+            assert stats["steel_calls"] == 0
+            assert stats["fallback_calls"] == 0
+            assert stats["steel_ratio"] == 0.0
+        finally:
+            unpatch_mlx_lm()
+
+    @requires_ext
+    def test_steel_calls_increment(self):
+        """Route causal mask calls through STEEL and verify counter increments."""
+        from mlx_mfa.integrations.mlx_lm import (
+            _steel_sdpa, get_patch_stats, patch_mlx_lm, unpatch_mlx_lm,
+        )
+        import mlx_mfa.integrations.mlx_lm as mod
+
+        try:
+            patch_mlx_lm(verbose=False)
+            q, k, v = _make_qkv(D=128)
+            # _steel_sdpa needs _original_sdpa set — it's set by patch_mlx_lm
+            _steel_sdpa(q, k, v, cache=None, scale=0.1, mask="causal")
+            stats = get_patch_stats()
+            assert stats["forward_calls"] == 1
+            assert stats["steel_calls"] == 1
+            assert stats["fallback_calls"] == 0
+        finally:
+            unpatch_mlx_lm()
+
+    @requires_ext
+    def test_fallback_increments_on_array_mask(self):
+        """Array mask triggers fallback counter."""
+        from mlx_mfa.integrations.mlx_lm import (
+            _steel_sdpa, get_patch_stats, patch_mlx_lm, unpatch_mlx_lm,
+        )
+
+        try:
+            patch_mlx_lm(verbose=False)
+            q, k, v = _make_qkv(D=128)
+            array_mask = mx.ones((1, 1, q.shape[2], k.shape[2]), dtype=mx.bool_)
+            _steel_sdpa(q, k, v, cache=None, scale=0.1, mask=array_mask)
+            stats = get_patch_stats()
+            assert stats["forward_calls"] == 1
+            assert stats["fallback_calls"] == 1
+        finally:
+            unpatch_mlx_lm()
+
+    def test_stats_reset_on_new_patch(self):
+        """Stats should reset to zero when patch_mlx_lm is called fresh."""
+        from mlx_mfa.integrations.mlx_lm import (
+            get_patch_stats, patch_mlx_lm, unpatch_mlx_lm,
+        )
+        import mlx_mfa.integrations.mlx_lm as mod
+
+        try:
+            patch_mlx_lm(verbose=False)
+            # Manually bump a counter to simulate previous activity
+            mod._stats["forward_calls"] = 99
+            unpatch_mlx_lm()
+            # Re-patch: stats should be zeroed
+            patch_mlx_lm(verbose=False)
+            stats = get_patch_stats()
+            assert stats["forward_calls"] == 0, "stats not reset on re-patch"
+        finally:
+            unpatch_mlx_lm()
+
+    def test_steel_ratio_calculation(self):
+        """steel_ratio = steel_calls / forward_calls."""
+        from mlx_mfa.integrations.mlx_lm import get_patch_stats
+        import mlx_mfa.integrations.mlx_lm as mod
+
+        mod._stats["forward_calls"] = 10
+        mod._stats["steel_calls"] = 7
+        mod._stats["fallback_calls"] = 3
+        stats = get_patch_stats()
+        assert abs(stats["steel_ratio"] - 0.7) < 1e-9
+        # restore
+        mod._stats["forward_calls"] = 0
+        mod._stats["steel_calls"] = 0
+        mod._stats["fallback_calls"] = 0
+
+
+class TestCheckModelCompatibility:
+    """GB.3 — check_model_compatibility() heuristics."""
+
+    def test_returns_dict_with_expected_keys(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("some-model")
+        for key in ("compatible", "reason", "extension_available",
+                    "supported_head_dims", "supported_dtypes", "notes"):
+            assert key in result, f"missing key: {key}"
+
+    def test_compatible_is_bool(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("llama-3.2-3b-instruct-4bit")
+        assert isinstance(result["compatible"], bool)
+
+    def test_mamba_incompatible(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("mamba-2.8b-hf")
+        if result["extension_available"]:
+            assert result["compatible"] is False
+            assert "mamba" in result["reason"].lower()
+
+    def test_rwkv_incompatible(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("RWKV-4-Raven-7B")
+        if result["extension_available"]:
+            assert result["compatible"] is False
+
+    def test_standard_transformer_compatible(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("mlx-community/Llama-3.2-3B-Instruct-4bit")
+        if result["extension_available"]:
+            assert result["compatible"] is True
+            assert "float16" in result["supported_dtypes"]
+
+    def test_quantized_note_present(self):
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        result = check_model_compatibility("llama-3b-4bit")
+        if result["extension_available"] and result["compatible"]:
+            assert "dequantize" in result["reason"]
+
+    def test_no_mlx_lm_dependency(self):
+        """check_model_compatibility must work without mlx-lm installed."""
+        from mlx_mfa.integrations.mlx_lm import check_model_compatibility
+        # Should not raise ImportError regardless of mlx-lm presence
+        result = check_model_compatibility("some-model")
+        assert "compatible" in result
