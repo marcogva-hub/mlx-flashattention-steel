@@ -2,6 +2,28 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.0-rc2] — UNRELEASED
+
+### Added
+- **Track FD: Kernel-level paged KV streaming in STEEL forward kernel** — K/V tiles
+  read directly from `[num_blocks, block_size, H_kv, D]` pool via `block_table` lookup
+  without first materialising a contiguous O(S×D) K/V tensor. Eliminates an extra Metal
+  command buffer round-trip for long-context decode. Targets D∈{64,128,256}, f16/bf16.
+- **Track FD-decode: Paged Flash Decode partial kernel** — Paged per-token gather
+  inside the split-KV partial accumulation kernel; reduce phase unchanged. Activated
+  when N_q≤4, S≥256, f16/bf16.
+- **Track FD-bench: Paged KV benchmark** — `benchmarks/bench_paged_kv.py` comparing
+  gather+attend vs kernel-level paged for S=1K/4K/16K/64K.
+
+### Changed
+- (infra) `has_window` added to `KernelKey` hash/equality; `window_left` wired into
+  `MFASteelParams` — prerequisite for Track FD kernel dispatch.
+
+### Tests
+- Tests: TBD
+
+---
+
 ## [1.0.0-rc1] — 2026-03-06
 
 ### Added
