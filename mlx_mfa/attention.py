@@ -702,6 +702,19 @@ def flash_attention_with_kv_cache(
 ):
     """Compute attention and update the KV cache in a single call.
 
+    .. deprecated:: 1.0.1
+        Use :func:`flash_attention_kvcache` instead.
+        ``flash_attention_with_kv_cache`` returns a 3-tuple and requires
+        manually managing the growing cache tensor.
+        :func:`flash_attention_kvcache` provides a cleaner API with
+        ``cache_seqlens`` support, paged attention, and RoPE appending::
+
+            out = flash_attention_kvcache(q, k_cache, v_cache,
+                                          scale=scale, causal=True,
+                                          cache_seqlens=mx.array([past_len]))
+
+        This function will be removed in v2.0.
+
     Concatenates the new K/V tokens onto the existing cache along the
     sequence dimension, then runs :func:`flash_attention` on the full
     ``(cache + new)`` K/V tensors.  The updated cache is returned alongside
