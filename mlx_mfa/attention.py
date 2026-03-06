@@ -2300,23 +2300,42 @@ def flash_attention_varlen(
 
 
 class PagedKVCache:
-    """Fixed-size block pool for paged KV cache management.
+    """Paged KV cache manager — dual-pool block allocator.
 
-    Manages KV memory as a pool of fixed-size blocks (pages), analogous to
-    OS virtual memory paging.  Eliminates padding waste when batch sequences
-    have very different lengths.
+    Manages separate K and V page pools as fixed-size blocks.  Eliminates
+    padding waste when batch sequences have different lengths.  Designed to
+    integrate directly with :func:`flash_attention_paged` and
+    :func:`flash_attention_kvcache` (paged mode).
 
-    Layout:
-        ``pool``:  ``[num_blocks, block_size, H_kv, D]``
-        ``block_table``:  list of lists, mapping sequence → list of block ids
+    Pool layout: ``[num_blocks, block_size, H_kv, D]``
 
     Example::
 
-        cache = PagedKVCache(num_blocks=64, block_size=16, H=4, D=128)
-        k_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
-        v_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
-        cache.append(k_new, v_new, seq_id=0)
-        k_seq, v_seq = cache.gather(seq_id=0)   # [1, 4, 32, 128]
+        cache = PagedKVCache(num_blocks=256, block_size=16, H=8, D=128)
+
+        # Prefill: append 512 tokens for sequence 0
+        cache.append(k_prefill, v_prefill, seq_id=0)   # k: [1, H, 512, D]
+
+        # Decode: append 1 new token per step
+        cache.append(k_new, v_new, seq_id=0)            # k: [1, H, 1, D]
+
+        # Attend via unified API
+        out = flash_attention_kvcache(
+            q, cache.k_pool, cache.v_pool,
+            block_table=cache.get_block_table(),
+            seq_lens=cache.get_seq_lens(),
+            block_size=cache.block_size, causal=True,
+        )
+
+        # Or via paged API
+        out = flash_attention_paged(
+            q, cache.k_pool, cache.v_pool,
+            cache.get_block_table(), cache.get_seq_lens(),
+            block_size=cache.block_size,
+        )
+
+        # Free when done
+        cache.free_seq(0)
 
     Args:
         num_blocks:  Total number of pages in the pool.
@@ -2324,6 +2343,14 @@ class PagedKVCache:
         H:           Number of KV heads.
         D:           Head dimension.
         dtype:       MLX dtype for the pool (default ``mx.float16``).
+
+    Note — Performance:
+        ``append()`` uses a numpy float32 backing store for efficient
+        block-level slice writes.  ``k_pool`` / ``v_pool`` create one
+        ``mx.array`` conversion per attention call, which is negligible
+        compared to Metal kernel dispatch.  For pools with thousands of
+        blocks, a Metal scatter kernel would be faster; this implementation
+        targets typical inference workloads (B=1, ≤512 blocks).
     """
 
     def __init__(
@@ -2335,6 +2362,7 @@ class PagedKVCache:
         dtype=None,
     ) -> None:
         import mlx.core as mx
+        import numpy as _np
 
         if dtype is None:
             dtype = mx.float16
@@ -2344,8 +2372,15 @@ class PagedKVCache:
         self.D = D
         self.dtype = dtype
 
-        # Pool: [num_blocks, block_size, H, D]
-        self._pool = mx.zeros((num_blocks, block_size, H, D), dtype=dtype)
+        # Numpy float32 backing store for efficient in-place slice writes.
+        # (numpy has no bfloat16 support; float32 is used for all dtypes.)
+        self._k_np = _np.zeros((num_blocks, block_size, H, D), dtype=_np.float32)
+        self._v_np = _np.zeros((num_blocks, block_size, H, D), dtype=_np.float32)
+
+        # Cached mx.array views — invalidated on every append.
+        self._k_pool_cached = None
+        self._v_pool_cached = None
+
         # Free list (stack of available block ids)
         self._free: list[int] = list(range(num_blocks))
         # Per-sequence block table: seq_id → [block_id, ...]
@@ -2366,6 +2401,28 @@ class PagedKVCache:
             self._block_table[seq_id] = [blk]
             self._write_ptr[seq_id] = 0
 
+    def _invalidate_cache(self) -> None:
+        self._k_pool_cached = None
+        self._v_pool_cached = None
+
+    # ── pool properties ───────────────────────────────────────────────────
+
+    @property
+    def k_pool(self) -> "mx.array":
+        """Key page pool ``[num_blocks, block_size, H, D]``."""
+        import mlx.core as mx
+        if self._k_pool_cached is None:
+            self._k_pool_cached = mx.array(self._k_np).astype(self.dtype)
+        return self._k_pool_cached
+
+    @property
+    def v_pool(self) -> "mx.array":
+        """Value page pool ``[num_blocks, block_size, H, D]``."""
+        import mlx.core as mx
+        if self._v_pool_cached is None:
+            self._v_pool_cached = mx.array(self._v_np).astype(self.dtype)
+        return self._v_pool_cached
+
     # ── public API ────────────────────────────────────────────────────────
 
     def append(
@@ -2376,75 +2433,148 @@ class PagedKVCache:
     ) -> None:
         """Append new K/V tokens for ``seq_id``.
 
+        Uses block-level numpy slice writes — one write per chunk rather
+        than one write per element.  Invalidates the ``k_pool``/``v_pool``
+        cached arrays so the next property access reflects the new data.
+
         Args:
             k:       ``[1, H, T, D]`` new key tokens.
             v:       ``[1, H, T, D]`` new value tokens.
-            seq_id:  Sequence identifier.
+            seq_id:  Sequence identifier (default 0).
         """
         import mlx.core as mx
+        import numpy as _np
 
-        # Transpose to [T, H, D] for pool storage
-        k = k[0].transpose(1, 0, 2)  # [T, H, D]
-        v = v[0].transpose(1, 0, 2)  # [T, H, D]
         mx.eval(k, v)
-
-        k_np = k.tolist()
-        v_np = v.tolist()
-        T = len(k_np)
+        # Transpose [1, H, T, D] → [T, H, D] for pool layout.
+        # Cast to float32 first (numpy has no bfloat16 support).
+        k_np = _np.array(k[0].astype(mx.float32)).transpose(1, 0, 2)  # [T, H, D]
+        v_np = _np.array(v[0].astype(mx.float32)).transpose(1, 0, 2)
+        T = k_np.shape[0]
 
         self._ensure_seq(seq_id)
+        self._invalidate_cache()
 
-        for t in range(T):
+        written = 0
+        while written < T:
             blks = self._block_table[seq_id]
             ptr = self._write_ptr[seq_id]
+
             if ptr == self.block_size:
                 blk = self._allocate_block()
                 blks.append(blk)
                 ptr = 0
-            blk_id = blks[-1]
-            # Write token t into pool[blk_id, ptr, :, :]
-            for h in range(self.H):
-                self._pool = self._pool.at[blk_id, ptr, h].set(
-                    mx.array(k_np[t][h], dtype=self.dtype)
-                )
-            # Same for V (we need a second pool — use simple dict approach)
-            self._write_ptr[seq_id] = ptr + 1
+                self._write_ptr[seq_id] = 0
 
-        # NOTE: This simple Python-loop implementation is intentionally
-        # straightforward for Phase 1.  Phase 2 will use a Metal kernel.
-        # For production use, call gather() then reconstruct via mx.stack.
+            blk_id = blks[-1]
+            room = self.block_size - ptr
+            chunk = min(room, T - written)
+
+            # Block-level slice write: O(chunk × H × D) per call.
+            self._k_np[blk_id, ptr:ptr + chunk] = k_np[written:written + chunk]
+            self._v_np[blk_id, ptr:ptr + chunk] = v_np[written:written + chunk]
+
+            self._write_ptr[seq_id] = ptr + chunk
+            written += chunk
 
     def gather(self, seq_id: int = 0) -> "tuple[mx.array, mx.array]":
         """Reconstruct contiguous K, V tensors for ``seq_id``.
 
+        Useful for inspection, debugging, or dense-attention fallback.
+        For inference, prefer :func:`flash_attention_paged` or
+        :func:`flash_attention_kvcache` which read tiles directly from
+        the pool without materialising a full contiguous copy.
+
         Returns:
             ``(k, v)`` each shaped ``[1, H, S, D]`` where S = tokens written.
-
-        Note:
-            Phase 1 uses a naive gather; Phase 2 will use a Metal kernel with
-            block-table scatter/gather for O(1) decode.
         """
-        raise NotImplementedError(
-            "PagedKVCache.gather() requires the MLX-native gather path "
-            "(Phase 2). Use flash_attention_paged() which handles gathering."
-        )
+        import mlx.core as mx
+        import numpy as _np
+
+        blks = self._block_table.get(seq_id, [])
+        seqlen = self.seq_lengths.get(seq_id, 0)
+
+        if not blks or seqlen == 0:
+            return (
+                mx.zeros((1, self.H, 0, self.D), dtype=self.dtype),
+                mx.zeros((1, self.H, 0, self.D), dtype=self.dtype),
+            )
+
+        # Concatenate block rows from numpy, trim to actual seqlen.
+        k_flat = _np.concatenate([self._k_np[b] for b in blks], axis=0)[:seqlen]  # [S, H, D]
+        v_flat = _np.concatenate([self._v_np[b] for b in blks], axis=0)[:seqlen]
+
+        # Transpose to [1, H, S, D] and cast to target dtype.
+        k_out = mx.array(k_flat.transpose(1, 0, 2)[_np.newaxis]).astype(self.dtype)
+        v_out = mx.array(v_flat.transpose(1, 0, 2)[_np.newaxis]).astype(self.dtype)
+        return k_out, v_out
+
+    def get_block_table(
+        self,
+        seq_ids: "Optional[list[int]]" = None,
+    ) -> "mx.array":
+        """Block table for given sequences.
+
+        Args:
+            seq_ids: Sequences to include (default: all active, sorted by id).
+
+        Returns:
+            ``int32 [B, max_blocks_per_seq]`` — unused slots padded with ``-1``.
+        """
+        import mlx.core as mx
+
+        if seq_ids is None:
+            seq_ids = sorted(self._block_table.keys())
+        if not seq_ids:
+            return mx.zeros((0, 0), dtype=mx.int32)
+        max_blks = max(len(self._block_table[s]) for s in seq_ids)
+        table = []
+        for s in seq_ids:
+            blks = self._block_table[s]
+            row = blks + [-1] * (max_blks - len(blks))
+            table.append(row)
+        return mx.array(table, dtype=mx.int32)
+
+    def get_seq_lens(
+        self,
+        seq_ids: "Optional[list[int]]" = None,
+    ) -> "mx.array":
+        """Sequence lengths for given sequences.
+
+        Args:
+            seq_ids: Sequences to include (default: all active, sorted by id).
+
+        Returns:
+            ``int32 [B]`` — token count per sequence.
+        """
+        import mlx.core as mx
+
+        if seq_ids is None:
+            seq_ids = sorted(self._block_table.keys())
+        lens = [self.seq_lengths.get(s, 0) for s in seq_ids]
+        return mx.array(lens, dtype=mx.int32)
+
+    def block_table_and_seq_lens(
+        self,
+        seq_ids: "list[int]",
+    ) -> "tuple[mx.array, mx.array]":
+        """Convenience wrapper: ``(get_block_table(seq_ids), get_seq_lens(seq_ids))``."""
+        return self.get_block_table(seq_ids), self.get_seq_lens(seq_ids)
 
     @property
     def seq_lengths(self) -> "dict[int, int]":
-        """Return {seq_id: num_tokens_written} for all sequences."""
+        """Return ``{seq_id: num_tokens_written}`` for all active sequences."""
         return {
-            sid: sum(
-                self.block_size if i < len(blks) - 1 else self._write_ptr[sid]
-                for i, _ in enumerate(blks)
-            )
+            sid: (len(blks) - 1) * self.block_size + self._write_ptr[sid]
             for sid, blks in self._block_table.items()
         }
 
     def free_seq(self, seq_id: int) -> None:
-        """Release all blocks held by ``seq_id``."""
+        """Release all blocks held by ``seq_id`` back to the free list."""
         if seq_id in self._block_table:
             self._free.extend(self._block_table.pop(seq_id))
             self._write_ptr.pop(seq_id, None)
+            self._invalidate_cache()
 
     def __repr__(self) -> str:
         used = self.num_blocks - len(self._free)

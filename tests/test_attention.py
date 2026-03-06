@@ -3422,6 +3422,249 @@ class TestPagedKVCache:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track GA — PagedKVCache rewrite (v1.0.1)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestPagedKVCacheGA:
+    """Tests for the rewritten PagedKVCache (dual-pool, functional gather)."""
+
+    def test_dual_pool_construction(self):
+        """K and V pools are separate numpy arrays with correct shape."""
+        from mlx_mfa import PagedKVCache
+        import numpy as np
+        cache = PagedKVCache(num_blocks=16, block_size=32, H=4, D=64)
+        assert cache._k_np.shape == (16, 32, 4, 64)
+        assert cache._v_np.shape == (16, 32, 4, 64)
+        assert cache._k_np.dtype == np.float32
+        assert cache._v_np.dtype == np.float32
+
+    def test_k_pool_v_pool_properties(self):
+        """k_pool / v_pool return mx.array with correct shape and dtype."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=4, block_size=16, H=2, D=64)
+        k_pool = cache.k_pool
+        v_pool = cache.v_pool
+        assert k_pool.shape == (4, 16, 2, 64)
+        assert v_pool.shape == (4, 16, 2, 64)
+        assert k_pool.dtype == mx.float16
+        assert v_pool.dtype == mx.float16
+
+    def test_append_single_token(self):
+        """Append 1 token and verify pool content matches."""
+        from mlx_mfa import PagedKVCache
+        import numpy as np
+        mx.random.seed(1)
+        cache = PagedKVCache(num_blocks=4, block_size=16, H=2, D=64)
+        k = mx.random.normal((1, 2, 1, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 2, 1, 64)).astype(mx.float16)
+        mx.eval(k, v)
+        cache.append(k, v, seq_id=0)
+
+        assert cache.seq_lengths == {0: 1}
+        # Verify K written correctly: pool[blk_id=0, ptr=0] == k[0,:,0,:]
+        blk_id = cache._block_table[0][0]
+        k_ref = np.array(k[0].astype(mx.float32)).transpose(1, 0, 2)  # [1, H, D]
+        np.testing.assert_allclose(
+            cache._k_np[blk_id, 0], k_ref[0], atol=1e-4)
+
+    def test_append_multi_token(self):
+        """Append T tokens; seq_lengths reflects total count."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        T = 32
+        k = mx.zeros((1, 2, T, 64), dtype=mx.float16)
+        v = mx.zeros((1, 2, T, 64), dtype=mx.float16)
+        cache.append(k, v, seq_id=0)
+        assert cache.seq_lengths[0] == T
+        # 32 tokens in blocks of 16 → 2 blocks used
+        assert len(cache._block_table[0]) == 2
+
+    def test_append_cross_block_boundary(self):
+        """Append tokens that cross a block boundary."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        # Fill block 0 with 10 tokens, then add 10 more (spills to block 1)
+        k1 = mx.zeros((1, 2, 10, 64), dtype=mx.float16)
+        v1 = mx.zeros((1, 2, 10, 64), dtype=mx.float16)
+        cache.append(k1, v1, seq_id=0)
+        assert cache._write_ptr[0] == 10
+
+        k2 = mx.zeros((1, 2, 10, 64), dtype=mx.float16)
+        v2 = mx.zeros((1, 2, 10, 64), dtype=mx.float16)
+        cache.append(k2, v2, seq_id=0)
+        assert cache.seq_lengths[0] == 20
+        assert len(cache._block_table[0]) == 2
+        assert cache._write_ptr[0] == 4   # 20 - 16 = 4 tokens in block 1
+
+    def test_gather_matches_append(self):
+        """gather() returns exactly what was appended."""
+        from mlx_mfa import PagedKVCache
+        import numpy as np
+        mx.random.seed(2)
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=4, D=64)
+        k = mx.random.normal((1, 4, 24, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 24, 64)).astype(mx.float16)
+        mx.eval(k, v)
+        cache.append(k, v, seq_id=0)
+
+        k_out, v_out = cache.gather(seq_id=0)
+        assert k_out.shape == (1, 4, 24, 64)
+        assert v_out.shape == (1, 4, 24, 64)
+
+        np.testing.assert_allclose(
+            np.array(k_out.astype(mx.float32)),
+            np.array(k.astype(mx.float32)),
+            atol=1e-4, err_msg="gather K != appended K")
+        np.testing.assert_allclose(
+            np.array(v_out.astype(mx.float32)),
+            np.array(v.astype(mx.float32)),
+            atol=1e-4, err_msg="gather V != appended V")
+
+    def test_gather_empty_seq(self):
+        """gather() on an empty / unknown seq returns [1, H, 0, D]."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=4, block_size=16, H=2, D=64)
+        k_out, v_out = cache.gather(seq_id=99)
+        assert k_out.shape == (1, 2, 0, 64)
+        assert v_out.shape == (1, 2, 0, 64)
+
+    def test_free_seq_releases_blocks(self):
+        """free_seq() returns blocks to the free list."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=4, block_size=16, H=2, D=64)
+        k = mx.zeros((1, 2, 32, 64), dtype=mx.float16)
+        v = mx.zeros((1, 2, 32, 64), dtype=mx.float16)
+        cache.append(k, v, seq_id=0)
+        assert len(cache._free) == 2   # 4 - 2 = 2 free
+
+        cache.free_seq(0)
+        assert len(cache._free) == 4   # all returned
+        assert 0 not in cache._block_table
+
+    def test_get_block_table_shape_and_dtype(self):
+        """get_block_table() returns [B, max_blocks] int32 with -1 padding."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        k = mx.zeros((1, 2, 32, 64), dtype=mx.float16)
+        v = mx.zeros((1, 2, 32, 64), dtype=mx.float16)
+        cache.append(k, v, seq_id=0)   # 2 blocks
+        cache.append(mx.zeros((1, 2, 8, 64), dtype=mx.float16),
+                     mx.zeros((1, 2, 8, 64), dtype=mx.float16), seq_id=1)  # 1 block
+
+        bt = cache.get_block_table([0, 1])
+        assert bt.shape == (2, 2)     # max 2 blocks, padded to 2
+        assert bt.dtype == mx.int32
+        assert int(bt[1, 1].item()) == -1   # seq 1 has only 1 block → pad
+
+    def test_get_seq_lens(self):
+        """get_seq_lens() returns correct token count per sequence."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        cache.append(mx.zeros((1, 2, 10, 64), dtype=mx.float16),
+                     mx.zeros((1, 2, 10, 64), dtype=mx.float16), seq_id=0)
+        cache.append(mx.zeros((1, 2, 25, 64), dtype=mx.float16),
+                     mx.zeros((1, 2, 25, 64), dtype=mx.float16), seq_id=1)
+        sl = cache.get_seq_lens([0, 1])
+        assert sl.dtype == mx.int32
+        assert int(sl[0].item()) == 10
+        assert int(sl[1].item()) == 25
+
+    @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension not available")
+    def test_paged_integration(self):
+        """PagedKVCache + flash_attention_paged produces correct output."""
+        from mlx_mfa import PagedKVCache, flash_attention_paged, flash_attention
+        mx.random.seed(42)
+        B, H, N_q, S, D = 1, 4, 4, 32, 64
+        scale = 1.0 / D**0.5
+
+        q  = mx.random.normal((B, H, N_q, D)).astype(mx.float16)
+        k  = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v  = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=H, D=D)
+        cache.append(k, v, seq_id=0)
+
+        out_paged = flash_attention_paged(
+            q, cache.k_pool, cache.v_pool,
+            cache.get_block_table([0]), cache.get_seq_lens([0]),
+            scale=scale, block_size=cache.block_size,
+        )
+        out_ref = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_paged, out_ref)
+
+        diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"paged vs ref max diff: {diff}"
+
+    @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension not available")
+    def test_kvcache_integration(self):
+        """PagedKVCache + flash_attention_kvcache (paged mode) produces correct output."""
+        from mlx_mfa import PagedKVCache, flash_attention_kvcache, flash_attention
+        mx.random.seed(7)
+        B, H, N_q, S, D = 1, 4, 1, 48, 64
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((B, H, N_q, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=H, D=D)
+        cache.append(k, v, seq_id=0)
+
+        out_paged = flash_attention_kvcache(
+            q, cache.k_pool, cache.v_pool,
+            block_table=cache.get_block_table([0]),
+            seq_lens=cache.get_seq_lens([0]),
+            block_size=cache.block_size,
+            scale=scale, causal=False,
+        )
+        out_ref = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_paged, out_ref)
+
+        diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"kvcache paged vs ref max diff: {diff}"
+
+    @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension not available")
+    def test_multi_seq(self):
+        """Multiple sequences with different lengths."""
+        from mlx_mfa import PagedKVCache, flash_attention_paged, flash_attention
+        mx.random.seed(5)
+        H, D = 4, 64
+        S0, S1 = 32, 48
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((2, H, 4, D)).astype(mx.float16)
+        k0 = mx.random.normal((1, H, S0, D)).astype(mx.float16)
+        k1 = mx.random.normal((1, H, S1, D)).astype(mx.float16)
+        v0 = mx.random.normal((1, H, S0, D)).astype(mx.float16)
+        v1 = mx.random.normal((1, H, S1, D)).astype(mx.float16)
+        mx.eval(q, k0, k1, v0, v1)
+
+        cache = PagedKVCache(num_blocks=16, block_size=16, H=H, D=D)
+        cache.append(k0, v0, seq_id=0)
+        cache.append(k1, v1, seq_id=1)
+
+        bt = cache.get_block_table([0, 1])
+        sl = cache.get_seq_lens([0, 1])
+        assert bt.shape == (2, 3)   # seq0: 2 blocks; seq1: 3 blocks
+
+        out_paged = flash_attention_paged(
+            q, cache.k_pool, cache.v_pool, bt, sl,
+            scale=scale, block_size=cache.block_size,
+        )
+        ref = mx.concatenate([
+            flash_attention(q[0:1], k0, v0, scale=scale),
+            flash_attention(q[1:2], k1, v1, scale=scale),
+        ], axis=0)
+        mx.eval(out_paged, ref)
+
+        diff = float(mx.abs(out_paged.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"multi-seq max diff: {diff}"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track BF — QKV / KV packed tensor formats
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
