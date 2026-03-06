@@ -2,10 +2,35 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [0.9.2] — UNRELEASED
+## [0.9.2] — 2026-03-06
 
 ### Added
-<!-- Tracks DA–DE filled incrementally -->
+- **Track DA: GQA backward guard fix** — Removed incorrect Python guard that blocked
+  STEEL backward dispatch for grouped-query attention (H_q ≠ H_kv). The STEEL kernels
+  have supported GQA since v0.9.0 via the `gqa_factor` Metal define; the Python
+  `use_steel_bwd` predicate now correctly allows GQA shapes through.
+- **Track DC: `mx.compile` for `_apply_rope_mlx`** — Shape-keyed compile cache
+  (`_rope_compile_cache`) with separate `_impl` closures for interleaved and
+  non-interleaved layouts. Scalars `offset` and `interleaved` are frozen in the
+  closure to avoid dynamic control flow in the compiled graph. Median speedup ≈1.4×
+  over the raw Python fallback (measured in `bench_compile.py`).
+- **Track DC: `benchmarks/bench_compile.py`** — New benchmark (50-iteration median)
+  comparing compiled vs raw latency for `_softcap_sdpa_ref`, `_alibi_sdpa_ref`, and
+  `_apply_rope_mlx` (interleaved + non-interleaved) at N=2048 D=128 f16.
+- **Track CE: D=256 D-split STEEL backward** — `generate_steel_backward_dq_source()`
+  and `generate_steel_backward_dkv_source()` now emit D-split Metal code when
+  `head_dim=256` (`BD_HALF=128`). Q/dO/K/V tiles are loaded in lo (0..127) and
+  hi (128..255) passes sharing one threadgroup buffer; dQ/dK/dV accumulators become
+  lo/hi register-tile pairs. TGP budget ≈ 23 KB (well below 32 KB limit). The
+  `use_steel_bwd` guard is widened from `D ≤ 128` to `D ≤ 256`.
+- **Track DD: Documentation refresh** — `docs/INVENTORY.md` updated to v0.9.2:
+  test count 241, benchmark count 9, backward strategy table, DA–DE additions table.
+  CE row in v0.9.1 table updated from "deferred" to "completed in v0.9.2".
+
+### Fixed
+- **Track DB: CHANGELOG inaccuracies** — v0.9.1 entry for Track CB now correctly states
+  `_apply_rope_mlx` was NOT compiled in v0.9.1 (completed in Track DC / v0.9.2).
+  Test count corrected to 232.
 
 ---
 

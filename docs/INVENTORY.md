@@ -1,6 +1,6 @@
 # mlx-mfa Repository Inventory
 
-_Auto-regenerated at v0.9.1 (2026-03-06)._
+_Auto-regenerated at v0.9.2 (2026-03-06)._
 
 ## Project structure
 
@@ -87,13 +87,14 @@ mlx-mfa-v2/
 | `SteelBackwardDQ` | f16/bf16 | Bwd | STEEL dQ kernel |
 | `SteelBackwardDKV` | f16/bf16 | Bwd | STEEL dK/dV kernel |
 
-**Backward strategy (v0.9.0)**: f16/bf16 backward dispatches native STEEL Metal kernels
-(`MFASteelBwdDQ`, `MFASteelBwdDKV`) via `_make_mfa_custom._backward`. f32 stays on ccv path.
+**Backward strategy (v0.9.2)**: f16/bf16 D≤256 dispatches native STEEL Metal kernels
+(`MFASteelBwdDQ`, `MFASteelBwdDKV`) via `_make_mfa_custom._backward`. D=256 uses D-split
+(BD_HALF=128) to stay within 32 KB TGP. f32 stays on ccv path.
 Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointing re-run of forward.
 
 ---
 
-## Tests (235 pytest runs / 197 test functions)
+## Tests (241 pytest runs / 203 test functions)
 
 | Class | Count | What |
 |-------|------:|------|
@@ -116,13 +117,15 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | TestKVCacheAppend | 4 | flash_attention_with_kv_cache |
 | TestAttentionDropout | 4 | Training dropout |
 | TestReturnAttnWeights | 4 | return_attn_weights=True |
+| TestSteelBackwardGQA | 3 | STEEL backward GQA (DA) |
+| TestSteelBackwardD256 | 6 | D=256 D-split backward (CE) |
 | TestPublicAPI / TestEdgeCases / etc. | ~35 | API, M3+ routing, edge cases |
 | test_mlx_lm_integration.py | 11 | mlx-lm integration |
-| **Total** | **232** | |
+| **Total** | **241** | |
 
 ---
 
-## Benchmarks (7 scripts)
+## Benchmarks (9 scripts)
 
 | Script | Scenarios |
 |--------|-----------|
@@ -133,7 +136,21 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | `bench_softcap_alibi.py` | Softcap + ALiBi overhead vs baseline |
 | `bench_spatial_masks.py` | Spatial mask attention throughput |
 | `bench_varlen.py` | Variable-length batching throughput |
-| `bench_all.py` | Consolidated fwd+bwd suite (NEW v0.9.1) |
+| `bench_all.py` | Consolidated fwd+bwd suite (v0.9.1) |
+| `bench_compile.py` | `mx.compile` overhead: softcap/alibi/rope compiled vs raw (v0.9.2) |
+
+---
+
+## v0.9.2 additions (DA–DE)
+
+| Track | File(s) | Description |
+|-------|---------|-------------|
+| DA | `mlx_mfa/attention.py` | Fix GQA backward Python guard (was blocking STEEL dispatch for GQA) |
+| DB | `CHANGELOG.md`, `docs/INVENTORY.md` | Fix doc inaccuracies (track CB scope, test counts) |
+| DC | `mlx_mfa/attention.py`, `benchmarks/bench_compile.py` | `mx.compile` for `_apply_rope_mlx` (shape-keyed cache) + compile benchmark |
+| CE | `csrc/mfa_steel_bwd.cpp`, `mlx_mfa/attention.py` | D=256 D-split STEEL backward (BD_HALF=128); widen guard to D≤256 |
+| DD | `docs/INVENTORY.md`, `docs/ARCHITECTURE.md` | Documentation refresh (v0.9.2 additions, test count 241, bench count 9) |
+| DE | `pyproject.toml`, `mlx_mfa/__init__.py`, `CHANGELOG.md` | Version bump → 0.9.2, tag |
 
 ---
 
@@ -145,7 +162,7 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | CB | `mlx_mfa/attention.py` | `mx.compile` for fallback paths |
 | CC | `csrc/mfa_steel_fwd.cpp` | Persistent multi-Q-block kernel (4× Q-blocks/dispatch) |
 | CD | `csrc/mfa_steel_bwd.cpp`, `shader_cache.hpp/.mm` | GQA in STEEL backward (bake `gqa_factor` as `#define`) |
-| CE | — | D=256 backward multi-pass (deferred to v1.0) |
+| CE | `csrc/mfa_steel_bwd.cpp` | D=256 backward D-split (completed in v0.9.2) |
 | CF | `csrc/mfa_steel_fwd.cpp` | Double-buffer ping-pong (K_smem⊕V_smem, 4→2 barriers/K-tile) |
 | CG | `benchmarks/bench_all.py`, `docs/benchmarks/RESULTS.md` | Consolidated benchmark + v0.9.1 results |
 | CH | `docs/INVENTORY.md`, `docs/ARCHITECTURE.md`, `README.md` | Documentation refresh |

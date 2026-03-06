@@ -279,5 +279,5 @@ NB_MODULE(_ext, m) {
         "Returns (O [1,H,total_q,D], L [1,H,total_q] logsumexp in log2 domain).\n"
         "Only f16/bf16 supported.");
 
-  m.attr("__version__") = "0.9.1";
+  m.attr("__version__") = "0.9.2";
 }
