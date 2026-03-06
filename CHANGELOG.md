@@ -2,10 +2,40 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [0.9.1] — UNRELEASED
+## [0.9.1] — 2026-03-06
 
 ### Added
-<!-- Tracks CA–CI filled incrementally -->
+- **Track CA: Vec4 block loads** — `MFABlockLoaderT` uses `float4`/`half4` aligned
+  vector reads for all tile loads in the STEEL forward kernel, reducing instruction
+  count per tile by 4× on cache-line-aligned data.
+- **Track CB: `mx.compile` for fallback paths** — The Python fallback routes
+  (`_fallback_sdpa`, sparse backward, varlen split-cat) are wrapped with `mx.compile`
+  so repeated calls with the same shapes share a compiled compute graph.
+- **Track CC: Persistent multi-Q-block kernel** — The STEEL forward kernel now iterates
+  over an outer `qb` loop (`[0, NQ)`) within a single threadgroup dispatch, processing
+  up to 4 Q-blocks per launch. Amortizes Metal command buffer overhead at N ≥ 4096.
+- **Track CD: GQA in STEEL backward** — The STEEL dQ and dKV backward kernels now
+  handle grouped-query attention.  The `gqa_factor` (H_q / H_kv) is baked into the
+  Metal shader as `#define MFA_GQA_FACTOR <N>` at compile time, avoiding Metal
+  `constant`-address-space struct-field read ambiguity.  `KernelKey` extended with
+  `gqa_factor` so each GQA ratio compiles to a distinct cached pipeline.
+- **Track CF: Double-buffer ping-pong** — Separate `K_smem` / `V_smem` threadgroup
+  arrays when D ≤ 128 (TGP ≈ 19.2 KB < 32 KB limit).  Reduces barriers per K-tile
+  from 4 → 2: V-tile stores overlap K-GEMM; K[n+1]-tile stores overlap P@V.
+  Phase-0 preloads K[0] before the loop; `loader_k/v.next()` called inline.
+  Disabled for D=256 (budget), RoPE (extra TGP), and sparse.
+- **Track CG: `benchmarks/bench_all.py`** — Consolidated forward + backward benchmark
+  suite (`--fwd-only`, `--bwd-only`, `--no-save` flags).  Appends markdown results
+  table to `docs/benchmarks/RESULTS.md`.
+- **Track CH: Documentation refresh** — `docs/INVENTORY.md` updated to v0.9.1
+  (test count 232, benchmark count 8, kernel table, CA–CI additions table).
+  `docs/ARCHITECTURE.md` adds notes on CF double-buffer and CC persistent kernel.
+  `README.md` roadmap updated: N1 marked Done (v0.9.0); CA/CB/CC/CD/CF rows added.
+
+### Deferred
+- **Track CE: D=256 backward multi-pass** — 3D blocking for the STEEL dQ/dKV
+  backward kernels (analogous to the forward D=256 path) is deferred to v1.0.
+  D=256 backward continues to route to `mx.vjp(SDPA)` (same as v0.9.0).
 
 ---
 
