@@ -2,6 +2,18 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.2] — 2026-03-06
+
+### Changed
+- **Build system**: added `mlx>=0.18.0` to `[build-system] requires` so MLX headers
+  are available to the C++ extension during isolated `pip install` builds (e.g. CI,
+  `--no-build-isolation` no longer required for a clean sdist install).
+- **Version bump**: 1.0.1 → 1.0.2 (pyproject.toml, `__init__.py`, `csrc/bindings.cpp`).
+
+**337 tests pass.** No API or kernel changes.
+
+---
+
 ## [1.0.1] — 2026-03-06
 
 ### Fixed / Improved

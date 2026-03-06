@@ -1,10 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0", "mlx>=0.18.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-mfa"
-version = "1.0.1"
+version = "1.0.2"
 description = "Metal Flash Attention for MLX — causal attention 1.5-2.9x faster than SDPA on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
