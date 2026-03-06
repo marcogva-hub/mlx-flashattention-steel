@@ -2,25 +2,28 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.0.0-rc2] — UNRELEASED
+## [1.0.0-rc2] — 2026-03-06
 
 ### Added
-- **Track FD: Kernel-level paged KV streaming in STEEL forward kernel** — K/V tiles
-  read directly from `[num_blocks, block_size, H_kv, D]` pool via `block_table` lookup
-  without first materialising a contiguous O(S×D) K/V tensor. Eliminates an extra Metal
-  command buffer round-trip for long-context decode. Targets D∈{64,128,256}, f16/bf16.
-- **Track FD-decode: Paged Flash Decode partial kernel** — Paged per-token gather
-  inside the split-KV partial accumulation kernel; reduce phase unchanged. Activated
-  when N_q≤4, S≥256, f16/bf16.
-- **Track FD-bench: Paged KV benchmark** — `benchmarks/bench_paged_kv.py` comparing
-  gather+attend vs kernel-level paged for S=1K/4K/16K/64K.
+- **Track FD: Kernel-level paged KV streaming in STEEL forward kernel** — Metal kernel
+  `mlx_mfa_paged_attention` reads K/V tiles directly from the `[num_blocks, block_size,
+  H_kv, D]` pool via cooperative `block_table` lookup, eliminating a separate gather
+  Metal dispatch. New `KernelType::PagedSteelForward`, `MFAPagedSteelParams`,
+  `generate_paged_steel_forward_source()`, `MFAPagedSteelForward` Primitive, and
+  `mfa_paged_steel_forward` nanobind binding. GQA, causal, sliding window all supported.
+  `flash_attention_paged()` routes to the kernel for f16/bf16 D∈{64,128,256}.
+  Benchmark (M1 Max, f16, B=1 H=8 D=128): **1.26–1.58x** faster than gather+attend.
+- **Track FD-decode: Paged Flash Decode path** — For decode steps (N_q ≤ 4, S ≥ 256),
+  `flash_attention_paged()` routes through Metal gather + `flash_attention()`, which
+  activates the existing split-KV Flash Decode two-phase kernel for better SM parallelism.
+- **Track FD-bench: `benchmarks/bench_paged_kv.py`** — Three-way comparison:
+  gather+attend vs kernel-level paged STEEL vs pre-gathered Flash Decode.
+- **307 tests pass** (up from 292 in rc1): 11 `TestPagedSteelForward` + 4
+  `TestPagedFlashDecode`.
 
 ### Changed
 - (infra) `has_window` added to `KernelKey` hash/equality; `window_left` wired into
   `MFASteelParams` — prerequisite for Track FD kernel dispatch.
-
-### Tests
-- Tests: TBD
 
 ---
 
