@@ -43,6 +43,10 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **KV cache append** — `flash_attention_with_kv_cache(q, k_new, v_new, k_cache, v_cache)` → `(out, k, v)`
 - **Attention dropout** — `flash_attention(..., dropout_p=0.1)` for training
 - **Return attention weights** — `flash_attention(..., return_attn_weights=True)` → `(out, weights [B,H,N,S])`
+- **Differentiable varlen** — `flash_attention_varlen()` supports `mx.grad()` via `mx.custom_function` (v0.9.3)
+- **Paged attention backward** — `flash_attention_paged()` computes dQ correctly via Metal gather + per-seq vjp (v0.9.3)
+- **Varlen packed formats** — `flash_attention_varlen_qkv_packed()` / `flash_attention_varlen_kv_packed()` for fused-tensor varlen (v0.9.3)
+- **D=256 D-split backward** — STEEL dQ/dK/dV with BD_HALF=128 sub-tiles fits D=256 in registers (v0.9.2)
 
 ## Requirements
 
@@ -127,29 +131,86 @@ Returns `mx.array [B, H, N, D]` normally, or `(mx.array, mx.array [B, H, N, S])`
 
 Raises `ValueError` if inputs are not 4-D, if `q/k` have mismatched `head_dim`, or if the GQA ratio is non-integer.
 
-### `is_mfa_available() -> bool`
+---
 
-Returns `True` if the MFA C++ extension compiled and loaded successfully.
+### `flash_attention_rope(q, k, v, rotary_cos=None, rotary_sin=None, scale=None, causal=False, cache_seqlens=0, rope_3d=None, interleaved=True, stream=None)`
 
-### `get_device_info() -> dict`
+Flash Attention with in-kernel RoPE fusion. Applies rotary position embeddings inside the Metal kernel, eliminating a separate elementwise pass over Q/K.
 
-Returns Metal GPU hardware information.
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q, k, v` | `mx.array [B, H, N, D]` | Standard attention inputs |
+| `rotary_cos` | `mx.array [N, D/2]` | Cosine table from `make_rope_3d_tables` or precomputed 1D tables |
+| `rotary_sin` | `mx.array [N, D/2]` | Sine table |
+| `cache_seqlens` | `int or list[int] or mx.array` | KV cache offsets (for decode; 0 = prefill) |
+| `rope_3d` | `dict or None` | 3D RoPE tables: `{"cos": ..., "sin": ..., "grid_shape": (T,H,W)}` |
+| `interleaved` | `bool` | `True` = adjacent pair rotation (LLaMA); `False` = split-halves (GPT-NeoX) |
 
-```python
-from mlx_mfa import get_device_info
-info = get_device_info()
-# {
-#   'device_name': 'Apple M1 Max',
-#   'gpu_family_gen': 13,
-#   'is_m3_plus': False,
-#   'chip_name': 'M1',
-#   'extension_available': True
-# }
-```
+Returns `mx.array [B, H, N, D]`.
 
-### `get_supported_configs() -> dict`
+---
 
-Returns the set of (head_dim, dtype) configurations that use the MFA kernel.
+### `flash_attention_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, scale=None, causal=False, stream=None)`
+
+Variable-length batched attention. Multiple sequences of different lengths packed into a single `B=1` tensor; each sequence attends independently. **Differentiable** via `mx.custom_function` — supports `mx.grad()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q, k, v` | `mx.array [1, H, total_tokens, D]` | Packed tensors |
+| `cu_seqlens_q` | `mx.array int32 [num_seqs+1]` | Cumulative Q lengths; `[0, ..., total_q]` |
+| `cu_seqlens_k` | `mx.array int32 [num_seqs+1]` | Cumulative KV lengths |
+| `max_seqlen_q` | `int` | Maximum Q sequence length |
+| `max_seqlen_k` | `int` | Maximum KV sequence length |
+
+Returns `mx.array [1, H, total_tokens, D]`.
+
+---
+
+### `flash_attention_with_kv_cache(q, k_new, v_new, k_cache=None, v_cache=None, scale=None, causal=True, softcap=0.0, stream=None)`
+
+Compute attention and update the KV cache in a single call. Concatenates new K/V tokens onto the cache, runs `flash_attention`, and returns `(output, k_full, v_full)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | `mx.array [B, H, N_new, D]` | Query for new tokens |
+| `k_new, v_new` | `mx.array [B, H, N_new, D]` | New token KV |
+| `k_cache, v_cache` | `mx.array [B, H, S_cache, D] or None` | Existing cache (pass `None` for first step) |
+
+Returns `(output [B,H,N_new,D], k_full [B,H,S_cache+N_new,D], v_full)`.
+
+---
+
+### `flash_attention_paged(q, k_pages, v_pages, block_table, seq_lens, *, scale=None, causal=False, block_size=16, stream=None)`
+
+Paged KV cache attention with Metal gather. Gathers K/V from a block pool via `mfa_paged_kv_gather` Metal kernel, then runs `flash_attention`. Supports autograd: dQ is correct; dK/dV pages are zeros (caches are not trainable parameters).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | `mx.array [B, H_q, N_q, D]` | Query tensor |
+| `k_pages, v_pages` | `mx.array [num_blocks, block_size, H_kv, D]` | Block pool |
+| `block_table` | `mx.array int32 [B, max_blocks_per_seq]` | Logical→physical block map; `-1` = padding |
+| `seq_lens` | `mx.array int32 [B]` | Actual KV token count per sequence |
+| `block_size` | `int` | Tokens per page (must match pool shape) |
+
+Returns `mx.array [B, H_q, N_q, D]`.
+
+---
+
+### `flash_attention_qkv_packed(qkv, *, scale=None, causal=False, num_heads=None, num_kv_heads=None, stream=None)`
+
+Attention from a fused QKV tensor. Accepts `[B, N, 3*H*D]` (flat) or `[B, H, N, 3, D]` (head-first). Returns `[B, H, N, D]`. `num_heads` is required for flat layout.
+
+### `flash_attention_kv_packed(q, kv, *, scale=None, causal=False, num_kv_heads=None, stream=None)`
+
+Attention from a fused KV tensor. Accepts `[B, S, 2*H_kv*D]` (flat) or `[B, H_kv, S, 2, D]` (head-first). Returns `[B, H_q, N, D]`. `num_kv_heads` is required for flat layout.
+
+### `flash_attention_varlen_qkv_packed(qkv, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, *, scale=None, causal=False, num_heads=None, num_kv_heads=None, stream=None)`
+
+Varlen attention from a packed QKV tensor. Unpacks into Q/K/V then calls `flash_attention_varlen`. Layouts: `[1, H, total, 3, D]` (head-first) or `[1, total, 3*H*D]` (flat). Returns `[1, H_q, total, D]`.
+
+### `flash_attention_varlen_kv_packed(q, kv, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, *, scale=None, causal=False, num_kv_heads=None, stream=None)`
+
+Varlen attention from a packed KV tensor. Unpacks K/V then calls `flash_attention_varlen`. Layouts: `[1, H_kv, total_kv, 2, D]` (head-first) or `[1, total_kv, 2*H_kv*D]` (flat). Returns `[1, H_q, total_q, D]`.
 
 ---
 
@@ -172,17 +233,42 @@ Raises `ValueError` for float32 input or wrong `block_mask` shape.
 
 > **Backward pass limitation:** Gradients are computed via dense `mx.fast.sdpa` with a float additive bias (correct, but no sparsity speedup in the backward). A native sparse backward is planned.
 
-### `make_causal_block_mask(seq_len, head_dim=128) -> mx.array`
+---
+
+### `PagedKVCache(num_blocks, block_size, H, D, dtype=mx.float16)`
+
+Fixed-size block pool for paged KV cache management. Eliminates padding waste when batch sequences have different lengths. Pool layout: `[num_blocks, block_size, H_kv, D]`.
+
+```python
+cache = PagedKVCache(num_blocks=64, block_size=16, H=4, D=128)
+k_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
+v_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
+cache.append(k_new, v_new, seq_id=0)
+k_seq, v_seq = cache.gather(seq_id=0)   # [1, 4, 32, 128]
+
+# Feed into flash_attention_paged:
+bt, sl = cache.block_table_and_seq_lens([0])
+out = flash_attention_paged(q, cache.k_pool, cache.v_pool, bt, sl)
+```
+
+Methods: `append(k, v, seq_id)`, `gather(seq_id) → (k, v)`, `block_table_and_seq_lens(seq_ids) → (block_table, seq_lens)`, `free(seq_id)`.
+
+---
+
+### Mask builders
+
+`make_causal_block_mask` and `make_sliding_window_mask` are the most common; the full set of 15 mask builders is listed below.
+
+#### `make_causal_block_mask(seq_len, head_dim=128) -> mx.array`
 
 Returns a lower-triangular block mask `[NQ, NK]` (dtype `bool`) matching the STEEL tile size for `head_dim`. Combine with `causal=True` for exact token-level causal masking:
 
 ```python
 mask = make_causal_block_mask(N, head_dim=128)
 out  = flash_attention_sparse(q, k, v, mask, causal=True)
-# Identical to flash_attention(q, k, v, causal=True) but skips upper triangle tiles.
 ```
 
-### `make_sliding_window_mask(seq_len, window_size, head_dim=128, causal=False) -> mx.array`
+#### `make_sliding_window_mask(seq_len, window_size, head_dim=128, causal=False) -> mx.array`
 
 Returns a sliding-window block mask. Each Q-tile attends only to K-tiles within `window_size` tokens.
 
@@ -190,6 +276,64 @@ Returns a sliding-window block mask. Each Q-tile attends only to K-tiles within 
 mask = make_sliding_window_mask(4096, window_size=512)
 out  = flash_attention_sparse(q, k, v, mask)
 ```
+
+#### Remaining mask builders
+
+| Function | Key parameters | Use case |
+|----------|---------------|----------|
+| `make_spatial_2d_mask(height, width, spatial_radius, head_dim, patch_size)` | `spatial_radius` in patch units | Image/frame Chebyshev locality |
+| `make_spatial_3d_mask(height, width, num_frames, spatial_radius, temporal_radius, ...)` | Both radii | Video spatio-temporal locality |
+| `make_topk_spatial_mask(q, k, top_k, head_dim)` | `top_k` K-tiles per Q-tile | Content-aware top-k scoring |
+| `make_segment_mask(segment_lengths, head_dim)` | `segment_lengths: list[int]` | Block-diagonal; each segment isolated |
+| `make_causal_segment_mask(segment_lengths, head_dim)` | Same as above | Block-diagonal + causal within each segment |
+| `make_adaptive_window_mask(height, width, num_frames, base_window_h/w/t, train_resolution, inference_resolution, ...)` | Scales window with resolution ratio | SeedVR2-style RoPE aliasing prevention |
+| `make_lcsa_mask(q, k, height, width, spatial_radius, top_k, ...)` | `spatial_radius` + `top_k` | FlashVSR LCSA (spatial window ∩ top-k) |
+| `make_axial_spatial_mask(height, width, num_frames, head_dim, ...)` | Optional `spatial_radius` | Same-frame attention (spatial axis only) |
+| `make_axial_temporal_mask(height, width, num_frames, head_dim, ...)` | Optional `temporal_radius`, `causal` | Same-position across frames (temporal axis) |
+| `make_dilated_temporal_mask(height, width, num_frames, dilation_rate, local_window, ...)` | `dilation_rate` | Dilated long-range temporal |
+| `make_sink_window_mask(seq_len, window_size, num_sink_tokens, head_dim, causal)` | `num_sink_tokens` | StreamingLLM: sinks + sliding window |
+| `make_reference_frame_mask(height, width, num_frames, reference_frames, ...)` | `reference_frames: list[int]` | Global reference frames + local context |
+| `make_cross_stream_mask(n_tokens_q, n_tokens_kv, head_dim, pattern, ...)` | `pattern`: "full"/"temporal"/"segment" | Rectangular Q≠KV cross-attention (LTX-2) |
+
+All mask builders return `mx.array[bool] [NQ_tiles, NK_tiles]` for use with `flash_attention_sparse`.
+
+---
+
+### `make_rope_3d_tables(grid_h, grid_w, num_frames, d_h=None, d_w=None, d_t=None, head_dim=128, theta=10000.0) -> tuple[mx.array, mx.array]`
+
+Build 3D RoPE cosine/sine tables for video attention. Returns `(cos, sin)` of shape `[N, D/2]` where `N = grid_h * grid_w * num_frames`. Sub-bands are allocated proportionally across height/width/temporal axes.
+
+```python
+cos, sin = make_rope_3d_tables(grid_h=16, grid_w=16, num_frames=8, head_dim=128)
+out = flash_attention_rope(q, k, v, cos, sin, rope_3d={"cos": cos, "sin": sin, "grid_shape": (8, 16, 16)})
+```
+
+---
+
+### `is_mfa_available() -> bool`
+
+Returns `True` if the MFA C++ extension compiled and loaded successfully.
+
+### `get_device_info() -> dict`
+
+Returns Metal GPU hardware information.
+
+```python
+from mlx_mfa import get_device_info
+info = get_device_info()
+# {
+#   'device_name': 'Apple M1 Max',
+#   'gpu_family_gen': 13,
+#   'is_m3_plus': False,
+#   'is_m5_plus': False,
+#   'chip_name': 'M1',
+#   'extension_available': True
+# }
+```
+
+### `get_supported_configs() -> dict`
+
+Returns the set of (head_dim, dtype) configurations that use the MFA kernel.
 
 ---
 
@@ -233,7 +377,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: 152 tests collected (45 active + 107 extension-gated/skipped without C++ build).
+Expected: **257 pytest runs / 212 test functions** across 40 test classes (257 with parametrize; ~45 skip without C++ build).
 
 ## Supported Configurations
 
