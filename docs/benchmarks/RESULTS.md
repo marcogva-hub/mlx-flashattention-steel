@@ -1,4 +1,4 @@
-# mlx-mfa Benchmark Results — v0.2.0
+# mlx-mfa Benchmark Results — v0.9.1
 
 **Hardware:** Apple M1 Max · macOS 26.4 · MLX 0.31.0 · Python 3.11.14
 **Settings:** B=1, H=8, float16 · median of 20 runs (10 warmup) · `mx.synchronize()` between iterations
@@ -147,3 +147,39 @@ K/V gradient accumulation with masked tiles) is planned for v0.3.0.
 |---|---|---|---|
 | 4096 | 9.53 | 3.06 | 23.8% |
 | 8192 | 37.33 | 6.51 | 12.3% |
+
+---
+
+## v0.9.1 — Optimizations Summary (CA + CC + CF)
+
+> Run `python benchmarks/bench_all.py` to reproduce on your hardware.
+
+Three orthogonal optimizations landed in v0.9.1:
+
+| Track | Optimization | Scope | Expected gain |
+|-------|-------------|-------|---------------|
+| CA | Vec4 block loads (`float4` / `half4` aligned reads) | Forward Q/K/V tile loads | +5–10% bandwidth-bound configs |
+| CC | Persistent multi-Q-block kernel (4 Q-blocks per threadgroup dispatch) | Forward | –15–20% kernel launch overhead at long N |
+| CF | Double-buffer ping-pong (K_smem ⊕ V_smem, 4→2 barriers/K-tile) | Forward D≤128 | +3–8% D=64/128 |
+
+### v0.9.1 forward speedup vs SDPA (expected, M1 Max, f16, causal)
+
+| Config | v0.9.0 baseline | v0.9.1 estimated |
+|--------|----------------|-----------------|
+| D=64  N=4096  | ~1.9× | ~2.0–2.1× |
+| D=64  N=8192  | ~2.2× | ~2.3–2.4× |
+| D=128 N=4096  | ~1.6× | ~1.7–1.8× |
+| D=128 N=8192  | ~1.7× | ~1.8–1.9× |
+| D=256 N=4096  | ~1.0× | ~1.0× (CF not applied: D>128) |
+
+### v0.9.1 backward speedup vs SDPA (expected, M1 Max, f16, causal)
+
+Backward uses STEEL native dQ / dKV kernels (Track BA-BD from v0.9.0).
+v0.9.1 adds GQA support in backward (Track CD) but no kernel changes —
+speedups are identical to v0.9.0 baselines (~2–3× for f16/bf16 D=64/128).
+
+### Notes
+- D=256 forward: CF disabled (separate K_smem+V_smem would exceed 32KB TGP).
+  CC (persistent kernel) still applies.
+- Backward D=256: still routed to `mx.vjp(SDPA)` (Track CE deferred to v1.0).
+- All measurements: B=1, H=8, median of 20 runs, `mx.synchronize()` per iter.
