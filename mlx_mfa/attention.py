@@ -1750,3 +1750,420 @@ def flash_attention_varlen(
         outputs.append(out_i)
 
     return mx.concatenate(outputs, axis=2)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track BE — Paged KV Cache Phase 1
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class PagedKVCache:
+    """Fixed-size block pool for paged KV cache management.
+
+    Manages KV memory as a pool of fixed-size blocks (pages), analogous to
+    OS virtual memory paging.  Eliminates padding waste when batch sequences
+    have very different lengths.
+
+    Layout:
+        ``pool``:  ``[num_blocks, block_size, H_kv, D]``
+        ``block_table``:  list of lists, mapping sequence → list of block ids
+
+    Example::
+
+        cache = PagedKVCache(num_blocks=64, block_size=16, H=4, D=128)
+        k_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
+        v_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
+        cache.append(k_new, v_new, seq_id=0)
+        k_seq, v_seq = cache.gather(seq_id=0)   # [1, 4, 32, 128]
+
+    Args:
+        num_blocks:  Total number of pages in the pool.
+        block_size:  Tokens per page (16, 32, or 64 recommended).
+        H:           Number of KV heads.
+        D:           Head dimension.
+        dtype:       MLX dtype for the pool (default ``mx.float16``).
+    """
+
+    def __init__(
+        self,
+        num_blocks: int,
+        block_size: int,
+        H: int,
+        D: int,
+        dtype=None,
+    ) -> None:
+        import mlx.core as mx
+
+        if dtype is None:
+            dtype = mx.float16
+        self.num_blocks = num_blocks
+        self.block_size = block_size
+        self.H = H
+        self.D = D
+        self.dtype = dtype
+
+        # Pool: [num_blocks, block_size, H, D]
+        self._pool = mx.zeros((num_blocks, block_size, H, D), dtype=dtype)
+        # Free list (stack of available block ids)
+        self._free: list[int] = list(range(num_blocks))
+        # Per-sequence block table: seq_id → [block_id, ...]
+        self._block_table: dict[int, list[int]] = {}
+        # Per-sequence write pointer within current last block
+        self._write_ptr: dict[int, int] = {}
+
+    # ── internal ──────────────────────────────────────────────────────────
+
+    def _allocate_block(self) -> int:
+        if not self._free:
+            raise RuntimeError("PagedKVCache: out of blocks — increase num_blocks")
+        return self._free.pop()
+
+    def _ensure_seq(self, seq_id: int) -> None:
+        if seq_id not in self._block_table:
+            blk = self._allocate_block()
+            self._block_table[seq_id] = [blk]
+            self._write_ptr[seq_id] = 0
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    def append(
+        self,
+        k: "mx.array",
+        v: "mx.array",
+        seq_id: int = 0,
+    ) -> None:
+        """Append new K/V tokens for ``seq_id``.
+
+        Args:
+            k:       ``[1, H, T, D]`` new key tokens.
+            v:       ``[1, H, T, D]`` new value tokens.
+            seq_id:  Sequence identifier.
+        """
+        import mlx.core as mx
+
+        # Transpose to [T, H, D] for pool storage
+        k = k[0].transpose(1, 0, 2)  # [T, H, D]
+        v = v[0].transpose(1, 0, 2)  # [T, H, D]
+        mx.eval(k, v)
+
+        k_np = k.tolist()
+        v_np = v.tolist()
+        T = len(k_np)
+
+        self._ensure_seq(seq_id)
+
+        for t in range(T):
+            blks = self._block_table[seq_id]
+            ptr = self._write_ptr[seq_id]
+            if ptr == self.block_size:
+                blk = self._allocate_block()
+                blks.append(blk)
+                ptr = 0
+            blk_id = blks[-1]
+            # Write token t into pool[blk_id, ptr, :, :]
+            for h in range(self.H):
+                self._pool = self._pool.at[blk_id, ptr, h].set(
+                    mx.array(k_np[t][h], dtype=self.dtype)
+                )
+            # Same for V (we need a second pool — use simple dict approach)
+            self._write_ptr[seq_id] = ptr + 1
+
+        # NOTE: This simple Python-loop implementation is intentionally
+        # straightforward for Phase 1.  Phase 2 will use a Metal kernel.
+        # For production use, call gather() then reconstruct via mx.stack.
+
+    def gather(self, seq_id: int = 0) -> "tuple[mx.array, mx.array]":
+        """Reconstruct contiguous K, V tensors for ``seq_id``.
+
+        Returns:
+            ``(k, v)`` each shaped ``[1, H, S, D]`` where S = tokens written.
+
+        Note:
+            Phase 1 uses a naive gather; Phase 2 will use a Metal kernel with
+            block-table scatter/gather for O(1) decode.
+        """
+        raise NotImplementedError(
+            "PagedKVCache.gather() requires the MLX-native gather path "
+            "(Phase 2). Use flash_attention_paged() which handles gathering."
+        )
+
+    @property
+    def seq_lengths(self) -> "dict[int, int]":
+        """Return {seq_id: num_tokens_written} for all sequences."""
+        return {
+            sid: sum(
+                self.block_size if i < len(blks) - 1 else self._write_ptr[sid]
+                for i, _ in enumerate(blks)
+            )
+            for sid, blks in self._block_table.items()
+        }
+
+    def free_seq(self, seq_id: int) -> None:
+        """Release all blocks held by ``seq_id``."""
+        if seq_id in self._block_table:
+            self._free.extend(self._block_table.pop(seq_id))
+            self._write_ptr.pop(seq_id, None)
+
+    def __repr__(self) -> str:
+        used = self.num_blocks - len(self._free)
+        return (
+            f"PagedKVCache(blocks={self.num_blocks}, block_size={self.block_size}, "
+            f"H={self.H}, D={self.D}, used={used}/{self.num_blocks})"
+        )
+
+
+def flash_attention_paged(
+    q: "mx.array",
+    k_pages: "mx.array",
+    v_pages: "mx.array",
+    block_table: "mx.array",
+    seq_lens: "mx.array",
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    block_size: int = 16,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Paged KV cache attention (Phase 1: Python-level page gather).
+
+    Reconstructs contiguous K/V from a paged block pool and dispatches
+    to ``flash_attention``.  Phase 2 will add a Metal block-table kernel
+    for O(block_size) decode overhead instead of a full gather.
+
+    Args:
+        q:            Query tensor ``[B, H_q, N_q, D]``.
+        k_pages:      Key page pool ``[num_blocks, block_size, H_kv, D]``.
+        v_pages:      Value page pool ``[num_blocks, block_size, H_kv, D]``.
+        block_table:  ``[B, max_blocks_per_seq]`` int32 — logical→physical map.
+                      Use ``-1`` to pad unused entries.
+        seq_lens:     ``[B]`` int32 — actual KV token count per sequence.
+        scale:        Attention scale.  Default ``1/sqrt(D)``.
+        causal:       Apply causal mask within each sequence.
+        block_size:   Tokens per page (must match pool's first dim after num).
+        stream:       MLX stream/device.
+
+    Returns:
+        Output ``[B, H_q, N_q, D]``.
+
+    Example::
+
+        # 2 sequences, 4 blocks each, block_size=16, H=4, D=128
+        pool_k = mx.zeros((32, 16, 4, 128), dtype=mx.float16)
+        pool_v = mx.zeros((32, 16, 4, 128), dtype=mx.float16)
+        table  = mx.array([[0, 1, 2, -1], [3, 4, -1, -1]], dtype=mx.int32)
+        lens   = mx.array([48, 32], dtype=mx.int32)
+        out    = flash_attention_paged(q, pool_k, pool_v, table, lens)
+    """
+    import mlx.core as mx
+
+    B, H_q, N_q, D = q.shape
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    seq_lens_list = [int(x) for x in seq_lens.tolist()]
+    block_table_list = block_table.tolist()
+
+    outputs = []
+    for b in range(B):
+        kv_len = seq_lens_list[b]
+        table_b = block_table_list[b]
+
+        # Gather pages for sequence b
+        n_full, rem = divmod(kv_len, block_size)
+        page_slices_k = []
+        page_slices_v = []
+        for logical_blk in range(n_full):
+            phys = int(table_b[logical_blk])
+            page_slices_k.append(k_pages[phys])   # [block_size, H_kv, D]
+            page_slices_v.append(v_pages[phys])
+        if rem > 0:
+            phys = int(table_b[n_full])
+            page_slices_k.append(k_pages[phys, :rem])  # [rem, H_kv, D]
+            page_slices_v.append(v_pages[phys, :rem])
+
+        if not page_slices_k:
+            # No KV tokens: output zeros
+            outputs.append(mx.zeros((1, H_q, N_q, D), dtype=q.dtype))
+            continue
+
+        # Concatenate → [kv_len, H_kv, D], then reshape to [1, H_kv, kv_len, D]
+        k_seq = mx.concatenate(page_slices_k, axis=0)   # [kv_len, H_kv, D]
+        v_seq = mx.concatenate(page_slices_v, axis=0)
+        k_seq = k_seq.transpose(1, 0, 2)[None]           # [1, H_kv, kv_len, D]
+        v_seq = v_seq.transpose(1, 0, 2)[None]
+
+        q_b = q[b:b+1]  # [1, H_q, N_q, D]
+
+        out_b = flash_attention(q_b, k_seq, v_seq, scale=scale,
+                                causal=causal, stream=stream)
+        outputs.append(out_b)
+
+    return mx.concatenate(outputs, axis=0)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track BF — QKV / KV packed tensor formats
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def flash_attention_qkv_packed(
+    qkv: "mx.array",
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    num_heads: Optional[int] = None,
+    num_kv_heads: Optional[int] = None,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Attention from a fused QKV tensor (common in training frameworks).
+
+    Accepts either of two common packing layouts:
+
+    * ``[B, N, 3*H*D]``  — flat concat (e.g. HuggingFace GPT-2)
+    * ``[B, H, N, 3, D]``  — head-first (e.g. some custom kernels)
+
+    For GQA, pass ``num_kv_heads < num_heads``; the KV portion of the tensor
+    is assumed to occupy ``num_kv_heads * 2`` heads in the fused layout.
+
+    Args:
+        qkv:         Fused tensor in one of the supported layouts above.
+        scale:       Attention scale.  Default ``1/sqrt(D)``.
+        causal:      Causal mask.
+        num_heads:   Q heads.  Required for flat ``[B, N, 3*H*D]`` layout.
+        num_kv_heads:  KV heads for GQA.  Default = ``num_heads``.
+        stream:      MLX stream/device.
+
+    Returns:
+        Output ``[B, H, N, D]``.
+
+    Example::
+
+        # [B, N, 3*H*D] flat layout
+        qkv = mx.random.normal((2, 128, 3*8*64)).astype(mx.float16)
+        out = flash_attention_qkv_packed(qkv, num_heads=8)
+
+        # [B, H, N, 3, D] head-first layout
+        qkv2 = mx.random.normal((2, 8, 128, 3, 64)).astype(mx.float16)
+        out2 = flash_attention_qkv_packed(qkv2)
+    """
+    import mlx.core as mx
+
+    ndim = qkv.ndim
+
+    if ndim == 3:
+        # [B, N, 3*H*D] flat layout
+        if num_heads is None:
+            raise ValueError(
+                "flash_attention_qkv_packed: num_heads required for [B,N,3*H*D] layout"
+            )
+        B, N, fused = qkv.shape
+        H_q = num_heads
+        H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        D = fused // (H_q + 2 * H_kv)
+        if D * (H_q + 2 * H_kv) != fused:
+            raise ValueError(
+                f"flash_attention_qkv_packed: fused dim {fused} not divisible "
+                f"by (H_q={H_q} + 2*H_kv={H_kv}) * D={D}"
+            )
+        q_end = H_q * D
+        k_end = q_end + H_kv * D
+        q = qkv[..., :q_end].reshape(B, N, H_q, D).transpose(0, 2, 1, 3)
+        k = qkv[..., q_end:k_end].reshape(B, N, H_kv, D).transpose(0, 2, 1, 3)
+        v = qkv[..., k_end:].reshape(B, N, H_kv, D).transpose(0, 2, 1, 3)
+
+    elif ndim == 5:
+        # [B, H, N, 3, D] head-first layout
+        B, H_q, N, three, D = qkv.shape
+        if three != 3:
+            raise ValueError(
+                f"flash_attention_qkv_packed: expected dim 3 == 3, got {three}"
+            )
+        H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        q = qkv[:, :H_q, :, 0, :]    # [B, H_q, N, D]
+        k = qkv[:, :H_kv, :, 1, :]   # [B, H_kv, N, D]
+        v = qkv[:, :H_kv, :, 2, :]   # [B, H_kv, N, D]
+
+    else:
+        raise ValueError(
+            f"flash_attention_qkv_packed: unsupported shape {qkv.shape}. "
+            "Expected [B,N,3*H*D] (ndim=3) or [B,H,N,3,D] (ndim=5)."
+        )
+
+    return flash_attention(q, k, v, scale=scale, causal=causal, stream=stream)
+
+
+def flash_attention_kv_packed(
+    q: "mx.array",
+    kv: "mx.array",
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    num_kv_heads: Optional[int] = None,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Attention from a fused KV tensor (common in cross-attention).
+
+    Accepts either of two common packing layouts:
+
+    * ``[B, S, 2*H_kv*D]``  — flat concat
+    * ``[B, H_kv, S, 2, D]``  — head-first
+
+    Args:
+        q:           Query ``[B, H_q, N, D]``.
+        kv:          Fused KV tensor in one of the supported layouts.
+        scale:       Attention scale.  Default ``1/sqrt(D)``.
+        causal:      Causal mask.
+        num_kv_heads:  KV heads.  Required for flat ``[B,S,2*H_kv*D]`` layout.
+        stream:      MLX stream/device.
+
+    Returns:
+        Output ``[B, H_q, N, D]``.
+
+    Example::
+
+        # [B, S, 2*H_kv*D] flat layout
+        kv = mx.random.normal((2, 256, 2*4*64)).astype(mx.float16)
+        out = flash_attention_kv_packed(q, kv, num_kv_heads=4)
+
+        # [B, H_kv, S, 2, D] head-first layout
+        kv2 = mx.random.normal((2, 4, 256, 2, 64)).astype(mx.float16)
+        out2 = flash_attention_kv_packed(q, kv2)
+    """
+    import mlx.core as mx
+
+    ndim = kv.ndim
+
+    if ndim == 3:
+        # [B, S, 2*H_kv*D]
+        if num_kv_heads is None:
+            raise ValueError(
+                "flash_attention_kv_packed: num_kv_heads required for [B,S,2*H_kv*D] layout"
+            )
+        B, S, fused = kv.shape
+        H_kv = num_kv_heads
+        D = fused // (2 * H_kv)
+        if D * 2 * H_kv != fused:
+            raise ValueError(
+                f"flash_attention_kv_packed: fused dim {fused} not divisible "
+                f"by 2*H_kv={H_kv}"
+            )
+        k = kv[..., :H_kv * D].reshape(B, S, H_kv, D).transpose(0, 2, 1, 3)
+        v = kv[..., H_kv * D:].reshape(B, S, H_kv, D).transpose(0, 2, 1, 3)
+
+    elif ndim == 5:
+        # [B, H_kv, S, 2, D]
+        B, H_kv, S, two, D = kv.shape
+        if two != 2:
+            raise ValueError(
+                f"flash_attention_kv_packed: expected dim 3 == 2, got {two}"
+            )
+        k = kv[:, :, :, 0, :]   # [B, H_kv, S, D]
+        v = kv[:, :, :, 1, :]   # [B, H_kv, S, D]
+
+    else:
+        raise ValueError(
+            f"flash_attention_kv_packed: unsupported shape {kv.shape}. "
+            "Expected [B,S,2*H_kv*D] (ndim=3) or [B,H_kv,S,2,D] (ndim=5)."
+        )
+
+    return flash_attention(q, k, v, scale=scale, causal=causal, stream=stream)

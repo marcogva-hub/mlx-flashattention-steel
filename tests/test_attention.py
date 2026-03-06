@@ -3283,3 +3283,291 @@ class TestReturnAttnWeights:
             atol=1e-5, rtol=1e-4,
             err_msg="Output diverges when return_attn_weights=True",
         )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track BE — PagedKVCache + flash_attention_paged
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestPagedKVCache:
+    """Tests for PagedKVCache and flash_attention_paged."""
+
+    def test_paged_cache_construction(self):
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=32, block_size=16, H=4, D=64)
+        assert cache.num_blocks == 32
+        assert cache.block_size == 16
+        assert "PagedKVCache" in repr(cache)
+
+    def test_paged_cache_free_tracks_usage(self):
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        assert len(cache._free) == 8
+        cache._ensure_seq(0)   # allocates one block
+        assert len(cache._free) == 7
+
+    def test_paged_cache_free_seq(self):
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=8, block_size=16, H=2, D=64)
+        cache._ensure_seq(0)
+        cache._ensure_seq(1)
+        assert len(cache._free) == 6
+        cache.free_seq(0)
+        assert len(cache._free) == 7
+
+    def test_paged_cache_repr(self):
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=16, block_size=32, H=4, D=128)
+        r = repr(cache)
+        assert "16" in r and "32" in r
+
+    def test_paged_attention_single_seq_correctness(self):
+        """flash_attention_paged single seq == flash_attention reference."""
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(7)
+        B, H, N, S, D = 1, 4, 8, 32, 64
+        block_size = 16
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        # Build page pool: 2 pages needed for S=32, block_size=16
+        # k is [B, H, S, D] → rearrange to [S, H, D] → reshape into blocks
+        n_blocks = S // block_size
+        k_nhd = k[0].transpose(1, 0, 2)   # [S, H, D]
+        v_nhd = v[0].transpose(1, 0, 2)
+
+        # Stack blocks directly (avoids .at[].set() which isn't in MLX)
+        k_blocks = k_nhd.reshape(n_blocks, block_size, H, D)
+        v_blocks = v_nhd.reshape(n_blocks, block_size, H, D)
+        pad = mx.zeros((4, block_size, H, D), dtype=mx.float16)
+        pool_k = mx.concatenate([k_blocks, pad], axis=0)
+        pool_v = mx.concatenate([v_blocks, pad], axis=0)
+
+        block_table = mx.array([[0, 1, -1, -1]], dtype=mx.int32)   # 2 blocks used
+        seq_lens = mx.array([S], dtype=mx.int32)
+
+        out_paged = flash_attention_paged(
+            q, pool_k, pool_v, block_table, seq_lens,
+            scale=scale, causal=False, block_size=block_size
+        )
+        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_paged, out_ref)
+
+        diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Paged vs direct max diff: {diff}"
+
+    def test_paged_attention_two_seqs(self):
+        """Two sequences with different lengths via paged attention."""
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(11)
+        H, N, D = 4, 4, 64
+        block_size = 16
+        S0, S1 = 32, 48
+        scale = 1.0 / D**0.5
+
+        q = mx.random.normal((2, H, N, D)).astype(mx.float16)
+        k0 = mx.random.normal((1, H, S0, D)).astype(mx.float16)
+        k1 = mx.random.normal((1, H, S1, D)).astype(mx.float16)
+        v0 = mx.random.normal((1, H, S0, D)).astype(mx.float16)
+        v1 = mx.random.normal((1, H, S1, D)).astype(mx.float16)
+        mx.eval(q, k0, k1, v0, v1)
+
+        # Build pool: 2 blocks for S0=32, 3 blocks for S1=48
+        # Reshape each seq's KV into blocks, concatenate into shared pool
+        n0, n1 = S0 // block_size, S1 // block_size
+        k0_nhd = k0[0].transpose(1, 0, 2)   # [S0, H, D]
+        v0_nhd = v0[0].transpose(1, 0, 2)
+        k1_nhd = k1[0].transpose(1, 0, 2)   # [S1, H, D]
+        v1_nhd = v1[0].transpose(1, 0, 2)
+
+        k0_blocks = k0_nhd.reshape(n0, block_size, H, D)
+        v0_blocks = v0_nhd.reshape(n0, block_size, H, D)
+        k1_blocks = k1_nhd.reshape(n1, block_size, H, D)
+        v1_blocks = v1_nhd.reshape(n1, block_size, H, D)
+        pad = mx.zeros((2, block_size, H, D), dtype=mx.float16)
+        pool_k = mx.concatenate([k0_blocks, k1_blocks, pad], axis=0)
+        pool_v = mx.concatenate([v0_blocks, v1_blocks, pad], axis=0)
+
+        table = mx.array([[0, 1, -1], [2, 3, 4]], dtype=mx.int32)
+        seq_lens = mx.array([S0, S1], dtype=mx.int32)
+
+        out_paged = flash_attention_paged(
+            q, pool_k, pool_v, table, seq_lens,
+            scale=scale, block_size=block_size
+        )
+        ref0 = flash_attention(q[0:1], k0, v0, scale=scale)
+        ref1 = flash_attention(q[1:2], k1, v1, scale=scale)
+        ref = mx.concatenate([ref0, ref1], axis=0)
+        mx.eval(out_paged, ref)
+
+        diff = float(mx.abs(out_paged.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Paged two-seq max diff: {diff}"
+
+    def test_paged_attention_output_shape(self):
+        """Output shape matches [B, H, N_q, D]."""
+        from mlx_mfa import flash_attention_paged
+        B, H, N_q, S, D = 2, 4, 8, 16, 64
+        q = mx.zeros((B, H, N_q, D), dtype=mx.float16)
+        pool = mx.zeros((4, 16, H, D), dtype=mx.float16)
+        table = mx.array([[0, -1], [1, -1]], dtype=mx.int32)
+        lens = mx.array([16, 16], dtype=mx.int32)
+        out = flash_attention_paged(q, pool, pool, table, lens, block_size=16)
+        mx.eval(out)
+        assert out.shape == (B, H, N_q, D)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track BF — QKV / KV packed tensor formats
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestPackedFormats:
+    """Tests for flash_attention_qkv_packed and flash_attention_kv_packed."""
+
+    # ── QKV packed ────────────────────────────────────────────────────────
+
+    def test_qkv_flat_matches_split(self):
+        """[B,N,3*H*D] flat layout == split Q/K/V attention."""
+        from mlx_mfa import flash_attention_qkv_packed, flash_attention
+        mx.random.seed(3)
+        B, H, N, D = 2, 4, 32, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        # Build flat [B, N, 3*H*D]: q_flat || k_flat || v_flat per token
+        q_flat = q.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        k_flat = k.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        v_flat = v.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        qkv = mx.concatenate([q_flat, k_flat, v_flat], axis=-1)   # [B,N,3*H*D]
+        mx.eval(qkv)
+
+        out_packed = flash_attention_qkv_packed(qkv, num_heads=H)
+        out_ref    = flash_attention(q, k, v)
+        mx.eval(out_packed, out_ref)
+
+        diff = float(mx.abs(out_packed.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"QKV flat max diff: {diff}"
+
+    def test_qkv_head_first_matches_split(self):
+        """[B,H,N,3,D] head-first layout == split Q/K/V attention."""
+        from mlx_mfa import flash_attention_qkv_packed, flash_attention
+        mx.random.seed(5)
+        B, H, N, D = 2, 4, 32, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        qkv = mx.stack([q, k, v], axis=3)   # [B, H, N, 3, D]
+        mx.eval(qkv)
+
+        out_packed = flash_attention_qkv_packed(qkv)
+        out_ref    = flash_attention(q, k, v)
+        mx.eval(out_packed, out_ref)
+
+        diff = float(mx.abs(out_packed.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"QKV head-first max diff: {diff}"
+
+    def test_qkv_flat_bad_shape_raises(self):
+        """Flat layout with num_heads not divisible raises ValueError."""
+        from mlx_mfa import flash_attention_qkv_packed
+        import pytest
+        qkv = mx.zeros((1, 16, 100), dtype=mx.float16)   # 100 not divisible by 3
+        with pytest.raises(ValueError):
+            flash_attention_qkv_packed(qkv, num_heads=5)
+
+    def test_qkv_flat_requires_num_heads(self):
+        """Flat layout without num_heads raises ValueError."""
+        from mlx_mfa import flash_attention_qkv_packed
+        import pytest
+        qkv = mx.zeros((1, 16, 3*4*64), dtype=mx.float16)
+        with pytest.raises(ValueError, match="num_heads required"):
+            flash_attention_qkv_packed(qkv)  # no num_heads
+
+    def test_qkv_bad_ndim_raises(self):
+        """Unsupported ndim raises ValueError."""
+        from mlx_mfa import flash_attention_qkv_packed
+        import pytest
+        qkv = mx.zeros((1, 4, 16, 64), dtype=mx.float16)   # ndim=4
+        with pytest.raises(ValueError, match="unsupported shape"):
+            flash_attention_qkv_packed(qkv)
+
+    def test_qkv_causal_flat(self):
+        """QKV flat causal matches split causal."""
+        from mlx_mfa import flash_attention_qkv_packed, flash_attention
+        mx.random.seed(9)
+        B, H, N, D = 1, 4, 32, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        q_flat = q.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        k_flat = k.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        v_flat = v.transpose(0, 2, 1, 3).reshape(B, N, H * D)
+        qkv = mx.concatenate([q_flat, k_flat, v_flat], axis=-1)
+        mx.eval(qkv)
+        out_packed = flash_attention_qkv_packed(qkv, num_heads=H, causal=True)
+        out_ref    = flash_attention(q, k, v, causal=True)
+        mx.eval(out_packed, out_ref)
+        diff = float(mx.abs(out_packed.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"QKV causal max diff: {diff}"
+
+    # ── KV packed ────────────────────────────────────────────────────────
+
+    def test_kv_flat_matches_split(self):
+        """[B,S,2*H*D] flat KV layout == split K/V attention."""
+        from mlx_mfa import flash_attention_kv_packed, flash_attention
+        mx.random.seed(13)
+        B, H, N, S, D = 2, 4, 16, 32, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        k_flat = k.transpose(0, 2, 1, 3).reshape(B, S, H * D)
+        v_flat = v.transpose(0, 2, 1, 3).reshape(B, S, H * D)
+        kv = mx.concatenate([k_flat, v_flat], axis=-1)   # [B, S, 2*H*D]
+        mx.eval(q, kv)
+
+        out_packed = flash_attention_kv_packed(q, kv, num_kv_heads=H)
+        out_ref    = flash_attention(q, k, v)
+        mx.eval(out_packed, out_ref)
+
+        diff = float(mx.abs(out_packed.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"KV flat max diff: {diff}"
+
+    def test_kv_head_first_matches_split(self):
+        """[B,H,S,2,D] head-first KV layout == split K/V attention."""
+        from mlx_mfa import flash_attention_kv_packed, flash_attention
+        mx.random.seed(17)
+        B, H, N, S, D = 2, 4, 16, 32, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        kv = mx.stack([k, v], axis=3)   # [B, H, S, 2, D]
+        mx.eval(q, kv)
+
+        out_packed = flash_attention_kv_packed(q, kv)
+        out_ref    = flash_attention(q, k, v)
+        mx.eval(out_packed, out_ref)
+
+        diff = float(mx.abs(out_packed.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"KV head-first max diff: {diff}"
+
+    def test_kv_flat_requires_num_kv_heads(self):
+        """Flat KV layout without num_kv_heads raises ValueError."""
+        from mlx_mfa import flash_attention_kv_packed
+        import pytest
+        q  = mx.zeros((1, 4, 8, 64), dtype=mx.float16)
+        kv = mx.zeros((1, 32, 2*4*64), dtype=mx.float16)
+        with pytest.raises(ValueError, match="num_kv_heads required"):
+            flash_attention_kv_packed(q, kv)
+
+    def test_kv_bad_ndim_raises(self):
+        """Unsupported kv ndim raises ValueError."""
+        from mlx_mfa import flash_attention_kv_packed
+        import pytest
+        q  = mx.zeros((1, 4, 8, 64), dtype=mx.float16)
+        kv = mx.zeros((1, 32, 128), dtype=mx.float16)
+        with pytest.raises(ValueError):
+            flash_attention_kv_packed(q, kv, num_kv_heads=3)  # 128 not / by 6
