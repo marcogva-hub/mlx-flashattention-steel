@@ -5,7 +5,17 @@ All notable changes to mlx-mfa are documented here.
 ## [0.9.3] — UNRELEASED
 
 ### Added
-<!-- Tracks EA–EE filled incrementally -->
+- **Track EA: Differentiable `flash_attention_varlen`** — `mx.custom_function`
+  wrapper adds full autograd. Forward: STEEL varlen kernel (f16/bf16, D=64/128/256);
+  backward: splits per sequence through `flash_attention`. `TestVarlenBackward` (6 tests).
+- **Track EB: Metal paged KV gather kernel** — `MFAPagedKVGather` Primitive
+  gathers pool pages to `[B, H, max_kv_len, D]` in a single Metal dispatch.
+  `flash_attention_paged` rewritten with `mx.custom_function`: `dQ` correct via
+  `vjp(flash_attention)`; pool gradients are zeros (cache buffers).
+  `TestPagedBackward` (6 tests).
+- **Track EC: Varlen packed formats** — `flash_attention_varlen_qkv_packed` and
+  `flash_attention_varlen_kv_packed` accept head-first or flat fused tensors and
+  route to `flash_attention_varlen`. `TestVarlenPacked` (4 tests).
 
 ---
 

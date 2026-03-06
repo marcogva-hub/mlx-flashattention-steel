@@ -1,14 +1,14 @@
 # mlx-mfa Repository Inventory
 
-_Auto-regenerated at v0.9.2 (2026-03-06)._
+_Auto-regenerated at v0.9.3 (2026-03-06)._
 
 ## Project structure
 
 ```
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
-│   ├── __init__.py        Public API (25 exports, version=0.9.1)
-│   ├── attention.py       Core attention + fallback paths (2187 lines)
+│   ├── __init__.py        Public API (27 exports, version=0.9.3)
+│   ├── attention.py       Core attention + fallback paths (2448 lines)
 │   ├── masks.py           Mask builders — 13 functions (1129 lines)
 │   └── integrations/
 │       └── mlx_lm.py      mlx-lm patch/unpatch
@@ -21,13 +21,15 @@ mlx-mfa-v2/
 │   ├── mfa_steel_bwd.hpp  STEEL backward params + decls
 │   ├── mfa_steel_bwd.cpp  STEEL backward JIT Metal generator (dQ + dK/dV)
 │   ├── mfa_shader_gen.*   ccv-derived shader gen (f32 fallback)
-│   ├── shader_cache.hpp   KernelKey + ShaderCache interface
+│   ├── mfa_paged_gather.hpp  MFAPagedKVGather Primitive declaration
+│   ├── mfa_paged_gather.cpp  Metal paged KV gather kernel (EB)
+│   ├── shader_cache.hpp   KernelKey + ShaderCache interface (KernelType 0-9)
 │   ├── shader_cache.mm    Obj-C++ Metal pipeline cache + routing
 │   ├── mfa/               ccv kernel infrastructure (AttentionKernel, GEMMHeaders…)
 │   └── kernels/           Placeholder .metal files (real kernels are JIT)
 ├── tests/
-│   ├── test_attention.py  198 tests
-│   └── test_mlx_lm_integration.py  11 tests
+│   ├── test_attention.py  196 test functions
+│   └── test_mlx_lm_integration.py  16 test functions
 ├── benchmarks/            8 benchmark scripts
 ├── docs/
 │   ├── ARCHITECTURE.md
@@ -42,14 +44,16 @@ mlx-mfa-v2/
 
 ## Public API (`mlx_mfa.__all__` — 25 symbols)
 
-### Core attention (5)
+### Core attention (7)
 | Function | Signature highlights |
 |----------|---------------------|
 | `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights)` |
 | `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved)` |
 | `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` |
-| `flash_attention_varlen` | `(q,k,v, cu_seqlens_q, cu_seqlens_k, max_q, max_k, scale, causal)` |
+| `flash_attention_varlen` | `(q,k,v, cu_seqlens_q, cu_seqlens_k, max_q, max_k, scale, causal)` — differentiable (EA) |
 | `flash_attention_with_kv_cache` | `(q, k_new, v_new, k_cache, v_cache, scale, causal, softcap)` |
+| `flash_attention_varlen_qkv_packed` | `(qkv, cu_q, cu_k, max_q, max_k, ...)` — head-first or flat fused (EC) |
+| `flash_attention_varlen_kv_packed` | `(q, kv, cu_q, cu_k, max_q, max_k, ...)` — head-first or flat fused (EC) |
 
 ### Mask builders (15)
 | Group | Functions |
@@ -67,11 +71,11 @@ mlx-mfa-v2/
 - `is_mfa_available()` — True when C++ extension loaded
 - `get_device_info()` — device_name, gpu_family_gen, is_m3_plus, is_m5_plus
 - `get_supported_configs()` — head_dims, dtypes, extension_available
-- `__version__` — "0.9.1"
+- `__version__` — "0.9.3"
 
 ---
 
-## C++ Metal kernel variants (v0.9.1)
+## C++ Metal kernel variants (v0.9.3)
 
 | KernelType | Dtype | Pass | Description |
 |-----------|-------|------|-------------|
@@ -86,6 +90,7 @@ mlx-mfa-v2/
 | `AttentionBackwardDKV` (ccv) | f32 | Bwd | dK/dV kernel (f32 only) |
 | `SteelBackwardDQ` | f16/bf16 | Bwd | STEEL dQ kernel |
 | `SteelBackwardDKV` | f16/bf16 | Bwd | STEEL dK/dV kernel |
+| `PagedKVGather` (=9) | f16/bf16 | Gather | Pool→contiguous [B,H,max_kv,D] (EB) |
 
 **Backward strategy (v0.9.2)**: f16/bf16 D≤256 dispatches native STEEL Metal kernels
 (`MFASteelBwdDQ`, `MFASteelBwdDKV`) via `_make_mfa_custom._backward`. D=256 uses D-split
@@ -94,7 +99,7 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 
 ---
 
-## Tests (241 pytest runs / 203 test functions)
+## Tests (257 pytest runs / 212 test functions)
 
 | Class | Count | What |
 |-------|------:|------|
@@ -119,9 +124,12 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | TestReturnAttnWeights | 4 | return_attn_weights=True |
 | TestSteelBackwardGQA | 3 | STEEL backward GQA (DA) |
 | TestSteelBackwardD256 | 6 | D=256 D-split backward (CE) |
+| TestVarlenBackward | 6 | Differentiable varlen (EA) |
+| TestPagedBackward | 6 | Metal paged gather + dQ (EB) |
+| TestVarlenPacked | 4 | Varlen QKV/KV packed formats (EC) |
 | TestPublicAPI / TestEdgeCases / etc. | ~35 | API, M3+ routing, edge cases |
-| test_mlx_lm_integration.py | 11 | mlx-lm integration |
-| **Total** | **241** | |
+| test_mlx_lm_integration.py | 16 | mlx-lm integration |
+| **Total** | **257** | |
 
 ---
 
@@ -138,6 +146,18 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | `bench_varlen.py` | Variable-length batching throughput |
 | `bench_all.py` | Consolidated fwd+bwd suite (v0.9.1) |
 | `bench_compile.py` | `mx.compile` overhead: softcap/alibi/rope compiled vs raw (v0.9.2) |
+
+---
+
+## v0.9.3 additions (EA–EE)
+
+| Track | File(s) | Description |
+|-------|---------|-------------|
+| EA | `mlx_mfa/attention.py`, `tests/test_attention.py` | Differentiable `flash_attention_varlen` via `mx.custom_function`; backward per-sequence through `flash_attention` |
+| EB | `csrc/mfa_paged_gather.hpp/.cpp`, `csrc/shader_cache.*`, `csrc/bindings.cpp`, `CMakeLists.txt`, `mlx_mfa/attention.py` | `MFAPagedKVGather` Metal Primitive + `flash_attention_paged` with `mx.custom_function` |
+| EC | `mlx_mfa/attention.py`, `mlx_mfa/__init__.py` | `flash_attention_varlen_qkv_packed` + `flash_attention_varlen_kv_packed` (head-first + flat layouts) |
+| ED | `CHANGELOG.md`, `docs/INVENTORY.md`, `docs/ARCHITECTURE.md`, `README.md` | Documentation refresh |
+| EE | `pyproject.toml`, `mlx_mfa/__init__.py`, `csrc/bindings.cpp`, `CHANGELOG.md` | Version bump → 0.9.3, tag |
 
 ---
 

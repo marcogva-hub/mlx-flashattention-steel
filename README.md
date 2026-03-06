@@ -301,8 +301,12 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | CC  | Persistent multi-Q-block kernel (4× Q-blocks/threadgroup) | **Done (v0.9.1)** |
 | CD  | GQA support in STEEL backward (`gqa_factor` baked as `#define`) | **Done (v0.9.1)** |
 | CF  | Double-buffer ping-pong (K_smem⊕V_smem, 4→2 barriers/K-tile, D≤128) | **Done (v0.9.1)** |
-| CE  | D=256 backward multi-pass tiling | Deferred to v1.0 |
-| PG  | Paged KV decode — native Metal kernel (full block-table gather) | Planned (v1.0) |
+| CE  | D=256 backward D-split (BD_HALF=128) | **Done (v0.9.2)** |
+| DA  | Fix GQA backward Python guard | **Done (v0.9.2)** |
+| DC  | `mx.compile` for `_apply_rope_mlx` | **Done (v0.9.2)** |
+| EA  | Differentiable `flash_attention_varlen` (`mx.custom_function`) | **Done (v0.9.3)** |
+| EB  | Metal paged KV gather kernel + `flash_attention_paged` backward | **Done (v0.9.3)** |
+| EC  | `flash_attention_varlen_qkv_packed` + `flash_attention_varlen_kv_packed` | **Done (v0.9.3)** |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
 
 ## References
