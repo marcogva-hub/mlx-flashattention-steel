@@ -300,5 +300,5 @@ NB_MODULE(_ext, m) {
         "pool: f16 or bf16. block_table: int32 [B, max_blocks]. seq_lens: int32 [B].\n"
         "Transposes [BS,H,D] -> [H,BS,D] (token-major -> head-major) during gather.");
 
-  m.attr("__version__") = "0.9.2";
+  m.attr("__version__") = "0.9.3";
 }

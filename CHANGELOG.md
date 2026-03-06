@@ -2,7 +2,7 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [0.9.3] — UNRELEASED
+## [0.9.3] — 2026-03-06
 
 ### Added
 - **Track EA: Differentiable `flash_attention_varlen`** — `mx.custom_function`
