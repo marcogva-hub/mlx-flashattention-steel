@@ -9,6 +9,7 @@
 #include <mlx/backend/metal/device.h>
 
 #include "mfa_attention.hpp"
+#include "mfa_paged_gather.hpp"
 #include "shader_cache.hpp"
 
 namespace nb = nanobind;
@@ -278,6 +279,26 @@ NB_MODULE(_ext, m) {
         "tile_offsets: int32 [num_seqs+1], cumulative Q-tile counts per sequence.\n"
         "Returns (O [1,H,total_q,D], L [1,H,total_q] logsumexp in log2 domain).\n"
         "Only f16/bf16 supported.");
+
+  m.def("mfa_paged_kv_gather",
+        [](mlx::core::array pool,
+           mlx::core::array block_table,
+           mlx::core::array seq_lens,
+           int max_kv_len,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> mlx::core::array {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_paged_kv_gather(
+              pool, block_table, seq_lens, max_kv_len, s);
+        },
+        nb::arg("pool"),
+        nb::arg("block_table"),
+        nb::arg("seq_lens"),
+        nb::arg("max_kv_len"),
+        nb::arg("stream") = nb::none(),
+        "Metal paged KV gather: pool [N_blk, BS, H, D] -> out [B, H, max_kv, D].\n"
+        "pool: f16 or bf16. block_table: int32 [B, max_blocks]. seq_lens: int32 [B].\n"
+        "Transposes [BS,H,D] -> [H,BS,D] (token-major -> head-major) during gather.");
 
   m.attr("__version__") = "0.9.2";
 }

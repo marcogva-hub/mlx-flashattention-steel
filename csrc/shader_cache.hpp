@@ -37,8 +37,9 @@ class ShaderCache {
       SteelBackwardDQ  = 6,      // STEEL native backward dQ (f16/bf16, D<=128)
       SteelBackwardDKV = 7,      // STEEL native backward dK/dV (f16/bf16, D<=128)
       SteelVarlenForward = 8,    // STEEL varlen forward: (total_q_tiles, H, 1) grid
+      PagedKVGather      = 9,    // Paged KV gather: pool → contiguous BHND (Track EB)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 9,   // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 10,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

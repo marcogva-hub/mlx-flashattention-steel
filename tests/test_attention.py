@@ -3826,3 +3826,121 @@ class TestVarlenBackward:
         assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite GQA varlen"
         assert mx.all(mx.isfinite(dk)).item(), "dK non-finite GQA varlen"
         assert mx.all(mx.isfinite(dv)).item(), "dV non-finite GQA varlen"
+
+
+# ===========================================================================
+# Track EB — Paged attention backward (Metal gather + custom_function)
+# ===========================================================================
+
+@requires_ext
+class TestPagedBackward:
+    """EB.6: Metal paged KV gather + differentiable flash_attention_paged."""
+
+    def _make_paged(self, B, H_q, H_kv, N_q, D, kv_lens, block_size=16,
+                    dtype=mx.float16):
+        """Build pool/table/lens for testing."""
+        import math
+        num_blocks = sum((kv_len + block_size - 1) // block_size
+                         for kv_len in kv_lens) + 2  # spare
+        q = (mx.random.normal((B, H_q, N_q, D)) * 0.1).astype(dtype)
+        k_pool = (mx.random.normal((num_blocks, block_size, H_kv, D)) * 0.1).astype(dtype)
+        v_pool = (mx.random.normal((num_blocks, block_size, H_kv, D)) * 0.1).astype(dtype)
+
+        # Assign blocks sequentially
+        table = [[-1] * 4 for _ in range(B)]
+        phys = 0
+        for b in range(B):
+            n_blk = (kv_lens[b] + block_size - 1) // block_size
+            for lb in range(n_blk):
+                table[b][lb] = phys
+                phys += 1
+
+        block_table = mx.array(table, dtype=mx.int32)
+        seq_lens = mx.array(kv_lens, dtype=mx.int32)
+        return q, k_pool, v_pool, block_table, seq_lens
+
+    def test_paged_forward_shape(self):
+        """Output shape is [B, H_q, N_q, D]."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q, D = 2, 4, 4, 1, 64
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [20, 18])
+        out = flash_attention_paged(q, k_p, v_p, bt, sl)
+        mx.eval(out)
+        assert list(out.shape) == [B, H_q, N_q, D]
+
+    def test_paged_forward_finite(self):
+        """Forward output values are finite."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q, D = 2, 4, 4, 1, 128
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [32, 16])
+        out = flash_attention_paged(q, k_p, v_p, bt, sl)
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item()
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_paged_dQ_finite(self, D):
+        """dQ is finite for f16 paged attention."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q = 2, 4, 4, 1
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [24, 20])
+
+        def loss(q_):
+            return flash_attention_paged(q_, k_p, v_p, bt, sl).sum()
+
+        dq = mx.grad(loss)(q)
+        mx.eval(dq)
+        assert list(dq.shape) == [B, H_q, N_q, D], "dQ shape"
+        assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite"
+
+    def test_paged_dQ_gqa(self):
+        """dQ is correct with GQA (H_q=4, H_kv=2)."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q, D = 1, 4, 2, 1, 64
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [20])
+
+        def loss(q_):
+            return flash_attention_paged(q_, k_p, v_p, bt, sl).sum()
+
+        dq = mx.grad(loss)(q)
+        mx.eval(dq)
+        assert list(dq.shape) == [B, H_q, N_q, D]
+        assert mx.all(mx.isfinite(dq)).item()
+
+    def test_paged_dQ_matches_non_paged(self):
+        """dQ from paged path matches non-paged flash_attention (single seq)."""
+        from mlx_mfa import flash_attention, flash_attention_paged
+        import math
+        B, H, N_q, N_kv, D, block_size = 1, 4, 2, 32, 64, 16
+        mx.random.seed(77)
+        q = (mx.random.normal((B, H, N_q, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, N_kv, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, N_kv, D)) * 0.1).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        scale = 1.0 / math.sqrt(D)
+
+        # Build paged pool matching k/v
+        # k shape: [1, H, N_kv, D] → pool [num_blocks, BS, H, D]
+        # Rearrange k[0]: [H, N_kv, D] → [N_kv, H, D] → [num_blocks, BS, H, D]
+        k_tok = k[0].transpose(1, 0, 2)  # [N_kv, H, D]
+        v_tok = v[0].transpose(1, 0, 2)
+        n_blk = N_kv // block_size
+        k_pool = k_tok.reshape(n_blk, block_size, H, D)
+        v_pool = v_tok.reshape(n_blk, block_size, H, D)
+        bt = mx.array([[0, 1]], dtype=mx.int32)
+        sl = mx.array([N_kv], dtype=mx.int32)
+        mx.eval(k_pool, v_pool, bt, sl)
+
+        def loss_paged(q_):
+            return flash_attention_paged(q_, k_pool, v_pool, bt, sl,
+                                         scale=scale).sum()
+
+        def loss_ref(q_):
+            return flash_attention(q_, k, v, scale=scale).sum()
+
+        dq_paged = mx.grad(loss_paged)(q)
+        dq_ref   = mx.grad(loss_ref)(q)
+        mx.eval(dq_paged, dq_ref)
+
+        max_err = mx.max(mx.abs(dq_paged - dq_ref)).item()
+        assert max_err < 0.05, f"dQ paged vs ref max err = {max_err}"

@@ -2003,11 +2003,13 @@ def flash_attention_paged(
     block_size: int = 16,
     stream: Optional["mx.StreamOrDevice"] = None,
 ) -> "mx.array":
-    """Paged KV cache attention (Phase 1: Python-level page gather).
+    """Paged KV cache attention with Metal gather kernel.
 
-    Reconstructs contiguous K/V from a paged block pool and dispatches
-    to ``flash_attention``.  Phase 2 will add a Metal block-table kernel
-    for O(block_size) decode overhead instead of a full gather.
+    Gathers K/V from a paged block pool into contiguous tensors via a single
+    Metal dispatch (``mfa_paged_kv_gather``), then runs ``flash_attention``.
+    Supports autograd: ``dQ`` is computed correctly; ``dK_pages``/``dV_pages``
+    are returned as zeros (KV pools are cache buffers, not trainable parameters
+    in standard use — use non-paged ``flash_attention`` for end-to-end training).
 
     Args:
         q:            Query tensor ``[B, H_q, N_q, D]``.
@@ -2018,7 +2020,7 @@ def flash_attention_paged(
         seq_lens:     ``[B]`` int32 — actual KV token count per sequence.
         scale:        Attention scale.  Default ``1/sqrt(D)``.
         causal:       Apply causal mask within each sequence.
-        block_size:   Tokens per page (must match pool's first dim after num).
+        block_size:   Tokens per page (must match pool layout).
         stream:       MLX stream/device.
 
     Returns:
@@ -2036,48 +2038,73 @@ def flash_attention_paged(
     import mlx.core as mx
 
     B, H_q, N_q, D = q.shape
+    H_kv = k_pages.shape[2]
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
+    # Materialise index data as Python scalars — transparent to autograd.
     seq_lens_list = [int(x) for x in seq_lens.tolist()]
     block_table_list = block_table.tolist()
+    max_kv_len = max(seq_lens_list) if seq_lens_list else 0
 
-    outputs = []
-    for b in range(B):
-        kv_len = seq_lens_list[b]
-        table_b = block_table_list[b]
+    if max_kv_len == 0:
+        return mx.zeros((B, H_q, N_q, D), dtype=q.dtype)
 
-        # Gather pages for sequence b
-        n_full, rem = divmod(kv_len, block_size)
-        page_slices_k = []
-        page_slices_v = []
-        for logical_blk in range(n_full):
-            phys = int(table_b[logical_blk])
-            page_slices_k.append(k_pages[phys])   # [block_size, H_kv, D]
-            page_slices_v.append(v_pages[phys])
-        if rem > 0:
-            phys = int(table_b[n_full])
-            page_slices_k.append(k_pages[phys, :rem])  # [rem, H_kv, D]
-            page_slices_v.append(v_pages[phys, :rem])
+    def _gather_contig(k_p: "mx.array", v_p: "mx.array"):
+        """Gather pool pages → contiguous [B, H_kv, max_kv_len, D]."""
+        if _ext_available() and k_p.dtype in (mx.float16, mx.bfloat16):
+            from mlx_mfa._ext import mfa_paged_kv_gather
+            K = mfa_paged_kv_gather(k_p, block_table, seq_lens, max_kv_len)
+            V = mfa_paged_kv_gather(v_p, block_table, seq_lens, max_kv_len)
+            return K, V
+        # Python fallback gather (all dtypes).
+        K_list, V_list = [], []
+        for b in range(B):
+            kv_len = seq_lens_list[b]
+            table_b = block_table_list[b]
+            n_full, rem = divmod(kv_len, block_size)
+            slices_k, slices_v = [], []
+            for lb in range(n_full):
+                phys = int(table_b[lb])
+                slices_k.append(k_p[phys])
+                slices_v.append(v_p[phys])
+            if rem > 0:
+                phys = int(table_b[n_full])
+                slices_k.append(k_p[phys, :rem])
+                slices_v.append(v_p[phys, :rem])
+            if slices_k:
+                k_seq = mx.concatenate(slices_k, axis=0)  # [kv_len, H_kv, D]
+                v_seq = mx.concatenate(slices_v, axis=0)
+            else:
+                k_seq = mx.zeros([0, H_kv, D], dtype=k_p.dtype)
+                v_seq = mx.zeros([0, H_kv, D], dtype=v_p.dtype)
+            pad = max_kv_len - k_seq.shape[0]
+            if pad > 0:
+                k_seq = mx.pad(k_seq, [(0, pad), (0, 0), (0, 0)])
+                v_seq = mx.pad(v_seq, [(0, pad), (0, 0), (0, 0)])
+            K_list.append(k_seq.transpose(1, 0, 2)[None])  # [1, H_kv, max_kv_len, D]
+            V_list.append(v_seq.transpose(1, 0, 2)[None])
+        return mx.concatenate(K_list, axis=0), mx.concatenate(V_list, axis=0)
 
-        if not page_slices_k:
-            # No KV tokens: output zeros
-            outputs.append(mx.zeros((1, H_q, N_q, D), dtype=q.dtype))
-            continue
+    @mx.custom_function
+    def _paged_impl(q_, k_pages_, v_pages_):
+        K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
+        return flash_attention(q_, K_contig, V_contig,
+                               scale=scale, causal=causal, stream=stream)
 
-        # Concatenate → [kv_len, H_kv, D], then reshape to [1, H_kv, kv_len, D]
-        k_seq = mx.concatenate(page_slices_k, axis=0)   # [kv_len, H_kv, D]
-        v_seq = mx.concatenate(page_slices_v, axis=0)
-        k_seq = k_seq.transpose(1, 0, 2)[None]           # [1, H_kv, kv_len, D]
-        v_seq = v_seq.transpose(1, 0, 2)[None]
+    @_paged_impl.vjp
+    def _paged_bwd(primals, cotangent, _output):
+        q_, k_pages_, v_pages_ = primals
+        dO = cotangent
+        K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
+        _, (dQ, _dK_c, _dV_c) = mx.vjp(
+            lambda qi, ki, vi: flash_attention(
+                qi, ki, vi, scale=scale, causal=causal),
+            [q_, K_contig, V_contig], [dO])
+        # KV pool gradients are zeros: pools are cache buffers, not parameters.
+        return dQ, mx.zeros_like(k_pages_), mx.zeros_like(v_pages_)
 
-        q_b = q[b:b+1]  # [1, H_q, N_q, D]
-
-        out_b = flash_attention(q_b, k_seq, v_seq, scale=scale,
-                                causal=causal, stream=stream)
-        outputs.append(out_b)
-
-    return mx.concatenate(outputs, axis=0)
+    return _paged_impl(q, k_pages, v_pages)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
