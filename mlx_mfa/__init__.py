@@ -25,7 +25,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "0.9.3"
+__version__ = "1.0.0rc1"
 
 from mlx_mfa.attention import (
     flash_attention,

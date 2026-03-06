@@ -2,27 +2,34 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.0.0-rc1] — UNRELEASED
+## [1.0.0-rc1] — 2026-03-06
 
 ### Added
 - **Track FB: Native sliding window in STEEL kernel** — `window_left` param in
   `MFASteelParams`; `has_window` KernelKey flag; K-tile `kb_start` computed per
   Q-block inside the persistent loop; boundary tiles apply element-wise mask.
-  `flash_attention(..., window_size=(left, right))` public API. 4+ tests.
+  Fixed multi-tile boundary bug (only first boundary tile was masked), NaN-safe
+  online softmax (all-masked-tile guard), and test reference `qL_off` alignment.
+  `flash_attention(..., window_size=(left, right))` public API. 4 tests.
 - **Track FA: Unified KV cache API** — `flash_attention_kvcache(q, k_cache, v_cache, ...)`
   replaces fragmented `with_kv_cache` / `paged` / `rope` paths. Dense + paged modes,
-  RoPE, softcap, ALiBi, sliding window, `cache_seqlens`, `cache_batch_idx`. 10+ tests.
+  RoPE, softcap, ALiBi, sliding window, `cache_seqlens`, `cache_batch_idx`. 17 tests.
 - **Track FX-1: `return_lse` in `flash_attention`** — Expose logsumexp `L [B,H,N]`
-  (log2 domain) alongside output when requested. 3 tests.
+  (log2 domain) alongside output when requested. MFA path uses `mfa_forward_with_lse`
+  (free); fallback materialises log2-domain LSE via pure-MLX ops. 4 tests.
 - **Track FX-2: `cache_batch_idx` in `flash_attention_kvcache`** — Non-contiguous
-  batch→cache-slot mapping for continuous batching. 2 tests.
+  batch→cache-slot mapping for continuous batching; `k_cache[cache_batch_idx]` gather
+  before attention dispatch. 2 tests.
 - **Track FX-3: `rotary_dim` partial RoPE** — Rotate only first `rotary_dim` dims;
-  remainder passes through unchanged. `rotary_dim` added to compile cache key. 2 tests.
-- **Track FC: Fused RoPE in cache append** — `k_new` is rotated BEFORE concat, avoiding
-  re-rotation of cached keys. `benchmarks/bench_kvcache.py` added.
+  remainder passes through unchanged. STEEL kernel forces MLX fallback when
+  `rotary_dim < head_dim`. 2 tests.
+- **Track FC: Fused RoPE in cache append** — `flash_attention_kvcache_rope_append`
+  rotates `k_new` BEFORE concat, storing pre-rotated keys in cache. O(1) rotation
+  cost per decode step vs O(past_len) for naive re-rotation. `benchmarks/bench_kvcache.py`
+  added for A/B comparison. 3 tests.
 
 ### Tests
-Total collected: **TBD**
+Total collected: **292**
 
 ---
 

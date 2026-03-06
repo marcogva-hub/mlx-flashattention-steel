@@ -26,10 +26,12 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"),
       nb::arg("causal"),
       nb::arg("softcap") = 0.0f,
+      nb::arg("window_left") = -1,
       nb::arg("stream") = nb::none(),
       "Flash Attention forward (Metal). "
       "q/k/v: [B, H, N, D], float16/bfloat16/float32. "
-      "softcap: tanh softcapping factor (0.0 = disabled).");
+      "softcap: tanh softcapping factor (0.0 = disabled). "
+      "window_left: sliding window left radius (-1 = disabled).");
 
   // Debug: returns (O, L) so L (logsumexp) can be inspected from Python.
   m.def("mfa_forward_with_lse",
@@ -38,7 +40,9 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& v,
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
-        mlx_mfa::MFAttention::Params params{q.shape(3), scale, causal};
+        mlx_mfa::MFAttention::Params params{
+            (int)q.shape(3), scale, causal,
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
         mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {q.shape(), lse_shape},
@@ -63,7 +67,9 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& dO,
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
-        mlx_mfa::MFAttention::Params params{q.shape(3), scale, causal};
+        mlx_mfa::MFAttention::Params params{
+            (int)q.shape(3), scale, causal,
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
         mlx::core::Shape d_shape = {q.shape(0), q.shape(1), q.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {q.shape(), d_shape},
@@ -90,7 +96,9 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& dO,
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
-        mlx_mfa::MFAttention::Params params{q.shape(3), scale, causal};
+        mlx_mfa::MFAttention::Params params{
+            (int)q.shape(3), scale, causal,
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
         auto outs = mlx::core::array::make_arrays(
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
@@ -118,9 +126,10 @@ NB_MODULE(_ext, m) {
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{};
-        params.head_dim = q.shape(3);
-        params.scale    = scale;
-        params.causal   = causal;
+        params.head_dim    = q.shape(3);
+        params.scale       = scale;
+        params.causal      = causal;
+        params.window_left = -1;  // disabled — steel backward has no window
 
         // delta = rowsum(dO * O)  [B, H, N], float32.
         // Note: the Metal kernel multiplies by p->scale internally when computing
@@ -300,5 +309,5 @@ NB_MODULE(_ext, m) {
         "pool: f16 or bf16. block_table: int32 [B, max_blocks]. seq_lens: int32 [B].\n"
         "Transposes [BS,H,D] -> [H,BS,D] (token-major -> head-major) during gather.");
 
-  m.attr("__version__") = "0.9.3";
+  m.attr("__version__") = "1.0.0rc1";
 }
