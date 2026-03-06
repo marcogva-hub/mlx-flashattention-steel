@@ -4936,3 +4936,99 @@ class TestPagedSteelForward:
         mx.eval(out_paged, out_ref)
         diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"flash_attention_paged diff={diff:.4e}"
+
+
+# =============================================================================
+# Track FD-decode — Paged Flash Decode (gather + Flash Decode two-phase)
+# =============================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestPagedFlashDecode:
+    """Tests for the paged Flash Decode path (N_q ≤ 4, long KV).
+
+    When N_q ≤ 4 and max_kv_len ≥ 256, flash_attention_paged gathers K/V
+    from the pool and routes to flash_attention() which activates the
+    split-KV Flash Decode two-phase kernel for better parallelism.
+    """
+
+    TOL = 5e-3
+
+    # ── 1. N_q=1, S=512 non-causal ───────────────────────────────────────
+    def test_decode_s512_noncausal(self):
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(20)
+        B, H, N, S, D = 1, 4, 1, 512, 128
+        bs = 64
+        scale = D**-0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
+                                       scale=scale, causal=False, block_size=bs)
+        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_pd, out_ref)
+        diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"N=1 S=512 non-causal diff={diff:.4e}"
+
+    # ── 2. N_q=1, S=1024 causal ─────────────────────────────────────────
+    def test_decode_s1024_causal(self):
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(21)
+        B, H, N, S, D = 1, 4, 1, 1024, 128
+        bs = 64
+        scale = D**-0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
+                                       scale=scale, causal=True, block_size=bs)
+        out_ref = flash_attention(q, k, v, scale=scale, causal=True)
+        mx.eval(out_pd, out_ref)
+        diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"N=1 S=1024 causal diff={diff:.4e}"
+
+    # ── 3. N_q=4, S=512 (boundary of flash decode activation) ────────────
+    def test_decode_nq4_s512(self):
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(22)
+        B, H, N, S, D = 2, 8, 4, 512, 64
+        bs = 64
+        scale = D**-0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
+                                       scale=scale, causal=False, block_size=bs)
+        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_pd, out_ref)
+        diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"N=4 S=512 diff={diff:.4e}"
+
+    # ── 4. GQA 4:1, N_q=1, S=512 ─────────────────────────────────────────
+    def test_decode_gqa(self):
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(23)
+        H_q, H_kv = 8, 2
+        B, N, S, D = 1, 1, 512, 64
+        bs = 64
+        scale = D**-0.5
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
+                                       scale=scale, causal=False, block_size=bs)
+        # Reference: expand K/V to H_q
+        k_exp = mx.repeat(k, H_q // H_kv, axis=1)
+        v_exp = mx.repeat(v, H_q // H_kv, axis=1)
+        out_ref = flash_attention(q, k_exp, v_exp, scale=scale, causal=False)
+        mx.eval(out_pd, out_ref)
+        diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"GQA 4:1 decode diff={diff:.4e}"

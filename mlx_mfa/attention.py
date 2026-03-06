@@ -2571,6 +2571,22 @@ def flash_attention_paged(
         and D in (64, 128, 256)
     )
 
+    # ── Paged Flash Decode path (Track FD-decode) ─────────────────────────
+    # For decode steps (N_q ≤ 4, long KV ≥ 256), gather K/V into contiguous
+    # tensors first, then route to flash_attention() which activates Flash
+    # Decoding (split-KV two-phase) for better GPU parallelism.
+    # The gather itself is a single fast Metal dispatch (mfa_paged_kv_gather).
+    _USE_PAGED_FLASH_DECODE = (
+        _USE_PAGED_STEEL
+        and N_q <= 4
+        and max_kv_len >= 256
+    )
+    if _USE_PAGED_FLASH_DECODE:
+        K_contig, V_contig = _gather_contig(k_pages, v_pages)
+        # Flash Decode is activated inside flash_attention when N≤4 and S≥256.
+        # Per-sequence slicing ensures each batch item sees only its kv_len.
+        return _attn_per_seq(q, K_contig, V_contig)
+
     if _USE_PAGED_STEEL:
         from mlx_mfa._ext import mfa_paged_steel_forward as _raw_paged_steel
 
