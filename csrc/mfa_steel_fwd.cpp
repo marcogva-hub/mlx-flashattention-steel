@@ -79,6 +79,11 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const bool has_rope          = key.has_rope;
   const bool rope_interleaved  = key.rope_interleaved; // true=LLaMA, false=GPT-NeoX
   const bool has_alibi         = key.has_alibi;
+  // Double-buffer: separate K_smem / V_smem so V-load can overlap K-GEMM
+  // and K[n+1]-load can overlap P@V. Only valid when TGP budget allows:
+  //   2*kv_s + Q_smem < 32KB → only D≤128. Also excluded: RoPE (modifies K_smem
+  //   before GEMM, requires extra barrier ordering), sparse (continue skips loads).
+  const bool double_buf = (BD <= 128 && !has_rope && !sparse);
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -546,10 +551,21 @@ struct MFAExpSubOp {
   ss << "  constexpr short kv_s  = kv_s0 > kv_s1 ? kv_s0 : kv_s1;\n";
   ss << "\n";
   ss << "  threadgroup T Q_smem[MFA_BQ * (MFA_BD + 16/sizeof(T))];\n";
-  ss << "  threadgroup T KV_smem[kv_s];\n";
-  ss << "  threadgroup T* Qs = Q_smem;\n";
-  ss << "  threadgroup T* Ks = KV_smem;\n";
-  ss << "  threadgroup T* Vs = KV_smem;\n";
+  if (double_buf) {
+    // Separate K_smem / V_smem allows K-load to overlap P@V and V-load to
+    // overlap K-GEMM at the hardware level (load + SIMD are separate units).
+    // Reduces barriers from 4 → 2 per K-tile. Valid for D≤128 (TGP < 32KB).
+    ss << "  threadgroup T K_smem[kv_s0];\n";
+    ss << "  threadgroup T V_smem[kv_s1];\n";
+    ss << "  threadgroup T* Qs = Q_smem;\n";
+    ss << "  threadgroup T* Ks = K_smem;\n";
+    ss << "  threadgroup T* Vs = V_smem;\n";
+  } else {
+    ss << "  threadgroup T KV_smem[kv_s];\n";
+    ss << "  threadgroup T* Qs = Q_smem;\n";
+    ss << "  threadgroup T* Ks = KV_smem;\n";
+    ss << "  threadgroup T* Vs = KV_smem;\n";
+  }
   ss << "\n";
 
   // Block loaders
@@ -678,6 +694,22 @@ struct MFAExpSubOp {
   }
   ss << "\n";
 
+  // Double-buffer Phase 0: preload K[0] into K_smem before the loop so the
+  // first iteration can immediately issue V[0]-load while computing Q@K[0]^T.
+  if (double_buf) {
+    ss << "  // Phase 0 (double-buffer): preload K[0] into K_smem before the loop.\n";
+    ss << "  if (kb_lim > 0) {\n";
+    ss << "    if (0 == p->NK_aligned) {\n";
+    ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
+    ss << "    } else {\n";
+    ss << "      loader_k.load_unsafe();\n";
+    ss << "    }\n";
+    ss << "    loader_k.next();\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "  }\n";
+    ss << "\n";
+  }
+
   // Main K/V loop
   ss << "  for (int kb = 0; kb < kb_lim; kb++) {\n";
   // Block-sparse: skip K-tiles where block_mask[q_tile][kb] == 0.
@@ -690,13 +722,17 @@ struct MFAExpSubOp {
     ss << "      continue;\n";
     ss << "    }\n";
   }
-  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-  ss << "    if (kb == p->NK_aligned) {\n";
-  ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
-  ss << "    } else {\n";
-  ss << "      loader_k.load_unsafe();\n";
-  ss << "    }\n";
-  ss << "\n";
+  // Non-double-buf: K is loaded here (4-barrier path, shared KV_smem).
+  // Double-buf: K[kb] was already preloaded; skip to K-GEMM directly.
+  if (!double_buf) {
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    if (kb == p->NK_aligned) {\n";
+    ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
+    ss << "    } else {\n";
+    ss << "      loader_k.load_unsafe();\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
   // Optional RoPE fusion for K.
   // K SRAM is transposed: element [k_row, d_col] stored at Ks[d_col*LDK+k_row].
   // RoPE pair (d0=2*pair, d1=2*pair+1) maps to Ks[d0*LDK+k_row] / Ks[d1*LDK+k_row].
@@ -734,7 +770,11 @@ struct MFAExpSubOp {
   }
   // S = Q @ K^T  (Q is in registers; only K is loaded from TGP per DD slice)
   ss << "    Stile.clear();\n";
-  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  // double_buf: K[kb] was synced by barrier-2 at end of prev iter (or Phase-0 barrier).
+  // No additional barrier needed here — K_smem is already fully visible.
+  if (!double_buf) {
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  }
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
   ss << "      Ktile.template load<T, 1, 1>(\n";
@@ -752,6 +792,20 @@ struct MFAExpSubOp {
   ss << "      }\n";
   ss << "    }\n";
   ss << "\n";
+  // Double-buf: issue V[kb] load into V_smem right after K-GEMM.
+  // K_smem ≠ V_smem → no conflict with the just-completed K reads.
+  // The load-store unit can process the V-writes while the ALU runs
+  // scale/softcap/masks/softmax below; barrier-1 (at P@V) captures them.
+  if (double_buf) {
+    ss << "    // Double-buf: issue V[kb] load (overlaps softmax compute)\n";
+    ss << "    if (kb == p->NK_aligned) {\n";
+    ss << "      loader_v.load_safe(short2(MFA_BD, p->kL_rem));\n";
+    ss << "    } else {\n";
+    ss << "      loader_v.load_unsafe();\n";
+    ss << "    }\n";
+    ss << "    loader_v.next();\n";
+    ss << "\n";
+  }
   ss << "    // Apply scale (log2-domain)\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
@@ -839,14 +893,19 @@ struct MFAExpSubOp {
     ss << "\n";
   }
 
-  // Load V while doing softmax
-  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-  ss << "    if (kb == p->NK_aligned) {\n";
-  ss << "      loader_v.load_safe(short2(MFA_BD, p->kL_rem));\n";
-  ss << "    } else {\n";
-  ss << "      loader_v.load_unsafe();\n";
-  ss << "    }\n";
-  ss << "\n";
+  // Load V while doing softmax.
+  // !double_buf: V shares KV_smem with K, so K-GEMM must finish (barrier) before
+  //              we overwrite that buffer with V data.
+  // double_buf:  V already issued right after K-GEMM into separate V_smem; skip.
+  if (!double_buf) {
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    if (kb == p->NK_aligned) {\n";
+    ss << "      loader_v.load_safe(short2(MFA_BD, p->kL_rem));\n";
+    ss << "    } else {\n";
+    ss << "      loader_v.load_unsafe();\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
 
   // Online softmax update
   ss << "    // Online softmax\n";
@@ -894,8 +953,25 @@ struct MFAExpSubOp {
   ss << "        }\n";
   ss << "      }\n";
   ss << "    }\n";
-  ss << "    loader_k.next();\n";
-  ss << "    loader_v.next();\n";
+  if (double_buf) {
+    // Double-buf barrier-2: preload K[kb+1] into K_smem while P@V (above) ran.
+    // P@V reads V_smem; K-load writes K_smem — separate TGP regions, no conflict.
+    // The barrier ensures K_smem is fully visible before the next K-GEMM.
+    // Skipped on the last iteration (kb+1 == kb_lim) — no next tile needed.
+    ss << "    // Double-buf: preload K[kb+1] (ran concurrently with P@V)\n";
+    ss << "    if (kb + 1 < kb_lim) {\n";
+    ss << "      if ((kb + 1) == p->NK_aligned) {\n";
+    ss << "        loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
+    ss << "      } else {\n";
+    ss << "        loader_k.load_unsafe();\n";
+    ss << "      }\n";
+    ss << "      loader_k.next();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    }\n";
+  } else {
+    ss << "    loader_k.next();\n";
+    ss << "    loader_v.next();\n";
+  }
   ss << "  } // end kb loop\n";
   ss << "\n";
 
