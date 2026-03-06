@@ -181,11 +181,28 @@ struct MFABlockLoaderT {
         src(src_ + bi * src_ld_ + bj) {}
 
   METAL_FUNC void load_unsafe() const {
-    STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < BROWS; i += TROWS) {
+    // Vectorize for row-major loaders (kDstStrCol==1) when vec_size is a
+    // multiple of 4 — 4× f16 = 8 bytes = one 64-bit coalesced transaction.
+    // The K loader has kDstStrCol=BK+pad > 1 (transposed layout) and is
+    // excluded at compile time by can_vectorize = false.
+    constexpr bool can_vectorize = (kDstStrCol == 1) && (vec_size % 4 == 0);
+    if constexpr (can_vectorize) {
+      using vec4_t = vec<T, 4>;
       STEEL_PRAGMA_UNROLL
-      for (short j = 0; j < vec_size; j++) {
-        dst[i * kDstStrRow + j * kDstStrCol] = src[i * src_ld + j];
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j += 4) {
+          *(threadgroup vec4_t*)(dst + i * kDstStrRow + j) =
+              *(const device vec4_t*)(src + i * src_ld + j);
+        }
+      }
+    } else {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j++) {
+          dst[i * kDstStrRow + j * kDstStrCol] = src[i * src_ld + j];
+        }
       }
     }
   }
@@ -982,11 +999,24 @@ struct MFABlockLoaderT {
         src(src_ + bi * src_ld_ + bj) {}
 
   METAL_FUNC void load_unsafe() const {
-    STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < BROWS; i += TROWS) {
+    constexpr bool can_vectorize = (kDstStrCol == 1) && (vec_size % 4 == 0);
+    if constexpr (can_vectorize) {
+      using vec4_t = vec<T, 4>;
       STEEL_PRAGMA_UNROLL
-      for (short j = 0; j < vec_size; j++)
-        dst[i * kDstStrRow + j * kDstStrCol] = src[i * src_ld + j];
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j += 4) {
+          *(threadgroup vec4_t*)(dst + i * kDstStrRow + j) =
+              *(const device vec4_t*)(src + i * src_ld + j);
+        }
+      }
+    } else {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j++)
+          dst[i * kDstStrRow + j * kDstStrCol] = src[i * src_ld + j];
+      }
     }
   }
 
