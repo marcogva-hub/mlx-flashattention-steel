@@ -8,7 +8,7 @@ _Auto-regenerated at v0.9.1 (2026-03-06)._
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
 │   ├── __init__.py        Public API (25 exports, version=0.9.1)
-│   ├── attention.py       Core attention + fallback paths (1699 lines)
+│   ├── attention.py       Core attention + fallback paths (2187 lines)
 │   ├── masks.py           Mask builders — 13 functions (1129 lines)
 │   └── integrations/
 │       └── mlx_lm.py      mlx-lm patch/unpatch
@@ -67,7 +67,7 @@ mlx-mfa-v2/
 - `is_mfa_available()` — True when C++ extension loaded
 - `get_device_info()` — device_name, gpu_family_gen, is_m3_plus, is_m5_plus
 - `get_supported_configs()` — head_dims, dtypes, extension_available
-- `__version__` — "0.8.0"
+- `__version__` — "0.9.1"
 
 ---
 
@@ -93,7 +93,7 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 
 ---
 
-## Tests (232 total)
+## Tests (235 pytest runs / 197 test functions)
 
 | Class | Count | What |
 |-------|------:|------|

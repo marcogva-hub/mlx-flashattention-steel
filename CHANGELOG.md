@@ -16,8 +16,9 @@ All notable changes to mlx-mfa are documented here.
   vector reads for all tile loads in the STEEL forward kernel, reducing instruction
   count per tile by 4× on cache-line-aligned data.
 - **Track CB: `mx.compile` for fallback paths** — The Python fallback routes
-  (`_fallback_sdpa`, sparse backward, varlen split-cat) are wrapped with `mx.compile`
-  so repeated calls with the same shapes share a compiled compute graph.
+  (`_softcap_sdpa_ref`, `_alibi_sdpa_ref`) are wrapped with `mx.compile`.
+  `_apply_rope_mlx` and the sparse/varlen fallbacks are NOT yet compiled
+  (completed in Track DC / v0.9.2).
 - **Track CC: Persistent multi-Q-block kernel** — The STEEL forward kernel now iterates
   over an outer `qb` loop (`[0, NQ)`) within a single threadgroup dispatch, processing
   up to 4 Q-blocks per launch. Amortizes Metal command buffer overhead at N ≥ 4096.
@@ -74,7 +75,7 @@ All notable changes to mlx-mfa are documented here.
   flash_attention VJP vs SDPA VJP across D=64/128, f16/bf16, causal/non-causal.
 - **Track BH: Varlen benchmark update** — `benchmarks/bench_varlen.py` updated to
   note STEEL varlen kernel; section header updated to v0.9.0.
-- **Tests: 232 total** (up from 209 in v0.8.0)
+- **Tests: 232 pytest runs** (180+16 test functions; 232 with parametrize expansion)
 
 ## [0.8.0] — 2026-03-05
 
