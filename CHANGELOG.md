@@ -16,6 +16,20 @@ All notable changes to mlx-mfa are documented here.
 - **Track EC: Varlen packed formats** — `flash_attention_varlen_qkv_packed` and
   `flash_attention_varlen_kv_packed` accept head-first or flat fused tensors and
   route to `flash_attention_varlen`. `TestVarlenPacked` (4 tests).
+- **Track ED: Documentation refresh** — `docs/ARCHITECTURE.md` rewritten to 476 lines:
+  updated backward routing tree (STEEL bwd / SDPA vjp / compiled vjp), new §8 (STEEL
+  native backward — FA-2 log2 domain, GQA `gqa_factor`, D=256 three-phase D-split),
+  new §9 (varlen backward via `mx.custom_function`), new §10 (paged KV gather — Metal
+  kernel pseudocode, forward/backward flow, per-seq slicing rationale), expanded Public
+  API table to all 31 exports. `docs/INVENTORY.md` regenerated from scratch: all line
+  counts verified with `wc -l`, 31 `__all__` exports, 10 KernelType entries, 7 C++
+  Primitive classes, 257 pytest runs / 212 test functions, 40 test classes, 10
+  benchmarks. `README.md`: API Reference expanded from 7 to all 31 exports (param
+  tables for core attention functions; compact reference table for 13 mask builders);
+  Features section updated with v0.9.2–v0.9.3 additions.
+
+### Tests
+Total collected: **257 pytest runs / 212 test functions** (EA adds 6, EB adds 6, EC adds 4).
 
 ---
 
