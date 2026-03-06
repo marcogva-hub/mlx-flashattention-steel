@@ -2,6 +2,22 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.1] — UNRELEASED
+
+### Fixed
+- **Track GA: PagedKVCache rewrite** — Dual K/V pools (was K-only), functional
+  `append()` with block-level writes (was per-element Python loop), working `gather()`
+  (was `NotImplementedError`). New convenience properties/methods: `k_pool`, `v_pool`,
+  `get_block_table()`, `get_seq_lens()`. Integrates with `flash_attention_paged` and
+  `flash_attention_kvcache` (paged mode).
+- **Track GB: `patch_mlx_lm` diagnostics** — `verbose` parameter, `get_patch_stats()`
+  for STEEL vs fallback tracking with reason breakdown, `check_model_compatibility()`
+  for model config assessment.
+- **Track GC: Deprecation notes** — `flash_attention_with_kv_cache` marked
+  soft-deprecated in favor of `flash_attention_kvcache` / `flash_attention_kvcache_rope_append`.
+
+---
+
 ## [1.0.0] — 2026-03-06
 
 ### Highlights
