@@ -2,6 +2,22 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.3] — 2026-03-06
+
+### Added
+- **D=512 head_dim support** — forward and backward STEEL kernels now support
+  `head_dim=512`. Both `flash_attention()` and `mx.vjp()` through it work
+  correctly for f16/bf16, causal/non-causal, GQA, and unaligned sequence lengths.
+- **D_SPLITS generalization** — `BD_HALF` in dQ and dKV backward generators
+  is now fixed at 128 (not `BD/2`), and `D_SPLITS = BD / 128`. Metal loops
+  over `[MFA_D_SPLITS]` tile arrays are fully unrolled at compile time, enabling
+  any `head_dim` that is a multiple of 128 (64, 128, 256, 512).
+- **13 new tests**: `TestD512Forward` (8) + `TestD512Backward` (5).
+
+**350 tests pass.**
+
+---
+
 ## [1.0.2] — 2026-03-06
 
 ### Changed

@@ -17,6 +17,7 @@ namespace nb = nanobind;
 NB_MODULE(_ext, m) {
   m.doc() = "mlx-mfa C++ extension: Metal Flash Attention for MLX";
 
+
   m.def(
       "mfa_attention_forward",
       &mlx_mfa::mfa_attention_forward,
@@ -352,5 +353,5 @@ NB_MODULE(_ext, m) {
         "GQA: H_q / H_kv must be integer. window_left=-1 disables sliding window.\n"
         "Only f16/bf16 supported.");
 
-  m.attr("__version__") = "1.0.2";
+  m.attr("__version__") = "1.0.3";
 }
