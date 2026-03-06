@@ -2,19 +2,17 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.0.1] — UNRELEASED
+## [1.0.1] — 2026-03-06
 
-### Fixed
-- **Track GA: PagedKVCache rewrite** — Dual K/V pools (was K-only), functional
-  `append()` with block-level writes (was per-element Python loop), working `gather()`
-  (was `NotImplementedError`). New convenience properties/methods: `k_pool`, `v_pool`,
-  `get_block_table()`, `get_seq_lens()`. Integrates with `flash_attention_paged` and
-  `flash_attention_kvcache` (paged mode).
-- **Track GB: `patch_mlx_lm` diagnostics** — `verbose` parameter, `get_patch_stats()`
-  for STEEL vs fallback tracking with reason breakdown, `check_model_compatibility()`
-  for model config assessment.
-- **Track GC: Deprecation notes** — `flash_attention_with_kv_cache` marked
-  soft-deprecated in favor of `flash_attention_kvcache` / `flash_attention_kvcache_rope_append`.
+### Fixed / Improved
+
+| Track | Description | New tests |
+|-------|-------------|-----------|
+| GA | **PagedKVCache rewrite** — dual numpy float32 backing stores (was K-only, V never stored); `append()` uses block-level slice writes (was per-element Python loop); working `gather()` (was `NotImplementedError`); `k_pool`/`v_pool` properties with lazy cached `mx.array` views; `get_block_table()`/`get_seq_lens()` for direct use with paged STEEL kernel | 13 |
+| GB | **`patch_mlx_lm` diagnostics** — `verbose=False` silent mode; `get_patch_stats()` returns `{forward_calls, steel_calls, fallback_calls, steel_ratio}`; `check_model_compatibility(model_name)` heuristic dict without loading the model; stats reset on each fresh `patch_mlx_lm()` | 17 |
+| GC | **Deprecation notes** — `flash_attention_with_kv_cache` marked `.. deprecated:: 1.0.1` in docstring; removal target v2.0 | — |
+
+**337 tests pass.** No kernel changes (no C++/Metal modifications).
 
 ---
 

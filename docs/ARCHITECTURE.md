@@ -474,3 +474,104 @@ Backward:
 `flash_attention` would include those zeros in the softmax denominator
 (`exp(Q·0) = 1` per padded position), corrupting the output for shorter sequences
 in a batch.  Slicing to `[:kv_len]` ensures only real tokens participate in attention.
+
+
+## 11. PagedKVCache — Python-level allocator (Track GA, v1.0.1)
+
+`PagedKVCache` (`mlx_mfa/attention.py`) is a pure-Python paged KV cache allocator
+that provides the block management layer above the Metal gather kernel.
+
+### Design rationale — numpy backing store
+
+MLX arrays are **immutable** (functional style): every `.at[].set()` call creates
+a new array.  For a decode loop appending one token at a time, this means
+`O(T × H)` full-array allocations for `T` steps with `H` heads — untenable.
+
+The fix is a **numpy float32 backing store** (`_k_np`, `_v_np`):
+
+```python
+# In __init__:
+self._k_np = np.zeros((num_blocks, block_size, H, D), dtype=np.float32)
+self._v_np = np.zeros((num_blocks, block_size, H, D), dtype=np.float32)
+```
+
+`numpy` supports true in-place slice writes:
+
+```python
+self._k_np[block_id, ptr:ptr+chunk] = k_tokens   # O(chunk*H*D), no allocation
+```
+
+**bfloat16 note**: numpy has no `bfloat16` dtype (PEP 3118 gap).  All backing
+stores use `float32`; the `k_pool` / `v_pool` properties convert at access time:
+
+```python
+@property
+def k_pool(self):
+    if self._k_pool_cached is None:
+        self._k_pool_cached = mx.array(self._k_np).astype(self.dtype)
+    return self._k_pool_cached
+```
+
+### Block allocator lifecycle
+
+```
+__init__(num_blocks=128, block_size=16, H=8, D=128)
+  _free = [0..num_blocks-1]
+  _block_table = {}    # seq_id -> [block_ids]
+  _write_ptr   = {}    # seq_id -> offset within last block
+
+append(k, v, seq_id=0)
+  1. Force MLX graph materialisation + numpy copy
+  2. Transpose [B,H,T,D] -> [T,H,D]
+  3. while written < T:
+       if write_ptr == block_size: allocate new block
+       slice-write chunk to numpy backing store
+       advance write_ptr
+  4. invalidate cached mx.array views
+
+k_pool / v_pool (property)
+  mx.array(np_store).astype(dtype)
+  cached between appends; invalidated on any mutation
+
+gather(seq_id)
+  np.concatenate([k_np[b] for b in block_table[seq_id]])[:seqlen]
+  -> mx.array [1, H, seqlen, D]
+
+free_seq(seq_id)
+  return blocks to _free list
+  invalidate cache
+```
+
+### `get_block_table()` and `get_seq_lens()`
+
+These return `mx.int32` arrays suitable as inputs to `flash_attention_kvcache`
+(paged mode) and `flash_attention_paged`:
+
+```python
+block_table = cache.get_block_table([0, 1])  # mx.int32 [2, max_blocks] (-1 = padding)
+seq_lens    = cache.get_seq_lens([0, 1])     # mx.int32 [2]
+
+out = flash_attention_kvcache(
+    q, cache.k_pool, cache.v_pool,
+    block_table=block_table,
+    seq_lens=seq_lens,
+    block_size=cache.block_size,
+    scale=scale,
+    causal=True,
+)
+```
+
+### `seq_lengths` formula
+
+```python
+@property
+def seq_lengths(self):
+    return {
+        sid: (len(blks) - 1) * self.block_size + self._write_ptr[sid]
+        for sid, blks in self._block_table.items()
+    }
+```
+
+This is O(active_sequences) — constant per sequence regardless of total tokens
+stored — because it uses `_write_ptr` (the offset within the *last* block) rather
+than summing individual block fills.

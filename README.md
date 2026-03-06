@@ -304,19 +304,41 @@ Raises `ValueError` for float32 input or wrong `block_mask` shape.
 
 Fixed-size block pool for paged KV cache management. Eliminates padding waste when batch sequences have different lengths. Pool layout: `[num_blocks, block_size, H_kv, D]`.
 
+Uses a **numpy float32 backing store** for true in-place block-level writes (avoids the O(T×H) MLX array allocations of naive `.at[].set()` loops). The `k_pool` / `v_pool` properties return cached `mx.array` views, lazily converted to the target dtype on access.
+
 ```python
+from mlx_mfa import PagedKVCache, flash_attention_kvcache
+
 cache = PagedKVCache(num_blocks=64, block_size=16, H=4, D=128)
+
+# Append tokens (any length, across block boundaries)
 k_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
 v_new = mx.random.normal((1, 4, 32, 128)).astype(mx.float16)
 cache.append(k_new, v_new, seq_id=0)
-k_seq, v_seq = cache.gather(seq_id=0)   # [1, 4, 32, 128]
 
-# Feed into flash_attention_paged:
-bt, sl = cache.block_table_and_seq_lens([0])
-out = flash_attention_paged(q, cache.k_pool, cache.v_pool, bt, sl)
+# Option A: dense gather (for non-paged STEEL path)
+k_seq, v_seq = cache.gather(seq_id=0)    # [1, 4, 32, 128]
+out = flash_attention(q, k_seq, v_seq, scale=scale, causal=True)
+
+# Option B: paged STEEL kernel (preferred — no materialisation)
+bt  = cache.get_block_table([0])         # mx.int32 [1, max_blocks]
+sl  = cache.get_seq_lens([0])            # mx.int32 [1]
+out = flash_attention_kvcache(
+    q, cache.k_pool, cache.v_pool,
+    block_table=bt, seq_lens=sl,
+    block_size=cache.block_size,
+    scale=scale, causal=True,
+)
+
+# Free sequence when done
+cache.free_seq(seq_id=0)
 ```
 
-Methods: `append(k, v, seq_id)`, `gather(seq_id) → (k, v)`, `block_table_and_seq_lens(seq_ids) → (block_table, seq_lens)`, `free(seq_id)`.
+**Methods:** `append(k, v, seq_id)`, `gather(seq_id) → (k, v)`,
+`get_block_table(seq_ids) → mx.int32`, `get_seq_lens(seq_ids) → mx.int32`,
+`block_table_and_seq_lens(seq_ids)` (compat alias), `free_seq(seq_id)`.
+
+**Properties:** `k_pool`, `v_pool` (cached `mx.array`), `seq_lengths` (dict).
 
 ---
 
@@ -420,6 +442,26 @@ The patch transparently routes `mask="causal"` (prefill) and `mask=None` (decode
 the STEEL kernel. It falls back to the original mlx_lm SDPA for quantized KV caches,
 attention sinks, and unsupported configs. Call `unpatch_mlx_lm()` to restore.
 
+**Silent mode / stats / compatibility check:**
+
+```python
+from mlx_mfa.integrations.mlx_lm import (
+    patch_mlx_lm, get_patch_stats, check_model_compatibility,
+)
+
+# Silent mode (no print output — useful inside library code)
+patch_mlx_lm(verbose=False)
+
+# Check compatibility before patching
+info = check_model_compatibility("mlx-community/Llama-3.2-3B-Instruct-4bit")
+print(info["compatible"], info["reason"])
+
+# After some inference:
+stats = get_patch_stats()
+# {'forward_calls': 128, 'steel_calls': 120, 'fallback_calls': 8, 'steel_ratio': 0.9375}
+print(f"STEEL handled {stats['steel_ratio']*100:.0f}% of attention calls")
+```
+
 **Expected speedup:** 1.5–2.1× on causal prefill (D=128, f16); decode step is memory-bound
 so speedup is minimal there.
 
@@ -442,7 +484,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: **307 pytest runs** across 42 test classes (~45 skip without C++ build).
+Expected: **337 pytest runs** across 52 test classes (~45 skip without C++ build).
 
 ## Supported Configurations
 

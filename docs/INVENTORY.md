@@ -1,6 +1,6 @@
 # mlx-mfa Repository Inventory
 
-_Regenerated at v1.0.0 (2026-03-06). All line counts verified with `wc -l`._
+_Regenerated at v1.0.1 (2026-03-06). All line counts verified with `wc -l`._
 
 ---
 
@@ -9,11 +9,11 @@ _Regenerated at v1.0.0 (2026-03-06). All line counts verified with `wc -l`._
 ```
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
-│   ├── __init__.py        Public API (33 exports, version=1.0.0)  [106 lines]
-│   ├── attention.py       Core attention + fallback paths         [2991 lines]
+│   ├── __init__.py        Public API (33 exports, version=1.0.1)  [106 lines]
+│   ├── attention.py       Core attention + fallback paths         [3134 lines]
 │   ├── masks.py           Mask builders — 15 functions            [1129 lines]
 │   └── integrations/
-│       └── mlx_lm.py      mlx-lm patch/unpatch                   [191 lines]
+│       └── mlx_lm.py      mlx-lm patch/unpatch + stats           [351 lines]
 ├── csrc/                  C++ extension (nanobind)
 │   ├── bindings.cpp       Python bindings                         [356 lines]
 │   ├── mfa_attention.hpp  MFAttention + 8 other Primitive decls   [437 lines]
@@ -31,8 +31,8 @@ mlx-mfa-v2/
 │   ├── mfa/               ccv kernel infrastructure
 │   └── kernels/           Placeholder .metal files (real kernels are JIT)
 ├── tests/
-│   ├── test_attention.py  ~220 test functions / 42 test classes   [5034 lines]
-│   └── test_mlx_lm_integration.py  16 test functions              [402 lines]
+│   ├── test_attention.py  254 test functions / 49 test classes    [5277 lines]
+│   └── test_mlx_lm_integration.py  33 test functions              [596 lines]
 ├── benchmarks/            12 benchmark scripts
 ├── examples/              5 practical usage scripts
 ├── docs/
@@ -129,7 +129,7 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 
 ---
 
-## Tests (307 pytest runs / ~220 test functions)
+## Tests (337 pytest runs / 287 test functions)
 
 | Class | Count | What |
 |-------|------:|------|
@@ -178,8 +178,12 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | TestRoPECacheAppend | 3 | `flash_attention_kvcache_rope_append` (FC) |
 | TestPagedSteelForward | 11 | Kernel-level paged STEEL correctness/shapes (FD) |
 | TestPagedFlashDecode | 4 | Paged + Flash Decode path (FD-decode) |
-| test_mlx_lm_integration.py | 16 | mlx-lm patch/unpatch, correctness, GQA |
-| **Total collected** | **307** | (~220 functions; 307 with parametrize) |
+| TestPagedKVCacheGA | 13 | PagedKVCache dual-pool rewrite (GA) |
+| TestPatchMLXLMVerbose | 4 | verbose param on patch_mlx_lm (GB) |
+| TestGetPatchStats | 6 | get_patch_stats() counters (GB) |
+| TestCheckModelCompatibility | 7 | check_model_compatibility() heuristics (GB) |
+| test_mlx_lm_integration.py (existing) | 16 | mlx-lm patch/unpatch, correctness, GQA |
+| **Total collected** | **337** | (287 functions; 337 with parametrize) |
 
 ---
 
