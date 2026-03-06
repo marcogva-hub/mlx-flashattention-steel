@@ -444,12 +444,11 @@ std::vector<mlx::core::array> MFAttention::vjp(
   mlx::core::Shape d_shape = {q.shape(0), q.shape(1), q.shape(2)};
   const int D_val = static_cast<int>(q.shape(3));
 
-  // Route f16/bf16 D≤128 standard-MHA (H_q==H_kv) to the STEEL backward
-  // kernels; fall back to ccv for f32, D=256, or GQA inputs.
+  // Route f16/bf16 D≤128 to the STEEL backward kernels.
+  // GQA (H_q != H_kv) is supported: gqa_factor is set in BwdDQ/BwdDKV.
   const bool use_steel_bwd =
       (q.dtype() != mlx::core::float32) &&
-      (D_val <= 128) &&
-      (q.shape(1) == k.shape(1));  // no GQA in STEEL bwd yet
+      (D_val <= 128);
 
   std::vector<mlx::core::array> all_grads;
 
@@ -743,7 +742,7 @@ void MFASteelBwdDQ::eval_gpu(
   const auto& delta = inputs[6];  // [B, H, N], float32
 
   const int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
-  const int S = k.shape(2);
+  const int S = k.shape(2), Hk = k.shape(1);  // Hk = H_kv for GQA
 
   auto& dQ = outputs[0];
   dQ.set_data(mlx::core::allocator::malloc(dQ.nbytes()));
@@ -767,7 +766,7 @@ void MFASteelBwdDQ::eval_gpu(
   MFASteelBackwardParams sp{};
   sp.B            = B;   sp.H = H;   sp.D = D;
   sp.qL           = N;   sp.kL = S;
-  sp.gqa_factor   = 1;
+  sp.gqa_factor   = H / Hk;  // 1 for standard MHA; >1 for GQA
   sp.scale        = params_.scale;
   sp.scale_log2   = params_.scale * static_cast<float>(M_LOG2E);
   sp.NQ           = NQ;  sp.NK = NK;
@@ -777,22 +776,24 @@ void MFASteelBwdDQ::eval_gpu(
   sp.kL_rem       = S % BK;
   sp.qL_off       = 0;
   // Strides: [B_stride, H_stride, seq_stride] for each operand.
-  sp.Q_strides[0]  = (int64_t)H * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
-  sp.K_strides[0]  = (int64_t)H * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
-  sp.V_strides[0]  = (int64_t)H * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
-  sp.O_strides[0]  = (int64_t)H * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
-  sp.dO_strides[0] = (int64_t)H * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
-  sp.dQ_strides[0] = (int64_t)H * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
-  sp.dK_strides[0] = (int64_t)H * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
-  sp.dV_strides[0] = (int64_t)H * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
-  sp.L_strides[0]  = (int64_t)H * N;      sp.L_strides[1]  = N;
+  // K/V batch stride uses Hk (= H_kv), not H_q, since K/V are [B, H_kv, S, D].
+  sp.Q_strides[0]  = (int64_t)H  * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
+  sp.K_strides[0]  = (int64_t)Hk * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
+  sp.V_strides[0]  = (int64_t)Hk * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
+  sp.O_strides[0]  = (int64_t)H  * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
+  sp.dO_strides[0] = (int64_t)H  * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
+  sp.dQ_strides[0] = (int64_t)H  * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
+  sp.dK_strides[0] = (int64_t)Hk * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
+  sp.dV_strides[0] = (int64_t)Hk * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
+  sp.L_strides[0]  = (int64_t)H  * N;      sp.L_strides[1]  = N;
 
   using KK = ShaderCache::KernelKey;
   KK key{KK::KernelType::SteelBackwardDQ,
          D, BQ, BK, BD, WM,
          params_.causal, /*sparse=*/false, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
-         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code};
+         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code,
+         /*gqa_factor=*/H / Hk};
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -840,7 +841,7 @@ void MFASteelBwdDKV::eval_gpu(
   const auto& dO    = inputs[6];
 
   const int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
-  const int S = k.shape(2);
+  const int S = k.shape(2), Hk = k.shape(1);  // Hk = H_kv for GQA
 
   auto& dK = outputs[0];
   auto& dV = outputs[1];
@@ -868,7 +869,7 @@ void MFASteelBwdDKV::eval_gpu(
   MFASteelBackwardParams sp{};
   sp.B            = B;   sp.H = H;   sp.D = D;
   sp.qL           = N;   sp.kL = S;
-  sp.gqa_factor   = 1;
+  sp.gqa_factor   = H / Hk;  // 1 for standard MHA; >1 for GQA
   sp.scale        = params_.scale;
   sp.scale_log2   = params_.scale * static_cast<float>(M_LOG2E);
   sp.NQ           = NQ;  sp.NK = NK;
@@ -877,22 +878,24 @@ void MFASteelBwdDKV::eval_gpu(
   sp.qL_rem       = N % BQ;
   sp.kL_rem       = S % BK;
   sp.qL_off       = 0;
-  sp.Q_strides[0]  = (int64_t)H * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
-  sp.K_strides[0]  = (int64_t)H * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
-  sp.V_strides[0]  = (int64_t)H * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
-  sp.O_strides[0]  = (int64_t)H * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
-  sp.dO_strides[0] = (int64_t)H * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
-  sp.dQ_strides[0] = (int64_t)H * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
-  sp.dK_strides[0] = (int64_t)H * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
-  sp.dV_strides[0] = (int64_t)H * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
-  sp.L_strides[0]  = (int64_t)H * N;      sp.L_strides[1]  = N;
+  // K/V/dK/dV batch strides use Hk (H_kv) — those tensors are [B, H_kv, S, D].
+  sp.Q_strides[0]  = (int64_t)H  * N * D;  sp.Q_strides[1]  = (int64_t)N * D;  sp.Q_strides[2]  = D;
+  sp.K_strides[0]  = (int64_t)Hk * S * D;  sp.K_strides[1]  = (int64_t)S * D;  sp.K_strides[2]  = D;
+  sp.V_strides[0]  = (int64_t)Hk * S * D;  sp.V_strides[1]  = (int64_t)S * D;  sp.V_strides[2]  = D;
+  sp.O_strides[0]  = (int64_t)H  * N * D;  sp.O_strides[1]  = (int64_t)N * D;  sp.O_strides[2]  = D;
+  sp.dO_strides[0] = (int64_t)H  * N * D;  sp.dO_strides[1] = (int64_t)N * D;  sp.dO_strides[2] = D;
+  sp.dQ_strides[0] = (int64_t)H  * N * D;  sp.dQ_strides[1] = (int64_t)N * D;  sp.dQ_strides[2] = D;
+  sp.dK_strides[0] = (int64_t)Hk * S * D;  sp.dK_strides[1] = (int64_t)S * D;  sp.dK_strides[2] = D;
+  sp.dV_strides[0] = (int64_t)Hk * S * D;  sp.dV_strides[1] = (int64_t)S * D;  sp.dV_strides[2] = D;
+  sp.L_strides[0]  = (int64_t)H  * N;      sp.L_strides[1]  = N;
 
   using KK = ShaderCache::KernelKey;
   KK key{KK::KernelType::SteelBackwardDKV,
          D, BQ, BK, BD, WM_DKV,
          params_.causal, /*sparse=*/false, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
-         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code};
+         /*has_softcap=*/false, /*has_alibi=*/false, dtype_code,
+         /*gqa_factor=*/H / Hk};
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -909,8 +912,9 @@ void MFASteelBwdDKV::eval_gpu(
   enc.set_output_array(dV,   8);
   enc.set_bytes(sp,          9);
 
+  // dKV grid Y = Hk (H_kv) — each TG handles one KV-head, iterating Q-heads
   enc.dispatch_threadgroups(
-      MTL::Size::Make(NK, H, B),
+      MTL::Size::Make(NK, Hk, B),
       MTL::Size::Make(WM_DKV * 32, 1, 1));
 }
 

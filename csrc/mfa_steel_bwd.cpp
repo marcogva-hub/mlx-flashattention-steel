@@ -320,6 +320,8 @@ std::string generate_steel_backward_dq_source(
   ss << "#define MFA_TD  " << TD << "\n";
   ss << "#define MFA_TK  " << TK << "\n";
   ss << "#define MFA_TQ  " << TQ << "\n";
+  // GQA factor: baked as compile-time constant to avoid struct-field read issues.
+  ss << "#define MFA_GQA_FACTOR  " << key.gqa_factor << "\n";
   ss << "\n";
 
   // ── Kernel signature ────────────────────────────────────────────────────
@@ -342,7 +344,7 @@ std::string generate_steel_backward_dq_source(
   ss << "  typedef float     AccT;\n\n";
 
   // Pointer offsets: tid.x=Q-block, tid.y=Q-head, tid.z=batch
-  ss << "  const ulong kv_head = (uint)tid.y / (uint)p->gqa_factor;\n";
+  ss << "  const ulong kv_head = (uint)tid.y / (uint)MFA_GQA_FACTOR;\n";
   ss << "  const ulong boff_q  = (ulong)tid.z * p->Q_strides[0]\n";
   ss << "                      + (ulong)tid.y * p->Q_strides[1];\n";
   ss << "  const ulong boff_k  = (ulong)tid.z * p->K_strides[0]\n";
@@ -635,6 +637,8 @@ std::string generate_steel_backward_dkv_source(
   ss << "#define MFA_TD  " << TD << "\n";
   ss << "#define MFA_TK  " << TK << "\n";
   ss << "#define MFA_TQ  " << TQ << "\n";
+  // GQA factor: baked as compile-time constant to avoid struct-field read issues.
+  ss << "#define MFA_GQA_FACTOR  " << key.gqa_factor << "\n";
   ss << "\n";
 
   // ── Kernel signature ─────────────────────────────────────────────────────
@@ -720,8 +724,8 @@ std::string generate_steel_backward_dkv_source(
   ss << "  dVtile.clear();\n\n";
 
   // Loop over Q heads that map to this KV head (for GQA)
-  ss << "  const int q_head_start = kv_head * p->gqa_factor;\n";
-  ss << "  const int q_head_end   = q_head_start + p->gqa_factor;\n\n";
+  ss << "  const int q_head_start = kv_head * MFA_GQA_FACTOR;\n";
+  ss << "  const int q_head_end   = q_head_start + MFA_GQA_FACTOR;\n\n";
 
   ss << "  for (int q_head = q_head_start; q_head < q_head_end; q_head++) {\n\n";
 
