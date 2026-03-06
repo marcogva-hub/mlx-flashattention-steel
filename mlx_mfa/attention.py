@@ -1202,6 +1202,7 @@ def _dropout_sdpa(
 # time, so branch structure (if causal:) is resolved correctly per compiled fn.
 _softcap_compile_cache: dict = {}
 _alibi_compile_cache: dict = {}
+_rope_compile_cache: dict = {}
 
 
 def _softcap_sdpa_ref(
@@ -1543,7 +1544,7 @@ def _apply_rope_mlx(
     offset: int = 0,
     interleaved: bool = True,
 ) -> mx.array:
-    """Apply rotary position embeddings to *x* using MLX ops.
+    """Apply rotary position embeddings to *x* using MLX ops (mx.compile cached).
 
     Two pairing modes:
 
@@ -1567,39 +1568,41 @@ def _apply_rope_mlx(
     Returns:
         Rotated tensor, same shape and dtype as *x*.
     """
-    B, H, N, D = x.shape
-    half_D = D // 2
+    # Cache key includes shape, dtype, offset and interleaved flag so
+    # mx.compile resolves the branch and scalar slicing at compile time.
+    key = (tuple(x.shape), x.dtype, int(offset), bool(interleaved))
+    if key not in _rope_compile_cache:
+        B, H, N, D = x.shape
+        half_D = D // 2
+        _off, _inter = int(offset), bool(interleaved)
 
-    # Slice the cos/sin rows for the current token range.
-    cos_n = cos[offset : offset + N, :]   # [N, D/2], float32
-    sin_n = sin[offset : offset + N, :]   # [N, D/2], float32
+        if _inter:
+            def _impl(x_: mx.array, cos_: mx.array, sin_: mx.array) -> mx.array:
+                cos_n = cos_[_off : _off + N, :]
+                sin_n = sin_[_off : _off + N, :]
+                cos_bc = cos_n[None, None, :, :].astype(x_.dtype)
+                sin_bc = sin_n[None, None, :, :].astype(x_.dtype)
+                x_pairs = x_.reshape(B, H, N, half_D, 2)
+                x0 = x_pairs[..., 0]
+                x1 = x_pairs[..., 1]
+                x0_rot = x0 * cos_bc - x1 * sin_bc
+                x1_rot = x0 * sin_bc + x1 * cos_bc
+                return mx.stack([x0_rot, x1_rot], axis=-1).reshape(B, H, N, D)
+        else:
+            def _impl(x_: mx.array, cos_: mx.array, sin_: mx.array) -> mx.array:
+                cos_n = cos_[_off : _off + N, :]
+                sin_n = sin_[_off : _off + N, :]
+                cos_bc = cos_n[None, None, :, :].astype(x_.dtype)
+                sin_bc = sin_n[None, None, :, :].astype(x_.dtype)
+                x0 = x_[..., :half_D]
+                x1 = x_[..., half_D:]
+                return mx.concatenate(
+                    [x0 * cos_bc - x1 * sin_bc,
+                     x0 * sin_bc + x1 * cos_bc], axis=-1)
 
-    # Broadcast cos/sin: [N, D/2] → [1, 1, N, D/2]
-    cos_bc = cos_n[None, None, :, :].astype(x.dtype)
-    sin_bc = sin_n[None, None, :, :].astype(x.dtype)
+        _rope_compile_cache[key] = mx.compile(_impl)
 
-    if interleaved:
-        # Split x into even/odd pairs along the head dimension.
-        # x reshaped: [B, H, N, D/2, 2] → x[..., 0] and x[..., 1]
-        x_pairs = x.reshape(B, H, N, half_D, 2)
-        x0 = x_pairs[..., 0]   # [B, H, N, D/2]
-        x1 = x_pairs[..., 1]   # [B, H, N, D/2]
-
-        x0_rot = x0 * cos_bc - x1 * sin_bc
-        x1_rot = x0 * sin_bc + x1 * cos_bc
-
-        # Re-interleave pairs: [B, H, N, D/2, 2] → [B, H, N, D]
-        x_rot = mx.stack([x0_rot, x1_rot], axis=-1)
-        return x_rot.reshape(B, H, N, D)
-    else:
-        # GPT-NeoX: first half vs second half
-        x0 = x[..., :half_D]   # [B, H, N, D/2]
-        x1 = x[..., half_D:]   # [B, H, N, D/2]
-
-        x0_rot = x0 * cos_bc - x1 * sin_bc
-        x1_rot = x0 * sin_bc + x1 * cos_bc
-
-        return mx.concatenate([x0_rot, x1_rot], axis=-1)
+    return _rope_compile_cache[key](x, cos, sin)
 
 
 @functools.lru_cache(maxsize=32)
