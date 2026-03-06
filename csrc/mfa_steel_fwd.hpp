@@ -153,3 +153,26 @@ std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& k
 std::string generate_flash_decode_reduce_source(const ShaderCache::KernelKey& key);
 
 }  // namespace mlx_mfa
+
+// =========================================================================
+// MFASteelVarlenParams — STEEL varlen forward kernel params
+// =========================================================================
+// Layout MUST exactly match MFASteelVarlenParams in the Metal source string.
+// Packed layout: Q/O = [1, H, total_q, D], K/V = [1, H_kv, total_kv, D]
+struct MFASteelVarlenParams {
+  int H, D;
+  int gqa_factor;       // H / H_kv
+  int num_seqs;         // number of independent sequences
+  int total_q;          // sum of all q lengths
+  int total_kv;         // sum of all kv lengths
+  int total_q_tiles;    // sum of Q-tiles = tile_offsets[num_seqs]
+  float scale;          // attention scale (1/sqrt(D))
+  float softcap;        // 0.0 = disabled
+  long Q_head_stride;   // = total_q * D
+  long K_head_stride;   // = total_kv * D
+};
+
+// Generator function declaration (inside mlx_mfa namespace)
+namespace mlx_mfa {
+std::string generate_steel_varlen_forward_source(const ShaderCache::KernelKey& key);
+}  // namespace mlx_mfa

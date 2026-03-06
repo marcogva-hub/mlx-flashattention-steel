@@ -1929,6 +1929,137 @@ class TestVarlenAttention:
 
 
 # ============================================================================
+# Track BD — STEEL varlen forward kernel
+# ============================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestSteelVarlen:
+    """Correctness tests for the STEEL varlen forward kernel (f16/bf16)."""
+
+    def _ref_concat(self, q, k, v, cu_q, cu_k, scale, causal):
+        """Reference: SDPA per sequence, concatenated."""
+        cu_q_l = [int(x) for x in cu_q.tolist()]
+        cu_k_l = [int(x) for x in cu_k.tolist()]
+        num_seqs = len(cu_q_l) - 1
+        outs = []
+        for i in range(num_seqs):
+            q_i = q[:, :, cu_q_l[i]:cu_q_l[i+1], :]
+            k_i = k[:, :, cu_k_l[i]:cu_k_l[i+1], :]
+            v_i = v[:, :, cu_k_l[i]:cu_k_l[i+1], :]
+            ref = mx.fast.scaled_dot_product_attention(
+                q_i.astype(mx.float32),
+                k_i.astype(mx.float32),
+                v_i.astype(mx.float32),
+                scale=scale,
+                mask="causal" if causal else None,
+            ).astype(q.dtype)
+            outs.append(ref)
+        return mx.concatenate(outs, axis=2)
+
+    def test_single_seq_f16(self):
+        """Single f16 sequence: kernel == SDPA reference."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, N, D = 1, 4, 64, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        scale = 1.0 / D**0.5
+        cu = mx.array([0, N], dtype=mx.int32)
+        ref = self._ref_concat(q, k, v, cu, cu, scale, causal=False)
+        out = flash_attention_varlen(q, k, v, cu, cu, N, N, scale=scale, causal=False)
+        mx.eval(out, ref)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Single seq f16 max diff: {diff}"
+
+    def test_two_seqs_f16(self):
+        """Two packed f16 sequences: kernel == per-sequence SDPA."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 4, 128
+        N1, N2 = 48, 64
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cu = mx.array([0, N1, N], dtype=mx.int32)
+        ref = self._ref_concat(q, k, v, cu, cu, scale, causal=False)
+        out = flash_attention_varlen(q, k, v, cu, cu, N2, N2, scale=scale, causal=False)
+        mx.eval(out, ref)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Two seqs f16 max diff: {diff}"
+
+    def test_three_seqs_mixed_lengths_f16(self):
+        """Three sequences with unequal lengths — shape and correctness."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 2, 64
+        lengths = [33, 64, 17]   # not multiples of BQ=32
+        N = sum(lengths)
+        scale = 1.0 / D**0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        import numpy as np
+        cu_list = [0] + [int(x) for x in np.cumsum(lengths)]
+        cu = mx.array(cu_list, dtype=mx.int32)
+        ref = self._ref_concat(q, k, v, cu, cu, scale, causal=False)
+        out = flash_attention_varlen(q, k, v, cu, cu, max(lengths), max(lengths),
+                                    scale=scale, causal=False)
+        mx.eval(out, ref)
+        assert out.shape == (B, H, N, D)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Mixed-length f16 max diff: {diff}"
+
+    def test_causal_f16(self):
+        """Causal kernel: each sequence is independently causal."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 4, 128
+        N1, N2 = 32, 64
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cu = mx.array([0, N1, N], dtype=mx.int32)
+        ref = self._ref_concat(q, k, v, cu, cu, scale, causal=True)
+        out = flash_attention_varlen(q, k, v, cu, cu, N2, N2, scale=scale, causal=True)
+        mx.eval(out, ref)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-3, f"Causal f16 max diff: {diff}"
+
+    def test_bf16(self):
+        """bfloat16: kernel activates and produces finite output."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, N, D = 1, 4, 64, 128
+        scale = 1.0 / D**0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        cu = mx.array([0, N], dtype=mx.int32)
+        out = flash_attention_varlen(q, k, v, cu, cu, N, N, scale=scale, causal=False)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert out.dtype == mx.bfloat16
+        assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
+
+    def test_gqa_varlen_f16(self):
+        """GQA: H_q=4, H_kv=2 — kernel maps query heads to KV heads."""
+        from mlx_mfa import flash_attention_varlen
+        B, H_q, H_kv, D = 1, 4, 2, 64
+        N1, N2 = 32, 48
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        cu_q = mx.array([0, N1, N], dtype=mx.int32)
+        cu_k = mx.array([0, N1, N], dtype=mx.int32)
+        out = flash_attention_varlen(q, k, v, cu_q, cu_k, N2, N2, scale=scale)
+        mx.eval(out)
+        assert out.shape == (B, H_q, N, D)
+        assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
+
+
+# ============================================================================
 # Track R — 3D RoPE fusion
 # ============================================================================
 

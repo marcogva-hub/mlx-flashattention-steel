@@ -1190,4 +1190,127 @@ mlx::core::array mfa_attention_alibi_forward(
   return outputs[0];
 }
 
+// =========================================================================
+// MFAVarlenAttention::eval_gpu
+// =========================================================================
+//
+// Inputs:  Q(0), K(1), V(2), cu_seqlens_q(3), cu_seqlens_k(4), tile_offsets(5)
+// Outputs: O(0), L(1)
+// Metal:   Q=buf0, K=buf1, V=buf2, O=buf3, L=buf4, params=buf5, cu_q=buf6, cu_k=buf7, tiles=buf8
+
+void MFAVarlenAttention::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  assert(inputs.size()  == 6);
+  assert(outputs.size() == 2);
+
+  const auto& q              = inputs[0];
+  const auto& k              = inputs[1];
+  const auto& v              = inputs[2];
+  const auto& cu_seqlens_q   = inputs[3];
+  const auto& cu_seqlens_k   = inputs[4];
+  const auto& tile_offsets   = inputs[5];
+
+  const int H  = q.shape(1);
+  const int Hk = k.shape(1);
+  const int total_q  = q.shape(2);
+  const int total_kv = k.shape(2);
+  const int D  = q.shape(3);
+  const int num_seqs = (int)cu_seqlens_q.size() - 1;
+  // tile_offsets is evaluated when eval_gpu() is called — last element = total tiles.
+  const int total_q_tiles = tile_offsets.data<int>()[num_seqs];
+
+  auto& O = outputs[0];
+  auto& L = outputs[1];
+  O.set_data(mlx::core::allocator::malloc(O.nbytes()));
+  L.set_data(mlx::core::allocator::malloc(L.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code;
+  if (q.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else                                        dtype_code = 2;
+
+  const auto cfg = select_steel_block_config(D, dtype_code != 2, is_m3_plus);
+  const int BQ = cfg.BQ, BK = cfg.BK, BD = cfg.BD, WM = cfg.WM;
+
+  MFASteelVarlenParams vp{};
+  vp.H             = H;
+  vp.D             = D;
+  vp.gqa_factor    = H / Hk;
+  vp.num_seqs      = num_seqs;
+  vp.total_q       = total_q;
+  vp.total_kv      = total_kv;
+  vp.total_q_tiles = total_q_tiles;
+  vp.scale         = params_.scale;
+  vp.softcap       = 0.0f;
+  vp.Q_head_stride = (long)total_q  * D;
+  vp.K_head_stride = (long)total_kv * D;
+
+  using KK = ShaderCache::KernelKey;
+  KK key{KK::KernelType::SteelVarlenForward,
+         D, BQ, BK, BD, WM,
+         params_.causal, /*sparse=*/false, is_m3_plus,
+         false, false, false, false, dtype_code};
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+  enc.set_input_array(q,            0);
+  enc.set_input_array(k,            1);
+  enc.set_input_array(v,            2);
+  enc.set_output_array(O,           3);
+  enc.set_output_array(L,           4);
+  enc.set_bytes(vp,                 5);
+  enc.set_input_array(cu_seqlens_q, 6);
+  enc.set_input_array(cu_seqlens_k, 7);
+  enc.set_input_array(tile_offsets, 8);
+
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(total_q_tiles, H, 1),
+      MTL::Size::Make(WM * 32, 1, 1));
+}
+
+// =========================================================================
+// mfa_attention_varlen_forward (free function)
+// =========================================================================
+// tile_offsets pre-computed in Python from cu_seqlens_q to avoid C++ eval().
+std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& cu_q,
+    const mlx::core::array& cu_k,
+    const mlx::core::array& tile_offsets,
+    float scale,
+    bool  causal,
+    mlx::core::Stream s) {
+
+  const int H  = q.shape(1);
+
+  mlx::core::Shape out_shape = q.shape();
+  mlx::core::Shape lse_shape = {1, H, q.shape(2)};
+
+  MFAVarlenAttention::Params params{scale, causal, q.shape(3)};
+
+  // cu_seqlens cast to int32 if not already (Metal requires int32)
+  auto cu_q_i32 = mlx::core::astype(cu_q, mlx::core::int32, s);
+  auto cu_k_i32 = mlx::core::astype(cu_k, mlx::core::int32, s);
+  auto tile_i32 = mlx::core::astype(tile_offsets, mlx::core::int32, s);
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAVarlenAttention>(s, params),
+      {q, k, v, cu_q_i32, cu_k_i32, tile_i32});
+
+  return {outputs[0], outputs[1]};
+}
+
 }  // namespace mlx_mfa

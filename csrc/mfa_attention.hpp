@@ -309,4 +309,58 @@ class MFASteelBwdDKV : public mlx::core::Primitive {
   Params params_;
 };
 
+// =========================================================================
+// MFAVarlenAttention — STEEL varlen forward primitive
+// =========================================================================
+// Inputs: Q(0), K(1), V(2), cu_seqlens_q(3), cu_seqlens_k(4), tile_offsets(5)
+// Outputs: O(0), L(1)
+class MFAVarlenAttention : public mlx::core::Primitive {
+ public:
+  struct Params {
+    float scale;
+    bool  causal;
+    int   head_dim;
+  };
+
+  MFAVarlenAttention(mlx::core::Stream stream, Params p)
+      : mlx::core::Primitive(stream), params_(p) {}
+
+  const char* name() const override { return "MFAVarlenAttention"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAVarlenAttention: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFAVarlenAttention*>(&other);
+    if (!o) return false;
+    return params_.head_dim == o->params_.head_dim &&
+           params_.scale    == o->params_.scale    &&
+           params_.causal   == o->params_.causal;
+  }
+
+ private:
+  Params params_;
+};
+
+// Free function: dispatches the varlen kernel.
+// tile_offsets[s] = cumulative Q-tile count for seqs 0..s-1 (computed in Python).
+// Returns (O, L) pair.
+std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& cu_seqlens_q,
+    const mlx::core::array& cu_seqlens_k,
+    const mlx::core::array& tile_offsets,
+    float scale,
+    bool  causal,
+    mlx::core::Stream stream);
+
 }  // namespace mlx_mfa

@@ -1696,7 +1696,7 @@ def flash_attention_varlen(
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
 
-    # Convert cumulative lengths to Python ints for indexing
+    # Convert cumulative lengths to Python ints for indexing / tile_offsets
     cu_q = [int(x) for x in cu_seqlens_q.tolist()]
     cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
     num_seqs = len(cu_q) - 1
@@ -1704,6 +1704,35 @@ def flash_attention_varlen(
     if num_seqs == 0:
         return q  # empty — return as-is
 
+    D = q.shape[-1]
+
+    # ── STEEL varlen kernel path (f16/bf16, D∈{64,128,256}, no block_mask) ──
+    # tile_offsets are computed here in Python (BQ=32 for all STEEL configs)
+    # to avoid mlx.eval() inside the C++ primitive.
+    if (
+        block_mask is None
+        and _ext_available()
+        and q.dtype in (mx.float16, mx.bfloat16)
+        and D in (64, 128, 256)
+    ):
+        from mlx_mfa._ext import mfa_attention_varlen_forward as _varlen_fwd
+
+        BQ = 32  # constant for all STEEL block configs (D=64/128/256)
+        tile_off = [0]
+        for i in range(num_seqs):
+            qlen = cu_q[i + 1] - cu_q[i]
+            tile_off.append(tile_off[-1] + (qlen + BQ - 1) // BQ)
+        tile_arr = mx.array(tile_off, dtype=mx.int32)
+
+        # Don't forward stream: the binding defaults to default_device().
+        # Passing mx.default_device() (a Device) causes a nanobind conversion
+        # error with optional<StreamOrDevice>; omitting it uses the default.
+        O, _L = _varlen_fwd(
+            q, k, v, cu_seqlens_q, cu_seqlens_k, tile_arr, scale, causal
+        )
+        return O
+
+    # ── Fallback: split-concat loop ──────────────────────────────────────────
     outputs = []
     for i in range(num_seqs):
         q_start, q_end = cu_q[i], cu_q[i + 1]

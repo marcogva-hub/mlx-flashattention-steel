@@ -252,5 +252,32 @@ NB_MODULE(_ext, m) {
         "Used by the native sparse backward pass to avoid recomputation.\n"
         "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
 
-  m.attr("__version__") = "0.8.0";
+  // --- STEEL varlen forward: packed [1, H, total_q, D] layout ---
+  m.def("mfa_attention_varlen_forward",
+        [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
+           mlx::core::array cu_seqlens_q, mlx::core::array cu_seqlens_k,
+           mlx::core::array tile_offsets,
+           float scale, bool causal,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> std::pair<mlx::core::array, mlx::core::array> {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_attention_varlen_forward(
+              q, k, v, cu_seqlens_q, cu_seqlens_k, tile_offsets,
+              scale, causal, s);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("cu_seqlens_q"), nb::arg("cu_seqlens_k"),
+        nb::arg("tile_offsets"),
+        nb::arg("scale"), nb::arg("causal"),
+        nb::arg("stream") = nb::none(),
+        "STEEL varlen attention forward.\n"
+        "\n"
+        "Inputs are packed: Q/O = [1, H, total_q, D], K/V = [1, H_kv, total_kv, D].\n"
+        "cu_seqlens_q: int32 [num_seqs+1], cumulative query lengths.\n"
+        "cu_seqlens_k: int32 [num_seqs+1], cumulative key lengths.\n"
+        "tile_offsets: int32 [num_seqs+1], cumulative Q-tile counts per sequence.\n"
+        "Returns (O [1,H,total_q,D], L [1,H,total_q] logsumexp in log2 domain).\n"
+        "Only f16/bf16 supported.");
+
+  m.attr("__version__") = "0.9.0";
 }
