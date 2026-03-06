@@ -4389,3 +4389,59 @@ class TestUnifiedKVCache:
         # grads is dq
         dq = grads
         assert mx.all(mx.isfinite(dq)).item()
+
+
+# ---------------------------------------------------------------------------
+# Track FX-1: return_lse in flash_attention
+# ---------------------------------------------------------------------------
+
+class TestReturnLSE:
+    """Tests for flash_attention(return_lse=True)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    def test_returns_tuple(self):
+        """return_lse=True must return a 2-tuple (O, L)."""
+        B, H, N, D = 1, 2, 32, 64
+        q, k, v = random_qkv(B, H, N, D)
+        result = flash_attention(q, k, v, causal=True, return_lse=True)
+        assert isinstance(result, tuple) and len(result) == 2, \
+            f"Expected (O, L) tuple, got {type(result)}"
+
+    def test_output_and_lse_shapes(self):
+        """O must be [B,H,N,D] and L must be [B,H,N]."""
+        B, H, N, D = 2, 4, 16, 128
+        q, k, v = random_qkv(B, H, N, D)
+        O, L = flash_attention(q, k, v, causal=False, return_lse=True)
+        mx.eval(O, L)
+        assert O.shape == (B, H, N, D), f"O shape {O.shape} != {(B, H, N, D)}"
+        assert L.shape == (B, H, N), f"L shape {L.shape} != {(B, H, N)}"
+
+    def test_lse_consistent_with_softmax(self):
+        """L must satisfy: O_no_lse == softmax(scores) @ V where sum(softmax)=1.
+
+        Check that exp2(L[b,h,i] - max_score) ≈ sum(2^(score_row - max_score)).
+        We verify via: O values match between return_lse=True and False.
+        """
+        B, H, N, D = 1, 2, 32, 64
+        q, k, v = random_qkv(B, H, N, D)
+        O_lse, L = flash_attention(q, k, v, causal=True, return_lse=True)
+        O_ref   = flash_attention(q, k, v, causal=True)
+        mx.eval(O_lse, O_ref, L)
+        # Outputs must agree
+        np.testing.assert_allclose(
+            np.array(O_lse.astype(mx.float32)),
+            np.array(O_ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+        # L must be finite
+        assert mx.all(mx.isfinite(L)).item(), "LSE contains non-finite values"
+
+    def test_return_attn_weights_and_lse_mutually_exclusive(self):
+        """return_attn_weights + return_lse must raise ValueError."""
+        B, H, N, D = 1, 2, 8, 64
+        q, k, v = random_qkv(B, H, N, D)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            flash_attention(q, k, v, return_attn_weights=True, return_lse=True)

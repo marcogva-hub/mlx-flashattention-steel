@@ -47,6 +47,7 @@ def flash_attention(
     dropout_p: float = 0.0,
     return_attn_weights: bool = False,
     window_size: Optional[tuple] = None,
+    return_lse: bool = False,
     stream: Optional[mx.Stream] = None,
 ):
     """Compute scaled dot-product attention using Metal Flash Attention.
@@ -90,17 +91,32 @@ def flash_attention(
             ``causal=True`` to mask future tokens).  When ``left >= 0``,
             the STEEL kernel uses native tile-skip to skip K-tiles entirely
             outside the window.  Pass ``None`` (default) to disable.
+        return_lse: When True, also return the log-sum-exp tensor
+            ``L [B, H, N]`` in **log2 domain** alongside the output.
+            Useful for Flash Decoding, speculative decoding, and any
+            application that needs the attention normaliser.  When the MFA
+            extension is available and the inputs are simple (no softcap,
+            ALiBi, or dropout), ``L`` comes directly from the Metal kernel
+            (free — no extra compute).  Otherwise a pure-MLX O(N·S) LSE
+            materialisation is performed.  Mutually exclusive with
+            ``return_attn_weights``.
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
 
     Returns:
-        When ``return_attn_weights=False`` (default): attention output of
-        shape ``[batch, heads, seq_len, head_dim]`` in the same dtype as q.
+        When ``return_attn_weights=False`` and ``return_lse=False``
+        (default): attention output of shape
+        ``[batch, heads, seq_len, head_dim]`` in the same dtype as q.
 
         When ``return_attn_weights=True``: a 2-tuple
         ``(output, attn_weights)`` where ``output`` is ``[B, H, N, D]`` and
         ``attn_weights`` is ``float32 [B, H, N, S]``.
+
+        When ``return_lse=True``: a 2-tuple ``(output, L)`` where ``L`` is
+        ``float32 [B, H, N]`` in log2 domain
+        (i.e. ``L = log2(sum_j 2^{score_j})``).  Mutually exclusive with
+        ``return_attn_weights``.
 
     Raises:
         ValueError: If any input is not a 4-D tensor, or if q and k have
@@ -159,6 +175,10 @@ def flash_attention(
     # Track AH: return_attn_weights forces Python SDPA (MFA kernel
     # does not expose intermediate softmax probabilities).
     if return_attn_weights:
+        if return_lse:
+            raise ValueError(
+                "return_attn_weights and return_lse are mutually exclusive."
+            )
         return _sdpa_with_weights(q, k, v, scale, causal, softcap, dropout_p)
 
     # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
@@ -170,6 +190,8 @@ def flash_attention(
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
+        if return_lse:
+            return _fallback_sdpa_with_lse(q, k, v, scale, causal)
         return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
@@ -199,6 +221,15 @@ def flash_attention(
                             mx.full((N, S), float("-inf"), dtype=q.dtype))
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=scale, mask=mask)
+
+    # Track FX-1: return_lse — use mfa_forward_with_lse to get L for free.
+    if return_lse:
+        from mlx_mfa._ext import mfa_forward_with_lse
+        q = mx.contiguous(q)
+        k = mx.contiguous(k)
+        v = mx.contiguous(v)
+        O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+        return O, L
 
     return _mfa_forward(q, k, v, scale, causal, softcap, window_left, stream)
 
@@ -1785,6 +1816,51 @@ def _fallback_sdpa(
     return mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=mask,
     )
+
+
+def _fallback_sdpa_with_lse(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: float,
+    causal: bool,
+) -> tuple:
+    """Compute SDPA + logsumexp (log2 domain) via pure-MLX ops.
+
+    Used when ``return_lse=True`` and the MFA extension is unavailable.
+    Materialises the full ``[B, H, N, S]`` logit matrix — O(N·S) memory.
+
+    Returns:
+        (O [B,H,N,D], L [B,H,N]) — L is in log2 domain:
+        ``L[b,h,i] = log2(sum_j 2^{score[b,h,i,j]})`` where
+        ``score = scale * q @ k^T`` (with causal masking applied).
+    """
+    # Compute raw attention scores [B, H, N, S]
+    scores = mx.matmul(q.astype(mx.float32),
+                       mx.swapaxes(k.astype(mx.float32), -2, -1)) * scale
+    if causal:
+        N, S = q.shape[2], k.shape[2]
+        cmask = mx.triu(
+            mx.full((N, S), float("-inf"), dtype=mx.float32),
+            k=S - N + 1,
+        )
+        scores = scores + cmask
+
+    # LSE in log2 domain: L = max + log2(sum(2^(scores - max)))
+    max_s = scores.max(axis=-1, keepdims=True)          # [B,H,N,1]
+    exp2_s = mx.exp2(scores - max_s)                    # [B,H,N,S]
+    lse = max_s.squeeze(-1) + mx.log2(exp2_s.sum(axis=-1))  # [B,H,N]
+
+    # Standard softmax attention output (use built-in for efficiency)
+    mask = None
+    if causal:
+        N, S = q.shape[2], k.shape[2]
+        mask = mx.triu(
+            mx.full((N, S), float("-inf"), dtype=q.dtype),
+            k=S - N + 1,
+        )
+    O = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+    return O, lse
 
 
 # ---------------------------------------------------------------------------
