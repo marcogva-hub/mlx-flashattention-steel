@@ -3628,3 +3628,91 @@ class TestSteelBackwardGQA:
             np.array(dv_ref.astype(mx.float32)),
             atol=5e-2, rtol=1e-1,
             err_msg=f"dV mismatch GQA ratio={ratio} D={D} causal={causal}")
+
+
+@requires_ext
+class TestSteelBackwardD256:
+    """D=256 D-split STEEL backward kernels (Track CE — v0.9.2).
+
+    The D-split approach partitions the head dimension into lo (0..127) and
+    hi (128..255) halves, fitting within the 32 KB Metal TGP budget while
+    still dispatching native STEEL kernels instead of falling back to SDPA VJP.
+    """
+
+    @pytest.mark.parametrize("causal", [True, False])
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    def test_d256_backward_matches_sdpa(self, dtype, causal):
+        """STEEL D-split backward gradients match mx.vjp(SDPA) reference."""
+        B, H, N, D = 1, 4, 128, 256
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(77 + int(causal))
+
+        q = mx.random.normal((B, H, N, D)).astype(dtype)
+        k = mx.random.normal((B, H, N, D)).astype(dtype)
+        v = mx.random.normal((B, H, N, D)).astype(dtype)
+        cot = mx.ones((B, H, N, D), dtype=dtype)
+        mx.eval(q, k, v, cot)
+
+        _, (dq_mfa, dk_mfa, dv_mfa) = mx.vjp(
+            lambda q_, k_, v_: flash_attention(q_, k_, v_, scale=scale, causal=causal),
+            [q, k, v], [cot])
+        _, (dq_ref, dk_ref, dv_ref) = mx.vjp(
+            lambda q_, k_, v_: mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale, mask="causal" if causal else None),
+            [q, k, v], [cot])
+        mx.eval(dq_mfa, dk_mfa, dv_mfa, dq_ref, dk_ref, dv_ref)
+
+        dtype_str = "f16" if dtype == mx.float16 else "bf16"
+        for name, mfa, ref in [("dQ", dq_mfa, dq_ref),
+                                ("dK", dk_mfa, dk_ref),
+                                ("dV", dv_mfa, dv_ref)]:
+            assert list(mfa.shape) == [B, H, N, D], f"{name} shape mismatch"
+            assert mfa.dtype == dtype, f"{name} dtype mismatch"
+            np.testing.assert_allclose(
+                np.array(mfa.astype(mx.float32)),
+                np.array(ref.astype(mx.float32)),
+                atol=5e-2, rtol=1e-1,
+                err_msg=f"{name} D=256 {dtype_str} causal={causal}")
+
+    def test_d256_backward_finite(self):
+        """All D=256 backward gradients are finite (no NaN/Inf)."""
+        B, H, N, D = 1, 8, 64, 256
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(99)
+
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention(q_, k_, v_, scale=scale, causal=True))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+
+        assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
+        assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
+        assert mx.all(mx.isfinite(dv)).item(), "dV has non-finite values"
+
+    def test_d256_backward_gqa(self):
+        """D=256 D-split backward works with GQA (ratio=2)."""
+        B, H_q, H_kv, N, D = 1, 4, 2, 64, 256
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(111)
+
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention(q_, k_, v_, scale=scale, causal=True))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+
+        assert list(dq.shape) == [B, H_q,  N, D], "dQ shape mismatch for GQA D=256"
+        assert list(dk.shape) == [B, H_kv, N, D], "dK shape mismatch for GQA D=256"
+        assert list(dv.shape) == [B, H_kv, N, D], "dV shape mismatch for GQA D=256"
+        assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite in GQA D=256"
+        assert mx.all(mx.isfinite(dk)).item(), "dK non-finite in GQA D=256"
+        assert mx.all(mx.isfinite(dv)).item(), "dV non-finite in GQA D=256"
