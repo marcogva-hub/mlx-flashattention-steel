@@ -2,7 +2,7 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [0.9.0] — UNRELEASED
+## [0.9.0] — 2026-03-06
 
 ### Added
 - **Track BA/BB/BC: STEEL native backward** — `mx.grad(flash_attention)` now dispatches
@@ -11,6 +11,26 @@ All notable changes to mlx-mfa are documented here.
   Key fixes: `Ktile[1,MFA_TK]` tile declaration (was 1×1, causing UB for ik>0) and
   `_sever_lazy_graph(cotangent)` before gradient checkpointing re-run of forward
   (prevents Metal buffer aliasing via lazy graph ancestry). 209 tests pass.
+- **Track BD: STEEL varlen forward kernel** — `flash_attention_varlen` dispatches a
+  dedicated Metal STEEL kernel instead of Python split-cat. Packed Q/K/V layout
+  `[1, H, N_total, D]` with `cu_seqlens` offsets; per-threadgroup batch-item decode.
+  Critical race-condition fix: `threadgroup_barrier` at START of K-loop prevents
+  P@V reads (V from KV_smem) from racing against next iteration's K write.
+  K-boundary `-INF` mask prevents softmax denominator inflation for partial K-tiles.
+  215 tests pass.
+- **Track BE: Paged KV Cache Phase 1** — `PagedKVCache` block allocator with pool
+  `[num_blocks, block_size, H_kv, D]`; per-seq block table; `append`/`free_seq` helpers.
+  `flash_attention_paged(q, k_pool, v_pool, block_table, seq_lens, ...)` reconstructs
+  contiguous K/V per batch item via block-table gather, routes to `flash_attention`.
+- **Track BF: QKV/KV packed tensor formats** — `flash_attention_qkv_packed` handles
+  flat `[B, N, 3·H·D]` and head-first `[B, H, N, 3, D]` packed layouts.
+  `flash_attention_kv_packed` handles `[B, S, 2·H·D]` and `[B, H, S, 2, D]`.
+  Both raise `ValueError` for unsupported shapes.
+- **Track BG: Backward benchmark** — `benchmarks/bench_backward.py` measures
+  flash_attention VJP vs SDPA VJP across D=64/128, f16/bf16, causal/non-causal.
+- **Track BH: Varlen benchmark update** — `benchmarks/bench_varlen.py` updated to
+  note STEEL varlen kernel; section header updated to v0.9.0.
+- **Tests: 232 total** (up from 209 in v0.8.0)
 
 ## [0.8.0] — 2026-03-05
 

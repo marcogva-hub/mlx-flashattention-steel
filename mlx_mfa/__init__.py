@@ -17,12 +17,15 @@ Supported configurations:
     - Shapes: [batch, heads, seq_len, head_dim] (BHND)
     - Causal and non-causal attention
     - Full autograd support (dQ, dK, dV)
+    - Softcap, ALiBi, dropout, attention weight return (v0.8.0)
+    - STEEL varlen kernel, paged KV cache, packed QKV/KV layouts (v0.9.0)
+    - STEEL native backward kernels for f16/bf16 (v0.9.0, 2-3× speedup)
 
 When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from mlx_mfa.attention import (
     flash_attention,
