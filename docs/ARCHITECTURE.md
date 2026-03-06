@@ -17,7 +17,7 @@ Python: flash_attention(q, k, v, causal=True)
          ▼
 mlx_mfa/attention.py
   1. Validate shapes (4-D, matching head_dim)
-  2. GQA: if H_kv < H_q, tile k/v via mx.repeat(k, ratio, axis=1)
+  2. GQA: if H_kv < H_q, native GQA via gqa_factor in kernel
   3. Check _can_use_mfa: head_dim ∈ {64,128,256}, dtype ∈ {f16,bf16,f32},
      extension importable
      ├── no  → _fallback_sdpa: mx.fast.scaled_dot_product_attention
@@ -26,7 +26,7 @@ mlx_mfa/attention.py
                  ▼
          mx.custom_function (_make_mfa_custom)
            Forward: mfa_forward_with_lse (C++ binding)
-           Backward: mx.vjp(_fallback_sdpa)
+           Backward: see "Backward pass routing" below
                  │
                  ▼
          C++ binding: csrc/bindings.cpp
@@ -133,20 +133,33 @@ the ccv `AttentionDescriptor::forward()` lookup from liuliu/ccv.
 
 ---
 
-## Backward pass
+## Backward pass routing
 
 ```
 mx.grad(flash_attention)(q, k, v)
          │
          ▼
-mx.custom_function vjp  (attention.py:_make_mfa_custom)
-  dO = _sever_lazy_graph(cotangent)   ← buffer-aliasing fix (see below)
-  _, (dQ, dK, dV) = mx.vjp(
-      _fallback_sdpa(q, k, v, scale, causal),
-      [q, k, v],
-      [cotangent]
-  )
-  return dQ, dK, dV
+mx.custom_function vjp  (attention.py:_make_mfa_custom._backward)
+         │
+         ├── f16/bf16, D≤256, softcap==0, alibi==False
+         │       │
+         │       ▼
+         │   mfa_steel_backward (C++ binding → MFASteelBwdDQ + MFASteelBwdDKV)
+         │   • dQ kernel grid: (N_q/BQ, H_q, B)
+         │   • dK/dV kernel grid: (N_k/BK, H_kv, B)
+         │   returns (dQ, dK, dV)
+         │
+         ├── f32
+         │       ▼
+         │   mx.vjp(_fallback_sdpa(q,k,v))   ← MLX SDPA backward
+         │
+         ├── softcap > 0
+         │       ▼
+         │   mx.vjp(_softcap_sdpa_ref)        ← compiled via mx.compile
+         │
+         └── alibi == True
+                 ▼
+             mx.vjp(_alibi_sdpa_ref)           ← compiled via mx.compile
 ```
 
 ### Why not the C++ Primitive vjp?
@@ -155,9 +168,9 @@ mx.custom_function vjp  (attention.py:_make_mfa_custom)
 from the graph.  When `MFAttention::vjp` runs in C++, `outputs[1]` (L) is gone
 — accessing it is undefined behaviour and corrupts gradients.
 
-The Python `custom_function` sidesteps this by *recomputing* gradients from scratch
-via `mx.vjp(_fallback_sdpa)`.  This is slightly slower (SDPA backward instead of
-STEEL backward) but correct, simple, and MLX-maintained.
+The Python `custom_function` sidesteps this by recomputing gradients either via
+native STEEL backward kernels (fast path) or `mx.vjp(_fallback_sdpa)` (safe
+fallback for unsupported dtypes/configs).
 
 ### Buffer aliasing fix (`_sever_lazy_graph`)
 
@@ -214,15 +227,45 @@ per-lane loads with no async DMA dependency).  It is used only for the ccv
 
 ## Public API reference
 
-| Function | Signature | Returns |
-|----------|-----------|---------|
-| `flash_attention` | `(q, k, v, scale=None, causal=False, stream=None)` | `mx.array [B,H,N,D]` |
-| `is_mfa_available` | `()` | `bool` |
-| `get_device_info` | `()` | `dict` with `device_name`, `gpu_family_gen`, `is_m3_plus`, `chip_name`, `extension_available` |
-| `get_supported_configs` | `()` | `dict` with `head_dims`, `dtypes`, `extension_available` |
+31 symbols exported in `mlx_mfa.__all__` (version 0.9.3):
 
-All functions are exported from `mlx_mfa/__init__.py` and re-exported from
-`mlx_mfa/attention.py`.
+### Core attention (11)
+
+| Function | Key arguments | Returns |
+|----------|--------------|---------|
+| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights)` | `[B,H,N,D]` |
+| `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved)` | `[B,H,N,D]` |
+| `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` | `[B,H,N,D]` |
+| `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` | `[1,H,total,D]` |
+| `flash_attention_with_kv_cache` | `(q, k_new,v_new, k_cache,v_cache, scale, causal, softcap)` | `[B,H,N,D]` |
+| `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` | `[B,H,N_q,D]` |
+| `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` | `[B,H,N,D]` |
+| `flash_attention_kv_packed` | `(q, kv, scale, causal, num_kv_heads)` | `[B,H,N,D]` |
+| `flash_attention_varlen_qkv_packed` | `(qkv, cu_q,cu_k, max_q,max_k, scale, causal, num_heads, num_kv_heads)` | `[1,H,total,D]` |
+| `flash_attention_varlen_kv_packed` | `(q, kv, cu_q,cu_k, max_q,max_k, scale, causal, num_kv_heads)` | `[1,H,total_q,D]` |
+| `PagedKVCache` | `(num_blocks, block_size, H, D, dtype)` | allocator class |
+
+### Mask builders (15)
+
+| Group | Functions |
+|-------|-----------|
+| Dense-sparse | `make_causal_block_mask`, `make_sliding_window_mask` |
+| Spatial | `make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_topk_spatial_mask` |
+| Segment | `make_segment_mask`, `make_causal_segment_mask` |
+| Adaptive | `make_adaptive_window_mask` |
+| Video/VSR | `make_lcsa_mask`, `make_axial_spatial_mask`, `make_axial_temporal_mask` |
+| Temporal | `make_dilated_temporal_mask` |
+| Special | `make_sink_window_mask`, `make_reference_frame_mask`, `make_cross_stream_mask` |
+
+### RoPE helpers (1)
+
+- `make_rope_3d_tables(freqs_h, freqs_w, freqs_t, ...)` — build 3D rotary tables for video
+
+### Utilities (3 + `__version__`)
+
+- `is_mfa_available()` — `True` when C++ extension loaded and Metal available
+- `get_device_info()` — `dict`: `device_name`, `gpu_family_gen`, `is_m3_plus`, `is_m5_plus`, `chip_name`, `extension_available`
+- `get_supported_configs()` — `dict`: `head_dims`, `dtypes`, `extension_available`
 
 ---
 
@@ -272,3 +315,162 @@ All functions are exported from `mlx_mfa/__init__.py` and re-exported from
    dispatch, processing 4 Q-blocks per launch. This amortizes Metal command
    buffer overhead at large N (N ≥ 4096) where grid occupancy would otherwise
    leave the GPU partly idle between sequential dispatches.
+
+---
+
+## 8. STEEL native backward kernels (Tracks BA/BB/BC, v0.9.0; CE, v0.9.2)
+
+For f16/bf16 D≤256 with `softcap==0` and `alibi==False`, `_make_mfa_custom`
+routes the backward through `mfa_steel_backward` (C++ binding) which dispatches
+two Metal kernels: `MFASteelBwdDQ` and `MFASteelBwdDKV`.
+
+**Algorithm**: FlashAttention-2 backward, log2 domain throughout.
+
+```
+Given: O, L (logsumexp from forward), dO (cotangent)
+
+P = exp2(S × scale × log2(e) − L_log2)   // recompute attention probabilities
+delta = scale × rowsum(O ⊙ dO)            // D_i = sum_j(O_ij * dO_ij)
+dS = P × (dO @ V^T − delta)               // dSoftmax
+
+dQ += scale × dS @ K    [dQ kernel,   grid: (N_q/BQ, H_q, B)]
+dK += scale × dS^T @ Q  [dKV kernel,  grid: (N_k/BK, H_kv, B)]
+dV += P^T @ dO
+```
+
+**GQA support**: `gqa_factor = H_q / H_kv` is baked into the Metal shader as
+`#define MFA_GQA_FACTOR`.
+- dQ kernel: maps `kv_head = tid.y / gqa_factor` to find the K/V row.
+- dKV kernel: iterates `for q_head in [kv_head*f .. (kv_head+1)*f)`, accumulating
+  dK/dV across all Q-heads in the GQA group.
+
+**D=256 D-split (Track CE, v0.9.2)**: D=256 exceeds the 32 KB TGP budget
+(`Q_smem + dO_smem + KV_smem ≈ 46,080 bytes` with standard tiling).
+Solution: split D into two halves (`BD_HALF = 128`), reducing TGP to ≈23,552 bytes.
+
+Three-phase algorithm per K-tile (dQ kernel):
+
+```
+// Phase 1: accumulate S from both D-halves
+load Q_lo  [BQ × 128], K^T_lo  [128 × BK] → S  += Q_lo  @ K^T_lo
+load Q_hi  [BQ × 128], K^T_hi  [128 × BK] → S  += Q_hi  @ K^T_hi
+// S is now complete → apply softmax/online-max
+
+// Phase 2: accumulate dP from both D-halves
+load dO_lo [BQ × 128], V^T_lo  [128 × BK] → dP += dO_lo @ V^T_lo
+load dO_hi [BQ × 128], V^T_hi  [128 × BK] → dP += dO_hi @ V^T_hi
+// dS = P × (dP − delta) — computed once, shared across phases
+
+// Phase 3: accumulate dQ in both D-halves
+load K_lo  [BK × 128] → dQ_lo += dS @ K_lo   (stored at offset 0)
+load K_hi  [BK × 128] → dQ_hi += dS @ K_hi   (stored at offset 128)
+```
+
+Register tiles `Qtile_lo/hi` and `dOtile_lo/hi` are declared as explicit named
+variables *outside* all loops so the compiler keeps them in registers across phases.
+`KV_smem` is shared between D-halves (single buffer reused per phase).
+
+---
+
+## 9. Varlen backward via `mx.custom_function` (Track EA, v0.9.3)
+
+`flash_attention_varlen` is wrapped in `mx.custom_function` to provide full
+autograd support without a dedicated varlen backward Metal kernel.
+
+```
+flash_attention_varlen(q, k, v, cu_q, cu_k, max_q, max_k, ...)
+         │
+         ▼
+@mx.custom_function _varlen_impl(q_, k_, v_)
+  Forward:
+    ├── f16/bf16, D∈{64,128,256} → STEEL varlen kernel (single Metal dispatch)
+    └── else → _varlen_split_concat (Python per-sequence)
+
+@_varlen_impl.vjp _varlen_bwd(primals, cotangent, output)
+  Backward: split per sequence → mx.vjp(flash_attention) for each seq
+    for i in 0..num_seqs:
+        q_i = q_[:, :, cu_q[i]:cu_q[i+1], :]
+        k_i = k_[:, :, cu_k[i]:cu_k[i+1], :]
+        v_i = v_[:, :, cu_k[i]:cu_k[i+1], :]
+        _, (dq_i, dk_i, dv_i) = mx.vjp(flash_attention, [q_i, k_i, v_i], [dO_i])
+    dQ = concat(dq_i, axis=2)
+    dK = concat(dk_i, axis=2)
+    dV = concat(dv_i, axis=2)
+```
+
+**Closure design**: `cu_seqlens_q` and `cu_seqlens_k` are materialised to
+Python `list[int]` via `.tolist()` *once* in the outer function (before the
+`@mx.custom_function` definition), then captured by closure.  Since Python
+scalars/lists are transparent to the MLX autograd tape, no `mx.array` slicing
+occurs inside the autograd graph — only MLX arrays `q_`, `k_`, `v_` are tracked.
+
+**Per-sequence vjp efficiency**: each `mx.vjp(flash_attention)` call dispatches
+to the STEEL backward kernels (for f16/bf16 D≤256), so the split-concat backward
+is nearly as fast as a hypothetical single-kernel varlen backward.
+
+---
+
+## 10. Metal paged KV gather kernel (Track EB, v0.9.3)
+
+`MFAPagedKVGather` (`csrc/mfa_paged_gather.cpp`) is a Metal Primitive that
+materialises contiguous K/V tensors from a paged block pool in a single GPU
+dispatch, replacing the Python for-loop gather from v0.9.0.
+
+**Pool and output layouts**:
+
+```
+Pool input:  [num_blocks, block_size, H_kv, D]   (token-major within block)
+Output:      [B, H_kv, max_kv_len, D]             (BHND — STEEL-ready)
+```
+
+The kernel simultaneously transposes `[block_size, H_kv, D] → [H_kv, block_size, D]`
+during the copy, eliminating a separate transpose operation.
+
+**Grid structure**: 1-D grid, one thread per output element.
+Total elements = `B × H_kv × max_kv_len × D`.
+
+```metal
+kernel void paged_kv_gather(..., uint gid [[thread_position_in_grid]])
+{
+    // Decode (b, h, kv_t, d) from flat gid
+    int d    = gid % D;
+    int kv_t = (gid / D) % max_kv_len;
+    int h    = (gid / D / max_kv_len) % H;
+    int b    = gid / D / max_kv_len / H;
+
+    if (kv_t >= seq_lens[b]) { out[gid] = 0; return; }  // padding
+
+    int log_blk  = kv_t / block_size;
+    int tok_off  = kv_t % block_size;
+    int phys_blk = block_table[b * max_blocks + log_blk];
+    if (phys_blk < 0) { out[gid] = 0; return; }         // sentinel
+
+    // Pool: [phys_blk][tok_off][h][d]
+    out[gid] = pool[phys_blk * (block_size*H*D) + tok_off * (H*D) + h*D + d];
+}
+```
+
+**`flash_attention_paged` with `mx.custom_function`** (v0.9.3):
+
+```
+Forward:
+  1. K_contig = mfa_paged_kv_gather(k_pages, block_table, seq_lens, max_kv_len)
+  2. V_contig = mfa_paged_kv_gather(v_pages, block_table, seq_lens, max_kv_len)
+  3. for b in 0..B:
+       out[b] = flash_attention(q[b], K_contig[b, :, :kv_len[b], :],
+                                       V_contig[b, :, :kv_len[b], :])
+  4. return concat(out, axis=0)
+
+Backward:
+  1. Re-gather K_contig, V_contig (same as forward)
+  2. for b in 0..B:
+       _, (dQ[b], _, _) = mx.vjp(flash_attention, [q[b], K_b, V_b], [dO[b]])
+  3. dK_pages = zeros_like(k_pages)   ← pools are cache buffers, not parameters
+  4. dV_pages = zeros_like(v_pages)
+```
+
+**Why per-sequence slicing after gather**: `K_contig[b]` has zeros for positions
+`seq_lens[b]:max_kv_len`.  Passing the full `[H, max_kv_len, D]` slice to
+`flash_attention` would include those zeros in the softmax denominator
+(`exp(Q·0) = 1` per padded position), corrupting the output for shorter sequences
+in a batch.  Slicing to `[:kv_len]` ensures only real tokens participate in attention.
