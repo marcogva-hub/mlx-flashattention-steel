@@ -1,7 +1,10 @@
 include LICENSE
 include THIRD_PARTY_LICENSES
 include README.md
-recursive-include csrc *.cpp *.hpp *.mm *.h *.metal
-recursive-include mlx_mfa *.py
+include CHANGELOG.md
 include CMakeLists.txt
 include pyproject.toml
+recursive-include csrc *.cpp *.hpp *.mm *.h *.metal
+recursive-include csrc/mfa *.cpp *.hpp *.h
+recursive-include mlx_mfa *.py
+recursive-include examples *.py

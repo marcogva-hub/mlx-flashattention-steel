@@ -4,16 +4,16 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-mfa"
-version = "1.0.0rc2"
+version = "1.0.0"
 description = "Metal Flash Attention for MLX — causal attention 1.5-2.9x faster than SDPA on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-  {name = "mlx-mfa contributors"},
+  {name = "Marco Marcelino"},
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -24,11 +24,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.18.0"]
+dependencies = ["mlx>=0.18.0", "numpy"]
 
 [project.urls]
-"Source Code" = "https://github.com/mlx-mfa/mlx-mfa"
-"Bug Tracker" = "https://github.com/mlx-mfa/mlx-mfa/issues"
+"Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"
+"Bug Tracker" = "https://github.com/marcogva-hub/mlx-flashattention-steel/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-benchmark"]
