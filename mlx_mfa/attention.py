@@ -345,6 +345,7 @@ def flash_attention_rope(
     cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
     rope_3d: Optional[dict] = None,
     interleaved: bool = True,
+    rotary_dim: Optional[int] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Flash Attention with in-kernel RoPE (Rotary Position Embedding) fusion.
@@ -450,19 +451,24 @@ def flash_attention_rope(
                 q[b : b + 1], k[b : b + 1], v[b : b + 1],
                 rotary_cos, rotary_sin,
                 scale=scale, causal=causal, cache_seqlens=cs,
-                rope_3d=None, interleaved=interleaved, stream=stream,
+                rope_3d=None, interleaved=interleaved,
+                rotary_dim=rotary_dim, stream=stream,
             )
             for b, cs in enumerate(cs_list)
         ]
         return mx.concatenate(chunks, axis=0)
 
     # RoPE requires f16/bf16 on the STEEL path.
-    # Fall back gracefully for f32 or unsupported head_dim.
-    if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32:
+    # Partial RoPE (rotary_dim < head_dim) also forces MLX fallback since the
+    # STEEL kernel rotates the full head dimension.
+    _partial_rope = rotary_dim is not None and rotary_dim < head_dim
+    if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial_rope:
         q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                                offset=cache_seqlens, interleaved=interleaved)
+                                offset=cache_seqlens, interleaved=interleaved,
+                                rotary_dim=rotary_dim)
         k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
-                                offset=0, interleaved=interleaved)
+                                offset=0, interleaved=interleaved,
+                                rotary_dim=rotary_dim)
         return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
 
     return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
@@ -796,6 +802,8 @@ def flash_attention_kvcache(
     rotary_sin: Optional[mx.array] = None,
     cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
     interleaved: bool = True,
+    # Track FX-3: partial RoPE — rotate only first rotary_dim head-dim elements
+    rotary_dim: Optional[int] = None,
     # Track FX-2: continuous batching — map logical batch → cache pool slot
     cache_batch_idx: Optional[mx.array] = None,
     stream: Optional[mx.Stream] = None,
@@ -941,7 +949,8 @@ def flash_attention_kvcache(
                 # per-batch: use the first offset (single decode step assumed)
                 _cs = int(list(_cs)[0]) if hasattr(_cs, '__iter__') else int(_cs)
             q_att = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                                    offset=_cs, interleaved=interleaved)
+                                    offset=_cs, interleaved=interleaved,
+                                    rotary_dim=rotary_dim)
 
         if alibi_slopes is not None:
             raise ValueError(
@@ -981,7 +990,8 @@ def flash_attention_kvcache(
             rotary_cos=rotary_cos, rotary_sin=rotary_sin,
             scale=scale, causal=causal,
             cache_seqlens=cache_seqlens,
-            interleaved=interleaved, stream=stream,
+            interleaved=interleaved,
+            rotary_dim=rotary_dim, stream=stream,
         )
 
     # All other dense features route through flash_attention.
@@ -1890,6 +1900,7 @@ def _apply_rope_mlx(
     sin: mx.array,
     offset: int = 0,
     interleaved: bool = True,
+    rotary_dim: Optional[int] = None,
 ) -> mx.array:
     """Apply rotary position embeddings to *x* using MLX ops (mx.compile cached).
 
@@ -1907,20 +1918,36 @@ def _apply_rope_mlx(
 
     Args:
         x:           ``[B, H, N, D]``
-        cos:         ``float32 [max_seq_len, D/2]``
-        sin:         ``float32 [max_seq_len, D/2]``
+        cos:         ``float32 [max_seq_len, rotary_dim/2]``
+        sin:         ``float32 [max_seq_len, rotary_dim/2]``
         offset:      First token position (= cache_seqlens for Q, 0 for K).
         interleaved: True = LLaMA; False = GPT-NeoX.
+        rotary_dim:  Number of head-dim elements to rotate (must be even).
+                     ``None`` (default) rotates all ``D`` elements.
+                     When ``rotary_dim < D`` the first ``rotary_dim`` elements
+                     are rotated and the remaining ``D - rotary_dim`` pass
+                     through unchanged.
 
     Returns:
         Rotated tensor, same shape and dtype as *x*.
     """
+    D = x.shape[-1]
+    rot_dim = rotary_dim if rotary_dim is not None else D
+
+    # Partial RoPE: recursively rotate the first rot_dim elements, concat tail.
+    if rot_dim < D:
+        x_rot_part = _apply_rope_mlx(
+            x[..., :rot_dim], cos, sin, offset, interleaved, rotary_dim=None
+        )
+        return mx.concatenate([x_rot_part, x[..., rot_dim:]], axis=-1)
+
+    # Full rotation (rot_dim == D):
     # Cache key includes shape, dtype, offset and interleaved flag so
     # mx.compile resolves the branch and scalar slicing at compile time.
     key = (tuple(x.shape), x.dtype, int(offset), bool(interleaved))
     if key not in _rope_compile_cache:
-        B, H, N, D = x.shape
-        half_D = D // 2
+        B, H, N, D_inner = x.shape
+        half_D = D_inner // 2
         _off, _inter = int(offset), bool(interleaved)
 
         if _inter:
@@ -1934,7 +1961,7 @@ def _apply_rope_mlx(
                 x1 = x_pairs[..., 1]
                 x0_rot = x0 * cos_bc - x1 * sin_bc
                 x1_rot = x0 * sin_bc + x1 * cos_bc
-                return mx.stack([x0_rot, x1_rot], axis=-1).reshape(B, H, N, D)
+                return mx.stack([x0_rot, x1_rot], axis=-1).reshape(B, H, N, D_inner)
         else:
             def _impl(x_: mx.array, cos_: mx.array, sin_: mx.array) -> mx.array:
                 cos_n = cos_[_off : _off + N, :]

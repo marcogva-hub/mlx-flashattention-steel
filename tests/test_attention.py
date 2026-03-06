@@ -4498,3 +4498,62 @@ class TestCacheBatchIdx:
                                       cache_batch_idx=idx, causal=False)
         mx.eval(out)
         assert out.shape == (B, H, 1, D)
+
+
+# ---------------------------------------------------------------------------
+# Track FX-3: rotary_dim partial RoPE
+# ---------------------------------------------------------------------------
+
+class TestRotaryDim:
+    """Tests for flash_attention_rope(rotary_dim=...)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    def test_rotary_dim_full_matches_default(self):
+        """rotary_dim=D must produce the same result as no rotary_dim."""
+        from mlx_mfa import flash_attention_rope
+        B, H, N, D = 1, 2, 16, 64
+        q, k, v = random_qkv(B, H, N, D)
+        max_len = 128
+        cos = mx.random.normal((max_len, D // 2)).astype(mx.float32)
+        sin = mx.random.normal((max_len, D // 2)).astype(mx.float32)
+        ref = flash_attention_rope(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                   causal=True)
+        out = flash_attention_rope(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                   causal=True, rotary_dim=D)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_rotary_dim_partial_tail_unchanged(self):
+        """With rotary_dim=D//2: first D//2 dims are rotated, last D//2 unchanged.
+
+        Use identity rotation (cos=1, sin=0) for the first half so that the
+        rotated result equals the original — then all dims should be unchanged,
+        confirming the tail pass-through is correct.
+        """
+        from mlx_mfa import flash_attention_rope
+        B, H, N, D = 1, 2, 8, 64
+        rot_dim = D // 2  # 32
+        q, k, v = random_qkv(B, H, N, D)
+        max_len = 32
+        # Identity rotation: cos=1, sin=0 → q_rot == q for the rotated portion.
+        cos = mx.ones((max_len, rot_dim // 2), dtype=mx.float32)
+        sin = mx.zeros((max_len, rot_dim // 2), dtype=mx.float32)
+        out = flash_attention_rope(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                   causal=False, rotary_dim=rot_dim)
+        ref = flash_attention_rope(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                   causal=False)  # full rotation, also identity
+        # With identity rotation the partial and full results must agree on the
+        # attended output (since q_rot=q for both paths).
+        mx.eval(out, ref)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
