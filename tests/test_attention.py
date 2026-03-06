@@ -3571,3 +3571,60 @@ class TestPackedFormats:
         kv = mx.zeros((1, 32, 128), dtype=mx.float16)
         with pytest.raises(ValueError):
             flash_attention_kv_packed(q, kv, num_kv_heads=3)  # 128 not / by 6
+
+
+@requires_ext
+class TestSteelBackwardGQA:
+    """STEEL backward for grouped-query attention (Track DA — GQA guard removed)."""
+
+    @pytest.mark.parametrize("ratio,D,causal", [
+        (2, 64, False), (4, 128, True), (8, 128, False),
+    ])
+    def test_gqa_backward_matches_sdpa(self, ratio, D, causal):
+        """STEEL backward GQA gradients match mx.vjp(SDPA) reference."""
+        B, H_q, N = 1, 8, 128
+        H_kv = H_q // ratio
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(42 + ratio + D)
+
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        # MFA path — should now use STEEL backward (no GQA guard)
+        def loss_mfa(q_, k_, v_):
+            return mx.sum(flash_attention(q_, k_, v_, scale=scale, causal=causal))
+        dq_mfa, dk_mfa, dv_mfa = mx.grad(loss_mfa, argnums=(0, 1, 2))(q, k, v)
+
+        # Reference: expand K/V to H_q, run SDPA backward, sum grads to H_kv
+        k_rep = mx.repeat(k, ratio, axis=1)
+        v_rep = mx.repeat(v, ratio, axis=1)
+
+        def loss_ref(q_, k_, v_):
+            return mx.sum(mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale,
+                mask="causal" if causal else None))
+        dq_ref, dk_exp, dv_exp = mx.grad(loss_ref, argnums=(0, 1, 2))(q, k_rep, v_rep)
+        dk_ref = dk_exp.reshape(B, H_kv, ratio, N, D).sum(axis=2)
+        dv_ref = dv_exp.reshape(B, H_kv, ratio, N, D).sum(axis=2)
+
+        mx.eval(dq_mfa, dk_mfa, dv_mfa, dq_ref, dk_ref, dv_ref)
+
+        assert list(dk_mfa.shape) == [B, H_kv, N, D], "dK shape must be [B,H_kv,N,D]"
+        assert list(dv_mfa.shape) == [B, H_kv, N, D], "dV shape must be [B,H_kv,N,D]"
+
+        np.testing.assert_allclose(
+            np.array(dq_mfa.astype(mx.float32)),
+            np.array(dq_ref.astype(mx.float32)),
+            atol=5e-2, rtol=1e-1,
+            err_msg=f"dQ mismatch GQA ratio={ratio} D={D} causal={causal}")
+        np.testing.assert_allclose(
+            np.array(dk_mfa.astype(mx.float32)),
+            np.array(dk_ref.astype(mx.float32)),
+            atol=5e-2, rtol=1e-1,
+            err_msg=f"dK mismatch GQA ratio={ratio} D={D} causal={causal}")
+        np.testing.assert_allclose(
+            np.array(dv_mfa.astype(mx.float32)),
+            np.array(dv_ref.astype(mx.float32)),
+            atol=5e-2, rtol=1e-1,
+            err_msg=f"dV mismatch GQA ratio={ratio} D={D} causal={causal}")

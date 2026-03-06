@@ -1449,14 +1449,13 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0):
         q, k, v = primals
 
         if softcap == 0.0:
-            # Route f16/bf16 D≤128 standard-MHA to STEEL backward kernels.
+            # Route f16/bf16 D≤128 to STEEL backward kernels (GQA supported).
             # Gradient checkpointing: re-run forward to recover L.
             # Cost: ~1x forward pass — same as the SDPA re-run below.
             D = q.shape[-1]
             use_steel_bwd = (
                 q.dtype in (mx.float16, mx.bfloat16)
                 and D <= 128
-                and q.shape[1] == k.shape[1]  # standard MHA, no GQA
             )
             if use_steel_bwd:
                 # Sever cotangent's lazy-graph ancestry before gradient checkpointing.
