@@ -1671,7 +1671,37 @@ def _mfa_rope_forward(
 
 # ---------------------------------------------------------------------------
 # Track S — Variable-length batching (split-concat, v0.7.0)
+#           Track EA — Differentiable varlen (mx.custom_function, v0.9.3)
 # ---------------------------------------------------------------------------
+
+
+def _varlen_split_concat(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    cu_q: list,
+    cu_k: list,
+    scale: float,
+    causal: bool,
+    block_mask,
+    stream,
+) -> mx.array:
+    """Per-sequence split → flash_attention → concat.  Internal helper."""
+    num_seqs = len(cu_q) - 1
+    outputs = []
+    for i in range(num_seqs):
+        q_i = q[:, :, cu_q[i] : cu_q[i + 1], :]
+        k_i = k[:, :, cu_k[i] : cu_k[i + 1], :]
+        v_i = v[:, :, cu_k[i] : cu_k[i + 1], :]
+        if block_mask is not None:
+            out_i = flash_attention_sparse(
+                q_i, k_i, v_i, block_mask, scale=scale, causal=causal, stream=stream
+            )
+        else:
+            out_i = flash_attention(q_i, k_i, v_i, scale=scale, causal=causal, stream=stream)
+        outputs.append(out_i)
+    return mx.concatenate(outputs, axis=2)
+
 
 def flash_attention_varlen(
     q: mx.array,
@@ -1718,7 +1748,8 @@ def flash_attention_varlen(
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
 
-    # Convert cumulative lengths to Python ints for indexing / tile_offsets
+    # Materialise cu_seqlens to Python lists ONCE here — safe to close over.
+    # mx.arrays must NOT be used for slicing inside a custom_function backward.
     cu_q = [int(x) for x in cu_seqlens_q.tolist()]
     cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
     num_seqs = len(cu_q) - 1
@@ -1728,50 +1759,76 @@ def flash_attention_varlen(
 
     D = q.shape[-1]
 
-    # ── STEEL varlen kernel path (f16/bf16, D∈{64,128,256}, no block_mask) ──
-    # tile_offsets are computed here in Python (BQ=32 for all STEEL configs)
-    # to avoid mlx.eval() inside the C++ primitive.
-    if (
-        block_mask is None
-        and _ext_available()
-        and q.dtype in (mx.float16, mx.bfloat16)
-        and D in (64, 128, 256)
-    ):
-        from mlx_mfa._ext import mfa_attention_varlen_forward as _varlen_fwd
-
-        BQ = 32  # constant for all STEEL block configs (D=64/128/256)
-        tile_off = [0]
-        for i in range(num_seqs):
-            qlen = cu_q[i + 1] - cu_q[i]
-            tile_off.append(tile_off[-1] + (qlen + BQ - 1) // BQ)
-        tile_arr = mx.array(tile_off, dtype=mx.int32)
-
-        # Don't forward stream: the binding defaults to default_device().
-        # Passing mx.default_device() (a Device) causes a nanobind conversion
-        # error with optional<StreamOrDevice>; omitting it uses the default.
-        O, _L = _varlen_fwd(
-            q, k, v, cu_seqlens_q, cu_seqlens_k, tile_arr, scale, causal
+    # ── block_mask: direct split-concat (no STEEL varlen for sparse) ─────────
+    if block_mask is not None:
+        return _varlen_split_concat(
+            q, k, v, cu_q, cu_k_list, scale, causal, block_mask, stream
         )
-        return O
 
-    # ── Fallback: split-concat loop ──────────────────────────────────────────
-    outputs = []
-    for i in range(num_seqs):
-        q_start, q_end = cu_q[i], cu_q[i + 1]
-        k_start, k_end = cu_k_list[i], cu_k_list[i + 1]
+    # ── Differentiable STEEL varlen path ─────────────────────────────────────
+    # Forward: STEEL single-dispatch varlen kernel when conditions are met.
+    # Backward: split-concat per-sequence through flash_attention, which
+    # has STEEL backward (D≤256 f16/bf16) or SDPA VJP fallback.
+    #
+    # cu_q / cu_k_list are Python list[int] closed over from the outer scope.
+    # They are transparent to MLX autograd — no trace nodes are created.
 
-        q_i = q[:, :, q_start:q_end, :]
-        k_i = k[:, :, k_start:k_end, :]
-        v_i = v[:, :, k_start:k_end, :]
+    @mx.custom_function
+    def _varlen_impl(q_, k_, v_):
+        if (
+            _ext_available()
+            and q_.dtype in (mx.float16, mx.bfloat16)
+            and D in (64, 128, 256)
+        ):
+            from mlx_mfa._ext import mfa_attention_varlen_forward as _varlen_fwd
 
-        kwargs: dict = {"scale": scale, "causal": causal, "stream": stream}
-        if block_mask is not None:
-            out_i = flash_attention_sparse(q_i, k_i, v_i, block_mask, **kwargs)
-        else:
-            out_i = flash_attention(q_i, k_i, v_i, **kwargs)
-        outputs.append(out_i)
+            BQ = 32  # constant for all STEEL block configs (D=64/128/256)
+            tile_off = [0]
+            for i in range(num_seqs):
+                qlen = cu_q[i + 1] - cu_q[i]
+                tile_off.append(tile_off[-1] + (qlen + BQ - 1) // BQ)
+            tile_arr = mx.array(tile_off, dtype=mx.int32)
+            O, _L = _varlen_fwd(
+                q_, k_, v_, cu_seqlens_q, cu_seqlens_k, tile_arr, scale, causal
+            )
+            return O
+        # f32 or unsupported D: per-sequence split-concat
+        return _varlen_split_concat(
+            q_, k_, v_, cu_q, cu_k_list, scale, causal, None, stream
+        )
 
-    return mx.concatenate(outputs, axis=2)
+    @_varlen_impl.vjp
+    def _varlen_bwd(primals, cotangent, _output):
+        q_, k_, v_ = primals
+        dO = cotangent
+        # Split-concat backward: each sequence goes through flash_attention
+        # (which has STEEL backward for f16/bf16 D≤256).
+        dQ_parts: list = []
+        dK_parts: list = []
+        dV_parts: list = []
+        for i in range(num_seqs):
+            qs, qe = cu_q[i], cu_q[i + 1]
+            ks, ke = cu_k_list[i], cu_k_list[i + 1]
+            q_i  = q_[:, :, qs:qe, :]
+            k_i  = k_[:, :, ks:ke, :]
+            v_i  = v_[:, :, ks:ke, :]
+            dO_i = dO[:, :, qs:qe, :]
+            _, (dq_i, dk_i, dv_i) = mx.vjp(
+                lambda qi, ki, vi: flash_attention(
+                    qi, ki, vi, scale=scale, causal=causal
+                ),
+                [q_i, k_i, v_i],
+                [dO_i],
+            )
+            dQ_parts.append(dq_i)
+            dK_parts.append(dk_i)
+            dV_parts.append(dv_i)
+        dQ = mx.concatenate(dQ_parts, axis=2)
+        dK = mx.concatenate(dK_parts, axis=2)
+        dV = mx.concatenate(dV_parts, axis=2)
+        return dQ, dK, dV
+
+    return _varlen_impl(q, k, v)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

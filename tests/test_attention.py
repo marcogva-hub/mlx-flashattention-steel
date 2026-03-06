@@ -3716,3 +3716,113 @@ class TestSteelBackwardD256:
         assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite in GQA D=256"
         assert mx.all(mx.isfinite(dk)).item(), "dK non-finite in GQA D=256"
         assert mx.all(mx.isfinite(dv)).item(), "dV non-finite in GQA D=256"
+
+
+@requires_ext
+class TestVarlenBackward:
+    """Differentiable flash_attention_varlen via mx.custom_function (Track EA)."""
+
+    @pytest.mark.parametrize("D,dtype", [
+        (64, mx.float16),
+        (128, mx.float16),
+        (128, mx.bfloat16),
+        (256, mx.float16),
+    ])
+    def test_varlen_backward_matches_ref(self, D, dtype):
+        """Varlen backward matches per-sequence flash_attention backward."""
+        from mlx_mfa import flash_attention, flash_attention_varlen
+        B, H = 1, 4
+        lens = [32, 64, 48]
+        N = sum(lens)
+        cu_off = [sum(lens[:i]) for i in range(len(lens) + 1)]
+        cu = mx.array(cu_off, dtype=mx.int32)
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(42 + D)
+
+        q = mx.random.normal((B, H, N, D)).astype(dtype)
+        k = mx.random.normal((B, H, N, D)).astype(dtype)
+        v = mx.random.normal((B, H, N, D)).astype(dtype)
+        mx.eval(q, k, v)
+
+        def loss_varlen(q_, k_, v_):
+            return mx.sum(flash_attention_varlen(
+                q_, k_, v_, cu, cu, max(lens), max(lens),
+                scale=scale, causal=True))
+
+        dq, dk, dv = mx.grad(loss_varlen, argnums=(0, 1, 2))(q, k, v)
+
+        # Reference: per-sequence flash_attention backward (same STEEL kernel)
+        def loss_ref(q_, k_, v_):
+            parts = []
+            for i in range(len(lens)):
+                s = sum(lens[:i])
+                e = sum(lens[:i + 1])
+                parts.append(flash_attention(
+                    q_[:, :, s:e, :], k_[:, :, s:e, :], v_[:, :, s:e, :],
+                    scale=scale, causal=True))
+            return mx.sum(mx.concatenate(parts, axis=2))
+
+        dq_ref, dk_ref, dv_ref = mx.grad(loss_ref, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv, dq_ref, dk_ref, dv_ref)
+
+        dtype_str = "f16" if dtype == mx.float16 else "bf16"
+        for name, mfa, ref in [("dQ", dq, dq_ref), ("dK", dk, dk_ref), ("dV", dv, dv_ref)]:
+            assert list(mfa.shape) == [B, H, N, D], f"{name} shape mismatch"
+            np.testing.assert_allclose(
+                np.array(mfa.astype(mx.float32)),
+                np.array(ref.astype(mx.float32)),
+                atol=5e-2, rtol=1e-1,
+                err_msg=f"{name} varlen bwd D={D} {dtype_str}")
+
+    def test_varlen_backward_f32_fallback(self):
+        """f32 varlen backward works via split-concat fallback."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 2, 64
+        lens = [16, 32]
+        N = sum(lens)
+        cu = mx.array([0, 16, 48], dtype=mx.int32)
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(7)
+
+        q = mx.random.normal((B, H, N, D))   # f32
+        k = mx.random.normal((B, H, N, D))
+        v = mx.random.normal((B, H, N, D))
+        mx.eval(q, k, v)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention_varlen(
+                q_, k_, v_, cu, cu, max(lens), max(lens), scale=scale, causal=False))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite (f32 fallback)"
+        assert mx.all(mx.isfinite(dk)).item(), "dK non-finite (f32 fallback)"
+        assert mx.all(mx.isfinite(dv)).item(), "dV non-finite (f32 fallback)"
+
+    def test_varlen_backward_gqa(self):
+        """Varlen backward with GQA (H_q=4, H_kv=2)."""
+        from mlx_mfa import flash_attention_varlen
+        B, H_q, H_kv, D = 1, 4, 2, 128
+        lens = [32, 48]
+        N = sum(lens)
+        cu = mx.array([0, 32, 80], dtype=mx.int32)
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(55)
+
+        q = mx.random.normal((B, H_q,  N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def loss(q_, k_, v_):
+            return mx.sum(flash_attention_varlen(
+                q_, k_, v_, cu, cu, max(lens), max(lens), scale=scale, causal=True))
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert list(dq.shape) == [B, H_q,  N, D], "dQ shape GQA varlen"
+        assert list(dk.shape) == [B, H_kv, N, D], "dK shape GQA varlen"
+        assert list(dv.shape) == [B, H_kv, N, D], "dV shape GQA varlen"
+        assert mx.all(mx.isfinite(dq)).item(), "dQ non-finite GQA varlen"
+        assert mx.all(mx.isfinite(dk)).item(), "dK non-finite GQA varlen"
+        assert mx.all(mx.isfinite(dv)).item(), "dV non-finite GQA varlen"
