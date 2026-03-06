@@ -1196,6 +1196,14 @@ def _dropout_sdpa(
     return mx.matmul(probs, v)
 
 
+# ── mx.compile caches for reference SDPA paths ───────────────────────────────
+# Each unique (shape, dtype, scalar_params) key gets its own compiled function.
+# Python scalars (scale, causal, softcap) are frozen in the closure at compile
+# time, so branch structure (if causal:) is resolved correctly per compiled fn.
+_softcap_compile_cache: dict = {}
+_alibi_compile_cache: dict = {}
+
+
 def _softcap_sdpa_ref(
     q: mx.array,
     k: mx.array,
@@ -1214,21 +1222,29 @@ def _softcap_sdpa_ref(
         if causal: S += upper-triangle(-inf) mask
         A = softmax(S, axis=-1)
         return A @ V
+
+    Compiled per unique (q.shape, k.shape, dtype, scale, causal, softcap) to
+    fuse the tanh + mask + softmax ops and reduce kernel launch overhead.
     """
-    # Raw attention scores: [B, H, N, S]
-    S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
-    # Tanh softcapping
-    S = mx.tanh(S / softcap) * softcap
-    if causal:
-        N, Sk = q.shape[2], k.shape[2]
-        mask = mx.triu(
-            mx.full((N, Sk), float("-inf"), dtype=q.dtype),
-            k=Sk - N + 1,
-        )
-        S = S + mask
-    # Softmax in float32 for numerical stability, then cast back
-    A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
-    return mx.matmul(A, v)
+    key = (tuple(q.shape), tuple(k.shape), q.dtype, float(scale), bool(causal), float(softcap))
+    if key not in _softcap_compile_cache:
+        _sc, _causal, _cap = scale, causal, softcap
+
+        def _impl(q_: mx.array, k_: mx.array, v_: mx.array) -> mx.array:
+            S = mx.matmul(q_, mx.transpose(k_, [0, 1, 3, 2])) * _sc
+            S = mx.tanh(S / _cap) * _cap
+            if _causal:
+                _N, _Sk = q_.shape[2], k_.shape[2]
+                mask = mx.triu(
+                    mx.full((_N, _Sk), float("-inf"), dtype=q_.dtype),
+                    k=_Sk - _N + 1,
+                )
+                S = S + mask
+            A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q_.dtype)
+            return mx.matmul(A, v_)
+
+        _softcap_compile_cache[key] = mx.compile(_impl)
+    return _softcap_compile_cache[key](q, k, v)
 
 
 def _alibi_sdpa_ref(
@@ -1251,32 +1267,35 @@ def _alibi_sdpa_ref(
     Because ``j - i <= 0`` for causal tokens (past keys are at lower indices),
     ALiBi penalises distant positions, acting as a soft relative position bias
     that degrades gracefully without position embedding tables.
+
+    Compiled per unique (q.shape, k.shape, dtype, scale, causal) to fuse bias
+    construction + SDPA into fewer kernel dispatches.
     """
-    B, H, N, _ = q.shape
-    Sk = k.shape[2]
+    key = (tuple(q.shape), tuple(k.shape), q.dtype, float(scale), bool(causal))
+    if key not in _alibi_compile_cache:
+        _sc, _causal = scale, causal
 
-    # Raw scores: [B, H, N, Sk]
-    S = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale
+        def _impl(q_: mx.array, k_: mx.array, v_: mx.array, slopes_: mx.array) -> mx.array:
+            _, _, _N, _ = q_.shape
+            _Sk = k_.shape[2]
+            S = mx.matmul(q_, mx.transpose(k_, [0, 1, 3, 2])) * _sc
+            q_pos = mx.arange(_N, dtype=mx.float32)[:, None]
+            k_pos = mx.arange(_Sk, dtype=mx.float32)[None, :]
+            pos_diff = k_pos - q_pos
+            sl = slopes_.astype(mx.float32)
+            bias = mx.expand_dims(sl[:, None, None] * pos_diff[None, :, :], axis=0)
+            S = S + bias.astype(q_.dtype)
+            if _causal:
+                mask = mx.triu(
+                    mx.full((_N, _Sk), float("-inf"), dtype=q_.dtype),
+                    k=_Sk - _N + 1,
+                )
+                S = S + mask
+            A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q_.dtype)
+            return mx.matmul(A, v_)
 
-    # Position indices: q_pos [N, 1], k_pos [1, Sk] → pos_diff [N, Sk]
-    q_pos = mx.arange(N, dtype=mx.float32)[:, None]
-    k_pos = mx.arange(Sk, dtype=mx.float32)[None, :]
-    pos_diff = k_pos - q_pos  # [N, Sk]
-
-    # slopes [H] → [H, 1, 1] * [1, N, Sk] → [H, N, Sk] → [1, H, N, Sk]
-    slopes = alibi_slopes.astype(mx.float32)
-    bias = (slopes[:, None, None] * pos_diff[None, :, :])  # [H, N, Sk]
-    bias = mx.expand_dims(bias, axis=0)                    # [1, H, N, Sk]
-
-    S = S + bias.astype(q.dtype)
-    if causal:
-        mask = mx.triu(
-            mx.full((N, Sk), float("-inf"), dtype=q.dtype),
-            k=Sk - N + 1,
-        )
-        S = S + mask
-    A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q.dtype)
-    return mx.matmul(A, v)
+        _alibi_compile_cache[key] = mx.compile(_impl)
+    return _alibi_compile_cache[key](q, k, v, alibi_slopes)
 
 
 def _can_use_mfa(q: mx.array, head_dim: int) -> bool:
