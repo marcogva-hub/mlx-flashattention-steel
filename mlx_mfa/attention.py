@@ -2086,21 +2086,42 @@ def flash_attention_paged(
             V_list.append(v_seq.transpose(1, 0, 2)[None])
         return mx.concatenate(K_list, axis=0), mx.concatenate(V_list, axis=0)
 
+    def _attn_per_seq(q_, K_contig, V_contig):
+        """Per-sequence attention using exact kv_len slices (avoids padding leak)."""
+        outputs = []
+        for b in range(B):
+            kv_len = seq_lens_list[b]
+            out_b = flash_attention(
+                q_[b:b+1],
+                K_contig[b:b+1, :, :kv_len, :],
+                V_contig[b:b+1, :, :kv_len, :],
+                scale=scale, causal=causal, stream=stream)
+            outputs.append(out_b)
+        return mx.concatenate(outputs, axis=0)
+
     @mx.custom_function
     def _paged_impl(q_, k_pages_, v_pages_):
         K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-        return flash_attention(q_, K_contig, V_contig,
-                               scale=scale, causal=causal, stream=stream)
+        return _attn_per_seq(q_, K_contig, V_contig)
 
     @_paged_impl.vjp
     def _paged_bwd(primals, cotangent, _output):
         q_, k_pages_, v_pages_ = primals
         dO = cotangent
         K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-        _, (dQ, _dK_c, _dV_c) = mx.vjp(
-            lambda qi, ki, vi: flash_attention(
-                qi, ki, vi, scale=scale, causal=causal),
-            [q_, K_contig, V_contig], [dO])
+        dQ_parts = []
+        for b in range(B):
+            kv_len = seq_lens_list[b]
+            q_b = q_[b:b+1]
+            K_b = K_contig[b:b+1, :, :kv_len, :]
+            V_b = V_contig[b:b+1, :, :kv_len, :]
+            dO_b = dO[b:b+1]
+            _, (dq_b, _dk_b, _dv_b) = mx.vjp(
+                lambda qi, ki, vi: flash_attention(
+                    qi, ki, vi, scale=scale, causal=causal),
+                [q_b, K_b, V_b], [dO_b])
+            dQ_parts.append(dq_b)
+        dQ = mx.concatenate(dQ_parts, axis=0)
         # KV pool gradients are zeros: pools are cache buffers, not parameters.
         return dQ, mx.zeros_like(k_pages_), mx.zeros_like(v_pages_)
 
