@@ -5379,3 +5379,108 @@ class TestD512Forward:
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
         assert err < self.TOL, f"decode N=1 max_err={err:.4f}"
+
+
+# ────────────────────────────────────────────────────────────────
+# Track HB — D=512 backward tests
+# ────────────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(not is_mfa_available(), reason="MFA extension required")
+class TestD512Backward:
+    """Gradient correctness for D=512 STEEL backward kernels."""
+
+    TOL_F16  = 5e-2
+    TOL_BF16 = 1e-1
+
+    def _ref_bwd(self, q, k, v, scale, causal):
+        """Expand GQA and run mx.vjp(SDPA)."""
+        H_q, H_kv = q.shape[1], k.shape[1]
+        if H_q != H_kv:
+            k = mx.repeat(k, H_q // H_kv, axis=1)
+            v = mx.repeat(v, H_q // H_kv, axis=1)
+        mask = "causal" if causal else None
+        def fn(q, k, v):
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask=mask
+            )
+        co = mx.ones_like(mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=mask))
+        _, grads = mx.vjp(fn, [q, k, v], [co])
+        return grads
+
+    def _mfa_bwd(self, q, k, v, scale, causal):
+        co = mx.ones_like(flash_attention(q, k, v, scale=scale, causal=causal))
+        _, grads = mx.vjp(
+            lambda q, k, v: flash_attention(q, k, v, scale=scale, causal=causal),
+            [q, k, v], [co]
+        )
+        return grads
+
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    def test_backward_causal(self, dtype):
+        """D=512 causal backward: dQ, dK, dV within tolerance."""
+        mx.random.seed(10)
+        B, H, N, D = 1, 4, 128, 512
+        scale = float(D ** -0.5)
+        q = mx.random.normal([B, H, N, D]).astype(dtype)
+        k = mx.random.normal([B, H, N, D]).astype(dtype)
+        v = mx.random.normal([B, H, N, D]).astype(dtype)
+        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=True)
+        dq_r, dk_r, dv_r = self._ref_bwd(q, k, v, scale, causal=True)
+        mx.eval(dq_m, dk_m, dv_m, dq_r, dk_r, dv_r)
+        tol = self.TOL_F16 if dtype == mx.float16 else self.TOL_BF16
+        def err(a, b): return float(mx.max(mx.abs(a.astype(mx.float32) - b.astype(mx.float32))))
+        assert err(dq_m, dq_r) < tol, f"dQ err={err(dq_m, dq_r):.5f}"
+        assert err(dk_m, dk_r) < tol, f"dK err={err(dk_m, dk_r):.5f}"
+        assert err(dv_m, dv_r) < tol, f"dV err={err(dv_m, dv_r):.5f}"
+
+    def test_backward_non_causal(self):
+        """D=512 non-causal backward."""
+        mx.random.seed(11)
+        B, H, N, D = 1, 4, 128, 512
+        scale = float(D ** -0.5)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=False)
+        dq_r, dk_r, dv_r = self._ref_bwd(q, k, v, scale, causal=False)
+        mx.eval(dq_m, dk_m, dv_m, dq_r, dk_r, dv_r)
+        def err(a, b): return float(mx.max(mx.abs(a.astype(mx.float32) - b.astype(mx.float32))))
+        assert err(dq_m, dq_r) < self.TOL_F16, f"dQ err={err(dq_m, dq_r):.5f}"
+        assert err(dk_m, dk_r) < self.TOL_F16, f"dK err={err(dk_m, dk_r):.5f}"
+        assert err(dv_m, dv_r) < self.TOL_F16, f"dV err={err(dv_m, dv_r):.5f}"
+
+    def test_backward_gqa(self):
+        """D=512 GQA (8:2) backward: gradient shapes and finite values."""
+        mx.random.seed(12)
+        B, H_q, H_kv, N, D = 1, 8, 2, 64, 512
+        scale = float(D ** -0.5)
+        q = mx.random.normal([B, H_q, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=True)
+        mx.eval(dq_m, dk_m, dv_m)
+        assert dq_m.shape == q.shape, f"dQ shape mismatch {dq_m.shape} vs {q.shape}"
+        assert dk_m.shape == k.shape, f"dK shape mismatch {dk_m.shape} vs {k.shape}"
+        assert dv_m.shape == v.shape, f"dV shape mismatch {dv_m.shape} vs {v.shape}"
+        assert mx.all(mx.isfinite(dq_m)).item(), "dQ has non-finite values"
+        assert mx.all(mx.isfinite(dk_m)).item(), "dK has non-finite values"
+        assert mx.all(mx.isfinite(dv_m)).item(), "dV has non-finite values"
+
+    def test_backward_value_and_grad(self):
+        """D=512 value_and_grad works end-to-end."""
+        mx.random.seed(13)
+        B, H, N, D = 1, 2, 64, 512
+        scale = float(D ** -0.5)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+
+        def loss(q, k, v):
+            return mx.mean(flash_attention(q, k, v, scale=scale, causal=True))
+
+        val_and_grad = mx.value_and_grad(loss)
+        loss_val, grads = val_and_grad(q, k, v)
+        mx.eval(loss_val, *grads)
+        assert mx.isfinite(loss_val).item(), "loss is not finite"
+        assert all(mx.all(mx.isfinite(g)).item() for g in grads), "grads have non-finite values"

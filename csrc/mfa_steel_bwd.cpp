@@ -303,12 +303,14 @@ std::string generate_steel_backward_dq_source(
   const int TQ  = BQ / (WM * WN * 8);   // = 1 for all configs
   const int TGP = WM * WN * 32;
 
-  // D-split: BD=256 exceeds 32KB TGP when using full BD for Q/dO/KV smem.
-  // Split the D dimension in half (BD_HALF=128) and process lo/hi in 2 passes.
+  // D-split: BD>128 exceeds 32KB TGP when using full BD for Q/dO/KV smem.
+  // Split into BD_HALF=128 chunks (D_SPLITS = BD/128).
+  // D=256 → D_SPLITS=2 (lo/hi). D=512 → D_SPLITS=4.
   // For BD<=128: d_split=false, BD_HALF=BD, TD_HALF=TD — path is identical.
-  const bool d_split = (BD > 128);
-  const int  BD_HALF = d_split ? BD / 2 : BD;
-  const int  TD_HALF = BD_HALF / 8;
+  const bool d_split   = (BD > 128);
+  const int  BD_HALF   = d_split ? 128 : BD;   // fixed 128, not BD/2
+  const int  TD_HALF   = BD_HALF / 8;
+  const int  D_SPLITS  = d_split ? (BD / BD_HALF) : 1;
 
   std::ostringstream ss;
 
@@ -327,8 +329,9 @@ std::string generate_steel_backward_dq_source(
   ss << "#define MFA_TD  " << TD << "\n";
   ss << "#define MFA_TK  " << TK << "\n";
   ss << "#define MFA_TQ  " << TQ << "\n";
-  ss << "#define MFA_BD_HALF  " << BD_HALF << "\n";
-  ss << "#define MFA_TD_HALF  " << TD_HALF << "\n";
+  ss << "#define MFA_BD_HALF   " << BD_HALF  << "\n";
+  ss << "#define MFA_TD_HALF   " << TD_HALF  << "\n";
+  ss << "#define MFA_D_SPLITS  " << D_SPLITS << "\n";
   // GQA factor: baked as compile-time constant to avoid struct-field read issues.
   ss << "#define MFA_GQA_FACTOR  " << key.gqa_factor << "\n";
   ss << "\n";
@@ -416,17 +419,10 @@ std::string generate_steel_backward_dq_source(
     ss << "  VtLoader loader_vt(V,  (int)p->V_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
     ss << "  KrLoader loader_kr(K,  (int)p->K_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n\n";
   } else {
-    // D=256 d-split: lo loaders at base, hi loaders offset by BD_HALF elements
-    ss << "  QLoader  loader_q_lo (Q,              (int)p->Q_strides[2],  Q_smem,  (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  QLoader  loader_q_hi (Q + MFA_BD_HALF,(int)p->Q_strides[2],  Q_smem,  (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  QLoader  loader_dO_lo(dO,              (int)p->dO_strides[2], dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  QLoader  loader_dO_hi(dO + MFA_BD_HALF,(int)p->dO_strides[2],dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  KtLoader loader_kt_lo(K,              (int)p->K_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  KtLoader loader_kt_hi(K + MFA_BD_HALF,(int)p->K_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  VtLoader loader_vt_lo(V,              (int)p->V_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  VtLoader loader_vt_hi(V + MFA_BD_HALF,(int)p->V_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  KrLoader loader_kr_lo(K,              (int)p->K_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "  KrLoader loader_kr_hi(K + MFA_BD_HALF,(int)p->K_strides[2],  KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n\n";
+    // d_split (D=256: D_SPLITS=2, D=512: D_SPLITS=4):
+    // KV/KR loaders are instantiated inline per D-chunk per K-tile.
+    // Q/dO persistent loaders not needed; they're also created inline in the hoist loop.
+    // (No persistent loader declarations needed here.)
   }
 
   // Simd coords
@@ -461,48 +457,40 @@ std::string generate_steel_backward_dq_source(
     ss << "  dOtile.template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n";
     ss << "  dQtile.clear();\n\n";
   } else {
-    // D=256 d-split: load Q_lo, Q_hi, dO_lo, dO_hi into separate register tiles.
-    // KV_smem is reused for each D-half within the K-tile loop below.
-    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Qtile_lo, Qtile_hi;\n";
-    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dOtile_lo, dOtile_hi;\n";
-    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dQtile_lo, dQtile_hi;\n";
+    // d_split: Q/dO hoisted into D_SPLITS-wide tile arrays; reuse Q_smem per chunk.
+    // KV_smem is reused for each D-chunk within the K-tile loop below.
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Qtile [MFA_D_SPLITS];\n";
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dOtile[MFA_D_SPLITS];\n";
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dQtile[MFA_D_SPLITS];\n";
     ss << "  MFAMMATile<AccT, 1, MFA_TK> Stile, dPtile;\n";
     ss << "  MFAMMATile<AccT, 1, MFA_TK> Ktile;\n";
     ss << "  MFAMMATile<AccT, 1, 1>      KRtile;\n\n";
 
-    // Load Q_lo
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
-    ss << "    loader_q_lo.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "  } else { loader_q_lo.load_unsafe(); }\n";
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  Qtile_lo.template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n\n";
+    // Hoist Q: load each BD_HALF-wide chunk into Qtile[dh]
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    QLoader loader_q_dh(Q + dh * MFA_BD_HALF, (int)p->Q_strides[2],\n";
+    ss << "                        Q_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    if ((int)tid.x == p->NQ_aligned) loader_q_dh.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
+    ss << "    else                             loader_q_dh.load_unsafe();\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    Qtile[dh].template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n";
+    ss << "  }\n\n";
 
-    // Load Q_hi
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
-    ss << "    loader_q_hi.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "  } else { loader_q_hi.load_unsafe(); }\n";
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  Qtile_hi.template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n\n";
-
-    // Load dO_lo
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
-    ss << "    loader_dO_lo.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "  } else { loader_dO_lo.load_unsafe(); }\n";
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  dOtile_lo.template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n\n";
-
-    // Load dO_hi
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
-    ss << "    loader_dO_hi.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "  } else { loader_dO_hi.load_unsafe(); }\n";
-    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  dOtile_hi.template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n";
-    ss << "  dQtile_lo.clear();\n";
-    ss << "  dQtile_hi.clear();\n\n";
+    // Hoist dO: load each BD_HALF-wide chunk into dOtile[dh]
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    QLoader loader_dO_dh(dO + dh * MFA_BD_HALF, (int)p->dO_strides[2],\n";
+    ss << "                         dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    if ((int)tid.x == p->NQ_aligned) loader_dO_dh.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
+    ss << "    else                             loader_dO_dh.load_unsafe();\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    dOtile[dh].template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n";
+    ss << "  }\n";
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) dQtile[dh].clear();\n\n";
   }
 
   // Read per-row L and delta scalars (one per thread, indexed by Q-row = tm+sm)
@@ -542,37 +530,29 @@ std::string generate_steel_backward_dq_source(
     ss << "            Qtile.frag_at(0,dd), Ktile.frag_at(0,ik), Stile.frag_at(0,ik));\n";
     ss << "    }\n\n";
   } else {
-    // ── D=256 d-split path ─────────────────────────────────────────────
-    // Phase 1a: K_t_lo → S += Q_lo @ K^T_lo
-    ss << "    // Phase 1a (d-split): K_t lo → S += Q_lo @ K^T_lo\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_kt_lo.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_kt_lo.load_unsafe();\n";
+    // ── d-split path (D=256: D_SPLITS=2; D=512: D_SPLITS=4) ───────────
+    // Phase 1: S += Q_dh @ K^T_dh  for each D-chunk dh
+    ss << "    // Phase 1 (d-split): S = sum_dh Q_dh @ K^T_dh\n";
     ss << "    Stile.clear();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "      Ktile.template load<T,1,1>(\n";
-    ss << "          &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "      KtLoader loader_kt_dh(K + dh * MFA_BD_HALF\n";
+    ss << "                            + (long)kb * MFA_BK * p->K_strides[2],\n";
+    ss << "                            (int)p->K_strides[2], KV_smem,\n";
+    ss << "                            (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      if (kb == p->NK_aligned) loader_kt_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "      else                     loader_kt_dh.load_unsafe();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "        MFAMMAFrag<AccT>::mma(Stile.frag_at(0,ik),\n";
-    ss << "            Qtile_lo.frag_at(0,dd), Ktile.frag_at(0,ik), Stile.frag_at(0,ik));\n";
-    ss << "    }\n";
-    // Phase 1b: K_t_hi → S += Q_hi @ K^T_hi
-    ss << "    // Phase 1b (d-split): K_t hi → S += Q_hi @ K^T_hi\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_kt_hi.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_kt_hi.load_unsafe();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "      Ktile.template load<T,1,1>(\n";
-    ss << "          &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "        MFAMMAFrag<AccT>::mma(Stile.frag_at(0,ik),\n";
-    ss << "            Qtile_hi.frag_at(0,dd), Ktile.frag_at(0,ik), Stile.frag_at(0,ik));\n";
+    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
+    ss << "        Ktile.template load<T,1,1>(\n";
+    ss << "            &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "          MFAMMAFrag<AccT>::mma(Stile.frag_at(0,ik),\n";
+    ss << "              Qtile[dh].frag_at(0,dd), Ktile.frag_at(0,ik), Stile.frag_at(0,ik));\n";
+    ss << "      }\n";
     ss << "    }\n\n";
   }
 
@@ -622,35 +602,28 @@ std::string generate_steel_backward_dq_source(
     ss << "            dOtile.frag_at(0,dd), Ktile.frag_at(0,ik), dPtile.frag_at(0,ik));\n";
     ss << "    }\n\n";
   } else {
-    // ── D=256 d-split: Phase 2a/2b (V_lo/hi → dP) ────────────────────────
-    ss << "    // Phase 2a (d-split): V_t lo → dP += dO_lo @ V^T_lo\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_vt_lo.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_vt_lo.load_unsafe();\n";
+    // ── d-split Phase 2: dP += dO_dh @ V^T_dh  for each D-chunk ───────────
+    ss << "    // Phase 2 (d-split): dP = sum_dh dO_dh @ V^T_dh\n";
     ss << "    dPtile.clear();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "      Ktile.template load<T,1,1>(\n";
-    ss << "          &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "      VtLoader loader_vt_dh(V + dh * MFA_BD_HALF\n";
+    ss << "                            + (long)kb * MFA_BK * p->V_strides[2],\n";
+    ss << "                            (int)p->V_strides[2], KV_smem,\n";
+    ss << "                            (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      if (kb == p->NK_aligned) loader_vt_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "      else                     loader_vt_dh.load_unsafe();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "        MFAMMAFrag<AccT>::mma(dPtile.frag_at(0,ik),\n";
-    ss << "            dOtile_lo.frag_at(0,dd), Ktile.frag_at(0,ik), dPtile.frag_at(0,ik));\n";
-    ss << "    }\n";
-    ss << "    // Phase 2b (d-split): V_t hi → dP += dO_hi @ V^T_hi\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_vt_hi.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_vt_hi.load_unsafe();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "      Ktile.template load<T,1,1>(\n";
-    ss << "          &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "        MFAMMAFrag<AccT>::mma(dPtile.frag_at(0,ik),\n";
-    ss << "            dOtile_hi.frag_at(0,dd), Ktile.frag_at(0,ik), dPtile.frag_at(0,ik));\n";
+    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
+    ss << "        Ktile.template load<T,1,1>(\n";
+    ss << "            &KV_smem[Ks_off + (short)(dd*8) * LDKt], LDKt, 1);\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "          MFAMMAFrag<AccT>::mma(dPtile.frag_at(0,ik),\n";
+    ss << "              dOtile[dh].frag_at(0,dd), Ktile.frag_at(0,ik), dPtile.frag_at(0,ik));\n";
+    ss << "      }\n";
     ss << "    }\n\n";
   }
 
@@ -697,56 +670,37 @@ std::string generate_steel_backward_dq_source(
     ss << "    loader_vt.next();\n";
     ss << "    loader_kr.next();\n";
   } else {
-    // ── D=256 d-split: Phase 3a/3b (K_lo/hi row-major → dQ_lo/hi) ─────────
-    // Phase 3a: K_r_lo → dQ_lo += dS @ K_lo
-    ss << "    // Phase 3a (d-split): K_r lo → dQ_lo += dS @ K_lo\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_kr_lo.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_kr_lo.load_unsafe();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    // ── d-split Phase 3: dQ_dh += dS @ K_dh  for each D-chunk ─────────────
+    ss << "    // Phase 3 (d-split): dQ_dh += dS @ K_r_dh\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "      KrLoader loader_kr_dh(K + dh * MFA_BD_HALF\n";
+    ss << "                            + (long)kb * MFA_BK * p->K_strides[2],\n";
+    ss << "                            (int)p->K_strides[2], KV_smem,\n";
+    ss << "                            (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      if (kb == p->NK_aligned) loader_kr_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "      else                     loader_kr_dh.load_unsafe();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
+    ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short id = 0; id < MFA_TD_HALF; id++) {\n";
-    ss << "          KRtile.template load<T,1,1>(\n";
-    ss << "              &KV_smem[KRs_off + (short)(ik*8)*LDKr + (short)(id*8)],\n";
-    ss << "              LDKr, 1);\n";
-    ss << "          MFAMMAFrag<AccT>::mma(\n";
-    ss << "              dQtile_lo.frag_at(iq,id),\n";
-    ss << "              Stile     .frag_at(iq,ik),\n";
-    ss << "              KRtile.frag_at(0, 0),\n";
-    ss << "              dQtile_lo.frag_at(iq,id));\n";
-    ss << "        }\n";
-    ss << "      }\n";
-    ss << "    }\n";
-    // Phase 3b: K_r_hi → dQ_hi += dS @ K_hi
-    ss << "    // Phase 3b (d-split): K_r hi → dQ_hi += dS @ K_hi\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) loader_kr_hi.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "    else                     loader_kr_hi.load_unsafe();\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    STEEL_PRAGMA_UNROLL\n";
-    ss << "    for (short iq = 0; iq < MFA_TQ; iq++) {\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
-    ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short id = 0; id < MFA_TD_HALF; id++) {\n";
-    ss << "          KRtile.template load<T,1,1>(\n";
-    ss << "              &KV_smem[KRs_off + (short)(ik*8)*LDKr + (short)(id*8)],\n";
-    ss << "              LDKr, 1);\n";
-    ss << "          MFAMMAFrag<AccT>::mma(\n";
-    ss << "              dQtile_hi.frag_at(iq,id),\n";
-    ss << "              Stile     .frag_at(iq,ik),\n";
-    ss << "              KRtile.frag_at(0, 0),\n";
-    ss << "              dQtile_hi.frag_at(iq,id));\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++) {\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short id = 0; id < MFA_TD_HALF; id++) {\n";
+    ss << "            KRtile.template load<T,1,1>(\n";
+    ss << "                &KV_smem[KRs_off + (short)(ik*8)*LDKr + (short)(id*8)],\n";
+    ss << "                LDKr, 1);\n";
+    ss << "            MFAMMAFrag<AccT>::mma(\n";
+    ss << "                dQtile[dh].frag_at(iq,id),\n";
+    ss << "                Stile     .frag_at(iq,ik),\n";
+    ss << "                KRtile.frag_at(0, 0),\n";
+    ss << "                dQtile[dh].frag_at(iq,id));\n";
+    ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";
     ss << "    }\n\n";
-    ss << "    loader_kt_lo.next(); loader_kt_hi.next();\n";
-    ss << "    loader_vt_lo.next(); loader_vt_hi.next();\n";
-    ss << "    loader_kr_lo.next(); loader_kr_hi.next();\n";
+    // No .next() needed: inline loaders compute offset from kb each iteration.
   }
 
   ss << "  } // end kb loop\n\n";
@@ -764,20 +718,18 @@ std::string generate_steel_backward_dq_source(
     ss << "    dQtile.template store<T,1,1>(dQ, (int)p->dQ_strides[2]);\n";
     ss << "  }\n";
   } else {
-    // D-split: write lo half at column offset sn, hi half at sn+BD_HALF
-    ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
-    ss << "    short rows_rem = (short)(p->qL_rem - (tm + sm));\n";
-    ss << "    if (rows_rem > 0) {\n";
-    ss << "      dQtile_lo.template store_safe<T,1,1>(\n";
-    ss << "          dQ, (int)p->dQ_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
-    ss << "      dQtile_hi.template store_safe<T,1,1>(\n";
-    ss << "          dQ + MFA_BD_HALF, (int)p->dQ_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    // d-split: write each BD_HALF-wide chunk at dQ + dh*BD_HALF
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    if ((int)tid.x == p->NQ_aligned) {\n";
+    ss << "      short rows_rem = (short)(p->qL_rem - (tm + sm));\n";
+    ss << "      if (rows_rem > 0)\n";
+    ss << "        dQtile[dh].template store_safe<T,1,1>(\n";
+    ss << "            dQ + dh * MFA_BD_HALF, (int)p->dQ_strides[2],\n";
+    ss << "            short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    ss << "    } else {\n";
+    ss << "      dQtile[dh].template store<T,1,1>(dQ + dh * MFA_BD_HALF, (int)p->dQ_strides[2]);\n";
     ss << "    }\n";
-    ss << "  } else {\n";
-    ss << "    dQtile_lo.template store<T,1,1>(dQ,              (int)p->dQ_strides[2]);\n";
-    ss << "    dQtile_hi.template store<T,1,1>(dQ + MFA_BD_HALF,(int)p->dQ_strides[2]);\n";
     ss << "  }\n";
   }
   ss << "}\n";
@@ -820,9 +772,10 @@ std::string generate_steel_backward_dkv_source(
   const int WN  = 1;
   const bool causal = key.causal;
 
-  const bool d_split = (BD > 128);
-  const int  BD_HALF = d_split ? BD / 2 : BD;
-  const int  TD_HALF = BD_HALF / 8;
+  const bool d_split  = (BD > 128);
+  const int  BD_HALF  = d_split ? 128 : BD;   // fixed 128, not BD/2
+  const int  TD_HALF  = BD_HALF / 8;
+  const int  D_SPLITS = d_split ? (BD / BD_HALF) : 1;
 
   const char* dtype_str = "half";
   if (key.dtype == 1)      dtype_str = "bfloat";
@@ -848,8 +801,9 @@ std::string generate_steel_backward_dkv_source(
   ss << "#define MFA_TD  " << TD << "\n";
   ss << "#define MFA_TK  " << TK << "\n";
   ss << "#define MFA_TQ  " << TQ << "\n";
-  ss << "#define MFA_BD_HALF  " << BD_HALF << "\n";
-  ss << "#define MFA_TD_HALF  " << TD_HALF << "\n";
+  ss << "#define MFA_BD_HALF   " << BD_HALF  << "\n";
+  ss << "#define MFA_TD_HALF   " << TD_HALF  << "\n";
+  ss << "#define MFA_D_SPLITS  " << D_SPLITS << "\n";
   // GQA factor: baked as compile-time constant to avoid struct-field read issues.
   ss << "#define MFA_GQA_FACTOR  " << key.gqa_factor << "\n";
   ss << "\n";
@@ -937,10 +891,10 @@ std::string generate_steel_backward_dkv_source(
     ss << "  dKtile.clear();\n";
     ss << "  dVtile.clear();\n\n";
   } else {
-    ss << "  MFAMMATile<AccT, MFA_TK, MFA_TD_HALF> dKtile_lo, dKtile_hi;\n";
-    ss << "  MFAMMATile<AccT, MFA_TK, MFA_TD_HALF> dVtile_lo, dVtile_hi;\n";
-    ss << "  dKtile_lo.clear(); dKtile_hi.clear();\n";
-    ss << "  dVtile_lo.clear(); dVtile_hi.clear();\n\n";
+    ss << "  MFAMMATile<AccT, MFA_TK, MFA_TD_HALF> dKtile[MFA_D_SPLITS];\n";
+    ss << "  MFAMMATile<AccT, MFA_TK, MFA_TD_HALF> dVtile[MFA_D_SPLITS];\n";
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) { dKtile[dh].clear(); dVtile[dh].clear(); }\n\n";
   }
 
   // Loop over Q heads that map to this KV head (for GQA)
@@ -975,8 +929,8 @@ std::string generate_steel_backward_dkv_source(
   if (!d_split) {
     ss << "      MFAMMATile<AccT, MFA_TQ, MFA_TD> Qtile, dOtile;\n";
   } else {
-    ss << "      MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Qtile_lo, Qtile_hi;\n";
-    ss << "      MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dOtile_lo, dOtile_hi;\n";
+    ss << "      MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Qtile [MFA_D_SPLITS];\n";
+    ss << "      MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> dOtile[MFA_D_SPLITS];\n";
   }
   ss << "      Stile.clear();\n\n";
 
@@ -1009,68 +963,48 @@ std::string generate_steel_backward_dkv_source(
     ss << "                Qtile.frag_at(iq,dd), Ktile.frag_at(0,ik), Stile.frag_at(iq,ik));\n";
     ss << "      }\n\n";
   } else {
-    // ── D=256 d-split: lo/hi RowLoaders; K_t loaded in two BD_HALF passes ─
-    // Load Q_lo → Qtile_lo
-    ss << "      RowLoader lq_lo (Qptr,               (int)p->Q_strides[2],  Q_smem,  (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      RowLoader lq_hi (Qptr  + MFA_BD_HALF,(int)p->Q_strides[2],  Q_smem,  (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      RowLoader ldO_lo(dOptr,               (int)p->dO_strides[2], dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      RowLoader ldO_hi(dOptr + MFA_BD_HALF,(int)p->dO_strides[2], dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      KtLoader  lkt_lo(K,               (int)p->K_strides[2], KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      KtLoader  lkt_hi(K + MFA_BD_HALF, (int)p->K_strides[2], KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n\n";
-    // Load Q_lo
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if (qb == p->NQ_aligned) lq_lo.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "      else lq_lo.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      Qtile_lo.template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n\n";
-    // Load Q_hi
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if (qb == p->NQ_aligned) lq_hi.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "      else lq_hi.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      Qtile_hi.template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n\n";
-    // Load dO_lo
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if (qb == p->NQ_aligned) ldO_lo.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "      else ldO_lo.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      dOtile_lo.template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n\n";
-    // Load dO_hi
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if (qb == p->NQ_aligned) ldO_hi.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
-    ss << "      else ldO_hi.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      dOtile_hi.template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n\n";
-    // S = Q_lo@K^T_lo + Q_hi@K^T_hi
-    ss << "      // S 1a: K_t lo → S += Q_lo @ K^T_lo\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if ((int)tid.x == p->NK_aligned) lkt_lo.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "      else                             lkt_lo.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    // ── d-split (D=256: D_SPLITS=2; D=512: D_SPLITS=4) ────────────────────
+    // Load Q chunks: Qtile[dh] = Q[rows, dh*BD_HALF .. (dh+1)*BD_HALF]
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "        Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
-    ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
-    ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(Stile.frag_at(iq,ik),\n";
-    ss << "                Qtile_lo.frag_at(iq,dd), Ktile.frag_at(0,ik), Stile.frag_at(iq,ik));\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "        RowLoader lq_dh(Qptr + dh * MFA_BD_HALF, (int)p->Q_strides[2],\n";
+    ss << "            Q_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        if (qb == p->NQ_aligned) lq_dh.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
+    ss << "        else                     lq_dh.load_unsafe();\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        Qtile[dh].template load<T,1,1>(&Q_smem[Qs_off], LDQ, 1);\n";
     ss << "      }\n";
-    ss << "      // S 1b: K_t hi → S += Q_hi @ K^T_hi\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if ((int)tid.x == p->NK_aligned) lkt_hi.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "      else                             lkt_hi.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    // Load dO chunks
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "        Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "        RowLoader ldO_dh(dOptr + dh * MFA_BD_HALF, (int)p->dO_strides[2],\n";
+    ss << "            dO_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        if (qb == p->NQ_aligned) ldO_dh.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
+    ss << "        else                     ldO_dh.load_unsafe();\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        dOtile[dh].template load<T,1,1>(&dO_smem[dOs_off], LDdO, 1);\n";
+    ss << "      }\n\n";
+    // S = sum_dh Qtile[dh] @ K^T_dh
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "        KtLoader lkt_dh(K + dh * MFA_BD_HALF, (int)p->K_strides[2],\n";
+    ss << "            KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        if ((int)tid.x == p->NK_aligned) lkt_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "        else                             lkt_dh.load_unsafe();\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "        for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
+    ss << "          Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(Stile.frag_at(iq,ik),\n";
-    ss << "                Qtile_hi.frag_at(iq,dd), Ktile.frag_at(0,ik), Stile.frag_at(iq,ik));\n";
+    ss << "          for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "            STEEL_PRAGMA_UNROLL\n";
+    ss << "            for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "              MFAMMAFrag<AccT>::mma(Stile.frag_at(iq,ik),\n";
+    ss << "                  Qtile[dh].frag_at(iq,dd), Ktile.frag_at(0,ik), Stile.frag_at(iq,ik));\n";
+    ss << "        }\n";
     ss << "      }\n\n";
   }
 
@@ -1171,26 +1105,19 @@ std::string generate_steel_backward_dkv_source(
     ss << "                dOtile .frag_at(iq,id),\n";
     ss << "                dVtile.frag_at(ik,id));\n\n";
   } else {
-    ss << "      // dV_lo[TK,TD_HALF] += Pt[TK,TQ] @ dO_lo[TQ,TD_HALF]\n";
+    // d_split: dV[dh] += Pt @ dOtile[dh]  for each chunk dh
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short id = 0; id < MFA_TD_HALF; id++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(\n";
-    ss << "                dVtile_lo.frag_at(ik,id), Pt_tile.frag_at(ik,iq),\n";
-    ss << "                dOtile_lo.frag_at(iq,id), dVtile_lo.frag_at(ik,id));\n";
-    ss << "      // dV_hi[TK,TD_HALF] += Pt[TK,TQ] @ dO_hi[TQ,TD_HALF]\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short iq = 0; iq < MFA_TQ; iq++)\n";
-    ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short id = 0; id < MFA_TD_HALF; id++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(\n";
-    ss << "                dVtile_hi.frag_at(ik,id), Pt_tile.frag_at(ik,iq),\n";
-    ss << "                dOtile_hi.frag_at(iq,id), dVtile_hi.frag_at(ik,id));\n\n";
+    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "            STEEL_PRAGMA_UNROLL\n";
+    ss << "            for (short id = 0; id < MFA_TD_HALF; id++)\n";
+    ss << "              MFAMMAFrag<AccT>::mma(\n";
+    ss << "                  dVtile[dh].frag_at(ik,id), Pt_tile.frag_at(ik,iq),\n";
+    ss << "                  dOtile[dh].frag_at(iq,id), dVtile[dh].frag_at(ik,id));\n";
+    ss << "      }\n\n";
   }
 
   // Load V transposed → KV_smem; compute dP = dO @ V^T
@@ -1214,37 +1141,25 @@ std::string generate_steel_backward_dkv_source(
     ss << "                dOtile.frag_at(iq,dd), Ktile.frag_at(0,ik), dPtile.frag_at(iq,ik));\n";
     ss << "      }\n\n";
   } else {
-    // V_t_lo
-    ss << "      KtLoader lvt_lo(V,               (int)p->V_strides[2], KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      KtLoader lvt_hi(V + MFA_BD_HALF, (int)p->V_strides[2], KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if ((int)tid.x == p->NK_aligned) lvt_lo.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "      else                             lvt_lo.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    // d_split: dP += dOtile[dh] @ V^T_dh  for each chunk dh
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "        Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "        KtLoader lvt_dh(V + dh * MFA_BD_HALF, (int)p->V_strides[2],\n";
+    ss << "            KV_smem, (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "        if ((int)tid.x == p->NK_aligned) lvt_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "        else                             lvt_dh.load_unsafe();\n";
+    ss << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "        for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
+    ss << "          Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(dPtile.frag_at(iq,ik),\n";
-    ss << "                dOtile_lo.frag_at(iq,dd), Ktile.frag_at(0,ik), dPtile.frag_at(iq,ik));\n";
-    ss << "      }\n";
-    // V_t_hi
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      if ((int)tid.x == p->NK_aligned) lvt_hi.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
-    ss << "      else                             lvt_hi.load_unsafe();\n";
-    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "        Ktile.template load<T,1,1>(&KV_smem[Kts_off + (short)(dd*8)*LDKt], LDKt, 1);\n";
-    ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
-    ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(dPtile.frag_at(iq,ik),\n";
-    ss << "                dOtile_hi.frag_at(iq,dd), Ktile.frag_at(0,ik), dPtile.frag_at(iq,ik));\n";
+    ss << "          for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "            STEEL_PRAGMA_UNROLL\n";
+    ss << "            for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "              MFAMMAFrag<AccT>::mma(dPtile.frag_at(iq,ik),\n";
+    ss << "                  dOtile[dh].frag_at(iq,dd), Ktile.frag_at(0,ik), dPtile.frag_at(iq,ik));\n";
+    ss << "        }\n";
     ss << "      }\n\n";
   }
 
@@ -1288,25 +1203,19 @@ std::string generate_steel_backward_dkv_source(
     ss << "                dKtile.frag_at(ik,id), dSt_tile.frag_at(ik,iq),\n";
     ss << "                Qtile  .frag_at(iq,id), dKtile.frag_at(ik,id));\n\n";
   } else {
-    ss << "      // dK_lo += dSt @ Q_lo; dK_hi += dSt @ Q_hi\n";
+    // d_split: dK[dh] += dSt @ Qtile[dh]  for each chunk dh
     ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "      for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short id = 0; id < MFA_TD_HALF; id++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(\n";
-    ss << "                dKtile_lo.frag_at(ik,id), dSt_tile.frag_at(ik,iq),\n";
-    ss << "                Qtile_lo  .frag_at(iq,id), dKtile_lo.frag_at(ik,id));\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short iq = 0; iq < MFA_TQ; iq++)\n";
-    ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
-    ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short id = 0; id < MFA_TD_HALF; id++)\n";
-    ss << "            MFAMMAFrag<AccT>::mma(\n";
-    ss << "                dKtile_hi.frag_at(ik,id), dSt_tile.frag_at(ik,iq),\n";
-    ss << "                Qtile_hi  .frag_at(iq,id), dKtile_hi.frag_at(ik,id));\n\n";
+    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "            STEEL_PRAGMA_UNROLL\n";
+    ss << "            for (short id = 0; id < MFA_TD_HALF; id++)\n";
+    ss << "              MFAMMAFrag<AccT>::mma(\n";
+    ss << "                  dKtile[dh].frag_at(ik,id), dSt_tile.frag_at(ik,iq),\n";
+    ss << "                  Qtile[dh].frag_at(iq,id), dKtile[dh].frag_at(ik,id));\n";
+    ss << "      }\n\n";
   }
 
   ss << "    } // end qb loop\n";
@@ -1334,34 +1243,34 @@ std::string generate_steel_backward_dkv_source(
     ss << "    dKtile.template store<T,1,1>(dK, (int)p->dK_strides[2]);\n";
     ss << "  }\n";
   } else {
-    // D=256 d-split: write lo half at sn, hi half at sn+BD_HALF
-    ss << "  // Write dV_lo and dV_hi\n";
+    // d-split: write each BD_HALF-wide chunk at offset dh*BD_HALF
+    ss << "  // Write dV (d_split: MFA_D_SPLITS chunks of BD_HALF cols)\n";
     ss << "  dV += sm * (long)p->dV_strides[2] + sn;\n";
-    ss << "  if ((int)tid.x == p->NK_aligned) {\n";
-    ss << "    short rows_rem = (short)(p->kL_rem - sm);\n";
-    ss << "    if (rows_rem > 0) {\n";
-    ss << "      dVtile_lo.template store_safe<T,1,1>(dV, (int)p->dV_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
-    ss << "      dVtile_hi.template store_safe<T,1,1>(dV + MFA_BD_HALF, (int)p->dV_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    if ((int)tid.x == p->NK_aligned) {\n";
+    ss << "      short rows_rem = (short)(p->kL_rem - sm);\n";
+    ss << "      if (rows_rem > 0)\n";
+    ss << "        dVtile[dh].template store_safe<T,1,1>(\n";
+    ss << "            dV + dh * MFA_BD_HALF, (int)p->dV_strides[2],\n";
+    ss << "            short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    ss << "    } else {\n";
+    ss << "      dVtile[dh].template store<T,1,1>(dV + dh * MFA_BD_HALF, (int)p->dV_strides[2]);\n";
     ss << "    }\n";
-    ss << "  } else {\n";
-    ss << "    dVtile_lo.template store<T,1,1>(dV,              (int)p->dV_strides[2]);\n";
-    ss << "    dVtile_hi.template store<T,1,1>(dV + MFA_BD_HALF,(int)p->dV_strides[2]);\n";
     ss << "  }\n\n";
-    ss << "  // Write dK_lo and dK_hi\n";
+    ss << "  // Write dK (d_split: MFA_D_SPLITS chunks of BD_HALF cols)\n";
     ss << "  dK += sm * (long)p->dK_strides[2] + sn;\n";
-    ss << "  if ((int)tid.x == p->NK_aligned) {\n";
-    ss << "    short rows_rem = (short)(p->kL_rem - sm);\n";
-    ss << "    if (rows_rem > 0) {\n";
-    ss << "      dKtile_lo.template store_safe<T,1,1>(dK, (int)p->dK_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
-    ss << "      dKtile_hi.template store_safe<T,1,1>(dK + MFA_BD_HALF, (int)p->dK_strides[2],\n";
-    ss << "          short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    if ((int)tid.x == p->NK_aligned) {\n";
+    ss << "      short rows_rem = (short)(p->kL_rem - sm);\n";
+    ss << "      if (rows_rem > 0)\n";
+    ss << "        dKtile[dh].template store_safe<T,1,1>(\n";
+    ss << "            dK + dh * MFA_BD_HALF, (int)p->dK_strides[2],\n";
+    ss << "            short2((short)(MFA_BD_HALF - sn), rows_rem));\n";
+    ss << "    } else {\n";
+    ss << "      dKtile[dh].template store<T,1,1>(dK + dh * MFA_BD_HALF, (int)p->dK_strides[2]);\n";
     ss << "    }\n";
-    ss << "  } else {\n";
-    ss << "    dKtile_lo.template store<T,1,1>(dK,              (int)p->dK_strides[2]);\n";
-    ss << "    dKtile_hi.template store<T,1,1>(dK + MFA_BD_HALF,(int)p->dK_strides[2]);\n";
     ss << "  }\n";
   }
   ss << "}\n";
