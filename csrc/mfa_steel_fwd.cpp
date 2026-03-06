@@ -527,12 +527,11 @@ struct MFAExpSubOp {
   ss << "  const ulong kv_boff_v = (ulong)tid.z * p->V_strides[0]\n";
   ss << "                        + kv_head      * p->V_strides[1];\n";
   ss << "\n";
-  ss << "  Q += boff         + (ulong)tid.x * MFA_BQ * p->Q_strides[2];\n";
+  ss << "  Q += boff;        // qb-block offset applied inside persistent loop\n";
   ss << "  K += kv_boff_k;  // K loader walks K-seq; no per-block offset\n";
   ss << "  V += kv_boff_v;\n";
   ss << "  O += (ulong)tid.z * p->O_strides[0]\n";
-  ss << "     + (ulong)tid.y * p->O_strides[1]\n";
-  ss << "     + (ulong)tid.x * MFA_BQ * p->O_strides[2];\n";
+  ss << "     + (ulong)tid.y * p->O_strides[1];\n"; // qb offset applied inside loop
   ss << "\n";
 
   // Threadgroup memory
@@ -573,15 +572,7 @@ struct MFAExpSubOp {
   ss << "      /*reduction_dim=*/ 0,\n";
   ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
   ss << "\n";
-  ss << "  QLoader loader_q(Q, (int)p->Q_strides[2], Qs,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-  ss << "  KLoader loader_k(K, (int)p->K_strides[2], Ks,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-  ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-  ss << "\n";
-
-  // MMA tile declarations
+  // MMA tile declarations — loop-invariant, declared outside the persistent loop
   ss << "  const AccT scale = p->scale * M_LOG2E_F;\n";
   ss << "\n";
   ss << "  // Warp offset within Q tile\n";
@@ -596,17 +587,33 @@ struct MFAExpSubOp {
   ss << "\n";
   // Qtile is TQ×TD so Q is loaded once into registers before the K loop.
   // Ktile stays 1×TK (one D-slice per DD iteration) to avoid register pressure.
+  // Tile and state arrays declared outside loop; reset inside per qb.
   ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Qtile;\n";
   ss << "  MFAMMATile<AccT, 1,     MFA_TK>  Ktile;\n";
   ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TK> Stile;\n";
   ss << "  MFAMMATile<AccT, 1,    1>       Vtile;\n";
   ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Otile;\n";
-  ss << "  Otile.clear();\n";
-  ss << "\n";
-
-  // Online softmax state
   ss << "  AccT max_score[MFA_ROWS_PT];\n";
   ss << "  AccT sum_score[MFA_ROWS_PT];\n";
+  ss << "\n";
+
+  // Persistent kernel: each threadgroup processes 4 consecutive Q-blocks.
+  // Grid dims shrink from (NQ,H,B) to (ceil(NQ/4),H,B).
+  ss << "  const int qb_start = (int)tid.x * 4;\n";
+  ss << "  const int qb_end   = min(qb_start + 4, p->NQ);\n";
+  ss << "  for (int qb = qb_start; qb < qb_end; qb++) {\n";
+  // Per-qb source/destination pointers
+  ss << "  const device T* Q_qb = Q + (long)qb * MFA_BQ * p->Q_strides[2];\n";
+  ss << "  device T*       O_qb = O + (long)qb * MFA_BQ * p->O_strides[2];\n";
+  // Re-instantiate loaders each iteration: QLoader advances in Q; KLoader/VLoader rewind
+  ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
+  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  ss << "  KLoader loader_k(K, (int)p->K_strides[2], Ks,\n";
+  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
+  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  // Reset accumulator and softmax state for this Q-block
+  ss << "  Otile.clear();\n";
   ss << "  STEEL_PRAGMA_UNROLL\n";
   ss << "  for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
   ss << "    max_score[i] = -INFINITY;\n";
@@ -616,7 +623,7 @@ struct MFAExpSubOp {
 
   // Cooperative Q load: device → threadgroup SRAM
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-  ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
+  ss << "  if (qb == p->NQ_aligned) {\n";
   ss << "    loader_q.load_safe(short2(MFA_BD, p->qL_rem));\n";
   ss << "  } else {\n";
   ss << "    loader_q.load_unsafe();\n";
@@ -628,7 +635,7 @@ struct MFAExpSubOp {
   if (has_rope) {
     ss << "  {\n";
     ss << "    const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
-    ss << "    const int qabs_base = p->rope_q_base + (int)tid.x * MFA_BQ;\n";
+    ss << "    const int qabs_base = p->rope_q_base + qb * MFA_BQ;\n";
     ss << "    for (int ri = (int)local_id; ri < MFA_BQ * (MFA_BD/2);\n";
     ss << "         ri += MFA_TGP_SIZE) {\n";
     ss << "      const int row  = ri / (MFA_BD/2);\n";
@@ -663,7 +670,7 @@ struct MFAExpSubOp {
 
   // K-loop limit (causal or full)
   if (causal) {
-    ss << "  int q_max = ((int)tid.x + 1) * MFA_BQ + p->qL_off;\n";
+    ss << "  int q_max = (qb + 1) * MFA_BQ + p->qL_off;\n";
     ss << "  int kb_lim = (q_max + MFA_BK - 1) / MFA_BK;\n";
     ss << "  if (kb_lim > p->NK) kb_lim = p->NK;\n";
   } else {
@@ -677,7 +684,7 @@ struct MFAExpSubOp {
   // All threads in a threadgroup share tid.x and kb, so this is a
   // uniform branch — no warp divergence, just skips the barriers and math.
   if (sparse) {
-    ss << "    if (!block_mask[(int)tid.x * p->NK + kb]) {\n";
+    ss << "    if (!block_mask[qb * p->NK + kb]) {\n";
     ss << "      loader_k.next();\n";
     ss << "      loader_v.next();\n";
     ss << "      continue;\n";
@@ -778,7 +785,7 @@ struct MFAExpSubOp {
     ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int q_pos = (int)tid.x * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
+    ss << "        const int q_pos = qb * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
@@ -816,7 +823,7 @@ struct MFAExpSubOp {
     ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = (int)tid.x * MFA_BQ + p->qL_off\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
     ss << "                      + tm + sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
@@ -896,14 +903,14 @@ struct MFAExpSubOp {
   ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
   ss << "  threadgroup_barrier(mem_flags::mem_none);\n";
   ss << "\n";
-  ss << "  O += (long)(tm + sm) * p->O_strides[2] + sn;\n";
-  ss << "  if ((int)tid.x == p->NQ_aligned) {\n";
+  ss << "  device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2] + sn;\n";
+  ss << "  if (qb == p->NQ_aligned) {\n";
   ss << "    auto dims = short2((short)(MFA_BD - sn),\n";
   ss << "                       (short)(p->qL_rem - (tm + sm)));\n";
   ss << "    if (dims.x > 0 && dims.y > 0)\n";
-  ss << "      Otile.template store_safe<T, 1, 1>(O, (int)p->O_strides[2], dims);\n";
+  ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
   ss << "  } else {\n";
-  ss << "    Otile.template store<T, 1, 1>(O, (int)p->O_strides[2]);\n";
+  ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
   ss << "  }\n";
   ss << "\n";
 
@@ -913,7 +920,7 @@ struct MFAExpSubOp {
   ss << "  if (sn == 0) {\n";
   ss << "    const long l_boff = (long)tid.z * p->L_strides[0]\n";
   ss << "                      + (long)tid.y * p->L_strides[1];\n";
-  ss << "    const long q_base = (long)tid.x * MFA_BQ + tm + sm;\n";
+  ss << "    const long q_base = (long)qb * MFA_BQ + tm + sm;\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
   ss << "      const long q_idx = q_base + i * 8;\n";
@@ -922,6 +929,7 @@ struct MFAExpSubOp {
   ss << "      }\n";
   ss << "    }\n";
   ss << "  }\n";
+  ss << "  } // end qb loop\n";
   ss << "}\n";
 
   return ss.str();

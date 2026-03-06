@@ -397,9 +397,11 @@ void MFAttention::eval_gpu(
     enc.set_input_array(inputs[alibi_idx], 9);
   }
 
-  // 3D grid: (NQ, H, B) — each threadgroup handles one Q tile, one head, one batch
+  // 3D grid: persistent kernel — each TG handles 4 Q-tiles, so grid shrinks to ceil(NQ/4)
+  static constexpr int kTilesPerTG = 4;
+  const int NQ_tgs = (NQ + kTilesPerTG - 1) / kTilesPerTG;
   enc.dispatch_threadgroups(
-      MTL::Size::Make(NQ, H, B),
+      MTL::Size::Make(NQ_tgs, H, B),
       MTL::Size::Make(TGP_SIZE, 1, 1));
 }
 
