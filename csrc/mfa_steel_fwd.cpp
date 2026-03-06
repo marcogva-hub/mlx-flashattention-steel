@@ -2290,4 +2290,678 @@ struct MFASteelVarlenParams {
   return ss.str();
 }
 
+// ===========================================================================
+// generate_paged_steel_forward_source — Track FD
+// ===========================================================================
+//
+// Generates Metal kernel "mlx_mfa_paged_attention".
+// Key differences vs generate_steel_forward_source:
+//   • buffer(1)/buffer(2) = k_pool/v_pool [num_blocks, block_size, H_kv, D]
+//   • buffer(3) = block_table [B, max_blocks] int32
+//   • buffer(4) = seq_lens [B] int32 (per-batch effective kL)
+//   • K/V loading: per-token cooperative gather; K transposed, V row-major
+//   • Double-buffer disabled (per-token gather cannot pipeline)
+//   • kL_batch = seq_lens[b_idx] drives masking; kL in params = global max
+
+std::string generate_paged_steel_forward_source(const ShaderCache::KernelKey& key) {
+  const int BD = key.head_dim;
+  const int BQ = key.block_q;
+  const int BK = key.block_k;
+  const int WM = key.n_warps;
+  const int WN = 1;
+  const int TGP_SIZE = WM * WN * 32;
+  const bool causal     = key.causal;
+  const bool has_window = key.has_window;
+  // elems per thread for BK×BD cooperative K/V gather
+  const int kv_tile_elems    = BK * BD;
+  const int elems_per_thread = (kv_tile_elems + TGP_SIZE - 1) / TGP_SIZE;
+
+  const char* dtype_str = "half";
+  if (key.dtype == 1)      dtype_str = "bfloat";
+  else if (key.dtype == 2) dtype_str = "float";
+  const int arch_gen = key.is_m3_plus ? 15 : 13;
+
+  std::ostringstream ss;
+
+  // ── Preamble ─────────────────────────────────────────────────────────────
+  ss << R"MFA(
+#include <metal_stdlib>
+#include <metal_simdgroup>
+#include <metal_simdgroup_matrix>
+using namespace metal;
+
+#define STEEL_CONST static constant constexpr const
+)MFA";
+  ss << "#define ARCHITECTURE_GEN " << arch_gen << "\n";
+  ss << "#define STEEL_PRAGMA_UNROLL";
+  bool enable_unroll = (BD <= 128) || key.is_m3_plus;
+  if (enable_unroll) ss << R"MFA( _Pragma("clang loop unroll(full)")
+)MFA";
+  else ss << "\n";
+  ss << "\n";
+
+  // ── MFAPagedSteelParams (Metal side — layout MUST match C++ struct) ───
+  ss << R"MFA(
+struct MFAPagedSteelParams {
+  int B, H, D;
+  int qL, kL;
+  int gqa_factor;
+  float scale;
+  int NQ, NK;
+  int NQ_aligned;
+  int NK_aligned;
+  int qL_rem;
+  int kL_rem;
+  int qL_off;
+  int rope_q_base;
+  int rope_cos_stride;
+  long Q_strides[3];
+  long O_strides[3];
+  long L_strides[2];
+  float softcap;
+  int   has_alibi;
+  int   window_left;
+  int block_size;
+  int max_blocks;
+  int pool_block_stride;
+  int pool_tok_stride;
+  int H_kv;
+};
+
+)MFA";
+
+  // ── Op structs ────────────────────────────────────────────────────────
+  ss << R"MFA(
+struct MFAMaxOp {
+  template <typename T> METAL_FUNC static T apply(T x, T y) { return metal::max(x, y); }
+};
+struct MFASumOp {
+  template <typename T> METAL_FUNC static T apply(T x, T y) { return x + y; }
+};
+struct MFAMulOp {
+  template <typename T> METAL_FUNC static T apply(T x, T y) { return x * y; }
+};
+struct MFADivOp {
+  template <typename T> METAL_FUNC static T apply(T x, T y) { return x / y; }
+};
+struct MFAExpSubOp {
+  template <typename T> METAL_FUNC static T apply(T x, T y) { return fast::exp2(x - y); }
+};
+
+)MFA";
+
+  // ── Compile-time tile constants ───────────────────────────────────────
+  ss << "#define MFA_BQ  " << BQ  << "\n";
+  ss << "#define MFA_BK  " << BK  << "\n";
+  ss << "#define MFA_BD  " << BD  << "\n";
+  ss << "#define MFA_WM  " << WM  << "\n";
+  ss << "#define MFA_WN  " << WN  << "\n";
+  ss << "#define MFA_TGP_SIZE  " << TGP_SIZE << "\n";
+  ss << "#define MFA_DTYPE  " << dtype_str << "\n";
+  ss << "\n";
+
+  const int TD = BD / 8;
+  const int TK = BK / 8;
+  const int TQ = BQ / (WM * WN * 8);
+  const int kRowsPT = TQ;
+
+  ss << "#define MFA_TD  " << TD << "\n";
+  ss << "#define MFA_TK  " << TK << "\n";
+  ss << "#define MFA_TQ  " << TQ << "\n";
+  ss << "#define MFA_ROWS_PT  " << kRowsPT << "\n";
+  ss << "\n";
+
+  // ── MFABlockLoaderT (Q only) ──────────────────────────────────────────
+  ss << R"MFA(
+template <
+    typename T, short BROWS, short BCOLS,
+    short kDstStrRow, short kDstStrCol, short reduction_dim, short tgp_size,
+    short n_reads = (BCOLS * BROWS) / tgp_size,
+    short TCOLS = BCOLS / n_reads,
+    short TROWS = tgp_size / TCOLS>
+struct MFABlockLoaderT {
+  STEEL_CONST short vec_size = n_reads;
+  const int src_ld;
+  const int tile_stride;
+  const short thread_idx;
+  const short bi, bj;
+  threadgroup T* dst;
+  const device T* src;
+
+  METAL_FUNC MFABlockLoaderT(const device T* src_, const int src_ld_,
+      threadgroup T* dst_, ushort simd_group_id, ushort simd_lane_id)
+      : src_ld(src_ld_),
+        tile_stride(reduction_dim ? BCOLS : BROWS * src_ld_),
+        thread_idx(simd_group_id * 32 + simd_lane_id),
+        bi(thread_idx / TCOLS),
+        bj(vec_size * (thread_idx % TCOLS)),
+        dst(dst_ + bi * kDstStrRow + bj * kDstStrCol),
+        src(src_ + bi * src_ld_ + bj) {}
+
+  METAL_FUNC void load_unsafe() const {
+    constexpr bool can_vectorize = (kDstStrCol == 1) && (vec_size % 4 == 0);
+    if constexpr (can_vectorize) {
+      using vec4_t = vec<T, 4>;
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j += 4)
+          *(threadgroup vec4_t*)(dst + i * kDstStrRow + j) =
+              *(const device vec4_t*)(src + i * src_ld + j);
+      }
+    } else {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j++)
+          dst[i * kDstStrRow + j * kDstStrCol] = src[i * src_ld + j];
+      }
+    }
+  }
+
+  METAL_FUNC void load_safe(short2 src_tile_dim) const {
+    src_tile_dim = src_tile_dim - short2(bj, bi);
+    if (src_tile_dim.x <= 0 || src_tile_dim.y <= 0) {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < BROWS; i += TROWS) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < vec_size; j++)
+          dst[i * kDstStrRow + j * kDstStrCol] = T(0);
+      }
+      return;
+    }
+    bool tmp_idx[vec_size];
+    T tmp_val[vec_size];
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < BROWS; i += TROWS) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < vec_size; j++)
+        tmp_idx[j] = (i < src_tile_dim.y) && (j < src_tile_dim.x);
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < vec_size; j++)
+        tmp_val[j] = src[(tmp_idx[j] ? i * src_ld + j : 0)];
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < vec_size; j++)
+        tmp_val[j] = tmp_idx[j] ? tmp_val[j] : T(0);
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < vec_size; j++)
+        dst[i * kDstStrRow + j * kDstStrCol] = tmp_val[j];
+    }
+  }
+
+  METAL_FUNC void next() { src += tile_stride; }
+};
+
+)MFA";
+
+  // ── MFAMMAFrag / MFAMMATile / tile_matmad ────────────────────────────
+  ss << R"MFA(
+template <typename T>
+struct MFAMMAFrag {
+  STEEL_CONST int kElemRows = 1;
+  STEEL_CONST int kElemCols = 2;
+  typedef simdgroup_matrix<T, 8, 8> mat_type;
+  typedef vec<T, 2> frag_type;
+
+  METAL_FUNC static short2 get_coord(ushort lane_id) {
+    const short qid = lane_id / 4;
+    const short fm  = (qid & 4) + ((lane_id / 2) % 4);
+    const short fn  = (qid & 2) * 2 + (lane_id % 2) * 2;
+    return short2{fn, fm};
+  }
+  template <typename SrcPtr, typename StrX, typename StrY>
+  METAL_FUNC static void load(thread frag_type& dst, SrcPtr src, StrX str_x, StrY str_y) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kElemCols; j++)
+        dst[i * kElemCols + j] = static_cast<T>(src[i * str_x + j * str_y]);
+    }
+  }
+  template <typename Op>
+  METAL_FUNC static void row_reduce(thread const frag_type& inp, thread T* out) {
+    T thr = Op::apply(inp.x, inp.y);
+    T qr  = Op::apply(thr, simd_shuffle_xor(thr, ushort(1)));
+    T sr  = Op::apply(qr,  simd_shuffle_xor(qr,  ushort(8)));
+    out[0] = Op::apply(out[0], sr);
+  }
+  template <typename Op>
+  METAL_FUNC static void row_bin_op(thread frag_type& inp, thread T* row_vals) {
+    STEEL_PRAGMA_UNROLL
+    for (short j = 0; j < kElemCols; j++)
+      inp[j] = Op::apply(inp[j], row_vals[0]);
+  }
+  METAL_FUNC static void mma(thread frag_type& D, thread frag_type& A,
+                              thread frag_type& B, thread frag_type& C) {
+    mat_type Dm, Am, Bm, Cm;
+    reinterpret_cast<thread frag_type&>(Am.thread_elements()) = A;
+    reinterpret_cast<thread frag_type&>(Bm.thread_elements()) = B;
+    reinterpret_cast<thread frag_type&>(Cm.thread_elements()) = C;
+    simdgroup_multiply_accumulate(Dm, Am, Bm, Cm);
+    D = reinterpret_cast<thread frag_type&>(Dm.thread_elements());
+  }
+};
+
+template <typename T, int kTileRows_, int kTileCols_>
+struct MFAMMATile {
+  using Frag = MFAMMAFrag<T>;
+  STEEL_CONST int kTileRows = kTileRows_;
+  STEEL_CONST int kTileCols = kTileCols_;
+  STEEL_CONST int kNumFrags  = kTileRows_ * kTileCols_;
+  typedef typename Frag::frag_type frag_type;
+  frag_type val_frags[kNumFrags];
+
+  METAL_FUNC MFAMMATile() thread {}
+  METAL_FUNC void clear() {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kNumFrags; i++) val_frags[i] = frag_type(0);
+  }
+  METAL_FUNC thread frag_type& frag_at(short i, short j) { return val_frags[i * kTileCols_ + j]; }
+  METAL_FUNC const thread frag_type& frag_at(short i, short j) const { return val_frags[i * kTileCols_ + j]; }
+  METAL_FUNC thread T* elems() { return reinterpret_cast<thread T*>(val_frags); }
+
+  template <typename Op>
+  METAL_FUNC void row_reduce(thread T vals[kTileRows_]) const {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++)
+        Frag::template row_reduce<Op>(frag_at(i, j), &vals[i]);
+    }
+  }
+  template <typename Op>
+  METAL_FUNC void row_bin_op(thread T vals[kTileRows_]) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++)
+        Frag::template row_bin_op<Op>(frag_at(i, j), &vals[i]);
+    }
+  }
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void load(const threadgroup U* src, int str_row, int str_col) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++)
+        Frag::load(frag_at(i, j),
+                   &src[(i * 8) * w_x * str_row + (j * 8) * w_y * str_col],
+                   str_row, str_col);
+    }
+  }
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void store(device U* dst, const int ld) const {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++) {
+        const int base = (i * 8) * w_x * ld + (j * 8) * w_y;
+        dst[base] = static_cast<U>(frag_at(i, j)[0]);
+        dst[base + 1] = static_cast<U>(frag_at(i, j)[1]);
+      }
+    }
+  }
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void store_safe(device U* dst, const int ld, const short2 dims) const {
+    STEEL_PRAGMA_UNROLL
+    for (int i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (int j = 0; j < kTileCols_; j++) {
+        const int off_row = (i * 8) * w_x;
+        const int off_col = (j * 8) * w_y;
+        if (off_row < (int)dims.y) {
+          if (off_col     < (int)dims.x) dst[off_row * ld + off_col]     = static_cast<U>(frag_at(i, j)[0]);
+          if (off_col + 1 < (int)dims.x) dst[off_row * ld + off_col + 1] = static_cast<U>(frag_at(i, j)[1]);
+        }
+      }
+    }
+  }
+};
+
+)MFA";
+
+  // ── Kernel function ───────────────────────────────────────────────────
+  ss << "[[kernel, max_total_threads_per_threadgroup(MFA_TGP_SIZE)]]\n";
+  ss << "void mlx_mfa_paged_attention(\n";
+  ss << "    const device MFA_DTYPE* Q              [[buffer(0)]],\n";
+  ss << "    const device MFA_DTYPE* k_pool         [[buffer(1)]],\n";
+  ss << "    const device MFA_DTYPE* v_pool         [[buffer(2)]],\n";
+  ss << "    const device int*       block_table    [[buffer(3)]],\n";
+  ss << "    const device int*       seq_lens       [[buffer(4)]],\n";
+  ss << "    device MFA_DTYPE*       O              [[buffer(5)]],\n";
+  ss << "    device float*           L              [[buffer(6)]],\n";
+  ss << "    const constant MFAPagedSteelParams* p  [[buffer(7)]],\n";
+  ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
+  ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
+  ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
+  ss << "{\n";
+  ss << "  typedef MFA_DTYPE T;\n";
+  ss << "  typedef float     AccT;\n";
+  ss << "\n";
+
+  // Indices
+  ss << "  const int b_idx   = (int)tid.z;\n";
+  ss << "  const int h_idx   = (int)tid.y;\n";
+  ss << "  const int kv_head = h_idx / p->gqa_factor;\n";
+  ss << "\n";
+  // Per-batch KV length
+  ss << "  const int kL_batch = seq_lens[b_idx];\n";
+  ss << "  const int NK_batch = (kL_batch + MFA_BK - 1) / MFA_BK;\n";
+  ss << "\n";
+  // Q/O base pointers
+  ss << "  const ulong boff = (ulong)b_idx * p->Q_strides[0]\n";
+  ss << "                   + (ulong)h_idx * p->Q_strides[1];\n";
+  ss << "  Q += boff;\n";
+  ss << "  O += (ulong)b_idx * p->O_strides[0]\n";
+  ss << "     + (ulong)h_idx * p->O_strides[1];\n";
+  ss << "\n";
+  // Threadgroup memory
+  ss << "  constexpr short padQ  = 16 / sizeof(T);\n";
+  ss << "  constexpr short LDQ   = MFA_BD + padQ;\n";
+  ss << "  constexpr short LDK   = MFA_BK + 16/sizeof(T);\n";
+  ss << "  constexpr short LDV   = MFA_BD + 16/sizeof(T);\n";
+  ss << "  constexpr short kv_s0 = LDK * MFA_BD;\n";
+  ss << "  constexpr short kv_s1 = MFA_BK * LDV;\n";
+  ss << "  constexpr short kv_s  = kv_s0 > kv_s1 ? kv_s0 : kv_s1;\n";
+  ss << "\n";
+  ss << "  threadgroup T Q_smem[MFA_BQ * LDQ];\n";
+  ss << "  threadgroup T KV_smem[kv_s];\n";
+  ss << "  threadgroup T* Qs = Q_smem;\n";
+  ss << "  threadgroup T* Ks = KV_smem;\n";
+  ss << "  threadgroup T* Vs = KV_smem;\n";
+  ss << "\n";
+  // Q loader
+  ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD,\n";
+  ss << "      /*kDstStrRow=*/ MFA_BD + 16/sizeof(T),\n";
+  ss << "      /*kDstStrCol=*/ 1,\n";
+  ss << "      /*reduction_dim=*/ 1,\n";
+  ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
+  ss << "\n";
+  // MMA coordinates
+  ss << "  const AccT scale_v = p->scale * M_LOG2E_F;\n";
+  ss << "  const short2 simd_coord = MFAMMAFrag<AccT>::get_coord((ushort)simd_lane_id);\n";
+  ss << "  const short sm = simd_coord.y;\n";
+  ss << "  const short sn = simd_coord.x;\n";
+  ss << "  const short tm = 8 * MFA_TQ * (short)simd_group_id;\n";
+  ss << "  const short Qs_off = (tm + sm) * LDQ + sn;\n";
+  ss << "  const short Ks_off = sm * LDK + sn;\n";
+  ss << "  const short Vs_off = sm * LDV + sn;\n";
+  ss << "  const int thread_idx = (int)simd_group_id * 32 + (int)simd_lane_id;\n";
+  ss << "\n";
+  // Tile register declarations
+  ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Qtile;\n";
+  ss << "  MFAMMATile<AccT, 1,     MFA_TK>  Ktile;\n";
+  ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TK> Stile;\n";
+  ss << "  MFAMMATile<AccT, 1,    1>        Vtile;\n";
+  ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Otile;\n";
+  ss << "  AccT max_score[MFA_ROWS_PT];\n";
+  ss << "  AccT sum_score[MFA_ROWS_PT];\n";
+  ss << "\n";
+  // Persistent Q-block loop (4 Q-blocks per threadgroup)
+  ss << "  const int qb_start = (int)tid.x * 4;\n";
+  ss << "  const int qb_end   = min(qb_start + 4, p->NQ);\n";
+  ss << "  for (int qb = qb_start; qb < qb_end; qb++) {\n";
+  ss << "\n";
+  ss << "  const device T* Q_qb = Q + (long)qb * MFA_BQ * p->Q_strides[2];\n";
+  ss << "  device T*       O_qb = O + (long)qb * MFA_BQ * p->O_strides[2];\n";
+  ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
+  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  // Reset accumulator
+  ss << "  Otile.clear();\n";
+  ss << "  STEEL_PRAGMA_UNROLL\n";
+  ss << "  for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "    max_score[i] = -INFINITY;\n";
+  ss << "    sum_score[i] = 0.0f;\n";
+  ss << "  }\n";
+  ss << "\n";
+  // Load Q
+  ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "  if (qb == p->NQ_aligned) {\n";
+  ss << "    loader_q.load_safe(short2(MFA_BD, p->qL_rem));\n";
+  ss << "  } else {\n";
+  ss << "    loader_q.load_unsafe();\n";
+  ss << "  }\n";
+  ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+  ss << "\n";
+  // K-loop limit
+  if (causal) {
+    ss << "  int q_max = (qb + 1) * MFA_BQ + p->qL_off;\n";
+    ss << "  int kb_lim = min((q_max + MFA_BK - 1) / MFA_BK, NK_batch);\n";
+  } else {
+    ss << "  int kb_lim = NK_batch;\n";
+  }
+  // Sliding window start
+  if (has_window) {
+    ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "  int win_start = q_min - p->window_left;\n";
+    ss << "  int kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "  int kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                      ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+  } else {
+    ss << "  const int kb_start = 0;\n";
+  }
+  ss << "\n";
+
+  // ── Main K-tile loop ──────────────────────────────────────────────────
+  ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
+
+  // ── Paged K gather (transposed: K_smem[d*LDK+t]) ──────────────────────
+  ss << "    {\n";
+  ss << "      STEEL_PRAGMA_UNROLL\n";
+  ss << "      for (short ei = 0; ei < " << elems_per_thread << "; ei++) {\n";
+  ss << "        const int slot = thread_idx + (int)ei * MFA_TGP_SIZE;\n";
+  ss << "        if (slot < MFA_BK * MFA_BD) {\n";
+  ss << "          const int t = slot % MFA_BK;\n";  // K-seq within tile (transposed)
+  ss << "          const int d = slot / MFA_BK;\n";  // head-dim index
+  ss << "          const int global_tok = kb * MFA_BK + t;\n";
+  ss << "          T val = T(0);\n";
+  ss << "          if (global_tok < kL_batch) {\n";
+  ss << "            const int blk_idx    = global_tok / p->block_size;\n";
+  ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
+  ss << "            const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
+  ss << "            val = k_pool[(long)phys * p->pool_block_stride\n";
+  ss << "                        + tok_in_blk * p->pool_tok_stride\n";
+  ss << "                        + kv_head * p->D + d];\n";
+  ss << "          }\n";
+  ss << "          Ks[d * LDK + t] = val;\n";
+  ss << "        }\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "\n";
+
+  // ── Q@K^T GEMM → Stile ────────────────────────────────────────────────
+  ss << "    Stile.clear();\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
+  ss << "      Ktile.template load<T, 1, 1>(\n";
+  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+  ss << "      STEEL_PRAGMA_UNROLL\n";
+  ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+  ss << "        STEEL_PRAGMA_UNROLL\n";
+  ss << "        for (short ik = 0; ik < MFA_TK; ik++) {\n";
+  ss << "          MFAMMAFrag<AccT>::mma(\n";
+  ss << "              Stile.frag_at(iq, ik),\n";
+  ss << "              Qtile.frag_at(iq, dd),\n";
+  ss << "              Ktile.frag_at(0, ik),\n";
+  ss << "              Stile.frag_at(iq, ik));\n";
+  ss << "        }\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "\n";
+
+  // Scale
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+  ss << "      Stile.elems()[ii] *= scale_v;\n";
+  ss << "    }\n";
+  ss << "\n";
+
+  // K-boundary mask (per-batch: positions >= kL_batch)
+  ss << "    if ((kb + 1) * MFA_BK > kL_batch) {\n";
+  ss << "      STEEL_PRAGMA_UNROLL\n";
+  ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+  ss << "        STEEL_PRAGMA_UNROLL\n";
+  ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+  ss << "          const int k_base = kb * MFA_BK + sn + j * 8;\n";
+  ss << "          STEEL_PRAGMA_UNROLL\n";
+  ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+  ss << "            if ((k_base + jj) >= kL_batch)\n";
+  ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+  ss << "          }\n";
+  ss << "        }\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "\n";
+
+  // Causal mask
+  if (causal) {
+    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if (row < (col + jj)) Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+  // Window mask
+  if (has_window) {
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // Barrier before V load (K-GEMM done; safe to overwrite KV_smem)
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "\n";
+
+  // ── Paged V gather (row-major: V_smem[t*LDV+d]) ──────────────────────
+  ss << "    {\n";
+  ss << "      STEEL_PRAGMA_UNROLL\n";
+  ss << "      for (short ei = 0; ei < " << elems_per_thread << "; ei++) {\n";
+  ss << "        const int slot = thread_idx + (int)ei * MFA_TGP_SIZE;\n";
+  ss << "        if (slot < MFA_BK * MFA_BD) {\n";
+  ss << "          const int t = slot / MFA_BD;\n";  // K-seq within tile
+  ss << "          const int d = slot % MFA_BD;\n";  // head-dim index
+  ss << "          const int global_tok = kb * MFA_BK + t;\n";
+  ss << "          T val = T(0);\n";
+  ss << "          if (global_tok < kL_batch) {\n";
+  ss << "            const int blk_idx    = global_tok / p->block_size;\n";
+  ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
+  ss << "            const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
+  ss << "            val = v_pool[(long)phys * p->pool_block_stride\n";
+  ss << "                        + tok_in_blk * p->pool_tok_stride\n";
+  ss << "                        + kv_head * p->D + d];\n";
+  ss << "          }\n";
+  ss << "          Vs[t * LDV + d] = val;\n";
+  ss << "        }\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "\n";
+
+  // Online softmax (NaN-safe)
+  ss << "    AccT new_max[MFA_ROWS_PT];\n";
+  ss << "    AccT factor[MFA_ROWS_PT];\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) new_max[i] = max_score[i];\n";
+  ss << "    Stile.template row_reduce<MFAMaxOp>(new_max);\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "      if (new_max[i] > max_score[i]) {\n";
+  ss << "        factor[i] = fast::exp2(max_score[i] - new_max[i]);\n";
+  ss << "        max_score[i] = new_max[i];\n";
+  ss << "      } else {\n";
+  ss << "        factor[i] = 1.0f;\n";
+  ss << "        new_max[i] = metal::isinf(max_score[i]) ? (AccT)0.0f : max_score[i];\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "    Stile.template row_bin_op<MFAExpSubOp>(new_max);\n";
+  ss << "    AccT sum_tmp[MFA_ROWS_PT] = {0};\n";
+  ss << "    Stile.template row_reduce<MFASumOp>(sum_tmp);\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "      sum_score[i] = sum_score[i] * factor[i] + sum_tmp[i];\n";
+  ss << "    }\n";
+  ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
+  ss << "\n";
+
+  // P @ V
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+  ss << "      STEEL_PRAGMA_UNROLL\n";
+  ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
+  ss << "        STEEL_PRAGMA_UNROLL\n";
+  ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
+  ss << "          Vtile.template load<T, 1, 1>(\n";
+  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+  ss << "          MFAMMAFrag<AccT>::mma(\n";
+  ss << "              Otile.frag_at(iq, id),\n";
+  ss << "              Stile.frag_at(iq, ik),\n";
+  ss << "              Vtile.frag_at(0, 0),\n";
+  ss << "              Otile.frag_at(iq, id));\n";
+  ss << "        }\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "\n";
+  ss << "  } // end kb loop\n";
+  ss << "\n";
+
+  // Normalize O and store
+  ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
+  ss << "  threadgroup_barrier(mem_flags::mem_none);\n";
+  ss << "\n";
+  ss << "  device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2] + sn;\n";
+  ss << "  if (qb == p->NQ_aligned) {\n";
+  ss << "    auto dims = short2((short)(MFA_BD - sn), (short)(p->qL_rem - (tm + sm)));\n";
+  ss << "    if (dims.x > 0 && dims.y > 0)\n";
+  ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
+  ss << "  } else {\n";
+  ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+  ss << "  }\n";
+  ss << "\n";
+
+  // Write L (log2-domain logsumexp)
+  ss << "  if (sn == 0) {\n";
+  ss << "    const long l_boff = (long)b_idx * p->L_strides[0]\n";
+  ss << "                      + (long)h_idx * p->L_strides[1];\n";
+  ss << "    const long q_base = (long)qb * MFA_BQ + tm + sm;\n";
+  ss << "    STEEL_PRAGMA_UNROLL\n";
+  ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "      const long q_idx = q_base + i * 8;\n";
+  ss << "      if (q_idx < p->qL) {\n";
+  ss << "        L[l_boff + q_idx] = max_score[i] + metal::log2(sum_score[i]);\n";
+  ss << "      }\n";
+  ss << "    }\n";
+  ss << "  }\n";
+  ss << "\n";
+
+  ss << "  } // end qb loop\n";
+  ss << "}\n";
+
+  return ss.str();
+}
+
 }  // namespace mlx_mfa

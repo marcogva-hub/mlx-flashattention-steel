@@ -2562,6 +2562,49 @@ def flash_attention_paged(
             outputs.append(out_b)
         return mx.concatenate(outputs, axis=0)
 
+    # ── Paged STEEL fast path (Track FD) ─────────────────────────────────
+    # Kernel-level paged KV: K/V tiles read directly from pool via block_table,
+    # eliminating the gather→attend round-trip.  Only f16/bf16 + D∈{64,128,256}.
+    _USE_PAGED_STEEL = (
+        _ext_available()
+        and q.dtype in (mx.float16, mx.bfloat16)
+        and D in (64, 128, 256)
+    )
+
+    if _USE_PAGED_STEEL:
+        from mlx_mfa._ext import mfa_paged_steel_forward as _raw_paged_steel
+
+        @mx.custom_function
+        def _paged_steel_impl(q_, k_pages_, v_pages_):
+            O, _L = _raw_paged_steel(
+                q_, k_pages_, v_pages_, block_table, seq_lens,
+                scale=scale, causal=causal,
+                window_left=-1, block_size=block_size)
+            return O
+
+        @_paged_steel_impl.vjp
+        def _paged_steel_bwd(primals, cotangent, _output):
+            q_, k_pages_, v_pages_ = primals
+            dO = cotangent
+            # Backward uses gather+per-seq vjp (same as non-paged path).
+            K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
+            dQ_parts = []
+            for b in range(B):
+                kv_len = seq_lens_list[b]
+                q_b  = q_[b:b+1]
+                K_b  = K_contig[b:b+1, :, :kv_len, :]
+                V_b  = V_contig[b:b+1, :, :kv_len, :]
+                dO_b = dO[b:b+1]
+                _, (dq_b, _dk_b, _dv_b) = mx.vjp(
+                    lambda qi, ki, vi: flash_attention(
+                        qi, ki, vi, scale=scale, causal=causal),
+                    [q_b, K_b, V_b], [dO_b])
+                dQ_parts.append(dq_b)
+            dQ = mx.concatenate(dQ_parts, axis=0)
+            return dQ, mx.zeros_like(k_pages_), mx.zeros_like(v_pages_)
+
+        return _paged_steel_impl(q, k_pages, v_pages)
+
     @mx.custom_function
     def _paged_impl(q_, k_pages_, v_pages_):
         K_contig, V_contig = _gather_contig(k_pages_, v_pages_)

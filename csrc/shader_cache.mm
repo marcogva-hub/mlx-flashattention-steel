@@ -117,6 +117,9 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::PagedKVGather) {
     fn_name = "paged_kv_gather";
     source  = generate_paged_kv_gather_source(key.dtype == 0);
+  } else if (key.type == KT::PagedSteelForward) {
+    fn_name = "mlx_mfa_paged_attention";
+    source  = generate_paged_steel_forward_source(key);
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -136,6 +139,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SteelBackwardDKV)     type_str = "steel_bwd_dkv";
     if (key.type == KT::SteelVarlenForward)   type_str = "steel_varlen_fwd";
     if (key.type == KT::PagedKVGather)        type_str = "paged_kv_gather";
+    if (key.type == KT::PagedSteelForward)   type_str = "paged_steel_fwd";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",

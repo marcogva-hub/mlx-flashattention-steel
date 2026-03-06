@@ -309,5 +309,48 @@ NB_MODULE(_ext, m) {
         "pool: f16 or bf16. block_table: int32 [B, max_blocks]. seq_lens: int32 [B].\n"
         "Transposes [BS,H,D] -> [H,BS,D] (token-major -> head-major) during gather.");
 
+  // --- Paged STEEL forward (Track FD): kernel-level paged KV ---
+  m.def("mfa_paged_steel_forward",
+        [](mlx::core::array q,
+           mlx::core::array k_pool,
+           mlx::core::array v_pool,
+           mlx::core::array block_table,
+           mlx::core::array seq_lens,
+           float scale,
+           bool  causal,
+           int   window_left,
+           int   block_size,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> std::pair<mlx::core::array, mlx::core::array> {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_paged_steel_forward(
+              q, k_pool, v_pool, block_table, seq_lens,
+              scale, causal, window_left, block_size, s);
+        },
+        nb::arg("q"),
+        nb::arg("k_pool"),
+        nb::arg("v_pool"),
+        nb::arg("block_table"),
+        nb::arg("seq_lens"),
+        nb::arg("scale"),
+        nb::arg("causal"),
+        nb::arg("window_left")  = -1,
+        nb::arg("block_size")   = 16,
+        nb::arg("stream")       = nb::none(),
+        "Paged STEEL forward attention (kernel-level paged KV, Track FD).\n"
+        "\n"
+        "Avoids a gather+attend round-trip by reading K/V directly from the paged\n"
+        "pool inside the Metal kernel via block_table lookups.\n"
+        "\n"
+        "q:           [B, H, N, D]               f16 or bf16\n"
+        "k_pool:      [num_blocks, block_size, H_kv, D]\n"
+        "v_pool:      [num_blocks, block_size, H_kv, D]\n"
+        "block_table: [B, max_blocks]             int32\n"
+        "seq_lens:    [B]                         int32 (effective KV length per batch)\n"
+        "\n"
+        "Returns (O [B,H,N,D], L [B,H,N] logsumexp in log2 domain).\n"
+        "GQA: H_q / H_kv must be integer. window_left=-1 disables sliding window.\n"
+        "Only f16/bf16 supported.");
+
   m.attr("__version__") = "1.0.0rc1";
 }

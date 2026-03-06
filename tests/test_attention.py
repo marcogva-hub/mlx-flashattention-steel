@@ -4658,3 +4658,281 @@ class TestKVCacheRopeAppend:
 def _apply_rope_for_test(x, cos, sin, offset):
     from mlx_mfa.attention import _apply_rope_mlx
     return _apply_rope_mlx(x, cos, sin, offset=offset, interleaved=True)
+
+
+# =============================================================================
+# Track FD — Paged STEEL Forward (kernel-level paged KV)
+# =============================================================================
+
+def _build_pool(k: "mx.array", v: "mx.array", block_size: int):
+    """Pack contiguous [B,H,S,D] K/V into paged pool tensors.
+
+    Returns (pool_k, pool_v, block_table, seq_lens) ready for paged attention.
+    Pool layout: [num_total_blocks, block_size, H, D].
+    block_table: [B, max_blocks_per_seq] int32.
+    seq_lens:    [B] int32.
+    """
+    B, H, S, D = k.shape
+    n_blk = (S + block_size - 1) // block_size
+    # Pad S to multiple of block_size
+    pad_len = n_blk * block_size - S
+    k_pad = mx.pad(k, [(0,0),(0,0),(0,pad_len),(0,0)]) if pad_len > 0 else k
+    v_pad = mx.pad(v, [(0,0),(0,0),(0,pad_len),(0,0)]) if pad_len > 0 else v
+    # k_pad: [B, H, n_blk*block_size, D] → [B, n_blk, block_size, H, D]
+    k_blk = k_pad.reshape(B, H, n_blk, block_size, D).transpose(0, 2, 3, 1, 4)
+    # k_blk: [B, n_blk, block_size, H, D]
+    v_blk = v_pad.reshape(B, H, n_blk, block_size, D).transpose(0, 2, 3, 1, 4)
+    # Stack all batch blocks into a single pool: [B*n_blk, block_size, H, D]
+    pool_k = k_blk.reshape(B * n_blk, block_size, H, D)
+    pool_v = v_blk.reshape(B * n_blk, block_size, H, D)
+    # block_table: batch b uses blocks [b*n_blk, ..., b*n_blk + n_blk - 1]
+    table = mx.array(
+        [[b * n_blk + i for i in range(n_blk)] for b in range(B)],
+        dtype=mx.int32)
+    seq_lens = mx.array([S] * B, dtype=mx.int32)
+    return pool_k, pool_v, table, seq_lens
+
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestPagedSteelForward:
+    """Correctness tests for the kernel-level paged STEEL forward pass (Track FD).
+
+    Each test compares `mfa_paged_steel_forward` (or `flash_attention_paged`
+    which now routes to it) against the dense reference `flash_attention`.
+    """
+
+    TOL = 5e-3   # max-abs tolerance (f16 precision)
+
+    # ── 1. D=64 non-causal ───────────────────────────────────────────────
+    def test_d64_noncausal(self):
+        mx.random.seed(1)
+        B, H, N, S, D = 1, 4, 8, 64, 64
+        bs = 16
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, L = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                             scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"D=64 non-causal diff={diff:.4e}"
+
+    # ── 2. D=128 non-causal ──────────────────────────────────────────────
+    def test_d128_noncausal(self):
+        mx.random.seed(2)
+        B, H, N, S, D = 2, 8, 16, 128, 128
+        bs = 32
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"D=128 non-causal diff={diff:.4e}"
+
+    # ── 3. D=256 non-causal ──────────────────────────────────────────────
+    def test_d256_noncausal(self):
+        mx.random.seed(3)
+        B, H, N, S, D = 1, 4, 8, 64, 256
+        bs = 16
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"D=256 non-causal diff={diff:.4e}"
+
+    # ── 4. bfloat16 ──────────────────────────────────────────────────────
+    def test_bf16(self):
+        mx.random.seed(4)
+        B, H, N, S, D = 1, 4, 8, 64, 64
+        bs = 16
+        q = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.bfloat16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < 1e-2, f"bf16 diff={diff:.4e}"
+
+    # ── 5. GQA 2:1 ───────────────────────────────────────────────────────
+    def test_gqa_2to1(self):
+        mx.random.seed(5)
+        H_q, H_kv, D = 8, 4, 64
+        B, N, S, bs = 1, 8, 64, 16
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        # Build pool with H_kv heads
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        # Reference: expand K/V to H_q
+        k_exp = mx.repeat(k, 2, axis=1)
+        v_exp = mx.repeat(v, 2, axis=1)
+        O_ref = flash_attention(q, k_exp, v_exp, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"GQA 2:1 diff={diff:.4e}"
+
+    # ── 6. Causal mask ────────────────────────────────────────────────────
+    def test_causal(self):
+        mx.random.seed(6)
+        B, H, N, S, D = 1, 4, 8, 64, 64
+        bs = 16
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=True, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=True)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"causal diff={diff:.4e}"
+
+    # ── 7. Cross-block boundary (S not multiple of block_size) ───────────
+    def test_cross_block_boundary(self):
+        """S=40 with block_size=16: last block is partially filled (8 tokens)."""
+        mx.random.seed(7)
+        B, H, N, S, D = 1, 4, 8, 40, 64
+        bs = 16   # 2 full + 1 partial block
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"cross-block diff={diff:.4e}"
+
+    # ── 8. Decode (N_q=1) ────────────────────────────────────────────────
+    def test_decode_nq1(self):
+        """Autoregressive decode step: N_q=1 (single new token)."""
+        mx.random.seed(8)
+        B, H, N, S, D = 2, 8, 1, 256, 128
+        bs = 32
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"decode N_q=1 diff={diff:.4e}"
+
+    # ── 9. Long context S=1024 ───────────────────────────────────────────
+    def test_long_context_s1024(self):
+        mx.random.seed(9)
+        B, H, N, S, D = 1, 4, 64, 1024, 128
+        bs = 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = D**-0.5
+
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                              scale=scale, causal=False, block_size=bs)
+        from mlx_mfa import flash_attention
+        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(O_paged, O_ref)
+        diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"S=1024 diff={diff:.4e}"
+
+    # ── 10. Output shape is correct ──────────────────────────────────────
+    def test_output_shapes(self):
+        mx.random.seed(10)
+        B, H, N, S, D = 2, 4, 8, 64, 64
+        bs = 16
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        from mlx_mfa._ext import mfa_paged_steel_forward
+        O, L = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
+                                        scale=D**-0.5, causal=False, block_size=bs)
+        mx.eval(O, L)
+        assert O.shape == (B, H, N, D), f"O shape {O.shape}"
+        assert L.shape == (B, H, N), f"L shape {L.shape}"
+        assert O.dtype == mx.float16
+        assert L.dtype == mx.float32
+
+    # ── 11. flash_attention_paged routes to paged STEEL kernel ───────────
+    def test_flash_attention_paged_uses_kernel(self):
+        """flash_attention_paged with f16+D=128 should route to paged STEEL."""
+        from mlx_mfa import flash_attention_paged, flash_attention
+        mx.random.seed(11)
+        B, H, N, S, D = 1, 4, 8, 64, 128
+        bs = 16
+        scale = D**-0.5
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        pool_k, pool_v, table, lens = _build_pool(k, v, bs)
+        out_paged = flash_attention_paged(q, pool_k, pool_v, table, lens,
+                                          scale=scale, causal=False, block_size=bs)
+        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        mx.eval(out_paged, out_ref)
+        diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < self.TOL, f"flash_attention_paged diff={diff:.4e}"

@@ -365,4 +365,73 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
     bool  causal,
     mlx::core::Stream stream);
 
+// =========================================================================
+// MFAPagedSteelForward — kernel-level paged KV (Track FD)
+// =========================================================================
+
+/// Primitive that runs the paged STEEL forward attention kernel.
+///
+/// Inputs (eval_gpu order):
+///   0: Q          [B, H, N, D]
+///   1: k_pool     [num_blocks, block_size, H_kv, D]
+///   2: v_pool     [num_blocks, block_size, H_kv, D]
+///   3: block_table [B, max_blocks] int32
+///   4: seq_lens   [B] int32
+///
+/// Outputs:
+///   0: O   [B, H, N, D]
+///   1: L   [B, H, N] float32 (log2-domain logsumexp)
+class MFAPagedSteelForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    int   head_dim;
+    float scale;
+    bool  causal;
+    int   window_left;   // -1 = disabled; >=0 = sliding window left radius
+    int   block_size;    // tokens per page block
+  };
+
+  MFAPagedSteelForward(mlx::core::Stream stream, Params p)
+      : mlx::core::Primitive(stream), params_(p) {}
+
+  const char* name() const override { return "MFAPagedSteelForward"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAPagedSteelForward: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFAPagedSteelForward*>(&other);
+    if (!o) return false;
+    return params_.head_dim    == o->params_.head_dim    &&
+           params_.scale       == o->params_.scale       &&
+           params_.causal      == o->params_.causal      &&
+           params_.window_left == o->params_.window_left &&
+           params_.block_size  == o->params_.block_size;
+  }
+
+ private:
+  Params params_;
+};
+
+/// Free function: validate inputs and create paged forward MLX arrays.
+/// Returns (O, L) pair.
+std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k_pool,
+    const mlx::core::array& v_pool,
+    const mlx::core::array& block_table,
+    const mlx::core::array& seq_lens,
+    float scale,
+    bool  causal,
+    int   window_left,
+    int   block_size,
+    mlx::core::Stream stream);
+
 }  // namespace mlx_mfa

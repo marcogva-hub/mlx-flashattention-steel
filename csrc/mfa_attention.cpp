@@ -1332,4 +1332,215 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   return {outputs[0], outputs[1]};
 }
 
+// =========================================================================
+// MFAPagedSteelForward::eval_gpu  (Track FD)
+// =========================================================================
+//
+// Inputs:  Q(0)[B,H,N,D], k_pool(1)[num_blocks,BS,H_kv,D],
+//          v_pool(2)[num_blocks,BS,H_kv,D], block_table(3)[B,max_blocks] int32,
+//          seq_lens(4)[B] int32
+// Outputs: O(0)[B,H,N,D], L(1)[B,H,N] float32
+//
+// Metal buffer layout:
+//   Q=0, k_pool=1, v_pool=2, block_table=3, seq_lens=4, O=5, L=6, params=7
+
+void MFAPagedSteelForward::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  assert(inputs.size()  == 5);
+  assert(outputs.size() == 2);
+
+  const auto& q           = inputs[0];  // [B, H, N, D]
+  const auto& k_pool      = inputs[1];  // [num_blocks, block_size, H_kv, D]
+  const auto& v_pool      = inputs[2];  // [num_blocks, block_size, H_kv, D]
+  const auto& block_table = inputs[3];  // [B, max_blocks] int32
+  const auto& seq_lens    = inputs[4];  // [B] int32
+
+  const int B          = q.shape(0);
+  const int H          = q.shape(1);
+  const int N          = q.shape(2);   // query length
+  const int D          = q.shape(3);
+  const int block_size = k_pool.shape(1);
+  const int H_kv       = k_pool.shape(2);
+  const int num_blocks = k_pool.shape(0);
+  const int max_blocks = block_table.shape(1);
+
+  // kL = max(seq_lens) — used only for grid sizing, not per-batch masking.
+  // seq_lens must already be evaluated by the free function (mx.eval'd).
+  const int kL = [&]() -> int {
+    int mx_len = 0;
+    const int* sl = seq_lens.data<int>();
+    for (int b = 0; b < B; ++b) mx_len = std::max(mx_len, sl[b]);
+    return std::max(mx_len, 1);
+  }();
+
+  auto& O = outputs[0];
+  auto& L = outputs[1];
+  O.set_data(mlx::core::allocator::malloc(O.nbytes()));
+  L.set_data(mlx::core::allocator::malloc(L.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code;
+  if (q.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else dtype_code = 2;  // f32 not currently routed here but keep safe
+
+  const auto cfg   = select_steel_block_config(D, dtype_code != 2, is_m3_plus);
+  const int BQ     = cfg.BQ;
+  const int BK     = cfg.BK;
+  const int WM     = cfg.WM;
+  const int TGP_SIZE = WM * 32;
+
+  // ── Kernel cache key ────────────────────────────────────────────────────
+  using KK = ShaderCache::KernelKey;
+  KK key{
+    KK::KernelType::PagedSteelForward,
+    D,
+    BQ, BK, D,          // block_d = full D (no sub-tiling)
+    WM,
+    params_.causal,
+    /*sparse=*/false,
+    is_m3_plus,
+    /*has_rope=*/false,
+    /*rope_interleaved=*/false,
+    /*has_softcap=*/false,
+    /*has_alibi=*/false,
+    params_.window_left >= 0,  // has_window
+    dtype_code,
+    /*gqa_factor=*/H / H_kv
+  };
+
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  // ── Build MFAPagedSteelParams ────────────────────────────────────────────
+  const int NQ         = (N   + BQ - 1) / BQ;
+  const int NK         = (kL  + BK - 1) / BK;
+  const int NQ_aligned = (N   % BQ == 0) ? NQ : NQ - 1;
+  const int NK_aligned = (kL  % BK == 0) ? NK : NK - 1;
+
+  MFAPagedSteelParams pp{};
+  pp.B          = B;
+  pp.H          = H;
+  pp.D          = D;
+  pp.qL         = N;
+  pp.kL         = kL;
+  pp.gqa_factor = H / H_kv;
+  pp.scale      = params_.scale;
+  pp.NQ         = NQ;
+  pp.NK         = NK;
+  pp.NQ_aligned = NQ_aligned;
+  pp.NK_aligned = NK_aligned;
+  pp.qL_rem     = (N   % BQ == 0) ? BQ : (N   % BQ);
+  pp.kL_rem     = (kL  % BK == 0) ? BK : (kL  % BK);
+  // Decode: causal + N < kL → queries start at position kL-N in the KV seq.
+  pp.qL_off     = (params_.causal && N < kL) ? (kL - N) : 0;
+  pp.rope_q_base     = 0;   // RoPE not fused in paged path
+  pp.rope_cos_stride = D / 2;
+  // Q strides [B, H, N] (D=1 implicit)
+  pp.Q_strides[0] = (int64_t)H  * N * D;
+  pp.Q_strides[1] = (int64_t)N  * D;
+  pp.Q_strides[2] = (int64_t)D;
+  // O strides [B, H, N]
+  pp.O_strides[0] = (int64_t)H  * N * D;
+  pp.O_strides[1] = (int64_t)N  * D;
+  pp.O_strides[2] = (int64_t)D;
+  // L strides [B, H]
+  pp.L_strides[0] = (int64_t)H  * N;
+  pp.L_strides[1] = (int64_t)N;
+  // Optional features
+  pp.softcap     = 0.0f;
+  pp.has_alibi   = 0;
+  pp.window_left = params_.window_left;
+  // Paged-specific
+  pp.block_size        = block_size;
+  pp.max_blocks        = max_blocks;
+  pp.pool_block_stride = block_size * H_kv * D;   // tokens/block * heads * D
+  pp.pool_tok_stride   = H_kv * D;                // per-token stride (heads * D)
+  pp.H_kv              = H_kv;
+
+  // ── Dispatch ─────────────────────────────────────────────────────────────
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+
+  // Buffer layout: Q=0, k_pool=1, v_pool=2, block_table=3, seq_lens=4,
+  //                O=5, L=6, params=7
+  enc.set_input_array (q,           0);
+  enc.set_input_array (k_pool,      1);
+  enc.set_input_array (v_pool,      2);
+  enc.set_input_array (block_table, 3);
+  enc.set_input_array (seq_lens,    4);
+  enc.set_output_array(O,           5);
+  enc.set_output_array(L,           6);
+  enc.set_bytes       (pp,          7);
+
+  // Persistent kernel: each TG handles 4 consecutive Q-tiles.
+  static constexpr int kTilesPerTG = 4;
+  const int NQ_tgs = (NQ + kTilesPerTG - 1) / kTilesPerTG;
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(NQ_tgs, H, B),
+      MTL::Size::Make(TGP_SIZE, 1, 1));
+}
+
+// =========================================================================
+// mfa_paged_steel_forward (free function)
+// =========================================================================
+
+std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k_pool,
+    const mlx::core::array& v_pool,
+    const mlx::core::array& block_table,
+    const mlx::core::array& seq_lens,
+    float scale,
+    bool  causal,
+    int   window_left,
+    int   block_size,
+    mlx::core::Stream s) {
+
+  // Validate shapes
+  if (q.ndim() != 4)
+    throw std::invalid_argument("mfa_paged_steel_forward: q must be 4-D [B,H,N,D]");
+  if (k_pool.ndim() != 4)
+    throw std::invalid_argument("mfa_paged_steel_forward: k_pool must be 4-D [num_blocks,BS,H_kv,D]");
+  if (v_pool.ndim() != 4)
+    throw std::invalid_argument("mfa_paged_steel_forward: v_pool must be 4-D [num_blocks,BS,H_kv,D]");
+  if (block_table.ndim() != 2)
+    throw std::invalid_argument("mfa_paged_steel_forward: block_table must be 2-D [B,max_blocks]");
+  if (seq_lens.ndim() != 1)
+    throw std::invalid_argument("mfa_paged_steel_forward: seq_lens must be 1-D [B]");
+
+  const int B = q.shape(0);
+  const int H = q.shape(1);
+  const int N = q.shape(2);
+  const int D = q.shape(3);
+
+  // seq_lens must be evaluated before eval_gpu() so we can compute kL for grid.
+  // The free function forces evaluation here.
+  mlx::core::eval(seq_lens);
+
+  // Cast block_table and seq_lens to int32 if not already.
+  auto bt_i32 = mlx::core::astype(block_table, mlx::core::int32, s);
+  auto sl_i32 = mlx::core::astype(seq_lens,    mlx::core::int32, s);
+  mlx::core::eval(sl_i32);
+
+  mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]
+  mlx::core::Shape lse_shape = {B, H, N};          // logsumexp
+
+  MFAPagedSteelForward::Params params{D, scale, causal, window_left, block_size};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAPagedSteelForward>(s, params),
+      {q, k_pool, v_pool, bt_i32, sl_i32});
+
+  return {outputs[0], outputs[1]};
+}
+
 }  // namespace mlx_mfa

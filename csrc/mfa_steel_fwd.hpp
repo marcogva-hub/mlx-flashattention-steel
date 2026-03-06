@@ -150,6 +150,62 @@ int compute_num_splits(int kL, int BK);
 /// Generate Phase 1 Metal source for the Flash Decode partial kernel.
 std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& key);
 
+// =========================================================================
+// Paged STEEL Forward — kernel-level paged KV (Track FD)
+// =========================================================================
+//
+// Pool layout: k_pool / v_pool each [num_blocks, block_size, H_kv, D]
+//   token pos → phys = block_table[batch * max_blocks + pos/block_size]
+//   element  = phys * (block_size*H_kv*D) + (pos%block_size)*(H_kv*D) + head*D + d
+//
+// Kernel buffer layout:
+//   buffer(0): Q          [B, H, N, D]
+//   buffer(1): k_pool     [num_blocks, block_size, H_kv, D]
+//   buffer(2): v_pool     [num_blocks, block_size, H_kv, D]
+//   buffer(3): block_table [B, max_blocks] int32
+//   buffer(4): seq_lens   [B] int32  (effective kL per batch item)
+//   buffer(5): O          [B, H, N, D]
+//   buffer(6): L          [B, H, N]   float32 logsumexp
+//   buffer(7): params     MFAPagedSteelParams (constant)
+
+/// Parameters for the paged STEEL forward kernel.
+/// Layout MUST match MFAPagedSteelParams in the Metal source string.
+struct MFAPagedSteelParams {
+    // ── Tensor dimensions ──────────────────────────────────────────────────
+    int B, H, D;
+    int qL, kL;       // qL = query length; kL = max(seq_lens) for grid sizing
+    int gqa_factor;   // H / H_kv
+    float scale;
+    // ── Block counts ───────────────────────────────────────────────────────
+    int NQ, NK;        // NQ=ceil(qL/BQ), NK=ceil(kL/BK)
+    int NQ_aligned;    // last fully-filled Q-block index
+    int NK_aligned;    // last fully-filled K-block index (into max kL)
+    int qL_rem;        // qL % BQ  (0 if aligned)
+    int kL_rem;        // max(seq_lens) % BK
+    int qL_off;        // query position offset (0 for full-context; S-N for decode)
+    // ── RoPE (unused for paged path — kept for layout compat) ─────────────
+    int rope_q_base;
+    int rope_cos_stride;
+    // ── Strides ───────────────────────────────────────────────────────────
+    int64_t Q_strides[3];   // [B, H, N] strides for Q  (D=1 implicit)
+    int64_t O_strides[3];   // [B, H, N] strides for O
+    int64_t L_strides[2];   // [B, H] strides for L
+    // ── Optional features (keep same layout tail as MFASteelParams) ───────
+    float softcap;           // 0.0 = disabled
+    int   has_alibi;         // 0 = disabled
+    int   window_left;       // -1 = disabled
+    // ── Paged-specific ────────────────────────────────────────────────────
+    int block_size;          // tokens per pool block (page size)
+    int max_blocks;          // columns in block_table (per-sequence max blocks)
+    int pool_block_stride;   // = block_size * H_kv * D  (strides in pool array)
+    int pool_tok_stride;     // = H_kv * D
+    int H_kv;                // kv head count = H / gqa_factor
+};
+
+/// Generate the Metal kernel source for the paged STEEL forward pass.
+/// Kernel function name: "mlx_mfa_paged_attention".
+std::string generate_paged_steel_forward_source(const ShaderCache::KernelKey& key);
+
 /// Generate Phase 2 Metal source for the Flash Decode reduce kernel.
 std::string generate_flash_decode_reduce_source(const ShaderCache::KernelKey& key);
 
