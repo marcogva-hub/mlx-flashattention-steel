@@ -57,8 +57,11 @@ SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec,
     // M3+: BK=32 → TGP=29696B < 32KB, fewer K-iterations (may improve pipeline)
     // M1/M2: BK=16 → tested; BK=32 gives 0.71x SDPA on M1 (register spill)
     return {32, BK, head_dim, 4, 1, 8};
-  } else {
+  } else if (head_dim <= 256) {
     // D=256: same tile sizes on all gens; M3+ enables unroll in shader source
+    return {32, 16, head_dim, 4, 1, 8};
+  } else {
+    // D=512: D-split (BD_HALF=128, D_SPLITS=4); same block sizes — TGP fits 32KB with split
     return {32, 16, head_dim, 4, 1, 8};
   }
 }
@@ -85,6 +88,14 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   //   2*kv_s + Q_smem < 32KB → only D≤128. Also excluded: RoPE (modifies K_smem
   //   before GEMM, requires extra barrier ordering), sparse (continue skips loads).
   const bool double_buf = (BD <= 128 && !has_rope && !sparse);
+
+  // D-split: D=512 exceeds 32KB TGP with full-width Q/KV smem.
+  // Process head_dim in D_SPLITS chunks of BD_HALF=128; Q/O arrays in registers.
+  // For BD<=256: d_split=false, BD_HALF=BD, D_SPLITS=1 — path unchanged.
+  const bool d_split  = (BD > 256);
+  const int  BD_HALF  = d_split ? 128 : BD;
+  const int  D_SPLITS = BD / BD_HALF;
+  const int  TD_HALF  = BD_HALF / 8;
 
   // dtype string for Metal
   const char* dtype_str = "half";
@@ -496,6 +507,9 @@ struct MFAExpSubOp {
   ss << "#define MFA_TK  " << TK << "\n";
   ss << "#define MFA_TQ  " << TQ << "\n";
   ss << "#define MFA_ROWS_PT  " << kRowsPT << "\n";
+  ss << "#define MFA_BD_HALF  " << BD_HALF  << "\n";
+  ss << "#define MFA_D_SPLITS " << D_SPLITS << "\n";
+  ss << "#define MFA_TD_HALF  " << TD_HALF  << "\n";
   ss << "\n";
 
   // ── Main kernel ──────────────────────────────────────────────────────────
@@ -545,14 +559,26 @@ struct MFAExpSubOp {
   ss << "  constexpr short padQ  = 16 / sizeof(T);\n";
   ss << "  constexpr short padK  = 16 / sizeof(T);\n";
   ss << "  constexpr short padV  = 16 / sizeof(T);\n";
-  ss << "  constexpr short LDQ   = MFA_BD + padQ;\n";
-  ss << "  constexpr short LDK   = MFA_BK + padK;\n";
-  ss << "  constexpr short LDV   = MFA_BD + padV;\n";
-  ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD;\n";
-  ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD + padV);\n";
+  // d_split: Q/V smem sized to BD_HALF; K transposed smem stride (LDK) unchanged.
+  if (!d_split) {
+    ss << "  constexpr short LDQ   = MFA_BD + padQ;\n";
+    ss << "  constexpr short LDK   = MFA_BK + padK;\n";
+    ss << "  constexpr short LDV   = MFA_BD + padV;\n";
+    ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD;\n";
+    ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD + padV);\n";
+  } else {
+    ss << "  constexpr short LDQ   = MFA_BD_HALF + padQ;\n";
+    ss << "  constexpr short LDK   = MFA_BK + padK;\n";
+    ss << "  constexpr short LDV   = MFA_BD_HALF + padV;\n";
+    ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD_HALF;\n";
+    ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD_HALF + padV);\n";
+  }
   ss << "  constexpr short kv_s  = kv_s0 > kv_s1 ? kv_s0 : kv_s1;\n";
   ss << "\n";
-  ss << "  threadgroup T Q_smem[MFA_BQ * (MFA_BD + 16/sizeof(T))];\n";
+  if (!d_split)
+    ss << "  threadgroup T Q_smem[MFA_BQ * (MFA_BD + 16/sizeof(T))];\n";
+  else
+    ss << "  threadgroup T Q_smem[MFA_BQ * (MFA_BD_HALF + 16/sizeof(T))];\n";
   if (double_buf) {
     // Separate K_smem / V_smem allows K-load to overlap P@V and V-load to
     // overlap K-GEMM at the hardware level (load + SIMD are separate units).
@@ -570,25 +596,35 @@ struct MFAExpSubOp {
   }
   ss << "\n";
 
-  // Block loaders
-  ss << "  // Q loader: row-major (kDstStrRow=LDQ, kDstStrCol=1, reduction_dim=1)\n";
-  ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD,\n";
-  ss << "      /*kDstStrRow=*/ MFA_BD + 16/sizeof(T),\n";
-  ss << "      /*kDstStrCol=*/ 1,\n";
-  ss << "      /*reduction_dim=*/ 1,\n";
-  ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
-  ss << "  // K loader: transposed into tgp (kDstStrRow=1, kDstStrCol=LDK, reduction_dim=0)\n";
-  ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
-  ss << "      /*kDstStrRow=*/ 1,\n";
-  ss << "      /*kDstStrCol=*/ MFA_BK + 16/sizeof(T),\n";
-  ss << "      /*reduction_dim=*/ 0,\n";
-  ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
-  ss << "  // V loader: row-major (kDstStrRow=LDV, kDstStrCol=1, reduction_dim=0)\n";
-  ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
-  ss << "      /*kDstStrRow=*/ MFA_BD + 16/sizeof(T),\n";
-  ss << "      /*kDstStrCol=*/ 1,\n";
-  ss << "      /*reduction_dim=*/ 0,\n";
-  ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
+  // Block loaders — d_split: all loaders use BD_HALF cols (one D-chunk at a time)
+  if (!d_split) {
+    ss << "  // Q loader: row-major (kDstStrRow=LDQ, kDstStrCol=1, reduction_dim=1)\n";
+    ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD,\n";
+    ss << "      /*kDstStrRow=*/ MFA_BD + 16/sizeof(T),\n";
+    ss << "      /*kDstStrCol=*/ 1,\n";
+    ss << "      /*reduction_dim=*/ 1,\n";
+    ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
+    ss << "  // K loader: transposed into tgp (kDstStrRow=1, kDstStrCol=LDK, reduction_dim=0)\n";
+    ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
+    ss << "      /*kDstStrRow=*/ 1,\n";
+    ss << "      /*kDstStrCol=*/ MFA_BK + 16/sizeof(T),\n";
+    ss << "      /*reduction_dim=*/ 0,\n";
+    ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
+    ss << "  // V loader: row-major (kDstStrRow=LDV, kDstStrCol=1, reduction_dim=0)\n";
+    ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
+    ss << "      /*kDstStrRow=*/ MFA_BD + 16/sizeof(T),\n";
+    ss << "      /*kDstStrCol=*/ 1,\n";
+    ss << "      /*reduction_dim=*/ 0,\n";
+    ss << "      /*tgp_size=*/ MFA_TGP_SIZE>;\n";
+  } else {
+    // d_split loaders: BD_HALF-wide tiles; loaders re-instantiated per D-chunk in Metal
+    ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD_HALF,\n";
+    ss << "      MFA_BD_HALF + 16/sizeof(T), 1, 1, MFA_TGP_SIZE>;\n";
+    ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_HALF,\n";
+    ss << "      1, MFA_BK + 16/sizeof(T), 0, MFA_TGP_SIZE>;\n";
+    ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_HALF,\n";
+    ss << "      MFA_BD_HALF + 16/sizeof(T), 1, 0, MFA_TGP_SIZE>;\n";
+  }
   ss << "\n";
   // MMA tile declarations — loop-invariant, declared outside the persistent loop
   ss << "  const AccT scale = p->scale * M_LOG2E_F;\n";
@@ -603,14 +639,19 @@ struct MFAExpSubOp {
   ss << "  const short Ks_off = sm * LDK + sn;\n";
   ss << "  const short Vs_off = sm * LDV + sn;\n";
   ss << "\n";
-  // Qtile is TQ×TD so Q is loaded once into registers before the K loop.
+  // Qtile is TQ×TD (or TQ×TD_HALF × D_SPLITS) so Q is hoisted into registers.
   // Ktile stays 1×TK (one D-slice per DD iteration) to avoid register pressure.
   // Tile and state arrays declared outside loop; reset inside per qb.
-  ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Qtile;\n";
+  if (!d_split) {
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Qtile;\n";
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Otile;\n";
+  } else {
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Qtile[MFA_D_SPLITS];\n";
+    ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD_HALF> Otile[MFA_D_SPLITS];\n";
+  }
   ss << "  MFAMMATile<AccT, 1,     MFA_TK>  Ktile;\n";
   ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TK> Stile;\n";
   ss << "  MFAMMATile<AccT, 1,    1>       Vtile;\n";
-  ss << "  MFAMMATile<AccT, MFA_TQ, MFA_TD> Otile;\n";
   ss << "  AccT max_score[MFA_ROWS_PT];\n";
   ss << "  AccT sum_score[MFA_ROWS_PT];\n";
   ss << "\n";
@@ -623,15 +664,23 @@ struct MFAExpSubOp {
   // Per-qb source/destination pointers
   ss << "  const device T* Q_qb = Q + (long)qb * MFA_BQ * p->Q_strides[2];\n";
   ss << "  device T*       O_qb = O + (long)qb * MFA_BQ * p->O_strides[2];\n";
-  // Re-instantiate loaders each iteration: QLoader advances in Q; KLoader/VLoader rewind
-  ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-  ss << "  KLoader loader_k(K, (int)p->K_strides[2], Ks,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-  ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
-  ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  if (!d_split) {
+    // Re-instantiate loaders each iteration: QLoader advances in Q; KLoader/VLoader rewind
+    ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
+    ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "  KLoader loader_k(K, (int)p->K_strides[2], Ks,\n";
+    ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
+    ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  }
+  // d_split: loaders created inline per D-chunk; no persistent loader_k / loader_v.
   // Reset accumulator and softmax state for this Q-block
-  ss << "  Otile.clear();\n";
+  if (!d_split)
+    ss << "  Otile.clear();\n";
+  else {
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) Otile[dh].clear();\n";
+  }
   ss << "  STEEL_PRAGMA_UNROLL\n";
   ss << "  for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
   ss << "    max_score[i] = -INFINITY;\n";
@@ -640,12 +689,14 @@ struct MFAExpSubOp {
   ss << "\n";
 
   // Cooperative Q load: device → threadgroup SRAM
-  ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-  ss << "  if (qb == p->NQ_aligned) {\n";
-  ss << "    loader_q.load_safe(short2(MFA_BD, p->qL_rem));\n";
-  ss << "  } else {\n";
-  ss << "    loader_q.load_unsafe();\n";
-  ss << "  }\n";
+  if (!d_split) {
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "  if (qb == p->NQ_aligned) {\n";
+    ss << "    loader_q.load_safe(short2(MFA_BD, p->qL_rem));\n";
+    ss << "  } else {\n";
+    ss << "    loader_q.load_unsafe();\n";
+    ss << "  }\n";
+  }
   // Q SRAM ready.  Optionally apply RoPE to Q in SRAM before register load.
   // Each thread handles a non-overlapping slice of (Q_row, D_pair) tuples;
   // no race conditions.  The existing barrier below synchronises writes.
@@ -683,7 +734,21 @@ struct MFAExpSubOp {
   }
   // Load Q from TGP into registers ONCE (key STEEL optimization: Q stays in
   // registers across all K-tile iterations; only K/V stream through TGP).
-  ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+  if (!d_split) {
+    ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+  } else {
+    // d_split: hoist each BD_HALF-wide chunk into Qtile[dh]
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    QLoader loader_q_dh(Q_qb + dh * MFA_BD_HALF, (int)p->Q_strides[2], Qs,\n";
+    ss << "                        (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    if (qb == p->NQ_aligned) loader_q_dh.load_safe(short2(MFA_BD_HALF, p->qL_rem));\n";
+    ss << "    else                     loader_q_dh.load_unsafe();\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "    Qtile[dh].template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+    ss << "  }\n";
+  }
   ss << "\n";
 
   // K-loop limit (causal or full)
@@ -746,7 +811,8 @@ struct MFAExpSubOp {
   }
   // Non-double-buf: K is loaded here (4-barrier path, shared KV_smem).
   // Double-buf: K[kb] was already preloaded; skip to K-GEMM directly.
-  if (!double_buf) {
+  // d_split: K loaded per D-chunk inline in S accumulation below; skip here.
+  if (!double_buf && !d_split) {
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    if (kb == p->NK_aligned) {\n";
     ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
@@ -792,27 +858,55 @@ struct MFAExpSubOp {
   }
   // S = Q @ K^T  (Q is in registers; only K is loaded from TGP per DD slice)
   ss << "    Stile.clear();\n";
-  // double_buf: K[kb] was synced by barrier-2 at end of prev iter (or Phase-0 barrier).
-  // No additional barrier needed here — K_smem is already fully visible.
-  if (!double_buf) {
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  if (!d_split) {
+    // double_buf: K[kb] was synced by barrier-2 at end of prev iter (or Phase-0 barrier).
+    // No additional barrier needed here — K_smem is already fully visible.
+    if (!double_buf) {
+      ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    }
+    ss << "    STEEL_PRAGMA_UNROLL\n";
+    ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
+    ss << "      Ktile.template load<T, 1, 1>(\n";
+    ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++) {\n";
+    ss << "          MFAMMAFrag<AccT>::mma(\n";
+    ss << "              Stile.frag_at(iq, ik),\n";
+    ss << "              Qtile.frag_at(iq, dd),\n";
+    ss << "              Ktile.frag_at(0, ik),\n";
+    ss << "              Stile.frag_at(iq, ik));\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+  } else {
+    // d_split: loop over D_SPLITS K chunks; load each BD_HALF-wide K tile
+    ss << "    STEEL_PRAGMA_UNROLL\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "      KLoader loader_k_dh(K + (long)kb * MFA_BK * p->K_strides[2] + dh * MFA_BD_HALF,\n";
+    ss << "                          (int)p->K_strides[2], Ks,\n";
+    ss << "                          (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      if (kb == p->NK_aligned) loader_k_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "      else                     loader_k_dh.load_unsafe();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
+    ss << "        Ktile.template load<T, 1, 1>(\n";
+    ss << "            &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "            MFAMMAFrag<AccT>::mma(\n";
+    ss << "                Stile.frag_at(iq, ik),\n";
+    ss << "                Qtile[dh].frag_at(iq, dd),\n";
+    ss << "                Ktile.frag_at(0, ik),\n";
+    ss << "                Stile.frag_at(iq, ik));\n";
+    ss << "      }\n";
+    ss << "    }\n";
   }
-  ss << "    STEEL_PRAGMA_UNROLL\n";
-  ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
-  ss << "      Ktile.template load<T, 1, 1>(\n";
-  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
-  ss << "      STEEL_PRAGMA_UNROLL\n";
-  ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
-  ss << "        STEEL_PRAGMA_UNROLL\n";
-  ss << "        for (short ik = 0; ik < MFA_TK; ik++) {\n";
-  ss << "          MFAMMAFrag<AccT>::mma(\n";
-  ss << "              Stile.frag_at(iq, ik),\n";
-  ss << "              Qtile.frag_at(iq, dd),\n";
-  ss << "              Ktile.frag_at(0, ik),\n";
-  ss << "              Stile.frag_at(iq, ik));\n";
-  ss << "        }\n";
-  ss << "      }\n";
-  ss << "    }\n";
   ss << "\n";
   // Double-buf: issue V[kb] load into V_smem right after K-GEMM.
   // K_smem ≠ V_smem → no conflict with the just-completed K reads.
@@ -943,7 +1037,8 @@ struct MFAExpSubOp {
   // !double_buf: V shares KV_smem with K, so K-GEMM must finish (barrier) before
   //              we overwrite that buffer with V data.
   // double_buf:  V already issued right after K-GEMM into separate V_smem; skip.
-  if (!double_buf) {
+  // d_split:     V is loaded per D-chunk inline in P@V loop below; skip here.
+  if (!double_buf && !d_split) {
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    if (kb == p->NK_aligned) {\n";
     ss << "      loader_v.load_safe(short2(MFA_BD, p->kL_rem));\n";
@@ -984,33 +1079,67 @@ struct MFAExpSubOp {
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
   ss << "      sum_score[i] = sum_score[i] * factor[i] + sum_tmp[i];\n";
   ss << "    }\n";
-  ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
+  if (!d_split)
+    ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
+  else {
+    ss << "    STEEL_PRAGMA_UNROLL\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++)\n";
+    ss << "      Otile[dh].template row_bin_op<MFAMulOp>(factor);\n";
+  }
   ss << "\n";
 
   // P @ V accumulation
   ss << "    // O += P @ V\n";
-  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  if (!d_split)
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
   // Loop order: iq → ik → id (innermost)
   // ik is the K-sequence tile (ik*8*LDV: large stride in V_smem).
   // id is the D tile (id*8: small stride = 16-byte step in V_smem).
   // With id innermost, each ik block does a sequential D-scan (cache-friendly).
   // Stile[iq][ik] stays live for all TD id iterations (saves re-load vs id-outer).
-  ss << "    STEEL_PRAGMA_UNROLL\n";
-  ss << "    for (short iq = 0; iq < MFA_TQ; iq++) {\n";
-  ss << "      STEEL_PRAGMA_UNROLL\n";
-  ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
-  ss << "        STEEL_PRAGMA_UNROLL\n";
-  ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
-  ss << "          Vtile.template load<T, 1, 1>(\n";
-  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
-  ss << "          MFAMMAFrag<AccT>::mma(\n";
-  ss << "              Otile.frag_at(iq, id),\n";
-  ss << "              Stile.frag_at(iq, ik),\n";
-  ss << "              Vtile.frag_at(0, 0),\n";
-  ss << "              Otile.frag_at(iq, id));\n";
-  ss << "        }\n";
-  ss << "      }\n";
-  ss << "    }\n";
+  if (!d_split) {
+    ss << "    STEEL_PRAGMA_UNROLL\n";
+    ss << "    for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
+    ss << "          Vtile.template load<T, 1, 1>(\n";
+    ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+    ss << "          MFAMMAFrag<AccT>::mma(\n";
+    ss << "              Otile.frag_at(iq, id),\n";
+    ss << "              Stile.frag_at(iq, ik),\n";
+    ss << "              Vtile.frag_at(0, 0),\n";
+    ss << "              Otile.frag_at(iq, id));\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+  } else {
+    // d_split P@V: loop over D_SPLITS V chunks; Otile[dh] accumulates per D chunk
+    ss << "    STEEL_PRAGMA_UNROLL\n";
+    ss << "    for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "      VLoader loader_v_dh(V + (long)kb * MFA_BK * p->V_strides[2] + dh * MFA_BD_HALF,\n";
+    ss << "                          (int)p->V_strides[2], Vs,\n";
+    ss << "                          (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      if (kb == p->NK_aligned) loader_v_dh.load_safe(short2(MFA_BD_HALF, p->kL_rem));\n";
+    ss << "      else                     loader_v_dh.load_unsafe();\n";
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short iq = 0; iq < MFA_TQ; iq++)\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++)\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short id = 0; id < MFA_TD_HALF; id++) {\n";
+    ss << "            Vtile.template load<T, 1, 1>(&Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+    ss << "            MFAMMAFrag<AccT>::mma(\n";
+    ss << "                Otile[dh].frag_at(iq, id),\n";
+    ss << "                Stile.frag_at(iq, ik),\n";
+    ss << "                Vtile.frag_at(0, 0),\n";
+    ss << "                Otile[dh].frag_at(iq, id));\n";
+    ss << "          }\n";
+    ss << "    }\n";
+  }
   if (double_buf) {
     // Double-buf barrier-2: preload K[kb+1] into K_smem while P@V (above) ran.
     // P@V reads V_smem; K-load writes K_smem — separate TGP regions, no conflict.
@@ -1026,26 +1155,53 @@ struct MFAExpSubOp {
     ss << "      loader_k.next();\n";
     ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    }\n";
-  } else {
+  } else if (!d_split) {
+    // Non-split: advance persistent loaders to next K/V tile
     ss << "    loader_k.next();\n";
     ss << "    loader_v.next();\n";
   }
+  // d_split: no persistent loaders to advance; offsets computed from kb directly.
   ss << "  } // end kb loop\n";
   ss << "\n";
 
   // Normalize + store O
-  ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
+  if (!d_split)
+    ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
+  else {
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++)\n";
+    ss << "    Otile[dh].template row_bin_op<MFADivOp>(sum_score);\n";
+  }
   ss << "  threadgroup_barrier(mem_flags::mem_none);\n";
   ss << "\n";
-  ss << "  device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2] + sn;\n";
-  ss << "  if (qb == p->NQ_aligned) {\n";
-  ss << "    auto dims = short2((short)(MFA_BD - sn),\n";
-  ss << "                       (short)(p->qL_rem - (tm + sm)));\n";
-  ss << "    if (dims.x > 0 && dims.y > 0)\n";
-  ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
-  ss << "  } else {\n";
-  ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
-  ss << "  }\n";
+  if (!d_split) {
+    // Non-split: single Otile covers full BD columns.
+    ss << "  device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2] + sn;\n";
+    ss << "  if (qb == p->NQ_aligned) {\n";
+    ss << "    auto dims = short2((short)(MFA_BD - sn),\n";
+    ss << "                       (short)(p->qL_rem - (tm + sm)));\n";
+    ss << "    if (dims.x > 0 && dims.y > 0)\n";
+    ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
+    ss << "  } else {\n";
+    ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+    ss << "  }\n";
+  } else {
+    // d_split: store each BD_HALF-wide Otile[dh] at offset dh*MFA_BD_HALF.
+    // dims.x uses MFA_BD_HALF (always positive since D%BD_HALF==0).
+    ss << "  STEEL_PRAGMA_UNROLL\n";
+    ss << "  for (short dh = 0; dh < MFA_D_SPLITS; dh++) {\n";
+    ss << "    device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2]\n";
+    ss << "                        + dh * MFA_BD_HALF + sn;\n";
+    ss << "    if (qb == p->NQ_aligned) {\n";
+    ss << "      auto dims = short2((short)(MFA_BD_HALF - sn),\n";
+    ss << "                         (short)(p->qL_rem - (tm + sm)));\n";
+    ss << "      if (dims.x > 0 && dims.y > 0)\n";
+    ss << "        Otile[dh].template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
+    ss << "    } else {\n";
+    ss << "      Otile[dh].template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+    ss << "    }\n";
+    ss << "  }\n";
+  }
   ss << "\n";
 
   // Write L (logsumexp): only thread with sn==0 writes

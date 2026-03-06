@@ -5275,3 +5275,107 @@ class TestPagedFlashDecode:
         mx.eval(out_pd, out_ref)
         diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"GQA 4:1 decode diff={diff:.4e}"
+
+
+# ============================================================================
+# Track HA — D=512 forward tests
+# ============================================================================
+
+@pytest.mark.skipif(not is_mfa_available(), reason="MFA extension required")
+class TestD512Forward:
+    """STEEL forward kernel with D=512 (d_split path: 4×BD_HALF=128 chunks)."""
+
+    TOL = 2e-2  # f16/bf16 tolerance
+
+    def _ref(self, q, k, v, scale, causal):
+        import mlx.core.fast as fast
+        mask = "causal" if causal else None
+        return fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    def test_forward_causal(self, dtype):
+        """D=512 causal forward matches SDPA reference."""
+        mx.random.seed(1)
+        B, H, N, D = 1, 4, 64, 512
+        q = mx.random.normal([B, H, N, D]).astype(dtype)
+        k = mx.random.normal([B, H, N, D]).astype(dtype)
+        v = mx.random.normal([B, H, N, D]).astype(dtype)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=True)
+        ref = self._ref(q, k, v, scale, causal=True)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"causal max_err={err:.4f} dtype={dtype}"
+
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    def test_forward_non_causal(self, dtype):
+        """D=512 non-causal forward matches SDPA reference."""
+        mx.random.seed(2)
+        B, H, N, D = 1, 4, 64, 512
+        q = mx.random.normal([B, H, N, D]).astype(dtype)
+        k = mx.random.normal([B, H, N, D]).astype(dtype)
+        v = mx.random.normal([B, H, N, D]).astype(dtype)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"non-causal max_err={err:.4f} dtype={dtype}"
+
+    def test_forward_unaligned_seqlen(self):
+        """D=512 with N not a multiple of BQ=32."""
+        mx.random.seed(3)
+        B, H, N, D = 1, 4, 65, 512  # 65 = 2*32 + 1
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=True)
+        ref = self._ref(q, k, v, scale, causal=True)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"unaligned max_err={err:.4f}"
+
+    def test_forward_batch_multi_head(self):
+        """D=512 with larger batch/head counts."""
+        mx.random.seed(4)
+        B, H, N, D = 2, 8, 128, 512
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=True)
+        ref = self._ref(q, k, v, scale, causal=True)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"B=2 H=8 max_err={err:.4f}"
+
+    def test_forward_gqa(self):
+        """D=512 GQA (H_q=8, H_kv=2)."""
+        mx.random.seed(5)
+        B, H_q, H_kv, N, D = 1, 8, 2, 64, 512
+        q = mx.random.normal([B, H_q, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=True)
+        k_exp = mx.repeat(k, H_q // H_kv, axis=1)
+        v_exp = mx.repeat(v, H_q // H_kv, axis=1)
+        ref = self._ref(q, k_exp, v_exp, scale, causal=True)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"GQA max_err={err:.4f}"
+
+    def test_forward_decode_n1(self):
+        """D=512 single-token decode (N=1)."""
+        mx.random.seed(6)
+        B, H, N, S, D = 1, 4, 1, 64, 512
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        scale = float(D ** -0.5)
+        out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref = self._ref(q, k, v, scale, causal=False)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(out - ref)))
+        assert err < self.TOL, f"decode N=1 max_err={err:.4f}"

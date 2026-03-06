@@ -27,7 +27,7 @@ from typing import Optional, Union, Sequence
 
 import mlx.core as mx
 
-_MFA_SUPPORTED_HDIMS = {64, 128, 256}
+_MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
 
@@ -1870,7 +1870,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             D = q.shape[-1]
             use_steel_bwd = (
                 q.dtype in (mx.float16, mx.bfloat16)
-                and D <= 256
+                and D <= 512
             )
             if use_steel_bwd:
                 # Sever cotangent's lazy-graph ancestry before gradient checkpointing.
