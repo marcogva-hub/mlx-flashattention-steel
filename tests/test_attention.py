@@ -4557,3 +4557,104 @@ class TestRotaryDim:
             np.array(ref.astype(mx.float32)),
             rtol=1e-4, atol=1e-4,
         )
+
+
+# ---------------------------------------------------------------------------
+# Track FC: Fused RoPE in cache append
+# ---------------------------------------------------------------------------
+
+class TestKVCacheRopeAppend:
+    """Tests for flash_attention_kvcache_rope_append."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    def test_rope_append_matches_naive(self):
+        """Pre-rotated cache append must match naive rotate-full-KV approach."""
+        from mlx_mfa import flash_attention_kvcache_rope_append, flash_attention_rope
+        B, H, D = 1, 2, 64
+        past_len, new_len = 8, 1
+        max_len = 64
+        mx.random.seed(3)
+        # Past cache (already rotated at positions 0..past_len)
+        k_past_unrot = mx.random.normal((B, H, past_len, D)).astype(mx.float16)
+        v_past = mx.random.normal((B, H, past_len, D)).astype(mx.float16)
+        k_new_unrot = mx.random.normal((B, H, new_len, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H, new_len, D)).astype(mx.float16)
+        q = mx.random.normal((B, H, new_len, D)).astype(mx.float16)
+        cos = mx.random.normal((max_len, D // 2)).astype(mx.float32)
+        sin = mx.random.normal((max_len, D // 2)).astype(mx.float32)
+
+        # Naive reference: rotate everything at decode time
+        k_past_rot = _apply_rope_for_test(k_past_unrot, cos, sin, offset=0)
+        k_full_rot = mx.concatenate(
+            [k_past_rot,
+             _apply_rope_for_test(k_new_unrot, cos, sin, offset=past_len)], axis=2
+        )
+        q_rot = _apply_rope_for_test(q, cos, sin, offset=past_len)
+        ref = flash_attention(q_rot, k_full_rot, v_past if past_len else v_new,
+                              causal=True)
+        # Actually build the proper full v
+        v_full = mx.concatenate([v_past, v_new], axis=2)
+        ref2 = flash_attention(q_rot, k_full_rot, v_full, causal=True)
+
+        # FC rope-append path: build pre-rotated cache first
+        k_cache_rot = _apply_rope_for_test(k_past_unrot, cos, sin, offset=0)
+        out, k_upd, v_upd = flash_attention_kvcache_rope_append(
+            q, k_new_unrot, v_new, k_cache_rot, v_past, cos, sin,
+            cache_seqlens=past_len, causal=True,
+        )
+        mx.eval(ref2, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref2.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_rope_append_no_cache(self):
+        """First-step (no cache) must work with k_cache=None."""
+        from mlx_mfa import flash_attention_kvcache_rope_append
+        B, H, N, D = 1, 2, 4, 64
+        max_len = 32
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cos = mx.ones((max_len, D // 2), dtype=mx.float32)
+        sin = mx.zeros((max_len, D // 2), dtype=mx.float32)
+        out, k_upd, v_upd = flash_attention_kvcache_rope_append(
+            q, k_new, v_new, None, None, cos, sin, cache_seqlens=0, causal=True,
+        )
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert k_upd.shape == (B, H, N, D)
+
+    def test_rope_append_cache_grows(self):
+        """Cache shape must grow by N_new per step."""
+        from mlx_mfa import flash_attention_kvcache_rope_append
+        B, H, D = 1, 2, 64
+        max_len = 64
+        cos = mx.ones((max_len, D // 2), dtype=mx.float32)
+        sin = mx.zeros((max_len, D // 2), dtype=mx.float32)
+
+        k_cache, v_cache = None, None
+        total_len = 0
+        for step in range(4):
+            N = 2
+            q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+            k_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+            v_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+            out, k_cache, v_cache = flash_attention_kvcache_rope_append(
+                q, k_new, v_new, k_cache, v_cache, cos, sin,
+                cache_seqlens=total_len, causal=True,
+            )
+            total_len += N
+            mx.eval(k_cache)
+            assert k_cache.shape[2] == total_len, \
+                f"step {step}: expected cache len {total_len}, got {k_cache.shape[2]}"
+
+
+# Helper for tests above: rotate tensor using _apply_rope_mlx
+def _apply_rope_for_test(x, cos, sin, offset):
+    from mlx_mfa.attention import _apply_rope_mlx
+    return _apply_rope_mlx(x, cos, sin, offset=offset, interleaved=True)

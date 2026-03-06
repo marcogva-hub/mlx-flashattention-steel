@@ -778,6 +778,96 @@ def flash_attention_with_kv_cache(
     return out, k_full, v_full
 
 
+def flash_attention_kvcache_rope_append(
+    q: mx.array,
+    k_new: mx.array,
+    v_new: mx.array,
+    k_cache: Optional[mx.array],
+    v_cache: Optional[mx.array],
+    rotary_cos: mx.array,
+    rotary_sin: mx.array,
+    cache_seqlens: int = 0,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = True,
+    interleaved: bool = True,
+    stream: Optional[mx.Stream] = None,
+) -> tuple:
+    """KV-cache append with fused RoPE rotation — stores keys pre-rotated.
+
+    This is the recommended pattern for efficient autoregressive generation
+    when using RoPE positional embeddings.  Keys are rotated *before* being
+    appended to the cache, so the cache always contains pre-rotated keys.
+    Only the new ``k_new`` tokens need rotation at each step, giving
+    O(N_new) rotation cost instead of O(cache_len) per decode step.
+
+    Concretely, this function:
+
+    1. Rotates ``q`` at positions ``[cache_seqlens, cache_seqlens + N_q)``.
+    2. Rotates ``k_new`` at positions ``[cache_seqlens, cache_seqlens + N_new)``.
+    3. Concatenates ``k_new_rotated`` onto ``k_cache`` (and ``v_new`` onto ``v_cache``).
+    4. Runs :func:`flash_attention` on the rotated Q and the full K/V.
+    5. Returns ``(output, k_cache_updated, v_cache_updated)`` where the cache
+       contains pre-rotated keys ready for the next step.
+
+    Usage pattern for incremental decode::
+
+        # Step 0: no cache
+        out, k_cache, v_cache = flash_attention_kvcache_rope_append(
+            q0, k0, v0, None, None, cos, sin, cache_seqlens=0,
+        )
+        # Step 1: append to cache
+        out, k_cache, v_cache = flash_attention_kvcache_rope_append(
+            q1, k1, v1, k_cache, v_cache, cos, sin,
+            cache_seqlens=k_cache.shape[2],
+        )
+
+    Args:
+        q:              Query ``[B, H_q, N_q, D]``.
+        k_new:          New key tokens ``[B, H_kv, N_new, D]`` (unrotated).
+        v_new:          New value tokens ``[B, H_kv, N_new, D]``.
+        k_cache:        Existing key cache ``[B, H_kv, past_len, D]`` (pre-rotated).
+                        Pass ``None`` for the first step.
+        v_cache:        Existing value cache ``[B, H_kv, past_len, D]``.
+        rotary_cos:     ``float32 [max_seq_len, D/2]`` cosine table.
+        rotary_sin:     ``float32 [max_seq_len, D/2]`` sine table.
+        cache_seqlens:  Current cache length = position of the first new token.
+        scale:          Attention scale; defaults to ``1/sqrt(D)``.
+        causal:         Apply causal masking (default ``True``).
+        interleaved:    RoPE mode: ``True`` = LLaMA; ``False`` = GPT-NeoX.
+        stream:         MLX stream.
+
+    Returns:
+        3-tuple ``(output, k_cache_updated, v_cache_updated)``:
+        - ``output`` — ``[B, H_q, N_q, D]``
+        - ``k_cache_updated`` — ``[B, H_kv, past_len + N_new, D]`` pre-rotated
+        - ``v_cache_updated`` — ``[B, H_kv, past_len + N_new, D]``
+    """
+    D = q.shape[-1]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    # Rotate Q at current decode positions.
+    q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                             offset=cache_seqlens, interleaved=interleaved)
+    # Rotate k_new at current decode positions (same offset as Q).
+    k_new_rot = _apply_rope_mlx(k_new, rotary_cos, rotary_sin,
+                                 offset=cache_seqlens, interleaved=interleaved)
+
+    # Append to cache.
+    if k_cache is not None:
+        k_full = mx.concatenate([k_cache, k_new_rot], axis=2)
+        v_full = mx.concatenate([v_cache, v_new], axis=2)
+    else:
+        k_full = k_new_rot
+        v_full = v_new
+
+    # Run attention on rotated Q, full pre-rotated K, V.
+    out = flash_attention(q_rot, k_full, v_full, scale=scale, causal=causal,
+                          stream=stream)
+    return out, k_full, v_full
+
+
 # ---------------------------------------------------------------------------
 # Unified KV-cache API  (Track FA)
 # ---------------------------------------------------------------------------
