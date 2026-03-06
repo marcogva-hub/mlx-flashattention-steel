@@ -276,8 +276,8 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | K   | Quantized KV Cache (Q4/Q8 dequantize before STEEL) | **Done (v0.6.0)** |
 | L   | RoPE Fusion (in-kernel rotary embeddings, `flash_attention_rope`) | **Done (v0.6.0)** |
 | M   | Paged Attention design document (`docs/PAGED_ATTENTION_DESIGN.md`) | **Done (v0.6.0)** |
-| N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | Planned (v0.9.0) |
-| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v0.9.0) |
+| N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | **Done (v0.9.0)** |
+| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v1.0) |
 | O   | Spatial 2D/3D block masks + segment masks + adaptive window | **Done (v0.7.0)** |
 | P   | Variable-length batching (`flash_attention_varlen`, split-concat) | **Done (v0.7.0)** |
 | R   | 3D RoPE table construction + `flash_attention_rope(rope_3d=...)` | **Done (v0.7.0)** |
@@ -294,8 +294,15 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | AF  | Fused KV cache append (`flash_attention_with_kv_cache`) | **Done (v0.8.0)** |
 | AG  | Attention dropout (training) | **Done (v0.8.0)** |
 | AH  | Return attention weights | **Done (v0.8.0)** |
-| PG  | Paged KV decode — block table gather, `PagedKVCache` allocator | Planned (v1.0) |
-| P   | Paged KV decode — block table gather, `PagedKVCache` Python allocator | Planned (v1.0) |
+| BA  | STEEL native backward + varlen Metal kernel | **Done (v0.9.0)** |
+| BB  | Paged KV decode (`PagedKVCache`), packed QKV/KV formats | **Done (v0.9.0)** |
+| CA  | Vec4 block loads (float4/half4 aligned tile reads) | **Done (v0.9.1)** |
+| CB  | `mx.compile` for Python fallback paths | **Done (v0.9.1)** |
+| CC  | Persistent multi-Q-block kernel (4× Q-blocks/threadgroup) | **Done (v0.9.1)** |
+| CD  | GQA support in STEEL backward (`gqa_factor` baked as `#define`) | **Done (v0.9.1)** |
+| CF  | Double-buffer ping-pong (K_smem⊕V_smem, 4→2 barriers/K-tile, D≤128) | **Done (v0.9.1)** |
+| CE  | D=256 backward multi-pass tiling | Deferred to v1.0 |
+| PG  | Paged KV decode — native Metal kernel (full block-table gather) | Planned (v1.0) |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
 
 ## References

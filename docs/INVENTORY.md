@@ -1,13 +1,13 @@
 # mlx-mfa Repository Inventory
 
-_Auto-regenerated at v0.8.0 (2026-03-05)._
+_Auto-regenerated at v0.9.1 (2026-03-06)._
 
 ## Project structure
 
 ```
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
-│   ├── __init__.py        Public API (25 exports, version=0.8.0)
+│   ├── __init__.py        Public API (25 exports, version=0.9.1)
 │   ├── attention.py       Core attention + fallback paths (1699 lines)
 │   ├── masks.py           Mask builders — 13 functions (1129 lines)
 │   └── integrations/
@@ -28,13 +28,13 @@ mlx-mfa-v2/
 ├── tests/
 │   ├── test_attention.py  198 tests
 │   └── test_mlx_lm_integration.py  11 tests
-├── benchmarks/            7 benchmark scripts
+├── benchmarks/            8 benchmark scripts
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── INVENTORY.md       This file
 │   └── PAGED_ATTENTION_DESIGN.md
 ├── scripts/check_env.py
-├── pyproject.toml         version=0.8.0
+├── pyproject.toml         version=0.9.1
 └── CMakeLists.txt
 ```
 
@@ -71,7 +71,7 @@ mlx-mfa-v2/
 
 ---
 
-## C++ Metal kernel variants (v0.8.0)
+## C++ Metal kernel variants (v0.9.1)
 
 | KernelType | Dtype | Pass | Description |
 |-----------|-------|------|-------------|
@@ -93,7 +93,7 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 
 ---
 
-## Tests (209 total)
+## Tests (232 total)
 
 | Class | Count | What |
 |-------|------:|------|
@@ -118,7 +118,7 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | TestReturnAttnWeights | 4 | return_attn_weights=True |
 | TestPublicAPI / TestEdgeCases / etc. | ~35 | API, M3+ routing, edge cases |
 | test_mlx_lm_integration.py | 11 | mlx-lm integration |
-| **Total** | **209** | |
+| **Total** | **232** | |
 
 ---
 
@@ -130,16 +130,32 @@ Buffer aliasing fix: `_sever_lazy_graph(cotangent)` before gradient-checkpointin
 | `bench_mlx_lm.py` | mlx-lm tokens/sec with/without MFA patch |
 | `bench_rope_3d.py` | 3D RoPE overhead |
 | `bench_segment.py` | Segment mask attention throughput |
-| `bench_softcap_alibi.py` | Softcap + ALiBi overhead vs baseline (NEW v0.8.0) |
+| `bench_softcap_alibi.py` | Softcap + ALiBi overhead vs baseline |
 | `bench_spatial_masks.py` | Spatial mask attention throughput |
 | `bench_varlen.py` | Variable-length batching throughput |
+| `bench_all.py` | Consolidated fwd+bwd suite (NEW v0.9.1) |
 
 ---
 
-## v0.9.0 planned additions
+## v0.9.1 additions (CA–CI)
+
+| Track | File(s) | Description |
+|-------|---------|-------------|
+| CA | `csrc/mfa_steel_fwd.cpp` | Vec4 aligned block loads (float4/half4) |
+| CB | `mlx_mfa/attention.py` | `mx.compile` for fallback paths |
+| CC | `csrc/mfa_steel_fwd.cpp` | Persistent multi-Q-block kernel (4× Q-blocks/dispatch) |
+| CD | `csrc/mfa_steel_bwd.cpp`, `shader_cache.hpp/.mm` | GQA in STEEL backward (bake `gqa_factor` as `#define`) |
+| CE | — | D=256 backward multi-pass (deferred to v1.0) |
+| CF | `csrc/mfa_steel_fwd.cpp` | Double-buffer ping-pong (K_smem⊕V_smem, 4→2 barriers/K-tile) |
+| CG | `benchmarks/bench_all.py`, `docs/benchmarks/RESULTS.md` | Consolidated benchmark + v0.9.1 results |
+| CH | `docs/INVENTORY.md`, `docs/ARCHITECTURE.md`, `README.md` | Documentation refresh |
+| CI | `pyproject.toml`, `mlx_mfa/__init__.py`, `CHANGELOG.md` | Version bump → 0.9.1, tag |
+
+## v0.9.0 additions (BA–BH, for reference)
 
 - `csrc/mfa_steel_bwd.hpp/.cpp` — STEEL native backward (dQ + dK/dV kernels)
 - STEEL varlen forward kernel (cu_seqlens in Metal)
 - `mlx_mfa/paged_kv.py` — PagedKVCache allocator
 - `mlx_mfa/packed.py` — QKV/KV packed format utilities
 - `benchmarks/bench_backward.py` — STEEL vs SDPA backward benchmark
+- `benchmarks/bench_varlen.py` — varlen STEEL kernel note

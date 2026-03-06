@@ -248,3 +248,27 @@ All functions are exported from `mlx_mfa/__init__.py` and re-exported from
 
 5. **`MTLLanguageVersion3_1`**: required for `bfloat4` vectors used in bf16 kernels.
    Metal 3.0 (macOS 14) only has scalar bfloat; 3.1 (macOS 14.2+) adds vector types.
+
+6. **Double-buffer ping-pong (Track CF, v0.9.1)**: For D≤128 without RoPE/sparse,
+   the STEEL forward kernel uses *separate* `K_smem` and `V_smem` threadgroup arrays
+   instead of a shared `KV_smem`.  This lets V-tile stores complete concurrently
+   with K-GEMM (different TGP regions, no hazard) and K[n+1]-tile stores complete
+   during P@V, reducing threadgroup barriers per K-tile from 4 to 2.
+
+   ```
+   Shared KV_smem (4 barriers):
+     barrier → K-load → barrier → K-GEMM → barrier → V-load+softmax → barrier → P@V
+
+   Separate K_smem/V_smem (2 barriers):
+     [Phase-0: K[0]-load, barrier]
+     K-GEMM + V[kb]-load → barrier-1 → softmax → P@V + K[kb+1]-load → barrier-2
+   ```
+
+   TGP budget check: D=128 requires `(BK+padK)*BD + BK*(BD+padV)` ≈ 19.2 KB < 32 KB.
+   D=256 would exceed 32 KB, so `double_buf` is disabled for D=256.
+
+7. **Persistent multi-Q-block kernel (Track CC, v0.9.1)**: The kernel iterates
+   over an outer `qb` (Q-block) loop (`[0, NQ)`) within a single threadgroup
+   dispatch, processing 4 Q-blocks per launch. This amortizes Metal command
+   buffer overhead at large N (N ≥ 4096) where grid occupancy would otherwise
+   leave the GPU partly idle between sequential dispatches.
