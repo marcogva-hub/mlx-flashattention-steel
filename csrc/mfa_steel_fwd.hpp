@@ -50,6 +50,7 @@ struct MFASteelParams {
     // Defaults: softcap=0.0f (disabled), has_alibi=0 (disabled).
     float softcap;     // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     int   has_alibi;   // 0 = disabled; 1 = ALiBi per-head bias (buffer(9))
+    int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
 };
 
 /// Select BQ/BK/BD/WM/WN based on head_dim and precision.

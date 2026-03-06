@@ -37,6 +37,7 @@ class MFAttention : public mlx::core::Primitive {
     int  cache_seqlens;      // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
     float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     bool has_alibi;      // false = disabled; alibi_slopes at last input
+    int  window_left;    // -1 = disabled; >=0 = sliding window left radius (tokens)
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -80,6 +81,7 @@ mlx::core::array mfa_attention_forward(
     float scale,
     bool causal,
     float softcap = 0.0f,
+    int  window_left = -1,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Forward pass with ALiBi per-head position biases.

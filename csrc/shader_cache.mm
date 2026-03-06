@@ -48,6 +48,7 @@ bool ShaderCache::KernelKey::operator==(const KernelKey& other) const {
          rope_interleaved  == other.rope_interleaved  &&
          has_softcap       == other.has_softcap       &&
          has_alibi         == other.has_alibi         &&
+         has_window        == other.has_window        &&
          dtype        == other.dtype        &&
          gqa_factor   == other.gqa_factor;
 }
@@ -72,6 +73,7 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
   mix(static_cast<uint64_t>(k.rope_interleaved));
   mix(static_cast<uint64_t>(k.has_softcap));
   mix(static_cast<uint64_t>(k.has_alibi));
+  mix(static_cast<uint64_t>(k.has_window));
   mix(static_cast<uint64_t>(k.dtype));
   mix(static_cast<uint64_t>(k.gqa_factor));
   return h;
