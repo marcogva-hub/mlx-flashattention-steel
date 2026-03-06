@@ -4126,3 +4126,266 @@ class TestSlidingWindow:
         np.testing.assert_allclose(
             np.array(out_fa), np.array(out_ref), rtol=1e-5, atol=1e-5,
         )
+
+
+# ---------------------------------------------------------------------------
+# Track FA: Unified KV-cache API  (flash_attention_kvcache)
+# ---------------------------------------------------------------------------
+
+class TestUnifiedKVCache:
+    """Tests for flash_attention_kvcache — dense and paged modes."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    # ------------------------------------------------------------------
+    # FA.1  Dense mode — basic correctness
+    # ------------------------------------------------------------------
+
+    def test_dense_basic_matches_flash_attention(self):
+        """Dense mode with no extras must equal flash_attention."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 2, 4, 32, 64
+        q, k, v = random_qkv(B, H, N, D)
+        ref = flash_attention(q, k, v, causal=True)
+        out = flash_attention_kvcache(q, k, v, causal=True)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_dense_non_causal(self):
+        """Dense non-causal mode."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 16, 128
+        q, k, v = random_qkv(B, H, N, D)
+        ref = flash_attention(q, k, v, causal=False)
+        out = flash_attention_kvcache(q, k, v, causal=False)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.2  Dense mode — softcap
+    # ------------------------------------------------------------------
+
+    def test_dense_softcap(self):
+        """Dense mode with softcap must equal flash_attention(softcap=...)."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 32, 64
+        q, k, v = random_qkv(B, H, N, D)
+        ref = flash_attention(q, k, v, causal=True, softcap=30.0)
+        out = flash_attention_kvcache(q, k, v, causal=True, softcap=30.0)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.3  Dense mode — ALiBi
+    # ------------------------------------------------------------------
+
+    def test_dense_alibi(self):
+        """Dense mode with ALiBi must equal flash_attention(alibi_slopes=...)."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 4, 16, 64
+        q, k, v = random_qkv(B, H, N, D)
+        slopes = mx.array([0.5 ** h for h in range(1, H + 1)],
+                          dtype=mx.float32)
+        ref = flash_attention(q, k, v, causal=True, alibi_slopes=slopes)
+        out = flash_attention_kvcache(q, k, v, causal=True, alibi_slopes=slopes)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.4  Dense mode — sliding window
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_dense_window(self, D):
+        """Dense mode with window_size must equal flash_attention(window_size=...)."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N = 1, 2, 64
+        q, k, v = random_qkv(B, H, N, D)
+        ref = flash_attention(q, k, v, causal=True, window_size=(32, -1))
+        out = flash_attention_kvcache(q, k, v, causal=True, window_size=(32, -1))
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.5  Dense mode — RoPE
+    # ------------------------------------------------------------------
+
+    def test_dense_rope(self):
+        """Dense mode with RoPE must equal flash_attention_rope."""
+        from mlx_mfa import flash_attention_kvcache, flash_attention_rope
+        B, H, N, D = 1, 2, 16, 64
+        q, k, v = random_qkv(B, H, N, D)
+        max_len = 256
+        cos = mx.ones((max_len, D // 2), dtype=mx.float32)
+        sin = mx.zeros((max_len, D // 2), dtype=mx.float32)
+        past = 8
+        ref = flash_attention_rope(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                   causal=True, cache_seqlens=past)
+        out = flash_attention_kvcache(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                      causal=True, cache_seqlens=past)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.6  Dense mode — GQA (H_kv < H_q)
+    # ------------------------------------------------------------------
+
+    def test_dense_gqa(self):
+        """Dense mode GQA routes correctly through flash_attention."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H_q, H_kv, N, D = 1, 8, 2, 32, 64
+        mx.random.seed(1)
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        out = flash_attention_kvcache(q, k, v, causal=True)
+        ref = flash_attention(q, k, v, causal=True)
+        mx.eval(out, ref)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.7  Paged mode — basic correctness
+    # ------------------------------------------------------------------
+
+    def test_paged_basic_correctness(self):
+        """Paged mode must produce same result as flash_attention_paged."""
+        from mlx_mfa import flash_attention_kvcache, flash_attention_paged
+        B, H, N_q, D = 1, 2, 1, 64
+        kv_len = 32
+        block_sz = 16
+        n_blocks = kv_len // block_sz
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N_q, D)).astype(mx.float16)
+        pool_k = mx.random.normal((n_blocks, block_sz, H, D)).astype(mx.float16)
+        pool_v = mx.random.normal((n_blocks, block_sz, H, D)).astype(mx.float16)
+        btable = mx.array([[0, 1]], dtype=mx.int32)
+        slens = mx.array([kv_len], dtype=mx.int32)
+
+        ref = flash_attention_paged(q, pool_k, pool_v, btable, slens,
+                                    scale=1.0, causal=False, block_size=block_sz)
+        out = flash_attention_kvcache(q, pool_k, pool_v,
+                                      block_table=btable, seq_lens=slens,
+                                      block_size=block_sz,
+                                      scale=1.0, causal=False)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    # ------------------------------------------------------------------
+    # FA.8  Output shape
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("D,causal", [(64, True), (128, False)])
+    def test_output_shape(self, D, causal):
+        """Output must be [B, H, N, D]."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N = 2, 4, 16
+        q, k, v = random_qkv(B, H, N, D)
+        out = flash_attention_kvcache(q, k, v, causal=causal)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+
+    # ------------------------------------------------------------------
+    # FA.9  Error paths
+    # ------------------------------------------------------------------
+
+    def test_error_rope_and_alibi_together(self):
+        """rotary_cos + alibi_slopes must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 8, 64
+        q, k, v = random_qkv(B, H, N, D)
+        cos = mx.ones((64, D // 2), dtype=mx.float32)
+        sin = mx.zeros((64, D // 2), dtype=mx.float32)
+        slopes = mx.ones((H,), dtype=mx.float32)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            flash_attention_kvcache(q, k, v, rotary_cos=cos, rotary_sin=sin,
+                                    alibi_slopes=slopes)
+
+    def test_error_paged_missing_seq_lens(self):
+        """Paged mode without seq_lens must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 1, 64
+        q = mx.zeros((B, H, N, D), dtype=mx.float16)
+        pool = mx.zeros((4, 16, H, D), dtype=mx.float16)
+        btable = mx.zeros((B, 4), dtype=mx.int32)
+        with pytest.raises(ValueError, match="seq_lens"):
+            flash_attention_kvcache(q, pool, pool, block_table=btable)
+
+    def test_error_dense_missing_cache(self):
+        """Dense mode with k_cache=None must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 8, 64
+        q = mx.zeros((B, H, N, D), dtype=mx.float16)
+        with pytest.raises(ValueError):
+            flash_attention_kvcache(q, None, None)
+
+    def test_error_q_not_4d(self):
+        """Non-4D q must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+        q = mx.zeros((2, 8, 64), dtype=mx.float16)
+        k = mx.zeros((2, 8, 64), dtype=mx.float16)
+        with pytest.raises(ValueError, match="4-D"):
+            flash_attention_kvcache(q, k, k)
+
+    # ------------------------------------------------------------------
+    # FA.10  Output is finite
+    # ------------------------------------------------------------------
+
+    def test_output_finite(self):
+        """Output must be finite for normal inputs."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 2, 4, 64, 128
+        q, k, v = random_qkv(B, H, N, D)
+        out = flash_attention_kvcache(q, k, v, causal=True)
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item()
+
+    # ------------------------------------------------------------------
+    # FA.11  Backward (autograd) works through dense path
+    # ------------------------------------------------------------------
+
+    def test_dense_backward_finite(self):
+        """Backward pass via dense path must produce finite gradients."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 2, 16, 64
+        q, k, v = random_qkv(B, H, N, D)
+        def _fwd(q, k, v):
+            return flash_attention_kvcache(q, k, v, causal=True)
+        grads = mx.grad(lambda q, k, v: _fwd(q, k, v).sum())(q, k, v)
+        mx.eval(*grads if isinstance(grads, tuple) else [grads])
+        # grads is dq
+        dq = grads
+        assert mx.all(mx.isfinite(dq)).item()
