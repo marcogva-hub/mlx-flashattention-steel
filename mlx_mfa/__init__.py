@@ -36,6 +36,8 @@ from mlx_mfa.attention import (
     flash_attention_paged,
     flash_attention_qkv_packed,
     flash_attention_kv_packed,
+    flash_attention_varlen_qkv_packed,
+    flash_attention_varlen_kv_packed,
     PagedKVCache,
     make_causal_block_mask,
     make_sliding_window_mask,
@@ -71,6 +73,8 @@ __all__ = [
     "flash_attention_paged",
     "flash_attention_qkv_packed",
     "flash_attention_kv_packed",
+    "flash_attention_varlen_qkv_packed",
+    "flash_attention_varlen_kv_packed",
     "PagedKVCache",
     # Mask construction
     "make_causal_block_mask",

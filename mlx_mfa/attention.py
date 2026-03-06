@@ -2273,3 +2273,176 @@ def flash_attention_kv_packed(
         )
 
     return flash_attention(q, k, v, scale=scale, causal=causal, stream=stream)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track EC — Varlen packed tensor formats
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def flash_attention_varlen_qkv_packed(
+    qkv: "mx.array",
+    cu_seqlens_q: "mx.array",
+    cu_seqlens_k: "mx.array",
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    num_heads: Optional[int] = None,
+    num_kv_heads: Optional[int] = None,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Varlen attention from a fused QKV packed tensor.
+
+    Splits a fused QKV tensor into Q, K, V then dispatches to
+    :func:`flash_attention_varlen`.  Supports the same two layouts as
+    :func:`flash_attention_qkv_packed`:
+
+    * ``[1, H, total_tokens, 3, D]``  — head-first (preferred)
+    * ``[1, total_tokens, 3*H*D]``    — flat concat
+
+    Args:
+        qkv:           Packed QKV tensor.
+        cu_seqlens_q:  int32 ``[num_seqs+1]`` cumulative query lengths.
+        cu_seqlens_k:  int32 ``[num_seqs+1]`` cumulative key lengths.
+        max_seqlen_q:  Maximum query sequence length.
+        max_seqlen_k:  Maximum key sequence length.
+        scale:         Attention scale.  Default ``1/sqrt(D)``.
+        causal:        Causal mask.
+        num_heads:     Q heads.  Required for flat layout.
+        num_kv_heads:  KV heads for GQA.  Default = ``num_heads``.
+        stream:        MLX stream/device.
+
+    Returns:
+        Output ``[1, H_q, total_tokens, D]``.
+    """
+    import mlx.core as mx
+
+    ndim = qkv.ndim
+
+    if ndim == 5:
+        # [1, H, total_tokens, 3, D]
+        _, H_q, total, three, D = qkv.shape
+        if three != 3:
+            raise ValueError(
+                f"flash_attention_varlen_qkv_packed: expected dim 3 == 3, got {three}"
+            )
+        H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        q = qkv[:, :H_q, :, 0, :]    # [1, H_q, total, D]
+        k = qkv[:, :H_kv, :, 1, :]   # [1, H_kv, total, D]
+        v = qkv[:, :H_kv, :, 2, :]   # [1, H_kv, total, D]
+
+    elif ndim == 3:
+        # [1, total_tokens, 3*H*D]
+        if num_heads is None:
+            raise ValueError(
+                "flash_attention_varlen_qkv_packed: num_heads required for "
+                "[1, total_tokens, 3*H*D] layout"
+            )
+        _, total, fused = qkv.shape
+        H_q = num_heads
+        H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        D = fused // (H_q + 2 * H_kv)
+        if D * (H_q + 2 * H_kv) != fused:
+            raise ValueError(
+                f"flash_attention_varlen_qkv_packed: fused dim {fused} not "
+                f"divisible by (H_q={H_q} + 2*H_kv={H_kv})"
+            )
+        q_end = H_q * D
+        k_end = q_end + H_kv * D
+        q = qkv[..., :q_end].reshape(1, total, H_q, D).transpose(0, 2, 1, 3)
+        k = qkv[..., q_end:k_end].reshape(1, total, H_kv, D).transpose(0, 2, 1, 3)
+        v = qkv[..., k_end:].reshape(1, total, H_kv, D).transpose(0, 2, 1, 3)
+
+    else:
+        raise ValueError(
+            f"flash_attention_varlen_qkv_packed: unsupported shape {qkv.shape}. "
+            "Expected [1,H,total,3,D] (ndim=5) or [1,total,3*H*D] (ndim=3)."
+        )
+
+    return flash_attention_varlen(
+        q, k, v, cu_seqlens_q, cu_seqlens_k,
+        max_seqlen_q, max_seqlen_k,
+        scale=scale, causal=causal, stream=stream)
+
+
+def flash_attention_varlen_kv_packed(
+    q: "mx.array",
+    kv: "mx.array",
+    cu_seqlens_q: "mx.array",
+    cu_seqlens_k: "mx.array",
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    num_kv_heads: Optional[int] = None,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Varlen attention from a fused KV packed tensor.
+
+    Splits a fused KV tensor into K, V then dispatches to
+    :func:`flash_attention_varlen`.  Supports the same two layouts as
+    :func:`flash_attention_kv_packed`:
+
+    * ``[1, H_kv, total_kv, 2, D]``  — head-first (preferred)
+    * ``[1, total_kv, 2*H_kv*D]``    — flat concat
+
+    Args:
+        q:             Query ``[1, H_q, total_q, D]``.
+        kv:            Fused KV tensor.
+        cu_seqlens_q:  int32 ``[num_seqs+1]`` cumulative query lengths.
+        cu_seqlens_k:  int32 ``[num_seqs+1]`` cumulative key lengths.
+        max_seqlen_q:  Maximum query sequence length.
+        max_seqlen_k:  Maximum key sequence length.
+        scale:         Attention scale.  Default ``1/sqrt(D)``.
+        causal:        Causal mask.
+        num_kv_heads:  KV heads.  Required for flat layout.
+        stream:        MLX stream/device.
+
+    Returns:
+        Output ``[1, H_q, total_q, D]``.
+    """
+    import mlx.core as mx
+
+    ndim = kv.ndim
+
+    if ndim == 5:
+        # [1, H_kv, total_kv, 2, D]
+        _, H_kv, total_kv, two, D = kv.shape
+        if two != 2:
+            raise ValueError(
+                f"flash_attention_varlen_kv_packed: expected dim 3 == 2, got {two}"
+            )
+        k = kv[:, :, :, 0, :]   # [1, H_kv, total_kv, D]
+        v = kv[:, :, :, 1, :]   # [1, H_kv, total_kv, D]
+
+    elif ndim == 3:
+        # [1, total_kv, 2*H_kv*D]
+        if num_kv_heads is None:
+            raise ValueError(
+                "flash_attention_varlen_kv_packed: num_kv_heads required for "
+                "[1, total_kv, 2*H_kv*D] layout"
+            )
+        _, total_kv, fused = kv.shape
+        H_kv = num_kv_heads
+        D = fused // (2 * H_kv)
+        if D * 2 * H_kv != fused:
+            raise ValueError(
+                f"flash_attention_varlen_kv_packed: fused dim {fused} not "
+                f"divisible by 2*H_kv={H_kv}"
+            )
+        k = kv[..., :H_kv * D].reshape(1, total_kv, H_kv, D).transpose(0, 2, 1, 3)
+        v = kv[..., H_kv * D:].reshape(1, total_kv, H_kv, D).transpose(0, 2, 1, 3)
+
+    else:
+        raise ValueError(
+            f"flash_attention_varlen_kv_packed: unsupported shape {kv.shape}. "
+            "Expected [1,H_kv,total_kv,2,D] (ndim=5) or [1,total_kv,2*H_kv*D] (ndim=3)."
+        )
+
+    return flash_attention_varlen(
+        q, k, v, cu_seqlens_q, cu_seqlens_k,
+        max_seqlen_q, max_seqlen_k,
+        scale=scale, causal=causal, stream=stream)

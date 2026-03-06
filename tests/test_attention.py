@@ -3944,3 +3944,74 @@ class TestPagedBackward:
 
         max_err = mx.max(mx.abs(dq_paged - dq_ref)).item()
         assert max_err < 0.05, f"dQ paged vs ref max err = {max_err}"
+
+
+# ===========================================================================
+# Track EC — Varlen packed tensor convenience wrappers
+# ===========================================================================
+
+class TestVarlenPacked:
+    """EC: flash_attention_varlen_qkv_packed + flash_attention_varlen_kv_packed."""
+
+    def _cu(self, lens):
+        import math
+        cu = [0]
+        for l in lens:
+            cu.append(cu[-1] + l)
+        return mx.array(cu, dtype=mx.int32)
+
+    def test_varlen_qkv_packed_head_first(self):
+        """[1, H, total, 3, D] head-first layout → correct output shape."""
+        from mlx_mfa import flash_attention_varlen_qkv_packed
+        import math
+        H, D, lens = 4, 64, [32, 48]
+        total = sum(lens)
+        cu = self._cu(lens)
+        qkv = (mx.random.normal((1, H, total, 3, D)) * 0.1).astype(mx.float16)
+        out = flash_attention_varlen_qkv_packed(
+            qkv, cu, cu, max(lens), max(lens), causal=True)
+        mx.eval(out)
+        assert list(out.shape) == [1, H, total, D]
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_varlen_qkv_packed_flat(self):
+        """[1, total, 3*H*D] flat layout → correct output shape."""
+        from mlx_mfa import flash_attention_varlen_qkv_packed
+        import math
+        H, D, lens = 4, 64, [32, 48]
+        total = sum(lens)
+        cu = self._cu(lens)
+        qkv = (mx.random.normal((1, total, 3 * H * D)) * 0.1).astype(mx.float16)
+        out = flash_attention_varlen_qkv_packed(
+            qkv, cu, cu, max(lens), max(lens), num_heads=H, causal=False)
+        mx.eval(out)
+        assert list(out.shape) == [1, H, total, D]
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_varlen_kv_packed_head_first(self):
+        """[1, H_kv, total_kv, 2, D] head-first layout → correct output shape."""
+        from mlx_mfa import flash_attention_varlen_kv_packed
+        H_q, H_kv, D, lens = 4, 2, 64, [32, 48]
+        total = sum(lens)
+        cu = self._cu(lens)
+        q  = (mx.random.normal((1, H_q, total, D)) * 0.1).astype(mx.float16)
+        kv = (mx.random.normal((1, H_kv, total, 2, D)) * 0.1).astype(mx.float16)
+        out = flash_attention_varlen_kv_packed(
+            q, kv, cu, cu, max(lens), max(lens), causal=True)
+        mx.eval(out)
+        assert list(out.shape) == [1, H_q, total, D]
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_varlen_kv_packed_flat(self):
+        """[1, total_kv, 2*H_kv*D] flat layout → correct output shape."""
+        from mlx_mfa import flash_attention_varlen_kv_packed
+        H_q, H_kv, D, lens = 4, 2, 64, [32, 48]
+        total = sum(lens)
+        cu = self._cu(lens)
+        q  = (mx.random.normal((1, H_q, total, D)) * 0.1).astype(mx.float16)
+        kv = (mx.random.normal((1, total, 2 * H_kv * D)) * 0.1).astype(mx.float16)
+        out = flash_attention_varlen_kv_packed(
+            q, kv, cu, cu, max(lens), max(lens), num_kv_heads=H_kv, causal=False)
+        mx.eval(out)
+        assert list(out.shape) == [1, H_q, total, D]
+        assert mx.all(mx.isfinite(out)).item()
