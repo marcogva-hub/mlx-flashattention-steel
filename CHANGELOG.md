@@ -2,6 +2,13 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [0.9.2] — UNRELEASED
+
+### Added
+<!-- Tracks DA–DE filled incrementally -->
+
+---
+
 ## [0.9.1] — 2026-03-06
 
 ### Added
