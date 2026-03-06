@@ -1,5 +1,11 @@
 # mlx-mfa
 
+[![PyPI version](https://img.shields.io/pypi/v/mlx-mfa.svg)](https://pypi.org/project/mlx-mfa/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/mlx-mfa.svg)](https://pypi.org/project/mlx-mfa/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-14%2B-blue.svg)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-orange.svg)](https://www.apple.com/newsroom/2020/11/apple-unleashes-m1/)
+
 **Metal Flash Attention for MLX** — causal attention 1.5–2.9× faster than `mx.fast.scaled_dot_product_attention` on Apple Silicon.
 
 A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal tiles skipped entirely.
@@ -31,6 +37,11 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **Flash Decoding** — split-KV parallelism for single-token decode (N≤4, S≥256); Phase 1 dispatches KV splits in parallel, Phase 2 reduces via log-sum-exp
 - **Cross-attention** — N_q != N_kv supported
 - **M5+ detection** — `is_m5_plus` flag in `get_device_info()`, reserved stub for Metal 4 tensor API (A19+)
+- **Unified KV-cache API** — `flash_attention_kvcache()` consolidates dense, paged, RoPE, ALiBi, sliding-window and continuous batching in one call (v1.0.0)
+- **Native sliding window in STEEL** — `flash_attention(..., window_size=(left, right))` applies boundary masking inside the Metal kernel without materializing a mask tensor (v1.0.0)
+- **Kernel-level paged KV** — `flash_attention_kvcache(q, pool_k, pool_v, block_table=..., seq_lens=...)` reads K/V tiles directly from the page pool inside the STEEL forward kernel, no separate gather dispatch (v1.0.0)
+- **Fused RoPE cache append** — `flash_attention_kvcache_rope_append` rotates new keys before cache append; O(1) rotation cost per decode step (v1.0.0)
+- **Return LSE** — `flash_attention(..., return_lse=True)` → `(output, lse [B,H,N])` for speculative decoding and custom reducers (v1.0.0)
 - **Graceful fallback** to `mx.fast.scaled_dot_product_attention` when the extension is unavailable or head_dim is unsupported
 - **RoPE fusion** — `flash_attention_rope()` with 1D or 3D rotary embeddings (`make_rope_3d_tables`)
 - **Variable-length batching** — `flash_attention_varlen()` for packed sequences with `cu_seqlens`
@@ -61,13 +72,21 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 ## Installation
 
 ```bash
+pip install mlx-mfa
+```
+
+The wheel includes the pre-compiled Metal C++ extension for Apple Silicon (macOS 14+, Python 3.10+).
+
+**From source** (for development):
+
+```bash
 # 1. Install build dependencies
 pip install mlx nanobind scikit-build-core
 
 # 2. Validate your environment
 python scripts/check_env.py
 
-# 3. Install (builds the C++ extension)
+# 3. Install with C++ build
 pip install -e .
 ```
 
@@ -163,6 +182,52 @@ Variable-length batched attention. Multiple sequences of different lengths packe
 | `max_seqlen_k` | `int` | Maximum KV sequence length |
 
 Returns `mx.array [1, H, total_tokens, D]`.
+
+---
+
+### `flash_attention_kvcache(q, k_cache, v_cache, *, block_table=None, seq_lens=None, block_size=16, scale=None, causal=True, softcap=0.0, alibi_slopes=None, window_size=None, rotary_cos=None, rotary_sin=None, cache_seqlens=0, interleaved=True, rotary_dim=None, cache_batch_idx=None, stream=None)`
+
+**Unified KV-cache attention** — recommended entry point for all inference workloads.  Supports dense and paged KV caches, RoPE, ALiBi, softcap, and sliding window in a single call.
+
+**Dense mode** (complete accumulated cache as positional args):
+
+```python
+# Full KV sequence — grow via concatenation each decode step
+out = flash_attention_kvcache(q, k_full, v_full, scale=scale, causal=True)
+```
+
+**Paged mode** (pool arrays as k_cache/v_cache, plus block_table/seq_lens):
+
+```python
+# k_cache / v_cache = page pool [num_pages, block_size, H_kv, D]
+out = flash_attention_kvcache(
+    q, pool_k, pool_v,
+    block_table=block_table,   # int32 [B, max_pages_per_seq]; -1 = padding
+    seq_lens=seq_lens,         # int32 [B] — true KV length per sequence
+    block_size=64,
+    scale=scale, causal=True,
+)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | `mx.array [B, H_q, N_q, D]` | Query tensor |
+| `k_cache, v_cache` | `mx.array` | Dense: `[B, H_kv, S, D]`. Paged: pool `[num_pages, block_size, H_kv, D]` |
+| `block_table` | `mx.array int32 [B, max_pages]` or `None` | Activates paged mode; `-1` = unused slot |
+| `seq_lens` | `mx.array int32 [B]` or `None` | True KV length per sequence in paged mode |
+| `block_size` | `int` | Tokens per page (must match pool shape) |
+| `scale` | `float or None` | Attention scale. Defaults to `1/sqrt(D)` |
+| `causal` | `bool` | Causal masking |
+| `softcap` | `float` | Tanh softcap factor (0.0 = disabled) |
+| `alibi_slopes` | `mx.array [H]` or `None` | ALiBi per-head slopes |
+| `window_size` | `tuple (left, right)` or `None` | Sliding-window attention |
+| `rotary_cos/sin` | `mx.array [N, D/2]` or `None` | RoPE tables applied to Q |
+| `cache_seqlens` | `int, list[int], or mx.array` | KV cache offsets for decode |
+| `interleaved` | `bool` | RoPE rotation layout (`True` = LLaMA, `False` = GPT-NeoX) |
+| `rotary_dim` | `int or None` | Partial RoPE: rotate only first `rotary_dim` dimensions |
+| `cache_batch_idx` | `mx.array int32 [B]` or `None` | Continuous batching: maps batch → cache slot |
+
+Returns `mx.array [B, H_q, N_q, D]`.
 
 ---
 
@@ -377,7 +442,7 @@ pytest tests/ -v -k "Backward"
 pytest tests/ -v -k "EdgeCase or BackwardEdge"
 ```
 
-Expected: **257 pytest runs / 212 test functions** across 40 test classes (257 with parametrize; ~45 skip without C++ build).
+Expected: **307 pytest runs** across 42 test classes (~45 skip without C++ build).
 
 ## Supported Configurations
 
@@ -451,7 +516,12 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | EA  | Differentiable `flash_attention_varlen` (`mx.custom_function`) | **Done (v0.9.3)** |
 | EB  | Metal paged KV gather kernel + `flash_attention_paged` backward | **Done (v0.9.3)** |
 | EC  | `flash_attention_varlen_qkv_packed` + `flash_attention_varlen_kv_packed` | **Done (v0.9.3)** |
-| Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.0+) |
+| FA  | Unified KV-cache API (`flash_attention_kvcache`) | **Done (v1.0.0)** |
+| FB  | Native sliding-window in STEEL kernel | **Done (v1.0.0)** |
+| FC  | Fused RoPE cache append (`flash_attention_kvcache_rope_append`) | **Done (v1.0.0)** |
+| FD  | Kernel-level paged KV STEEL forward + Flash Decode path | **Done (v1.0.0)** |
+| FX  | `return_lse`, `cache_batch_idx`, `rotary_dim` additions | **Done (v1.0.0)** |
+| Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.1+) |
 
 ## References
 

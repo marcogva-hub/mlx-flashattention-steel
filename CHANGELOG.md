@@ -2,6 +2,32 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.0] — 2026-03-06
+
+### Highlights
+
+First stable public release. All features from v1.0.0-rc1 and v1.0.0-rc2.
+
+| Track | Description | Tests added |
+|-------|-------------|-------------|
+| FA | Unified KV-cache API (`flash_attention_kvcache`) | 17 |
+| FB | Native sliding-window in STEEL kernel | 4 |
+| FC | Fused RoPE cache append (`flash_attention_kvcache_rope_append`) | 3 |
+| FD | Kernel-level paged KV STEEL forward + Flash Decode | 15 |
+| FX | `return_lse`, `cache_batch_idx`, `rotary_dim` | 8 |
+
+**307 tests pass.** Full Python API with 33 public exports.
+
+### Package
+- First PyPI release: `pip install mlx-mfa`
+- `pyproject.toml`: `Development Status :: 5 - Production/Stable`, `numpy` added to dependencies
+- `MANIFEST.in`: adds `examples/`, `CHANGELOG.md`, `csrc/mfa/`
+- `examples/`: 5 practical scripts covering all major API paths
+
+See `[1.0.0-rc1]` and `[1.0.0-rc2]` below for the complete feature details.
+
+---
+
 ## [1.0.0-rc2] — 2026-03-06
 
 ### Added

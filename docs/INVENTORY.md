@@ -1,6 +1,6 @@
 # mlx-mfa Repository Inventory
 
-_Regenerated at v0.9.3 (2026-03-06). All line counts verified with `wc -l`._
+_Regenerated at v1.0.0 (2026-03-06). All line counts verified with `wc -l`._
 
 ---
 
@@ -9,52 +9,55 @@ _Regenerated at v0.9.3 (2026-03-06). All line counts verified with `wc -l`._
 ```
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
-│   ├── __init__.py        Public API (31 exports, version=0.9.3)  [102 lines]
-│   ├── attention.py       Core attention + fallback paths         [2469 lines]
+│   ├── __init__.py        Public API (33 exports, version=1.0.0)  [106 lines]
+│   ├── attention.py       Core attention + fallback paths         [2991 lines]
 │   ├── masks.py           Mask builders — 15 functions            [1129 lines]
 │   └── integrations/
 │       └── mlx_lm.py      mlx-lm patch/unpatch                   [191 lines]
 ├── csrc/                  C++ extension (nanobind)
-│   ├── bindings.cpp       Python bindings                         [304 lines]
-│   ├── mfa_attention.hpp  MFAttention + 5 other Primitive decls   [366 lines]
-│   ├── mfa_attention.cpp  Primitive eval_gpu + free functions    [1322 lines]
-│   ├── mfa_steel_fwd.hpp  STEEL forward params + decls            [178 lines]
-│   ├── mfa_steel_fwd.cpp  STEEL forward JIT Metal generator      [2205 lines]
+│   ├── bindings.cpp       Python bindings                         [356 lines]
+│   ├── mfa_attention.hpp  MFAttention + 8 other Primitive decls   [437 lines]
+│   ├── mfa_attention.cpp  Primitive eval_gpu + free functions    [1546 lines]
+│   ├── mfa_steel_fwd.hpp  STEEL forward params + decls            [235 lines]
+│   ├── mfa_steel_fwd.cpp  STEEL fwd + paged STEEL JIT generator  [2967 lines]
 │   ├── mfa_steel_bwd.hpp  STEEL backward params + decls            [68 lines]
 │   ├── mfa_steel_bwd.cpp  STEEL backward JIT Metal generator     [1372 lines]
 │   ├── mfa_paged_gather.hpp  MFAPagedKVGather Primitive decl       [84 lines]
-│   ├── mfa_paged_gather.cpp  Metal paged KV gather kernel          [241 lines]
+│   ├── mfa_paged_gather.cpp  Metal paged KV gather kernel          [242 lines]
 │   ├── mfa_shader_gen.hpp ccv shader gen interface                  [59 lines]
 │   ├── mfa_shader_gen.cpp ccv-derived shader gen (f32 fallback)    [305 lines]
-│   ├── shader_cache.hpp   KernelKey enum (10 types) + ShaderCache   [89 lines]
-│   ├── shader_cache.mm    Obj-C++ Metal pipeline cache + routing   [224 lines]
+│   ├── shader_cache.hpp   KernelKey enum (11 types) + ShaderCache   [91 lines]
+│   ├── shader_cache.mm    Obj-C++ Metal pipeline cache + routing   [230 lines]
 │   ├── mfa/               ccv kernel infrastructure
 │   └── kernels/           Placeholder .metal files (real kernels are JIT)
 ├── tests/
-│   ├── test_attention.py  196 test functions / 40 test classes    [4017 lines]
+│   ├── test_attention.py  ~220 test functions / 42 test classes   [5034 lines]
 │   └── test_mlx_lm_integration.py  16 test functions              [402 lines]
-├── benchmarks/            10 benchmark scripts
+├── benchmarks/            12 benchmark scripts
+├── examples/              5 practical usage scripts
 ├── docs/
 │   ├── ARCHITECTURE.md    Architecture + algorithm documentation
 │   ├── INVENTORY.md       This file
 │   └── PAGED_ATTENTION_DESIGN.md
 ├── scripts/check_env.py
-├── pyproject.toml         version=0.9.3
+├── pyproject.toml         version=1.0.0
 └── CMakeLists.txt
 ```
 
 ---
 
-## Public API (`mlx_mfa.__all__` — 31 symbols)
+## Public API (`mlx_mfa.__all__` — 33 symbols)
 
-### Core attention (11)
+### Core attention (13)
 
 | Symbol | Signature highlights |
 |--------|---------------------|
-| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights)` |
+| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights, return_lse)` |
 | `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved)` |
 | `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` |
 | `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` — differentiable (EA) |
+| `flash_attention_kvcache` | `(q, k_cache,v_cache, *, block_table, seq_lens, block_size, scale, causal, ...)` — unified API (FA) |
+| `flash_attention_kvcache_rope_append` | `(q, k_new,v_new, k_cache,v_cache, ...)` — fused RoPE append (FC) |
 | `flash_attention_with_kv_cache` | `(q, k_new,v_new, k_cache,v_cache, scale, causal, softcap)` |
 | `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` — Metal gather (EB) |
 | `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` |
@@ -84,13 +87,13 @@ mlx-mfa-v2/
 - `is_mfa_available()` — `True` when C++ extension loaded
 - `get_device_info()` — `device_name`, `gpu_family_gen`, `is_m3_plus`, `is_m5_plus`, `chip_name`
 - `get_supported_configs()` — `head_dims`, `dtypes`, `extension_available`
-- `__version__` — `"0.9.3"`
+- `__version__` — `"1.0.0"`
 
 ---
 
-## C++ Metal kernel variants (v0.9.3)
+## C++ Metal kernel variants (v1.0.0)
 
-10 `KernelType` entries in `csrc/shader_cache.hpp`:
+11 `KernelType` entries in `csrc/shader_cache.hpp`:
 
 | Value | KernelType | Dtype | Pass | Description |
 |:-----:|-----------|-------|------|-------------|
@@ -104,8 +107,9 @@ mlx-mfa-v2/
 | 7 | `SteelBackwardDKV` | f16/bf16 | Bwd | STEEL dK/dV kernel |
 | 8 | `SteelVarlenForward` | f16/bf16 | Fwd | Varlen: `(total_q_tiles, H, 1)` grid |
 | 9 | `PagedKVGather` | f16/bf16 | Gather | Pool `[NB,BS,H,D]` → `[B,H,max_kv,D]` (EB) |
+| 10 | `PagedSteelForward` | f16/bf16 | Fwd | Kernel-level paged STEEL: K/V tiles from pool (FD) |
 
-**Backward routing (v0.9.3)**: f16/bf16 D≤256 softcap==0 → STEEL kernels 6+7.
+**Backward routing (v1.0.0)**: f16/bf16 D≤256 softcap==0 → STEEL kernels 6+7.
 f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled reference.
 
 ---
@@ -121,10 +125,11 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | `MFASteelBwdDKV` | `mfa_attention.cpp` | STEEL dK/dV backward |
 | `MFAVarlenAttention` | `mfa_attention.cpp` | STEEL varlen forward |
 | `MFAPagedKVGather` | `mfa_paged_gather.cpp` | Metal paged KV gather (EB) |
+| `MFAPagedSteelForward` | `mfa_attention.cpp` | Kernel-level paged STEEL forward (FD) |
 
 ---
 
-## Tests (257 pytest runs / 212 test functions)
+## Tests (307 pytest runs / ~220 test functions)
 
 | Class | Count | What |
 |-------|------:|------|
@@ -168,12 +173,17 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | TestVarlenBackward | 6 | Differentiable varlen backward (EA) |
 | TestPagedBackward | 6 | Metal paged gather + dQ backward (EB) |
 | TestVarlenPacked | 4 | Varlen QKV/KV packed formats (EC) |
+| TestUnifiedKVCache | ~17 | `flash_attention_kvcache` dense/paged/RoPE/window (FA) |
+| TestNativeSlidingWindow | 4 | STEEL native window_size kernel (FB) |
+| TestRoPECacheAppend | 3 | `flash_attention_kvcache_rope_append` (FC) |
+| TestPagedSteelForward | 11 | Kernel-level paged STEEL correctness/shapes (FD) |
+| TestPagedFlashDecode | 4 | Paged + Flash Decode path (FD-decode) |
 | test_mlx_lm_integration.py | 16 | mlx-lm patch/unpatch, correctness, GQA |
-| **Total collected** | **257** | (196 + 16 = 212 functions; 257 with parametrize) |
+| **Total collected** | **307** | (~220 functions; 307 with parametrize) |
 
 ---
 
-## Benchmarks (10 scripts)
+## Benchmarks (12 scripts)
 
 | Script | Scenarios |
 |--------|-----------|
@@ -187,6 +197,22 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | `bench_varlen.py` | Variable-length batching throughput |
 | `bench_all.py` | Consolidated fwd+bwd suite (v0.9.1) |
 | `bench_compile.py` | `mx.compile` overhead: softcap/alibi/rope compiled vs raw (v0.9.2) |
+| `bench_kvcache.py` | `flash_attention_kvcache_rope_append` vs naive re-rotation (FC) |
+| `bench_paged_kv.py` | gather+attend vs kernel paged STEEL vs Flash Decode (FD) |
+
+---
+
+## v1.0.0 additions (FA–FI + FX)
+
+| Track | File(s) | Description |
+|-------|---------|-------------|
+| FA | `mlx_mfa/attention.py`, `mlx_mfa/__init__.py`, `csrc/bindings.cpp`, `csrc/mfa_attention.*` | `flash_attention_kvcache` unified API: dense/paged/RoPE/softcap/ALiBi/window/cache_batch_idx |
+| FB | `csrc/mfa_steel_fwd.cpp`, `csrc/mfa_attention.cpp`, `csrc/shader_cache.*` | Native `window_left` param in STEEL kernel; boundary tile K-loop clamping |
+| FC | `mlx_mfa/attention.py`, `mlx_mfa/__init__.py`, `benchmarks/bench_kvcache.py` | `flash_attention_kvcache_rope_append`: fused RoPE before cache concat |
+| FD | `csrc/mfa_steel_fwd.cpp`, `csrc/mfa_attention.*`, `csrc/shader_cache.*`, `csrc/bindings.cpp`, `benchmarks/bench_paged_kv.py` | `PagedSteelForward` kernel type, `MFAPagedSteelParams`, `generate_paged_steel_forward_source()`, `mfa_paged_steel_forward` binding |
+| FX | `mlx_mfa/attention.py`, `mlx_mfa/__init__.py` | `return_lse` in `flash_attention`, `cache_batch_idx` + `rotary_dim` in kvcache |
+| FG | `pyproject.toml`, `mlx_mfa/__init__.py`, `csrc/bindings.cpp`, `MANIFEST.in` | PyPI packaging: version=1.0.0, prod classifier, numpy dep, examples/ |
+| FH | `examples/`, `docs/`, `README.md`, `CHANGELOG.md` | Examples + documentation refresh |
 
 ---
 
