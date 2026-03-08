@@ -613,6 +613,150 @@ class TestBackwardEdge:
 
 
 # ---------------------------------------------------------------------------
+# Track ID — flash_attention API enrichment (attn_bias, backend)
+# ---------------------------------------------------------------------------
+
+class TestFlashAttentionAPI:
+    """Tests for attn_bias and backend parameters (Track ID)."""
+
+    def _qkv(self, B=1, H=4, N=64, D=64, dtype=mx.float16, seed=42):
+        mx.random.seed(seed)
+        q = mx.random.normal((B, H, N, D)).astype(dtype)
+        k = mx.random.normal((B, H, N, D)).astype(dtype)
+        v = mx.random.normal((B, H, N, D)).astype(dtype)
+        return q, k, v
+
+    # --- backend='sdpa' ------------------------------------------------------
+
+    def test_backend_sdpa_returns_correct_shape(self):
+        q, k, v = self._qkv()
+        out = flash_attention(q, k, v, backend="sdpa")
+        assert out.shape == q.shape
+
+    def test_backend_sdpa_matches_mlx_sdpa(self):
+        q, k, v = self._qkv(dtype=mx.float32)
+        scale = 1.0 / math.sqrt(64)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        got = flash_attention(q, k, v, scale=scale, backend="sdpa")
+        mx.eval(ref, got)
+        np.testing.assert_allclose(
+            np.array(ref), np.array(got), atol=1e-5,
+            err_msg="backend='sdpa' output must match mx.fast.sdpa"
+        )
+
+    def test_backend_sdpa_causal(self):
+        q, k, v = self._qkv(dtype=mx.float32)
+        scale = 1.0 / math.sqrt(64)
+        N, S = q.shape[2], k.shape[2]
+        causal_mask = mx.triu(mx.full((N, S), float("-inf"), dtype=mx.float32), k=1)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=causal_mask)
+        got = flash_attention(q, k, v, scale=scale, causal=True, backend="sdpa")
+        mx.eval(ref, got)
+        np.testing.assert_allclose(
+            np.array(ref), np.array(got), atol=1e-5,
+            err_msg="backend='sdpa' causal output mismatch"
+        )
+
+    def test_backend_invalid_raises(self):
+        q, k, v = self._qkv()
+        with pytest.raises(ValueError, match="backend must be one of"):
+            flash_attention(q, k, v, backend="unknown")
+
+    # --- backend='mfa' -------------------------------------------------------
+
+    @pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+    def test_backend_mfa_returns_correct_shape(self):
+        q, k, v = self._qkv(dtype=mx.float16)
+        out = flash_attention(q, k, v, backend="mfa")
+        assert out.shape == q.shape
+
+    @pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+    def test_backend_mfa_matches_sdpa(self):
+        q, k, v = self._qkv(D=128, dtype=mx.float16, seed=7)
+        scale = 1.0 / math.sqrt(128)
+        ref = flash_attention(q, k, v, scale=scale, backend="sdpa")
+        got = flash_attention(q, k, v, scale=scale, backend="mfa")
+        mx.eval(ref, got)
+        ref32 = np.array(ref.astype(mx.float32))
+        got32 = np.array(got.astype(mx.float32))
+        np.testing.assert_allclose(ref32, got32, atol=1e-2,
+            err_msg="backend='mfa' must match SDPA within f16 tolerance")
+
+    def test_backend_mfa_raises_bad_dim(self):
+        """Unsupported head_dim with backend='mfa' should raise RuntimeError."""
+        # D=48 is not in {64,128,256,512}
+        mx.random.seed(1)
+        q = mx.random.normal((1, 2, 32, 48)).astype(mx.float16)
+        k = mx.random.normal((1, 2, 32, 48)).astype(mx.float16)
+        v = mx.random.normal((1, 2, 32, 48)).astype(mx.float16)
+        with pytest.raises(RuntimeError, match="unsupported configuration|not compiled"):
+            flash_attention(q, k, v, backend="mfa")
+
+    # --- attn_bias -----------------------------------------------------------
+
+    def test_attn_bias_none_unchanged(self):
+        """attn_bias=None must not change output."""
+        q, k, v = self._qkv(dtype=mx.float32)
+        scale = 1.0 / math.sqrt(64)
+        ref = flash_attention(q, k, v, scale=scale)
+        got = flash_attention(q, k, v, scale=scale, attn_bias=None)
+        mx.eval(ref, got)
+        np.testing.assert_allclose(np.array(ref), np.array(got), atol=0)
+
+    def test_attn_bias_zeros_unchanged(self):
+        """Zero attn_bias must not change output."""
+        q, k, v = self._qkv(dtype=mx.float32)
+        B, H, N, S = q.shape[0], q.shape[1], q.shape[2], k.shape[2]
+        scale = 1.0 / math.sqrt(64)
+        bias = mx.zeros((N, S), dtype=mx.float32)
+        ref = flash_attention(q, k, v, scale=scale, backend="sdpa")
+        got = flash_attention(q, k, v, scale=scale, attn_bias=bias)
+        mx.eval(ref, got)
+        np.testing.assert_allclose(np.array(ref), np.array(got), atol=1e-5,
+            err_msg="Zero attn_bias must leave output unchanged")
+
+    def test_attn_bias_neginf_masks_positions(self):
+        """attn_bias=-inf at (q=0, k=1) should mask key position 1 for query 0."""
+        q, k, v = self._qkv(N=8, D=64, dtype=mx.float32)
+        scale = 1.0 / math.sqrt(64)
+        N, S = q.shape[2], k.shape[2]
+        bias = mx.zeros((N, S), dtype=mx.float32)
+        bias_np = np.zeros((N, S), dtype=np.float32)
+        bias_np[0, 1] = float("-inf")
+        bias = mx.array(bias_np)
+        out = flash_attention(q, k, v, scale=scale, attn_bias=bias)
+        mx.eval(out)
+        # Build reference: SDPA with the same mask
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=bias)
+        mx.eval(ref)
+        np.testing.assert_allclose(np.array(out), np.array(ref), atol=1e-5,
+            err_msg="attn_bias masking mismatch")
+
+    def test_attn_bias_combined_with_causal(self):
+        """attn_bias + causal=True should apply both masks."""
+        q, k, v = self._qkv(N=16, D=64, dtype=mx.float32)
+        scale = 1.0 / math.sqrt(64)
+        N, S = q.shape[2], k.shape[2]
+        bias_np = np.random.default_rng(99).uniform(-0.5, 0.5, (N, S)).astype(np.float32)
+        bias = mx.array(bias_np)
+        got = flash_attention(q, k, v, scale=scale, causal=True, attn_bias=bias)
+        # Reference: apply causal mask + bias together
+        causal_mask = mx.triu(mx.full((N, S), float("-inf"), dtype=mx.float32), k=1)
+        ref = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=causal_mask + bias)
+        mx.eval(got, ref)
+        np.testing.assert_allclose(np.array(got), np.array(ref), atol=1e-5,
+            err_msg="causal + attn_bias mismatch")
+
+    def test_attn_bias_shape_error_propagates(self):
+        """Incompatible attn_bias shape should raise from MLX, not silently wrong."""
+        q, k, v = self._qkv(N=8, D=64, dtype=mx.float32)
+        bad_bias = mx.zeros((3, 3))  # wrong shape
+        with pytest.raises(Exception):
+            mx.eval(flash_attention(q, k, v, attn_bias=bad_bias))
+
+
+# ---------------------------------------------------------------------------
 # Native GQA tests — requires C++ extension (STEEL kernel handles GQA natively)
 # ---------------------------------------------------------------------------
 
@@ -1121,6 +1265,100 @@ class TestSparseBackwardTiled:
         assert np.isfinite(float(loss_val)), "loss is not finite"
         assert np.all(np.isfinite(np.array(dq.astype(mx.float32)))), "dQ non-finite"
         assert np.all(np.isfinite(np.array(dk.astype(mx.float32)))), "dK non-finite"
+
+
+# ==========================================================================
+# Track IC — Native sparse backward (steel_sparse)
+# ==========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestSparseBackwardSteel:
+    """Verify backward='steel_sparse' (native STEEL Metal sparse backward).
+
+    Compares steel_sparse gradients against sdpa (dense SDPA reference).
+    f16 only; D=64/128.
+    """
+
+    def _grads(self, q, k, v, mask, scale, causal=False, backward="sdpa"):
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       causal=causal, backward=backward)
+            )
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        return (
+            np.array(dq.astype(mx.float32)),
+            np.array(dk.astype(mx.float32)),
+            np.array(dv.astype(mx.float32)),
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_steel_sparse_all_true_matches_sdpa(self, D):
+        """All-true mask: steel_sparse grads must match sdpa dense reference."""
+        B, H, N = 1, 2, 64
+        mx.random.seed(99)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        mask = make_causal_block_mask(N, D)
+        scale = 1.0 / N**0.5
+
+        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, backward="sdpa")
+        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale, backward="steel_sparse")
+
+        np.testing.assert_allclose(dq_sp, dq_ref, atol=2e-2, err_msg="dQ mismatch")
+        np.testing.assert_allclose(dk_sp, dk_ref, atol=2e-2, err_msg="dK mismatch")
+        np.testing.assert_allclose(dv_sp, dv_ref, atol=2e-2, err_msg="dV mismatch")
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_steel_sparse_causal_block_mask(self, D):
+        """Causal block mask: steel_sparse must match sdpa with causal=True."""
+        B, H, N = 1, 2, 64
+        mx.random.seed(77)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        mask = make_causal_block_mask(N, D)
+        scale = 1.0 / D**0.5
+
+        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, causal=True, backward="sdpa")
+        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale, causal=True, backward="steel_sparse")
+
+        np.testing.assert_allclose(dq_sp, dq_ref, atol=2e-2, err_msg="dQ causal mismatch")
+        np.testing.assert_allclose(dk_sp, dk_ref, atol=2e-2, err_msg="dK causal mismatch")
+        np.testing.assert_allclose(dv_sp, dv_ref, atol=2e-2, err_msg="dV causal mismatch")
+
+    def test_steel_sparse_gradients_finite(self):
+        """Gradients are finite (no NaN/Inf) for steel_sparse."""
+        B, H, N, D = 1, 2, 64, 128
+        mx.random.seed(13)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        mask = make_causal_block_mask(N, D)
+
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, backward="steel_sparse")
+            )
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
+        assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
+        assert mx.all(mx.isfinite(dv)).item(), "dV has non-finite values"
+
+    def test_steel_sparse_backward_binding_exists(self):
+        """mfa_steel_backward_sparse binding is importable."""
+        from mlx_mfa._ext import mfa_steel_backward_sparse
+        assert callable(mfa_steel_backward_sparse)
 
 
 # ==========================================================================

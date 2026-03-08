@@ -49,6 +49,8 @@ def flash_attention(
     window_size: Optional[tuple] = None,
     return_lse: bool = False,
     stream: Optional[mx.Stream] = None,
+    attn_bias: Optional[mx.array] = None,
+    backend: str = "auto",
 ):
     """Compute scaled dot-product attention using Metal Flash Attention.
 
@@ -103,6 +105,25 @@ def flash_attention(
         stream: MLX stream for async execution. Defaults to the default GPU
             stream. Currently only honoured on the fallback path; the MFA
             kernel always uses the default GPU stream.
+        attn_bias: Optional additive bias added to attention scores before
+            softmax, broadcastable to ``[B, H, N, S]``.  Can be used for
+            padding masks (``-inf`` for padding positions), relative position
+            encodings, or any per-element score adjustment.  When provided,
+            the call falls back to ``mx.fast.scaled_dot_product_attention``
+            (which passes it as the ``mask`` argument) because the MFA Metal
+            kernel does not support a generic additive bias buffer.
+            Mutually exclusive with ``alibi_slopes`` and ``softcap``.
+        backend: Backend selection.  One of:
+
+            * ``"auto"`` *(default)*: use the MFA Metal kernel when supported
+              (head_dim ∈ {64,128,256,512}, dtype ∈ {f16,bf16,f32}, extension
+              compiled); fall back to ``mx.fast.scaled_dot_product_attention``
+              otherwise.
+            * ``"mfa"``: force the MFA Metal kernel.  Raises ``RuntimeError``
+              if the C++ extension is not compiled or the configuration is
+              unsupported.
+            * ``"sdpa"``: always use ``mx.fast.scaled_dot_product_attention``.
+              Useful for baseline benchmarks or debugging.
 
     Returns:
         When ``return_attn_weights=False`` and ``return_lse=False``
@@ -134,6 +155,27 @@ def flash_attention(
         v = mx.random.normal((1, 8, 512, 128))
         out = flash_attention(q, k, v, causal=True)  # [1, 8, 512, 128]
     """
+    _VALID_BACKENDS = {"auto", "mfa", "sdpa"}
+    if backend not in _VALID_BACKENDS:
+        raise ValueError(
+            f"flash_attention: backend must be one of {sorted(_VALID_BACKENDS)},"
+            f" got {backend!r}."
+        )
+
+    # --- backend='sdpa': unconditional SDPA fallback -------------------------
+    if backend == "sdpa":
+        mask = attn_bias  # may be None
+        if causal:
+            N, S = q.shape[2], k.shape[2]
+            causal_mask = mx.triu(
+                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+            )
+            mask = causal_mask if mask is None else causal_mask + mask
+        return mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=(scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])),
+            mask=mask,
+        )
+
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
         raise ValueError(
             f"flash_attention expects 4-D tensors [batch, heads, seq, head_dim]."
@@ -185,7 +227,37 @@ def flash_attention(
     if dropout_p > 0.0:
         return _dropout_sdpa(q, k, v, scale, causal, dropout_p)
 
-    if not _can_use_mfa(q, head_dim) or v_dim_mismatch:
+    # Track ID: attn_bias — MFA kernel has no generic additive bias path;
+    # fall back to SDPA which passes it as the mask argument.
+    if attn_bias is not None:
+        mask = attn_bias
+        if causal:
+            N, S = q.shape[2], k.shape[2]
+            causal_mask = mx.triu(
+                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+            )
+            mask = causal_mask + mask
+        return mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=mask,
+        )
+
+    # Track ID: backend='mfa' — force MFA; raise if unavailable.
+    use_mfa = _can_use_mfa(q, head_dim) and not v_dim_mismatch
+    if backend == "mfa" and not use_mfa:
+        try:
+            from mlx_mfa import _ext  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "flash_attention(backend='mfa'): the MFA C++ extension is not "
+                "compiled. Run: pip install -e . (with cmake args)."
+            )
+        raise RuntimeError(
+            f"flash_attention(backend='mfa'): unsupported configuration — "
+            f"head_dim={head_dim}, dtype={q.dtype}, v_dim_mismatch={v_dim_mismatch}. "
+            f"Supported: head_dim∈{{64,128,256,512}}, dtype∈{{f16,bf16,f32}}."
+        )
+
+    if not use_mfa:
         if softcap != 0.0:
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:
