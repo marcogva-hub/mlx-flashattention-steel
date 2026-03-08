@@ -29,7 +29,7 @@ All notable changes to mlx-mfa are documented here.
   numpy `float32` backing arrays to `mx.array`. Eliminates the CPU round-trip
   on every token append; `k_pool` / `v_pool` stay on GPU throughout.
 - **ABI version check** (Track IB): `_check_abi()` called at import time;
-  raises `RuntimeError` when the C++ extension ABI version does not match the
+  emits `RuntimeWarning` when the C++ extension ABI version does not match the
   installed MLX minor version, preventing silent correctness failures.
 - **`_apply_rope_and_attend` helper** (Track IE): unifies the 5-line
   `_apply_rope_mlx` × 2 + `_fallback_sdpa` pattern shared by
