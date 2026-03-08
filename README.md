@@ -58,6 +58,10 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **Paged attention backward** — `flash_attention_paged()` computes dQ correctly via Metal gather + per-seq vjp (v0.9.3)
 - **Varlen packed formats** — `flash_attention_varlen_qkv_packed()` / `flash_attention_varlen_kv_packed()` for fused-tensor varlen (v0.9.3)
 - **D=256 D-split backward** — STEEL dQ/dK/dV with BD_HALF=128 sub-tiles fits D=256 in registers (v0.9.2)
+- **`attn_bias` parameter** — `flash_attention(..., attn_bias=bias)` adds an arbitrary float tensor (broadcastable to `[B,H,N,S]`) to attention scores before softmax; use for padding masks, RPE biases, etc. (v1.0.4)
+- **`backend` parameter** — `flash_attention(..., backend="sdpa"|"mfa"|"auto")` for explicit backend selection (v1.0.4)
+- **Native sparse backward** — `flash_attention_sparse(..., backward="steel_sparse")` uses the STEEL Metal backward kernel with block-mask skipping; numpy round-trip workaround for MLX buffer-aliasing in autograd (v1.0.4)
+- **Paged dK/dV gradients** — `flash_attention_paged()` now computes real `dK_pages`/`dV_pages` via `_scatter_to_pool()` (v1.0.4)
 
 ## Requirements
 
@@ -130,7 +134,7 @@ out = flash_attention(q, k, v)  # native GQA — no K/V expansion needed
 
 ## API Reference
 
-### `flash_attention(q, k, v, scale=None, causal=False, softcap=0.0, dropout_p=0.0, return_attn_weights=False, stream=None)`
+### `flash_attention(q, k, v, scale=None, causal=False, softcap=0.0, dropout_p=0.0, return_attn_weights=False, window_size=None, return_lse=False, stream=None, attn_bias=None, backend="auto")`
 
 Compute scaled dot-product attention.
 
@@ -144,11 +148,15 @@ Compute scaled dot-product attention.
 | `softcap` | `float` | Tanh softcapping factor `cap` (0.0 = disabled) |
 | `dropout_p` | `float` | Softmax dropout probability (0.0 = disabled; training only) |
 | `return_attn_weights` | `bool` | If True, returns `(output, attn_weights)` tuple |
+| `window_size` | `tuple(int,int) or None` | `(left, right)` sliding window (f16/bf16 only) |
+| `return_lse` | `bool` | If True, returns `(output, lse [B,H,N])` in log2 domain |
 | `stream` | `mx.Stream or None` | MLX stream (honoured on fallback path) |
+| `attn_bias` | `mx.array or None` | Additive pre-softmax bias broadcastable to `[B,H,N,S]`. Always routes to `mx.fast.sdpa`; use for padding masks, RPE, etc. Mutually exclusive with `alibi_slopes`/`softcap`. *(v1.0.4)* |
+| `backend` | `str` | `"auto"` (default): MFA when supported, SDPA otherwise. `"mfa"`: force Metal kernel (raises if unavailable). `"sdpa"`: always use `mx.fast.scaled_dot_product_attention`. *(v1.0.4)* |
 
-Returns `mx.array [B, H, N, D]` normally, or `(mx.array, mx.array [B, H, N, S])` when `return_attn_weights=True`.
+Returns `mx.array [B, H, N, D]` normally, or `(mx.array, mx.array [B, H, N, S])` when `return_attn_weights=True`, or `(mx.array, mx.array [B, H, N])` when `return_lse=True`.
 
-Raises `ValueError` if inputs are not 4-D, if `q/k` have mismatched `head_dim`, or if the GQA ratio is non-integer.
+Raises `ValueError` if inputs are not 4-D, if `q/k` have mismatched `head_dim`, if the GQA ratio is non-integer, or if `backend` is not one of `{"auto","mfa","sdpa"}`.
 
 ---
 
@@ -528,7 +536,7 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | L   | RoPE Fusion (in-kernel rotary embeddings, `flash_attention_rope`) | **Done (v0.6.0)** |
 | M   | Paged Attention design document (`docs/PAGED_ATTENTION_DESIGN.md`) | **Done (v0.6.0)** |
 | N1  | STEEL native backward kernel (dQ/dK/dV in Metal) | **Done (v0.9.0)** |
-| N2  | Native sparse backward (block-sparse dQ/dK/dV) | Planned (v1.0) |
+| N2  | Native sparse backward (block-sparse dQ/dK/dV) | **Done (v1.0.4)** |
 | O   | Spatial 2D/3D block masks + segment masks + adaptive window | **Done (v0.7.0)** |
 | P   | Variable-length batching (`flash_attention_varlen`, split-concat) | **Done (v0.7.0)** |
 | R   | 3D RoPE table construction + `flash_attention_rope(rope_3d=...)` | **Done (v0.7.0)** |
@@ -563,6 +571,12 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | FC  | Fused RoPE cache append (`flash_attention_kvcache_rope_append`) | **Done (v1.0.0)** |
 | FD  | Kernel-level paged KV STEEL forward + Flash Decode path | **Done (v1.0.0)** |
 | FX  | `return_lse`, `cache_batch_idx`, `rotary_dim` additions | **Done (v1.0.0)** |
+| IA  | `PagedKVCache` MLX-native pool arrays (remove numpy round-trip) | **Done (v1.0.4)** |
+| IB  | ABI robustness (`_mlx_build_version` + `_check_abi` at import) | **Done (v1.0.4)** |
+| IC  | `backward="steel_sparse"` buffer-aliasing fix (numpy round-trip) | **Done (v1.0.4)** |
+| ID  | `attn_bias` + `backend` parameters in `flash_attention` | **Done (v1.0.4)** |
+| IE  | `_apply_rope_and_attend` helper (RoPE + SDPA unification) | **Done (v1.0.4)** |
+| IF  | Paged backward real dK/dV via `_scatter_to_pool` | **Done (v1.0.4)** |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.1+) |
 
 ## References

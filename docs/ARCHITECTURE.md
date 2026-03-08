@@ -575,3 +575,98 @@ def seq_lengths(self):
 This is O(active_sequences) — constant per sequence regardless of total tokens
 stored — because it uses `_write_ptr` (the offset within the *last* block) rather
 than summing individual block fills.
+
+---
+
+## 12. v1.0.4 Architecture Notes (Tracks IA–IF)
+
+### 12.1 MLX buffer aliasing in `@mx.custom_function` backward (Track IC)
+
+**Critical constraint**: When a Python function is decorated with
+`@mx.custom_function` and a `.vjp` backward is registered, MLX's autograd
+engine may **recycle the GPU buffers** that backed the primal inputs
+(`q`, `k`, `v`) by the time the backward is evaluated. Standard MLX ops
+(`mx.fast.scaled_dot_product_attention`, arithmetic) are stream-ordered and
+see consistent data. Custom C++ `Primitive` objects (e.g. `MFASteelBwdDQ`)
+read raw Metal buffers via `eval_gpu()` and are **not** protected by this
+ordering — they can silently read garbage.
+
+**Symptom**: `mfa_steel_backward_sparse` called directly (outside vjp) gives
+correct dQ; the same call inside the vjp gives values 20–50× smaller.
+
+**Fix applied in `backward="steel_sparse"`** (`attention.py`): force a
+CPU round-trip before calling the Metal backward kernel.
+
+```python
+mx.eval(q, k, v, mask_uint8, dO, O, L)          # materialise on GPU
+def _to_fresh(a, dtype=None):
+    a32 = a.astype(mx.float32) if a.dtype != mx.float32 else a
+    return mx.array(_np.array(a32), dtype=dtype or a.dtype)  # new GPU buf
+q2, k2, v2 = _to_fresh(q), _to_fresh(k), _to_fresh(v)
+```
+
+`mx.array(np.array(...))` always allocates a fresh GPU buffer. `add-zero`
+tricks (`q + mx.zeros(...)`) do **not** work because MLX may schedule them
+without materialising a new allocation.
+
+**Scope**: Only custom Metal primitives are affected. Pure MLX ops and
+`mx.vjp(sdpa)` inside a vjp are safe.
+
+---
+
+### 12.2 `flash_attention` backend and attn_bias routing (Track ID)
+
+`flash_attention` now accepts two new keyword parameters:
+
+| Parameter | Type | Default | Behaviour |
+|-----------|------|---------|-----------|
+| `backend` | `str` | `"auto"` | `"sdpa"` short-circuits to `mx.fast.sdpa` unconditionally; `"mfa"` forces the Metal kernel and raises `RuntimeError` if unsupported; `"auto"` is unchanged |
+| `attn_bias` | `mx.array \| None` | `None` | Additive pre-softmax bias, broadcastable to `[B,H,N,S]`; always routes through `mx.fast.sdpa` (MFA kernel has no generic bias buffer) |
+
+`backend="sdpa"` is evaluated **before** the 4-D shape check so it can be
+used even with non-standard tensor shapes. `attn_bias` is evaluated after
+dropout/weight checks but before `_can_use_mfa`.
+
+---
+
+### 12.3 `_apply_rope_and_attend` helper (Track IE)
+
+Unifies the pattern that appears in three call sites:
+
+```python
+q_rot = _apply_rope_mlx(q, cos, sin, offset=q_off, interleaved=..., rotary_dim=...)
+k_rot = _apply_rope_mlx(k, cos, sin, offset=k_off, interleaved=..., rotary_dim=...)
+return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
+```
+
+into a single call `_apply_rope_and_attend(q, k, v, cos, sin, scale, causal, ...)`.
+The two active call sites are:
+
+1. `flash_attention_rope()` — when `not _can_use_mfa` or `float32` or partial RoPE.
+2. `_make_mfa_rope_custom().backward._fwd_with_rope()` — used inside the vjp to
+   compute reference gradients via `mx.vjp(sdpa)`.
+
+---
+
+### 12.4 Paged backward dK/dV scatter (Track IF)
+
+Prior to v1.0.4, `_paged_bwd` and `_paged_steel_bwd` discarded `dk_b`/`dv_b`
+from `mx.vjp` and returned `zeros_like(k_pages)`. This made
+`flash_attention_paged` non-differentiable w.r.t. K/V pool contents.
+
+**`_scatter_to_pool(dk_seqs, dv_seqs, dtype)`** (defined inline inside
+`flash_attention_paged`) performs the inverse of `_gather_contig`:
+
+```
+for b, (kv_len, table_b):
+    for logical block lb:
+        phys = block_table[b][lb]
+        dk_pool[phys] += dk_seqs[b][:, lb*bs:(lb+1)*bs, :].T  # [bs, H_kv, D]
+    if partial last block:
+        dk_pool[phys][:rem] += ...   # zero-padded to block_size
+```
+
+Multiple sequences sharing a physical block have their contributions **summed**
+(unusual in practice; block_table entries are typically unique per sequence).
+
+Output shape: `[num_blocks, block_size, H_kv, D]` — identical to `k_pages`.

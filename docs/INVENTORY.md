@@ -1,6 +1,6 @@
 # mlx-mfa Repository Inventory
 
-_Regenerated at v1.0.1 (2026-03-06). All line counts verified with `wc -l`._
+_Regenerated at v1.0.4 (2026-03-08). All line counts verified with `wc -l`._
 
 ---
 
@@ -9,19 +9,19 @@ _Regenerated at v1.0.1 (2026-03-06). All line counts verified with `wc -l`._
 ```
 mlx-mfa-v2/
 ├── mlx_mfa/               Python package
-│   ├── __init__.py        Public API (33 exports, version=1.0.1)  [106 lines]
-│   ├── attention.py       Core attention + fallback paths         [3134 lines]
+│   ├── __init__.py        Public API (34 exports, version=1.0.4)  [135 lines]
+│   ├── attention.py       Core attention + fallback paths         [3344 lines]
 │   ├── masks.py           Mask builders — 15 functions            [1129 lines]
 │   └── integrations/
 │       └── mlx_lm.py      mlx-lm patch/unpatch + stats           [351 lines]
 ├── csrc/                  C++ extension (nanobind)
-│   ├── bindings.cpp       Python bindings                         [356 lines]
+│   ├── bindings.cpp       Python bindings                         [410 lines]
 │   ├── mfa_attention.hpp  MFAttention + 8 other Primitive decls   [437 lines]
-│   ├── mfa_attention.cpp  Primitive eval_gpu + free functions    [1546 lines]
+│   ├── mfa_attention.cpp  Primitive eval_gpu + free functions    [1554 lines]
 │   ├── mfa_steel_fwd.hpp  STEEL forward params + decls            [235 lines]
-│   ├── mfa_steel_fwd.cpp  STEEL fwd + paged STEEL JIT generator  [2967 lines]
+│   ├── mfa_steel_fwd.cpp  STEEL fwd + paged STEEL JIT generator  [3123 lines]
 │   ├── mfa_steel_bwd.hpp  STEEL backward params + decls            [68 lines]
-│   ├── mfa_steel_bwd.cpp  STEEL backward JIT Metal generator     [1372 lines]
+│   ├── mfa_steel_bwd.cpp  STEEL backward JIT Metal generator     [1295 lines]
 │   ├── mfa_paged_gather.hpp  MFAPagedKVGather Primitive decl       [84 lines]
 │   ├── mfa_paged_gather.cpp  Metal paged KV gather kernel          [242 lines]
 │   ├── mfa_shader_gen.hpp ccv shader gen interface                  [59 lines]
@@ -203,6 +203,21 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | `bench_compile.py` | `mx.compile` overhead: softcap/alibi/rope compiled vs raw (v0.9.2) |
 | `bench_kvcache.py` | `flash_attention_kvcache_rope_append` vs naive re-rotation (FC) |
 | `bench_paged_kv.py` | gather+attend vs kernel paged STEEL vs Flash Decode (FD) |
+
+---
+
+## v1.0.4 additions (IA–IH)
+
+| Track | File(s) | Description |
+|-------|---------|-------------|
+| IA | `mlx_mfa/attention.py` | `PagedKVCache` backing switched from numpy to MLX-native arrays; removes CPU round-trip on cache append |
+| IB | `csrc/bindings.cpp`, `mlx_mfa/__init__.py` | `_mlx_build_version` C++ binding + `_check_abi()` Python guard; raises `RuntimeError` on MLX ABI version mismatch at import time |
+| IC | `mlx_mfa/attention.py` | `backward="steel_sparse"` in `flash_attention_sparse`: numpy round-trip fix for MLX buffer aliasing in autograd (primal buffers recycled during vjp); all 6 `TestSparseBackwardSteel` tests pass |
+| ID | `mlx_mfa/attention.py`, `tests/test_attention.py` | `flash_attention` gains `attn_bias` (optional additive pre-softmax bias, SDPA fallback) and `backend` (`"auto"/"mfa"/"sdpa"`) params; 12 new tests |
+| IE | `mlx_mfa/attention.py` | `_apply_rope_and_attend()` helper unifies `_apply_rope_mlx` × 2 + `_fallback_sdpa` pattern; used in `flash_attention_rope` fallback and `_make_mfa_rope_custom` backward |
+| IF | `mlx_mfa/attention.py`, `tests/test_attention.py` | `_scatter_to_pool()` helper; `_paged_bwd` and `_paged_steel_bwd` now return real `dK_pages`/`dV_pages` instead of zeros; 4 new paged backward tests |
+| IG | `docs/INVENTORY.md`, `docs/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md` | Documentation refresh for v1.0.4 |
+| IH | `pyproject.toml`, `mlx_mfa/__init__.py`, `CHANGELOG.md` | Version bump → 1.0.4, tag v1.0.4, PyPI upload |
 
 ---
 

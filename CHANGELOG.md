@@ -2,20 +2,40 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.0.4] — UNRELEASED
+## [1.0.4] — 2026-03-08
 
 ### Added
-- **PagedKVCache MLX-native** (Track IA): pool storage migrated from numpy
-  float32 backing arrays to `mx.array`; no numpy roundtrip on every token.
-- **ABI version check** (Track IB): `_check_abi()` warns at import time when
-  the C++ extension was compiled against a different MLX minor version.
-- **Native sparse backward** (Track IC): STEEL dQ and dKV kernels gain
-  `block_mask` support; Python tiled loop fallback retained for unsupported configs.
-- **`attn_bias` parameter** (Track ID): additive bias before softmax (forces SDPA).
-- **`backend` parameter** (Track ID): `"auto"` / `"steel"` / `"sdpa"` dispatch.
-- **`window_size` right side** (Track ID): documented; `right != 0` raises or warns.
-- **RoPE unification** (Track IE): shared `_apply_rope_and_attend` helper.
-- **Paged backward dK/dV** (Track IF): gradients scattered back to pool layout.
+- **`attn_bias` parameter in `flash_attention`** (Track ID): optional float
+  tensor broadcastable to `[B,H,N,S]` added to attention scores before softmax.
+  Useful for padding masks, relative position encodings, etc. Routes through
+  `mx.fast.scaled_dot_product_attention` (MFA kernel has no generic bias buffer).
+- **`backend` parameter in `flash_attention`** (Track ID): `"auto"` (default),
+  `"mfa"` (force Metal kernel, raises if unavailable), `"sdpa"` (always SDPA).
+- **Paged backward dK/dV** (Track IF): `flash_attention_paged()` now computes
+  real `dK_pages` / `dV_pages` via `_scatter_to_pool()` instead of zeros.
+  Scatters per-sequence contiguous gradients back to `[num_blocks, bs, H_kv, D]`
+  pool format using the block_table metadata.
+
+### Fixed
+- **Native sparse backward buffer aliasing** (Track IC): `backward="steel_sparse"`
+  in `flash_attention_sparse()` now copies all inputs through numpy before calling
+  the Metal backward kernel. MLX's autograd engine recycles primal GPU buffers
+  during the backward pass; custom Metal primitives read those recycled buffers
+  and produce wrong results without this workaround. All 6
+  `TestSparseBackwardSteel` tests now pass.
+
+### Internal
+- **`PagedKVCache` MLX-native pool** (Track IA): pool storage migrated from
+  numpy `float32` backing arrays to `mx.array`. Eliminates the CPU round-trip
+  on every token append; `k_pool` / `v_pool` stay on GPU throughout.
+- **ABI version check** (Track IB): `_check_abi()` called at import time;
+  raises `RuntimeError` when the C++ extension ABI version does not match the
+  installed MLX minor version, preventing silent correctness failures.
+- **`_apply_rope_and_attend` helper** (Track IE): unifies the 5-line
+  `_apply_rope_mlx` × 2 + `_fallback_sdpa` pattern shared by
+  `flash_attention_rope()` and the `_make_mfa_rope_custom` backward.
+- **374 tests pass** (up from 358 at v1.0.3). +16 new tests covering
+  `attn_bias`, `backend`, dK/dV paged scatter, and sparse backward correctness.
 
 ---
 
