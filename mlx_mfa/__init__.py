@@ -27,6 +27,35 @@ all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 
 __version__ = "1.0.3"
 
+
+def _check_abi() -> None:
+    """Warn if the compiled extension was built against a different MLX major.minor."""
+    try:
+        import importlib
+        _ext = importlib.import_module("mlx_mfa._ext")
+        build_ver = _ext._mlx_build_version()
+        if build_ver == "unknown":
+            return
+        import mlx.core
+        runtime_ver = mlx.core.__version__
+        # Compare major.minor only — patch releases are ABI-compatible.
+        bv = tuple(int(x) for x in build_ver.split(".")[:2])
+        rv = tuple(int(x) for x in runtime_ver.split(".")[:2])
+        if bv != rv:
+            import warnings
+            warnings.warn(
+                f"mlx-mfa was compiled against MLX {build_ver} but the installed "
+                f"MLX is {runtime_ver}.  Rebuild the extension to avoid crashes:\n"
+                "  pip install --no-build-isolation -e .",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    except Exception:
+        pass
+
+
+_check_abi()
+
 from mlx_mfa.attention import (
     flash_attention,
     flash_attention_rope,

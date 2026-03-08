@@ -386,6 +386,20 @@ class TestPublicAPI:
             f"gen={gen}: is_m3_plus should be {expected}, got {info['is_m3_plus']}"
         )
 
+    @pytest.mark.skipif(not _ext_available(), reason="extension not compiled")
+    def test_mlx_build_version(self):
+        """_mlx_build_version() returns a semver string matching runtime MLX."""
+        import mlx_mfa._ext as _ext
+        import mlx.core
+        build_ver = _ext._mlx_build_version()
+        assert isinstance(build_ver, str)
+        assert build_ver != "unknown", "MLX_BUILD_VERSION not captured at compile time"
+        # major.minor must match runtime
+        runtime_ver = mlx.core.__version__
+        bv = tuple(int(x) for x in build_ver.split(".")[:2])
+        rv = tuple(int(x) for x in runtime_ver.split(".")[:2])
+        assert bv == rv, f"build={build_ver} vs runtime={runtime_ver}"
+
 
 # ---------------------------------------------------------------------------
 # Edge case tests (Phase 4.6.1) — requires extension

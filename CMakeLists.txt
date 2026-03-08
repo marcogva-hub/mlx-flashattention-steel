@@ -61,6 +61,11 @@ endif()
 message(STATUS "MLX library: ${MLX_LIB}")
 
 # -- nanobind (pip-installed) --
+# IMPORTANT: nanobind version must match MLX's internal NB_INTERNALS_VERSION.
+#   MLX 0.31.0 uses NB_INTERNALS_VERSION=17 with NB_DOMAIN "mlx".
+#   nanobind 2.10.x is the pip version with NB_INTERNALS_VERSION=17.
+#   If MLX is upgraded, check its capsule key and match nanobind accordingly:
+#     python3 -c "import mlx.core, ctypes; ..."  (see mlx_mfa_integration.md)
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -94,6 +99,12 @@ set(MFA_SOURCES
   csrc/mfa/CodeWriter.cpp
 )
 
+# NB_STATIC: statically links nanobind runtime into this extension.
+# NB_DOMAIN "mlx": MUST match MLX's domain (mlx.core uses NB_DOMAIN "mlx").
+#   Both extensions use the same capsule key in PyInterpreterState_GetDict(),
+#   sharing a single type registry so mlx::core::array passes between them.
+#   Requires nanobind pip version with NB_INTERNALS_VERSION matching MLX's
+#   (e.g., nanobind==2.10.2 for MLX 0.31.0).
 nanobind_add_module(_ext NB_STATIC NB_DOMAIN "mlx" ${MFA_SOURCES})
 
 target_include_directories(_ext PRIVATE
@@ -109,8 +120,20 @@ target_link_libraries(_ext PRIVATE
   ${FOUNDATION_FRAMEWORK}
 )
 
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -c "import mlx.core; print(mlx.core.__version__)"
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_VARIABLE MLX_RUNTIME_VERSION
+  RESULT_VARIABLE MLX_VERSION_RC
+)
+if(NOT MLX_VERSION_RC EQUAL 0)
+  set(MLX_RUNTIME_VERSION "unknown")
+endif()
+message(STATUS "MLX build version: ${MLX_RUNTIME_VERSION}")
+
 target_compile_definitions(_ext PRIVATE
   MLX_MFA_METAL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels"
+  MLX_BUILD_VERSION="${MLX_RUNTIME_VERSION}"
 )
 
 # Install into the Python package directory

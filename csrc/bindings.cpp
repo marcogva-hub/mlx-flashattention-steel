@@ -162,6 +162,14 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"), nb::arg("causal"),
       "STEEL backward: returns (dQ, dK, dV). f16/bf16, D<=128 only.");
 
+  m.def("_mlx_build_version", []() -> std::string {
+#ifdef MLX_BUILD_VERSION
+    return MLX_BUILD_VERSION;
+#else
+    return "unknown";
+#endif
+  }, "MLX version used at compile time (major.minor.patch).");
+
   m.def("shader_cache_size", []() {
     return mlx_mfa::ShaderCache::get().size();
   }, "Number of cached Metal compute pipelines.");
