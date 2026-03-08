@@ -790,6 +790,34 @@ class TestFlashAttentionAPI:
         with pytest.raises(Exception):
             mx.eval(flash_attention(q, k, v, attn_bias=bad_bias))
 
+    # --- window_size right side (Track 6) ------------------------------------
+
+    def test_window_right_positive_raises(self):
+        """window_size right>0 must raise NotImplementedError immediately."""
+        q, k, v = self._qkv()
+        with pytest.raises(NotImplementedError, match="right="):
+            flash_attention(q, k, v, window_size=(128, 1))
+
+    def test_window_right_zero_is_ok(self):
+        """window_size right=0 (no right exclusion) should not raise."""
+        q, k, v = self._qkv()
+        out = flash_attention(q, k, v, window_size=(128, 0))
+        mx.eval(out)
+        assert out.shape == q.shape
+
+    def test_window_right_negative_is_ok(self):
+        """window_size right=-1 (disabled) should not raise."""
+        q, k, v = self._qkv()
+        out = flash_attention(q, k, v, window_size=(128, -1))
+        mx.eval(out)
+        assert out.shape == q.shape
+
+    def test_window_right_large_raises_f32(self):
+        """window_size right=999 must raise even for f32 (caught before fallback)."""
+        q, k, v = self._qkv(dtype=mx.float32)
+        with pytest.raises(NotImplementedError, match="right="):
+            flash_attention(q, k, v, window_size=(64, 999))
+
 
 # ---------------------------------------------------------------------------
 # Native GQA tests — requires C++ extension (STEEL kernel handles GQA natively)

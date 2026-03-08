@@ -89,10 +89,13 @@ def flash_attention(
             Useful for attention visualization / debugging.
         window_size: Optional ``(left, right)`` tuple for sliding window
             attention.  ``left`` is the number of tokens to the left of each
-            query that are visible; ``right`` is currently ignored (use
-            ``causal=True`` to mask future tokens).  When ``left >= 0``,
-            the STEEL kernel uses native tile-skip to skip K-tiles entirely
-            outside the window.  Pass ``None`` (default) to disable.
+            query that are visible.  ``right`` must be ``-1`` or ``0``
+            (meaning no right-side masking); passing ``right > 0`` raises
+            ``NotImplementedError`` because the STEEL kernel does not yet
+            support right-side exclusion (use ``causal=True`` to mask all
+            future tokens).  When ``left >= 0``, the STEEL kernel uses native
+            tile-skip to skip K-tiles entirely outside the window.
+            Pass ``None`` (default) to disable.
         return_lse: When True, also return the log-sum-exp tensor
             ``L [B, H, N]`` in **log2 domain** alongside the output.
             Useful for Flash Decoding, speculative decoding, and any
@@ -276,6 +279,13 @@ def flash_attention(
     # Only f16/bf16 support native window; f32 falls back to masked SDPA.
     window_left = -1
     if window_size is not None:
+        wr = window_size[1] if len(window_size) > 1 else -1
+        if wr > 0:
+            raise NotImplementedError(
+                f"flash_attention: window_size right={wr} is not yet supported. "
+                "The STEEL kernel only implements left-side sliding-window masking. "
+                "Use causal=True to mask all future tokens, or set right=-1."
+            )
         wl = window_size[0]
         if wl >= 0 and q.dtype != mx.float32:
             window_left = wl
