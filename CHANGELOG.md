@@ -2,6 +2,23 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.4] — UNRELEASED
+
+### Added
+- **PagedKVCache MLX-native** (Track IA): pool storage migrated from numpy
+  float32 backing arrays to `mx.array`; no numpy roundtrip on every token.
+- **ABI version check** (Track IB): `_check_abi()` warns at import time when
+  the C++ extension was compiled against a different MLX minor version.
+- **Native sparse backward** (Track IC): STEEL dQ and dKV kernels gain
+  `block_mask` support; Python tiled loop fallback retained for unsupported configs.
+- **`attn_bias` parameter** (Track ID): additive bias before softmax (forces SDPA).
+- **`backend` parameter** (Track ID): `"auto"` / `"steel"` / `"sdpa"` dispatch.
+- **`window_size` right side** (Track ID): documented; `right != 0` raises or warns.
+- **RoPE unification** (Track IE): shared `_apply_rope_and_attend` helper.
+- **Paged backward dK/dV** (Track IF): gradients scattered back to pool layout.
+
+---
+
 ## [1.0.3] — 2026-03-06
 
 ### Added
