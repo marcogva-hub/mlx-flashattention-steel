@@ -162,6 +162,51 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"), nb::arg("causal"),
       "STEEL backward: returns (dQ, dK, dV). f16/bf16, D<=128 only.");
 
+  m.def("mfa_steel_backward_sparse",
+      [](const mlx::core::array& q,
+         const mlx::core::array& k,
+         const mlx::core::array& v,
+         const mlx::core::array& O,
+         const mlx::core::array& L,
+         const mlx::core::array& dO,
+         const mlx::core::array& block_mask,
+         float scale, bool causal) {
+        auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        mlx_mfa::MFAttention::Params params{};
+        params.head_dim       = q.shape(3);
+        params.scale          = scale;
+        params.causal         = causal;
+        params.has_block_mask = true;
+        params.window_left    = -1;
+
+        // delta = rowsum(dO * O)  [B, H, N], float32.
+        auto dO_f32 = mlx::core::astype(dO, mlx::core::float32, s);
+        auto O_f32  = mlx::core::astype(O,  mlx::core::float32, s);
+        auto delta  = mlx::core::sum(
+                          mlx::core::multiply(dO_f32, O_f32, s),
+                          std::vector<int>{3}, false, s);
+
+        // dQ — inputs[7] = block_mask
+        auto bwd_q = mlx::core::array::make_arrays(
+            {q.shape()},
+            {q.dtype()},
+            std::make_shared<mlx_mfa::MFASteelBwdDQ>(s, params),
+            {q, k, v, O, L, dO, delta, block_mask});
+
+        // dK, dV — inputs[7] = block_mask
+        auto bwd_kv = mlx::core::array::make_arrays(
+            {k.shape(), v.shape()},
+            {k.dtype(), v.dtype()},
+            std::make_shared<mlx_mfa::MFASteelBwdDKV>(s, params),
+            {q, k, v, O, L, delta, dO, block_mask});
+
+        return nb::make_tuple(bwd_q[0], bwd_kv[0], bwd_kv[1]);
+      },
+      nb::arg("q"), nb::arg("k"), nb::arg("v"),
+      nb::arg("O"), nb::arg("L"), nb::arg("dO"),
+      nb::arg("block_mask"), nb::arg("scale"), nb::arg("causal"),
+      "Sparse STEEL backward: block_mask skips inactive tiles. Returns (dQ, dK, dV).");
+
   m.def("_mlx_build_version", []() -> std::string {
 #ifdef MLX_BUILD_VERSION
     return MLX_BUILD_VERSION;
@@ -361,5 +406,5 @@ NB_MODULE(_ext, m) {
         "GQA: H_q / H_kv must be integer. window_left=-1 disables sliding window.\n"
         "Only f16/bf16 supported.");
 
-  m.attr("__version__") = "1.0.3";
+  m.attr("__version__") = "1.0.5";
 }

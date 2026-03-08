@@ -9,8 +9,8 @@ Regenerated: 2026-03-08.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.0.5` (pending bump in Track 5) |
-| `mlx_mfa/__init__.py` | `1.0.4` (pending) |
+| `pyproject.toml` | `1.0.5` |
+| `mlx_mfa/__init__.py` | `1.0.5` |
 | Latest git tag | `v1.0.4` |
 
 ---

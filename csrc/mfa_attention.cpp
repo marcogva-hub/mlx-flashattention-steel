@@ -733,7 +733,8 @@ void MFASteelBwdDQ::eval_gpu(
     const std::vector<mlx::core::array>& inputs,
     std::vector<mlx::core::array>& outputs) {
 
-  assert(inputs.size()  == 7);  // Q, K, V, O, L, dO, delta
+  // inputs: Q, K, V, O, L, dO, delta, [block_mask if sparse]
+  assert(inputs.size()  == 7u + (params_.has_block_mask ? 1u : 0u));
   assert(outputs.size() == 1);  // dQ
 
   const auto& q     = inputs[0];  // [B, H, N, D]
@@ -793,7 +794,7 @@ void MFASteelBwdDQ::eval_gpu(
   using KK = ShaderCache::KernelKey;
   KK key{KK::KernelType::SteelBackwardDQ,
          D, BQ, BK, BD, WM,
-         params_.causal, /*sparse=*/false, is_m3_plus,
+         params_.causal, /*sparse=*/params_.has_block_mask, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
          /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code,
          /*gqa_factor=*/H / Hk};
@@ -811,6 +812,9 @@ void MFASteelBwdDQ::eval_gpu(
   enc.set_input_array(delta, 6);
   enc.set_output_array(dQ,   7);
   enc.set_bytes(sp,          8);
+  if (params_.has_block_mask) {
+    enc.set_input_array(inputs[7], 9);  // block_mask [NQ_tiles, NK_tiles] uchar
+  }
 
   enc.dispatch_threadgroups(
       MTL::Size::Make(NQ, H, B),
@@ -832,7 +836,8 @@ void MFASteelBwdDKV::eval_gpu(
     const std::vector<mlx::core::array>& inputs,
     std::vector<mlx::core::array>& outputs) {
 
-  assert(inputs.size()  == 7);  // Q, K, V, O, L, delta, dO
+  // inputs: Q, K, V, O, L, delta, dO, [block_mask if sparse]
+  assert(inputs.size()  == 7u + (params_.has_block_mask ? 1u : 0u));
   assert(outputs.size() == 2);  // dK, dV
 
   const auto& q     = inputs[0];
@@ -895,7 +900,7 @@ void MFASteelBwdDKV::eval_gpu(
   using KK = ShaderCache::KernelKey;
   KK key{KK::KernelType::SteelBackwardDKV,
          D, BQ, BK, BD, WM_DKV,
-         params_.causal, /*sparse=*/false, is_m3_plus,
+         params_.causal, /*sparse=*/params_.has_block_mask, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
          /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code,
          /*gqa_factor=*/H / Hk};
@@ -914,6 +919,9 @@ void MFASteelBwdDKV::eval_gpu(
   enc.set_output_array(dK,   7);
   enc.set_output_array(dV,   8);
   enc.set_bytes(sp,          9);
+  if (params_.has_block_mask) {
+    enc.set_input_array(inputs[7], 10);  // block_mask [NQ_tiles, NK_tiles] uchar
+  }
 
   // dKV grid Y = Hk (H_kv) — each TG handles one KV-head, iterating Q-heads
   enc.dispatch_threadgroups(

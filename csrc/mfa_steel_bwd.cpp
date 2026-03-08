@@ -348,6 +348,9 @@ std::string generate_steel_backward_dq_source(
   ss << "    const device float*     delta [[buffer(6)]],\n";  // rowsum(dO⊙O)
   ss << "    device MFA_DTYPE*       dQ    [[buffer(7)]],\n";
   ss << "    const constant MFASteelBwdParams* p [[buffer(8)]],\n";
+  if (key.sparse) {
+    ss << "    const device uchar* block_mask [[buffer(9)]],\n";
+  }
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -510,6 +513,10 @@ std::string generate_steel_backward_dq_source(
 
   // ── K-tile loop ──────────────────────────────────────────────────────────
   ss << "  for (int kb = 0; kb < kb_lim; kb++) {\n\n";
+  if (key.sparse) {
+    ss << "    // Sparse skip: skip K-tile if block_mask[qb * NK + kb] == 0.\n";
+    ss << "    if (!block_mask[(int)tid.x * p->NK + kb]) continue;\n\n";
+  }
 
   if (!d_split) {
     // ── D<=128 path (existing, unchanged) ────────────────────────────────
@@ -824,6 +831,9 @@ std::string generate_steel_backward_dkv_source(
   ss << "    device MFA_DTYPE*       dK     [[buffer(7)]],\n";
   ss << "    device MFA_DTYPE*       dV     [[buffer(8)]],\n";
   ss << "    const constant MFASteelBwdParams* p [[buffer(9)]],\n";
+  if (key.sparse) {
+    ss << "    const device uchar* block_mask [[buffer(10)]],\n";
+  }
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -918,6 +928,10 @@ std::string generate_steel_backward_dkv_source(
   ss << "    const long  l_boff  = (long)tid.z * p->L_strides[0]   + (long)q_head * p->L_strides[1];\n\n";
 
   ss << "    for (int qb = qb_min; qb < p->NQ; qb++) {\n\n";
+  if (key.sparse) {
+    ss << "      // Sparse skip: skip Q-tile if block_mask[qb * NK + kb] == 0.\n";
+    ss << "      if (!block_mask[qb * p->NK + (int)tid.x]) continue;\n\n";
+  }
 
   // Q and dO base for this Q-tile
   ss << "      const device T* Qptr  = Q  + boff_q  + (ulong)qb * MFA_BQ * p->Q_strides[2];\n";
