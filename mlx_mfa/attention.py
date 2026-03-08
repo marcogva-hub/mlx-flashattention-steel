@@ -973,12 +973,12 @@ def flash_attention_kvcache_rope_append(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Rotate Q at current decode positions.
-    q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                             offset=cache_seqlens, interleaved=interleaved)
-    # Rotate k_new at current decode positions (same offset as Q).
-    k_new_rot = _apply_rope_mlx(k_new, rotary_cos, rotary_sin,
-                                 offset=cache_seqlens, interleaved=interleaved)
+    # Rotate Q and K_new at the current decode positions (same offset for both).
+    q_rot, k_new_rot = _apply_rope_to_qk(
+        q, k_new, rotary_cos, rotary_sin,
+        q_offset=cache_seqlens, k_offset=cache_seqlens,
+        interleaved=interleaved,
+    )
 
     # Append to cache.
     if k_cache is not None:
@@ -2217,6 +2217,44 @@ def _apply_rope_mlx(
     return _rope_compile_cache[key](x, cos, sin)
 
 
+def _apply_rope_to_qk(
+    q: mx.array,
+    k: mx.array,
+    rotary_cos: mx.array,
+    rotary_sin: mx.array,
+    q_offset: int = 0,
+    k_offset: int = 0,
+    interleaved: bool = True,
+    rotary_dim: Optional[int] = None,
+) -> tuple:
+    """Apply RoPE to Q and K independently; return ``(q_rot, k_rot)``.
+
+    Pure rotation helper — does not compute attention.  Use this when the
+    caller needs to rotate Q and K before dispatching its own kernel (e.g.
+    MFA, paged-KV, varlen).
+
+    Args:
+        q:            Query tensor ``[B, H, N, D]``.
+        k:            Key tensor ``[B, H, S, D]``.
+        rotary_cos:   Cosine table ``[max_seq, rotary_dim/2]``.
+        rotary_sin:   Sine table ``[max_seq, rotary_dim/2]``.
+        q_offset:     Token position of the first Q token (= cache_seqlens).
+        k_offset:     Token position of the first K token (0 for full KV).
+        interleaved:  True = LLaMA adjacent-pair layout; False = GPT-NeoX.
+        rotary_dim:   Elements to rotate; None rotates all ``D`` elements.
+
+    Returns:
+        ``(q_rot, k_rot)`` — rotated tensors, same dtype and shape as inputs.
+    """
+    q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                             offset=q_offset, interleaved=interleaved,
+                             rotary_dim=rotary_dim)
+    k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
+                             offset=k_offset, interleaved=interleaved,
+                             rotary_dim=rotary_dim)
+    return q_rot, k_rot
+
+
 def _apply_rope_and_attend(
     q: mx.array,
     k: mx.array,
@@ -2255,12 +2293,11 @@ def _apply_rope_and_attend(
     Returns:
         Attention output ``[B, H, N, D]`` in the same dtype as q.
     """
-    q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                             offset=q_offset, interleaved=interleaved,
-                             rotary_dim=rotary_dim)
-    k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
-                             offset=k_offset, interleaved=interleaved,
-                             rotary_dim=rotary_dim)
+    q_rot, k_rot = _apply_rope_to_qk(
+        q, k, rotary_cos, rotary_sin,
+        q_offset=q_offset, k_offset=k_offset,
+        interleaved=interleaved, rotary_dim=rotary_dim,
+    )
     return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
 
 
