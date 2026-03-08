@@ -2,6 +2,51 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.0.5] — 2026-03-08
+
+### Added
+- **`flash_attention_kvcache` append mode** — new `k_new` / `v_new` keyword-only
+  parameters let callers concatenate new tokens onto the KV cache and attend in
+  one call: `flash_attention_kvcache(q, k_cache, v_cache, k_new=k_new, v_new=v_new)`
+  returns `(output, k_updated, v_updated)`. Supports RoPE via explicit
+  `_apply_rope_to_qk` rotation of `q` and `k_new` before concatenation (avoids
+  double-rotating the already pre-rotated cache). 9 new tests in
+  `TestKVCacheAppendUnified`.
+- **`get_supported_configs()` feature matrix** — `features` key is now a 22-entry
+  boolean dict covering every runtime capability (`causal`, `gqa`, `rope`, `d512`,
+  `paged_kv`, `flash_decode`, `alibi`, `softcap`, `attn_bias`, `backend_select`,
+  `native_backward`, `sparse_backward`, `m3_routing`, `m5_stub`, etc.). Applications
+  can query capabilities without version checks. `kernel_types` key returns 8.
+
+### Fixed
+- **`window_size` right boundary** — `flash_attention(..., window_size=(left, right))`
+  with `right > 0` now raises `NotImplementedError` instead of silently ignoring
+  the right-side bound. The STEEL kernel only implements left-only sliding windows.
+  `right = 0` and `right = -1` are accepted as "no right bound". 4 new tests.
+- **Varlen D=512 TGP guard** — `flash_attention_varlen` no longer attempts the
+  STEEL varlen kernel for D=512 (would exceed 32 KB TGP). Added `D <= 256` guard;
+  D=512 falls back correctly to split-concat + SDPA. 1 new test.
+- **Paged STEEL D=512 guard** — same fix applied to the paged STEEL path.
+- **Docstrings** — all head_dim references updated from `{64, 128, 256}` to
+  `{64, 128, 256, 512}` in `flash_attention`, module docstring, and `__init__.py`.
+- **CHANGELOG** — corrected ABI warning description from "raises RuntimeError" to
+  "emits RuntimeWarning" (the actual behaviour of `_check_abi()`).
+
+### Changed
+- **`_apply_rope_to_qk` helper** — new internal function isolates the pure-rotation
+  step from attention dispatch; replaces duplicate `_apply_rope_mlx` call pairs at
+  two sites (`_apply_rope_and_attend`, `flash_attention_kvcache`).
+- **`flash_attention_with_kv_cache` removed** — deprecated since v1.0.1;
+  fully removed from `attention.py`, `__init__.py`, `__all__`, tests, and
+  documentation. Use `flash_attention_kvcache(q, k_cache, v_cache, k_new=k_new,
+  v_new=v_new)` instead.
+
+### Tests
+- **385 tests pass** (up from 374 at v1.0.4). +11 new tests; removed
+  `TestKVCacheAppend` (4 tests, now superseded by `TestKVCacheAppendUnified`).
+
+---
+
 ## [1.0.4] — 2026-03-08
 
 ### Added
