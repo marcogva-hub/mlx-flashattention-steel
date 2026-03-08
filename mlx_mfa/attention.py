@@ -2797,6 +2797,70 @@ def flash_attention_paged(
     if max_kv_len == 0:
         return mx.zeros((B, H_q, N_q, D), dtype=q.dtype)
 
+    def _scatter_to_pool(
+        dk_seqs: list,
+        dv_seqs: list,
+        dtype,
+    ):
+        """Scatter per-sequence dK/dV gradients back to the paged pool.
+
+        Inverse of ``_gather_contig``.
+
+        Args:
+            dk_seqs: List of B arrays, each ``[1, H_kv, kv_len_b, D]``.
+            dv_seqs: Same.
+            dtype:   Output dtype.
+
+        Returns:
+            ``(dk_pages, dv_pages)`` both of shape
+            ``[num_blocks, block_size, H_kv, D]``.
+        """
+        num_blocks = k_pages.shape[0]
+        H_kv_s = k_pages.shape[2]
+        D_s = k_pages.shape[3]
+
+        dk_acc: dict = {}
+        dv_acc: dict = {}
+        for b, (kv_len, table_b) in enumerate(zip(seq_lens_list, block_table_list)):
+            if kv_len == 0:
+                continue
+            dk_b = dk_seqs[b][0]  # [H_kv, kv_len, D]
+            dv_b = dv_seqs[b][0]
+            n_full, rem = divmod(kv_len, block_size)
+            for lb in range(n_full):
+                phys = int(table_b[lb])
+                if phys < 0:
+                    continue
+                s = lb * block_size
+                dk_tile = dk_b[:, s:s + block_size, :].transpose(1, 0, 2)  # [bs, H_kv, D]
+                dv_tile = dv_b[:, s:s + block_size, :].transpose(1, 0, 2)
+                if phys in dk_acc:
+                    dk_acc[phys] = dk_acc[phys] + dk_tile
+                    dv_acc[phys] = dv_acc[phys] + dv_tile
+                else:
+                    dk_acc[phys] = dk_tile
+                    dv_acc[phys] = dv_tile
+            if rem > 0:
+                phys = int(table_b[n_full])
+                if phys >= 0:
+                    s = n_full * block_size
+                    dk_p = dk_b[:, s:s + rem, :].transpose(1, 0, 2)  # [rem, H_kv, D]
+                    dv_p = dv_b[:, s:s + rem, :].transpose(1, 0, 2)
+                    pad = block_size - rem
+                    dk_tile = mx.pad(dk_p, [(0, pad), (0, 0), (0, 0)])
+                    dv_tile = mx.pad(dv_p, [(0, pad), (0, 0), (0, 0)])
+                    if phys in dk_acc:
+                        dk_acc[phys] = dk_acc[phys] + dk_tile
+                        dv_acc[phys] = dv_acc[phys] + dv_tile
+                    else:
+                        dk_acc[phys] = dk_tile
+                        dv_acc[phys] = dv_tile
+
+        zero = mx.zeros((block_size, H_kv_s, D_s), dtype=dtype)
+        dk_blocks = [dk_acc.get(i, zero) for i in range(num_blocks)]
+        dv_blocks = [dv_acc.get(i, zero) for i in range(num_blocks)]
+        return mx.stack(dk_blocks), mx.stack(dv_blocks)
+
     def _gather_contig(k_p: "mx.array", v_p: "mx.array"):
         """Gather pool pages → contiguous [B, H_kv, max_kv_len, D]."""
         if _ext_available() and k_p.dtype in (mx.float16, mx.bfloat16):
@@ -2886,22 +2950,25 @@ def flash_attention_paged(
         def _paged_steel_bwd(primals, cotangent, _output):
             q_, k_pages_, v_pages_ = primals
             dO = cotangent
-            # Backward uses gather+per-seq vjp (same as non-paged path).
+            # Backward uses gather+per-seq vjp, then scatter dK/dV to pool.
             K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-            dQ_parts = []
+            dQ_parts, dK_seqs, dV_seqs = [], [], []
             for b in range(B):
                 kv_len = seq_lens_list[b]
                 q_b  = q_[b:b+1]
                 K_b  = K_contig[b:b+1, :, :kv_len, :]
                 V_b  = V_contig[b:b+1, :, :kv_len, :]
                 dO_b = dO[b:b+1]
-                _, (dq_b, _dk_b, _dv_b) = mx.vjp(
+                _, (dq_b, dk_b, dv_b) = mx.vjp(
                     lambda qi, ki, vi: flash_attention(
                         qi, ki, vi, scale=scale, causal=causal),
                     [q_b, K_b, V_b], [dO_b])
                 dQ_parts.append(dq_b)
+                dK_seqs.append(dk_b)
+                dV_seqs.append(dv_b)
             dQ = mx.concatenate(dQ_parts, axis=0)
-            return dQ, mx.zeros_like(k_pages_), mx.zeros_like(v_pages_)
+            dk_pages, dv_pages = _scatter_to_pool(dK_seqs, dV_seqs, k_pages_.dtype)
+            return dQ, dk_pages, dv_pages
 
         return _paged_steel_impl(q, k_pages, v_pages)
 
@@ -2915,21 +2982,23 @@ def flash_attention_paged(
         q_, k_pages_, v_pages_ = primals
         dO = cotangent
         K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-        dQ_parts = []
+        dQ_parts, dK_seqs, dV_seqs = [], [], []
         for b in range(B):
             kv_len = seq_lens_list[b]
             q_b = q_[b:b+1]
             K_b = K_contig[b:b+1, :, :kv_len, :]
             V_b = V_contig[b:b+1, :, :kv_len, :]
             dO_b = dO[b:b+1]
-            _, (dq_b, _dk_b, _dv_b) = mx.vjp(
+            _, (dq_b, dk_b, dv_b) = mx.vjp(
                 lambda qi, ki, vi: flash_attention(
                     qi, ki, vi, scale=scale, causal=causal),
                 [q_b, K_b, V_b], [dO_b])
             dQ_parts.append(dq_b)
+            dK_seqs.append(dk_b)
+            dV_seqs.append(dv_b)
         dQ = mx.concatenate(dQ_parts, axis=0)
-        # KV pool gradients are zeros: pools are cache buffers, not parameters.
-        return dQ, mx.zeros_like(k_pages_), mx.zeros_like(v_pages_)
+        dk_pages, dv_pages = _scatter_to_pool(dK_seqs, dV_seqs, k_pages_.dtype)
+        return dQ, dk_pages, dv_pages
 
     return _paged_impl(q, k_pages, v_pages)
 

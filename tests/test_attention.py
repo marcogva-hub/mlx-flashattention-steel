@@ -4455,6 +4455,95 @@ class TestPagedBackward:
         max_err = mx.max(mx.abs(dq_paged - dq_ref)).item()
         assert max_err < 0.05, f"dQ paged vs ref max err = {max_err}"
 
+    # ── Track IF — dK/dV scatter ──────────────────────────────────────────
+
+    def test_paged_dk_shape(self):
+        """dK_pages has the same shape as k_pages."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q, D = 2, 4, 4, 2, 64
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [24, 20])
+
+        def loss(k_p_):
+            return flash_attention_paged(q, k_p_, v_p, bt, sl).sum()
+
+        dk = mx.grad(loss)(k_p)
+        mx.eval(dk)
+        assert dk.shape == k_p.shape, f"dk shape {dk.shape} != {k_p.shape}"
+
+    def test_paged_dkv_finite(self):
+        """dK_pages and dV_pages are finite."""
+        from mlx_mfa import flash_attention_paged
+        B, H_q, H_kv, N_q, D = 2, 4, 4, 2, 64
+        q, k_p, v_p, bt, sl = self._make_paged(B, H_q, H_kv, N_q, D, [24, 20])
+
+        def loss(k_p_, v_p_):
+            return flash_attention_paged(q, k_p_, v_p_, bt, sl).sum()
+
+        dk, dv = mx.grad(loss, argnums=(0, 1))(k_p, v_p)
+        mx.eval(dk, dv)
+        assert mx.all(mx.isfinite(dk)).item(), "dK_pages has non-finite values"
+        assert mx.all(mx.isfinite(dv)).item(), "dV_pages has non-finite values"
+
+    def test_paged_dkv_nonzero(self):
+        """dK and dV are not all zeros (regression: previously returned zeros)."""
+        from mlx_mfa import flash_attention_paged
+        B, H, N_q, D, block_size = 1, 4, 2, 64, 16
+        q, k_p, v_p, bt, sl = self._make_paged(B, H, H, N_q, D, [32])
+
+        def loss(k_p_, v_p_):
+            return flash_attention_paged(q, k_p_, v_p_, bt, sl).sum()
+
+        dk, dv = mx.grad(loss, argnums=(0, 1))(k_p, v_p)
+        mx.eval(dk, dv)
+        # At least some gradient must be non-zero
+        assert float(mx.sum(mx.abs(dk)).item()) > 0.0, "dK_pages is all zeros"
+        assert float(mx.sum(mx.abs(dv)).item()) > 0.0, "dV_pages is all zeros"
+
+    def test_paged_dk_matches_non_paged(self):
+        """dK from paged path matches non-paged flash_attention (single seq, f32)."""
+        from mlx_mfa import flash_attention, flash_attention_paged
+        B, H, N_q, N_kv, D, block_size = 1, 2, 4, 32, 64, 16
+        mx.random.seed(33)
+        dtype = mx.float32
+        q  = (mx.random.normal((B, H, N_q, D)) * 0.1).astype(dtype)
+        kv = (mx.random.normal((B, H, N_kv, D)) * 0.1).astype(dtype)
+        vv = (mx.random.normal((B, H, N_kv, D)) * 0.1).astype(dtype)
+
+        # Build paged pool from the same K/V using numpy
+        import numpy as _np_t
+        n_blk = (N_kv + block_size - 1) // block_size
+        k_pool_np = _np_t.zeros((n_blk, block_size, H, D), dtype=_np_t.float32)
+        v_pool_np = _np_t.zeros((n_blk, block_size, H, D), dtype=_np_t.float32)
+        for lb in range(n_blk):
+            s, e = lb * block_size, min((lb + 1) * block_size, N_kv)
+            # kv[0, :, s:e, :] → [H, e-s, D] → [e-s, H, D]
+            k_pool_np[lb, :e-s] = _np_t.array(kv[0, :, s:e, :].transpose(1, 0, 2))
+            v_pool_np[lb, :e-s] = _np_t.array(vv[0, :, s:e, :].transpose(1, 0, 2))
+        k_pool = mx.array(k_pool_np, dtype=dtype)
+        v_pool = mx.array(v_pool_np, dtype=dtype)
+        bt = mx.array([[i for i in range(n_blk)]], dtype=mx.int32)
+        sl = mx.array([N_kv], dtype=mx.int32)
+
+        def loss_paged(k_p_, v_p_):
+            return flash_attention_paged(q, k_p_, v_p_, bt, sl, scale=0.1).sum()
+
+        def loss_ref(k_, v_):
+            return flash_attention(q, k_, v_, scale=0.1).sum()
+
+        dk_paged, dv_paged = mx.grad(loss_paged, argnums=(0, 1))(k_pool, v_pool)
+        dk_ref, _ = mx.grad(loss_ref, argnums=(0, 1))(kv, vv)
+        mx.eval(dk_paged, dv_paged, dk_ref)
+
+        # Reconstruct contiguous dk from paged pool
+        dk_contig = mx.concatenate(
+            [dk_paged[lb, :min(block_size, N_kv - lb*block_size), :, :]
+             for lb in range(n_blk)], axis=0)  # [N_kv, H, D]
+        dk_contig = dk_contig.transpose(1, 0, 2)[None]  # [1, H, N_kv, D]
+
+        # Compare with reference dK
+        max_err = float(mx.max(mx.abs(dk_contig - dk_ref)).item())
+        assert max_err < 1e-4, f"paged dK vs ref max_err={max_err:.2e}"
+
 
 # ===========================================================================
 # Track EC — Varlen packed tensor convenience wrappers
