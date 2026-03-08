@@ -12,7 +12,7 @@ Quick start::
     out = flash_attention(q, k, v, scale=None, causal=False)
 
 Supported configurations:
-    - head_dim: 64, 128, 256
+    - head_dim: 64, 128, 256, 512
     - dtype: float16, bfloat16, float32
     - Shapes: [batch, heads, seq_len, head_dim] (BHND)
     - Causal and non-causal attention

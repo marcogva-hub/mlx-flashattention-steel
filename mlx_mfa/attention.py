@@ -57,7 +57,7 @@ def flash_attention(
     Drop-in replacement for ``mx.fast.scaled_dot_product_attention``.
 
     The function dispatches to the Metal Flash Attention (MFA) kernel when:
-    - ``head_dim`` is in ``{64, 128, 256}``
+    - ``head_dim`` is in ``{64, 128, 256, 512}``
     - ``dtype`` is float16, bfloat16, or float32
     - all of q/k/v have the same ``head_dim``
     - the C++ extension (``mlx_mfa._ext``) is compiled and importable
@@ -635,24 +635,67 @@ def get_device_info() -> dict:
 
 
 def get_supported_configs() -> dict:
-    """Return the set of (head_dim, dtype) configurations supported by MFA.
+    """Return the full feature matrix for this build of mlx-mfa.
 
     Returns:
         Dictionary with keys:
+
         - ``"head_dims"``: frozenset of supported integer head dimensions.
         - ``"dtypes"``: frozenset of supported MLX dtype values.
         - ``"extension_available"``: bool — whether the C++ extension loaded.
+        - ``"features"``: dict mapping feature name → bool.
+        - ``"kernel_types"``: int — number of distinct Metal kernel variants
+          compiled into the extension (0 when extension not available).
 
     Example::
 
         from mlx_mfa import get_supported_configs
         cfg = get_supported_configs()
-        print(cfg["head_dims"])   # frozenset({64, 128, 256})
+        print(cfg["head_dims"])          # frozenset({64, 128, 256, 512})
+        print(cfg["features"]["rope"])   # True
     """
+    ext = _ext_available()
+    features = {
+        # --- attention variants ---
+        "causal":               True,
+        "gqa":                  True,   # native GQA without KV expansion
+        "block_sparse":         True,
+        "sliding_window":       True,   # left side only; right side is Option B guard
+        "rope":                 True,
+        "paged_kv":             True,
+        "varlen":               True,
+        "flash_decode":         True,   # split-KV decode for short queries
+        # --- score modifiers ---
+        "alibi":                True,
+        "softcap":              True,
+        "attn_bias":            True,
+        # --- API knobs ---
+        "backend_select":       True,   # "auto" | "mfa" | "sdpa"
+        "dropout":              True,   # SDPA fallback only
+        "return_lse":           True,
+        # --- backward ---
+        "native_backward":      False,  # backward is mx.vjp(SDPA); MFA backward removed
+        "sparse_backward":      True,   # tiled FA-2 sparse backward
+        # --- hardware routing ---
+        "m3_routing":           True,   # M3+ block config (gen ≥ 15)
+        "m5_stub":              True,   # M5 detection stub (gen ≥ 17)
+        # --- extended API ---
+        "kvcache_rope_append":  True,
+        "packed_api":           True,   # qkv_packed / kv_packed variants
+        # --- dtype / dim ---
+        "bfloat16":             True,
+        "float16":              True,
+        "d512":                 True,
+    }
+    # 8 distinct Metal kernel variants (STEEL forward, sparse forward, varlen,
+    # paged gather, paged forward, backward dQ, backward dKV, sparse backward)
+    kernel_types = 8 if ext else 0
     return {
-        "head_dims": frozenset(_MFA_SUPPORTED_HDIMS),
-        "dtypes": frozenset(_MFA_SUPPORTED_DTYPES),
-        "extension_available": _ext_available(),
+        "head_dims":           frozenset(_MFA_SUPPORTED_HDIMS),
+        "dtypes":              frozenset(_MFA_SUPPORTED_DTYPES),
+        "extension_available": ext,
+        "features":            features,
+        "kernel_types":        kernel_types,
     }
 
 
@@ -2389,10 +2432,15 @@ def flash_attention_varlen(
 
     @mx.custom_function
     def _varlen_impl(q_, k_, v_):
+        # _MFA_SUPPORTED_HDIMS includes 512, but the varlen STEEL kernel lacks
+        # the d_split path that the main forward kernel uses for D=512 (TGP
+        # would be 65 KB, exceeding the 32 KB threadgroup limit).  Cap at 256
+        # until varlen d_split is implemented; D=512 falls back to split-concat.
         if (
             _ext_available()
             and q_.dtype in (mx.float16, mx.bfloat16)
-            and D in (64, 128, 256)
+            and D in _MFA_SUPPORTED_HDIMS
+            and D <= 256
         ):
             from mlx_mfa._ext import mfa_attention_varlen_forward as _varlen_fwd
 
@@ -2912,11 +2960,14 @@ def flash_attention_paged(
 
     # ── Paged STEEL fast path (Track FD) ─────────────────────────────────
     # Kernel-level paged KV: K/V tiles read directly from pool via block_table,
-    # eliminating the gather→attend round-trip.  Only f16/bf16 + D∈{64,128,256}.
+    # eliminating the gather→attend round-trip.  f16/bf16 + D≤256 only.
+    # D=512 exceeds the paged kernel's 32KB TGP limit (no d_split); it falls
+    # back to the gather→flash_attention path which has d_split support.
     _USE_PAGED_STEEL = (
         _ext_available()
         and q.dtype in (mx.float16, mx.bfloat16)
-        and D in (64, 128, 256)
+        and D in _MFA_SUPPORTED_HDIMS
+        and D <= 256
     )
 
     # ── Paged Flash Decode path (Track FD-decode) ─────────────────────────

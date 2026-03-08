@@ -400,6 +400,41 @@ class TestPublicAPI:
         rv = tuple(int(x) for x in runtime_ver.split(".")[:2])
         assert bv == rv, f"build={build_ver} vs runtime={runtime_ver}"
 
+    def test_supported_configs_features(self):
+        """get_supported_configs() returns full feature matrix (Track 1)."""
+        cfg = get_supported_configs()
+        # core keys
+        assert "head_dims" in cfg
+        assert "dtypes" in cfg
+        assert "extension_available" in cfg
+        assert "features" in cfg, "missing 'features' key"
+        assert "kernel_types" in cfg, "missing 'kernel_types' key"
+        # head_dims includes 512
+        assert 512 in cfg["head_dims"], "512 missing from head_dims"
+        # features dict has required boolean entries
+        required = {
+            "causal", "gqa", "block_sparse", "sliding_window", "rope",
+            "paged_kv", "varlen", "flash_decode", "alibi", "softcap",
+            "attn_bias", "backend_select", "dropout", "return_lse",
+            "native_backward", "sparse_backward", "m3_routing", "m5_stub",
+            "kvcache_rope_append", "packed_api", "bfloat16", "float16", "d512",
+        }
+        features = cfg["features"]
+        missing = required - set(features.keys())
+        assert not missing, f"features dict missing keys: {missing}"
+        for k, v in features.items():
+            assert isinstance(v, bool), f"features['{k}'] is not bool: {v!r}"
+        # known values
+        assert features["causal"] is True
+        assert features["gqa"] is True
+        assert features["d512"] is True
+        assert features["native_backward"] is False
+        # kernel_types
+        ext = cfg["extension_available"]
+        assert cfg["kernel_types"] == (8 if ext else 0), (
+            f"expected kernel_types={'8 if ext else 0'}, got {cfg['kernel_types']}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Edge case tests (Phase 4.6.1) — requires extension
@@ -2309,6 +2344,33 @@ class TestSteelVarlen:
         mx.eval(out)
         assert out.shape == (B, H_q, N, D)
         assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
+
+    def test_varlen_d512_steel_path(self):
+        """D=512 varlen should take the STEEL path, not fall back (Track 3)."""
+        from mlx_mfa import flash_attention_varlen
+        B, H, D = 1, 2, 512
+        N1, N2 = 16, 32
+        N = N1 + N2
+        scale = 1.0 / D**0.5
+        mx.random.seed(77)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cu_q = mx.array([0, N1, N], dtype=mx.int32)
+        cu_k = mx.array([0, N1, N], dtype=mx.int32)
+        out = flash_attention_varlen(q, k, v, cu_q, cu_k, N2, N2, scale=scale)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
+        # Compare to reference: individual SDPA per sequence
+        ref0 = mx.fast.scaled_dot_product_attention(
+            q[:, :, :N1, :], k[:, :, :N1, :], v[:, :, :N1, :], scale=scale)
+        ref1 = mx.fast.scaled_dot_product_attention(
+            q[:, :, N1:, :], k[:, :, N1:, :], v[:, :, N1:, :], scale=scale)
+        ref = mx.concatenate([ref0, ref1], axis=2)
+        mx.eval(ref)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert diff < 5e-2, f"D=512 varlen max diff {diff:.4f} too large"
 
 
 # ============================================================================
