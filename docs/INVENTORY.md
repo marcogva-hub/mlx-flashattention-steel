@@ -58,7 +58,6 @@ mlx-mfa-v2/
 | `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` — differentiable (EA) |
 | `flash_attention_kvcache` | `(q, k_cache,v_cache, *, block_table, seq_lens, block_size, scale, causal, ...)` — unified API (FA) |
 | `flash_attention_kvcache_rope_append` | `(q, k_new,v_new, k_cache,v_cache, ...)` — fused RoPE append (FC) |
-| `flash_attention_with_kv_cache` | `(q, k_new,v_new, k_cache,v_cache, scale, causal, softcap)` |
 | `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` — Metal gather (EB) |
 | `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` |
 | `flash_attention_kv_packed` | `(q, kv, scale, causal, num_kv_heads)` |
@@ -163,7 +162,7 @@ f32 → `mx.vjp(_fallback_sdpa)`. softcap/alibi → `mx.vjp` over compiled refer
 | TestRoPENonInterleaved | 6 | GPT-NeoX RoPE |
 | TestPerBatchCacheSeqlens | 3 | list/array cache offsets |
 | TestHeadDimVMismatch | 4 | D_v != D_qk fallback |
-| TestKVCacheAppend | 4 | flash_attention_with_kv_cache |
+| TestKVCacheAppendUnified | 9 | flash_attention_kvcache k_new/v_new append mode |
 | TestAttentionDropout | 4 | Training dropout |
 | TestReturnAttnWeights | 4 | return_attn_weights=True |
 | TestPagedKVCache | ~12 | PagedKVCache allocator + paged attention |

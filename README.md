@@ -51,7 +51,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **RoPE non-interleaved** — `flash_attention_rope(..., interleaved=False)` for GPT-NeoX split-halves layout
 - **Per-batch cache offsets** — `cache_seqlens` accepts `list[int]` or `mx.array` for heterogeneous batches
 - **D_v ≠ D_qk** — graceful fallback when value head_dim differs from query head_dim
-- **KV cache append** — `flash_attention_with_kv_cache(q, k_new, v_new, k_cache, v_cache)` → `(out, k, v)`
+- **KV cache append** — `flash_attention_kvcache(q, k_cache, v_cache, k_new=k_new, v_new=v_new)` → `(out, k, v)`
 - **Attention dropout** — `flash_attention(..., dropout_p=0.1)` for training
 - **Return attention weights** — `flash_attention(..., return_attn_weights=True)` → `(out, weights [B,H,N,S])`
 - **Differentiable varlen** — `flash_attention_varlen()` supports `mx.grad()` via `mx.custom_function` (v0.9.3)
@@ -239,17 +239,10 @@ Returns `mx.array [B, H_q, N_q, D]`.
 
 ---
 
-### `flash_attention_with_kv_cache(q, k_new, v_new, k_cache=None, v_cache=None, scale=None, causal=True, softcap=0.0, stream=None)`
+### ~~~~ *(removed in v1.1.0)*
 
-Compute attention and update the KV cache in a single call. Concatenates new K/V tokens onto the cache, runs `flash_attention`, and returns `(output, k_full, v_full)`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `q` | `mx.array [B, H, N_new, D]` | Query for new tokens |
-| `k_new, v_new` | `mx.array [B, H, N_new, D]` | New token KV |
-| `k_cache, v_cache` | `mx.array [B, H, S_cache, D] or None` | Existing cache (pass `None` for first step) |
-
-Returns `(output [B,H,N_new,D], k_full [B,H,S_cache+N_new,D], v_full)`.
+Use  instead.
+The new API returns  when / are provided.
 
 ---
 
@@ -550,7 +543,7 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | AC  | RoPE non-interleaved (GPT-NeoX) | **Done (v0.8.0)** |
 | AD  | Per-batch cache_seqlens (list/array) | **Done (v0.8.0)** |
 | AE  | D_v ≠ D_qk graceful fallback | **Done (v0.8.0)** |
-| AF  | Fused KV cache append (`flash_attention_with_kv_cache`) | **Done (v0.8.0)** |
+| AF  | Fused KV cache append (now `flash_attention_kvcache k_new/v_new`) | **Done (v0.8.0, API unified v1.1.0)** |
 | AG  | Attention dropout (training) | **Done (v0.8.0)** |
 | AH  | Return attention weights | **Done (v0.8.0)** |
 | BA  | STEEL native backward + varlen Metal kernel | **Done (v0.9.0)** |

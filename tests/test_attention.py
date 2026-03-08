@@ -3374,7 +3374,7 @@ class TestHeadDimVMismatch:
 # ---------------------------------------------------------------------------
 
 class TestKVCacheAppendUnified:
-    """flash_attention_kvcache with k_new/v_new — replaces flash_attention_with_kv_cache."""
+    """flash_attention_kvcache with k_new/v_new — unified append-mode API."""
 
     D = 64
 

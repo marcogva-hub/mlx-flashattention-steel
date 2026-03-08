@@ -237,7 +237,6 @@ per-lane loads with no async DMA dependency).  It is used only for the ccv
 | `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved)` | `[B,H,N,D]` |
 | `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` | `[B,H,N,D]` |
 | `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` | `[1,H,total,D]` |
-| `flash_attention_with_kv_cache` | `(q, k_new,v_new, k_cache,v_cache, scale, causal, softcap)` | `[B,H,N,D]` |
 | `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` | `[B,H,N_q,D]` |
 | `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` | `[B,H,N,D]` |
 | `flash_attention_kv_packed` | `(q, kv, scale, causal, num_kv_heads)` | `[B,H,N,D]` |
