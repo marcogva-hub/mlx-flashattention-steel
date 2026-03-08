@@ -18,6 +18,7 @@ A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the 
 | 128 | 4096 | 0.91× | **1.56×** | **3.1×** |
 | 128 | 8192 | 0.92× | **1.72×** | **5.7×** |
 | 256 | 8192 | 0.50× | 1.00× | — |
+| 512 | 4096 | 0.48× | 0.95× | — |
 
 Causal speedup is fundamental to STEEL: ~half the K-tiles are skipped (all keys after
 the current query position), halving effective work while SDPA still pays full cost.
@@ -29,7 +30,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 
 - **Drop-in replacement** for `mx.fast.scaled_dot_product_attention`
 - **Full autograd** — dQ, dK, dV via custom gradient checkpointing backward
-- **All head dims**: 64, 128, 256
+- **All head dims**: 64, 128, 256, 512 (D=512 uses 4-pass d-split in forward/backward)
 - **All dtypes**: float16, bfloat16, float32
 - **Causal and non-causal** attention
 - **GQA / MQA** — Native Grouped Query Attention (no K/V expansion)
@@ -62,6 +63,8 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **`backend` parameter** — `flash_attention(..., backend="sdpa"|"mfa"|"auto")` for explicit backend selection (v1.0.4)
 - **Native sparse backward** — `flash_attention_sparse(..., backward="steel_sparse")` uses the STEEL Metal backward kernel with block-mask skipping; numpy round-trip workaround for MLX buffer-aliasing in autograd (v1.0.4)
 - **Paged dK/dV gradients** — `flash_attention_paged()` now computes real `dK_pages`/`dV_pages` via `_scatter_to_pool()` (v1.0.4)
+- **Feature matrix** — `get_supported_configs()["features"]` returns a 22-key boolean dict: all supported capabilities queryable at runtime without version checks (v1.0.5)
+- **`window_size` right guard** — `window_size=(left, right)` with `right > 0` now raises `NotImplementedError` instead of silently ignoring the right bound (v1.0.5)
 
 ## Requirements
 
@@ -93,6 +96,10 @@ python scripts/check_env.py
 # 3. Install with C++ build
 pip install -e .
 ```
+
+> **ABI compatibility**: If you upgrade MLX after installing mlx-mfa, you may see a
+> `RuntimeWarning: mlx-mfa was compiled against MLX X.Y but the installed MLX is A.B`.
+> Rebuild with `pip install --no-build-isolation -e .` to restore compatibility.
 
 ## Quick Start
 
