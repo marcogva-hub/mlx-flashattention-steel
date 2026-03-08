@@ -806,114 +806,6 @@ def make_sliding_window_mask(
     return in_window
 
 
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Track AF — Fused KV cache append
-# ---------------------------------------------------------------------------
-
-def flash_attention_with_kv_cache(
-    q: mx.array,
-    k_new: mx.array,
-    v_new: mx.array,
-    k_cache: Optional[mx.array] = None,
-    v_cache: Optional[mx.array] = None,
-    scale: Optional[float] = None,
-    causal: bool = True,
-    softcap: float = 0.0,
-    stream: Optional[mx.Stream] = None,
-):
-    """Compute attention and update the KV cache in a single call.
-
-    .. deprecated:: 1.0.1
-        Use :func:`flash_attention_kvcache` instead.
-        ``flash_attention_with_kv_cache`` returns a 3-tuple and requires
-        manually managing the growing cache tensor.
-        :func:`flash_attention_kvcache` provides a cleaner API with
-        ``cache_seqlens`` support, paged attention, and RoPE appending::
-
-            out = flash_attention_kvcache(q, k_cache, v_cache,
-                                          scale=scale, causal=True,
-                                          cache_seqlens=mx.array([past_len]))
-
-        This function will be removed in v2.0.
-
-    Concatenates the new K/V tokens onto the existing cache along the
-    sequence dimension, then runs :func:`flash_attention` on the full
-    ``(cache + new)`` K/V tensors.  The updated cache is returned alongside
-    the attention output so callers can propagate it to the next step.
-
-    This is equivalent to::
-
-        k_full = mx.concatenate([k_cache, k_new], axis=2)
-        v_full = mx.concatenate([v_cache, v_new], axis=2)
-        out = flash_attention(q, k_full, v_full, scale, causal)
-        return out, k_full, v_full
-
-    but in one convenient call.  The real performance win is that the
-    *concat* and the *attention* share the same lazy evaluation batch;
-    MLX fuses them into a single Metal command buffer.
-
-    Args:
-        q:        Query ``[B, H, N, D]`` — new query tokens.
-        k_new:    New key tokens ``[B, H, N, D]`` to append.
-        v_new:    New value tokens ``[B, H, N, D]`` to append.
-        k_cache:  Existing key cache ``[B, H, past_len, D]``.  Pass ``None``
-                  (default) for the first token / no cache.
-        v_cache:  Existing value cache ``[B, H, past_len, D]``.  Must be
-                  provided iff ``k_cache`` is provided.
-        scale:    Attention scale. Defaults to ``1 / sqrt(D)``.
-        causal:   Apply causal masking (default ``True`` — typical for decode).
-        softcap:  Tanh soft-capping factor (0 = disabled).
-        stream:   MLX stream.
-
-    Returns:
-        A 3-tuple ``(output, k_updated, v_updated)``:
-
-        * ``output`` — attention result ``[B, H, N, D]``.
-        * ``k_updated`` — full key cache ``[B, H, past_len + N, D]``.
-        * ``v_updated`` — full value cache ``[B, H, past_len + N, D]``.
-
-    Raises:
-        ValueError: If exactly one of ``k_cache`` / ``v_cache`` is None, or
-                    if tensor shapes are inconsistent.
-
-    Example — single-token decode step::
-
-        from mlx_mfa import flash_attention_with_kv_cache
-
-        # First call: no cache
-        out, k_cache, v_cache = flash_attention_with_kv_cache(
-            q0, k0, v0, causal=True
-        )
-
-        # Subsequent calls: pass the updated cache
-        out, k_cache, v_cache = flash_attention_with_kv_cache(
-            q1, k1, v1, k_cache=k_cache, v_cache=v_cache, causal=True
-        )
-    """
-    if (k_cache is None) != (v_cache is None):
-        raise ValueError(
-            "flash_attention_with_kv_cache: k_cache and v_cache must both be "
-            "provided or both be None."
-        )
-
-    if k_cache is not None:
-        if k_cache.ndim != 4 or v_cache.ndim != 4:
-            raise ValueError(
-                "k_cache and v_cache must be 4-D tensors [B, H, past_len, D]."
-            )
-        k_full = mx.concatenate([k_cache, k_new], axis=2)
-        v_full = mx.concatenate([v_cache, v_new], axis=2)
-    else:
-        k_full = k_new
-        v_full = v_new
-
-    out = flash_attention(q, k_full, v_full, scale=scale, causal=causal,
-                          softcap=softcap, stream=stream)
-    return out, k_full, v_full
-
-
 def flash_attention_kvcache_rope_append(
     q: mx.array,
     k_new: mx.array,
@@ -1040,9 +932,9 @@ def flash_attention_kvcache(
     """Unified KV-cache attention — dense and paged modes in one call.
 
     This function is the recommended entry point for inference with KV caches.
-    It consolidates the previously separate :func:`flash_attention_with_kv_cache`,
-    :func:`flash_attention_paged`, and :func:`flash_attention_rope` paths and adds
-    full support for RoPE, ALiBi, softcap, and sliding-window on both cache modes.
+    It consolidates :func:`flash_attention_paged`, :func:`flash_attention_rope`,
+    and the append-cache path into one API with full support for RoPE, ALiBi,
+    softcap, and sliding-window on both cache modes.
 
     **Dense mode** (default)::
 
@@ -1115,7 +1007,7 @@ def flash_attention_kvcache(
                         without copying.  Dense mode only.
         stream:         MLX stream.
 
-    **Append mode** (replaces ``flash_attention_with_kv_cache``)::
+    **Append mode** (cache concat + attend)::
 
         out, k_updated, v_updated = flash_attention_kvcache(
             q, k_cache, v_cache,
