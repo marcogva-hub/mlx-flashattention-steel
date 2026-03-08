@@ -1013,6 +1013,9 @@ def flash_attention_kvcache(
     k_cache: Optional[mx.array],
     v_cache: Optional[mx.array],
     *,
+    # Append mode: new tokens to concat onto the cache before attention
+    k_new: Optional[mx.array] = None,
+    v_new: Optional[mx.array] = None,
     # Paged mode: pass these instead of dense k_cache / v_cache
     block_table: Optional[mx.array] = None,
     seq_lens: Optional[mx.array] = None,
@@ -1023,7 +1026,7 @@ def flash_attention_kvcache(
     softcap: float = 0.0,
     alibi_slopes: Optional[mx.array] = None,
     window_size: Optional[tuple] = None,
-    # RoPE: applied to Q only (K already stored post-rotation in the cache)
+    # RoPE: applied to Q (and k_new when k_new is provided)
     rotary_cos: Optional[mx.array] = None,
     rotary_sin: Optional[mx.array] = None,
     cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
@@ -1033,7 +1036,7 @@ def flash_attention_kvcache(
     # Track FX-2: continuous batching — map logical batch → cache pool slot
     cache_batch_idx: Optional[mx.array] = None,
     stream: Optional[mx.Stream] = None,
-) -> mx.array:
+) -> Union[mx.array, tuple]:
     """Unified KV-cache attention — dense and paged modes in one call.
 
     This function is the recommended entry point for inference with KV caches.
@@ -1112,8 +1115,31 @@ def flash_attention_kvcache(
                         without copying.  Dense mode only.
         stream:         MLX stream.
 
+    **Append mode** (replaces ``flash_attention_with_kv_cache``)::
+
+        out, k_updated, v_updated = flash_attention_kvcache(
+            q, k_cache, v_cache,
+            k_new=k_new, v_new=v_new, causal=True,
+        )
+
+    When ``k_new`` and ``v_new`` are provided, they are appended to the cache
+    along the sequence dimension before attention is computed.  If
+    ``rotary_cos``/``rotary_sin`` are also provided, ``k_new`` is rotated at
+    the ``cache_seqlens`` offset before the append (Q is still rotated
+    separately by the attention dispatch).  The function then returns a 3-tuple
+    ``(output, k_updated, v_updated)`` so the caller can propagate the enlarged
+    cache to the next step.
+
+    Args:
+        k_new:          New key tokens ``[B, H_kv, N, D]`` to append.  Must
+                        be paired with ``v_new``.  Dense mode only.
+        v_new:          New value tokens ``[B, H_kv, N, D]`` to append.
+
     Returns:
-        Attention output ``[B, H_q, N_q, D]``.
+        * ``mx.array`` ``[B, H_q, N_q, D]`` when ``k_new`` is ``None``
+          (existing behaviour, backward-compatible).
+        * ``tuple (output, k_updated, v_updated)`` when ``k_new`` is provided
+          (append mode).
 
     Raises:
         ValueError: On shape mismatches, paged mode missing args, or ALiBi + RoPE.
@@ -1134,6 +1160,71 @@ def flash_attention_kvcache(
             "flash_attention_kvcache: rotary_cos/sin and alibi_slopes are "
             "mutually exclusive."
         )
+
+    # ----------------------------------------------------------------
+    # APPEND MODE: k_new / v_new provided — concat onto cache, then attend
+    # ----------------------------------------------------------------
+    if k_new is not None or v_new is not None:
+        if k_new is None or v_new is None:
+            raise ValueError(
+                "flash_attention_kvcache: k_new and v_new must both be provided "
+                "or both be None."
+            )
+        if block_table is not None:
+            raise ValueError(
+                "flash_attention_kvcache: k_new/v_new append is not supported "
+                "in paged mode.  Manage the page pool externally and call "
+                "without k_new."
+            )
+        if cache_batch_idx is not None:
+            raise ValueError(
+                "flash_attention_kvcache: k_new/v_new append is not supported "
+                "together with cache_batch_idx (continuous-batching pool mode)."
+            )
+
+        # Resolve cache_seqlens to a plain int for the k_new RoPE offset.
+        _cs_int: int = cache_seqlens  # type: ignore[assignment]
+        if isinstance(_cs_int, mx.array):
+            _cs_int = int(_cs_int.tolist()) if _cs_int.ndim == 0 else int(_cs_int.reshape(-1)[0].tolist())
+        elif not isinstance(_cs_int, int):
+            _cs_int = int(list(_cs_int)[0]) if hasattr(_cs_int, '__iter__') else int(_cs_int)
+
+        # Optionally rotate both q and k_new before appending.
+        # Keys are stored pre-rotated in the cache; k_new must be rotated at
+        # cache_seqlens before concat.  Q is also rotated here so the
+        # subsequent flash_attention call does NOT need RoPE (passing
+        # rotary_cos to flash_attention_kvcache with a pre-rotated K would
+        # incorrectly re-rotate the entire cache).
+        q_to_attend = q
+        if rotary_cos is not None:
+            if rotary_sin is None:
+                raise ValueError(
+                    "flash_attention_kvcache: both rotary_cos and rotary_sin "
+                    "must be provided together."
+                )
+            q_to_attend, k_new = _apply_rope_to_qk(
+                q, k_new, rotary_cos, rotary_sin,
+                q_offset=_cs_int, k_offset=_cs_int,
+                interleaved=interleaved, rotary_dim=rotary_dim,
+            )
+
+        # Append to cache (or start a fresh cache from k_new / v_new alone).
+        if k_cache is not None:
+            k_updated = mx.concatenate([k_cache, k_new], axis=2)
+            v_updated = mx.concatenate([v_cache, v_new], axis=2)
+        else:
+            k_updated = k_new
+            v_updated = v_new
+
+        # Dispatch attention on the rotated Q and the full updated cache.
+        # No RoPE here — rotation was applied explicitly above.
+        out = flash_attention(
+            q_to_attend, k_updated, v_updated,
+            scale=scale, causal=causal, softcap=softcap,
+            alibi_slopes=alibi_slopes, window_size=window_size,
+            stream=stream,
+        )
+        return out, k_updated, v_updated
 
     # ----------------------------------------------------------------
     # PAGED MODE: block_table provided
@@ -1162,7 +1253,7 @@ def flash_attention_kvcache(
                     "must be provided together."
                 )
             # Use the STEEL rope path if available; else pure-MLX rotation.
-            from mlx_mfa.attention import _apply_rope_mlx, _can_use_mfa
+            # _apply_rope_mlx and _can_use_mfa are module-level in attention.py.
             if _can_use_mfa(q, D) and q.dtype != mx.float32:
                 # Rotate Q in-kernel: build a dummy single-element K that will
                 # be discarded, but the Q rotation is correct.

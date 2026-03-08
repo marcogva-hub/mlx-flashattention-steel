@@ -3468,6 +3468,209 @@ class TestKVCacheAppend:
 
 
 # ---------------------------------------------------------------------------
+# Track 1 — flash_attention_kvcache append mode (k_new / v_new)
+# ---------------------------------------------------------------------------
+
+class TestKVCacheAppendUnified:
+    """flash_attention_kvcache with k_new/v_new — replaces flash_attention_with_kv_cache."""
+
+    D = 64
+
+    def _qkv(self, B=1, H=2, N=16, D=None, seed=200, dtype=mx.float32):
+        D = D or self.D
+        mx.random.seed(seed)
+        q = mx.random.normal((B, H, N, D)).astype(dtype)
+        k = mx.random.normal((B, H, N, D)).astype(dtype)
+        v = mx.random.normal((B, H, N, D)).astype(dtype)
+        return q, k, v
+
+    def test_kvcache_with_k_new_matches_old_api(self):
+        """flash_attention_kvcache(k_new=...) matches flash_attention_with_kv_cache."""
+        from mlx_mfa import flash_attention_with_kv_cache, flash_attention_kvcache
+
+        B, H, past, D = 1, 2, 32, self.D
+        mx.random.seed(201)
+        k_cache = mx.random.normal((B, H, past, D))
+        v_cache = mx.random.normal((B, H, past, D))
+        q_new = mx.random.normal((B, H, 1, D))
+        k_new = mx.random.normal((B, H, 1, D))
+        v_new = mx.random.normal((B, H, 1, D))
+
+        # Old API
+        out_old, k_old, v_old = flash_attention_with_kv_cache(
+            q_new, k_new, v_new, k_cache=k_cache, v_cache=v_cache, causal=True
+        )
+        # New API
+        out_new, k_new_up, v_new_up = flash_attention_kvcache(
+            q_new, k_cache, v_cache,
+            k_new=k_new, v_new=v_new, causal=True,
+        )
+        mx.eval(out_old, k_old, v_old, out_new, k_new_up, v_new_up)
+
+        np.testing.assert_allclose(
+            np.array(out_old), np.array(out_new), atol=1e-5,
+            err_msg="append-mode output differs from old API"
+        )
+        np.testing.assert_allclose(
+            np.array(k_old), np.array(k_new_up), atol=0, rtol=0,
+            err_msg="k_updated differs from old API"
+        )
+
+    def test_kvcache_with_k_new_no_existing_cache(self):
+        """k_new without existing cache (first decode step: k_cache=None)."""
+        from mlx_mfa import flash_attention_kvcache, flash_attention
+
+        B, H, N, D = 1, 2, 16, self.D
+        q, k, v = self._qkv(B=B, H=H, N=N, seed=202)
+
+        out_new, k_up, v_up = flash_attention_kvcache(
+            q, None, None, k_new=k, v_new=v, causal=True,
+        )
+        out_ref = flash_attention(q, k, v, causal=True)
+        mx.eval(out_new, k_up, v_up, out_ref)
+
+        assert out_new.shape == (B, H, N, D)
+        assert k_up.shape == (B, H, N, D)
+        np.testing.assert_allclose(
+            np.array(out_new), np.array(out_ref), atol=1e-5,
+            err_msg="first-step append differs from flash_attention"
+        )
+
+    def test_kvcache_with_k_new_returns_3tuple(self):
+        """When k_new is provided, return type is (array, array, array)."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, N, D = 1, 2, 8, self.D
+        q, k, v = self._qkv(B=B, H=H, N=N, seed=203)
+        result = flash_attention_kvcache(q, None, None, k_new=k, v_new=v)
+        assert isinstance(result, tuple) and len(result) == 3, (
+            f"expected 3-tuple, got {type(result)}"
+        )
+        out, k_up, v_up = result
+        assert isinstance(out, mx.array)
+        assert isinstance(k_up, mx.array)
+        assert isinstance(v_up, mx.array)
+
+    def test_kvcache_without_k_new_returns_array(self):
+        """When k_new is None, return type is mx.array (backward compat)."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, N, D = 1, 2, 8, self.D
+        q, k, v = self._qkv(B=B, H=H, N=N, seed=204)
+        result = flash_attention_kvcache(q, k, v)
+        assert isinstance(result, mx.array), (
+            f"expected mx.array, got {type(result)}"
+        )
+
+    def test_kvcache_with_k_new_cache_shape_grows(self):
+        """Updated cache has past_len + N tokens on axis 2."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, past, N, D = 1, 2, 32, 4, self.D
+        mx.random.seed(205)
+        k_cache = mx.random.normal((B, H, past, D))
+        v_cache = mx.random.normal((B, H, past, D))
+        q_new = mx.random.normal((B, H, N, D))
+        k_new = mx.random.normal((B, H, N, D))
+        v_new = mx.random.normal((B, H, N, D))
+
+        _, k_up, v_up = flash_attention_kvcache(
+            q_new, k_cache, v_cache, k_new=k_new, v_new=v_new, causal=True
+        )
+        mx.eval(k_up, v_up)
+        assert k_up.shape == (B, H, past + N, D), f"k_up shape {k_up.shape}"
+        assert v_up.shape == (B, H, past + N, D), f"v_up shape {v_up.shape}"
+
+    def test_kvcache_with_k_new_and_rope(self):
+        """k_new gets RoPE rotation at cache_seqlens offset before append."""
+        from mlx_mfa import flash_attention_kvcache, flash_attention_kvcache_rope_append
+
+        B, H, past, N, D = 1, 2, 16, 1, 64
+        mx.random.seed(206)
+        k_cache = mx.random.normal((B, H, past, D)).astype(mx.float16)
+        v_cache = mx.random.normal((B, H, past, D)).astype(mx.float16)
+        q_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        max_seq = past + N + 8
+        cos = mx.random.normal((max_seq, D // 2)).astype(mx.float32)
+        sin = mx.random.normal((max_seq, D // 2)).astype(mx.float32)
+
+        # Reference: use flash_attention_kvcache_rope_append
+        out_ref, k_ref, v_ref = flash_attention_kvcache_rope_append(
+            q_new, k_new, v_new, k_cache, v_cache,
+            rotary_cos=cos, rotary_sin=sin,
+            cache_seqlens=past, causal=True,
+        )
+        # New API
+        out_new, k_up, v_up = flash_attention_kvcache(
+            q_new, k_cache, v_cache,
+            k_new=k_new, v_new=v_new,
+            rotary_cos=cos, rotary_sin=sin,
+            cache_seqlens=past, causal=True,
+        )
+        mx.eval(out_ref, k_ref, v_ref, out_new, k_up, v_up)
+
+        # Updated caches must match exactly (same RoPE rotation on k_new)
+        np.testing.assert_allclose(
+            np.array(k_ref.astype(mx.float32)),
+            np.array(k_up.astype(mx.float32)),
+            atol=1e-4, err_msg="k_updated with RoPE differs"
+        )
+        np.testing.assert_allclose(
+            np.array(out_ref.astype(mx.float32)),
+            np.array(out_new.astype(mx.float32)),
+            atol=5e-2, err_msg="output with RoPE differs from kvcache_rope_append"
+        )
+
+    def test_kvcache_with_k_new_and_softcap(self):
+        """k_new append works with softcap."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, past, N, D = 1, 2, 8, 2, self.D
+        mx.random.seed(207)
+        k_cache = mx.random.normal((B, H, past, D))
+        v_cache = mx.random.normal((B, H, past, D))
+        q_new = mx.random.normal((B, H, N, D))
+        k_new = mx.random.normal((B, H, N, D))
+        v_new = mx.random.normal((B, H, N, D))
+
+        out, k_up, v_up = flash_attention_kvcache(
+            q_new, k_cache, v_cache,
+            k_new=k_new, v_new=v_new, softcap=20.0, causal=True,
+        )
+        mx.eval(out, k_up, v_up)
+        assert out.shape == (B, H, N, D)
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_kvcache_k_new_without_v_new_raises(self):
+        """k_new without v_new must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, N, D = 1, 2, 4, self.D
+        q, k, v = self._qkv(B=B, H=H, N=N, seed=208)
+        with pytest.raises(ValueError, match="k_new and v_new must both"):
+            flash_attention_kvcache(q, None, None, k_new=k)
+
+    def test_kvcache_k_new_paged_raises(self):
+        """k_new in paged mode must raise ValueError."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, N, D = 1, 2, 1, self.D
+        q, k, v = self._qkv(B=B, H=H, N=N, seed=209)
+        block_table = mx.zeros((B, 4), dtype=mx.int32)
+        seq_lens = mx.array([N], dtype=mx.int32)
+        pool_k = mx.random.normal((4, 16, H, D))
+        pool_v = mx.random.normal((4, 16, H, D))
+        with pytest.raises(ValueError, match="paged mode"):
+            flash_attention_kvcache(
+                q, pool_k, pool_v,
+                block_table=block_table, seq_lens=seq_lens,
+                k_new=k, v_new=v,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Track AG — Attention dropout fallback
 # ---------------------------------------------------------------------------
 
