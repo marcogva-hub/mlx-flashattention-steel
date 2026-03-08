@@ -535,13 +535,11 @@ def flash_attention_rope(
     # STEEL kernel rotates the full head dimension.
     _partial_rope = rotary_dim is not None and rotary_dim < head_dim
     if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial_rope:
-        q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                                offset=cache_seqlens, interleaved=interleaved,
-                                rotary_dim=rotary_dim)
-        k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
-                                offset=0, interleaved=interleaved,
-                                rotary_dim=rotary_dim)
-        return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
+        return _apply_rope_and_attend(
+            q, k, v, rotary_cos, rotary_sin, scale, causal,
+            q_offset=cache_seqlens, k_offset=0,
+            interleaved=interleaved, rotary_dim=rotary_dim, stream=stream,
+        )
 
     return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
                              scale, causal, cache_seqlens, interleaved)
@@ -2176,6 +2174,53 @@ def _apply_rope_mlx(
     return _rope_compile_cache[key](x, cos, sin)
 
 
+def _apply_rope_and_attend(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    rotary_cos: mx.array,
+    rotary_sin: mx.array,
+    scale: float,
+    causal: bool,
+    q_offset: int = 0,
+    k_offset: int = 0,
+    interleaved: bool = True,
+    rotary_dim: Optional[int] = None,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Apply RoPE to Q and K then compute SDPA.
+
+    Convenience helper that unifies the repeated pattern::
+
+        q_rot = _apply_rope_mlx(q, cos, sin, offset=q_offset, ...)
+        k_rot = _apply_rope_mlx(k, cos, sin, offset=k_offset, ...)
+        return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
+
+    Args:
+        q, k, v:      Attention tensors ``[B, H, N, D]``.
+        rotary_cos:   Cosine table ``[max_seq, rotary_dim/2]``.
+        rotary_sin:   Sine table ``[max_seq, rotary_dim/2]``.
+        scale:        Attention scale factor.
+        causal:       Whether to apply causal masking.
+        q_offset:     Token position of the first Q token (= cache_seqlens).
+        k_offset:     Token position of the first K token (usually 0 for
+                      full KV; same as ``q_offset`` for decode append).
+        interleaved:  True = LLaMA (adjacent pairs); False = GPT-NeoX.
+        rotary_dim:   Number of head-dim elements to rotate; None = all D.
+        stream:       MLX stream (forwarded to ``_fallback_sdpa``).
+
+    Returns:
+        Attention output ``[B, H, N, D]`` in the same dtype as q.
+    """
+    q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                             offset=q_offset, interleaved=interleaved,
+                             rotary_dim=rotary_dim)
+    k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
+                             offset=k_offset, interleaved=interleaved,
+                             rotary_dim=rotary_dim)
+    return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
+
+
 @functools.lru_cache(maxsize=32)
 def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int,
                            interleaved: bool = True):
@@ -2203,11 +2248,10 @@ def _make_mfa_rope_custom(scale: float, causal: bool, cache_seqlens: int,
         q, k, v, rotary_cos, rotary_sin = primals
 
         def _fwd_with_rope(q, k, v):
-            q_rot = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                                    offset=cache_seqlens, interleaved=interleaved)
-            k_rot = _apply_rope_mlx(k, rotary_cos, rotary_sin,
-                                    offset=0, interleaved=interleaved)
-            return _fallback_sdpa(q_rot, k_rot, v, scale, causal)
+            return _apply_rope_and_attend(
+                q, k, v, rotary_cos, rotary_sin, scale, causal,
+                q_offset=cache_seqlens, k_offset=0, interleaved=interleaved,
+            )
 
         _, (dQ, dK, dV) = mx.vjp(
             _fwd_with_rope, [q, k, v], [cotangent]
