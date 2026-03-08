@@ -18,7 +18,7 @@ Python: flash_attention(q, k, v, causal=True)
 mlx_mfa/attention.py
   1. Validate shapes (4-D, matching head_dim)
   2. GQA: if H_kv < H_q, native GQA via gqa_factor in kernel
-  3. Check _can_use_mfa: head_dim ∈ {64,128,256}, dtype ∈ {f16,bf16,f32},
+  3. Check _can_use_mfa: head_dim ∈ {64,128,256,512}, dtype ∈ {f16,bf16,f32},
      extension importable
      ├── no  → _fallback_sdpa: mx.fast.scaled_dot_product_attention
      └── yes → _mfa_forward
@@ -141,7 +141,7 @@ mx.grad(flash_attention)(q, k, v)
          ▼
 mx.custom_function vjp  (attention.py:_make_mfa_custom._backward)
          │
-         ├── f16/bf16, D≤256, softcap==0, alibi==False
+         ├── f16/bf16, D≤512, softcap==0, alibi==False
          │       │
          │       ▼
          │   mfa_steel_backward (C++ binding → MFASteelBwdDQ + MFASteelBwdDKV)
@@ -227,16 +227,18 @@ per-lane loads with no async DMA dependency).  It is used only for the ccv
 
 ## Public API reference
 
-31 symbols exported in `mlx_mfa.__all__` (version 0.9.3):
+32 symbols exported in `mlx_mfa.__all__` (v1.0.5):
 
-### Core attention (11)
+### Core attention (11 functions + 1 class)
 
 | Function | Key arguments | Returns |
 |----------|--------------|---------|
-| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights)` | `[B,H,N,D]` |
-| `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved)` | `[B,H,N,D]` |
+| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights, attn_bias, backend)` | `[B,H,N,D]` |
+| `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved, rotary_dim)` | `[B,H,N,D]` |
 | `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` | `[B,H,N,D]` |
 | `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` | `[1,H,total,D]` |
+| `flash_attention_kvcache` | `(q, k_cache,v_cache, *, k_new,v_new, block_table, cache_seqlens, scale, causal, ...)` | `[B,H,N,D]` or 3-tuple |
+| `flash_attention_kvcache_rope_append` | `(q, k_new,v_new, k_cache,v_cache, cos,sin, cache_seqlens, ...)` | `[B,H,N,D]` |
 | `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` | `[B,H,N_q,D]` |
 | `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` | `[B,H,N,D]` |
 | `flash_attention_kv_packed` | `(q, kv, scale, causal, num_kv_heads)` | `[B,H,N,D]` |
@@ -264,7 +266,7 @@ per-lane loads with no async DMA dependency).  It is used only for the ccv
 
 - `is_mfa_available()` — `True` when C++ extension loaded and Metal available
 - `get_device_info()` — `dict`: `device_name`, `gpu_family_gen`, `is_m3_plus`, `is_m5_plus`, `chip_name`, `extension_available`
-- `get_supported_configs()` — `dict`: `head_dims`, `dtypes`, `extension_available`
+- `get_supported_configs()` — `dict`: `head_dims`, `dtypes`, `extension_available`, `features` (22-key capability matrix), `kernel_types`
 
 ---
 
@@ -319,7 +321,7 @@ per-lane loads with no async DMA dependency).  It is used only for the ccv
 
 ## 8. STEEL native backward kernels (Tracks BA/BB/BC, v0.9.0; CE, v0.9.2)
 
-For f16/bf16 D≤256 with `softcap==0` and `alibi==False`, `_make_mfa_custom`
+For f16/bf16 D≤512 with `softcap==0` and `alibi==False`, `_make_mfa_custom`
 routes the backward through `mfa_steel_backward` (C++ binding) which dispatches
 two Metal kernels: `MFASteelBwdDQ` and `MFASteelBwdDKV`.
 
@@ -404,7 +406,7 @@ scalars/lists are transparent to the MLX autograd tape, no `mx.array` slicing
 occurs inside the autograd graph — only MLX arrays `q_`, `k_`, `v_` are tracked.
 
 **Per-sequence vjp efficiency**: each `mx.vjp(flash_attention)` call dispatches
-to the STEEL backward kernels (for f16/bf16 D≤256), so the split-concat backward
+to the STEEL backward kernels (for f16/bf16 D≤512), so the split-concat backward
 is nearly as fast as a hypothetical single-kernel varlen backward.
 
 ---
@@ -669,3 +671,90 @@ Multiple sequences sharing a physical block have their contributions **summed**
 (unusual in practice; block_table entries are typically unique per sequence).
 
 Output shape: `[num_blocks, block_size, H_kv, D]` — identical to `k_pages`.
+
+---
+
+## 13. v1.0.5 Architecture Notes
+
+### 13.1 `get_supported_configs()` feature matrix (v1.0.5)
+
+`get_supported_configs()` now returns a machine-readable capability contract:
+
+```python
+{
+    "head_dims":  frozenset({64, 128, 256, 512}),
+    "dtypes":     frozenset({mx.float16, mx.bfloat16, mx.float32}),
+    "extension_available": bool,
+    "features":   dict[str, bool],  # 22 capability flags
+    "kernel_types": int,            # 11 Metal kernel variants when ext available
+}
+```
+
+The `features` dict is the authoritative source of truth for what `mlx_mfa`
+supports at runtime. Applications can query `get_supported_configs()["features"]`
+rather than hardcoding version checks.
+
+### 13.2 `_apply_rope_to_qk` shared helper (v1.0.5)
+
+`_apply_rope_to_qk(q, k, cos, sin, q_offset, k_offset, interleaved, rotary_dim)`
+isolates the pure-rotation step from attention dispatch. Three callers:
+
+1. `_apply_rope_and_attend()` — non-MFA RoPE path in `flash_attention_rope()`
+2. `flash_attention_kvcache()` — rotates Q and K_new in append mode
+3. `flash_attention_kvcache_rope_append()` — legacy explicit-rotate path
+
+### 13.3 `flash_attention_kvcache` append mode (v1.0.5)
+
+`flash_attention_kvcache` now accepts `k_new` / `v_new` keyword-only params,
+providing a unified API that subsumes `flash_attention_with_kv_cache` (removed).
+
+```
+k_new / v_new provided?
+  ├── yes → APPEND MODE
+  │         1. Rotate q, k_new via _apply_rope_to_qk (if rotary_cos given)
+  │         2. k_updated = concat([k_cache, k_new], axis=2)  (or k_new if no cache)
+  │         3. flash_attention(q_rot, k_updated, v_updated)  ← no rotary_cos here
+  │         4. return (out, k_updated, v_updated)
+  └── no  → normal dense / paged / flash-decode mode
+```
+
+**Pre-rotated cache invariant**: keys stored in the cache are already rotated at
+their position. The append mode rotates only the new key `k_new` (at offset
+`cache_seqlens`) and leaves existing cache keys untouched. Passing `rotary_cos`
+to the `flash_attention` call would re-rotate the entire key tensor from position
+0 — this must NOT happen in append mode.
+
+### 13.4 `window_size` right boundary constraint (v1.0.5)
+
+`flash_attention(..., window_size=(left, right))` now raises `NotImplementedError`
+when `right > 0`. The STEEL forward kernel uses a symmetric or left-only sliding
+window implemented as:
+
+```metal
+bool in_window = (j >= q_pos - window_left);
+```
+
+A right-side future window (`right > 0`) would require an additional bound:
+```metal
+bool in_window = (j >= q_pos - window_left) && (j <= q_pos + window_right);
+```
+
+This is not yet wired into the Metal shader's `has_window` path. Callers that
+previously passed `window_size=(left, right)` with `right > 0` had the right
+component silently ignored; the error is now explicit.
+
+### 13.5 D=512 varlen / paged guard (v1.0.5)
+
+The STEEL varlen (`SteelVarlenForward`, kernel type 8) and paged-STEEL
+(`PagedSteelForward`, kernel type 10) generators do not include the d-split
+loop present in the main `SteelForward` (kernel type 3).
+
+| Kernel | D=512 path |
+|--------|------------|
+| `SteelForward` | d-split: BD_HALF=128, 4 passes over head_dim → fits 32 KB TGP |
+| `SteelVarlenForward` | no d-split → TGP=65 KB > 32 KB → **SDPA fallback** |
+| `PagedSteelForward` | no d-split → TGP=65 KB > 32 KB → **SDPA fallback** |
+
+The guard `D in _MFA_SUPPORTED_HDIMS and D <= 256` is applied before dispatching
+to the varlen and paged STEEL kernels, so D=512 falls back gracefully to
+`flash_attention_varlen` → split-concat → `_fallback_sdpa`.
