@@ -3430,14 +3430,13 @@ class TestPagedKVCacheGA:
     """Tests for the rewritten PagedKVCache (dual-pool, functional gather)."""
 
     def test_dual_pool_construction(self):
-        """K and V pools are separate numpy arrays with correct shape."""
+        """K and V pools are MLX arrays with correct shape and dtype."""
         from mlx_mfa import PagedKVCache
-        import numpy as np
         cache = PagedKVCache(num_blocks=16, block_size=32, H=4, D=64)
-        assert cache._k_np.shape == (16, 32, 4, 64)
-        assert cache._v_np.shape == (16, 32, 4, 64)
-        assert cache._k_np.dtype == np.float32
-        assert cache._v_np.dtype == np.float32
+        assert cache._k_pool.shape == (16, 32, 4, 64)
+        assert cache._v_pool.shape == (16, 32, 4, 64)
+        assert cache._k_pool.dtype == mx.float16
+        assert cache._v_pool.dtype == mx.float16
 
     def test_k_pool_v_pool_properties(self):
         """k_pool / v_pool return mx.array with correct shape and dtype."""
@@ -3462,11 +3461,27 @@ class TestPagedKVCacheGA:
         cache.append(k, v, seq_id=0)
 
         assert cache.seq_lengths == {0: 1}
-        # Verify K written correctly: pool[blk_id=0, ptr=0] == k[0,:,0,:]
+        # Verify K written correctly: pool[blk_id, 0] == k[0, :, 0, :]
         blk_id = cache._block_table[0][0]
-        k_ref = np.array(k[0].astype(mx.float32)).transpose(1, 0, 2)  # [1, H, D]
-        np.testing.assert_allclose(
-            cache._k_np[blk_id, 0], k_ref[0], atol=1e-4)
+        k_ref = np.array(k[0].astype(mx.float32)).transpose(1, 0, 2)  # [T=1, H, D]
+        pool_val = np.array(cache._k_pool[blk_id, 0].astype(mx.float32))
+        np.testing.assert_allclose(pool_val, k_ref[0], atol=1e-4)
+
+    def test_append_no_numpy_roundtrip(self):
+        """Verify pool holds mx.array (no numpy backing store)."""
+        from mlx_mfa import PagedKVCache
+        import mlx.core as mx
+        cache = PagedKVCache(num_blocks=4, block_size=16, H=2, D=64)
+        assert isinstance(cache._k_pool, mx.array), "_k_pool must be mx.array"
+        assert isinstance(cache._v_pool, mx.array), "_v_pool must be mx.array"
+        assert not hasattr(cache, "_k_np"), "numpy backing store must not exist"
+        assert not hasattr(cache, "_v_np"), "numpy backing store must not exist"
+        # After append, pool is still mx.array.
+        k = mx.zeros((1, 2, 4, 64), dtype=mx.float16)
+        v = mx.zeros((1, 2, 4, 64), dtype=mx.float16)
+        cache.append(k, v, seq_id=0)
+        assert isinstance(cache._k_pool, mx.array)
+        assert isinstance(cache._v_pool, mx.array)
 
     def test_append_multi_token(self):
         """Append T tokens; seq_lengths reflects total count."""

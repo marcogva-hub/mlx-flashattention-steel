@@ -2358,12 +2358,12 @@ class PagedKVCache:
         dtype:       MLX dtype for the pool (default ``mx.float16``).
 
     Note — Performance:
-        ``append()`` uses a numpy float32 backing store for efficient
-        block-level slice writes.  ``k_pool`` / ``v_pool`` create one
-        ``mx.array`` conversion per attention call, which is negligible
-        compared to Metal kernel dispatch.  For pools with thousands of
-        blocks, a Metal scatter kernel would be faster; this implementation
-        targets typical inference workloads (B=1, ≤512 blocks).
+        ``append()`` uses MLX-native concatenation to splice new tokens into
+        the pool.  ``mx.eval()`` is called at the end of each ``append()`` to
+        materialise the lazy graph and prevent O(N) graph growth during long
+        decode loops.  For pools with thousands of blocks a Metal scatter
+        kernel would be faster; this implementation targets typical inference
+        workloads (B=1, ≤512 blocks).
     """
 
     def __init__(
@@ -2375,7 +2375,6 @@ class PagedKVCache:
         dtype=None,
     ) -> None:
         import mlx.core as mx
-        import numpy as _np
 
         if dtype is None:
             dtype = mx.float16
@@ -2385,14 +2384,10 @@ class PagedKVCache:
         self.D = D
         self.dtype = dtype
 
-        # Numpy float32 backing store for efficient in-place slice writes.
-        # (numpy has no bfloat16 support; float32 is used for all dtypes.)
-        self._k_np = _np.zeros((num_blocks, block_size, H, D), dtype=_np.float32)
-        self._v_np = _np.zeros((num_blocks, block_size, H, D), dtype=_np.float32)
-
-        # Cached mx.array views — invalidated on every append.
-        self._k_pool_cached = None
-        self._v_pool_cached = None
+        # MLX-native pool arrays — updated via concatenation in append().
+        self._k_pool = mx.zeros((num_blocks, block_size, H, D), dtype=dtype)
+        self._v_pool = mx.zeros((num_blocks, block_size, H, D), dtype=dtype)
+        mx.eval(self._k_pool, self._v_pool)
 
         # Free list (stack of available block ids)
         self._free: list[int] = list(range(num_blocks))
@@ -2414,27 +2409,17 @@ class PagedKVCache:
             self._block_table[seq_id] = [blk]
             self._write_ptr[seq_id] = 0
 
-    def _invalidate_cache(self) -> None:
-        self._k_pool_cached = None
-        self._v_pool_cached = None
-
     # ── pool properties ───────────────────────────────────────────────────
 
     @property
     def k_pool(self) -> "mx.array":
         """Key page pool ``[num_blocks, block_size, H, D]``."""
-        import mlx.core as mx
-        if self._k_pool_cached is None:
-            self._k_pool_cached = mx.array(self._k_np).astype(self.dtype)
-        return self._k_pool_cached
+        return self._k_pool
 
     @property
     def v_pool(self) -> "mx.array":
         """Value page pool ``[num_blocks, block_size, H, D]``."""
-        import mlx.core as mx
-        if self._v_pool_cached is None:
-            self._v_pool_cached = mx.array(self._v_np).astype(self.dtype)
-        return self._v_pool_cached
+        return self._v_pool
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -2446,9 +2431,9 @@ class PagedKVCache:
     ) -> None:
         """Append new K/V tokens for ``seq_id``.
 
-        Uses block-level numpy slice writes — one write per chunk rather
-        than one write per element.  Invalidates the ``k_pool``/``v_pool``
-        cached arrays so the next property access reflects the new data.
+        Uses MLX-native concatenation — no numpy roundtrip.  ``mx.eval()``
+        is called at the end to materialise the lazy graph and prevent
+        unbounded graph growth during long decode loops.
 
         Args:
             k:       ``[1, H, T, D]`` new key tokens.
@@ -2456,17 +2441,13 @@ class PagedKVCache:
             seq_id:  Sequence identifier (default 0).
         """
         import mlx.core as mx
-        import numpy as _np
 
-        mx.eval(k, v)
-        # Transpose [1, H, T, D] → [T, H, D] for pool layout.
-        # Cast to float32 first (numpy has no bfloat16 support).
-        k_np = _np.array(k[0].astype(mx.float32)).transpose(1, 0, 2)  # [T, H, D]
-        v_np = _np.array(v[0].astype(mx.float32)).transpose(1, 0, 2)
-        T = k_np.shape[0]
+        # [1, H, T, D] → [T, H, D], cast to pool dtype.
+        k_tokens = k[0].transpose([1, 0, 2]).astype(self.dtype)
+        v_tokens = v[0].transpose([1, 0, 2]).astype(self.dtype)
+        T = k_tokens.shape[0]
 
         self._ensure_seq(seq_id)
-        self._invalidate_cache()
 
         written = 0
         while written < T:
@@ -2483,12 +2464,35 @@ class PagedKVCache:
             room = self.block_size - ptr
             chunk = min(room, T - written)
 
-            # Block-level slice write: O(chunk × H × D) per call.
-            self._k_np[blk_id, ptr:ptr + chunk] = k_np[written:written + chunk]
-            self._v_np[blk_id, ptr:ptr + chunk] = v_np[written:written + chunk]
+            # Build replacement block: [prefix | new_chunk | suffix] on axis 0.
+            parts_k: list = []
+            parts_v: list = []
+            if ptr > 0:
+                parts_k.append(self._k_pool[blk_id, :ptr])
+                parts_v.append(self._v_pool[blk_id, :ptr])
+            parts_k.append(k_tokens[written : written + chunk])
+            parts_v.append(v_tokens[written : written + chunk])
+            tail = self.block_size - ptr - chunk
+            if tail > 0:
+                parts_k.append(self._k_pool[blk_id, ptr + chunk :])
+                parts_v.append(self._v_pool[blk_id, ptr + chunk :])
+
+            new_k = mx.concatenate(parts_k, axis=0)[None]  # [1, block_size, H, D]
+            new_v = mx.concatenate(parts_v, axis=0)[None]
+
+            # Splice block blk_id into pool.
+            self._k_pool = mx.concatenate(
+                [self._k_pool[:blk_id], new_k, self._k_pool[blk_id + 1 :]], axis=0
+            )
+            self._v_pool = mx.concatenate(
+                [self._v_pool[:blk_id], new_v, self._v_pool[blk_id + 1 :]], axis=0
+            )
 
             self._write_ptr[seq_id] = ptr + chunk
             written += chunk
+
+        # Materialise the lazy graph — prevents O(N) graph depth in decode loops.
+        mx.eval(self._k_pool, self._v_pool)
 
     def gather(self, seq_id: int = 0) -> "tuple[mx.array, mx.array]":
         """Reconstruct contiguous K, V tensors for ``seq_id``.
@@ -2502,7 +2506,6 @@ class PagedKVCache:
             ``(k, v)`` each shaped ``[1, H, S, D]`` where S = tokens written.
         """
         import mlx.core as mx
-        import numpy as _np
 
         blks = self._block_table.get(seq_id, [])
         seqlen = self.seq_lengths.get(seq_id, 0)
@@ -2513,13 +2516,14 @@ class PagedKVCache:
                 mx.zeros((1, self.H, 0, self.D), dtype=self.dtype),
             )
 
-        # Concatenate block rows from numpy, trim to actual seqlen.
-        k_flat = _np.concatenate([self._k_np[b] for b in blks], axis=0)[:seqlen]  # [S, H, D]
-        v_flat = _np.concatenate([self._v_np[b] for b in blks], axis=0)[:seqlen]
+        # Gather blocks: [num_blks, block_size, H, D] → [S_full, H, D] → trim.
+        blk_idx = mx.array(blks, dtype=mx.int32)
+        k_flat = self._k_pool[blk_idx].reshape(-1, self.H, self.D)[:seqlen]
+        v_flat = self._v_pool[blk_idx].reshape(-1, self.H, self.D)[:seqlen]
 
-        # Transpose to [1, H, S, D] and cast to target dtype.
-        k_out = mx.array(k_flat.transpose(1, 0, 2)[_np.newaxis]).astype(self.dtype)
-        v_out = mx.array(v_flat.transpose(1, 0, 2)[_np.newaxis]).astype(self.dtype)
+        # [S, H, D] → [1, H, S, D]
+        k_out = k_flat.transpose([1, 0, 2])[None]
+        v_out = v_flat.transpose([1, 0, 2])[None]
         return k_out, v_out
 
     def get_block_table(
@@ -2587,7 +2591,6 @@ class PagedKVCache:
         if seq_id in self._block_table:
             self._free.extend(self._block_table.pop(seq_id))
             self._write_ptr.pop(seq_id, None)
-            self._invalidate_cache()
 
     def __repr__(self) -> str:
         used = self.num_blocks - len(self._free)
