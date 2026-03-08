@@ -1143,9 +1143,10 @@ def flash_attention_sparse(
         Output [B, H, N, D].
 
     Note — Backward pass:
-        Gradients are computed via dense SDPA + float block bias, which is
-        correct but does not benefit from sparsity (dense backward).
-        A native sparse backward is planned for a future release.
+        ``backward="sdpa"`` (default): dense SDPA vjp — correct but O(N×S×D).
+        ``backward="sdpa_sparse"``: tiled Python sparse backward — O(nnz·BQ·BK·D).
+        ``backward="steel_sparse"``: native Metal sparse backward (fastest for
+        low-density masks); requires f16/bf16, D≤128.
 
     Example::
 
@@ -1215,9 +1216,11 @@ def _make_mfa_sparse_custom(
     L is in log2 domain (STEEL convention: L = log2(e) * L_natural).
 
     backward options:
-        "sdpa"         (default) — dense mx.fast.sdpa vjp; correct but O(N×S×D)
-        "sdpa_sparse"  — tiled Python sparse backward using saved L;
-                         O(nnz × BQ × BK × D), benefits large sparse configs
+        "sdpa"          (default) — dense mx.fast.sdpa vjp; correct but O(N×S×D)
+        "sdpa_sparse"   — tiled Python sparse backward using saved L;
+                          O(nnz × BQ × BK × D), benefits large sparse configs
+        "steel_sparse"  — Metal STEEL sparse backward; skips inactive tiles in
+                          native Metal kernel (fastest for low-density masks)
     """
     import numpy as _np
 
@@ -1235,6 +1238,25 @@ def _make_mfa_sparse_custom(
         q, k, v, mask_uint8 = primals
         dO, _dL = cotangents  # dL is zero (L not consumed downstream)
         O, L    = outputs
+
+        if backward == "steel_sparse":
+            # Native STEEL sparse backward — Metal kernel skips inactive tiles.
+            # IMPORTANT: MLX's autograd recycles GPU buffers for q/k/v during
+            # backward.  Custom Metal primitives read those buffers directly and
+            # see garbage data.  Forcing a CPU round-trip through numpy gives
+            # every tensor a freshly-allocated GPU buffer, avoiding the aliasing.
+            from mlx_mfa._ext import mfa_steel_backward_sparse as _sbwd
+            mx.eval(q, k, v, mask_uint8, dO, O, L)
+            def _to_fresh(a, dtype=None):
+                a32 = a.astype(mx.float32) if a.dtype != mx.float32 else a
+                return mx.array(_np.array(a32), dtype=dtype or a.dtype)
+            q2  = _to_fresh(q);  k2  = _to_fresh(k);  v2  = _to_fresh(v)
+            O2  = _to_fresh(O);  L2  = _to_fresh(L, dtype=mx.float32)
+            dO2 = _to_fresh(dO)
+            mu2 = mx.array(_np.array(mask_uint8), dtype=mx.uint8)
+            mx.eval(q2, k2, v2, O2, L2, dO2, mu2)
+            dQ, dK, dV = _sbwd(q2, k2, v2, O2, L2, dO2, mu2, scale, causal)
+            return dQ, dK, dV, mx.zeros_like(mask_uint8)
 
         if backward == "sdpa_sparse":
             # Tiled sparse backward using saved L — skips inactive tiles.
