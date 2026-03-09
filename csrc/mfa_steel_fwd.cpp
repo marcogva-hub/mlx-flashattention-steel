@@ -156,6 +156,10 @@ struct MFASteelParams {
   int   has_alibi;  // 0 = disabled; 1 = ALiBi bias from buffer(9)
   int   window_left;  // -1 = disabled; >=0 = sliding window left radius (tokens)
   int   window_right; // -1 = disabled; >=0 = sliding window right radius (tokens)
+  // Block-sparse mask strides: 0 = broadcast this dimension.
+  // 2D [NQ,NK]: both 0; 3D [H,NQ,NK]: batch=0; 4D [B,H,NQ,NK]: both set.
+  long  mask_batch_stride;
+  long  mask_head_stride;
 };
 
 )MFA";
@@ -828,7 +832,12 @@ struct MFAExpSubOp {
   // All threads in a threadgroup share tid.x and kb, so this is a
   // uniform branch — no warp divergence, just skips the barriers and math.
   if (sparse) {
-    ss << "    if (!block_mask[qb * p->NK + kb]) {\n";
+    // 2D broadcast: mask_batch_stride=0, mask_head_stride=0 → same tile for all B,H.
+    // 3D [H,NQ,NK]: mask_batch_stride=0, mask_head_stride=NQ*NK.
+    // 4D [B,H,NQ,NK]: both strides set.
+    ss << "    if (!block_mask[(long)tid.z * p->mask_batch_stride\n";
+    ss << "                  + (long)tid.y * p->mask_head_stride\n";
+    ss << "                  + (long)qb * p->NK + kb]) {\n";
     ss << "      loader_k.next();\n";
     ss << "      loader_v.next();\n";
     ss << "      continue;\n";

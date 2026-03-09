@@ -53,6 +53,12 @@ struct MFASteelParams {
     int   has_alibi;   // 0 = disabled; 1 = ALiBi per-head bias (buffer(9))
     int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
     int   window_right;// -1 = disabled; >=0 = sliding window right radius (tokens)
+    // Block-sparse mask strides — 0 means "broadcast this dimension".
+    // 2D [NQ, NK]:          both = 0
+    // 3D [H, NQ, NK]:       mask_batch_stride=0, mask_head_stride=NQ*NK
+    // 4D [B, H, NQ, NK]:    mask_batch_stride=H*NQ*NK, mask_head_stride=NQ*NK
+    int64_t mask_batch_stride; // 0 = broadcast across batches
+    int64_t mask_head_stride;  // 0 = broadcast across heads
 };
 
 /// Append Metal preamble (#include, STEEL_CONST, ARCHITECTURE_GEN, STEEL_PRAGMA_UNROLL).

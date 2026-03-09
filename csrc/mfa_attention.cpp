@@ -373,6 +373,23 @@ void MFAttention::eval_gpu(
   sp.window_left  = params_.window_left;     // -1 when disabled
   sp.window_right = params_.window_right;    // -1 when disabled
 
+  // Block-sparse mask strides — 0 = broadcast this dimension.
+  // 2D [NQ, NK]:       both = 0  (one mask shared by all B, H)
+  // 3D [H, NQ, NK]:    batch=0, head=NQ*NK
+  // 4D [B, H, NQ, NK]: batch=H*NQ*NK, head=NQ*NK
+  sp.mask_batch_stride = 0;
+  sp.mask_head_stride  = 0;
+  if (params_.has_block_mask) {
+    const auto& bm = inputs[3];
+    if (bm.ndim() == 3) {
+      sp.mask_head_stride  = (int64_t)bm.shape(1) * bm.shape(2);
+    } else if (bm.ndim() == 4) {
+      sp.mask_head_stride  = (int64_t)bm.shape(2) * bm.shape(3);
+      sp.mask_batch_stride = (int64_t)bm.shape(1) * sp.mask_head_stride;
+    }
+    // 2D: both remain 0 (initialized above)
+  }
+
   // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = d.get_command_encoder(stream().index);
   enc.set_compute_pipeline_state(pipeline);
@@ -1021,9 +1038,10 @@ mlx::core::array mfa_attention_sparse_forward(
   if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
     throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
   }
-  if (block_mask.ndim() != 2) {
+  if (block_mask.ndim() < 2 || block_mask.ndim() > 4) {
     throw std::invalid_argument(
-        "MFA sparse: block_mask must be 2D [NQ_tiles, NK_tiles]");
+        "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
+        "or 4D [B,H,NQ,NK]");
   }
 
   int D = q.shape(3);
@@ -1070,9 +1088,10 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
 
   if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
     throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
-  if (block_mask.ndim() != 2)
+  if (block_mask.ndim() < 2 || block_mask.ndim() > 4)
     throw std::invalid_argument(
-        "MFA sparse: block_mask must be 2D [NQ_tiles, NK_tiles]");
+        "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
+        "or 4D [B,H,NQ,NK]");
 
   int D = q.shape(3);
   if (D != 64 && D != 128 && D != 256)

@@ -1635,11 +1635,16 @@ def flash_attention_sparse(
         q:          Query   [B, H, N, D].  f16 or bf16 only.
         k:          Key     [B, H, S, D].
         v:          Value   [B, H, S, D].
-        block_mask: Boolean [NQ_tiles, NK_tiles].
-                    ``NQ_tiles = ceil(N / BQ)``, ``NK_tiles = ceil(S / BK)``
-                    where BQ, BK are from ``_steel_block_config(D)``.
+        block_mask: Boolean tile mask.  Supported shapes:
+
+                    * ``[NQ, NK]`` — shared across all batches and heads.
+                    * ``[H, NQ, NK]`` — per-head mask (same for all batches).
+                    * ``[B, H, NQ, NK]`` — per-batch, per-head mask.
+
+                    ``NQ = ceil(N / BQ)``, ``NK = ceil(S / BK)`` where BQ/BK
+                    come from ``_steel_block_config(D)``.
                     Use :func:`make_causal_block_mask` or
-                    :func:`make_sliding_window_mask` to generate.
+                    :func:`make_sliding_window_mask` to generate 2-D masks.
         scale:      Attention scale (default: 1/sqrt(D)).
         causal:     Additional causal masking within the active blocks.
         stream:     Optional MLX stream.
@@ -1677,24 +1682,43 @@ def flash_attention_sparse(
             f"flash_attention_sparse: head_dim must be in {_MFA_SUPPORTED_HDIMS}, "
             f"got {D}"
         )
-    if block_mask.ndim != 2:
+    if block_mask.ndim not in (2, 3, 4):
         raise ValueError(
-            "block_mask must be 2-D [NQ_tiles, NK_tiles]; "
+            "block_mask must be 2-D [NQ, NK], 3-D [H, NQ, NK], or 4-D [B, H, NQ, NK]; "
             f"got shape {list(block_mask.shape)}"
         )
 
     BQ, BK = _steel_block_config(D)
     NQ_expected = (N + BQ - 1) // BQ
     NK_expected = (S + BK - 1) // BK
-    if block_mask.shape[0] != NQ_expected or block_mask.shape[1] != NK_expected:
+    if block_mask.shape[-2] != NQ_expected or block_mask.shape[-1] != NK_expected:
         raise ValueError(
-            f"block_mask shape {list(block_mask.shape)} does not match "
+            f"block_mask last two dims {list(block_mask.shape[-2:])} do not match "
             f"expected [{NQ_expected}, {NK_expected}] "
             f"for seq_len={N}/{S}, head_dim={D} (BQ={BQ}, BK={BK})"
         )
+    if block_mask.ndim == 3 and block_mask.shape[0] != H:
+        raise ValueError(
+            f"3-D block_mask shape[0]={block_mask.shape[0]} must equal H={H}"
+        )
+    if block_mask.ndim == 4:
+        if block_mask.shape[0] != B:
+            raise ValueError(
+                f"4-D block_mask shape[0]={block_mask.shape[0]} must equal B={B}"
+            )
+        if block_mask.shape[1] != H:
+            raise ValueError(
+                f"4-D block_mask shape[1]={block_mask.shape[1]} must equal H={H}"
+            )
 
+    # Collapse to 2-D for fallback SDPA (no per-head routing in pure Python).
     if not _ext_available():
-        return _sparse_fallback_sdpa(q, k, v, block_mask, BQ, BK, scale, causal)
+        mask_2d = block_mask
+        if block_mask.ndim == 4:
+            mask_2d = block_mask.any(axis=(0, 1))
+        elif block_mask.ndim == 3:
+            mask_2d = block_mask.any(axis=0)
+        return _sparse_fallback_sdpa(q, k, v, mask_2d, BQ, BK, scale, causal)
 
     impl = _make_mfa_sparse_custom(scale, causal, block_mask,
                                     head_dim=D, backward=backward)
@@ -1731,6 +1755,16 @@ def _make_mfa_sparse_custom(
 
     BQ, BK = _steel_block_config(head_dim)
 
+    # For backward paths that only support 2-D masks, pre-collapse 3-D/4-D
+    # block_mask by taking the union (any) across batch/head dimensions.
+    # This is conservative: the dense-SDPA and tiled-sparse backward will
+    # compute gradients for all blocks that are active in *any* head/batch.
+    _block_mask_2d = block_mask
+    if block_mask.ndim == 4:
+        _block_mask_2d = block_mask.any(axis=(0, 1))
+    elif block_mask.ndim == 3:
+        _block_mask_2d = block_mask.any(axis=0)
+
     @mx.custom_function
     def _impl(q, k, v, mask_uint8):
         # Returns (O, L) — L saved for backward via `output` parameter.
@@ -1750,24 +1784,27 @@ def _make_mfa_sparse_custom(
             # backward.  Custom Metal primitives read those buffers directly and
             # see garbage data.  Forcing a CPU round-trip through numpy gives
             # every tensor a freshly-allocated GPU buffer, avoiding the aliasing.
+            # NOTE: backward kernel uses 2-D mask indexing; pass collapsed mask.
             from mlx_mfa._ext import mfa_steel_backward_sparse as _sbwd
-            mx.eval(q, k, v, mask_uint8, dO, O, L)
+            mask_bwd = _block_mask_2d.astype(mx.uint8)
+            mx.eval(q, k, v, mask_bwd, dO, O, L)
             def _to_fresh(a, dtype=None):
                 a32 = a.astype(mx.float32) if a.dtype != mx.float32 else a
                 return mx.array(_np.array(a32), dtype=dtype or a.dtype)
             q2  = _to_fresh(q);  k2  = _to_fresh(k);  v2  = _to_fresh(v)
             O2  = _to_fresh(O);  L2  = _to_fresh(L, dtype=mx.float32)
             dO2 = _to_fresh(dO)
-            mu2 = mx.array(_np.array(mask_uint8), dtype=mx.uint8)
+            mu2 = mx.array(_np.array(mask_bwd), dtype=mx.uint8)
             mx.eval(q2, k2, v2, O2, L2, dO2, mu2)
             dQ, dK, dV = _sbwd(q2, k2, v2, O2, L2, dO2, mu2, scale, causal)
             return dQ, dK, dV, mx.zeros_like(mask_uint8)
 
         if backward == "sdpa_sparse":
             # Tiled sparse backward using saved L — skips inactive tiles.
+            # Use 2-D collapsed mask (tiled backward is per-block, not per-head).
             D = q.shape[-1]
             bq, bk = _steel_block_config(D)
-            block_mask_np = _np.array(block_mask.astype(mx.uint8))
+            block_mask_np = _np.array(_block_mask_2d.astype(mx.uint8))
             dQ, dK, dV = _sparse_backward_tiled(
                 q, k, v, O, L, dO, block_mask_np, bq, bk, scale, causal
             )
@@ -1775,7 +1812,7 @@ def _make_mfa_sparse_custom(
 
         # Dense SDPA backward (correct, no sparsity speedup).
         float_mask = _block_mask_to_float_bias(
-            block_mask, q.shape[2], k.shape[2], scale_q_dtype=q.dtype
+            _block_mask_2d, q.shape[2], k.shape[2], scale_q_dtype=q.dtype
         )
         if causal:
             N, S = q.shape[2], k.shape[2]

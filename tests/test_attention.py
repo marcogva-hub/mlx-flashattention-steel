@@ -975,7 +975,7 @@ class TestSparseAttentionAPI:
         q = mx.ones((B, H, N, D), dtype=mx.float16)
         k, v = q, q
         wrong_mask = mx.ones((5, 5), dtype=mx.bool_)
-        with pytest.raises(ValueError, match="block_mask shape"):
+        with pytest.raises(ValueError, match="block_mask"):
             flash_attention_sparse(q, k, v, wrong_mask)
 
 
@@ -6758,3 +6758,218 @@ class TestSageQuantization:
         assert bq64 == 32 and bk64 == 32
         assert bq128 == 32 and bk128 == 16
         assert bq256 == 32 and bk256 == 16
+
+
+# ===========================================================================
+# Track LB: 4D sparse block masks  [B, H, NQ, NK] and [H, NQ, NK]
+# ===========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestBlockMask4D:
+    """Tests for 2-D / 3-D / 4-D sparse block mask support (Track LB)."""
+
+    def _base(self, B=2, H=4, N=128, D=128, seed=0):
+        """Return q, k, v, scale and tile grid dims."""
+        q, k, v = random_qkv(B, H, N, D, seed=seed)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        return q, k, v, scale, BQ, BK, NQ, NK
+
+    # ── Shape validation tests ──────────────────────────────────────────────
+
+    def test_3d_mask_wrong_shape0_raises(self):
+        """3-D block_mask with shape[0] ≠ H must raise ValueError."""
+        q, k, v, scale, BQ, BK, NQ, NK = self._base(H=4)
+        bad = mx.ones((3, NQ, NK), dtype=mx.bool_)  # H=4 but mask says 3
+        with pytest.raises(ValueError, match="must equal H=4"):
+            flash_attention_sparse(q, k, v, bad, scale=scale)
+
+    def test_4d_mask_wrong_shape0_raises(self):
+        """4-D block_mask with shape[0] ≠ B must raise ValueError."""
+        q, k, v, scale, BQ, BK, NQ, NK = self._base(B=2, H=4)
+        bad = mx.ones((3, 4, NQ, NK), dtype=mx.bool_)  # B=2 but mask says 3
+        with pytest.raises(ValueError, match="must equal B=2"):
+            flash_attention_sparse(q, k, v, bad, scale=scale)
+
+    def test_4d_mask_wrong_shape1_raises(self):
+        """4-D block_mask with shape[1] ≠ H must raise ValueError."""
+        q, k, v, scale, BQ, BK, NQ, NK = self._base(B=2, H=4)
+        bad = mx.ones((2, 3, NQ, NK), dtype=mx.bool_)  # H=4 but mask says 3
+        with pytest.raises(ValueError, match="must equal H=4"):
+            flash_attention_sparse(q, k, v, bad, scale=scale)
+
+    def test_5d_mask_raises(self):
+        """5-D block_mask must raise ValueError."""
+        q, k, v, scale, BQ, BK, NQ, NK = self._base(B=2, H=4)
+        bad = mx.ones((2, 4, NQ, NK, 1), dtype=mx.bool_)
+        with pytest.raises(ValueError, match="2-D.*3-D.*4-D"):
+            flash_attention_sparse(q, k, v, bad, scale=scale)
+
+    def test_1d_mask_raises(self):
+        """1-D block_mask must raise ValueError."""
+        q, k, v, scale, BQ, BK, NQ, NK = self._base()
+        bad = mx.ones((NQ * NK,), dtype=mx.bool_)
+        with pytest.raises(ValueError, match="2-D.*3-D.*4-D"):
+            flash_attention_sparse(q, k, v, bad, scale=scale)
+
+    # ── Correctness: 3-D and 4-D all-True == dense ──────────────────────────
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_3d_all_true_matches_dense(self, D):
+        """3-D all-True mask [H, NQ, NK] must match dense flash_attention."""
+        B, H, N = 1, 4, 128
+        q, k, v = random_qkv(B, H, N, D, seed=10)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+
+        mask_3d = mx.ones((H, NQ, NK), dtype=mx.bool_)
+        out_sparse = flash_attention_sparse(q, k, v, mask_3d, scale=scale)
+        out_dense  = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_sparse, out_dense)
+
+        np.testing.assert_allclose(
+            np.array(out_dense.astype(mx.float32)),
+            np.array(out_sparse.astype(mx.float32)),
+            atol=1e-3,
+            err_msg=f"D={D}: 3-D all-True sparse ≠ dense"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_4d_all_true_matches_dense(self, D):
+        """4-D all-True mask [B, H, NQ, NK] must match dense flash_attention."""
+        B, H, N = 2, 4, 128
+        q, k, v = random_qkv(B, H, N, D, seed=11)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+
+        mask_4d = mx.ones((B, H, NQ, NK), dtype=mx.bool_)
+        out_sparse = flash_attention_sparse(q, k, v, mask_4d, scale=scale)
+        out_dense  = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_sparse, out_dense)
+
+        np.testing.assert_allclose(
+            np.array(out_dense.astype(mx.float32)),
+            np.array(out_sparse.astype(mx.float32)),
+            atol=1e-3,
+            err_msg=f"D={D}: 4-D all-True sparse ≠ dense"
+        )
+
+    # ── Correctness: 3-D/4-D broadcast behaviour ─────────────────────────────
+
+    def test_3d_broadcast_vs_2d_allheads(self):
+        """Per-head 3-D mask broadcast == stacking the same 2-D mask H times."""
+        B, H, N, D = 1, 4, 128, 128
+        q, k, v = random_qkv(B, H, N, D, seed=20)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+
+        mx.random.seed(5)
+        mask_2d = mx.random.uniform(shape=(NQ, NK)) > 0.3  # ~70% active
+
+        # 3-D mask = same 2-D mask broadcast across all heads
+        mask_3d = mx.stack([mask_2d] * H, axis=0)  # [H, NQ, NK]
+        out_2d = flash_attention_sparse(q, k, v, mask_2d, scale=scale)
+        out_3d = flash_attention_sparse(q, k, v, mask_3d, scale=scale)
+        mx.eval(out_2d, out_3d)
+
+        np.testing.assert_allclose(
+            np.array(out_2d.astype(mx.float32)),
+            np.array(out_3d.astype(mx.float32)),
+            atol=1e-4,
+            err_msg="3-D same-per-head mask ≠ 2-D shared mask"
+        )
+
+    def test_4d_broadcast_vs_2d(self):
+        """4-D all-same mask [B, H, NQ, NK] == matching 2-D shared mask."""
+        B, H, N, D = 2, 4, 128, 128
+        q, k, v = random_qkv(B, H, N, D, seed=21)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+
+        mx.random.seed(6)
+        mask_2d = mx.random.uniform(shape=(NQ, NK)) > 0.4
+
+        # Repeat into 4-D: [B, H, NQ, NK]
+        mask_4d = mx.broadcast_to(mask_2d[None, None, :, :], (B, H, NQ, NK))
+        mask_4d = mx.contiguous(mask_4d)
+
+        out_2d = flash_attention_sparse(q, k, v, mask_2d, scale=scale)
+        out_4d = flash_attention_sparse(q, k, v, mask_4d, scale=scale)
+        mx.eval(out_2d, out_4d)
+
+        np.testing.assert_allclose(
+            np.array(out_2d.astype(mx.float32)),
+            np.array(out_4d.astype(mx.float32)),
+            atol=1e-4,
+            err_msg="4-D same-for-all mask ≠ 2-D shared mask"
+        )
+
+    # ── Per-head different masks (4-D) ─────────────────────────────────────
+
+    def test_4d_per_head_different_masks(self):
+        """Different masks per head give different outputs for each head."""
+        B, H, N, D = 1, 4, 128, 128
+        q, k, v = random_qkv(B, H, N, D, seed=30)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+
+        # Build per-head masks: head h has different random patterns
+        masks_per_head = []
+        for h in range(H):
+            mx.random.seed(100 + h)
+            m = mx.random.uniform(shape=(NQ, NK)) > 0.5
+            masks_per_head.append(m)
+        # Stack into [1, H, NQ, NK] (B=1)
+        mask_4d = mx.stack(masks_per_head, axis=0)[None, :, :, :]
+        mask_4d = mx.contiguous(mask_4d)
+
+        out_4d = flash_attention_sparse(q, k, v, mask_4d, scale=scale)
+        mx.eval(out_4d)
+        assert out_4d.shape == (B, H, N, D), f"unexpected shape {out_4d.shape}"
+
+        # Compare against per-head reference: run each head separately with 2-D mask
+        for h in range(H):
+            q_h = q[:, h:h+1, :, :]
+            k_h = k[:, h:h+1, :, :]
+            v_h = v[:, h:h+1, :, :]
+            out_h = flash_attention_sparse(q_h, k_h, v_h, masks_per_head[h], scale=scale)
+            mx.eval(out_h)
+            np.testing.assert_allclose(
+                np.array(out_4d[:, h:h+1, :, :].astype(mx.float32)),
+                np.array(out_h.astype(mx.float32)),
+                atol=2e-3,
+                err_msg=f"4-D per-head mask mismatch at head {h}"
+            )
+
+    # ── Output shape tests ──────────────────────────────────────────────────
+
+    def test_3d_output_shape(self):
+        """3-D block_mask must produce correct output shape [B, H, N, D]."""
+        B, H, N, D = 2, 4, 128, 64
+        q, k, v = random_qkv(B, H, N, D, seed=40)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((H, NQ, NK), dtype=mx.bool_)
+        out = flash_attention_sparse(q, k, v, mask, scale=scale)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D), f"expected {(B,H,N,D)}, got {out.shape}"
+
+    def test_4d_output_shape(self):
+        """4-D block_mask must produce correct output shape [B, H, N, D]."""
+        B, H, N, D = 3, 8, 64, 128
+        q, k, v = random_qkv(B, H, N, D, seed=41)
+        scale = 1.0 / math.sqrt(D)
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((B, H, NQ, NK), dtype=mx.bool_)
+        out = flash_attention_sparse(q, k, v, mask, scale=scale)
+        mx.eval(out)
+        assert out.shape == (B, H, N, D), f"expected {(B,H,N,D)}, got {out.shape}"
