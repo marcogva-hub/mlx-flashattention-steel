@@ -43,16 +43,20 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& v,
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // D.5: enforce row-major layout; no-op when already contiguous.
+        auto qc = mlx::core::contiguous(q, false, s);
+        auto kc = mlx::core::contiguous(k, false, s);
+        auto vc = mlx::core::contiguous(v, false, s);
         mlx_mfa::MFAttention::Params params{
-            (int)q.shape(3), scale, causal,
+            (int)qc.shape(3), scale, causal,
             false, false, false, 0, 0.0f, false, /*window_left=*/-1,
             /*window_right=*/-1};
-        mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+        mlx::core::Shape lse_shape = {qc.shape(0), qc.shape(1), qc.shape(2)};
         auto outs = mlx::core::array::make_arrays(
-            {q.shape(), lse_shape},
-            {q.dtype(), mlx::core::float32},
+            {qc.shape(), lse_shape},
+            {qc.dtype(), mlx::core::float32},
             std::make_shared<mlx_mfa::MFAttention>(s, params),
-            {q, k, v});
+            {qc, kc, vc});
         return std::make_pair(outs[0], outs[1]);
       },
       nb::arg("q"), nb::arg("k"), nb::arg("v"),

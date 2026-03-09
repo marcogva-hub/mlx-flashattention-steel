@@ -312,11 +312,9 @@ def flash_attention(
                 q, k, v, scale=scale, mask=mask)
 
     # Track FX-1: return_lse — use mfa_forward_with_lse to get L for free.
+    # D.5: contiguity is now enforced inside mfa_forward_with_lse C++ binding.
     if return_lse:
         from mlx_mfa._ext import mfa_forward_with_lse
-        q = mx.contiguous(q)
-        k = mx.contiguous(k)
-        v = mx.contiguous(v)
         O, L = mfa_forward_with_lse(q, k, v, scale, causal)
         return O, L
 
@@ -2581,10 +2579,10 @@ def _mfa_alibi_forward(
     scale: float,
     causal: bool,
 ) -> mx.array:
-    """Dispatch through the MFA+ALiBi custom-vjp path."""
-    q = mx.contiguous(q)
-    k = mx.contiguous(k)
-    v = mx.contiguous(v)
+    """Dispatch through the MFA+ALiBi custom-vjp path.
+
+    Row-major contiguity is enforced inside mfa_attention_alibi_forward (D.5).
+    """
     impl = _make_mfa_alibi_custom(scale, causal)
     return impl(q, k, v, alibi_slopes)
 
@@ -2718,15 +2716,11 @@ def _mfa_forward(
 ) -> mx.array:
     """Dispatch through the MFA custom-vjp path.
 
-    Ensures inputs are contiguous before passing to the Metal kernel.
     The ``stream`` argument is accepted for API compatibility but the
     custom-vjp path always uses the default GPU stream.
+    Row-major contiguity is enforced inside the C++ binding entry points
+    (D.5 fix) — no need for Python-level mx.contiguous() here.
     """
-    # Metal kernels require BHND row-major layout (leading dim = D).
-    # mx.contiguous() is a no-op when the array is already contiguous.
-    q = mx.contiguous(q)
-    k = mx.contiguous(k)
-    v = mx.contiguous(v)
     impl = _make_mfa_custom(scale, causal, softcap, window_left, window_right)
     # _impl now returns (O, L); callers only need O.
     O, _L = impl(q, k, v)

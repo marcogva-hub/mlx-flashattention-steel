@@ -992,7 +992,15 @@ mlx::core::array mfa_attention_forward(
     throw std::invalid_argument("MFA: expected 4D inputs [B, H, N, D]");
   }
 
-  int D = q.shape(3);
+  // D.5: Enforce row-major BHND layout inside the C++ binding entry point.
+  // mlx::core::contiguous() is a no-op (zero allocation) when the array is
+  // already contiguous — it returns the same buffer with no copy.  Moving
+  // this here eliminates 3 Python->C++ round-trips per forward dispatch.
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+
+  int D = qc.shape(3);
   if (D != 64 && D != 128 && D != 256) {
     throw std::invalid_argument(
         "MFA: head_dim must be 64, 128, or 256, got " + std::to_string(D));
@@ -1004,17 +1012,17 @@ mlx::core::array mfa_attention_forward(
       /*has_alibi=*/false, /*window_left=*/window_left,
       /*window_right=*/window_right};
 
-  auto out_shape  = q.shape();                      // Shape [B, H, N, D]
+  auto out_shape  = qc.shape();                     // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {
-      q.shape(0), q.shape(1), q.shape(2)};          // Shape [B, H, N]
+      qc.shape(0), qc.shape(1), qc.shape(2)};       // Shape [B, H, N]
 
   // O dtype matches input dtype (kernel accumulates FP32 then writes input prec).
   // L (logsumexp for backward) is always FP32.
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
-      {q.dtype(), mlx::core::float32},
+      {qc.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v});
+      {qc, kc, vc});
 
   return outputs[0];
 }
@@ -1216,7 +1224,12 @@ mlx::core::array mfa_attention_alibi_forward(
     throw std::invalid_argument(
         "MFA alibi: alibi_slopes must be 1D [H]");
 
-  int D = q.shape(3);
+  // D.5: enforce row-major layout at the C++ binding entry point.
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+
+  int D = qc.shape(3);
   if (D != 64 && D != 128 && D != 256)
     throw std::invalid_argument(
         "MFA alibi: head_dim must be 64, 128, or 256, got " +
@@ -1234,16 +1247,16 @@ mlx::core::array mfa_attention_alibi_forward(
     /*window_right=*/-1
   };
 
-  auto out_shape  = q.shape();
-  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+  auto out_shape  = qc.shape();
+  mlx::core::Shape lse_shape = {qc.shape(0), qc.shape(1), qc.shape(2)};
 
   // inputs: [Q, K, V, alibi_slopes]
   // Metal buffers: Q=0, K=1, V=2, O=3, L=4, params=5, alibi_slopes=9
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
-      {q.dtype(), mlx::core::float32},
+      {qc.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, alibi_slopes});
+      {qc, kc, vc, alibi_slopes});
 
   return outputs[0];
 }
