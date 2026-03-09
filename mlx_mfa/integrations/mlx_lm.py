@@ -17,10 +17,12 @@ Call ``unpatch_mlx_lm()`` to restore the original implementation.
 
 Supported configs (use STEEL):
     - Extension available (MFA C++ extension compiled)
-    - head_dim in {64, 128, 256}
+    - head_dim in {64, 128, 256, 512}
     - dtype float16 or bfloat16
     - mask == "causal" or mask is None with single-token decode
     - Quantized KV cache (cache.bits set): K/V dequantized before STEEL
+    - Sliding window from cache.max_kv_window (Track JE)
+    - GQA (H_q != H_kv) — STEEL handles natively
     - No attention sinks (sinks=None)
 
 All other cases fall back to the original mlx_lm SDPA transparently.
@@ -39,13 +41,50 @@ _original_sdpa = None
 _SUPPORTED_HDIMS: set[int] = set()
 _SUPPORTED_DTYPES: frozenset = frozenset()
 
+# Whether to emit per-call dispatch log lines (set by patch_mlx_lm).
+_verbose_dispatch: bool = False
+
 # --------------------------------------------------------------------------- #
-# Per-session call statistics                                                   #
+# Per-session call statistics (Track JE: added gqa_calls)                      #
 # --------------------------------------------------------------------------- #
 _stats: dict = {
     "forward_calls": 0,   # total calls to _steel_sdpa
     "steel_calls": 0,     # calls routed to the STEEL kernel
     "fallback_calls": 0,  # calls delegated back to the original SDPA
+    "gqa_calls": 0,       # STEEL calls with GQA (H_q != H_kv)
+    "sliding_window_calls": 0,  # STEEL calls with sliding window from cache
+}
+
+# --------------------------------------------------------------------------- #
+# Known model configuration hints (Track JE)                                   #
+# --------------------------------------------------------------------------- #
+#: Hints for popular model families. Keys are lowercase substrings of model
+#: names; values are dicts with optional keys ``head_dim`` (int) and
+#: ``sliding_window`` (int, -1 = disabled).
+KNOWN_MODEL_CONFIGS: dict[str, dict] = {
+    "llama":    {"head_dim": 128},
+    "mistral":  {"head_dim": 128, "sliding_window": 4096},
+    "mixtral":  {"head_dim": 128, "sliding_window": 4096},
+    "gemma":    {"head_dim": 256},
+    "gemma2":   {"head_dim": 256, "sliding_window": 4096},
+    "phi":      {"head_dim": 96},
+    "phi3":     {"head_dim": 96},
+    "qwen":     {"head_dim": 128},
+    "qwen2":    {"head_dim": 128},
+    "deepseek": {"head_dim": 128},
+    "falcon":   {"head_dim": 64},
+    "mpt":      {"head_dim": 64},
+    "opt":      {"head_dim": 64},
+    "gpt2":     {"head_dim": 64},
+    "gpt-neo":  {"head_dim": 64},
+    "bloom":    {"head_dim": 64},
+    "yi":       {"head_dim": 128},
+    "solar":    {"head_dim": 128},
+    "internlm": {"head_dim": 128},
+    "baichuan": {"head_dim": 128},
+    "cohere":   {"head_dim": 128},
+    "olmo":     {"head_dim": 64},
+    "starcoder":{"head_dim": 64},
 }
 
 
@@ -61,6 +100,8 @@ def _reset_stats() -> None:
     _stats["forward_calls"] = 0
     _stats["steel_calls"] = 0
     _stats["fallback_calls"] = 0
+    _stats["gqa_calls"] = 0
+    _stats["sliding_window_calls"] = 0
 
 
 def _steel_sdpa(
@@ -118,31 +159,59 @@ def _steel_sdpa(
 
     # Only use STEEL for supported head_dims, dtypes, and extension.
     if D not in _SUPPORTED_HDIMS or dtype not in _SUPPORTED_DTYPES:
+        if _verbose_dispatch:
+            print(f"[mlx-mfa dispatch] fallback: D={D} not in {sorted(_SUPPORTED_HDIMS)}")
         _stats["fallback_calls"] += 1
         return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
+    # GQA detection: track when H_q != H_kv.
+    _is_gqa = queries.shape[1] != keys.shape[1]
+
+    # Sliding-window from cache: mlx-lm cache objects may expose max_kv_window.
+    _window = None
+    if cache is not None and hasattr(cache, "max_kv_window"):
+        _mw = cache.max_kv_window
+        if _mw is not None and _mw > 0:
+            _window = (_mw - 1, 0)  # (left, right) — right=0 (causal-only)
+
     # Causal detection:
     #   - mask == "causal" (string): prefill with standard causal mask
-    #   - mask is None and queries.shape[-2] == 1: single-token decode
-    #     (attend to all cached K/V — no causal mask needed, use causal=False)
-    #   - any other mask type: fall back (boolean array, sliding window, etc.)
+    #   - mask is None: decode step — attend to all cached K/V (causal=False)
+    #   - any other mask type: fall back (boolean array, etc.)
     if mask == "causal":
-        # Prefill: STEEL causal is 1.6–2.1× faster than SDPA
         _stats["steel_calls"] += 1
-        return flash_attention(queries, keys, values, scale=scale, causal=True)
+        if _is_gqa:
+            _stats["gqa_calls"] += 1
+        if _window is not None:
+            _stats["sliding_window_calls"] += 1
+        if _verbose_dispatch:
+            print(f"[mlx-mfa dispatch] STEEL causal D={D} {dtype} "
+                  f"{'GQA ' if _is_gqa else ''}"
+                  f"{'window=' + str(_window[0]) if _window else ''}")
+        return flash_attention(queries, keys, values, scale=scale, causal=True,
+                               window_size=_window)
 
     if mask is None:
-        # Decode step (N_q=1) or full-attention prefill with no mask
         _stats["steel_calls"] += 1
-        return flash_attention(queries, keys, values, scale=scale, causal=False)
+        if _is_gqa:
+            _stats["gqa_calls"] += 1
+        if _window is not None:
+            _stats["sliding_window_calls"] += 1
+        if _verbose_dispatch:
+            print(f"[mlx-mfa dispatch] STEEL no-mask D={D} {dtype} "
+                  f"{'GQA ' if _is_gqa else ''}"
+                  f"{'window=' + str(_window[0]) if _window else ''}")
+        return flash_attention(queries, keys, values, scale=scale, causal=False,
+                               window_size=_window)
 
-    # mask is an array (boolean causal, sliding-window, padding, etc.):
-    # fall back to original — STEEL uses its own causal logic, not additive masks.
+    # mask is an array (boolean, padding, etc.): fall back.
+    if _verbose_dispatch:
+        print(f"[mlx-mfa dispatch] fallback: mask type={type(mask).__name__}")
     _stats["fallback_calls"] += 1
     return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
 
-def patch_mlx_lm(verbose: bool = True) -> bool:
+def patch_mlx_lm(verbose: bool = True, verbose_dispatch: bool = False) -> bool:
     """Monkey-patch mlx-lm to use STEEL attention.
 
     Parameters
@@ -151,6 +220,10 @@ def patch_mlx_lm(verbose: bool = True) -> bool:
         If ``True`` (default), print a one-line confirmation message after a
         successful patch and a warning when the extension is unavailable.
         Set to ``False`` for silent operation (e.g., inside library code).
+    verbose_dispatch:
+        If ``True``, print a log line for every SDPA call dispatched through
+        the patched function (steel vs fallback, D, dtype, GQA flag, window).
+        Useful for debugging routing decisions.  Default ``False``.
 
     Returns
     -------
@@ -164,13 +237,13 @@ def patch_mlx_lm(verbose: bool = True) -> bool:
     Example::
 
         from mlx_mfa.integrations.mlx_lm import patch_mlx_lm
-        patch_mlx_lm()
+        patch_mlx_lm(verbose_dispatch=True)  # log every dispatch
 
         from mlx_lm import load, generate
         model, tokenizer = load("mlx-community/Llama-3.2-3B-Instruct-4bit")
         generate(model, tokenizer, prompt="Hello world", verbose=True)
     """
-    global _original_sdpa
+    global _original_sdpa, _verbose_dispatch
 
     if _original_sdpa is not None:
         # Already patched — idempotent.
@@ -190,12 +263,14 @@ def patch_mlx_lm(verbose: bool = True) -> bool:
 
     _refresh_supported()
     _reset_stats()
+    _verbose_dispatch = verbose_dispatch
     _original_sdpa = base_module.scaled_dot_product_attention
     base_module.scaled_dot_product_attention = _steel_sdpa
     if verbose:
         print(
             f"[mlx-mfa] Patched mlx-lm — STEEL kernel active for causal f16/bf16 "
             f"attention (head_dims={sorted(_SUPPORTED_HDIMS)})"
+            + (" [verbose_dispatch=True]" if verbose_dispatch else "")
         )
     return True
 
@@ -258,6 +333,8 @@ def get_patch_stats() -> dict:
         "forward_calls": total,
         "steel_calls": steel,
         "fallback_calls": _stats["fallback_calls"],
+        "gqa_calls": _stats["gqa_calls"],
+        "sliding_window_calls": _stats["sliding_window_calls"],
         "steel_ratio": steel / total if total > 0 else 0.0,
     }
 

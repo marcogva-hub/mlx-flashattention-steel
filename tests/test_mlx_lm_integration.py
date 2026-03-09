@@ -594,3 +594,82 @@ class TestCheckModelCompatibility:
         # Should not raise ImportError regardless of mlx-lm presence
         result = check_model_compatibility("some-model")
         assert "compatible" in result
+
+
+# ---------------------------------------------------------------------------
+# Track JE — patch_mlx_lm enrichment
+# ---------------------------------------------------------------------------
+
+class TestTrackJEEnrichment:
+    """Tests for Track JE: GQA stats, sliding window, verbose_dispatch,
+    KNOWN_MODEL_CONFIGS."""
+
+    def test_stats_dict_has_new_keys(self):
+        """get_patch_stats must include gqa_calls and sliding_window_calls."""
+        from mlx_mfa.integrations.mlx_lm import get_patch_stats
+        stats = get_patch_stats()
+        assert "gqa_calls" in stats, "gqa_calls missing from stats"
+        assert "sliding_window_calls" in stats, "sliding_window_calls missing from stats"
+
+    @requires_ext
+    def test_gqa_calls_incremented(self):
+        """STEEL GQA dispatch (H_q != H_kv) increments gqa_calls."""
+        from mlx_mfa.integrations.mlx_lm import (
+            _steel_sdpa, get_patch_stats, patch_mlx_lm, unpatch_mlx_lm,
+        )
+        try:
+            patch_mlx_lm(verbose=False)
+            # GQA: H_q=4, H_kv=2, D=128
+            B, H_q, H_kv, N, D = 1, 4, 2, 8, 128
+            q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+            k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+            v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+            _steel_sdpa(q, k, v, cache=None, scale=0.1, mask="causal")
+            stats = get_patch_stats()
+            assert stats["gqa_calls"] == 1, f"gqa_calls expected 1, got {stats['gqa_calls']}"
+        finally:
+            unpatch_mlx_lm()
+
+    @requires_ext
+    def test_sliding_window_from_cache(self):
+        """Cache with max_kv_window attribute triggers sliding_window_calls."""
+        from mlx_mfa.integrations.mlx_lm import (
+            _steel_sdpa, get_patch_stats, patch_mlx_lm, unpatch_mlx_lm,
+        )
+
+        class _FakeCache:
+            bits = None
+            max_kv_window = 512
+
+        try:
+            patch_mlx_lm(verbose=False)
+            q, k, v = _make_qkv(D=128)
+            _steel_sdpa(q, k, v, cache=_FakeCache(), scale=0.1, mask="causal")
+            stats = get_patch_stats()
+            assert stats["sliding_window_calls"] == 1, (
+                f"sliding_window_calls expected 1, got {stats['sliding_window_calls']}"
+            )
+        finally:
+            unpatch_mlx_lm()
+
+    def test_verbose_dispatch_param_accepted(self):
+        """patch_mlx_lm accepts verbose_dispatch=True without error."""
+        from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
+        try:
+            # Should not raise even if extension is unavailable
+            patch_mlx_lm(verbose=False, verbose_dispatch=True)
+        except ImportError:
+            pass  # mlx-lm not installed — that's fine
+        finally:
+            unpatch_mlx_lm()
+
+    def test_known_model_configs_dict_exists(self):
+        """KNOWN_MODEL_CONFIGS must be a non-empty dict with expected families."""
+        from mlx_mfa.integrations.mlx_lm import KNOWN_MODEL_CONFIGS
+        assert isinstance(KNOWN_MODEL_CONFIGS, dict)
+        assert len(KNOWN_MODEL_CONFIGS) >= 5
+        for family in ("llama", "mistral", "gemma"):
+            assert family in KNOWN_MODEL_CONFIGS, f"'{family}' not in KNOWN_MODEL_CONFIGS"
+        # Each entry must have 'head_dim'
+        for name, cfg in KNOWN_MODEL_CONFIGS.items():
+            assert "head_dim" in cfg, f"KNOWN_MODEL_CONFIGS['{name}'] missing 'head_dim'"
