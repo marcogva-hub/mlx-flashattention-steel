@@ -1187,6 +1187,27 @@ def flash_attention_kvcache(
                         without copying.  Dense mode only.
         stream:         MLX stream.
 
+    **Cross-attention** (encoder–decoder, Q from decoder, K/V from encoder)::
+
+        # Encoder output: [B, H, S_enc, D] — fixed, not growing
+        out = flash_attention_kvcache(
+            q_dec, k_enc, v_enc,
+            causal=False,   # every decoder token attends all encoder positions
+        )
+
+    ``flash_attention_kvcache`` is the recommended entry point for cross-
+    attention: the encoder KV tensors (``k_enc``, ``v_enc``) are passed as
+    ``k_cache`` / ``v_cache`` without a ``block_table``, so the function uses
+    the dense attention path.  Set ``causal=False`` — the decoder can attend
+    to all encoder positions.  GQA is supported; H_kv may be less than H_q.
+
+    RoPE is typically **not** used for cross-attention (positional info comes
+    from the encoder); if your encoder uses absolute embeddings, omit
+    ``rotary_cos``/``rotary_sin``.
+
+    Cross-attention has full autograd support: dQ, dK, dV are all computed
+    correctly via the SDPA-based backward.
+
     **Append mode** (cache concat + attend)::
 
         out, k_updated, v_updated = flash_attention_kvcache(

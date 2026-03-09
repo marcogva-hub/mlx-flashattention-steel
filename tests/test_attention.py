@@ -6490,3 +6490,57 @@ class TestSplitFuse:
         assert mx.all(mx.isfinite(out_d)).item()
         assert out_p.shape == (B_p, H, N_p, D)
         assert out_d.shape == (B_d, H, N_d, D)
+
+
+# ---------------------------------------------------------------------------
+# Track JF: Cross-attention via flash_attention_kvcache
+# ---------------------------------------------------------------------------
+
+class TestCrossAttentionKVCache:
+    """flash_attention_kvcache as cross-attention (encoder–decoder)."""
+
+    def test_forward_shape_and_finite(self):
+        """Basic cross-attention: Q from decoder, K/V from encoder, causal=False."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H_q, H_kv, S_enc, S_dec, D = 2, 8, 2, 256, 32, 128
+        q = mx.random.normal([B, H_q, S_dec, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+        out = flash_attention_kvcache(q, k, v, causal=False)
+        mx.eval(out)
+        assert out.shape == (B, H_q, S_dec, D)
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_single_token_decode(self):
+        """Single-token (N_q=1) cross-attention — typical decode-step usage."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H_q, H_kv, S_enc, D = 1, 4, 4, 128, 64
+        q = mx.random.normal([B, H_q, 1, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+        out = flash_attention_kvcache(q, k, v, causal=False)
+        mx.eval(out)
+        assert out.shape == (B, H_q, 1, D), out.shape
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_autograd_gradients_finite(self):
+        """Cross-attention backward: dQ, dK_enc, dV_enc all finite."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H_q, H_kv, S_enc, S_dec, D = 2, 4, 2, 64, 16, 128
+        q = mx.random.normal([B, H_q, S_dec, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, S_enc, D]).astype(mx.float16)
+
+        def fn(q_, k_, v_):
+            return flash_attention_kvcache(q_, k_, v_, causal=False)
+
+        cot = mx.ones([B, H_q, S_dec, D], dtype=mx.float16)
+        _, grads = mx.vjp(fn, (q, k, v), (cot,))
+        dq, dk, dv = grads
+        mx.eval(dq, dk, dv)
+        assert dq.shape == q.shape
+        assert dk.shape == k.shape
+        assert dv.shape == v.shape
+        assert mx.all(mx.isfinite(dq)).item()
+        assert mx.all(mx.isfinite(dk)).item()
+        assert mx.all(mx.isfinite(dv)).item()
