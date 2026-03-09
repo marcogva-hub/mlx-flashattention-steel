@@ -1458,64 +1458,88 @@ def flash_attention_kvcache(
                     interleaved=interleaved, rotary_dim=rotary_dim,
                 )
 
-            # Build scatter target lists: (phys_blk, slot_off, b, t)
-            sc_blk_ids: list = []
-            sc_blk_offs: list = []
-            sc_k_rows: list = []
-            sc_v_rows: list = []
-            for b in range(B_p):
-                kv_len = seq_lens_list_p[b]
-                tb = block_table_list_p[b]
-                for t in range(N_new_p):
-                    pos = kv_len + t
-                    blk_idx = pos // blk_sz
-                    blk_off = pos % blk_sz
-                    phys = int(tb[blk_idx])
-                    if phys < 0:
-                        continue
-                    sc_blk_ids.append(phys)
-                    sc_blk_offs.append(blk_off)
-                    sc_k_rows.append(k_new[b, :, t, :])   # [H_kv, D]
-                    sc_v_rows.append(v_new[b, :, t, :])
-
-            if _USE_SCATTER_KV and sc_blk_ids:
-                # Phase 4-C.1: single Metal scatter replaces O(num_blks) concat.
-                blk_ids_arr  = mx.array(sc_blk_ids,  dtype=mx.int32)
-                blk_offs_arr = mx.array(sc_blk_offs, dtype=mx.int32)
-                k_toks = mx.stack(sc_k_rows)   # [N_write, H_kv, D]
-                v_toks = mx.stack(sc_v_rows)
-                k_pages_new = _mfa_scatter_kv_cpp(
-                    k_cache, k_toks, blk_ids_arr, blk_offs_arr)
-                v_pages_new = _mfa_scatter_kv_cpp(
-                    v_cache, v_toks, blk_ids_arr, blk_offs_arr)
+            if _USE_SCATTER_KV:
+                # F.2: Vectorised scatter targets — O(1) MLX ops, no per-token loop.
+                # positions[b, t] = seq_lens[b] + t  →  [B_p, N_new_p]
+                _kv_l = mx.array(seq_lens_list_p, dtype=mx.int32)    # [B_p]
+                _t    = mx.arange(N_new_p, dtype=mx.int32)            # [N_new_p]
+                _pos  = _kv_l[:, None] + _t[None, :]                  # [B_p, N_new_p]
+                _bi   = (_pos // blk_sz).astype(mx.int32)             # block indices
+                _bo   = (_pos %  blk_sz).astype(mx.int32)             # block offsets
+                # Gather physical block IDs: block_table [B_p, max_blks]
+                _ri   = mx.arange(B_p, dtype=mx.int32)[:, None]      # [B_p, 1]
+                _ph   = block_table[_ri, _bi]                         # [B_p, N_new_p]
+                # Evaluate phys + offsets (small int arrays — one GPU sync) and
+                # filter invalid (phys < 0) slots.  MLX lacks boolean indexing;
+                # use integer fancy indexing on the filtered indices instead.
+                ph_list = _ph.reshape(-1).tolist()
+                bo_list = _bo.reshape(-1).tolist()
+                valid   = [i for i, p in enumerate(ph_list) if p >= 0]
+                # k_new [B_p, H_kv, N_new_p, D] → [B_p*N_new_p, H_kv, D]
+                _kf = k_new.transpose(0, 2, 1, 3).reshape(B_p * N_new_p, H_kv_p, D_p)
+                _vf = v_new.transpose(0, 2, 1, 3).reshape(B_p * N_new_p, H_kv_p, D_p)
+                if valid:
+                    _idx         = mx.array(valid, dtype=mx.int32)
+                    blk_ids_arr  = mx.array([ph_list[i] for i in valid], dtype=mx.int32)
+                    blk_offs_arr = mx.array([bo_list[i] for i in valid], dtype=mx.int32)
+                    k_pages_new = _mfa_scatter_kv_cpp(
+                        k_cache, _kf[_idx], blk_ids_arr, blk_offs_arr)
+                    v_pages_new = _mfa_scatter_kv_cpp(
+                        v_cache, _vf[_idx], blk_ids_arr, blk_offs_arr)
+                else:
+                    k_pages_new = k_cache
+                    v_pages_new = v_cache
             else:
-                # Fallback: MLX-native pool rebuild.
-                k_updates: dict = {phys: {} for phys in sc_blk_ids}
-                v_updates: dict = {phys: {} for phys in sc_blk_ids}
-                for phys, off, kr, vr in zip(
-                        sc_blk_ids, sc_blk_offs, sc_k_rows, sc_v_rows):
-                    k_updates[phys][off] = kr
-                    v_updates[phys][off] = vr
-                k_blocks, v_blocks = [], []
-                for i in range(num_blks):
-                    if i in k_updates:
-                        rows_k = [
-                            (k_updates[i][j][None] if j in k_updates[i]
-                             else k_cache[i, j:j+1])
-                            for j in range(blk_sz)
-                        ]
-                        rows_v = [
-                            (v_updates[i][j][None] if j in v_updates[i]
-                             else v_cache[i, j:j+1])
-                            for j in range(blk_sz)
-                        ]
-                        k_blocks.append(mx.concatenate(rows_k, axis=0))
-                        v_blocks.append(mx.concatenate(rows_v, axis=0))
-                    else:
-                        k_blocks.append(k_cache[i])
-                        v_blocks.append(v_cache[i])
-                k_pages_new = mx.stack(k_blocks)
-                v_pages_new = mx.stack(v_blocks)
+                # Fallback: Python loop builds per-block update dicts.
+                sc_blk_ids: list = []
+                sc_blk_offs: list = []
+                sc_k_rows: list = []
+                sc_v_rows: list = []
+                for b in range(B_p):
+                    kv_len = seq_lens_list_p[b]
+                    tb = block_table_list_p[b]
+                    for t in range(N_new_p):
+                        pos = kv_len + t
+                        blk_idx = pos // blk_sz
+                        blk_off = pos % blk_sz
+                        phys = int(tb[blk_idx])
+                        if phys < 0:
+                            continue
+                        sc_blk_ids.append(phys)
+                        sc_blk_offs.append(blk_off)
+                        sc_k_rows.append(k_new[b, :, t, :])
+                        sc_v_rows.append(v_new[b, :, t, :])
+                # Fallback: MLX-native pool rebuild (extension unavailable).
+                if sc_blk_ids:
+                    k_updates: dict = {phys: {} for phys in sc_blk_ids}
+                    v_updates: dict = {phys: {} for phys in sc_blk_ids}
+                    for phys, off, kr, vr in zip(
+                            sc_blk_ids, sc_blk_offs, sc_k_rows, sc_v_rows):
+                        k_updates[phys][off] = kr
+                        v_updates[phys][off] = vr
+                    k_blocks, v_blocks = [], []
+                    for i in range(num_blks):
+                        if i in k_updates:
+                            rows_k = [
+                                (k_updates[i][j][None] if j in k_updates[i]
+                                 else k_cache[i, j:j+1])
+                                for j in range(blk_sz)
+                            ]
+                            rows_v = [
+                                (v_updates[i][j][None] if j in v_updates[i]
+                                 else v_cache[i, j:j+1])
+                                for j in range(blk_sz)
+                            ]
+                            k_blocks.append(mx.concatenate(rows_k, axis=0))
+                            v_blocks.append(mx.concatenate(rows_v, axis=0))
+                        else:
+                            k_blocks.append(k_cache[i])
+                            v_blocks.append(v_cache[i])
+                    k_pages_new = mx.stack(k_blocks)
+                    v_pages_new = mx.stack(v_blocks)
+                else:
+                    k_pages_new = k_cache
+                    v_pages_new = v_cache
             seq_lens_new = mx.array(
                 [sl + N_new_p for sl in seq_lens_list_p], dtype=mx.int32)
 
@@ -2723,13 +2747,12 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 # B.1: L is already available from the forward output — no
                 # gradient-checkpointing re-run of mfa_forward_with_lse needed.
                 #
-                # Materialise + pin contiguity before Metal kernel dispatch.
-                # MLX's autograd may recycle GPU buffers for q/k/v during
-                # backward; mfa_steel_backward reads them directly and sees
-                # garbage without an mx.eval() fence.  mx.contiguous() then
+                # Pin contiguity before Metal kernel dispatch.  mx.contiguous()
                 # gives each tensor fresh graph ancestry so the Metal allocator
                 # cannot alias them with the backward outputs (dQ, dK, dV).
-                mx.eval(q, k, v, O, L, dO)
+                # G.1: The mx.eval() fence is now inside mfa_steel_backward
+                # (mlx::core::eval({q,k,v,O,L,dO})) to avoid a blocking
+                # Python-level GPU sync call.
                 q  = mx.contiguous(q)
                 k  = mx.contiguous(k)
                 v  = mx.contiguous(v)
@@ -3241,6 +3264,147 @@ def flash_attention_varlen(
         return dQ, dK, dV
 
     return _varlen_impl(q, k, v)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# I.2 — DenseKVCache: pre-allocated dense KV buffer
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class DenseKVCache:
+    """Dense KV cache with pre-allocated buffer and write-pointer.
+
+    Solves the O(seqlen²) graph-accumulation problem of repeated
+    ``mx.concatenate([cache, k_new], axis=2)`` calls by writing new tokens
+    into a fixed pre-allocated ``[B, H, max_seq_len, D]`` buffer via
+    ``mx.slice_update`` (MLX ``__setitem__``).  ``mx.eval()`` is called after
+    each append to keep the lazy graph at constant depth, so evaluation cost
+    stays O(1) regardless of how many tokens have been appended.
+
+    **Key benefit**: avoids the O(seqlen)-deep lazy graph that accumulates
+    when concatenation results are not explicitly evaluated between steps.
+
+    Example::
+
+        cache = DenseKVCache(B=1, H=8, D=128, max_seq_len=4096)
+
+        # Prefill
+        cache.append(k_prefill, v_prefill)   # [B, H, N_prefill, D]
+
+        # Decode loop
+        for _ in range(steps):
+            cache.append(k_new, v_new)       # [B, H, 1, D]
+            out = flash_attention_kvcache(
+                q, cache.k, cache.v,
+                cache_seqlens=cache.seqlen,
+            )
+
+        cache.reset()   # reuse for next sequence
+
+    Args:
+        B:            Batch size.
+        H:            Number of KV heads.
+        D:            Head dimension.
+        max_seq_len:  Maximum total sequence length (prefill + generated).
+        dtype:        MLX dtype for the buffer (default: ``mx.float16``).
+
+    Attributes:
+        seqlen (int): Current number of tokens written.
+        k:            Active slice ``[B, H, seqlen, D]``.
+        v:            Active slice ``[B, H, seqlen, D]``.
+    """
+
+    def __init__(
+        self,
+        B: int,
+        H: int,
+        D: int,
+        max_seq_len: int = 8192,
+        dtype=None,
+    ) -> None:
+        if dtype is None:
+            dtype = mx.float16
+        self.B = B
+        self.H = H
+        self.D = D
+        self.max_seq_len = max_seq_len
+        self.dtype = dtype
+        self._seqlen: int = 0
+
+        # Pre-allocate fixed buffers; eval immediately to commit GPU memory.
+        self._k = mx.zeros([B, H, max_seq_len, D], dtype=dtype)
+        self._v = mx.zeros([B, H, max_seq_len, D], dtype=dtype)
+        mx.eval(self._k, self._v)
+
+    # -- Properties ----------------------------------------------------------
+
+    @property
+    def seqlen(self) -> int:
+        """Number of tokens currently in the cache."""
+        return self._seqlen
+
+    @property
+    def k(self) -> "mx.array":
+        """Active K slice ``[B, H, seqlen, D]``."""
+        return self._k[:, :, :self._seqlen, :]
+
+    @property
+    def v(self) -> "mx.array":
+        """Active V slice ``[B, H, seqlen, D]``."""
+        return self._v[:, :, :self._seqlen, :]
+
+    # -- Mutation ------------------------------------------------------------
+
+    def append(self, k_new: "mx.array", v_new: "mx.array") -> None:
+        """Scatter ``k_new / v_new`` into the pre-allocated buffer.
+
+        Args:
+            k_new: New key tokens   ``[B, H, N_new, D]``.
+            v_new: New value tokens ``[B, H, N_new, D]``.
+
+        Raises:
+            ValueError: if ``seqlen + N_new > max_seq_len``.
+        """
+        n_new = k_new.shape[2]
+        end   = self._seqlen + n_new
+        if end > self.max_seq_len:
+            raise ValueError(
+                f"DenseKVCache: seqlen {end} > max_seq_len={self.max_seq_len}. "
+                "Increase max_seq_len or switch to PagedKVCache."
+            )
+        # Scatter into pre-allocated buffer via __setitem__ (MLX slice_update).
+        # O(max_seq_len) write but constant graph depth after mx.eval().
+        self._k[:, :, self._seqlen:end, :] = k_new.astype(self.dtype)
+        self._v[:, :, self._seqlen:end, :] = v_new.astype(self.dtype)
+        self._seqlen = end
+        # Materialise the scatter to prevent O(seqlen) lazy-graph growth.
+        mx.eval(self._k, self._v)
+
+    def reset(self) -> "DenseKVCache":
+        """Reset write pointer to 0 (reuse buffer for a new sequence).
+
+        Does **not** zero the buffer — stale data is unreachable since we
+        track ``seqlen`` and slice with ``[:, :, :seqlen, :]``.
+
+        Returns:
+            ``self`` — enables chaining: ``cache.reset().append(...)``
+        """
+        self._seqlen = 0
+        return self
+
+    # -- Context manager -----------------------------------------------------
+
+    def __enter__(self) -> "DenseKVCache":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.reset()
+
+    def __repr__(self) -> str:
+        return (
+            f"DenseKVCache(B={self.B}, H={self.H}, D={self.D}, "
+            f"seqlen={self._seqlen}/{self.max_seq_len})"
+        )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

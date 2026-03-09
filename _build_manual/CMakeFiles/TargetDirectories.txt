@@ -1,0 +1,8 @@
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/_ext.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/nanobind-static.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/edit_cache.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/rebuild_cache.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/list_install_components.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/install.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/install/local.dir
+/Users/marcomarcelino/code/mlx-mfa-v2/_build_manual/CMakeFiles/install/strip.dir

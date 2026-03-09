@@ -137,6 +137,9 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& dO,
          float scale, bool causal) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // G.1: Materialise all 6 inputs before Metal kernel dispatch.
+        // MLX autograd may recycle GPU buffers; mlx::core::eval() fences against aliasing.
+        mlx::core::eval(std::vector<mlx::core::array>{q, k, v, O, L, dO});
         mlx_mfa::MFAttention::Params params{};
         params.head_dim    = q.shape(3);
         params.scale       = scale;

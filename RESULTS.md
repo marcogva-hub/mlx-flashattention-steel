@@ -80,3 +80,28 @@
 | extreme | 5 | 4,352 | 0.01 | 0.01 | 0.05 |
 | short_many | 32 | 2,048 | 0.02 | 0.01 | 0.28 |
 | two_long | 2 | 4,096 | 0.01 | 0.01 | 0.02 |
+
+
+## v0.9.0 — Varlen Attention Benchmarks (STEEL varlen kernel)
+
+| Scenario | Seqs | Total N | Varlen (ms) | Padded (ms) | Sequential (ms) |
+|----------|------|---------|-------------|-------------|------------------|
+| uniform_10x1024 | 10 | 10,240 | 0.01 | 0.01 | 0.06 |
+| varied | 5 | 4,352 | 0.01 | 0.01 | 0.03 |
+| extreme | 5 | 4,352 | 0.01 | 0.01 | 0.03 |
+| short_many | 32 | 2,048 | 0.01 | 0.01 | 0.20 |
+| two_long | 2 | 4,096 | 0.01 | 0.01 | 0.01 |
+
+
+## v0.9.0 — Backward Benchmarks (STEEL native bwd)
+
+| Config | MFA bwd (ms) | SDPA bwd (ms) | Speedup |
+|--------|-------------|--------------|--------|
+| D=64  N=2048 f16 causal | 2.03 | 0.02 | 0.01x |
+| D=64  N=4096 f16 causal | 5.67 | 0.02 | 0.00x |
+| D=128 N=2048 f16 causal | 3.81 | 0.02 | 0.00x |
+| D=128 N=4096 f16 causal | 11.93 | 0.02 | 0.00x |
+| D=128 N=2048 bf16 causal | 5.12 | 0.02 | 0.00x |
+| D=128 N=4096 bf16 causal | 22.32 | 0.02 | 0.00x |
+| D=64  N=2048 f16 non-caus | 1.65 | 0.02 | 0.01x |
+| D=128 N=2048 f16 non-caus | 3.92 | 0.01 | 0.00x |
