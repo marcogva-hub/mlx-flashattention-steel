@@ -52,6 +52,7 @@ struct MFASteelParams {
     float softcap;     // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     int   has_alibi;   // 0 = disabled; 1 = ALiBi per-head bias (buffer(9))
     int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
+    int   window_right;// -1 = disabled; >=0 = sliding window right radius (tokens)
 };
 
 /// Append Metal preamble (#include, STEEL_CONST, ARCHITECTURE_GEN, STEEL_PRAGMA_UNROLL).
@@ -132,6 +133,8 @@ struct FlashDecodePartialParams {
     int64_t pL_head_stride;    // qL
     // Optional features — appended at end for backward compatibility.
     float softcap;             // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
+    int   window_left;         // -1 = disabled; >=0 = sliding window left radius
+    int   window_right;        // -1 = disabled; >=0 = sliding window right radius
 };
 
 /// Parameters for the Flash Decode Phase 2 (reduce) kernel.
@@ -208,6 +211,7 @@ struct MFAPagedSteelParams {
     float softcap;           // 0.0 = disabled
     int   has_alibi;         // 0 = disabled
     int   window_left;       // -1 = disabled
+    int   window_right;      // -1 = disabled
     // ── Paged-specific ────────────────────────────────────────────────────
     int block_size;          // tokens per pool block (page size)
     int max_blocks;          // columns in block_table (per-sequence max blocks)

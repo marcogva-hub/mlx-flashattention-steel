@@ -28,11 +28,13 @@ NB_MODULE(_ext, m) {
       nb::arg("causal"),
       nb::arg("softcap") = 0.0f,
       nb::arg("window_left") = -1,
+      nb::arg("window_right") = -1,
       nb::arg("stream") = nb::none(),
       "Flash Attention forward (Metal). "
       "q/k/v: [B, H, N, D], float16/bfloat16/float32. "
       "softcap: tanh softcapping factor (0.0 = disabled). "
-      "window_left: sliding window left radius (-1 = disabled).");
+      "window_left: sliding window left radius (-1 = disabled). "
+      "window_right: sliding window right radius (-1 = disabled).");
 
   // Debug: returns (O, L) so L (logsumexp) can be inspected from Python.
   m.def("mfa_forward_with_lse",
@@ -43,7 +45,8 @@ NB_MODULE(_ext, m) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
+            /*window_right=*/-1};
         mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {q.shape(), lse_shape},
@@ -70,7 +73,8 @@ NB_MODULE(_ext, m) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
+            /*window_right=*/-1};
         mlx::core::Shape d_shape = {q.shape(0), q.shape(1), q.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {q.shape(), d_shape},
@@ -99,7 +103,8 @@ NB_MODULE(_ext, m) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1};
+            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
+            /*window_right=*/-1};
         auto outs = mlx::core::array::make_arrays(
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
@@ -373,13 +378,14 @@ NB_MODULE(_ext, m) {
            float scale,
            bool  causal,
            int   window_left,
+           int   window_right,
            int   block_size,
            std::optional<mlx::core::StreamOrDevice> stream)
             -> std::pair<mlx::core::array, mlx::core::array> {
           auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
           return mlx_mfa::mfa_paged_steel_forward(
               q, k_pool, v_pool, block_table, seq_lens,
-              scale, causal, window_left, block_size, s);
+              scale, causal, window_left, window_right, block_size, s);
         },
         nb::arg("q"),
         nb::arg("k_pool"),
@@ -389,6 +395,7 @@ NB_MODULE(_ext, m) {
         nb::arg("scale"),
         nb::arg("causal"),
         nb::arg("window_left")  = -1,
+        nb::arg("window_right") = -1,
         nb::arg("block_size")   = 16,
         nb::arg("stream")       = nb::none(),
         "Paged STEEL forward attention (kernel-level paged KV, Track FD).\n"
@@ -403,7 +410,7 @@ NB_MODULE(_ext, m) {
         "seq_lens:    [B]                         int32 (effective KV length per batch)\n"
         "\n"
         "Returns (O [B,H,N,D], L [B,H,N] logsumexp in log2 domain).\n"
-        "GQA: H_q / H_kv must be integer. window_left=-1 disables sliding window.\n"
+        "GQA: H_q / H_kv must be integer. window_left/right=-1 disables sliding window.\n"
         "Only f16/bf16 supported.");
 
   // --- SageAttention forward (Track KB): int8 Q/K + fp16 GEMM ---

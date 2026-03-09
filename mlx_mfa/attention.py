@@ -89,13 +89,11 @@ def flash_attention(
             Useful for attention visualization / debugging.
         window_size: Optional ``(left, right)`` tuple for sliding window
             attention.  ``left`` is the number of tokens to the left of each
-            query that are visible.  ``right`` must be ``-1`` or ``0``
-            (meaning no right-side masking); passing ``right > 0`` raises
-            ``NotImplementedError`` because the STEEL kernel does not yet
-            support right-side exclusion (use ``causal=True`` to mask all
-            future tokens).  When ``left >= 0``, the STEEL kernel uses native
-            tile-skip to skip K-tiles entirely outside the window.
-            Pass ``None`` (default) to disable.
+            query that are visible; ``right`` is the number of tokens to the
+            right.  Use ``-1`` to disable either side.  Both sides are
+            natively supported by the STEEL kernel: tiles entirely outside
+            the window are skipped and per-element masking handles boundary
+            tiles.  Pass ``None`` (default) to disable the feature entirely.
         return_lse: When True, also return the log-sum-exp tensor
             ``L [B, H, N]`` in **log2 domain** alongside the output.
             Useful for Flash Decoding, speculative decoding, and any
@@ -275,27 +273,28 @@ def flash_attention(
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
         return _mfa_alibi_forward(q, k, v, alibi_slopes, scale, causal)
 
-    # Convert window_size=(left, right) → window_left for the STEEL kernel.
-    # Only f16/bf16 support native window; f32 falls back to masked SDPA.
+    # Convert window_size=(left, right) → window_left / window_right for the STEEL kernel.
+    # Both f16 and bf16 support native left+right window masking.
+    # f32 falls back to masked SDPA (no native kernel support for f32).
     window_left = -1
+    window_right = -1
     if window_size is not None:
-        wr = window_size[1] if len(window_size) > 1 else -1
-        if wr > 0:
-            raise NotImplementedError(
-                f"flash_attention: window_size right={wr} is not yet supported. "
-                "The STEEL kernel only implements left-side sliding-window masking. "
-                "Use causal=True to mask all future tokens, or set right=-1."
-            )
         wl = window_size[0]
-        if wl >= 0 and q.dtype != mx.float32:
-            window_left = wl
+        wr = window_size[1] if len(window_size) > 1 else -1
+        if q.dtype != mx.float32 and (wl >= 0 or wr >= 0):
+            # Native STEEL kernel path: both sides supported.
+            if wl >= 0:
+                window_left = wl
+            if wr >= 0:
+                window_right = wr
         else:
-            # f32 or negative left: windowed SDPA fallback
+            # f32 or both disabled: windowed SDPA fallback.
             N, S = q.shape[2], k.shape[2]
-            wl = max(wl, 0)
+            wl_eff = max(wl, 0) if wl >= 0 else S
+            wr_eff = max(wr, 0) if wr >= 0 else S
             q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
             k_idx = mx.arange(S, dtype=mx.int32)[None, :]
-            in_win = k_idx >= q_idx - wl
+            in_win = (k_idx >= q_idx - wl_eff) & (k_idx <= q_idx + wr_eff)
             if causal:
                 in_win = in_win & (k_idx <= q_idx)
             mask = mx.where(in_win,
@@ -313,7 +312,7 @@ def flash_attention(
         O, L = mfa_forward_with_lse(q, k, v, scale, causal)
         return O, L
 
-    return _mfa_forward(q, k, v, scale, causal, softcap, window_left, stream)
+    return _mfa_forward(q, k, v, scale, causal, softcap, window_left, window_right, stream)
 
 
 def make_rope_3d_tables(
@@ -864,7 +863,7 @@ def get_supported_configs() -> dict:
         "causal":               True,
         "gqa":                  True,   # native GQA without KV expansion
         "block_sparse":         True,
-        "sliding_window":       True,   # left side only; right side is Option B guard
+        "sliding_window":       True,   # both left and right sides supported
         "rope":                 True,
         "paged_kv":             True,
         "varlen":               True,
@@ -2539,8 +2538,8 @@ def _mfa_alibi_forward(
 
 @functools.lru_cache(maxsize=64)
 def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
-                     window_left: int = -1):
-    """Return a custom-vjp MFA forward function for the given (scale, causal, softcap, window_left).
+                     window_left: int = -1, window_right: int = -1):
+    """Return a custom-vjp MFA forward function for the given (scale, causal, softcap, window_left, window_right).
 
     ``lru_cache`` ensures the same Python function object (with its registered
     backward) is reused for identical hyperparameters, avoiding repeated
@@ -2566,9 +2565,10 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
 
     @mx.custom_function
     def _impl(q, k, v):
-        if window_left >= 0 or softcap != 0.0:
+        if window_left >= 0 or window_right >= 0 or softcap != 0.0:
             # Window or softcap variant: pass all params via mfa_attention_forward.
-            O = mfa_attention_forward(q, k, v, scale, causal, softcap, window_left)
+            O = mfa_attention_forward(q, k, v, scale, causal, softcap,
+                                      window_left, window_right)
         else:
             # Fast path: uses the debug binding that also returns L.
             O, _ = mfa_forward_with_lse(q, k, v, scale, causal)
@@ -2582,7 +2582,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
         #   output    - forward output O (unused; gradients computed fresh)
         q, k, v = primals
 
-        if window_left >= 0:
+        if window_left >= 0 or window_right >= 0:
             # Windowed attention backward: re-run reference SDPA with window mask.
             # Sliding window is mainly used for inference; backward is provided
             # for correctness when gradients are needed during training.
@@ -2590,7 +2590,11 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 N, S = q.shape[2], k.shape[2]
                 q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]  # [N,1]
                 k_idx = mx.arange(S, dtype=mx.int32)[None, :]          # [1,S]
-                in_win = k_idx >= q_idx - window_left
+                in_win = mx.ones((N, S), dtype=mx.bool_)
+                if window_left >= 0:
+                    in_win = in_win & (k_idx >= q_idx - window_left)
+                if window_right >= 0:
+                    in_win = in_win & (k_idx <= q_idx + window_right)
                 if causal:
                     in_win = in_win & (k_idx <= q_idx)
                 mask = mx.where(in_win,
@@ -2647,6 +2651,7 @@ def _mfa_forward(
     causal: bool,
     softcap: float = 0.0,
     window_left: int = -1,
+    window_right: int = -1,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Dispatch through the MFA custom-vjp path.
@@ -2660,7 +2665,7 @@ def _mfa_forward(
     q = mx.contiguous(q)
     k = mx.contiguous(k)
     v = mx.contiguous(v)
-    impl = _make_mfa_custom(scale, causal, softcap, window_left)
+    impl = _make_mfa_custom(scale, causal, softcap, window_left, window_right)
     return impl(q, k, v)
 
 

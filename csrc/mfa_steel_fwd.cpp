@@ -154,7 +154,8 @@ struct MFASteelParams {
   // Optional features (appended for backward compat; defaults 0.0f / 0)
   float softcap;    // 0.0 = disabled; >0 = tanh(S/cap)*cap before softmax
   int   has_alibi;  // 0 = disabled; 1 = ALiBi bias from buffer(9)
-  int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
+  int   window_left;  // -1 = disabled; >=0 = sliding window left radius (tokens)
+  int   window_right; // -1 = disabled; >=0 = sliding window right radius (tokens)
 };
 
 )MFA";
@@ -759,25 +760,49 @@ struct MFAExpSubOp {
   } else {
     ss << "  int kb_lim = p->NK;\n";
   }
-  // Sliding window: compute kb_start per Q-block (different qb → different window).
-  // kb_start skips all K-tiles entirely before the window boundary for the smallest row.
-  // kb_last_win: last tile that may have a window boundary for ANY row in this Q-block.
-  // Different rows have different window starts, so the boundary spans tiles
-  // [kb_start, kb_last_win].  Per-element masking must cover ALL of them.
+  // Sliding window: compute kb_start/kb_lim per Q-block (different qb → different window).
+  // kb_start (left bound):  skip K-tiles entirely before the left window boundary.
+  // kb_last_win (left boundary zone): last tile with any left-boundary elements.
+  // kb_right_lim (right bound): clamp kb_lim so we stop past the right window boundary.
+  // kb_first_right (right boundary zone): first tile with any right-masked elements.
+  // All must be recomputed per Q-block since different qb → different window positions.
   if (has_window) {
     ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
-    ss << "  int win_start = q_min - p->window_left;\n";
-    ss << "  int kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
-    ss << "  // Window boundary for largest row in block: q_min + BQ - 1 - window_left.\n";
-    ss << "  // If <= 0 all tiles are fully in-window → kb_last_win = -1 (no masking).\n";
-    ss << "  int kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
-    ss << "                      ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
-    ss << "  for (int _kf = 0; _kf < kb_start; _kf++) {\n";
-    ss << "    loader_k.next();\n";
-    ss << "    loader_v.next();\n";
+    // Left bound: only when window_left is enabled (-1 means disabled).
+    ss << "  int kb_start, kb_last_win;\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    int win_start = q_min - p->window_left;\n";
+    ss << "    kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  } else {\n";
+    ss << "    kb_start = 0;\n";
+    ss << "    kb_last_win = -1; // no left masking\n";
+    ss << "  }\n";
+    // d_split uses absolute kb-indexed loaders (no persistent loader to advance).
+    if (!d_split) {
+      ss << "  for (int _kf = 0; _kf < kb_start; _kf++) {\n";
+      ss << "    loader_k.next();\n";
+      ss << "    loader_v.next();\n";
+      ss << "  }\n";
+    }
+    // Right bound: clamp kb_lim and track first tile needing per-element right masking.
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    // First tile where ALL elements are out-of-window for the largest row.\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start; // empty range guard\n";
+    ss << "    // First tile where col > row + window_right for the smallest row (q_min).\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim; // right masking disabled\n";
     ss << "  }\n";
   } else {
     ss << "  const int kb_start = 0;\n";
+    ss << "  const int kb_last_win = -1;\n";
+    ss << "  const int kb_first_right = p->NK; // no window\n";
   }
   ss << "\n";
 
@@ -1025,6 +1050,26 @@ struct MFAExpSubOp {
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+    // Window right boundary: mask k > q + window_right for tiles >= kb_first_right.
+    ss << "    // Window right boundary: mask k > q + window_right\n";
+    ss << "    // Apply for all tiles in [kb_first_right, kb_lim) (per-element check).\n";
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
     ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
@@ -1593,6 +1638,8 @@ struct MFAFlashDecodePartialParams {
   long pL_head_stride;
   // Optional features — appended at end for backward compatibility.
   float softcap;
+  int   window_left;  // -1 = disabled; >=0 = sliding window left radius
+  int   window_right; // -1 = disabled; >=0 = sliding window right radius
 };
 
 )MFAP";
@@ -1742,25 +1789,47 @@ struct MFAFlashDecodePartialParams {
   ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
   ss << "\n";
 
-  // K-loop bounds: [kb_start, kb_lim) where kb_lim respects causal + split end
+  // K-loop bounds: [kb_start, kb_lim) where kb_lim respects causal + split end + window.
   ss << "  const int kb_split_start = (int)split_id * p->NK_per_split;\n";
   ss << "  const int kb_end   = min(kb_split_start + p->NK_per_split, p->NK_total);\n";
   if (causal) {
     // qL_off positions the query globally; causal mask: col <= row
     ss << "  const int q_max    = (int)q_tile_id * MFA_BQ + p->qL_off + MFA_BQ;\n";
     ss << "  const int kb_causal_lim = (q_max + MFA_BK - 1) / MFA_BK;\n";
-    ss << "  const int kb_lim   = min(kb_causal_lim, kb_end);\n";
+    ss << "  int kb_lim   = min(kb_causal_lim, kb_end);\n";
   } else {
-    ss << "  const int kb_lim   = kb_end;\n";
+    ss << "  int kb_lim   = kb_end;\n";
   }
-  // Sliding window: clamp kb_start to skip tiles before the window boundary.
+  // Sliding window: per-Q-tile kb_start (left) and kb_lim clamp (right).
   if (has_window) {
-    ss << "  const int q_min     = (int)q_tile_id * MFA_BQ + p->qL_off;\n";
-    ss << "  const int win_start = q_min - p->window_left;\n";
-    ss << "  const int kb_window_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
-    ss << "  const int kb_start = max(kb_split_start, kb_window_start);\n";
+    ss << "  const int q_min = (int)q_tile_id * MFA_BQ + p->qL_off;\n";
+    // Left bound
+    ss << "  int kb_start, kb_last_win;\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    const int win_start = q_min - p->window_left;\n";
+    ss << "    const int kb_win_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "    kb_start = max(kb_split_start, kb_win_start);\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  } else {\n";
+    ss << "    kb_start = kb_split_start;\n";
+    ss << "    kb_last_win = -1;\n";
+    ss << "  }\n";
+    // Right bound
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim;\n";
+    ss << "  }\n";
   } else {
     ss << "  const int kb_start = kb_split_start;\n";
+    ss << "  const int kb_last_win = -1;\n";
+    ss << "  const int kb_first_right = kb_lim;\n";
   }
   ss << "\n";
 
@@ -1883,19 +1952,38 @@ struct MFAFlashDecodePartialParams {
     ss << "    }\n";
     ss << "\n";
   }
-  // Window left boundary mask for flash decode partial
+  // Window boundary masks for flash decode partial
   if (has_window) {
-    ss << "    if (kb == kb_start && kb_start > kb_split_start) {\n";
+    // Left: mask k < q - window_left for tiles in [kb_start, kb_last_win]
+    ss << "    if (kb <= kb_last_win) {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
     ss << "        const int row = (int)q_tile_id * MFA_BQ + p->qL_off\n";
     ss << "                      + tm + sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
-    ss << "          const int col = kb_start * MFA_BK + sn + j * 8;\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+    // Right: mask k > q + window_right for tiles >= kb_first_right
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = (int)q_tile_id * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
     ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
@@ -2517,6 +2605,7 @@ struct MFAPagedSteelParams {
   float softcap;
   int   has_alibi;
   int   window_left;
+  int   window_right;
   int block_size;
   int max_blocks;
   int pool_block_stride;
@@ -2887,15 +2976,35 @@ struct MFAMMATile {
   } else {
     ss << "  int kb_lim = NK_batch;\n";
   }
-  // Sliding window start
+  // Sliding window: per-Q-block kb_start (left) and kb_lim clamp (right).
   if (has_window) {
     ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
-    ss << "  int win_start = q_min - p->window_left;\n";
-    ss << "  int kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
-    ss << "  int kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
-    ss << "                      ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    // Left bound
+    ss << "  int kb_start, kb_last_win;\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    int win_start = q_min - p->window_left;\n";
+    ss << "    kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  } else {\n";
+    ss << "    kb_start = 0;\n";
+    ss << "    kb_last_win = -1;\n";
+    ss << "  }\n";
+    // Right bound
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim;\n";
+    ss << "  }\n";
   } else {
     ss << "  const int kb_start = 0;\n";
+    ss << "  const int kb_last_win = -1;\n";
+    ss << "  const int kb_first_right = kb_lim;\n";
   }
   ss << "\n";
 
@@ -2989,8 +3098,9 @@ struct MFAMMATile {
     ss << "    }\n";
     ss << "\n";
   }
-  // Window mask
+  // Window boundary masks
   if (has_window) {
+    // Left: mask k < q - window_left
     ss << "    if (kb <= kb_last_win) {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
@@ -3001,6 +3111,23 @@ struct MFAMMATile {
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+    // Right: mask k > q + window_right
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
     ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";

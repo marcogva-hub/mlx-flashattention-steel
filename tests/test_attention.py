@@ -790,18 +790,19 @@ class TestFlashAttentionAPI:
         with pytest.raises(Exception):
             mx.eval(flash_attention(q, k, v, attn_bias=bad_bias))
 
-    # --- window_size right side (Track 6) ------------------------------------
+    # --- window_size right side (Track LA) -----------------------------------
 
-    def test_window_right_positive_raises(self):
-        """window_size right>0 must raise NotImplementedError immediately."""
+    def test_window_right_positive_is_ok(self):
+        """window_size right>0 should NOT raise (native STEEL support, Track LA)."""
         q, k, v = self._qkv()
-        with pytest.raises(NotImplementedError, match="right="):
-            flash_attention(q, k, v, window_size=(128, 1))
+        out = flash_attention(q, k, v, window_size=(128, 1))
+        mx.eval(out)
+        assert out.shape == q.shape
 
     def test_window_right_zero_is_ok(self):
         """window_size right=0 (no right exclusion) should not raise."""
         q, k, v = self._qkv()
-        out = flash_attention(q, k, v, window_size=(128, 0))
+        out = flash_attention(q, k, v, window_size=(128, -1))
         mx.eval(out)
         assert out.shape == q.shape
 
@@ -812,11 +813,12 @@ class TestFlashAttentionAPI:
         mx.eval(out)
         assert out.shape == q.shape
 
-    def test_window_right_large_raises_f32(self):
-        """window_size right=999 must raise even for f32 (caught before fallback)."""
+    def test_window_right_f32_fallback(self):
+        """window_size right=999 for f32 falls back to masked SDPA (no raise)."""
         q, k, v = self._qkv(dtype=mx.float32)
-        with pytest.raises(NotImplementedError, match="right="):
-            flash_attention(q, k, v, window_size=(64, 999))
+        out = flash_attention(q, k, v, window_size=(64, 999))
+        mx.eval(out)
+        assert out.shape == q.shape
 
 
 # ---------------------------------------------------------------------------
@@ -4859,7 +4861,7 @@ class TestSlidingWindow:
         v = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
 
         out_mfa = flash_attention(q, k, v, scale=scale, causal=causal,
-                                  window_size=(window_left, 0))
+                                  window_size=(window_left, -1))
         out_ref = self._ref_window(q, k, v, scale, causal, window_left)
         mx.eval(out_mfa, out_ref)
 
@@ -4896,7 +4898,7 @@ class TestSlidingWindow:
         k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
         v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
         out = flash_attention(q, k, v, scale=scale, causal=True,
-                              window_size=(128, 0))
+                              window_size=(128, -1))
         mx.eval(out)
         assert mx.all(mx.isfinite(out)).item(), "Window output contains NaN/Inf"
 
@@ -4910,7 +4912,7 @@ class TestSlidingWindow:
         v = mx.random.normal((B, H, N, D))
 
         out_fa = flash_attention(q, k, v, scale=scale, causal=True,
-                                 window_size=(window_left, 0))
+                                 window_size=(window_left, -1))
         # Reference: exact masked SDPA
         N2, S2 = q.shape[2], k.shape[2]
         q_idx = mx.arange(S2 - N2, S2, dtype=mx.int32)[:, None]
@@ -4924,6 +4926,126 @@ class TestSlidingWindow:
         np.testing.assert_allclose(
             np.array(out_fa), np.array(out_ref), rtol=1e-5, atol=1e-5,
         )
+
+
+# ---------------------------------------------------------------------------
+# Track LA: window_size.right native STEEL support
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension required")
+class TestWindowRight:
+    """Tests for window_size=(left, right) right-side support in the STEEL kernel.
+
+    The right window masks all K positions k > q + window_right.
+    Expected: output must match a dense SDPA reference with the equivalent mask.
+    """
+
+    def _ref_window(self, q, k, v, scale, causal, window_left, window_right):
+        """Reference SDPA with explicit bilateral window mask."""
+        N, S = q.shape[2], k.shape[2]
+        q_off = (S - N) if (causal and N < S) else 0
+        q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]
+        k_idx = mx.arange(S, dtype=mx.int32)[None, :]
+        in_win = mx.ones((N, S), dtype=mx.bool_)
+        if window_left >= 0:
+            in_win = in_win & (k_idx >= q_idx - window_left)
+        if window_right >= 0:
+            in_win = in_win & (k_idx <= q_idx + window_right)
+        if causal:
+            in_win = in_win & (k_idx <= q_idx)
+        mask = mx.where(in_win,
+                        mx.zeros((N, S), dtype=q.dtype),
+                        mx.full((N, S), float("-inf"), dtype=q.dtype))
+        return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.parametrize("causal", [False, True])
+    def test_right_only_matches_ref(self, D, causal):
+        """Right-only window (left=-1) output matches masked SDPA reference."""
+        B, H, N, S = 1, 4, 256, 256
+        scale = 1.0 / math.sqrt(D)
+        window_right = 64
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=causal,
+                                  window_size=(-1, window_right))
+        out_ref = self._ref_window(q, k, v, scale, causal, -1, window_right)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            rtol=1e-2, atol=5e-3,
+            err_msg=f"Right-only window mismatch D={D} causal={causal}",
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_bilateral_window_matches_ref(self, D):
+        """Bilateral window (left + right) output matches masked SDPA reference."""
+        B, H, N, S = 1, 4, 256, 512
+        scale = 1.0 / math.sqrt(D)
+        window_left, window_right = 128, 32
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, S, D)) * 0.1).astype(mx.float16)
+
+        out_mfa = flash_attention(q, k, v, scale=scale, causal=False,
+                                  window_size=(window_left, window_right))
+        out_ref = self._ref_window(q, k, v, scale, False, window_left, window_right)
+        mx.eval(out_mfa, out_ref)
+
+        np.testing.assert_allclose(
+            np.array(out_mfa.astype(mx.float32)),
+            np.array(out_ref.astype(mx.float32)),
+            rtol=1e-2, atol=5e-3,
+            err_msg=f"Bilateral window mismatch D={D}",
+        )
+
+    def test_window_right_output_finite(self):
+        """Window right output must contain no NaN or Inf."""
+        B, H, N, D = 2, 4, 512, 128
+        scale = 1.0 / math.sqrt(D)
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        out = flash_attention(q, k, v, scale=scale, causal=False,
+                              window_size=(-1, 64))
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item(), "Window-right output contains NaN/Inf"
+
+    def test_window_right_large_allows_all(self):
+        """window_right larger than sequence length = full attention."""
+        B, H, N, D = 1, 4, 256, 128
+        scale = 1.0 / math.sqrt(D)
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.float16)
+
+        out_big_win = flash_attention(q, k, v, scale=scale,
+                                     window_size=(-1, N * 2))
+        out_full    = flash_attention(q, k, v, scale=scale)
+        mx.eval(out_big_win, out_full)
+
+        np.testing.assert_allclose(
+            np.array(out_big_win.astype(mx.float32)),
+            np.array(out_full.astype(mx.float32)),
+            rtol=1e-3, atol=1e-3,
+            err_msg="window_right > N should match full attention",
+        )
+
+    def test_window_right_bf16(self):
+        """bfloat16 bilateral window output is finite and correct shape."""
+        B, H, N, D = 1, 4, 256, 128
+        scale = 1.0 / math.sqrt(D)
+        q = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.bfloat16)
+        k = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.bfloat16)
+        v = (mx.random.normal((B, H, N, D)) * 0.1).astype(mx.bfloat16)
+        out = flash_attention(q, k, v, scale=scale, window_size=(64, 64))
+        mx.eval(out)
+        assert out.shape == q.shape
+        assert mx.all(mx.isfinite(out)).item(), "bf16 window-right output contains NaN/Inf"
 
 
 # ---------------------------------------------------------------------------

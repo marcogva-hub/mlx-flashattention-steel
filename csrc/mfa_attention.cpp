@@ -205,7 +205,9 @@ void MFAttention::eval_gpu(
     pp.pL_head_stride  = (int64_t)N;
 
     // Optional features
-    pp.softcap = params_.softcap;   // 0.0 when disabled
+    pp.softcap       = params_.softcap;    // 0.0 when disabled
+    pp.window_left   = params_.window_left;  // -1 when disabled
+    pp.window_right  = params_.window_right; // -1 when disabled
 
     // ── Build FlashDecodeReduceParams ──────────────────────────────────────
     int reduce_tgp = std::min(D, 128);
@@ -234,7 +236,7 @@ void MFAttention::eval_gpu(
       /*has_rope=*/false, /*rope_interleaved=*/true,
       params_.softcap > 0.0f,   // softcap variant
       params_.has_alibi,        // ALiBi position biases
-      params_.window_left >= 0, // sliding window variant
+      params_.window_left >= 0 || params_.window_right >= 0, // sliding window variant
       dtype_code
     };
     KK key_p2{
@@ -310,7 +312,7 @@ void MFAttention::eval_gpu(
     params_.rope_interleaved,   // true=LLaMA, false=GPT-NeoX
     params_.softcap > 0.0f,    // tanh softcapping variant
     params_.has_alibi,          // ALiBi per-head position biases
-    params_.window_left >= 0,   // sliding window native tile-skip variant
+    params_.window_left >= 0 || params_.window_right >= 0, // sliding window variant
     dtype_code
   };
 
@@ -368,7 +370,8 @@ void MFAttention::eval_gpu(
   // above but explicit assignment is clearer and guards against future refactors).
   sp.softcap     = params_.softcap;           // 0.0 when disabled
   sp.has_alibi   = params_.has_alibi ? 1 : 0;
-  sp.window_left = params_.window_left;      // -1 when disabled
+  sp.window_left  = params_.window_left;     // -1 when disabled
+  sp.window_right = params_.window_right;    // -1 when disabled
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = d.get_command_encoder(stream().index);
@@ -945,7 +948,9 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
          params_.rope_interleaved  == o->params_.rope_interleaved  &&
          params_.cache_seqlens     == o->params_.cache_seqlens     &&
          params_.softcap        == o->params_.softcap        &&
-         params_.has_alibi      == o->params_.has_alibi;
+         params_.has_alibi      == o->params_.has_alibi      &&
+         params_.window_left    == o->params_.window_left    &&
+         params_.window_right   == o->params_.window_right;
 }
 
 // =========================================================================
@@ -960,6 +965,7 @@ mlx::core::array mfa_attention_forward(
     bool causal,
     float softcap,
     int  window_left,
+    int  window_right,
     std::optional<mlx::core::StreamOrDevice> stream) {
   auto s = stream.has_value()
       ? mlx::core::to_stream(stream.value())
@@ -978,7 +984,8 @@ mlx::core::array mfa_attention_forward(
   MFAttention::Params params{D, scale, causal,
       /*has_block_mask=*/false, /*has_rope=*/false,
       /*rope_interleaved=*/false, /*cache_seqlens=*/0, /*softcap=*/softcap,
-      /*has_alibi=*/false, /*window_left=*/window_left};
+      /*has_alibi=*/false, /*window_left=*/window_left,
+      /*window_right=*/window_right};
 
   auto out_shape  = q.shape();                      // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {
@@ -1034,7 +1041,8 @@ mlx::core::array mfa_attention_sparse_forward(
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
-      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1};
+      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1,
+      /*window_right=*/-1};
 
   auto out_shape  = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
@@ -1078,7 +1086,8 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
-      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1};
+      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1,
+      /*window_right=*/-1};
   auto out_shape = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
 
@@ -1147,7 +1156,8 @@ mlx::core::array mfa_attention_rope_forward(
     /*cache_seqlens=*/cache_seqlens,
     /*softcap=*/0.0f,
     /*has_alibi=*/false,
-    /*window_left=*/-1
+    /*window_left=*/-1,
+    /*window_right=*/-1
   };
 
   auto out_shape  = q.shape();
@@ -1201,7 +1211,8 @@ mlx::core::array mfa_attention_alibi_forward(
     /*cache_seqlens=*/0,
     /*softcap=*/0.0f,
     /*has_alibi=*/true,
-    /*window_left=*/-1
+    /*window_left=*/-1,
+    /*window_right=*/-1
   };
 
   auto out_shape  = q.shape();
@@ -1419,7 +1430,7 @@ void MFAPagedSteelForward::eval_gpu(
     /*rope_interleaved=*/false,
     /*has_softcap=*/false,
     /*has_alibi=*/false,
-    params_.window_left >= 0,  // has_window
+    params_.window_left >= 0 || params_.window_right >= 0,  // has_window
     dtype_code,
     /*gqa_factor=*/H / H_kv
   };
@@ -1463,9 +1474,10 @@ void MFAPagedSteelForward::eval_gpu(
   pp.L_strides[0] = (int64_t)H  * N;
   pp.L_strides[1] = (int64_t)N;
   // Optional features
-  pp.softcap     = 0.0f;
-  pp.has_alibi   = 0;
-  pp.window_left = params_.window_left;
+  pp.softcap      = 0.0f;
+  pp.has_alibi    = 0;
+  pp.window_left  = params_.window_left;
+  pp.window_right = params_.window_right;
   // Paged-specific
   pp.block_size        = block_size;
   pp.max_blocks        = max_blocks;
@@ -1509,6 +1521,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     float scale,
     bool  causal,
     int   window_left,
+    int   window_right,
     int   block_size,
     mlx::core::Stream s) {
 
@@ -1541,7 +1554,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]
   mlx::core::Shape lse_shape = {B, H, N};          // logsumexp
 
-  MFAPagedSteelForward::Params params{D, scale, causal, window_left, block_size};
+  MFAPagedSteelForward::Params params{D, scale, causal, window_left, window_right, block_size};
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},

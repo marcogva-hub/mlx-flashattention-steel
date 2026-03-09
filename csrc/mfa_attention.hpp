@@ -38,6 +38,7 @@ class MFAttention : public mlx::core::Primitive {
     float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     bool has_alibi;      // false = disabled; alibi_slopes at last input
     int  window_left;    // -1 = disabled; >=0 = sliding window left radius (tokens)
+    int  window_right;   // -1 = disabled; >=0 = sliding window right radius (tokens)
   };
 
   explicit MFAttention(mlx::core::Stream stream, Params params);
@@ -82,6 +83,7 @@ mlx::core::array mfa_attention_forward(
     bool causal,
     float softcap = 0.0f,
     int  window_left = -1,
+    int  window_right = -1,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
 
 /// Forward pass with ALiBi per-head position biases.
@@ -388,6 +390,7 @@ class MFAPagedSteelForward : public mlx::core::Primitive {
     float scale;
     bool  causal;
     int   window_left;   // -1 = disabled; >=0 = sliding window left radius
+    int   window_right;  // -1 = disabled; >=0 = sliding window right radius
     int   block_size;    // tokens per page block
   };
 
@@ -409,11 +412,12 @@ class MFAPagedSteelForward : public mlx::core::Primitive {
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto* o = dynamic_cast<const MFAPagedSteelForward*>(&other);
     if (!o) return false;
-    return params_.head_dim    == o->params_.head_dim    &&
-           params_.scale       == o->params_.scale       &&
-           params_.causal      == o->params_.causal      &&
-           params_.window_left == o->params_.window_left &&
-           params_.block_size  == o->params_.block_size;
+    return params_.head_dim     == o->params_.head_dim     &&
+           params_.scale        == o->params_.scale        &&
+           params_.causal       == o->params_.causal       &&
+           params_.window_left  == o->params_.window_left  &&
+           params_.window_right == o->params_.window_right &&
+           params_.block_size   == o->params_.block_size;
   }
 
  private:
@@ -496,6 +500,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     float scale,
     bool  causal,
     int   window_left,
+    int   window_right,
     int   block_size,
     mlx::core::Stream stream);
 
