@@ -43,16 +43,18 @@ class InferenceContext:
     """Stateful KV-cache manager for autoregressive generation.
 
     Manages the growing K/V cache across prefill and decode steps so callers
-    don't need to track concatenation manually.  The cache is extended lazily
-    via :func:`mlx.core.concatenate`; no pre-allocated max-length buffer is
-    required.
+    don't need to track concatenation manually.  Internally uses a
+    :class:`DenseKVCache` pre-allocated write-pointer buffer; each decode step
+    scatter-writes ``N_new`` tokens in O(N_new × H × D) work with constant
+    lazy-graph depth (no ``mx.concatenate`` allocations).
 
     Args:
         B:           Batch size.
         H_kv:        Number of KV heads (may differ from Q heads for GQA).
         D:           Head dimension.
-        max_seq_len: Soft limit on total sequence length (prefill + generated).
-                     Exceeding it raises :class:`ValueError`.
+        max_seq_len: Maximum total sequence length (prefill + generated).
+                     Pre-allocated at construction; exceeding raises
+                     :class:`ValueError`.
         dtype:       Cache data type (default: ``mx.float16``).
         stream:      Optional MLX stream for all attention calls.
 
@@ -89,42 +91,45 @@ class InferenceContext:
         self.dtype = dtype
         self.stream = stream
 
-        self._seqlen: int = 0
-        self._k_cache: Optional[mx.array] = None
-        self._v_cache: Optional[mx.array] = None
+        # I.1: Single pre-allocated DenseKVCache; eliminates O(seqlen) concatenate
+        # per decode step.  mx.eval() is called inside DenseKVCache.append() to
+        # keep the lazy graph at constant depth regardless of decode-loop length.
+        from mlx_mfa.attention import DenseKVCache
+        self._cache = DenseKVCache(B, H_kv, D, max_seq_len=max_seq_len, dtype=dtype)
 
     # -- Properties ----------------------------------------------------------
 
     @property
     def seqlen(self) -> int:
         """Current KV cache fill length."""
-        return self._seqlen
+        return self._cache.seqlen
 
     @property
     def k_cache(self) -> Optional[mx.array]:
         """Accumulated K cache ``[B, H_kv, seqlen, D]`` or ``None`` if empty."""
-        return self._k_cache
+        if self._cache.seqlen == 0:
+            return None
+        return self._cache.k
 
     @property
     def v_cache(self) -> Optional[mx.array]:
         """Accumulated V cache ``[B, H_kv, seqlen, D]`` or ``None`` if empty."""
-        return self._v_cache
+        if self._cache.seqlen == 0:
+            return None
+        return self._cache.v
 
     # -- Lifecycle -----------------------------------------------------------
 
     def reset(self) -> "InferenceContext":
         """Reset cache to empty state (reuse context for a new sequence).
 
-        Clears the accumulated K/V buffers and resets :attr:`seqlen` to 0.
-        Does not re-allocate anything; the next :meth:`prefill` or :meth:`step`
-        call will start fresh.
+        Resets the write-pointer to 0 without re-allocating the underlying
+        buffer.  The next :meth:`prefill` or :meth:`step` call will start fresh.
 
         Returns:
             ``self`` -- enables chaining: ``ctx.reset().prefill(...)``
         """
-        self._seqlen = 0
-        self._k_cache = None
-        self._v_cache = None
+        self._cache.reset()
         return self
 
     # -- Attention calls -----------------------------------------------------
@@ -166,10 +171,10 @@ class InferenceContext:
                 f"Prefill length {N} > max_seq_len={self.max_seq_len}"
             )
 
-        # Reset and store the prefill cache.
-        self._k_cache = mx.contiguous(k.astype(self.dtype))
-        self._v_cache = mx.contiguous(v.astype(self.dtype))
-        self._seqlen = N
+        # Reset write-pointer and scatter prefill tokens into the pre-allocated
+        # buffer.  DenseKVCache.append() calls mx.eval() internally.
+        self._cache.reset()
+        self._cache.append(k, v)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
@@ -195,9 +200,10 @@ class InferenceContext:
     ) -> mx.array:
         """Append new K/V tokens to the cache and run decode attention.
 
-        Concatenates ``k_new / v_new`` onto the accumulated cache, then calls
-        :func:`flash_attention_kvcache` so each new query token attends to the
-        full KV history (causal by construction).
+        Scatter-writes ``k_new / v_new`` into the pre-allocated cache buffer via
+        :meth:`DenseKVCache.append`, then calls :func:`flash_attention_kvcache`
+        so each new query token attends to the full KV history (causal by
+        construction).
 
         Args:
             q:        Query for the new tokens ``[B, H_q, N_new, D]``.
@@ -216,35 +222,22 @@ class InferenceContext:
         from mlx_mfa.attention import flash_attention_kvcache
 
         n_new = k_new.shape[2]
-        new_seqlen = self._seqlen + n_new
+        new_seqlen = self._cache.seqlen + n_new
         if new_seqlen > self.max_seq_len:
             raise ValueError(
-                f"Cache overflow: seqlen {self._seqlen} + n_new {n_new} = "
+                f"Cache overflow: seqlen {self._cache.seqlen} + n_new {n_new} = "
                 f"{new_seqlen} > max_seq_len={self.max_seq_len}"
             )
 
-        k_new = k_new.astype(self.dtype)
-        v_new = v_new.astype(self.dtype)
-
-        if self._k_cache is None:
-            self._k_cache = mx.contiguous(k_new)
-            self._v_cache = mx.contiguous(v_new)
-        else:
-            self._k_cache = mx.concatenate([self._k_cache, k_new], axis=2)
-            self._v_cache = mx.concatenate([self._v_cache, v_new], axis=2)
-        self._seqlen = new_seqlen
-
-        # Phase 4-E.1: materialise the lazy graph after each step.
-        # Without this, the graph grows to O(N_steps) depth over long decode
-        # loops, causing catastrophic memory pressure.  mx.eval() pins the
-        # concatenate result so the next step starts from a flat buffer.
-        mx.eval(self._k_cache, self._v_cache)
+        # I.1: Scatter-write into pre-allocated buffer — no mx.concatenate,
+        # no explicit mx.eval() here (DenseKVCache.append handles it).
+        self._cache.append(k_new, v_new)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
 
         return flash_attention_kvcache(
-            q, self._k_cache, self._v_cache,
+            q, self._cache.k, self._cache.v,
             scale=scale,
             causal=True,
             softcap=softcap,
@@ -265,6 +258,6 @@ class InferenceContext:
     def __repr__(self) -> str:
         return (
             f"InferenceContext(B={self.B}, H_kv={self.H_kv}, D={self.D}, "
-            f"max_seq_len={self.max_seq_len}, seqlen={self._seqlen}, "
+            f"max_seq_len={self.max_seq_len}, seqlen={self._cache.seqlen}, "
             f"dtype={self.dtype})"
         )
