@@ -2,6 +2,19 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.2.1] — UNRELEASED
+
+### Added
+- **Track LA** — `window_size=(left, right)` right-side bound now active in STEEL kernel
+- **Track LB** — 4D sparse block masks `[B, H, NQ, NK]` and `[H, NQ, NK]`
+- **Track LC** — `InferenceContext` stateful lifecycle object for autoregressive generation
+
+### Fixed
+- `attn_bias` docstring: clearly documented as SDPA-only (architectural decision)
+- `flash_attention_paged` docstring: removed stale "zeros" references for dK/dV
+
+---
+
 ## [1.2.0] — 2026-03-09
 
 ### Added
