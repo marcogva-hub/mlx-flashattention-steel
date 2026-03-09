@@ -857,3 +857,129 @@ cross-attention.  Passing `causal=False` with encoder KV tensors as `k_cache`
   models.
 
 See `examples/cross_attention.py` for a working code example.
+
+---
+
+## 15. v1.2.0 Architecture Notes — SageAttention (Tracks KA–KC)
+
+### Overview
+
+SageAttention is an int8-quantized attention variant that reduces memory bandwidth
+for Q and K by 2× (loading int8 instead of float16/bfloat16). On Apple Silicon,
+there is **no int8 GEMM hardware** — the GEMM still executes in fp16. The speedup
+comes entirely from reduced memory bandwidth for Q/K tile loads.
+
+**When it helps**: long-context inference with pre-quantized KV caches (S ≥ 2048).
+In the current Python implementation, `quantize_per_block` adds overhead that makes
+real-time quantization slower than `flash_attention` for standard use.
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `csrc/mfa_sage_fwd.hpp` | `MFASageParams`, `mfa_sage_forward` declaration |
+| `csrc/mfa_sage_fwd.cpp` | SageForward Primitive + Metal JIT source generator |
+| `mlx_mfa/quantize.py` | Python utilities: `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
+| `tests/test_sage_attention.py` | 23 tests across `TestQuantizeUtils`, `TestSageAPI`, `TestSageKernel` |
+| `benchmarks/bench_sage.py` | sage_attention vs flash_attention throughput comparison |
+
+### Metal kernel design (`mfa_sage_fwd.cpp`)
+
+The kernel is a simplified STEEL variant:
+
+- **Grid**: `(ceil(N/BQ), H, B)` — one threadgroup per Q-tile (non-persistent)
+- **Warp layout**: `WM×WN` simdgroups per threadgroup
+- **Q/K tile loads**: int8, dequantized to fp16 in-register using per-block scale
+- **V tile loads**: fp16/bf16 (V is never quantized — sum reduction needs full precision)
+- **Accumulator**: fp32 online softmax (same as STEEL)
+- **Causal masking**: `kb_lim = ceil((tile_row + 1) / BK)` limits K-loop
+
+Block sizes (`sage_block_sizes(D)`):
+| D | BQ | BK |
+|---|----|----|
+| 64 | 32 | 32 |
+| 128 | 32 | 16 |
+| 256 | 32 | 16 |
+
+### K-smoothing: smooth_k
+
+`smooth_k(k)` subtracts the per-channel mean of K across the sequence dimension:
+
+```
+k_mean[b, h, 1, d] = mean(k[b, h, :, d])    # float32
+k_smooth = k - k_mean                         # centered K
+```
+
+**Purpose**: centering channels around zero reduces the per-block absmax, giving
+finer int8 quantization granularity (smaller quantization step → lower error).
+
+**Mathematical proof that no output correction is needed**:
+
+Let `b_i = (q_i · k_mean) * scale` be the bias added to every attention logit for
+query `i`. Since `k_mean` is the same for all key positions j:
+
+```
+S_smooth[i, j] = S_exact[i, j] + b_i    (for all j)
+```
+
+In the softmax, constant `b_i` factors as `exp(b_i)` in both numerator and denominator:
+
+```
+P_smooth[i, j] = exp(S_exact[i,j] + b_i) / Σ_k exp(S_exact[i,k] + b_i)
+               = exp(S_exact[i,j])       / Σ_k exp(S_exact[i,k])
+               = P_exact[i, j]
+```
+
+Therefore `sage_attention(q, k_smooth, v) = sage_attention(q, k, v)` exactly (in exact
+arithmetic). The `sage_output_correction` function in `quantize.py` is mathematically
+a no-op and adds spurious error in practice — it is **not called** by `sage_attention()`.
+
+### GQA support
+
+`mfa_sage_forward` accepts `H_kv < H_q`. The kernel maps Q head `h` to KV head
+`h // gqa_factor` exactly as the STEEL forward kernel does.
+
+Q scales have shape `[B, H, N_blocks]`; KV scales have shape `[B, H_kv, S_blocks]`.
+
+### Python API (`sage_attention`)
+
+```python
+out = sage_attention(q, k, v,
+                     scale=None,        # default: 1/√D
+                     causal=False,
+                     apply_smooth_k=True,
+                     stream=None)
+```
+
+The function:
+1. Optionally applies `smooth_k` (drops `k_mean` — no correction needed)
+2. Quantizes Q and K per-block with `quantize_per_block(x, block_size)`
+3. Squeezes scale shapes from `[B, H, N_blocks, 1]` → `[B, H, N_blocks]`
+4. Calls `mfa_sage_forward(q_int8, k_int8, v, q_scale, k_scale, scale, causal)`
+5. Returns `O` directly (float16/bfloat16, same dtype as input)
+
+Falls back to `flash_attention` when the C++ extension is unavailable.
+
+### Numerical tolerances
+
+| Config | Typical max abs error | Notes |
+|--------|----------------------|-------|
+| D=64/128 non-causal | 0.05–0.15 | Int8 quantization error |
+| D=64/128 causal | 0.10–0.45 | Metal non-deterministic softmax reduction adds variance |
+| D=256 | finite, no NaN | Correctness check only |
+
+Causal max error can vary ±0.2 across runs due to Metal GPU non-deterministic
+reduction order. Test tolerance: `atol=0.30` non-causal, `atol=0.50` causal.
+
+### Performance
+
+On M1 Max (f16, B=1, H=8), measured with `benchmarks/bench_sage.py`:
+
+| N | sage / flash_attention |
+|---|------------------------|
+| 1024 | 0.31× |
+| 4096 | 0.52× |
+
+Current bottleneck: Python-side `quantize_per_block` adds 5+ elementwise MLX ops per
+tensor. True speedup requires pre-quantized KV caches (KV stored as int8 between
+decode steps). This is the expected use-case for production inference engines.

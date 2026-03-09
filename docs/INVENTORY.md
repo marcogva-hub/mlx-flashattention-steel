@@ -1,4 +1,4 @@
-# mlx-mfa Code Inventory — v1.1.0
+# mlx-mfa Code Inventory — v1.2.0
 
 All numbers verified by running shell commands against the source tree.
 Regenerated: 2026-03-09.
@@ -9,9 +9,9 @@ Regenerated: 2026-03-09.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.1.0` |
-| `mlx_mfa/__init__.py` | `1.1.0` |
-| Latest git tag | `v1.0.5` |
+| `pyproject.toml` | `1.2.0` |
+| `mlx_mfa/__init__.py` | `1.2.0` |
+| Latest git tag | `v1.2.0` |
 
 ---
 
@@ -21,18 +21,19 @@ Regenerated: 2026-03-09.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mlx_mfa/__init__.py` | 143 | Public API re-exports, ABI check, `__version__` |
-| `mlx_mfa/attention.py` | 3924 | All attention functions + helpers |
+| `mlx_mfa/__init__.py` | 161 | Public API re-exports, ABI check, `__version__` |
+| `mlx_mfa/attention.py` | 4036 | All attention functions + helpers |
 | `mlx_mfa/masks.py` | 1129 | 15 mask builders |
+| `mlx_mfa/quantize.py` | 260 | **New v1.2.0** — `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
 | `mlx_mfa/integrations/mlx_lm.py` | 428 | `patch_mlx_lm` / `unpatch_mlx_lm` + enrichment |
 | `mlx_mfa/integrations/__init__.py` | 0 | Package marker |
-| **Python total** | **5624** | |
+| **Python total** | **6014** | |
 
 ### C++ / Objective-C++ (`csrc/`)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `csrc/bindings.cpp` | 410 | nanobind module + Python bindings |
+| `csrc/bindings.cpp` | 447 | nanobind module + Python bindings |
 | `csrc/mfa_attention.cpp` | 1554 | `MFAttention` Primitive: `eval_gpu`, `vjp` |
 | `csrc/mfa_attention.hpp` | 437 | Primitive header |
 | `csrc/mfa_steel_fwd.cpp` | 3123 | STEEL forward: JIT source gen, dispatch |
@@ -41,10 +42,12 @@ Regenerated: 2026-03-09.
 | `csrc/mfa_steel_bwd.hpp` | 68 | STEEL backward header |
 | `csrc/mfa_paged_gather.cpp` | 242 | Paged KV gather Metal kernel |
 | `csrc/mfa_paged_gather.hpp` | 84 | Paged gather header |
+| `csrc/mfa_sage_fwd.cpp` | 446 | **New v1.2.0** — SageAttention Primitive + Metal JIT source gen |
+| `csrc/mfa_sage_fwd.hpp` | 67 | **New v1.2.0** — `MFASageParams`, `mfa_sage_forward` declaration |
 | `csrc/mfa_shader_gen.cpp` | 305 | ccv-based shader generator (legacy) |
 | `csrc/mfa_shader_gen.hpp` | 59 | Shader gen header |
 | `csrc/shader_cache.hpp` | 91 | `KernelType` enum, cache interface |
-| `csrc/shader_cache.mm` | 230 | Objective-C++ Metal pipeline compilation |
+| `csrc/shader_cache.mm` | 235 | Objective-C++ Metal pipeline compilation |
 | `csrc/mfa/AttentionKernel.cpp` | 3324 | ccv MFA kernel generation |
 | `csrc/mfa/AttentionKernel.hpp` | 134 | ccv kernel header |
 | `csrc/mfa/AttentionKernelDescriptor.cpp` | 42 | ccv kernel descriptor |
@@ -57,13 +60,13 @@ Regenerated: 2026-03-09.
 | `csrc/mfa/GEMMHeaders.cpp` | 786 | ccv GEMM headers |
 | `csrc/mfa/GEMMHeaders.hpp` | 36 | ccv GEMM header |
 | `csrc/mfa/GEMMOperandPrecision.hpp` | 89 | ccv GEMM precision |
-| **C++ total** | **13305** | |
+| **C++ total** | **13836** | |
 
-**Total source (Python + C++)**: 18929 lines across 30 files.
+**Total source (Python + C++)**: 19850 lines across 33 files.
 
 ---
 
-## Public API (`mlx_mfa.__all__` — 36 symbols)
+## Public API (`mlx_mfa.__all__` — 42 symbols)
 
 ### Core attention (14 functions + 1 class)
 
@@ -117,18 +120,34 @@ Regenerated: 2026-03-09.
 |--------|-------------|
 | `make_rope_3d_tables` | Build 3D rotary frequency tables for video |
 
+### SageAttention *(v1.2.0, 1 function)*
+
+| Symbol | Brief description |
+|--------|------------------|
+| `sage_attention` | **New v1.2.0** — int8 quantized Q/K attention; fp16 GEMM + smooth_k |
+
+### Quantization utilities *(v1.2.0, 5 symbols)*
+
+| Symbol | Returns | Description |
+|--------|---------|-------------|
+| `quantize_per_block` | `(int8, float32)` | **New v1.2.0** — per-block int8 quantize `[B,H,N,D]` tensor |
+| `dequantize` | `float32` | **New v1.2.0** — reconstruct fp32 from int8 + per-block scale |
+| `smooth_k` | `(fp16/bf16, float32)` | **New v1.2.0** — per-channel mean subtraction for K; returns `(k_smooth, k_mean)` |
+| `sage_output_correction` | `float32` | Legacy: smooth_k bias compensation (not used by `sage_attention`) |
+| `sage_block_sizes` | `(int, int)` | **New v1.2.0** — returns `(BQ, BK)` for given head_dim |
+
 ### Utilities (3 + `__version__`)
 
 | Symbol | Returns | Description |
 |--------|---------|-------------|
 | `is_mfa_available` | `bool` | True when C++ ext + Metal GPU present |
 | `get_device_info` | `dict` | device_name, gpu_family_gen, is_m3_plus, is_m5_plus, chip_name |
-| `get_supported_configs` | `dict` | head_dims, dtypes, extension_available, features (22 flags), kernel_types |
+| `get_supported_configs` | `dict` | head_dims, dtypes, extension_available, features (23 flags), kernel_types |
 | `__version__` | `str` | Package version string |
 
 ---
 
-## Metal kernel types (`csrc/shader_cache.hpp` — 11 active)
+## Metal kernel types (`csrc/shader_cache.hpp` — 12 active)
 
 | Value | Name | Description |
 |-------|------|-------------|
@@ -143,18 +162,28 @@ Regenerated: 2026-03-09.
 | 8 | `SteelVarlenForward` | STEEL varlen forward (D<=256; D=512 -> SDPA fallback) |
 | 9 | `PagedKVGather` | Paged KV gather: pool to contiguous BHND |
 | 10 | `PagedSteelForward` | STEEL forward with kernel-level paged KV (D<=256) |
+| 11 | `SageForward` | **New v1.2.0** — int8 Q/K quantized attention forward |
 | — | `TensorOpsForward` | Reserved: Metal 4 cooperative tensors (M5+/A19+ only) |
 
 ---
 
 ## Tests
 
-**Total: ~420 pytest-collected tests** (357 test methods; estimated expansion)
+**Total: ~465 pytest-collected tests** (380 test methods; estimated expansion)
 
 | File | Classes | Methods |
 |------|---------|---------|
 | `tests/test_attention.py` | 59 | 319 |
 | `tests/test_mlx_lm_integration.py` | 8 | 38 |
+| `tests/test_sage_attention.py` | 3 | 23 |
+
+### New test classes — v1.2.0
+
+| Class | Methods | Track | What it tests |
+|-------|---------|-------|---------------|
+| `TestQuantizeUtils` | 7 | KA | `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
+| `TestSageAPI` | 7 | KC | `sage_attention()` interface: shapes, dtypes, NaN, smooth_k toggle, supported configs |
+| `TestSageKernel` | 9 | KC | Numerical correctness (requires C++ ext): D=64/128/256, causal, GQA 2:1, batch>1 |
 
 ### New test classes — v1.1.0
 
@@ -170,7 +199,7 @@ Regenerated: 2026-03-09.
 
 ---
 
-## Benchmarks (`benchmarks/` — 12 files)
+## Benchmarks (`benchmarks/` — 13 files)
 
 | File | Lines | What it benchmarks |
 |------|-------|-------------------|
@@ -182,6 +211,7 @@ Regenerated: 2026-03-09.
 | `bench_mlx_lm.py` | 204 | mlx_lm integration: tokens/sec |
 | `bench_paged_kv.py` | 159 | Paged attention vs dense |
 | `bench_rope_3d.py` | 112 | 3D RoPE attention throughput |
+| `bench_sage.py` | 93 | **New v1.2.0** — sage_attention vs flash_attention: N=512–4096, with/without smooth_k |
 | `bench_segment.py` | 101 | Segment mask attention |
 | `bench_softcap_alibi.py` | 133 | Softcap and ALiBi overhead |
 | `bench_spatial_masks.py` | 325 | Spatial mask benchmarks |

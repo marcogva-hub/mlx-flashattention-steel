@@ -2,11 +2,46 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.2.0] — UNRELEASED
+## [1.2.0] — 2026-03-09
 
 ### Added
-- **SageAttention** (Tracks KA–KC) — int8 quantized Q/K attention for
-  ~1.3-1.8× memory-bandwidth speedup on Apple Silicon for S≥2048.
+- **Track KA — Quantization utilities** (`mlx_mfa/quantize.py`):
+  - `quantize_per_block(x, block_size)` — per-block int8 quantization with float32 scales
+  - `dequantize(x_int8, x_scale, block_size)` — reconstruct float32 from int8 + per-block scale
+  - `smooth_k(k)` — per-channel mean subtraction; returns `(k_smooth, k_mean)` in float32
+  - `sage_block_sizes(head_dim)` — returns `(BQ, BK)` for given D
+  - `sage_output_correction` — included for completeness; **not called** by `sage_attention` (correction is mathematically a no-op)
+- **Track KB — SageAttention Metal kernel** (`csrc/mfa_sage_fwd.cpp`):
+  - `MFASagePrimitive` — MLX Primitive; `eval_gpu()` dispatches `SageForward` kernel
+  - JIT Metal source gen: int8 Q/K dequantize in-register; V loaded at full precision; fp32 online softmax accumulator
+  - Non-persistent grid `(ceil(N/BQ), H, B)` — one threadgroup per Q-tile
+  - `SageForward` added as kernel type 11 in `shader_cache.hpp`
+  - GQA: Q head `h` maps to KV head `h // gqa_factor`
+  - `mfa_sage_forward` nanobind binding in `csrc/bindings.cpp`
+- **Track KC — `sage_attention()` Python API** (`mlx_mfa/attention.py`):
+  - `sage_attention(q, k, v, scale=None, causal=False, apply_smooth_k=True, stream=None)`
+  - Optionally applies `smooth_k`; quantizes Q/K with `quantize_per_block`; calls `mfa_sage_forward`
+  - No output correction applied (smooth_k bias cancels exactly in softmax denominator)
+  - Falls back to `flash_attention` when C++ extension is unavailable
+  - GQA supported: `H_kv < H_q` with `sage_attention(q, k, v)` where `k.shape[1] < q.shape[1]`
+  - All new symbols exported from `mlx_mfa.__init__`
+  - `get_supported_configs()["features"]["sage_attention"]` feature flag added
+  - `kernel_types` count updated 8 → 9
+
+### Tests
+- 23 new tests in `tests/test_sage_attention.py`
+  - `TestQuantizeUtils` (7): roundtrip shape/accuracy, non-multiple seq, smooth_k shape/zero-mean, block sizes, dequantize shape
+  - `TestSageAPI` (7, always run): output shape/dtype (fp16/bf16), no NaN (causal + non-causal), smooth_k toggle, supported configs
+  - `TestSageKernel` (9, extension required): D=64/128 × causal/non-causal, longer seq, GQA 2:1, batch>1, no-smooth correctness, D=256 finite
+
+### Performance (M1 Max, f16, B=1 H=8)
+| N | sage / flash_attention |
+|---|------------------------|
+| 1024 | 0.31× |
+| 4096 | 0.52× |
+
+Note: Current overhead is Python-side `quantize_per_block`. Speedup realized with
+pre-quantized int8 KV caches between decode steps.
 
 ---
 

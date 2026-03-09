@@ -70,6 +70,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **LLM inference helpers** — `flash_attention_speculative_verify`, `make_shared_prefix_cache`, `flash_attention_splitfuse` for speculative decoding, prefix sharing, and prefill+decode routing (v1.1.0)
 - **`patch_mlx_lm` enrichment** — sliding window from `cache.max_kv_window`, GQA + sliding-window stat counters, `verbose_dispatch` parameter, `KNOWN_MODEL_CONFIGS` reference dict (v1.1.0)
 - **Cross-attention** — `flash_attention_kvcache(q_dec, k_enc, v_enc, causal=False)` with GQA + full autograd; see `examples/cross_attention.py` (v1.1.0)
+- **SageAttention** — `sage_attention(q, k, v)` quantizes Q and K to int8 per block, reducing Q/K memory bandwidth by 2×; K-smoothing (per-channel mean subtraction) reduces quantization error at no accuracy cost; GQA supported (v1.2.0)
 
 ## Requirements
 
@@ -465,6 +466,43 @@ Route prefill tokens and decode tokens in a single call. Returns `(out_prefill, 
 
 ---
 
+### SageAttention *(v1.2.0)*
+
+#### `sage_attention(q, k, v, scale=None, causal=False, apply_smooth_k=True, stream=None)`
+
+Int8-quantized Q/K attention. Reduces memory bandwidth for Q and K loads by 2× compared
+to float16. V is never quantized (V sum reduction requires full precision).
+
+```python
+from mlx_mfa import sage_attention
+
+# Same interface as flash_attention; dtype preserved (fp16/bf16)
+out = sage_attention(q, k, v, causal=False)
+
+# Disable K-smoothing (slightly higher quantization error but faster if pre-centered)
+out = sage_attention(q, k, v, apply_smooth_k=False)
+```
+
+**K-smoothing (`apply_smooth_k=True`)**: subtracts per-channel mean from K before
+quantizing. Reduces the per-block absmax → finer int8 steps → lower error. The mean
+subtraction bias cancels exactly in the softmax ratio, so **no output correction
+is applied**.
+
+**When to use**: long-context inference with pre-quantized KV caches (S ≥ 2048) where
+Q/K can be stored as int8 between decode steps. On-the-fly quantization adds Python
+overhead that currently offsets the kernel speedup.
+
+**Quantization utilities** (`from mlx_mfa import ...`):
+
+| Function | Description |
+|----------|-------------|
+| `quantize_per_block(x, block_size)` | Per-block int8 quantization → `(x_int8, x_scale)` |
+| `dequantize(x_int8, x_scale, block_size)` | Reconstruct fp32 from int8 + scale |
+| `smooth_k(k)` | Per-channel mean subtraction → `(k_smooth, k_mean)` |
+| `sage_block_sizes(head_dim)` | Returns `(BQ, BK)` block sizes for given D |
+
+---
+
 ## mlx-lm Integration
 
 Use STEEL attention with any mlx-lm model in two lines:
@@ -610,7 +648,10 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | ID  | `attn_bias` + `backend` parameters in `flash_attention` | **Done (v1.0.4)** |
 | IE  | `_apply_rope_and_attend` helper (RoPE + SDPA unification) | **Done (v1.0.4)** |
 | IF  | Paged backward real dK/dV via `_scatter_to_pool` | **Done (v1.0.4)** |
-| Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.1+) |
+| KA  | Quantization utilities (`quantize_per_block`, `smooth_k`) | **Done (v1.2.0)** |
+| KB  | SageAttention Metal kernel + Primitive (`mfa_sage_fwd`) | **Done (v1.2.0)** |
+| KC  | `sage_attention()` Python API + GQA + tests | **Done (v1.2.0)** |
+| Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.2+) |
 
 ## References
 
