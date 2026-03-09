@@ -1439,8 +1439,10 @@ def flash_attention_kvcache(
             D_p      = k_cache.shape[3]
             B_p      = k_new.shape[0]
             N_new_p  = k_new.shape[2]
+            # E.3: seq_lens.tolist() GPU sync needed for RoPE offset + fallback loop.
             seq_lens_list_p = [int(x) for x in seq_lens.tolist()]
-            block_table_list_p = block_table.tolist()
+            # E.3: block_table.tolist() deferred to the fallback else-branch;
+            # the _USE_SCATTER_KV fast-path uses block_table as an MLX array.
 
             # Rotate k_new if RoPE requested.
             q_to_att = q
@@ -1461,7 +1463,7 @@ def flash_attention_kvcache(
             if _USE_SCATTER_KV:
                 # F.2: Vectorised scatter targets — O(1) MLX ops, no per-token loop.
                 # positions[b, t] = seq_lens[b] + t  →  [B_p, N_new_p]
-                _kv_l = mx.array(seq_lens_list_p, dtype=mx.int32)    # [B_p]
+                _kv_l = seq_lens.astype(mx.int32)                     # [B_p]
                 _t    = mx.arange(N_new_p, dtype=mx.int32)            # [N_new_p]
                 _pos  = _kv_l[:, None] + _t[None, :]                  # [B_p, N_new_p]
                 _bi   = (_pos // blk_sz).astype(mx.int32)             # block indices
@@ -1491,6 +1493,9 @@ def flash_attention_kvcache(
                     v_pages_new = v_cache
             else:
                 # Fallback: Python loop builds per-block update dicts.
+                # E.3: block_table.tolist() GPU sync here (fallback only;
+                # production path is _USE_SCATTER_KV which avoids this).
+                block_table_list_p = block_table.tolist()
                 sc_blk_ids: list = []
                 sc_blk_offs: list = []
                 sc_k_rows: list = []
