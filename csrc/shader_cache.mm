@@ -14,6 +14,7 @@
 #include "mfa_steel_bwd.hpp"
 #include "mfa_paged_gather.hpp"
 #include "mfa_sage_fwd.hpp"
+#include "mfa_quantize.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -124,6 +125,9 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::SageForward) {
     fn_name = "mlx_mfa_sage_attention";
     source  = generate_sage_forward_source(key);
+  } else if (key.type == KT::QuantizePerBlock) {
+    fn_name = "mfa_quantize_per_block";
+    source  = generate_quantize_per_block_source(key.dtype == 0 ? "half" : "bfloat");
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -145,6 +149,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::PagedKVGather)        type_str = "paged_kv_gather";
     if (key.type == KT::PagedSteelForward)   type_str = "paged_steel_fwd";
     if (key.type == KT::SageForward)         type_str = "sage_fwd";
+    if (key.type == KT::QuantizePerBlock)    type_str = "quantize_per_block";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",

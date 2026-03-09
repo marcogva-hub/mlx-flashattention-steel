@@ -10,6 +10,7 @@
 
 #include "mfa_attention.hpp"
 #include "mfa_paged_gather.hpp"
+#include "mfa_quantize.hpp"
 #include "shader_cache.hpp"
 
 namespace nb = nanobind;
@@ -453,6 +454,28 @@ NB_MODULE(_ext, m) {
         "\n"
         "Returns (O [B,H,N,D] fp16/bf16, L [B,H,N] logsumexp in log2 domain).\n"
         "GQA: H_q / H_kv must be an integer. Only f16/bf16 V supported.");
+
+  // --- Fused per-block INT8 quantization (Phase 4-A.1) ---
+  m.def("mfa_quantize_per_block",
+        [](mlx::core::array x,
+           int block_size,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> std::pair<mlx::core::array, mlx::core::array> {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_quantize_per_block(x, block_size, s);
+        },
+        nb::arg("x"),
+        nb::arg("block_size"),
+        nb::arg("stream") = nb::none(),
+        "Fused per-block INT8 quantization (Phase 4-A.1).\n"
+        "\n"
+        "Replaces the Python-side quantize_per_block() with a single Metal dispatch.\n"
+        "One threadgroup per (b, h, block_idx) reduces absmax then quantizes elements.\n"
+        "\n"
+        "x:          [B, H, N, D]  fp16 or bf16\n"
+        "block_size: positive power of 2\n"
+        "\n"
+        "Returns (x_int8 [B,H,N,D] int8, scale [B,H,N_blocks,1] float32).");
 
   m.attr("__version__") = "1.1.0";
 }

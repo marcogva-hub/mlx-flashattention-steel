@@ -21,6 +21,14 @@ from typing import Optional
 
 import mlx.core as mx
 
+# Optional C++ accelerated quantization (Phase 4-A.1).
+# Falls back to the pure-MLX path below when the extension is not built.
+try:
+    from mlx_mfa._ext import mfa_quantize_per_block as _mfa_quantize_per_block_cpp
+    _HAS_CPP_QUANTIZE = True
+except ImportError:
+    _HAS_CPP_QUANTIZE = False
+
 
 # ---------------------------------------------------------------------------
 # Per-block INT8 quantization
@@ -60,6 +68,11 @@ def quantize_per_block(
         exposed to the caller).  Padding rows (if N was not a multiple of
         ``block_size``) are handled internally and not included in the output.
     """
+    # Fast path: single fused Metal kernel (Phase 4-A.1).
+    if _HAS_CPP_QUANTIZE:
+        return _mfa_quantize_per_block_cpp(x, block_size)
+
+    # Pure-MLX fallback (dispatches ~12 separate kernels).
     B, H, N, D = x.shape
     N_blocks = (N + block_size - 1) // block_size
 
