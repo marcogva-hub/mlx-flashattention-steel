@@ -2,7 +2,7 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.2.1] — UNRELEASED
+## [1.2.1] — 2026-03-09
 
 ### Added
 - **Track LA — `window_size.right` in STEEL kernel**:
