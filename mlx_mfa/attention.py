@@ -579,6 +579,19 @@ def flash_attention_rope_unified(
             raise ValueError(
                 f"cache_seqlens length {len(cs_list)} must equal B={B}"
             )
+        # H.4: All offsets identical → skip per-batch loop; one batched call.
+        # C.2 partial fix: full Metal per-batch rope_q_base deferred to v1.3.0.
+        if len(set(cs_list)) == 1:
+            return flash_attention_rope_unified(
+                q, k, v, rotary_cos, rotary_sin,
+                k_cache=k_cache, v_cache=v_cache,
+                block_table=block_table, seq_lens=seq_lens,
+                block_size=block_size,
+                scale=scale, causal=causal,
+                cache_seqlens=cs_list[0], k_offset=k_offset,
+                interleaved=interleaved, rotary_dim=rotary_dim,
+                return_updated_cache=_ret_cache, stream=stream,
+            )
         chunks_out, chunks_k, chunks_v = [], [], []
         for b, cs in enumerate(cs_list):
             kc_b = k_cache[b:b+1] if k_cache is not None else None
@@ -3678,27 +3691,27 @@ def flash_attention_paged(
             K = mfa_paged_kv_gather(k_p, block_table, seq_lens, max_kv_len)
             V = mfa_paged_kv_gather(v_p, block_table, seq_lens, max_kv_len)
             return K, V
-        # Python fallback gather (all dtypes).
+        # H.3: Advanced-indexing fallback gather (all dtypes).
+        # Gather all blocks per-batch in one mx.take op, eliminating the
+        # inner per-block loop.  Outer B loop remains; inner is now O(1) MLX.
+        max_n_blocks = (max_kv_len + block_size - 1) // block_size
         K_list, V_list = [], []
         for b in range(B):
             kv_len = seq_lens_list[b]
             table_b = block_table_list[b]
             n_full, rem = divmod(kv_len, block_size)
-            slices_k, slices_v = [], []
-            for lb in range(n_full):
-                phys = int(table_b[lb])
-                slices_k.append(k_p[phys])
-                slices_v.append(v_p[phys])
-            if rem > 0:
-                phys = int(table_b[n_full])
-                slices_k.append(k_p[phys, :rem])
-                slices_v.append(v_p[phys, :rem])
-            if slices_k:
-                k_seq = mx.concatenate(slices_k, axis=0)  # [kv_len, H_kv, D]
-                v_seq = mx.concatenate(slices_v, axis=0)
-            else:
+            n_blocks = n_full + (1 if rem > 0 else 0)
+            if n_blocks == 0:
                 k_seq = mx.zeros([0, H_kv, D], dtype=k_p.dtype)
                 v_seq = mx.zeros([0, H_kv, D], dtype=v_p.dtype)
+            else:
+                # Gather all needed blocks at once: [n_blocks, block_size, H_kv, D]
+                phys_arr = mx.array(table_b[:n_blocks], dtype=mx.int32)
+                k_blks = k_p[phys_arr]  # [n_blocks, block_size, H_kv, D]
+                v_blks = v_p[phys_arr]
+                # Reshape to [n_blocks*block_size, H_kv, D] and trim to kv_len
+                k_seq = k_blks.reshape(n_blocks * block_size, H_kv, D)[:kv_len]
+                v_seq = v_blks.reshape(n_blocks * block_size, H_kv, D)[:kv_len]
             pad = max_kv_len - k_seq.shape[0]
             if pad > 0:
                 k_seq = mx.pad(k_seq, [(0, pad), (0, 0), (0, 0)])
@@ -3708,7 +3721,15 @@ def flash_attention_paged(
         return mx.concatenate(K_list, axis=0), mx.concatenate(V_list, axis=0)
 
     def _attn_per_seq(q_, K_contig, V_contig):
-        """Per-sequence attention using exact kv_len slices (avoids padding leak)."""
+        """Per-sequence attention using exact kv_len slices (avoids padding-leak NaN).
+
+        The Metal paged-gather kernel can leave uninitialized bytes beyond the
+        written pool region, which appear as NaN in K_contig.  Slicing to
+        [:kv_len] keeps only the written tokens; flash_attention's STEEL Metal
+        kernel additionally quenches NaN via GPU-level score masking.
+        Using mx.fast.scaled_dot_product_attention directly would propagate NaN
+        through IEEE-compliant softmax into the output — H.1 reverted for safety.
+        """
         outputs = []
         for b in range(B):
             kv_len = seq_lens_list[b]
