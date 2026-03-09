@@ -30,6 +30,11 @@ import mlx.core as mx
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
+# Module-level caches (avoid repeated import probes / set allocations per call)
+_ext_avail_cached: Optional[bool] = None
+_sage_avail_cached: Optional[bool] = None
+_VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa"})
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -160,7 +165,6 @@ def flash_attention(
         v = mx.random.normal((1, 8, 512, 128))
         out = flash_attention(q, k, v, causal=True)  # [1, 8, 512, 128]
     """
-    _VALID_BACKENDS = {"auto", "mfa", "sdpa"}
     if backend not in _VALID_BACKENDS:
         raise ValueError(
             f"flash_attention: backend must be one of {sorted(_VALID_BACKENDS)},"
@@ -977,12 +981,17 @@ def sage_attention(
 
     BQ, BK = sage_block_sizes(D)
 
-    # Check extension availability
-    try:
-        from mlx_mfa._ext import mfa_sage_forward as _sage_fwd
-        _ext_ok = True
-    except ImportError:
-        _ext_ok = False
+    # Check extension availability (cached)
+    global _sage_avail_cached
+    if _sage_avail_cached is None:
+        try:
+            from mlx_mfa._ext import mfa_sage_forward  # noqa: F401
+            _sage_avail_cached = True
+        except ImportError:
+            _sage_avail_cached = False
+    _ext_ok = _sage_avail_cached
+    if _ext_ok:
+        from mlx_mfa._ext import mfa_sage_forward as _sage_fwd  # noqa: F811
 
     if not _ext_ok:
         import warnings
@@ -1724,8 +1733,7 @@ def flash_attention_sparse(
             mask_2d = block_mask.any(axis=0)
         return _sparse_fallback_sdpa(q, k, v, mask_2d, BQ, BK, scale, causal)
 
-    impl = _make_mfa_sparse_custom(scale, causal, block_mask,
-                                    head_dim=D, backward=backward)
+    impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)
     q = mx.contiguous(q)
     k = mx.contiguous(k)
     v = mx.contiguous(v)
@@ -1736,14 +1744,17 @@ def flash_attention_sparse(
     return O
 
 
+@functools.lru_cache(maxsize=32)
 def _make_mfa_sparse_custom(
     scale: float,
     causal: bool,
-    block_mask: mx.array,
     head_dim: int = 128,
     backward: str = "sdpa",
 ):
-    """Build a custom_function wrapping the sparse STEEL kernel.
+    """Build and cache a custom_function wrapping the sparse STEEL kernel.
+
+    Cached by (scale, causal, head_dim, backward) — block_mask is passed at
+    call time via mask_uint8 so the factory is hashable and lru_cache works.
 
     The forward returns (O, L) where L is the logsumexp [B, H, N, float32].
     L is in log2 domain (STEEL convention: L = log2(e) * L_natural).
@@ -1756,18 +1767,6 @@ def _make_mfa_sparse_custom(
                           native Metal kernel (fastest for low-density masks)
     """
     import numpy as _np
-
-    BQ, BK = _steel_block_config(head_dim)
-
-    # For backward paths that only support 2-D masks, pre-collapse 3-D/4-D
-    # block_mask by taking the union (any) across batch/head dimensions.
-    # This is conservative: the dense-SDPA and tiled-sparse backward will
-    # compute gradients for all blocks that are active in *any* head/batch.
-    _block_mask_2d = block_mask
-    if block_mask.ndim == 4:
-        _block_mask_2d = block_mask.any(axis=(0, 1))
-    elif block_mask.ndim == 3:
-        _block_mask_2d = block_mask.any(axis=0)
 
     @mx.custom_function
     def _impl(q, k, v, mask_uint8):
@@ -1782,24 +1781,32 @@ def _make_mfa_sparse_custom(
         dO, _dL = cotangents  # dL is zero (L not consumed downstream)
         O, L    = outputs
 
+        # Derive the 2-D collapsed mask from the primal mask_uint8.
+        # mask_uint8 may be 2-D, 3-D [H,NQ,NK], or 4-D [B,H,NQ,NK].
+        _block_mask_2d = mask_uint8
+        if mask_uint8.ndim == 4:
+            _block_mask_2d = mask_uint8.any(axis=(0, 1))
+        elif mask_uint8.ndim == 3:
+            _block_mask_2d = mask_uint8.any(axis=0)
+
         if backward == "steel_sparse":
             # Native STEEL sparse backward — Metal kernel skips inactive tiles.
             # IMPORTANT: MLX's autograd recycles GPU buffers for q/k/v during
             # backward.  Custom Metal primitives read those buffers directly and
-            # see garbage data.  Forcing a CPU round-trip through numpy gives
-            # every tensor a freshly-allocated GPU buffer, avoiding the aliasing.
+            # see garbage data.  After mx.eval() the buffers are pinned;
+            # mx.contiguous() then returns a view with fresh graph ancestry so
+            # the Metal allocator cannot alias them with earlier outputs.
             # NOTE: backward kernel uses 2-D mask indexing; pass collapsed mask.
             from mlx_mfa._ext import mfa_steel_backward_sparse as _sbwd
             mask_bwd = _block_mask_2d.astype(mx.uint8)
             mx.eval(q, k, v, mask_bwd, dO, O, L)
-            def _to_fresh(a, dtype=None):
-                a32 = a.astype(mx.float32) if a.dtype != mx.float32 else a
-                return mx.array(_np.array(a32), dtype=dtype or a.dtype)
-            q2  = _to_fresh(q);  k2  = _to_fresh(k);  v2  = _to_fresh(v)
-            O2  = _to_fresh(O);  L2  = _to_fresh(L, dtype=mx.float32)
-            dO2 = _to_fresh(dO)
-            mu2 = mx.array(_np.array(mask_bwd), dtype=mx.uint8)
-            mx.eval(q2, k2, v2, O2, L2, dO2, mu2)
+            q2  = mx.contiguous(q)
+            k2  = mx.contiguous(k)
+            v2  = mx.contiguous(v)
+            O2  = mx.contiguous(O)
+            L2  = mx.contiguous(L.astype(mx.float32) if L.dtype != mx.float32 else L)
+            dO2 = mx.contiguous(dO)
+            mu2 = mx.contiguous(mask_bwd)
             dQ, dK, dV = _sbwd(q2, k2, v2, O2, L2, dO2, mu2, scale, causal)
             return dQ, dK, dV, mx.zeros_like(mask_uint8)
 
@@ -1902,7 +1909,7 @@ def flash_attention_speculative_verify(
         q_target, k_cache, v_cache,
         scale=scale, causal=causal, return_lse=True, stream=stream,
     )
-    mx.eval(out, lse)
+    # Note: no mx.eval() needed here — ops below are pure MLX and can fuse lazily.
 
     # Compute per-token log-softmax over D (output dimension) to get a
     # proxy for target log-probability indexed by draft_ids.
@@ -1911,14 +1918,11 @@ def flash_attention_speculative_verify(
     logits = out_mean / temperature  # scale by temperature
     log_probs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)  # [B, N_draft, D]
 
-    # Index into log_probs at draft_ids: [B, N_draft]
-    # draft_ids: [B, N_draft], clamp to [0, D-1] for safety
-    ids = mx.clip(draft_ids.astype(mx.int32), 0, D - 1)
-    target_logprobs = mx.array(
-        [[float(log_probs[b, t, int(ids[b, t])]) for t in range(N_draft)]
-         for b in range(B)],
-        dtype=mx.float32,
-    )
+    # Vectorised gather: no Python loop, no GPU→CPU scalar round-trips
+    ids = mx.clip(draft_ids.astype(mx.int32), 0, D - 1)  # [B, N_draft]
+    target_logprobs = mx.take_along_axis(
+        log_probs, ids[..., None], axis=-1
+    ).squeeze(-1).astype(mx.float32)  # [B, N_draft]
 
     return out, lse, target_logprobs
 
@@ -2075,7 +2079,6 @@ def _block_mask_to_float_bias(
     )
     # Reshape [NQ, BQ, NK, BK] → [NQ*BQ, NK*BK] via transpose + reshape
     NQ, _, NK, _ = float_block.shape
-    float_block = mx.transpose(float_block, (0, 1, 2, 3))  # keep shape
     float_block = float_block.reshape(NQ * BQ_actual, NK * BK_actual)
     # Slice to actual [seq_q, seq_k]
     float_bias = float_block[:seq_q, :seq_k]
@@ -2483,12 +2486,16 @@ def _can_use_mfa(q: mx.array, head_dim: int) -> bool:
 
 
 def _ext_available() -> bool:
-    """Return True iff the C++ extension module is importable."""
+    """Return True iff the C++ extension module is importable (cached)."""
+    global _ext_avail_cached
+    if _ext_avail_cached is not None:
+        return _ext_avail_cached
     try:
         from mlx_mfa._ext import mfa_attention_forward  # noqa: F401
-        return True
+        _ext_avail_cached = True
     except ImportError:
-        return False
+        _ext_avail_cached = False
+    return _ext_avail_cached
 
 
 def _sever_lazy_graph(arr: mx.array) -> mx.array:
@@ -2523,9 +2530,14 @@ def _sever_lazy_graph(arr: mx.array) -> mx.array:
     | ``mx.stop_gradient(arr)``               | ✗      |
     +-----------------------------------------+--------+
 
-    The pure-MLX add is preferred: no CPU round-trip, no bfloat16 numpy issue.
+    After ``mx.eval(arr)`` the buffer is materialised and pinned; a subsequent
+    ``mx.contiguous()`` call returns a view with a freshly allocated header that
+    carries no lazy-graph ancestry, so the Metal allocator cannot alias it with
+    any earlier output buffer.  This avoids the ~5µs elementwise-add kernel that
+    ``arr + mx.zeros_like(arr)`` previously dispatched.
     """
-    return arr + mx.zeros_like(arr)
+    mx.eval(arr)
+    return mx.contiguous(arr)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2751,13 +2763,17 @@ def _fallback_sdpa_with_lse(
     # Compute raw attention scores [B, H, N, S]
     scores = mx.matmul(q.astype(mx.float32),
                        mx.swapaxes(k.astype(mx.float32), -2, -1)) * scale
+
+    sdpa_mask = None
     if causal:
         N, S = q.shape[2], k.shape[2]
-        cmask = mx.triu(
+        # Build causal mask once in float32; reuse (cast) for SDPA
+        cmask_f32 = mx.triu(
             mx.full((N, S), float("-inf"), dtype=mx.float32),
             k=S - N + 1,
         )
-        scores = scores + cmask
+        scores = scores + cmask_f32
+        sdpa_mask = cmask_f32.astype(q.dtype)
 
     # LSE in log2 domain: L = max + log2(sum(2^(scores - max)))
     max_s = scores.max(axis=-1, keepdims=True)          # [B,H,N,1]
@@ -2765,14 +2781,7 @@ def _fallback_sdpa_with_lse(
     lse = max_s.squeeze(-1) + mx.log2(exp2_s.sum(axis=-1))  # [B,H,N]
 
     # Standard softmax attention output (use built-in for efficiency)
-    mask = None
-    if causal:
-        N, S = q.shape[2], k.shape[2]
-        mask = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=q.dtype),
-            k=S - N + 1,
-        )
-    O = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+    O = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=sdpa_mask)
     return O, lse
 
 

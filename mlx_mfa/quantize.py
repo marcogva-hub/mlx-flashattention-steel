@@ -73,13 +73,14 @@ def quantize_per_block(
     x_blocked = x.reshape(B, H, N_blocks, block_size, D)
 
     # Per-block absmax → scale: [B, H, N_blocks, 1, 1]
-    absmax = mx.max(mx.abs(x_blocked.astype(mx.float32)), axis=(3, 4), keepdims=True)
+    x_f32 = x_blocked.astype(mx.float32)  # compute once; reused below
+    absmax = mx.max(mx.abs(x_f32), axis=(3, 4), keepdims=True)
     scale = absmax / 127.0
     scale = mx.maximum(scale, 1e-8)  # prevent division by zero
 
     # Quantize: clip to [-128, 127]
     x_quant = mx.clip(
-        mx.round(x_blocked.astype(mx.float32) / scale),
+        mx.round(x_f32 / scale),
         -128, 127,
     ).astype(mx.int8)
 

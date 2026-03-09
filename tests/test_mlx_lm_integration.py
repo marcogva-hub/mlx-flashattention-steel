@@ -522,7 +522,7 @@ class TestGetPatchStats:
         try:
             patch_mlx_lm(verbose=False)
             # Manually bump a counter to simulate previous activity
-            mod._stats["forward_calls"] = 99
+            mod._stat_forward_calls = 99
             unpatch_mlx_lm()
             # Re-patch: stats should be zeroed
             patch_mlx_lm(verbose=False)
@@ -536,15 +536,15 @@ class TestGetPatchStats:
         from mlx_mfa.integrations.mlx_lm import get_patch_stats
         import mlx_mfa.integrations.mlx_lm as mod
 
-        mod._stats["forward_calls"] = 10
-        mod._stats["steel_calls"] = 7
-        mod._stats["fallback_calls"] = 3
+        mod._stat_forward_calls = 10
+        mod._stat_steel_calls = 7
+        mod._stat_fallback_calls = 3
         stats = get_patch_stats()
         assert abs(stats["steel_ratio"] - 0.7) < 1e-9
         # restore
-        mod._stats["forward_calls"] = 0
-        mod._stats["steel_calls"] = 0
-        mod._stats["fallback_calls"] = 0
+        mod._stat_forward_calls = 0
+        mod._stat_steel_calls = 0
+        mod._stat_fallback_calls = 0
 
 
 class TestCheckModelCompatibility:

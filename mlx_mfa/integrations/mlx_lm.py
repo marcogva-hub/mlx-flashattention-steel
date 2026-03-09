@@ -34,7 +34,8 @@ from typing import Optional
 
 import mlx.core as mx
 
-from mlx_mfa import flash_attention, get_supported_configs, is_mfa_available
+from mlx_mfa import get_supported_configs, is_mfa_available
+from mlx_mfa.attention import _mfa_forward as _steel_dispatch
 
 # The original mlx_lm SDPA function, saved at patch time.
 _original_sdpa = None
@@ -45,15 +46,16 @@ _SUPPORTED_DTYPES: frozenset = frozenset()
 _verbose_dispatch: bool = False
 
 # --------------------------------------------------------------------------- #
-# Per-session call statistics (Track JE: added gqa_calls)                      #
+# Per-session call statistics — plain int counters (faster than dict lookup)   #
 # --------------------------------------------------------------------------- #
-_stats: dict = {
-    "forward_calls": 0,   # total calls to _steel_sdpa
-    "steel_calls": 0,     # calls routed to the STEEL kernel
-    "fallback_calls": 0,  # calls delegated back to the original SDPA
-    "gqa_calls": 0,       # STEEL calls with GQA (H_q != H_kv)
-    "sliding_window_calls": 0,  # STEEL calls with sliding window from cache
-}
+_stat_forward_calls: int = 0
+_stat_steel_calls: int = 0
+_stat_fallback_calls: int = 0
+_stat_gqa_calls: int = 0
+_stat_sliding_window_calls: int = 0
+
+# Public dict alias (lazy-built by get_stats(); not mutated in the hot path)
+_stats: dict = {}
 
 # --------------------------------------------------------------------------- #
 # Known model configuration hints (Track JE)                                   #
@@ -97,11 +99,13 @@ def _refresh_supported() -> None:
 
 
 def _reset_stats() -> None:
-    _stats["forward_calls"] = 0
-    _stats["steel_calls"] = 0
-    _stats["fallback_calls"] = 0
-    _stats["gqa_calls"] = 0
-    _stats["sliding_window_calls"] = 0
+    global _stat_forward_calls, _stat_steel_calls, _stat_fallback_calls
+    global _stat_gqa_calls, _stat_sliding_window_calls
+    _stat_forward_calls = 0
+    _stat_steel_calls = 0
+    _stat_fallback_calls = 0
+    _stat_gqa_calls = 0
+    _stat_sliding_window_calls = 0
 
 
 def _steel_sdpa(
@@ -124,34 +128,38 @@ def _steel_sdpa(
     dequantize them to plain float arrays so STEEL can run, preserving the
     causal tile-skip speedup even for 4-bit models.
     """
-    _stats["forward_calls"] += 1
+    global _stat_forward_calls, _stat_steel_calls, _stat_fallback_calls
+    global _stat_gqa_calls, _stat_sliding_window_calls
+    _stat_forward_calls += 1
 
     # Attention sinks: always fall back (STEEL doesn't implement them).
     if sinks is not None:
-        _stats["fallback_calls"] += 1
+        _stat_fallback_calls += 1
         return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     # Quantized KV cache: dequantize K/V then proceed to STEEL.
     # mlx-lm passes keys/values as (quantized_data, scales, biases) tuples
     # when cache.bits is set.  mx.dequantize returns float16/bf16 matching
     # the query dtype.
-    if cache is not None and hasattr(cache, "bits") and cache.bits is not None:
+    # D.9: use getattr to avoid double attribute lookup (hasattr + attr access)
+    _cache_bits = getattr(cache, "bits", None) if cache is not None else None
+    if _cache_bits is not None:
         try:
             q_k_data, q_k_scales, q_k_biases = keys
             q_v_data, q_v_scales, q_v_biases = values
             keys = mx.dequantize(
                 q_k_data, q_k_scales, q_k_biases,
-                cache.group_size, cache.bits,
+                cache.group_size, _cache_bits,
                 dtype=queries.dtype,
             )
             values = mx.dequantize(
                 q_v_data, q_v_scales, q_v_biases,
-                cache.group_size, cache.bits,
+                cache.group_size, _cache_bits,
                 dtype=queries.dtype,
             )
         except Exception:
             # Unexpected format (e.g., future quantization modes): fall back.
-            _stats["fallback_calls"] += 1
+            _stat_fallback_calls += 1
             return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     D = queries.shape[-1]
@@ -161,53 +169,48 @@ def _steel_sdpa(
     if D not in _SUPPORTED_HDIMS or dtype not in _SUPPORTED_DTYPES:
         if _verbose_dispatch:
             print(f"[mlx-mfa dispatch] fallback: D={D} not in {sorted(_SUPPORTED_HDIMS)}")
-        _stats["fallback_calls"] += 1
+        _stat_fallback_calls += 1
         return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     # GQA detection: track when H_q != H_kv.
     _is_gqa = queries.shape[1] != keys.shape[1]
 
     # Sliding-window from cache: mlx-lm cache objects may expose max_kv_window.
-    _window = None
-    if cache is not None and hasattr(cache, "max_kv_window"):
-        _mw = cache.max_kv_window
-        if _mw is not None and _mw > 0:
-            _window = (_mw - 1, 0)  # (left, right) — right=0 (causal-only)
+    # D.9: use getattr to avoid hasattr + access double lookup
+    _window_left = -1
+    _window_right = -1
+    _mw = getattr(cache, "max_kv_window", None) if cache is not None else None
+    if _mw is not None and _mw > 0:
+        _window_left = _mw - 1
+        _window_right = 0
 
     # Causal detection:
     #   - mask == "causal" (string): prefill with standard causal mask
     #   - mask is None: decode step — attend to all cached K/V (causal=False)
     #   - any other mask type: fall back (boolean array, etc.)
-    if mask == "causal":
-        _stats["steel_calls"] += 1
+    if mask == "causal" or mask is None:
+        _is_causal = (mask == "causal")
+        _stat_steel_calls += 1
         if _is_gqa:
-            _stats["gqa_calls"] += 1
-        if _window is not None:
-            _stats["sliding_window_calls"] += 1
+            _stat_gqa_calls += 1
+        if _window_left >= 0:
+            _stat_sliding_window_calls += 1
         if _verbose_dispatch:
-            print(f"[mlx-mfa dispatch] STEEL causal D={D} {dtype} "
+            print(f"[mlx-mfa dispatch] STEEL {'causal' if _is_causal else 'no-mask'} "
+                  f"D={D} {dtype} "
                   f"{'GQA ' if _is_gqa else ''}"
-                  f"{'window=' + str(_window[0]) if _window else ''}")
-        return flash_attention(queries, keys, values, scale=scale, causal=True,
-                               window_size=_window)
-
-    if mask is None:
-        _stats["steel_calls"] += 1
-        if _is_gqa:
-            _stats["gqa_calls"] += 1
-        if _window is not None:
-            _stats["sliding_window_calls"] += 1
-        if _verbose_dispatch:
-            print(f"[mlx-mfa dispatch] STEEL no-mask D={D} {dtype} "
-                  f"{'GQA ' if _is_gqa else ''}"
-                  f"{'window=' + str(_window[0]) if _window else ''}")
-        return flash_attention(queries, keys, values, scale=scale, causal=False,
-                               window_size=_window)
+                  f"{'window=' + str(_window_left) if _window_left >= 0 else ''}")
+        # D.4: call _mfa_forward directly — skips flash_attention() wrapper overhead
+        # (backend validation, GQA expansion check, window tuple unpacking, etc.)
+        return _steel_dispatch(
+            queries, keys, values, scale, _is_causal,
+            window_left=_window_left, window_right=_window_right,
+        )
 
     # mask is an array (boolean, padding, etc.): fall back.
     if _verbose_dispatch:
         print(f"[mlx-mfa dispatch] fallback: mask type={type(mask).__name__}")
-    _stats["fallback_calls"] += 1
+    _stat_fallback_calls += 1
     return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
 
@@ -327,14 +330,14 @@ def get_patch_stats() -> dict:
         print(get_patch_stats())
         # {'forward_calls': 128, 'steel_calls': 120, 'fallback_calls': 8, 'steel_ratio': 0.9375}
     """
-    total = _stats["forward_calls"]
-    steel = _stats["steel_calls"]
+    total = _stat_forward_calls
+    steel = _stat_steel_calls
     return {
         "forward_calls": total,
         "steel_calls": steel,
-        "fallback_calls": _stats["fallback_calls"],
-        "gqa_calls": _stats["gqa_calls"],
-        "sliding_window_calls": _stats["sliding_window_calls"],
+        "fallback_calls": _stat_fallback_calls,
+        "gqa_calls": _stat_gqa_calls,
+        "sliding_window_calls": _stat_sliding_window_calls,
         "steel_ratio": steel / total if total > 0 else 0.0,
     }
 
