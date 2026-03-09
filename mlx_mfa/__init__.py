@@ -92,6 +92,9 @@ from mlx_mfa.quantize import (
     sage_block_sizes,
 )
 
+# Track LC: InferenceContext lifecycle object
+from mlx_mfa.inference import InferenceContext
+
 from mlx_mfa.masks import (
     make_spatial_2d_mask,
     make_spatial_3d_mask,
@@ -157,5 +160,7 @@ __all__ = [
     "smooth_k",
     "sage_output_correction",
     "sage_block_sizes",
+    # InferenceContext lifecycle (Track LC)
+    "InferenceContext",
     "__version__",
 ]
