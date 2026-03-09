@@ -11,6 +11,7 @@
 
 #include "shader_cache.hpp"
 #include <cstdint>
+#include <sstream>
 #include <string>
 
 namespace mlx_mfa {
@@ -52,6 +53,19 @@ struct MFASteelParams {
     int   has_alibi;   // 0 = disabled; 1 = ALiBi per-head bias (buffer(9))
     int   window_left; // -1 = disabled; >=0 = sliding window left radius (tokens)
 };
+
+/// Append Metal preamble (#include, STEEL_CONST, ARCHITECTURE_GEN, STEEL_PRAGMA_UNROLL).
+/// Shared by all STEEL-style kernel generators.
+void append_metal_headers_and_defines(
+    std::ostringstream& ss,
+    bool enable_unroll,
+    int  arch_gen,
+    const char* dtype_str);
+
+/// Append the shared Metal template code: MFABlockLoaderT, MFAMMAFrag, MFAMMATile,
+/// mfa_tile_matmad, and arithmetic op structs (MFAMaxOp, MFASumOp, etc.).
+/// Shared by all STEEL-style kernel generators.
+void append_steel_shared_templates(std::ostringstream& ss);
 
 /// Select BQ/BK/BD/WM/WN based on head_dim and precision.
 /// Returns a struct used both for dispatch sizing and kernel source generation.

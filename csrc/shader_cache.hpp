@@ -39,8 +39,9 @@ class ShaderCache {
       SteelVarlenForward = 8,    // STEEL varlen forward: (total_q_tiles, H, 1) grid
       PagedKVGather      = 9,    // Paged KV gather: pool → contiguous BHND (Track EB)
       PagedSteelForward  = 10,   // STEEL forward with kernel-level paged KV (Track FD)
+      SageForward        = 11,   // SageAttention: int8 Q/K loads + fp16 GEMM (Track KB)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 11,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 12,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

@@ -19,6 +19,7 @@
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_bwd.hpp"
+#include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
 
 #include <mlx/utils.h>
@@ -1547,6 +1548,218 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedSteelForward>(s, params),
       {q, k_pool, v_pool, bt_i32, sl_i32});
+
+  return {outputs[0], outputs[1]};
+}
+
+// =========================================================================
+// MFASageForward::eval_gpu  (Track KB)
+// =========================================================================
+//
+// Inputs:  q_int8(0)[B,H,N,D], k_int8(1)[B,H_kv,S,D],
+//          v(2)[B,H_kv,S,D], q_scale(3)[B,H,NQ_blocks],
+//          k_scale(4)[B,H_kv,NK_blocks]
+// Outputs: O(0)[B,H,N,D], L(1)[B,H,N] float32
+//
+// Metal buffer layout:
+//   Q_int8=0, K_int8=1, V=2, O=3, L=4, params=5, Q_scale=6, K_scale=7
+
+void MFASageForward::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  assert(inputs.size()  == 5);
+  assert(outputs.size() == 2);
+
+  const auto& q_int8  = inputs[0];  // [B, H,    N, D] int8
+  const auto& k_int8  = inputs[1];  // [B, H_kv, S, D] int8
+  const auto& v       = inputs[2];  // [B, H_kv, S, D] fp16/bf16
+  const auto& q_scale = inputs[3];  // [B, H,    NQ_blocks]  float32
+  const auto& k_scale = inputs[4];  // [B, H_kv, NK_blocks]  float32
+
+  const int B    = q_int8.shape(0);
+  const int H    = q_int8.shape(1);
+  const int N    = q_int8.shape(2);   // query length
+  const int D    = q_int8.shape(3);
+  const int H_kv = k_int8.shape(1);
+  const int S    = k_int8.shape(2);   // KV length
+
+  auto& O = outputs[0];
+  auto& L = outputs[1];
+  O.set_data(mlx::core::allocator::malloc(O.nbytes()));
+  L.set_data(mlx::core::allocator::malloc(L.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  // V dtype code (O has same dtype as V)
+  uint8_t dtype_code;
+  if (v.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (v.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else dtype_code = 2;
+
+  const bool is_low_prec = (dtype_code != 2);
+  const auto cfg  = select_steel_block_config(D, is_low_prec, is_m3_plus);
+  const int BQ    = cfg.BQ;
+  const int BK    = cfg.BK;
+  const int WM    = cfg.WM;
+  const int TGP_SIZE = WM * 32;
+
+  // ── Kernel cache key ────────────────────────────────────────────────────
+  using KK = ShaderCache::KernelKey;
+  KK key{
+    KK::KernelType::SageForward,
+    D,
+    BQ, BK, D,
+    WM,
+    params_.causal,
+    /*sparse=*/false,
+    is_m3_plus,
+    /*has_rope=*/false,
+    /*rope_interleaved=*/false,
+    /*has_softcap=*/false,
+    /*has_alibi=*/false,
+    /*has_window=*/false,
+    dtype_code,
+    /*gqa_factor=*/params_.gqa_factor
+  };
+
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  // ── Build MFASageParams ──────────────────────────────────────────────────
+  const int NQ         = (N + BQ - 1) / BQ;
+  const int NK         = (S + BK - 1) / BK;
+  const int NQ_aligned = (N % BQ == 0) ? NQ : NQ - 1;
+  const int NK_aligned = (S % BK == 0) ? NK : NK - 1;
+
+  // NQ_blocks and NK_blocks are the same as NQ and NK (one scale per tile)
+  // since quantization block_size was set to BQ and BK respectively.
+  const int NQ_blocks = NQ;
+  const int NK_blocks = NK;
+
+  MFASageParams sp{};
+  sp.B          = B;
+  sp.H          = H;
+  sp.D          = D;
+  sp.qL         = N;
+  sp.kL         = S;
+  sp.gqa_factor = params_.gqa_factor;
+  sp.scale      = params_.scale;
+  sp.NQ         = NQ;
+  sp.NK         = NK;
+  sp.NQ_aligned = NQ_aligned;
+  sp.NK_aligned = NK_aligned;
+  sp.qL_rem     = (N % BQ == 0) ? BQ : (N % BQ);
+  sp.kL_rem     = (S % BK == 0) ? BK : (S % BK);
+  // For self-attention qL_off = 0; for decode with causal + N < S, offset the
+  // causal mask so query at position i sees keys 0..(S-N+i).
+  sp.qL_off     = (params_.causal && N < S) ? (S - N) : 0;
+  // RoPE fields unused (kept for struct layout compatibility)
+  sp.rope_q_base     = 0;
+  sp.rope_cos_stride = D / 2;
+  // Q strides [B, H, N] for int8 — same as fp16 layout (elements = bytes for int8)
+  sp.Q_strides[0] = (int64_t)H  * N * D;
+  sp.Q_strides[1] = (int64_t)N  * D;
+  sp.Q_strides[2] = (int64_t)D;
+  // K strides [B, H_kv, S] for int8
+  sp.K_strides[0] = (int64_t)H_kv * S * D;
+  sp.K_strides[1] = (int64_t)S  * D;
+  sp.K_strides[2] = (int64_t)D;
+  // V strides [B, H_kv, S] for fp16
+  sp.V_strides[0] = (int64_t)H_kv * S * D;
+  sp.V_strides[1] = (int64_t)S  * D;
+  sp.V_strides[2] = (int64_t)D;
+  // O strides [B, H, N] for fp16
+  sp.O_strides[0] = (int64_t)H  * N * D;
+  sp.O_strides[1] = (int64_t)N  * D;
+  sp.O_strides[2] = (int64_t)D;
+  // L strides [B, H] for float32
+  sp.L_strides[0] = (int64_t)H  * N;
+  sp.L_strides[1] = (int64_t)N;
+  // Sage features disabled in v1.2.0
+  sp.softcap     = 0.0f;
+  sp.has_alibi   = 0;
+  sp.window_left = -1;
+  // Scale strides: Q_scale [B, H, NQ_blocks], K_scale [B, H_kv, NK_blocks]
+  sp.NQ_blocks         = NQ_blocks;
+  sp.NK_blocks         = NK_blocks;
+  sp.q_scale_stride_b  = H    * NQ_blocks;
+  sp.q_scale_stride_h  = NQ_blocks;
+  sp.k_scale_stride_b  = H_kv * NK_blocks;
+  sp.k_scale_stride_h  = NK_blocks;
+
+  // ── Dispatch ─────────────────────────────────────────────────────────────
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+
+  // Buffer layout: Q_int8=0, K_int8=1, V=2, O=3, L=4, params=5,
+  //                Q_scale=6, K_scale=7
+  enc.set_input_array (q_int8,  0);
+  enc.set_input_array (k_int8,  1);
+  enc.set_input_array (v,       2);
+  enc.set_output_array(O,       3);
+  enc.set_output_array(L,       4);
+  enc.set_bytes       (sp,      5);
+  enc.set_input_array (q_scale, 6);
+  enc.set_input_array (k_scale, 7);
+
+  // Non-persistent grid: one TG per Q-tile
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(NQ, H, B),
+      MTL::Size::Make(TGP_SIZE, 1, 1));
+}
+
+// =========================================================================
+// mfa_sage_forward (free function)
+// =========================================================================
+
+std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
+    const mlx::core::array& q_int8,
+    const mlx::core::array& k_int8,
+    const mlx::core::array& v,
+    const mlx::core::array& q_scale,
+    const mlx::core::array& k_scale,
+    float scale,
+    bool  causal,
+    mlx::core::Stream s) {
+
+  // Shape validation
+  if (q_int8.ndim() != 4)
+    throw std::invalid_argument("mfa_sage_forward: q_int8 must be 4-D [B,H,N,D]");
+  if (k_int8.ndim() != 4)
+    throw std::invalid_argument("mfa_sage_forward: k_int8 must be 4-D [B,H_kv,S,D]");
+  if (v.ndim() != 4)
+    throw std::invalid_argument("mfa_sage_forward: v must be 4-D [B,H_kv,S,D]");
+  if (q_scale.ndim() != 3)
+    throw std::invalid_argument("mfa_sage_forward: q_scale must be 3-D [B,H,NQ_blocks]");
+  if (k_scale.ndim() != 3)
+    throw std::invalid_argument("mfa_sage_forward: k_scale must be 3-D [B,H_kv,NK_blocks]");
+
+  const int B    = q_int8.shape(0);
+  const int H    = q_int8.shape(1);
+  const int N    = q_int8.shape(2);
+  const int D    = q_int8.shape(3);
+  const int H_kv = k_int8.shape(1);
+
+  if (H % H_kv != 0)
+    throw std::invalid_argument(
+        "mfa_sage_forward: H must be divisible by H_kv (GQA).");
+
+  const int gqa_factor = H / H_kv;
+
+  mlx::core::Shape out_shape = {B, H, N, D};
+  mlx::core::Shape lse_shape = {B, H, N};
+
+  MFASageForward::Params params{D, scale, causal, gqa_factor};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {v.dtype(), mlx::core::float32},
+      std::make_shared<MFASageForward>(s, params),
+      {q_int8, k_int8, v, q_scale, k_scale});
 
   return {outputs[0], outputs[1]};
 }

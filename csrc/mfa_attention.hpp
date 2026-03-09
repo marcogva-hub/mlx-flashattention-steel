@@ -420,6 +420,71 @@ class MFAPagedSteelForward : public mlx::core::Primitive {
   Params params_;
 };
 
+// =========================================================================
+// MFASageForward — SageAttention int8-Q/K forward pass (Track KB)
+// =========================================================================
+
+/// Primitive that runs the SageAttention forward kernel.
+///
+/// Inputs (eval_gpu order):
+///   0: q_int8  [B, H, N, D]        int8 (quantized Q)
+///   1: k_int8  [B, H_kv, S, D]     int8 (quantized K)
+///   2: v       [B, H_kv, S, D]     fp16 or bf16
+///   3: q_scale [B, H, NQ_blocks]   float32 (one scale per Q-tile)
+///   4: k_scale [B, H_kv, NK_blocks] float32 (one scale per K-tile)
+///
+/// Outputs:
+///   0: O  [B, H, N, D]   fp16 or bf16
+///   1: L  [B, H, N]      float32 (log2-domain logsumexp, for sage_output_correction)
+class MFASageForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    int   head_dim;
+    float scale;
+    bool  causal;
+    int   gqa_factor;  // H / H_kv (1 = standard MHA)
+  };
+
+  MFASageForward(mlx::core::Stream stream, Params p)
+      : mlx::core::Primitive(stream), params_(p) {}
+
+  const char* name() const override { return "MFASageForward"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFASageForward: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFASageForward*>(&other);
+    if (!o) return false;
+    return params_.head_dim   == o->params_.head_dim   &&
+           params_.scale      == o->params_.scale      &&
+           params_.causal     == o->params_.causal     &&
+           params_.gqa_factor == o->params_.gqa_factor;
+  }
+
+ private:
+  Params params_;
+};
+
+/// Free function: validate inputs and launch MFASageForward Primitive.
+/// Returns (O [B,H,N,D], L [B,H,N] log2-logsumexp) pair.
+std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
+    const mlx::core::array& q_int8,
+    const mlx::core::array& k_int8,
+    const mlx::core::array& v,
+    const mlx::core::array& q_scale,
+    const mlx::core::array& k_scale,
+    float scale,
+    bool  causal,
+    mlx::core::Stream stream);
+
 /// Free function: validate inputs and create paged forward MLX arrays.
 /// Returns (O, L) pair.
 std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(

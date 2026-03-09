@@ -1239,7 +1239,7 @@ int compute_num_splits(int kL, int BK) {
 
 // Append shared Metal template code (BlockLoaderT, MMA tiles, op structs).
 // Both Phase 1 and Phase 2 use the same STEEL_PRAGMA_UNROLL / Metal headers.
-static void append_metal_headers_and_defines(
+void append_metal_headers_and_defines(
     std::ostringstream& ss,
     bool enable_unroll,
     int arch_gen,
@@ -1262,7 +1262,7 @@ using namespace metal;
 }
 
 // Append BlockLoaderT + MMA tile templates + Op structs (identical for all kernels).
-static void append_steel_shared_templates(std::ostringstream& ss) {
+void append_steel_shared_templates(std::ostringstream& ss) {
   ss << R"MFA(
 template <
     typename T,
