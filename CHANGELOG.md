@@ -2,6 +2,14 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.2.0] — UNRELEASED
+
+### Added
+- **SageAttention** (Tracks KA–KC) — int8 quantized Q/K attention for
+  ~1.3-1.8× memory-bandwidth speedup on Apple Silicon for S≥2048.
+
+---
+
 ## [1.1.0] — 2026-03-09
 
 ### Added
