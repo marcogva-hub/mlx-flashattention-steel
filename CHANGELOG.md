@@ -2,6 +2,72 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.2.2] — 2026-03-09
+
+### Added
+
+- **Phase 4-A.1+A.2 — Fused `MFAQuantizePerBlock` C++ primitive** (`csrc/mfa_quantize.hpp/.cpp`):
+  - Single Metal JIT kernel: reads fp16/bf16 input, computes per-block absmax, scales, rounds, clips, outputs int8 + f32 scale in one GPU dispatch
+  - Replaces 12+ sequential Python MLX ops in `quantize_per_block()` — the SageAttention bottleneck
+  - Registered as `mfa_quantize_per_block` nanobind binding; `mlx_mfa/quantize.py` uses C++ path when available
+  - `QuantizePerBlock = 12` added to `ShaderCache::KernelType`
+
+- **Phase 4-C.1+E.2 — `mfa_scatter_kv` C++ primitive** (`csrc/mfa_scatter.hpp/.cpp`):
+  - Single-pass Metal kernel: one thread per pool element; copies from `pool_in`, writes scatter token on `(blk, off)` match
+  - Replaces O(num_blocks) Python concatenate loop in `PagedKVCache.append()` and paged-append mode of `flash_attention_kvcache`
+  - `ScatterKV = 13` added to `ShaderCache::KernelType`; CPU fallback via memcpy
+
+- **Phase 4-E.1 — `InferenceContext.step()` graph materialisation**:
+  - mx.eval(k_cache, v_cache) after each mx.concatenate prevents O(N_steps) lazy graph depth
+  - Eliminates memory pressure during long decode loops (>200 tokens)
+
+- **Phase 3-B.1 — Logsumexp saved from forward pass**:
+  - `_make_mfa_custom` returns `(O, L)` from `_impl()`; backward uses saved L for sparse/custom paths
+
+- **Phase 3-D.5 — Contiguity checks in C++ bindings**:
+  - `mfa_attention_forward`, `mfa_attention_forward_lse`, `mfa_paged_kv_gather` call `mlx::core::contiguous()` internally
+  - Removes 3 Python-to-C++ round-trips from every MFA forward dispatch
+
+- **Phase 3-E.4 — Batched paged/varlen backward**:
+  - `_paged_backward` and `_varlen_backward` batch K/V across the B dimension; run one vjp instead of B sequential calls
+
+- **Phase 2 fixes** (Python-only):
+  - **B.2**: Causal mask in `_fallback_sdpa_with_lse` built once and recast
+  - **C.3**: `backward=sdpa_sparse` emits `DeprecationWarning`; use `backward=steel_sparse`
+  - **C.4**: Sparse backward: 7-tensor numpy round-trip replaced with mx.contiguous() (~10-50 ms saved)
+  - **C.5**: `speculative_verify` O(B*N) Python loop replaced with `mx.take_along_axis`
+  - **D.4**: `mlx_lm._steel_sdpa()` calls `_mfa_forward()` directly (saves ~2us/token)
+  - **D.6**: `_make_mfa_sparse_custom` cached with `@lru_cache(32)` on `(scale, causal, head_dim, backward)`
+  - **D.8**: mlx_lm stats: string-keyed dict replaced with module-level int counters
+  - **D.9**: `hasattr(cache, attr)` replaced with `getattr(cache, attr, None)`
+
+- **Phase 1 fixes** (trivial Python):
+  - **D.1**: `_ext_available()` cached (removes ~3us/call import probe)
+  - **D.2**: sage_attention import probe cached
+  - **D.3**: `_VALID_BACKENDS` is now a module-scope frozenset
+  - **A.3**: `x_blocked.astype(float32)` computed once in `quantize_per_block`
+  - **B.3**: `_sever_lazy_graph()` uses contiguity fix instead of elementwise-add kernel
+  - **E.5**: Identity transpose no-op removed from `_block_mask_to_float_bias`
+
+### Performance (v1.2.2 vs v1.2.1 baseline)
+
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| SageAttention N=512 vs FA | 0.89x | **1.10x** | **+24%** |
+| SageAttention N=1024 vs FA | 0.81x | **1.12x** | **+38%** |
+| SageAttention N=4096 vs FA | 0.52x | 0.56x | +4% |
+| STEEL fwd D=64 N=8192 causal | 1.40x | 1.37x | noise |
+| Sliding window N=16384 w=512 | 13.24x | 13.17x | noise |
+| Paged STEEL decode S=1024 | 1.54x | **1.60x** | +4% |
+| Per-token Python overhead (32L) | ~138us | ~22us | **-84%** |
+
+See `docs/benchmarks/COMPARISON_V1_2_2_ALL_PHASES.md`.
+
+### Tests
+- 486 tests pass
+
+---
+
 ## [1.2.1] — 2026-03-09
 
 ### Added

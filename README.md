@@ -6,11 +6,11 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-blue.svg)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-orange.svg)](https://www.apple.com/newsroom/2020/11/apple-unleashes-m1/)
 
-**Metal Flash Attention for MLX** — sliding window attention up to **13× faster** than full causal; STEEL forward wins over SDPA at large sequence lengths.
+**Metal Flash Attention for MLX** — sliding window attention up to **13× faster** than full causal; SageAttention **1.12×** faster than flash_attention at N≤1024 via fused int8 quantize kernel.
 
 A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal and window tiles skipped entirely.
 
-## Performance (M1 Max, float16, B=1, H=8)
+## Performance (M1 Max, float16, B=1, H=8) — v1.2.2
 
 ### Forward attention (STEEL vs SDPA)
 
@@ -18,8 +18,8 @@ STEEL wins when causal masking skips enough K-tiles (~50% at full-causal, more w
 
 | head_dim | N | causal speedup |
 |:--------:|:-:|:--------------:|
-| 64  | 8192 | **1.40×** |
-| 128 | 8192 | **1.25×** |
+| 64  | 8192 | **1.37×** |
+| 128 | 8192 | **1.26×** |
 | 128 | 4096 | 0.83× |
 | 256 | 8192 | 0.77× |
 | 512 | 4096 | 0.26× |
@@ -30,18 +30,31 @@ Speedup vs the equivalent full-causal STEEL kernel. Active-tile fraction = `wind
 
 | head_dim | N | window | speedup | active tiles |
 |:--------:|:-:|:------:|:-------:|:------------:|
-| 128 | 4096  | 512  | **5.64×**  | ~12% |
-| 128 | 8192  | 512  | **8.07×**  | ~6%  |
+| 128 | 4096  | 512  | **5.43×**  | ~12% |
+| 128 | 8192  | 512  | **7.67×**  | ~6%  |
 | 128 | 8192  | 1024 | **4.46×**  | ~12% |
-| 128 | 16384 | 512  | **13.24×** | ~3%  |
+| 128 | 16384 | 512  | **13.17×** | ~3%  |
+
+### SageAttention (int8 Q/K, fused Metal quantize kernel — v1.2.2)
+
+The fused `MFAQuantizePerBlock` Metal kernel replaces 12+ Python MLX ops with a
+single GPU dispatch, making SageAttention faster than flash_attention at N≤1024.
+
+| N    | flash_attention | sage_attention | speedup |
+|:----:|:---------------:|:--------------:|:-------:|
+| 512  | 0.93 ms | 0.85 ms | **1.10×** |
+| 1024 | 1.93 ms | 1.73 ms | **1.12×** |
+| 2048 | 3.78 ms | 6.05 ms | 0.63× |
+| 4096 | 11.6 ms | 20.6 ms | 0.56× |
+
+At N≥2048 the sage_forward kernel dominates; further gains require a faster
+sage kernel.
 
 ### Backward pass (STEEL vjp vs SDPA vjp)
 
-Backward uses gradient checkpointing: the custom vjp re-runs the forward to recover the logsumexp. Total cost ≈ 2× forward + dQ + dKV kernels — consistently slower than SDPA's fused backward.
-
 | head_dim | N | backward speedup |
 |:--------:|:-:|:----------------:|
-| 64  | 4096 | 0.66× |
+| 64  | 4096 | 0.64× |
 | 128 | 4096 | 0.26× |
 | 256 | 4096 | 0.16× |
 | 512 | 2048 | 0.12× |
@@ -50,9 +63,9 @@ Backward uses gradient checkpointing: the custom vjp re-runs the forward to reco
 
 | KV length | speedup |
 |:---------:|:-------:|
-| 1024  | **1.54×** |
-| 4096  | **1.32×** |
-| 16384 | **1.63×** |
+| 1024  | **1.60×** |
+| 4096  | **1.48×** |
+| 16384 | **1.47×** |
 
 Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 

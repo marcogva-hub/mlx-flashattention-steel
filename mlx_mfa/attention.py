@@ -1833,6 +1833,17 @@ def _make_mfa_sparse_custom(
             return dQ, dK, dV, mx.zeros_like(mask_uint8)
 
         if backward == "sdpa_sparse":
+            # C.3: Deprecate in favour of steel_sparse now that C.4 (numpy
+            # round-trip) has been eliminated.  steel_sparse uses the native
+            # Metal kernel and is faster for all practical inputs.
+            import warnings
+            warnings.warn(
+                "backward='sdpa_sparse' is deprecated and will be removed in "
+                "a future release.  Use backward='steel_sparse' instead, which "
+                "skips inactive tiles natively in Metal without a Python loop.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
             # Tiled sparse backward using saved L — skips inactive tiles.
             # Use 2-D collapsed mask (tiled backward is per-block, not per-head).
             D = q.shape[-1]
