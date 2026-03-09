@@ -6,24 +6,54 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-blue.svg)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M4-orange.svg)](https://www.apple.com/newsroom/2020/11/apple-unleashes-m1/)
 
-**Metal Flash Attention for MLX** — causal attention 1.5–2.9× faster than `mx.fast.scaled_dot_product_attention` on Apple Silicon.
+**Metal Flash Attention for MLX** — sliding window attention up to **13× faster** than full causal; STEEL forward wins over SDPA at large sequence lengths.
 
-A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal tiles skipped entirely.
+A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal and window tiles skipped entirely.
 
 ## Performance (M1 Max, float16, B=1, H=8)
 
-| head_dim | N | non-causal | causal | sliding window 512 |
-|:--------:|:-:|:----------:|:------:|:------------------:|
-| 64 | 8192 | 1.00× | **2.11×** | — |
-| 128 | 4096 | 0.91× | **1.56×** | **3.1×** |
-| 128 | 8192 | 0.92× | **1.72×** | **5.7×** |
-| 256 | 8192 | 0.50× | 1.00× | — |
-| 512 | 4096 | 0.48× | 0.95× | — |
+### Forward attention (STEEL vs SDPA)
 
-Causal speedup is fundamental to STEEL: ~half the K-tiles are skipped (all keys after
-the current query position), halving effective work while SDPA still pays full cost.
-Sliding-window sparsity scales with `window/N` — at N=8192 and window=512, only 12%
-of K-tiles are active.
+STEEL wins when causal masking skips enough K-tiles (~50% at full-causal, more with a window). Crossover vs SDPA is around N=8192 for D≤128. Large head dims (D=256, D=512) spill registers and are slower.
+
+| head_dim | N | causal speedup |
+|:--------:|:-:|:--------------:|
+| 64  | 8192 | **1.40×** |
+| 128 | 8192 | **1.25×** |
+| 128 | 4096 | 0.83× |
+| 256 | 8192 | 0.77× |
+| 512 | 4096 | 0.26× |
+
+### Sliding window attention (vs full causal)
+
+Speedup vs the equivalent full-causal STEEL kernel. Active-tile fraction = `window / N`.
+
+| head_dim | N | window | speedup | active tiles |
+|:--------:|:-:|:------:|:-------:|:------------:|
+| 128 | 4096  | 512  | **5.64×**  | ~12% |
+| 128 | 8192  | 512  | **8.07×**  | ~6%  |
+| 128 | 8192  | 1024 | **4.46×**  | ~12% |
+| 128 | 16384 | 512  | **13.24×** | ~3%  |
+
+### Backward pass (STEEL vjp vs SDPA vjp)
+
+Backward uses gradient checkpointing: the custom vjp re-runs the forward to recover the logsumexp. Total cost ≈ 2× forward + dQ + dKV kernels — consistently slower than SDPA's fused backward.
+
+| head_dim | N | backward speedup |
+|:--------:|:-:|:----------------:|
+| 64  | 4096 | 0.66× |
+| 128 | 4096 | 0.26× |
+| 256 | 4096 | 0.16× |
+| 512 | 2048 | 0.12× |
+
+### Paged KV decode (N_q=1, gather+attend vs paged STEEL)
+
+| KV length | speedup |
+|:---------:|:-------:|
+| 1024  | **1.54×** |
+| 4096  | **1.32×** |
+| 16384 | **1.63×** |
+
 Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 
 ## Features
