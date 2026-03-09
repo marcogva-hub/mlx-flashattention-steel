@@ -684,7 +684,7 @@ def get_supported_configs() -> dict:
         "dropout":              True,   # SDPA fallback only
         "return_lse":           True,
         # --- backward ---
-        "native_backward":      False,  # backward is mx.vjp(SDPA); MFA backward removed
+        "native_backward":      "ext",  # STEEL backward kernels active for f16/bf16 D≤512
         "sparse_backward":      True,   # tiled FA-2 sparse backward
         # --- hardware routing ---
         "m3_routing":           True,   # M3+ block config (gen ≥ 15)
@@ -2832,9 +2832,11 @@ def flash_attention_paged(
 
     Gathers K/V from a paged block pool into contiguous tensors via a single
     Metal dispatch (``mfa_paged_kv_gather``), then runs ``flash_attention``.
-    Supports autograd: ``dQ`` is computed correctly; ``dK_pages``/``dV_pages``
-    are returned as zeros (KV pools are cache buffers, not trainable parameters
-    in standard use — use non-paged ``flash_attention`` for end-to-end training).
+    Supports autograd: ``dQ``, ``dK_pages``, and ``dV_pages`` are all computed
+    correctly.  Per-sequence gradients are gathered via the dense attention
+    backward and then scattered back to the paged pool via ``_scatter_to_pool``
+    (gather → dense vjp → scatter-accumulate).  Partial pages are zero-padded
+    to ``block_size`` before accumulation.
 
     Args:
         q:            Query tensor ``[B, H_q, N_q, D]``.

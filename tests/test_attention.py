@@ -423,12 +423,12 @@ class TestPublicAPI:
         missing = required - set(features.keys())
         assert not missing, f"features dict missing keys: {missing}"
         for k, v in features.items():
-            assert isinstance(v, bool), f"features['{k}'] is not bool: {v!r}"
+            assert isinstance(v, (bool, str)), f"features['{k}'] is not bool/str: {v!r}"
         # known values
         assert features["causal"] is True
         assert features["gqa"] is True
         assert features["d512"] is True
-        assert features["native_backward"] is False
+        assert features["native_backward"] == "ext"  # STEEL bwd active for f16/bf16 D≤512
         # kernel_types
         ext = cfg["extension_available"]
         assert cfg["kernel_types"] == (8 if ext else 0), (
