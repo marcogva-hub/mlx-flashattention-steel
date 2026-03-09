@@ -71,6 +71,9 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **`patch_mlx_lm` enrichment** — sliding window from `cache.max_kv_window`, GQA + sliding-window stat counters, `verbose_dispatch` parameter, `KNOWN_MODEL_CONFIGS` reference dict (v1.1.0)
 - **Cross-attention** — `flash_attention_kvcache(q_dec, k_enc, v_enc, causal=False)` with GQA + full autograd; see `examples/cross_attention.py` (v1.1.0)
 - **SageAttention** — `sage_attention(q, k, v)` quantizes Q and K to int8 per block, reducing Q/K memory bandwidth by 2×; K-smoothing (per-channel mean subtraction) reduces quantization error at no accuracy cost; GQA supported (v1.2.0)
+- **`window_size` right bound** — `flash_attention(..., window_size=(left, right))` with `right >= 0` now activates the right guard inside the STEEL Metal kernel; no longer raises `NotImplementedError` (v1.2.1)
+- **4-D sparse block masks** — `flash_attention_sparse(q, k, v, block_mask)` accepts `[B, H, NQ, NK]` and `[H, NQ, NK]` masks for per-head and per-batch-item sparsity; backward collapses to 2-D via `.any()` (v1.2.1)
+- **`InferenceContext`** — stateful KV-cache wrapper for autoregressive generation; exposes `prefill()`, `step()`, `reset()`, and context-manager lifecycle so callers don't track KV concatenation manually (v1.2.1)
 
 ## Requirements
 
@@ -503,6 +506,52 @@ overhead that currently offsets the kernel speedup.
 
 ---
 
+### InferenceContext *(v1.2.1)*
+
+#### `InferenceContext(B, H_kv, D, max_seq_len=8192, dtype=mx.float16, stream=None)`
+
+Stateful KV-cache manager for autoregressive generation. Owns the growing K/V cache and
+exposes clean `prefill` / `step` / `reset` methods so callers don't manage concatenation.
+
+```python
+from mlx_mfa import InferenceContext
+import mlx.core as mx
+
+ctx = InferenceContext(B=1, H_kv=8, D=128, max_seq_len=4096)
+
+# Prefill (full sequence, causal)
+out_prefill = ctx.prefill(q_prefill, k_prefill, v_prefill, scale=scale)
+mx.eval(out_prefill)
+
+# Autoregressive decode loop
+for _ in range(max_new_tokens):
+    out = ctx.step(q_new, k_new, v_new, scale=scale)
+    mx.eval(out)
+
+ctx.reset()   # clear cache; reuse for a new sequence
+
+# Context-manager form (auto-reset on exit)
+with InferenceContext(B=1, H_kv=8, D=128) as ctx:
+    out = ctx.prefill(q, k, v, scale=scale)
+    for _ in range(steps):
+        out = ctx.step(q_t, k_t, v_t, scale=scale)
+```
+
+| Method | Description |
+|--------|-------------|
+| `prefill(q, k, v, *, scale, causal=True, softcap=0, window_size=None)` | Full-sequence attention; initialises cache |
+| `step(q, k_new, v_new, *, scale, softcap=0, window_size=None)` | Append new K/V; attend to full history |
+| `reset()` → `self` | Clear cache; enable chaining `ctx.reset().prefill(...)` |
+| `seqlen` *(property)* | Current KV cache fill length |
+| `k_cache`, `v_cache` *(properties)* | Current cache arrays or `None` if empty |
+
+**Design note**: MLX arrays are immutable lazy values — the cache grows via
+`mx.concatenate` in `step()` rather than in-place writes. This is correct and transparent
+to MLX's lazy graph; use `mx.eval()` at decode loop boundaries to prevent graph
+accumulation.
+
+---
+
 ## mlx-lm Integration
 
 Use STEEL attention with any mlx-lm model in two lines:
@@ -651,6 +700,9 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | KA  | Quantization utilities (`quantize_per_block`, `smooth_k`) | **Done (v1.2.0)** |
 | KB  | SageAttention Metal kernel + Primitive (`mfa_sage_fwd`) | **Done (v1.2.0)** |
 | KC  | `sage_attention()` Python API + GQA + tests | **Done (v1.2.0)** |
+| LA  | `window_size.right` active in STEEL Metal kernel | **Done (v1.2.1)** |
+| LB  | 4-D sparse block masks `[B, H, NQ, NK]` | **Done (v1.2.1)** |
+| LC  | `InferenceContext` stateful lifecycle object | **Done (v1.2.1)** |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.2+) |
 
 ## References

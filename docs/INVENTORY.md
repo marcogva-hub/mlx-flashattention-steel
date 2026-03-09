@@ -1,4 +1,4 @@
-# mlx-mfa Code Inventory — v1.2.0
+# mlx-mfa Code Inventory — v1.2.1
 
 All numbers verified by running shell commands against the source tree.
 Regenerated: 2026-03-09.
@@ -9,9 +9,9 @@ Regenerated: 2026-03-09.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.2.0` |
-| `mlx_mfa/__init__.py` | `1.2.0` |
-| Latest git tag | `v1.2.0` |
+| `pyproject.toml` | `1.2.1` (pending bump in Track LF) |
+| `mlx_mfa/__init__.py` | `1.2.1` (pending bump in Track LF) |
+| Latest git tag | `v1.2.0` (v1.2.1 pending) |
 
 ---
 
@@ -21,23 +21,24 @@ Regenerated: 2026-03-09.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mlx_mfa/__init__.py` | 161 | Public API re-exports, ABI check, `__version__` |
-| `mlx_mfa/attention.py` | 4036 | All attention functions + helpers |
+| `mlx_mfa/__init__.py` | 166 | Public API re-exports, ABI check, `__version__` |
+| `mlx_mfa/attention.py` | 4082 | All attention functions + helpers |
+| `mlx_mfa/inference.py` | 264 | **New v1.2.1** — `InferenceContext` stateful KV-cache lifecycle |
 | `mlx_mfa/masks.py` | 1129 | 15 mask builders |
 | `mlx_mfa/quantize.py` | 260 | **New v1.2.0** — `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
 | `mlx_mfa/integrations/mlx_lm.py` | 428 | `patch_mlx_lm` / `unpatch_mlx_lm` + enrichment |
 | `mlx_mfa/integrations/__init__.py` | 0 | Package marker |
-| **Python total** | **6014** | |
+| **Python total** | **6329** | |
 
 ### C++ / Objective-C++ (`csrc/`)
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `csrc/bindings.cpp` | 447 | nanobind module + Python bindings |
-| `csrc/mfa_attention.cpp` | 1554 | `MFAttention` Primitive: `eval_gpu`, `vjp` |
+| `csrc/mfa_attention.cpp` | 1799 | `MFAttention` Primitive: `eval_gpu`, `vjp` |
 | `csrc/mfa_attention.hpp` | 437 | Primitive header |
-| `csrc/mfa_steel_fwd.cpp` | 3123 | STEEL forward: JIT source gen, dispatch |
-| `csrc/mfa_steel_fwd.hpp` | 235 | STEEL forward header |
+| `csrc/mfa_steel_fwd.cpp` | 3259 | STEEL forward: JIT source gen, dispatch |
+| `csrc/mfa_steel_fwd.hpp` | 259 | STEEL forward header (+`mask_batch/head_stride`, `window_right`) |
 | `csrc/mfa_steel_bwd.cpp` | 1295 | STEEL backward dQ + dKV kernels |
 | `csrc/mfa_steel_bwd.hpp` | 68 | STEEL backward header |
 | `csrc/mfa_paged_gather.cpp` | 242 | Paged KV gather Metal kernel |
@@ -60,13 +61,13 @@ Regenerated: 2026-03-09.
 | `csrc/mfa/GEMMHeaders.cpp` | 786 | ccv GEMM headers |
 | `csrc/mfa/GEMMHeaders.hpp` | 36 | ccv GEMM header |
 | `csrc/mfa/GEMMOperandPrecision.hpp` | 89 | ccv GEMM precision |
-| **C++ total** | **13836** | |
+| **C++ total** | **14241** | |
 
-**Total source (Python + C++)**: 19850 lines across 33 files.
+**Total source (Python + C++)**: 20570 lines across 34 files.
 
 ---
 
-## Public API (`mlx_mfa.__all__` — 42 symbols)
+## Public API (`mlx_mfa.__all__` — 43 symbols)
 
 ### Core attention (14 functions + 1 class)
 
@@ -136,6 +137,12 @@ Regenerated: 2026-03-09.
 | `sage_output_correction` | `float32` | Legacy: smooth_k bias compensation (not used by `sage_attention`) |
 | `sage_block_sizes` | `(int, int)` | **New v1.2.0** — returns `(BQ, BK)` for given head_dim |
 
+### InferenceContext *(v1.2.1, 1 class)*
+
+| Symbol | Brief description |
+|--------|------------------|
+| `InferenceContext` | **New v1.2.1** — stateful KV-cache wrapper: `prefill()`, `step()`, `reset()`, context-manager |
+
 ### Utilities (3 + `__version__`)
 
 | Symbol | Returns | Description |
@@ -169,13 +176,27 @@ Regenerated: 2026-03-09.
 
 ## Tests
 
-**Total: ~465 pytest-collected tests** (380 test methods; estimated expansion)
+**Total: 486 pytest-collected tests** (423 test methods + parametrized expansion)
 
 | File | Classes | Methods |
 |------|---------|---------|
-| `tests/test_attention.py` | 59 | 319 |
+| `tests/test_attention.py` | 61 | 341 |
 | `tests/test_mlx_lm_integration.py` | 8 | 38 |
 | `tests/test_sage_attention.py` | 3 | 23 |
+| `tests/test_inference_context.py` | 6 | 21 |
+
+### New test classes — v1.2.1
+
+| Class | Methods | Track | What it tests |
+|-------|---------|-------|---------------|
+| `TestWindowRight` | 8 | LA | `window_size=(left, right)` with right bound: correctness vs dense, fallback, errors |
+| `TestBlockMask4D` | 14 | LB | 3-D/4-D block masks: shape validation, broadcast equivalence, per-head differences |
+| `TestInferenceContextConstruct` | 3 | LC | `InferenceContext` init, repr, defaults |
+| `TestInferenceContextPrefill` | 4 | LC | prefill output shape, cache state, overflow guard |
+| `TestInferenceContextStep` | 5 | LC | step output, cache growth, multi-step, GQA |
+| `TestInferenceContextReset` | 3 | LC | reset, prefill-then-reset, chaining |
+| `TestInferenceContextManager` | 3 | LC | context manager: auto-reset, nested |
+| `TestInferenceContextGQA` | 3 | LC | GQA shapes in prefill + step |
 
 ### New test classes — v1.2.0
 

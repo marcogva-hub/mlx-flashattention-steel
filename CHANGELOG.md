@@ -5,13 +5,35 @@ All notable changes to mlx-mfa are documented here.
 ## [1.2.1] — UNRELEASED
 
 ### Added
-- **Track LA** — `window_size=(left, right)` right-side bound now active in STEEL kernel
-- **Track LB** — 4D sparse block masks `[B, H, NQ, NK]` and `[H, NQ, NK]`
-- **Track LC** — `InferenceContext` stateful lifecycle object for autoregressive generation
+- **Track LA — `window_size.right` in STEEL kernel**:
+  - `flash_attention(..., window_size=(left, right))` with `right >= 0` now activates the right-side guard inside the STEEL Metal kernel
+  - `MFASteelParams` gains `int window_right` field; Metal shader uses it to skip K-tiles wholly outside `[q - left, q + right]` and to clamp per-element scores
+  - Previously `right > 0` raised `NotImplementedError`; now handled natively (f16/bf16) or via boolean mask fallback (f32)
+  - 8 new tests in `TestWindowRight`
+
+- **Track LB — 4-D sparse block masks**:
+  - `flash_attention_sparse(q, k, v, block_mask)` accepts `[B, H, NQ, NK]` (per-batch-per-head) and `[H, NQ, NK]` (per-head broadcast) in addition to the existing `[NQ, NK]` shape
+  - Implemented via `mask_batch_stride` / `mask_head_stride` fields in `MFASteelParams`; stride = 0 means "broadcast that dimension" — zero-copy broadcast
+  - Backward path collapses 3-D/4-D masks to 2-D via `.any()` (conservative union of active blocks)
+  - 14 new tests in `TestBlockMask4D`
+
+- **Track LC — `InferenceContext` stateful lifecycle object**:
+  - New class `mlx_mfa.InferenceContext` manages the growing KV cache for autoregressive generation
+  - `prefill(q, k, v, *, scale, causal=True, softcap, window_size)` — full-sequence attention; initialises cache
+  - `step(q, k_new, v_new, *, scale, softcap, window_size)` — appends new K/V tokens; calls `flash_attention_kvcache(causal=True)`
+  - `reset()` — clears cache; returns `self` for chaining
+  - Context-manager form: `__exit__` calls `reset()`
+  - `seqlen`, `k_cache`, `v_cache` read-only properties
+  - 21 new tests in `tests/test_inference_context.py`
 
 ### Fixed
-- `attn_bias` docstring: clearly documented as SDPA-only (architectural decision)
-- `flash_attention_paged` docstring: removed stale "zeros" references for dK/dV
+- `attn_bias` docstring: explicitly marked as SDPA-only **architectural decision** (MFA's fused online-softmax kernel has no generic additive-bias buffer); directed users to `alibi_slopes` for native Metal relative-position biases
+- `flash_attention_paged` dK/dV zeros text: already corrected in Track JA; confirmed clean
+
+### Tests
+- **486 tests pass** (up from 442 in v1.2.0)
+- New test files: `tests/test_inference_context.py` (21 tests, Track LC)
+- New test classes in `tests/test_attention.py`: `TestWindowRight` (8, Track LA), `TestBlockMask4D` (14, Track LB)
 
 ---
 

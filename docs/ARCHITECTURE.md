@@ -983,3 +983,87 @@ On M1 Max (f16, B=1, H=8), measured with `benchmarks/bench_sage.py`:
 Current bottleneck: Python-side `quantize_per_block` adds 5+ elementwise MLX ops per
 tensor. True speedup requires pre-quantized KV caches (KV stored as int8 between
 decode steps). This is the expected use-case for production inference engines.
+
+---
+
+## 16. v1.2.1 Architecture Notes (Tracks LA–LD)
+
+### Track LA — `window_size.right` in STEEL kernel
+
+Previously only the *left* window radius was enforced inside the Metal kernel.
+The right radius (`window_size=(left, right)` with `right >= 0`) was silently
+ignored — keys within `right` positions *after* the query were erroneously kept.
+
+**Fix**: `MFASteelParams` gains a new field `int window_right` (offset 188, value
+-1 means disabled). Inside the Metal shader the K-loop start (`kb_start`) and a
+per-element guard (`|qb - kb| <= window_right`) use `p->window_right` directly.
+
+Python-side: `flash_attention(..., window_size=(left, right))` with `right >= 0`
+no longer raises `NotImplementedError`; it passes `right` to the STEEL kernel (or
+creates the correct fallback mask for SDPA).
+
+Changed files: `csrc/mfa_steel_fwd.hpp`, `csrc/mfa_steel_fwd.cpp`,
+`mlx_mfa/attention.py`.  8 new tests in `TestWindowRight`.
+
+### Track LB — 4-D sparse block masks
+
+`flash_attention_sparse(q, k, v, block_mask)` previously accepted only 2-D block
+masks `[NQ, NK]` shared across all batch items and heads.
+
+**New**: `block_mask` may be:
+
+| Shape | Semantics |
+|-------|-----------|
+| `[NQ, NK]` | Same mask for all B and H |
+| `[H, NQ, NK]` | Per-head mask, broadcast across B |
+| `[B, H, NQ, NK]` | Fully independent per-batch-per-head masks |
+
+**Implementation**: `MFASteelParams` gains two `int64_t` stride fields,
+`mask_batch_stride` and `mask_head_stride`. A stride of 0 means "broadcast this
+dimension". The Metal kernel computes the block_mask offset as:
+
+```
+offset = tid.z * p->mask_batch_stride   // batch dim
+       + tid.y * p->mask_head_stride    // head dim
+       + qb    * p->NK + kb             // block-row / block-col
+```
+
+For the backward pass (Metal backward kernels support only 2-D indexing), 3-D/4-D
+masks are conservatively collapsed to 2-D via `block_mask.any(axis=(0,1))` or
+`.any(axis=0)`.  Changed files: `csrc/mfa_steel_fwd.hpp`, `csrc/mfa_steel_fwd.cpp`,
+`csrc/mfa_attention.cpp`, `mlx_mfa/attention.py`.  14 new tests in `TestBlockMask4D`.
+
+### Track LC — `InferenceContext` stateful lifecycle object
+
+`mlx_mfa.InferenceContext` wraps the growing KV cache for autoregressive
+generation. It exposes:
+
+```python
+ctx = InferenceContext(B, H_kv, D, max_seq_len=8192, dtype=mx.float16)
+
+out_prefill = ctx.prefill(q, k, v, scale=scale)  # stores k/v as cache
+for _ in range(steps):
+    out = ctx.step(q_t, k_t, v_t, scale=scale)   # appends to cache
+
+ctx.reset()          # clear cache, reuse context
+# or use as context manager: cache auto-cleared on __exit__
+```
+
+**Design**: MLX arrays are *immutable* lazy values — the cache is grown with
+`mx.concatenate` in `step()` rather than in-place index writes. The `reset()`
+method simply sets `_k_cache = None`, relying on MLX's reference counting to free
+the old buffer when it falls out of scope.
+
+`prefill()` calls `flash_attention()` (full-sequence causal); `step()` calls
+`flash_attention_kvcache(causal=True)`.  New file: `mlx_mfa/inference.py`.
+21 new tests in `tests/test_inference_context.py`.
+
+### Track LD — docstring fixes
+
+- **`attn_bias`**: added explicit note that SDPA-only routing is an
+  **intentional architectural decision** — MFA's fused online-softmax kernel has
+  no generic additive-bias buffer; adding one would require a separate pre-pass
+  and negate bandwidth savings.  Directs users to `alibi_slopes` for
+  relative-position biases (native Metal path).
+- **`flash_attention_paged`** dK/dV zeros text: already removed in Track JA;
+  no additional change needed.
