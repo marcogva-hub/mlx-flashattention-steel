@@ -35,6 +35,13 @@ _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa"})
 
+# Optional C++ scatter primitive for O(1) paged KV pool writes (Phase 4-C.1+E.2).
+try:
+    from mlx_mfa._ext import mfa_scatter_kv as _mfa_scatter_kv_cpp
+    _USE_SCATTER_KV = True
+except ImportError:
+    _USE_SCATTER_KV = False
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -1429,9 +1436,11 @@ def flash_attention_kvcache(
                     interleaved=interleaved, rotary_dim=rotary_dim,
                 )
 
-            # Build pool update dict: phys_block -> {slot_offset -> [H_kv, D]}
-            k_updates: dict = {}
-            v_updates: dict = {}
+            # Build scatter target lists: (phys_blk, slot_off, b, t)
+            sc_blk_ids: list = []
+            sc_blk_offs: list = []
+            sc_k_rows: list = []
+            sc_v_rows: list = []
             for b in range(B_p):
                 kv_len = seq_lens_list_p[b]
                 tb = block_table_list_p[b]
@@ -1442,34 +1451,49 @@ def flash_attention_kvcache(
                     phys = int(tb[blk_idx])
                     if phys < 0:
                         continue
-                    if phys not in k_updates:
-                        k_updates[phys] = {}
-                        v_updates[phys] = {}
-                    # k_new[b, :, t, :] → shape [H_kv, D]
-                    k_updates[phys][blk_off] = k_new[b, :, t, :]
-                    v_updates[phys][blk_off] = v_new[b, :, t, :]
+                    sc_blk_ids.append(phys)
+                    sc_blk_offs.append(blk_off)
+                    sc_k_rows.append(k_new[b, :, t, :])   # [H_kv, D]
+                    sc_v_rows.append(v_new[b, :, t, :])
 
-            # Rebuild pool pages (only modified blocks are reconstructed).
-            k_blocks, v_blocks = [], []
-            for i in range(num_blks):
-                if i in k_updates:
-                    rows_k = [
-                        (k_updates[i][j][None] if j in k_updates[i]
-                         else k_cache[i, j:j+1])
-                        for j in range(blk_sz)
-                    ]
-                    rows_v = [
-                        (v_updates[i][j][None] if j in v_updates[i]
-                         else v_cache[i, j:j+1])
-                        for j in range(blk_sz)
-                    ]
-                    k_blocks.append(mx.concatenate(rows_k, axis=0))
-                    v_blocks.append(mx.concatenate(rows_v, axis=0))
-                else:
-                    k_blocks.append(k_cache[i])
-                    v_blocks.append(v_cache[i])
-            k_pages_new = mx.stack(k_blocks)
-            v_pages_new = mx.stack(v_blocks)
+            if _USE_SCATTER_KV and sc_blk_ids:
+                # Phase 4-C.1: single Metal scatter replaces O(num_blks) concat.
+                blk_ids_arr  = mx.array(sc_blk_ids,  dtype=mx.int32)
+                blk_offs_arr = mx.array(sc_blk_offs, dtype=mx.int32)
+                k_toks = mx.stack(sc_k_rows)   # [N_write, H_kv, D]
+                v_toks = mx.stack(sc_v_rows)
+                k_pages_new = _mfa_scatter_kv_cpp(
+                    k_cache, k_toks, blk_ids_arr, blk_offs_arr)
+                v_pages_new = _mfa_scatter_kv_cpp(
+                    v_cache, v_toks, blk_ids_arr, blk_offs_arr)
+            else:
+                # Fallback: MLX-native pool rebuild.
+                k_updates: dict = {phys: {} for phys in sc_blk_ids}
+                v_updates: dict = {phys: {} for phys in sc_blk_ids}
+                for phys, off, kr, vr in zip(
+                        sc_blk_ids, sc_blk_offs, sc_k_rows, sc_v_rows):
+                    k_updates[phys][off] = kr
+                    v_updates[phys][off] = vr
+                k_blocks, v_blocks = [], []
+                for i in range(num_blks):
+                    if i in k_updates:
+                        rows_k = [
+                            (k_updates[i][j][None] if j in k_updates[i]
+                             else k_cache[i, j:j+1])
+                            for j in range(blk_sz)
+                        ]
+                        rows_v = [
+                            (v_updates[i][j][None] if j in v_updates[i]
+                             else v_cache[i, j:j+1])
+                            for j in range(blk_sz)
+                        ]
+                        k_blocks.append(mx.concatenate(rows_k, axis=0))
+                        v_blocks.append(mx.concatenate(rows_v, axis=0))
+                    else:
+                        k_blocks.append(k_cache[i])
+                        v_blocks.append(v_cache[i])
+                k_pages_new = mx.stack(k_blocks)
+                v_pages_new = mx.stack(v_blocks)
             seq_lens_new = mx.array(
                 [sl + N_new_p for sl in seq_lens_list_p], dtype=mx.int32)
 
@@ -3334,47 +3358,70 @@ class PagedKVCache:
 
         self._ensure_seq(seq_id)
 
-        written = 0
-        while written < T:
-            blks = self._block_table[seq_id]
-            ptr = self._write_ptr[seq_id]
-
-            if ptr == self.block_size:
-                blk = self._allocate_block()
-                blks.append(blk)
-                ptr = 0
-                self._write_ptr[seq_id] = 0
-
-            blk_id = blks[-1]
-            room = self.block_size - ptr
-            chunk = min(room, T - written)
-
-            # Build replacement block: [prefix | new_chunk | suffix] on axis 0.
-            parts_k: list = []
-            parts_v: list = []
-            if ptr > 0:
-                parts_k.append(self._k_pool[blk_id, :ptr])
-                parts_v.append(self._v_pool[blk_id, :ptr])
-            parts_k.append(k_tokens[written : written + chunk])
-            parts_v.append(v_tokens[written : written + chunk])
-            tail = self.block_size - ptr - chunk
-            if tail > 0:
-                parts_k.append(self._k_pool[blk_id, ptr + chunk :])
-                parts_v.append(self._v_pool[blk_id, ptr + chunk :])
-
-            new_k = mx.concatenate(parts_k, axis=0)[None]  # [1, block_size, H, D]
-            new_v = mx.concatenate(parts_v, axis=0)[None]
-
-            # Splice block blk_id into pool.
-            self._k_pool = mx.concatenate(
-                [self._k_pool[:blk_id], new_k, self._k_pool[blk_id + 1 :]], axis=0
-            )
-            self._v_pool = mx.concatenate(
-                [self._v_pool[:blk_id], new_v, self._v_pool[blk_id + 1 :]], axis=0
-            )
-
-            self._write_ptr[seq_id] = ptr + chunk
-            written += chunk
+        if _USE_SCATTER_KV:
+            # Phase 4-E.2: single Metal scatter dispatch replaces O(pool_size) concat.
+            # Collect all (blk_id, slot_off) targets across all T tokens first.
+            all_blk_ids: list = []
+            all_blk_offs: list = []
+            written = 0
+            while written < T:
+                blks = self._block_table[seq_id]
+                ptr = self._write_ptr[seq_id]
+                if ptr == self.block_size:
+                    blk = self._allocate_block()
+                    blks.append(blk)
+                    ptr = 0
+                    self._write_ptr[seq_id] = 0
+                blk_id = blks[-1]
+                room = self.block_size - ptr
+                chunk = min(room, T - written)
+                for i in range(chunk):
+                    all_blk_ids.append(blk_id)
+                    all_blk_offs.append(ptr + i)
+                self._write_ptr[seq_id] = ptr + chunk
+                written += chunk
+            # One scatter call per pool (copy + scatter in one Metal pass).
+            blk_ids_arr  = mx.array(all_blk_ids,  dtype=mx.int32)
+            blk_offs_arr = mx.array(all_blk_offs, dtype=mx.int32)
+            self._k_pool = _mfa_scatter_kv_cpp(
+                self._k_pool, k_tokens, blk_ids_arr, blk_offs_arr)
+            self._v_pool = _mfa_scatter_kv_cpp(
+                self._v_pool, v_tokens, blk_ids_arr, blk_offs_arr)
+        else:
+            # Fallback: MLX-native concatenation path.
+            written = 0
+            while written < T:
+                blks = self._block_table[seq_id]
+                ptr = self._write_ptr[seq_id]
+                if ptr == self.block_size:
+                    blk = self._allocate_block()
+                    blks.append(blk)
+                    ptr = 0
+                    self._write_ptr[seq_id] = 0
+                blk_id = blks[-1]
+                room = self.block_size - ptr
+                chunk = min(room, T - written)
+                parts_k: list = []
+                parts_v: list = []
+                if ptr > 0:
+                    parts_k.append(self._k_pool[blk_id, :ptr])
+                    parts_v.append(self._v_pool[blk_id, :ptr])
+                parts_k.append(k_tokens[written : written + chunk])
+                parts_v.append(v_tokens[written : written + chunk])
+                tail = self.block_size - ptr - chunk
+                if tail > 0:
+                    parts_k.append(self._k_pool[blk_id, ptr + chunk :])
+                    parts_v.append(self._v_pool[blk_id, ptr + chunk :])
+                new_k = mx.concatenate(parts_k, axis=0)[None]
+                new_v = mx.concatenate(parts_v, axis=0)[None]
+                self._k_pool = mx.concatenate(
+                    [self._k_pool[:blk_id], new_k, self._k_pool[blk_id + 1 :]], axis=0
+                )
+                self._v_pool = mx.concatenate(
+                    [self._v_pool[:blk_id], new_v, self._v_pool[blk_id + 1 :]], axis=0
+                )
+                self._write_ptr[seq_id] = ptr + chunk
+                written += chunk
 
         # Materialise the lazy graph — prevents O(N) graph depth in decode loops.
         mx.eval(self._k_pool, self._v_pool)

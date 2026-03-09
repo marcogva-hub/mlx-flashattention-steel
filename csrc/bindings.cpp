@@ -11,6 +11,7 @@
 #include "mfa_attention.hpp"
 #include "mfa_paged_gather.hpp"
 #include "mfa_quantize.hpp"
+#include "mfa_scatter.hpp"
 #include "shader_cache.hpp"
 
 namespace nb = nanobind;
@@ -476,6 +477,35 @@ NB_MODULE(_ext, m) {
         "block_size: positive power of 2\n"
         "\n"
         "Returns (x_int8 [B,H,N,D] int8, scale [B,H,N_blocks,1] float32).");
+
+  // --- Paged KV scatter write (Phase 4-C.1+E.2) ---
+  m.def("mfa_scatter_kv",
+        [](mlx::core::array pool,
+           mlx::core::array tokens,
+           mlx::core::array blk_ids,
+           mlx::core::array blk_offs,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> mlx::core::array {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_scatter_kv(pool, tokens, blk_ids, blk_offs, s);
+        },
+        nb::arg("pool"),
+        nb::arg("tokens"),
+        nb::arg("blk_ids"),
+        nb::arg("blk_offs"),
+        nb::arg("stream") = nb::none(),
+        "Scatter-write tokens into paged KV pool (Phase 4-C.1+E.2).\n"
+        "\n"
+        "Replaces the Python pool rebuild loop with a single Metal copy+scatter pass.\n"
+        "Each pool element is either copied from pool_in or overwritten by a scattered\n"
+        "token — whichever applies.  Optimized for small N_write (decode: 1-4 tokens).\n"
+        "\n"
+        "pool:     [num_blocks, block_size, H_kv, D]  fp16 or bf16\n"
+        "tokens:   [N_write, H_kv, D]                 same dtype\n"
+        "blk_ids:  [N_write]                           int32 (target physical block)\n"
+        "blk_offs: [N_write]                           int32 (target slot within block)\n"
+        "\n"
+        "Returns pool_out [num_blocks, block_size, H_kv, D] with scattered writes applied.");
 
   m.attr("__version__") = "1.1.0";
 }

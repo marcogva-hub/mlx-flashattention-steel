@@ -41,6 +41,7 @@ class ShaderCache {
       PagedSteelForward  = 10,   // STEEL forward with kernel-level paged KV (Track FD)
       SageForward        = 11,   // SageAttention: int8 Q/K loads + fp16 GEMM (Track KB)
       QuantizePerBlock   = 12,   // Fused per-block INT8 quantization (Phase 4-A.1)
+      ScatterKV          = 13,   // In-place scatter write for paged KV pool (Phase 4-C.1/E.2)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
       // TensorOpsForward = 13,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
