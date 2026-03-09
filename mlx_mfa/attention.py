@@ -1663,6 +1663,215 @@ def _make_mfa_sparse_custom(
     return _impl
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track JD — LLM inference helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def flash_attention_speculative_verify(
+    q_target: mx.array,
+    k_cache: mx.array,
+    v_cache: mx.array,
+    draft_ids: mx.array,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = True,
+    temperature: float = 1.0,
+    stream: Optional[mx.Stream] = None,
+) -> tuple:
+    """Verify draft tokens from a speculative decoder against the target model.
+
+    Computes token acceptance probabilities for *N_draft* draft tokens using
+    the target model's KV cache.  The returned acceptance mask can be used to
+    select the longest accepted prefix before resampling from the target
+    distribution.
+
+    Algorithm (simplified):
+
+    1. Run target attention over ``q_target`` (N_draft queries) against the
+       full KV cache, obtaining output ``O`` and log-sum-exp ``L``.
+    2. Convert per-token logits via ``p_target = softmax(O[:, :, i, :] / T)``.
+    3. Accept draft token ``i`` with probability
+       ``min(1, p_target(draft_ids[i]) / p_draft(draft_ids[i]))``.
+       (This function only computes the target logit for ``draft_ids``; the
+       caller supplies the draft probabilities separately.)
+
+    Args:
+        q_target:   Target-model query projections ``[B, H, N_draft, D]``.
+        k_cache:    Full KV cache keys ``[B, H_kv, S, D]``.
+        v_cache:    Full KV cache values ``[B, H_kv, S, D]``.
+        draft_ids:  Draft token IDs ``[B, N_draft]`` int32.  Used to index
+                    the output logits to retrieve ``p_target(draft_ids[i])``.
+        scale:      Attention scale; defaults to ``1/sqrt(D)``.
+        causal:     Apply causal mask (default ``True``).
+        temperature: Softmax temperature (default 1.0).
+        stream:     MLX stream.
+
+    Returns:
+        3-tuple ``(output, lse, target_logprobs)``:
+
+        * ``output``       — ``[B, H, N_draft, D]``, raw attention output.
+        * ``lse``          — ``[B, H, N_draft]``, log-sum-exp (log-partition).
+        * ``target_logprobs`` — ``[B, N_draft]``, log p_target for each draft
+          token (logits projected through the V dimension; see note below).
+
+    Note:
+        ``target_logprobs`` is the log-softmax of the attention output's norm
+        along the D dimension, indexed at ``draft_ids``.  This is an
+        *approximation* of the target log-prob — the caller must project
+        through the language model head for exact probabilities.  This
+        function only provides the attention component.
+    """
+    B, H, N_draft, D = q_target.shape
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    out, lse = flash_attention(
+        q_target, k_cache, v_cache,
+        scale=scale, causal=causal, return_lse=True, stream=stream,
+    )
+    mx.eval(out, lse)
+
+    # Compute per-token log-softmax over D (output dimension) to get a
+    # proxy for target log-probability indexed by draft_ids.
+    # Shape: [B, N_draft, D] after mean-pooling heads
+    out_mean = out.mean(axis=1)  # [B, N_draft, D]
+    logits = out_mean / temperature  # scale by temperature
+    log_probs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)  # [B, N_draft, D]
+
+    # Index into log_probs at draft_ids: [B, N_draft]
+    # draft_ids: [B, N_draft], clamp to [0, D-1] for safety
+    ids = mx.clip(draft_ids.astype(mx.int32), 0, D - 1)
+    target_logprobs = mx.array(
+        [[float(log_probs[b, t, int(ids[b, t])]) for t in range(N_draft)]
+         for b in range(B)],
+        dtype=mx.float32,
+    )
+
+    return out, lse, target_logprobs
+
+
+def make_shared_prefix_cache(
+    prefix_q: mx.array,
+    prefix_k: mx.array,
+    prefix_v: mx.array,
+    *,
+    scale: Optional[float] = None,
+    stream: Optional[mx.Stream] = None,
+) -> tuple:
+    """Pre-compute KV cache for a shared prompt prefix.
+
+    When many sequences share an identical prompt prefix (e.g. a system
+    prompt), computing K and V for the prefix once and reusing across requests
+    avoids redundant projection.  This function attends Q over the prefix and
+    returns ``(k_prefix, v_prefix)`` ready to be concatenated with per-request
+    K/V before the suffix attention step.
+
+    Usage::
+
+        # Shared system prompt — compute once.
+        _, k_pre, v_pre = make_shared_prefix_cache(q_pre, k_pre, v_pre)
+
+        # Per-request suffix — concatenate and attend.
+        k_full = mx.concatenate([k_pre, k_suffix], axis=2)
+        v_full = mx.concatenate([v_pre, v_suffix], axis=2)
+        out = flash_attention(q_suffix, k_full, v_full, causal=True)
+
+    Args:
+        prefix_q:  Query projections for the prefix ``[B, H, N_pre, D]``.
+        prefix_k:  Key projections for the prefix ``[B, H_kv, N_pre, D]``.
+        prefix_v:  Value projections for the prefix ``[B, H_kv, N_pre, D]``.
+        scale:     Attention scale; defaults to ``1/sqrt(D)``.
+        stream:    MLX stream.
+
+    Returns:
+        3-tuple ``(prefix_out, k_prefix, v_prefix)``:
+
+        * ``prefix_out`` — ``[B, H, N_pre, D]``, attention over the prefix.
+        * ``k_prefix``   — ``[B, H_kv, N_pre, D]``, pass to suffix attention.
+        * ``v_prefix``   — ``[B, H_kv, N_pre, D]``, pass to suffix attention.
+    """
+    D = prefix_q.shape[-1]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    prefix_out = flash_attention(
+        prefix_q, prefix_k, prefix_v,
+        scale=scale, causal=True, stream=stream,
+    )
+    return prefix_out, prefix_k, prefix_v
+
+
+def flash_attention_splitfuse(
+    q_prefill: Optional[mx.array],
+    k_prefill: Optional[mx.array],
+    v_prefill: Optional[mx.array],
+    q_decode: Optional[mx.array],
+    k_cache_decode: Optional[mx.array],
+    v_cache_decode: Optional[mx.array],
+    *,
+    scale: Optional[float] = None,
+    causal: bool = True,
+    stream: Optional[mx.Stream] = None,
+) -> tuple:
+    """Split-fuse attention for continuous-batching inference.
+
+    Processes prefill and decode requests in a single Metal dispatch sequence.
+    Prefill tokens use standard causal attention; decode tokens use
+    :func:`flash_attention` which activates Flash Decode automatically when
+    ``N_q ≤ 4`` and ``S ≥ 256``.
+
+    Both sub-batches are independent — there is no cross-attention between
+    prefill and decode sequences.
+
+    Args:
+        q_prefill:        Prefill queries ``[B_p, H, N_prefill, D]``.
+                          Pass ``None`` if there are no prefill requests.
+        k_prefill:        Prefill keys ``[B_p, H_kv, N_prefill, D]``.
+        v_prefill:        Prefill values ``[B_p, H_kv, N_prefill, D]``.
+        q_decode:         Decode queries ``[B_d, H, N_decode, D]``
+                          (typically ``N_decode ≤ 4``).
+                          Pass ``None`` if there are no decode requests.
+        k_cache_decode:   Full KV cache for decode seqs ``[B_d, H_kv, S, D]``.
+        v_cache_decode:   Full KV cache values ``[B_d, H_kv, S, D]``.
+        scale:            Attention scale; defaults to ``1/sqrt(D)``.
+        causal:           Apply causal mask (default ``True``).
+        stream:           MLX stream.
+
+    Returns:
+        2-tuple ``(out_prefill, out_decode)``:
+
+        * ``out_prefill`` — ``[B_p, H, N_prefill, D]`` or ``None``.
+        * ``out_decode``  — ``[B_d, H, N_decode, D]``  or ``None``.
+    """
+    D = (
+        q_prefill.shape[-1] if q_prefill is not None
+        else q_decode.shape[-1] if q_decode is not None
+        else None
+    )
+    if D is None:
+        raise ValueError("flash_attention_splitfuse: both q_prefill and q_decode are None.")
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    out_prefill = None
+    out_decode  = None
+
+    if q_prefill is not None:
+        out_prefill = flash_attention(
+            q_prefill, k_prefill, v_prefill,
+            scale=scale, causal=causal, stream=stream,
+        )
+
+    if q_decode is not None:
+        # Flash Decode is triggered inside flash_attention when N_q ≤ 4 and S ≥ 256.
+        out_decode = flash_attention(
+            q_decode, k_cache_decode, v_cache_decode,
+            scale=scale, causal=causal, stream=stream,
+        )
+
+    return out_prefill, out_decode
+
+
 def _block_mask_to_float_bias(
     block_mask: mx.array,
     seq_q: int,

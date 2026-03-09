@@ -6316,3 +6316,177 @@ class TestRoPEUnified:
         # Both outputs must be finite
         assert mx.all(mx.isfinite(ref0)).item()
         assert mx.all(mx.isfinite(ref1)).item()
+
+# ---------------------------------------------------------------------------
+# Track JD — LLM inference helpers
+# ---------------------------------------------------------------------------
+
+class TestSpeculativeVerify:
+    """Tests for flash_attention_speculative_verify."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(0)
+
+    def test_returns_correct_shapes(self):
+        """Returns (out, lse, target_logprobs) with correct shapes."""
+        from mlx_mfa import flash_attention_speculative_verify
+        B, H, N_draft, D = 1, 4, 4, 128
+        S = 64
+        q = mx.random.normal((B, H, N_draft, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        draft_ids = mx.zeros((B, N_draft), dtype=mx.int32)
+        out, lse, lp = flash_attention_speculative_verify(q, k, v, draft_ids)
+        mx.eval(out, lse, lp)
+        assert out.shape == (B, H, N_draft, D)
+        assert lse.shape == (B, H, N_draft)
+        assert lp.shape == (B, N_draft)
+
+    def test_output_is_finite(self):
+        """All returned tensors must be finite."""
+        from mlx_mfa import flash_attention_speculative_verify
+        B, H, N_draft, D = 1, 4, 4, 64
+        S = 32
+        q = mx.random.normal((B, H, N_draft, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        draft_ids = mx.zeros((B, N_draft), dtype=mx.int32)
+        out, lse, lp = flash_attention_speculative_verify(q, k, v, draft_ids)
+        mx.eval(out, lse, lp)
+        assert mx.all(mx.isfinite(out)).item(), "out has non-finite values"
+        assert mx.all(mx.isfinite(lse)).item(), "lse has non-finite values"
+        assert mx.all(mx.isfinite(lp)).item(), "target_logprobs has non-finite values"
+
+    def test_output_matches_flash_attention(self):
+        """out must match flash_attention output (lse is bonus)."""
+        from mlx_mfa import flash_attention_speculative_verify, flash_attention
+        B, H, N_draft, D = 1, 4, 4, 64
+        S = 32
+        q = mx.random.normal((B, H, N_draft, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        draft_ids = mx.zeros((B, N_draft), dtype=mx.int32)
+        ref = flash_attention(q, k, v, causal=True)
+        out, _, _ = flash_attention_speculative_verify(q, k, v, draft_ids)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_logprobs_are_negative(self):
+        """Log-probabilities must be ≤ 0."""
+        from mlx_mfa import flash_attention_speculative_verify
+        B, H, N_draft, D = 1, 2, 3, 64
+        q = mx.random.normal((B, H, N_draft, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, 32, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, 32, D)).astype(mx.float16)
+        draft_ids = mx.zeros((B, N_draft), dtype=mx.int32)
+        _, _, lp = flash_attention_speculative_verify(q, k, v, draft_ids)
+        mx.eval(lp)
+        assert mx.all(lp <= 0).item(), "log-probs must be ≤ 0"
+
+
+class TestSharedPrefixCache:
+    """Tests for make_shared_prefix_cache."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(1)
+
+    def test_returns_three_tuple(self):
+        """Returns (prefix_out, k_prefix, v_prefix)."""
+        from mlx_mfa import make_shared_prefix_cache
+        B, H, N_pre, D = 1, 4, 32, 64
+        q = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        out, kp, vp = make_shared_prefix_cache(q, k, v)
+        mx.eval(out, kp, vp)
+        assert out.shape == (B, H, N_pre, D)
+        assert kp.shape == k.shape
+        assert vp.shape == v.shape
+
+    def test_prefix_k_equals_input_k(self):
+        """Returned k_prefix must be identical to the input k."""
+        from mlx_mfa import make_shared_prefix_cache
+        B, H, N_pre, D = 1, 2, 16, 64
+        q = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        _, kp, vp = make_shared_prefix_cache(q, k, v)
+        mx.eval(kp, vp)
+        np.testing.assert_array_equal(
+            np.array(kp.astype(mx.float32)),
+            np.array(k.astype(mx.float32)),
+        )
+
+    def test_suffix_concat_extends_cache(self):
+        """Concatenating k_prefix with k_suffix and attending produces finite output."""
+        from mlx_mfa import make_shared_prefix_cache, flash_attention
+        B, H, N_pre, N_suf, D = 1, 4, 16, 8, 64
+        q_pre = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        k_pre = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        v_pre = mx.random.normal((B, H, N_pre, D)).astype(mx.float16)
+        _, kp, vp = make_shared_prefix_cache(q_pre, k_pre, v_pre)
+
+        q_suf = mx.random.normal((B, H, N_suf, D)).astype(mx.float16)
+        k_suf = mx.random.normal((B, H, N_suf, D)).astype(mx.float16)
+        v_suf = mx.random.normal((B, H, N_suf, D)).astype(mx.float16)
+        k_full = mx.concatenate([kp, k_suf], axis=2)
+        v_full = mx.concatenate([vp, v_suf], axis=2)
+        out = flash_attention(q_suf, k_full, v_full, causal=True)
+        mx.eval(out)
+        assert mx.all(mx.isfinite(out)).item()
+
+
+class TestSplitFuse:
+    """Tests for flash_attention_splitfuse."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(2)
+
+    def test_prefill_only(self):
+        """Passing only prefill returns (out_prefill, None)."""
+        from mlx_mfa import flash_attention_splitfuse
+        B, H, N_p, D = 1, 4, 64, 128
+        q = mx.random.normal((B, H, N_p, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N_p, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N_p, D)).astype(mx.float16)
+        out_p, out_d = flash_attention_splitfuse(q, k, v, None, None, None)
+        mx.eval(out_p)
+        assert out_p is not None and out_p.shape == (B, H, N_p, D)
+        assert out_d is None
+
+    def test_decode_only(self):
+        """Passing only decode returns (None, out_decode)."""
+        from mlx_mfa import flash_attention_splitfuse
+        B, H, N_d, S, D = 1, 4, 1, 128, 128
+        q = mx.random.normal((B, H, N_d, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        out_p, out_d = flash_attention_splitfuse(None, None, None, q, k, v)
+        mx.eval(out_d)
+        assert out_p is None
+        assert out_d is not None and out_d.shape == (B, H, N_d, D)
+
+    def test_splitfuse_both(self):
+        """Prefill + decode simultaneously — both outputs are finite."""
+        from mlx_mfa import flash_attention_splitfuse
+        B_p, B_d = 2, 4
+        H, N_p, N_d, S, D = 4, 128, 1, 256, 128
+        qp = mx.random.normal((B_p, H, N_p, D)).astype(mx.float16)
+        kp = mx.random.normal((B_p, H, N_p, D)).astype(mx.float16)
+        vp = mx.random.normal((B_p, H, N_p, D)).astype(mx.float16)
+        qd = mx.random.normal((B_d, H, N_d, D)).astype(mx.float16)
+        kd = mx.random.normal((B_d, H, S, D)).astype(mx.float16)
+        vd = mx.random.normal((B_d, H, S, D)).astype(mx.float16)
+        out_p, out_d = flash_attention_splitfuse(qp, kp, vp, qd, kd, vd)
+        mx.eval(out_p, out_d)
+        assert mx.all(mx.isfinite(out_p)).item()
+        assert mx.all(mx.isfinite(out_d)).item()
+        assert out_p.shape == (B_p, H, N_p, D)
+        assert out_d.shape == (B_d, H, N_d, D)

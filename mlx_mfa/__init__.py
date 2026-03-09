@@ -76,6 +76,10 @@ from mlx_mfa.attention import (
     is_mfa_available,
     get_device_info,
     get_supported_configs,
+    # Track JD: LLM inference helpers
+    flash_attention_speculative_verify,
+    make_shared_prefix_cache,
+    flash_attention_splitfuse,
 )
 
 from mlx_mfa.masks import (
@@ -131,5 +135,9 @@ __all__ = [
     "is_mfa_available",
     "get_device_info",
     "get_supported_configs",
+    # LLM inference helpers (Track JD)
+    "flash_attention_speculative_verify",
+    "make_shared_prefix_cache",
+    "flash_attention_splitfuse",
     "__version__",
 ]
