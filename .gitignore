@@ -56,3 +56,5 @@ full_shader_dump.txt
 claude-code-prompt*.md
 PROMPT_PHASE_*.md
 TODO.md
+_build_manual/
+*.varlen_append
