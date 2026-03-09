@@ -6547,3 +6547,92 @@ class TestCrossAttentionKVCache:
         assert mx.all(mx.isfinite(dq)).item()
         assert mx.all(mx.isfinite(dk)).item()
         assert mx.all(mx.isfinite(dv)).item()
+
+
+# ---------------------------------------------------------------------------
+# Track KA: SageAttention quantization utilities
+# ---------------------------------------------------------------------------
+
+class TestSageQuantization:
+    """Tests for mlx_mfa.quantize — per-block int8 quantization utilities."""
+
+    def test_quantize_per_block_roundtrip_f16(self):
+        """Quantize then dequantize stays close to original (int8 precision)."""
+        from mlx_mfa.quantize import quantize_per_block, dequantize
+        B, H, N, D = 1, 2, 64, 128
+        mx.random.seed(0)
+        x = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        x_int8, scale = quantize_per_block(x, block_size=32)
+        mx.eval(x_int8, scale)
+        x_deq = dequantize(x_int8, scale, block_size=32, dtype=mx.float16)
+        mx.eval(x_deq)
+        # int8 has ~0.8% relative error per element; absolute tolerance ~ absmax/127
+        absmax = float(mx.max(mx.abs(x)).item())
+        atol = absmax / 127.0 * 1.5  # 1.5× rounding budget
+        err = float(mx.max(mx.abs(x.astype(mx.float32) - x_deq.astype(mx.float32))).item())
+        assert err <= atol, f"roundtrip error {err:.4f} > atol {atol:.4f}"
+
+    def test_quantize_scale_shape(self):
+        """Scale tensor has correct shape [B, H, N_blocks, 1]."""
+        from mlx_mfa.quantize import quantize_per_block
+        B, H, N, D = 2, 4, 48, 64
+        x = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        x_int8, scale = quantize_per_block(x, block_size=16)
+        mx.eval(x_int8, scale)
+        assert x_int8.shape == (B, H, N, D), x_int8.shape
+        assert x_int8.dtype == mx.int8
+        assert scale.shape == (B, H, 3, 1), scale.shape  # 48/16 = 3 blocks
+        assert scale.dtype == mx.float32
+
+    def test_quantize_non_multiple_N(self):
+        """N not divisible by block_size: output has same N as input."""
+        from mlx_mfa.quantize import quantize_per_block
+        B, H, N, D = 1, 1, 50, 64  # 50 not divisible by 32
+        x = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        x_int8, scale = quantize_per_block(x, block_size=32)
+        mx.eval(x_int8, scale)
+        assert x_int8.shape == (B, H, N, D)
+        assert scale.shape == (B, H, 2, 1)  # ceil(50/32) = 2 blocks
+
+    def test_smooth_k_mean_subtracted(self):
+        """smooth_k subtracts per-channel mean correctly."""
+        from mlx_mfa.quantize import smooth_k
+        B, H, S, D = 1, 2, 32, 64
+        mx.random.seed(7)
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        k_smooth, k_mean = smooth_k(k)
+        mx.eval(k_smooth, k_mean)
+        # Smoothed K should have near-zero channel mean
+        residual_mean = mx.mean(k_smooth.astype(mx.float32), axis=2)  # [B,H,D]
+        max_residual = float(mx.max(mx.abs(residual_mean)).item())
+        assert max_residual < 0.01, f"Residual mean too large: {max_residual}"
+
+    def test_smooth_k_shapes(self):
+        """smooth_k returns correct shapes."""
+        from mlx_mfa.quantize import smooth_k
+        B, H, S, D = 2, 4, 128, 64
+        k = mx.random.normal([B, H, S, D]).astype(mx.float16)
+        k_smooth, k_mean = smooth_k(k)
+        mx.eval(k_smooth, k_mean)
+        assert k_smooth.shape == (B, H, S, D)
+        assert k_mean.shape == (B, H, 1, D)
+        assert k_mean.dtype == mx.float32
+
+    def test_quantize_scale_positive(self):
+        """All scale values must be positive (not zero) to avoid NaN."""
+        from mlx_mfa.quantize import quantize_per_block
+        B, H, N, D = 1, 1, 32, 64
+        x = mx.zeros([B, H, N, D]).astype(mx.float16)  # all-zero input
+        _, scale = quantize_per_block(x, block_size=32)
+        mx.eval(scale)
+        assert bool(mx.all(scale > 0).item()), "Scale must be positive even for zero input"
+
+    def test_sage_block_sizes(self):
+        """Block sizes match STEEL tile dimensions."""
+        from mlx_mfa.quantize import sage_block_sizes
+        bq64, bk64 = sage_block_sizes(64)
+        bq128, bk128 = sage_block_sizes(128)
+        bq256, bk256 = sage_block_sizes(256)
+        assert bq64 == 32 and bk64 == 32
+        assert bq128 == 32 and bk128 == 16
+        assert bq256 == 32 and bk256 == 16
