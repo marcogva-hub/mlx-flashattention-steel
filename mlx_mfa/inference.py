@@ -234,6 +234,12 @@ class InferenceContext:
             self._v_cache = mx.concatenate([self._v_cache, v_new], axis=2)
         self._seqlen = new_seqlen
 
+        # Phase 4-E.1: materialise the lazy graph after each step.
+        # Without this, the graph grows to O(N_steps) depth over long decode
+        # loops, causing catastrophic memory pressure.  mx.eval() pins the
+        # concatenate result so the next step starts from a flat buffer.
+        mx.eval(self._k_cache, self._v_cache)
+
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
 
