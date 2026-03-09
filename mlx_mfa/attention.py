@@ -110,9 +110,13 @@ def flash_attention(
             softmax, broadcastable to ``[B, H, N, S]``.  Can be used for
             padding masks (``-inf`` for padding positions), relative position
             encodings, or any per-element score adjustment.  When provided,
-            the call falls back to ``mx.fast.scaled_dot_product_attention``
-            (which passes it as the ``mask`` argument) because the MFA Metal
-            kernel does not support a generic additive bias buffer.
+            the call always falls back to
+            ``mx.fast.scaled_dot_product_attention`` (which accepts it as the
+            ``mask`` argument).  **This is an intentional architectural
+            decision**: the MFA Metal kernel uses fused online softmax with no
+            generic additive-bias buffer; adding one would require a separate
+            pre-pass and negate the bandwidth savings.  Use ``alibi_slopes``
+            for relative-position biases (handled natively in Metal).
             Mutually exclusive with ``alibi_slopes`` and ``softcap``.
         backend: Backend selection.  One of:
 
