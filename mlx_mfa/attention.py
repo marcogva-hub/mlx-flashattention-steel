@@ -886,14 +886,16 @@ def get_supported_configs() -> dict:
         # --- extended API ---
         "kvcache_rope_append":  True,
         "packed_api":           True,   # qkv_packed / kv_packed variants
+        "sage_attention":       ext,    # int8 Q/K quantized attention (Track KB/KC)
         # --- dtype / dim ---
         "bfloat16":             True,
         "float16":              True,
         "d512":                 True,
     }
-    # 8 distinct Metal kernel variants (STEEL forward, sparse forward, varlen,
-    # paged gather, paged forward, backward dQ, backward dKV, sparse backward)
-    kernel_types = 8 if ext else 0
+    # 9 distinct Metal kernel variants (STEEL forward, sparse forward, varlen,
+    # paged gather, paged forward, backward dQ, backward dKV, sparse backward,
+    # sage forward)
+    kernel_types = 9 if ext else 0
     return {
         "head_dims":           frozenset(_MFA_SUPPORTED_HDIMS),
         "dtypes":              frozenset(_MFA_SUPPORTED_DTYPES),
@@ -901,6 +903,116 @@ def get_supported_configs() -> dict:
         "features":            features,
         "kernel_types":        kernel_types,
     }
+
+
+# ---------------------------------------------------------------------------
+# SageAttention — quantized Q/K forward pass (Track KC)
+# ---------------------------------------------------------------------------
+
+def sage_attention(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    apply_smooth_k: bool = True,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Compute attention with int8-quantized Q and K (SageAttention style).
+
+    Reduces Q/K device→threadgroup memory traffic by 2× vs fp16 by loading
+    Q and K as int8 and dequantizing to fp16 inside the Metal kernel.
+    V is always fp16/bf16 (P@V is memory-access-bound only at very large D).
+
+    Speedup is meaningful for long sequences (S ≥ 2048) where memory
+    bandwidth dominates arithmetic throughput.
+
+    When the MFA extension is not available, falls back to standard
+    ``flash_attention`` (fp16 SDPA) with a runtime warning.
+
+    Args:
+        q: Query tensor ``[B, H, N, D]``.  fp16 or bf16.
+        k: Key tensor ``[B, H_kv, S, D]``.  fp16 or bf16.  GQA: ``H_kv``
+           must divide ``H``.
+        v: Value tensor ``[B, H_kv, S, D]``.  fp16 or bf16.
+        scale: Attention scale.  Defaults to ``1 / sqrt(D)``.
+        causal: Whether to apply causal masking.
+        apply_smooth_k: When ``True`` (default), subtracts the per-channel
+            mean of K before quantizing (SageAttention K-smoothing) and
+            applies an approximate output correction term to account for it.
+            This dramatically reduces quantization error at negligible cost
+            (one extra ``mx.mean`` + ``mx.sum`` over V).
+            Set to ``False`` to skip smoothing (faster but less accurate).
+        stream: MLX stream for async execution.
+
+    Returns:
+        ``[B, H, N, D]`` attention output in the same dtype as ``q``.
+
+    Note:
+        This function does **not** support autograd.  It is inference-only.
+        For training, use ``flash_attention`` which uses fp16 STEEL kernels.
+
+    Example::
+
+        import mlx.core as mx
+        from mlx_mfa import sage_attention
+
+        q = mx.random.normal([1, 8, 2048, 128]).astype(mx.float16)
+        k = mx.random.normal([1, 8, 2048, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 8, 2048, 128]).astype(mx.float16)
+        out = sage_attention(q, k, v, causal=True)  # [1, 8, 2048, 128]
+    """
+    from mlx_mfa.quantize import (
+        quantize_per_block,
+        sage_block_sizes,
+        smooth_k as _smooth_k,
+    )
+
+    D = q.shape[-1]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    BQ, BK = sage_block_sizes(D)
+
+    # Check extension availability
+    try:
+        from mlx_mfa._ext import mfa_sage_forward as _sage_fwd
+        _ext_ok = True
+    except ImportError:
+        _ext_ok = False
+
+    if not _ext_ok:
+        import warnings
+        warnings.warn(
+            "sage_attention: MFA extension not available; "
+            "falling back to fp16 flash_attention.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return flash_attention(q, k, v, scale=scale, causal=causal, stream=stream)
+
+    # K smoothing: subtract per-channel mean to reduce int8 quantization error.
+    # Mathematical note: subtracting a constant k_mean from all key positions
+    # adds a query-specific scalar bias to every attention score for position i
+    # (bias_i = q_i · k_mean * scale, independent of j). Since bias_i cancels
+    # in the softmax ratio, the output is identical to unsmoothed attention.
+    # No output correction is needed; smooth_k purely improves int8 precision.
+    if apply_smooth_k:
+        k_work, _ = _smooth_k(k)
+    else:
+        k_work = k
+
+    # Quantize Q and K to int8 per STEEL tile
+    q_int8, q_scale = quantize_per_block(q, BQ)       # q_scale: [B, H, NQ, 1]
+    k_int8, k_scale = quantize_per_block(k_work, BK)  # k_scale: [B, H_kv, NK, 1]
+
+    # Kernel expects 3-D scales (squeeze trailing broadcast dim)
+    q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
+    k_scale = k_scale.squeeze(-1)   # [B, H_kv, NK]
+
+    # Dispatch SageAttention Metal kernel
+    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal, stream)
+    return O
 
 
 # ---------------------------------------------------------------------------

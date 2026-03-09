@@ -80,6 +80,16 @@ from mlx_mfa.attention import (
     flash_attention_speculative_verify,
     make_shared_prefix_cache,
     flash_attention_splitfuse,
+    # Track KC: SageAttention
+    sage_attention,
+)
+
+from mlx_mfa.quantize import (
+    quantize_per_block,
+    dequantize,
+    smooth_k,
+    sage_output_correction,
+    sage_block_sizes,
 )
 
 from mlx_mfa.masks import (
@@ -139,5 +149,13 @@ __all__ = [
     "flash_attention_speculative_verify",
     "make_shared_prefix_cache",
     "flash_attention_splitfuse",
+    # SageAttention (Track KC)
+    "sage_attention",
+    # Quantization utilities (Track KA/KC)
+    "quantize_per_block",
+    "dequantize",
+    "smooth_k",
+    "sage_output_correction",
+    "sage_block_sizes",
     "__version__",
 ]

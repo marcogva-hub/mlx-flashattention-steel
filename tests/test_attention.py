@@ -431,8 +431,8 @@ class TestPublicAPI:
         assert features["native_backward"] == "ext"  # STEEL bwd active for f16/bf16 D≤512
         # kernel_types
         ext = cfg["extension_available"]
-        assert cfg["kernel_types"] == (8 if ext else 0), (
-            f"expected kernel_types={'8 if ext else 0'}, got {cfg['kernel_types']}"
+        assert cfg["kernel_types"] == (9 if ext else 0), (
+            f"expected kernel_types={'9 if ext else 0'}, got {cfg['kernel_types']}"
         )
 
 
