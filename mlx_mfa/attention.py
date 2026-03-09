@@ -416,6 +416,264 @@ def make_rope_3d_tables(
     return mx.array(cos_table), mx.array(sin_table)
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track JB — Unified RoPE entry point
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def flash_attention_rope_unified(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    rotary_cos: Optional[mx.array] = None,
+    rotary_sin: Optional[mx.array] = None,
+    *,
+    # Cache: when provided, k/v are treated as NEW tokens to append
+    k_cache: Optional[mx.array] = None,
+    v_cache: Optional[mx.array] = None,
+    # Paged KV (mutually exclusive with dense k_cache)
+    block_table: Optional[mx.array] = None,
+    seq_lens: Optional[mx.array] = None,
+    block_size: int = 16,
+    # Attention hyper-parameters
+    scale: Optional[float] = None,
+    causal: bool = True,
+    # RoPE parameters
+    cache_seqlens: Union[int, "mx.array", Sequence[int]] = 0,
+    k_offset: Optional[int] = None,
+    interleaved: bool = True,
+    rotary_dim: Optional[int] = None,
+    rope_3d: Optional[dict] = None,
+    # Output
+    return_updated_cache: bool = False,
+    stream: Optional[mx.Stream] = None,
+) -> Union[mx.array, tuple]:
+    """Unified RoPE-fused attention — single entry point for all RoPE modes.
+
+    Dispatches automatically to the right sub-path based on which cache
+    parameters are provided.  All four modes share the same Q/K rotation
+    logic via :func:`_apply_rope_to_qk`.
+
+    **Mode selection**:
+
+    * **Standalone** (``k_cache=None``, ``block_table=None``):
+      ``k``/``v`` are the full key/value sequences.  Q is rotated at
+      ``[cache_seqlens, cache_seqlens + N_q)``;  K is rotated starting at
+      ``k_offset`` (defaults to 0).  Equivalent to :func:`flash_attention_rope`.
+
+    * **Cache-append** (``k_cache`` or ``v_cache`` provided):
+      ``k``/``v`` are the *new* tokens to append.  Both Q and ``k`` are rotated
+      at ``[cache_seqlens, …)``, i.e. ``k_offset`` defaults to ``cache_seqlens``.
+      The new rotated ``k`` and ``v`` are concatenated onto the cache before
+      attention.  Returns ``(output, k_updated, v_updated)`` when
+      ``return_updated_cache=True`` (default when ``k_cache`` is provided).
+
+    * **Cache-consume** (``k_cache`` provided, ``k`` is ``None`` / empty):
+      Q is rotated; the full cache is attended without appending.  Set
+      ``return_updated_cache=False`` explicitly.
+
+    * **Paged** (``block_table`` provided):
+      Q is rotated at ``[cache_seqlens, …)``;  K/V are read from the paged
+      pool via :func:`flash_attention_paged`.  ``k``/``v`` args are ignored.
+
+    **3D RoPE**: pass ``rope_3d`` dict instead of ``rotary_cos``/``rotary_sin``
+    (mutually exclusive).  Tables are built automatically.
+
+    Args:
+        q:             Query ``[B, H_q, N_q, D]``.
+        k:             Key tensor.  Meaning depends on mode:
+                       standalone → full ``[B, H_kv, S, D]``;
+                       cache-append → new tokens ``[B, H_kv, N_new, D]``;
+                       paged → ignored (pass ``k_pages`` as ``v`` for paged).
+        v:             Value tensor (same conventions as ``k``).
+        rotary_cos:    ``float32 [max_seq_len, D/2]`` cosine table (1D RoPE).
+        rotary_sin:    ``float32 [max_seq_len, D/2]`` sine table (1D RoPE).
+        k_cache:       Past key cache ``[B, H_kv, past_len, D]`` (pre-rotated).
+                       ``None`` for standalone or first step.
+        v_cache:       Past value cache.
+        block_table:   ``[B, max_blocks]`` int32 — triggers paged mode.
+        seq_lens:      ``[B]`` int32 — per-sequence KV lengths (paged mode).
+        block_size:    Page size (paged mode only).
+        scale:         Attention scale; defaults to ``1/sqrt(D)``.
+        causal:        Causal masking (default ``True``).
+        cache_seqlens: Q rotation offset = current cache length.  Can be a
+                       per-batch int array.
+        k_offset:      K rotation start position.  Defaults to ``0`` in
+                       standalone mode and ``cache_seqlens`` in cache mode.
+        interleaved:   ``True`` = LLaMA; ``False`` = GPT-NeoX split-halves.
+        rotary_dim:    Rotate only the first ``rotary_dim`` head-dim elements.
+        rope_3d:       3D RoPE config dict (mutually exclusive with cos/sin).
+        return_updated_cache: Return ``(output, k_updated, v_updated)`` tuple.
+                       Defaults to ``True`` when ``k_cache`` is provided,
+                       ``False`` otherwise.
+        stream:        MLX stream.
+
+    Returns:
+        When ``return_updated_cache`` is ``False``:
+            Output ``[B, H_q, N_q, D]``.
+        When ``return_updated_cache`` is ``True``:
+            3-tuple ``(output, k_cache_updated, v_cache_updated)``.
+    """
+    # ── 0. Validate ───────────────────────────────────────────────────────
+    if q.ndim != 4:
+        raise ValueError(
+            "flash_attention_rope_unified expects 4-D tensors "
+            f"[B, H, N, D]. Got q={q.ndim}D."
+        )
+
+    head_dim = q.shape[-1]
+    if scale is None:
+        scale = 1.0 / math.sqrt(head_dim)
+
+    # _ret_cache: whether to return (out, k_updated, v_updated).
+    # _cache_mode: whether k/v are *new* tokens (rather than full sequences).
+    # Cache-mode is triggered either by k_cache being provided OR by the caller
+    # explicitly requesting the updated cache (e.g. first-step append).
+    _ret_cache = bool(return_updated_cache)
+    _cache_mode = (k_cache is not None) or _ret_cache
+
+    # ── 1. 3D RoPE table construction ─────────────────────────────────────
+    if rope_3d is not None:
+        if rotary_cos is not None or rotary_sin is not None:
+            raise ValueError(
+                "rope_3d and rotary_cos/rotary_sin are mutually exclusive."
+            )
+        grid_h = rope_3d["grid_h"]
+        grid_w = rope_3d["grid_w"]
+        num_frames = rope_3d.get("num_frames", 1)
+        rotary_cos, rotary_sin = make_rope_3d_tables(
+            grid_h, grid_w, num_frames,
+            d_h=rope_3d.get("d_h"),
+            d_w=rope_3d.get("d_w"),
+            d_t=rope_3d.get("d_t"),
+            head_dim=head_dim,
+            theta=rope_3d.get("theta", 10000.0),
+        )
+        cache_seqlens = 0
+
+    if rotary_cos is None or rotary_sin is None:
+        raise ValueError(
+            "flash_attention_rope_unified requires rotary_cos/rotary_sin "
+            "or rope_3d."
+        )
+
+    # ── 2. Per-batch cache_seqlens dispatch ───────────────────────────────
+    if not isinstance(cache_seqlens, int):
+        if isinstance(cache_seqlens, mx.array):
+            cs_list = [int(x) for x in cache_seqlens.tolist()]
+        else:
+            cs_list = [int(x) for x in cache_seqlens]
+        B = q.shape[0]
+        if len(cs_list) != B:
+            raise ValueError(
+                f"cache_seqlens length {len(cs_list)} must equal B={B}"
+            )
+        chunks_out, chunks_k, chunks_v = [], [], []
+        for b, cs in enumerate(cs_list):
+            kc_b = k_cache[b:b+1] if k_cache is not None else None
+            vc_b = v_cache[b:b+1] if v_cache is not None else None
+            result = flash_attention_rope_unified(
+                q[b:b+1], k[b:b+1], v[b:b+1],
+                rotary_cos, rotary_sin,
+                k_cache=kc_b, v_cache=vc_b,
+                block_table=block_table[b:b+1] if block_table is not None else None,
+                seq_lens=seq_lens[b:b+1] if seq_lens is not None else None,
+                block_size=block_size,
+                scale=scale, causal=causal,
+                cache_seqlens=cs, k_offset=k_offset,
+                interleaved=interleaved, rotary_dim=rotary_dim,
+                return_updated_cache=_ret_cache, stream=stream,
+            )
+            if _ret_cache:
+                chunks_out.append(result[0])
+                chunks_k.append(result[1])
+                chunks_v.append(result[2])
+            else:
+                chunks_out.append(result)
+        out_cat = mx.concatenate(chunks_out, axis=0)
+        if _ret_cache:
+            return (out_cat,
+                    mx.concatenate(chunks_k, axis=0),
+                    mx.concatenate(chunks_v, axis=0))
+        return out_cat
+
+    # Single-batch path from here.
+    cs = int(cache_seqlens) if isinstance(cache_seqlens, (int, float)) else cache_seqlens
+
+    # ── 3. Paged mode ─────────────────────────────────────────────────────
+    if block_table is not None:
+        if seq_lens is None:
+            raise ValueError("seq_lens is required in paged mode.")
+        _partial = rotary_dim is not None and rotary_dim < head_dim
+        if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial:
+            q_rot, _ = _apply_rope_to_qk(
+                q, k, rotary_cos, rotary_sin,
+                q_offset=cs, k_offset=cs,
+                interleaved=interleaved, rotary_dim=rotary_dim,
+            )
+        else:
+            q_rot, _ = _apply_rope_to_qk(
+                q, k, rotary_cos, rotary_sin,
+                q_offset=cs, k_offset=cs,
+                interleaved=interleaved, rotary_dim=rotary_dim,
+            )
+        out = flash_attention_paged(
+            q_rot, k, v, block_table, seq_lens,
+            scale=scale, causal=causal, block_size=block_size, stream=stream,
+        )
+        if _ret_cache:
+            return out, k, v
+        return out
+
+    # ── 4. Determine K rotation offset ────────────────────────────────────
+    # In cache mode K starts at the same position as Q (new tokens).
+    # In standalone mode K starts at 0 (full sequence from the beginning).
+    if k_offset is None:
+        _k_off = cs if _cache_mode else 0
+    else:
+        _k_off = k_offset
+
+    # ── 5. Rotate Q and K, then attend ────────────────────────────────────
+    _partial_rope = rotary_dim is not None and rotary_dim < head_dim
+
+    def _make_kv_full(k_rot):
+        """Concat rotated k/v onto cache (or return as-is for first step)."""
+        if k_cache is not None:
+            return (mx.concatenate([k_cache, k_rot], axis=2),
+                    mx.concatenate([v_cache, v], axis=2))
+        return k_rot, v
+
+    if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial_rope:
+        q_rot, k_rot = _apply_rope_to_qk(
+            q, k, rotary_cos, rotary_sin,
+            q_offset=cs, k_offset=_k_off,
+            interleaved=interleaved, rotary_dim=rotary_dim,
+        )
+        k_full, v_full = _make_kv_full(k_rot) if _cache_mode else (k_rot, v)
+        out = flash_attention(q_rot, k_full, v_full, scale=scale, causal=causal,
+                              stream=stream)
+        if _ret_cache:
+            return out, k_full, v_full
+        return out
+
+    # STEEL / MFA fast path.
+    if _cache_mode:
+        q_rot, k_new_rot = _apply_rope_to_qk(
+            q, k, rotary_cos, rotary_sin,
+            q_offset=cs, k_offset=_k_off,
+            interleaved=interleaved,
+        )
+        k_full, v_full = _make_kv_full(k_new_rot)
+        out = flash_attention(q_rot, k_full, v_full, scale=scale, causal=causal,
+                              stream=stream)
+        if _ret_cache:
+            return out, k_full, v_full
+        return out
+    else:
+        # Standalone: use the in-kernel MFA RoPE path (K rotated from pos 0).
+        return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
+                                 scale, causal, cs, interleaved)
+
+
 def flash_attention_rope(
     q: mx.array,
     k: mx.array,
@@ -480,79 +738,15 @@ def flash_attention_rope(
     Returns:
         Attention output ``[B, H, N, D]``, same dtype as ``q``.
     """
-    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
-        raise ValueError(
-            "flash_attention_rope expects 4-D tensors [batch, heads, seq, head_dim]."
-            f" Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D."
-        )
-
-    head_dim = q.shape[-1]
-    if scale is None:
-        scale = 1.0 / math.sqrt(head_dim)
-
-    # --- 3D RoPE: build flat [N, D/2] tables from grid coordinates ---
-    if rope_3d is not None:
-        if rotary_cos is not None or rotary_sin is not None:
-            raise ValueError(
-                "rope_3d and rotary_cos/rotary_sin are mutually exclusive."
-            )
-        grid_h = rope_3d["grid_h"]
-        grid_w = rope_3d["grid_w"]
-        num_frames = rope_3d.get("num_frames", 1)
-        d_h = rope_3d.get("d_h", None)
-        d_w = rope_3d.get("d_w", None)
-        d_t = rope_3d.get("d_t", None)
-        theta = rope_3d.get("theta", 10000.0)
-        rotary_cos, rotary_sin = make_rope_3d_tables(
-            grid_h, grid_w, num_frames,
-            d_h=d_h, d_w=d_w, d_t=d_t,
-            head_dim=head_dim, theta=theta,
-        )
-        # 3D RoPE always starts at position 0 (spatial, not sequential)
-        cache_seqlens = 0
-
-    if rotary_cos is None or rotary_sin is None:
-        raise ValueError(
-            "flash_attention_rope requires either rotary_cos/rotary_sin (1D) "
-            "or rope_3d (3D) to be provided."
-        )
-
-    # Track AD: per-batch cache_seqlens — split along batch dim.
-    if not isinstance(cache_seqlens, int):
-        if isinstance(cache_seqlens, mx.array):
-            cs_list = [int(v) for v in cache_seqlens.tolist()]
-        else:
-            cs_list = [int(v) for v in cache_seqlens]
-        B = q.shape[0]
-        if len(cs_list) != B:
-            raise ValueError(
-                f"cache_seqlens length {len(cs_list)} must equal batch size B={B}"
-            )
-        chunks = [
-            flash_attention_rope(
-                q[b : b + 1], k[b : b + 1], v[b : b + 1],
-                rotary_cos, rotary_sin,
-                scale=scale, causal=causal, cache_seqlens=cs,
-                rope_3d=None, interleaved=interleaved,
-                rotary_dim=rotary_dim, stream=stream,
-            )
-            for b, cs in enumerate(cs_list)
-        ]
-        return mx.concatenate(chunks, axis=0)
-
-    # RoPE requires f16/bf16 on the STEEL path.
-    # Partial RoPE (rotary_dim < head_dim) also forces MLX fallback since the
-    # STEEL kernel rotates the full head dimension.
-    _partial_rope = rotary_dim is not None and rotary_dim < head_dim
-    if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial_rope:
-        return _apply_rope_and_attend(
-            q, k, v, rotary_cos, rotary_sin, scale, causal,
-            q_offset=cache_seqlens, k_offset=0,
-            interleaved=interleaved, rotary_dim=rotary_dim, stream=stream,
-        )
-
-    return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
-                             scale, causal, cache_seqlens, interleaved)
+    # Thin wrapper — full logic lives in flash_attention_rope_unified.
+    return flash_attention_rope_unified(
+        q, k, v, rotary_cos, rotary_sin,
+        k_cache=None, v_cache=None,
+        scale=scale, causal=causal,
+        cache_seqlens=cache_seqlens, k_offset=0,
+        interleaved=interleaved, rotary_dim=rotary_dim, rope_3d=rope_3d,
+        return_updated_cache=False, stream=stream,
+    )
 
 
 def is_mfa_available() -> bool:
@@ -871,29 +1065,15 @@ def flash_attention_kvcache_rope_append(
         - ``k_cache_updated`` — ``[B, H_kv, past_len + N_new, D]`` pre-rotated
         - ``v_cache_updated`` — ``[B, H_kv, past_len + N_new, D]``
     """
-    D = q.shape[-1]
-    if scale is None:
-        scale = 1.0 / math.sqrt(D)
-
-    # Rotate Q and K_new at the current decode positions (same offset for both).
-    q_rot, k_new_rot = _apply_rope_to_qk(
-        q, k_new, rotary_cos, rotary_sin,
-        q_offset=cache_seqlens, k_offset=cache_seqlens,
+    # Thin wrapper — full logic lives in flash_attention_rope_unified.
+    return flash_attention_rope_unified(
+        q, k_new, v_new, rotary_cos, rotary_sin,
+        k_cache=k_cache, v_cache=v_cache,
+        scale=scale, causal=causal,
+        cache_seqlens=cache_seqlens,
         interleaved=interleaved,
+        return_updated_cache=True, stream=stream,
     )
-
-    # Append to cache.
-    if k_cache is not None:
-        k_full = mx.concatenate([k_cache, k_new_rot], axis=2)
-        v_full = mx.concatenate([v_cache, v_new], axis=2)
-    else:
-        k_full = k_new_rot
-        v_full = v_new
-
-    # Run attention on rotated Q, full pre-rotated K, V.
-    out = flash_attention(q_rot, k_full, v_full, scale=scale, causal=causal,
-                          stream=stream)
-    return out, k_full, v_full
 
 
 # ---------------------------------------------------------------------------

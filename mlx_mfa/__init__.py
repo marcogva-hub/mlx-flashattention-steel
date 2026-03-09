@@ -59,6 +59,7 @@ _check_abi()
 from mlx_mfa.attention import (
     flash_attention,
     flash_attention_rope,
+    flash_attention_rope_unified,
     flash_attention_sparse,
     flash_attention_varlen,
     flash_attention_kvcache,
@@ -97,6 +98,7 @@ __all__ = [
     # Core attention
     "flash_attention",
     "flash_attention_rope",
+    "flash_attention_rope_unified",
     "flash_attention_sparse",
     "flash_attention_varlen",
     "flash_attention_kvcache",

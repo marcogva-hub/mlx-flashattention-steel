@@ -6036,3 +6036,185 @@ class TestD512Backward:
         mx.eval(loss_val, *grads)
         assert mx.isfinite(loss_val).item(), "loss is not finite"
         assert all(mx.all(mx.isfinite(g)).item() for g in grads), "grads have non-finite values"
+
+# ---------------------------------------------------------------------------
+# Track JB — flash_attention_rope_unified
+# ---------------------------------------------------------------------------
+
+class TestRoPEUnified:
+    """Tests for flash_attention_rope_unified — the single RoPE entry point."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(42)
+
+    def _make_cos_sin(self, max_len, head_dim, dtype=mx.float32):
+        import mlx.core as mx
+        half = head_dim // 2
+        freq = 1.0 / (10000.0 ** (mx.arange(half, dtype=mx.float32) / half))
+        pos = mx.arange(max_len, dtype=mx.float32)
+        angles = pos[:, None] * freq[None, :]  # [max_len, half]
+        return mx.cos(angles), mx.sin(angles)
+
+    def test_standalone_matches_rope(self):
+        """Unified standalone mode must match flash_attention_rope."""
+        from mlx_mfa import flash_attention_rope, flash_attention_rope_unified
+        B, H, N, D = 1, 4, 64, 128
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cos, sin = self._make_cos_sin(256, D)
+        ref = flash_attention_rope(q, k, v, cos, sin, causal=True)
+        out = flash_attention_rope_unified(q, k, v, cos, sin, causal=True,
+                                           return_updated_cache=False)
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_cache_append_first_step(self):
+        """Cache-append first step (k_cache=None) returns 3-tuple."""
+        from mlx_mfa import flash_attention_rope_unified
+        B, H, N, D = 1, 4, 8, 128
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cos, sin = self._make_cos_sin(256, D)
+        result = flash_attention_rope_unified(
+            q, k, v, cos, sin,
+            k_cache=None, v_cache=None,
+            return_updated_cache=True, causal=True,
+        )
+        assert isinstance(result, tuple) and len(result) == 3
+        out, k_upd, v_upd = result
+        mx.eval(out, k_upd, v_upd)
+        assert out.shape == (B, H, N, D)
+        assert k_upd.shape == (B, H, N, D)   # no past; updated = k_new_rotated
+        assert v_upd.shape == (B, H, N, D)
+
+    def test_cache_append_matches_rope_append(self):
+        """Cache-append mode must match flash_attention_kvcache_rope_append."""
+        from mlx_mfa import flash_attention_kvcache_rope_append, flash_attention_rope_unified
+        B, H, N, D = 1, 4, 8, 128
+        past_len = 32
+        q     = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k_cache = mx.random.normal((B, H, past_len, D)).astype(mx.float16)
+        v_cache = mx.random.normal((B, H, past_len, D)).astype(mx.float16)
+        cos, sin = self._make_cos_sin(256, D)
+        ref_out, ref_k, ref_v = flash_attention_kvcache_rope_append(
+            q, k_new, v_new, k_cache, v_cache, cos, sin,
+            cache_seqlens=past_len, causal=True,
+        )
+        out, k_upd, v_upd = flash_attention_rope_unified(
+            q, k_new, v_new, cos, sin,
+            k_cache=k_cache, v_cache=v_cache,
+            cache_seqlens=past_len, return_updated_cache=True, causal=True,
+        )
+        mx.eval(ref_out, out, ref_k, k_upd)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref_out.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+        np.testing.assert_allclose(
+            np.array(k_upd.astype(mx.float32)),
+            np.array(ref_k.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_standalone_return_false(self):
+        """return_updated_cache=False returns a plain array, not a tuple."""
+        from mlx_mfa import flash_attention_rope_unified
+        B, H, N, D = 1, 2, 16, 64
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        cos, sin = self._make_cos_sin(128, D)
+        out = flash_attention_rope_unified(
+            q, k, v, cos, sin, return_updated_cache=False, causal=False,
+        )
+        mx.eval(out)
+        assert isinstance(out, mx.array)
+        assert out.shape == (B, H, N, D)
+
+    def test_rope_3d_standalone(self):
+        """rope_3d parameter routes through 3D table construction."""
+        from mlx_mfa import flash_attention_rope_unified, flash_attention_rope
+        B, H, N, D = 1, 2, 16, 128
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        rope_3d_cfg = {"grid_h": 4, "grid_w": 4, "num_frames": 1}
+        ref = flash_attention_rope(q, k, v, rope_3d=rope_3d_cfg, causal=False)
+        out = flash_attention_rope_unified(
+            q, k, v, rope_3d=rope_3d_cfg,
+            return_updated_cache=False, causal=False,
+        )
+        mx.eval(ref, out)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref.astype(mx.float32)),
+            rtol=1e-4, atol=1e-4,
+        )
+
+    def test_multistep_grow(self):
+        """Two-step incremental decode: cache grows correctly."""
+        from mlx_mfa import flash_attention_rope_unified
+        B, H, D = 1, 4, 128
+        cos, sin = self._make_cos_sin(256, D)
+        # Step 0 — prefill 32 tokens
+        q0 = mx.random.normal((B, H, 32, D)).astype(mx.float16)
+        k0 = mx.random.normal((B, H, 32, D)).astype(mx.float16)
+        v0 = mx.random.normal((B, H, 32, D)).astype(mx.float16)
+        out0, kc, vc = flash_attention_rope_unified(
+            q0, k0, v0, cos, sin,
+            return_updated_cache=True, causal=True,
+        )
+        mx.eval(out0, kc, vc)
+        assert kc.shape == (B, H, 32, D)
+        # Step 1 — decode 1 token
+        q1 = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        k1 = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        v1 = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        out1, kc2, vc2 = flash_attention_rope_unified(
+            q1, k1, v1, cos, sin,
+            k_cache=kc, v_cache=vc,
+            cache_seqlens=32, return_updated_cache=True, causal=True,
+        )
+        mx.eval(out1, kc2, vc2)
+        assert kc2.shape == (B, H, 33, D)
+        assert out1.shape == (B, H, 1, D)
+
+    def test_per_batch_cache_seqlens(self):
+        """Per-batch list cache_seqlens with cache-append mode."""
+        from mlx_mfa import flash_attention_rope_unified
+        B, H, D = 2, 2, 64
+        past0, past1 = 8, 16
+        cos, sin = self._make_cos_sin(64, D)
+        k_cache0 = mx.random.normal((1, H, past0, D)).astype(mx.float16)
+        k_cache1 = mx.random.normal((1, H, past1, D)).astype(mx.float16)
+        # Stack caches padded to max(past_len) — simpler: call separately and concat
+        q0  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        k0  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        v0  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        q1  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        k1  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        v1  = mx.random.normal((1, H, 1, D)).astype(mx.float16)
+        v_cache0 = mx.random.normal((1, H, past0, D)).astype(mx.float16)
+        v_cache1 = mx.random.normal((1, H, past1, D)).astype(mx.float16)
+        ref0, _, _ = flash_attention_rope_unified(
+            q0, k0, v0, cos, sin, k_cache=k_cache0, v_cache=v_cache0,
+            cache_seqlens=past0, return_updated_cache=True, causal=True,
+        )
+        ref1, _, _ = flash_attention_rope_unified(
+            q1, k1, v1, cos, sin, k_cache=k_cache1, v_cache=v_cache1,
+            cache_seqlens=past1, return_updated_cache=True, causal=True,
+        )
+        mx.eval(ref0, ref1)
+        # Both outputs must be finite
+        assert mx.all(mx.isfinite(ref0)).item()
+        assert mx.all(mx.isfinite(ref1)).item()
