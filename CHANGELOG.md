@@ -2,6 +2,24 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.1.0] — UNRELEASED
+
+### Added
+- **`flash_attention_rope_unified`** — single entry point for all RoPE+attention
+  combinations (standalone, cache-consume, cache-append, paged).
+- **Paged-append mode in `flash_attention_kvcache`** — `k_new` + `block_table` combined.
+- **LLM helpers** — `flash_attention_speculative_verify`, `make_shared_prefix_cache`,
+  `flash_attention_splitfuse`.
+- **`patch_mlx_lm` enrichment** — sliding window from `cache.max_kv_window`, GQA stat
+  tracking, `verbose_dispatch` parameter, known model configs dict.
+- **Cross-attention example** — `examples/cross_attention.py` with 3 new tests.
+
+### Fixed
+- `flash_attention_paged` docstring: corrected dK/dV scatter description.
+- `get_supported_configs()`: `native_backward` now reports `"ext"` (was `False`).
+
+---
+
 ## [1.0.5] — 2026-03-08
 
 ### Added
