@@ -3687,6 +3687,46 @@ def flash_attention_paged(
         # Per-sequence slicing ensures each batch item sees only its kv_len.
         return _attn_per_seq(q, K_contig, V_contig)
 
+    def _paged_batched_bwd(q_, K_contig, V_contig, dO):
+        """E.4: Batched backward — one mx.vjp call for all B sequences.
+
+        Builds a key-padding mask [B, 1, 1, max_kv_len] with -inf at padded
+        positions so that padded KV slots contribute zero attention weight.
+        This replaces B serial mx.vjp calls with one parallel batch call.
+
+        Returns: (dQ [B,H,N,D], dK_seqs list, dV_seqs list)
+        """
+        max_kv_len = K_contig.shape[2]
+        # Key-padding mask: -inf for positions >= seq_len[b].
+        kv_lens_arr = mx.array(seq_lens_list, dtype=mx.int32)   # [B]
+        idx = mx.arange(max_kv_len, dtype=mx.int32)              # [max_kv_len]
+        valid = idx[None, :] < kv_lens_arr[:, None]              # [B, max_kv_len]
+        pad_mask = mx.where(
+            valid[:, None, None, :],
+            mx.zeros((1,), dtype=q_.dtype),
+            mx.full((1,), float("-inf"), dtype=q_.dtype),
+        )  # [B, 1, 1, max_kv_len]
+        if causal:
+            N_q, S = q_.shape[2], max_kv_len
+            q_idx = mx.arange(S - N_q, S, dtype=mx.int32)[:, None]
+            k_idx = mx.arange(S, dtype=mx.int32)[None, :]
+            causal_m = mx.where(
+                k_idx <= q_idx,
+                mx.zeros((N_q, S), dtype=q_.dtype),
+                mx.full((N_q, S), float("-inf"), dtype=q_.dtype),
+            )
+            pad_mask = pad_mask + causal_m[None, None, :, :]
+        _, (dQ, dK_pad, dV_pad) = mx.vjp(
+            lambda qi, ki, vi: mx.fast.scaled_dot_product_attention(
+                qi, ki, vi, scale=scale, mask=pad_mask),
+            [q_, K_contig, V_contig],
+            [dO],
+        )
+        # Crop dK/dV to exact kv_lens (padded positions have grad=0 already).
+        dK_seqs = [dK_pad[b:b+1, :, :seq_lens_list[b], :] for b in range(B)]
+        dV_seqs = [dV_pad[b:b+1, :, :seq_lens_list[b], :] for b in range(B)]
+        return dQ, dK_seqs, dV_seqs
+
     if _USE_PAGED_STEEL:
         from mlx_mfa._ext import mfa_paged_steel_forward as _raw_paged_steel
 
@@ -3702,23 +3742,9 @@ def flash_attention_paged(
         def _paged_steel_bwd(primals, cotangent, _output):
             q_, k_pages_, v_pages_ = primals
             dO = cotangent
-            # Backward uses gather+per-seq vjp, then scatter dK/dV to pool.
             K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-            dQ_parts, dK_seqs, dV_seqs = [], [], []
-            for b in range(B):
-                kv_len = seq_lens_list[b]
-                q_b  = q_[b:b+1]
-                K_b  = K_contig[b:b+1, :, :kv_len, :]
-                V_b  = V_contig[b:b+1, :, :kv_len, :]
-                dO_b = dO[b:b+1]
-                _, (dq_b, dk_b, dv_b) = mx.vjp(
-                    lambda qi, ki, vi: flash_attention(
-                        qi, ki, vi, scale=scale, causal=causal),
-                    [q_b, K_b, V_b], [dO_b])
-                dQ_parts.append(dq_b)
-                dK_seqs.append(dk_b)
-                dV_seqs.append(dv_b)
-            dQ = mx.concatenate(dQ_parts, axis=0)
+            dQ, dK_seqs, dV_seqs = _paged_batched_bwd(
+                q_, K_contig, V_contig, dO)
             dk_pages, dv_pages = _scatter_to_pool(dK_seqs, dV_seqs, k_pages_.dtype)
             return dQ, dk_pages, dv_pages
 
@@ -3734,21 +3760,8 @@ def flash_attention_paged(
         q_, k_pages_, v_pages_ = primals
         dO = cotangent
         K_contig, V_contig = _gather_contig(k_pages_, v_pages_)
-        dQ_parts, dK_seqs, dV_seqs = [], [], []
-        for b in range(B):
-            kv_len = seq_lens_list[b]
-            q_b = q_[b:b+1]
-            K_b = K_contig[b:b+1, :, :kv_len, :]
-            V_b = V_contig[b:b+1, :, :kv_len, :]
-            dO_b = dO[b:b+1]
-            _, (dq_b, dk_b, dv_b) = mx.vjp(
-                lambda qi, ki, vi: flash_attention(
-                    qi, ki, vi, scale=scale, causal=causal),
-                [q_b, K_b, V_b], [dO_b])
-            dQ_parts.append(dq_b)
-            dK_seqs.append(dk_b)
-            dV_seqs.append(dv_b)
-        dQ = mx.concatenate(dQ_parts, axis=0)
+        dQ, dK_seqs, dV_seqs = _paged_batched_bwd(
+            q_, K_contig, V_contig, dO)
         dk_pages, dv_pages = _scatter_to_pool(dK_seqs, dV_seqs, k_pages_.dtype)
         return dQ, dk_pages, dv_pages
 
