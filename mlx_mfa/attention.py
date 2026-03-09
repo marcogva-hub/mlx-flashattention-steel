@@ -2622,27 +2622,33 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Window or softcap variant: pass all params via mfa_attention_forward.
             O = mfa_attention_forward(q, k, v, scale, causal, softcap,
                                       window_left, window_right)
+            # Produce a dummy L so the return type is always (O, L).
+            # The windowed/softcap backward uses mx.vjp and never reads L.
+            B, H, N = q.shape[0], q.shape[1], q.shape[2]
+            L = mx.zeros([B, H, N], dtype=mx.float32)
         else:
-            # Fast path: uses the debug binding that also returns L.
-            O, _ = mfa_forward_with_lse(q, k, v, scale, causal)
-        return O
+            # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
+            # B.1: We now *keep* L as the second return value so the backward can
+            # use it directly — no gradient-checkpointing re-run needed.
+            O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+        return O, L  # always return (O, L); callers index [0] to get O
 
     @_impl.vjp
-    def _backward(primals, cotangent, output):
-        # mx.custom_function vjp signature:
-        #   primals   - tuple of all forward inputs (q, k, v)
-        #   cotangent - gradient w.r.t. the output O  (i.e. dO)
-        #   output    - forward output O (unused; gradients computed fresh)
+    def _backward(primals, cotangents, output):
+        # mx.custom_function vjp signature (multiple outputs):
+        #   primals    - forward inputs (q, k, v)
+        #   cotangents - (dO, dL); dL is always zeros since L is not used downstream
+        #   output     - (O, L) saved from forward — L is free, no recompute needed
         q, k, v = primals
+        dO, _dL = cotangents   # ignore dL
+        O, L    = output       # B.1: L already materialised from forward
 
         if window_left >= 0 or window_right >= 0:
             # Windowed attention backward: re-run reference SDPA with window mask.
-            # Sliding window is mainly used for inference; backward is provided
-            # for correctness when gradients are needed during training.
             def _windowed_sdpa(q, k, v):
                 N, S = q.shape[2], k.shape[2]
-                q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]  # [N,1]
-                k_idx = mx.arange(S, dtype=mx.int32)[None, :]          # [1,S]
+                q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
+                k_idx = mx.arange(S, dtype=mx.int32)[None, :]
                 in_win = mx.ones((N, S), dtype=mx.bool_)
                 if window_left >= 0:
                     in_win = in_win & (k_idx >= q_idx - window_left)
@@ -2655,41 +2661,44 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                                 mx.full((N, S), float("-inf"), dtype=q.dtype))
                 return mx.fast.scaled_dot_product_attention(
                     q, k, v, scale=scale, mask=mask)
-            _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [cotangent])
+            _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
         elif softcap == 0.0:
-            # Route f16/bf16 D≤256 to STEEL backward kernels (GQA supported).
-            # D=256 uses D-split kernels (BD_HALF=128) to stay within TGP budget.
-            # Gradient checkpointing: re-run forward to recover L.
-            # Cost: ~1x forward pass — same as the SDPA re-run below.
             D = q.shape[-1]
             use_steel_bwd = (
                 q.dtype in (mx.float16, mx.bfloat16)
                 and D <= 512
             )
             if use_steel_bwd:
-                # Sever cotangent's lazy-graph ancestry before gradient checkpointing.
-                # cotangent = ones_like(O_fwd) inherits O_fwd's buffer ancestry.
-                # Re-running mfa_forward_with_lse can alias O_remat's output
-                # buffer with O_fwd's — _sever_lazy_graph() prevents this.
-                dO = _sever_lazy_graph(cotangent)
-                O_remat, L = mfa_forward_with_lse(q, k, v, scale, causal)
+                # B.1: L is already available from the forward output — no
+                # gradient-checkpointing re-run of mfa_forward_with_lse needed.
+                #
+                # Materialise + pin contiguity before Metal kernel dispatch.
+                # MLX's autograd may recycle GPU buffers for q/k/v during
+                # backward; mfa_steel_backward reads them directly and sees
+                # garbage without an mx.eval() fence.  mx.contiguous() then
+                # gives each tensor fresh graph ancestry so the Metal allocator
+                # cannot alias them with the backward outputs (dQ, dK, dV).
+                mx.eval(q, k, v, O, L, dO)
+                q  = mx.contiguous(q)
+                k  = mx.contiguous(k)
+                v  = mx.contiguous(v)
+                O  = mx.contiguous(O)
+                L  = mx.contiguous(L.astype(mx.float32) if L.dtype != mx.float32 else L)
+                dO = mx.contiguous(dO)
                 dQ, dK, dV = mfa_steel_backward(
-                    q, k, v, O_remat, L, dO, scale, causal
+                    q, k, v, O, L, dO, scale, causal
                 )
             else:
-                # Fallback: SDPA backward (f32, D>256, etc.).
                 _, (dQ, dK, dV) = mx.vjp(
                     lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
                     [q, k, v],
-                    [cotangent],
+                    [dO],
                 )
         else:
-            # Backward through tanh softcapping via the pure-MLX reference.
-            # mx.vjp correctly handles the chain rule through tanh(S/cap)*cap.
             _, (dQ, dK, dV) = mx.vjp(
                 lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
                 [q, k, v],
-                [cotangent],
+                [dO],
             )
         return dQ, dK, dV
 
@@ -2719,7 +2728,9 @@ def _mfa_forward(
     k = mx.contiguous(k)
     v = mx.contiguous(v)
     impl = _make_mfa_custom(scale, causal, softcap, window_left, window_right)
-    return impl(q, k, v)
+    # _impl now returns (O, L); callers only need O.
+    O, _L = impl(q, k, v)
+    return O
 
 
 def _fallback_sdpa(
