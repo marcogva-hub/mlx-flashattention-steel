@@ -5187,6 +5187,104 @@ class TestUnifiedKVCache:
 
 
 # ---------------------------------------------------------------------------
+# Track JC — Paged append in flash_attention_kvcache
+# ---------------------------------------------------------------------------
+
+class TestPagedAppend:
+    """Tests for flash_attention_kvcache with k_new + block_table (paged append)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        mx.random.seed(7)
+
+    def test_paged_append_output_matches_dense_append(self):
+        """Paged-append output matches dense concat+attend reference."""
+        from mlx_mfa import flash_attention_kvcache, flash_attention
+
+        B, H_q, H_kv, D = 1, 4, 4, 64
+        block_size = 16
+        past_len = 32   # 2 full blocks
+        N_new = 1
+        num_blocks = 4
+
+        mx.random.seed(7)
+        k_pool = mx.random.normal((num_blocks, block_size, H_kv, D)).astype(mx.float16)
+        v_pool = mx.random.normal((num_blocks, block_size, H_kv, D)).astype(mx.float16)
+        block_table = mx.array([[0, 1, 2, -1]], dtype=mx.int32)
+        seq_lens = mx.array([past_len], dtype=mx.int32)
+
+        q     = mx.random.normal((B, H_q, N_new, D)).astype(mx.float16)
+        k_new = mx.random.normal((B, H_kv, N_new, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H_kv, N_new, D)).astype(mx.float16)
+
+        # Dense reference: gather past from pool, concat k_new, attend
+        # k_pool[i] has shape [block_size, H_kv, D] → transpose to [H_kv, block_size, D]
+        k_past = mx.concatenate(
+            [k_pool[0].transpose(1, 0, 2), k_pool[1].transpose(1, 0, 2)], axis=1
+        )[None]  # [1, H_kv, past_len, D]
+        v_past = mx.concatenate(
+            [v_pool[0].transpose(1, 0, 2), v_pool[1].transpose(1, 0, 2)], axis=1
+        )[None]
+        k_full = mx.concatenate([k_past, k_new], axis=2)
+        v_full = mx.concatenate([v_past, v_new], axis=2)
+        ref_out = flash_attention(q, k_full, v_full, scale=None, causal=True)
+
+        out, k_pool_up, v_pool_up = flash_attention_kvcache(
+            q, k_pool, v_pool,
+            k_new=k_new, v_new=v_new,
+            block_table=block_table, seq_lens=seq_lens, block_size=block_size,
+            causal=True,
+        )
+        mx.eval(ref_out, out, k_pool_up, v_pool_up)
+
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)),
+            np.array(ref_out.astype(mx.float32)),
+            rtol=2e-3, atol=2e-3,
+            err_msg="paged-append output differs from dense reference",
+        )
+        # New token lands in block 2 (past_len=32, slot 32//16=2), offset 0
+        new_k_in_pool = k_pool_up[2, 0, :, :]   # [H_kv, D]
+        expected_k    = k_new[0, :, 0, :]        # [H_kv, D]
+        mx.eval(new_k_in_pool, expected_k)
+        np.testing.assert_allclose(
+            np.array(new_k_in_pool.astype(mx.float32)),
+            np.array(expected_k.astype(mx.float32)),
+            rtol=1e-5, atol=0,
+            err_msg="new token not correctly scattered to pool block 2 slot 0",
+        )
+
+    def test_paged_append_pool_shape_preserved(self):
+        """Pool shape must be unchanged after paged append."""
+        from mlx_mfa import flash_attention_kvcache
+
+        B, H, D = 1, 2, 64
+        block_size = 16
+        num_blocks = 8
+        past_len = 16  # 1 block used (slots 0..15 filled)
+
+        k_pool = mx.zeros((num_blocks, block_size, H, D), dtype=mx.float16)
+        v_pool = mx.zeros((num_blocks, block_size, H, D), dtype=mx.float16)
+        block_table = mx.array([[0] + [-1] * 7], dtype=mx.int32)
+        seq_lens = mx.array([past_len], dtype=mx.int32)
+
+        q     = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        k_new = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+        v_new = mx.random.normal((B, H, 1, D)).astype(mx.float16)
+
+        out, k_up, v_up = flash_attention_kvcache(
+            q, k_pool, v_pool,
+            k_new=k_new, v_new=v_new,
+            block_table=block_table, seq_lens=seq_lens, block_size=block_size,
+            causal=True,
+        )
+        mx.eval(out, k_up, v_up)
+        assert k_up.shape == k_pool.shape, "k_pool shape changed after paged append"
+        assert v_up.shape == v_pool.shape, "v_pool shape changed after paged append"
+        assert out.shape == (B, H, 1, D), f"unexpected output shape {out.shape}"
+
+
+# ---------------------------------------------------------------------------
 # Track FX-1: return_lse in flash_attention
 # ---------------------------------------------------------------------------
 

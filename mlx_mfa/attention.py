@@ -1243,11 +1243,98 @@ def flash_attention_kvcache(
                 "or both be None."
             )
         if block_table is not None:
-            raise ValueError(
-                "flash_attention_kvcache: k_new/v_new append is not supported "
-                "in paged mode.  Manage the page pool externally and call "
-                "without k_new."
+            # ── Paged-append path ──────────────────────────────────────────
+            # Scatter k_new/v_new tokens into the paged pool, then attend.
+            # Cost: O(num_blocks) pool rebuild (MLX is functional — no in-place).
+            if seq_lens is None:
+                raise ValueError(
+                    "flash_attention_kvcache: seq_lens is required for "
+                    "paged-append mode (k_new + block_table)."
+                )
+            if k_cache is None or v_cache is None:
+                raise ValueError(
+                    "flash_attention_kvcache: k_cache/v_cache (page pool) must "
+                    "be provided for paged-append mode."
+                )
+            if cache_batch_idx is not None:
+                raise NotImplementedError(
+                    "flash_attention_kvcache: paged-append with cache_batch_idx "
+                    "is not currently supported."
+                )
+            num_blks = k_cache.shape[0]
+            blk_sz   = k_cache.shape[1]
+            H_kv_p   = k_cache.shape[2]
+            D_p      = k_cache.shape[3]
+            B_p      = k_new.shape[0]
+            N_new_p  = k_new.shape[2]
+            seq_lens_list_p = [int(x) for x in seq_lens.tolist()]
+            block_table_list_p = block_table.tolist()
+
+            # Rotate k_new if RoPE requested.
+            q_to_att = q
+            if rotary_cos is not None:
+                if rotary_sin is None:
+                    raise ValueError(
+                        "flash_attention_kvcache: rotary_sin required with "
+                        "rotary_cos in paged-append mode."
+                    )
+                _cs_p = seq_lens_list_p[0] if len(seq_lens_list_p) == 1 else int(
+                    min(seq_lens_list_p))
+                q_to_att, k_new = _apply_rope_to_qk(
+                    q, k_new, rotary_cos, rotary_sin,
+                    q_offset=_cs_p, k_offset=_cs_p,
+                    interleaved=interleaved, rotary_dim=rotary_dim,
+                )
+
+            # Build pool update dict: phys_block -> {slot_offset -> [H_kv, D]}
+            k_updates: dict = {}
+            v_updates: dict = {}
+            for b in range(B_p):
+                kv_len = seq_lens_list_p[b]
+                tb = block_table_list_p[b]
+                for t in range(N_new_p):
+                    pos = kv_len + t
+                    blk_idx = pos // blk_sz
+                    blk_off = pos % blk_sz
+                    phys = int(tb[blk_idx])
+                    if phys < 0:
+                        continue
+                    if phys not in k_updates:
+                        k_updates[phys] = {}
+                        v_updates[phys] = {}
+                    # k_new[b, :, t, :] → shape [H_kv, D]
+                    k_updates[phys][blk_off] = k_new[b, :, t, :]
+                    v_updates[phys][blk_off] = v_new[b, :, t, :]
+
+            # Rebuild pool pages (only modified blocks are reconstructed).
+            k_blocks, v_blocks = [], []
+            for i in range(num_blks):
+                if i in k_updates:
+                    rows_k = [
+                        (k_updates[i][j][None] if j in k_updates[i]
+                         else k_cache[i, j:j+1])
+                        for j in range(blk_sz)
+                    ]
+                    rows_v = [
+                        (v_updates[i][j][None] if j in v_updates[i]
+                         else v_cache[i, j:j+1])
+                        for j in range(blk_sz)
+                    ]
+                    k_blocks.append(mx.concatenate(rows_k, axis=0))
+                    v_blocks.append(mx.concatenate(rows_v, axis=0))
+                else:
+                    k_blocks.append(k_cache[i])
+                    v_blocks.append(v_cache[i])
+            k_pages_new = mx.stack(k_blocks)
+            v_pages_new = mx.stack(v_blocks)
+            seq_lens_new = mx.array(
+                [sl + N_new_p for sl in seq_lens_list_p], dtype=mx.int32)
+
+            out = flash_attention_paged(
+                q_to_att, k_pages_new, v_pages_new, block_table, seq_lens_new,
+                scale=scale, causal=causal, block_size=blk_sz, stream=stream,
             )
+            return out, k_pages_new, v_pages_new
         if cache_batch_idx is not None:
             raise ValueError(
                 "flash_attention_kvcache: k_new/v_new append is not supported "
