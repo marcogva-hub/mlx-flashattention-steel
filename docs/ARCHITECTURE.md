@@ -1067,3 +1067,60 @@ the old buffer when it falls out of scope.
   relative-position biases (native Metal path).
 - **`flash_attention_paged`** dK/dV zeros text: already removed in Track JA;
   no additional change needed.
+
+## 17. v1.2.3 Architecture Notes — Tech-debt remediation v2 (Phases 1–4)
+
+### Summary of changes
+
+v1.2.3 is a pure tech-debt remediation release with no new public API.
+All 4 phases completed across 6 commits (33d6c05 → de37269).
+
+### DenseKVCache (I.2 / I.1)
+
+`DenseKVCache` is a new helper class in `mlx_mfa/attention.py`:
+
+```python
+class DenseKVCache:
+    def __init__(self, B, H, D, max_seq_len=8192, dtype=mx.float16): ...
+    def append(self, k_new, v_new) -> None: ...   # slice_update + mx.eval()
+    @property
+    def k(self) -> mx.array: ...   # active slice [B, H, seqlen, D]
+    @property
+    def v(self) -> mx.array: ...
+```
+
+Key design:
+- Pre-allocates `[B, H, max_seq_len, D]` at construction — one GPU allocation.
+- `append()` uses `self._k[:, :, ptr:end, :] = k_new` (`__setitem__` = MLX
+  `slice_update`) + `mx.eval()` to keep lazy-graph depth at O(1) regardless
+  of decode-loop length.
+- `k` / `v` properties return the active slice `[:, :, :seqlen, :]` — no copy.
+
+`InferenceContext` (Track LC, `mlx_mfa/inference.py`) now uses `DenseKVCache`
+internally; the `mx.concatenate` pattern is gone.  Public interface unchanged.
+
+### G.1 — C++ eval fence in mfa_steel_backward
+
+The `mx.eval(q, k, v, O, L, dO)` that previously blocked in Python's `_backward`
+is now `mlx::core::eval(std::vector<array>{q, k, v, O, L, dO})` at the top of
+the `mfa_steel_backward` C++ lambda in `csrc/bindings.cpp`.
+Effect: one less Python-level blocking GPU sync per backward pass.
+
+### F.2 — Vectorised scatter targets
+
+Paged-append block-table lookup is now computed with broadcast MLX ops:
+
+```python
+_pos  = seq_lens[:, None] + t_arange[None, :]   # [B, N_new]
+_bi   = _pos // blk_sz                           # block indices
+_ph   = block_table[row_idx, _bi]                # physical block IDs
+```
+
+MLX boolean-index limitation (as of v1.2.3) requires `.tolist()` + Python list
+comprehension for the `phys >= 0` filter, then integer fancy indexing `arr[idx]`.
+
+### E.3-partial — GPU sync deferral
+
+`block_table.tolist()` moved inside the Python-loop fallback branch; the
+`_USE_SCATTER_KV` fast path never materialises the full block table to Python.
+`seq_lens_list_p` is still needed (Python int for RoPE offset + fallback loop).

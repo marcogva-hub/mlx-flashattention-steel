@@ -2,6 +2,38 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.2.3] — 2026-03-09
+
+### Changed (tech-debt remediation v2, Phases 1–4)
+
+- **Phase 1 quick-wins** (commits 33d6c05):
+  - J.1: Removed dead `_kv_cache_hit_count` / `_reset_count` attributes from `InferenceContext`
+  - J.2: Removed stale `# Phase 4-E.1` comment superseded by I.1
+  - J.3: Eliminated scalar-zero `mx.zeros([], ...)` in sparse backward; replaced with `mx.array(0.0)`
+  - G.2: Removed redundant `mx.eval()` before `_mfa_scatter_kv_cpp` call
+  - I.4: Extracted `_resolve_cache_seqlens()` utility; eliminated 6-way isinstance branching
+  - F.3: Replaced O(B) positional scatter loop in `flash_attention_paged` with `mx.concatenate` + reshape
+
+- **Phase 2 serialization fixes** (commit 5410d55):
+  - H.3: `flash_attention_varlen` fallback now handles cu_seqlens mismatch gracefully
+  - H.4: Uniform `cache_seqlens` shortcut in paged-append avoids per-batch loops when all offsets equal
+  - H.1 safely reverted: per-batch `flash_attention` loop kept over single SDPA (avoids NaN from paged gather on uninitialized bytes)
+
+- **Phase 3 structural changes** (commit c09bc5f):
+  - F.2: Vectorised paged-append scatter targets — `O(1)` broadcast MLX ops replace `O(B×N_new)` Python loop; uses `seq_lens[:, None] + t_arange[None, :]` + gather `block_table[row_idx, blk_idxs]`
+  - I.2: New `DenseKVCache` class — pre-allocated `[B, H, max_seq_len, D]` buffer; `append()` uses `__setitem__` (MLX `slice_update`) + `mx.eval()` for constant lazy-graph depth
+  - G.1: Moved `mx.eval(q,k,v,O,L,dO)` fence from Python `_backward` into C++ `mfa_steel_backward` lambda (`mlx::core::eval(std::vector<array>{...})`); avoids one blocking Python-level GPU sync per backward pass
+
+- **Phase 4 structural changes** (commits c4ae2f5, de37269):
+  - I.1: `InferenceContext` now uses `DenseKVCache` write-pointer internally — eliminates `mx.concatenate` per decode step; lazy-graph depth stays constant; `k_cache`/`v_cache`/`seqlen` properties unchanged
+  - E.3-partial: `block_table.tolist()` deferred to Python-loop fallback branch (avoids GPU sync on `_USE_SCATTER_KV` fast path); `mx.array(seq_lens_list_p)` replaced with `seq_lens.astype(mx.int32)` in scatter branch; E.3 comments added to all remaining `.tolist()` calls
+  - F.1 skipped: Metal block-scoped scatter rewrite analyzed, found negligible benefit (~40 μs for 16 MB at 400 GB/s = 0.1% of decode step)
+
+### Tests
+- 486 tests pass (sage flaky test passes in isolation; pre-existing GPU cross-test noise)
+
+---
+
 ## [1.2.2] — 2026-03-09
 
 ### Added
