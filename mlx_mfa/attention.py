@@ -615,19 +615,12 @@ def flash_attention_rope_unified(
     if block_table is not None:
         if seq_lens is None:
             raise ValueError("seq_lens is required in paged mode.")
-        _partial = rotary_dim is not None and rotary_dim < head_dim
-        if not _can_use_mfa(q, head_dim) or q.dtype == mx.float32 or _partial:
-            q_rot, _ = _apply_rope_to_qk(
-                q, k, rotary_cos, rotary_sin,
-                q_offset=cs, k_offset=cs,
-                interleaved=interleaved, rotary_dim=rotary_dim,
-            )
-        else:
-            q_rot, _ = _apply_rope_to_qk(
-                q, k, rotary_cos, rotary_sin,
-                q_offset=cs, k_offset=cs,
-                interleaved=interleaved, rotary_dim=rotary_dim,
-            )
+        # J.1: both branches were identical; unconditional call.
+        q_rot, _ = _apply_rope_to_qk(
+            q, k, rotary_cos, rotary_sin,
+            q_offset=cs, k_offset=cs,
+            interleaved=interleaved, rotary_dim=rotary_dim,
+        )
         out = flash_attention_paged(
             q_rot, k, v, block_table, seq_lens,
             scale=scale, causal=causal, block_size=block_size, stream=stream,
@@ -1129,6 +1122,22 @@ def make_sliding_window_mask(
     return in_window
 
 
+def _resolve_scalar_seqlens(cache_seqlens) -> int:
+    """I.4: Resolve cache_seqlens (int, 0-D array, or iterable) to a plain int.
+
+    Used on the paged-append hot path to obtain the current sequence length for
+    RoPE offset calculation, avoiding duplicated type-checking branches.
+    """
+    if isinstance(cache_seqlens, int):
+        return cache_seqlens
+    if isinstance(cache_seqlens, mx.array):
+        if cache_seqlens.ndim == 0:
+            return int(cache_seqlens.item())
+        return int(cache_seqlens.reshape(-1)[0].item())
+    # Sequence / list / generator
+    return int(next(iter(cache_seqlens)))
+
+
 def flash_attention_kvcache_rope_append(
     q: mx.array,
     k_new: mx.array,
@@ -1508,12 +1517,8 @@ def flash_attention_kvcache(
                 "together with cache_batch_idx (continuous-batching pool mode)."
             )
 
-        # Resolve cache_seqlens to a plain int for the k_new RoPE offset.
-        _cs_int: int = cache_seqlens  # type: ignore[assignment]
-        if isinstance(_cs_int, mx.array):
-            _cs_int = int(_cs_int.tolist()) if _cs_int.ndim == 0 else int(_cs_int.reshape(-1)[0].tolist())
-        elif not isinstance(_cs_int, int):
-            _cs_int = int(list(_cs_int)[0]) if hasattr(_cs_int, '__iter__') else int(_cs_int)
+        # I.4: Resolve cache_seqlens to a plain int for the k_new RoPE offset.
+        _cs_int: int = _resolve_scalar_seqlens(cache_seqlens)
 
         # Optionally rotate both q and k_new before appending.
         # Keys are stored pre-rotated in the cache; k_new must be rotated at
@@ -1788,8 +1793,6 @@ def _make_mfa_sparse_custom(
         "steel_sparse"  — Metal STEEL sparse backward; skips inactive tiles in
                           native Metal kernel (fastest for low-density masks)
     """
-    import numpy as _np
-
     @mx.custom_function
     def _impl(q, k, v, mask_uint8):
         # Returns (O, L) — L saved for backward via `output` parameter.
@@ -1830,7 +1833,7 @@ def _make_mfa_sparse_custom(
             dO2 = mx.contiguous(dO)
             mu2 = mx.contiguous(mask_bwd)
             dQ, dK, dV = _sbwd(q2, k2, v2, O2, L2, dO2, mu2, scale, causal)
-            return dQ, dK, dV, mx.zeros_like(mask_uint8)
+            return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
 
         if backward == "sdpa_sparse":
             # C.3: Deprecate in favour of steel_sparse now that C.4 (numpy
@@ -1844,6 +1847,8 @@ def _make_mfa_sparse_custom(
                 DeprecationWarning,
                 stacklevel=4,
             )
+            # J.3: numpy only needed by the deprecated sdpa_sparse branch.
+            import numpy as _np
             # Tiled sparse backward using saved L — skips inactive tiles.
             # Use 2-D collapsed mask (tiled backward is per-block, not per-head).
             D = q.shape[-1]
@@ -1852,7 +1857,7 @@ def _make_mfa_sparse_custom(
             dQ, dK, dV = _sparse_backward_tiled(
                 q, k, v, O, L, dO, block_mask_np, bq, bk, scale, causal
             )
-            return dQ, dK, dV, mx.zeros_like(mask_uint8)
+            return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
 
         # Dense SDPA backward (correct, no sparsity speedup).
         float_mask = _block_mask_to_float_bias(
@@ -1871,7 +1876,7 @@ def _make_mfa_sparse_custom(
             [q, k, v],
             [dO],
         )
-        return dQ, dK, dV, mx.zeros_like(mask_uint8)
+        return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
 
     return _impl
 
@@ -3053,9 +3058,7 @@ def _mfa_rope_forward(
     interleaved: bool = True,
 ) -> mx.array:
     """Dispatch through the MFA+RoPE custom-vjp path."""
-    q = mx.contiguous(q)
-    k = mx.contiguous(k)
-    v = mx.contiguous(v)
+    # J.2: contiguity ensured by the C++ binding (D.5); no Python-side calls needed.
     impl = _make_mfa_rope_custom(scale, causal, cache_seqlens, interleaved)
     return impl(q, k, v, rotary_cos, rotary_sin)
 
@@ -3386,9 +3389,9 @@ class PagedKVCache:
                 blk_id = blks[-1]
                 room = self.block_size - ptr
                 chunk = min(room, T - written)
-                for i in range(chunk):
-                    all_blk_ids.append(blk_id)
-                    all_blk_offs.append(ptr + i)
+                # F.3: extend replaces per-element append loop.
+                all_blk_ids.extend([blk_id] * chunk)
+                all_blk_offs.extend(range(ptr, ptr + chunk))
                 self._write_ptr[seq_id] = ptr + chunk
                 written += chunk
             # One scatter call per pool (copy + scatter in one Metal pass).
