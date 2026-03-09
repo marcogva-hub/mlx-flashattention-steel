@@ -3289,7 +3289,7 @@ class TestPerBatchCacheSeqlens:
         v = mx.random.normal((B, H, N, D), dtype=mx.float16)
         cos, sin = _make_rope_tables(64, D)
 
-        with pytest.raises(ValueError, match="length.*must equal batch size"):
+        with pytest.raises(ValueError, match="must equal B="):
             flash_attention_rope(q, k, v, cos, sin,
                                   cache_seqlens=[0, 16, 32])  # len=3, B=2
 
@@ -3555,22 +3555,25 @@ class TestKVCacheAppendUnified:
         with pytest.raises(ValueError, match="k_new and v_new must both"):
             flash_attention_kvcache(q, None, None, k_new=k)
 
-    def test_kvcache_k_new_paged_raises(self):
-        """k_new in paged mode must raise ValueError."""
+    def test_kvcache_k_new_paged_succeeds(self):
+        """k_new + block_table (paged-append) is now supported (Track JC)."""
         from mlx_mfa import flash_attention_kvcache
 
         B, H, N, D = 1, 2, 1, self.D
         q, k, v = self._qkv(B=B, H=H, N=N, seed=209)
+        # Pool with 4 blocks of size 16; block 0 is the only used block for seq 0
         block_table = mx.zeros((B, 4), dtype=mx.int32)
-        seq_lens = mx.array([N], dtype=mx.int32)
-        pool_k = mx.random.normal((4, 16, H, D))
-        pool_v = mx.random.normal((4, 16, H, D))
-        with pytest.raises(ValueError, match="paged mode"):
-            flash_attention_kvcache(
-                q, pool_k, pool_v,
-                block_table=block_table, seq_lens=seq_lens,
-                k_new=k, v_new=v,
-            )
+        seq_lens = mx.array([0], dtype=mx.int32)  # cache currently empty
+        pool_k = mx.zeros((4, 16, H, D), dtype=mx.float16)
+        pool_v = mx.zeros((4, 16, H, D), dtype=mx.float16)
+        out, k_new_pool, v_new_pool = flash_attention_kvcache(
+            q, pool_k, pool_v,
+            block_table=block_table, seq_lens=seq_lens, block_size=16,
+            k_new=k, v_new=v,
+        )
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert mx.all(mx.isfinite(out)).item()
 
 
 # ---------------------------------------------------------------------------

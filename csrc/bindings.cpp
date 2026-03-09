@@ -406,5 +406,5 @@ NB_MODULE(_ext, m) {
         "GQA: H_q / H_kv must be integer. window_left=-1 disables sliding window.\n"
         "Only f16/bf16 supported.");
 
-  m.attr("__version__") = "1.0.5";
+  m.attr("__version__") = "1.1.0";
 }
