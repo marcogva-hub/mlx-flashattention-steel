@@ -758,3 +758,102 @@ loop present in the main `SteelForward` (kernel type 3).
 The guard `D in _MFA_SUPPORTED_HDIMS and D <= 256` is applied before dispatching
 to the varlen and paged STEEL kernels, so D=512 falls back gracefully to
 `flash_attention_varlen` → split-concat → `_fallback_sdpa`.
+
+## 14. v1.1.0 Architecture Notes (Tracks JA–JF)
+
+### 14.1 `get_supported_configs()` native_backward flag (Track JA)
+
+The `features["native_backward"]` field previously returned `False`, incorrectly
+suggesting no native backward kernels were active.  The STEEL backward kernels
+(`SteelBackwardDQ` and `SteelBackwardDKV`, kernel types 6 and 7) have been active
+since v0.9.0 for f16/bf16 inputs with D≤512.  The value is now the string
+`"ext"`, indicating that the native backward path requires the C++ extension.
+
+`isinstance(v, (bool, str))` and `v == "ext"` are the correct checks in tests.
+
+### 14.2 `flash_attention_rope_unified` — single RoPE entry point (Track JB)
+
+`flash_attention_rope` and `flash_attention_kvcache_rope_append` are now thin
+wrappers that delegate to `flash_attention_rope_unified`, which handles all
+RoPE+attention combinations in a single function:
+
+| Mode | `k_cache` | `return_updated_cache` |
+|------|-----------|----------------------|
+| Standalone (no cache) | `None` | `False` |
+| Cache-append (first step) | `None` | `True` |
+| Cache-append (subsequent) | cache tensor | `True` |
+
+The key dispatch variable is `_cache_mode = (k_cache is not None) or return_updated_cache`.
+Setting `_cache_mode=True` even when `k_cache=None` (first step) ensures the
+function returns a 3-tuple `(out, k_new_rotated, v)` rather than a plain array,
+allowing callers to concatenate onto an initially empty cache.
+
+K-rotation offset:
+- Standalone: `k_offset = 0` (keys begin at position 0)
+- Cache mode: `k_offset = cache_seqlens` (new keys start after cached tokens)
+
+### 14.3 Paged KV append path (Track JC)
+
+`flash_attention_kvcache(q, k_pages, v_pages, k_new=new_k, v_new=new_v, block_table=table)`
+is now supported.  Since MLX is a functional framework (no in-place writes),
+appending to a paged pool requires rebuilding affected pool blocks:
+
+```
+1. Build update dict: {phys_block_idx → {slot_offset → [H_kv, D] tensor}}
+   for each (batch, timestep) in k_new.
+2. Rebuild pool:
+   new_pages[i] = concat(updates[i]) if i in updates else pages[i]
+3. stack(new_pages) → new pool tensor.
+4. Attend using the rebuilt pool.
+```
+
+Cost: O(num_blocks × block_size) Python loop.  Acceptable for typical inference
+pool sizes; for ultra-large pools, prefer the dense-append path or a custom
+scatter kernel.
+
+`cache_batch_idx + paged-append` raises `NotImplementedError` (the combination
+requires per-request pool indexing that cannot be expressed without in-place
+updates in a single pass).
+
+### 14.4 LLM inference helpers (Track JD)
+
+Three new high-level functions for LLM inference use-cases:
+
+| Function | Purpose |
+|----------|---------|
+| `flash_attention_speculative_verify` | Speculative decoding verification: compute target log-probs for draft token sequences |
+| `make_shared_prefix_cache` | Build a shared prefix KV cache to be reused across multiple requests |
+| `flash_attention_splitfuse` | Route prefill tokens and decode tokens in a single call |
+
+These are pure-Python wrappers over the lower-level attention primitives; they
+add no new C++ paths and are fully differentiable.
+
+### 14.5 `patch_mlx_lm` enrichment (Track JE)
+
+`_steel_sdpa` now reads `cache.max_kv_window` from the mlx-lm cache object.
+When present and positive, it is converted to `window_size=(max_kv_window - 1, 0)`
+before dispatching to `flash_attention`.  This activates STEEL tile-skipping for
+windowed models (e.g., Mistral's 4 K window) without any caller change.
+
+New statistics counters: `gqa_calls` (H_q ≠ H_kv) and `sliding_window_calls`
+(cache exposed a window).  Both are accessible via `get_patch_stats()`.
+
+`KNOWN_MODEL_CONFIGS` (22 entries) provides a reference dictionary of model
+family → `{head_dim, sliding_window}` hints for tooling and documentation.
+
+`verbose_dispatch=True` in `patch_mlx_lm()` enables per-call routing log lines
+for debugging which dispatch branch was taken.
+
+### 14.6 Cross-attention via `flash_attention_kvcache` (Track JF)
+
+`flash_attention_kvcache` is the recommended entry point for encoder-decoder
+cross-attention.  Passing `causal=False` with encoder KV tensors as `k_cache`
+/ `v_cache` (no `block_table`) routes through the dense attention path.
+
+- GQA is fully supported: H_kv < H_q with no K/V expansion in the public API.
+- RoPE is not used (omit `rotary_cos`/`rotary_sin`).
+- Full autograd: dQ, dK_enc, dV_enc computed via SDPA backward.
+- Single-token decode (N_q=1) is supported for autoregressive encoder-decoder
+  models.
+
+See `examples/cross_attention.py` for a working code example.

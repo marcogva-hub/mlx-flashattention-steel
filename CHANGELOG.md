@@ -2,21 +2,33 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [1.1.0] — UNRELEASED
+## [1.1.0] — 2026-03-09
 
 ### Added
-- **`flash_attention_rope_unified`** — single entry point for all RoPE+attention
-  combinations (standalone, cache-consume, cache-append, paged).
-- **Paged-append mode in `flash_attention_kvcache`** — `k_new` + `block_table` combined.
-- **LLM helpers** — `flash_attention_speculative_verify`, `make_shared_prefix_cache`,
-  `flash_attention_splitfuse`.
-- **`patch_mlx_lm` enrichment** — sliding window from `cache.max_kv_window`, GQA stat
-  tracking, `verbose_dispatch` parameter, known model configs dict.
-- **Cross-attention example** — `examples/cross_attention.py` with 3 new tests.
+- **`flash_attention_rope_unified`** (Track JB) — single entry point for all
+  RoPE+attention combinations (standalone, first-step cache-append, subsequent
+  cache-append). `flash_attention_rope` and `flash_attention_kvcache_rope_append`
+  are now thin wrappers. Dispatch flag: `_cache_mode = (k_cache is not None) or
+  return_updated_cache`. 7 new tests in `TestRoPEUnified`.
+- **Paged-append in `flash_attention_kvcache`** (Track JC) — `k_new` +
+  `block_table` combined is now supported (pool rebuilt via Python loop).
+  `cache_batch_idx + paged-append` raises `NotImplementedError`. 2 new tests.
+- **LLM inference helpers** (Track JD):
+  - `flash_attention_speculative_verify` — target log-probs for draft sequences.
+  - `make_shared_prefix_cache` — shared prefix KV cache for multi-request reuse.
+  - `flash_attention_splitfuse` — combined prefill + decode routing.
+  10 new tests across `TestSpeculativeVerify`, `TestSharedPrefixCache`, `TestSplitFuse`.
+- **`patch_mlx_lm` enrichment** (Track JE): sliding window via `cache.max_kv_window`,
+  `gqa_calls` + `sliding_window_calls` stats, `verbose_dispatch` param,
+  `KNOWN_MODEL_CONFIGS` dict (22 families). 5 new tests.
+- **Cross-attention** (Track JF): docstring section in `flash_attention_kvcache`,
+  `examples/cross_attention.py`, 3 new tests in `TestCrossAttentionKVCache`.
 
 ### Fixed
-- `flash_attention_paged` docstring: corrected dK/dV scatter description.
-- `get_supported_configs()`: `native_backward` now reports `"ext"` (was `False`).
+- **`flash_attention_paged` docstring** (Track JA.1) — dK_pages/dV_pages are computed
+  correctly via `_scatter_to_pool`, not zeros.
+- **`get_supported_configs()` `native_backward`** (Track JA.2) — now `"ext"` (was
+  `False`); STEEL backward kernels have been active since v0.9.0.
 
 ---
 

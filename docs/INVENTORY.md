@@ -1,7 +1,7 @@
-# mlx-mfa Code Inventory — v1.0.5
+# mlx-mfa Code Inventory — v1.1.0
 
 All numbers verified by running shell commands against the source tree.
-Regenerated: 2026-03-08.
+Regenerated: 2026-03-09.
 
 ---
 
@@ -9,9 +9,9 @@ Regenerated: 2026-03-08.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.0.5` |
-| `mlx_mfa/__init__.py` | `1.0.5` |
-| Latest git tag | `v1.0.4` |
+| `pyproject.toml` | `1.1.0` |
+| `mlx_mfa/__init__.py` | `1.1.0` |
+| Latest git tag | `v1.0.5` |
 
 ---
 
@@ -21,12 +21,12 @@ Regenerated: 2026-03-08.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mlx_mfa/__init__.py` | 133 | Public API re-exports, ABI check, `__version__` |
-| `mlx_mfa/attention.py` | 3425 | All attention functions + helpers |
+| `mlx_mfa/__init__.py` | 143 | Public API re-exports, ABI check, `__version__` |
+| `mlx_mfa/attention.py` | 3924 | All attention functions + helpers |
 | `mlx_mfa/masks.py` | 1129 | 15 mask builders |
-| `mlx_mfa/integrations/mlx_lm.py` | 351 | `patch_mlx_lm` / `unpatch_mlx_lm` |
+| `mlx_mfa/integrations/mlx_lm.py` | 428 | `patch_mlx_lm` / `unpatch_mlx_lm` + enrichment |
 | `mlx_mfa/integrations/__init__.py` | 0 | Package marker |
-| **Python total** | **5038** | |
+| **Python total** | **5624** | |
 
 ### C++ / Objective-C++ (`csrc/`)
 
@@ -59,28 +59,37 @@ Regenerated: 2026-03-08.
 | `csrc/mfa/GEMMOperandPrecision.hpp` | 89 | ccv GEMM precision |
 | **C++ total** | **13305** | |
 
-**Total source (Python + C++)**: 18343 lines across 29 files.
+**Total source (Python + C++)**: 18929 lines across 30 files.
 
 ---
 
-## Public API (`mlx_mfa.__all__` — 32 symbols)
+## Public API (`mlx_mfa.__all__` — 36 symbols)
 
-### Core attention (11 functions + 1 class)
+### Core attention (14 functions + 1 class)
 
 | Symbol | Brief description |
 |--------|------------------|
 | `flash_attention` | Standard BHND attention; MFA or SDPA backend |
 | `flash_attention_rope` | RoPE-fused attention (3D RoPE, interleaved/split, rotary_dim) |
+| `flash_attention_rope_unified` | **New v1.1.0** — unified RoPE entry point; replaces rope + rope_append |
 | `flash_attention_sparse` | Block-sparse attention with `block_mask` |
 | `flash_attention_varlen` | Variable-length (jagged) sequences, cu_seqlens |
 | `flash_attention_kvcache` | Unified KV-cache: dense, paged, append (k_new/v_new) |
-| `flash_attention_kvcache_rope_append` | Fused RoPE + KV-cache append |
+| `flash_attention_kvcache_rope_append` | Fused RoPE + KV-cache append (thin wrapper of rope_unified) |
 | `flash_attention_paged` | Paged KV pool attention (block_table) |
 | `flash_attention_qkv_packed` | Fused QKV tensor input |
 | `flash_attention_kv_packed` | Fused KV tensor input |
 | `flash_attention_varlen_qkv_packed` | Varlen + packed QKV |
 | `flash_attention_varlen_kv_packed` | Varlen + packed KV |
+| `flash_attention_speculative_verify` | **New v1.1.0** — speculative decoding target log-probs |
+| `flash_attention_splitfuse` | **New v1.1.0** — combined prefill + decode in one call |
 | `PagedKVCache` | Python KV block allocator (dual-pool design) |
+
+### LLM helpers (1 function)
+
+| Symbol | Brief description |
+|--------|------------------|
+| `make_shared_prefix_cache` | **New v1.1.0** — build shared prefix KV cache for multi-request reuse |
 
 ### Mask builders (15)
 
@@ -140,82 +149,24 @@ Regenerated: 2026-03-08.
 
 ## Tests
 
-**Total: 385 pytest-collected tests** (330 test methods; 55 parametrized expansions)
+**Total: ~420 pytest-collected tests** (357 test methods; estimated expansion)
 
-| File | Classes | Methods | Collected |
-|------|---------|---------|-----------|
-| `tests/test_attention.py` | 53 | 297 | ~352 |
-| `tests/test_mlx_lm_integration.py` | 7 | 33 | ~33 |
+| File | Classes | Methods |
+|------|---------|---------|
+| `tests/test_attention.py` | 59 | 319 |
+| `tests/test_mlx_lm_integration.py` | 8 | 38 |
 
-### Test classes — `test_attention.py` (53 classes, 297 methods)
+### New test classes — v1.1.0
 
-| Class | Methods | What it tests |
-|-------|---------|---------------|
-| TestFallbackPath | 6 | SDPA fallback (no extension needed) |
-| TestMFAKernel | 4 | Forward pass via MFA extension |
-| TestMFABackward | 5 | Backward: dQ, dK, dV correctness |
-| TestPublicAPI | 7 | is_mfa_available, get_device_info, get_supported_configs (feature matrix) |
-| TestEdgeCases | 8 | GQA, N=1, non-multiple seq, cross-attention, D mismatches |
-| TestBackwardEdge | 4 | Backward at edge shapes, partial argnums |
-| TestFlashAttentionAPI | 16 | API params: scale, causal, window_size (right>0 guard), backend, attn_bias |
-| TestNativeGQA | 3 | Native GQA ratios 2/4/8 |
-| TestSparseAttentionAPI | 6 | flash_attention_sparse: shapes, mask properties, dtype rejection |
-| TestSparseAttentionKernel | 5 | Sparse STEEL kernel: causal-block, sliding window, all-false rows |
-| TestM3M4Path | 2 | M3+ BK=32 routing via MFA_FORCE_GEN env override |
-| TestSparseBackwardTiled | 7 | Tiled Python sparse backward correctness, GQA, value_and_grad |
-| TestSparseBackwardSteel | 4 | Native STEEL sparse backward |
-| TestFlashDecode | 8 | Flash Decode (N_q<=4, 2-phase split-KV) |
-| TestM5Detection | 3 | is_m5_plus flag, gen>=17 threshold |
-| TestRoPEFusion | 5 | flash_attention_rope: correctness, cache_seqlens, rope_3d |
-| TestSpatialMasks | 9 | make_spatial_2d/3d/topk masks |
-| TestSegmentMask | 6 | make_segment_mask, make_causal_segment_mask |
-| TestAdaptiveWindowMask | 4 | make_adaptive_window_mask |
-| TestVarlenAttention | 5 | flash_attention_varlen: basic + GQA |
-| TestSteelVarlen | 7 | STEEL varlen kernel incl. D=512 fallback path |
-| TestRoPE3D | 8 | 3D RoPE tables + flash_attention_rope(rope_3d=True) |
-| TestLCSAMask | 5 | make_lcsa_mask |
-| TestAxialMasks | 5 | make_axial_spatial_mask, make_axial_temporal_mask |
-| TestDilatedTemporalMask | 4 | make_dilated_temporal_mask |
-| TestSinkAndReferenceFrameMasks | 5 | make_sink_window_mask, make_reference_frame_mask |
-| TestCrossStreamMask | 5 | make_cross_stream_mask |
-| TestSoftcap | 4 | Softcap tanh-capping correctness |
-| TestALiBi | 4 | ALiBi linear position biases |
-| TestRoPENonInterleaved | 3 | interleaved=False (GPT-NeoX split-halves RoPE) |
-| TestPerBatchCacheSeqlens | 3 | List/array per-batch cache offsets |
-| TestHeadDimVMismatch | 4 | D_v != D_qk graceful fallback |
-| TestKVCacheAppendUnified | 9 | flash_attention_kvcache k_new/v_new append mode |
-| TestAttentionDropout | 4 | Training dropout (dropout_p) |
-| TestReturnAttnWeights | 4 | return_attn_weights=True -> (out, weights) |
-| TestPagedKVCache | 7 | PagedKVCache allocator operations |
-| TestPagedKVCacheGA | 14 | PagedKVCache dual-pool, gather, block table |
-| TestPackedFormats | 10 | QKV/KV packed tensor formats |
-| TestSteelBackwardGQA | 1 | STEEL backward with GQA |
-| TestSteelBackwardD256 | 3 | STEEL backward at D=256 |
-| TestVarlenBackward | 3 | Varlen autograd via custom_function |
-| TestPagedBackward | 9 | Paged attention dQ + dK_pages/dV_pages scatter |
-| TestVarlenPacked | 4 | Varlen packed formats |
-| TestSlidingWindow | 4 | Sliding window tile-skip forward |
-| TestUnifiedKVCache | 15 | flash_attention_kvcache: dense/paged/flash-decode dispatch |
-| TestReturnLSE | 4 | return_lse=True -> (out, logsumexp) |
-| TestCacheBatchIdx | 2 | cache_batch_idx per-batch cache indexing |
-| TestRotaryDim | 2 | rotary_dim partial RoPE |
-| TestKVCacheRopeAppend | 3 | flash_attention_kvcache_rope_append |
-| TestPagedSteelForward | 11 | Kernel-level paged STEEL forward |
-| TestPagedFlashDecode | 4 | Flash Decode with paged KV |
-| TestD512Forward | 6 | D=512 forward: d-split correctness |
-| TestD512Backward | 4 | D=512 backward via STEEL bwd |
-
-### Test classes — `test_mlx_lm_integration.py` (7 classes, 33 methods)
-
-| Class | Methods | What it tests |
-|-------|---------|---------------|
-| TestPatchUnpatch | 5 | patch_mlx_lm / unpatch_mlx_lm lifecycle |
-| TestSignatureCompatibility | 3 | mlx_lm 0.30+ signature compat |
-| TestNumericalCorrectness | 3 | Numerical output match vs reference |
-| TestQuantizedKVCache | 5 | Quantized KV cache fallback |
-| TestPatchMLXLMVerbose | 4 | verbose=True logging |
-| TestGetPatchStats | 6 | get_patch_stats() counters |
-| TestCheckModelCompatibility | 7 | check_model_compatibility() |
+| Class | Methods | Track | What it tests |
+|-------|---------|-------|---------------|
+| `TestRoPEUnified` | 7 | JB | `flash_attention_rope_unified`: standalone, cache-append, first-step, rope_3d |
+| `TestPagedAppend` | 2 | JC | `k_new + block_table` combined: output correctness, pool shape |
+| `TestSpeculativeVerify` | 4 | JD | `flash_attention_speculative_verify`: shape, lse, logprobs |
+| `TestSharedPrefixCache` | 3 | JD | `make_shared_prefix_cache`: shapes, reuse |
+| `TestSplitFuse` | 3 | JD | `flash_attention_splitfuse`: shapes, finite |
+| `TestCrossAttentionKVCache` | 3 | JF | Cross-attention: shape, N_q=1, autograd |
+| `TestTrackJEEnrichment` | 5 | JE | `patch_mlx_lm` stats, verbose_dispatch, KNOWN_MODEL_CONFIGS |
 
 ---
 
@@ -238,11 +189,12 @@ Regenerated: 2026-03-08.
 
 ---
 
-## Examples (`examples/` — 5 files)
+## Examples (`examples/` — 6 files)
 
 | File | Lines | Description |
 |------|-------|-------------|
 | `basic_attention.py` | 83 | Drop-in flash_attention quickstart |
+| `cross_attention.py` | 104 | **New v1.1.0** — encoder-decoder cross-attention with GQA + autograd |
 | `kvcache_decode.py` | 80 | Single-token decode with KV cache |
 | `paged_kv_inference.py` | 115 | Paged KV cache multi-sequence |
 | `sliding_window.py` | 87 | Sliding window attention |
@@ -260,4 +212,5 @@ Regenerated: 2026-03-08.
 | TGP budget | <= 32 KB threadgroup memory |
 | D=512 varlen/paged STEEL | Falls back to SDPA (no d-split in those generators) |
 | STEEL backward D limit | D<=512 (f16/bf16 only) |
+| Paged append + cache_batch_idx | `NotImplementedError` (cannot express without in-place updates) |
 | Platform | macOS arm64, Python 3.10+, mlx >= 0.18.0 |

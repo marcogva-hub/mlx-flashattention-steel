@@ -65,6 +65,11 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **Paged dK/dV gradients** — `flash_attention_paged()` now computes real `dK_pages`/`dV_pages` via `_scatter_to_pool()` (v1.0.4)
 - **Feature matrix** — `get_supported_configs()["features"]` returns a 22-key boolean dict: all supported capabilities queryable at runtime without version checks (v1.0.5)
 - **`window_size` right guard** — `window_size=(left, right)` with `right > 0` now raises `NotImplementedError` instead of silently ignoring the right bound (v1.0.5)
+- **Unified RoPE entry point** — `flash_attention_rope_unified()` handles standalone RoPE, cache-append (first step and subsequent), and paged in one function; `flash_attention_rope` / `flash_attention_kvcache_rope_append` are thin wrappers (v1.1.0)
+- **Paged KV append** — `flash_attention_kvcache(q, pool, pool, k_new=..., block_table=...)` scatters new tokens into the paged pool before attention (v1.1.0)
+- **LLM inference helpers** — `flash_attention_speculative_verify`, `make_shared_prefix_cache`, `flash_attention_splitfuse` for speculative decoding, prefix sharing, and prefill+decode routing (v1.1.0)
+- **`patch_mlx_lm` enrichment** — sliding window from `cache.max_kv_window`, GQA + sliding-window stat counters, `verbose_dispatch` parameter, `KNOWN_MODEL_CONFIGS` reference dict (v1.1.0)
+- **Cross-attention** — `flash_attention_kvcache(q_dec, k_enc, v_enc, causal=False)` with GQA + full autograd; see `examples/cross_attention.py` (v1.1.0)
 
 ## Requirements
 
@@ -181,6 +186,18 @@ Flash Attention with in-kernel RoPE fusion. Applies rotary position embeddings i
 | `interleaved` | `bool` | `True` = adjacent pair rotation (LLaMA); `False` = split-halves (GPT-NeoX) |
 
 Returns `mx.array [B, H, N, D]`.
+
+---
+
+### `flash_attention_rope_unified(q, k, v, rotary_cos=None, rotary_sin=None, *, k_cache=None, v_cache=None, block_table=None, seq_lens=None, block_size=16, scale=None, causal=True, cache_seqlens=0, k_offset=None, interleaved=True, rotary_dim=None, rope_3d=None, return_updated_cache=False, stream=None)` *(v1.1.0)*
+
+Unified RoPE+attention entry point. Handles standalone RoPE (no cache), first-step cache-append (`k_cache=None, return_updated_cache=True`), and subsequent cache-append in one function. `flash_attention_rope` and `flash_attention_kvcache_rope_append` are thin wrappers.
+
+| Returns | Condition |
+|---------|-----------|
+| `mx.array [B, H, N, D]` | `return_updated_cache=False` and `k_cache=None` |
+| `(output, k_rotated, v)` | `return_updated_cache=True` and `k_cache=None` (first step) |
+| `(output, k_updated, v_updated)` | `return_updated_cache=True` and `k_cache` is provided |
 
 ---
 
@@ -429,6 +446,22 @@ info = get_device_info()
 ### `get_supported_configs() -> dict`
 
 Returns the set of (head_dim, dtype) configurations that use the MFA kernel.
+
+---
+
+### LLM inference helpers *(v1.1.0)*
+
+#### `flash_attention_speculative_verify(q_target, k_cache, v_cache, draft_ids, *, scale=None, causal=True, stream=None) -> tuple`
+
+Compute target log-probabilities for a draft token sequence (speculative decoding). Returns `(output, lse, target_logprobs)`.
+
+#### `make_shared_prefix_cache(prefix_q, prefix_k, prefix_v, *, scale=None, causal=True, stream=None) -> tuple`
+
+Build a shared prefix KV cache that can be reused across multiple decode requests. Returns `(prefix_out, k_prefix, v_prefix)`.
+
+#### `flash_attention_splitfuse(q_prefill, k_prefill, v_prefill, q_decode, k_cache_decode, v_cache_decode, *, scale=None, causal=True, stream=None) -> tuple`
+
+Route prefill tokens and decode tokens in a single call. Returns `(out_prefill, out_decode)`.
 
 ---
 
