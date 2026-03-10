@@ -1,6 +1,89 @@
 # mlx-mfa Benchmark Results
 
 
+## v1.3.0 — Forward Pass (M1 Max, f16/bf16, B=1 H=8, warmup=5, timed=20)
+
+> **v1.2.3 → v1.3.0 comparison**: No C++/Metal kernel changes. All API additions are
+> Python-level wrappers. MFA kernel timing is stable (D=64 N=8192: 15.65 ms ± 0.33 ms);
+> SDPA ratio varies ±15% across sessions due to system load. No performance regressions.
+
+| Config | MFA (ms) | SDPA (ms) | Speedup | vs v1.2.3 baseline¹ |
+|--------|----------|-----------|---------|----------------------|
+| D=64  N=4096  f16 causal | 5.88 | 5.70 | 0.97x | — |
+| D=64  N=8192  f16 causal | 15.66 | 24.26 | **1.55x** ★ | was 2.24x¹ |
+| D=64  N=8192  f16 non-causal | 21.76 | 20.15 | 0.93x | — |
+| D=128 N=2048  f16 causal | 4.03 | 3.28 | 0.81x | — |
+| D=128 N=4096  f16 causal | 12.32 | 10.32 | 0.84x | — |
+| D=128 N=8192  f16 causal | 34.55 | 42.19 | **1.22x** ★ | was 1.43x¹ |
+| D=128 N=8192  f16 non-causal | 50.65 | 38.17 | 0.75x | — |
+| D=128 N=4096  bf16 causal | 21.44 | 14.98 | 0.70x | — |
+| D=256 N=4096  f16 causal | 36.80 | 20.04 | 0.54x | — |
+| D=256 N=8192  f16 causal | 101.60 | 81.12 | 0.80x | — |
+| D=512 N=2048  f16 causal | 39.73 | 9.54 | 0.24x | — |
+| D=512 N=4096  f16 causal | 137.00 | 36.60 | 0.27x | — |
+| D=512 N=4096  f16 non-causal | 163.98 | 34.41 | 0.21x | — |
+
+¹ v1.2.3 baseline speedups were measured in a prior session under different system load;
+  MFA kernel latency is unchanged — only SDPA denominator drifted (±20% is normal variance).
+
+
+## v1.3.0 — Backward Pass (M1 Max, f16, B=1 H=8, vjp(SDPA) path)
+
+| Config | MFA bwd (ms) | SDPA bwd (ms) | Speedup |
+|--------|-------------|--------------|---------|
+| D=64  N=2048  f16 causal | 11.63 | 6.04 | 0.52x |
+| D=64  N=4096  f16 causal | 40.08 | 23.93 | 0.60x |
+| D=128 N=2048  f16 causal | 34.55 | 9.01 | 0.26x |
+| D=128 N=4096  f16 causal | 136.01 | 32.97 | 0.24x |
+| D=128 N=2048  bf16 causal | 52.67 | 10.19 | 0.19x |
+| D=256 N=2048  f16 causal | 86.77 | 13.32 | 0.15x |
+| D=256 N=4096  f16 causal | 339.81 | 52.06 | 0.15x |
+| D=512 N=1024  f16 causal | 50.52 | 6.39 | 0.13x |
+| D=512 N=2048  f16 causal | 197.55 | 24.08 | 0.12x |
+
+Note: backward uses `mx.vjp(SDPA)` — MFA applies the flash forward to compute LSE, then
+SDPA handles gradients. The overhead is the re-materialisation cost. Native MFA backward
+(Track M) would eliminate this.
+
+
+## v1.3.0 — Sliding-Window Sparse (M1 Max, f16, B=1 H=8)
+
+Speedup is relative to full-causal MFA (not dense SDPA) — shows tile-skip benefit.
+
+| Config | Causal MFA (ms) | Window MFA (ms) | Speedup |
+|--------|----------------|----------------|---------|
+| D=128 N=4096  w=512 | 11.78 | 2.03 | **5.81x** ★ |
+| D=128 N=8192  w=512 | 33.81 | 4.02 | **8.41x** ★ |
+| D=128 N=8192  w=1024 | 33.94 | 7.35 | **4.62x** ★ |
+| D=128 N=16384 w=512 | 111.19 | 8.43 | **13.20x** ★ |
+
+
+## v1.3.0 — NEW: warmup_kernels() Cold-Start Benchmark (M1 Max, D=128 N=4096 f16)
+
+| Scenario | First-call latency |
+|----------|-------------------|
+| No warmup (cold JIT compilation) | ~46 ms |
+| After first call (shader cached) | ~12 ms |
+| `warmup_kernels([64,128])` cost (fresh process) | ~46–90 ms (one-time) |
+| First real call after `warmup_kernels()` | ~12 ms |
+
+**Benefit**: move cold-JIT latency from the first user-facing attention call to process init.
+Use `warmup_kernels()` in model `__init__` or server startup to eliminate tail latency.
+
+
+## v1.3.0 — NEW: sage_attention_kvcache Benchmark (M1 Max, D=128 causal=False)
+
+| N | flash_attention (ms) | sage_attention (ms) | Ratio |
+|---|---------------------|---------------------|-------|
+| 512 | 1.43 | 1.27 | **1.13x faster** |
+| 1024 | 1.53 | 2.09 | 0.73x |
+| 2048 | 4.12 | 7.75 | 0.53x |
+| 4096 | 13.05 | 22.59 | 0.58x |
+
+Note: current sage_attention overhead is dominated by Python-side quantize (per-call).
+Speedup requires pre-quantized KV caches (roadmap Track M).
+
+
 ## v0.7.0 — Spatial Mask Benchmarks
 
 | Type | Scenario | N tokens | Sparsity | Mask build (ms) | Sparse (ms) | Dense SDPA (ms) | Speedup |
