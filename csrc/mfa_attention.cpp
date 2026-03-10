@@ -442,10 +442,9 @@ void MFAttention::eval_gpu(
   }  // end if (!MFA_DISABLE_V2) — split-K block
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only, no RoPE/ALiBi/sparse) ────
-  // D=256 excluded: TGP halved (64 vs 128) → fewer warps/TG → regression vs V1.
-  // D=256 falls through to V1 (BQ=32, BK=16, WM=4, TGP=128).
-  // V2: sequential K/V phases in shared KV_smem: BQ=32, BK=64 (D=64) / 32 (D=128/256).
-  // 2× larger BK → 2× fewer K-tile iterations → 2× more compute per barrier stall.
+  // BQ=64 (TQ=2): 2× Q rows per TG → half the grid → 2× Q amortization.
+  // Sequential KV_smem enables BQ=64 without exceeding 32KB TGP budget.
+  // D=256 excluded: routes to V1 (BQ=32, BK=16, WM=4, TGP=128).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
   if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_eligible =

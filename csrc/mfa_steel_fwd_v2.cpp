@@ -41,29 +41,26 @@ namespace mlx_mfa {
 // ---------------------------------------------------------------------------
 
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
-  // V2 key principle: keep BQ = V1's BQ (same grid → same occupancy), but
-  // double BK using sequential K/V sharing of KV_smem.
+  // BQ=64 (TQ=2): sequential KV_smem frees enough TGP headroom for 2× Q rows.
+  // The key insight: doubling BQ halves the grid (fewer TGs = less scheduling
+  // overhead), doubles Q amortization (each Q-tile reused across all K-tiles),
+  // and all existing MFA_TQ loops auto-adapt via TQ = BQ / (WM * WN * 8) = 2.
   //
-  // V1 configs: D=64  → BQ=32, BK=32, WM=4  (TGP = 4608+5120+4608 = 14336 B)
-  //             D=128 → BQ=32, BK=16, WM=4  (TGP = 8704+6144+4352 = 19200 B)
-  //             D=256 → BQ=32, BK=16, WM=4  (TGP = 8704+6144+4352 = 29184 B)
+  // TGP memory (BQ=64, WM=4, TGP=128 threads):
+  //   D=64:  Q= 64×(64+8)×2= 9,216B  KV=max(72×64,64×72)×2= 9,216B  → 18,432B ✓
+  //   D=128: Q= 64×(128+8)×2=17,408B  KV=max(40×128,32×136)×2=10,240B → 27,648B ✓
   //
-  // V2 configs (doubled BK, sequential KV_smem = max(K_smem, V_smem)):
-  //   D=64:  BQ=32, BK=64, WM=4  → Q(4608) + KV(max(9216,9216))  = 13824 B < 14336 ✓
-  //   D=128: BQ=32, BK=32, WM=4  → Q(8704) + KV(max(10240,8704)) = 18944 B < 19200 ✓
-  //   D=256: BQ=16, BK=32, WM=2  → Q(8448) + KV(max(20480,16896))= 28928 B < 32768 ✓
-  //            (BQ=32,BK=32,WM=4 would be 37376 B > 32KB — requires BQ halving)
+  // MFABlockLoaderT constraint: n_reads=(BROWS×BCOLS)/TGP must divide BCOLS evenly.
+  //   D=64  QLoader: n_reads=(64×64)/128=32,   TCOLS=2  ✓
+  //   D=64  KLoader: n_reads=(64×64)/128=32,   TCOLS=2  ✓
+  //   D=128 QLoader: n_reads=(64×128)/128=64,  TCOLS=2  ✓
+  //   D=128 KLoader: n_reads=(32×128)/128=32,  TCOLS=4  ✓
   //
-  // MFABlockLoaderT constraint: n_reads = (BROWS*BCOLS)/TGP must divide BCOLS evenly.
-  //   D=64,  BK=64, TGP=128: n_reads=32, TCOLS=2 ✓
-  //   D=128, BK=32, TGP=128: n_reads=32, TCOLS=4 ✓
-  //   D=256, BK=32, TGP=64:  K: n_reads=128, TCOLS=2; V: n_reads=128, TCOLS=2 ✓
-  //
-  // D=64/128: same grid as V1 (BQ=32), 2× fewer K-tile iterations, TGP ≤ V1.
-  // D=256: halved BQ (16 vs 32), 2× more K-tile batching per threadgroup.
-  if (head_dim == 64)  return {32, 64,  64, 4, 1};  // TQ=1, TK=8, TD=8
-  if (head_dim == 128) return {32, 32, 128, 4, 1};  // TQ=1, TK=4, TD=16
-  if (head_dim == 256) return {16, 32, 256, 2, 1};  // TQ=1, TK=4, TD=32; TGP=64; 28928B
+  // D=256: BQ=32 kept (register file limit); routes to V1 in eval_gpu().
+  // The D=256 kernel source is retained below for future research.
+  if (head_dim == 64)  return {64, 64,  64, 4, 1};  // BQ=64, TQ=2, TK=8, TD=8
+  if (head_dim == 128) return {64, 32, 128, 4, 1};  // BQ=64, TQ=2, TK=4, TD=16
+  if (head_dim == 256) return {16, 32, 256, 2, 1};  // BQ=16, TQ=1 (not dispatched)
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
 
@@ -1048,13 +1045,15 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // ── Write pL (log2-domain logsumexp) ─────────────────────────────────────
+  // Use LOCAL tile index (tm+sm+i*8) as the write address: pL is already
+  // advanced to the qb-tile base (pL += qb*MFA_BQ) at kernel entry.
+  // abs_q is the BOUNDS CHECK only — not the write address.
   ss << "  if (sn == 0) {\n";
-  ss << "    const long q_base = (long)qb * MFA_BQ + tm + sm;\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
-  ss << "      const long q_idx = q_base + i * 8;\n";
-  ss << "      if (q_idx < p->qL)\n";
-  ss << "        pL[q_idx] = max_score[i] + metal::log2(sum_score[i]);\n";
+  ss << "      const long abs_q = (long)qb * MFA_BQ + tm + sm + (long)i * 8;\n";
+  ss << "      if (abs_q < p->qL)\n";
+  ss << "        pL[tm + sm + (long)i * 8] = max_score[i] + metal::log2(sum_score[i]);\n";
   ss << "    }\n";
   ss << "  }\n";
   ss << "\n";
