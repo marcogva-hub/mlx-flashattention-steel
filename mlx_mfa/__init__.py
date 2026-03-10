@@ -69,6 +69,7 @@ from mlx_mfa.attention import (
     flash_attention_kv_packed,
     flash_attention_varlen_qkv_packed,
     flash_attention_varlen_kv_packed,
+    KVCacheProtocol,
     DenseKVCache,
     PagedKVCache,
     make_causal_block_mask,
@@ -93,8 +94,8 @@ from mlx_mfa.quantize import (
     sage_block_sizes,
 )
 
-# Track LC: InferenceContext lifecycle object
-from mlx_mfa.inference import InferenceContext
+# Track LC/Phase 2: InferenceContext + PagedInferenceContext lifecycle objects
+from mlx_mfa.inference import InferenceContext, PagedInferenceContext
 
 from mlx_mfa.masks import (
     make_spatial_2d_mask,
@@ -126,6 +127,7 @@ __all__ = [
     "flash_attention_kv_packed",
     "flash_attention_varlen_qkv_packed",
     "flash_attention_varlen_kv_packed",
+    "KVCacheProtocol",
     "DenseKVCache",
     "PagedKVCache",
     # Mask construction
@@ -162,7 +164,8 @@ __all__ = [
     "smooth_k",
     "sage_output_correction",
     "sage_block_sizes",
-    # InferenceContext lifecycle (Track LC)
+    # InferenceContext lifecycle (Track LC / Phase 2)
     "InferenceContext",
+    "PagedInferenceContext",
     "__version__",
 ]

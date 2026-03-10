@@ -36,7 +36,7 @@ from typing import Optional
 import mlx.core as mx
 
 
-__all__ = ["InferenceContext"]
+__all__ = ["InferenceContext", "PagedInferenceContext"]
 
 
 class InferenceContext:
@@ -259,5 +259,195 @@ class InferenceContext:
         return (
             f"InferenceContext(B={self.B}, H_kv={self.H_kv}, D={self.D}, "
             f"max_seq_len={self.max_seq_len}, seqlen={self._cache.seqlen}, "
+            f"dtype={self.dtype})"
+        )
+
+
+class PagedInferenceContext:
+    """Stateful KV-cache manager for paged autoregressive generation.
+
+    Wraps :class:`~mlx_mfa.attention.PagedKVCache` and exposes the same
+    prefill / step / reset lifecycle as :class:`InferenceContext`, but
+    using a block-paged pool that avoids padding waste for variable-length
+    sequences.
+
+    Each sequence is identified by an integer ``seq_id`` (default 0).
+    Multiple independent sequences can coexist in the same pool.
+
+    Example::
+
+        ctx = PagedInferenceContext(
+            num_blocks=128, block_size=16, H_kv=8, D=128
+        )
+
+        # Prefill sequence 0
+        out = ctx.prefill(q_pre, k_pre, v_pre, scale=scale, seq_id=0)
+        mx.eval(out)
+
+        # Decode
+        for _ in range(steps):
+            out = ctx.step(q_tok, k_tok, v_tok, scale=scale, seq_id=0)
+            mx.eval(out)
+
+        ctx.reset(seq_id=0)   # free blocks for seq 0 only
+
+    Args:
+        num_blocks:  Total pool blocks (capacity = ``num_blocks * block_size`` tokens).
+        block_size:  Tokens per page (16, 32, or 64 recommended).
+        H_kv:        Number of KV heads.
+        D:           Head dimension.
+        dtype:       Cache data type (default: ``mx.float16``).
+        stream:      Optional MLX stream for all attention calls.
+    """
+
+    def __init__(
+        self,
+        num_blocks: int,
+        block_size: int,
+        H_kv: int,
+        D: int,
+        dtype: mx.Dtype = mx.float16,
+        stream: Optional[mx.Stream] = None,
+    ) -> None:
+        from mlx_mfa.attention import PagedKVCache
+        self.num_blocks = num_blocks
+        self.block_size = block_size
+        self.H_kv = H_kv
+        self.D = D
+        self.dtype = dtype
+        self.stream = stream
+        self._cache = PagedKVCache(num_blocks, block_size, H_kv, D, dtype=dtype)
+
+    # -- Protocol delegation -------------------------------------------------
+
+    @property
+    def cache(self):
+        """Underlying :class:`~mlx_mfa.attention.PagedKVCache`."""
+        return self._cache
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        """Current token count for ``seq_id``."""
+        return self._cache.seq_length(seq_id)
+
+    # -- Lifecycle -----------------------------------------------------------
+
+    def reset(self, seq_id: Optional[int] = None) -> "PagedInferenceContext":
+        """Free blocks for ``seq_id`` (or all sequences if ``None``).
+
+        Returns:
+            ``self`` -- enables chaining.
+        """
+        self._cache.reset(seq_id)
+        return self
+
+    # -- Attention calls -----------------------------------------------------
+
+    def prefill(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        seq_id: int = 0,
+    ) -> mx.array:
+        """Process prefill tokens and initialise the paged KV cache.
+
+        Resets ``seq_id`` and fills its blocks with ``k / v``.
+
+        Args:
+            q:       Query ``[1, H_q, N, D]``.
+            k:       Key   ``[1, H_kv, N, D]``.
+            v:       Value ``[1, H_kv, N, D]``.
+            scale:   Attention scale (default ``1/sqrt(D)``).
+            causal:  Causal mask (default ``True``).
+            softcap: Logit softcap (0 = disabled).
+            window_size: ``(left, right)`` sliding-window radii.
+            seq_id:  Sequence identifier (default 0).
+
+        Returns:
+            Attention output ``[1, H_q, N, D]``.
+        """
+        from mlx_mfa.attention import flash_attention
+
+        if scale is None:
+            scale = 1.0 / math.sqrt(self.D)
+
+        self._cache.reset(seq_id)
+        self._cache.append(k, v, seq_id=seq_id)
+
+        return flash_attention(
+            q, k, v,
+            scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
+            stream=self.stream,
+        )
+
+    def step(
+        self,
+        q: mx.array,
+        k_new: mx.array,
+        v_new: mx.array,
+        *,
+        scale: Optional[float] = None,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        seq_id: int = 0,
+    ) -> mx.array:
+        """Append new K/V tokens and run decode attention.
+
+        Writes ``k_new / v_new`` into the paged pool for ``seq_id`` then
+        gathers the full K/V history and calls flash_attention_kvcache.
+
+        Args:
+            q:        Query for the new tokens ``[1, H_q, N_new, D]``.
+            k_new:    New key tokens   ``[1, H_kv, N_new, D]``.
+            v_new:    New value tokens ``[1, H_kv, N_new, D]``.
+            scale:    Attention scale (default ``1/sqrt(D)``).
+            softcap:  Logit softcap (0 = disabled).
+            window_size: ``(left, right)`` sliding-window radii.
+            seq_id:   Sequence identifier (default 0).
+
+        Returns:
+            Attention output ``[1, H_q, N_new, D]``.
+        """
+        from mlx_mfa.attention import flash_attention_kvcache
+
+        if scale is None:
+            scale = 1.0 / math.sqrt(self.D)
+
+        self._cache.append(k_new, v_new, seq_id=seq_id)
+
+        k_hist = self._cache.k_for_attention(seq_id)
+        v_hist = self._cache.v_for_attention(seq_id)
+
+        return flash_attention_kvcache(
+            q, k_hist, v_hist,
+            scale=scale,
+            causal=True,
+            softcap=softcap,
+            window_size=window_size,
+            stream=self.stream,
+        )
+
+    # -- Context manager -----------------------------------------------------
+
+    def __enter__(self) -> "PagedInferenceContext":
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.reset()
+
+    # -- Repr ----------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        return (
+            f"PagedInferenceContext(num_blocks={self.num_blocks}, "
+            f"block_size={self.block_size}, H_kv={self.H_kv}, D={self.D}, "
             f"dtype={self.dtype})"
         )

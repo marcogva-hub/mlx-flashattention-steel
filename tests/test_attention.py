@@ -6973,3 +6973,140 @@ class TestBlockMask4D:
         out = flash_attention_sparse(q, k, v, mask, scale=scale)
         mx.eval(out)
         assert out.shape == (B, H, N, D), f"expected {(B,H,N,D)}, got {out.shape}"
+
+
+# ─── Phase 2 — KVCacheProtocol + PagedInferenceContext ───────────────────────
+
+class TestKVCacheProtocol:
+    """KVCacheProtocol methods on DenseKVCache and PagedKVCache."""
+
+    def test_dense_protocol_methods(self):
+        """DenseKVCache satisfies protocol: k/v_for_attention, seq_length, reset."""
+        from mlx_mfa import DenseKVCache
+        cache = DenseKVCache(B=1, H=4, D=64, max_seq_len=512)
+        k = mx.zeros([1, 4, 32, 64], dtype=mx.float16)
+        v = mx.zeros([1, 4, 32, 64], dtype=mx.float16)
+        cache.append(k, v, seq_id=0)  # seq_id accepted
+
+        assert cache.seq_length(0) == 32
+        assert cache.seq_length() == 32  # default seq_id=0
+
+        ka = cache.k_for_attention()
+        va = cache.v_for_attention()
+        assert ka.shape == (1, 4, 32, 64)
+        assert va.shape == (1, 4, 32, 64)
+
+        cache.reset(seq_id=None)  # seq_id=None accepted
+        assert cache.seq_length() == 0
+
+    def test_paged_protocol_methods(self):
+        """PagedKVCache satisfies protocol: k/v_for_attention, seq_length, reset."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=16, block_size=16, H=4, D=64)
+        k = mx.zeros([1, 4, 24, 64], dtype=mx.float16)
+        v = mx.zeros([1, 4, 24, 64], dtype=mx.float16)
+        cache.append(k, v, seq_id=0)
+
+        assert cache.seq_length(0) == 24
+
+        ka = cache.k_for_attention(0)
+        va = cache.v_for_attention(0)
+        assert ka.shape == (1, 4, 24, 64)
+        assert va.shape == (1, 4, 24, 64)
+
+        cache.reset(seq_id=0)
+        assert cache.seq_length(0) == 0
+
+    def test_paged_reset_all(self):
+        """PagedKVCache.reset(None) frees all sequences."""
+        from mlx_mfa import PagedKVCache
+        cache = PagedKVCache(num_blocks=32, block_size=16, H=2, D=64)
+        k = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+        v = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+        cache.append(k, v, seq_id=0)
+        cache.append(k, v, seq_id=1)
+        assert cache.seq_length(0) == 16
+        assert cache.seq_length(1) == 16
+        cache.reset()  # seq_id=None by default
+        assert cache.seq_length(0) == 0
+        assert cache.seq_length(1) == 0
+
+    def test_protocol_isinstance(self):
+        """Both cache classes are instances of KVCacheProtocol."""
+        from mlx_mfa import KVCacheProtocol, DenseKVCache, PagedKVCache
+        assert isinstance(DenseKVCache(1, 4, 64), KVCacheProtocol)
+        assert isinstance(PagedKVCache(8, 16, 4, 64), KVCacheProtocol)
+
+
+class TestPagedInferenceContext:
+    """PagedInferenceContext prefill / step / reset lifecycle."""
+
+    def test_repr(self):
+        from mlx_mfa import PagedInferenceContext
+        ctx = PagedInferenceContext(num_blocks=64, block_size=16, H_kv=4, D=64)
+        r = repr(ctx)
+        assert "PagedInferenceContext" in r
+        assert "num_blocks=64" in r
+
+    def test_prefill_shape(self):
+        """prefill returns correct [1, H_q, N, D] shape."""
+        from mlx_mfa import PagedInferenceContext
+        ctx = PagedInferenceContext(num_blocks=64, block_size=16, H_kv=4, D=64)
+        N = 32
+        q = mx.zeros([1, 4, N, 64], dtype=mx.float16)
+        k = mx.zeros([1, 4, N, 64], dtype=mx.float16)
+        v = mx.zeros([1, 4, N, 64], dtype=mx.float16)
+        out = ctx.prefill(q, k, v, scale=0.125)
+        mx.eval(out)
+        assert out.shape == (1, 4, N, 64)
+        assert ctx.seq_length(0) == N
+
+    def test_step_shape(self):
+        """step returns [1, H_q, 1, D] for single-token decode."""
+        from mlx_mfa import PagedInferenceContext
+        ctx = PagedInferenceContext(num_blocks=64, block_size=16, H_kv=4, D=64)
+        k_pre = mx.zeros([1, 4, 32, 64], dtype=mx.float16)
+        v_pre = mx.zeros([1, 4, 32, 64], dtype=mx.float16)
+        q_pre = mx.zeros([1, 4, 32, 64], dtype=mx.float16)
+        ctx.prefill(q_pre, k_pre, v_pre, scale=0.125)
+        mx.eval(ctx._cache.k_for_attention())
+
+        q_new = mx.zeros([1, 4, 1, 64], dtype=mx.float16)
+        k_new = mx.zeros([1, 4, 1, 64], dtype=mx.float16)
+        v_new = mx.zeros([1, 4, 1, 64], dtype=mx.float16)
+        out = ctx.step(q_new, k_new, v_new, scale=0.125)
+        mx.eval(out)
+        assert out.shape == (1, 4, 1, 64)
+        assert ctx.seq_length(0) == 33  # 32 prefill + 1 decode
+
+    def test_reset_frees_seq(self):
+        """reset(seq_id) frees the cache for that sequence."""
+        from mlx_mfa import PagedInferenceContext
+        ctx = PagedInferenceContext(num_blocks=32, block_size=16, H_kv=2, D=64)
+        k = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+        v = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+        q = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+        ctx.prefill(q, k, v, seq_id=0)
+        assert ctx.seq_length(0) == 16
+        ctx.reset(seq_id=0)
+        assert ctx.seq_length(0) == 0
+
+    def test_context_manager(self):
+        """Context manager resets on exit."""
+        from mlx_mfa import PagedInferenceContext
+        with PagedInferenceContext(num_blocks=32, block_size=16, H_kv=2, D=64) as ctx:
+            k = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+            v = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+            q = mx.zeros([1, 2, 16, 64], dtype=mx.float16)
+            ctx.prefill(q, k, v)
+            assert ctx.seq_length(0) == 16
+        # After exit, seq length is 0 (reset called)
+        assert ctx.seq_length(0) == 0
+
+    def test_export(self):
+        """PagedInferenceContext and KVCacheProtocol are exported from mlx_mfa."""
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "PagedInferenceContext")
+        assert hasattr(mlx_mfa, "KVCacheProtocol")
+        assert "PagedInferenceContext" in mlx_mfa.__all__
+        assert "KVCacheProtocol" in mlx_mfa.__all__

@@ -3289,11 +3289,58 @@ def flash_attention_varlen(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Phase 2 — KVCacheProtocol
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class KVCacheProtocol:
+    """Structural base for KV cache implementations.
+
+    Both :class:`DenseKVCache` and :class:`PagedKVCache` implement this
+    interface.  Callers can accept ``KVCacheProtocol`` as a type hint to
+    write code that works with either backend.
+
+    Protocol methods:
+
+    * :meth:`append` — write new K/V tokens for ``seq_id``
+    * :meth:`k_for_attention` — return K ready for attention ``[B,H,S,D]``
+    * :meth:`v_for_attention` — return V ready for attention ``[B,H,S,D]``
+    * :meth:`seq_length` — current token count for ``seq_id``
+    * :meth:`reset` — clear state; if ``seq_id is None`` clears all sequences
+    """
+
+    def append(
+        self,
+        k_new: "mx.array",
+        v_new: "mx.array",
+        seq_id: int = 0,
+    ) -> None:
+        """Append ``k_new / v_new`` tokens for sequence ``seq_id``."""
+        raise NotImplementedError
+
+    def k_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return K tensor ``[B, H, S, D]`` ready for attention."""
+        raise NotImplementedError
+
+    def v_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return V tensor ``[B, H, S, D]`` ready for attention."""
+        raise NotImplementedError
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        """Return the number of tokens stored for ``seq_id``."""
+        raise NotImplementedError
+
+    def reset(self, seq_id: "Optional[int]" = None) -> "KVCacheProtocol":
+        """Reset cache state.  ``seq_id=None`` clears all sequences."""
+        raise NotImplementedError
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # I.2 — DenseKVCache: pre-allocated dense KV buffer
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-class DenseKVCache:
+class DenseKVCache(KVCacheProtocol):
     """Dense KV cache with pre-allocated buffer and write-pointer.
 
     Solves the O(seqlen²) graph-accumulation problem of repeated
@@ -3377,12 +3424,22 @@ class DenseKVCache:
 
     # -- Mutation ------------------------------------------------------------
 
-    def append(self, k_new: "mx.array", v_new: "mx.array") -> None:
+    def append(
+        self,
+        k_new: "mx.array",
+        v_new: "mx.array",
+        seq_id: int = 0,
+    ) -> None:
         """Scatter ``k_new / v_new`` into the pre-allocated buffer.
 
+        ``seq_id`` is accepted for protocol compatibility with
+        :class:`PagedKVCache` but ignored — :class:`DenseKVCache` supports
+        only a single sequence (``seq_id=0``).
+
         Args:
-            k_new: New key tokens   ``[B, H, N_new, D]``.
-            v_new: New value tokens ``[B, H, N_new, D]``.
+            k_new:  New key tokens   ``[B, H, N_new, D]``.
+            v_new:  New value tokens ``[B, H, N_new, D]``.
+            seq_id: Sequence identifier (must be 0; ignored).
 
         Raises:
             ValueError: if ``seqlen + N_new > max_seq_len``.
@@ -3402,8 +3459,25 @@ class DenseKVCache:
         # Materialise the scatter to prevent O(seqlen) lazy-graph growth.
         mx.eval(self._k, self._v)
 
-    def reset(self) -> "DenseKVCache":
+    # -- KVCacheProtocol methods ---------------------------------------------
+
+    def k_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return K slice ``[B, H, seqlen, D]`` ready for attention."""
+        return self.k
+
+    def v_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return V slice ``[B, H, seqlen, D]`` ready for attention."""
+        return self.v
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        """Return current token count (``seq_id`` ignored for dense cache)."""
+        return self._seqlen
+
+    def reset(self, seq_id: "Optional[int]" = None) -> "DenseKVCache":
         """Reset write pointer to 0 (reuse buffer for a new sequence).
+
+        ``seq_id`` is accepted for protocol compatibility but ignored —
+        the dense cache tracks a single sequence.
 
         Does **not** zero the buffer — stale data is unreachable since we
         track ``seqlen`` and slice with ``[:, :, :seqlen, :]``.
@@ -3434,7 +3508,7 @@ class DenseKVCache:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-class PagedKVCache:
+class PagedKVCache(KVCacheProtocol):
     """Paged KV cache manager — dual-pool block allocator.
 
     Manages separate K and V page pools as fixed-size blocks.  Eliminates
@@ -3736,6 +3810,45 @@ class PagedKVCache:
         if seq_id in self._block_table:
             self._free.extend(self._block_table.pop(seq_id))
             self._write_ptr.pop(seq_id, None)
+
+    # -- KVCacheProtocol methods ---------------------------------------------
+
+    def k_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return contiguous K ``[1, H, S, D]`` for ``seq_id``.
+
+        Gathers paged blocks into a contiguous tensor via :meth:`gather`.
+        For large caches prefer :func:`flash_attention_kvcache` (paged mode)
+        which reads tiles directly without materialising a full copy.
+        """
+        k, _ = self.gather(seq_id)
+        return k
+
+    def v_for_attention(self, seq_id: int = 0) -> "mx.array":
+        """Return contiguous V ``[1, H, S, D]`` for ``seq_id``."""
+        _, v = self.gather(seq_id)
+        return v
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        """Return the number of tokens stored for ``seq_id``."""
+        return self.seq_lengths.get(seq_id, 0)
+
+    def reset(self, seq_id: "Optional[int]" = None) -> "PagedKVCache":
+        """Free blocks and reset state.
+
+        Args:
+            seq_id: If given, free only that sequence.  If ``None``,
+                    free all sequences (resets the pool to its initial state).
+
+        Returns:
+            ``self`` — enables chaining: ``cache.reset().append(...)``
+        """
+        if seq_id is None:
+            # Free every active sequence.
+            for sid in list(self._block_table.keys()):
+                self.free_seq(sid)
+        else:
+            self.free_seq(seq_id)
+        return self
 
     def __repr__(self) -> str:
         used = self.num_blocks - len(self._free)
