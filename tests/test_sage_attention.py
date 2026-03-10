@@ -99,9 +99,10 @@ class TestQuantizeUtils:
         assert mean_after < 1e-3, f"channel mean not zeroed: {mean_after}"
 
     def test_sage_block_sizes(self):
-        assert sage_block_sizes(64)  == (32, 32)
-        assert sage_block_sizes(128) == (32, 16)
-        assert sage_block_sizes(256) == (32, 16)
+        # V2 tile sizes: BK doubled vs V1 to match select_steel_v2_block_config
+        assert sage_block_sizes(64)  == (32, 64)   # V2: was (32,32) in V1
+        assert sage_block_sizes(128) == (32, 32)   # V2: was (32,16) in V1
+        assert sage_block_sizes(256) == (16, 32)   # V2: was (32,16) in V1
 
     def test_dequantize_shape(self):
         B, H, N, D = 1, 2, 48, 64

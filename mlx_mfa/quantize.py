@@ -261,14 +261,16 @@ def sage_output_correction(
 
 
 def sage_block_sizes(head_dim: int) -> tuple[int, int]:
-    """Return (BQ, BK) — STEEL tile sizes for the given head_dim.
+    """Return (BQ, BK) — STEEL V2 tile sizes for the given head_dim.
 
     These should be used as block_size parameters for ``quantize_per_block``
-    so that each Metal tile has exactly one scale value.
+    so that each Metal tile has exactly one scale value.  Matches
+    ``select_steel_v2_block_config`` in csrc/mfa_attention.cpp (V2 sizes:
+    BK doubled vs V1 to halve K-tile iterations within shared KV_smem).
     """
     if head_dim <= 64:
-        return 32, 32
+        return 32, 64   # V2: BQ=32, BK=64 (was 32,32 in V1)
     elif head_dim <= 128:
-        return 32, 16
+        return 32, 32   # V2: BQ=32, BK=32 (was 32,16 in V1)
     else:
-        return 32, 16
+        return 16, 32   # V2: BQ=16, BK=32 (was 32,16 in V1)

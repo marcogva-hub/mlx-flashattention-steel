@@ -6869,9 +6869,10 @@ class TestSageQuantization:
         bq64, bk64 = sage_block_sizes(64)
         bq128, bk128 = sage_block_sizes(128)
         bq256, bk256 = sage_block_sizes(256)
-        assert bq64 == 32 and bk64 == 32
-        assert bq128 == 32 and bk128 == 16
-        assert bq256 == 32 and bk256 == 16
+        # V2 tile sizes (BK doubled vs V1 to match select_steel_v2_block_config)
+        assert bq64 == 32 and bk64 == 64    # V2: was bk=32 in V1
+        assert bq128 == 32 and bk128 == 32  # V2: was bk=16 in V1
+        assert bq256 == 16 and bk256 == 32  # V2: was bq=32,bk=16 in V1
 
 
 # ===========================================================================
