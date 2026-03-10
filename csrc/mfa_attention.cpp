@@ -310,9 +310,11 @@ void MFAttention::eval_gpu(
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         (D == 64 || D == 128) &&
+        // RoPE / ALiBi / sparse not yet in split-K shader — those fall through
+        // to V2 single-pass (which does support them after Phase 3).
+        !params_.has_block_mask &&
         !params_.has_rope &&
         !params_.has_alibi &&
-        !params_.has_block_mask &&
         // Window masking interacts with split-K ranges — keep in V1 split-K
         params_.window_left  < 0 &&
         params_.window_right < 0;
@@ -450,16 +452,16 @@ void MFAttention::eval_gpu(
     }
   }  // end if (!MFA_DISABLE_V2) — split-K block
 
-  // ── STEEL V2 dispatch (f16/bf16, D=64/128 only, no RoPE/ALiBi/sparse) ────
+  // ── STEEL V2 dispatch (f16/bf16, D=64/128 only) ──────────────────────────
   // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.
   // D=256 excluded: routes to V1 (BQ=32, BK=16, WM=4, TGP=128).
+  // Sparse (block_mask) excluded: mask is sized for V1 BK (BK_v1 != BK_v2).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
   if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_eligible =
         (dtype_code != 2) &&
         (D == 64 || D == 128) &&
-        !params_.has_rope &&
-        !params_.has_alibi &&
+        // block_mask is sized for V1 tile BK (BK_v1 ≠ BK_v2) — route to V1.
         !params_.has_block_mask;
 
     if (v2_eligible) {
@@ -478,14 +480,14 @@ void MFAttention::eval_gpu(
         KK2::KernelType::SteelForwardV2,
         D, BQ2, BK2, D, WM2,
         params_.causal,
-        /*sparse=*/false,
-        is_m3_plus_steel,       // controls enable_unroll for D=256 (same code otherwise)
-        /*has_rope=*/false, /*rope_interleaved=*/false,
-        params_.softcap > 0.0f,   // has_softcap
-        /*has_alibi=*/false,
-        params_.window_left >= 0 || params_.window_right >= 0,  // has_window
+        /*sparse=*/false,        // sparse routes to V1 (mask sized for V1 BK)
+        is_m3_plus_steel,
+        params_.has_rope, params_.rope_interleaved,
+        params_.softcap > 0.0f,
+        params_.has_alibi,
+        params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
-        H / Hk   // gqa_factor
+        H / Hk
       };
 
       void* raw2     = ShaderCache::get().get_or_compile(key2, d.mtl_device());
@@ -506,7 +508,7 @@ void MFAttention::eval_gpu(
       sp2.qL_rem     = (N % BQ2 == 0) ? BQ2 : (N % BQ2);
       sp2.kL_rem     = (S % BK2 == 0) ? BK2 : (S % BK2);
       sp2.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
-      sp2.rope_q_base     = 0;
+      sp2.rope_q_base     = params_.cache_seqlens;
       sp2.rope_cos_stride = D / 2;
       sp2.Q_strides[0] = (int64_t)H  * N * D;
       sp2.Q_strides[1] = (int64_t)N  * D;
@@ -523,9 +525,10 @@ void MFAttention::eval_gpu(
       sp2.L_strides[0] = (int64_t)H  * N;
       sp2.L_strides[1] = (int64_t)N;
       sp2.softcap      = params_.softcap;
-      sp2.has_alibi    = 0;
+      sp2.has_alibi    = params_.has_alibi ? 1 : 0;
       sp2.window_left  = params_.window_left;
       sp2.window_right = params_.window_right;
+      // V2 is never sparse (block_mask sized for V1 BK ≠ V2 BK).
       sp2.mask_batch_stride = 0;
       sp2.mask_head_stride  = 0;
 
@@ -537,6 +540,17 @@ void MFAttention::eval_gpu(
       enc2.set_output_array(out,       3);
       enc2.set_output_array(logsumexp, 4);
       enc2.set_bytes(sp2,              5);
+      // buffer(6) = block_mask: unused in V2 (sparse routes to V1)
+      if (params_.has_rope) {
+        // Dense + RoPE: inputs[3]=cos, inputs[4]=sin (no block_mask in V2 path)
+        enc2.set_input_array(inputs[3], 7);
+        enc2.set_input_array(inputs[4], 8);
+      }
+      if (params_.has_alibi) {
+        // Dense + ALiBi: inputs[3]=alibi_slopes (no block_mask, rope may or may not be set)
+        int alibi_idx = 3 + (params_.has_rope ? 2 : 0);
+        enc2.set_input_array(inputs[alibi_idx], 9);
+      }
 
       // One threadgroup per Q-block: grid x = NQ2.
       enc2.dispatch_threadgroups(

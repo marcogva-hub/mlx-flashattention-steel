@@ -108,6 +108,10 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
   const bool has_window  = key.has_window;
+  const bool has_alibi   = key.has_alibi;
+  const bool sparse      = key.sparse;
+  const bool has_rope    = key.has_rope;
+  const bool rope_interleaved = key.rope_interleaved;
   const int gqa   = key.gqa_factor;  // H_q / H_kv (1 = standard MHA)
 
   // V2 only supports f16/bf16
@@ -190,6 +194,14 @@ struct MFASteelParams {
   ss << "    device T*                   O         [[buffer(3)]],\n";
   ss << "    device float*               L         [[buffer(4)]],\n";
   ss << "    constant MFASteelParams*    p         [[buffer(5)]],\n";
+  if (sparse)
+    ss << "    const device uchar* block_mask   [[buffer(6)]],\n";
+  if (has_rope) {
+    ss << "    const device float* rotary_cos   [[buffer(7)]],\n";
+    ss << "    const device float* rotary_sin   [[buffer(8)]],\n";
+  }
+  if (has_alibi)
+    ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -322,6 +334,37 @@ struct MFASteelParams {
   ss << "    loader_q.load_unsafe();\n";
   ss << "  }\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  // RoPE-Q: apply in-place to Q_smem before loading into Qtile registers
+  if (has_rope) {
+    ss << "  // RoPE-Q: apply rotary embeddings to Q in smem\n";
+    ss << "  {\n";
+    ss << "    const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "    const int qabs_base = p->rope_q_base + qb * MFA_BQ;\n";
+    ss << "    for (int ri = (int)local_id; ri < MFA_BQ * (MFA_BD/2);\n";
+    ss << "         ri += MFA_TGP_SIZE) {\n";
+    ss << "      const int row  = ri / (MFA_BD/2);\n";
+    ss << "      const int pair = ri % (MFA_BD/2);\n";
+    ss << "      const int cos_idx = (qabs_base + row) * p->rope_cos_stride + pair;\n";
+    ss << "      const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "      const float sin_v = rotary_sin[cos_idx];\n";
+    if (rope_interleaved) {
+      ss << "      const int si0 = row * LDQ + pair * 2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si0 + 1];\n";
+      ss << "      Qs[si0]     = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si0 + 1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    } else {
+      ss << "      const int si0 = row * LDQ + pair;\n";
+      ss << "      const int si1 = row * LDQ + pair + MFA_BD/2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si1];\n";
+      ss << "      Qs[si0] = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    }
+    ss << "    }\n";
+    ss << "  }\n";
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-Q writes visible\n";
+  }
   ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
   ss << "\n";
 
@@ -357,6 +400,36 @@ struct MFASteelParams {
   // at the start of each iteration without an explicit load+barrier in the loop.
   ss << "  // V2: preload K[kb_start] into KV_smem before the loop.\n";
   ss << "  // Barrier B0 ensures K is visible at the first Q@K^T.\n";
+  // Inline lambda to emit RoPE-K for a given kabs_base variable name.
+  // Applied after K tile is written to KV_smem and a barrier ensures visibility.
+  // Must be followed by another barrier (to make RoPE writes visible for Q@K^T).
+  auto emit_rope_k = [&](const std::string& kabs_expr) {
+    ss << "    // RoPE-K: apply rotary embeddings to K in KV_smem (transposed)\n";
+    ss << "    {\n";
+    ss << "      const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "      const int kabs_base = " << kabs_expr << ";\n";
+    ss << "      for (int ri = (int)local_id; ri < MFA_BK * (MFA_BD/2);\n";
+    ss << "           ri += MFA_TGP_SIZE) {\n";
+    ss << "        const int k_row = ri % MFA_BK;\n";
+    ss << "        const int pair  = ri / MFA_BK;\n";
+    ss << "        const int cos_idx = (kabs_base + k_row) * p->rope_cos_stride + pair;\n";
+    ss << "        const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "        const float sin_v = rotary_sin[cos_idx];\n";
+    if (rope_interleaved) {
+      ss << "        const int ci0 = pair * 2 * LDK + k_row;\n";
+      ss << "        const int ci1 = (pair * 2 + 1) * LDK + k_row;\n";
+    } else {
+      ss << "        const int ci0 = pair * LDK + k_row;\n";
+      ss << "        const int ci1 = (pair + MFA_BD/2) * LDK + k_row;\n";
+    }
+    ss << "        const float k0 = (float)Ks[ci0];\n";
+    ss << "        const float k1 = (float)Ks[ci1];\n";
+    ss << "        Ks[ci0] = (T)(k0 * cos_v - k1 * sin_v);\n";
+    ss << "        Ks[ci1] = (T)(k0 * sin_v + k1 * cos_v);\n";
+    ss << "      }\n";
+    ss << "    }\n";
+  };
+
   ss << "  if (kb_lim > kb_start) {\n";
   ss << "    if (kb_start == p->NK_aligned) {\n";
   ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
@@ -364,7 +437,11 @@ struct MFASteelParams {
   ss << "      loader_k.load_unsafe();\n";
   ss << "    }\n";
   ss << "    loader_k.next();\n";
-  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // B0: K[0] ready\n";
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // B0: K[0] visible\n";
+  if (has_rope) {
+    emit_rope_k("kb_start * MFA_BK");
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-K[0] visible\n";
+  }
   ss << "  }\n";
   ss << "\n";
 
@@ -372,7 +449,17 @@ struct MFASteelParams {
   ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
 
-  // Phase 1: Q@K^T (K[kb] already in KV_smem, synced by B0 or prev-iter C)
+  // Sparse tile-skip: uniform branch (all threads in TG share tid.x, kb).
+  if (sparse) {
+    ss << "    // Block-sparse: skip tiles where block_mask==0 (uniform branch)\n";
+    ss << "    const bool skip_tile = !block_mask[\n";
+    ss << "        (long)tid.z * p->mask_batch_stride\n";
+    ss << "      + (long)tid.y * p->mask_head_stride\n";
+    ss << "      + (long)qb * p->NK + kb];\n";
+    ss << "    if (!skip_tile) {\n";
+  }
+
+  // Phase 1: Q@K^T (K[kb] already in KV_smem, synced by B0 or prev-iter RoPE/C)
   ss << "    // ─ Phase 1: Q@K^T ─\n";
   ss << "    // K[kb] is in KV_smem, already visible via preload barrier.\n";
   ss << "    Stile.clear();\n";
@@ -413,6 +500,28 @@ struct MFASteelParams {
     ss << "        AccT s_nat = Stile.elems()[ii] * ln2;\n";
     ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
     ss << "        Stile.elems()[ii] = s_nat * log2e;\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // ALiBi: per-head linear position bias added to scores in log2 domain
+  if (has_alibi) {
+    ss << "    // ALiBi: add per-head linear position bias to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int q_pos = qb * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            Stile.frag_at(i, j)[jj] += slope * (float)(k_base + jj - q_pos);\n";
+    ss << "          }\n";
+    ss << "        }\n";
     ss << "      }\n";
     ss << "    }\n";
     ss << "\n";
@@ -560,12 +669,21 @@ struct MFASteelParams {
   ss << "    }\n";
   ss << "\n";
 
-  // Barrier X: flush P@V reads of V from KV_smem before any thread writes
-  // K[kb+1] into the same buffer.  K and V share KV_smem sequentially — reads
-  // and writes to KV_smem cannot overlap even if issued by different SIMD groups.
-  // Barrier C: K[kb+1] writes visible to all threads for next Q@K^T.
-  ss << "    // ─ Barrier X: all P@V V-reads done → safe to overwrite KV_smem ─\n";
-  ss << "    // ─ Barrier C: K[kb+1] fully written → visible for next Q@K^T  ─\n";
+  // Close sparse if(!skip_tile) block; in skip case just advance VLoader
+  if (sparse) {
+    ss << "    } else {\n";
+    ss << "      loader_v.next();  // sparse skip: keep VLoader in sync\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // Barrier X: flush V-reads (or sync for skip case) before K[kb+1] write.
+  // Barrier C: K[kb+1] written → visible.
+  // With RoPE: split C into C_load + RoPE-K + C_rope.
+  ss << "    // ─ Barrier X: KV_smem reads done → safe to overwrite with K[kb+1] ─\n";
+  if (has_rope)
+    ss << "    // ─ C_load: K[kb+1] written  → RoPE-K reads  ─\n";
+  ss << "    // ─ Barrier C: K[kb+1] (post-RoPE) visible for next Q@K^T         ─\n";
   ss << "    if (kb + 1 < kb_lim) {\n";
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // X\n";
   ss << "      if ((kb + 1) == p->NK_aligned) {\n";
@@ -574,6 +692,10 @@ struct MFASteelParams {
   ss << "        loader_k.load_unsafe();\n";
   ss << "      }\n";
   ss << "      loader_k.next();\n";
+  if (has_rope) {
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C_load: K visible for RoPE\n";
+    emit_rope_k("(kb + 1) * MFA_BK");
+  }
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C\n";
   ss << "    }\n";
   ss << "\n";

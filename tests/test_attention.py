@@ -7725,3 +7725,121 @@ class TestMainCLI:
         with pytest.raises(SystemExit) as exc:
             main([])
         assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — V2 Feature Extensions (RoPE, ALiBi; sparse stays in V1)
+# ---------------------------------------------------------------------------
+
+class TestV2FeatureExtensions:
+    """Verify V2 kernel correctly handles RoPE and ALiBi, and that sparse
+    attention routes to V1 (mask block-size mismatch with V2 BK)."""
+
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.skipif(
+        not is_mfa_available(), reason="MFA extension not available"
+    )
+    def test_v2_rope_matches_v1(self, D):
+        """V2 kernel with RoPE fusion matches V1 kernel with RoPE fusion."""
+        import os as _os
+        B, H, N = 1, 4, 4096
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(41)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        cos, sin = _make_rope_tables(N + 64, D)
+
+        out_v2 = flash_attention_rope(q, k, v, cos, sin, scale=scale, causal=True)
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            out_v1 = flash_attention_rope(q, k, v, cos, sin, scale=scale, causal=True)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+        mx.eval(out_v2, out_v1)
+
+        np.testing.assert_allclose(
+            np.array(out_v2.astype(mx.float32)),
+            np.array(out_v1.astype(mx.float32)),
+            atol=1e-2, rtol=1e-2,
+            err_msg=f"D={D}: V2+RoPE differs from V1+RoPE",
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.skipif(
+        not is_mfa_available(), reason="MFA extension not available"
+    )
+    def test_v2_alibi_matches_v1(self, D):
+        """V2 kernel with ALiBi matches V1 kernel with ALiBi."""
+        import os as _os
+        B, H, N = 1, 4, 4096
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        # Geometric ALiBi slopes: 2^(-8/H), 2^(-8*2/H), ...
+        slopes = mx.array(
+            [2 ** (-8.0 * (i + 1) / H) for i in range(H)], dtype=mx.float32
+        )
+
+        out_v2 = flash_attention(q, k, v, scale=scale, causal=True,
+                                  alibi_slopes=slopes)
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            out_v1 = flash_attention(q, k, v, scale=scale, causal=True,
+                                      alibi_slopes=slopes)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+        mx.eval(out_v2, out_v1)
+
+        np.testing.assert_allclose(
+            np.array(out_v2.astype(mx.float32)),
+            np.array(out_v1.astype(mx.float32)),
+            atol=1e-2, rtol=1e-2,
+            err_msg=f"D={D}: V2+ALiBi differs from V1+ALiBi",
+        )
+
+    @pytest.mark.skipif(
+        not is_mfa_available(), reason="MFA extension not available"
+    )
+    def test_sparse_routes_to_v1(self):
+        """Sparse attention (block_mask) must route to V1 — V2 BK != mask BK.
+        Verified by ensuring output matches V1-forced run."""
+        import os as _os
+        from mlx_mfa import flash_attention_sparse, make_causal_block_mask
+        B, H, N, D = 1, 4, 512, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(43)
+        q = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        k = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        v = mx.random.normal((B, H, N, D), dtype=mx.float16)
+        mask = make_causal_block_mask(N, head_dim=D)
+
+        # Both should produce identical output (sparse always routes to V1)
+        out1 = flash_attention_sparse(q, k, v, mask, scale=scale, causal=True)
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            out2 = flash_attention_sparse(q, k, v, mask, scale=scale, causal=True)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+        mx.eval(out1, out2)
+
+        np.testing.assert_allclose(
+            np.array(out1.astype(mx.float32)),
+            np.array(out2.astype(mx.float32)),
+            atol=1e-5,
+            err_msg="Sparse output changed when V2 disabled — routing bug",
+        )
