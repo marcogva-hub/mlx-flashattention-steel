@@ -4,6 +4,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 
 #include <mlx/mlx.h>
 #include <mlx/backend/metal/device.h>
@@ -12,6 +13,7 @@
 #include "mfa_paged_gather.hpp"
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
+#include "mfa_smooth_quant.hpp"
 #include "shader_cache.hpp"
 
 namespace nb = nanobind;
@@ -480,6 +482,28 @@ NB_MODULE(_ext, m) {
         "block_size: positive power of 2\n"
         "\n"
         "Returns (x_int8 [B,H,N,D] int8, scale [B,H,N_blocks,1] float32).");
+
+  // --- Fused smooth_k + quantize_per_block (Phase 1.1) ---
+  m.def("mfa_smooth_quantize_k",
+        [](mlx::core::array k,
+           int block_size,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> std::tuple<mlx::core::array, mlx::core::array, mlx::core::array> {
+          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          return mlx_mfa::mfa_smooth_quantize_k(k, block_size, s);
+        },
+        nb::arg("k"),
+        nb::arg("block_size"),
+        nb::arg("stream") = nb::none(),
+        "Fused smooth_k + quantize_per_block for SageAttention K preprocessing (Phase 1.1).\n"
+        "\n"
+        "Replaces smooth_k() + quantize_per_block(k_smooth) with one C++ primitive.\n"
+        "Eliminates intermediate K_smooth tensor; 2 Metal dispatches instead of 3.\n"
+        "\n"
+        "k:          [B, H, S, D]  fp16 or bf16\n"
+        "block_size: positive power of 2 (should be BK from sage_block_sizes())\n"
+        "\n"
+        "Returns (k_int8 [B,H,S,D] int8, k_scale [B,H,N_blocks,1] f32, k_mean [B,H,1,D] f32).");
 
   // --- Paged KV scatter write (Phase 4-C.1+E.2) ---
   m.def("mfa_scatter_kv",

@@ -368,7 +368,7 @@ def make_rope_3d_tables(
         out = flash_attention_rope(q, k, v, cos, sin, rope_3d={
             'grid_h': 32, 'grid_w': 32, 'num_frames': 16})
     """
-    import numpy as _np
+    import numpy as _np  # cold path: rope table generation, not per-step
 
     if d_h is None:
         # Round down to even
@@ -571,7 +571,7 @@ def flash_attention_rope_unified(
     # ── 2. Per-batch cache_seqlens dispatch ───────────────────────────────
     if not isinstance(cache_seqlens, int):
         if isinstance(cache_seqlens, mx.array):
-            cs_list = [int(x) for x in cache_seqlens.tolist()]
+            cs_list = [int(x) for x in cache_seqlens.tolist()]  # GPU sync: per-batch RoPE routing
         else:
             cs_list = [int(x) for x in cache_seqlens]
         B = q.shape[0]
@@ -1020,14 +1020,28 @@ def sage_attention(
     # (bias_i = q_i · k_mean * scale, independent of j). Since bias_i cancels
     # in the softmax ratio, the output is identical to unsmoothed attention.
     # No output correction is needed; smooth_k purely improves int8 precision.
+    #
+    # Phase 1.1: use fused smooth+quantize kernel when available — eliminates
+    # intermediate K_smooth fp16 tensor and reduces dispatch count 3 → 2.
+    _fused_sq = None
     if apply_smooth_k:
-        k_work, _ = _smooth_k(k)
-    else:
-        k_work = k
+        try:
+            from mlx_mfa._ext import mfa_smooth_quantize_k as _fused_sq
+        except ImportError:
+            _fused_sq = None
 
-    # Quantize Q and K to int8 per STEEL tile
+    if _fused_sq is not None:
+        # Fused: mean → subtract → absmax → int8 in one C++ primitive.
+        k_int8, k_scale, _ = _fused_sq(k, BK)          # _ = k_mean (unused)
+    else:
+        if apply_smooth_k:
+            k_work, _ = _smooth_k(k)
+        else:
+            k_work = k
+        k_int8, k_scale = quantize_per_block(k_work, BK)
+
+    # Quantize Q to int8 per STEEL tile (Q is not smoothed).
     q_int8, q_scale = quantize_per_block(q, BQ)       # q_scale: [B, H, NQ, 1]
-    k_int8, k_scale = quantize_per_block(k_work, BK)  # k_scale: [B, H_kv, NK, 1]
 
     # Kernel expects 3-D scales (squeeze trailing broadcast dim)
     q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
@@ -1440,7 +1454,7 @@ def flash_attention_kvcache(
             B_p      = k_new.shape[0]
             N_new_p  = k_new.shape[2]
             # E.3: seq_lens.tolist() GPU sync needed for RoPE offset + fallback loop.
-            seq_lens_list_p = [int(x) for x in seq_lens.tolist()]
+            seq_lens_list_p = [int(x) for x in seq_lens.tolist()]  # GPU sync: RoPE offset
             # E.3: block_table.tolist() deferred to the fallback else-branch;
             # the _USE_SCATTER_KV fast-path uses block_table as an MLX array.
 
@@ -1471,11 +1485,14 @@ def flash_attention_kvcache(
                 # Gather physical block IDs: block_table [B_p, max_blks]
                 _ri   = mx.arange(B_p, dtype=mx.int32)[:, None]      # [B_p, 1]
                 _ph   = block_table[_ri, _bi]                         # [B_p, N_new_p]
-                # Evaluate phys + offsets (small int arrays — one GPU sync) and
-                # filter invalid (phys < 0) slots.  MLX lacks boolean indexing;
-                # use integer fancy indexing on the filtered indices instead.
-                ph_list = _ph.reshape(-1).tolist()
-                bo_list = _bo.reshape(-1).tolist()
+                # GPU sync: evaluate phys+offsets in one command buffer flush.
+                # Subsequent tolist() calls hit already-evaluated data (no extra sync).
+                # MLX lacks boolean indexing, so a Python-level valid-slot filter
+                # is required (phys < 0 means unallocated block).
+                _ph_flat = _ph.reshape(-1)
+                mx.eval(_ph_flat, _bo)   # batched sync: ph + offsets together
+                ph_list = _ph_flat.tolist()   # GPU sync: filter invalid physical blocks
+                bo_list = _bo.reshape(-1).tolist()  # no extra sync — already evaluated
                 valid   = [i for i, p in enumerate(ph_list) if p >= 0]
                 # k_new [B_p, H_kv, N_new_p, D] → [B_p*N_new_p, H_kv, D]
                 _kf = k_new.transpose(0, 2, 1, 3).reshape(B_p * N_new_p, H_kv_p, D_p)
@@ -1890,7 +1907,7 @@ def _make_mfa_sparse_custom(
                 stacklevel=4,
             )
             # J.3: numpy only needed by the deprecated sdpa_sparse branch.
-            import numpy as _np
+            import numpy as _np  # cold path: deprecated sdpa_sparse backward only
             # Tiled sparse backward using saved L — skips inactive tiles.
             # Use 2-D collapsed mask (tiled backward is per-block, not per-head).
             D = q.shape[-1]
@@ -2218,7 +2235,7 @@ def _sparse_backward_tiled(
     Returns (dQ, dK, dV) in the input dtype of q / k / v.
     """
     import math as _math
-    import numpy as _np
+    import numpy as _np  # cold path: deprecated tiled sparse backward
 
     B, H_q, N, D = q.shape
     H_kv = k.shape[1]
@@ -3185,8 +3202,8 @@ def flash_attention_varlen(
 
     # Materialise cu_seqlens to Python lists ONCE here — safe to close over.
     # mx.arrays must NOT be used for slicing inside a custom_function backward.
-    cu_q = [int(x) for x in cu_seqlens_q.tolist()]
-    cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
+    cu_q = [int(x) for x in cu_seqlens_q.tolist()]  # GPU sync: varlen per-seq slicing
+    cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]  # GPU sync: varlen per-seq slicing
     num_seqs = len(cu_q) - 1
 
     if num_seqs == 0:
@@ -3782,8 +3799,8 @@ def flash_attention_paged(
         scale = 1.0 / math.sqrt(D)
 
     # Materialise index data as Python scalars — transparent to autograd.
-    seq_lens_list = [int(x) for x in seq_lens.tolist()]
-    block_table_list = block_table.tolist()
+    seq_lens_list = [int(x) for x in seq_lens.tolist()]  # GPU sync: paged backward slicing
+    block_table_list = block_table.tolist()  # GPU sync: paged backward block scatter
     max_kv_len = max(seq_lens_list) if seq_lens_list else 0
 
     if max_kv_len == 0:

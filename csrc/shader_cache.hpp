@@ -42,8 +42,10 @@ class ShaderCache {
       SageForward        = 11,   // SageAttention: int8 Q/K loads + fp16 GEMM (Track KB)
       QuantizePerBlock   = 12,   // Fused per-block INT8 quantization (Phase 4-A.1)
       ScatterKV          = 13,   // In-place scatter write for paged KV pool (Phase 4-C.1/E.2)
+      SmoothQuantizeMean = 14,   // Fused smooth_k pass 1: per-channel mean over S (Phase 1.1)
+      SmoothQuantizeK    = 15,   // Fused smooth_k pass 2: subtract mean + quantize (Phase 1.1)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 13,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 16,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

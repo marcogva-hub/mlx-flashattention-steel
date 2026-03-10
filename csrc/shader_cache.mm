@@ -16,6 +16,7 @@
 #include "mfa_sage_fwd.hpp"
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
+#include "mfa_smooth_quant.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -132,6 +133,12 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::ScatterKV) {
     fn_name = "mfa_scatter_kv";
     source  = generate_scatter_kv_source(key.dtype == 0 ? "half" : "bfloat");
+  } else if (key.type == KT::SmoothQuantizeMean) {
+    fn_name = "mfa_smooth_k_mean";
+    source  = generate_smooth_k_mean_source(key.dtype == 0 ? "half" : "bfloat");
+  } else if (key.type == KT::SmoothQuantizeK) {
+    fn_name = "mfa_smooth_k_quant";
+    source  = generate_smooth_k_quant_source(key.dtype == 0 ? "half" : "bfloat");
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -155,6 +162,8 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SageForward)         type_str = "sage_fwd";
     if (key.type == KT::QuantizePerBlock)    type_str = "quantize_per_block";
     if (key.type == KT::ScatterKV)           type_str = "scatter_kv";
+    if (key.type == KT::SmoothQuantizeMean)  type_str = "smooth_k_mean";
+    if (key.type == KT::SmoothQuantizeK)     type_str = "smooth_k_quant";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",
