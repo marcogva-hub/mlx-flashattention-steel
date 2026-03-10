@@ -7342,3 +7342,40 @@ class TestWarmupAndConfigs:
         assert "sage_inference_context" in cfg["features"]
         assert "warmup_kernels" in cfg["features"]
         assert cfg["features"]["warmup_kernels"] is True
+
+
+# ==========================================================================
+# Phase 6: DispatchPolicy coherent runtime (Track LC-runtime)
+# ==========================================================================
+
+class TestDispatchPolicy:
+    """DispatchPolicy string constants (Phase 6)."""
+
+    def test_constants_exist(self):
+        """DispatchPolicy has AUTO, MFA, SDPA constants."""
+        from mlx_mfa import DispatchPolicy
+        assert DispatchPolicy.AUTO == "auto"
+        assert DispatchPolicy.MFA  == "mfa"
+        assert DispatchPolicy.SDPA == "sdpa"
+
+    def test_exported(self):
+        """DispatchPolicy exported from mlx_mfa."""
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "DispatchPolicy")
+        assert "DispatchPolicy" in mlx_mfa.__all__
+
+    def test_flash_attention_accepts_dispatch_policy(self):
+        """flash_attention accepts DispatchPolicy string constants."""
+        import mlx.core as mx
+        from mlx_mfa import flash_attention, DispatchPolicy
+        B, H, N, D = 1, 1, 4, 64
+        mx.random.seed(0)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        # SDPA always works; AUTO and MFA require extension
+        out_sdpa = flash_attention(q, k, v, backend=DispatchPolicy.SDPA)
+        out_auto = flash_attention(q, k, v, backend=DispatchPolicy.AUTO)
+        mx.eval(out_sdpa, out_auto)
+        assert out_sdpa.shape == (B, H, N, D)
+        assert out_auto.shape == (B, H, N, D)

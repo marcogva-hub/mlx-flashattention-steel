@@ -35,6 +35,33 @@ _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa"})
 
+
+class DispatchPolicy:
+    """Backend selection constants for :func:`flash_attention`.
+
+    Pass one of these string constants as the ``backend=`` argument to
+    :func:`flash_attention` to explicitly control GPU kernel routing.
+
+    Attributes:
+        AUTO: ``"auto"`` — use the MFA Metal kernel when conditions are met
+              (supported head_dim / dtype / no dropout), fall back to
+              ``mx.fast.scaled_dot_product_attention`` otherwise.
+        MFA:  ``"mfa"``  — force the MFA Metal kernel; raise ``RuntimeError``
+              if the C++ extension is unavailable or the config is unsupported.
+        SDPA: ``"sdpa"`` — always use ``mx.fast.scaled_dot_product_attention``;
+              useful for correctness comparisons and CI without a Metal GPU.
+
+    Example::
+
+        from mlx_mfa import flash_attention, DispatchPolicy
+        out = flash_attention(q, k, v, backend=DispatchPolicy.MFA)
+        ref = flash_attention(q, k, v, backend=DispatchPolicy.SDPA)
+    """
+
+    AUTO: str = "auto"
+    MFA:  str = "mfa"
+    SDPA: str = "sdpa"
+
 # Optional C++ scatter primitive for O(1) paged KV pool writes (Phase 4-C.1+E.2).
 try:
     from mlx_mfa._ext import mfa_scatter_kv as _mfa_scatter_kv_cpp
