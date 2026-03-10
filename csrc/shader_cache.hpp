@@ -44,9 +44,11 @@ class ShaderCache {
       ScatterKV          = 13,   // In-place scatter write for paged KV pool (Phase 4-C.1/E.2)
       SmoothQuantizeMean = 14,   // Fused smooth_k pass 1: per-channel mean over S (Phase 1.1)
       SmoothQuantizeK    = 15,   // Fused smooth_k pass 2: subtract mean + quantize (Phase 1.1)
-      SteelForwardV2     = 16,   // STEEL V2: sequential K/V phases, BQ=64 BK=48 D=128
+      SteelForwardV2         = 16,  // STEEL V2: sequential K/V phases, BQ=32 BK=64/32
+      SteelV2SplitKPartial   = 17,  // STEEL V2 split-K Phase 1: partial attn per K-range
+      // SteelV2SplitKReduce reuses FlashDecodeReduce (type 5) — no new enum needed.
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 17,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 18,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

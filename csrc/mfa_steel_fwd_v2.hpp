@@ -32,4 +32,24 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim);
 /// Supports: f16/bf16, D=64/128, causal/non-causal, GQA.
 std::string generate_steel_v2_source(const ShaderCache::KernelKey& key);
 
+// ── V2 Split-K (Phase 3) ─────────────────────────────────────────────────────
+//
+// Two-phase split-K for under-occupied grids (total_tgs < 0.8 * gpu_cores):
+//   Phase 1: SteelV2SplitKPartial — each TG handles one Q-tile + K-range
+//   Phase 2: FlashDecodeReduce    — reused as-is (no new kernel needed)
+//
+// Activation: v2_eligible && total_tgs < 0.8 * gpu_cores && S >= 2*BK
+// Params struct: FlashDecodePartialParams (same as flash decode — reused)
+
+/// Compute num_splits for V2 split-K.
+/// FA2-inspired heuristic: find smallest s s.t. total_tgs*s >= gpu_cores.
+/// Returns 1 if split is not beneficial (already well-occupied or too few K-tiles).
+int compute_v2_num_splits(int total_tgs, int kL, int BK, int arch_gen);
+
+/// Generate the Metal shader source for the V2 split-K partial kernel.
+/// Kernel function name: "mlx_mfa_v2_splitk_partial".
+/// Takes FlashDecodePartialParams; outputs pO (normalized, dtype T) and pL (float32 log2).
+/// Phase 2 reduce uses the existing FlashDecodeReduce kernel (type 5).
+std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey& key);
+
 }  // namespace mlx_mfa

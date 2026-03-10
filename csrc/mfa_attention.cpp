@@ -291,10 +291,158 @@ void MFAttention::eval_gpu(
     return;
   }
 
+  // ── STEEL V2 split-K dispatch (Phase 3) ─────────────────────────────────
+  // For under-occupied grids (total_tgs < 0.8 * gpu_cores) that are V2-eligible
+  // but NOT handled by flash decode (N > 4), use V2 split-K to fill the GPU.
+  // Phase 1: SteelV2SplitKPartial  (grid: NQ * num_splits, H, B)
+  // Phase 2: FlashDecodeReduce     (reused, grid: N, H, B)
+  {
+    const bool v2sk_eligible =
+        (dtype_code != 2) &&
+        (D == 64 || D == 128) &&
+        !params_.has_rope &&
+        !params_.has_alibi &&
+        !params_.has_block_mask &&
+        params_.window_left  < 0 &&
+        params_.window_right < 0 &&
+        params_.softcap == 0.0f;
+
+    if (v2sk_eligible) {
+      auto cfg2 = select_steel_v2_block_config(D);
+      const int BQ2  = cfg2.BQ;
+      const int BK2  = cfg2.BK;
+      const int WM2  = cfg2.WM;
+      const int TGP2 = WM2 * cfg2.WN * 32;
+      const int NQ2  = (N + BQ2 - 1) / BQ2;
+      const int total_tgs = NQ2 * H * B;
+      const int num_splits = compute_v2_num_splits(total_tgs, S, BK2, arch_gen_steel);
+
+      if (num_splits >= 2) {
+        const int NK2_total = (S + BK2 - 1) / BK2;
+        const int NK2_per_split = (NK2_total + num_splits - 1) / num_splits;
+        const int NQ2_aln = (N % BQ2 == 0) ? NQ2 : NQ2 - 1;
+        const int NK2_aln = (S % BK2 == 0) ? NK2_total : NK2_total - 1;
+
+        // ── Scratch buffers pO[num_splits, B, H, N, D] and pL[num_splits, B, H, N] ─
+        size_t pO_size = (size_t)num_splits * B * H * N * D * 2;  // f16/bf16 = 2 bytes
+        size_t pL_size = (size_t)num_splits * B * H * N * sizeof(float);
+        auto pO_buf = mlx::core::allocator::malloc(pO_size);
+        auto pL_buf = mlx::core::allocator::malloc(pL_size);
+
+        // ── Build FlashDecodePartialParams for Phase 1 ─────────────────────
+        FlashDecodePartialParams sk_pp{};
+        sk_pp.B = B; sk_pp.H = H; sk_pp.D = D;
+        sk_pp.qL = N; sk_pp.kL = S;
+        sk_pp.gqa_factor  = H / Hk;
+        sk_pp.scale       = params_.scale;
+        sk_pp.NQ          = NQ2;
+        sk_pp.NQ_aligned  = NQ2_aln;
+        sk_pp.qL_rem      = (N % BQ2 == 0) ? BQ2 : (N % BQ2);
+        sk_pp.qL_off      = (params_.causal && N < S) ? (S - N) : 0;
+        sk_pp.NK_total    = NK2_total;
+        sk_pp.NK_aligned  = NK2_aln;
+        sk_pp.kL_rem      = (S % BK2 == 0) ? BK2 : (S % BK2);
+        sk_pp.num_splits  = num_splits;
+        sk_pp.NK_per_split = NK2_per_split;
+        sk_pp.Q_strides[0] = (int64_t)H  * N * D;
+        sk_pp.Q_strides[1] = (int64_t)N  * D;
+        sk_pp.Q_strides[2] = (int64_t)D;
+        sk_pp.K_strides[0] = (int64_t)Hk * S * D;
+        sk_pp.K_strides[1] = (int64_t)S  * D;
+        sk_pp.K_strides[2] = (int64_t)D;
+        sk_pp.V_strides[0] = (int64_t)Hk * S * D;
+        sk_pp.V_strides[1] = (int64_t)S  * D;
+        sk_pp.V_strides[2] = (int64_t)D;
+        sk_pp.pO_split_stride = (int64_t)B * H * N * D;
+        sk_pp.pO_batch_stride = (int64_t)H * N * D;
+        sk_pp.pO_head_stride  = (int64_t)N * D;
+        sk_pp.pL_split_stride = (int64_t)B * H * N;
+        sk_pp.pL_batch_stride = (int64_t)H * N;
+        sk_pp.pL_head_stride  = (int64_t)N;
+        sk_pp.softcap     = 0.0f;
+        sk_pp.window_left = -1;
+        sk_pp.window_right = -1;
+
+        // ── Build FlashDecodeReduceParams for Phase 2 ─────────────────────
+        int reduce_tgp = std::min(D, 128);
+        FlashDecodeReduceParams sk_rp{};
+        sk_rp.B = B; sk_rp.H = H; sk_rp.D = D;
+        sk_rp.qL = N;
+        sk_rp.num_splits      = num_splits;
+        sk_rp.pO_split_stride = sk_pp.pO_split_stride;
+        sk_rp.pO_batch_stride = sk_pp.pO_batch_stride;
+        sk_rp.pO_head_stride  = sk_pp.pO_head_stride;
+        sk_rp.pL_split_stride = sk_pp.pL_split_stride;
+        sk_rp.pL_batch_stride = sk_pp.pL_batch_stride;
+        sk_rp.pL_head_stride  = sk_pp.pL_head_stride;
+        sk_rp.O_batch_stride  = (int64_t)H * N * D;
+        sk_rp.O_head_stride   = (int64_t)N * D;
+        sk_rp.L_batch_stride  = (int64_t)H * N;
+        sk_rp.L_head_stride   = (int64_t)N;
+        sk_rp.reduce_tgp_size = reduce_tgp;
+
+        // ── Compile Phase 1 (V2 split-K partial) ──────────────────────────
+        using KK2 = ShaderCache::KernelKey;
+        KK2 key_sk{
+          KK2::KernelType::SteelV2SplitKPartial,
+          D, BQ2, BK2, D, WM2,
+          params_.causal, /*sparse=*/false, /*is_m3_plus=*/false,
+          /*has_rope=*/false, /*rope_interleaved=*/false,
+          /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
+          dtype_code, H / Hk
+        };
+        // Phase 2 reuses FlashDecodeReduce (key identical to flash_decode reduce).
+        KK2 key_sk_reduce{
+          KK2::KernelType::FlashDecodeReduce,
+          D, 0, 0, 0, 0,
+          false, false, false, false, true,
+          false, false, false,
+          dtype_code
+        };
+
+        auto* pl_sk1 = reinterpret_cast<MTL::ComputePipelineState*>(
+            ShaderCache::get().get_or_compile(key_sk, d.mtl_device()));
+        auto* pl_sk2 = reinterpret_cast<MTL::ComputePipelineState*>(
+            ShaderCache::get().get_or_compile(key_sk_reduce, d.mtl_device()));
+
+        auto& enc_sk = d.get_command_encoder(stream().index);
+
+        // ── Phase 1: V2 split-K partial ────────────────────────────────────
+        enc_sk.set_compute_pipeline_state(pl_sk1);
+        enc_sk.set_input_array(q, 0);
+        enc_sk.set_input_array(k, 1);
+        enc_sk.set_input_array(v, 2);
+        enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 3, 0);
+        enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 4, 0);
+        enc_sk.set_bytes(sk_pp, 5);
+        enc_sk.dispatch_threadgroups(
+            MTL::Size::Make((size_t)(NQ2 * num_splits), (size_t)H, (size_t)B),
+            MTL::Size::Make((size_t)TGP2, 1, 1));
+
+        // ── Phase 2: reduce ────────────────────────────────────────────────
+        enc_sk.barrier();
+        enc_sk.set_compute_pipeline_state(pl_sk2);
+        enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 0, 0);
+        enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 1, 0);
+        enc_sk.set_output_array(out,       2);
+        enc_sk.set_output_array(logsumexp, 3);
+        enc_sk.set_bytes(sk_rp, 4);
+        enc_sk.dispatch_threadgroups(
+            MTL::Size::Make((size_t)N, (size_t)H, (size_t)B),
+            MTL::Size::Make((size_t)reduce_tgp, 1, 1));
+
+        mlx::core::allocator::free(pO_buf);
+        mlx::core::allocator::free(pL_buf);
+        return;
+      }
+    }
+  }
+
   // ── STEEL V2 dispatch (f16/bf16, D=64/128, no special features) ─────────
-  // V2 uses sequential K/V phases in shared KV_smem: BQ=64, BK=64/32.
-  // 67% fewer threadgroup barriers than V1 + 2× arithmetic intensity.
-  // One threadgroup per Q-block (NQ2 TGs vs V1's NQ1).
+  // V2: sequential K/V phases in shared KV_smem: BQ=32, BK=64 (D=64) / 32 (D=128).
+  // 67% fewer barriers vs V1 + 2× K-tile compute per iteration.
+  // One threadgroup per Q-block (NQ2 TGs). Under-occupied grids already
+  // handled above by split-K; this path fires for well-occupied grids.
   // Falls through to V1 for: D>128, f32, RoPE, ALiBi, block_mask, sliding window, softcap.
   {
     const bool v2_eligible =

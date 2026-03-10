@@ -143,6 +143,9 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::SteelForwardV2) {
     fn_name = "mlx_mfa_v2_attention";
     source  = generate_steel_v2_source(key);
+  } else if (key.type == KT::SteelV2SplitKPartial) {
+    fn_name = "mlx_mfa_v2_splitk_partial";
+    source  = generate_steel_v2_splitk_partial_source(key);
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -168,7 +171,8 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::ScatterKV)           type_str = "scatter_kv";
     if (key.type == KT::SmoothQuantizeMean)  type_str = "smooth_k_mean";
     if (key.type == KT::SmoothQuantizeK)     type_str = "smooth_k_quant";
-    if (key.type == KT::SteelForwardV2)     type_str = "steel_fwd_v2";
+    if (key.type == KT::SteelForwardV2)         type_str = "steel_fwd_v2";
+    if (key.type == KT::SteelV2SplitKPartial)  type_str = "steel_v2_splitk_partial";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",
