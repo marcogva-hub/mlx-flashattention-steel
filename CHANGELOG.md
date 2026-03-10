@@ -2,6 +2,60 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [1.3.0] — 2026-03-09
+
+### Added
+
+- **`KVCacheProtocol`** — abstract base class defining `append / k_for_attention /
+  v_for_attention / seq_length / reset` interface; both `DenseKVCache` and
+  `PagedKVCache` now inherit from it (Phase 2 / Track LC).
+
+- **`PagedInferenceContext`** — stateful paged KV-cache lifecycle (prefill / step /
+  reset / context-manager) wrapping `PagedKVCache`; `seq_id` parameter for
+  multi-sequence pools (Phase 2 / Track LC).
+
+- **`sage_attention_kvcache(q, k, v, ...)`** — decode-pattern wrapper around
+  `sage_attention`; documents and exposes N_q ≠ N_k cross-attention shape,
+  which the Metal sage kernel already supports natively (Phase 4 / Track LA).
+
+- **`SageInferenceContext`** — stateful SageAttention decode wrapper:
+  prefill uses full-precision `flash_attention`, decode uses
+  `sage_attention_kvcache`; same lifecycle API as `InferenceContext`
+  (Phase 4 / Track LA).
+
+- **`warmup_kernels(head_dims, dtypes, causal)`** — pre-compiles Metal shaders
+  for specified (D, dtype) pairs to eliminate 100–300 ms first-call JIT
+  latency; no-op when extension unavailable (Phase 5 / Track LB).
+
+- **`DispatchPolicy`** — namespace class with `AUTO / MFA / SDPA` string
+  constants for explicit backend routing to `flash_attention(backend=...)`
+  (Phase 6 / Track LC-runtime).
+
+### Changed
+
+- **`get_supported_configs()` corrections** (Phase 5):
+  - `kernel_types` corrected from 9 → 16 (actual enum count: AttentionFwd/BwdDQ/DKV,
+    SteelFwd, FlashDecodePartial/Reduce, SteelBwdDQ/DKV, SteelVarlenFwd,
+    PagedKVGather, PagedSteelFwd, SageForward, QuantizePerBlock, ScatterKV,
+    SmoothQuantizeMean/K).
+  - New feature flags: `sage_attention_kvcache`, `sage_inference_context`,
+    `warmup_kernels`.
+
+### Fixed
+
+- Metal buffer pool stale-data NaN: added `mx.metal.clear_cache()` fences
+  after GQA + value_and_grad sparse backward tests to prevent recycled scratch
+  buffers from contaminating downstream paged-append tests (Phase 3).
+
+### Tests
+
+- 433 tests pass (up from 416 at v1.2.3).
+  - New: `TestKVCacheProtocol` (4), `TestPagedInferenceContext` (6),
+    `TestSparseBackwardSteel` additions (2), `TestSageKVCache` (9),
+    `TestWarmupAndConfigs` (5), `TestDispatchPolicy` (3).
+
+---
+
 ## [1.2.3] — 2026-03-09
 
 ### Changed (tech-debt remediation v2, Phases 1–4)

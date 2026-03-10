@@ -117,6 +117,11 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **`window_size` right bound** — `flash_attention(..., window_size=(left, right))` with `right >= 0` now activates the right guard inside the STEEL Metal kernel; no longer raises `NotImplementedError` (v1.2.1)
 - **4-D sparse block masks** — `flash_attention_sparse(q, k, v, block_mask)` accepts `[B, H, NQ, NK]` and `[H, NQ, NK]` masks for per-head and per-batch-item sparsity; backward collapses to 2-D via `.any()` (v1.2.1)
 - **`InferenceContext`** — stateful KV-cache wrapper for autoregressive generation; exposes `prefill()`, `step()`, `reset()`, and context-manager lifecycle so callers don't track KV concatenation manually (v1.2.1)
+- **`KVCacheProtocol`** — abstract interface implemented by `DenseKVCache` and `PagedKVCache`; enables interchangeable backends in higher-level code (v1.3.0)
+- **`PagedInferenceContext`** — stateful paged lifecycle (prefill/step/reset) wrapping `PagedKVCache`; `seq_id` parameter for multi-sequence pools (v1.3.0)
+- **`SageInferenceContext`** — stateful SageAttention decode wrapper; prefill uses full-precision `flash_attention`, decode uses int8 `sage_attention_kvcache` for reduced bandwidth (v1.3.0)
+- **`warmup_kernels()`** — pre-compile Metal shaders before first use to eliminate 100–300 ms first-call JIT latency (v1.3.0)
+- **`DispatchPolicy`** — `AUTO / MFA / SDPA` constants for explicit backend selection in `flash_attention(backend=...)` (v1.3.0)
 
 ## Requirements
 
@@ -746,6 +751,8 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | LA  | `window_size.right` active in STEEL Metal kernel | **Done (v1.2.1)** |
 | LB  | 4-D sparse block masks `[B, H, NQ, NK]` | **Done (v1.2.1)** |
 | LC  | `InferenceContext` stateful lifecycle object | **Done (v1.2.1)** |
+| LA† | `KVCacheProtocol` + `PagedInferenceContext` + `SageInferenceContext` | **Done (v1.3.0)** |
+| LB† | `warmup_kernels()` + `DispatchPolicy` + `get_supported_configs` corrections | **Done (v1.3.0)** |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.2+) |
 
 ## References

@@ -25,7 +25,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "1.2.3"
+__version__ = "1.3.0"
 
 
 def _check_abi() -> None:
