@@ -41,15 +41,39 @@ namespace mlx_mfa {
 // ---------------------------------------------------------------------------
 
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
-  // BQ=32 (TQ=1): baseline V2 tile config. BQ=64 (TQ=2) was evaluated but
-  // regressed ~2× on M1 Max: doubling Q_smem (4.6→9.2 KB for D=64) reduces
-  // concurrent TGs per core from 2 → 1, negating the Q-amortization gain.
+  // BQ=32, WM=4, TGP=128 (default): baseline V2 tile config.
+  //
+  // Both BQ=64 options were fully evaluated (M1 Max, B=2 H=8 f16):
+  //   Option A: BQ=64, WM=4, TQ=2 (128 threads) — regressed ~2× on D=64:
+  //     doubling Q_smem (4.6→9.2 KB) reduces TGs/core 2→1. Reverted.
+  //   Option B: BQ=64, WM=8, TQ=1 (256 threads) — evaluated via MFA_V2_BQ64:
+  //     D=64:  TGP=18,432B → TGs/core 2→1. Neutral large N, small-N noisy.
+  //     D=128: TGP=27,648B → same 1 TG/core. Results (BQ64/BQ32 ratio):
+  //       N=1024 causal:  0.62× (REGRESSION: 38% slower, register pressure)
+  //       N=2048-4096:    0.98–0.99× (neutral)
+  //       N=8192 causal:  1.06× (marginal win, within noise)
+  //     Decision: N=1024 regression fails threshold. BQ=32 WM=4 stays default.
+  //     MFA_V2_BQ64=1 env var retains BQ=64 WM=8 for research use.
   //
   // TGP memory (BQ=32, WM=4, TGP=128 threads):
-  //   D=64:  Q=32×72×2=4,608B  KV=max(72×64,64×72)×2=9,216B  → 13,824B
-  //   D=128: Q=32×136×2=8,704B KV=max(40×128,32×136)×2=9,216B → 17,920B
+  //   D=64:  Q=32×72×2=4,608B  KV=max(64×72,64×72)×2=9,216B  → 13,824B
+  //   D=128: Q=32×136×2=8,704B KV=max(128×40,32×136)×2=10,240B → 18,944B
+  // TGP memory (BQ=64, WM=8, TGP=256 threads):
+  //   D=64:  Q=64×72×2=9,216B  KV=max(64×72,64×72)×2=9,216B   → 18,432B
+  //   D=128: Q=64×136×2=17,408B KV=max(128×40,32×136)×2=10,240B → 27,648B
   //
   // D=256: BQ=16 retained for source-completeness; routes to V1 in eval_gpu().
+  const bool use_bq64 = (std::getenv("MFA_V2_BQ64") != nullptr);
+  if (use_bq64) {
+    // BQ=64, WM=8, TGP=256 — Option B (256 threads, TQ=1 per simdgroup)
+    // MFABlockLoaderT constraints verified (n_reads integer for all loaders):
+    //   D=64:  Q(64×64/256=16), K(64×64/256=16), V(64×64/256=16) — all ok
+    //   D=128: Q(64×128/256=32), K(128×32/256=16), V(32×128/256=16) — all ok
+    if (head_dim == 64)  return {64, 64,  64, 8, 1};  // TQ=1, TK=8, TD=8
+    if (head_dim == 128) return {64, 32, 128, 8, 1};  // TQ=1, TK=4, TD=16
+    if (head_dim == 256) return {16, 32, 256, 2, 1};  // not dispatched
+    return {0, 0, 0, 0, 0};
+  }
   if (head_dim == 64)  return {32, 64,  64, 4, 1};  // BQ=32, TQ=1, TK=8, TD=8
   if (head_dim == 128) return {32, 32, 128, 4, 1};  // BQ=32, TQ=1, TK=4, TD=16
   if (head_dim == 256) return {16, 32, 256, 2, 1};  // BQ=16, TQ=1 (not dispatched)
@@ -73,14 +97,14 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
   auto cfg = select_steel_v2_block_config(D);
-  const int BQ = cfg.BQ;   // 64
-  const int BK = cfg.BK;   // 48 (D=128) or 64 (D=64)
-  const int WM = cfg.WM;   // 8
+  const int BQ = cfg.BQ;   // 32 (default) or 64 (MFA_V2_BQ64)
+  const int BK = cfg.BK;   // 64 (D=64) or 32 (D=128)
+  const int WM = cfg.WM;   // 4 (default, TGP=128) or 8 (MFA_V2_BQ64, TGP=256)
   const int WN = 1;
-  const int TGP_SIZE = WM * WN * 32;  // 256
-  const int TD  = D / 8;       // 16 (D=128) or 8 (D=64)
-  const int TK  = BK / 8;      // 6 (BK=48) or 8 (BK=64)
-  const int TQ  = BQ / (WM * WN * 8);  // 1  (64 / (8*8))
+  const int TGP_SIZE = WM * WN * 32;  // 128 (default) or 256 (MFA_V2_BQ64)
+  const int TD  = D / 8;       // 8 (D=64) or 16 (D=128)
+  const int TK  = BK / 8;      // 8 (D=64) or 4 (D=128, BK=32)
+  const int TQ  = BQ / (WM * WN * 8);  // always 1
 
   // Unroll: safe for D<=128 (TD=8/16); D=256 (TD=32) causes register spill.
   const bool enable_unroll = (D <= 128) || key.is_m3_plus;
