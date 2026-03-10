@@ -1425,6 +1425,64 @@ class TestSparseBackwardSteel:
         from mlx_mfa._ext import mfa_steel_backward_sparse
         assert callable(mfa_steel_backward_sparse)
 
+    def test_steel_sparse_gqa_shape_and_finite(self):
+        """GQA (H_q=4, H_kv=2) steel_sparse backward: shapes and finite."""
+        B, H_q, H_kv, N, D = 1, 4, 2, 64, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        BQ, BK = _steel_block_config(D)
+        NQ, NK = (N + BQ - 1) // BQ, (N + BK - 1) // BK
+        mask = mx.ones((H_q, NQ, NK), dtype=mx.bool_)
+        scale = 1.0 / D**0.5
+
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       causal=False, backward="steel_sparse")
+            )
+
+        dq, dk, dv = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+
+        assert dq.shape == (B, H_q, N, D), f"dQ shape wrong: {dq.shape}"
+        assert dk.shape == (B, H_kv, N, D), f"dK shape wrong: {dk.shape}"
+        assert dv.shape == (B, H_kv, N, D), f"dV shape wrong: {dv.shape}"
+        assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
+        assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
+        assert mx.all(mx.isfinite(dv)).item(), "dV has non-finite values"
+        mx.metal.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
+
+    def test_steel_sparse_value_and_grad(self):
+        """mx.value_and_grad must work with steel_sparse backward."""
+        B, H, N, D = 1, 2, 64, 128
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        mask = make_causal_block_mask(N, D)
+        scale = 1.0 / D**0.5
+
+        def loss(q_, k_, v_):
+            return mx.sum(
+                flash_attention_sparse(q_, k_, v_, mask, scale=scale,
+                                       causal=True, backward="steel_sparse")
+            )
+
+        val_fn = mx.value_and_grad(loss, argnums=(0, 1, 2))
+        (loss_val, (dq, dk, dv)) = val_fn(q, k, v)
+        mx.eval(loss_val, dq, dk, dv)
+
+        assert mx.isfinite(loss_val).item(), "loss is non-finite"
+        assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
+        assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
+        mx.metal.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
+
 
 # ==========================================================================
 # Flash Decoding (Split-KV) — Track H
