@@ -1,12 +1,13 @@
 /// mfa_steel_fwd_v2.hpp  –  STEEL V2 forward kernel: sequential K/V phases.
 ///
-/// V2 keeps BQ=V1's BQ (same grid, same occupancy) but doubles BK by sharing
-/// K_smem and V_smem in a single KV_smem buffer (sequential, not simultaneous):
-///   D=64:  BQ=32, BK=64, WM=4 → TGP=13,824 B (V1: 14,336 B)
-///   D=128: BQ=32, BK=32, WM=4 → TGP=18,944 B (V1: 19,200 B)
+/// V2 doubles BK vs V1 by sharing K_smem and V_smem in a single KV_smem
+/// buffer (sequential phases), reducing K-tile iterations by 2×:
+///   D=64:  BQ=32, BK=64, WM=4 → TGP=13,824 B (V1: 14,336 B)  occupancy ≥ V1
+///   D=128: BQ=32, BK=32, WM=4 → TGP=18,944 B (V1: 19,200 B)  occupancy ≥ V1
+///   D=256: BQ=16, BK=32, WM=2 → TGP=28,928 B (V1: 29,184 B)  BQ halved; BK 2×
 ///
-/// Both configs fit in V1's footprint, so occupancy is ≥ V1. 2× larger BK →
-/// 2× fewer K-tile iterations → 2× more compute per barrier stall.
+/// 2× larger BK → 2× fewer K-tile iterations → 2× more compute per barrier stall.
+/// D=256: pragma unroll disabled (TD=32 → register spill on M1/M2); M3+ still unrolls.
 
 #pragma once
 
@@ -16,20 +17,20 @@
 namespace mlx_mfa {
 
 struct SteelV2BlockConfig {
-  int BQ;   // query tile rows  (= 64 for D=64/128)
-  int BK;   // KV tile rows     (= 64 for D=64, 32 for D=128) — 2× V1
+  int BQ;   // query tile rows  (32 for D=64/128, 16 for D=256)
+  int BK;   // KV tile rows     (64 for D=64, 32 for D=128/256) — 2× V1
   int BD;   // head dimension   (= D)
-  int WM;   // SIMD groups      (= 8)
+  int WM;   // SIMD groups      (4 for D=64/128, 2 for D=256)
   int WN;   // always 1
 };
 
 /// Select V2 tile config for f16/bf16 inputs.
-/// Returns {0,0,0,0,0} for unsupported head dims (D>128).
+/// Returns {0,0,0,0,0} for unsupported head dims (D>256).
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim);
 
 /// Generate the complete Metal shader source for the STEEL V2 forward kernel.
 /// Kernel function name: "mlx_mfa_v2_attention".
-/// Supports: f16/bf16, D=64/128, causal/non-causal, GQA.
+/// Supports: f16/bf16, D=64/128/256, causal/non-causal, GQA.
 std::string generate_steel_v2_source(const ShaderCache::KernelKey& key);
 
 // ── V2 Split-K (Phase 3) ─────────────────────────────────────────────────────

@@ -46,21 +46,25 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
   //
   // V1 configs: D=64  → BQ=32, BK=32, WM=4  (TGP = 4608+5120+4608 = 14336 B)
   //             D=128 → BQ=32, BK=16, WM=4  (TGP = 8704+6144+4352 = 19200 B)
+  //             D=256 → BQ=32, BK=16, WM=4  (TGP = 8704+6144+4352 = 29184 B)
   //
   // V2 configs (doubled BK, sequential KV_smem = max(K_smem, V_smem)):
-  //   D=64:  BQ=32, BK=64, WM=4  → Q(4608) + KV(max(9216,9216)) = 13824 B < 14336 ✓
+  //   D=64:  BQ=32, BK=64, WM=4  → Q(4608) + KV(max(9216,9216))  = 13824 B < 14336 ✓
   //   D=128: BQ=32, BK=32, WM=4  → Q(8704) + KV(max(10240,8704)) = 18944 B < 19200 ✓
+  //   D=256: BQ=16, BK=32, WM=2  → Q(8448) + KV(max(20480,16896))= 28928 B < 32768 ✓
+  //            (BQ=32,BK=32,WM=4 would be 37376 B > 32KB — requires BQ halving)
   //
-  // MFABlockLoaderT constraint: n_reads = (D*BK)/TGP must divide D evenly.
-  //   TGP=128 threads (WM=4). For K-transposed loader (BCOLS=D):
-  //   D=64,  BK=64: n_reads=32, TCOLS=64/32=2 ✓
-  //   D=128, BK=32: n_reads=32, TCOLS=128/32=4 ✓
+  // MFABlockLoaderT constraint: n_reads = (BROWS*BCOLS)/TGP must divide BCOLS evenly.
+  //   D=64,  BK=64, TGP=128: n_reads=32, TCOLS=2 ✓
+  //   D=128, BK=32, TGP=128: n_reads=32, TCOLS=4 ✓
+  //   D=256, BK=32, TGP=64:  K: n_reads=128, TCOLS=2; V: n_reads=128, TCOLS=2 ✓
   //
-  // Both configs have same grid as V1 (BQ=32), 2× fewer K-tile iterations,
-  // and slightly smaller TGP → occupancy ≥ V1.
+  // D=64/128: same grid as V1 (BQ=32), 2× fewer K-tile iterations, TGP ≤ V1.
+  // D=256: halved BQ (16 vs 32), 2× more K-tile batching per threadgroup.
   if (head_dim == 64)  return {32, 64,  64, 4, 1};  // TQ=1, TK=8, TD=8
   if (head_dim == 128) return {32, 32, 128, 4, 1};  // TQ=1, TK=4, TD=16
-  return {0, 0, 0, 0, 0};  // unsupported
+  if (head_dim == 256) return {16, 32, 256, 2, 1};  // TQ=1, TK=4, TD=32; TGP=64; 28928B
+  return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
 
 // ---------------------------------------------------------------------------
@@ -87,8 +91,8 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   const int TK  = BK / 8;      // 6 (BK=48) or 8 (BK=64)
   const int TQ  = BQ / (WM * WN * 8);  // 1  (64 / (8*8))
 
-  // Unroll: always enable for D<=128
-  const bool enable_unroll = true;
+  // Unroll: safe for D<=128 (TD=8/16); D=256 (TD=32) causes register spill.
+  const bool enable_unroll = (D <= 128) || key.is_m3_plus;
   const int  arch_gen      = 13;  // not used in V2 Metal source, placeholder
 
   std::ostringstream ss;
@@ -549,7 +553,7 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   const int TK      = BK / 8;
   const int TQ      = BQ / (WM * WN * 8);  // 1
 
-  const bool enable_unroll = true;
+  const bool enable_unroll = (D <= 128) || key.is_m3_plus;
   const int  arch_gen      = 13;  // placeholder; not used in V2 Metal shader
 
   std::ostringstream ss;

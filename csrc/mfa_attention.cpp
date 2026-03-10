@@ -299,7 +299,7 @@ void MFAttention::eval_gpu(
   {
     const bool v2sk_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128) &&
+        (D == 64 || D == 128 || D == 256) &&
         !params_.has_rope &&
         !params_.has_alibi &&
         !params_.has_block_mask &&
@@ -386,7 +386,7 @@ void MFAttention::eval_gpu(
         KK2 key_sk{
           KK2::KernelType::SteelV2SplitKPartial,
           D, BQ2, BK2, D, WM2,
-          params_.causal, /*sparse=*/false, /*is_m3_plus=*/false,
+          params_.causal, /*sparse=*/false, is_m3_plus_steel,
           /*has_rope=*/false, /*rope_interleaved=*/false,
           /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
           dtype_code, H / Hk
@@ -443,11 +443,11 @@ void MFAttention::eval_gpu(
   // 67% fewer barriers vs V1 + 2× K-tile compute per iteration.
   // One threadgroup per Q-block (NQ2 TGs). Under-occupied grids already
   // handled above by split-K; this path fires for well-occupied grids.
-  // Falls through to V1 for: D>128, f32, RoPE, ALiBi, block_mask, sliding window, softcap.
+  // Falls through to V1 for: D>256, f32, RoPE, ALiBi, block_mask, sliding window, softcap.
   {
     const bool v2_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128) &&
+        (D == 64 || D == 128 || D == 256) &&
         !params_.has_rope &&
         !params_.has_alibi &&
         !params_.has_block_mask &&
@@ -472,7 +472,7 @@ void MFAttention::eval_gpu(
         D, BQ2, BK2, D, WM2,
         params_.causal,
         /*sparse=*/false,
-        /*is_m3_plus=*/false,   // not baked into V2 shader (same code all gens)
+        is_m3_plus_steel,       // controls enable_unroll for D=256 (same code otherwise)
         /*has_rope=*/false, /*rope_interleaved=*/false,
         /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
         dtype_code,
