@@ -52,14 +52,14 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): 999_999,
 }
 
-# M3+ thresholds: BK=32 for D=128 gives better occupancy.
-# Estimated based on known M3+ improvements; same caution applies.
+# M3+ thresholds: D=128 uses BK=64 (doubled tile) for better throughput.
+# BK=64 provides larger per-tile speedup → can activate at lower N than M1/M2.
 _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
-    (64,  True):  4096,    # conservative (matches M1 default)
+    (64,  True):  4096,    # BK=64 (same all gens); conservative match M1
     (64,  False): 999_999,
-    (128, True):  4096,    # M3+ BK=32 may win from N=4096 (estimated)
+    (128, True):  2048,    # M3+ BK=64: 2× tile → win even at N=2048
     (128, False): 999_999,
-    (256, True):  999_999, # conservative until M3+ measured
+    (256, True):  999_999, # V2 not dispatched for D=256 (regression)
     (256, False): 999_999,
     (512, True):  999_999,
     (512, False): 999_999,

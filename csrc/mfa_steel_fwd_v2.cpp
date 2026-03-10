@@ -43,30 +43,39 @@ namespace mlx_mfa {
 // V2 tile config
 // ---------------------------------------------------------------------------
 
-SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
+SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus) {
   // BQ=32, WM=4, TGP=128 (default): baseline V2 tile config.
   //
-  // Both BQ=64 options were fully evaluated (M1 Max, B=2 H=8 f16):
-  //   Option A: BQ=64, WM=4, TQ=2 (128 threads) — regressed ~2× on D=64:
-  //     doubling Q_smem (4.6→9.2 KB) reduces TGs/core 2→1. Reverted.
-  //   Option B: BQ=64, WM=8, TQ=1 (256 threads) — evaluated via MFA_V2_BQ64:
-  //     D=64:  TGP=18,432B → TGs/core 2→1. Neutral large N, small-N noisy.
-  //     D=128: TGP=27,648B → same 1 TG/core. Results (BQ64/BQ32 ratio):
-  //       N=1024 causal:  0.62× (REGRESSION: 38% slower, register pressure)
-  //       N=2048-4096:    0.98–0.99× (neutral)
-  //       N=8192 causal:  1.06× (marginal win, within noise)
-  //     Decision: N=1024 regression fails threshold. BQ=32 WM=4 stays default.
-  //     MFA_V2_BQ64=1 env var retains BQ=64 WM=8 for research use.
+  // D=128 BK selection is gen-aware:
+  //   M1/M2 (is_m3_plus=false): BK=32 — BK=64 spills registers at N≥8192 on M1 Max.
+  //     Root cause: TK=8 doubles K/P accumulator registers alongside pinned BQ×D Q-regs.
+  //   M3+  (is_m3_plus=true):  BK=64 — dynamic register allocation provides more headroom.
+  //     TGP: Q(8,704B) + KV(max(18,432,17,408)=18,432B) = 27,136B < 32KB ✓
+  //     Loader constraints (TGP=128): Q(n_reads=32,TCOLS=4) K(64,1) V(64,2) all ok ✓
+  //     Note: unconfirmed on M3+ HW — override with MFA_V2_FORCE_BK=32 if regression.
+  //
+  // MFA_V2_FORCE_BK=<32|64>: override D=128 BK selection for testing/debugging.
+  // MFA_V2_BQ64=1: use BQ=64,WM=8 (research path, all gens — see comment below).
   //
   // TGP memory (BQ=32, WM=4, TGP=128 threads):
   //   D=64  BK=64: Q=32×72×2=4,608B  KV=max(64×72,64×72)×2=9,216B    → 13,824B
-  //   D=128 BK=32: Q=32×136×2=8,704B KV=max(128×40,32×136)×2=10,240B → 18,944B  [default]
-  //   D=128 BK=64: Q=32×136×2=8,704B KV=max(128×72,64×136)×2=18,432B → 27,136B  [regressed, reverted]
+  //   D=128 BK=32: Q=32×136×2=8,704B KV=max(128×40,32×136)×2=10,240B → 18,944B  [M1/M2]
+  //   D=128 BK=64: Q=32×136×2=8,704B KV=max(128×72,64×136)×2=18,432B → 27,136B  [M3+]
   // TGP memory (BQ=64, WM=8, TGP=256 threads, MFA_V2_BQ64):
   //   D=64:  Q=64×72×2=9,216B  KV=max(64×72,64×72)×2=9,216B            → 18,432B
   //   D=128: Q=64×136×2=17,408B KV=max(128×40,32×136)×2=10,240B        → 27,648B
+  //   Both BQ=64 options fully evaluated; N=1024 regression 0.62× → BQ=32 stays default.
   //
   // D=256: BQ=16 retained for source-completeness; routes to V1 in eval_gpu().
+
+  // MFA_V2_FORCE_BK=32|64 — override gen-based BK selection (debug/testing).
+  const char* force_bk_env = std::getenv("MFA_V2_FORCE_BK");
+  int forced_bk = 0;
+  if (force_bk_env) {
+    forced_bk = std::atoi(force_bk_env);
+    if (forced_bk != 32 && forced_bk != 64) forced_bk = 0;  // ignore invalid values
+  }
+
   const bool use_bq64 = (std::getenv("MFA_V2_BQ64") != nullptr);
   if (use_bq64) {
     // BQ=64, WM=8, TGP=256 — Option B (256 threads, TQ=1 per simdgroup)
@@ -79,7 +88,11 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
     return {0, 0, 0, 0, 0};
   }
   if (head_dim == 64)  return {32, 64,  64, 4, 1};  // BQ=32, TQ=1, TK=8, TD=8
-  if (head_dim == 128) return {32, 32, 128, 4, 1};  // BQ=32, BK=32, TQ=1, TK=4, TD=16
+  if (head_dim == 128) {
+    // Gen-aware: BK=64 on M3+ (dynamic register file); BK=32 on M1/M2.
+    const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 32);
+    return {32, bk, 128, 4, 1};  // TQ=1, TD=16; TK=bk/8
+  }
   if (head_dim == 256) return {16, 32, 256, 2, 1};  // BQ=16, TQ=1 (not dispatched)
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
@@ -100,9 +113,9 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   // V2 only supports f16/bf16
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
-  auto cfg = select_steel_v2_block_config(D);
+  auto cfg = select_steel_v2_block_config(D, key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32 (default) or 64 (MFA_V2_BQ64)
-  const int BK = cfg.BK;   // 64 (D=64) or 32 (D=128)
+  const int BK = cfg.BK;   // 64 (D=64) | M1/M2 D=128:32, M3+ D=128:64
   const int WM = cfg.WM;   // 4 (default, TGP=128) or 8 (MFA_V2_BQ64, TGP=256)
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128 (default) or 256 (MFA_V2_BQ64)
@@ -688,9 +701,9 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   const int gqa    = key.gqa_factor;
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
-  auto cfg = select_steel_v2_block_config(D);
+  auto cfg = select_steel_v2_block_config(D, key.is_m3_plus);
   const int BQ      = cfg.BQ;   // 32
-  const int BK      = cfg.BK;   // 64 (D=64) or 32 (D=128)
+  const int BK      = cfg.BK;   // 64 (D=64) | M1/M2 D=128:32, M3+ D=128:64
   const int WM      = cfg.WM;   // 4
   const int WN      = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128

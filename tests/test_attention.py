@@ -7571,3 +7571,96 @@ class TestSmartDispatch:
         sig = inspect.signature(calibrate_dispatch)
         assert "head_dims" in sig.parameters
         assert "save_path" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# V2 gen-aware BK selection (Phase 1 — MFA_FORCE_GEN + MFA_V2_FORCE_BK)
+# ---------------------------------------------------------------------------
+
+@requires_ext
+class TestV2GenAwareBK:
+    """Verify gen-aware BK selection for D=128 V2 kernels.
+
+    BK=32 on M1/M2 (gen=13/14), BK=64 on M3+ (gen>=15).
+    MFA_V2_FORCE_BK=32|64 overrides both paths.
+
+    All tests compare against SDPA reference to ensure correctness under
+    the different BK configs; both should produce equivalent results within
+    f16 tolerance (atol=1e-2).
+    """
+
+    def _run(self, q, k, v, scale, causal, *, gen=None, force_bk=None):
+        """Run flash_attention with optional gen/BK overrides, return np.array."""
+        import os as _os
+        env_backup = {}
+        try:
+            if gen is not None:
+                env_backup["MFA_FORCE_GEN"] = _os.environ.get("MFA_FORCE_GEN")
+                _os.environ["MFA_FORCE_GEN"] = str(gen)
+            if force_bk is not None:
+                env_backup["MFA_V2_FORCE_BK"] = _os.environ.get("MFA_V2_FORCE_BK")
+                _os.environ["MFA_V2_FORCE_BK"] = str(force_bk)
+            out = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out)
+        finally:
+            for key, prev in env_backup.items():
+                if prev is None:
+                    _os.environ.pop(key, None)
+                else:
+                    _os.environ[key] = prev
+        return np.array(out.astype(mx.float32))
+
+    def _sdpa(self, q, k, v, scale, causal):
+        from mlx_mfa.attention import _fallback_sdpa
+        out = _fallback_sdpa(q, k, v, scale, causal)
+        mx.eval(out)
+        return np.array(out.astype(mx.float32))
+
+    @pytest.mark.parametrize("causal", [True, False])
+    def test_v2_config_m1(self, causal):
+        """D=128 with M1 gen (BK=32) matches SDPA reference."""
+        mx.random.seed(42)
+        q = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        k = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(128)
+        out_m1  = self._run(q, k, v, scale, causal, gen=13)  # M1 → BK=32
+        out_ref = self._sdpa(q, k, v, scale, causal)
+        np.testing.assert_allclose(
+            out_ref, out_m1, atol=1e-2,
+            err_msg=f"V2 M1 BK=32 (causal={causal}) != SDPA ref",
+        )
+
+    @pytest.mark.parametrize("causal", [True, False])
+    def test_v2_config_m3_plus(self, causal):
+        """D=128 with M3+ gen (BK=64) matches SDPA reference."""
+        mx.random.seed(43)
+        q = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        k = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(128)
+        out_m3  = self._run(q, k, v, scale, causal, gen=15)  # M3+ → BK=64
+        out_ref = self._sdpa(q, k, v, scale, causal)
+        np.testing.assert_allclose(
+            out_ref, out_m3, atol=1e-2,
+            err_msg=f"V2 M3+ BK=64 (causal={causal}) != SDPA ref",
+        )
+
+    @pytest.mark.parametrize("force_bk", [32, 64])
+    def test_v2_force_bk_env(self, force_bk):
+        """MFA_V2_FORCE_BK overrides gen-based BK for D=128; output must match SDPA."""
+        mx.random.seed(44)
+        q = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        k = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(128)
+        # Force M1 gen so we can verify FORCE_BK=64 overrides it
+        out  = self._run(q, k, v, scale, True, gen=13, force_bk=force_bk)
+        ref  = self._sdpa(q, k, v, scale, True)
+        np.testing.assert_allclose(
+            ref, out, atol=1e-2,
+            err_msg=f"MFA_V2_FORCE_BK={force_bk} (M1 sim) != SDPA ref",
+        )

@@ -318,7 +318,7 @@ void MFAttention::eval_gpu(
         params_.window_right < 0;
 
     if (v2sk_eligible) {
-      auto cfg2 = select_steel_v2_block_config(D);
+      auto cfg2 = select_steel_v2_block_config(D, is_m3_plus_steel);
       const int BQ2  = cfg2.BQ;
       const int BK2  = cfg2.BK;
       const int WM2  = cfg2.WM;
@@ -463,9 +463,9 @@ void MFAttention::eval_gpu(
         !params_.has_block_mask;
 
     if (v2_eligible) {
-      auto cfg2 = select_steel_v2_block_config(D);
+      auto cfg2 = select_steel_v2_block_config(D, is_m3_plus_steel);
       const int BQ2      = cfg2.BQ;   // 32
-      const int BK2      = cfg2.BK;   // 64 (D=64) or 32 (D=128)
+      const int BK2      = cfg2.BK;   // 64 (D=64) | M1/M2 D=128:32, M3+ D=128:64
       const int WM2      = cfg2.WM;   // 4
       const int TGP2     = WM2 * cfg2.WN * 32;  // 128
       const int NQ2      = (N + BQ2 - 1) / BQ2;

@@ -30,7 +30,7 @@ struct SteelV2BlockConfig {
 
 /// Select V2 tile config for f16/bf16 inputs.
 /// Returns {0,0,0,0,0} for unsupported head dims (D>256).
-SteelV2BlockConfig select_steel_v2_block_config(int head_dim);
+SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus);
 
 /// Estimate actual GPU core count from MTLDevice name + fallback arch_gen.
 /// Uses longest-prefix matching (Ultra > Max > Pro > base) so "M1 Max" matches
