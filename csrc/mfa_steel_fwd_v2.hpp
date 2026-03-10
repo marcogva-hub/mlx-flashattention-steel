@@ -2,9 +2,13 @@
 ///
 /// V2 doubles BK vs V1 by sharing K_smem and V_smem in a single KV_smem
 /// buffer (sequential phases), reducing K-tile iterations by 2×:
-///   D=64:  BQ=32, BK=64, WM=4 → TGP=13,824 B (V1: 14,336 B)  occupancy ≥ V1
-///   D=128: BQ=32, BK=32, WM=4 → TGP=18,944 B (V1: 19,200 B)  occupancy ≥ V1
-///   D=256: BQ=16, BK=32, WM=2 → TGP=28,928 B (V1: 29,184 B)  BQ halved; BK 2×
+///   D=64:  BQ=32, BK=64, WM=4 → TGP=13,824 B (V1: 14,336 B)  +22–85% vs V1 (causal)
+///   D=128: BQ=32, BK=32, WM=4 → TGP=18,944 B (V1: 19,200 B)  +22–78% vs V1 (causal)
+///
+/// D=256 NOT dispatched: BQ must halve (→16) to fit 32KB TGP, which also halves
+/// WM (4→2). Fewer warps/TG makes each K tile load slower; net regression vs V1
+/// (0.62–0.84× causal, 0.58–0.62× non-causal).  D=256 routes to V1 in eval_gpu().
+/// The D=256 kernel source and config are retained for future research.
 ///
 /// 2× larger BK → 2× fewer K-tile iterations → 2× more compute per barrier stall.
 /// D=256: pragma unroll disabled (TD=32 → register spill on M1/M2); M3+ still unrolls.

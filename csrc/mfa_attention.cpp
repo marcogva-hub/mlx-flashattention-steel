@@ -296,10 +296,11 @@ void MFAttention::eval_gpu(
   // but NOT handled by flash decode (N > 4), use V2 split-K to fill the GPU.
   // Phase 1: SteelV2SplitKPartial  (grid: NQ * num_splits, H, B)
   // Phase 2: FlashDecodeReduce     (reused, grid: N, H, B)
-  {
+  // Set MFA_DISABLE_V2=1 to force V1 path (for benchmarking/debugging only).
+  if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2sk_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128 || D == 256) &&
+        (D == 64 || D == 128) &&
         !params_.has_rope &&
         !params_.has_alibi &&
         !params_.has_block_mask &&
@@ -438,18 +439,18 @@ void MFAttention::eval_gpu(
         return;
       }
     }
-  }
+  }  // end if (!MFA_DISABLE_V2) — split-K block
 
-  // ── STEEL V2 dispatch (f16/bf16, D=64/128, no special features) ─────────
-  // V2: sequential K/V phases in shared KV_smem: BQ=32, BK=64 (D=64) / 32 (D=128).
-  // 67% fewer barriers vs V1 + 2× K-tile compute per iteration.
-  // One threadgroup per Q-block (NQ2 TGs). Under-occupied grids already
-  // handled above by split-K; this path fires for well-occupied grids.
-  // Falls through to V1 for: D>256, f32, RoPE, ALiBi, block_mask, sliding window, softcap.
-  {
+  // ── STEEL V2 dispatch (f16/bf16, D=64/128 only, no RoPE/ALiBi/sparse) ────
+  // D=256 excluded: TGP halved (64 vs 128) → fewer warps/TG → regression vs V1.
+  // D=256 falls through to V1 (BQ=32, BK=16, WM=4, TGP=128).
+  // V2: sequential K/V phases in shared KV_smem: BQ=32, BK=64 (D=64) / 32 (D=128/256).
+  // 2× larger BK → 2× fewer K-tile iterations → 2× more compute per barrier stall.
+  // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
+  if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128 || D == 256) &&
+        (D == 64 || D == 128) &&
         !params_.has_rope &&
         !params_.has_alibi &&
         !params_.has_block_mask;
@@ -536,9 +537,9 @@ void MFAttention::eval_gpu(
           MTL::Size::Make((size_t)TGP2, 1, 1));
       return;
     }
-  }
+  }  // end if (!MFA_DISABLE_V2) — single-pass block
 
-  // ── STEEL tile config (f16 / bf16) ───────────────────────────────────────
+  // ── STEEL V1 tile config (f16 / bf16, or V2-disabled fallback) ───────────
   auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
   int BQ = cfg.BQ;
   int BK = cfg.BK;
