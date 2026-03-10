@@ -36,7 +36,7 @@ from typing import Optional
 import mlx.core as mx
 
 
-__all__ = ["InferenceContext", "PagedInferenceContext"]
+__all__ = ["InferenceContext", "PagedInferenceContext", "SageInferenceContext"]
 
 
 class InferenceContext:
@@ -449,5 +449,180 @@ class PagedInferenceContext:
         return (
             f"PagedInferenceContext(num_blocks={self.num_blocks}, "
             f"block_size={self.block_size}, H_kv={self.H_kv}, D={self.D}, "
+            f"dtype={self.dtype})"
+        )
+
+class SageInferenceContext:
+    """Stateful KV-cache manager using SageAttention for decode.
+
+    Prefill runs full-precision :func:`flash_attention`; decode uses
+    :func:`sage_attention_kvcache` (int8 Q/K) to reduce memory bandwidth.
+    When the MFA extension is unavailable, decode falls back to
+    :func:`flash_attention_kvcache`.
+
+    Internally uses a :class:`DenseKVCache` for storage (fp16 K and V).
+    K is re-quantized on every decode step; for very long sequences consider
+    a ``QuantizedKVCache`` (future).
+
+    Args:
+        B:           Batch size.
+        H_kv:        Number of KV heads (may differ from Q heads for GQA).
+        D:           Head dimension.
+        max_seq_len: Pre-allocated buffer length (default: 8192).
+        dtype:       Cache data type (default: ``mx.float16``).
+        stream:      Optional MLX stream for all attention calls.
+
+    Example::
+
+        ctx = SageInferenceContext(B=1, H_kv=8, D=128, max_seq_len=4096)
+        out_prefill = ctx.prefill(q_pre, k_pre, v_pre, scale=scale)
+        mx.eval(out_prefill)
+        for _ in range(steps):
+            out = ctx.step(q_tok, k_tok, v_tok, scale=scale)
+            mx.eval(out)
+    """
+
+    def __init__(
+        self,
+        B: int,
+        H_kv: int,
+        D: int,
+        max_seq_len: int = 8192,
+        dtype: mx.Dtype = mx.float16,
+        stream: Optional[mx.Stream] = None,
+    ) -> None:
+        self.B = B
+        self.H_kv = H_kv
+        self.D = D
+        self.max_seq_len = max_seq_len
+        self.dtype = dtype
+        self.stream = stream
+        from mlx_mfa.attention import DenseKVCache
+        self._cache = DenseKVCache(B, H_kv, D, max_seq_len=max_seq_len, dtype=dtype)
+
+    # -- Properties ----------------------------------------------------------
+
+    @property
+    def seqlen(self) -> int:
+        """Current KV cache fill length."""
+        return self._cache.seqlen
+
+    # -- Lifecycle -----------------------------------------------------------
+
+    def reset(self) -> "SageInferenceContext":
+        """Reset cache to empty state.  Returns ``self`` for chaining."""
+        self._cache.reset()
+        return self
+
+    # -- Attention calls -----------------------------------------------------
+
+    def prefill(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+    ) -> mx.array:
+        """Process prefill tokens with full-precision flash attention.
+
+        Args:
+            q: Query ``[B, H_q, N, D]``.
+            k: Key   ``[B, H_kv, N, D]``.
+            v: Value ``[B, H_kv, N, D]``.
+            scale: Attention scale (default: ``1/sqrt(D)``).
+            causal: Causal masking (default: ``True``).
+            softcap: Soft-capping logit bound (0 = disabled).
+            window_size: ``(left, right)`` sliding-window radii.
+
+        Returns:
+            Attention output ``[B, H_q, N, D]``.
+        """
+        from mlx_mfa.attention import flash_attention
+
+        N = k.shape[2]
+        if N > self.max_seq_len:
+            raise ValueError(
+                f"Prefill length {N} > max_seq_len={self.max_seq_len}"
+            )
+        if scale is None:
+            scale = 1.0 / math.sqrt(self.D)
+
+        self._cache.reset()
+        self._cache.append(k, v)
+
+        return flash_attention(
+            q, k, v,
+            scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
+            stream=self.stream,
+        )
+
+    def step(
+        self,
+        q: mx.array,
+        k_new: mx.array,
+        v_new: mx.array,
+        *,
+        scale: Optional[float] = None,
+        apply_smooth_k: bool = True,
+    ) -> mx.array:
+        """Append new K/V tokens and run int8 decode attention.
+
+        Args:
+            q:       Query for the new tokens ``[B, H_q, N_new, D]``.
+            k_new:   New key tokens   ``[B, H_kv, N_new, D]``.
+            v_new:   New value tokens ``[B, H_kv, N_new, D]``.
+            scale:   Attention scale (default: ``1/sqrt(D)``).
+            apply_smooth_k: K-smoothing before int8 quantization.
+
+        Returns:
+            Attention output ``[B, H_q, N_new, D]``.
+
+        Raises:
+            ValueError: if the new cache length would exceed ``max_seq_len``.
+        """
+        from mlx_mfa.attention import sage_attention_kvcache
+
+        n_new = k_new.shape[2]
+        new_seqlen = self._cache.seqlen + n_new
+        if new_seqlen > self.max_seq_len:
+            raise ValueError(
+                f"Cache overflow: seqlen {self._cache.seqlen} + n_new {n_new} = "
+                f"{new_seqlen} > max_seq_len={self.max_seq_len}"
+            )
+
+        self._cache.append(k_new, v_new)
+
+        if scale is None:
+            scale = 1.0 / math.sqrt(self.D)
+
+        return sage_attention_kvcache(
+            q, self._cache.k, self._cache.v,
+            scale=scale,
+            causal=True,
+            apply_smooth_k=apply_smooth_k,
+            stream=self.stream,
+        )
+
+    # -- Context manager -----------------------------------------------------
+
+    def __enter__(self) -> "SageInferenceContext":
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.reset()
+
+    # -- Repr ----------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        return (
+            f"SageInferenceContext(B={self.B}, H_kv={self.H_kv}, D={self.D}, "
+            f"max_seq_len={self.max_seq_len}, seqlen={self._cache.seqlen}, "
             f"dtype={self.dtype})"
         )

@@ -1052,6 +1052,49 @@ def sage_attention(
     return O
 
 
+def sage_attention_kvcache(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = True,
+    apply_smooth_k: bool = True,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Sage attention for KV-cache decode (N_q may differ from N_kv).
+
+    Convenience wrapper around :func:`sage_attention` for the autoregressive
+    decode pattern where the query has fewer tokens than the accumulated KV
+    cache.  The Metal sage kernel supports ``N_q != N_kv`` natively; this
+    function documents and enforces the intended calling convention.
+
+    Args:
+        q:              Query  ``[B, H_q, N_new, D]``.  fp16 or bf16.
+        k:              Key cache  ``[B, H_kv, seqlen, D]``.  fp16 or bf16.
+        v:              Value cache  ``[B, H_kv, seqlen, D]``.  fp16 or bf16.
+        scale:          Attention scale.  Defaults to ``1/sqrt(D)``.
+        causal:         Whether to apply causal masking (default ``True``).
+        apply_smooth_k: K-smoothing before int8 quantization (default ``True``).
+        stream:         Optional MLX stream.
+
+    Returns:
+        ``[B, H_q, N_new, D]`` attention output.
+
+    Note:
+        K is re-quantized on every call (O(seqlen × D) overhead).  For
+        production decode loops with seqlen ≥ 4096, pre-quantizing K into a
+        :class:`QuantizedKVCache` eliminates this per-step cost.
+    """
+    return sage_attention(
+        q, k, v,
+        scale=scale,
+        causal=causal,
+        apply_smooth_k=apply_smooth_k,
+        stream=stream,
+    )
+
+
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Block-sparse block size lookup (mirrors select_steel_block_config in C++)

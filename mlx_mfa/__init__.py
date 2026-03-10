@@ -84,6 +84,8 @@ from mlx_mfa.attention import (
     flash_attention_splitfuse,
     # Track KC: SageAttention
     sage_attention,
+    # Track LA: SageAttention KV-cache decode
+    sage_attention_kvcache,
 )
 
 from mlx_mfa.quantize import (
@@ -94,8 +96,8 @@ from mlx_mfa.quantize import (
     sage_block_sizes,
 )
 
-# Track LC/Phase 2: InferenceContext + PagedInferenceContext lifecycle objects
-from mlx_mfa.inference import InferenceContext, PagedInferenceContext
+# Track LC/Phase 2: InferenceContext + PagedInferenceContext + SageInferenceContext
+from mlx_mfa.inference import InferenceContext, PagedInferenceContext, SageInferenceContext
 
 from mlx_mfa.masks import (
     make_spatial_2d_mask,
@@ -156,16 +158,18 @@ __all__ = [
     "flash_attention_speculative_verify",
     "make_shared_prefix_cache",
     "flash_attention_splitfuse",
-    # SageAttention (Track KC)
+    # SageAttention (Track KC / LA)
     "sage_attention",
+    "sage_attention_kvcache",
     # Quantization utilities (Track KA/KC)
     "quantize_per_block",
     "dequantize",
     "smooth_k",
     "sage_output_correction",
     "sage_block_sizes",
-    # InferenceContext lifecycle (Track LC / Phase 2)
+    # InferenceContext lifecycle (Track LC / Phase 2 / LA)
     "InferenceContext",
     "PagedInferenceContext",
+    "SageInferenceContext",
     "__version__",
 ]

@@ -7168,3 +7168,132 @@ class TestPagedInferenceContext:
         assert hasattr(mlx_mfa, "KVCacheProtocol")
         assert "PagedInferenceContext" in mlx_mfa.__all__
         assert "KVCacheProtocol" in mlx_mfa.__all__
+
+
+# ==========================================================================
+# Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
+# ==========================================================================
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestSageKVCache:
+    """sage_attention_kvcache and SageInferenceContext (Track LA)."""
+
+    D = 64
+
+    def test_sage_kvcache_same_length(self):
+        """sage_attention_kvcache with N_q == N_k."""
+        from mlx_mfa import sage_attention_kvcache
+        B, H, N = 1, 2, 32
+        mx.random.seed(10)
+        q = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        out = sage_attention_kvcache(q, k, v, causal=True)
+        mx.eval(out)
+        assert out.shape == (B, H, N, self.D)
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_sage_kvcache_decode_shape(self):
+        """sage_attention_kvcache decode: N_q=1 attends to N_k=64 cache."""
+        from mlx_mfa import sage_attention_kvcache
+        B, H, N_k = 1, 2, 64
+        mx.random.seed(11)
+        q = mx.random.normal([B, H, 1, self.D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N_k, self.D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N_k, self.D]).astype(mx.float16)
+        out = sage_attention_kvcache(q, k, v, causal=True)
+        mx.eval(out)
+        assert out.shape == (B, H, 1, self.D)
+        assert mx.all(mx.isfinite(out)).item()
+
+    def test_sage_kvcache_matches_sage_attention(self):
+        """sage_attention_kvcache output == sage_attention for same N_q==N_k."""
+        from mlx_mfa import sage_attention, sage_attention_kvcache
+        B, H, N = 1, 2, 32
+        mx.random.seed(12)
+        q = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, self.D]).astype(mx.float16)
+        out_a = sage_attention(q, k, v, causal=False)
+        out_b = sage_attention_kvcache(q, k, v, causal=False)
+        mx.eval(out_a, out_b)
+        assert mx.allclose(out_a, out_b, atol=0.0).item()
+
+    def test_sage_inference_context_repr(self):
+        """SageInferenceContext repr shows correct params."""
+        from mlx_mfa import SageInferenceContext
+        ctx = SageInferenceContext(B=1, H_kv=4, D=128, max_seq_len=1024)
+        r = repr(ctx)
+        assert "SageInferenceContext" in r
+        assert "H_kv=4" in r
+        assert "D=128" in r
+        assert "seqlen=0" in r
+
+    def test_sage_inference_context_prefill_shape(self):
+        """SageInferenceContext prefill returns correct shape."""
+        from mlx_mfa import SageInferenceContext
+        B, H_q, H_kv, N = 1, 4, 2, 32
+        ctx = SageInferenceContext(B=B, H_kv=H_kv, D=self.D, max_seq_len=256)
+        mx.random.seed(20)
+        q = mx.random.normal([B, H_q, N, self.D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, N, self.D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, N, self.D]).astype(mx.float16)
+        out = ctx.prefill(q, k, v, scale=1.0 / self.D**0.5)
+        mx.eval(out)
+        assert out.shape == (B, H_q, N, self.D)
+        assert ctx.seqlen == N
+        assert mx.all(mx.isfinite(out)).item()
+        mx.metal.clear_cache()
+
+    def test_sage_inference_context_step_shape(self):
+        """SageInferenceContext step appends to cache and returns correct shape."""
+        from mlx_mfa import SageInferenceContext
+        B, H_q, H_kv, N = 1, 2, 2, 32
+        ctx = SageInferenceContext(B=B, H_kv=H_kv, D=self.D, max_seq_len=256)
+        mx.random.seed(21)
+        kp = mx.random.normal([B, H_kv, N, self.D]).astype(mx.float16)
+        vp = mx.random.normal([B, H_kv, N, self.D]).astype(mx.float16)
+        # Prefill
+        ctx.prefill(mx.random.normal([B, H_q, N, self.D]).astype(mx.float16), kp, vp)
+        # Step
+        q_tok = mx.random.normal([B, H_q, 1, self.D]).astype(mx.float16)
+        k_tok = mx.random.normal([B, H_kv, 1, self.D]).astype(mx.float16)
+        v_tok = mx.random.normal([B, H_kv, 1, self.D]).astype(mx.float16)
+        out = ctx.step(q_tok, k_tok, v_tok, scale=1.0 / self.D**0.5)
+        mx.eval(out)
+        assert out.shape == (B, H_q, 1, self.D)
+        assert ctx.seqlen == N + 1
+        assert mx.all(mx.isfinite(out)).item()
+        mx.metal.clear_cache()
+
+    def test_sage_inference_context_reset(self):
+        """SageInferenceContext reset clears the cache."""
+        from mlx_mfa import SageInferenceContext
+        ctx = SageInferenceContext(B=1, H_kv=2, D=self.D, max_seq_len=256)
+        mx.random.seed(22)
+        k = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        v = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        ctx.prefill(mx.random.normal([1, 2, 16, self.D]).astype(mx.float16), k, v)
+        assert ctx.seqlen == 16
+        ctx.reset()
+        assert ctx.seqlen == 0
+
+    def test_sage_inference_context_manager(self):
+        """SageInferenceContext context manager resets on exit."""
+        from mlx_mfa import SageInferenceContext
+        ctx = SageInferenceContext(B=1, H_kv=2, D=self.D, max_seq_len=256)
+        mx.random.seed(23)
+        k = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        v = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        with ctx:
+            ctx.prefill(mx.random.normal([1, 2, 16, self.D]).astype(mx.float16), k, v)
+            assert ctx.seqlen == 16
+        assert ctx.seqlen == 0
+
+    def test_sage_kvcache_export(self):
+        """sage_attention_kvcache and SageInferenceContext exported from mlx_mfa."""
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "sage_attention_kvcache")
+        assert hasattr(mlx_mfa, "SageInferenceContext")
+        assert "sage_attention_kvcache" in mlx_mfa.__all__
+        assert "SageInferenceContext" in mlx_mfa.__all__
