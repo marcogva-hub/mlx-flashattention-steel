@@ -2,6 +2,37 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.2.0] — 2026-03-10
+
+### GPU core count detection + BQ=64 WM=8 evaluation
+
+**Phase 1 — GPU core count detection** (`estimate_gpu_cores`):
+`compute_v2_num_splits()` previously estimated 16 GPU cores for all M1 variants (gen=13).
+M1 Max has 32. New `estimate_gpu_cores(device_name, arch_gen)` parses `MTLDevice::name()`
+with longest-prefix-first matching (Ultra > Max > Pro > base) across all M1–M4 families;
+falls back to gen-based estimate for simulator/unknown devices. Split-K threshold on M1 Max
+is now 0.8 × 32 = 25.6 (was 12.8). `gpu_cores` exposed in `get_device_info()`.
+
+**Phase 2 — BQ=64 WM=8 (Option B, TGP=256)** evaluated via `MFA_V2_BQ64=1`:
+- D=128 N=1024 causal: 0.62× vs BQ=32 (38% regression — register pressure with 8 simdgroups)
+- D=128 large N / D=64: neutral (0.97–1.06×, within noise)
+- Decision: BQ=32 WM=4 stays default; `MFA_V2_BQ64=1` retained for research.
+
+**Phase 3 — Split-K correctness**: B=1 H=1 N=512 (total_tgs=16 < 25.6) newly activates
+V2 split-K. Verified correct (max_err=0.00 vs SDPA) and neutral performance (0.96–1.01×).
+4 new `TestV2SplitK` tests.
+
+### Benchmark (V2, M1 Max, B=2 H=8 f16, causal)
+
+| D | N | V2/SDPA |
+|---|---|--------:|
+| 64  | 4096 | 1.96× |
+| 64  | 8192 | 2.12× |
+| 128 | 4096 | 1.67× |
+| 128 | 8192 | 1.71× |
+
+531/531 tests pass.
+
 ## [2.1.1] — 2026-03-10
 
 ### Bug fix — V2 split-K pL double-offset
