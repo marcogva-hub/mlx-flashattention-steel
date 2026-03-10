@@ -183,6 +183,7 @@ def calibrate_dispatch(
     *,
     warmup: int = 5,
     n_iters: int = 20,
+    calibrate_kernel_configs: bool = True,
 ) -> dict[tuple[int, bool], int]:
     """Run micro-benchmarks to find optimal MFA/SDPA crossover points.
 
@@ -201,6 +202,11 @@ def calibrate_dispatch(
         Warmup iterations per config (default 5).
     n_iters : int
         Timed iterations per config (default 20).
+    calibrate_kernel_configs : bool
+        When True (default), also benchmark D=128 BK=32 vs BK=64 and save
+        the optimal BK to ``kernel_configs.d128_optimal_bk`` in the JSON.
+        BK=64 is chosen only if it wins at BOTH N=4096 and N=8192 (i.e.,
+        BK=64 time < 0.95 × BK=32 time at both points).
 
     Returns
     -------
@@ -262,16 +268,92 @@ def calibrate_dispatch(
             c_str = "causal" if causal else "non-causal"
             print(f"  => D={D} {c_str}: min_N={min_N}")
 
-    # Save
+    # ── Kernel config calibration (BK=32 vs BK=64 for D=128) ───────────────
+    kernel_configs: dict = {}
+    if calibrate_kernel_configs:
+        print("\nCalibrating D=128 BK selection (BK=32 vs BK=64)...")
+        bk_results: dict[int, dict[int, float]] = {32: {}, 64: {}}
+        for bk in (32, 64):
+            for N in (4096, 8192):
+                scale = 1.0 / math.sqrt(128)
+                q = mx.zeros([1, 8, N, 128], dtype=mx.float16)
+                k = mx.zeros([1, 8, N, 128], dtype=mx.float16)
+                v = mx.zeros([1, 8, N, 128], dtype=mx.float16)
+                _materialize(q, k, v)
+
+                def _run_bk(fn):  # noqa: E306
+                    for _ in range(warmup):
+                        _materialize(fn())
+                    mx.synchronize()
+                    ts = []
+                    for _ in range(n_iters):
+                        t0 = time.perf_counter()
+                        _materialize(fn())
+                        mx.synchronize()
+                        ts.append((time.perf_counter() - t0) * 1000.0)
+                    return float(np.median(ts))
+
+                prev = os.environ.get("MFA_V2_FORCE_BK")
+                try:
+                    os.environ["MFA_V2_FORCE_BK"] = str(bk)
+                    ms = _run_bk(lambda: flash_attention(  # noqa: B023
+                        q, k, v, scale=scale, causal=True, backend="mfa"))
+                finally:
+                    if prev is None:
+                        os.environ.pop("MFA_V2_FORCE_BK", None)
+                    else:
+                        os.environ["MFA_V2_FORCE_BK"] = prev
+                bk_results[bk][N] = ms
+                print(f"  D=128 BK={bk} N={N}: {ms:.2f} ms")
+
+        # BK=64 wins only if faster at BOTH N=4096 AND N=8192
+        wins_4096 = bk_results[64][4096] < 0.95 * bk_results[32][4096]
+        wins_8192 = bk_results[64][8192] < 0.95 * bk_results[32][8192]
+        optimal_bk = 64 if (wins_4096 and wins_8192) else 32
+        kernel_configs["d128_optimal_bk"] = optimal_bk
+        print(f"  => D=128 optimal BK={optimal_bk} "
+              f"(BK=64 wins N=4096: {wins_4096}, N=8192: {wins_8192})")
+
+    # ── Save ─────────────────────────────────────────────────────────────────
     if save_path is None:
         save_path = os.path.expanduser("~/.mlx_mfa/dispatch_table.json")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    payload = {
+    payload: dict = {
         "generated": "mlx_mfa.dispatch_policy.calibrate_dispatch",
         "thresholds": thresholds_list,
     }
+    if kernel_configs:
+        payload["kernel_configs"] = kernel_configs
     with open(save_path, "w") as fh:
         json.dump(payload, fh, indent=2)
     print(f"\nSaved dispatch table -> {save_path}")
-    print("To activate: export MLX_MFA_DISPATCH_TABLE=" + save_path)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Auto-load calibrated kernel config at import time
+# ---------------------------------------------------------------------------
+
+def _load_calibrated_kernel_config() -> None:
+    """Read kernel_configs from dispatch_table.json and apply via os.environ.
+
+    Uses os.environ.setdefault so an explicit MFA_V2_FORCE_BK set by the
+    user before import still takes precedence.
+    Called once at mlx_mfa import time.
+    """
+    table_path = os.environ.get(
+        "MLX_MFA_DISPATCH_TABLE",
+        os.path.expanduser("~/.mlx_mfa/dispatch_table.json"),
+    )
+    if not os.path.exists(table_path):
+        return
+    try:
+        with open(table_path) as fh:
+            data = json.load(fh)
+        bk = data.get("kernel_configs", {}).get("d128_optimal_bk")
+        if bk in (32, 64):
+            os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
+            if _verbose:
+                print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
+    except Exception:  # noqa: BLE001
+        pass  # silently skip — calibration is advisory

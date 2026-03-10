@@ -101,7 +101,10 @@ from mlx_mfa.quantize import (
 # Track LC/Phase 2: InferenceContext + PagedInferenceContext + SageInferenceContext
 from mlx_mfa.inference import InferenceContext, PagedInferenceContext, SageInferenceContext
 
-from mlx_mfa.dispatch_policy import calibrate_dispatch
+from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
+
+# Apply any calibrated kernel config (BK selection etc.) before first kernel dispatch.
+_load_calibrated_kernel_config()
 
 from mlx_mfa.masks import (
     make_spatial_2d_mask,

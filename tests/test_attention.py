@@ -7664,3 +7664,64 @@ class TestV2GenAwareBK:
             ref, out, atol=1e-2,
             err_msg=f"MFA_V2_FORCE_BK={force_bk} (M1 sim) != SDPA ref",
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Auto-calibration + python -m mlx_mfa CLI
+# ---------------------------------------------------------------------------
+
+class TestAutoCalibration:
+    """Verify calibrate_kernel_configs benchmarks BK and saves to JSON."""
+
+    def test_calibrate_creates_file(self, tmp_path):
+        """calibrate_dispatch(calibrate_kernel_configs=True) writes kernel_configs to JSON."""
+        from mlx_mfa.dispatch_policy import calibrate_dispatch
+        out = tmp_path / "dispatch.json"
+        calibrate_dispatch(
+            head_dims=[64],          # fast — skip 128/256 dispatch sweep
+            save_path=str(out),
+            warmup=1,
+            n_iters=2,
+            calibrate_kernel_configs=True,
+        )
+        assert out.exists(), "calibrate_dispatch did not write JSON"
+        import json
+        data = json.loads(out.read_text())
+        assert "kernel_configs" in data, "kernel_configs key missing from JSON"
+        bk = data["kernel_configs"].get("d128_optimal_bk")
+        assert bk in (32, 64), f"d128_optimal_bk={bk!r} is not 32 or 64"
+
+    def test_calibrate_without_kernel_configs(self, tmp_path):
+        """calibrate_kernel_configs=False omits kernel_configs from JSON."""
+        from mlx_mfa.dispatch_policy import calibrate_dispatch
+        out = tmp_path / "dispatch.json"
+        calibrate_dispatch(
+            head_dims=[64],
+            save_path=str(out),
+            warmup=1,
+            n_iters=2,
+            calibrate_kernel_configs=False,
+        )
+        import json
+        data = json.loads(out.read_text())
+        assert "kernel_configs" not in data
+
+
+class TestMainCLI:
+    """Verify python -m mlx_mfa subcommands."""
+
+    def test_main_info(self, capsys):
+        """python -m mlx_mfa info prints device and version."""
+        from mlx_mfa.__main__ import main
+        main(["info"])
+        captured = capsys.readouterr()
+        assert "mlx-mfa" in captured.out
+        assert "Device" in captured.out
+
+    def test_main_no_args_exits(self):
+        """python -m mlx_mfa with no subcommand exits with code 1."""
+        from mlx_mfa.__main__ import main
+        import pytest
+        with pytest.raises(SystemExit) as exc:
+            main([])
+        assert exc.value.code == 1
