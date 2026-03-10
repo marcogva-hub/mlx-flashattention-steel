@@ -159,7 +159,7 @@ class TestSageAPI:
         assert "sage_attention" in cfg["features"]
         if _ext_available():
             assert cfg["features"]["sage_attention"] is True
-            assert cfg["kernel_types"] == 9
+            assert cfg["kernel_types"] == 16
 
 
 # ---------------------------------------------------------------------------
