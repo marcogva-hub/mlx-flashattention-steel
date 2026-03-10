@@ -11,12 +11,14 @@ Usage:
     python benchmarks/bench_v2_final.py --section dense
     python benchmarks/bench_v2_final.py --section window
     python benchmarks/bench_v2_final.py --section splitk
+    python benchmarks/bench_v2_final.py --save            # write docs/benchmarks/RESULTS.md
 """
 
 import argparse
 import math
 import os
 import time
+from datetime import date
 
 import mlx.core as mx
 
@@ -67,6 +69,7 @@ def bench_dense(B=2, H=8, n_warmup=8, n_iter=20):
     print(hdr)
     print("-" * len(hdr))
 
+    rows = []
     for D, N, causal, dtype_str in DENSE_CONFIGS:
         dtype = DTYPE_MAP[dtype_str]
         mx.random.seed(42)
@@ -91,6 +94,8 @@ def bench_dense(B=2, H=8, n_warmup=8, n_iter=20):
         s2 = " *" if r2 >= 1.5 else "  "
         print(f"{lbl:<42} {sdpa_ms:>9.2f} {v1_ms:>8.2f} {v2_ms:>8.2f}  "
               f"{r1:>7.2f}x{s1} {r2:>7.2f}x{s2} {rv:>5.2f}x")
+        rows.append((lbl, v2_ms, sdpa_ms, r2, v1_ms, r1, rv))
+    return rows
 
 
 # ------------------------------------------------------------------
@@ -114,6 +119,7 @@ def bench_window(B=2, H=8, n_warmup=8, n_iter=20):
     print(hdr)
     print("-" * len(hdr))
 
+    rows = []
     for D, N, win in WINDOW_CONFIGS:
         mx.random.seed(42)
         q = mx.random.normal([B, H, N, D]).astype(mx.float16)
@@ -131,6 +137,8 @@ def bench_window(B=2, H=8, n_warmup=8, n_iter=20):
         lbl = f"D={D} N={N} win={win} f16 causal"
         s   = " *" if r >= 1.5 else "  "
         print(f"{lbl:<42} {sdpa_ms:>9.2f} {mfa_ms:>8.2f}  {r:>8.2f}x{s}")
+        rows.append((lbl, mfa_ms, sdpa_ms, r))
+    return rows
 
 
 # ------------------------------------------------------------------
@@ -153,6 +161,7 @@ def bench_splitk(n_warmup=8, n_iter=20):
     print(hdr)
     print("-" * len(hdr))
 
+    rows = []
     for B, H, N, D in SPLITK_CONFIGS:
         mx.random.seed(42)
         q = mx.random.normal([B, H, N, D]).astype(mx.float16)
@@ -168,6 +177,53 @@ def bench_splitk(n_warmup=8, n_iter=20):
         lbl = f"B={B} H={H} N={N} D={D} f16 causal"
         s   = " *" if r >= 1.5 else "  "
         print(f"{lbl:<42} {sdpa_ms:>9.2f} {v2_ms:>8.2f}  {r:>8.2f}x{s}")
+        rows.append((lbl, v2_ms, sdpa_ms, r))
+    return rows
+
+
+# ------------------------------------------------------------------
+# RESULTS.md writer
+# ------------------------------------------------------------------
+
+def save_results_md(dense_rows, window_rows, splitk_rows, info, version, batch, heads):
+    """Write docs/benchmarks/RESULTS.md with current benchmark numbers."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(repo, "docs", "benchmarks", "RESULTS.md")
+
+    import mlx.core as _mx
+    with open(path, "w") as f:
+        f.write("# mlx-mfa Benchmark Results\n\n")
+        f.write(f"**Device**: {info['device_name']} (gen {info['gpu_family_gen']}, M3+: {info['is_m3_plus']})\n")
+        f.write(f"**MLX version**: {_mx.__version__}\n")
+        f.write(f"**mlx-mfa version**: {version}\n")
+        f.write(f"**Date**: {date.today()}\n")
+        f.write(f"**Config**: B={batch} H={heads}, warmup=8, iters=20\n\n---\n\n")
+
+        if dense_rows:
+            f.write("## Forward Pass — V2 vs V1 vs SDPA\n\n")
+            f.write("| Config | V2 ms | V1 ms | SDPA ms | V2/SDPA | V1/SDPA | V2/V1 |\n")
+            f.write("|--------|------:|------:|--------:|--------:|--------:|------:|\n")
+            for (lbl, v2_ms, sdpa_ms, r2, v1_ms, r1, rv) in dense_rows:
+                star = " ★" if r2 >= 1.5 else ""
+                f.write(f"| {lbl} | {v2_ms:.1f} | {v1_ms:.1f} | {sdpa_ms:.1f} "
+                        f"| **{r2:.2f}×**{star} | {r1:.2f}× | {rv:.2f}× |\n")
+
+        if window_rows:
+            f.write("\n## Sliding Window — MFA vs Full-SDPA\n\n")
+            f.write("| Config | MFA ms | SDPA ms | MFA/SDPA |\n")
+            f.write("|--------|-------:|--------:|---------:|\n")
+            for (lbl, mfa_ms, sdpa_ms, r) in window_rows:
+                star = " ★" if r >= 3.0 else ""
+                f.write(f"| {lbl} | {mfa_ms:.1f} | {sdpa_ms:.1f} | **{r:.2f}×**{star} |\n")
+
+        if splitk_rows:
+            f.write("\n## V2 Split-K — Small Grid\n\n")
+            f.write("| Config | V2 ms | SDPA ms | V2/SDPA |\n")
+            f.write("|--------|------:|--------:|--------:|\n")
+            for (lbl, v2_ms, sdpa_ms, r) in splitk_rows:
+                f.write(f"| {lbl} | {v2_ms:.1f} | {sdpa_ms:.1f} | {r:.2f}× |\n")
+
+    print(f"\nSaved → {path}")
 
 
 # ------------------------------------------------------------------
@@ -182,6 +238,8 @@ def main():
     parser.add_argument("--heads",  type=int, default=8)
     parser.add_argument("--warmup", type=int, default=8)
     parser.add_argument("--iters",  type=int, default=20)
+    parser.add_argument("--save",   action="store_true",
+                        help="Write results to docs/benchmarks/RESULTS.md")
     args = parser.parse_args()
 
     import mlx_mfa
@@ -189,12 +247,20 @@ def main():
     print(f"Device: {info['device_name']}  gen={info['gpu_family_gen']}  M3+={info['is_m3_plus']}")
     print(f"mlx-mfa version: {mlx_mfa.__version__}")
 
+    dense_rows   = []
+    window_rows  = []
+    splitk_rows  = []
+
     if args.section in ("dense", "all"):
-        bench_dense(args.batch, args.heads, args.warmup, args.iters)
+        dense_rows = bench_dense(args.batch, args.heads, args.warmup, args.iters)
     if args.section in ("window", "all"):
-        bench_window(args.batch, args.heads, args.warmup, args.iters)
+        window_rows = bench_window(args.batch, args.heads, args.warmup, args.iters)
     if args.section in ("splitk", "all"):
-        bench_splitk(args.warmup, args.iters)
+        splitk_rows = bench_splitk(args.warmup, args.iters)
+
+    if args.save:
+        save_results_md(dense_rows, window_rows, splitk_rows,
+                        info, mlx_mfa.__version__, args.batch, args.heads)
 
 
 if __name__ == "__main__":
