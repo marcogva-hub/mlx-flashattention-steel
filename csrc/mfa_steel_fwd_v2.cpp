@@ -3,7 +3,7 @@
 /// Key innovation over V1:
 ///   - Q_smem loaded ONCE and stays in registers for all K-tile iterations.
 ///   - K and V share the SAME KV_smem region (sequential, not simultaneous).
-///   - Enables BQ=64, BK=48 for D=128 → 31,744 bytes < 32 KB TGP.
+///   - Default: BK=32 for D=128 (18,944B TGP). BK=64 evaluated: regression at N≥8192.
 ///   - Arithmetic intensity: 32 FMAs/byte (vs 16 FMAs/byte in V1).
 ///
 /// Barrier schedule (4 per non-last K-tile, 3 for last tile):
@@ -26,6 +26,9 @@
 ///   V2:  4 × 42 + 3 = 171 total barriers
 ///   V1:  2 × 256 = 512 total barriers (BK=16 double_buf)
 ///   → 67% fewer barrier stalls with 2× more compute per K-tile (BK=32 vs 16).
+///
+/// BK=64 for D=128 was evaluated and REVERTED: TK=8 doubles K/P fragment registers,
+/// causing register spill at N≥8192 (−27% vs BK=32). BK=32 remains the default.
 ///
 /// Supported: f16/bf16, D=64/128, causal=true/false, GQA.
 /// Phase 5 extensions: RoPE, sliding window, sparse, ALiBi, softcap.
@@ -56,11 +59,12 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
   //     MFA_V2_BQ64=1 env var retains BQ=64 WM=8 for research use.
   //
   // TGP memory (BQ=32, WM=4, TGP=128 threads):
-  //   D=64:  Q=32×72×2=4,608B  KV=max(64×72,64×72)×2=9,216B  → 13,824B
-  //   D=128: Q=32×136×2=8,704B KV=max(128×40,32×136)×2=10,240B → 18,944B
-  // TGP memory (BQ=64, WM=8, TGP=256 threads):
-  //   D=64:  Q=64×72×2=9,216B  KV=max(64×72,64×72)×2=9,216B   → 18,432B
-  //   D=128: Q=64×136×2=17,408B KV=max(128×40,32×136)×2=10,240B → 27,648B
+  //   D=64  BK=64: Q=32×72×2=4,608B  KV=max(64×72,64×72)×2=9,216B    → 13,824B
+  //   D=128 BK=32: Q=32×136×2=8,704B KV=max(128×40,32×136)×2=10,240B → 18,944B  [default]
+  //   D=128 BK=64: Q=32×136×2=8,704B KV=max(128×72,64×136)×2=18,432B → 27,136B  [regressed, reverted]
+  // TGP memory (BQ=64, WM=8, TGP=256 threads, MFA_V2_BQ64):
+  //   D=64:  Q=64×72×2=9,216B  KV=max(64×72,64×72)×2=9,216B            → 18,432B
+  //   D=128: Q=64×136×2=17,408B KV=max(128×40,32×136)×2=10,240B        → 27,648B
   //
   // D=256: BQ=16 retained for source-completeness; routes to V1 in eval_gpu().
   const bool use_bq64 = (std::getenv("MFA_V2_BQ64") != nullptr);
@@ -75,7 +79,7 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
     return {0, 0, 0, 0, 0};
   }
   if (head_dim == 64)  return {32, 64,  64, 4, 1};  // BQ=32, TQ=1, TK=8, TD=8
-  if (head_dim == 128) return {32, 32, 128, 4, 1};  // BQ=32, TQ=1, TK=4, TD=16
+  if (head_dim == 128) return {32, 32, 128, 4, 1};  // BQ=32, BK=32, TQ=1, TK=4, TD=16
   if (head_dim == 256) return {16, 32, 256, 2, 1};  // BQ=16, TQ=1 (not dispatched)
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
@@ -103,7 +107,7 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128 (default) or 256 (MFA_V2_BQ64)
   const int TD  = D / 8;       // 8 (D=64) or 16 (D=128)
-  const int TK  = BK / 8;      // 8 (D=64) or 4 (D=128, BK=32)
+  const int TK  = BK / 8;      // 8 (D=64) or 4 (D=128)
   const int TQ  = BQ / (WM * WN * 8);  // always 1
 
   // Unroll: safe for D<=128 (TD=8/16); D=256 (TD=32) causes register spill.
