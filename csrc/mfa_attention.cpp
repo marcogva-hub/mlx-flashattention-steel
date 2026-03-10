@@ -442,8 +442,7 @@ void MFAttention::eval_gpu(
   }  // end if (!MFA_DISABLE_V2) — split-K block
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only, no RoPE/ALiBi/sparse) ────
-  // BQ=64 (TQ=2): 2× Q rows per TG → half the grid → 2× Q amortization.
-  // Sequential KV_smem enables BQ=64 without exceeding 32KB TGP budget.
+  // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.
   // D=256 excluded: routes to V1 (BQ=32, BK=16, WM=4, TGP=128).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
   if (!std::getenv("MFA_DISABLE_V2")) {
@@ -456,10 +455,10 @@ void MFAttention::eval_gpu(
 
     if (v2_eligible) {
       auto cfg2 = select_steel_v2_block_config(D);
-      const int BQ2      = cfg2.BQ;   // 64
-      const int BK2      = cfg2.BK;   // 48 (D=128) or 64 (D=64)
-      const int WM2      = cfg2.WM;   // 8
-      const int TGP2     = WM2 * cfg2.WN * 32;  // 256
+      const int BQ2      = cfg2.BQ;   // 32
+      const int BK2      = cfg2.BK;   // 64 (D=64) or 32 (D=128)
+      const int WM2      = cfg2.WM;   // 4
+      const int TGP2     = WM2 * cfg2.WN * 32;  // 128
       const int NQ2      = (N + BQ2 - 1) / BQ2;
       const int NK2      = (S + BK2 - 1) / BK2;
       const int NQ2_aln  = (N % BQ2 == 0) ? NQ2 : NQ2 - 1;

@@ -41,25 +41,17 @@ namespace mlx_mfa {
 // ---------------------------------------------------------------------------
 
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
-  // BQ=64 (TQ=2): sequential KV_smem frees enough TGP headroom for 2× Q rows.
-  // The key insight: doubling BQ halves the grid (fewer TGs = less scheduling
-  // overhead), doubles Q amortization (each Q-tile reused across all K-tiles),
-  // and all existing MFA_TQ loops auto-adapt via TQ = BQ / (WM * WN * 8) = 2.
+  // BQ=32 (TQ=1): baseline V2 tile config. BQ=64 (TQ=2) was evaluated but
+  // regressed ~2× on M1 Max: doubling Q_smem (4.6→9.2 KB for D=64) reduces
+  // concurrent TGs per core from 2 → 1, negating the Q-amortization gain.
   //
-  // TGP memory (BQ=64, WM=4, TGP=128 threads):
-  //   D=64:  Q= 64×(64+8)×2= 9,216B  KV=max(72×64,64×72)×2= 9,216B  → 18,432B ✓
-  //   D=128: Q= 64×(128+8)×2=17,408B  KV=max(40×128,32×136)×2=10,240B → 27,648B ✓
+  // TGP memory (BQ=32, WM=4, TGP=128 threads):
+  //   D=64:  Q=32×72×2=4,608B  KV=max(72×64,64×72)×2=9,216B  → 13,824B
+  //   D=128: Q=32×136×2=8,704B KV=max(40×128,32×136)×2=9,216B → 17,920B
   //
-  // MFABlockLoaderT constraint: n_reads=(BROWS×BCOLS)/TGP must divide BCOLS evenly.
-  //   D=64  QLoader: n_reads=(64×64)/128=32,   TCOLS=2  ✓
-  //   D=64  KLoader: n_reads=(64×64)/128=32,   TCOLS=2  ✓
-  //   D=128 QLoader: n_reads=(64×128)/128=64,  TCOLS=2  ✓
-  //   D=128 KLoader: n_reads=(32×128)/128=32,  TCOLS=4  ✓
-  //
-  // D=256: BQ=32 kept (register file limit); routes to V1 in eval_gpu().
-  // The D=256 kernel source is retained below for future research.
-  if (head_dim == 64)  return {64, 64,  64, 4, 1};  // BQ=64, TQ=2, TK=8, TD=8
-  if (head_dim == 128) return {64, 32, 128, 4, 1};  // BQ=64, TQ=2, TK=4, TD=16
+  // D=256: BQ=16 retained for source-completeness; routes to V1 in eval_gpu().
+  if (head_dim == 64)  return {32, 64,  64, 4, 1};  // BQ=32, TQ=1, TK=8, TD=8
+  if (head_dim == 128) return {32, 32, 128, 4, 1};  // BQ=32, TQ=1, TK=4, TD=16
   if (head_dim == 256) return {16, 32, 256, 2, 1};  // BQ=16, TQ=1 (not dispatched)
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
