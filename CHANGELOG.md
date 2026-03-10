@@ -2,6 +2,29 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.1.1] — 2026-03-10
+
+### Bug fix — V2 split-K pL double-offset
+
+**Root cause**: In `generate_steel_v2_splitk_partial_source`, the final pL write used the
+absolute Q index `q_idx = qb*BQ + tm + sm + i*8` as the buffer offset, but `pL` was already
+advanced by `qb*BQ` at kernel entry. This double-counted the tile offset, corrupting
+logsumexp values for all Q-tiles with qb ≥ 1.
+
+**Why it was dormant** (v2.1.0): On M1 Max, `compute_v2_num_splits` uses `gpu_cores = 16`.
+For typical test configs with BQ=32, `total_tgs ≥ 0.8 × 16 = 12.8` → `num_splits = 1`
+(no split-K). The split-K path only fired in under-occupied grids not covered by the test suite.
+
+**Fix**: Changed `pL[q_idx]` → `pL[tm + sm + (long)i * 8]` (local tile index), matching
+the existing early-exit path on line 819. The bounds check still uses `abs_q < p->qL`.
+
+**Investigation note**: BQ=64 (TQ=2) was evaluated as Phase 1 of a performance experiment.
+It halved `total_tgs` sufficiently to trigger split-K in the test suite, which exposed the
+bug. BQ=64 itself was reverted (2× TGP increase reduces concurrent TGs/core from 2→1,
+causing 0.5–0.8× regression vs BQ=32).
+
+526/526 tests pass.
+
 ## [2.1.0] — 2026-03-10
 
 ### STEEL V2 Kernel — Sequential K/V Phases
