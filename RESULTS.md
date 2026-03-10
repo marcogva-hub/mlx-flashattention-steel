@@ -1,190 +1,113 @@
 # mlx-mfa Benchmark Results
 
+> **Current version: v2.2.0** (STEEL V2)  
+> Device: Apple M1 Max (gen=13, 32 cores)  
+> `mlx_mfa.flash_attention` vs `mx.fast.scaled_dot_product_attention` with explicit causal mask  
+> Warmup=8, iters=20 per measurement. Values are means; GPU variance ±5–15%.
 
-## v1.3.0 — Forward Pass (M1 Max, f16/bf16, B=1 H=8, warmup=5, timed=20)
+---
 
-> **v1.2.3 → v1.3.0 comparison**: No C++/Metal kernel changes. All API additions are
-> Python-level wrappers. MFA kernel timing is stable (D=64 N=8192: 15.65 ms ± 0.33 ms);
-> SDPA ratio varies ±15% across sessions due to system load. No performance regressions.
+## v2.2.0 — Dense Forward Pass (B=2 H=8, f16/bf16)
 
-| Config | MFA (ms) | SDPA (ms) | Speedup | vs v1.2.3 baseline¹ |
-|--------|----------|-----------|---------|----------------------|
-| D=64  N=4096  f16 causal | 5.88 | 5.70 | 0.97x | — |
-| D=64  N=8192  f16 causal | 15.66 | 24.26 | **1.55x** ★ | was 2.24x¹ |
-| D=64  N=8192  f16 non-causal | 21.76 | 20.15 | 0.93x | — |
-| D=128 N=2048  f16 causal | 4.03 | 3.28 | 0.81x | — |
-| D=128 N=4096  f16 causal | 12.32 | 10.32 | 0.84x | — |
-| D=128 N=8192  f16 causal | 34.55 | 42.19 | **1.22x** ★ | was 1.43x¹ |
-| D=128 N=8192  f16 non-causal | 50.65 | 38.17 | 0.75x | — |
-| D=128 N=4096  bf16 causal | 21.44 | 14.98 | 0.70x | — |
-| D=256 N=4096  f16 causal | 36.80 | 20.04 | 0.54x | — |
-| D=256 N=8192  f16 causal | 101.60 | 81.12 | 0.80x | — |
-| D=512 N=2048  f16 causal | 39.73 | 9.54 | 0.24x | — |
-| D=512 N=4096  f16 causal | 137.00 | 36.60 | 0.27x | — |
-| D=512 N=4096  f16 non-causal | 163.98 | 34.41 | 0.21x | — |
+SDPA = `_fallback_sdpa` (explicit upper-triangular mask).  
+V1 = STEEL V1 (`MFA_DISABLE_V2=1`).  V2 = STEEL V2 (default path).
 
-¹ v1.2.3 baseline speedups were measured in a prior session under different system load;
-  MFA kernel latency is unchanged — only SDPA denominator drifted (±20% is normal variance).
+| Config | SDPA ms | V1 ms | V2 ms | V1/SDPA | V2/SDPA | V2/V1 |
+|--------|--------:|------:|------:|--------:|--------:|------:|
+| D=64  N=2048  f16 causal | 2.93 | 2.91 | 1.70 | 1.01× | **1.73×** | 1.72× |
+| D=64  N=4096  f16 causal | 10.63 | 9.46 | 6.03 | 1.12× | **1.76×** ★ | 1.57× |
+| D=64  N=8192  f16 causal | 42.61 | 24.27 | 20.72 | 1.76× ★ | **2.06×** ★ | 1.17× |
+| D=64  N=8192  f16 non-causal | 36.22 | 39.50 | 37.46 | 0.92× | 0.97× | 1.05× |
+| D=128 N=2048  f16 causal | 5.34 | 6.81 | 3.84 | 0.78× | **1.39×** | 1.77× |
+| D=128 N=4096  f16 causal | 19.79 | 17.32 | 11.70 | 1.14× | **1.69×** ★ | 1.48× |
+| D=128 N=8192  f16 causal | 74.87 | 51.49 | 43.16 | 1.45× | **1.73×** ★ | 1.19× |
+| D=128 N=16384 f16 causal | 297.38 | 190.84 | 171.98 | 1.56× ★ | **1.73×** ★ | 1.11× |
+| D=128 N=4096  bf16 causal | 27.40 | 29.12 | 19.79 | 0.94× | **1.38×** | 1.47× |
+| D=128 N=8192  f16 non-causal | 77.21 | 86.21 | 81.50 | 0.90× | 0.95× | 1.06× |
+| D=256 N=4096  f16 causal | 37.63 | 49.88 | 49.48 | 0.75× | 0.76× | 1.01× |
+| D=256 N=8192  f16 causal | 145.22 | 159.84 | 161.25 | 0.91× | 0.90× | 0.99× |
+| D=256 N=4096  f16 non-causal | 34.45 | 70.62 | 69.82 | 0.49× | 0.49× | 1.01× |
 
+★ = ≥1.5× speedup.
 
-## v1.3.0 — Backward Pass (M1 Max, f16, B=1 H=8, vjp(SDPA) path)
+**Key wins**: D=64 N=8192 causal **2.06×**, D=128 N=4096+ causal **1.69–1.76×**.  
+D=256 dense is slower than SDPA (both V1 and V2): needs 3D blocking not yet supported.
 
-| Config | MFA bwd (ms) | SDPA bwd (ms) | Speedup |
-|--------|-------------|--------------|---------|
-| D=64  N=2048  f16 causal | 11.63 | 6.04 | 0.52x |
-| D=64  N=4096  f16 causal | 40.08 | 23.93 | 0.60x |
-| D=128 N=2048  f16 causal | 34.55 | 9.01 | 0.26x |
-| D=128 N=4096  f16 causal | 136.01 | 32.97 | 0.24x |
-| D=128 N=2048  bf16 causal | 52.67 | 10.19 | 0.19x |
-| D=256 N=2048  f16 causal | 86.77 | 13.32 | 0.15x |
-| D=256 N=4096  f16 causal | 339.81 | 52.06 | 0.15x |
-| D=512 N=1024  f16 causal | 50.52 | 6.39 | 0.13x |
-| D=512 N=2048  f16 causal | 197.55 | 24.08 | 0.12x |
+---
 
-Note: backward uses `mx.vjp(SDPA)` — MFA applies the flash forward to compute LSE, then
-SDPA handles gradients. The overhead is the re-materialisation cost. Native MFA backward
-(Track M) would eliminate this.
+## v2.2.0 — Window Masking (B=2 H=8, f16 causal)
 
+Window masking always routes to MFA (tile-skip benefit regardless of D).
 
-## v1.3.0 — Sliding-Window Sparse (M1 Max, f16, B=1 H=8)
+| Config | SDPA ms | MFA ms | MFA/SDPA |
+|--------|--------:|-------:|---------:|
+| D=64  N=4096 win=512 | 10.75 | 1.70 | **6.3×** ★ |
+| D=64  N=8192 win=512 | 45.97 | 3.20 | **14.4×** ★ |
+| D=128 N=4096 win=512 | 20.08 | 3.30 | **6.1×** ★ |
+| D=128 N=8192 win=512 | 82.54 | 7.13 | **11.6×** ★ |
+| D=128 N=4096 win=256 | 19.90 | 2.25 | **8.9×** ★ |
+| D=128 N=8192 win=256 | 74.63 | 3.69 | **20.2×** ★ |
+| D=256 N=4096 win=512 | 37.25 | 10.02 | **3.7×** ★ |
+| D=256 N=8192 win=512 | 147.21 | 20.74 | **7.1×** ★ |
+| D=256 N=8192 win=256 | 147.05 | 12.42 | **11.8×** ★ |
 
-Speedup is relative to full-causal MFA (not dense SDPA) — shows tile-skip benefit.
+All window configs achieve dramatic speedups: 3.7×–20.2× SDPA.  
+D=256 window also routes to MFA via tile-skip (V1 sparse path).
 
-| Config | Causal MFA (ms) | Window MFA (ms) | Speedup |
-|--------|----------------|----------------|---------|
-| D=128 N=4096  w=512 | 11.78 | 2.03 | **5.81x** ★ |
-| D=128 N=8192  w=512 | 33.81 | 4.02 | **8.41x** ★ |
-| D=128 N=8192  w=1024 | 33.94 | 7.35 | **4.62x** ★ |
-| D=128 N=16384 w=512 | 111.19 | 8.43 | **13.20x** ★ |
+---
 
+## v2.2.0 — V2 Split-K (Small-Grid, f16 causal)
 
-## v1.3.0 — NEW: warmup_kernels() Cold-Start Benchmark (M1 Max, D=128 N=4096 f16)
+Split-K activates for `total_tgs < 0.8 × gpu_cores` (32 on M1 Max).
 
-| Scenario | First-call latency |
-|----------|-------------------|
-| No warmup (cold JIT compilation) | ~46 ms |
-| After first call (shader cached) | ~12 ms |
-| `warmup_kernels([64,128])` cost (fresh process) | ~46–90 ms (one-time) |
-| First real call after `warmup_kernels()` | ~12 ms |
+| Config | SDPA ms | V2 ms | V2/SDPA |
+|--------|--------:|------:|--------:|
+| B=1 H=1 N=512  D=64  | 0.50 | 0.42 | 1.20× |
+| B=1 H=1 N=1024 D=64  | 0.62 | 0.38 | **1.63×** ★ |
+| B=1 H=1 N=512  D=128 | 0.41 | 0.35 | 1.15× |
+| B=1 H=1 N=1024 D=128 | 0.49 | 0.47 | 1.04× |
+| B=1 H=2 N=512  D=128 | 0.39 | 0.39 | 1.00× |
+| B=1 H=4 N=512  D=128 | 0.41 | 0.40 | 1.01× |
 
-**Benefit**: move cold-JIT latency from the first user-facing attention call to process init.
-Use `warmup_kernels()` in model `__init__` or server startup to eliminate tail latency.
+Split-K helps most at B=1 H=1 (single under-occupied tile).
 
+---
 
-## v1.3.0 — NEW: sage_attention_kvcache Benchmark (M1 Max, D=128 causal=False)
+## v2.2.0 — BK=64 Evaluation for D=128 (Reverted)
 
-| N | flash_attention (ms) | sage_attention (ms) | Ratio |
-|---|---------------------|---------------------|-------|
-| 512 | 1.43 | 1.27 | **1.13x faster** |
-| 1024 | 1.53 | 2.09 | 0.73x |
-| 2048 | 4.12 | 7.75 | 0.53x |
-| 4096 | 13.05 | 22.59 | 0.58x |
+BK=64 for D=128 was evaluated as a barrier-reduction strategy (TK=8, 27,136B TGP).
+Results (M1 Max, B=2 H=8 f16 causal, V2/SDPA):
 
-Note: current sage_attention overhead is dominated by Python-side quantize (per-call).
-Speedup requires pre-quantized KV caches (roadmap Track M).
+| N | BK=32 (current) | BK=64 (reverted) |
+|---|----------------:|-----------------:|
+| 4096 | 1.63× | 1.15× |
+| 8192 | 1.73× | 1.25× |
 
+BK=64 regresses because TK=8 doubles K/P accumulator registers, causing spill
+alongside the pinned Q accumulators (BQ×D=4096 elements per simdgroup).
+BK=32 remains the default.
 
-## v0.7.0 — Spatial Mask Benchmarks
+---
 
-| Type | Scenario | N tokens | Sparsity | Mask build (ms) | Sparse (ms) | Dense SDPA (ms) | Speedup |
-|------|----------|----------|----------|-----------------|------------|-----------------|--------|
-| 2D | flickr_r4 | 256 | 53.1% | 0.25 | N/A | N/A | N/A |
-| 2D | image_r8 | 1,024 | 46.1% | 0.22 | N/A | N/A | N/A |
-| 2D | image_r16 | 1,024 | 76.6% | 0.10 | N/A | N/A | N/A |
-| 2D | flashvsr_r8 | 57,600 | 1.8% | 34.22 | N/A | N/A | N/A |
-| 2D | flashvsr_r16 | 57,600 | 3.3% | 33.25 | N/A | N/A | N/A |
-| 2D | flashvsr_r32 | 57,600 | 9.2% | 33.60 | N/A | N/A | N/A |
-| 3D | video_dit_small | 2,048 | 28.2% | 0.31 | N/A | N/A | N/A |
-| 3D | video_dit_medium | 8,192 | 13.9% | 1.19 | N/A | N/A | N/A |
-| 3D | seedvr2_512 | 16,384 | 7.6% | 5.52 | N/A | N/A | N/A |
-| 3D | seedvr2_1024 | 65,536 | 2.9% | 89.53 | N/A | N/A | N/A |
-| 3D | diffvsr_8frame | 32,768 | 12.5% | 19.88 | N/A | N/A | N/A |
-| segment | 2_segs_2k | 2,048 | 50.0% | 0.04 | N/A | N/A | N/A |
-| segment | 4_segs_1k | 2,048 | 25.0% | 0.05 | N/A | N/A | N/A |
-| segment | 8_segs_512 | 2,048 | 12.5% | 0.02 | N/A | N/A | N/A |
-| segment | mixed | 3,840 | 37.8% | 0.07 | N/A | N/A | N/A |
-| adaptive | adaptive_1x | 4,096 | 40.3% | 0.43 | N/A | N/A | N/A |
-| adaptive | adaptive_2x | 16,384 | 8.9% | 5.03 | N/A | N/A | N/A |
-| adaptive | adaptive_4x | 65,536 | 1.5% | 77.83 | N/A | N/A | N/A |
+## Dispatch Thresholds (M1/M2)
 
+Dense attention routes to MFA only when N ≥ threshold:
 
-## v0.7.0 — Varlen Attention Benchmarks
+| D | causal | threshold N |
+|---|--------|------------|
+| 64  | True  | 2048 |
+| 64  | False | 8192 |
+| 128 | True  | 2048 |
+| 128 | False | 8192 |
+| 256 | True  | never (V1 is ≤SDPA for dense) |
 
-| Scenario | Seqs | Total N | Varlen (ms) | Padded (ms) | Sequential (ms) |
-|----------|------|---------|-------------|-------------|------------------|
-| uniform_10x1024 | 10 | 10,240 | 0.22 | 0.02 | 0.16 |
-| varied | 5 | 4,352 | 0.11 | 0.02 | 0.08 |
-| extreme | 5 | 4,352 | 0.10 | 0.01 | 0.07 |
-| short_many | 32 | 2,048 | 0.65 | 0.02 | 0.54 |
-| two_long | 2 | 4,096 | 0.05 | 0.01 | 0.03 |
+Window/sparse attention always routes to MFA regardless of N and D.
 
+---
 
-## v0.7.0 — 3D RoPE Benchmarks
+## Historical Context
 
-| Scenario | N | Table build (ms) | RopeFwd (ms) | PlainFwd (ms) | PyRope+Fwd (ms) |
-|----------|---|-----------------|--------------|---------------|------------------|
-| dit_tiny | 256 | 0.55 | 0.05 | 0.02 | 0.05 |
-| dit_small | 2,048 | 0.93 | 0.05 | 0.02 | 0.05 |
-| dit_medium | 16,384 | 23.20 | 0.05 | 0.02 | 0.05 |
-| dit_large | 32,768 | 36.42 | 0.06 | 0.02 | 0.05 |
-
-
-## v0.7.0 — Segment Mask Benchmarks
-
-| Scenario | N | Sparsity | Mask (ms) | Sparse (ms) | Per-segment (ms) | Dense (ms) |
-|----------|---|----------|-----------|-------------|------------------|------------|
-| 2_segs | 4,096 | 50.0% | 0.16 | 0.03 | 0.03 | 0.00 |
-| 4_segs | 4,096 | 25.0% | 0.09 | 0.03 | 0.06 | 0.00 |
-| 8_segs | 4,096 | 12.5% | 0.06 | 0.03 | 0.14 | 0.00 |
-| mixed | 3,840 | 37.8% | 0.05 | 0.03 | 0.06 | 0.00 |
-| 16_segs | 4,096 | 6.2% | 0.04 | 0.02 | 0.26 | 0.00 |
-
-
-## v0.9.0 — Backward Benchmarks (STEEL native bwd)
-
-| Config | MFA bwd (ms) | SDPA bwd (ms) | Speedup |
-|--------|-------------|--------------|--------|
-| D=64  N=2048 f16 causal | 0.03 | 0.02 | 0.56x |
-| D=64  N=4096 f16 causal | 0.03 | 0.02 | 0.59x |
-| D=128 N=2048 f16 causal | 0.03 | 0.02 | 0.56x |
-| D=128 N=4096 f16 causal | 0.03 | 0.02 | 0.57x |
-| D=128 N=2048 bf16 causal | 0.03 | 0.02 | 0.59x |
-| D=128 N=4096 bf16 causal | 0.03 | 0.02 | 0.52x |
-| D=64  N=2048 f16 non-caus | 0.03 | 0.01 | 0.43x |
-| D=128 N=2048 f16 non-caus | 0.03 | 0.01 | 0.43x |
-
-
-## v0.9.0 — Varlen Attention Benchmarks (STEEL varlen kernel)
-
-| Scenario | Seqs | Total N | Varlen (ms) | Padded (ms) | Sequential (ms) |
-|----------|------|---------|-------------|-------------|------------------|
-| uniform_10x1024 | 10 | 10,240 | 0.01 | 0.01 | 0.09 |
-| varied | 5 | 4,352 | 0.03 | 0.01 | 0.04 |
-| extreme | 5 | 4,352 | 0.01 | 0.01 | 0.05 |
-| short_many | 32 | 2,048 | 0.02 | 0.01 | 0.28 |
-| two_long | 2 | 4,096 | 0.01 | 0.01 | 0.02 |
-
-
-## v0.9.0 — Varlen Attention Benchmarks (STEEL varlen kernel)
-
-| Scenario | Seqs | Total N | Varlen (ms) | Padded (ms) | Sequential (ms) |
-|----------|------|---------|-------------|-------------|------------------|
-| uniform_10x1024 | 10 | 10,240 | 0.01 | 0.01 | 0.06 |
-| varied | 5 | 4,352 | 0.01 | 0.01 | 0.03 |
-| extreme | 5 | 4,352 | 0.01 | 0.01 | 0.03 |
-| short_many | 32 | 2,048 | 0.01 | 0.01 | 0.20 |
-| two_long | 2 | 4,096 | 0.01 | 0.01 | 0.01 |
-
-
-## v0.9.0 — Backward Benchmarks (STEEL native bwd)
-
-| Config | MFA bwd (ms) | SDPA bwd (ms) | Speedup |
-|--------|-------------|--------------|--------|
-| D=64  N=2048 f16 causal | 2.03 | 0.02 | 0.01x |
-| D=64  N=4096 f16 causal | 5.67 | 0.02 | 0.00x |
-| D=128 N=2048 f16 causal | 3.81 | 0.02 | 0.00x |
-| D=128 N=4096 f16 causal | 11.93 | 0.02 | 0.00x |
-| D=128 N=2048 bf16 causal | 5.12 | 0.02 | 0.00x |
-| D=128 N=4096 bf16 causal | 22.32 | 0.02 | 0.00x |
-| D=64  N=2048 f16 non-caus | 1.65 | 0.02 | 0.01x |
-| D=128 N=2048 f16 non-caus | 3.92 | 0.01 | 0.00x |
+| Version | Key change | D=128 N=8192 causal |
+|---------|-----------|---------------------|
+| v1.3.0  | STEEL V1 (no V2) | 1.22× SDPA |
+| v2.2.0  | STEEL V2 (sequential KV_smem, 2× BK) | **1.73×** SDPA |
