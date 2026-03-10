@@ -139,6 +139,15 @@ void MFAttention::eval_gpu(
   if (force_gen_env) arch_gen_steel = std::atoi(force_gen_env);
   bool is_m3_plus_steel = (arch_gen_steel >= 15);
 
+  // ── GPU core count (for split-K occupancy heuristics) ────────────────────
+  // estimate_gpu_cores() parses MTLDevice::name() for the actual chip variant
+  // (M1 Max=32, M1 base=8, etc.) rather than using arch_gen alone (which maps
+  // all M1 variants to gen=13). Falls back to gen-based estimate if unavailable.
+  auto* mtl_dev_ptr = d.mtl_device();
+  const std::string mtl_dev_name = mtl_dev_ptr
+      ? std::string(mtl_dev_ptr->name()->utf8String()) : "";
+  const int gpu_cores = estimate_gpu_cores(mtl_dev_name, arch_gen_steel);
+
   // ── Flash Decoding (Split-KV) path ──────────────────────────────────────
   //
   // At decode time (N_q ≤ 4) the standard grid (NQ, H, B) = (1, H, B) leaves
@@ -316,7 +325,7 @@ void MFAttention::eval_gpu(
       const int TGP2 = WM2 * cfg2.WN * 32;
       const int NQ2  = (N + BQ2 - 1) / BQ2;
       const int total_tgs = NQ2 * H * B;
-      const int num_splits = compute_v2_num_splits(total_tgs, S, BK2, arch_gen_steel);
+      const int num_splits = compute_v2_num_splits(total_tgs, S, BK2, gpu_cores);
 
       if (num_splits >= 2) {
         const int NK2_total = (S + BK2 - 1) / BK2;

@@ -387,6 +387,19 @@ class TestPublicAPI:
         )
 
     @pytest.mark.skipif(not _ext_available(), reason="extension not compiled")
+    def test_gpu_cores_m1_max(self):
+        """estimate_gpu_cores() returns 32 for 'Apple M1 Max' (not the gen-13 fallback of 8)."""
+        info = get_device_info()
+        assert "gpu_cores" in info, "gpu_cores key missing from get_device_info()"
+        assert isinstance(info["gpu_cores"], int), f"gpu_cores must be int, got {type(info['gpu_cores'])}"
+        assert info["gpu_cores"] > 0, "gpu_cores must be positive"
+        # On M1 Max hardware, verify the variant is detected correctly.
+        if "M1 Max" in info.get("device_name", ""):
+            assert info["gpu_cores"] == 32, (
+                f"M1 Max should have gpu_cores=32, got {info['gpu_cores']}"
+            )
+
+    @pytest.mark.skipif(not _ext_available(), reason="extension not compiled")
     def test_mlx_build_version(self):
         """_mlx_build_version() returns a semver string matching runtime MLX."""
         import mlx_mfa._ext as _ext

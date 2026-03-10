@@ -579,15 +579,46 @@ struct MFASteelParams {
 // V2 Split-K: num_splits heuristic  (Phase 3)
 // ---------------------------------------------------------------------------
 
-int compute_v2_num_splits(int total_tgs, int kL, int BK, int arch_gen) {
-  // Conservative GPU core estimate from arch gen (base chip, not Max variant).
-  // M1 Max (gen 13) has 32 cores; M2 Max 38; M3 Max 40; M4 Max 40.
-  // We use the base estimate — split-K is cheap, under-splitting is worse.
-  const int gpu_cores = (arch_gen >= 17) ? 40 :
-                        (arch_gen >= 16) ? 20 :
-                        (arch_gen >= 15) ? 18 :
-                        (arch_gen >= 14) ? 19 : 16;
+int estimate_gpu_cores(const std::string& device_name, int arch_gen) {
+  // Longest-prefix-first matching (Ultra > Max > Pro > base).
+  // "Apple M1 Max" → 32, "Apple M1" → 8, etc.
+  // Falls back to conservative gen-based estimate for unknown names / simulator.
+  if (!device_name.empty()) {
+    // M1 family
+    if (device_name.find("M1 Ultra") != std::string::npos) return 48;
+    if (device_name.find("M1 Max")   != std::string::npos) return 32;
+    if (device_name.find("M1 Pro")   != std::string::npos) return 16;
+    if (device_name.find("M1")       != std::string::npos) return 8;
+    // M2 family
+    if (device_name.find("M2 Ultra") != std::string::npos) return 60;
+    if (device_name.find("M2 Max")   != std::string::npos) return 38;
+    if (device_name.find("M2 Pro")   != std::string::npos) return 19;
+    if (device_name.find("M2")       != std::string::npos) return 10;
+    // M3 family
+    if (device_name.find("M3 Ultra") != std::string::npos) return 60;
+    if (device_name.find("M3 Max")   != std::string::npos) return 40;
+    if (device_name.find("M3 Pro")   != std::string::npos) return 18;
+    if (device_name.find("M3")       != std::string::npos) return 10;
+    // M4 family
+    if (device_name.find("M4 Ultra") != std::string::npos) return 64;
+    if (device_name.find("M4 Max")   != std::string::npos) return 40;
+    if (device_name.find("M4 Pro")   != std::string::npos) return 20;
+    if (device_name.find("M4")       != std::string::npos) return 10;
+    // A-series (iPad)
+    if (device_name.find("A17")      != std::string::npos) return 6;
+    if (device_name.find("A16")      != std::string::npos) return 5;
+    if (device_name.find("A15")      != std::string::npos) return 5;
+  }
+  // Fallback: conservative gen-based estimate (base chip, not Max variant).
+  if (arch_gen >= 17) return 40;
+  if (arch_gen >= 16) return 20;
+  if (arch_gen >= 15) return 18;
+  if (arch_gen >= 14) return 19;
+  return 8;  // M1 base
+}
 
+int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores) {
+  // gpu_cores is the actual estimated core count from estimate_gpu_cores().
   // Skip if already well-occupied
   if (total_tgs >= (int)(0.8f * (float)gpu_cores)) return 1;
 

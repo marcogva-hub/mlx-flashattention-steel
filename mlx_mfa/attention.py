@@ -859,28 +859,33 @@ def get_device_info() -> dict:
     Returns:
         Dictionary with keys:
 
-        - ``"device_name"`` (str | None): MTLDevice name, e.g. ``"Apple M2 Pro"``.
+        - ``"device_name"`` (str | None): MTLDevice name, e.g. ``"Apple M1 Max"``.
         - ``"gpu_family_gen"`` (int | None): Apple GPU family generation number.
-          7 = M1/A15, 8 = M2/A16, 9 = M3/A17, 10 = M4.
+          13 = M1, 14 = M2, 15 = M3, 16 = M4.
         - ``"is_m3_plus"`` (bool | None): True for M3/M4 (uses different block
           params and ``preferAsyncCache`` vs ``preferAsyncLoad``).
-        - ``"chip_name"`` (str | None): Inferred chip family, e.g. ``"M2"``.
+        - ``"chip_name"`` (str | None): Inferred chip family, e.g. ``"M1"``.
+        - ``"gpu_cores"`` (int | None): Estimated physical GPU core count, parsed
+          from the device name.  Correct per variant: M1 Max=32, M1=8, M2 Max=38.
+          Falls back to conservative gen-based estimate for unknown devices.
         - ``"extension_available"`` (bool): Whether the C++ extension loaded.
 
     Example::
 
         from mlx_mfa import get_device_info
         info = get_device_info()
-        print(info["device_name"])   # "Apple M2 Pro"
-        print(info["chip_name"])     # "M2"
-        print(info["is_m3_plus"])    # False
+        print(info["device_name"])  # "Apple M1 Max"
+        print(info["chip_name"])    # "M1"
+        print(info["gpu_cores"])    # 32
     """
     if not _ext_available():
         return {
             "device_name": None,
             "gpu_family_gen": None,
             "is_m3_plus": None,
+            "is_m5_plus": None,
             "chip_name": None,
+            "gpu_cores": None,
             "extension_available": False,
         }
 
@@ -920,6 +925,7 @@ def get_device_info() -> dict:
         "is_m3_plus":          is_m3_plus,
         "is_m5_plus":          is_m5_plus,
         "chip_name":           chip,
+        "gpu_cores":           raw.get("gpu_cores"),
         "extension_available": True,
     }
 

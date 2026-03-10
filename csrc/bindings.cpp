@@ -14,6 +14,7 @@
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
 #include "mfa_smooth_quant.hpp"
+#include "mfa_steel_fwd_v2.hpp"
 #include "shader_cache.hpp"
 
 namespace nb = nanobind;
@@ -245,6 +246,10 @@ NB_MODULE(_ext, m) {
   //                          13=M1, 14=M2, 15=M3, 16=M4.
   //   is_m3_plus      bool — True if gen >= 15 (M3/M4: preferAsyncCache block params)
   //   device_name     str  — MTLDevice name (e.g. "Apple M1 Max")
+  //   gpu_cores       int  — Estimated physical GPU core count from device name.
+  //                          Correct per-variant: M1 Max=32, M1 base=8, M2 Max=38, …
+  //                          Falls back to conservative gen-based estimate for
+  //                          unknown names (simulator, future hardware).
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);
     auto& d = mlx::core::metal::device(s.device);
@@ -253,13 +258,16 @@ NB_MODULE(_ext, m) {
     auto* mtl_dev = d.mtl_device();
     std::string dev_name = mtl_dev
         ? std::string(mtl_dev->name()->utf8String())
-        : "unknown";
+        : "";
+    int cores = mlx_mfa::estimate_gpu_cores(dev_name, gen);
+    if (dev_name.empty()) dev_name = "unknown";
     nb::dict info;
     info["gpu_family_gen"] = gen;
     info["is_m3_plus"]     = (gen >= 15);
     info["device_name"]    = dev_name;
+    info["gpu_cores"]      = cores;
     return info;
-  }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name.");
+  }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name, gpu_cores.");
 
   // --- ALiBi-biased forward ---
   m.def(

@@ -32,6 +32,12 @@ struct SteelV2BlockConfig {
 /// Returns {0,0,0,0,0} for unsupported head dims (D>256).
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim);
 
+/// Estimate actual GPU core count from MTLDevice name + fallback arch_gen.
+/// Uses longest-prefix matching (Ultra > Max > Pro > base) so "M1 Max" matches
+/// before "M1". Falls back to conservative gen-based estimate for unknown names.
+/// If name is empty / unavailable (simulator, CI), uses arch_gen estimate only.
+int estimate_gpu_cores(const std::string& device_name, int arch_gen);
+
 /// Generate the complete Metal shader source for the STEEL V2 forward kernel.
 /// Kernel function name: "mlx_mfa_v2_attention".
 /// Supports: f16/bf16, D=64/128/256, causal/non-causal, GQA.
@@ -49,7 +55,8 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key);
 /// Compute num_splits for V2 split-K.
 /// FA2-inspired heuristic: find smallest s s.t. total_tgs*s >= gpu_cores.
 /// Returns 1 if split is not beneficial (already well-occupied or too few K-tiles).
-int compute_v2_num_splits(int total_tgs, int kL, int BK, int arch_gen);
+/// gpu_cores: actual core count from estimate_gpu_cores(); NOT arch_gen internally.
+int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores);
 
 /// Generate the Metal shader source for the V2 split-K partial kernel.
 /// Kernel function name: "mlx_mfa_v2_splitk_partial".
