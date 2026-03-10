@@ -44,8 +44,9 @@ class ShaderCache {
       ScatterKV          = 13,   // In-place scatter write for paged KV pool (Phase 4-C.1/E.2)
       SmoothQuantizeMean = 14,   // Fused smooth_k pass 1: per-channel mean over S (Phase 1.1)
       SmoothQuantizeK    = 15,   // Fused smooth_k pass 2: subtract mean + quantize (Phase 1.1)
+      SteelForwardV2     = 16,   // STEEL V2: sequential K/V phases, BQ=64 BK=48 D=128
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 16,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 17,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

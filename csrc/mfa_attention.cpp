@@ -18,6 +18,7 @@
 #include "mfa_attention.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
+#include "mfa_steel_fwd_v2.hpp"
 #include "mfa_steel_bwd.hpp"
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
@@ -288,6 +289,104 @@ void MFAttention::eval_gpu(
     mlx::core::allocator::free(pO_buf);
     mlx::core::allocator::free(pL_buf);
     return;
+  }
+
+  // ── STEEL V2 dispatch (f16/bf16, D=64/128, no special features) ─────────
+  // V2 uses sequential K/V phases in shared KV_smem: BQ=64, BK=64/32.
+  // 67% fewer threadgroup barriers than V1 + 2× arithmetic intensity.
+  // One threadgroup per Q-block (NQ2 TGs vs V1's NQ1).
+  // Falls through to V1 for: D>128, f32, RoPE, ALiBi, block_mask, sliding window, softcap.
+  {
+    const bool v2_eligible =
+        (dtype_code != 2) &&
+        (D == 64 || D == 128) &&
+        !params_.has_rope &&
+        !params_.has_alibi &&
+        !params_.has_block_mask &&
+        params_.window_left  < 0 &&
+        params_.window_right < 0 &&
+        params_.softcap == 0.0f;
+
+    if (v2_eligible) {
+      auto cfg2 = select_steel_v2_block_config(D);
+      const int BQ2      = cfg2.BQ;   // 64
+      const int BK2      = cfg2.BK;   // 48 (D=128) or 64 (D=64)
+      const int WM2      = cfg2.WM;   // 8
+      const int TGP2     = WM2 * cfg2.WN * 32;  // 256
+      const int NQ2      = (N + BQ2 - 1) / BQ2;
+      const int NK2      = (S + BK2 - 1) / BK2;
+      const int NQ2_aln  = (N % BQ2 == 0) ? NQ2 : NQ2 - 1;
+      const int NK2_aln  = (S % BK2 == 0) ? NK2 : NK2 - 1;
+
+      using KK2 = ShaderCache::KernelKey;
+      KK2 key2{
+        KK2::KernelType::SteelForwardV2,
+        D, BQ2, BK2, D, WM2,
+        params_.causal,
+        /*sparse=*/false,
+        /*is_m3_plus=*/false,   // not baked into V2 shader (same code all gens)
+        /*has_rope=*/false, /*rope_interleaved=*/false,
+        /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
+        dtype_code,
+        H / Hk   // gqa_factor
+      };
+
+      void* raw2     = ShaderCache::get().get_or_compile(key2, d.mtl_device());
+      auto* pipeline2 = reinterpret_cast<MTL::ComputePipelineState*>(raw2);
+
+      MFASteelParams sp2{};
+      sp2.B          = B;
+      sp2.H          = H;
+      sp2.D          = D;
+      sp2.qL         = N;
+      sp2.kL         = S;
+      sp2.gqa_factor = H / Hk;
+      sp2.scale      = params_.scale;
+      sp2.NQ         = NQ2;
+      sp2.NK         = NK2;
+      sp2.NQ_aligned = NQ2_aln;
+      sp2.NK_aligned = NK2_aln;
+      sp2.qL_rem     = (N % BQ2 == 0) ? BQ2 : (N % BQ2);
+      sp2.kL_rem     = (S % BK2 == 0) ? BK2 : (S % BK2);
+      sp2.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
+      sp2.rope_q_base     = 0;
+      sp2.rope_cos_stride = D / 2;
+      sp2.Q_strides[0] = (int64_t)H  * N * D;
+      sp2.Q_strides[1] = (int64_t)N  * D;
+      sp2.Q_strides[2] = (int64_t)D;
+      sp2.K_strides[0] = (int64_t)Hk * S * D;
+      sp2.K_strides[1] = (int64_t)S  * D;
+      sp2.K_strides[2] = (int64_t)D;
+      sp2.V_strides[0] = (int64_t)Hk * S * D;
+      sp2.V_strides[1] = (int64_t)S  * D;
+      sp2.V_strides[2] = (int64_t)D;
+      sp2.O_strides[0] = (int64_t)H  * N * D;
+      sp2.O_strides[1] = (int64_t)N  * D;
+      sp2.O_strides[2] = (int64_t)D;
+      sp2.L_strides[0] = (int64_t)H  * N;
+      sp2.L_strides[1] = (int64_t)N;
+      sp2.softcap      = 0.0f;
+      sp2.has_alibi    = 0;
+      sp2.window_left  = -1;
+      sp2.window_right = -1;
+      sp2.mask_batch_stride = 0;
+      sp2.mask_head_stride  = 0;
+
+      auto& enc2 = d.get_command_encoder(stream().index);
+      enc2.set_compute_pipeline_state(pipeline2);
+      enc2.set_input_array(q,          0);
+      enc2.set_input_array(k,          1);
+      enc2.set_input_array(v,          2);
+      enc2.set_output_array(out,       3);
+      enc2.set_output_array(logsumexp, 4);
+      enc2.set_bytes(sp2,              5);
+
+      // One threadgroup per Q-block: grid x = NQ2.
+      enc2.dispatch_threadgroups(
+          MTL::Size::Make((size_t)NQ2, (size_t)H, (size_t)B),
+          MTL::Size::Make((size_t)TGP2, 1, 1));
+      return;
+    }
   }
 
   // ── STEEL tile config (f16 / bf16) ───────────────────────────────────────
