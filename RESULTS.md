@@ -1,6 +1,6 @@
 # mlx-mfa Benchmark Results
 
-> **Current version: v2.2.0** (STEEL V2)  
+> **Current version: v2.4.0** (STEEL V2 + Gen-Aware BK + Auto-Calibration + RoPE/ALiBi in V2)
 > Device: Apple M1 Max (gen=13, 32 cores)  
 > `mlx_mfa.flash_attention` vs `mx.fast.scaled_dot_product_attention` with explicit causal mask  
 > Warmup=8, iters=20 per measurement. Values are means; GPU variance ±5–15%.

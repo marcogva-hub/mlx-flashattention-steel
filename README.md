@@ -10,7 +10,7 @@
 
 A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal and window tiles skipped entirely.
 
-## Performance (M1 Max, float16, B=2, H=8) — v2.1.0
+## Performance (M1 Max, float16, B=2, H=8) — v2.4.0
 
 ### Forward attention — STEEL V2 vs SDPA (causal)
 
@@ -87,6 +87,9 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 
 - **Drop-in replacement** for `mx.fast.scaled_dot_product_attention`
 - **STEEL V2 kernel** (v2.1.0) — Sequential K/V phases in shared threadgroup memory: 2x BK, 2x fewer K-tile iterations, 1.5-2.1x SDPA for D=64/128 causal at N>=4096
+- **Gen-aware V2 BK** (v2.4.0) — D=128 on M3+/M4+ uses BK=64 (larger register file); M1/M2 stays at BK=32. `MFA_V2_FORCE_BK=<32|64>` overrides.
+- **Auto-calibration** (v2.4.0) — `python -m mlx_mfa calibrate` benchmarks BK=32 vs BK=64 on your device and saves a dispatch table; auto-applied at import.
+- **V2 RoPE + ALiBi** (v2.4.0) — STEEL V2 kernel now fuses RoPE (Q+K) and ALiBi position biases, matching V1 feature parity for all non-sparse causal workloads.
 - **Smart dispatch** (`backend='auto'`) — shape-aware MFA/SDPA routing; MFA only when empirically faster; SDPA otherwise; ~2μs dispatch overhead
 - **Full autograd** — dQ, dK, dV via `mx.vjp(SDPA)` (4–6× faster than v1.x STEEL backward)
 - **All head dims**: 64, 128, 256, 512 (D=512 uses 4-pass d-split in forward/backward)
@@ -769,6 +772,9 @@ The silicon generation is derived from MLX's architecture string (e.g. `applegpu
 | LC  | `InferenceContext` stateful lifecycle object | **Done (v1.2.1)** |
 | LA† | `KVCacheProtocol` + `PagedInferenceContext` + `SageInferenceContext` | **Done (v1.3.0)** |
 | LB† | `warmup_kernels()` + `DispatchPolicy` + `get_supported_configs` corrections | **Done (v1.3.0)** |
+| V2-1 | Gen-aware V2 BK (M3+ BK=64 for D=128) | **Done (v2.4.0)** |
+| V2-2 | Auto-calibration + `python -m mlx_mfa calibrate` | **Done (v2.4.0)** |
+| V2-3 | V2 RoPE fusion (Q+K) + V2 ALiBi | **Done (v2.4.0)** |
 | Q   | Metal 4 tensor API (cooperative tensors, M5+/A19+ only) | Planned (v1.2+) |
 
 ## References

@@ -2,6 +2,58 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.4.0] — 2026-03-10
+
+### Adaptive Multi-Generation V2 + Auto-Calibration + V2 Feature Extensions
+
+**Phase 1 — Gen-aware V2 kernel configs**
+
+`select_steel_v2_block_config(head_dim, is_m3_plus)` now selects BK based on
+GPU generation. D=128 on M3+ uses BK=64 (larger register file absorbs the
+doubled K fragments without spill, yielding ~2× tiles per barrier vs M1/M2).
+M1/M2 keeps BK=32 (BK=64 confirmed −27% regression at N≥8192 on M1 Max).
+
+New `MFA_V2_FORCE_BK=<32|64>` environment variable overrides gen-based
+selection for benchmarking and diagnostics.
+
+`_M3_THRESHOLDS` in `dispatch_policy.py` updated: D=128 causal threshold
+4096 → 2048 (BK=64 doubles the per-tile work, making V2 profitable at N=2048).
+
+**Phase 2 — Auto-calibration system**
+
+`calibrate_dispatch(calibrate_kernel_configs=True)` now benchmarks D=128 BK=32
+vs BK=64 at N=4096 and N=8192. BK=64 is chosen only when it wins at *both*
+points (< 0.95× BK=32 time). Optimal BK saved to
+`~/.mlx_mfa/dispatch_table.json` under `kernel_configs.d128_optimal_bk`.
+
+`_load_calibrated_kernel_config()` reads the JSON at import time and applies
+the calibrated BK via `os.environ.setdefault` (user-set `MFA_V2_FORCE_BK`
+always wins).
+
+New `python -m mlx_mfa` CLI:
+- `python -m mlx_mfa info` — prints device, gen, M3+, dtypes, current V2 BK
+- `python -m mlx_mfa calibrate [--quick]` — runs full or quick calibration
+  and saves dispatch table
+
+**Phase 3 — V2 feature extensions (RoPE + ALiBi)**
+
+V2 single-pass kernel now supports:
+- **RoPE fusion** (`has_rope`): Q-RoPE applied before Q@K^T; K-RoPE applied
+  to each K tile in the preload path and loop tail (barrier split: C_load +
+  RoPE-K + C to ensure correctness).
+- **ALiBi** (`has_alibi`): per-head linear bias `slope * (k_pos − q_pos)` added
+  in log2 domain after scale/softcap, before online softmax.
+
+**Sparse (block_mask) stays in V1**: V2 uses BK=64 for D=64 and BK=32 for
+D=128, while `make_causal_block_mask` creates masks sized for V1 tiles
+(BK_v1 ≠ BK_v2). Routing sparse to V2 would produce wrong mask indexing and
+NaN outputs. `v2_eligible` now excludes `has_block_mask`.
+
+V2 split-K retains restrictions for rope/alibi/sparse (split-K Metal shader
+not updated); those fall through to V2 single-pass which supports them.
+
+546 tests pass.
+
 ## [2.3.0] — 2026-03-10
 
 ### BK=64 evaluation (reverted) + comprehensive benchmarks + RESULTS.md refresh
