@@ -904,16 +904,22 @@ def get_supported_configs() -> dict:
         # --- extended API ---
         "kvcache_rope_append":  True,
         "packed_api":           True,   # qkv_packed / kv_packed variants
-        "sage_attention":       ext,    # int8 Q/K quantized attention (Track KB/KC)
+        "sage_attention":           ext,    # int8 Q/K quantized attention (Track KB/KC)
+        "sage_attention_kvcache":   ext,    # decode variant (N_q != N_k, Track LA)
+        "sage_inference_context":   ext,    # stateful sage decode wrapper (Track LA)
+        "warmup_kernels":           True,   # pre-compile Metal shaders before first use
         # --- dtype / dim ---
         "bfloat16":             True,
         "float16":              True,
         "d512":                 True,
     }
-    # 9 distinct Metal kernel variants (STEEL forward, sparse forward, varlen,
-    # paged gather, paged forward, backward dQ, backward dKV, sparse backward,
-    # sage forward)
-    kernel_types = 9 if ext else 0
+    # 16 distinct Metal kernel types (0–15):
+    #   AttentionForward/BwdDQ/BwdDKV (ccv legacy),
+    #   SteelForward, FlashDecodePartial/Reduce,
+    #   SteelBackwardDQ/DKV, SteelVarlenForward,
+    #   PagedKVGather, PagedSteelForward, SageForward,
+    #   QuantizePerBlock, ScatterKV, SmoothQuantizeMean/K
+    kernel_types = 16 if ext else 0
     return {
         "head_dims":           frozenset(_MFA_SUPPORTED_HDIMS),
         "dtypes":              frozenset(_MFA_SUPPORTED_DTYPES),
@@ -921,6 +927,50 @@ def get_supported_configs() -> dict:
         "features":            features,
         "kernel_types":        kernel_types,
     }
+
+
+def warmup_kernels(
+    head_dims: Optional[list] = None,
+    dtypes: Optional[list] = None,
+    causal: bool = True,
+) -> None:
+    """Pre-compile Metal shaders for the specified configurations.
+
+    Dispatches small (N=BQ) forward passes to trigger JIT shader compilation
+    before the first real attention call.  Without warmup, the first call for
+    each new (D, dtype, causal) combination incurs ~100–300 ms of Metal shader
+    compilation.  After warmup, all subsequent calls reuse cached pipelines.
+
+    No-op when the C++ extension is unavailable.
+
+    Args:
+        head_dims: Head dimensions to warm up (default: ``[64, 128]``).
+        dtypes:    MLX dtypes to warm up (default: ``[mx.float16]``).
+        causal:    Whether to compile causal variants (default: ``True``).
+
+    Example::
+
+        from mlx_mfa import warmup_kernels
+        warmup_kernels(head_dims=[64, 128, 256], dtypes=[mx.float16])
+        # Now flash_attention() has no first-call latency.
+    """
+    if not _ext_available():
+        return
+
+    if head_dims is None:
+        head_dims = [64, 128]
+    if dtypes is None:
+        dtypes = [mx.float16]
+
+    for D in head_dims:
+        for dtype in dtypes:
+            # Use BQ (32) — minimum viable tile for STEEL kernel.
+            N = 32
+            q = mx.zeros([1, 1, N, D], dtype=dtype)
+            k = mx.zeros([1, 1, N, D], dtype=dtype)
+            v = mx.zeros([1, 1, N, D], dtype=dtype)
+            out = flash_attention(q, k, v, scale=1.0 / math.sqrt(D), causal=causal)
+            mx.eval(out)
 
 
 # ---------------------------------------------------------------------------

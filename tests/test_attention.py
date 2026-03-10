@@ -431,8 +431,8 @@ class TestPublicAPI:
         assert features["native_backward"] == "ext"  # STEEL bwd active for f16/bf16 D≤512
         # kernel_types
         ext = cfg["extension_available"]
-        assert cfg["kernel_types"] == (9 if ext else 0), (
-            f"expected kernel_types={'9 if ext else 0'}, got {cfg['kernel_types']}"
+        assert cfg["kernel_types"] == (16 if ext else 0), (
+            f"expected kernel_types={'16 if ext else 0'}, got {cfg['kernel_types']}"
         )
 
 
@@ -7297,3 +7297,48 @@ class TestSageKVCache:
         assert hasattr(mlx_mfa, "SageInferenceContext")
         assert "sage_attention_kvcache" in mlx_mfa.__all__
         assert "SageInferenceContext" in mlx_mfa.__all__
+
+
+# ==========================================================================
+# Phase 5: warmup_kernels + get_supported_configs update (Track LB)
+# ==========================================================================
+
+class TestWarmupAndConfigs:
+    """warmup_kernels, get_supported_configs updates (Phase 5 / Track LB)."""
+
+    def test_warmup_kernels_no_error(self):
+        """warmup_kernels() runs without error."""
+        from mlx_mfa import warmup_kernels
+        import mlx.core as mx
+        warmup_kernels(head_dims=[64], dtypes=[mx.float16])
+
+    def test_warmup_kernels_noop_no_ext(self):
+        """warmup_kernels is a no-op when extension unavailable (returns None)."""
+        from mlx_mfa import warmup_kernels
+        import mlx.core as mx
+        result = warmup_kernels(head_dims=[64], dtypes=[mx.float16])
+        assert result is None
+
+    def test_warmup_kernels_exported(self):
+        """warmup_kernels exported from mlx_mfa."""
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "warmup_kernels")
+        assert "warmup_kernels" in mlx_mfa.__all__
+
+    def test_get_supported_configs_kernel_types_16(self):
+        """kernel_types should be 16 when extension available."""
+        from mlx_mfa import get_supported_configs
+        cfg = get_supported_configs()
+        if cfg["extension_available"]:
+            assert cfg["kernel_types"] == 16
+        else:
+            assert cfg["kernel_types"] == 0
+
+    def test_get_supported_configs_new_features(self):
+        """Phase 4/5 features present in get_supported_configs()."""
+        from mlx_mfa import get_supported_configs
+        cfg = get_supported_configs()
+        assert "sage_attention_kvcache" in cfg["features"]
+        assert "sage_inference_context" in cfg["features"]
+        assert "warmup_kernels" in cfg["features"]
+        assert cfg["features"]["warmup_kernels"] is True

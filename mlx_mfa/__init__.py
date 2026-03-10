@@ -78,6 +78,7 @@ from mlx_mfa.attention import (
     is_mfa_available,
     get_device_info,
     get_supported_configs,
+    warmup_kernels,
     # Track JD: LLM inference helpers
     flash_attention_speculative_verify,
     make_shared_prefix_cache,
@@ -154,6 +155,7 @@ __all__ = [
     "is_mfa_available",
     "get_device_info",
     "get_supported_configs",
+    "warmup_kernels",
     # LLM inference helpers (Track JD)
     "flash_attention_speculative_verify",
     "make_shared_prefix_cache",
