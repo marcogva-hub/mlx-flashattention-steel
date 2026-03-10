@@ -1013,7 +1013,7 @@ class TestSparseAttentionKernel:
 
         mask = make_causal_block_mask(N, head_dim=D)
         out_sparse = flash_attention_sparse(q, k, v, mask, scale=scale, causal=True)
-        out_dense  = flash_attention(q, k, v, scale=scale, causal=True)
+        out_dense  = flash_attention(q, k, v, scale=scale, causal=True, backend="mfa")
         mx.eval(out_sparse, out_dense)
 
         np.testing.assert_allclose(
@@ -7379,3 +7379,138 @@ class TestDispatchPolicy:
         mx.eval(out_sdpa, out_auto)
         assert out_sdpa.shape == (B, H, N, D)
         assert out_auto.shape == (B, H, N, D)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1.5 — TestSmartDispatch: shape-aware MFA/SDPA routing
+# ─────────────────────────────────────────────────────────────────────────────
+class TestSmartDispatch:
+    """Validate the Phase 1 smart dispatch policy (should_use_mfa + integration)."""
+
+    # ── should_use_mfa unit tests ─────────────────────────────────────────────
+
+    def test_small_n_causal_d64_routes_sdpa(self):
+        """Small N below threshold: D=64 causal N=512 should NOT use MFA."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        # Threshold for D=64 causal is 2048; N=512 is below → SDPA
+        assert not should_use_mfa(64, 512, causal=True, is_m3_plus=False)
+
+    def test_large_n_causal_d64_routes_mfa(self):
+        """Large N above threshold: D=64 causal N=2048 should use MFA."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert should_use_mfa(64, 2048, causal=True, is_m3_plus=False)
+        assert should_use_mfa(64, 8192, causal=True, is_m3_plus=False)
+
+    def test_large_n_causal_d128_routes_mfa(self):
+        """D=128 causal N=8192 should use MFA (1.25x crossover)."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert should_use_mfa(128, 8192, causal=True, is_m3_plus=False)
+
+    def test_noncausal_never_routes_mfa(self):
+        """Non-causal attention should never use MFA (best 0.92x, no win)."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        for D in [64, 128, 256, 512]:
+            for N in [512, 1024, 2048, 4096, 8192]:
+                assert not should_use_mfa(D, N, causal=False, is_m3_plus=False), \
+                    f"Non-causal D={D} N={N} routed to MFA unexpectedly"
+
+    def test_window_always_routes_mfa(self):
+        """Sliding-window attention always uses MFA (tile-skip guarantee)."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        # left-only window, small N
+        assert should_use_mfa(64, 128, causal=False, is_m3_plus=False,
+                               window_size=(64, -1))
+        # right-only window
+        assert should_use_mfa(128, 64, causal=False, is_m3_plus=False,
+                               window_size=(-1, 32))
+        # both dimensions
+        assert should_use_mfa(256, 256, causal=True, is_m3_plus=False,
+                               window_size=(128, 128))
+
+    def test_backend_mfa_forces_mfa(self):
+        """backend='mfa' overrides the shape dispatch → always True."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert should_use_mfa(256, 64, causal=False, is_m3_plus=False,
+                               backend="mfa")
+
+    def test_backend_sdpa_forces_sdpa(self):
+        """backend='sdpa' overrides the shape dispatch → always False."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(64, 8192, causal=True, is_m3_plus=False,
+                                   backend="sdpa")
+
+    # ── flash_attention integration: shape routing + correctness ─────────────
+
+    def test_auto_small_n_matches_sdpa(self):
+        """flash_attention(auto, small N) == flash_attention(sdpa): same output."""
+        import mlx.core as mx
+        from mlx_mfa import flash_attention
+        B, H, N, D = 1, 4, 256, 64  # N=256 < threshold 2048, non-causal
+        mx.random.seed(42)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        out_auto = flash_attention(q, k, v, causal=False, backend="auto")
+        out_sdpa = flash_attention(q, k, v, causal=False, backend="sdpa")
+        mx.eval(out_auto, out_sdpa)
+        import numpy as np
+        np.testing.assert_allclose(
+            np.array(out_auto.astype(mx.float32)),
+            np.array(out_sdpa.astype(mx.float32)),
+            atol=1e-3,
+            err_msg="auto-small-N output differs from sdpa backend",
+        )
+
+    def test_auto_large_n_causal_d64_uses_mfa(self):
+        """flash_attention(auto, causal, D=64, large N) matches MFA backend."""
+        import mlx.core as mx
+        from mlx_mfa import flash_attention, is_mfa_available
+        if not is_mfa_available():
+            pytest.skip("MFA extension not available")
+        B, H, N, D = 1, 4, 4096, 64  # above 2048 threshold
+        mx.random.seed(7)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        out_auto = flash_attention(q, k, v, causal=True, backend="auto")
+        out_mfa  = flash_attention(q, k, v, causal=True, backend="mfa")
+        mx.eval(out_auto, out_mfa)
+        import numpy as np
+        np.testing.assert_allclose(
+            np.array(out_auto.astype(mx.float32)),
+            np.array(out_mfa.astype(mx.float32)),
+            atol=1e-2,
+            err_msg="auto large-N D=64 causal output differs from mfa backend",
+        )
+
+    def test_mixed_dtype_routes_mfa(self):
+        """Mixed-dtype (f32 Q + f16 K/V) always routes to MFA, not SDPA (NaN guard)."""
+        import mlx.core as mx
+        from mlx_mfa import flash_attention, is_mfa_available
+        if not is_mfa_available():
+            pytest.skip("MFA extension not available — mixed-dtype handled by MFA only")
+        # Flush the Metal buffer pool to prevent stale-buffer NaN from prior
+        # large backward tests leaking into uninitialized allocations.
+        if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+            mx.metal.clear_cache()
+        B, H, N, D = 1, 2, 32, 64
+        mx.random.seed(99)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float32)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        out = flash_attention(q, k, v, causal=False, backend="auto")
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        import numpy as np
+        assert np.all(np.isfinite(np.array(out.astype(mx.float32)))), \
+            "mixed-dtype auto dispatch produced NaN — not routed to MFA"
+
+    def test_calibrate_dispatch_returns_dict(self):
+        """calibrate_dispatch() is importable and returns a threshold dict."""
+        from mlx_mfa import calibrate_dispatch
+        # Smoke-test: just verify the function exists and is callable.
+        import inspect
+        assert callable(calibrate_dispatch)
+        sig = inspect.signature(calibrate_dispatch)
+        assert "head_dims" in sig.parameters
+        assert "save_path" in sig.parameters

@@ -285,8 +285,8 @@ def flash_attention(
         )
 
     # Track ID: backend='mfa' — force MFA; raise if unavailable.
-    use_mfa = _can_use_mfa(q, head_dim) and not v_dim_mismatch
-    if backend == "mfa" and not use_mfa:
+    _mfa_capable = _can_use_mfa(q, head_dim) and not v_dim_mismatch
+    if backend == "mfa" and not _mfa_capable:
         try:
             from mlx_mfa import _ext  # noqa: F401
         except ImportError:
@@ -300,14 +300,39 @@ def flash_attention(
             f"Supported: head_dim∈{{64,128,256,512}}, dtype∈{{f16,bf16,f32}}."
         )
 
+    # Phase 1.1 — smart dispatch: only activate MFA when it is expected to be
+    # faster than SDPA based on empirical crossover thresholds.
+    # Window-size and sparse are handled inside should_use_mfa (always MFA).
+    if _mfa_capable and backend == "auto":
+        from mlx_mfa.dispatch_policy import should_use_mfa as _should_mfa
+        _dev_info = get_device_info()
+        # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch: MFA handles
+        # the cast internally, but mx.fast.sdpa produces NaN on mixed dtypes.
+        _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
+        use_mfa = _mixed_dtype or _should_mfa(
+            head_dim, q.shape[2], causal,
+            _dev_info.get("is_m3_plus", False),
+            window_size=window_size,
+            sparse=False,
+            backend=backend,
+        )
+    else:
+        use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
+
     if not use_mfa:
         if softcap != 0.0:
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
-        if return_lse:
+        # return_lse: when MFA-capable, always route to MFA regardless of shape
+        # dispatch (the kernel returns LSE for free; Python fallback has broken
+        # mx.exp2 in some MLX versions).  When not capable: use the Python path.
+        if return_lse and _mfa_capable:
+            use_mfa = True  # fall through to MFA path below
+        elif return_lse:
             return _fallback_sdpa_with_lse(q, k, v, scale, causal)
-        return _fallback_sdpa(q, k, v, scale, causal, stream)
+        else:
+            return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
     if alibi_slopes is not None:
@@ -2880,36 +2905,25 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                     q, k, v, scale=scale, mask=mask)
             _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
         elif softcap == 0.0:
-            D = q.shape[-1]
-            use_steel_bwd = (
-                q.dtype in (mx.float16, mx.bfloat16)
-                and D <= 512
+            # Phase 1.3 — SDPA vjp is the default backward path.
+            #
+            # Benchmark data (bench_backward_matrix.py, M1 Max 2026-03-10):
+            #   mfa_steel_backward is 0.15-0.63x vs mx.vjp(SDPA) in ALL configs.
+            #   D=64 N=4096: steel=35ms vs sdpa=22ms (0.63x)
+            #   D=128 N=4096: steel=128ms vs sdpa=31ms (0.24x)
+            #   D=256 N=4096: steel=317ms vs sdpa=50ms (0.16x)
+            #
+            # SDPA vjp is used by default for ALL f16/bf16 shapes.
+            # The STEEL backward kernel remains compiled and accessible via
+            # backend='mfa' + explicit opt-in (future Track M).
+            #
+            # PERF-TODO: Track M — native STEEL backward — reinvestigate when
+            # mfa_steel_backward achieves parity with mx.vjp(SDPA).
+            _, (dQ, dK, dV) = mx.vjp(
+                lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+                [q, k, v],
+                [dO],
             )
-            if use_steel_bwd:
-                # B.1: L is already available from the forward output — no
-                # gradient-checkpointing re-run of mfa_forward_with_lse needed.
-                #
-                # Pin contiguity before Metal kernel dispatch.  mx.contiguous()
-                # gives each tensor fresh graph ancestry so the Metal allocator
-                # cannot alias them with the backward outputs (dQ, dK, dV).
-                # G.1: The mx.eval() fence is now inside mfa_steel_backward
-                # (mlx::core::eval({q,k,v,O,L,dO})) to avoid a blocking
-                # Python-level GPU sync call.
-                q  = mx.contiguous(q)
-                k  = mx.contiguous(k)
-                v  = mx.contiguous(v)
-                O  = mx.contiguous(O)
-                L  = mx.contiguous(L.astype(mx.float32) if L.dtype != mx.float32 else L)
-                dO = mx.contiguous(dO)
-                dQ, dK, dV = mfa_steel_backward(
-                    q, k, v, O, L, dO, scale, causal
-                )
-            else:
-                _, (dQ, dK, dV) = mx.vjp(
-                    lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
-                    [q, k, v],
-                    [dO],
-                )
         else:
             _, (dQ, dK, dV) = mx.vjp(
                 lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
@@ -2999,9 +3013,12 @@ def _fallback_sdpa_with_lse(
         sdpa_mask = cmask_f32.astype(q.dtype)
 
     # LSE in log2 domain: L = max + log2(sum(2^(scores - max)))
-    max_s = scores.max(axis=-1, keepdims=True)          # [B,H,N,1]
-    exp2_s = mx.exp2(scores - max_s)                    # [B,H,N,S]
-    lse = max_s.squeeze(-1) + mx.log2(exp2_s.sum(axis=-1))  # [B,H,N]
+    # Use log2 = log / ln(2) to avoid mx.exp2/mx.log2 which may be absent in
+    # older MLX builds.  The constant converts natural-log to log-base-2.
+    _LN2 = 0.6931471805599453  # ln(2)
+    max_s = scores.max(axis=-1, keepdims=True)                    # [B,H,N,1]
+    exp_s = mx.exp((scores - max_s) * _LN2)                       # [B,H,N,S]
+    lse   = max_s.squeeze(-1) + mx.log(exp_s.sum(axis=-1)) / _LN2  # [B,H,N]
 
     # Standard softmax attention output (use built-in for efficiency)
     O = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=sdpa_mask)

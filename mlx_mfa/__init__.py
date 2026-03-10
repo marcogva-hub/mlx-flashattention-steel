@@ -101,6 +101,8 @@ from mlx_mfa.quantize import (
 # Track LC/Phase 2: InferenceContext + PagedInferenceContext + SageInferenceContext
 from mlx_mfa.inference import InferenceContext, PagedInferenceContext, SageInferenceContext
 
+from mlx_mfa.dispatch_policy import calibrate_dispatch
+
 from mlx_mfa.masks import (
     make_spatial_2d_mask,
     make_spatial_3d_mask,
@@ -158,6 +160,7 @@ __all__ = [
     "get_supported_configs",
     "warmup_kernels",
     "DispatchPolicy",
+    "calibrate_dispatch",
     # LLM inference helpers (Track JD)
     "flash_attention_speculative_verify",
     "make_shared_prefix_cache",
