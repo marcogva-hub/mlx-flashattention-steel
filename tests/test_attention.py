@@ -1672,6 +1672,49 @@ class TestFlashDecode:
 
 
 # ===========================================================================
+# V2 split-K correctness tests (Phase 3)
+# ===========================================================================
+
+@requires_ext
+class TestV2SplitK:
+    """Correctness tests for V2 split-K path (under-occupied grids).
+
+    V2 split-K fires when total_tgs < 0.8 * gpu_cores.
+    With gpu_cores=32 (M1 Max), threshold = 25.6.
+    B=1 H=1 N=512: total_tgs = 16*1*1 = 16 < 25.6 → activates split-K.
+    """
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_splitk_causal_correctness(self, D):
+        """V2 split-K causal output matches SDPA reference."""
+        B, H, N = 1, 1, 512
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        scale = D ** -0.5
+        mfa_out = flash_attention(q, k, v, scale=scale, causal=True)
+        mask = mx.tril(mx.ones([N, N], dtype=mx.bool_))
+        ref_out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        mx.eval(mfa_out, ref_out)
+        max_err = float(mx.max(mx.abs(mfa_out.astype(mx.float32) - ref_out.astype(mx.float32))))
+        assert max_err < 0.05, f"V2 split-K causal D={D}: max_err={max_err:.4f}"
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_splitk_noncausal_correctness(self, D):
+        """V2 split-K non-causal output matches SDPA reference."""
+        B, H, N = 1, 1, 512
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        scale = D ** -0.5
+        mfa_out = flash_attention(q, k, v, scale=scale, causal=False)
+        ref_out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        mx.eval(mfa_out, ref_out)
+        max_err = float(mx.max(mx.abs(mfa_out.astype(mx.float32) - ref_out.astype(mx.float32))))
+        assert max_err < 0.05, f"V2 split-K non-causal D={D}: max_err={max_err:.4f}"
+
+
+# ===========================================================================
 # Track I — M5+ (gen >= 17) detection stub
 # ===========================================================================
 
