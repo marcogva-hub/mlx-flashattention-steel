@@ -1915,9 +1915,11 @@ void MFASageForward::eval_gpu(
   else if (v.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else dtype_code = 2;
 
-  // V2 tile sizes for sage: BK doubled vs V1 (64 for D=64, 32 for D=128/256).
-  // Matches sage_block_sizes() in quantize.py for consistent block granularity.
-  const auto cfg  = select_steel_v2_block_config(D, is_m3_plus);
+  // Sage uses V1 tile sizes (not V2): V2 sequential K/V phase sharing requires
+  // a different shader structure. Larger V2 BK increases TGP without the
+  // sequential sharing benefit → occupancy regression (~0.4× vs 0.56× at N=4096).
+  const bool is_low_prec = (dtype_code != 2);
+  const auto cfg  = select_steel_block_config(D, is_low_prec, is_m3_plus);
   const int BQ    = cfg.BQ;
   const int BK    = cfg.BK;
   const int WM    = cfg.WM;
