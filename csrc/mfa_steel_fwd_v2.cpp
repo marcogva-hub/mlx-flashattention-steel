@@ -74,8 +74,10 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim) {
 std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
-  const int D     = key.head_dim;
-  const bool causal = key.causal;
+  const int D          = key.head_dim;
+  const bool causal    = key.causal;
+  const bool has_softcap = key.has_softcap;
+  const bool has_window  = key.has_window;
   const int gqa   = key.gqa_factor;  // H_q / H_kv (1 = standard MHA)
 
   // V2 only supports f16/bf16
@@ -241,6 +243,29 @@ struct MFASteelParams {
   ss << "  device T*       O_qb = O + (long)qb * MFA_BQ * p->O_strides[2];\n";
   ss << "\n";
 
+  // ── Sliding window: compute kb_start (left bound) + O(1) K/V advance ────
+  // Must be done BEFORE loader creation so KLoader/VLoader start at the
+  // correct K-tile (no advance-by-loop).
+  if (has_window) {
+    ss << "  int kb_start  = 0;\n";
+    ss << "  int kb_last_win = -1;  // last tile with left-boundary masking\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    const int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "    const int win_start = q_min - p->window_left;\n";
+    ss << "    kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  }\n";
+    ss << "  // O(1) K/V advance: shift base pointers to kb_start tile\n";
+    ss << "  K += (long)kb_start * MFA_BK * p->K_strides[2];\n";
+    ss << "  V += (long)kb_start * MFA_BK * p->V_strides[2];\n";
+    ss << "\n";
+  } else {
+    ss << "  const int kb_start  = 0;\n";
+    ss << "  const int kb_last_win = -1;\n";
+    ss << "\n";
+  }
+
   // Block loaders for this Q-block
   ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
   ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
@@ -278,7 +303,23 @@ struct MFASteelParams {
   } else {
     ss << "  int kb_lim = p->NK;\n";
   }
-  ss << "  const int kb_start = 0;\n";
+  // kb_start is already declared above (before loaders).
+  // Sliding window right bound: clamp kb_lim + track first tile needing masking.
+  if (has_window) {
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    const int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim;  // no right masking\n";
+    ss << "  }\n";
+  } else {
+    ss << "  const int kb_first_right = kb_lim;  // no window\n";
+  }
   ss << "\n";
 
   // ── V2 Phase 0: Preload K[kb_start] before main loop ────────────────────
@@ -330,6 +371,23 @@ struct MFASteelParams {
   ss << "    }\n";
   ss << "\n";
 
+  // Softcap (Gemma 2 / Grok): tanh(S_nat / cap) * cap, in log2 domain
+  if (has_softcap) {
+    ss << "    // Softcapping: convert log2→nat, tanh, nat→log2\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      constexpr AccT ln2   = 0.6931471805599453f;\n";
+    ss << "      const AccT cap = p->softcap;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+    ss << "        AccT s_nat = Stile.elems()[ii] * ln2;\n";
+    ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
+    ss << "        Stile.elems()[ii] = s_nat * log2e;\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
   // K-boundary mask (pad positions → -inf)
   ss << "    if (kb == p->NK_aligned) {\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
@@ -360,6 +418,43 @@ struct MFASteelParams {
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if (row < (col + jj))\n";
     ss << "              Stile.frag_at(i, j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // Sliding window masking (left + right boundaries)
+  if (has_window) {
+    ss << "    // Window left boundary: mask col < row - window_left\n";
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "    // Window right boundary: mask col > row + window_right\n";
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";
@@ -539,7 +634,9 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   using KK = ShaderCache::KernelKey;
 
   const int D      = key.head_dim;
-  const bool causal = key.causal;
+  const bool causal    = key.causal;
+  const bool has_softcap = key.has_softcap;
+  const bool has_window  = key.has_window;
   const int gqa    = key.gqa_factor;
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
@@ -804,6 +901,22 @@ struct MFAFlashDecodePartialParams {
   ss << "    for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++)\n";
   ss << "      Stile.elems()[ii] *= scale;\n";
   ss << "\n";
+
+  // Softcap (Gemma 2 / Grok)
+  if (has_softcap) {
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      constexpr AccT ln2   = 0.6931471805599453f;\n";
+    ss << "      const AccT cap = p->softcap;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+    ss << "        AccT s_nat = Stile.elems()[ii] * ln2;\n";
+    ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
+    ss << "        Stile.elems()[ii] = s_nat * log2e;\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
 
   // K-boundary mask
   ss << "    if (kb == p->NK_aligned) {\n";

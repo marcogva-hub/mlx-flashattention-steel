@@ -303,9 +303,9 @@ void MFAttention::eval_gpu(
         !params_.has_rope &&
         !params_.has_alibi &&
         !params_.has_block_mask &&
+        // Window masking interacts with split-K ranges — keep in V1 split-K
         params_.window_left  < 0 &&
-        params_.window_right < 0 &&
-        params_.softcap == 0.0f;
+        params_.window_right < 0;
 
     if (v2sk_eligible) {
       auto cfg2 = select_steel_v2_block_config(D);
@@ -359,9 +359,9 @@ void MFAttention::eval_gpu(
         sk_pp.pL_split_stride = (int64_t)B * H * N;
         sk_pp.pL_batch_stride = (int64_t)H * N;
         sk_pp.pL_head_stride  = (int64_t)N;
-        sk_pp.softcap     = 0.0f;
-        sk_pp.window_left = -1;
-        sk_pp.window_right = -1;
+        sk_pp.softcap     = params_.softcap;
+        sk_pp.window_left = params_.window_left;
+        sk_pp.window_right = params_.window_right;
 
         // ── Build FlashDecodeReduceParams for Phase 2 ─────────────────────
         int reduce_tgp = std::min(D, 128);
@@ -388,7 +388,9 @@ void MFAttention::eval_gpu(
           D, BQ2, BK2, D, WM2,
           params_.causal, /*sparse=*/false, is_m3_plus_steel,
           /*has_rope=*/false, /*rope_interleaved=*/false,
-          /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
+          params_.softcap > 0.0f,   // has_softcap
+          /*has_alibi=*/false,
+          params_.window_left >= 0 || params_.window_right >= 0,  // has_window
           dtype_code, H / Hk
         };
         // Phase 2 reuses FlashDecodeReduce (key identical to flash_decode reduce).
@@ -450,10 +452,7 @@ void MFAttention::eval_gpu(
         (D == 64 || D == 128 || D == 256) &&
         !params_.has_rope &&
         !params_.has_alibi &&
-        !params_.has_block_mask &&
-        params_.window_left  < 0 &&
-        params_.window_right < 0 &&
-        params_.softcap == 0.0f;
+        !params_.has_block_mask;
 
     if (v2_eligible) {
       auto cfg2 = select_steel_v2_block_config(D);
@@ -474,7 +473,9 @@ void MFAttention::eval_gpu(
         /*sparse=*/false,
         is_m3_plus_steel,       // controls enable_unroll for D=256 (same code otherwise)
         /*has_rope=*/false, /*rope_interleaved=*/false,
-        /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
+        params_.softcap > 0.0f,   // has_softcap
+        /*has_alibi=*/false,
+        params_.window_left >= 0 || params_.window_right >= 0,  // has_window
         dtype_code,
         H / Hk   // gqa_factor
       };
@@ -513,10 +514,10 @@ void MFAttention::eval_gpu(
       sp2.O_strides[2] = (int64_t)D;
       sp2.L_strides[0] = (int64_t)H  * N;
       sp2.L_strides[1] = (int64_t)N;
-      sp2.softcap      = 0.0f;
+      sp2.softcap      = params_.softcap;
       sp2.has_alibi    = 0;
-      sp2.window_left  = -1;
-      sp2.window_right = -1;
+      sp2.window_left  = params_.window_left;
+      sp2.window_right = params_.window_right;
       sp2.mask_batch_stride = 0;
       sp2.mask_head_stride  = 0;
 
