@@ -2,6 +2,87 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.0.0] — 2026-03-10
+
+### Performance Revolution (Phase 1)
+
+**Backward pass: 4–6× faster** (eliminating `mfa_steel_backward`):
+
+| Config | Before | After | Speedup |
+|--------|--------|-------|---------|
+| D=64  N=4096 bwd | 35ms  | 21ms  | 1.7×  |
+| D=128 N=4096 bwd | 128ms | 30ms  | 4.3×  |
+| D=256 N=4096 bwd | 317ms | 48ms  | 6.6×  |
+
+`mfa_steel_backward` was 0.15–0.63× vs `mx.vjp(SDPA)` in ALL configs.
+The default backward is now `mx.vjp(mx.fast.scaled_dot_product_attention)`.
+The STEEL backward kernel is compiled but not used (future Track M).
+
+**Smart MFA/SDPA dispatch (`dispatch_policy.py`)**:
+
+`flash_attention(backend='auto')` now routes based on empirical crossover points:
+- Non-causal (all D, all N): SDPA (MFA never wins, best 0.92×)
+- Causal D=64  N<4096:  SDPA (1.0× effective)
+- Causal D=64  N≥4096:  MFA  (1.02–1.41× speedup)
+- Causal D=128 N<8192:  SDPA (1.0× effective)
+- Causal D=128 N≥8192:  MFA  (1.25× speedup)
+- Causal D=256/512:     SDPA (MFA max 0.78×)
+- Window/sparse:        always MFA (tile-skip guarantee regardless of shape)
+- Mixed-dtype (q f32 + k/v f16): always MFA (SDPA produces NaN)
+
+Python dispatch overhead: **~2μs per call** (negligible at production scales).
+
+### Added
+
+- **`mlx_mfa.dispatch_policy`** — `should_use_mfa()` + shape-aware threshold
+  tables (`_DEFAULT_THRESHOLDS`, `_M3_THRESHOLDS`). Supports `MLX_MFA_DISPATCH_TABLE`
+  env var for custom JSON thresholds and `MLX_MFA_VERBOSE_DISPATCH=1` logging.
+
+- **`calibrate_dispatch()`** — runtime micro-benchmark that discovers device-specific
+  MFA/SDPA crossover points and saves to `~/.mlx_mfa/dispatch_table.json`.
+
+- **`benchmarks/bench_dispatch_matrix.py`** — D×N×causal raw kernel matrix;
+  baseline committed to `docs/benchmarks/dispatch_matrix.json`.
+
+- **`benchmarks/bench_backward_matrix.py`** — backward performance matrix;
+  baseline committed to `docs/benchmarks/backward_matrix.json`.
+
+- **`benchmarks/bench_auto_dispatch_validation.py`** — validates that
+  `backend='auto'` is ≥ SDPA in all dispatch cases.
+
+### Changed
+
+- **Default backward**: `mfa_steel_backward` → `mx.vjp(SDPA)`. 4–6× faster
+  across all D/N combinations measured. Breaking change only if code explicitly
+  depends on the backward kernel being the STEEL Metal implementation.
+
+- **`flash_attention(backend='auto')`**: now shape-aware. Previously always MFA when
+  ext available; now SDPA for non-causal and causal small-N (below crossover).
+
+- **Dispatch threshold D=64 causal**: 2048 → 4096 (more conservative, eliminates
+  sub-2ms Metal scheduling jitter at the crossover point).
+
+### Fixed
+
+- Mixed-dtype bypass: `flash_attention(q_f32, k_f16, v_f16)` with `backend='auto'`
+  now routes to MFA regardless of N; `mx.fast.sdpa` produces NaN on mixed dtypes.
+
+- `_fallback_sdpa_with_lse`: replaced `mx.exp2`/`mx.log2` (absent in MLX ≤ 0.31)
+  with portable `mx.exp(x * ln2)` / `mx.log(x) / ln2`.
+
+- `is_m3_plus` caching: `get_device_info()` called once per process (cached after
+  first dispatch) instead of per `flash_attention` call.
+
+### Tests
+
+- `TestSmartDispatch` (11 tests): dispatch threshold routing, non-causal disable,
+  window/sparse always-MFA, backend override, auto-vs-sdpa numerical match,
+  mixed-dtype NaN guard, `calibrate_dispatch` importability.
+
+- 526 tests pass.
+
+---
+
 ## [1.3.0] — 2026-03-09
 
 ### Added

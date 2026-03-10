@@ -69,6 +69,22 @@ try:
 except ImportError:
     _USE_SCATTER_KV = False
 
+# ---------------------------------------------------------------------------
+# Phase 1.1 — dispatch overhead guard: cache is_m3_plus once at module load.
+# get_device_info() makes a C++ Metal API call; calling it per-attention-op
+# adds ~5% overhead at sub-millisecond workloads.
+# ---------------------------------------------------------------------------
+_cached_is_m3_plus: "bool | None" = None
+
+
+def _get_is_m3_plus_cached() -> bool:
+    """Return cached is_m3_plus to avoid repeated MTLDevice queries."""
+    global _cached_is_m3_plus
+    if _cached_is_m3_plus is None:
+        info = get_device_info()
+        _cached_is_m3_plus = bool(info.get("is_m3_plus", False))
+    return _cached_is_m3_plus
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -305,13 +321,13 @@ def flash_attention(
     # Window-size and sparse are handled inside should_use_mfa (always MFA).
     if _mfa_capable and backend == "auto":
         from mlx_mfa.dispatch_policy import should_use_mfa as _should_mfa
-        _dev_info = get_device_info()
         # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch: MFA handles
         # the cast internally, but mx.fast.sdpa produces NaN on mixed dtypes.
         _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
+        # Use cached is_m3_plus to avoid per-call MTLDevice query overhead.
         use_mfa = _mixed_dtype or _should_mfa(
             head_dim, q.shape[2], causal,
-            _dev_info.get("is_m3_plus", False),
+            _get_is_m3_plus_cached(),
             window_size=window_size,
             sparse=False,
             backend=backend,

@@ -10,7 +10,7 @@
 
 A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal and window tiles skipped entirely.
 
-## Performance (M1 Max, float16, B=1, H=8) — v1.2.2
+## Performance (M1 Max, float16, B=1, H=8) — v2.0.0
 
 ### Forward attention (STEEL vs SDPA)
 
@@ -50,14 +50,25 @@ single GPU dispatch, making SageAttention faster than flash_attention at N≤102
 At N≥2048 the sage_forward kernel dominates; further gains require a faster
 sage kernel.
 
-### Backward pass (STEEL vjp vs SDPA vjp)
+### Backward pass — v2.0.0 (SDPA vjp, 4–6× faster than previous STEEL vjp)
 
-| head_dim | N | backward speedup |
-|:--------:|:-:|:----------------:|
-| 64  | 4096 | 0.64× |
-| 128 | 4096 | 0.26× |
-| 256 | 4096 | 0.16× |
-| 512 | 2048 | 0.12× |
+`flash_attention(backend='auto')` uses `mx.vjp(mx.fast.sdpa)` for all backward passes.
+
+| head_dim | N | forward speedup | backward speedup (vs v1.3.x) |
+|:--------:|:-:|:---------------:|:----------------------------:|
+| 64  | 4096 | 1.04×  | **1.7×** (21ms → 35ms was) |
+| 64  | 8192 | **1.40×** | **1.7×** |
+| 128 | 8192 | **1.25×** | **4.3×** (30ms → 128ms was) |
+| 256 | 4096 | 1.00×  | **6.6×** (48ms → 317ms was) |
+
+**Smart forward dispatch** (backend='auto', SDPA for non-winning shapes):
+
+| head_dim | causal | N routed to MFA | speedup |
+|:--------:|:------:|:---------------:|:-------:|
+| 64  | yes | ≥4096  | 1.02–1.41× |
+| 128 | yes | ≥8192  | 1.25× |
+| any | no  | never  | 1.00× (SDPA) |
+| any | yes | <4096  | 1.00× (SDPA) |
 
 ### Paged KV decode (N_q=1, gather+attend vs paged STEEL)
 
@@ -72,7 +83,8 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 ## Features
 
 - **Drop-in replacement** for `mx.fast.scaled_dot_product_attention`
-- **Full autograd** — dQ, dK, dV via custom gradient checkpointing backward
+- **Smart dispatch** (`backend='auto'`) — shape-aware MFA/SDPA routing; MFA only when empirically faster; SDPA otherwise; ~2μs dispatch overhead
+- **Full autograd** — dQ, dK, dV via `mx.vjp(SDPA)` (4–6× faster than v1.x STEEL backward)
 - **All head dims**: 64, 128, 256, 512 (D=512 uses 4-pass d-split in forward/backward)
 - **All dtypes**: float16, bfloat16, float32
 - **Causal and non-causal** attention

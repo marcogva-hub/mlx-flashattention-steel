@@ -7396,9 +7396,10 @@ class TestSmartDispatch:
         assert not should_use_mfa(64, 512, causal=True, is_m3_plus=False)
 
     def test_large_n_causal_d64_routes_mfa(self):
-        """Large N above threshold: D=64 causal N=2048 should use MFA."""
+        """Large N above threshold: D=64 causal N=4096 should use MFA."""
         from mlx_mfa.dispatch_policy import should_use_mfa
-        assert should_use_mfa(64, 2048, causal=True, is_m3_plus=False)
+        # Threshold raised to 4096 for stable dispatch (1.04x at N=4096).
+        assert should_use_mfa(64, 4096, causal=True, is_m3_plus=False)
         assert should_use_mfa(64, 8192, causal=True, is_m3_plus=False)
 
     def test_large_n_causal_d128_routes_mfa(self):

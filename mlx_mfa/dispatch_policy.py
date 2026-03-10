@@ -35,8 +35,9 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
-    # D=64 causal: crossover at N=2048 (1.06x).  Use conservatively.
-    (64,  True):  2048,
+    # D=64 causal: crossover ~1.06x at N=2048 but high scheduling variance.
+    # Raised to N=4096 for stability (1.04x stable, 1.41x at N=8192).
+    (64,  True):  4096,
     # D=64 non-causal: best 0.92x at N=8192 — MFA never wins. Disable.
     (64,  False): 999_999,
     # D=128 causal: crossover at N=8192 (1.25x).
@@ -54,7 +55,7 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
 # M3+ thresholds: BK=32 for D=128 gives better occupancy.
 # Estimated based on known M3+ improvements; same caution applies.
 _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
-    (64,  True):  2048,    # same crossover, slightly safer
+    (64,  True):  4096,    # conservative (matches M1 default)
     (64,  False): 999_999,
     (128, True):  4096,    # M3+ BK=32 may win from N=4096 (estimated)
     (128, False): 999_999,
