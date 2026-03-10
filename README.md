@@ -12,31 +12,37 @@ A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the 
 
 ## Performance (M1 Max, float16, B=2, H=8) — v2.4.0
 
+> Regenerate: `python benchmarks/bench_v2_final.py --warmup 8 --iters 20 --save`
+
 ### Forward attention — STEEL V2 vs SDPA (causal)
 
 V2 (sequential K/V phases, 2× BK) wins decisively over V1 and SDPA for causal
-D=64/128. D=256 and D=512 still route to V1 (register spill ceiling).
+D=64/128. D=256 routes to V1 (register spill ceiling with 3D blocking).
 
 | head_dim | N | V2/SDPA | V2/V1 |
 |:--------:|:-:|:-------:|:-----:|
-| 64  | 4096 | **1.95x** | **1.66x** |
-| 64  | 8192 | **2.07x** | **1.21x** |
-| 128 | 4096 | **1.67x** | **1.51x** |
-| 128 | 8192 | **1.74x** | **1.26x** |
-| 256 | 8192 | 0.95x (V1) | --- |
+| 64  | 4096  | **1.66×** ★ | 1.34× |
+| 64  | 8192  | **2.15×** ★ | 1.24× |
+| 128 | 4096  | **1.56×** ★ | 1.45× |
+| 128 | 8192  | **1.71×** ★ | 1.19× |
+| 128 | 16384 | **1.78×** ★ | 1.12× |
+| 256 | 8192  | 0.93× (V1)  | ---   |
 
-Non-causal: V2 1.04-1.32x vs V1 (smaller benefit; fewer tiles to amortize 2x BK).
+★ = ≥1.5× speedup. Non-causal: V2 ≈1.05× vs V1 (smaller benefit; full K-tile traversal).
 
-### Sliding window attention (vs full causal)
+### Sliding window attention (vs full SDPA — causal)
 
-Speedup vs the equivalent full-causal STEEL kernel. Active-tile fraction = `window / N`.
+Window masking skips `(N−win)/N` fraction of K-tiles, giving super-linear speedup
+as N grows relative to the window.
 
-| head_dim | N | window | speedup | active tiles |
-|:--------:|:-:|:------:|:-------:|:------------:|
-| 128 | 4096  | 512  | **5.43×**  | ~12% |
-| 128 | 8192  | 512  | **7.67×**  | ~6%  |
-| 128 | 8192  | 1024 | **4.46×**  | ~12% |
-| 128 | 16384 | 512  | **13.17×** | ~3%  |
+| head_dim | N | window | MFA/SDPA |
+|:--------:|:-:|:------:|:--------:|
+| 64  | 4096 | 512 | **4.1×**  |
+| 64  | 8192 | 512 | **13.3×** |
+| 128 | 4096 | 512 | **4.5×**  |
+| 128 | 8192 | 512 | **11.8×** |
+| 128 | 4096 | 256 | **9.7×**  |
+| 128 | 8192 | 256 | **20.2×** |
 
 ### SageAttention (int8 Q/K, fused Metal quantize kernel — v1.2.2)
 
@@ -141,6 +147,37 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 - **`SageInferenceContext`** — stateful SageAttention decode wrapper; prefill uses full-precision `flash_attention`, decode uses int8 `sage_attention_kvcache` for reduced bandwidth (v1.3.0)
 - **`warmup_kernels()`** — pre-compile Metal shaders before first use to eliminate 100–300 ms first-call JIT latency (v1.3.0)
 - **`DispatchPolicy`** — `AUTO / MFA / SDPA` constants for explicit backend selection in `flash_attention(backend=...)` (v1.3.0)
+
+## Auto-Calibration Quickstart (v2.4.0)
+
+mlx-mfa selects block sizes based on GPU generation (M1/M2 vs M3+), but the
+optimal BK may differ on your exact chip. Run calibration once after installation:
+
+```bash
+pip install mlx-mfa
+
+# Show device info and current dispatch config
+python -m mlx_mfa info
+
+# Benchmark BK=32 vs BK=64 on your device (~30 s); saves ~/.mlx_mfa/dispatch_table.json
+python -m mlx_mfa calibrate
+
+# Quick calibration (fewer iters, less accurate)
+python -m mlx_mfa calibrate --quick
+```
+
+The dispatch table is auto-loaded at `import mlx_mfa` for all subsequent runs.
+No code changes required — `flash_attention()` automatically uses the calibrated config.
+
+Example `info` output on M1 Max:
+
+```
+Device : Apple M1 Max  gen=13  M3+=False
+mlx-mfa: 2.4.0
+D=128 BK: 32  (gen-aware default, not calibrated)
+D=64  BK: 64  (gen-aware default, not calibrated)
+Dispatch table: not found (~/.mlx_mfa/dispatch_table.json)
+```
 
 ## Requirements
 
