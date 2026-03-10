@@ -1,7 +1,7 @@
-# mlx-mfa Code Inventory — v1.2.1
+# mlx-mfa Code Inventory — v2.3.0
 
 All numbers verified by running shell commands against the source tree.
-Regenerated: 2026-03-09.
+Regenerated: 2026-03-10.
 
 ---
 
@@ -9,9 +9,9 @@ Regenerated: 2026-03-09.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.2.1` |
-| `mlx_mfa/__init__.py` | `1.2.1` |
-| Latest git tag | `v1.2.1` |
+| `pyproject.toml` | `2.3.0` |
+| `mlx_mfa/__init__.py` | `2.3.0` |
+| Latest git tag | `v2.3.0` |
 
 ---
 
@@ -220,7 +220,7 @@ Regenerated: 2026-03-09.
 
 ---
 
-## Benchmarks (`benchmarks/` — 13 files)
+## Benchmarks (`benchmarks/` — 14 files)
 
 | File | Lines | What it benchmarks |
 |------|-------|-------------------|
@@ -236,6 +236,8 @@ Regenerated: 2026-03-09.
 | `bench_segment.py` | 101 | Segment mask attention |
 | `bench_softcap_alibi.py` | 133 | Softcap and ALiBi overhead |
 | `bench_spatial_masks.py` | 325 | Spatial mask benchmarks |
+| `bench_v2.py` | 98 | STEEL V2 vs V1 vs SDPA: D=64/128, causal/non-causal |
+| `bench_v2_final.py` | 201 | **New v2.3.0** — Comprehensive: dense+window+split-K, all D/N/causal combos |
 | `bench_varlen.py` | 113 | Varlen vs padded attention |
 
 ---

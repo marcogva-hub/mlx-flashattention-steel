@@ -2,6 +2,34 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.3.0] — 2026-03-10
+
+### BK=64 evaluation (reverted) + comprehensive benchmarks + RESULTS.md refresh
+
+**BK=64 for D=128 — evaluated and reverted**: Doubling BK from 32→64 reduces
+total barriers by ~49% (TK=8 vs 4), and the 27,136B TGP still fits in 32KB.
+However, TK=8 doubles K/P accumulator registers alongside the pinned Q
+accumulators (BQ×D=4096 elements per simdgroup), causing register spill at
+N≥8192 (−27% at N=8192 vs BK=32). BK=32 remains default; evaluation documented
+in `select_steel_v2_block_config` comments.
+
+**bench_v2_final.py**: New comprehensive benchmark covering dense causal/non-causal
+(D=64/128/256, N=2048–16384, f16/bf16), window masking (6×–20× SDPA), and V2
+split-K small-grid scenarios. Replaces ad-hoc per-feature bench scripts.
+
+**RESULTS.md**: Fully regenerated with v2.2.0 measurements (M1 Max, B=2 H=8,
+warmup=8 iters=20). Replaces stale v1.3.0 data. Highlights:
+  - D=64  N=8192 causal: V2=**2.06×** SDPA
+  - D=128 N=4096 causal: V2=**1.69×** SDPA
+  - D=128 win=256 N=8192: MFA=**20.2×** SDPA
+  - D=256 win=512 N=8192: MFA=**7.1×** SDPA
+
+**D=256 window/sparse dispatch verified**: `dispatch_policy.py` correctly routes
+D=256 window and sparse attention to MFA unconditionally (tile-skip benefit
+independent of D). V1 sparse path achieves 3.7×–11.8× SDPA for D=256 window.
+
+531/531 tests pass.
+
 ## [2.2.0] — 2026-03-10
 
 ### GPU core count detection + BQ=64 WM=8 evaluation

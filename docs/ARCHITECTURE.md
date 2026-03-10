@@ -1124,3 +1124,67 @@ comprehension for the `phys >= 0` filter, then integer fancy indexing `arr[idx]`
 `block_table.tolist()` moved inside the Python-loop fallback branch; the
 `_USE_SCATTER_KV` fast path never materialises the full block table to Python.
 `seq_lens_list_p` is still needed (Python int for RoPE offset + fallback loop).
+
+## 18. v2.3.0 Architecture Notes — BK=64 Evaluation + Benchmark Refresh
+
+### 18.1 BK=64 for D=128 — Evaluation and Reversal
+
+**Hypothesis**: Doubling BK from 32 → 64 in `select_steel_v2_block_config` for D=128
+halves total barrier stalls (~171 → ~87 per Q-tile at N=4096 causal) without reducing
+occupancy (27,136B TGP < 32KB → still 1 TG/core on M1 Max).
+
+**MFABlockLoaderT constraints verified for BK=64**:
+| Loader | BROWS | BCOLS | n_reads | TCOLS |
+|--------|------:|------:|--------:|------:|
+| Q (row-major) | 32 | 128 | 32 | 4 |
+| K (transposed) | 128 | 64 | 64 | 1 |
+| V (row-major) | 64 | 128 | 64 | 2 |
+
+All `n_reads = BROWS × BCOLS / TGP_SIZE` are integers — constraint satisfied.
+
+**Benchmark results (M1 Max, B=2 H=8 f16 causal, V2/SDPA)**:
+| N | BK=32 | BK=64 | Delta |
+|---|------:|------:|------:|
+| 4096 | 1.63× | 1.15× | −29% |
+| 8192 | 1.73× | 1.25× | −28% |
+
+**Root cause**: TK=8 (BK=64) doubles the K-fragment and P-fragment register count
+vs TK=4 (BK=32). With BQ×D = 32×128 = 4096 Q-elements pinned in registers across
+all K-tile iterations (the core V2 optimization), the additional 2× K/P fragments
+cause register spill. The spill penalty (DRAM roundtrip) completely dominates the
+barrier savings.
+
+**Decision**: BK=32 remains the default. The evaluation data and rationale are
+preserved in `csrc/mfa_steel_fwd_v2.cpp` comments.
+
+**General principle**: For STEEL V2, the Q-accumulator pinning (O(BQ×D) registers
+per simdgroup held across all K-tiles) leaves limited register headroom for inner
+GEMM fragments. TK must be small (≤4 for D=128) to avoid spill. Barrier reduction
+must come from architectural changes (e.g., async copy, hardware tensor ops) rather
+than tile-size increases.
+
+### 18.2 D=256 Window/Sparse Dispatch Verification
+
+Dense D=256 routes to V1 STEEL (not V2), which is slower than SDPA (0.76–0.90× at
+typical N). However, `dispatch_policy.py` unconditionally routes window-masked and
+sparse attention to MFA regardless of D — the tile-skip benefit applies at all head
+dimensions.
+
+V1 STEEL with window masking achieves:
+| D | N | win | MFA/SDPA |
+|---|---|-----|--------:|
+| 256 | 4096 | 512 | 3.7× |
+| 256 | 8192 | 512 | 7.1× |
+| 256 | 8192 | 256 | 11.8× |
+
+No dispatch fix was needed. D=256 dense remains at SDPA (pending 3D-blocking for
+register-friendly D=256 tiling).
+
+### 18.3 bench_v2_final.py
+
+New comprehensive benchmark (`benchmarks/bench_v2_final.py`) covering:
+- **Dense** (13 configs): D=64/128/256, causal/non-causal, f16/bf16, N=2048–16384
+- **Window** (9 configs): D=64/128/256, win=256/512, N=4096/8192
+- **Split-K** (6 configs): small-grid B=1 H=1–4 scenarios
+
+Use `--section dense/window/splitk/all` to select.
