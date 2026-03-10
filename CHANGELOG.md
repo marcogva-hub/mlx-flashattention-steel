@@ -2,6 +2,46 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.1.0] — 2026-03-10
+
+### STEEL V2 Kernel — Sequential K/V Phases
+
+**New architecture**: V2 shares `K_smem` and `V_smem` in a single `KV_smem` buffer
+(sequential K phase → V phase), doubling BK within the same TGP budget. This halves
+K-tile iterations and provides 2× more compute per threadgroup barrier stall.
+
+| Config | BQ | BK | BK gain | TGP delta |
+|--------|----|----|--------:|----------:|
+| D=64   | 32 | 64 | 2× vs V1 | −512 B |
+| D=128  | 32 | 32 | 2× vs V1 | −256 B |
+
+D=256 (BQ=16, BK=32, WM=2) was implemented but reverts to V1 after benchmarking:
+halving WM reduces warp parallelism more than 2× BK saves in K-tile iterations
+(0.62–0.84× causal regression).
+
+**Performance (M1 Max, B=2 H=8, f16, causal, vs V1):**
+
+| D | N | V2/V1 | V2/SDPA |
+|---|---|------:|--------:|
+| 64  | 4096 | 1.66× | 1.95× |
+| 64  | 8192 | 1.21× | 2.07× |
+| 128 | 4096 | 1.51× | 1.67× |
+| 128 | 8192 | 1.26× | 1.74× |
+
+Non-causal: V2 1.04–1.32× vs V1 (smaller benefit; fewer K-tiles to amortize).
+
+### V2 Feature Support
+- **Split-K** (Phase 3): V2 split-K for under-occupied grids
+  (`total_tgs < 0.8 * gpu_cores`). Activation: `num_splits ≥ 2`. D=64/128 only.
+- **Softcap** (Phase 5): tanh softcapping in log2 domain (`log2e`/`ln2` conversion),
+  compatible with both single-pass and split-K paths.
+- **Sliding window** (Phase 5): O(1) K/V pointer advance before MFABlockLoaderT
+  construction; single-pass only (split-K + window interaction excluded).
+
+### New benchmark
+`benchmarks/bench_v2.py` — 3-way V2 vs V1 vs SDPA across D/N/causal/dtype.
+`MFA_DISABLE_V2=1` env var bypasses V2 dispatch for benchmarking/debugging.
+
 ## [2.0.0] — 2026-03-10
 
 ### Performance Revolution (Phase 1)

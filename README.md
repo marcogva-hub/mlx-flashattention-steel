@@ -10,19 +10,22 @@
 
 A drop-in replacement for `mx.fast.scaled_dot_product_attention` powered by the **STEEL** (Structured Tiled Execution Engine Layer) kernel: Q loaded once into registers, K/V streamed tile-by-tile, causal and window tiles skipped entirely.
 
-## Performance (M1 Max, float16, B=1, H=8) — v2.0.0
+## Performance (M1 Max, float16, B=2, H=8) — v2.1.0
 
-### Forward attention (STEEL vs SDPA)
+### Forward attention — STEEL V2 vs SDPA (causal)
 
-STEEL wins when causal masking skips enough K-tiles (~50% at full-causal, more with a window). Crossover vs SDPA is around N=8192 for D≤128. Large head dims (D=256, D=512) spill registers and are slower.
+V2 (sequential K/V phases, 2× BK) wins decisively over V1 and SDPA for causal
+D=64/128. D=256 and D=512 still route to V1 (register spill ceiling).
 
-| head_dim | N | causal speedup |
-|:--------:|:-:|:--------------:|
-| 64  | 8192 | **1.37×** |
-| 128 | 8192 | **1.26×** |
-| 128 | 4096 | 0.83× |
-| 256 | 8192 | 0.77× |
-| 512 | 4096 | 0.26× |
+| head_dim | N | V2/SDPA | V2/V1 |
+|:--------:|:-:|:-------:|:-----:|
+| 64  | 4096 | **1.95x** | **1.66x** |
+| 64  | 8192 | **2.07x** | **1.21x** |
+| 128 | 4096 | **1.67x** | **1.51x** |
+| 128 | 8192 | **1.74x** | **1.26x** |
+| 256 | 8192 | 0.95x (V1) | --- |
+
+Non-causal: V2 1.04-1.32x vs V1 (smaller benefit; fewer tiles to amortize 2x BK).
 
 ### Sliding window attention (vs full causal)
 
@@ -83,6 +86,7 @@ Full results: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md).
 ## Features
 
 - **Drop-in replacement** for `mx.fast.scaled_dot_product_attention`
+- **STEEL V2 kernel** (v2.1.0) — Sequential K/V phases in shared threadgroup memory: 2x BK, 2x fewer K-tile iterations, 1.5-2.1x SDPA for D=64/128 causal at N>=4096
 - **Smart dispatch** (`backend='auto'`) — shape-aware MFA/SDPA routing; MFA only when empirically faster; SDPA otherwise; ~2μs dispatch overhead
 - **Full autograd** — dQ, dK, dV via `mx.vjp(SDPA)` (4–6× faster than v1.x STEEL backward)
 - **All head dims**: 64, 128, 256, 512 (D=512 uses 4-pass d-split in forward/backward)

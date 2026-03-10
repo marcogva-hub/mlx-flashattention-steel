@@ -129,7 +129,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v0.5.0 in progress — 107 tests pass.
+v1.4.0 in progress — 526 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
@@ -142,6 +142,10 @@ v0.5.0 in progress — 107 tests pass.
 | F/G | M3+ routing, sparse backward | Done (v0.4.0) |
 | H | Flash Decoding (split-KV) | Done (v0.5.0) |
 | I | M5+ detection stub | Done (v0.5.0) |
+| V2-1 | STEEL V2 (sequential K/V phases, 2× BK) | Done (v1.4.0) |
+| V2-2 | V2 split-K for under-occupied grids | Done (v1.4.0) |
+| V2-3 | V2 D=256 support (implemented; reverted: regression) | Done (v1.4.0) |
+| V2-4 | V2 softcap + sliding window | Done (v1.4.0) |
 
 ## Post-Phase 1 Technical Notes
 
@@ -334,6 +338,50 @@ Needs 3D blocking (block_d tiling along head dim) to fit in registers. Current t
 The 5% gap at D=128 is likely the cost of software tile loads vs what hardware DMA
 (`simdgroup_async_copy`) provided. Cannot be closed without hardware support
 (M5+ tensor API or restored async copy).
+
+## v1.4.0 Technical Notes — STEEL V2
+
+### V2 kernel overview
+STEEL V2 shares K_smem and V_smem in a single `KV_smem` buffer (sequential K phase
+then V phase). This doubles BK vs V1 within the same TGP, halving K-tile iterations:
+
+| D | BQ | BK | WM | TGP bytes | V1 BK | V1 TGP |
+|---|----|----|----|-----------:|------:|-------:|
+| 64  | 32 | 64 | 4 | 13,824 | 32 | 14,336 |
+| 128 | 32 | 32 | 4 | 18,944 | 16 | 19,200 |
+
+D=256 is **not dispatched** to V2. The V2 config (BQ=16, BK=32, WM=2) requires halving
+BQ to stay under 32KB TGP, which also halves WM. Fewer warps/TG causes a net regression:
+0.62–0.84× causal, 0.58–0.62× non-causal vs V1. D=256 always routes to V1.
+
+### V2 dispatch routing
+Two routing checks in `eval_gpu()`:
+1. **V2 split-K** (Phase 3): `v2sk_eligible` — fires for under-occupied grids
+   (`total_tgs < 0.8 * gpu_cores`). Softcap: OK. Sliding window: excluded (interacts with
+   split ranges). D=64/128 only.
+2. **V2 single-pass**: `v2_eligible` — fires for all other well-occupied grids.
+   Softcap + sliding window: both OK. D=64/128 only.
+
+Both blocks gated by `if (!std::getenv("MFA_DISABLE_V2"))` for benchmarking.
+
+### V2 benchmark results (M1 Max, B=2 H=8, f16, causal)
+
+| D | N | V2/SDPA | V2/V1 |
+|---|---|--------:|------:|
+| 64  | 4096 | 1.95× | 1.66× |
+| 64  | 8192 | 2.07× | 1.21× |
+| 128 | 4096 | 1.67× | 1.51× |
+| 128 | 8192 | 1.74× | 1.26× |
+
+Non-causal: V2 1.04–1.32× vs V1 (smaller benefit; fewer K-tiles to amortize).
+
+### V2 Phase 5 — softcap + sliding window
+Softcap (`has_softcap`): tanh applied in log2 domain via `log2e`/`ln2` conversion,
+after QK scale, before masking. Uses `precise::tanh` for Metal accuracy.
+
+Sliding window (`has_window`): `kb_start` computed before MFABlockLoaderT construction;
+K and V base pointers advanced O(1) before loader creation. Right bound clips `kb_lim`
+and masks per-element in the K-tile loop.
 
 ## Output constraint — MANDATORY
 NEVER produce a monolithic response exceeding 20000 tokens.
