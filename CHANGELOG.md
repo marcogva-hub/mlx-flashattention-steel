@@ -2,6 +2,30 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.6.0] — 2026-03-11
+
+### Consolidation + Validated Benchmarks
+
+- **fix**: async kernel `threadgroup_barrier` after `simdgroup_event::wait` —
+  `wait()` is per-simdgroup; without the barrier, simdgroups 1-3 may still
+  be writing shared K_smem/V_smem when simdgroup 0 begins reading (root cause
+  of max_abs_diff=3.86 correctness failure)
+- **perf**: D=256/512 dense routes to SDPA — D-split V2 achieves ~1.00× SDPA
+  on M1 Max (validated benchmark); route to SDPA to avoid Python overhead;
+  window/sparse always route to MFA (tile-skip 5-20× regardless of D)
+- **docs**: RESULTS.md with validated M1 Max benchmarks (exact numbers)
+- **docs**: README with v2.6.0 performance tables
+- **docs**: ARCHITECTURE.md — async_copy investigation results and metallib design
+
+Validated performance (M1 Max, f16, B=2 H=8, 2026-03-11):
+- D=64  N=8192  causal: **1.82× SDPA**
+- D=64  N=4096  causal: **1.51× SDPA**
+- D=128 N=8192  causal: **1.67× SDPA**
+- D=128 N=16384 causal: **1.75× SDPA**
+- D=256/512 dense: ~1.00× SDPA (parity; tile-skip for window/sparse)
+- Async metallib: loads on macOS 26, runtime converts async_copy to sync
+  (no DMA benefit, no harm); correctness fix committed for macOS ≤15 rebuild
+
 ## [2.5.4] — 2026-03-11
 
 ### Async V2 Metallib — Hardware DMA Overlap (CP4)
