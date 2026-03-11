@@ -1,7 +1,7 @@
 # mlx-mfa Code Inventory — v2.5.0
 
 All numbers verified by running shell commands against the source tree.
-Regenerated: 2026-03-10.
+Regenerated: 2026-03-11.
 
 ---
 
@@ -20,10 +20,10 @@ Regenerated: 2026-03-10.
 ### Python (`mlx_mfa/`)
 
 | File | Lines | Purpose |
-|------|-------|---------|
+|------|-------|---------||
 | `mlx_mfa/__init__.py` | 190 | Public API re-exports, ABI check, `__version__` |
-| `mlx_mfa/attention.py` | 4951 | All attention functions + helpers + `DispatchPolicy.SAGE` (CP8) |
-| `mlx_mfa/inference.py` | 628 | `InferenceContext`, `DenseKVCache`, `PagedKVCache`, `SageInferenceContext`, **`QuantizedKVCache`** (CP6) |
+| `mlx_mfa/attention.py` | 4951 | All attention functions + helpers + `DispatchPolicy.SAGE` |
+| `mlx_mfa/inference.py` | 628 | `InferenceContext`, `DenseKVCache`, `PagedKVCache`, `SageInferenceContext`, `QuantizedKVCache` |
 | `mlx_mfa/masks.py` | 1129 | 15 mask builders |
 | `mlx_mfa/quantize.py` | 280 | `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
 | `mlx_mfa/dispatch_policy.py` | 359 | Shape-aware MFA/SDPA routing + calibration |
@@ -34,19 +34,19 @@ Regenerated: 2026-03-10.
 ### C++ / Objective-C++ (`csrc/`)
 
 | File | Lines | Purpose |
-|------|-------|---------|
+|------|-------|---------||
 | `csrc/bindings.cpp` | 553 | nanobind module + Python bindings |
 | `csrc/mfa_attention.cpp` | 2087 | `MFAttention` Primitive: `eval_gpu`, `vjp` |
-| `csrc/mfa_attention.hpp` | 513 | Primitive header; `MFASageForward::Params` gains `window_left/right` (CP7) |
-| `csrc/mfa_steel_fwd.cpp` | 3259 | STEEL forward: JIT source gen, dispatch |
+| `csrc/mfa_attention.hpp` | 513 | Primitive header |
+| `csrc/mfa_steel_fwd.cpp` | 3259 | STEEL V1/V2 forward: JIT source gen, dispatch |
 | `csrc/mfa_steel_fwd.hpp` | 259 | STEEL forward header |
 | `csrc/mfa_steel_bwd.cpp` | 1295 | STEEL backward dQ + dKV kernels |
 | `csrc/mfa_steel_bwd.hpp` | 68 | STEEL backward header |
 | `csrc/mfa_paged_gather.cpp` | 242 | Paged KV gather Metal kernel |
 | `csrc/mfa_paged_gather.hpp` | 84 | Paged gather header |
-| `csrc/mfa_sage_fwd.cpp` | 524 | SageAttention Primitive + Metal JIT; **window support** (CP7) |
-| `csrc/mfa_sage_fwd.hpp` | 68 | `MFASageParams` (gains `window_right`), `mfa_sage_forward` declaration |
-| `csrc/mfa_shader_gen.cpp` | 305 | ccv-based shader generator (legacy) |
+| `csrc/mfa_sage_fwd.cpp` | 524 | SageAttention Primitive + Metal JIT; window support |
+| `csrc/mfa_sage_fwd.hpp` | 68 | `MFASageParams`, `mfa_sage_forward` declaration |
+| `csrc/mfa_shader_gen.cpp` | 305 | ccv-based shader generator (f32 path) |
 | `csrc/mfa_shader_gen.hpp` | 59 | Shader gen header |
 | `csrc/shader_cache.hpp` | 99 | `KernelType` enum, cache interface |
 | `csrc/shader_cache.mm` | 263 | Objective-C++ Metal pipeline compilation |
@@ -70,37 +70,41 @@ Regenerated: 2026-03-10.
 
 ## Public API (`mlx_mfa.__all__`)
 
-### Core attention (14 functions + 1 class)
+53 symbols total (52 exports + `__version__`).
+
+### Core attention (14 functions + 2 classes)
 
 | Symbol | Brief description |
 |--------|------------------|
-| `flash_attention` | Standard BHND attention; MFA/SDPA/**Sage** backend; `backend="sage"` new (CP8) |
+| `flash_attention` | Standard BHND attention; AUTO/MFA/SDPA/SAGE backends |
 | `flash_attention_rope` | RoPE-fused attention (3D RoPE, interleaved/split, rotary_dim) |
-| `flash_attention_rope_unified` | Unified RoPE entry point (v1.1.0) |
+| `flash_attention_rope_unified` | Unified RoPE entry point |
 | `flash_attention_sparse` | Block-sparse attention with `block_mask` |
 | `flash_attention_varlen` | Variable-length (jagged) sequences, cu_seqlens |
-| `flash_attention_kvcache` | Unified KV-cache: dense, paged, append |
+| `flash_attention_kvcache` | Unified KV-cache: dense read/append, paged read/append |
 | `flash_attention_kvcache_rope_append` | Fused RoPE + KV-cache append |
 | `flash_attention_paged` | Paged KV pool attention (block_table) |
 | `flash_attention_qkv_packed` | Fused QKV tensor input |
 | `flash_attention_kv_packed` | Fused KV tensor input |
 | `flash_attention_varlen_qkv_packed` | Varlen + packed QKV |
 | `flash_attention_varlen_kv_packed` | Varlen + packed KV |
-| `flash_attention_speculative_verify` | Speculative decoding target log-probs (v1.1.0) |
-| `flash_attention_splitfuse` | Combined prefill + decode in one call (v1.1.0) |
-| `PagedKVCache` | Python KV block allocator (dual-pool design) |
+| `flash_attention_speculative_verify` | Speculative decoding target log-probs |
+| `flash_attention_splitfuse` | Combined prefill + decode in one call |
+| `KVCacheProtocol` | Abstract protocol for all KV cache types |
+| `DenseKVCache` | Dense KV cache (append + read) |
 
-### Dispatch (1 class)
+### Dispatch (1 class + 1 function)
 
 | Symbol | Brief description |
 |--------|------------------|
-| `DispatchPolicy` | Backend constants: `.AUTO`, `.MFA`, `.SDPA`, `.SAGE` (CP8) |
+| `DispatchPolicy` | Backend constants: `.AUTO`, `.MFA`, `.SDPA`, `.SAGE` |
+| `calibrate_dispatch` | Benchmark device and save optimal routing thresholds |
 
 ### LLM helpers (1 function)
 
 | Symbol | Brief description |
 |--------|------------------|
-| `make_shared_prefix_cache` | Build shared prefix KV cache for multi-request reuse (v1.1.0) |
+| `make_shared_prefix_cache` | Build shared prefix KV cache for multi-request reuse |
 
 ### Mask builders (15)
 
@@ -128,40 +132,42 @@ Regenerated: 2026-03-10.
 |--------|-------------|
 | `make_rope_3d_tables` | Build 3D rotary frequency tables for video |
 
-### SageAttention *(v1.2.0–v1.4.0)*
+### SageAttention (3 functions + 1 class)
 
 | Symbol | Brief description |
 |--------|------------------|
-| `sage_attention` | int8 Q/K attention; **`window_size=`** added (CP7) |
-| `sage_attention_prequantized` | Uses pre-stored int8 from `QuantizedKVCache`; bypass re-quantize |
+| `sage_attention` | int8 Q/K attention; `window_size=` supported |
+| `sage_attention_prequantized` | Uses pre-stored int8 from `QuantizedKVCache` |
 | `sage_attention_kvcache` | Decode variant: N_q ≠ N_kv native |
+| `QuantizedKVCache` | Pre-stores K as int8; O(1) quantize per decode step |
 
-### KV cache classes
+### KV cache / inference contexts (3 classes)
 
 | Symbol | Brief description |
 |--------|------------------|
-| `InferenceContext` | Stateful KV-cache lifecycle: `prefill()`, `step()`, `reset()` (v1.2.1) |
-| `DenseKVCache` | Base dense KV cache (v1.3.0) |
-| `QuantizedKVCache` | **New v1.4.0 (CP6)** — pre-stores K as int8; O(1) quantize per decode step |
-| `SageInferenceContext` | Stateful sage decode with `QuantizedKVCache` (v1.3.0) |
+| `InferenceContext` | Stateful KV-cache lifecycle: `prefill()`, `step()`, `reset()` |
+| `PagedInferenceContext` | Stateful paged KV-cache lifecycle |
+| `SageInferenceContext` | Stateful sage decode with `QuantizedKVCache` |
+| `PagedKVCache` | Python KV block allocator (dual-pool design) |
 
-### Quantization utilities *(v1.2.0)*
+### Quantization utilities (5)
 
 | Symbol | Returns | Description |
 |--------|---------|-------------|
 | `quantize_per_block` | `(int8, float32)` | Per-block int8 quantize `[B,H,N,D]` tensor |
 | `dequantize` | `float32` | Reconstruct fp32 from int8 + per-block scale |
 | `smooth_k` | `(fp16/bf16, float32)` | Per-channel mean subtraction for K |
-| `sage_output_correction` | `float32` | Legacy: smooth_k bias compensation (no-op; not called) |
+| `sage_output_correction` | `float32` | Legacy no-op (not called) |
 | `sage_block_sizes` | `(int, int)` | Returns `(BQ, BK)` for given head_dim |
 
-### Utilities (3 + `__version__`)
+### Utilities (4 + `__version__`)
 
 | Symbol | Returns | Description |
 |--------|---------|-------------|
 | `is_mfa_available` | `bool` | True when C++ ext + Metal GPU present |
 | `get_device_info` | `dict` | device_name, gpu_family_gen, is_m3_plus, is_m5_plus, chip_name |
-| `get_supported_configs` | `dict` | head_dims, dtypes, extension_available, features (16 flags), kernel_types |
+| `get_supported_configs` | `dict` | head_dims, dtypes, extension_available, features (22 flags), kernel_types |
+| `warmup_kernels` | `None` | Pre-compile JIT kernels for given head_dims/dtypes |
 | `__version__` | `str` | Package version string |
 
 ---
@@ -170,18 +176,18 @@ Regenerated: 2026-03-10.
 
 | Value | Name | Description |
 |-------|------|-------------|
-| 0 | `AttentionForward` | ccv MFA forward (legacy) |
+| 0 | `AttentionForward` | ccv MFA forward (f32) |
 | 1 | `AttentionBackwardDQ` | ccv MFA backward dQ |
 | 2 | `AttentionBackwardDKV` | ccv MFA backward dKV |
-| 3 | `SteelForward` | STEEL cooperative forward (all D; d-split for D=512) |
+| 3 | `SteelForward` | STEEL V1/V2 forward (all D; d-split for D=512) |
 | 4 | `FlashDecodePartial` | Flash Decode Phase 1: partial attn per KV split |
 | 5 | `FlashDecodeReduce` | Flash Decode Phase 2: LSE reduce over splits |
 | 6 | `SteelBackwardDQ` | STEEL native backward dQ (f16/bf16, D≤512) |
 | 7 | `SteelBackwardDKV` | STEEL native backward dKV (f16/bf16, D≤512) |
-| 8 | `SteelVarlenForward` | STEEL varlen forward (D≤256; D=512 → SDPA fallback) |
+| 8 | `SteelVarlenForward` | STEEL varlen forward (D≤256) |
 | 9 | `PagedKVGather` | Paged KV gather: pool to contiguous BHND |
 | 10 | `PagedSteelForward` | STEEL forward with kernel-level paged KV (D≤256) |
-| 11 | `SageForward` | int8 Q/K quantized attention; **window support** (CP7) |
+| 11 | `SageForward` | int8 Q/K quantized attention; window support |
 | — | `TensorOpsForward` | Reserved: Metal 4 cooperative tensors (M5+/A19+ only) |
 
 ---
@@ -191,29 +197,23 @@ Regenerated: 2026-03-10.
 **Total: 553 pytest-collected tests**
 
 | File | Classes | Methods |
-|------|---------|---------|
-| `tests/test_attention.py` | 73 | 396 |
+|------|---------|---------||
+| `tests/test_attention.py` | 73 | 464 |
 | `tests/test_mlx_lm_integration.py` | 8 | 38 |
 | `tests/test_sage_attention.py` | 5 | 30 |
 | `tests/test_inference_context.py` | 6 | 21 |
 
-### New test classes — v1.4.0 (CP6–CP7)
-
-| Class | Methods | Track | What it tests |
-|-------|---------|-------|---------------|
-| `TestQuantizedKVCache` | 3 | CP6 | append shapes, O(1) decode step correctness, prequantized vs sage |
-| `TestSageWindow` | 4 | CP7 | left window, both-sides window, shape preserved, no-window unchanged |
-
 ---
 
-## Benchmarks (`benchmarks/` — 17 files)
+## Benchmarks (`benchmarks/` — 18 files)
 
 | File | Lines | What it benchmarks |
 |------|-------|-------------------|
-| `bench_all.py` | 433 | **v1.4.0** — fwd + bwd + window + **sage** (CP9) |
+| `bench_all.py` | 433 | fwd + bwd + window + sage (comprehensive) |
 | `bench_attention.py` | 142 | MFA vs SDPA: D=64/128/256/512, causal |
 | `bench_auto_dispatch_validation.py` | 107 | Auto dispatch correctness validation |
 | `bench_backward.py` | 145 | Backward pass: MFA vs SDPA vjp |
+| `bench_backward_matrix.py` | 145 | Backward pass across all shapes |
 | `bench_compile.py` | 196 | Metal JIT compilation time |
 | `bench_dispatch_matrix.py` | 168 | MFA vs SDPA across all shapes |
 | `bench_kvcache.py` | 138 | KV cache decode step throughput |
@@ -225,7 +225,7 @@ Regenerated: 2026-03-10.
 | `bench_softcap_alibi.py` | 133 | Softcap and ALiBi overhead |
 | `bench_spatial_masks.py` | 325 | Spatial mask benchmarks |
 | `bench_v2.py` | 98 | STEEL V2 vs V1 vs SDPA: D=64/128 |
-| `bench_v2_final.py` | 267 | Comprehensive: dense+window+split-K |
+| `bench_v2_final.py` | 267 | Comprehensive: dense+window+split-K (primary) |
 | `bench_varlen.py` | 113 | Varlen vs padded attention |
 
 ---
@@ -238,8 +238,9 @@ Regenerated: 2026-03-10.
 | Supported dtypes | {float16, bfloat16, float32} |
 | Layout | BHND [B, H, N, D] row-major |
 | TGP budget | ≤ 32 KB threadgroup memory |
-| D=512 varlen/paged STEEL | Falls back to SDPA (no d-split in those generators) |
+| STEEL V2 activation | D=64/128 only; D=256+ routes to SDPA |
+| D=512 varlen/paged STEEL | Falls back to SDPA |
 | STEEL backward D limit | D≤512 (f16/bf16 only) |
-| Sage autograd | **Not supported** — inference-only |
-| `QuantizedKVCache` contiguity | Slices need `mx.contiguous()` / `.flatten().reshape()` before C++ dispatch |
+| Sage autograd | Not supported — inference-only |
+| `QuantizedKVCache` contiguity | Slices need `mx.contiguous()` before C++ dispatch |
 | Platform | macOS arm64, Python 3.10+, mlx ≥ 0.18.0 |
