@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""bench_all.py — mlx-mfa v1.4.x comprehensive benchmark suite.
+"""bench_all.py — comprehensive benchmark suite (forward, backward, window, sage).
 
 Runs forward, backward, sliding-window, and SageAttention benchmarks in one
 pass and writes a complete RESULTS.md.
+
+Note: For the official v2.5.0 RESULTS.md, use ``bench_v2_final.py --save``
+which covers STEEL V2 dense + window + split-K and generates the canonical
+results table. This script covers a broader range (backward + sage) but uses
+the V1 baseline.
 
 Usage:
     python benchmarks/bench_all.py               # forward + backward + window + sage
