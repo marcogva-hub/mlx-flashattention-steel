@@ -2,1253 +2,445 @@
 
 ## Overview
 
-mlx-mfa provides `flash_attention(q, k, v, scale, causal)` as a drop-in
-replacement for `mx.fast.scaled_dot_product_attention`.  The implementation
-uses hand-tuned Metal GPU kernels compiled JIT at runtime, dispatched through
-an MLX C++ Primitive.
+mlx-mfa provides `flash_attention(q, k, v)` as a drop-in replacement for
+`mx.fast.scaled_dot_product_attention`.  The implementation uses hand-tuned
+Metal GPU kernels compiled JIT at runtime, dispatched through an MLX C++
+Primitive (`MFAttention`).
+
+All functions accept `[B, H, N, D]` (BHND) tensors with `D ∈ {64, 128, 256, 512}`
+and `dtype ∈ {float16, bfloat16, float32}`.
 
 ---
 
-## Data flow
+## System Architecture
 
 ```
-Python: flash_attention(q, k, v, causal=True)
+Python: flash_attention(q, k, v, ...)
          │
          ▼
 mlx_mfa/attention.py
-  1. Validate shapes (4-D, matching head_dim)
-  2. GQA: if H_kv < H_q, native GQA via gqa_factor in kernel
-  3. Check _can_use_mfa: head_dim ∈ {64,128,256,512}, dtype ∈ {f16,bf16,f32},
-     extension importable
+  1. Validate shapes + GQA ratio
+  2. Check _can_use_mfa: head_dim ∈ {64,128,256,512}, dtype ∈ {f16,bf16,f32}
      ├── no  → _fallback_sdpa: mx.fast.scaled_dot_product_attention
      └── yes → _mfa_forward
                  │
                  ▼
          mx.custom_function (_make_mfa_custom)
-           Forward: mfa_forward_with_lse (C++ binding)
-           Backward: see "Backward pass routing" below
+           Forward: mfa_forward_with_lse   ← C++ binding
+           Backward: see "Backward Pass" section
                  │
                  ▼
          C++ binding: csrc/bindings.cpp
-           mfa_attention_forward(q, k, v, scale, causal)
+           mfa_attention_forward(q, k, v, params)
                  │
                  ▼
          MFAttention::eval_gpu (csrc/mfa_attention.cpp)
-           ├── dtype == f32 → ccv path (generate_attention_source)
-           └── dtype == f16/bf16 → STEEL path (generate_steel_forward_source)
+           ├── V2 eligible → SteelV2Forward      (D=64/128, f16/bf16)
+           ├── Flash Decode eligible → FlashDecodePartial + Reduce
+           ├── STEEL eligible → SteelForward     (all D, f16/bf16)
+           ├── Varlen → SteelVarlenForward        (D≤256)
+           ├── f32 → ccv path (AttentionForward)
+           └── else → SDPA fallback
                  │
                  ▼
          ShaderCache::get_or_compile (csrc/shader_cache.mm)
-           ├── key in cache → return cached id<MTLComputePipelineState>
-           └── key missing  → newLibraryWithSource + newComputePipelineState
+           ├── KernelKey in cache → return cached MTLComputePipelineState
+           └── key missing → newLibraryWithSource + newComputePipelineState
                  │
                  ▼
          Metal GPU kernel execution
-           Result: O [B, H, N, D], L [B, H, N] (logsumexp)
+           Output: O [B, H, N, D], L [B, H, N] (logsumexp, internal)
 ```
 
 ---
 
-## STEEL kernel architecture (`csrc/mfa_steel_fwd.cpp`)
+## STEEL Kernel Family
 
-The STEEL (Structured Tiled Execution Engine Layer) kernel is the primary
-forward path for f16 and bf16.  It is JIT-generated as a Metal source string
-from `generate_steel_forward_source()` — there is no pre-compiled `.metal` file.
+The STEEL (Structured Tiled Execution Engine Layer) kernel family handles all
+f16/bf16 forward passes.  Kernels are JIT-generated as Metal source strings —
+there are no pre-compiled `.metal` files.
 
-### Tiling strategy
+### STEEL V2 (current primary, D=64/128)
 
-Each threadgroup processes one Q-block (`BQ` rows) against all K/V blocks:
+STEEL V2 is the default forward path for `D ∈ {64, 128}` when sequence length
+meets the activation threshold (`N ≥ 4096` for D=64, `N ≥ 8192` for D=128 on M1).
+
+**Key innovation**: K_smem and V_smem share a single `KV_smem` buffer (sequential
+K phase then V phase).  This doubles `BK` vs V1 within the same TGP budget,
+halving K-tile iterations:
+
+| D | BQ | BK | WM | TGP bytes | V1 BK | Speedup vs V1 |
+|---|----|----|----|-----------:|------:|:-------------:|
+| 64  | 32 | 64 | 4 | 13,824 | 32 | ~1.7× |
+| 128 | 32 | 32 | 4 | 18,944 | 16 | ~1.5× |
+
+M3+ devices (gen ≥ 15) use `BK=64` for D=128 (vs `BK=32` on M1/M2), exploiting
+larger register files.
+
+**Tiling algorithm**:
 
 ```
-for kb in 0..num_k_blocks:
-    if causal and entire tile is masked: continue (tile skip)
+// Q is pre-loaded into registers (Q-hoisting)
+for kb in kb_start..kb_lim:
+    if causal and tile fully masked: continue   // tile-skip
 
-    // Cooperative load: all threads load K tile [BK × D] to threadgroup SRAM
-    load K[kb] → K_smem
-    load V[kb] → V_smem
-    barrier
+    // Phase K: load K[BK × D] into KV_smem; compute S = Q_reg @ K_smem^T
+    load K[kb] → KV_smem; barrier
+    S = simdgroup_multiply(Q_reg, KV_smem)      // [BQ × BK]
 
-    // QK GEMM: S[BQ × BK] = Q_reg[BQ × D] × K_smem[D × BK]
-    // (Q is pre-loaded into registers before this loop)
-    S = simdgroup_multiply(Q_reg, K_smem)
+    apply softcap / sliding-window mask
+    update running_max + sum; rescale O_reg
 
-    // Online softmax (running max + sum across K tiles)
-    apply causal element mask (diagonal tiles only)
-    update running_max, running_sum; rescale accumulator O_reg
+    // Phase V: load V[BK × D] into KV_smem; accumulate O
+    load V[kb] → KV_smem; barrier
+    O_reg += simdgroup_multiply(P, KV_smem)     // [BQ × D]
 
-    // PV GEMM: O_reg[BQ × D] += P[BQ × BK] × V_smem[BK × D]
-    O_reg += simdgroup_multiply(P, V_smem)
-
-// Write O_reg to device memory; write logsumexp L
+write O_reg → device memory; write logsumexp L
 ```
 
-**Key design decision**: Q is loaded into registers *once* before the K-loop
-(Q hoisting).  K and V are loaded into threadgroup SRAM for each tile.
-This avoids re-loading Q every iteration (O(N²) savings for long sequences).
+**Causal tile-skip**: if `k_start ≥ q_start + BQ` the entire tile is skipped
+with no masking overhead — halves effective iterations for causal attention.
 
-### Causal tile skipping
+**V2 split-K**: for under-occupied grids (`total_tgs < 0.8 × gpu_cores`), the
+K dimension is split across additional threadgroups.  A reduction pass combines
+partial outputs via exp2-domain LSE.  Disabled with `MFA_DISABLE_V2=1`.
 
-For a Q-block at row offset `q_start` and a K-block at column offset `k_start`:
-- If `k_start >= q_start + BQ` (entire K tile is after all Q rows): skip entirely.
-- If `q_start <= k_start < q_start + BQ` (diagonal tile): partial mask applied per-element.
-- Otherwise (K tile is fully before Q rows): no masking needed.
+**Sliding window**: `window_size=(left, right)` — `kb_start` is offset O(1)
+before the K-loop; right bound clips `kb_lim`; masks applied per-element on
+diagonal tiles.  Guarantees constant active tile count → 5–21× vs SDPA at
+long sequences.
 
-This halves the effective K-tile iterations for causal attention → **1.5–2.9× speedup**
-vs SDPA at large sequence lengths (SDPA applies the causal mask without skipping tiles).
+**Softcap**: `tanh(score × scale / softcap) × softcap` applied in log2 domain
+(`log2e`/`ln2` conversion) after QK scale, before masking. Uses `precise::tanh`.
 
-### Blocking tables
+### STEEL V1 (D=256/512 and short-N fallback)
 
-| head_dim | dtype | BQ | BK | WM | WN | TGP threads | TGP memory |
-|:--------:|-------|:--:|:--:|:--:|:--:|:-----------:|:----------:|
-| 64 | f16/bf16 | 32 | 32 | 4 | 1 | 128 | ~16 KB |
-| 128 | f16/bf16 | 32 | 16 | 4 | 1 | 128 | ~20 KB |
-| 256 | f16/bf16 | 32 | 16 | 4 | 1 | 128 | ~29 KB |
-| any | f32 | 16 | 16 | 2 | 1 | 64 | ~12 KB |
+Same algorithm as V2 but with separate K_smem and V_smem buffers.
+Primary use: D=256 and D=512, where V2's doubled-BK would exceed TGP budget.
 
-- `BQ` = Q rows per threadgroup
-- `BK` = K/V rows per tile iteration
-- `WM × WN × 32` = number of SIMD groups × 32 threads = total threadgroup size
-- TGP memory < 32 KB (Metal hard limit per threadgroup)
+| D | BQ | BK | WM | TGP bytes |
+|---|----|----|----|-----------:|
+| 64  | 32 | 32 | 4 | ~16 KB |
+| 128 | 32 | 16 | 4 | ~20 KB |
+| 256 | 32 | 16 | 4 | ~29 KB |
+| 512 | D-split | 16 | 2 | <32 KB |
 
-**D=256 note**: f16/bf16 uses `BQ=32/WM=4` (128 threads) for better occupancy.
-Larger configs were tested but regressed due to TGP memory exceeding 32 KB.
-The f32 path is routed to the ccv kernel (not STEEL) due to register pressure.
+D=256 causes register spill on M1/M2 — performance is 0.9–1.0× SDPA.
+Auto-routing never activates STEEL for D=256+.
+
+**D=512 D-split**: head_dim=512 is processed in 4× sub-tiles of 128 per
+inner loop to stay within the 32 KB TGP limit.
+
+### Flash Decode (N_q ≤ 4, S ≥ 256)
+
+Two-phase split-KV decode for single-token or speculative decoding steps.
+Activated automatically when `N_q ≤ 4` and `S ≥ 256` (f16/bf16 only).
+
+**Phase 1** (`FlashDecodePartial`): KV is split into `num_splits` chunks.
+Grid = `(N_q × num_splits, H, B)`.  Writes partial output `O_partial [N_q, D]`
+and log-sum-exp `L_partial [N_q]` to scratch buffers.
+
+**Phase 2** (`FlashDecodeReduce`): LSE-weighted combination across splits.
+Grid = `(N_q, H, B)`.  Writes final `O [B, H, N_q, D]`.
+
+`compute_num_splits(kL, BK)` targets ≥2 K-tiles per split, capped at 32.
+
+**Causal offset**: `qL_off = S − N_q`.  Query at position `i` sees keys
+`0..(S − N_q + i)` — the K-loop must start at `qL_off`, not 0.
+
+### STEEL Varlen Forward
+
+Single Metal dispatch for packed sequences with `cu_seqlens`.
+Supported for D ∈ {64, 128, 256}; D=512 falls back to per-sequence SDPA.
+
+### Block-Sparse STEEL
+
+Block-sparse kernel triggered by `flash_attention_sparse(block_mask=...)`.
+K-tile loop checks `block_mask[qb][kb]` via uniform threadgroup branch
+(zero warp divergence for fully-zero or fully-one tiles).
+
+### GQA (Grouped Query Attention)
+
+`gqa_factor = H_q / H_kv` is a compile-time Metal `#define`.
+
+- Forward: Q head `h` reads KV head `h / gqa_factor`
+- Backward dQ: same mapping
+- Backward dKV: accumulates gradients across all `gqa_factor` Q-heads per KV-head
+
+No K/V tensor copying or tiling — GQA is native in the kernel.
 
 ---
 
-## ccv-derived kernel (`csrc/mfa/`)
+## Backward Pass
 
-Used for f32 inputs (and as a fallback for configurations STEEL doesn't support).
-Significantly slower than STEEL on macOS 26 due to the `simdgroup_async_copy` removal:
+### STEEL native backward (f16/bf16, D ≤ 512)
 
-| Path | macOS 26 | Notes |
-|------|:--------:|-------|
-| STEEL (no async DMA) | ✓ | `preferAsyncCache=true` — per-lane device reads |
-| ccv original | ✗ | `simdgroup_async_copy` AIR intrinsic removed |
-| ccv + disableAsyncCopy | ✓ (slow) | Software fallback, ~10–15× slower than STEEL |
+Activated for f16/bf16 with `softcap==0` and `alibi==False`.
+Dispatches two Metal kernels: `MFASteelBwdDQ` and `MFASteelBwdDKV`.
 
-The ccv path generates Metal source via `AttentionKernel` (3324 lines, `csrc/mfa/`)
-using the same JIT cache.  Its blocking tables (`mfa_shader_gen.cpp`) mirror
-the ccv `AttentionDescriptor::forward()` lookup from liuliu/ccv.
-
----
-
-## Backward pass routing
+**Algorithm** (FlashAttention-2 backward, log2 domain):
 
 ```
-mx.grad(flash_attention)(q, k, v)
-         │
-         ▼
-mx.custom_function vjp  (attention.py:_make_mfa_custom._backward)
-         │
-         ├── f16/bf16, D≤512, softcap==0, alibi==False
-         │       │
-         │       ▼
-         │   mfa_steel_backward (C++ binding → MFASteelBwdDQ + MFASteelBwdDKV)
-         │   • dQ kernel grid: (N_q/BQ, H_q, B)
-         │   • dK/dV kernel grid: (N_k/BK, H_kv, B)
-         │   returns (dQ, dK, dV)
-         │
-         ├── f32
-         │       ▼
-         │   mx.vjp(_fallback_sdpa(q,k,v))   ← MLX SDPA backward
-         │
-         ├── softcap > 0
-         │       ▼
-         │   mx.vjp(_softcap_sdpa_ref)        ← compiled via mx.compile
-         │
-         └── alibi == True
-                 ▼
-             mx.vjp(_alibi_sdpa_ref)           ← compiled via mx.compile
-```
+P = exp2(S × scale × log2e − L_log2)    // recompute attention weights
+D_i = scale × rowsum(O ⊙ dO)            // diagonal correction
 
-### Why not the C++ Primitive vjp?
-
-`mfa_attention_forward` returns only `O` to Python.  MLX prunes `L` (logsumexp)
-from the graph.  When `MFAttention::vjp` runs in C++, `outputs[1]` (L) is gone
-— accessing it is undefined behaviour and corrupts gradients.
-
-The Python `custom_function` sidesteps this by recomputing gradients either via
-native STEEL backward kernels (fast path) or `mx.vjp(_fallback_sdpa)` (safe
-fallback for unsupported dtypes/configs).
-
-### Buffer aliasing fix (`_sever_lazy_graph`)
-
-Inside the vjp, `cotangent` is `ones_like(O_fwd)` — a lazy node inheriting
-`O_fwd`'s buffer ancestry.  If the backward re-runs `mfa_forward_with_lse`
-in the same Metal encoder, the allocator can alias `O_r`'s output buffer with
-the freed `O_fwd` buffer, corrupting `L_r`.
-
-Fix: `cotangent + mx.zeros_like(cotangent)` writes to a fresh buffer with no
-shared ancestry, preventing the alias.  See `attention.py:_sever_lazy_graph`
-for the full analysis and alternatives tested.
-
----
-
-## Build system
-
-```
-pyproject.toml
-  build-backend: scikit-build-core
-  ↓
-CMakeLists.txt
-  Languages: CXX + OBJCXX (for shader_cache.mm)
-  Finds: Python.Development.Module, MLX (via python -c "import mlx")
-  Frameworks: Metal, Foundation
-  Produces: mlx_mfa/_ext.cpython-3XX-darwin.so
-```
-
-**nanobind domain**: `NB_DOMAIN "mlx"` is required so that `mlx.core.array`
-objects are recognised across the `mlx` and `mlx_mfa._ext` extension boundaries.
-Without this, passing MLX arrays to the extension raises a type error.
-
----
-
-## Device detection and configuration
-
-```cpp
-// csrc/mfa_attention.cpp
-int gen = d.get_architecture_gen();  // e.g. "applegpu_g13s" → 13
-bool is_m3_plus = (gen >= 15);       // 13=M1, 14=M2, 15=M3, 16=M4
-```
-
-| Gen | Chip | preferAsyncCache | Notes |
-|:---:|------|:----------------:|-------|
-| 13 | M1 | false | STEEL: per-lane loads from device |
-| 14 | M2 | false | Same as M1 for STEEL |
-| 15 | M3 | true | ccv-path uses preferAsyncCache (K/V from device, no DMA) |
-| 16 | M4 | true | Same as M3 |
-
-For the **STEEL** path, `is_m3_plus` is not used (the kernel always uses
-per-lane loads with no async DMA dependency).  It is used only for the ccv
-(f32) path's blocking table selection.
-
----
-
-## Public API reference
-
-32 symbols exported in `mlx_mfa.__all__` (v1.0.5):
-
-### Core attention (11 functions + 1 class)
-
-| Function | Key arguments | Returns |
-|----------|--------------|---------|
-| `flash_attention` | `(q,k,v, scale, causal, softcap, dropout_p, return_attn_weights, attn_bias, backend)` | `[B,H,N,D]` |
-| `flash_attention_rope` | `(q,k,v, cos,sin, scale, causal, cache_seqlens, rope_3d, interleaved, rotary_dim)` | `[B,H,N,D]` |
-| `flash_attention_sparse` | `(q,k,v, block_mask, scale, causal, backward)` | `[B,H,N,D]` |
-| `flash_attention_varlen` | `(q,k,v, cu_q,cu_k, max_q,max_k, scale, causal)` | `[1,H,total,D]` |
-| `flash_attention_kvcache` | `(q, k_cache,v_cache, *, k_new,v_new, block_table, cache_seqlens, scale, causal, ...)` | `[B,H,N,D]` or 3-tuple |
-| `flash_attention_kvcache_rope_append` | `(q, k_new,v_new, k_cache,v_cache, cos,sin, cache_seqlens, ...)` | `[B,H,N,D]` |
-| `flash_attention_paged` | `(q, k_pages,v_pages, block_table,seq_lens, scale, causal)` | `[B,H,N_q,D]` |
-| `flash_attention_qkv_packed` | `(qkv, scale, causal, num_heads, num_kv_heads)` | `[B,H,N,D]` |
-| `flash_attention_kv_packed` | `(q, kv, scale, causal, num_kv_heads)` | `[B,H,N,D]` |
-| `flash_attention_varlen_qkv_packed` | `(qkv, cu_q,cu_k, max_q,max_k, scale, causal, num_heads, num_kv_heads)` | `[1,H,total,D]` |
-| `flash_attention_varlen_kv_packed` | `(q, kv, cu_q,cu_k, max_q,max_k, scale, causal, num_kv_heads)` | `[1,H,total_q,D]` |
-| `PagedKVCache` | `(num_blocks, block_size, H, D, dtype)` | allocator class |
-
-### Mask builders (15)
-
-| Group | Functions |
-|-------|-----------|
-| Dense-sparse | `make_causal_block_mask`, `make_sliding_window_mask` |
-| Spatial | `make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_topk_spatial_mask` |
-| Segment | `make_segment_mask`, `make_causal_segment_mask` |
-| Adaptive | `make_adaptive_window_mask` |
-| Video/VSR | `make_lcsa_mask`, `make_axial_spatial_mask`, `make_axial_temporal_mask` |
-| Temporal | `make_dilated_temporal_mask` |
-| Special | `make_sink_window_mask`, `make_reference_frame_mask`, `make_cross_stream_mask` |
-
-### RoPE helpers (1)
-
-- `make_rope_3d_tables(freqs_h, freqs_w, freqs_t, ...)` — build 3D rotary tables for video
-
-### Utilities (3 + `__version__`)
-
-- `is_mfa_available()` — `True` when C++ extension loaded and Metal available
-- `get_device_info()` — `dict`: `device_name`, `gpu_family_gen`, `is_m3_plus`, `is_m5_plus`, `chip_name`, `extension_available`
-- `get_supported_configs()` — `dict`: `head_dims`, `dtypes`, `extension_available`, `features` (22-key capability matrix), `kernel_types`
-
----
-
-## Key design decisions and non-obvious constraints
-
-1. **JIT Metal compilation** (not pre-compiled `.metal`): kernels are parameterized
-   by head_dim, dtype, block dims, and causal flag.  Pre-compiling all combinations
-   would require 3 × 2 × N_configs `.air` files shipped in the wheel.
-
-2. **`NB_DOMAIN "mlx"`**: mandatory for sharing `mlx.core.array` ABI between
-   MLX and the extension.  Without it, Python raises `RuntimeError: Unable to
-   cast Python instance to C++ type`.
-
-3. **`transposeState = false`**: the original ccv code set `transposeState = true`
-   which coupled head-offset computation to GEMM inner loop addressing.  mlx-mfa
-   unconditionally uses `transposeState = false` and forces `SEQUENCE_LENGTH` in
-   the head-offset expression.  See `CLAUDE.md § transposeState Fix`.
-
-4. **`disableAsyncCopy = true`**: `simdgroup_async_copy` (a private AIR intrinsic)
-   was removed from Metal shader compilation on macOS 26.  All ccv-path kernels
-   use the software-loop fallback.  The STEEL path was designed to avoid this
-   intrinsic entirely.
-
-5. **`MTLLanguageVersion3_1`**: required for `bfloat4` vectors used in bf16 kernels.
-   Metal 3.0 (macOS 14) only has scalar bfloat; 3.1 (macOS 14.2+) adds vector types.
-
-6. **Double-buffer ping-pong (Track CF, v0.9.1)**: For D≤128 without RoPE/sparse,
-   the STEEL forward kernel uses *separate* `K_smem` and `V_smem` threadgroup arrays
-   instead of a shared `KV_smem`.  This lets V-tile stores complete concurrently
-   with K-GEMM (different TGP regions, no hazard) and K[n+1]-tile stores complete
-   during P@V, reducing threadgroup barriers per K-tile from 4 to 2.
-
-   ```
-   Shared KV_smem (4 barriers):
-     barrier → K-load → barrier → K-GEMM → barrier → V-load+softmax → barrier → P@V
-
-   Separate K_smem/V_smem (2 barriers):
-     [Phase-0: K[0]-load, barrier]
-     K-GEMM + V[kb]-load → barrier-1 → softmax → P@V + K[kb+1]-load → barrier-2
-   ```
-
-   TGP budget check: D=128 requires `(BK+padK)*BD + BK*(BD+padV)` ≈ 19.2 KB < 32 KB.
-   D=256 would exceed 32 KB, so `double_buf` is disabled for D=256.
-
-7. **Persistent multi-Q-block kernel (Track CC, v0.9.1)**: The kernel iterates
-   over an outer `qb` (Q-block) loop (`[0, NQ)`) within a single threadgroup
-   dispatch, processing 4 Q-blocks per launch. This amortizes Metal command
-   buffer overhead at large N (N ≥ 4096) where grid occupancy would otherwise
-   leave the GPU partly idle between sequential dispatches.
-
----
-
-## 8. STEEL native backward kernels (Tracks BA/BB/BC, v0.9.0; CE, v0.9.2)
-
-For f16/bf16 D≤512 with `softcap==0` and `alibi==False`, `_make_mfa_custom`
-routes the backward through `mfa_steel_backward` (C++ binding) which dispatches
-two Metal kernels: `MFASteelBwdDQ` and `MFASteelBwdDKV`.
-
-**Algorithm**: FlashAttention-2 backward, log2 domain throughout.
-
-```
-Given: O, L (logsumexp from forward), dO (cotangent)
-
-P = exp2(S × scale × log2(e) − L_log2)   // recompute attention probabilities
-delta = scale × rowsum(O ⊙ dO)            // D_i = sum_j(O_ij * dO_ij)
-dS = P × (dO @ V^T − delta)               // dSoftmax
-
-dQ += scale × dS @ K    [dQ kernel,   grid: (N_q/BQ, H_q, B)]
-dK += scale × dS^T @ Q  [dKV kernel,  grid: (N_k/BK, H_kv, B)]
+dQ += scale × (P ⊙ (dO @ V^T − D_i)) @ K   [grid: (N_q/BQ, H_q, B)]
+dK += scale × (P ⊙ (dO @ V^T − D_i))^T @ Q [grid: (N_k/BK, H_kv, B)]
 dV += P^T @ dO
 ```
 
-**GQA support**: `gqa_factor = H_q / H_kv` is baked into the Metal shader as
-`#define MFA_GQA_FACTOR`.
-- dQ kernel: maps `kv_head = tid.y / gqa_factor` to find the K/V row.
-- dKV kernel: iterates `for q_head in [kv_head*f .. (kv_head+1)*f)`, accumulating
-  dK/dV across all Q-heads in the GQA group.
+**D=256 D-split**: QK and `dO@V^T` are each accumulated across two D=128 sub-tiles
+(three phases per K-tile) to stay within TGP.  Register tiles `Qtile_lo/hi` and
+`dOtile_lo/hi` are declared outside all loops to keep them in registers.
 
-**D=256 D-split (Track CE, v0.9.2)**: D=256 exceeds the 32 KB TGP budget
-(`Q_smem + dO_smem + KV_smem ≈ 46,080 bytes` with standard tiling).
-Solution: split D into two halves (`BD_HALF = 128`), reducing TGP to ≈23,552 bytes.
+### Varlen backward
 
-Three-phase algorithm per K-tile (dQ kernel):
+`flash_attention_varlen` uses `mx.custom_function`.  The backward splits into
+per-sequence vjp calls:
 
-```
-// Phase 1: accumulate S from both D-halves
-load Q_lo  [BQ × 128], K^T_lo  [128 × BK] → S  += Q_lo  @ K^T_lo
-load Q_hi  [BQ × 128], K^T_hi  [128 × BK] → S  += Q_hi  @ K^T_hi
-// S is now complete → apply softmax/online-max
-
-// Phase 2: accumulate dP from both D-halves
-load dO_lo [BQ × 128], V^T_lo  [128 × BK] → dP += dO_lo @ V^T_lo
-load dO_hi [BQ × 128], V^T_hi  [128 × BK] → dP += dO_hi @ V^T_hi
-// dS = P × (dP − delta) — computed once, shared across phases
-
-// Phase 3: accumulate dQ in both D-halves
-load K_lo  [BK × 128] → dQ_lo += dS @ K_lo   (stored at offset 0)
-load K_hi  [BK × 128] → dQ_hi += dS @ K_hi   (stored at offset 128)
+```python
+for i in 0..num_seqs:
+    _, (dq_i, dk_i, dv_i) = mx.vjp(flash_attention, [q_i, k_i, v_i], [dO_i])
+dQ, dK, dV = concat(dq_i), concat(dk_i), concat(dv_i)
 ```
 
-Register tiles `Qtile_lo/hi` and `dOtile_lo/hi` are declared as explicit named
-variables *outside* all loops so the compiler keeps them in registers across phases.
-`KV_smem` is shared between D-halves (single buffer reused per phase).
+`cu_seqlens` lists are materialised to `list[int]` before the
+`@mx.custom_function` definition so they are captured by closure, not tracked
+by the MLX autograd tape.
+
+### Fallback routes
+
+| Condition | Backward method |
+|-----------|----------------|
+| f32 | `mx.vjp(mx.fast.scaled_dot_product_attention)` |
+| softcap > 0 | `mx.vjp(_softcap_sdpa_ref)` via `mx.compile` |
+| alibi | `mx.vjp(_alibi_sdpa_ref)` via `mx.compile` |
+| sparse | `mx.vjp(sdpa)` (dense) or tiled sparse backward |
+
+**Why not C++ Primitive vjp**: `MFAttention::vjp()` cannot access `L`
+(logsumexp) because MLX prunes it from the graph before vjp runs.  The Python
+`custom_function` saves `L` as a closure variable.
 
 ---
 
-## 9. Varlen backward via `mx.custom_function` (Track EA, v0.9.3)
+## SageAttention
 
-`flash_attention_varlen` is wrapped in `mx.custom_function` to provide full
-autograd support without a dedicated varlen backward Metal kernel.
+SageAttention (int8 Q/K) is implemented in `csrc/mfa_sage_fwd.cpp`.
 
-```
-flash_attention_varlen(q, k, v, cu_q, cu_k, max_q, max_k, ...)
-         │
-         ▼
-@mx.custom_function _varlen_impl(q_, k_, v_)
-  Forward:
-    ├── f16/bf16, D∈{64,128,256} → STEEL varlen kernel (single Metal dispatch)
-    └── else → _varlen_split_concat (Python per-sequence)
-
-@_varlen_impl.vjp _varlen_bwd(primals, cotangent, output)
-  Backward: split per sequence → mx.vjp(flash_attention) for each seq
-    for i in 0..num_seqs:
-        q_i = q_[:, :, cu_q[i]:cu_q[i+1], :]
-        k_i = k_[:, :, cu_k[i]:cu_k[i+1], :]
-        v_i = v_[:, :, cu_k[i]:cu_k[i+1], :]
-        _, (dq_i, dk_i, dv_i) = mx.vjp(flash_attention, [q_i, k_i, v_i], [dO_i])
-    dQ = concat(dq_i, axis=2)
-    dK = concat(dk_i, axis=2)
-    dV = concat(dv_i, axis=2)
-```
-
-**Closure design**: `cu_seqlens_q` and `cu_seqlens_k` are materialised to
-Python `list[int]` via `.tolist()` *once* in the outer function (before the
-`@mx.custom_function` definition), then captured by closure.  Since Python
-scalars/lists are transparent to the MLX autograd tape, no `mx.array` slicing
-occurs inside the autograd graph — only MLX arrays `q_`, `k_`, `v_` are tracked.
-
-**Per-sequence vjp efficiency**: each `mx.vjp(flash_attention)` call dispatches
-to the STEEL backward kernels (for f16/bf16 D≤512), so the split-concat backward
-is nearly as fast as a hypothetical single-kernel varlen backward.
-
----
-
-## 10. Metal paged KV gather kernel (Track EB, v0.9.3)
-
-`MFAPagedKVGather` (`csrc/mfa_paged_gather.cpp`) is a Metal Primitive that
-materialises contiguous K/V tensors from a paged block pool in a single GPU
-dispatch, replacing the Python for-loop gather from v0.9.0.
-
-**Pool and output layouts**:
-
-```
-Pool input:  [num_blocks, block_size, H_kv, D]   (token-major within block)
-Output:      [B, H_kv, max_kv_len, D]             (BHND — STEEL-ready)
-```
-
-The kernel simultaneously transposes `[block_size, H_kv, D] → [H_kv, block_size, D]`
-during the copy, eliminating a separate transpose operation.
-
-**Grid structure**: 1-D grid, one thread per output element.
-Total elements = `B × H_kv × max_kv_len × D`.
-
-```metal
-kernel void paged_kv_gather(..., uint gid [[thread_position_in_grid]])
-{
-    // Decode (b, h, kv_t, d) from flat gid
-    int d    = gid % D;
-    int kv_t = (gid / D) % max_kv_len;
-    int h    = (gid / D / max_kv_len) % H;
-    int b    = gid / D / max_kv_len / H;
-
-    if (kv_t >= seq_lens[b]) { out[gid] = 0; return; }  // padding
-
-    int log_blk  = kv_t / block_size;
-    int tok_off  = kv_t % block_size;
-    int phys_blk = block_table[b * max_blocks + log_blk];
-    if (phys_blk < 0) { out[gid] = 0; return; }         // sentinel
-
-    // Pool: [phys_blk][tok_off][h][d]
-    out[gid] = pool[phys_blk * (block_size*H*D) + tok_off * (H*D) + h*D + d];
-}
-```
-
-**`flash_attention_paged` with `mx.custom_function`** (v0.9.3):
-
-```
-Forward:
-  1. K_contig = mfa_paged_kv_gather(k_pages, block_table, seq_lens, max_kv_len)
-  2. V_contig = mfa_paged_kv_gather(v_pages, block_table, seq_lens, max_kv_len)
-  3. for b in 0..B:
-       out[b] = flash_attention(q[b], K_contig[b, :, :kv_len[b], :],
-                                       V_contig[b, :, :kv_len[b], :])
-  4. return concat(out, axis=0)
-
-Backward:
-  1. Re-gather K_contig, V_contig (same as forward)
-  2. for b in 0..B:
-       _, (dQ[b], _, _) = mx.vjp(flash_attention, [q[b], K_b, V_b], [dO[b]])
-  3. dK_pages = zeros_like(k_pages)   ← pools are cache buffers, not parameters
-  4. dV_pages = zeros_like(v_pages)
-```
-
-**Why per-sequence slicing after gather**: `K_contig[b]` has zeros for positions
-`seq_lens[b]:max_kv_len`.  Passing the full `[H, max_kv_len, D]` slice to
-`flash_attention` would include those zeros in the softmax denominator
-(`exp(Q·0) = 1` per padded position), corrupting the output for shorter sequences
-in a batch.  Slicing to `[:kv_len]` ensures only real tokens participate in attention.
-
-
-## 11. PagedKVCache — Python-level allocator (Track GA, v1.0.1)
-
-`PagedKVCache` (`mlx_mfa/attention.py`) is a pure-Python paged KV cache allocator
-that provides the block management layer above the Metal gather kernel.
-
-### Design rationale — numpy backing store
-
-MLX arrays are **immutable** (functional style): every `.at[].set()` call creates
-a new array.  For a decode loop appending one token at a time, this means
-`O(T × H)` full-array allocations for `T` steps with `H` heads — untenable.
-
-The fix is a **numpy float32 backing store** (`_k_np`, `_v_np`):
+### Quantization scheme
 
 ```python
-# In __init__:
-self._k_np = np.zeros((num_blocks, block_size, H, D), dtype=np.float32)
-self._v_np = np.zeros((num_blocks, block_size, H, D), dtype=np.float32)
+K_smooth, K_mean  = smooth_k(K)               # per-channel mean subtraction
+K_int8, K_scale   = quantize_per_block(K_smooth)
+Q_int8, Q_scale   = quantize_per_block(Q)
 ```
 
-`numpy` supports true in-place slice writes:
+`smooth_k` bias cancels exactly in the softmax ratio — no output correction needed.
 
-```python
-self._k_np[block_id, ptr:ptr+chunk] = k_tokens   # O(chunk*H*D), no allocation
-```
+### Kernel (`SageForward = 11`)
 
-**bfloat16 note**: numpy has no `bfloat16` dtype (PEP 3118 gap).  All backing
-stores use `float32`; the `k_pool` / `v_pool` properties convert at access time:
+JIT-generated Metal kernel:
 
-```python
-@property
-def k_pool(self):
-    if self._k_pool_cached is None:
-        self._k_pool_cached = mx.array(self._k_np).astype(self.dtype)
-    return self._k_pool_cached
-```
+- `Q_int8 @ K_int8^T` in int32 accumulator; dequantize via scales before softmax
+- `V` kept in fp16/bf16 (memory bandwidth dominates, not compute)
+- Optional `window_size=(left, right)` for sliding-window SageAttention
 
-### Block allocator lifecycle
+Block sizes by head_dim:
 
-```
-__init__(num_blocks=128, block_size=16, H=8, D=128)
-  _free = [0..num_blocks-1]
-  _block_table = {}    # seq_id -> [block_ids]
-  _write_ptr   = {}    # seq_id -> offset within last block
-
-append(k, v, seq_id=0)
-  1. Force MLX graph materialisation + numpy copy
-  2. Transpose [B,H,T,D] -> [T,H,D]
-  3. while written < T:
-       if write_ptr == block_size: allocate new block
-       slice-write chunk to numpy backing store
-       advance write_ptr
-  4. invalidate cached mx.array views
-
-k_pool / v_pool (property)
-  mx.array(np_store).astype(dtype)
-  cached between appends; invalidated on any mutation
-
-gather(seq_id)
-  np.concatenate([k_np[b] for b in block_table[seq_id]])[:seqlen]
-  -> mx.array [1, H, seqlen, D]
-
-free_seq(seq_id)
-  return blocks to _free list
-  invalidate cache
-```
-
-### `get_block_table()` and `get_seq_lens()`
-
-These return `mx.int32` arrays suitable as inputs to `flash_attention_kvcache`
-(paged mode) and `flash_attention_paged`:
-
-```python
-block_table = cache.get_block_table([0, 1])  # mx.int32 [2, max_blocks] (-1 = padding)
-seq_lens    = cache.get_seq_lens([0, 1])     # mx.int32 [2]
-
-out = flash_attention_kvcache(
-    q, cache.k_pool, cache.v_pool,
-    block_table=block_table,
-    seq_lens=seq_lens,
-    block_size=cache.block_size,
-    scale=scale,
-    causal=True,
-)
-```
-
-### `seq_lengths` formula
-
-```python
-@property
-def seq_lengths(self):
-    return {
-        sid: (len(blks) - 1) * self.block_size + self._write_ptr[sid]
-        for sid, blks in self._block_table.items()
-    }
-```
-
-This is O(active_sequences) — constant per sequence regardless of total tokens
-stored — because it uses `_write_ptr` (the offset within the *last* block) rather
-than summing individual block fills.
-
----
-
-## 12. v1.0.4 Architecture Notes (Tracks IA–IF)
-
-### 12.1 MLX buffer aliasing in `@mx.custom_function` backward (Track IC)
-
-**Critical constraint**: When a Python function is decorated with
-`@mx.custom_function` and a `.vjp` backward is registered, MLX's autograd
-engine may **recycle the GPU buffers** that backed the primal inputs
-(`q`, `k`, `v`) by the time the backward is evaluated. Standard MLX ops
-(`mx.fast.scaled_dot_product_attention`, arithmetic) are stream-ordered and
-see consistent data. Custom C++ `Primitive` objects (e.g. `MFASteelBwdDQ`)
-read raw Metal buffers via `eval_gpu()` and are **not** protected by this
-ordering — they can silently read garbage.
-
-**Symptom**: `mfa_steel_backward_sparse` called directly (outside vjp) gives
-correct dQ; the same call inside the vjp gives values 20–50× smaller.
-
-**Fix applied in `backward="steel_sparse"`** (`attention.py`): force a
-CPU round-trip before calling the Metal backward kernel.
-
-```python
-mx.eval(q, k, v, mask_uint8, dO, O, L)          # materialise on GPU
-def _to_fresh(a, dtype=None):
-    a32 = a.astype(mx.float32) if a.dtype != mx.float32 else a
-    return mx.array(_np.array(a32), dtype=dtype or a.dtype)  # new GPU buf
-q2, k2, v2 = _to_fresh(q), _to_fresh(k), _to_fresh(v)
-```
-
-`mx.array(np.array(...))` always allocates a fresh GPU buffer. `add-zero`
-tricks (`q + mx.zeros(...)`) do **not** work because MLX may schedule them
-without materialising a new allocation.
-
-**Scope**: Only custom Metal primitives are affected. Pure MLX ops and
-`mx.vjp(sdpa)` inside a vjp are safe.
-
----
-
-### 12.2 `flash_attention` backend and attn_bias routing (Track ID)
-
-`flash_attention` now accepts two new keyword parameters:
-
-| Parameter | Type | Default | Behaviour |
-|-----------|------|---------|-----------|
-| `backend` | `str` | `"auto"` | `"sdpa"` short-circuits to `mx.fast.sdpa` unconditionally; `"mfa"` forces the Metal kernel and raises `RuntimeError` if unsupported; `"auto"` is unchanged |
-| `attn_bias` | `mx.array \| None` | `None` | Additive pre-softmax bias, broadcastable to `[B,H,N,S]`; always routes through `mx.fast.sdpa` (MFA kernel has no generic bias buffer) |
-
-`backend="sdpa"` is evaluated **before** the 4-D shape check so it can be
-used even with non-standard tensor shapes. `attn_bias` is evaluated after
-dropout/weight checks but before `_can_use_mfa`.
-
----
-
-### 12.3 `_apply_rope_and_attend` helper (Track IE)
-
-Unifies the pattern that appears in three call sites:
-
-```python
-q_rot = _apply_rope_mlx(q, cos, sin, offset=q_off, interleaved=..., rotary_dim=...)
-k_rot = _apply_rope_mlx(k, cos, sin, offset=k_off, interleaved=..., rotary_dim=...)
-return _fallback_sdpa(q_rot, k_rot, v, scale, causal, stream)
-```
-
-into a single call `_apply_rope_and_attend(q, k, v, cos, sin, scale, causal, ...)`.
-The two active call sites are:
-
-1. `flash_attention_rope()` — when `not _can_use_mfa` or `float32` or partial RoPE.
-2. `_make_mfa_rope_custom().backward._fwd_with_rope()` — used inside the vjp to
-   compute reference gradients via `mx.vjp(sdpa)`.
-
----
-
-### 12.4 Paged backward dK/dV scatter (Track IF)
-
-Prior to v1.0.4, `_paged_bwd` and `_paged_steel_bwd` discarded `dk_b`/`dv_b`
-from `mx.vjp` and returned `zeros_like(k_pages)`. This made
-`flash_attention_paged` non-differentiable w.r.t. K/V pool contents.
-
-**`_scatter_to_pool(dk_seqs, dv_seqs, dtype)`** (defined inline inside
-`flash_attention_paged`) performs the inverse of `_gather_contig`:
-
-```
-for b, (kv_len, table_b):
-    for logical block lb:
-        phys = block_table[b][lb]
-        dk_pool[phys] += dk_seqs[b][:, lb*bs:(lb+1)*bs, :].T  # [bs, H_kv, D]
-    if partial last block:
-        dk_pool[phys][:rem] += ...   # zero-padded to block_size
-```
-
-Multiple sequences sharing a physical block have their contributions **summed**
-(unusual in practice; block_table entries are typically unique per sequence).
-
-Output shape: `[num_blocks, block_size, H_kv, D]` — identical to `k_pages`.
-
----
-
-## 13. v1.0.5 Architecture Notes
-
-### 13.1 `get_supported_configs()` feature matrix (v1.0.5)
-
-`get_supported_configs()` now returns a machine-readable capability contract:
-
-```python
-{
-    "head_dims":  frozenset({64, 128, 256, 512}),
-    "dtypes":     frozenset({mx.float16, mx.bfloat16, mx.float32}),
-    "extension_available": bool,
-    "features":   dict[str, bool],  # 22 capability flags
-    "kernel_types": int,            # 11 Metal kernel variants when ext available
-}
-```
-
-The `features` dict is the authoritative source of truth for what `mlx_mfa`
-supports at runtime. Applications can query `get_supported_configs()["features"]`
-rather than hardcoding version checks.
-
-### 13.2 `_apply_rope_to_qk` shared helper (v1.0.5)
-
-`_apply_rope_to_qk(q, k, cos, sin, q_offset, k_offset, interleaved, rotary_dim)`
-isolates the pure-rotation step from attention dispatch. Three callers:
-
-1. `_apply_rope_and_attend()` — non-MFA RoPE path in `flash_attention_rope()`
-2. `flash_attention_kvcache()` — rotates Q and K_new in append mode
-3. `flash_attention_kvcache_rope_append()` — legacy explicit-rotate path
-
-### 13.3 `flash_attention_kvcache` append mode (v1.0.5)
-
-`flash_attention_kvcache` now accepts `k_new` / `v_new` keyword-only params,
-providing a unified API that subsumes `flash_attention_with_kv_cache` (removed).
-
-```
-k_new / v_new provided?
-  ├── yes → APPEND MODE
-  │         1. Rotate q, k_new via _apply_rope_to_qk (if rotary_cos given)
-  │         2. k_updated = concat([k_cache, k_new], axis=2)  (or k_new if no cache)
-  │         3. flash_attention(q_rot, k_updated, v_updated)  ← no rotary_cos here
-  │         4. return (out, k_updated, v_updated)
-  └── no  → normal dense / paged / flash-decode mode
-```
-
-**Pre-rotated cache invariant**: keys stored in the cache are already rotated at
-their position. The append mode rotates only the new key `k_new` (at offset
-`cache_seqlens`) and leaves existing cache keys untouched. Passing `rotary_cos`
-to the `flash_attention` call would re-rotate the entire key tensor from position
-0 — this must NOT happen in append mode.
-
-### 13.4 `window_size` right boundary constraint (v1.0.5)
-
-`flash_attention(..., window_size=(left, right))` now raises `NotImplementedError`
-when `right > 0`. The STEEL forward kernel uses a symmetric or left-only sliding
-window implemented as:
-
-```metal
-bool in_window = (j >= q_pos - window_left);
-```
-
-A right-side future window (`right > 0`) would require an additional bound:
-```metal
-bool in_window = (j >= q_pos - window_left) && (j <= q_pos + window_right);
-```
-
-This is not yet wired into the Metal shader's `has_window` path. Callers that
-previously passed `window_size=(left, right)` with `right > 0` had the right
-component silently ignored; the error is now explicit.
-
-### 13.5 D=512 varlen / paged guard (v1.0.5)
-
-The STEEL varlen (`SteelVarlenForward`, kernel type 8) and paged-STEEL
-(`PagedSteelForward`, kernel type 10) generators do not include the d-split
-loop present in the main `SteelForward` (kernel type 3).
-
-| Kernel | D=512 path |
-|--------|------------|
-| `SteelForward` | d-split: BD_HALF=128, 4 passes over head_dim → fits 32 KB TGP |
-| `SteelVarlenForward` | no d-split → TGP=65 KB > 32 KB → **SDPA fallback** |
-| `PagedSteelForward` | no d-split → TGP=65 KB > 32 KB → **SDPA fallback** |
-
-The guard `D in _MFA_SUPPORTED_HDIMS and D <= 256` is applied before dispatching
-to the varlen and paged STEEL kernels, so D=512 falls back gracefully to
-`flash_attention_varlen` → split-concat → `_fallback_sdpa`.
-
-## 14. v1.1.0 Architecture Notes (Tracks JA–JF)
-
-### 14.1 `get_supported_configs()` native_backward flag (Track JA)
-
-The `features["native_backward"]` field previously returned `False`, incorrectly
-suggesting no native backward kernels were active.  The STEEL backward kernels
-(`SteelBackwardDQ` and `SteelBackwardDKV`, kernel types 6 and 7) have been active
-since v0.9.0 for f16/bf16 inputs with D≤512.  The value is now the string
-`"ext"`, indicating that the native backward path requires the C++ extension.
-
-`isinstance(v, (bool, str))` and `v == "ext"` are the correct checks in tests.
-
-### 14.2 `flash_attention_rope_unified` — single RoPE entry point (Track JB)
-
-`flash_attention_rope` and `flash_attention_kvcache_rope_append` are now thin
-wrappers that delegate to `flash_attention_rope_unified`, which handles all
-RoPE+attention combinations in a single function:
-
-| Mode | `k_cache` | `return_updated_cache` |
-|------|-----------|----------------------|
-| Standalone (no cache) | `None` | `False` |
-| Cache-append (first step) | `None` | `True` |
-| Cache-append (subsequent) | cache tensor | `True` |
-
-The key dispatch variable is `_cache_mode = (k_cache is not None) or return_updated_cache`.
-Setting `_cache_mode=True` even when `k_cache=None` (first step) ensures the
-function returns a 3-tuple `(out, k_new_rotated, v)` rather than a plain array,
-allowing callers to concatenate onto an initially empty cache.
-
-K-rotation offset:
-- Standalone: `k_offset = 0` (keys begin at position 0)
-- Cache mode: `k_offset = cache_seqlens` (new keys start after cached tokens)
-
-### 14.3 Paged KV append path (Track JC)
-
-`flash_attention_kvcache(q, k_pages, v_pages, k_new=new_k, v_new=new_v, block_table=table)`
-is now supported.  Since MLX is a functional framework (no in-place writes),
-appending to a paged pool requires rebuilding affected pool blocks:
-
-```
-1. Build update dict: {phys_block_idx → {slot_offset → [H_kv, D] tensor}}
-   for each (batch, timestep) in k_new.
-2. Rebuild pool:
-   new_pages[i] = concat(updates[i]) if i in updates else pages[i]
-3. stack(new_pages) → new pool tensor.
-4. Attend using the rebuilt pool.
-```
-
-Cost: O(num_blocks × block_size) Python loop.  Acceptable for typical inference
-pool sizes; for ultra-large pools, prefer the dense-append path or a custom
-scatter kernel.
-
-`cache_batch_idx + paged-append` raises `NotImplementedError` (the combination
-requires per-request pool indexing that cannot be expressed without in-place
-updates in a single pass).
-
-### 14.4 LLM inference helpers (Track JD)
-
-Three new high-level functions for LLM inference use-cases:
-
-| Function | Purpose |
-|----------|---------|
-| `flash_attention_speculative_verify` | Speculative decoding verification: compute target log-probs for draft token sequences |
-| `make_shared_prefix_cache` | Build a shared prefix KV cache to be reused across multiple requests |
-| `flash_attention_splitfuse` | Route prefill tokens and decode tokens in a single call |
-
-These are pure-Python wrappers over the lower-level attention primitives; they
-add no new C++ paths and are fully differentiable.
-
-### 14.5 `patch_mlx_lm` enrichment (Track JE)
-
-`_steel_sdpa` now reads `cache.max_kv_window` from the mlx-lm cache object.
-When present and positive, it is converted to `window_size=(max_kv_window - 1, 0)`
-before dispatching to `flash_attention`.  This activates STEEL tile-skipping for
-windowed models (e.g., Mistral's 4 K window) without any caller change.
-
-New statistics counters: `gqa_calls` (H_q ≠ H_kv) and `sliding_window_calls`
-(cache exposed a window).  Both are accessible via `get_patch_stats()`.
-
-`KNOWN_MODEL_CONFIGS` (22 entries) provides a reference dictionary of model
-family → `{head_dim, sliding_window}` hints for tooling and documentation.
-
-`verbose_dispatch=True` in `patch_mlx_lm()` enables per-call routing log lines
-for debugging which dispatch branch was taken.
-
-### 14.6 Cross-attention via `flash_attention_kvcache` (Track JF)
-
-`flash_attention_kvcache` is the recommended entry point for encoder-decoder
-cross-attention.  Passing `causal=False` with encoder KV tensors as `k_cache`
-/ `v_cache` (no `block_table`) routes through the dense attention path.
-
-- GQA is fully supported: H_kv < H_q with no K/V expansion in the public API.
-- RoPE is not used (omit `rotary_cos`/`rotary_sin`).
-- Full autograd: dQ, dK_enc, dV_enc computed via SDPA backward.
-- Single-token decode (N_q=1) is supported for autoregressive encoder-decoder
-  models.
-
-See `examples/cross_attention.py` for a working code example.
-
----
-
-## 15. v1.2.0 Architecture Notes — SageAttention (Tracks KA–KC)
-
-### Overview
-
-SageAttention is an int8-quantized attention variant that reduces memory bandwidth
-for Q and K by 2× (loading int8 instead of float16/bfloat16). On Apple Silicon,
-there is **no int8 GEMM hardware** — the GEMM still executes in fp16. The speedup
-comes entirely from reduced memory bandwidth for Q/K tile loads.
-
-**When it helps**: long-context inference with pre-quantized KV caches (S ≥ 2048).
-In the current Python implementation, `quantize_per_block` adds overhead that makes
-real-time quantization slower than `flash_attention` for standard use.
-
-### New files
-
-| File | Purpose |
-|------|---------|
-| `csrc/mfa_sage_fwd.hpp` | `MFASageParams`, `mfa_sage_forward` declaration |
-| `csrc/mfa_sage_fwd.cpp` | SageForward Primitive + Metal JIT source generator |
-| `mlx_mfa/quantize.py` | Python utilities: `quantize_per_block`, `dequantize`, `smooth_k`, `sage_block_sizes` |
-| `tests/test_sage_attention.py` | 23 tests across `TestQuantizeUtils`, `TestSageAPI`, `TestSageKernel` |
-| `benchmarks/bench_sage.py` | sage_attention vs flash_attention throughput comparison |
-
-### Metal kernel design (`mfa_sage_fwd.cpp`)
-
-The kernel is a simplified STEEL variant:
-
-- **Grid**: `(ceil(N/BQ), H, B)` — one threadgroup per Q-tile (non-persistent)
-- **Warp layout**: `WM×WN` simdgroups per threadgroup
-- **Q/K tile loads**: int8, dequantized to fp16 in-register using per-block scale
-- **V tile loads**: fp16/bf16 (V is never quantized — sum reduction needs full precision)
-- **Accumulator**: fp32 online softmax (same as STEEL)
-- **Causal masking**: `kb_lim = ceil((tile_row + 1) / BK)` limits K-loop
-
-Block sizes (`sage_block_sizes(D)`):
 | D | BQ | BK |
 |---|----|----|
-| 64 | 32 | 32 |
-| 128 | 32 | 16 |
-| 256 | 32 | 16 |
+| 64 | 16 | 32 |
+| 128 | 16 | 32 |
+| 256 | 8  | 32 |
+| 512 | 4  | 32 |
 
-### K-smoothing: smooth_k
+**SageAttention is inference-only**: autograd is not supported.
 
-`smooth_k(k)` subtracts the per-channel mean of K across the sequence dimension:
+### QuantizedKVCache
 
-```
-k_mean[b, h, 1, d] = mean(k[b, h, :, d])    # float32
-k_smooth = k - k_mean                         # centered K
-```
-
-**Purpose**: centering channels around zero reduces the per-block absmax, giving
-finer int8 quantization granularity (smaller quantization step → lower error).
-
-**Mathematical proof that no output correction is needed**:
-
-Let `b_i = (q_i · k_mean) * scale` be the bias added to every attention logit for
-query `i`. Since `k_mean` is the same for all key positions j:
-
-```
-S_smooth[i, j] = S_exact[i, j] + b_i    (for all j)
-```
-
-In the softmax, constant `b_i` factors as `exp(b_i)` in both numerator and denominator:
-
-```
-P_smooth[i, j] = exp(S_exact[i,j] + b_i) / Σ_k exp(S_exact[i,k] + b_i)
-               = exp(S_exact[i,j])       / Σ_k exp(S_exact[i,k])
-               = P_exact[i, j]
-```
-
-Therefore `sage_attention(q, k_smooth, v) = sage_attention(q, k, v)` exactly (in exact
-arithmetic). The `sage_output_correction` function in `quantize.py` is mathematically
-a no-op and adds spurious error in practice — it is **not called** by `sage_attention()`.
-
-### GQA support
-
-`mfa_sage_forward` accepts `H_kv < H_q`. The kernel maps Q head `h` to KV head
-`h // gqa_factor` exactly as the STEEL forward kernel does.
-
-Q scales have shape `[B, H, N_blocks]`; KV scales have shape `[B, H_kv, S_blocks]`.
-
-### Python API (`sage_attention`)
+Pre-stores K as int8; O(1) quantization per decode step (only the new K block):
 
 ```python
-out = sage_attention(q, k, v,
-                     scale=None,        # default: 1/√D
-                     causal=False,
-                     apply_smooth_k=True,
-                     stream=None)
+cache = QuantizedKVCache(B, H_kv, D, max_seq_len)
+cache.append(k_new, v_new)       # quantizes k_new once; stores k_int8, k_scale
+out = sage_attention_prequantized(q_int8, cache.k_int8, cache.v,
+                                   q_scale, cache.k_scale, causal=True)
 ```
-
-The function:
-1. Optionally applies `smooth_k` (drops `k_mean` — no correction needed)
-2. Quantizes Q and K per-block with `quantize_per_block(x, block_size)`
-3. Squeezes scale shapes from `[B, H, N_blocks, 1]` → `[B, H, N_blocks]`
-4. Calls `mfa_sage_forward(q_int8, k_int8, v, q_scale, k_scale, scale, causal)`
-5. Returns `O` directly (float16/bfloat16, same dtype as input)
-
-Falls back to `flash_attention` when the C++ extension is unavailable.
-
-### Numerical tolerances
-
-| Config | Typical max abs error | Notes |
-|--------|----------------------|-------|
-| D=64/128 non-causal | 0.05–0.15 | Int8 quantization error |
-| D=64/128 causal | 0.10–0.45 | Metal non-deterministic softmax reduction adds variance |
-| D=256 | finite, no NaN | Correctness check only |
-
-Causal max error can vary ±0.2 across runs due to Metal GPU non-deterministic
-reduction order. Test tolerance: `atol=0.30` non-causal, `atol=0.50` causal.
-
-### Performance
-
-On M1 Max (f16, B=1, H=8), measured with `benchmarks/bench_sage.py`:
-
-| N | sage / flash_attention |
-|---|------------------------|
-| 1024 | 0.31× |
-| 4096 | 0.52× |
-
-Current bottleneck: Python-side `quantize_per_block` adds 5+ elementwise MLX ops per
-tensor. True speedup requires pre-quantized KV caches (KV stored as int8 between
-decode steps). This is the expected use-case for production inference engines.
 
 ---
 
-## 16. v1.2.1 Architecture Notes (Tracks LA–LD)
+## Memory Architecture
 
-### Track LA — `window_size.right` in STEEL kernel
+### KV cache types
 
-Previously only the *left* window radius was enforced inside the Metal kernel.
-The right radius (`window_size=(left, right)` with `right >= 0`) was silently
-ignored — keys within `right` positions *after* the query were erroneously kept.
+| Class | Storage | Use case |
+|-------|---------|----------|
+| `DenseKVCache` | `[B, H, max_len, D]` f16/bf16 | Standard decode |
+| `QuantizedKVCache` | K: `[B, H, max_len, D]` int8 + scale | SageAttention decode |
+| `PagedKVCache` | pool: `[num_blocks, block_size, H, D]` + `block_table` | Multi-request serving |
 
-**Fix**: `MFASteelParams` gains a new field `int window_right` (offset 188, value
--1 means disabled). Inside the Metal shader the K-loop start (`kb_start`) and a
-per-element guard (`|qb - kb| <= window_right`) use `p->window_right` directly.
+### Paged KV gather kernel
 
-Python-side: `flash_attention(..., window_size=(left, right))` with `right >= 0`
-no longer raises `NotImplementedError`; it passes `right` to the STEEL kernel (or
-creates the correct fallback mask for SDPA).
-
-Changed files: `csrc/mfa_steel_fwd.hpp`, `csrc/mfa_steel_fwd.cpp`,
-`mlx_mfa/attention.py`.  8 new tests in `TestWindowRight`.
-
-### Track LB — 4-D sparse block masks
-
-`flash_attention_sparse(q, k, v, block_mask)` previously accepted only 2-D block
-masks `[NQ, NK]` shared across all batch items and heads.
-
-**New**: `block_mask` may be:
-
-| Shape | Semantics |
-|-------|-----------|
-| `[NQ, NK]` | Same mask for all B and H |
-| `[H, NQ, NK]` | Per-head mask, broadcast across B |
-| `[B, H, NQ, NK]` | Fully independent per-batch-per-head masks |
-
-**Implementation**: `MFASteelParams` gains two `int64_t` stride fields,
-`mask_batch_stride` and `mask_head_stride`. A stride of 0 means "broadcast this
-dimension". The Metal kernel computes the block_mask offset as:
+`MFAPagedKVGather` (`csrc/mfa_paged_gather.cpp`) materialises a contiguous
+`[B, H_kv, max_kv_len, D]` tensor from the page pool in a single GPU dispatch.
 
 ```
-offset = tid.z * p->mask_batch_stride   // batch dim
-       + tid.y * p->mask_head_stride    // head dim
-       + qb    * p->NK + kb             // block-row / block-col
+Pool:   [num_blocks, block_size, H_kv, D]   (token-major within block)
+Output: [B, H_kv, max_kv_len, D]             (BHND — STEEL-ready)
 ```
 
-For the backward pass (Metal backward kernels support only 2-D indexing), 3-D/4-D
-masks are conservatively collapsed to 2-D via `block_mask.any(axis=(0,1))` or
-`.any(axis=0)`.  Changed files: `csrc/mfa_steel_fwd.hpp`, `csrc/mfa_steel_fwd.cpp`,
-`csrc/mfa_attention.cpp`, `mlx_mfa/attention.py`.  14 new tests in `TestBlockMask4D`.
+The kernel transposes `[block_size, H_kv, D] → [H_kv, block_size, D]` during
+the copy.  Grid: 1-D, one thread per output element.
 
-### Track LC — `InferenceContext` stateful lifecycle object
+After gather, sequences are sliced to actual length `[:kv_len]` before
+dispatching to STEEL, preventing padded-zero positions from corrupting softmax.
 
-`mlx_mfa.InferenceContext` wraps the growing KV cache for autoregressive
-generation. It exposes:
+### InferenceContext lifecycle
 
-```python
-ctx = InferenceContext(B, H_kv, D, max_seq_len=8192, dtype=mx.float16)
-
-out_prefill = ctx.prefill(q, k, v, scale=scale)  # stores k/v as cache
-for _ in range(steps):
-    out = ctx.step(q_t, k_t, v_t, scale=scale)   # appends to cache
-
-ctx.reset()          # clear cache, reuse context
-# or use as context manager: cache auto-cleared on __exit__
+```
+InferenceContext(B, H_kv, D, max_seq_len)
+  ├── prefill(q, k, v)   → STEEL forward on full sequence
+  ├── step(q, k, v)      → Flash Decode (N_q=1, split-KV)
+  └── reset()            → zero fill_pos counter
 ```
 
-**Design**: MLX arrays are *immutable* lazy values — the cache is grown with
-`mx.concatenate` in `step()` rather than in-place index writes. The `reset()`
-method simply sets `_k_cache = None`, relying on MLX's reference counting to free
-the old buffer when it falls out of scope.
+`SageInferenceContext` wraps `QuantizedKVCache` and routes `step()` through
+`sage_attention_prequantized`.
 
-`prefill()` calls `flash_attention()` (full-sequence causal); `step()` calls
-`flash_attention_kvcache(causal=True)`.  New file: `mlx_mfa/inference.py`.
-21 new tests in `tests/test_inference_context.py`.
+---
 
-### Track LD — docstring fixes
+## Dispatch System
 
-- **`attn_bias`**: added explicit note that SDPA-only routing is an
-  **intentional architectural decision** — MFA's fused online-softmax kernel has
-  no generic additive-bias buffer; adding one would require a separate pre-pass
-  and negate bandwidth savings.  Directs users to `alibi_slopes` for
-  relative-position biases (native Metal path).
-- **`flash_attention_paged`** dK/dV zeros text: already removed in Track JA;
-  no additional change needed.
+### DispatchPolicy constants
 
-## 17. v1.2.3 Architecture Notes — Tech-debt remediation v2 (Phases 1–4)
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `DispatchPolicy.AUTO` | `"auto"` | Empirical threshold routing (default) |
+| `DispatchPolicy.MFA` | `"mfa"` | Force STEEL kernel |
+| `DispatchPolicy.SDPA` | `"sdpa"` | Force MLX SDPA |
+| `DispatchPolicy.SAGE` | `"sage"` | Force SageAttention (int8 Q/K) |
 
-### Summary of changes
+### Auto-routing thresholds
 
-v1.2.3 is a pure tech-debt remediation release with no new public API.
-All 4 phases completed across 6 commits (33d6c05 → de37269).
+| D | Causal | M1 threshold N ≥ | M3+ threshold N ≥ |
+|---|--------|:----------------:|:------------------:|
+| 64 | yes | 4096 | 4096 |
+| 128 | yes | 8192 | 2048 |
+| 256+ | any | never | never |
+| any | window | always | always |
+| any | sparse | always | always |
 
-### DenseKVCache (I.2 / I.1)
+### Calibration
 
-`DenseKVCache` is a new helper class in `mlx_mfa/attention.py`:
+`calibrate_dispatch()` benchmarks your device and saves thresholds to
+`~/.cache/mlx_mfa/calibration.json`.
 
-```python
-class DenseKVCache:
-    def __init__(self, B, H, D, max_seq_len=8192, dtype=mx.float16): ...
-    def append(self, k_new, v_new) -> None: ...   # slice_update + mx.eval()
-    @property
-    def k(self) -> mx.array: ...   # active slice [B, H, seqlen, D]
-    @property
-    def v(self) -> mx.array: ...
+Environment overrides (set before `import mlx_mfa`):
+
+| Variable | Effect |
+|----------|--------|
+| `MFA_DISABLE_V2=1` | Force V1 (benchmarking baseline) |
+| `MFA_FORCE_GEN=13` | Override arch detection (13=M1, 15=M3) |
+| `MFA_LOG_DISPATCH=1` | Print chosen kernel per call |
+
+---
+
+## Build System
+
+```
+pyproject.toml (scikit-build-core)
+  ↓
+CMakeLists.txt
+  Languages: CXX + OBJCXX (for shader_cache.mm)
+  Finds: Python.Development.Module + MLX (via python -c "import mlx")
+  Frameworks: Metal, Foundation
+  Output: mlx_mfa/_ext.cpython-3XX-darwin.so
 ```
 
-Key design:
-- Pre-allocates `[B, H, max_seq_len, D]` at construction — one GPU allocation.
-- `append()` uses `self._k[:, :, ptr:end, :] = k_new` (`__setitem__` = MLX
-  `slice_update`) + `mx.eval()` to keep lazy-graph depth at O(1) regardless
-  of decode-loop length.
-- `k` / `v` properties return the active slice `[:, :, :seqlen, :]` — no copy.
+Key decisions:
 
-`InferenceContext` (Track LC, `mlx_mfa/inference.py`) now uses `DenseKVCache`
-internally; the `mx.concatenate` pattern is gone.  Public interface unchanged.
+- **`NB_DOMAIN "mlx"`** — mandatory for sharing `mlx.core.array` ABI between
+  MLX and the extension.  Without this, passing MLX arrays raises
+  `RuntimeError: Unable to cast Python instance to C++ type`.
+- **`MTLLanguageVersion3_1`** — required for `bfloat4` vectors in bf16 kernels.
+- **`shader_cache.mm` is Objective-C++** — uses native Metal API with
+  `void*` / `__bridge_retained` for ARC-safe pipeline management.
 
-### G.1 — C++ eval fence in mfa_steel_backward
+---
 
-The `mx.eval(q, k, v, O, L, dO)` that previously blocked in Python's `_backward`
-is now `mlx::core::eval(std::vector<array>{q, k, v, O, L, dO})` at the top of
-the `mfa_steel_backward` C++ lambda in `csrc/bindings.cpp`.
-Effect: one less Python-level blocking GPU sync per backward pass.
+## Device Detection
 
-### F.2 — Vectorised scatter targets
-
-Paged-append block-table lookup is now computed with broadcast MLX ops:
-
-```python
-_pos  = seq_lens[:, None] + t_arange[None, :]   # [B, N_new]
-_bi   = _pos // blk_sz                           # block indices
-_ph   = block_table[row_idx, _bi]                # physical block IDs
+```cpp
+int gen = d.get_architecture_gen();   // "applegpu_g13s" → 13
+bool is_m3_plus = (gen >= 15);        // 13=M1, 14=M2, 15=M3, 16=M4
+bool is_m5_plus = (gen >= 17);        // M5/A19+ (Metal 4 tensor API, reserved)
 ```
 
-MLX boolean-index limitation (as of v1.2.3) requires `.tolist()` + Python list
-comprehension for the `phys >= 0` filter, then integer fancy indexing `arr[idx]`.
+| Gen | Chip | STEEL V2 BK(D=128) |
+|:---:|------|--------------------|
+| 13 | M1 | 32 |
+| 14 | M2 | 32 |
+| 15 | M3 | 64 |
+| 16 | M4 | 64 |
 
-### E.3-partial — GPU sync deferral
+`get_architecture_gen()` extracts the integer suffix from the Metal architecture
+string — **not** the `MTLGPUFamilyApple` enum value.
 
-`block_table.tolist()` moved inside the Python-loop fallback branch; the
-`_USE_SCATTER_KV` fast path never materialises the full block table to Python.
-`seq_lens_list_p` is still needed (Python int for RoPE offset + fallback loop).
+---
 
-## 18. v2.3.0 Architecture Notes — BK=64 Evaluation + Benchmark Refresh
+## Kernel Type Registry
 
-### 18.1 BK=64 for D=128 — Evaluation and Reversal
+12 active types defined in `csrc/shader_cache.hpp`:
 
-**Hypothesis**: Doubling BK from 32 → 64 in `select_steel_v2_block_config` for D=128
-halves total barrier stalls (~171 → ~87 per Q-tile at N=4096 causal) without reducing
-occupancy (27,136B TGP < 32KB → still 1 TG/core on M1 Max).
+| Value | Name | Description |
+|------:|------|-------------|
+| 0 | `AttentionForward` | ccv MFA forward (f32) |
+| 1 | `AttentionBackwardDQ` | ccv MFA backward dQ |
+| 2 | `AttentionBackwardDKV` | ccv MFA backward dKV |
+| 3 | `SteelForward` | STEEL V1/V2 forward (all D; d-split for D=512) |
+| 4 | `FlashDecodePartial` | Flash Decode Phase 1: partial attn per KV split |
+| 5 | `FlashDecodeReduce` | Flash Decode Phase 2: LSE reduce over splits |
+| 6 | `SteelBackwardDQ` | STEEL native backward dQ (f16/bf16, D≤512) |
+| 7 | `SteelBackwardDKV` | STEEL native backward dKV (f16/bf16, D≤512) |
+| 8 | `SteelVarlenForward` | STEEL varlen forward (D≤256) |
+| 9 | `PagedKVGather` | Paged KV gather: pool → contiguous BHND |
+| 10 | `PagedSteelForward` | STEEL forward with kernel-level paged KV (D≤256) |
+| 11 | `SageForward` | int8 Q/K quantized attention with window support |
+| — | `TensorOpsForward` | Reserved: Metal 4 cooperative tensors (M5+/A19+ only) |
 
-**MFABlockLoaderT constraints verified for BK=64**:
-| Loader | BROWS | BCOLS | n_reads | TCOLS |
-|--------|------:|------:|--------:|------:|
-| Q (row-major) | 32 | 128 | 32 | 4 |
-| K (transposed) | 128 | 64 | 64 | 1 |
-| V (row-major) | 64 | 128 | 64 | 2 |
+STEEL V2 shares kernel type 3 (`SteelForward`) with a `v2=true` compile-time
+flag in the JIT source generator.
 
-All `n_reads = BROWS × BCOLS / TGP_SIZE` are integers — constraint satisfied.
+---
 
-**Benchmark results (M1 Max, B=2 H=8 f16 causal, V2/SDPA)**:
-| N | BK=32 | BK=64 | Delta |
-|---|------:|------:|------:|
-| 4096 | 1.63× | 1.15× | −29% |
-| 8192 | 1.73× | 1.25× | −28% |
+## Key Design Decisions
 
-**Root cause**: TK=8 (BK=64) doubles the K-fragment and P-fragment register count
-vs TK=4 (BK=32). With BQ×D = 32×128 = 4096 Q-elements pinned in registers across
-all K-tile iterations (the core V2 optimization), the additional 2× K/P fragments
-cause register spill. The spill penalty (DRAM roundtrip) completely dominates the
-barrier savings.
+1. **JIT Metal compilation** — kernels are parameterized by head_dim, dtype,
+   block dims, and causal flag.  Pre-compiling all combinations would require
+   O(100) `.air` files shipped in the wheel; JIT compiles only what is used.
 
-**Decision**: BK=32 remains the default. The evaluation data and rationale are
-preserved in `csrc/mfa_steel_fwd_v2.cpp` comments.
+2. **`transposeState = false`** — the original ccv code set `transposeState = true`,
+   coupling head-offset computation to GEMM inner loop addressing.  mlx-mfa
+   unconditionally uses `transposeState = false` and forces `SEQUENCE_LENGTH`
+   in the head-offset expression.  **Do not revert.**
 
-**General principle**: For STEEL V2, the Q-accumulator pinning (O(BQ×D) registers
-per simdgroup held across all K-tiles) leaves limited register headroom for inner
-GEMM fragments. TK must be small (≤4 for D=128) to avoid spill. Barrier reduction
-must come from architectural changes (e.g., async copy, hardware tensor ops) rather
-than tile-size increases.
+3. **`disableAsyncCopy = true`** — `simdgroup_async_copy` (a private AIR
+   intrinsic) was removed from Metal shader compilation on macOS 26.  STEEL
+   was designed from the start to avoid it; ccv-path kernels use the software
+   loop fallback.
 
-### 18.2 D=256 Window/Sparse Dispatch Verification
+4. **Why not C++ Primitive vjp** — `MFAttention::vjp()` cannot access `L`
+   (logsumexp) because MLX prunes it from the graph.  Python `mx.custom_function`
+   saves `L` as a closure variable.
 
-Dense D=256 routes to V1 STEEL (not V2), which is slower than SDPA (0.76–0.90× at
-typical N). However, `dispatch_policy.py` unconditionally routes window-masked and
-sparse attention to MFA regardless of D — the tile-skip benefit applies at all head
-dimensions.
+5. **Buffer aliasing prevention** — `cotangent = ones_like(O_fwd)` carries
+   lazy graph ancestry.  `_sever_lazy_graph` adds `+ zeros_like` to write a
+   fresh buffer, preventing the Metal allocator from aliasing `O_backward`
+   with the freed `O_fwd` buffer.
 
-V1 STEEL with window masking achieves:
-| D | N | win | MFA/SDPA |
-|---|---|-----|--------:|
-| 256 | 4096 | 512 | 3.7× |
-| 256 | 8192 | 512 | 7.1× |
-| 256 | 8192 | 256 | 11.8× |
+6. **bfloat16 → numpy** — `numpy` PEP 3118 does not support bfloat16.  Cast
+   to float32 first: `np.array(mlx_bf16.astype(mx.float32))`.
 
-No dispatch fix was needed. D=256 dense remains at SDPA (pending 3D-blocking for
-register-friendly D=256 tiling).
-
-### 18.3 bench_v2_final.py
-
-New comprehensive benchmark (`benchmarks/bench_v2_final.py`) covering:
-- **Dense** (13 configs): D=64/128/256, causal/non-causal, f16/bf16, N=2048–16384
-- **Window** (9 configs): D=64/128/256, win=256/512, N=4096/8192
-- **Split-K** (6 configs): small-grid B=1 H=1–4 scenarios
-
-Use `--section dense/window/splitk/all` to select.
-
-## 19. v1.4.0 Architecture Notes — Sage Extensions (CP6–CP9)
-
-### 19.1 QuantizedKVCache (CP6)
-
-`QuantizedKVCache` is a stateful KV cache that pre-stores K as int8 to avoid
-re-quantizing the full K tensor on every decode step.
-
-**Design**: Pre-allocates `[B, H, max_seq_len, D]` int8 K buffer + `[B, H,
-ceil(max_seq_len / BK)]` float32 scale buffer + a fp16 shadow K buffer.
-On `append(k_new, v_new)`:
-1. Only the newly appended block positions are quantized (O(BK × D) per step).
-2. The full K slice is assembled by `k_int8 / k_scale` inside the Metal kernel.
-
-**Critical stride issue**: MLX slice `arr[:,:,:seqlen,:]` from a pre-allocated
-`[B, H, max_seq_len, D]` buffer returns a view with head stride =
-`max_seq_len * D` (allocated shape) rather than `seqlen * D` (active shape).
-The Metal C++ kernel computes offsets from `.shape()` dims, not array strides,
-so head > 0 reads wrong memory.
-
-**Fix**: `QuantizedKVCache.v` property applies `mx.contiguous()`. The
-`sage_attention_prequantized()` call site also applies `.flatten().reshape()`
-to k_int8, k_scale, and v as belt-and-suspenders.
-
-### 19.2 Sage kernel sliding window (CP7)
-
-`sage_attention()` and `sage_attention_prequantized()` gain `window_size=`
-parameter (same semantics as `flash_attention`).
-
-**Implementation**: mirrors STEEL V2 window logic exactly:
-- `KernelKey.has_window` drives a JIT compile-time branch in the Metal shader
-- `MFASageParams` gains `window_left` and `window_right` fields
-- Metal shader computes `kb_start` (left skip) and `kb_lim` (right clip)
-- VLoader advances to `kb_start` to skip inaccessible K-tiles
-- Boundary tiles apply per-element masking to `−∞` for out-of-window positions
-- Non-boundary tiles inside the window require zero masking overhead
-
-Files changed: `mfa_sage_fwd.hpp`, `mfa_sage_fwd.cpp`, `mfa_attention.hpp`,
-`mfa_attention.cpp`, `bindings.cpp`, `attention.py`.
-
-### 19.3 DispatchPolicy.SAGE (CP8)
-
-`flash_attention(backend="sage")` now routes to `sage_attention()` (int8-
-quantized Q/K, inference-only, no autograd).
-
-**Routing**: the `backend == "sage"` branch is inserted in `flash_attention()`
-immediately before the MFA-capable check. Basic tensor validation (shape,
-GQA ratio) runs first; sage's own validation runs inside `sage_attention()`.
-`_VALID_BACKENDS` gains `"sage"`; `DispatchPolicy.SAGE = "sage"` constant
-is added to the class for user ergonomics.
-
-### 19.4 bench_all.py modernization (CP9)
-
-`benchmarks/bench_all.py` updated from v1.2.x to v1.4.x:
-- `SAGE_CONFIGS`: 6 configs (D=64/128, N=2048–8192, causal/non-causal)
-- `bench_sage()`: times `backend='sage'` vs `backend='mfa'` vs SDPA; returns
-  both `sage_vs_mfa` and `sage_vs_sdpa` speedup ratios
-- `--sage-only` CLI flag; Sage section in `save_results()` RESULTS.md output
-- `_row_sage()` display helper (4-column: Sage ms, MFA ms, sage/mfa, sage/sdpa)
-
-**Expected results** (M1 Max, D=128, f16, causal): sage slower than MFA at
-N ≤ 4096 due to Python-side quantization overhead; may equal or exceed at
-N ≥ 8192 where 2× Q/K bandwidth reduction starts to dominate. Pre-quantized
-KV caches eliminate the Python overhead entirely.
+7. **`QuantizedKVCache` contiguity** — slices from `cache.k_int8` may be
+   non-contiguous after indexing.  Call `.flatten().reshape(shape)` or
+   `mx.contiguous()` before C++ dispatch.
