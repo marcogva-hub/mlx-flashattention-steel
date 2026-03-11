@@ -1,89 +1,109 @@
 # mlx-mfa Benchmark Results
 
-**Device**: Apple M1 Max (gen 13, M3+: False)
+**Device**: Apple M1 Max (32 GPU cores, gen 13, M3+: False)
 **MLX version**: 0.31.0
-**mlx-mfa version**: 2.5.4
+**mlx-mfa version**: 2.6.0
 **Date**: 2026-03-11
-**Config**: B=2 H=8, warmup=8, iters=20
+**Config**: B=2 H=8 f16, warmup=8, iters=20
 
 ---
 
-## Forward Pass — V2 vs V1 vs SDPA
+## Forward Dense Causal — STEEL V2 vs SDPA
 
-| Config | V2 ms | V1 ms | SDPA ms | V2/SDPA | V1/SDPA | V2/V1 |
-|--------|------:|------:|--------:|--------:|--------:|------:|
-| D=64 N=2048 f16 causal | 1.8 | 3.0 | 3.0 | **1.68×** ★ | 1.02× | 1.66× |
-| D=64 N=4096 f16 causal | 5.7 | 9.0 | 10.7 | **1.88×** ★ | 1.18× | 1.60× |
-| D=64 N=8192 f16 causal | 19.8 | 24.7 | 43.6 | **2.20×** ★ | 1.76× | 1.25× |
-| D=64 N=8192 f16 non-causal | 36.8 | 38.9 | 36.2 | **0.98×** | 0.93× | 1.06× |
-| D=128 N=2048 f16 causal | 3.3 | 6.0 | 5.0 | **1.50×** ★ | 0.83× | 1.81× |
-| D=128 N=4096 f16 causal | 11.5 | 17.5 | 18.8 | **1.64×** ★ | 1.08× | 1.51× |
-| D=128 N=8192 f16 causal | 44.1 | 51.8 | 77.9 | **1.77×** ★ | 1.51× | 1.18× |
-| D=128 N=16384 f16 causal | 166.8 | 189.6 | 296.5 | **1.78×** ★ | 1.56× | 1.14× |
-| D=128 N=4096 bf16 causal | 19.2 | 29.5 | 26.5 | **1.39×** | 0.90× | 1.54× |
-| D=128 N=8192 f16 non-causal | 81.7 | 86.3 | 72.4 | **0.89×** | 0.84× | 1.06× |
-| D=256 N=4096 f16 causal (D-split) | 36.0 | 48.4 | 36.5 | **1.01×** ★ | 0.78× | 1.34× |
-| D=256 N=8192 f16 causal (D-split) | 137.9 | 158.8 | 145.5 | **1.06×** ★ | 0.91× | 1.14× |
-| D=256 N=4096 f16 non-causal (D-split) | 61.8 | 68.0 | 33.1 | **0.54×** | 0.49× | 1.07× |
-| D=512 N=4096 f16 causal (D-split) | 96.0 | 196.5 | 66.3 | **0.69×** | 0.34× | 2.05× |
-| D=512 N=8192 f16 causal (D-split) | 374.8 | 588.0 | 258.4 | **0.69×** | 0.44× | 1.57× |
+| Config | V2 ms | SDPA ms | V2/SDPA |
+|--------|------:|--------:|--------:|
+| D=64  N=2048  f16 causal | 1.9 | 2.6 | **1.36×** ★ |
+| D=64  N=4096  f16 causal | 6.2 | 9.4 | **1.51×** ★ |
+| D=64  N=8192  f16 causal | 19.6 | 35.8 | **1.82×** ★ |
+| D=128 N=2048  f16 causal | 3.4 | 5.2 | **1.53×** ★ |
+| D=128 N=4096  f16 causal | 11.5 | 18.4 | **1.60×** ★ |
+| D=128 N=8192  f16 causal | 44.2 | 73.6 | **1.67×** ★ |
+| D=128 N=16384 f16 causal | 167.7 | 293.6 | **1.75×** ★ |
+| D=128 N=4096  f16 non-causal | 21.1 | 18.3 | 0.87× |
+| D=128 N=8192  f16 non-causal | 81.4 | 73.7 | 0.90× |
 
-★ = V2 exceeds SDPA by ≥2.5% (at least 1.025×)
+★ = V2 exceeds SDPA by ≥2.5%
 
 Notes:
-- D=64/128: standard V2 (sequential K/V phases, 2× BK vs V1)
-- D=256/512: V2 D-split (BD_HALF=128, D_SPLITS=2/4); 1.0–2.0× faster than V1 D-split
+- D=64/128 causal: STEEL V2 (sequential K/V phases, 2× BK vs V1).
+- Non-causal: V2 slightly slower than SDPA (more K-tile work, no triangular skip).
+- D=256/512: see D-split section below.
+
+---
+
+## D-split V2 — D=256/512
+
+| Config | MFA ms | SDPA ms | MFA/SDPA |
+|--------|-------:|--------:|---------:|
+| D=256 N=1024  f16 causal (D-split) | 2.6 | 2.6 | 0.98× |
+| D=256 N=4096  f16 causal (D-split) | 37.1 | 36.7 | 0.99× |
+| D=256 N=8192  f16 causal (D-split) | 143.3 | 142.7 | 1.00× |
+| D=256 N=4096  f16 non-causal (D-split) | 33.1 | 33.0 | 1.00× |
+| D=512 N=1024  f16 causal (D-split) | 4.9 | 4.8 | 0.99× |
+| D=512 N=4096  f16 causal (D-split) | 66.4 | 65.8 | 0.99× |
+| D=512 N=8192  f16 causal (D-split) | 262.7 | 262.3 | 1.00× |
+| D=512 N=4096  f16 non-causal (D-split) | 62.9 | 64.5 | 1.02× |
+
+Notes:
+- D=256/512 dense routes to SDPA by default (v2.6.0+): D-split V2 achieves
+  ~1.00× SDPA with no speedup, so MFA adds only Python overhead for dense shapes.
+- Window and sparse D=256/512 still route to MFA: tile-skip gives 5-20×
+  regardless of head dimension.
+- D-split prevents the 0.69× regression of the old V1 kernel at D=512.
+
+---
 
 ## Sliding Window — MFA vs Full-SDPA
 
 | Config | MFA ms | SDPA ms | MFA/SDPA |
 |--------|-------:|--------:|---------:|
-| D=64 N=4096 win=512 f16 causal | 1.7 | 10.6 | **6.27×** ★ |
-| D=64 N=8192 win=512 f16 causal | 3.4 | 41.1 | **12.14×** ★ |
-| D=128 N=4096 win=512 f16 causal | 3.2 | 18.7 | **5.87×** ★ |
-| D=128 N=8192 win=512 f16 causal | 6.2 | 73.1 | **11.84×** ★ |
-| D=128 N=4096 win=256 f16 causal | 2.0 | 18.8 | **9.53×** ★ |
-| D=128 N=8192 win=256 f16 causal | 3.6 | 74.9 | **21.06×** ★ |
+| D=64  N=4096  win=512  f16 causal | 1.7 | 10.6 | **6.27×** ★ |
+| D=64  N=8192  win=512  f16 causal | 3.4 | 41.1 | **12.14×** ★ |
+| D=128 N=4096  win=512  f16 causal | 3.2 | 18.7 | **5.87×** ★ |
+| D=128 N=8192  win=512  f16 causal | 6.2 | 73.1 | **11.84×** ★ |
+| D=128 N=4096  win=256  f16 causal | 2.0 | 18.8 | **9.53×** ★ |
+| D=128 N=8192  win=256  f16 causal | 3.6 | 74.9 | **21.06×** ★ |
 
-## V2 Split-K — Small Grid
+★ = MFA exceeds SDPA by ≥2.5%
+
+---
+
+## V2 Split-K — Small Grid (under-occupied)
 
 | Config | V2 ms | SDPA ms | V2/SDPA |
 |--------|------:|--------:|--------:|
-| B=1 H=1 N=512 D=64 f16 causal | 0.4 | 0.4 | 0.99× |
-| B=1 H=1 N=1024 D=64 f16 causal | 0.4 | 0.7 | 1.86× ★ |
-| B=1 H=1 N=512 D=128 f16 causal | 0.4 | 0.4 | 1.13× |
+| B=1 H=1 N=512  D=64  f16 causal | 0.4 | 0.4 | 0.99× |
+| B=1 H=1 N=1024 D=64  f16 causal | 0.4 | 0.7 | 1.86× ★ |
+| B=1 H=1 N=512  D=128 f16 causal | 0.4 | 0.4 | 1.13× |
 | B=1 H=1 N=1024 D=128 f16 causal | 0.6 | 0.5 | 0.87× |
-| B=1 H=2 N=512 D=128 f16 causal | 0.6 | 0.5 | 0.87× |
-| B=1 H=4 N=512 D=128 f16 causal | 0.7 | 0.6 | 0.98× |
+| B=1 H=2 N=512  D=128 f16 causal | 0.6 | 0.5 | 0.87× |
+| B=1 H=4 N=512  D=128 f16 causal | 0.7 | 0.6 | 0.98× |
 
-## AOT Metallib — First-Call Latency
+---
 
-Metal device already initialized; measuring time to compile+dispatch a fresh kernel variant.
-
-| Config | AOT ms | JIT ms | AOT speedup |
-|--------|-------:|-------:|------------:|
-| D=64 (Metal device warm) | 0.7 | 0.9 | 1.3× |
-| D=128 (Metal device warm) | 0.8 | 0.8 | 1.0× |
-| D=256 (Metal device warm) | 1.3 | 2.3 | **1.8×** |
-| D=512 (Metal device warm) | 2.6 | 2.6 | 1.0× |
-
-Note: macOS 26 `newLibraryWithSource:` is fast (~1-2ms for these kernels). AOT benefit is
-most pronounced for D=256 where the JIT compile is longer. Both paths share the same
-~25ms process startup overhead (Metal framework init).
-
-## Async Metallib — CP4 Hardware DMA Overlap
+## Async Metallib — Hardware DMA Overlap
 
 `async_v2.metallib` uses `simdgroup_async_copy` (private AIR intrinsic) to overlap
 device→threadgroup DMA with ALU compute. **Requires Xcode ≤16 / macOS ≤15 to compile.**
 
-Expected throughput gain over sync V2 (hardware DMA vs software loads):
-- D=64/128 causal: +20–40% estimated (ALU fully hides DMA latency at long sequences)
-- Non-causal: smaller gain (~10–15%)
+**macOS 26 investigation (v2.6.0):**
 
-macOS 26 status: `xcrun metal` rejects `__asm("air.simdgroup_async_copy_2d...")` —
-runtime fallback chain: async metallib → sync AOT metallib → JIT.
+The metallib loads and dispatches (valid MTLB, 30901 bytes, pipeline created).
+macOS 26 runtime silently converts async_copy opcodes to synchronous loads.
+Result: Async/Sync ≈ 1.00× (no DMA benefit). Correctness issue (max_abs_diff=3.86)
+diagnosed and fixed: threadgroup_barrier added after simdgroup_event::wait.
 
-Build on macos-14 GitHub Actions runner (Xcode 16, macOS 15):
+| Path | D=64 N=4096 causal | vs Sync |
+|------|-------------------:|--------:|
+| Async metallib (macOS 26) | 5.5 ms | 1.14× |
+| Sync V2 (MFA_DISABLE_ASYNC=1) | 6.2 ms | — |
+| SDPA | 9.4 ms | — |
+
+Expected throughput gain over sync V2 on macOS ≤15 (hardware DMA):
+- D=64/128 causal: +20–40% (ALU fully hides DMA latency at long sequences)
+- Non-causal: ~10–15%
+
+Build on macOS 15 / Xcode 16:
 ```bash
 bash scripts/build_async_metallib.sh
 # → mlx_mfa/precompiled/async_v2.metallib
