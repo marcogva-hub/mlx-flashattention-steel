@@ -25,7 +25,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 
 def _check_abi() -> None:
@@ -88,6 +88,9 @@ from mlx_mfa.attention import (
     sage_attention,
     # Track LA: SageAttention KV-cache decode
     sage_attention_kvcache,
+    # CP6: pre-quantized SageAttention + QuantizedKVCache
+    sage_attention_prequantized,
+    QuantizedKVCache,
 )
 
 from mlx_mfa.quantize import (
@@ -168,9 +171,11 @@ __all__ = [
     "flash_attention_speculative_verify",
     "make_shared_prefix_cache",
     "flash_attention_splitfuse",
-    # SageAttention (Track KC / LA)
+    # SageAttention (Track KC / LA / CP6)
     "sage_attention",
     "sage_attention_kvcache",
+    "sage_attention_prequantized",
+    "QuantizedKVCache",
     # Quantization utilities (Track KA/KC)
     "quantize_per_block",
     "dequantize",

@@ -1,4 +1,4 @@
-# mlx-mfa Code Inventory — v1.4.0
+# mlx-mfa Code Inventory — v2.5.0
 
 All numbers verified by running shell commands against the source tree.
 Regenerated: 2026-03-10.
@@ -9,9 +9,9 @@ Regenerated: 2026-03-10.
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `1.3.0` → bump to `1.4.0` in CP11 |
-| `mlx_mfa/__init__.py` | `1.3.0` → bump to `1.4.0` in CP11 |
-| Latest git tag | `v1.3.0` |
+| `pyproject.toml` | `2.5.0` |
+| `mlx_mfa/__init__.py` | `2.5.0` |
+| Latest git tag | `v2.5.0` |
 
 ---
 

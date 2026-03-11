@@ -2,6 +2,54 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.5.0] — 2026-03-10
+
+### SageAttention Extensions — QuantizedKVCache, Sliding Window, DispatchPolicy.SAGE
+
+**CP6 — QuantizedKVCache**
+
+New `QuantizedKVCache` class in `inference.py`: pre-allocates K as int8
+and scale as float32 at construction time. On each decode step only the
+newly appended K block is quantized (O(BK × D) per step vs O(S × D)
+previously). Eliminates re-quantization overhead for incremental decode.
+
+`QuantizedKVCache.v` property now applies `mx.contiguous()` to guarantee
+canonical strides before C++ dispatch. `sage_attention_prequantized()` also
+applies `.flatten().reshape()` to k_int8, k_scale, and v as belt-and-suspenders
+protection against non-contiguous slices from pre-allocated buffers.
+
+**CP7 — Sage kernel sliding window**
+
+`sage_attention()` and `sage_attention_prequantized()` gain `window_size=(left,
+right)` parameter (same semantics as `flash_attention`).
+
+Implementation mirrors STEEL V2 window logic: `KernelKey.has_window` drives
+a JIT compile-time branch; `MFASageParams` gains `window_left` and `window_right`
+fields; the Metal shader computes `kb_start` / `kb_lim` to skip K-tiles outside
+the window. VLoader advances to `kb_start`; boundary tiles apply per-element
+masking to −∞.
+
+Files changed: `mfa_sage_fwd.hpp`, `mfa_sage_fwd.cpp`, `mfa_attention.hpp`,
+`mfa_attention.cpp`, `bindings.cpp`, `attention.py`.
+
+**CP8 — DispatchPolicy.SAGE**
+
+`flash_attention(backend="sage")` now routes to `sage_attention()`. Backend
+constant `DispatchPolicy.SAGE = "sage"` added. The `backend == "sage"` branch
+is inserted before the MFA-capable check so basic shape validation still runs.
+`_VALID_BACKENDS` updated; docstrings updated.
+
+**CP9 — bench_all.py modernization**
+
+`benchmarks/bench_all.py` updated to v1.4.x / v2.5.x:
+- `SAGE_CONFIGS` (6 configs), `bench_sage()`, `_row_sage()`, `HDR_SAGE`
+- `--sage-only` CLI flag
+- Sage section in `save_results()` RESULTS.md output
+
+**553 tests pass.**
+
+---
+
 ## [2.4.0] — 2026-03-10
 
 ### Adaptive Multi-Generation V2 + Auto-Calibration + V2 Feature Extensions
