@@ -1,0 +1,41 @@
+name: Build async metallib
+
+on:
+  push:
+    paths:
+      - 'csrc/async_v2_kernel.metal'
+      - 'scripts/build_async_metallib.sh'
+  workflow_dispatch:  # permet le déclenchement manuel
+
+jobs:
+  build:
+    runs-on: macos-15        # Xcode 16 inclus — metal compiler avec __asm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Metal compiler
+        run: |
+          xcrun -sdk macosx --find metal
+          xcrun -sdk macosx metal --version
+
+      - name: Build async metallib
+        run: bash scripts/build_async_metallib.sh
+
+      - name: Verify output
+        run: |
+          ls -la mlx_mfa/precompiled/async_v2.metallib
+          file mlx_mfa/precompiled/async_v2.metallib
+
+      - name: Upload metallib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-v2-metallib
+          path: mlx_mfa/precompiled/async_v2.metallib
+
+      - name: Commit metallib to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mlx_mfa/precompiled/async_v2.metallib
+          git diff --cached --quiet || git commit -m "build: async_v2.metallib compiled on macos-15 (Xcode 16)"
+          git push
