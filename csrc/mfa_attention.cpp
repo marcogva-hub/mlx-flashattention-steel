@@ -573,6 +573,109 @@ void MFAttention::eval_gpu(
     }
   }  // end if (!MFA_DISABLE_V2) — single-pass block
 
+  // ── STEEL V2 D-split dispatch (f16/bf16, D=256/512) ─────────────────────
+  // BD_HALF=128; D_SPLITS=D/128 (2 for D=256, 4 for D=512).
+  // Reuses V2 block config for D=128 (BK=32/64, WM=4, TGP=128).
+  // No RoPE (GPT-NeoX pairs cross BD_HALF boundary).
+  // Sparse excluded (block_mask sized for V1 BK).
+  // Set MFA_DISABLE_V2=1 to bypass.
+  if (!std::getenv("MFA_DISABLE_V2")) {
+    const bool v2_dsplit_eligible =
+        (dtype_code != 2) &&
+        (D == 256 || D == 512) &&
+        !params_.has_block_mask &&
+        !params_.has_rope;
+
+    if (v2_dsplit_eligible) {
+      const int BD_HALF = 128;
+      auto cfg_ds    = select_steel_v2_block_config(128, is_m3_plus_steel);
+      const int BQ_ds  = cfg_ds.BQ;   // 32
+      const int BK_ds  = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
+      const int WM_ds  = cfg_ds.WM;   // 4
+      const int TGP_ds = WM_ds * cfg_ds.WN * 32;  // 128
+      const int NQ_ds  = (N + BQ_ds - 1) / BQ_ds;
+      const int NK_ds  = (S + BK_ds - 1) / BK_ds;
+      const int NQ_ds_aln = (N % BQ_ds == 0) ? NQ_ds : NQ_ds - 1;
+      const int NK_ds_aln = (S % BK_ds == 0) ? NK_ds : NK_ds - 1;
+
+      using KKds = ShaderCache::KernelKey;
+      const auto kt_ds = (D == 256) ? KKds::KernelType::SteelV2DSplit256
+                                     : KKds::KernelType::SteelV2DSplit512;
+      KKds key_ds{
+        kt_ds,
+        D, BQ_ds, BK_ds, BD_HALF, WM_ds,
+        params_.causal,
+        /*sparse=*/false,
+        is_m3_plus_steel,
+        /*has_rope=*/false, /*rope_interleaved=*/false,
+        params_.softcap > 0.0f,
+        params_.has_alibi,
+        params_.window_left >= 0 || params_.window_right >= 0,
+        dtype_code,
+        H / Hk
+      };
+
+      void* raw_ds      = ShaderCache::get().get_or_compile(key_ds, d.mtl_device());
+      auto* pipeline_ds = reinterpret_cast<MTL::ComputePipelineState*>(raw_ds);
+
+      MFASteelParams sp_ds{};
+      sp_ds.B          = B;
+      sp_ds.H          = H;
+      sp_ds.D          = D;
+      sp_ds.qL         = N;
+      sp_ds.kL         = S;
+      sp_ds.gqa_factor = H / Hk;
+      sp_ds.scale      = params_.scale;
+      sp_ds.NQ         = NQ_ds;
+      sp_ds.NK         = NK_ds;
+      sp_ds.NQ_aligned = NQ_ds_aln;
+      sp_ds.NK_aligned = NK_ds_aln;
+      sp_ds.qL_rem     = (N % BQ_ds == 0) ? BQ_ds : (N % BQ_ds);
+      sp_ds.kL_rem     = (S % BK_ds == 0) ? BK_ds : (S % BK_ds);
+      sp_ds.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
+      sp_ds.rope_q_base     = params_.cache_seqlens;
+      sp_ds.rope_cos_stride = D / 2;
+      sp_ds.Q_strides[0] = (int64_t)H  * N * D;
+      sp_ds.Q_strides[1] = (int64_t)N  * D;
+      sp_ds.Q_strides[2] = (int64_t)D;
+      sp_ds.K_strides[0] = (int64_t)Hk * S * D;
+      sp_ds.K_strides[1] = (int64_t)S  * D;
+      sp_ds.K_strides[2] = (int64_t)D;
+      sp_ds.V_strides[0] = (int64_t)Hk * S * D;
+      sp_ds.V_strides[1] = (int64_t)S  * D;
+      sp_ds.V_strides[2] = (int64_t)D;
+      sp_ds.O_strides[0] = (int64_t)H  * N * D;
+      sp_ds.O_strides[1] = (int64_t)N  * D;
+      sp_ds.O_strides[2] = (int64_t)D;
+      sp_ds.L_strides[0] = (int64_t)H  * N;
+      sp_ds.L_strides[1] = (int64_t)N;
+      sp_ds.softcap      = params_.softcap;
+      sp_ds.has_alibi    = params_.has_alibi ? 1 : 0;
+      sp_ds.window_left  = params_.window_left;
+      sp_ds.window_right = params_.window_right;
+      sp_ds.mask_batch_stride = 0;
+      sp_ds.mask_head_stride  = 0;
+
+      auto& enc_ds = d.get_command_encoder(stream().index);
+      enc_ds.set_compute_pipeline_state(pipeline_ds);
+      enc_ds.set_input_array(q,          0);
+      enc_ds.set_input_array(k,          1);
+      enc_ds.set_input_array(v,          2);
+      enc_ds.set_output_array(out,       3);
+      enc_ds.set_output_array(logsumexp, 4);
+      enc_ds.set_bytes(sp_ds,            5);
+      if (params_.has_alibi) {
+        // No rope, no block_mask in D-split path: ALiBi slopes at inputs[3].
+        enc_ds.set_input_array(inputs[3], 9);
+      }
+
+      enc_ds.dispatch_threadgroups(
+          MTL::Size::Make((size_t)NQ_ds, (size_t)H, (size_t)B),
+          MTL::Size::Make((size_t)TGP_ds, 1, 1));
+      return;
+    }
+  }  // end if (!MFA_DISABLE_V2) — D-split block
+
   // ── STEEL V1 tile config (f16 / bf16, or V2-disabled fallback) ───────────
   auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
   int BQ = cfg.BQ;

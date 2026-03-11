@@ -64,4 +64,19 @@ int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores);
 /// Phase 2 reduce uses the existing FlashDecodeReduce kernel (type 5).
 std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey& key);
 
+// ── V2 D-split (CP1/CP2) ─────────────────────────────────────────────────────
+//
+// D-split attention for D=256 (D_SPLITS=2) and D=512 (D_SPLITS=4):
+//   BD_HALF=128; each pass processes one BD_HALF chunk of the head dimension.
+//   BK from select_steel_v2_block_config(128, is_m3_plus) — same as D=128.
+//   Q loaded into named register tiles (Qtile0, Qtile1, …) before the main loop.
+//   K/V pointers advanced by K_strides[2] each K-tile; dh offset via + dh*BD_HALF.
+//   No RoPE support (GPT-NeoX pairs cross BD_HALF boundary). All other features OK.
+
+/// Generate Metal shader source for D-split V2 kernel (D=256/512).
+/// Kernel function name: "mlx_mfa_v2_dsplit_attention".
+/// BD_HALF=128; D_SPLITS = D/128 (2 for D=256, 4 for D=512).
+/// Supports: f16/bf16, causal, softcap, ALiBi, sliding window, GQA. No RoPE.
+std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key);
+
 }  // namespace mlx_mfa
