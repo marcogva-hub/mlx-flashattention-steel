@@ -7,6 +7,9 @@ on:
       - 'scripts/build_async_metallib.sh'
   workflow_dispatch:  # permet le déclenchement manuel
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15        # Xcode 16 inclus — metal compiler avec __asm
