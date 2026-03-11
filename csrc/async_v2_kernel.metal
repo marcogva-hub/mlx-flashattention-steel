@@ -616,6 +616,7 @@ void mlx_mfa_v2_async_attention(
 
     // ─ Wait for K[kb] DMA to complete ─
     simdgroup_event::wait(1, &k_ev);
+    threadgroup_barrier(mem_flags::mem_threadgroup);  // all simdgroups see full K tile
 
     // ─ Phase 1: Q @ K[kb]^T ─
     Stile.clear();
@@ -717,6 +718,7 @@ void mlx_mfa_v2_async_attention(
     // ─ Wait for V[kb] DMA ─
     if (kb != p->NK_aligned) {
       simdgroup_event::wait(1, &v_ev);
+      threadgroup_barrier(mem_flags::mem_threadgroup);  // all simdgroups see full V tile
     }
 
     // ─ Launch K[kb+1] DMA — overlaps with P@V below ─
@@ -926,6 +928,7 @@ void mlx_mfa_v2_async_attention_d128(
   for (int kb = 0; kb < kb_lim; kb++) {
 
     simdgroup_event::wait(1, &k_ev);
+    threadgroup_barrier(mem_flags::mem_threadgroup);  // all simdgroups see full K tile
 
     Stile.clear();
     STEEL_PRAGMA_UNROLL
@@ -1020,6 +1023,7 @@ void mlx_mfa_v2_async_attention_d128(
 
     if (kb != p->NK_aligned) {
       simdgroup_event::wait(1, &v_ev);
+      threadgroup_barrier(mem_flags::mem_threadgroup);  // all simdgroups see full V tile
     }
 
     if (kb + 1 < kb_lim) {
