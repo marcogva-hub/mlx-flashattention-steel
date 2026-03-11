@@ -1,53 +1,49 @@
 # mlx-mfa Benchmark Results
 
-> **Version: v2.4.0** (STEEL V2 + Gen-Aware BK + Auto-Calibration + RoPE/ALiBi in V2)
-> Device: Apple M1 Max (gen=13, 32 cores)
-> B=2 H=8, warmup=8, iters=20. Values are means; GPU variance ±5–15%.
-> Full data: [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md)
+**Device**: Apple M1 Max (gen 13, M3+: False)
+**MLX version**: 0.31.0
+**mlx-mfa version**: 2.5.0
+**Date**: 2026-03-11
+**Config**: B=2 H=8, warmup=8, iters=20
 
 ---
 
-## Dense Forward Pass (B=2 H=8, f16/bf16)
+## Forward Pass — V2 vs V1 vs SDPA
 
-SDPA = `mx.fast.scaled_dot_product_attention` (explicit upper-triangular mask).
-V1 = STEEL V1 (`MFA_DISABLE_V2=1`). V2 = STEEL V2 (default path, v2.4.0).
+| Config | V2 ms | V1 ms | SDPA ms | V2/SDPA | V1/SDPA | V2/V1 |
+|--------|------:|------:|--------:|--------:|--------:|------:|
+| D=64 N=2048 f16 causal | 2.2 | 3.3 | 3.1 | **1.45×** | 0.94× | 1.54× |
+| D=64 N=4096 f16 causal | 5.5 | 8.3 | 10.9 | **1.98×** ★ | 1.31× | 1.51× |
+| D=64 N=8192 f16 causal | 19.7 | 24.0 | 42.0 | **2.13×** ★ | 1.75× | 1.22× |
+| D=64 N=8192 f16 non-causal | 36.7 | 38.8 | 36.0 | **0.98×** | 0.93× | 1.06× |
+| D=128 N=2048 f16 causal | 3.4 | 6.0 | 4.9 | **1.43×** | 0.83× | 1.74× |
+| D=128 N=4096 f16 causal | 11.7 | 17.6 | 19.1 | **1.64×** ★ | 1.09× | 1.51× |
+| D=128 N=8192 f16 causal | 43.5 | 50.9 | 74.7 | **1.72×** ★ | 1.47× | 1.17× |
+| D=128 N=16384 f16 causal | 186.1 | 206.3 | 308.9 | **1.66×** ★ | 1.50× | 1.11× |
+| D=128 N=4096 bf16 causal | 19.9 | 30.2 | 28.2 | **1.41×** | 0.93× | 1.51× |
+| D=128 N=8192 f16 non-causal | 82.3 | 86.2 | 73.8 | **0.90×** | 0.86× | 1.05× |
+| D=256 N=4096 f16 causal | 49.4 | 48.8 | 37.1 | **0.75×** | 0.76× | 0.99× |
+| D=256 N=8192 f16 causal | 157.0 | 171.2 | 145.9 | **0.93×** | 0.85× | 1.09× |
+| D=256 N=4096 f16 non-causal | 67.8 | 68.8 | 32.9 | **0.49×** | 0.48× | 1.02× |
 
-| Config | SDPA ms | V1 ms | V2 ms | V1/SDPA | V2/SDPA | V2/V1 |
-|--------|--------:|------:|------:|--------:|--------:|------:|
-| D=64  N=2048  f16 causal | 3.02 | 3.01 | 1.88 | 1.00× | **1.61×** | 1.60× |
-| D=64  N=4096  f16 causal | 10.93 | 8.80 | 6.57 | 1.24× | **1.66×** ★ | 1.34× |
-| D=64  N=8192  f16 causal | 42.69 | 24.62 | 19.82 | 1.73× ★ | **2.15×** ★ | 1.24× |
-| D=64  N=8192  f16 non-causal | 35.97 | 39.86 | 37.36 | 0.90× | 0.96× | 1.07× |
-| D=128 N=2048  f16 causal | 5.21 | 6.19 | 3.49 | 0.84× | **1.49×** | 1.77× |
-| D=128 N=4096  f16 causal | 18.96 | 17.58 | 12.14 | 1.08× | **1.56×** ★ | 1.45× |
-| D=128 N=8192  f16 causal | 74.87 | 51.95 | 43.69 | 1.44× | **1.71×** ★ | 1.19× |
-| D=128 N=16384 f16 causal | 299.34 | 188.17 | 167.78 | 1.59× ★ | **1.78×** ★ | 1.12× |
-| D=128 N=4096  bf16 causal | 26.73 | 29.89 | 19.21 | 0.89× | **1.39×** | 1.56× |
-| D=128 N=8192  f16 non-causal | 73.36 | 85.87 | 81.86 | 0.85× | 0.90× | 1.05× |
-| D=256 N=4096  f16 causal | 37.21 | 49.54 | 50.34 | 0.75× | 0.74× | 0.98× |
-| D=256 N=8192  f16 causal | 146.43 | 157.44 | 157.34 | 0.93× | 0.93× | 1.00× |
-| D=256 N=4096  f16 non-causal | 33.63 | 68.80 | 70.58 | 0.49× | 0.48× | 0.97× |
+## Sliding Window — MFA vs Full-SDPA
 
-★ = ≥1.5× speedup.
+| Config | MFA ms | SDPA ms | MFA/SDPA |
+|--------|-------:|--------:|---------:|
+| D=64 N=4096 win=512 f16 causal | 1.9 | 11.1 | **5.90×** ★ |
+| D=64 N=8192 win=512 f16 causal | 3.0 | 40.9 | **13.74×** ★ |
+| D=128 N=4096 win=512 f16 causal | 4.0 | 19.9 | **4.93×** ★ |
+| D=128 N=8192 win=512 f16 causal | 6.2 | 73.9 | **11.95×** ★ |
+| D=128 N=4096 win=256 f16 causal | 2.4 | 19.0 | **7.81×** ★ |
+| D=128 N=8192 win=256 f16 causal | 3.5 | 72.9 | **20.91×** ★ |
 
-**Key wins**: D=64 N=8192 causal **2.15×**, D=128 N=4096+ causal **1.56–1.78×**.
-D=256 dense routes to V1 (V2 BK mismatch with 3D blocking).
+## V2 Split-K — Small Grid
 
----
-
-## Sliding Window (B=2 H=8, f16, causal)
-
-| Config | SDPA ms | MFA ms | MFA/SDPA |
-|--------|--------:|-------:|---------:|
-| D=64  N=4096 win=512  | 11.52 | 2.81 | **4.1×** |
-| D=64  N=8192 win=512  | 42.06 | 3.15 | **13.3×** |
-| D=128 N=4096 win=512  | 19.13 | 4.22 | **4.5×** |
-| D=128 N=8192 win=512  | 74.63 | 6.34 | **11.8×** |
-| D=128 N=4096 win=256  | 18.86 | 1.95 | **9.7×** |
-| D=128 N=8192 win=256  | 74.56 | 3.69 | **20.2×** |
-
-Window masking skips ~(N−win)/N fraction of K-tiles, giving super-linear speedup.
-
----
-
-Regenerate: `python benchmarks/bench_v2_final.py --warmup 8 --iters 20 --save`
+| Config | V2 ms | SDPA ms | V2/SDPA |
+|--------|------:|--------:|--------:|
+| B=1 H=1 N=512 D=64 f16 causal | 0.3 | 0.4 | 1.10× |
+| B=1 H=1 N=1024 D=64 f16 causal | 0.4 | 0.4 | 1.10× |
+| B=1 H=1 N=512 D=128 f16 causal | 0.3 | 0.4 | 1.14× |
+| B=1 H=1 N=1024 D=128 f16 causal | 0.5 | 0.5 | 1.01× |
+| B=1 H=2 N=512 D=128 f16 causal | 0.4 | 0.4 | 1.02× |
+| B=1 H=4 N=512 D=128 f16 causal | 0.4 | 0.4 | 1.07× |
