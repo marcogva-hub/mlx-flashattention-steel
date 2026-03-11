@@ -30,22 +30,22 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
-## Performance (v2.5.4, M1 Max, B=2 H=8 f16)
+## Performance (v2.6.0, M1 Max, B=2 H=8 f16)
 
-> Regenerate: `python benchmarks/bench_v2_final.py`
+> Full results: [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md)
 
 ### Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 (ms) | SDPA (ms) | Speedup |
 |--------|--------:|----------:|--------:|
-| D=64  N=4096  causal | 5.7 | 10.7 | **1.9×** |
-| D=64  N=8192  causal | 19.8 | 43.6 | **2.2×** |
-| D=128 N=4096  causal | 11.5 | 18.8 | **1.6×** |
-| D=128 N=8192  causal | 44.1 | 77.9 | **1.8×** |
-| D=128 N=16384 causal | 166.8 | 296.5 | **1.8×** |
-| D=256 N=4096  causal | 37.0  | 37.4  | **1.0×** (V2 D-split: 2×BD_HALF=128 passes) |
-| D=256 N=8192  causal | 147.0 | 144.8 | **1.0×** (V2 D-split: 2×BD_HALF=128 passes) |
-| D=512 N=4096  causal | 67.0  | 66.4  | **1.0×** (V2 D-split: 4×BD_HALF=128 passes) |
+| D=64  N=4096  causal | 6.2 | 9.4 | **1.51×** |
+| D=64  N=8192  causal | 19.6 | 35.8 | **1.82×** |
+| D=128 N=4096  causal | 11.5 | 18.4 | **1.60×** |
+| D=128 N=8192  causal | 44.2 | 73.6 | **1.67×** |
+| D=128 N=16384 causal | 167.7 | 293.6 | **1.75×** |
+
+D=256/512 dense routes to SDPA by default (D-split V2 achieves ~1.00× SDPA).
+Window/sparse attention always routes to MFA for tile-skip speedup.
 
 ### Sliding Window — MFA vs Full SDPA
 
@@ -82,7 +82,7 @@ dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
 - **Variable-length** — packed sequences with `cu_seqlens` (training)
 - **Paged KV** — page-pool KV cache with `block_table` (multi-request serving)
 - **Autograd** — full `mx.vjp` support via STEEL backward kernels (D≤512, f16/bf16)
-- **Async metallib** — `csrc/async_v2_kernel.metal` ships hardware-DMA kernels (`simdgroup_async_copy`) for V load/softmax and K/P@V overlap; compile with `bash scripts/build_async_metallib.sh` on macOS ≤15
+- **Async metallib** — `async_v2.metallib` ships hardware-DMA kernels (`simdgroup_async_copy`) for V/softmax and K/P@V overlap; +20–40% on macOS ≤15; on macOS 26 loads correctly but runtime converts async_copy to sync (no benefit, no harm); disable with `MFA_DISABLE_ASYNC=1`
 - **Smart dispatch** — `backend="auto"` routes to STEEL V2 only when faster than SDPA
 - **Auto-calibration** — `calibrate_dispatch()` benchmarks your device and saves thresholds
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
@@ -210,10 +210,10 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 
 | D | causal | Activated at N ≥ | Note |
 |---|--------|-----------------|------|
-| 64 | yes | 4096 (M1), 4096 (M3+) | V2 ~2× |
-| 128 | yes | 8192 (M1), 2048 (M3+) | V2 ~1.7× |
-| 256+ | any | never (SDPA wins) | register spill |
-| any | window | always | tile-skip guarantee |
+| 64 | yes | 1024 (M1), 512 (M3+) | V2 1.5–1.8× |
+| 128 | yes | 2048 (M1), 1024 (M3+) | V2 1.6–1.8× |
+| 256/512 | any | never dense | ~1.00×; route to SDPA |
+| any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
 
 Run `python -m mlx_mfa calibrate` to measure crossover points on your device
