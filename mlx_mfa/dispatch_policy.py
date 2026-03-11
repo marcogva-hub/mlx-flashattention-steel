@@ -46,10 +46,12 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (128, True):  2048,
     # D=128 non-causal: 0.90x at N=16384, 0.88x at N=32768 — disable.
     (128, False): 999_999,
-    # D=256: best 0.77x (causal N=8192) — disable entirely.
-    (256, True):  999_999,
+    # D=256 causal: V1 kernel wins at large N (CP7 benchmark — M1 Max, f16):
+    #   N=8192→0.80x, N=16384→1.03x, N=32768→1.28x.
+    # Threshold N=16384 (stable 1.03x+; N<16384 routes to SDPA).
+    (256, True):  16384,
     (256, False): 999_999,
-    # D=512: best 0.36x — disable entirely.
+    # D=512: best 0.49x at N=16384 — MFA never wins.
     (512, True):  999_999,
     (512, False): 999_999,
 }
@@ -64,7 +66,9 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
     # On M1/M2 threshold is N=2048; M3+ wins earlier due to larger tile.
     (128, True):  1024,
     (128, False): 999_999,
-    (256, True):  999_999, # V2 not dispatched for D=256 (occupancy regression)
+    # D=256 causal: M3+ likely wins at smaller N due to register file headroom.
+    # Conservative estimate N=8192 (not measured; override with MFA_DISPATCH_TABLE).
+    (256, True):  8192,
     (256, False): 999_999,
     (512, True):  999_999,
     (512, False): 999_999,
