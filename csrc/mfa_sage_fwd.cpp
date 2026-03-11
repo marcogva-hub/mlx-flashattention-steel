@@ -7,7 +7,8 @@
 ///   - Q and K are const device char* (int8); dequantized cooperatively in TGP.
 ///   - V remains fp16; uses standard MFABlockLoaderT (unchanged from STEEL).
 ///   - Non-persistent grid: (NQ, H, B) — one TG per Q-tile (no 4-tile loop).
-///   - No d_split, RoPE, ALiBi, window, sparse, double_buf in v1.2.0.
+///   - No d_split, RoPE, ALiBi, sparse, double_buf in v1.2.0.
+///   - Sliding window (has_window=true): same kb_start/kb_lim logic as STEEL.
 ///   - Buffer layout: Q=0, K=1, V=2, O=3, L=4, params=5, Q_scale=6, K_scale=7.
 
 #include "mfa_sage_fwd.hpp"
@@ -27,6 +28,7 @@ std::string generate_sage_forward_source(const ShaderCache::KernelKey& key) {
   const int WM = key.n_warps;
   const int WN = 1;
   const bool causal     = key.causal;
+  const bool has_window = key.has_window;
   const bool is_m3_plus = key.is_m3_plus;
 
   // No d_split in Sage v1.2.0 (D <= 256 only)
@@ -69,8 +71,9 @@ struct MFASageParams {
   long O_strides[3];     // [B,H,N] fp16 strides
   long L_strides[2];     // [B,H] f32 strides
   float softcap;         // 0.0 = disabled
-  int   has_alibi;       // always 0 in Sage v1.2.0
-  int   window_left;     // always -1 in Sage v1.2.0
+  int   has_alibi;       // always 0 in Sage
+  int   window_left;     // -1 = disabled; >=0 = left window radius (tokens)
+  int   window_right;    // -1 = disabled; >=0 = right window radius (tokens)
   // Sage-specific scale index strides
   int NQ_blocks;
   int NK_blocks;
@@ -242,17 +245,51 @@ struct MFASageParams {
     ss << "  int kb_lim = (q_max + MFA_BK - 1) / MFA_BK;\n";
     ss << "  if (kb_lim > p->NK) kb_lim = p->NK;\n";
   } else {
-    ss << "  const int kb_lim = p->NK;\n";
+    ss << "  int kb_lim = p->NK;\n";
+  }
+  // Sliding window: kb_start (left skip), kb_lim clamp (right skip),
+  // kb_last_win / kb_first_right for per-element masking in boundary tiles.
+  // Mirrors STEEL forward window logic exactly.
+  if (has_window) {
+    ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "  int kb_start, kb_last_win;\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    int win_start = q_min - p->window_left;\n";
+    ss << "    kb_start = win_start > 0 ? win_start / MFA_BK : 0;\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  } else {\n";
+    ss << "    kb_start = 0;\n";
+    ss << "    kb_last_win = -1;\n";
+    ss << "  }\n";
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim;\n";
+    ss << "  }\n";
+  } else {
+    ss << "  const int kb_start = 0;\n";
+    ss << "  const int kb_last_win = -1;\n";
+    ss << "  const int kb_first_right = p->NK;\n";
   }
   ss << "\n";
 
   // V loader (positioned at start of KV sequence for this BH slice)
   ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
   ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  if (has_window) {
+    // Advance loader_v to kb_start to keep K/V indices in sync.
+    ss << "  for (int _kf = 0; _kf < kb_start; _kf++) loader_v.next();\n";
+  }
   ss << "\n";
 
   // ── Main K/V loop ─────────────────────────────────────────────────────────
-  ss << "  for (int kb = 0; kb < kb_lim; kb++) {\n";
+  ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
 
   // K int8 dequantize + transpose cooperative load into Ks
@@ -339,6 +376,47 @@ struct MFASageParams {
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if (row < (col + jj))\n";
     ss << "              Stile.frag_at(i, j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // Sliding window masking: boundary tiles only.
+  // Left boundary [kb_start, kb_last_win]: mask k < q - window_left.
+  // Right boundary [kb_first_right, kb_lim): mask k > q + window_right.
+  if (has_window) {
+    ss << "    // Window left boundary: mask k < q - window_left\n";
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "    // Window right boundary: mask k > q + window_right\n";
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
+    ss << "                      + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";

@@ -441,11 +441,14 @@ NB_MODULE(_ext, m) {
            mlx::core::array k_scale,
            float scale,
            bool  causal,
+           int   window_left,
+           int   window_right,
            std::optional<mlx::core::StreamOrDevice> stream)
             -> std::pair<mlx::core::array, mlx::core::array> {
           auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
           return mlx_mfa::mfa_sage_forward(
-              q_int8, k_int8, v, q_scale, k_scale, scale, causal, s);
+              q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+              window_left, window_right, s);
         },
         nb::arg("q_int8"),
         nb::arg("k_int8"),
@@ -453,18 +456,22 @@ NB_MODULE(_ext, m) {
         nb::arg("q_scale"),
         nb::arg("k_scale"),
         nb::arg("scale"),
-        nb::arg("causal")   = false,
-        nb::arg("stream")   = nb::none(),
+        nb::arg("causal")       = false,
+        nb::arg("window_left")  = -1,
+        nb::arg("window_right") = -1,
+        nb::arg("stream")       = nb::none(),
         "SageAttention forward pass: quantized Q/K (int8) + fp16 V → fp16 O.\n"
         "\n"
         "Reduces Q/K memory bandwidth by 2× vs fp16. GEMM always runs in fp16.\n"
         "Speedup requires long sequences (≥2048) where memory is the bottleneck.\n"
         "\n"
-        "q_int8:   [B, H, N, D]       int8 quantized queries\n"
-        "k_int8:   [B, H_kv, S, D]    int8 quantized keys\n"
-        "v:        [B, H_kv, S, D]    fp16 or bf16 values (unquantized)\n"
-        "q_scale:  [B, H, NQ]         float32 per-tile Q dequantization scales\n"
-        "k_scale:  [B, H_kv, NK]      float32 per-tile K dequantization scales\n"
+        "q_int8:       [B, H, N, D]    int8 quantized queries\n"
+        "k_int8:       [B, H_kv, S, D] int8 quantized keys\n"
+        "v:            [B, H_kv, S, D] fp16 or bf16 values (unquantized)\n"
+        "q_scale:      [B, H, NQ]      float32 per-tile Q dequantization scales\n"
+        "k_scale:      [B, H_kv, NK]   float32 per-tile K dequantization scales\n"
+        "window_left:  left window radius in tokens (-1 = disabled).\n"
+        "window_right: right window radius in tokens (-1 = disabled).\n"
         "\n"
         "Returns (O [B,H,N,D] fp16/bf16, L [B,H,N] logsumexp in log2 domain).\n"
         "GQA: H_q / H_kv must be an integer. Only f16/bf16 V supported.");

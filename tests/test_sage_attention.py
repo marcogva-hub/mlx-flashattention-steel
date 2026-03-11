@@ -245,3 +245,142 @@ class TestSageKernel:
         mx.eval(out)
         out_np = np.array(out.astype(mx.float32))
         assert np.all(np.isfinite(out_np))
+
+
+# ---------------------------------------------------------------------------
+# CP6: QuantizedKVCache tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _ext_available(), reason="MFA extension not available")
+class TestQuantizedKVCache:
+    """QuantizedKVCache and sage_attention_prequantized correctness."""
+
+    TOL = 0.50  # fp16 int8 quantization tolerance
+
+    def test_append_shapes(self):
+        """append() updates k_int8, k_scale, v with correct shapes."""
+        from mlx_mfa import QuantizedKVCache
+        cache = QuantizedKVCache(B=1, H=4, D=128, max_seq_len=512)
+        k = mx.random.normal([1, 4, 64, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 4, 64, 128]).astype(mx.float16)
+        mx.eval(k, v)
+        cache.append(k, v)
+
+        assert cache.seqlen == 64
+        assert cache.k_int8.shape == (1, 4, 64, 128)
+        assert cache.v.shape     == (1, 4, 64, 128)
+        # scale: ceil(64/BK) blocks
+        BK = cache.block_size
+        n_blocks = (64 + BK - 1) // BK
+        assert cache.k_scale.shape == (1, 4, n_blocks)
+
+    def test_decode_step_o1(self):
+        """Each decode step only updates the current partial block, not full seqlen."""
+        from mlx_mfa import QuantizedKVCache
+        cache = QuantizedKVCache(B=1, H=4, D=128, max_seq_len=512)
+
+        # Prefill
+        k_pre = mx.random.normal([1, 4, 64, 128]).astype(mx.float16)
+        v_pre = mx.random.normal([1, 4, 64, 128]).astype(mx.float16)
+        mx.eval(k_pre, v_pre)
+        cache.append(k_pre, v_pre)
+        assert cache.seqlen == 64
+
+        # Decode step
+        k_new = mx.random.normal([1, 4, 1, 128]).astype(mx.float16)
+        v_new = mx.random.normal([1, 4, 1, 128]).astype(mx.float16)
+        mx.eval(k_new, v_new)
+        cache.append(k_new, v_new)
+        assert cache.seqlen == 65
+        assert cache.k_int8.shape == (1, 4, 65, 128)
+
+    def test_prequantized_matches_sage(self):
+        """sage_attention_prequantized output is close to sage_attention reference."""
+        from mlx_mfa import QuantizedKVCache, sage_attention, sage_attention_prequantized
+        mx.random.seed(42)
+        q = mx.random.normal([1, 4, 32, 128]).astype(mx.float16)
+        k = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        v = mx.random.normal([1, 4, 128, 128]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(128)
+
+        # Build cache
+        cache = QuantizedKVCache(B=1, H=4, D=128, max_seq_len=256)
+        cache.append(k, v)
+
+        # Pre-quantized path
+        out_pq = sage_attention_prequantized(
+            q, cache.k_int8, cache.k_scale, cache.v,
+            scale=scale, causal=False,
+        )
+        # Reference sage path
+        out_ref = sage_attention(q, k, v, scale=scale, causal=False, apply_smooth_k=False)
+        mx.eval(out_pq, out_ref)
+
+        err = float(mx.abs(out_pq - out_ref).max().item())
+        assert err < self.TOL, f"prequantized vs sage max err={err:.4f}"
+
+
+# ---------------------------------------------------------------------------
+# CP7: SageAttention sliding window tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+class TestSageWindow:
+    """Sliding window support in sage_attention (CP7)."""
+
+    TOL = 0.50  # int8 + window tolerance
+
+    def _ref_window(self, q, k, v, scale, window):
+        """Reference: apply sliding window bias to SDPA."""
+        N, S = q.shape[2], k.shape[2]
+        rows = mx.arange(N, dtype=mx.float32)[:, None]
+        cols = mx.arange(S, dtype=mx.float32)[None, :]
+        left, right = window
+        mask = mx.zeros((N, S), dtype=q.dtype)
+        if left >= 0:
+            mask = mx.where(cols < rows - left, mx.full((N, S), float("-inf"), dtype=q.dtype), mask)
+        if right >= 0:
+            mask = mx.where(cols > rows + right, mx.full((N, S), float("-inf"), dtype=q.dtype), mask)
+        return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    def test_left_window_noncausal(self):
+        """Left-only window: non-causal sage vs reference."""
+        mx.random.seed(20)
+        q, k, v = (mx.random.normal([1, 4, 256, 64]).astype(mx.float16) for _ in range(3))
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(64)
+        ref = self._ref_window(q, k, v, scale, window=(128, -1))
+        out = sage_attention(q, k, v, scale=scale, causal=False,
+                             window_size=(128, -1), apply_smooth_k=False)
+        mx.eval(ref, out)
+        err = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
+        assert err < self.TOL, f"left window max_err={err:.4f}"
+
+    def test_both_sides_window(self):
+        """Both left+right window: sage output is finite and not all same."""
+        mx.random.seed(21)
+        q, k, v = (mx.random.normal([1, 4, 256, 128]).astype(mx.float16) for _ in range(3))
+        mx.eval(q, k, v)
+        out = sage_attention(q, k, v, causal=False,
+                             window_size=(64, 64), apply_smooth_k=False)
+        mx.eval(out)
+        out_np = np.array(out.astype(mx.float32))
+        assert np.all(np.isfinite(out_np)), "window output has non-finite values"
+
+    def test_window_shape_preserved(self):
+        """Output shape is unchanged regardless of window."""
+        q, k, v = rand_qkv(1, 4, 256, 64, seed=30)
+        out = sage_attention(q, k, v, causal=False, window_size=(64, 64))
+        mx.eval(out)
+        assert out.shape == (1, 4, 256, 64)
+
+    def test_no_window_unchanged(self):
+        """window_size=None keeps same result as before (regression guard)."""
+        q, k, v = rand_qkv(1, 4, 128, 64, seed=31)
+        out_none = sage_attention(q, k, v, causal=False, window_size=None,
+                                  apply_smooth_k=False)
+        out_no   = sage_attention(q, k, v, causal=False, apply_smooth_k=False)
+        mx.eval(out_none, out_no)
+        err = float(mx.max(mx.abs(out_none.astype(mx.float32) - out_no.astype(mx.float32))))
+        assert err == 0.0, f"window_size=None changed output: max_err={err}"

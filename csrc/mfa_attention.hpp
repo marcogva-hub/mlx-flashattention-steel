@@ -446,7 +446,9 @@ class MFASageForward : public mlx::core::Primitive {
     int   head_dim;
     float scale;
     bool  causal;
-    int   gqa_factor;  // H / H_kv (1 = standard MHA)
+    int   gqa_factor;    // H / H_kv (1 = standard MHA)
+    int   window_left;   // -1 = disabled; >=0 = sliding window left radius (tokens)
+    int   window_right;  // -1 = disabled; >=0 = sliding window right radius (tokens)
   };
 
   MFASageForward(mlx::core::Stream stream, Params p)
@@ -467,10 +469,12 @@ class MFASageForward : public mlx::core::Primitive {
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto* o = dynamic_cast<const MFASageForward*>(&other);
     if (!o) return false;
-    return params_.head_dim   == o->params_.head_dim   &&
-           params_.scale      == o->params_.scale      &&
-           params_.causal     == o->params_.causal     &&
-           params_.gqa_factor == o->params_.gqa_factor;
+    return params_.head_dim    == o->params_.head_dim    &&
+           params_.scale       == o->params_.scale       &&
+           params_.causal      == o->params_.causal      &&
+           params_.gqa_factor  == o->params_.gqa_factor  &&
+           params_.window_left == o->params_.window_left &&
+           params_.window_right== o->params_.window_right;
   }
 
  private:
@@ -487,6 +491,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
     const mlx::core::array& k_scale,
     float scale,
     bool  causal,
+    int   window_left,
+    int   window_right,
     mlx::core::Stream stream);
 
 /// Free function: validate inputs and create paged forward MLX arrays.

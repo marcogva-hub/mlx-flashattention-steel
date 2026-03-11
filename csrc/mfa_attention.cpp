@@ -1939,7 +1939,7 @@ void MFASageForward::eval_gpu(
     /*rope_interleaved=*/false,
     /*has_softcap=*/false,
     /*has_alibi=*/false,
-    /*has_window=*/false,
+    /*has_window=*/params_.window_left >= 0 || params_.window_right >= 0,
     dtype_code,
     /*gqa_factor=*/params_.gqa_factor
   };
@@ -1997,10 +1997,10 @@ void MFASageForward::eval_gpu(
   // L strides [B, H] for float32
   sp.L_strides[0] = (int64_t)H  * N;
   sp.L_strides[1] = (int64_t)N;
-  // Sage features disabled in v1.2.0
-  sp.softcap     = 0.0f;
-  sp.has_alibi   = 0;
-  sp.window_left = -1;
+  sp.softcap      = 0.0f;
+  sp.has_alibi    = 0;
+  sp.window_left  = params_.window_left;
+  sp.window_right = params_.window_right;
   // Scale strides: Q_scale [B, H, NQ_blocks], K_scale [B, H_kv, NK_blocks]
   sp.NQ_blocks         = NQ_blocks;
   sp.NK_blocks         = NK_blocks;
@@ -2042,6 +2042,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
     const mlx::core::array& k_scale,
     float scale,
     bool  causal,
+    int   window_left,
+    int   window_right,
     mlx::core::Stream s) {
 
   // Shape validation
@@ -2071,7 +2073,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
   mlx::core::Shape out_shape = {B, H, N, D};
   mlx::core::Shape lse_shape = {B, H, N};
 
-  MFASageForward::Params params{D, scale, causal, gqa_factor};
+  MFASageForward::Params params{D, scale, causal, gqa_factor, window_left, window_right};
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},

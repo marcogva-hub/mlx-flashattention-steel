@@ -44,8 +44,9 @@ struct MFASageParams {
     int64_t O_strides[3];     // [B,H,N] fp16 O strides
     int64_t L_strides[2];     // [B,H] f32 L strides
     float softcap;            // 0.0 = disabled
-    int   has_alibi;          // 0 = disabled (always 0 in Sage v1.2.0)
-    int   window_left;        // -1 = disabled (always -1 in Sage v1.2.0)
+    int   has_alibi;          // 0 = disabled (always 0 in Sage)
+    int   window_left;        // -1 = disabled; >=0 = left radius (tokens)
+    int   window_right;       // -1 = disabled; >=0 = right radius (tokens)
     // ── Sage-specific scale index strides ─────────────────────────────────
     // Q_scale: [B, H, NQ_blocks, 1]  (one float per Q-tile)
     // K_scale: [B, H_kv, NK_blocks, 1]

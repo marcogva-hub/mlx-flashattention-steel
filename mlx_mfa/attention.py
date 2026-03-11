@@ -1058,6 +1058,7 @@ def sage_attention(
     scale: Optional[float] = None,
     causal: bool = False,
     apply_smooth_k: bool = True,
+    window_size: Optional[tuple] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """Compute attention with int8-quantized Q and K (SageAttention style).
@@ -1171,8 +1172,20 @@ def sage_attention(
     q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
     k_scale = k_scale.squeeze(-1)   # [B, H_kv, NK]
 
+    # Convert window_size=(left, right) → window_left / window_right integers.
+    window_left  = -1
+    window_right = -1
+    if window_size is not None:
+        wl = window_size[0] if window_size[0] is not None else -1
+        wr = window_size[1] if len(window_size) > 1 and window_size[1] is not None else -1
+        if wl >= 0:
+            window_left = int(wl)
+        if wr >= 0:
+            window_right = int(wr)
+
     # Dispatch SageAttention Metal kernel
-    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal, stream)
+    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+                     window_left, window_right, stream)
     return O
 
 
@@ -1184,6 +1197,7 @@ def sage_attention_prequantized(
     *,
     scale: Optional[float] = None,
     causal: bool = False,
+    window_size: Optional[tuple] = None,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
     """SageAttention with pre-quantized K — skips the K quantization step.
@@ -1236,7 +1250,18 @@ def sage_attention_prequantized(
     v = v.flatten().reshape(v.shape)
     mx.eval(k_int8, k_scale, v)
 
-    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal, stream)
+    window_left  = -1
+    window_right = -1
+    if window_size is not None:
+        wl = window_size[0] if window_size[0] is not None else -1
+        wr = window_size[1] if len(window_size) > 1 and window_size[1] is not None else -1
+        if wl >= 0:
+            window_left = int(wl)
+        if wr >= 0:
+            window_right = int(wr)
+
+    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+                     window_left, window_right, stream)
     return O
 
 
