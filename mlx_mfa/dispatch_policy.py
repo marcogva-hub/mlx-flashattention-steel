@@ -35,14 +35,16 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
-    # D=64 causal: crossover ~1.06x at N=2048 but high scheduling variance.
-    # Raised to N=4096 for stability (1.04x stable, 1.41x at N=8192).
-    (64,  True):  4096,
-    # D=64 non-causal: best 0.92x at N=8192 — MFA never wins. Disable.
+    # D=64 causal: V2 kernel (BK=64) raises crossover. Measured (M1 Max, 12 trials):
+    #   N=512→1.18x, N=1024→1.14x, N=2048→1.25x, N=4096→1.86x, N=16384→2.20x.
+    # Threshold N=1024 (conservatively above break-even, stable across runs).
+    (64,  True):  1024,
+    # D=64 non-causal: 0.98x at N=16384, 0.97x at N=32768 — MFA never wins.
     (64,  False): 999_999,
-    # D=128 causal: crossover at N=8192 (1.25x).
-    (128, True):  8192,
-    # D=128 non-causal: best 0.81x — disable.
+    # D=128 causal: V2 delivers 1.33x at N=2048, 1.60x at N=4096, 1.76x at N=16384.
+    # Old V1 threshold was N=8192 (too conservative). New threshold: N=2048.
+    (128, True):  2048,
+    # D=128 non-causal: 0.90x at N=16384, 0.88x at N=32768 — disable.
     (128, False): 999_999,
     # D=256: best 0.77x (causal N=8192) — disable entirely.
     (256, True):  999_999,
@@ -52,14 +54,17 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): 999_999,
 }
 
-# M3+ thresholds: D=128 uses BK=64 (doubled tile) for better throughput.
-# BK=64 provides larger per-tile speedup → can activate at lower N than M1/M2.
+# M3+ thresholds: D=128 BK=64 (doubled vs M1 BK=32) → larger per-tile speedup.
+# V2 BK=64 on M3+ provides ~2× K-tile size → can activate at lower N than M1.
 _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
-    (64,  True):  4096,    # BK=64 (same all gens); conservative match M1
+    # D=64 causal: BK=64 same on all gens; lower threshold conservatively to 512.
+    (64,  True):  512,
     (64,  False): 999_999,
-    (128, True):  2048,    # M3+ BK=64: 2× tile → win even at N=2048
+    # D=128 causal: M3+ BK=64 (~2× tile vs M1 BK=32) → threshold N=1024.
+    # On M1/M2 threshold is N=2048; M3+ wins earlier due to larger tile.
+    (128, True):  1024,
     (128, False): 999_999,
-    (256, True):  999_999, # V2 not dispatched for D=256 (regression)
+    (256, True):  999_999, # V2 not dispatched for D=256 (occupancy regression)
     (256, False): 999_999,
     (512, True):  999_999,
     (512, False): 999_999,
