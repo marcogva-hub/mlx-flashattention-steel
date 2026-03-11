@@ -119,3 +119,56 @@ jobs:
           if [ "$COUNT" -lt 400 ]; then
             echo "WARNING: Expected >= 400 tests, got $COUNT"
           fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 3: Packaging validation — verify sdist contains expected files
+  # ─────────────────────────────────────────────────────────────────────────
+  test-packaging:
+    name: "Packaging validation"
+    runs-on: macos-14
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install build tools
+        run: pip install --upgrade pip build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - name: Verify sdist contents
+        run: |
+          SDIST=$(ls dist/*.tar.gz)
+          echo "Checking: $SDIST"
+
+          # Must contain the metallib
+          tar tzf "$SDIST" | grep "async_v2.metallib" \
+            && echo "✅ async_v2.metallib found in sdist" \
+            || echo "❌ async_v2.metallib MISSING from sdist"
+
+          # Must contain the Metal kernel source
+          tar tzf "$SDIST" | grep "async_v2_kernel.metal" \
+            && echo "✅ async_v2_kernel.metal found" \
+            || echo "❌ async_v2_kernel.metal MISSING"
+
+          # Must contain C++ sources
+          tar tzf "$SDIST" | grep "mfa_steel_fwd_v2.cpp" \
+            && echo "✅ C++ sources found" \
+            || echo "❌ C++ sources MISSING"
+
+          # Count Python files
+          PY_COUNT=$(tar tzf "$SDIST" | grep "\.py$" | wc -l)
+          echo "Python files in sdist: $PY_COUNT"
+
+          # Fail if metallib is missing
+          tar tzf "$SDIST" | grep -q "async_v2.metallib" \
+            || { echo "FATAL: metallib not in sdist"; exit 1; }
