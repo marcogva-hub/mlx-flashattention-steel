@@ -105,6 +105,7 @@ from mlx_mfa.quantize import (
 from mlx_mfa.inference import InferenceContext, PagedInferenceContext, SageInferenceContext
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
+from mlx_mfa.compile_metallib import compile_metallib
 
 # Apply any calibrated kernel config (BK selection etc.) before first kernel dispatch.
 _load_calibrated_kernel_config()
@@ -165,6 +166,7 @@ __all__ = [
     "get_device_info",
     "get_supported_configs",
     "warmup_kernels",
+    "compile_metallib",
     "DispatchPolicy",
     "calibrate_dispatch",
     # LLM inference helpers (Track JD)

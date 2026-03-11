@@ -85,6 +85,61 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
 }
 
 // ---------------------------------------------------------------------------
+// CP9: Precompiled metallib fast path
+// ---------------------------------------------------------------------------
+
+/// Try to load a precompiled .metallib for SteelForwardV2 keys.
+/// Returns a retained id<MTLComputePipelineState> (as void*) on success,
+/// or nullptr when no matching file exists (caller falls through to JIT).
+///
+/// Filename scheme (must match mlx_mfa/compile_metallib.py):
+///   v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
+/// Located in: ~/.mlx_mfa/metallib/
+static void* try_precompiled_pipeline(const ShaderCache::KernelKey& key,
+                                      void* raw_device) {
+  using KT = ShaderCache::KernelKey::KernelType;
+
+  // Only for SteelForwardV2 without extra features (no rope/alibi/softcap/window)
+  // and standard MHA (gqa_factor == 1).
+  if (key.type != KT::SteelForwardV2) return nullptr;
+  if (key.sparse || key.has_rope || key.has_softcap ||
+      key.has_alibi || key.has_window || key.gqa_factor != 1) return nullptr;
+
+  @autoreleasepool {
+    NSString* fname = [NSString stringWithFormat:
+        @"v2_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
+        key.head_dim, key.block_k,
+        (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
+
+    NSString* home = NSHomeDirectory();
+    NSURL* dir_url  = [NSURL fileURLWithPath:
+        [home stringByAppendingPathComponent:@".mlx_mfa/metallib"]];
+    NSURL* file_url = [dir_url URLByAppendingPathComponent:fname];
+
+    // Bail out quickly when the file is absent (no Metal exception thrown).
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[file_url path]]) {
+      return nullptr;
+    }
+
+    id<MTLDevice> device = (__bridge id<MTLDevice>)raw_device;
+    NSError* error = nil;
+
+    id<MTLLibrary> library = [device newLibraryWithURL:file_url error:&error];
+    if (!library) return nullptr;  // fall through to JIT
+
+    id<MTLFunction> function =
+        [library newFunctionWithName:@"mlx_mfa_v2_attention"];
+    if (!function) return nullptr;
+
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) return nullptr;
+
+    return (void*)CFBridgingRetain(pipeline);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // get_or_compile (thread-safe)
 // ---------------------------------------------------------------------------
 
@@ -95,6 +150,13 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (it != cache_.end()) {
       return it->second;
     }
+  }
+
+  // CP9: try to load a precompiled metallib — skips ~50ms JIT compilation.
+  if (void* pre = try_precompiled_pipeline(key, device)) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    cache_.emplace(key, pre);
+    return pre;
   }
 
   std::string fn_name;

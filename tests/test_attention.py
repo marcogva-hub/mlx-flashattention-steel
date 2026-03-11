@@ -7844,3 +7844,47 @@ class TestV2FeatureExtensions:
             atol=1e-5,
             err_msg="Sparse output changed when V2 disabled — routing bug",
         )
+
+
+# ---------------------------------------------------------------------------
+# CP9: compile_metallib (AOT metallib compilation)
+# ---------------------------------------------------------------------------
+
+class TestCompileMetallib:
+    """Tests for mlx_mfa.compile_metallib (CP9 AOT compilation)."""
+
+    def test_compile_metallib_importable(self):
+        """compile_metallib must be importable from the top-level package."""
+        from mlx_mfa import compile_metallib
+        assert callable(compile_metallib)
+
+    def test_compile_metallib_in_all(self):
+        """compile_metallib must be in mlx_mfa.__all__."""
+        import mlx_mfa
+        assert "compile_metallib" in mlx_mfa.__all__
+
+    def test_xcrun_check(self):
+        """_xcrun_metal_available() must not crash; result is a bool."""
+        from mlx_mfa.compile_metallib import _xcrun_metal_available
+        result = _xcrun_metal_available()
+        assert isinstance(result, bool)
+
+    def test_compile_metallib_returns_dict(self, tmp_path):
+        """compile_metallib() returns a dict {filename: bool}.
+        With xcrun present, at least one metallib is compiled; without,
+        the dict is empty but no exception is raised."""
+        from mlx_mfa.compile_metallib import compile_metallib, _xcrun_metal_available
+        import os
+
+        result = compile_metallib(output_dir=str(tmp_path), verbose=False)
+        assert isinstance(result, dict), "Expected dict return type"
+
+        if _xcrun_metal_available():
+            assert len(result) > 0, "Expected at least one compiled metallib"
+            for fname, ok in result.items():
+                assert fname.endswith(".metallib"), f"Unexpected filename: {fname}"
+                assert isinstance(ok, bool)
+                if ok:
+                    assert os.path.exists(os.path.join(str(tmp_path), fname))
+        else:
+            assert result == {}, "Expected empty dict when xcrun unavailable"
