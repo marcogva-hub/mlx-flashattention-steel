@@ -1188,3 +1188,67 @@ New comprehensive benchmark (`benchmarks/bench_v2_final.py`) covering:
 - **Split-K** (6 configs): small-grid B=1 H=1–4 scenarios
 
 Use `--section dense/window/splitk/all` to select.
+
+## 19. v1.4.0 Architecture Notes — Sage Extensions (CP6–CP9)
+
+### 19.1 QuantizedKVCache (CP6)
+
+`QuantizedKVCache` is a stateful KV cache that pre-stores K as int8 to avoid
+re-quantizing the full K tensor on every decode step.
+
+**Design**: Pre-allocates `[B, H, max_seq_len, D]` int8 K buffer + `[B, H,
+ceil(max_seq_len / BK)]` float32 scale buffer + a fp16 shadow K buffer.
+On `append(k_new, v_new)`:
+1. Only the newly appended block positions are quantized (O(BK × D) per step).
+2. The full K slice is assembled by `k_int8 / k_scale` inside the Metal kernel.
+
+**Critical stride issue**: MLX slice `arr[:,:,:seqlen,:]` from a pre-allocated
+`[B, H, max_seq_len, D]` buffer returns a view with head stride =
+`max_seq_len * D` (allocated shape) rather than `seqlen * D` (active shape).
+The Metal C++ kernel computes offsets from `.shape()` dims, not array strides,
+so head > 0 reads wrong memory.
+
+**Fix**: `QuantizedKVCache.v` property applies `mx.contiguous()`. The
+`sage_attention_prequantized()` call site also applies `.flatten().reshape()`
+to k_int8, k_scale, and v as belt-and-suspenders.
+
+### 19.2 Sage kernel sliding window (CP7)
+
+`sage_attention()` and `sage_attention_prequantized()` gain `window_size=`
+parameter (same semantics as `flash_attention`).
+
+**Implementation**: mirrors STEEL V2 window logic exactly:
+- `KernelKey.has_window` drives a JIT compile-time branch in the Metal shader
+- `MFASageParams` gains `window_left` and `window_right` fields
+- Metal shader computes `kb_start` (left skip) and `kb_lim` (right clip)
+- VLoader advances to `kb_start` to skip inaccessible K-tiles
+- Boundary tiles apply per-element masking to `−∞` for out-of-window positions
+- Non-boundary tiles inside the window require zero masking overhead
+
+Files changed: `mfa_sage_fwd.hpp`, `mfa_sage_fwd.cpp`, `mfa_attention.hpp`,
+`mfa_attention.cpp`, `bindings.cpp`, `attention.py`.
+
+### 19.3 DispatchPolicy.SAGE (CP8)
+
+`flash_attention(backend="sage")` now routes to `sage_attention()` (int8-
+quantized Q/K, inference-only, no autograd).
+
+**Routing**: the `backend == "sage"` branch is inserted in `flash_attention()`
+immediately before the MFA-capable check. Basic tensor validation (shape,
+GQA ratio) runs first; sage's own validation runs inside `sage_attention()`.
+`_VALID_BACKENDS` gains `"sage"`; `DispatchPolicy.SAGE = "sage"` constant
+is added to the class for user ergonomics.
+
+### 19.4 bench_all.py modernization (CP9)
+
+`benchmarks/bench_all.py` updated from v1.2.x to v1.4.x:
+- `SAGE_CONFIGS`: 6 configs (D=64/128, N=2048–8192, causal/non-causal)
+- `bench_sage()`: times `backend='sage'` vs `backend='mfa'` vs SDPA; returns
+  both `sage_vs_mfa` and `sage_vs_sdpa` speedup ratios
+- `--sage-only` CLI flag; Sage section in `save_results()` RESULTS.md output
+- `_row_sage()` display helper (4-column: Sage ms, MFA ms, sage/mfa, sage/sdpa)
+
+**Expected results** (M1 Max, D=128, f16, causal): sage slower than MFA at
+N ≤ 4096 due to Python-side quantization overhead; may equal or exceed at
+N ≥ 8192 where 2× Q/K bandwidth reduction starts to dominate. Pre-quantized
+KV caches eliminate the Python overhead entirely.
