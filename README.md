@@ -25,34 +25,34 @@ q = mx.random.normal((1, 8, 4096, 128)).astype(mx.float16)
 k = mx.random.normal((1, 8, 4096, 128)).astype(mx.float16)
 v = mx.random.normal((1, 8, 4096, 128)).astype(mx.float16)
 
-out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.7× SDPA at N=4096
+out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 ```
 
 ---
 
-## Performance (v2.5.0, M1 Max, B=2 H=8 f16)
+## Performance (v2.5.1, M1 Max, B=2 H=8 f16)
 
-> Regenerate: `python benchmarks/bench_v2_final.py --save`
+> Regenerate: `python benchmarks/bench_v2_final.py`
 
 ### Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 (ms) | SDPA (ms) | Speedup |
 |--------|--------:|----------:|--------:|
-| D=64  N=4096  causal | 5.5 | 10.9 | **2.0×** |
-| D=64  N=8192  causal | 19.7 | 42.0 | **2.1×** |
-| D=128 N=4096  causal | 11.7 | 19.1 | **1.6×** |
-| D=128 N=8192  causal | 43.5 | 74.7 | **1.7×** |
-| D=128 N=16384 causal | 186  | 309  | **1.7×** |
-| D=256 N=8192  causal | 157  | 146  | 0.9× (SDPA wins → auto-routes to SDPA) |
+| D=64  N=4096  causal | 5.7 | 10.7 | **1.9×** |
+| D=64  N=8192  causal | 19.8 | 43.6 | **2.2×** |
+| D=128 N=4096  causal | 11.5 | 18.8 | **1.6×** |
+| D=128 N=8192  causal | 44.1 | 77.9 | **1.8×** |
+| D=128 N=16384 causal | 166.8 | 296.5 | **1.8×** |
+| D=256 N=8192  causal | 154.7 | 144.7 | 0.9× (SDPA wins → auto-routes to SDPA) |
 
 ### Sliding Window — MFA vs Full SDPA
 
 | Config | MFA (ms) | SDPA (ms) | Speedup |
 |--------|----------:|----------:|--------:|
-| D=64  N=8192  win=512  | 3.0 | 40.9 | **13.7×** |
-| D=128 N=8192  win=512  | 6.2 | 73.9 | **12.0×** |
-| D=128 N=8192  win=256  | 3.5 | 72.9 | **20.9×** |
-| D=128 N=4096  win=256  | 2.4 | 19.0 |  **7.8×** |
+| D=64  N=8192  win=512  | 3.4 | 41.1 | **12.1×** |
+| D=128 N=8192  win=512  | 6.2 | 73.1 | **11.8×** |
+| D=128 N=8192  win=256  | 3.6 | 74.9 | **21.1×** |
+| D=128 N=4096  win=256  | 2.0 | 18.8 |  **9.5×** |
 
 ### SageAttention (int8 Q/K)
 
