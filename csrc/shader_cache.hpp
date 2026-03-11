@@ -47,9 +47,10 @@ class ShaderCache {
       SteelForwardV2         = 16,  // STEEL V2: sequential K/V phases, BQ=32 BK=64/32
       SteelV2SplitKPartial   = 17,  // STEEL V2 split-K Phase 1: partial attn per K-range
       // SteelV2SplitKReduce reuses FlashDecodeReduce (type 5) — no new enum needed.
-      // --- CP7/CP8: D-split stubs (D=256 2-pass, D=512 4-pass BD_HALF=128) ---
-      // Not yet dispatched: generate_steel_v2_dsplit256_source() / _dsplit512_source()
-      // pending full inner-D-loop kernel implementation.
+      // --- CP1/CP2: D-split V2 (D=256 2-pass, D=512 4-pass, BD_HALF=128) ---
+      // Dispatched by v2_dsplit_eligible in eval_gpu() for D=256/512, f16/bf16.
+      // generate_steel_v2_dsplit_source() in mfa_steel_fwd_v2.cpp.
+      // Performance: ~1.0× SDPA (vs old V1 ~0.57× for D=256). No RoPE support.
       SteelV2DSplit256       = 18,  // D=256 V2 D-split: 2 BD_HALF=128 inner-loop passes
       SteelV2DSplit512       = 19,  // D=512 V2 D-split: 4 BD_HALF=128 inner-loop passes
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---

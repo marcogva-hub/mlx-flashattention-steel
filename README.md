@@ -43,7 +43,9 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 | D=128 N=4096  causal | 11.5 | 18.8 | **1.6×** |
 | D=128 N=8192  causal | 44.1 | 77.9 | **1.8×** |
 | D=128 N=16384 causal | 166.8 | 296.5 | **1.8×** |
-| D=256 N=8192  causal | 154.7 | 144.7 | 0.9× (SDPA wins → auto-routes to SDPA) |
+| D=256 N=4096  causal | 37.0  | 37.4  | **1.0×** (V2 D-split: 2×BD_HALF=128 passes) |
+| D=256 N=8192  causal | 147.0 | 144.8 | **1.0×** (V2 D-split: 2×BD_HALF=128 passes) |
+| D=512 N=4096  causal | 67.0  | 66.4  | **1.0×** (V2 D-split: 4×BD_HALF=128 passes) |
 
 ### Sliding Window — MFA vs Full SDPA
 

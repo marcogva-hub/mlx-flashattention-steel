@@ -2,6 +2,37 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.5.3] — 2026-03-11
+
+### Deep Performance Optimizations — D-split V2 (CP1/CP2/CP3)
+
+**CP1/CP2 — V2 D-split kernel for D=256 and D=512**
+- `generate_steel_v2_dsplit_source()` in `mfa_steel_fwd_v2.cpp`: new JIT Metal kernel that
+  combines STEEL V2's sequential KV_smem sharing with D-split tiling (BD_HALF=128).
+  D=256 → D_SPLITS=2 (`SteelV2DSplit256`); D=512 → D_SPLITS=4 (`SteelV2DSplit512`).
+- Reuses `select_steel_v2_block_config(128, is_m3_plus)` for BK/WM — same tile config as D=128 V2.
+  Named register tiles (Qtile0/Otile0, Qtile1/Otile1, …) avoid runtime array indexing in Metal.
+  K_cur/V_cur absolute addressing enables per-(kb,dh) loads without persistent loader state.
+- No RoPE support (GPT-NeoX pairs cross BD_HALF boundary); all other features OK
+  (causal, softcap, ALiBi, sliding window, GQA, f16/bf16).
+- `v2_dsplit_eligible` dispatch block in `mfa_attention.cpp` activates for D=256/512, f16/bf16,
+  no block_mask, no RoPE. Guarded by `MFA_DISABLE_V2` env var for benchmarking.
+
+**CP3 — Benchmark results (M1 Max, B=2 H=8 f16, causal)**
+
+| Config | V2 D-split (ms) | SDPA (ms) | V2ds/SDPA | V2ds/V1 |
+|--------|----------------:|----------:|----------:|--------:|
+| D=256 N=4096 | 37.0 | 37.4 | 1.01× | 1.00× |
+| D=256 N=8192 | 147.0 | 144.8 | 0.99× | 1.00× |
+| D=512 N=4096 | 67.0 | 66.4 | 0.99× | 0.99× |
+| D=512 N=8192 | 264.6 | 262.8 | 0.99× | 1.00× |
+
+D-split achieves ~1.0× SDPA for D=256/512 (vs old V1 ~0.57× for D=256). The bottleneck
+shifts from K-tile iteration count (halved by D-split) to register pressure from accumulating
+Otile[dh] for all D-halves simultaneously — this is the hardware ceiling on M1/M2 (32K reg file).
+
+---
+
 ## [2.5.2] — 2026-03-11
 
 ### Deep Performance Optimizations — CP1–CP11
