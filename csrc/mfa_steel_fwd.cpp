@@ -9,6 +9,7 @@
 /// Tile sizes are injected via #define substitution at generation time.
 
 #include "mfa_steel_fwd.hpp"
+#include "mfa_steel_fwd_v2.hpp"  // select_steel_v2_block_config for D=64/128 flash decode
 #include <sstream>
 
 namespace mlx_mfa {
@@ -1593,13 +1594,18 @@ struct MFAExpSubOp {
 // =========================================================================
 
 std::string generate_flash_decode_partial_source(const ShaderCache::KernelKey& key) {
-  auto cfg = select_steel_block_config(key.head_dim, /*is_low_prec=*/(key.dtype != 2),
-                                       key.is_m3_plus);
-  const int BQ = cfg.BQ;
-  const int BK = cfg.BK;
+  // CP2: use V2 tile sizes (larger BK) for D=64/128 to reduce K-tile iterations.
+  // D=256/512: keep V1 tiles (V2 BQ=16/WM=2 for D=256 halves occupancy in V1 kernel).
+  int BQ, BK, WM, WN;
+  if (key.head_dim <= 128) {
+    auto cfgv2 = select_steel_v2_block_config(key.head_dim, key.is_m3_plus);
+    BQ = cfgv2.BQ; BK = cfgv2.BK; WM = cfgv2.WM; WN = cfgv2.WN;
+  } else {
+    auto cfgv1 = select_steel_block_config(key.head_dim, /*is_low_prec=*/(key.dtype != 2),
+                                           key.is_m3_plus);
+    BQ = cfgv1.BQ; BK = cfgv1.BK; WM = cfgv1.WM; WN = cfgv1.WN;
+  }
   const int BD = key.head_dim;
-  const int WM = cfg.WM;
-  const int WN = cfg.WN;
   const int TGP_SIZE = WM * WN * 32;
   const int TD = BD / 8;
   const int TK = BK / 8;

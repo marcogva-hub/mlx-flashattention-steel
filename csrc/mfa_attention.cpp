@@ -156,17 +156,30 @@ void MFAttention::eval_gpu(
   //
   // Activation: N ≤ 4 AND S ≥ 256 AND f16/bf16 (dtype_code != 2)
   //             AND no block mask (sparse path keeps its own dispatch)
-  auto cfg_fd = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
-  const int BK_fd = cfg_fd.BK;
+  // CP2: D=64/128 use V2 tile sizes (larger BK) to reduce K-tile iterations per split.
+  //      D=256/512 keep V1 tiles (V2 BQ=16/WM=2 for D=256 halves occupancy in V1 kernel).
+  int BK_fd;
+  if (D <= 128) {
+    auto cfgv2 = select_steel_v2_block_config(D, is_m3_plus_steel);
+    BK_fd = cfgv2.BK;
+  } else {
+    auto cfgv1 = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
+    BK_fd = cfgv1.BK;
+  }
   const bool use_flash_decode = (N <= 4 && S >= 256 && dtype_code != 2
                                  && !params_.has_block_mask);
   if (use_flash_decode) {
     int num_splits = compute_num_splits(S, BK_fd);
-    auto cfg_s = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
-    int BQ_s = cfg_s.BQ;
-    int BK_s = cfg_s.BK;
-    int WM_s = cfg_s.WM;
-    int TGP_s = WM_s * cfg_s.WN * 32;
+    // Use same config as shader generator (consistent BQ/BK/WM).
+    int BQ_s, BK_s, WM_s, WN_s;
+    if (D <= 128) {
+      auto cfgv2 = select_steel_v2_block_config(D, is_m3_plus_steel);
+      BQ_s = cfgv2.BQ; BK_s = cfgv2.BK; WM_s = cfgv2.WM; WN_s = cfgv2.WN;
+    } else {
+      auto cfgv1 = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
+      BQ_s = cfgv1.BQ; BK_s = cfgv1.BK; WM_s = cfgv1.WM; WN_s = cfgv1.WN;
+    }
+    int TGP_s = WM_s * WN_s * 32;
 
     // ── Allocate scratch buffers pO and pL ─────────────────────────────────
     size_t pO_size = (size_t)num_splits * B * H * N * D * (dtype_code == 2 ? 4 : 2);
