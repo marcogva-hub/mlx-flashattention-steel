@@ -2,6 +2,20 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.6.1] — 2026-03-11
+
+### Release Engineering Cleanup
+
+- fix: .gitignore exception for shipped async_v2.metallib
+- fix: metallib CI workflow — artifact-only, no git push
+- fix: MANIFEST.in includes precompiled metallib in sdist
+- fix: CI test count threshold 40 → 400
+- fix: stale export counts in README/INVENTORY/API_MANUAL
+- fix: ARCHITECTURE.md runner reference
+- ci: packaging validation job (verify sdist contents)
+- docs: metallib precedence chain in README
+- docs: INVENTORY.md regenerated
+
 ## [2.6.0] — 2026-03-11
 
 ### Consolidation + Validated Benchmarks

@@ -1,4 +1,4 @@
-# mlx-mfa Code Inventory — v2.6.0
+# mlx-mfa Code Inventory — v2.6.1
 
 All numbers verified by running shell commands against the source tree.
 Regenerated: 2026-03-11 (v2.6.1 cleanup).
@@ -9,8 +9,8 @@ Regenerated: 2026-03-11 (v2.6.1 cleanup).
 
 | Key | Value |
 |-----|-------|
-| `pyproject.toml` | `2.6.0` |
-| `mlx_mfa/__init__.py` | `2.6.0` |
+| `pyproject.toml` | `2.6.1` |
+| `mlx_mfa/__init__.py` | `2.6.1` |
 | Latest git tag | `v2.6.0` |
 
 ---
