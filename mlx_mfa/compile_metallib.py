@@ -13,14 +13,19 @@ After compilation, common STEEL V2 forward kernels are cached as precompiled
 AIR metallibs in ``~/.mlx_mfa/metallib/``.  The C++ ShaderCache loads them on
 subsequent runs, reducing cold-start latency from ~50ms to ~5ms per kernel.
 
-Compiled configs cover:
+Compiled configs cover (standard V2):
   - D=64  BK=64  f16/bf16  causal/noncausal  (all gens)
   - D=128 BK=32  f16/bf16  causal/noncausal  (M1/M2)
   - D=128 BK=64  f16/bf16  causal/noncausal  (M3+, if is_m3_plus)
 
+Compiled configs cover (V2 D-split):
+  - D=256 BK=32/64 f16/bf16  causal/noncausal  (M1/M2 or M3+)
+  - D=512 BK=32/64 f16/bf16  causal/noncausal  (M1/M2 or M3+)
+
 Filename scheme (matches C++ ShaderCache lookup)::
 
-    v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
+    v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib       (standard V2)
+    v2_dsplit_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib (D-split V2)
 """
 from __future__ import annotations
 
@@ -141,6 +146,46 @@ def compile_metallib(
         if verbose:
             print("ok" if ok else "FAILED (xcrun)")
 
+    # ── V2 D-split configs (D=256/512) ─────────────────────────────────────
+    # BK from select_steel_v2_block_config(128, is_m3_plus) — same as D=128.
+    bk_dsplit = 64 if is_m3_plus else 32
+
+    dsplit_configs = [
+        (256, bk_dsplit, 0, True,  "float16"),
+        (256, bk_dsplit, 0, False, "float16"),
+        (256, bk_dsplit, 1, True,  "bfloat16"),
+        (256, bk_dsplit, 1, False, "bfloat16"),
+        (512, bk_dsplit, 0, True,  "float16"),
+        (512, bk_dsplit, 0, False, "float16"),
+        (512, bk_dsplit, 1, True,  "bfloat16"),
+        (512, bk_dsplit, 1, False, "bfloat16"),
+    ]
+
+    for D, BK, dtype_code, causal, dtype_name in dsplit_configs:
+        filename = f"v2_dsplit_D{D}_BK{BK}_M{m3}_dtype{dtype_code}_causal{int(causal)}.metallib"
+        metallib_path = os.path.join(output_dir, filename)
+
+        if os.path.exists(metallib_path) and not force:
+            if verbose:
+                print(f"[compile_metallib] Already compiled: {filename}")
+            results[filename] = True
+            continue
+
+        if verbose:
+            print(f"[compile_metallib] Compiling: {filename} ...", end=" ", flush=True)
+
+        source = _capture_dsplit_shader_source(D, BK, dtype_name, causal, is_m3_plus)
+        if source is None:
+            if verbose:
+                print("FAILED (source generation)")
+            results[filename] = False
+            continue
+
+        ok = _compile_source_to_metallib(source, metallib_path)
+        results[filename] = ok
+        if verbose:
+            print("ok" if ok else "FAILED (xcrun)")
+
     if verbose:
         n_ok = sum(1 for v in results.values() if v)
         print(f"[compile_metallib] {n_ok}/{len(results)} configs compiled -> {output_dir}")
@@ -184,7 +229,7 @@ def _capture_shader_source(
             f"r = mlx_mfa.flash_attention(q, q, q, scale={scale:.8f},"
             f" causal={causal}, backend='mfa')"
         ),
-        "mx.synchronize()",
+        "mx.eval(r)",  # mx.synchronize() does not trigger lazy evaluation
     ]
     script = "\n".join(lines)
 
@@ -206,6 +251,53 @@ def _capture_shader_source(
     # Parse: "=== MFA Shader [steel_fwd_v2 ...] ===\n<source>\n=== END MFA Shader ==="
     pattern = (
         r"=== MFA Shader \[steel_fwd_v2[^\]]*\] ===\n"
+        r"(.*?)"
+        r"=== END MFA Shader ==="
+    )
+    m = re.search(pattern, stderr, re.DOTALL)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+def _capture_dsplit_shader_source(
+    D: int,
+    BK: int,
+    dtype_name: str,
+    causal: bool,
+    is_m3_plus: bool,
+) -> Optional[str]:
+    """Like _capture_shader_source but for the V2 D-split kernel (D=256/512)."""
+    N = 256  # short sequence — just triggers one JIT compile
+    scale = 1.0 / (D ** 0.5)
+    label = f"steel_v2_dsplit{D}"
+
+    lines = [
+        "import mlx.core as mx, mlx_mfa",
+        f"q = mx.zeros([1, 1, {N}, {D}], dtype=mx.{dtype_name})",
+        (
+            f"r = mlx_mfa.flash_attention(q, q, q, scale={scale:.8f},"
+            f" causal={causal}, backend='mfa')"
+        ),
+        "mx.eval(r)",  # mx.synchronize() does not trigger lazy evaluation
+    ]
+    script = "\n".join(lines)
+
+    env = dict(os.environ)
+    env["MFA_DEBUG_SHADERS"] = "1"
+    env.pop("MFA_DISABLE_V2", None)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env, capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        return None
+
+    stderr = result.stderr
+    pattern = (
+        rf"=== MFA Shader \[{re.escape(label)}[^\]]*\] ===\n"
         r"(.*?)"
         r"=== END MFA Shader ==="
     )

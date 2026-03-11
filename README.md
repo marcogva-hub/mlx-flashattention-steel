@@ -30,7 +30,7 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
-## Performance (v2.5.2, M1 Max, B=2 H=8 f16)
+## Performance (v2.5.4, M1 Max, B=2 H=8 f16)
 
 > Regenerate: `python benchmarks/bench_v2_final.py`
 
@@ -82,6 +82,7 @@ dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
 - **Variable-length** — packed sequences with `cu_seqlens` (training)
 - **Paged KV** — page-pool KV cache with `block_table` (multi-request serving)
 - **Autograd** — full `mx.vjp` support via STEEL backward kernels (D≤512, f16/bf16)
+- **Async metallib** — `csrc/async_v2_kernel.metal` ships hardware-DMA kernels (`simdgroup_async_copy`) for V load/softmax and K/P@V overlap; compile with `bash scripts/build_async_metallib.sh` on macOS ≤15
 - **Smart dispatch** — `backend="auto"` routes to STEEL V2 only when faster than SDPA
 - **Auto-calibration** — `calibrate_dispatch()` benchmarks your device and saves thresholds
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models

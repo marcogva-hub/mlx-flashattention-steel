@@ -2,6 +2,41 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.5.4] — 2026-03-11
+
+### Async V2 Metallib — Hardware DMA Overlap (CP4)
+
+**CP4a — `csrc/async_v2_kernel.metal`**
+Standalone Metal source using the `simdgroup_event` API with verbatim
+`__asm("air.simdgroup_async_copy_2d.p3i8.p1i8")` hardware DMA intrinsics.
+Double-buffer async overlap schedule: V loads overlap with softmax, K[N+1] loads
+overlap with P@V compute. Expected +20–40% throughput gain over sync V2 on hardware
+that supports async copy (M1–M4 with Xcode ≤16 / macOS ≤15).
+
+Two kernel functions in one metallib:
+- `mlx_mfa_v2_async_attention` — D=64, BQ=32, BK=64 (TGP=13824B)
+- `mlx_mfa_v2_async_attention_d128` — D=128, BQ=32, BK=32 (TGP=18176B)
+
+Function constants (`MTLFunctionConstantValues`): `FC_CAUSAL` (bool, index 0),
+`FC_GQA_FACTOR` (ushort, index 1) — one metallib serves all combinations.
+
+**CP4b — `scripts/build_async_metallib.sh`**
+Offline compile script targeting `air64-apple-macos15.0`. Produces
+`mlx_mfa/precompiled/async_v2.metallib`. On macOS 26 xcrun metal rejects
+`__asm` intrinsics; script exits non-zero with clear explanation.
+
+**CP4c — `csrc/shader_cache.mm` fallback chain**
+`try_async_pipeline()` resolves metallib via `dladdr()`, loads with
+`MTLFunctionConstantValues`, caches the pipeline. Chain:
+async metallib → sync AOT → JIT. `MFA_DISABLE_ASYNC=1` skips async step.
+
+**macOS 26 status**: xcrun metal 32023.864 rejects `air.simdgroup_async_copy_2d`.
+Source preserved; compile on macos-14 GitHub Actions runner (Xcode 16).
+
+**Tests**: 5 tests in `TestAsyncV2Metallib` (4 pass, 1 skipped on macOS 26).
+
+---
+
 ## [2.5.3] — 2026-03-11
 
 ### Deep Performance Optimizations — D-split V2 (CP1/CP2/CP3)
