@@ -221,6 +221,20 @@ and automatically save optimal thresholds.
 
 ---
 
+---
+
+## Metal Pipeline Resolution
+
+When `flash_attention` dispatches to the STEEL kernel, the pipeline is resolved in order:
+
+1. **Async metallib** (`mlx_mfa/precompiled/async_v2.metallib`) — shipped with the
+   package; uses hardware DMA overlap on macOS ≤15. Disable: `MFA_DISABLE_ASYNC=1`.
+2. **Sync AOT metallib** (`~/.mlx_mfa/metallib/`) — user-compiled cache from
+   `python -m mlx_mfa compile_metallib`. Saves ~50ms cold-start.
+3. **JIT compilation** — always available; compiles Metal shader source at runtime.
+
+The first successful match is cached for the process lifetime.
+
 ## Documentation
 
 | Document | Description |
