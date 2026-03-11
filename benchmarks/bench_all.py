@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""bench_all.py — mlx-mfa v1.2.x comprehensive benchmark suite.
+"""bench_all.py — mlx-mfa v1.4.x comprehensive benchmark suite.
 
-Runs forward, backward, and sliding-window attention benchmarks in one pass
-and writes a complete RESULTS.md.
+Runs forward, backward, sliding-window, and SageAttention benchmarks in one
+pass and writes a complete RESULTS.md.
 
 Usage:
-    python benchmarks/bench_all.py               # forward + backward + window
+    python benchmarks/bench_all.py               # forward + backward + window + sage
     python benchmarks/bench_all.py --fwd-only    # forward only
     python benchmarks/bench_all.py --bwd-only    # backward only
     python benchmarks/bench_all.py --win-only    # window only
+    python benchmarks/bench_all.py --sage-only   # sage (int8 Q/K) only
     python benchmarks/bench_all.py --no-save     # skip RESULTS.md write
 """
 from __future__ import annotations
@@ -112,6 +113,19 @@ WINDOW_CONFIGS = [
     ("win D=128 N=16384 w=512  f16",  1, 8, 16384, 128, mx.float16, 512),
 ]
 
+# ── SageAttention configs ───────────────────────────────────────────────────
+
+SAGE_CONFIGS = [
+    # (label, B, H, N, D, dtype, causal)
+    # Compare sage (int8 Q/K) vs mfa (fp16 STEEL): bandwidth reduction benefit
+    ("sage D=64  N=4096  f16 causal",     1, 8, 4096,  64,  mx.float16, True),
+    ("sage D=64  N=8192  f16 causal",     1, 8, 8192,  64,  mx.float16, True),
+    ("sage D=128 N=2048  f16 causal",     1, 8, 2048,  128, mx.float16, True),
+    ("sage D=128 N=4096  f16 causal",     1, 8, 4096,  128, mx.float16, True),
+    ("sage D=128 N=8192  f16 causal",     1, 8, 8192,  128, mx.float16, True),
+    ("sage D=128 N=4096  f16 non-causal", 1, 8, 4096,  128, mx.float16, False),
+]
+
 
 def _make(B, H, N, D, dtype):
     q = mx.random.normal((B, H, N, D)).astype(dtype)
@@ -196,11 +210,39 @@ def bench_win(label, B, H, N, D, dtype, window_left) -> dict:
                 speedup=speedup, kind="win")
 
 
+# ── SageAttention benchmark ─────────────────────────────────────────────────
+
+def bench_sage(label, B, H, N, D, dtype, causal) -> dict:
+    """Compare sage (int8 Q/K) vs mfa (fp16 STEEL) forward.
+
+    Speedup > 1.0 means Sage's 2× bandwidth reduction for Q/K outweighs
+    the extra Python-side quantization overhead at this sequence length.
+    """
+    scale = 1.0 / math.sqrt(D)
+    q, k, v = _make(B, H, N, D, dtype)
+
+    sage_ms = timed_ms(lambda: flash_attention(q, k, v, scale=scale,
+                                               causal=causal, backend="sage"))
+    mfa_ms  = timed_ms(lambda: flash_attention(q, k, v, scale=scale,
+                                               causal=causal, backend="mfa"))
+    sdpa_ms = timed_ms(lambda: _fallback_sdpa(q, k, v, scale, causal))
+
+    return dict(label=label, B=B, H=H, N=N, D=D,
+                dtype="f16" if dtype == mx.float16 else "bf16",
+                causal=causal,
+                sage_ms=sage_ms, mfa_ms=mfa_ms, sdpa_ms=sdpa_ms,
+                sage_vs_mfa=mfa_ms / sage_ms if sage_ms > 0 else float("nan"),
+                sage_vs_sdpa=sdpa_ms / sage_ms if sage_ms > 0 else float("nan"),
+                kind="sage")
+
+
 # ── Print & save ────────────────────────────────────────────────────────────
 
 HDR = f"{'Config':<38} {'MFA (ms)':>10} {'SDPA (ms)':>11} {'Speedup':>9}"
 SEP = "-" * 74
-HDR_WIN = f"{'Config':<38} {'causal (ms)':>12} {'window (ms)':>12} {'Speedup':>9}"
+HDR_WIN  = f"{'Config':<38} {'causal (ms)':>12} {'window (ms)':>12} {'Speedup':>9}"
+HDR_SAGE = (f"{'Config':<38} {'Sage (ms)':>10} {'MFA (ms)':>10}"
+            f" {'sage/mfa':>9} {'sage/sdpa':>10}")
 
 
 def _row(r: dict) -> str:
@@ -215,7 +257,13 @@ def _row_win(r: dict) -> str:
             f" {r['speedup']:>8.2f}x{tag}")
 
 
-def save_results(fwd_rows, bwd_rows, win_rows, path: str) -> None:
+def _row_sage(r: dict) -> str:
+    tag = " ★" if r["sage_vs_sdpa"] >= 1.0 else "  "
+    return (f"{r['label']:<38} {r['sage_ms']:>9.2f}ms {r['mfa_ms']:>9.2f}ms"
+            f" {r['sage_vs_mfa']:>8.2f}x {r['sage_vs_sdpa']:>8.2f}x{tag}")
+
+
+def save_results(fwd_rows, bwd_rows, win_rows, sage_rows, path: str) -> None:
     from mlx_mfa import __version__
     info = get_device_info()
     today = date.today().isoformat()
@@ -269,6 +317,21 @@ def save_results(fwd_rows, bwd_rows, win_rows, path: str) -> None:
             )
         lines.append("\n")
 
+    if sage_rows:
+        lines.append("## SageAttention (int8 Q/K vs fp16 MFA vs fp16 SDPA)\n\n")
+        lines.append(
+            "| Config | Sage (ms) | MFA (ms) | Sage/MFA | Sage/SDPA |\n")
+        lines.append(
+            "|--------|----------|---------|---------|----------|\n")
+        for r in sage_rows:
+            sm = bold_if(r['sage_vs_mfa'] >= 1.0, f"{r['sage_vs_mfa']:.2f}×")
+            ss = bold_if(r['sage_vs_sdpa'] >= 1.0, f"{r['sage_vs_sdpa']:.2f}×")
+            lines.append(
+                f"| {r['label']} | {r['sage_ms']:.1f} | {r['mfa_ms']:.1f}"
+                f" | {sm} | {ss} |\n"
+            )
+        lines.append("\n")
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.writelines(lines)
@@ -277,20 +340,24 @@ def save_results(fwd_rows, bwd_rows, win_rows, path: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="mlx-mfa v1.2.x comprehensive benchmark")
-    ap.add_argument("--fwd-only", action="store_true")
-    ap.add_argument("--bwd-only", action="store_true")
-    ap.add_argument("--win-only", action="store_true")
-    ap.add_argument("--no-save",  action="store_true",
+        description="mlx-mfa v1.4.x comprehensive benchmark")
+    ap.add_argument("--fwd-only",  action="store_true")
+    ap.add_argument("--bwd-only",  action="store_true")
+    ap.add_argument("--win-only",  action="store_true")
+    ap.add_argument("--sage-only", action="store_true",
+                    help="SageAttention (int8 Q/K) benchmarks only")
+    ap.add_argument("--no-save",   action="store_true",
                     help="Do not write to RESULTS.md")
     args = ap.parse_args()
 
     if not is_mfa_available():
         print("[WARN] MFA extension not available — both columns use MLX fallback.")
 
-    run_fwd = not (args.bwd_only or args.win_only)
-    run_bwd = not (args.fwd_only or args.win_only)
-    run_win = not (args.fwd_only or args.bwd_only)
+    _only = args.fwd_only or args.bwd_only or args.win_only or args.sage_only
+    run_fwd  = not _only or args.fwd_only
+    run_bwd  = not _only or args.bwd_only
+    run_win  = not _only or args.win_only
+    run_sage = not _only or args.sage_only
 
     from mlx_mfa import __version__
     info = get_device_info()
@@ -299,9 +366,10 @@ def main() -> None:
     print(f"Device : {info['device_name']}  MLX {mx.__version__}")
     print()
 
-    fwd_rows: list[dict] = []
-    bwd_rows: list[dict] = []
-    win_rows: list[dict] = []
+    fwd_rows:  list[dict] = []
+    bwd_rows:  list[dict] = []
+    win_rows:  list[dict] = []
+    sage_rows: list[dict] = []
 
     if run_fwd:
         print("=" * 74)
@@ -342,10 +410,23 @@ def main() -> None:
             except Exception as exc:
                 print(f"  ERROR {cfg[0]}: {exc}")
 
-    if not args.no_save and (fwd_rows or bwd_rows or win_rows):
+    if run_sage:
+        print("=" * 74)
+        print("[SageAttention — int8 Q/K vs fp16 MFA vs fp16 SDPA]")
+        print(HDR_SAGE)
+        print(SEP)
+        for cfg in SAGE_CONFIGS:
+            try:
+                r = bench_sage(*cfg)
+                sage_rows.append(r)
+                print(_row_sage(r))
+            except Exception as exc:
+                print(f"  ERROR {cfg[0]}: {exc}")
+
+    if not args.no_save and (fwd_rows or bwd_rows or win_rows or sage_rows):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         results_path = os.path.join(repo_root, "docs", "benchmarks", "RESULTS.md")
-        save_results(fwd_rows, bwd_rows, win_rows, results_path)
+        save_results(fwd_rows, bwd_rows, win_rows, sage_rows, results_path)
 
 
 if __name__ == "__main__":
