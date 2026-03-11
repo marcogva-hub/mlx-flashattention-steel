@@ -148,6 +148,59 @@ Grid = `(N_q, H, B)`.  Writes final `O [B, H, N_q, D]`.
 **Causal offset**: `qL_off = S − N_q`.  Query at position `i` sees keys
 `0..(S − N_q + i)` — the K-loop must start at `qL_off`, not 0.
 
+### Async DMA Metallib (experimental)
+
+The Apple GPU has a hardware DMA unit that overlaps device→threadgroup copies
+with shader core compute, exposed via the undocumented `simdgroup_event` API
+(`__asm("air.simdgroup_async_copy_2d.p3i8.p1i8")`).  Philip Turner's
+metal-flash-attention used this to achieve 83% ALU utilisation on M1 Max.
+
+**Apple removed access to this instruction:**
+
+- Xcode 14.3+: public headers removed
+- macOS 26: `__asm` blocked in JIT compiler; runtime silently converts
+  precompiled async_copy opcodes to synchronous loads (no crash, no gain)
+
+mlx-mfa ships `mlx_mfa/precompiled/async_v2.metallib` compiled on macOS 15
+/ Xcode 16 (GitHub Actions macos-14 runner).  The metallib contains two
+entry points — `mlx_mfa_v2_async_attention` (D=64) and
+`mlx_mfa_v2_async_attention_d128` (D=128) — with function constants
+`FC_CAUSAL` (bool, index 0) and `FC_GQA_FACTOR` (ushort, index 1).
+
+**Async overlap schedule** (per K-tile iteration):
+
+```
+wait K[kb] DMA → threadgroup_barrier → Q@K^T GEMM
+launch V[kb] DMA (overlaps softmax below)
+softmax (compute while V DMA runs)
+wait V[kb] DMA → threadgroup_barrier → launch K[kb+1] DMA
+P@V GEMM (compute while K[kb+1] DMA runs)
+```
+
+The `threadgroup_barrier(mem_flags::mem_threadgroup)` after each
+`simdgroup_event::wait()` is mandatory: `wait()` synchronises only the
+calling simdgroup; without the barrier, simdgroups 1–3 may still be writing
+shared K_smem/V_smem when simdgroup 0 begins reading.
+
+**Fallback chain:** async metallib → sync AOT metallib (`~/.mlx_mfa/`) → JIT.
+Disable async path: `MFA_DISABLE_ASYNC=1`.
+
+**macOS 26 measurement (M1 Max, D=64 N=4096 causal, B=2 H=8):**
+
+| Path | ms | vs Sync |
+|------|----|---------|
+| Async metallib | 5.5 | 1.14× |
+| Sync V2 | 6.2 | — |
+
+The 1.14× at D=64/N=4096 is measurement noise; at D=64/N=8192 ratio = 1.00×.
+On macOS ≤15, hardware DMA is expected to provide +20–40% over sync V2 for
+causal D=64/128 (ALU fully hides DMA latency at long sequences).
+
+**Future:** Metal 4 TensorOps (M5+/A19+) provide dedicated matrix multiply
+hardware that inherently overlaps with shader core compute — the official
+successor to `simdgroup_async_copy`.  Reserved as `TensorOpsForward` in the
+kernel type registry.
+
 ### STEEL Varlen Forward
 
 Single Metal dispatch for packed sequences with `cu_seqlens`.
