@@ -1,7 +1,7 @@
 # mlx-mfa Code Inventory — v2.6.0
 
 All numbers verified by running shell commands against the source tree.
-Regenerated: 2026-03-11.
+Regenerated: 2026-03-11 (v2.6.1 cleanup).
 
 ---
 
@@ -217,7 +217,7 @@ Regenerated: 2026-03-11.
 
 | File | Lines | What it benchmarks |
 |------|-------|-------------------|
-| `bench_all.py` | 433 | fwd + bwd + window + sage (comprehensive) |
+| `bench_all.py` | 438 | fwd + bwd + window + sage (comprehensive) |
 | `bench_attention.py` | 142 | MFA vs SDPA: D=64/128/256/512, causal |
 | `bench_auto_dispatch_validation.py` | 107 | Auto dispatch correctness validation |
 | `bench_backward.py` | 145 | Backward pass: MFA vs SDPA vjp |
