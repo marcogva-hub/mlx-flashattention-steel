@@ -24,6 +24,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <mutex>
 #include <stdexcept>
 
@@ -85,31 +86,115 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
 }
 
 // ---------------------------------------------------------------------------
+// CP4c: Async metallib fast path (ships with package in mlx_mfa/precompiled/)
+// ---------------------------------------------------------------------------
+
+/// Try to load the async V2 metallib (uses simdgroup_async_copy hardware DMA).
+/// Checks mlx_mfa/precompiled/async_v2.metallib relative to the installed
+/// package dylib.  Uses MTLFunctionConstantValues for FC_CAUSAL and
+/// FC_GQA_FACTOR so one metallib serves all flag combinations.
+/// Set MFA_DISABLE_ASYNC=1 to skip this path entirely.
+/// Returns a retained id<MTLComputePipelineState> (as void*) or nullptr.
+static void* try_async_pipeline(const ShaderCache::KernelKey& key,
+                                void* raw_device) {
+  using KT = ShaderCache::KernelKey::KernelType;
+
+  // Only D=64/128 SteelForwardV2, f16 only, no extra features
+  if (key.type != KT::SteelForwardV2) return nullptr;
+  if (key.head_dim != 64 && key.head_dim != 128) return nullptr;
+  if (key.dtype != 0) return nullptr;  // f16 only
+  if (key.sparse || key.has_rope || key.has_softcap ||
+      key.has_alibi || key.has_window) return nullptr;
+  if (std::getenv("MFA_DISABLE_ASYNC")) return nullptr;
+
+  @autoreleasepool {
+    // Resolve precompiled dir relative to our shared library's location.
+    // The dylib lives at mlx_mfa/_ext.cpython-*.so and the metallib is at
+    // mlx_mfa/precompiled/async_v2.metallib — same parent directory.
+    Dl_info dl_info;
+    if (dladdr((void*)&ShaderCache::get, &dl_info) == 0) return nullptr;
+    NSString* dylib_path = [NSString stringWithUTF8String:dl_info.dli_fname];
+    NSString* pkg_dir    = [dylib_path stringByDeletingLastPathComponent];
+    NSURL* metallib_url  = [NSURL fileURLWithPath:
+        [[pkg_dir stringByAppendingPathComponent:@"precompiled"]
+                  stringByAppendingPathComponent:@"async_v2.metallib"]];
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[metallib_url path]]) {
+      return nullptr;
+    }
+
+    id<MTLDevice> device = (__bridge id<MTLDevice>)raw_device;
+    NSError* error = nil;
+
+    id<MTLLibrary> library = [device newLibraryWithURL:metallib_url error:&error];
+    if (!library) return nullptr;
+
+    NSString* fn_name = (key.head_dim == 64)
+        ? @"mlx_mfa_v2_async_attention"
+        : @"mlx_mfa_v2_async_attention_d128";
+
+    // Set function constants: index 0 = FC_CAUSAL (bool), index 1 = FC_GQA_FACTOR (ushort)
+    MTLFunctionConstantValues* constants = [[MTLFunctionConstantValues alloc] init];
+    bool   causal_val = key.causal;
+    ushort gqa_val    = (ushort)key.gqa_factor;
+    [constants setConstantValue:&causal_val type:MTLDataTypeBool   atIndex:0];
+    [constants setConstantValue:&gqa_val    type:MTLDataTypeUShort atIndex:1];
+
+    id<MTLFunction> function = [library newFunctionWithName:fn_name
+                                            constantValues:constants
+                                                     error:&error];
+    if (!function) return nullptr;
+
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) return nullptr;
+
+    return (void*)CFBridgingRetain(pipeline);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CP9: Precompiled metallib fast path
 // ---------------------------------------------------------------------------
 
-/// Try to load a precompiled .metallib for SteelForwardV2 keys.
+/// Try to load a precompiled .metallib for SteelForwardV2 or V2 D-split keys.
 /// Returns a retained id<MTLComputePipelineState> (as void*) on success,
 /// or nullptr when no matching file exists (caller falls through to JIT).
 ///
-/// Filename scheme (must match mlx_mfa/compile_metallib.py):
-///   v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
+/// Filename schemes (must match mlx_mfa/compile_metallib.py):
+///   Standard V2:  v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
+///   D-split V2:   v2_dsplit_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
 /// Located in: ~/.mlx_mfa/metallib/
 static void* try_precompiled_pipeline(const ShaderCache::KernelKey& key,
                                       void* raw_device) {
   using KT = ShaderCache::KernelKey::KernelType;
 
-  // Only for SteelForwardV2 without extra features (no rope/alibi/softcap/window)
-  // and standard MHA (gqa_factor == 1).
-  if (key.type != KT::SteelForwardV2) return nullptr;
+  const bool is_std_v2    = (key.type == KT::SteelForwardV2);
+  const bool is_dsplit256 = (key.type == KT::SteelV2DSplit256);
+  const bool is_dsplit512 = (key.type == KT::SteelV2DSplit512);
+
+  if (!is_std_v2 && !is_dsplit256 && !is_dsplit512) return nullptr;
+
+  // Only precompile standard single-head MHA without extra features.
   if (key.sparse || key.has_rope || key.has_softcap ||
       key.has_alibi || key.has_window || key.gqa_factor != 1) return nullptr;
 
   @autoreleasepool {
-    NSString* fname = [NSString stringWithFormat:
-        @"v2_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
-        key.head_dim, key.block_k,
-        (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
+    NSString* fname;
+    NSString* fn_name;
+    if (is_std_v2) {
+      fname   = [NSString stringWithFormat:
+          @"v2_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
+          key.head_dim, key.block_k,
+          (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
+      fn_name = @"mlx_mfa_v2_attention";
+    } else {
+      fname   = [NSString stringWithFormat:
+          @"v2_dsplit_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
+          key.head_dim, key.block_k,
+          (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
+      fn_name = @"mlx_mfa_v2_dsplit_attention";
+    }
 
     NSString* home = NSHomeDirectory();
     NSURL* dir_url  = [NSURL fileURLWithPath:
@@ -127,8 +212,7 @@ static void* try_precompiled_pipeline(const ShaderCache::KernelKey& key,
     id<MTLLibrary> library = [device newLibraryWithURL:file_url error:&error];
     if (!library) return nullptr;  // fall through to JIT
 
-    id<MTLFunction> function =
-        [library newFunctionWithName:@"mlx_mfa_v2_attention"];
+    id<MTLFunction> function = [library newFunctionWithName:fn_name];
     if (!function) return nullptr;
 
     id<MTLComputePipelineState> pipeline =
@@ -150,6 +234,13 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (it != cache_.end()) {
       return it->second;
     }
+  }
+
+  // CP4c: async metallib (hardware DMA, ships with package) — best throughput.
+  if (void* async = try_async_pipeline(key, device)) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    cache_.emplace(key, async);
+    return async;
   }
 
   // CP9: try to load a precompiled metallib — skips ~50ms JIT compilation.
