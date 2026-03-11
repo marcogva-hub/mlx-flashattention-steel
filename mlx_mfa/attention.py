@@ -1176,6 +1176,70 @@ def sage_attention(
     return O
 
 
+def sage_attention_prequantized(
+    q: mx.array,
+    k_int8: mx.array,
+    k_scale: mx.array,
+    v: mx.array,
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """SageAttention with pre-quantized K — skips the K quantization step.
+
+    Designed for use with :class:`QuantizedKVCache`, which stores K as int8
+    and updates only new blocks on each decode step.  This avoids O(seqlen×D)
+    re-quantization per step that :func:`sage_attention` performs.
+
+    Args:
+        q:       Query ``[B, H, N, D]`` fp16 or bf16.
+        k_int8:  Pre-quantized K ``[B, H_kv, S, D]`` int8.
+        k_scale: Per-block K scales ``[B, H_kv, NK_blocks]`` float32.
+        v:       Value ``[B, H_kv, S, D]`` fp16 or bf16.
+        scale:   Attention scale.  Defaults to ``1/sqrt(D)``.
+        causal:  Causal masking (default: ``False``).
+        stream:  MLX stream.
+
+    Returns:
+        ``[B, H, N, D]`` attention output in the same dtype as ``q``.
+
+    Raises:
+        RuntimeError: if the MFA extension is not available.
+    """
+    import math as _math
+    from mlx_mfa.quantize import sage_block_sizes, quantize_per_block
+
+    D = q.shape[-1]
+    if scale is None:
+        scale = 1.0 / _math.sqrt(D)
+
+    if not _ext_available():
+        raise RuntimeError(
+            "sage_attention_prequantized: MFA extension not available. "
+            "Install with: pip install mlx-mfa"
+        )
+    from mlx_mfa._ext import mfa_sage_forward as _sage_fwd
+
+    BQ, _ = sage_block_sizes(D)
+    q_int8, q_scale = quantize_per_block(q, BQ)
+    q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
+
+    # Force genuinely contiguous buffers before kernel dispatch.
+    # Inputs may come from QuantizedKVCache properties, which return slices of
+    # pre-allocated [B, H, max_seq_len, D] / [B, H, max_blocks] buffers.
+    # Those slices have head strides of max_seq_len*D (or max_blocks) instead
+    # of seqlen*D (or n_blocks), which confuses C++ kernel offset arithmetic.
+    # flatten+reshape always produces a fresh allocation with canonical strides.
+    k_int8 = k_int8.flatten().reshape(k_int8.shape)
+    k_scale = k_scale.flatten().reshape(k_scale.shape)
+    v = v.flatten().reshape(v.shape)
+    mx.eval(k_int8, k_scale, v)
+
+    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal, stream)
+    return O
+
+
 def sage_attention_kvcache(
     q: mx.array,
     k: mx.array,
@@ -3659,6 +3723,200 @@ class DenseKVCache(KVCacheProtocol):
         return (
             f"DenseKVCache(B={self.B}, H={self.H}, D={self.D}, "
             f"seqlen={self._seqlen}/{self.max_seq_len})"
+        )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# QuantizedKVCache (CP6) — pre-quantized int8 K storage for SageAttention
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class QuantizedKVCache:
+    """KV cache that stores K pre-quantized as int8 for :func:`sage_attention`.
+
+    Unlike :class:`DenseKVCache` + :func:`sage_attention`, which re-quantizes
+    the **full** K cache on every decode step (O(seqlen × D) quantize ops),
+    :class:`QuantizedKVCache` only quantizes the **affected block** on each
+    :meth:`append` call — O(block_size × D) per step regardless of seqlen.
+
+    V is stored as fp16/bf16 (unchanged from DenseKVCache) because V is not
+    quantized by SageAttention.
+
+    Internally keeps a fp16 shadow K buffer so that each partial block at the
+    write frontier can be re-quantized correctly as new tokens arrive. Once a
+    block is complete (all ``block_size`` tokens present), its int8 data is
+    final and the shadow buffer is no longer consulted for that block.
+
+    Args:
+        B:           Batch size.
+        H:           Number of KV heads.
+        D:           Head dimension.
+        max_seq_len: Pre-allocated sequence length.  Defaults to 8192.
+        dtype:       Cache dtype for V and shadow K fp16 buffer.  Defaults to
+                     ``mx.float16``.
+        block_size:  Quantization block size (tokens per scale).  Defaults to
+                     the BK for ``D`` from :func:`~mlx_mfa.quantize.sage_block_sizes`.
+
+    Attributes:
+        seqlen (int):   Current number of tokens stored.
+        k_int8:         Active K slice as int8 ``[B, H, seqlen, D]``.
+        k_scale:        Block scales ``[B, H, n_blocks]`` float32.
+        v:              Active V slice ``[B, H, seqlen, D]``.
+
+    Example::
+
+        cache = QuantizedKVCache(B=1, H=8, D=128, max_seq_len=4096)
+
+        # Prefill — quantizes N_prefill tokens once
+        cache.append(k_prefill, v_prefill)
+
+        # Decode loop — quantizes only 1 new token per step
+        for _ in range(steps):
+            cache.append(k_new, v_new)   # k_new: [B, H, 1, D]
+            out = sage_attention_prequantized(
+                q, cache.k_int8, cache.k_scale, cache.v,
+                scale=scale, causal=True,
+            )
+    """
+
+    def __init__(
+        self,
+        B: int,
+        H: int,
+        D: int,
+        max_seq_len: int = 8192,
+        dtype=None,
+        block_size: "Optional[int]" = None,
+    ) -> None:
+        if dtype is None:
+            dtype = mx.float16
+        if block_size is None:
+            from mlx_mfa.quantize import sage_block_sizes
+            _, block_size = sage_block_sizes(D)  # BK for K quantization
+
+        self.B = B
+        self.H = H
+        self.D = D
+        self.max_seq_len = max_seq_len
+        self.dtype = dtype
+        self.block_size = block_size
+        self._seqlen: int = 0
+
+        max_blocks = (max_seq_len + block_size - 1) // block_size
+
+        # Pre-allocated buffers.
+        self._k_fp16 = mx.zeros([B, H, max_seq_len, D], dtype=dtype)   # shadow
+        self._k_int8 = mx.zeros([B, H, max_seq_len, D], dtype=mx.int8)
+        self._k_scale = mx.zeros([B, H, max_blocks], dtype=mx.float32)
+        self._v = mx.zeros([B, H, max_seq_len, D], dtype=dtype)
+        mx.eval(self._k_fp16, self._k_int8, self._k_scale, self._v)
+
+    # -- Properties ----------------------------------------------------------
+
+    @property
+    def seqlen(self) -> int:
+        """Current number of tokens stored."""
+        return self._seqlen
+
+    @property
+    def length(self) -> int:
+        """Alias for :attr:`seqlen`."""
+        return self._seqlen
+
+    @property
+    def k_int8(self) -> "mx.array":
+        """Active K as int8 ``[B, H, seqlen, D]`` (contiguous)."""
+        return mx.contiguous(self._k_int8[:, :, :self._seqlen, :])
+
+    @property
+    def k_scale(self) -> "mx.array":
+        """Block scales ``[B, H, n_blocks]`` where n_blocks = ceil(seqlen/BK) (contiguous)."""
+        n_blocks = (self._seqlen + self.block_size - 1) // self.block_size if self._seqlen else 0
+        return mx.contiguous(self._k_scale[:, :, :n_blocks])
+
+    @property
+    def v(self) -> "mx.array":
+        """Active V slice ``[B, H, seqlen, D]`` (contiguous)."""
+        return mx.contiguous(self._v[:, :, :self._seqlen, :])
+
+    # -- Mutation ------------------------------------------------------------
+
+    def append(
+        self,
+        k_new: "mx.array",
+        v_new: "mx.array",
+    ) -> None:
+        """Append new tokens and update int8 K storage.
+
+        Only the block(s) touched by the new tokens are (re-)quantized.
+        For decode (``k_new`` shape ``[B, H, 1, D]``), this costs
+        O(``block_size × D``) regardless of ``seqlen``.
+
+        Args:
+            k_new: New key tokens ``[B, H, N_new, D]`` fp16 or bf16.
+            v_new: New value tokens ``[B, H, N_new, D]`` fp16 or bf16.
+
+        Raises:
+            ValueError: if ``seqlen + N_new > max_seq_len``.
+        """
+        from mlx_mfa.quantize import quantize_per_block
+
+        n_new = k_new.shape[2]
+        end = self._seqlen + n_new
+        if end > self.max_seq_len:
+            raise ValueError(
+                f"QuantizedKVCache overflow: seqlen {self._seqlen} + n_new {n_new} = "
+                f"{end} > max_seq_len={self.max_seq_len}"
+            )
+
+        # 1. Write new tokens to shadow fp16 buffer and V buffer.
+        self._k_fp16[:, :, self._seqlen:end, :] = k_new.astype(self.dtype)
+        self._v[:, :, self._seqlen:end, :] = v_new.astype(self.dtype)
+
+        # 2. Re-quantize the affected block range from the fp16 shadow.
+        #    first_block: the block that the first new token belongs to.
+        #    Tokens in [first_token, end) may span multiple blocks.
+        first_block = self._seqlen // self.block_size
+        first_token = first_block * self.block_size   # start of the partial block
+        n_blocks_new = (end - first_token + self.block_size - 1) // self.block_size
+
+        k_slice = self._k_fp16[:, :, first_token:end, :]
+        k_int8_new, k_scale_new = quantize_per_block(k_slice, self.block_size)
+        k_scale_new = k_scale_new.squeeze(-1)   # [B, H, n_blocks_new]
+
+        # 3. Scatter int8 tokens into the int8 buffer.
+        #    Only tokens [first_token:end] are valid; the rest of each block
+        #    may be zeros (causal masking prevents them from contributing).
+        self._k_int8[:, :, first_token:end, :] = k_int8_new
+        self._k_scale[:, :, first_block:first_block + n_blocks_new] = k_scale_new
+
+        self._seqlen = end
+        mx.eval(self._k_fp16, self._k_int8, self._k_scale, self._v)
+
+    # -- Reset ---------------------------------------------------------------
+
+    def reset(self) -> "QuantizedKVCache":
+        """Reset write pointer to 0 (reuse buffer for a new sequence).
+
+        Returns:
+            ``self`` for chaining: ``cache.reset().append(...)``
+        """
+        self._seqlen = 0
+        return self
+
+    # -- Context manager -----------------------------------------------------
+
+    def __enter__(self) -> "QuantizedKVCache":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.reset()
+
+    def __repr__(self) -> str:
+        return (
+            f"QuantizedKVCache(B={self.B}, H={self.H}, D={self.D}, "
+            f"seqlen={self._seqlen}/{self.max_seq_len}, "
+            f"block_size={self.block_size})"
         )
 
 
