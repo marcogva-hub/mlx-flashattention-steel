@@ -1,3 +1,4 @@
 # This directory holds the pre-compiled async_v2.metallib (shipped with the package).
 # Build it with: bash scripts/build_async_metallib.sh
 # Requires Xcode ≤16 (macOS ≤15). macOS 26 uses the JIT fallback.
+async_v2.metallib
