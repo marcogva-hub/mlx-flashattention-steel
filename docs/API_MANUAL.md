@@ -1,6 +1,6 @@
 # mlx-mfa API Manual — v2.5.0
 
-Complete reference for all 51 public symbols in `mlx_mfa.__all__`.
+Complete reference for all 52 public exports in `mlx_mfa.__all__` (plus `__version__`).
 
 ## Table of Contents
 

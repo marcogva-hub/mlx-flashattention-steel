@@ -222,7 +222,7 @@ and automatically save optimal thresholds.
 
 | Document | Description |
 |----------|-------------|
-| [docs/API_MANUAL.md](docs/API_MANUAL.md) | Complete function reference — all 51 exports |
+| [docs/API_MANUAL.md](docs/API_MANUAL.md) | Complete function reference — all 52 exports |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Kernel architecture and design decisions |
 | [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md) | Latest benchmark results |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
