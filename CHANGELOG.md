@@ -2,6 +2,22 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.5.1] — 2026-03-11
+
+### Documentation cleanup — no functional changes
+
+- **API_MANUAL.md**: new comprehensive developer reference covering all 52
+  public exports, grouped by use case with signatures, parameters, and examples
+- **ARCHITECTURE.md**: rewritten as thematic doc (1254 → 446 lines); removed
+  version-by-version notes (§11–§19); added STEEL V2, SageAttention, Memory
+  Architecture, Dispatch System, and Kernel Type Registry sections
+- **INVENTORY.md**: regenerated with current line counts (553 tests, 18 benchmarks)
+- **RESULTS.md**: no change (already regenerated in v2.5.0)
+- **README.md**: fixed export count 51 → 52
+- **benchmarks/bench_all.py**: removed stale `v1.4.x` version reference in docstring
+- Removed obsolete files: `TECH_DEBT_REMEDIATION*.md`, `PAGED_ATTENTION_DESIGN.md`,
+  and v1.2.x benchmark comparison artifacts
+
 ## [2.5.0] — 2026-03-10
 
 ### SageAttention Extensions — QuantizedKVCache, Sliding Window, DispatchPolicy.SAGE
