@@ -35,6 +35,15 @@ _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
+# CP1: dispatch decision cache — keyed by (head_dim, seq_len, causal, is_m3_plus,
+# window_size, sparse).  Eliminates should_use_mfa() call overhead on repeated
+# same-shape calls (e.g. decode loops that call flash_attention per token).
+_dispatch_decision_cache: dict = {}
+
+# CP1: module-level reference to should_use_mfa — populated lazily on first
+# backend='auto' call so the import never blocks module load.
+_should_use_mfa_fn = None
+
 
 class DispatchPolicy:
     """Backend selection constants for :func:`flash_attention`.
@@ -339,18 +348,27 @@ def flash_attention(
     # faster than SDPA based on empirical crossover thresholds.
     # Window-size and sparse are handled inside should_use_mfa (always MFA).
     if _mfa_capable and backend == "auto":
-        from mlx_mfa.dispatch_policy import should_use_mfa as _should_mfa
+        # CP1: load dispatch fn once, then cache decisions per (shape, flags).
+        global _should_use_mfa_fn
+        if _should_use_mfa_fn is None:
+            from mlx_mfa.dispatch_policy import should_use_mfa as _fn
+            _should_use_mfa_fn = _fn
         # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch: MFA handles
         # the cast internally, but mx.fast.sdpa produces NaN on mixed dtypes.
         _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
-        # Use cached is_m3_plus to avoid per-call MTLDevice query overhead.
-        use_mfa = _mixed_dtype or _should_mfa(
-            head_dim, q.shape[2], causal,
-            _get_is_m3_plus_cached(),
-            window_size=window_size,
-            sparse=False,
-            backend=backend,
-        )
+        if _mixed_dtype:
+            use_mfa = True
+        else:
+            _is_m3 = _get_is_m3_plus_cached()
+            _cache_key = (head_dim, q.shape[2], causal, _is_m3, window_size, False)
+            _cached = _dispatch_decision_cache.get(_cache_key)
+            if _cached is None:
+                _cached = _should_use_mfa_fn(
+                    head_dim, q.shape[2], causal, _is_m3,
+                    window_size=window_size, sparse=False, backend=backend,
+                )
+                _dispatch_decision_cache[_cache_key] = _cached
+            use_mfa = _cached
     else:
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
