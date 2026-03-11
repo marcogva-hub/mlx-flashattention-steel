@@ -2,6 +2,57 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.5.2] — 2026-03-11
+
+### Deep Performance Optimizations — CP1–CP11
+
+**CP1 — Python dispatch cache**
+- Module-level `_DEVICE_INFO` and `_DISPATCH_CACHE` avoid re-calling C++ `get_device_info()`
+  and re-computing `v2_eligible`/`v2sk_eligible` on every call. No measurable latency gain on
+  long sequences; eliminates O(1µs) overhead on short-sequence decode.
+
+**CP2 — Flash Decode V2 tiles**
+- `select_flash_decode_v2_block_config()`: splits-K path now uses BK=64 (D≤64) / BK=32 (D≤128)
+  matching V2 tile widths. `FlashDecodePartial` shader updated to use V2 BK when dispatched.
+
+**CP3 — Sage kernel V2 tiles**
+- Sage (`SageForward`) now uses `select_steel_v2_block_config()` for D≤128, doubling BK vs V1.
+  `sage_block_sizes()` updated to return V2 values (32, 64) for D=64 and (32, 32) for D=128
+  (gen-independent for Python API compatibility).
+
+**CP4 — Auto-warmup**
+- `flash_attention()` triggers `warmup_kernels()` on the first call (once per process) so
+  the JIT cost is paid at startup, not inside user timing loops.
+
+**CP5 — Dispatch threshold tuning**
+- `calibrate_dispatch()` benchmarks shapes ≥ N=16384 and writes per-shape thresholds to
+  `~/.mlx_mfa/dispatch_calibration.json`. N=16384 was the previous gap — now covered.
+
+**CP6 — QuantizedKVCache** (already in v2.5.0, confirmed 30 tests pass)
+
+**CP7 — D=256 dispatch enabled**
+- `v2_eligible` now includes D=256 via `select_steel_v2_block_config(256)`. D=256 was
+  previously excluded due to a stale register-spill concern; V2 matches V1 throughput.
+
+**CP8 — D-split enum stubs**
+- `SteelV2DSplit256 = 18` and `SteelV2DSplit512 = 19` added to `KernelType` enum.
+  Placeholder `generate_steel_v2_dsplit256_source()` / `_dsplit512_source()` stubs in
+  `shader_cache.mm` for future inner-D-loop kernels. Not yet dispatched.
+
+**CP9 — Precompiled metallib fast path**
+- `mlx_mfa/compile_metallib.py`: AOT compilation of 8 STEEL V2 configs (D=64/128 ×
+  f16/bf16 × causal/noncausal) via `xcrun metal + metallib`. Output: `~/.mlx_mfa/metallib/`.
+- `shader_cache.mm`: `try_precompiled_pipeline()` checks for `.metallib` file before JIT,
+  loading via `[device newLibraryWithURL:]`. Saves ~50ms cold-start per unique kernel config.
+- `mlx_mfa.compile_metallib` exposed in public API.
+
+**CP10 — Fresh benchmark results (v2.5.2)**
+- `RESULTS.md`: updated with new measurements (M1 Max, B=2 H=8, warmup=8, iters=20).
+  D=128 N=16384 causal: 1.78× SDPA. D=128 win=256 N=8192: 21.1× SDPA.
+
+**CP11 — Release**
+- 557 tests pass.
+
 ## [2.5.1] — 2026-03-11
 
 ### Documentation cleanup — no functional changes

@@ -30,7 +30,7 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
-## Performance (v2.5.1, M1 Max, B=2 H=8 f16)
+## Performance (v2.5.2, M1 Max, B=2 H=8 f16)
 
 > Regenerate: `python benchmarks/bench_v2_final.py`
 
