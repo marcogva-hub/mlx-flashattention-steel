@@ -33,7 +33,7 @@ _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 # Module-level caches (avoid repeated import probes / set allocations per call)
 _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
-_VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa"})
+_VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
 
 class DispatchPolicy:
@@ -50,6 +50,9 @@ class DispatchPolicy:
               if the C++ extension is unavailable or the config is unsupported.
         SDPA: ``"sdpa"`` — always use ``mx.fast.scaled_dot_product_attention``;
               useful for correctness comparisons and CI without a Metal GPU.
+        SAGE: ``"sage"`` — route through :func:`sage_attention` (int8 Q/K);
+              inference-only, no autograd.  Falls back to MFA if the Sage
+              kernel is unavailable.
 
     Example::
 
@@ -61,6 +64,7 @@ class DispatchPolicy:
     AUTO: str = "auto"
     MFA:  str = "mfa"
     SDPA: str = "sdpa"
+    SAGE: str = "sage"
 
 # Optional C++ scatter primitive for O(1) paged KV pool writes (Phase 4-C.1+E.2).
 try:
@@ -184,6 +188,9 @@ def flash_attention(
               unsupported.
             * ``"sdpa"``: always use ``mx.fast.scaled_dot_product_attention``.
               Useful for baseline benchmarks or debugging.
+            * ``"sage"``: route through :func:`sage_attention` (int8-quantized
+              Q/K, fp16 V).  Inference-only — autograd is not supported.
+              Falls back to MFA STEEL if the Sage kernel is unavailable.
 
     Returns:
         When ``return_attn_weights=False`` and ``return_lse=False``
@@ -298,6 +305,18 @@ def flash_attention(
             mask = causal_mask + mask
         return mx.fast.scaled_dot_product_attention(
             q, k, v, scale=scale, mask=mask,
+        )
+
+    # CP8: backend='sage' — route through sage_attention() (int8 Q/K inference).
+    # Sage is inference-only: no autograd.  Falls back to MFA STEEL when the
+    # Sage C++ extension is unavailable (sage_attention() handles the fallback).
+    if backend == "sage":
+        return sage_attention(
+            q, k, v,
+            scale=scale,
+            causal=causal,
+            apply_smooth_k=True,
+            window_size=window_size,
         )
 
     # Track ID: backend='mfa' — force MFA; raise if unavailable.
