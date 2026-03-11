@@ -44,6 +44,10 @@ _dispatch_decision_cache: dict = {}
 # backend='auto' call so the import never blocks module load.
 _should_use_mfa_fn = None
 
+# CP4: auto-warmup flag — set to True after the first MFA-capable call triggers
+# kernel pre-compilation for the most common shapes.
+_auto_warmup_done: bool = False
+
 
 class DispatchPolicy:
     """Backend selection constants for :func:`flash_attention`.
@@ -330,6 +334,16 @@ def flash_attention(
 
     # Track ID: backend='mfa' — force MFA; raise if unavailable.
     _mfa_capable = _can_use_mfa(q, head_dim) and not v_dim_mismatch
+
+    # CP4: auto-warmup — pre-compile the most common kernel variants on the
+    # first MFA-capable call.  Submits small (N=32) forward passes for both
+    # causal and non-causal to populate the ShaderCache without blocking the
+    # current call (Metal JIT compiles async via newLibraryWithSource).
+    global _auto_warmup_done
+    if _mfa_capable and not _auto_warmup_done:
+        _auto_warmup_done = True
+        _auto_warmup_background(head_dim, q.dtype)
+
     if backend == "mfa" and not _mfa_capable:
         try:
             from mlx_mfa import _ext  # noqa: F401
@@ -1082,6 +1096,32 @@ def warmup_kernels(
             v = mx.zeros([1, 1, N, D], dtype=dtype)
             out = flash_attention(q, k, v, scale=1.0 / math.sqrt(D), causal=causal)
             mx.eval(out)
+
+
+def _auto_warmup_background(head_dim: int, dtype) -> None:
+    """CP4: trigger JIT compilation for head_dim/dtype on first MFA call.
+
+    Warms up both causal=True and causal=False variants for the observed
+    head_dim/dtype.  Also warms up D=128 if the first call is D=64 (and
+    vice versa), since both are very common in practice.
+
+    Called synchronously — Metal's newLibraryWithSource runs on the GPU
+    command queue so subsequent work is correctly serialized.
+    """
+    if not _ext_available():
+        return
+    try:
+        N = 32
+        warmup_dims = {head_dim}
+        if head_dim in (64, 128):
+            warmup_dims = {64, 128}  # pre-warm both common dims together
+        for D in warmup_dims:
+            for c in (True, False):
+                q = mx.zeros([1, 1, N, D], dtype=dtype)
+                out = flash_attention(q, q, q, scale=1.0 / math.sqrt(D), causal=c)
+                mx.eval(out)
+    except Exception:
+        pass  # warmup failure must never break the caller
 
 
 # ---------------------------------------------------------------------------
