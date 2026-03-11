@@ -162,7 +162,7 @@ metal-flash-attention used this to achieve 83% ALU utilisation on M1 Max.
   precompiled async_copy opcodes to synchronous loads (no crash, no gain)
 
 mlx-mfa ships `mlx_mfa/precompiled/async_v2.metallib` compiled on macOS 15
-/ Xcode 16 (GitHub Actions macos-14 runner).  The metallib contains two
+/ Xcode 16 (GitHub Actions macos-15 runner).  The metallib contains two
 entry points — `mlx_mfa_v2_async_attention` (D=64) and
 `mlx_mfa_v2_async_attention_d128` (D=128) — with function constants
 `FC_CAUSAL` (bool, index 0) and `FC_GQA_FACTOR` (ushort, index 1).
