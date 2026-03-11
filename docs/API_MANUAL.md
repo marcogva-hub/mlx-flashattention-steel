@@ -1,6 +1,6 @@
 # mlx-mfa API Manual — v2.6.0
 
-Complete reference for all 53 public exports in `mlx_mfa.__all__` (plus `__version__`).
+Complete reference for all 54 public exports in `mlx_mfa.__all__` (plus `__version__`).
 
 ## Table of Contents
 

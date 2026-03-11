@@ -72,7 +72,7 @@ Regenerated: 2026-03-11.
 
 ## Public API (`mlx_mfa.__all__`)
 
-54 symbols total (53 exports + `__version__`).
+55 symbols total (54 exports + `__version__`).
 
 ### Core attention (14 functions + 2 classes)
 
