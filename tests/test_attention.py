@@ -6869,9 +6869,9 @@ class TestSageQuantization:
         bq64, bk64 = sage_block_sizes(64)
         bq128, bk128 = sage_block_sizes(128)
         bq256, bk256 = sage_block_sizes(256)
-        # Sage uses V1 tile sizes (V2 BK caused occupancy regression without V2 sequential KV sharing)
-        assert bq64 == 32 and bk64 == 32
-        assert bq128 == 32 and bk128 == 16
+        # CP3: Sage uses V2 BK values (doubled vs V1, gen-independent for Python API)
+        assert bq64 == 32 and bk64 == 64
+        assert bq128 == 32 and bk128 == 32
         assert bq256 == 32 and bk256 == 16
 
 

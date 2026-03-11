@@ -1928,14 +1928,25 @@ void MFASageForward::eval_gpu(
   else if (v.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else dtype_code = 2;
 
-  // Sage uses V1 tile sizes (not V2): V2 sequential K/V phase sharing requires
-  // a different shader structure. Larger V2 BK increases TGP without the
-  // sequential sharing benefit → occupancy regression (~0.4× vs 0.56× at N=4096).
+  // CP3: Sage uses V2 tile sizes for D<=128. The Sage kernel already uses
+  // sequential K/V sharing (Ks = KV_smem; Vs = KV_smem) — same as V2 STEEL.
+  // V2 BK doubles K-tile coverage, halving K-tile iterations and barriers.
+  // TGP: D=64 BK=64→13,824B; D=128 BK=32→18,944B — all <32KB.
+  // Note: D=128 uses BK=32 on ALL gens (not M3+-adaptive BK=64) so that
+  // sage_block_sizes() can return a gen-independent value for Python-side
+  // quantization (K_scale.shape[-1] = S/BK must match kernel BK exactly).
   const bool is_low_prec = (dtype_code != 2);
-  const auto cfg  = select_steel_block_config(D, is_low_prec, is_m3_plus);
-  const int BQ    = cfg.BQ;
-  const int BK    = cfg.BK;
-  const int WM    = cfg.WM;
+  int BQ, BK, WM;
+  if (D <= 128) {
+    // Use V2 config but cap D=128 at BK=32 for Sage (Python API compatibility).
+    const auto cfgv2_64 = select_steel_v2_block_config(64,  /*is_m3_plus=*/false);
+    const auto cfgv2_128 = select_steel_v2_block_config(128, /*is_m3_plus=*/false);
+    const auto& cfgv2 = (D <= 64) ? cfgv2_64 : cfgv2_128;
+    BQ = cfgv2.BQ; BK = cfgv2.BK; WM = cfgv2.WM;
+  } else {
+    const auto cfgv1 = select_steel_block_config(D, is_low_prec, is_m3_plus);
+    BQ = cfgv1.BQ; BK = cfgv1.BK; WM = cfgv1.WM;
+  }
   const int TGP_SIZE = WM * 32;
 
   // ── Kernel cache key ────────────────────────────────────────────────────

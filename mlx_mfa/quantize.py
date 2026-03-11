@@ -261,20 +261,20 @@ def sage_output_correction(
 
 
 def sage_block_sizes(head_dim: int) -> tuple[int, int]:
-    """Return (BQ, BK) — STEEL V1 tile sizes used by the sage kernel.
+    """Return (BQ, BK) — STEEL V2 tile sizes used by the sage kernel.
 
     These should be used as block_size parameters for ``quantize_per_block``
     so that each Metal tile has exactly one scale value.  Matches
-    ``select_steel_block_config`` in csrc/mfa_attention.cpp.
+    the CP3 V2 block config in ``MFASageForward::eval_gpu`` (csrc/mfa_attention.cpp).
 
-    Note: V2 tile sizes (larger BK) were tested and caused a regression (~0.4×
-    vs 0.56×) because the sage kernel does not implement V2's sequential K/V
-    phase sharing.  Larger BK without sequential sharing increases TGP usage
-    and hurts occupancy.
+    CP3 update: Sage now uses V2 BK values (doubled vs V1):
+      D=64:  BK=64 (all gens)
+      D=128: BK=32 (all gens; gen-independent for Python API compatibility)
+      D>128: BK=16 (V1, unchanged)
     """
     if head_dim <= 64:
-        return 32, 32
+        return 32, 64
     elif head_dim <= 128:
-        return 32, 16
+        return 32, 32
     else:
         return 32, 16

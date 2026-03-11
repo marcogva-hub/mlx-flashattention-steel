@@ -99,9 +99,9 @@ class TestQuantizeUtils:
         assert mean_after < 1e-3, f"channel mean not zeroed: {mean_after}"
 
     def test_sage_block_sizes(self):
-        # Sage uses V1 tile sizes (V2 BK caused occupancy regression)
-        assert sage_block_sizes(64)  == (32, 32)
-        assert sage_block_sizes(128) == (32, 16)
+        # CP3: Sage uses V2 BK values (doubled vs V1, gen-independent for Python API)
+        assert sage_block_sizes(64)  == (32, 64)
+        assert sage_block_sizes(128) == (32, 32)
         assert sage_block_sizes(256) == (32, 16)
 
     def test_dequantize_shape(self):
