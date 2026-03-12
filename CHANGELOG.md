@@ -2,6 +2,25 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.10.0] — 2026-03-12
+
+### STEEL V5 M3+ Direct Device Reads + Post-Fix Benchmarks
+
+- **new**: V5 M3+ direct-read path (`MFA_DIRECT_READS=1`). When `is_m3_plus`, K and V
+  are read directly from device memory per-thread using `simdgroup_matrix_storage::load`
+  — no KV_smem, no KLoader/VLoader, 0 threadgroup barriers/K-tile (vs 16 on M1/M2).
+  This is also a compilability requirement on M3+ (WM=2 → TGP=64B → `TCOLS=0` in
+  MFABlockLoaderT, integer division-by-zero at template instantiation).
+- **fix**: KLoader/VLoader entirely excluded on M3+ via `#if !MFA_DIRECT_READS` —
+  prevents template instantiation crash at WM=2.
+- **test**: 6 new tests in `TestSteelV5DirectReads` — correctness via MFA_FORCE_GEN=15
+  on M1/M2 hardware; skipped when actual M3+ not available.
+- **bench**: Full V5 grid benchmark (D=64/128, N=512–16384, causal+dense):
+  - Large N (≥4096): V5 = 0.60–0.90× V2 — barrier overhead dominates on M1 Max.
+  - Small N (≤1024): V5 up to 1.58× V2 causal (under-occupied grids where 3 TG/CU matters).
+  - Dispatch policy: V5 stays opt-in (`MFA_ENABLE_V5=1`); M3+ hardware needed for gains.
+- **total**: 632 tests pass.
+
 ## [2.9.0] — 2026-03-12
 
 ### STEEL V5 D-Blocked Kernel
