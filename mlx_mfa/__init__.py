@@ -108,6 +108,10 @@ from mlx_mfa.inference import (
     SageInferenceContext,
     create_inference_context,
 )
+from mlx_mfa.runtime import (
+    DecodeRuntime,
+    create_decode_runtime,
+)
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
 from mlx_mfa.compile_metallib import compile_metallib
@@ -194,5 +198,7 @@ __all__ = [
     "PagedInferenceContext",
     "SageInferenceContext",
     "create_inference_context",
+    "DecodeRuntime",
+    "create_decode_runtime",
     "__version__",
 ]

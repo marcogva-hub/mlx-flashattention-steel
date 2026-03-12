@@ -44,6 +44,20 @@ __all__ = [
 ]
 
 
+def _context_backend_name(context) -> str:
+    """Return canonical backend name for a context instance."""
+    if isinstance(context, PagedInferenceContext):
+        return "paged"
+    if isinstance(context, SageInferenceContext):
+        return "sage"
+    if isinstance(context, InferenceContext):
+        return "dense"
+    raise TypeError(
+        "Unsupported inference context type: "
+        f"{type(context).__name__}"
+    )
+
+
 class InferenceContext:
     """Stateful KV-cache manager for autoregressive generation.
 

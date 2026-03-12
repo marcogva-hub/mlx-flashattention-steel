@@ -7551,6 +7551,86 @@ class TestInferenceContextFactory:
             )
 
 
+class TestDecodeRuntimeFactory:
+    """Lightweight runtime wrapper over dense/paged/sage contexts."""
+
+    def test_dense_runtime_selected(self):
+        from mlx_mfa import create_decode_runtime, DecodeRuntime, InferenceContext
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        assert isinstance(rt, DecodeRuntime)
+        assert rt.backend == "dense"
+        assert isinstance(rt.context, InferenceContext)
+
+    def test_paged_runtime_selected(self):
+        from mlx_mfa import create_decode_runtime, PagedInferenceContext
+        rt = create_decode_runtime(
+            backend="auto",
+            paged=True,
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        assert rt.backend == "paged"
+        assert isinstance(rt.context, PagedInferenceContext)
+
+    def test_sage_runtime_selected_for_narrow_auto_regime(self):
+        from mlx_mfa import create_decode_runtime, SageInferenceContext
+        rt = create_decode_runtime(
+            backend="auto",
+            quantized_kv=True,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=128,
+            decode_nq=4,
+            expected_cache_len=4096,
+            causal=True,
+            window_size=(256, 0),
+            dtype=mx.float16,
+        )
+        assert rt.backend == "sage"
+        assert isinstance(rt.context, SageInferenceContext)
+
+    def test_sage_runtime_requires_quantized_kv(self):
+        from mlx_mfa import create_decode_runtime
+        with pytest.raises(ValueError, match="backend='sage'.*quantized_kv=True"):
+            create_decode_runtime(
+                backend="sage",
+                quantized_kv=False,
+                B=1,
+                H_kv=4,
+                D=128,
+            )
+
+    def test_paged_and_quantized_is_invalid(self):
+        from mlx_mfa import create_decode_runtime
+        with pytest.raises(ValueError, match="paged=True.*quantized_kv=True"):
+            create_decode_runtime(
+                backend="auto",
+                paged=True,
+                quantized_kv=True,
+                B=1,
+                H_kv=4,
+                D=64,
+            )
+
+    def test_runtime_exported(self):
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "DecodeRuntime")
+        assert hasattr(mlx_mfa, "create_decode_runtime")
+        assert "DecodeRuntime" in mlx_mfa.__all__
+        assert "create_decode_runtime" in mlx_mfa.__all__
+
+
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
 # ==========================================================================
