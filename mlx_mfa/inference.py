@@ -575,6 +575,7 @@ class SageInferenceContext:
         v_new: mx.array,
         *,
         scale: Optional[float] = None,
+        window_size: Optional[tuple] = None,
     ) -> mx.array:
         """Append new K/V tokens and run int8 decode attention.
 
@@ -587,6 +588,7 @@ class SageInferenceContext:
             k_new:   New key tokens   ``[B, H_kv, N_new, D]``.
             v_new:   New value tokens ``[B, H_kv, N_new, D]``.
             scale:   Attention scale (default: ``1/sqrt(D)``).
+            window_size: Optional decode window ``(left, right)``.
 
         Returns:
             Attention output ``[B, H_q, N_new, D]``.
@@ -616,6 +618,7 @@ class SageInferenceContext:
             self._cache.v,
             scale=scale,
             causal=True,
+            window_size=window_size,
             stream=self.stream,
         )
 
@@ -643,9 +646,14 @@ def create_inference_context(
     paged: bool = False,
     quantized_kv: bool = False,
     B: Optional[int] = None,
+    H_q: Optional[int] = None,
     H_kv: int,
     D: int,
     max_seq_len: int = 8192,
+    decode_nq: int = 1,
+    expected_cache_len: int = 0,
+    causal: bool = True,
+    window_size: Optional[tuple] = None,
     num_blocks: Optional[int] = None,
     block_size: int = 16,
     dtype: mx.Dtype = mx.float16,
@@ -654,7 +662,7 @@ def create_inference_context(
     """Create a decode context for dense, paged, or Sage backends.
 
     Routing policy:
-      - ``backend="auto"``: paged > sage > dense
+      - ``backend="auto"``: paged > benchmark-backed Sage decode > dense
       - ``backend="paged"``: :class:`PagedInferenceContext`
       - ``backend="sage"``:  :class:`SageInferenceContext`
       - ``backend="dense"``: :class:`InferenceContext`
@@ -662,11 +670,17 @@ def create_inference_context(
     Args:
         backend: ``"auto"``, ``"dense"``, ``"paged"``, or ``"sage"``.
         paged: Hint for auto mode; when True selects paged context.
-        quantized_kv: Hint for auto mode; when True selects Sage context.
+        quantized_kv: Enables Sage-eligible auto routing (QuantizedKVCache).
         B: Batch size (required for dense/sage; optional for paged helper sizing).
+        H_q: Query head count for auto Sage decode policy.  Defaults to ``H_kv``.
         H_kv: KV head count.
         D: Head dimension.
         max_seq_len: Maximum sequence length for dense/sage buffers.
+        decode_nq: Expected decode query length (tokens/step). Auto Sage policy
+            is decode-only and expects ``decode_nq <= 4``.
+        expected_cache_len: Expected KV cache length in decode mode.
+        causal: Expected decode masking mode for auto policy.
+        window_size: Expected decode window ``(left, right)`` for auto policy.
         num_blocks: Paged pool blocks; if omitted in paged mode, a conservative
             default is derived from ``B`` and ``max_seq_len``.
         block_size: Tokens per paged block.
@@ -674,13 +688,37 @@ def create_inference_context(
         stream: Optional MLX stream.
     """
     mode = backend.lower()
+    requested_mode = mode
     if mode not in {"auto", "dense", "paged", "sage"}:
         raise ValueError(f"backend must be one of auto|dense|paged|sage, got {backend!r}")
+    if decode_nq <= 0:
+        raise ValueError("decode_nq must be >= 1")
+    if expected_cache_len < 0:
+        raise ValueError("expected_cache_len must be >= 0")
+    if H_kv <= 0:
+        raise ValueError("H_kv must be >= 1")
+
+    q_heads = H_kv if H_q is None else H_q
+    if q_heads <= 0:
+        raise ValueError("H_q must be >= 1")
+    if q_heads % H_kv != 0:
+        raise ValueError("H_q must be divisible by H_kv for GQA routing")
+    gqa_factor = q_heads // H_kv
 
     if mode == "auto":
+        from mlx_mfa.dispatch_policy import should_use_sage_decode
+
         if paged:
             mode = "paged"
-        elif quantized_kv:
+        elif should_use_sage_decode(
+            D,
+            decode_nq,
+            expected_cache_len,
+            causal,
+            has_quantized_kv=quantized_kv,
+            window_size=window_size,
+            gqa_factor=gqa_factor,
+        ):
             mode = "sage"
         else:
             mode = "dense"
@@ -688,7 +726,7 @@ def create_inference_context(
     if mode == "dense":
         if paged:
             raise ValueError("backend='dense' is incompatible with paged=True")
-        if quantized_kv:
+        if quantized_kv and requested_mode == "dense":
             raise ValueError("backend='dense' is incompatible with quantized_kv=True")
         if B is None:
             raise ValueError("B is required for backend='dense'")

@@ -93,6 +93,19 @@ _NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
     (128, "bfloat16"): 999_999,
 }
 
+# Sage decode auto-routing policy (specialized, benchmark-backed only).
+# 2026-03-12 decode matrix (post-bwd pass):
+#   - 13/240 wins overall, heavily concentrated in windowed decode.
+#   - Production-like GQA wins were narrow and centered on D=128 + window.
+# Keep auto-promotion intentionally narrow:
+#   - decode shape only (N_q <= 4), causal, QuantizedKVCache available
+#   - D=128 only
+#   - windowed decode only
+#   - long-cache regime only (N_cache >= 4096)
+_SAGE_DECODE_MIN_CACHE: dict[int, int] = {
+    128: 4096,
+}
+
 # Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
 _custom_table_loaded = False
@@ -386,6 +399,66 @@ def should_use_native_backward(
 
     min_n = _NATIVE_BWD_MIN_N.get((head_dim, dtype_key), 999_999)
     return seq_len >= min_n
+
+
+def _window_enabled(window_size: Optional[tuple]) -> bool:
+    """Return True when either window side is enabled."""
+    if window_size is None:
+        return False
+    left = window_size[0] if len(window_size) > 0 else -1
+    right = window_size[1] if len(window_size) > 1 else -1
+    return left >= 0 or right >= 0
+
+
+def should_use_sage_decode(
+    head_dim: int,
+    n_q: int,
+    cache_len: int,
+    causal: bool,
+    *,
+    has_quantized_kv: bool,
+    window_size: Optional[tuple] = None,
+    gqa_factor: int = 1,
+) -> bool:
+    """Return whether decode auto mode should route to Sage.
+
+    Priority:
+      1) ``MFA_FORCE_SAGE_DECODE=0|1`` hard override.
+      2) benchmark-backed narrow policy.
+
+    Safety constraints (always enforced):
+      - decode shape only (``n_q <= 4``)
+      - causal only
+      - ``head_dim in {64, 128}``
+      - quantized KV cache available
+    """
+    decode_shape = n_q <= 4
+    supported = (
+        has_quantized_kv
+        and causal
+        and decode_shape
+        and (head_dim in (64, 128))
+    )
+
+    force = os.environ.get("MFA_FORCE_SAGE_DECODE")
+    if force == "0":
+        return False
+    if force == "1":
+        return supported
+
+    if not supported:
+        return False
+
+    # Narrow promotion only: D=128 + windowed + long cache.
+    if head_dim != 128:
+        return False
+    if not _window_enabled(window_size):
+        return False
+    if gqa_factor <= 0 or gqa_factor > 2:
+        return False
+
+    min_cache = _SAGE_DECODE_MIN_CACHE.get(head_dim, 999_999)
+    return cache_len >= min_cache
 
 
 def calibrate_dispatch(

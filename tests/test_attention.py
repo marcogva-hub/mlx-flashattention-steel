@@ -7458,6 +7458,98 @@ class TestInferenceContextFactory:
         assert hasattr(mlx_mfa, "create_inference_context")
         assert "create_inference_context" in mlx_mfa.__all__
 
+    def test_auto_quantized_routes_sage_only_for_narrow_decode_regime(self):
+        from mlx_mfa import create_inference_context, SageInferenceContext
+        ctx = create_inference_context(
+            backend="auto",
+            quantized_kv=True,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=128,
+            decode_nq=4,
+            expected_cache_len=4096,
+            causal=True,
+            window_size=(256, 0),
+            max_seq_len=8192,
+        )
+        assert isinstance(ctx, SageInferenceContext)
+
+    def test_auto_quantized_non_qualifying_shape_stays_dense(self):
+        from mlx_mfa import create_inference_context, InferenceContext
+        ctx = create_inference_context(
+            backend="auto",
+            quantized_kv=True,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=128,
+            decode_nq=4,
+            expected_cache_len=4096,
+            causal=True,
+            window_size=None,
+            max_seq_len=8192,
+        )
+        assert isinstance(ctx, InferenceContext)
+
+    def test_auto_quantized_force_override(self, monkeypatch):
+        from mlx_mfa import create_inference_context, InferenceContext, SageInferenceContext
+        monkeypatch.setenv("MFA_FORCE_SAGE_DECODE", "0")
+        off_ctx = create_inference_context(
+            backend="auto",
+            quantized_kv=True,
+            B=1,
+            H_kv=4,
+            D=128,
+            decode_nq=1,
+            expected_cache_len=8192,
+            causal=True,
+            window_size=(256, 0),
+        )
+        assert isinstance(off_ctx, InferenceContext)
+
+        monkeypatch.setenv("MFA_FORCE_SAGE_DECODE", "1")
+        on_ctx = create_inference_context(
+            backend="auto",
+            quantized_kv=True,
+            B=1,
+            H_kv=4,
+            D=64,
+            decode_nq=1,
+            expected_cache_len=0,
+            causal=True,
+            window_size=None,
+        )
+        assert isinstance(on_ctx, SageInferenceContext)
+
+    def test_force_sage_auto_never_routes_without_quantized_kv(self, monkeypatch):
+        from mlx_mfa import create_inference_context, InferenceContext
+        monkeypatch.setenv("MFA_FORCE_SAGE_DECODE", "1")
+        ctx = create_inference_context(
+            backend="auto",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=128,
+            decode_nq=1,
+            expected_cache_len=8192,
+            causal=True,
+            window_size=(256, 0),
+        )
+        assert isinstance(ctx, InferenceContext)
+
+    def test_invalid_hq_hkv_combination_fails(self):
+        from mlx_mfa import create_inference_context
+        with pytest.raises(ValueError, match="H_q must be divisible by H_kv"):
+            create_inference_context(
+                backend="auto",
+                quantized_kv=True,
+                B=1,
+                H_q=6,
+                H_kv=4,
+                D=128,
+            )
+
 
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
@@ -7684,6 +7776,43 @@ class TestSageInferenceContextQuantized:
             mx.eval(out)
             assert out.shape == (B, Hq, 1, D)
             assert mx.isfinite(out).all().item()
+
+    def test_step_window_matches_prequantized(self):
+        """step(window_size=...) must forward the decode window to Sage kernel."""
+        from mlx_mfa import SageInferenceContext
+        from mlx_mfa.attention import QuantizedKVCache, sage_attention_prequantized
+        B, Hq, Hkv, N_pre, D = 1, 4, 4, 64, self.D
+        window = (256, 0)
+        mx.random.seed(199)
+        k_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        v_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        q_tok = mx.random.normal([B, Hq, 1, D]).astype(mx.float16)
+        k_tok = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+        v_tok = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+        mx.eval(k_pre, v_pre, q_tok, k_tok, v_tok)
+
+        ctx = SageInferenceContext(B=B, H_kv=Hkv, D=D, max_seq_len=256)
+        ctx._cache.append(k_pre, v_pre)
+        out_ctx = ctx.step(q_tok, k_tok, v_tok, window_size=window)
+        mx.eval(out_ctx)
+
+        cache2 = QuantizedKVCache(B, Hkv, D, max_seq_len=256)
+        cache2.append(k_pre, v_pre)
+        cache2.append(k_tok, v_tok)
+        out_manual = sage_attention_prequantized(
+            q_tok,
+            cache2.k_int8,
+            cache2.k_scale,
+            cache2.v,
+            causal=True,
+            window_size=window,
+        )
+        mx.eval(out_manual)
+
+        diff = mx.max(mx.abs(
+            out_ctx.astype(mx.float32) - out_manual.astype(mx.float32)
+        )).item()
+        assert diff < 1e-4, f"ctx windowed step vs manual max_diff={diff:.4e}"
 
     def test_reset_clears_cache(self):
         """reset() zeroes the seqlen in QuantizedKVCache."""
@@ -8177,6 +8306,75 @@ class TestSplitKPolicy:
         monkeypatch.delenv(env_key, raising=False)
         _load_calibrated_kernel_config()
         assert os.environ.get(env_key) == "1024"
+
+
+class TestSageDecodePolicy:
+    """Sage decode auto policy + env override behavior."""
+
+    def test_force_override_precedence(self, monkeypatch):
+        from mlx_mfa.dispatch_policy import should_use_sage_decode
+
+        monkeypatch.setenv("MFA_FORCE_SAGE_DECODE", "0")
+        assert should_use_sage_decode(
+            128, 1, 8192, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=2,
+        ) is False
+
+        monkeypatch.setenv("MFA_FORCE_SAGE_DECODE", "1")
+        assert should_use_sage_decode(
+            64, 2, 512, True,
+            has_quantized_kv=True,
+            window_size=None,
+            gqa_factor=1,
+        ) is True
+
+    def test_auto_policy_is_narrow_and_decode_only(self, monkeypatch):
+        from mlx_mfa.dispatch_policy import should_use_sage_decode
+
+        monkeypatch.delenv("MFA_FORCE_SAGE_DECODE", raising=False)
+        assert should_use_sage_decode(
+            128, 4, 4096, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=2,
+        ) is True
+        assert should_use_sage_decode(
+            128, 4, 2048, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=2,
+        ) is False
+        assert should_use_sage_decode(
+            128, 1, 8192, True,
+            has_quantized_kv=True,
+            window_size=None,
+            gqa_factor=2,
+        ) is False
+        assert should_use_sage_decode(
+            64, 1, 8192, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=1,
+        ) is False
+        assert should_use_sage_decode(
+            128, 8, 8192, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=2,
+        ) is False
+
+    def test_requires_quantized_kv(self, monkeypatch):
+        from mlx_mfa.dispatch_policy import should_use_sage_decode
+
+        monkeypatch.delenv("MFA_FORCE_SAGE_DECODE", raising=False)
+        assert should_use_sage_decode(
+            128, 1, 8192, True,
+            has_quantized_kv=False,
+            window_size=(256, 0),
+            gqa_factor=1,
+        ) is False
 
 
 class TestNativeBackwardPolicy:
