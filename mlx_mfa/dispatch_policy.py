@@ -95,16 +95,10 @@ _NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
 
 # Sage decode auto-routing policy (specialized, benchmark-backed only).
 # 2026-03-12 decode matrix (post-bwd pass):
-#   - 13/240 wins overall, heavily concentrated in windowed decode.
-#   - Production-like GQA wins were narrow and centered on D=128 + window.
-# Keep auto-promotion intentionally narrow:
-#   - decode shape only (N_q <= 4), causal, QuantizedKVCache available
-#   - D=128 only
-#   - windowed decode only
-#   - long-cache regime only (N_cache >= 4096)
-_SAGE_DECODE_MIN_CACHE: dict[int, int] = {
-    128: 4096,
-}
+#   - 13/240 wins overall, with most rows losing vs dense STEEL.
+#   - Production-like GQA wins appeared only in very narrow D=128 windowed
+#     decode regimes at N_cache=4096.
+# Auto-promotion is intentionally strict to avoid broad regressions.
 
 # Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
@@ -419,6 +413,7 @@ def should_use_sage_decode(
     has_quantized_kv: bool,
     window_size: Optional[tuple] = None,
     gqa_factor: int = 1,
+    dtype=None,
 ) -> bool:
     """Return whether decode auto mode should route to Sage.
 
@@ -449,16 +444,22 @@ def should_use_sage_decode(
     if not supported:
         return False
 
-    # Narrow promotion only: D=128 + windowed + long cache.
+    # Narrow promotion only: production-like GQA decode windows.
     if head_dim != 128:
         return False
     if not _window_enabled(window_size):
         return False
-    if gqa_factor <= 0 or gqa_factor > 2:
+    if gqa_factor != 2:
+        return False
+    if cache_len != 4096:
         return False
 
-    min_cache = _SAGE_DECODE_MIN_CACHE.get(head_dim, 999_999)
-    return cache_len >= min_cache
+    dtype_key = _dispatch_dtype_key(dtype)
+    if dtype_key == "float16":
+        return n_q == 4
+    if dtype_key == "bfloat16":
+        return n_q == 1
+    return False
 
 
 def calibrate_dispatch(

@@ -718,6 +718,7 @@ def create_inference_context(
             has_quantized_kv=quantized_kv,
             window_size=window_size,
             gqa_factor=gqa_factor,
+            dtype=dtype,
         ):
             mode = "sage"
         else:

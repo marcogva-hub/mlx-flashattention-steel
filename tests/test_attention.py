@@ -8339,30 +8339,42 @@ class TestSageDecodePolicy:
             has_quantized_kv=True,
             window_size=(256, 0),
             gqa_factor=2,
+            dtype=mx.float16,
+        ) is True
+        assert should_use_sage_decode(
+            128, 1, 4096, True,
+            has_quantized_kv=True,
+            window_size=(256, 0),
+            gqa_factor=2,
+            dtype=mx.bfloat16,
         ) is True
         assert should_use_sage_decode(
             128, 4, 2048, True,
             has_quantized_kv=True,
             window_size=(256, 0),
             gqa_factor=2,
+            dtype=mx.float16,
         ) is False
         assert should_use_sage_decode(
             128, 1, 8192, True,
             has_quantized_kv=True,
             window_size=None,
             gqa_factor=2,
+            dtype=mx.bfloat16,
         ) is False
         assert should_use_sage_decode(
             64, 1, 8192, True,
             has_quantized_kv=True,
             window_size=(256, 0),
             gqa_factor=1,
+            dtype=mx.float16,
         ) is False
         assert should_use_sage_decode(
             128, 8, 8192, True,
             has_quantized_kv=True,
             window_size=(256, 0),
             gqa_factor=2,
+            dtype=mx.float16,
         ) is False
 
     def test_requires_quantized_kv(self, monkeypatch):
