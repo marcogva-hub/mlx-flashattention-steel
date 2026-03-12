@@ -16,9 +16,32 @@ All notable changes to mlx-mfa are documented here.
 - **fix**: V5 conditional padding — M1/M2 now uses `8/sizeof(T)` instead of
   `0`. Power-of-2 BK=128 / BD_tile=32 strides caused bank-conflict
   serialization in threadgroup GEMM. M3+ (device reads, no TGP) keeps `0`.
-- **docs**: README Kernel Status table added — production vs experimental vs
-  archived status for V2/V3/V4/V5/Sage/backward.
-- **total**: 632 tests pass.
+- **docs**: README Kernel Status table added — production vs experimental
+  status for V2/V3/V4/V5/Sage/backward.
+
+### Split-K Composability + Dispatch/Runtime Polish
+
+- **feat**: V2 split-K production path now composes with **ALiBi** and
+  **window** attention in addition to RoPE. Split ranges now intersect
+  correctly with window bounds in split-K partial phase. Sparse/block-mask
+  remains intentionally excluded from split-K.
+- **test**: Added split-K composability coverage for ALiBi, window,
+  RoPE+window parity, and explicit RoPE+ALiBi gating.
+- **perf**: Added split-K calibration + persistence in dispatch table
+  (`splitk_thresholds`) for D=64/128 causal families (dense/ALiBi/window).
+  Added `MFA_FORCE_SPLITK=0|1` override with highest precedence.
+- **perf**: D=256 decision pass landed a narrow promotion:
+  `D=256`, `causal=True`, `N>=8192` routes to MFA V2 D-split on M1-class
+  thresholds; shorter causal and all non-causal D=256 remain SDPA-default.
+  Benchmark harness: `benchmarks/bench_d256_decision.py`, decision notes in
+  `notes/d256_decision.md` + JSON artifact.
+- **feat**: Added `create_inference_context(...)` helper to unify dense/paged/
+  sage decode context creation with clear routing and validation.
+- **docs**: Updated `README.md`, `RESULTS.md`, and `docs/benchmarks/RESULTS.md`
+  to distinguish production V2 vs experimental V3/V4/V5, reflect split-K
+  composability, and document the D=256 decision.
+- **chore**: Archived stale dump artifacts under `notes/archive/`.
+- **total**: 655 tests pass.
 
 ## [2.9.1] — 2026-03-12
 

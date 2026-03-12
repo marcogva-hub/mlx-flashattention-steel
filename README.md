@@ -5,7 +5,8 @@
 
 Fast attention for Apple Silicon. Drop-in replacement for
 `mx.fast.scaled_dot_product_attention` with automatic STEEL V2 routing,
-sliding window, block-sparse, GQA, RoPE, ALiBi, and int8 SageAttention.
+split-K composability (RoPE/ALiBi/window), sliding window, block-sparse,
+GQA, and int8 SageAttention.
 
 ---
 
@@ -30,7 +31,7 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
-## Performance (v2.9.0, M1 Max, B=2 H=8 f16)
+## Performance (v2.9.2 decision pass, M1 Max, B=2 H=8 f16)
 
 > Full results: [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md)
 
@@ -44,8 +45,22 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 | D=128 N=8192  causal | 44.2 | 73.6 | **1.67×** |
 | D=128 N=16384 causal | 167.7 | 293.6 | **1.75×** |
 
-D=256/512 dense routes to SDPA by default (D-split V2 achieves ~1.00× SDPA).
-Window/sparse attention always routes to MFA for tile-skip speedup.
+Dense D=512 remains SDPA-default. D=256 now uses a narrow causal promotion:
+`causal=True and N>=8192` routes to V2 D-split; smaller causal and all
+non-causal D=256 stay on SDPA.
+
+### D=256 Decision Pass (v2.9.2)
+
+| N | causal | SDPA (ms) | V2 D-split (ms) | V2/SDPA |
+|---:|:------:|----------:|----------------:|--------:|
+| 4096  | ✅ | 36.55 | 37.35 | 0.98× |
+| 8192  | ✅ | 143.24 | 141.78 | 1.01× |
+| 16384 | ✅ | 685.77 | 578.13 | 1.19× |
+| 4096  | ❌ | 36.56 | 66.66 | 0.55× |
+| 8192  | ❌ | 144.52 | 267.52 | 0.54× |
+| 16384 | ❌ | 611.60 | 1108.43 | 0.55× |
+
+Decision: only promote the measured winning regime (`D=256`, causal, `N>=8192`).
 
 ### Sliding Window — MFA vs Full SDPA
 
@@ -68,7 +83,8 @@ dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
 
 - **STEEL V2 forward** — sequential K/V phases share threadgroup memory, halving K-tile
   iterations; gen-aware config (M3+/M4 uses BK=64 for D=128)
-- **V2 split-K** — under-occupied grids (single-batch decode) are split across more threadgroups
+- **V2 split-K** — under-occupied grids are split across more threadgroups; composed
+  with RoPE, ALiBi, and windowed attention (sparse/block-mask remains excluded)
 - **Flash Decode** — two-phase split-KV for N_q ≤ 4 decode steps
 - **Causal tile-skip** — skips upper-triangular K-tiles entirely (no masking overhead)
 - **Sliding window** — `window_size=(left, right)` skips out-of-window K-tiles; 5–20× vs SDPA
@@ -85,6 +101,8 @@ dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
 - **Async metallib** — `async_v2.metallib` ships hardware-DMA kernels (`simdgroup_async_copy`) for V/softmax and K/P@V overlap; +20–40% on macOS ≤15; on macOS 26 loads correctly but runtime converts async_copy to sync (no benefit, no harm); disable with `MFA_DISABLE_ASYNC=1`
 - **Smart dispatch** — `backend="auto"` routes to STEEL V2 only when faster than SDPA
 - **Auto-calibration** — `calibrate_dispatch()` benchmarks your device and saves thresholds
+- **Split-K calibration** — per-family split-K crossover cache (`splitk_thresholds`);
+  debug override via `MFA_FORCE_SPLITK=0|1`
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
 
 ---
@@ -115,7 +133,7 @@ from mlx_mfa import flash_attention, DispatchPolicy
 # auto: STEEL V2 when faster, SDPA otherwise
 out = flash_attention(q, k, v, causal=True)
 
-# GQA: q has H_q heads, k/v have H_kv heads (H_q must divide H_q)
+# GQA: q has H_q heads, k/v have H_kv heads (H_q must be a multiple of H_kv)
 out = flash_attention(q_32h, k_8h, v_8h, causal=True)
 
 # Sliding window
@@ -165,6 +183,20 @@ for _ in range(100):
 ctx.reset()
 ```
 
+### Unified decode context helper
+
+```python
+from mlx_mfa import create_inference_context
+
+# auto routing: paged > sage > dense
+ctx = create_inference_context(
+    backend="auto",
+    paged=False,
+    quantized_kv=True,   # selects SageInferenceContext in auto mode
+    B=1, H_kv=8, D=128, max_seq_len=4096
+)
+```
+
 ### SageAttention decode (QuantizedKVCache)
 
 ```python
@@ -209,10 +241,10 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Kernel | Status | Default | Notes |
 |--------|--------|---------|-------|
 | V2 | Production | ✅ D=64/128 | Causal, GQA, window, sparse, RoPE, ALiBi, softcap |
-| V2 D-split | Production | ✅ D=256/512 | ~Parity with SDPA |
-| V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; wins expected on M3+ (0 barriers via device reads) |
-| V4 | Archived | opt-in `MFA_ENABLE_V4=1` | Superseded by V5 |
-| V3 | Archived | opt-in `MFA_ENABLE_V3=1` | Superseded by V2 (higher TGP reduces occupancy) |
+| V2 D-split | Production (narrow) | ✅ D=256 causal N>=8192 | D=256 non-causal + short causal stay on SDPA; D=512 stays SDPA-default |
+| V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
+| V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
+| V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
 | Sage | Production | via `sage_attention()` | Int8 Q/K; `QuantizedKVCache` for decode |
 | Backward | Fallback | `mx.vjp(SDPA)` | Native sparse bwd exists; dense uses SDPA vjp |
 
@@ -226,14 +258,14 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 |---|--------|-----------------|------|
 | 64 | yes | 1024 (M1), 512 (M3+) | V2 1.5–1.8× |
 | 128 | yes | 2048 (M1), 1024 (M3+) | V2 1.6–1.8× |
-| 256/512 | any | never dense | ~1.00×; route to SDPA |
+| 256 | yes | 8192 (M1) | Narrow D-split win regime from v2.9.2 decision pass |
+| 256 | no | never dense | Clear loss; route to SDPA |
+| 512 | any | never dense | ~parity; SDPA default |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
 
 Run `python -m mlx_mfa calibrate` to measure crossover points on your device
 and automatically save optimal thresholds.
-
----
 
 ---
 

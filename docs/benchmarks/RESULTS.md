@@ -2,9 +2,41 @@
 
 **Device**: Apple M1 Max (32 GPU cores, gen 13, M3+: False)
 **MLX version**: 0.31.0
-**mlx-mfa version**: 2.6.0
-**Date**: 2026-03-11
+**mlx-mfa version**: 2.9.2
+**Date**: 2026-03-12
 **Config**: B=2 H=8 f16, warmup=8, iters=20
+
+---
+
+## v2.9.2 Decision Addendum — Split-K + D=256
+
+### Split-K composability status
+
+| Feature family | V2 split-K status |
+|---|---|
+| RoPE | ✅ supported |
+| ALiBi | ✅ supported |
+| window `(left,right)` | ✅ supported |
+| RoPE + window | ✅ supported |
+| RoPE + ALiBi | 🚫 explicitly gated |
+| sparse/block-mask | 🚫 excluded from split-K |
+
+Split-K selection is now calibrated per shape family and persisted as
+`splitk_thresholds`; `MFA_FORCE_SPLITK=0|1` overrides policy for debugging.
+
+### D=256 decision pass
+
+| N | causal | SDPA ms | V2 D-split ms | V2/SDPA |
+|---:|:------:|--------:|--------------:|--------:|
+| 4096  | ✅ | 36.55 | 37.35 | 0.98× |
+| 8192  | ✅ | 143.24 | 141.78 | 1.01× |
+| 16384 | ✅ | 685.77 | 578.13 | 1.19× |
+| 4096  | ❌ | 36.56 | 66.66 | 0.55× |
+| 8192  | ❌ | 144.52 | 267.52 | 0.54× |
+| 16384 | ❌ | 611.60 | 1108.43 | 0.55× |
+
+Dispatch outcome: promote only `D=256`, causal, `N>=8192`; keep SDPA default
+for shorter causal and all non-causal D=256.
 
 ---
 
@@ -45,8 +77,9 @@ Notes:
 | D=512 N=4096  f16 non-causal (D-split) | 62.9 | 64.5 | 1.02× |
 
 Notes:
-- D=256/512 dense routes to SDPA by default (v2.6.0+): D-split V2 achieves
-  ~1.00× SDPA with no speedup, so MFA adds only Python overhead for dense shapes.
+- D=256 dense now uses a narrow promotion (`causal=True`, `N>=8192`) from the
+  v2.9.2 decision pass; non-causal and shorter causal remain SDPA-default.
+- D=512 dense remains SDPA-default (parity-only in current measurements).
 - Window and sparse D=256/512 still route to MFA: tile-skip gives 5-20×
   regardless of head dimension.
 - D-split prevents the 0.69× regression of the old V1 kernel at D=512.
@@ -78,6 +111,10 @@ Notes:
 | B=1 H=1 N=1024 D=128 f16 causal | 0.6 | 0.5 | 0.87× |
 | B=1 H=2 N=512  D=128 f16 causal | 0.6 | 0.5 | 0.87× |
 | B=1 H=4 N=512  D=128 f16 causal | 0.7 | 0.6 | 0.98× |
+
+Notes:
+- Split-K now composes with ALiBi and windowed attention in the production path.
+- Sparse/block-mask remains intentionally excluded from split-K.
 
 ---
 
