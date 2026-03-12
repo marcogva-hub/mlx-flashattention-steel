@@ -8644,3 +8644,79 @@ class TestSteelV5CP5:
             out.astype(mx.float32) - ref.astype(mx.float32)
         )).item()
         assert diff < 2e-2, f"D={D}: diff={diff:.4e}"
+
+
+class TestSteelV5DirectReads:
+    """CP7: V5 M3+ direct device reads — 0 barriers/K-tile.
+
+    Exercises MFA_DIRECT_READS=1 (emitted when is_m3_plus=True).
+    Uses MFA_FORCE_GEN=15 to simulate M3+ on M1/M2 hardware.
+    """
+
+    pytestmark = [
+        pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
+    ]
+
+    def _run_v5_m3plus(self, q, k, v, scale, causal=False, **kwargs):
+        """Run V5 with MFA_ENABLE_V5=1 and MFA_FORCE_GEN=15 (simulated M3+)."""
+        import os
+        saved = {key: os.environ.get(key) for key in ("MFA_ENABLE_V5", "MFA_FORCE_GEN")}
+        os.environ["MFA_ENABLE_V5"] = "1"
+        os.environ["MFA_FORCE_GEN"] = "15"
+        try:
+            return flash_attention(q, k, v, scale=scale, causal=causal, **kwargs)
+        finally:
+            for key, val in saved.items():
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (64, 1024, False),
+        (64, 1024, True),
+        (128, 2048, False),
+        (128, 2048, True),
+    ])
+    def test_v5_direct_reads_matches_sdpa(self, D, N, causal):
+        """V5 M3+ direct reads must match SDPA within f16 tolerance."""
+        mx.random.seed(77)
+        B, H = 2, 8
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = D ** -0.5
+        out = self._run_v5_m3plus(q, k, v, scale, causal=causal)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale,
+                                                   mask="causal" if causal else None)
+        mx.eval(out, ref)
+        diff = mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))).item()
+        assert diff < 2e-2, f"D={D} N={N} causal={causal}: diff={diff:.4e}"
+
+    def test_v5_direct_reads_gqa(self):
+        """V5 M3+ direct reads: GQA must produce correct output."""
+        mx.random.seed(88)
+        B, H_q, H_kv, N, D = 2, 8, 2, 512, 64
+        q = mx.random.normal([B, H_q, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
+        scale = D ** -0.5
+        out = self._run_v5_m3plus(q, k, v, scale, causal=False)
+        k_exp = mx.repeat(k, H_q // H_kv, axis=1)
+        v_exp = mx.repeat(v, H_q // H_kv, axis=1)
+        ref = mx.fast.scaled_dot_product_attention(q, k_exp, v_exp, scale=scale)
+        mx.eval(out, ref)
+        diff = mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))).item()
+        assert diff < 2e-2, f"GQA diff={diff:.4e}"
+
+    def test_v5_direct_reads_nonaligned(self):
+        """V5 M3+ direct reads: non-power-of-2 sequence length must not NaN."""
+        mx.random.seed(99)
+        B, H, D = 2, 4, 128
+        for N in (63, 65, 100, 513):
+            q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+            k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+            v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+            out = self._run_v5_m3plus(q, k, v, scale=D**-0.5, causal=True)
+            mx.eval(out)
+            assert not mx.any(mx.isnan(out)).item(), f"NaN at N={N}"

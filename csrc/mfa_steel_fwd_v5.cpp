@@ -74,6 +74,7 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   ss << "#define MFA_TD       " << TD       << "\n";
   ss << "#define MFA_GQA      " << gqa      << "\n";
   ss << "#define MFA_ROWS_PT  " << TQ       << "\n";
+  ss << "#define MFA_DIRECT_READS " << (key.is_m3_plus ? 1 : 0) << "\n";
   ss << "\n";
 
   // ── Shared templates (BlockLoaderT, MMAFrag, MMATile, ops) ───────────────
@@ -126,13 +127,15 @@ struct MFASteelParams {
   ss << "  O += (long)tid.z * p->O_strides[0] + (long)h_q  * p->O_strides[1];\n";
   ss << "\n";
 
-  // ── Threadgroup memory: single KV_smem buffer ─────────────────────────────
-  // K^T_smem layout [BD_tile, BK+pad]: BD_tile rows of (BK+pad) elements.
-  // V_smem layout   [BK, BD_tile+pad]: BK rows of (BD_tile+pad) elements.
-  // Buffer sized to the larger of the two:
+  // ── Threadgroup memory + loaders (TGP path only) ─────────────────────────
+  // M3+ (MFA_DIRECT_READS=1): K and V read directly from device — no KV_smem needed.
+  //   KLoader/VLoader templates break at TGP_SIZE=64 (WM=2 → n_reads=64 > BCOLS=32),
+  //   so they must be excluded on M3+.
+  // TGP path: KV_smem holds whichever is larger: K^T or V.
   //   K^T: BD_tile * BK * sizeof(T) = 32 * 128 * 2 = 8,192 bytes (half)
   //   V:   BK * BD_tile * sizeof(T) = 128 * 32 * 2 = 8,192 bytes (half)
-  //   max = 8,192 bytes → 4 TG/CU at 32KB threadgroup memory budget (no padding needed).
+  //   max = 8,192 bytes → 4 TG/CU on M1/M2 (no padding needed).
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  constexpr short padK = " << pad_expr << ";\n";
   ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  // K^T layout: [BD_tile, BK+padK]  → LDK stride = BK+padK\n";
@@ -140,7 +143,6 @@ struct MFASteelParams {
   ss << "  // V layout:   [BK,     BD_tile+padV] → LDV stride = BD_tile+padV\n";
   ss << "  constexpr short LDV  = MFA_BD_TILE + padV;\n";
   ss << "\n";
-  ss << "  // KV_smem holds whichever is larger: K^T or V.\n";
   ss << "  constexpr short kK_elems = MFA_BD_TILE * (MFA_BK + padK);\n";
   ss << "  constexpr short kV_elems = MFA_BK * (MFA_BD_TILE + padV);\n";
   ss << "  constexpr short kKV_elems = kK_elems > kV_elems ? kK_elems : kV_elems;\n";
@@ -148,20 +150,18 @@ struct MFASteelParams {
   ss << "  threadgroup T* Ks = KV_smem;  // K^T occupant\n";
   ss << "  threadgroup T* Vs = KV_smem;  // V occupant (same buffer, sequential)\n";
   ss << "\n";
-
-  // ── Block loader types ────────────────────────────────────────────────────
   // KLoader: loads K[BK, BD_tile] transposed into K^T[BD_tile, BK+pad].
-  //   src_ld = K_strides[2] = D (full K row stride, we start at dh*BD_tile offset)
-  //   kDstStrRow = LDK = BK (BD_tile=32 → 64B row stride, no bank conflicts)
-  //   kDstStrCol = 1 (contiguous K-index in each row)
   ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_TILE,\n";
   ss << "      1, MFA_BK, 0, MFA_TGP_SIZE>;\n";  // LDK = BK (no pad)
   // VLoader: loads V[BK, BD_tile] row-major.
-  //   src_ld = V_strides[2] = D
-  //   kDstStrRow = LDV = BD_tile (no pad)
-  //   kDstStrCol = 1
   ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_TILE,\n";
   ss << "      MFA_BD_TILE, 1, 0, MFA_TGP_SIZE>;\n";  // LDV = BD_tile (no pad)
+  ss << "#endif  // !MFA_DIRECT_READS\n";
+  ss << "\n";
+
+  // Strides for M3+ direct device reads.
+  ss << "  const int K_stride = (int)p->K_strides[2];  // = D\n";
+  ss << "  const int V_stride = (int)p->V_strides[2];  // = D\n";
   ss << "\n";
 
   // ── Scale ─────────────────────────────────────────────────────────────────
@@ -175,12 +175,11 @@ struct MFASteelParams {
   ss << "  const short tm = 8 * MFA_TQ * (short)simd_group_id;\n";
   ss << "\n";
 
-  // Ks_off: position within K^T_smem for this SIMD lane.
-  // K^T[BD_tile, LDK]: row=sm (D-chunk row), col=sn (K-seq col).
+  // Ks_off/Vs_off: only needed for TGP path (inside #else branches).
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  const short Ks_off = sm * LDK + sn;\n";
-  // Vs_off: position within V_smem for this SIMD lane.
-  // V[BK, LDV]: row=sm (K-seq row), col=sn (D-chunk col).
   ss << "  const short Vs_off = sm * LDV + sn;\n";
+  ss << "#endif\n";
   ss << "\n";
 
   // ── Tile registers ────────────────────────────────────────────────────────
@@ -328,16 +327,26 @@ struct MFASteelParams {
     ss << "    }\n";
   };
 
-  // emit_qkt: emit Q@K^T sub-GEMM for D-chunk dh.
-  // K^T[dh] is already in KV_smem.  Qtile.frag_at(0, dh*BD_frags+dd) for each dd.
-  // LDK = BK+pad (K^T row stride).
+  // emit_v5_qkt: emit Q@K^T sub-GEMM for D-chunk dh.
+  // TGP path (MFA_DIRECT_READS=0): K^T[dh] already in KV_smem.
+  // Device path (MFA_DIRECT_READS=1): load K^T fragment directly from K_cur.
+  //   K^T[dh*BD_tile + sm + dd*8, sn] = K_cur[(dh*BD_tile + sm + dd*8) + sn*K_stride]
+  //   row_stride=1 (D-axis), col_stride=K_stride=D (S-axis)  — same as V4.
   auto emit_v5_qkt = [&](int dh) {
     ss << "    // ─ Q@K^T: D-chunk dh=" << dh << " ─\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
     ss << "    for (short dd = 0; dd < MFA_BD_FRAGS; dd++) {\n";
-    ss << "      // Load K^T fragment: row dd*8 of K^T[BD_tile, LDK]\n";
+    ss << "#if MFA_DIRECT_READS\n";
+    ss << "      // M3+: direct device read — no TGP copy, no barrier.\n";
+    ss << "      Ktile.template load<T, 1, 1>(\n";
+    ss << "          K_cur + (long)(" << (dh * BD_tile) << " + sm + (short)(dd * 8))\n";
+    ss << "                + (long)sn * K_stride,\n";
+    ss << "          1, K_stride);\n";
+    ss << "#else\n";
+    ss << "      // TGP path: K^T fragment from KV_smem.\n";
     ss << "      Ktile.template load<T, 1, 1>(\n";
     ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+    ss << "#endif\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
@@ -353,8 +362,12 @@ struct MFASteelParams {
     ss << "    }\n";
   };
 
-  // emit_pv: emit P@V sub-GEMM for D-chunk dh.
-  // V[dh] row-major in KV_smem.  Otile.frag_at(0, dh*BD_frags+id) for each id.
+  // emit_v5_pv: emit P@V sub-GEMM for D-chunk dh.
+  // TGP path (MFA_DIRECT_READS=0): V[dh] row-major in KV_smem.
+  // Device path (MFA_DIRECT_READS=1): load V fragment directly from V_cur.
+  //   V[sm + ik*8, dh*BD_tile + sn + id*8] = V_cur[(sm+ik*8)*V_stride + dh*BD_tile + sn + id*8]
+  //   row_stride=V_stride=D (S-axis), col_stride=1 (D-axis).
+  //   Out-of-bounds rows (kb=NK_aligned): P values are 0 after K-boundary mask → safe.
   auto emit_v5_pv = [&](int dh) {
     ss << "    // ─ P@V: D-chunk dh=" << dh << " ─\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -363,8 +376,17 @@ struct MFASteelParams {
     ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short id = 0; id < MFA_BD_FRAGS; id++) {\n";
+    ss << "#if MFA_DIRECT_READS\n";
+    ss << "          // M3+: direct device read — no TGP copy, no barrier.\n";
     ss << "          Vtile.template load<T, 1, 1>(\n";
-    ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+    ss << "              V_cur + (long)(sm + (short)(ik * 8)) * V_stride\n";
+    ss << "                    + " << (dh * BD_tile) << " + sn + (short)(id * 8),\n";
+    ss << "              V_stride, 1);\n";
+    ss << "#else\n";
+    ss << "          // TGP path: V fragment from KV_smem.\n";
+    ss << "          Vtile.template load<T, 1, 1>(\n";
+    ss << "              &Vs[Vs_off + (short)(ik*8)*LDV + (short)(id*8)], LDV, 1);\n";
+    ss << "#endif\n";
     ss << "          MFAMMAFrag<AccT>::mma(\n";
     ss << "              Otile.frag_at(iq, " << (dh * BD_frags) << " + id),\n";
     ss << "              Stile.frag_at(iq, ik),\n";
@@ -375,12 +397,15 @@ struct MFASteelParams {
     ss << "    }\n";
   };
 
-  // ── Pre-loop: preload K[kb_start][dh=0] ──────────────────────────────────
+  // ── Pre-loop: preload K[kb_start][dh=0] (TGP path only) ─────────────────
+  // M3+ direct reads: K is loaded from device on-the-fly in the loop; no preload needed.
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  // Pre-loop: preload K[kb_start] D-chunk 0 into KV_smem.\n";
   ss << "  if (kb_lim > kb_start) {\n";
   emit_load_k("K_cur", "kb_start");  // pre-loop: kb_start tile (kb not in scope yet)
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // B_pre: K[0][dh=0] ready\n";
   ss << "  }\n";
+  ss << "#endif  // !MFA_DIRECT_READS\n";
   ss << "\n";
 
   // ── Main K-tile loop ──────────────────────────────────────────────────────
@@ -398,15 +423,21 @@ struct MFASteelParams {
   }
 
   // ── Phase 1: Q@K^T (all D-chunks of K^T) ─────────────────────────────────
+  // M3+ (MFA_DIRECT_READS=1): all K^T fragments loaded directly from device —
+  //   no barriers needed between D-chunks.
+  // TGP path (MFA_DIRECT_READS=0): each D-chunk loads into KV_smem, fenced with barriers.
   ss << "    // ─ Phase 1: Q@K^T (all D-chunks) ─\n";
   ss << "    Stile.clear();\n";
-  // dh=0: K[dh=0] already in KV_smem from preload (or prev-iter barrier C)
+  // dh=0: TGP path uses K[dh=0] from pre-loop preload (or prev-iter barrier C).
+  //        Device path reads directly from K_cur — no prior load needed.
   emit_v5_qkt(0);
   for (int dh = 1; dh < D_chunks; dh++) {
+    ss << "#if !MFA_DIRECT_READS\n";
     ss << "    // K[dh=" << (dh-1) << "] reads done → safe to load K[dh=" << dh << "]\n";
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     emit_load_k("K_cur + (long)" + std::to_string(dh) + " * MFA_BD_TILE");
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // K[dh=" << dh << "] ready\n";
+    ss << "#endif  // !MFA_DIRECT_READS\n";
     emit_v5_qkt(dh);
   }
   ss << "\n";
@@ -558,20 +589,28 @@ struct MFASteelParams {
   ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
   ss << "\n";
 
-  // ── Barrier A: K reads done → safe to use KV_smem for V ──────────────────
+  // ── Barrier A + Phase 2: P@V ─────────────────────────────────────────────
+  // M3+ (MFA_DIRECT_READS=1): no barrier A (KV_smem not used for K), V loaded from device.
+  // TGP path: barrier A gates KV_smem reuse; each V D-chunk loads into KV_smem.
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "    // ─ Barrier A: K phase done → start V loading ─\n";
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "#endif  // !MFA_DIRECT_READS\n";
   ss << "\n";
 
   // ── Phase 2: P@V (all D-chunks of V) ─────────────────────────────────────
   ss << "    // ─ Phase 2: P@V (all D-chunks) ─\n";
   for (int dh = 0; dh < D_chunks; dh++) {
     if (dh > 0) {
+      ss << "#if !MFA_DIRECT_READS\n";
       ss << "    // V[dh=" << (dh-1) << "] reads done → safe to load V[dh=" << dh << "]\n";
       ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+      ss << "#endif\n";
     }
+    ss << "#if !MFA_DIRECT_READS\n";
     emit_load_v("V_cur + (long)" + std::to_string(dh) + " * MFA_BD_TILE");
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // V[dh=" << dh << "] ready\n";
+    ss << "#endif  // !MFA_DIRECT_READS\n";
     emit_v5_pv(dh);
     ss << "\n";
   }
@@ -580,16 +619,18 @@ struct MFASteelParams {
   if (sparse)
     ss << "    }  // end if (!skip_tile)\n\n";
 
-  // ── Advance K_cur/V_cur + preload K[kb+1][dh=0] ──────────────────────────
+  // ── Advance K_cur/V_cur + preload K[kb+1][dh=0] (TGP path only) ──────────
   ss << "    K_cur += (long)MFA_BK * p->K_strides[2];\n";
   ss << "    V_cur += (long)MFA_BK * p->V_strides[2];\n";
   ss << "\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "    // ─ Barrier X: V reads done → preload K[kb+1][dh=0] ─\n";
   ss << "    if (kb + 1 < kb_lim) {\n";
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // X\n";
   emit_load_k("K_cur");
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C: K[kb+1][dh=0] ready\n";
   ss << "    }\n";
+  ss << "#endif  // !MFA_DIRECT_READS\n";
   ss << "\n";
 
   ss << "  } // end kb loop\n";
