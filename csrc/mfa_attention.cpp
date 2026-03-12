@@ -38,6 +38,39 @@
 
 namespace mlx_mfa {
 
+namespace {
+
+inline bool is_v2_small_d_family(int head_dim) {
+  return head_dim == 64 || head_dim == 128;
+}
+
+inline bool is_v2_large_d_family(int head_dim) {
+  return head_dim == 256 || head_dim == 512;
+}
+
+struct SteelV2DSplitRouteConfig {
+  int BQ;
+  int BK;
+  int WM;
+  int WN;
+  int TGP;
+};
+
+inline SteelV2DSplitRouteConfig select_steel_v2_dsplit_route_config(bool is_m3_plus) {
+  // D=256/512 is treated as a separate family and intentionally mapped to the
+  // D=128 half-dim tile policy for D-split kernels (BD_HALF=128 passes).
+  auto cfg = select_steel_v2_block_config(/*head_dim=*/128, is_m3_plus);
+  return {
+      cfg.BQ,
+      cfg.BK,
+      cfg.WM,
+      cfg.WN,
+      cfg.WM * cfg.WN * 32,
+  };
+}
+
+}  // namespace
+
 // =========================================================================
 // Constructor
 // =========================================================================
@@ -354,7 +387,7 @@ void MFAttention::eval_gpu(
 
     const bool v2sk_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128) &&
+        is_v2_small_d_family(D) &&
         // Sparse remains excluded from V2 split-K (block-mask uses V1 BK indexing).
         // RoPE/ALiBi/window are supported in V2 split-K (Phase 3 composability).
         !params_.has_block_mask;
@@ -825,7 +858,7 @@ void MFAttention::eval_gpu(
   if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_eligible =
         (dtype_code != 2) &&
-        (D == 64 || D == 128) &&
+        is_v2_small_d_family(D) &&
         // block_mask is sized for V1 tile BK (BK_v1 ≠ BK_v2) — route to V1.
         !params_.has_block_mask;
 
@@ -934,17 +967,17 @@ void MFAttention::eval_gpu(
   if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_dsplit_eligible =
         (dtype_code != 2) &&
-        (D == 256 || D == 512) &&
+        is_v2_large_d_family(D) &&
         !params_.has_block_mask &&
         !params_.has_rope;
 
     if (v2_dsplit_eligible) {
       const int BD_HALF = 128;
-      auto cfg_ds    = select_steel_v2_block_config(128, is_m3_plus_steel);
-      const int BQ_ds  = cfg_ds.BQ;   // 32
-      const int BK_ds  = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
-      const int WM_ds  = cfg_ds.WM;   // 4
-      const int TGP_ds = WM_ds * cfg_ds.WN * 32;  // 128
+      auto cfg_ds       = select_steel_v2_dsplit_route_config(is_m3_plus_steel);
+      const int BQ_ds   = cfg_ds.BQ;   // 32
+      const int BK_ds   = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
+      const int WM_ds   = cfg_ds.WM;   // 4
+      const int TGP_ds  = cfg_ds.TGP;  // 128
       const int NQ_ds  = (N + BQ_ds - 1) / BQ_ds;
       const int NK_ds  = (S + BK_ds - 1) / BK_ds;
       const int NQ_ds_aln = (N % BQ_ds == 0) ? NQ_ds : NQ_ds - 1;

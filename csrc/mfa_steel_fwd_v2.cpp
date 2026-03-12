@@ -97,6 +97,16 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus) {
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
 
+namespace {
+
+inline SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
+  // D=256/512 is treated as a separate family. D-split kernels run each pass
+  // at BD_HALF=128 and intentionally reuse the D=128 tile policy for BK/WM.
+  return select_steel_v2_block_config(/*head_dim=*/128, is_m3_plus);
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // V2 kernel source generator
 // ---------------------------------------------------------------------------
@@ -750,7 +760,7 @@ struct MFASteelParams {
 // Grid: (NQ, H, B)  — same as V2 single-pass.
 //
 // Design: BD_HALF=128, D_SPLITS=D/128 (2 for D=256, 4 for D=512).
-// Block config: select_steel_v2_block_config(128, is_m3_plus) for BK.
+// Block config: select_steel_v2_dsplit_block_config(is_m3_plus) for BK.
 //   M1/M2: BK=32, TK=4   M3+: BK=64, TK=8
 // TGP: BQ=32, WM=4, TGP_SIZE=128, TD_HALF=16, TQ=1.
 //
@@ -783,7 +793,7 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   const int D_SPLITS = D / BD_HALF;   // 2 for D=256, 4 for D=512
 
   // Block config: use D=128 V2 tile config for each BD_HALF pass
-  auto cfg = select_steel_v2_block_config(128, key.is_m3_plus);
+  auto cfg = select_steel_v2_dsplit_block_config(key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32
   const int BK = cfg.BK;   // 32 (M1/M2) or 64 (M3+)
   const int WM = cfg.WM;   // 4
