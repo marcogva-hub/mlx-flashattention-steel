@@ -2,7 +2,7 @@
 
 **Device**: Apple M1 Max (32 GPU cores, gen 13, M3+: False)
 **MLX version**: 0.31.0
-**mlx-mfa version**: 2.6.0
+**mlx-mfa version**: 2.7.0
 **Date**: 2026-03-11
 **Config**: B=2 H=8 f16, warmup=8, iters=20
 
@@ -108,3 +108,31 @@ Build on macOS 15 / Xcode 16:
 bash scripts/build_async_metallib.sh
 # → mlx_mfa/precompiled/async_v2.metallib
 ```
+
+---
+
+## V3 Kernel — Separate K_smem + V_smem (v2.7.0 experiment)
+
+V3 reduces per-K-tile barriers from 4 (V2) to 2 by allocating K_smem and
+V_smem as independent threadgroup buffers (vs V2's shared KV_smem).
+
+**Benchmark** (M1 Max, B=2 H=8 f16, causal, 2026-03-12):
+
+| Config | V2 ms | V3 ms | V3/V2 | V3/SDPA |
+|--------|------:|------:|------:|--------:|
+| D=64  N=1024  causal | 2.07 | 2.37 | 0.88× | 1.13× |
+| D=64  N=2048  causal | 1.73 | 2.24 | 0.77× | 1.34× |
+| D=64  N=4096  causal | 5.52 | 7.01 | 0.79× | 1.51× |
+| D=64  N=8192  causal | 19.76 | 25.77 | 0.77× | 1.59× |
+| D=128 N=1024  causal | 1.33 | 1.50 | 0.88× | 1.04× |
+| D=128 N=2048  causal | 3.46 | 4.07 | 0.85× | 1.24× |
+| D=128 N=4096  causal | 11.42 | 13.99 | 0.82× | 1.33× |
+| D=128 N=8192  causal | 42.45 | 52.90 | 0.80× | 1.38× |
+
+**Conclusion**: V3 regresses vs V2 (0.77–0.88×). Doubling TGP usage
+(K+V separate, ~23 KB) vs V2 (shared max(K,V), ~14 KB) halves
+occupancy from 2 TGs/CU to 1 TG/CU. The extra memory-stall latency
+exceeds the savings from 2 fewer barriers per iteration.
+
+**Status**: Kernel implemented and correct; disabled by default.
+Enable via `MFA_ENABLE_V3=1` for research/benchmarking.

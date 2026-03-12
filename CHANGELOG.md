@@ -2,6 +2,24 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.7.0] — 2026-03-12
+
+### V3 Kernel Research + Sage Validation
+
+- **new**: STEEL V3 forward kernel — separate K_smem + V_smem, 2 barriers/iter
+  (vs V2's 4).  Eligible: D=64 all gens, D=128 M1/M2 (BK=32, TGP=27 KB).
+  Correct output (max_abs_diff=0 vs V2). 17 new tests in TestSteelV3.
+- **bench**: V3 benchmarked vs V2 (M1 Max, B=2 H=8 f16, causal).
+  Result: 0.77–0.88× regression. Root cause: separate K+V buffers double TGP
+  usage (23 KB vs 14 KB), halving occupancy 2 TGs/CU → 1 TG/CU.
+  Disabled by default; opt-in via `MFA_ENABLE_V3=1`.
+- **verified**: sage_output_correction is a mathematical no-op and never
+  called (CP3). mfa_smooth_quantize_k is the active fused path (CP4).
+- **bench**: sage_attention fused path confirmed: no regression vs baseline.
+  Sage still 0.35–0.89× FA due to Python-side quantize overhead.
+- **docs**: RESULTS.md V3 section with benchmark table and occupancy analysis.
+- **infra**: benchmarks/bench_v3.py for V3 vs V2 vs SDPA comparison.
+
 ## [2.6.1] — 2026-03-11
 
 ### Release Engineering Cleanup
