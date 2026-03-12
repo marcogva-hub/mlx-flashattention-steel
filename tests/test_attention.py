@@ -8438,3 +8438,107 @@ class TestSteelV5:
             out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
         )).item()
         assert diff < 2e-2, f"non-aligned N={N_odd} D={D}: diff={diff:.4e}"
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (64, 512, True), (64, 512, False),
+        (128, 512, True), (128, 512, False),
+        (128, 2048, True),
+    ])
+    def test_v5_causal_explicit(self, D, N, causal):
+        """Explicit causal/non-causal correctness vs SDPA (larger N than smoke tests)."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(77)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out_v5 = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out_v5)
+
+        out_ref = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask='causal' if causal else None)
+        mx.eval(out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D} N={N} causal={causal}: diff={diff:.4e}"
+
+    @pytest.mark.parametrize("D,ratio", [
+        (64, 2), (64, 4), (128, 2), (128, 8),
+    ])
+    def test_v5_gqa_explicit(self, D, ratio):
+        """V5 GQA correctness: H_q=8, H_kv=H_q/ratio vs SDPA reference."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(33)
+        B, Hq, N = 1, 8, 512
+        Hkv = Hq // ratio
+        q = mx.random.normal([B, Hq,  N, D]).astype(mx.float16)
+        k = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out_v5 = flash_attention(q, k, v, scale=scale, causal=True)
+            mx.eval(out_v5)
+
+        # Reference: expand k/v to Hq heads then SDPA
+        k_exp = mx.repeat(k, ratio, axis=1)
+        v_exp = mx.repeat(v, ratio, axis=1)
+        out_ref = mx.fast.scaled_dot_product_attention(
+            q, k_exp, v_exp, scale=scale, mask='causal')
+        mx.eval(out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D} ratio={ratio}: diff={diff:.4e}"
+
+    @pytest.mark.parametrize("D,N,window", [
+        (64,  1024, 128),
+        (64,  2048, 256),
+        (128, 1024, 128),
+        (128, 2048, 512),
+    ])
+    def test_v5_window(self, D, N, window):
+        """V5 sliding window matches SDPA with per-element bias simulation."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(55)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out_v5 = flash_attention(
+                q, k, v, scale=scale, causal=True,
+                window_size=(window,))
+            mx.eval(out_v5)
+
+        # Reference: causal SDPA with a sliding-window mask applied as bias
+        # Build [1,1,N,N] mask: True where attention is allowed
+        rows = mx.arange(N)[:, None]   # [N, 1]
+        cols = mx.arange(N)[None, :]   # [1, N]
+        allow = (cols <= rows) & (cols >= rows - window)
+        bias = mx.where(allow,
+                        mx.zeros([N, N], dtype=mx.float16),
+                        mx.full([N, N], float('-inf'), dtype=mx.float16))
+        bias = bias[None, None, :, :]  # [1,1,N,N]
+        out_ref = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=bias)
+        mx.eval(out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D} N={N} window={window}: diff={diff:.4e}"

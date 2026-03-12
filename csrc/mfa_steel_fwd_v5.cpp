@@ -25,9 +25,10 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
-  const int D       = key.head_dim;
-  const bool causal = key.causal;
-  const int  gqa    = key.gqa_factor;
+  const int D          = key.head_dim;
+  const bool causal    = key.causal;
+  const bool has_window = key.has_window;
+  const int  gqa       = key.gqa_factor;
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
@@ -237,7 +238,7 @@ struct MFASteelParams {
   ss << "  }\n";
   ss << "\n";
 
-  // ── K-loop limits ─────────────────────────────────────────────────────────
+  // ── K-loop limits (causal + sliding window) ──────────────────────────────
   if (causal) {
     ss << "  int q_max  = (qb + 1) * MFA_BQ + p->qL_off;\n";
     ss << "  int kb_lim = (q_max + MFA_BK - 1) / MFA_BK;\n";
@@ -245,12 +246,45 @@ struct MFASteelParams {
   } else {
     ss << "  int kb_lim = p->NK;\n";
   }
-  ss << "  const int kb_start = 0;\n";
+
+  // Sliding window left bound → kb_start + K_cur/V_cur advance
+  if (has_window) {
+    ss << "  int kb_start   = 0;\n";
+    ss << "  int kb_last_win = -1;  // last tile needing left-boundary masking\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    const int q_min   = qb * MFA_BQ + p->qL_off;\n";
+    ss << "    const int ws      = q_min - p->window_left;\n";
+    ss << "    kb_start = ws > 0 ? ws / MFA_BK : 0;\n";
+    ss << "    kb_last_win = (q_min + MFA_BQ - 1 > p->window_left)\n";
+    ss << "                    ? (q_min + MFA_BQ - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  }\n";
+  } else {
+    ss << "  const int kb_start   = 0;\n";
+    ss << "  const int kb_last_win = -1;\n";
+  }
   ss << "\n";
 
-  // ── Running K/V pointers ─────────────────────────────────────────────────
-  ss << "  const device T* K_cur = K;\n";
-  ss << "  const device T* V_cur = V;\n";
+  // ── Running K/V pointers (advanced to kb_start tile for sliding window) ──
+  ss << "  const device T* K_cur = K + (long)kb_start * MFA_BK * p->K_strides[2];\n";
+  ss << "  const device T* V_cur = V + (long)kb_start * MFA_BK * p->V_strides[2];\n";
+  ss << "\n";
+
+  // Sliding window right bound: clamp kb_lim + track first tile needing masking
+  if (has_window) {
+    ss << "  int kb_first_right;\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    const int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "    int kb_right_lim = (q_min + MFA_BQ - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_right_lim < kb_lim) kb_lim = kb_right_lim;\n";
+    ss << "    if (kb_lim < kb_start) kb_lim = kb_start;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  } else {\n";
+    ss << "    kb_first_right = kb_lim;  // no right masking\n";
+    ss << "  }\n";
+  } else {
+    ss << "  const int kb_first_right = kb_lim;  // no window\n";
+  }
   ss << "\n";
 
   // ── Helper lambdas (C++-side, emit Metal code) ───────────────────────────
@@ -337,7 +371,7 @@ struct MFASteelParams {
   // ── Pre-loop: preload K[kb_start][dh=0] ──────────────────────────────────
   ss << "  // Pre-loop: preload K[kb_start] D-chunk 0 into KV_smem.\n";
   ss << "  if (kb_lim > kb_start) {\n";
-  emit_load_k("K_cur", "0");  // pre-loop: kb=0 (kb not in scope yet)
+  emit_load_k("K_cur", "kb_start");  // pre-loop: kb_start tile (kb not in scope yet)
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // B_pre: K[0][dh=0] ready\n";
   ss << "  }\n";
   ss << "\n";
@@ -396,6 +430,43 @@ struct MFASteelParams {
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if (row < (col + jj))\n";
+    ss << "              Stile.frag_at(i, j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // ── Sliding window masking (left + right boundaries) ─────────────────────
+  if (has_window) {
+    ss << "    // Window left boundary: mask col < row - window_left\n";
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i, j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "    // Window right boundary: mask col > row + window_right\n";
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
     ss << "              Stile.frag_at(i, j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
