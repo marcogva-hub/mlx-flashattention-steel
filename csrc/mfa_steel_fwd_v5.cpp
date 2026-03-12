@@ -4,7 +4,7 @@
 ///   - BD_tile=32 (vs BD_HALF=128 in V2 D-split) → 4× smaller TGP
 ///   - BK=128 (vs BK=32/64 in V2) → 4× fewer K-tile iterations
 ///   - Q loaded directly from device into registers (no Q_smem)
-///   - Single KV_smem buffer = max(K^T, V) = 10,240 bytes → 3 TG/CU
+///   - Single KV_smem buffer = max(K^T, V) = 8,192 bytes → 4 TG/CU (no padding needed)
 ///
 /// Barrier schedule per K-tile (D=128, D_chunks=4):
 ///   Q@K^T phase:   B_pre (preloaded) + (D_chunks-1) × 2 = 6 barriers
@@ -23,7 +23,7 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
   const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
-  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+  const std::string pad_expr = "0";  // V5: BD_tile=32 → stride 32 = 64B = 1 bank line, no conflicts
 
   const int D           = key.head_dim;
   const bool causal     = key.causal;
@@ -130,9 +130,9 @@ struct MFASteelParams {
   // K^T_smem layout [BD_tile, BK+pad]: BD_tile rows of (BK+pad) elements.
   // V_smem layout   [BK, BD_tile+pad]: BK rows of (BD_tile+pad) elements.
   // Buffer sized to the larger of the two:
-  //   K^T: BD_tile * (BK + pad) = 32 * 136 * 2 = 8,704 bytes (half)
-  //   V:   BK * (BD_tile + pad) = 128 * 40 * 2 = 10,240 bytes (half)
-  //   max = V → 10,240 bytes → 3 TG/CU at 32KB threadgroup memory budget.
+  //   K^T: BD_tile * BK * sizeof(T) = 32 * 128 * 2 = 8,192 bytes (half)
+  //   V:   BK * BD_tile * sizeof(T) = 128 * 32 * 2 = 8,192 bytes (half)
+  //   max = 8,192 bytes → 4 TG/CU at 32KB threadgroup memory budget (no padding needed).
   ss << "  constexpr short padK = " << pad_expr << ";\n";
   ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  // K^T layout: [BD_tile, BK+padK]  → LDK stride = BK+padK\n";
@@ -152,16 +152,16 @@ struct MFASteelParams {
   // ── Block loader types ────────────────────────────────────────────────────
   // KLoader: loads K[BK, BD_tile] transposed into K^T[BD_tile, BK+pad].
   //   src_ld = K_strides[2] = D (full K row stride, we start at dh*BD_tile offset)
-  //   kDstStrRow = LDK = BK+pad (each D-row has BK+pad cols in TGP)
+  //   kDstStrRow = LDK = BK (BD_tile=32 → 64B row stride, no bank conflicts)
   //   kDstStrCol = 1 (contiguous K-index in each row)
   ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_TILE,\n";
-  ss << "      1, MFA_BK + 16/sizeof(T), 0, MFA_TGP_SIZE>;\n";
+  ss << "      1, MFA_BK, 0, MFA_TGP_SIZE>;\n";  // LDK = BK (no pad)
   // VLoader: loads V[BK, BD_tile] row-major.
   //   src_ld = V_strides[2] = D
-  //   kDstStrRow = LDV = BD_tile+pad
+  //   kDstStrRow = LDV = BD_tile (no pad)
   //   kDstStrCol = 1
   ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD_TILE,\n";
-  ss << "      MFA_BD_TILE + 16/sizeof(T), 1, 0, MFA_TGP_SIZE>;\n";
+  ss << "      MFA_BD_TILE, 1, 0, MFA_TGP_SIZE>;\n";  // LDV = BD_tile (no pad)
   ss << "\n";
 
   // ── Scale ─────────────────────────────────────────────────────────────────
@@ -600,46 +600,20 @@ struct MFASteelParams {
   ss << "  threadgroup_barrier(mem_flags::mem_none);\n";
   ss << "\n";
 
-  // ── Write O to device (D-blocked, same as V2 D-split) ────────────────────
-  // Otile holds all D=TD fragments; write each D-chunk's fragments.
-  for (int dh = 0; dh < D_chunks; dh++) {
-    ss << "  // Write O D-chunk " << dh << " (D-cols "
-       << (dh * BD_tile) << ".." << (dh * BD_tile + BD_tile - 1) << ")\n";
-    ss << "  {\n";
-    ss << "    device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2]\n";
-    ss << "                       + sn + (long)" << dh << " * MFA_BD_TILE;\n";
-    ss << "    if (qb == p->NQ_aligned) {\n";
-    ss << "      auto dims = short2((short)(MFA_BD_TILE - sn),\n";
-    ss << "                         (short)(p->qL_rem - (tm + sm)));\n";
-    ss << "      if (dims.x > 0 && dims.y > 0) {\n";
-    // We need to store only the BD_frags fragments for this D-chunk.
-    // Otile is [TQ, TD] with TD = D/8.  Fragment index = dh*BD_frags + id.
-    // Build a sub-tile by emitting a temporary 1×BD_frags tile and store.
-    // Simpler: write individual fragments.
-    for (int id = 0; id < BD_frags; id++) {
-      const int frag_idx = dh * BD_frags + id;
-      const int col_off  = id * 8;
-      ss << "        if ((short)(MFA_BD_TILE - sn) > " << col_off
-         << " && p->qL_rem > (tm + sm)) {\n";
-      ss << "          if (" << col_off << " < dims.x)\n";
-      ss << "            O_write[" << col_off << "] = static_cast<T>(Otile.frag_at(0, " << frag_idx << ")[0]);\n";
-      ss << "          if (" << (col_off + 1) << " < dims.x)\n";
-      ss << "            O_write[" << (col_off + 1) << "] = static_cast<T>(Otile.frag_at(0, " << frag_idx << ")[1]);\n";
-      ss << "        }\n";
-    }
-    ss << "      }\n";
-    ss << "    } else {\n";
-    // Fast unsafe path: write all fragments for this D-chunk
-    for (int id = 0; id < BD_frags; id++) {
-      const int frag_idx = dh * BD_frags + id;
-      const int col_off  = id * 8;
-      ss << "      O_write[" << col_off << "] = static_cast<T>(Otile.frag_at(0, " << frag_idx << ")[0]);\n";
-      ss << "      O_write[" << (col_off+1) << "] = static_cast<T>(Otile.frag_at(0, " << frag_idx << ")[1]);\n";
-    }
-    ss << "    }\n";
-    ss << "  }\n";
-    ss << "\n";
-  }
+  // ── Write O to device — vectorized (same pattern as V2) ─────────────────
+  // Otile is MFAMMATile<AccT, TQ=1, TD> with TD=D/8 fragments spanning the
+  // full head dimension. store<T,1,1> / store_safe<T,1,1> write all TD fragments
+  // in a single vectorized call, matching the V2 pattern.
+  ss << "  device T* O_write = O_qb + (long)(tm + sm) * p->O_strides[2] + sn;\n";
+  ss << "  if (qb == p->NQ_aligned) {\n";
+  ss << "    auto dims = short2((short)(MFA_BD - sn),\n";
+  ss << "                       (short)(p->qL_rem - (tm + sm)));\n";
+  ss << "    if (dims.x > 0 && dims.y > 0)\n";
+  ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
+  ss << "  } else {\n";
+  ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+  ss << "  }\n";
+  ss << "\n";
 
   // ── Write L (logsumexp) ───────────────────────────────────────────────────
   ss << "  if (sn == 0) {\n";
