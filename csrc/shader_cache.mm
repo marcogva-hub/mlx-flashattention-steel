@@ -18,6 +18,7 @@
 #include "mfa_scatter.hpp"
 #include "mfa_smooth_quant.hpp"
 #include "mfa_steel_fwd_v2.hpp"
+#include "mfa_steel_fwd_v3.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -303,6 +304,9 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
              key.type == KT::SteelV2DSplit512) {
     fn_name = "mlx_mfa_v2_dsplit_attention";
     source  = generate_steel_v2_dsplit_source(key);
+  } else if (key.type == KT::SteelForwardV3) {
+    fn_name = "mlx_mfa_v3_attention";
+    source  = generate_steel_v3_source(key);
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";
@@ -332,6 +336,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SteelV2SplitKPartial)  type_str = "steel_v2_splitk_partial";
     if (key.type == KT::SteelV2DSplit256)       type_str = "steel_v2_dsplit256";
     if (key.type == KT::SteelV2DSplit512)       type_str = "steel_v2_dsplit512";
+    if (key.type == KT::SteelForwardV3)         type_str = "steel_fwd_v3";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",

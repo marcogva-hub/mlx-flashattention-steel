@@ -8005,3 +8005,98 @@ class TestAsyncV2Metallib:
             assert err < 1e-2, (
                 f"D={D} N={N}: async vs sync max_err={err:.4e} (expected < 1e-2)"
             )
+
+
+@requires_ext
+class TestSteelV3:
+    """STEEL V3 (separate K_smem + V_smem, 2 barriers/iter).
+
+    V3 is eligible for D=64 (all gens) and D=128 M1/M2 only (BK=32).
+    Results must match V2 within f16 tolerance (atol=1e-2).
+    """
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (64, 256, True), (64, 256, False),
+        (64, 1024, True), (64, 1024, False),
+        (64, 4096, True), (64, 4096, False),
+        (128, 256, True), (128, 256, False),
+        (128, 1024, True), (128, 1024, False),
+        (128, 4096, True), (128, 4096, False),
+    ])
+    def test_v3_matches_v2(self, D, N, causal):
+        """V3 output matches V2 output within f16 tolerance."""
+        mx.random.seed(42)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        # V3 path (default)
+        out_v3 = flash_attention(q, k, v, scale=scale, causal=causal)
+        mx.eval(out_v3)
+
+        # V2 path (disable V3)
+        import os as _os
+        from unittest.mock import patch
+        with patch.dict(_os.environ, {"MFA_DISABLE_V3": "1"}):
+            out_v2 = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out_v2)
+
+        diff = mx.max(mx.abs(
+            out_v3.astype(mx.float32) - out_v2.astype(mx.float32)
+        )).item()
+        assert diff < 1e-2, (
+            f"D={D} N={N} causal={causal}: V3 vs V2 max_diff={diff:.4e}"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_v3_matches_sdpa(self, D):
+        """V3 output matches MLX SDPA reference (N=1024, causal)."""
+        from mlx_mfa.attention import _fallback_sdpa
+        mx.random.seed(7)
+        B, H, N = 1, 4, 1024
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        out_v3 = flash_attention(q, k, v, scale=scale, causal=True)
+        out_ref = _fallback_sdpa(q, k, v, scale, causal=True)
+        mx.eval(out_v3, out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v3.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 1e-2, f"D={D}: V3 vs SDPA max_diff={diff:.4e}"
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_v3_gqa(self, D):
+        """V3 handles GQA (H_q=8, H_kv=2)."""
+        mx.random.seed(11)
+        B, Hq, Hkv, N = 1, 8, 2, 512
+        q = mx.random.normal([B, Hq, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention(q, k, v, causal=True)
+        mx.eval(out)
+        assert out.shape == (B, Hq, N, D)
+
+    def test_v3_bf16(self):
+        """V3 works with bfloat16 dtype."""
+        mx.random.seed(99)
+        B, H, N, D = 1, 4, 256, 64
+        q = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+
+        out = flash_attention(q, k, v, causal=True)
+        mx.eval(out)
+        assert out.dtype == mx.bfloat16
+        assert out.shape == (B, H, N, D)
+        assert mx.isfinite(out).all().item()

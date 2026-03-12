@@ -53,8 +53,12 @@ class ShaderCache {
       // Performance: ~1.0× SDPA (vs old V1 ~0.57× for D=256). No RoPE support.
       SteelV2DSplit256       = 18,  // D=256 V2 D-split: 2 BD_HALF=128 inner-loop passes
       SteelV2DSplit512       = 19,  // D=512 V2 D-split: 4 BD_HALF=128 inner-loop passes
+      // --- V3: separate K_smem + V_smem, 2 barriers/iter (was 4 in V2) ---
+      // D=64 all gens, D=128 M1/M2 only (BK=32; M3+ BK=64 exceeds 32KB TGP).
+      // generate_steel_v3_source() in mfa_steel_fwd_v3.cpp.
+      SteelForwardV3             = 20,  // STEEL V3: separate K/V smem, 2 barriers/iter
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 20,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 21,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 

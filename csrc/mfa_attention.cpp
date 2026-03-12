@@ -19,6 +19,7 @@
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_fwd_v2.hpp"
+#include "mfa_steel_fwd_v3.hpp"
 #include "mfa_steel_bwd.hpp"
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
@@ -464,6 +465,108 @@ void MFAttention::eval_gpu(
       }
     }
   }  // end if (!MFA_DISABLE_V2) — split-K block
+
+  // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
+  // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.
+  // D=128 M3+ excluded: BK=64 requires 44 KB TGP (over 32 KB limit).
+  // Sparse excluded: block_mask sized for V1 BK.
+  // Set MFA_DISABLE_V3=1 to bypass (forces V2 path, useful for benchmarking).
+  if (!std::getenv("MFA_DISABLE_V3")) {
+    const bool v3_eligible =
+        (dtype_code != 2) &&
+        v3_tgp_eligible(D, is_m3_plus_steel) &&
+        !params_.has_block_mask;
+
+    if (v3_eligible) {
+      auto cfg3 = select_steel_v3_block_config(D, is_m3_plus_steel);
+      const int BQ3      = cfg3.BQ;   // 32
+      const int BK3      = cfg3.BK;   // 64 (D=64) | 32 (D=128, all gens)
+      const int WM3      = cfg3.WM;   // 4
+      const int TGP3     = WM3 * cfg3.WN * 32;  // 128
+      const int NQ3      = (N + BQ3 - 1) / BQ3;
+      const int NK3      = (S + BK3 - 1) / BK3;
+      const int NQ3_aln  = (N % BQ3 == 0) ? NQ3 : NQ3 - 1;
+      const int NK3_aln  = (S % BK3 == 0) ? NK3 : NK3 - 1;
+
+      using KK3 = ShaderCache::KernelKey;
+      KK3 key3{
+        KK3::KernelType::SteelForwardV3,
+        D, BQ3, BK3, D, WM3,
+        params_.causal,
+        /*sparse=*/false,
+        is_m3_plus_steel,
+        params_.has_rope, params_.rope_interleaved,
+        params_.softcap > 0.0f,
+        params_.has_alibi,
+        params_.window_left >= 0 || params_.window_right >= 0,
+        dtype_code,
+        H / Hk
+      };
+
+      void* raw3     = ShaderCache::get().get_or_compile(key3, d.mtl_device());
+      auto* pipeline3 = reinterpret_cast<MTL::ComputePipelineState*>(raw3);
+
+      MFASteelParams sp3{};
+      sp3.B          = B;
+      sp3.H          = H;
+      sp3.D          = D;
+      sp3.qL         = N;
+      sp3.kL         = S;
+      sp3.gqa_factor = H / Hk;
+      sp3.scale      = params_.scale;
+      sp3.NQ         = NQ3;
+      sp3.NK         = NK3;
+      sp3.NQ_aligned = NQ3_aln;
+      sp3.NK_aligned = NK3_aln;
+      sp3.qL_rem     = (N % BQ3 == 0) ? BQ3 : (N % BQ3);
+      sp3.kL_rem     = (S % BK3 == 0) ? BK3 : (S % BK3);
+      sp3.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
+      sp3.rope_q_base     = params_.cache_seqlens;
+      sp3.rope_cos_stride = D / 2;
+      sp3.Q_strides[0] = (int64_t)H  * N * D;
+      sp3.Q_strides[1] = (int64_t)N  * D;
+      sp3.Q_strides[2] = (int64_t)D;
+      sp3.K_strides[0] = (int64_t)Hk * S * D;
+      sp3.K_strides[1] = (int64_t)S  * D;
+      sp3.K_strides[2] = (int64_t)D;
+      sp3.V_strides[0] = (int64_t)Hk * S * D;
+      sp3.V_strides[1] = (int64_t)S  * D;
+      sp3.V_strides[2] = (int64_t)D;
+      sp3.O_strides[0] = (int64_t)H  * N * D;
+      sp3.O_strides[1] = (int64_t)N  * D;
+      sp3.O_strides[2] = (int64_t)D;
+      sp3.L_strides[0] = (int64_t)H  * N;
+      sp3.L_strides[1] = (int64_t)N;
+      sp3.softcap      = params_.softcap;
+      sp3.has_alibi    = params_.has_alibi ? 1 : 0;
+      sp3.window_left  = params_.window_left;
+      sp3.window_right = params_.window_right;
+      sp3.mask_batch_stride = 0;
+      sp3.mask_head_stride  = 0;
+
+      auto& enc3 = d.get_command_encoder(stream().index);
+      enc3.set_compute_pipeline_state(pipeline3);
+      enc3.set_input_array(q,          0);
+      enc3.set_input_array(k,          1);
+      enc3.set_input_array(v,          2);
+      enc3.set_output_array(out,       3);
+      enc3.set_output_array(logsumexp, 4);
+      enc3.set_bytes(sp3,              5);
+      if (params_.has_rope) {
+        enc3.set_input_array(inputs[3], 7);
+        enc3.set_input_array(inputs[4], 8);
+      }
+      if (params_.has_alibi) {
+        int alibi_idx = 3 + (params_.has_rope ? 2 : 0);
+        enc3.set_input_array(inputs[alibi_idx], 9);
+      }
+
+      enc3.dispatch_threadgroups(
+          MTL::Size::Make((size_t)NQ3, (size_t)H, (size_t)B),
+          MTL::Size::Make((size_t)TGP3, 1, 1));
+      return;
+    }
+  }  // end if (!MFA_DISABLE_V3)
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only) ──────────────────────────
   // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.
