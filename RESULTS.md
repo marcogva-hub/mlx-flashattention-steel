@@ -235,3 +235,52 @@ dominate over the 3× TG/CU occupancy gain from smaller TGP.
 V5 **not dispatched by default**; enabled via `MFA_ENABLE_V5=1`.
 Intended as a foundation for M3+ hardware where device reads replace smem
 loads entirely, reducing to 0 barriers per K-tile.
+
+## STEEL V5 Post-Fix Benchmark (post-v2.9.0, commit c115b50)
+
+Full grid: D=64/128, N=512–16384, causal+dense. B=2 H=8 f16, M1 Max.
+V5 built with: padding removed (8,192B → 4 TG/CU) + vectorized O store + M3+
+direct-reads path (TGP path tested here; MFA_FORCE_GEN not set).
+
+| D | N | Mode | SDPA ms | V2 ms | V5 ms | V5/SDPA | V5/V2 |
+|---|---|------|--------:|------:|------:|--------:|------:|
+| 64 | 512 | causal | 1.02 | 0.96 | 1.11 | 0.92× | **0.86×** |
+| 64 | 1024 | causal | 1.02 | 1.41 | 1.33 | 0.77× | **1.06×** |
+| 64 | 2048 | causal | 3.07 | 2.25 | 2.15 | 1.43× | **1.05×** |
+| 64 | 4096 | causal | 10.98 | 5.58 | 6.98 | 1.57× | **0.80×** |
+| 64 | 8192 | causal | 41.73 | 19.64 | 25.10 | 1.66× | **0.78×** |
+| 64 | 16384 | causal | 166.50 | 75.26 | 95.33 | 1.75× | **0.79×** |
+| 64 | 512 | dense | 0.90 | 0.87 | 0.97 | 0.92× | 0.90× |
+| 64 | 1024 | dense | 1.83 | 1.31 | 1.67 | 1.10× | 0.79× |
+| 64 | 2048 | dense | 2.58 | 2.84 | 3.46 | 0.75× | 0.82× |
+| 64 | 4096 | dense | 9.30 | 9.81 | 12.38 | 0.75× | 0.79× |
+| 64 | 8192 | dense | 35.70 | 36.87 | 46.76 | 0.76× | 0.79× |
+| 64 | 16384 | dense | 141.86 | 145.37 | 183.98 | 0.77× | 0.79× |
+| 128 | 512 | causal | 0.80 | 1.45 | 0.92 | 0.87× | **1.58×** |
+| 128 | 1024 | causal | 2.02 | 1.73 | 2.15 | 0.94× | 0.80× |
+| 128 | 2048 | causal | 5.23 | 3.52 | 5.65 | 0.93× | 0.62× |
+| 128 | 4096 | causal | 18.83 | 11.60 | 19.24 | 0.98× | 0.60× |
+| 128 | 8192 | causal | 78.15 | 48.73 | 72.34 | 1.08× | 0.67× |
+| 128 | 16384 | causal | 334.81 | 186.94 | 287.38 | 1.17× | 0.65× |
+| 128 | 512 | dense | 0.69 | 1.21 | 1.19 | 0.58× | **1.02×** |
+| 128 | 1024 | dense | 1.48 | 2.07 | 2.77 | 0.53× | 0.75× |
+| 128 | 2048 | dense | 4.88 | 5.52 | 9.18 | 0.53× | 0.60× |
+| 128 | 4096 | dense | 20.53 | 22.49 | 33.60 | 0.61× | 0.67× |
+| 128 | 8192 | dense | 83.59 | 92.87 | 134.08 | 0.62× | 0.69× |
+| 128 | 16384 | dense | 323.02 | 355.77 | 524.71 | 0.62× | 0.68× |
+
+**Dispatch decision**: V5 remains opt-in (`MFA_ENABLE_V5=1` gate unchanged).
+On M1 Max (TGP path, 17 barriers/K-tile), V5 is generally slower than V2:
+- D=64 causal: 0.78–1.06× V2 (wins only at N=1024–2048, under-occupied grid)
+- D=64 dense: 0.79–0.90× V2 (consistent regression)
+- D=128 causal: 0.60–1.58× V2 (wins only at N=512 where V2 is severely under-occupied)
+- D=128 dense: 0.60–1.02× V2 (regression at N≥1024)
+
+The padding-removal (CP7 of v2.9.0) worsened D=64 causal at large N (0.88×→0.78×)
+because power-of-2 LDK=128 causes bank-conflict read serialization that more than
+offsets the +1 TG/CU gain.
+
+**Expected gain on M3+**: M3+ direct reads (MFA_DIRECT_READS=1, commit c115b50)
+eliminate all 17 barriers/K-tile. With 0 barriers and 3× occupancy over V2's 1 TG/CU,
+V5 should significantly outperform V2 on M3+ for all N≥1024. Benchmark pending M3+
+hardware.
