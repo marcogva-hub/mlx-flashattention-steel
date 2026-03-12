@@ -15,6 +15,7 @@ from mlx_mfa.inference import create_inference_context, _context_backend_name
 from mlx_mfa.attention import (
     make_shared_prefix_cache,
     flash_attention_splitfuse,
+    flash_attention_speculative_verify,
 )
 
 __all__ = [
@@ -81,6 +82,47 @@ class DecodeRuntime:
             q_decode,
             k_cache_decode,
             v_cache_decode,
+            **kwargs,
+        )
+
+    def speculative_verify(
+        self,
+        q_target: mx.array,
+        draft_ids: mx.array,
+        *,
+        k_cache: Optional[mx.array] = None,
+        v_cache: Optional[mx.array] = None,
+        **kwargs,
+    ):
+        """Expose flash_attention_speculative_verify() through runtime.
+
+        If ``k_cache``/``v_cache`` are omitted, dense runtime uses its own
+        internal cache. Other backends must pass explicit dense caches.
+        """
+        if (k_cache is None) != (v_cache is None):
+            raise ValueError(
+                "speculative_verify: k_cache and v_cache must be provided together"
+            )
+
+        if k_cache is None:
+            if self.backend != "dense":
+                raise ValueError(
+                    "speculative_verify without explicit k_cache/v_cache requires "
+                    f"dense backend runtime, got backend={self.backend!r}"
+                )
+            k_cache = self.context.k_cache
+            v_cache = self.context.v_cache
+            if k_cache is None or v_cache is None:
+                raise ValueError(
+                    "speculative_verify: dense runtime cache is empty; run prefill/step "
+                    "first or pass explicit k_cache/v_cache"
+                )
+
+        return flash_attention_speculative_verify(
+            q_target,
+            k_cache,
+            v_cache,
+            draft_ids,
             **kwargs,
         )
 

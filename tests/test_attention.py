@@ -7665,6 +7665,69 @@ class TestDecodeRuntimeFactory:
         assert out_p.shape == (1, 4, 32, 64)
         assert out_d is None
 
+    def test_speculative_verify_helper_via_dense_runtime_cache(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((1, 2), dtype=mx.int32)
+        out, lse, lp = rt.speculative_verify(q_target, draft_ids)
+        mx.eval(out, lse, lp)
+        assert out.shape == (1, 4, 2, 64)
+        assert lse.shape == (1, 4, 2)
+        assert lp.shape == (1, 2)
+
+    def test_speculative_verify_invalid_backend_without_explicit_cache(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((1, 2), dtype=mx.int32)
+        with pytest.raises(ValueError, match="requires dense backend runtime"):
+            rt.speculative_verify(q_target, draft_ids)
+
+    def test_speculative_verify_accepts_explicit_cache(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        k_cache = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v_cache = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((1, 2), dtype=mx.int32)
+        out, lse, lp = rt.speculative_verify(
+            q_target,
+            draft_ids,
+            k_cache=k_cache,
+            v_cache=v_cache,
+        )
+        mx.eval(out, lse, lp)
+        assert out.shape == (1, 4, 2, 64)
+
 
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
