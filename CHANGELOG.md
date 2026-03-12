@@ -2,7 +2,7 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [2.10.0] — 2026-03-12
+## [2.9.1] — 2026-03-12
 
 ### STEEL V5 M3+ Direct Device Reads + Post-Fix Benchmarks
 
