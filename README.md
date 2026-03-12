@@ -49,7 +49,7 @@ Dense D=512 remains SDPA-default. D=256 now uses a narrow causal promotion:
 `causal=True`, `dtype=f16`, and `N>=4096` routes to V2 D-split on M1/M2;
 bf16, smaller causal, and all non-causal D=256 stay on SDPA.
 
-### D=256 Decision Pass (v2.9.2)
+### D=256 Decision Pass (v2.9.2, post-backward refresh)
 
 | N | dtype | causal | SDPA (ms) | Auto (ms) | SDPA/Auto |
 |---:|:---:|:---:|----------:|----------:|----------:|
@@ -269,6 +269,9 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 
 Run `python -m mlx_mfa calibrate` to measure crossover points on your device
 and automatically save optimal thresholds.
+
+Debug override for D=256 auto routing:
+`MFA_FORCE_D256_PATH=1|mfa|0|sdpa` (applies only to D=256 with `backend=\"auto\"`).
 
 Dense backward policy in v2.9.2:
 - Auto mode defaults to SDPA VJP.

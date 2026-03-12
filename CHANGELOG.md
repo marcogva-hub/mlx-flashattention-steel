@@ -42,6 +42,15 @@ All notable changes to mlx-mfa are documented here.
 - **perf**: Auto-dispatch now accepts dtype in policy decisions and applies a
   D=256 separate-family rule for dense causal paths (f16 promoted narrowly,
   bf16 conservative). M3+ D=256 remains conservative until measured.
+- **bench**: Post-backward D=256 matrix refresh
+  (`benchmarks/bench_d256_design_matrix.py`, output
+  `notes/d256_design_matrix_post_bwd_latest.json`) confirmed the same shape:
+  wins remain concentrated in causal f16; bf16/non-causal remain SDPA territory.
+- **refactor**: Further isolated D=256 family policy code paths in both
+  C++ dispatch selection and Python auto-dispatch helpers for readability and
+  future large-D iteration safety.
+- **feat**: Added `MFA_FORCE_D256_PATH=1|mfa|0|sdpa` debug override for
+  D=256 auto-dispatch evaluation without changing global backend settings.
 - **feat**: Added `create_inference_context(...)` helper to unify dense/paged/
   sage decode context creation with clear routing and validation.
 - **docs**: Updated `README.md`, `RESULTS.md`, and `docs/benchmarks/RESULTS.md`

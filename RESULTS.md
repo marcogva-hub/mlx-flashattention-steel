@@ -40,6 +40,9 @@ Dispatch decision from this pass:
 - Promote only `D=256`, `causal=True`, `dtype=f16`, `N>=4096` (M1/M2) to MFA V2 D-split.
 - Keep SDPA default for D=256 `bf16`, D=256 non-causal, and conservative M3+ until measured.
 - Keep D=512 dense on SDPA by default (out of scope for this D=256 design-track pass).
+- Post-backward refresh matrix (`notes/d256_design_matrix_post_bwd_latest.json`):
+  32 cases -> `maybe_win=8`, `neutral=0`, `losing=24`; wins are concentrated in
+  causal `f16` only. Policy remains unchanged after refresh.
 
 ---
 
