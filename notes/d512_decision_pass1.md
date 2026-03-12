@@ -57,3 +57,19 @@ Per-family best observed MFA/SDPA ratios:
 - No D=512 regime beat SDPA in this matrix.
 - Current `backend="auto"` behavior (stay on SDPA for dense D=512) matches benchmark evidence.
 - `MFA_ENABLE_V5=1` does not provide a benchmark-backed D=512 win; D=512 remains a conservative SDPA family for production auto-dispatch.
+
+## Task 3 narrow candidate check
+
+Candidate tried: force D-split BK=64 (`MFA_V2_FORCE_BK_D256=64`) for D=512.
+
+Focused checks (warmup=3, iters=10, separate processes):
+
+| Shape | SDPA ms | V2 default ms | V2 BK64 ms | Best MFA/SDPA |
+|---|---:|---:|---:|---:|
+| B=2 H=8 N=4096 causal f16 | 74.0 | 100.9 | 98.9 | 0.75x |
+| B=2 H=8 N=8192 causal f16 | 288.0 | 387.4 | 373.1 | 0.77x |
+| B=1 H=1 N=1024 non-causal f16 | 1.38 | 1.59 | 1.89 | 0.87x |
+| B=1 H=1 N=2048 non-causal f16 | 1.84 | 3.67 | 3.92 | 0.50x |
+
+Conclusion: BK override improves some rows slightly but never reaches parity.
+No narrow benchmark-backed D=512 win was found.
