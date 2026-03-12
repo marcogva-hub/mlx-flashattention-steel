@@ -110,6 +110,33 @@ def _dispatch_dtype_key(dtype) -> Optional[str]:
     return None
 
 
+def _d256_min_n(
+    *,
+    head_dim: int,
+    causal: bool,
+    is_m3_plus: bool,
+    dtype_key: Optional[str],
+    has_custom_table: bool,
+) -> Optional[int]:
+    """Return D=256 family threshold when a dedicated rule applies.
+
+    D=256 is handled as a separate design family from D=64/128:
+    - M1/M2 f16 causal: promote from N>=4096 (benchmark-backed narrow win)
+    - M1/M2 bf16 causal: keep SDPA
+    - M3+ causal: keep conservative SDPA default until measured
+    - non-causal: defer to global table (already SDPA default)
+    """
+    if head_dim != 256 or not causal or has_custom_table:
+        return None
+    if is_m3_plus:
+        return 999_999
+    if dtype_key == "float16":
+        return 4096
+    if dtype_key == "bfloat16":
+        return 999_999
+    return None
+
+
 def _splitk_env_key(
     head_dim: int,
     causal: bool,
@@ -224,18 +251,15 @@ def should_use_mfa(
 
     dtype_key = _dispatch_dtype_key(dtype)
 
-    # D=256 is treated as a separate family with dtype-specific behavior:
-    # - M1/M2 f16 causal can win from N>=4096.
-    # - bf16 remains SDPA territory on current measurements.
-    # Keep this narrow rule local-only when no custom table is supplied.
-    if custom is None and head_dim == 256 and causal and not is_m3_plus:
-        if dtype_key == "float16":
-            min_n = 4096
-        elif dtype_key == "bfloat16":
-            min_n = 999_999
-        else:
-            # dtype unknown: keep conservative fallback table behavior.
-            min_n = thresholds.get((head_dim, causal), 999_999)
+    d256_min_n = _d256_min_n(
+        head_dim=head_dim,
+        causal=causal,
+        is_m3_plus=is_m3_plus,
+        dtype_key=dtype_key,
+        has_custom_table=(custom is not None),
+    )
+    if d256_min_n is not None:
+        min_n = d256_min_n
     else:
         min_n = thresholds.get((head_dim, causal), 999_999)
 
