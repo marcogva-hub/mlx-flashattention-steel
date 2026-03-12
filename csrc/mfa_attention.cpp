@@ -328,6 +328,30 @@ void MFAttention::eval_gpu(
   // Phase 2: FlashDecodeReduce     (reused, grid: N, H, B)
   // Set MFA_DISABLE_V2=1 to force V1 path (for benchmarking/debugging only).
   if (!std::getenv("MFA_DISABLE_V2")) {
+    // MFA_FORCE_SPLITK override:
+    //   1 -> force split-K attempt (bypass occupancy short-circuit)
+    //   0 -> disable split-K entirely
+    // unset/other -> normal heuristic + optional calibrated thresholds
+    int force_splitk = -1;
+    if (const char* fs_env = std::getenv("MFA_FORCE_SPLITK")) {
+      if (fs_env[0] == '0' && fs_env[1] == '\0') force_splitk = 0;
+      if (fs_env[0] == '1' && fs_env[1] == '\0') force_splitk = 1;
+    }
+    const bool has_window = (params_.window_left >= 0 || params_.window_right >= 0);
+    const auto splitk_calibrated_max_n = [&]() -> int {
+      // Key format (set by dispatch_policy._load_calibrated_kernel_config):
+      // MFA_SPLITK_MAX_N_D{D}_C{0|1}_A{0|1}_W{0|1}
+      const std::string env_key =
+          "MFA_SPLITK_MAX_N_D" + std::to_string(D) +
+          "_C" + std::to_string(params_.causal ? 1 : 0) +
+          "_A" + std::to_string(params_.has_alibi ? 1 : 0) +
+          "_W" + std::to_string(has_window ? 1 : 0);
+      const char* v = std::getenv(env_key.c_str());
+      if (!v || v[0] == '\0') return -1;
+      return std::atoi(v);
+    };
+    const int calibrated_max_n = splitk_calibrated_max_n();
+
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         (D == 64 || D == 128) &&
@@ -335,7 +359,11 @@ void MFAttention::eval_gpu(
         // RoPE/ALiBi/window are supported in V2 split-K (Phase 3 composability).
         !params_.has_block_mask;
 
-    if (v2sk_eligible) {
+    const bool splitk_disabled_by_override = (force_splitk == 0);
+    const bool splitk_disabled_by_calibration =
+        (force_splitk < 0 && calibrated_max_n >= 0 && N > calibrated_max_n);
+
+    if (v2sk_eligible && !splitk_disabled_by_override && !splitk_disabled_by_calibration) {
       auto cfg2 = select_steel_v2_block_config(D, is_m3_plus_steel);
       const int BQ2  = cfg2.BQ;
       const int BK2  = cfg2.BK;
@@ -343,7 +371,8 @@ void MFAttention::eval_gpu(
       const int TGP2 = WM2 * cfg2.WN * 32;
       const int NQ2  = (N + BQ2 - 1) / BQ2;
       const int total_tgs = NQ2 * H * B;
-      const int num_splits = compute_v2_num_splits(total_tgs, S, BK2, gpu_cores);
+      const int num_splits = compute_v2_num_splits(
+          total_tgs, S, BK2, gpu_cores, force_splitk == 1);
 
       if (num_splits >= 2) {
         const int NK2_total = (S + BK2 - 1) / BK2;

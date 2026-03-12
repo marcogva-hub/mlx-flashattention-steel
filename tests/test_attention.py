@@ -12,6 +12,7 @@ Test classes:
 """
 
 import math
+import os
 
 import mlx.core as mx
 import numpy as np
@@ -8001,6 +8002,85 @@ class TestAutoCalibration:
         import json
         data = json.loads(out.read_text())
         assert "kernel_configs" not in data
+
+    def test_calibrate_writes_splitk_thresholds(self, tmp_path):
+        """calibrate_dispatch writes split-K crossover entries to JSON."""
+        from mlx_mfa.dispatch_policy import calibrate_dispatch
+        out = tmp_path / "dispatch.json"
+        calibrate_dispatch(
+            head_dims=[64],
+            save_path=str(out),
+            warmup=1,
+            n_iters=1,
+            calibrate_kernel_configs=False,
+            calibrate_splitk=True,
+        )
+        import json
+        data = json.loads(out.read_text())
+        entries = data.get("splitk_thresholds")
+        assert isinstance(entries, list) and entries, "splitk_thresholds missing/empty"
+        sample = entries[0]
+        for key in ("D", "causal", "has_alibi", "has_window", "max_N"):
+            assert key in sample, f"splitk_thresholds entry missing key: {key}"
+
+
+class TestSplitKPolicy:
+    """Split-K calibration table + env override behavior."""
+
+    def test_should_use_splitk_env_override_precedence(self, monkeypatch):
+        """MFA_FORCE_SPLITK must override calibrated split-K max_N entries."""
+        from mlx_mfa.dispatch_policy import should_use_splitk, _splitk_env_key
+
+        key = _splitk_env_key(64, True, has_alibi=False, has_window=False)
+        monkeypatch.setenv(key, "256")
+
+        monkeypatch.setenv("MFA_FORCE_SPLITK", "1")
+        assert should_use_splitk(64, 4096, True) is True
+
+        monkeypatch.setenv("MFA_FORCE_SPLITK", "0")
+        assert should_use_splitk(64, 64, True) is False
+
+        monkeypatch.delenv("MFA_FORCE_SPLITK", raising=False)
+        assert should_use_splitk(64, 128, True) is True
+        assert should_use_splitk(64, 512, True) is False
+
+    def test_load_calibration_missing_file_is_safe(self, tmp_path, monkeypatch):
+        """Missing dispatch table must not raise or mutate split-K env."""
+        from mlx_mfa.dispatch_policy import _load_calibrated_kernel_config, _splitk_env_key
+
+        missing = tmp_path / "no_such_dispatch.json"
+        monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(missing))
+        env_key = _splitk_env_key(64, True, has_alibi=False, has_window=False)
+        monkeypatch.delenv(env_key, raising=False)
+
+        _load_calibrated_kernel_config()
+        assert os.environ.get(env_key) is None
+
+    def test_load_calibration_sets_splitk_env(self, tmp_path, monkeypatch):
+        """splitk_thresholds entries are loaded into env vars for C++ dispatch."""
+        import json
+        from mlx_mfa.dispatch_policy import _load_calibrated_kernel_config, _splitk_env_key
+
+        table = tmp_path / "dispatch.json"
+        payload = {
+            "thresholds": [],
+            "splitk_thresholds": [
+                {
+                    "D": 64,
+                    "causal": True,
+                    "has_alibi": False,
+                    "has_window": True,
+                    "max_N": 1024,
+                }
+            ],
+        }
+        table.write_text(json.dumps(payload))
+
+        monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(table))
+        env_key = _splitk_env_key(64, True, has_alibi=False, has_window=True)
+        monkeypatch.delenv(env_key, raising=False)
+        _load_calibrated_kernel_config()
+        assert os.environ.get(env_key) == "1024"
 
 
 class TestMainCLI:

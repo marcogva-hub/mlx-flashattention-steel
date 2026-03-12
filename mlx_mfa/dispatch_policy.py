@@ -81,6 +81,22 @@ _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
 _custom_table_loaded = False
 
 
+def _splitk_env_key(
+    head_dim: int,
+    causal: bool,
+    *,
+    has_alibi: bool,
+    has_window: bool,
+) -> str:
+    """Return the split-K calibration env key for this shape family."""
+    return (
+        f"MFA_SPLITK_MAX_N_D{int(head_dim)}"
+        f"_C{1 if causal else 0}"
+        f"_A{1 if has_alibi else 0}"
+        f"_W{1 if has_window else 0}"
+    )
+
+
 def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
     """Load a JSON dispatch table if MLX_MFA_DISPATCH_TABLE is set."""
     global _custom_thresholds, _custom_table_loaded
@@ -186,6 +202,46 @@ def should_use_mfa(
     return use_mfa
 
 
+def should_use_splitk(
+    head_dim: int,
+    seq_len: int,
+    causal: bool,
+    *,
+    has_alibi: bool = False,
+    has_window: bool = False,
+) -> bool:
+    """Return whether split-K should be enabled for this shape family.
+
+    Priority:
+      1) ``MFA_FORCE_SPLITK=0|1`` hard override.
+      2) calibrated max-N env threshold (if present).
+      3) fallback to C++ occupancy heuristic (return ``True`` here).
+    """
+    force = os.environ.get("MFA_FORCE_SPLITK")
+    if force == "0":
+        return False
+    if force == "1":
+        return True
+
+    key = _splitk_env_key(
+        head_dim,
+        causal,
+        has_alibi=has_alibi,
+        has_window=has_window,
+    )
+    raw = os.environ.get(key)
+    if raw is None or raw == "":
+        # No calibration entry -> let C++ occupancy heuristic decide.
+        return True
+    try:
+        max_n = int(raw)
+    except ValueError:
+        return True
+    if max_n < 0:
+        return True
+    return seq_len <= max_n
+
+
 def calibrate_dispatch(
     head_dims: Optional[list] = None,
     save_path: Optional[str] = None,
@@ -193,6 +249,7 @@ def calibrate_dispatch(
     warmup: int = 5,
     n_iters: int = 20,
     calibrate_kernel_configs: bool = True,
+    calibrate_splitk: bool = True,
 ) -> dict[tuple[int, bool], int]:
     """Run micro-benchmarks to find optimal MFA/SDPA crossover points.
 
@@ -216,6 +273,10 @@ def calibrate_dispatch(
         the optimal BK to ``kernel_configs.d128_optimal_bk`` in the JSON.
         BK=64 is chosen only if it wins at BOTH N=4096 and N=8192 (i.e.,
         BK=64 time < 0.95 × BK=32 time at both points).
+    calibrate_splitk : bool
+        When True (default), benchmark V2 split-K on/off for representative
+        production families (D=64/128, causal dense, causal+ALiBi,
+        causal+window) and save per-family ``max_N`` crossover entries.
 
     Returns
     -------
@@ -279,6 +340,7 @@ def calibrate_dispatch(
 
     # ── Kernel config calibration (BK=32 vs BK=64 for D=128) ───────────────
     kernel_configs: dict = {}
+    splitk_thresholds: list[dict] = []
     if calibrate_kernel_configs:
         print("\nCalibrating D=128 BK selection (BK=32 vs BK=64)...")
         bk_results: dict[int, dict[int, float]] = {32: {}, 64: {}}
@@ -323,6 +385,97 @@ def calibrate_dispatch(
         print(f"  => D=128 optimal BK={optimal_bk} "
               f"(BK=64 wins N=4096: {wins_4096}, N=8192: {wins_8192})")
 
+    # ── Split-K calibration (on/off crossover) ─────────────────────────────
+    if calibrate_splitk:
+        print("\nCalibrating split-K on/off crossover (D=64/128, causal families)...")
+        splitk_profiles = [
+            {"causal": True, "has_alibi": False, "window_size": None},
+            {"causal": True, "has_alibi": True, "window_size": None},
+            {"causal": True, "has_alibi": False, "window_size": (256, 0)},
+            {"causal": True, "has_alibi": False, "window_size": (512, 0)},
+        ]
+        splitk_candidates = [256, 512, 1024, 2048, 4096, 8192]
+
+        for D in (64, 128):
+            for profile in splitk_profiles:
+                causal = profile["causal"]
+                has_alibi = profile["has_alibi"]
+                window_size = profile["window_size"]
+                has_window = window_size is not None
+                max_n = -1
+
+                for N in splitk_candidates:
+                    scale = 1.0 / math.sqrt(D)
+                    q = mx.zeros([1, 1, N, D], dtype=mx.float16)
+                    k = mx.zeros([1, 1, N, D], dtype=mx.float16)
+                    v = mx.zeros([1, 1, N, D], dtype=mx.float16)
+                    slopes = mx.array([-0.1], dtype=mx.float32)
+                    _materialize(q, k, v, slopes)
+
+                    def _run_mode(force_splitk: str) -> float:
+                        prev = os.environ.get("MFA_FORCE_SPLITK")
+                        try:
+                            os.environ["MFA_FORCE_SPLITK"] = force_splitk
+                            for _ in range(warmup):
+                                _materialize(flash_attention(
+                                    q, k, v,
+                                    scale=scale,
+                                    causal=causal,
+                                    backend="mfa",
+                                    alibi_slopes=(slopes if has_alibi else None),
+                                    window_size=window_size,
+                                ))
+                            mx.synchronize()
+                            ts = []
+                            for _ in range(n_iters):
+                                t0 = time.perf_counter()
+                                _materialize(flash_attention(
+                                    q, k, v,
+                                    scale=scale,
+                                    causal=causal,
+                                    backend="mfa",
+                                    alibi_slopes=(slopes if has_alibi else None),
+                                    window_size=window_size,
+                                ))
+                                mx.synchronize()
+                                ts.append((time.perf_counter() - t0) * 1000.0)
+                            return float(np.median(ts))
+                        finally:
+                            if prev is None:
+                                os.environ.pop("MFA_FORCE_SPLITK", None)
+                            else:
+                                os.environ["MFA_FORCE_SPLITK"] = prev
+
+                    splitk_ms = _run_mode("1")
+                    nosplit_ms = _run_mode("0")
+                    speedup = nosplit_ms / splitk_ms if splitk_ms > 0 else 0.0
+
+                    prof = (
+                        "dense"
+                        if not has_alibi and not has_window
+                        else ("alibi" if has_alibi else f"window={window_size[0]}")
+                    )
+                    print(
+                        f"  D={D} N={N} {prof}: split-K {splitk_ms:.2f} ms, "
+                        f"no-split {nosplit_ms:.2f} ms, speedup {speedup:.2f}x"
+                    )
+                    # Require a small margin to avoid noise-driven toggles.
+                    if speedup >= 1.02:
+                        max_n = N
+
+                entry = {
+                    "D": D,
+                    "causal": causal,
+                    "has_alibi": has_alibi,
+                    "has_window": has_window,
+                    "max_N": max_n,
+                }
+                splitk_thresholds.append(entry)
+                print(
+                    f"  => split-K max_N D={D} C={int(causal)} A={int(has_alibi)} "
+                    f"W={int(has_window)}: {max_n}"
+                )
+
     # ── Save ─────────────────────────────────────────────────────────────────
     if save_path is None:
         save_path = os.path.expanduser("~/.mlx_mfa/dispatch_table.json")
@@ -333,6 +486,8 @@ def calibrate_dispatch(
     }
     if kernel_configs:
         payload["kernel_configs"] = kernel_configs
+    if splitk_thresholds:
+        payload["splitk_thresholds"] = splitk_thresholds
     with open(save_path, "w") as fh:
         json.dump(payload, fh, indent=2)
     print(f"\nSaved dispatch table -> {save_path}")
@@ -364,5 +519,16 @@ def _load_calibrated_kernel_config() -> None:
             os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
             if _verbose:
                 print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
+
+        for entry in data.get("splitk_thresholds", []):
+            d = int(entry.get("D"))
+            c = bool(entry.get("causal"))
+            a = bool(entry.get("has_alibi"))
+            w = bool(entry.get("has_window"))
+            max_n = int(entry.get("max_N"))
+            env_key = _splitk_env_key(d, c, has_alibi=a, has_window=w)
+            os.environ.setdefault(env_key, str(max_n))
+            if _verbose:
+                print(f"[MFA dispatch] loaded {env_key}={max_n} from {table_path}")
     except Exception:  # noqa: BLE001
         pass  # silently skip — calibration is advisory

@@ -56,7 +56,9 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key);
 /// FA2-inspired heuristic: find smallest s s.t. total_tgs*s >= gpu_cores.
 /// Returns 1 if split is not beneficial (already well-occupied or too few K-tiles).
 /// gpu_cores: actual core count from estimate_gpu_cores(); NOT arch_gen internally.
-int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores);
+/// force_splitk=true bypasses the occupancy short-circuit and always tries to
+/// find s>=2 when NK_total permits (used by MFA_FORCE_SPLITK=1 debug override).
+int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores, bool force_splitk = false);
 
 /// Generate the Metal shader source for the V2 split-K partial kernel.
 /// Kernel function name: "mlx_mfa_v2_splitk_partial".

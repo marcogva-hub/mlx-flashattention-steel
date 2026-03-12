@@ -1416,10 +1416,10 @@ int estimate_gpu_cores(const std::string& device_name, int arch_gen) {
   return 8;  // M1 base
 }
 
-int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores) {
+int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores, bool force_splitk) {
   // gpu_cores is the actual estimated core count from estimate_gpu_cores().
   // Skip if already well-occupied
-  if (total_tgs >= (int)(0.8f * (float)gpu_cores)) return 1;
+  if (!force_splitk && total_tgs >= (int)(0.8f * (float)gpu_cores)) return 1;
 
   const int NK_total = (kL + BK - 1) / BK;
   if (NK_total < 2) return 1;  // Can't meaningfully split
