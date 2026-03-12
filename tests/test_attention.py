@@ -7760,6 +7760,12 @@ class TestSmartDispatch:
         from mlx_mfa.dispatch_policy import should_use_mfa
         assert should_use_mfa(128, 8192, causal=True, is_m3_plus=False)
 
+    def test_d256_causal_narrow_regime(self):
+        """D=256 causal uses MFA only in the large-N narrow winning regime."""
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(256, 4096, causal=True, is_m3_plus=False)
+        assert should_use_mfa(256, 8192, causal=True, is_m3_plus=False)
+
     def test_noncausal_never_routes_mfa(self):
         """Non-causal attention should never use MFA (best 0.92x, no win)."""
         from mlx_mfa.dispatch_policy import should_use_mfa

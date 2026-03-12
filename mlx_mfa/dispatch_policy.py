@@ -46,12 +46,15 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (128, True):  2048,
     # D=128 non-causal: 0.90x at N=16384, 0.88x at N=32768 — disable.
     (128, False): 999_999,
-    # D=256/512 dense: D-split V2 achieves ~1.00× SDPA (M1 Max benchmark, v2.6.0).
-    # No benefit over SDPA for dense; route to SDPA to avoid Python overhead.
-    # Window/sparse: always MFA (tile-skip gives 5-20× regardless of D) —
-    # handled before this table in should_use_mfa().
-    (256, True):  999_999,
+    # D=256 causal: narrow win regime (M1 Max, 2026-03-12 decision pass):
+    #   N=1024 -> 0.73x, N=2048 -> 0.94x, N=4096 -> ~1.0-1.05x, N>=8192 -> 1.11-1.19x.
+    # Promote only for large causal contexts; keep shorter causal + non-causal on SDPA.
+    (256, True):  8192,
+    # D=256 non-causal remains a clear loss (~0.55x in decision pass).
     (256, False): 999_999,
+    # D=512 dense: still parity-only in current measurements; keep SDPA default.
+    # Window/sparse always MFA (tile-skip gives 5-20× regardless of D) —
+    # handled before this table in should_use_mfa().
     (512, True):  999_999,
     (512, False): 999_999,
 }
@@ -66,7 +69,7 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
     # On M1/M2 threshold is N=2048; M3+ wins earlier due to larger tile.
     (128, True):  1024,
     (128, False): 999_999,
-    # D=256/512: D-split V2 at parity with SDPA (~1.00×). Dense → SDPA.
+    # D=256/512 on M3+ remain conservative until measured on real M3/M4 hardware.
     # Window/sparse still route to MFA via should_use_mfa() early-exit.
     (256, True):  999_999,
     (256, False): 999_999,
