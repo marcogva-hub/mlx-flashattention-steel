@@ -7630,6 +7630,41 @@ class TestDecodeRuntimeFactory:
         assert "DecodeRuntime" in mlx_mfa.__all__
         assert "create_decode_runtime" in mlx_mfa.__all__
 
+    def test_shared_prefix_helper_accessible_via_runtime(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        out, kp, vp = rt.shared_prefix_cache(q, k, v)
+        mx.eval(out, kp, vp)
+        assert out.shape == (1, 4, 16, 64)
+        assert kp.shape == k.shape
+        assert vp.shape == v.shape
+
+    def test_splitfuse_helper_accessible_via_runtime(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 32, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 32, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 32, 64)).astype(mx.float16)
+        out_p, out_d = rt.splitfuse(q, k, v, None, None, None)
+        mx.eval(out_p)
+        assert out_p.shape == (1, 4, 32, 64)
+        assert out_d is None
+
 
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)

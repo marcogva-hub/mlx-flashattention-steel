@@ -12,6 +12,10 @@ from typing import Optional
 import mlx.core as mx
 
 from mlx_mfa.inference import create_inference_context, _context_backend_name
+from mlx_mfa.attention import (
+    make_shared_prefix_cache,
+    flash_attention_splitfuse,
+)
 
 __all__ = [
     "DecodeRuntime",
@@ -48,6 +52,37 @@ class DecodeRuntime:
     def reset(self, **kwargs):
         """Forward reset to the underlying context."""
         return self.context.reset(**kwargs)
+
+    def shared_prefix_cache(
+        self,
+        prefix_q: mx.array,
+        prefix_k: mx.array,
+        prefix_v: mx.array,
+        **kwargs,
+    ):
+        """Expose make_shared_prefix_cache() through the runtime surface."""
+        return make_shared_prefix_cache(prefix_q, prefix_k, prefix_v, **kwargs)
+
+    def splitfuse(
+        self,
+        q_prefill: Optional[mx.array],
+        k_prefill: Optional[mx.array],
+        v_prefill: Optional[mx.array],
+        q_decode: Optional[mx.array],
+        k_cache_decode: Optional[mx.array],
+        v_cache_decode: Optional[mx.array],
+        **kwargs,
+    ):
+        """Expose flash_attention_splitfuse() through the runtime surface."""
+        return flash_attention_splitfuse(
+            q_prefill,
+            k_prefill,
+            v_prefill,
+            q_decode,
+            k_cache_decode,
+            v_cache_decode,
+            **kwargs,
+        )
 
     def seq_length(self, seq_id: int = 0) -> int:
         """Return sequence length for dense/paged/sage contexts."""
