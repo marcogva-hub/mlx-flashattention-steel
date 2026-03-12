@@ -36,7 +36,12 @@ from typing import Optional
 import mlx.core as mx
 
 
-__all__ = ["InferenceContext", "PagedInferenceContext", "SageInferenceContext"]
+__all__ = [
+    "InferenceContext",
+    "PagedInferenceContext",
+    "SageInferenceContext",
+    "create_inference_context",
+]
 
 
 class InferenceContext:
@@ -630,3 +635,98 @@ class SageInferenceContext:
             f"max_seq_len={self.max_seq_len}, seqlen={self._cache.seqlen}, "
             f"dtype={self.dtype})"
         )
+
+
+def create_inference_context(
+    *,
+    backend: str = "auto",
+    paged: bool = False,
+    quantized_kv: bool = False,
+    B: Optional[int] = None,
+    H_kv: int,
+    D: int,
+    max_seq_len: int = 8192,
+    num_blocks: Optional[int] = None,
+    block_size: int = 16,
+    dtype: mx.Dtype = mx.float16,
+    stream: Optional[mx.Stream] = None,
+):
+    """Create a decode context for dense, paged, or Sage backends.
+
+    Routing policy:
+      - ``backend="auto"``: paged > sage > dense
+      - ``backend="paged"``: :class:`PagedInferenceContext`
+      - ``backend="sage"``:  :class:`SageInferenceContext`
+      - ``backend="dense"``: :class:`InferenceContext`
+
+    Args:
+        backend: ``"auto"``, ``"dense"``, ``"paged"``, or ``"sage"``.
+        paged: Hint for auto mode; when True selects paged context.
+        quantized_kv: Hint for auto mode; when True selects Sage context.
+        B: Batch size (required for dense/sage; optional for paged helper sizing).
+        H_kv: KV head count.
+        D: Head dimension.
+        max_seq_len: Maximum sequence length for dense/sage buffers.
+        num_blocks: Paged pool blocks; if omitted in paged mode, a conservative
+            default is derived from ``B`` and ``max_seq_len``.
+        block_size: Tokens per paged block.
+        dtype: Cache dtype.
+        stream: Optional MLX stream.
+    """
+    mode = backend.lower()
+    if mode not in {"auto", "dense", "paged", "sage"}:
+        raise ValueError(f"backend must be one of auto|dense|paged|sage, got {backend!r}")
+
+    if mode == "auto":
+        if paged:
+            mode = "paged"
+        elif quantized_kv:
+            mode = "sage"
+        else:
+            mode = "dense"
+
+    if mode == "dense":
+        if paged:
+            raise ValueError("backend='dense' is incompatible with paged=True")
+        if quantized_kv:
+            raise ValueError("backend='dense' is incompatible with quantized_kv=True")
+        if B is None:
+            raise ValueError("B is required for backend='dense'")
+        return InferenceContext(
+            B=B,
+            H_kv=H_kv,
+            D=D,
+            max_seq_len=max_seq_len,
+            dtype=dtype,
+            stream=stream,
+        )
+
+    if mode == "sage":
+        if paged:
+            raise ValueError("backend='sage' is incompatible with paged=True")
+        if B is None:
+            raise ValueError("B is required for backend='sage'")
+        return SageInferenceContext(
+            B=B,
+            H_kv=H_kv,
+            D=D,
+            max_seq_len=max_seq_len,
+            dtype=dtype,
+            stream=stream,
+        )
+
+    # mode == "paged"
+    if quantized_kv:
+        raise ValueError("backend='paged' is incompatible with quantized_kv=True")
+    if num_blocks is None:
+        effective_b = B if B is not None else 1
+        # Default assumes one full max_seq_len stream per batch element.
+        num_blocks = max(1, (effective_b * max_seq_len + block_size - 1) // block_size)
+    return PagedInferenceContext(
+        num_blocks=num_blocks,
+        block_size=block_size,
+        H_kv=H_kv,
+        D=D,
+        dtype=dtype,
+        stream=stream,
+    )

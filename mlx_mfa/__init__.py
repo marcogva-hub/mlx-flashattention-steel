@@ -102,7 +102,12 @@ from mlx_mfa.quantize import (
 )
 
 # Track LC/Phase 2: InferenceContext + PagedInferenceContext + SageInferenceContext
-from mlx_mfa.inference import InferenceContext, PagedInferenceContext, SageInferenceContext
+from mlx_mfa.inference import (
+    InferenceContext,
+    PagedInferenceContext,
+    SageInferenceContext,
+    create_inference_context,
+)
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
 from mlx_mfa.compile_metallib import compile_metallib
@@ -188,5 +193,6 @@ __all__ = [
     "InferenceContext",
     "PagedInferenceContext",
     "SageInferenceContext",
+    "create_inference_context",
     "__version__",
 ]

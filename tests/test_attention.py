@@ -7404,6 +7404,61 @@ class TestPagedInferenceContext:
         assert "KVCacheProtocol" in mlx_mfa.__all__
 
 
+class TestInferenceContextFactory:
+    """Unified decode context helper routing."""
+
+    def test_backend_sage_routes_to_sage_context(self):
+        from mlx_mfa import create_inference_context, SageInferenceContext
+        ctx = create_inference_context(
+            backend="sage",
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=256,
+        )
+        assert isinstance(ctx, SageInferenceContext)
+
+    def test_paged_hint_routes_to_paged_context(self):
+        from mlx_mfa import create_inference_context, PagedInferenceContext
+        ctx = create_inference_context(
+            backend="auto",
+            paged=True,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=256,
+            num_blocks=32,
+            block_size=16,
+        )
+        assert isinstance(ctx, PagedInferenceContext)
+
+    def test_invalid_dense_plus_paged_fails(self):
+        from mlx_mfa import create_inference_context
+        with pytest.raises(ValueError, match="backend='dense'.*paged=True"):
+            create_inference_context(
+                backend="dense",
+                paged=True,
+                B=1,
+                H_kv=4,
+                D=64,
+            )
+
+    def test_invalid_paged_plus_quantized_fails(self):
+        from mlx_mfa import create_inference_context
+        with pytest.raises(ValueError, match="backend='paged'.*quantized_kv=True"):
+            create_inference_context(
+                backend="paged",
+                quantized_kv=True,
+                H_kv=4,
+                D=64,
+            )
+
+    def test_helper_is_exported(self):
+        import mlx_mfa
+        assert hasattr(mlx_mfa, "create_inference_context")
+        assert "create_inference_context" in mlx_mfa.__all__
+
+
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
 # ==========================================================================
