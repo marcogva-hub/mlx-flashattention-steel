@@ -104,6 +104,10 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus) {
 std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
+  // MFA_NO_PADDING=1: set all smem padding to 0 (for benchmarking bank-conflict cost).
+  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+
   const int D          = key.head_dim;
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
@@ -223,9 +227,9 @@ struct MFASteelParams {
   // KV_smem = max(K_smem, V_smem):
   //   K_smem (transposed): (BK+padK) * BD * sizeof(T)
   //   V_smem (row-major):  BK * (BD+padV) * sizeof(T)
-  ss << "  constexpr short padQ = 16 / sizeof(T);\n";
-  ss << "  constexpr short padK = 16 / sizeof(T);\n";
-  ss << "  constexpr short padV = 16 / sizeof(T);\n";
+  ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "  constexpr short padK = " << pad_expr << ";\n";
+  ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  constexpr short LDQ  = MFA_BD + padQ;\n";
   ss << "  constexpr short LDK  = MFA_BK + padK;  // stride for transposed K\n";
   ss << "  constexpr short LDV  = MFA_BD + padV;\n";
@@ -761,6 +765,9 @@ struct MFASteelParams {
 std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
+  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+
   const int D          = key.head_dim;  // 256 or 512
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
@@ -879,9 +886,9 @@ struct MFASteelParams {
   // KV_smem: max(K_transposed_smem, V_rowmajor_smem) — BD_HALF wide
   //   K_smem (transposed): (BK+padK) × BD_HALF × sizeof(T)
   //   V_smem (row-major):  BK × (BD_HALF+padV) × sizeof(T)
-  ss << "  constexpr short padQ = 16 / sizeof(T);\n";
-  ss << "  constexpr short padK = 16 / sizeof(T);\n";
-  ss << "  constexpr short padV = 16 / sizeof(T);\n";
+  ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "  constexpr short padK = " << pad_expr << ";\n";
+  ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  constexpr short LDQ  = MFA_BD_HALF + padQ;\n";
   ss << "  constexpr short LDK  = MFA_BK + padK;         // stride for transposed K\n";
   ss << "  constexpr short LDV  = MFA_BD_HALF + padV;\n";
@@ -1445,6 +1452,9 @@ int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores) {
 std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
+  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+
   const int D      = key.head_dim;
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
@@ -1571,9 +1581,9 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // ── Threadgroup memory ────────────────────────────────────────────────────
-  ss << "  constexpr short padQ = 16 / sizeof(T);\n";
-  ss << "  constexpr short padK = 16 / sizeof(T);\n";
-  ss << "  constexpr short padV = 16 / sizeof(T);\n";
+  ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "  constexpr short padK = " << pad_expr << ";\n";
+  ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  constexpr short LDQ  = MFA_BD + padQ;\n";
   ss << "  constexpr short LDK  = MFA_BK + padK;\n";
   ss << "  constexpr short LDV  = MFA_BD + padV;\n";

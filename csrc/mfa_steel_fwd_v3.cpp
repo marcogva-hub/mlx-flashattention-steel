@@ -26,6 +26,9 @@ namespace mlx_mfa {
 std::string generate_steel_v3_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
+  const bool no_padding  = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+
   const int D            = key.head_dim;
   const bool causal      = key.causal;
   const bool has_softcap = key.has_softcap;
@@ -141,9 +144,9 @@ struct MFASteelParams {
   //   D=128 BK=32: Q(32×136×2=8,704) K(136×32×2=8,704)... wait, K is transposed:
   //     K_smem (BK+padK)*BD: (32+8)*128*2=10,240 B  V_smem BK*(BD+padV): 32*136*2=8,704 B
   //     Total D=128 BK=32: 8,704 + 10,240 + 8,704 = 27,648 B ✅
-  ss << "  constexpr short padQ = 16 / sizeof(T);\n";
-  ss << "  constexpr short padK = 16 / sizeof(T);\n";
-  ss << "  constexpr short padV = 16 / sizeof(T);\n";
+  ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "  constexpr short padK = " << pad_expr << ";\n";
+  ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  constexpr short LDQ  = MFA_BD + padQ;\n";
   ss << "  constexpr short LDK  = MFA_BK + padK;  // stride for transposed K\n";
   ss << "  constexpr short LDV  = MFA_BD + padV;\n";

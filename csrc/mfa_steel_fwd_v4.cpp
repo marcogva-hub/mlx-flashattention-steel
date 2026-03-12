@@ -26,6 +26,9 @@ namespace mlx_mfa {
 std::string generate_steel_v4_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
+  const bool no_padding  = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
+
   const int D            = key.head_dim;
   const bool causal      = key.causal;
   const bool has_softcap = key.has_softcap;
@@ -131,8 +134,8 @@ struct MFASteelParams {
   //   D=64  BK=64: Q(32×72×2=4,608) + V(64×72×2=9,216)  = 13,824 B
   //   D=128 BK=32: Q(32×136×2=8,704) + V(32×136×2=8,704) = 17,408 B
   //   D=128 BK=64: Q(32×136×2=8,704) + V(64×136×2=17,408)= 26,112 B
-  ss << "  constexpr short padQ = 16 / sizeof(T);\n";
-  ss << "  constexpr short padV = 16 / sizeof(T);\n";
+  ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "  constexpr short padV = " << pad_expr << ";\n";
   ss << "  constexpr short LDQ  = MFA_BD + padQ;\n";
   ss << "  constexpr short LDV  = MFA_BD + padV;\n";
   ss << "\n";
