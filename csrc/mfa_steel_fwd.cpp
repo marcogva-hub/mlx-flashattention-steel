@@ -1525,6 +1525,21 @@ struct MFAMMATile {
     }
   }
 
+  // Device-memory overload: same logic, device address space.
+  // Used by V4 to load K fragments directly from device memory.
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void load(const device U* src, int str_row, int str_col) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++) {
+        Frag::load(frag_at(i, j),
+                   &src[(i * 8) * w_x * str_row + (j * 8) * w_y * str_col],
+                   str_row, str_col);
+      }
+    }
+  }
+
   template <typename U, int w_x, int w_y>
   METAL_FUNC void store(device U* dst, const int ld) const {
     STEEL_PRAGMA_UNROLL

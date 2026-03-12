@@ -8231,3 +8231,84 @@ class TestSteelV3:
         assert out.dtype == mx.bfloat16
         assert out.shape == (B, H, N, D)
         assert mx.isfinite(out).all().item()
+
+
+@requires_ext
+class TestSteelV4:
+    """STEEL V4 (direct device K reads, 2 barriers/iter, M3+ only).
+
+    V4 eliminates K_smem: each simdgroup loads K fragments directly from
+    device memory in the GEMM loop. 2 barriers/tile vs V2's 4.
+
+    Enabled via MFA_ENABLE_V4=1. On non-M3+ hardware the gate is tested
+    using MFA_FORCE_GEN=15 to simulate M3+ routing.
+    """
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (64, 256, True), (64, 256, False),
+        (64, 1024, True),
+        (128, 256, True), (128, 256, False),
+        (128, 1024, True),
+    ])
+    def test_v4_matches_v2(self, D, N, causal):
+        """V4 output matches V2 (or SDPA) within f16 tolerance."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(42)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        # V4 path (force M3+ routing even on M1)
+        with patch.dict(_os.environ, {"MFA_ENABLE_V4": "1", "MFA_FORCE_GEN": "15"}):
+            out_v4 = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out_v4)
+
+        # V2 default path
+        out_v2 = flash_attention(q, k, v, scale=scale, causal=causal)
+        mx.eval(out_v2)
+
+        diff = mx.max(mx.abs(
+            out_v4.astype(mx.float32) - out_v2.astype(mx.float32)
+        )).item()
+        assert diff < 1e-2, (
+            f"D={D} N={N} causal={causal}: V4 vs V2 max_diff={diff:.4e}"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_v4_gqa(self, D):
+        """V4 handles GQA (H_q=8, H_kv=2)."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(11)
+        B, Hq, Hkv, N = 1, 8, 2, 512
+        q = mx.random.normal([B, Hq, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V4": "1", "MFA_FORCE_GEN": "15"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
+        assert out.shape == (B, Hq, N, D)
+
+    def test_v4_bf16(self):
+        """V4 works with bfloat16 dtype."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(99)
+        B, H, N, D = 1, 4, 256, 64
+        q = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V4": "1", "MFA_FORCE_GEN": "15"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
+        assert out.dtype == mx.bfloat16
+        assert out.shape == (B, H, N, D)
+        assert mx.isfinite(out).all().item()

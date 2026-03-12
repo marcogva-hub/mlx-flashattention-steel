@@ -20,6 +20,7 @@
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_fwd_v2.hpp"
 #include "mfa_steel_fwd_v3.hpp"
+#include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_bwd.hpp"
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
@@ -465,6 +466,108 @@ void MFAttention::eval_gpu(
       }
     }
   }  // end if (!MFA_DISABLE_V2) — split-K block
+
+  // ── STEEL V4 dispatch (f16/bf16, D=64/128, M3+ only) ────────────────────
+  // Direct device K reads: eliminates K_smem + 2 barriers/tile (X + C).
+  // Barrier schedule: B0 + (NK-1)×(A+B) ≈ 2×NK vs V2's 4×NK.
+  // TGP: Q_smem + V_smem only (no K_smem). RoPE-K not supported (no TGP K).
+  // Set MFA_ENABLE_V4=1 to opt in (disabled by default pending benchmarks).
+  if (is_m3_plus_steel && std::getenv("MFA_ENABLE_V4")) {
+    const bool v4_eligible =
+        (dtype_code != 2) &&
+        v4_tgp_eligible(D, is_m3_plus_steel) &&
+        !params_.has_rope;    // V4 reads K raw from device; no TGP for RoPE-K
+
+    if (v4_eligible) {
+      auto cfg4 = select_steel_v4_block_config(D, is_m3_plus_steel);
+      const int BQ4      = cfg4.BQ;   // 32
+      const int BK4      = cfg4.BK;   // same as V2 (64 D=64, 64 M3+ D=128, 32 M1 D=128)
+      const int WM4      = cfg4.WM;   // 4
+      const int TGP4     = WM4 * cfg4.WN * 32;  // 128
+      const int NQ4      = (N + BQ4 - 1) / BQ4;
+      const int NK4      = (S + BK4 - 1) / BK4;
+      const int NQ4_aln  = (N % BQ4 == 0) ? NQ4 : NQ4 - 1;
+      const int NK4_aln  = (S % BK4 == 0) ? NK4 : NK4 - 1;
+
+      using KK4 = ShaderCache::KernelKey;
+      KK4 key4{
+        KK4::KernelType::SteelForwardV4,
+        D, BQ4, BK4, D, WM4,
+        params_.causal,
+        /*sparse=*/params_.has_block_mask,
+        is_m3_plus_steel,
+        /*has_rope=*/false,   // V4 never uses RoPE-K (gated above)
+        /*rope_interleaved=*/false,
+        params_.softcap > 0.0f,
+        params_.has_alibi,
+        params_.window_left >= 0 || params_.window_right >= 0,
+        dtype_code,
+        H / Hk
+      };
+
+      void* raw4     = ShaderCache::get().get_or_compile(key4, d.mtl_device());
+      auto* pipeline4 = reinterpret_cast<MTL::ComputePipelineState*>(raw4);
+
+      MFASteelParams sp4{};
+      sp4.B          = B;
+      sp4.H          = H;
+      sp4.D          = D;
+      sp4.qL         = N;
+      sp4.kL         = S;
+      sp4.gqa_factor = H / Hk;
+      sp4.scale      = params_.scale;
+      sp4.NQ         = NQ4;
+      sp4.NK         = NK4;
+      sp4.NQ_aligned = NQ4_aln;
+      sp4.NK_aligned = NK4_aln;
+      sp4.qL_rem     = (N % BQ4 == 0) ? BQ4 : (N % BQ4);
+      sp4.kL_rem     = (S % BK4 == 0) ? BK4 : (S % BK4);
+      sp4.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
+      sp4.rope_q_base     = params_.cache_seqlens;
+      sp4.rope_cos_stride = D / 2;
+      sp4.Q_strides[0] = (int64_t)H  * N * D;
+      sp4.Q_strides[1] = (int64_t)N  * D;
+      sp4.Q_strides[2] = (int64_t)D;
+      sp4.K_strides[0] = (int64_t)Hk * S * D;
+      sp4.K_strides[1] = (int64_t)S  * D;
+      sp4.K_strides[2] = (int64_t)D;
+      sp4.V_strides[0] = (int64_t)Hk * S * D;
+      sp4.V_strides[1] = (int64_t)S  * D;
+      sp4.V_strides[2] = (int64_t)D;
+      sp4.O_strides[0] = (int64_t)H  * N * D;
+      sp4.O_strides[1] = (int64_t)N  * D;
+      sp4.O_strides[2] = (int64_t)D;
+      sp4.L_strides[0] = (int64_t)H  * N;
+      sp4.L_strides[1] = (int64_t)N;
+      sp4.softcap      = params_.softcap;
+      sp4.has_alibi    = params_.has_alibi ? 1 : 0;
+      sp4.window_left  = params_.window_left;
+      sp4.window_right = params_.window_right;
+      sp4.mask_batch_stride = params_.has_block_mask ? (int64_t)(NQ4 * NK4) : 0;
+      sp4.mask_head_stride  = params_.has_block_mask ? (int64_t)(NQ4 * NK4) : 0;
+
+      auto& enc4 = d.get_command_encoder(stream().index);
+      enc4.set_compute_pipeline_state(pipeline4);
+      enc4.set_input_array(q,          0);
+      enc4.set_input_array(k,          1);
+      enc4.set_input_array(v,          2);
+      enc4.set_output_array(out,       3);
+      enc4.set_output_array(logsumexp, 4);
+      enc4.set_bytes(sp4,              5);
+      if (params_.has_block_mask) {
+        enc4.set_input_array(inputs[3], 6);
+      }
+      if (params_.has_alibi) {
+        int alibi_idx = 3 + (params_.has_block_mask ? 1 : 0);
+        enc4.set_input_array(inputs[alibi_idx], 9);
+      }
+
+      enc4.dispatch_threadgroups(
+          MTL::Size::Make((size_t)NQ4, (size_t)H, (size_t)B),
+          MTL::Size::Make((size_t)TGP4, 1, 1));
+      return;
+    }
+  }  // end if (is_m3_plus_steel && MFA_ENABLE_V4)
 
   // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.

@@ -57,8 +57,15 @@ class ShaderCache {
       // D=64 all gens, D=128 M1/M2 only (BK=32; M3+ BK=64 exceeds 32KB TGP).
       // generate_steel_v3_source() in mfa_steel_fwd_v3.cpp.
       SteelForwardV3             = 20,  // STEEL V3: separate K/V smem, 2 barriers/iter
+      // --- V4: direct device K reads (M3+ only, opt-in via MFA_ENABLE_V4) ---
+      // Eliminates K_smem: K loaded from device per-simdgroup in GEMM.
+      // Barrier schedule: 2/tile (A+B) vs V2's 4/tile (A+B+X+C).
+      // TGP: Q+V only. No RoPE-K support (K not buffered in TGP).
+      // Set MFA_ENABLE_V4=1 to opt in (disabled by default pending benchmarks).
+      // generate_steel_v4_source() in mfa_steel_fwd_v4.cpp.
+      SteelForwardV4             = 21,  // STEEL V4: direct device K reads, 2 barriers/iter
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 21,  // Reserved: Metal 4 cooperative tensor API
+      // TensorOpsForward = 22,  // Reserved: Metal 4 cooperative tensor API
       //                         // Not yet implemented; M5+ hardware required.
     };
 
