@@ -8542,3 +8542,105 @@ class TestSteelV5:
             out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
         )).item()
         assert diff < 2e-2, f"D={D} N={N} window={window}: diff={diff:.4e}"
+
+
+class TestSteelV5CP5:
+    """CP5: softcap, ALiBi, and sparse support in STEEL V5."""
+
+    pytestmark = [
+        pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
+    ]
+
+    B, H, N, D = 2, 8, 1024, 128
+
+    def _run_v5(self, q, k, v, scale, causal=False, **kwargs):
+        import os, contextlib
+        old = os.environ.get("MFA_ENABLE_V5")
+        os.environ["MFA_ENABLE_V5"] = "1"
+        try:
+            return flash_attention(q, k, v, scale=scale, causal=causal, **kwargs)
+        finally:
+            if old is None:
+                del os.environ["MFA_ENABLE_V5"]
+            else:
+                os.environ["MFA_ENABLE_V5"] = old
+
+    # ── softcap ──────────────────────────────────────────────────────────────
+    @pytest.mark.parametrize("D,causal", [(64, False), (128, True)])
+    def test_v5_softcap(self, D, causal):
+        """V5 softcap must match reference within f16 tolerance."""
+        mx.random.seed(7)
+        B, H, N = 2, 8, 512
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = D ** -0.5
+        softcap = 30.0
+
+        ref = flash_attention(q, k, v, scale=scale, causal=causal,
+                              softcap=softcap)
+        out = self._run_v5(q, k, v, scale, causal=causal, softcap=softcap)
+        mx.eval(ref, out)
+
+        diff = mx.max(mx.abs(
+            ref.astype(mx.float32) - out.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D} causal={causal}: diff={diff:.4e}"
+
+    # ── ALiBi ────────────────────────────────────────────────────────────────
+    @pytest.mark.parametrize("D,causal", [(64, False), (128, False)])
+    def test_v5_alibi(self, D, causal):
+        """V5 ALiBi must match reference within f16 tolerance."""
+        mx.random.seed(11)
+        B, H, N = 2, 8, 512
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = D ** -0.5
+        slopes = mx.array([2.0 ** (-i) for i in range(1, H + 1)],
+                          dtype=mx.float32)
+
+        ref = flash_attention(q, k, v, scale=scale, causal=causal,
+                              alibi_slopes=slopes)
+        out = self._run_v5(q, k, v, scale, causal=causal,
+                           alibi_slopes=slopes)
+        mx.eval(ref, out)
+
+        diff = mx.max(mx.abs(
+            ref.astype(mx.float32) - out.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D}: diff={diff:.4e}"
+
+    # ── block-sparse ─────────────────────────────────────────────────────────
+    # V5 excludes sparse: block_mask is sized for V2's BK, not V5's BK=128.
+    # With MFA_ENABLE_V5=1, sparse calls fall through to V2.
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_v5_sparse_falls_back_to_v2(self, D):
+        """Sparse calls must fall through to V2 (not error) when MFA_ENABLE_V5=1."""
+        import os
+        mx.random.seed(23)
+        B, H, N = 2, 8, 512
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        scale = D ** -0.5
+        mask = make_causal_block_mask(N, head_dim=D)
+
+        old = os.environ.get("MFA_ENABLE_V5")
+        os.environ["MFA_ENABLE_V5"] = "1"
+        try:
+            # Should not raise; falls through to V2 sparse
+            out = flash_attention_sparse(q, k, v, mask, scale=scale, causal=True)
+            ref = mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask="causal")
+            mx.eval(out, ref)
+        finally:
+            if old is None:
+                del os.environ["MFA_ENABLE_V5"]
+            else:
+                os.environ["MFA_ENABLE_V5"] = old
+
+        diff = mx.max(mx.abs(
+            out.astype(mx.float32) - ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"D={D}: diff={diff:.4e}"

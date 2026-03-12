@@ -25,10 +25,13 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
-  const int D          = key.head_dim;
-  const bool causal    = key.causal;
+  const int D           = key.head_dim;
+  const bool causal     = key.causal;
   const bool has_window = key.has_window;
-  const int  gqa       = key.gqa_factor;
+  const bool has_softcap = key.has_softcap;
+  const bool has_alibi   = key.has_alibi;
+  const bool sparse      = key.sparse;
+  const int  gqa         = key.gqa_factor;
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
@@ -105,6 +108,10 @@ struct MFASteelParams {
   ss << "    device T*                O  [[buffer(3)]],\n";
   ss << "    device float*            L  [[buffer(4)]],\n";
   ss << "    constant MFASteelParams* p  [[buffer(5)]],\n";
+  if (sparse)
+    ss << "    const device uchar* block_mask [[buffer(6)]],\n";
+  if (has_alibi)
+    ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -380,6 +387,16 @@ struct MFASteelParams {
   ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
 
+  // Sparse tile-skip: uniform branch (zero warp divergence since all TG threads share tid.x, kb)
+  if (sparse) {
+    ss << "    // Block-sparse: skip tiles where block_mask==0 (uniform branch)\n";
+    ss << "    const bool skip_tile = !block_mask[\n";
+    ss << "        (long)tid.z * p->mask_batch_stride\n";
+    ss << "      + (long)tid.y * p->mask_head_stride\n";
+    ss << "      + (long)qb * p->NK + kb];\n";
+    ss << "    if (!skip_tile) {\n";
+  }
+
   // ── Phase 1: Q@K^T (all D-chunks of K^T) ─────────────────────────────────
   ss << "    // ─ Phase 1: Q@K^T (all D-chunks) ─\n";
   ss << "    Stile.clear();\n";
@@ -400,6 +417,45 @@ struct MFASteelParams {
   ss << "      Stile.elems()[ii] *= scale;\n";
   ss << "    }\n";
   ss << "\n";
+
+  // Softcap (Gemma 2 / Grok): tanh(S_nat / cap) * cap, in log2 domain
+  if (has_softcap) {
+    ss << "    // Softcapping: convert log2→nat, tanh, nat→log2\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      constexpr AccT ln2   = 0.6931471805599453f;\n";
+    ss << "      const AccT cap = p->softcap;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++) {\n";
+    ss << "        AccT s_nat = Stile.elems()[ii] * ln2;\n";
+    ss << "        s_nat = precise::tanh(s_nat / cap) * cap;\n";
+    ss << "        Stile.elems()[ii] = s_nat * log2e;\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // ALiBi: per-head linear position bias added to scores in log2 domain
+  if (has_alibi) {
+    ss << "    // ALiBi: add per-head linear position bias to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int q_pos = qb * MFA_BQ + p->qL_off + (int)tm + (int)sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            Stile.frag_at(i, j)[jj] += slope * (float)(k_base + jj - q_pos);\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
 
   // ── K-boundary mask (pad out-of-range K positions → -inf) ────────────────
   ss << "    if (kb == p->NK_aligned) {\n";
@@ -519,6 +575,10 @@ struct MFASteelParams {
     emit_v5_pv(dh);
     ss << "\n";
   }
+
+  // Close sparse if(!skip_tile) block
+  if (sparse)
+    ss << "    }  // end if (!skip_tile)\n\n";
 
   // ── Advance K_cur/V_cur + preload K[kb+1][dh=0] ──────────────────────────
   ss << "    K_cur += (long)MFA_BK * p->K_strides[2];\n";

@@ -584,7 +584,8 @@ void MFAttention::eval_gpu(
     const bool v5_elig =
         (dtype_code != 2) &&
         v5_eligible(D) &&
-        !params_.has_rope;   // V5 CP1: no in-kernel RoPE; add in CP5
+        !params_.has_rope &&         // RoPE: incompatible with register Q
+        !params_.has_block_mask;     // sparse: block mask sized for V2's BK, not V5's BK=128
 
     if (v5_elig) {
       auto cfg5 = select_steel_v5_block_config(D, is_m3_plus_steel);
