@@ -1459,6 +1459,7 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
   const bool has_window  = key.has_window;
+  const bool has_alibi   = key.has_alibi;
   const bool has_rope    = key.has_rope;
   const bool rope_interleaved = key.rope_interleaved;
   const int gqa    = key.gqa_factor;
@@ -1549,6 +1550,9 @@ struct MFAFlashDecodePartialParams {
     ss << "    const device float* rotary_cos   [[buffer(6)]],\n";
     ss << "    const device float* rotary_sin   [[buffer(7)]],\n";
   }
+  if (has_alibi) {
+    ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
+  }
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -1579,12 +1583,31 @@ struct MFAFlashDecodePartialParams {
   // ── K-loop range for this split ───────────────────────────────────────────
   ss << "  const int kb_split_start = split_id * p->NK_per_split;\n";
   ss << "  const int kb_split_end   = min(kb_split_start + p->NK_per_split, p->NK_total);\n";
+  ss << "  const int q_min = qb * MFA_BQ + p->qL_off;\n";
+  ss << "  const int q_max = q_min + MFA_BQ;\n";
+  ss << "  int kb_start = kb_split_start;\n";
+  ss << "  int kb_lim   = kb_split_end;\n";
   if (causal) {
-    ss << "  const int q_max       = (qb + 1) * MFA_BQ + p->qL_off;\n";
     ss << "  const int kb_causal_lim = min((q_max + MFA_BK - 1) / MFA_BK, p->NK_total);\n";
-    ss << "  const int kb_lim      = min(kb_split_end, kb_causal_lim);\n";
-  } else {
-    ss << "  const int kb_lim      = kb_split_end;\n";
+    ss << "  if (kb_lim > kb_causal_lim) kb_lim = kb_causal_lim;\n";
+  }
+  if (has_window) {
+    ss << "  int kb_last_win = -1;\n";
+    ss << "  int kb_first_right = kb_lim;\n";
+    ss << "  if (p->window_left >= 0) {\n";
+    ss << "    const int win_start = q_min - p->window_left;\n";
+    ss << "    const int kb_left_start = (win_start > 0) ? (win_start / MFA_BK) : 0;\n";
+    ss << "    if (kb_start < kb_left_start) kb_start = kb_left_start;\n";
+    ss << "    kb_last_win = (q_max - 1 > p->window_left)\n";
+    ss << "                    ? (q_max - 1 - p->window_left) / MFA_BK : -1;\n";
+    ss << "  }\n";
+    ss << "  if (p->window_right >= 0) {\n";
+    ss << "    const int kb_right_lim = (q_max - 1 + p->window_right) / MFA_BK + 1;\n";
+    ss << "    if (kb_lim > kb_right_lim) kb_lim = kb_right_lim;\n";
+    ss << "    kb_first_right = (q_min + p->window_right + 1) / MFA_BK;\n";
+    ss << "    if (kb_first_right < kb_start) kb_first_right = kb_start;\n";
+    ss << "  }\n";
+    ss << "  if (kb_lim < kb_start) kb_lim = kb_start;\n";
   }
   ss << "\n";
 
@@ -1636,9 +1659,9 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // ── Empty split early exit ────────────────────────────────────────────────
-  // When kb_split_start >= kb_lim this TG covers no K-tiles.
+  // When kb_start >= kb_lim this TG covers no K-tiles.
   // Write pO=0 (pool allocator may not zero-init) and pL=-inf.
-  ss << "  if (kb_split_start >= kb_lim) {\n";
+  ss << "  if (kb_start >= kb_lim) {\n";
   ss << "    // Write pO = 0 cooperatively (flat D-major loop)\n";
   ss << "    const uint tgp_tid = (uint)simd_group_id * 32u + (uint)simd_lane_id;\n";
   ss << "    const uint n_rows_empty = (qb == p->NQ_aligned) ? (uint)p->qL_rem : MFA_BQ;\n";
@@ -1656,10 +1679,10 @@ struct MFAFlashDecodePartialParams {
   ss << "  }\n";
   ss << "\n";
 
-  // ── Offset K/V to split start (O(1) vs advance-by-loop) ──────────────────
-  ss << "  // Offset K/V pointers to kb_split_start — O(1) vs V1 advance-by-loop.\n";
-  ss << "  K += (long)kb_split_start * MFA_BK * p->K_strides[2];\n";
-  ss << "  V += (long)kb_split_start * MFA_BK * p->V_strides[2];\n";
+  // ── Offset K/V to split+window start (O(1) vs advance-by-loop) ───────────
+  ss << "  // Offset K/V pointers to kb_start — O(1) vs V1 advance-by-loop.\n";
+  ss << "  K += (long)kb_start * MFA_BK * p->K_strides[2];\n";
+  ss << "  V += (long)kb_start * MFA_BK * p->V_strides[2];\n";
   ss << "\n";
 
   // ── Block loaders (from offset pointers) ─────────────────────────────────
@@ -1751,9 +1774,9 @@ struct MFAFlashDecodePartialParams {
     ss << "    }\n";
   };
 
-  // ── V2 preload K[kb_split_start] (Barrier B0) ────────────────────────────
+  // ── V2 preload K[kb_start] (Barrier B0) ──────────────────────────────────
   ss << "  // V2: preload first K tile of split before main loop.\n";
-  ss << "  if (kb_split_start == p->NK_aligned) {\n";
+  ss << "  if (kb_start == p->NK_aligned) {\n";
   ss << "    loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
   ss << "  } else {\n";
   ss << "    loader_k.load_unsafe();\n";
@@ -1761,13 +1784,13 @@ struct MFAFlashDecodePartialParams {
   ss << "  loader_k.next();\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // B0\n";
   if (has_rope) {
-    emit_rope_k("kb_split_start * MFA_BK");
+    emit_rope_k("kb_start * MFA_BK");
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-K[0] visible\n";
   }
   ss << "\n";
 
-  // ── Main K/V loop [kb_split_start, kb_lim) ───────────────────────────────
-  ss << "  for (int kb = kb_split_start; kb < kb_lim; kb++) {\n";
+  // ── Main K/V loop [kb_start, kb_lim) ─────────────────────────────────────
+  ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
 
   // Phase 1: Q@K^T
@@ -1811,6 +1834,27 @@ struct MFAFlashDecodePartialParams {
     ss << "\n";
   }
 
+  if (has_alibi) {
+    ss << "    // ALiBi: add per-head linear position bias to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    ss << "      const AccT slope = alibi_slopes[(int)tid.y] * log2e;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int q_pos = q_min + (int)tm + (int)sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int k_base = kb * MFA_BK + (int)sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            Stile.frag_at(i, j)[jj] += slope * (float)(k_base + jj - q_pos);\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
   // K-boundary mask
   ss << "    if (kb == p->NK_aligned) {\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
@@ -1840,6 +1884,42 @@ struct MFAFlashDecodePartialParams {
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
     ss << "            if (row < (col + jj)) Stile.frag_at(i, j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  if (has_window) {
+    ss << "    // Window left boundary: mask col < row - window_left\n";
+    ss << "    if (kb <= kb_last_win) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = q_min + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) < row - p->window_left)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "    // Window right boundary: mask col > row + window_right\n";
+    ss << "    if (kb >= kb_first_right) {\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "        const int row = q_min + tm + sm + i * 8;\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "          STEEL_PRAGMA_UNROLL\n";
+    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "            if ((col + jj) > row + p->window_right)\n";
+    ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";

@@ -1754,6 +1754,141 @@ class TestV2SplitK:
         assert max_err < 0.05, (
             f"V2 split-K + RoPE D={D}: max_err={max_err:.4f}")
 
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.parametrize("causal", [True, False])
+    def test_splitk_alibi_matches_non_split(self, D, causal):
+        """V2 split-K + ALiBi matches no-V2 routing on under-occupied grids."""
+        import os as _os
+        B, H, N = 1, 1, 512
+        mx.random.seed(123)
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        slopes = mx.array([-0.1], dtype=mx.float32)
+        scale = D ** -0.5
+
+        out = flash_attention(
+            q, k, v, scale=scale, causal=causal, alibi_slopes=slopes, backend="mfa"
+        )
+        mx.eval(out)
+
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            ref = flash_attention(
+                q, k, v, scale=scale, causal=causal, alibi_slopes=slopes, backend="mfa"
+            )
+            mx.eval(ref)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+
+        max_err = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
+        assert max_err < 0.05, (
+            f"V2 split-K + ALiBi D={D} causal={causal}: max_err={max_err:.4f}"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    @pytest.mark.parametrize("window", [(256, 0), (512, 0)])
+    def test_splitk_window_matches_non_split(self, D, window):
+        """V2 split-K + window matches no-V2 routing on under-occupied grids."""
+        import os as _os
+        B, H, N = 1, 1, 512
+        mx.random.seed(456)
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        scale = D ** -0.5
+        out = flash_attention(
+            q, k, v, scale=scale, causal=True, window_size=window, backend="mfa"
+        )
+        mx.eval(out)
+
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            ref = flash_attention(
+                q, k, v, scale=scale, causal=True, window_size=window, backend="mfa"
+            )
+            mx.eval(ref)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+
+        max_err = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
+        assert max_err < 0.05, (
+            f"V2 split-K + window D={D} window={window}: max_err={max_err:.4f}"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_splitk_rope_window_matches_non_split(self, D):
+        """RoPE+window remains supported (via pre-rotated path) and matches no-V2 routing."""
+        import os as _os
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N = 1, 1, 512
+        mx.random.seed(789)
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        cos, sin = _make_rope_tables(N + 64, D)
+        scale = D ** -0.5
+
+        out = flash_attention_kvcache(
+            q, k, v,
+            scale=scale,
+            causal=True,
+            rotary_cos=cos,
+            rotary_sin=sin,
+            window_size=(256, 0),
+        )
+        mx.eval(out)
+
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            ref = flash_attention_kvcache(
+                q, k, v,
+                scale=scale,
+                causal=True,
+                rotary_cos=cos,
+                rotary_sin=sin,
+                window_size=(256, 0),
+            )
+            mx.eval(ref)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+
+        max_err = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
+        assert max_err < 0.05, (
+            f"V2 split-K + RoPE + window D={D}: max_err={max_err:.4f}"
+        )
+
+    def test_splitk_rope_alibi_is_explicitly_gated(self):
+        """RoPE+ALiBi remains explicitly gated in public API (unsupported combination)."""
+        from mlx_mfa import flash_attention_kvcache
+        B, H, N, D = 1, 1, 64, 64
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        slopes = mx.array([1.0], dtype=mx.float32)
+        cos, sin = _make_rope_tables(N + 16, D)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            flash_attention_kvcache(
+                q, k, v,
+                scale=D ** -0.5,
+                causal=True,
+                rotary_cos=cos,
+                rotary_sin=sin,
+                alibi_slopes=slopes,
+            )
+
 
 # ===========================================================================
 # Track I — M5+ (gen >= 17) detection stub

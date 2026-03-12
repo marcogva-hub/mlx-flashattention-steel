@@ -331,13 +331,9 @@ void MFAttention::eval_gpu(
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         (D == 64 || D == 128) &&
-        // ALiBi / sparse not in split-K shader — fall through to V2 single-pass.
-        // RoPE is now supported in split-K (Phase 3).
-        !params_.has_block_mask &&
-        !params_.has_alibi &&
-        // Window masking interacts with split-K ranges — keep in V1 split-K
-        params_.window_left  < 0 &&
-        params_.window_right < 0;
+        // Sparse remains excluded from V2 split-K (block-mask uses V1 BK indexing).
+        // RoPE/ALiBi/window are supported in V2 split-K (Phase 3 composability).
+        !params_.has_block_mask;
 
     if (v2sk_eligible) {
       auto cfg2 = select_steel_v2_block_config(D, is_m3_plus_steel);
@@ -423,7 +419,7 @@ void MFAttention::eval_gpu(
           params_.causal, /*sparse=*/false, is_m3_plus_steel,
           params_.has_rope, params_.rope_interleaved,
           params_.softcap > 0.0f,   // has_softcap
-          /*has_alibi=*/false,
+          params_.has_alibi,
           params_.window_left >= 0 || params_.window_right >= 0,  // has_window
           dtype_code, H / Hk
         };
@@ -455,6 +451,11 @@ void MFAttention::eval_gpu(
           // inputs[3]=rotary_cos, inputs[4]=rotary_sin (no block_mask in split-K path)
           enc_sk.set_input_array(inputs[3], 6);
           enc_sk.set_input_array(inputs[4], 7);
+        }
+        if (params_.has_alibi) {
+          // Dense split-K input order: [Q, K, V, alibi] or [Q, K, V, cos, sin, alibi]
+          const int alibi_idx = 3 + (params_.has_rope ? 2 : 0);
+          enc_sk.set_input_array(inputs[alibi_idx], 9);
         }
         enc_sk.dispatch_threadgroups(
             MTL::Size::Make((size_t)(NQ2 * num_splits), (size_t)H, (size_t)B),
