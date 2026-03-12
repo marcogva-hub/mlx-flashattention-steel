@@ -468,10 +468,10 @@ void MFAttention::eval_gpu(
 
   // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.
-  // D=128 M3+ excluded: BK=64 requires 44 KB TGP (over 32 KB limit).
-  // Sparse excluded: block_mask sized for V1 BK.
-  // Set MFA_DISABLE_V3=1 to bypass (forces V2 path, useful for benchmarking).
-  if (!std::getenv("MFA_DISABLE_V3")) {
+  // Benchmarked result: V3 regresses vs V2 (0.77–0.88×) because doubling TGP
+  // (separate K+V instead of max(K,V)) halves occupancy (2 TGs/CU → 1 TG/CU).
+  // Disabled by default; set MFA_ENABLE_V3=1 to opt in (research/benchmarking).
+  if (std::getenv("MFA_ENABLE_V3")) {
     const bool v3_eligible =
         (dtype_code != 2) &&
         v3_tgp_eligible(D, is_m3_plus_steel) &&
@@ -566,7 +566,7 @@ void MFAttention::eval_gpu(
           MTL::Size::Make((size_t)TGP3, 1, 1));
       return;
     }
-  }  // end if (!MFA_DISABLE_V3)
+  }  // end if (MFA_ENABLE_V3)
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only) ──────────────────────────
   // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.

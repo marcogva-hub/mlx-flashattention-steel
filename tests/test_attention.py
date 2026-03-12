@@ -8011,8 +8011,10 @@ class TestAsyncV2Metallib:
 class TestSteelV3:
     """STEEL V3 (separate K_smem + V_smem, 2 barriers/iter).
 
-    V3 is eligible for D=64 (all gens) and D=128 M1/M2 only (BK=32).
-    Results must match V2 within f16 tolerance (atol=1e-2).
+    V3 is disabled by default (regresses vs V2 due to occupancy drop from
+    doubled TGP usage).  Enabled via MFA_ENABLE_V3=1.
+
+    Eligible: D=64 all gens, D=128 M1/M2 (BK=32).
     """
 
     @pytest.mark.parametrize("D,N,causal", [
@@ -8025,6 +8027,8 @@ class TestSteelV3:
     ])
     def test_v3_matches_v2(self, D, N, causal):
         """V3 output matches V2 output within f16 tolerance."""
+        import os as _os
+        from unittest.mock import patch
         mx.random.seed(42)
         B, H = 1, 4
         q = mx.random.normal([B, H, N, D]).astype(mx.float16)
@@ -8033,16 +8037,14 @@ class TestSteelV3:
         mx.eval(q, k, v)
         scale = 1.0 / math.sqrt(D)
 
-        # V3 path (default)
-        out_v3 = flash_attention(q, k, v, scale=scale, causal=causal)
-        mx.eval(out_v3)
+        # V3 path (opt-in via MFA_ENABLE_V3)
+        with patch.dict(_os.environ, {"MFA_ENABLE_V3": "1"}):
+            out_v3 = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out_v3)
 
-        # V2 path (disable V3)
-        import os as _os
-        from unittest.mock import patch
-        with patch.dict(_os.environ, {"MFA_DISABLE_V3": "1"}):
-            out_v2 = flash_attention(q, k, v, scale=scale, causal=causal)
-            mx.eval(out_v2)
+        # V2 path (default — MFA_ENABLE_V3 not set)
+        out_v2 = flash_attention(q, k, v, scale=scale, causal=causal)
+        mx.eval(out_v2)
 
         diff = mx.max(mx.abs(
             out_v3.astype(mx.float32) - out_v2.astype(mx.float32)
@@ -8054,6 +8056,8 @@ class TestSteelV3:
     @pytest.mark.parametrize("D", [64, 128])
     def test_v3_matches_sdpa(self, D):
         """V3 output matches MLX SDPA reference (N=1024, causal)."""
+        import os as _os
+        from unittest.mock import patch
         from mlx_mfa.attention import _fallback_sdpa
         mx.random.seed(7)
         B, H, N = 1, 4, 1024
@@ -8063,9 +8067,11 @@ class TestSteelV3:
         mx.eval(q, k, v)
         scale = 1.0 / math.sqrt(D)
 
-        out_v3 = flash_attention(q, k, v, scale=scale, causal=True)
+        with patch.dict(_os.environ, {"MFA_ENABLE_V3": "1"}):
+            out_v3 = flash_attention(q, k, v, scale=scale, causal=True)
+            mx.eval(out_v3)
         out_ref = _fallback_sdpa(q, k, v, scale, causal=True)
-        mx.eval(out_v3, out_ref)
+        mx.eval(out_ref)
 
         diff = mx.max(mx.abs(
             out_v3.astype(mx.float32) - out_ref.astype(mx.float32)
@@ -8075,6 +8081,8 @@ class TestSteelV3:
     @pytest.mark.parametrize("D", [64, 128])
     def test_v3_gqa(self, D):
         """V3 handles GQA (H_q=8, H_kv=2)."""
+        import os as _os
+        from unittest.mock import patch
         mx.random.seed(11)
         B, Hq, Hkv, N = 1, 8, 2, 512
         q = mx.random.normal([B, Hq, N, D]).astype(mx.float16)
@@ -8082,12 +8090,15 @@ class TestSteelV3:
         v = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
         mx.eval(q, k, v)
 
-        out = flash_attention(q, k, v, causal=True)
-        mx.eval(out)
+        with patch.dict(_os.environ, {"MFA_ENABLE_V3": "1"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
         assert out.shape == (B, Hq, N, D)
 
     def test_v3_bf16(self):
         """V3 works with bfloat16 dtype."""
+        import os as _os
+        from unittest.mock import patch
         mx.random.seed(99)
         B, H, N, D = 1, 4, 256, 64
         q = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
@@ -8095,8 +8106,9 @@ class TestSteelV3:
         v = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
         mx.eval(q, k, v)
 
-        out = flash_attention(q, k, v, causal=True)
-        mx.eval(out)
+        with patch.dict(_os.environ, {"MFA_ENABLE_V3": "1"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
         assert out.dtype == mx.bfloat16
         assert out.shape == (B, H, N, D)
         assert mx.isfinite(out).all().item()
