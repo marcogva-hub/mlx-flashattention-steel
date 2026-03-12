@@ -32,6 +32,11 @@ struct SteelV2BlockConfig {
 /// Returns {0,0,0,0,0} for unsupported head dims (D>256).
 SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus);
 
+/// Select D-split tile config for the large-D family (D=256/512).
+/// This is intentionally separate from the D=64/128 selector so D=256 policy
+/// can evolve independently. Uses MFA_V2_FORCE_BK_D256=32|64 when set.
+SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus);
+
 /// Estimate actual GPU core count from MTLDevice name + fallback arch_gen.
 /// Uses longest-prefix matching (Ultra > Max > Pro > base) so "M1 Max" matches
 /// before "M1". Falls back to conservative gen-based estimate for unknown names.
@@ -70,7 +75,7 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
 //
 // D-split attention for D=256 (D_SPLITS=2) and D=512 (D_SPLITS=4):
 //   BD_HALF=128; each pass processes one BD_HALF chunk of the head dimension.
-//   BK from select_steel_v2_block_config(128, is_m3_plus) — same as D=128.
+//   BK from select_steel_v2_dsplit_block_config(is_m3_plus) — separate large-D policy.
 //   Q loaded into named register tiles (Qtile0, Qtile1, …) before the main loop.
 //   K/V pointers advanced by K_strides[2] each K-tile; dh offset via + dh*BD_HALF.
 //   No RoPE support (GPT-NeoX pairs cross BD_HALF boundary). All other features OK.

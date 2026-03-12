@@ -48,27 +48,6 @@ inline bool is_v2_large_d_family(int head_dim) {
   return head_dim == 256 || head_dim == 512;
 }
 
-struct SteelV2DSplitRouteConfig {
-  int BQ;
-  int BK;
-  int WM;
-  int WN;
-  int TGP;
-};
-
-inline SteelV2DSplitRouteConfig select_steel_v2_dsplit_route_config(bool is_m3_plus) {
-  // D=256/512 is treated as a separate family and intentionally mapped to the
-  // D=128 half-dim tile policy for D-split kernels (BD_HALF=128 passes).
-  auto cfg = select_steel_v2_block_config(/*head_dim=*/128, is_m3_plus);
-  return {
-      cfg.BQ,
-      cfg.BK,
-      cfg.WM,
-      cfg.WN,
-      cfg.WM * cfg.WN * 32,
-  };
-}
-
 }  // namespace
 
 // =========================================================================
@@ -960,7 +939,8 @@ void MFAttention::eval_gpu(
 
   // ── STEEL V2 D-split dispatch (f16/bf16, D=256/512) ─────────────────────
   // BD_HALF=128; D_SPLITS=D/128 (2 for D=256, 4 for D=512).
-  // Reuses V2 block config for D=128 (BK=32/64, WM=4, TGP=128).
+  // Uses dedicated large-D config selector (BK=32/64, WM=4, TGP=128).
+  // D=128 BK calibration override (MFA_V2_FORCE_BK) does not affect D-split.
   // No RoPE (GPT-NeoX pairs cross BD_HALF boundary).
   // Sparse excluded (block_mask sized for V1 BK).
   // Set MFA_DISABLE_V2=1 to bypass.
@@ -973,11 +953,11 @@ void MFAttention::eval_gpu(
 
     if (v2_dsplit_eligible) {
       const int BD_HALF = 128;
-      auto cfg_ds       = select_steel_v2_dsplit_route_config(is_m3_plus_steel);
+      auto cfg_ds       = select_steel_v2_dsplit_block_config(is_m3_plus_steel);
       const int BQ_ds   = cfg_ds.BQ;   // 32
       const int BK_ds   = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
       const int WM_ds   = cfg_ds.WM;   // 4
-      const int TGP_ds  = cfg_ds.TGP;  // 128
+      const int TGP_ds  = WM_ds * cfg_ds.WN * 32;  // 128
       const int NQ_ds  = (N + BQ_ds - 1) / BQ_ds;
       const int NK_ds  = (S + BK_ds - 1) / BK_ds;
       const int NQ_ds_aln = (N % BQ_ds == 0) ? NQ_ds : NQ_ds - 1;

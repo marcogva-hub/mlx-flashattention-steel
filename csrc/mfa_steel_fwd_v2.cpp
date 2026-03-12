@@ -97,15 +97,20 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus) {
   return {0, 0, 0, 0, 0};  // unsupported (D=512+ needs BD-split)
 }
 
-namespace {
+SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
+  // D=256/512 is a separate family: keep BK policy independent from D=128.
+  // Global MFA_V2_FORCE_BK (used by D=128 calibration) must not leak here.
+  // Optional debug override for this family only:
+  //   MFA_V2_FORCE_BK_D256=32|64
+  int forced_bk = 0;
+  if (const char* env = std::getenv("MFA_V2_FORCE_BK_D256")) {
+    const int parsed = std::atoi(env);
+    if (parsed == 32 || parsed == 64) forced_bk = parsed;
+  }
 
-inline SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
-  // D=256/512 is treated as a separate family. D-split kernels run each pass
-  // at BD_HALF=128 and intentionally reuse the D=128 tile policy for BK/WM.
-  return select_steel_v2_block_config(/*head_dim=*/128, is_m3_plus);
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 32);
+  return {32, bk, 128, 4, 1};
 }
-
-}  // namespace
 
 // ---------------------------------------------------------------------------
 // V2 kernel source generator
