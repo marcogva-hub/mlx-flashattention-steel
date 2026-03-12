@@ -182,6 +182,26 @@ def _forced_d256_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]
     return None
 
 
+def _forced_d512_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]:
+    """Return forced D=512 auto-route override when explicitly requested.
+
+    Env:
+      MFA_FORCE_D512_PATH=1|mfa   -> force MFA for D=512 in backend='auto'
+      MFA_FORCE_D512_PATH=0|sdpa  -> force SDPA for D=512 in backend='auto'
+    """
+    if backend != "auto" or head_dim != 512:
+        return None
+    raw = os.environ.get("MFA_FORCE_D512_PATH")
+    if raw is None:
+        return None
+    raw = raw.strip().lower()
+    if raw in {"1", "mfa"}:
+        return True
+    if raw in {"0", "sdpa"}:
+        return False
+    return None
+
+
 def _splitk_env_key(
     head_dim: int,
     causal: bool,
@@ -293,6 +313,15 @@ def should_use_mfa(
                 f"-> {'MFA' if forced_d256 else 'SDPA'}"
             )
         return forced_d256
+
+    forced_d512 = _forced_d512_auto_decision(head_dim, backend=backend)
+    if forced_d512 is not None:
+        if _verbose:
+            print(
+                f"[MFA dispatch] D=512 force override MFA_FORCE_D512_PATH "
+                f"-> {'MFA' if forced_d512 else 'SDPA'}"
+            )
+        return forced_d512
 
     # Dense attention: check empirical crossover threshold.
     custom = _load_custom_table()

@@ -8163,6 +8163,29 @@ class TestSmartDispatch:
         monkeypatch.setenv("MFA_FORCE_D256_PATH", "sdpa")
         assert not should_use_mfa(256, 16384, causal=True, is_m3_plus=False, dtype=mx.float16)
 
+    def test_d512_dense_stays_sdpa_by_default(self):
+        """D=512 dense stays SDPA-backed on current benchmark evidence."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(512, 8192, causal=True, is_m3_plus=False, dtype=mx.float16)
+        assert not should_use_mfa(512, 8192, causal=False, is_m3_plus=False, dtype=mx.float16)
+
+    def test_d512_force_path_override_mfa(self, monkeypatch):
+        """MFA_FORCE_D512_PATH=1 must force D=512 auto route to MFA."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        monkeypatch.setenv("MFA_FORCE_D512_PATH", "1")
+        assert should_use_mfa(512, 1024, causal=False, is_m3_plus=False, dtype=mx.float16)
+        # Non-D512 shapes should ignore this override.
+        assert not should_use_mfa(64, 512, causal=False, is_m3_plus=False, dtype=mx.float16)
+
+    def test_d512_force_path_override_sdpa(self, monkeypatch):
+        """MFA_FORCE_D512_PATH=sdpa must force D=512 auto route to SDPA."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        monkeypatch.setenv("MFA_FORCE_D512_PATH", "sdpa")
+        assert not should_use_mfa(512, 16384, causal=True, is_m3_plus=False, dtype=mx.float16)
+
     def test_noncausal_never_routes_mfa(self):
         """Non-causal attention should never use MFA (best 0.92x, no win)."""
         from mlx_mfa.dispatch_policy import should_use_mfa
