@@ -7357,6 +7357,125 @@ class TestSageKVCache:
 
 
 # ==========================================================================
+# CP1: SageInferenceContext → QuantizedKVCache (incremental int8)
+# ==========================================================================
+
+@requires_ext
+class TestSageInferenceContextQuantized:
+    """SageInferenceContext now uses QuantizedKVCache for incremental int8."""
+
+    D = 128
+
+    def test_cache_type_is_quantized(self):
+        """SageInferenceContext._cache is a QuantizedKVCache."""
+        from mlx_mfa import SageInferenceContext
+        from mlx_mfa.attention import QuantizedKVCache
+        ctx = SageInferenceContext(B=1, H_kv=4, D=self.D, max_seq_len=256)
+        assert isinstance(ctx._cache, QuantizedKVCache), (
+            f"Expected QuantizedKVCache, got {type(ctx._cache).__name__}"
+        )
+
+    def test_step_returns_correct_shape(self):
+        """step() returns [B, H_q, N_new, D] after prefill."""
+        from mlx_mfa import SageInferenceContext
+        B, Hq, Hkv, N_pre, D = 1, 4, 2, 64, self.D
+        ctx = SageInferenceContext(B=B, H_kv=Hkv, D=D, max_seq_len=256)
+        mx.random.seed(42)
+        q_pre = mx.random.normal([B, Hq, N_pre, D]).astype(mx.float16)
+        k_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        v_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        mx.eval(q_pre, k_pre, v_pre)
+        ctx.prefill(q_pre, k_pre, v_pre)
+
+        q_tok = mx.random.normal([B, Hq, 1, D]).astype(mx.float16)
+        k_tok = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+        v_tok = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+        mx.eval(q_tok, k_tok, v_tok)
+        out = ctx.step(q_tok, k_tok, v_tok)
+        mx.eval(out)
+        assert out.shape == (B, Hq, 1, D)
+        assert mx.isfinite(out).all().item()
+
+    def test_step_matches_prequantized(self):
+        """step() output matches sage_attention_prequantized called manually."""
+        from mlx_mfa import SageInferenceContext
+        from mlx_mfa.attention import QuantizedKVCache, sage_attention_prequantized
+        B, Hq, Hkv, N_pre, N_new, D = 1, 4, 4, 32, 1, self.D
+        mx.random.seed(7)
+        k_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        v_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        q_tok = mx.random.normal([B, Hq, N_new, D]).astype(mx.float16)
+        k_tok = mx.random.normal([B, Hkv, N_new, D]).astype(mx.float16)
+        v_tok = mx.random.normal([B, Hkv, N_new, D]).astype(mx.float16)
+        mx.eval(k_pre, v_pre, q_tok, k_tok, v_tok)
+        scale = 1.0 / math.sqrt(D)
+
+        # Context path
+        ctx = SageInferenceContext(B=B, H_kv=Hkv, D=D, max_seq_len=256)
+        # manually load prefill into cache
+        ctx._cache.append(k_pre, v_pre)
+        out_ctx = ctx.step(q_tok, k_tok, v_tok, scale=scale)
+        mx.eval(out_ctx)
+
+        # Manual path — independent QuantizedKVCache
+        cache2 = QuantizedKVCache(B, Hkv, D, max_seq_len=256)
+        cache2.append(k_pre, v_pre)
+        cache2.append(k_tok, v_tok)
+        out_manual = sage_attention_prequantized(
+            q_tok, cache2.k_int8, cache2.k_scale, cache2.v,
+            scale=scale, causal=True,
+        )
+        mx.eval(out_manual)
+
+        diff = mx.max(mx.abs(
+            out_ctx.astype(mx.float32) - out_manual.astype(mx.float32)
+        )).item()
+        assert diff < 1e-4, f"ctx vs manual max_diff={diff:.4e}"
+
+    def test_step_incremental_correct(self):
+        """Step-by-step decode is consistent across steps (finite, correct shape)."""
+        from mlx_mfa import SageInferenceContext
+        B, Hq, Hkv, N_pre, D = 1, 4, 4, 32, self.D
+        mx.random.seed(99)
+        ctx = SageInferenceContext(B=B, H_kv=Hkv, D=D, max_seq_len=128)
+        q_pre = mx.random.normal([B, Hq, N_pre, D]).astype(mx.float16)
+        k_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        v_pre = mx.random.normal([B, Hkv, N_pre, D]).astype(mx.float16)
+        mx.eval(q_pre, k_pre, v_pre)
+        ctx.prefill(q_pre, k_pre, v_pre)
+        for _ in range(5):
+            q_t = mx.random.normal([B, Hq, 1, D]).astype(mx.float16)
+            k_t = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+            v_t = mx.random.normal([B, Hkv, 1, D]).astype(mx.float16)
+            mx.eval(q_t, k_t, v_t)
+            out = ctx.step(q_t, k_t, v_t)
+            mx.eval(out)
+            assert out.shape == (B, Hq, 1, D)
+            assert mx.isfinite(out).all().item()
+
+    def test_reset_clears_cache(self):
+        """reset() zeroes the seqlen in QuantizedKVCache."""
+        from mlx_mfa import SageInferenceContext
+        ctx = SageInferenceContext(B=1, H_kv=2, D=self.D, max_seq_len=256)
+        k = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        v = mx.random.normal([1, 2, 16, self.D]).astype(mx.float16)
+        mx.eval(k, v)
+        ctx._cache.append(k, v)
+        assert ctx.seqlen == 16
+        ctx.reset()
+        assert ctx.seqlen == 0
+
+    def test_step_no_apply_smooth_k_param(self):
+        """step() no longer accepts apply_smooth_k (QuantizedKVCache path)."""
+        import inspect
+        from mlx_mfa.inference import SageInferenceContext
+        sig = inspect.signature(SageInferenceContext.step)
+        assert "apply_smooth_k" not in sig.parameters, (
+            "apply_smooth_k should have been removed from step() signature"
+        )
+
+
+# ==========================================================================
 # Phase 5: warmup_kernels + get_supported_configs update (Track LB)
 # ==========================================================================
 
