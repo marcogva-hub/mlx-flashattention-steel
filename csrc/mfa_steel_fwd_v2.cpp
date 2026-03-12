@@ -369,7 +369,7 @@ struct MFASteelParams {
     ss << "  }\n";
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-Q writes visible\n";
   }
-  ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+  ss << "  Qtile.template load_contiguous<T, 1, 1>(&Qs[Qs_off], LDQ);\n";
   ss << "\n";
 
   // ── K-loop limit (causal or full) ────────────────────────────────────────
@@ -469,8 +469,8 @@ struct MFASteelParams {
   ss << "    Stile.clear();\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
-  ss << "      Ktile.template load<T, 1, 1>(\n";
-  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+  ss << "      Ktile.template load_contiguous<T, 1, 1>(\n";
+  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK);\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
   ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
@@ -661,8 +661,8 @@ struct MFASteelParams {
   ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
   ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
-  ss << "          Vtile.template load<T, 1, 1>(\n";
-  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+  ss << "          Vtile.template load_contiguous<T, 1, 1>(\n";
+  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV);\n";
   ss << "          MFAMMAFrag<AccT>::mma(\n";
   ss << "              Otile.frag_at(iq, id),\n";
   ss << "              Stile.frag_at(iq, ik),\n";
@@ -718,7 +718,7 @@ struct MFASteelParams {
   ss << "    if (dims.x > 0 && dims.y > 0)\n";
   ss << "      Otile.template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
   ss << "  } else {\n";
-  ss << "    Otile.template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+  ss << "    Otile.template store_contiguous<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
   ss << "  }\n";
   ss << "\n";
 
@@ -1000,7 +1000,7 @@ struct MFASteelParams {
     ss << "        .load_unsafe();\n";
     ss << "  }\n";
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "  Qtile" << dh << ".template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+    ss << "  Qtile" << dh << ".template load_contiguous<T, 1, 1>(&Qs[Qs_off], LDQ);\n";
     ss << "\n";
   }
 
@@ -1079,8 +1079,8 @@ struct MFASteelParams {
     ss << "    // Q@K^T for dh=" << dh << "\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
     ss << "    for (short dd = 0; dd < MFA_TD_HALF; dd++) {\n";
-    ss << "      Ktile.template load<T, 1, 1>(\n";
-    ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+    ss << "      Ktile.template load_contiguous<T, 1, 1>(\n";
+    ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK);\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
@@ -1104,8 +1104,8 @@ struct MFASteelParams {
     ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short id = 0; id < MFA_TD_HALF; id++) {\n";
-    ss << "          Vtile.template load<T, 1, 1>(\n";
-    ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+    ss << "          Vtile.template load_contiguous<T, 1, 1>(\n";
+    ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV);\n";
     ss << "          MFAMMAFrag<AccT>::mma(\n";
     ss << "              Otile" << dh << ".frag_at(iq, id),\n";
     ss << "              Stile.frag_at(iq, ik),\n";
@@ -1348,7 +1348,7 @@ struct MFASteelParams {
     ss << "      if (dims.x > 0 && dims.y > 0)\n";
     ss << "        Otile" << dh << ".template store_safe<T, 1, 1>(O_write, (int)p->O_strides[2], dims);\n";
     ss << "    } else {\n";
-    ss << "      Otile" << dh << ".template store<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
+    ss << "      Otile" << dh << ".template store_contiguous<T, 1, 1>(O_write, (int)p->O_strides[2]);\n";
     ss << "    }\n";
     ss << "  }\n";
   }
@@ -1681,7 +1681,7 @@ struct MFAFlashDecodePartialParams {
   ss << "    loader_q.load_unsafe();\n";
   ss << "  }\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-  ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
+  ss << "  Qtile.template load_contiguous<T, 1, 1>(&Qs[Qs_off], LDQ);\n";
   ss << "\n";
 
   // ── V2 preload K[kb_split_start] (Barrier B0) ────────────────────────────
@@ -1704,8 +1704,8 @@ struct MFAFlashDecodePartialParams {
   ss << "    Stile.clear();\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
-  ss << "      Ktile.template load<T, 1, 1>(\n";
-  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK, 1);\n";
+  ss << "      Ktile.template load_contiguous<T, 1, 1>(\n";
+  ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK);\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
   ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
@@ -1826,8 +1826,8 @@ struct MFAFlashDecodePartialParams {
   ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
   ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
-  ss << "          Vtile.template load<T, 1, 1>(\n";
-  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV, 1);\n";
+  ss << "          Vtile.template load_contiguous<T, 1, 1>(\n";
+  ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV);\n";
   ss << "          MFAMMAFrag<AccT>::mma(\n";
   ss << "              Otile.frag_at(iq, id), Stile.frag_at(iq, ik),\n";
   ss << "              Vtile.frag_at(0, 0),   Otile.frag_at(iq, id));\n";
@@ -1865,7 +1865,7 @@ struct MFAFlashDecodePartialParams {
   ss << "    if (dims.x > 0 && dims.y > 0)\n";
   ss << "      Otile.template store_safe<T, 1, 1>(pO_write, (int)p->D, dims);\n";
   ss << "  } else {\n";
-  ss << "    Otile.template store<T, 1, 1>(pO_write, (int)p->D);\n";
+  ss << "    Otile.template store_contiguous<T, 1, 1>(pO_write, (int)p->D);\n";
   ss << "  }\n";
   ss << "\n";
 

@@ -1454,6 +1454,31 @@ struct MFAMMAFrag {
       inp[j] = Op::apply(inp[j], row_vals[0]);
   }
 
+  // Vectorized 2-element load for contiguous (str_col==1) memory access.
+  // src[0] and src[1] are loaded as a single vec<U,2> instruction.
+  // Requires 2-byte alignment (guaranteed: sn coordinate is always even).
+  template <typename U>
+  METAL_FUNC static void load_vec2(thread frag_type& dst,
+                                    const threadgroup U* src) {
+    vec<U, 2> v = *(const threadgroup vec<U, 2>*)(src);
+    dst[0] = static_cast<T>(v[0]);
+    dst[1] = static_cast<T>(v[1]);
+  }
+  template <typename U>
+  METAL_FUNC static void load_vec2(thread frag_type& dst,
+                                    const device U* src) {
+    vec<U, 2> v = *(const device vec<U, 2>*)(src);
+    dst[0] = static_cast<T>(v[0]);
+    dst[1] = static_cast<T>(v[1]);
+  }
+  // Vectorized 2-element store for contiguous output.
+  template <typename U>
+  METAL_FUNC static void store_vec2(thread const frag_type& src,
+                                     device U* dst) {
+    *(device vec<U, 2>*)(dst) =
+        vec<U, 2>(static_cast<U>(src[0]), static_cast<U>(src[1]));
+  }
+
   METAL_FUNC static void mma(thread frag_type& D, thread frag_type& A,
                              thread frag_type& B, thread frag_type& C) {
     mat_type Dm, Am, Bm, Cm;
@@ -1549,6 +1574,44 @@ struct MFAMMATile {
         const int base = (i * 8) * w_x * ld + (j * 8) * w_y;
         dst[base + 0] = static_cast<U>(frag_at(i, j)[0]);
         dst[base + 1] = static_cast<U>(frag_at(i, j)[1]);
+      }
+    }
+  }
+
+  // Contiguous (str_col==1) load: uses vec<U,2> to halve load instruction count.
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void load_contiguous(const threadgroup U* src, int str_row) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++) {
+        Frag::template load_vec2<U>(
+            frag_at(i, j),
+            &src[(i * 8) * w_x * str_row + (j * 8) * w_y]);
+      }
+    }
+  }
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void load_contiguous(const device U* src, int str_row) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++) {
+        Frag::template load_vec2<U>(
+            frag_at(i, j),
+            &src[(i * 8) * w_x * str_row + (j * 8) * w_y]);
+      }
+    }
+  }
+  // Contiguous store: uses vec<U,2> for 2-element aligned write (no bounds check).
+  template <typename U, int w_x, int w_y>
+  METAL_FUNC void store_contiguous(device U* dst, const int ld) const {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows_; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols_; j++) {
+        const int base = (i * 8) * w_x * ld + (j * 8) * w_y;
+        Frag::template store_vec2<U>(frag_at(i, j), &dst[base]);
       }
     }
   }
