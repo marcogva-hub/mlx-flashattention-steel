@@ -48,9 +48,10 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (128, True):  2048,
     # D=128 non-causal: 0.90x at N=16384, 0.88x at N=32768 — disable.
     (128, False): 999_999,
-    # D=256 causal: narrow win regime (M1 Max, 2026-03-12 decision pass):
-    #   N=1024 -> 0.73x, N=2048 -> 0.94x, N=4096 -> ~1.0-1.05x, N>=8192 -> 1.11-1.19x.
-    # Promote only for large causal contexts; keep shorter causal + non-causal on SDPA.
+    # D=256 causal: dtype-specific logic now lives in should_use_mfa():
+    #   - M1/M2 + f16: promote at N>=4096
+    #   - M1/M2 + bf16: keep SDPA
+    # This table entry remains as a conservative fallback when dtype is unknown.
     (256, True):  8192,
     # D=256 non-causal remains a clear loss (~0.55x in decision pass).
     (256, False): 999_999,
@@ -95,6 +96,18 @@ _NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
 # Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
 _custom_table_loaded = False
+
+
+def _dispatch_dtype_key(dtype) -> Optional[str]:
+    """Normalize dtype objects/strings for dispatch policy lookup."""
+    if dtype is None:
+        return None
+    dtype_str = str(dtype)
+    if dtype_str in {"float16", "mlx.core.float16"}:
+        return "float16"
+    if dtype_str in {"bfloat16", "mlx.core.bfloat16"}:
+        return "bfloat16"
+    return None
 
 
 def _splitk_env_key(
@@ -143,6 +156,7 @@ def should_use_mfa(
     causal: bool,
     is_m3_plus: bool,
     *,
+    dtype=None,
     window_size: Optional[tuple] = None,
     sparse: bool = False,
     backend: str = "auto",
@@ -164,6 +178,9 @@ def should_use_mfa(
         Whether causal masking is applied.
     is_m3_plus : bool
         True on M3/M4/M5+ Apple Silicon (better block configs available).
+    dtype : optional
+        Input dtype (``mx.float16`` / ``mx.bfloat16``) when available. Used
+        for D=256 narrow routing, where f16 and bf16 regimes differ.
     window_size : tuple, optional
         ``(left, right)`` sliding-window radii.  Non-negative left enables
         the window path, which always benefits from MFA tile-skipping.
@@ -205,14 +222,31 @@ def should_use_mfa(
     else:
         thresholds = _DEFAULT_THRESHOLDS
 
-    min_n = thresholds.get((head_dim, causal), 999_999)
+    dtype_key = _dispatch_dtype_key(dtype)
+
+    # D=256 is treated as a separate family with dtype-specific behavior:
+    # - M1/M2 f16 causal can win from N>=4096.
+    # - bf16 remains SDPA territory on current measurements.
+    # Keep this narrow rule local-only when no custom table is supplied.
+    if custom is None and head_dim == 256 and causal and not is_m3_plus:
+        if dtype_key == "float16":
+            min_n = 4096
+        elif dtype_key == "bfloat16":
+            min_n = 999_999
+        else:
+            # dtype unknown: keep conservative fallback table behavior.
+            min_n = thresholds.get((head_dim, causal), 999_999)
+    else:
+        min_n = thresholds.get((head_dim, causal), 999_999)
+
     use_mfa = seq_len >= min_n
 
     if _verbose:
         src = "custom" if custom else ("M3+" if is_m3_plus else "M1")
         print(
             f"[MFA dispatch] D={head_dim} N={seq_len} causal={causal} "
-            f"m3+={is_m3_plus} threshold={min_n} ({src}) "
+            f"m3+={is_m3_plus} dtype={dtype_key or 'unknown'} "
+            f"threshold={min_n} ({src}) "
             f"-> {'MFA' if use_mfa else 'SDPA'}"
         )
     return use_mfa

@@ -36,8 +36,8 @@ _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
 # CP1: dispatch decision cache — keyed by (head_dim, seq_len, causal, is_m3_plus,
-# window_size, sparse).  Eliminates should_use_mfa() call overhead on repeated
-# same-shape calls (e.g. decode loops that call flash_attention per token).
+# dtype, window_size, sparse).  Eliminates should_use_mfa() call overhead on
+# repeated same-shape calls (e.g. decode loops that call flash_attention/token).
 _dispatch_decision_cache: dict = {}
 
 # CP1: module-level reference to should_use_mfa — populated lazily on first
@@ -374,11 +374,12 @@ def flash_attention(
             use_mfa = True
         else:
             _is_m3 = _get_is_m3_plus_cached()
-            _cache_key = (head_dim, q.shape[2], causal, _is_m3, window_size, False)
+            _cache_key = (head_dim, q.shape[2], causal, _is_m3, q.dtype, window_size, False)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
                     head_dim, q.shape[2], causal, _is_m3,
+                    dtype=q.dtype,
                     window_size=window_size, sparse=False, backend=backend,
                 )
                 _dispatch_decision_cache[_cache_key] = _cached

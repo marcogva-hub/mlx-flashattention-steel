@@ -7815,11 +7815,30 @@ class TestSmartDispatch:
         from mlx_mfa.dispatch_policy import should_use_mfa
         assert should_use_mfa(128, 8192, causal=True, is_m3_plus=False)
 
-    def test_d256_causal_narrow_regime(self):
-        """D=256 causal uses MFA only in the large-N narrow winning regime."""
+    def test_d256_causal_f16_narrow_regime(self):
+        """D=256 causal f16 uses MFA only in the benchmark-backed narrow regime."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(256, 2048, causal=True, is_m3_plus=False, dtype=mx.float16)
+        assert should_use_mfa(256, 4096, causal=True, is_m3_plus=False, dtype=mx.float16)
+
+    def test_d256_causal_bf16_stays_sdpa(self):
+        """D=256 causal bf16 remains SDPA-backed on current benchmark evidence."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(256, 16384, causal=True, is_m3_plus=False, dtype=mx.bfloat16)
+
+    def test_d256_unknown_dtype_keeps_conservative_fallback(self):
+        """Without dtype, policy keeps the conservative legacy threshold."""
         from mlx_mfa.dispatch_policy import should_use_mfa
         assert not should_use_mfa(256, 4096, causal=True, is_m3_plus=False)
         assert should_use_mfa(256, 8192, causal=True, is_m3_plus=False)
+
+    def test_d256_m3plus_stays_conservative_until_measured(self):
+        """M3+ D=256 remains conservative until real-hardware evidence lands."""
+        import mlx.core as mx
+        from mlx_mfa.dispatch_policy import should_use_mfa
+        assert not should_use_mfa(256, 16384, causal=True, is_m3_plus=True, dtype=mx.float16)
 
     def test_noncausal_never_routes_mfa(self):
         """Non-causal attention should never use MFA (best 0.92x, no win)."""

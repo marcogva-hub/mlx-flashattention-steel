@@ -189,6 +189,7 @@ def run_case(
         N,
         causal,
         is_m3_plus,
+        dtype=dtype,
         backend="auto",
     )
     auto_path = _infer_auto_path(
