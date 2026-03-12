@@ -432,12 +432,12 @@ NB_MODULE(_ext, m) {
         "GQA: H_q / H_kv must be integer. window_left/right=-1 disables sliding window.\n"
         "Only f16/bf16 supported.");
 
-  // --- SageAttention forward (Track KB): int8 Q/K + fp16 GEMM ---
+  // --- SageAttention forward (Track KB, CP2): fp16 Q + int8 K + fp16 V ---
+  // CP2: Q is now fp16 (no external Q quantize dispatch). K stays int8.
   m.def("mfa_sage_forward",
-        [](mlx::core::array q_int8,
+        [](mlx::core::array q,
            mlx::core::array k_int8,
            mlx::core::array v,
-           mlx::core::array q_scale,
            mlx::core::array k_scale,
            float scale,
            bool  causal,
@@ -447,28 +447,27 @@ NB_MODULE(_ext, m) {
             -> std::pair<mlx::core::array, mlx::core::array> {
           auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
           return mlx_mfa::mfa_sage_forward(
-              q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+              q, k_int8, v, k_scale, scale, causal,
               window_left, window_right, s);
         },
-        nb::arg("q_int8"),
+        nb::arg("q"),
         nb::arg("k_int8"),
         nb::arg("v"),
-        nb::arg("q_scale"),
         nb::arg("k_scale"),
         nb::arg("scale"),
         nb::arg("causal")       = false,
         nb::arg("window_left")  = -1,
         nb::arg("window_right") = -1,
         nb::arg("stream")       = nb::none(),
-        "SageAttention forward pass: quantized Q/K (int8) + fp16 V → fp16 O.\n"
+        "SageAttention forward pass: fp16 Q + int8 K + fp16 V → fp16 O.\n"
         "\n"
-        "Reduces Q/K memory bandwidth by 2× vs fp16. GEMM always runs in fp16.\n"
-        "Speedup requires long sequences (≥2048) where memory is the bottleneck.\n"
+        "CP2: Q is passed as fp16/bf16 directly — no external Q quantize dispatch.\n"
+        "K is int8 (quantized by QuantizedKVCache at append time). K bandwidth\n"
+        "reduction (2×) still applies. GEMM always runs in fp16.\n"
         "\n"
-        "q_int8:       [B, H, N, D]    int8 quantized queries\n"
+        "q:            [B, H, N, D]    fp16 or bf16 queries\n"
         "k_int8:       [B, H_kv, S, D] int8 quantized keys\n"
         "v:            [B, H_kv, S, D] fp16 or bf16 values (unquantized)\n"
-        "q_scale:      [B, H, NQ]      float32 per-tile Q dequantization scales\n"
         "k_scale:      [B, H_kv, NK]   float32 per-tile K dequantization scales\n"
         "window_left:  left window radius in tokens (-1 = disabled).\n"
         "window_right: right window radius in tokens (-1 = disabled).\n"

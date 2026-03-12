@@ -2087,34 +2087,31 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
 }
 
 // =========================================================================
-// MFASageForward::eval_gpu  (Track KB)
+// MFASageForward::eval_gpu  (Track KB, CP2)
 // =========================================================================
 //
-// Inputs:  q_int8(0)[B,H,N,D], k_int8(1)[B,H_kv,S,D],
-//          v(2)[B,H_kv,S,D], q_scale(3)[B,H,NQ_blocks],
-//          k_scale(4)[B,H_kv,NK_blocks]
+// Inputs:  q(0)[B,H,N,D] fp16/bf16, k_int8(1)[B,H_kv,S,D] int8,
+//          v(2)[B,H_kv,S,D], k_scale(3)[B,H_kv,NK_blocks]
 // Outputs: O(0)[B,H,N,D], L(1)[B,H,N] float32
 //
-// Metal buffer layout:
-//   Q_int8=0, K_int8=1, V=2, O=3, L=4, params=5, Q_scale=6, K_scale=7
+// Metal buffer layout (CP2): Q=0, K_int8=1, V=2, O=3, L=4, params=5, K_scale=6
 
 void MFASageForward::eval_gpu(
     const std::vector<mlx::core::array>& inputs,
     std::vector<mlx::core::array>& outputs) {
 
-  assert(inputs.size()  == 5);
+  assert(inputs.size()  == 4);
   assert(outputs.size() == 2);
 
-  const auto& q_int8  = inputs[0];  // [B, H,    N, D] int8
+  const auto& q       = inputs[0];  // [B, H,    N, D] fp16/bf16
   const auto& k_int8  = inputs[1];  // [B, H_kv, S, D] int8
   const auto& v       = inputs[2];  // [B, H_kv, S, D] fp16/bf16
-  const auto& q_scale = inputs[3];  // [B, H,    NQ_blocks]  float32
-  const auto& k_scale = inputs[4];  // [B, H_kv, NK_blocks]  float32
+  const auto& k_scale = inputs[3];  // [B, H_kv, NK_blocks]  float32
 
-  const int B    = q_int8.shape(0);
-  const int H    = q_int8.shape(1);
-  const int N    = q_int8.shape(2);   // query length
-  const int D    = q_int8.shape(3);
+  const int B    = q.shape(0);
+  const int H    = q.shape(1);
+  const int N    = q.shape(2);   // query length
+  const int D    = q.shape(3);
   const int H_kv = k_int8.shape(1);
   const int S    = k_int8.shape(2);   // KV length
 
@@ -2208,7 +2205,7 @@ void MFASageForward::eval_gpu(
   // RoPE fields unused (kept for struct layout compatibility)
   sp.rope_q_base     = 0;
   sp.rope_cos_stride = D / 2;
-  // Q strides [B, H, N] for int8 — same as fp16 layout (elements = bytes for int8)
+  // Q strides [B, H, N] for fp16 (element units; CP2: Q is no longer int8)
   sp.Q_strides[0] = (int64_t)H  * N * D;
   sp.Q_strides[1] = (int64_t)N  * D;
   sp.Q_strides[2] = (int64_t)D;
@@ -2231,11 +2228,9 @@ void MFASageForward::eval_gpu(
   sp.has_alibi    = 0;
   sp.window_left  = params_.window_left;
   sp.window_right = params_.window_right;
-  // Scale strides: Q_scale [B, H, NQ_blocks], K_scale [B, H_kv, NK_blocks]
+  // Scale strides: K_scale [B, H_kv, NK_blocks]. Q_scale eliminated (CP2).
   sp.NQ_blocks         = NQ_blocks;
   sp.NK_blocks         = NK_blocks;
-  sp.q_scale_stride_b  = H    * NQ_blocks;
-  sp.q_scale_stride_h  = NQ_blocks;
   sp.k_scale_stride_b  = H_kv * NK_blocks;
   sp.k_scale_stride_h  = NK_blocks;
 
@@ -2243,16 +2238,14 @@ void MFASageForward::eval_gpu(
   auto& enc = dev.get_command_encoder(stream().index);
   enc.set_compute_pipeline_state(pipeline);
 
-  // Buffer layout: Q_int8=0, K_int8=1, V=2, O=3, L=4, params=5,
-  //                Q_scale=6, K_scale=7
-  enc.set_input_array (q_int8,  0);
+  // Buffer layout (CP2): Q=0, K_int8=1, V=2, O=3, L=4, params=5, K_scale=6
+  enc.set_input_array (q,       0);
   enc.set_input_array (k_int8,  1);
   enc.set_input_array (v,       2);
   enc.set_output_array(O,       3);
   enc.set_output_array(L,       4);
   enc.set_bytes       (sp,      5);
-  enc.set_input_array (q_scale, 6);
-  enc.set_input_array (k_scale, 7);
+  enc.set_input_array (k_scale, 6);
 
   // Non-persistent grid: one TG per Q-tile
   enc.dispatch_threadgroups(
@@ -2265,10 +2258,9 @@ void MFASageForward::eval_gpu(
 // =========================================================================
 
 std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
-    const mlx::core::array& q_int8,
+    const mlx::core::array& q,
     const mlx::core::array& k_int8,
     const mlx::core::array& v,
-    const mlx::core::array& q_scale,
     const mlx::core::array& k_scale,
     float scale,
     bool  causal,
@@ -2277,21 +2269,19 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
     mlx::core::Stream s) {
 
   // Shape validation
-  if (q_int8.ndim() != 4)
-    throw std::invalid_argument("mfa_sage_forward: q_int8 must be 4-D [B,H,N,D]");
+  if (q.ndim() != 4)
+    throw std::invalid_argument("mfa_sage_forward: q must be 4-D [B,H,N,D]");
   if (k_int8.ndim() != 4)
     throw std::invalid_argument("mfa_sage_forward: k_int8 must be 4-D [B,H_kv,S,D]");
   if (v.ndim() != 4)
     throw std::invalid_argument("mfa_sage_forward: v must be 4-D [B,H_kv,S,D]");
-  if (q_scale.ndim() != 3)
-    throw std::invalid_argument("mfa_sage_forward: q_scale must be 3-D [B,H,NQ_blocks]");
   if (k_scale.ndim() != 3)
     throw std::invalid_argument("mfa_sage_forward: k_scale must be 3-D [B,H_kv,NK_blocks]");
 
-  const int B    = q_int8.shape(0);
-  const int H    = q_int8.shape(1);
-  const int N    = q_int8.shape(2);
-  const int D    = q_int8.shape(3);
+  const int B    = q.shape(0);
+  const int H    = q.shape(1);
+  const int N    = q.shape(2);
+  const int D    = q.shape(3);
   const int H_kv = k_int8.shape(1);
 
   if (H % H_kv != 0)
@@ -2309,7 +2299,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
       {out_shape, lse_shape},
       {v.dtype(), mlx::core::float32},
       std::make_shared<MFASageForward>(s, params),
-      {q_int8, k_int8, v, q_scale, k_scale});
+      {q, k_int8, v, k_scale});
 
   return {outputs[0], outputs[1]};
 }

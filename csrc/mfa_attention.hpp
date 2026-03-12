@@ -483,11 +483,11 @@ class MFASageForward : public mlx::core::Primitive {
 
 /// Free function: validate inputs and launch MFASageForward Primitive.
 /// Returns (O [B,H,N,D], L [B,H,N] log2-logsumexp) pair.
+/// CP2: q is fp16/bf16 (no Q quantize dispatch); k_int8 stays int8.
 std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
-    const mlx::core::array& q_int8,
+    const mlx::core::array& q,
     const mlx::core::array& k_int8,
     const mlx::core::array& v,
-    const mlx::core::array& q_scale,
     const mlx::core::array& k_scale,
     float scale,
     bool  causal,

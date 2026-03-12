@@ -19,10 +19,12 @@
 namespace mlx_mfa {
 
 /// Parameters passed from C++ to the Metal Sage kernel.
-/// Layout MUST exactly match MFASageParams in the Metal source string.
+/// Layout MUST exactly match MFaSageParams in the Metal source string.
 ///
 /// Identical prefix to MFASteelParams (B through window_left).
 /// Sage-specific fields appended at end.
+///
+/// CP2: Q is now fp16 (not int8). Q_scale eliminated — no Q quantize dispatch.
 struct MFASageParams {
     // ── MFASteelParams-compatible prefix (same layout) ─────────────────────
     int B, H, D;
@@ -38,8 +40,8 @@ struct MFASageParams {
     // RoPE fields (kept for struct alignment; unused in Sage kernel)
     int rope_q_base;
     int rope_cos_stride;
-    int64_t Q_strides[3];     // [B,H,N] int8 Q strides (in element units = int8)
-    int64_t K_strides[3];     // [B,H,S] int8 K strides
+    int64_t Q_strides[3];     // [B,H,N] fp16 Q strides (element units)
+    int64_t K_strides[3];     // [B,H,S] int8 K strides (element units)
     int64_t V_strides[3];     // [B,H_kv,S] fp16 V strides
     int64_t O_strides[3];     // [B,H,N] fp16 O strides
     int64_t L_strides[2];     // [B,H] f32 L strides
@@ -48,14 +50,11 @@ struct MFASageParams {
     int   window_left;        // -1 = disabled; >=0 = left radius (tokens)
     int   window_right;       // -1 = disabled; >=0 = right radius (tokens)
     // ── Sage-specific scale index strides ─────────────────────────────────
-    // Q_scale: [B, H, NQ_blocks, 1]  (one float per Q-tile)
-    // K_scale: [B, H_kv, NK_blocks, 1]
-    int NQ_blocks;            // ceil(qL / BQ)
+    // K_scale: [B, H_kv, NK_blocks, 1]  (one float per K-tile)
+    int NQ_blocks;            // ceil(qL / BQ)  (kept for symmetry)
     int NK_blocks;            // ceil(kL / BK)
-    int q_scale_stride_b;     // H * NQ_blocks  (stride for batch dim in Q_scale)
-    int q_scale_stride_h;     // NQ_blocks       (stride for head dim in Q_scale)
     int k_scale_stride_b;     // H_kv * NK_blocks
-    int k_scale_stride_h;     // NK_blocks       (stride for head dim in K_scale)
+    int k_scale_stride_h;     // NK_blocks  (stride for head dim in K_scale)
 };
 
 /// Generate the complete Metal shader source for the SageAttention forward kernel.

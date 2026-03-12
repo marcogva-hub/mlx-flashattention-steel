@@ -1192,7 +1192,7 @@ def sage_attention(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    BQ, BK = sage_block_sizes(D)
+    _, BK = sage_block_sizes(D)
 
     # Check extension availability (cached)
     global _sage_avail_cached
@@ -1242,11 +1242,7 @@ def sage_attention(
             k_work = k
         k_int8, k_scale = quantize_per_block(k_work, BK)
 
-    # Quantize Q to int8 per STEEL tile (Q is not smoothed).
-    q_int8, q_scale = quantize_per_block(q, BQ)       # q_scale: [B, H, NQ, 1]
-
-    # Kernel expects 3-D scales (squeeze trailing broadcast dim)
-    q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
+    # CP2: Q is passed as fp16 directly — no Q quantize dispatch.
     k_scale = k_scale.squeeze(-1)   # [B, H_kv, NK]
 
     # Convert window_size=(left, right) → window_left / window_right integers.
@@ -1260,8 +1256,8 @@ def sage_attention(
         if wr >= 0:
             window_right = int(wr)
 
-    # Dispatch SageAttention Metal kernel
-    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+    # Dispatch SageAttention Metal kernel (fp16 Q + int8 K)
+    O, _ = _sage_fwd(q, k_int8, v, k_scale, scale, causal,
                      window_left, window_right, stream)
     return O
 
@@ -1299,7 +1295,6 @@ def sage_attention_prequantized(
         RuntimeError: if the MFA extension is not available.
     """
     import math as _math
-    from mlx_mfa.quantize import sage_block_sizes, quantize_per_block
 
     D = q.shape[-1]
     if scale is None:
@@ -1312,9 +1307,7 @@ def sage_attention_prequantized(
         )
     from mlx_mfa._ext import mfa_sage_forward as _sage_fwd
 
-    BQ, _ = sage_block_sizes(D)
-    q_int8, q_scale = quantize_per_block(q, BQ)
-    q_scale = q_scale.squeeze(-1)   # [B, H, NQ]
+    # CP2: Q is fp16 — no Q quantize dispatch. Pass Q directly to kernel.
 
     # Force genuinely contiguous buffers before kernel dispatch.
     # Inputs may come from QuantizedKVCache properties, which return slices of
@@ -1337,7 +1330,7 @@ def sage_attention_prequantized(
         if wr >= 0:
             window_right = int(wr)
 
-    O, _ = _sage_fwd(q_int8, k_int8, v, q_scale, k_scale, scale, causal,
+    O, _ = _sage_fwd(q, k_int8, v, k_scale, scale, causal,
                      window_left, window_right, stream)
     return O
 

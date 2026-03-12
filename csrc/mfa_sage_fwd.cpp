@@ -4,12 +4,13 @@
 /// See mfa_sage_fwd.hpp for MFASageParams layout.
 ///
 /// Key differences from STEEL forward (mfa_steel_fwd.cpp):
-///   - Q and K are const device char* (int8); dequantized cooperatively in TGP.
+///   - Q is fp16/bf16 (CP2: no Q quantize dispatch; direct load into TGP).
+///   - K is const device char* (int8); dequantized cooperatively in TGP.
 ///   - V remains fp16; uses standard MFABlockLoaderT (unchanged from STEEL).
 ///   - Non-persistent grid: (NQ, H, B) — one TG per Q-tile (no 4-tile loop).
 ///   - No d_split, RoPE, ALiBi, sparse, double_buf in v1.2.0.
 ///   - Sliding window (has_window=true): same kb_start/kb_lim logic as STEEL.
-///   - Buffer layout: Q=0, K=1, V=2, O=3, L=4, params=5, Q_scale=6, K_scale=7.
+///   - Buffer layout: Q=0, K=1, V=2, O=3, L=4, params=5, K_scale=6.
 
 #include "mfa_sage_fwd.hpp"
 #include "mfa_steel_fwd.hpp"   // append_metal_headers_and_defines, append_steel_shared_templates
@@ -51,6 +52,7 @@ std::string generate_sage_forward_source(const ShaderCache::KernelKey& key) {
 
   // ── MFASageParams struct ──────────────────────────────────────────────────
   // Must EXACTLY match the C++ MFASageParams in mfa_sage_fwd.hpp.
+  // CP2: q_scale_stride_b/h removed; Q_scale buffer eliminated.
   ss << R"SAGE(
 struct MFASageParams {
   int B, H, D;
@@ -65,8 +67,8 @@ struct MFASageParams {
   int qL_off;
   int rope_q_base;       // unused — kept for layout compatibility
   int rope_cos_stride;   // unused — kept for layout compatibility
-  long Q_strides[3];     // [B,H,N] int8 strides (element units = bytes)
-  long K_strides[3];     // [B,H,S] int8 strides
+  long Q_strides[3];     // [B,H,N] fp16 Q strides (element units; CP2: Q is fp16)
+  long K_strides[3];     // [B,H,S] int8 K strides
   long V_strides[3];     // [B,H_kv,S] fp16 strides
   long O_strides[3];     // [B,H,N] fp16 strides
   long L_strides[2];     // [B,H] f32 strides
@@ -74,11 +76,9 @@ struct MFASageParams {
   int   has_alibi;       // always 0 in Sage
   int   window_left;     // -1 = disabled; >=0 = left window radius (tokens)
   int   window_right;    // -1 = disabled; >=0 = right window radius (tokens)
-  // Sage-specific scale index strides
+  // Sage-specific scale index strides (K only; Q_scale eliminated CP2)
   int NQ_blocks;
   int NK_blocks;
-  int q_scale_stride_b;  // H * NQ_blocks
-  int q_scale_stride_h;  // NQ_blocks
   int k_scale_stride_b;  // H_kv * NK_blocks
   int k_scale_stride_h;  // NK_blocks
 };
@@ -106,15 +106,16 @@ struct MFASageParams {
 
   // ── Kernel function ───────────────────────────────────────────────────────
   ss << "[[kernel, max_total_threads_per_threadgroup(MFA_TGP_SIZE)]]\n";
+  // CP2: Q is now fp16 (same dtype as V/O). Q_scale buffer eliminated.
+  //      K_scale moves from buffer(7) to buffer(6).
   ss << "void mlx_mfa_sage_attention(\n";
-  ss << "    const device char*            Q       [[buffer(0)]],\n";
+  ss << "    const device MFA_DTYPE*       Q       [[buffer(0)]],\n";
   ss << "    const device char*            K       [[buffer(1)]],\n";
   ss << "    const device MFA_DTYPE*       V       [[buffer(2)]],\n";
   ss << "    device MFA_DTYPE*             O       [[buffer(3)]],\n";
   ss << "    device float*                 L       [[buffer(4)]],\n";
   ss << "    const constant MFASageParams* p       [[buffer(5)]],\n";
-  ss << "    const device float*           Q_scale [[buffer(6)]],\n";
-  ss << "    const device float*           K_scale [[buffer(7)]],\n";
+  ss << "    const device float*           K_scale [[buffer(6)]],\n";
   ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
   ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -143,10 +144,7 @@ struct MFASageParams {
   ss << "     + (ulong)tid.y * (ulong)p->O_strides[1];\n";
   ss << "\n";
 
-  // Scale pointer offsets (per [B, H] / [B, H_kv] slice)
-  ss << "  const device float* Q_scale_bh =\n";
-  ss << "      Q_scale + (long)tid.z * p->q_scale_stride_b\n";
-  ss << "              + (long)tid.y * p->q_scale_stride_h;\n";
+  // K_scale pointer offset (per [B, H_kv] slice). Q_scale eliminated (CP2).
   ss << "  const device float* K_scale_bh =\n";
   ss << "      K_scale + (long)tid.z * p->k_scale_stride_b\n";
   ss << "              + (long)kv_head * p->k_scale_stride_h;\n";
@@ -210,14 +208,13 @@ struct MFASageParams {
   ss << "  }\n";
   ss << "\n";
 
-  // ── Q int8 dequantize cooperative load ───────────────────────────────────
+  // ── Q fp16 cooperative load (CP2: no quantize/dequantize) ────────────────
   // All TGP_SIZE threads cooperate: thread t handles elements
   // t, t+TGP_SIZE, t+2*TGP_SIZE, ... of the flat BQ*BD tile.
-  // Each element: dequantize via scale = Q_scale[qb] and store to Q_smem.
-  ss << "  // Q: cooperative int8 → fp16 dequantize into Q_smem\n";
+  // Q is now fp16/bf16 — load directly without any int8 conversion.
+  ss << "  // Q: cooperative fp16 direct load into Q_smem (CP2: no int8 round-trip)\n";
   ss << "  {\n";
-  ss << "    const float q_sc = Q_scale_bh[qb];\n";
-  ss << "    const device char* Q_qb = Q + (long)qb * MFA_BQ * p->Q_strides[2];\n";
+  ss << "    const device T* Q_qb = Q + (long)qb * MFA_BQ * p->Q_strides[2];\n";
   ss << "    const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
   ss << "    for (int elem = (int)local_id; elem < MFA_BQ * MFA_BD;\n";
   ss << "         elem += MFA_TGP_SIZE) {\n";
@@ -225,10 +222,9 @@ struct MFASageParams {
   ss << "      const int col = elem % MFA_BD;\n";
   // Boundary check: pad rows beyond qL_rem with 0 in the last Q-tile.
   ss << "      const bool valid = (qb < p->NQ_aligned) || (row < p->qL_rem);\n";
-  ss << "      const int8_t raw = valid\n";
-  ss << "                         ? Q_qb[(long)row * p->Q_strides[2] + col]\n";
-  ss << "                         : (int8_t)0;\n";
-  ss << "      Qs[row * LDQ + col] = (T)((float)raw * q_sc);\n";
+  ss << "      Qs[row * LDQ + col] = valid\n";
+  ss << "                             ? Q_qb[(long)row * p->Q_strides[2] + col]\n";
+  ss << "                             : T(0.0f);\n";
   ss << "    }\n";
   ss << "  }\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
