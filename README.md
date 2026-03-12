@@ -74,9 +74,10 @@ Decision: only promote the measured winning regime (`D=256`, causal, `f16`,
 
 ### SageAttention (int8 Q/K)
 
-Sage halves Q/K memory bandwidth. Speedup is meaningful at long sequences
-where bandwidth dominates; at short sequences the Python quantization overhead
-dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
+Sage is treated as a **specialized decode backend** in v2.9.2, not a universal
+replacement for STEEL V2. Decode matrix (post-backward pass) produced
+`13/240` wins overall, with most rows still losing vs dense STEEL. Auto-routing
+is therefore intentionally narrow and requires `QuantizedKVCache`.
 
 ---
 
@@ -190,12 +191,16 @@ ctx.reset()
 ```python
 from mlx_mfa import create_inference_context
 
-# auto routing: paged > sage > dense
+# auto routing: paged > narrow benchmark-backed Sage decode > dense
 ctx = create_inference_context(
     backend="auto",
     paged=False,
-    quantized_kv=True,   # selects SageInferenceContext in auto mode
-    B=1, H_kv=8, D=128, max_seq_len=4096
+    quantized_kv=True,   # enables Sage-eligible auto mode
+    B=1, H_q=8, H_kv=4, D=128, max_seq_len=4096,
+    decode_nq=4,
+    expected_cache_len=4096,
+    causal=True,
+    window_size=(256, 0),
 )
 ```
 
@@ -208,8 +213,7 @@ cache = QuantizedKVCache(B=1, H_kv=8, D=128, max_seq_len=2048)
 cache.append(k_new, v_new)
 
 out = sage_attention_prequantized(
-    q_int8, cache.k_int8, cache.v,
-    q_scale, cache.k_scale,
+    q, cache.k_int8, cache.k_scale, cache.v,
     causal=True
 )
 ```
@@ -247,7 +251,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
 | V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
 | V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
-| Sage | Production | via `sage_attention()` | Int8 Q/K; `QuantizedKVCache` for decode |
+| Sage | Specialized decode | narrow auto + explicit `backend=\"sage\"` | `QuantizedKVCache`-backed decode backend; not a universal V2 replacement |
 | Backward (dense) | Production fallback | `mx.vjp(SDPA)` | Native STEEL bwd remains gated after targeted pass (0/16 wins); debug override: `MFA_FORCE_NATIVE_BWD=1` |
 | Backward (sparse) | Production | `backward="steel_sparse"` | Native sparse backward remains available and default for sparse path |
 
@@ -264,6 +268,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | 256 | yes | f16: 4096 (M1/M2), bf16: never | Narrow D-split win regime (separate large-D family) |
 | 256 | no | never dense | Clear loss; route to SDPA |
 | 512 | any | never dense | ~parity; SDPA default |
+| Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
 
@@ -278,6 +283,9 @@ Dense backward policy in v2.9.2:
 - Native dense backward stays off unless explicitly forced for debugging
   (`MFA_FORCE_NATIVE_BWD=1`) or a future benchmark-backed regime is added.
 
+Sage decode override:
+- `MFA_FORCE_SAGE_DECODE=0|1` (higher priority than heuristic; still decode-safety gated).
+
 ---
 
 ## Metal Pipeline Resolution
@@ -291,6 +299,8 @@ When `flash_attention` dispatches to the STEEL kernel, the pipeline is resolved 
 3. **JIT compilation** — always available; compiles Metal shader source at runtime.
 
 The first successful match is cached for the process lifetime.
+Sage kernels currently use JIT cache only; broad Sage AOT coverage is deferred
+until winning regimes expand beyond the current narrow decode cases.
 
 ## Documentation
 

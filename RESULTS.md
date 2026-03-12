@@ -70,6 +70,42 @@ Raw artifact: `notes/native_backward_targeted_latest.json`
 
 ---
 
+## Sage Decode Productionization (v2.9.2, post-backward)
+
+Decode-only matrix (`benchmarks/bench_sage_decode_matrix.py`) swept:
+`N_q ∈ {1,2,4}`, `N_cache ∈ {512,1024,2048,4096,8192}`, `D ∈ {64,128}`,
+window `None` and `(256,0)`, production-like GQA and under-occupied profiles.
+
+| total rows | sage_win | maybe | losing |
+|-----------:|---------:|------:|-------:|
+| 240 | 13 | 4 | 223 |
+
+Decision:
+- Keep STEEL V2 as default production decode path.
+- Keep Sage as specialized decode backend, primarily useful with
+  `QuantizedKVCache` reuse and windowed decode.
+- Add a strict auto-route only for benchmark-backed slices:
+  - `D=128`, `causal=True`, window enabled, `H_q/H_kv=2`,
+    `N_cache=4096`, and `N_q=4` (f16) or `N_q=1` (bf16).
+- Add debug override: `MFA_FORCE_SAGE_DECODE=0|1`.
+
+Policy quality check on the recorded matrix:
+- auto-selected rows: 2
+- `sage_win`: 2, `maybe`: 0, `losing`: 0
+
+Selective AOT decision:
+- Broad Sage AOT metallib coverage is deferred in this pass.
+- Current AOT focus remains STEEL V2 / V2 D-split while Sage winning
+  regimes remain narrow and highly parameter-specific.
+
+Artifacts:
+- `notes/sage_decode_matrix_post_bwd_latest.json`
+- `notes/sage_decode_productionization_task1.md`
+- `notes/sage_decode_productionization_task2_policy.md`
+- `notes/sage_decode_productionization_task4_aot.md`
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

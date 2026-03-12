@@ -74,7 +74,30 @@ All notable changes to mlx-mfa are documented here.
   long-`N`) against SDPA gradients.
 - **docs**: Updated backward scope language to clarify targeted native status
   vs production fallback behavior.
-- **total**: 664 tests pass.
+
+### Sage Decode Productionization (Runtime + Routing + AOT Scope)
+
+- **bench**: Added focused decode matrix harness
+  (`benchmarks/bench_sage_decode_matrix.py`) and artifact
+  (`notes/sage_decode_matrix_post_bwd_latest.json`) for Sage vs dense decode
+  across `N_q={1,2,4}`, `N_cache={512..8192}`, `D={64,128}`, windowed/non-windowed
+  cases, and GQA profiles.
+- **perf**: Added `MFA_FORCE_SAGE_DECODE=0|1` override and benchmark-backed
+  Sage decode auto-policy in `dispatch_policy.py`; policy remains intentionally
+  narrow to avoid broad regressions.
+- **feat**: Tightened `create_inference_context(...)` decode routing:
+  explicit shape hints (`H_q`, `decode_nq`, `expected_cache_len`, `causal`,
+  `window_size`) now drive narrow Sage auto selection.
+- **feat**: `SageInferenceContext.step(...)` now accepts `window_size`, so
+  windowed Sage decode can be used through the unified runtime helper path.
+- **test**: Added Sage decode policy tests (override precedence, narrow auto
+  selection, quantized-cache requirement) and runtime factory routing tests.
+- **docs**: Documented Sage as a specialized decode backend (not a universal
+  STEEL V2 replacement), including explicit auto-route boundaries and AOT defer
+  rationale.
+- **docs**: Added Sage AOT decision note (`notes/sage_decode_productionization_task4_aot.md`);
+  broad Sage metallib precompile coverage is deferred in this pass.
+- **total**: 678 tests pass.
 
 ## [2.9.1] — 2026-03-12
 
