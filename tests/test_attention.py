@@ -8230,6 +8230,55 @@ class TestNativeBackwardRouting:
         n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="0")
         assert n_calls == 0
 
+    @pytest.mark.parametrize("D,N", [(64, 2048), (64, 4096), (128, 2048), (128, 4096)])
+    def test_target_shapes_native_backward_matches_sdpa_gradients(self, monkeypatch, D, N):
+        """Target causal shapes: force-native gradients should match SDPA-VJP gradients."""
+        import mlx_mfa.attention as attn
+        from mlx_mfa import flash_attention
+
+        B, H = 1, 2
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(314159)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        dO = mx.random.normal([B, H, N, D]).astype(mx.float16)
+
+        def _run(force_value):
+            monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", force_value)
+            attn._make_mfa_custom.cache_clear()
+            _, (dq, dk, dv) = mx.vjp(
+                lambda qi, ki, vi: flash_attention(
+                    qi, ki, vi, scale=scale, causal=True, backend="mfa"
+                ),
+                [q, k, v],
+                [dO],
+            )
+            mx.eval(dq, dk, dv)
+            return dq, dk, dv
+
+        dq_native, dk_native, dv_native = _run("1")
+        dq_sdpa, dk_sdpa, dv_sdpa = _run("0")
+
+        np.testing.assert_allclose(
+            np.array(dq_native.astype(mx.float32)),
+            np.array(dq_sdpa.astype(mx.float32)),
+            atol=5e-2,
+            err_msg=f"dQ mismatch for D={D} N={N}",
+        )
+        np.testing.assert_allclose(
+            np.array(dk_native.astype(mx.float32)),
+            np.array(dk_sdpa.astype(mx.float32)),
+            atol=5e-2,
+            err_msg=f"dK mismatch for D={D} N={N}",
+        )
+        np.testing.assert_allclose(
+            np.array(dv_native.astype(mx.float32)),
+            np.array(dv_sdpa.astype(mx.float32)),
+            atol=5e-2,
+            err_msg=f"dV mismatch for D={D} N={N}",
+        )
+
 
 class TestMainCLI:
     """Verify python -m mlx_mfa subcommands."""

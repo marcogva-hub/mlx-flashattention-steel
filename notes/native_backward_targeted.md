@@ -46,3 +46,11 @@ No benchmark-backed winning regime was found for native STEEL backward in this t
 - Keep dispatch unchanged for now (no native backward auto-enable yet).
 - Proceed with a **narrow policy gate** in code that defaults to SDPA VJP and
   supports explicit override for targeted re-evaluation.
+
+## Post-Policy Rerun (Task 3)
+- Reran `benchmarks/bench_backward_targeted.py` after policy/test integration
+  with `--warmup 0 --iters 1` (separate process).
+- Classification remained unchanged: **0 promising / 0 neutral / 16 losing**.
+- `notes/native_backward_targeted_latest.json` is the latest run artifact.
+- Conclusion unchanged: keep auto native backward disabled; retain SDPA VJP
+  fallback by default outside explicit debug override.
