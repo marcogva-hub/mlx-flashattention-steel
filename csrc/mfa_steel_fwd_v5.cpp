@@ -23,7 +23,13 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
   const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
-  const std::string pad_expr = "0";  // V5: BD_tile=32 → stride 32 = 64B = 1 bank line, no conflicts
+  // V5 always uses pad_expr="0". The KLoader/VLoader LD_DST template params
+  // are compile-time constants (MFA_BK and MFA_BD_TILE), so smem stride must
+  // equal BK or BD_tile exactly — padding would create a loader/stride mismatch.
+  // On M3+, device reads bypass threadgroup entirely so padding is irrelevant.
+  // On M1/M2, bank-conflict risk is real but the loader constraint prevents
+  // adding stride padding without restructuring the loader template.
+  const std::string pad_expr = "0";
 
   const int D           = key.head_dim;
   const bool causal     = key.causal;

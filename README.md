@@ -204,6 +204,20 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 
 ---
 
+## Kernel Status
+
+| Kernel | Status | Default | Notes |
+|--------|--------|---------|-------|
+| V2 | Production | ✅ D=64/128 | Causal, GQA, window, sparse, RoPE, ALiBi, softcap |
+| V2 D-split | Production | ✅ D=256/512 | ~Parity with SDPA |
+| V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; wins expected on M3+ (0 barriers via device reads) |
+| V4 | Archived | opt-in `MFA_ENABLE_V4=1` | Superseded by V5 |
+| V3 | Archived | opt-in `MFA_ENABLE_V3=1` | Superseded by V2 (higher TGP reduces occupancy) |
+| Sage | Production | via `sage_attention()` | Int8 Q/K; `QuantizedKVCache` for decode |
+| Backward | Fallback | `mx.vjp(SDPA)` | Native sparse bwd exists; dense uses SDPA vjp |
+
+---
+
 ## Dispatch Policy
 
 `backend="auto"` activates STEEL V2 only when empirically faster than SDPA:

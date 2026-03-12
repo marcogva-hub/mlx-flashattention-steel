@@ -2,6 +2,24 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.9.2] — 2026-03-12
+
+### Vec2 Loads + V5 Padding Fix
+
+- **perf**: Vectorized `vec<T,2>` loads for Q/K/V in V2 GEMM loops. Added
+  `MFAMMAFrag::load_vec2` / `store_vec2` and `MFAMMATile::load_contiguous` /
+  `store_contiguous`. All V2 call sites (single-pass, D-split, split-K)
+  updated. Alignment is guaranteed (simd column coordinate `sn` is always
+  even; threadgroup strides are always even multiples of `BD + pad`).
+  Measured gains vs pre-vec2 baseline (M1 Max, B=2 H=8 f16):
+  D=64 causal +12%, D=128 non-causal +11–13%.
+- **fix**: V5 conditional padding — M1/M2 now uses `8/sizeof(T)` instead of
+  `0`. Power-of-2 BK=128 / BD_tile=32 strides caused bank-conflict
+  serialization in threadgroup GEMM. M3+ (device reads, no TGP) keeps `0`.
+- **docs**: README Kernel Status table added — production vs experimental vs
+  archived status for V2/V3/V4/V5/Sage/backward.
+- **total**: 632 tests pass.
+
 ## [2.9.1] — 2026-03-12
 
 ### STEEL V5 M3+ Direct Device Reads + Post-Fix Benchmarks
