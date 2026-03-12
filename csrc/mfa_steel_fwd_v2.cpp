@@ -1459,6 +1459,8 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   const bool causal    = key.causal;
   const bool has_softcap = key.has_softcap;
   const bool has_window  = key.has_window;
+  const bool has_rope    = key.has_rope;
+  const bool rope_interleaved = key.rope_interleaved;
   const int gqa    = key.gqa_factor;
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
@@ -1528,6 +1530,8 @@ struct MFAFlashDecodePartialParams {
   float softcap;
   int window_left;
   int window_right;
+  int rope_q_base;
+  int rope_cos_stride;
 };
 
 )MFA";
@@ -1541,6 +1545,10 @@ struct MFAFlashDecodePartialParams {
   ss << "    device T*                                 pO  [[buffer(3)]],\n";
   ss << "    device float*                             pL  [[buffer(4)]],\n";
   ss << "    constant MFAFlashDecodePartialParams*     p   [[buffer(5)]],\n";
+  if (has_rope) {
+    ss << "    const device float* rotary_cos   [[buffer(6)]],\n";
+    ss << "    const device float* rotary_sin   [[buffer(7)]],\n";
+  }
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -1681,8 +1689,67 @@ struct MFAFlashDecodePartialParams {
   ss << "    loader_q.load_unsafe();\n";
   ss << "  }\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  // RoPE-Q: apply rotary embeddings in-place to Q_smem before loading into registers
+  if (has_rope) {
+    ss << "  // RoPE-Q: apply rotary embeddings to Q in smem\n";
+    ss << "  {\n";
+    ss << "    const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "    const int qabs_base = p->rope_q_base + qb * MFA_BQ;\n";
+    ss << "    for (int ri = (int)local_id; ri < MFA_BQ * (MFA_BD/2);\n";
+    ss << "         ri += MFA_TGP_SIZE) {\n";
+    ss << "      const int row  = ri / (MFA_BD/2);\n";
+    ss << "      const int pair = ri % (MFA_BD/2);\n";
+    ss << "      const int cos_idx = (qabs_base + row) * p->rope_cos_stride + pair;\n";
+    ss << "      const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "      const float sin_v = rotary_sin[cos_idx];\n";
+    if (rope_interleaved) {
+      ss << "      const int si0 = row * LDQ + pair * 2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si0 + 1];\n";
+      ss << "      Qs[si0]     = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si0 + 1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    } else {
+      ss << "      const int si0 = row * LDQ + pair;\n";
+      ss << "      const int si1 = row * LDQ + pair + MFA_BD/2;\n";
+      ss << "      const float q0 = (float)Qs[si0];\n";
+      ss << "      const float q1 = (float)Qs[si1];\n";
+      ss << "      Qs[si0] = (T)(q0 * cos_v - q1 * sin_v);\n";
+      ss << "      Qs[si1] = (T)(q0 * sin_v + q1 * cos_v);\n";
+    }
+    ss << "    }\n";
+    ss << "  }\n";
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-Q writes visible\n";
+  }
   ss << "  Qtile.template load_contiguous<T, 1, 1>(&Qs[Qs_off], LDQ);\n";
   ss << "\n";
+
+  // Inline lambda to emit RoPE-K after a K tile is loaded into KV_smem.
+  auto emit_rope_k = [&](const std::string& kabs_expr) {
+    ss << "    // RoPE-K: apply rotary embeddings to K in KV_smem (transposed layout)\n";
+    ss << "    {\n";
+    ss << "      const uint local_id = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "      const int kabs_base = " << kabs_expr << ";\n";
+    ss << "      for (int ri = (int)local_id; ri < MFA_BK * (MFA_BD/2);\n";
+    ss << "           ri += MFA_TGP_SIZE) {\n";
+    ss << "        const int k_row = ri % MFA_BK;\n";
+    ss << "        const int pair  = ri / MFA_BK;\n";
+    ss << "        const int cos_idx = (kabs_base + k_row) * p->rope_cos_stride + pair;\n";
+    ss << "        const float cos_v = rotary_cos[cos_idx];\n";
+    ss << "        const float sin_v = rotary_sin[cos_idx];\n";
+    if (rope_interleaved) {
+      ss << "        const int ci0 = pair * 2 * LDK + k_row;\n";
+      ss << "        const int ci1 = (pair * 2 + 1) * LDK + k_row;\n";
+    } else {
+      ss << "        const int ci0 = pair * LDK + k_row;\n";
+      ss << "        const int ci1 = (pair + MFA_BD/2) * LDK + k_row;\n";
+    }
+    ss << "        const float k0 = (float)Ks[ci0];\n";
+    ss << "        const float k1 = (float)Ks[ci1];\n";
+    ss << "        Ks[ci0] = (T)(k0 * cos_v - k1 * sin_v);\n";
+    ss << "        Ks[ci1] = (T)(k0 * sin_v + k1 * cos_v);\n";
+    ss << "      }\n";
+    ss << "    }\n";
+  };
 
   // ── V2 preload K[kb_split_start] (Barrier B0) ────────────────────────────
   ss << "  // V2: preload first K tile of split before main loop.\n";
@@ -1693,6 +1760,10 @@ struct MFAFlashDecodePartialParams {
   ss << "  }\n";
   ss << "  loader_k.next();\n";
   ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // B0\n";
+  if (has_rope) {
+    emit_rope_k("kb_split_start * MFA_BK");
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-K[0] visible\n";
+  }
   ss << "\n";
 
   // ── Main K/V loop [kb_split_start, kb_lim) ───────────────────────────────
@@ -1837,6 +1908,7 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // Barriers X + C: preload K[kb+1] (V2 preload optimization)
+  // With RoPE: barrier C is split into C_load + RoPE-K + C_rope.
   ss << "    // ─ X: P@V V-reads done → safe to overwrite KV_smem ─\n";
   ss << "    // ─ C: K[kb+1] visible for next iteration's Q@K^T  ─\n";
   ss << "    if (kb + 1 < kb_lim) {\n";
@@ -1847,7 +1919,13 @@ struct MFAFlashDecodePartialParams {
   ss << "        loader_k.load_unsafe();\n";
   ss << "      }\n";
   ss << "      loader_k.next();\n";
-  ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C\n";
+  if (has_rope) {
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C_load: K[kb+1] in smem\n";
+    emit_rope_k("(kb + 1) * MFA_BK");
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C_rope: RoPE-K visible\n";
+  } else {
+    ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C\n";
+  }
   ss << "    }\n";
   ss << "\n";
 

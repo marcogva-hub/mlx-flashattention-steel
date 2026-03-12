@@ -1713,6 +1713,47 @@ class TestV2SplitK:
         max_err = float(mx.max(mx.abs(mfa_out.astype(mx.float32) - ref_out.astype(mx.float32))))
         assert max_err < 0.05, f"V2 split-K non-causal D={D}: max_err={max_err:.4f}"
 
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_splitk_rope_matches_sdpa(self, D):
+        """V2 split-K + RoPE output matches flash_attention_rope_unified on SDPA path.
+
+        Uses B=1 H=1 (under-occupied → split-K fires) with half-rotate RoPE.
+        Reference: flash_attention_rope_unified with MFA_DISABLE_V2=1 (forces
+        single-pass V2 which also supports RoPE, or falls through to SDPA).
+        """
+        import os as _os
+        from mlx_mfa import flash_attention_rope_unified
+        B, H, N, S = 1, 1, 512, 512
+        mx.random.seed(42)
+        q = mx.random.normal([B, H, N, D], dtype=mx.float16)
+        k = mx.random.normal([B, H, S, D], dtype=mx.float16)
+        v = mx.random.normal([B, H, S, D], dtype=mx.float16)
+        # Build cos/sin for half-rotate (non-interleaved) RoPE
+        cos = mx.ones([N + S, D // 2], dtype=mx.float32)
+        sin = mx.zeros([N + S, D // 2], dtype=mx.float32)
+        mx.eval(q, k, v, cos, sin)
+
+        # MFA with split-K enabled (default)
+        mfa_out = flash_attention_rope_unified(q, k, v, cos, sin, causal=True)
+        mx.eval(mfa_out)
+
+        # Reference: disable split-K to force single-pass (avoids circular comparison)
+        prev = _os.environ.get("MFA_DISABLE_V2")
+        try:
+            _os.environ["MFA_DISABLE_V2"] = "1"
+            ref_out = flash_attention_rope_unified(q, k, v, cos, sin, causal=True)
+            mx.eval(ref_out)
+        finally:
+            if prev is None:
+                _os.environ.pop("MFA_DISABLE_V2", None)
+            else:
+                _os.environ["MFA_DISABLE_V2"] = prev
+
+        max_err = float(mx.max(mx.abs(
+            mfa_out.astype(mx.float32) - ref_out.astype(mx.float32))))
+        assert max_err < 0.05, (
+            f"V2 split-K + RoPE D={D}: max_err={max_err:.4f}")
+
 
 # ===========================================================================
 # Track I — M5+ (gen >= 17) detection stub

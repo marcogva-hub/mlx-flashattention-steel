@@ -331,10 +331,9 @@ void MFAttention::eval_gpu(
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         (D == 64 || D == 128) &&
-        // RoPE / ALiBi / sparse not yet in split-K shader — those fall through
-        // to V2 single-pass (which does support them after Phase 3).
+        // ALiBi / sparse not in split-K shader — fall through to V2 single-pass.
+        // RoPE is now supported in split-K (Phase 3).
         !params_.has_block_mask &&
-        !params_.has_rope &&
         !params_.has_alibi &&
         // Window masking interacts with split-K ranges — keep in V1 split-K
         params_.window_left  < 0 &&
@@ -395,6 +394,8 @@ void MFAttention::eval_gpu(
         sk_pp.softcap     = params_.softcap;
         sk_pp.window_left = params_.window_left;
         sk_pp.window_right = params_.window_right;
+        sk_pp.rope_q_base    = params_.cache_seqlens;
+        sk_pp.rope_cos_stride = D / 2;
 
         // ── Build FlashDecodeReduceParams for Phase 2 ─────────────────────
         int reduce_tgp = std::min(D, 128);
@@ -420,7 +421,7 @@ void MFAttention::eval_gpu(
           KK2::KernelType::SteelV2SplitKPartial,
           D, BQ2, BK2, D, WM2,
           params_.causal, /*sparse=*/false, is_m3_plus_steel,
-          /*has_rope=*/false, /*rope_interleaved=*/false,
+          params_.has_rope, params_.rope_interleaved,
           params_.softcap > 0.0f,   // has_softcap
           /*has_alibi=*/false,
           params_.window_left >= 0 || params_.window_right >= 0,  // has_window
@@ -450,6 +451,11 @@ void MFAttention::eval_gpu(
         enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pO_buf.ptr()), 3, 0);
         enc_sk.set_buffer(reinterpret_cast<MTL::Buffer*>(pL_buf.ptr()), 4, 0);
         enc_sk.set_bytes(sk_pp, 5);
+        if (params_.has_rope) {
+          // inputs[3]=rotary_cos, inputs[4]=rotary_sin (no block_mask in split-K path)
+          enc_sk.set_input_array(inputs[3], 6);
+          enc_sk.set_input_array(inputs[4], 7);
+        }
         enc_sk.dispatch_threadgroups(
             MTL::Size::Make((size_t)(NQ2 * num_splits), (size_t)H, (size_t)B),
             MTL::Size::Make((size_t)TGP2, 1, 1));

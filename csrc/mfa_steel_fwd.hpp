@@ -141,6 +141,9 @@ struct FlashDecodePartialParams {
     float softcap;             // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     int   window_left;         // -1 = disabled; >=0 = sliding window left radius
     int   window_right;        // -1 = disabled; >=0 = sliding window right radius
+    // RoPE (rotary position embeddings) — 0 when unused
+    int   rope_q_base;         // absolute position of Q token 0 = cache_seqlens
+    int   rope_cos_stride;     // stride of rotary_cos along seq dim = D/2
 };
 
 /// Parameters for the Flash Decode Phase 2 (reduce) kernel.
