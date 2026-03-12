@@ -21,6 +21,7 @@
 #include "mfa_steel_fwd_v2.hpp"
 #include "mfa_steel_fwd_v3.hpp"
 #include "mfa_steel_fwd_v4.hpp"
+#include "mfa_steel_fwd_v5.hpp"
 #include "mfa_steel_bwd.hpp"
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
@@ -573,6 +574,109 @@ void MFAttention::eval_gpu(
       return;
     }
   }  // end if (is_m3_plus_steel && MFA_ENABLE_V4)
+
+  // ── STEEL V5 dispatch (f16/bf16, D=64/128, all gens) ────────────────────
+  // D-blocked: BD_tile=32, BK=128.  Q loaded from device into registers;
+  // no Q_smem.  KV_smem = max(K^T=8704, V=10240) = 10,240 B → 3 TG/CU.
+  // BK=128 → 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
+  // Set MFA_ENABLE_V5=1 to opt in (disabled by default pending benchmarks).
+  if (std::getenv("MFA_ENABLE_V5")) {
+    const bool v5_elig =
+        (dtype_code != 2) &&
+        v5_eligible(D) &&
+        !params_.has_rope;   // V5 CP1: no in-kernel RoPE; add in CP5
+
+    if (v5_elig) {
+      auto cfg5 = select_steel_v5_block_config(D, is_m3_plus_steel);
+      const int BQ5     = cfg5.BQ;      // 32 (M1/M2) or 16 (M3+)
+      const int BK5     = cfg5.BK;      // 128
+      const int BD5     = cfg5.BD_tile; // 32
+      const int WM5     = cfg5.WM;      // 4 (M1/M2) or 2 (M3+)
+      const int TGP5    = WM5 * 32;     // 128 or 64
+      const int NQ5     = (N + BQ5 - 1) / BQ5;
+      const int NK5     = (S + BK5 - 1) / BK5;
+      const int NQ5_aln = (N % BQ5 == 0) ? NQ5 : NQ5 - 1;
+      const int NK5_aln = (S % BK5 == 0) ? NK5 : NK5 - 1;
+
+      using KK5 = ShaderCache::KernelKey;
+      KK5 key5{
+        KK5::KernelType::SteelForwardV5,
+        D, BQ5, BK5, BD5, WM5,
+        params_.causal,
+        /*sparse=*/params_.has_block_mask,
+        is_m3_plus_steel,
+        /*has_rope=*/false,
+        /*rope_interleaved=*/false,
+        params_.softcap > 0.0f,
+        params_.has_alibi,
+        params_.window_left >= 0 || params_.window_right >= 0,
+        dtype_code,
+        H / Hk
+      };
+
+      void* raw5      = ShaderCache::get().get_or_compile(key5, d.mtl_device());
+      auto* pipeline5 = reinterpret_cast<MTL::ComputePipelineState*>(raw5);
+
+      MFASteelParams sp5{};
+      sp5.B          = B;
+      sp5.H          = H;
+      sp5.D          = D;
+      sp5.qL         = N;
+      sp5.kL         = S;
+      sp5.gqa_factor = H / Hk;
+      sp5.scale      = params_.scale;
+      sp5.NQ         = NQ5;
+      sp5.NK         = NK5;
+      sp5.NQ_aligned = NQ5_aln;
+      sp5.NK_aligned = NK5_aln;
+      sp5.qL_rem     = (N % BQ5 == 0) ? BQ5 : (N % BQ5);
+      sp5.kL_rem     = (S % BK5 == 0) ? BK5 : (S % BK5);
+      sp5.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
+      sp5.rope_q_base     = params_.cache_seqlens;
+      sp5.rope_cos_stride = D / 2;
+      sp5.Q_strides[0] = (int64_t)H  * N * D;
+      sp5.Q_strides[1] = (int64_t)N  * D;
+      sp5.Q_strides[2] = (int64_t)D;
+      sp5.K_strides[0] = (int64_t)Hk * S * D;
+      sp5.K_strides[1] = (int64_t)S  * D;
+      sp5.K_strides[2] = (int64_t)D;
+      sp5.V_strides[0] = (int64_t)Hk * S * D;
+      sp5.V_strides[1] = (int64_t)S  * D;
+      sp5.V_strides[2] = (int64_t)D;
+      sp5.O_strides[0] = (int64_t)H  * N * D;
+      sp5.O_strides[1] = (int64_t)N  * D;
+      sp5.O_strides[2] = (int64_t)D;
+      sp5.L_strides[0] = (int64_t)H  * N;
+      sp5.L_strides[1] = (int64_t)N;
+      sp5.softcap      = params_.softcap;
+      sp5.has_alibi    = params_.has_alibi ? 1 : 0;
+      sp5.window_left  = params_.window_left;
+      sp5.window_right = params_.window_right;
+      sp5.mask_batch_stride = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
+      sp5.mask_head_stride  = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
+
+      auto& enc5 = d.get_command_encoder(stream().index);
+      enc5.set_compute_pipeline_state(pipeline5);
+      enc5.set_input_array(q,          0);
+      enc5.set_input_array(k,          1);
+      enc5.set_input_array(v,          2);
+      enc5.set_output_array(out,       3);
+      enc5.set_output_array(logsumexp, 4);
+      enc5.set_bytes(sp5,              5);
+      if (params_.has_block_mask) {
+        enc5.set_input_array(inputs[3], 6);
+      }
+      if (params_.has_alibi) {
+        int alibi_idx = 3 + (params_.has_block_mask ? 1 : 0);
+        enc5.set_input_array(inputs[alibi_idx], 9);
+      }
+
+      enc5.dispatch_threadgroups(
+          MTL::Size::Make((size_t)NQ5, (size_t)H, (size_t)B),
+          MTL::Size::Make((size_t)TGP5, 1, 1));
+      return;
+    }
+  }  // end if (MFA_ENABLE_V5)
 
   // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.

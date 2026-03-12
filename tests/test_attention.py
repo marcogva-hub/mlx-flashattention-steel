@@ -8312,3 +8312,129 @@ class TestSteelV4:
         assert out.dtype == mx.bfloat16
         assert out.shape == (B, H, N, D)
         assert mx.isfinite(out).all().item()
+
+
+class TestSteelV5:
+    """STEEL V5 (D-blocked, BK=128, BD_tile=32, 3 TG/CU, all gens).
+
+    V5 eliminates Q_smem: Q is loaded from device into registers per SIMD.
+    KV_smem = max(K^T, V) = 10,240 B → 3 TG/CU (vs V2's 18,944 B → 1 TG/CU).
+    BK=128 → 4× fewer K-tile iterations vs V2 M1/M2.
+
+    Enabled via MFA_ENABLE_V5=1.  Works on all Apple Silicon gens.
+    """
+
+    @pytest.mark.parametrize("D,N,causal", [
+        (64, 256, False), (64, 256, True),
+        (64, 1024, True),
+        (128, 256, False), (128, 256, True),
+        (128, 1024, True),
+        (128, 4096, True),
+    ])
+    def test_v5_matches_sdpa(self, D, N, causal):
+        """V5 output matches SDPA within f16 tolerance."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(42)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out_v5 = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out_v5)
+
+        out_ref = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask='causal' if causal else None)
+        mx.eval(out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, (
+            f"D={D} N={N} causal={causal}: V5 vs SDPA max_diff={diff:.4e}"
+        )
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_v5_gqa(self, D):
+        """V5 handles GQA (H_q=8, H_kv=2)."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(11)
+        B, Hq, Hkv, N = 1, 8, 2, 512
+        q = mx.random.normal([B, Hq, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, Hkv, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
+        assert out.shape == (B, Hq, N, D)
+        assert mx.isfinite(out).all().item()
+
+    def test_v5_bf16(self):
+        """V5 works with bfloat16 dtype."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(99)
+        B, H, N, D = 1, 4, 256, 128
+        q = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out = flash_attention(q, k, v, causal=True)
+            mx.eval(out)
+        assert out.dtype == mx.bfloat16
+        assert out.shape == (B, H, N, D)
+        assert mx.isfinite(out).all().item()
+
+    def test_v5_batch(self):
+        """V5 handles batch > 1."""
+        import os as _os
+        from unittest.mock import patch
+        mx.random.seed(7)
+        B, H, N, D = 2, 4, 256, 64
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out = flash_attention(q, k, v, scale=scale, causal=True)
+            mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert mx.isfinite(out).all().item()
+
+    @pytest.mark.parametrize("D,N", [(64, 512), (128, 512)])
+    def test_v5_nonaligned_seq(self, D, N):
+        """V5 handles sequence lengths not divisible by BK=128."""
+        import os as _os
+        from unittest.mock import patch
+        # N=512 % BK=128 == 0 → aligned; try odd length
+        N_odd = 500  # 500 % 128 = 116 (not aligned)
+        mx.random.seed(5)
+        B, H = 1, 4
+        q = mx.random.normal([B, H, N_odd, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N_odd, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N_odd, D]).astype(mx.float16)
+        mx.eval(q, k, v)
+        scale = 1.0 / math.sqrt(D)
+
+        with patch.dict(_os.environ, {"MFA_ENABLE_V5": "1"}):
+            out_v5 = flash_attention(q, k, v, scale=scale, causal=False)
+            mx.eval(out_v5)
+
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        mx.eval(out_ref)
+
+        diff = mx.max(mx.abs(
+            out_v5.astype(mx.float32) - out_ref.astype(mx.float32)
+        )).item()
+        assert diff < 2e-2, f"non-aligned N={N_odd} D={D}: diff={diff:.4e}"

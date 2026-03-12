@@ -64,6 +64,12 @@ class ShaderCache {
       // Set MFA_ENABLE_V4=1 to opt in (disabled by default pending benchmarks).
       // generate_steel_v4_source() in mfa_steel_fwd_v4.cpp.
       SteelForwardV4             = 21,  // STEEL V4: direct device K reads, 2 barriers/iter
+      // --- V5: D-blocked attention (BD_tile=32, BK=128) ---
+      // Q loaded from device into registers (no Q_smem).
+      // TGP = max(K^T_smem=8704, V_smem=10240) = 10,240 B → 3 TG/CU.
+      // BK=128: 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
+      // generate_steel_v5_source() in mfa_steel_fwd_v5.cpp.
+      SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
       // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
       //                         // MTLTensor / cooperative tensor ops (A19+/M5+).
