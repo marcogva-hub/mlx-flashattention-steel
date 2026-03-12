@@ -136,3 +136,73 @@ exceeds the savings from 2 fewer barriers per iteration.
 
 **Status**: Kernel implemented and correct; disabled by default.
 Enable via `MFA_ENABLE_V3=1` for research/benchmarking.
+
+---
+
+## V4 Kernel — Direct Device K Reads (v2.8.0 experiment)
+
+V4 eliminates K_smem: K fragments loaded directly from device memory per-simdgroup
+in the GEMM loop. Reduces barriers from 4/tile (V2) to 2/tile. Gate: `MFA_ENABLE_V4=1`.
+Measured on M1 Max with `MFA_FORCE_GEN=15` (simulates M3+ routing, not M3+ cache).
+
+| Config | V2 ms | V4 ms | V4/V2 | V4/SDPA |
+|--------|------:|------:|------:|--------:|
+| D=64  N=4096  causal | 7.32 | 7.50 | 0.98× | 0.75× |
+| D=64  N=8192  causal | 19.58 | 28.44 | 0.69× | 0.72× |
+| D=128 N=4096  causal | 15.37 | 30.26 | 0.51× | 0.33× |
+| D=128 N=8192  causal | 58.44 | 108.31 | 0.54× | 0.35× |
+| D=64  N=4096  non-causal | 9.30 | 9.49 | 0.98× | 0.99× |
+| D=128 N=4096  non-causal | 18.31 | 18.51 | 0.99× | 0.99× |
+
+**Conclusion**: V4 regresses vs V2 on M1 (0.51–0.98×). The 4× redundant device
+reads (WM=4 simdgroups each reading K independently) are not cached on M1's smaller
+L2. M3+ has a larger, faster L2 cache expected to absorb the redundant reads —
+validation pending real M3+ hardware. No RoPE support (K not staged in TGP).
+
+**Status**: Kernel implemented and correct (9/9 tests pass); disabled by default.
+Enable via `MFA_ENABLE_V4=1 MFA_FORCE_GEN=15` for M3+ simulation/benchmarking.
+
+---
+
+## SageAttention Benchmark (v2.8.0)
+
+SageAttention uses INT8-quantized Q×K GEMMs. Current status: Python-side Q
+quantization (`quantize_per_block`) adds significant per-call overhead.
+
+**Benchmark** (M1 Max, B=2 H=8 f16, causal, 2026-03-12):
+
+| Config | Flash ms | Sage ms | Sage/Flash |
+|--------|--------:|--------:|-----------:|
+| D=64  N=2048  causal | 1.76 | 3.33 | 0.53× |
+| D=64  N=4096  causal | 5.48 | 10.68 | 0.51× |
+| D=128 N=2048  causal | 3.42 | 7.35 | 0.46× |
+| D=128 N=4096  causal | 11.57 | 24.37 | 0.47× |
+
+**Conclusion**: Sage is ~2× slower than flash_attention due to Python-side Q
+quantization per call. Speedup requires pre-quantized KV caches (KV quantized
+once, Q quantized at decode time via CP2 fused path). `SageInferenceContext`
+provides this: Q quantized in-kernel, KV cached as INT8.
+
+---
+
+## Padding Necessity Audit (v2.8.0)
+
+`MFA_NO_PADDING=1` sets `padQ=padK=padV=0` in JIT kernels (V2/V3/V4).
+
+**Performance with no padding** (M1 Max, B=2 H=8 N=4096 f16):
+
+| D | causal | with_pad ms | no_pad ms | ratio |
+|---|--------|----------:|----------:|------:|
+| 128 | True  | 17.4 | 16.9 | 0.975× |
+| 128 | False | 18.8 | 18.4 | 0.976× |
+| 64  | True  | 9.4  | 8.7  | 0.929× |
+| 64  | False | 9.3  | 9.3  | 0.994× |
+
+**Correctness**: `MFA_NO_PADDING=1` causes 45/594 tests to produce NaN. Affected
+features: RoPE, ALiBi, sliding window, sparse, per-batch seqlens. Root cause:
+power-of-2 threadgroup strides (BK=64 for D=64, BK=32 for D=128) trigger bank
+conflict write corruption on Apple Silicon — hardware produces NaN rather than
+merely serializing writes.
+
+**Conclusion**: The 2-7% padding cost is a correctness requirement.
+`MFA_NO_PADDING=1` is for debugging only.
