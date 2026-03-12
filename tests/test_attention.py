@@ -7582,6 +7582,34 @@ class TestDecodeRuntimeFactory:
         assert rt.backend == "paged"
         assert isinstance(rt.context, PagedInferenceContext)
 
+    def test_paged_runtime_default_seq_id_applies_to_prefill_and_step(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+            default_seq_id=3,
+        )
+        q = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        out = rt.prefill(q, k, v, scale=0.125)
+        mx.eval(out)
+        assert rt.seq_length(3) == 16
+        assert rt.seq_length(0) == 0
+
+        q_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        k_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        v_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        out2 = rt.step(q_new, k_new, v_new, scale=0.125)
+        mx.eval(out2)
+        assert rt.seq_length(3) == 17
+
     def test_sage_runtime_selected_for_narrow_auto_regime(self):
         from mlx_mfa import create_decode_runtime, SageInferenceContext
         rt = create_decode_runtime(
@@ -7630,6 +7658,18 @@ class TestDecodeRuntimeFactory:
         assert "DecodeRuntime" in mlx_mfa.__all__
         assert "create_decode_runtime" in mlx_mfa.__all__
 
+    def test_runtime_invalid_default_seq_id(self):
+        from mlx_mfa import create_decode_runtime
+        with pytest.raises(ValueError, match="default_seq_id must be >= 0"):
+            create_decode_runtime(
+                backend="dense",
+                quantized_kv=False,
+                B=1,
+                H_kv=4,
+                D=64,
+                default_seq_id=-1,
+            )
+
     def test_shared_prefix_helper_accessible_via_runtime(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
@@ -7664,6 +7704,93 @@ class TestDecodeRuntimeFactory:
         mx.eval(out_p)
         assert out_p.shape == (1, 4, 32, 64)
         assert out_d is None
+
+    def test_prefill_shared_prefix_seeds_dense_runtime_cache(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        out_pre, kp, vp = rt.prefill_shared_prefix(q_pre, k_pre, v_pre, scale=0.125)
+        mx.eval(out_pre, kp, vp)
+        assert rt.seq_length() == 16
+
+        q_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        k_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        v_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        out = rt.step(q_new, k_new, v_new, scale=0.125)
+        mx.eval(out)
+        assert rt.seq_length() == 17
+
+    def test_decode_from_shared_prefix_requires_prepare(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        with pytest.raises(ValueError, match="prefill_shared_prefix\\(\\) first"):
+            rt.decode_from_shared_prefix(q, k, v, scale=0.125)
+
+    def test_splitfuse_can_use_prepared_prefix(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 16, 64)).astype(mx.float16)
+        rt.prefill_shared_prefix(
+            q_pre,
+            k_pre,
+            v_pre,
+            scale=0.125,
+            seed_runtime_cache=False,
+        )
+        q_decode = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        k_decode = mx.random.normal((1, 4, 32, 64)).astype(mx.float16)
+        v_decode = mx.random.normal((1, 4, 32, 64)).astype(mx.float16)
+        out_p, out_d = rt.splitfuse(
+            None,
+            None,
+            None,
+            q_decode,
+            k_decode,
+            v_decode,
+            use_prepared_prefix=True,
+            scale=0.125,
+        )
+        mx.eval(out_p, out_d)
+        assert out_p.shape == (1, 4, 16, 64)
+        assert out_d.shape == (1, 4, 2, 64)
+
+    def test_splitfuse_rejects_partial_prefill_inputs(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        with pytest.raises(ValueError, match="prefill inputs must be all provided"):
+            rt.splitfuse(q, None, None, None, None, None)
 
     def test_speculative_verify_helper_via_dense_runtime_cache(self):
         from mlx_mfa import create_decode_runtime

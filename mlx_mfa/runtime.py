@@ -17,6 +17,7 @@ from mlx_mfa.inference import (
     _resolve_inference_context_mode,
 )
 from mlx_mfa.attention import (
+    flash_attention,
     make_shared_prefix_cache,
     flash_attention_splitfuse,
     flash_attention_speculative_verify,
@@ -39,24 +40,113 @@ class DecodeRuntime:
         requested_backend: str,
         paged: bool,
         quantized_kv: bool,
+        default_seq_id: int,
     ) -> None:
         self.context = context
         self.backend = backend
         self.requested_backend = requested_backend
         self.paged = paged
         self.quantized_kv = quantized_kv
+        self.default_seq_id = default_seq_id
+        self._prepared_prefix = None
+
+    def _with_default_seq_id(self, kwargs: dict) -> dict:
+        if self.backend == "paged" and "seq_id" not in kwargs:
+            kwargs["seq_id"] = self.default_seq_id
+        return kwargs
 
     def prefill(self, q: mx.array, k: mx.array, v: mx.array, **kwargs):
         """Forward to the underlying context prefill call."""
-        return self.context.prefill(q, k, v, **kwargs)
+        return self.context.prefill(q, k, v, **self._with_default_seq_id(dict(kwargs)))
 
     def step(self, q: mx.array, k_new: mx.array, v_new: mx.array, **kwargs):
         """Forward to the underlying context step call."""
-        return self.context.step(q, k_new, v_new, **kwargs)
+        return self.context.step(
+            q,
+            k_new,
+            v_new,
+            **self._with_default_seq_id(dict(kwargs)),
+        )
 
     def reset(self, **kwargs):
         """Forward reset to the underlying context."""
-        return self.context.reset(**kwargs)
+        return self.context.reset(**self._with_default_seq_id(dict(kwargs)))
+
+    def prefill_shared_prefix(
+        self,
+        prefix_q: mx.array,
+        prefix_k: mx.array,
+        prefix_v: mx.array,
+        *,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        seed_runtime_cache: bool = True,
+        seq_id: Optional[int] = None,
+    ):
+        """Prepare a shared prefix and optionally seed runtime KV state.
+
+        This helper removes manual orchestration between
+        ``make_shared_prefix_cache(...)`` and runtime ``prefill(...)``.
+        """
+        prefix_out, kp, vp = self.shared_prefix_cache(
+            prefix_q,
+            prefix_k,
+            prefix_v,
+            scale=scale,
+        )
+        self._prepared_prefix = {
+            "q": prefix_q,
+            "k": kp,
+            "v": vp,
+            "scale": scale,
+            "causal": causal,
+            "softcap": softcap,
+            "window_size": window_size,
+        }
+        if seed_runtime_cache:
+            prefill_kwargs = {
+                "scale": scale,
+                "causal": causal,
+                "softcap": softcap,
+                "window_size": window_size,
+            }
+            if seq_id is not None:
+                prefill_kwargs["seq_id"] = seq_id
+            self.prefill(prefix_q, prefix_k, prefix_v, **prefill_kwargs)
+        return prefix_out, kp, vp
+
+    def decode_from_shared_prefix(
+        self,
+        q_suffix: mx.array,
+        k_suffix: mx.array,
+        v_suffix: mx.array,
+        *,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+    ):
+        """Run suffix attention using a prepared shared-prefix cache."""
+        if self._prepared_prefix is None:
+            raise ValueError(
+                "decode_from_shared_prefix requires prefill_shared_prefix() first"
+            )
+        kp = self._prepared_prefix["k"]
+        vp = self._prepared_prefix["v"]
+        k_full = mx.concatenate([kp, k_suffix], axis=2)
+        v_full = mx.concatenate([vp, v_suffix], axis=2)
+        return flash_attention(
+            q_suffix,
+            k_full,
+            v_full,
+            scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
+            stream=getattr(self.context, "stream", None),
+        )
 
     def shared_prefix_cache(
         self,
@@ -76,9 +166,31 @@ class DecodeRuntime:
         q_decode: Optional[mx.array],
         k_cache_decode: Optional[mx.array],
         v_cache_decode: Optional[mx.array],
+        *,
+        use_prepared_prefix: bool = False,
         **kwargs,
     ):
         """Expose flash_attention_splitfuse() through the runtime surface."""
+        if use_prepared_prefix:
+            if self._prepared_prefix is None:
+                raise ValueError(
+                    "splitfuse(use_prepared_prefix=True) requires "
+                    "prefill_shared_prefix() first"
+                )
+            q_prefill = self._prepared_prefix["q"] if q_prefill is None else q_prefill
+            k_prefill = self._prepared_prefix["k"] if k_prefill is None else k_prefill
+            v_prefill = self._prepared_prefix["v"] if v_prefill is None else v_prefill
+
+        prefill_present = [q_prefill is not None, k_prefill is not None, v_prefill is not None]
+        if any(prefill_present) and not all(prefill_present):
+            raise ValueError(
+                "splitfuse prefill inputs must be all provided or all None"
+            )
+        decode_present = [q_decode is not None, k_cache_decode is not None, v_cache_decode is not None]
+        if any(decode_present) and not all(decode_present):
+            raise ValueError(
+                "splitfuse decode inputs must be all provided or all None"
+            )
         return flash_attention_splitfuse(
             q_prefill,
             k_prefill,
@@ -150,6 +262,7 @@ class DecodeRuntime:
             f"DecodeRuntime(backend={self.backend!r}, "
             f"requested={self.requested_backend!r}, "
             f"paged={self.paged}, quantized_kv={self.quantized_kv}, "
+            f"default_seq_id={self.default_seq_id}, "
             f"context={type(self.context).__name__})"
         )
 
@@ -172,6 +285,7 @@ def create_decode_runtime(
     block_size: int = 16,
     dtype: mx.Dtype = mx.float16,
     stream: Optional[mx.Stream] = None,
+    default_seq_id: int = 0,
 ) -> DecodeRuntime:
     """Create a unified decode runtime over dense/paged/Sage contexts.
 
@@ -180,6 +294,9 @@ def create_decode_runtime(
     - Runtime callers can always use the same methods (`prefill`, `step`, `reset`).
     - Explicit `backend="sage"` requires `quantized_kv=True`.
     """
+    if default_seq_id < 0:
+        raise ValueError("default_seq_id must be >= 0")
+
     mode, requested = _resolve_inference_context_mode(
         backend=backend,
         paged=paged,
@@ -213,4 +330,5 @@ def create_decode_runtime(
         requested_backend=requested,
         paged=paged,
         quantized_kv=quantized_kv,
+        default_seq_id=default_seq_id,
     )
