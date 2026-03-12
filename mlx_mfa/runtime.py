@@ -11,7 +11,11 @@ from typing import Optional
 
 import mlx.core as mx
 
-from mlx_mfa.inference import create_inference_context, _context_backend_name
+from mlx_mfa.inference import (
+    _build_inference_context,
+    _context_backend_name,
+    _resolve_inference_context_mode,
+)
 from mlx_mfa.attention import (
     make_shared_prefix_cache,
     flash_attention_splitfuse,
@@ -176,29 +180,27 @@ def create_decode_runtime(
     - Runtime callers can always use the same methods (`prefill`, `step`, `reset`).
     - Explicit `backend="sage"` requires `quantized_kv=True`.
     """
-    requested = backend.lower()
-    if requested == "sage" and not quantized_kv:
-        raise ValueError(
-            "create_decode_runtime: backend='sage' requires quantized_kv=True"
-        )
-    if paged and quantized_kv:
-        raise ValueError(
-            "create_decode_runtime: paged=True is incompatible with quantized_kv=True"
-        )
-
-    context = create_inference_context(
+    mode, requested = _resolve_inference_context_mode(
         backend=backend,
         paged=paged,
         quantized_kv=quantized_kv,
-        B=B,
         H_q=H_q,
         H_kv=H_kv,
         D=D,
-        max_seq_len=max_seq_len,
         decode_nq=decode_nq,
         expected_cache_len=expected_cache_len,
         causal=causal,
         window_size=window_size,
+        dtype=dtype,
+        require_quantized_for_sage=True,
+    )
+
+    context = _build_inference_context(
+        mode=mode,
+        B=B,
+        H_kv=H_kv,
+        D=D,
+        max_seq_len=max_seq_len,
         num_blocks=num_blocks,
         block_size=block_size,
         dtype=dtype,

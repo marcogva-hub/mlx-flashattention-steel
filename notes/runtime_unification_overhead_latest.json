@@ -1,0 +1,27 @@
+{
+  "date": "2026-03-12",
+  "mlx_mfa_version": "2.9.2",
+  "shape": {
+    "B": 1,
+    "H_q": 4,
+    "H_kv": 4,
+    "N_pre": 64,
+    "steps": 32,
+    "D": 64,
+    "dtype": "float16"
+  },
+  "decode_loop_ms": {
+    "legacy_context_mean": 23.021010498723626,
+    "unified_runtime_mean": 22.809551999671385,
+    "unified_over_legacy": 0.9908145431294614
+  },
+  "factory_overhead_us": {
+    "legacy_context": 306.1738899972018,
+    "unified_runtime": 311.94125000183703,
+    "unified_over_legacy": 1.0188368773205578
+  },
+  "notes": [
+    "Measured in separate process.",
+    "Dense decode path only (production default)."
+  ]
+}
