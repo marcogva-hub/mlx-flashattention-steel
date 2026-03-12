@@ -8144,6 +8144,93 @@ class TestSplitKPolicy:
         assert os.environ.get(env_key) == "1024"
 
 
+class TestNativeBackwardPolicy:
+    """Native backward policy + env override behavior."""
+
+    def test_force_native_bwd_override_precedence(self, monkeypatch):
+        """MFA_FORCE_NATIVE_BWD=0|1 has higher priority than auto policy."""
+        from mlx_mfa.dispatch_policy import should_use_native_backward
+
+        monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", "1")
+        assert should_use_native_backward(64, 256, True, dtype=mx.float16) is True
+
+        monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", "0")
+        assert should_use_native_backward(64, 16384, True, dtype=mx.float16) is False
+
+    def test_auto_policy_stays_disabled_without_winning_regime(self, monkeypatch):
+        """Auto policy keeps native backward off until benchmark-backed wins exist."""
+        from mlx_mfa.dispatch_policy import should_use_native_backward
+
+        monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
+        assert should_use_native_backward(64, 16384, True, dtype=mx.float16) is False
+        assert should_use_native_backward(128, 16384, True, dtype=mx.bfloat16) is False
+
+    def test_unsupported_shapes_never_route_native(self, monkeypatch):
+        """Non-causal, D>128, and float32 must stay off native backward."""
+        from mlx_mfa.dispatch_policy import should_use_native_backward
+
+        monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
+        assert should_use_native_backward(256, 8192, True, dtype=mx.float16) is False
+        assert should_use_native_backward(64, 8192, False, dtype=mx.float16) is False
+        assert should_use_native_backward(64, 8192, True, dtype=mx.float32) is False
+
+
+@requires_ext
+class TestNativeBackwardRouting:
+    """Integration checks for native backward routing in custom VJP path."""
+
+    def _run_backward_and_count_native_calls(self, monkeypatch, force_env):
+        import mlx_mfa.attention as attn
+        import mlx_mfa._ext as ext
+        from mlx_mfa import flash_attention
+
+        attn._make_mfa_custom.cache_clear()
+
+        if force_env is None:
+            monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
+        else:
+            monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", force_env)
+
+        calls = {"n": 0}
+        original = ext.mfa_steel_backward
+
+        def wrapped(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(ext, "mfa_steel_backward", wrapped)
+        attn._make_mfa_custom.cache_clear()
+
+        B, H, N, D = 1, 1, 64, 64
+        scale = 1.0 / math.sqrt(D)
+        mx.random.seed(1234)
+        q = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        k = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        v = mx.random.normal([B, H, N, D]).astype(mx.float16)
+        dO = mx.random.normal([B, H, N, D]).astype(mx.float16)
+
+        _, (dq, dk, dv) = mx.vjp(
+            lambda qi, ki, vi: flash_attention(
+                qi, ki, vi, scale=scale, causal=True, backend="mfa"
+            ),
+            [q, k, v],
+            [dO],
+        )
+        mx.eval(dq, dk, dv)
+        attn._make_mfa_custom.cache_clear()
+        return calls["n"]
+
+    def test_force_native_bwd_on_calls_native_kernel(self, monkeypatch):
+        """MFA_FORCE_NATIVE_BWD=1 should route supported shapes to native kernel."""
+        n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="1")
+        assert n_calls > 0
+
+    def test_force_native_bwd_off_keeps_sdpa_vjp(self, monkeypatch):
+        """MFA_FORCE_NATIVE_BWD=0 should keep native kernel unused."""
+        n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="0")
+        assert n_calls == 0
+
+
 class TestMainCLI:
     """Verify python -m mlx_mfa subcommands."""
 

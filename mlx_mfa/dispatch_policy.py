@@ -29,6 +29,8 @@ import math
 import os
 from typing import Optional
 
+import mlx.core as mx
+
 # ---------------------------------------------------------------------------
 # Default thresholds: minimum N to activate MFA for (D, causal) pair.
 # Derived from M1 Max dispatch matrix baseline.  999_999 effectively disables.
@@ -78,6 +80,17 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
 }
 
 _verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
+
+# Native STEEL backward policy (targeted, benchmark-backed only).
+# 2026-03-12 targeted pass on M1 Max found 0/16 winning configs for:
+#   D in {64, 128}, N in {2048, 4096, 8192, 16384}, causal=True, f16/bf16.
+# Keep auto-dispatch disabled until a measured winning regime appears.
+_NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
+    (64, "float16"): 999_999,
+    (64, "bfloat16"): 999_999,
+    (128, "float16"): 999_999,
+    (128, "bfloat16"): 999_999,
+}
 
 # Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
@@ -243,6 +256,49 @@ def should_use_splitk(
     if max_n < 0:
         return True
     return seq_len <= max_n
+
+
+def _native_bwd_dtype_key(dtype) -> Optional[str]:
+    """Normalize dtype objects/strings for native-bwd policy lookup."""
+    if dtype == mx.float16 or dtype == "float16":
+        return "float16"
+    if dtype == mx.bfloat16 or dtype == "bfloat16":
+        return "bfloat16"
+    return None
+
+
+def should_use_native_backward(
+    head_dim: int,
+    seq_len: int,
+    causal: bool,
+    *,
+    dtype,
+) -> bool:
+    """Return whether native STEEL backward should be used for this shape.
+
+    Priority:
+      1) ``MFA_FORCE_NATIVE_BWD=0|1`` hard override (for supported shapes).
+      2) benchmark-backed narrow policy table.
+
+    Safety constraints (always enforced):
+      - causal only
+      - D in {64, 128}
+      - dtype in {float16, bfloat16}
+    """
+    dtype_key = _native_bwd_dtype_key(dtype)
+    supported = causal and (head_dim in (64, 128)) and (dtype_key is not None)
+
+    force = os.environ.get("MFA_FORCE_NATIVE_BWD")
+    if force == "0":
+        return False
+    if force == "1":
+        return supported
+
+    if not supported:
+        return False
+
+    min_n = _NATIVE_BWD_MIN_N.get((head_dim, dtype_key), 999_999)
+    return seq_len >= min_n
 
 
 def calibrate_dispatch(

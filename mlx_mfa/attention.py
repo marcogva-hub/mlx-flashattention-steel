@@ -3086,25 +3086,25 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                     q, k, v, scale=scale, mask=mask)
             _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
         elif softcap == 0.0:
-            # Phase 1.3 — SDPA vjp is the default backward path.
-            #
-            # Benchmark data (bench_backward_matrix.py, M1 Max 2026-03-10):
-            #   mfa_steel_backward is 0.15-0.63x vs mx.vjp(SDPA) in ALL configs.
-            #   D=64 N=4096: steel=35ms vs sdpa=22ms (0.63x)
-            #   D=128 N=4096: steel=128ms vs sdpa=31ms (0.24x)
-            #   D=256 N=4096: steel=317ms vs sdpa=50ms (0.16x)
-            #
-            # SDPA vjp is used by default for ALL f16/bf16 shapes.
-            # The STEEL backward kernel remains compiled and accessible via
-            # backend='mfa' + explicit opt-in (future Track M).
-            #
-            # PERF-TODO: Track M — native STEEL backward — reinvestigate when
-            # mfa_steel_backward achieves parity with mx.vjp(SDPA).
-            _, (dQ, dK, dV) = mx.vjp(
-                lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
-                [q, k, v],
-                [dO],
+            # Native STEEL backward is narrowly policy-gated from benchmark data.
+            # Current auto policy is conservative and defaults to SDPA VJP unless
+            # explicitly benchmark-backed (or env-overridden for debugging).
+            from mlx_mfa.dispatch_policy import should_use_native_backward
+
+            use_native_bwd = should_use_native_backward(
+                q.shape[3],
+                q.shape[2],
+                causal,
+                dtype=q.dtype,
             )
+            if use_native_bwd:
+                dQ, dK, dV = mfa_steel_backward(q, k, v, O, L, dO, scale, causal)
+            else:
+                _, (dQ, dK, dV) = mx.vjp(
+                    lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+                    [q, k, v],
+                    [dO],
+                )
         else:
             _, (dQ, dK, dV) = mx.vjp(
                 lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
