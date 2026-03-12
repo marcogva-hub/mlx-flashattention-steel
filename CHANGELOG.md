@@ -41,7 +41,24 @@ All notable changes to mlx-mfa are documented here.
   to distinguish production V2 vs experimental V3/V4/V5, reflect split-K
   composability, and document the D=256 decision.
 - **chore**: Archived stale dump artifacts under `notes/archive/`.
-- **total**: 655 tests pass.
+
+### Native Backward Targeted Pass (Winning Shapes Only)
+
+- **bench**: Added `benchmarks/bench_backward_targeted.py` and
+  `notes/native_backward_targeted.md` for a narrow dense-backward sweep:
+  `D={64,128}`, causal, long-`N`, `f16/bf16`, comparing direct native STEEL
+  backward vs SDPA VJP baseline.
+- **bench result**: No benchmark-backed dense winning regime on M1 Max
+  (`0 promising / 0 neutral / 16 losing`), so dense auto-backward remains
+  SDPA VJP by default.
+- **perf**: Added explicit dense backward policy gate in Python with
+  `MFA_FORCE_NATIVE_BWD=0|1` override precedence for debug/evaluation.
+- **test**: Added policy + routing tests (force-on/force-off/unsupported
+  shapes) and target-shape gradient parity tests (`D=64/128`, causal,
+  long-`N`) against SDPA gradients.
+- **docs**: Updated backward scope language to clarify targeted native status
+  vs production fallback behavior.
+- **total**: 664 tests pass.
 
 ## [2.9.1] — 2026-03-12
 

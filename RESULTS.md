@@ -42,6 +42,30 @@ Dispatch decision from this pass:
 
 ---
 
+## Native Backward Targeted Pass (v2.9.2)
+
+Targeted dense-backward sweep (M1 Max, `B=2 H=8`, causal, `D={64,128}`,
+`N={2048,4096,8192,16384}`, `f16/bf16`) compared direct native STEEL backward
+against SDPA VJP.
+
+| Family | Native/SDPA range | Outcome |
+|---|---:|---|
+| f16 D=64 causal | 0.60–0.86× | losing |
+| f16 D=128 causal | 0.19–0.32× | losing |
+| bf16 D=64 causal | 0.41–0.71× | losing |
+| bf16 D=128 causal | 0.21–0.24× | losing |
+
+Classification: **0 promising / 0 neutral / 16 losing**.
+
+Decision:
+- Keep dense backward default as `mx.vjp(SDPA)` in auto mode.
+- Keep native dense backward available only via explicit debug override
+  (`MFA_FORCE_NATIVE_BWD=1`) while no benchmark-backed winning regime exists.
+
+Raw artifact: `notes/native_backward_targeted_latest.json`
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

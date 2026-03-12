@@ -97,7 +97,8 @@ dominates. Use `QuantizedKVCache` to amortize this cost across decode steps.
 - **QuantizedKVCache** — O(1) per-step quantize; pre-stores K as int8 for incremental decode
 - **Variable-length** — packed sequences with `cu_seqlens` (training)
 - **Paged KV** — page-pool KV cache with `block_table` (multi-request serving)
-- **Autograd** — full `mx.vjp` support via STEEL backward kernels (D≤512, f16/bf16)
+- **Autograd** — default backward is `mx.vjp(SDPA)` for dense attention;
+  native STEEL backward is intentionally targeted/override-only in v2.9.2
 - **Async metallib** — `async_v2.metallib` ships hardware-DMA kernels (`simdgroup_async_copy`) for V/softmax and K/P@V overlap; +20–40% on macOS ≤15; on macOS 26 loads correctly but runtime converts async_copy to sync (no benefit, no harm); disable with `MFA_DISABLE_ASYNC=1`
 - **Smart dispatch** — `backend="auto"` routes to STEEL V2 only when faster than SDPA
 - **Auto-calibration** — `calibrate_dispatch()` benchmarks your device and saves thresholds
@@ -246,7 +247,8 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
 | V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
 | Sage | Production | via `sage_attention()` | Int8 Q/K; `QuantizedKVCache` for decode |
-| Backward | Fallback | `mx.vjp(SDPA)` | Native sparse bwd exists; dense uses SDPA vjp |
+| Backward (dense) | Production fallback | `mx.vjp(SDPA)` | Native STEEL bwd remains gated after targeted pass (0/16 wins); debug override: `MFA_FORCE_NATIVE_BWD=1` |
+| Backward (sparse) | Production | `backward="steel_sparse"` | Native sparse backward remains available and default for sparse path |
 
 ---
 
@@ -266,6 +268,11 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 
 Run `python -m mlx_mfa calibrate` to measure crossover points on your device
 and automatically save optimal thresholds.
+
+Dense backward policy in v2.9.2:
+- Auto mode defaults to SDPA VJP.
+- Native dense backward stays off unless explicitly forced for debugging
+  (`MFA_FORCE_NATIVE_BWD=1`) or a future benchmark-backed regime is added.
 
 ---
 
