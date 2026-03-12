@@ -46,21 +46,22 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 | D=128 N=16384 causal | 167.7 | 293.6 | **1.75×** |
 
 Dense D=512 remains SDPA-default. D=256 now uses a narrow causal promotion:
-`causal=True and N>=8192` routes to V2 D-split; smaller causal and all
-non-causal D=256 stay on SDPA.
+`causal=True`, `dtype=f16`, and `N>=4096` routes to V2 D-split on M1/M2;
+bf16, smaller causal, and all non-causal D=256 stay on SDPA.
 
 ### D=256 Decision Pass (v2.9.2)
 
-| N | causal | SDPA (ms) | V2 D-split (ms) | V2/SDPA |
-|---:|:------:|----------:|----------------:|--------:|
-| 4096  | ✅ | 36.55 | 37.35 | 0.98× |
-| 8192  | ✅ | 143.24 | 141.78 | 1.01× |
-| 16384 | ✅ | 685.77 | 578.13 | 1.19× |
-| 4096  | ❌ | 36.56 | 66.66 | 0.55× |
-| 8192  | ❌ | 144.52 | 267.52 | 0.54× |
-| 16384 | ❌ | 611.60 | 1108.43 | 0.55× |
+| N | dtype | causal | SDPA (ms) | Auto (ms) | SDPA/Auto |
+|---:|:---:|:---:|----------:|----------:|----------:|
+| 4096  | f16 | ✅ | 38.49 | 38.24 | 1.01× |
+| 8192  | f16 | ✅ | 153.08 | 144.26 | 1.06× |
+| 16384 | f16 | ✅ | 653.99 | 564.79 | 1.16× |
+| 4096  | bf16 | ✅ | 43.97 | 46.05 | 0.95× |
+| 8192  | bf16 | ✅ | 177.33 | 176.88 | 1.00× |
+| 16384 | bf16 | ✅ | 728.42 | 735.21 | 0.99× |
 
-Decision: only promote the measured winning regime (`D=256`, causal, `N>=8192`).
+Decision: only promote the measured winning regime (`D=256`, causal, `f16`,
+`N>=4096`, M1/M2). Keep bf16 and non-causal D=256 on SDPA.
 
 ### Sliding Window — MFA vs Full SDPA
 
@@ -242,7 +243,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Kernel | Status | Default | Notes |
 |--------|--------|---------|-------|
 | V2 | Production | ✅ D=64/128 | Causal, GQA, window, sparse, RoPE, ALiBi, softcap |
-| V2 D-split | Production (narrow) | ✅ D=256 causal N>=8192 | D=256 non-causal + short causal stay on SDPA; D=512 stays SDPA-default |
+| V2 D-split | Production (narrow) | ✅ D=256 causal f16 N>=4096 (M1/M2) | D=256 bf16 + non-causal stay on SDPA; D=512 stays SDPA-default |
 | V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
 | V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
 | V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
@@ -260,7 +261,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 |---|--------|-----------------|------|
 | 64 | yes | 1024 (M1), 512 (M3+) | V2 1.5–1.8× |
 | 128 | yes | 2048 (M1), 1024 (M3+) | V2 1.6–1.8× |
-| 256 | yes | 8192 (M1) | Narrow D-split win regime from v2.9.2 decision pass |
+| 256 | yes | f16: 4096 (M1/M2), bf16: never | Narrow D-split win regime (separate large-D family) |
 | 256 | no | never dense | Clear loss; route to SDPA |
 | 512 | any | never dense | ~parity; SDPA default |
 | any | window | always | tile-skip 6–21× |

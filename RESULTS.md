@@ -25,20 +25,21 @@ Split-K dispatch is now calibrated per family (`dense`, `ALiBi`, `window=256`, `
 and persisted in `dispatch_table.json` as `splitk_thresholds`. Debug override:
 `MFA_FORCE_SPLITK=0|1`.
 
-### D=256 decision pass (M1 Max, B=2 H=8 f16)
+### D=256 decision pass (M1 Max, B=2 H=8)
 
-| N | causal | SDPA ms | V2 D-split ms | V2/SDPA |
-|---:|:------:|--------:|--------------:|--------:|
-| 4096  | ✅ | 36.55 | 37.35 | 0.98× |
-| 8192  | ✅ | 143.24 | 141.78 | 1.01× |
-| 16384 | ✅ | 685.77 | 578.13 | 1.19× |
-| 4096  | ❌ | 36.56 | 66.66 | 0.55× |
-| 8192  | ❌ | 144.52 | 267.52 | 0.54× |
-| 16384 | ❌ | 611.60 | 1108.43 | 0.55× |
+| N | dtype | causal | SDPA ms | Auto ms | SDPA/Auto |
+|---:|:---:|:---:|--------:|--------:|----------:|
+| 4096  | f16 | ✅ | 38.49 | 38.24 | 1.01× |
+| 8192  | f16 | ✅ | 153.08 | 144.26 | 1.06× |
+| 16384 | f16 | ✅ | 653.99 | 564.79 | 1.16× |
+| 4096  | bf16 | ✅ | 43.97 | 46.05 | 0.95× |
+| 8192  | bf16 | ✅ | 177.33 | 176.88 | 1.00× |
+| 16384 | bf16 | ✅ | 728.42 | 735.21 | 0.99× |
 
 Dispatch decision from this pass:
-- Promote only `D=256`, `causal=True`, `N>=8192` to MFA V2 D-split.
-- Keep SDPA default for `D=256` non-causal and shorter causal sequences.
+- Promote only `D=256`, `causal=True`, `dtype=f16`, `N>=4096` (M1/M2) to MFA V2 D-split.
+- Keep SDPA default for D=256 `bf16`, D=256 non-causal, and conservative M3+ until measured.
+- Keep D=512 dense on SDPA by default (out of scope for this D=256 design-track pass).
 
 ---
 
@@ -103,8 +104,9 @@ Notes:
 | D=512 N=4096  f16 non-causal (D-split) | 62.9 | 64.5 | 1.02× |
 
 Notes:
-- D=256 dense now uses a narrow promotion (`causal=True`, `N>=8192`) from the
-  v2.9.2 decision pass; non-causal and shorter causal remain SDPA-default.
+- D=256 dense now uses a narrow promotion (`causal=True`, `dtype=f16`,
+  `N>=4096` on M1/M2) from the design-track pass; bf16, non-causal, and
+  shorter causal remain SDPA-default.
 - D=512 dense routes to SDPA by default: D-split V2 is parity-only on current data.
 - Window and sparse D=256/512 still route to MFA: tile-skip gives 5-20×
   regardless of head dimension.

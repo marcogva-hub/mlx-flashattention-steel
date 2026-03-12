@@ -31,10 +31,17 @@ All notable changes to mlx-mfa are documented here.
   (`splitk_thresholds`) for D=64/128 causal families (dense/ALiBi/window).
   Added `MFA_FORCE_SPLITK=0|1` override with highest precedence.
 - **perf**: D=256 decision pass landed a narrow promotion:
-  `D=256`, `causal=True`, `N>=8192` routes to MFA V2 D-split on M1-class
-  thresholds; shorter causal and all non-causal D=256 remain SDPA-default.
+  `D=256`, `causal=True`, `dtype=f16`, `N>=4096` routes to MFA V2 D-split on
+  M1/M2; bf16, shorter causal, and all non-causal D=256 remain SDPA-default.
   Benchmark harness: `benchmarks/bench_d256_decision.py`, decision notes in
   `notes/d256_decision.md` + JSON artifact.
+- **perf**: D=256/512 D-split tile selection is now explicitly isolated from
+  D=128 BK calibration overrides. Added `select_steel_v2_dsplit_block_config()`
+  plus `MFA_V2_FORCE_BK_D256=32|64` debug override so global
+  `MFA_V2_FORCE_BK` no longer leaks into large-D routing.
+- **perf**: Auto-dispatch now accepts dtype in policy decisions and applies a
+  D=256 separate-family rule for dense causal paths (f16 promoted narrowly,
+  bf16 conservative). M3+ D=256 remains conservative until measured.
 - **feat**: Added `create_inference_context(...)` helper to unify dense/paged/
   sage decode context creation with clear routing and validation.
 - **docs**: Updated `README.md`, `RESULTS.md`, and `docs/benchmarks/RESULTS.md`
