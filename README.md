@@ -45,7 +45,8 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 | D=128 N=8192  causal | 44.2 | 73.6 | **1.67×** |
 | D=128 N=16384 causal | 167.7 | 293.6 | **1.75×** |
 
-Dense D=512 remains SDPA-default. D=256 now uses a narrow causal promotion:
+Dense D=512 remains SDPA-default after a dedicated decision pass (0/32 dense
+rows beat SDPA on M1 Max). D=256 uses a narrow causal promotion:
 `causal=True`, `dtype=f16`, and `N>=4096` routes to V2 D-split on M1/M2;
 bf16, smaller causal, and all non-causal D=256 stay on SDPA.
 
@@ -62,6 +63,20 @@ bf16, smaller causal, and all non-causal D=256 stay on SDPA.
 
 Decision: only promote the measured winning regime (`D=256`, causal, `f16`,
 `N>=4096`, M1/M2). Keep bf16 and non-causal D=256 on SDPA.
+
+### D=512 Decision Pass (v2.9.2)
+
+Matrix scope (`benchmarks/bench_d512_decision_matrix.py`):
+- `N in {1024, 2048, 4096, 8192}`
+- `causal in {False, True}`
+- `dtype in {f16, bf16}`
+- profiles: `B=2,H=8` and `B=1,H=1`
+
+Outcome:
+- best MFA/SDPA in matrix: **0.81×**
+- classification: **0 maybe-win / 0 no-win / 32 losing**
+- `backend="auto"` stays SDPA for dense D=512 (`0/32` auto rows routed to MFA)
+- no benchmark-backed narrow D=512 promotion landed in this pass
 
 ### Sliding Window — MFA vs Full SDPA
 
@@ -261,7 +276,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Kernel | Status | Default | Notes |
 |--------|--------|---------|-------|
 | V2 | Production | ✅ D=64/128 | Causal, GQA, window, sparse, RoPE, ALiBi, softcap |
-| V2 D-split | Production (narrow) | ✅ D=256 causal f16 N>=4096 (M1/M2) | D=256 bf16 + non-causal stay on SDPA; D=512 stays SDPA-default |
+| V2 D-split | Production (narrow) | ✅ D=256 causal f16 N>=4096 (M1/M2) | D=256 bf16 + non-causal stay on SDPA; D=512 decision pass found no dense winning regime (SDPA-default) |
 | V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
 | V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
 | V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
@@ -281,7 +296,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | 128 | yes | 2048 (M1), 1024 (M3+) | V2 1.6–1.8× |
 | 256 | yes | f16: 4096 (M1/M2), bf16: never | Narrow D-split win regime (separate large-D family) |
 | 256 | no | never dense | Clear loss; route to SDPA |
-| 512 | any | never dense | ~parity; SDPA default |
+| 512 | any | never dense | D=512 decision pass: 0/32 wins vs SDPA; SDPA default |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
@@ -291,6 +306,9 @@ and automatically save optimal thresholds.
 
 Debug override for D=256 auto routing:
 `MFA_FORCE_D256_PATH=1|mfa|0|sdpa` (applies only to D=256 with `backend=\"auto\"`).
+
+Debug override for D=512 auto routing:
+`MFA_FORCE_D512_PATH=1|mfa|0|sdpa` (applies only to D=512 with `backend=\"auto\"`).
 
 Dense backward policy in v2.9.2:
 - Auto mode defaults to SDPA VJP.

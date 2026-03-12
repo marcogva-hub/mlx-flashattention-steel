@@ -8,7 +8,7 @@
 
 ---
 
-## v2.9.2 Decision Addendum — Split-K + D=256
+## v2.9.2 Decision Addendum — Split-K + D=256 + D=512
 
 ### Split-K composability status
 
@@ -39,10 +39,28 @@ and persisted in `dispatch_table.json` as `splitk_thresholds`. Debug override:
 Dispatch decision from this pass:
 - Promote only `D=256`, `causal=True`, `dtype=f16`, `N>=4096` (M1/M2) to MFA V2 D-split.
 - Keep SDPA default for D=256 `bf16`, D=256 non-causal, and conservative M3+ until measured.
-- Keep D=512 dense on SDPA by default (out of scope for this D=256 design-track pass).
+- D=512 now has a dedicated decision pass (below): keep dense D=512 on SDPA.
 - Post-backward refresh matrix (`notes/d256_design_matrix_post_bwd_latest.json`):
   32 cases -> `maybe_win=8`, `neutral=0`, `losing=24`; wins are concentrated in
   causal `f16` only. Policy remains unchanged after refresh.
+
+### D=512 decision pass (M1 Max, post-runtime unification)
+
+Dedicated matrix artifact: `notes/d512_decision_matrix_latest.json`.
+
+Scope:
+- `N in {1024, 2048, 4096, 8192}`
+- `causal in {False, True}`
+- `dtype in {f16, bf16}`
+- profiles: `prod_b2h8` and `under_b1h1`
+
+Outcome:
+- `maybe_win=0`, `no_win=0`, `losing=32`
+- best MFA/SDPA in matrix: `0.81x`
+- `backend="auto"` routed dense D=512 to SDPA on all rows (`0/32` MFA routes)
+- Narrow candidate check (`MFA_V2_FORCE_BK_D256=64` for D-split) improved some
+  rows slightly but remained below SDPA (best observed `0.77x` on tested long
+  causal production shapes)
 
 ---
 
@@ -168,16 +186,17 @@ Notes:
 | D=256 N=4096  f16 causal (D-split) | 37.1 | 36.7 | 0.99× |
 | D=256 N=8192  f16 causal (D-split) | 143.3 | 142.7 | 1.00× |
 | D=256 N=4096  f16 non-causal (D-split) | 33.1 | 33.0 | 1.00× |
-| D=512 N=1024  f16 causal (D-split) | 4.9 | 4.8 | 0.99× |
-| D=512 N=4096  f16 causal (D-split) | 66.4 | 65.8 | 0.99× |
-| D=512 N=8192  f16 causal (D-split) | 262.7 | 262.3 | 1.00× |
-| D=512 N=4096  f16 non-causal (D-split) | 62.9 | 64.5 | 1.02× |
+| D=512 N=1024  f16 causal (D-split, prod_b2h8) | 10.6 | 5.1 | 0.48× |
+| D=512 N=4096  f16 causal (D-split, prod_b2h8) | 98.8 | 72.1 | 0.73× |
+| D=512 N=8192  f16 causal (D-split, prod_b2h8) | 383.2 | 281.0 | 0.73× |
+| D=512 N=4096  f16 non-causal (D-split, prod_b2h8) | 186.5 | 67.4 | 0.36× |
 
 Notes:
 - D=256 dense now uses a narrow promotion (`causal=True`, `dtype=f16`,
   `N>=4096` on M1/M2) from the design-track pass; bf16, non-causal, and
   shorter causal remain SDPA-default.
-- D=512 dense routes to SDPA by default: D-split V2 is parity-only on current data.
+- D=512 dense routes to SDPA by default: decision pass found no benchmark-backed
+  dense winning regime (`0/32` matrix wins vs SDPA).
 - Window and sparse D=256/512 still route to MFA: tile-skip gives 5-20×
   regardless of head dimension.
 - D-split prevents the 0.69× regression of the old V1 kernel at D=512.

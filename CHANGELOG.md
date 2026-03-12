@@ -114,7 +114,26 @@ All notable changes to mlx-mfa are documented here.
   `notes/runtime_unification_overhead_latest.json`; decode-loop path shows
   no regression (unified/legacy `0.991x` on measured shape).
 - **docs**: Updated runtime architecture notes in README/RESULTS/CHANGELOG.
-- **total**: 689 tests pass.
+
+### D=512 Decision Pass (Benchmark-Backed Production Status)
+
+- **bench**: Added dedicated matrix harness
+  (`benchmarks/bench_d512_decision_matrix.py`) with per-route subprocess
+  isolation for `sdpa`, `mfa_v1`, `mfa_v2_dsplit`, `mfa_v5_optin`, and `auto`.
+  Artifact: `notes/d512_decision_matrix_latest.json`.
+- **bench result**: No benchmark-backed dense D=512 win on M1 Max in this pass
+  (`0 maybe-win / 0 no-win / 32 losing`; best MFA/SDPA `0.81x`).
+- **docs/decision**: Added decision note (`notes/d512_decision_pass1.md`) and
+  recorded narrow candidate check (D-split BK override) with no winning regime.
+- **refactor**: Isolated D=512 production-decision logic in dispatch policy and
+  C++ dispatch comments to keep large-D family intent explicit.
+- **perf**: Auto-dispatch keeps D=512 dense on SDPA by default; added debug
+  override `MFA_FORCE_D512_PATH=1|mfa|0|sdpa` (auto mode only).
+- **test**: Added D=512 policy tests for conservative default and override
+  precedence in `tests/test_attention.py`.
+- **docs**: Updated README/RESULTS/CHANGELOG with explicit D=512 production
+  status (decision-pass outcome, not speculative promotion).
+- **total**: 692 tests pass.
 
 ## [2.9.1] — 2026-03-12
 
