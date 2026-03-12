@@ -133,7 +133,30 @@ All notable changes to mlx-mfa are documented here.
   precedence in `tests/test_attention.py`.
 - **docs**: Updated README/RESULTS/CHANGELOG with explicit D=512 production
   status (decision-pass outcome, not speculative promotion).
-- **total**: 692 tests pass.
+
+### Paged / Shared-Prefix Productionization
+
+- **bench**: Added subprocess-isolated runtime matrix
+  (`benchmarks/bench_paged_sharedprefix_matrix.py`) for paged decode setup and
+  steady-state, shared-prefix reuse, and splitfuse scenarios.
+  Artifact: `notes/paged_sharedprefix_matrix_latest.json`.
+- **bench result**: Paged decode did not show a stable benchmark-backed auto
+  win in this matrix (`paged_step: 0 clear wins, 28 losing`;
+  `paged_setup: 10 losing`), so paged remains explicit-only for now.
+- **feat**: Tightened unified runtime flows in `mlx_mfa/runtime.py`:
+  - default paged `seq_id` routing (`default_seq_id`)
+  - `prefill_shared_prefix(...)` to prepare and optionally seed runtime cache
+  - clearer splitfuse input validation and prepared-prefix reuse path
+- **feat**: Added lightweight runtime metadata via `DecodeRuntime.metadata` and
+  repr flags (`shared_prefix_active`, `splitfuse_active`,
+  `speculative_verify_active`, backend/cache selection state).
+- **test**: Added runtime tests for paged default-seq behavior, shared-prefix
+  flow helpers, splitfuse validation/reuse path, and metadata correctness.
+- **docs**: Added decision notes:
+  - `notes/paged_sharedprefix_productionization_task1.md`
+  - `notes/paged_sharedprefix_productionization_task3_policy.md`
+  and refreshed README/RESULTS scope language.
+- **total**: 698 tests pass.
 
 ## [2.9.1] — 2026-03-12
 

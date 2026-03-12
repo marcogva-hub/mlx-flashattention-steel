@@ -155,6 +155,34 @@ Artifacts:
 
 ---
 
+## Paged / Shared-Prefix Productionization (v2.9.2)
+
+Focused runtime matrix:
+- script: `benchmarks/bench_paged_sharedprefix_matrix.py`
+- artifact: `notes/paged_sharedprefix_matrix_latest.json`
+- profile: `B=1, H_q=8, H_kv=4` (GQA 2:1), `D={64,128}`, causal decode
+
+### Matrix classification counts
+
+| Family | clear_win | maybe_win | no_win | losing |
+|---|---:|---:|---:|---:|
+| paged_step (`flash_attention_paged` vs dense kvcache) | 0 | 1 | 1 | 28 |
+| paged_setup (paged runtime prefill vs dense runtime prefill) | 0 | 0 | 0 | 10 |
+| shared_prefix (reuse flow) | 4 | 0 | 3 | 1 |
+| splitfuse (`flash_attention_splitfuse`) | 3 | 0 | 0 | 5 |
+
+Decision from this pass:
+- Keep paged decode explicit-only in runtime auto mode (no benchmark-backed
+  stable winning regime in this matrix).
+- Keep shared-prefix and splitfuse available through unified runtime helpers,
+  with docs explicitly calling out shape/workload sensitivity.
+
+Supporting note:
+- `notes/paged_sharedprefix_productionization_task1.md`
+- `notes/paged_sharedprefix_productionization_task3_policy.md`
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

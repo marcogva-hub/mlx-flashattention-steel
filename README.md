@@ -94,6 +94,19 @@ replacement for STEEL V2. Decode matrix (post-backward pass) produced
 `13/240` wins overall, with most rows still losing vs dense STEEL. Auto-routing
 is therefore intentionally narrow and requires `QuantizedKVCache`.
 
+### Paged / Shared-Prefix Runtime Decision (v2.9.2)
+
+Paged decode and shared-prefix/splitfuse were benchmarked in a focused runtime
+matrix (`benchmarks/bench_paged_sharedprefix_matrix.py`):
+
+- Paged decode setup + steady-state did **not** show a stable production win on
+  this device profile (`paged_step: 0 clear wins, 28 losing`; `paged_setup: 10 losing`).
+- Shared-prefix showed selective wins when prompt-prefix reuse is real.
+- Splitfuse remained mixed and shape-sensitive.
+
+Decision: keep paged decode explicit-only for now; keep shared-prefix/splitfuse
+as opt-in runtime optimizations.
+
 ---
 
 ## Features
@@ -124,6 +137,8 @@ is therefore intentionally narrow and requires `QuantizedKVCache`.
 - **Unified runtime layer** — `DecodeRuntime` / `create_decode_runtime(...)`
   unify dense/paged/Sage decode plus shared-prefix, splitfuse, and
   speculative-verify helper access from one surface
+- **Runtime metadata** — `DecodeRuntime.metadata` reports selected backend and
+  helper activation (`paged`, `shared_prefix`, `splitfuse`, `speculative_verify`, `sage`)
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
 
 ---
@@ -209,7 +224,8 @@ ctx.reset()
 ```python
 from mlx_mfa import create_decode_runtime
 
-# auto routing: paged > narrow benchmark-backed Sage decode > dense
+# auto routing: narrow benchmark-backed Sage decode > dense
+# (paged decode is explicit-only in this release)
 rt = create_decode_runtime(
     backend="auto",
     paged=False,
@@ -225,9 +241,16 @@ out_prefill = rt.prefill(q, k, v)
 out_decode = rt.step(q_tok, k_tok, v_tok)
 
 # helper access from the same runtime surface
-prefix_out, kp, vp = rt.shared_prefix_cache(q_pre, k_pre, v_pre)
-out_p, out_d = rt.splitfuse(qp, kp, vp, qd, kd, vd)
+prefix_out, kp, vp = rt.prefill_shared_prefix(q_pre, k_pre, v_pre)
+out_p, out_d = rt.splitfuse(None, None, None, qd, kd, vd, use_prepared_prefix=True)
 verify = rt.speculative_verify(q_verify, draft_ids, k_cache=kd, v_cache=vd)
+print(rt.metadata)
+
+# explicit paged runtime
+rt_paged = create_decode_runtime(
+    backend="paged", paged=True, quantized_kv=False,
+    B=1, H_q=8, H_kv=4, D=128, max_seq_len=4096, default_seq_id=0,
+)
 ```
 
 `create_inference_context(...)` remains available as the lower-level
@@ -297,6 +320,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | 256 | yes | f16: 4096 (M1/M2), bf16: never | Narrow D-split win regime (separate large-D family) |
 | 256 | no | never dense | Clear loss; route to SDPA |
 | 512 | any | never dense | D=512 decision pass: 0/32 wins vs SDPA; SDPA default |
+| Paged decode | auto | explicit-only | Runtime matrix did not show stable benchmark-backed auto win |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
