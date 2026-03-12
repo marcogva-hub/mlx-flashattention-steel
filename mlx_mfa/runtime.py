@@ -49,6 +49,8 @@ class DecodeRuntime:
         self.quantized_kv = quantized_kv
         self.default_seq_id = default_seq_id
         self._prepared_prefix = None
+        self._splitfuse_used = False
+        self._speculative_verify_used = False
 
     def _with_default_seq_id(self, kwargs: dict) -> dict:
         if self.backend == "paged" and "seq_id" not in kwargs:
@@ -158,6 +160,21 @@ class DecodeRuntime:
         """Expose make_shared_prefix_cache() through the runtime surface."""
         return make_shared_prefix_cache(prefix_q, prefix_k, prefix_v, **kwargs)
 
+    @property
+    def metadata(self) -> dict:
+        """Lightweight runtime-selection and helper-activation metadata."""
+        return {
+            "backend": self.backend,
+            "requested_backend": self.requested_backend,
+            "context_class": type(self.context).__name__,
+            "paged_active": self.backend == "paged",
+            "sage_active": self.backend == "sage",
+            "shared_prefix_active": self._prepared_prefix is not None,
+            "splitfuse_active": self._splitfuse_used,
+            "speculative_verify_active": self._speculative_verify_used,
+            "default_seq_id": self.default_seq_id,
+        }
+
     def splitfuse(
         self,
         q_prefill: Optional[mx.array],
@@ -191,7 +208,7 @@ class DecodeRuntime:
             raise ValueError(
                 "splitfuse decode inputs must be all provided or all None"
             )
-        return flash_attention_splitfuse(
+        out = flash_attention_splitfuse(
             q_prefill,
             k_prefill,
             v_prefill,
@@ -200,6 +217,8 @@ class DecodeRuntime:
             v_cache_decode,
             **kwargs,
         )
+        self._splitfuse_used = True
+        return out
 
     def speculative_verify(
         self,
@@ -234,13 +253,15 @@ class DecodeRuntime:
                     "first or pass explicit k_cache/v_cache"
                 )
 
-        return flash_attention_speculative_verify(
+        out = flash_attention_speculative_verify(
             q_target,
             k_cache,
             v_cache,
             draft_ids,
             **kwargs,
         )
+        self._speculative_verify_used = True
+        return out
 
     def seq_length(self, seq_id: int = 0) -> int:
         """Return sequence length for dense/paged/sage contexts."""
@@ -263,6 +284,9 @@ class DecodeRuntime:
             f"requested={self.requested_backend!r}, "
             f"paged={self.paged}, quantized_kv={self.quantized_kv}, "
             f"default_seq_id={self.default_seq_id}, "
+            f"shared_prefix_active={self.metadata['shared_prefix_active']}, "
+            f"splitfuse_active={self.metadata['splitfuse_active']}, "
+            f"speculative_verify_active={self.metadata['speculative_verify_active']}, "
             f"context={type(self.context).__name__})"
         )
 

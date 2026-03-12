@@ -7566,6 +7566,9 @@ class TestDecodeRuntimeFactory:
         assert isinstance(rt, DecodeRuntime)
         assert rt.backend == "dense"
         assert isinstance(rt.context, InferenceContext)
+        assert rt.metadata["backend"] == "dense"
+        assert rt.metadata["paged_active"] is False
+        assert rt.metadata["sage_active"] is False
 
     def test_paged_runtime_selected(self):
         from mlx_mfa import create_decode_runtime, PagedInferenceContext
@@ -7581,6 +7584,9 @@ class TestDecodeRuntimeFactory:
         )
         assert rt.backend == "paged"
         assert isinstance(rt.context, PagedInferenceContext)
+        assert rt.metadata["backend"] == "paged"
+        assert rt.metadata["paged_active"] is True
+        assert rt.metadata["sage_active"] is False
 
     def test_paged_runtime_default_seq_id_applies_to_prefill_and_step(self):
         from mlx_mfa import create_decode_runtime
@@ -7627,6 +7633,8 @@ class TestDecodeRuntimeFactory:
         )
         assert rt.backend == "sage"
         assert isinstance(rt.context, SageInferenceContext)
+        assert rt.metadata["backend"] == "sage"
+        assert rt.metadata["sage_active"] is True
 
     def test_sage_runtime_requires_quantized_kv(self):
         from mlx_mfa import create_decode_runtime
@@ -7720,6 +7728,7 @@ class TestDecodeRuntimeFactory:
         out_pre, kp, vp = rt.prefill_shared_prefix(q_pre, k_pre, v_pre, scale=0.125)
         mx.eval(out_pre, kp, vp)
         assert rt.seq_length() == 16
+        assert rt.metadata["shared_prefix_active"] is True
 
         q_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
         k_new = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
@@ -7778,6 +7787,7 @@ class TestDecodeRuntimeFactory:
         mx.eval(out_p, out_d)
         assert out_p.shape == (1, 4, 16, 64)
         assert out_d.shape == (1, 4, 2, 64)
+        assert rt.metadata["splitfuse_active"] is True
 
     def test_splitfuse_rejects_partial_prefill_inputs(self):
         from mlx_mfa import create_decode_runtime
@@ -7812,6 +7822,7 @@ class TestDecodeRuntimeFactory:
         assert out.shape == (1, 4, 2, 64)
         assert lse.shape == (1, 4, 2)
         assert lp.shape == (1, 2)
+        assert rt.metadata["speculative_verify_active"] is True
 
     def test_speculative_verify_invalid_backend_without_explicit_cache(self):
         from mlx_mfa import create_decode_runtime
