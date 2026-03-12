@@ -106,6 +106,9 @@ is therefore intentionally narrow and requires `QuantizedKVCache`.
 - **Auto-calibration** — `calibrate_dispatch()` benchmarks your device and saves thresholds
 - **Split-K calibration** — per-family split-K crossover cache (`splitk_thresholds`);
   debug override via `MFA_FORCE_SPLITK=0|1`
+- **Unified runtime layer** — `DecodeRuntime` / `create_decode_runtime(...)`
+  unify dense/paged/Sage decode plus shared-prefix, splitfuse, and
+  speculative-verify helper access from one surface
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
 
 ---
@@ -186,13 +189,13 @@ for _ in range(100):
 ctx.reset()
 ```
 
-### Unified decode context helper
+### Unified decode runtime
 
 ```python
-from mlx_mfa import create_inference_context
+from mlx_mfa import create_decode_runtime
 
 # auto routing: paged > narrow benchmark-backed Sage decode > dense
-ctx = create_inference_context(
+rt = create_decode_runtime(
     backend="auto",
     paged=False,
     quantized_kv=True,   # enables Sage-eligible auto mode
@@ -202,7 +205,18 @@ ctx = create_inference_context(
     causal=True,
     window_size=(256, 0),
 )
+
+out_prefill = rt.prefill(q, k, v)
+out_decode = rt.step(q_tok, k_tok, v_tok)
+
+# helper access from the same runtime surface
+prefix_out, kp, vp = rt.shared_prefix_cache(q_pre, k_pre, v_pre)
+out_p, out_d = rt.splitfuse(qp, kp, vp, qd, kd, vd)
+verify = rt.speculative_verify(q_verify, draft_ids, k_cache=kd, v_cache=vd)
 ```
+
+`create_inference_context(...)` remains available as the lower-level
+context factory when direct context access is preferred.
 
 ### SageAttention decode (QuantizedKVCache)
 

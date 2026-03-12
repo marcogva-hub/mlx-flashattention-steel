@@ -97,7 +97,24 @@ All notable changes to mlx-mfa are documented here.
   rationale.
 - **docs**: Added Sage AOT decision note (`notes/sage_decode_productionization_task4_aot.md`);
   broad Sage metallib precompile coverage is deferred in this pass.
-- **total**: 678 tests pass.
+
+### Runtime Unification Pass (Dense / Paged / Sage / Helpers)
+
+- **notes**: Added runtime-fragmentation inventory and unification targets:
+  `notes/runtime_unification_inventory.md`.
+- **feat**: Added lightweight runtime module `mlx_mfa/runtime.py` with
+  `DecodeRuntime` + `create_decode_runtime(...)` over existing context classes
+  (no kernel-surface expansion).
+- **feat**: Integrated helper access through the unified runtime:
+  `shared_prefix_cache()`, `splitfuse()`, and `speculative_verify()`.
+- **perf/refactor**: Centralized backend mode resolution and context building
+  in shared inference helpers to reduce duplicated runtime-side routing logic.
+- **bench**: Added separate-process microbenchmark
+  (`benchmarks/bench_runtime_decode_overhead.py`) with artifact
+  `notes/runtime_unification_overhead_latest.json`; decode-loop path shows
+  no regression (unified/legacy `0.991x` on measured shape).
+- **docs**: Updated runtime architecture notes in README/RESULTS/CHANGELOG.
+- **total**: 689 tests pass.
 
 ## [2.9.1] — 2026-03-12
 

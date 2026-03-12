@@ -106,6 +106,37 @@ Artifacts:
 
 ---
 
+## Runtime Unification Pass (v2.9.2)
+
+Added lightweight runtime surface:
+- `DecodeRuntime`
+- `create_decode_runtime(...)`
+
+The runtime wraps existing dense/paged/Sage contexts (no kernel changes) and
+exposes shared-prefix, splitfuse, and speculative-verify helpers from the same
+API surface.
+
+### Microbenchmark — legacy context vs unified runtime (separate process)
+
+Shape: `B=1, H_q=4, H_kv=4, N_pre=64, D=64, steps=32, f16`
+
+| Metric | Legacy (`create_inference_context`) | Unified (`create_decode_runtime`) | Ratio |
+|---|---:|---:|---:|
+| Decode loop mean | 23.02 ms | 22.81 ms | 0.991× |
+| Factory overhead | 306.17 µs | 311.94 µs | 1.019× |
+
+Decision:
+- No decode-loop regression from runtime unification.
+- Small factory overhead increase is acceptable given reduced orchestration
+  branching and unified helper access.
+
+Artifacts:
+- `benchmarks/bench_runtime_decode_overhead.py`
+- `notes/runtime_unification_overhead_latest.json`
+- `notes/runtime_unification_perf.md`
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |
