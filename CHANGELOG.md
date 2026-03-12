@@ -2,6 +2,23 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.9.0] — 2026-03-12
+
+### STEEL V5 D-Blocked Kernel
+
+- **new**: STEEL V5 forward kernel — D-blocked attention with BD_tile=32, BK=128.
+  Q loaded from device directly into registers (no Q_smem). TGP = WM×32 = 128B,
+  enabling 3 TG/CU vs V2's 1 TG/CU. Gate: `MFA_ENABLE_V5=1`.
+  - 32 new tests in `TestSteelV5` + `TestSteelV5CP5`.
+  - Supports: causal, GQA, bf16, sliding window, softcap, ALiBi.
+  - Not dispatched by default: 16 threadgroup barriers/K-tile (D=128, 4 D-chunks)
+    dominate the 3× occupancy gain on M1 Max. Intended for M3+ where device reads
+    replace smem loads (0 barriers).
+  - Sparse excluded: block_mask is sized for V2's BK; V5's BK=128 is incompatible.
+    Sparse calls with `MFA_ENABLE_V5=1` fall through to V2.
+- **bench**: V5 vs V2 vs SDPA (M1 Max, B=2 H=8 f16): 0.68–0.88× V2 causal,
+  0.87–0.88× V2 dense at D=64/128. Results in `RESULTS.md §STEEL V5`.
+
 ## [2.8.0] — 2026-03-12
 
 ### V4 Kernel + Padding Audit + Sage Benchmarks + Metal 4 Stubs

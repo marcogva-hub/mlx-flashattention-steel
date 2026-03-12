@@ -30,7 +30,7 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
-## Performance (v2.6.0, M1 Max, B=2 H=8 f16)
+## Performance (v2.9.0, M1 Max, B=2 H=8 f16)
 
 > Full results: [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md)
 
