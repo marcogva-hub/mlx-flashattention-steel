@@ -2,6 +2,27 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.8.0] — 2026-03-12
+
+### V4 Kernel + Padding Audit + Sage Benchmarks + Metal 4 Stubs
+
+- **new**: STEEL V4 forward kernel — eliminates K_smem, loads K directly from
+  device memory per-simdgroup in the GEMM loop. Reduces barriers from 4/tile (V2)
+  to 2/tile. Gate: `MFA_ENABLE_V4=1`. 9 new tests in `TestSteelV4`.
+  On M1 (simulated M3+ via MFA_FORCE_GEN=15): 0.51–0.98× V2 (4× redundant device
+  reads not cached by M1 L2; M3+ validation pending). No RoPE support.
+- **new**: `MFA_NO_PADDING=1` env var for JIT kernels V2/V3/V4 — sets all smem
+  padding to 0 for debugging/research.
+- **bench**: Padding audit — removing padding causes 45/594 tests to produce NaN.
+  Power-of-2 threadgroup strides (BK=64, BK=32) trigger write corruption on Apple
+  Silicon; bank conflicts are not merely a performance issue. Padding cost: 2-7%.
+- **bench**: Sage vs flash_attention on M1 Max: ~2× slower due to Python-side Q
+  quantization. Speedup requires SageInferenceContext (Q fused in-kernel).
+- **stub**: Metal 4 dispatch stub in `eval_gpu()` — `is_m5_plus = (gen >= 17)`.
+  `Metal4TensorOps = 22` slot reserved in `shader_cache.hpp` for MTLTensor API.
+- **docs**: RESULTS.md updated with V4, Sage, and padding audit sections.
+- **infra**: Version 2.7.0 → 2.8.0.
+
 ## [2.7.0] — 2026-03-12
 
 ### V3 Kernel Research + Sage Validation

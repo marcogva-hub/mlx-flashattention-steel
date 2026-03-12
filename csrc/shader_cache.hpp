@@ -65,8 +65,10 @@ class ShaderCache {
       // generate_steel_v4_source() in mfa_steel_fwd_v4.cpp.
       SteelForwardV4             = 21,  // STEEL V4: direct device K reads, 2 barriers/iter
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // TensorOpsForward = 22,  // Reserved: Metal 4 cooperative tensor API
+      // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
+      //                         // MTLTensor / cooperative tensor ops (A19+/M5+).
       //                         // Not yet implemented; M5+ hardware required.
+      //                         // Dispatch stub in mfa_attention.cpp gated on is_m5_plus.
     };
 
     KernelType type;

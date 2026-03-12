@@ -140,6 +140,11 @@ void MFAttention::eval_gpu(
   const char* force_gen_env = std::getenv("MFA_FORCE_GEN");
   if (force_gen_env) arch_gen_steel = std::atoi(force_gen_env);
   bool is_m3_plus_steel = (arch_gen_steel >= 15);
+  // M5+ (gen >= 17, A19/Apple Silicon 5th gen) exposes Metal 4 tensor API
+  // (MTLTensor, cooperative tensor ops). Stub only — no kernel implemented yet.
+  // When M5+ hardware is available, dispatch Metal4TensorOps kernel here.
+  bool is_m5_plus = (arch_gen_steel >= 17);
+  (void)is_m5_plus;  // unused until Metal4TensorOps kernel is implemented
 
   // ── GPU core count (for split-K occupancy heuristics) ────────────────────
   // estimate_gpu_cores() parses MTLDevice::name() for the actual chip variant
