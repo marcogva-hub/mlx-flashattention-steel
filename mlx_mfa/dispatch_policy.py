@@ -36,6 +36,9 @@ import mlx.core as mx
 # Derived from M1 Max dispatch matrix baseline.  999_999 effectively disables.
 # ---------------------------------------------------------------------------
 
+_D512_CONSERVATIVE_MIN_N = 999_999
+
+
 _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     # D=64 causal: V2 kernel (BK=64) raises crossover. Measured (M1 Max, 12 trials):
     #   N=512→1.18x, N=1024→1.14x, N=2048→1.25x, N=4096→1.86x, N=16384→2.20x.
@@ -55,11 +58,10 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (256, True):  8192,
     # D=256 non-causal remains a clear loss (~0.55x in decision pass).
     (256, False): 999_999,
-    # D=512 dense: still parity-only in current measurements; keep SDPA default.
-    # Window/sparse always MFA (tile-skip gives 5-20× regardless of D) —
-    # handled before this table in should_use_mfa().
-    (512, True):  999_999,
-    (512, False): 999_999,
+    # D=512 is handled by _d512_min_n() as a separate decision family.
+    # Keep conservative fallback table entries for custom/legacy callers.
+    (512, True):  _D512_CONSERVATIVE_MIN_N,
+    (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
 # M3+ thresholds: D=128 BK=64 (doubled vs M1 BK=32) → larger per-tile speedup.
@@ -76,8 +78,8 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
     # Window/sparse still route to MFA via should_use_mfa() early-exit.
     (256, True):  999_999,
     (256, False): 999_999,
-    (512, True):  999_999,
-    (512, False): 999_999,
+    (512, True):  _D512_CONSERVATIVE_MIN_N,
+    (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
 _verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
@@ -142,6 +144,22 @@ def _d256_min_n(
     if dtype_key == "bfloat16":
         return 999_999
     return None
+
+
+def _d512_min_n(
+    *,
+    head_dim: int,
+    has_custom_table: bool,
+) -> Optional[int]:
+    """Return D=512 threshold when dedicated policy should be applied.
+
+    D=512 is intentionally modeled as a separate family from D=64/128/256.
+    Current benchmark evidence keeps dense D=512 on conservative SDPA default
+    across causal and non-causal modes.
+    """
+    if head_dim != 512 or has_custom_table:
+        return None
+    return _D512_CONSERVATIVE_MIN_N
 
 
 def _forced_d256_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]:
@@ -287,6 +305,11 @@ def should_use_mfa(
 
     dtype_key = _dispatch_dtype_key(dtype)
 
+    d512_min_n = _d512_min_n(
+        head_dim=head_dim,
+        has_custom_table=(custom is not None),
+    )
+
     d256_min_n = _d256_min_n(
         head_dim=head_dim,
         causal=causal,
@@ -294,7 +317,9 @@ def should_use_mfa(
         dtype_key=dtype_key,
         has_custom_table=(custom is not None),
     )
-    if d256_min_n is not None:
+    if d512_min_n is not None:
+        min_n = d512_min_n
+    elif d256_min_n is not None:
         min_n = d256_min_n
     else:
         min_n = thresholds.get((head_dim, causal), 999_999)

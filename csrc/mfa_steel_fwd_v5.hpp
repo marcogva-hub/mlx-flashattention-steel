@@ -41,6 +41,8 @@ struct SteelV5BlockConfig {
 
 /// Check if V5 is eligible for a given head_dim.
 inline bool v5_eligible(int head_dim) {
+  // D=512 is intentionally excluded here; D=512 stays in the dedicated
+  // D-split family and is currently SDPA-default in auto-dispatch policy.
   return (head_dim == 64 || head_dim == 128);
 }
 

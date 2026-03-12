@@ -52,10 +52,12 @@ inline bool is_v2_d512_family(int head_dim) {
   return head_dim == 512;
 }
 
-inline bool is_v2_large_d_family(int head_dim) {
-  // Large-D family is explicit: D=256 (active design track) and D=512
-  // (kept conservative / SDPA-default in Python auto-dispatch).
-  // Both use the same D-split kernel family here; policy lives above.
+inline bool is_v2_dsplit_family(int head_dim) {
+  // Large-D families are explicit:
+  //   - D=256: narrow benchmark-backed MFA promotion in Python policy.
+  //   - D=512: conservative SDPA-default in Python policy.
+  // Both share the same C++ D-split kernel family; auto-route policy lives in
+  // mlx_mfa/dispatch_policy.py.
   return is_v2_d256_family(head_dim) || is_v2_d512_family(head_dim);
 }
 
@@ -958,12 +960,13 @@ void MFAttention::eval_gpu(
   if (!std::getenv("MFA_DISABLE_V2")) {
     const bool v2_dsplit_eligible =
         (dtype_code != 2) &&
-        is_v2_large_d_family(D) &&
+        is_v2_dsplit_family(D) &&
         !params_.has_block_mask &&
         !params_.has_rope;
 
     if (v2_dsplit_eligible) {
       const bool is_d256_path = is_v2_d256_family(D);
+      const bool is_d512_path = is_v2_d512_family(D);
       const int BD_HALF = 128;
       auto cfg_ds       = select_steel_v2_dsplit_block_config(is_m3_plus_steel);
       const int BQ_ds   = cfg_ds.BQ;   // 32
@@ -976,8 +979,13 @@ void MFAttention::eval_gpu(
       const int NK_ds_aln = (S % BK_ds == 0) ? NK_ds : NK_ds - 1;
 
       using KKds = ShaderCache::KernelKey;
-      const auto kt_ds = is_d256_path ? KKds::KernelType::SteelV2DSplit256
-                                      : KKds::KernelType::SteelV2DSplit512;
+      // Keep the kernel-type branch explicit so D=512 decisions remain visible.
+      auto kt_ds = KKds::KernelType::SteelV2DSplit512;
+      if (is_d256_path) {
+        kt_ds = KKds::KernelType::SteelV2DSplit256;
+      } else if (is_d512_path) {
+        kt_ds = KKds::KernelType::SteelV2DSplit512;
+      }
       KKds key_ds{
         kt_ds,
         D, BQ_ds, BK_ds, BD_HALF, WM_ds,
