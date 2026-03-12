@@ -206,3 +206,32 @@ merely serializing writes.
 
 **Conclusion**: The 2-7% padding cost is a correctness requirement.
 `MFA_NO_PADDING=1` is for debugging only.
+
+---
+
+## STEEL V5 D-Blocked Benchmark (v2.9.0)
+
+V5 uses BD_tile=32 D-chunks (BK=128), loading Q from device into registers — no
+Q_smem — so TGP = WM×32 = 128B, enabling 3 TG/CU vs V2's 1 TG/CU.
+
+**Benchmark** (M1 Max, B=2 H=8 f16, 2026-03-12):
+
+| D | N | Mode | SDPA ms | V2 ms | V5 ms | V5/SDPA | V5/V2 |
+|---|---|------|--------:|------:|------:|--------:|------:|
+| 64 | 1024 | causal | 2.14 | 2.09 | 1.79 | 1.20× | 1.16× |
+| 64 | 2048 | causal | 3.06 | 2.33 | 2.33 | 1.32× | 1.00× |
+| 64 | 4096 | causal | 10.62 | 5.51 | 6.24 | 1.70× | 0.88× |
+| 64 | 8192 | causal | 41.10 | 19.57 | 22.19 | 1.85× | 0.88× |
+| 64 | 1024 | dense | 1.14 | 1.95 | 2.25 | 0.51× | 0.87× |
+| 64 | 4096 | dense | 9.35 | 9.60 | 10.85 | 0.86× | 0.88× |
+| 128 | 2048 | causal | 4.99 | 3.31 | 4.91 | 1.02× | 0.67× |
+| 128 | 4096 | causal | 20.40 | 11.51 | 16.86 | 1.21× | 0.68× |
+| 128 | 8192 | causal | 75.27 | 42.68 | 63.08 | 1.19× | 0.68× |
+| 128 | 4096 | dense | 18.41 | 20.76 | 28.66 | 0.64× | 0.72× |
+
+**Conclusion**: V5 regresses on M1 Max vs V2.
+Root cause: 16 threadgroup barriers per K-tile (4 D-chunks × 4 barriers each)
+dominate over the 3× TG/CU occupancy gain from smaller TGP.
+V5 **not dispatched by default**; enabled via `MFA_ENABLE_V5=1`.
+Intended as a foundation for M3+ hardware where device reads replace smem
+loads entirely, reducing to 0 barriers per K-tile.
