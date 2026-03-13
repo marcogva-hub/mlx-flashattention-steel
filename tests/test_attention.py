@@ -7791,6 +7791,20 @@ class TestDecodeRuntimeFactory:
         assert out_d.shape == (1, 4, 1, 64)
         assert rt.metadata["last_splitfuse"]["seq_id"] == 9
 
+    def test_splitfuse_step_rejects_unsupported_backend(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="sage",
+            quantized_kv=True,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_dec = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        with pytest.raises(ValueError, match="dense/paged runtime only"):
+            rt.splitfuse_step(q_dec, scale=0.125)
+
     def test_prefill_shared_prefix_seeds_dense_runtime_cache(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
