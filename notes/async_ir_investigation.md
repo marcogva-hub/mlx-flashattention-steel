@@ -179,3 +179,52 @@ Implication:
 Interim interpretation for Stage 4:
 - No direct overlap evidence was extractable from the recorded traces in this configuration.
 - Combined with benchmark results, behavior remains consistent with ineffective async overlap on this setup.
+
+## Final stage-by-stage findings
+
+### Stage 1: MSL -> AIR (current compiler)
+- Can current compiler emit intrinsic from source? **NO**.
+- Error class: `illegal string literal in 'asm'` for `air.simdgroup_async_copy_*` and `air.wait_simdgroup_events`.
+
+### Stage 2: AIR -> metallib (shipped artifact inspection)
+- Are async intrinsics present in shipped metallib bitcode? **YES**.
+- Found symbols/calls include:
+  - `@air.simdgroup_async_copy_2d.p3i8.p1i8`
+  - `@air.wait_simdgroup_events`
+  - `struct.metal::simdgroup_event`
+
+### Stage 3: metallib -> runtime pipeline
+- Does async metallib load at runtime? **YES**, when file is present in expected package path.
+- Evidence log:
+  - `[MFA-IR-INVESTIGATE] Async pipeline: SUCCESS (mlx_mfa_v2_async_attention_d128)`
+
+### Stage 4: execution behavior
+- Async path median (metallib loaded): **27.776 ms**
+- Sync fallback median (`MFA_DISABLE_ASYNC=1`): **24.577 ms**
+- Ratio: `sync/async = 0.885x` (async ~13.0% slower on this scenario)
+- xctrace Metal System Trace captured, but with `Shader Timeline: Disabled`; no direct overlap visualization extracted.
+
+## Diagnosis
+
+Most likely conversion/failure point is **Stage 3/4** on this setup:
+- The shipped metallib still contains async intrinsics (Stage 2 preserved them).
+- Runtime can create the async pipeline (Stage 3 load path succeeds).
+- Yet measured execution does not show the expected speedup; async path is slower than sync fallback for tested shape.
+
+This is consistent with one (or a combination) of:
+- runtime/driver lowering that serializes or otherwise neutralizes async overlap,
+- hardware/runtime scheduling behavior on this OS/chip that does not realize practical DMA/ALU overlap for this kernel,
+- additional overhead in the async path offsetting any overlap.
+
+## Recommendation
+
+- [x] The shipped metallib loads successfully.
+- [x] The shipped metallib is **not** showing practical benefit on this setup.
+- [x] Keep robust sync fallback as primary reliable path on macOS 26 / M1 Max.
+- [ ] Rely on async metallib as default performance path on this setup.
+
+Follow-up to fully close Stage-4 certainty:
+- Run interactive Xcode GPU capture with Shader Timeline explicitly enabled for:
+  - async metallib path (`scripts/bench_async_path.py`)
+  - sync fallback path (`scripts/bench_sync_path.py`)
+- Compare command-buffer timeline overlap directly in GUI.
