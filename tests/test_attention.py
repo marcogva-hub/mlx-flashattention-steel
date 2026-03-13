@@ -7868,6 +7868,230 @@ class TestDecodeRuntimeFactory:
 
 
 # ==========================================================================
+# Track LE — Paged KV + packed varlen query API / runtime
+# ==========================================================================
+
+
+class TestPagedVarlenQueries:
+    """Correctness coverage for flash_attention_paged_varlen."""
+
+    @staticmethod
+    def _build_hetero_paged_pool(
+        k_seqs: list,
+        v_seqs: list,
+        block_size: int,
+    ):
+        """Pack per-sequence contiguous KV tensors into one paged pool."""
+        B = len(k_seqs)
+        H_kv = k_seqs[0].shape[1]
+        D = k_seqs[0].shape[3]
+        blocks_per_seq = [
+            (int(k.shape[2]) + block_size - 1) // block_size
+            for k in k_seqs
+        ]
+        total_blocks = sum(blocks_per_seq)
+        max_blocks = max(blocks_per_seq) if blocks_per_seq else 0
+
+        pool_k = np.zeros((total_blocks, block_size, H_kv, D), dtype=np.float16)
+        pool_v = np.zeros((total_blocks, block_size, H_kv, D), dtype=np.float16)
+        table = np.full((B, max_blocks), -1, dtype=np.int32)
+        lens = np.zeros((B,), dtype=np.int32)
+
+        blk_base = 0
+        for b in range(B):
+            k_np = np.array(k_seqs[b]).astype(np.float16)[0].transpose(1, 0, 2)  # [S,H,D]
+            v_np = np.array(v_seqs[b]).astype(np.float16)[0].transpose(1, 0, 2)  # [S,H,D]
+            S = k_np.shape[0]
+            lens[b] = S
+            n_blk = blocks_per_seq[b]
+            for lb in range(n_blk):
+                table[b, lb] = blk_base + lb
+                s0 = lb * block_size
+                s1 = min(S, s0 + block_size)
+                pool_k[blk_base + lb, : s1 - s0] = k_np[s0:s1]
+                pool_v[blk_base + lb, : s1 - s0] = v_np[s0:s1]
+            blk_base += n_blk
+
+        return (
+            mx.array(pool_k),
+            mx.array(pool_v),
+            mx.array(table, dtype=mx.int32),
+            mx.array(lens, dtype=mx.int32),
+        )
+
+    @staticmethod
+    def _pack_queries(q_seqs: list):
+        """Pack per-sequence [1,H,Qi,D] into [1,H,total_q,D] + cu_seqlens_q."""
+        offsets = [0]
+        for q in q_seqs:
+            offsets.append(offsets[-1] + int(q.shape[2]))
+        q_pack = mx.concatenate(q_seqs, axis=2) if offsets[-1] > 0 else q_seqs[0][:, :, :0, :]
+        cu = mx.array(offsets, dtype=mx.int32)
+        return q_pack, cu
+
+    def test_paged_varlen_basic_correctness(self):
+        from mlx_mfa import flash_attention_paged, flash_attention_paged_varlen
+
+        mx.random.seed(701)
+        H_q, H_kv, D = 8, 4, 64
+        q_lens = [3, 1, 4]
+        kv_lens = [27, 19, 33]
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        mx.eval(*q_seqs, *k_seqs, *v_seqs)
+        q_pack, cu_q = self._pack_queries(q_seqs)
+        pool_k, pool_v, table, lens = self._build_hetero_paged_pool(k_seqs, v_seqs, block_size)
+
+        out = flash_attention_paged_varlen(
+            q_pack,
+            pool_k,
+            pool_v,
+            table,
+            lens,
+            cu_q,
+            max_seqlen_q=max(q_lens),
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+        )
+
+        ref_parts = []
+        for i in range(len(q_lens)):
+            qs, qe = int(cu_q[i].item()), int(cu_q[i + 1].item())
+            out_i = flash_attention_paged(
+                q_pack[:, :, qs:qe, :],
+                pool_k,
+                pool_v,
+                table[i : i + 1, :],
+                lens[i : i + 1],
+                scale=scale,
+                causal=True,
+                block_size=block_size,
+            )
+            ref_parts.append(out_i)
+        ref = mx.concatenate(ref_parts, axis=2)
+        mx.eval(out, ref)
+        diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
+        assert out.shape == (1, H_q, sum(q_lens), D)
+        assert diff < 5e-3, f"paged_varlen vs dense ref max diff {diff}"
+
+    def test_paged_varlen_handles_zero_length_sequence(self):
+        from mlx_mfa import flash_attention_paged_varlen
+
+        mx.random.seed(702)
+        H_q, H_kv, D = 4, 2, 64
+        q_lens = [2, 0, 3]
+        kv_lens = [20, 12, 28]
+        block_size = 16
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        mx.eval(*q_seqs, *k_seqs, *v_seqs)
+        q_pack, cu_q = self._pack_queries(q_seqs)
+        pool_k, pool_v, table, lens = self._build_hetero_paged_pool(k_seqs, v_seqs, block_size)
+
+        out = flash_attention_paged_varlen(
+            q_pack, pool_k, pool_v, table, lens, cu_q,
+            causal=True, block_size=block_size
+        )
+        mx.eval(out)
+        assert out.shape == (1, H_q, sum(q_lens), D)
+        assert bool(mx.all(mx.isfinite(out)).item())
+
+    def test_paged_varlen_invalid_cu_fails(self):
+        from mlx_mfa import flash_attention_paged_varlen
+
+        q = mx.zeros((1, 4, 5, 64), dtype=mx.float16)
+        pool = mx.zeros((8, 16, 4, 64), dtype=mx.float16)
+        table = mx.array([[0], [1]], dtype=mx.int32)
+        lens = mx.array([16, 16], dtype=mx.int32)
+        bad_cu = mx.array([0, 2, 4], dtype=mx.int32)  # should end at total_q=5
+
+        with pytest.raises(ValueError, match="must equal total_q"):
+            flash_attention_paged_varlen(q, pool, pool, table, lens, bad_cu)
+
+    def test_runtime_paged_varlen_matches_direct_api(self):
+        from mlx_mfa import (
+            create_decode_runtime,
+            flash_attention_paged_varlen,
+            PagedInferenceContext,
+        )
+
+        mx.random.seed(703)
+        H_q, H_kv, D = 8, 4, 64
+        q_lens = [1, 3]
+        kv_lens = [17, 29]
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+        seq_ids = [11, 22]
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="packed",
+            quantized_kv=False,
+            B=1,
+            H_q=H_q,
+            H_kv=H_kv,
+            D=D,
+            num_blocks=64,
+            block_size=block_size,
+        )
+        assert isinstance(rt.context, PagedInferenceContext)
+        assert rt.metadata["query_layout"] == "packed"
+
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        mx.eval(*q_seqs, *k_seqs, *v_seqs)
+        q_pack, cu_q = self._pack_queries(q_seqs)
+
+        for sid, k_i, v_i in zip(seq_ids, k_seqs, v_seqs):
+            rt.context.cache.append(k_i, v_i, seq_id=sid)
+
+        out_rt = rt.paged_varlen(
+            q_pack,
+            cu_q,
+            seq_ids=seq_ids,
+            scale=scale,
+            causal=True,
+        )
+        table = rt.context.cache.get_block_table(seq_ids)
+        lens = rt.context.cache.get_seq_lens(seq_ids)
+        out_ref = flash_attention_paged_varlen(
+            q_pack,
+            rt.context.cache.k_pool,
+            rt.context.cache.v_pool,
+            table,
+            lens,
+            cu_q,
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+        )
+        mx.eval(out_rt, out_ref)
+        diff = float(mx.abs(out_rt.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 1e-6
+
+    def test_runtime_query_layout_validation(self):
+        from mlx_mfa import create_decode_runtime
+
+        with pytest.raises(ValueError, match="query_layout='packed'.*paged runtime"):
+            create_decode_runtime(
+                backend="dense",
+                query_layout="packed",
+                quantized_kv=False,
+                B=1,
+                H_kv=4,
+                D=64,
+            )
+
+
+# ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
 # ==========================================================================
 
