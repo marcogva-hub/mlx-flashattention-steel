@@ -16,6 +16,8 @@
 - **D=512 remains SDPA-default** after dedicated decision pass (`0/32` wins).
 - **Sage remains specialized decode** with narrow benchmark-backed auto routing.
 - **Paged decode remains explicit-only** while shared-prefix/splitfuse stay opt-in runtime helpers.
+- **Paged KV + packed varlen query** is now supported via explicit API/runtime
+  bridge (`flash_attention_paged_varlen`, `DecodeRuntime(..., query_layout="packed")`).
 - **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
 
 ---
@@ -192,6 +194,35 @@ Decision from this pass:
 Supporting note:
 - `notes/paged_sharedprefix_productionization_task1.md`
 - `notes/paged_sharedprefix_productionization_task3_policy.md`
+
+---
+
+## Paged KV + Packed Varlen Query Unification (v2.9.2)
+
+Capability focus:
+- Packed queries: `q=[1,H_q,total_q,D]` with `cu_seqlens_q`
+- Paged KV: `k_pages/v_pages`, `block_table`, `seq_lens_kv`
+- Public API: `flash_attention_paged_varlen(...)`
+- Unified runtime path: `DecodeRuntime(..., query_layout="packed").paged_varlen(...)`
+
+Current implementation strategy:
+- Uniform query lengths: one batched paged dispatch
+- Heterogeneous query lengths: per-sequence paged dispatch + packed concat
+
+Benchmark matrix (M1 Max, f16):
+- script: `benchmarks/bench_paged_varlen.py`
+- artifact: `notes/paged_varlen_matrix_latest.json`
+
+| Scenario | D | varlen ms | padded paged ms | seq-loop ms | varlen/padded |
+|---|---:|---:|---:|---:|---:|
+| GQA `B=8 H_q=8 H_kv=4` hetero | 64 | 3.536 | 3.770 | 4.263 | 1.07× |
+| GQA `B=8 H_q=8 H_kv=4` hetero | 128 | 4.495 | 4.529 | 4.394 | 1.01× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 64 | 4.267 | 1.561 | 4.220 | 0.37× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 128 | 4.191 | 3.380 | 4.236 | 0.81× |
+
+Decision:
+- Treat this pass as a correctness/runtime-unification milestone.
+- Keep selection explicit for now (no broad auto-promotion from this matrix).
 
 ---
 

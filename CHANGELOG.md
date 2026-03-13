@@ -15,6 +15,26 @@ All notable changes to mlx-mfa are documented here.
 - **docs**: Clarified production-vs-experimental guidance in README wording so
   V3/V4/V5 remain clearly documented as experimental opt-in paths.
 
+### Paged + Packed Varlen Query Unification (vLLM-Oriented)
+
+- **feat**: Added `flash_attention_paged_varlen(...)` public API for packed
+  varlen queries over paged KV (`q=[1,H,total_q,D]` + `cu_seqlens_q` with
+  `k_pages/v_pages`, `block_table`, `seq_lens_kv`).
+- **feat**: Integrated packed-query support into unified runtime via
+  `DecodeRuntime(query_layout="packed")` and `DecodeRuntime.paged_varlen(...)`,
+  with explicit validation and metadata.
+- **feat**: Implemented correctness-first heterogeneous-query bridge behavior:
+  uniform `q_len` uses one batched paged dispatch; heterogeneous `q_len` uses
+  per-sequence paged dispatch plus packed concat.
+- **test**: Added coverage for heterogeneous query/KV lengths, zero-length
+  query segments, invalid `cu_seqlens_q`, and runtime integration/validation.
+- **bench**: Added vLLM-oriented benchmark matrix
+  (`benchmarks/bench_paged_varlen.py`,
+  `notes/paged_varlen_matrix_latest.json`) against padded paged baseline and
+  sequence loop reference.
+- **docs**: Updated README/RESULTS/API manual/architecture docs to document the
+  new capability and current limitations without overselling fusion status.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix

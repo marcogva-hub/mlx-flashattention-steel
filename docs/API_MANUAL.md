@@ -456,6 +456,38 @@ out = flash_attention_paged(
 
 **See also:** `PagedKVCache`, `flash_attention_kvcache` (paged mode)
 
+### `flash_attention_paged_varlen`
+
+```python
+flash_attention_paged_varlen(
+    q: mx.array,             # [1, H_q, total_q, D]
+    k_pages: mx.array,       # [num_blocks, block_size, H_kv, D]
+    v_pages: mx.array,       # [num_blocks, block_size, H_kv, D]
+    block_table: mx.array,   # [B, max_blocks_per_seq] int32
+    seq_lens_kv: mx.array,   # [B] int32
+    cu_seqlens_q: mx.array,  # [B+1] int32
+    *,
+    max_seqlen_q: Optional[int] = None,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    block_size: int = 16,
+    stream: Optional[mx.StreamOrDevice] = None,
+) -> mx.array  # [1, H_q, total_q, D]
+```
+
+Paged KV attention for **packed variable-length queries** (vLLM-oriented).
+
+This bridges:
+- varlen query packing (`q`, `cu_seqlens_q`)
+- paged KV cache (`k_pages/v_pages`, `block_table`, `seq_lens_kv`)
+
+Current strategy:
+- uniform query lengths: one batched paged dispatch
+- heterogeneous query lengths: per-sequence paged dispatch + packed concat
+
+This is correctness-first and explicit; it is not yet a single fully fused
+kernel path for heterogeneous query lengths.
+
 ---
 
 ## 7. LLM Inference Helpers
@@ -816,6 +848,38 @@ attention; decode uses `sage_attention_prequantized` with a `QuantizedKVCache`
 that re-quantizes only newly appended tokens.
 
 **Same interface as `InferenceContext`:** `prefill`, `step`, `reset`, context manager.
+
+---
+
+### `DecodeRuntime` / `create_decode_runtime`
+
+```python
+create_decode_runtime(
+    *,
+    backend: Literal["auto", "dense", "paged", "sage"] = "auto",
+    paged: bool = False,
+    quantized_kv: bool = False,
+    query_layout: Literal["batched", "packed"] = "batched",
+    B: Optional[int] = None,
+    H_q: Optional[int] = None,
+    H_kv: int,
+    D: int,
+    ...
+) -> DecodeRuntime
+```
+
+`DecodeRuntime` is the unified runtime wrapper over dense/paged/Sage contexts.
+
+Core methods:
+- `prefill(...)` / `step(...)` / `reset(...)` for batched query layout
+- `paged_varlen(...)` for paged KV + packed varlen queries
+- `prefill_shared_prefix(...)`, `splitfuse(...)`, `speculative_verify(...)`
+- `metadata` (backend/cache/query-layout snapshot)
+
+`query_layout` behavior:
+- `"batched"`: standard `[B,H,N,D]` queries via `prefill/step`
+- `"packed"`: currently supported only with paged runtime; use
+  `DecodeRuntime.paged_varlen(...)`
 
 ---
 

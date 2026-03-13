@@ -134,6 +134,32 @@ matrix (`benchmarks/bench_paged_sharedprefix_matrix.py`):
 Decision: keep paged decode explicit-only for now; keep shared-prefix/splitfuse
 as opt-in runtime optimizations.
 
+### Paged KV + Packed Varlen Query (vLLM-oriented, v2.9.2)
+
+New explicit API: `flash_attention_paged_varlen(...)`
+
+- Query layout: packed varlen `q=[1,H_q,total_q,D]` + `cu_seqlens_q`
+- KV layout: paged pool + `block_table` + per-sequence `seq_lens_kv`
+- Runtime bridge: `DecodeRuntime(..., query_layout="packed")` +
+  `rt.paged_varlen(...)`
+
+Current implementation is a **correct bridge path**, not a fully fused kernel:
+- uniform query lengths: one batched paged dispatch
+- heterogeneous query lengths: per-sequence paged dispatch + packed concat
+
+Focused matrix (`benchmarks/bench_paged_varlen.py`, f16):
+
+| Scenario | D | varlen vs padded paged |
+|---|---:|---:|
+| GQA B=8 H_q=8 H_kv=4 hetero | 64 | 1.07× |
+| GQA B=8 H_q=8 H_kv=4 hetero | 128 | 1.01× |
+| MQA B=8 H_q=16 H_kv=1 hetero | 64 | 0.37× |
+| MQA B=8 H_q=16 H_kv=1 hetero | 128 | 0.81× |
+
+Interpretation: the new path closes the capability gap for vLLM-like packed
+queries with paged KV. Performance is scenario-dependent and should be treated
+as a correctness/runtime-unification feature first.
+
 ### Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
 
 Experimental-path triage (`benchmarks/bench_experimental_triage.py`) keeps the
@@ -163,6 +189,8 @@ Experimental keep/park recommendations are tracked in
 - **Block-sparse attention** — `block_mask` tensor skips entire tiles at zero warp cost
 - **Native GQA** — kernel computes Q-head-to-KV-head mapping without repeat; no copy
 - **RoPE fusion** — RoPE applied in-kernel for prefill and decode with `flash_attention_rope_unified`
+- **Paged + packed varlen queries** — `flash_attention_paged_varlen` for
+  vLLM-like packed-query scheduling over paged KV pools
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -293,6 +321,15 @@ rt_paged = create_decode_runtime(
     backend="paged", paged=True, quantized_kv=False,
     B=1, H_q=8, H_kv=4, D=128, max_seq_len=4096, default_seq_id=0,
 )
+
+# paged runtime for packed varlen query layout
+rt_packed = create_decode_runtime(
+    backend="paged", paged=True, query_layout="packed", quantized_kv=False,
+    B=1, H_q=8, H_kv=4, D=128, max_seq_len=4096,
+)
+out_packed = rt_packed.paged_varlen(
+    q_packed, cu_seqlens_q, seq_ids=[11, 22], causal=True
+)
 ```
 
 `create_inference_context(...)` remains available as the lower-level
@@ -366,7 +403,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
 | V4 | Experimental (M3+ research) | opt-in `MFA_ENABLE_V4=1` | Parked on M1/M2 production routing; simulated M3 probe still losing in latest triage |
 | V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Narrow wins only; mostly losing vs V2/SDPA in latest triage |
-| Sage | Specialized decode | narrow auto + explicit `backend=\"sage\"` | `QuantizedKVCache`-backed decode backend; not a universal V2 replacement |
+| Sage | Specialized decode | narrow auto + explicit `backend="sage"` | `QuantizedKVCache`-backed decode backend; not a universal V2 replacement |
 | Backward (dense) | Production fallback | `mx.vjp(SDPA)` | Native STEEL bwd remains gated after targeted pass (0/16 wins); debug override: `MFA_FORCE_NATIVE_BWD=1` |
 | Backward (sparse) | Production | `backward="steel_sparse"` | Native sparse backward remains available and default for sparse path |
 
@@ -384,6 +421,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | 256 | no | never dense | Clear loss; route to SDPA |
 | 512 | any | never dense | D=512 decision pass: 0/32 wins vs SDPA; SDPA default |
 | Paged decode | auto | explicit-only | Runtime matrix did not show stable benchmark-backed auto win |
+| Paged + packed varlen query | explicit API/runtime | `flash_attention_paged_varlen` or `DecodeRuntime(..., query_layout="packed")` | Correct bridge path for hetero query lengths; not a fully fused kernel yet |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |
@@ -392,10 +430,10 @@ Run `python -m mlx_mfa calibrate` to measure crossover points on your device
 and automatically save optimal thresholds.
 
 Debug override for D=256 auto routing:
-`MFA_FORCE_D256_PATH=1|mfa|0|sdpa` (applies only to D=256 with `backend=\"auto\"`).
+`MFA_FORCE_D256_PATH=1|mfa|0|sdpa` (applies only to D=256 with `backend="auto"`).
 
 Debug override for D=512 auto routing:
-`MFA_FORCE_D512_PATH=1|mfa|0|sdpa` (applies only to D=512 with `backend=\"auto\"`).
+`MFA_FORCE_D512_PATH=1|mfa|0|sdpa` (applies only to D=512 with `backend="auto"`).
 
 Dense backward policy in v2.9.2:
 - Auto mode defaults to SDPA VJP.

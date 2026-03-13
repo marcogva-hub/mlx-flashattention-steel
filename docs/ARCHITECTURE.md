@@ -206,6 +206,11 @@ kernel type registry.
 Single Metal dispatch for packed sequences with `cu_seqlens`.
 Supported for D ∈ {64, 128, 256}; D=512 falls back to per-sequence SDPA.
 
+Paged KV + packed varlen query unification is exposed separately via
+`flash_attention_paged_varlen(...)`: packed queries are mapped to paged KV
+state per sequence. Heterogeneous query lengths currently use a correctness-
+first bridge (per-sequence paged dispatch + packed concat).
+
 ### Block-Sparse STEEL
 
 Block-sparse kernel triggered by `flash_attention_sparse(block_mask=...)`.
@@ -348,6 +353,14 @@ the copy.  Grid: 1-D, one thread per output element.
 After gather, sequences are sliced to actual length `[:kv_len]` before
 dispatching to STEEL, preventing padded-zero positions from corrupting softmax.
 
+For vLLM-like packed query scheduling, `flash_attention_paged_varlen(...)`
+consumes:
+- packed queries `q=[1,H,total_q,D]`,
+- `cu_seqlens_q`,
+- paged KV (`block_table`, `seq_lens_kv`),
+and returns packed outputs. This closes the API/runtime capability gap even
+when a single fused heterogeneous-query kernel is not available.
+
 ### InferenceContext lifecycle
 
 ```
@@ -359,6 +372,10 @@ InferenceContext(B, H_kv, D, max_seq_len)
 
 `SageInferenceContext` wraps `QuantizedKVCache` and routes `step()` through
 `sage_attention_prequantized`.
+
+`DecodeRuntime` adds explicit query-layout selection:
+- `query_layout="batched"` for `prefill/step`,
+- `query_layout="packed"` (paged backend) for `paged_varlen(...)`.
 
 ---
 

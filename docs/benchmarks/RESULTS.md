@@ -8,7 +8,7 @@
 
 ---
 
-## v2.9.2 Decision Addendum — Split-K + D=256
+## v2.9.2 Decision Addendum — Split-K + D=256 + D=512 + Paged Varlen
 
 ### Split-K composability status
 
@@ -37,6 +37,28 @@ Split-K selection is now calibrated per shape family and persisted as
 
 Dispatch outcome: promote only `D=256`, causal, `N>=8192`; keep SDPA default
 for shorter causal and all non-causal D=256.
+
+---
+
+## Paged KV + Packed Varlen Query (vLLM-oriented)
+
+Matrix script: `benchmarks/bench_paged_varlen.py`  
+Artifact: `notes/paged_varlen_matrix_latest.json`
+
+| Scenario | D | varlen ms | padded paged ms | seq-loop ms | varlen/padded |
+|---|---:|---:|---:|---:|---:|
+| GQA `B=8 H_q=8 H_kv=4` hetero | 64 | 3.536 | 3.770 | 4.263 | 1.07× |
+| GQA `B=8 H_q=8 H_kv=4` hetero | 128 | 4.495 | 4.529 | 4.394 | 1.01× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 64 | 4.267 | 1.561 | 4.220 | 0.37× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 128 | 4.191 | 3.380 | 4.236 | 0.81× |
+
+Interpretation:
+- New capability is now available through explicit API/runtime:
+  `flash_attention_paged_varlen(...)` and
+  `DecodeRuntime(..., query_layout="packed").paged_varlen(...)`.
+- Current heterogeneous-query path is a correctness-first runtime bridge
+  (per-sequence paged dispatch + packed concat), not a fully fused single-pass
+  kernel.
 
 ---
 
