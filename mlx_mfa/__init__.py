@@ -128,6 +128,11 @@ from mlx_mfa.kv_cache import (
     resolve_context_cache,
     resolve_context_cache_adapter,
 )
+from mlx_mfa.external_cache import (
+    ExternalKVCacheCapabilities,
+    ExternalKVCacheAdapter,
+    LocalHostKVStoreAdapter,
+)
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
 from mlx_mfa.compile_metallib import compile_metallib
@@ -229,5 +234,8 @@ __all__ = [
     "adapt_kv_cache",
     "resolve_context_cache",
     "resolve_context_cache_adapter",
+    "ExternalKVCacheCapabilities",
+    "ExternalKVCacheAdapter",
+    "LocalHostKVStoreAdapter",
     "__version__",
 ]
