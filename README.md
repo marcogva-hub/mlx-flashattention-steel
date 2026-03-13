@@ -31,6 +31,33 @@ out = flash_attention(q, k, v, causal=True)  # STEEL V2: ~1.8× SDPA at N=4096
 
 ---
 
+## Recommended Usage (Production Defaults)
+
+- Use `flash_attention(..., backend="auto")` for dense attention.
+- Use `create_decode_runtime(...)` for decode flows that may need Sage/paged/shared-prefix helpers.
+- Keep `backend="mfa"` and experimental kernel env flags for benchmarking/debug only.
+- Treat D=256 as narrow-policy territory and D=512 as SDPA-default unless future decision passes change policy.
+
+```python
+from mlx_mfa import flash_attention, create_decode_runtime
+
+# Dense production path: benchmark-backed auto routing
+out = flash_attention(q, k, v, causal=True, backend="auto")
+
+# Decode production path: unified runtime helper
+rt = create_decode_runtime(
+    backend="auto",
+    B=1, H_q=8, H_kv=4, D=128,
+    quantized_kv=True,
+    decode_nq=4,
+    expected_cache_len=4096,
+    causal=True,
+    window_size=(256, 0),
+)
+```
+
+---
+
 ## Performance (v2.9.2 decision pass, M1 Max, B=2 H=8 f16)
 
 > Full results: [docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md)
@@ -271,6 +298,19 @@ rt_paged = create_decode_runtime(
 `create_inference_context(...)` remains available as the lower-level
 context factory when direct context access is preferred.
 
+### Advanced runtime usage (shared-prefix / splitfuse / speculative verify)
+
+Use `DecodeRuntime` helper methods when decode orchestration would otherwise
+require manual stitching across multiple helper functions:
+
+- `prefill_shared_prefix(...)` + `decode_from_shared_prefix(...)`
+- `splitfuse(...)` (optionally with `use_prepared_prefix=True`)
+- `speculative_verify(...)`
+
+`DecodeRuntime.metadata` provides a lightweight snapshot of selected backend
+and helper-activation state (`paged`, `sage`, `shared_prefix`, `splitfuse`,
+`speculative_verify`).
+
 ### SageAttention decode (QuantizedKVCache)
 
 ```python
@@ -310,6 +350,14 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 ---
 
 ## Kernel Status
+
+### Production vs experimental at a glance
+
+- Production default: V2 dense path (`backend="auto"` with benchmark-backed routing).
+- Production fallback: SDPA for regimes without measured wins (including dense D=512).
+- Narrow production exception: D=256 causal f16 long-sequence regime on M1/M2.
+- Specialized backend: Sage decode with `QuantizedKVCache` in narrow decode regimes.
+- Experimental opt-in only: V3 / V4 / V5.
 
 | Kernel | Status | Default | Notes |
 |--------|--------|---------|-------|

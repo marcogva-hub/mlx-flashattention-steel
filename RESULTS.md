@@ -8,6 +8,18 @@
 
 ---
 
+## Production Interpretation (v2.9.2)
+
+- **V2 remains the production default** for dense causal small-D (`D=64/128`).
+- **Native dense backward remains non-default** (`mx.vjp(SDPA)` fallback in auto mode).
+- **D=256 is narrow-policy only** (causal f16 long-N on M1/M2).
+- **D=512 remains SDPA-default** after dedicated decision pass (`0/32` wins).
+- **Sage remains specialized decode** with narrow benchmark-backed auto routing.
+- **Paged decode remains explicit-only** while shared-prefix/splitfuse stay opt-in runtime helpers.
+- **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
+
+---
+
 ## v2.9.2 Decision Addendum — Split-K + D=256 + D=512
 
 ### Split-K composability status

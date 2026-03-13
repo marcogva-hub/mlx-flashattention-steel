@@ -2,6 +2,19 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased]
+
+### Final Stabilization / Polish
+
+- **docs**: Added a concise production-default usage section and an advanced
+  runtime-usage section to `README.md` to reduce ambiguity around when to use
+  dense auto routing vs unified decode runtime helpers.
+- **docs**: Added an explicit production-interpretation summary to
+  `RESULTS.md` to keep the current decision status clear (native backward
+  non-default, narrow D=256 promotion, D=512 SDPA-default, Sage specialized).
+- **docs**: Clarified production-vs-experimental guidance in README wording so
+  V3/V4/V5 remain clearly documented as experimental opt-in paths.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix
