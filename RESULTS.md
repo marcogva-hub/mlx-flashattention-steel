@@ -18,6 +18,8 @@
 - **Paged decode remains explicit-only** while shared-prefix/splitfuse stay opt-in runtime helpers.
 - **Paged KV + packed varlen query** is now supported via explicit API/runtime
   bridge (`flash_attention_paged_varlen`, `DecodeRuntime(..., query_layout="packed")`).
+- **Paged continuous batching remap** is now supported via explicit API/runtime
+  mapping (`cache_batch_idx` in paged APIs; runtime batched paged remap helpers).
 - **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
 
 ---
@@ -223,6 +225,38 @@ Benchmark matrix (M1 Max, f16):
 Decision:
 - Treat this pass as a correctness/runtime-unification milestone.
 - Keep selection explicit for now (no broad auto-promotion from this matrix).
+
+---
+
+## Paged Continuous Batching Support (v2.9.2)
+
+Scope in this pass:
+- Added explicit request-slot remapping for paged APIs:
+  - `flash_attention_paged(..., cache_batch_idx=...)`
+  - `flash_attention_paged_varlen(..., cache_batch_idx=...)`
+- Added runtime helpers for scheduler-friendly batched paged flows:
+  - `DecodeRuntime.paged_prefill_batch(...)`
+  - `DecodeRuntime.paged_step_batch(...)`
+  - remap-aware `DecodeRuntime.paged_varlen(...)`
+
+Benchmark matrix (M1 Max, f16):
+- script: `benchmarks/bench_paged_continuous_batching.py`
+- artifact: `notes/paged_continuous_batching_latest.json`
+
+| Scenario | D | manual ms | runtime-remap ms | manual/runtime |
+|---|---:|---:|---:|---:|
+| paged_step_batch reorder active sets | 64 | 28.279 | 27.648 | 1.02× |
+| paged_varlen remap reorder active sets | 64 | 22.004 | 24.529 | 0.90× |
+| paged_step_batch reorder active sets | 128 | 49.385 | 47.097 | 1.05× |
+| paged_varlen remap reorder active sets | 128 | 34.899 | 35.533 | 0.98× |
+
+Correctness:
+- All rows reported `max_err = 0.0` against manual reference paths.
+
+Decision:
+- Treat this as an operational/runtime capability milestone for continuous
+  batching semantics in paged mode.
+- Keep policy explicit; do not claim broad speedup from this pass.
 
 ---
 

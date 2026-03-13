@@ -211,6 +211,12 @@ Paged KV + packed varlen query unification is exposed separately via
 state per sequence. Heterogeneous query lengths currently use a correctness-
 first bridge (per-sequence paged dispatch + packed concat).
 
+Paged continuous batching remap is now explicit at API level:
+- `flash_attention_paged(..., cache_batch_idx=...)`
+- `flash_attention_paged_varlen(..., cache_batch_idx=...)`
+The remap is applied as row-gather over `block_table/seq_lens` before kernel
+dispatch; no kernel redesign is required for scheduler-style slot mapping.
+
 ### Block-Sparse STEEL
 
 Block-sparse kernel triggered by `flash_attention_sparse(block_mask=...)`.
@@ -361,6 +367,9 @@ consumes:
 and returns packed outputs. This closes the API/runtime capability gap even
 when a single fused heterogeneous-query kernel is not available.
 
+For changing active request order, `cache_batch_idx` can project active rows
+over a stable slot-ordered table (`seq_ids`/scheduler slots) before dispatch.
+
 ### InferenceContext lifecycle
 
 ```
@@ -376,6 +385,11 @@ InferenceContext(B, H_kv, D, max_seq_len)
 `DecodeRuntime` adds explicit query-layout selection:
 - `query_layout="batched"` for `prefill/step`,
 - `query_layout="packed"` (paged backend) for `paged_varlen(...)`.
+
+Paged runtime now also exposes scheduler-facing helpers:
+- `paged_prefill_batch(...)`
+- `paged_step_batch(...)`
+and tracks `active_seq_ids` / `active_cache_batch_idx` in runtime metadata.
 
 ---
 

@@ -35,6 +35,31 @@ All notable changes to mlx-mfa are documented here.
 - **docs**: Updated README/RESULTS/API manual/architecture docs to document the
   new capability and current limitations without overselling fusion status.
 
+### Paged Continuous Batching Support (Scheduler-Friendly)
+
+- **notes**: Added gap audit note (`notes/paged_continuous_batching_gap.md`)
+  documenting API/runtime/cache limitations and the minimal safe plan.
+- **feat**: Added explicit paged request-slot remap support via
+  `cache_batch_idx` in:
+  - `flash_attention_paged(...)`
+  - `flash_attention_paged_varlen(...)`
+  - paged path in `flash_attention_kvcache(...)` (non-append).
+- **feat**: Added scheduler-friendly paged runtime methods:
+  - `DecodeRuntime.paged_prefill_batch(...)`
+  - `DecodeRuntime.paged_step_batch(...)`
+  - remap-aware `DecodeRuntime.paged_varlen(...)`
+  plus runtime metadata fields `active_seq_ids` and
+  `active_cache_batch_idx`.
+- **test**: Added continuous-batching coverage for paged remap semantics:
+  remap parity vs row-gather reference, changing active request order, packed
+  paged-varlen remap parity, and invalid remap validation.
+- **bench**: Added scheduler-style matrix harness
+  (`benchmarks/bench_paged_continuous_batching.py`) with artifact
+  `notes/paged_continuous_batching_latest.json`.
+- **bench result**: This pass is a capability/runtime milestone (explicit
+  remap semantics, correctness parity) with mixed performance deltas; no broad
+  auto-promotion claim.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix

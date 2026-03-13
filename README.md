@@ -160,6 +160,31 @@ Interpretation: the new path closes the capability gap for vLLM-like packed
 queries with paged KV. Performance is scenario-dependent and should be treated
 as a correctness/runtime-unification feature first.
 
+### Paged Continuous Batching Remap (vLLM-oriented, v2.9.2)
+
+Paged mode now supports explicit scheduler-style request-slot remapping:
+
+- API-level remap:
+  - `flash_attention_paged(..., cache_batch_idx=...)`
+  - `flash_attention_paged_varlen(..., cache_batch_idx=...)`
+- Runtime-level remap:
+  - `DecodeRuntime.paged_prefill_batch(...)`
+  - `DecodeRuntime.paged_step_batch(...)`
+  - `DecodeRuntime.paged_varlen(..., cache_batch_idx=...)`
+
+Focused remap matrix (`benchmarks/bench_paged_continuous_batching.py`, f16):
+
+| Scenario | D | runtime remap vs manual baseline |
+|---|---:|---:|
+| paged_step_batch reorder-active-sets | 64 | 1.02× |
+| paged_step_batch reorder-active-sets | 128 | 1.05× |
+| paged_varlen remap reorder-active-sets | 64 | 0.90× |
+| paged_varlen remap reorder-active-sets | 128 | 0.98× |
+
+Interpretation: this pass is primarily a scheduler/runtime capability milestone
+with explicit remap semantics and parity-level behavior. It is not presented as
+a broad speedup pass.
+
 ### Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
 
 Experimental-path triage (`benchmarks/bench_experimental_triage.py`) keeps the
@@ -191,6 +216,8 @@ Experimental keep/park recommendations are tracked in
 - **RoPE fusion** — RoPE applied in-kernel for prefill and decode with `flash_attention_rope_unified`
 - **Paged + packed varlen queries** — `flash_attention_paged_varlen` for
   vLLM-like packed-query scheduling over paged KV pools
+- **Paged continuous batching remap** — explicit `cache_batch_idx` support in
+  paged APIs plus batched paged runtime remap helpers
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -292,6 +319,7 @@ ctx.reset()
 ### Unified decode runtime
 
 ```python
+import mlx.core as mx
 from mlx_mfa import create_decode_runtime
 
 # auto routing: narrow benchmark-backed Sage decode > dense
@@ -330,6 +358,14 @@ rt_packed = create_decode_runtime(
 out_packed = rt_packed.paged_varlen(
     q_packed, cu_seqlens_q, seq_ids=[11, 22], causal=True
 )
+
+# scheduler-style paged batched step with explicit request-slot remap
+out_step = rt_paged.paged_step_batch(
+    q_step, k_new_step, v_new_step,
+    seq_ids=[11, 22, 33, 44],                 # scheduler slot order
+    cache_batch_idx=mx.array([2, 0], mx.int32),  # active request order
+    causal=True,
+)
 ```
 
 `create_inference_context(...)` remains available as the lower-level
@@ -346,7 +382,8 @@ require manual stitching across multiple helper functions:
 
 `DecodeRuntime.metadata` provides a lightweight snapshot of selected backend
 and helper-activation state (`paged`, `sage`, `shared_prefix`, `splitfuse`,
-`speculative_verify`).
+`speculative_verify`) plus active remap state
+(`active_seq_ids`, `active_cache_batch_idx`) for paged scheduler flows.
 
 ### SageAttention decode (QuantizedKVCache)
 
@@ -422,6 +459,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | 512 | any | never dense | D=512 decision pass: 0/32 wins vs SDPA; SDPA default |
 | Paged decode | auto | explicit-only | Runtime matrix did not show stable benchmark-backed auto win |
 | Paged + packed varlen query | explicit API/runtime | `flash_attention_paged_varlen` or `DecodeRuntime(..., query_layout="packed")` | Correct bridge path for hetero query lengths; not a fully fused kernel yet |
+| Paged continuous batching remap | explicit API/runtime | `cache_batch_idx` in paged APIs or `DecodeRuntime.paged_step_batch/paged_prefill_batch` | Scheduler-friendly request-slot mapping; capability milestone, not broad perf promotion |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

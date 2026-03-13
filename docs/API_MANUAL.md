@@ -427,6 +427,7 @@ flash_attention_paged(
     scale: Optional[float] = None,
     causal: bool = False,
     block_size: int = 16,
+    cache_batch_idx: Optional[mx.array] = None,  # [B_active] int32
     stream: Optional[mx.StreamOrDevice] = None,
 ) -> mx.array
 ```
@@ -438,6 +439,10 @@ tensors via a single Metal dispatch, then runs `flash_attention`.
 block index. Use `-1` to pad unused entries.
 
 Supports autograd: gradients are scattered back to the page pool.
+
+`cache_batch_idx` enables scheduler-style active-order remapping. It indexes
+rows of `block_table` / `seq_lens` so logical batch rows can be mapped onto a
+stable slot table without rebuilding the table upstream.
 
 ```python
 from mlx_mfa import flash_attention_paged, PagedKVCache
@@ -471,6 +476,7 @@ flash_attention_paged_varlen(
     scale: Optional[float] = None,
     causal: bool = False,
     block_size: int = 16,
+    cache_batch_idx: Optional[mx.array] = None,  # [B_active] int32
     stream: Optional[mx.StreamOrDevice] = None,
 ) -> mx.array  # [1, H_q, total_q, D]
 ```
@@ -484,6 +490,8 @@ This bridges:
 Current strategy:
 - uniform query lengths: one batched paged dispatch
 - heterogeneous query lengths: per-sequence paged dispatch + packed concat
+- optional `cache_batch_idx` remaps active rows over a larger slot table
+  (continuous batching / scheduler-friendly order).
 
 This is correctness-first and explicit; it is not yet a single fully fused
 kernel path for heterogeneous query lengths.
@@ -872,6 +880,8 @@ create_decode_runtime(
 
 Core methods:
 - `prefill(...)` / `step(...)` / `reset(...)` for batched query layout
+- `paged_prefill_batch(...)` / `paged_step_batch(...)` for scheduler-style
+  active-set decode/prefill with explicit remap
 - `paged_varlen(...)` for paged KV + packed varlen queries
 - `prefill_shared_prefix(...)`, `splitfuse(...)`, `speculative_verify(...)`
 - `metadata` (backend/cache/query-layout snapshot)
@@ -880,6 +890,11 @@ Core methods:
 - `"batched"`: standard `[B,H,N,D]` queries via `prefill/step`
 - `"packed"`: currently supported only with paged runtime; use
   `DecodeRuntime.paged_varlen(...)`
+
+Continuous batching hints:
+- pass `seq_ids=[slot0, slot1, ...]` for stable slot ordering
+- pass `cache_batch_idx` to express the current active-order projection
+  over that slot list
 
 ---
 

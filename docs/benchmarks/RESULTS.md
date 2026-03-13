@@ -62,6 +62,26 @@ Interpretation:
 
 ---
 
+## Paged Continuous Batching Remap (Scheduler-Oriented)
+
+Matrix script: `benchmarks/bench_paged_continuous_batching.py`  
+Artifact: `notes/paged_continuous_batching_latest.json`
+
+| Scenario | D | manual ms | runtime-remap ms | manual/runtime |
+|---|---:|---:|---:|---:|
+| paged_step_batch reorder active sets | 64 | 28.279 | 27.648 | 1.02× |
+| paged_varlen remap reorder active sets | 64 | 22.004 | 24.529 | 0.90× |
+| paged_step_batch reorder active sets | 128 | 49.385 | 47.097 | 1.05× |
+| paged_varlen remap reorder active sets | 128 | 34.899 | 35.533 | 0.98× |
+
+Interpretation:
+- Primary win is capability/usability: explicit scheduler-friendly remap
+  semantics for paged batched and packed-varlen runtime flows.
+- Performance is mixed and near parity in this matrix; no broad auto policy
+  promotion is implied.
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |
