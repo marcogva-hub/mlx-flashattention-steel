@@ -140,6 +140,218 @@ class DecodeRuntime:
             **self._with_default_seq_id(dict(kwargs)),
         )
 
+    def chunked_prefill(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        chunk_size: int,
+        seq_ids: Optional[tuple[int, ...] | list[int]] = None,
+        cache_batch_idx: Optional[mx.array | tuple[int, ...] | list[int]] = None,
+        cu_seqlens_q: Optional[mx.array] = None,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        block_size: Optional[int] = None,
+        stream: Optional[mx.StreamOrDevice] = None,
+        reset: bool = True,
+    ):
+        """Chunk a long prefill into multiple cache-updating prefill steps.
+
+        This is a serving-oriented helper for prefill scheduling. It preserves
+        existing prefill/step paths and adds explicit chunk semantics.
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if not causal:
+            raise ValueError(
+                "chunked_prefill currently requires causal=True; "
+                "non-causal chunked prefill is not supported."
+            )
+
+        if self.query_layout == "packed":
+            if self.backend != "paged":
+                raise ValueError(
+                    "chunked_prefill with query_layout='packed' requires "
+                    "backend='paged'"
+                )
+            if cache_batch_idx is not None:
+                raise ValueError(
+                    "chunked_prefill packed path does not yet support "
+                    "cache_batch_idx; pass seq_ids in packed order"
+                )
+            if cu_seqlens_q is None:
+                raise ValueError(
+                    "chunked_prefill packed path requires cu_seqlens_q"
+                )
+            if seq_ids is None:
+                raise ValueError(
+                    "chunked_prefill packed path requires explicit seq_ids"
+                )
+            if q.ndim != 4 or q.shape[0] != 1:
+                raise ValueError(
+                    "chunked_prefill packed path expects q shape [1,H,total_q,D]"
+                )
+            if k.shape != q.shape or v.shape != q.shape:
+                raise ValueError(
+                    "chunked_prefill packed path requires q/k/v with identical shape"
+                )
+            if cu_seqlens_q.ndim != 1:
+                raise ValueError("cu_seqlens_q must be 1-D [B+1]")
+
+            seq_ids_t = tuple(int(s) for s in seq_ids)
+            B = len(seq_ids_t)
+            if cu_seqlens_q.shape[0] != B + 1:
+                raise ValueError(
+                    "cu_seqlens_q must have shape [B+1] matching seq_ids "
+                    f"(got {cu_seqlens_q.shape[0]} vs expected {B + 1})"
+                )
+            cu = [int(x) for x in cu_seqlens_q.tolist()]
+            if cu[0] != 0:
+                raise ValueError("cu_seqlens_q[0] must be 0")
+            if cu[-1] != q.shape[2]:
+                raise ValueError(
+                    "cu_seqlens_q[-1] must equal total_q in packed input"
+                )
+
+            cache = getattr(self.context, "cache", None)
+            if cache is None:
+                raise TypeError(
+                    "chunked_prefill packed path requires runtime context.cache"
+                )
+
+            if reset:
+                for sid in seq_ids_t:
+                    cache.reset(seq_id=sid)
+
+            lengths = [cu[i + 1] - cu[i] for i in range(B)]
+            consumed = [0] * B
+            out_parts: list[list[mx.array]] = [[] for _ in range(B)]
+
+            while any(consumed[i] < lengths[i] for i in range(B)):
+                active_rows = [i for i in range(B) if consumed[i] < lengths[i]]
+                if not active_rows:
+                    break
+                active_seq_ids = [seq_ids_t[i] for i in active_rows]
+
+                q_parts = []
+                k_parts = []
+                v_parts = []
+                chunk_offsets = [0]
+                for i in active_rows:
+                    base = cu[i]
+                    remain = lengths[i] - consumed[i]
+                    clen = min(chunk_size, remain)
+                    s = base + consumed[i]
+                    e = s + clen
+                    q_i = q[:, :, s:e, :]
+                    k_i = k[:, :, s:e, :]
+                    v_i = v[:, :, s:e, :]
+                    q_parts.append(q_i)
+                    k_parts.append(k_i)
+                    v_parts.append(v_i)
+                    chunk_offsets.append(chunk_offsets[-1] + clen)
+
+                q_chunk = mx.concatenate(q_parts, axis=2)
+                cu_chunk = mx.array(chunk_offsets, dtype=mx.int32)
+
+                for sid, k_i, v_i in zip(active_seq_ids, k_parts, v_parts):
+                    cache.append(k_i, v_i, seq_id=sid)
+
+                out_chunk = self.paged_varlen(
+                    q_chunk,
+                    cu_chunk,
+                    seq_ids=active_seq_ids,
+                    scale=scale,
+                    causal=causal,
+                    block_size=block_size,
+                    stream=stream,
+                )
+
+                for local_idx, i in enumerate(active_rows):
+                    s = chunk_offsets[local_idx]
+                    e = chunk_offsets[local_idx + 1]
+                    out_parts[i].append(out_chunk[:, :, s:e, :])
+                    consumed[i] += e - s
+
+            flat_parts = []
+            for i in range(B):
+                if out_parts[i]:
+                    flat_parts.append(mx.concatenate(out_parts[i], axis=2))
+                else:
+                    H_q, D = q.shape[1], q.shape[3]
+                    flat_parts.append(mx.zeros((1, H_q, 0, D), dtype=q.dtype))
+            return mx.concatenate(flat_parts, axis=2)
+
+        # query_layout == "batched"
+        if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+            raise ValueError("chunked_prefill batched path requires 4-D q/k/v")
+        if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+            raise ValueError("chunked_prefill batched path requires matching batch sizes")
+        if q.shape[2] != k.shape[2] or q.shape[2] != v.shape[2]:
+            raise ValueError(
+                "chunked_prefill batched path requires matching sequence lengths"
+            )
+
+        if self.backend == "sage":
+            raise ValueError(
+                "chunked_prefill is not implemented for backend='sage' in this pass"
+            )
+
+        N = int(q.shape[2])
+        if reset:
+            if self.backend == "paged":
+                cache = getattr(self.context, "cache", None)
+                if cache is None:
+                    raise TypeError(
+                        "chunked_prefill paged path requires runtime context.cache"
+                    )
+                active_seq_ids, _ = self._resolve_active_seq_ids(
+                    seq_ids=seq_ids,
+                    cache_batch_idx=cache_batch_idx,
+                    expected_batch=int(q.shape[0]),
+                )
+                for sid in active_seq_ids:
+                    cache.reset(seq_id=sid)
+            else:
+                self.reset()
+
+        out_chunks = []
+        for s in range(0, N, chunk_size):
+            e = min(N, s + chunk_size)
+            q_c = q[:, :, s:e, :]
+            k_c = k[:, :, s:e, :]
+            v_c = v[:, :, s:e, :]
+            if self.backend == "paged":
+                out_c = self.paged_step_batch(
+                    q_c,
+                    k_c,
+                    v_c,
+                    seq_ids=seq_ids,
+                    cache_batch_idx=cache_batch_idx,
+                    scale=scale,
+                    causal=causal,
+                    block_size=block_size,
+                    stream=stream,
+                )
+            else:
+                out_c = self.step(
+                    q_c,
+                    k_c,
+                    v_c,
+                    scale=scale,
+                    softcap=softcap,
+                    window_size=window_size,
+                )
+            out_chunks.append(out_c)
+
+        if not out_chunks:
+            B, H_q, _, D = q.shape
+            return mx.zeros((B, H_q, 0, D), dtype=q.dtype)
+        return mx.concatenate(out_chunks, axis=2)
+
     def reset(self, **kwargs):
         """Forward reset to the underlying context."""
         return self.context.reset(**self._with_default_seq_id(dict(kwargs)))
