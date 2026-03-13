@@ -136,6 +136,7 @@ class DecodeRuntime:
         self._active_prefix_id: Optional[str] = None
         self._last_prefix_reuse: Optional[dict[str, Any]] = None
         self._last_speculative_step: Optional[dict[str, Any]] = None
+        self._last_speculative_verify: Optional[dict[str, Any]] = None
         self._last_splitfuse: Optional[dict[str, Any]] = None
 
     def _with_default_seq_id(self, kwargs: dict) -> dict:
@@ -1190,6 +1191,7 @@ class DecodeRuntime:
             "active_prefix_id": self._active_prefix_id,
             "last_prefix_reuse": self._last_prefix_reuse,
             "last_speculative_step": self._last_speculative_step,
+            "last_speculative_verify": self._last_speculative_verify,
             "last_splitfuse": self._last_splitfuse,
         }
 
@@ -1385,6 +1387,10 @@ class DecodeRuntime:
                 "speculative_verify: k_cache and v_cache must be provided together"
             )
 
+        used_explicit_cache = k_cache is not None and v_cache is not None
+        verify_path: Optional[str] = "explicit_cache" if used_explicit_cache else None
+        verify_seq_ids: Optional[tuple[int, ...]] = None
+
         if k_cache is None:
             if self.backend == "dense":
                 cache_adapter = self._cache_adapter()
@@ -1395,6 +1401,7 @@ class DecodeRuntime:
                     )
                 k_cache = cache_adapter.attention_k(0)
                 v_cache = cache_adapter.attention_v(0)
+                verify_path = "dense_runtime_cache"
             elif self.backend == "paged":
                 if self.query_layout != "batched":
                     raise ValueError(
@@ -1448,6 +1455,15 @@ class DecodeRuntime:
                     **kwargs,
                 )
                 self._speculative_verify_used = True
+                verify_path = "paged_native"
+                verify_seq_ids = tuple(seq_ids)
+                self._last_speculative_verify = {
+                    "backend": self.backend,
+                    "query_layout": self.query_layout,
+                    "path": verify_path,
+                    "used_explicit_cache": used_explicit_cache,
+                    "seq_ids": verify_seq_ids,
+                }
                 return out
             else:
                 raise ValueError(
@@ -1463,6 +1479,15 @@ class DecodeRuntime:
             **kwargs,
         )
         self._speculative_verify_used = True
+        if verify_path is None:
+            verify_path = "explicit_cache"
+        self._last_speculative_verify = {
+            "backend": self.backend,
+            "query_layout": self.query_layout,
+            "path": verify_path,
+            "used_explicit_cache": used_explicit_cache,
+            "seq_ids": verify_seq_ids,
+        }
         return out
 
     def speculative_step(
@@ -1548,7 +1573,9 @@ class DecodeRuntime:
             "batch": int(q_target.shape[0]),
             "tokens": int(q_target.shape[2]),
             "accept_logprob_delta": float(accept_logprob_delta),
-            "used_explicit_cache": bool(k_cache is not None),
+            "used_explicit_cache": bool(
+                k_cache is not None and v_cache is not None
+            ),
             "query_layout": self.query_layout,
             "backend": self.backend,
         }
