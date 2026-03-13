@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from mlx_mfa.external_cache import ExternalKVCacheAdapter
+
 
 class KVCacheOperationUnsupported(RuntimeError):
     """Raised when a cache adapter operation is not supported."""
@@ -28,6 +30,7 @@ class KVCacheCapabilities:
     paged_pool: bool = False
     quantized_view: bool = False
     multi_seq: bool = False
+    external_offload: bool = False
 
 
 class KVCacheAdapter:
@@ -202,6 +205,7 @@ class HybridKVCache:
         self,
         primary_cache: Any,
         secondary_cache: Optional[Any] = None,
+        external_adapter: Optional[ExternalKVCacheAdapter] = None,
         *,
         policy: str = "lru",
         hot_seq_capacity: int = 1,
@@ -210,6 +214,7 @@ class HybridKVCache:
             raise ValueError("hot_seq_capacity must be > 0")
         self.primary_cache = primary_cache
         self.secondary_cache = secondary_cache
+        self.external_adapter = external_adapter
         self.policy = str(policy)
         self.hot_seq_capacity = int(hot_seq_capacity)
         self._primary_adapter = adapt_kv_cache(primary_cache)
@@ -221,6 +226,7 @@ class HybridKVCache:
         self._residency: dict[int, str] = {}
         self._hot_seq_ids: set[int] = set()
         self._cold_seq_ids: set[int] = set()
+        self._offloaded_seq_ids: set[int] = set()
         self._pinned_seq_ids: set[int] = set()
         self._prefetch_intent: set[int] = set()
 
@@ -230,9 +236,11 @@ class HybridKVCache:
         self._promotion_count = 0
         self._demotion_count = 0
         self._eviction_count = 0
+        self._reload_count = 0
         self._last_promotion: Optional[dict[str, Any]] = None
         self._last_demotion: Optional[dict[str, Any]] = None
         self._last_eviction: Optional[dict[str, Any]] = None
+        self._last_reload: Optional[dict[str, Any]] = None
         self._last_access_event: Optional[dict[str, Any]] = None
         self._last_prefetch_intent: Optional[dict[str, Any]] = None
         self._last_prefetch_action: Optional[dict[str, Any]] = None
@@ -276,6 +284,28 @@ class HybridKVCache:
         sid = int(seq_id)
         if sid not in self._hot_seq_ids:
             return
+        if self.external_adapter is not None:
+            k = self._primary_adapter.attention_k(sid)
+            v = self._primary_adapter.attention_v(sid)
+            self.external_adapter.put(
+                sid,
+                k,
+                v,
+                meta={
+                    "reason": str(reason),
+                    "tick": int(self._tick),
+                },
+            )
+            self._primary_adapter.reset(seq_id=sid)
+            self._set_residency(sid, "offloaded", reason=reason)
+            self._demotion_count += 1
+            self._last_demotion = {
+                "seq_id": sid,
+                "reason": str(reason),
+                "tick": int(self._tick),
+                "target": "external",
+            }
+            return
         if self._secondary_adapter is not None:
             self._copy_seq(self._primary_adapter, self._secondary_adapter, sid)
             self._set_residency(sid, "cold", reason=reason)
@@ -297,6 +327,35 @@ class HybridKVCache:
                 "tick": int(self._tick),
                 "mode": "drop_no_secondary",
             }
+
+    def _reload_offloaded_seq(self, seq_id: int, *, reason: str) -> None:
+        sid = int(seq_id)
+        if self.external_adapter is None:
+            raise KVCacheOperationUnsupported(
+                "Cannot reload offloaded sequence without external adapter"
+            )
+        if not self.external_adapter.has(sid):
+            raise KVCacheOperationUnsupported(
+                f"Offloaded sequence {sid} is missing from external adapter"
+            )
+        self._ensure_hot_capacity(incoming_seq=sid)
+        k, v = self.external_adapter.fetch(sid)
+        self._primary_adapter.reset(seq_id=sid)
+        self._primary_adapter.append(k, v, seq_id=sid)
+        self._set_residency(sid, "hot", reason=reason)
+        self._promotion_count += 1
+        self._reload_count += 1
+        self._last_promotion = {
+            "seq_id": sid,
+            "reason": str(reason),
+            "tick": int(self._tick),
+            "source": "external",
+        }
+        self._last_reload = {
+            "seq_id": sid,
+            "reason": str(reason),
+            "tick": int(self._tick),
+        }
 
     def _ensure_hot_capacity(self, *, incoming_seq: int) -> None:
         if len(self._hot_seq_ids) < self.hot_seq_capacity:
@@ -330,6 +389,9 @@ class HybridKVCache:
         if tier == "hot":
             self._touch(sid, reason=reason)
             return
+        if tier == "offloaded":
+            self._reload_offloaded_seq(sid, reason=reason)
+            return
         if tier == "cold":
             self._promote_seq(sid, reason=reason)
             return
@@ -340,6 +402,10 @@ class HybridKVCache:
         if self._secondary_adapter is not None and int(self._secondary_adapter.seq_length(sid)) > 0:
             self._set_residency(sid, "cold", reason=f"{reason}:infer_cold")
             self._promote_seq(sid, reason=reason)
+            return
+        if self.external_adapter is not None and self.external_adapter.has(sid):
+            self._set_residency(sid, "offloaded", reason=f"{reason}:infer_offloaded")
+            self._reload_offloaded_seq(sid, reason=reason)
             return
         # Fresh sequence path.
         self._ensure_hot_capacity(incoming_seq=sid)
@@ -373,15 +439,21 @@ class HybridKVCache:
 
     def _set_residency(self, seq_id: int, tier: str, *, reason: str) -> None:
         sid = int(seq_id)
-        if tier not in ("hot", "cold"):
+        if tier not in ("hot", "cold", "offloaded"):
             raise ValueError(f"Unknown residency tier: {tier!r}")
         self._residency[sid] = tier
         if tier == "hot":
             self._hot_seq_ids.add(sid)
             self._cold_seq_ids.discard(sid)
-        else:
+            self._offloaded_seq_ids.discard(sid)
+        elif tier == "cold":
             self._cold_seq_ids.add(sid)
             self._hot_seq_ids.discard(sid)
+            self._offloaded_seq_ids.discard(sid)
+        else:
+            self._offloaded_seq_ids.add(sid)
+            self._hot_seq_ids.discard(sid)
+            self._cold_seq_ids.discard(sid)
         self._touch(sid, reason=reason)
 
     @property
@@ -397,12 +469,17 @@ class HybridKVCache:
         return len(self._cold_seq_ids)
 
     @property
+    def offloaded_occupancy(self) -> int:
+        return len(self._offloaded_seq_ids)
+
+    @property
     def state(self) -> dict[str, Any]:
         return {
             "policy": self.policy,
             "hot_seq_capacity": self.hot_seq_capacity,
             "hot_seq_ids": tuple(sorted(self._hot_seq_ids)),
             "cold_seq_ids": tuple(sorted(self._cold_seq_ids)),
+            "offloaded_seq_ids": tuple(sorted(self._offloaded_seq_ids)),
             "residency_map": self.residency_map,
             "pinned_seq_ids": tuple(sorted(self._pinned_seq_ids)),
             "prefetch_intent_seq_ids": tuple(sorted(self._prefetch_intent)),
@@ -410,13 +487,19 @@ class HybridKVCache:
             "promotion_count": self._promotion_count,
             "demotion_count": self._demotion_count,
             "eviction_count": self._eviction_count,
+            "reload_count": self._reload_count,
             "last_promotion": self._last_promotion,
             "last_demotion": self._last_demotion,
             "last_eviction": self._last_eviction,
+            "last_reload": self._last_reload,
             "last_access_event": self._last_access_event,
             "last_prefetch_intent": self._last_prefetch_intent,
             "last_prefetch_action": self._last_prefetch_action,
             "has_secondary_tier": self._secondary_adapter is not None,
+            "has_external_offload": self.external_adapter is not None,
+            "external_offload_state": (
+                None if self.external_adapter is None else self.external_adapter.state
+            ),
             "ready_for_production": self.ready_for_production,
         }
 
@@ -439,11 +522,18 @@ class HybridKVCache:
             except KVCacheOperationUnsupported:
                 # Secondary tier may not support seq-id scoped reset yet.
                 self._secondary_adapter.reset(seq_id=None)
+        if self.external_adapter is not None:
+            if seq_id is None:
+                for sid in list(self.external_adapter.offloaded_seq_ids):
+                    self.external_adapter.evict(int(sid))
+            else:
+                self.external_adapter.evict(int(seq_id))
 
         if seq_id is None:
             self._residency.clear()
             self._hot_seq_ids.clear()
             self._cold_seq_ids.clear()
+            self._offloaded_seq_ids.clear()
             self._pinned_seq_ids.clear()
             self._prefetch_intent.clear()
             self._last_access_tick.clear()
@@ -454,6 +544,7 @@ class HybridKVCache:
             self._residency.pop(sid, None)
             self._hot_seq_ids.discard(sid)
             self._cold_seq_ids.discard(sid)
+            self._offloaded_seq_ids.discard(sid)
             self._pinned_seq_ids.discard(sid)
             self._prefetch_intent.discard(sid)
             self._last_access_tick.pop(sid, None)
@@ -466,6 +557,8 @@ class HybridKVCache:
             return self._primary_adapter.seq_length(sid)
         if tier == "cold" and self._secondary_adapter is not None:
             return self._secondary_adapter.seq_length(sid)
+        if tier == "offloaded" and self.external_adapter is not None:
+            return int(self.external_adapter.seq_length(sid))
         # Conservative fallback for legacy state.
         length = self._primary_adapter.seq_length(sid)
         if length > 0:
@@ -474,7 +567,9 @@ class HybridKVCache:
             try:
                 return self._secondary_adapter.seq_length(sid)
             except KVCacheOperationUnsupported:
-                return 0
+                pass
+        if self.external_adapter is not None:
+            return int(self.external_adapter.seq_length(sid))
         return 0
 
     def k_for_attention(self, seq_id: int = 0):
@@ -505,7 +600,10 @@ class HybridKVCache:
         return self._primary_adapter.paged_tables(norm_ids)
 
     def active_seq_ids(self) -> tuple[int, ...]:
-        return tuple(sorted(int(sid) for sid in self._residency.keys()))
+        ids = set(int(sid) for sid in self._residency.keys())
+        if self.external_adapter is not None:
+            ids.update(int(sid) for sid in self.external_adapter.offloaded_seq_ids)
+        return tuple(sorted(ids))
 
     def quantized_view(self):
         if not self._primary_adapter.capabilities.quantized_view:
@@ -574,6 +672,8 @@ class HybridKVCache:
     def prefetch_seq(self, seq_id: int, *, reason: str = "manual") -> None:
         sid = int(seq_id)
         self.mark_for_prefetch(sid, reason=reason)
+        if self.external_adapter is not None and self.external_adapter.has(sid):
+            self.external_adapter.prefetch(sid)
         self._ensure_hot(sid, reason=f"prefetch:{reason}")
         self._prefetch_intent.discard(sid)
         self._last_prefetch_action = {
@@ -614,10 +714,12 @@ class HybridKVCache:
 
     def __repr__(self) -> str:
         sec = "none" if self.secondary_cache is None else type(self.secondary_cache).__name__
+        ext = "none" if self.external_adapter is None else type(self.external_adapter).__name__
         return (
             f"HybridKVCache(primary={type(self.primary_cache).__name__}, "
-            f"secondary={sec}, policy={self.policy!r}, "
+            f"secondary={sec}, external={ext}, policy={self.policy!r}, "
             f"hot={sorted(self._hot_seq_ids)}, cold={sorted(self._cold_seq_ids)}, "
+            f"offloaded={sorted(self._offloaded_seq_ids)}, "
             f"ready_for_production={self.ready_for_production})"
         )
 
@@ -636,6 +738,7 @@ class HybridKVCacheAdapter(KVCacheAdapter):
             paged_pool=inner.paged_pool,
             quantized_view=inner.quantized_view,
             multi_seq=inner.multi_seq,
+            external_offload=self.cache.external_adapter is not None,
         )
 
     def append(self, k_new, v_new, *, seq_id: int = 0) -> None:

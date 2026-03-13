@@ -28,6 +28,10 @@ from mlx_mfa.kv_cache import (
     HybridKVCache,
     resolve_context_cache_adapter,
 )
+from mlx_mfa.external_cache import (
+    ExternalKVCacheAdapter,
+    LocalHostKVStoreAdapter,
+)
 
 __all__ = [
     "DecodeRuntime",
@@ -71,6 +75,8 @@ def _wrap_context_with_hybrid_cache(
     policy: str,
     hot_seq_capacity: int,
     with_secondary: bool,
+    enable_external_offload: bool,
+    external_adapter: Optional[ExternalKVCacheAdapter] = None,
 ):
     if not hasattr(context, "_cache"):
         raise ValueError(
@@ -81,12 +87,16 @@ def _wrap_context_with_hybrid_cache(
         return context
 
     secondary = _build_secondary_cache_for_context(context) if with_secondary else None
+    ext = external_adapter
+    if enable_external_offload and ext is None:
+        ext = LocalHostKVStoreAdapter()
     setattr(
         context,
         "_cache",
         HybridKVCache(
             current,
             secondary_cache=secondary,
+            external_adapter=ext,
             policy=policy,
             hot_seq_capacity=hot_seq_capacity,
         ),
@@ -166,6 +176,30 @@ class DecodeRuntime:
         if h is None:
             raise ValueError("hybrid_prefetch requires hybrid cache mode")
         return h.prepare_hot_window(seq_ids, pin=pin, reason=reason)
+
+    def hybrid_offload(
+        self,
+        seq_ids: tuple[int, ...] | list[int],
+        *,
+        reason: str = "runtime",
+    ) -> tuple[int, ...]:
+        h = self._hybrid_cache()
+        if h is None:
+            raise ValueError("hybrid_offload requires hybrid cache mode")
+        moved: list[int] = []
+        for sid in seq_ids:
+            h.offload_seq(int(sid))
+            moved.append(int(sid))
+        return tuple(moved)
+
+    def hybrid_reload(
+        self,
+        seq_ids: tuple[int, ...] | list[int],
+        *,
+        pin: bool = False,
+        reason: str = "runtime_reload",
+    ) -> tuple[int, ...]:
+        return self.hybrid_prefetch(seq_ids, pin=pin, reason=reason)
 
     @staticmethod
     def _normalize_cache_batch_idx(
@@ -1410,6 +1444,8 @@ def create_decode_runtime(
     hybrid_policy: str = "lru",
     hybrid_hot_seq_capacity: int = 1,
     hybrid_with_secondary: bool = True,
+    hybrid_enable_offload: bool = False,
+    hybrid_external_adapter: Optional[ExternalKVCacheAdapter] = None,
     query_layout: QueryLayout = "batched",
     B: Optional[int] = None,
     H_q: Optional[int] = None,
@@ -1434,6 +1470,8 @@ def create_decode_runtime(
     - Explicit `backend="sage"` requires `quantized_kv=True`.
     - Optional `hybrid_cache=True` wraps the context cache in `HybridKVCache`
       (currently supported for dense/paged backends only).
+    - Optional `hybrid_enable_offload=True` enables local external offload tier
+      behavior through `LocalHostKVStoreAdapter` unless a custom adapter is passed.
     """
     if default_seq_id < 0:
         raise ValueError("default_seq_id must be >= 0")
@@ -1477,6 +1515,8 @@ def create_decode_runtime(
             policy=hybrid_policy,
             hot_seq_capacity=hybrid_hot_seq_capacity,
             with_secondary=hybrid_with_secondary,
+            enable_external_offload=hybrid_enable_offload,
+            external_adapter=hybrid_external_adapter,
         )
     if query_layout == "packed" and selected != "paged":
         raise ValueError(

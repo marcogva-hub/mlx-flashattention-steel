@@ -11,6 +11,7 @@ from mlx_mfa import (
     adapt_kv_cache,
     HybridKVCache,
     KVCacheOperationUnsupported,
+    LocalHostKVStoreAdapter,
 )
 
 
@@ -225,6 +226,56 @@ class TestKVCacheAdapters:
         assert v_hist.shape == (1, 4, 3, 64)
         assert hybrid.state["residency_map"][0] == "hot"
 
+    def test_local_external_adapter_store_fetch_prefetch_evict(self):
+        ad = LocalHostKVStoreAdapter()
+        k = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        ad.put(5, k, v, meta={"source": "unit"})
+        assert ad.has(5) is True
+        assert ad.seq_length(5) == 3
+        ad.prefetch(5)
+        k2, v2 = ad.fetch(5)
+        mx.eval(k2, v2)
+        assert k2.shape == (1, 4, 3, 64)
+        assert v2.shape == (1, 4, 3, 64)
+        ad.evict(5)
+        assert ad.has(5) is False
+
+    def test_hybrid_external_offload_and_reload(self):
+        hot_ctx = PagedInferenceContext(
+            num_blocks=64,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        ext = LocalHostKVStoreAdapter()
+        hybrid = HybridKVCache(
+            hot_ctx._cache,
+            secondary_cache=None,
+            external_adapter=ext,
+            hot_seq_capacity=1,
+        )
+        k0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        hybrid.append(k1, v1, seq_id=1)
+
+        st = hybrid.state
+        assert st["residency_map"][0] == "offloaded"
+        assert st["residency_map"][1] == "hot"
+        assert ext.has(0) is True
+
+        k_hist = hybrid.k_for_attention(0)
+        v_hist = hybrid.v_for_attention(0)
+        mx.eval(k_hist, v_hist)
+        st2 = hybrid.state
+        assert st2["residency_map"][0] == "hot"
+        assert st2["reload_count"] >= 1
+        assert k_hist.shape == (1, 4, 3, 64)
+        assert v_hist.shape == (1, 4, 3, 64)
+
 
 class TestCacheAbstractionRuntimeFlows:
     @pytest.fixture(autouse=True)
@@ -427,3 +478,37 @@ class TestCacheAbstractionRuntimeFlows:
         mx.eval(out["accepted_prefix_lens"])
         assert tuple(out["accepted_prefix_lens"].tolist()) == (3,)
         assert rt.metadata["hybrid_cache_active"] is True
+
+    def test_hybrid_runtime_offload_and_reload_dense(self):
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_with_secondary=False,
+            hybrid_enable_offload=True,
+            hybrid_hot_seq_capacity=1,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=64,
+        )
+        q = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        rt.hybrid_offload([0], reason="unit")
+        st = rt.hybrid_state
+        assert st is not None
+        assert st["residency_map"][0] == "offloaded"
+        assert st["has_external_offload"] is True
+
+        q1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        out = rt.step(q1, k1, v1)
+        mx.eval(out)
+        st2 = rt.hybrid_state
+        assert st2 is not None
+        assert st2["residency_map"][0] == "hot"
+        assert st2["reload_count"] >= 1
+        assert rt.seq_length() == 9
