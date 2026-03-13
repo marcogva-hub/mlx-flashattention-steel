@@ -1,7 +1,7 @@
 # Task 3 Policy Decision — Paged Decode Auto Routing
 
 Date: 2026-03-12  
-Artifact: `notes/paged_sharedprefix_matrix_latest.json`
+Artifact: `devnotes/paged_sharedprefix_matrix_latest.json`
 
 Decision:
 - Keep paged decode **explicit-only** for now.

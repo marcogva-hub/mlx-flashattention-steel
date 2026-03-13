@@ -5,7 +5,7 @@
 - Dtype: `float16`
 - Shape family: `B=2, H=8, D=256`
 - Benchmark script: `benchmarks/bench_d256_decision.py`
-- Raw JSON: `notes/d256_decision_latest.json`
+- Raw JSON: `devnotes/d256_decision_latest.json`
 
 ## Measured Results
 

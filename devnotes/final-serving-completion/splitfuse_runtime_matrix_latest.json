@@ -1,0 +1,35 @@
+{
+  "version": "2.9.2",
+  "device": {
+    "device_name": "Apple M1 Max",
+    "gpu_family_gen": 13,
+    "is_m3_plus": false,
+    "is_m5_plus": false,
+    "chip_name": "M1",
+    "gpu_cores": 32,
+    "extension_available": true
+  },
+  "timestamp": "2026-03-13 16:41:54",
+  "warmup": 1,
+  "iters": 4,
+  "results": [
+    {
+      "scenario": "dense_splitfuse",
+      "D": 64,
+      "helper_ms": 0.9447499905945733,
+      "runtime_splitfuse_ms": 0.800499998149462,
+      "runtime_splitfuse_step_ms": 1.046833989676088,
+      "runtime_splitfuse_step_prefix_ms": 1.1304159997962415,
+      "runtime_step_vs_helper": 1.1080539826385907
+    },
+    {
+      "scenario": "dense_splitfuse",
+      "D": 128,
+      "helper_ms": 1.0018330067396164,
+      "runtime_splitfuse_ms": 0.6997909949859604,
+      "runtime_splitfuse_step_ms": 1.0399999882793054,
+      "runtime_splitfuse_step_prefix_ms": 0.9371250052936375,
+      "runtime_step_vs_helper": 1.0380971492084299
+    }
+  ]
+}

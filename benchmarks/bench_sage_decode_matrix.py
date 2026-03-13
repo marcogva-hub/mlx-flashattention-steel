@@ -222,7 +222,7 @@ def main() -> None:
     ap.add_argument(
         "--output",
         type=str,
-        default="notes/sage_decode_matrix_latest.json",
+        default="devnotes/sage_decode_matrix_latest.json",
     )
     args = ap.parse_args()
 

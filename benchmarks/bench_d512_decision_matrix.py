@@ -347,7 +347,7 @@ def main() -> None:
     ap.add_argument(
         "--output",
         type=str,
-        default="notes/d512_decision_matrix_latest.json",
+        default="devnotes/d512_decision_matrix_latest.json",
     )
     args = ap.parse_args()
 

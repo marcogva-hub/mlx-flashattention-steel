@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.9.2"
+__version__ = "2.10.0"
 
 
 def _check_abi() -> None:
@@ -67,6 +67,7 @@ from mlx_mfa.attention import (
     flash_attention_kvcache,
     flash_attention_kvcache_rope_append,
     flash_attention_paged,
+    flash_attention_paged_varlen,
     flash_attention_qkv_packed,
     flash_attention_kv_packed,
     flash_attention_varlen_qkv_packed,
@@ -84,6 +85,7 @@ from mlx_mfa.attention import (
     DispatchPolicy,
     # Track JD: LLM inference helpers
     flash_attention_speculative_verify,
+    flash_attention_speculative_verify_paged,
     make_shared_prefix_cache,
     flash_attention_splitfuse,
     # Track KC: SageAttention
@@ -113,6 +115,24 @@ from mlx_mfa.inference import (
 from mlx_mfa.runtime import (
     DecodeRuntime,
     create_decode_runtime,
+)
+from mlx_mfa.kv_cache import (
+    KVCacheCapabilities,
+    KVCacheOperationUnsupported,
+    KVCacheAdapter,
+    DenseKVCacheAdapter,
+    PagedKVCacheAdapter,
+    QuantizedKVCacheAdapter,
+    HybridKVCache,
+    HybridKVCacheAdapter,
+    adapt_kv_cache,
+    resolve_context_cache,
+    resolve_context_cache_adapter,
+)
+from mlx_mfa.external_cache import (
+    ExternalKVCacheCapabilities,
+    ExternalKVCacheAdapter,
+    LocalHostKVStoreAdapter,
 )
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
@@ -147,6 +167,7 @@ __all__ = [
     "flash_attention_kvcache",
     "flash_attention_kvcache_rope_append",
     "flash_attention_paged",
+    "flash_attention_paged_varlen",
     "flash_attention_qkv_packed",
     "flash_attention_kv_packed",
     "flash_attention_varlen_qkv_packed",
@@ -182,6 +203,7 @@ __all__ = [
     "calibrate_dispatch",
     # LLM inference helpers (Track JD)
     "flash_attention_speculative_verify",
+    "flash_attention_speculative_verify_paged",
     "make_shared_prefix_cache",
     "flash_attention_splitfuse",
     # SageAttention (Track KC / LA / CP6)
@@ -202,5 +224,20 @@ __all__ = [
     "create_inference_context",
     "DecodeRuntime",
     "create_decode_runtime",
+    # Cache abstraction helpers
+    "KVCacheCapabilities",
+    "KVCacheOperationUnsupported",
+    "KVCacheAdapter",
+    "DenseKVCacheAdapter",
+    "PagedKVCacheAdapter",
+    "QuantizedKVCacheAdapter",
+    "HybridKVCache",
+    "HybridKVCacheAdapter",
+    "adapt_kv_cache",
+    "resolve_context_cache",
+    "resolve_context_cache_adapter",
+    "ExternalKVCacheCapabilities",
+    "ExternalKVCacheAdapter",
+    "LocalHostKVStoreAdapter",
     "__version__",
 ]

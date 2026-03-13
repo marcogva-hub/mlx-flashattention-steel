@@ -2,7 +2,7 @@
 
 Date: 2026-03-12
 Script: `benchmarks/bench_runtime_decode_overhead.py`
-Artifact: `notes/runtime_unification_overhead_latest.json`
+Artifact: `devnotes/runtime_unification_overhead_latest.json`
 
 ## Setup
 

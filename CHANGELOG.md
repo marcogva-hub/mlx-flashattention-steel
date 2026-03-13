@@ -4,6 +4,97 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### Final Cleanup / Freeze / Release Prep (v2.10.0)
+
+- **docs**: Rewrote and reordered `README.md` as the closure-ready entry point
+  with explicit freeze status, serving-capability maturity, and manual
+  foreword placeholder.
+- **docs**: Refreshed active documentation set for freeze state:
+  - `docs/API_MANUAL.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/INVENTORY.md`
+  - `docs/benchmarks/RESULTS.md`
+- **docs/archive**: Moved legacy benchmark JSON out of active docs surface to:
+  `docs/benchmarks/archive/benchmarks_v2.0.0/`.
+- **chore**: Reorganized historical artifacts from `notes/` into
+  track-scoped `devnotes/` folders and added `devnotes/README.md` index.
+- **examples**: Updated decode/paged examples to reflect current recommended
+  runtime usage (`create_decode_runtime`, `DecodeRuntime` serving helpers).
+- **version**: Bumped project version metadata to `2.10.0` in
+  `mlx_mfa/__init__.py` and `pyproject.toml`.
+- **status**: Freeze-prep state now explicitly documents the expanded serving
+  capability set completed during the final pre-pause phase.
+
+### Final Serving Completion Pass
+
+- **notes**: Added final serving-completion design/audit notes:
+  - `devnotes/minimal_kv_offloading_design.md`
+  - `devnotes/splitfuse_runtime_integration_design.md`
+  - `devnotes/paged_runtime_page_native_gaps.md`
+- **feat**: Added external-cache extension module `mlx_mfa.external_cache`:
+  - `ExternalKVCacheAdapter`
+  - `ExternalKVCacheCapabilities`
+  - `LocalHostKVStoreAdapter` (first concrete local backend)
+- **feat**: Upgraded hybrid cache behavior with minimal real offload:
+  - offloaded residency tier in `HybridKVCache`
+  - demote/offload + reload/promotion behavior
+  - runtime-visible offload/residency state
+- **test**: Added dedicated external/offload coverage:
+  - `tests/test_external_cache.py`
+  - expanded hybrid cache transition coverage in
+    `tests/test_kv_cache_abstraction.py`
+- **feat**: Deepened runtime splitfuse and paged-native integration:
+  - `DecodeRuntime.splitfuse_step(...)`
+  - paged decode-only splitfuse page-native path
+  - paged speculative verify runtime path via
+    `flash_attention_speculative_verify_paged(...)`
+  - `flash_attention_paged(..., return_lse=True)` support for runtime verify
+    integration
+- **perf**: Reduced one high-value paged gather/bridge point in runtime
+  (paged decode-only splitfuse no longer requires dense bridge materialization
+  in the supported narrow path).
+- **bench**: Refreshed serving-oriented matrices after final capability pass:
+  - `devnotes/hybrid_kv_cache_bench_latest.json`
+  - `devnotes/splitfuse_runtime_matrix_latest.json`
+  - `devnotes/paged_page_native_runtime_latest.json`
+  - `devnotes/speculative_decode_runtime_matrix_latest.json`
+  - `devnotes/prefix_caching_runtime_matrix_latest.json`
+  - `devnotes/chunked_prefill_matrix_latest.json`
+  - `devnotes/paged_continuous_batching_latest.json`
+  - `devnotes/paged_varlen_matrix_latest.json`
+- **fix**: Made `DecodeRuntime.speculative_verify(...)` metadata deterministic
+  (`last_speculative_verify` no longer gets overwritten by mixed fallback
+  states).
+- **notes**: Added branch-level serving capability summary:
+  `devnotes/final_serving_capabilities_summary.md`.
+
+### Hybrid KV Behavior Implementation Pass
+
+- **notes**: Added concrete hybrid behavior model note:
+  `devnotes/hybrid_kv_cache_behavior_design.md`.
+- **feat**: Upgraded `HybridKVCache` from scaffold to local tiered behavior:
+  - hot/cold residency tracking with inspectable state
+  - deterministic promotion/demotion/eviction on capacity pressure
+  - compatibility attention/paged/quantized view surfaces routed through
+    hybrid-aware methods
+  - prefetch/warmup controls (`mark_for_prefetch`, `prefetch_seq`,
+    `prepare_hot_window`) with runtime-visible action metadata.
+- **feat**: Integrated hybrid cache into serving runtime surface:
+  - optional `create_decode_runtime(..., hybrid_cache=True, ...)` wrapping
+    for dense/paged contexts
+  - runtime helpers `hybrid_prefetch(...)`, `hybrid_mark_for_prefetch(...)`,
+    `hybrid_state`, and metadata fields
+    (`hybrid_cache_active`, `hybrid_state`).
+- **test**: Expanded hybrid behavior coverage for real transitions:
+  promotion on access, demotion/eviction under pressure, pinned-capacity
+  behavior, runtime dense/paged integration, and speculative compatibility.
+- **bench**: Added hybrid smoke matrix harness
+  (`benchmarks/bench_hybrid_kv_cache.py`) with artifact
+  (`devnotes/hybrid_kv_cache_bench_latest.json`).
+- **bench result**: Hybrid behavior is now a real cache/runtime capability
+  milestone with mixed overhead impact; current value is architectural/control
+  readiness rather than broad throughput promotion.
+
 ### Final Stabilization / Polish
 
 - **docs**: Added a concise production-default usage section and an advanced
@@ -14,6 +105,157 @@ All notable changes to mlx-mfa are documented here.
   non-default, narrow D=256 promotion, D=512 SDPA-default, Sage specialized).
 - **docs**: Clarified production-vs-experimental guidance in README wording so
   V3/V4/V5 remain clearly documented as experimental opt-in paths.
+
+### Paged + Packed Varlen Query Unification (vLLM-Oriented)
+
+- **feat**: Added `flash_attention_paged_varlen(...)` public API for packed
+  varlen queries over paged KV (`q=[1,H,total_q,D]` + `cu_seqlens_q` with
+  `k_pages/v_pages`, `block_table`, `seq_lens_kv`).
+- **feat**: Integrated packed-query support into unified runtime via
+  `DecodeRuntime(query_layout="packed")` and `DecodeRuntime.paged_varlen(...)`,
+  with explicit validation and metadata.
+- **feat**: Implemented correctness-first heterogeneous-query bridge behavior:
+  uniform `q_len` uses one batched paged dispatch; heterogeneous `q_len` uses
+  per-sequence paged dispatch plus packed concat.
+- **test**: Added coverage for heterogeneous query/KV lengths, zero-length
+  query segments, invalid `cu_seqlens_q`, and runtime integration/validation.
+- **bench**: Added vLLM-oriented benchmark matrix
+  (`benchmarks/bench_paged_varlen.py`,
+  `devnotes/paged_varlen_matrix_latest.json`) against padded paged baseline and
+  sequence loop reference.
+- **docs**: Updated README/RESULTS/API manual/architecture docs to document the
+  new capability and current limitations without overselling fusion status.
+
+### Paged Continuous Batching Support (Scheduler-Friendly)
+
+- **notes**: Added gap audit note (`devnotes/paged_continuous_batching_gap.md`)
+  documenting API/runtime/cache limitations and the minimal safe plan.
+- **feat**: Added explicit paged request-slot remap support via
+  `cache_batch_idx` in:
+  - `flash_attention_paged(...)`
+  - `flash_attention_paged_varlen(...)`
+  - paged path in `flash_attention_kvcache(...)` (non-append).
+- **feat**: Added scheduler-friendly paged runtime methods:
+  - `DecodeRuntime.paged_prefill_batch(...)`
+  - `DecodeRuntime.paged_step_batch(...)`
+  - remap-aware `DecodeRuntime.paged_varlen(...)`
+  plus runtime metadata fields `active_seq_ids` and
+  `active_cache_batch_idx`.
+- **test**: Added continuous-batching coverage for paged remap semantics:
+  remap parity vs row-gather reference, changing active request order, packed
+  paged-varlen remap parity, and invalid remap validation.
+- **bench**: Added scheduler-style matrix harness
+  (`benchmarks/bench_paged_continuous_batching.py`) with artifact
+  `devnotes/paged_continuous_batching_latest.json`.
+- **bench result**: This pass is a capability/runtime milestone (explicit
+  remap semantics, correctness parity) with mixed performance deltas; no broad
+  auto-promotion claim.
+
+### Chunked Prefill Support (Serving-Oriented)
+
+- **notes**: Added chunked prefill design note with explicit semantics and
+  scope (`devnotes/chunked_prefill_design.md`).
+- **feat**: Added explicit runtime API:
+  - `DecodeRuntime.chunked_prefill(...)`
+  with causal-only validation and clear error messages for unsupported
+  combinations.
+- **feat**: Integrated chunked prefill for:
+  - dense batched runtime flow,
+  - paged batched runtime flow,
+  - paged packed-varlen runtime flow (`query_layout=\"packed\"` with
+    `cu_seqlens_q` + `seq_ids`).
+- **test**: Added chunked prefill coverage for dense parity, paged batched
+  incremental parity, packed paged multi-chunk behavior, invalid inputs, and
+  cache-growth behavior (`reset=False`).
+- **bench**: Added benchmark matrix harness
+  (`benchmarks/bench_chunked_prefill.py`) with artifact
+  (`devnotes/chunked_prefill_matrix_latest.json`) and chunk latency profile stats.
+- **bench result**: This pass is a serving/runtime capability milestone;
+  monolithic prefill remains faster in current M1 Max measurements, while
+  chunked prefill provides explicit interleavable scheduling units.
+
+### Prefix Caching Automation (Runtime-Integrated)
+
+- **notes**: Added runtime semantics/design note:
+  `devnotes/prefix_caching_design.md`.
+- **feat**: Added runtime-managed prefix layer to `DecodeRuntime`:
+  - `register_prefix(...)`
+  - `list_registered_prefix_ids()`
+  - `seed_prefix(...)`
+  - `drop_prefix(...)`
+  - `clear_registered_prefixes()`
+- **feat**: Added prefix-aware runtime integration helper:
+  - `prefill_with_prefix(...)`
+  which seeds registered prefix state and routes suffix processing through
+  `chunked_prefill(..., reset=False)` for serving-style flows.
+- **feat**: Extended runtime metadata with prefix-cache visibility:
+  `prefix_cache_size`, `registered_prefix_ids`, `active_prefix_id`,
+  and `last_prefix_reuse`.
+- **test**: Added runtime-integrated prefix caching coverage for dense, paged
+  batched, paged packed (single-seq), chunked integration, invalid
+  combinations, and metadata state.
+- **bench**: Added benchmark matrix harness
+  (`benchmarks/bench_prefix_caching_runtime.py`) with artifact
+  (`devnotes/prefix_caching_runtime_matrix_latest.json`) comparing:
+  no-reuse baseline vs explicit helper path vs runtime-managed path.
+- **bench result**: Runtime-managed prefix path matches explicit helper
+  correctness and is near parity in cost; paged serving-style rows show clear
+  wins vs no-reuse baseline, while dense rows remain largely integration/flow
+  wins under current chunked settings.
+
+### Speculative Decode Runtime Pass (Draft/Verify Integration)
+
+- **notes**: Added speculative runtime design note:
+  `devnotes/speculative_decode_design.md`.
+- **feat**: Added runtime-level speculative API:
+  - `DecodeRuntime.speculative_step(...)`
+  which wraps verify and returns explicit accept/reject bookkeeping
+  (`accept_mask`, `accepted_prefix_lens`, `accepted_ids`, `rejected_ids`).
+- **feat**: Integrated speculative verify/step with supported runtime-cache
+  flows:
+  - dense runtime cache fallback (existing),
+  - paged runtime cache fallback for batched layout + `seq_id`
+    (new narrow support),
+  while preserving explicit-cache override behavior.
+- **feat**: Extended runtime metadata with:
+  - `speculative_step_active`
+  - `last_speculative_step`
+- **test**: Added speculative runtime coverage for full/partial/reject paths,
+  paged runtime-cache integration, invalid combinations, metadata signaling,
+  and output alignment bookkeeping.
+- **bench**: Added focused matrix harness
+  (`benchmarks/bench_speculative_decode_runtime.py`) with artifact
+  (`devnotes/speculative_decode_runtime_matrix_latest.json`) comparing manual
+  helper orchestration vs runtime-integrated speculative flow.
+- **bench result**: Capability milestone confirmed (correctness + integration);
+  measured deltas are mixed, so this pass does not claim broad throughput
+  promotion.
+- **docs**: Updated README/RESULTS/API manual/benchmark docs to document
+  supported speculative runtime paths and limitations.
+
+### Hybrid KV Cache Abstraction Pass (Serving-Oriented)
+
+- **notes**: Added cache-abstraction design note:
+  `devnotes/hybrid_kv_cache_design.md`.
+- **refactor**: Added cache abstraction module `mlx_mfa/kv_cache.py` with:
+  - capability model (`KVCacheCapabilities`)
+  - explicit unsupported-operation signaling (`KVCacheOperationUnsupported`)
+  - adapters for dense/paged/quantized caches
+  - context helpers (`resolve_context_cache(_adapter)`).
+- **refactor**: Integrated adapter-based cache access into serving-oriented
+  runtime flows (prefix seeding, paged varlen/batch helpers, packed chunked
+  prefill cache updates, speculative verify fallback).
+- **feat**: Added future-facing `HybridKVCache` + adapter scaffold
+  (non-production) to establish extension points for hybrid/offload policy work.
+- **test**: Added cache abstraction coverage:
+  - dense/paged/quantized adapter behavior
+  - unsupported operation errors
+  - runtime flow regression checks (prefix/chunked/speculative/paged).
+- **bench**: Added smoke matrix harness
+  (`benchmarks/bench_cache_abstraction_smoke.py`) with artifact
+  (`devnotes/cache_abstraction_smoke_latest.json`).
+- **bench result**: Primary outcome is structural/runtime maintainability;
+  smoke timing is mixed with no broad optimization claim.
 
 ## [2.9.2] — 2026-03-12
 
@@ -47,7 +289,7 @@ All notable changes to mlx-mfa are documented here.
   `D=256`, `causal=True`, `dtype=f16`, `N>=4096` routes to MFA V2 D-split on
   M1/M2; bf16, shorter causal, and all non-causal D=256 remain SDPA-default.
   Benchmark harness: `benchmarks/bench_d256_decision.py`, decision notes in
-  `notes/d256_decision.md` + JSON artifact.
+  `devnotes/d256_decision.md` + JSON artifact.
 - **perf**: D=256/512 D-split tile selection is now explicitly isolated from
   D=128 BK calibration overrides. Added `select_steel_v2_dsplit_block_config()`
   plus `MFA_V2_FORCE_BK_D256=32|64` debug override so global
@@ -57,7 +299,7 @@ All notable changes to mlx-mfa are documented here.
   bf16 conservative). M3+ D=256 remains conservative until measured.
 - **bench**: Post-backward D=256 matrix refresh
   (`benchmarks/bench_d256_design_matrix.py`, output
-  `notes/d256_design_matrix_post_bwd_latest.json`) confirmed the same shape:
+  `devnotes/d256_design_matrix_post_bwd_latest.json`) confirmed the same shape:
   wins remain concentrated in causal f16; bf16/non-causal remain SDPA territory.
 - **refactor**: Further isolated D=256 family policy code paths in both
   C++ dispatch selection and Python auto-dispatch helpers for readability and
@@ -69,12 +311,12 @@ All notable changes to mlx-mfa are documented here.
 - **docs**: Updated `README.md`, `RESULTS.md`, and `docs/benchmarks/RESULTS.md`
   to distinguish production V2 vs experimental V3/V4/V5, reflect split-K
   composability, and document the D=256 decision.
-- **chore**: Archived stale dump artifacts under `notes/archive/`.
+- **chore**: Archived stale dump artifacts under `devnotes/archive/`.
 
 ### Native Backward Targeted Pass (Winning Shapes Only)
 
 - **bench**: Added `benchmarks/bench_backward_targeted.py` and
-  `notes/native_backward_targeted.md` for a narrow dense-backward sweep:
+  `devnotes/native_backward_targeted.md` for a narrow dense-backward sweep:
   `D={64,128}`, causal, long-`N`, `f16/bf16`, comparing direct native STEEL
   backward vs SDPA VJP baseline.
 - **bench result**: No benchmark-backed dense winning regime on M1 Max
@@ -92,7 +334,7 @@ All notable changes to mlx-mfa are documented here.
 
 - **bench**: Added focused decode matrix harness
   (`benchmarks/bench_sage_decode_matrix.py`) and artifact
-  (`notes/sage_decode_matrix_post_bwd_latest.json`) for Sage vs dense decode
+  (`devnotes/sage_decode_matrix_post_bwd_latest.json`) for Sage vs dense decode
   across `N_q={1,2,4}`, `N_cache={512..8192}`, `D={64,128}`, windowed/non-windowed
   cases, and GQA profiles.
 - **perf**: Added `MFA_FORCE_SAGE_DECODE=0|1` override and benchmark-backed
@@ -108,13 +350,13 @@ All notable changes to mlx-mfa are documented here.
 - **docs**: Documented Sage as a specialized decode backend (not a universal
   STEEL V2 replacement), including explicit auto-route boundaries and AOT defer
   rationale.
-- **docs**: Added Sage AOT decision note (`notes/sage_decode_productionization_task4_aot.md`);
+- **docs**: Added Sage AOT decision note (`devnotes/sage_decode_productionization_task4_aot.md`);
   broad Sage metallib precompile coverage is deferred in this pass.
 
 ### Runtime Unification Pass (Dense / Paged / Sage / Helpers)
 
 - **notes**: Added runtime-fragmentation inventory and unification targets:
-  `notes/runtime_unification_inventory.md`.
+  `devnotes/runtime_unification_inventory.md`.
 - **feat**: Added lightweight runtime module `mlx_mfa/runtime.py` with
   `DecodeRuntime` + `create_decode_runtime(...)` over existing context classes
   (no kernel-surface expansion).
@@ -124,7 +366,7 @@ All notable changes to mlx-mfa are documented here.
   in shared inference helpers to reduce duplicated runtime-side routing logic.
 - **bench**: Added separate-process microbenchmark
   (`benchmarks/bench_runtime_decode_overhead.py`) with artifact
-  `notes/runtime_unification_overhead_latest.json`; decode-loop path shows
+  `devnotes/runtime_unification_overhead_latest.json`; decode-loop path shows
   no regression (unified/legacy `0.991x` on measured shape).
 - **docs**: Updated runtime architecture notes in README/RESULTS/CHANGELOG.
 
@@ -133,10 +375,10 @@ All notable changes to mlx-mfa are documented here.
 - **bench**: Added dedicated matrix harness
   (`benchmarks/bench_d512_decision_matrix.py`) with per-route subprocess
   isolation for `sdpa`, `mfa_v1`, `mfa_v2_dsplit`, `mfa_v5_optin`, and `auto`.
-  Artifact: `notes/d512_decision_matrix_latest.json`.
+  Artifact: `devnotes/d512_decision_matrix_latest.json`.
 - **bench result**: No benchmark-backed dense D=512 win on M1 Max in this pass
   (`0 maybe-win / 0 no-win / 32 losing`; best MFA/SDPA `0.81x`).
-- **docs/decision**: Added decision note (`notes/d512_decision_pass1.md`) and
+- **docs/decision**: Added decision note (`devnotes/d512_decision_pass1.md`) and
   recorded narrow candidate check (D-split BK override) with no winning regime.
 - **refactor**: Isolated D=512 production-decision logic in dispatch policy and
   C++ dispatch comments to keep large-D family intent explicit.
@@ -152,7 +394,7 @@ All notable changes to mlx-mfa are documented here.
 - **bench**: Added subprocess-isolated runtime matrix
   (`benchmarks/bench_paged_sharedprefix_matrix.py`) for paged decode setup and
   steady-state, shared-prefix reuse, and splitfuse scenarios.
-  Artifact: `notes/paged_sharedprefix_matrix_latest.json`.
+  Artifact: `devnotes/paged_sharedprefix_matrix_latest.json`.
 - **bench result**: Paged decode did not show a stable benchmark-backed auto
   win in this matrix (`paged_step: 0 clear wins, 28 losing`;
   `paged_setup: 10 losing`), so paged remains explicit-only for now.
@@ -166,8 +408,8 @@ All notable changes to mlx-mfa are documented here.
 - **test**: Added runtime tests for paged default-seq behavior, shared-prefix
   flow helpers, splitfuse validation/reuse path, and metadata correctness.
 - **docs**: Added decision notes:
-  - `notes/paged_sharedprefix_productionization_task1.md`
-  - `notes/paged_sharedprefix_productionization_task3_policy.md`
+  - `devnotes/paged_sharedprefix_productionization_task1.md`
+  - `devnotes/paged_sharedprefix_productionization_task3_policy.md`
   and refreshed README/RESULTS scope language.
 
 ### Experimental Path Triage + Selective AOT Evaluation
@@ -175,19 +417,19 @@ All notable changes to mlx-mfa are documented here.
 - **bench**: Added subprocess-isolated triage harness
   (`benchmarks/bench_experimental_triage.py`) to evaluate V3/V4/V5 regimes and
   advanced-kernel cold-start candidates in one matrix artifact:
-  `notes/experimental_path_triage_latest.json`.
-- **notes/decision**: Added explicit keep/park matrix with production-status
+  `devnotes/experimental_path_triage_latest.json`.
+- **devnotes/decision**: Added explicit keep/park matrix with production-status
   recommendations:
-  `notes/experimental_path_status_matrix.md`.
+  `devnotes/experimental_path_status_matrix.md`.
   - V2 remains production default.
   - V3/V5 remain experimental opt-in (narrow wins, mostly losing).
   - V4 remains hardware-specific/experimental and parked on current M1/M2 routing.
-- **bench**: Targeted selective-AOT evaluation (`notes/experimental_aot_evaluation.md`)
+- **bench**: Targeted selective-AOT evaluation (`devnotes/experimental_aot_evaluation.md`)
   compared JIT-only vs precompiled first-call latency for advanced candidates.
 - **docs/decision**: Deferred selective advanced-kernel AOT expansion for this
   pass after measured cold-start regressions on evaluated candidates; keep AOT
   focus on STEEL V2 / V2 D-split until loader/artifact behavior is favorable.
-- **chore**: Notes hygiene check found no stale `notes/` root artifacts older
+- **chore**: Notes hygiene check found no stale `devnotes/` root artifacts older
   than 24h requiring archive moves in this pass.
 - **total**: 698 tests pass.
 

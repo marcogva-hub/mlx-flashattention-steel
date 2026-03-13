@@ -34,6 +34,7 @@ import math
 from typing import Optional
 
 import mlx.core as mx
+from mlx_mfa.kv_cache import adapt_kv_cache
 
 
 __all__ = [
@@ -136,6 +137,11 @@ class InferenceContext:
         if self._cache.seqlen == 0:
             return None
         return self._cache.v
+
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -264,6 +270,55 @@ class InferenceContext:
             stream=self.stream,
         )
 
+    def chunked_prefill(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        chunk_size: int,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        reset: bool = True,
+    ) -> mx.array:
+        """Chunked prefill for long prompts (causal-only in this pass)."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if not causal:
+            raise ValueError(
+                "chunked_prefill currently requires causal=True in this pass"
+            )
+        if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+            raise ValueError("chunked_prefill expects 4-D q/k/v tensors")
+        if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+            raise ValueError("chunked_prefill requires matching batch sizes")
+        if q.shape[2] != k.shape[2] or q.shape[2] != v.shape[2]:
+            raise ValueError("chunked_prefill requires matching sequence lengths")
+
+        if reset:
+            self.reset()
+
+        N = int(q.shape[2])
+        out_chunks = []
+        for s in range(0, N, chunk_size):
+            e = min(N, s + chunk_size)
+            out_chunks.append(
+                self.step(
+                    q[:, :, s:e, :],
+                    k[:, :, s:e, :],
+                    v[:, :, s:e, :],
+                    scale=scale,
+                    softcap=softcap,
+                    window_size=window_size,
+                )
+            )
+        if not out_chunks:
+            B, H_q, _, D = q.shape
+            return mx.zeros((B, H_q, 0, D), dtype=q.dtype)
+        return mx.concatenate(out_chunks, axis=2)
+
     # -- Context manager -----------------------------------------------------
 
     def __enter__(self) -> "InferenceContext":
@@ -343,6 +398,11 @@ class PagedInferenceContext:
     def cache(self):
         """Underlying :class:`~mlx_mfa.attention.PagedKVCache`."""
         return self._cache
+
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
 
     def seq_length(self, seq_id: int = 0) -> int:
         """Current token count for ``seq_id``."""
@@ -454,6 +514,56 @@ class PagedInferenceContext:
             stream=self.stream,
         )
 
+    def chunked_prefill(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        chunk_size: int,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        seq_id: int = 0,
+        reset: bool = True,
+    ) -> mx.array:
+        """Chunked prefill for paged cache lifecycle (causal-only)."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if not causal:
+            raise ValueError(
+                "chunked_prefill currently requires causal=True in this pass"
+            )
+        if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+            raise ValueError("chunked_prefill expects 4-D q/k/v tensors")
+        if q.shape[0] != 1 or k.shape[0] != 1 or v.shape[0] != 1:
+            raise ValueError(
+                "PagedInferenceContext.chunked_prefill currently supports B=1; "
+                "use DecodeRuntime.chunked_prefill for batched paged flows."
+            )
+        if q.shape[2] != k.shape[2] or q.shape[2] != v.shape[2]:
+            raise ValueError("chunked_prefill requires matching sequence lengths")
+
+        if reset:
+            self._cache.reset(seq_id=seq_id)
+
+        N = int(q.shape[2])
+        out_chunks = []
+        for s in range(0, N, chunk_size):
+            e = min(N, s + chunk_size)
+            out_chunks.append(
+                self.step(
+                    q[:, :, s:e, :],
+                    k[:, :, s:e, :],
+                    v[:, :, s:e, :],
+                    scale=scale,
+                    seq_id=seq_id,
+                )
+            )
+        if not out_chunks:
+            B, H_q, _, D = q.shape
+            return mx.zeros((B, H_q, 0, D), dtype=q.dtype)
+        return mx.concatenate(out_chunks, axis=2)
+
     # -- Context manager -----------------------------------------------------
 
     def __enter__(self) -> "PagedInferenceContext":
@@ -525,6 +635,11 @@ class SageInferenceContext:
     def seqlen(self) -> int:
         """Current KV cache fill length."""
         return self._cache.seqlen
+
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
 
     # -- Lifecycle -----------------------------------------------------------
 

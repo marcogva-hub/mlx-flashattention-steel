@@ -1,0 +1,75 @@
+{
+  "version": "2.9.2",
+  "device": {
+    "device_name": "Apple M1 Max",
+    "gpu_family_gen": 13,
+    "is_m3_plus": false,
+    "is_m5_plus": false,
+    "chip_name": "M1",
+    "gpu_cores": 32,
+    "extension_available": true
+  },
+  "timestamp": "2026-03-13 15:37:52",
+  "warmup": 1,
+  "iters": 4,
+  "results": [
+    {
+      "scenario": "dense_cache_append_attention_view",
+      "D": 64,
+      "direct_ms": 1.1857909994432703,
+      "adapter_ms": 0.9176250023301691,
+      "ratio_adapter_vs_direct": 0.7738505375407595
+    },
+    {
+      "scenario": "paged_cache_append_table_view",
+      "D": 64,
+      "direct_ms": 0.4588750016409904,
+      "adapter_ms": 0.8922910055844113,
+      "ratio_adapter_vs_direct": 1.9445186649816941
+    },
+    {
+      "scenario": "dense_runtime_prefill_step",
+      "D": 64,
+      "context_ms": 1.2512919929577038,
+      "runtime_ms": 2.5091249990509823,
+      "ratio_runtime_vs_context": 2.005227407489529
+    },
+    {
+      "scenario": "runtime_prefix_and_speculative",
+      "D": 64,
+      "prefix_runtime_ms": 1.8597089947434142,
+      "spec_runtime_ms": 3.3207910018973053,
+      "spec_helper_ms": 4.332500000600703,
+      "ratio_runtime_spec_vs_helper": 0.7664837856749859
+    },
+    {
+      "scenario": "dense_cache_append_attention_view",
+      "D": 128,
+      "direct_ms": 0.39129098877310753,
+      "adapter_ms": 0.7534580072388053,
+      "ratio_adapter_vs_direct": 1.9255695348397162
+    },
+    {
+      "scenario": "paged_cache_append_table_view",
+      "D": 128,
+      "direct_ms": 1.6459999897051603,
+      "adapter_ms": 0.5276250012684613,
+      "ratio_adapter_vs_direct": 0.3205498205154741
+    },
+    {
+      "scenario": "dense_runtime_prefill_step",
+      "D": 128,
+      "context_ms": 2.2522500075865537,
+      "runtime_ms": 1.6931249992921948,
+      "ratio_runtime_vs_context": 0.7517482489017722
+    },
+    {
+      "scenario": "runtime_prefix_and_speculative",
+      "D": 128,
+      "prefix_runtime_ms": 2.34958301007282,
+      "spec_runtime_ms": 3.234749994589947,
+      "spec_helper_ms": 1.2211670109536499,
+      "ratio_runtime_spec_vs_helper": 2.648900572628328
+    }
+  ]
+}

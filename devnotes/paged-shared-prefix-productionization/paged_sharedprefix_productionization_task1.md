@@ -7,7 +7,7 @@ Command:
 ```bash
 .venv/bin/python benchmarks/bench_paged_sharedprefix_matrix.py \
   --warmup 3 --iters 10 \
-  --output notes/paged_sharedprefix_matrix_latest.json
+  --output devnotes/paged_sharedprefix_matrix_latest.json
 ```
 
 Profile:

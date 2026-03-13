@@ -2,8 +2,8 @@
 
 ## Summary
 
-- Checked `notes/` for stale log/dump artifacts older than 24 hours.
-- No eligible `notes/` root artifacts met the `>24h and no longer needed` threshold in this pass.
+- Checked `devnotes/` for stale log/dump artifacts older than 24 hours.
+- No eligible `devnotes/` root artifacts met the `>24h and no longer needed` threshold in this pass.
 - Existing decision records and latest benchmark artifacts were kept in place.
 - Verified no temporary debug files were introduced by this stabilization run.
 

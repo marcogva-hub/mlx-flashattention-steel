@@ -83,7 +83,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/runtime_unification_overhead_latest.json",
+        default="devnotes/runtime_unification_overhead_latest.json",
     )
     args = parser.parse_args()
 
