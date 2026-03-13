@@ -7,11 +7,12 @@ Conservative principle: only activate MFA when it is EXPECTED to be faster
 than MLX SDPA.  It is always better to route to SDPA (and be ~1.0x) than to
 route to MFA incorrectly (and be 0.5x).
 
-Baseline crossover data (dispatch_matrix.json, 2026-03-10):
-  - D=64  causal  N>=2048: MFA wins (1.06x at 2048, 1.41x at 8192)
-  - D=128 causal  N>=8192: MFA wins (1.25x at 8192)
-  - All non-causal: MFA never wins (best 0.92x at D=64 N=8192)
-  - D=256/512: MFA never wins causal or non-causal
+Baseline crossover data (decision passes through 2026-03-12):
+  - D=64  causal: MFA wins with low-N crossover on current M1/M2 defaults
+  - D=128 causal: MFA wins with low-N crossover on current M1/M2 defaults
+  - D=256 causal: narrow win only for f16 on M1/M2 at long N (>=4096)
+  - D=256 bf16 and all non-causal dense routes remain conservative SDPA
+  - D=512 dense remains conservative SDPA (0/32 wins in decision pass)
 
 Override the dispatch table at runtime::
 

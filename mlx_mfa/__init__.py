@@ -16,10 +16,12 @@ Supported configurations:
     - dtype: float16, bfloat16, float32
     - Shapes: [batch, heads, seq_len, head_dim] (BHND)
     - Causal and non-causal attention
-    - Full autograd support (dQ, dK, dV)
-    - Softcap, ALiBi, dropout, attention weight return (v0.8.0)
-    - STEEL varlen kernel, paged KV cache, packed QKV/KV layouts (v0.9.0)
-    - STEEL native backward kernels for f16/bf16 (v0.9.0, 2-3× speedup)
+    - Full autograd support via SDPA VJP fallback (default)
+    - STEEL V2 production routing for dense causal D=64/128
+    - D=256 narrow benchmark-backed dense causal promotion (M1/M2 f16)
+    - D=512 dense remains SDPA-default in auto mode
+    - SageAttention as a specialized decode backend
+    - Softcap, ALiBi, window, sparse, varlen, and packed QKV/KV layouts
 
 When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.

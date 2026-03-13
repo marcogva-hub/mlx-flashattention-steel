@@ -192,10 +192,10 @@ def flash_attention(
             Mutually exclusive with ``alibi_slopes`` and ``softcap``.
         backend: Backend selection.  One of:
 
-            * ``"auto"`` *(default)*: use the MFA Metal kernel when supported
-              (head_dim ∈ {64,128,256,512}, dtype ∈ {f16,bf16,f32}, extension
-              compiled); fall back to ``mx.fast.scaled_dot_product_attention``
-              otherwise.
+            * ``"auto"`` *(default)*: use benchmark-backed dispatch policy.
+              Dense causal D=64/128 routes to MFA on supported shapes; D=256
+              is a narrow promoted family; dense D=512 and other conservative
+              regimes stay on ``mx.fast.scaled_dot_product_attention``.
             * ``"mfa"``: force the MFA Metal kernel.  Raises ``RuntimeError``
               if the C++ extension is not compiled or the configuration is
               unsupported.
