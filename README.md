@@ -223,6 +223,9 @@ Experimental keep/park recommendations are tracked in
 - **Runtime-managed prefix caching** — register/reuse prefix state through
   `DecodeRuntime.register_prefix(...)`, `seed_prefix(...)`, and
   `prefill_with_prefix(...)` for serving-oriented flows
+- **Runtime-integrated speculative decode** — `DecodeRuntime.speculative_step(...)`
+  provides explicit draft/verify accept-reject bookkeeping over existing
+  `flash_attention_speculative_verify(...)` semantics
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -238,9 +241,10 @@ Experimental keep/park recommendations are tracked in
   debug override via `MFA_FORCE_SPLITK=0|1`
 - **Unified runtime layer** — `DecodeRuntime` / `create_decode_runtime(...)`
   unify dense/paged/Sage decode plus shared-prefix, splitfuse, and
-  speculative-verify helper access from one surface
+  speculative draft/verify helper access from one surface
 - **Runtime metadata** — `DecodeRuntime.metadata` reports selected backend and
-  helper activation (`paged`, `shared_prefix`, `splitfuse`, `speculative_verify`, `sage`)
+  helper activation (`paged`, `shared_prefix`, `splitfuse`,
+  `speculative_verify`, `speculative_step`, `sage`)
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
 
 ---
@@ -358,6 +362,14 @@ out_prefixed = rt.prefill_with_prefix(
 )
 out_p, out_d = rt.splitfuse(None, None, None, qd, kd, vd, use_prepared_prefix=True)
 verify = rt.speculative_verify(q_verify, draft_ids, k_cache=kd, v_cache=vd)
+spec = rt.speculative_step(
+    q_verify,
+    draft_ids,
+    draft_logprobs=draft_logprobs,     # optional
+    accept_logprob_delta=0.0,
+    k_cache=kd,
+    v_cache=vd,
+)
 print(rt.metadata)
 
 # explicit paged runtime
@@ -394,7 +406,7 @@ out_step = rt_paged.paged_step_batch(
 `create_inference_context(...)` remains available as the lower-level
 context factory when direct context access is preferred.
 
-### Advanced runtime usage (shared-prefix / splitfuse / speculative verify)
+### Advanced runtime usage (shared-prefix / splitfuse / speculative flow)
 
 Use `DecodeRuntime` helper methods when decode orchestration would otherwise
 require manual stitching across multiple helper functions:
@@ -403,12 +415,14 @@ require manual stitching across multiple helper functions:
 - `register_prefix(...)` + `seed_prefix(...)` + `prefill_with_prefix(...)`
 - `splitfuse(...)` (optionally with `use_prepared_prefix=True`)
 - `speculative_verify(...)`
+- `speculative_step(...)` (verify + contiguous accepted-prefix bookkeeping)
 
 `DecodeRuntime.metadata` provides a lightweight snapshot of selected backend
 and helper-activation state (`paged`, `sage`, `shared_prefix`, `splitfuse`,
-`speculative_verify`) plus prefix-cache state (`prefix_cache_size`,
+`speculative_verify`, `speculative_step`) plus prefix-cache state (`prefix_cache_size`,
 `registered_prefix_ids`, `active_prefix_id`, `last_prefix_reuse`) and active remap state
-(`active_seq_ids`, `active_cache_batch_idx`) for paged scheduler flows.
+(`active_seq_ids`, `active_cache_batch_idx`) for paged scheduler flows. Latest
+speculative-step metadata is exposed via `last_speculative_step`.
 
 ### SageAttention decode (QuantizedKVCache)
 
@@ -487,6 +501,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Paged continuous batching remap | explicit API/runtime | `cache_batch_idx` in paged APIs or `DecodeRuntime.paged_step_batch/paged_prefill_batch` | Scheduler-friendly request-slot mapping; capability milestone, not broad perf promotion |
 | Chunked prefill | explicit runtime API | `DecodeRuntime.chunked_prefill(...)` | Serving/scheduling capability milestone; monolithic prefill remains faster in current M1 Max matrix |
 | Runtime-managed prefix reuse | explicit runtime API | `register_prefix` + `seed_prefix` + `prefill_with_prefix` | Prefix reuse integrated into runtime surface; strongest gains in paged serving-style flows |
+| Runtime speculative decode | explicit runtime API | `DecodeRuntime.speculative_step(...)` | Draft/verify flow integration milestone; not a full scheduler or broad throughput promotion yet |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

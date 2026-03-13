@@ -406,6 +406,15 @@ Runtime-managed prefix caching is now first-class in `DecodeRuntime`:
 - metadata exposes `prefix_cache_size`, `registered_prefix_ids`,
   `active_prefix_id`, and `last_prefix_reuse` for inspection/debugging
 
+Speculative decode is now runtime-integrated (narrow scope):
+- low-level verify remains available as `flash_attention_speculative_verify(...)`
+- `DecodeRuntime.speculative_step(...)` wraps verify + accept/reject bookkeeping
+  and reports contiguous accepted-prefix lengths and accepted/rejected tails
+- dense runtime cache fallback is supported by default
+- paged runtime fallback is supported for batched layout + `seq_id`
+- this is a serving capability layer, not a full speculative scheduler engine
+  or broad throughput-promotion claim
+
 ---
 
 ## Dispatch System

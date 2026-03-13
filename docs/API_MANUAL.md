@@ -513,12 +513,13 @@ flash_attention_speculative_verify(
     causal: bool = True,
     temperature: float = 1.0,
     stream: Optional[mx.Stream] = None,
-) -> tuple[mx.array, mx.array]  # (target_logprobs, accepted_mask)
+) -> tuple[mx.array, mx.array, mx.array]  # (out, lse, target_logprobs)
 ```
 
 Verify draft tokens from a speculative decoder against the target model's KV
-cache. Returns per-draft-token log-probabilities under the target distribution
-and an acceptance mask (True = accept).
+cache. Returns attention output/LSE for the draft window and per-draft-token
+target log-probability proxy. Acceptance/rejection policy is intentionally left
+to caller/runtime orchestration.
 
 ---
 
@@ -887,6 +888,9 @@ Core methods:
   active-set decode/prefill with explicit remap
 - `paged_varlen(...)` for paged KV + packed varlen queries
 - `prefill_shared_prefix(...)`, `splitfuse(...)`, `speculative_verify(...)`
+- `speculative_step(...)` for runtime-integrated draft/verify bookkeeping
+  (accept mask + contiguous accepted-prefix length + accepted/rejected token
+  partition metadata)
 - `metadata` (backend/cache/query-layout snapshot)
 
 `query_layout` behavior:
@@ -904,6 +908,13 @@ Prefix-caching hints:
 - call `register_prefix(prefix_id, q_pre, k_pre, v_pre, ...)` once
 - call `prefill_with_prefix(..., prefix_id=..., ...)` for suffix requests
 - inspect `DecodeRuntime.metadata["last_prefix_reuse"]` for debug visibility
+
+Speculative-flow hints:
+- use `speculative_verify(...)` for low-level verify outputs only
+- use `speculative_step(...)` when you want runtime-managed accept/reject
+  bookkeeping
+- paged runtime fallback is currently batched-layout only (`query_layout=\"batched\"`);
+  packed-query speculative verify/step requires explicit cache tensors
 
 ---
 

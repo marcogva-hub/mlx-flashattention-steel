@@ -3,7 +3,7 @@
 **Device**: Apple M1 Max (32 GPU cores, gen 13, M3+: False)
 **MLX version**: 0.31.0
 **mlx-mfa version**: 2.9.2
-**Date**: 2026-03-12
+**Date**: 2026-03-13
 **Config**: B=2 H=8 f16, warmup=8, iters=20
 
 ---
@@ -125,6 +125,32 @@ Interpretation:
 - Paged serving-style flows show clear gains vs no-reuse baseline.
 - Dense rows in this setup remain dominated by chunked suffix overhead, so the
   main win there is cleaner runtime integration rather than raw speedup.
+
+---
+
+## Runtime-Integrated Speculative Decode
+
+Matrix script: `benchmarks/bench_speculative_decode_runtime.py`  
+Artifact: `notes/speculative_decode_runtime_matrix_latest.json`
+
+| Scenario | Mode | manual helper ms | runtime `speculative_step` ms | manual/runtime |
+|---|---|---:|---:|---:|
+| dense_short (D=64, cache=1024, N_draft=4) | full_accept | 1.219 | 1.342 | 0.91× |
+| dense_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.157 | 1.159 | 1.00× |
+| dense_short (D=64, cache=1024, N_draft=4) | reject_all | 2.718 | 2.456 | 1.11× |
+| dense_micro (D=128, cache=2048, N_draft=8) | full_accept | 2.872 | 1.527 | 1.88× |
+| dense_micro (D=128, cache=2048, N_draft=8) | partial_accept | 1.478 | 2.580 | 0.57× |
+| dense_micro (D=128, cache=2048, N_draft=8) | reject_all | 1.358 | 1.336 | 1.02× |
+| paged_short (D=64, cache=1024, N_draft=4) | full_accept | 1.284 | 1.350 | 0.95× |
+| paged_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.094 | 1.377 | 0.79× |
+| paged_short (D=64, cache=1024, N_draft=4) | reject_all | 1.059 | 1.363 | 0.78× |
+
+Interpretation:
+- This pass is a runtime capability milestone for draft/verify orchestration.
+- Manual and runtime-integrated paths match acceptance outputs in all measured
+  rows.
+- Performance deltas are mixed; this matrix supports integration clarity, not
+  a broad throughput-promotion claim.
 
 ---
 

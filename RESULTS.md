@@ -3,7 +3,7 @@
 **Device**: Apple M1 Max (32 GPU cores, gen 13, M3+: False)
 **MLX version**: 0.31.0
 **mlx-mfa version**: 2.9.2
-**Date**: 2026-03-12
+**Date**: 2026-03-13
 **Config**: B=2 H=8 f16, warmup=8, iters=20
 
 ---
@@ -20,6 +20,8 @@
   bridge (`flash_attention_paged_varlen`, `DecodeRuntime(..., query_layout="packed")`).
 - **Paged continuous batching remap** is now supported via explicit API/runtime
   mapping (`cache_batch_idx` in paged APIs; runtime batched paged remap helpers).
+- **Speculative decode runtime flow** is now supported via explicit runtime API
+  (`DecodeRuntime.speculative_step`) with dense default and narrow paged-cache integration.
 - **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
 
 ---
@@ -326,6 +328,50 @@ Interpretation:
   orchestration (`max_err_runtime_vs_explicit = 0.0` in all rows).
 - Paged serving-style rows show clear benefit vs no-reuse baseline; dense rows
   remain dominated by chunking overhead in this specific configuration.
+
+---
+
+## Speculative Decode Runtime Integration (v2.9.2, serving-oriented)
+
+Scope in this pass:
+- Added explicit runtime API:
+  - `DecodeRuntime.speculative_step(...)`
+- Preserved low-level helper:
+  - `flash_attention_speculative_verify(...)`
+- Added paged runtime support for verify/step when using batched layout and
+  cache state for a specific `seq_id` (or explicit dense caches).
+- Added runtime metadata fields:
+  - `speculative_step_active`
+  - `last_speculative_step`
+
+Correctness coverage:
+- full accept / partial accept / reject-all behavior
+- accepted-prefix and rejected-tail bookkeeping
+- dense and paged runtime-cache integration paths
+- unsupported combinations (e.g. packed-query paged verify fallback) error clearly
+
+Benchmark matrix (M1 Max, f16, separate process):
+- script: `benchmarks/bench_speculative_decode_runtime.py`
+- artifact: `notes/speculative_decode_runtime_matrix_latest.json`
+
+| Scenario | Mode | manual helper flow ms | runtime speculative-step ms | manual/runtime |
+|---|---|---:|---:|---:|
+| dense_short (D=64, cache=1024, N_draft=4) | full_accept | 1.219 | 1.342 | 0.91× |
+| dense_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.157 | 1.159 | 1.00× |
+| dense_short (D=64, cache=1024, N_draft=4) | reject_all | 2.718 | 2.456 | 1.11× |
+| dense_micro (D=128, cache=2048, N_draft=8) | full_accept | 2.872 | 1.527 | 1.88× |
+| dense_micro (D=128, cache=2048, N_draft=8) | partial_accept | 1.478 | 2.580 | 0.57× |
+| dense_micro (D=128, cache=2048, N_draft=8) | reject_all | 1.358 | 1.336 | 1.02× |
+| paged_short (D=64, cache=1024, N_draft=4) | full_accept | 1.284 | 1.350 | 0.95× |
+| paged_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.094 | 1.377 | 0.79× |
+| paged_short (D=64, cache=1024, N_draft=4) | reject_all | 1.059 | 1.363 | 0.78× |
+
+Interpretation:
+- This is a **runtime capability milestone** (draft/verify integration and
+  inspectable acceptance metadata), not a broad throughput-promotion claim.
+- Runtime and manual helper flows match acceptance outputs in all measured rows.
+- Performance deltas are mixed and small-to-moderate; no auto-promotion policy
+  change is warranted from this matrix alone.
 
 ---
 

@@ -112,6 +112,36 @@ All notable changes to mlx-mfa are documented here.
   wins vs no-reuse baseline, while dense rows remain largely integration/flow
   wins under current chunked settings.
 
+### Speculative Decode Runtime Pass (Draft/Verify Integration)
+
+- **notes**: Added speculative runtime design note:
+  `notes/speculative_decode_design.md`.
+- **feat**: Added runtime-level speculative API:
+  - `DecodeRuntime.speculative_step(...)`
+  which wraps verify and returns explicit accept/reject bookkeeping
+  (`accept_mask`, `accepted_prefix_lens`, `accepted_ids`, `rejected_ids`).
+- **feat**: Integrated speculative verify/step with supported runtime-cache
+  flows:
+  - dense runtime cache fallback (existing),
+  - paged runtime cache fallback for batched layout + `seq_id`
+    (new narrow support),
+  while preserving explicit-cache override behavior.
+- **feat**: Extended runtime metadata with:
+  - `speculative_step_active`
+  - `last_speculative_step`
+- **test**: Added speculative runtime coverage for full/partial/reject paths,
+  paged runtime-cache integration, invalid combinations, metadata signaling,
+  and output alignment bookkeeping.
+- **bench**: Added focused matrix harness
+  (`benchmarks/bench_speculative_decode_runtime.py`) with artifact
+  (`notes/speculative_decode_runtime_matrix_latest.json`) comparing manual
+  helper orchestration vs runtime-integrated speculative flow.
+- **bench result**: Capability milestone confirmed (correctness + integration);
+  measured deltas are mixed, so this pass does not claim broad throughput
+  promotion.
+- **docs**: Updated README/RESULTS/API manual/benchmark docs to document
+  supported speculative runtime paths and limitations.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix
