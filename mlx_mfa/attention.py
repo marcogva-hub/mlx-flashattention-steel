@@ -1669,14 +1669,13 @@ def flash_attention_kvcache(
                         Used as the RoPE offset for Q.  Typically ``past_len``.
         interleaved:    RoPE pairing mode: ``True`` = LLaMA (default), ``False``
                         = GPT-NeoX split-halves.
-        cache_batch_idx: ``int32 [B]`` — optional batch→cache-pool index for
-                        continuous batching.  When provided, ``k_cache`` and
-                        ``v_cache`` are treated as a *pool* of shape
-                        ``[pool_size, H_kv, S, D]`` (or compatible), and row
-                        ``i`` of the logical batch selects
-                        ``k_cache[cache_batch_idx[i]]``.  Allows multiple
-                        logical requests to share a single large cache tensor
-                        without copying.  Dense mode only.
+        cache_batch_idx: ``int32 [B]`` — optional batch→cache-pool row remap
+                        for continuous batching.  Dense mode uses this to
+                        select rows from ``k_cache``/``v_cache`` pools.  Paged
+                        mode uses this to remap rows from
+                        ``block_table``/``seq_lens`` before dispatch.
+                        Paged append (`k_new/v_new` + `block_table`) remains
+                        unsupported with ``cache_batch_idx``.
         stream:         MLX stream.
 
     **Cross-attention** (encoder–decoder, Q from decoder, K/V from encoder)::
@@ -1992,8 +1991,16 @@ def flash_attention_kvcache(
             )
 
         return flash_attention_paged(
-            q_att, k_cache, v_cache, block_table, seq_lens,
-            scale=scale, causal=causal, block_size=block_size, stream=stream,
+            q_att,
+            k_cache,
+            v_cache,
+            block_table,
+            seq_lens,
+            scale=scale,
+            causal=causal,
+            block_size=block_size,
+            cache_batch_idx=cache_batch_idx,
+            stream=stream,
         )
 
     # ----------------------------------------------------------------
@@ -4381,6 +4388,7 @@ def flash_attention_paged(
     scale: Optional[float] = None,
     causal: bool = False,
     block_size: int = 16,
+    cache_batch_idx: Optional["mx.array"] = None,
     stream: Optional["mx.StreamOrDevice"] = None,
 ) -> "mx.array":
     """Paged KV cache attention with Metal gather kernel.
@@ -4403,6 +4411,9 @@ def flash_attention_paged(
         scale:        Attention scale.  Default ``1/sqrt(D)``.
         causal:       Apply causal mask within each sequence.
         block_size:   Tokens per page (must match pool layout).
+        cache_batch_idx: Optional ``int32 [B_active]`` row-remap over
+                      ``block_table`` / ``seq_lens`` for continuous batching.
+                      When set, output batch rows follow this remapped order.
         stream:       MLX stream/device.
 
     Returns:
@@ -4424,9 +4435,33 @@ def flash_attention_paged(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
+    bt_eff = block_table
+    sl_eff = seq_lens
+    if cache_batch_idx is not None:
+        if cache_batch_idx.ndim != 1:
+            raise ValueError(
+                "flash_attention_paged: cache_batch_idx must be 1-D [B_active]"
+            )
+        if cache_batch_idx.shape[0] != B:
+            raise ValueError(
+                "flash_attention_paged: cache_batch_idx length must match "
+                f"q batch size (got {cache_batch_idx.shape[0]} vs {B})"
+            )
+        idx = [int(x) for x in cache_batch_idx.tolist()]
+        max_rows = block_table.shape[0]
+        for i in idx:
+            if i < 0 or i >= max_rows:
+                raise ValueError(
+                    "flash_attention_paged: cache_batch_idx contains out-of-range "
+                    f"slot {i} for block_table batch size {max_rows}"
+                )
+        idx_arr = mx.array(idx, dtype=mx.int32)
+        bt_eff = block_table[idx_arr]
+        sl_eff = seq_lens[idx_arr]
+
     # Materialise index data as Python scalars — transparent to autograd.
-    seq_lens_list = [int(x) for x in seq_lens.tolist()]  # GPU sync: paged backward slicing
-    block_table_list = block_table.tolist()  # GPU sync: paged backward block scatter
+    seq_lens_list = [int(x) for x in sl_eff.tolist()]  # GPU sync: paged backward slicing
+    block_table_list = bt_eff.tolist()  # GPU sync: paged backward block scatter
     max_kv_len = max(seq_lens_list) if seq_lens_list else 0
 
     if max_kv_len == 0:
@@ -4500,8 +4535,8 @@ def flash_attention_paged(
         """Gather pool pages → contiguous [B, H_kv, max_kv_len, D]."""
         if _ext_available() and k_p.dtype in (mx.float16, mx.bfloat16):
             from mlx_mfa._ext import mfa_paged_kv_gather
-            K = mfa_paged_kv_gather(k_p, block_table, seq_lens, max_kv_len)
-            V = mfa_paged_kv_gather(v_p, block_table, seq_lens, max_kv_len)
+            K = mfa_paged_kv_gather(k_p, bt_eff, sl_eff, max_kv_len)
+            V = mfa_paged_kv_gather(v_p, bt_eff, sl_eff, max_kv_len)
             return K, V
         # H.3: Advanced-indexing fallback gather (all dtypes).
         # Gather all blocks per-batch in one mx.take op, eliminating the
@@ -4627,7 +4662,7 @@ def flash_attention_paged(
         @mx.custom_function
         def _paged_steel_impl(q_, k_pages_, v_pages_):
             O, _L = _raw_paged_steel(
-                q_, k_pages_, v_pages_, block_table, seq_lens,
+                q_, k_pages_, v_pages_, bt_eff, sl_eff,
                 scale=scale, causal=causal,
                 window_left=-1, block_size=block_size)
             return O
@@ -4679,6 +4714,7 @@ def flash_attention_paged_varlen(
     scale: Optional[float] = None,
     causal: bool = False,
     block_size: int = 16,
+    cache_batch_idx: Optional["mx.array"] = None,
     stream: Optional["mx.StreamOrDevice"] = None,
 ) -> "mx.array":
     """Paged KV attention for packed variable-length queries.
@@ -4713,6 +4749,9 @@ def flash_attention_paged_varlen(
         scale: Attention scale (default ``1/sqrt(D)``).
         causal: Causal masking.
         block_size: Tokens per page (must match pool layout).
+        cache_batch_idx: Optional ``int32 [B_active]`` row remap over
+            ``block_table`` / ``seq_lens_kv`` for scheduler-style active-order
+            dispatch.
         stream: MLX stream/device.
 
     Returns:
@@ -4737,12 +4776,34 @@ def flash_attention_paged_varlen(
             "flash_attention_paged_varlen: cu_seqlens_q must be 1-D [B+1]"
         )
 
-    B = block_table.shape[0]
-    if seq_lens_kv.shape[0] != B:
+    base_B = block_table.shape[0]
+    if seq_lens_kv.shape[0] != base_B:
         raise ValueError(
             "flash_attention_paged_varlen: seq_lens_kv length must match "
-            f"block_table batch size (got {seq_lens_kv.shape[0]} vs {B})"
+            f"block_table batch size (got {seq_lens_kv.shape[0]} vs {base_B})"
         )
+
+    bt_eff = block_table
+    sl_eff = seq_lens_kv
+    if cache_batch_idx is not None:
+        if cache_batch_idx.ndim != 1:
+            raise ValueError(
+                "flash_attention_paged_varlen: cache_batch_idx must be 1-D [B_active]"
+            )
+        idx = [int(x) for x in cache_batch_idx.tolist()]
+        for i in idx:
+            if i < 0 or i >= base_B:
+                raise ValueError(
+                    "flash_attention_paged_varlen: cache_batch_idx contains out-of-range "
+                    f"slot {i} for block_table batch size {base_B}"
+                )
+        idx_arr = mx.array(idx, dtype=mx.int32)
+        bt_eff = block_table[idx_arr]
+        sl_eff = seq_lens_kv[idx_arr]
+        B = len(idx)
+    else:
+        B = base_B
+
     if cu_seqlens_q.shape[0] != B + 1:
         raise ValueError(
             "flash_attention_paged_varlen: cu_seqlens_q must have shape [B+1] "
@@ -4773,7 +4834,7 @@ def flash_attention_paged_varlen(
                 "flash_attention_paged_varlen: cu_seqlens_q must be non-decreasing"
             )
         q_lens.append(qe - qs)
-    seq_lens_list = [int(x) for x in seq_lens_kv.tolist()]
+    seq_lens_list = [int(x) for x in sl_eff.tolist()]
     if any(kv_len < 0 for kv_len in seq_lens_list):
         raise ValueError("flash_attention_paged_varlen: seq_lens_kv must be non-negative")
 
@@ -4797,8 +4858,8 @@ def flash_attention_paged_varlen(
             q_batched,
             k_pages,
             v_pages,
-            block_table,
-            seq_lens_kv,
+            bt_eff,
+            sl_eff,
             scale=scale,
             causal=causal,
             block_size=block_size,
@@ -4819,8 +4880,8 @@ def flash_attention_paged_varlen(
             q[:, :, qs:qe, :],
             k_pages,
             v_pages,
-            block_table[i : i + 1, :],
-            seq_lens_kv[i : i + 1],
+            bt_eff[i : i + 1, :],
+            sl_eff[i : i + 1],
             scale=scale,
             causal=causal,
             block_size=block_size,
