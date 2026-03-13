@@ -7,7 +7,7 @@ without rewriting application-side selection logic.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Literal
 
 import mlx.core as mx
 
@@ -27,6 +27,8 @@ __all__ = [
     "DecodeRuntime",
     "create_decode_runtime",
 ]
+
+DecodeBackend = Literal["auto", "dense", "paged", "sage"]
 
 
 class DecodeRuntime:
@@ -161,7 +163,7 @@ class DecodeRuntime:
         return make_shared_prefix_cache(prefix_q, prefix_k, prefix_v, **kwargs)
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> dict[str, object]:
         """Lightweight runtime-selection and helper-activation metadata."""
         return {
             "backend": self.backend,
@@ -174,6 +176,11 @@ class DecodeRuntime:
             "speculative_verify_active": self._speculative_verify_used,
             "default_seq_id": self.default_seq_id,
         }
+
+    @property
+    def context_class(self) -> str:
+        """Return the concrete wrapped context class name."""
+        return type(self.context).__name__
 
     def splitfuse(
         self,
@@ -293,7 +300,7 @@ class DecodeRuntime:
 
 def create_decode_runtime(
     *,
-    backend: str = "auto",
+    backend: DecodeBackend = "auto",
     paged: bool = False,
     quantized_kv: bool = False,
     B: Optional[int] = None,

@@ -44,7 +44,7 @@ __all__ = [
 ]
 
 
-def _context_backend_name(context) -> str:
+def _context_backend_name(context: object) -> str:
     """Return canonical backend name for a context instance."""
     if isinstance(context, PagedInferenceContext):
         return "paged"
@@ -739,7 +739,7 @@ def _build_inference_context(
     block_size: int,
     dtype: mx.Dtype,
     stream: Optional[mx.Stream],
-):
+) -> "InferenceContext | PagedInferenceContext | SageInferenceContext":
     """Instantiate an inference context from a resolved mode."""
     if mode == "dense":
         if B is None:
@@ -798,7 +798,7 @@ def create_inference_context(
     block_size: int = 16,
     dtype: mx.Dtype = mx.float16,
     stream: Optional[mx.Stream] = None,
-):
+) -> "InferenceContext | PagedInferenceContext | SageInferenceContext":
     """Create a decode context for dense, paged, or Sage backends.
 
     Routing policy:
@@ -806,6 +806,14 @@ def create_inference_context(
       - ``backend="paged"``: :class:`PagedInferenceContext`
       - ``backend="sage"``:  :class:`SageInferenceContext`
       - ``backend="dense"``: :class:`InferenceContext`
+
+    Notes:
+      - ``backend="sage"`` is explicit-only here and does not require
+        ``quantized_kv=True``; this preserves backward-compatible behavior for
+        callers that manage Sage constraints themselves.
+      - For stricter runtime validation (including ``backend="sage"``
+        requiring quantized KV intent), use
+        :func:`mlx_mfa.runtime.create_decode_runtime`.
     """
     mode, _requested_mode = _resolve_inference_context_mode(
         backend=backend,
