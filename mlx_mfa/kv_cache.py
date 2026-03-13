@@ -669,6 +669,14 @@ class HybridKVCache:
         sid = int(seq_id)
         self._demote_seq(sid, reason="offload_seq")
 
+    def reload_seq(self, seq_id: int, *, reason: str = "manual_reload") -> None:
+        sid = int(seq_id)
+        tier = self._residency.get(sid)
+        if tier == "offloaded":
+            self._reload_offloaded_seq(sid, reason=reason)
+            return
+        self._ensure_hot(sid, reason=reason)
+
     def prefetch_seq(self, seq_id: int, *, reason: str = "manual") -> None:
         sid = int(seq_id)
         self.mark_for_prefetch(sid, reason=reason)

@@ -502,6 +502,12 @@ class TestCacheAbstractionRuntimeFlows:
         assert st["residency_map"][0] == "offloaded"
         assert st["has_external_offload"] is True
 
+        rt.hybrid_reload([0], pin=True, reason="unit-reload")
+        st_reload = rt.hybrid_state
+        assert st_reload is not None
+        assert st_reload["residency_map"][0] == "hot"
+        assert st_reload["pinned_seq_ids"] == (0,)
+
         q1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
         k1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
         v1 = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)

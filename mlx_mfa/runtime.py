@@ -199,7 +199,17 @@ class DecodeRuntime:
         pin: bool = False,
         reason: str = "runtime_reload",
     ) -> tuple[int, ...]:
-        return self.hybrid_prefetch(seq_ids, pin=pin, reason=reason)
+        h = self._hybrid_cache()
+        if h is None:
+            raise ValueError("hybrid_reload requires hybrid cache mode")
+        loaded: list[int] = []
+        for sid in seq_ids:
+            h.reload_seq(int(sid), reason=reason)
+            loaded.append(int(sid))
+        if pin:
+            for sid in loaded:
+                h.mark_pinned(int(sid), pinned=True)
+        return tuple(loaded)
 
     @staticmethod
     def _normalize_cache_batch_idx(
