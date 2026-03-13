@@ -83,6 +83,35 @@ All notable changes to mlx-mfa are documented here.
   monolithic prefill remains faster in current M1 Max measurements, while
   chunked prefill provides explicit interleavable scheduling units.
 
+### Prefix Caching Automation (Runtime-Integrated)
+
+- **notes**: Added runtime semantics/design note:
+  `notes/prefix_caching_design.md`.
+- **feat**: Added runtime-managed prefix layer to `DecodeRuntime`:
+  - `register_prefix(...)`
+  - `list_registered_prefix_ids()`
+  - `seed_prefix(...)`
+  - `drop_prefix(...)`
+  - `clear_registered_prefixes()`
+- **feat**: Added prefix-aware runtime integration helper:
+  - `prefill_with_prefix(...)`
+  which seeds registered prefix state and routes suffix processing through
+  `chunked_prefill(..., reset=False)` for serving-style flows.
+- **feat**: Extended runtime metadata with prefix-cache visibility:
+  `prefix_cache_size`, `registered_prefix_ids`, `active_prefix_id`,
+  and `last_prefix_reuse`.
+- **test**: Added runtime-integrated prefix caching coverage for dense, paged
+  batched, paged packed (single-seq), chunked integration, invalid
+  combinations, and metadata state.
+- **bench**: Added benchmark matrix harness
+  (`benchmarks/bench_prefix_caching_runtime.py`) with artifact
+  (`notes/prefix_caching_runtime_matrix_latest.json`) comparing:
+  no-reuse baseline vs explicit helper path vs runtime-managed path.
+- **bench result**: Runtime-managed prefix path matches explicit helper
+  correctness and is near parity in cost; paged serving-style rows show clear
+  wins vs no-reuse baseline, while dense rows remain largely integration/flow
+  wins under current chunked settings.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix

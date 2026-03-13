@@ -106,6 +106,28 @@ Interpretation:
 
 ---
 
+## Runtime-Integrated Prefix Caching
+
+Matrix script: `benchmarks/bench_prefix_caching_runtime.py`  
+Artifact: `notes/prefix_caching_runtime_matrix_latest.json`
+
+| Scenario | D | no-reuse ms | explicit-helper ms | runtime-managed ms | no-reuse/runtime |
+|---|---:|---:|---:|---:|---:|
+| dense prefix reuse chunked | 64 | 3.665 | 8.256 | 7.770 | 0.47× |
+| dense prefix reuse chunked | 128 | 2.800 | 7.946 | 8.330 | 0.34× |
+| paged prefix reuse chunked | 64 | 37.378 | 19.786 | 20.077 | 1.86× |
+| paged prefix reuse chunked | 128 | 41.764 | 33.913 | 34.028 | 1.23× |
+
+Interpretation:
+- Runtime-managed prefix path tracks explicit helper orchestration closely
+  (`max_err_runtime_vs_explicit = 0.0` in this matrix) while reducing runtime
+  orchestration fragmentation.
+- Paged serving-style flows show clear gains vs no-reuse baseline.
+- Dense rows in this setup remain dominated by chunked suffix overhead, so the
+  main win there is cleaner runtime integration rather than raw speedup.
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

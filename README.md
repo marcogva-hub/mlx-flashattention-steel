@@ -220,6 +220,9 @@ Experimental keep/park recommendations are tracked in
   paged APIs plus batched paged runtime remap helpers
 - **Chunked prefill** — explicit `DecodeRuntime.chunked_prefill(...)` for
   splitting long causal prefills into interleavable cache-updating chunks
+- **Runtime-managed prefix caching** — register/reuse prefix state through
+  `DecodeRuntime.register_prefix(...)`, `seed_prefix(...)`, and
+  `prefill_with_prefix(...)` for serving-oriented flows
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -345,6 +348,14 @@ out_chunked = rt.chunked_prefill(
 
 # helper access from the same runtime surface
 prefix_out, kp, vp = rt.prefill_shared_prefix(q_pre, k_pre, v_pre)
+rt.register_prefix("shared_prompt", q_pre, k_pre, v_pre, scale=scale)
+out_prefixed = rt.prefill_with_prefix(
+    q_suf, k_suf, v_suf,
+    prefix_id="shared_prompt",
+    chunk_size=128,
+    scale=scale,
+    causal=True,
+)
 out_p, out_d = rt.splitfuse(None, None, None, qd, kd, vd, use_prepared_prefix=True)
 verify = rt.speculative_verify(q_verify, draft_ids, k_cache=kd, v_cache=vd)
 print(rt.metadata)
@@ -389,12 +400,14 @@ Use `DecodeRuntime` helper methods when decode orchestration would otherwise
 require manual stitching across multiple helper functions:
 
 - `prefill_shared_prefix(...)` + `decode_from_shared_prefix(...)`
+- `register_prefix(...)` + `seed_prefix(...)` + `prefill_with_prefix(...)`
 - `splitfuse(...)` (optionally with `use_prepared_prefix=True`)
 - `speculative_verify(...)`
 
 `DecodeRuntime.metadata` provides a lightweight snapshot of selected backend
 and helper-activation state (`paged`, `sage`, `shared_prefix`, `splitfuse`,
-`speculative_verify`) plus active remap state
+`speculative_verify`) plus prefix-cache state (`prefix_cache_size`,
+`registered_prefix_ids`, `active_prefix_id`, `last_prefix_reuse`) and active remap state
 (`active_seq_ids`, `active_cache_batch_idx`) for paged scheduler flows.
 
 ### SageAttention decode (QuantizedKVCache)
@@ -473,6 +486,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Paged + packed varlen query | explicit API/runtime | `flash_attention_paged_varlen` or `DecodeRuntime(..., query_layout="packed")` | Correct bridge path for hetero query lengths; not a fully fused kernel yet |
 | Paged continuous batching remap | explicit API/runtime | `cache_batch_idx` in paged APIs or `DecodeRuntime.paged_step_batch/paged_prefill_batch` | Scheduler-friendly request-slot mapping; capability milestone, not broad perf promotion |
 | Chunked prefill | explicit runtime API | `DecodeRuntime.chunked_prefill(...)` | Serving/scheduling capability milestone; monolithic prefill remains faster in current M1 Max matrix |
+| Runtime-managed prefix reuse | explicit runtime API | `register_prefix` + `seed_prefix` + `prefill_with_prefix` | Prefix reuse integrated into runtime surface; strongest gains in paged serving-style flows |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

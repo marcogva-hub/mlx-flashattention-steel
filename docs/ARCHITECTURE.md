@@ -398,6 +398,14 @@ Chunked prefill is now explicit at runtime level:
 - Designed for serving/scheduler interleaving (chunk boundaries), not as a
   guaranteed throughput win over monolithic prefill on current M1 Max data.
 
+Runtime-managed prefix caching is now first-class in `DecodeRuntime`:
+- `register_prefix(...)` stores reusable shared-prefix state by `prefix_id`
+- `seed_prefix(...)` seeds runtime cache from registered prefix state
+- `prefill_with_prefix(...)` seeds prefix then routes suffix through existing
+  chunked prefill flow (`reset=False`) for explicit serving integration
+- metadata exposes `prefix_cache_size`, `registered_prefix_ids`,
+  `active_prefix_id`, and `last_prefix_reuse` for inspection/debugging
+
 ---
 
 ## Dispatch System

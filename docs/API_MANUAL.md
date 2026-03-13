@@ -881,6 +881,8 @@ create_decode_runtime(
 Core methods:
 - `prefill(...)` / `step(...)` / `reset(...)` for batched query layout
 - `chunked_prefill(...)` for explicit chunked causal prefill scheduling
+- `register_prefix(...)` / `seed_prefix(...)` / `prefill_with_prefix(...)`
+  for runtime-managed prefix reuse
 - `paged_prefill_batch(...)` / `paged_step_batch(...)` for scheduler-style
   active-set decode/prefill with explicit remap
 - `paged_varlen(...)` for paged KV + packed varlen queries
@@ -897,6 +899,11 @@ Continuous batching hints:
 - pass `seq_ids=[slot0, slot1, ...]` for stable slot ordering
 - pass `cache_batch_idx` to express the current active-order projection
   over that slot list
+
+Prefix-caching hints:
+- call `register_prefix(prefix_id, q_pre, k_pre, v_pre, ...)` once
+- call `prefill_with_prefix(..., prefix_id=..., ...)` for suffix requests
+- inspect `DecodeRuntime.metadata["last_prefix_reuse"]` for debug visibility
 
 ---
 

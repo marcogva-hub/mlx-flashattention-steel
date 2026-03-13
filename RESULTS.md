@@ -296,6 +296,39 @@ Interpretation:
 
 ---
 
+## Runtime-Integrated Prefix Caching (v2.9.2)
+
+Scope in this pass:
+- Added runtime-managed prefix registry and reuse APIs in `DecodeRuntime`:
+  - `register_prefix(...)`
+  - `seed_prefix(...)`
+  - `prefill_with_prefix(...)`
+- Prefix metadata is now visible in runtime state (`prefix_cache_size`,
+  `registered_prefix_ids`, `active_prefix_id`, `last_prefix_reuse`).
+- Existing helper paths remain compatible (`prefill_shared_prefix`,
+  `decode_from_shared_prefix`, `splitfuse`).
+
+Benchmark matrix (M1 Max, f16):
+- script: `benchmarks/bench_prefix_caching_runtime.py`
+- artifact: `notes/prefix_caching_runtime_matrix_latest.json`
+
+| Scenario | D | no-reuse ms | explicit-helper ms | runtime-managed ms | no-reuse/runtime |
+|---|---:|---:|---:|---:|---:|
+| dense prefix reuse chunked | 64 | 3.665 | 8.256 | 7.770 | 0.47× |
+| dense prefix reuse chunked | 128 | 2.800 | 7.946 | 8.330 | 0.34× |
+| paged prefix reuse chunked | 64 | 37.378 | 19.786 | 20.077 | 1.86× |
+| paged prefix reuse chunked | 128 | 41.764 | 33.913 | 34.028 | 1.23× |
+
+Interpretation:
+- Runtime-managed prefix reuse is primarily an integration/operability win
+  (first-class runtime-managed reuse with metadata and cleaner flow control).
+- In this matrix, runtime-managed path closely tracks explicit helper/manual
+  orchestration (`max_err_runtime_vs_explicit = 0.0` in all rows).
+- Paged serving-style rows show clear benefit vs no-reuse baseline; dense rows
+  remain dominated by chunking overhead in this specific configuration.
+
+---
+
 ## Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
 
 Primary artifact: `notes/experimental_path_triage_latest.json`  
