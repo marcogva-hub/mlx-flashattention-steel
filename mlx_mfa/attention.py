@@ -4773,6 +4773,9 @@ def flash_attention_paged_varlen(
                 "flash_attention_paged_varlen: cu_seqlens_q must be non-decreasing"
             )
         q_lens.append(qe - qs)
+    seq_lens_list = [int(x) for x in seq_lens_kv.tolist()]
+    if any(kv_len < 0 for kv_len in seq_lens_list):
+        raise ValueError("flash_attention_paged_varlen: seq_lens_kv must be non-negative")
 
     if max_seqlen_q is not None and q_lens:
         if max(q_lens) > max_seqlen_q:
@@ -4808,6 +4811,9 @@ def flash_attention_paged_varlen(
     for i in range(B):
         qs, qe = cu_q[i], cu_q[i + 1]
         if qe == qs:
+            continue
+        if seq_lens_list[i] == 0:
+            out_parts.append(mx.zeros((1, H_q, qe - qs, D), dtype=q.dtype))
             continue
         out_i = flash_attention_paged(
             q[:, :, qs:qe, :],
