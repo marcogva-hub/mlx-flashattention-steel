@@ -8092,7 +8092,7 @@ class TestDecodeRuntimeFactory:
         assert lp.shape == (1, 2)
         assert rt.metadata["speculative_verify_active"] is True
 
-    def test_speculative_verify_invalid_backend_without_explicit_cache(self):
+    def test_speculative_verify_empty_paged_cache_without_explicit_cache(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
             backend="paged",
@@ -8106,7 +8106,7 @@ class TestDecodeRuntimeFactory:
         )
         q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
         draft_ids = mx.zeros((1, 2), dtype=mx.int32)
-        with pytest.raises(ValueError, match="requires dense backend runtime"):
+        with pytest.raises(ValueError, match="paged runtime cache is empty"):
             rt.speculative_verify(q_target, draft_ids)
 
     def test_speculative_verify_accepts_explicit_cache(self):

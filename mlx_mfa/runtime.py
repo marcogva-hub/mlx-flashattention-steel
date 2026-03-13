@@ -1083,7 +1083,9 @@ class DecodeRuntime:
         """Expose flash_attention_speculative_verify() through runtime.
 
         If ``k_cache``/``v_cache`` are omitted, dense runtime uses its own
-        internal cache. Other backends must pass explicit dense caches.
+        internal cache. Paged runtime can also source cache by ``seq_id`` for
+        batched-layout single-sequence verify. Other combinations must pass
+        explicit dense cache tensors.
         """
         if (k_cache is None) != (v_cache is None):
             raise ValueError(
@@ -1091,17 +1093,42 @@ class DecodeRuntime:
             )
 
         if k_cache is None:
-            if self.backend != "dense":
+            if self.backend == "dense":
+                k_cache = self.context.k_cache
+                v_cache = self.context.v_cache
+                if k_cache is None or v_cache is None:
+                    raise ValueError(
+                        "speculative_verify: dense runtime cache is empty; run prefill/step "
+                        "first or pass explicit k_cache/v_cache"
+                    )
+            elif self.backend == "paged":
+                if self.query_layout != "batched":
+                    raise ValueError(
+                        "speculative_verify paged runtime fallback requires "
+                        "query_layout='batched'"
+                    )
+                if int(q_target.shape[0]) != 1:
+                    raise ValueError(
+                        "speculative_verify paged runtime fallback currently requires "
+                        "batch size 1"
+                    )
+                seq_id = int(kwargs.pop("seq_id", self.default_seq_id))
+                cache = getattr(self.context, "cache", None)
+                if cache is None:
+                    raise TypeError(
+                        "speculative_verify paged runtime fallback requires context.cache"
+                    )
+                if int(cache.seq_length(seq_id)) <= 0:
+                    raise ValueError(
+                        "speculative_verify: paged runtime cache is empty for "
+                        f"seq_id={seq_id}; run prefill/step first or pass explicit k_cache/v_cache"
+                    )
+                k_cache = cache.k_for_attention(seq_id)
+                v_cache = cache.v_for_attention(seq_id)
+            else:
                 raise ValueError(
                     "speculative_verify without explicit k_cache/v_cache requires "
-                    f"dense backend runtime, got backend={self.backend!r}"
-                )
-            k_cache = self.context.k_cache
-            v_cache = self.context.v_cache
-            if k_cache is None or v_cache is None:
-                raise ValueError(
-                    "speculative_verify: dense runtime cache is empty; run prefill/step "
-                    "first or pass explicit k_cache/v_cache"
+                    f"dense or paged runtime, got backend={self.backend!r}"
                 )
 
         out = flash_attention_speculative_verify(
