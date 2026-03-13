@@ -408,6 +408,11 @@ class HybridKVCache:
             "ready_for_production": self.ready_for_production,
         }
 
+    @property
+    def debug_state(self) -> dict[str, Any]:
+        """Alias used by runtime/debug tooling."""
+        return self.state
+
     def append(self, k_new, v_new, seq_id: int = 0) -> None:
         sid = int(seq_id)
         self._ensure_hot(sid, reason="append")
@@ -469,6 +474,86 @@ class HybridKVCache:
         self._ensure_hot(sid, reason="v_for_attention")
         return self._primary_adapter.attention_v(sid)
 
+    def paged_pool(self):
+        if not self._primary_adapter.capabilities.paged_pool:
+            raise KVCacheOperationUnsupported(
+                "HybridKVCache primary tier does not expose paged_pool capability"
+            )
+        return self._primary_adapter.paged_pool()
+
+    def paged_tables(self, seq_ids: list[int]):
+        if not self._primary_adapter.capabilities.paged_pool:
+            raise KVCacheOperationUnsupported(
+                "HybridKVCache primary tier does not expose paged table capability"
+            )
+        norm_ids = [int(sid) for sid in seq_ids]
+        for sid in norm_ids:
+            self._ensure_hot(sid, reason="paged_tables")
+        return self._primary_adapter.paged_tables(norm_ids)
+
+    def active_seq_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(int(sid) for sid in self._residency.keys()))
+
+    def quantized_view(self):
+        if not self._primary_adapter.capabilities.quantized_view:
+            raise KVCacheOperationUnsupported(
+                "HybridKVCache primary tier does not expose quantized_view capability"
+            )
+        self._ensure_hot(0, reason="quantized_view")
+        return self._primary_adapter.quantized_view()
+
+    # Compatibility properties used by existing runtime/context codepaths.
+    @property
+    def k(self):
+        return self.k_for_attention(0)
+
+    @property
+    def v(self):
+        return self.v_for_attention(0)
+
+    @property
+    def seqlen(self) -> int:
+        return self.seq_length(0)
+
+    @property
+    def k_pool(self):
+        k_pool, _, _ = self.paged_pool()
+        return k_pool
+
+    @property
+    def v_pool(self):
+        _, v_pool, _ = self.paged_pool()
+        return v_pool
+
+    @property
+    def block_size(self) -> int:
+        _, _, block_size = self.paged_pool()
+        return int(block_size)
+
+    def get_block_table(self, seq_ids: Optional[list[int]] = None):
+        ids = list(self.active_seq_ids()) if seq_ids is None else [int(s) for s in seq_ids]
+        table, _ = self.paged_tables(ids)
+        return table
+
+    def get_seq_lens(self, seq_ids: Optional[list[int]] = None):
+        ids = list(self.active_seq_ids()) if seq_ids is None else [int(s) for s in seq_ids]
+        _, lens = self.paged_tables(ids)
+        return lens
+
+    @property
+    def seq_lengths(self) -> dict[int, int]:
+        return {sid: self.seq_length(sid) for sid in self.active_seq_ids()}
+
+    @property
+    def k_int8(self):
+        k_int8, _, _ = self.quantized_view()
+        return k_int8
+
+    @property
+    def k_scale(self):
+        _, k_scale, _ = self.quantized_view()
+        return k_scale
+
     def offload_seq(self, seq_id: int) -> None:
         sid = int(seq_id)
         self._demote_seq(sid, reason="offload_seq")
@@ -525,16 +610,16 @@ class HybridKVCacheAdapter(KVCacheAdapter):
         return self.cache.v_for_attention(seq_id)
 
     def paged_pool(self):
-        return self.cache._primary_adapter.paged_pool()
+        return self.cache.paged_pool()
 
     def paged_tables(self, seq_ids: list[int]):
-        return self.cache._primary_adapter.paged_tables(seq_ids)
+        return self.cache.paged_tables(seq_ids)
 
     def active_seq_ids(self) -> tuple[int, ...]:
-        return tuple(sorted(int(s) for s in self.cache.residency_map.keys()))
+        return self.cache.active_seq_ids()
 
     def quantized_view(self):
-        return self.cache._primary_adapter.quantized_view()
+        return self.cache.quantized_view()
 
 
 def adapt_kv_cache(cache: Any) -> KVCacheAdapter:
