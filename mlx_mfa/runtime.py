@@ -58,11 +58,13 @@ class DecodeRuntime:
         self._prepared_prefix = None
         self._splitfuse_used = False
         self._speculative_verify_used = False
+        self._speculative_step_used = False
         self._active_seq_ids: Optional[tuple[int, ...]] = None
         self._active_cache_batch_idx: Optional[tuple[int, ...]] = None
         self._prefix_cache: dict[str, dict[str, Any]] = {}
         self._active_prefix_id: Optional[str] = None
         self._last_prefix_reuse: Optional[dict[str, Any]] = None
+        self._last_speculative_step: Optional[dict[str, Any]] = None
 
     def _with_default_seq_id(self, kwargs: dict) -> dict:
         if self.backend == "paged" and "seq_id" not in kwargs:
@@ -141,6 +143,24 @@ class DecodeRuntime:
                 f"{tuple(sorted(self._prefix_cache.keys()))}"
             )
         return pid
+
+    @staticmethod
+    def _accepted_prefix_lens_from_mask(mask: mx.array) -> mx.array:
+        """Compute contiguous accepted prefix lengths from per-token bool mask."""
+        if mask.ndim != 2:
+            raise ValueError(
+                f"accept mask must be 2-D [B, N], got ndim={mask.ndim}"
+            )
+        lens: list[int] = []
+        for row in mask.tolist():
+            accepted = 0
+            for flag in row:
+                if bool(flag):
+                    accepted += 1
+                else:
+                    break
+            lens.append(accepted)
+        return mx.array(lens, dtype=mx.int32)
 
     def _seed_dense_prefix(self, entry: dict[str, Any], *, reset: bool) -> None:
         cache = getattr(self.context, "_cache", None)
@@ -990,6 +1010,7 @@ class DecodeRuntime:
             "shared_prefix_active": self._prepared_prefix is not None,
             "splitfuse_active": self._splitfuse_used,
             "speculative_verify_active": self._speculative_verify_used,
+            "speculative_step_active": self._speculative_step_used,
             "default_seq_id": self.default_seq_id,
             "active_seq_ids": self._active_seq_ids,
             "active_cache_batch_idx": self._active_cache_batch_idx,
@@ -997,6 +1018,7 @@ class DecodeRuntime:
             "registered_prefix_ids": tuple(sorted(self._prefix_cache.keys())),
             "active_prefix_id": self._active_prefix_id,
             "last_prefix_reuse": self._last_prefix_reuse,
+            "last_speculative_step": self._last_speculative_step,
         }
 
     @property
@@ -1092,6 +1114,102 @@ class DecodeRuntime:
         self._speculative_verify_used = True
         return out
 
+    def speculative_step(
+        self,
+        q_target: mx.array,
+        draft_ids: mx.array,
+        *,
+        draft_logprobs: Optional[mx.array] = None,
+        accept_logprob_delta: float = 0.0,
+        k_cache: Optional[mx.array] = None,
+        v_cache: Optional[mx.array] = None,
+        **kwargs,
+    ) -> dict[str, mx.array]:
+        """Run verify + contiguous-prefix accept/reject bookkeeping.
+
+        This is a lightweight runtime integration wrapper around
+        ``flash_attention_speculative_verify``. It does not implement a full
+        scheduler; it computes inspectable acceptance outputs for serving code.
+
+        Acceptance rule:
+        - if ``draft_logprobs`` is provided: accept token i when
+          ``target_logprobs[i] - draft_logprobs[i] >= accept_logprob_delta``
+        - else: accept token i when
+          ``target_logprobs[i] >= accept_logprob_delta``
+
+        The returned accepted prefix length is contiguous from token 0.
+        """
+        if q_target.ndim != 4:
+            raise ValueError("speculative_step expects q_target shape [B,H,N,D]")
+        if draft_ids.ndim != 2:
+            raise ValueError("speculative_step expects draft_ids shape [B,N]")
+        if int(q_target.shape[0]) != int(draft_ids.shape[0]):
+            raise ValueError(
+                "speculative_step batch mismatch between q_target and draft_ids "
+                f"({q_target.shape[0]} vs {draft_ids.shape[0]})"
+            )
+        if int(q_target.shape[2]) != int(draft_ids.shape[1]):
+            raise ValueError(
+                "speculative_step token-count mismatch between q_target and draft_ids "
+                f"({q_target.shape[2]} vs {draft_ids.shape[1]})"
+            )
+        if draft_logprobs is not None:
+            if draft_logprobs.ndim != 2:
+                raise ValueError(
+                    "speculative_step expects draft_logprobs shape [B,N]"
+                )
+            if draft_logprobs.shape != draft_ids.shape:
+                raise ValueError(
+                    "speculative_step requires draft_logprobs shape to match draft_ids "
+                    f"({tuple(draft_logprobs.shape)} vs {tuple(draft_ids.shape)})"
+                )
+
+        out, lse, target_logprobs = self.speculative_verify(
+            q_target,
+            draft_ids,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            **kwargs,
+        )
+
+        if draft_logprobs is None:
+            accept_mask = target_logprobs >= float(accept_logprob_delta)
+        else:
+            accept_mask = (
+                target_logprobs.astype(mx.float32)
+                - draft_logprobs.astype(mx.float32)
+            ) >= float(accept_logprob_delta)
+
+        accepted_prefix_lens = self._accepted_prefix_lens_from_mask(accept_mask)
+        token_idx = mx.arange(int(draft_ids.shape[1]), dtype=mx.int32)[None, :]
+        prefix_mask = token_idx < accepted_prefix_lens[:, None]
+
+        accepted_ids = mx.where(prefix_mask, draft_ids, mx.full_like(draft_ids, -1))
+        rejected_ids = mx.where(
+            prefix_mask,
+            mx.full_like(draft_ids, -1),
+            draft_ids,
+        )
+
+        self._speculative_step_used = True
+        self._last_speculative_step = {
+            "batch": int(q_target.shape[0]),
+            "tokens": int(q_target.shape[2]),
+            "accept_logprob_delta": float(accept_logprob_delta),
+            "used_explicit_cache": bool(k_cache is not None),
+            "query_layout": self.query_layout,
+            "backend": self.backend,
+        }
+        return {
+            "out": out,
+            "lse": lse,
+            "target_logprobs": target_logprobs,
+            "accept_mask": accept_mask,
+            "accepted_prefix_lens": accepted_prefix_lens,
+            "accepted_ids": accepted_ids,
+            "rejected_ids": rejected_ids,
+        }
+
     def seq_length(self, seq_id: int = 0) -> int:
         """Return sequence length for dense/paged/sage contexts."""
         if hasattr(self.context, "seq_length"):
@@ -1121,6 +1239,7 @@ class DecodeRuntime:
             f"active_prefix_id={self.metadata['active_prefix_id']!r}, "
             f"splitfuse_active={self.metadata['splitfuse_active']}, "
             f"speculative_verify_active={self.metadata['speculative_verify_active']}, "
+            f"speculative_step_active={self.metadata['speculative_step_active']}, "
             f"context={type(self.context).__name__})"
         )
 
