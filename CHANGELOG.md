@@ -156,6 +156,24 @@ All notable changes to mlx-mfa are documented here.
   - `notes/paged_sharedprefix_productionization_task1.md`
   - `notes/paged_sharedprefix_productionization_task3_policy.md`
   and refreshed README/RESULTS scope language.
+
+### Experimental Path Triage + Selective AOT Evaluation
+
+- **bench**: Added subprocess-isolated triage harness
+  (`benchmarks/bench_experimental_triage.py`) to evaluate V3/V4/V5 regimes and
+  advanced-kernel cold-start candidates in one matrix artifact:
+  `notes/experimental_path_triage_latest.json`.
+- **notes/decision**: Added explicit keep/park matrix with production-status
+  recommendations:
+  `notes/experimental_path_status_matrix.md`.
+  - V2 remains production default.
+  - V3/V5 remain experimental opt-in (narrow wins, mostly losing).
+  - V4 remains hardware-specific/experimental and parked on current M1/M2 routing.
+- **bench**: Targeted selective-AOT evaluation (`notes/experimental_aot_evaluation.md`)
+  compared JIT-only vs precompiled first-call latency for advanced candidates.
+- **docs/decision**: Deferred selective advanced-kernel AOT expansion for this
+  pass after measured cold-start regressions on evaluated candidates; keep AOT
+  focus on STEEL V2 / V2 D-split until loader/artifact behavior is favorable.
 - **total**: 698 tests pass.
 
 ## [2.9.1] — 2026-03-12

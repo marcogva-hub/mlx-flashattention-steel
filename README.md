@@ -107,6 +107,19 @@ matrix (`benchmarks/bench_paged_sharedprefix_matrix.py`):
 Decision: keep paged decode explicit-only for now; keep shared-prefix/splitfuse
 as opt-in runtime optimizations.
 
+### Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
+
+Experimental-path triage (`benchmarks/bench_experimental_triage.py`) keeps the
+production boundary explicit:
+
+- **V2** remains the production default.
+- **V3/V5** stay experimental opt-in paths with only narrow, unstable wins.
+- **V4** remains M3+-specific and parked on current M1/M2 production routing.
+
+Selective advanced-kernel AOT was evaluated and **deferred** after targeted
+cold-start checks (`notes/experimental_aot_evaluation.md`) showed regressions
+on this hardware for the candidate advanced kernels.
+
 ---
 
 ## Features
@@ -301,8 +314,8 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | V2 | Production | ✅ D=64/128 | Causal, GQA, window, sparse, RoPE, ALiBi, softcap |
 | V2 D-split | Production (narrow) | ✅ D=256 causal f16 N>=4096 (M1/M2) | D=256 bf16 + non-causal stay on SDPA; D=512 decision pass found no dense winning regime (SDPA-default) |
 | V5 | Experimental | opt-in `MFA_ENABLE_V5=1` | D-blocked BK=128; M1 regresses vs V2; M3+ still pending real-hardware proof |
-| V4 | Experimental | opt-in `MFA_ENABLE_V4=1` | Research path; not default-dispatched |
-| V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Research path; lower occupancy than V2 on M1/M2 |
+| V4 | Experimental (M3+ research) | opt-in `MFA_ENABLE_V4=1` | Parked on M1/M2 production routing; simulated M3 probe still losing in latest triage |
+| V3 | Experimental | opt-in `MFA_ENABLE_V3=1` | Narrow wins only; mostly losing vs V2/SDPA in latest triage |
 | Sage | Specialized decode | narrow auto + explicit `backend=\"sage\"` | `QuantizedKVCache`-backed decode backend; not a universal V2 replacement |
 | Backward (dense) | Production fallback | `mx.vjp(SDPA)` | Native STEEL bwd remains gated after targeted pass (0/16 wins); debug override: `MFA_FORCE_NATIVE_BWD=1` |
 | Backward (sparse) | Production | `backward="steel_sparse"` | Native sparse backward remains available and default for sparse path |
@@ -351,12 +364,13 @@ When `flash_attention` dispatches to the STEEL kernel, the pipeline is resolved 
 1. **Async metallib** (`mlx_mfa/precompiled/async_v2.metallib`) — shipped with the
    package; uses hardware DMA overlap on macOS ≤15. Disable: `MFA_DISABLE_ASYNC=1`.
 2. **Sync AOT metallib** (`~/.mlx_mfa/metallib/`) — user-compiled cache from
-   `python -m mlx_mfa compile_metallib`. Saves ~50ms cold-start.
+   `python -m mlx_mfa compile_metallib`. Primary production coverage remains
+   STEEL V2 / V2 D-split.
 3. **JIT compilation** — always available; compiles Metal shader source at runtime.
 
 The first successful match is cached for the process lifetime.
-Sage kernels currently use JIT cache only; broad Sage AOT coverage is deferred
-until winning regimes expand beyond the current narrow decode cases.
+Advanced-kernel selective AOT expansion is currently deferred after targeted
+evaluation showed cold-start regressions on this hardware (`notes/experimental_aot_evaluation.md`).
 
 ## Documentation
 

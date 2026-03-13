@@ -183,6 +183,42 @@ Supporting note:
 
 ---
 
+## Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
+
+Primary artifact: `notes/experimental_path_triage_latest.json`  
+Status matrix + recommendations: `notes/experimental_path_status_matrix.md`
+
+### Experimental forward path triage (M1 Max)
+
+| Path | ineligible | clear_win | neutral | losing | Status |
+|---|---:|---:|---:|---:|---|
+| V3 | 0 | 3 | 0 | 13 | Experimental only (narrow wins; mostly losing) |
+| V4 | 16 | 0 | 0 | 0 | Hardware-specific (M3+); parked on M1/M2 |
+| V5 | 0 | 1 | 0 | 15 | Experimental opt-in only |
+
+Simulated M3 V4 probe (`MFA_FORCE_GEN=15`), D=128 N=4096 causal:
+- `v4_sim_m3 / v2 = 0.39x` (losing)
+
+### Selective advanced-kernel AOT decision
+
+Targeted cold-start probes (separate processes) were run in two modes:
+- JIT-only (`MFA_DISABLE_PRECOMPILED=1`)
+- Precompiled mode (`python -m mlx_mfa.compile_metallib --force`)
+
+| Candidate | JIT first-call (ms) | Precompiled first-call (ms) | Decision |
+|---|---:|---:|---|
+| `sage_decode_d128_gqa2` | 6.33 | 152.74 | Defer AOT (regression) |
+| `paged_gather_d128` | 4.96 | 83.73 | Defer AOT (regression) |
+| `paged_steel_d128` | 121.72 | 198.81 | Defer AOT (regression) |
+
+Decision from this pass:
+- Keep AOT production focus on STEEL V2 / V2 D-split.
+- Do not promote selective advanced-kernel AOT until cold-start behavior is favorable.
+
+Reference note: `notes/experimental_aot_evaluation.md`
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |
