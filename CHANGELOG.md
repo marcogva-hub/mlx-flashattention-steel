@@ -60,6 +60,29 @@ All notable changes to mlx-mfa are documented here.
   remap semantics, correctness parity) with mixed performance deltas; no broad
   auto-promotion claim.
 
+### Chunked Prefill Support (Serving-Oriented)
+
+- **notes**: Added chunked prefill design note with explicit semantics and
+  scope (`notes/chunked_prefill_design.md`).
+- **feat**: Added explicit runtime API:
+  - `DecodeRuntime.chunked_prefill(...)`
+  with causal-only validation and clear error messages for unsupported
+  combinations.
+- **feat**: Integrated chunked prefill for:
+  - dense batched runtime flow,
+  - paged batched runtime flow,
+  - paged packed-varlen runtime flow (`query_layout=\"packed\"` with
+    `cu_seqlens_q` + `seq_ids`).
+- **test**: Added chunked prefill coverage for dense parity, paged batched
+  incremental parity, packed paged multi-chunk behavior, invalid inputs, and
+  cache-growth behavior (`reset=False`).
+- **bench**: Added benchmark matrix harness
+  (`benchmarks/bench_chunked_prefill.py`) with artifact
+  (`notes/chunked_prefill_matrix_latest.json`) and chunk latency profile stats.
+- **bench result**: This pass is a serving/runtime capability milestone;
+  monolithic prefill remains faster in current M1 Max measurements, while
+  chunked prefill provides explicit interleavable scheduling units.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix

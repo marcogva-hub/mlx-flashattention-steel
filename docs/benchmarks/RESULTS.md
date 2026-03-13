@@ -82,6 +82,30 @@ Interpretation:
 
 ---
 
+## Chunked Prefill (Serving-Oriented)
+
+Matrix script: `benchmarks/bench_chunked_prefill.py`  
+Artifact: `notes/chunked_prefill_matrix_latest.json`
+
+| Group | D | best chunk_size | monolithic ms | chunked ms | chunked/mono |
+|---|---:|---:|---:|---:|---:|
+| dense (`B=1, N=8192`) | 64 | 512 | 13.47 | 29.99 | 2.23× |
+| dense (`B=1, N=8192`) | 128 | 512 | 29.52 | 49.99 | 1.69× |
+| paged batched (`B=2, N=4096`) | 64 | 512 | 85.93 | 104.14 | 1.21× |
+| paged batched (`B=2, N=4096`) | 128 | 512 | 171.74 | 203.23 | 1.18× |
+| paged packed (`total_q=6144`) | 64 | 512 | 59.02 | 79.19 | 1.34× |
+| paged packed (`total_q=6144`) | 128 | 512 | 116.41 | 146.67 | 1.26× |
+
+Interpretation:
+- Chunked prefill is added as an explicit runtime/scheduler capability via
+  `DecodeRuntime.chunked_prefill(...)`.
+- In this matrix, monolithic prefill remains faster; chunked mode trades total
+  throughput for interleavable per-chunk units and bounded chunk latency.
+- This pass should be interpreted as a serving integration milestone, not a
+  broad performance promotion.
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

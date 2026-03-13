@@ -260,6 +260,42 @@ Decision:
 
 ---
 
+## Chunked Prefill Support (v2.9.2)
+
+Scope in this pass:
+- Added explicit runtime API: `DecodeRuntime.chunked_prefill(...)`.
+- Supported paths in this branch:
+  - dense batched (`query_layout=\"batched\"`)
+  - paged batched (`query_layout=\"batched\"`)
+  - paged packed-varlen (`query_layout=\"packed\"`, requires `cu_seqlens_q` + `seq_ids`)
+- Current pass is causal-only (`causal=True`) and scheduler-facing by design.
+
+Benchmark matrix (M1 Max, f16):
+- script: `benchmarks/bench_chunked_prefill.py`
+- artifact: `notes/chunked_prefill_matrix_latest.json`
+
+Best observed chunk-size rows from this matrix:
+
+| Group | D | best chunk_size | monolithic ms | chunked ms | chunked/mono |
+|---|---:|---:|---:|---:|---:|
+| dense (`B=1, N=8192`) | 64 | 512 | 13.47 | 29.99 | 2.23× |
+| dense (`B=1, N=8192`) | 128 | 512 | 29.52 | 49.99 | 1.69× |
+| paged batched (`B=2, N=4096`) | 64 | 512 | 85.93 | 104.14 | 1.21× |
+| paged batched (`B=2, N=4096`) | 128 | 512 | 171.74 | 203.23 | 1.18× |
+| paged packed (`total_q=6144`) | 64 | 512 | 59.02 | 79.19 | 1.34× |
+| paged packed (`total_q=6144`) | 128 | 512 | 116.41 | 146.67 | 1.26× |
+
+Interpretation:
+- Chunked prefill is a serving/runtime capability milestone (interleavable
+  prefill units with explicit chunk boundaries), not a raw throughput win in
+  this matrix.
+- Monolithic prefill remains faster on current M1 Max measurements.
+- Runtime chunk outputs match manual incremental references for supported paths
+  in branch tests; monolithic-vs-chunked outputs are not equivalent for all
+  paged modes because chunked prefill follows decode-style incremental semantics.
+
+---
+
 ## Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
 
 Primary artifact: `notes/experimental_path_triage_latest.json`  

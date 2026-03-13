@@ -218,6 +218,8 @@ Experimental keep/park recommendations are tracked in
   vLLM-like packed-query scheduling over paged KV pools
 - **Paged continuous batching remap** — explicit `cache_batch_idx` support in
   paged APIs plus batched paged runtime remap helpers
+- **Chunked prefill** — explicit `DecodeRuntime.chunked_prefill(...)` for
+  splitting long causal prefills into interleavable cache-updating chunks
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -337,6 +339,9 @@ rt = create_decode_runtime(
 
 out_prefill = rt.prefill(q, k, v)
 out_decode = rt.step(q_tok, k_tok, v_tok)
+out_chunked = rt.chunked_prefill(
+    q_long, k_long, v_long, chunk_size=256, causal=True
+)
 
 # helper access from the same runtime surface
 prefix_out, kp, vp = rt.prefill_shared_prefix(q_pre, k_pre, v_pre)
@@ -357,6 +362,13 @@ rt_packed = create_decode_runtime(
 )
 out_packed = rt_packed.paged_varlen(
     q_packed, cu_seqlens_q, seq_ids=[11, 22], causal=True
+)
+out_packed_chunked = rt_packed.chunked_prefill(
+    q_packed, k_packed, v_packed,
+    chunk_size=256,
+    seq_ids=[11, 22],
+    cu_seqlens_q=cu_seqlens_q,
+    causal=True,
 )
 
 # scheduler-style paged batched step with explicit request-slot remap
@@ -460,6 +472,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Paged decode | auto | explicit-only | Runtime matrix did not show stable benchmark-backed auto win |
 | Paged + packed varlen query | explicit API/runtime | `flash_attention_paged_varlen` or `DecodeRuntime(..., query_layout="packed")` | Correct bridge path for hetero query lengths; not a fully fused kernel yet |
 | Paged continuous batching remap | explicit API/runtime | `cache_batch_idx` in paged APIs or `DecodeRuntime.paged_step_batch/paged_prefill_batch` | Scheduler-friendly request-slot mapping; capability milestone, not broad perf promotion |
+| Chunked prefill | explicit runtime API | `DecodeRuntime.chunked_prefill(...)` | Serving/scheduling capability milestone; monolithic prefill remains faster in current M1 Max matrix |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

@@ -391,6 +391,13 @@ Paged runtime now also exposes scheduler-facing helpers:
 - `paged_step_batch(...)`
 and tracks `active_seq_ids` / `active_cache_batch_idx` in runtime metadata.
 
+Chunked prefill is now explicit at runtime level:
+- `DecodeRuntime.chunked_prefill(...)`
+- Causal-only in this pass (`causal=True` required)
+- Supports dense batched, paged batched, and paged packed-varlen flows
+- Designed for serving/scheduler interleaving (chunk boundaries), not as a
+  guaranteed throughput win over monolithic prefill on current M1 Max data.
+
 ---
 
 ## Dispatch System

@@ -880,6 +880,7 @@ create_decode_runtime(
 
 Core methods:
 - `prefill(...)` / `step(...)` / `reset(...)` for batched query layout
+- `chunked_prefill(...)` for explicit chunked causal prefill scheduling
 - `paged_prefill_batch(...)` / `paged_step_batch(...)` for scheduler-style
   active-set decode/prefill with explicit remap
 - `paged_varlen(...)` for paged KV + packed varlen queries
@@ -889,7 +890,8 @@ Core methods:
 `query_layout` behavior:
 - `"batched"`: standard `[B,H,N,D]` queries via `prefill/step`
 - `"packed"`: currently supported only with paged runtime; use
-  `DecodeRuntime.paged_varlen(...)`
+  `DecodeRuntime.paged_varlen(...)` and packed-mode
+  `DecodeRuntime.chunked_prefill(...)` (`cu_seqlens_q` + `seq_ids` required)
 
 Continuous batching hints:
 - pass `seq_ids=[slot0, slot1, ...]` for stable slot ordering
