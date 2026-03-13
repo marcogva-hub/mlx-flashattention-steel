@@ -136,7 +136,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/splitfuse_runtime_matrix_latest.json",
+        default="devnotes/splitfuse_runtime_matrix_latest.json",
     )
     args = parser.parse_args()
 

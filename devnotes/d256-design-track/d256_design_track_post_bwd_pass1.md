@@ -3,7 +3,7 @@
 Date: 2026-03-12  
 Branch: `codex/d256-design-track-post-bwd`  
 Script: `benchmarks/bench_d256_design_matrix.py`  
-Command: `/Users/marcomarcelino/code/mlx-mfa-v2/.venv/bin/python benchmarks/bench_d256_design_matrix.py --warmup 1 --iters 1 --output notes/d256_design_matrix_post_bwd_latest.json`
+Command: `/Users/marcomarcelino/code/mlx-mfa-v2/.venv/bin/python benchmarks/bench_d256_design_matrix.py --warmup 1 --iters 1 --output devnotes/d256_design_matrix_post_bwd_latest.json`
 
 ## Summary
 

@@ -44,7 +44,7 @@ Branch: `codex/paged-continuous-batching`
 
 - Benchmark matrix:
   - script: `benchmarks/bench_paged_continuous_batching.py`
-  - artifact: `notes/paged_continuous_batching_latest.json`
+  - artifact: `devnotes/paged_continuous_batching_latest.json`
 
 - Result summary (M1 Max, f16):
   - `paged_step_batch` remap: ~1.02–1.05x vs manual baseline

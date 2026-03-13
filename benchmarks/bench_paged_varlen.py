@@ -264,7 +264,7 @@ def main() -> int:
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--iters", type=int, default=3)
     ap.add_argument("--block-size", type=int, default=16)
-    ap.add_argument("--output", type=str, default="notes/paged_varlen_matrix_latest.json")
+    ap.add_argument("--output", type=str, default="devnotes/paged_varlen_matrix_latest.json")
     args = ap.parse_args()
 
     scenarios = [

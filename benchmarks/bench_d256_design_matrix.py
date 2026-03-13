@@ -249,7 +249,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="D=256 design-space benchmark matrix")
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--iters", type=int, default=2)
-    ap.add_argument("--output", type=str, default="notes/d256_design_matrix_latest.json")
+    ap.add_argument("--output", type=str, default="devnotes/d256_design_matrix_latest.json")
     args = ap.parse_args()
 
     dev = get_device_info()

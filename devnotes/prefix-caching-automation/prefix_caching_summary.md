@@ -44,7 +44,7 @@ Runtime metadata now reports:
 
 Matrix:
 - script: `benchmarks/bench_prefix_caching_runtime.py`
-- artifact: `notes/prefix_caching_runtime_matrix_latest.json`
+- artifact: `devnotes/prefix_caching_runtime_matrix_latest.json`
 
 Summary:
 - Runtime-managed path matches explicit helper correctness (`max_err=0.0` in

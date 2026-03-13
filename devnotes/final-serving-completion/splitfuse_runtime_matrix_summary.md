@@ -1,6 +1,6 @@
 # Splitfuse Runtime Integration Matrix Summary
 
-Source artifact: `notes/splitfuse_runtime_matrix_latest.json`  
+Source artifact: `devnotes/splitfuse_runtime_matrix_latest.json`  
 Script: `benchmarks/bench_splitfuse_runtime.py`
 
 ## Measured Rows (M1 Max)

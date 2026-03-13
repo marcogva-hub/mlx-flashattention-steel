@@ -54,7 +54,7 @@ Added/extended tests validate:
 ## Benchmark / Smoke Outcome
 
 - Script: `benchmarks/bench_hybrid_kv_cache.py`
-- Artifact: `notes/hybrid_kv_cache_bench_latest.json`
+- Artifact: `devnotes/hybrid_kv_cache_bench_latest.json`
 - Summary (M1 Max): mixed overhead/benefit across scenarios.
   - Dense rows show near-parity to modest win/loss depending on shape.
   - Paged row shows modest overhead in this smoke matrix.

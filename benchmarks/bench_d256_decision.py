@@ -109,7 +109,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/d256_decision_latest.json",
+        default="devnotes/d256_decision_latest.json",
         help="Where to write JSON results",
     )
     args = parser.parse_args()

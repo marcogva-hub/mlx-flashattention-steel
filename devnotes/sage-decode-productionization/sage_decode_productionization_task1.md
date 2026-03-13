@@ -2,7 +2,7 @@
 
 Date: 2026-03-12
 Benchmark script: `benchmarks/bench_sage_decode_matrix.py`
-Output: `notes/sage_decode_matrix_post_bwd_latest.json`
+Output: `devnotes/sage_decode_matrix_post_bwd_latest.json`
 
 ## Matrix
 

@@ -40,7 +40,7 @@ Latest full suite run on this branch: `703 passed`.
 ## Benchmark status
 
 Matrix script: `benchmarks/bench_paged_varlen.py`  
-Artifact: `notes/paged_varlen_matrix_latest.json`
+Artifact: `devnotes/paged_varlen_matrix_latest.json`
 
 Observed on M1 Max (f16):
 

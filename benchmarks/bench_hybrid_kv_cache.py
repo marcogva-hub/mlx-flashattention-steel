@@ -283,7 +283,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/hybrid_kv_cache_bench_latest.json",
+        default="devnotes/hybrid_kv_cache_bench_latest.json",
     )
     args = parser.parse_args()
 

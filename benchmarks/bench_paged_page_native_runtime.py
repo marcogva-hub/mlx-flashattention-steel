@@ -168,7 +168,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/paged_page_native_runtime_latest.json",
+        default="devnotes/paged_page_native_runtime_latest.json",
     )
     args = parser.parse_args()
 

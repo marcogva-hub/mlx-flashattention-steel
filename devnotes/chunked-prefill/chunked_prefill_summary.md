@@ -29,7 +29,7 @@
 ## Benchmark status
 
 - Matrix script: `benchmarks/bench_chunked_prefill.py`
-- Latest artifact: `notes/chunked_prefill_matrix_latest.json`
+- Latest artifact: `devnotes/chunked_prefill_matrix_latest.json`
 
 Observed on M1 Max:
 - Monolithic prefill remains faster across dense/paged scenarios.

@@ -1,14 +1,9 @@
-"""kvcache_decode.py — Autoregressive decode with a growing KV cache.
+"""kvcache_decode.py — Stateful decode using DecodeRuntime (recommended).
 
-Shows the recommended inference pattern:
-  - Prefill (full context) → build initial KV cache
-  - Decode loop: generate one token at a time, growing the cache via concatenation
-  - flash_attention_kvcache() handles both prefill and decode steps
-
-Note: flash_attention_kvcache() takes the *complete* accumulated cache as
-k_cache / v_cache and returns only the output tensor.  The caller is
-responsible for managing cache growth (concatenation here; paged for
-large contexts — see paged_kv_inference.py).
+Shows current preferred decode usage:
+  - prefill via DecodeRuntime
+  - step-wise decode with internal cache management
+  - optional low-level explicit cache path remains available separately
 
 Usage::
 
@@ -17,64 +12,50 @@ Usage::
 
 import math
 import mlx.core as mx
-from mlx_mfa import flash_attention_kvcache
+from mlx_mfa import create_decode_runtime
 
-# ── configuration ──────────────────────────────────────────────────────────────
-
-B, H, D = 1, 8, 128
-PROMPT_LEN   = 512    # prefill tokens
-DECODE_STEPS = 8      # autoregressive tokens to generate
+# Configuration
+B, H_q, H_kv, D = 1, 8, 8, 128
+PROMPT_LEN = 512
+DECODE_STEPS = 8
 
 dtype = mx.float16
 scale = 1.0 / math.sqrt(D)
 
 mx.random.seed(42)
 
-# ── prefill ────────────────────────────────────────────────────────────────────
-
-# Prefill: process the full prompt at once.
-# For prefill, N_q == N_k so we use flash_attention_kvcache with causal=True.
-q_prefill = mx.random.normal((B, H, PROMPT_LEN, D)).astype(dtype)
-k_prefill = mx.random.normal((B, H, PROMPT_LEN, D)).astype(dtype)
-v_prefill = mx.random.normal((B, H, PROMPT_LEN, D)).astype(dtype)
-
-out_prefill = flash_attention_kvcache(
-    q_prefill, k_prefill, v_prefill,
-    scale=scale,
-    causal=True,
-    # cache_seqlens: how many cached tokens the Q attends *past* its own position.
-    # For prefill, no prior cached tokens.
-    cache_seqlens=0,
+rt = create_decode_runtime(
+    backend="auto",
+    paged=False,
+    quantized_kv=False,
+    B=B,
+    H_q=H_q,
+    H_kv=H_kv,
+    D=D,
+    max_seq_len=4096,
 )
+
+# Prefill
+q_prefill = mx.random.normal((B, H_q, PROMPT_LEN, D)).astype(dtype)
+k_prefill = mx.random.normal((B, H_kv, PROMPT_LEN, D)).astype(dtype)
+v_prefill = mx.random.normal((B, H_kv, PROMPT_LEN, D)).astype(dtype)
+
+out_prefill = rt.prefill(q_prefill, k_prefill, v_prefill, scale=scale, causal=True)
 mx.synchronize()
-print(f"Prefill  N={PROMPT_LEN}  out={out_prefill.shape}")
+print(f"Prefill  N={PROMPT_LEN}  out={out_prefill.shape}  seq_len={rt.seq_length()}")
 
-# Accumulate the KV cache from the prefill step.
-k_cache = k_prefill   # [B, H, PROMPT_LEN, D]
-v_cache = v_prefill   # [B, H, PROMPT_LEN, D]
-
-# ── decode loop ────────────────────────────────────────────────────────────────
-
+# Decode loop
 for step in range(DECODE_STEPS):
-    # One new query token (the latest generated token).
-    q_new = mx.random.normal((B, H, 1, D)).astype(dtype)
-    k_new = mx.random.normal((B, H, 1, D)).astype(dtype)
-    v_new = mx.random.normal((B, H, 1, D)).astype(dtype)
+    q_new = mx.random.normal((B, H_q, 1, D)).astype(dtype)
+    k_new = mx.random.normal((B, H_kv, 1, D)).astype(dtype)
+    v_new = mx.random.normal((B, H_kv, 1, D)).astype(dtype)
 
-    # Append new K/V to cache.
-    k_cache = mx.concatenate([k_cache, k_new], axis=2)
-    v_cache = mx.concatenate([v_cache, v_new], axis=2)
-    kv_len  = k_cache.shape[2]   # total cached length including new token
-
-    # Attend: single query over the entire KV cache (causal = attends all).
-    out_step = flash_attention_kvcache(
-        q_new, k_cache, v_cache,
-        scale=scale,
-        causal=True,
-        cache_seqlens=kv_len - 1,   # Q[0] sits at position kv_len-1
-    )
+    out_step = rt.step(q_new, k_new, v_new, scale=scale)
     mx.synchronize()
+    print(
+        f"  Step {step+1:2d}  seq_len={rt.seq_length():4d}  out={tuple(out_step.shape)}"
+    )
 
-    print(f"  Step {step+1:2d}  KV_len={kv_len:4d}  out={out_step.shape}")
-
-print("\n✓ Decode loop completed")
+print("\nRuntime metadata snapshot:")
+print(rt.metadata)
+print("\n✓ DecodeRuntime example completed")

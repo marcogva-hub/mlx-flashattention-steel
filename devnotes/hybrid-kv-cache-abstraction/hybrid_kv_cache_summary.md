@@ -51,7 +51,7 @@ also expose `cache_adapter` for explicit adapter access.
 
 Smoke matrix added:
 - script: `benchmarks/bench_cache_abstraction_smoke.py`
-- artifact: `notes/cache_abstraction_smoke_latest.json`
+- artifact: `devnotes/cache_abstraction_smoke_latest.json`
 
 Observed outcome:
 - mixed micro-level timing deltas across scenarios

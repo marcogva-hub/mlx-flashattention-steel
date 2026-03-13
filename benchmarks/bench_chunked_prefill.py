@@ -478,7 +478,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=str,
-        default="notes/chunked_prefill_matrix_latest.json",
+        default="devnotes/chunked_prefill_matrix_latest.json",
     )
     return p.parse_args()
 

@@ -9,7 +9,7 @@ Benchmark command:
 ```bash
 .venv/bin/python benchmarks/bench_d512_decision_matrix.py \
   --warmup 2 --iters 5 \
-  --output notes/d512_decision_matrix_latest.json
+  --output devnotes/d512_decision_matrix_latest.json
 ```
 
 Scope:

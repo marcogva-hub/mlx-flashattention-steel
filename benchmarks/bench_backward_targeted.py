@@ -242,7 +242,7 @@ def main() -> None:
     ap.add_argument(
         "--output",
         type=str,
-        default="notes/native_backward_targeted_latest.json",
+        default="devnotes/native_backward_targeted_latest.json",
     )
     args = ap.parse_args()
 

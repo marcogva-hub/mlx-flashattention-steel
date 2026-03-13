@@ -1,7 +1,7 @@
 # Sage Decode Auto-Routing Policy Note (Task 2/3)
 
 Date: 2026-03-12
-Input matrix: `notes/sage_decode_matrix_post_bwd_latest.json`
+Input matrix: `devnotes/sage_decode_matrix_post_bwd_latest.json`
 
 ## Policy shape
 

@@ -315,7 +315,7 @@ def main() -> int:
     ap.add_argument(
         "--output",
         type=str,
-        default="notes/paged_continuous_batching_latest.json",
+        default="devnotes/paged_continuous_batching_latest.json",
     )
     args = ap.parse_args()
 

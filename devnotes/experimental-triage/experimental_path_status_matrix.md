@@ -3,9 +3,9 @@
 Date: 2026-03-12
 Device: Apple M1 Max (gen 13, non-M3+)
 Primary artifacts:
-- `notes/experimental_path_triage_latest.json`
-- `notes/sage_decode_matrix_post_bwd_latest.json`
-- `notes/paged_sharedprefix_matrix_latest.json`
+- `devnotes/experimental_path_triage_latest.json`
+- `devnotes/sage_decode_matrix_post_bwd_latest.json`
+- `devnotes/paged_sharedprefix_matrix_latest.json`
 
 ## Experimental Forward Paths (V3/V4/V5)
 

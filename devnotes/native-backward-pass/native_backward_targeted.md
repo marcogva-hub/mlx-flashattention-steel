@@ -7,7 +7,7 @@
 - N: `{2048, 4096, 8192, 16384}`
 - dtype: `f16`, `bf16`
 - Benchmark script: `benchmarks/bench_backward_targeted.py`
-- Raw data: `notes/native_backward_targeted_latest.json`
+- Raw data: `devnotes/native_backward_targeted_latest.json`
 
 Measured variants:
 1. **current** = `flash_attention(..., backend="mfa")` VJP path
@@ -51,6 +51,6 @@ No benchmark-backed winning regime was found for native STEEL backward in this t
 - Reran `benchmarks/bench_backward_targeted.py` after policy/test integration
   with `--warmup 0 --iters 1` (separate process).
 - Classification remained unchanged: **0 promising / 0 neutral / 16 losing**.
-- `notes/native_backward_targeted_latest.json` is the latest run artifact.
+- `devnotes/native_backward_targeted_latest.json` is the latest run artifact.
 - Conclusion unchanged: keep auto native backward disabled; retain SDPA VJP
   fallback by default outside explicit debug override.

@@ -358,7 +358,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=str,
-        default="notes/prefix_caching_runtime_matrix_latest.json",
+        default="devnotes/prefix_caching_runtime_matrix_latest.json",
     )
     return p.parse_args()
 

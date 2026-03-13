@@ -31,14 +31,14 @@ This branch closes the remaining serving-oriented gaps with a minimal-real appro
 ## Benchmark highlights (refreshed artifacts)
 
 Sources:
-- `notes/hybrid_kv_cache_bench_latest.json`
-- `notes/splitfuse_runtime_matrix_latest.json`
-- `notes/paged_page_native_runtime_latest.json`
-- `notes/speculative_decode_runtime_matrix_latest.json`
-- `notes/prefix_caching_runtime_matrix_latest.json`
-- `notes/chunked_prefill_matrix_latest.json`
-- `notes/paged_varlen_matrix_latest.json`
-- `notes/paged_continuous_batching_latest.json`
+- `devnotes/hybrid_kv_cache_bench_latest.json`
+- `devnotes/splitfuse_runtime_matrix_latest.json`
+- `devnotes/paged_page_native_runtime_latest.json`
+- `devnotes/speculative_decode_runtime_matrix_latest.json`
+- `devnotes/prefix_caching_runtime_matrix_latest.json`
+- `devnotes/chunked_prefill_matrix_latest.json`
+- `devnotes/paged_varlen_matrix_latest.json`
+- `devnotes/paged_continuous_batching_latest.json`
 
 Observed summary (ratio > 1.0 means the new/runtime path is faster than baseline where noted in each artifact):
 - Hybrid cache vs baseline: mixed; several rows show parity or better, one paged D=128 row is near parity/slightly slower.

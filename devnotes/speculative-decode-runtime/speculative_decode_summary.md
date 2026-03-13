@@ -43,7 +43,7 @@ Added tests cover:
 
 Matrix:
 - script: `benchmarks/bench_speculative_decode_runtime.py`
-- artifact: `notes/speculative_decode_runtime_matrix_latest.json`
+- artifact: `devnotes/speculative_decode_runtime_matrix_latest.json`
 
 Observed outcome:
 - runtime and manual helper flow match acceptance outputs in all measured rows

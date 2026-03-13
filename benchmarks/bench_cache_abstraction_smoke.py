@@ -257,7 +257,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/cache_abstraction_smoke_latest.json",
+        default="devnotes/cache_abstraction_smoke_latest.json",
     )
     args = parser.parse_args()
 

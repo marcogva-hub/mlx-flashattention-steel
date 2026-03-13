@@ -262,7 +262,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="notes/speculative_decode_runtime_matrix_latest.json",
+        default="devnotes/speculative_decode_runtime_matrix_latest.json",
     )
     args = parser.parse_args()
 
