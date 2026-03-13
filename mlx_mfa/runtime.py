@@ -18,6 +18,7 @@ from mlx_mfa.inference import (
 )
 from mlx_mfa.attention import (
     flash_attention,
+    flash_attention_paged_varlen,
     make_shared_prefix_cache,
     flash_attention_splitfuse,
     flash_attention_speculative_verify,
@@ -29,6 +30,7 @@ __all__ = [
 ]
 
 DecodeBackend = Literal["auto", "dense", "paged", "sage"]
+QueryLayout = Literal["batched", "packed"]
 
 
 class DecodeRuntime:
@@ -42,6 +44,7 @@ class DecodeRuntime:
         requested_backend: str,
         paged: bool,
         quantized_kv: bool,
+        query_layout: str,
         default_seq_id: int,
     ) -> None:
         self.context = context
@@ -49,6 +52,7 @@ class DecodeRuntime:
         self.requested_backend = requested_backend
         self.paged = paged
         self.quantized_kv = quantized_kv
+        self.query_layout = query_layout
         self.default_seq_id = default_seq_id
         self._prepared_prefix = None
         self._splitfuse_used = False
@@ -61,10 +65,20 @@ class DecodeRuntime:
 
     def prefill(self, q: mx.array, k: mx.array, v: mx.array, **kwargs):
         """Forward to the underlying context prefill call."""
+        if self.query_layout != "batched":
+            raise ValueError(
+                "prefill() requires query_layout='batched'. "
+                "Use paged_varlen() for packed-query paged attention."
+            )
         return self.context.prefill(q, k, v, **self._with_default_seq_id(dict(kwargs)))
 
     def step(self, q: mx.array, k_new: mx.array, v_new: mx.array, **kwargs):
         """Forward to the underlying context step call."""
+        if self.query_layout != "batched":
+            raise ValueError(
+                "step() requires query_layout='batched'. "
+                "Use paged_varlen() for packed-query paged attention."
+            )
         return self.context.step(
             q,
             k_new,
@@ -75,6 +89,71 @@ class DecodeRuntime:
     def reset(self, **kwargs):
         """Forward reset to the underlying context."""
         return self.context.reset(**self._with_default_seq_id(dict(kwargs)))
+
+    def paged_varlen(
+        self,
+        q: mx.array,
+        cu_seqlens_q: mx.array,
+        *,
+        seq_ids: Optional[tuple[int, ...] | list[int]] = None,
+        block_table: Optional[mx.array] = None,
+        seq_lens_kv: Optional[mx.array] = None,
+        max_seqlen_q: Optional[int] = None,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        block_size: Optional[int] = None,
+        stream: Optional[mx.StreamOrDevice] = None,
+    ):
+        """Run paged attention with packed variable-length queries.
+
+        This method is available only when the runtime backend is paged and
+        ``query_layout='packed'``. If ``block_table``/``seq_lens_kv`` are not
+        provided, they are derived from the runtime paged cache using
+        ``seq_ids`` (or all active sequence ids when omitted).
+        """
+        if self.backend != "paged":
+            raise ValueError(
+                "paged_varlen() requires backend='paged', got "
+                f"backend={self.backend!r}"
+            )
+        if self.query_layout != "packed":
+            raise ValueError(
+                "paged_varlen() requires query_layout='packed'. "
+                "Create the runtime with query_layout='packed'."
+            )
+
+        cache = getattr(self.context, "cache", None)
+        if cache is None:
+            raise TypeError(
+                "paged_varlen(): runtime context does not expose a paged cache"
+            )
+
+        if (block_table is None) != (seq_lens_kv is None):
+            raise ValueError(
+                "paged_varlen(): block_table and seq_lens_kv must be provided together"
+            )
+
+        if block_table is None:
+            if seq_ids is None:
+                seq_ids = tuple(sorted(cache.seq_lengths.keys()))
+            block_table = cache.get_block_table(list(seq_ids))
+            seq_lens_kv = cache.get_seq_lens(list(seq_ids))
+
+        eff_block_size = self.context.block_size if block_size is None else block_size
+        eff_stream = getattr(self.context, "stream", None) if stream is None else stream
+        return flash_attention_paged_varlen(
+            q,
+            cache.k_pool,
+            cache.v_pool,
+            block_table,
+            seq_lens_kv,
+            cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
+            scale=scale,
+            causal=causal,
+            block_size=eff_block_size,
+            stream=eff_stream,
+        )
 
     def prefill_shared_prefix(
         self,
@@ -171,6 +250,7 @@ class DecodeRuntime:
             "context_class": type(self.context).__name__,
             "paged_active": self.backend == "paged",
             "sage_active": self.backend == "sage",
+            "query_layout": self.query_layout,
             "shared_prefix_active": self._prepared_prefix is not None,
             "splitfuse_active": self._splitfuse_used,
             "speculative_verify_active": self._speculative_verify_used,
@@ -290,6 +370,7 @@ class DecodeRuntime:
             f"DecodeRuntime(backend={self.backend!r}, "
             f"requested={self.requested_backend!r}, "
             f"paged={self.paged}, quantized_kv={self.quantized_kv}, "
+            f"query_layout={self.query_layout!r}, "
             f"default_seq_id={self.default_seq_id}, "
             f"shared_prefix_active={self.metadata['shared_prefix_active']}, "
             f"splitfuse_active={self.metadata['splitfuse_active']}, "
@@ -303,6 +384,7 @@ def create_decode_runtime(
     backend: DecodeBackend = "auto",
     paged: bool = False,
     quantized_kv: bool = False,
+    query_layout: QueryLayout = "batched",
     B: Optional[int] = None,
     H_q: Optional[int] = None,
     H_kv: int,
@@ -327,6 +409,8 @@ def create_decode_runtime(
     """
     if default_seq_id < 0:
         raise ValueError("default_seq_id must be >= 0")
+    if query_layout not in ("batched", "packed"):
+        raise ValueError("query_layout must be one of 'batched' or 'packed'")
 
     mode, requested = _resolve_inference_context_mode(
         backend=backend,
@@ -355,11 +439,17 @@ def create_decode_runtime(
         stream=stream,
     )
     selected = _context_backend_name(context)
+    if query_layout == "packed" and selected != "paged":
+        raise ValueError(
+            "query_layout='packed' is currently supported only with paged runtime "
+            f"(resolved backend={selected!r})"
+        )
     return DecodeRuntime(
         context=context,
         backend=selected,
         requested_backend=requested,
         paged=paged,
         quantized_kv=quantized_kv,
+        query_layout=query_layout,
         default_seq_id=default_seq_id,
     )
