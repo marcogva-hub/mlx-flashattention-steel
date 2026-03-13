@@ -101,6 +101,7 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
 static void* try_async_pipeline(const ShaderCache::KernelKey& key,
                                 void* raw_device) {
   using KT = ShaderCache::KernelKey::KernelType;
+  const bool ir_debug = (std::getenv("MFA_IR_INVESTIGATE") != nullptr);
 
   // Only D=64/128 SteelForwardV2, f16 only, no extra features
   if (key.type != KT::SteelForwardV2) return nullptr;
@@ -108,21 +109,37 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
   if (key.dtype != 0) return nullptr;  // f16 only
   if (key.sparse || key.has_rope || key.has_softcap ||
       key.has_alibi || key.has_window) return nullptr;
-  if (std::getenv("MFA_DISABLE_ASYNC")) return nullptr;
+  if (std::getenv("MFA_DISABLE_ASYNC")) {
+    if (ir_debug) {
+      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: disabled by MFA_DISABLE_ASYNC");
+    }
+    return nullptr;
+  }
 
   @autoreleasepool {
     // Resolve precompiled dir relative to our shared library's location.
     // The dylib lives at mlx_mfa/_ext.cpython-*.so and the metallib is at
     // mlx_mfa/precompiled/async_v2.metallib — same parent directory.
     Dl_info dl_info;
-    if (dladdr((void*)&ShaderCache::get, &dl_info) == 0) return nullptr;
+    if (dladdr((void*)&ShaderCache::get, &dl_info) == 0) {
+      if (ir_debug) {
+        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: dladdr failed");
+      }
+      return nullptr;
+    }
     NSString* dylib_path = [NSString stringWithUTF8String:dl_info.dli_fname];
     NSString* pkg_dir    = [dylib_path stringByDeletingLastPathComponent];
     NSURL* metallib_url  = [NSURL fileURLWithPath:
         [[pkg_dir stringByAppendingPathComponent:@"precompiled"]
                   stringByAppendingPathComponent:@"async_v2.metallib"]];
 
+    if (ir_debug) {
+      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: loading %@", [metallib_url path]);
+    }
     if (![[NSFileManager defaultManager] fileExistsAtPath:[metallib_url path]]) {
+      if (ir_debug) {
+        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED (metallib missing)");
+      }
       return nullptr;
     }
 
@@ -130,7 +147,13 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
     NSError* error = nil;
 
     id<MTLLibrary> library = [device newLibraryWithURL:metallib_url error:&error];
-    if (!library) return nullptr;
+    if (!library) {
+      if (ir_debug) {
+        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED library load (%@)",
+              error ? [error localizedDescription] : @"unknown");
+      }
+      return nullptr;
+    }
 
     NSString* fn_name = (key.head_dim == 64)
         ? @"mlx_mfa_v2_async_attention"
@@ -146,11 +169,26 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
     id<MTLFunction> function = [library newFunctionWithName:fn_name
                                             constantValues:constants
                                                      error:&error];
-    if (!function) return nullptr;
+    if (!function) {
+      if (ir_debug) {
+        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED function load (%@)",
+              error ? [error localizedDescription] : @"unknown");
+      }
+      return nullptr;
+    }
 
     id<MTLComputePipelineState> pipeline =
         [device newComputePipelineStateWithFunction:function error:&error];
-    if (!pipeline) return nullptr;
+    if (!pipeline) {
+      if (ir_debug) {
+        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED pipeline creation (%@)",
+              error ? [error localizedDescription] : @"unknown");
+      }
+      return nullptr;
+    }
+    if (ir_debug) {
+      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: SUCCESS (%@)", fn_name);
+    }
 
     return (void*)CFBridgingRetain(pipeline);
   }
