@@ -43,3 +43,58 @@ Interim conclusion:
 - Task 3: runtime async-vs-sync benchmark in separate processes + pipeline-path logging.
 - Task 4: GPU capture (if available).
 - Task 5: final stage-by-stage diagnosis and recommendation.
+
+### Task 2 — Current toolchain compile and AIR comparison
+
+#### 2A. Compile original async source on current toolchain
+
+Command used:
+- `xcrun -sdk macosx metal -target air64-apple-macos15.0 -c csrc/async_v2_kernel.metal -o /tmp/async_v2_current.air`
+
+Result:
+- **Compilation fails** on current toolchain.
+
+Observed errors (first-order failures):
+- `error: illegal string literal in 'asm'` for:
+  - `air.simdgroup_async_copy_1d.p3i8.p1i8`
+  - `air.simdgroup_async_copy_1d.p1i8.p3i8`
+  - `air.simdgroup_async_copy_2d.p3i8.p1i8`
+  - `air.simdgroup_async_copy_2d.p1i8.p3i8`
+  - `air.wait_simdgroup_events`
+- Follow-on unresolved symbol errors for `__metal_simdgroup_async_copy_2d` and `__metal_wait_simdgroup_events`.
+
+Interpretation:
+- Stage 1 (`MSL -> AIR`) for this source is blocked on this toolchain due to rejection of inline `__asm` AIR intrinsic mapping.
+
+#### 2B. Build stripped no-asm variant
+
+Created:
+- `csrc/async_v2_noasm.metal`
+
+Change strategy:
+- Replaced only the `simdgroup_event` intrinsic bridge block with a synchronous software implementation of `simdgroup_event::async_copy(...)` and no-op `wait(...)`.
+- Kept kernel entrypoints and main flow intact for comparison purposes.
+
+Command used:
+- `xcrun -sdk macosx metal -target air64-apple-macos26.0 -c csrc/async_v2_noasm.metal -o /tmp/async_v2_noasm.air`
+
+Result:
+- Compiles successfully (warnings only).
+
+#### 2C. Compare shipped IR vs no-asm IR
+
+Commands used:
+- `xcrun metal-objdump --disassemble mlx_mfa/precompiled/async_v2.metallib > /tmp/async_v2_metallib_disasm.ll`
+- `xcrun metal-objdump --disassemble /tmp/async_v2_noasm.air > /tmp/async_v2_noasm.ll`
+- Symbol grep + diff on async/event terms.
+
+Findings:
+- Shipped metallib IR contains:
+  - `@air.simdgroup_async_copy_2d.p3i8.p1i8`
+  - `@air.wait_simdgroup_events`
+  - `struct.metal::simdgroup_event`
+- No-asm AIR contains **none** of those symbols/calls.
+
+Interim conclusion:
+- Shipped artifact and no-asm artifact are materially different at AIR level.
+- Therefore, any runtime serialization hypothesis now points to Stage 3/4 (runtime JIT/lowering/execution), not Stage 1/2 for the shipped binary.
