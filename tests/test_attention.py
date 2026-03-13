@@ -7737,6 +7737,274 @@ class TestDecodeRuntimeFactory:
         mx.eval(out)
         assert rt.seq_length() == 17
 
+    def test_register_prefix_and_metadata_dense(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+
+        out_pre, kp, vp = rt.register_prefix(
+            "sys_prompt",
+            q_pre,
+            k_pre,
+            v_pre,
+            scale=0.125,
+        )
+        mx.eval(out_pre, kp, vp)
+        assert "sys_prompt" in rt.list_registered_prefix_ids()
+        assert rt.metadata["prefix_cache_size"] == 1
+        assert rt.metadata["active_prefix_id"] == "sys_prompt"
+
+        rt.seed_prefix(prefix_id="sys_prompt", reset=True)
+        assert rt.seq_length() == 8
+        assert rt.metadata["last_prefix_reuse"]["prefix_ids"] == ("sys_prompt",)
+
+    def test_prefill_with_prefix_dense_matches_manual_seed_then_chunked(self):
+        from mlx_mfa import create_decode_runtime
+
+        scale = 0.125
+        q_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        q_suf = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        k_suf = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        v_suf = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+
+        rt_auto = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        rt_auto.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        out_auto = rt_auto.prefill_with_prefix(
+            q_suf,
+            k_suf,
+            v_suf,
+            prefix_id="p0",
+            chunk_size=2,
+            scale=scale,
+            causal=True,
+            reset=True,
+        )
+
+        rt_ref = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        rt_ref.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        rt_ref.seed_prefix(prefix_id="p0", reset=True)
+        out_ref = rt_ref.chunked_prefill(
+            q_suf,
+            k_suf,
+            v_suf,
+            chunk_size=2,
+            scale=scale,
+            causal=True,
+            reset=False,
+        )
+
+        mx.eval(out_auto, out_ref)
+        diff = float(mx.abs(out_auto.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt_auto.seq_length() == 14
+
+    def test_prefill_with_prefix_paged_batched(self):
+        from mlx_mfa import create_decode_runtime
+
+        scale = 1.0 / math.sqrt(64)
+        seq_id = 77
+        q_pre = mx.random.normal((1, 8, 6, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        q_suf = mx.random.normal((1, 8, 5, 64)).astype(mx.float16)
+        k_suf = mx.random.normal((1, 4, 5, 64)).astype(mx.float16)
+        v_suf = mx.random.normal((1, 4, 5, 64)).astype(mx.float16)
+
+        rt_auto = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="batched",
+            quantized_kv=False,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        rt_auto.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        out_auto = rt_auto.prefill_with_prefix(
+            q_suf,
+            k_suf,
+            v_suf,
+            prefix_id="p0",
+            seq_id=seq_id,
+            chunk_size=2,
+            scale=scale,
+            causal=True,
+            reset=True,
+        )
+
+        rt_ref = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="batched",
+            quantized_kv=False,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        rt_ref.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        rt_ref.seed_prefix(prefix_id="p0", seq_id=seq_id, reset=True)
+        out_ref = rt_ref.chunked_prefill(
+            q_suf,
+            k_suf,
+            v_suf,
+            chunk_size=2,
+            seq_ids=[seq_id],
+            scale=scale,
+            causal=True,
+            reset=False,
+        )
+
+        mx.eval(out_auto, out_ref)
+        diff = float(mx.abs(out_auto.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt_auto.seq_length(seq_id) == 11
+
+    def test_prefill_with_prefix_paged_packed_single_seq(self):
+        from mlx_mfa import create_decode_runtime
+
+        scale = 1.0 / math.sqrt(64)
+        seq_id = 5
+        q_pre = mx.random.normal((1, 8, 4, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        q_suf = mx.random.normal((1, 8, 5, 64)).astype(mx.float16)
+        k_suf = mx.random.normal((1, 4, 5, 64)).astype(mx.float16)
+        v_suf = mx.random.normal((1, 4, 5, 64)).astype(mx.float16)
+        cu = mx.array([0, 5], dtype=mx.int32)
+
+        rt_auto = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="packed",
+            quantized_kv=False,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        rt_auto.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        out_auto = rt_auto.prefill_with_prefix(
+            q_suf,
+            k_suf,
+            v_suf,
+            prefix_id="p0",
+            seq_ids=[seq_id],
+            cu_seqlens_q=cu,
+            chunk_size=2,
+            scale=scale,
+            causal=True,
+            reset=True,
+        )
+
+        rt_ref = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="packed",
+            quantized_kv=False,
+            B=1,
+            H_q=8,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        rt_ref.register_prefix("p0", q_pre, k_pre, v_pre, scale=scale)
+        rt_ref.seed_prefix(prefix_id="p0", seq_ids=[seq_id], reset=True)
+        out_ref = rt_ref.chunked_prefill(
+            q_suf,
+            k_suf,
+            v_suf,
+            chunk_size=2,
+            seq_ids=[seq_id],
+            cu_seqlens_q=cu,
+            scale=scale,
+            causal=True,
+            reset=False,
+        )
+
+        mx.eval(out_auto, out_ref)
+        diff = float(mx.abs(out_auto.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt_auto.seq_length(seq_id) == 9
+
+    def test_prefix_reuse_invalid_combinations_fail_clearly(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt_dense = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        rt_dense.register_prefix("p0", q_pre, k_pre, v_pre)
+        with pytest.raises(ValueError, match="supported only on paged runtime"):
+            rt_dense.seed_prefix(prefix_ids=["p0"], seq_ids=[0])
+
+        rt_paged = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="packed",
+            quantized_kv=False,
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        rt_paged.register_prefix("p0", q_pre, k_pre, v_pre)
+        with pytest.raises(ValueError, match="length mismatch"):
+            rt_paged.seed_prefix(prefix_ids=["p0", "p0"], seq_ids=[1])
+
+        q = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        with pytest.raises(ValueError, match="requires cu_seqlens_q"):
+            rt_paged.prefill_with_prefix(
+                q,
+                k,
+                v,
+                prefix_id="p0",
+                seq_ids=[1],
+                chunk_size=2,
+                causal=True,
+            )
+
     def test_decode_from_shared_prefix_requires_prepare(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
