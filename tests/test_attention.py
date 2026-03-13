@@ -8091,6 +8091,274 @@ class TestPagedVarlenQueries:
             )
 
 
+class TestPagedContinuousBatching:
+    """Scheduler-style continuous batching coverage for paged runtime/API."""
+
+    def test_flash_attention_paged_cache_batch_idx_matches_row_gather(self):
+        from mlx_mfa import flash_attention_paged
+
+        mx.random.seed(811)
+        B_pool, H_q, H_kv, D = 4, 8, 4, 64
+        q_len = 2
+        kv_lens = [24, 31, 19, 27]
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((2, H_q, q_len, D)).astype(mx.float16)
+        k_seqs = [mx.random.normal((1, H_kv, s, D)).astype(mx.float16) for s in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, s, D)).astype(mx.float16) for s in kv_lens]
+        mx.eval(q, *k_seqs, *v_seqs)
+        pool_k, pool_v, table, lens = TestPagedVarlenQueries._build_hetero_paged_pool(
+            k_seqs,
+            v_seqs,
+            block_size,
+        )
+        idx = mx.array([3, 1], dtype=mx.int32)
+
+        out_remap = flash_attention_paged(
+            q,
+            pool_k,
+            pool_v,
+            table,
+            lens,
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+            cache_batch_idx=idx,
+        )
+        out_ref = flash_attention_paged(
+            q,
+            pool_k,
+            pool_v,
+            table[idx],
+            lens[idx],
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+        )
+        mx.eval(out_remap, out_ref)
+        diff = float(mx.abs(out_remap.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 1e-6
+
+    def test_runtime_paged_step_batch_with_reordered_active_requests(self):
+        from mlx_mfa import create_decode_runtime, PagedKVCache, flash_attention_paged
+
+        mx.random.seed(812)
+        H_q, H_kv, D = 8, 4, 64
+        block_size = 16
+        seq_ids = [10, 20, 30]
+        kv_lens = [18, 25, 22]
+        scale = 1.0 / math.sqrt(D)
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="batched",
+            B=1,
+            H_q=H_q,
+            H_kv=H_kv,
+            D=D,
+            num_blocks=128,
+            block_size=block_size,
+        )
+        cache_ref = PagedKVCache(num_blocks=128, block_size=block_size, H=H_kv, D=D)
+
+        k_prefill = {}
+        v_prefill = {}
+        for sid, kv_len in zip(seq_ids, kv_lens):
+            k_i = mx.random.normal((1, H_kv, kv_len, D)).astype(mx.float16)
+            v_i = mx.random.normal((1, H_kv, kv_len, D)).astype(mx.float16)
+            k_prefill[sid] = k_i
+            v_prefill[sid] = v_i
+            rt.context.cache.append(k_i, v_i, seq_id=sid)
+            cache_ref.append(k_i, v_i, seq_id=sid)
+
+        active_seq_ids = [30, 10]
+        q = mx.random.normal((2, H_q, 1, D)).astype(mx.float16)
+        k_new = mx.random.normal((2, H_kv, 1, D)).astype(mx.float16)
+        v_new = mx.random.normal((2, H_kv, 1, D)).astype(mx.float16)
+
+        out_rt = rt.paged_step_batch(
+            q,
+            k_new,
+            v_new,
+            seq_ids=active_seq_ids,
+            scale=scale,
+            causal=True,
+        )
+
+        for b, sid in enumerate(active_seq_ids):
+            cache_ref.append(k_new[b : b + 1], v_new[b : b + 1], seq_id=sid)
+        table_ref = cache_ref.get_block_table(active_seq_ids)
+        lens_ref = cache_ref.get_seq_lens(active_seq_ids)
+        out_ref = flash_attention_paged(
+            q,
+            cache_ref.k_pool,
+            cache_ref.v_pool,
+            table_ref,
+            lens_ref,
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+        )
+
+        mx.eval(out_rt, out_ref)
+        diff = float(mx.abs(out_rt.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt.seq_length(30) == kv_lens[2] + 1
+        assert rt.seq_length(10) == kv_lens[0] + 1
+        assert rt.seq_length(20) == kv_lens[1]
+        assert rt.metadata["active_seq_ids"] == tuple(active_seq_ids)
+        assert rt.metadata["active_cache_batch_idx"] is None
+
+    def test_runtime_paged_step_batch_cache_batch_idx(self):
+        from mlx_mfa import create_decode_runtime
+
+        mx.random.seed(813)
+        H_q, H_kv, D = 8, 4, 64
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+        seq_ids = [5, 7, 9]
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="batched",
+            B=1,
+            H_q=H_q,
+            H_kv=H_kv,
+            D=D,
+            num_blocks=128,
+            block_size=block_size,
+        )
+        for sid in seq_ids:
+            k_i = mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)
+            v_i = mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)
+            rt.context.cache.append(k_i, v_i, seq_id=sid)
+
+        q = mx.random.normal((2, H_q, 1, D)).astype(mx.float16)
+        k_new = mx.random.normal((2, H_kv, 1, D)).astype(mx.float16)
+        v_new = mx.random.normal((2, H_kv, 1, D)).astype(mx.float16)
+        idx = mx.array([2, 0], dtype=mx.int32)
+        out = rt.paged_step_batch(
+            q,
+            k_new,
+            v_new,
+            seq_ids=seq_ids,
+            cache_batch_idx=idx,
+            scale=scale,
+            causal=True,
+        )
+        mx.eval(out)
+        assert out.shape == (2, H_q, 1, D)
+        assert rt.metadata["active_seq_ids"] == (9, 5)
+        assert rt.metadata["active_cache_batch_idx"] == (2, 0)
+
+    def test_flash_attention_paged_varlen_cache_batch_idx(self):
+        from mlx_mfa import flash_attention_paged_varlen
+
+        mx.random.seed(814)
+        H_q, H_kv, D = 8, 4, 64
+        block_size = 16
+        q_lens = [2, 3]
+        kv_lens = [20, 27, 18, 31]
+        scale = 1.0 / math.sqrt(D)
+
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        mx.eval(*q_seqs, *k_seqs, *v_seqs)
+        q_pack, cu_q = TestPagedVarlenQueries._pack_queries(q_seqs)
+        pool_k, pool_v, table, lens = TestPagedVarlenQueries._build_hetero_paged_pool(
+            k_seqs,
+            v_seqs,
+            block_size,
+        )
+        idx = mx.array([3, 1], dtype=mx.int32)
+
+        out_remap = flash_attention_paged_varlen(
+            q_pack,
+            pool_k,
+            pool_v,
+            table,
+            lens,
+            cu_q,
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+            cache_batch_idx=idx,
+        )
+        out_ref = flash_attention_paged_varlen(
+            q_pack,
+            pool_k,
+            pool_v,
+            table[idx],
+            lens[idx],
+            cu_q,
+            scale=scale,
+            causal=True,
+            block_size=block_size,
+        )
+        mx.eval(out_remap, out_ref)
+        diff = float(mx.abs(out_remap.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+
+    def test_invalid_paged_remap_fails(self):
+        from mlx_mfa import (
+            flash_attention_paged,
+            flash_attention_paged_varlen,
+            create_decode_runtime,
+        )
+
+        q = mx.zeros((2, 4, 1, 64), dtype=mx.float16)
+        pool = mx.zeros((8, 16, 4, 64), dtype=mx.float16)
+        table = mx.array([[0], [1], [2]], dtype=mx.int32)
+        lens = mx.array([16, 16, 16], dtype=mx.int32)
+
+        with pytest.raises(ValueError, match="out-of-range"):
+            flash_attention_paged(
+                q,
+                pool,
+                pool,
+                table,
+                lens,
+                cache_batch_idx=mx.array([0, 3], dtype=mx.int32),
+            )
+
+        q_pack = mx.zeros((1, 4, 3, 64), dtype=mx.float16)
+        cu = mx.array([0, 1, 3], dtype=mx.int32)
+        with pytest.raises(ValueError, match="out-of-range"):
+            flash_attention_paged_varlen(
+                q_pack,
+                pool,
+                pool,
+                table,
+                lens,
+                cu,
+                cache_batch_idx=mx.array([0, 5], dtype=mx.int32),
+            )
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="batched",
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=16,
+            block_size=16,
+        )
+        q_bad = mx.zeros((2, 4, 1, 64), dtype=mx.float16)
+        k_bad = mx.zeros((2, 4, 1, 64), dtype=mx.float16)
+        v_bad = mx.zeros((1, 4, 1, 64), dtype=mx.float16)
+        with pytest.raises(ValueError, match="batch sizes must match"):
+            rt.paged_step_batch(q_bad, k_bad, v_bad, seq_ids=[0, 1])
+
+
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
 # ==========================================================================
