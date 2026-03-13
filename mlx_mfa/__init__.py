@@ -115,6 +115,17 @@ from mlx_mfa.runtime import (
     DecodeRuntime,
     create_decode_runtime,
 )
+from mlx_mfa.kv_cache import (
+    KVCacheCapabilities,
+    KVCacheOperationUnsupported,
+    KVCacheAdapter,
+    DenseKVCacheAdapter,
+    PagedKVCacheAdapter,
+    QuantizedKVCacheAdapter,
+    adapt_kv_cache,
+    resolve_context_cache,
+    resolve_context_cache_adapter,
+)
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
 from mlx_mfa.compile_metallib import compile_metallib
@@ -204,5 +215,15 @@ __all__ = [
     "create_inference_context",
     "DecodeRuntime",
     "create_decode_runtime",
+    # Cache abstraction helpers
+    "KVCacheCapabilities",
+    "KVCacheOperationUnsupported",
+    "KVCacheAdapter",
+    "DenseKVCacheAdapter",
+    "PagedKVCacheAdapter",
+    "QuantizedKVCacheAdapter",
+    "adapt_kv_cache",
+    "resolve_context_cache",
+    "resolve_context_cache_adapter",
     "__version__",
 ]
