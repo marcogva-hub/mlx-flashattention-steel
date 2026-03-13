@@ -34,7 +34,7 @@ dependencies = ["mlx>=0.18.0", "numpy"]
 dev = ["pytest>=7.0", "pytest-benchmark"]
 
 [tool.scikit-build]
-cmake.minimum-version = "3.24"
+cmake.version = ">=3.24"
 cmake.build-type = "Release"
 wheel.packages = ["mlx_mfa"]
 
