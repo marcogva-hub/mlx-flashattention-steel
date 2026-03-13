@@ -891,7 +891,8 @@ Core methods:
 - `speculative_step(...)` for runtime-integrated draft/verify bookkeeping
   (accept mask + contiguous accepted-prefix length + accepted/rejected token
   partition metadata)
-- `metadata` (backend/cache/query-layout snapshot)
+- `metadata` (backend/cache/query-layout snapshot, including cache adapter
+  metadata: `cache_kind`, `cache_capabilities`)
 
 `query_layout` behavior:
 - `"batched"`: standard `[B,H,N,D]` queries via `prefill/step`
@@ -919,6 +920,32 @@ Speculative-flow hints:
 ---
 
 ## 12. KV Cache Classes
+
+### Cache abstraction helpers
+
+```python
+from mlx_mfa import (
+    adapt_kv_cache,
+    resolve_context_cache,
+    resolve_context_cache_adapter,
+    KVCacheCapabilities,
+    KVCacheOperationUnsupported,
+    HybridKVCache,
+)
+```
+
+This layer provides capability adapters over concrete cache implementations
+without forcing identical internals:
+
+- `DenseKVCacheAdapter`
+- `PagedKVCacheAdapter`
+- `QuantizedKVCacheAdapter`
+- `HybridKVCacheAdapter` (future-facing scaffold)
+
+`HybridKVCache` in v2.9.2 is structural groundwork only (non-production):
+it delegates current operations to a primary cache and exposes explicit
+future hooks (`offload_seq`, `prefetch_seq`, `promote_seq`) as
+`NotImplementedError`.
 
 ### `KVCacheProtocol`
 

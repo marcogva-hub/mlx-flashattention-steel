@@ -406,6 +406,16 @@ Runtime-managed prefix caching is now first-class in `DecodeRuntime`:
 - metadata exposes `prefix_cache_size`, `registered_prefix_ids`,
   `active_prefix_id`, and `last_prefix_reuse` for inspection/debugging
 
+Cache abstraction layer (serving-oriented refactor):
+- `mlx_mfa.kv_cache` introduces capability adapters over concrete cache types
+  (`DenseKVCache`, `PagedKVCache`, `QuantizedKVCache`)
+- runtime flows use adapter capability calls for key cache interactions
+  instead of directly relying on concrete cache internals where practical
+- `DecodeRuntime.metadata` now reports `cache_kind` and
+  `cache_capabilities` for debug visibility
+- `HybridKVCache` is included as future-facing structural scaffold for
+  tiered/offloaded cache strategies (non-production in this pass)
+
 Speculative decode is now runtime-integrated (narrow scope):
 - low-level verify remains available as `flash_attention_speculative_verify(...)`
 - `DecodeRuntime.speculative_step(...)` wraps verify + accept/reject bookkeeping

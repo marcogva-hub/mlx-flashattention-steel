@@ -226,6 +226,11 @@ Experimental keep/park recommendations are tracked in
 - **Runtime-integrated speculative decode** — `DecodeRuntime.speculative_step(...)`
   provides explicit draft/verify accept-reject bookkeeping over existing
   `flash_attention_speculative_verify(...)` semantics
+- **KV cache abstraction layer** — capability adapters (`adapt_kv_cache`,
+  `resolve_context_cache_adapter`) for dense/paged/quantized caches with
+  explicit unsupported-operation signaling
+- **Hybrid cache skeleton** — `HybridKVCache` provides future offload/tiering
+  extension points (non-production scaffold in this release)
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -244,7 +249,8 @@ Experimental keep/park recommendations are tracked in
   speculative draft/verify helper access from one surface
 - **Runtime metadata** — `DecodeRuntime.metadata` reports selected backend and
   helper activation (`paged`, `shared_prefix`, `splitfuse`,
-  `speculative_verify`, `speculative_step`, `sage`)
+  `speculative_verify`, `speculative_step`, `sage`) plus cache abstraction
+  metadata (`cache_kind`, `cache_capabilities`)
 - **mlx-lm integration** — `patch_mlx_lm()` replaces attention in Llama/Mistral/Qwen models
 
 ---
@@ -502,6 +508,8 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Chunked prefill | explicit runtime API | `DecodeRuntime.chunked_prefill(...)` | Serving/scheduling capability milestone; monolithic prefill remains faster in current M1 Max matrix |
 | Runtime-managed prefix reuse | explicit runtime API | `register_prefix` + `seed_prefix` + `prefill_with_prefix` | Prefix reuse integrated into runtime surface; strongest gains in paged serving-style flows |
 | Runtime speculative decode | explicit runtime API | `DecodeRuntime.speculative_step(...)` | Draft/verify flow integration milestone; not a full scheduler or broad throughput promotion yet |
+| KV cache abstraction | structural runtime layer | `adapt_kv_cache(...)`, `resolve_context_cache_adapter(...)` | Cleaner extension point for dense/paged/quantized cache interchangeability |
+| Hybrid/offload-ready cache | future-facing scaffold | `HybridKVCache` | Non-production skeleton; no auto-routing/offload policy in this release |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

@@ -22,6 +22,10 @@
   mapping (`cache_batch_idx` in paged APIs; runtime batched paged remap helpers).
 - **Speculative decode runtime flow** is now supported via explicit runtime API
   (`DecodeRuntime.speculative_step`) with dense default and narrow paged-cache integration.
+- **KV cache abstraction layer** is now present for dense/paged/quantized cache
+  capability adaptation (`adapt_kv_cache`, `resolve_context_cache_adapter`).
+- **Hybrid/offload cache support** is groundwork-only in this pass via
+  `HybridKVCache` skeleton (non-production).
 - **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
 
 ---
@@ -372,6 +376,39 @@ Interpretation:
 - Runtime and manual helper flows match acceptance outputs in all measured rows.
 - Performance deltas are mixed and small-to-moderate; no auto-promotion policy
   change is warranted from this matrix alone.
+
+---
+
+## KV Cache Abstraction Smoke Matrix (v2.9.2)
+
+Scope in this pass:
+- Introduced capability adapters for dense/paged/quantized caches.
+- Integrated runtime cache interactions through adapter calls in key serving
+  flows (prefix seeding, paged batch/varlen paths, speculative fallback).
+- Added `HybridKVCache` future-facing scaffold (non-production).
+
+Smoke matrix (M1 Max, separate process):
+- script: `benchmarks/bench_cache_abstraction_smoke.py`
+- artifact: `notes/cache_abstraction_smoke_latest.json`
+
+| Scenario | D | baseline ms | abstraction/runtime ms | ratio |
+|---|---:|---:|---:|---:|
+| dense cache append+view (direct vs adapter) | 64 | 1.186 | 0.918 | 0.77× |
+| dense cache append+view (direct vs adapter) | 128 | 0.391 | 0.753 | 1.93× |
+| paged cache append+tables (direct vs adapter) | 64 | 0.459 | 0.892 | 1.94× |
+| paged cache append+tables (direct vs adapter) | 128 | 1.646 | 0.528 | 0.32× |
+| dense prefill+step (InferenceContext vs DecodeRuntime) | 64 | 1.251 | 2.509 | 2.01× |
+| dense prefill+step (InferenceContext vs DecodeRuntime) | 128 | 2.252 | 1.693 | 0.75× |
+| speculative flow (helper vs runtime step) | 64 | 4.333 | 3.321 | 0.77× |
+| speculative flow (helper vs runtime step) | 128 | 1.221 | 3.235 | 2.65× |
+
+Interpretation:
+- This pass is primarily a **structural maintainability milestone**, not a
+  throughput pass.
+- Smoke results are mixed and small-scale; no broad regression signal appears,
+  but no speedup claim is made.
+- The key output is cleaner cache/runtime extension points for future hybrid
+  and offload work.
 
 ---
 

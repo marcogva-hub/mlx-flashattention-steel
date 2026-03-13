@@ -154,6 +154,30 @@ Interpretation:
 
 ---
 
+## KV Cache Abstraction Smoke Matrix
+
+Matrix script: `benchmarks/bench_cache_abstraction_smoke.py`  
+Artifact: `notes/cache_abstraction_smoke_latest.json`
+
+| Scenario | D | baseline ms | abstraction/runtime ms | ratio |
+|---|---:|---:|---:|---:|
+| dense cache append+view (direct vs adapter) | 64 | 1.186 | 0.918 | 0.77× |
+| dense cache append+view (direct vs adapter) | 128 | 0.391 | 0.753 | 1.93× |
+| paged cache append+tables (direct vs adapter) | 64 | 0.459 | 0.892 | 1.94× |
+| paged cache append+tables (direct vs adapter) | 128 | 1.646 | 0.528 | 0.32× |
+| dense prefill+step (InferenceContext vs DecodeRuntime) | 64 | 1.251 | 2.509 | 2.01× |
+| dense prefill+step (InferenceContext vs DecodeRuntime) | 128 | 2.252 | 1.693 | 0.75× |
+| speculative flow (helper vs runtime step) | 64 | 4.333 | 3.321 | 0.77× |
+| speculative flow (helper vs runtime step) | 128 | 1.221 | 3.235 | 2.65× |
+
+Interpretation:
+- Structural/maintainability milestone: cache interactions now route through a
+  capability adapter layer.
+- Smoke timings are mixed; this section is a regression guard, not a speedup
+  claim.
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

@@ -142,6 +142,30 @@ All notable changes to mlx-mfa are documented here.
 - **docs**: Updated README/RESULTS/API manual/benchmark docs to document
   supported speculative runtime paths and limitations.
 
+### Hybrid KV Cache Abstraction Pass (Serving-Oriented)
+
+- **notes**: Added cache-abstraction design note:
+  `notes/hybrid_kv_cache_design.md`.
+- **refactor**: Added cache abstraction module `mlx_mfa/kv_cache.py` with:
+  - capability model (`KVCacheCapabilities`)
+  - explicit unsupported-operation signaling (`KVCacheOperationUnsupported`)
+  - adapters for dense/paged/quantized caches
+  - context helpers (`resolve_context_cache(_adapter)`).
+- **refactor**: Integrated adapter-based cache access into serving-oriented
+  runtime flows (prefix seeding, paged varlen/batch helpers, packed chunked
+  prefill cache updates, speculative verify fallback).
+- **feat**: Added future-facing `HybridKVCache` + adapter scaffold
+  (non-production) to establish extension points for hybrid/offload policy work.
+- **test**: Added cache abstraction coverage:
+  - dense/paged/quantized adapter behavior
+  - unsupported operation errors
+  - runtime flow regression checks (prefix/chunked/speculative/paged).
+- **bench**: Added smoke matrix harness
+  (`benchmarks/bench_cache_abstraction_smoke.py`) with artifact
+  (`notes/cache_abstraction_smoke_latest.json`).
+- **bench result**: Primary outcome is structural/runtime maintainability;
+  smoke timing is mixed with no broad optimization claim.
+
 ## [2.9.2] — 2026-03-12
 
 ### Vec2 Loads + V5 Padding Fix
