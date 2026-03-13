@@ -518,3 +518,70 @@ class TestCacheAbstractionRuntimeFlows:
         assert st2["residency_map"][0] == "hot"
         assert st2["reload_count"] >= 1
         assert rt.seq_length() == 9
+
+    def test_hybrid_runtime_prefix_chunked_prefill_after_offload_reload(self):
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_with_secondary=False,
+            hybrid_enable_offload=True,
+            hybrid_hot_seq_capacity=1,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=128,
+        )
+        q_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        rt.register_prefix("off-p0", q_pre, k_pre, v_pre)
+        rt.seed_prefix(prefix_id="off-p0", reset=True)
+        rt.hybrid_offload([0], reason="unit")
+        assert rt.hybrid_state["residency_map"][0] == "offloaded"
+
+        q_s = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        k_s = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        v_s = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        out = rt.chunked_prefill(
+            q_s,
+            k_s,
+            v_s,
+            chunk_size=2,
+            causal=True,
+            reset=False,
+        )
+        mx.eval(out)
+        st = rt.hybrid_state
+        assert st["residency_map"][0] == "hot"
+        assert st["reload_count"] >= 1
+        assert rt.seq_length() == 10
+
+    def test_hybrid_runtime_speculative_after_offload(self):
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_with_secondary=False,
+            hybrid_enable_offload=True,
+            hybrid_hot_seq_capacity=1,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=96,
+        )
+        q = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        rt.hybrid_offload([0], reason="unit")
+        assert rt.hybrid_state["residency_map"][0] == "offloaded"
+
+        q_target = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        draft_ids = mx.array([[0, 1, 2]], dtype=mx.int32)
+        out = rt.speculative_step(q_target, draft_ids, accept_logprob_delta=-1e9)
+        mx.eval(out["accepted_prefix_lens"])
+        st = rt.hybrid_state
+        assert st["residency_map"][0] == "hot"
+        assert st["reload_count"] >= 1
+        assert tuple(out["accepted_prefix_lens"].tolist()) == (3,)
