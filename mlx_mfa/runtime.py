@@ -301,6 +301,44 @@ class DecodeRuntime:
             )
 
         N = int(q.shape[2])
+
+        if (
+            self.backend == "dense"
+            and seq_ids is None
+            and cache_batch_idx is None
+            and hasattr(self.context, "chunked_prefill")
+        ):
+            return self.context.chunked_prefill(
+                q,
+                k,
+                v,
+                chunk_size=chunk_size,
+                scale=scale,
+                causal=causal,
+                softcap=softcap,
+                window_size=window_size,
+                reset=reset,
+            )
+
+        if (
+            self.backend == "paged"
+            and int(q.shape[0]) == 1
+            and cache_batch_idx is None
+            and hasattr(self.context, "chunked_prefill")
+            and (seq_ids is None or len(seq_ids) == 1)
+        ):
+            sid = self.default_seq_id if seq_ids is None else int(seq_ids[0])
+            return self.context.chunked_prefill(
+                q,
+                k,
+                v,
+                chunk_size=chunk_size,
+                scale=scale,
+                causal=causal,
+                seq_id=sid,
+                reset=reset,
+            )
+
         if reset:
             if self.backend == "paged":
                 cache = getattr(self.context, "cache", None)
