@@ -4,6 +4,49 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### Final Serving Completion Pass
+
+- **notes**: Added final serving-completion design/audit notes:
+  - `notes/minimal_kv_offloading_design.md`
+  - `notes/splitfuse_runtime_integration_design.md`
+  - `notes/paged_runtime_page_native_gaps.md`
+- **feat**: Added external-cache extension module `mlx_mfa.external_cache`:
+  - `ExternalKVCacheAdapter`
+  - `ExternalKVCacheCapabilities`
+  - `LocalHostKVStoreAdapter` (first concrete local backend)
+- **feat**: Upgraded hybrid cache behavior with minimal real offload:
+  - offloaded residency tier in `HybridKVCache`
+  - demote/offload + reload/promotion behavior
+  - runtime-visible offload/residency state
+- **test**: Added dedicated external/offload coverage:
+  - `tests/test_external_cache.py`
+  - expanded hybrid cache transition coverage in
+    `tests/test_kv_cache_abstraction.py`
+- **feat**: Deepened runtime splitfuse and paged-native integration:
+  - `DecodeRuntime.splitfuse_step(...)`
+  - paged decode-only splitfuse page-native path
+  - paged speculative verify runtime path via
+    `flash_attention_speculative_verify_paged(...)`
+  - `flash_attention_paged(..., return_lse=True)` support for runtime verify
+    integration
+- **perf**: Reduced one high-value paged gather/bridge point in runtime
+  (paged decode-only splitfuse no longer requires dense bridge materialization
+  in the supported narrow path).
+- **bench**: Refreshed serving-oriented matrices after final capability pass:
+  - `notes/hybrid_kv_cache_bench_latest.json`
+  - `notes/splitfuse_runtime_matrix_latest.json`
+  - `notes/paged_page_native_runtime_latest.json`
+  - `notes/speculative_decode_runtime_matrix_latest.json`
+  - `notes/prefix_caching_runtime_matrix_latest.json`
+  - `notes/chunked_prefill_matrix_latest.json`
+  - `notes/paged_continuous_batching_latest.json`
+  - `notes/paged_varlen_matrix_latest.json`
+- **fix**: Made `DecodeRuntime.speculative_verify(...)` metadata deterministic
+  (`last_speculative_verify` no longer gets overwritten by mixed fallback
+  states).
+- **notes**: Added branch-level serving capability summary:
+  `notes/final_serving_capabilities_summary.md`.
+
 ### Hybrid KV Behavior Implementation Pass
 
 - **notes**: Added concrete hybrid behavior model note:

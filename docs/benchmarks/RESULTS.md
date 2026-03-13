@@ -4,7 +4,9 @@
 **MLX version**: 0.31.0
 **mlx-mfa version**: 2.9.2
 **Date**: 2026-03-13
-**Config**: B=2 H=8 f16, warmup=8, iters=20
+**Config**: mixed per section/script; dense decision rows use B=2 H=8 f16,
+while serving refresh matrices use per-script scenarios (typically
+warmup=1, iters=2-4)
 
 ---
 
@@ -47,10 +49,10 @@ Artifact: `notes/paged_varlen_matrix_latest.json`
 
 | Scenario | D | varlen ms | padded paged ms | seq-loop ms | varlen/padded |
 |---|---:|---:|---:|---:|---:|
-| GQA `B=8 H_q=8 H_kv=4` hetero | 64 | 3.536 | 3.770 | 4.263 | 1.07× |
-| GQA `B=8 H_q=8 H_kv=4` hetero | 128 | 4.495 | 4.529 | 4.394 | 1.01× |
-| MQA `B=8 H_q=16 H_kv=1` hetero | 64 | 4.267 | 1.561 | 4.220 | 0.37× |
-| MQA `B=8 H_q=16 H_kv=1` hetero | 128 | 4.191 | 3.380 | 4.236 | 0.81× |
+| GQA `B=8 H_q=8 H_kv=4` hetero | 64 | 3.548 | 6.190 | 3.610 | 1.75× |
+| GQA `B=8 H_q=8 H_kv=4` hetero | 128 | 4.274 | 9.675 | 4.811 | 2.26× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 64 | 2.037 | 1.318 | 1.941 | 0.65× |
+| MQA `B=8 H_q=16 H_kv=1` hetero | 128 | 2.996 | 2.892 | 3.240 | 0.97× |
 
 Interpretation:
 - New capability is now available through explicit API/runtime:
@@ -69,10 +71,10 @@ Artifact: `notes/paged_continuous_batching_latest.json`
 
 | Scenario | D | manual ms | runtime-remap ms | manual/runtime |
 |---|---:|---:|---:|---:|
-| paged_step_batch reorder active sets | 64 | 28.279 | 27.648 | 1.02× |
-| paged_varlen remap reorder active sets | 64 | 22.004 | 24.529 | 0.90× |
-| paged_step_batch reorder active sets | 128 | 49.385 | 47.097 | 1.05× |
-| paged_varlen remap reorder active sets | 128 | 34.899 | 35.533 | 0.98× |
+| paged_step_batch reorder active sets | 64 | 26.101 | 21.114 | 1.24× |
+| paged_varlen remap reorder active sets | 64 | 16.840 | 16.022 | 1.05× |
+| paged_step_batch reorder active sets | 128 | 32.533 | 31.296 | 1.04× |
+| paged_varlen remap reorder active sets | 128 | 27.090 | 26.847 | 1.01× |
 
 Interpretation:
 - Primary win is capability/usability: explicit scheduler-friendly remap
@@ -87,14 +89,14 @@ Interpretation:
 Matrix script: `benchmarks/bench_chunked_prefill.py`  
 Artifact: `notes/chunked_prefill_matrix_latest.json`
 
-| Group | D | best chunk_size | monolithic ms | chunked ms | chunked/mono |
+| Group | D | chunk_size | monolithic ms | chunked ms | chunked/mono |
 |---|---:|---:|---:|---:|---:|
-| dense (`B=1, N=8192`) | 64 | 512 | 13.47 | 29.99 | 2.23× |
-| dense (`B=1, N=8192`) | 128 | 512 | 29.52 | 49.99 | 1.69× |
-| paged batched (`B=2, N=4096`) | 64 | 512 | 85.93 | 104.14 | 1.21× |
-| paged batched (`B=2, N=4096`) | 128 | 512 | 171.74 | 203.23 | 1.18× |
-| paged packed (`total_q=6144`) | 64 | 512 | 59.02 | 79.19 | 1.34× |
-| paged packed (`total_q=6144`) | 128 | 512 | 116.41 | 146.67 | 1.26× |
+| dense (`B=1, N=8192`) | 64 | 256 | 12.61 | 33.30 | 2.64× |
+| dense (`B=1, N=8192`) | 128 | 256 | 28.46 | 57.74 | 2.03× |
+| paged batched (`B=2, N=4096`) | 64 | 256 | 84.48 | 110.76 | 1.31× |
+| paged batched (`B=2, N=4096`) | 128 | 256 | 172.14 | 220.92 | 1.28× |
+| paged packed (`total_q=6144`) | 64 | 256 | 58.10 | 68.33 | 1.18× |
+| paged packed (`total_q=6144`) | 128 | 256 | 109.59 | 143.44 | 1.31× |
 
 Interpretation:
 - Chunked prefill is added as an explicit runtime/scheduler capability via
@@ -113,10 +115,10 @@ Artifact: `notes/prefix_caching_runtime_matrix_latest.json`
 
 | Scenario | D | no-reuse ms | explicit-helper ms | runtime-managed ms | no-reuse/runtime |
 |---|---:|---:|---:|---:|---:|
-| dense prefix reuse chunked | 64 | 3.665 | 8.256 | 7.770 | 0.47× |
-| dense prefix reuse chunked | 128 | 2.800 | 7.946 | 8.330 | 0.34× |
-| paged prefix reuse chunked | 64 | 37.378 | 19.786 | 20.077 | 1.86× |
-| paged prefix reuse chunked | 128 | 41.764 | 33.913 | 34.028 | 1.23× |
+| dense prefix reuse chunked | 64 | 2.830 | 6.241 | 6.589 | 0.43× |
+| dense prefix reuse chunked | 128 | 4.716 | 7.072 | 7.268 | 0.65× |
+| paged prefix reuse chunked | 64 | 41.231 | 19.370 | 19.468 | 2.12× |
+| paged prefix reuse chunked | 128 | 53.641 | 32.141 | 31.583 | 1.70× |
 
 Interpretation:
 - Runtime-managed prefix path tracks explicit helper orchestration closely
@@ -135,15 +137,15 @@ Artifact: `notes/speculative_decode_runtime_matrix_latest.json`
 
 | Scenario | Mode | manual helper ms | runtime `speculative_step` ms | manual/runtime |
 |---|---|---:|---:|---:|
-| dense_short (D=64, cache=1024, N_draft=4) | full_accept | 1.219 | 1.342 | 0.91× |
-| dense_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.157 | 1.159 | 1.00× |
-| dense_short (D=64, cache=1024, N_draft=4) | reject_all | 2.718 | 2.456 | 1.11× |
-| dense_micro (D=128, cache=2048, N_draft=8) | full_accept | 2.872 | 1.527 | 1.88× |
-| dense_micro (D=128, cache=2048, N_draft=8) | partial_accept | 1.478 | 2.580 | 0.57× |
-| dense_micro (D=128, cache=2048, N_draft=8) | reject_all | 1.358 | 1.336 | 1.02× |
-| paged_short (D=64, cache=1024, N_draft=4) | full_accept | 1.284 | 1.350 | 0.95× |
-| paged_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.094 | 1.377 | 0.79× |
-| paged_short (D=64, cache=1024, N_draft=4) | reject_all | 1.059 | 1.363 | 0.78× |
+| dense_short (D=64, cache=1024, N_draft=4) | full_accept | 1.436 | 1.287 | 1.12× |
+| dense_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.224 | 1.170 | 1.05× |
+| dense_short (D=64, cache=1024, N_draft=4) | reject_all | 1.289 | 1.431 | 0.90× |
+| dense_micro (D=128, cache=2048, N_draft=8) | full_accept | 1.289 | 1.211 | 1.06× |
+| dense_micro (D=128, cache=2048, N_draft=8) | partial_accept | 1.177 | 1.185 | 0.99× |
+| dense_micro (D=128, cache=2048, N_draft=8) | reject_all | 1.128 | 1.164 | 0.97× |
+| paged_short (D=64, cache=1024, N_draft=4) | full_accept | 1.035 | 1.183 | 0.88× |
+| paged_short (D=64, cache=1024, N_draft=4) | partial_accept | 1.006 | 1.056 | 0.95× |
+| paged_short (D=64, cache=1024, N_draft=4) | reject_all | 1.208 | 1.027 | 1.18× |
 
 Interpretation:
 - This pass is a runtime capability milestone for draft/verify orchestration.
@@ -185,12 +187,12 @@ Artifact: `notes/hybrid_kv_cache_bench_latest.json`
 
 | Scenario | D | baseline ms | hybrid ms | hybrid/baseline |
 |---|---:|---:|---:|---:|
-| dense prefill + 8 decode steps | 64 | 4.712 | 3.956 | 0.84× |
-| paged batch (2 seq, 16 decode steps) | 64 | 16.653 | 17.385 | 1.04× |
-| dense prefix reuse prefill_with_prefix | 64 | 1.659 | 1.561 | 0.94× |
-| dense prefill + 8 decode steps | 128 | 4.278 | 4.587 | 1.07× |
-| paged batch (2 seq, 16 decode steps) | 128 | 19.595 | 21.198 | 1.08× |
-| dense prefix reuse prefill_with_prefix | 128 | 2.505 | 1.792 | 0.72× |
+| dense prefill + 8 decode steps | 64 | 4.062 | 3.807 | 0.94× |
+| paged batch (2 seq, 16 decode steps) | 64 | 17.007 | 16.160 | 0.95× |
+| dense prefix reuse prefill_with_prefix | 64 | 1.970 | 1.596 | 0.81× |
+| dense prefill + 8 decode steps | 128 | 4.083 | 3.385 | 0.83× |
+| paged batch (2 seq, 16 decode steps) | 128 | 14.263 | 14.537 | 1.02× |
+| dense prefix reuse prefill_with_prefix | 128 | 1.261 | 1.258 | 1.00× |
 
 Interpretation:
 - Hybrid behavior is now a runtime/cache capability milestone: local hot/cold
@@ -198,6 +200,32 @@ Interpretation:
   operational.
 - Performance impact is mixed in this matrix; the primary value is structural
   and serving-oriented cache control rather than broad speedup.
+
+---
+
+## Final Serving Completion (Offload + Splitfuse Deepening + Page-Native Runtime)
+
+Supporting artifacts:
+- `notes/final_serving_capabilities_summary.md`
+- `notes/splitfuse_runtime_matrix_latest.json`
+- `notes/paged_page_native_runtime_latest.json`
+- `notes/minimal_kv_offloading_design.md`
+
+Key rows:
+
+| Scenario | D | baseline/bridge ms | runtime path ms | runtime/baseline |
+|---|---:|---:|---:|---:|
+| splitfuse decode-step (dense) | 64 | 0.945 (helper) | 1.047 (`splitfuse_step`) | 1.11× |
+| splitfuse decode-step (dense) | 128 | 1.002 (helper) | 1.040 (`splitfuse_step`) | 1.04× |
+| paged decode-only splitfuse | 64 | 1.305 (manual bridge) | 1.101 (page-native runtime) | 0.84× |
+| paged decode-only splitfuse | 128 | 1.106 (manual bridge) | 1.131 (page-native runtime) | 1.02× |
+
+Interpretation:
+- Runtime and cache control surfaces are now substantially more serving-native.
+- Offload is now a real local behavior milestone (hot/cold/offloaded with
+  reload/promotion) via external-adapter extension points.
+- Performance remains shape-sensitive; this section is a capability milestone,
+  not a broad throughput-promotion claim.
 
 ---
 

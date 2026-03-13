@@ -151,10 +151,10 @@ Focused matrix (`benchmarks/bench_paged_varlen.py`, f16):
 
 | Scenario | D | varlen vs padded paged |
 |---|---:|---:|
-| GQA B=8 H_q=8 H_kv=4 hetero | 64 | 1.07× |
-| GQA B=8 H_q=8 H_kv=4 hetero | 128 | 1.01× |
-| MQA B=8 H_q=16 H_kv=1 hetero | 64 | 0.37× |
-| MQA B=8 H_q=16 H_kv=1 hetero | 128 | 0.81× |
+| GQA B=8 H_q=8 H_kv=4 hetero | 64 | 1.75× |
+| GQA B=8 H_q=8 H_kv=4 hetero | 128 | 2.26× |
+| MQA B=8 H_q=16 H_kv=1 hetero | 64 | 0.65× |
+| MQA B=8 H_q=16 H_kv=1 hetero | 128 | 0.97× |
 
 Interpretation: the new path closes the capability gap for vLLM-like packed
 queries with paged KV. Performance is scenario-dependent and should be treated
@@ -176,14 +176,33 @@ Focused remap matrix (`benchmarks/bench_paged_continuous_batching.py`, f16):
 
 | Scenario | D | runtime remap vs manual baseline |
 |---|---:|---:|
-| paged_step_batch reorder-active-sets | 64 | 1.02× |
-| paged_step_batch reorder-active-sets | 128 | 1.05× |
-| paged_varlen remap reorder-active-sets | 64 | 0.90× |
-| paged_varlen remap reorder-active-sets | 128 | 0.98× |
+| paged_step_batch reorder-active-sets | 64 | 1.24× |
+| paged_step_batch reorder-active-sets | 128 | 1.04× |
+| paged_varlen remap reorder-active-sets | 64 | 1.05× |
+| paged_varlen remap reorder-active-sets | 128 | 1.01× |
 
 Interpretation: this pass is primarily a scheduler/runtime capability milestone
 with explicit remap semantics and parity-level behavior. It is not presented as
 a broad speedup pass.
+
+### Hybrid Offload + External Adapter + Page-Native Runtime (v2.9.2)
+
+Final serving-completion work added minimal-real offload behavior and deeper
+runtime integration:
+
+- `HybridKVCache` now supports real local offloaded residency transitions
+  (hot/cold/offloaded) with promotion/reload and inspectable state.
+- `ExternalKVCacheAdapter` defines an LMCache-like extension point; the branch
+  includes `LocalHostKVStoreAdapter` as the first concrete backend.
+- `DecodeRuntime.splitfuse_step(...)` is integrated and metadata-visible.
+- Paged decode-only splitfuse now has a page-native runtime path that avoids
+  dense bridge materialization.
+
+Focused artifacts:
+- `notes/hybrid_kv_cache_bench_latest.json`
+- `notes/splitfuse_runtime_matrix_latest.json`
+- `notes/paged_page_native_runtime_latest.json`
+- `notes/final_serving_capabilities_summary.md`
 
 ### Experimental Path Triage + Selective AOT Evaluation (v2.9.2)
 
@@ -231,7 +250,13 @@ Experimental keep/park recommendations are tracked in
   explicit unsupported-operation signaling
 - **Hybrid tiered cache behavior** — `HybridKVCache` now supports local
   hot/cold residency, promotion/demotion/eviction policy, and prefetch/warmup
-  hooks through runtime-visible metadata (future offload remains out of scope)
+  hooks through runtime-visible metadata plus a minimal local offloaded tier
+  via `LocalHostKVStoreAdapter`
+- **External cache adapter layer** — `ExternalKVCacheAdapter` +
+  `LocalHostKVStoreAdapter` provide a concrete LMCache-like extension point
+  (local host-memory backend in this pass)
+- **Splitfuse step runtime integration** — `DecodeRuntime.splitfuse_step(...)`
+  with runtime metadata and a page-native paged decode-only fast path
 - **ALiBi** — per-head linear position bias
 - **Softcap** — tanh softcapping (Gemma-2, Grok) fused in-kernel
 - **SageAttention** — int8 quantized Q/K with smooth-K and sliding window
@@ -409,6 +434,21 @@ out_step = rt_paged.paged_step_batch(
     cache_batch_idx=mx.array([2, 0], mx.int32),  # active request order
     causal=True,
 )
+
+# optional hybrid tier + local offload backend
+rt_hybrid = create_decode_runtime(
+    backend="dense",
+    paged=False,
+    quantized_kv=False,
+    B=1, H_q=8, H_kv=4, D=128, max_seq_len=4096,
+    hybrid_cache=True,
+    hybrid_enable_offload=True,
+    hybrid_hot_seq_capacity=1,
+)
+rt_hybrid.prefill(q, k, v, seq_id=11)
+rt_hybrid.hybrid_mark_for_prefetch(11, reason="demo")
+rt_hybrid.hybrid_prefetch([11], reason="demo")
+print(rt_hybrid.metadata["hybrid_state"])
 ```
 
 `create_inference_context(...)` remains available as the lower-level
@@ -422,8 +462,11 @@ require manual stitching across multiple helper functions:
 - `prefill_shared_prefix(...)` + `decode_from_shared_prefix(...)`
 - `register_prefix(...)` + `seed_prefix(...)` + `prefill_with_prefix(...)`
 - `splitfuse(...)` (optionally with `use_prepared_prefix=True`)
+- `splitfuse_step(...)` (decode-step-focused splitfuse path)
 - `speculative_verify(...)`
 - `speculative_step(...)` (verify + contiguous accepted-prefix bookkeeping)
+- `hybrid_prefetch(...)` / `hybrid_mark_for_prefetch(...)` when hybrid cache
+  mode is enabled
 
 `DecodeRuntime.metadata` provides a lightweight snapshot of selected backend
 and helper-activation state (`paged`, `sage`, `shared_prefix`, `splitfuse`,
@@ -511,7 +554,7 @@ patch_mlx_lm(verbose=True)   # all mlx-lm models now use STEEL V2
 | Runtime-managed prefix reuse | explicit runtime API | `register_prefix` + `seed_prefix` + `prefill_with_prefix` | Prefix reuse integrated into runtime surface; strongest gains in paged serving-style flows |
 | Runtime speculative decode | explicit runtime API | `DecodeRuntime.speculative_step(...)` | Draft/verify flow integration milestone; not a full scheduler or broad throughput promotion yet |
 | KV cache abstraction | structural runtime layer | `adapt_kv_cache(...)`, `resolve_context_cache_adapter(...)` | Cleaner extension point for dense/paged/quantized cache interchangeability |
-| Hybrid tiered cache | local behavior milestone | `HybridKVCache` + `create_decode_runtime(..., hybrid_cache=True)` | Real hot/cold residency + promotion/demotion + prefetch hooks; no remote/offloaded backend yet |
+| Hybrid tiered cache | local offload-capable milestone | `HybridKVCache` + `create_decode_runtime(..., hybrid_cache=True)` | Real hot/cold/offloaded residency + promotion/demotion/reload + prefetch hooks; local host backend via `ExternalKVCacheAdapter` |
 | Sage decode | auto (very narrow) | D=128, causal, windowed, GQA 2:1, `N_cache=4096`, `N_q={4(f16),1(bf16)}` | Requires `quantized_kv=True`; otherwise stays dense |
 | any | window | always | tile-skip 6–21× |
 | any | sparse | always | tile-skip guarantee |

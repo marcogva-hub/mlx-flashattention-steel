@@ -405,6 +405,9 @@ Runtime-managed prefix caching is now first-class in `DecodeRuntime`:
   chunked prefill flow (`reset=False`) for explicit serving integration
 - metadata exposes `prefix_cache_size`, `registered_prefix_ids`,
   `active_prefix_id`, and `last_prefix_reuse` for inspection/debugging
+- splitfuse is now reachable through both `splitfuse(...)` and
+  decode-step-oriented `splitfuse_step(...)` runtime paths, including a narrow
+  page-native paged decode-only path to reduce dense bridge glue.
 
 Cache abstraction layer (serving-oriented refactor):
 - `mlx_mfa.kv_cache` introduces capability adapters over concrete cache types
@@ -416,8 +419,11 @@ Cache abstraction layer (serving-oriented refactor):
 - `HybridKVCache` now implements local tiered behavior (hot/cold residency,
   promotion/demotion/eviction, prefetch/warmup hooks) and can be enabled
   explicitly through `create_decode_runtime(..., hybrid_cache=True)`.
-- Hybrid mode remains local-only in this pass (no remote/offloaded backend
-  integration yet).
+- Hybrid mode now supports a minimal real local offloaded tier through
+  `ExternalKVCacheAdapter` integration (default concrete backend:
+  `LocalHostKVStoreAdapter`).
+- Remote/distributed offload remains future work; this pass establishes a real
+  local behavior milestone and extension surface.
 
 Speculative decode is now runtime-integrated (narrow scope):
 - low-level verify remains available as `flash_attention_speculative_verify(...)`

@@ -887,10 +887,13 @@ Core methods:
 - `paged_prefill_batch(...)` / `paged_step_batch(...)` for scheduler-style
   active-set decode/prefill with explicit remap
 - `paged_varlen(...)` for paged KV + packed varlen queries
-- `prefill_shared_prefix(...)`, `splitfuse(...)`, `speculative_verify(...)`
+- `prefill_shared_prefix(...)`, `splitfuse(...)`, `splitfuse_step(...)`
+- `speculative_verify(...)`
 - `speculative_step(...)` for runtime-integrated draft/verify bookkeeping
   (accept mask + contiguous accepted-prefix length + accepted/rejected token
   partition metadata)
+- `hybrid_mark_for_prefetch(...)` / `hybrid_prefetch(...)` when hybrid cache
+  mode is enabled
 - `metadata` (backend/cache/query-layout snapshot, including cache adapter
   metadata: `cache_kind`, `cache_capabilities`)
 
@@ -947,10 +950,17 @@ without forcing identical internals:
 - deterministic promotion/demotion/eviction under capacity pressure
 - explicit prefetch/warmup controls (`mark_for_prefetch`, `prefetch_seq`,
   `prepare_hot_window`)
+- local offloaded residency via external adapter integration
+  (`LocalHostKVStoreAdapter` backend in this pass)
 - runtime-visible metadata via `state` / `debug_state`
 
+External adapter extension point:
+- `ExternalKVCacheAdapter`
+- `ExternalKVCacheCapabilities`
+- `LocalHostKVStoreAdapter` (concrete local host-memory backend)
+
 Current limitations:
-- no remote/offloaded cache backend in this pass
+- remote/distributed offload backend is not implemented in this pass
 - no production auto-routing; hybrid mode is explicit runtime opt-in
 - Sage/quantized backend is not yet supported for hybrid wrapping in
   `create_decode_runtime(...)`
