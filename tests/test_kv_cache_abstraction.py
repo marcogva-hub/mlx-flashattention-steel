@@ -102,8 +102,13 @@ class TestKVCacheAdapters:
         assert hybrid.ready_for_production is True
         assert hybrid.state["hot_seq_capacity"] == 1
         assert hybrid.state["residency_map"] == {}
-        with pytest.raises(NotImplementedError, match="future work"):
-            hybrid.offload_seq(0)
+        k = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k, v, seq_id=0)
+        assert hybrid.state["residency_map"][0] == "hot"
+        hybrid.offload_seq(0)
+        # With no secondary tier, offload behaves as eviction/drop.
+        assert 0 not in hybrid.state["residency_map"]
 
 
 class TestCacheAbstractionRuntimeFlows:

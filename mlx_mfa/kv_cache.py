@@ -233,6 +233,7 @@ class HybridKVCache:
         self._last_promotion: Optional[dict[str, Any]] = None
         self._last_demotion: Optional[dict[str, Any]] = None
         self._last_eviction: Optional[dict[str, Any]] = None
+        self._last_access_event: Optional[dict[str, Any]] = None
         self._last_prefetch_intent: Optional[dict[str, Any]] = None
 
     @property
@@ -242,7 +243,117 @@ class HybridKVCache:
 
     def _touch(self, seq_id: int, *, reason: str) -> None:
         self._tick += 1
-        self._last_access_tick[int(seq_id)] = int(self._tick)
+        sid = int(seq_id)
+        self._last_access_tick[sid] = int(self._tick)
+        self._last_access_event = {
+            "seq_id": sid,
+            "reason": str(reason),
+            "tick": int(self._tick),
+        }
+
+    def _copy_seq(self, src: KVCacheAdapter, dst: KVCacheAdapter, seq_id: int) -> None:
+        sid = int(seq_id)
+        s = int(src.seq_length(sid))
+        if s <= 0:
+            dst.reset(seq_id=sid)
+            return
+        k = src.attention_k(sid)
+        v = src.attention_v(sid)
+        dst.reset(seq_id=sid)
+        dst.append(k, v, seq_id=sid)
+
+    def _choose_demotion_victim(self, *, exclude_seq: int) -> Optional[int]:
+        candidates = [
+            sid for sid in self._hot_seq_ids
+            if sid != exclude_seq and sid not in self._pinned_seq_ids
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda sid: self._last_access_tick.get(sid, -1))
+
+    def _demote_seq(self, seq_id: int, *, reason: str) -> None:
+        sid = int(seq_id)
+        if sid not in self._hot_seq_ids:
+            return
+        if self._secondary_adapter is not None:
+            self._copy_seq(self._primary_adapter, self._secondary_adapter, sid)
+            self._set_residency(sid, "cold", reason=reason)
+            self._demotion_count += 1
+            self._last_demotion = {
+                "seq_id": sid,
+                "reason": str(reason),
+                "tick": int(self._tick),
+            }
+        else:
+            self._primary_adapter.reset(seq_id=sid)
+            self._residency.pop(sid, None)
+            self._hot_seq_ids.discard(sid)
+            self._cold_seq_ids.discard(sid)
+            self._eviction_count += 1
+            self._last_eviction = {
+                "seq_id": sid,
+                "reason": str(reason),
+                "tick": int(self._tick),
+                "mode": "drop_no_secondary",
+            }
+
+    def _ensure_hot_capacity(self, *, incoming_seq: int) -> None:
+        if len(self._hot_seq_ids) < self.hot_seq_capacity:
+            return
+        if incoming_seq in self._hot_seq_ids:
+            return
+        victim = self._choose_demotion_victim(exclude_seq=incoming_seq)
+        if victim is None:
+            raise KVCacheOperationUnsupported(
+                "HybridKVCache hot tier is full and no demotion victim is "
+                "available (all candidates pinned or excluded)."
+            )
+        self._demote_seq(victim, reason="capacity_pressure")
+
+    def _promote_seq(self, seq_id: int, *, reason: str) -> None:
+        sid = int(seq_id)
+        self._ensure_hot_capacity(incoming_seq=sid)
+        if self._secondary_adapter is not None:
+            self._copy_seq(self._secondary_adapter, self._primary_adapter, sid)
+        self._set_residency(sid, "hot", reason=reason)
+        self._promotion_count += 1
+        self._last_promotion = {
+            "seq_id": sid,
+            "reason": str(reason),
+            "tick": int(self._tick),
+        }
+
+    def _ensure_hot(self, seq_id: int, *, reason: str) -> None:
+        sid = int(seq_id)
+        tier = self._residency.get(sid)
+        if tier == "hot":
+            self._touch(sid, reason=reason)
+            return
+        if tier == "cold":
+            self._promote_seq(sid, reason=reason)
+            return
+        # Unknown residency: infer from adapters.
+        if int(self._primary_adapter.seq_length(sid)) > 0:
+            self._set_residency(sid, "hot", reason=f"{reason}:infer_hot")
+            return
+        if self._secondary_adapter is not None and int(self._secondary_adapter.seq_length(sid)) > 0:
+            self._set_residency(sid, "cold", reason=f"{reason}:infer_cold")
+            self._promote_seq(sid, reason=reason)
+            return
+        # Fresh sequence path.
+        self._ensure_hot_capacity(incoming_seq=sid)
+        self._set_residency(sid, "hot", reason=f"{reason}:new")
+
+    def mark_pinned(self, seq_id: int, *, pinned: bool = True) -> None:
+        sid = int(seq_id)
+        if pinned:
+            self._pinned_seq_ids.add(sid)
+        else:
+            self._pinned_seq_ids.discard(sid)
+
+    def mark_for_prefetch(self, seq_id: int, *, reason: str = "manual") -> None:
+        sid = int(seq_id)
+        self._prefetch_intent.add(sid)
         self._last_prefetch_intent = {
             "seq_id": int(seq_id),
             "reason": str(reason),
@@ -291,6 +402,7 @@ class HybridKVCache:
             "last_promotion": self._last_promotion,
             "last_demotion": self._last_demotion,
             "last_eviction": self._last_eviction,
+            "last_access_event": self._last_access_event,
             "last_prefetch_intent": self._last_prefetch_intent,
             "has_secondary_tier": self._secondary_adapter is not None,
             "ready_for_production": self.ready_for_production,
@@ -298,6 +410,7 @@ class HybridKVCache:
 
     def append(self, k_new, v_new, seq_id: int = 0) -> None:
         sid = int(seq_id)
+        self._ensure_hot(sid, reason="append")
         self._primary_adapter.append(k_new, v_new, seq_id=sid)
         self._set_residency(sid, "hot", reason="append")
 
@@ -317,6 +430,7 @@ class HybridKVCache:
             self._pinned_seq_ids.clear()
             self._prefetch_intent.clear()
             self._last_access_tick.clear()
+            self._last_access_event = None
         else:
             sid = int(seq_id)
             self._residency.pop(sid, None)
@@ -347,19 +461,17 @@ class HybridKVCache:
 
     def k_for_attention(self, seq_id: int = 0):
         sid = int(seq_id)
-        self._touch(sid, reason="k_for_attention")
+        self._ensure_hot(sid, reason="k_for_attention")
         return self._primary_adapter.attention_k(sid)
 
     def v_for_attention(self, seq_id: int = 0):
         sid = int(seq_id)
-        self._touch(sid, reason="v_for_attention")
+        self._ensure_hot(sid, reason="v_for_attention")
         return self._primary_adapter.attention_v(sid)
 
     def offload_seq(self, seq_id: int) -> None:
-        raise NotImplementedError(
-            "HybridKVCache.offload_seq will be backed by real tier transitions "
-            "in this branch; remote/offload backends remain future work."
-        )
+        sid = int(seq_id)
+        self._demote_seq(sid, reason="offload_seq")
 
     def prefetch_seq(self, seq_id: int) -> None:
         raise NotImplementedError(
@@ -368,10 +480,8 @@ class HybridKVCache:
         )
 
     def promote_seq(self, seq_id: int) -> None:
-        raise NotImplementedError(
-            "HybridKVCache.promote_seq will be backed by explicit residency "
-            "transitions in this branch."
-        )
+        sid = int(seq_id)
+        self._ensure_hot(sid, reason="promote_seq")
 
     def __repr__(self) -> str:
         sec = "none" if self.secondary_cache is None else type(self.secondary_cache).__name__
