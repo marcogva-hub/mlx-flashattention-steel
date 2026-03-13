@@ -413,8 +413,11 @@ Cache abstraction layer (serving-oriented refactor):
   instead of directly relying on concrete cache internals where practical
 - `DecodeRuntime.metadata` now reports `cache_kind` and
   `cache_capabilities` for debug visibility
-- `HybridKVCache` is included as future-facing structural scaffold for
-  tiered/offloaded cache strategies (non-production in this pass)
+- `HybridKVCache` now implements local tiered behavior (hot/cold residency,
+  promotion/demotion/eviction, prefetch/warmup hooks) and can be enabled
+  explicitly through `create_decode_runtime(..., hybrid_cache=True)`.
+- Hybrid mode remains local-only in this pass (no remote/offloaded backend
+  integration yet).
 
 Speculative decode is now runtime-integrated (narrow scope):
 - low-level verify remains available as `flash_attention_speculative_verify(...)`

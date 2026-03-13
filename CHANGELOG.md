@@ -4,6 +4,33 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### Hybrid KV Behavior Implementation Pass
+
+- **notes**: Added concrete hybrid behavior model note:
+  `notes/hybrid_kv_cache_behavior_design.md`.
+- **feat**: Upgraded `HybridKVCache` from scaffold to local tiered behavior:
+  - hot/cold residency tracking with inspectable state
+  - deterministic promotion/demotion/eviction on capacity pressure
+  - compatibility attention/paged/quantized view surfaces routed through
+    hybrid-aware methods
+  - prefetch/warmup controls (`mark_for_prefetch`, `prefetch_seq`,
+    `prepare_hot_window`) with runtime-visible action metadata.
+- **feat**: Integrated hybrid cache into serving runtime surface:
+  - optional `create_decode_runtime(..., hybrid_cache=True, ...)` wrapping
+    for dense/paged contexts
+  - runtime helpers `hybrid_prefetch(...)`, `hybrid_mark_for_prefetch(...)`,
+    `hybrid_state`, and metadata fields
+    (`hybrid_cache_active`, `hybrid_state`).
+- **test**: Expanded hybrid behavior coverage for real transitions:
+  promotion on access, demotion/eviction under pressure, pinned-capacity
+  behavior, runtime dense/paged integration, and speculative compatibility.
+- **bench**: Added hybrid smoke matrix harness
+  (`benchmarks/bench_hybrid_kv_cache.py`) with artifact
+  (`notes/hybrid_kv_cache_bench_latest.json`).
+- **bench result**: Hybrid behavior is now a real cache/runtime capability
+  milestone with mixed overhead impact; current value is architectural/control
+  readiness rather than broad throughput promotion.
+
 ### Final Stabilization / Polish
 
 - **docs**: Added a concise production-default usage section and an advanced

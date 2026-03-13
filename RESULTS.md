@@ -24,8 +24,9 @@
   (`DecodeRuntime.speculative_step`) with dense default and narrow paged-cache integration.
 - **KV cache abstraction layer** is now present for dense/paged/quantized cache
   capability adaptation (`adapt_kv_cache`, `resolve_context_cache_adapter`).
-- **Hybrid/offload cache support** is groundwork-only in this pass via
-  `HybridKVCache` skeleton (non-production).
+- **Hybrid cache support** now includes real local tier behavior (hot/cold
+  residency + promotion/demotion + prefetch hooks), with explicit runtime
+  opt-in and no remote/offloaded backend in this pass.
 - **V3/V4/V5 remain experimental** unless a future decision pass establishes a narrow winning regime.
 
 ---
@@ -385,7 +386,8 @@ Scope in this pass:
 - Introduced capability adapters for dense/paged/quantized caches.
 - Integrated runtime cache interactions through adapter calls in key serving
   flows (prefix seeding, paged batch/varlen paths, speculative fallback).
-- Added `HybridKVCache` future-facing scaffold (non-production).
+- Established `HybridKVCache` as a local tiered behavior base with explicit
+  runtime control surfaces.
 
 Smoke matrix (M1 Max, separate process):
 - script: `benchmarks/bench_cache_abstraction_smoke.py`
@@ -407,8 +409,31 @@ Interpretation:
   throughput pass.
 - Smoke results are mixed and small-scale; no broad regression signal appears,
   but no speedup claim is made.
-- The key output is cleaner cache/runtime extension points for future hybrid
-  and offload work.
+- The key output is cleaner cache/runtime extension points for hybrid policy
+  evolution and future offload work.
+
+---
+
+## Hybrid KV Cache Behavior Smoke Matrix
+
+Matrix script: `benchmarks/bench_hybrid_kv_cache.py`  
+Artifact: `notes/hybrid_kv_cache_bench_latest.json`
+
+| Scenario | D | baseline ms | hybrid ms | hybrid/baseline |
+|---|---:|---:|---:|---:|
+| dense prefill + 8 decode steps | 64 | 4.712 | 3.956 | 0.84× |
+| paged batch (2 seq, 16 decode steps) | 64 | 16.653 | 17.385 | 1.04× |
+| dense prefix reuse prefill_with_prefix | 64 | 1.659 | 1.561 | 0.94× |
+| dense prefill + 8 decode steps | 128 | 4.278 | 4.587 | 1.07× |
+| paged batch (2 seq, 16 decode steps) | 128 | 19.595 | 21.198 | 1.08× |
+| dense prefix reuse prefill_with_prefix | 128 | 2.505 | 1.792 | 0.72× |
+
+Interpretation:
+- Hybrid behavior is now a **real runtime capability** (residency transitions,
+  promotion/demotion, prefetch/warmup controls), not a scaffold-only type.
+- Performance impact is mixed and scenario-dependent in this smoke matrix.
+- Current value is primarily serving/cache-architecture readiness with
+  acceptable overhead, not broad throughput promotion.
 
 ---
 

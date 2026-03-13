@@ -178,6 +178,29 @@ Interpretation:
 
 ---
 
+## Hybrid KV Cache Behavior Smoke Matrix
+
+Matrix script: `benchmarks/bench_hybrid_kv_cache.py`  
+Artifact: `notes/hybrid_kv_cache_bench_latest.json`
+
+| Scenario | D | baseline ms | hybrid ms | hybrid/baseline |
+|---|---:|---:|---:|---:|
+| dense prefill + 8 decode steps | 64 | 4.712 | 3.956 | 0.84× |
+| paged batch (2 seq, 16 decode steps) | 64 | 16.653 | 17.385 | 1.04× |
+| dense prefix reuse prefill_with_prefix | 64 | 1.659 | 1.561 | 0.94× |
+| dense prefill + 8 decode steps | 128 | 4.278 | 4.587 | 1.07× |
+| paged batch (2 seq, 16 decode steps) | 128 | 19.595 | 21.198 | 1.08× |
+| dense prefix reuse prefill_with_prefix | 128 | 2.505 | 1.792 | 0.72× |
+
+Interpretation:
+- Hybrid behavior is now a runtime/cache capability milestone: local hot/cold
+  residency transitions, promotion/demotion, and prefetch/warmup hooks are
+  operational.
+- Performance impact is mixed in this matrix; the primary value is structural
+  and serving-oriented cache control rather than broad speedup.
+
+---
+
 ## Forward Dense Causal — STEEL V2 vs SDPA
 
 | Config | V2 ms | SDPA ms | V2/SDPA |

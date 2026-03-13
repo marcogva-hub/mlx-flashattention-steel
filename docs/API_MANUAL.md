@@ -940,12 +940,20 @@ without forcing identical internals:
 - `DenseKVCacheAdapter`
 - `PagedKVCacheAdapter`
 - `QuantizedKVCacheAdapter`
-- `HybridKVCacheAdapter` (future-facing scaffold)
+- `HybridKVCacheAdapter`
 
-`HybridKVCache` in v2.9.2 is structural groundwork only (non-production):
-it delegates current operations to a primary cache and exposes explicit
-future hooks (`offload_seq`, `prefetch_seq`, `promote_seq`) as
-`NotImplementedError`.
+`HybridKVCache` now provides a local tiered-cache behavior milestone:
+- hot/cold residency tracking per sequence
+- deterministic promotion/demotion/eviction under capacity pressure
+- explicit prefetch/warmup controls (`mark_for_prefetch`, `prefetch_seq`,
+  `prepare_hot_window`)
+- runtime-visible metadata via `state` / `debug_state`
+
+Current limitations:
+- no remote/offloaded cache backend in this pass
+- no production auto-routing; hybrid mode is explicit runtime opt-in
+- Sage/quantized backend is not yet supported for hybrid wrapping in
+  `create_decode_runtime(...)`
 
 ### `KVCacheProtocol`
 
