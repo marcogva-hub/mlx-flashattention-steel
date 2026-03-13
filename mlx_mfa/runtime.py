@@ -24,6 +24,9 @@ from mlx_mfa.attention import (
     flash_attention_splitfuse,
     flash_attention_speculative_verify,
 )
+from mlx_mfa.kv_cache import (
+    resolve_context_cache_adapter,
+)
 
 __all__ = [
     "DecodeRuntime",
@@ -71,6 +74,9 @@ class DecodeRuntime:
             kwargs["seq_id"] = self.default_seq_id
         return kwargs
 
+    def _cache_adapter(self):
+        return resolve_context_cache_adapter(self.context)
+
     @staticmethod
     def _normalize_cache_batch_idx(
         cache_batch_idx: Optional[mx.array | tuple[int, ...] | list[int]],
@@ -92,13 +98,14 @@ class DecodeRuntime:
         cache_batch_idx: Optional[mx.array | tuple[int, ...] | list[int]],
         expected_batch: Optional[int] = None,
     ) -> tuple[tuple[int, ...], Optional[tuple[int, ...]]]:
-        cache = getattr(self.context, "cache", None)
-        if cache is None:
+        cache_adapter = self._cache_adapter()
+        if not cache_adapter.capabilities.multi_seq:
             raise TypeError(
-                "Paged runtime requires context.cache for sequence-id resolution"
+                "Sequence-id resolution requires a multi-sequence cache adapter; "
+                f"got cache kind {cache_adapter.kind!r}"
             )
         base_seq_ids = (
-            tuple(sorted(cache.seq_lengths.keys()))
+            tuple(sorted(cache_adapter.active_seq_ids()))
             if seq_ids is None
             else tuple(int(s) for s in seq_ids)
         )
@@ -163,14 +170,10 @@ class DecodeRuntime:
         return mx.array(lens, dtype=mx.int32)
 
     def _seed_dense_prefix(self, entry: dict[str, Any], *, reset: bool) -> None:
-        cache = getattr(self.context, "_cache", None)
-        if cache is None or not hasattr(cache, "append"):
-            raise TypeError(
-                "Dense/Sage prefix seeding requires an append-capable runtime cache"
-            )
+        cache_adapter = self._cache_adapter()
         if reset:
             self.reset()
-        cache.append(entry["k"], entry["v"])
+        cache_adapter.append(entry["k"], entry["v"], seq_id=0)
 
     def _seed_paged_prefixes(
         self,
@@ -179,10 +182,10 @@ class DecodeRuntime:
         *,
         reset: bool,
     ) -> None:
-        cache = getattr(self.context, "cache", None)
-        if cache is None:
+        cache_adapter = self._cache_adapter()
+        if not cache_adapter.capabilities.multi_seq:
             raise TypeError(
-                "Paged prefix seeding requires runtime context.cache"
+                "Paged prefix seeding requires multi-sequence cache adapter"
             )
         if len(entries) != len(seq_ids):
             raise ValueError(
@@ -191,7 +194,7 @@ class DecodeRuntime:
             )
         if reset:
             for sid in seq_ids:
-                cache.reset(seq_id=sid)
+                cache_adapter.reset(seq_id=sid)
         for sid, entry in zip(seq_ids, entries):
             k = entry["k"]
             v = entry["v"]
@@ -200,7 +203,7 @@ class DecodeRuntime:
                     "Paged prefix seeding currently requires prefix tensors "
                     "with batch=1"
                 )
-            cache.append(k, v, seq_id=sid)
+            cache_adapter.append(k, v, seq_id=sid)
 
     def register_prefix(
         self,
@@ -524,15 +527,15 @@ class DecodeRuntime:
                     "cu_seqlens_q[-1] must equal total_q in packed input"
                 )
 
-            cache = getattr(self.context, "cache", None)
-            if cache is None:
+            cache_adapter = self._cache_adapter()
+            if not cache_adapter.capabilities.multi_seq:
                 raise TypeError(
-                    "chunked_prefill packed path requires runtime context.cache"
+                    "chunked_prefill packed path requires multi-sequence cache adapter"
                 )
 
             if reset:
                 for sid in seq_ids_t:
-                    cache.reset(seq_id=sid)
+                    cache_adapter.reset(seq_id=sid)
 
             lengths = [cu[i + 1] - cu[i] for i in range(B)]
             consumed = [0] * B
@@ -566,7 +569,7 @@ class DecodeRuntime:
                 cu_chunk = mx.array(chunk_offsets, dtype=mx.int32)
 
                 for sid, k_i, v_i in zip(active_seq_ids, k_parts, v_parts):
-                    cache.append(k_i, v_i, seq_id=sid)
+                    cache_adapter.append(k_i, v_i, seq_id=sid)
 
                 out_chunk = self.paged_varlen(
                     q_chunk,
@@ -649,10 +652,10 @@ class DecodeRuntime:
 
         if reset:
             if self.backend == "paged":
-                cache = getattr(self.context, "cache", None)
-                if cache is None:
+                cache_adapter = self._cache_adapter()
+                if not cache_adapter.capabilities.multi_seq:
                     raise TypeError(
-                        "chunked_prefill paged path requires runtime context.cache"
+                        "chunked_prefill paged path requires multi-sequence cache adapter"
                     )
                 active_seq_ids, _ = self._resolve_active_seq_ids(
                     seq_ids=seq_ids,
@@ -660,7 +663,7 @@ class DecodeRuntime:
                     expected_batch=int(q.shape[0]),
                 )
                 for sid in active_seq_ids:
-                    cache.reset(seq_id=sid)
+                    cache_adapter.reset(seq_id=sid)
             else:
                 self.reset()
 
@@ -735,10 +738,10 @@ class DecodeRuntime:
                 "Create the runtime with query_layout='packed'."
             )
 
-        cache = getattr(self.context, "cache", None)
-        if cache is None:
+        cache_adapter = self._cache_adapter()
+        if not cache_adapter.capabilities.paged_pool:
             raise TypeError(
-                "paged_varlen(): runtime context does not expose a paged cache"
+                "paged_varlen(): runtime cache does not expose paged pool capability"
             )
 
         if (block_table is None) != (seq_lens_kv is None):
@@ -755,8 +758,7 @@ class DecodeRuntime:
                 cache_batch_idx=cache_batch_idx,
                 expected_batch=expected,
             )
-            block_table = cache.get_block_table(list(active_seq_ids))
-            seq_lens_kv = cache.get_seq_lens(list(active_seq_ids))
+            block_table, seq_lens_kv = cache_adapter.paged_tables(list(active_seq_ids))
             # Mapping already applied when deriving rows from cache.
             idx_for_api = None
         else:
@@ -779,10 +781,11 @@ class DecodeRuntime:
 
         eff_block_size = self.context.block_size if block_size is None else block_size
         eff_stream = getattr(self.context, "stream", None) if stream is None else stream
+        k_pool, v_pool, _ = cache_adapter.paged_pool()
         out = flash_attention_paged_varlen(
             q,
-            cache.k_pool,
-            cache.v_pool,
+            k_pool,
+            v_pool,
             block_table,
             seq_lens_kv,
             cu_seqlens_q,
@@ -824,10 +827,10 @@ class DecodeRuntime:
         if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
             raise ValueError("paged_prefill_batch(): q/k/v batch sizes must match")
 
-        cache = getattr(self.context, "cache", None)
-        if cache is None:
+        cache_adapter = self._cache_adapter()
+        if not cache_adapter.capabilities.paged_pool:
             raise TypeError(
-                "paged_prefill_batch(): runtime context does not expose a paged cache"
+                "paged_prefill_batch(): runtime cache does not expose paged pool capability"
             )
 
         active_seq_ids, idx_tuple = self._resolve_active_seq_ids(
@@ -836,17 +839,17 @@ class DecodeRuntime:
             expected_batch=q.shape[0],
         )
         for b, sid in enumerate(active_seq_ids):
-            cache.reset(seq_id=sid)
-            cache.append(k[b : b + 1], v[b : b + 1], seq_id=sid)
+            cache_adapter.reset(seq_id=sid)
+            cache_adapter.append(k[b : b + 1], v[b : b + 1], seq_id=sid)
 
-        table = cache.get_block_table(list(active_seq_ids))
-        lens = cache.get_seq_lens(list(active_seq_ids))
+        table, lens = cache_adapter.paged_tables(list(active_seq_ids))
         eff_block_size = self.context.block_size if block_size is None else block_size
         eff_stream = getattr(self.context, "stream", None) if stream is None else stream
+        k_pool, v_pool, _ = cache_adapter.paged_pool()
         out = flash_attention_paged(
             q,
-            cache.k_pool,
-            cache.v_pool,
+            k_pool,
+            v_pool,
             table,
             lens,
             scale=scale,
@@ -885,10 +888,10 @@ class DecodeRuntime:
         if q.shape[0] != k_new.shape[0] or q.shape[0] != v_new.shape[0]:
             raise ValueError("paged_step_batch(): q/k_new/v_new batch sizes must match")
 
-        cache = getattr(self.context, "cache", None)
-        if cache is None:
+        cache_adapter = self._cache_adapter()
+        if not cache_adapter.capabilities.paged_pool:
             raise TypeError(
-                "paged_step_batch(): runtime context does not expose a paged cache"
+                "paged_step_batch(): runtime cache does not expose paged pool capability"
             )
 
         active_seq_ids, idx_tuple = self._resolve_active_seq_ids(
@@ -897,16 +900,16 @@ class DecodeRuntime:
             expected_batch=q.shape[0],
         )
         for b, sid in enumerate(active_seq_ids):
-            cache.append(k_new[b : b + 1], v_new[b : b + 1], seq_id=sid)
+            cache_adapter.append(k_new[b : b + 1], v_new[b : b + 1], seq_id=sid)
 
-        table = cache.get_block_table(list(active_seq_ids))
-        lens = cache.get_seq_lens(list(active_seq_ids))
+        table, lens = cache_adapter.paged_tables(list(active_seq_ids))
         eff_block_size = self.context.block_size if block_size is None else block_size
         eff_stream = getattr(self.context, "stream", None) if stream is None else stream
+        k_pool, v_pool, _ = cache_adapter.paged_pool()
         out = flash_attention_paged(
             q,
-            cache.k_pool,
-            cache.v_pool,
+            k_pool,
+            v_pool,
             table,
             lens,
             scale=scale,
@@ -1000,10 +1003,13 @@ class DecodeRuntime:
     @property
     def metadata(self) -> dict[str, object]:
         """Lightweight runtime-selection and helper-activation metadata."""
+        cache_adapter = self._cache_adapter()
         return {
             "backend": self.backend,
             "requested_backend": self.requested_backend,
             "context_class": type(self.context).__name__,
+            "cache_kind": cache_adapter.kind,
+            "cache_capabilities": cache_adapter.capabilities.__dict__,
             "paged_active": self.backend == "paged",
             "sage_active": self.backend == "sage",
             "query_layout": self.query_layout,
@@ -1094,13 +1100,14 @@ class DecodeRuntime:
 
         if k_cache is None:
             if self.backend == "dense":
-                k_cache = self.context.k_cache
-                v_cache = self.context.v_cache
-                if k_cache is None or v_cache is None:
+                cache_adapter = self._cache_adapter()
+                if int(cache_adapter.seq_length(0)) <= 0:
                     raise ValueError(
                         "speculative_verify: dense runtime cache is empty; run prefill/step "
                         "first or pass explicit k_cache/v_cache"
                     )
+                k_cache = cache_adapter.attention_k(0)
+                v_cache = cache_adapter.attention_v(0)
             elif self.backend == "paged":
                 if self.query_layout != "batched":
                     raise ValueError(
@@ -1113,18 +1120,19 @@ class DecodeRuntime:
                         "batch size 1"
                     )
                 seq_id = int(kwargs.pop("seq_id", self.default_seq_id))
-                cache = getattr(self.context, "cache", None)
-                if cache is None:
+                cache_adapter = self._cache_adapter()
+                if not cache_adapter.capabilities.multi_seq:
                     raise TypeError(
-                        "speculative_verify paged runtime fallback requires context.cache"
+                        "speculative_verify paged runtime fallback requires "
+                        "multi-sequence cache adapter"
                     )
-                if int(cache.seq_length(seq_id)) <= 0:
+                if int(cache_adapter.seq_length(seq_id)) <= 0:
                     raise ValueError(
                         "speculative_verify: paged runtime cache is empty for "
                         f"seq_id={seq_id}; run prefill/step first or pass explicit k_cache/v_cache"
                     )
-                k_cache = cache.k_for_attention(seq_id)
-                v_cache = cache.v_for_attention(seq_id)
+                k_cache = cache_adapter.attention_k(seq_id)
+                v_cache = cache_adapter.attention_v(seq_id)
             else:
                 raise ValueError(
                     "speculative_verify without explicit k_cache/v_cache requires "
@@ -1259,6 +1267,7 @@ class DecodeRuntime:
             f"requested={self.requested_backend!r}, "
             f"paged={self.paged}, quantized_kv={self.quantized_kv}, "
             f"query_layout={self.query_layout!r}, "
+            f"cache_kind={self.metadata['cache_kind']!r}, "
             f"default_seq_id={self.default_seq_id}, "
             f"active_seq_ids={self.metadata['active_seq_ids']}, "
             f"active_cache_batch_idx={self.metadata['active_cache_batch_idx']}, "

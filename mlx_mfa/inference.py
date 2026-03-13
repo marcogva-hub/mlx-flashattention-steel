@@ -34,6 +34,7 @@ import math
 from typing import Optional
 
 import mlx.core as mx
+from mlx_mfa.kv_cache import adapt_kv_cache
 
 
 __all__ = [
@@ -136,6 +137,11 @@ class InferenceContext:
         if self._cache.seqlen == 0:
             return None
         return self._cache.v
+
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -393,6 +399,11 @@ class PagedInferenceContext:
         """Underlying :class:`~mlx_mfa.attention.PagedKVCache`."""
         return self._cache
 
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
+
     def seq_length(self, seq_id: int = 0) -> int:
         """Current token count for ``seq_id``."""
         return self._cache.seq_length(seq_id)
@@ -624,6 +635,11 @@ class SageInferenceContext:
     def seqlen(self) -> int:
         """Current KV cache fill length."""
         return self._cache.seqlen
+
+    @property
+    def cache_adapter(self):
+        """Capability adapter over the underlying cache implementation."""
+        return adapt_kv_cache(self._cache)
 
     # -- Lifecycle -----------------------------------------------------------
 
