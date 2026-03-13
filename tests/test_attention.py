@@ -7790,6 +7790,7 @@ class TestDecodeRuntimeFactory:
         assert out_p is None
         assert out_d.shape == (1, 4, 1, 64)
         assert rt.metadata["last_splitfuse"]["seq_id"] == 9
+        assert rt.metadata["last_splitfuse"]["paged_native_decode_only"] is True
 
     def test_splitfuse_step_rejects_unsupported_backend(self):
         from mlx_mfa import create_decode_runtime

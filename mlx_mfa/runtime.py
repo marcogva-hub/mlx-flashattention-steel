@@ -1286,6 +1286,7 @@ class DecodeRuntime:
 
         cache_adapter = self._cache_adapter()
         used_seq_id = None
+        paged_native_decode_only = False
         if self.backend == "dense":
             if int(cache_adapter.seq_length(0)) <= 0:
                 raise ValueError(
@@ -1310,27 +1311,46 @@ class DecodeRuntime:
                     "splitfuse_step requires non-empty paged cache for "
                     f"seq_id={sid}; run prefill/step first"
                 )
-            # Narrow path: materialize attention-ready K/V from paged cache.
-            k_cache_decode = cache_adapter.attention_k(sid)
-            v_cache_decode = cache_adapter.attention_v(sid)
             used_seq_id = sid
+            if q_prefill is None:
+                # Page-native decode-only fast path (no dense gather materialization).
+                table, lens = cache_adapter.paged_tables([sid])
+                k_pool, v_pool, block_size = cache_adapter.paged_pool()
+                out_decode = flash_attention_paged(
+                    q_decode,
+                    k_pool,
+                    v_pool,
+                    table,
+                    lens,
+                    scale=scale,
+                    causal=causal,
+                    block_size=block_size,
+                    stream=stream,
+                )
+                out = (None, out_decode)
+                paged_native_decode_only = True
+            else:
+                # Prefill+decode route still requires dense decode-cache materialization.
+                k_cache_decode = cache_adapter.attention_k(sid)
+                v_cache_decode = cache_adapter.attention_v(sid)
         else:
             raise ValueError(
                 "splitfuse_step is supported for dense/paged runtime only "
                 f"(got backend={self.backend!r})"
             )
 
-        out = flash_attention_splitfuse(
-            q_prefill,
-            k_prefill,
-            v_prefill,
-            q_decode,
-            k_cache_decode,
-            v_cache_decode,
-            scale=scale,
-            causal=causal,
-            stream=stream,
-        )
+        if not paged_native_decode_only:
+            out = flash_attention_splitfuse(
+                q_prefill,
+                k_prefill,
+                v_prefill,
+                q_decode,
+                k_cache_decode,
+                v_cache_decode,
+                scale=scale,
+                causal=causal,
+                stream=stream,
+            )
         self._splitfuse_used = True
         self._last_splitfuse = {
             "backend": self.backend,
@@ -1340,6 +1360,7 @@ class DecodeRuntime:
             "seq_id": used_seq_id,
             "has_prefill": bool(q_prefill is not None),
             "has_decode": True,
+            "paged_native_decode_only": paged_native_decode_only,
         }
         return out
 
