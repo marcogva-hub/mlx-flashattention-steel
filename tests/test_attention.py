@@ -7713,6 +7713,84 @@ class TestDecodeRuntimeFactory:
         assert out_p.shape == (1, 4, 32, 64)
         assert out_d is None
 
+    def test_splitfuse_step_uses_runtime_dense_cache(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        rt.prefill(q_pre, k_pre, v_pre, scale=0.125)
+
+        q_dec = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        out_p, out_d = rt.splitfuse_step(q_dec, scale=0.125)
+        mx.eval(out_d)
+        assert out_p is None
+        assert out_d.shape == (1, 4, 2, 64)
+        assert rt.metadata["splitfuse_active"] is True
+        assert rt.metadata["last_splitfuse"]["used_runtime_cache"] is True
+
+    def test_splitfuse_step_can_use_registered_prefix(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q_pre = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        rt.register_prefix("p0", q_pre, k_pre, v_pre, overwrite=True)
+        rt.seed_prefix(prefix_id="p0", reset=True)
+        q_dec = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+
+        out_p, out_d = rt.splitfuse_step(
+            q_dec,
+            use_registered_prefix=True,
+            prefix_id="p0",
+            scale=0.125,
+        )
+        mx.eval(out_p, out_d)
+        assert out_p.shape == (1, 4, 10, 64)
+        assert out_d.shape == (1, 4, 2, 64)
+        assert rt.metadata["last_splitfuse"]["used_registered_prefix"] is True
+
+    def test_splitfuse_step_paged_single_seq_cache(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="batched",
+            quantized_kv=False,
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        q_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        rt.prefill(q_pre, k_pre, v_pre, seq_id=9, scale=0.125)
+
+        q_dec = mx.random.normal((1, 4, 1, 64)).astype(mx.float16)
+        out_p, out_d = rt.splitfuse_step(q_dec, seq_id=9, scale=0.125)
+        mx.eval(out_d)
+        assert out_p is None
+        assert out_d.shape == (1, 4, 1, 64)
+        assert rt.metadata["last_splitfuse"]["seq_id"] == 9
+
     def test_prefill_shared_prefix_seeds_dense_runtime_cache(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
@@ -8159,6 +8237,38 @@ class TestDecodeRuntimeFactory:
         assert out.shape == (1, 4, 3, 64)
         assert lse.shape == (1, 4, 3)
         assert lp.shape == (1, 3)
+
+    def test_speculative_verify_via_paged_runtime_cache_batched_seq_ids(self):
+        from mlx_mfa import create_decode_runtime
+
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="batched",
+            quantized_kv=False,
+            B=2,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        q_pre = mx.random.normal((2, 4, 6, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((2, 4, 6, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((2, 4, 6, 64)).astype(mx.float16)
+        _ = rt.paged_prefill_batch(q_pre, k_pre, v_pre, seq_ids=[3, 7], causal=True)
+
+        q_target = mx.random.normal((2, 4, 3, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((2, 3), dtype=mx.int32)
+        out, lse, lp = rt.speculative_verify(
+            q_target,
+            draft_ids,
+            seq_ids=[3, 7],
+        )
+        mx.eval(out, lse, lp)
+        assert out.shape == (2, 4, 3, 64)
+        assert lse.shape == (2, 4, 3)
+        assert lp.shape == (2, 3)
 
     def test_speculative_step_full_accept_and_metadata(self):
         from mlx_mfa import create_decode_runtime

@@ -85,6 +85,7 @@ from mlx_mfa.attention import (
     DispatchPolicy,
     # Track JD: LLM inference helpers
     flash_attention_speculative_verify,
+    flash_attention_speculative_verify_paged,
     make_shared_prefix_cache,
     flash_attention_splitfuse,
     # Track KC: SageAttention
@@ -202,6 +203,7 @@ __all__ = [
     "calibrate_dispatch",
     # LLM inference helpers (Track JD)
     "flash_attention_speculative_verify",
+    "flash_attention_speculative_verify_paged",
     "make_shared_prefix_cache",
     "flash_attention_splitfuse",
     # SageAttention (Track KC / LA / CP6)

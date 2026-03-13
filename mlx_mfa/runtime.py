@@ -23,6 +23,7 @@ from mlx_mfa.attention import (
     make_shared_prefix_cache,
     flash_attention_splitfuse,
     flash_attention_speculative_verify,
+    flash_attention_speculative_verify_paged,
 )
 from mlx_mfa.kv_cache import (
     HybridKVCache,
@@ -135,6 +136,7 @@ class DecodeRuntime:
         self._active_prefix_id: Optional[str] = None
         self._last_prefix_reuse: Optional[dict[str, Any]] = None
         self._last_speculative_step: Optional[dict[str, Any]] = None
+        self._last_splitfuse: Optional[dict[str, Any]] = None
 
     def _with_default_seq_id(self, kwargs: dict) -> dict:
         if self.backend == "paged" and "seq_id" not in kwargs:
@@ -1188,6 +1190,7 @@ class DecodeRuntime:
             "active_prefix_id": self._active_prefix_id,
             "last_prefix_reuse": self._last_prefix_reuse,
             "last_speculative_step": self._last_speculative_step,
+            "last_splitfuse": self._last_splitfuse,
         }
 
     @property
@@ -1238,6 +1241,106 @@ class DecodeRuntime:
             **kwargs,
         )
         self._splitfuse_used = True
+        self._last_splitfuse = {
+            "backend": self.backend,
+            "query_layout": self.query_layout,
+            "used_prepared_prefix": bool(use_prepared_prefix),
+            "has_prefill": bool(q_prefill is not None),
+            "has_decode": bool(q_decode is not None),
+            "used_runtime_cache": False,
+        }
+        return out
+
+    def splitfuse_step(
+        self,
+        q_decode: mx.array,
+        *,
+        q_prefill: Optional[mx.array] = None,
+        k_prefill: Optional[mx.array] = None,
+        v_prefill: Optional[mx.array] = None,
+        use_registered_prefix: bool = False,
+        prefix_id: Optional[str] = None,
+        seq_id: Optional[int] = None,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        stream: Optional[mx.StreamOrDevice] = None,
+    ):
+        """Runtime-integrated splitfuse with cache-derived decode tensors.
+
+        This is a serving-oriented convenience wrapper over `splitfuse(...)`:
+        it resolves decode cache tensors from the runtime cache and optionally
+        sources prefill tensors from a registered prefix.
+        """
+        if q_decode is None:
+            raise ValueError("splitfuse_step requires q_decode")
+
+        if use_registered_prefix:
+            pid = self._resolve_prefix_id_or_active(prefix_id)
+            entry = self._prefix_cache[pid]
+            if q_prefill is None:
+                q_prefill = entry["q"]
+            if k_prefill is None:
+                k_prefill = entry["k"]
+            if v_prefill is None:
+                v_prefill = entry["v"]
+
+        cache_adapter = self._cache_adapter()
+        used_seq_id = None
+        if self.backend == "dense":
+            if int(cache_adapter.seq_length(0)) <= 0:
+                raise ValueError(
+                    "splitfuse_step requires non-empty dense runtime cache; "
+                    "run prefill/step first"
+                )
+            k_cache_decode = cache_adapter.attention_k(0)
+            v_cache_decode = cache_adapter.attention_v(0)
+            used_seq_id = 0
+        elif self.backend == "paged":
+            if self.query_layout != "batched":
+                raise ValueError(
+                    "splitfuse_step paged path requires query_layout='batched'"
+                )
+            if int(q_decode.shape[0]) != 1:
+                raise ValueError(
+                    "splitfuse_step paged path currently requires batch size 1"
+                )
+            sid = self.default_seq_id if seq_id is None else int(seq_id)
+            if int(cache_adapter.seq_length(sid)) <= 0:
+                raise ValueError(
+                    "splitfuse_step requires non-empty paged cache for "
+                    f"seq_id={sid}; run prefill/step first"
+                )
+            # Narrow path: materialize attention-ready K/V from paged cache.
+            k_cache_decode = cache_adapter.attention_k(sid)
+            v_cache_decode = cache_adapter.attention_v(sid)
+            used_seq_id = sid
+        else:
+            raise ValueError(
+                "splitfuse_step is supported for dense/paged runtime only "
+                f"(got backend={self.backend!r})"
+            )
+
+        out = flash_attention_splitfuse(
+            q_prefill,
+            k_prefill,
+            v_prefill,
+            q_decode,
+            k_cache_decode,
+            v_cache_decode,
+            scale=scale,
+            causal=causal,
+            stream=stream,
+        )
+        self._splitfuse_used = True
+        self._last_splitfuse = {
+            "backend": self.backend,
+            "query_layout": self.query_layout,
+            "used_registered_prefix": bool(use_registered_prefix),
+            "used_runtime_cache": True,
+            "seq_id": used_seq_id,
+            "has_prefill": bool(q_prefill is not None),
+            "has_decode": True,
+        }
         return out
 
     def speculative_verify(
@@ -1277,25 +1380,54 @@ class DecodeRuntime:
                         "speculative_verify paged runtime fallback requires "
                         "query_layout='batched'"
                     )
-                if int(q_target.shape[0]) != 1:
-                    raise ValueError(
-                        "speculative_verify paged runtime fallback currently requires "
-                        "batch size 1"
-                    )
-                seq_id = int(kwargs.pop("seq_id", self.default_seq_id))
                 cache_adapter = self._cache_adapter()
                 if not cache_adapter.capabilities.multi_seq:
                     raise TypeError(
                         "speculative_verify paged runtime fallback requires "
                         "multi-sequence cache adapter"
                     )
-                if int(cache_adapter.seq_length(seq_id)) <= 0:
-                    raise ValueError(
-                        "speculative_verify: paged runtime cache is empty for "
-                        f"seq_id={seq_id}; run prefill/step first or pass explicit k_cache/v_cache"
+                if not cache_adapter.capabilities.paged_pool:
+                    raise TypeError(
+                        "speculative_verify paged runtime fallback requires paged pool capability"
                     )
-                k_cache = cache_adapter.attention_k(seq_id)
-                v_cache = cache_adapter.attention_v(seq_id)
+                seq_ids_arg = kwargs.pop("seq_ids", None)
+                cache_batch_idx = kwargs.pop("cache_batch_idx", None)
+                block_size = int(kwargs.pop("block_size", getattr(self.context, "block_size", 16)))
+                if seq_ids_arg is None:
+                    if int(q_target.shape[0]) != 1:
+                        raise ValueError(
+                            "speculative_verify paged runtime fallback with implicit seq_id "
+                            "requires batch size 1"
+                        )
+                    seq_ids = (int(kwargs.pop("seq_id", self.default_seq_id)),)
+                else:
+                    seq_ids = tuple(int(s) for s in seq_ids_arg)
+                if len(seq_ids) != int(q_target.shape[0]):
+                    raise ValueError(
+                        "speculative_verify paged runtime fallback requires seq_ids "
+                        "length to match q_target batch size"
+                    )
+                for sid in seq_ids:
+                    if int(cache_adapter.seq_length(sid)) <= 0:
+                        raise ValueError(
+                            "speculative_verify: paged runtime cache is empty for "
+                            f"seq_id={sid}; run prefill/step first or pass explicit k_cache/v_cache"
+                        )
+                table, lens = cache_adapter.paged_tables(list(seq_ids))
+                k_pool, v_pool, _ = cache_adapter.paged_pool()
+                out = flash_attention_speculative_verify_paged(
+                    q_target,
+                    k_pool,
+                    v_pool,
+                    table,
+                    lens,
+                    draft_ids,
+                    cache_batch_idx=cache_batch_idx,
+                    block_size=block_size,
+                    **kwargs,
+                )
+                self._speculative_verify_used = True
+                return out
             else:
                 raise ValueError(
                     "speculative_verify without explicit k_cache/v_cache requires "
