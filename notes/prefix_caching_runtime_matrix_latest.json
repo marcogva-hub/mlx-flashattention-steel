@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "device": {
+      "device_name": "Apple M1 Max",
+      "gpu_family_gen": 13,
+      "is_m3_plus": false,
+      "is_m5_plus": false,
+      "chip_name": "M1",
+      "gpu_cores": 32,
+      "extension_available": true
+    },
+    "mlx_mfa_version": "2.9.2",
+    "mlx_version": "0.31.0",
+    "python": "3.11.14",
+    "warmup": 1,
+    "iters": 3
+  },
+  "rows": [
+    {
+      "scenario": "dense_prefix_reuse_chunked",
+      "backend": "dense",
+      "D": 64,
+      "H_q": 8,
+      "H_kv": 4,
+      "prefix_len": 512,
+      "suffix_len": 256,
+      "chunk_size": 128,
+      "requests": 4,
+      "no_reuse_ms": 3.6648329987656325,
+      "explicit_helper_ms": 8.256499990238808,
+      "runtime_managed_ms": 7.770083990180865,
+      "ratio_runtime_vs_no_reuse": 0.47165938018133646,
+      "ratio_runtime_vs_explicit": 1.0626011251194494,
+      "max_err_runtime_vs_explicit": 0.0
+    },
+    {
+      "scenario": "dense_prefix_reuse_chunked",
+      "backend": "dense",
+      "D": 128,
+      "H_q": 8,
+      "H_kv": 4,
+      "prefix_len": 512,
+      "suffix_len": 256,
+      "chunk_size": 128,
+      "requests": 4,
+      "no_reuse_ms": 2.7995829877909273,
+      "explicit_helper_ms": 7.9455000086454675,
+      "runtime_managed_ms": 8.330416996614076,
+      "ratio_runtime_vs_no_reuse": 0.33606756887786365,
+      "ratio_runtime_vs_explicit": 0.9537937911001263,
+      "max_err_runtime_vs_explicit": 0.0
+    },
+    {
+      "scenario": "paged_prefix_reuse_chunked",
+      "backend": "paged",
+      "D": 64,
+      "H_q": 8,
+      "H_kv": 4,
+      "prefix_len": 512,
+      "suffix_len": 256,
+      "chunk_size": 128,
+      "requests": 4,
+      "no_reuse_ms": 37.3780420050025,
+      "explicit_helper_ms": 19.78641698951833,
+      "runtime_managed_ms": 20.07687499281019,
+      "ratio_runtime_vs_no_reuse": 1.861746014675496,
+      "ratio_runtime_vs_explicit": 0.9855327084819785,
+      "max_err_runtime_vs_explicit": 0.0
+    },
+    {
+      "scenario": "paged_prefix_reuse_chunked",
+      "backend": "paged",
+      "D": 128,
+      "H_q": 8,
+      "H_kv": 4,
+      "prefix_len": 512,
+      "suffix_len": 256,
+      "chunk_size": 128,
+      "requests": 4,
+      "no_reuse_ms": 41.76395799731836,
+      "explicit_helper_ms": 33.912500002770685,
+      "runtime_managed_ms": 34.02754200214986,
+      "ratio_runtime_vs_no_reuse": 1.2273574739744562,
+      "ratio_runtime_vs_explicit": 0.9966191504701719,
+      "max_err_runtime_vs_explicit": 0.0
+    }
+  ]
+}
