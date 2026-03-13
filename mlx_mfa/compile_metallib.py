@@ -11,7 +11,13 @@ Or from the command line::
 
 After compilation, common STEEL V2 forward kernels are cached as precompiled
 AIR metallibs in ``~/.mlx_mfa/metallib/``.  The C++ ShaderCache loads them on
-subsequent runs, reducing cold-start latency from ~50ms to ~5ms per kernel.
+subsequent runs to reduce JIT cold-start overhead for production paths.
+
+Scope note:
+  - This helper intentionally focuses on STEEL V2 / V2 D-split coverage.
+  - Selective advanced-kernel AOT (Sage/paged/shared-prefix extras) is
+    currently deferred by policy until benchmarked cold-start behavior is
+    consistently favorable.
 
 Compiled configs cover (standard V2):
   - D=64  BK=64  f16/bf16  causal/noncausal  (all gens)
