@@ -110,6 +110,62 @@ class TestKVCacheAdapters:
         # With no secondary tier, offload behaves as eviction/drop.
         assert 0 not in hybrid.state["residency_map"]
 
+    def test_hybrid_prefetch_promotes_from_cold_tier(self):
+        hot_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        cold_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        hybrid = HybridKVCache(
+            hot_ctx._cache,
+            secondary_cache=cold_ctx._cache,
+            policy="lru",
+            hot_seq_capacity=1,
+        )
+
+        k0 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        hybrid.append(k1, v1, seq_id=1)
+        assert hybrid.state["residency_map"][0] == "cold"
+        assert hybrid.state["residency_map"][1] == "hot"
+        assert hybrid.pending_prefetch_seq_ids == ()
+
+        hybrid.prefetch_seq(0, reason="unit")
+        st = hybrid.state
+        assert st["residency_map"][0] == "hot"
+        assert st["residency_map"][1] == "cold"
+        assert st["last_prefetch_action"]["seq_id"] == 0
+        assert st["last_prefetch_action"]["result_tier"] == "hot"
+        assert hybrid.pending_prefetch_seq_ids == ()
+
+    def test_hybrid_prepare_hot_window_and_prefetch_intent_controls(self):
+        dense_ctx = InferenceContext(B=1, H_kv=4, D=64, max_seq_len=32)
+        hybrid = HybridKVCache(dense_ctx._cache, policy="lru", hot_seq_capacity=1)
+        k = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k, v, seq_id=7)
+
+        hybrid.mark_for_prefetch(7, reason="manual")
+        assert hybrid.pending_prefetch_seq_ids == (7,)
+        hybrid.clear_prefetch_intent(7)
+        assert hybrid.pending_prefetch_seq_ids == ()
+
+        warmed = hybrid.prepare_hot_window([7], pin=True, reason="window-test")
+        assert warmed == (7,)
+        st = hybrid.state
+        assert st["pinned_seq_ids"] == (7,)
+        assert st["last_prefetch_action"]["seq_id"] == 7
+
 
 class TestCacheAbstractionRuntimeFlows:
     @pytest.fixture(autouse=True)

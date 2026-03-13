@@ -235,6 +235,7 @@ class HybridKVCache:
         self._last_eviction: Optional[dict[str, Any]] = None
         self._last_access_event: Optional[dict[str, Any]] = None
         self._last_prefetch_intent: Optional[dict[str, Any]] = None
+        self._last_prefetch_action: Optional[dict[str, Any]] = None
 
     @property
     def ready_for_production(self) -> bool:
@@ -360,6 +361,16 @@ class HybridKVCache:
             "tick": int(self._tick),
         }
 
+    def clear_prefetch_intent(self, seq_id: Optional[int] = None) -> None:
+        if seq_id is None:
+            self._prefetch_intent.clear()
+            return
+        self._prefetch_intent.discard(int(seq_id))
+
+    @property
+    def pending_prefetch_seq_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(int(sid) for sid in self._prefetch_intent))
+
     def _set_residency(self, seq_id: int, tier: str, *, reason: str) -> None:
         sid = int(seq_id)
         if tier not in ("hot", "cold"):
@@ -404,6 +415,7 @@ class HybridKVCache:
             "last_eviction": self._last_eviction,
             "last_access_event": self._last_access_event,
             "last_prefetch_intent": self._last_prefetch_intent,
+            "last_prefetch_action": self._last_prefetch_action,
             "has_secondary_tier": self._secondary_adapter is not None,
             "ready_for_production": self.ready_for_production,
         }
@@ -436,6 +448,7 @@ class HybridKVCache:
             self._prefetch_intent.clear()
             self._last_access_tick.clear()
             self._last_access_event = None
+            self._last_prefetch_action = None
         else:
             sid = int(seq_id)
             self._residency.pop(sid, None)
@@ -558,11 +571,42 @@ class HybridKVCache:
         sid = int(seq_id)
         self._demote_seq(sid, reason="offload_seq")
 
-    def prefetch_seq(self, seq_id: int) -> None:
-        raise NotImplementedError(
-            "HybridKVCache.prefetch_seq will be wired to local prefetch intent "
-            "and hot-tier warmup in this branch."
-        )
+    def prefetch_seq(self, seq_id: int, *, reason: str = "manual") -> None:
+        sid = int(seq_id)
+        self.mark_for_prefetch(sid, reason=reason)
+        self._ensure_hot(sid, reason=f"prefetch:{reason}")
+        self._prefetch_intent.discard(sid)
+        self._last_prefetch_action = {
+            "seq_id": sid,
+            "reason": str(reason),
+            "tick": int(self._tick),
+            "result_tier": self._residency.get(sid, "unknown"),
+        }
+
+    def prefetch(
+        self,
+        seq_ids: list[int] | tuple[int, ...],
+        *,
+        reason: str = "batch",
+    ) -> tuple[int, ...]:
+        warmed: list[int] = []
+        for sid in seq_ids:
+            self.prefetch_seq(int(sid), reason=reason)
+            warmed.append(int(sid))
+        return tuple(warmed)
+
+    def prepare_hot_window(
+        self,
+        seq_ids: list[int] | tuple[int, ...],
+        *,
+        pin: bool = False,
+        reason: str = "window",
+    ) -> tuple[int, ...]:
+        warmed = self.prefetch(seq_ids, reason=reason)
+        if pin:
+            for sid in warmed:
+                self.mark_pinned(sid, pinned=True)
+        return warmed
 
     def promote_seq(self, seq_id: int) -> None:
         sid = int(seq_id)
