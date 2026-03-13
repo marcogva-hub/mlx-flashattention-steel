@@ -7,7 +7,7 @@ without rewriting application-side selection logic.
 
 from __future__ import annotations
 
-from typing import Optional, Literal
+from typing import Any, Optional, Literal
 
 import mlx.core as mx
 
@@ -60,6 +60,9 @@ class DecodeRuntime:
         self._speculative_verify_used = False
         self._active_seq_ids: Optional[tuple[int, ...]] = None
         self._active_cache_batch_idx: Optional[tuple[int, ...]] = None
+        self._prefix_cache: dict[str, dict[str, Any]] = {}
+        self._active_prefix_id: Optional[str] = None
+        self._last_prefix_reuse: Optional[dict[str, Any]] = None
 
     def _with_default_seq_id(self, kwargs: dict) -> dict:
         if self.backend == "paged" and "seq_id" not in kwargs:
@@ -116,6 +119,208 @@ class DecodeRuntime:
                 f"(got {len(active_seq_ids)} vs expected {expected_batch})"
             )
         return active_seq_ids, idx_tuple
+
+    @staticmethod
+    def _normalize_prefix_id(prefix_id: str) -> str:
+        pid = str(prefix_id).strip()
+        if not pid:
+            raise ValueError("prefix_id must be a non-empty string")
+        return pid
+
+    def _resolve_prefix_id_or_active(self, prefix_id: Optional[str]) -> str:
+        pid = self._active_prefix_id if prefix_id is None else prefix_id
+        if pid is None:
+            raise ValueError(
+                "No active prefix is set; call register_prefix(...) first "
+                "or pass prefix_id explicitly."
+            )
+        pid = self._normalize_prefix_id(pid)
+        if pid not in self._prefix_cache:
+            raise ValueError(
+                f"Unknown prefix_id={pid!r}. Known ids: "
+                f"{tuple(sorted(self._prefix_cache.keys()))}"
+            )
+        return pid
+
+    def _seed_dense_prefix(self, entry: dict[str, Any], *, reset: bool) -> None:
+        cache = getattr(self.context, "_cache", None)
+        if cache is None or not hasattr(cache, "append"):
+            raise TypeError(
+                "Dense/Sage prefix seeding requires an append-capable runtime cache"
+            )
+        if reset:
+            self.reset()
+        cache.append(entry["k"], entry["v"])
+
+    def _seed_paged_prefixes(
+        self,
+        entries: tuple[dict[str, Any], ...],
+        seq_ids: tuple[int, ...],
+        *,
+        reset: bool,
+    ) -> None:
+        cache = getattr(self.context, "cache", None)
+        if cache is None:
+            raise TypeError(
+                "Paged prefix seeding requires runtime context.cache"
+            )
+        if len(entries) != len(seq_ids):
+            raise ValueError(
+                "entries/seq_ids length mismatch in paged prefix seeding "
+                f"({len(entries)} vs {len(seq_ids)})"
+            )
+        if reset:
+            for sid in seq_ids:
+                cache.reset(seq_id=sid)
+        for sid, entry in zip(seq_ids, entries):
+            k = entry["k"]
+            v = entry["v"]
+            if int(k.shape[0]) != 1 or int(v.shape[0]) != 1:
+                raise ValueError(
+                    "Paged prefix seeding currently requires prefix tensors "
+                    "with batch=1"
+                )
+            cache.append(k, v, seq_id=sid)
+
+    def register_prefix(
+        self,
+        prefix_id: str,
+        prefix_q: mx.array,
+        prefix_k: mx.array,
+        prefix_v: mx.array,
+        *,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        overwrite: bool = False,
+    ):
+        """Register reusable shared-prefix state under ``prefix_id``."""
+        pid = self._normalize_prefix_id(prefix_id)
+        if (not overwrite) and pid in self._prefix_cache:
+            raise ValueError(
+                f"prefix_id={pid!r} already exists. Pass overwrite=True to replace it."
+            )
+        prefix_out, kp, vp = self.shared_prefix_cache(
+            prefix_q,
+            prefix_k,
+            prefix_v,
+            scale=scale,
+        )
+        entry = {
+            "id": pid,
+            "q": prefix_q,
+            "k": kp,
+            "v": vp,
+            "scale": scale,
+            "causal": causal,
+            "softcap": softcap,
+            "window_size": window_size,
+        }
+        self._prefix_cache[pid] = entry
+        self._active_prefix_id = pid
+        return prefix_out, kp, vp
+
+    def list_registered_prefix_ids(self) -> tuple[str, ...]:
+        """Return registered prefix ids sorted lexicographically."""
+        return tuple(sorted(self._prefix_cache.keys()))
+
+    def drop_prefix(self, prefix_id: str) -> None:
+        """Remove one registered prefix by id."""
+        pid = self._normalize_prefix_id(prefix_id)
+        if pid in self._prefix_cache:
+            self._prefix_cache.pop(pid, None)
+            if self._active_prefix_id == pid:
+                self._active_prefix_id = None
+            if self._prepared_prefix is not None and self._prepared_prefix.get("id") == pid:
+                self._prepared_prefix = None
+
+    def clear_registered_prefixes(self) -> None:
+        """Remove all registered prefixes and clear active prepared state."""
+        self._prefix_cache.clear()
+        self._active_prefix_id = None
+        self._prepared_prefix = None
+
+    def seed_prefix(
+        self,
+        *,
+        prefix_id: Optional[str] = None,
+        prefix_ids: Optional[tuple[str, ...] | list[str]] = None,
+        seq_id: Optional[int] = None,
+        seq_ids: Optional[tuple[int, ...] | list[int]] = None,
+        reset: bool = True,
+    ) -> Optional[tuple[int, ...]]:
+        """Seed runtime cache from registered prefix entries.
+
+        Returns paged ``seq_ids`` when seeding paged runtime, else ``None``.
+        """
+        if prefix_id is not None and prefix_ids is not None:
+            raise ValueError("seed_prefix: pass either prefix_id or prefix_ids, not both")
+
+        if prefix_ids is not None:
+            if self.backend != "paged":
+                raise ValueError(
+                    "seed_prefix(prefix_ids=...) is supported only on paged runtime"
+                )
+            ids = tuple(self._normalize_prefix_id(pid) for pid in prefix_ids)
+            if seq_ids is None:
+                raise ValueError(
+                    "seed_prefix with prefix_ids requires explicit seq_ids"
+                )
+            sids = tuple(int(s) for s in seq_ids)
+            if len(ids) != len(sids):
+                raise ValueError(
+                    "seed_prefix prefix_ids/seq_ids length mismatch "
+                    f"({len(ids)} vs {len(sids)})"
+                )
+            entries = tuple(self._prefix_cache[pid] for pid in ids)
+            self._seed_paged_prefixes(entries, sids, reset=reset)
+            self._active_prefix_id = ids[-1] if ids else self._active_prefix_id
+            self._active_seq_ids = sids
+            self._last_prefix_reuse = {
+                "prefix_ids": ids,
+                "seq_ids": sids,
+                "reset": bool(reset),
+            }
+            return sids
+
+        pid = self._resolve_prefix_id_or_active(prefix_id)
+        entry = self._prefix_cache[pid]
+
+        if self.backend == "paged":
+            if seq_ids is not None:
+                sids = tuple(int(s) for s in seq_ids)
+                entries = tuple(entry for _ in sids)
+                self._seed_paged_prefixes(entries, sids, reset=reset)
+            else:
+                sid = self.default_seq_id if seq_id is None else int(seq_id)
+                sids = (sid,)
+                self._seed_paged_prefixes((entry,), sids, reset=reset)
+            self._active_prefix_id = pid
+            self._active_seq_ids = sids
+            self._last_prefix_reuse = {
+                "prefix_ids": (pid,),
+                "seq_ids": sids,
+                "reset": bool(reset),
+            }
+            return sids
+
+        if seq_ids is not None:
+            raise ValueError(
+                "seed_prefix(seq_ids=...) is unsupported for non-paged runtime"
+            )
+        if seq_id not in (None, 0):
+            raise ValueError(
+                "seed_prefix(seq_id=...) is unsupported for non-paged runtime"
+            )
+        self._seed_dense_prefix(entry, reset=reset)
+        self._active_prefix_id = pid
+        self._last_prefix_reuse = {
+            "prefix_ids": (pid,),
+            "seq_ids": None,
+            "reset": bool(reset),
+        }
+        return None
 
     def prefill(self, q: mx.array, k: mx.array, v: mx.array, **kwargs):
         """Forward to the underlying context prefill call."""
@@ -634,37 +839,30 @@ class DecodeRuntime:
         window_size: Optional[tuple] = None,
         seed_runtime_cache: bool = True,
         seq_id: Optional[int] = None,
+        prefix_id: Optional[str] = None,
     ):
         """Prepare a shared prefix and optionally seed runtime KV state.
 
         This helper removes manual orchestration between
         ``make_shared_prefix_cache(...)`` and runtime ``prefill(...)``.
         """
-        prefix_out, kp, vp = self.shared_prefix_cache(
+        pid = "__prepared__" if prefix_id is None else self._normalize_prefix_id(prefix_id)
+        prefix_out, kp, vp = self.register_prefix(
+            pid,
             prefix_q,
             prefix_k,
             prefix_v,
             scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
+            overwrite=True,
         )
-        self._prepared_prefix = {
-            "q": prefix_q,
-            "k": kp,
-            "v": vp,
-            "scale": scale,
-            "causal": causal,
-            "softcap": softcap,
-            "window_size": window_size,
-        }
+        self._prepared_prefix = self._prefix_cache[pid]
+        self._active_prefix_id = pid
         if seed_runtime_cache:
-            prefill_kwargs = {
-                "scale": scale,
-                "causal": causal,
-                "softcap": softcap,
-                "window_size": window_size,
-            }
-            if seq_id is not None:
-                prefill_kwargs["seq_id"] = seq_id
-            self.prefill(prefix_q, prefix_k, prefix_v, **prefill_kwargs)
+            seed_seq = self.default_seq_id if seq_id is None else int(seq_id)
+            self.seed_prefix(prefix_id=pid, seq_id=seed_seq, reset=True)
         return prefix_out, kp, vp
 
     def decode_from_shared_prefix(
@@ -724,6 +922,9 @@ class DecodeRuntime:
             "default_seq_id": self.default_seq_id,
             "active_seq_ids": self._active_seq_ids,
             "active_cache_batch_idx": self._active_cache_batch_idx,
+            "prefix_cache_size": len(self._prefix_cache),
+            "active_prefix_id": self._active_prefix_id,
+            "last_prefix_reuse": self._last_prefix_reuse,
         }
 
     @property
@@ -844,6 +1045,8 @@ class DecodeRuntime:
             f"active_seq_ids={self.metadata['active_seq_ids']}, "
             f"active_cache_batch_idx={self.metadata['active_cache_batch_idx']}, "
             f"shared_prefix_active={self.metadata['shared_prefix_active']}, "
+            f"prefix_cache_size={self.metadata['prefix_cache_size']}, "
+            f"active_prefix_id={self.metadata['active_prefix_id']!r}, "
             f"splitfuse_active={self.metadata['splitfuse_active']}, "
             f"speculative_verify_active={self.metadata['speculative_verify_active']}, "
             f"context={type(self.context).__name__})"
