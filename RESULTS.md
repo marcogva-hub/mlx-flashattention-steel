@@ -214,6 +214,8 @@ Targeted cold-start probes (separate processes) were run in two modes:
 Decision from this pass:
 - Keep AOT production focus on STEEL V2 / V2 D-split.
 - Do not promote selective advanced-kernel AOT until cold-start behavior is favorable.
+- Notes hygiene check: no stale `notes/` root artifacts older than 24h were
+  found in this pass to move into `notes/archive/`.
 
 Reference note: `notes/experimental_aot_evaluation.md`
 

@@ -119,6 +119,8 @@ production boundary explicit:
 Selective advanced-kernel AOT was evaluated and **deferred** after targeted
 cold-start checks (`notes/experimental_aot_evaluation.md`) showed regressions
 on this hardware for the candidate advanced kernels.
+Experimental keep/park recommendations are tracked in
+`notes/experimental_path_status_matrix.md`.
 
 ---
 

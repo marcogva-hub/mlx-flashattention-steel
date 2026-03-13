@@ -174,6 +174,8 @@ All notable changes to mlx-mfa are documented here.
 - **docs/decision**: Deferred selective advanced-kernel AOT expansion for this
   pass after measured cold-start regressions on evaluated candidates; keep AOT
   focus on STEEL V2 / V2 D-split until loader/artifact behavior is favorable.
+- **chore**: Notes hygiene check found no stale `notes/` root artifacts older
+  than 24h requiring archive moves in this pass.
 - **total**: 698 tests pass.
 
 ## [2.9.1] — 2026-03-12
