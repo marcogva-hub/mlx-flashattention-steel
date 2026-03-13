@@ -155,3 +155,27 @@ Measured ratio (same post-copy environment):
 Interim conclusion:
 - Shipped async metallib **does load** successfully (Stage 3 load succeeds).
 - But observed runtime performance indicates no practical overlap benefit on this setup; behavior is consistent with serialization/emulation/ineffective async execution at runtime.
+
+### Task 4 — GPU capture / trace attempt
+
+Environment availability:
+- `xcodebuild -version`: Xcode 26.2 (17C52)
+- `xcrun xctrace version`: 26.0 (17C52)
+
+Command-line captures executed:
+- `xcrun xctrace record --template 'Metal System Trace' --time-limit 8s --output /tmp/mfa_async.trace --launch -- .venv/bin/python scripts/bench_async_path.py`
+- `xcrun xctrace record --template 'Metal System Trace' --time-limit 8s --output /tmp/mfa_sync.trace --launch -- .venv/bin/python scripts/bench_sync_path.py`
+
+Exported TOC metadata:
+- Async run duration (trace summary): ~1.51s
+- Sync run duration (trace summary): ~2.57s
+- Template setting in both traces reports:
+  - `Shader Timeline: Disabled`
+
+Implication:
+- These captures confirm trace collection is working, but they do **not** provide direct shader-timeline overlap visualization for DMA-vs-ALU overlap in this run.
+- To answer overlap conclusively, an Xcode GUI capture with Shader Timeline enabled is still required.
+
+Interim interpretation for Stage 4:
+- No direct overlap evidence was extractable from the recorded traces in this configuration.
+- Combined with benchmark results, behavior remains consistent with ineffective async overlap on this setup.
