@@ -1210,11 +1210,12 @@ class DecodeRuntime:
         accepted_prefix_lens = self._accepted_prefix_lens_from_mask(accept_mask)
         token_idx = mx.arange(int(draft_ids.shape[1]), dtype=mx.int32)[None, :]
         prefix_mask = token_idx < accepted_prefix_lens[:, None]
+        minus_one = mx.full(draft_ids.shape, -1, dtype=draft_ids.dtype)
 
-        accepted_ids = mx.where(prefix_mask, draft_ids, mx.full_like(draft_ids, -1))
+        accepted_ids = mx.where(prefix_mask, draft_ids, minus_one)
         rejected_ids = mx.where(
             prefix_mask,
-            mx.full_like(draft_ids, -1),
+            minus_one,
             draft_ids,
         )
 

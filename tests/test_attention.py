@@ -8134,6 +8134,177 @@ class TestDecodeRuntimeFactory:
         mx.eval(out, lse, lp)
         assert out.shape == (1, 4, 2, 64)
 
+    def test_speculative_verify_via_paged_runtime_cache(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        q_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        rt.prefill(q_pre, k_pre, v_pre, seq_id=3)
+
+        q_target = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((1, 3), dtype=mx.int32)
+        out, lse, lp = rt.speculative_verify(q_target, draft_ids, seq_id=3)
+        mx.eval(out, lse, lp)
+        assert out.shape == (1, 4, 3, 64)
+        assert lse.shape == (1, 4, 3)
+        assert lp.shape == (1, 3)
+
+    def test_speculative_step_full_accept_and_metadata(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        seq_before = rt.seq_length()
+
+        q_target = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        draft_ids = mx.array([[3, 4, 5, 6]], dtype=mx.int32)
+        result = rt.speculative_step(
+            q_target,
+            draft_ids,
+            accept_logprob_delta=-1e9,
+        )
+        mx.eval(
+            result["out"],
+            result["lse"],
+            result["target_logprobs"],
+            result["accept_mask"],
+            result["accepted_prefix_lens"],
+            result["accepted_ids"],
+            result["rejected_ids"],
+        )
+
+        assert tuple(result["accepted_prefix_lens"].tolist()) == (4,)
+        assert tuple(result["accepted_ids"].tolist()[0]) == (3, 4, 5, 6)
+        assert tuple(result["rejected_ids"].tolist()[0]) == (-1, -1, -1, -1)
+        assert rt.seq_length() == seq_before
+        assert rt.metadata["speculative_step_active"] is True
+        assert rt.metadata["last_speculative_step"]["tokens"] == 4
+
+    def test_speculative_step_partial_accept_with_draft_logprobs(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+
+        q_target = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        draft_ids = mx.array([[0, 1, 2, 3]], dtype=mx.int32)
+        _, _, lp = rt.speculative_verify(q_target, draft_ids)
+        lp_np = np.array(lp.astype(mx.float32))
+        draft_lp_np = lp_np - 0.5
+        draft_lp_np[:, 2:] = lp_np[:, 2:] + 5.0
+        draft_lp = mx.array(draft_lp_np.astype(np.float32))
+
+        result = rt.speculative_step(
+            q_target,
+            draft_ids,
+            draft_logprobs=draft_lp,
+            accept_logprob_delta=0.0,
+        )
+        mx.eval(
+            result["accept_mask"],
+            result["accepted_prefix_lens"],
+            result["accepted_ids"],
+            result["rejected_ids"],
+        )
+        assert tuple(result["accepted_prefix_lens"].tolist()) == (2,)
+        assert tuple(result["accepted_ids"].tolist()[0]) == (0, 1, -1, -1)
+        assert tuple(result["rejected_ids"].tolist()[0]) == (-1, -1, 2, 3)
+
+    def test_speculative_step_reject_all_with_high_threshold(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 10, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+
+        q_target = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        draft_ids = mx.array([[9, 7, 1]], dtype=mx.int32)
+        result = rt.speculative_step(
+            q_target,
+            draft_ids,
+            accept_logprob_delta=1e6,
+        )
+        mx.eval(result["accepted_prefix_lens"], result["accepted_ids"], result["rejected_ids"])
+        assert tuple(result["accepted_prefix_lens"].tolist()) == (0,)
+        assert tuple(result["accepted_ids"].tolist()[0]) == (-1, -1, -1)
+        assert tuple(result["rejected_ids"].tolist()[0]) == (9, 7, 1)
+
+    def test_speculative_step_invalid_draft_logprobs_shape(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            B=1,
+            H_kv=4,
+            D=64,
+        )
+        q = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 8, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        draft_ids = mx.array([[0, 1]], dtype=mx.int32)
+        bad_lp = mx.zeros((2, 2), dtype=mx.float32)
+        with pytest.raises(ValueError, match="shape to match draft_ids"):
+            rt.speculative_step(
+                q_target,
+                draft_ids,
+                draft_logprobs=bad_lp,
+            )
+
+    def test_speculative_verify_packed_query_layout_without_explicit_cache_fails(self):
+        from mlx_mfa import create_decode_runtime
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="packed",
+            quantized_kv=False,
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        q_target = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        draft_ids = mx.zeros((1, 2), dtype=mx.int32)
+        with pytest.raises(ValueError, match="requires query_layout='batched'"):
+            rt.speculative_verify(q_target, draft_ids)
+
 
 # ==========================================================================
 # Track LE — Paged KV + packed varlen query API / runtime
