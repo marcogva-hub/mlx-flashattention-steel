@@ -1,0 +1,67 @@
+{
+  "date": "2026-03-13",
+  "mlx_mfa_version": "2.9.2",
+  "device": {
+    "device_name": "Apple M1 Max",
+    "gpu_family_gen": 13,
+    "is_m3_plus": false,
+    "is_m5_plus": false,
+    "chip_name": "M1",
+    "gpu_cores": 32,
+    "extension_available": true
+  },
+  "warmup": 1,
+  "iters": 3,
+  "block_size": 16,
+  "prefill_len": 512,
+  "rows": [
+    {
+      "scenario": "scheduler_reorder_active3_of6",
+      "kind": "paged_step_batch_remap",
+      "D": 64,
+      "dtype": "f16",
+      "steps": 5,
+      "manual_ms": 28.278792000492103,
+      "runtime_remap_ms": 27.648125003906898,
+      "ratio_runtime_vs_manual": 1.0228104797882709,
+      "max_err": 0.0
+    },
+    {
+      "scenario": "scheduler_reorder_active3_of6",
+      "kind": "paged_varlen_remap",
+      "D": 64,
+      "dtype": "f16",
+      "steps": 5,
+      "manual_ms": 22.00433300458826,
+      "runtime_remap_ms": 24.528791996999644,
+      "ratio_runtime_vs_manual": 0.8970818052221987,
+      "max_err": 0.0
+    },
+    {
+      "scenario": "scheduler_reorder_active3_of6",
+      "kind": "paged_step_batch_remap",
+      "D": 128,
+      "dtype": "f16",
+      "steps": 5,
+      "manual_ms": 49.38479200063739,
+      "runtime_remap_ms": 47.096541995415464,
+      "ratio_runtime_vs_manual": 1.048586369790051,
+      "max_err": 0.0
+    },
+    {
+      "scenario": "scheduler_reorder_active3_of6",
+      "kind": "paged_varlen_remap",
+      "D": 128,
+      "dtype": "f16",
+      "steps": 5,
+      "manual_ms": 34.899040998425335,
+      "runtime_remap_ms": 35.53312500298489,
+      "ratio_runtime_vs_manual": 0.9821551297695801,
+      "max_err": 0.0
+    }
+  ],
+  "notes": [
+    "Scheduler-style active-order remap benchmark for paged batched and packed-varlen runtime paths.",
+    "Primary win target is operational capability with explicit mapping; performance deltas may be modest."
+  ]
+}
