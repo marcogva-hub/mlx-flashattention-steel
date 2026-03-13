@@ -1,0 +1,59 @@
+{
+  "version": "2.9.2",
+  "device": {
+    "device_name": "Apple M1 Max",
+    "gpu_family_gen": 13,
+    "is_m3_plus": false,
+    "is_m5_plus": false,
+    "chip_name": "M1",
+    "gpu_cores": 32,
+    "extension_available": true
+  },
+  "timestamp": "2026-03-13 16:04:34",
+  "warmup": 1,
+  "iters": 4,
+  "results": [
+    {
+      "scenario": "dense_prefill_plus_8_decode_steps",
+      "D": 64,
+      "baseline_ms": 4.712499998277053,
+      "hybrid_ms": 3.9562080055475235,
+      "ratio_hybrid_vs_baseline": 0.8395136354363842
+    },
+    {
+      "scenario": "paged_batch_2x16_decode_steps",
+      "D": 64,
+      "baseline_ms": 16.653416998451576,
+      "hybrid_ms": 17.384999999194406,
+      "ratio_hybrid_vs_baseline": 1.0439299034432905
+    },
+    {
+      "scenario": "dense_prefix_reuse_prefill_with_prefix",
+      "D": 64,
+      "baseline_ms": 1.65891699725762,
+      "hybrid_ms": 1.56095800048206,
+      "ratio_hybrid_vs_baseline": 0.9409500312930077
+    },
+    {
+      "scenario": "dense_prefill_plus_8_decode_steps",
+      "D": 128,
+      "baseline_ms": 4.277833999367431,
+      "hybrid_ms": 4.5867089938838035,
+      "ratio_hybrid_vs_baseline": 1.0722035952217983
+    },
+    {
+      "scenario": "paged_batch_2x16_decode_steps",
+      "D": 128,
+      "baseline_ms": 19.595249992562458,
+      "hybrid_ms": 21.198499991442077,
+      "ratio_hybrid_vs_baseline": 1.0818182977756419
+    },
+    {
+      "scenario": "dense_prefix_reuse_prefill_with_prefix",
+      "D": 128,
+      "baseline_ms": 2.504874995793216,
+      "hybrid_ms": 1.7915420030476525,
+      "ratio_hybrid_vs_baseline": 0.7152221192899596
+    }
+  ]
+}
