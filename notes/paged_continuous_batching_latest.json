@@ -11,7 +11,7 @@
     "extension_available": true
   },
   "warmup": 1,
-  "iters": 3,
+  "iters": 2,
   "block_size": 16,
   "prefill_len": 512,
   "rows": [
@@ -21,9 +21,9 @@
       "D": 64,
       "dtype": "f16",
       "steps": 5,
-      "manual_ms": 28.278792000492103,
-      "runtime_remap_ms": 27.648125003906898,
-      "ratio_runtime_vs_manual": 1.0228104797882709,
+      "manual_ms": 26.1009169917088,
+      "runtime_remap_ms": 21.11387500190176,
+      "ratio_runtime_vs_manual": 1.2361973815492346,
       "max_err": 0.0
     },
     {
@@ -32,9 +32,9 @@
       "D": 64,
       "dtype": "f16",
       "steps": 5,
-      "manual_ms": 22.00433300458826,
-      "runtime_remap_ms": 24.528791996999644,
-      "ratio_runtime_vs_manual": 0.8970818052221987,
+      "manual_ms": 16.84012499754317,
+      "runtime_remap_ms": 16.02150000690017,
+      "ratio_runtime_vs_manual": 1.0510954024461152,
       "max_err": 0.0
     },
     {
@@ -43,9 +43,9 @@
       "D": 128,
       "dtype": "f16",
       "steps": 5,
-      "manual_ms": 49.38479200063739,
-      "runtime_remap_ms": 47.096541995415464,
-      "ratio_runtime_vs_manual": 1.048586369790051,
+      "manual_ms": 32.5327919999836,
+      "runtime_remap_ms": 31.295542008592747,
+      "ratio_runtime_vs_manual": 1.0395343845155691,
       "max_err": 0.0
     },
     {
@@ -54,9 +54,9 @@
       "D": 128,
       "dtype": "f16",
       "steps": 5,
-      "manual_ms": 34.899040998425335,
-      "runtime_remap_ms": 35.53312500298489,
-      "ratio_runtime_vs_manual": 0.9821551297695801,
+      "manual_ms": 27.089625000371598,
+      "runtime_remap_ms": 26.84695800417103,
+      "ratio_runtime_vs_manual": 1.0090389010242005,
       "max_err": 0.0
     }
   ],

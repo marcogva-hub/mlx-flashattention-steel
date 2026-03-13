@@ -9,27 +9,27 @@
     "gpu_cores": 32,
     "extension_available": true
   },
-  "timestamp": "2026-03-13 16:34:05",
+  "timestamp": "2026-03-13 16:41:54",
   "warmup": 1,
   "iters": 4,
   "results": [
     {
       "scenario": "dense_splitfuse",
       "D": 64,
-      "helper_ms": 0.7744579925201833,
-      "runtime_splitfuse_ms": 0.7735839899396524,
-      "runtime_splitfuse_step_ms": 0.6799580005463213,
-      "runtime_splitfuse_step_prefix_ms": 0.9757919906405732,
-      "runtime_step_vs_helper": 0.8779791894633985
+      "helper_ms": 0.9447499905945733,
+      "runtime_splitfuse_ms": 0.800499998149462,
+      "runtime_splitfuse_step_ms": 1.046833989676088,
+      "runtime_splitfuse_step_prefix_ms": 1.1304159997962415,
+      "runtime_step_vs_helper": 1.1080539826385907
     },
     {
       "scenario": "dense_splitfuse",
       "D": 128,
-      "helper_ms": 0.788124991231598,
-      "runtime_splitfuse_ms": 0.8262500050477684,
-      "runtime_splitfuse_step_ms": 0.7392920088022947,
-      "runtime_splitfuse_step_prefix_ms": 1.0580420057522133,
-      "runtime_step_vs_helper": 0.9380390382583957
+      "helper_ms": 1.0018330067396164,
+      "runtime_splitfuse_ms": 0.6997909949859604,
+      "runtime_splitfuse_step_ms": 1.0399999882793054,
+      "runtime_splitfuse_step_prefix_ms": 0.9371250052936375,
+      "runtime_step_vs_helper": 1.0380971492084299
     }
   ]
 }

@@ -9,37 +9,37 @@
     "gpu_cores": 32,
     "extension_available": true
   },
-  "timestamp": "2026-03-13 16:37:40",
+  "timestamp": "2026-03-13 16:41:58",
   "warmup": 1,
   "iters": 4,
   "results": [
     {
       "scenario": "paged_splitfuse_decode_only",
       "D": 64,
-      "manual_bridge_ms": 1.1075420043198392,
-      "runtime_page_native_ms": 1.2590420083142817,
-      "runtime_vs_manual": 1.1367893979673316
+      "manual_bridge_ms": 1.305209007114172,
+      "runtime_page_native_ms": 1.1005420092260465,
+      "runtime_vs_manual": 0.8431921655669187
     },
     {
       "scenario": "paged_speculative_verify",
       "D": 64,
-      "manual_bridge_ms": 2.8731249913107604,
-      "runtime_page_native_ms": 2.2547080006916076,
-      "runtime_vs_manual": 0.7847580622181626
+      "manual_bridge_ms": 2.0826660038437694,
+      "runtime_page_native_ms": 2.967874999740161,
+      "runtime_vs_manual": 1.425036464926517
     },
     {
       "scenario": "paged_splitfuse_decode_only",
       "D": 128,
-      "manual_bridge_ms": 1.0590419988147914,
-      "runtime_page_native_ms": 1.1894580093212426,
-      "runtime_vs_manual": 1.1231452677536906
+      "manual_bridge_ms": 1.105624993215315,
+      "runtime_page_native_ms": 1.1311659909551963,
+      "runtime_vs_manual": 1.0231009590924718
     },
     {
       "scenario": "paged_speculative_verify",
       "D": 128,
-      "manual_bridge_ms": 2.259333006804809,
-      "runtime_page_native_ms": 3.217707999283448,
-      "runtime_vs_manual": 1.4241849207673865
+      "manual_bridge_ms": 2.5130830035777763,
+      "runtime_page_native_ms": 2.442541008349508,
+      "runtime_vs_manual": 0.971930097363342
     }
   ]
 }

@@ -26,11 +26,11 @@
       "suffix_len": 256,
       "chunk_size": 128,
       "requests": 4,
-      "no_reuse_ms": 3.6648329987656325,
-      "explicit_helper_ms": 8.256499990238808,
-      "runtime_managed_ms": 7.770083990180865,
-      "ratio_runtime_vs_no_reuse": 0.47165938018133646,
-      "ratio_runtime_vs_explicit": 1.0626011251194494,
+      "no_reuse_ms": 2.8298329998506233,
+      "explicit_helper_ms": 6.240957998670638,
+      "runtime_managed_ms": 6.589333992451429,
+      "ratio_runtime_vs_no_reuse": 0.42945660412606296,
+      "ratio_runtime_vs_explicit": 0.9471303178470112,
       "max_err_runtime_vs_explicit": 0.0
     },
     {
@@ -43,11 +43,11 @@
       "suffix_len": 256,
       "chunk_size": 128,
       "requests": 4,
-      "no_reuse_ms": 2.7995829877909273,
-      "explicit_helper_ms": 7.9455000086454675,
-      "runtime_managed_ms": 8.330416996614076,
-      "ratio_runtime_vs_no_reuse": 0.33606756887786365,
-      "ratio_runtime_vs_explicit": 0.9537937911001263,
+      "no_reuse_ms": 4.715832998044789,
+      "explicit_helper_ms": 7.0720829971833155,
+      "runtime_managed_ms": 7.267708002473228,
+      "ratio_runtime_vs_no_reuse": 0.6488748579937408,
+      "ratio_runtime_vs_explicit": 0.9730829850038911,
       "max_err_runtime_vs_explicit": 0.0
     },
     {
@@ -60,11 +60,11 @@
       "suffix_len": 256,
       "chunk_size": 128,
       "requests": 4,
-      "no_reuse_ms": 37.3780420050025,
-      "explicit_helper_ms": 19.78641698951833,
-      "runtime_managed_ms": 20.07687499281019,
-      "ratio_runtime_vs_no_reuse": 1.861746014675496,
-      "ratio_runtime_vs_explicit": 0.9855327084819785,
+      "no_reuse_ms": 41.23079100099858,
+      "explicit_helper_ms": 19.369875008123927,
+      "runtime_managed_ms": 19.46812499954831,
+      "ratio_runtime_vs_no_reuse": 2.1178614274335716,
+      "ratio_runtime_vs_explicit": 0.9949532894705236,
       "max_err_runtime_vs_explicit": 0.0
     },
     {
@@ -77,11 +77,11 @@
       "suffix_len": 256,
       "chunk_size": 128,
       "requests": 4,
-      "no_reuse_ms": 41.76395799731836,
-      "explicit_helper_ms": 33.912500002770685,
-      "runtime_managed_ms": 34.02754200214986,
-      "ratio_runtime_vs_no_reuse": 1.2273574739744562,
-      "ratio_runtime_vs_explicit": 0.9966191504701719,
+      "no_reuse_ms": 53.641334001440555,
+      "explicit_helper_ms": 32.14145799574908,
+      "runtime_managed_ms": 31.582625000737607,
+      "ratio_runtime_vs_no_reuse": 1.698444445329917,
+      "ratio_runtime_vs_explicit": 1.0176943175242217,
       "max_err_runtime_vs_explicit": 0.0
     }
   ]

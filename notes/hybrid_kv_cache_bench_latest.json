@@ -9,51 +9,51 @@
     "gpu_cores": 32,
     "extension_available": true
   },
-  "timestamp": "2026-03-13 16:04:34",
+  "timestamp": "2026-03-13 16:41:50",
   "warmup": 1,
-  "iters": 4,
+  "iters": 3,
   "results": [
     {
       "scenario": "dense_prefill_plus_8_decode_steps",
       "D": 64,
-      "baseline_ms": 4.712499998277053,
-      "hybrid_ms": 3.9562080055475235,
-      "ratio_hybrid_vs_baseline": 0.8395136354363842
+      "baseline_ms": 4.062374995555729,
+      "hybrid_ms": 3.8069169968366623,
+      "ratio_hybrid_vs_baseline": 0.9371160961263941
     },
     {
       "scenario": "paged_batch_2x16_decode_steps",
       "D": 64,
-      "baseline_ms": 16.653416998451576,
-      "hybrid_ms": 17.384999999194406,
-      "ratio_hybrid_vs_baseline": 1.0439299034432905
+      "baseline_ms": 17.00741700187791,
+      "hybrid_ms": 16.160041996045038,
+      "ratio_hybrid_vs_baseline": 0.9501761492800871
     },
     {
       "scenario": "dense_prefix_reuse_prefill_with_prefix",
       "D": 64,
-      "baseline_ms": 1.65891699725762,
-      "hybrid_ms": 1.56095800048206,
-      "ratio_hybrid_vs_baseline": 0.9409500312930077
+      "baseline_ms": 1.9701249984791502,
+      "hybrid_ms": 1.595624999026768,
+      "ratio_hybrid_vs_baseline": 0.8099105388026243
     },
     {
       "scenario": "dense_prefill_plus_8_decode_steps",
       "D": 128,
-      "baseline_ms": 4.277833999367431,
-      "hybrid_ms": 4.5867089938838035,
-      "ratio_hybrid_vs_baseline": 1.0722035952217983
+      "baseline_ms": 4.083166000782512,
+      "hybrid_ms": 3.3848749881144613,
+      "ratio_hybrid_vs_baseline": 0.8289829479050747
     },
     {
       "scenario": "paged_batch_2x16_decode_steps",
       "D": 128,
-      "baseline_ms": 19.595249992562458,
-      "hybrid_ms": 21.198499991442077,
-      "ratio_hybrid_vs_baseline": 1.0818182977756419
+      "baseline_ms": 14.26345799700357,
+      "hybrid_ms": 14.537416995153762,
+      "ratio_hybrid_vs_baseline": 1.0192070533111777
     },
     {
       "scenario": "dense_prefix_reuse_prefill_with_prefix",
       "D": 128,
-      "baseline_ms": 2.504874995793216,
-      "hybrid_ms": 1.7915420030476525,
-      "ratio_hybrid_vs_baseline": 0.7152221192899596
+      "baseline_ms": 1.261375000467524,
+      "hybrid_ms": 1.2575000000651926,
+      "ratio_hybrid_vs_baseline": 0.9969279552861797
     }
   ]
 }

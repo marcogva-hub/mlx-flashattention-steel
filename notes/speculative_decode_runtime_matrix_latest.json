@@ -9,9 +9,9 @@
     "gpu_cores": 32,
     "extension_available": true
   },
-  "timestamp": "2026-03-13 15:18:23",
+  "timestamp": "2026-03-13 16:42:02",
   "warmup": 1,
-  "iters": 3,
+  "iters": 4,
   "results": [
     {
       "scenario": "dense_short",
@@ -20,9 +20,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "full_accept",
-      "manual_ms": 1.21870799921453,
-      "runtime_ms": 1.3420420000329614,
-      "ratio_runtime_vs_manual": 0.9080997458981148,
+      "manual_ms": 1.435874990420416,
+      "runtime_ms": 1.28749999566935,
+      "ratio_runtime_vs_manual": 1.1152427147573918,
       "accepted_prefix_lens": [
         4
       ],
@@ -44,9 +44,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "partial_accept",
-      "manual_ms": 1.15666700003203,
-      "runtime_ms": 1.1592079972615466,
-      "ratio_runtime_vs_manual": 0.997807988527064,
+      "manual_ms": 1.2239580100867897,
+      "runtime_ms": 1.1699580063577741,
+      "ratio_runtime_vs_manual": 1.0461555059545464,
       "accepted_prefix_lens": [
         2
       ],
@@ -68,9 +68,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "reject_all",
-      "manual_ms": 2.717958006542176,
-      "runtime_ms": 2.4562919861637056,
-      "ratio_runtime_vs_manual": 1.1065288743571349,
+      "manual_ms": 1.2891249934909865,
+      "runtime_ms": 1.4308749960036948,
+      "ratio_runtime_vs_manual": 0.9009347406946077,
       "accepted_prefix_lens": [
         0
       ],
@@ -92,9 +92,9 @@
       "cache_len": 2048,
       "n_draft": 8,
       "accept_mode": "full_accept",
-      "manual_ms": 2.8716670058202,
-      "runtime_ms": 1.52749998960644,
-      "ratio_runtime_vs_manual": 1.879978412674218,
+      "manual_ms": 1.2885000032838434,
+      "runtime_ms": 1.2108330120099708,
+      "ratio_runtime_vs_manual": 1.0641434372068748,
       "accepted_prefix_lens": [
         8
       ],
@@ -120,9 +120,9 @@
       "cache_len": 2048,
       "n_draft": 8,
       "accept_mode": "partial_accept",
-      "manual_ms": 1.4780829951632768,
-      "runtime_ms": 2.5800000003073364,
-      "ratio_runtime_vs_manual": 0.5729003856539548,
+      "manual_ms": 1.1771249992307276,
+      "runtime_ms": 1.1847920104628429,
+      "ratio_runtime_vs_manual": 0.9935288125135818,
       "accepted_prefix_lens": [
         4
       ],
@@ -148,9 +148,9 @@
       "cache_len": 2048,
       "n_draft": 8,
       "accept_mode": "reject_all",
-      "manual_ms": 1.3578340003732592,
-      "runtime_ms": 1.3362499885261059,
-      "ratio_runtime_vs_manual": 1.0161526750476988,
+      "manual_ms": 1.1276250006631017,
+      "runtime_ms": 1.1641250021057203,
+      "ratio_runtime_vs_manual": 0.9686459775568811,
       "accepted_prefix_lens": [
         0
       ],
@@ -176,9 +176,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "full_accept",
-      "manual_ms": 1.2843330041505396,
-      "runtime_ms": 1.3498329935828224,
-      "ratio_runtime_vs_manual": 0.95147548641671,
+      "manual_ms": 1.0352500103181228,
+      "runtime_ms": 1.1829580034827814,
+      "ratio_runtime_vs_manual": 0.8751367396561948,
       "accepted_prefix_lens": [
         4
       ],
@@ -200,9 +200,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "partial_accept",
-      "manual_ms": 1.0941250075120479,
-      "runtime_ms": 1.377333013806492,
-      "ratio_runtime_vs_manual": 0.7943794249788937,
+      "manual_ms": 1.0063329973490909,
+      "runtime_ms": 1.0556249908404425,
+      "ratio_runtime_vs_manual": 0.9533053935639516,
       "accepted_prefix_lens": [
         2
       ],
@@ -224,9 +224,9 @@
       "cache_len": 1024,
       "n_draft": 4,
       "accept_mode": "reject_all",
-      "manual_ms": 1.059332993463613,
-      "runtime_ms": 1.3630409957841039,
-      "ratio_runtime_vs_manual": 0.7771835159324907,
+      "manual_ms": 1.20808400970418,
+      "runtime_ms": 1.0268329933751374,
+      "ratio_runtime_vs_manual": 1.1765146012043122,
       "accepted_prefix_lens": [
         0
       ],
