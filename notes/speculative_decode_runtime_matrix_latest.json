@@ -1,0 +1,245 @@
+{
+  "version": "2.9.2",
+  "device": {
+    "device_name": "Apple M1 Max",
+    "gpu_family_gen": 13,
+    "is_m3_plus": false,
+    "is_m5_plus": false,
+    "chip_name": "M1",
+    "gpu_cores": 32,
+    "extension_available": true
+  },
+  "timestamp": "2026-03-13 15:18:23",
+  "warmup": 1,
+  "iters": 3,
+  "results": [
+    {
+      "scenario": "dense_short",
+      "backend": "dense",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "full_accept",
+      "manual_ms": 1.21870799921453,
+      "runtime_ms": 1.3420420000329614,
+      "ratio_runtime_vs_manual": 0.9080997458981148,
+      "accepted_prefix_lens": [
+        4
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "dense_short",
+      "backend": "dense",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "partial_accept",
+      "manual_ms": 1.15666700003203,
+      "runtime_ms": 1.1592079972615466,
+      "ratio_runtime_vs_manual": 0.997807988527064,
+      "accepted_prefix_lens": [
+        2
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "dense_short",
+      "backend": "dense",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "reject_all",
+      "manual_ms": 2.717958006542176,
+      "runtime_ms": 2.4562919861637056,
+      "ratio_runtime_vs_manual": 1.1065288743571349,
+      "accepted_prefix_lens": [
+        0
+      ],
+      "accept_mask": [
+        [
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "dense_micro",
+      "backend": "dense",
+      "D": 128,
+      "cache_len": 2048,
+      "n_draft": 8,
+      "accept_mode": "full_accept",
+      "manual_ms": 2.8716670058202,
+      "runtime_ms": 1.52749998960644,
+      "ratio_runtime_vs_manual": 1.879978412674218,
+      "accepted_prefix_lens": [
+        8
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "dense_micro",
+      "backend": "dense",
+      "D": 128,
+      "cache_len": 2048,
+      "n_draft": 8,
+      "accept_mode": "partial_accept",
+      "manual_ms": 1.4780829951632768,
+      "runtime_ms": 2.5800000003073364,
+      "ratio_runtime_vs_manual": 0.5729003856539548,
+      "accepted_prefix_lens": [
+        4
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "dense_micro",
+      "backend": "dense",
+      "D": 128,
+      "cache_len": 2048,
+      "n_draft": 8,
+      "accept_mode": "reject_all",
+      "manual_ms": 1.3578340003732592,
+      "runtime_ms": 1.3362499885261059,
+      "ratio_runtime_vs_manual": 1.0161526750476988,
+      "accepted_prefix_lens": [
+        0
+      ],
+      "accept_mask": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "paged_short",
+      "backend": "paged",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "full_accept",
+      "manual_ms": 1.2843330041505396,
+      "runtime_ms": 1.3498329935828224,
+      "ratio_runtime_vs_manual": 0.95147548641671,
+      "accepted_prefix_lens": [
+        4
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "paged_short",
+      "backend": "paged",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "partial_accept",
+      "manual_ms": 1.0941250075120479,
+      "runtime_ms": 1.377333013806492,
+      "ratio_runtime_vs_manual": 0.7943794249788937,
+      "accepted_prefix_lens": [
+        2
+      ],
+      "accept_mask": [
+        [
+          1,
+          1,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    },
+    {
+      "scenario": "paged_short",
+      "backend": "paged",
+      "D": 64,
+      "cache_len": 1024,
+      "n_draft": 4,
+      "accept_mode": "reject_all",
+      "manual_ms": 1.059332993463613,
+      "runtime_ms": 1.3630409957841039,
+      "ratio_runtime_vs_manual": 0.7771835159324907,
+      "accepted_prefix_lens": [
+        0
+      ],
+      "accept_mask": [
+        [
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "manual_runtime_prefix_match": true,
+      "manual_runtime_mask_match": true
+    }
+  ]
+}
