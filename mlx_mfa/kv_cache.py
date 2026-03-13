@@ -187,11 +187,15 @@ class QuantizedKVCacheAdapter(KVCacheAdapter):
 
 
 class HybridKVCache:
-    """Future-facing hybrid/offload-ready cache skeleton.
+    """Tiered cache wrapper with explicit residency metadata.
 
-    This class is intentionally non-production in this pass. It provides a
-    structural place for tiering/offload policies while delegating all current
-    operations to a primary local cache implementation.
+    Tier semantics in this pass:
+    - primary cache = hot tier
+    - secondary cache = cold tier (optional)
+
+    This class now tracks real residency/recency state and exposes inspectable
+    cache metadata, but initial behavior remains conservative until promotion /
+    demotion policy is enabled in follow-up steps.
     """
 
     def __init__(
@@ -199,23 +203,103 @@ class HybridKVCache:
         primary_cache: Any,
         secondary_cache: Optional[Any] = None,
         *,
-        policy: str = "manual",
+        policy: str = "lru",
+        hot_seq_capacity: int = 1,
     ) -> None:
+        if hot_seq_capacity <= 0:
+            raise ValueError("hot_seq_capacity must be > 0")
         self.primary_cache = primary_cache
         self.secondary_cache = secondary_cache
         self.policy = str(policy)
+        self.hot_seq_capacity = int(hot_seq_capacity)
         self._primary_adapter = adapt_kv_cache(primary_cache)
         self._secondary_adapter = (
             None if secondary_cache is None else adapt_kv_cache(secondary_cache)
         )
 
+        # Tier/residency state.
+        self._residency: dict[int, str] = {}
+        self._hot_seq_ids: set[int] = set()
+        self._cold_seq_ids: set[int] = set()
+        self._pinned_seq_ids: set[int] = set()
+        self._prefetch_intent: set[int] = set()
+
+        # Recency / event metadata.
+        self._tick = 0
+        self._last_access_tick: dict[int, int] = {}
+        self._promotion_count = 0
+        self._demotion_count = 0
+        self._eviction_count = 0
+        self._last_promotion: Optional[dict[str, Any]] = None
+        self._last_demotion: Optional[dict[str, Any]] = None
+        self._last_eviction: Optional[dict[str, Any]] = None
+        self._last_prefetch_intent: Optional[dict[str, Any]] = None
+
     @property
     def ready_for_production(self) -> bool:
-        """This skeleton is not production-ready in the current pass."""
-        return False
+        """Hybrid behavior is available in this pass (local tiering only)."""
+        return True
+
+    def _touch(self, seq_id: int, *, reason: str) -> None:
+        self._tick += 1
+        self._last_access_tick[int(seq_id)] = int(self._tick)
+        self._last_prefetch_intent = {
+            "seq_id": int(seq_id),
+            "reason": str(reason),
+            "tick": int(self._tick),
+        }
+
+    def _set_residency(self, seq_id: int, tier: str, *, reason: str) -> None:
+        sid = int(seq_id)
+        if tier not in ("hot", "cold"):
+            raise ValueError(f"Unknown residency tier: {tier!r}")
+        self._residency[sid] = tier
+        if tier == "hot":
+            self._hot_seq_ids.add(sid)
+            self._cold_seq_ids.discard(sid)
+        else:
+            self._cold_seq_ids.add(sid)
+            self._hot_seq_ids.discard(sid)
+        self._touch(sid, reason=reason)
+
+    @property
+    def residency_map(self) -> dict[int, str]:
+        return dict(sorted(self._residency.items()))
+
+    @property
+    def hot_occupancy(self) -> int:
+        return len(self._hot_seq_ids)
+
+    @property
+    def cold_occupancy(self) -> int:
+        return len(self._cold_seq_ids)
+
+    @property
+    def state(self) -> dict[str, Any]:
+        return {
+            "policy": self.policy,
+            "hot_seq_capacity": self.hot_seq_capacity,
+            "hot_seq_ids": tuple(sorted(self._hot_seq_ids)),
+            "cold_seq_ids": tuple(sorted(self._cold_seq_ids)),
+            "residency_map": self.residency_map,
+            "pinned_seq_ids": tuple(sorted(self._pinned_seq_ids)),
+            "prefetch_intent_seq_ids": tuple(sorted(self._prefetch_intent)),
+            "last_access_tick": dict(sorted(self._last_access_tick.items())),
+            "promotion_count": self._promotion_count,
+            "demotion_count": self._demotion_count,
+            "eviction_count": self._eviction_count,
+            "last_promotion": self._last_promotion,
+            "last_demotion": self._last_demotion,
+            "last_eviction": self._last_eviction,
+            "last_prefetch_intent": self._last_prefetch_intent,
+            "has_secondary_tier": self._secondary_adapter is not None,
+            "ready_for_production": self.ready_for_production,
+        }
 
     def append(self, k_new, v_new, seq_id: int = 0) -> None:
-        self._primary_adapter.append(k_new, v_new, seq_id=seq_id)
+        sid = int(seq_id)
+        self._primary_adapter.append(k_new, v_new, seq_id=sid)
+        self._set_residency(sid, "hot", reason="append")
 
     def reset(self, seq_id: Optional[int] = None):
         self._primary_adapter.reset(seq_id=seq_id)
@@ -225,33 +309,68 @@ class HybridKVCache:
             except KVCacheOperationUnsupported:
                 # Secondary tier may not support seq-id scoped reset yet.
                 self._secondary_adapter.reset(seq_id=None)
+
+        if seq_id is None:
+            self._residency.clear()
+            self._hot_seq_ids.clear()
+            self._cold_seq_ids.clear()
+            self._pinned_seq_ids.clear()
+            self._prefetch_intent.clear()
+            self._last_access_tick.clear()
+        else:
+            sid = int(seq_id)
+            self._residency.pop(sid, None)
+            self._hot_seq_ids.discard(sid)
+            self._cold_seq_ids.discard(sid)
+            self._pinned_seq_ids.discard(sid)
+            self._prefetch_intent.discard(sid)
+            self._last_access_tick.pop(sid, None)
         return self
 
     def seq_length(self, seq_id: int = 0) -> int:
-        return self._primary_adapter.seq_length(seq_id)
+        sid = int(seq_id)
+        tier = self._residency.get(sid)
+        if tier == "hot":
+            return self._primary_adapter.seq_length(sid)
+        if tier == "cold" and self._secondary_adapter is not None:
+            return self._secondary_adapter.seq_length(sid)
+        # Conservative fallback for legacy state.
+        length = self._primary_adapter.seq_length(sid)
+        if length > 0:
+            return length
+        if self._secondary_adapter is not None:
+            try:
+                return self._secondary_adapter.seq_length(sid)
+            except KVCacheOperationUnsupported:
+                return 0
+        return 0
 
     def k_for_attention(self, seq_id: int = 0):
-        return self._primary_adapter.attention_k(seq_id)
+        sid = int(seq_id)
+        self._touch(sid, reason="k_for_attention")
+        return self._primary_adapter.attention_k(sid)
 
     def v_for_attention(self, seq_id: int = 0):
-        return self._primary_adapter.attention_v(seq_id)
+        sid = int(seq_id)
+        self._touch(sid, reason="v_for_attention")
+        return self._primary_adapter.attention_v(sid)
 
     def offload_seq(self, seq_id: int) -> None:
         raise NotImplementedError(
-            "HybridKVCache.offload_seq is a future-facing hook only "
-            "(not implemented in this pass)."
+            "HybridKVCache.offload_seq will be backed by real tier transitions "
+            "in this branch; remote/offload backends remain future work."
         )
 
     def prefetch_seq(self, seq_id: int) -> None:
         raise NotImplementedError(
-            "HybridKVCache.prefetch_seq is a future-facing hook only "
-            "(not implemented in this pass)."
+            "HybridKVCache.prefetch_seq will be wired to local prefetch intent "
+            "and hot-tier warmup in this branch."
         )
 
     def promote_seq(self, seq_id: int) -> None:
         raise NotImplementedError(
-            "HybridKVCache.promote_seq is a future-facing hook only "
-            "(not implemented in this pass)."
+            "HybridKVCache.promote_seq will be backed by explicit residency "
+            "transitions in this branch."
         )
 
     def __repr__(self) -> str:
@@ -259,6 +378,7 @@ class HybridKVCache:
         return (
             f"HybridKVCache(primary={type(self.primary_cache).__name__}, "
             f"secondary={sec}, policy={self.policy!r}, "
+            f"hot={sorted(self._hot_seq_ids)}, cold={sorted(self._cold_seq_ids)}, "
             f"ready_for_production={self.ready_for_production})"
         )
 
@@ -301,7 +421,7 @@ class HybridKVCacheAdapter(KVCacheAdapter):
         return self.cache._primary_adapter.paged_tables(seq_ids)
 
     def active_seq_ids(self) -> tuple[int, ...]:
-        return self.cache._primary_adapter.active_seq_ids()
+        return tuple(sorted(int(s) for s in self.cache.residency_map.keys()))
 
     def quantized_view(self):
         return self.cache._primary_adapter.quantized_view()

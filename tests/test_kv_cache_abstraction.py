@@ -99,8 +99,10 @@ class TestKVCacheAdapters:
         ad = adapt_kv_cache(hybrid)
         assert ad.kind == "hybrid"
         assert ad.capabilities.attention_view is True
-        assert hybrid.ready_for_production is False
-        with pytest.raises(NotImplementedError, match="future-facing hook"):
+        assert hybrid.ready_for_production is True
+        assert hybrid.state["hot_seq_capacity"] == 1
+        assert hybrid.state["residency_map"] == {}
+        with pytest.raises(NotImplementedError, match="future work"):
             hybrid.offload_seq(0)
 
 
