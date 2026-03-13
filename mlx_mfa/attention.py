@@ -4662,6 +4662,171 @@ def flash_attention_paged(
     return _paged_impl(q, k_pages, v_pages)
 
 
+# ---------------------------------------------------------------------------
+# Track LE — Paged KV + packed varlen-query bridge (vLLM-oriented)
+# ---------------------------------------------------------------------------
+
+
+def flash_attention_paged_varlen(
+    q: "mx.array",
+    k_pages: "mx.array",
+    v_pages: "mx.array",
+    block_table: "mx.array",
+    seq_lens_kv: "mx.array",
+    cu_seqlens_q: "mx.array",
+    *,
+    max_seqlen_q: Optional[int] = None,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    block_size: int = 16,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Paged KV attention for packed variable-length queries.
+
+    This API unifies:
+    - packed query layout from :func:`flash_attention_varlen`
+      (``q=[1,H_q,total_q,D]`` + ``cu_seqlens_q``), and
+    - paged KV layout from :func:`flash_attention_paged`
+      (``k_pages/v_pages`` + ``block_table`` + ``seq_lens_kv``).
+
+    Sequence ``i`` uses:
+    - query slice: ``q[:, :, cu_seqlens_q[i]:cu_seqlens_q[i+1], :]``
+    - KV cache: ``block_table[i]`` and ``seq_lens_kv[i]``
+
+    Output is packed back into ``[1, H_q, total_q, D]`` in the same sequence
+    order as ``cu_seqlens_q``.
+
+    Current implementation strategy:
+    - If all query lengths are equal, dispatches one batched
+      :func:`flash_attention_paged` call.
+    - Otherwise, uses a correctness-first bridge: one paged call per sequence
+      and concatenates outputs in packed order.
+
+    Args:
+        q: Packed query tensor ``[1, H_q, total_q, D]``.
+        k_pages: Key page pool ``[num_blocks, block_size, H_kv, D]``.
+        v_pages: Value page pool ``[num_blocks, block_size, H_kv, D]``.
+        block_table: ``int32 [B, max_blocks_per_seq]``.
+        seq_lens_kv: ``int32 [B]`` effective KV length per sequence.
+        cu_seqlens_q: ``int32 [B+1]`` cumulative query lengths.
+        max_seqlen_q: Optional max allowed query length per sequence.
+        scale: Attention scale (default ``1/sqrt(D)``).
+        causal: Causal masking.
+        block_size: Tokens per page (must match pool layout).
+        stream: MLX stream/device.
+
+    Returns:
+        Packed output ``[1, H_q, total_q, D]``.
+    """
+    import mlx.core as mx
+
+    if q.ndim != 4 or q.shape[0] != 1:
+        raise ValueError(
+            f"flash_attention_paged_varlen: q must be [1,H,total_q,D], got {q.shape}"
+        )
+    if block_table.ndim != 2:
+        raise ValueError(
+            "flash_attention_paged_varlen: block_table must be 2-D [B,max_blocks]"
+        )
+    if seq_lens_kv.ndim != 1:
+        raise ValueError(
+            "flash_attention_paged_varlen: seq_lens_kv must be 1-D [B]"
+        )
+    if cu_seqlens_q.ndim != 1:
+        raise ValueError(
+            "flash_attention_paged_varlen: cu_seqlens_q must be 1-D [B+1]"
+        )
+
+    B = block_table.shape[0]
+    if seq_lens_kv.shape[0] != B:
+        raise ValueError(
+            "flash_attention_paged_varlen: seq_lens_kv length must match "
+            f"block_table batch size (got {seq_lens_kv.shape[0]} vs {B})"
+        )
+    if cu_seqlens_q.shape[0] != B + 1:
+        raise ValueError(
+            "flash_attention_paged_varlen: cu_seqlens_q must have shape [B+1] "
+            f"(got {cu_seqlens_q.shape[0]} vs expected {B + 1})"
+        )
+
+    _, H_q, total_q, D = q.shape
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    # Materialize once; values are indexing metadata only.
+    cu_q = [int(x) for x in cu_seqlens_q.tolist()]
+    if not cu_q:
+        raise ValueError("flash_attention_paged_varlen: cu_seqlens_q cannot be empty")
+    if cu_q[0] != 0:
+        raise ValueError("flash_attention_paged_varlen: cu_seqlens_q[0] must be 0")
+    if cu_q[-1] != total_q:
+        raise ValueError(
+            "flash_attention_paged_varlen: cu_seqlens_q[-1] must equal total_q "
+            f"(got {cu_q[-1]} vs {total_q})"
+        )
+
+    q_lens: list[int] = []
+    for i in range(B):
+        qs, qe = cu_q[i], cu_q[i + 1]
+        if qe < qs:
+            raise ValueError(
+                "flash_attention_paged_varlen: cu_seqlens_q must be non-decreasing"
+            )
+        q_lens.append(qe - qs)
+
+    if max_seqlen_q is not None and q_lens:
+        if max(q_lens) > max_seqlen_q:
+            raise ValueError(
+                "flash_attention_paged_varlen: max query length exceeds "
+                f"max_seqlen_q ({max(q_lens)} > {max_seqlen_q})"
+            )
+
+    if total_q == 0:
+        return mx.zeros((1, H_q, 0, D), dtype=q.dtype)
+
+    # Fast path for scheduler steps where all active requests have equal q_len.
+    if q_lens and all(l == q_lens[0] for l in q_lens):
+        q_batched = mx.concatenate(
+            [q[:, :, cu_q[i] : cu_q[i + 1], :] for i in range(B)],
+            axis=0,
+        )
+        out_batched = flash_attention_paged(
+            q_batched,
+            k_pages,
+            v_pages,
+            block_table,
+            seq_lens_kv,
+            scale=scale,
+            causal=causal,
+            block_size=block_size,
+            stream=stream,
+        )
+        return mx.concatenate([out_batched[i : i + 1] for i in range(B)], axis=2)
+
+    # Correctness-first bridge for heterogeneous query lengths.
+    out_parts = []
+    for i in range(B):
+        qs, qe = cu_q[i], cu_q[i + 1]
+        if qe == qs:
+            continue
+        out_i = flash_attention_paged(
+            q[:, :, qs:qe, :],
+            k_pages,
+            v_pages,
+            block_table[i : i + 1, :],
+            seq_lens_kv[i : i + 1],
+            scale=scale,
+            causal=causal,
+            block_size=block_size,
+            stream=stream,
+        )
+        out_parts.append(out_i)
+
+    if not out_parts:
+        return mx.zeros((1, H_q, 0, D), dtype=q.dtype)
+    return mx.concatenate(out_parts, axis=2)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track BF — QKV / KV packed tensor formats
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
