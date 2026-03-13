@@ -186,6 +186,127 @@ class QuantizedKVCacheAdapter(KVCacheAdapter):
         return self.cache.k_int8, self.cache.k_scale, self.cache.v
 
 
+class HybridKVCache:
+    """Future-facing hybrid/offload-ready cache skeleton.
+
+    This class is intentionally non-production in this pass. It provides a
+    structural place for tiering/offload policies while delegating all current
+    operations to a primary local cache implementation.
+    """
+
+    def __init__(
+        self,
+        primary_cache: Any,
+        secondary_cache: Optional[Any] = None,
+        *,
+        policy: str = "manual",
+    ) -> None:
+        self.primary_cache = primary_cache
+        self.secondary_cache = secondary_cache
+        self.policy = str(policy)
+        self._primary_adapter = adapt_kv_cache(primary_cache)
+        self._secondary_adapter = (
+            None if secondary_cache is None else adapt_kv_cache(secondary_cache)
+        )
+
+    @property
+    def ready_for_production(self) -> bool:
+        """This skeleton is not production-ready in the current pass."""
+        return False
+
+    def append(self, k_new, v_new, seq_id: int = 0) -> None:
+        self._primary_adapter.append(k_new, v_new, seq_id=seq_id)
+
+    def reset(self, seq_id: Optional[int] = None):
+        self._primary_adapter.reset(seq_id=seq_id)
+        if self._secondary_adapter is not None:
+            try:
+                self._secondary_adapter.reset(seq_id=seq_id)
+            except KVCacheOperationUnsupported:
+                # Secondary tier may not support seq-id scoped reset yet.
+                self._secondary_adapter.reset(seq_id=None)
+        return self
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        return self._primary_adapter.seq_length(seq_id)
+
+    def k_for_attention(self, seq_id: int = 0):
+        return self._primary_adapter.attention_k(seq_id)
+
+    def v_for_attention(self, seq_id: int = 0):
+        return self._primary_adapter.attention_v(seq_id)
+
+    def offload_seq(self, seq_id: int) -> None:
+        raise NotImplementedError(
+            "HybridKVCache.offload_seq is a future-facing hook only "
+            "(not implemented in this pass)."
+        )
+
+    def prefetch_seq(self, seq_id: int) -> None:
+        raise NotImplementedError(
+            "HybridKVCache.prefetch_seq is a future-facing hook only "
+            "(not implemented in this pass)."
+        )
+
+    def promote_seq(self, seq_id: int) -> None:
+        raise NotImplementedError(
+            "HybridKVCache.promote_seq is a future-facing hook only "
+            "(not implemented in this pass)."
+        )
+
+    def __repr__(self) -> str:
+        sec = "none" if self.secondary_cache is None else type(self.secondary_cache).__name__
+        return (
+            f"HybridKVCache(primary={type(self.primary_cache).__name__}, "
+            f"secondary={sec}, policy={self.policy!r}, "
+            f"ready_for_production={self.ready_for_production})"
+        )
+
+
+class HybridKVCacheAdapter(KVCacheAdapter):
+    kind = "hybrid"
+
+    @property
+    def capabilities(self) -> KVCacheCapabilities:
+        inner = self.cache._primary_adapter.capabilities
+        return KVCacheCapabilities(
+            append=inner.append,
+            reset=inner.reset,
+            seq_length=inner.seq_length,
+            attention_view=inner.attention_view,
+            paged_pool=inner.paged_pool,
+            quantized_view=inner.quantized_view,
+            multi_seq=inner.multi_seq,
+        )
+
+    def append(self, k_new, v_new, *, seq_id: int = 0) -> None:
+        self.cache.append(k_new, v_new, seq_id=seq_id)
+
+    def reset(self, *, seq_id: Optional[int] = None) -> None:
+        self.cache.reset(seq_id=seq_id)
+
+    def seq_length(self, seq_id: int = 0) -> int:
+        return self.cache.seq_length(seq_id)
+
+    def attention_k(self, seq_id: int = 0):
+        return self.cache.k_for_attention(seq_id)
+
+    def attention_v(self, seq_id: int = 0):
+        return self.cache.v_for_attention(seq_id)
+
+    def paged_pool(self):
+        return self.cache._primary_adapter.paged_pool()
+
+    def paged_tables(self, seq_ids: list[int]):
+        return self.cache._primary_adapter.paged_tables(seq_ids)
+
+    def active_seq_ids(self) -> tuple[int, ...]:
+        return self.cache._primary_adapter.active_seq_ids()
+
+    def quantized_view(self):
+        return self.cache._primary_adapter.quantized_view()
+
+
 def adapt_kv_cache(cache: Any) -> KVCacheAdapter:
     """Build a capability adapter for a concrete cache object."""
     if cache is None:
@@ -198,6 +319,8 @@ def adapt_kv_cache(cache: Any) -> KVCacheAdapter:
         return DenseKVCacheAdapter(cache)
     if cls_name == "QuantizedKVCache":
         return QuantizedKVCacheAdapter(cache)
+    if cls_name == "HybridKVCache":
+        return HybridKVCacheAdapter(cache)
 
     # Fallback duck-typed adaptation for cache-like custom implementations.
     if hasattr(cache, "get_block_table") and hasattr(cache, "k_pool"):
