@@ -194,9 +194,21 @@ class DecodeRuntime:
                 raise ValueError(
                     "chunked_prefill packed path expects q shape [1,H,total_q,D]"
                 )
-            if k.shape != q.shape or v.shape != q.shape:
+            if k.ndim != 4 or v.ndim != 4 or k.shape[0] != 1 or v.shape[0] != 1:
                 raise ValueError(
-                    "chunked_prefill packed path requires q/k/v with identical shape"
+                    "chunked_prefill packed path expects k/v shape [1,H_kv,total_q,D]"
+                )
+            if k.shape[2] != q.shape[2] or v.shape[2] != q.shape[2]:
+                raise ValueError(
+                    "chunked_prefill packed path requires matching total_q across q/k/v"
+                )
+            if k.shape[3] != q.shape[3] or v.shape[3] != q.shape[3]:
+                raise ValueError(
+                    "chunked_prefill packed path requires matching head dim D across q/k/v"
+                )
+            if k.shape[1] != v.shape[1]:
+                raise ValueError(
+                    "chunked_prefill packed path requires matching H_kv between k and v"
                 )
             if cu_seqlens_q.ndim != 1:
                 raise ValueError("cu_seqlens_q must be 1-D [B+1]")

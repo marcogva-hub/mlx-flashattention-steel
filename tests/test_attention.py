@@ -8359,6 +8359,266 @@ class TestPagedContinuousBatching:
             rt.paged_step_batch(q_bad, k_bad, v_bad, seq_ids=[0, 1])
 
 
+class TestChunkedPrefillRuntime:
+    """Chunked prefill parity/validation for dense and paged runtime paths."""
+
+    def test_dense_chunked_prefill_matches_monolithic(self):
+        from mlx_mfa import create_decode_runtime
+
+        mx.random.seed(821)
+        B, H, N, D = 1, 4, 37, 64
+        scale = 1.0 / math.sqrt(D)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+
+        rt_ref = create_decode_runtime(
+            backend="dense", quantized_kv=False, B=B, H_kv=H, D=D
+        )
+        out_ref = rt_ref.prefill(q, k, v, scale=scale, causal=True)
+
+        rt_chunk = create_decode_runtime(
+            backend="dense", quantized_kv=False, B=B, H_kv=H, D=D
+        )
+        out_chunk = rt_chunk.chunked_prefill(
+            q, k, v, chunk_size=8, scale=scale, causal=True
+        )
+        mx.eval(out_ref, out_chunk)
+        diff = float(mx.abs(out_ref.astype(mx.float32) - out_chunk.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt_chunk.seq_length() == N
+
+    def test_paged_chunked_prefill_matches_incremental_manual_reference(self):
+        from mlx_mfa import create_decode_runtime, PagedKVCache, flash_attention_paged
+
+        mx.random.seed(822)
+        B, H_q, H_kv, N, D = 2, 8, 4, 29, 64
+        scale = 1.0 / math.sqrt(D)
+        seq_ids = [101, 202]
+        q = mx.random.normal((B, H_q, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_kv, N, D)).astype(mx.float16)
+
+        cache_ref = PagedKVCache(num_blocks=128, block_size=16, H=H_kv, D=D)
+        out_ref_parts = []
+        for s in range(0, N, 7):
+            e = min(N, s + 7)
+            q_c = q[:, :, s:e, :]
+            k_c = k[:, :, s:e, :]
+            v_c = v[:, :, s:e, :]
+            for b, sid in enumerate(seq_ids):
+                cache_ref.append(k_c[b : b + 1], v_c[b : b + 1], seq_id=sid)
+            table = cache_ref.get_block_table(seq_ids)
+            lens = cache_ref.get_seq_lens(seq_ids)
+            out_ref_parts.append(
+                flash_attention_paged(
+                    q_c,
+                    cache_ref.k_pool,
+                    cache_ref.v_pool,
+                    table,
+                    lens,
+                    scale=scale,
+                    causal=True,
+                    block_size=16,
+                )
+            )
+        out_ref = mx.concatenate(out_ref_parts, axis=2)
+
+        rt_chunk = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="batched",
+            B=1,
+            H_q=H_q,
+            H_kv=H_kv,
+            D=D,
+            num_blocks=128,
+            block_size=16,
+        )
+        out_chunk = rt_chunk.chunked_prefill(
+            q,
+            k,
+            v,
+            chunk_size=7,
+            seq_ids=seq_ids,
+            scale=scale,
+            causal=True,
+        )
+        mx.eval(out_ref, out_chunk)
+        diff = float(mx.abs(out_ref.astype(mx.float32) - out_chunk.astype(mx.float32)).max())
+        assert diff < 5e-3
+        assert rt_chunk.seq_length(101) == N
+        assert rt_chunk.seq_length(202) == N
+
+    def test_paged_packed_chunked_prefill_multi_chunk(self):
+        from mlx_mfa import (
+            create_decode_runtime,
+            PagedKVCache,
+            flash_attention_paged_varlen,
+        )
+
+        mx.random.seed(823)
+        H_q, H_kv, D = 8, 4, 64
+        q_lens = [5, 2, 7]
+        seq_ids = [7, 11, 13]
+        scale = 1.0 / math.sqrt(D)
+
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, ql, D)).astype(mx.float16) for ql in q_lens]
+        v_seqs = [mx.random.normal((1, H_kv, ql, D)).astype(mx.float16) for ql in q_lens]
+        q_pack = mx.concatenate(q_seqs, axis=2)
+        k_pack = mx.concatenate(k_seqs, axis=2)
+        v_pack = mx.concatenate(v_seqs, axis=2)
+        offsets = [0]
+        for ql in q_lens:
+            offsets.append(offsets[-1] + ql)
+        cu = mx.array(offsets, dtype=mx.int32)
+
+        rt_chunk = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="packed",
+            B=1,
+            H_q=H_q,
+            H_kv=H_kv,
+            D=D,
+            num_blocks=128,
+            block_size=16,
+        )
+        out_chunk = rt_chunk.chunked_prefill(
+            q_pack,
+            k_pack,
+            v_pack,
+            chunk_size=3,
+            seq_ids=seq_ids,
+            cu_seqlens_q=cu,
+            scale=scale,
+            causal=True,
+        )
+
+        # Reference the same scheduling contract explicitly:
+        # append chunk K/V into paged cache, then run packed paged_varlen for
+        # currently active rows, and reassemble per original packed sequence order.
+        cache_ref = PagedKVCache(num_blocks=128, block_size=16, H=H_kv, D=D)
+        lengths = [offsets[i + 1] - offsets[i] for i in range(len(seq_ids))]
+        consumed = [0] * len(seq_ids)
+        out_parts = [[] for _ in seq_ids]
+        chunk_size = 3
+        while any(consumed[i] < lengths[i] for i in range(len(seq_ids))):
+            active_rows = [i for i in range(len(seq_ids)) if consumed[i] < lengths[i]]
+            active_seq_ids = [seq_ids[i] for i in active_rows]
+            q_parts = []
+            chunk_offsets = [0]
+            for i in active_rows:
+                s = offsets[i] + consumed[i]
+                e = min(offsets[i + 1], s + chunk_size)
+                q_parts.append(q_pack[:, :, s:e, :])
+                cache_ref.append(k_pack[:, :, s:e, :], v_pack[:, :, s:e, :], seq_id=seq_ids[i])
+                chunk_offsets.append(chunk_offsets[-1] + (e - s))
+
+            q_chunk = mx.concatenate(q_parts, axis=2)
+            cu_chunk = mx.array(chunk_offsets, dtype=mx.int32)
+            table = cache_ref.get_block_table(active_seq_ids)
+            lens = cache_ref.get_seq_lens(active_seq_ids)
+            out_step = flash_attention_paged_varlen(
+                q_chunk,
+                cache_ref.k_pool,
+                cache_ref.v_pool,
+                table,
+                lens,
+                cu_chunk,
+                scale=scale,
+                causal=True,
+                block_size=16,
+            )
+            for local_idx, i in enumerate(active_rows):
+                s = chunk_offsets[local_idx]
+                e = chunk_offsets[local_idx + 1]
+                out_parts[i].append(out_step[:, :, s:e, :])
+                consumed[i] += e - s
+
+        out_ref = mx.concatenate(
+            [
+                mx.concatenate(parts, axis=2)
+                if parts
+                else mx.zeros((1, H_q, 0, D), dtype=q_pack.dtype)
+                for parts in out_parts
+            ],
+            axis=2,
+        )
+
+        mx.eval(out_chunk, out_ref)
+        diff = float(mx.abs(out_chunk.astype(mx.float32) - out_ref.astype(mx.float32)).max())
+        assert diff < 5e-3
+        for sid, ql in zip(seq_ids, q_lens):
+            assert rt_chunk.seq_length(sid) == ql
+
+    def test_chunked_prefill_invalid_params(self):
+        from mlx_mfa import create_decode_runtime
+
+        q = mx.zeros((1, 4, 8, 64), dtype=mx.float16)
+        k = mx.zeros((1, 4, 8, 64), dtype=mx.float16)
+        v = mx.zeros((1, 4, 8, 64), dtype=mx.float16)
+
+        rt_dense = create_decode_runtime(
+            backend="dense", quantized_kv=False, B=1, H_kv=4, D=64
+        )
+        with pytest.raises(ValueError, match="chunk_size must be > 0"):
+            rt_dense.chunked_prefill(q, k, v, chunk_size=0)
+        with pytest.raises(ValueError, match="requires causal=True"):
+            rt_dense.chunked_prefill(q, k, v, chunk_size=4, causal=False)
+
+        rt_packed = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            quantized_kv=False,
+            query_layout="packed",
+            B=1,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=32,
+            block_size=16,
+        )
+        cu = mx.array([0, 8], dtype=mx.int32)
+        with pytest.raises(ValueError, match="requires explicit seq_ids"):
+            rt_packed.chunked_prefill(q, k, v, chunk_size=4, cu_seqlens_q=cu)
+        with pytest.raises(ValueError, match="does not yet support cache_batch_idx"):
+            rt_packed.chunked_prefill(
+                q,
+                k,
+                v,
+                chunk_size=4,
+                seq_ids=[1],
+                cu_seqlens_q=cu,
+                cache_batch_idx=mx.array([0], dtype=mx.int32),
+            )
+
+    def test_chunked_prefill_cache_growth_with_reset_false(self):
+        from mlx_mfa import create_decode_runtime
+
+        mx.random.seed(824)
+        B, H, D = 1, 4, 64
+        rt = create_decode_runtime(
+            backend="dense", quantized_kv=False, B=B, H_kv=H, D=D
+        )
+        q1 = mx.random.normal((B, H, 10, D)).astype(mx.float16)
+        k1 = mx.random.normal((B, H, 10, D)).astype(mx.float16)
+        v1 = mx.random.normal((B, H, 10, D)).astype(mx.float16)
+        q2 = mx.random.normal((B, H, 6, D)).astype(mx.float16)
+        k2 = mx.random.normal((B, H, 6, D)).astype(mx.float16)
+        v2 = mx.random.normal((B, H, 6, D)).astype(mx.float16)
+
+        out1 = rt.chunked_prefill(q1, k1, v1, chunk_size=4, causal=True, reset=True)
+        out2 = rt.chunked_prefill(q2, k2, v2, chunk_size=3, causal=True, reset=False)
+        mx.eval(out1, out2)
+        assert out1.shape == (B, H, 10, D)
+        assert out2.shape == (B, H, 6, D)
+        assert rt.seq_length() == 16
+
+
 # ==========================================================================
 # Phase 4: SageAttention KV-cache + SageInferenceContext (Track LA)
 # ==========================================================================
