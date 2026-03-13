@@ -345,6 +345,77 @@ class DecodeRuntime:
             **self._with_default_seq_id(dict(kwargs)),
         )
 
+    def prefill_with_prefix(
+        self,
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        *,
+        prefix_id: Optional[str] = None,
+        prefix_ids: Optional[tuple[str, ...] | list[str]] = None,
+        seq_id: Optional[int] = None,
+        seq_ids: Optional[tuple[int, ...] | list[int]] = None,
+        chunk_size: Optional[int] = None,
+        cache_batch_idx: Optional[mx.array | tuple[int, ...] | list[int]] = None,
+        cu_seqlens_q: Optional[mx.array] = None,
+        scale: Optional[float] = None,
+        causal: bool = True,
+        softcap: float = 0.0,
+        window_size: Optional[tuple] = None,
+        block_size: Optional[int] = None,
+        stream: Optional[mx.StreamOrDevice] = None,
+        reset: bool = True,
+    ):
+        """Seed registered prefix state then run suffix prefill.
+
+        This is an explicit serving helper:
+        1) seed runtime cache from registered prefix entry/entries,
+        2) route suffix through ``chunked_prefill(..., reset=False)``.
+        """
+        seeded_seq_ids = self.seed_prefix(
+            prefix_id=prefix_id,
+            prefix_ids=prefix_ids,
+            seq_id=seq_id,
+            seq_ids=seq_ids,
+            reset=reset,
+        )
+
+        if q.ndim != 4:
+            raise ValueError("prefill_with_prefix expects 4-D q/k/v tensors")
+        total_q = int(q.shape[2])
+        eff_chunk_size = max(1, total_q) if chunk_size is None else int(chunk_size)
+
+        eff_seq_ids = seq_ids
+        if eff_seq_ids is None and seeded_seq_ids is not None:
+            eff_seq_ids = list(seeded_seq_ids)
+
+        out = self.chunked_prefill(
+            q,
+            k,
+            v,
+            chunk_size=eff_chunk_size,
+            seq_ids=eff_seq_ids,
+            cache_batch_idx=cache_batch_idx,
+            cu_seqlens_q=cu_seqlens_q,
+            scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
+            block_size=block_size,
+            stream=stream,
+            reset=False,
+        )
+
+        prev = self._last_prefix_reuse or {}
+        self._last_prefix_reuse = {
+            **prev,
+            "op": "prefill_with_prefix",
+            "chunk_size": eff_chunk_size,
+            "query_layout": self.query_layout,
+            "backend": self.backend,
+        }
+        return out
+
     def chunked_prefill(
         self,
         q: mx.array,
@@ -923,6 +994,7 @@ class DecodeRuntime:
             "active_seq_ids": self._active_seq_ids,
             "active_cache_batch_idx": self._active_cache_batch_idx,
             "prefix_cache_size": len(self._prefix_cache),
+            "registered_prefix_ids": tuple(sorted(self._prefix_cache.keys())),
             "active_prefix_id": self._active_prefix_id,
             "last_prefix_reuse": self._last_prefix_reuse,
         }
