@@ -166,6 +166,65 @@ class TestKVCacheAdapters:
         assert st["pinned_seq_ids"] == (7,)
         assert st["last_prefetch_action"]["seq_id"] == 7
 
+    def test_hybrid_capacity_pressure_respects_pinned_sequences(self):
+        hot_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        cold_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        hybrid = HybridKVCache(
+            hot_ctx._cache,
+            secondary_cache=cold_ctx._cache,
+            hot_seq_capacity=1,
+        )
+        k0 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        hybrid.mark_pinned(0, pinned=True)
+        with pytest.raises(KVCacheOperationUnsupported, match="no demotion victim"):
+            hybrid.append(k1, v1, seq_id=1)
+
+    def test_hybrid_attention_view_remains_correct_after_promotion(self):
+        hot_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        cold_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        hybrid = HybridKVCache(
+            hot_ctx._cache,
+            secondary_cache=cold_ctx._cache,
+            hot_seq_capacity=1,
+        )
+        k0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        hybrid.append(k1, v1, seq_id=1)
+        assert hybrid.state["residency_map"][0] == "cold"
+        k_hist = hybrid.k_for_attention(0)
+        v_hist = hybrid.v_for_attention(0)
+        mx.eval(k_hist, v_hist)
+        assert k_hist.shape == (1, 4, 3, 64)
+        assert v_hist.shape == (1, 4, 3, 64)
+        assert hybrid.state["residency_map"][0] == "hot"
+
 
 class TestCacheAbstractionRuntimeFlows:
     @pytest.fixture(autouse=True)
@@ -344,3 +403,27 @@ class TestCacheAbstractionRuntimeFlows:
                 H_kv=4,
                 D=64,
             )
+
+    def test_hybrid_runtime_speculative_step_compatibility(self):
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_with_secondary=True,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=64,
+        )
+        q = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 12, 64)).astype(mx.float16)
+        rt.prefill(q, k, v)
+        out = rt.speculative_step(
+            mx.random.normal((1, 4, 3, 64)).astype(mx.float16),
+            mx.array([[0, 1, 2]], dtype=mx.int32),
+            accept_logprob_delta=-1e9,
+        )
+        mx.eval(out["accepted_prefix_lens"])
+        assert tuple(out["accepted_prefix_lens"].tolist()) == (3,)
+        assert rt.metadata["hybrid_cache_active"] is True
