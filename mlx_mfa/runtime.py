@@ -25,6 +25,7 @@ from mlx_mfa.attention import (
     flash_attention_speculative_verify,
 )
 from mlx_mfa.kv_cache import (
+    HybridKVCache,
     resolve_context_cache_adapter,
 )
 
@@ -35,6 +36,62 @@ __all__ = [
 
 DecodeBackend = Literal["auto", "dense", "paged", "sage"]
 QueryLayout = Literal["batched", "packed"]
+
+
+def _build_secondary_cache_for_context(context) -> Any:
+    """Construct a same-shape secondary cache for hybrid tiering."""
+    from mlx_mfa.attention import DenseKVCache, PagedKVCache
+
+    cls_name = type(context).__name__
+    if cls_name == "InferenceContext":
+        return DenseKVCache(
+            context.B,
+            context.H_kv,
+            context.D,
+            max_seq_len=context.max_seq_len,
+            dtype=context.dtype,
+        )
+    if cls_name == "PagedInferenceContext":
+        return PagedKVCache(
+            context.num_blocks,
+            context.block_size,
+            context.H_kv,
+            context.D,
+            dtype=context.dtype,
+        )
+    raise ValueError(
+        "Hybrid cache secondary tier is currently supported only for dense/paged "
+        f"contexts, got {cls_name!r}"
+    )
+
+
+def _wrap_context_with_hybrid_cache(
+    context,
+    *,
+    policy: str,
+    hot_seq_capacity: int,
+    with_secondary: bool,
+):
+    if not hasattr(context, "_cache"):
+        raise ValueError(
+            f"Context {type(context).__name__} does not expose _cache for hybrid wrapping"
+        )
+    current = getattr(context, "_cache")
+    if isinstance(current, HybridKVCache):
+        return context
+
+    secondary = _build_secondary_cache_for_context(context) if with_secondary else None
+    setattr(
+        context,
+        "_cache",
+        HybridKVCache(
+            current,
+            secondary_cache=secondary,
+            policy=policy,
+            hot_seq_capacity=hot_seq_capacity,
+        ),
+    )
+    return context
 
 
 class DecodeRuntime:
@@ -76,6 +133,39 @@ class DecodeRuntime:
 
     def _cache_adapter(self):
         return resolve_context_cache_adapter(self.context)
+
+    def _hybrid_cache(self) -> Optional[HybridKVCache]:
+        cache = getattr(self.context, "_cache", None)
+        if isinstance(cache, HybridKVCache):
+            return cache
+        return None
+
+    @property
+    def hybrid_cache_enabled(self) -> bool:
+        return self._hybrid_cache() is not None
+
+    @property
+    def hybrid_state(self) -> Optional[dict[str, Any]]:
+        h = self._hybrid_cache()
+        return None if h is None else h.state
+
+    def hybrid_mark_for_prefetch(self, seq_id: int, *, reason: str = "runtime") -> None:
+        h = self._hybrid_cache()
+        if h is None:
+            raise ValueError("hybrid_mark_for_prefetch requires hybrid cache mode")
+        h.mark_for_prefetch(int(seq_id), reason=reason)
+
+    def hybrid_prefetch(
+        self,
+        seq_ids: tuple[int, ...] | list[int],
+        *,
+        pin: bool = False,
+        reason: str = "runtime",
+    ) -> tuple[int, ...]:
+        h = self._hybrid_cache()
+        if h is None:
+            raise ValueError("hybrid_prefetch requires hybrid cache mode")
+        return h.prepare_hot_window(seq_ids, pin=pin, reason=reason)
 
     @staticmethod
     def _normalize_cache_batch_idx(
@@ -174,6 +264,9 @@ class DecodeRuntime:
         if reset:
             self.reset()
         cache_adapter.append(entry["k"], entry["v"], seq_id=0)
+        h = self._hybrid_cache()
+        if h is not None:
+            h.prepare_hot_window([0], pin=True, reason="prefix_seed_dense")
 
     def _seed_paged_prefixes(
         self,
@@ -204,6 +297,9 @@ class DecodeRuntime:
                     "with batch=1"
                 )
             cache_adapter.append(k, v, seq_id=sid)
+        h = self._hybrid_cache()
+        if h is not None:
+            h.prepare_hot_window(list(seq_ids), pin=True, reason="prefix_seed_paged")
 
     def register_prefix(
         self,
@@ -519,6 +615,12 @@ class DecodeRuntime:
                     "cu_seqlens_q must have shape [B+1] matching seq_ids "
                     f"(got {cu_seqlens_q.shape[0]} vs expected {B + 1})"
                 )
+            h = self._hybrid_cache()
+            if h is not None:
+                h.prepare_hot_window(
+                    list(seq_ids_t),
+                    reason="chunked_prefill_packed",
+                )
             cu = [int(x) for x in cu_seqlens_q.tolist()]
             if cu[0] != 0:
                 raise ValueError("cu_seqlens_q[0] must be 0")
@@ -619,6 +721,9 @@ class DecodeRuntime:
             and cache_batch_idx is None
             and hasattr(self.context, "chunked_prefill")
         ):
+            h = self._hybrid_cache()
+            if h is not None:
+                h.prepare_hot_window([0], reason="chunked_prefill_dense")
             return self.context.chunked_prefill(
                 q,
                 k,
@@ -662,6 +767,12 @@ class DecodeRuntime:
                     cache_batch_idx=cache_batch_idx,
                     expected_batch=int(q.shape[0]),
                 )
+                h = self._hybrid_cache()
+                if h is not None:
+                    h.prepare_hot_window(
+                        list(active_seq_ids),
+                        reason="chunked_prefill_batched",
+                    )
                 for sid in active_seq_ids:
                     cache_adapter.reset(seq_id=sid)
             else:
@@ -838,6 +949,9 @@ class DecodeRuntime:
             cache_batch_idx=cache_batch_idx,
             expected_batch=q.shape[0],
         )
+        h = self._hybrid_cache()
+        if h is not None:
+            h.prepare_hot_window(list(active_seq_ids), reason="paged_prefill_batch")
         for b, sid in enumerate(active_seq_ids):
             cache_adapter.reset(seq_id=sid)
             cache_adapter.append(k[b : b + 1], v[b : b + 1], seq_id=sid)
@@ -899,6 +1013,9 @@ class DecodeRuntime:
             cache_batch_idx=cache_batch_idx,
             expected_batch=q.shape[0],
         )
+        h = self._hybrid_cache()
+        if h is not None:
+            h.prepare_hot_window(list(active_seq_ids), reason="paged_step_batch")
         for b, sid in enumerate(active_seq_ids):
             cache_adapter.append(k_new[b : b + 1], v_new[b : b + 1], seq_id=sid)
 
@@ -1009,6 +1126,8 @@ class DecodeRuntime:
             "requested_backend": self.requested_backend,
             "context_class": type(self.context).__name__,
             "cache_kind": cache_adapter.kind,
+            "hybrid_cache_active": self.hybrid_cache_enabled,
+            "hybrid_state": self.hybrid_state,
             "cache_capabilities": cache_adapter.capabilities.__dict__,
             "paged_active": self.backend == "paged",
             "sage_active": self.backend == "sage",
@@ -1268,6 +1387,7 @@ class DecodeRuntime:
             f"paged={self.paged}, quantized_kv={self.quantized_kv}, "
             f"query_layout={self.query_layout!r}, "
             f"cache_kind={self.metadata['cache_kind']!r}, "
+            f"hybrid_cache_active={self.metadata['hybrid_cache_active']}, "
             f"default_seq_id={self.default_seq_id}, "
             f"active_seq_ids={self.metadata['active_seq_ids']}, "
             f"active_cache_batch_idx={self.metadata['active_cache_batch_idx']}, "
@@ -1286,6 +1406,10 @@ def create_decode_runtime(
     backend: DecodeBackend = "auto",
     paged: bool = False,
     quantized_kv: bool = False,
+    hybrid_cache: bool = False,
+    hybrid_policy: str = "lru",
+    hybrid_hot_seq_capacity: int = 1,
+    hybrid_with_secondary: bool = True,
     query_layout: QueryLayout = "batched",
     B: Optional[int] = None,
     H_q: Optional[int] = None,
@@ -1308,6 +1432,8 @@ def create_decode_runtime(
     extra guarantees:
     - Runtime callers can always use the same methods (`prefill`, `step`, `reset`).
     - Explicit `backend="sage"` requires `quantized_kv=True`.
+    - Optional `hybrid_cache=True` wraps the context cache in `HybridKVCache`
+      (currently supported for dense/paged backends only).
     """
     if default_seq_id < 0:
         raise ValueError("default_seq_id must be >= 0")
@@ -1341,6 +1467,17 @@ def create_decode_runtime(
         stream=stream,
     )
     selected = _context_backend_name(context)
+    if hybrid_cache:
+        if selected == "sage":
+            raise ValueError(
+                "hybrid_cache=True is currently unsupported for backend='sage'"
+            )
+        context = _wrap_context_with_hybrid_cache(
+            context,
+            policy=hybrid_policy,
+            hot_seq_capacity=hybrid_hot_seq_capacity,
+            with_secondary=hybrid_with_secondary,
+        )
     if query_layout == "packed" and selected != "paged":
         raise ValueError(
             "query_layout='packed' is currently supported only with paged runtime "

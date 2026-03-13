@@ -260,3 +260,87 @@ class TestCacheAbstractionRuntimeFlows:
         mx.eval(out)
         assert out.shape == (1, 4, 6, 64)
         assert rt.seq_length(5) == 6
+
+    def test_hybrid_runtime_dense_flow_and_metadata(self):
+        rt = create_decode_runtime(
+            backend="dense",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_hot_seq_capacity=1,
+            hybrid_with_secondary=True,
+            B=1,
+            H_kv=4,
+            D=64,
+            max_seq_len=64,
+        )
+        assert rt.hybrid_cache_enabled is True
+        md = rt.metadata
+        assert md["hybrid_cache_active"] is True
+        assert md["hybrid_state"] is not None
+
+        q_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        k_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        v_pre = mx.random.normal((1, 4, 6, 64)).astype(mx.float16)
+        rt.register_prefix("hyb-p0", q_pre, k_pre, v_pre)
+        rt.seed_prefix(prefix_id="hyb-p0", reset=True)
+        rt.hybrid_prefetch([0], pin=True, reason="unit")
+        st = rt.hybrid_state
+        assert st is not None
+        assert st["residency_map"][0] == "hot"
+        assert st["pinned_seq_ids"] == (0,)
+        assert st["last_prefetch_action"]["seq_id"] == 0
+
+        q_suf = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        k_suf = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        v_suf = mx.random.normal((1, 4, 4, 64)).astype(mx.float16)
+        out = rt.chunked_prefill(
+            q_suf,
+            k_suf,
+            v_suf,
+            chunk_size=2,
+            causal=True,
+            reset=False,
+        )
+        mx.eval(out)
+        assert out.shape == (1, 4, 4, 64)
+        assert rt.seq_length() == 10
+
+    def test_hybrid_runtime_paged_batch_flow(self):
+        rt = create_decode_runtime(
+            backend="paged",
+            paged=True,
+            query_layout="batched",
+            quantized_kv=False,
+            hybrid_cache=True,
+            hybrid_hot_seq_capacity=2,
+            hybrid_with_secondary=True,
+            B=2,
+            H_q=4,
+            H_kv=4,
+            D=64,
+            num_blocks=64,
+            block_size=16,
+        )
+        q = mx.random.normal((2, 4, 3, 64)).astype(mx.float16)
+        k = mx.random.normal((2, 4, 3, 64)).astype(mx.float16)
+        v = mx.random.normal((2, 4, 3, 64)).astype(mx.float16)
+        out = rt.paged_prefill_batch(q, k, v, seq_ids=[10, 11], causal=True)
+        mx.eval(out)
+        assert out.shape == (2, 4, 3, 64)
+        rt.hybrid_prefetch([10, 11], pin=True, reason="unit")
+        st = rt.hybrid_state
+        assert st is not None
+        assert st["residency_map"][10] == "hot"
+        assert st["residency_map"][11] == "hot"
+        assert st["pinned_seq_ids"] == (10, 11)
+
+    def test_hybrid_runtime_rejects_sage_backend(self):
+        with pytest.raises(ValueError, match="unsupported for backend='sage'"):
+            create_decode_runtime(
+                backend="sage",
+                quantized_kv=True,
+                hybrid_cache=True,
+                B=1,
+                H_kv=4,
+                D=64,
+            )
