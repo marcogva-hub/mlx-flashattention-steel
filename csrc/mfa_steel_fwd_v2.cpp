@@ -169,6 +169,10 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   ss << "#define MFA_TQ  " << TQ  << "\n";
   ss << "#define MFA_GQA " << gqa << "\n";
   ss << "#define MFA_ROWS_PT " << TQ << "\n";
+  // M3+ direct device reads: bypass TGP for K/V. Disabled when RoPE is active
+  // (RoPE requires in-place K modification in threadgroup memory).
+  const bool use_direct_reads = key.is_m3_plus && !key.has_rope;
+  ss << "#define MFA_DIRECT_READS " << (use_direct_reads ? 1 : 0) << "\n";
   ss << "\n";
 
   // ── Shared BlockLoaderT + MMATile templates (from V1) ───────────────────
@@ -239,37 +243,40 @@ struct MFASteelParams {
 
   // ── Threadgroup memory: Q_smem + shared KV_smem ─────────────────────────
   // Sequential K/V phases: K and V reuse the same KV_smem buffer.
-  // KV_smem = max(K_smem, V_smem):
-  //   K_smem (transposed): (BK+padK) * BD * sizeof(T)
-  //   V_smem (row-major):  BK * (BD+padV) * sizeof(T)
+  // M3+ (MFA_DIRECT_READS=1): K/V read directly from device; no KV_smem needed.
   ss << "  constexpr short padQ = " << pad_expr << ";\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  constexpr short padK = " << pad_expr << ";\n";
   ss << "  constexpr short padV = " << pad_expr << ";\n";
+  ss << "#endif\n";
   ss << "  constexpr short LDQ  = MFA_BD + padQ;\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  constexpr short LDK  = MFA_BK + padK;  // stride for transposed K\n";
   ss << "  constexpr short LDV  = MFA_BD + padV;\n";
-  ss << "  // KV_smem = max of K_smem and V_smem sizes:\n";
-  ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD;     // K transposed\n";
-  ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD + padV);      // V row-major\n";
+  ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD;\n";
+  ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD + padV);\n";
   ss << "  constexpr short kv_s  = kv_s0 > kv_s1 ? kv_s0 : kv_s1;\n";
+  ss << "  threadgroup T KV_smem[kv_s];\n";
+  ss << "  threadgroup T* Ks = KV_smem;\n";
+  ss << "  threadgroup T* Vs = KV_smem;\n";
+  ss << "#endif\n";
   ss << "\n";
   ss << "  threadgroup T Q_smem[MFA_BQ * (MFA_BD + padQ)];\n";
-  ss << "  threadgroup T KV_smem[kv_s];  // K and V share this buffer sequentially\n";
   ss << "  threadgroup T* Qs = Q_smem;\n";
-  ss << "  threadgroup T* Ks = KV_smem;  // K transposed into KV_smem\n";
-  ss << "  threadgroup T* Vs = KV_smem;  // V row-major into same KV_smem\n";
   ss << "\n";
 
   // ── Block loaders ────────────────────────────────────────────────────────
   ss << "  // Q: row-major, BQ×BD tiles\n";
   ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD,\n";
   ss << "      MFA_BD + 16/sizeof(T), 1, 1, MFA_TGP_SIZE>;\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  // K: transposed into TGP (kDstStrRow=1, kDstStrCol=LDK)\n";
   ss << "  using KLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
   ss << "      1, MFA_BK + 16/sizeof(T), 0, MFA_TGP_SIZE>;\n";
   ss << "  // V: row-major, BK×BD tiles\n";
   ss << "  using VLoader = MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
   ss << "      MFA_BD + 16/sizeof(T), 1, 0, MFA_TGP_SIZE>;\n";
+  ss << "#endif  // !MFA_DIRECT_READS\n";
   ss << "\n";
 
   // ── SIMD coordinate (same pattern as V1) ─────────────────────────────────
@@ -281,8 +288,10 @@ struct MFASteelParams {
   ss << "  const short tm = 8 * MFA_TQ * (short)simd_group_id;\n";
   ss << "\n";
   ss << "  const short Qs_off = (tm + sm) * LDQ + sn;\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  const short Ks_off = sm * LDK + sn;\n";
   ss << "  const short Vs_off = sm * LDV + sn;\n";
+  ss << "#endif\n";
   ss << "\n";
 
   // ── Tile registers ───────────────────────────────────────────────────────
@@ -330,10 +339,18 @@ struct MFASteelParams {
   // Block loaders for this Q-block
   ss << "  QLoader loader_q(Q_qb, (int)p->Q_strides[2], Qs,\n";
   ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  KLoader loader_k(K, (int)p->K_strides[2], Ks,\n";
   ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
   ss << "  VLoader loader_v(V, (int)p->V_strides[2], Vs,\n";
   ss << "                   (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+  ss << "#else\n";
+  ss << "  // M3+ direct reads: K/V pointers for device memory access.\n";
+  ss << "  const int K_stride = (int)p->K_strides[2];  // = D\n";
+  ss << "  const int V_stride = (int)p->V_strides[2];  // = D\n";
+  ss << "  const device T* K_cur = K;  // advances by BK*K_stride per tile\n";
+  ss << "  const device T* V_cur = V;\n";
+  ss << "#endif\n";
   ss << "\n";
 
   // Reset accumulators for this Q-block
@@ -449,6 +466,7 @@ struct MFASteelParams {
     ss << "    }\n";
   };
 
+  ss << "#if !MFA_DIRECT_READS\n";
   ss << "  if (kb_lim > kb_start) {\n";
   ss << "    if (kb_start == p->NK_aligned) {\n";
   ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
@@ -462,6 +480,7 @@ struct MFASteelParams {
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);  // RoPE-K[0] visible\n";
   }
   ss << "  }\n";
+  ss << "#endif  // !MFA_DIRECT_READS — skip K preload on M3+\n";
   ss << "\n";
 
   // ── Main K/V loop ────────────────────────────────────────────────────────
@@ -478,14 +497,26 @@ struct MFASteelParams {
     ss << "    if (!skip_tile) {\n";
   }
 
-  // Phase 1: Q@K^T (K[kb] already in KV_smem, synced by B0 or prev-iter RoPE/C)
+  // Phase 1: Q@K^T
   ss << "    // ─ Phase 1: Q@K^T ─\n";
+  ss << "#if MFA_DIRECT_READS\n";
+  ss << "    // M3+ direct: K_cur points to K[kb*BK, 0] in device memory.\n";
+  ss << "    // K is [S, D] row-major. K^T fragment at (d, s): K_cur[s*K_stride + d].\n";
+  ss << "    // load<T, row_stride=1, col_stride=K_stride> reads K^T sub-tile.\n";
+  ss << "#else\n";
   ss << "    // K[kb] is in KV_smem, already visible via preload barrier.\n";
+  ss << "#endif\n";
   ss << "    Stile.clear();\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
+  ss << "#if MFA_DIRECT_READS\n";
+  ss << "      Ktile.template load<T, 1, 1>(\n";
+  ss << "          K_cur + (long)(sm + (short)(dd * 8)) + (long)sn * K_stride,\n";
+  ss << "          1, K_stride);\n";
+  ss << "#else\n";
   ss << "      Ktile.template load_contiguous<T, 1, 1>(\n";
   ss << "          &Ks[Ks_off + (short)(dd * 8) * LDK], LDK);\n";
+  ss << "#endif\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
   ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
@@ -647,6 +678,7 @@ struct MFASteelParams {
   ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
   ss << "\n";
 
+  ss << "#if !MFA_DIRECT_READS\n";
   // Barrier A: K reads done → safe to overwrite KV_smem with V
   ss << "    // ─ Barrier A: all threads done reading K → safe to load V ─\n";
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
@@ -665,6 +697,7 @@ struct MFASteelParams {
   // Barrier B: V loaded → P@V can proceed
   ss << "    // ─ Barrier B: V fully written → P@V can read ─\n";
   ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "#endif  // !MFA_DIRECT_READS — no A/B barriers on M3+\n";
   ss << "\n";
 
   // Phase 3: P@V — iq outer, ik middle, id inner (same as V1)
@@ -676,8 +709,16 @@ struct MFASteelParams {
   ss << "      for (short ik = 0; ik < MFA_TK; ik++) {\n";
   ss << "        STEEL_PRAGMA_UNROLL\n";
   ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
+  ss << "#if MFA_DIRECT_READS\n";
+  ss << "          // M3+: V[s, d] row-major. V_cur[(s)*V_stride + d].\n";
+  ss << "          Vtile.template load<T, 1, 1>(\n";
+  ss << "              V_cur + (long)(sm + (short)(ik * 8)) * V_stride\n";
+  ss << "                    + sn + (short)(id * 8),\n";
+  ss << "              V_stride, 1);\n";
+  ss << "#else\n";
   ss << "          Vtile.template load_contiguous<T, 1, 1>(\n";
   ss << "              &Vs[Vs_off + ik*8*LDV + id*8], LDV);\n";
+  ss << "#endif\n";
   ss << "          MFAMMAFrag<AccT>::mma(\n";
   ss << "              Otile.frag_at(iq, id),\n";
   ss << "              Stile.frag_at(iq, ik),\n";
@@ -691,18 +732,21 @@ struct MFASteelParams {
   // Close sparse if(!skip_tile) block; in skip case just advance VLoader
   if (sparse) {
     ss << "    } else {\n";
+    ss << "#if !MFA_DIRECT_READS\n";
     ss << "      loader_v.next();  // sparse skip: keep VLoader in sync\n";
+    ss << "#endif\n";
     ss << "    }\n";
     ss << "\n";
   }
 
-  // Barrier X: flush V-reads (or sync for skip case) before K[kb+1] write.
+  // End of K-tile iteration: advance K/V pointers or preload next tile.
+  ss << "#if MFA_DIRECT_READS\n";
+  ss << "    // M3+: advance device pointers to next K-tile. No barriers needed.\n";
+  ss << "    K_cur += (long)MFA_BK * K_stride;\n";
+  ss << "    V_cur += (long)MFA_BK * V_stride;\n";
+  ss << "#else\n";
+  // Barrier X: flush V-reads before K[kb+1] write.
   // Barrier C: K[kb+1] written → visible.
-  // With RoPE: split C into C_load + RoPE-K + C_rope.
-  ss << "    // ─ Barrier X: KV_smem reads done → safe to overwrite with K[kb+1] ─\n";
-  if (has_rope)
-    ss << "    // ─ C_load: K[kb+1] written  → RoPE-K reads  ─\n";
-  ss << "    // ─ Barrier C: K[kb+1] (post-RoPE) visible for next Q@K^T         ─\n";
   ss << "    if (kb + 1 < kb_lim) {\n";
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // X\n";
   ss << "      if ((kb + 1) == p->NK_aligned) {\n";
@@ -717,6 +761,7 @@ struct MFASteelParams {
   }
   ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);  // C\n";
   ss << "    }\n";
+  ss << "#endif  // !MFA_DIRECT_READS\n";
   ss << "\n";
 
   ss << "  } // end kb loop\n";
