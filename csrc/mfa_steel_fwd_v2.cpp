@@ -148,7 +148,7 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
 
   // Unroll: safe for D<=128 (TD=8/16); D=256 (TD=32) causes register spill.
   const bool enable_unroll = (D <= 128) || key.is_m3_plus;
-  const int  arch_gen      = 13;  // not used in V2 Metal source, placeholder
+  const int  arch_gen      = key.is_m3_plus ? 15 : 13;
 
   std::ostringstream ss;
 
@@ -810,7 +810,7 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
 
   // TD_HALF=16 is safe to unroll (no register spill like TD=32)
   const bool enable_unroll = true;
-  const int  arch_gen      = 13;  // not used in source; placeholder
+  const int  arch_gen      = key.is_m3_plus ? 15 : 13;
 
   std::ostringstream ss;
 
@@ -1491,7 +1491,7 @@ std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey
   const int TQ      = BQ / (WM * WN * 8);  // 1
 
   const bool enable_unroll = (D <= 128) || key.is_m3_plus;
-  const int  arch_gen      = 13;  // placeholder; not used in V2 Metal shader
+  const int  arch_gen      = key.is_m3_plus ? 15 : 13;
 
   std::ostringstream ss;
 
