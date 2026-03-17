@@ -18,6 +18,7 @@ Public API (re-exported from ``mlx_mfa``):
     make_sink_window_mask
     make_reference_frame_mask
     make_cross_stream_mask
+    make_gna_mask
 """
 
 from __future__ import annotations
@@ -1127,3 +1128,154 @@ def make_cross_stream_mask(
         return mx.array(mask_np)
 
     raise ValueError(f"Unknown pattern '{pattern}'. Use 'full', 'temporal', or 'segment'.")
+
+
+# ---------------------------------------------------------------------------
+# Track GNA — Generalized Neighborhood Attention Masks
+# ---------------------------------------------------------------------------
+
+def _linear_to_nd(idx: np.ndarray, shape: tuple[int, ...]) -> tuple[np.ndarray, ...]:
+    """Convert linear indices to N-dimensional coordinates.
+
+    Args:
+        idx:   1-D array of linear indices.
+        shape: Spatial shape, e.g. (T, H, W) or (H, W).
+
+    Returns:
+        Tuple of arrays, one per dimension.
+    """
+    coords: list[np.ndarray] = [np.empty(0)] * len(shape)
+    remainder = idx
+    for d in range(len(shape) - 1, -1, -1):
+        coords[d] = remainder % shape[d]
+        remainder = remainder // shape[d]
+    return tuple(coords)
+
+
+def _nd_to_linear(coords: tuple[np.ndarray, ...], strides: tuple[int, ...]) -> np.ndarray:
+    """Convert N-dimensional coordinates to linear indices.
+
+    Args:
+        coords:  Tuple of coordinate arrays, one per dimension.
+        strides: Linear strides per dimension, e.g. (H*W, W, 1).
+
+    Returns:
+        1-D array of linear indices.
+    """
+    result = np.zeros_like(coords[0])
+    for c, s in zip(coords, strides):
+        result = result + c * s
+    return result
+
+
+def make_gna_mask(
+    seq_shape: tuple[int, ...],
+    window_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    head_dim: int = 128,
+) -> mx.array:
+    """Generalized Neighborhood Attention block mask.
+
+    For each query at position (t, h, w), attention is restricted to keys
+    within a window of size ``window_size`` centered on the query's stride-group.
+
+    The stride parameter controls query grouping:
+
+    - ``stride=(1,...,1)``: sliding window / neighborhood attention
+    - ``stride=window_size``: blocked attention (Swin-style)
+    - intermediate stride: groups of queries share K/V windows
+
+    GNA window semantics per dimension *d*:
+
+    - ``group_base = (pos // stride[d]) * stride[d]``
+    - ``win_lo = group_base - (window[d] - stride[d]) // 2``
+    - ``win_hi = group_base + stride[d] + (window[d] - stride[d] + 1) // 2``
+    - Both bounds are clamped to ``[0, seq_shape[d])``.
+
+    Args:
+        seq_shape:   Spatial/temporal dimensions, e.g. ``(T, H, W)`` or ``(H, W)``.
+        window_size: Window size per dimension (same length as *seq_shape*).
+        stride:      Stride per dimension (same length as *seq_shape*).
+        head_dim:    Head dimension for tile sizes.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+    """
+    ndim = len(seq_shape)
+    assert len(window_size) == ndim and len(stride) == ndim, \
+        "seq_shape, window_size, stride must have the same length"
+    for d in range(ndim):
+        assert 1 <= stride[d] <= window_size[d] <= seq_shape[d], \
+            f"dim {d}: need 1 <= stride <= window <= seq_shape, " \
+            f"got stride={stride[d]}, window={window_size[d]}, seq={seq_shape[d]}"
+
+    N = math.prod(seq_shape)
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (N + BQ - 1) // BQ
+    NK = (N + BK - 1) // BK
+
+    # Compute ND bounding boxes for each Q-tile and K-tile.
+    # For each tile, find the min and max coordinate in each dimension.
+    def tile_nd_bboxes(tile_size: int, num_tiles: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return (mins[num_tiles, ndim], maxs[num_tiles, ndim])."""
+        starts = np.arange(num_tiles) * tile_size
+        ends = np.minimum(starts + tile_size, N)
+        # For each tile, compute coords of first and last token.
+        # Since tokens are in row-major order, the ND bounding box
+        # of a contiguous token range may span multiple dimensions.
+        # We need the actual min/max per dimension across all tokens in the tile.
+        # Efficient approach: expand tile tokens, compute coords, take min/max.
+        offsets = np.arange(tile_size)
+        token_indices = starts[:, None] + offsets[None, :]  # [num_tiles, tile_size]
+        valid = token_indices < N
+        token_indices_clamped = np.clip(token_indices, 0, max(N - 1, 0))
+        coords = _linear_to_nd(token_indices_clamped, seq_shape)  # ndim arrays of [num_tiles, tile_size]
+
+        INF = 10**9
+        mins = np.empty((num_tiles, ndim), dtype=np.int32)
+        maxs = np.empty((num_tiles, ndim), dtype=np.int32)
+        for d in range(ndim):
+            c = coords[d]
+            mins[:, d] = np.where(valid, c, INF).min(axis=1)
+            maxs[:, d] = np.where(valid, c, -INF).max(axis=1)
+        return mins, maxs
+
+    q_mins, q_maxs = tile_nd_bboxes(BQ, NQ)  # [NQ, ndim]
+    k_mins, k_maxs = tile_nd_bboxes(BK, NK)  # [NK, ndim]
+
+    # For each Q-tile, compute the union of GNA windows across all
+    # stride-groups that the tile's queries span.
+    # The Q-tile spans coords q_mins[qi, d] .. q_maxs[qi, d] in each dim.
+    # Stride-group range: group_min = q_min_d // stride[d], group_max = q_max_d // stride[d]
+    # Union window:
+    #   win_lo = group_min * stride[d] - (window[d] - stride[d]) // 2
+    #   win_hi = (group_max + 1) * stride[d] + (window[d] - stride[d] + 1) // 2 - 1
+    # Clamped to [0, seq_shape[d]).
+
+    # Build the window bounds for all Q-tiles: [NQ, ndim] each
+    q_win_lo = np.empty((NQ, ndim), dtype=np.int32)
+    q_win_hi = np.empty((NQ, ndim), dtype=np.int32)
+    for d in range(ndim):
+        s = stride[d]
+        w = window_size[d]
+        half_lo = (w - s) // 2
+        half_hi = (w - s + 1) // 2  # handles odd (w - s)
+        group_min = q_mins[:, d] // s
+        group_max = q_maxs[:, d] // s
+        q_win_lo[:, d] = np.maximum(0, group_min * s - half_lo)
+        q_win_hi[:, d] = np.minimum(seq_shape[d] - 1,
+                                     (group_max + 1) * s + half_hi - 1)
+
+    # Tile pair (qi, ki) is active iff for ALL dimensions d:
+    #   k_maxs[ki, d] >= q_win_lo[qi, d]  AND  k_mins[ki, d] <= q_win_hi[qi, d]
+    # i.e. the K-tile bbox overlaps the Q-tile's window bbox.
+    # Vectorized: broadcast [NQ, 1, ndim] vs [1, NK, ndim]
+    q_lo = q_win_lo[:, None, :]   # [NQ, 1, ndim]
+    q_hi = q_win_hi[:, None, :]   # [NQ, 1, ndim]
+    k_lo = k_mins[None, :, :]     # [1, NK, ndim]
+    k_hi = k_maxs[None, :, :]     # [1, NK, ndim]
+
+    overlap = (k_hi >= q_lo) & (k_lo <= q_hi)  # [NQ, NK, ndim]
+    mask_np = overlap.all(axis=2)  # [NQ, NK]
+
+    return mx.array(mask_np)

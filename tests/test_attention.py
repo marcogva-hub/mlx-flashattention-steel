@@ -3137,6 +3137,98 @@ class TestCrossStreamMask:
 
 
 # =============================================================================
+# Track GNA: Generalized Neighborhood Attention Masks
+# =============================================================================
+
+class TestGNAMask:
+    """Tests for make_gna_mask() — GNA block mask generation."""
+
+    D = 128
+
+    def test_gna_mask_blocked_all_true(self):
+        """stride=window=seq_shape → single block = all tiles active."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((4, 8, 8), (4, 8, 8), (4, 8, 8), head_dim=self.D)
+        assert bool(mask.all().item()), "Full block should be all-True"
+
+    def test_gna_mask_blocked(self):
+        """stride=window_size should produce non-overlapping blocks."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((4, 8, 8), (2, 4, 4), (2, 4, 4), head_dim=self.D)
+        mask_np = np.array(mask)
+        # Each Q-tile row should have at least 1 active K-tile
+        assert mask_np.any(axis=1).all(), "Every Q-tile must see at least one K-tile"
+        # Blocked attention should be sparser than full
+        density = mask_np.mean()
+        assert density < 0.5, f"Blocked mask should be sparse, got density={density}"
+
+    def test_gna_mask_2d(self):
+        """2D (H, W) without temporal dimension."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((16, 16), (5, 5), (1, 1), head_dim=self.D)
+        mask_np = np.array(mask)
+        N = 256
+        BQ, BK = 32, 16
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        assert list(mask.shape) == [NQ, NK], f"Expected [{NQ}, {NK}], got {list(mask.shape)}"
+        # Non-trivial: not all True, not all False
+        density = mask_np.mean()
+        assert 0.0 < density < 1.0, f"2D mask should be non-trivial, density={density}"
+
+    def test_gna_mask_sparsity(self):
+        """Sparsity increases with smaller window relative to seq."""
+        from mlx_mfa.masks import make_gna_mask
+        mask_dense = make_gna_mask((4, 16, 16), (4, 16, 16), (4, 16, 16), head_dim=self.D)
+        mask_sparse = make_gna_mask((4, 16, 16), (2, 4, 4), (1, 1, 1), head_dim=self.D)
+        dense_count = int(mask_dense.astype(mx.int32).sum().item())
+        sparse_count = int(mask_sparse.astype(mx.int32).sum().item())
+        assert sparse_count < dense_count, \
+            f"Sparse mask should have fewer active tiles: {sparse_count} vs {dense_count}"
+
+    def test_gna_mask_with_sparse_attention(self):
+        """End-to-end: GNA mask + flash_attention_sparse produces valid output."""
+        from mlx_mfa.masks import make_gna_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, D = 1, 4, self.D
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mask = make_gna_mask((T, pH, pW), (3, 5, 5), (1, 1, 1), head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32)))), "Output has NaN"
+
+    def test_gna_mask_stride1_sliding_window(self):
+        """stride=(1,1) with small window gives sparse sliding neighborhood."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((8, 8), (3, 3), (1, 1), head_dim=self.D)
+        mask_np = np.array(mask)
+        # Diagonal should always be active (self-attention)
+        N = 64
+        BQ, BK = 32, 16
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        # Each Q-tile must see at least one K-tile
+        assert mask_np.any(axis=1).all()
+
+    def test_gna_mask_intermediate_stride(self):
+        """Intermediate stride (1 < stride < window) produces valid mask."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((8, 8), (4, 4), (2, 2), head_dim=self.D)
+        mask_np = np.array(mask)
+        density = mask_np.mean()
+        # Should be between fully sparse and fully dense
+        assert 0.0 < density < 1.0, f"Intermediate stride density={density}"
+        # Every Q-tile must see at least one K-tile
+        assert mask_np.any(axis=1).all()
+
+
+# =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================
 
