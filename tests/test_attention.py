@@ -3228,6 +3228,129 @@ class TestGNAMask:
         assert mask_np.any(axis=1).all()
 
 
+class TestGNAAttention:
+    """Integration tests for flash_attention_gna()."""
+
+    def test_gna_fullwindow_matches_dense(self):
+        """GNA with window=seq_shape, stride=seq_shape should match dense."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out_gna = flash_attention_gna(q, k, v, (T, pH, pW), (T, pH, pW), (T, pH, pW))
+        out_sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0/(D**0.5))
+        mx.eval(out_gna, out_sdpa)
+
+        diff = float(mx.max(mx.abs(out_gna.astype(mx.float32) - out_sdpa.astype(mx.float32))).item())
+        assert diff < 0.01, f"GNA full-window vs SDPA: max_diff={diff}"
+
+    def test_gna_no_nan_stride1(self):
+        """GNA with stride=(1,1,1) should produce no NaN."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (3, 5, 5), (1, 1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_no_nan_blocked(self):
+        """GNA with stride=window_size (blocked) should produce no NaN."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_2d(self):
+        """GNA on 2D (H, W) without temporal dimension."""
+        from mlx_mfa import flash_attention_gna
+        B, H_heads, D = 1, 4, 128
+        pH, pW = 16, 16
+        N = pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (pH, pW), (5, 5), (1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H_heads, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_d64(self):
+        """GNA with head_dim=64."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (1, 1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_bf16(self):
+        """GNA with bfloat16 dtype."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 128
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_intermediate_stride(self):
+        """GNA with 1 < stride < window_size."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        pH, pW = 8, 8
+        N = pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (pH, pW), (4, 4), (2, 2))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
 # =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================
