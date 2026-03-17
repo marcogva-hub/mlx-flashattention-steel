@@ -130,19 +130,19 @@ def _d256_min_n(
     """Return D=256 family threshold when a dedicated rule applies.
 
     D=256 is handled as a separate design family from D=64/128:
+    - M3+ causal: f16 and bf16 both win from N>=2048 (1.53-1.65× on M4 Max)
     - M1/M2 f16 causal: promote from N>=4096 (benchmark-backed narrow win)
-    - M1/M2 bf16 causal: keep SDPA
-    - M3+ causal: keep conservative SDPA default until measured
+    - M1/M2 bf16 causal: promote from N>=4096 (expected similar to f16)
     - non-causal: defer to global table (already SDPA default)
     """
     if head_dim != 256 or not causal or has_custom_table:
         return None
     if is_m3_plus:
-        return 999_999
-    if dtype_key == "float16":
+        # M4 Max D=256 causal B=2 H=8: 1.63×@N=2048, 1.65×@N=4096 (f16+bf16)
+        return 2048
+    # M1/M2: both f16 and bf16 promoted from N=4096
+    if dtype_key in ("float16", "bfloat16"):
         return 4096
-    if dtype_key == "bfloat16":
-        return 999_999
     return None
 
 

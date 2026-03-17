@@ -1070,8 +1070,8 @@ def warmup_kernels(
     No-op when the C++ extension is unavailable.
 
     Args:
-        head_dims: Head dimensions to warm up (default: ``[64, 128]``).
-        dtypes:    MLX dtypes to warm up (default: ``[mx.float16]``).
+        head_dims: Head dimensions to warm up (default: ``[64, 128, 256]``).
+        dtypes:    MLX dtypes to warm up (default: ``[mx.float16, mx.bfloat16]``).
         causal:    Whether to compile causal variants (default: ``True``).
 
     Example::
@@ -1084,9 +1084,9 @@ def warmup_kernels(
         return
 
     if head_dims is None:
-        head_dims = [64, 128]
+        head_dims = [64, 128, 256]
     if dtypes is None:
-        dtypes = [mx.float16]
+        dtypes = [mx.float16, mx.bfloat16]
 
     for D in head_dims:
         for dtype in dtypes:
@@ -1116,11 +1116,21 @@ def _auto_warmup_background(head_dim: int, dtype) -> None:
         warmup_dims = {head_dim}
         if head_dim in (64, 128):
             warmup_dims = {64, 128}  # pre-warm both common dims together
+        elif head_dim == 256:
+            warmup_dims = {256}
+        # Also warm bf16 if the caller uses f16 (and vice versa) — both are
+        # common in production and the driver overhead is worse on cold kernels.
+        warmup_dtypes = {dtype}
+        if dtype == mx.float16:
+            warmup_dtypes.add(mx.bfloat16)
+        elif dtype == mx.bfloat16:
+            warmup_dtypes.add(mx.float16)
         for D in warmup_dims:
-            for c in (True, False):
-                q = mx.zeros([1, 1, N, D], dtype=dtype)
-                out = flash_attention(q, q, q, scale=1.0 / math.sqrt(D), causal=c)
-                mx.eval(out)
+            for dt in warmup_dtypes:
+                for c in (True, False):
+                    q = mx.zeros([1, 1, N, D], dtype=dt)
+                    out = flash_attention(q, q, q, scale=1.0 / math.sqrt(D), causal=c)
+                    mx.eval(out)
     except Exception:
         pass  # warmup failure must never break the caller
 
