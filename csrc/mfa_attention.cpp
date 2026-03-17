@@ -377,12 +377,20 @@ void MFAttention::eval_gpu(
     };
     const int calibrated_max_n = splitk_calibrated_max_n();
 
+    // M3+ (gen>=15): V1 double-buffer is 1.5-3.7x faster than V2 at D<=128 causal.
+    // V2's shared KV_smem requires 3-4 barriers/tile vs V1's 2 barriers/tile.
+    // On M3+ hardware, reduced TGP bandwidth makes barriers more expensive.
+    // Skip V2 for this regime, falling through to V1.
+    // Override: set MFA_FORCE_V2=1 to bypass this guard (benchmarking).
+    const bool m3_prefers_v1_sk = is_m3_plus_steel && D <= 128 && params_.causal
+                                  && !std::getenv("MFA_FORCE_V2");
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         is_v2_small_d_family(D) &&
         // Sparse remains excluded from V2 split-K (block-mask uses V1 BK indexing).
         // RoPE/ALiBi/window are supported in V2 split-K (Phase 3 composability).
-        !params_.has_block_mask;
+        !params_.has_block_mask &&
+        !m3_prefers_v1_sk;
 
     const bool splitk_disabled_by_override = (force_splitk == 0);
     const bool splitk_disabled_by_calibration =
@@ -848,11 +856,19 @@ void MFAttention::eval_gpu(
   // Sparse (block_mask) excluded: mask is sized for V1 BK (BK_v1 != BK_v2).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
   if (!std::getenv("MFA_DISABLE_V2")) {
+    // M3+ (gen>=15): V1 double-buffer is 1.5-3.7x faster than V2 at D<=128 causal.
+    // V2's shared KV_smem requires 3-4 barriers/tile vs V1's 2 barriers/tile.
+    // On M3+ hardware, reduced TGP bandwidth makes barriers more expensive.
+    // Skip V2 for this regime, falling through to V1.
+    // Override: set MFA_FORCE_V2=1 to bypass this guard (benchmarking).
+    const bool m3_prefers_v1 = is_m3_plus_steel && D <= 128 && params_.causal
+                               && !std::getenv("MFA_FORCE_V2");
     const bool v2_eligible =
         (dtype_code != 2) &&
         is_v2_small_d_family(D) &&
         // block_mask is sized for V1 tile BK (BK_v1 ≠ BK_v2) — route to V1.
-        !params_.has_block_mask;
+        !params_.has_block_mask &&
+        !m3_prefers_v1;
 
     if (v2_eligible) {
       auto cfg2 = select_steel_v2_block_config(D, is_m3_plus_steel);

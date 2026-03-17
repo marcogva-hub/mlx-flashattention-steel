@@ -65,18 +65,17 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
-# M3+ thresholds: D=128 BK=64 (doubled vs M1 BK=32) → larger per-tile speedup.
-# V2 BK=64 on M3+ provides ~2× K-tile size → can activate at lower N than M1.
+# M3+ thresholds: V1 double-buffer (2 barriers/tile) replaces V2 for D<=128 causal.
+# On M3+ hardware, reduced TGP bandwidth makes V2's 3-4 barriers/tile a net loss.
+# V1 wins 1.5-3.7x over V2 at D<=128 causal on M4 Max (see mfa_attention.cpp).
 _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
-    # D=64 causal: BK=64 same on all gens; lower threshold conservatively to 512.
+    # D=64 causal: V1 double-buffer wins from N=512 on M4 Max (1.65x at N=2048).
     (64,  True):  512,
     (64,  False): 999_999,
-    # D=128 causal: M3+ BK=64 (~2× tile vs M1 BK=32) → threshold N=1024.
-    # On M1/M2 threshold is N=2048; M3+ wins earlier due to larger tile.
+    # D=128 causal: V1 wins from N=1024 on M4 Max (1.47x at N=2048, 1.83x at N=16384).
     (128, True):  1024,
     (128, False): 999_999,
-    # D=256/512 on M3+ remain conservative until measured on real M3/M4 hardware.
-    # Window/sparse still route to MFA via should_use_mfa() early-exit.
+    # D=256/512: V2 D-split still used (not affected by V1-over-V2 routing).
     (256, True):  999_999,
     (256, False): 999_999,
     (512, True):  _D512_CONSERVATIVE_MIN_N,

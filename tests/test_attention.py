@@ -11094,13 +11094,15 @@ class TestSteelV2DirectReads:
         """Run V2 with MFA_FORCE_GEN=gen.
 
         Forces BK=32 for D=128 so that gen=13 and gen=15 use the same blocking.
-        This isolates the direct-reads variable from the M3+ BK=64 change.
+        Forces MFA_FORCE_V2=1 so M3+ causal still dispatches to V2 (not V1).
+        This isolates the direct-reads variable from M3+ routing changes.
         """
         import os
-        env_keys = ("MFA_FORCE_GEN", "MFA_V2_FORCE_BK")
+        env_keys = ("MFA_FORCE_GEN", "MFA_V2_FORCE_BK", "MFA_FORCE_V2")
         saved = {k: os.environ.get(k) for k in env_keys}
         os.environ["MFA_FORCE_GEN"] = str(gen)
         os.environ["MFA_V2_FORCE_BK"] = "32"  # same BK for both paths
+        os.environ["MFA_FORCE_V2"] = "1"       # bypass M3+ V1 preference
         try:
             out = flash_attention(q, k, v, scale=scale, causal=causal, **kwargs)
             mx.eval(out)
