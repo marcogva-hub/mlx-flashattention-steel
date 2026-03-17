@@ -42,7 +42,7 @@ std::string generate_gna_forward_source(const ShaderCache::KernelKey& key) {
     const int TQ = BQ / (WM * 8);  // frag rows per warp
     const int TK = BK / (WN * 8);  // frag cols per warp
     const int TD = BD / 8;          // D frags
-    const int kRowsPT = TQ * 8 / 32; // rows per thread (for softmax)
+    const int kRowsPT = TQ;  // rows per thread in S tile
 
     std::ostringstream ss;
 
@@ -139,13 +139,14 @@ struct MFAGNAParams {
     ss << "  constexpr short LDK   = MFA_BK + padK;\n";
     ss << "  constexpr short LDV   = MFA_BD + padV;\n";
     // TGP layout: [Q_smem | K_smem | V_smem]
-    ss << "  constexpr short q_s   = MFA_BQ * LDQ;\n";
     ss << "  constexpr short kv_s0 = (MFA_BK + padK) * MFA_BD;\n";  // K^T smem
     ss << "  constexpr short kv_s1 = MFA_BK * (MFA_BD + padV);\n";  // V smem
-    ss << "  threadgroup T smem_raw[q_s + kv_s0 + kv_s1];\n";
-    ss << "  threadgroup T* Qs = smem_raw;\n";
-    ss << "  threadgroup T* Ks = smem_raw + q_s;\n";
-    ss << "  threadgroup T* Vs = smem_raw + q_s + kv_s0;\n";
+    ss << "  threadgroup T Q_smem[MFA_BQ * LDQ];\n";
+    ss << "  threadgroup T K_smem[kv_s0];\n";
+    ss << "  threadgroup T V_smem[kv_s1];\n";
+    ss << "  threadgroup T* Qs = Q_smem;\n";
+    ss << "  threadgroup T* Ks = K_smem;\n";
+    ss << "  threadgroup T* Vs = V_smem;\n";
     ss << "\n";
 
     // Loader type aliases
@@ -156,7 +157,7 @@ struct MFAGNAParams {
     ss << "\n";
 
     // Per-thread tile coordinates
-    ss << "  const ushort2 simd_coord = MFAMMAFrag<AccT>::get_coord(simd_lane_id);\n";
+    ss << "  const short2 simd_coord = MFAMMAFrag<AccT>::get_coord((ushort)simd_lane_id);\n";
     ss << "  const short sm = simd_coord.y;\n";
     ss << "  const short sn = simd_coord.x;\n";
     ss << "  const short tm = 8 * MFA_TQ * (short)simd_group_id;\n";
@@ -205,11 +206,8 @@ struct MFAGNAParams {
     ss << "  }\n";
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     // Load Q from SRAM into registers (hoisted out of K loop)
-    ss << "  STEEL_PRAGMA_UNROLL\n";
-    ss << "  for (short dd = 0; dd < MFA_TD; dd++) {\n";
-    ss << "    Qtile.template load<T, 1, 1>(\n";
-    ss << "        &Qs[Qs_off + dd * 8], LDQ, 1);\n";
-    ss << "  }\n";
+    // Single call loads entire TQ×TD tile from the thread's starting offset.
+    ss << "  Qtile.template load<T, 1, 1>(&Qs[Qs_off], LDQ, 1);\n";
     ss << "\n";
 
     // ── GNA window computation ────────────────────────────────────────────
@@ -245,6 +243,9 @@ struct MFAGNAParams {
     // ── K-tile loop with ND window skip ───────────────────────────────────
     ss << "  for (int kb = 0; kb < p->NK; kb++) {\n";
     // ND bounding-box overlap test: skip K-tiles outside the GNA window
+    // Debug: MFA_GNA_SKIP_WINDOW=1 disables the window test (process all tiles)
+    const bool skip_window = std::getenv("MFA_GNA_SKIP_WINDOW") != nullptr;
+    if (!skip_window) {
     ss << "    // ND window skip: compute K-tile bounding box and test overlap\n";
     ss << "    {\n";
     ss << "      const int k_start = kb * MFA_BK;\n";
@@ -281,6 +282,7 @@ struct MFAGNAParams {
     ss << "      }\n";
     ss << "      if (!active) continue;\n";
     ss << "    }\n";
+    } // end if (!skip_window)
     ss << "\n";
 
     // Load K tile into SRAM (cooperative, transposed)
@@ -316,10 +318,13 @@ struct MFAGNAParams {
     ss << "    }\n";
     ss << "\n";
 
-    // Apply scale: S *= scale (converted to log2 domain for fast exp2)
-    ss << "    // Scale QK^T scores\n";
-    ss << "    Stile.template row_bin_op<MFAScaleOp>(\n";
-    ss << "        (AccT)(p->scale * 1.4426950408889634f));\n"; // scale * log2(e)
+    // Apply scale (log2-domain: scale * log2(e) so exp2(S) = exp(S/scale_orig))
+    ss << "    {\n";
+    ss << "      const AccT scale = p->scale * M_LOG2E_F;\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short ii = 0; ii < MFA_TQ * MFA_TK * 2; ii++)\n";
+    ss << "        Stile.elems()[ii] *= scale;\n";
+    ss << "    }\n";
     ss << "\n";
 
     // Per-element ND mask: tokens in the K-tile that fall outside the per-query

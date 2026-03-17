@@ -2615,6 +2615,8 @@ void MFAGNAForward::eval_gpu(
   auto& v = inputs[2];
   auto& out = outputs[0];
   auto& lse = outputs[1];
+  out.set_data(mlx::core::allocator::malloc(out.nbytes()));
+  lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
 
   int B = q.shape(0);
   int H = q.shape(1);

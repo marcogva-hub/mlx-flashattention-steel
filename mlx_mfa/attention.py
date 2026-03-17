@@ -2285,6 +2285,84 @@ def _make_mfa_sparse_custom(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track GNA — Generalized Neighborhood Attention
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def flash_attention_gna(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    seq_shape: tuple[int, ...],
+    window_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    scale: Optional[float] = None,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Generalized Neighborhood Attention with multi-dimensional window.
+
+    For each query at position ``(t, h, w)``, computes attention only over keys
+    within a window of size *window_size* centered on the query's stride-group.
+
+    The stride controls query partitioning:
+
+    - ``stride=(1,1,1)``: sliding window (each query has its own window)
+    - ``stride=window_size``: blocked attention (Swin-style, non-overlapping)
+    - intermediate stride: groups of queries share the same K/V window
+
+    Reference: "Generalized Neighborhood Attention" (Hassani et al., 2025).
+
+    Args:
+        q: Query  ``[B, H, N, D]``.  f16 or bf16.
+        k: Key    ``[B, H, N, D]``.
+        v: Value  ``[B, H, N, D]``.
+        seq_shape: Spatial/temporal shape of the sequence, e.g. ``(T, H, W)``.
+                   ``prod(seq_shape)`` must equal ``N``.
+        window_size: Attention window per dimension (same length as *seq_shape*).
+        stride: Stride per dimension (same length as *seq_shape*).
+        scale: Attention scale factor. Defaults to ``1/sqrt(D)``.
+        stream: Optional MLX stream.
+
+    Returns:
+        Output ``[B, H, N, D]``.
+    """
+    if q.ndim != 4:
+        raise ValueError(f"q must be 4D [B,H,N,D], got {q.ndim}D")
+    B, H, N, D = q.shape
+    ndim = len(seq_shape)
+    if len(window_size) != ndim or len(stride) != ndim:
+        raise ValueError("seq_shape, window_size, stride must have the same length")
+    if math.prod(seq_shape) != N:
+        raise ValueError(f"prod(seq_shape)={math.prod(seq_shape)} != N={N}")
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    # Native GNA kernel (opt-in via MFA_GNA_NATIVE=1 while under development)
+    import os
+    if (
+        os.environ.get("MFA_GNA_NATIVE")
+        and _ext_available()
+        and q.dtype in (mx.float16, mx.bfloat16)
+        and D in (64, 128)
+    ):
+        from mlx_mfa._ext import mfa_gna_forward
+        o, _lse = mfa_gna_forward(
+            q, k, v,
+            list(seq_shape),
+            list(window_size),
+            list(stride),
+            scale,
+            stream,
+        )
+        return o
+
+    # Default path: sparse mask (correct, uses existing STEEL sparse kernel)
+    from mlx_mfa.masks import make_gna_mask
+    mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
+    return flash_attention_sparse(q, k, v, mask, scale=scale)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track JD — LLM inference helpers
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
