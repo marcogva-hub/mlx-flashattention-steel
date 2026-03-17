@@ -9,8 +9,37 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 
 namespace mlx_mfa {
+
+// ── Struct layout verification ───────────────────────────────────────────
+// Metal reads the constant buffer as raw bytes. If C++ and Metal disagree
+// on field offsets, the kernel reads garbage → NaN output.
+static_assert(offsetof(MFAGNAParams, B)            ==   0, "B offset");
+static_assert(offsetof(MFAGNAParams, H)            ==   4, "H offset");
+static_assert(offsetof(MFAGNAParams, D)            ==   8, "D offset");
+static_assert(offsetof(MFAGNAParams, seq_len)      ==  12, "seq_len offset");
+static_assert(offsetof(MFAGNAParams, scale)         ==  16, "scale offset");
+static_assert(offsetof(MFAGNAParams, gqa_factor)    ==  20, "gqa_factor offset");
+static_assert(offsetof(MFAGNAParams, ndim)          ==  24, "ndim offset");
+static_assert(offsetof(MFAGNAParams, seq_shape)     ==  28, "seq_shape offset");
+static_assert(offsetof(MFAGNAParams, seq_strides)   ==  40, "seq_strides offset");
+static_assert(offsetof(MFAGNAParams, window_size)   ==  52, "window_size offset");
+static_assert(offsetof(MFAGNAParams, stride)        ==  64, "stride offset");
+static_assert(offsetof(MFAGNAParams, window_volume) ==  76, "window_volume offset");
+static_assert(offsetof(MFAGNAParams, NQ)            ==  80, "NQ offset");
+static_assert(offsetof(MFAGNAParams, NK)            ==  84, "NK offset");
+static_assert(offsetof(MFAGNAParams, NQ_aligned)    ==  88, "NQ_aligned offset");
+static_assert(offsetof(MFAGNAParams, NK_aligned)    ==  92, "NK_aligned offset");
+static_assert(offsetof(MFAGNAParams, qL_rem)        ==  96, "qL_rem offset");
+static_assert(offsetof(MFAGNAParams, kL_rem)        == 100, "kL_rem offset");
+static_assert(offsetof(MFAGNAParams, Q_strides)     == 104, "Q_strides offset");
+static_assert(offsetof(MFAGNAParams, K_strides)     == 128, "K_strides offset");
+static_assert(offsetof(MFAGNAParams, V_strides)     == 152, "V_strides offset");
+static_assert(offsetof(MFAGNAParams, O_strides)     == 176, "O_strides offset");
+static_assert(offsetof(MFAGNAParams, L_strides)     == 200, "L_strides offset");
+static_assert(sizeof(MFAGNAParams)                  == 216, "MFAGNAParams total size");
 
 SteelBlockConfig select_gna_block_config(int head_dim, bool is_low_prec) {
     // Reuse STEEL V1 defaults. GNA doesn't need double-buffer or D-split
@@ -37,6 +66,9 @@ std::string generate_gna_forward_source(const ShaderCache::KernelKey& key) {
 
     const int arch_gen = key.is_m3_plus ? 15 : 13;
     const bool enable_unroll = (BD <= 128) || key.is_m3_plus;
+    // Debug env vars (compile-time only, not cached in KernelKey):
+    // MFA_GNA_SKIP_WINDOW=1: skip ND window test (process all K-tiles)
+    // MFA_DUMP_GNA_SHADER=1: write generated shader to /tmp/gna_shader.metal
 
     // Tile counts
     const int TQ = BQ / (WM * 8);  // frag rows per warp
@@ -150,9 +182,13 @@ struct MFAGNAParams {
     ss << "\n";
 
     // Loader type aliases
+    // Q loader: row-major (kDstStrRow=LDQ, kDstStrCol=1, reduction_dim=0)
     ss << "  typedef MFABlockLoaderT<T, MFA_BQ, MFA_BD, LDQ, 1, 0, MFA_TGP_SIZE> QLoader;\n";
-    // K loader: transposed (reduction_dim=1) so K[k_row, d_col] → Ks[d_col*LDK + k_row]
-    ss << "  typedef MFABlockLoaderT<T, MFA_BK, MFA_BD, LDK, 1, 1, MFA_TGP_SIZE> KLoader;\n";
+    // K loader: TRANSPOSED into smem (kDstStrRow=1, kDstStrCol=LDK, reduction_dim=0)
+    // Writes K[k_row, d_col] as Ks[d_col * LDK + k_row] → [D, K] layout for Q@K^T GEMM
+    ss << "  typedef MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
+    ss << "      1, MFA_BK + 16/sizeof(T), 0, MFA_TGP_SIZE> KLoader;\n";
+    // V loader: row-major (kDstStrRow=LDV, kDstStrCol=1, reduction_dim=0)
     ss << "  typedef MFABlockLoaderT<T, MFA_BK, MFA_BD, LDV, 1, 0, MFA_TGP_SIZE> VLoader;\n";
     ss << "\n";
 
@@ -433,7 +469,15 @@ struct MFAGNAParams {
     ss << "  }\n";
     ss << "}\n";
 
-    return ss.str();
+    auto result = ss.str();
+
+    // Debug: dump generated shader to /tmp for inspection
+    if (std::getenv("MFA_DUMP_GNA_SHADER")) {
+        FILE* f = fopen("/tmp/gna_shader.metal", "w");
+        if (f) { fprintf(f, "%s", result.c_str()); fclose(f); }
+    }
+
+    return result;
 }
 
 }  // namespace mlx_mfa

@@ -2337,11 +2337,9 @@ def flash_attention_gna(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Native GNA kernel (opt-in via MFA_GNA_NATIVE=1 while under development)
-    import os
+    # Native GNA kernel for f16/bf16 D=64/128
     if (
-        os.environ.get("MFA_GNA_NATIVE")
-        and _ext_available()
+        _ext_available()
         and q.dtype in (mx.float16, mx.bfloat16)
         and D in (64, 128)
     ):
