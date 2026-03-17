@@ -7,7 +7,7 @@ import time
 import mlx.core as mx
 
 from mlx_mfa import flash_attention
-from mlx_mfa.attention import _fallback_sdpa
+from mlx_mfa.attention import _fallback_sdpa, _softcap_sdpa_ref
 
 
 def _bench(fns: dict, n_warmup: int = 10, n_iter: int = 20) -> dict:
@@ -42,7 +42,7 @@ def bench_softcap(B: int, H: int, N: int, D: int, causal: bool, dtype) -> dict:
 
     return _bench({
         "sdpa_ref":       lambda: _fallback_sdpa(q, k, v, scale, causal),
-        "sdpa_softcap":   lambda: _fallback_sdpa(q, k, v, scale, causal, softcap=cap),
+        "sdpa_softcap":   lambda: _softcap_sdpa_ref(q, k, v, scale, causal, cap),
         "mfa_plain":      lambda: flash_attention(q, k, v, scale=scale, causal=causal),
         "mfa_softcap":    lambda: flash_attention(q, k, v, scale=scale, causal=causal, softcap=cap),
     })

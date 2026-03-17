@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current freeze-prep version target: **2.10.0**.
+Current version: **2.11.0** — M3/M4 optimization pass with full dual-chip benchmarks.
 
 ## Foreword
 
@@ -26,9 +26,12 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-I'll be adding, in the next couple days, benchmarks for the M4 Max, thanks
-to a colleague willing to do them, and I'll update the best stats in this
-file, and provide the full benchmark results in a dedicated file.
+v2.11.0 includes comprehensive benchmarks on both Apple M1 Max and M4 Max.
+The M3+ dispatch optimization delivers up to 2.07× over SDPA for D=64 causal
+attention on M4 Max, and window masking reaches 20.8× on both chips.
+See `docs/benchmarks/RESULTS.md` for complete data across all shapes, dtypes,
+and both hardware generations — including where MFA loses, so you can evaluate
+if it benefits your specific workload.
 
 Thank you for your interest, and let me know if you've been able to improve
 on my work!

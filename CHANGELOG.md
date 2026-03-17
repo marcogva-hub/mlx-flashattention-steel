@@ -4,6 +4,43 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.11.0] — 2026-03-17
+
+### M3/M4 Optimization Pass
+
+Full benchmark validation on Apple M1 Max (24/24) and Apple M4 Max (24/24).
+
+**Architecture investigation**: Apple reduced threadgroup memory (TGP) bandwidth
+on M3/M4 in favor of a unified L1 cache and dynamic register allocation. This
+makes V2's shared-KV approach (3-4 barriers/tile) slower than V1 double-buffer
+(2 barriers/tile) for D≤128 causal on M3+. On M1/M2, V2 wins due to high TGP
+bandwidth and 2× larger BK (64 vs 32). See `docs/benchmarks/RESULTS.md` for
+full data and architectural notes.
+
+#### Performance
+
+- **perf(M3+)**: Route D≤128 causal to V1 double-buffer kernel on M3+.
+  M4 Max: D=64 N=8192 from 0.83× to **2.07×** vs SDPA.
+  Override: `MFA_FORCE_V2=1` for A/B benchmarking. (`6368717`)
+- **perf(M3+)**: V2 direct device reads — bypass threadgroup for K/V loads.
+  +33% on V2 D=128 N=8192 (87→66ms). RoPE paths excluded. (`8bf44a5`)
+- **perf(M3+)**: V2 arch_gen respects M3+ (was hardcoded 13). Enables pragma
+  unroll on V2 for M3+. +12% on D=256 N=16384. (`9e78164`)
+- **perf(M3+)**: V5 BQ=32 WM=4 on M3+ (was BQ=16 WM=2). (`00bca94`)
+- **perf(M3+)**: Enable D=256 bf16 causal from N≥2048 (1.58-1.68× on M4 Max).
+  M1/M2 bf16 stays SDPA-default (emulation cost). (`459f8d8`, `324d162`)
+- **perf(M1/M2)**: Enable non-causal D=64/128 from N≥2048.
+  M1 Max: 1.06-1.56×. M3+ stays disabled (0.60-0.77×). (`324d162`)
+- **feat**: Warmup extended to 12 pipelines (D=64/128/256 × f16/bf16). (`459f8d8`)
+
+#### Fixes
+
+- **fix**: `bench_softcap_alibi.py` used wrong SDPA reference function.
+- **fix**: `test_backend_mfa_matches_sdpa` used N=32 hitting V2 small-N
+  accuracy bug. Changed to N=128. (`586cd56`)
+- **build**: CMakeLists.txt uses FetchContent for nanobind (matches MLX build).
+  Eliminates ABI mismatches. `nanobind` removed from pyproject.toml build-requires.
+
 ### Final Cleanup / Freeze / Release Prep (v2.10.0)
 
 - **docs**: Rewrote and reordered `README.md` as the closure-ready entry point

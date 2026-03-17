@@ -60,22 +60,20 @@ if(NOT MLX_LIB)
 endif()
 message(STATUS "MLX library: ${MLX_LIB}")
 
-# -- nanobind (pip-installed) --
-# IMPORTANT: nanobind version must match MLX's internal NB_INTERNALS_VERSION.
-#   MLX 0.31.0 uses NB_INTERNALS_VERSION=17 with NB_DOMAIN "mlx".
-#   nanobind 2.10.x is the pip version with NB_INTERNALS_VERSION=17.
-#   If MLX is upgraded, check its capsule key and match nanobind accordingly:
-#     python3 -c "import mlx.core, ctypes; ..."  (see mlx_mfa_integration.md)
-execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  OUTPUT_VARIABLE NB_DIR
-  RESULT_VARIABLE NB_DIR_RC
+# -- nanobind via FetchContent --
+# MLX 0.31.1 builds nanobind via CMake FetchContent (PR #2949), producing
+# capsule key: __nb_internals_v17_system_libcpp_abi1_mlx__
+# We use the same method to guarantee ABI compatibility.
+# nanobind v2.10.0 → NB_INTERNALS_VERSION=17 (matches MLX 0.31.x).
+# If MLX upgrades nanobind, update the GIT_TAG here to match.
+include(FetchContent)
+FetchContent_Declare(
+  nanobind
+  GIT_REPOSITORY https://github.com/wjakob/nanobind.git
+  GIT_TAG        v2.10.0
+  GIT_SHALLOW    ON
 )
-if(NB_DIR_RC EQUAL 0 AND EXISTS "${NB_DIR}")
-  list(APPEND CMAKE_PREFIX_PATH "${NB_DIR}")
-endif()
-find_package(nanobind CONFIG REQUIRED)
+FetchContent_MakeAvailable(nanobind)
 
 # -- Metal & Foundation frameworks --
 find_library(METAL_FRAMEWORK Metal REQUIRED)

@@ -1,30 +1,34 @@
-# mlx-mfa Results Summary (Freeze Prep)
+# mlx-mfa Results Summary
 
-Version target: **2.10.0**  
-Primary benchmark hardware: **Apple M1 Max**
+Version: **2.11.0**
+Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
-This file is the concise top-level benchmark interpretation. Detailed matrices
-and historical artifacts are linked under `devnotes/` and
+For complete benchmark tables and architectural notes, see
 `docs/benchmarks/RESULTS.md`.
 
 ## 1) Production Interpretation
 
-- **V2 dense** remains the production default for causal D=64/128 regimes.
-- **D=256** remains narrow benchmark-backed only.
+- **V2 dense** remains the production default for causal D=64/128 on M1/M2.
+- **V1 double-buffer** is the production default for causal D≤128 on M3+.
+- **D=256** promoted for f16 causal (both chips) and bf16 causal (M3+ only).
 - **D=512** remains SDPA-default.
+- **Non-causal D=64/128** enabled on M1/M2 only (1.06-1.56×); M3+ stays SDPA.
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** remains a specialized decode backend (narrow policy).
 - **V3/V4/V5** remain experimental/hardware-dependent.
 
-## 2) Representative Dense Outcomes (M1 Max)
+## 2) Representative Results
 
-| Scenario | Outcome |
-|---|---:|
-| V2 causal D=64 N=8192 vs SDPA | ~1.82x |
-| V2 causal D=128 N=16384 vs SDPA | ~1.75x |
-| Sliding-window tile-skip regimes | up to ~21x vs full SDPA |
-| D=256 causal long-N (narrow rows) | up to ~1.16x |
-| D=512 decision pass | no broad wins (SDPA-default) |
+| Scenario | M1 Max | M4 Max |
+|---|---:|---:|
+| D=64 N=8192 causal | 1.69× | **2.07×** |
+| D=128 N=8192 causal | 1.58× | **1.62×** |
+| D=256 N=8192 causal f16 | 1.01× | **1.81×** |
+| D=256 N=8192 causal bf16 | SDPA default | **1.68×** |
+| D=64/128 non-causal | up to 1.51× | SDPA default |
+| Sliding-window D=128 N=8192 win=256 | **18.4×** | **20.8×** |
+| D=64 backward | 0.60-0.72× | **1.29-1.45×** |
+| Softcap D=128 | **1.37×** | **1.34×** |
 
 ## 3) Serving/Runtime Capability Outcomes
 
@@ -83,11 +87,12 @@ Interpretation:
 
 ## 4) Practical Ceiling Statement (Current Hardware)
 
-For this architecture on M1 Max:
+For this architecture on M1 Max and M4 Max:
 - dense kernel family appears close to practical ceiling in the main production
   design space;
+- M3/M4 optimizations (V1 routing, direct reads) recover hardware-specific wins;
 - remaining improvements are mostly serving/runtime integration and future
-  hardware-dependent opportunities.
+  hardware-dependent opportunities (M5+ tensor API).
 
 ## 5) Artifact Map
 
