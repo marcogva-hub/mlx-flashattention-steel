@@ -9595,11 +9595,17 @@ class TestSmartDispatch:
         assert not should_use_mfa(256, 4096, causal=True, is_m3_plus=False)
         assert should_use_mfa(256, 8192, causal=True, is_m3_plus=False)
 
-    def test_d256_m3plus_stays_conservative_until_measured(self):
-        """M3+ D=256 remains conservative until real-hardware evidence lands."""
+    def test_d256_m3plus_promoted_from_benchmark(self):
+        """M3+ D=256 causal promoted from N>=2048 (M4 Max benchmarks: 1.58-1.68x)."""
         import mlx.core as mx
         from mlx_mfa.dispatch_policy import should_use_mfa
-        assert not should_use_mfa(256, 16384, causal=True, is_m3_plus=True, dtype=mx.float16)
+        # M3+ D=256 f16 causal: promoted from N>=2048
+        assert should_use_mfa(256, 2048, causal=True, is_m3_plus=True, dtype=mx.float16)
+        assert should_use_mfa(256, 16384, causal=True, is_m3_plus=True, dtype=mx.float16)
+        # M3+ D=256 bf16 causal: also promoted (native bf16 ALU on M3+)
+        assert should_use_mfa(256, 4096, causal=True, is_m3_plus=True, dtype=mx.bfloat16)
+        # Below threshold: still SDPA
+        assert not should_use_mfa(256, 1024, causal=True, is_m3_plus=True, dtype=mx.float16)
 
     def test_d256_force_path_override_mfa(self, monkeypatch):
         """MFA_FORCE_D256_PATH=1 must force D=256 auto route to MFA."""
@@ -9640,13 +9646,23 @@ class TestSmartDispatch:
         monkeypatch.setenv("MFA_FORCE_D512_PATH", "sdpa")
         assert not should_use_mfa(512, 16384, causal=True, is_m3_plus=False, dtype=mx.float16)
 
-    def test_noncausal_never_routes_mfa(self):
-        """Non-causal attention should never use MFA (best 0.92x, no win)."""
+    def test_noncausal_dispatch_policy(self):
+        """Non-causal dispatch: M1/M2 routes MFA for D=64/128 N>=2048; M3+ stays SDPA."""
         from mlx_mfa.dispatch_policy import should_use_mfa
+        # M1/M2: D=64/128 non-causal wins from N>=2048 (V2 BK=64, high TGP BW)
+        assert should_use_mfa(64, 2048, causal=False, is_m3_plus=False)
+        assert should_use_mfa(128, 4096, causal=False, is_m3_plus=False)
+        # M1/M2: below threshold stays SDPA
+        assert not should_use_mfa(64, 1024, causal=False, is_m3_plus=False)
+        assert not should_use_mfa(128, 1024, causal=False, is_m3_plus=False)
+        # M1/M2: D=256/512 non-causal stays SDPA
+        assert not should_use_mfa(256, 8192, causal=False, is_m3_plus=False)
+        assert not should_use_mfa(512, 8192, causal=False, is_m3_plus=False)
+        # M3+: all non-causal stays SDPA (0.60-0.77x on M4 Max)
         for D in [64, 128, 256, 512]:
-            for N in [512, 1024, 2048, 4096, 8192]:
-                assert not should_use_mfa(D, N, causal=False, is_m3_plus=False), \
-                    f"Non-causal D={D} N={N} routed to MFA unexpectedly"
+            for N in [2048, 4096, 8192]:
+                assert not should_use_mfa(D, N, causal=False, is_m3_plus=True), \
+                    f"M3+ non-causal D={D} N={N} routed to MFA unexpectedly"
 
     def test_window_always_routes_mfa(self):
         """Sliding-window attention always uses MFA (tile-skip guarantee)."""
