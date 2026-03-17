@@ -23,6 +23,7 @@
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
 #include "mfa_steel_bwd.hpp"
+#include "mfa_steel_gna_fwd.hpp"
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
 
@@ -2598,6 +2599,191 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
       {v.dtype(), mlx::core::float32},
       std::make_shared<MFASageForward>(s, params),
       {q, k_int8, v, k_scale});
+
+  return {outputs[0], outputs[1]};
+}
+
+// =========================================================================
+// MFAGNAForward::eval_gpu  (GNA forward kernel dispatch)
+// =========================================================================
+
+void MFAGNAForward::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+  auto& q = inputs[0];
+  auto& k = inputs[1];
+  auto& v = inputs[2];
+  auto& out = outputs[0];
+  auto& lse = outputs[1];
+
+  int B = q.shape(0);
+  int H = q.shape(1);
+  int N = q.shape(2);
+  int D = q.shape(3);
+  int H_kv = k.shape(1);
+
+  auto cfg = select_gna_block_config(D, q.dtype() != mlx::core::float32);
+  int BQ = cfg.BQ;
+  int BK = cfg.BK;
+  int NQ = (N + BQ - 1) / BQ;
+  int NK = (N + BK - 1) / BK;
+  int TGP = cfg.WM * 32;
+
+  // Build Metal kernel params
+  MFAGNAParams metal_params{};
+  metal_params.B = B;
+  metal_params.H = H;
+  metal_params.D = D;
+  metal_params.seq_len = N;
+  metal_params.scale = params_.scale;
+  metal_params.gqa_factor = params_.gqa_factor;
+  metal_params.ndim = params_.ndim;
+
+  int window_vol = 1;
+  for (int i = 0; i < 3; i++) {
+    metal_params.seq_shape[i]   = i < params_.ndim ? params_.seq_shape[i]   : 1;
+    metal_params.window_size[i] = i < params_.ndim ? params_.window_size[i] : 1;
+    metal_params.stride[i]      = i < params_.ndim ? params_.stride[i]      : 1;
+    if (i < params_.ndim) window_vol *= params_.window_size[i];
+  }
+  metal_params.window_volume = window_vol;
+
+  // Compute ND strides (row-major)
+  metal_params.seq_strides[params_.ndim - 1] = 1;
+  for (int i = params_.ndim - 2; i >= 0; i--) {
+    metal_params.seq_strides[i] = metal_params.seq_strides[i + 1]
+                                * metal_params.seq_shape[i + 1];
+  }
+  for (int i = params_.ndim; i < 3; i++) {
+    metal_params.seq_strides[i] = 1;
+  }
+
+  metal_params.NQ = NQ;
+  metal_params.NK = NK;
+  metal_params.NQ_aligned = NQ - (N % BQ ? 1 : 0);
+  metal_params.NK_aligned = NK - (N % BK ? 1 : 0);
+  metal_params.qL_rem = N % BQ ? N % BQ : BQ;
+  metal_params.kL_rem = N % BK ? N % BK : BK;
+
+  // BHND contiguous strides
+  metal_params.Q_strides[0] = (int64_t)H    * N * D;
+  metal_params.Q_strides[1] = (int64_t)N    * D;
+  metal_params.Q_strides[2] = (int64_t)D;
+  metal_params.K_strides[0] = (int64_t)H_kv * N * D;
+  metal_params.K_strides[1] = (int64_t)N    * D;
+  metal_params.K_strides[2] = (int64_t)D;
+  metal_params.V_strides[0] = (int64_t)H_kv * N * D;
+  metal_params.V_strides[1] = (int64_t)N    * D;
+  metal_params.V_strides[2] = (int64_t)D;
+  metal_params.O_strides[0] = (int64_t)H    * N * D;
+  metal_params.O_strides[1] = (int64_t)N    * D;
+  metal_params.O_strides[2] = (int64_t)D;
+  metal_params.L_strides[0] = (int64_t)H * N;
+  metal_params.L_strides[1] = (int64_t)N;
+
+  // Get or compile pipeline
+  auto& d = mlx::core::metal::device(stream().device);
+  int arch_gen_steel = 13;
+  if (auto* gi = std::getenv("MFA_FORCE_GEN")) {
+    arch_gen_steel = std::atoi(gi);
+  } else {
+    arch_gen_steel = static_cast<int>(d.get_architecture_gen());
+  }
+  bool is_m3_plus_steel = (arch_gen_steel >= 15);
+
+  uint8_t dtype_code = 0;
+  if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else if (q.dtype() == mlx::core::float32) dtype_code = 2;
+
+  ShaderCache::KernelKey kkey{};
+  kkey.type = ShaderCache::KernelKey::KernelType::GNAForward;
+  kkey.head_dim = D;
+  kkey.block_q  = BQ;
+  kkey.block_k  = BK;
+  kkey.n_warps  = cfg.WM;
+  kkey.dtype    = dtype_code;
+  kkey.causal   = false;
+  kkey.sparse   = false;
+  kkey.is_m3_plus = is_m3_plus_steel;
+  void* raw = ShaderCache::get().get_or_compile(kkey, d.mtl_device());
+  auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  // Encode kernel
+  auto& enc = d.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pl);
+  enc.set_input_array(q,   0);
+  enc.set_input_array(k,   1);
+  enc.set_input_array(v,   2);
+  enc.set_output_array(out, 3);
+  enc.set_output_array(lse, 4);
+  enc.set_bytes(metal_params, 5);
+
+  // Grid: (NQ, H, B) — one threadgroup per Q-tile
+  enc.dispatch_threadgroups(
+      MTL::Size::Make((size_t)NQ, (size_t)H, (size_t)B),
+      MTL::Size::Make((size_t)TGP, 1, 1));
+}
+
+// =========================================================================
+// mfa_gna_forward — Free function (Python binding target)
+// =========================================================================
+
+std::pair<mlx::core::array, mlx::core::array> mfa_gna_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const std::vector<int>& seq_shape,
+    const std::vector<int>& window_size,
+    const std::vector<int>& stride,
+    float scale,
+    mlx::core::Stream stream) {
+
+  // Validate
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::runtime_error("mfa_gna_forward: Q/K/V must be 4D [B,H,N,D]");
+
+  int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
+  int H_kv = k.shape(1);
+
+  int ndim = (int)seq_shape.size();
+  if (ndim < 2 || ndim > 3)
+    throw std::runtime_error("mfa_gna_forward: seq_shape must be 2D or 3D");
+  if ((int)window_size.size() != ndim || (int)stride.size() != ndim)
+    throw std::runtime_error("mfa_gna_forward: window/stride must match seq_shape length");
+
+  int prod = 1;
+  for (int d = 0; d < ndim; d++) prod *= seq_shape[d];
+  if (prod != N)
+    throw std::runtime_error("mfa_gna_forward: prod(seq_shape) != N");
+
+  if (D != 64 && D != 128)
+    throw std::runtime_error("mfa_gna_forward: head_dim must be 64 or 128");
+
+  // Build primitive params
+  MFAGNAForward::Params params{};
+  params.head_dim = D;
+  params.scale = scale;
+  params.gqa_factor = H / H_kv;
+  params.ndim = ndim;
+  for (int d = 0; d < ndim; d++) {
+    params.seq_shape[d]   = seq_shape[d];
+    params.window_size[d] = window_size[d];
+    params.stride[d]      = stride[d];
+  }
+  for (int d = ndim; d < 3; d++) {
+    params.seq_shape[d]   = 1;
+    params.window_size[d] = 1;
+    params.stride[d]      = 1;
+  }
+
+  mlx::core::Shape out_shape = {B, H, N, D};
+  mlx::core::Shape lse_shape = {B, H, N};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAGNAForward>(stream, params),
+      {q, k, v});
 
   return {outputs[0], outputs[1]};
 }
