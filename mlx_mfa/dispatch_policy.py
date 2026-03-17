@@ -45,13 +45,15 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     #   N=512→1.18x, N=1024→1.14x, N=2048→1.25x, N=4096→1.86x, N=16384→2.20x.
     # Threshold N=1024 (conservatively above break-even, stable across runs).
     (64,  True):  1024,
-    # D=64 non-causal: 0.98x at N=16384, 0.97x at N=32768 — MFA never wins.
-    (64,  False): 999_999,
+    # D=64 non-causal: V2 wins on M1/M2 (1.06x at N=2048, 1.43x at N=8192).
+    # Old measurements (0.98x) predated V2 BK=64 optimization or used different MLX.
+    (64,  False): 2048,
     # D=128 causal: V2 delivers 1.33x at N=2048, 1.60x at N=4096, 1.76x at N=16384.
     # Old V1 threshold was N=8192 (too conservative). New threshold: N=2048.
     (128, True):  2048,
-    # D=128 non-causal: 0.90x at N=16384, 0.88x at N=32768 — disable.
-    (128, False): 999_999,
+    # D=128 non-causal: V2 wins on M1/M2 (1.12x at N=2048, 1.51x at N=8192).
+    # Old measurements (0.90x) predated V2 BK=64 optimization or used different MLX.
+    (128, False): 2048,
     # D=256 causal: dtype-specific logic now lives in should_use_mfa():
     #   - M1/M2 + f16: promote at N>=4096
     #   - M1/M2 + bf16: keep SDPA
@@ -65,18 +67,19 @@ _DEFAULT_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
-# M3+ thresholds: D=128 BK=64 (doubled vs M1 BK=32) → larger per-tile speedup.
-# V2 BK=64 on M3+ provides ~2× K-tile size → can activate at lower N than M1.
+# M3+ thresholds: V1 double-buffer (2 barriers/tile) replaces V2 for D<=128 causal.
+# On M3+ hardware, reduced TGP bandwidth makes V2's 3-4 barriers/tile a net loss.
+# V1 wins 1.5-3.7x over V2 at D<=128 causal on M4 Max (see mfa_attention.cpp).
 _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
-    # D=64 causal: BK=64 same on all gens; lower threshold conservatively to 512.
+    # D=64 causal: V1 routed on M3+ (dispatch guard). V1 wins from N=512.
     (64,  True):  512,
+    # D=64 non-causal: M3+ SDPA wins (0.60x at N=8192 on M4 Max). Disabled.
     (64,  False): 999_999,
-    # D=128 causal: M3+ BK=64 (~2× tile vs M1 BK=32) → threshold N=1024.
-    # On M1/M2 threshold is N=2048; M3+ wins earlier due to larger tile.
+    # D=128 causal: V1 routed on M3+ (dispatch guard). V1 wins from N=1024.
     (128, True):  1024,
+    # D=128 non-causal: M3+ SDPA wins (0.68x at N=8192 on M4 Max). Disabled.
     (128, False): 999_999,
-    # D=256/512 on M3+ remain conservative until measured on real M3/M4 hardware.
-    # Window/sparse still route to MFA via should_use_mfa() early-exit.
+    # D=256/512: V2 D-split still used (not affected by V1-over-V2 routing).
     (256, True):  999_999,
     (256, False): 999_999,
     (512, True):  _D512_CONSERVATIVE_MIN_N,
@@ -131,19 +134,21 @@ def _d256_min_n(
     """Return D=256 family threshold when a dedicated rule applies.
 
     D=256 is handled as a separate design family from D=64/128:
+    - M3+ f16 and bf16 causal: promote from N>=2048 (1.58-1.68x on M4 Max)
     - M1/M2 f16 causal: promote from N>=4096 (benchmark-backed narrow win)
-    - M1/M2 bf16 causal: keep SDPA
-    - M3+ causal: keep conservative SDPA default until measured
+    - M1/M2 bf16 causal: keep SDPA (0.65-0.88x on M1 Max -- emulation cost)
     - non-causal: defer to global table (already SDPA default)
     """
     if head_dim != 256 or not causal or has_custom_table:
         return None
     if is_m3_plus:
-        return 999_999
+        # M4 Max D=256 causal (B=2 H=8): f16 1.64-1.66x, bf16 1.58-1.68x.
+        return 2048
+    # M1/M2: only f16 promoted (bf16 D-split emulation is too expensive)
     if dtype_key == "float16":
         return 4096
     if dtype_key == "bfloat16":
-        return 999_999
+        return 999_999  # 0.65-0.88x on M1 Max
     return None
 
 

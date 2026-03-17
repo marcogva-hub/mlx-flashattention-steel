@@ -42,12 +42,12 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
   auto cfg = select_steel_v5_block_config(D, key.is_m3_plus);
-  const int BQ     = cfg.BQ;    // 32 (M1/M2) or 16 (M3+)
+  const int BQ     = cfg.BQ;    // 32 (all gens)
   const int BK     = cfg.BK;    // 128 for all gens
   const int BD_tile = cfg.BD_tile;  // 32 always
-  const int WM     = cfg.WM;    // 4 (M1/M2) or 2 (M3+)
+  const int WM     = cfg.WM;    // 4 (all gens)
   const int WN     = 1;
-  const int TGP_SIZE = WM * WN * 32;   // 128 or 64
+  const int TGP_SIZE = WM * WN * 32;   // 128
 
   const int TQ      = BQ / (WM * WN * 8);  // always 1
   const int TK      = BK / 8;              // 128/8 = 16
@@ -135,8 +135,7 @@ struct MFASteelParams {
 
   // ── Threadgroup memory + loaders (TGP path only) ─────────────────────────
   // M3+ (MFA_DIRECT_READS=1): K and V read directly from device — no KV_smem needed.
-  //   KLoader/VLoader templates break at TGP_SIZE=64 (WM=2 → n_reads=64 > BCOLS=32),
-  //   so they must be excluded on M3+.
+  //   KLoader/VLoader excluded on M3+ (direct device reads bypass TGP).
   // TGP path: KV_smem holds whichever is larger: K^T or V.
   //   K^T: BD_tile * BK * sizeof(T) = 32 * 128 * 2 = 8,192 bytes (half)
   //   V:   BK * BD_tile * sizeof(T) = 128 * 32 * 2 = 8,192 bytes (half)
