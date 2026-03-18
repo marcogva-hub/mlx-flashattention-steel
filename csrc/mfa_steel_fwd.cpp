@@ -3173,18 +3173,24 @@ struct MFAMMATile {
   ss << "    }\n";
   ss << "\n";
 
-  // Causal mask
+  // Causal mask: mask k > q (where q position includes qL_off)
+  // The first K-tile requiring causal masking is the one containing the
+  // first query's causal boundary: (qb * BQ + qL_off) / BK.
+  // For the paged kernel, qL_off accounts for N_q < S_kv positioning.
   if (causal) {
-    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
-    ss << "      STEEL_PRAGMA_UNROLL\n";
-    ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "    {\n";
+    ss << "      const int first_causal_kb = (qb * MFA_BQ + p->qL_off) / MFA_BK;\n";
+    ss << "      if (kb >= first_causal_kb) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
-    ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
-    ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "        for (short i = 0; i < MFA_TQ; i++) {\n";
+    ss << "          const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
-    ss << "          for (short jj = 0; jj < 2; jj++) {\n";
-    ss << "            if (row < (col + jj)) Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "          for (short j = 0; j < MFA_TK; j++) {\n";
+    ss << "            const int col = kb * MFA_BK + sn + j * 8;\n";
+    ss << "            STEEL_PRAGMA_UNROLL\n";
+    ss << "            for (short jj = 0; jj < 2; jj++) {\n";
+    ss << "              if (row < (col + jj)) Stile.frag_at(i,j)[jj] = -INFINITY;\n";
+    ss << "            }\n";
     ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";
