@@ -4,6 +4,31 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.13.0] — 2026-03-18
+
+### Sparse Attention Mask Utilities (Phase B)
+
+- **feat**: `make_diagonal_mask()` — block-diagonal and multi-diagonal attention
+  masks for temporal correlation patterns (Sparse-vDiT). Supports configurable
+  number of diagonals and bandwidth.
+- **feat**: `make_strided_mask()` — combined local window + global dilated
+  attention (Longformer/Sparse Transformers style). 1D generalization for
+  sequences needing both local and global context.
+- **feat**: `make_temporal_group_mask()` — variable-density attention based on
+  temporal distance (Compact Attention). Dense nearby frames, sparse distant
+  frames, with configurable group definitions.
+- **feat**: `make_temporal_distance_bias()` — continuous temporal distance bias
+  (ALiBi-style soft decay). Linear, exponential, or log decay with per-head
+  rates. Includes memory guard for large sequences.
+- **feat**: `temporal_distance_bias_to_mask()` — converts dense bias tensor to
+  block mask via thresholding, bridging soft→hard mask transition.
+
+### Top-k Dynamic Sparse Attention (Phase C)
+
+- **feat**: `flash_attention_topk()` — per-query top-k attention score selection.
+  Python reference implementation (O(N²) memory). Composable with any block mask
+  for LCSA-style spatial + content-based sparsity.
+
 ## [2.12.0] — 2026-03-18
 
 ### Generalized Neighborhood Attention (GNA)

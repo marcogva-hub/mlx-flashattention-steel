@@ -3431,6 +3431,226 @@ class TestGNABackward:
 
 
 # =============================================================================
+# Track GNA-B: Additional mask/bias utilities
+# =============================================================================
+
+class TestDiagonalMask:
+    """Tests for make_diagonal_mask()."""
+
+    D = 128
+
+    def test_diagonal_mask_single(self):
+        """Single diagonal: each Q-tile sees at least one K-tile."""
+        from mlx_mfa.masks import make_diagonal_mask
+        mask = make_diagonal_mask(512, num_diagonals=1, bandwidth=1, head_dim=self.D)
+        mask_np = np.array(mask)
+        # Every Q-tile should see at least one K-tile (main diagonal)
+        assert mask_np.any(axis=1).all(), "Every Q-tile must see at least one K-tile"
+        # Should be sparse (not all True)
+        assert mask_np.mean() < 1.0, "Single diagonal should be sparse"
+
+    def test_diagonal_mask_tridiagonal(self):
+        """Tri-diagonal includes more tiles than single."""
+        from mlx_mfa.masks import make_diagonal_mask
+        single = make_diagonal_mask(512, num_diagonals=1, bandwidth=1, head_dim=self.D)
+        tri = make_diagonal_mask(512, num_diagonals=3, bandwidth=1, head_dim=self.D)
+        assert int(tri.sum().item()) >= int(single.sum().item())
+
+    def test_diagonal_mask_with_sparse(self):
+        """End-to-end sparse attention with diagonal mask."""
+        from mlx_mfa.masks import make_diagonal_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, N, D = 1, 4, 512, self.D
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        mask = make_diagonal_mask(N, num_diagonals=3, bandwidth=2, head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
+class TestTemporalGroupMask:
+    """Tests for make_temporal_group_mask()."""
+
+    D = 128
+
+    def test_dense_nearby(self):
+        """Same-frame tiles should be active with density=1.0."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [{"distance_range": (0, 1), "density": 1.0}]
+        mask = make_temporal_group_mask(4, 64, groups, head_dim=self.D)
+        assert int(mask.sum().item()) > 0
+
+    def test_sparser_far(self):
+        """Distant frames with low density should give intermediate sparsity."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [
+            {"distance_range": (0, 1), "density": 1.0},
+            {"distance_range": (1, 100), "density": 0.1},
+        ]
+        mask = make_temporal_group_mask(8, 64, groups, head_dim=self.D)
+        total_density = int(mask.sum().item()) / (mask.shape[0] * mask.shape[1])
+        assert 0.05 < total_density < 0.95
+
+    def test_deterministic(self):
+        """Same seed produces same mask."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [{"distance_range": (0, 100), "density": 0.5}]
+        m1 = make_temporal_group_mask(4, 64, groups, seed=42)
+        m2 = make_temporal_group_mask(4, 64, groups, seed=42)
+        assert bool(mx.array_equal(m1, m2).item())
+
+
+class TestTopkAttention:
+    """Tests for flash_attention_topk() Python reference."""
+
+    def test_topk_ratio_1_matches_dense(self):
+        """topk_ratio=1.0 should match standard dense attention."""
+        from mlx_mfa import flash_attention_topk, flash_attention
+        B, H, N, D = 1, 4, 64, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        out_topk = flash_attention_topk(q, k, v, topk_ratio=1.0)
+        out_dense = flash_attention(q, k, v, backend="sdpa")
+        mx.eval(out_topk, out_dense)
+        diff = float(mx.max(mx.abs(out_topk - out_dense)).item())
+        assert diff < 1e-4, f"topk_ratio=1.0 should match dense: diff={diff}"
+
+    def test_topk_reduces_context(self):
+        """topk_ratio=0.25 gives different output than dense."""
+        from mlx_mfa import flash_attention_topk, flash_attention
+        B, H, N, D = 1, 4, 64, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        out_topk = flash_attention_topk(q, k, v, topk_ratio=0.25)
+        out_dense = flash_attention(q, k, v, backend="sdpa")
+        mx.eval(out_topk, out_dense)
+        diff = float(mx.max(mx.abs(out_topk - out_dense)).item())
+        assert diff > 1e-3, f"topk_ratio=0.25 should differ from dense: diff={diff}"
+
+    def test_topk_no_nan(self):
+        """No NaN in output."""
+        from mlx_mfa import flash_attention_topk
+        B, H, N, D = 1, 2, 128, 64
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_topk(q, k, v, topk_ratio=0.5)
+        mx.eval(out)
+        assert not mx.isnan(out).any().item()
+
+    def test_topk_with_mask(self):
+        """Top-k composed with block mask."""
+        from mlx_mfa import flash_attention_topk
+        from mlx_mfa.masks import make_diagonal_mask
+        B, H, N, D = 1, 2, 256, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        mask = make_diagonal_mask(N, num_diagonals=3, bandwidth=2, head_dim=D)
+        out = flash_attention_topk(q, k, v, topk_ratio=0.5, mask=mask)
+        mx.eval(out)
+        assert not mx.isnan(out).any().item()
+        assert out.shape == (B, H, N, D)
+
+
+class TestTemporalDistanceBias:
+    """Tests for make_temporal_distance_bias + threshold converter."""
+
+    D = 128
+
+    def test_shape(self):
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=8, head_dim=self.D)
+        assert bias.shape == (1, 8, 64, 64)
+
+    def test_same_frame_zero(self):
+        """Tokens in the same frame should have bias = 0."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=1, head_dim=self.D)
+        assert abs(bias[0, 0, 0, 15].item()) < 1e-6
+
+    def test_monotonic(self):
+        """Bias magnitude increases with temporal distance."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=1, head_dim=self.D)
+        b01 = abs(bias[0, 0, 0, 16].item())  # frame 0 vs frame 1
+        b02 = abs(bias[0, 0, 0, 32].item())  # frame 0 vs frame 2
+        assert b02 > b01
+
+    def test_to_mask(self):
+        """Threshold conversion produces valid sparse mask."""
+        from mlx_mfa.masks import make_temporal_distance_bias, temporal_distance_bias_to_mask
+        bias = make_temporal_distance_bias(4, 64, num_heads=1, decay_rate=2.0, head_dim=self.D)
+        mask = temporal_distance_bias_to_mask(bias, threshold=-3.0, head_dim=self.D)
+        assert mask.dtype == mx.bool_
+        assert mask.ndim == 2
+        # Should be sparser than full
+        assert float(mask.astype(mx.float32).mean().item()) < 1.0
+
+    def test_memory_guard(self):
+        """Large sequences should raise ValueError."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        try:
+            make_temporal_distance_bias(256, 256, num_heads=32)
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "GB" in str(e)
+
+
+class TestStridedMask:
+    """Tests for make_strided_mask()."""
+
+    D = 128
+
+    def test_strided_mask_large_window_dense(self):
+        """Window covering full sequence should be all True."""
+        from mlx_mfa.masks import make_strided_mask
+        mask = make_strided_mask(512, window_size=1024, global_stride=99999, head_dim=self.D)
+        assert bool(mask.all().item())
+
+    def test_strided_mask_global_adds_tiles(self):
+        """Global stride adds non-local tiles."""
+        from mlx_mfa.masks import make_strided_mask
+        mask_local = make_strided_mask(4096, window_size=256, global_stride=999999, head_dim=self.D)
+        mask_both = make_strided_mask(4096, window_size=256, global_stride=512, head_dim=self.D)
+        assert int(mask_both.sum().item()) > int(mask_local.sum().item())
+
+    def test_strided_mask_with_sparse(self):
+        """End-to-end sparse attention."""
+        from mlx_mfa.masks import make_strided_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, N, D = 1, 4, 1024, self.D
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        mask = make_strided_mask(N, window_size=256, global_stride=512, head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
+# =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================
 

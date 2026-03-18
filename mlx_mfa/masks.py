@@ -1279,3 +1279,299 @@ def make_gna_mask(
     mask_np = overlap.all(axis=2)  # [NQ, NK]
 
     return mx.array(mask_np)
+
+
+# ---------------------------------------------------------------------------
+# Track GNA-B — Additional mask and bias utilities
+# ---------------------------------------------------------------------------
+
+def make_diagonal_mask(
+    seq_len: int,
+    block_size: int = 0,
+    num_diagonals: int = 1,
+    bandwidth: int = 1,
+    head_dim: int = 128,
+) -> mx.array:
+    """Block-diagonal or multi-diagonal attention mask.
+
+    Pattern identified by Sparse-vDiT: tokens at the same position across
+    frames (single diagonal) or nearby positions on adjacent frames
+    (multi-diagonal) share strong temporal correlation.
+
+    A tile pair ``(qi, ki)`` is active when any token pair within the tiles
+    satisfies ``|q_token - k_token| <= half_band``, where
+    ``half_band = (num_diagonals // 2) * bandwidth * BK``.
+
+    Args:
+        seq_len:       Total sequence length N.
+        block_size:    Ignored (tile sizes come from *head_dim*).
+        num_diagonals: Number of diagonal bands. Must be odd (centred on main).
+                       1 = main diagonal, 3 = tri-diagonal, 5 = penta-diagonal.
+        bandwidth:     Width of each band in tiles.
+        head_dim:      Head dimension (determines BQ, BK tile sizes).
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        mask = make_diagonal_mask(4096, num_diagonals=3, bandwidth=2, head_dim=128)
+        out = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+
+    half_band = (num_diagonals // 2) * bandwidth * BK
+
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, seq_len)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, seq_len)
+
+    # Tile (qi, ki) active if ranges overlap within the diagonal band:
+    # q_start - half_band < k_end  AND  k_start - half_band < q_end
+    mask_np = (
+        (q_starts[:, None] - half_band < k_ends[None, :]) &
+        (k_starts[None, :] - half_band < q_ends[:, None])
+    )
+    return mx.array(mask_np)
+
+
+def make_strided_mask(
+    seq_len: int,
+    window_size: int,
+    global_stride: int,
+    head_dim: int = 128,
+) -> mx.array:
+    """Combined local window + global strided (dilated) attention mask.
+
+    Each query attends to:
+      - All tokens within a local window of *window_size* (centred)
+      - Tokens sampled at regular intervals (*global_stride*) across the
+        full sequence
+
+    Inspired by Sparse Transformers (Child et al., 2019) and Longformer.
+
+    Args:
+        seq_len:       Total sequence length N.
+        window_size:   Local window diameter in tokens.
+        global_stride: Sampling stride for global dilated attention (tokens).
+        head_dim:      Head dimension for tile sizes.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        mask = make_strided_mask(8192, window_size=256, global_stride=512)
+        out = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, seq_len)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, seq_len)
+
+    # Local window: tile overlap with centred window around each Q-tile
+    q_centers = (q_starts + q_ends) // 2
+    k_centers = (k_starts + k_ends) // 2
+    half_win = window_size // 2 + max(BQ, BK)
+    local_active = np.abs(q_centers[:, None] - k_centers[None, :]) <= half_win
+
+    # Global stride: K-tile contains at least one token aligned with stride
+    # floor((k_end - 1) / stride) > floor((k_start - 1) / stride) means
+    # the tile spans a stride boundary
+    k_has_strided = (
+        (k_ends - 1) // global_stride > (np.maximum(k_starts, 1) - 1) // global_stride
+    )
+    global_active = np.broadcast_to(k_has_strided[None, :], (NQ, NK))
+
+    mask_np = local_active | global_active
+    return mx.array(mask_np)
+
+
+def make_temporal_group_mask(
+    num_frames: int,
+    spatial_size: int,
+    groups: list,
+    head_dim: int = 128,
+    seed: int = 42,
+) -> mx.array:
+    """Variable-density attention mask based on temporal distance.
+
+    Nearby frames get dense attention, distant frames get sparse attention.
+    Inspired by Compact Attention for video DiT models.
+
+    Each group defines a temporal distance range and the fraction of tiles
+    to keep (density). Frame pairs not covered by any group are masked out.
+
+    Args:
+        num_frames:   Number of frames T.
+        spatial_size: H*W tokens per frame.
+        groups:       List of dicts, each with:
+                      - ``"distance_range"``: ``(min_dist, max_dist)`` in frames
+                      - ``"density"``: float in ``[0, 1]`` — fraction of tiles to keep
+        head_dim:     Head dimension for tile sizes.
+        seed:         RNG seed for deterministic sub-sampling when density < 1.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        groups = [
+            {"distance_range": (0, 2), "density": 1.0},   # dense nearby
+            {"distance_range": (2, 8), "density": 0.25},   # sparse medium
+        ]
+        mask = make_temporal_group_mask(16, 1024, groups)
+    """
+    N = num_frames * spatial_size
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (N + BQ - 1) // BQ
+    NK = (N + BK - 1) // BK
+
+    # Frame index of the centre token of each tile
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, N)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, N)
+    q_frames_min = q_starts // spatial_size
+    q_frames_max = (q_ends - 1) // spatial_size
+    k_frames_min = k_starts // spatial_size
+    k_frames_max = (k_ends - 1) // spatial_size
+
+    # Minimum temporal distance between tiles (conservative: min over all pairs)
+    # dist = max(0, max(q_frame_min - k_frame_max, k_frame_min - q_frame_max))
+    frame_dist = np.maximum(
+        0,
+        np.maximum(
+            q_frames_min[:, None] - k_frames_max[None, :],
+            k_frames_min[None, :] - q_frames_max[:, None],
+        ),
+    )
+
+    # Deterministic random for density sub-sampling
+    rng = np.random.RandomState(seed)
+    random_vals = rng.random((NQ, NK))
+
+    mask_np = np.zeros((NQ, NK), dtype=bool)
+    for g in groups:
+        lo, hi = g["distance_range"]
+        density = g["density"]
+        in_range = (frame_dist >= lo) & (frame_dist < hi)
+        if density >= 1.0:
+            mask_np |= in_range
+        else:
+            mask_np |= in_range & (random_vals < density)
+
+    return mx.array(mask_np)
+
+
+def make_temporal_distance_bias(
+    num_frames: int,
+    spatial_size: int,
+    num_heads: int,
+    decay_rate: float = 1.0,
+    decay_type: str = "linear",
+    head_dim: int = 128,
+) -> mx.array:
+    """Attention bias based on inter-frame temporal distance.
+
+    For tokens at frames t1 and t2:
+      - linear:      ``bias = -decay_rate * |t1 - t2|``
+      - exponential: ``bias = -decay_rate * (exp(|t1 - t2|) - 1)``
+      - log:         ``bias = -decay_rate * log(1 + |t1 - t2|)``
+
+    The bias is uniform within a frame and varies per head when *decay_rate*
+    is an array. Intended for ``flash_attention(attn_bias=...)``, which
+    currently falls back to SDPA (no MFA additive-bias kernel).
+
+    For large sequences, use :func:`temporal_distance_bias_to_mask` to
+    threshold the bias into a block mask for ``flash_attention_sparse()``.
+
+    Args:
+        num_frames:   Number of frames T.
+        spatial_size: H*W tokens per frame.
+        num_heads:    Number of attention heads H.
+        decay_rate:   Float for uniform, or array of length *num_heads*.
+        decay_type:   ``"linear"``, ``"exponential"``, or ``"log"``.
+        head_dim:     Not used (kept for API consistency).
+
+    Returns:
+        ``float32 mx.array [1, num_heads, N, N]`` where ``N = T * spatial_size``.
+
+    Raises:
+        ValueError: If the resulting tensor would exceed 2 GB.
+    """
+    N = num_frames * spatial_size
+    mem_bytes = num_heads * N * N * 4
+    if mem_bytes > 2 * 1024 ** 3:
+        raise ValueError(
+            f"make_temporal_distance_bias would allocate {mem_bytes / 1024**3:.1f} GB "
+            f"for N={N}, num_heads={num_heads}. Use a block mask instead."
+        )
+
+    frames = np.arange(N) // spatial_size
+    dist = np.abs(frames[:, None] - frames[None, :]).astype(np.float32)
+
+    if isinstance(decay_rate, (int, float)):
+        rates = np.full(num_heads, float(decay_rate), dtype=np.float32)
+    else:
+        rates = np.asarray(decay_rate, dtype=np.float32)
+
+    if decay_type == "linear":
+        bias = -rates[:, None, None] * dist[None, :, :]
+    elif decay_type == "exponential":
+        bias = -rates[:, None, None] * (np.exp(dist[None, :, :]) - 1.0)
+    elif decay_type == "log":
+        bias = -rates[:, None, None] * np.log1p(dist[None, :, :])
+    else:
+        raise ValueError(f"Unknown decay_type '{decay_type}'. Use 'linear', 'exponential', or 'log'.")
+
+    return mx.array(bias[None, ...].astype(np.float32))
+
+
+def temporal_distance_bias_to_mask(
+    bias: mx.array,
+    threshold: float = -2.0,
+    head_dim: int = 128,
+) -> mx.array:
+    """Convert a dense temporal distance bias to a block mask.
+
+    Tiles where ALL bias values are below *threshold* are masked out.
+    Returns a 2-D mask (broadcast across heads/batches) for the
+    conservative union across all heads.
+
+    Args:
+        bias:      ``[1, H, N, N]`` float bias from :func:`make_temporal_distance_bias`.
+        threshold: Cutoff value. Positions with ``bias < threshold`` are masked.
+        head_dim:  Head dimension for tile sizes.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+    """
+    # Token-level mask: True where ANY head has bias >= threshold
+    bias_np = np.array(bias)  # [1, H, N, N]
+    token_mask = (bias_np.max(axis=1)[0] >= threshold)  # [N, N]
+
+    N = token_mask.shape[0]
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (N + BQ - 1) // BQ
+    NK = (N + BK - 1) // BK
+
+    # Tile-level: active if ANY token pair in the tile is above threshold
+    mask_np = np.zeros((NQ, NK), dtype=bool)
+    for qi in range(NQ):
+        qs = qi * BQ
+        qe = min(qs + BQ, N)
+        for ki in range(NK):
+            ks = ki * BK
+            ke = min(ks + BK, N)
+            if token_mask[qs:qe, ks:ke].any():
+                mask_np[qi, ki] = True
+
+    return mx.array(mask_np)

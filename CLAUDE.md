@@ -147,6 +147,8 @@ v1.4.0 in progress — 526 tests pass.
 | V2-3 | V2 D=256 support (implemented; reverted: regression) | Done (v1.4.0) |
 | V2-4 | V2 softcap + sliding window | Done (v1.4.0) |
 | GNA | Generalized Neighborhood Attention | Done (v2.12.0) — sparse path production |
+| Phase B | Sparse mask utilities (diagonal, strided, temporal group, bias) | Done (v2.13.0) |
+| Phase C | Top-k dynamic sparse attention (Python ref) | Done (v2.13.0) — Metal kernel deferred |
 
 ## Post-Phase 1 Technical Notes
 
