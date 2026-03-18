@@ -2300,51 +2300,65 @@ def flash_attention_gna(
 ) -> mx.array:
     """Generalized Neighborhood Attention with multi-dimensional window.
 
-    For each query at position ``(t, h, w)``, computes attention only over keys
-    within a window of size *window_size* centered on the query's stride-group.
+    Computes attention restricted to a local window around each query position,
+    with configurable stride for query grouping. Implemented via block-sparse
+    attention with a precomputed GNA mask.
 
     The stride controls query partitioning:
 
-    - ``stride=(1,1,1)``: sliding window (each query has its own window)
+    - ``stride=(1,...,1)``: sliding window (each query has its own window)
     - ``stride=window_size``: blocked attention (Swin-style, non-overlapping)
     - intermediate stride: groups of queries share the same K/V window
 
-    Reference: "Generalized Neighborhood Attention" (Hassani et al., 2025).
+    This is the MLX implementation of Generalized Neighborhood Attention
+    (Hassani et al., 2025, arXiv 2504.16922).
 
     Args:
         q: Query  ``[B, H, N, D]``.  f16 or bf16.
         k: Key    ``[B, H, N, D]``.
         v: Value  ``[B, H, N, D]``.
-        seq_shape: Spatial/temporal shape of the sequence, e.g. ``(T, H, W)``.
+        seq_shape: Spatial/temporal shape, e.g. ``(T, H, W)``.
                    ``prod(seq_shape)`` must equal ``N``.
-        window_size: Attention window per dimension (same length as *seq_shape*).
-        stride: Stride per dimension (same length as *seq_shape*).
-        scale: Attention scale factor. Defaults to ``1/sqrt(D)``.
+        window_size: Attention window per dimension (same len as *seq_shape*).
+        stride: Stride per dimension (same len as *seq_shape*).
+        scale: Attention scale (default: ``1/sqrt(D)``).
         stream: Optional MLX stream.
 
     Returns:
         Output ``[B, H, N, D]``.
+
+    Example::
+
+        # Video: 8 frames of 32x32, local 3D window, sliding
+        out = flash_attention_gna(q, k, v,
+                                   seq_shape=(8, 32, 32),
+                                   window_size=(2, 8, 8),
+                                   stride=(1, 1, 1))
+
+        # Blocked attention (Swin-style)
+        out = flash_attention_gna(q, k, v,
+                                   seq_shape=(8, 32, 32),
+                                   window_size=(2, 8, 8),
+                                   stride=(2, 8, 8))
     """
-    if q.ndim != 4:
-        raise ValueError(f"q must be 4D [B,H,N,D], got {q.ndim}D")
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            "flash_attention_gna expects 4-D tensors [B, H, N, D]. "
+            f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D."
+        )
     B, H, N, D = q.shape
-    ndim = len(seq_shape)
-    if len(window_size) != ndim or len(stride) != ndim:
-        raise ValueError("seq_shape, window_size, stride must have the same length")
     if math.prod(seq_shape) != N:
         raise ValueError(f"prod(seq_shape)={math.prod(seq_shape)} != N={N}")
+    if len(window_size) != len(seq_shape) or len(stride) != len(seq_shape):
+        raise ValueError(
+            f"seq_shape, window_size, stride must have same length. "
+            f"Got {len(seq_shape)}, {len(window_size)}, {len(stride)}."
+        )
 
-    if scale is None:
-        scale = 1.0 / math.sqrt(D)
-
-    # Sparse path: provides VJP support for backward pass via SDPA.
-    # The native GNA kernel (csrc/mfa_steel_gna_fwd.cpp) with 3D strided
-    # window loader is available via _ext.mfa_gna_forward() for inference-only
-    # workloads where backward is not needed. It iterates only over window
-    # tokens (not all NK tiles) for better locality.
+    # Build block mask and dispatch through sparse path (supports VJP backward)
     from mlx_mfa.masks import make_gna_mask
     mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
-    return flash_attention_sparse(q, k, v, mask, scale=scale)
+    return flash_attention_sparse(q, k, v, mask, scale=scale, stream=stream)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
