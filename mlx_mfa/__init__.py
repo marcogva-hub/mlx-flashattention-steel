@@ -157,6 +157,11 @@ from mlx_mfa.masks import (
     make_reference_frame_mask,
     make_cross_stream_mask,
     make_gna_mask,
+    make_diagonal_mask,
+    make_strided_mask,
+    make_temporal_group_mask,
+    make_temporal_distance_bias,
+    temporal_distance_bias_to_mask,
 )
 
 __all__ = [
@@ -195,6 +200,11 @@ __all__ = [
     "make_reference_frame_mask",
     "make_cross_stream_mask",
     "make_gna_mask",
+    "make_diagonal_mask",
+    "make_strided_mask",
+    "make_temporal_group_mask",
+    "make_temporal_distance_bias",
+    "temporal_distance_bias_to_mask",
     # RoPE helpers
     "make_rope_3d_tables",
     # Utilities
