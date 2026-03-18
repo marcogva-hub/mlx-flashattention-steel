@@ -4,6 +4,17 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.14.2] — 2026-03-18
+
+### Benchmark + Documentation Cleanup
+
+- **bench**: `benchmarks/bench_paged_varlen.py` — fused kernel vs per-sequence
+  bridge performance matrix. M1 Max results: 4.7-25.6× speedup for B=4-16.
+- **cleanup**: Removed stale `AGENTS.md` (CLAUDE.md is canonical).
+- **docs**: Updated README, ARCHITECTURE, API_MANUAL, INVENTORY, RESULTS
+  to reflect v2.14.1 state (fused PagedVarlenForward, 81 exports).
+- **cleanup**: Removed stale bridge comments in attention.py.
+
 ## [2.14.1] — 2026-03-18
 
 ### PagedVarlenForward Fused Kernel
