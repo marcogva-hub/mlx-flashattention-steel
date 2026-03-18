@@ -1469,3 +1469,109 @@ def make_temporal_group_mask(
             mask_np |= in_range & (random_vals < density)
 
     return mx.array(mask_np)
+
+
+def make_temporal_distance_bias(
+    num_frames: int,
+    spatial_size: int,
+    num_heads: int,
+    decay_rate: float = 1.0,
+    decay_type: str = "linear",
+    head_dim: int = 128,
+) -> mx.array:
+    """Attention bias based on inter-frame temporal distance.
+
+    For tokens at frames t1 and t2:
+      - linear:      ``bias = -decay_rate * |t1 - t2|``
+      - exponential: ``bias = -decay_rate * (exp(|t1 - t2|) - 1)``
+      - log:         ``bias = -decay_rate * log(1 + |t1 - t2|)``
+
+    The bias is uniform within a frame and varies per head when *decay_rate*
+    is an array. Intended for ``flash_attention(attn_bias=...)``, which
+    currently falls back to SDPA (no MFA additive-bias kernel).
+
+    For large sequences, use :func:`temporal_distance_bias_to_mask` to
+    threshold the bias into a block mask for ``flash_attention_sparse()``.
+
+    Args:
+        num_frames:   Number of frames T.
+        spatial_size: H*W tokens per frame.
+        num_heads:    Number of attention heads H.
+        decay_rate:   Float for uniform, or array of length *num_heads*.
+        decay_type:   ``"linear"``, ``"exponential"``, or ``"log"``.
+        head_dim:     Not used (kept for API consistency).
+
+    Returns:
+        ``float32 mx.array [1, num_heads, N, N]`` where ``N = T * spatial_size``.
+
+    Raises:
+        ValueError: If the resulting tensor would exceed 2 GB.
+    """
+    N = num_frames * spatial_size
+    mem_bytes = num_heads * N * N * 4
+    if mem_bytes > 2 * 1024 ** 3:
+        raise ValueError(
+            f"make_temporal_distance_bias would allocate {mem_bytes / 1024**3:.1f} GB "
+            f"for N={N}, num_heads={num_heads}. Use a block mask instead."
+        )
+
+    frames = np.arange(N) // spatial_size
+    dist = np.abs(frames[:, None] - frames[None, :]).astype(np.float32)
+
+    if isinstance(decay_rate, (int, float)):
+        rates = np.full(num_heads, float(decay_rate), dtype=np.float32)
+    else:
+        rates = np.asarray(decay_rate, dtype=np.float32)
+
+    if decay_type == "linear":
+        bias = -rates[:, None, None] * dist[None, :, :]
+    elif decay_type == "exponential":
+        bias = -rates[:, None, None] * (np.exp(dist[None, :, :]) - 1.0)
+    elif decay_type == "log":
+        bias = -rates[:, None, None] * np.log1p(dist[None, :, :])
+    else:
+        raise ValueError(f"Unknown decay_type '{decay_type}'. Use 'linear', 'exponential', or 'log'.")
+
+    return mx.array(bias[None, ...].astype(np.float32))
+
+
+def temporal_distance_bias_to_mask(
+    bias: mx.array,
+    threshold: float = -2.0,
+    head_dim: int = 128,
+) -> mx.array:
+    """Convert a dense temporal distance bias to a block mask.
+
+    Tiles where ALL bias values are below *threshold* are masked out.
+    Returns a 2-D mask (broadcast across heads/batches) for the
+    conservative union across all heads.
+
+    Args:
+        bias:      ``[1, H, N, N]`` float bias from :func:`make_temporal_distance_bias`.
+        threshold: Cutoff value. Positions with ``bias < threshold`` are masked.
+        head_dim:  Head dimension for tile sizes.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+    """
+    # Token-level mask: True where ANY head has bias >= threshold
+    bias_np = np.array(bias)  # [1, H, N, N]
+    token_mask = (bias_np.max(axis=1)[0] >= threshold)  # [N, N]
+
+    N = token_mask.shape[0]
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (N + BQ - 1) // BQ
+    NK = (N + BK - 1) // BK
+
+    # Tile-level: active if ANY token pair in the tile is above threshold
+    mask_np = np.zeros((NQ, NK), dtype=bool)
+    for qi in range(NQ):
+        qs = qi * BQ
+        qe = min(qs + BQ, N)
+        for ki in range(NK):
+            ks = ki * BK
+            ke = min(ks + BK, N)
+            if token_mask[qs:qe, ks:ke].any():
+                mask_np[qi, ki] = True
+
+    return mx.array(mask_np)

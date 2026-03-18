@@ -3505,6 +3505,50 @@ class TestTemporalGroupMask:
         assert bool(mx.array_equal(m1, m2).item())
 
 
+class TestTemporalDistanceBias:
+    """Tests for make_temporal_distance_bias + threshold converter."""
+
+    D = 128
+
+    def test_shape(self):
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=8, head_dim=self.D)
+        assert bias.shape == (1, 8, 64, 64)
+
+    def test_same_frame_zero(self):
+        """Tokens in the same frame should have bias = 0."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=1, head_dim=self.D)
+        assert abs(bias[0, 0, 0, 15].item()) < 1e-6
+
+    def test_monotonic(self):
+        """Bias magnitude increases with temporal distance."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        bias = make_temporal_distance_bias(4, 16, num_heads=1, head_dim=self.D)
+        b01 = abs(bias[0, 0, 0, 16].item())  # frame 0 vs frame 1
+        b02 = abs(bias[0, 0, 0, 32].item())  # frame 0 vs frame 2
+        assert b02 > b01
+
+    def test_to_mask(self):
+        """Threshold conversion produces valid sparse mask."""
+        from mlx_mfa.masks import make_temporal_distance_bias, temporal_distance_bias_to_mask
+        bias = make_temporal_distance_bias(4, 64, num_heads=1, decay_rate=2.0, head_dim=self.D)
+        mask = temporal_distance_bias_to_mask(bias, threshold=-3.0, head_dim=self.D)
+        assert mask.dtype == mx.bool_
+        assert mask.ndim == 2
+        # Should be sparser than full
+        assert float(mask.astype(mx.float32).mean().item()) < 1.0
+
+    def test_memory_guard(self):
+        """Large sequences should raise ValueError."""
+        from mlx_mfa.masks import make_temporal_distance_bias
+        try:
+            make_temporal_distance_bias(256, 256, num_heads=32)
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "GB" in str(e)
+
+
 class TestStridedMask:
     """Tests for make_strided_mask()."""
 
