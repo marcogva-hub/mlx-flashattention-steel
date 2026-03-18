@@ -5123,11 +5123,8 @@ def flash_attention_paged_varlen(
         return mx.concatenate([out_batched[i : i + 1] for i in range(B)], axis=2)
 
     # Fused kernel: single dispatch for heterogeneous q_lens (f16/bf16, D=64/128)
-    # Gated behind MFA_PAGED_VARLEN_FUSED=1 while correctness is validated.
-    import os
     if (
-        os.environ.get("MFA_PAGED_VARLEN_FUSED")
-        and _ext_available()
+        _ext_available()
         and q.dtype in (mx.float16, mx.bfloat16)
         and D in (64, 128)
     ):

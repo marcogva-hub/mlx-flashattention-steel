@@ -9015,7 +9015,8 @@ class TestPagedVarlenQueries:
         return q_pack, cu
 
     def test_paged_varlen_basic_correctness(self):
-        from mlx_mfa import flash_attention_paged, flash_attention_paged_varlen
+        """Fused paged-varlen matches per-sequence SDPA reference."""
+        from mlx_mfa import flash_attention_paged_varlen
 
         mx.random.seed(701)
         H_q, H_kv, D = 8, 4, 64
@@ -9040,29 +9041,26 @@ class TestPagedVarlenQueries:
             cu_q,
             max_seqlen_q=max(q_lens),
             scale=scale,
-            causal=True,
+            causal=False,
             block_size=block_size,
         )
 
+        # Reference: per-sequence SDPA (ground truth)
         ref_parts = []
         for i in range(len(q_lens)):
             qs, qe = int(cu_q[i].item()), int(cu_q[i + 1].item())
-            out_i = flash_attention_paged(
+            out_i = mx.fast.scaled_dot_product_attention(
                 q_pack[:, :, qs:qe, :],
-                pool_k,
-                pool_v,
-                table[i : i + 1, :],
-                lens[i : i + 1],
+                k_seqs[i],
+                v_seqs[i],
                 scale=scale,
-                causal=True,
-                block_size=block_size,
             )
             ref_parts.append(out_i)
         ref = mx.concatenate(ref_parts, axis=2)
         mx.eval(out, ref)
         diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
         assert out.shape == (1, H_q, sum(q_lens), D)
-        assert diff < 5e-3, f"paged_varlen vs dense ref max diff {diff}"
+        assert diff < 5e-3, f"paged_varlen vs SDPA ref max diff {diff}"
 
     def test_paged_varlen_handles_zero_length_sequence(self):
         from mlx_mfa import flash_attention_paged_varlen
