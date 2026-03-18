@@ -4,6 +4,24 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.12.0] — 2026-03-18
+
+### Generalized Neighborhood Attention (GNA)
+
+- **feat**: `flash_attention_gna()` — multi-dimensional windowed attention with
+  configurable stride. Supports sliding window (stride=1), blocked attention
+  (stride=window_size), and strided sliding window (intermediate stride).
+  Implemented via block-sparse attention with precomputed mask.
+  (arXiv 2504.16922, Hassani et al. 2025)
+- **feat**: `make_gna_mask(seq_shape, window_size, stride)` — generates block
+  masks for GNA patterns, compatible with `flash_attention_sparse()`.
+  Supports 2D (H, W) and 3D (T, H, W) sequences.
+- **bench**: `benchmarks/bench_gna.py` — GNA benchmark matrix across sequence
+  sizes, window sizes, and stride configurations.
+- **arch**: Native Metal GNA kernel evaluated (two approaches: inline ND test
+  and 3D strided window loader) — sparse+mask path proved faster on all configs
+  due to BlockLoaderT vectorized sequential loads. Sparse path is production default.
+
 ## [2.11.0] — 2026-03-17
 
 ### M3/M4 Optimization Pass
