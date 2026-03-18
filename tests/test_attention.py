@@ -3351,6 +3351,85 @@ class TestGNAAttention:
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
 
 
+class TestGNABackward:
+    """Gradient tests for flash_attention_gna() via sparse backward path."""
+
+    def test_gna_backward_no_nan(self):
+        """GNA backward produces finite gradients."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def fn(q, k, v):
+            return flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (1, 1, 1)).sum()
+
+        dq, dk, dv = mx.grad(fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert not mx.isnan(dq).any().item(), "dQ has NaN"
+        assert not mx.isnan(dk).any().item(), "dK has NaN"
+        assert not mx.isnan(dv).any().item(), "dV has NaN"
+        assert dq.abs().max().item() > 1e-6, "dQ is zero"
+        assert dk.abs().max().item() > 1e-6, "dK is zero"
+        assert dv.abs().max().item() > 1e-6, "dV is zero"
+
+    def test_gna_backward_fullwindow_matches_dense(self):
+        """GNA backward with full window should match dense backward."""
+        from mlx_mfa import flash_attention_gna, flash_attention
+        B, H, D = 1, 2, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def gna_fn(q, k, v):
+            return flash_attention_gna(
+                q, k, v, (T, pH, pW), (T, pH, pW), (T, pH, pW)).sum()
+
+        def dense_fn(q, k, v):
+            return flash_attention(q, k, v, backend="sdpa").sum()
+
+        gna_grads = mx.grad(gna_fn, argnums=(0, 1, 2))(q, k, v)
+        dense_grads = mx.grad(dense_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*gna_grads, *dense_grads)
+
+        for g_gna, g_dense, name in zip(gna_grads, dense_grads, ["dQ", "dK", "dV"]):
+            diff = mx.abs(
+                g_gna.astype(mx.float32) - g_dense.astype(mx.float32)
+            ).max().item()
+            assert diff < 0.1, f"{name} mismatch: max_diff={diff}"
+
+    def test_gna_backward_blocked(self):
+        """GNA backward with stride=window_size produces finite gradients."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def fn(q, k, v):
+            return flash_attention_gna(
+                q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4)).sum()
+
+        dq, dk, dv = mx.grad(fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert not mx.isnan(dq).any().item()
+        assert not mx.isnan(dk).any().item()
+        assert not mx.isnan(dv).any().item()
+
+
 # =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================

@@ -2337,24 +2337,11 @@ def flash_attention_gna(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Native GNA kernel for f16/bf16 D=64/128
-    if (
-        _ext_available()
-        and q.dtype in (mx.float16, mx.bfloat16)
-        and D in (64, 128)
-    ):
-        from mlx_mfa._ext import mfa_gna_forward
-        o, _lse = mfa_gna_forward(
-            q, k, v,
-            list(seq_shape),
-            list(window_size),
-            list(stride),
-            scale,
-            stream,
-        )
-        return o
-
-    # Default path: sparse mask (correct, uses existing STEEL sparse kernel)
+    # Sparse path: flash_attention_sparse provides VJP support for backward.
+    # Benchmarks show sparse+mask is faster than native GNA kernel for
+    # medium/large sequences (0.38-0.82x native vs sparse on M1 Max).
+    # The native kernel (csrc/mfa_steel_gna_fwd.cpp) is kept for future
+    # optimization (Approach B: precomputed active tile list).
     from mlx_mfa.masks import make_gna_mask
     mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
     return flash_attention_sparse(q, k, v, mask, scale=scale)
