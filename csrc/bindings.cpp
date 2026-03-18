@@ -549,30 +549,7 @@ NB_MODULE(_ext, m) {
         "\n"
         "Returns pool_out [num_blocks, block_size, H_kv, D] with scattered writes applied.");
 
-  // ── GNA (Generalized Neighborhood Attention) ────────────────────────────
-  m.def("mfa_gna_forward",
-      [](const mlx::core::array& q,
-         const mlx::core::array& k,
-         const mlx::core::array& v,
-         const std::vector<int>& seq_shape,
-         const std::vector<int>& window_size,
-         const std::vector<int>& stride,
-         float scale,
-         nb::object stream) {
-        auto s = mlx::core::default_stream(mlx::core::Device::gpu);
-        return mlx_mfa::mfa_gna_forward(q, k, v, seq_shape, window_size, stride, scale, s);
-      },
-      nb::arg("q"),
-      nb::arg("k"),
-      nb::arg("v"),
-      nb::arg("seq_shape"),
-      nb::arg("window_size"),
-      nb::arg("stride"),
-      nb::arg("scale"),
-      nb::arg("stream") = nb::none(),
-      "GNA forward (Metal). q/k/v: [B, H, N, D], f16/bf16. "
-      "seq_shape: spatial dims (T,H,W) or (H,W). "
-      "Returns (O, L) pair.");
+  // GNA native binding removed — flash_attention_gna() uses sparse path (Python-side)
 
   m.attr("__version__") = "1.1.0";
 }

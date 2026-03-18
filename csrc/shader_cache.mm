@@ -21,7 +21,7 @@
 #include "mfa_steel_fwd_v3.hpp"
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
-#include "mfa_steel_gna_fwd.hpp"
+// GNA native kernel removed (sparse path is faster) — include was here
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -354,9 +354,6 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::SteelForwardV5) {
     fn_name = "mlx_mfa_v5_attention";
     source  = generate_steel_v5_source(key);
-  } else if (key.type == KT::GNAForward) {
-    fn_name = "mlx_mfa_gna_attention";
-    source  = generate_gna_forward_source(key);
   } else {
     // ccv-derived kernels (AttentionForward, BackwardDQ, BackwardDKV)
     fn_name = "attention";

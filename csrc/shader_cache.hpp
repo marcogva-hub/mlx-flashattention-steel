@@ -70,8 +70,7 @@ class ShaderCache {
       // BK=128: 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
       // generate_steel_v5_source() in mfa_steel_fwd_v5.cpp.
       SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
-      // --- GNA (Generalized Neighborhood Attention) ---
-      GNAForward                 = 24,  // GNA forward: ND windowed attention with stride
+      // 24-26: reserved (GNA native kernel — removed, sparse path is faster)
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
       // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
       //                         // MTLTensor / cooperative tensor ops (A19+/M5+).
