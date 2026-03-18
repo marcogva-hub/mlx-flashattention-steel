@@ -1279,3 +1279,60 @@ def make_gna_mask(
     mask_np = overlap.all(axis=2)  # [NQ, NK]
 
     return mx.array(mask_np)
+
+
+# ---------------------------------------------------------------------------
+# Track GNA-B — Additional mask and bias utilities
+# ---------------------------------------------------------------------------
+
+def make_diagonal_mask(
+    seq_len: int,
+    block_size: int = 0,
+    num_diagonals: int = 1,
+    bandwidth: int = 1,
+    head_dim: int = 128,
+) -> mx.array:
+    """Block-diagonal or multi-diagonal attention mask.
+
+    Pattern identified by Sparse-vDiT: tokens at the same position across
+    frames (single diagonal) or nearby positions on adjacent frames
+    (multi-diagonal) share strong temporal correlation.
+
+    A tile pair ``(qi, ki)`` is active when any token pair within the tiles
+    satisfies ``|q_token - k_token| <= half_band``, where
+    ``half_band = (num_diagonals // 2) * bandwidth * BK``.
+
+    Args:
+        seq_len:       Total sequence length N.
+        block_size:    Ignored (tile sizes come from *head_dim*).
+        num_diagonals: Number of diagonal bands. Must be odd (centred on main).
+                       1 = main diagonal, 3 = tri-diagonal, 5 = penta-diagonal.
+        bandwidth:     Width of each band in tiles.
+        head_dim:      Head dimension (determines BQ, BK tile sizes).
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        mask = make_diagonal_mask(4096, num_diagonals=3, bandwidth=2, head_dim=128)
+        out = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+
+    half_band = (num_diagonals // 2) * bandwidth * BK
+
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, seq_len)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, seq_len)
+
+    # Tile (qi, ki) active if ranges overlap within the diagonal band:
+    # q_start - half_band < k_end  AND  k_start - half_band < q_end
+    mask_np = (
+        (q_starts[:, None] - half_band < k_ends[None, :]) &
+        (k_starts[None, :] - half_band < q_ends[:, None])
+    )
+    return mx.array(mask_np)

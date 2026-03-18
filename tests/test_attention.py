@@ -3431,6 +3431,49 @@ class TestGNABackward:
 
 
 # =============================================================================
+# Track GNA-B: Additional mask/bias utilities
+# =============================================================================
+
+class TestDiagonalMask:
+    """Tests for make_diagonal_mask()."""
+
+    D = 128
+
+    def test_diagonal_mask_single(self):
+        """Single diagonal: each Q-tile sees at least one K-tile."""
+        from mlx_mfa.masks import make_diagonal_mask
+        mask = make_diagonal_mask(512, num_diagonals=1, bandwidth=1, head_dim=self.D)
+        mask_np = np.array(mask)
+        # Every Q-tile should see at least one K-tile (main diagonal)
+        assert mask_np.any(axis=1).all(), "Every Q-tile must see at least one K-tile"
+        # Should be sparse (not all True)
+        assert mask_np.mean() < 1.0, "Single diagonal should be sparse"
+
+    def test_diagonal_mask_tridiagonal(self):
+        """Tri-diagonal includes more tiles than single."""
+        from mlx_mfa.masks import make_diagonal_mask
+        single = make_diagonal_mask(512, num_diagonals=1, bandwidth=1, head_dim=self.D)
+        tri = make_diagonal_mask(512, num_diagonals=3, bandwidth=1, head_dim=self.D)
+        assert int(tri.sum().item()) >= int(single.sum().item())
+
+    def test_diagonal_mask_with_sparse(self):
+        """End-to-end sparse attention with diagonal mask."""
+        from mlx_mfa.masks import make_diagonal_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, N, D = 1, 4, 512, self.D
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        mask = make_diagonal_mask(N, num_diagonals=3, bandwidth=2, head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
+# =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================
 
