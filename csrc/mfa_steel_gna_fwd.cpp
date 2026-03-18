@@ -181,15 +181,9 @@ struct MFAGNAParams {
     ss << "  threadgroup T* Vs = V_smem;\n";
     ss << "\n";
 
-    // Loader type aliases
-    // Q loader: row-major (kDstStrRow=LDQ, kDstStrCol=1, reduction_dim=0)
+    // Q loader: row-major via BlockLoaderT (standard cooperative load)
+    // K/V use inline 3D window loaders (not BlockLoaderT) — see window tile loop below
     ss << "  typedef MFABlockLoaderT<T, MFA_BQ, MFA_BD, LDQ, 1, 0, MFA_TGP_SIZE> QLoader;\n";
-    // K loader: TRANSPOSED into smem (kDstStrRow=1, kDstStrCol=LDK, reduction_dim=0)
-    // Writes K[k_row, d_col] as Ks[d_col * LDK + k_row] → [D, K] layout for Q@K^T GEMM
-    ss << "  typedef MFABlockLoaderT<T, MFA_BK, MFA_BD,\n";
-    ss << "      1, MFA_BK + 16/sizeof(T), 0, MFA_TGP_SIZE> KLoader;\n";
-    // V loader: row-major (kDstStrRow=LDV, kDstStrCol=1, reduction_dim=0)
-    ss << "  typedef MFABlockLoaderT<T, MFA_BK, MFA_BD, LDV, 1, 0, MFA_TGP_SIZE> VLoader;\n";
     ss << "\n";
 
     // Per-thread tile coordinates
@@ -276,65 +270,77 @@ struct MFAGNAParams {
     ss << "  }\n";
     ss << "\n";
 
-    // ── K-tile loop with ND window skip ───────────────────────────────────
-    ss << "  for (int kb = 0; kb < p->NK; kb++) {\n";
-    // ND bounding-box overlap test: skip K-tiles outside the GNA window
-    // Debug: MFA_GNA_SKIP_WINDOW=1 disables the window test (process all tiles)
-    const bool skip_window = std::getenv("MFA_GNA_SKIP_WINDOW") != nullptr;
-    if (!skip_window) {
-    ss << "    // ND window skip: compute K-tile bounding box and test overlap\n";
+    // ── 3D strided window loader ─────────────────────────────────────────
+    // Instead of iterating all NK linear tiles and testing ND overlap,
+    // iterate ONLY over the window_volume tokens in (t, h, w) order.
+    // The window decomposes into wT × wH contiguous segments of wW tokens.
+    // Each segment's device address is predictable (constant strides),
+    // enabling hardware prefetcher to follow the access pattern.
+
+    // Window dimensions from clamped bounds
+    ss << "  // Window dimensions\n";
+    // For 2D sequences (ndim=2), we treat as 1×H×W: win_lo/hi[0] is H, [1] is W.
+    // For 3D: win_lo/hi[0] is T, [1] is H, [2] is W.
+    // Normalize to 3D: pad with T=0..0 for 2D.
+    ss << "  int wT, wH, wW;\n";
+    ss << "  int t0, h0, w0;\n";  // window start coords
+    ss << "  int W_seq, HW_seq;\n";  // sequence strides in tokens
+    ss << "  if (p->ndim == 3) {\n";
+    ss << "    wT = win_hi[0] - win_lo[0] + 1;\n";
+    ss << "    wH = win_hi[1] - win_lo[1] + 1;\n";
+    ss << "    wW = win_hi[2] - win_lo[2] + 1;\n";
+    ss << "    t0 = win_lo[0]; h0 = win_lo[1]; w0 = win_lo[2];\n";
+    ss << "    W_seq  = p->seq_shape[2];\n";
+    ss << "    HW_seq = p->seq_shape[1] * p->seq_shape[2];\n";
+    ss << "  } else {\n";
+    ss << "    wT = 1;\n";
+    ss << "    wH = win_hi[0] - win_lo[0] + 1;\n";
+    ss << "    wW = win_hi[1] - win_lo[1] + 1;\n";
+    ss << "    t0 = 0; h0 = win_lo[0]; w0 = win_lo[1];\n";
+    ss << "    W_seq  = p->seq_shape[1];\n";
+    ss << "    HW_seq = p->seq_shape[0] * p->seq_shape[1];\n";
+    ss << "  }\n";
+    ss << "  const int window_vol = wT * wH * wW;\n";
+    ss << "  const int num_win_tiles = (window_vol + MFA_BK - 1) / MFA_BK;\n";
+    ss << "  const int D_val = p->D;\n";
+    ss << "  const uint lid = simd_group_id * 32 + simd_lane_id;\n";
+    ss << "\n";
+
+    // Window tile loop
+    ss << "  for (int wk = 0; wk < num_win_tiles; wk++) {\n";
+    ss << "    const int tile_start = wk * MFA_BK;\n";
+    ss << "    const int count = min(MFA_BK, window_vol - tile_start);\n";
+    ss << "\n";
+
+    // ── Cooperative K load: window → K_smem (transposed [D, BK] layout) ──
+    // K_smem layout: Ks[d * LDK + k] where d ∈ [0, D), k ∈ [0, BK)
+    // Each thread loads a subset of count × D elements.
+    ss << "    // Cooperative K load: 3D window → K_smem (transposed)\n";
+    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    // Zero the padding region and out-of-bounds positions
     ss << "    {\n";
-    ss << "      const int k_start = kb * MFA_BK;\n";
-    ss << "      const int k_end   = min(k_start + MFA_BK - 1, p->seq_len - 1);\n";
-    ss << "      int ks_nd[3], ke_nd[3];\n";
-    ss << "      int tmp_s = k_start, tmp_e = k_end;\n";
-    ss << "      for (int d = 0; d < p->ndim; d++) {\n";
-    ss << "        ks_nd[d] = tmp_s / p->seq_strides[d];\n";
-    ss << "        tmp_s   %= p->seq_strides[d];\n";
-    ss << "        ke_nd[d] = tmp_e / p->seq_strides[d];\n";
-    ss << "        tmp_e   %= p->seq_strides[d];\n";
-    ss << "      }\n";
-    // Need min/max per dim since linear→ND decomposition of first/last token
-    // doesn't give per-dimension min/max for tiles that span dimension boundaries.
-    // For a contiguous range [k_start, k_end], the per-dim min is min(ks_nd[d], ke_nd[d])
-    // but we also need to account for wraparound: if the tile spans a dimension boundary,
-    // the range in that dimension is [0, seq_shape[d]-1].
-    // Conservative check: if the tile spans more than seq_strides[d] tokens, the dim
-    // range covers the full extent. Otherwise, min/max of the two endpoints suffices.
-    ss << "      bool active = true;\n";
-    ss << "      for (int d = 0; d < p->ndim; d++) {\n";
-    ss << "        int kt_min, kt_max;\n";
-    ss << "        if ((k_end - k_start) >= p->seq_strides[d]) {\n";
-    ss << "          kt_min = 0;\n";
-    ss << "          kt_max = p->seq_shape[d] - 1;\n";
+    ss << "      const int total_k = count * D_val;\n";
+    ss << "      for (uint idx = lid; idx < (uint)(MFA_BK * MFA_BD); idx += MFA_TGP_SIZE) {\n";
+    ss << "        const int lk = idx % MFA_BK;\n";
+    ss << "        const int ld = idx / MFA_BK;\n";
+    ss << "        if (lk < count) {\n";
+    ss << "          const int wp = tile_start + lk;\n";
+    ss << "          const int lw = wp % wW;\n";
+    ss << "          const int lh = (wp / wW) % wH;\n";
+    ss << "          const int lt = wp / (wW * wH);\n";
+    ss << "          const long src_off = (long)(t0 + lt) * HW_seq * D_val\n";
+    ss << "                             + (long)(h0 + lh) * W_seq  * D_val\n";
+    ss << "                             + (long)(w0 + lw) * D_val + ld;\n";
+    ss << "          Ks[ld * LDK + lk] = K[src_off];\n";
     ss << "        } else {\n";
-    ss << "          kt_min = min(ks_nd[d], ke_nd[d]);\n";
-    ss << "          kt_max = max(ks_nd[d], ke_nd[d]);\n";
-    ss << "        }\n";
-    ss << "        if (kt_max < win_lo[d] || kt_min > win_hi[d]) {\n";
-    ss << "          active = false;\n";
-    ss << "          break;\n";
+    ss << "          Ks[ld * LDK + lk] = (T)0;\n";
     ss << "        }\n";
     ss << "      }\n";
-    ss << "      if (!active) continue;\n";
-    ss << "    }\n";
-    } // end if (!skip_window)
-    ss << "\n";
-
-    // Load K tile into SRAM (cooperative, transposed)
-    ss << "    KLoader loader_k(K + (long)kb * MFA_BK * p->K_strides[2],\n";
-    ss << "                     (int)p->K_strides[2], Ks,\n";
-    ss << "                     (ushort)simd_group_id, (ushort)simd_lane_id);\n";
-    ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) {\n";
-    ss << "      loader_k.load_safe(short2(MFA_BD, p->kL_rem));\n";
-    ss << "    } else {\n";
-    ss << "      loader_k.load_unsafe();\n";
     ss << "    }\n";
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "\n";
 
-    // S = Q @ K^T (Q in registers, K in SRAM)
+    // S = Q @ K^T (Q in registers, K in SRAM) — IDENTICAL to V1
     ss << "    Stile.clear();\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
     ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
@@ -354,7 +360,7 @@ struct MFAGNAParams {
     ss << "    }\n";
     ss << "\n";
 
-    // Apply scale (log2-domain: scale * log2(e) so exp2(S) = exp(S/scale_orig))
+    // Apply scale (log2-domain)
     ss << "    {\n";
     ss << "      const AccT scale = p->scale * M_LOG2E_F;\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
@@ -363,29 +369,57 @@ struct MFAGNAParams {
     ss << "    }\n";
     ss << "\n";
 
-    // Per-element ND mask: tokens in the K-tile that fall outside the per-query
-    // GNA window get -inf. This is the token-level mask (vs the tile-level skip above).
-    // For the first kernel version, we apply a conservative tile-level-only skip
-    // and accept some false positives at tile boundaries. The online softmax handles
-    // -inf contributions correctly (they get zero weight).
-    // NOTE: Per-element masking would need per-query window computation in the kernel,
-    // which is complex for multi-dimensional windows. The tile-level skip provides
-    // the main sparsity benefit; per-element refinement is a future optimization.
+    // Mask out-of-bounds columns in partial tiles (count < BK)
+    // Columns [count, BK) should be -INFINITY so softmax ignores them.
+    // The simdgroup_matrix layout maps column j to specific fragment elements.
+    // For simplicity, mask at the fragment level: any frag column ik where
+    // ik*8 >= count needs its elements set to -INFINITY.
+    // More precisely, within each 8-wide fragment column ik, elements
+    // corresponding to K-positions >= count need masking.
+    ss << "    if (count < MFA_BK) {\n";
+    ss << "      // Mask partial tile: set S columns >= count to -INFINITY\n";
+    ss << "      // Each frag column ik covers K-positions [ik*8, (ik+1)*8)\n";
+    ss << "      STEEL_PRAGMA_UNROLL\n";
+    ss << "      for (short iq = 0; iq < MFA_TQ; iq++) {\n";
+    ss << "        STEEL_PRAGMA_UNROLL\n";
+    ss << "        for (short ik = 0; ik < MFA_TK; ik++) {\n";
+    ss << "          if ((ik + 1) * 8 > count) {\n";
+    ss << "            // This fragment column has some or all out-of-bounds\n";
+    ss << "            // Set entire frag to -inf (conservative; at most 7 extra masked)\n";
+    ss << "            Stile.frag_at(iq, ik)[0] = -INFINITY;\n";
+    ss << "            Stile.frag_at(iq, ik)[1] = -INFINITY;\n";
+    ss << "          }\n";
+    ss << "        }\n";
+    ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
 
-    // Load V tile into SRAM (cooperative, row-major)
-    ss << "    VLoader loader_v(V + (long)kb * MFA_BK * p->V_strides[2],\n";
-    ss << "                     (int)p->V_strides[2], Vs,\n";
-    ss << "                     (ushort)simd_group_id, (ushort)simd_lane_id);\n";
+    // ── Cooperative V load: window → V_smem (row-major [BK, D] layout) ──
+    // V_smem layout: Vs[k * LDV + d] where k ∈ [0, BK), d ∈ [0, D)
+    ss << "    // Cooperative V load: 3D window → V_smem (row-major)\n";
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    ss << "    if (kb == p->NK_aligned) {\n";
-    ss << "      loader_v.load_safe(short2(MFA_BD, p->kL_rem));\n";
-    ss << "    } else {\n";
-    ss << "      loader_v.load_unsafe();\n";
+    ss << "    {\n";
+    ss << "      for (uint idx = lid; idx < (uint)(MFA_BK * MFA_BD); idx += MFA_TGP_SIZE) {\n";
+    ss << "        const int lk = idx / MFA_BD;\n";
+    ss << "        const int ld = idx % MFA_BD;\n";
+    ss << "        if (lk < count) {\n";
+    ss << "          const int wp = tile_start + lk;\n";
+    ss << "          const int lw = wp % wW;\n";
+    ss << "          const int lh = (wp / wW) % wH;\n";
+    ss << "          const int lt = wp / (wW * wH);\n";
+    ss << "          const long src_off = (long)(t0 + lt) * HW_seq * D_val\n";
+    ss << "                             + (long)(h0 + lh) * W_seq  * D_val\n";
+    ss << "                             + (long)(w0 + lw) * D_val + ld;\n";
+    ss << "          Vs[lk * LDV + ld] = V[src_off];\n";
+    ss << "        } else {\n";
+    ss << "          Vs[lk * LDV + ld] = (T)0;\n";
+    ss << "        }\n";
+    ss << "      }\n";
     ss << "    }\n";
     ss << "\n";
 
     // Online softmax update (NaN-safe, identical to STEEL V1)
-    ss << "    // Online softmax (NaN-safe: handles all-masked tiles)\n";
+    ss << "    // Online softmax (NaN-safe)\n";
     ss << "    AccT new_max[MFA_ROWS_PT];\n";
     ss << "    AccT factor[MFA_ROWS_PT];\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -411,7 +445,7 @@ struct MFAGNAParams {
     ss << "    Otile.template row_bin_op<MFAMulOp>(factor);\n";
     ss << "\n";
 
-    // P @ V accumulation
+    // P @ V accumulation — IDENTICAL to V1
     ss << "    // O += P @ V\n";
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -431,8 +465,8 @@ struct MFAGNAParams {
     ss << "      }\n";
     ss << "    }\n";
 
-    // End K-tile loop
-    ss << "  } // end kb loop\n";
+    // End window tile loop
+    ss << "  } // end window tile loop\n";
     ss << "\n";
 
     // Normalize O by sum_score

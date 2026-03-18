@@ -2337,11 +2337,11 @@ def flash_attention_gna(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Sparse path: flash_attention_sparse provides VJP support for backward.
-    # Benchmarks show sparse+mask is faster than native GNA kernel for
-    # medium/large sequences (0.38-0.82x native vs sparse on M1 Max).
-    # The native kernel (csrc/mfa_steel_gna_fwd.cpp) is kept for future
-    # optimization (Approach B: precomputed active tile list).
+    # Sparse path: provides VJP support for backward pass via SDPA.
+    # The native GNA kernel (csrc/mfa_steel_gna_fwd.cpp) with 3D strided
+    # window loader is available via _ext.mfa_gna_forward() for inference-only
+    # workloads where backward is not needed. It iterates only over window
+    # tokens (not all NK tiles) for better locality.
     from mlx_mfa.masks import make_gna_mask
     mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
     return flash_attention_sparse(q, k, v, mask, scale=scale)
