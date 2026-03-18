@@ -14,10 +14,10 @@ AIR metallibs in ``~/.mlx_mfa/metallib/``.  The C++ ShaderCache loads them on
 subsequent runs to reduce JIT cold-start overhead for production paths.
 
 Scope note:
-  - This helper intentionally focuses on STEEL V2 / V2 D-split coverage.
-  - Selective advanced-kernel AOT (Sage/paged/shared-prefix extras) is
-    currently deferred by policy until benchmarked cold-start behavior is
-    consistently favorable.
+  - Covers STEEL V1 (M3+ D≤128 causal) and V2 / V2 D-split.
+  - Sage/paged/varlen AOT deferred: these kernels have per-request varying
+    configs (block_size, max_blocks, quantization) that make static AOT
+    impractical. They compile on first use via JIT with acceptable latency.
 
 Compiled configs cover (standard V2):
   - D=64  BK=64  f16/bf16  causal/noncausal  (all gens)
