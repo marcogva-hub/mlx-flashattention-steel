@@ -3505,6 +3505,73 @@ class TestTemporalGroupMask:
         assert bool(mx.array_equal(m1, m2).item())
 
 
+class TestTopkAttention:
+    """Tests for flash_attention_topk() Python reference."""
+
+    def test_topk_ratio_1_matches_dense(self):
+        """topk_ratio=1.0 should match standard dense attention."""
+        from mlx_mfa import flash_attention_topk, flash_attention
+        B, H, N, D = 1, 4, 64, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        out_topk = flash_attention_topk(q, k, v, topk_ratio=1.0)
+        out_dense = flash_attention(q, k, v, backend="sdpa")
+        mx.eval(out_topk, out_dense)
+        diff = float(mx.max(mx.abs(out_topk - out_dense)).item())
+        assert diff < 1e-4, f"topk_ratio=1.0 should match dense: diff={diff}"
+
+    def test_topk_reduces_context(self):
+        """topk_ratio=0.25 gives different output than dense."""
+        from mlx_mfa import flash_attention_topk, flash_attention
+        B, H, N, D = 1, 4, 64, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        out_topk = flash_attention_topk(q, k, v, topk_ratio=0.25)
+        out_dense = flash_attention(q, k, v, backend="sdpa")
+        mx.eval(out_topk, out_dense)
+        diff = float(mx.max(mx.abs(out_topk - out_dense)).item())
+        assert diff > 1e-3, f"topk_ratio=0.25 should differ from dense: diff={diff}"
+
+    def test_topk_no_nan(self):
+        """No NaN in output."""
+        from mlx_mfa import flash_attention_topk
+        B, H, N, D = 1, 2, 128, 64
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_topk(q, k, v, topk_ratio=0.5)
+        mx.eval(out)
+        assert not mx.isnan(out).any().item()
+
+    def test_topk_with_mask(self):
+        """Top-k composed with block mask."""
+        from mlx_mfa import flash_attention_topk
+        from mlx_mfa.masks import make_diagonal_mask
+        B, H, N, D = 1, 2, 256, 64
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float32)
+        mx.eval(q, k, v)
+
+        mask = make_diagonal_mask(N, num_diagonals=3, bandwidth=2, head_dim=D)
+        out = flash_attention_topk(q, k, v, topk_ratio=0.5, mask=mask)
+        mx.eval(out)
+        assert not mx.isnan(out).any().item()
+        assert out.shape == (B, H, N, D)
+
+
 class TestTemporalDistanceBias:
     """Tests for make_temporal_distance_bias + threshold converter."""
 

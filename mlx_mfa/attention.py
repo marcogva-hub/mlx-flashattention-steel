@@ -2362,6 +2362,86 @@ def flash_attention_gna(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track GNA-C — Top-k dynamic sparse attention
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def flash_attention_topk(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    topk_ratio: float,
+    scale: Optional[float] = None,
+    mask: Optional[mx.array] = None,
+) -> mx.array:
+    """Top-k dynamic sparse attention (Python reference implementation).
+
+    For each query, computes scores over all keys (within an optional block
+    mask), retains only the top-k highest scores, and applies softmax + V
+    weighting over those k keys.
+
+    This is the key mechanism in FlashVSR's LCSA: a spatial locality mask
+    restricts the neighbourhood, then top-k selects the most relevant keys.
+
+    .. warning::
+
+        This implementation **materialises** the full ``[B, H, N, S]`` score
+        matrix. Memory usage is ``O(N * S)`` — suitable for ``N <= 4096``.
+        For larger sequences, use a block mask via ``flash_attention_sparse()``.
+
+    Args:
+        q: Query ``[B, H, N, D]``.
+        k: Key ``[B, H, S, D]``.
+        v: Value ``[B, H, S, D]``.
+        topk_ratio: Fraction of K tokens to keep per query (0.0-1.0).
+        scale: Attention scale (default: ``1/sqrt(D)``).
+        mask: Optional block mask ``[NQ, NK]`` — top-k is computed only
+              within unmasked tiles.
+
+    Returns:
+        Output ``[B, H, N, D]``.
+
+    Example::
+
+        out = flash_attention_topk(q, k, v, topk_ratio=0.25)
+    """
+    if q.ndim != 4:
+        raise ValueError(f"q must be 4D [B,H,N,D], got {q.ndim}D")
+    B, H, N, D = q.shape
+    S = k.shape[2]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    # Compute full scores
+    scores = (q @ k.swapaxes(-1, -2)) * scale  # [B, H, N, S]
+
+    # Apply block mask (expand to token level)
+    if mask is not None:
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(D)
+        # Expand tile mask [NQ, NK] → token mask [N, S] via repeat
+        mask_expanded = mx.repeat(mx.repeat(mask, BQ, axis=0), BK, axis=1)
+        mask_expanded = mask_expanded[:N, :S]  # trim to actual size
+        scores = mx.where(mask_expanded[None, None, :, :], scores, mx.array(float('-inf')))
+
+    # Top-k selection per query
+    k_count = max(1, math.ceil(topk_ratio * S))
+    if k_count >= S:
+        # No filtering needed
+        pass
+    else:
+        # Sort to find threshold (ascending)
+        sorted_scores = mx.sort(scores, axis=-1)
+        threshold = sorted_scores[:, :, :, S - k_count]  # [B, H, N] k-th largest
+        topk_mask = scores >= threshold[:, :, :, None]
+        scores = mx.where(topk_mask, scores, mx.array(float('-inf')))
+
+    # Softmax + weighted sum
+    weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(q.dtype)
+    out = weights @ v
+    return out
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track JD — LLM inference helpers
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
