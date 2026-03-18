@@ -1,6 +1,6 @@
 # mlx-mfa API Manual
 
-Version: **2.14.1**
+Version: **2.14.2**
 Public exports: **81 + `__version__`**
 
 This manual documents the retained public API surface for the freeze-prep
@@ -249,6 +249,18 @@ Mask builders:
 - `make_sink_window_mask`
 - `make_reference_frame_mask`
 - `make_cross_stream_mask`
+- `make_gna_mask`
+- `make_diagonal_mask`
+- `make_strided_mask`
+- `make_temporal_group_mask`
+- `make_temporal_distance_bias`
+- `temporal_distance_bias_to_mask`
+
+GNA / sparse attention (v2.12.0+):
+- `flash_attention_gna(q, k, v, seq_shape, window_size, stride)` — multi-dimensional
+  windowed attention. Routes through `make_gna_mask()` + `flash_attention_sparse()`.
+- `flash_attention_topk(q, k, v, topk_ratio)` — per-query top-k attention
+  (Python reference, O(N^2) memory). Composable with block masks.
 
 RoPE utilities:
 - `flash_attention_rope(...)`
