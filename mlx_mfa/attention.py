@@ -5122,7 +5122,30 @@ def flash_attention_paged_varlen(
         )
         return mx.concatenate([out_batched[i : i + 1] for i in range(B)], axis=2)
 
-    # Correctness-first bridge for heterogeneous query lengths.
+    # Fused kernel: single dispatch for heterogeneous q_lens (f16/bf16, D=64/128)
+    # Gated behind MFA_PAGED_VARLEN_FUSED=1 while correctness is validated.
+    import os
+    if (
+        os.environ.get("MFA_PAGED_VARLEN_FUSED")
+        and _ext_available()
+        and q.dtype in (mx.float16, mx.bfloat16)
+        and D in (64, 128)
+    ):
+        from mlx_mfa._ext import mfa_paged_varlen_forward as _pvf
+        BQ = 32  # constant for STEEL block configs D=64/128
+        tile_off = [0]
+        for i in range(B):
+            tile_off.append(tile_off[-1] + (q_lens[i] + BQ - 1) // BQ)
+        tile_arr = mx.array(tile_off, dtype=mx.int32)
+        O, _L = _pvf(
+            q, k_pages, v_pages,
+            cu_seqlens_q, tile_arr,
+            bt_eff, sl_eff,
+            scale, causal, block_size,
+        )
+        return O
+
+    # Fallback bridge for f32 or unsupported D: per-sequence loop.
     out_parts = []
     for i in range(B):
         qs, qe = cu_q[i], cu_q[i + 1]

@@ -551,5 +551,36 @@ NB_MODULE(_ext, m) {
 
   // GNA native binding removed — flash_attention_gna() uses sparse path (Python-side)
 
+  // ── PagedVarlenForward (fused packed Q + paged KV) ──────────────────────
+  m.def("mfa_paged_varlen_forward",
+      [](const mlx::core::array& q,
+         const mlx::core::array& k_pool,
+         const mlx::core::array& v_pool,
+         const mlx::core::array& cu_seqlens_q,
+         const mlx::core::array& tile_offsets,
+         const mlx::core::array& block_table,
+         const mlx::core::array& seq_lens_kv,
+         float scale,
+         bool causal,
+         int block_size,
+         nb::object stream) {
+        auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        return mlx_mfa::mfa_paged_varlen_forward(
+            q, k_pool, v_pool, cu_seqlens_q, tile_offsets,
+            block_table, seq_lens_kv, scale, causal, block_size, s);
+      },
+      nb::arg("q"),
+      nb::arg("k_pool"),
+      nb::arg("v_pool"),
+      nb::arg("cu_seqlens_q"),
+      nb::arg("tile_offsets"),
+      nb::arg("block_table"),
+      nb::arg("seq_lens_kv"),
+      nb::arg("scale"),
+      nb::arg("causal"),
+      nb::arg("block_size"),
+      nb::arg("stream") = nb::none(),
+      "Fused paged varlen forward: packed Q + paged KV in a single dispatch.");
+
   m.attr("__version__") = "1.1.0";
 }

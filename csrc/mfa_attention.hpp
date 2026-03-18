@@ -510,5 +510,59 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     int   block_size,
     mlx::core::Stream stream);
 
+// ── PagedVarlenForward (fused packed varlen Q + paged KV) ─────────────────
+
+class MFAPagedVarlenForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    float scale;
+    bool causal;
+    int D;
+    int block_size;
+  };
+
+  MFAPagedVarlenForward(mlx::core::Stream s, Params p)
+      : mlx::core::Primitive(s), params_(p) {}
+
+  const char* name() const override { return "MFAPagedVarlenForward"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAPagedVarlenForward: CPU not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFAPagedVarlenForward*>(&other);
+    if (!o) return false;
+    return params_.scale == o->params_.scale &&
+           params_.causal == o->params_.causal &&
+           params_.D == o->params_.D &&
+           params_.block_size == o->params_.block_size;
+  }
+
+ private:
+  Params params_;
+};
+
+/// Free function: validates inputs and creates MFAPagedVarlenForward.
+/// Returns (O [1, H_q, total_q, D], L [H_q, total_q]).
+std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
+    const mlx::core::array& q,          // [1, H_q, total_q, D]
+    const mlx::core::array& k_pool,     // [num_pages, block_size, H_kv, D]
+    const mlx::core::array& v_pool,     // [num_pages, block_size, H_kv, D]
+    const mlx::core::array& cu_seqlens_q,  // [num_seqs + 1]
+    const mlx::core::array& tile_offsets,  // [num_seqs + 1]
+    const mlx::core::array& block_table,   // [num_seqs, max_blocks]
+    const mlx::core::array& seq_lens_kv,   // [num_seqs]
+    float scale,
+    bool causal,
+    int block_size,
+    mlx::core::Stream stream);
+
 
 }  // namespace mlx_mfa
