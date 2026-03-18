@@ -9670,16 +9670,7 @@ class TestChunkedPrefillRuntime:
         cu = mx.array([0, 8], dtype=mx.int32)
         with pytest.raises(ValueError, match="requires explicit seq_ids"):
             rt_packed.chunked_prefill(q, k, v, chunk_size=4, cu_seqlens_q=cu)
-        with pytest.raises(ValueError, match="does not yet support cache_batch_idx"):
-            rt_packed.chunked_prefill(
-                q,
-                k,
-                v,
-                chunk_size=4,
-                seq_ids=[1],
-                cu_seqlens_q=cu,
-                cache_batch_idx=mx.array([0], dtype=mx.int32),
-            )
+        # cache_batch_idx is now supported (passed through to paged_varlen)
 
     def test_chunked_prefill_cache_growth_with_reset_false(self):
         from mlx_mfa import create_decode_runtime
