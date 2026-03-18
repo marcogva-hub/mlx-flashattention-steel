@@ -149,6 +149,9 @@ v1.4.0 in progress — 526 tests pass.
 | GNA | Generalized Neighborhood Attention | Done (v2.12.0) — sparse path production |
 | Phase B | Sparse mask utilities (diagonal, strided, temporal group, bias) | Done (v2.13.0) |
 | Phase C | Top-k dynamic sparse attention (Python ref) | Done (v2.13.0) — Metal kernel deferred |
+| LLM Serving | HybridKVCache, runtime, external cache finalization | Done (v2.14.0) |
+| PagedVarlenFwd | Fused packed varlen + paged KV kernel | Done (v2.14.1) |
+| Paged causal fix | Per-tile causal zone accounting for qL_off | Done (v2.14.1) |
 
 ## Post-Phase 1 Technical Notes
 
@@ -179,6 +182,21 @@ mask lookup per tile is cheaper than runtime ND overlap computation.
 Production path: `flash_attention_gna()` -> `make_gna_mask()` + `flash_attention_sparse()`.
 Native kernel code removed from codebase. Sparse backward (VJP) provides
 correct gradients for training.
+
+### Paged Causal Zone Fix (v2.14.1)
+
+The paged kernel's causal masking zone check `kb >= (kb_lim - (BQ+BK-1)/BK)`
+only applies causal masking to the LAST few K-tiles. This is correct when
+qL_off=0 (N_q == S_kv) but wrong when qL_off > 0 (N_q < S_kv, decode/prefill).
+
+Fix: `first_causal_kb = (qb * BQ + qL_off) / BK` — start causal masking from
+the K-tile where the first query's causal boundary falls.
+
+The bug was invisible for N_q=1 decode (K-boundary mask coincides with causal)
+and for kv_len aligned to block_size. Exposed by the PagedVarlenForward fused
+kernel which was a clean implementation that didn't inherit the bug.
+
+Lesson: always test against SDPA (ground truth), not against other internal paths.
 
 ### transposeState Fix (Critical)
 

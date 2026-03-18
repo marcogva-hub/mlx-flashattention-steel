@@ -4,6 +4,29 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.14.1] — 2026-03-18
+
+### PagedVarlenForward Fused Kernel
+
+- **feat**: `PagedVarlenForward` Metal kernel — fused packed varlen queries + paged
+  KV in a single GPU dispatch. Combines the varlen grid `(total_q_tiles, H, 1)` with
+  paged KV gather, eliminating the per-sequence Python bridge loop for heterogeneous
+  query lengths. Production default in `flash_attention_paged_varlen()` for f16/bf16.
+
+### Paged Causal Masking Fix
+
+- **fix**: Paged attention causal masking zone check `kb >= (kb_lim - const)` did
+  not account for `qL_off`, missing K-tiles where the causal diagonal crosses when
+  `N_q << S_kv`. Fixed by computing `first_causal_kb = (qb * BQ + qL_off) / BK`.
+  Affects all paged causal calls with `N_q < S_kv` and `kv_len` not aligned to
+  pool block size. Bug was invisible for N_q=1 decode (K-boundary mask coincides).
+
+### Deferred Items Resolved
+
+- **feat**: Chunked prefill packed path supports `cache_batch_idx` remap.
+- **docs**: RoPE per-batch vectorization deferred to PagedVarlenForward fused kernel.
+- **docs**: AOT compile scope clarified (Sage/paged/varlen have per-request configs).
+
 ## [2.14.0] — 2026-03-18
 
 ### LLM Serving Layer Finalization
