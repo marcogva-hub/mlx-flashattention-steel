@@ -700,7 +700,9 @@ def flash_attention_rope_unified(
                 f"cache_seqlens length {len(cs_list)} must equal B={B}"
             )
         # H.4: All offsets identical → skip per-batch loop; one batched call.
-        # C.2 partial fix: full Metal per-batch rope_q_base deferred to v1.3.0.
+        # Heterogeneous cache_seqlens → different K lengths per batch element.
+        # Can't batch attention without padding (wastes compute) or varlen kernel.
+        # Per-batch loop is correct; single-dispatch requires PagedVarlenForward.
         if len(set(cs_list)) == 1:
             return flash_attention_rope_unified(
                 q, k, v, rotary_cos, rotary_sin,
