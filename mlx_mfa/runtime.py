@@ -619,11 +619,7 @@ class DecodeRuntime:
                     "chunked_prefill with query_layout='packed' requires "
                     "backend='paged'"
                 )
-            if cache_batch_idx is not None:
-                raise ValueError(
-                    "chunked_prefill packed path does not yet support "
-                    "cache_batch_idx; pass seq_ids in packed order"
-                )
+            # cache_batch_idx is passed through to paged_varlen for block_table remapping
             if cu_seqlens_q is None:
                 raise ValueError(
                     "chunked_prefill packed path requires cu_seqlens_q"
@@ -724,6 +720,7 @@ class DecodeRuntime:
                     q_chunk,
                     cu_chunk,
                     seq_ids=active_seq_ids,
+                    cache_batch_idx=cache_batch_idx,
                     scale=scale,
                     causal=causal,
                     block_size=block_size,
