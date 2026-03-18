@@ -1,7 +1,7 @@
-# mlx-mfa API Manual (Freeze Prep)
+# mlx-mfa API Manual
 
-Version target: **2.10.0**  
-Public exports: **73 + `__version__`**
+Version: **2.14.1**
+Public exports: **81 + `__version__`**
 
 This manual documents the retained public API surface for the freeze-prep
 state. It emphasizes current usage and serving/runtime integration behavior.
