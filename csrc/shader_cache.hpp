@@ -71,6 +71,7 @@ class ShaderCache {
       // generate_steel_v5_source() in mfa_steel_fwd_v5.cpp.
       SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
       // 24-26: reserved (GNA native kernel — removed, sparse path is faster)
+      PagedVarlenForward         = 27,  // Fused packed varlen Q + paged KV gather
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
       // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
       //                         // MTLTensor / cooperative tensor ops (A19+/M5+).
