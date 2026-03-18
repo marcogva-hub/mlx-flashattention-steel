@@ -1,6 +1,6 @@
 # mlx-mfa Results Summary
 
-Version: **2.11.0**
+Version: **2.14.1**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
 For complete benchmark tables and architectural notes, see
@@ -34,7 +34,20 @@ For complete benchmark tables and architectural notes, see
 
 ### Paged + packed varlen queries
 
-Artifact: `devnotes/paged-packed-varlen-unification/paged_varlen_matrix_latest.json`
+**PagedVarlenForward fused kernel** (v2.14.1): single dispatch for heterogeneous
+query lengths + paged KV. Benchmark results (M1 Max, H_q=32 H_kv=8 D=128 f16):
+
+| Config | Fused | Bridge | Speedup |
+|--------|------:|-------:|--------:|
+| B=4 decode kv hetero | 0.09ms | 0.43ms | 4.7× |
+| B=8 decode kv hetero | 0.16ms | 0.77ms | 4.8× |
+| B=16 decode kv hetero | 0.27ms | 1.48ms | 5.6× |
+| B=4 prefill q+kv hetero | 0.03ms | 0.37ms | 10.9× |
+| B=8 mixed q hetero | 0.04ms | 0.90ms | 25.6× |
+
+Full data: `devnotes/paged_varlen_fused_bench.json`
+
+Previous artifact: `devnotes/paged-packed-varlen-unification/paged_varlen_matrix_latest.json`
 
 - GQA hetero rows show strong wins (up to ~2.26x vs padded paged baseline).
 - MQA hetero rows are mixed/near parity.
