@@ -84,7 +84,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | Capability | Maturity | Current status |
 |---|---|---|
 | Paged KV decode runtime | Fully usable | Explicit runtime/API usage; no broad auto-promotion |
-| Paged + packed varlen queries | Fully usable (bridge-backed for hetero) | Correct runtime bridge; fused path remains future work |
+| Paged + packed varlen queries | Production (fused kernel) | Single-dispatch fused kernel for all query/KV length combinations |
 | Paged continuous batching remap | Fully usable | Explicit `cache_batch_idx` semantics + runtime helpers |
 | Chunked prefill | Fully usable (scheduler-oriented) | Operational capability; not a throughput win on current matrix |
 | Runtime prefix caching | Fully usable | Register/seed/reuse path integrated with runtime metadata |
