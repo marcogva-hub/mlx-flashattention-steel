@@ -1,6 +1,6 @@
-# mlx-mfa Architecture (Freeze Prep)
+# mlx-mfa Architecture
 
-Version target: **2.14.1**
+Version: **2.14.2**
 
 ## 1) System Overview
 

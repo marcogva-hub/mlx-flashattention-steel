@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.11.0** — M3/M4 optimization pass with full dual-chip benchmarks.
+Current version: **2.14.2** — GNA sparse attention, fused PagedVarlenForward kernel, paged causal fix, LLM serving finalization.
 
 ## Foreword
 
@@ -26,12 +26,10 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.11.0 includes comprehensive benchmarks on both Apple M1 Max and M4 Max.
-The M3+ dispatch optimization delivers up to 2.07× over SDPA for D=64 causal
-attention on M4 Max, and window masking reaches 20.8× on both chips.
-See `docs/benchmarks/RESULTS.md` for complete data across all shapes, dtypes,
-and both hardware generations — including where MFA loses, so you can evaluate
-if it benefits your specific workload.
+v2.14.2 includes GNA (Generalized Neighborhood Attention) for video DiTs,
+a fused PagedVarlenForward kernel with 4.7-25.6× speedup over the previous
+per-sequence bridge, a paged causal masking fix, and comprehensive LLM
+serving layer finalization. See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
 on my work!
@@ -123,7 +121,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 ## Installation
 
 ```bash
-/Users/marcomarcelino/code/mlx-mfa-v2/.venv/bin/python -m pip install -e .
+pip install -e .
 ```
 
 ## Minimal Usage

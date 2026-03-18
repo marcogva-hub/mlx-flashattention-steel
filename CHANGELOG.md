@@ -4,6 +4,22 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.14.3] — 2026-03-18
+
+### Documentation Cleanup
+
+- **cleanup**: Removed hardcoded `/Users/marcomarcelino/...` paths from CLAUDE.md
+  and README.md — replaced with relative paths.
+- **docs**: README.md updated from v2.11.0 to v2.14.2 (GNA, fused kernel,
+  causal fix, serving finalization).
+- **docs**: API_MANUAL.md — added 8 missing APIs from v2.12-2.14 (GNA, sparse
+  masks, top-k, bias utilities).
+- **docs**: ARCHITECTURE.md — removed "Freeze Prep" tag, updated version.
+- **docs**: SERVING_GUIDE.md — chunked prefill packed now supported.
+- **docs**: INVENTORY.md, RESULTS.md — version updates.
+- **cleanup**: CLAUDE.md status header updated (v2.14.2, 769 tests).
+- **cleanup**: Stale bridge reference in attention.py track comment.
+
 ## [2.14.2] — 2026-03-18
 
 ### Benchmark + Documentation Cleanup

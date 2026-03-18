@@ -6,13 +6,13 @@ ALWAYS `git push origin master` before starting any destructive operation.
 NEVER run `rm -rf` on any path containing the repo root.
 
 ## Python environment
-Always use the project venv: `/Users/marcomarcelino/code/mlx-mfa-v2/.venv`
+Always use the project venv: `~/code/mlx-mfa-v2/.venv`
 
 Build extension:
 ```bash
-CMAKE_ARGS="-DPython_EXECUTABLE=/Users/marcomarcelino/code/mlx-mfa-v2/.venv/bin/python" \
-  /Users/marcomarcelino/code/mlx-mfa-v2/.venv/bin/python -m pip install \
-  --no-build-isolation -e /Users/marcomarcelino/code/mlx-mfa-v2
+cd ~/code/mlx-mfa-v2
+CMAKE_ARGS="-DPython_EXECUTABLE=.venv/bin/python" \
+  .venv/bin/python -m pip install --no-build-isolation -e .
 ```
 
 Run tests:
@@ -129,7 +129,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v1.4.0 in progress — 526 tests pass.
+v2.14.2 — 769 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
