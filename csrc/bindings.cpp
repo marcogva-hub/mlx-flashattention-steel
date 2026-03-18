@@ -5,6 +5,7 @@
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
+#include <nanobind/stl/vector.h>
 
 #include <mlx/mlx.h>
 #include <mlx/backend/metal/device.h>
@@ -547,6 +548,8 @@ NB_MODULE(_ext, m) {
         "blk_offs: [N_write]                           int32 (target slot within block)\n"
         "\n"
         "Returns pool_out [num_blocks, block_size, H_kv, D] with scattered writes applied.");
+
+  // GNA native binding removed — flash_attention_gna() uses sparse path (Python-side)
 
   m.attr("__version__") = "1.1.0";
 }

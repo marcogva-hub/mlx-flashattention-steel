@@ -510,4 +510,5 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     int   block_size,
     mlx::core::Stream stream);
 
+
 }  // namespace mlx_mfa

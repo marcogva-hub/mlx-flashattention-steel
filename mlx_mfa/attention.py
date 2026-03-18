@@ -2285,6 +2285,83 @@ def _make_mfa_sparse_custom(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Track GNA — Generalized Neighborhood Attention
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def flash_attention_gna(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    seq_shape: tuple[int, ...],
+    window_size: tuple[int, ...],
+    stride: tuple[int, ...],
+    scale: Optional[float] = None,
+    stream: Optional[mx.Stream] = None,
+) -> mx.array:
+    """Generalized Neighborhood Attention with multi-dimensional window.
+
+    Computes attention restricted to a local window around each query position,
+    with configurable stride for query grouping. Implemented via block-sparse
+    attention with a precomputed GNA mask.
+
+    The stride controls query partitioning:
+
+    - ``stride=(1,...,1)``: sliding window (each query has its own window)
+    - ``stride=window_size``: blocked attention (Swin-style, non-overlapping)
+    - intermediate stride: groups of queries share the same K/V window
+
+    This is the MLX implementation of Generalized Neighborhood Attention
+    (Hassani et al., 2025, arXiv 2504.16922).
+
+    Args:
+        q: Query  ``[B, H, N, D]``.  f16 or bf16.
+        k: Key    ``[B, H, N, D]``.
+        v: Value  ``[B, H, N, D]``.
+        seq_shape: Spatial/temporal shape, e.g. ``(T, H, W)``.
+                   ``prod(seq_shape)`` must equal ``N``.
+        window_size: Attention window per dimension (same len as *seq_shape*).
+        stride: Stride per dimension (same len as *seq_shape*).
+        scale: Attention scale (default: ``1/sqrt(D)``).
+        stream: Optional MLX stream.
+
+    Returns:
+        Output ``[B, H, N, D]``.
+
+    Example::
+
+        # Video: 8 frames of 32x32, local 3D window, sliding
+        out = flash_attention_gna(q, k, v,
+                                   seq_shape=(8, 32, 32),
+                                   window_size=(2, 8, 8),
+                                   stride=(1, 1, 1))
+
+        # Blocked attention (Swin-style)
+        out = flash_attention_gna(q, k, v,
+                                   seq_shape=(8, 32, 32),
+                                   window_size=(2, 8, 8),
+                                   stride=(2, 8, 8))
+    """
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            "flash_attention_gna expects 4-D tensors [B, H, N, D]. "
+            f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D."
+        )
+    B, H, N, D = q.shape
+    if math.prod(seq_shape) != N:
+        raise ValueError(f"prod(seq_shape)={math.prod(seq_shape)} != N={N}")
+    if len(window_size) != len(seq_shape) or len(stride) != len(seq_shape):
+        raise ValueError(
+            f"seq_shape, window_size, stride must have same length. "
+            f"Got {len(seq_shape)}, {len(window_size)}, {len(stride)}."
+        )
+
+    # Build block mask and dispatch through sparse path (supports VJP backward)
+    from mlx_mfa.masks import make_gna_mask
+    mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
+    return flash_attention_sparse(q, k, v, mask, scale=scale, stream=stream)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track JD — LLM inference helpers
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

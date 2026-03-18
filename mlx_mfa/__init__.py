@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 
 
 def _check_abi() -> None:
@@ -63,6 +63,7 @@ from mlx_mfa.attention import (
     flash_attention_rope,
     flash_attention_rope_unified,
     flash_attention_sparse,
+    flash_attention_gna,
     flash_attention_varlen,
     flash_attention_kvcache,
     flash_attention_kvcache_rope_append,
@@ -155,6 +156,7 @@ from mlx_mfa.masks import (
     make_sink_window_mask,
     make_reference_frame_mask,
     make_cross_stream_mask,
+    make_gna_mask,
 )
 
 __all__ = [
@@ -163,6 +165,7 @@ __all__ = [
     "flash_attention_rope",
     "flash_attention_rope_unified",
     "flash_attention_sparse",
+    "flash_attention_gna",
     "flash_attention_varlen",
     "flash_attention_kvcache",
     "flash_attention_kvcache_rope_append",
@@ -191,6 +194,7 @@ __all__ = [
     "make_sink_window_mask",
     "make_reference_frame_mask",
     "make_cross_stream_mask",
+    "make_gna_mask",
     # RoPE helpers
     "make_rope_3d_tables",
     # Utilities

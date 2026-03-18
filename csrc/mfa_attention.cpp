@@ -23,6 +23,7 @@
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
 #include "mfa_steel_bwd.hpp"
+// GNA native kernel removed (sparse path is faster)
 #include "mfa_sage_fwd.hpp"
 #include "shader_cache.hpp"
 
@@ -2601,5 +2602,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
 
   return {outputs[0], outputs[1]};
 }
+
+// GNA native kernel eval_gpu + mfa_gna_forward removed.
+// flash_attention_gna() routes through sparse path (Python-side).
 
 }  // namespace mlx_mfa

@@ -3137,6 +3137,300 @@ class TestCrossStreamMask:
 
 
 # =============================================================================
+# Track GNA: Generalized Neighborhood Attention Masks
+# =============================================================================
+
+class TestGNAMask:
+    """Tests for make_gna_mask() — GNA block mask generation."""
+
+    D = 128
+
+    def test_gna_mask_blocked_all_true(self):
+        """stride=window=seq_shape → single block = all tiles active."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((4, 8, 8), (4, 8, 8), (4, 8, 8), head_dim=self.D)
+        assert bool(mask.all().item()), "Full block should be all-True"
+
+    def test_gna_mask_blocked(self):
+        """stride=window_size should produce non-overlapping blocks."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((4, 8, 8), (2, 4, 4), (2, 4, 4), head_dim=self.D)
+        mask_np = np.array(mask)
+        # Each Q-tile row should have at least 1 active K-tile
+        assert mask_np.any(axis=1).all(), "Every Q-tile must see at least one K-tile"
+        # Blocked attention should be sparser than full
+        density = mask_np.mean()
+        assert density < 0.5, f"Blocked mask should be sparse, got density={density}"
+
+    def test_gna_mask_2d(self):
+        """2D (H, W) without temporal dimension."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((16, 16), (5, 5), (1, 1), head_dim=self.D)
+        mask_np = np.array(mask)
+        N = 256
+        BQ, BK = 32, 16
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        assert list(mask.shape) == [NQ, NK], f"Expected [{NQ}, {NK}], got {list(mask.shape)}"
+        # Non-trivial: not all True, not all False
+        density = mask_np.mean()
+        assert 0.0 < density < 1.0, f"2D mask should be non-trivial, density={density}"
+
+    def test_gna_mask_sparsity(self):
+        """Sparsity increases with smaller window relative to seq."""
+        from mlx_mfa.masks import make_gna_mask
+        mask_dense = make_gna_mask((4, 16, 16), (4, 16, 16), (4, 16, 16), head_dim=self.D)
+        mask_sparse = make_gna_mask((4, 16, 16), (2, 4, 4), (1, 1, 1), head_dim=self.D)
+        dense_count = int(mask_dense.astype(mx.int32).sum().item())
+        sparse_count = int(mask_sparse.astype(mx.int32).sum().item())
+        assert sparse_count < dense_count, \
+            f"Sparse mask should have fewer active tiles: {sparse_count} vs {dense_count}"
+
+    def test_gna_mask_with_sparse_attention(self):
+        """End-to-end: GNA mask + flash_attention_sparse produces valid output."""
+        from mlx_mfa.masks import make_gna_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, D = 1, 4, self.D
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mask = make_gna_mask((T, pH, pW), (3, 5, 5), (1, 1, 1), head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32)))), "Output has NaN"
+
+    def test_gna_mask_stride1_sliding_window(self):
+        """stride=(1,1) with small window gives sparse sliding neighborhood."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((8, 8), (3, 3), (1, 1), head_dim=self.D)
+        mask_np = np.array(mask)
+        # Diagonal should always be active (self-attention)
+        N = 64
+        BQ, BK = 32, 16
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        # Each Q-tile must see at least one K-tile
+        assert mask_np.any(axis=1).all()
+
+    def test_gna_mask_intermediate_stride(self):
+        """Intermediate stride (1 < stride < window) produces valid mask."""
+        from mlx_mfa.masks import make_gna_mask
+        mask = make_gna_mask((8, 8), (4, 4), (2, 2), head_dim=self.D)
+        mask_np = np.array(mask)
+        density = mask_np.mean()
+        # Should be between fully sparse and fully dense
+        assert 0.0 < density < 1.0, f"Intermediate stride density={density}"
+        # Every Q-tile must see at least one K-tile
+        assert mask_np.any(axis=1).all()
+
+
+class TestGNAAttention:
+    """Integration tests for flash_attention_gna()."""
+
+    def test_gna_fullwindow_matches_dense(self):
+        """GNA with window=seq_shape, stride=seq_shape should match dense."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out_gna = flash_attention_gna(q, k, v, (T, pH, pW), (T, pH, pW), (T, pH, pW))
+        out_sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0/(D**0.5))
+        mx.eval(out_gna, out_sdpa)
+
+        diff = float(mx.max(mx.abs(out_gna.astype(mx.float32) - out_sdpa.astype(mx.float32))).item())
+        assert diff < 0.01, f"GNA full-window vs SDPA: max_diff={diff}"
+
+    def test_gna_no_nan_stride1(self):
+        """GNA with stride=(1,1,1) should produce no NaN."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (3, 5, 5), (1, 1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_no_nan_blocked(self):
+        """GNA with stride=window_size (blocked) should produce no NaN."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_2d(self):
+        """GNA on 2D (H, W) without temporal dimension."""
+        from mlx_mfa import flash_attention_gna
+        B, H_heads, D = 1, 4, 128
+        pH, pW = 16, 16
+        N = pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H_heads, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (pH, pW), (5, 5), (1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H_heads, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_d64(self):
+        """GNA with head_dim=64."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (1, 1, 1))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_bf16(self):
+        """GNA with bfloat16 dtype."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 128
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.bfloat16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4))
+        mx.eval(out)
+        assert out.shape == (B, H, N, D)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+    def test_gna_intermediate_stride(self):
+        """GNA with 1 < stride < window_size."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 4, 128
+        pH, pW = 8, 8
+        N = pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        out = flash_attention_gna(q, k, v, (pH, pW), (4, 4), (2, 2))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
+class TestGNABackward:
+    """Gradient tests for flash_attention_gna() via sparse backward path."""
+
+    def test_gna_backward_no_nan(self):
+        """GNA backward produces finite gradients."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def fn(q, k, v):
+            return flash_attention_gna(q, k, v, (T, pH, pW), (2, 4, 4), (1, 1, 1)).sum()
+
+        dq, dk, dv = mx.grad(fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert not mx.isnan(dq).any().item(), "dQ has NaN"
+        assert not mx.isnan(dk).any().item(), "dK has NaN"
+        assert not mx.isnan(dv).any().item(), "dV has NaN"
+        assert dq.abs().max().item() > 1e-6, "dQ is zero"
+        assert dk.abs().max().item() > 1e-6, "dK is zero"
+        assert dv.abs().max().item() > 1e-6, "dV is zero"
+
+    def test_gna_backward_fullwindow_matches_dense(self):
+        """GNA backward with full window should match dense backward."""
+        from mlx_mfa import flash_attention_gna, flash_attention
+        B, H, D = 1, 2, 64
+        T, pH, pW = 2, 4, 4
+        N = T * pH * pW
+        mx.random.seed(7)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def gna_fn(q, k, v):
+            return flash_attention_gna(
+                q, k, v, (T, pH, pW), (T, pH, pW), (T, pH, pW)).sum()
+
+        def dense_fn(q, k, v):
+            return flash_attention(q, k, v, backend="sdpa").sum()
+
+        gna_grads = mx.grad(gna_fn, argnums=(0, 1, 2))(q, k, v)
+        dense_grads = mx.grad(dense_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*gna_grads, *dense_grads)
+
+        for g_gna, g_dense, name in zip(gna_grads, dense_grads, ["dQ", "dK", "dV"]):
+            diff = mx.abs(
+                g_gna.astype(mx.float32) - g_dense.astype(mx.float32)
+            ).max().item()
+            assert diff < 0.1, f"{name} mismatch: max_diff={diff}"
+
+    def test_gna_backward_blocked(self):
+        """GNA backward with stride=window_size produces finite gradients."""
+        from mlx_mfa import flash_attention_gna
+        B, H, D = 1, 2, 128
+        T, pH, pW = 4, 8, 8
+        N = T * pH * pW
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+
+        def fn(q, k, v):
+            return flash_attention_gna(
+                q, k, v, (T, pH, pW), (2, 4, 4), (2, 4, 4)).sum()
+
+        dq, dk, dv = mx.grad(fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        assert not mx.isnan(dq).any().item()
+        assert not mx.isnan(dk).any().item()
+        assert not mx.isnan(dv).any().item()
+
+
+# =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================
 

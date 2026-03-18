@@ -21,6 +21,7 @@
 #include "mfa_steel_fwd_v3.hpp"
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
+// GNA native kernel removed (sparse path is faster) — include was here
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>

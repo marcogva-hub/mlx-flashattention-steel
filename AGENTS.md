@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## MANDATORY — Git safety
 NEVER delete, move, or `rm -rf` the repository directory.
@@ -146,37 +146,8 @@ v1.4.0 in progress — 526 tests pass.
 | V2-2 | V2 split-K for under-occupied grids | Done (v1.4.0) |
 | V2-3 | V2 D=256 support (implemented; reverted: regression) | Done (v1.4.0) |
 | V2-4 | V2 softcap + sliding window | Done (v1.4.0) |
-| GNA | Generalized Neighborhood Attention | Done (v2.12.0) — sparse path production |
 
 ## Post-Phase 1 Technical Notes
-
-### GNA Kernel — BlockLoaderT Template Parameters
-
-CRITICAL: When creating a new kernel that uses BlockLoaderT for K/V loading,
-copy the EXACT typedef from a working kernel (V1 forward in mfa_steel_fwd.cpp).
-
-The six template parameters control memory layout:
-  `<T, BROWS, BCOLS, kDstStrRow, kDstStrCol, reduction_dim, tgp_size>`
-
-For K loader in Q@K^T GEMM (K needs transposed layout [D, K_seq] in smem):
-  `kDstStrRow=1, kDstStrCol=LDK, reduction_dim=0`
-
-Getting kDstStrRow and kDstStrCol swapped produces silent data corruption:
-the loader writes K in [K_seq, D] but the GEMM reads it as [D, K_seq].
-Q_smem and K_smem values will look correct in isolation — the bug only
-manifests as NaN/garbage in the GEMM output.
-
-### GNA Kernel — Architecture Decision (v2.12.0)
-
-Native GNA kernels (v1: inline ND test, v2: 3D strided window loader) were
-benchmarked at 0.24-0.89x vs `flash_attention_sparse(make_gna_mask(...))`.
-Root cause: BlockLoaderT's vectorized sequential loads (vec4/vec8) are 3-4x
-faster than per-element loads with computed 3D offsets. The sparse kernel's O(1)
-mask lookup per tile is cheaper than runtime ND overlap computation.
-
-Production path: `flash_attention_gna()` -> `make_gna_mask()` + `flash_attention_sparse()`.
-Native kernel code removed from codebase. Sparse backward (VJP) provides
-correct gradients for training.
 
 ### transposeState Fix (Critical)
 
