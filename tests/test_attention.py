@@ -3473,6 +3473,38 @@ class TestDiagonalMask:
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
 
 
+class TestTemporalGroupMask:
+    """Tests for make_temporal_group_mask()."""
+
+    D = 128
+
+    def test_dense_nearby(self):
+        """Same-frame tiles should be active with density=1.0."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [{"distance_range": (0, 1), "density": 1.0}]
+        mask = make_temporal_group_mask(4, 64, groups, head_dim=self.D)
+        assert int(mask.sum().item()) > 0
+
+    def test_sparser_far(self):
+        """Distant frames with low density should give intermediate sparsity."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [
+            {"distance_range": (0, 1), "density": 1.0},
+            {"distance_range": (1, 100), "density": 0.1},
+        ]
+        mask = make_temporal_group_mask(8, 64, groups, head_dim=self.D)
+        total_density = int(mask.sum().item()) / (mask.shape[0] * mask.shape[1])
+        assert 0.05 < total_density < 0.95
+
+    def test_deterministic(self):
+        """Same seed produces same mask."""
+        from mlx_mfa.masks import make_temporal_group_mask
+        groups = [{"distance_range": (0, 100), "density": 0.5}]
+        m1 = make_temporal_group_mask(4, 64, groups, seed=42)
+        m2 = make_temporal_group_mask(4, 64, groups, seed=42)
+        assert bool(mx.array_equal(m1, m2).item())
+
+
 class TestStridedMask:
     """Tests for make_strided_mask()."""
 

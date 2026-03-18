@@ -1392,3 +1392,80 @@ def make_strided_mask(
 
     mask_np = local_active | global_active
     return mx.array(mask_np)
+
+
+def make_temporal_group_mask(
+    num_frames: int,
+    spatial_size: int,
+    groups: list,
+    head_dim: int = 128,
+    seed: int = 42,
+) -> mx.array:
+    """Variable-density attention mask based on temporal distance.
+
+    Nearby frames get dense attention, distant frames get sparse attention.
+    Inspired by Compact Attention for video DiT models.
+
+    Each group defines a temporal distance range and the fraction of tiles
+    to keep (density). Frame pairs not covered by any group are masked out.
+
+    Args:
+        num_frames:   Number of frames T.
+        spatial_size: H*W tokens per frame.
+        groups:       List of dicts, each with:
+                      - ``"distance_range"``: ``(min_dist, max_dist)`` in frames
+                      - ``"density"``: float in ``[0, 1]`` — fraction of tiles to keep
+        head_dim:     Head dimension for tile sizes.
+        seed:         RNG seed for deterministic sub-sampling when density < 1.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        groups = [
+            {"distance_range": (0, 2), "density": 1.0},   # dense nearby
+            {"distance_range": (2, 8), "density": 0.25},   # sparse medium
+        ]
+        mask = make_temporal_group_mask(16, 1024, groups)
+    """
+    N = num_frames * spatial_size
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (N + BQ - 1) // BQ
+    NK = (N + BK - 1) // BK
+
+    # Frame index of the centre token of each tile
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, N)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, N)
+    q_frames_min = q_starts // spatial_size
+    q_frames_max = (q_ends - 1) // spatial_size
+    k_frames_min = k_starts // spatial_size
+    k_frames_max = (k_ends - 1) // spatial_size
+
+    # Minimum temporal distance between tiles (conservative: min over all pairs)
+    # dist = max(0, max(q_frame_min - k_frame_max, k_frame_min - q_frame_max))
+    frame_dist = np.maximum(
+        0,
+        np.maximum(
+            q_frames_min[:, None] - k_frames_max[None, :],
+            k_frames_min[None, :] - q_frames_max[:, None],
+        ),
+    )
+
+    # Deterministic random for density sub-sampling
+    rng = np.random.RandomState(seed)
+    random_vals = rng.random((NQ, NK))
+
+    mask_np = np.zeros((NQ, NK), dtype=bool)
+    for g in groups:
+        lo, hi = g["distance_range"]
+        density = g["density"]
+        in_range = (frame_dist >= lo) & (frame_dist < hi)
+        if density >= 1.0:
+            mask_np |= in_range
+        else:
+            mask_np |= in_range & (random_vals < density)
+
+    return mx.array(mask_np)
