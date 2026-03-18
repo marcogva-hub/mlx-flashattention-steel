@@ -1,6 +1,6 @@
 # mlx-mfa Inventory
 
-Version: **2.14.1**
+Version: **2.14.2**
 Regenerated: 2026-03-18
 
 ## Scope
