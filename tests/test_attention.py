@@ -3473,6 +3473,40 @@ class TestDiagonalMask:
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
 
 
+class TestStridedMask:
+    """Tests for make_strided_mask()."""
+
+    D = 128
+
+    def test_strided_mask_large_window_dense(self):
+        """Window covering full sequence should be all True."""
+        from mlx_mfa.masks import make_strided_mask
+        mask = make_strided_mask(512, window_size=1024, global_stride=99999, head_dim=self.D)
+        assert bool(mask.all().item())
+
+    def test_strided_mask_global_adds_tiles(self):
+        """Global stride adds non-local tiles."""
+        from mlx_mfa.masks import make_strided_mask
+        mask_local = make_strided_mask(4096, window_size=256, global_stride=999999, head_dim=self.D)
+        mask_both = make_strided_mask(4096, window_size=256, global_stride=512, head_dim=self.D)
+        assert int(mask_both.sum().item()) > int(mask_local.sum().item())
+
+    def test_strided_mask_with_sparse(self):
+        """End-to-end sparse attention."""
+        from mlx_mfa.masks import make_strided_mask
+        from mlx_mfa import flash_attention_sparse
+        B, H, N, D = 1, 4, 1024, self.D
+        mx.random.seed(42)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        mask = make_strided_mask(N, window_size=256, global_stride=512, head_dim=D)
+        out = flash_attention_sparse(q, k, v, mask, scale=1.0 / (D ** 0.5))
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
+
+
 # =============================================================================
 # Track AA: Softcapping (Gemma 2 / Grok style)
 # =============================================================================

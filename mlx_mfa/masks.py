@@ -1336,3 +1336,59 @@ def make_diagonal_mask(
         (k_starts[None, :] - half_band < q_ends[:, None])
     )
     return mx.array(mask_np)
+
+
+def make_strided_mask(
+    seq_len: int,
+    window_size: int,
+    global_stride: int,
+    head_dim: int = 128,
+) -> mx.array:
+    """Combined local window + global strided (dilated) attention mask.
+
+    Each query attends to:
+      - All tokens within a local window of *window_size* (centred)
+      - Tokens sampled at regular intervals (*global_stride*) across the
+        full sequence
+
+    Inspired by Sparse Transformers (Child et al., 2019) and Longformer.
+
+    Args:
+        seq_len:       Total sequence length N.
+        window_size:   Local window diameter in tokens.
+        global_stride: Sampling stride for global dilated attention (tokens).
+        head_dim:      Head dimension for tile sizes.
+
+    Returns:
+        ``bool mx.array [NQ_tiles, NK_tiles]``.
+
+    Example::
+
+        mask = make_strided_mask(8192, window_size=256, global_stride=512)
+        out = flash_attention_sparse(q, k, v, mask)
+    """
+    BQ, BK = _bq_bk(head_dim)
+    NQ = (seq_len + BQ - 1) // BQ
+    NK = (seq_len + BK - 1) // BK
+
+    q_starts = np.arange(NQ) * BQ
+    q_ends = np.minimum(q_starts + BQ, seq_len)
+    k_starts = np.arange(NK) * BK
+    k_ends = np.minimum(k_starts + BK, seq_len)
+
+    # Local window: tile overlap with centred window around each Q-tile
+    q_centers = (q_starts + q_ends) // 2
+    k_centers = (k_starts + k_ends) // 2
+    half_win = window_size // 2 + max(BQ, BK)
+    local_active = np.abs(q_centers[:, None] - k_centers[None, :]) <= half_win
+
+    # Global stride: K-tile contains at least one token aligned with stride
+    # floor((k_end - 1) / stride) > floor((k_start - 1) / stride) means
+    # the tile spans a stride boundary
+    k_has_strided = (
+        (k_ends - 1) // global_stride > (np.maximum(k_starts, 1) - 1) // global_stride
+    )
+    global_active = np.broadcast_to(k_has_strided[None, :], (NQ, NK))
+
+    mask_np = local_active | global_active
+    return mx.array(mask_np)
