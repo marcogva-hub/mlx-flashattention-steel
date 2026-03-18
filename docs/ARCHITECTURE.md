@@ -1,6 +1,6 @@
 # mlx-mfa Architecture (Freeze Prep)
 
-Version target: **2.10.0**
+Version target: **2.14.1**
 
 ## 1) System Overview
 
@@ -66,7 +66,7 @@ Primary callable families:
 - Supports packed queries with per-sequence boundaries (`cu_seqlens_q`) over
   paged KV pools.
 - Equal query lengths can use batched paged fast path.
-- Heterogeneous query lengths currently use a correctness-first bridge path.
+- Heterogeneous query lengths use fused PagedVarlenForward kernel (single dispatch).
 
 ### 5.2 Paged continuous batching/remap
 
@@ -167,7 +167,6 @@ This separation is intentional for freeze-readability.
 ## 9) Deferred Work
 
 Deferred until future continuation (likely newer hardware generation):
-- deeper fused page-native heterogeneous paths
 - remote/distributed offload backends via external adapter contract
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
@@ -180,7 +179,7 @@ See `docs/SERVING_GUIDE.md` for usage guide.
 | Component | Status |
 |---|---|
 | Dense decode runtime | Production |
-| Paged KV (batched/packed) | Production (bridge for heterogeneous) |
+| Paged KV (batched/packed) | Production (fused PagedVarlenForward kernel) |
 | HybridKVCache (hot/cold/offloaded) | Production (local offload only) |
 | Prefix caching | Production |
 | Speculative decode | Production (narrow) |
