@@ -4953,7 +4953,7 @@ def flash_attention_paged(
 
 
 # ---------------------------------------------------------------------------
-# Track LE — Paged KV + packed varlen-query bridge (vLLM-oriented)
+# Track LE — Paged KV + packed varlen queries (vLLM-oriented)
 # ---------------------------------------------------------------------------
 
 

@@ -133,7 +133,7 @@ out = rt.chunked_prefill(q, k, v, chunk_size=512)
 ```
 
 Processes the prompt in chunks of 512 tokens, accumulating the KV cache
-incrementally. Supports `query_layout="batched"` only (not `"packed"`).
+incrementally. Supports both `query_layout="batched"` and `query_layout="packed"`.
 
 ---
 
@@ -193,7 +193,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 | Prefix caching | Production |
 | Speculative decode | Production (narrow) |
 | Chunked prefill (batched) | Production |
-| Chunked prefill (packed) | Not supported |
+| Chunked prefill (packed) | Supported (v2.14.1) |
 | Splitfuse | Narrow/conditional |
 | mlx-lm patch | Production |
 | Remote/distributed offload | Deferred (M5+) |
