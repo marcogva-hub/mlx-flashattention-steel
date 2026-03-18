@@ -1,7 +1,7 @@
-# mlx-mfa Inventory (Freeze Prep)
+# mlx-mfa Inventory
 
-Version target: **2.10.0**  
-Regenerated: 2026-03-13
+Version: **2.14.1**
+Regenerated: 2026-03-18
 
 ## Scope
 
@@ -57,7 +57,7 @@ Current line counts (major files):
 
 ## Public API Snapshot
 
-`mlx_mfa.__all__` exports: **73** symbols (`+ __version__`).
+`mlx_mfa.__all__` exports: **81** symbols (`+ __version__`).
 
 Major groups:
 - Core attention: `flash_attention*` dense/paged/varlen/packed/splitfuse/speculative.

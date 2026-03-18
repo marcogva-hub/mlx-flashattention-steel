@@ -4987,11 +4987,10 @@ def flash_attention_paged_varlen(
     Output is packed back into ``[1, H_q, total_q, D]`` in the same sequence
     order as ``cu_seqlens_q``.
 
-    Current implementation strategy:
-    - If all query lengths are equal, dispatches one batched
-      :func:`flash_attention_paged` call.
-    - Otherwise, uses a correctness-first bridge: one paged call per sequence
-      and concatenates outputs in packed order.
+    Current implementation:
+    - f16/bf16 with supported head_dim: single fused Metal kernel dispatch
+      (PagedVarlenForward) for all query/KV length combinations.
+    - f32 or unsupported head_dim: fallback bridge (one dispatch per sequence).
 
     Args:
         q: Packed query tensor ``[1, H_q, total_q, D]``.
