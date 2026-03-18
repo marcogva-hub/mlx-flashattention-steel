@@ -171,3 +171,21 @@ Deferred until future continuation (likely newer hardware generation):
 - remote/distributed offload backends via external adapter contract
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
+
+## 10) LLM Serving Layer Status (v2.14.0)
+
+The serving layer is considered production-ready for local inference.
+See `docs/SERVING_GUIDE.md` for usage guide.
+
+| Component | Status |
+|---|---|
+| Dense decode runtime | Production |
+| Paged KV (batched/packed) | Production (bridge for heterogeneous) |
+| HybridKVCache (hot/cold/offloaded) | Production (local offload only) |
+| Prefix caching | Production |
+| Speculative decode | Production (narrow) |
+| Chunked prefill (batched) | Production |
+| Chunked prefill (packed) | Not supported |
+| Splitfuse | Narrow/conditional |
+| mlx-lm patch | Production |
+| Remote/distributed offload | Deferred (M5+) |

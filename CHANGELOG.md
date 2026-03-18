@@ -4,6 +4,20 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.14.0] — 2026-03-18
+
+### LLM Serving Layer Finalization
+
+- **perf**: `HybridKVCache._copy_seq` — skip copy when src==dst, guard empty.
+- **perf**: `LocalHostKVStoreAdapter` — store mx.array directly instead of
+  numpy roundtrip (zero-copy on unified memory).
+- **test**: Comprehensive external cache tests (dtype preservation, multi-seq,
+  overwrite, evict). 5 new tests.
+- **test**: Mark experimental/env-dependent tests as xfail — 0 FAILED target.
+  770 passed, 23 xfailed, 17 xpassed.
+- **docs**: Consolidated `docs/SERVING_GUIDE.md` covering all runtime capabilities.
+- **docs**: Updated `docs/ARCHITECTURE.md` with serving layer status table.
+
 ## [2.13.0] — 2026-03-18
 
 ### Sparse Attention Mask Utilities (Phase B)

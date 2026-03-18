@@ -262,6 +262,9 @@ class HybridKVCache:
 
     def _copy_seq(self, src: KVCacheAdapter, dst: KVCacheAdapter, seq_id: int) -> None:
         sid = int(seq_id)
+        # Skip copy when src and dst are the same adapter (promote/demote no-op)
+        if src is dst:
+            return
         s = int(src.seq_length(sid))
         if s <= 0:
             dst.reset(seq_id=sid)

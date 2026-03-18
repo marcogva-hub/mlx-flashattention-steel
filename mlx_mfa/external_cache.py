@@ -102,18 +102,16 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
 
     def put(self, seq_id: int, k, v, *, meta: Optional[dict[str, Any]] = None) -> None:
         sid = int(seq_id)
-        k_np, k_dtype = self._to_numpy_preserve(k)
-        v_np, v_dtype = self._to_numpy_preserve(v)
-        if k_np.ndim != 4 or v_np.ndim != 4:
+        # Store mx.array directly — zero-copy on Apple Silicon unified memory.
+        # The numpy roundtrip was only needed for a future remote/network backend;
+        # LocalHostKVStoreAdapter is explicitly local so we skip the copy.
+        if k.ndim != 4 or v.ndim != 4:
             raise ValueError("LocalHostKVStoreAdapter.put expects 4-D K/V arrays")
-        if k_np.shape[:3] != v_np.shape[:3] or k_np.shape[-1] != v_np.shape[-1]:
-            raise ValueError("LocalHostKVStoreAdapter.put requires matching K/V shapes")
         self._records[sid] = {
-            "k": k_np,
-            "v": v_np,
-            "k_dtype": k_dtype,
-            "v_dtype": v_dtype,
-            "shape": tuple(k_np.shape),
+            "k": k,
+            "v": v,
+            "shape": tuple(k.shape),
+            "dtype": str(k.dtype),
             "stored_at": time.time(),
             "meta": dict(meta or {}),
         }
@@ -123,9 +121,7 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
         rec = self._records.get(sid)
         if rec is None:
             raise KeyError(f"No offloaded KV payload for seq_id={sid}")
-        k = self._restore_mx(rec["k"], rec["k_dtype"])
-        v = self._restore_mx(rec["v"], rec["v_dtype"])
-        return k, v
+        return rec["k"], rec["v"]  # zero-copy return
 
     def prefetch(self, seq_id: int) -> None:
         sid = int(seq_id)
@@ -157,8 +153,7 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
         entries = {
             sid: {
                 "shape": tuple(rec["shape"]),
-                "k_dtype": rec["k_dtype"],
-                "v_dtype": rec["v_dtype"],
+                "dtype": rec["dtype"],
                 "stored_at": rec["stored_at"],
                 "meta": dict(rec.get("meta", {})),
             }
