@@ -21,9 +21,9 @@
 ///   needed, so Q is read directly from device memory into registers per SIMD.
 ///   This eliminates the Q_smem that V2 needed (8,704 bytes).
 ///
-/// Block configs:
-///   M1/M2: BQ=32, BK=128, BD_tile=32, WM=4  → TGP=10,240 B, 3 TG/CU
-///   M3+:   BQ=16, BK=128, BD_tile=32, WM=2  → TGP=10,240 B, 3 TG/CU
+/// Block configs (post-autoresearch):
+///   M1/M2: BQ=32, BK=32, BD_tile=64, WM=4  → TGP=4,096 B, 8 TG/CU
+///   (was:  BQ=32, BK=128, BD_tile=32, WM=4 → TGP=10,240 B, 3 TG/CU)
 
 #pragma once
 
@@ -47,8 +47,11 @@ inline bool v5_eligible(int head_dim) {
 }
 
 /// Block config for V5.
-/// BK=128 (4× V2's BK=32 for M1/M2) with BD_tile=32.
-/// TGP: max(K^T_smem=8704, V_smem=10240) = 10,240 bytes → 3 TG/CU.
+/// autoresearch (16 iters, M1 Max, 2026-03-20): BK=32 BD_tile=64
+///   TGP = 32×64×2 = 4,096B → 8 TGs/CU (was 10,240B → 3 TGs/CU)
+///   V5/SDPA: 1.57x geomean (was 1.30x)
+///   V5/V3:   0.97x geomean (D=128: 1.01-1.08x wins; D=64: 0.89-0.96x loses)
+///   D=128 B*H≥16: V5 beats V3 by 2-8% (more TGs/CU, fewer D-chunks)
 inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
                                                        bool is_m3_plus) {
   (void)is_m3_plus;
@@ -60,8 +63,8 @@ inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
     }
     return def;
   };
-  const int bk      = get_int("MFA_V5_FORCE_BK",      128);
-  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE",  32);
+  const int bk      = get_int("MFA_V5_FORCE_BK",      32);
+  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE",  64);
   (void)head_dim;
   return {.BQ = 32, .BK = bk, .BD_tile = bd_tile, .WM = 4};
 }
