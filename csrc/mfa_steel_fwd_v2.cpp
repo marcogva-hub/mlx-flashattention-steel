@@ -101,11 +101,11 @@ SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
   // D=256/512 is a separate family: keep BK policy independent from D=128.
   // Global MFA_V2_FORCE_BK (used by D=128 calibration) must not leak here.
   // Optional debug override for this family only:
-  //   MFA_V2_FORCE_BK_D256=32|64
+  //   MFA_V2_FORCE_BK_D256=8|16|32|64
   int forced_bk = 0;
   if (const char* env = std::getenv("MFA_V2_FORCE_BK_D256")) {
     const int parsed = std::atoi(env);
-    if (parsed == 32 || parsed == 64) forced_bk = parsed;
+    if (parsed == 8 || parsed == 16 || parsed == 32 || parsed == 64) forced_bk = parsed;
   }
 
   const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 8);
@@ -811,7 +811,7 @@ struct MFASteelParams {
 //
 // Design: BD_HALF=128, D_SPLITS=D/128 (2 for D=256, 4 for D=512).
 // Block config: select_steel_v2_dsplit_block_config(is_m3_plus) for BK.
-//   M1/M2: BK=32, TK=4   M3+: BK=64, TK=8
+//   M1/M2: BK=8, TK=1   M3+: BK=64, TK=8
 // TGP: BQ=32, WM=4, TGP_SIZE=128, TD_HALF=16, TQ=1.
 //
 // Barrier pattern per K-tile (D=256 / D_SPLITS=2):
@@ -845,7 +845,7 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   // Block config: use D=128 V2 tile config for each BD_HALF pass
   auto cfg = select_steel_v2_dsplit_block_config(key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32
-  const int BK = cfg.BK;   // 32 (M1/M2) or 64 (M3+)
+  const int BK = cfg.BK;   // 8 (M1/M2) or 64 (M3+)
   const int WM = cfg.WM;   // 4
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128
