@@ -49,13 +49,21 @@ inline bool v5_eligible(int head_dim) {
 /// Block config for V5.
 /// BK=128 (4× V2's BK=32 for M1/M2) with BD_tile=32.
 /// TGP: max(K^T_smem=8704, V_smem=10240) = 10,240 bytes → 3 TG/CU.
-inline SteelV5BlockConfig select_steel_v5_block_config(int /*head_dim*/,
+inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
                                                        bool is_m3_plus) {
-  // M3+ dynamic register allocation makes BQ=32 WM=4 viable even with
-  // direct device reads. BQ=16 WM=2 halved occupancy and prevented
-  // FP16/FP32 inter-simdgroup parallelism.
   (void)is_m3_plus;
-  return {.BQ = 32, .BK = 128, .BD_tile = 32, .WM = 4};
+  // Autoresearch overrides (env vars take precedence over code changes)
+  auto get_int = [](const char* env, int def) -> int {
+    if (const char* v = std::getenv(env)) {
+      const int p = std::atoi(v);
+      if (p > 0) return p;
+    }
+    return def;
+  };
+  const int bk      = get_int("MFA_V5_FORCE_BK",      128);
+  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE",  32);
+  (void)head_dim;
+  return {.BQ = 32, .BK = bk, .BD_tile = bd_tile, .WM = 4};
 }
 
 /// Generate the Metal shader source for the STEEL V5 forward kernel.
