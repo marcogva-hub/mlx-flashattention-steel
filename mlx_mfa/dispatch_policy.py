@@ -660,7 +660,10 @@ def calibrate_dispatch(
         # BK=64 wins only if faster at BOTH N=4096 AND N=8192
         wins_4096 = bk_results[64][4096] < 0.95 * bk_results[32][4096]
         wins_8192 = bk_results[64][8192] < 0.95 * bk_results[32][8192]
-        optimal_bk = 64 if (wins_4096 and wins_8192) else 32
+        from mlx_mfa import get_device_info as _gdi
+        _dev_info = _gdi()
+        _hw_m3_plus = bool(_dev_info.get("is_m3_plus", False))
+        optimal_bk = 64 if (_hw_m3_plus and wins_4096 and wins_8192) else 32
         kernel_configs["d128_optimal_bk"] = optimal_bk
         print(f"  => D=128 optimal BK={optimal_bk} "
               f"(BK=64 wins N=4096: {wins_4096}, N=8192: {wins_8192})")
@@ -796,6 +799,10 @@ def _load_calibrated_kernel_config() -> None:
             data = json.load(fh)
         bk = data.get("kernel_configs", {}).get("d128_optimal_bk")
         if bk in (32, 64):
+            if bk == 64:
+                from mlx_mfa import get_device_info as _gdi
+                if not bool(_gdi().get("is_m3_plus", False)):
+                    bk = 32  # downgrade: M1/M2 cannot use BK=64 safely
             os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
             if _verbose:
                 print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
