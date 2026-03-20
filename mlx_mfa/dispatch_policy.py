@@ -135,7 +135,7 @@ def _d256_min_n(
 
     D=256 is handled as a separate design family from D=64/128:
     - M3+ f16 and bf16 causal: promote from N>=2048 (1.58-1.68x on M4 Max)
-    - M1/M2 f16 causal: promote from N>=4096 (benchmark-backed narrow win)
+    - M1/M2 f16 causal: promote from N>=2048 (1.09x@2048, 1.22x@4096 post-BK=8)
     - M1/M2 bf16 causal: keep SDPA (0.65-0.88x on M1 Max -- emulation cost)
     - non-causal: defer to global table (already SDPA default)
     """
@@ -145,8 +145,9 @@ def _d256_min_n(
         # M4 Max D=256 causal (B=2 H=8): f16 1.64-1.66x, bf16 1.58-1.68x.
         return 2048
     # M1/M2: only f16 promoted (bf16 D-split emulation is too expensive)
+    # BK=8 default (527f9d3): N=1024 0.84x, N=2048 1.09x, N=4096 1.22x (M1 Max)
     if dtype_key == "float16":
-        return 4096
+        return 2048
     if dtype_key == "bfloat16":
         return 999_999  # 0.65-0.88x on M1 Max
     return None
