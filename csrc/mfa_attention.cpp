@@ -986,7 +986,9 @@ void MFAttention::eval_gpu(
       const bool is_d256_path = is_v2_d256_family(D);
       const bool is_d512_path = is_v2_d512_family(D);
       const int BD_HALF = 128;
-      auto cfg_ds       = select_steel_v2_dsplit_block_config(is_m3_plus_steel);
+      auto cfg_ds       = (D == 512)
+          ? select_steel_v2_d512_block_config(is_m3_plus_steel)
+          : select_steel_v2_dsplit_block_config(is_m3_plus_steel);
       const int BQ_ds   = cfg_ds.BQ;   // 32
       const int BK_ds   = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
       const int WM_ds   = cfg_ds.WM;   // 4

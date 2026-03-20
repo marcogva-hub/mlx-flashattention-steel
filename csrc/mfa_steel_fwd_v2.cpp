@@ -112,6 +112,19 @@ SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
   return {32, bk, 128, 4, 1};
 }
 
+SteelV2BlockConfig select_steel_v2_d512_block_config(bool is_m3_plus) {
+  // D=512 ONLY: decoupled from D=256 so autoresearch can iterate independently.
+  // MFA_V2_FORCE_BK_D512=<4|8|12|16|20|24|32>: override BK for D=512 testing.
+  int forced_bk = 0;
+  if (const char* env = std::getenv("MFA_V2_FORCE_BK_D512")) {
+    const int parsed = std::atoi(env);
+    if (parsed == 4 || parsed == 8 || parsed == 12 || parsed == 16 ||
+        parsed == 20 || parsed == 24 || parsed == 32) forced_bk = parsed;
+  }
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 32 : 8);
+  return {32, bk, 128, 4, 1};
+}
+
 // ---------------------------------------------------------------------------
 // V2 kernel source generator
 // ---------------------------------------------------------------------------
@@ -843,9 +856,11 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   const int D_SPLITS = D / BD_HALF;   // 2 for D=256, 4 for D=512
 
   // Block config: use D=128 V2 tile config for each BD_HALF pass
-  auto cfg = select_steel_v2_dsplit_block_config(key.is_m3_plus);
+  auto cfg = (D == 512)
+      ? select_steel_v2_d512_block_config(key.is_m3_plus)
+      : select_steel_v2_dsplit_block_config(key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32
-  const int BK = cfg.BK;   // 8 (M1/M2) or 64 (M3+)
+  const int BK = cfg.BK;
   const int WM = cfg.WM;   // 4
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128
