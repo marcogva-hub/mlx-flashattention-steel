@@ -114,15 +114,22 @@ SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
 
 SteelV2BlockConfig select_steel_v2_d512_block_config(bool is_m3_plus) {
   // D=512 ONLY: decoupled from D=256 so autoresearch can iterate independently.
-  // MFA_V2_FORCE_BK_D512=<4|8|12|16|20|24|32>: override BK for D=512 testing.
+  // MFA_V2_FORCE_BK_D512=<8..64 step 4>: override BK
+  // MFA_V2_FORCE_BQ_D512=<16|32>: override BQ (WM=BQ/16)
   int forced_bk = 0;
   if (const char* env = std::getenv("MFA_V2_FORCE_BK_D512")) {
     const int parsed = std::atoi(env);
-    if (parsed == 4 || parsed == 8 || parsed == 12 || parsed == 16 ||
-        parsed == 20 || parsed == 24 || parsed == 32) forced_bk = parsed;
+    if (parsed >= 8 && parsed <= 256 && parsed % 4 == 0) forced_bk = parsed;
   }
-  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 32 : 8);
-  return {32, bk, 128, 4, 1};
+  int bq = 32, wm = 4;
+  if (const char* env = std::getenv("MFA_V2_FORCE_BQ_D512")) {
+    const int parsed = std::atoi(env);
+    if (parsed == 16) { bq = 16; wm = 2; }
+    else if (parsed == 32) { bq = 32; wm = 4; }
+    else if (parsed == 64) { bq = 64; wm = 8; }
+  }
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 32 : 128);
+  return {bq, bk, 128, wm, 1};
 }
 
 // ---------------------------------------------------------------------------
@@ -851,9 +858,17 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
-  // D-split parameters
-  const int BD_HALF  = 128;
-  const int D_SPLITS = D / BD_HALF;   // 2 for D=256, 4 for D=512
+  // D-split parameters — BD_HALF default: 128 for D=256, 32 for D=512
+  // BD_HALF=32 for D=512: 16 D-splits with BK=128 gives best occupancy on M1/M2
+  // (TGP=12,800B → 2 TGs/CU, 0.80x SDPA vs 0.27x at BD_HALF=128 BK=8)
+  int BD_HALF = (D == 512) ? 32 : 128;
+  if (D == 512) {
+    if (const char* env = std::getenv("MFA_V2_BD_HALF_D512")) {
+      const int v = std::atoi(env);
+      if (v == 32 || v == 64 || v == 128) BD_HALF = v;
+    }
+  }
+  const int D_SPLITS = D / BD_HALF;
 
   // Block config: use D=128 V2 tile config for each BD_HALF pass
   auto cfg = (D == 512)

@@ -985,7 +985,13 @@ void MFAttention::eval_gpu(
     if (v2_dsplit_eligible) {
       const bool is_d256_path = is_v2_d256_family(D);
       const bool is_d512_path = is_v2_d512_family(D);
-      const int BD_HALF = 128;
+      int BD_HALF = (D == 512) ? 32 : 128;
+      if (D == 512) {
+        if (const char* env = std::getenv("MFA_V2_BD_HALF_D512")) {
+          const int v = std::atoi(env);
+          if (v == 32 || v == 64 || v == 128) BD_HALF = v;
+        }
+      }
       auto cfg_ds       = (D == 512)
           ? select_steel_v2_d512_block_config(is_m3_plus_steel)
           : select_steel_v2_dsplit_block_config(is_m3_plus_steel);
