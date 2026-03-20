@@ -42,7 +42,7 @@ inline bool v3_tgp_eligible(int head_dim, bool is_m3_plus) {
 inline SteelV2BlockConfig select_steel_v3_block_config(int head_dim, bool is_m3_plus) {
   // V3 uses the same BQ/BK/WM values as V2; the difference is the smem layout.
   // For D=128 we always use BK=32 in V3 (M3+ BK=64 doesn't fit).
-  if (head_dim == 64)  return {32, 64,  64, 4, 1};
+  if (head_dim == 64)  return {32, 32,  64, 4, 1};
   if (head_dim == 128) return {32, 32, 128, 4, 1};  // BK=32 regardless of gen
   return {0, 0, 0, 0, 0};
 }
