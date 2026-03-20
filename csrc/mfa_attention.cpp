@@ -752,11 +752,28 @@ void MFAttention::eval_gpu(
 
   // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.
-  // Benchmarked result: V3 regresses vs V2 (0.77–0.88×) because doubling TGP
-  // (separate K+V instead of max(K,V)) halves occupancy (2 TGs/CU → 1 TG/CU).
-  // Disabled by default; set MFA_ENABLE_V3=1 to opt in (research/benchmarking).
-  if (std::getenv("MFA_ENABLE_V3")) {
+  //
+  // autoresearch (24 iters, M1 Max, 2026-03-20): BK=32 D=64 / BK=16 D=128
+  //   Geomean V3/SDPA: 1.47x (causal, B*H≥16, large N)
+  //   Geomean V3/V2:   1.015x (causal only)
+  //   Wins:  D=64 N≥4096 causal, D=128 N≥2048 causal, B*H≥16
+  //   Loses: small N, B*H<16, non-causal
+  //
+  // Production routing: V3 dispatched when shape is in the winning regime.
+  // Shape guard: causal only, N above threshold per D, B*H≥16.
+  // Set MFA_DISABLE_V3=1 to force V2 for benchmarking/debugging.
+  //
+  // Note: V3 stays BEFORE V2 in dispatch order (V2 is the fallback).
+  {
+    const int v3_min_N = (D == 64) ? 4096 : 2048;  // N threshold per D
+    const bool v3_shape_ok =
+        params_.causal &&          // causal only
+        (N >= v3_min_N) &&         // large enough sequence
+        (B * H >= 16);             // sufficient parallelism
+    const bool v3_force = !!std::getenv("MFA_ENABLE_V3");  // backward compat: bypass shape guard
     const bool v3_eligible =
+        !std::getenv("MFA_DISABLE_V3") &&
+        (v3_shape_ok || v3_force) &&
         (dtype_code != 2) &&
         v3_tgp_eligible(D, is_m3_plus_steel) &&
         !params_.has_block_mask;
@@ -764,7 +781,7 @@ void MFAttention::eval_gpu(
     if (v3_eligible) {
       auto cfg3 = select_steel_v3_block_config(D, is_m3_plus_steel);
       const int BQ3      = cfg3.BQ;   // 32
-      const int BK3      = cfg3.BK;   // 64 (D=64) | 32 (D=128, all gens)
+      const int BK3      = cfg3.BK;   // 32 (D=64) | 16 (D=128)
       const int WM3      = cfg3.WM;   // 4
       const int TGP3     = WM3 * cfg3.WN * 32;  // 128
       const int NQ3      = (N + BQ3 - 1) / BQ3;
@@ -850,7 +867,7 @@ void MFAttention::eval_gpu(
           MTL::Size::Make((size_t)TGP3, 1, 1));
       return;
     }
-  }  // end if (MFA_ENABLE_V3)
+  }  // end V3 dispatch block
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only) ──────────────────────────
   // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.

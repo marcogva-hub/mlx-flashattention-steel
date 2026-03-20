@@ -47,10 +47,19 @@ inline bool v3_tgp_eligible(int head_dim, bool is_m3_plus) {
 ///   V3 loses on non-causal (0.85-0.93x SDPA). Dispatch should gate on causal.
 ///   V3 loses on small N (<1024 D=128). Dispatch should gate on N≥2048.
 inline SteelV2BlockConfig select_steel_v3_block_config(int head_dim, bool is_m3_plus) {
-  // V3 separate K+V smem: smaller BK than V2 is optimal (lower TGP, more occupancy).
-  // BK must be power-of-2 and ≥ 8 (MMA fragment minimum).
-  if (head_dim == 64)  return {32, 32,  64, 4, 1};   // TGP=14,336B → 2 TGs/CU
-  if (head_dim == 128) return {32, 16, 128, 4, 1};   // TGP=19,200B → 1 TG/CU
+  // BK values from autoresearch (24 iters, M1 Max, 2026-03-20):
+  //   D=64  BK=32: TGP=14,336B → 2 TGs/CU  +10-17% vs V2 at N≥4096 causal
+  //   D=128 BK=16: TGP=19,200B → 1 TG/CU   +10-15% vs V2 at N≥2048 causal
+  // MFA_V3_FORCE_BK_D64 / MFA_V3_FORCE_BK_D128: override for testing.
+  auto get_bk = [](const char* env, int default_bk) -> int {
+    if (const char* v = std::getenv(env)) {
+      const int p = std::atoi(v);
+      if (p == 8 || p == 16 || p == 32 || p == 64) return p;
+    }
+    return default_bk;
+  };
+  if (head_dim == 64)  return {32, get_bk("MFA_V3_FORCE_BK_D64",  32),  64, 4, 1};
+  if (head_dim == 128) return {32, get_bk("MFA_V3_FORCE_BK_D128", 16), 128, 4, 1};
   return {0, 0, 0, 0, 0};
 }
 
