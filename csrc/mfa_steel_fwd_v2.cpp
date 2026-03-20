@@ -108,7 +108,7 @@ SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
     if (parsed == 32 || parsed == 64) forced_bk = parsed;
   }
 
-  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 16);
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 8);
   return {32, bk, 128, 4, 1};
 }
 
