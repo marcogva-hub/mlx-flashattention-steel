@@ -12,7 +12,15 @@ Baseline crossover data (decision passes through 2026-03-12):
   - D=128 causal: MFA wins with low-N crossover on current M1/M2 defaults
   - D=256 causal: narrow win only for f16 on M1/M2 at long N (>=4096)
   - D=256 bf16 and all non-causal dense routes remain conservative SDPA
-  - D=512 dense remains conservative SDPA (0/32 wins in decision pass)
+  - D=512 dense remains conservative SDPA (0/32 wins in decision pass);
+    post-autoresearch ceiling: 0.80x geomean (74 iters, BK=128 BD_HALF=32
+    optimal). Autoresearch (2026-03-20, M1 Max) exhaustively explored
+    BK∈{4..256}, BD_HALF∈{16..256}, BQ∈{16..64}, WM∈{1..8}, plus exotic
+    approaches (direct device reads, lazy Q, no-unroll, half-padding).
+    Root cause: 64 barriers/K-tile (16 D-split passes × ~4 barriers each),
+    ~6% constant ALU overhead vs SDPA that cannot be eliminated with D-split
+    architecture. Asymptotic: 0.96x at N=32k — approaches but never crosses
+    1.0x. Large-batch profiles (B=4 H=8 N=8192) reach 0.97x.
 
 Override the dispatch table at runtime::
 
@@ -37,6 +45,14 @@ import mlx.core as mx
 # Derived from M1 Max dispatch matrix baseline.  999_999 effectively disables.
 # ---------------------------------------------------------------------------
 
+# D=512 autoresearch ceiling (2026-03-20, M1 Max, 74 iterations):
+#   Best achievable: BD_HALF=32 BK=128 BQ=32 WM=4 → 0.80x geomean SDPA
+#   (B=2 H=8, N=1024–8192, f16, causal).
+#   Asymptotic: 0.96x at N=32768 — approaches but never crosses 1.0x.
+#   Root cause: 16 D-split passes × ~4 barriers/pass = 64 barriers/K-tile,
+#   yielding ~6% constant ALU overhead vs SDPA's fused single-pass approach.
+#   This overhead is intrinsic to the D-split architecture on M1/M2 and
+#   cannot be eliminated by block-config tuning alone.
 _D512_CONSERVATIVE_MIN_N = 999_999
 
 
