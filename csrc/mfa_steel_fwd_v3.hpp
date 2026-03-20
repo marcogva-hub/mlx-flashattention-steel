@@ -39,11 +39,18 @@ inline bool v3_tgp_eligible(int head_dim, bool is_m3_plus) {
 
 /// Return the block config to use for V3 (same values as V2 since same BQ/BK/WM).
 /// Only call when v3_tgp_eligible() is true.
+///
+/// Autoresearch (2026-03-20, M1 Max, 16 iterations):
+///   D=64:  BK=32 optimal (1.46x geomean vs SDPA). BK=64→1.35x, BK=16→1.40x, BK=8→1.25x.
+///   D=128: BK=16 optimal (1.46x geomean vs SDPA). BK=32→1.45x, BK=8→1.37x.
+///   V3 vs V2 (causal): +5% geomean. D=64 N=8K: 2.0x SDPA (V3) vs 1.7x (V2).
+///   V3 loses on non-causal (0.85-0.93x SDPA). Dispatch should gate on causal.
+///   V3 loses on small N (<1024 D=128). Dispatch should gate on N≥2048.
 inline SteelV2BlockConfig select_steel_v3_block_config(int head_dim, bool is_m3_plus) {
-  // V3 uses the same BQ/BK/WM values as V2; the difference is the smem layout.
-  // For D=128 we always use BK=32 in V3 (M3+ BK=64 doesn't fit).
-  if (head_dim == 64)  return {32, 32,  64, 4, 1};
-  if (head_dim == 128) return {32, 16, 128, 4, 1};  // BK=16 regardless of gen
+  // V3 separate K+V smem: smaller BK than V2 is optimal (lower TGP, more occupancy).
+  // BK must be power-of-2 and ≥ 8 (MMA fragment minimum).
+  if (head_dim == 64)  return {32, 32,  64, 4, 1};   // TGP=14,336B → 2 TGs/CU
+  if (head_dim == 128) return {32, 16, 128, 4, 1};   // TGP=19,200B → 1 TG/CU
   return {0, 0, 0, 0, 0};
 }
 
