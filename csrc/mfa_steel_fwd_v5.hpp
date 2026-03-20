@@ -65,8 +65,10 @@ inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
   };
   const int bk      = get_int("MFA_V5_FORCE_BK",      32);
   const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE",  64);
+  const int bq      = get_int("MFA_V5_FORCE_BQ",       32);
+  const int wm      = get_int("MFA_V5_FORCE_WM",        4);
   (void)head_dim;
-  return {.BQ = 32, .BK = bk, .BD_tile = bd_tile, .WM = 4};
+  return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
 }
 
 /// Generate the Metal shader source for the STEEL V5 forward kernel.
