@@ -613,8 +613,9 @@ void MFAttention::eval_gpu(
       sp4.has_alibi    = params_.has_alibi ? 1 : 0;
       sp4.window_left  = params_.window_left;
       sp4.window_right = params_.window_right;
-      sp4.mask_batch_stride = params_.has_block_mask ? (int64_t)(NQ4 * NK4) : 0;
-      sp4.mask_head_stride  = params_.has_block_mask ? (int64_t)(NQ4 * NK4) : 0;
+      // V4 never dispatches with block_mask (gated above), so strides are always 0.
+      sp4.mask_batch_stride = 0;
+      sp4.mask_head_stride  = 0;
 
       auto& enc4 = d.get_command_encoder(stream().index);
       enc4.set_compute_pipeline_state(pipeline4);
