@@ -17,7 +17,9 @@
 ///   D=128 BK=32 M1/M2:    Q(8,704) + K(10,240) + V(8,704) = 27,648 B  ✅
 ///   D=128 BK=64 M3+:      Q(8,704) + K(18,432) + V(17,408)= 44,544 B  ❌ OVER
 ///
-/// V3 is dispatched BEFORE V2 in eval_gpu().  M3+ D=128 falls back to V2.
+/// V3 is dispatched after V5 but before V2-single-pass in eval_gpu().
+/// Order: V2-split-K → V4 → V5 → V3 → V2-single → V2-dsplit → V1.
+/// M3+ D=128 falls back to V2 (TGP too large for separate K+V smem).
 /// Set MFA_DISABLE_V3=1 to bypass V3 (forces V2 path).
 
 #pragma once

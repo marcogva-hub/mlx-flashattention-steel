@@ -29,7 +29,9 @@ def med(fn):
     ts.sort(); return ts[len(ts)//2]
 
 def main():
-    from mlx_mfa import flash_attention, get_device_info
+    from mlx_mfa import flash_attention, is_mfa_available, get_device_info
+    if not is_mfa_available():
+        print("MFA extension not available"); return
     dev = get_device_info()
     print(f"Device: {dev.get('chip_name','?')} M3+={dev.get('is_m3_plus',False)}")
     print(f"{'Config':38s}  {'Auto ms':>8}  {'SDPA ms':>8}  {'V2 ms':>8}  "

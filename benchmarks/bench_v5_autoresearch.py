@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""V5 autoresearch bench — SPEEDUP_RATIO: geomean V5/SDPA, causal profils."""
+"""V5 autoresearch bench — SPEEDUP_RATIO: geomean V5/SDPA, causal profiles."""
 import math, os, time, sys
 import mlx.core as mx
 
 SEED, WARMUP, ITERS = 42, 3, 12
 DTYPE = mx.float16
 
-# Profils causal uniquement (là où V5 a du potentiel d'après le triage)
-# prod_b2h8 = profil production standard
+# Causal profiles only (where V5 has potential based on triage results)
+# prod_b2h8 = standard production profile
 PROFILES = [
     (2, 8, 2048,  64, True),
     (2, 8, 4096,  64, True),
@@ -54,7 +54,8 @@ def main():
         prev = os.environ.get("MFA_ENABLE_V5")
         os.environ.pop("MFA_ENABLE_V5", None)
         v3_ms = med(lambda: flash_attention(q,k,v,scale=scale,causal=causal,backend="mfa"))
-        if prev: os.environ["MFA_ENABLE_V5"] = prev
+        if prev is not None:
+            os.environ["MFA_ENABLE_V5"] = prev
 
         r_sdpa = sdpa_ms/v5_ms if v5_ms>0 else 0
         r_v3   = v3_ms/v5_ms   if v5_ms>0 else 0
@@ -66,9 +67,8 @@ def main():
               f"{r_sdpa:8.3f}x  {r_v3:7.3f}x")
 
     print("-"*70)
-    import math as m
-    geo_sdpa = m.exp(sum(m.log(max(r,1e-9)) for r in ratios_sdpa)/len(ratios_sdpa))
-    geo_v3   = m.exp(sum(m.log(max(r,1e-9)) for r in ratios_v3)/len(ratios_v3))
+    geo_sdpa = math.exp(sum(math.log(max(r,1e-9)) for r in ratios_sdpa)/len(ratios_sdpa))
+    geo_v3   = math.exp(sum(math.log(max(r,1e-9)) for r in ratios_v3)/len(ratios_v3))
     wins_sdpa = sum(1 for r in ratios_sdpa if r>=1.02)
     wins_v3   = sum(1 for r in ratios_v3   if r>=1.02)
     print(f"Wins vs SDPA (>=1.02x): {wins_sdpa}/{len(ratios_sdpa)}")
