@@ -862,10 +862,8 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   // (TGP=12,800B → 2 TGs/CU, 0.80x SDPA vs 0.27x at BD_HALF=128 BK=8)
   int BD_HALF = (D == 512) ? 32 : 128;
   if (D == 512) {
-    if (const char* env = std::getenv("MFA_V2_BD_HALF_D512")) {
-      const int v = std::atoi(env);
-      if (v == 32 || v == 64 || v == 128) BD_HALF = v;
-    }
+    const int v = MFAEnvConfig::get().v2_bd_half_d512;
+    if (v == 32 || v == 64 || v == 128) BD_HALF = v;
   }
   const int D_SPLITS = D / BD_HALF;
 
