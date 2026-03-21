@@ -4,6 +4,32 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.20.1] — 2026-03-21
+
+### Critical Fix
+- **MFAEnvConfig.invalidate() exposed to Python**: BK calibration in
+  `dispatch_policy.py` was silently broken — C++ cached env vars were never
+  re-read after `os.environ` mutations. Added `_invalidate_env_config()`
+  binding and calls at all 3 calibration sites.
+
+### Major Fixes
+- **V5 dead sparse codegen removed**: Cleaned up unreachable block_mask buffer
+  binding and tile-skip code from V5 shader generator (V5 never dispatches
+  with sparse masks).
+- **V2 BD_HALF_D512 uses MFAEnvConfig**: Replaced raw `std::getenv()` with
+  `MFAEnvConfig::get().v2_bd_half_d512` for consistency with other cached vars.
+- **Benchmark med() deduplication**: All 4 autoresearch/promotion benchmarks
+  now import `med()` from `bench_utils.py` instead of defining local copies.
+
+### Minor Fixes
+- Hardcoded V4 mask strides to 0 (dead conditional — V4 is gated by
+  `!has_block_mask`).
+- Updated stale v2.14.0 section headers to v2.20.0 in SERVING_GUIDE and
+  ARCHITECTURE.
+- Added 7 missing env vars to ENV_VARS.md: `MFA_DEBUG_SHADERS`,
+  `MFA_FORCE_D256_PATH`, `MFA_FORCE_D512_PATH`, `MFA_FORCE_NATIVE_BWD`,
+  `MFA_FORCE_SAGE_DECODE`, `MLX_MFA_VERBOSE_DISPATCH`, `MLX_MFA_DISPATCH_TABLE`.
+
 ## [2.20.0] — 2026-03-21
 
 ### Performance Optimization (Autoresearch)
