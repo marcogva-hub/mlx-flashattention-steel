@@ -116,7 +116,9 @@ void MFAttention::eval_gpu(
   //  Note: D=256 (f16/bf16) stays on STEEL despite register pressure because ccv
   //  3D-blocking + async_copy fallback is slower than STEEL register spill on macOS 26.
   if (dtype_code == 2) {
-    bool is_m3_plus = (d.get_architecture_gen() >= 15);
+    int arch_gen_ccv = static_cast<int>(d.get_architecture_gen());
+    { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_ccv = e.force_gen; }
+    bool is_m3_plus = (arch_gen_ccv >= 15);
     const bool low_prec_inter  = false;
     const bool low_prec_inputs = false;
     auto ccv_cfg = resolve_block_config(D, is_m3_plus, low_prec_inter, low_prec_inputs);
@@ -550,7 +552,8 @@ void MFAttention::eval_gpu(
     const bool v4_eligible =
         (dtype_code != 2) &&
         v4_tgp_eligible(D, is_m3_plus_steel) &&
-        !params_.has_rope;    // V4 reads K raw from device; no TGP for RoPE-K
+        !params_.has_rope &&         // V4 reads K raw from device; no TGP for RoPE-K
+        !params_.has_block_mask;     // V4 does not support sparse masks
 
     if (v4_eligible) {
       auto cfg4 = select_steel_v4_block_config(D, is_m3_plus_steel);
@@ -1382,7 +1385,9 @@ void MFABackwardQuery::eval_gpu(
 
   // ── Device & dtype ─────────────────────────────────────────────────────
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
+  int arch_gen_bwdq = static_cast<int>(dev.get_architecture_gen());
+  { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_bwdq = e.force_gen; }
+  bool is_m3_plus = (arch_gen_bwdq >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
@@ -1483,7 +1488,9 @@ void MFABackwardKeyValue::eval_gpu(
   dV.set_data(mlx::core::allocator::malloc(dV.nbytes()));
 
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
+  int arch_gen_bwdkv = static_cast<int>(dev.get_architecture_gen());
+  { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_bwdkv = e.force_gen; }
+  bool is_m3_plus = (arch_gen_bwdkv >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
