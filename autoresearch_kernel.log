@@ -1,0 +1,19 @@
+
+=== D=512 CEILING REPORT (50 iterations) ===
+Date: 2026-03-20
+Device: M1 Max (32 GPU cores, gen 13)
+Best config: BD_HALF=32 BK=128 BQ=32 WM=4 (commit 8144da1)
+Geomean: 0.80x SDPA (standard profiles B=2 H=8 N=1024-8192)
+Peak: 0.94x at N=8192, 0.96x at N=32768 (asymptotic to 1.0x)
+Improvement from baseline: 2.9x (0.27x → 0.80x)
+
+Bottleneck: 16 D-split passes × ~4 barriers each = 64 barriers/K-tile
+Cannot be reduced without:
+  1. Separate K+V smem (drops to 1 TG/CU — net regression)
+  2. Direct device reads (4x bandwidth penalty — 0.20x)
+  3. Double-buffered K (drops to 1 TG/CU — net regression)
+  4. Hardware async DMA (not available on M1-M4)
+  5. M3+ L2 cache (untested on actual M3 hardware)
+
+BK=128 is hard max for BD_HALF=32 (BlockLoaderT TCOLS=0 for BK>128)
+

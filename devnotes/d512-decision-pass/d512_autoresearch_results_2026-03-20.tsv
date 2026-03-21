@@ -1,0 +1,81 @@
+iter	phase	hyp	bk	bd_half	bq	ratio	keep	notes
+0	baseline	unmodified	8	128	32	0.273	Y	BK=8 inherited from D=256
+1	P1	BK=4 more occupancy	4	128	32	0.000	N	TK=0 compile error: BK<8 invalid
+2	P1	BK=12 fewer K-tiles	12	128	32	0.418	N	+55% vs BK=8 baseline
+3	P1	BK=16 half K-tiles vs BK=8	16	128	32	0.457	N	+9% vs BK=12
+4	P1	BK=20	20	128	32	0.490	N	+7% vs BK=16
+5	P1	BK=24	24	128	32	0.500	N	+2% vs BK=20, diminishing
+6	P1	BK=32 1 TG/CU	32	128	32	0.625	N	+25% vs BK=24 despite 1 TG/CU
+7	P1	BK=48	48	128	32	0.689	N	+10% vs BK=32, still 1 TG/CU
+8	P1	BK=64 max BK	64	128	32	0.679	N	-1.5% vs BK=48 regression — register pressure
+9	P1	BK=40 between 32-48	40	128	32	0.618	N	worse than BK=32 and BK=48 — alignment?
+10	P1	BK=56	56	128	32	0.611	N	worse than BK=48 — confirms 48 as peak
+11	P1	BK=48 no-padding	48	128	32	0.158	N	MFA_NO_PADDING=1 massive regression — bank conflicts
+12	P1	BQ=16 WM=2 BK=48	48	128	16	0.527	N	-24% vs BQ=32 — halving warps hurts
+13	P1	BQ=16 WM=2 BK=64	64	128	16	0.397	N	BQ=16 path clearly worse
+14	P2	BD_HALF=64 BK=8	8	64	32	0.264	N	2x D_SPLITS overwhelms occupancy gain
+15	P2	BD_HALF=64 BK=32	32	64	32	0.610	N	better than BD64/BK8 but still < BD128/BK48
+16	P2	BD_HALF=64 BK=64	64	64	32	0.773	Y	NEW BEST! N=8192: 0.892x approaching parity
+17	P2	BD_HALF=64 BK=48	48	64	32	0.702	N	worse than BK=64
+18	P2	BD_HALF=64 BK=128	128	64	32	0.759	N	1 TG/CU hurts small N
+19	P2	BD_HALF=64 BK=96	96	64	32	0.784	Y	NEW BEST! N=8192: 0.899x
+20	P2	BD_HALF=64 BK=80	80	64	32	0.292	N	massive regression — BK=80 not perf-friendly
+21	P2	BD_HALF=64 BK=112	112	64	32	0.758	N	worse than BK=96
+22	P2	BD_HALF=32 BK=64	64	32	32	0.667	N	16 D-splits too extreme
+23	P2	BD_HALF=32 BK=128	128	32	32	0.799	Y	NEW BEST! N=8192: 0.950x N=4096: 0.921x
+24	P2	BD_HALF=32 BK=160	160	32	32	0.000	N	Metal compile fail: BlockLoaderT TCOLS=0 when BK>>BD_HALF
+25	P2	BD_HALF=32 BK=96	96	32	32	0.721	N	worse than BK=128 — confirms larger BK better
+26	P3	BD_HALF=32 BK=128 BQ=16	128	32	16	0.000	N	Loader TCOLS=0 — BQ=16+BD_HALF=32 incompatible
+28	P1	BD_HALF=128 BK=84	84	128	32	0.801	Y	NEW BEST (avg 0.812+0.790)/2 — N=8192: ~0.89x
+29	P1	BD_HALF=128 BK=76	76	128	32	0.796	N	similar to BK=84, slightly worse
+30	P1	BD_HALF=128 BK=80	80	128	32	0.762	N	worse than BK=84
+31	P3	BD32 BK128 BQ64 WM8	128	32	64	0.683	N	BQ=64 WM=8 too many threads
+32	P3	commit BD32 BK128 default	128	32	32	0.802	Y	COMMITTED — 2.9x improvement from baseline
+33	P3	no unroll	128	32	32	0.439	N	unroll essential — 45% regression without
+34	P3	pad=4	128	32	32	0.771	N	slightly worse — bank conflicts
+35	P3	pad=16	128	32	32	0.769	N	slightly worse — TGP waste
+36	P3	BD64 BK128 reverify	128	64	32	0.763	N	confirmed < BD32 BK128
+37	P3	BD128 BK sweep	84	128	32	0.788	N	BD128 BK=84 close but still < BD32 BK=128
+38	P3	BD64 high BK sweep	108	64	32	0.790	N	BD64 BK=108 best of sweep but < BD32 BK128
+39	P3	BD16 BK128	128	16	32	0.689	N	32 D-splits too extreme — 64 barriers/K-tile
+40	P3	GQA D=512 N=4096	128	32	32	0.916	N	GQA ratio ~same as non-GQA — no differential benefit
+41	P3	B1 H32 N=8192	128	32	32	0.975	N	more heads improves GPU utilization — 0.975x!
+42	P3	B4 H16 N=8192	128	32	32	0.980	N	max occupancy: 0.98x — ceiling is sub-1.0x
+43	P3	bf16 D=512	128	32	32	0.575	N	bf16 emulation penalty: 0.42-0.67x vs f16 0.59-0.94x
+44	P3	non-causal BK sweep	128	32	32	0.405	N	non-causal ceiling: 0.40x (no causal tile-skip benefit)
+45	P3	direct V reads	128	32	32	0.203	N	4x bandwidth penalty overwhelms barrier savings (0.80→0.20x)
+46	P3	BQ=64 WM=8	128	32	64	0.691	N	larger BQ hurts — more Q rows per TG but 2x Q_smem
+47	P3	large N ceiling	128	32	32	0.946	N	N=16384: 0.93x  N=32768: 0.96x — asymptotic to 1.0x
+48	P3	direct K reads	128	32	32	skip	N	SKIPPED: K transposed access → zero coalescing, guaranteed worse than direct V (0.20x)
+49	P3	BK=112 BD32	112	32	32	0.773	N	more K-tiles → worse than BK=128
+50	P3	BK>128 impossible	128	32	32	n/a	N	BlockLoaderT TCOLS=0 for BK>128 with BD_HALF=32 — BK=128 is hard max
+51	P3	direct Q reads	128	32	32	0.757	N	3 TGs/CU but non-coalesced Q reads negate occupancy gain
+52	P3	directQ BD64 BK64	64	64	32	0.724	N	3 TGs/CU 8 D-splits but 2x more K-tiles
+53	P3	BK=32 BD32 6TGs	32	32	32	0.607	N	6 TGs/CU but 4x more K-tiles than BK=128
+54	P3	BD16 BK128 32splits	128	16	32	skip	N	32 D-splits = 126 barriers/K-tile — guaranteed regression
+55	P3	WM=2 impossible	128	32	32	n/a	N	TCOLS=0 with TGP_SIZE=64: n_reads=64 > BD_HALF=32
+56	P3	exotic profiles	128	32	32	0.905	N	B8H4: 0.93x, B1H32: 0.90x, B4H4: 0.88x, B1H1N16K: 0.90x
+57	P3	no-pad BD32 BK128	128	32	32	nan	N	NaN without padding — bank conflicts corrupt data
+58	P3	lazy Q (register pressure)	128	32	32	0.802	N	identical to baseline — compiler already handles Qtile spill
+59	P3	lazy_q+direct_v	128	32	32	0.205	N	catastrophic: V bandwidth penalty dominates lazy_q savings
+60	P3	BK=64 BD32	64	32	32	0.667	N	2x more K-tiles than BK=128 → 0.67x vs 0.80x
+61	P3	BK=96 BD32	96	32	32	0.735	N	between BK=64 (0.67x) and BK=128 (0.80x) — linear BK scaling
+62	P3	no-unroll BD32 BK128	128	32	32	0.444	N	unrolling critical for latency hiding — 0.80→0.44x without it
+63	P3	BD64 BK128 default	128	64	32	0.769	N	BD_HALF=64 (8 splits) worse than BD_HALF=32 (16 splits) — more reg pressure per pass
+64	P3	BQ16 WM2 BD64 BK128	128	64	16	compile_fail	N	TCOLS=0 in BlockLoaderT with TGP_SIZE=64
+65	P3	BD128 BK32 (4 splits)	32	128	32	0.627	N	4 D-splits but 4x K-tile iterations — net worse than BD32 BK128
+66	P3	BD128 BK64 (4 splits)	64	128	32	0.699	N	4 D-splits BK=64 still worse than 16 D-splits BK=128
+67	P3	half-padding BD32 BK128	128	32	32	nan	N	NaN with pad=4 (8 bytes) — bank conflicts. Full pad=8 (16 bytes) essential
+68	P3	directQ BD64 BK128	128	64	32	0.782	N	no Q_smem helps BD64 slightly (0.769→0.782) but still < BD32 (0.80)
+69	P3	BK256 BQ64 WM8 BD32	256	32	64	0.671	N	BK=256 halves K-iters but BQ=64 WM=8 → 1 TG/CU, net regression
+70	P3	ceiling check	128	32	32	0.802	N	70 ITERATIONS: D=512 CEILING FOUND at 0.80x — barrier-limited
+71	P3	BQ16 WM2 BK32 BD32	32	32	16	nan	N	NaN with WM=2 BQ=16 — possible alignment or output store issue
+72	P3	splitK for D-split	-	-	-	n/a	N	splitK dispatch excludes D>128 — would need new partial kernel + reduce
+73	P3	compute analysis	-	-	-	n/a	N	D=512 is compute-bound (1.1 TFLOP). 8% gap is D-split serialization overhead, NOT barriers.
+74	P3	parallel D-splits	-	-	-	n/a	N	Concurrent D-split groups: doubles registers, 1 TG/CU → rejected
+75	P3	extended N sweep	128	32	32	0.795	N	N=256:0.46x N=1024:0.58x N=4096:0.89x N=16384:0.94x — asymptotic to 1.0x
+76	P3	varied B/H profiles	128	32	32	0.795	N	B4H8N8192:0.97x B8H8N4096:0.95x — approaches 1.0x with large B*H*N
+77	P3	large workloads	128	32	32	0.940	N	Large B*H: 0.93-0.94x ceiling. Constant ~6% D-split overhead at scale.
+78	D256	BK sweep D=256	-	128	32	1.21	N	BK=8 (1.21x) still best. BK=4:1.19x BK=10:1.18x BK=12:1.18x BK=16:1.11x
+79	P3	BD256 BK8 (2 splits)	8	256	32	0.229	N	TD_HALF=32 causes massive register spill on M1 — 2 slow passes
+80	FINAL	D=512 SEARCH COMPLETE	128	32	32	0.80	N	80 iterations. Firm ceiling: 0.80x geomean (B2H8 N1K-8K). Asymptotic ~0.94x at large B*H*N.

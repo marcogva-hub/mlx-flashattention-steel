@@ -73,3 +73,71 @@ Focused checks (warmup=3, iters=10, separate processes):
 
 Conclusion: BK override improves some rows slightly but never reaches parity.
 No narrow benchmark-backed D=512 win was found.
+
+## Addendum — VAE-path short-N (2026-03-19)
+
+Tested N=64–512 (previously untested range) on M1 Max with bench_dispatch_d512_vae.py.
+
+| N  | causal | MFA ms | SDPA ms | ratio |
+|----|--------|--------|---------|-------|
+| 64 | False  | 0.638  | 0.459   | 0.72x |
+|128 | False  | 0.848  | 0.505   | 0.60x |
+|256 | False  | 1.020  | 0.621   | 0.61x |
+|512 | False  | 2.117  | 0.814   | 0.38x |
+|256 | True   | 0.654  | 0.484   | 0.74x |
+|512 | True   | 1.743  | 0.872   | 0.50x |
+
+Geomean: 0.577x. No win. Ratio deteriorates as N increases — consistent
+with D-split overhead dominating at short sequences. Conservative SDPA
+default confirmed correct for entire D=512 family on M1 Max.
+
+## Addendum — VAE-path short-N (2026-03-19)
+
+Tested N=64–512 (previously untested range) on M1 Max with bench_dispatch_d512_vae.py.
+
+| N  | causal | MFA ms | SDPA ms | ratio |
+|----|--------|--------|---------|-------|
+| 64 | False  | 0.638  | 0.459   | 0.72x |
+|128 | False  | 0.848  | 0.505   | 0.60x |
+|256 | False  | 1.020  | 0.621   | 0.61x |
+|512 | False  | 2.117  | 0.814   | 0.38x |
+|256 | True   | 0.654  | 0.484   | 0.74x |
+|512 | True   | 1.743  | 0.872   | 0.50x |
+
+Geomean: 0.577x. No win. Ratio deteriorates as N increases — consistent
+with D-split overhead dominating at short sequences. Conservative SDPA
+default confirmed correct for entire D=512 family on M1 Max.
+
+## Addendum — VAE-path short-N (2026-03-19)
+
+Tested N=64–512 (previously untested range) on M1 Max with bench_dispatch_d512_vae.py.
+
+| N  | causal | MFA ms | SDPA ms | ratio |
+|----|--------|--------|---------|-------|
+| 64 | False  | 0.638  | 0.459   | 0.72x |
+|128 | False  | 0.848  | 0.505   | 0.60x |
+|256 | False  | 1.020  | 0.621   | 0.61x |
+|512 | False  | 2.117  | 0.814   | 0.38x |
+|256 | True   | 0.654  | 0.484   | 0.74x |
+|512 | True   | 1.743  | 0.872   | 0.50x |
+
+Geomean: 0.577x. No win. Ratio deteriorates as N increases — consistent
+with D-split overhead dominating at short sequences. Conservative SDPA
+default confirmed correct for entire D=512 family on M1 Max.
+
+## Addendum — VAE-path short-N (2026-03-19)
+
+Tested N=64–512 (previously untested range) on M1 Max with bench_dispatch_d512_vae.py.
+
+| N  | causal | MFA ms | SDPA ms | ratio |
+|----|--------|--------|---------|-------|
+| 64 | False  | 0.638  | 0.459   | 0.72x |
+|128 | False  | 0.848  | 0.505   | 0.60x |
+|256 | False  | 1.020  | 0.621   | 0.61x |
+|512 | False  | 2.117  | 0.814   | 0.38x |
+|256 | True   | 0.654  | 0.484   | 0.74x |
+|512 | True   | 1.743  | 0.872   | 0.50x |
+
+Geomean: 0.577x. No win. Ratio deteriorates as N increases — consistent
+with D-split overhead dominating at short sequences. Conservative SDPA
+default confirmed correct for entire D=512 family on M1 Max.
