@@ -35,7 +35,7 @@ std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   const bool has_window = key.has_window;
   const bool has_softcap = key.has_softcap;
   const bool has_alibi   = key.has_alibi;
-  const bool sparse      = key.sparse;
+  // V5 dispatch guarantees sparse=false — no sparse codegen needed.
   const int  gqa         = key.gqa_factor;
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
@@ -114,8 +114,6 @@ struct MFASteelParams {
   ss << "    device T*                O  [[buffer(3)]],\n";
   ss << "    device float*            L  [[buffer(4)]],\n";
   ss << "    constant MFASteelParams* p  [[buffer(5)]],\n";
-  if (sparse)
-    ss << "    const device uchar* block_mask [[buffer(6)]],\n";
   if (has_alibi)
     ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
@@ -416,16 +414,6 @@ struct MFASteelParams {
   ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
 
-  // Sparse tile-skip: uniform branch (zero warp divergence since all TG threads share tid.x, kb)
-  if (sparse) {
-    ss << "    // Block-sparse: skip tiles where block_mask==0 (uniform branch)\n";
-    ss << "    const bool skip_tile = !block_mask[\n";
-    ss << "        (long)tid.z * p->mask_batch_stride\n";
-    ss << "      + (long)tid.y * p->mask_head_stride\n";
-    ss << "      + (long)qb * p->NK + kb];\n";
-    ss << "    if (!skip_tile) {\n";
-  }
-
   // ── Phase 1: Q@K^T (all D-chunks of K^T) ─────────────────────────────────
   // M3+ (MFA_DIRECT_READS=1): all K^T fragments loaded directly from device —
   //   no barriers needed between D-chunks.
@@ -618,10 +606,6 @@ struct MFASteelParams {
     emit_v5_pv(dh);
     ss << "\n";
   }
-
-  // Close sparse if(!skip_tile) block
-  if (sparse)
-    ss << "    }  // end if (!skip_tile)\n\n";
 
   // ── Advance K_cur/V_cur + preload K[kb+1][dh=0] (TGP path only) ──────────
   ss << "    K_cur += (long)MFA_BK * p->K_strides[2];\n";
