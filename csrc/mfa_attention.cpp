@@ -754,13 +754,15 @@ void MFAttention::eval_gpu(
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.
   //
   // autoresearch (24 iters, M1 Max, 2026-03-20): BK=32 D=64 / BK=16 D=128
-  //   Geomean V3/SDPA: 1.47x (causal, B*H≥16, large N)
+  //   Geomean V3/SDPA: 1.47x (causal, large N)
   //   Geomean V3/V2:   1.015x (causal only)
-  //   Wins:  D=64 N≥4096 causal, D=128 N≥2048 causal, B*H≥16
-  //   Loses: small N, B*H<16, non-causal
+  //   Wins:  D=64 N≥4096 causal, D=128 N≥2048 causal, all B*H≥4
+  //   Loses: small N, non-causal
   //
+  // Guard sweep (Axis 1, 2026-03-21): V3 wins at all B*H≥4 (worst=0.665x V2).
+  // At B=1 H=4 N=2048, grid=256 tiles >> 32 CUs — occupancy is not the limit.
   // Production routing: V3 dispatched when shape is in the winning regime.
-  // Shape guard: causal only, N above threshold per D, B*H≥16.
+  // Shape guard: causal only, N above threshold per D, B*H≥4.
   // Set MFA_DISABLE_V3=1 to force V2 for benchmarking/debugging.
   //
   // Note: V3 stays BEFORE V2 in dispatch order (V2 is the fallback).
@@ -769,7 +771,7 @@ void MFAttention::eval_gpu(
     const bool v3_shape_ok =
         params_.causal &&          // causal only
         (N >= v3_min_N) &&         // large enough sequence
-        (B * H >= 16);             // sufficient parallelism
+        (B * H >= 4);              // sufficient parallelism (sweep: V3 wins all B*H≥4)
     const bool v3_force = !!std::getenv("MFA_ENABLE_V3");  // backward compat: bypass shape guard
     const bool v3_eligible =
         !std::getenv("MFA_DISABLE_V3") &&

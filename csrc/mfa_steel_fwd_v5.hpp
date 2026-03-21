@@ -21,9 +21,10 @@
 ///   needed, so Q is read directly from device memory into registers per SIMD.
 ///   This eliminates the Q_smem that V2 needed (8,704 bytes).
 ///
-/// Block configs (post-autoresearch):
-///   M1/M2: BQ=32, BK=32, BD_tile=64, WM=4  → TGP=4,096 B, 8 TG/CU
-///   (was:  BQ=32, BK=128, BD_tile=32, WM=4 → TGP=10,240 B, 3 TG/CU)
+/// Block configs (post-autoresearch, per-D):
+///   D=64  M1/M2: BQ=32, BK=32, BD_tile=32, WM=4 → TGP=2,048 B, 16 TG/CU
+///   D=128 M1/M2: BQ=32, BK=32, BD_tile=64, WM=4 → TGP=4,096 B,  8 TG/CU
+///   (was:  BQ=32, BK=128, BD_tile=32, WM=4      → TGP=10,240 B,  3 TG/CU)
 
 #pragma once
 
@@ -47,11 +48,11 @@ inline bool v5_eligible(int head_dim) {
 }
 
 /// Block config for V5.
-/// autoresearch (16 iters, M1 Max, 2026-03-20): BK=32 BD_tile=64
-///   TGP = 32×64×2 = 4,096B → 8 TGs/CU (was 10,240B → 3 TGs/CU)
-///   V5/SDPA: 1.57x geomean (was 1.30x)
-///   V5/V3:   0.97x geomean (D=128: 1.01-1.08x wins; D=64: 0.89-0.96x loses)
-///   D=128 B*H≥16: V5 beats V3 by 2-8% (more TGs/CU, fewer D-chunks)
+/// autoresearch Axis 2 (M1 Max, 2026-03-21): per-D configs
+///   D=64:  BK=32 BD_tile=32 → TGP=2,048B → 16 TGs/CU  V5/SDPA=0.695 (1.44x)
+///   D=128: BK=32 BD_tile=64 → TGP=4,096B →  8 TGs/CU  V5/SDPA=0.556 (1.80x)
+///   D=64 prefers smaller BD_tile (fewer D-chunks, fewer barriers).
+///   D=128 prefers larger BD_tile (amortizes barrier cost at higher D).
 inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
                                                        bool is_m3_plus) {
   (void)is_m3_plus;
@@ -63,11 +64,16 @@ inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
     }
     return def;
   };
-  const int bk      = get_int("MFA_V5_FORCE_BK",      32);
-  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE",  64);
-  const int bq      = get_int("MFA_V5_FORCE_BQ",       32);
-  const int wm      = get_int("MFA_V5_FORCE_WM",        4);
-  (void)head_dim;
+  const int bq = get_int("MFA_V5_FORCE_BQ", 32);
+  const int wm = get_int("MFA_V5_FORCE_WM",  4);
+  if (head_dim == 64) {
+    const int bk      = get_int("MFA_V5_FORCE_BK",     32);
+    const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE", 32);
+    return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
+  }
+  // D=128 (default)
+  const int bk      = get_int("MFA_V5_FORCE_BK",     32);
+  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE", 64);
   return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
 }
 
