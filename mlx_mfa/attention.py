@@ -16,7 +16,7 @@ Dispatch logic:
 Backward:
     _make_mfa_custom registers a custom vjp that re-materialises gradients via
     mx.vjp(_fallback_sdpa), bypassing the ccv C++ vjp path (which loses LSE).
-    See _sever_lazy_graph() for the buffer-aliasing fix required in that path.
+    Buffer-aliasing is handled by mx.contiguous() on materialized arrays.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 # CP1: dispatch decision cache — keyed by (head_dim, seq_len, causal, is_m3_plus,
 # dtype, window_size, sparse).  Eliminates should_use_mfa() call overhead on
 # repeated same-shape calls (e.g. decode loops that call flash_attention/token).
+# Capped at 512 entries to prevent unbounded growth during autoregressive decode
+# (seq_len increments by 1 each step, creating unique keys).
+_DISPATCH_CACHE_MAX = 512
 _dispatch_decision_cache: dict = {}
 
 # CP1: module-level reference to should_use_mfa — populated lazily on first
@@ -382,6 +385,8 @@ def flash_attention(
                     dtype=q.dtype,
                     window_size=window_size, sparse=False, backend=backend,
                 )
+                if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
+                    _dispatch_decision_cache.clear()
                 _dispatch_decision_cache[_cache_key] = _cached
             use_mfa = _cached
     else:
@@ -3157,46 +3162,8 @@ def _ext_available() -> bool:
     return _ext_avail_cached
 
 
-def _sever_lazy_graph(arr: mx.array) -> mx.array:
-    """Return a copy of *arr* with no lazy-graph ancestry.
 
-    **Why this is needed — buffer aliasing in Metal:**
-
-    Inside a ``mx.custom_function`` vjp, the ``cotangent`` argument is often
-    ``ones_like(O_fwd)`` — a lazy node that inherits the same buffer-ancestry
-    as the first forward pass output ``O_fwd``.  When the backward then calls
-    ``mfa_forward_with_lse`` a second time (gradient checkpointing), MLX may
-    schedule both forward dispatches in the *same* Metal command encoder.  The
-    Metal allocator can then alias ``O_r``'s output buffer with the freed
-    ``O_fwd`` buffer; since ``L_r`` is written alongside ``O_r`` in one atomic
-    kernel dispatch, this corrupts ``L_r`` and produces wrong or overflowed
-    gradients.
-
-    **The fix:**  ``arr + mx.zeros_like(arr)`` routes through an elementwise-
-    add kernel that writes to a *fresh, independent* output buffer.  This new
-    buffer has no shared ancestry with ``O_fwd``, so the allocator cannot
-    alias it with ``O_r`` — the second forward runs cleanly.
-
-    **Alternatives tested (Phase 4.1.1):**
-
-    +-----------------------------------------+--------+
-    | Approach                                | Works? |
-    +=========================================+========+
-    | ``arr + mx.zeros_like(arr)``            | ✓      |
-    | numpy round-trip (f32 cast)             | ✓      |
-    | ``mx.contiguous(arr)`` (after eval)     | ✓      |
-    | ``mx.array(arr)``                       | ✗      |
-    | ``mx.stop_gradient(arr)``               | ✗      |
-    +-----------------------------------------+--------+
-
-    After ``mx.eval(arr)`` the buffer is materialised and pinned; a subsequent
-    ``mx.contiguous()`` call returns a view with a freshly allocated header that
-    carries no lazy-graph ancestry, so the Metal allocator cannot alias it with
-    any earlier output buffer.  This avoids the ~5µs elementwise-add kernel that
-    ``arr + mx.zeros_like(arr)`` previously dispatched.
-    """
-    mx.eval(arr)
-    return mx.contiguous(arr)
+# _sever_lazy_graph was removed in v2.20.0 (dead code — never called).
 
 
 @functools.lru_cache(maxsize=32)
