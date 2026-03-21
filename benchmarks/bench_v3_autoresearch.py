@@ -2,12 +2,14 @@
 """V3 autoresearch bench — geomean V3/SDPA on D=64/128 causal profiles.
 Last line output: SPEEDUP_RATIO: X.XXXXXX  (maximize)
 """
-import math, os, sys, time
+import math, os, sys
+from functools import partial
 import mlx.core as mx
+from bench_utils import med as _med
 
 SEED = 42
 DTYPE = mx.float16
-WARMUP, ITERS = 3, 12
+med = partial(_med, warmup=3, iters=12)
 
 # Profiles: D=64 and D=128, causal only (where V3 has potential)
 # B=2 H=8 = production profile; B=1 H=1 = under-occupied profile
@@ -20,15 +22,6 @@ PROFILES = [
     (2, 8,  4096, 128, True),
     (1, 1,  2048, 128, True),
 ]
-
-def med(fn):
-    for _ in range(WARMUP): mx.eval(fn())
-    mx.synchronize()
-    ts = []
-    for _ in range(ITERS):
-        t0 = time.perf_counter(); mx.eval(fn()); mx.synchronize()
-        ts.append((time.perf_counter()-t0)*1000)
-    ts.sort(); return ts[len(ts)//2]
 
 def main():
     try:

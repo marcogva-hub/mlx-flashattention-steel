@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """V5 autoresearch bench — SPEEDUP_RATIO: geomean V5/SDPA, causal profiles."""
-import math, os, time, sys
+import math, os, sys
+from functools import partial
 import mlx.core as mx
+from bench_utils import med as _med
 
-SEED, WARMUP, ITERS = 42, 3, 12
+SEED = 42
 DTYPE = mx.float16
+med = partial(_med, warmup=3, iters=12)
 
 # Causal profiles only (where V5 has potential based on triage results)
 # prod_b2h8 = standard production profile
@@ -16,15 +19,6 @@ PROFILES = [
     (2, 8, 4096, 128, True),
     (2, 8, 8192, 128, True),
 ]
-
-def med(fn):
-    for _ in range(WARMUP): mx.eval(fn())
-    mx.synchronize()
-    ts = []
-    for _ in range(ITERS):
-        t0 = time.perf_counter(); mx.eval(fn()); mx.synchronize()
-        ts.append((time.perf_counter()-t0)*1000)
-    ts.sort(); return ts[len(ts)//2]
 
 def main():
     from mlx_mfa import flash_attention, is_mfa_available, get_device_info

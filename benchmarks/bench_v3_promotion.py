@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """V3 promotion verification: compare V3 (default) vs V2 (MFA_DISABLE_V3=1) vs SDPA."""
-import math, os, time, sys
+import math, os, sys
 import mlx.core as mx
+from bench_utils import med
 
-SEED, WARMUP, ITERS = 42, 5, 20
+SEED = 42
 DTYPE = mx.float16
 
 PROFILES = [
@@ -18,15 +19,6 @@ PROFILES = [
     (1, 1,  4096,  64, True,  "V2 expected (B*H<16)"),
     (2, 8,  4096,  64, False, "V2 expected (non-causal)"),
 ]
-
-def med(fn):
-    for _ in range(WARMUP): mx.eval(fn())
-    mx.synchronize()
-    ts = []
-    for _ in range(ITERS):
-        t0 = time.perf_counter(); mx.eval(fn()); mx.synchronize()
-        ts.append((time.perf_counter()-t0)*1000)
-    ts.sort(); return ts[len(ts)//2]
 
 def main():
     from mlx_mfa import flash_attention, is_mfa_available, get_device_info
