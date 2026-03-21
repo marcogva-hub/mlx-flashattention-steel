@@ -1,6 +1,6 @@
 # mlx-mfa Results Summary
 
-Version: **2.14.2**
+Version: **2.20.0**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
 For complete benchmark tables and architectural notes, see

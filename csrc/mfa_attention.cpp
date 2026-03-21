@@ -116,7 +116,9 @@ void MFAttention::eval_gpu(
   //  Note: D=256 (f16/bf16) stays on STEEL despite register pressure because ccv
   //  3D-blocking + async_copy fallback is slower than STEEL register spill on macOS 26.
   if (dtype_code == 2) {
-    bool is_m3_plus = (d.get_architecture_gen() >= 15);
+    int arch_gen_ccv = static_cast<int>(d.get_architecture_gen());
+    { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_ccv = e.force_gen; }
+    bool is_m3_plus = (arch_gen_ccv >= 15);
     const bool low_prec_inter  = false;
     const bool low_prec_inputs = false;
     auto ccv_cfg = resolve_block_config(D, is_m3_plus, low_prec_inter, low_prec_inputs);
@@ -194,27 +196,20 @@ void MFAttention::eval_gpu(
   //             AND no block mask (sparse path keeps its own dispatch)
   // CP2: D=64/128 use V2 tile sizes (larger BK) to reduce K-tile iterations per split.
   //      D=256/512 keep V1 tiles (V2 BQ=16/WM=2 for D=256 halves occupancy in V1 kernel).
-  int BK_fd;
+  // Pre-compute block config for flash decode (reused in BK_fd and dispatch).
+  int BQ_fd, BK_fd, WM_fd, WN_fd;
   if (D <= 128) {
     auto cfgv2 = select_steel_v2_block_config(D, is_m3_plus_steel);
-    BK_fd = cfgv2.BK;
+    BQ_fd = cfgv2.BQ; BK_fd = cfgv2.BK; WM_fd = cfgv2.WM; WN_fd = cfgv2.WN;
   } else {
     auto cfgv1 = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
-    BK_fd = cfgv1.BK;
+    BQ_fd = cfgv1.BQ; BK_fd = cfgv1.BK; WM_fd = cfgv1.WM; WN_fd = cfgv1.WN;
   }
   const bool use_flash_decode = (N <= 4 && S >= 256 && dtype_code != 2
                                  && !params_.has_block_mask);
   if (use_flash_decode) {
     int num_splits = compute_num_splits(S, BK_fd);
-    // Use same config as shader generator (consistent BQ/BK/WM).
-    int BQ_s, BK_s, WM_s, WN_s;
-    if (D <= 128) {
-      auto cfgv2 = select_steel_v2_block_config(D, is_m3_plus_steel);
-      BQ_s = cfgv2.BQ; BK_s = cfgv2.BK; WM_s = cfgv2.WM; WN_s = cfgv2.WN;
-    } else {
-      auto cfgv1 = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
-      BQ_s = cfgv1.BQ; BK_s = cfgv1.BK; WM_s = cfgv1.WM; WN_s = cfgv1.WN;
-    }
+    int BQ_s = BQ_fd, BK_s = BK_fd, WM_s = WM_fd, WN_s = WN_fd;
     int TGP_s = WM_s * WN_s * 32;
 
     // ── Allocate scratch buffers pO and pL ─────────────────────────────────
@@ -550,7 +545,8 @@ void MFAttention::eval_gpu(
     const bool v4_eligible =
         (dtype_code != 2) &&
         v4_tgp_eligible(D, is_m3_plus_steel) &&
-        !params_.has_rope;    // V4 reads K raw from device; no TGP for RoPE-K
+        !params_.has_rope &&         // V4 reads K raw from device; no TGP for RoPE-K
+        !params_.has_block_mask;     // V4 does not support sparse masks
 
     if (v4_eligible) {
       auto cfg4 = select_steel_v4_block_config(D, is_m3_plus_steel);
@@ -644,24 +640,24 @@ void MFAttention::eval_gpu(
   }  // end if (is_m3_plus_steel && MFA_ENABLE_V4)
 
   // ── STEEL V5 dispatch (f16/bf16, D=64/128, all gens) ────────────────────
-  // D-blocked: BD_tile=32, BK=128.  Q loaded from device into registers;
-  // no Q_smem.  KV_smem = max(K^T=8704, V=10240) = 10,240 B → 3 TG/CU.
-  // BK=128 → 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
-  // Set MFA_ENABLE_V5=1 to opt in (disabled by default pending benchmarks).
+  // D-blocked: Q in registers (no Q_smem), KV_smem reused for K^T and V.
+  // Per-D configs (autoresearch): D=64 BK=32 BD=32, D=128 BK=32 BD=64.
+  // TGP: D=64 2,048B (16 TG/CU), D=128 4,096B (8 TG/CU).
+  // Set MFA_ENABLE_V5=1 to opt in (experimental).
   if (MFAEnvConfig::enable_v5()) {
     const bool v5_elig =
         (dtype_code != 2) &&
         v5_eligible(D) &&
         !params_.has_rope &&         // RoPE: incompatible with register Q
-        !params_.has_block_mask;     // sparse: block mask sized for V2's BK, not V5's BK=128
+        !params_.has_block_mask;     // sparse: block mask sized for V2's BK, not V5's BK
 
     if (v5_elig) {
       auto cfg5 = select_steel_v5_block_config(D, is_m3_plus_steel);
-      const int BQ5     = cfg5.BQ;      // 32 (M1/M2) or 16 (M3+)
-      const int BK5     = cfg5.BK;      // 128
-      const int BD5     = cfg5.BD_tile; // 32
-      const int WM5     = cfg5.WM;      // 4 (M1/M2) or 2 (M3+)
-      const int TGP5    = WM5 * 32;     // 128 or 64
+      const int BQ5     = cfg5.BQ;      // 32
+      const int BK5     = cfg5.BK;      // 32
+      const int BD5     = cfg5.BD_tile; // 32 (D=64) or 64 (D=128)
+      const int WM5     = cfg5.WM;      // 4
+      const int TGP5    = WM5 * 32;     // 128
       const int NQ5     = (N + BQ5 - 1) / BQ5;
       const int NK5     = (S + BK5 - 1) / BK5;
       const int NQ5_aln = (N % BQ5 == 0) ? NQ5 : NQ5 - 1;
@@ -1382,7 +1378,9 @@ void MFABackwardQuery::eval_gpu(
 
   // ── Device & dtype ─────────────────────────────────────────────────────
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
+  int arch_gen_bwdq = static_cast<int>(dev.get_architecture_gen());
+  { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_bwdq = e.force_gen; }
+  bool is_m3_plus = (arch_gen_bwdq >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;
@@ -1483,7 +1481,9 @@ void MFABackwardKeyValue::eval_gpu(
   dV.set_data(mlx::core::allocator::malloc(dV.nbytes()));
 
   auto& dev = mlx::core::metal::device(stream().device);
-  bool is_m3_plus = (dev.get_architecture_gen() >= 15); // 13=M1 14=M2 15=M3 16=M4
+  int arch_gen_bwdkv = static_cast<int>(dev.get_architecture_gen());
+  { const auto& e = MFAEnvConfig::get(); if (e.force_gen > 0) arch_gen_bwdkv = e.force_gen; }
+  bool is_m3_plus = (arch_gen_bwdkv >= 15); // 13=M1 14=M2 15=M3 16=M4
 
   uint8_t dtype_code;
   if (q.dtype() == mlx::core::float16)       dtype_code = 0;

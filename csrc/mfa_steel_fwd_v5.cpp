@@ -22,7 +22,6 @@ namespace mlx_mfa {
 std::string generate_steel_v5_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
-  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
   // V5 always uses pad_expr="0". The KLoader/VLoader LD_DST template params
   // are compile-time constants (MFA_BK and MFA_BD_TILE), so smem stride must
   // equal BK or BD_tile exactly — padding would create a loader/stride mismatch.

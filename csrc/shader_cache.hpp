@@ -109,7 +109,7 @@ class ShaderCache {
   void* get_or_compile(const KernelKey& key, void* device);
 
   void   clear();
-  size_t size() const { return cache_.size(); }
+  size_t size() { std::lock_guard<std::mutex> lock(mtx_); return cache_.size(); }
 
  private:
   ShaderCache() = default;

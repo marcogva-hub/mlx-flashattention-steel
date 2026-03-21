@@ -129,7 +129,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.14.2 — 769 tests pass.
+v2.20.0 — 769 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
