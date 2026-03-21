@@ -29,6 +29,7 @@
 #pragma once
 
 #include "shader_cache.hpp"
+#include "mfa_env.hpp"
 #include <string>
 
 namespace mlx_mfa {
@@ -56,24 +57,18 @@ inline bool v5_eligible(int head_dim) {
 inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
                                                        bool is_m3_plus) {
   (void)is_m3_plus;
-  // Autoresearch overrides (env vars take precedence over code changes)
-  auto get_int = [](const char* env, int def) -> int {
-    if (const char* v = std::getenv(env)) {
-      const int p = std::atoi(v);
-      if (p > 0) return p;
-    }
-    return def;
-  };
-  const int bq = get_int("MFA_V5_FORCE_BQ", 32);
-  const int wm = get_int("MFA_V5_FORCE_WM",  4);
+  const auto& env = MFAEnvConfig::get();
+  auto or_default = [](int override_val, int def) { return override_val > 0 ? override_val : def; };
+  const int bq = or_default(env.v5_force_bq, 32);
+  const int wm = or_default(env.v5_force_wm,  4);
   if (head_dim == 64) {
-    const int bk      = get_int("MFA_V5_FORCE_BK",     32);
-    const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE", 32);
+    const int bk      = or_default(env.v5_force_bk,      32);
+    const int bd_tile = or_default(env.v5_force_bd_tile,  32);
     return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
   }
   // D=128 (default)
-  const int bk      = get_int("MFA_V5_FORCE_BK",     32);
-  const int bd_tile = get_int("MFA_V5_FORCE_BD_TILE", 64);
+  const int bk      = or_default(env.v5_force_bk,      32);
+  const int bd_tile = or_default(env.v5_force_bd_tile,  64);
   return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
 }
 

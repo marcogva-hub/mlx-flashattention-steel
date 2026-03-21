@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "mfa_env.hpp"
+
 #include "shader_cache.hpp"
 #include "mfa_steel_fwd_v2.hpp"  // reuse SteelV2BlockConfig
 #include <string>
@@ -51,15 +53,14 @@ inline SteelV2BlockConfig select_steel_v3_block_config(int head_dim, bool is_m3_
   //   D=64  BK=32: TGP=14,336B → 2 TGs/CU  +10-17% vs V2 at N≥4096 causal
   //   D=128 BK=16: TGP=19,200B → 1 TG/CU   +10-15% vs V2 at N≥2048 causal
   // MFA_V3_FORCE_BK_D64 / MFA_V3_FORCE_BK_D128: override for testing.
-  auto get_bk = [](const char* env, int default_bk) -> int {
-    if (const char* v = std::getenv(env)) {
-      const int p = std::atoi(v);
-      if (p == 8 || p == 16 || p == 32 || p == 64) return p;
-    }
+  const auto& env = MFAEnvConfig::get();
+  auto bk_or = [](int override_val, int default_bk) -> int {
+    if (override_val == 8 || override_val == 16 || override_val == 32 || override_val == 64)
+      return override_val;
     return default_bk;
   };
-  if (head_dim == 64)  return {32, get_bk("MFA_V3_FORCE_BK_D64",  32),  64, 4, 1};
-  if (head_dim == 128) return {32, get_bk("MFA_V3_FORCE_BK_D128", 16), 128, 4, 1};
+  if (head_dim == 64)  return {32, bk_or(env.v3_force_bk_d64,  32),  64, 4, 1};
+  if (head_dim == 128) return {32, bk_or(env.v3_force_bk_d128, 16), 128, 4, 1};
   return {0, 0, 0, 0, 0};
 }
 
