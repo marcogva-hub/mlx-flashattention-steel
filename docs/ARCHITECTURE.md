@@ -1,6 +1,6 @@
 # mlx-mfa Architecture
 
-Version: **2.14.2**
+Version: **2.20.0**
 
 ## 1) System Overview
 
@@ -142,14 +142,42 @@ remote backend support in the freeze state.
 
 Core native files:
 - `csrc/mfa_attention.cpp`: primitive dispatch and routing
+- `csrc/mfa_env.hpp`: MFAEnvConfig singleton (env var caching)
 - `csrc/mfa_steel_fwd.cpp` + `csrc/mfa_steel_fwd_v2.cpp`: dense forward family
+- `csrc/mfa_steel_fwd_v3.hpp/cpp`: V3 separate K/V smem kernel
+- `csrc/mfa_steel_fwd_v5.hpp/cpp`: V5 D-blocked kernel (experimental)
 - `csrc/mfa_steel_bwd.cpp`: native backward kernels (gated non-default)
 - `csrc/mfa_sage_fwd.cpp`: Sage path
 - `csrc/mfa_paged_gather.cpp` / `csrc/mfa_scatter.cpp`: paged helpers
 - `csrc/shader_cache.mm`: pipeline compilation/cache
 
-Kernels are generated/selected by policy; active production behavior is policy
-and benchmark constrained.
+### 7.1 MFAEnvConfig (v2.20.0)
+
+Static singleton (`csrc/mfa_env.hpp`) that caches all `MFA_*` env vars at
+first access. Eliminates per-dispatch `std::getenv()` syscall overhead.
+
+**Cached fields** (read once): `force_gen`, `v2_force_bk`, `v3_force_bk_d64`,
+`v3_force_bk_d128`, `v5_force_bk`, `v5_force_bd_tile`, etc.
+
+**Live-read static methods** (uncached): `enable_v3()`, `enable_v4()`,
+`enable_v5()`, `disable_v2()`, `force_v2()`, `force_splitk()`. These must
+remain live-read because Python tests use `os.environ` patching at runtime.
+
+`invalidate()` forces re-read of cached fields (test/bench use only).
+
+### 7.2 Forward Dispatch Cascade
+
+```
+f32 → ccv legacy path
+f16/bf16:
+  Flash Decode (N≤4, S≥256) → split-KV two-phase
+  V2 split-K (under-occupied grid) → V2 with parallel reduction
+  V4 (M3+, MFA_ENABLE_V4=1) → direct device K reads
+  V5 (MFA_ENABLE_V5=1) → D-blocked, Q in registers
+  V3 (B*H≥4, causal, D=64 N≥4096 or D=128 N≥2048) → separate K/V smem
+  V2 single-pass → production default
+  V1 (D>128) → original STEEL kernel
+```
 
 ## 8) Documentation and Historical Separation
 

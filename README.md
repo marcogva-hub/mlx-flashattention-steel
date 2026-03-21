@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.14.2** — GNA sparse attention, fused PagedVarlenForward kernel, paged causal fix, LLM serving finalization.
+Current version: **2.20.0** — MFAEnvConfig refactor, V3 guard optimization, V5 per-D configs, comprehensive audit + docs update.
 
 ## Foreword
 
@@ -26,10 +26,10 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.14.2 includes GNA (Generalized Neighborhood Attention) for video DiTs,
-a fused PagedVarlenForward kernel with 4.7-25.6× speedup over the previous
-per-sequence bridge, a paged causal masking fix, and comprehensive LLM
-serving layer finalization. See `CHANGELOG.md` for full details per version.
+v2.20.0 adds MFAEnvConfig (centralized env var caching), V3 dispatch guard
+optimization (B*H≥4, +35-67% for small-batch causal), V5 per-D block configs,
+comprehensive code audit with 14 tech debt fixes, and full documentation
+update. See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
 on my work!
