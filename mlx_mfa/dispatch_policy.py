@@ -40,6 +40,24 @@ from typing import Optional
 
 import mlx.core as mx
 
+
+def _invalidate_cached_env():
+    """Notify C++ MFAEnvConfig that cached env vars changed.
+
+    Must be called after any os.environ mutation of cached MFA_* vars
+    (MFA_V2_FORCE_BK, MFA_V2_BQ64, MFA_FORCE_GEN, MFA_V3_FORCE_BK_*,
+    MFA_V5_FORCE_*, MFA_V2_BD_HALF_D512, etc.).
+
+    Dispatch gate vars (MFA_ENABLE_V3, MFA_ENABLE_V5, etc.) are live-read
+    static methods and do NOT require this call.
+    """
+    try:
+        from mlx_mfa._ext import _invalidate_env_config
+        _invalidate_env_config()
+    except (ImportError, AttributeError):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Default thresholds: minimum N to activate MFA for (D, causal) pair.
 # Derived from M1 Max dispatch matrix baseline.  999_999 effectively disables.
@@ -664,6 +682,7 @@ def calibrate_dispatch(
                 prev = os.environ.get("MFA_V2_FORCE_BK")
                 try:
                     os.environ["MFA_V2_FORCE_BK"] = str(bk)
+                    _invalidate_cached_env()
                     ms = _run_bk(lambda: flash_attention(  # noqa: B023
                         q, k, v, scale=scale, causal=True, backend="mfa"))
                 finally:
@@ -671,6 +690,7 @@ def calibrate_dispatch(
                         os.environ.pop("MFA_V2_FORCE_BK", None)
                     else:
                         os.environ["MFA_V2_FORCE_BK"] = prev
+                    _invalidate_cached_env()
                 bk_results[bk][N] = ms
                 print(f"  D=128 BK={bk} N={N}: {ms:.2f} ms")
 
@@ -821,6 +841,7 @@ def _load_calibrated_kernel_config() -> None:
                 if not bool(_gdi().get("is_m3_plus", False)):
                     bk = 32  # downgrade: M1/M2 cannot use BK=64 safely
             os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
+            _invalidate_cached_env()
             if _verbose:
                 print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
 
