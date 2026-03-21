@@ -183,7 +183,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 
 ---
 
-## 11) Component Status (v2.14.0)
+## 11) Component Status (v2.20.0)
 
 | Component | Status |
 |-----------|--------|

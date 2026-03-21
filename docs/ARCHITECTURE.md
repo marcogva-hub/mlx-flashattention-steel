@@ -199,7 +199,7 @@ Deferred until future continuation (likely newer hardware generation):
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
 
-## 10) LLM Serving Layer Status (v2.14.0)
+## 10) LLM Serving Layer Status (v2.20.0)
 
 The serving layer is considered production-ready for local inference.
 See `docs/SERVING_GUIDE.md` for usage guide.

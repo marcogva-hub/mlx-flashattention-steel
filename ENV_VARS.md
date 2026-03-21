@@ -48,10 +48,22 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_V5_FORCE_BQ` | int | 0 (auto) | Yes | Override V5 BQ (default: 32) |
 | `MFA_V5_FORCE_WM` | int | 0 (auto) | Yes | Override V5 WM (default: 4) |
 
+## Dispatch Policy (Python-side, live-read)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MFA_FORCE_D256_PATH` | str | unset | Force D=256 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
+| `MFA_FORCE_D512_PATH` | str | unset | Force D=512 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
+| `MFA_FORCE_NATIVE_BWD` | str | unset | Force native backward: `1` → native kernel, `0` → SDPA VJP |
+| `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
+| `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
+| `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
+
 ## Shader Generation (cold path, not cached)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
+| `MFA_DEBUG_SHADERS` | bool | false | Dump generated Metal shader source to stderr during compilation |
 | `MFA_NO_PADDING` | bool | false | Disable threadgroup memory padding (causes NaN in 45/594 tests) |
 | `MFA_IR_INVESTIGATE` | bool | false | Dump Metal IR during shader compilation |
 | `MFA_DISABLE_ASYNC` | bool | false | Disable precompiled async metallib lookup |

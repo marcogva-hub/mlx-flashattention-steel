@@ -11,6 +11,7 @@
 #include <mlx/backend/metal/device.h>
 
 #include "mfa_attention.hpp"
+#include "mfa_env.hpp"
 #include "mfa_paged_gather.hpp"
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
@@ -582,5 +583,9 @@ NB_MODULE(_ext, m) {
       nb::arg("stream") = nb::none(),
       "Fused paged varlen forward: packed Q + paged KV in a single dispatch.");
 
-  m.attr("__version__") = "2.20.0";
+  m.def("_invalidate_env_config", []() {
+      mlx_mfa::MFAEnvConfig::invalidate();
+  }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
+
+  m.attr("__version__") = "2.20.1";
 }

@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.20.0"
+__version__ = "2.20.1"
 
 
 def _check_abi() -> None:
@@ -137,11 +137,24 @@ from mlx_mfa.external_cache import (
     LocalHostKVStoreAdapter,
 )
 
-from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config
+from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
 from mlx_mfa.compile_metallib import compile_metallib
 
 # Apply any calibrated kernel config (BK selection etc.) before first kernel dispatch.
 _load_calibrated_kernel_config()
+
+# Re-export C++ invalidation for benchmarks/advanced users.
+def _invalidate_env_config():
+    """Re-read all cached MFA_* env vars in the C++ singleton.
+
+    Call after os.environ mutations of cached vars (MFA_V2_FORCE_BK, etc.).
+    Dispatch gates (MFA_ENABLE_V3, etc.) are live-read and don't need this.
+    """
+    try:
+        from mlx_mfa._ext import _invalidate_env_config as _inv
+        _inv()
+    except (ImportError, AttributeError):
+        pass
 
 from mlx_mfa.masks import (
     make_spatial_2d_mask,

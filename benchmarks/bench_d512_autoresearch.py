@@ -1,28 +1,19 @@
 #!/usr/bin/env python3
 """D=512 autoresearch bench — outputs SPEEDUP_RATIO on last line."""
-import math, os, sys, time
+import math, os, sys
+from functools import partial
 import mlx.core as mx
+from bench_utils import med as _med
 
 D, SEED = 512, 42
 DTYPE = mx.float16
+med = partial(_med, warmup=3, iters=12)
 PROFILES = [
     (2, 8, 1024, True),
     (2, 8, 2048, True),
     (2, 8, 4096, True),
     (2, 8, 8192, True),
 ]
-WARMUP, ITERS = 3, 12
-
-def med(fn):
-    for _ in range(WARMUP): mx.eval(fn())
-    mx.synchronize()
-    ts = []
-    for _ in range(ITERS):
-        t0 = time.perf_counter()
-        mx.eval(fn())
-        mx.synchronize()
-        ts.append((time.perf_counter()-t0)*1000)
-    ts.sort(); return ts[len(ts)//2]
 
 def main():
     from mlx_mfa import flash_attention, is_mfa_available, get_device_info
