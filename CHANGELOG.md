@@ -4,6 +4,62 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.20.0] — 2026-03-21
+
+### Performance Optimization (Autoresearch)
+
+- **V3 dispatch guard**: Lowered B*H threshold from 16 to 4, unlocking V3 for
+  Llama-7B decode (B=1 H=8) and similar small-batch causal shapes. +35-67%
+  speedup for previously V2-fallback shapes.
+- **V5 per-D block configs**: D=64 uses BD_tile=32, D=128 uses BD_tile=64.
+  V5 now correctly differentiates head dimensions instead of single config.
+- **V5 promotion**: Evaluated and rejected — only 2-3% gain at B*H>=128 with
+  regression risk at B*H=16/32. V5 remains experimental (`MFA_ENABLE_V5=1`).
+- **V3 non-causal**: Evaluated and rejected — V3 loses 6/9 non-causal shapes
+  by 25-77%. Causal-only gate confirmed necessary.
+- **V3 causal BK defaults**: Confirmed optimal (D=64->BK=32, D=128->BK=16).
+- **D=256 autoresearch**: BK=8 default for M1/M2 (+43% geomean D=256 causal).
+- **D=512 autoresearch**: BD_HALF=32 BK=128 default (0.80x SDPA geomean).
+
+### Refactoring & Tech Debt
+
+- **MFAEnvConfig**: Centralized all ~20 `std::getenv()` calls into a static
+  singleton with lazy initialization and `invalidate()` for testing. Eliminates
+  per-dispatch syscall overhead and thread-safety issues.
+- **MFA_FORCE_GEN in backward**: Fixed ccv backward passes (BackwardQuery,
+  BackwardKV) and ccv f32 forward to honor `MFA_FORCE_GEN` override, matching
+  the STEEL forward path behavior.
+- **V4 sparse guard**: Added missing `!has_block_mask` check to V4 dispatch
+  eligibility, preventing silent mask-ignore when V4 is enabled.
+- **Dead code removal**: Removed unreachable sparse code in V5 dispatch,
+  unused `_sever_lazy_graph()` function (40 lines), unused `no_padding`
+  variable in V5 shader generator.
+- **ShaderCache thread safety**: `size()` now acquires mutex before reading.
+- **Dispatch cache cap**: `_dispatch_decision_cache` capped at 512 entries to
+  prevent unbounded growth during autoregressive decode.
+- **Redundant config call**: Eliminated duplicate `select_steel_v2_block_config`
+  call in flash decode path.
+- **Shared benchmark utilities**: Extracted `bench_utils.py` with `med()`,
+  `geomean()`, `env_override()` context manager, `is_mfa_available()` guard.
+- **Env var documentation**: Added `ENV_VARS.md` enumerating all 18+ MFA_*
+  environment variables with types, defaults, and descriptions.
+- **Stale comments**: Fixed V5 header/dispatch comments (BK=128->BK=32),
+  updated development-phase comments to reflect current capabilities,
+  updated bindings.cpp `__version__` from "1.1.0" to "2.20.0".
+
+### Documentation
+
+- All documentation files updated to v2.20.0 state.
+- README, CLAUDE.md, API_MANUAL, INVENTORY, ARCHITECTURE, SERVING_GUIDE,
+  RESULTS, ENV_VARS — all version-stamped and content-verified.
+- ARCHITECTURE: added MFAEnvConfig section and dispatch cascade description.
+- INVENTORY: regenerated all line counts, added new files.
+
+### Tests
+
+- 769 tests pass (748 pass + 21 xfail + 20 xpass = 769 total).
+- No test modifications — all changes validated against existing suite.
+
 ## [2.14.3] — 2026-03-18
 
 ### Documentation Cleanup
