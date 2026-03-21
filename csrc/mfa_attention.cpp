@@ -571,7 +571,7 @@ void MFAttention::eval_gpu(
         KK4::KernelType::SteelForwardV4,
         D, BQ4, BK4, D, WM4,
         params_.causal,
-        /*sparse=*/params_.has_block_mask,
+        /*sparse=*/false,  // V4 excludes has_block_mask in eligibility guard
         is_m3_plus_steel,
         /*has_rope=*/false,   // V4 never uses RoPE-K (gated above)
         /*rope_interleaved=*/false,
@@ -675,7 +675,7 @@ void MFAttention::eval_gpu(
         KK5::KernelType::SteelForwardV5,
         D, BQ5, BK5, BD5, WM5,
         params_.causal,
-        /*sparse=*/params_.has_block_mask,
+        /*sparse=*/false,  // V5 excludes has_block_mask in eligibility guard
         is_m3_plus_steel,
         /*has_rope=*/false,
         /*rope_interleaved=*/false,
@@ -724,8 +724,8 @@ void MFAttention::eval_gpu(
       sp5.has_alibi    = params_.has_alibi ? 1 : 0;
       sp5.window_left  = params_.window_left;
       sp5.window_right = params_.window_right;
-      sp5.mask_batch_stride = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
-      sp5.mask_head_stride  = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
+      sp5.mask_batch_stride = 0;  // V5 excludes sparse (has_block_mask) in eligibility guard
+      sp5.mask_head_stride  = 0;
 
       auto& enc5 = d.get_command_encoder(stream().index);
       enc5.set_compute_pipeline_state(pipeline5);
@@ -735,12 +735,9 @@ void MFAttention::eval_gpu(
       enc5.set_output_array(out,       3);
       enc5.set_output_array(logsumexp, 4);
       enc5.set_bytes(sp5,              5);
-      if (params_.has_block_mask) {
-        enc5.set_input_array(inputs[3], 6);
-      }
+      // V5 excludes sparse (has_block_mask); no buffer(6) binding needed.
       if (params_.has_alibi) {
-        int alibi_idx = 3 + (params_.has_block_mask ? 1 : 0);
-        enc5.set_input_array(inputs[alibi_idx], 9);
+        enc5.set_input_array(inputs[3], 9);  // alibi always at inputs[3] (no block_mask)
       }
 
       enc5.dispatch_threadgroups(
