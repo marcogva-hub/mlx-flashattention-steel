@@ -582,5 +582,5 @@ NB_MODULE(_ext, m) {
       nb::arg("stream") = nb::none(),
       "Fused paged varlen forward: packed Q + paged KV in a single dispatch.");
 
-  m.attr("__version__") = "1.1.0";
+  m.attr("__version__") = "2.20.0";
 }
