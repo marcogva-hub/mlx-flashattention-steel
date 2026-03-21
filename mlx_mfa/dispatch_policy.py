@@ -12,7 +12,15 @@ Baseline crossover data (decision passes through 2026-03-12):
   - D=128 causal: MFA wins with low-N crossover on current M1/M2 defaults
   - D=256 causal: narrow win only for f16 on M1/M2 at long N (>=4096)
   - D=256 bf16 and all non-causal dense routes remain conservative SDPA
-  - D=512 dense remains conservative SDPA (0/32 wins in decision pass)
+  - D=512 dense remains conservative SDPA (0/32 wins in decision pass);
+    post-autoresearch ceiling: 0.80x geomean (74 iters, BK=128 BD_HALF=32
+    optimal). Autoresearch (2026-03-20, M1 Max) exhaustively explored
+    BK∈{4..256}, BD_HALF∈{16..256}, BQ∈{16..64}, WM∈{1..8}, plus exotic
+    approaches (direct device reads, lazy Q, no-unroll, half-padding).
+    Root cause: 64 barriers/K-tile (16 D-split passes × ~4 barriers each),
+    ~6% constant ALU overhead vs SDPA that cannot be eliminated with D-split
+    architecture. Asymptotic: 0.96x at N=32k — approaches but never crosses
+    1.0x. Large-batch profiles (B=4 H=8 N=8192) reach 0.97x.
 
 Override the dispatch table at runtime::
 
@@ -37,6 +45,14 @@ import mlx.core as mx
 # Derived from M1 Max dispatch matrix baseline.  999_999 effectively disables.
 # ---------------------------------------------------------------------------
 
+# D=512 autoresearch ceiling (2026-03-20, M1 Max, 74 iterations):
+#   Best achievable: BD_HALF=32 BK=128 BQ=32 WM=4 → 0.80x geomean SDPA
+#   (B=2 H=8, N=1024–8192, f16, causal).
+#   Asymptotic: 0.96x at N=32768 — approaches but never crosses 1.0x.
+#   Root cause: 16 D-split passes × ~4 barriers/pass = 64 barriers/K-tile,
+#   yielding ~6% constant ALU overhead vs SDPA's fused single-pass approach.
+#   This overhead is intrinsic to the D-split architecture on M1/M2 and
+#   cannot be eliminated by block-config tuning alone.
 _D512_CONSERVATIVE_MIN_N = 999_999
 
 
@@ -135,7 +151,7 @@ def _d256_min_n(
 
     D=256 is handled as a separate design family from D=64/128:
     - M3+ f16 and bf16 causal: promote from N>=2048 (1.58-1.68x on M4 Max)
-    - M1/M2 f16 causal: promote from N>=4096 (benchmark-backed narrow win)
+    - M1/M2 f16 causal: promote from N>=2048 (1.09x@2048, 1.22x@4096 post-BK=8)
     - M1/M2 bf16 causal: keep SDPA (0.65-0.88x on M1 Max -- emulation cost)
     - non-causal: defer to global table (already SDPA default)
     """
@@ -145,8 +161,9 @@ def _d256_min_n(
         # M4 Max D=256 causal (B=2 H=8): f16 1.64-1.66x, bf16 1.58-1.68x.
         return 2048
     # M1/M2: only f16 promoted (bf16 D-split emulation is too expensive)
+    # BK=8 default (527f9d3): N=1024 0.84x, N=2048 1.09x, N=4096 1.22x (M1 Max)
     if dtype_key == "float16":
-        return 4096
+        return 2048
     if dtype_key == "bfloat16":
         return 999_999  # 0.65-0.88x on M1 Max
     return None
@@ -660,7 +677,10 @@ def calibrate_dispatch(
         # BK=64 wins only if faster at BOTH N=4096 AND N=8192
         wins_4096 = bk_results[64][4096] < 0.95 * bk_results[32][4096]
         wins_8192 = bk_results[64][8192] < 0.95 * bk_results[32][8192]
-        optimal_bk = 64 if (wins_4096 and wins_8192) else 32
+        from mlx_mfa import get_device_info as _gdi
+        _dev_info = _gdi()
+        _hw_m3_plus = bool(_dev_info.get("is_m3_plus", False))
+        optimal_bk = 64 if (_hw_m3_plus and wins_4096 and wins_8192) else 32
         kernel_configs["d128_optimal_bk"] = optimal_bk
         print(f"  => D=128 optimal BK={optimal_bk} "
               f"(BK=64 wins N=4096: {wins_4096}, N=8192: {wins_8192})")
@@ -796,6 +816,10 @@ def _load_calibrated_kernel_config() -> None:
             data = json.load(fh)
         bk = data.get("kernel_configs", {}).get("d128_optimal_bk")
         if bk in (32, 64):
+            if bk == 64:
+                from mlx_mfa import get_device_info as _gdi
+                if not bool(_gdi().get("is_m3_plus", False)):
+                    bk = 32  # downgrade: M1/M2 cannot use BK=64 safely
             os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
             if _verbose:
                 print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")

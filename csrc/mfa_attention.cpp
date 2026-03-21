@@ -27,6 +27,7 @@
 #include "mfa_sage_fwd.hpp"
 #include "mfa_steel_paged_varlen_fwd.hpp"
 #include "shader_cache.hpp"
+#include "mfa_env.hpp"
 
 #include <mlx/utils.h>
 #include <mlx/allocator.h>
@@ -165,8 +166,8 @@ void MFAttention::eval_gpu(
   //   MFA_FORCE_GEN=15  → treat as M3 (gen=15) even on M1 (gen=13)
   //   MFA_FORCE_GEN=13  → treat as M1 even on M3 hardware
   int arch_gen_steel = static_cast<int>(d.get_architecture_gen());
-  const char* force_gen_env = std::getenv("MFA_FORCE_GEN");
-  if (force_gen_env) arch_gen_steel = std::atoi(force_gen_env);
+  const auto& env = MFAEnvConfig::get();
+  if (env.force_gen > 0) arch_gen_steel = env.force_gen;
   bool is_m3_plus_steel = (arch_gen_steel >= 15);
   // M5+ (gen >= 17, A19/Apple Silicon 5th gen) exposes Metal 4 tensor API
   // (MTLTensor, cooperative tensor ops). Stub only — no kernel implemented yet.
@@ -354,16 +355,12 @@ void MFAttention::eval_gpu(
   // Phase 1: SteelV2SplitKPartial  (grid: NQ * num_splits, H, B)
   // Phase 2: FlashDecodeReduce     (reused, grid: N, H, B)
   // Set MFA_DISABLE_V2=1 to force V1 path (for benchmarking/debugging only).
-  if (!std::getenv("MFA_DISABLE_V2")) {
+  if (!MFAEnvConfig::disable_v2()) {
     // MFA_FORCE_SPLITK override:
     //   1 -> force split-K attempt (bypass occupancy short-circuit)
     //   0 -> disable split-K entirely
     // unset/other -> normal heuristic + optional calibrated thresholds
-    int force_splitk = -1;
-    if (const char* fs_env = std::getenv("MFA_FORCE_SPLITK")) {
-      if (fs_env[0] == '0' && fs_env[1] == '\0') force_splitk = 0;
-      if (fs_env[0] == '1' && fs_env[1] == '\0') force_splitk = 1;
-    }
+    int force_splitk = MFAEnvConfig::force_splitk();  // -1=heuristic, 0=disable, 1=force
     const bool has_window = (params_.window_left >= 0 || params_.window_right >= 0);
     const auto splitk_calibrated_max_n = [&]() -> int {
       // Key format (set by dispatch_policy._load_calibrated_kernel_config):
@@ -385,7 +382,7 @@ void MFAttention::eval_gpu(
     // Skip V2 for this regime, falling through to V1.
     // Override: set MFA_FORCE_V2=1 to bypass this guard (benchmarking).
     const bool m3_prefers_v1_sk = is_m3_plus_steel && D <= 128 && params_.causal
-                                  && !std::getenv("MFA_FORCE_V2");
+                                  && !MFAEnvConfig::force_v2();
     const bool v2sk_eligible =
         (dtype_code != 2) &&
         is_v2_small_d_family(D) &&
@@ -549,7 +546,7 @@ void MFAttention::eval_gpu(
   // Barrier schedule: B0 + (NK-1)×(A+B) ≈ 2×NK vs V2's 4×NK.
   // TGP: Q_smem + V_smem only (no K_smem). RoPE-K not supported (no TGP K).
   // Set MFA_ENABLE_V4=1 to opt in (disabled by default pending benchmarks).
-  if (is_m3_plus_steel && std::getenv("MFA_ENABLE_V4")) {
+  if (is_m3_plus_steel && MFAEnvConfig::enable_v4()) {
     const bool v4_eligible =
         (dtype_code != 2) &&
         v4_tgp_eligible(D, is_m3_plus_steel) &&
@@ -571,7 +568,7 @@ void MFAttention::eval_gpu(
         KK4::KernelType::SteelForwardV4,
         D, BQ4, BK4, D, WM4,
         params_.causal,
-        /*sparse=*/params_.has_block_mask,
+        /*sparse=*/false,  // V4 excludes has_block_mask in eligibility guard
         is_m3_plus_steel,
         /*has_rope=*/false,   // V4 never uses RoPE-K (gated above)
         /*rope_interleaved=*/false,
@@ -651,7 +648,7 @@ void MFAttention::eval_gpu(
   // no Q_smem.  KV_smem = max(K^T=8704, V=10240) = 10,240 B → 3 TG/CU.
   // BK=128 → 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
   // Set MFA_ENABLE_V5=1 to opt in (disabled by default pending benchmarks).
-  if (std::getenv("MFA_ENABLE_V5")) {
+  if (MFAEnvConfig::enable_v5()) {
     const bool v5_elig =
         (dtype_code != 2) &&
         v5_eligible(D) &&
@@ -675,7 +672,7 @@ void MFAttention::eval_gpu(
         KK5::KernelType::SteelForwardV5,
         D, BQ5, BK5, BD5, WM5,
         params_.causal,
-        /*sparse=*/params_.has_block_mask,
+        /*sparse=*/false,  // V5 excludes has_block_mask in eligibility guard
         is_m3_plus_steel,
         /*has_rope=*/false,
         /*rope_interleaved=*/false,
@@ -724,8 +721,8 @@ void MFAttention::eval_gpu(
       sp5.has_alibi    = params_.has_alibi ? 1 : 0;
       sp5.window_left  = params_.window_left;
       sp5.window_right = params_.window_right;
-      sp5.mask_batch_stride = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
-      sp5.mask_head_stride  = params_.has_block_mask ? (int64_t)(NQ5 * NK5) : 0;
+      sp5.mask_batch_stride = 0;  // V5 excludes sparse (has_block_mask) in eligibility guard
+      sp5.mask_head_stride  = 0;
 
       auto& enc5 = d.get_command_encoder(stream().index);
       enc5.set_compute_pipeline_state(pipeline5);
@@ -735,12 +732,9 @@ void MFAttention::eval_gpu(
       enc5.set_output_array(out,       3);
       enc5.set_output_array(logsumexp, 4);
       enc5.set_bytes(sp5,              5);
-      if (params_.has_block_mask) {
-        enc5.set_input_array(inputs[3], 6);
-      }
+      // V5 excludes sparse (has_block_mask); no buffer(6) binding needed.
       if (params_.has_alibi) {
-        int alibi_idx = 3 + (params_.has_block_mask ? 1 : 0);
-        enc5.set_input_array(inputs[alibi_idx], 9);
+        enc5.set_input_array(inputs[3], 9);  // alibi always at inputs[3] (no block_mask)
       }
 
       enc5.dispatch_threadgroups(
@@ -752,11 +746,30 @@ void MFAttention::eval_gpu(
 
   // ── STEEL V3 dispatch (f16/bf16, D=64 all gens, D=128 M1/M2 only) ───────
   // Separate K_smem + V_smem → 2 barriers/iter instead of V2's 4.
-  // Benchmarked result: V3 regresses vs V2 (0.77–0.88×) because doubling TGP
-  // (separate K+V instead of max(K,V)) halves occupancy (2 TGs/CU → 1 TG/CU).
-  // Disabled by default; set MFA_ENABLE_V3=1 to opt in (research/benchmarking).
-  if (std::getenv("MFA_ENABLE_V3")) {
+  //
+  // autoresearch (24 iters, M1 Max, 2026-03-20): BK=32 D=64 / BK=16 D=128
+  //   Geomean V3/SDPA: 1.47x (causal, large N)
+  //   Geomean V3/V2:   1.015x (causal only)
+  //   Wins:  D=64 N≥4096 causal, D=128 N≥2048 causal, all B*H≥4
+  //   Loses: small N, non-causal
+  //
+  // Guard sweep (Axis 1, 2026-03-21): V3 wins at all B*H≥4 (worst=0.665x V2).
+  // At B=1 H=4 N=2048, grid=256 tiles >> 32 CUs — occupancy is not the limit.
+  // Production routing: V3 dispatched when shape is in the winning regime.
+  // Shape guard: causal only, N above threshold per D, B*H≥4.
+  // Set MFA_DISABLE_V3=1 to force V2 for benchmarking/debugging.
+  //
+  // Note: V3 stays BEFORE V2 in dispatch order (V2 is the fallback).
+  {
+    const int v3_min_N = (D == 64) ? 4096 : 2048;  // N threshold per D
+    const bool v3_shape_ok =
+        params_.causal &&          // causal only
+        (N >= v3_min_N) &&         // large enough sequence
+        (B * H >= 4);              // sufficient parallelism (sweep: V3 wins all B*H≥4)
+    const bool v3_force = MFAEnvConfig::enable_v3();  // backward compat: bypass shape guard
     const bool v3_eligible =
+        !MFAEnvConfig::disable_v3() &&
+        (v3_shape_ok || v3_force) &&
         (dtype_code != 2) &&
         v3_tgp_eligible(D, is_m3_plus_steel) &&
         !params_.has_block_mask;
@@ -764,7 +777,7 @@ void MFAttention::eval_gpu(
     if (v3_eligible) {
       auto cfg3 = select_steel_v3_block_config(D, is_m3_plus_steel);
       const int BQ3      = cfg3.BQ;   // 32
-      const int BK3      = cfg3.BK;   // 64 (D=64) | 32 (D=128, all gens)
+      const int BK3      = cfg3.BK;   // 32 (D=64) | 16 (D=128)
       const int WM3      = cfg3.WM;   // 4
       const int TGP3     = WM3 * cfg3.WN * 32;  // 128
       const int NQ3      = (N + BQ3 - 1) / BQ3;
@@ -850,21 +863,21 @@ void MFAttention::eval_gpu(
           MTL::Size::Make((size_t)TGP3, 1, 1));
       return;
     }
-  }  // end if (MFA_ENABLE_V3)
+  }  // end V3 dispatch block
 
   // ── STEEL V2 dispatch (f16/bf16, D=64/128 only) ──────────────────────────
   // BQ=32 (TQ=1), BK=64 (D=64) / BK=32 (D=128): sequential KV_smem, 2× BK vs V1.
   // D=256 excluded: routes to V1 (BQ=32, BK=16, WM=4, TGP=128).
   // Sparse (block_mask) excluded: mask is sized for V1 BK (BK_v1 != BK_v2).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
-  if (!std::getenv("MFA_DISABLE_V2")) {
+  if (!MFAEnvConfig::disable_v2()) {
     // M3+ (gen>=15): V1 double-buffer is 1.5-3.7x faster than V2 at D<=128 causal.
     // V2's shared KV_smem requires 3-4 barriers/tile vs V1's 2 barriers/tile.
     // On M3+ hardware, reduced TGP bandwidth makes barriers more expensive.
     // Skip V2 for this regime, falling through to V1.
     // Override: set MFA_FORCE_V2=1 to bypass this guard (benchmarking).
     const bool m3_prefers_v1 = is_m3_plus_steel && D <= 128 && params_.causal
-                               && !std::getenv("MFA_FORCE_V2");
+                               && !MFAEnvConfig::force_v2();
     const bool v2_eligible =
         (dtype_code != 2) &&
         is_v2_small_d_family(D) &&
@@ -975,7 +988,7 @@ void MFAttention::eval_gpu(
   // No RoPE (GPT-NeoX pairs cross BD_HALF boundary).
   // Sparse excluded (block_mask sized for V1 BK).
   // Set MFA_DISABLE_V2=1 to bypass.
-  if (!std::getenv("MFA_DISABLE_V2")) {
+  if (!MFAEnvConfig::disable_v2()) {
     const bool v2_dsplit_eligible =
         (dtype_code != 2) &&
         is_v2_dsplit_family(D) &&
@@ -985,8 +998,14 @@ void MFAttention::eval_gpu(
     if (v2_dsplit_eligible) {
       const bool is_d256_path = is_v2_d256_family(D);
       const bool is_d512_path = is_v2_d512_family(D);
-      const int BD_HALF = 128;
-      auto cfg_ds       = select_steel_v2_dsplit_block_config(is_m3_plus_steel);
+      int BD_HALF = (D == 512) ? 32 : 128;
+      if (D == 512 && env.v2_bd_half_d512 > 0) {
+        const int v = env.v2_bd_half_d512;
+        if (v == 32 || v == 64 || v == 128) BD_HALF = v;
+      }
+      auto cfg_ds       = (D == 512)
+          ? select_steel_v2_d512_block_config(is_m3_plus_steel)
+          : select_steel_v2_dsplit_block_config(is_m3_plus_steel);
       const int BQ_ds   = cfg_ds.BQ;   // 32
       const int BK_ds   = cfg_ds.BK;   // 32 (M1/M2) or 64 (M3+)
       const int WM_ds   = cfg_ds.WM;   // 4
@@ -1563,7 +1582,7 @@ void MFASteelBwdDQ::eval_gpu(
 
   auto& dev = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(dev.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   const bool is_m3_plus = (arch_gen >= 15);
 
   uint8_t dtype_code;
@@ -1668,7 +1687,7 @@ void MFASteelBwdDKV::eval_gpu(
 
   auto& dev = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(dev.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   const bool is_m3_plus = (arch_gen >= 15);
 
   uint8_t dtype_code;
@@ -2088,7 +2107,7 @@ void MFAVarlenAttention::eval_gpu(
 
   auto& dev = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(dev.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   const bool is_m3_plus = (arch_gen >= 15);
 
   uint8_t dtype_code;
@@ -2223,7 +2242,7 @@ void MFAPagedSteelForward::eval_gpu(
 
   auto& dev = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(dev.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   const bool is_m3_plus = (arch_gen >= 15);
 
   uint8_t dtype_code;
@@ -2422,7 +2441,7 @@ void MFASageForward::eval_gpu(
 
   auto& dev = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(dev.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   const bool is_m3_plus = (arch_gen >= 15);
 
   // V dtype code (O has same dtype as V)
@@ -2667,7 +2686,7 @@ void MFAPagedVarlenForward::eval_gpu(
   // Compile kernel
   auto& d = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(d.get_architecture_gen());
-  if (const char* fg = std::getenv("MFA_FORCE_GEN")) arch_gen = std::atoi(fg);
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
   bool is_m3_plus = (arch_gen >= 15);
 
   uint8_t dtype_code = 0;

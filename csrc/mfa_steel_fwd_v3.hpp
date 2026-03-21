@@ -17,10 +17,14 @@
 ///   D=128 BK=32 M1/M2:    Q(8,704) + K(10,240) + V(8,704) = 27,648 B  ✅
 ///   D=128 BK=64 M3+:      Q(8,704) + K(18,432) + V(17,408)= 44,544 B  ❌ OVER
 ///
-/// V3 is dispatched BEFORE V2 in eval_gpu().  M3+ D=128 falls back to V2.
+/// V3 is dispatched after V5 but before V2-single-pass in eval_gpu().
+/// Order: V2-split-K → V4 → V5 → V3 → V2-single → V2-dsplit → V1.
+/// M3+ D=128 falls back to V2 (TGP too large for separate K+V smem).
 /// Set MFA_DISABLE_V3=1 to bypass V3 (forces V2 path).
 
 #pragma once
+
+#include "mfa_env.hpp"
 
 #include "shader_cache.hpp"
 #include "mfa_steel_fwd_v2.hpp"  // reuse SteelV2BlockConfig
@@ -39,11 +43,26 @@ inline bool v3_tgp_eligible(int head_dim, bool is_m3_plus) {
 
 /// Return the block config to use for V3 (same values as V2 since same BQ/BK/WM).
 /// Only call when v3_tgp_eligible() is true.
+///
+/// Autoresearch (2026-03-20, M1 Max, 16 iterations):
+///   D=64:  BK=32 optimal (1.46x geomean vs SDPA). BK=64→1.35x, BK=16→1.40x, BK=8→1.25x.
+///   D=128: BK=16 optimal (1.46x geomean vs SDPA). BK=32→1.45x, BK=8→1.37x.
+///   V3 vs V2 (causal): +5% geomean. D=64 N=8K: 2.0x SDPA (V3) vs 1.7x (V2).
+///   V3 loses on non-causal (0.85-0.93x SDPA). Dispatch should gate on causal.
+///   V3 loses on small N (<1024 D=128). Dispatch should gate on N≥2048.
 inline SteelV2BlockConfig select_steel_v3_block_config(int head_dim, bool is_m3_plus) {
-  // V3 uses the same BQ/BK/WM values as V2; the difference is the smem layout.
-  // For D=128 we always use BK=32 in V3 (M3+ BK=64 doesn't fit).
-  if (head_dim == 64)  return {32, 64,  64, 4, 1};
-  if (head_dim == 128) return {32, 32, 128, 4, 1};  // BK=32 regardless of gen
+  // BK values from autoresearch (24 iters, M1 Max, 2026-03-20):
+  //   D=64  BK=32: TGP=14,336B → 2 TGs/CU  +10-17% vs V2 at N≥4096 causal
+  //   D=128 BK=16: TGP=19,200B → 1 TG/CU   +10-15% vs V2 at N≥2048 causal
+  // MFA_V3_FORCE_BK_D64 / MFA_V3_FORCE_BK_D128: override for testing.
+  const auto& env = MFAEnvConfig::get();
+  auto bk_or = [](int override_val, int default_bk) -> int {
+    if (override_val == 8 || override_val == 16 || override_val == 32 || override_val == 64)
+      return override_val;
+    return default_bk;
+  };
+  if (head_dim == 64)  return {32, bk_or(env.v3_force_bk_d64,  32),  64, 4, 1};
+  if (head_dim == 128) return {32, bk_or(env.v3_force_bk_d128, 16), 128, 4, 1};
   return {0, 0, 0, 0, 0};
 }
 

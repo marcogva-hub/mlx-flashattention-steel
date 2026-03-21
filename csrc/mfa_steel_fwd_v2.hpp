@@ -37,6 +37,11 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus);
 /// can evolve independently. Uses MFA_V2_FORCE_BK_D256=32|64 when set.
 SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus);
 
+/// Select D-split tile config for D=512 ONLY.
+/// Decoupled from D=256 so autoresearch can iterate independently.
+/// Uses MFA_V2_FORCE_BK_D512=4|8|12|16|20|24|32 when set.
+SteelV2BlockConfig select_steel_v2_d512_block_config(bool is_m3_plus);
+
 /// Estimate actual GPU core count from MTLDevice name + fallback arch_gen.
 /// Uses longest-prefix matching (Ultra > Max > Pro > base) so "M1 Max" matches
 /// before "M1". Falls back to conservative gen-based estimate for unknown names.

@@ -21,13 +21,15 @@
 ///   needed, so Q is read directly from device memory into registers per SIMD.
 ///   This eliminates the Q_smem that V2 needed (8,704 bytes).
 ///
-/// Block configs:
-///   M1/M2: BQ=32, BK=128, BD_tile=32, WM=4  → TGP=10,240 B, 3 TG/CU
-///   M3+:   BQ=16, BK=128, BD_tile=32, WM=2  → TGP=10,240 B, 3 TG/CU
+/// Block configs (post-autoresearch, per-D):
+///   D=64  M1/M2: BQ=32, BK=32, BD_tile=32, WM=4 → TGP=2,048 B, 16 TG/CU
+///   D=128 M1/M2: BQ=32, BK=32, BD_tile=64, WM=4 → TGP=4,096 B,  8 TG/CU
+///   (was:  BQ=32, BK=128, BD_tile=32, WM=4      → TGP=10,240 B,  3 TG/CU)
 
 #pragma once
 
 #include "shader_cache.hpp"
+#include "mfa_env.hpp"
 #include <string>
 
 namespace mlx_mfa {
@@ -47,15 +49,27 @@ inline bool v5_eligible(int head_dim) {
 }
 
 /// Block config for V5.
-/// BK=128 (4× V2's BK=32 for M1/M2) with BD_tile=32.
-/// TGP: max(K^T_smem=8704, V_smem=10240) = 10,240 bytes → 3 TG/CU.
-inline SteelV5BlockConfig select_steel_v5_block_config(int /*head_dim*/,
+/// autoresearch Axis 2 (M1 Max, 2026-03-21): per-D configs
+///   D=64:  BK=32 BD_tile=32 → TGP=2,048B → 16 TGs/CU  V5/SDPA=0.695 (1.44x)
+///   D=128: BK=32 BD_tile=64 → TGP=4,096B →  8 TGs/CU  V5/SDPA=0.556 (1.80x)
+///   D=64 prefers smaller BD_tile (fewer D-chunks, fewer barriers).
+///   D=128 prefers larger BD_tile (amortizes barrier cost at higher D).
+inline SteelV5BlockConfig select_steel_v5_block_config(int head_dim,
                                                        bool is_m3_plus) {
-  // M3+ dynamic register allocation makes BQ=32 WM=4 viable even with
-  // direct device reads. BQ=16 WM=2 halved occupancy and prevented
-  // FP16/FP32 inter-simdgroup parallelism.
   (void)is_m3_plus;
-  return {.BQ = 32, .BK = 128, .BD_tile = 32, .WM = 4};
+  const auto& env = MFAEnvConfig::get();
+  auto or_default = [](int override_val, int def) { return override_val > 0 ? override_val : def; };
+  const int bq = or_default(env.v5_force_bq, 32);
+  const int wm = or_default(env.v5_force_wm,  4);
+  if (head_dim == 64) {
+    const int bk      = or_default(env.v5_force_bk,      32);
+    const int bd_tile = or_default(env.v5_force_bd_tile,  32);
+    return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
+  }
+  // D=128 (default)
+  const int bk      = or_default(env.v5_force_bk,      32);
+  const int bd_tile = or_default(env.v5_force_bd_tile,  64);
+  return {.BQ = bq, .BK = bk, .BD_tile = bd_tile, .WM = wm};
 }
 
 /// Generate the Metal shader source for the STEEL V5 forward kernel.

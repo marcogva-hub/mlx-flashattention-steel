@@ -35,6 +35,7 @@
 
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_fwd_v2.hpp"
+#include "mfa_env.hpp"
 #include <sstream>
 
 namespace mlx_mfa {
@@ -69,14 +70,11 @@ SteelV2BlockConfig select_steel_v2_block_config(int head_dim, bool is_m3_plus) {
   // D=256: BQ=16 retained for source-completeness; routes to V1 in eval_gpu().
 
   // MFA_V2_FORCE_BK=32|64 — override gen-based BK selection (debug/testing).
-  const char* force_bk_env = std::getenv("MFA_V2_FORCE_BK");
-  int forced_bk = 0;
-  if (force_bk_env) {
-    forced_bk = std::atoi(force_bk_env);
-    if (forced_bk != 32 && forced_bk != 64) forced_bk = 0;  // ignore invalid values
-  }
+  const auto& env = MFAEnvConfig::get();
+  int forced_bk = env.v2_force_bk;
+  if (forced_bk != 32 && forced_bk != 64) forced_bk = 0;  // ignore invalid values
 
-  const bool use_bq64 = (std::getenv("MFA_V2_BQ64") != nullptr);
+  const bool use_bq64 = env.v2_bq64;
   if (use_bq64) {
     // BQ=64, WM=8, TGP=256 — Option B (256 threads, TQ=1 per simdgroup)
     // MFABlockLoaderT constraints verified (n_reads integer for all loaders):
@@ -101,15 +99,36 @@ SteelV2BlockConfig select_steel_v2_dsplit_block_config(bool is_m3_plus) {
   // D=256/512 is a separate family: keep BK policy independent from D=128.
   // Global MFA_V2_FORCE_BK (used by D=128 calibration) must not leak here.
   // Optional debug override for this family only:
-  //   MFA_V2_FORCE_BK_D256=32|64
+  //   MFA_V2_FORCE_BK_D256=8|16|32|64
   int forced_bk = 0;
-  if (const char* env = std::getenv("MFA_V2_FORCE_BK_D256")) {
-    const int parsed = std::atoi(env);
-    if (parsed == 32 || parsed == 64) forced_bk = parsed;
+  {
+    const int parsed = MFAEnvConfig::get().v2_force_bk_d256;
+    if (parsed == 8 || parsed == 16 || parsed == 32 || parsed == 64) forced_bk = parsed;
   }
 
-  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 32);
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 64 : 8);
   return {32, bk, 128, 4, 1};
+}
+
+SteelV2BlockConfig select_steel_v2_d512_block_config(bool is_m3_plus) {
+  // D=512 ONLY: decoupled from D=256 so autoresearch can iterate independently.
+  // MFA_V2_FORCE_BK_D512=<8..64 step 4>: override BK
+  // MFA_V2_FORCE_BQ_D512=<16|32>: override BQ (WM=BQ/16)
+  const auto& env = MFAEnvConfig::get();
+  int forced_bk = 0;
+  {
+    const int parsed = env.v2_force_bk_d512;
+    if (parsed >= 8 && parsed <= 256 && parsed % 4 == 0) forced_bk = parsed;
+  }
+  int bq = 32, wm = 4;
+  {
+    const int parsed = env.v2_force_bq_d512;
+    if (parsed == 16) { bq = 16; wm = 2; }
+    else if (parsed == 32) { bq = 32; wm = 4; }
+    else if (parsed == 64) { bq = 64; wm = 8; }
+  }
+  const int bk = forced_bk ? forced_bk : (is_m3_plus ? 32 : 128);
+  return {bq, bk, 128, wm, 1};
 }
 
 // ---------------------------------------------------------------------------
@@ -811,7 +830,7 @@ struct MFASteelParams {
 //
 // Design: BD_HALF=128, D_SPLITS=D/128 (2 for D=256, 4 for D=512).
 // Block config: select_steel_v2_dsplit_block_config(is_m3_plus) for BK.
-//   M1/M2: BK=32, TK=4   M3+: BK=64, TK=8
+//   M1/M2: BK=8, TK=1   M3+: BK=64, TK=8
 // TGP: BQ=32, WM=4, TGP_SIZE=128, TD_HALF=16, TQ=1.
 //
 // Barrier pattern per K-tile (D=256 / D_SPLITS=2):
@@ -838,14 +857,24 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
-  // D-split parameters
-  const int BD_HALF  = 128;
-  const int D_SPLITS = D / BD_HALF;   // 2 for D=256, 4 for D=512
+  // D-split parameters — BD_HALF default: 128 for D=256, 32 for D=512
+  // BD_HALF=32 for D=512: 16 D-splits with BK=128 gives best occupancy on M1/M2
+  // (TGP=12,800B → 2 TGs/CU, 0.80x SDPA vs 0.27x at BD_HALF=128 BK=8)
+  int BD_HALF = (D == 512) ? 32 : 128;
+  if (D == 512) {
+    if (const char* env = std::getenv("MFA_V2_BD_HALF_D512")) {
+      const int v = std::atoi(env);
+      if (v == 32 || v == 64 || v == 128) BD_HALF = v;
+    }
+  }
+  const int D_SPLITS = D / BD_HALF;
 
   // Block config: use D=128 V2 tile config for each BD_HALF pass
-  auto cfg = select_steel_v2_dsplit_block_config(key.is_m3_plus);
+  auto cfg = (D == 512)
+      ? select_steel_v2_d512_block_config(key.is_m3_plus)
+      : select_steel_v2_dsplit_block_config(key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32
-  const int BK = cfg.BK;   // 32 (M1/M2) or 64 (M3+)
+  const int BK = cfg.BK;
   const int WM = cfg.WM;   // 4
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128

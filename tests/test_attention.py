@@ -10087,11 +10087,11 @@ class TestSmartDispatch:
         assert should_use_mfa(128, 8192, causal=True, is_m3_plus=False)
 
     def test_d256_causal_f16_narrow_regime(self):
-        """D=256 causal f16 uses MFA only in the benchmark-backed narrow regime."""
+        """D=256 causal f16 uses MFA from N>=2048 (post-BK=8: 1.09x@2048)."""
         import mlx.core as mx
         from mlx_mfa.dispatch_policy import should_use_mfa
-        assert not should_use_mfa(256, 2048, causal=True, is_m3_plus=False, dtype=mx.float16)
-        assert should_use_mfa(256, 4096, causal=True, is_m3_plus=False, dtype=mx.float16)
+        assert not should_use_mfa(256, 1024, causal=True, is_m3_plus=False, dtype=mx.float16)
+        assert should_use_mfa(256, 2048, causal=True, is_m3_plus=False, dtype=mx.float16)
 
     def test_d256_causal_bf16_stays_sdpa(self):
         """D=256 causal bf16 remains SDPA-backed on current benchmark evidence."""

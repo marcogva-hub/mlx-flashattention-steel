@@ -1,0 +1,43 @@
+{
+  "report": "D=512 D-split kernel optimization ceiling",
+  "date": "2026-03-20",
+  "device": "M1 Max",
+  "iterations": 74,
+  "best_config": {
+    "BK": 128,
+    "BD_HALF": 32,
+    "BQ": 32,
+    "WM": 4,
+    "D_SPLITS": 16,
+    "TGP_bytes": 12800,
+    "TGs_per_CU": 2
+  },
+  "best_geomean": 0.80,
+  "target": 1.02,
+  "ceiling_reached": true,
+  "profiles": {
+    "N=1024_causal": "0.59x",
+    "N=2048_causal": "0.83x",
+    "N=4096_causal": "0.89x",
+    "N=8192_causal": "0.91x"
+  },
+  "asymptotic": {
+    "N=16384": "0.93x",
+    "N=32768": "0.96x"
+  },
+  "root_cause": "D-split serialization: 16 sequential BD_HALF=32 passes per K-tile, each requiring 4 threadgroup barriers. Compute-bound at 36% ALU utilization vs SDPA's 38%. The 8% gap is the overhead of serial D-half processing.",
+  "explored_configs": [
+    "BK: 8,12,16,20,24,32,64,96,112,128,256",
+    "BD_HALF: 16,32,64,128",
+    "BQ: 16,32,64",
+    "WM: 2,4,8",
+    "enable_unroll: true/false",
+    "padding: 0,4,8",
+    "direct_v: device reads for V",
+    "direct_q: device reads for Q",
+    "lazy_q: reload Q per K-tile",
+    "direct_v+lazy_q combination",
+    "direct_q+BD_HALF=64 combination"
+  ],
+  "conclusion": "D=512 on M1/M2 is limited to 0.80x SDPA with D-split architecture. Breaking 1.0x requires either M3+ hardware or a fundamentally different kernel design (e.g., Apple's SDPA-internal fused approach)."
+}
