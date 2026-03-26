@@ -667,3 +667,49 @@ class TurboQuantKVCache:
         self._k_chunks.clear()
         self._v_chunks.clear()
         self._seq_len = 0
+
+
+# ---------------------------------------------------------------------------
+# Step 2.2 — Adapter for KVCacheAdapter interface
+# ---------------------------------------------------------------------------
+# Imported lazily to avoid circular imports (kv_cache.py may import turboquant).
+
+
+def _make_adapter(cache: "TurboQuantKVCache"):
+    """Create a TurboQuantKVCacheAdapter wrapping a TurboQuantKVCache.
+
+    Returns a KVCacheAdapter subclass instance.
+    """
+    from mlx_mfa.kv_cache import KVCacheAdapter, KVCacheCapabilities
+
+    class TurboQuantKVCacheAdapter(KVCacheAdapter):
+        """Adapter: TurboQuantKVCache → KVCacheAdapter interface."""
+
+        kind = "turboquant"
+
+        @property
+        def capabilities(self) -> KVCacheCapabilities:
+            return KVCacheCapabilities(
+                append=True,
+                reset=True,
+                seq_length=True,
+                attention_view=True,
+                multi_seq=False,
+            )
+
+        def append(self, k_new, v_new, *, seq_id: int = 0) -> None:
+            self.cache.append(k_new, v_new)
+
+        def attention_k(self, seq_id: int = 0):
+            return self.cache.k_decompressed()
+
+        def attention_v(self, seq_id: int = 0):
+            return self.cache.v_decompressed()
+
+        def seq_length(self, seq_id: int = 0) -> int:
+            return self.cache.seq_length
+
+        def reset(self, *, seq_id: Optional[int] = None) -> None:
+            self.cache.reset()
+
+    return TurboQuantKVCacheAdapter(cache)
