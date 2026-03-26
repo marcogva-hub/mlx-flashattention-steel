@@ -213,6 +213,135 @@ def dequantize_from_indices(indices: mx.array, bits: int) -> mx.array:
 
 
 # ---------------------------------------------------------------------------
+# Step 1.4 — Bit packing / unpacking
+# ---------------------------------------------------------------------------
+
+
+def _pack_1bit(bits_arr: mx.array) -> mx.array:
+    """Pack 1-bit values (0 or 1) into uint8. 8 values per byte."""
+    flat = bits_arr.reshape(-1).astype(mx.uint8)
+    n = flat.shape[0]
+    pad_n = (8 - n % 8) % 8
+    if pad_n:
+        flat = mx.concatenate([flat, mx.zeros((pad_n,), dtype=mx.uint8)])
+    flat = flat.reshape(-1, 8)
+    packed = flat[:, 0]
+    for i in range(1, 8):
+        packed = packed | (flat[:, i] << i)
+    return packed
+
+
+def _unpack_1bit(packed: mx.array, n_values: int) -> mx.array:
+    """Unpack 1-bit packed bytes back to uint8 (0 or 1)."""
+    bits_out = []
+    for i in range(8):
+        bits_out.append((packed >> i) & mx.array(0x01, dtype=mx.uint8))
+    interleaved = mx.stack(bits_out, axis=-1).reshape(-1)
+    return interleaved[:n_values]
+
+
+def _pack_2bit(indices: mx.array) -> mx.array:
+    """Pack 2-bit indices (0-3) into uint8. 4 values per byte."""
+    shape = indices.shape
+    flat = indices.reshape(-1).astype(mx.uint8)
+    n = flat.shape[0]
+    # Pad to multiple of 4
+    pad_n = (4 - n % 4) % 4
+    if pad_n:
+        flat = mx.concatenate([flat, mx.zeros((pad_n,), dtype=mx.uint8)])
+    flat = flat.reshape(-1, 4)
+    packed = flat[:, 0] | (flat[:, 1] << 2) | (flat[:, 2] << 4) | (flat[:, 3] << 6)
+    return packed  # [n_packed] uint8
+
+
+def _unpack_2bit(packed: mx.array, n_values: int) -> mx.array:
+    """Unpack 2-bit packed bytes back to uint8 indices 0-3."""
+    b0 = packed & mx.array(0x03, dtype=mx.uint8)
+    b1 = (packed >> 2) & mx.array(0x03, dtype=mx.uint8)
+    b2 = (packed >> 4) & mx.array(0x03, dtype=mx.uint8)
+    b3 = (packed >> 6) & mx.array(0x03, dtype=mx.uint8)
+    interleaved = mx.stack([b0, b1, b2, b3], axis=-1).reshape(-1)
+    return interleaved[:n_values]
+
+
+def _pack_3bit(indices: mx.array) -> mx.array:
+    """Pack 3-bit indices (0-7) into uint8. 8 values → 3 bytes.
+
+    Layout: 8 values v0..v7 packed little-endian into 3 bytes:
+      byte0 = v0 | (v1<<3) | (v2<<6)          [v2 contributes 2 low bits]
+      byte1 = (v2>>2) | (v3<<1) | (v4<<4) | (v5<<7)  [v5 contributes 1 low bit]
+      byte2 = (v5>>1) | (v6<<2) | (v7<<5)
+    """
+    flat = indices.reshape(-1).astype(mx.uint8)
+    n = flat.shape[0]
+    pad_n = (8 - n % 8) % 8
+    if pad_n:
+        flat = mx.concatenate([flat, mx.zeros((pad_n,), dtype=mx.uint8)])
+    flat = flat.reshape(-1, 8)  # [groups, 8]
+    v = [flat[:, i] for i in range(8)]
+
+    byte0 = v[0] | (v[1] << 3) | (v[2] << 6)
+    byte1 = (v[2] >> 2) | (v[3] << 1) | (v[4] << 4) | (v[5] << 7)
+    byte2 = (v[5] >> 1) | (v[6] << 2) | (v[7] << 5)
+
+    packed = mx.stack([byte0, byte1, byte2], axis=-1).reshape(-1)
+    return packed  # [groups * 3] uint8
+
+
+def _unpack_3bit(packed: mx.array, n_values: int) -> mx.array:
+    """Unpack 3-bit packed bytes back to uint8 indices 0-7."""
+    mask3 = mx.array(0x07, dtype=mx.uint8)
+    packed = packed.reshape(-1, 3)
+    b0, b1, b2 = packed[:, 0], packed[:, 1], packed[:, 2]
+
+    v0 = b0 & mask3
+    v1 = (b0 >> 3) & mask3
+    v2 = ((b0 >> 6) | (b1 << 2)) & mask3
+    v3 = (b1 >> 1) & mask3
+    v4 = (b1 >> 4) & mask3
+    v5 = ((b1 >> 7) | (b2 << 1)) & mask3
+    v6 = (b2 >> 2) & mask3
+    v7 = (b2 >> 5) & mask3
+
+    interleaved = mx.stack([v0, v1, v2, v3, v4, v5, v6, v7], axis=-1).reshape(-1)
+    return interleaved[:n_values]
+
+
+def _pack_4bit(indices: mx.array) -> mx.array:
+    """Pack 4-bit indices (0-15) into uint8. 2 values per byte."""
+    flat = indices.reshape(-1).astype(mx.uint8)
+    n = flat.shape[0]
+    pad_n = n % 2
+    if pad_n:
+        flat = mx.concatenate([flat, mx.zeros((1,), dtype=mx.uint8)])
+    flat = flat.reshape(-1, 2)
+    packed = flat[:, 0] | (flat[:, 1] << 4)
+    return packed
+
+
+def _unpack_4bit(packed: mx.array, n_values: int) -> mx.array:
+    """Unpack 4-bit packed bytes back to uint8 indices 0-15."""
+    low = packed & mx.array(0x0F, dtype=mx.uint8)
+    high = (packed >> 4) & mx.array(0x0F, dtype=mx.uint8)
+    interleaved = mx.stack([low, high], axis=-1).reshape(-1)
+    return interleaved[:n_values]
+
+
+_PACK_FNS = {2: _pack_2bit, 3: _pack_3bit, 4: _pack_4bit}
+_UNPACK_FNS = {2: _unpack_2bit, 3: _unpack_3bit, 4: _unpack_4bit}
+
+
+def pack_indices(indices: mx.array, bits: int) -> mx.array:
+    """Pack quantization indices into bit-packed uint8 bytes."""
+    return _PACK_FNS[bits](indices)
+
+
+def unpack_indices(packed: mx.array, n_values: int, bits: int) -> mx.array:
+    """Unpack bit-packed uint8 bytes to quantization indices."""
+    return _UNPACK_FNS[bits](packed, n_values)
+
+
+# ---------------------------------------------------------------------------
 # Step 1.3 — Compress / Decompress core
 # ---------------------------------------------------------------------------
 
@@ -277,8 +406,13 @@ def turboquant_compress(
     # 4. Quantize each coordinate
     x_q = quantize_to_indices(x_normalized, bits)  # [B, H, S, D] uint8
 
+    # Bit-pack for storage efficiency (3-bit: 5.3× compression ratio)
+    x_q_packed = pack_indices(x_q, bits)
+    n_values = B * H * S * D  # needed for unpacking
+
     result = {
-        "x_q": x_q,
+        "x_q_packed": x_q_packed,
+        "n_values": n_values,
         "scales": scale.squeeze(-1),  # [B, H, S]
         "bits": bits,
         "rotation": rotation,
@@ -311,7 +445,9 @@ def turboquant_compress(
         proj = residual @ S_proj  # [B, H, S, D]
         qjl_signs = proj >= 0  # bool [B, H, S, D]
 
-        result["qjl_signs"] = qjl_signs
+        # Pack signs as 1-bit: 8 bools per byte
+        result["qjl_signs_packed"] = _pack_1bit(qjl_signs.astype(mx.uint8))
+        result["qjl_n_signs"] = B * H * S * D
         result["qjl_norms"] = residual_norms
         result["qjl_proj_seed"] = qjl_seed
 
@@ -332,18 +468,22 @@ def turboquant_decompress(compressed: dict) -> mx.array:
         [B, H, S, D] tensor in original dtype.
     """
     bits = compressed["bits"]
-    x_q = compressed["x_q"]
     scales = compressed["scales"]  # [B, H, S]
     rotation = compressed["rotation"]
     seed = compressed["seed"]
     B, H, S, D = compressed["shape"]
 
-    # 1. Dequantize: indices → centroid values (normalized domain)
+    # 1. Unpack and dequantize: packed bytes → indices → centroid values
+    x_q = unpack_indices(
+        compressed["x_q_packed"], compressed["n_values"], bits
+    ).reshape(B, H, S, D)
     x_normalized = dequantize_from_indices(x_q, bits)  # [B, H, S, D] f32
 
     # 2. QJL correction (approximate vector reconstruction)
-    if "qjl_signs" in compressed:
-        qjl_signs = compressed["qjl_signs"]
+    if "qjl_signs_packed" in compressed:
+        qjl_signs = _unpack_1bit(
+            compressed["qjl_signs_packed"], compressed["qjl_n_signs"]
+        ).reshape(B, H, S, D)
         qjl_norms = compressed["qjl_norms"]  # [B, H, S]
         qjl_seed = compressed["qjl_proj_seed"]
 
