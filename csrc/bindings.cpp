@@ -587,5 +587,5 @@ NB_MODULE(_ext, m) {
       mlx_mfa::MFAEnvConfig::invalidate();
   }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
 
-  m.attr("__version__") = "2.20.1";
+  m.attr("__version__") = "2.21.0";
 }

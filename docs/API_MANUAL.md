@@ -323,4 +323,53 @@ cross-checking:
 `make_spatial_3d_mask`, `make_topk_spatial_mask`, `quantize_per_block`,
 `resolve_context_cache`, `resolve_context_cache_adapter`, `sage_attention`,
 `sage_attention_kvcache`, `sage_attention_prequantized`, `sage_block_sizes`,
-`sage_output_correction`, `smooth_k`, `warmup_kernels`.
+`sage_output_correction`, `smooth_k`, `turboquant_compress`,
+`turboquant_decompress`, `TurboQuantKVCache`, `warmup_kernels`.
+
+---
+
+## TurboQuant KV Cache Compression (v2.21.0)
+
+Training-free, data-oblivious KV cache compression based on Google's
+TurboQuant (ICLR 2026). Two-stage: PolarQuant MSE + QJL 1-bit correction.
+
+### `turboquant_compress(x, bits=3, *, use_qjl=True, rotation="wht", seed=42)`
+
+Compress a `[B, H, S, D]` KV tensor to 2-4 bits per coordinate.
+
+**Parameters:**
+- `x` — fp16/bf16/f32 tensor `[B, H, S, D]`
+- `bits` — 2, 3, or 4 (default: 3)
+- `use_qjl` — apply QJL 1-bit residual correction (default: True)
+- `rotation` — `"wht"` (Walsh-Hadamard, faster) or `"qr"` (random orthogonal)
+- `seed` — random seed for deterministic rotation and QJL projection
+
+**Returns:** dict with packed indices, scales, and optional QJL signs.
+
+### `turboquant_decompress(compressed)`
+
+Decompress back to fp16/bf16 for use with existing attention kernels.
+
+### `TurboQuantKVCache`
+
+Drop-in KV cache that stores K (and optionally V) in compressed format.
+Transparent decompression on attention access.
+
+```python
+cache = TurboQuantKVCache(bits=3, use_qjl=True, compress_v=True)
+cache.append(k_new, v_new)
+k_fp16 = cache.k_decompressed()
+v_fp16 = cache.v_decompressed()
+print(cache.compression_ratio)  # ~4.1× for K+V at 3-bit
+```
+
+**Compression ratios (vs fp16):**
+
+| Config | K-only | K+V |
+|--------|-------:|----:|
+| 2-bit  | 1.64×  | 5.6× |
+| 3-bit  | 1.56×  | 4.1× |
+| 4-bit  | 1.49×  | 3.3× |
+
+**Note:** Phase 1 is non-fused — decompression happens before attention.
+The memory savings are real but there is overhead from decompress + recompute.

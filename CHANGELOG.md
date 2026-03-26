@@ -4,6 +4,27 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.21.0] — 2026-03-26
+
+### TurboQuant KV Cache Compression (Phase 1)
+
+- **feat**: `turboquant_compress()` / `turboquant_decompress()` — two-stage
+  vector quantization (PolarQuant MSE + QJL 1-bit correction) for KV cache.
+  Supports 2/3/4-bit quantization with WHT or QR random rotation.
+- **feat**: Walsh-Hadamard transform (butterfly, O(d log d)) and QR random
+  orthogonal rotation. WHT is 2× faster than QR for D=128.
+- **feat**: Pre-computed Lloyd-Max optimal centroids for N(0,1) at 2/3/4-bit.
+- **feat**: Bit packing (1/2/3/4-bit) for storage-efficient compressed format.
+  3-bit+QJL: 3.56× compression, 3-bit no QJL: 4.92×, 2-bit: 7.11× vs fp16.
+- **feat**: `TurboQuantKVCache` — drop-in KV cache with transparent
+  TurboQuant compression. K+V at 3-bit: ~4.1× memory reduction vs fp16.
+- **feat**: `TurboQuantKVCacheAdapter` — integrates with `adapt_kv_cache()`
+  and the HybridKVCache / DecodeRuntime infrastructure.
+- **test**: 57 tests — WHT, QR rotation, Lloyd-Max centroids, bit packing,
+  roundtrip, inner product preservation (corr >0.95), attention output,
+  KVCache, adapter integration, bits comparison.
+- **bench**: Compression/decompression timing + memory savings benchmarks.
+
 ## [2.20.1] — 2026-03-21
 
 ### Critical Fix
