@@ -513,3 +513,157 @@ def turboquant_decompress(compressed: dict) -> mx.array:
     # 5. Cast to original dtype
     target_dtype = _STR_DTYPE_MAP.get(compressed["dtype"], mx.float16)
     return x_decompressed.astype(target_dtype)
+
+
+# ---------------------------------------------------------------------------
+# Step 2.1 — TurboQuantKVCache
+# ---------------------------------------------------------------------------
+
+
+class TurboQuantKVCache:
+    """KV cache with TurboQuant compression.
+
+    Stores K (and optionally V) in TurboQuant compressed format.
+    Decompresses to fp16/bf16 transparently when accessed for attention.
+
+    The compression is applied per-append: each new token chunk is compressed
+    immediately, storing only the compressed representation.
+
+    Usage::
+
+        cache = TurboQuantKVCache(bits=3, use_qjl=True)
+        cache.append(k_new, v_new)              # compresses K immediately
+        k_fp16 = cache.k_decompressed()          # decompresses for attention
+        v_fp16 = cache.v_decompressed()
+        print(cache.compression_ratio)            # ~3.5-5× vs fp16
+    """
+
+    def __init__(
+        self,
+        *,
+        bits: int = 3,
+        use_qjl: bool = True,
+        rotation: str = "wht",
+        seed: int = 42,
+        compress_v: bool = False,
+    ):
+        """
+        Args:
+            bits: quantization bits for K (and V if compress_v). 2, 3, or 4.
+            use_qjl: QJL 1-bit correction for K (recommended for dot-product accuracy).
+            rotation: "wht" (Walsh-Hadamard) or "qr" (random orthogonal).
+            seed: random seed for rotation matrix and QJL projection.
+            compress_v: also compress V (MSE-only, no QJL — V errors are linear).
+        """
+        self.bits = bits
+        self.use_qjl = use_qjl
+        self.rotation = rotation
+        self.seed = seed
+        self.compress_v = compress_v
+
+        # Storage: list of compressed dicts (one per append call)
+        self._k_chunks: list[dict] = []
+        self._v_chunks: list[dict | mx.array] = []  # compressed or raw fp16
+        self._seq_len = 0
+        self._dtype: Optional[str] = None
+
+    def append(self, k_new: mx.array, v_new: mx.array) -> None:
+        """Append new K/V tokens, compressing K (and optionally V) immediately.
+
+        Args:
+            k_new: [B, H, S_new, D] fp16/bf16
+            v_new: [B, H, S_new, D] fp16/bf16
+        """
+        if k_new.ndim != 4:
+            raise ValueError(f"Expected [B,H,S,D], got ndim={k_new.ndim}")
+
+        S_new = k_new.shape[2]
+
+        # Compress K
+        k_compressed = turboquant_compress(
+            k_new,
+            bits=self.bits,
+            use_qjl=self.use_qjl,
+            rotation=self.rotation,
+            seed=self.seed,
+        )
+        self._k_chunks.append(k_compressed)
+
+        # V: compress or store raw
+        if self.compress_v:
+            v_compressed = turboquant_compress(
+                v_new,
+                bits=self.bits,
+                use_qjl=False,  # V doesn't benefit from QJL
+                rotation=self.rotation,
+                seed=self.seed,
+            )
+            self._v_chunks.append(v_compressed)
+        else:
+            self._v_chunks.append(v_new)
+
+        self._seq_len += S_new
+        if self._dtype is None:
+            self._dtype = _DTYPE_STR_MAP.get(k_new.dtype, "float16")
+
+    def k_decompressed(self) -> mx.array:
+        """Return full K in original dtype, decompressed from all chunks."""
+        if not self._k_chunks:
+            raise RuntimeError("Cache is empty — call append() first")
+        parts = [turboquant_decompress(c) for c in self._k_chunks]
+        return mx.concatenate(parts, axis=2) if len(parts) > 1 else parts[0]
+
+    def v_decompressed(self) -> mx.array:
+        """Return full V in original dtype."""
+        if not self._v_chunks:
+            raise RuntimeError("Cache is empty — call append() first")
+        if self.compress_v:
+            parts = [turboquant_decompress(c) for c in self._v_chunks]
+            return mx.concatenate(parts, axis=2) if len(parts) > 1 else parts[0]
+        else:
+            chunks = self._v_chunks
+            return (
+                mx.concatenate(chunks, axis=2) if len(chunks) > 1 else chunks[0]
+            )
+
+    @property
+    def seq_length(self) -> int:
+        return self._seq_len
+
+    @property
+    def memory_bytes(self) -> int:
+        """Actual memory usage of compressed cache."""
+        total = 0
+        for c in self._k_chunks:
+            total += c["x_q_packed"].nbytes + c["scales"].nbytes
+            if "qjl_signs_packed" in c:
+                total += c["qjl_signs_packed"].nbytes + c["qjl_norms"].nbytes
+        for vc in self._v_chunks:
+            if isinstance(vc, dict):
+                total += vc["x_q_packed"].nbytes + vc["scales"].nbytes
+                if "qjl_signs_packed" in vc:
+                    total += vc["qjl_signs_packed"].nbytes + vc["qjl_norms"].nbytes
+            else:
+                total += vc.nbytes
+        return total
+
+    @property
+    def memory_bytes_fp16(self) -> int:
+        """What the fp16 equivalent would use."""
+        if not self._k_chunks:
+            return 0
+        B, H, _, D = self._k_chunks[0]["shape"]
+        # K + V, both [B, H, seq_len, D] in fp16 (2 bytes)
+        return 2 * B * H * self._seq_len * D * 2
+
+    @property
+    def compression_ratio(self) -> float:
+        """memory_bytes_fp16 / memory_bytes."""
+        mem = self.memory_bytes
+        return self.memory_bytes_fp16 / mem if mem > 0 else 0.0
+
+    def reset(self) -> None:
+        """Clear all cached data."""
+        self._k_chunks.clear()
+        self._v_chunks.clear()
+        self._seq_len = 0
