@@ -794,6 +794,9 @@ def adapt_kv_cache(cache: Any) -> KVCacheAdapter:
         return QuantizedKVCacheAdapter(cache)
     if cls_name == "HybridKVCache":
         return HybridKVCacheAdapter(cache)
+    if cls_name == "TurboQuantKVCache":
+        from mlx_mfa.turboquant import _make_adapter
+        return _make_adapter(cache)
 
     # Fallback duck-typed adaptation for cache-like custom implementations.
     if hasattr(cache, "get_block_table") and hasattr(cache, "k_pool"):

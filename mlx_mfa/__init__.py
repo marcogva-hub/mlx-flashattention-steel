@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.20.1"
+__version__ = "2.21.0"
 
 
 def _check_abi() -> None:
@@ -135,6 +135,12 @@ from mlx_mfa.external_cache import (
     ExternalKVCacheCapabilities,
     ExternalKVCacheAdapter,
     LocalHostKVStoreAdapter,
+)
+
+from mlx_mfa.turboquant import (
+    turboquant_compress,
+    turboquant_decompress,
+    TurboQuantKVCache,
 )
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
@@ -268,5 +274,9 @@ __all__ = [
     "ExternalKVCacheCapabilities",
     "ExternalKVCacheAdapter",
     "LocalHostKVStoreAdapter",
+    # TurboQuant KV cache compression (Phase 1)
+    "turboquant_compress",
+    "turboquant_decompress",
+    "TurboQuantKVCache",
     "__version__",
 ]
