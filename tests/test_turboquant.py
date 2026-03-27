@@ -23,6 +23,7 @@ from mlx_mfa.turboquant import (
     apply_rotation,
     apply_inverse_rotation,
     _get_centroids,
+    _compute_packed_d,
     quantize_to_indices,
     dequantize_from_indices,
     pack_indices,
@@ -473,12 +474,12 @@ def _skip_if_no_ext():
 
 def _build_tq_paged_pool(k_seqs, v_seqs, block_size, bits=3, rotation="wht", seed=42):
     """Build fp16 V pool + TQ-packed K pool from per-sequence KV tensors."""
-    from mlx_mfa.turboquant import pack_k_for_metal, _get_centroids
+    from mlx_mfa.turboquant import pack_k_for_metal, _get_centroids, _compute_packed_d
 
     B = len(k_seqs)
     H_kv = k_seqs[0].shape[1]
     D = k_seqs[0].shape[3]
-    packed_D = D // 2
+    packed_D = _compute_packed_d(D, bits)
     blocks_per_seq = [
         (int(k.shape[2]) + block_size - 1) // block_size for k in k_seqs
     ]
@@ -783,17 +784,19 @@ class TestTurboQuantFusedKernel:
 
     def test_pack_k_for_metal_roundtrip(self):
         """pack_k_for_metal indices roundtrip to correct centroid values."""
-        from mlx_mfa.turboquant import pack_k_for_metal
+        from mlx_mfa.turboquant import pack_k_for_metal, _compute_packed_d
 
         mx.random.seed(810)
-        k = mx.random.normal((1, 2, 8, 64)).astype(mx.float16)
+        D = 64
+        k = mx.random.normal((1, 2, 8, D)).astype(mx.float16)
         mx.synchronize()
 
         for bits in [2, 3, 4]:
             k_packed, scales, centroids = pack_k_for_metal(k, bits=bits)
             mx.synchronize()
+            expected_pd = _compute_packed_d(D, bits)
 
-            assert k_packed.shape == (1, 2, 8, 32), f"bits={bits}: bad shape {k_packed.shape}"
+            assert k_packed.shape == (1, 2, 8, expected_pd), f"bits={bits}: bad shape {k_packed.shape}"
             assert k_packed.dtype == mx.uint8
             assert scales.shape == (1, 2, 8)
             assert centroids.shape == (1 << bits,)
@@ -810,24 +813,26 @@ class TestTurboQuantFusedKernel:
         k_pool_tq, scales, centroids = build_tq_paged_k_pool(k_pool, bits=3)
         mx.synchronize()
 
-        assert k_pool_tq.shape == (num_pages, block_size, H_kv, D // 2)
+        assert k_pool_tq.shape == (num_pages, block_size, H_kv, _compute_packed_d(D, 3))
         assert k_pool_tq.dtype == mx.uint8
         assert scales.shape == (num_pages, block_size, H_kv)
         assert centroids.shape == (8,)  # 2^3
 
     def test_pack_v_for_metal_roundtrip(self):
         """pack_v_for_metal produces correctly shaped packed V."""
-        from mlx_mfa.turboquant import pack_v_for_metal
+        from mlx_mfa.turboquant import pack_v_for_metal, _compute_packed_d
 
         mx.random.seed(820)
-        v = mx.random.normal((1, 2, 8, 64)).astype(mx.float16)
+        D = 64
+        v = mx.random.normal((1, 2, 8, D)).astype(mx.float16)
         mx.synchronize()
 
         for bits in [2, 3, 4]:
             v_packed, scales, centroids = pack_v_for_metal(v, bits=bits)
             mx.synchronize()
+            expected_pd = _compute_packed_d(D, bits)
 
-            assert v_packed.shape == (1, 2, 8, 32), f"bits={bits}: bad shape {v_packed.shape}"
+            assert v_packed.shape == (1, 2, 8, expected_pd), f"bits={bits}: bad shape {v_packed.shape}"
             assert v_packed.dtype == mx.uint8
             assert scales.shape == (1, 2, 8)
             assert centroids.shape == (1 << bits,)
@@ -844,7 +849,7 @@ class TestTurboQuantFusedKernel:
         v_pool_tq, scales, centroids = build_tq_paged_v_pool(v_pool, bits=3)
         mx.synchronize()
 
-        assert v_pool_tq.shape == (num_pages, block_size, H_kv, D // 2)
+        assert v_pool_tq.shape == (num_pages, block_size, H_kv, _compute_packed_d(D, 3))
         assert v_pool_tq.dtype == mx.uint8
         assert scales.shape == (num_pages, block_size, H_kv)
         assert centroids.shape == (8,)  # 2^3
@@ -981,3 +986,128 @@ class TestTurboQuantFusedKernel:
 
         assert out.shape == (1, H_q, 1, D)
         assert mx.isfinite(out).all().item(), "V-TQ GQA output has non-finite values"
+
+
+# ---------------------------------------------------------------------------
+# Optimal 3-bit Bit-Planar Packing
+# ---------------------------------------------------------------------------
+
+
+class TestOptimal3BitPacking:
+    """Tests for pack_3bit_optimal / unpack_3bit_optimal bit-planar layout."""
+
+    def test_roundtrip_exact(self):
+        """Pack then unpack recovers original indices exactly."""
+        from mlx_mfa import pack_3bit_optimal, unpack_3bit_optimal
+        mx.random.seed(900)
+        D = 128
+        indices = mx.random.randint(0, 8, (2, 4, 16, D)).astype(mx.uint8)
+        packed = pack_3bit_optimal(indices)
+        unpacked = unpack_3bit_optimal(packed, D)
+        assert mx.array_equal(indices, unpacked), "Roundtrip mismatch"
+
+    @pytest.mark.parametrize("D", [32, 64, 128, 256])
+    def test_packed_shape(self, D):
+        """Packed dimension should be D * 12 / 32 = D * 3/8."""
+        from mlx_mfa import pack_3bit_optimal
+        indices = mx.zeros((1, 1, 1, D), dtype=mx.uint8)
+        packed = pack_3bit_optimal(indices)
+        assert packed.shape[-1] == D * 12 // 32
+
+    def test_compression_ratio(self):
+        """5.33× compression: D=128 → 48 bytes (vs 128 bytes uint8)."""
+        from mlx_mfa import pack_3bit_optimal
+        D = 128
+        indices = mx.zeros((D,), dtype=mx.uint8)
+        packed = pack_3bit_optimal(indices)
+        assert packed.shape[0] == 48  # 128 * 3 / 8
+
+    def test_all_max_values(self):
+        """All indices = 7 (max 3-bit) roundtrips correctly."""
+        from mlx_mfa import pack_3bit_optimal, unpack_3bit_optimal
+        D = 64
+        indices = mx.full((D,), 7, dtype=mx.uint8)
+        packed = pack_3bit_optimal(indices)
+        unpacked = unpack_3bit_optimal(packed, D)
+        assert mx.array_equal(indices, unpacked)
+
+    def test_individual_bits(self):
+        """Each bit plane is independent: test single-bit values."""
+        from mlx_mfa import pack_3bit_optimal, unpack_3bit_optimal
+        D = 32
+        for val in [1, 2, 4]:  # single bits: 001, 010, 100
+            indices = mx.full((D,), val, dtype=mx.uint8)
+            packed = pack_3bit_optimal(indices)
+            unpacked = unpack_3bit_optimal(packed, D)
+            assert mx.array_equal(indices, unpacked), f"Failed for value {val}"
+
+
+class TestOptimalPackingFusedKernel:
+    """Tests that the fused TQ kernel works with bit-planar packed pools."""
+
+    def test_fused_kernel_finite_output(self):
+        """Fused kernel with bit-planar packing produces finite output."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(910)
+        H_q, H_kv, D = 4, 4, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 4, D)).astype(mx.float16)
+        k = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        v = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        q_pack, cu_q = _pack_queries([q_rot])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k, v, block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 4, D)
+        assert mx.isfinite(out).all().item(), "Bit-planar fused output has non-finite values"
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_fused_kernel_d_variants(self, D):
+        """Bit-planar fused kernel works for D=64 and D=128."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(911)
+        H_q, H_kv = 4, 4
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 2, D)).astype(mx.float16)
+        k = [mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)]
+        v = [mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        q_pack, cu_q = _pack_queries([q_rot])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k, v, block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 2, D)
+        assert mx.isfinite(out).all().item(), f"Bit-planar fused D={D} has non-finite values"
