@@ -5496,6 +5496,7 @@ def flash_attention_paged_varlen_turboquant(
     block_size: int = 16,
     tq_bits: int = 3,
     tq_v_enabled: bool = False,
+    tq_wht_enabled: bool = False,
     v_pool_tq: Optional["mx.array"] = None,
     v_centroids: Optional["mx.array"] = None,
     v_scales: Optional["mx.array"] = None,
@@ -5509,6 +5510,11 @@ def flash_attention_paged_varlen_turboquant(
 
     When ``tq_v_enabled=True``, V is also TQ-packed and dequantified inline
     in the P@V accumulation, achieving ~8x KV compression (K+V both quantized).
+
+    When ``tq_wht_enabled=True``, the Walsh-Hadamard transform is applied to Q
+    in-kernel (log2(D) butterfly passes on threadgroup memory), eliminating the
+    need for Python-side ``apply_rotation(q, "wht")``. The WHT normalization
+    ``1/sqrt(D)`` is folded into the attention scale.
 
     Args:
         q: Packed query tensor ``[1, H_q, total_q, D]`` fp16/bf16.
@@ -5571,7 +5577,7 @@ def flash_attention_paged_varlen_turboquant(
         block_table, seq_lens_kv,
         centroids, k_scales,
         scale, causal, block_size, tq_bits,
-        tq_v_enabled,
+        tq_v_enabled, tq_wht_enabled,
         v_pool_tq, v_centroids, v_scales,
     )
 

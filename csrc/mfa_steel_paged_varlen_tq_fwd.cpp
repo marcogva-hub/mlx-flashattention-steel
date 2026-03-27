@@ -86,6 +86,7 @@ struct MFAPagedVarlenTQParams {
   int tq_v_enabled;
   int tq_v_pool_block_stride;
   int tq_v_pool_tok_stride;
+  int tq_wht_enabled;
 };
 
 )MFA";
@@ -166,7 +167,11 @@ struct MFAPagedVarlenTQParams {
     ss << "\n";
 
     // ── Scale (log2 domain) ──────────────────────────────────────────────────
-    ss << "  const AccT scale_v = p->scale * M_LOG2E_F;\n";
+    // When WHT is fused in kernel, fold 1/sqrt(D) normalization into scale.
+    ss << "  const AccT base_scale = p->tq_wht_enabled\n";
+    ss << "      ? (p->scale * rsqrt((AccT)p->D))\n";
+    ss << "      : p->scale;\n";
+    ss << "  const AccT scale_v = base_scale * M_LOG2E_F;\n";
     ss << "\n";
 
     // ── MMA thread coordinates ───────────────────────────────────────────────
@@ -225,6 +230,49 @@ struct MFAPagedVarlenTQParams {
     ss << "    loader_q.load_unsafe();\n";
     ss << "  }\n";
     ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "\n";
+
+    // ── WHT butterfly on Q_smem (when tq_wht_enabled) ────────────────────────
+    // Walsh-Hadamard transform: log2(D) passes of butterfly add/subtract.
+    // Each pass at stride h: for pairs (i, i+h), replace with (a+b, a-b).
+    // Applied in-place on Q_smem rows. Normalization 1/sqrt(D) folded into scale.
+    ss << "  if (p->tq_wht_enabled) {\n";
+    {
+        // Total elements in Q_smem = BQ * D; distribute across TGP threads.
+        // Each butterfly pass processes BQ * D/2 pairs.
+        const int log2_D = (key.head_dim == 64) ? 6 : (key.head_dim == 128) ? 7 : 8;
+        ss << "    const int total_q_elems = MFA_BQ * MFA_BD;\n";
+        ss << "    const int n_pairs = total_q_elems / 2;\n";
+        ss << "    const int pairs_per_thread = (n_pairs + MFA_TGP_SIZE - 1) / MFA_TGP_SIZE;\n";
+        for (int pass = 0; pass < log2_D; pass++) {
+            int h = 1 << pass;
+            ss << "    {\n";
+            ss << "      const int h = " << h << ";\n";
+            ss << "      STEEL_PRAGMA_UNROLL\n";
+            ss << "      for (int pi = 0; pi < pairs_per_thread; pi++) {\n";
+            ss << "        const int pair_id = thread_idx + pi * MFA_TGP_SIZE;\n";
+            ss << "        if (pair_id < n_pairs) {\n";
+            // pair_id addresses the pair within the flattened BQ*D space.
+            // Within each row of D elements, pairs at stride h:
+            // element indices: group = pair_id_in_row / h, lo = group*2h + (pair_id_in_row % h)
+            ss << "          const int row = pair_id / (MFA_BD / 2);\n";
+            ss << "          const int pair_in_row = pair_id % (MFA_BD / 2);\n";
+            ss << "          const int group = pair_in_row / h;\n";
+            ss << "          const int lo_d = group * (2 * h) + (pair_in_row % h);\n";
+            ss << "          const int hi_d = lo_d + h;\n";
+            ss << "          const int lo_idx = row * LDQ + lo_d;\n";
+            ss << "          const int hi_idx = row * LDQ + hi_d;\n";
+            ss << "          T a = Qs[lo_idx];\n";
+            ss << "          T b = Qs[hi_idx];\n";
+            ss << "          Qs[lo_idx] = a + b;\n";
+            ss << "          Qs[hi_idx] = a - b;\n";
+            ss << "        }\n";
+            ss << "      }\n";
+            ss << "      threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+            ss << "    }\n";
+        }
+    }
+    ss << "  }\n";
     ss << "\n";
 
     // SMEM-to-register offsets
