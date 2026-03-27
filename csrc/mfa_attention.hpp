@@ -565,4 +565,66 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
     mlx::core::Stream stream);
 
 
+// =========================================================================
+// MFAPagedVarlenTQForward — TurboQuant fused paged-varlen primitive
+// =========================================================================
+
+class MFAPagedVarlenTQForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    float scale;
+    bool causal;
+    int D;
+    int block_size;
+    int tq_bits;     // 2, 3, or 4
+    int packed_D;    // D / 2
+  };
+
+  MFAPagedVarlenTQForward(mlx::core::Stream s, Params p)
+      : mlx::core::Primitive(s), params_(p) {}
+
+  const char* name() const override { return "MFAPagedVarlenTQForward"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAPagedVarlenTQForward: CPU not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFAPagedVarlenTQForward*>(&other);
+    if (!o) return false;
+    return params_.scale == o->params_.scale &&
+           params_.causal == o->params_.causal &&
+           params_.D == o->params_.D &&
+           params_.block_size == o->params_.block_size &&
+           params_.tq_bits == o->params_.tq_bits;
+  }
+
+ private:
+  Params params_;
+};
+
+/// Free function: validates inputs and creates MFAPagedVarlenTQForward.
+/// Returns (O [1, H_q, total_q, D], L [H_q, total_q]).
+std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
+    const mlx::core::array& q,             // [1, H_q, total_q, D]
+    const mlx::core::array& k_pool_tq,     // [num_pages, block_size, H_kv, packed_D] uint8
+    const mlx::core::array& v_pool,        // [num_pages, block_size, H_kv, D]
+    const mlx::core::array& cu_seqlens_q,  // [num_seqs + 1]
+    const mlx::core::array& tile_offsets,  // [num_seqs + 1]
+    const mlx::core::array& block_table,   // [num_seqs, max_blocks]
+    const mlx::core::array& seq_lens_kv,   // [num_seqs]
+    const mlx::core::array& centroids,     // [n_centroids] fp16
+    const mlx::core::array& k_scales,      // [num_pages, block_size, H_kv] f32
+    float scale,
+    bool causal,
+    int block_size,
+    int tq_bits,
+    mlx::core::Stream stream);
+
 }  // namespace mlx_mfa

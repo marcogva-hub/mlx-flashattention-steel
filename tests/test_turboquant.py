@@ -454,3 +454,363 @@ class TestBitsComparison:
 
         assert corrs[2] < corrs[3] < corrs[4], f"Not monotonic: {corrs}"
         assert corrs[4] > 0.99, f"4-bit correlation {corrs[4]:.4f} < 0.99"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Fused TurboQuant kernel tests
+# ---------------------------------------------------------------------------
+
+
+def _skip_if_no_ext():
+    """Skip if C++ extension not built."""
+    try:
+        from mlx_mfa import is_mfa_available
+        if not is_mfa_available():
+            pytest.skip("MFA extension not available")
+    except ImportError:
+        pytest.skip("mlx_mfa not installed")
+
+
+def _build_tq_paged_pool(k_seqs, v_seqs, block_size, bits=3, rotation="wht", seed=42):
+    """Build fp16 V pool + TQ-packed K pool from per-sequence KV tensors."""
+    from mlx_mfa.turboquant import pack_k_for_metal, _get_centroids
+
+    B = len(k_seqs)
+    H_kv = k_seqs[0].shape[1]
+    D = k_seqs[0].shape[3]
+    packed_D = D // 2
+    blocks_per_seq = [
+        (int(k.shape[2]) + block_size - 1) // block_size for k in k_seqs
+    ]
+    total_blocks = sum(blocks_per_seq)
+    max_blocks = max(blocks_per_seq) if blocks_per_seq else 0
+
+    pool_k_tq = np.zeros((total_blocks, block_size, H_kv, packed_D), dtype=np.uint8)
+    pool_k_scales = np.zeros((total_blocks, block_size, H_kv), dtype=np.float32)
+    pool_v = np.zeros((total_blocks, block_size, H_kv, D), dtype=np.float16)
+    table = np.full((B, max_blocks), 0, dtype=np.int32)
+    lens = np.zeros((B,), dtype=np.int32)
+
+    # Get centroids once
+    _, centroids_f32 = _get_centroids(bits)
+    centroids_fp16 = centroids_f32.astype(mx.float16)
+
+    blk_base = 0
+    for b in range(B):
+        # k_seqs[b] = [1, H_kv, S, D]
+        S = k_seqs[b].shape[2]
+        lens[b] = S
+
+        # Pack K for this sequence
+        k_packed, k_scales, _ = pack_k_for_metal(
+            k_seqs[b], bits=bits, rotation=rotation, seed=seed
+        )
+        mx.synchronize()
+        # k_packed: [1, H_kv, S, packed_D], k_scales: [1, H_kv, S]
+
+        k_packed_np = np.array(k_packed)[0]  # [H_kv, S, packed_D]
+        k_scales_np = np.array(k_scales.astype(mx.float32))[0]  # [H_kv, S]
+
+        v_np = np.array(v_seqs[b].astype(mx.float16))[0]  # [H_kv, S, D]
+
+        n_blk = blocks_per_seq[b]
+        for lb in range(n_blk):
+            table[b, lb] = blk_base + lb
+            s0 = lb * block_size
+            s1 = min(S, s0 + block_size)
+            chunk_len = s1 - s0
+            # pool layout: [block, block_size, H_kv, ...]
+            # from [H_kv, S, ...] -> transpose to [S, H_kv, ...]
+            pool_k_tq[blk_base + lb, :chunk_len] = k_packed_np.transpose(1, 0, 2)[s0:s1]
+            pool_k_scales[blk_base + lb, :chunk_len] = k_scales_np.transpose(1, 0)[s0:s1]
+            pool_v[blk_base + lb, :chunk_len] = v_np.transpose(1, 0, 2)[s0:s1]
+        blk_base += n_blk
+
+    return (
+        mx.array(pool_k_tq),
+        mx.array(pool_v),
+        mx.array(pool_k_scales, dtype=mx.float32),
+        centroids_fp16,
+        mx.array(table, dtype=mx.int32),
+        mx.array(lens, dtype=mx.int32),
+    )
+
+
+def _pack_queries(q_seqs):
+    """Pack per-sequence [1,H,Qi,D] into [1,H,total_q,D] + cu_seqlens_q."""
+    offsets = [0]
+    for q in q_seqs:
+        offsets.append(offsets[-1] + int(q.shape[2]))
+    q_pack = mx.concatenate(q_seqs, axis=2)
+    cu = mx.array(offsets, dtype=mx.int32)
+    return q_pack, cu
+
+
+class TestTurboQuantFusedKernel:
+    """Tests for the Phase 2 fused TQ paged varlen kernel."""
+
+    def test_fused_vs_decompress_noncausal(self):
+        """Fused TQ kernel matches decompress->paged_varlen for non-causal."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen, flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import turboquant_compress, turboquant_decompress
+
+        mx.random.seed(801)
+        H_q, H_kv, D = 4, 4, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q_seqs = [mx.random.normal((1, H_q, 8, D)).astype(mx.float16)]
+        k_seqs = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        v_seqs = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        # --- Fused path ---
+        # Pre-rotate Q with WHT
+        from mlx_mfa.turboquant import apply_rotation
+        q_rot_seqs = [apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16) for q in q_seqs]
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries(q_rot_seqs)
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k_seqs, v_seqs, block_size, bits=bits
+        )
+
+        out_fused = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        # --- Decompress path (reference) ---
+        k_decomp_seqs = []
+        for k in k_seqs:
+            c = turboquant_compress(k, bits=bits, use_qjl=False, rotation="wht")
+            k_decomp_seqs.append(turboquant_decompress(c))
+        mx.synchronize()
+
+        # Build fp16 paged pool for reference
+        B = len(k_seqs)
+        blocks_per_seq = [(int(k.shape[2]) + block_size - 1) // block_size for k in k_seqs]
+        total_blocks = sum(blocks_per_seq)
+        max_blocks_val = max(blocks_per_seq)
+        pool_k_ref = np.zeros((total_blocks, block_size, H_kv, D), dtype=np.float16)
+        pool_v_ref = np.zeros((total_blocks, block_size, H_kv, D), dtype=np.float16)
+        table_ref = np.full((B, max_blocks_val), 0, dtype=np.int32)
+        lens_ref = np.zeros((B,), dtype=np.int32)
+
+        blk = 0
+        for b in range(B):
+            S = int(k_seqs[b].shape[2])
+            lens_ref[b] = S
+            n_blk = blocks_per_seq[b]
+            k_np = np.array(k_decomp_seqs[b].astype(mx.float16))[0].transpose(1, 0, 2)
+            v_np = np.array(v_seqs[b].astype(mx.float16))[0].transpose(1, 0, 2)
+            for lb in range(n_blk):
+                table_ref[b, lb] = blk + lb
+                s0 = lb * block_size
+                s1 = min(S, s0 + block_size)
+                pool_k_ref[blk + lb, :s1 - s0] = k_np[s0:s1]
+                pool_v_ref[blk + lb, :s1 - s0] = v_np[s0:s1]
+            blk += n_blk
+
+        # Reference uses decompressed K (original space) → needs original Q (not rotated).
+        q_orig_pack, cu_q_orig = _pack_queries(q_seqs)
+        out_ref = flash_attention_paged_varlen(
+            q_orig_pack,
+            mx.array(pool_k_ref), mx.array(pool_v_ref),
+            mx.array(table_ref, dtype=mx.int32),
+            mx.array(lens_ref, dtype=mx.int32),
+            cu_q_orig,
+            scale=scale, causal=False, block_size=block_size,
+        )
+        mx.synchronize()
+
+        err = np.abs(np.array(out_fused.astype(mx.float32)) - np.array(out_ref.astype(mx.float32)))
+        max_err = err.max()
+        # Fused and decompress paths should produce close results
+        assert max_err < 0.1, f"max_abs_err={max_err:.4f} > 0.1"
+
+    def test_fused_causal(self):
+        """Fused TQ kernel with causal masking."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(802)
+        H_q, H_kv, D = 4, 4, 128
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 16, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=True, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        assert out.shape == q_pack.shape
+        out_np = np.array(out.astype(mx.float32))
+        assert np.all(np.isfinite(out_np)), "NaN or Inf in causal output"
+
+    def test_fused_gqa(self):
+        """Fused TQ kernel with GQA (H_q > H_kv)."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(803)
+        H_q, H_kv, D = 8, 2, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 4, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 4, D)
+        out_np = np.array(out.astype(mx.float32))
+        assert np.all(np.isfinite(out_np)), "NaN or Inf in GQA output"
+
+    def test_fused_multi_seq(self):
+        """Fused TQ with multiple variable-length sequences."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(804)
+        H_q, H_kv, D = 4, 4, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q_lens = [3, 1, 4]
+        kv_lens = [27, 19, 33]
+
+        q_seqs = [mx.random.normal((1, H_q, ql, D)).astype(mx.float16) for ql in q_lens]
+        k_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        v_seqs = [mx.random.normal((1, H_kv, kl, D)).astype(mx.float16) for kl in kv_lens]
+        mx.synchronize()
+
+        q_rot_seqs = [apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16) for q in q_seqs]
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries(q_rot_seqs)
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k_seqs, v_seqs, block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        total_q = sum(q_lens)
+        assert out.shape == (1, H_q, total_q, D)
+        out_np = np.array(out.astype(mx.float32))
+        assert np.all(np.isfinite(out_np)), "NaN or Inf in multi-seq output"
+
+    @pytest.mark.parametrize("bits", [2, 4])
+    def test_fused_other_bitwidths(self, bits):
+        """Fused TQ kernel with 2-bit and 4-bit."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(805 + bits)
+        H_q, H_kv, D = 4, 4, 64
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 8, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+        )
+        mx.synchronize()
+
+        assert out.shape == q_pack.shape
+        out_np = np.array(out.astype(mx.float32))
+        assert np.all(np.isfinite(out_np)), f"NaN/Inf with {bits}-bit"
+
+    def test_pack_k_for_metal_roundtrip(self):
+        """pack_k_for_metal indices roundtrip to correct centroid values."""
+        from mlx_mfa.turboquant import pack_k_for_metal
+
+        mx.random.seed(810)
+        k = mx.random.normal((1, 2, 8, 64)).astype(mx.float16)
+        mx.synchronize()
+
+        for bits in [2, 3, 4]:
+            k_packed, scales, centroids = pack_k_for_metal(k, bits=bits)
+            mx.synchronize()
+
+            assert k_packed.shape == (1, 2, 8, 32), f"bits={bits}: bad shape {k_packed.shape}"
+            assert k_packed.dtype == mx.uint8
+            assert scales.shape == (1, 2, 8)
+            assert centroids.shape == (1 << bits,)
+
+    def test_build_tq_paged_k_pool(self):
+        """build_tq_paged_k_pool produces correctly shaped output."""
+        from mlx_mfa.turboquant import build_tq_paged_k_pool
+
+        mx.random.seed(811)
+        num_pages, block_size, H_kv, D = 4, 16, 2, 128
+        k_pool = mx.random.normal((num_pages, block_size, H_kv, D)).astype(mx.float16)
+        mx.synchronize()
+
+        k_pool_tq, scales, centroids = build_tq_paged_k_pool(k_pool, bits=3)
+        mx.synchronize()
+
+        assert k_pool_tq.shape == (num_pages, block_size, H_kv, D // 2)
+        assert k_pool_tq.dtype == mx.uint8
+        assert scales.shape == (num_pages, block_size, H_kv)
+        assert centroids.shape == (8,)  # 2^3

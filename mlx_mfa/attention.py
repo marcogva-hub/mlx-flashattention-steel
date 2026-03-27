@@ -5474,3 +5474,90 @@ def flash_attention_varlen_kv_packed(
         q, k, v, cu_seqlens_q, cu_seqlens_k,
         max_seqlen_q, max_seqlen_k,
         scale=scale, causal=causal, stream=stream)
+
+
+# ==========================================================================
+# TurboQuant Phase 2 — Fused paged varlen with inline K dequant
+# ==========================================================================
+
+
+def flash_attention_paged_varlen_turboquant(
+    q: "mx.array",
+    k_pool_tq: "mx.array",
+    v_pages: "mx.array",
+    block_table: "mx.array",
+    seq_lens_kv: "mx.array",
+    cu_seqlens_q: "mx.array",
+    centroids: "mx.array",
+    k_scales: "mx.array",
+    *,
+    scale: Optional[float] = None,
+    causal: bool = False,
+    block_size: int = 16,
+    tq_bits: int = 3,
+    stream: Optional["mx.StreamOrDevice"] = None,
+) -> "mx.array":
+    """Fused TurboQuant paged varlen attention — inline K dequantification.
+
+    The kernel reads packed uint8 K indices from ``k_pool_tq``, performs
+    centroid lookup and per-vector rescaling inline during the K gather,
+    eliminating the need for a separate decompress pass. V remains fp16.
+
+    This is Phase 2 of TurboQuant: same accuracy as Phase 1 decompress→attend,
+    but removes the ~18ms decompress overhead.
+
+    Args:
+        q: Packed query tensor ``[1, H_q, total_q, D]`` fp16/bf16.
+        k_pool_tq: TQ-packed K pool ``[num_pages, block_size, H_kv, packed_D]``
+            uint8, where ``packed_D = D/2`` (2 indices per byte).
+        v_pages: Value page pool ``[num_pages, block_size, H_kv, D]`` fp16.
+        block_table: ``int32 [B, max_blocks_per_seq]``.
+        seq_lens_kv: ``int32 [B]`` effective KV length per sequence.
+        cu_seqlens_q: ``int32 [B+1]`` cumulative query lengths.
+        centroids: ``[n_centroids]`` fp16 centroid lookup table (e.g. 8 for 3-bit).
+        k_scales: ``[num_pages, block_size, H_kv]`` float32 per-vector scales.
+        scale: Attention scale (default ``1/sqrt(D)``).
+        causal: Causal masking.
+        block_size: Tokens per page (must match pool layout).
+        tq_bits: Quantization bits (2, 3, or 4). Must match packing.
+        stream: MLX stream/device.
+
+    Returns:
+        Packed output ``[1, H_q, total_q, D]``.
+    """
+    import math
+    import mlx.core as mx
+
+    if q.ndim != 4 or q.shape[0] != 1:
+        raise ValueError(
+            f"flash_attention_paged_varlen_turboquant: q must be [1,H,total_q,D], "
+            f"got {q.shape}"
+        )
+
+    D = q.shape[3]
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    H_q = q.shape[1]
+    total_q = q.shape[2]
+
+    # Compute tile_offsets for varlen grid scheduling
+    from mlx_mfa._ext import mfa_paged_varlen_tq_forward
+
+    cfg_bq = 32  # matches select_steel_block_config default BQ
+    seq_lens_q = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+    n_tiles_per_seq = (seq_lens_q + cfg_bq - 1) // cfg_bq
+    tile_offsets = mx.concatenate([
+        mx.array([0], dtype=mx.int32),
+        mx.cumsum(n_tiles_per_seq.astype(mx.int32))
+    ])
+    mx.eval(tile_offsets)
+
+    o, _lse = mfa_paged_varlen_tq_forward(
+        q, k_pool_tq, v_pages,
+        cu_seqlens_q, tile_offsets,
+        block_table, seq_lens_kv,
+        centroids, k_scales,
+        scale, causal, block_size, tq_bits,
+    )
+    return o

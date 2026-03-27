@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.21.0"
+__version__ = "2.22.0"
 
 
 def _check_abi() -> None:
@@ -70,6 +70,7 @@ from mlx_mfa.attention import (
     flash_attention_kvcache_rope_append,
     flash_attention_paged,
     flash_attention_paged_varlen,
+    flash_attention_paged_varlen_turboquant,
     flash_attention_qkv_packed,
     flash_attention_kv_packed,
     flash_attention_varlen_qkv_packed,
@@ -141,6 +142,8 @@ from mlx_mfa.turboquant import (
     turboquant_compress,
     turboquant_decompress,
     TurboQuantKVCache,
+    pack_k_for_metal,
+    build_tq_paged_k_pool,
 )
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
@@ -197,6 +200,7 @@ __all__ = [
     "flash_attention_kvcache_rope_append",
     "flash_attention_paged",
     "flash_attention_paged_varlen",
+    "flash_attention_paged_varlen_turboquant",
     "flash_attention_qkv_packed",
     "flash_attention_kv_packed",
     "flash_attention_varlen_qkv_packed",
@@ -274,9 +278,11 @@ __all__ = [
     "ExternalKVCacheCapabilities",
     "ExternalKVCacheAdapter",
     "LocalHostKVStoreAdapter",
-    # TurboQuant KV cache compression (Phase 1)
+    # TurboQuant KV cache compression
     "turboquant_compress",
     "turboquant_decompress",
     "TurboQuantKVCache",
+    "pack_k_for_metal",
+    "build_tq_paged_k_pool",
     "__version__",
 ]

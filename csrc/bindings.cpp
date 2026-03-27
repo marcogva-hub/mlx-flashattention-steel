@@ -583,9 +583,47 @@ NB_MODULE(_ext, m) {
       nb::arg("stream") = nb::none(),
       "Fused paged varlen forward: packed Q + paged KV in a single dispatch.");
 
+  // ── PagedVarlenTQForward (TurboQuant fused K dequant) ──────────────────
+  m.def("mfa_paged_varlen_tq_forward",
+      [](const mlx::core::array& q,
+         const mlx::core::array& k_pool_tq,
+         const mlx::core::array& v_pool,
+         const mlx::core::array& cu_seqlens_q,
+         const mlx::core::array& tile_offsets,
+         const mlx::core::array& block_table,
+         const mlx::core::array& seq_lens_kv,
+         const mlx::core::array& centroids,
+         const mlx::core::array& k_scales,
+         float scale,
+         bool causal,
+         int block_size,
+         int tq_bits,
+         nb::object stream) {
+        auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        return mlx_mfa::mfa_paged_varlen_tq_forward(
+            q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets,
+            block_table, seq_lens_kv, centroids, k_scales,
+            scale, causal, block_size, tq_bits, s);
+      },
+      nb::arg("q"),
+      nb::arg("k_pool_tq"),
+      nb::arg("v_pool"),
+      nb::arg("cu_seqlens_q"),
+      nb::arg("tile_offsets"),
+      nb::arg("block_table"),
+      nb::arg("seq_lens_kv"),
+      nb::arg("centroids"),
+      nb::arg("k_scales"),
+      nb::arg("scale"),
+      nb::arg("causal"),
+      nb::arg("block_size"),
+      nb::arg("tq_bits"),
+      nb::arg("stream") = nb::none(),
+      "TurboQuant fused paged varlen forward: packed uint8 K + centroid dequant.");
+
   m.def("_invalidate_env_config", []() {
       mlx_mfa::MFAEnvConfig::invalidate();
   }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
 
-  m.attr("__version__") = "2.21.0";
+  m.attr("__version__") = "2.22.0";
 }
