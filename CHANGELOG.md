@@ -4,6 +4,28 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.22.0] — 2026-03-27
+
+### TurboQuant Phase 2 — Semi-Fused Metal Kernel
+
+- **feat**: `flash_attention_paged_varlen_turboquant()` — fused paged varlen
+  attention that reads TQ-packed uint8 K directly in the Metal kernel. Inline
+  centroid lookup + per-vector rescaling during K gather eliminates the
+  separate decompress pass. V remains fp16.
+- **feat**: `PagedVarlenTQForward` Metal kernel (KernelType 28) — copy of
+  PagedVarlenForward with modified K gather: unpack 2 indices per byte,
+  centroid lookup from buffer(10), scale from buffer(11).
+- **feat**: `pack_k_for_metal()` — rotate, normalize, quantize K and pack
+  into Metal-friendly 2-indices-per-byte uint8 format (packed_D = D/2).
+- **feat**: `build_tq_paged_k_pool()` — convert a paged K pool from fp16
+  to TQ-packed format. Returns (k_pool_tq, scales, centroids).
+- **feat**: Supports 2/3/4-bit quantization, causal masking, GQA, and
+  multi-sequence varlen batching.
+- **test**: 8 new tests — fused-vs-decompress correctness, causal, GQA,
+  multi-seq, 2-bit/4-bit, packing roundtrip, pool builder shapes.
+- **bench**: `bench_turboquant_fused.py` — compares fp16, Phase 1, Phase 2.
+  Phase 2 is up to 3× faster than Phase 1 for batched multi-seq decode.
+
 ## [2.21.0] — 2026-03-26
 
 ### TurboQuant KV Cache Compression (Phase 1)

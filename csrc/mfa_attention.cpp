@@ -26,6 +26,7 @@
 // GNA native kernel removed (sparse path is faster)
 #include "mfa_sage_fwd.hpp"
 #include "mfa_steel_paged_varlen_fwd.hpp"
+#include "mfa_steel_paged_varlen_tq_fwd.hpp"
 #include "shader_cache.hpp"
 #include "mfa_env.hpp"
 
@@ -2765,6 +2766,164 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedVarlenForward>(stream, params),
       {q, k_pool, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv});
+
+  return {outputs[0], outputs[1]};
+}
+
+// =========================================================================
+// MFAPagedVarlenTQForward::eval_gpu
+// =========================================================================
+
+void MFAPagedVarlenTQForward::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+  // inputs: Q(0), k_pool_tq(1), v_pool(2), cu_seqlens_q(3), tile_offsets(4),
+  //         block_table(5), seq_lens_kv(6), centroids(7), k_scales(8)
+  auto& q            = inputs[0];  // [1, H_q, total_q, D]
+  auto& k_pool_tq    = inputs[1];  // [num_pages, block_size, H_kv, packed_D] uint8
+  auto& v_pool       = inputs[2];  // [num_pages, block_size, H_kv, D]
+  auto& cu_seqlens_q = inputs[3];
+  auto& tile_offsets = inputs[4];
+  auto& block_table  = inputs[5];
+  auto& seq_lens_kv  = inputs[6];
+  auto& centroids    = inputs[7];  // [n_centroids] fp16
+  auto& k_scales     = inputs[8];  // [num_pages, block_size, H_kv] f32
+
+  auto& out = outputs[0];
+  auto& lse = outputs[1];
+  out.set_data(mlx::core::allocator::malloc(out.nbytes()));
+  lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
+
+  const int H_q     = q.shape(1);
+  const int total_q = q.shape(2);
+  const int D       = q.shape(3);
+  const int H_kv    = v_pool.shape(2);  // [num_pages, block_size, H_kv, D]
+  const int packed_D = k_pool_tq.shape(3);
+  const int num_seqs  = (int)cu_seqlens_q.shape(0) - 1;
+  const int max_blocks = (int)block_table.shape(1);
+
+  auto tile_offsets_data = tile_offsets.data<int32_t>();
+  const int total_q_tiles = tile_offsets_data[num_seqs];
+
+  auto cfg = select_steel_block_config(D, q.dtype() != mlx::core::float32);
+  const int BQ  = cfg.BQ;
+  const int BK  = cfg.BK;
+  const int TGP = cfg.WM * cfg.WN * 32;
+
+  // Build Metal params
+  MFAPagedVarlenTQParams metal_params{};
+  metal_params.H               = H_q;
+  metal_params.D               = D;
+  metal_params.gqa_factor      = H_q / H_kv;
+  metal_params.num_seqs        = num_seqs;
+  metal_params.total_q         = total_q;
+  metal_params.total_q_tiles   = total_q_tiles;
+  metal_params.scale           = params_.scale;
+  metal_params.softcap         = 0.0f;
+  metal_params.Q_head_stride   = (int64_t)total_q * D;
+  metal_params.block_size      = params_.block_size;
+  metal_params.max_blocks      = max_blocks;
+  metal_params.pool_block_stride_v = params_.block_size * H_kv * D;
+  metal_params.pool_tok_stride_v   = H_kv * D;
+  metal_params.pool_block_stride_k = params_.block_size * H_kv * packed_D;
+  metal_params.pool_tok_stride_k   = H_kv * packed_D;
+  metal_params.H_kv            = H_kv;
+  metal_params.packed_D        = packed_D;
+  metal_params.tq_bits         = params_.tq_bits;
+  metal_params.n_centroids     = 1 << params_.tq_bits;
+  metal_params.window_left     = -1;
+  metal_params.window_right    = -1;
+
+  // Compile kernel
+  auto& d = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(d.get_architecture_gen());
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
+  bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code = 0;
+  if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+
+  using KK = ShaderCache::KernelKey;
+  KK kkey{};
+  kkey.type       = KK::KernelType::PagedVarlenTQForward;
+  kkey.head_dim   = D;
+  kkey.block_q    = BQ;
+  kkey.block_k    = BK;
+  kkey.n_warps    = cfg.WM;
+  kkey.dtype      = dtype_code;
+  kkey.causal     = params_.causal;
+  kkey.sparse     = false;
+  kkey.is_m3_plus = is_m3_plus;
+
+  void* raw = ShaderCache::get().get_or_compile(kkey, d.mtl_device());
+  auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  // Dispatch
+  auto& enc = d.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pl);
+  enc.set_input_array(q,            0);
+  enc.set_input_array(k_pool_tq,    1);
+  enc.set_input_array(v_pool,       2);
+  enc.set_output_array(out,         3);
+  enc.set_output_array(lse,         4);
+  enc.set_bytes(metal_params,       5);
+  enc.set_input_array(cu_seqlens_q, 6);
+  enc.set_input_array(tile_offsets, 7);
+  enc.set_input_array(block_table,  8);
+  enc.set_input_array(seq_lens_kv,  9);
+  enc.set_input_array(centroids,    10);
+  enc.set_input_array(k_scales,     11);
+
+  enc.dispatch_threadgroups(
+      MTL::Size::Make((size_t)total_q_tiles, (size_t)H_q, 1),
+      MTL::Size::Make((size_t)TGP, 1, 1));
+}
+
+// =========================================================================
+// mfa_paged_varlen_tq_forward — Free function
+// =========================================================================
+
+std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k_pool_tq,
+    const mlx::core::array& v_pool,
+    const mlx::core::array& cu_seqlens_q,
+    const mlx::core::array& tile_offsets,
+    const mlx::core::array& block_table,
+    const mlx::core::array& seq_lens_kv,
+    const mlx::core::array& centroids,
+    const mlx::core::array& k_scales,
+    float scale,
+    bool causal,
+    int block_size,
+    int tq_bits,
+    mlx::core::Stream stream) {
+
+  if (q.ndim() != 4 || q.shape(0) != 1)
+    throw std::runtime_error("mfa_paged_varlen_tq_forward: Q must be [1, H_q, total_q, D]");
+
+  int H_q     = q.shape(1);
+  int total_q = q.shape(2);
+  int D       = q.shape(3);
+  int packed_D = D / 2;
+
+  MFAPagedVarlenTQForward::Params params{};
+  params.scale      = scale;
+  params.causal     = causal;
+  params.D          = D;
+  params.block_size = block_size;
+  params.tq_bits    = tq_bits;
+  params.packed_D   = packed_D;
+
+  mlx::core::Shape out_shape = q.shape();       // [1, H_q, total_q, D]
+  mlx::core::Shape lse_shape = {H_q, total_q};  // [H_q, total_q]
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAPagedVarlenTQForward>(stream, params),
+      {q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
+       centroids, k_scales});
 
   return {outputs[0], outputs[1]};
 }

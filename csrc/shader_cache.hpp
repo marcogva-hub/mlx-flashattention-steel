@@ -72,6 +72,7 @@ class ShaderCache {
       SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
       // 24-26: reserved (GNA native kernel — removed, sparse path is faster)
       PagedVarlenForward         = 27,  // Fused packed varlen Q + paged KV gather
+      PagedVarlenTQForward       = 28,  // TurboQuant: packed uint8 K + centroid dequant
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
       // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
       //                         // MTLTensor / cooperative tensor ops (A19+/M5+).

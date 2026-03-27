@@ -713,3 +713,113 @@ def _make_adapter(cache: "TurboQuantKVCache"):
             self.cache.reset()
 
     return TurboQuantKVCacheAdapter(cache)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Metal packing helpers for fused TQ kernel
+# ---------------------------------------------------------------------------
+
+
+def pack_k_for_metal(
+    k: mx.array,
+    bits: int = 3,
+    *,
+    rotation: str = "wht",
+    seed: int = 42,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """Rotate, normalize, quantize K and pack for the fused Metal TQ kernel.
+
+    The Metal kernel expects 2 indices packed per byte:
+      idx_0 = byte & 0x7  (or 0x3 for 2-bit, 0xF for 4-bit)
+      idx_1 = (byte >> bits) & mask
+
+    For 3-bit: 2 × 3 = 6 bits used, 2 padding. packed_D = ceil(D/2).
+    For 2-bit: 2 × 2 = 4 bits used, 4 padding. packed_D = ceil(D/2).
+    For 4-bit: 2 × 4 = 8 bits used, 0 padding. packed_D = ceil(D/2).
+
+    Args:
+        k: [B, H, S, D] fp16/bf16 K tensor.
+        bits: 2, 3, or 4.
+        rotation: "wht" or "qr".
+        seed: random seed for rotation.
+
+    Returns:
+        (k_packed, scales, centroids_fp16):
+          k_packed: [B, H, S, packed_D] uint8 — 2 indices per byte.
+          scales: [B, H, S] float32 — per-vector L2 scale.
+          centroids_fp16: [2^bits] float16 — centroid lookup table for Metal.
+    """
+    if bits not in (2, 3, 4):
+        raise ValueError(f"bits must be 2, 3, or 4, got {bits}")
+    if k.ndim != 4:
+        raise ValueError(f"Expected [B,H,S,D], got ndim={k.ndim}")
+
+    B, H, S, D = k.shape
+    if D % 2 != 0:
+        raise ValueError(f"D must be even for Metal packing, got D={D}")
+
+    # 1. Rotate + normalize (same as turboquant_compress)
+    k_f32 = k.astype(mx.float32)
+    k_rot = apply_rotation(k_f32, rotation, seed)
+    norms = mx.sqrt((k_rot * k_rot).sum(axis=-1, keepdims=True))
+    scale = norms / math.sqrt(D)
+    safe_scale = mx.maximum(scale, 1e-10)
+    k_normalized = k_rot / safe_scale  # ~N(0,1)
+
+    # 2. Quantize to indices
+    k_indices = quantize_to_indices(k_normalized, bits)  # [B,H,S,D] uint8
+
+    # 3. Pack pairs: even/odd along D → 2 indices per byte
+    # Reshape to [B,H,S, D/2, 2] then combine
+    k_pairs = k_indices.reshape(B, H, S, D // 2, 2)
+    k_packed = k_pairs[..., 0] | (k_pairs[..., 1] << bits)
+    # k_packed: [B, H, S, D//2] uint8
+
+    # 4. Centroids as fp16 for Metal buffer
+    _, centroids = _get_centroids(bits)
+    centroids_fp16 = centroids.astype(mx.float16)
+
+    return k_packed, scale.squeeze(-1), centroids_fp16
+
+
+def build_tq_paged_k_pool(
+    k_pool_fp16: mx.array,
+    bits: int = 3,
+    *,
+    rotation: str = "wht",
+    seed: int = 42,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """Convert a paged KV pool's K from fp16 to TQ-packed format.
+
+    Args:
+        k_pool_fp16: [num_pages, block_size, H_kv, D] fp16 K pool.
+        bits: quantization bits (2, 3, or 4).
+        rotation: "wht" or "qr".
+        seed: random seed.
+
+    Returns:
+        (k_pool_tq, scales, centroids_fp16):
+          k_pool_tq: [num_pages, block_size, H_kv, packed_D] uint8.
+          scales: [num_pages, block_size, H_kv] float32.
+          centroids_fp16: [2^bits] float16.
+    """
+    if k_pool_fp16.ndim != 4:
+        raise ValueError(
+            f"Expected [num_pages, block_size, H_kv, D], got ndim={k_pool_fp16.ndim}"
+        )
+
+    num_pages, block_size, H_kv, D = k_pool_fp16.shape
+
+    # Reshape to [1, num_pages*block_size*H_kv, 1, D] for pack_k_for_metal
+    # (it expects [B,H,S,D])
+    flat = k_pool_fp16.reshape(1, 1, num_pages * block_size * H_kv, D)
+    k_packed, scales, centroids_fp16 = pack_k_for_metal(
+        flat, bits=bits, rotation=rotation, seed=seed
+    )
+
+    # Reshape back to pool layout
+    packed_D = D // 2
+    k_pool_tq = k_packed.reshape(num_pages, block_size, H_kv, packed_D)
+    scales = scales.reshape(num_pages, block_size, H_kv)
+
+    return k_pool_tq, scales, centroids_fp16
