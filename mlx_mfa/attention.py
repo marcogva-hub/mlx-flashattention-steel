@@ -5513,7 +5513,7 @@ def flash_attention_paged_varlen_turboquant(
     Args:
         q: Packed query tensor ``[1, H_q, total_q, D]`` fp16/bf16.
         k_pool_tq: TQ-packed K pool ``[num_pages, block_size, H_kv, packed_D]``
-            uint8, where ``packed_D = D/2`` (2 indices per byte).
+            uint8. For 3-bit: ``packed_D = D*3/8`` (bit-planar, 48 for D=128).
         v_pages: Value page pool ``[num_pages, block_size, H_kv, D]`` fp16.
             Used when ``tq_v_enabled=False``; can be a dummy when V is TQ-packed.
         block_table: ``int32 [B, max_blocks_per_seq]``.

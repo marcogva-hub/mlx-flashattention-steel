@@ -815,7 +815,8 @@ class TurboQuantPagedInferenceContext:
         self.tq_v = tq_v
         self.dtype = dtype
         self.stream = stream
-        self.packed_D = D // 2
+        from mlx_mfa.turboquant import _compute_packed_d
+        self.packed_D = _compute_packed_d(D, tq_bits)
 
         # TQ-packed K pool: [num_blocks, block_size, H_kv, packed_D] uint8
         self._k_pool = mx.zeros(
