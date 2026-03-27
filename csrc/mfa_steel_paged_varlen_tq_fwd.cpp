@@ -193,6 +193,21 @@ struct MFAPagedVarlenTQParams {
     ss << "  threadgroup T* Vs = KV_smem;\n";
     ss << "\n";
 
+    // Phase 3C: Centroid cache in threadgroup memory
+    // Max 16 centroids (4-bit); actual count = p->n_centroids at runtime.
+    ss << "  // Centroid TGP cache (Phase 3C): load once, read many\n";
+    ss << "  constexpr short MAX_CENTROIDS = 16;\n";
+    ss << "  threadgroup T k_centroids_smem[MAX_CENTROIDS];\n";
+    ss << "  threadgroup T v_centroids_smem[MAX_CENTROIDS];\n";
+    ss << "  if (thread_idx < p->n_centroids) {\n";
+    ss << "    k_centroids_smem[thread_idx] = centroids[thread_idx];\n";
+    ss << "    if (p->tq_v_enabled) {\n";
+    ss << "      v_centroids_smem[thread_idx] = v_centroids[thread_idx];\n";
+    ss << "    }\n";
+    ss << "  }\n";
+    ss << "  threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+    ss << "\n";
+
     // ── Q loader ─────────────────────────────────────────────────────────────
     ss << "  using QLoader = MFABlockLoaderT<T, MFA_BQ, MFA_BD,\n";
     ss << "      /*kDstStrRow=*/ MFA_BD + MFA_PAD,\n";
@@ -288,7 +303,7 @@ struct MFAPagedVarlenTQParams {
     ss << "                ? (packed_byte & tq_mask)\n";
     ss << "                : ((packed_byte >> tq_bits) & tq_mask);\n";
     // Centroid lookup → fp16 value
-    ss << "            const T centroid_val = centroids[idx];\n";
+    ss << "            const T centroid_val = k_centroids_smem[idx];\n";
     // Per-vector scale: k_scales[phys * block_size * H_kv + tok_in_blk * H_kv + kv_head]
     ss << "            const float kscale = k_scales[\n";
     ss << "                (long)phys * p->block_size * p->H_kv\n";
@@ -394,7 +409,7 @@ struct MFAPagedVarlenTQParams {
     ss << "              const uchar v_idx = (d & 1) == 0\n";
     ss << "                  ? (v_packed_byte & tq_mask)\n";
     ss << "                  : ((v_packed_byte >> tq_bits) & tq_mask);\n";
-    ss << "              const T v_centroid_val = v_centroids[v_idx];\n";
+    ss << "              const T v_centroid_val = v_centroids_smem[v_idx];\n";
     ss << "              const float vscale = v_scales[\n";
     ss << "                  (long)phys * p->block_size * p->H_kv\n";
     ss << "                  + tok_in_blk * p->H_kv + kv_head];\n";
