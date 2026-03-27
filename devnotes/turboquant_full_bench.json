@@ -1,0 +1,267 @@
+[
+  {
+    "label": "Llama-8B 1seq 2K",
+    "q_lens": [
+      1
+    ],
+    "kv_lens": [
+      2048
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 0.59,
+    "ms_p1": 4.071,
+    "ms_p2": 4.038,
+    "ms_p3": 4.356,
+    "ratio_p3_fp16": 7.377,
+    "ratio_p3_p1": 1.07,
+    "cos_p2_vs_fp16": 0.98252,
+    "cos_p3_vs_fp16": 0.96537,
+    "mem_fp16_mb": 8.0,
+    "mem_k_tq_mb": 5.06,
+    "mem_kv_tq_mb": 2.12
+  },
+  {
+    "label": "Llama-8B 1seq 8K",
+    "q_lens": [
+      1
+    ],
+    "kv_lens": [
+      8192
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 1.402,
+    "ms_p1": 12.645,
+    "ms_p2": 11.286,
+    "ms_p3": 12.231,
+    "ratio_p3_fp16": 8.726,
+    "ratio_p3_p1": 0.967,
+    "cos_p2_vs_fp16": 0.98111,
+    "cos_p3_vs_fp16": 0.96475,
+    "mem_fp16_mb": 32.0,
+    "mem_k_tq_mb": 20.25,
+    "mem_kv_tq_mb": 8.5
+  },
+  {
+    "label": "Llama-8B 4seq 2K",
+    "q_lens": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "kv_lens": [
+      2048,
+      2048,
+      2048,
+      2048
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 1.242,
+    "ms_p1": 14.208,
+    "ms_p2": 3.332,
+    "ms_p3": 3.901,
+    "ratio_p3_fp16": 3.141,
+    "ratio_p3_p1": 0.275,
+    "cos_p2_vs_fp16": 0.98112,
+    "cos_p3_vs_fp16": 0.96525,
+    "mem_fp16_mb": 32.0,
+    "mem_k_tq_mb": 20.25,
+    "mem_kv_tq_mb": 8.5
+  },
+  {
+    "label": "Llama-8B 8seq 4K",
+    "q_lens": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "kv_lens": [
+      4096,
+      4096,
+      4096,
+      4096,
+      4096,
+      4096,
+      4096,
+      4096
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 3.861,
+    "ms_p1": 53.769,
+    "ms_p2": 13.528,
+    "ms_p3": 14.939,
+    "ratio_p3_fp16": 3.869,
+    "ratio_p3_p1": 0.278,
+    "cos_p2_vs_fp16": 0.9824,
+    "cos_p3_vs_fp16": 0.96556,
+    "mem_fp16_mb": 128.0,
+    "mem_k_tq_mb": 81.0,
+    "mem_kv_tq_mb": 34.0
+  },
+  {
+    "label": "Llama-8B prefill 512",
+    "q_lens": [
+      512
+    ],
+    "kv_lens": [
+      512
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": true,
+    "ms_fp16": 3.677,
+    "ms_p1": 4.895,
+    "ms_p2": 3.064,
+    "ms_p3": 4.996,
+    "ratio_p3_fp16": 1.359,
+    "ratio_p3_p1": 1.021,
+    "cos_p2_vs_fp16": 0.98753,
+    "cos_p3_vs_fp16": 0.9707,
+    "mem_fp16_mb": 2.0,
+    "mem_k_tq_mb": 1.27,
+    "mem_kv_tq_mb": 0.53
+  },
+  {
+    "label": "Llama-8B prefill 2K",
+    "q_lens": [
+      2048
+    ],
+    "kv_lens": [
+      2048
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": true,
+    "ms_fp16": 40.327,
+    "ms_p1": 41.047,
+    "ms_p2": 25.4,
+    "ms_p3": 37.06,
+    "ratio_p3_fp16": 0.919,
+    "ratio_p3_p1": 0.903,
+    "cos_p2_vs_fp16": 0.98626,
+    "cos_p3_vs_fp16": 0.96936,
+    "mem_fp16_mb": 8.0,
+    "mem_k_tq_mb": 5.06,
+    "mem_kv_tq_mb": 2.12
+  },
+  {
+    "label": "Qwen-7B 1seq 8K",
+    "q_lens": [
+      1
+    ],
+    "kv_lens": [
+      8192
+    ],
+    "H_q": 28,
+    "H_kv": 4,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 0.9,
+    "ms_p1": 8.885,
+    "ms_p2": 11.679,
+    "ms_p3": 12.918,
+    "ratio_p3_fp16": 14.357,
+    "ratio_p3_p1": 1.454,
+    "cos_p2_vs_fp16": 0.98258,
+    "cos_p3_vs_fp16": 0.96468,
+    "mem_fp16_mb": 16.0,
+    "mem_k_tq_mb": 10.12,
+    "mem_kv_tq_mb": 4.25
+  },
+  {
+    "label": "Qwen-7B 4seq 4K",
+    "q_lens": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "kv_lens": [
+      4096,
+      4096,
+      4096,
+      4096
+    ],
+    "H_q": 28,
+    "H_kv": 4,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 1.51,
+    "ms_p1": 15.438,
+    "ms_p2": 6.299,
+    "ms_p3": 7.548,
+    "ratio_p3_fp16": 4.997,
+    "ratio_p3_p1": 0.489,
+    "cos_p2_vs_fp16": 0.98222,
+    "cos_p3_vs_fp16": 0.96496,
+    "mem_fp16_mb": 32.0,
+    "mem_k_tq_mb": 20.25,
+    "mem_kv_tq_mb": 8.5
+  },
+  {
+    "label": "Mixed 8seq hetero",
+    "q_lens": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "kv_lens": [
+      512,
+      1024,
+      2048,
+      4096,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "H_q": 32,
+    "H_kv": 8,
+    "D": 128,
+    "bits": 3,
+    "causal": false,
+    "ms_fp16": 4.052,
+    "ms_p1": 26.289,
+    "ms_p2": 12.494,
+    "ms_p3": 14.521,
+    "ratio_p3_fp16": 3.583,
+    "ratio_p3_p1": 0.552,
+    "cos_p2_vs_fp16": 0.98181,
+    "cos_p3_vs_fp16": 0.96493,
+    "mem_fp16_mb": 60.0,
+    "mem_k_tq_mb": 37.97,
+    "mem_kv_tq_mb": 15.94
+  }
+]
