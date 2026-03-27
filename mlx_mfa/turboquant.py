@@ -1,4 +1,4 @@
-"""TurboQuant KV cache compression — Phase 1 (non-fused).
+"""TurboQuant KV cache compression.
 
 Two-stage vector quantization for KV cache compression:
   Stage 1 (PolarQuant/MSE): random rotation + Lloyd-Max scalar quantization
@@ -6,7 +6,32 @@ Two-stage vector quantization for KV cache compression:
 
 Reference: TurboQuant (Google, ICLR 2026) — https://arxiv.org/abs/2504.19874
 
-Phase 1 decompresses to fp16 before attention — memory savings only, no speed gain.
+Execution paths
+~~~~~~~~~~~~~~~
+
+**Phase 1 — decompress path** (``turboquant_compress`` → ``turboquant_decompress``):
+    Decompresses to fp16 before attention.  Supports QJL 1-bit residual correction
+    (``use_qjl=True``) for improved 2-bit quality.  No speed gain over fp16 attention;
+    benefits are memory-only.
+
+**Phase 2 — fused K dequant** (``flash_attention_paged_varlen_turboquant``):
+    Reads packed uint8 K indices inline during the K gather; centroid lookup +
+    per-vector rescaling fused into the attention kernel.  Eliminates the
+    ~18ms decompress overhead.  V stays fp16 by default.  QJL is **not fused** —
+    the fused kernel uses PolarQuant/MSE only.
+
+**Phase 3 — fused K+V dequant** (``tq_v_enabled=True``):
+    Both K and V are TQ-packed and dequantified inline, achieving ~8× KV compression.
+    Use via ``TurboQuantPagedInferenceContext`` or
+    ``create_decode_runtime(turboquant=True, tq_v=True)``.
+
+QJL note
+~~~~~~~~
+QJL correction (``use_qjl=True`` in ``turboquant_compress``) is a Phase 1 path only.
+It applies a 1-bit random-projected residual bias to the attention scores, which
+requires access to the full decomposed residual — incompatible with fused kernel
+streaming.  For 2-bit quantization where QJL matters most, use the Phase 1 decompress
+path.  For 3-bit and above, PolarQuant/MSE alone (fused path) is sufficient.
 """
 
 from __future__ import annotations
