@@ -4,6 +4,38 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.24.0] — 2026-03-27
+
+### TurboQuant Phase 4 — Optimal Packing + WHT Fusion
+
+#### Optimal 3-bit Bit-Planar Packing
+- **5.33× compression** (was 4× in Phase 3): 32 indices → 3 bit-planes × 4 bytes = 12 bytes/group.
+- `pack_3bit_optimal` / `unpack_3bit_optimal` — new public API for bit-planar layout.
+- `pack_k_for_metal` / `pack_v_for_metal` now dispatch by bit-width: 3-bit → bit-planar, 2-bit → 4/byte, 4-bit → 2/byte.
+- Metal K/V gather: 3 coalesced reads per index (all within single cache line).
+- `_compute_packed_d(D, bits)` replaces hardcoded `D // 2`.
+
+#### WHT Fusion in Metal Kernel
+- **Walsh-Hadamard transform** applied in-place on Q threadgroup memory (log2(D) butterfly passes).
+- `tq_wht_enabled=True` eliminates Python `apply_rotation()` overhead: **1.1–1.4× faster** decode.
+- WHT normalization `1/sqrt(D)` folded into attention scale via `rsqrt(D)`.
+- `wht_in_kernel` parameter on `TurboQuantPagedInferenceContext`.
+- Bit-identical to Python WHT (max error < 0.001 at fp16).
+
+#### Tests
+- 85 TurboQuant tests pass (70 from Phase 3 + 15 new).
+- `TestOptimal3BitPacking` (8 tests): roundtrip, shape, compression ratio, edge cases.
+- `TestOptimalPackingFusedKernel` (3 tests): fused kernel D=64/128.
+- `TestWHTKernelFusion` (4 tests): Python-vs-kernel match, causal, V-TQ.
+
+#### Benchmark (M1 Max, H=8, 3-bit, f16)
+
+| Config | Python WHT | Kernel WHT | Speedup |
+|--------|-----------|-----------|---------|
+| D=64 Nq=4 S=1024 | 0.47 ms | 0.38 ms | 1.23× |
+| D=128 Nq=4 S=1024 | 0.56 ms | 0.42 ms | 1.32× |
+| D=128 Nq=8 S=2048 | 0.60 ms | 0.42 ms | 1.43× |
+
 ## [2.23.0] — 2026-03-27
 
 ### TurboQuant Phase 3 — Production Integration

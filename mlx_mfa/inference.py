@@ -804,6 +804,7 @@ class TurboQuantPagedInferenceContext:
         D: int,
         tq_bits: int = 3,
         tq_v: bool = True,
+        wht_in_kernel: bool = False,
         dtype: mx.Dtype = mx.float16,
         stream: Optional[mx.Stream] = None,
     ) -> None:
@@ -813,9 +814,11 @@ class TurboQuantPagedInferenceContext:
         self.D = D
         self.tq_bits = tq_bits
         self.tq_v = tq_v
+        self.wht_in_kernel = wht_in_kernel
         self.dtype = dtype
         self.stream = stream
-        self.packed_D = D // 2
+        from mlx_mfa.turboquant import _compute_packed_d
+        self.packed_D = _compute_packed_d(D, tq_bits)
 
         # TQ-packed K pool: [num_blocks, block_size, H_kv, packed_D] uint8
         self._k_pool = mx.zeros(
@@ -980,10 +983,10 @@ class TurboQuantPagedInferenceContext:
     ) -> mx.array:
         """Compress K/V, store in TQ pool, and attend with fused kernel.
 
-        Q is automatically pre-rotated with WHT.
+        Q is WHT-rotated either in Python (default) or in the Metal kernel
+        (when ``wht_in_kernel=True``).
         """
         from mlx_mfa.attention import flash_attention_paged_varlen_turboquant
-        from mlx_mfa.turboquant import apply_rotation
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
@@ -991,7 +994,11 @@ class TurboQuantPagedInferenceContext:
         self.reset(seq_id)
         self.append(k, v, seq_id=seq_id)
 
-        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
+        if self.wht_in_kernel:
+            q_input = q
+        else:
+            from mlx_mfa.turboquant import apply_rotation
+            q_input = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
         mx.synchronize()
 
         cu_q = mx.array([0, q.shape[2]], dtype=mx.int32)
@@ -999,12 +1006,13 @@ class TurboQuantPagedInferenceContext:
         seq_lens = self.get_seq_lens([seq_id])
 
         return flash_attention_paged_varlen_turboquant(
-            q_rot, self._k_pool, self._v_pool_fp16,
+            q_input, self._k_pool, self._v_pool_fp16,
             block_table, seq_lens, cu_q,
             self._k_centroids, self._k_scales,
             scale=scale, causal=causal,
             block_size=self.block_size, tq_bits=self.tq_bits,
             tq_v_enabled=self.tq_v,
+            tq_wht_enabled=self.wht_in_kernel,
             v_pool_tq=self._v_pool_tq,
             v_centroids=self._v_centroids,
             v_scales=self._v_scales,
@@ -1022,14 +1030,17 @@ class TurboQuantPagedInferenceContext:
     ) -> mx.array:
         """Append new K/V tokens (compressed) and decode with fused TQ kernel."""
         from mlx_mfa.attention import flash_attention_paged_varlen_turboquant
-        from mlx_mfa.turboquant import apply_rotation
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
 
         self.append(k_new, v_new, seq_id=seq_id)
 
-        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
+        if self.wht_in_kernel:
+            q_input = q
+        else:
+            from mlx_mfa.turboquant import apply_rotation
+            q_input = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
         mx.synchronize()
 
         cu_q = mx.array([0, q.shape[2]], dtype=mx.int32)
@@ -1037,12 +1048,13 @@ class TurboQuantPagedInferenceContext:
         seq_lens = self.get_seq_lens([seq_id])
 
         return flash_attention_paged_varlen_turboquant(
-            q_rot, self._k_pool, self._v_pool_fp16,
+            q_input, self._k_pool, self._v_pool_fp16,
             block_table, seq_lens, cu_q,
             self._k_centroids, self._k_scales,
             scale=scale, causal=True,
             block_size=self.block_size, tq_bits=self.tq_bits,
             tq_v_enabled=self.tq_v,
+            tq_wht_enabled=self.wht_in_kernel,
             v_pool_tq=self._v_pool_tq,
             v_centroids=self._v_centroids,
             v_scales=self._v_scales,

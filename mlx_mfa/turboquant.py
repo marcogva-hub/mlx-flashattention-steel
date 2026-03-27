@@ -741,6 +741,97 @@ def _make_adapter(cache: "TurboQuantKVCache"):
 
 
 # ---------------------------------------------------------------------------
+# Bit-planar optimal packing: 32 indices × 3 bits → 12 bytes (5.33× compress)
+# ---------------------------------------------------------------------------
+
+
+def _compute_packed_d(D: int, bits: int) -> int:
+    """Return packed dimension: bytes per D elements at given bit-width."""
+    if bits == 3:
+        assert D % 32 == 0, f"D must be multiple of 32 for 3-bit packing, got {D}"
+        return (D // 32) * 12  # 12 bytes per group of 32
+    elif bits == 2:
+        return D // 4  # 4 indices per byte
+    elif bits == 4:
+        return D // 2  # 2 indices per byte
+    else:
+        raise ValueError(f"Unsupported bits={bits}")
+
+
+def pack_3bit_optimal(indices: mx.array) -> mx.array:
+    """Pack 3-bit indices in bit-planar layout: 32 indices → 12 bytes.
+
+    Layout per group of 32: bytes 0-3 = bit-plane 0, bytes 4-7 = bit-plane 1,
+    bytes 8-11 = bit-plane 2. Within each 4-byte plane, byte i contains bits
+    for indices [i*8 .. i*8+7], packed LSB-first.
+
+    Args:
+        indices: [..., D] uint8 with values 0-7. D must be multiple of 32.
+
+    Returns:
+        [..., D * 3 // 8] uint8 packed bytes. (48 bytes for D=128)
+    """
+    *prefix, D = indices.shape
+    assert D % 32 == 0, f"D must be multiple of 32, got {D}"
+    n_groups = D // 32
+
+    idx = indices.reshape(*prefix, n_groups, 32)
+
+    bit0 = (idx & 1).astype(mx.uint8)
+    bit1 = ((idx >> 1) & 1).astype(mx.uint8)
+    bit2 = ((idx >> 2) & 1).astype(mx.uint8)
+
+    powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
+
+    def pack_plane(bits_arr):
+        # bits_arr: [..., n_groups, 32] → [..., n_groups, 4, 8] → sum → [..., n_groups, 4]
+        b = bits_arr.reshape(*prefix, n_groups, 4, 8)
+        return (b * powers).sum(axis=-1).astype(mx.uint8)
+
+    p0 = pack_plane(bit0)
+    p1 = pack_plane(bit1)
+    p2 = pack_plane(bit2)
+
+    packed = mx.concatenate([p0, p1, p2], axis=-1)  # [..., n_groups, 12]
+    return packed.reshape(*prefix, n_groups * 12)
+
+
+def unpack_3bit_optimal(packed: mx.array, D: int) -> mx.array:
+    """Unpack bit-planar 3-bit packed bytes back to uint8 indices 0-7.
+
+    Args:
+        packed: [..., D * 3 // 8] uint8
+        D: original dimension (must be multiple of 32)
+
+    Returns:
+        [..., D] uint8 with values 0-7
+    """
+    *prefix, packed_D = packed.shape
+    n_groups = D // 32
+    assert packed_D == n_groups * 12
+
+    packed = packed.reshape(*prefix, n_groups, 12)
+    p0 = packed[..., 0:4]
+    p1 = packed[..., 4:8]
+    p2 = packed[..., 8:12]
+
+    shifts = mx.array([0, 1, 2, 3, 4, 5, 6, 7], dtype=mx.uint8)
+
+    def unpack_plane(p):
+        # p: [..., n_groups, 4] → [..., n_groups, 4, 1] → shift → [..., n_groups, 4, 8]
+        p_exp = mx.expand_dims(p, axis=-1)
+        bits = (p_exp >> shifts) & 1
+        return bits.reshape(*prefix, n_groups, 32)
+
+    b0 = unpack_plane(p0)
+    b1 = unpack_plane(p1)
+    b2 = unpack_plane(p2)
+
+    indices = (b0 | (b1 << 1) | (b2 << 2)).astype(mx.uint8)
+    return indices.reshape(*prefix, D)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2 — Metal packing helpers for fused TQ kernel
 # ---------------------------------------------------------------------------
 
@@ -754,13 +845,10 @@ def pack_k_for_metal(
 ) -> tuple[mx.array, mx.array, mx.array]:
     """Rotate, normalize, quantize K and pack for the fused Metal TQ kernel.
 
-    The Metal kernel expects 2 indices packed per byte:
-      idx_0 = byte & 0x7  (or 0x3 for 2-bit, 0xF for 4-bit)
-      idx_1 = (byte >> bits) & mask
-
-    For 3-bit: 2 × 3 = 6 bits used, 2 padding. packed_D = ceil(D/2).
-    For 2-bit: 2 × 2 = 4 bits used, 4 padding. packed_D = ceil(D/2).
-    For 4-bit: 2 × 4 = 8 bits used, 0 padding. packed_D = ceil(D/2).
+    Packing layout depends on bit-width:
+    - 3-bit: bit-planar — 32 indices → 12 bytes. packed_D = D*3/8.
+    - 2-bit: 4 indices per byte. packed_D = D/4.
+    - 4-bit: 2 indices per byte. packed_D = D/2.
 
     Args:
         k: [B, H, S, D] fp16/bf16 K tensor.
@@ -770,7 +858,7 @@ def pack_k_for_metal(
 
     Returns:
         (k_packed, scales, centroids_fp16):
-          k_packed: [B, H, S, packed_D] uint8 — 2 indices per byte.
+          k_packed: [B, H, S, packed_D] uint8.
           scales: [B, H, S] float32 — per-vector L2 scale.
           centroids_fp16: [2^bits] float16 — centroid lookup table for Metal.
     """
@@ -780,8 +868,8 @@ def pack_k_for_metal(
         raise ValueError(f"Expected [B,H,S,D], got ndim={k.ndim}")
 
     B, H, S, D = k.shape
-    if D % 2 != 0:
-        raise ValueError(f"D must be even for Metal packing, got D={D}")
+    if D % 32 != 0:
+        raise ValueError(f"D must be multiple of 32 for Metal packing, got D={D}")
 
     # 1. Rotate + normalize (same as turboquant_compress)
     k_f32 = k.astype(mx.float32)
@@ -794,11 +882,20 @@ def pack_k_for_metal(
     # 2. Quantize to indices
     k_indices = quantize_to_indices(k_normalized, bits)  # [B,H,S,D] uint8
 
-    # 3. Pack pairs: even/odd along D → 2 indices per byte
-    # Reshape to [B,H,S, D/2, 2] then combine
-    k_pairs = k_indices.reshape(B, H, S, D // 2, 2)
-    k_packed = k_pairs[..., 0] | (k_pairs[..., 1] << bits)
-    # k_packed: [B, H, S, D//2] uint8
+    # 3. Pack indices
+    if bits == 3:
+        k_packed = pack_3bit_optimal(k_indices)
+    elif bits == 2:
+        # 4 indices per byte: [B,H,S, D/4, 4] → pack
+        k_groups = k_indices.reshape(B, H, S, D // 4, 4)
+        k_packed = (k_groups[..., 0]
+                    | (k_groups[..., 1] << 2)
+                    | (k_groups[..., 2] << 4)
+                    | (k_groups[..., 3] << 6))
+    else:  # bits == 4
+        # 2 indices per byte
+        k_pairs = k_indices.reshape(B, H, S, D // 2, 2)
+        k_packed = k_pairs[..., 0] | (k_pairs[..., 1] << 4)
 
     # 4. Centroids as fp16 for Metal buffer
     _, centroids = _get_centroids(bits)
@@ -843,7 +940,7 @@ def build_tq_paged_k_pool(
     )
 
     # Reshape back to pool layout
-    packed_D = D // 2
+    packed_D = _compute_packed_d(D, bits)
     k_pool_tq = k_packed.reshape(num_pages, block_size, H_kv, packed_D)
     scales = scales.reshape(num_pages, block_size, H_kv)
 
@@ -859,7 +956,7 @@ def pack_v_for_metal(
 ) -> tuple[mx.array, mx.array, mx.array]:
     """Rotate, normalize, quantize V and pack for the fused Metal TQ kernel.
 
-    Same packing scheme as ``pack_k_for_metal``: 2 indices per byte.
+    Same packing scheme as ``pack_k_for_metal``.
 
     Args:
         v: [B, H, S, D] fp16/bf16 V tensor.
@@ -869,7 +966,7 @@ def pack_v_for_metal(
 
     Returns:
         (v_packed, scales, centroids_fp16):
-          v_packed: [B, H, S, packed_D] uint8 — 2 indices per byte.
+          v_packed: [B, H, S, packed_D] uint8.
           scales: [B, H, S] float32 — per-vector L2 scale.
           centroids_fp16: [2^bits] float16 — centroid lookup table for Metal.
     """
@@ -879,8 +976,8 @@ def pack_v_for_metal(
         raise ValueError(f"Expected [B,H,S,D], got ndim={v.ndim}")
 
     B, H, S, D = v.shape
-    if D % 2 != 0:
-        raise ValueError(f"D must be even for Metal packing, got D={D}")
+    if D % 32 != 0:
+        raise ValueError(f"D must be multiple of 32 for Metal packing, got D={D}")
 
     v_f32 = v.astype(mx.float32)
     v_rot = apply_rotation(v_f32, rotation, seed)
@@ -890,8 +987,18 @@ def pack_v_for_metal(
     v_normalized = v_rot / safe_scale
 
     v_indices = quantize_to_indices(v_normalized, bits)
-    v_pairs = v_indices.reshape(B, H, S, D // 2, 2)
-    v_packed = v_pairs[..., 0] | (v_pairs[..., 1] << bits)
+
+    if bits == 3:
+        v_packed = pack_3bit_optimal(v_indices)
+    elif bits == 2:
+        v_groups = v_indices.reshape(B, H, S, D // 4, 4)
+        v_packed = (v_groups[..., 0]
+                    | (v_groups[..., 1] << 2)
+                    | (v_groups[..., 2] << 4)
+                    | (v_groups[..., 3] << 6))
+    else:  # bits == 4
+        v_pairs = v_indices.reshape(B, H, S, D // 2, 2)
+        v_packed = v_pairs[..., 0] | (v_pairs[..., 1] << 4)
 
     _, centroids = _get_centroids(bits)
     centroids_fp16 = centroids.astype(mx.float16)
@@ -931,7 +1038,7 @@ def build_tq_paged_v_pool(
         flat, bits=bits, rotation=rotation, seed=seed
     )
 
-    packed_D = D // 2
+    packed_D = _compute_packed_d(D, bits)
     v_pool_tq = v_packed.reshape(num_pages, block_size, H_kv, packed_D)
     scales = scales.reshape(num_pages, block_size, H_kv)
 

@@ -2846,6 +2846,9 @@ void MFAPagedVarlenTQForward::eval_gpu(
     metal_params.tq_v_pool_tok_stride   = 0;
   }
 
+  // WHT fusion (Phase 4)
+  metal_params.tq_wht_enabled = params_.tq_wht_enabled ? 1 : 0;
+
   // Compile kernel
   auto& d = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(d.get_architecture_gen());
@@ -2917,6 +2920,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     int block_size,
     int tq_bits,
     bool tq_v_enabled,
+    bool tq_wht_enabled,
     const std::optional<mlx::core::array>& v_pool_tq,
     const std::optional<mlx::core::array>& v_centroids,
     const std::optional<mlx::core::array>& v_scales,
@@ -2930,7 +2934,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   int H_q     = q.shape(1);
   int total_q = q.shape(2);
   int D       = q.shape(3);
-  int packed_D = D / 2;
+  int packed_D = k_pool_tq.shape(3);  // inferred from pool shape (bit-planar: D*12/32 for 3-bit)
 
   MFAPagedVarlenTQForward::Params params{};
   params.scale         = scale;
@@ -2940,6 +2944,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   params.tq_bits       = tq_bits;
   params.packed_D      = packed_D;
   params.tq_v_enabled  = tq_v_enabled;
+  params.tq_wht_enabled = tq_wht_enabled;
 
   mlx::core::Shape out_shape = q.shape();       // [1, H_q, total_q, D]
   mlx::core::Shape lse_shape = {H_q, total_q};  // [H_q, total_q]

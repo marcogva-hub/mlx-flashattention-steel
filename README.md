@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.23.0** — TurboQuant KV cache compression Phase 1–3 (non-fused, K fused, K+V fused in Metal kernel).
+Current version: **2.24.0** — TurboQuant Phase 4: optimal 3-bit packing (5.33× compression) + WHT fusion in Metal kernel.
 
 ## Foreword
 
@@ -26,10 +26,10 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.23.0 adds TurboQuant KV cache compression — training-free, data-oblivious
-compression based on Google's TurboQuant (ICLR 2026). Phase 3 fuses both K and V
-in the Metal kernel for ~3.8× memory savings at cosine similarity 0.96–0.97 vs
-fp16. See `CHANGELOG.md` for full details per version.
+v2.24.0 adds TurboQuant Phase 4: optimal 3-bit bit-planar packing (5.33×
+compression vs 4× in Phase 3) and Walsh-Hadamard transform fused directly in
+the Metal kernel (1.1–1.4× faster decode by eliminating Python pre-rotation).
+See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
 on my work!
@@ -44,7 +44,7 @@ on my work!
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** is a specialized decode backend (narrow, benchmark-gated use).
 - **V3/V4/V5** remain experimental/hardware-dependent.
-- **TurboQuant** KV cache compression (Phase 1–3) production-ready.
+- **TurboQuant** KV cache compression (Phase 1–4) production-ready.
 - Serving/runtime capability surface is now substantially expanded:
   - paged KV + packed varlen query support
   - paged continuous batching/remap
@@ -91,7 +91,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | Runtime speculative decode | Fully usable (narrow) | `speculative_step` + verify integration; scheduler engine still future work |
 | Splitfuse runtime integration | Narrow/conditional | Runtime path exists; performance remains shape-sensitive |
 | Hybrid KV cache + local offload tier | Narrow/conditional milestone | Real hot/cold/offloaded behavior locally; remote offload future work |
-| TurboQuant KV compression (Phase 3) | Production | ~3.8× memory savings, cos 0.96–0.97 vs fp16 |
+| TurboQuant KV compression (Phase 4) | Production | 5.33× K compression, WHT fused in kernel (1.1–1.4× faster) |
 | External cache adapter layer | Experimental groundwork | Concrete local backend provided; external backend integrations pending |
 
 ## Repository Guide

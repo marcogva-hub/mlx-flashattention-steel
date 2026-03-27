@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.23.0"
+__version__ = "2.24.0"
 
 
 def _check_abi() -> None:
@@ -147,6 +147,8 @@ from mlx_mfa.turboquant import (
     build_tq_paged_k_pool,
     pack_v_for_metal,
     build_tq_paged_v_pool,
+    pack_3bit_optimal,
+    unpack_3bit_optimal,
 )
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
@@ -290,5 +292,7 @@ __all__ = [
     "build_tq_paged_k_pool",
     "pack_v_for_metal",
     "build_tq_paged_v_pool",
+    "pack_3bit_optimal",
+    "unpack_3bit_optimal",
     "__version__",
 ]

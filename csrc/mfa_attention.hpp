@@ -579,6 +579,7 @@ class MFAPagedVarlenTQForward : public mlx::core::Primitive {
     int tq_bits;     // 2, 3, or 4
     int packed_D;    // D / 2
     bool tq_v_enabled;  // Phase 3A: V is also TQ-packed
+    bool tq_wht_enabled; // Phase 4: WHT applied in kernel (not Python)
   };
 
   MFAPagedVarlenTQForward(mlx::core::Stream s, Params p)
@@ -629,6 +630,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     int block_size,
     int tq_bits,
     bool tq_v_enabled,
+    bool tq_wht_enabled,
     const std::optional<mlx::core::array>& v_pool_tq,    // [num_pages, block_size, H_kv, packed_D] uint8
     const std::optional<mlx::core::array>& v_centroids,  // [n_centroids] fp16
     const std::optional<mlx::core::array>& v_scales,     // [num_pages, block_size, H_kv] f32
