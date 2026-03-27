@@ -22,6 +22,33 @@
 //   buffer(10): centroids     [n_centroids] fp16 (e.g. 8 for 3-bit)
 //   buffer(11): k_scales      [num_blocks, block_size, H_kv] float32
 // ===========================================================================
+//
+// ── Dequant-in-GEMM analysis (v2.24.1) ──────────────────────────────────
+//
+// Considered restructuring K gather to dequantify DURING the GEMM (write
+// packed uint8 indices to K_smem, centroid lookup inline in GEMM loop)
+// instead of BEFORE it (current: unpack → centroid → fp16 → K_smem → GEMM).
+//
+// This would halve the K phase of KV_smem from fp16 to uint8 — saving
+// 512 B (D=64 BK=32) to 1792 B (D=128 BK=16).
+//
+// TGP budget analysis (select_steel_block_config values):
+//
+//   Config      | Q_smem  | KV_smem | Centroids | Total   | % 32KB | Headroom
+//   ------------|---------|---------|-----------|---------|--------|----------
+//   M1  D=64    | 4,608 B | 5,120 B |     64 B  | 9,792 B |  30%   | 22,976 B
+//   M1  D=128   | 8,704 B | 6,144 B |     64 B  | 14,912B |  46%   | 17,856 B
+//   M3+ D=128   | 8,704 B | 10,240B |     64 B  | 19,008B |  58%   | 13,760 B
+//
+// Decision: SKIP.  All configs sit well below the 32 KB hardware limit.
+// Max usage is 19 KB (M3+ D=128) with 13.7 KB headroom.  The uint8 savings
+// (0.5–1.8 KB) cannot change occupancy tiers (next threshold at 32 KB).
+// Additional complexity (MFAMMAFrag inline centroid lookup, uint8 smem
+// reinterpretation) is not justified for zero occupancy benefit.
+//
+// Revisit if: new block configs push TGP past 28 KB, or D=256 TQ support
+// is added (larger BQ/BD tiles).
+// ─────────────────────────────────────────────────────────────────────────
 
 #include "mfa_steel_paged_varlen_tq_fwd.hpp"
 #include "mfa_steel_fwd.hpp"
