@@ -113,6 +113,7 @@ from mlx_mfa.inference import (
     InferenceContext,
     PagedInferenceContext,
     SageInferenceContext,
+    TurboQuantPagedInferenceContext,
     create_inference_context,
 )
 from mlx_mfa.runtime import (
@@ -262,6 +263,7 @@ __all__ = [
     "InferenceContext",
     "PagedInferenceContext",
     "SageInferenceContext",
+    "TurboQuantPagedInferenceContext",
     "create_inference_context",
     "DecodeRuntime",
     "create_decode_runtime",
