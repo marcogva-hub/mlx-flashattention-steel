@@ -83,6 +83,9 @@ struct MFAPagedVarlenTQParams {
   int n_centroids;
   int window_left;
   int window_right;
+  int tq_v_enabled;
+  int tq_v_pool_block_stride;
+  int tq_v_pool_tok_stride;
 };
 
 )MFA";
@@ -119,6 +122,9 @@ struct MFAPagedVarlenTQParams {
     ss << "    const device int*       seq_lens_kv              [[buffer(9)]],\n";
     ss << "    const device MFA_DTYPE* centroids                [[buffer(10)]],\n";
     ss << "    const device float*     k_scales                 [[buffer(11)]],\n";
+    ss << "    const device uchar*     v_pool_tq                [[buffer(12)]],\n";
+    ss << "    const device MFA_DTYPE* v_centroids              [[buffer(13)]],\n";
+    ss << "    const device float*     v_scales                 [[buffer(14)]],\n";
     ss << "    uint simd_lane_id  [[thread_index_in_simdgroup]],\n";
     ss << "    uint simd_group_id [[simdgroup_index_in_threadgroup]],\n";
     ss << "    uint3 tid          [[threadgroup_position_in_grid]])\n";
@@ -364,7 +370,7 @@ struct MFAPagedVarlenTQParams {
     ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
     ss << "\n";
 
-    // ── Paged V gather (unchanged — fp16) ────────────────────────────────────
+    // ── Paged V gather (fp16 or TQ depending on tq_v_enabled) ──────────────
     ss << "    {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short ei = 0; ei < " << elems_per_thread << "; ei++) {\n";
@@ -378,9 +384,26 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int blk_idx    = global_tok / p->block_size;\n";
     ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
-    ss << "            val = v_pool[(long)phys * p->pool_block_stride_v\n";
-    ss << "                        + tok_in_blk * p->pool_tok_stride_v\n";
-    ss << "                        + kv_head * p->D + d];\n";
+    // V-TQ branch: uniform branch (all threads take same path), zero divergence cost
+    ss << "            if (p->tq_v_enabled) {\n";
+    ss << "              const int vbyte_off = (int)((long)phys * p->tq_v_pool_block_stride\n";
+    ss << "                                   + tok_in_blk * p->tq_v_pool_tok_stride\n";
+    ss << "                                   + kv_head * p->packed_D\n";
+    ss << "                                   + (d >> 1));\n";
+    ss << "              const uchar v_packed_byte = v_pool_tq[vbyte_off];\n";
+    ss << "              const uchar v_idx = (d & 1) == 0\n";
+    ss << "                  ? (v_packed_byte & tq_mask)\n";
+    ss << "                  : ((v_packed_byte >> tq_bits) & tq_mask);\n";
+    ss << "              const T v_centroid_val = v_centroids[v_idx];\n";
+    ss << "              const float vscale = v_scales[\n";
+    ss << "                  (long)phys * p->block_size * p->H_kv\n";
+    ss << "                  + tok_in_blk * p->H_kv + kv_head];\n";
+    ss << "              val = T((float)v_centroid_val * vscale);\n";
+    ss << "            } else {\n";
+    ss << "              val = v_pool[(long)phys * p->pool_block_stride_v\n";
+    ss << "                          + tok_in_blk * p->pool_tok_stride_v\n";
+    ss << "                          + kv_head * p->D + d];\n";
+    ss << "            }\n";
     ss << "          }\n";
     ss << "          Vs[t * LDV + d] = val;\n";
     ss << "        }\n";

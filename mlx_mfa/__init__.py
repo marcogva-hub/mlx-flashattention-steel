@@ -144,6 +144,8 @@ from mlx_mfa.turboquant import (
     TurboQuantKVCache,
     pack_k_for_metal,
     build_tq_paged_k_pool,
+    pack_v_for_metal,
+    build_tq_paged_v_pool,
 )
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
@@ -284,5 +286,7 @@ __all__ = [
     "TurboQuantKVCache",
     "pack_k_for_metal",
     "build_tq_paged_k_pool",
+    "pack_v_for_metal",
+    "build_tq_paged_v_pool",
     "__version__",
 ]

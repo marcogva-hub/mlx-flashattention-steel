@@ -5495,31 +5495,43 @@ def flash_attention_paged_varlen_turboquant(
     causal: bool = False,
     block_size: int = 16,
     tq_bits: int = 3,
+    tq_v_enabled: bool = False,
+    v_pool_tq: Optional["mx.array"] = None,
+    v_centroids: Optional["mx.array"] = None,
+    v_scales: Optional["mx.array"] = None,
     stream: Optional["mx.StreamOrDevice"] = None,
 ) -> "mx.array":
     """Fused TurboQuant paged varlen attention — inline K dequantification.
 
     The kernel reads packed uint8 K indices from ``k_pool_tq``, performs
     centroid lookup and per-vector rescaling inline during the K gather,
-    eliminating the need for a separate decompress pass. V remains fp16.
+    eliminating the need for a separate decompress pass.
 
-    This is Phase 2 of TurboQuant: same accuracy as Phase 1 decompress→attend,
-    but removes the ~18ms decompress overhead.
+    When ``tq_v_enabled=True``, V is also TQ-packed and dequantified inline
+    in the P@V accumulation, achieving ~8x KV compression (K+V both quantized).
 
     Args:
         q: Packed query tensor ``[1, H_q, total_q, D]`` fp16/bf16.
         k_pool_tq: TQ-packed K pool ``[num_pages, block_size, H_kv, packed_D]``
             uint8, where ``packed_D = D/2`` (2 indices per byte).
         v_pages: Value page pool ``[num_pages, block_size, H_kv, D]`` fp16.
+            Used when ``tq_v_enabled=False``; can be a dummy when V is TQ-packed.
         block_table: ``int32 [B, max_blocks_per_seq]``.
         seq_lens_kv: ``int32 [B]`` effective KV length per sequence.
         cu_seqlens_q: ``int32 [B+1]`` cumulative query lengths.
-        centroids: ``[n_centroids]`` fp16 centroid lookup table (e.g. 8 for 3-bit).
-        k_scales: ``[num_pages, block_size, H_kv]`` float32 per-vector scales.
+        centroids: ``[n_centroids]`` fp16 centroid lookup table for K.
+        k_scales: ``[num_pages, block_size, H_kv]`` float32 per-vector K scales.
         scale: Attention scale (default ``1/sqrt(D)``).
         causal: Causal masking.
         block_size: Tokens per page (must match pool layout).
         tq_bits: Quantization bits (2, 3, or 4). Must match packing.
+        tq_v_enabled: If True, V is also TQ-packed (Phase 3A).
+        v_pool_tq: TQ-packed V pool ``[num_pages, block_size, H_kv, packed_D]``
+            uint8. Required when ``tq_v_enabled=True``.
+        v_centroids: ``[n_centroids]`` fp16 centroid lookup table for V.
+            Required when ``tq_v_enabled=True``.
+        v_scales: ``[num_pages, block_size, H_kv]`` float32 per-vector V scales.
+            Required when ``tq_v_enabled=True``.
         stream: MLX stream/device.
 
     Returns:
@@ -5559,5 +5571,7 @@ def flash_attention_paged_varlen_turboquant(
         block_table, seq_lens_kv,
         centroids, k_scales,
         scale, causal, block_size, tq_bits,
+        tq_v_enabled,
+        v_pool_tq, v_centroids, v_scales,
     )
     return o
