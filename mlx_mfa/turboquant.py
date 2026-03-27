@@ -741,6 +741,97 @@ def _make_adapter(cache: "TurboQuantKVCache"):
 
 
 # ---------------------------------------------------------------------------
+# Bit-planar optimal packing: 32 indices × 3 bits → 12 bytes (5.33× compress)
+# ---------------------------------------------------------------------------
+
+
+def _compute_packed_d(D: int, bits: int) -> int:
+    """Return packed dimension: bytes per D elements at given bit-width."""
+    if bits == 3:
+        assert D % 32 == 0, f"D must be multiple of 32 for 3-bit packing, got {D}"
+        return (D // 32) * 12  # 12 bytes per group of 32
+    elif bits == 2:
+        return D // 4  # 4 indices per byte
+    elif bits == 4:
+        return D // 2  # 2 indices per byte
+    else:
+        raise ValueError(f"Unsupported bits={bits}")
+
+
+def pack_3bit_optimal(indices: mx.array) -> mx.array:
+    """Pack 3-bit indices in bit-planar layout: 32 indices → 12 bytes.
+
+    Layout per group of 32: bytes 0-3 = bit-plane 0, bytes 4-7 = bit-plane 1,
+    bytes 8-11 = bit-plane 2. Within each 4-byte plane, byte i contains bits
+    for indices [i*8 .. i*8+7], packed LSB-first.
+
+    Args:
+        indices: [..., D] uint8 with values 0-7. D must be multiple of 32.
+
+    Returns:
+        [..., D * 3 // 8] uint8 packed bytes. (48 bytes for D=128)
+    """
+    *prefix, D = indices.shape
+    assert D % 32 == 0, f"D must be multiple of 32, got {D}"
+    n_groups = D // 32
+
+    idx = indices.reshape(*prefix, n_groups, 32)
+
+    bit0 = (idx & 1).astype(mx.uint8)
+    bit1 = ((idx >> 1) & 1).astype(mx.uint8)
+    bit2 = ((idx >> 2) & 1).astype(mx.uint8)
+
+    powers = mx.array([1, 2, 4, 8, 16, 32, 64, 128], dtype=mx.uint8)
+
+    def pack_plane(bits_arr):
+        # bits_arr: [..., n_groups, 32] → [..., n_groups, 4, 8] → sum → [..., n_groups, 4]
+        b = bits_arr.reshape(*prefix, n_groups, 4, 8)
+        return (b * powers).sum(axis=-1).astype(mx.uint8)
+
+    p0 = pack_plane(bit0)
+    p1 = pack_plane(bit1)
+    p2 = pack_plane(bit2)
+
+    packed = mx.concatenate([p0, p1, p2], axis=-1)  # [..., n_groups, 12]
+    return packed.reshape(*prefix, n_groups * 12)
+
+
+def unpack_3bit_optimal(packed: mx.array, D: int) -> mx.array:
+    """Unpack bit-planar 3-bit packed bytes back to uint8 indices 0-7.
+
+    Args:
+        packed: [..., D * 3 // 8] uint8
+        D: original dimension (must be multiple of 32)
+
+    Returns:
+        [..., D] uint8 with values 0-7
+    """
+    *prefix, packed_D = packed.shape
+    n_groups = D // 32
+    assert packed_D == n_groups * 12
+
+    packed = packed.reshape(*prefix, n_groups, 12)
+    p0 = packed[..., 0:4]
+    p1 = packed[..., 4:8]
+    p2 = packed[..., 8:12]
+
+    shifts = mx.array([0, 1, 2, 3, 4, 5, 6, 7], dtype=mx.uint8)
+
+    def unpack_plane(p):
+        # p: [..., n_groups, 4] → [..., n_groups, 4, 1] → shift → [..., n_groups, 4, 8]
+        p_exp = mx.expand_dims(p, axis=-1)
+        bits = (p_exp >> shifts) & 1
+        return bits.reshape(*prefix, n_groups, 32)
+
+    b0 = unpack_plane(p0)
+    b1 = unpack_plane(p1)
+    b2 = unpack_plane(p2)
+
+    indices = (b0 | (b1 << 1) | (b2 << 2)).astype(mx.uint8)
+    return indices.reshape(*prefix, D)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2 — Metal packing helpers for fused TQ kernel
 # ---------------------------------------------------------------------------
 
