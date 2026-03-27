@@ -149,7 +149,39 @@ Shape-sensitive — test with your specific workload before relying on it.
 
 ---
 
-## 9) mlx-lm Integration
+## 9) TurboQuant KV Compression
+
+For memory-constrained long-context serving, TurboQuant compresses KV caches
+to 2-4 bits with ~3.8× memory savings (K+V at 3-bit).
+
+```python
+from mlx_mfa import create_decode_runtime
+import mlx.core as mx
+
+rt = create_decode_runtime(
+    turboquant=True,          # enable TQ compression
+    tq_bits=3,                # 2, 3, or 4 bits
+    tq_v=True,                # compress V as well as K (Phase 3)
+    paged=True,
+    H_q=32, H_kv=8, D=128,
+    max_seq_len=8192,
+    dtype=mx.float16,
+    block_size=64,
+)
+
+# Same prefill/step API as standard runtime
+out = rt.prefill(q, k, v)
+out = rt.step(q_step, k_step, v_step)
+```
+
+**Trade-offs:**
+- Memory: ~3.8× savings (K+V), enabling longer contexts
+- Quality: cosine similarity 0.96–0.97 vs fp16 (Phase 3)
+- Latency: currently higher than fp16 due to Python pack overhead
+
+---
+
+## 10) mlx-lm Integration
 
 ```python
 from mlx_mfa import patch_mlx_lm, unpatch_mlx_lm
@@ -168,7 +200,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 
 ---
 
-## 10) Environment Variables
+## 11) Environment Variables
 
 | Variable | Effect |
 |----------|--------|
@@ -183,7 +215,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 
 ---
 
-## 11) Component Status (v2.20.0)
+## 12) Component Status (v2.23.0)
 
 | Component | Status |
 |-----------|--------|
@@ -196,4 +228,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 | Chunked prefill (packed) | Supported (v2.14.1) |
 | Splitfuse | Narrow/conditional |
 | mlx-lm patch | Production |
+| TurboQuant Phase 1 (non-fused) | Production (v2.21.0) |
+| TurboQuant Phase 2 (K fused) | Production (v2.22.0) |
+| TurboQuant Phase 3 (K+V fused) | Production (v2.23.0) |
 | Remote/distributed offload | Deferred (M5+) |
