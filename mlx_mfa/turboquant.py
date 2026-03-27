@@ -1,4 +1,4 @@
-"""TurboQuant KV cache compression — Phase 1 (non-fused).
+"""TurboQuant KV cache compression.
 
 Two-stage vector quantization for KV cache compression:
   Stage 1 (PolarQuant/MSE): random rotation + Lloyd-Max scalar quantization
@@ -6,7 +6,32 @@ Two-stage vector quantization for KV cache compression:
 
 Reference: TurboQuant (Google, ICLR 2026) — https://arxiv.org/abs/2504.19874
 
-Phase 1 decompresses to fp16 before attention — memory savings only, no speed gain.
+Execution paths
+~~~~~~~~~~~~~~~
+
+**Phase 1 — decompress path** (``turboquant_compress`` → ``turboquant_decompress``):
+    Decompresses to fp16 before attention.  Supports QJL 1-bit residual correction
+    (``use_qjl=True``) for improved 2-bit quality.  No speed gain over fp16 attention;
+    benefits are memory-only.
+
+**Phase 2 — fused K dequant** (``flash_attention_paged_varlen_turboquant``):
+    Reads packed uint8 K indices inline during the K gather; centroid lookup +
+    per-vector rescaling fused into the attention kernel.  Eliminates the
+    ~18ms decompress overhead.  V stays fp16 by default.  QJL is **not fused** —
+    the fused kernel uses PolarQuant/MSE only.
+
+**Phase 3 — fused K+V dequant** (``tq_v_enabled=True``):
+    Both K and V are TQ-packed and dequantified inline, achieving ~8× KV compression.
+    Use via ``TurboQuantPagedInferenceContext`` or
+    ``create_decode_runtime(turboquant=True, tq_v=True)``.
+
+QJL note
+~~~~~~~~
+QJL correction (``use_qjl=True`` in ``turboquant_compress``) is a Phase 1 path only.
+It applies a 1-bit random-projected residual bias to the attention scores, which
+requires access to the full decomposed residual — incompatible with fused kernel
+streaming.  For 2-bit quantization where QJL matters most, use the Phase 1 decompress
+path.  For 3-bit and above, PolarQuant/MSE alone (fused path) is sufficient.
 """
 
 from __future__ import annotations
@@ -823,3 +848,91 @@ def build_tq_paged_k_pool(
     scales = scales.reshape(num_pages, block_size, H_kv)
 
     return k_pool_tq, scales, centroids_fp16
+
+
+def pack_v_for_metal(
+    v: mx.array,
+    bits: int = 3,
+    *,
+    rotation: str = "wht",
+    seed: int = 42,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """Rotate, normalize, quantize V and pack for the fused Metal TQ kernel.
+
+    Same packing scheme as ``pack_k_for_metal``: 2 indices per byte.
+
+    Args:
+        v: [B, H, S, D] fp16/bf16 V tensor.
+        bits: 2, 3, or 4.
+        rotation: "wht" or "qr".
+        seed: random seed for rotation.
+
+    Returns:
+        (v_packed, scales, centroids_fp16):
+          v_packed: [B, H, S, packed_D] uint8 — 2 indices per byte.
+          scales: [B, H, S] float32 — per-vector L2 scale.
+          centroids_fp16: [2^bits] float16 — centroid lookup table for Metal.
+    """
+    if bits not in (2, 3, 4):
+        raise ValueError(f"bits must be 2, 3, or 4, got {bits}")
+    if v.ndim != 4:
+        raise ValueError(f"Expected [B,H,S,D], got ndim={v.ndim}")
+
+    B, H, S, D = v.shape
+    if D % 2 != 0:
+        raise ValueError(f"D must be even for Metal packing, got D={D}")
+
+    v_f32 = v.astype(mx.float32)
+    v_rot = apply_rotation(v_f32, rotation, seed)
+    norms = mx.sqrt((v_rot * v_rot).sum(axis=-1, keepdims=True))
+    scale = norms / math.sqrt(D)
+    safe_scale = mx.maximum(scale, 1e-10)
+    v_normalized = v_rot / safe_scale
+
+    v_indices = quantize_to_indices(v_normalized, bits)
+    v_pairs = v_indices.reshape(B, H, S, D // 2, 2)
+    v_packed = v_pairs[..., 0] | (v_pairs[..., 1] << bits)
+
+    _, centroids = _get_centroids(bits)
+    centroids_fp16 = centroids.astype(mx.float16)
+
+    return v_packed, scale.squeeze(-1), centroids_fp16
+
+
+def build_tq_paged_v_pool(
+    v_pool_fp16: mx.array,
+    bits: int = 3,
+    *,
+    rotation: str = "wht",
+    seed: int = 42,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """Convert a paged KV pool's V from fp16 to TQ-packed format.
+
+    Args:
+        v_pool_fp16: [num_pages, block_size, H_kv, D] fp16 V pool.
+        bits: quantization bits (2, 3, or 4).
+        rotation: "wht" or "qr".
+        seed: random seed.
+
+    Returns:
+        (v_pool_tq, scales, centroids_fp16):
+          v_pool_tq: [num_pages, block_size, H_kv, packed_D] uint8.
+          scales: [num_pages, block_size, H_kv] float32.
+          centroids_fp16: [2^bits] float16.
+    """
+    if v_pool_fp16.ndim != 4:
+        raise ValueError(
+            f"Expected [num_pages, block_size, H_kv, D], got ndim={v_pool_fp16.ndim}"
+        )
+
+    num_pages, block_size, H_kv, D = v_pool_fp16.shape
+    flat = v_pool_fp16.reshape(1, 1, num_pages * block_size * H_kv, D)
+    v_packed, scales, centroids_fp16 = pack_v_for_metal(
+        flat, bits=bits, rotation=rotation, seed=seed
+    )
+
+    packed_D = D // 2
+    v_pool_tq = v_packed.reshape(num_pages, block_size, H_kv, packed_D)
+    scales = scales.reshape(num_pages, block_size, H_kv)
+
+    return v_pool_tq, scales, centroids_fp16

@@ -2779,6 +2779,7 @@ void MFAPagedVarlenTQForward::eval_gpu(
     std::vector<mlx::core::array>& outputs) {
   // inputs: Q(0), k_pool_tq(1), v_pool(2), cu_seqlens_q(3), tile_offsets(4),
   //         block_table(5), seq_lens_kv(6), centroids(7), k_scales(8)
+  //         [optional V-TQ: v_pool_tq(9), v_centroids(10), v_scales(11)]
   auto& q            = inputs[0];  // [1, H_q, total_q, D]
   auto& k_pool_tq    = inputs[1];  // [num_pages, block_size, H_kv, packed_D] uint8
   auto& v_pool       = inputs[2];  // [num_pages, block_size, H_kv, D]
@@ -2788,6 +2789,7 @@ void MFAPagedVarlenTQForward::eval_gpu(
   auto& seq_lens_kv  = inputs[6];
   auto& centroids    = inputs[7];  // [n_centroids] fp16
   auto& k_scales     = inputs[8];  // [num_pages, block_size, H_kv] f32
+  const bool has_v_tq = params_.tq_v_enabled && inputs.size() > 9;
 
   auto& out = outputs[0];
   auto& lse = outputs[1];
@@ -2834,6 +2836,16 @@ void MFAPagedVarlenTQForward::eval_gpu(
   metal_params.window_left     = -1;
   metal_params.window_right    = -1;
 
+  // V-TQ fields (Phase 3A)
+  metal_params.tq_v_enabled    = has_v_tq ? 1 : 0;
+  if (has_v_tq) {
+    metal_params.tq_v_pool_block_stride = params_.block_size * H_kv * packed_D;
+    metal_params.tq_v_pool_tok_stride   = H_kv * packed_D;
+  } else {
+    metal_params.tq_v_pool_block_stride = 0;
+    metal_params.tq_v_pool_tok_stride   = 0;
+  }
+
   // Compile kernel
   auto& d = mlx::core::metal::device(stream().device);
   int arch_gen = static_cast<int>(d.get_architecture_gen());
@@ -2874,6 +2886,13 @@ void MFAPagedVarlenTQForward::eval_gpu(
   enc.set_input_array(centroids,    10);
   enc.set_input_array(k_scales,     11);
 
+  // V-TQ buffers (Phase 3A) — only bound when V is TQ-packed
+  if (has_v_tq) {
+    enc.set_input_array(inputs[9],  12);  // v_pool_tq
+    enc.set_input_array(inputs[10], 13);  // v_centroids
+    enc.set_input_array(inputs[11], 14);  // v_scales
+  }
+
   enc.dispatch_threadgroups(
       MTL::Size::Make((size_t)total_q_tiles, (size_t)H_q, 1),
       MTL::Size::Make((size_t)TGP, 1, 1));
@@ -2897,10 +2916,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     bool causal,
     int block_size,
     int tq_bits,
+    bool tq_v_enabled,
+    const std::optional<mlx::core::array>& v_pool_tq,
+    const std::optional<mlx::core::array>& v_centroids,
+    const std::optional<mlx::core::array>& v_scales,
     mlx::core::Stream stream) {
 
   if (q.ndim() != 4 || q.shape(0) != 1)
     throw std::runtime_error("mfa_paged_varlen_tq_forward: Q must be [1, H_q, total_q, D]");
+  if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
+    throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
 
   int H_q     = q.shape(1);
   int total_q = q.shape(2);
@@ -2908,22 +2933,33 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   int packed_D = D / 2;
 
   MFAPagedVarlenTQForward::Params params{};
-  params.scale      = scale;
-  params.causal     = causal;
-  params.D          = D;
-  params.block_size = block_size;
-  params.tq_bits    = tq_bits;
-  params.packed_D   = packed_D;
+  params.scale         = scale;
+  params.causal        = causal;
+  params.D             = D;
+  params.block_size    = block_size;
+  params.tq_bits       = tq_bits;
+  params.packed_D      = packed_D;
+  params.tq_v_enabled  = tq_v_enabled;
 
   mlx::core::Shape out_shape = q.shape();       // [1, H_q, total_q, D]
   mlx::core::Shape lse_shape = {H_q, total_q};  // [H_q, total_q]
+
+  // Build inputs vector — conditionally include V-TQ arrays
+  std::vector<mlx::core::array> prim_inputs = {
+    q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
+    centroids, k_scales
+  };
+  if (tq_v_enabled) {
+    prim_inputs.push_back(*v_pool_tq);
+    prim_inputs.push_back(*v_centroids);
+    prim_inputs.push_back(*v_scales);
+  }
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedVarlenTQForward>(stream, params),
-      {q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
-       centroids, k_scales});
+      prim_inputs);
 
   return {outputs[0], outputs[1]};
 }

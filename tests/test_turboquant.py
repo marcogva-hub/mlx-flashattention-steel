@@ -814,3 +814,170 @@ class TestTurboQuantFusedKernel:
         assert k_pool_tq.dtype == mx.uint8
         assert scales.shape == (num_pages, block_size, H_kv)
         assert centroids.shape == (8,)  # 2^3
+
+    def test_pack_v_for_metal_roundtrip(self):
+        """pack_v_for_metal produces correctly shaped packed V."""
+        from mlx_mfa.turboquant import pack_v_for_metal
+
+        mx.random.seed(820)
+        v = mx.random.normal((1, 2, 8, 64)).astype(mx.float16)
+        mx.synchronize()
+
+        for bits in [2, 3, 4]:
+            v_packed, scales, centroids = pack_v_for_metal(v, bits=bits)
+            mx.synchronize()
+
+            assert v_packed.shape == (1, 2, 8, 32), f"bits={bits}: bad shape {v_packed.shape}"
+            assert v_packed.dtype == mx.uint8
+            assert scales.shape == (1, 2, 8)
+            assert centroids.shape == (1 << bits,)
+
+    def test_build_tq_paged_v_pool(self):
+        """build_tq_paged_v_pool produces correctly shaped output."""
+        from mlx_mfa.turboquant import build_tq_paged_v_pool
+
+        mx.random.seed(821)
+        num_pages, block_size, H_kv, D = 4, 16, 2, 128
+        v_pool = mx.random.normal((num_pages, block_size, H_kv, D)).astype(mx.float16)
+        mx.synchronize()
+
+        v_pool_tq, scales, centroids = build_tq_paged_v_pool(v_pool, bits=3)
+        mx.synchronize()
+
+        assert v_pool_tq.shape == (num_pages, block_size, H_kv, D // 2)
+        assert v_pool_tq.dtype == mx.uint8
+        assert scales.shape == (num_pages, block_size, H_kv)
+        assert centroids.shape == (8,)  # 2^3
+
+    def test_fused_v_tq_noncausal(self):
+        """Fused kernel with tq_v_enabled=True produces finite output matching K-only TQ."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import pack_k_for_metal, pack_v_for_metal, apply_rotation, _get_centroids
+
+        mx.random.seed(830)
+        H_q, H_kv, D = 4, 4, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 4, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        # Build K TQ pool
+        pool_k_tq, pool_v_fp16, k_scales, k_centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+
+        # Build V TQ pool
+        from mlx_mfa.turboquant import build_tq_paged_v_pool
+        v_pool_tq, v_scales, v_centroids = build_tq_paged_v_pool(
+            pool_v_fp16, bits=bits
+        )
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+
+        # K-only TQ (V stays fp16)
+        out_k_only = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v_fp16, table, lens, cu_q,
+            k_centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_v_enabled=False,
+        )
+        mx.synchronize()
+
+        # K+V TQ (both quantized)
+        out_kv_tq = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v_fp16, table, lens, cu_q,
+            k_centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_v_enabled=True, v_pool_tq=v_pool_tq, v_centroids=v_centroids, v_scales=v_scales,
+        )
+        mx.synchronize()
+
+        assert out_kv_tq.shape == out_k_only.shape
+        assert mx.isfinite(out_kv_tq).all().item(), "V-TQ output has non-finite values"
+
+    def test_fused_v_tq_causal(self):
+        """Fused V-TQ kernel with causal masking produces finite output."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation, build_tq_paged_v_pool
+
+        mx.random.seed(831)
+        H_q, H_kv, D = 4, 4, 128
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 8, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        pool_k_tq, pool_v_fp16, k_scales, k_centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+        v_pool_tq, v_scales, v_centroids = build_tq_paged_v_pool(pool_v_fp16, bits=bits)
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v_fp16, table, lens, cu_q,
+            k_centroids, k_scales,
+            scale=scale, causal=True, block_size=block_size, tq_bits=bits,
+            tq_v_enabled=True, v_pool_tq=v_pool_tq, v_centroids=v_centroids, v_scales=v_scales,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 8, D)
+        assert mx.isfinite(out).all().item(), "V-TQ causal output has non-finite values"
+
+    def test_fused_v_tq_gqa(self):
+        """V-TQ with GQA (H_q > H_kv) produces finite output."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation, build_tq_paged_v_pool
+
+        mx.random.seed(832)
+        H_q, H_kv, D = 8, 2, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 1, D)).astype(mx.float16)
+        k = mx.random.normal((1, H_kv, 64, D)).astype(mx.float16)
+        v = mx.random.normal((1, H_kv, 64, D)).astype(mx.float16)
+        mx.synchronize()
+
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.synchronize()
+
+        pool_k_tq, pool_v_fp16, k_scales, k_centroids, table, lens = _build_tq_paged_pool(
+            [k], [v], block_size, bits=bits
+        )
+        v_pool_tq, v_scales, v_centroids = build_tq_paged_v_pool(pool_v_fp16, bits=bits)
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q_rot])
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v_fp16, table, lens, cu_q,
+            k_centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_v_enabled=True, v_pool_tq=v_pool_tq, v_centroids=v_centroids, v_scales=v_scales,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 1, D)
+        assert mx.isfinite(out).all().item(), "V-TQ GQA output has non-finite values"

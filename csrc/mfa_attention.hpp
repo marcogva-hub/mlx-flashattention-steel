@@ -578,6 +578,7 @@ class MFAPagedVarlenTQForward : public mlx::core::Primitive {
     int block_size;
     int tq_bits;     // 2, 3, or 4
     int packed_D;    // D / 2
+    bool tq_v_enabled;  // Phase 3A: V is also TQ-packed
   };
 
   MFAPagedVarlenTQForward(mlx::core::Stream s, Params p)
@@ -602,7 +603,8 @@ class MFAPagedVarlenTQForward : public mlx::core::Primitive {
            params_.causal == o->params_.causal &&
            params_.D == o->params_.D &&
            params_.block_size == o->params_.block_size &&
-           params_.tq_bits == o->params_.tq_bits;
+           params_.tq_bits == o->params_.tq_bits &&
+           params_.tq_v_enabled == o->params_.tq_v_enabled;
   }
 
  private:
@@ -611,20 +613,25 @@ class MFAPagedVarlenTQForward : public mlx::core::Primitive {
 
 /// Free function: validates inputs and creates MFAPagedVarlenTQForward.
 /// Returns (O [1, H_q, total_q, D], L [H_q, total_q]).
+/// When tq_v_enabled=true, v_pool_tq/v_centroids/v_scales must be provided.
 std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     const mlx::core::array& q,             // [1, H_q, total_q, D]
     const mlx::core::array& k_pool_tq,     // [num_pages, block_size, H_kv, packed_D] uint8
-    const mlx::core::array& v_pool,        // [num_pages, block_size, H_kv, D]
+    const mlx::core::array& v_pool,        // [num_pages, block_size, H_kv, D] (fp16 when !tq_v)
     const mlx::core::array& cu_seqlens_q,  // [num_seqs + 1]
     const mlx::core::array& tile_offsets,  // [num_seqs + 1]
     const mlx::core::array& block_table,   // [num_seqs, max_blocks]
     const mlx::core::array& seq_lens_kv,   // [num_seqs]
-    const mlx::core::array& centroids,     // [n_centroids] fp16
+    const mlx::core::array& centroids,     // [n_centroids] fp16 (K centroids)
     const mlx::core::array& k_scales,      // [num_pages, block_size, H_kv] f32
     float scale,
     bool causal,
     int block_size,
     int tq_bits,
+    bool tq_v_enabled,
+    const std::optional<mlx::core::array>& v_pool_tq,    // [num_pages, block_size, H_kv, packed_D] uint8
+    const std::optional<mlx::core::array>& v_centroids,  // [n_centroids] fp16
+    const std::optional<mlx::core::array>& v_scales,     // [num_pages, block_size, H_kv] f32
     mlx::core::Stream stream);
 
 }  // namespace mlx_mfa

@@ -4,6 +4,31 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.23.0] — 2026-03-27
+
+### TurboQuant Phase 3 — Production Integration
+
+- **feat**: Optional V compression in fused TQ kernel (`tq_v_enabled=True`).
+  Both K and V are TQ-packed and dequantified inline during the attention
+  kernel, achieving ~8× KV cache compression. Uniform branch (zero warp
+  divergence). Buffers 12-14 for `v_pool_tq`, `v_centroids`, `v_scales`.
+- **feat**: `pack_v_for_metal()` and `build_tq_paged_v_pool()` — V-side
+  TQ packing helpers matching the K-side API.
+- **feat**: `TurboQuantPagedInferenceContext` — stateful paged KV-cache
+  with automatic TQ compression on append. Prefill/step auto-rotate Q
+  with WHT and call the fused TQ kernel.
+- **feat**: `create_decode_runtime(turboquant=True)` — runtime factory
+  shortcut that creates a TurboQuant paged context. `tq_bits` and `tq_v`
+  parameters control quantization width and V compression.
+- **perf**: Centroids cached in threadgroup memory (Phase 3C). K and V
+  centroid lookup tables (16-32 bytes) loaded once per kernel invocation
+  into `k_centroids_smem`/`v_centroids_smem`, replacing per-element device
+  memory reads in the gather loops.
+- **docs**: QJL documented as Phase 1 decompress path only. The fused
+  kernel uses PolarQuant/MSE without QJL correction. For 2-bit quality
+  improvement with QJL, use `turboquant_compress(use_qjl=True)` +
+  `turboquant_decompress()`.
+
 ## [2.22.0] — 2026-03-27
 
 ### TurboQuant Phase 2 — Semi-Fused Metal Kernel

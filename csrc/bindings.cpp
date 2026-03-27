@@ -598,12 +598,17 @@ NB_MODULE(_ext, m) {
          bool causal,
          int block_size,
          int tq_bits,
+         bool tq_v_enabled,
+         std::optional<mlx::core::array> v_pool_tq,
+         std::optional<mlx::core::array> v_centroids,
+         std::optional<mlx::core::array> v_scales,
          nb::object stream) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         return mlx_mfa::mfa_paged_varlen_tq_forward(
             q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets,
             block_table, seq_lens_kv, centroids, k_scales,
-            scale, causal, block_size, tq_bits, s);
+            scale, causal, block_size, tq_bits,
+            tq_v_enabled, v_pool_tq, v_centroids, v_scales, s);
       },
       nb::arg("q"),
       nb::arg("k_pool_tq"),
@@ -618,8 +623,12 @@ NB_MODULE(_ext, m) {
       nb::arg("causal"),
       nb::arg("block_size"),
       nb::arg("tq_bits"),
+      nb::arg("tq_v_enabled") = false,
+      nb::arg("v_pool_tq") = nb::none(),
+      nb::arg("v_centroids") = nb::none(),
+      nb::arg("v_scales") = nb::none(),
       nb::arg("stream") = nb::none(),
-      "TurboQuant fused paged varlen forward: packed uint8 K + centroid dequant.");
+      "TurboQuant fused paged varlen forward: packed uint8 K + centroid dequant, optional V-TQ.");
 
   m.def("_invalidate_env_config", []() {
       mlx_mfa::MFAEnvConfig::invalidate();

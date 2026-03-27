@@ -39,7 +39,7 @@ __all__ = [
     "create_decode_runtime",
 ]
 
-DecodeBackend = Literal["auto", "dense", "paged", "sage"]
+DecodeBackend = Literal["auto", "dense", "paged", "sage", "turboquant"]
 QueryLayout = Literal["batched", "packed"]
 
 
@@ -1627,6 +1627,9 @@ def create_decode_runtime(
     backend: DecodeBackend = "auto",
     paged: bool = False,
     quantized_kv: bool = False,
+    turboquant: bool = False,
+    tq_bits: int = 3,
+    tq_v: bool = True,
     hybrid_cache: bool = False,
     hybrid_policy: str = "lru",
     hybrid_hot_seq_capacity: int = 1,
@@ -1664,6 +1667,30 @@ def create_decode_runtime(
         raise ValueError("default_seq_id must be >= 0")
     if query_layout not in ("batched", "packed"):
         raise ValueError("query_layout must be one of 'batched' or 'packed'")
+
+    # TurboQuant fast path — bypass standard inference context resolution
+    if turboquant or backend == "turboquant":
+        from mlx_mfa.inference import TurboQuantPagedInferenceContext
+        eff_blocks = num_blocks if num_blocks is not None else (max_seq_len + block_size - 1) // block_size + 4
+        context = TurboQuantPagedInferenceContext(
+            num_blocks=eff_blocks,
+            block_size=block_size,
+            H_kv=H_kv,
+            D=D,
+            tq_bits=tq_bits,
+            tq_v=tq_v,
+            dtype=dtype,
+            stream=stream,
+        )
+        return DecodeRuntime(
+            context=context,
+            backend="turboquant",
+            requested_backend="turboquant",
+            paged=True,
+            quantized_kv=True,
+            query_layout=query_layout,
+            default_seq_id=default_seq_id,
+        )
 
     mode, requested = _resolve_inference_context_mode(
         backend=backend,
