@@ -1111,3 +1111,158 @@ class TestOptimalPackingFusedKernel:
 
         assert out.shape == (1, H_q, 2, D)
         assert mx.isfinite(out).all().item(), f"Bit-planar fused D={D} has non-finite values"
+
+
+# ---------------------------------------------------------------------------
+# WHT Kernel Fusion
+# ---------------------------------------------------------------------------
+
+
+class TestWHTKernelFusion:
+    """Tests for in-kernel Walsh-Hadamard transform on Q."""
+
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_wht_fused_matches_python_wht(self, D):
+        """Kernel WHT on unrotated Q matches Python WHT on pre-rotated Q."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import apply_rotation
+
+        mx.random.seed(920)
+        H_q, H_kv = 4, 4
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 4, D)).astype(mx.float16)
+        k = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        v = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k, v, block_size, bits=bits
+        )
+
+        # Path A: Python WHT pre-rotation (existing behavior)
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        q_pack_a, cu_q = _pack_queries([q_rot])
+        out_a = flash_attention_paged_varlen_turboquant(
+            q_pack_a, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_wht_enabled=False,
+        )
+        mx.synchronize()
+
+        # Path B: Kernel WHT fusion (unrotated Q)
+        q_pack_b, cu_q_b = _pack_queries([q])
+        out_b = flash_attention_paged_varlen_turboquant(
+            q_pack_b, pool_k_tq, pool_v, table, lens, cu_q_b,
+            centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_wht_enabled=True,
+        )
+        mx.synchronize()
+
+        # Both should be finite
+        assert mx.isfinite(out_a).all().item(), "Python WHT path has non-finite values"
+        assert mx.isfinite(out_b).all().item(), "Kernel WHT path has non-finite values"
+
+        # Should match closely (fp16 precision)
+        out_a_f = out_a.astype(mx.float32)
+        out_b_f = out_b.astype(mx.float32)
+        max_err = mx.abs(out_a_f - out_b_f).max().item()
+        assert max_err < 0.1, f"D={D}: max error {max_err:.4f} between Python and kernel WHT"
+
+    def test_wht_fused_causal(self):
+        """Kernel WHT works with causal masking."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+
+        mx.random.seed(921)
+        H_q, H_kv, D = 4, 4, 128
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 8, D)).astype(mx.float16)
+        k = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        v = [mx.random.normal((1, H_kv, 32, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q])
+        pool_k_tq, pool_v, k_scales, centroids, table, lens = _build_tq_paged_pool(
+            k, v, block_size, bits=bits
+        )
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v, table, lens, cu_q,
+            centroids, k_scales,
+            scale=scale, causal=True, block_size=block_size, tq_bits=bits,
+            tq_wht_enabled=True,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 8, D)
+        assert mx.isfinite(out).all().item(), "WHT fused causal output has non-finite values"
+
+    def test_wht_fused_with_v_tq(self):
+        """Kernel WHT works with V-TQ enabled."""
+        _skip_if_no_ext()
+        from mlx_mfa import flash_attention_paged_varlen_turboquant
+        from mlx_mfa.turboquant import pack_v_for_metal, _get_centroids
+
+        mx.random.seed(922)
+        H_q, H_kv, D = 4, 4, 64
+        bits = 3
+        block_size = 16
+        scale = 1.0 / math.sqrt(D)
+
+        q = mx.random.normal((1, H_q, 4, D)).astype(mx.float16)
+        k = [mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)]
+        v = [mx.random.normal((1, H_kv, 16, D)).astype(mx.float16)]
+        mx.synchronize()
+
+        q_pack, cu_q = _pack_queries([q])
+        pool_k_tq, pool_v_fp16, k_scales, k_centroids, table, lens = _build_tq_paged_pool(
+            k, v, block_size, bits=bits
+        )
+
+        # Build V-TQ pool
+        v_packed, v_sc, v_cents = pack_v_for_metal(v[0], bits=bits)
+        mx.synchronize()
+
+        _, v_centroids_f32 = _get_centroids(bits)
+        v_centroids = v_centroids_f32.astype(mx.float16)
+
+        # Build paged V-TQ pool (simplified: single sequence, single page)
+        from mlx_mfa.turboquant import build_tq_paged_v_pool, _compute_packed_d
+        packed_D = _compute_packed_d(D, bits)
+        v_pool_tq_np = np.zeros((pool_v_fp16.shape[0], block_size, H_kv, packed_D), dtype=np.uint8)
+        v_scales_np = np.zeros((pool_v_fp16.shape[0], block_size, H_kv), dtype=np.float32)
+
+        v_packed_np = np.array(v_packed)[0]  # [H_kv, S, packed_D]
+        v_sc_np = np.array(v_sc.astype(mx.float32))[0]  # [H_kv, S]
+        S = v[0].shape[2]
+        n_blk = (S + block_size - 1) // block_size
+        for lb in range(n_blk):
+            s0 = lb * block_size
+            s1 = min(S, s0 + block_size)
+            chunk_len = s1 - s0
+            v_pool_tq_np[lb, :chunk_len] = v_packed_np.transpose(1, 0, 2)[s0:s1]
+            v_scales_np[lb, :chunk_len] = v_sc_np.transpose(1, 0)[s0:s1]
+
+        v_pool_tq = mx.array(v_pool_tq_np)
+        v_scales = mx.array(v_scales_np, dtype=mx.float32)
+
+        out = flash_attention_paged_varlen_turboquant(
+            q_pack, pool_k_tq, pool_v_fp16, table, lens, cu_q,
+            k_centroids, k_scales,
+            scale=scale, causal=False, block_size=block_size, tq_bits=bits,
+            tq_v_enabled=True, tq_wht_enabled=True,
+            v_pool_tq=v_pool_tq, v_centroids=v_centroids, v_scales=v_scales,
+        )
+        mx.synchronize()
+
+        assert out.shape == (1, H_q, 4, D)
+        assert mx.isfinite(out).all().item(), "WHT fused + V-TQ output has non-finite values"
