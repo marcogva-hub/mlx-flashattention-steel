@@ -2930,7 +2930,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   int H_q     = q.shape(1);
   int total_q = q.shape(2);
   int D       = q.shape(3);
-  int packed_D = D / 2;
+  int packed_D = k_pool_tq.shape(3);  // inferred from pool shape (bit-planar: D*12/32 for 3-bit)
 
   MFAPagedVarlenTQForward::Params params{};
   params.scale         = scale;

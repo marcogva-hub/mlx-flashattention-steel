@@ -292,16 +292,21 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
     ss << "\n";
-    // Read packed byte: k_pool_tq[phys * pool_block_stride_k + tok_in_blk * pool_tok_stride_k + kv_head * packed_D + d/2]
-    ss << "            const int byte_off = (int)((long)phys * p->pool_block_stride_k\n";
-    ss << "                               + tok_in_blk * p->pool_tok_stride_k\n";
-    ss << "                               + kv_head * p->packed_D\n";
-    ss << "                               + (d >> 1));\n";
-    ss << "            const uchar packed_byte = k_pool_tq[byte_off];\n";
-    // Extract index: even d → low bits, odd d → high bits
-    ss << "            const uchar idx = (d & 1) == 0\n";
-    ss << "                ? (packed_byte & tq_mask)\n";
-    ss << "                : ((packed_byte >> tq_bits) & tq_mask);\n";
+    // Bit-planar 3-bit extraction: 32 indices → 3 bit-planes × 4 bytes = 12 bytes/group
+    ss << "            const int group = d / 32;\n";
+    ss << "            const int lane  = d % 32;\n";
+    ss << "            const int byte_in_lane = lane / 8;\n";
+    ss << "            const int bit_in_byte  = lane % 8;\n";
+    ss << "            const int base_off = (int)((long)phys * p->pool_block_stride_k\n";
+    ss << "                              + tok_in_blk * p->pool_tok_stride_k\n";
+    ss << "                              + kv_head * p->packed_D\n";
+    ss << "                              + group * 12);\n";
+    ss << "            const uchar b0 = k_pool_tq[base_off + 0 * 4 + byte_in_lane];\n";
+    ss << "            const uchar b1 = k_pool_tq[base_off + 1 * 4 + byte_in_lane];\n";
+    ss << "            const uchar b2 = k_pool_tq[base_off + 2 * 4 + byte_in_lane];\n";
+    ss << "            const uchar idx = ((b0 >> bit_in_byte) & 1)\n";
+    ss << "                            | (((b1 >> bit_in_byte) & 1) << 1)\n";
+    ss << "                            | (((b2 >> bit_in_byte) & 1) << 2);\n";
     // Centroid lookup → fp16 value
     ss << "            const T centroid_val = k_centroids_smem[idx];\n";
     // Per-vector scale: k_scales[phys * block_size * H_kv + tok_in_blk * H_kv + kv_head]
@@ -401,14 +406,20 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
     // V-TQ branch: uniform branch (all threads take same path), zero divergence cost
     ss << "            if (p->tq_v_enabled) {\n";
-    ss << "              const int vbyte_off = (int)((long)phys * p->tq_v_pool_block_stride\n";
+    ss << "              const int vgroup = d / 32;\n";
+    ss << "              const int vlane  = d % 32;\n";
+    ss << "              const int vbyte_in_lane = vlane / 8;\n";
+    ss << "              const int vbit_in_byte  = vlane % 8;\n";
+    ss << "              const int vbase_off = (int)((long)phys * p->tq_v_pool_block_stride\n";
     ss << "                                   + tok_in_blk * p->tq_v_pool_tok_stride\n";
     ss << "                                   + kv_head * p->packed_D\n";
-    ss << "                                   + (d >> 1));\n";
-    ss << "              const uchar v_packed_byte = v_pool_tq[vbyte_off];\n";
-    ss << "              const uchar v_idx = (d & 1) == 0\n";
-    ss << "                  ? (v_packed_byte & tq_mask)\n";
-    ss << "                  : ((v_packed_byte >> tq_bits) & tq_mask);\n";
+    ss << "                                   + vgroup * 12);\n";
+    ss << "              const uchar vb0 = v_pool_tq[vbase_off + 0 * 4 + vbyte_in_lane];\n";
+    ss << "              const uchar vb1 = v_pool_tq[vbase_off + 1 * 4 + vbyte_in_lane];\n";
+    ss << "              const uchar vb2 = v_pool_tq[vbase_off + 2 * 4 + vbyte_in_lane];\n";
+    ss << "              const uchar v_idx = ((vb0 >> vbit_in_byte) & 1)\n";
+    ss << "                                | (((vb1 >> vbit_in_byte) & 1) << 1)\n";
+    ss << "                                | (((vb2 >> vbit_in_byte) & 1) << 2);\n";
     ss << "              const T v_centroid_val = v_centroids_smem[v_idx];\n";
     ss << "              const float vscale = v_scales[\n";
     ss << "                  (long)phys * p->block_size * p->H_kv\n";
