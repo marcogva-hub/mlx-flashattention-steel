@@ -1,6 +1,6 @@
 # mlx-mfa Architecture
 
-Version: **2.20.0**
+Version: **2.23.0**
 
 ## 1) System Overview
 
@@ -11,7 +11,7 @@ Python API/runtime (mlx_mfa.*)
   -> nanobind extension (csrc/bindings.cpp)
     -> MFA Primitive dispatch (csrc/mfa_attention.cpp)
       -> JIT shader generation + pipeline cache
-        -> Metal kernels (STEEL V2/V3/V4/V5, Sage, paged helpers)
+        -> Metal kernels (STEEL V2/V3/V4/V5, Sage, paged helpers, TurboQuant)
 ```
 
 Key principle: keep dense production routing conservative and benchmark-backed,
@@ -58,6 +58,7 @@ Primary callable families:
 - Speculative verify helpers:
   - `flash_attention_speculative_verify(...)`
   - `flash_attention_speculative_verify_paged(...)`
+- TurboQuant fused: `flash_attention_paged_varlen_turboquant(...)`
 
 ## 5) Serving-Oriented Flow Architecture
 
@@ -138,7 +139,54 @@ This is a **minimal local offload milestone**, not distributed offload.
 This defines a future LMCache-like integration surface without claiming full
 remote backend support in the freeze state.
 
-## 7) Native Extension Architecture
+## 7) TurboQuant KV Compression Architecture (v2.21.0–v2.23.0)
+
+Three-phase integration of training-free KV cache compression:
+
+### 7.1 Compression pipeline
+
+```text
+Input: fp16 [B, H, S, D]
+  -> WHT rotation (Walsh-Hadamard Transform, orthogonal)
+  -> Per-channel scalar quantization (PolarQuant centroids)
+  -> 2-bit/3-bit/4-bit index packing (2 indices per byte)
+  -> uint8 packed output [B, H, S, D/2]
+```
+
+### 7.2 Phase progression
+
+| Phase | K path | V path | Output correction |
+|-------|--------|--------|-------------------|
+| 1 (v2.21.0) | Decompress before attention | Decompress before attention | None |
+| 2 (v2.22.0) | Fused: Metal kernel reads packed K | fp16 V pool | None |
+| 3 (v2.23.0) | Fused: Metal kernel reads packed K | Fused: Metal kernel reads packed V | WHT inverse on output |
+
+### 7.3 V rotation asymmetry
+
+K rotation cancels in Q@K^T: `R(Q) @ R(K)^T = Q @ K^T` (WHT is orthogonal).
+V rotation does NOT cancel: `O_tq = P @ R(V) = R(P @ V) = R(O)`.
+Phase 3 applies inverse WHT to the output after the kernel returns.
+WHT is self-inverse: `R^{-1} = R`.
+
+### 7.4 Metal kernel architecture
+
+`MFAPagedVarlenTQForward` primitive (`csrc/mfa_steel_paged_varlen_tq_fwd.cpp`):
+- K gather: centroid lookup from TGP-cached centroids + per-token scale
+- V gather: same centroid+scale pattern, gated by `tq_v_enabled` uniform branch
+- Centroids loaded once into threadgroup memory (16-element array)
+- Buffer layout: Q(0), k_pool_tq(1), v_pool(2), O(3), L(4), params(5),
+  cu_seqlens_q(6), tile_offsets(7), block_table(8), seq_lens_kv(9),
+  centroids(10), k_scales(11), v_pool_tq(12), v_centroids(13), v_scales(14)
+
+### 7.5 Runtime integration
+
+`TurboQuantPagedInferenceContext` manages:
+- Dual pools: uint8 K pool + uint8 V pool (Phase 3) or fp16 V pool (Phase 2)
+- Auto-compression on `append(k, v)` via `pack_k_for_metal` / `pack_v_for_metal`
+- Auto Q rotation with WHT before calling fused kernel
+- `create_decode_runtime(turboquant=True)` instantiates this context
+
+## 8) Native Extension Architecture
 
 Core native files:
 - `csrc/mfa_attention.cpp`: primitive dispatch and routing
@@ -148,10 +196,11 @@ Core native files:
 - `csrc/mfa_steel_fwd_v5.hpp/cpp`: V5 D-blocked kernel (experimental)
 - `csrc/mfa_steel_bwd.cpp`: native backward kernels (gated non-default)
 - `csrc/mfa_sage_fwd.cpp`: Sage path
+- `csrc/mfa_steel_paged_varlen_tq_fwd.hpp/cpp`: TurboQuant paged varlen kernel
 - `csrc/mfa_paged_gather.cpp` / `csrc/mfa_scatter.cpp`: paged helpers
 - `csrc/shader_cache.mm`: pipeline compilation/cache
 
-### 7.1 MFAEnvConfig (v2.20.0)
+### 8.1 MFAEnvConfig (v2.20.0)
 
 Static singleton (`csrc/mfa_env.hpp`) that caches all `MFA_*` env vars at
 first access. Eliminates per-dispatch `std::getenv()` syscall overhead.
@@ -165,7 +214,7 @@ remain live-read because Python tests use `os.environ` patching at runtime.
 
 `invalidate()` forces re-read of cached fields (test/bench use only).
 
-### 7.2 Forward Dispatch Cascade
+### 8.2 Forward Dispatch Cascade
 
 ```
 f32 → ccv legacy path
@@ -179,7 +228,7 @@ f16/bf16:
   V1 (D>128) → original STEEL kernel
 ```
 
-## 8) Documentation and Historical Separation
+## 9) Documentation and Historical Separation
 
 Active references:
 - `README.md`
@@ -192,14 +241,14 @@ Historical branch/track artifacts:
 
 This separation is intentional for freeze-readability.
 
-## 9) Deferred Work
+## 10) Deferred Work
 
 Deferred until future continuation (likely newer hardware generation):
 - remote/distributed offload backends via external adapter contract
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
 
-## 10) LLM Serving Layer Status (v2.20.0)
+## 11) LLM Serving Layer Status (v2.23.0)
 
 The serving layer is considered production-ready for local inference.
 See `docs/SERVING_GUIDE.md` for usage guide.
@@ -215,4 +264,7 @@ See `docs/SERVING_GUIDE.md` for usage guide.
 | Chunked prefill (packed) | Not supported |
 | Splitfuse | Narrow/conditional |
 | mlx-lm patch | Production |
+| TurboQuant Phase 1 (non-fused) | Production (v2.21.0) |
+| TurboQuant Phase 2 (K fused) | Production (v2.22.0) |
+| TurboQuant Phase 3 (K+V fused) | Production (v2.23.0) |
 | Remote/distributed offload | Deferred (M5+) |
