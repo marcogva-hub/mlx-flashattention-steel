@@ -4,6 +4,15 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.24.1] — 2026-03-27
+
+### Documentation
+- Confirmed V centroids already read from threadgroup memory (`v_centroids_smem`) —
+  no bug to fix (Phase 3C implemented correctly).
+- **Dequant-in-GEMM analysis**: TGP budget is not constrained (max 19 KB / 58% of
+  32 KB on M3+ D=128). The uint8 K_smem savings (0.5–1.8 KB) cannot improve
+  occupancy. Implementation skipped; analysis documented in shader generator header.
+
 ## [2.24.0] — 2026-03-27
 
 ### TurboQuant Phase 4 — Optimal Packing + WHT Fusion
