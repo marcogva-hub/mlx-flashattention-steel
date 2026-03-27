@@ -5574,4 +5574,13 @@ def flash_attention_paged_varlen_turboquant(
         tq_v_enabled,
         v_pool_tq, v_centroids, v_scales,
     )
+
+    # When V is TQ-packed, V was rotated before quantization. The P@V output
+    # is therefore in rotated space: O_tq = P @ R(V) = R(P @ V). Un-rotate to
+    # recover the original output space. WHT is self-inverse: R^{-1} = R.
+    if tq_v_enabled:
+        from mlx_mfa.turboquant import apply_rotation
+        o_shape = o.shape
+        o = apply_rotation(o.astype(mx.float32), "wht").astype(o.dtype)
+
     return o
