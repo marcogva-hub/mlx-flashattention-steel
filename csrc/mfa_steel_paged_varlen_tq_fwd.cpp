@@ -198,7 +198,8 @@ struct MFAPagedVarlenTQParams {
     ss << "  threadgroup T* Vs = KV_smem;\n";
     ss << "\n";
 
-    // Phase 3C: Centroid cache in threadgroup memory
+    // Phase 3C: Centroid cache in threadgroup memory.
+    // Both K and V centroids are loaded once and read from smem in every gather.
     // Max 16 centroids (4-bit); actual count = p->n_centroids at runtime.
     ss << "  // Centroid TGP cache (Phase 3C): load once, read many\n";
     ss << "  constexpr short MAX_CENTROIDS = 16;\n";
