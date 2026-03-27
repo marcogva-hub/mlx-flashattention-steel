@@ -129,7 +129,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.20.0 — 769 tests pass.
+v2.23.0 — 839 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
@@ -152,6 +152,9 @@ v2.20.0 — 769 tests pass.
 | LLM Serving | HybridKVCache, runtime, external cache finalization | Done (v2.14.0) |
 | PagedVarlenFwd | Fused packed varlen + paged KV kernel | Done (v2.14.1) |
 | Paged causal fix | Per-tile causal zone accounting for qL_off | Done (v2.14.1) |
+| TurboQuant P1 | Non-fused KV compression (compress/decompress/cache) | Done (v2.21.0) |
+| TurboQuant P2 | K fused in Metal paged varlen kernel | Done (v2.22.0) |
+| TurboQuant P3 | V fused in kernel, TGP centroids, runtime integration | Done (v2.23.0) |
 
 ## Post-Phase 1 Technical Notes
 
