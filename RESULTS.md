@@ -1,6 +1,6 @@
 # mlx-mfa Results Summary
 
-Version: **2.20.0**
+Version: **2.23.0**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
 For complete benchmark tables and architectural notes, see
@@ -16,6 +16,7 @@ For complete benchmark tables and architectural notes, see
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** remains a specialized decode backend (narrow policy).
 - **V3/V4/V5** remain experimental/hardware-dependent.
+- **TurboQuant** KV cache compression (Phase 1–3) production-ready.
 
 ## 2) Representative Results
 
@@ -98,7 +99,36 @@ Interpretation:
 - Splitfuse/runtime deepening and page-native reductions are real but
   shape-sensitive.
 
-## 4) Practical Ceiling Statement (Current Hardware)
+## 4) TurboQuant KV Cache Compression (v2.21.0–v2.23.0)
+
+Training-free, data-oblivious KV compression based on Google's TurboQuant (ICLR 2026).
+Three phases: Phase 1 (non-fused decompress), Phase 2 (K fused in kernel),
+Phase 3 (K+V fused in kernel).
+
+### Benchmark matrix (M1 Max, f16)
+
+| Config | fp16 (ms) | P2/K-only (ms) | P3/K+V (ms) | P3/fp16 | cos(P2) | cos(P3) | fp16 MB | KV-TQ MB |
+|--------|----------:|----------------:|-------------:|--------:|--------:|--------:|--------:|---------:|
+| Llama-8B 1seq 2K | 0.59 | 4.04 | 4.36 | 7.4× | 0.9825 | 0.9654 | 8.0 | 2.1 |
+| Llama-8B 1seq 8K | 1.40 | 11.29 | 12.23 | 8.7× | 0.9811 | 0.9647 | 32.0 | 8.5 |
+| Llama-8B 4seq 2K | 1.24 | 3.33 | 3.90 | 3.1× | 0.9811 | 0.9652 | 32.0 | 8.5 |
+| Llama-8B 8seq 4K | 3.86 | 13.53 | 14.94 | 3.9× | 0.9824 | 0.9656 | 128.0 | 34.0 |
+| Llama-8B prefill 512 | 3.68 | 3.06 | 5.00 | 1.4× | 0.9875 | 0.9707 | 2.0 | 0.5 |
+| Llama-8B prefill 2K | 40.33 | 25.40 | 37.06 | 0.9× | 0.9863 | 0.9694 | 8.0 | 2.1 |
+| Qwen-7B 1seq 8K | 0.90 | 11.68 | 12.92 | 14.4× | 0.9826 | 0.9647 | 16.0 | 4.3 |
+| Qwen-7B 4seq 4K | 1.51 | 6.30 | 7.55 | 5.0× | 0.9822 | 0.9650 | 32.0 | 8.5 |
+| Mixed 8seq hetero | 4.05 | 12.49 | 14.52 | 3.6× | 0.9818 | 0.9649 | 60.0 | 15.9 |
+
+**Interpretation:**
+- Memory savings: ~3.8× with both K+V compressed (Phase 3).
+- Quality: cosine similarity 0.9647–0.9707 vs fp16 (Phase 3), 0.9811–0.9875 (Phase 2 K-only).
+- Latency: Phase 2/3 are currently slower than fp16 due to Python-side pack/unpack overhead.
+  The fused Metal kernel avoids decompression but packing still happens in Python.
+- Primary value is memory savings for long-context serving, not latency reduction.
+
+Full data: `devnotes/turboquant_full_bench.json`
+
+## 5) Practical Ceiling Statement (Current Hardware)
 
 For this architecture on M1 Max and M4 Max:
 - dense kernel family appears close to practical ceiling in the main production
@@ -107,7 +137,7 @@ For this architecture on M1 Max and M4 Max:
 - remaining improvements are mostly serving/runtime integration and future
   hardware-dependent opportunities (M5+ tensor API).
 
-## 5) Artifact Map
+## 6) Artifact Map
 
 - Dense/backward/large-D decisions: `devnotes/native-backward-pass/`,
   `devnotes/d256-design-track/`, `devnotes/d512-decision-pass/`
@@ -124,8 +154,9 @@ For this architecture on M1 Max and M4 Max:
   - `devnotes/hybrid-kv-cache-behavior/`
   - `devnotes/final-serving-completion/`
 - Experimental triage: `devnotes/experimental-triage/`
+- TurboQuant: `devnotes/turboquant_full_bench.json`
 
-## 6) Related Documentation
+## 7) Related Documentation
 
 - Benchmark details: `docs/benchmarks/RESULTS.md`
 - API reference: `docs/API_MANUAL.md`
