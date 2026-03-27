@@ -129,7 +129,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.23.0 — 839 tests pass.
+v2.24.0 — 854 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
@@ -155,6 +155,7 @@ v2.23.0 — 839 tests pass.
 | TurboQuant P1 | Non-fused KV compression (compress/decompress/cache) | Done (v2.21.0) |
 | TurboQuant P2 | K fused in Metal paged varlen kernel | Done (v2.22.0) |
 | TurboQuant P3 | V fused in kernel, TGP centroids, runtime integration | Done (v2.23.0) |
+| TurboQuant P4 | Optimal 3-bit packing (5.33×) + WHT fusion in kernel | Done (v2.24.0) |
 
 ## Post-Phase 1 Technical Notes
 
