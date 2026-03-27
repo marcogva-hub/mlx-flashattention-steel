@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.20.0** — MFAEnvConfig refactor, V3 guard optimization, V5 per-D configs, comprehensive audit + docs update.
+Current version: **2.23.0** — TurboQuant KV cache compression Phase 1–3 (non-fused, K fused, K+V fused in Metal kernel).
 
 ## Foreword
 
@@ -26,10 +26,10 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.20.0 adds MFAEnvConfig (centralized env var caching), V3 dispatch guard
-optimization (B*H≥4, +35-67% for small-batch causal), V5 per-D block configs,
-comprehensive code audit with 14 tech debt fixes, and full documentation
-update. See `CHANGELOG.md` for full details per version.
+v2.23.0 adds TurboQuant KV cache compression — training-free, data-oblivious
+compression based on Google's TurboQuant (ICLR 2026). Phase 3 fuses both K and V
+in the Metal kernel for ~3.8× memory savings at cosine similarity 0.96–0.97 vs
+fp16. See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
 on my work!
@@ -44,6 +44,7 @@ on my work!
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** is a specialized decode backend (narrow, benchmark-gated use).
 - **V3/V4/V5** remain experimental/hardware-dependent.
+- **TurboQuant** KV cache compression (Phase 1–3) production-ready.
 - Serving/runtime capability surface is now substantially expanded:
   - paged KV + packed varlen query support
   - paged continuous batching/remap
@@ -53,6 +54,7 @@ on my work!
   - deeper splitfuse runtime integration
   - KV cache abstraction layer
   - minimal real hybrid/offload-capable cache behavior (local offload tier)
+  - TurboQuant compressed KV serving (`create_decode_runtime(turboquant=True)`)
 
 ## Limitations
 
@@ -89,10 +91,12 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | Runtime speculative decode | Fully usable (narrow) | `speculative_step` + verify integration; scheduler engine still future work |
 | Splitfuse runtime integration | Narrow/conditional | Runtime path exists; performance remains shape-sensitive |
 | Hybrid KV cache + local offload tier | Narrow/conditional milestone | Real hot/cold/offloaded behavior locally; remote offload future work |
+| TurboQuant KV compression (Phase 3) | Production | ~3.8× memory savings, cos 0.96–0.97 vs fp16 |
 | External cache adapter layer | Experimental groundwork | Concrete local backend provided; external backend integrations pending |
 
 ## Repository Guide
 
+- Feature coverage: [`docs/FEATURE_COVERAGE.md`](docs/FEATURE_COVERAGE.md)
 - API manual: [`docs/API_MANUAL.md`](docs/API_MANUAL.md)
 - Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Inventory map: [`docs/INVENTORY.md`](docs/INVENTORY.md)
@@ -106,7 +110,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 
 | Status | Components |
 |---|---|
-| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy |
+| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression |
 | Narrow / conditional | D=256 causal long-N policy; Sage decode regimes; splitfuse/page-native runtime paths; hybrid local offload behavior |
 | Experimental | V3/V4/V5 families; external/LMCache-like backend extensions beyond local adapter |
 
