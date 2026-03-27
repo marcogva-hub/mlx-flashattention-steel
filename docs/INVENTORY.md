@@ -1,7 +1,7 @@
 # mlx-mfa Inventory
 
-Version: **2.20.0**
-Regenerated: 2026-03-21
+Version: **2.23.0**
+Regenerated: 2026-03-27
 
 ## Scope
 
@@ -9,6 +9,7 @@ This inventory reflects the retained codebase at freeze-prep time, including:
 - dense V2 production path and dispatch policy;
 - serving/runtime expansion (paged/packed/chunked/prefix/speculative/splitfuse);
 - cache abstraction and hybrid local offload-capable behavior;
+- TurboQuant KV cache compression (Phase 1–3);
 - historical development artifacts moved under `devnotes/`.
 
 ## Top-Level Layout
@@ -25,13 +26,14 @@ This inventory reflects the retained codebase at freeze-prep time, including:
 
 ## Python Modules (`mlx_mfa/`)
 
-Current line counts (2026-03-21 snapshot):
+Current line counts (2026-03-27 snapshot):
 
 | File | Lines | Notes |
 |---|---:|---|
-| `mlx_mfa/attention.py` | 5476 | Core attention APIs: dense/paged/varlen/sparse/speculative/splitfuse |
-| `mlx_mfa/runtime.py` | 1724 | `DecodeRuntime`, runtime integration, serving flow helpers |
-| `mlx_mfa/inference.py` | 957 | Inference contexts and cache implementations |
+| `mlx_mfa/attention.py` | 5586 | Core attention APIs: dense/paged/varlen/sparse/speculative/splitfuse/turboquant |
+| `mlx_mfa/runtime.py` | 1748 | `DecodeRuntime`, runtime integration, serving flow helpers |
+| `mlx_mfa/inference.py` | 1245 | Inference contexts incl. TurboQuantPagedInferenceContext |
+| `mlx_mfa/turboquant.py` | 938 | TurboQuant compress/decompress, Metal packing helpers |
 | `mlx_mfa/kv_cache.py` | 822 | Cache adapter layer + hybrid cache behavior |
 | `mlx_mfa/dispatch_policy.py` | 838 | Benchmark-backed dispatch policy and calibration |
 | `mlx_mfa/masks.py` | 1129 | Mask builders |
@@ -39,38 +41,43 @@ Current line counts (2026-03-21 snapshot):
 | `mlx_mfa/external_cache.py` | 181 | External cache adapter contract + local host backend |
 | `mlx_mfa/compile_metallib.py` | 364 | AOT metallib tooling |
 | `mlx_mfa/integrations/mlx_lm.py` | 431 | mlx-lm integration hooks |
-| `mlx_mfa/__init__.py` | 259 | Public exports and version |
+| `mlx_mfa/__init__.py` | 294 | Public exports and version |
 
 ## Native Extension (`csrc/`)
 
-Current line counts (major files, 2026-03-21 snapshot):
+Current line counts (major files, 2026-03-27 snapshot):
 
 | File | Lines | Notes |
 |---|---:|---|
-| `csrc/mfa_attention.cpp` | 2771 | Primitive dispatch and routing hooks |
+| `csrc/mfa_attention.cpp` | 2967 | Primitive dispatch and routing hooks |
 | `csrc/mfa_steel_fwd.cpp` | 3349 | Shared forward template generation |
 | `csrc/mfa_steel_fwd_v2.cpp` | 2138 | V2 production kernel family |
+| `csrc/mfa_steel_paged_varlen_tq_fwd.cpp` | 511 | TurboQuant paged varlen kernel generator |
 | `csrc/mfa_steel_fwd_v3.cpp` | 642 | V3 separate K/V smem kernel |
 | `csrc/mfa_steel_fwd_v5.cpp` | 683 | V5 D-blocked kernel (experimental) |
 | `csrc/mfa_steel_bwd.cpp` | 1295 | Native backward (kept non-default) |
 | `csrc/mfa_env.hpp` | 108 | MFAEnvConfig env var singleton |
 | `csrc/mfa_sage_fwd.cpp` | 520 | Sage forward path |
 | `csrc/shader_cache.mm` | 480 | Metal pipeline compilation/cache |
+| `csrc/bindings.cpp` | 638 | nanobind module bindings |
 | `csrc/async_v2_kernel.metal` | 1088 | Async metallib kernel source |
 
 ## Public API Snapshot
 
-`mlx_mfa.__all__` exports: **81** symbols (`+ __version__`).
+`mlx_mfa.__all__` exports: **90** symbols (`+ __version__`).
 
 Major groups:
-- Core attention: `flash_attention*` dense/paged/varlen/packed/splitfuse/speculative.
+- Core attention: `flash_attention*` dense/paged/varlen/packed/splitfuse/speculative/turboquant.
 - Runtime/context: `create_decode_runtime`, `create_inference_context`,
   `InferenceContext`, `PagedInferenceContext`, `SageInferenceContext`,
-  `DecodeRuntime`.
+  `TurboQuantPagedInferenceContext`, `DecodeRuntime`.
 - Cache abstraction: `KVCacheAdapter`, `KVCacheCapabilities`,
   `DenseKVCacheAdapter`, `PagedKVCacheAdapter`, `QuantizedKVCacheAdapter`,
   `HybridKVCacheAdapter`, `HybridKVCache`, `adapt_kv_cache`,
   `resolve_context_cache*`.
+- TurboQuant: `turboquant_compress`, `turboquant_decompress`,
+  `TurboQuantKVCache`, `pack_k_for_metal`, `pack_v_for_metal`,
+  `build_tq_paged_k_pool`, `build_tq_paged_v_pool`.
 - External cache groundwork: `ExternalKVCacheAdapter`,
   `ExternalKVCacheCapabilities`, `LocalHostKVStoreAdapter`.
 
@@ -78,6 +85,7 @@ Major groups:
 
 - Benchmark scripts live in `benchmarks/`.
 - `benchmarks/bench_utils.py` (61 lines): shared `med()`, `geomean()`, `env_override()`.
+- `benchmarks/bench_turboquant_full.py`: TurboQuant Phase 1-3 benchmark matrix.
 - `benchmarks/bench_v3_autoresearch.py`, `bench_v5_autoresearch.py`,
   `bench_v3_promotion.py`, `bench_d512_autoresearch.py`,
   `bench_dispatch_d256_kernel.py`, `bench_dispatch_d512_vae.py`: autoresearch scripts.
@@ -96,6 +104,7 @@ Primary suites used in recent passes:
 - `tests/test_inference_context.py`
 - `tests/test_kv_cache_abstraction.py`
 - `tests/test_external_cache.py`
+- `tests/test_turboquant.py`
 
 ## Historical Notes
 
