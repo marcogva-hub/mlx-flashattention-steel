@@ -1,7 +1,7 @@
 # mlx-mfa API Manual
 
-Version: **2.23.0**
-Public exports: **90 + `__version__`**
+Version: **2.26.0**
+Public exports: **94 + `__version__`**
 
 This manual documents the retained public API surface for the freeze-prep
 state. It emphasizes current usage and serving/runtime integration behavior.
@@ -284,7 +284,11 @@ Mask builders:
 
 GNA / sparse attention (v2.12.0+):
 - `flash_attention_gna(q, k, v, seq_shape, window_size, stride)` — multi-dimensional
-  windowed attention. Routes through `make_gna_mask()` + `flash_attention_sparse()`.
+  windowed attention. As of v2.26.0, tries the native Metal GNA kernel first (D=128,
+  3D `seq_shape`, f16/bf16, forward-only). Falls back to `make_gna_mask()` +
+  `flash_attention_sparse()` for other configs or when a backward pass is needed.
+  The native kernel applies exact per-element window masking (more precise than
+  tile-level sparse approximation).
 - `flash_attention_topk(q, k, v, topk_ratio)` — per-query top-k attention
   (Python reference, O(N^2) memory). Composable with block masks.
 
@@ -320,7 +324,7 @@ Integrations:
 
 ## 8) Export Index
 
-Current exported symbols (`mlx_mfa.__all__`) — **90 symbols** (+ `__version__`) — are listed below:
+Current exported symbols (`mlx_mfa.__all__`) — **94 symbols** (+ `__version__`) — are listed below:
 
 `DecodeRuntime`, `DenseKVCache`, `DenseKVCacheAdapter`, `DispatchPolicy`,
 `ExternalKVCacheAdapter`, `ExternalKVCacheCapabilities`, `HybridKVCache`,
@@ -328,7 +332,7 @@ Current exported symbols (`mlx_mfa.__all__`) — **90 symbols** (+ `__version__`
 `KVCacheCapabilities`, `KVCacheOperationUnsupported`, `KVCacheProtocol`,
 `LocalHostKVStoreAdapter`, `PagedInferenceContext`, `PagedKVCache`,
 `PagedKVCacheAdapter`, `QuantizedKVCache`, `QuantizedKVCacheAdapter`,
-`SageInferenceContext`, `TurboQuantPagedInferenceContext`,
+`SVDQuantLinear`, `SageInferenceContext`, `TurboQuantPagedInferenceContext`,
 `adapt_kv_cache`, `calibrate_dispatch`,
 `compile_metallib`, `create_decode_runtime`, `create_inference_context`,
 `dequantize`, `flash_attention`, `flash_attention_gna`,
@@ -353,19 +357,19 @@ Current exported symbols (`mlx_mfa.__all__`) — **90 symbols** (+ `__version__`
 `make_spatial_3d_mask`, `make_strided_mask`,
 `make_temporal_distance_bias`, `make_temporal_group_mask`,
 `make_topk_spatial_mask`,
-`pack_k_for_metal`, `pack_v_for_metal`,
+`pack_3bit_optimal`, `pack_k_for_metal`, `pack_v_for_metal`,
 `build_tq_paged_k_pool`, `build_tq_paged_v_pool`,
-`quantize_per_block`,
+`quantize_model`, `quantize_per_block`,
 `resolve_context_cache`, `resolve_context_cache_adapter`, `sage_attention`,
 `sage_attention_kvcache`, `sage_attention_prequantized`, `sage_block_sizes`,
 `sage_output_correction`, `smooth_k`,
 `temporal_distance_bias_to_mask`,
 `turboquant_compress`, `turboquant_decompress`, `TurboQuantKVCache`,
-`warmup_kernels`.
+`unpack_3bit_optimal`, `warmup_kernels`.
 
 ---
 
-## TurboQuant KV Cache Compression (v2.21.0–v2.23.0)
+## TurboQuant KV Cache Compression (v2.21.0–v2.24.0)
 
 Training-free, data-oblivious KV cache compression based on Google's
 TurboQuant (ICLR 2026). Three phases of increasing kernel fusion.
@@ -451,3 +455,48 @@ out = rt.step(q_step, k_step, v_step)
 QJL (Quantized Johnson-Lindenstrauss) 1-bit residual correction is a Phase 1
 feature only. The fused Metal kernels (Phase 2/3) use PolarQuant centroids
 without QJL correction, which is sufficient for serving quality.
+
+---
+
+## SVDQuant (v2.25.0)
+
+Post-training weight quantization with optional SVD low-rank FP16 correction.
+Both symbols are in `mlx_mfa.svdquant` and re-exported from `mlx_mfa`.
+
+#### `SVDQuantLinear(weight_q, scales, biases, group_size, bits, U=None, V=None)`
+
+W4A16 linear layer. `weight_q`, `scales`, and `biases` are the quantized weight
+tensor and its per-group scale/bias. `U` and `V` (optional) are FP16 low-rank
+factors `[out_features, rank]` and `[rank, in_features]`; when present the
+forward pass computes `y = dequant(W)*x + U*(V*x)` for improved accuracy on
+outlier-heavy layers.
+
+#### `quantize_model(model, group_size=64, bits=4, rank=0, calibration_data=None)`
+
+Replace all `nn.Linear` layers in `model` with `SVDQuantLinear` in-place.
+If `rank > 0`, SVD decomposition of each layer's quantization residual is
+computed and stored as FP16 correction factors. Providing `calibration_data`
+(a list of input tensors) enables activation-aware rank allocation.
+
+---
+
+## GNA Native Metal Kernel (v2.26.0)
+
+As of v2.26.0, `flash_attention_gna()` dispatches a native Metal kernel when
+all of the following conditions are met:
+
+- `D == 128`
+- `len(seq_shape) == 3` (3D spatial sequence)
+- `dtype` is `float16` or `bfloat16`
+- No backward pass is required (forward-only call)
+
+The native kernel applies **exact per-element GNA window masking** directly in
+the Metal shader, which is more precise than the tile-level block-mask
+approximation used by the sparse fallback path. All other configurations
+(D ≠ 128, 2D sequences, float32, or when gradients are needed) continue to
+route through `make_gna_mask()` + `flash_attention_sparse()`.
+
+**KernelType:** `GNAForward = 24`
+
+**Backward:** no VJP on the native kernel; backward always uses the sparse path
+(equivalent numerical result for supported configs).

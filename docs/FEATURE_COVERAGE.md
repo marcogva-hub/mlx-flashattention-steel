@@ -1,6 +1,6 @@
 # mlx-mfa Feature Coverage
 
-Version: **2.23.0**
+Version: **2.26.0**
 
 ## Attention Kernels
 
@@ -15,7 +15,7 @@ Version: **2.23.0**
 | ALiBi | Production | V2 bias addition |
 | Sliding window | Production | V2 O(1) kb_start + kb_lim clip |
 | RoPE (fused) | Production | Q+K rotation in kernel |
-| GNA (neighborhood) | Production | Via sparse path |
+| GNA (neighborhood) | Production | Native Metal kernel (D=128) + sparse fallback |
 | Flash Decoding (split-KV) | Production | N_q<=4, S>=256 |
 | Native backward | Non-default | Benchmarked, not promoted |
 
@@ -56,6 +56,7 @@ Version: **2.23.0**
 | 3 | V output un-rotation | Production (v2.23.0) | WHT inverse applied to P@V output |
 | 3 | TGP centroid cache | Production (v2.23.0) | Centroids loaded once into threadgroup memory |
 | 3 | TurboQuantPagedInferenceContext | Production (v2.23.0) | Stateful runtime with auto Q rotation |
+| 4 | Optimal 3-bit packing + WHT fusion | Production (v2.24.0) | 5.33× memory savings; WHT fused into kernel |
 
 ### Compression quality (3-bit, cosine similarity vs fp16)
 
@@ -72,6 +73,19 @@ Version: **2.23.0**
 | sage_attention_kvcache() | Production | Decode backend |
 | sage_attention_prequantized() | Production | Pre-quantized KV path |
 | smooth_k() | Production | Per-channel mean subtraction |
+
+## SVDQuant
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SVDQuantLinear | Production (v2.25.0) | W4A16 + SVD low-rank FP16 correction |
+| quantize_model() | Production (v2.25.0) | Tree walker; replaces `nn.Linear` in-place |
+
+## GNA Native Kernel
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| GNA native Metal kernel | Production (v2.26.0) | Inline 3D window, forward-only, D=128 |
 
 ## Experimental Kernels
 

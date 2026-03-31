@@ -4,6 +4,29 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.26.0] — 2026-03-31
+
+### GNA Native Metal Kernel
+- **Native 3D window kernel** for `flash_attention_gna()` with D=128, f16/bf16.
+- Two-level masking: `gna_tile_active()` for O(1) tile skip + per-element window
+  mask after Q@K^T GEMM for exact GNA window bounds.
+- Forward-only (no VJP); backward falls through to sparse mask path.
+- KernelType `GNAForward = 24` in `shader_cache.hpp`.
+- New files: `csrc/mfa_gna_fwd.hpp/.cpp`, `tests/test_gna_native.py` (11 tests).
+- Benchmark (M1 Max, CogVideoX N=70200): 285ms native vs 266ms sparse (0.93×);
+  native wins at medium N (0.63–0.89×) where mask construction overhead dominates.
+
+### SVDQuantLinear (v2.25.0)
+- **SVDQuantLinear**: W4A16 linear layer with optional rank-r FP16 SVD correction.
+- `quantize_model()`: tree walker to replace `nn.Linear` layers in-place.
+- New module: `mlx_mfa/svdquant/` (linear.py, quantize.py).
+- New test file: `tests/test_svdquant.py` (21 tests).
+
+### Documentation
+- All docs updated to v2.26.0 (ARCHITECTURE, API_MANUAL, FEATURE_COVERAGE,
+  INVENTORY, SERVING_GUIDE, README, CHANGELOG, CLAUDE.md).
+- 864+ tests pass.
+
 ## [2.24.1] — 2026-03-27
 
 ### Documentation

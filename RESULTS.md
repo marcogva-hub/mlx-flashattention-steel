@@ -1,6 +1,6 @@
 # mlx-mfa Results Summary
 
-Version: **2.23.0**
+Version: **2.26.0**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
 For complete benchmark tables and architectural notes, see
@@ -16,7 +16,9 @@ For complete benchmark tables and architectural notes, see
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** remains a specialized decode backend (narrow policy).
 - **V3/V4/V5** remain experimental/hardware-dependent.
-- **TurboQuant** KV cache compression (Phase 1–3) production-ready.
+- **TurboQuant** KV cache compression (Phase 1–4) production-ready.
+- **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
+- **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).
 
 ## 2) Representative Results
 
@@ -99,11 +101,11 @@ Interpretation:
 - Splitfuse/runtime deepening and page-native reductions are real but
   shape-sensitive.
 
-## 4) TurboQuant KV Cache Compression (v2.21.0–v2.23.0)
+## 4) TurboQuant KV Cache Compression (v2.21.0–v2.24.0)
 
 Training-free, data-oblivious KV compression based on Google's TurboQuant (ICLR 2026).
-Three phases: Phase 1 (non-fused decompress), Phase 2 (K fused in kernel),
-Phase 3 (K+V fused in kernel).
+Four phases: Phase 1 (non-fused decompress), Phase 2 (K fused in kernel),
+Phase 3 (K+V fused in kernel), Phase 4 (optimal 3-bit packing + WHT fusion).
 
 ### Benchmark matrix (M1 Max, f16)
 

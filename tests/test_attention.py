@@ -3352,6 +3352,14 @@ class TestGNAAttention:
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
 
 
+@pytest.fixture(autouse=True, scope="class")
+def _disable_gna_native_for_backward():
+    """Native GNA kernel is forward-only; backward tests must use sparse path."""
+    os.environ["MFA_DISABLE_GNA_NATIVE"] = "1"
+    yield
+    os.environ.pop("MFA_DISABLE_GNA_NATIVE", None)
+
+
 class TestGNABackward:
     """Gradient tests for flash_attention_gna() via sparse backward path."""
 

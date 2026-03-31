@@ -70,7 +70,8 @@ class ShaderCache {
       // BK=128: 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
       // generate_steel_v5_source() in mfa_steel_fwd_v5.cpp.
       SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
-      // 24-26: reserved (GNA native kernel — removed, sparse path is faster)
+      GNAForward                 = 24,  // GNA: inline 3D window check, no block_mask
+      // 25-26: reserved
       PagedVarlenForward         = 27,  // Fused packed varlen Q + paged KV gather
       PagedVarlenTQForward       = 28,  // TurboQuant: packed uint8 K + centroid dequant
       // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---

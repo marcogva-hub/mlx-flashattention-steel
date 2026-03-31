@@ -27,7 +27,7 @@ When the C++ extension is unavailable (e.g., during CI without a Metal GPU),
 all functions fall back to ``mx.fast.scaled_dot_product_attention``.
 """
 
-__version__ = "2.24.1"
+__version__ = "2.26.0"
 
 
 def _check_abi() -> None:
@@ -150,6 +150,8 @@ from mlx_mfa.turboquant import (
     pack_3bit_optimal,
     unpack_3bit_optimal,
 )
+
+from mlx_mfa.svdquant import SVDQuantLinear, quantize_model
 
 from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
 from mlx_mfa.compile_metallib import compile_metallib
@@ -294,5 +296,8 @@ __all__ = [
     "build_tq_paged_v_pool",
     "pack_3bit_optimal",
     "unpack_3bit_optimal",
+    # SVDQuant W4A16 quantization
+    "SVDQuantLinear",
+    "quantize_model",
     "__version__",
 ]

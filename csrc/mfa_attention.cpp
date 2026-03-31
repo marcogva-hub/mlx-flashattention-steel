@@ -23,6 +23,7 @@
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
 #include "mfa_steel_bwd.hpp"
+#include "mfa_gna_fwd.hpp"
 // GNA native kernel removed (sparse path is faster)
 #include "mfa_sage_fwd.hpp"
 #include "mfa_steel_paged_varlen_fwd.hpp"
@@ -2625,8 +2626,222 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
   return {outputs[0], outputs[1]};
 }
 
-// GNA native kernel eval_gpu + mfa_gna_forward removed.
-// flash_attention_gna() routes through sparse path (Python-side).
+// =========================================================================
+// MFAGNAForward::eval_gpu  (Phase A: GNA native kernel)
+// =========================================================================
+//
+// Inputs:  q(0)[B,H,N,D] fp16/bf16, k(1)[B,H_kv,S,D], v(2)[B,H_kv,S,D]
+// Outputs: O(0)[B,H,N,D], L(1)[B,H,N] float32
+//
+// Metal buffer layout: Q=0, K=1, V=2, O=3, L=4, MFASteelParams=5, MFAGNAParams=6
+
+void MFAGNAForward::eval_gpu(
+    const std::vector<mlx::core::array>& inputs,
+    std::vector<mlx::core::array>& outputs) {
+
+  {
+    FILE* dbg = fopen("/tmp/mfa_gna_debug.log", "a");
+    if (dbg) { fprintf(dbg, "MFAGNAForward::eval_gpu called!\n"); fclose(dbg); }
+  }
+
+  assert(inputs.size()  == 3);
+  assert(outputs.size() == 2);
+
+  const auto& q = inputs[0];  // [B, H,    N, D]
+  const auto& k = inputs[1];  // [B, H_kv, S, D]
+  const auto& v = inputs[2];  // [B, H_kv, S, D]
+
+  const int B    = q.shape(0);
+  const int H    = q.shape(1);
+  const int N    = q.shape(2);
+  const int D    = q.shape(3);
+  const int H_kv = k.shape(1);
+  const int S    = k.shape(2);
+
+  auto& O = outputs[0];
+  auto& L = outputs[1];
+  O.set_data(mlx::core::allocator::malloc(O.nbytes()));
+  L.set_data(mlx::core::allocator::malloc(L.nbytes()));
+
+  auto& dev = mlx::core::metal::device(stream().device);
+  int arch_gen = static_cast<int>(dev.get_architecture_gen());
+  if (MFAEnvConfig::get().force_gen > 0) arch_gen = MFAEnvConfig::get().force_gen;
+  const bool is_m3_plus = (arch_gen >= 15);
+
+  uint8_t dtype_code;
+  if (q.dtype() == mlx::core::float16)       dtype_code = 0;
+  else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+  else dtype_code = 2;
+
+  // GNA uses V2 block config (same tiling/accumulation pattern)
+  auto cfg = select_steel_v2_block_config(D, is_m3_plus);
+  int BQ = cfg.BQ;
+  int BK = cfg.BK;
+  int WM = cfg.WM;
+  int TGP_SIZE = WM * 32;
+
+  // ── Kernel cache key ────────────────────────────────────────────────────
+  using KK = ShaderCache::KernelKey;
+  KK key{
+    KK::KernelType::GNAForward,
+    D,
+    BQ, BK, D,
+    WM,
+    /*causal=*/false,
+    /*sparse=*/false,
+    is_m3_plus,
+    /*has_rope=*/false,
+    /*rope_interleaved=*/false,
+    /*has_softcap=*/false,
+    /*has_alibi=*/false,
+    /*has_window=*/false,
+    dtype_code,
+    /*gqa_factor=*/params_.gqa_factor
+  };
+
+  void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
+  auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
+
+  // ── Build MFASteelParams ────────────────────────────────────────────────
+  const int NQ         = (N + BQ - 1) / BQ;
+  const int NK         = (S + BK - 1) / BK;
+  const int NQ_aligned = (N % BQ == 0) ? NQ : NQ - 1;
+  const int NK_aligned = (S % BK == 0) ? NK : NK - 1;
+
+  MFASteelParams sp{};
+  sp.B          = B;
+  sp.H          = H;
+  sp.D          = D;
+  sp.qL         = N;
+  sp.kL         = S;
+  sp.gqa_factor = params_.gqa_factor;
+  sp.scale      = params_.scale;
+  sp.NQ         = NQ;
+  sp.NK         = NK;
+  sp.NQ_aligned = NQ_aligned;
+  sp.NK_aligned = NK_aligned;
+  sp.qL_rem     = (N % BQ == 0) ? BQ : (N % BQ);
+  sp.kL_rem     = (S % BK == 0) ? BK : (S % BK);
+  sp.qL_off     = 0;  // GNA is non-causal
+
+  sp.rope_q_base     = 0;
+  sp.rope_cos_stride = D / 2;
+
+  // Strides
+  sp.Q_strides[0] = (int64_t)H    * N * D;
+  sp.Q_strides[1] = (int64_t)N    * D;
+  sp.Q_strides[2] = (int64_t)D;
+  sp.K_strides[0] = (int64_t)H_kv * S * D;
+  sp.K_strides[1] = (int64_t)S    * D;
+  sp.K_strides[2] = (int64_t)D;
+  sp.V_strides[0] = (int64_t)H_kv * S * D;
+  sp.V_strides[1] = (int64_t)S    * D;
+  sp.V_strides[2] = (int64_t)D;
+  sp.O_strides[0] = (int64_t)H    * N * D;
+  sp.O_strides[1] = (int64_t)N    * D;
+  sp.O_strides[2] = (int64_t)D;
+  sp.L_strides[0] = (int64_t)H    * N;
+  sp.L_strides[1] = (int64_t)N;
+
+  sp.softcap     = 0.0f;
+  sp.has_alibi   = 0;
+  sp.window_left  = -1;
+  sp.window_right = -1;
+  sp.mask_batch_stride = 0;
+  sp.mask_head_stride  = 0;
+
+  // ── Build MFAGNAParams ──────────────────────────────────────────────────
+  MFAGNAParams gna{};
+  gna.dim0 = params_.dim0;
+  gna.dim1 = params_.dim1;
+  gna.dim2 = params_.dim2;
+  gna.win0 = params_.win0;
+  gna.win1 = params_.win1;
+  gna.win2 = params_.win2;
+  gna.str0 = params_.str0;
+  gna.str1 = params_.str1;
+  gna.str2 = params_.str2;
+  gna.dim12 = params_.dim1 * params_.dim2;
+
+  // ── Dispatch ────────────────────────────────────────────────────────────
+  auto& enc = dev.get_command_encoder(stream().index);
+  enc.set_compute_pipeline_state(pipeline);
+
+  enc.set_input_array (q, 0);
+  enc.set_input_array (k, 1);
+  enc.set_input_array (v, 2);
+  enc.set_output_array(O, 3);
+  enc.set_output_array(L, 4);
+  enc.set_bytes       (sp,  5);
+  enc.set_bytes       (gna, 6);
+
+  enc.dispatch_threadgroups(
+      MTL::Size::Make(NQ, H, B),
+      MTL::Size::Make(TGP_SIZE, 1, 1));
+}
+
+// =========================================================================
+// mfa_gna_forward (free function)
+// =========================================================================
+
+mlx::core::array mfa_gna_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    float scale,
+    int dim0, int dim1, int dim2,
+    int win0, int win1, int win2,
+    int str0, int str1, int str2,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::invalid_argument("MFA GNA: expected 4D inputs [B, H, N, D]");
+
+  int D = q.shape(3);
+  if (D != 128)
+    throw std::invalid_argument(
+        "MFA GNA: only D=128 supported, got " + std::to_string(D));
+
+  if (q.dtype() == mlx::core::float32)
+    throw std::invalid_argument(
+        "MFA GNA: float32 not supported; use float16 or bfloat16");
+
+  int N = q.shape(2);
+  int expected_N = dim0 * dim1 * dim2;
+  if (N != expected_N)
+    throw std::invalid_argument(
+        "MFA GNA: N (" + std::to_string(N) + ") != dim0*dim1*dim2 (" +
+        std::to_string(expected_N) + ")");
+
+  int H    = q.shape(1);
+  int H_kv = k.shape(1);
+  if (H % H_kv != 0)
+    throw std::invalid_argument("MFA GNA: H must be divisible by H_kv (GQA)");
+
+  int gqa_factor = H / H_kv;
+
+  MFAGNAForward::Params params{
+    D, scale, gqa_factor,
+    dim0, dim1, dim2,
+    win0, win1, win2,
+    str0, str1, str2
+  };
+
+  auto out_shape  = q.shape();
+  mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
+
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAGNAForward>(s, params),
+      {q, k, v});
+
+  return outputs[0];
+}
 
 // =========================================================================
 // MFAPagedVarlenForward::eval_gpu

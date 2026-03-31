@@ -1,7 +1,7 @@
 # mlx-mfa Inventory
 
-Version: **2.23.0**
-Regenerated: 2026-03-27
+Version: **2.26.0**
+Regenerated: 2026-03-31
 
 ## Scope
 
@@ -9,7 +9,9 @@ This inventory reflects the retained codebase at freeze-prep time, including:
 - dense V2 production path and dispatch policy;
 - serving/runtime expansion (paged/packed/chunked/prefix/speculative/splitfuse);
 - cache abstraction and hybrid local offload-capable behavior;
-- TurboQuant KV cache compression (Phase 1–3);
+- TurboQuant KV cache compression (Phase 1–4);
+- SVDQuant linear compression (W4A16 + low-rank correction);
+- GNA native Metal kernel (inline 3D window, D=128);
 - historical development artifacts moved under `devnotes/`.
 
 ## Top-Level Layout
@@ -42,6 +44,9 @@ Current line counts (2026-03-27 snapshot):
 | `mlx_mfa/compile_metallib.py` | 364 | AOT metallib tooling |
 | `mlx_mfa/integrations/mlx_lm.py` | 431 | mlx-lm integration hooks |
 | `mlx_mfa/__init__.py` | 294 | Public exports and version |
+| `mlx_mfa/svdquant/__init__.py` | — | SVDQuant public API |
+| `mlx_mfa/svdquant/linear.py` | — | SVDQuantLinear nn.Module |
+| `mlx_mfa/svdquant/quantize.py` | — | quantize_model() tree walker |
 
 ## Native Extension (`csrc/`)
 
@@ -57,6 +62,8 @@ Current line counts (major files, 2026-03-27 snapshot):
 | `csrc/mfa_steel_fwd_v5.cpp` | 683 | V5 D-blocked kernel (experimental) |
 | `csrc/mfa_steel_bwd.cpp` | 1295 | Native backward (kept non-default) |
 | `csrc/mfa_env.hpp` | 108 | MFAEnvConfig env var singleton |
+| `csrc/mfa_gna_fwd.hpp` | — | GNA forward kernel declarations |
+| `csrc/mfa_gna_fwd.cpp` | — | GNA forward kernel JIT generator |
 | `csrc/mfa_sage_fwd.cpp` | 520 | Sage forward path |
 | `csrc/shader_cache.mm` | 480 | Metal pipeline compilation/cache |
 | `csrc/bindings.cpp` | 638 | nanobind module bindings |
@@ -105,6 +112,8 @@ Primary suites used in recent passes:
 - `tests/test_kv_cache_abstraction.py`
 - `tests/test_external_cache.py`
 - `tests/test_turboquant.py`
+- `tests/test_gna_native.py` (11 tests — GNA native kernel)
+- `tests/test_svdquant.py` (21 tests — SVDQuant)
 
 ## Historical Notes
 

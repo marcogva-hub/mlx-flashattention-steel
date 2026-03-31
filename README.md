@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.24.0** — TurboQuant Phase 4: optimal 3-bit packing (5.33× compression) + WHT fusion in Metal kernel.
+Current version: **2.26.0** — SVDQuantLinear (W4A16 + SVD low-rank correction) + GNA native Metal kernel (inline 3D window attention).
 
 ## Foreword
 
@@ -26,9 +26,9 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.24.0 adds TurboQuant Phase 4: optimal 3-bit bit-planar packing (5.33×
-compression vs 4× in Phase 3) and Walsh-Hadamard transform fused directly in
-the Metal kernel (1.1–1.4× faster decode by eliminating Python pre-rotation).
+v2.26.0 adds SVDQuantLinear (W4A16 linear layer with optional SVD low-rank
+correction for DiT model quantization) and a native GNA Metal kernel with
+inline 3D window attention and exact per-element masking.
 See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
@@ -45,6 +45,8 @@ on my work!
 - **Sage** is a specialized decode backend (narrow, benchmark-gated use).
 - **V3/V4/V5** remain experimental/hardware-dependent.
 - **TurboQuant** KV cache compression (Phase 1–4) production-ready.
+- **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
+- **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).
 - Serving/runtime capability surface is now substantially expanded:
   - paged KV + packed varlen query support
   - paged continuous batching/remap
@@ -92,6 +94,8 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | Splitfuse runtime integration | Narrow/conditional | Runtime path exists; performance remains shape-sensitive |
 | Hybrid KV cache + local offload tier | Narrow/conditional milestone | Real hot/cold/offloaded behavior locally; remote offload future work |
 | TurboQuant KV compression (Phase 4) | Production | 5.33× K compression, WHT fused in kernel (1.1–1.4× faster) |
+| SVDQuantLinear | Production | W4A16 + rank-r FP16 correction; `quantize_model()` tree walker |
+| GNA native kernel | Production | Inline 3D window attention (D=128); exact per-element masking |
 | External cache adapter layer | Experimental groundwork | Concrete local backend provided; external backend integrations pending |
 
 ## Repository Guide
@@ -110,7 +114,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 
 | Status | Components |
 |---|---|
-| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression |
+| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression; SVDQuantLinear; GNA native kernel |
 | Narrow / conditional | D=256 causal long-N policy; Sage decode regimes; splitfuse/page-native runtime paths; hybrid local offload behavior |
 | Experimental | V3/V4/V5 families; external/LMCache-like backend extensions beyond local adapter |
 
@@ -132,13 +136,28 @@ pip install -e .
 
 ```python
 import mlx.core as mx
-from mlx_mfa import flash_attention, create_decode_runtime
+from mlx_mfa import flash_attention, flash_attention_gna, create_decode_runtime
+from mlx_mfa import SVDQuantLinear, quantize_model
 
 # Dense attention
 q = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 k = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 v = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 out = flash_attention(q, k, v, causal=True)
+
+# GNA (Generalized Neighborhood Attention) — 3D window
+# Video: 8 frames of 32x32, local 3D window, sliding
+q_vid = mx.random.normal((1, 8, 8192, 128)).astype(mx.float16)
+k_vid = mx.random.normal((1, 8, 8192, 128)).astype(mx.float16)
+v_vid = mx.random.normal((1, 8, 8192, 128)).astype(mx.float16)
+out_gna = flash_attention_gna(q_vid, k_vid, v_vid,
+                               seq_shape=(8, 32, 32),
+                               window_size=(2, 8, 8),
+                               stride=(1, 1, 1))
+
+# SVDQuantLinear — W4A16 + SVD low-rank correction
+# (quantize_model replaces nn.Linear layers in-place)
+# model = quantize_model(model, group_size=64, bits=4, rank=32)
 
 # Serving-oriented runtime
 rt = create_decode_runtime(

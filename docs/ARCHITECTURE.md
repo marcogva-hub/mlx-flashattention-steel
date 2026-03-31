@@ -1,6 +1,6 @@
 # mlx-mfa Architecture
 
-Version: **2.23.0**
+Version: **2.26.0**
 
 ## 1) System Overview
 
@@ -186,6 +186,36 @@ WHT is self-inverse: `R^{-1} = R`.
 - Auto Q rotation with WHT before calling fused kernel
 - `create_decode_runtime(turboquant=True)` instantiates this context
 
+## 7.6 TurboQuant Phase 4 — Optimal Packing + WHT Fusion (v2.24.0)
+
+- Optimal 3-bit bit-planar packing achieves **5.33× compression** (vs 4× with
+  2 indices/byte): 3 quantization indices packed into 1 byte using bit-plane layout.
+- WHT (Walsh-Hadamard Transform) rotation fused directly into the Metal kernel,
+  eliminating the separate Python-side WHT pre/post-processing step.
+- Packing/unpacking implemented in Metal via compile-time `PACK_BITS` template
+  parameter; centroids adapted to the bit-planar index encoding.
+
+## 7.7 SVDQuant — W4A16 + SVD Low-Rank Correction (v2.25.0)
+
+- `SVDQuantLinear`: drop-in replacement for `nn.Linear` that stores the weight
+  matrix in 4-bit quantized form plus an optional rank-r FP16 SVD residual
+  correction (`U @ V^T` additive term after dequantization).
+- `quantize_model()`: tree walker that replaces `nn.Linear` layers with
+  `SVDQuantLinear` in-place, with configurable rank and group size.
+- Located in `mlx_mfa/svdquant/linear.py` and `mlx_mfa/svdquant/quantize.py`.
+- Activation remains in FP16 throughout; only weights are quantized.
+
+## 7.8 GNA Native Kernel (v2.26.0)
+
+- Native Metal kernel with inline 3D window check, replacing the sparse-path
+  `make_gna_mask()` + `flash_attention_sparse()` fallback for forward pass.
+- Two-level masking: `gna_tile_active()` for tile-level skip (avoids loading
+  entire K/V tiles outside the GNA window) + per-element window mask applied
+  inside the tile.
+- Forward-only (no VJP); D=128, f16/bf16.
+- Falls back to sparse path for backward and for configs outside D=128/f16/bf16.
+- Located in `csrc/mfa_gna_fwd.cpp`, dispatched as `GNAForward = 24`.
+
 ## 8) Native Extension Architecture
 
 Core native files:
@@ -197,8 +227,31 @@ Core native files:
 - `csrc/mfa_steel_bwd.cpp`: native backward kernels (gated non-default)
 - `csrc/mfa_sage_fwd.cpp`: Sage path
 - `csrc/mfa_steel_paged_varlen_tq_fwd.hpp/cpp`: TurboQuant paged varlen kernel
+- `csrc/mfa_gna_fwd.hpp/.cpp`: GNA native forward kernel JIT generator
 - `csrc/mfa_paged_gather.cpp` / `csrc/mfa_scatter.cpp`: paged helpers
 - `csrc/shader_cache.mm`: pipeline compilation/cache
+- `mlx_mfa/svdquant/`: SVDQuantLinear (W4A16 + SVD low-rank correction)
+
+### 8.0 KernelType enum (shader_cache.hpp)
+
+Selected entries relevant to production dispatch:
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | AttentionForward | ccv legacy path (f32) |
+| 3 | SteelForward | STEEL V1 (D>128) |
+| 4 | FlashDecodePartial | Flash Decode Phase 1 |
+| 5 | FlashDecodeReduce | Flash Decode Phase 2 |
+| 16 | SteelForwardV2 | STEEL V2 production default |
+| 17 | SteelV2SplitKPartial | V2 split-K Phase 1 |
+| 18 | SteelV2DSplit256 | D=256 two-pass D-split |
+| 19 | SteelV2DSplit512 | D=512 four-pass D-split |
+| 20 | SteelForwardV3 | V3 separate K/V smem (opt-in) |
+| 21 | SteelForwardV4 | V4 direct device K reads (opt-in) |
+| 23 | SteelForwardV5 | V5 D-blocked BK=128 (opt-in) |
+| 24 | GNAForward | GNA inline 3D window (no block_mask) |
+| 27 | PagedVarlenForward | Fused packed varlen + paged KV |
+| 28 | PagedVarlenTQForward | TurboQuant packed uint8 K/V + centroids |
 
 ### 8.1 MFAEnvConfig (v2.20.0)
 
@@ -248,7 +301,7 @@ Deferred until future continuation (likely newer hardware generation):
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
 
-## 11) LLM Serving Layer Status (v2.23.0)
+## 11) LLM Serving Layer Status (v2.26.0)
 
 The serving layer is considered production-ready for local inference.
 See `docs/SERVING_GUIDE.md` for usage guide.
@@ -267,4 +320,7 @@ See `docs/SERVING_GUIDE.md` for usage guide.
 | TurboQuant Phase 1 (non-fused) | Production (v2.21.0) |
 | TurboQuant Phase 2 (K fused) | Production (v2.22.0) |
 | TurboQuant Phase 3 (K+V fused) | Production (v2.23.0) |
+| TurboQuant Phase 4 (packing + WHT) | Production (v2.24.0) |
+| SVDQuantLinear | Production (v2.25.0) |
+| GNA native kernel | Production (v2.26.0) |
 | Remote/distributed offload | Deferred (M5+) |

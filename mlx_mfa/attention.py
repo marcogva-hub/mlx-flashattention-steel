@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import math
+import os
 from typing import Optional, Union, Sequence
 
 import mlx.core as mx
@@ -2362,7 +2363,29 @@ def flash_attention_gna(
             f"Got {len(seq_shape)}, {len(window_size)}, {len(stride)}."
         )
 
-    # Build block mask and dispatch through sparse path (supports VJP backward)
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    # Try native GNA kernel (D=128, f16/bf16, 3D only)
+    if (
+        D == 128
+        and len(seq_shape) == 3
+        and q.dtype in (mx.float16, mx.bfloat16)
+        and not os.environ.get("MFA_DISABLE_GNA_NATIVE")
+    ):
+        try:
+            from mlx_mfa._ext import mfa_gna_forward as _gna_fwd
+            return _gna_fwd(
+                q, k, v, scale,
+                seq_shape[0], seq_shape[1], seq_shape[2],
+                window_size[0], window_size[1], window_size[2],
+                stride[0], stride[1], stride[2],
+                stream=stream,
+            )
+        except (ImportError, RuntimeError):
+            pass  # Fall through to sparse mask path
+
+    # Fallback: build block mask and dispatch through sparse path (supports VJP backward)
     from mlx_mfa.masks import make_gna_mask
     mask = make_gna_mask(seq_shape, window_size, stride, head_dim=D)
     return flash_attention_sparse(q, k, v, mask, scale=scale, stream=stream)

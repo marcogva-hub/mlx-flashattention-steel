@@ -69,15 +69,27 @@ Python API (mlx_mfa.flash_attention)
 
 ```
 csrc/
-  mfa_attention.hpp/.cpp  -- MFAttention Primitive
+  mfa_attention.hpp/.cpp  -- MFAttention + MFAGNAForward Primitives
+  mfa_gna_fwd.hpp/.cpp    -- GNA native kernel JIT generator
+  mfa_steel_fwd.cpp       -- STEEL V1 forward kernel
+  mfa_steel_fwd_v2.cpp    -- STEEL V2 forward kernel (sequential K/V)
+  mfa_sage_fwd.cpp        -- SageAttention forward kernel
   shader_cache.hpp        -- Cache interface (pure C++)
   shader_cache.mm         -- Obj-C++ Metal compilation
   bindings.cpp            -- nanobind module
   kernels/                -- Placeholder .metal (real kernels are JIT)
 mlx_mfa/
   __init__.py             -- Public API
-  attention.py            -- flash_attention() + fallback
-tests/test_attention.py   -- Fallback + extension-gated tests
+  attention.py            -- flash_attention() + variants
+  masks.py                -- Block masks (causal, sliding, GNA, diagonal, etc.)
+  turboquant.py           -- TurboQuant KV compression
+  svdquant/               -- SVDQuantLinear (W4A16 + SVD low-rank)
+    linear.py             -- SVDQuantLinear nn.Module
+    quantize.py           -- quantize_model() tree walker
+tests/
+  test_attention.py       -- Core attention tests (800+)
+  test_gna_native.py      -- GNA native kernel tests (11)
+  test_svdquant.py        -- SVDQuant tests (21)
 benchmarks/               -- MFA vs MLX SDPA comparison
 scripts/check_env.py      -- Pre-build validation
 ```
@@ -129,7 +141,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.24.0 — 854 tests pass.
+v2.26.0 — 886 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
@@ -156,6 +168,8 @@ v2.24.0 — 854 tests pass.
 | TurboQuant P2 | K fused in Metal paged varlen kernel | Done (v2.22.0) |
 | TurboQuant P3 | V fused in kernel, TGP centroids, runtime integration | Done (v2.23.0) |
 | TurboQuant P4 | Optimal 3-bit packing (5.33×) + WHT fusion in kernel | Done (v2.24.0) |
+| SVDQuant P1 | SVDQuantLinear (W4A16 + rank-r FP16 correction) | Done (v2.25.0) |
+| GNA Native | Inline 3D window Metal kernel (forward-only, D=128) | Done (v2.26.0) |
 
 ## Post-Phase 1 Technical Notes
 
@@ -175,17 +189,20 @@ the loader writes K in [K_seq, D] but the GEMM reads it as [D, K_seq].
 Q_smem and K_smem values will look correct in isolation — the bug only
 manifests as NaN/garbage in the GEMM output.
 
-### GNA Kernel — Architecture Decision (v2.12.0)
+### GNA Kernel — Architecture Decision (v2.12.0 → v2.26.0)
 
-Native GNA kernels (v1: inline ND test, v2: 3D strided window loader) were
-benchmarked at 0.24-0.89x vs `flash_attention_sparse(make_gna_mask(...))`.
-Root cause: BlockLoaderT's vectorized sequential loads (vec4/vec8) are 3-4x
-faster than per-element loads with computed 3D offsets. The sparse kernel's O(1)
-mask lookup per tile is cheaper than runtime ND overlap computation.
+v2.12.0: Early native GNA kernels (v1: inline ND test, v2: 3D strided window loader)
+benchmarked at 0.24-0.89x vs sparse path. Production used sparse fallback only.
 
-Production path: `flash_attention_gna()` -> `make_gna_mask()` + `flash_attention_sparse()`.
-Native kernel code removed from codebase. Sparse backward (VJP) provides
-correct gradients for training.
+v2.26.0: Reimplemented native GNA kernel using V2 STEEL infrastructure (BlockLoaderT,
+MMAFrag/MMATile). Two-level masking: `gna_tile_active()` for O(1) tile skip +
+per-element window mask after Q@K^T. The native kernel applies the **exact** GNA
+window formula per (query, key) pair, which is more precise than the sparse path's
+tile-level block mask (conservative over-approximation).
+
+Production path: `flash_attention_gna()` tries native kernel first (D=128, 3D, f16/bf16),
+falls back to `make_gna_mask()` + `flash_attention_sparse()` for other configs or backward.
+Native kernel is forward-only (no VJP). Backward uses sparse path.
 
 ### Paged Causal Zone Fix (v2.14.1)
 

@@ -21,7 +21,7 @@
 #include "mfa_steel_fwd_v3.hpp"
 #include "mfa_steel_fwd_v4.hpp"
 #include "mfa_steel_fwd_v5.hpp"
-// GNA native kernel removed (sparse path is faster) — include was here
+#include "mfa_gna_fwd.hpp"
 #include "mfa_steel_paged_varlen_fwd.hpp"
 #include "mfa_steel_paged_varlen_tq_fwd.hpp"
 
@@ -356,6 +356,9 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   } else if (key.type == KT::SteelForwardV5) {
     fn_name = "mlx_mfa_v5_attention";
     source  = generate_steel_v5_source(key);
+  } else if (key.type == KT::GNAForward) {
+    fn_name = "mlx_mfa_gna_attention";
+    source  = generate_gna_forward_source(key);
   } else if (key.type == KT::PagedVarlenForward) {
     fn_name = "mlx_mfa_paged_varlen_forward";
     source  = generate_paged_varlen_forward_source(key);
@@ -394,6 +397,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SteelForwardV3)         type_str = "steel_fwd_v3";
     if (key.type == KT::SteelForwardV4)         type_str = "steel_fwd_v4";
     if (key.type == KT::SteelForwardV5)         type_str = "steel_fwd_v5";
+    if (key.type == KT::GNAForward)             type_str = "gna_fwd";
     fprintf(stderr,
             "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
             "%s\n=== END MFA Shader ===\n",

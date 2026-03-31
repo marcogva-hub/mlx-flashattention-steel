@@ -342,6 +342,32 @@ NB_MODULE(_ext, m) {
         "Used by the native sparse backward pass to avoid recomputation.\n"
         "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
 
+  // --- GNA (Generalized Neighborhood Attention) native forward ---
+  m.def("mfa_gna_forward",
+        [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
+           float scale,
+           int dim0, int dim1, int dim2,
+           int win0, int win1, int win2,
+           int str0, int str1, int str2,
+           std::optional<mlx::core::StreamOrDevice> stream)
+            -> mlx::core::array {
+          return mlx_mfa::mfa_gna_forward(
+              q, k, v, scale,
+              dim0, dim1, dim2,
+              win0, win1, win2,
+              str0, str1, str2,
+              stream);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("scale"),
+        nb::arg("dim0"), nb::arg("dim1"), nb::arg("dim2"),
+        nb::arg("win0"), nb::arg("win1"), nb::arg("win2"),
+        nb::arg("str0"), nb::arg("str1"), nb::arg("str2"),
+        nb::arg("stream") = nb::none(),
+        "GNA (Generalized Neighborhood Attention) forward.\n"
+        "Inline 3D window check — no block_mask allocation.\n"
+        "D=128 only, f16/bf16. Returns O [B, H, N, D].");
+
   // --- STEEL varlen forward: packed [1, H, total_q, D] layout ---
   m.def("mfa_attention_varlen_forward",
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,

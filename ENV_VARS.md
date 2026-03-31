@@ -67,6 +67,7 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_NO_PADDING` | bool | false | Disable threadgroup memory padding (causes NaN in 45/594 tests) |
 | `MFA_IR_INVESTIGATE` | bool | false | Dump Metal IR during shader compilation |
 | `MFA_DISABLE_ASYNC` | bool | false | Disable precompiled async metallib lookup |
+| `MFA_DISABLE_GNA_NATIVE` | bool | false | Disable native GNA kernel; fall back to sparse path |
 
 ## Calibration (dynamic keys, not cached)
 

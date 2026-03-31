@@ -93,6 +93,7 @@ set(MFA_SOURCES
   csrc/mfa_quantize.cpp
   csrc/mfa_scatter.cpp
   csrc/mfa_smooth_quant.cpp
+  csrc/mfa_gna_fwd.cpp
   csrc/mfa_steel_fwd_v2.cpp
   csrc/mfa_steel_fwd_v3.cpp
   csrc/mfa_steel_fwd_v4.cpp

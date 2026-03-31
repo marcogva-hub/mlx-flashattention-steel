@@ -636,4 +636,70 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     const std::optional<mlx::core::array>& v_scales,     // [num_pages, block_size, H_kv] f32
     mlx::core::Stream stream);
 
+// =========================================================================
+// MFAGNAForward Primitive (Phase A: GNA native kernel)
+// =========================================================================
+
+class MFAGNAForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    int   head_dim;
+    float scale;
+    int   gqa_factor;    // H / H_kv (1 = standard MHA)
+    // 3D sequence shape: N = dim0 * dim1 * dim2
+    int dim0, dim1, dim2;
+    // Window size per dimension
+    int win0, win1, win2;
+    // Stride per dimension
+    int str0, str1, str2;
+  };
+
+  MFAGNAForward(mlx::core::Stream stream, Params p)
+      : mlx::core::Primitive(stream), params_(p) {}
+
+  const char* name() const override { return "MFAGNAForward"; }
+
+  void eval_cpu(
+      const std::vector<mlx::core::array>&,
+      std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAGNAForward: CPU evaluation not supported");
+  }
+
+  void eval_gpu(
+      const std::vector<mlx::core::array>& inputs,
+      std::vector<mlx::core::array>& outputs) override;
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto* o = dynamic_cast<const MFAGNAForward*>(&other);
+    if (!o) return false;
+    return params_.head_dim   == o->params_.head_dim   &&
+           params_.scale      == o->params_.scale      &&
+           params_.gqa_factor == o->params_.gqa_factor &&
+           params_.dim0       == o->params_.dim0       &&
+           params_.dim1       == o->params_.dim1       &&
+           params_.dim2       == o->params_.dim2       &&
+           params_.win0       == o->params_.win0       &&
+           params_.win1       == o->params_.win1       &&
+           params_.win2       == o->params_.win2       &&
+           params_.str0       == o->params_.str0       &&
+           params_.str1       == o->params_.str1       &&
+           params_.str2       == o->params_.str2;
+  }
+
+ private:
+  Params params_;
+};
+
+/// Free function: validate inputs and launch MFAGNAForward Primitive.
+/// Returns O [B,H,N,D].
+mlx::core::array mfa_gna_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    float scale,
+    int dim0, int dim1, int dim2,
+    int win0, int win1, int win2,
+    int str0, int str1, int str2,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
 }  // namespace mlx_mfa
