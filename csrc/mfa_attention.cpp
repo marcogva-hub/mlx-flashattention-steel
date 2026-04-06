@@ -145,6 +145,7 @@ void MFAttention::eval_gpu(
                 params_.causal, /*sparse=*/false, is_m3_plus,
                 /*has_rope=*/false, /*rope_interleaved=*/false,
                 /*has_softcap=*/false, /*has_alibi=*/false,
+                /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
                 /*has_window=*/false, dtype_code };
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
     auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -292,6 +293,7 @@ void MFAttention::eval_gpu(
       /*has_rope=*/false, /*rope_interleaved=*/true,
       params_.softcap > 0.0f,   // softcap variant
       params_.has_alibi,        // ALiBi position biases
+      /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
       params_.window_left >= 0 || params_.window_right >= 0, // sliding window variant
       dtype_code
     };
@@ -299,7 +301,9 @@ void MFAttention::eval_gpu(
       KK::KernelType::FlashDecodeReduce,
       D, 0, 0, 0, 0,
       false, false, false, /*has_rope=*/false, /*rope_interleaved=*/true,
-      /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false,
+      /*has_softcap=*/false, /*has_alibi=*/false,
+      /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+      /*has_window=*/false,
       dtype_code
     };
     auto* pl_p1 = reinterpret_cast<MTL::ComputePipelineState*>(
@@ -385,7 +389,9 @@ void MFAttention::eval_gpu(
         is_v2_small_d_family(D) &&
         // Sparse remains excluded from V2 split-K (block-mask uses V1 BK indexing).
         // RoPE/ALiBi/window are supported in V2 split-K (Phase 3 composability).
+        // attn_bias excluded: split-K partial kernel doesn't implement bias addition.
         !params_.has_block_mask &&
+        !params_.has_attn_bias &&
         !m3_prefers_v1_sk;
 
     const bool splitk_disabled_by_override = (force_splitk == 0);
@@ -478,6 +484,7 @@ void MFAttention::eval_gpu(
           params_.has_rope, params_.rope_interleaved,
           params_.softcap > 0.0f,   // has_softcap
           params_.has_alibi,
+          /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
           params_.window_left >= 0 || params_.window_right >= 0,  // has_window
           dtype_code, H / Hk
         };
@@ -486,7 +493,9 @@ void MFAttention::eval_gpu(
           KK2::KernelType::FlashDecodeReduce,
           D, 0, 0, 0, 0,
           false, false, false, false, true,
-          false, false, false,
+          false, false,
+          /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+          false,
           dtype_code
         };
 
@@ -572,6 +581,7 @@ void MFAttention::eval_gpu(
         /*rope_interleaved=*/false,
         params_.softcap > 0.0f,
         params_.has_alibi,
+        /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
         params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
         H / Hk
@@ -677,6 +687,7 @@ void MFAttention::eval_gpu(
         /*rope_interleaved=*/false,
         params_.softcap > 0.0f,
         params_.has_alibi,
+        /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
         params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
         H / Hk
@@ -794,6 +805,7 @@ void MFAttention::eval_gpu(
         params_.has_rope, params_.rope_interleaved,
         params_.softcap > 0.0f,
         params_.has_alibi,
+        /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
         params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
         H / Hk
@@ -905,6 +917,7 @@ void MFAttention::eval_gpu(
         params_.has_rope, params_.rope_interleaved,
         params_.softcap > 0.0f,
         params_.has_alibi,
+        params_.has_attn_bias, params_.attn_bias_mode,
         params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
         H / Hk
@@ -951,6 +964,9 @@ void MFAttention::eval_gpu(
       // V2 is never sparse (block_mask sized for V1 BK ≠ V2 BK).
       sp2.mask_batch_stride = 0;
       sp2.mask_head_stride  = 0;
+      sp2.has_attn_bias     = params_.has_attn_bias ? 1 : 0;
+      sp2.attn_bias_mode    = params_.attn_bias_mode;
+      sp2.attn_bias_nkv     = S;  // N_kv for bias indexing
 
       auto& enc2 = d.get_command_encoder(stream().index);
       enc2.set_compute_pipeline_state(pipeline2);
@@ -970,6 +986,11 @@ void MFAttention::eval_gpu(
         // Dense + ALiBi: inputs[3]=alibi_slopes (no block_mask, rope may or may not be set)
         int alibi_idx = 3 + (params_.has_rope ? 2 : 0);
         enc2.set_input_array(inputs[alibi_idx], 9);
+      }
+      if (params_.has_attn_bias) {
+        // attn_bias tensor: after alibi_slopes (if present), rope (if present)
+        int bias_idx = 3 + (params_.has_rope ? 2 : 0) + (params_.has_alibi ? 1 : 0);
+        enc2.set_input_array(inputs[bias_idx], 10);
       }
 
       // One threadgroup per Q-block: grid x = NQ2.
@@ -1031,6 +1052,7 @@ void MFAttention::eval_gpu(
         /*has_rope=*/false, /*rope_interleaved=*/false,
         params_.softcap > 0.0f,
         params_.has_alibi,
+        params_.has_attn_bias, params_.attn_bias_mode,
         params_.window_left >= 0 || params_.window_right >= 0,
         dtype_code,
         H / Hk
@@ -1076,6 +1098,9 @@ void MFAttention::eval_gpu(
       sp_ds.window_right = params_.window_right;
       sp_ds.mask_batch_stride = 0;
       sp_ds.mask_head_stride  = 0;
+      sp_ds.has_attn_bias     = params_.has_attn_bias ? 1 : 0;
+      sp_ds.attn_bias_mode    = params_.attn_bias_mode;
+      sp_ds.attn_bias_nkv     = S;
 
       auto& enc_ds = d.get_command_encoder(stream().index);
       enc_ds.set_compute_pipeline_state(pipeline_ds);
@@ -1088,6 +1113,10 @@ void MFAttention::eval_gpu(
       if (params_.has_alibi) {
         // No rope, no block_mask in D-split path: ALiBi slopes at inputs[3].
         enc_ds.set_input_array(inputs[3], 9);
+      }
+      if (params_.has_attn_bias) {
+        int bias_idx = 3 + (params_.has_alibi ? 1 : 0);
+        enc_ds.set_input_array(inputs[bias_idx], 10);
       }
 
       enc_ds.dispatch_threadgroups(
@@ -1119,6 +1148,7 @@ void MFAttention::eval_gpu(
     params_.rope_interleaved,   // true=LLaMA, false=GPT-NeoX
     params_.softcap > 0.0f,    // tanh softcapping variant
     params_.has_alibi,          // ALiBi per-head position biases
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,  // V1 doesn't support attn_bias
     params_.window_left >= 0 || params_.window_right >= 0, // sliding window variant
     dtype_code
   };
@@ -1421,7 +1451,9 @@ void MFABackwardQuery::eval_gpu(
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
     params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
     /*rope_interleaved=*/false,
-    /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code
+    /*has_softcap=*/false, /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+    /*has_window=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -1524,7 +1556,9 @@ void MFABackwardKeyValue::eval_gpu(
     D, (int)block_q, (int)block_k, (int)block_d, (int)n_warps,
     params_.causal, /*sparse=*/false, is_m3_plus, /*has_rope=*/false,
     /*rope_interleaved=*/false,
-    /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code
+    /*has_softcap=*/false, /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+    /*has_window=*/false, dtype_code
   };
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -1628,7 +1662,9 @@ void MFASteelBwdDQ::eval_gpu(
          D, BQ, BK, BD, WM,
          params_.causal, /*sparse=*/params_.has_block_mask, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
-         /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code,
+         /*has_softcap=*/false, /*has_alibi=*/false,
+         /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+         /*has_window=*/false, dtype_code,
          /*gqa_factor=*/H / Hk};
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -1734,7 +1770,9 @@ void MFASteelBwdDKV::eval_gpu(
          D, BQ, BK, BD, WM_DKV,
          params_.causal, /*sparse=*/params_.has_block_mask, is_m3_plus,
          /*has_rope=*/false, /*rope_interleaved=*/false,
-         /*has_softcap=*/false, /*has_alibi=*/false, /*has_window=*/false, dtype_code,
+         /*has_softcap=*/false, /*has_alibi=*/false,
+         /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+         /*has_window=*/false, dtype_code,
          /*gqa_factor=*/H / Hk};
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
@@ -1777,6 +1815,8 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
          params_.cache_seqlens     == o->params_.cache_seqlens     &&
          params_.softcap        == o->params_.softcap        &&
          params_.has_alibi      == o->params_.has_alibi      &&
+         params_.has_attn_bias  == o->params_.has_attn_bias  &&
+         params_.attn_bias_mode == o->params_.attn_bias_mode &&
          params_.window_left    == o->params_.window_left    &&
          params_.window_right   == o->params_.window_right;
 }
@@ -1820,8 +1860,8 @@ mlx::core::array mfa_attention_forward(
   MFAttention::Params params{D, scale, causal,
       /*has_block_mask=*/false, /*has_rope=*/false,
       /*rope_interleaved=*/false, /*cache_seqlens=*/0, /*softcap=*/softcap,
-      /*has_alibi=*/false, /*window_left=*/window_left,
-      /*window_right=*/window_right};
+      /*has_alibi=*/false, /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+      /*window_left=*/window_left, /*window_right=*/window_right};
 
   auto out_shape  = qc.shape();                     // Shape [B, H, N, D]
   mlx::core::Shape lse_shape = {
@@ -1878,8 +1918,8 @@ mlx::core::array mfa_attention_sparse_forward(
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
-      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1,
-      /*window_right=*/-1};
+      /*softcap=*/0.0f, /*has_alibi=*/false, /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+      /*window_left=*/-1, /*window_right=*/-1};
 
   auto out_shape  = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
@@ -1924,8 +1964,8 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
-      /*softcap=*/0.0f, /*has_alibi=*/false, /*window_left=*/-1,
-      /*window_right=*/-1};
+      /*softcap=*/0.0f, /*has_alibi=*/false, /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+      /*window_left=*/-1, /*window_right=*/-1};
   auto out_shape = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
 
@@ -1994,6 +2034,7 @@ mlx::core::array mfa_attention_rope_forward(
     /*cache_seqlens=*/cache_seqlens,
     /*softcap=*/0.0f,
     /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
     /*window_left=*/-1,
     /*window_right=*/-1
   };
@@ -2054,6 +2095,7 @@ mlx::core::array mfa_attention_alibi_forward(
     /*cache_seqlens=*/0,
     /*softcap=*/0.0f,
     /*has_alibi=*/true,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
     /*window_left=*/-1,
     /*window_right=*/-1
   };
@@ -2068,6 +2110,92 @@ mlx::core::array mfa_attention_alibi_forward(
       {qc.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
       {qc, kc, vc, alibi_slopes});
+
+  return outputs[0];
+}
+
+// =========================================================================
+// Free function: mfa_attention_bias_forward
+// =========================================================================
+
+mlx::core::array mfa_attention_bias_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& attn_bias,
+    uint8_t attn_bias_mode,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream) {
+  auto s = stream.has_value()
+      ? mlx::core::to_stream(stream.value())
+      : mlx::core::default_stream(mlx::core::Device::gpu);
+
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::invalid_argument("MFA bias: expected 4D inputs [B, H, N, D]");
+
+  if (attn_bias_mode < 1 || attn_bias_mode > 2)
+    throw std::invalid_argument(
+        "MFA bias: only modes 1 ([1,1,1,Nkv]) and 2 ([1,H,1,Nkv]) supported, got " +
+        std::to_string(attn_bias_mode));
+
+  // Validate bias shape against mode
+  int S = k.shape(2);  // N_kv
+  int H = q.shape(1);  // H_q
+  if (attn_bias_mode == 1) {
+    if (attn_bias.ndim() != 4 ||
+        attn_bias.shape(0) != 1 || attn_bias.shape(1) != 1 ||
+        attn_bias.shape(2) != 1 || attn_bias.shape(3) != S)
+      throw std::invalid_argument(
+          "MFA bias mode 1: expected shape [1,1,1," + std::to_string(S) + "]");
+  } else if (attn_bias_mode == 2) {
+    if (attn_bias.ndim() != 4 ||
+        attn_bias.shape(0) != 1 || attn_bias.shape(1) != H ||
+        attn_bias.shape(2) != 1 || attn_bias.shape(3) != S)
+      throw std::invalid_argument(
+          "MFA bias mode 2: expected shape [1," + std::to_string(H) +
+          ",1," + std::to_string(S) + "]");
+  }
+
+  // Enforce contiguous layout
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+
+  // Bias must be float32 contiguous (read as device float* in kernel)
+  auto bc = mlx::core::astype(attn_bias, mlx::core::float32, s);
+  bc = mlx::core::contiguous(bc, false, s);
+
+  int D = qc.shape(3);
+  if (D != 64 && D != 128 && D != 256)
+    throw std::invalid_argument(
+        "MFA bias: head_dim must be 64, 128, or 256, got " +
+        std::to_string(D));
+
+  MFAttention::Params params{
+    D, scale, causal,
+    /*has_block_mask=*/false,
+    /*has_rope=*/false,
+    /*rope_interleaved=*/false,
+    /*cache_seqlens=*/0,
+    /*softcap=*/0.0f,
+    /*has_alibi=*/false,
+    /*has_attn_bias=*/true,
+    /*attn_bias_mode=*/attn_bias_mode,
+    /*window_left=*/-1,
+    /*window_right=*/-1
+  };
+
+  auto out_shape  = qc.shape();
+  mlx::core::Shape lse_shape = {qc.shape(0), qc.shape(1), qc.shape(2)};
+
+  // inputs: [Q, K, V, attn_bias]
+  // Metal buffers: Q=0, K=1, V=2, O=3, L=4, params=5, attn_bias=10
+  auto outputs = mlx::core::array::make_arrays(
+      {out_shape, lse_shape},
+      {qc.dtype(), mlx::core::float32},
+      std::make_shared<MFAttention>(s, params),
+      {qc, kc, vc, bc});
 
   return outputs[0];
 }
@@ -2138,7 +2266,9 @@ void MFAVarlenAttention::eval_gpu(
   KK key{KK::KernelType::SteelVarlenForward,
          D, BQ, BK, BD, WM,
          params_.causal, /*sparse=*/false, is_m3_plus,
-         false, false, false, false, /*has_window=*/false, dtype_code};
+         false, false, false, false,
+         /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+         /*has_window=*/false, dtype_code};
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
@@ -2273,6 +2403,7 @@ void MFAPagedSteelForward::eval_gpu(
     /*rope_interleaved=*/false,
     /*has_softcap=*/false,
     /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
     params_.window_left >= 0 || params_.window_right >= 0,  // has_window
     dtype_code,
     /*gqa_factor=*/H / H_kv
@@ -2488,6 +2619,7 @@ void MFASageForward::eval_gpu(
     /*rope_interleaved=*/false,
     /*has_softcap=*/false,
     /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
     /*has_window=*/params_.window_left >= 0 || params_.window_right >= 0,
     dtype_code,
     /*gqa_factor=*/params_.gqa_factor
@@ -2694,6 +2826,7 @@ void MFAGNAForward::eval_gpu(
     /*rope_interleaved=*/false,
     /*has_softcap=*/false,
     /*has_alibi=*/false,
+    /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
     /*has_window=*/false,
     dtype_code,
     /*gqa_factor=*/params_.gqa_factor

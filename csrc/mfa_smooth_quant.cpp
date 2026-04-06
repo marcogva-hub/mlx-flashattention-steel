@@ -269,7 +269,9 @@ void MFASmoothQuantizeK::eval_gpu(
         KK mean_key{
             KK::KernelType::SmoothQuantizeMean,
             D_, 0, 0, 0, 0,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
+            /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+            false,
             dtype, 1
         };
         void* raw = ShaderCache::get().get_or_compile(mean_key, dev.mtl_device());
@@ -300,7 +302,9 @@ void MFASmoothQuantizeK::eval_gpu(
         KK quant_key{
             KK::KernelType::SmoothQuantizeK,
             D_, block_size_, 0, 0, 0,
-            false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false,
+            /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+            false,
             dtype, 1
         };
         void* raw = ShaderCache::get().get_or_compile(quant_key, dev.mtl_device());

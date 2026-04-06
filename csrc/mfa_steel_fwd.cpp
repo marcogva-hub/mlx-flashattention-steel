@@ -161,6 +161,9 @@ struct MFASteelParams {
   // 2D [NQ,NK]: both 0; 3D [H,NQ,NK]: batch=0; 4D [B,H,NQ,NK]: both set.
   long  mask_batch_stride;
   long  mask_head_stride;
+  int   has_attn_bias;      // 0 = disabled; 1 = additive bias from buffer(10)
+  int   attn_bias_mode;     // 0=[B,H,Nq,Nkv], 1=[1,1,1,Nkv], 2=[1,H,1,Nkv]
+  int   attn_bias_nkv;      // N_kv for bias stride computation
 };
 
 )MFA";

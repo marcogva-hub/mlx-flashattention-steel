@@ -95,6 +95,9 @@ struct MFASteelParams {
   int   window_right;
   long  mask_batch_stride;
   long  mask_head_stride;
+  int   has_attn_bias;
+  int   attn_bias_mode;
+  int   attn_bias_nkv;
 };
 
 )MFA";

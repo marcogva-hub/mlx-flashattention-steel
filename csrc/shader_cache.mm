@@ -60,6 +60,8 @@ bool ShaderCache::KernelKey::operator==(const KernelKey& other) const {
          rope_interleaved  == other.rope_interleaved  &&
          has_softcap       == other.has_softcap       &&
          has_alibi         == other.has_alibi         &&
+         has_attn_bias     == other.has_attn_bias     &&
+         attn_bias_mode    == other.attn_bias_mode    &&
          has_window        == other.has_window        &&
          dtype        == other.dtype        &&
          gqa_factor   == other.gqa_factor;
@@ -85,6 +87,8 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
   mix(static_cast<uint64_t>(k.rope_interleaved));
   mix(static_cast<uint64_t>(k.has_softcap));
   mix(static_cast<uint64_t>(k.has_alibi));
+  mix(static_cast<uint64_t>(k.has_attn_bias));
+  mix(static_cast<uint64_t>(k.attn_bias_mode));
   mix(static_cast<uint64_t>(k.has_window));
   mix(static_cast<uint64_t>(k.dtype));
   mix(static_cast<uint64_t>(k.gqa_factor));
@@ -111,7 +115,7 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
   if (key.head_dim != 64 && key.head_dim != 128) return nullptr;
   if (key.dtype != 0) return nullptr;  // f16 only
   if (key.sparse || key.has_rope || key.has_softcap ||
-      key.has_alibi || key.has_window) return nullptr;
+      key.has_alibi || key.has_attn_bias || key.has_window) return nullptr;
   if (std::getenv("MFA_DISABLE_ASYNC")) {
     if (ir_debug) {
       NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: disabled by MFA_DISABLE_ASYNC");
@@ -221,7 +225,8 @@ static void* try_precompiled_pipeline(const ShaderCache::KernelKey& key,
 
   // Only precompile standard single-head MHA without extra features.
   if (key.sparse || key.has_rope || key.has_softcap ||
-      key.has_alibi || key.has_window || key.gqa_factor != 1) return nullptr;
+      key.has_alibi || key.has_attn_bias || key.has_window ||
+      key.gqa_factor != 1) return nullptr;
 
   @autoreleasepool {
     NSString* fname;

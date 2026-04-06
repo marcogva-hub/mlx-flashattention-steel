@@ -94,6 +94,8 @@ class ShaderCache {
     bool rope_interleaved;   // true = LLaMA-style (pair d*2,d*2+1); false = GPT-NeoX (d,d+D/2)
     bool has_softcap;        // true = tanh softcapping (Gemma 2 / Grok); p->softcap > 0
     bool has_alibi;          // true = ALiBi per-head bias; slopes at buffer(9)
+    bool has_attn_bias;      // true = additive bias tensor at buffer(10)
+    uint8_t attn_bias_mode;  // 0=[B,H,Nq,Nkv], 1=[1,1,1,Nkv], 2=[1,H,1,Nkv], 3=[1,H,Nq,Nkv]
     bool has_window;         // true = native sliding window (window_left in params)
     uint8_t dtype;       // 0=f16, 1=bf16, 2=f32
     int  gqa_factor;     // H_q / H_kv; 1 = standard MHA (baked into shader as #define)

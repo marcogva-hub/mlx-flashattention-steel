@@ -142,3 +142,31 @@ LR overhead mostly 10-18%, except K>M case (36%) which may benefit from Phase 2 
 - Overall: [HIGH]
 - Risks: Native kernel slightly slower than sparse path for CogVideoX shapes;
   benefit is correctness (exact masking), not speed
+
+---
+## [2026-04-06 00:00] attn_bias native Metal kernel — split-K fix + debug cleanup
+
+### Plan
+- **Objective:** Fix split-K dispatch ignoring attn_bias, remove debug code
+- **Files to modify:** `csrc/mfa_attention.cpp`, `csrc/shader_cache.mm`, `csrc/mfa_steel_fwd_v2.cpp`
+- **Dependencies impacted:** V2 split-K path, shader cache pipeline selection
+
+### Changes made
+- `csrc/mfa_attention.cpp:L392` — added `!params_.has_attn_bias` to `v2sk_eligible` [HIGH]
+  Forces bias queries to single-pass V2 (which implements bias) instead of split-K (which doesn't)
+- `csrc/shader_cache.mm:L284-306` — removed 5 NSLog debug prints from `get_or_compile()` [HIGH]
+- `csrc/mfa_steel_fwd_v2.cpp:L40,L869-875` — removed `#include <cstdio>` and fputs shader dump [HIGH]
+
+### Dependency & regression check
+- Split-K path: unaffected for non-bias queries (condition only adds exclusion) ✓
+- V2 single-pass: unaffected (bias code was already correct) ✓
+- Full suite: 920 passed, 19 xfailed, 22 xpassed ✓
+
+### Tech cost assessment
+- No runtime cost: compile-time bool check in dispatch logic
+- No memory impact
+- No kernel changes
+
+### Confidence
+- Overall: HIGH
+- Risks: none — split-K exclusion is the same pattern used for block_mask

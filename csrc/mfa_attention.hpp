@@ -37,6 +37,8 @@ class MFAttention : public mlx::core::Primitive {
     int  cache_seqlens;      // Q sequence offset for RoPE (= KV cache length, 0 otherwise)
     float softcap;       // 0.0 = disabled; >0 → tanh(S/cap)*cap before softmax
     bool has_alibi;      // false = disabled; alibi_slopes at last input
+    bool has_attn_bias;      // false = disabled; bias tensor at buffer(10)
+    uint8_t attn_bias_mode;  // 0=[B,H,Nq,Nkv], 1=[1,1,1,Nkv], 2=[1,H,1,Nkv], 3=[1,H,Nq,Nkv]
     int  window_left;    // -1 = disabled; >=0 = sliding window left radius (tokens)
     int  window_right;   // -1 = disabled; >=0 = sliding window right radius (tokens)
   };
@@ -93,6 +95,19 @@ mlx::core::array mfa_attention_alibi_forward(
     const mlx::core::array& k,
     const mlx::core::array& v,
     const mlx::core::array& alibi_slopes,
+    float scale,
+    bool causal,
+    std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);
+
+/// Forward pass with additive attention bias.
+/// attn_bias: float32 tensor. Mode 1: [1,1,1,Nkv]. Mode 2: [1,H,1,Nkv].
+/// Bias is added to Q@K^T scores (in log2 domain) before softmax.
+mlx::core::array mfa_attention_bias_forward(
+    const mlx::core::array& q,
+    const mlx::core::array& k,
+    const mlx::core::array& v,
+    const mlx::core::array& attn_bias,
+    uint8_t attn_bias_mode,
     float scale,
     bool causal,
     std::optional<mlx::core::StreamOrDevice> stream = std::nullopt);

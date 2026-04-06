@@ -59,6 +59,11 @@ struct MFASteelParams {
     // 4D [B, H, NQ, NK]:    mask_batch_stride=H*NQ*NK, mask_head_stride=NQ*NK
     int64_t mask_batch_stride; // 0 = broadcast across batches
     int64_t mask_head_stride;  // 0 = broadcast across heads
+    // Additive attention bias — appended at end for backward compatibility.
+    // Default: has_attn_bias=0 (disabled). Buffer(10) when enabled.
+    int   has_attn_bias;       // 0 = disabled; 1 = additive bias tensor at buffer(10)
+    int   attn_bias_mode;      // 0=[B,H,Nq,Nkv], 1=[1,1,1,Nkv], 2=[1,H,1,Nkv], 3=[1,H,Nq,Nkv]
+    int   attn_bias_nkv;       // N_kv dimension for bias stride calculation
 };
 
 /// Append Metal preamble (#include, STEEL_CONST, ARCHITECTURE_GEN, STEEL_PRAGMA_UNROLL).

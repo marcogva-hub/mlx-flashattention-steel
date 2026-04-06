@@ -162,6 +162,8 @@ void MFAPagedKVGather::eval_gpu(
         false,       // rope_interleaved
         false,       // has_softcap
         false,       // has_alibi
+        false,       // has_attn_bias
+        0,           // attn_bias_mode
         false,       // has_window
         is_f16 ? uint8_t(0) : uint8_t(1),
         1            // gqa_factor (unused)

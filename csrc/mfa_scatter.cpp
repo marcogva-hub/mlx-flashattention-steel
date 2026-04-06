@@ -150,7 +150,9 @@ void MFAScatterKV::eval_gpu(
         N_write_,      // block_q  = N_write (cache key dimension)
         block_size_,   // block_k  = block_size
         0, 0,          // block_d, n_warps — unused
-        false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false,
+        /*has_attn_bias=*/false, /*attn_bias_mode=*/0,
+        false,
         is_f16 ? uint8_t(0) : uint8_t(1),
         1
     };

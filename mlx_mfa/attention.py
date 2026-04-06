@@ -108,6 +108,41 @@ def _get_is_m3_plus_cached() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Internal: bias shape classification
+# ---------------------------------------------------------------------------
+
+
+def _classify_bias_shape(
+    attn_bias: mx.array, q: mx.array, k: mx.array
+) -> int:
+    """Classify attn_bias into mode 0-3 based on shape.
+
+    Returns:
+        0: [B, H, Nq, Nkv] — full bias (not yet supported natively)
+        1: [1, 1, 1, Nkv]  — per-KV broadcast
+        2: [1, H, 1, Nkv]  — per-head per-KV broadcast
+        3: [1, H, Nq, Nkv] — per-head full (not yet supported natively)
+       -1: unrecognized shape
+    """
+    if attn_bias.ndim != 4:
+        return -1
+    B_b, H_b, N_b, S_b = attn_bias.shape
+    _, H_q, N_q, _ = q.shape
+    S_kv = k.shape[2]
+    if S_b != S_kv:
+        return -1
+    if B_b == 1 and H_b == 1 and N_b == 1:
+        return 1
+    if B_b == 1 and H_b == H_q and N_b == 1:
+        return 2
+    if B_b == 1 and H_b == H_q and N_b == N_q:
+        return 3
+    if B_b > 1 and H_b == H_q and N_b == N_q:
+        return 0
+    return -1
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -310,9 +345,19 @@ def flash_attention(
     if dropout_p > 0.0:
         return _dropout_sdpa(q, k, v, scale, causal, dropout_p)
 
-    # Track ID: attn_bias — MFA kernel has no generic additive bias path;
-    # fall back to SDPA which passes it as the mask argument.
+    # Track A1: attn_bias — native Metal kernel for modes 1/2 (per-KV bias),
+    # SDPA fallback for modes 0/3 (full [B,H,Nq,Nkv] or [1,H,Nq,Nkv]).
     if attn_bias is not None:
+        bias_mode = _classify_bias_shape(attn_bias, q, k)
+        if bias_mode in (1, 2) and _can_use_mfa(q, head_dim) and not v_dim_mismatch:
+            try:
+                from mlx_mfa._ext import mfa_attention_bias_forward
+                return mfa_attention_bias_forward(
+                    q, k, v, attn_bias, bias_mode, scale, causal,
+                )
+            except Exception:
+                pass  # fall through to SDPA
+        # Modes 0/3 or MFA unavailable: SDPA fallback
         mask = attn_bias
         if causal:
             N, S = q.shape[2], k.shape[2]

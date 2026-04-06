@@ -56,8 +56,9 @@ NB_MODULE(_ext, m) {
         auto vc = mlx::core::contiguous(v, false, s);
         mlx_mfa::MFAttention::Params params{
             (int)qc.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
-            /*window_right=*/-1};
+            false, false, false, 0, 0.0f, false,
+            /*has_attn_bias=*/false, /*attn_bias_mode=*/(uint8_t)0,
+            /*window_left=*/-1, /*window_right=*/-1};
         mlx::core::Shape lse_shape = {qc.shape(0), qc.shape(1), qc.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {qc.shape(), lse_shape},
@@ -84,8 +85,9 @@ NB_MODULE(_ext, m) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
-            /*window_right=*/-1};
+            false, false, false, 0, 0.0f, false,
+            /*has_attn_bias=*/false, /*attn_bias_mode=*/(uint8_t)0,
+            /*window_left=*/-1, /*window_right=*/-1};
         mlx::core::Shape d_shape = {q.shape(0), q.shape(1), q.shape(2)};
         auto outs = mlx::core::array::make_arrays(
             {q.shape(), d_shape},
@@ -114,8 +116,9 @@ NB_MODULE(_ext, m) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
-            false, false, false, 0, 0.0f, false, /*window_left=*/-1,
-            /*window_right=*/-1};
+            false, false, false, 0, 0.0f, false,
+            /*has_attn_bias=*/false, /*attn_bias_mode=*/(uint8_t)0,
+            /*window_left=*/-1, /*window_right=*/-1};
         auto outs = mlx::core::array::make_arrays(
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
@@ -286,6 +289,23 @@ NB_MODULE(_ext, m) {
       "alibi_slopes: float32 [H], one slope per query head.\n"
       "Bias = slope_h * (k_pos - q_pos) added before softmax.\n"
       "Only f16/bf16 supported.");
+
+  // --- Attention bias forward ---
+  m.def(
+      "mfa_attention_bias_forward",
+      &mlx_mfa::mfa_attention_bias_forward,
+      nb::arg("q"),
+      nb::arg("k"),
+      nb::arg("v"),
+      nb::arg("attn_bias"),
+      nb::arg("attn_bias_mode"),
+      nb::arg("scale"),
+      nb::arg("causal"),
+      nb::arg("stream") = nb::none(),
+      "Flash Attention with additive attention bias.\n"
+      "attn_bias: float32. Mode 1: [1,1,1,Nkv]. Mode 2: [1,H,1,Nkv].\n"
+      "Bias added to Q@K^T scores before softmax.\n"
+      "Only f16/bf16, D=64/128/256. Modes 1-2 only.");
 
   // --- RoPE-fused forward ---
   m.def(

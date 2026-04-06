@@ -38,6 +38,7 @@
 #include "mfa_env.hpp"
 #include <sstream>
 
+
 namespace mlx_mfa {
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,8 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   const bool has_softcap = key.has_softcap;
   const bool has_window  = key.has_window;
   const bool has_alibi   = key.has_alibi;
+  const bool has_attn_bias = key.has_attn_bias;
+  const uint8_t attn_bias_mode = key.attn_bias_mode;
   const bool sparse      = key.sparse;
   const bool has_rope    = key.has_rope;
   const bool rope_interleaved = key.rope_interleaved;
@@ -223,6 +226,9 @@ struct MFASteelParams {
   int   window_right;
   long  mask_batch_stride;
   long  mask_head_stride;
+  int   has_attn_bias;
+  int   attn_bias_mode;
+  int   attn_bias_nkv;
 };
 
 )MFA";
@@ -244,6 +250,8 @@ struct MFASteelParams {
   }
   if (has_alibi)
     ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
+  if (has_attn_bias)
+    ss << "    const device float* attn_bias    [[buffer(10)]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -596,6 +604,46 @@ struct MFASteelParams {
     ss << "\n";
   }
 
+  // Additive attention bias: per-KV (mode 1) or per-head-per-KV (mode 2)
+  // Applied after ALiBi, before masking, in log2 domain.
+  if (has_attn_bias) {
+    ss << "    // Additive attention bias (modes 1/2): add bias[k_pos] to scores\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    if (attn_bias_mode == 1) {
+      // Mode 1: [1,1,1,Nkv] — same scalar for all batches/heads/queries
+      ss << "      STEEL_PRAGMA_UNROLL\n";
+      ss << "      for (short j = 0; j < MFA_TK; j++) {\n";
+      ss << "        const int k_pos = kb * MFA_BK + (int)sn + j * 8;\n";
+      ss << "        STEEL_PRAGMA_UNROLL\n";
+      ss << "        for (short jj = 0; jj < 2; jj++) {\n";
+      ss << "          const AccT b = attn_bias[k_pos + jj] * log2e;\n";
+      ss << "          STEEL_PRAGMA_UNROLL\n";
+      ss << "          for (short i = 0; i < MFA_TQ; i++) {\n";
+      ss << "            Stile.frag_at(i, j)[jj] += b;\n";
+      ss << "          }\n";
+      ss << "        }\n";
+      ss << "      }\n";
+    } else if (attn_bias_mode == 2) {
+      // Mode 2: [1,H,1,Nkv] — per-head, broadcast over batch and queries
+      ss << "      const int bias_head_off = h_q * p->attn_bias_nkv;\n";
+      ss << "      STEEL_PRAGMA_UNROLL\n";
+      ss << "      for (short j = 0; j < MFA_TK; j++) {\n";
+      ss << "        const int k_pos = kb * MFA_BK + (int)sn + j * 8;\n";
+      ss << "        STEEL_PRAGMA_UNROLL\n";
+      ss << "        for (short jj = 0; jj < 2; jj++) {\n";
+      ss << "          const AccT b = attn_bias[bias_head_off + k_pos + jj] * log2e;\n";
+      ss << "          STEEL_PRAGMA_UNROLL\n";
+      ss << "          for (short i = 0; i < MFA_TQ; i++) {\n";
+      ss << "            Stile.frag_at(i, j)[jj] += b;\n";
+      ss << "          }\n";
+      ss << "        }\n";
+      ss << "      }\n";
+    }
+    ss << "    }\n";
+    ss << "\n";
+  }
+
   // K-boundary mask (pad positions → -inf)
   ss << "    if (kb == p->NK_aligned) {\n";
   ss << "      STEEL_PRAGMA_UNROLL\n";
@@ -852,6 +900,8 @@ std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   const bool has_softcap = key.has_softcap;
   const bool has_window  = key.has_window;
   const bool has_alibi   = key.has_alibi;
+  const bool has_attn_bias = key.has_attn_bias;
+  const uint8_t attn_bias_mode = key.attn_bias_mode;
   // NOTE: RoPE is NOT supported in D-split (GPT-NeoX pairs d with d+D/2 across D-halves)
   const int gqa   = key.gqa_factor;
 
@@ -936,6 +986,9 @@ struct MFASteelParams {
   int   window_right;
   long  mask_batch_stride;
   long  mask_head_stride;
+  int   has_attn_bias;
+  int   attn_bias_mode;
+  int   attn_bias_nkv;
 };
 
 )MFA";
@@ -953,6 +1006,8 @@ struct MFASteelParams {
   // buffer(7/8) = rope: unused (RoPE incompatible with D-split)
   if (has_alibi)
     ss << "    const device float* alibi_slopes [[buffer(9)]],\n";
+  if (has_attn_bias)
+    ss << "    const device float* attn_bias    [[buffer(10)]],\n";
   ss << "    uint3 tid          [[threadgroup_position_in_grid]],\n";
   ss << "    uint  simd_group_id [[simdgroup_index_in_threadgroup]],\n";
   ss << "    uint  simd_lane_id  [[thread_index_in_simdgroup]])\n";
@@ -1263,6 +1318,43 @@ struct MFASteelParams {
     ss << "          }\n";
     ss << "        }\n";
     ss << "      }\n";
+    ss << "    }\n";
+    ss << "\n";
+  }
+
+  // Additive attention bias (D-split): same per-KV logic as V2 single-pass
+  if (has_attn_bias) {
+    ss << "    // Additive attention bias (modes 1/2)\n";
+    ss << "    {\n";
+    ss << "      constexpr AccT log2e = 1.4426950408889634f;\n";
+    if (attn_bias_mode == 1) {
+      ss << "      STEEL_PRAGMA_UNROLL\n";
+      ss << "      for (short j = 0; j < MFA_TK; j++) {\n";
+      ss << "        const int k_pos = kb * MFA_BK + (int)sn + j * 8;\n";
+      ss << "        STEEL_PRAGMA_UNROLL\n";
+      ss << "        for (short jj = 0; jj < 2; jj++) {\n";
+      ss << "          const AccT b = attn_bias[k_pos + jj] * log2e;\n";
+      ss << "          STEEL_PRAGMA_UNROLL\n";
+      ss << "          for (short i = 0; i < MFA_TQ; i++) {\n";
+      ss << "            Stile.frag_at(i, j)[jj] += b;\n";
+      ss << "          }\n";
+      ss << "        }\n";
+      ss << "      }\n";
+    } else if (attn_bias_mode == 2) {
+      ss << "      const int bias_head_off = h_q * p->attn_bias_nkv;\n";
+      ss << "      STEEL_PRAGMA_UNROLL\n";
+      ss << "      for (short j = 0; j < MFA_TK; j++) {\n";
+      ss << "        const int k_pos = kb * MFA_BK + (int)sn + j * 8;\n";
+      ss << "        STEEL_PRAGMA_UNROLL\n";
+      ss << "        for (short jj = 0; jj < 2; jj++) {\n";
+      ss << "          const AccT b = attn_bias[bias_head_off + k_pos + jj] * log2e;\n";
+      ss << "          STEEL_PRAGMA_UNROLL\n";
+      ss << "          for (short i = 0; i < MFA_TQ; i++) {\n";
+      ss << "            Stile.frag_at(i, j)[jj] += b;\n";
+      ss << "          }\n";
+      ss << "        }\n";
+      ss << "      }\n";
+    }
     ss << "    }\n";
     ss << "\n";
   }
