@@ -1,0 +1,110 @@
+{
+  "hardware": "M1 Max (32 GPU cores, gen 13)",
+  "date": "2026-04-06",
+  "version": "v2.26.0",
+  "self_attn": [
+    {
+      "label": "UNet smallest (8x8)",
+      "B": 1, "H": 8, "N": 64, "D": 128,
+      "dispatch_mfa": false, "mfa_ms": 0.42, "sdpa_ms": 0.35,
+      "ratio": 0.84, "winner": "SDPA", "correct": true
+    },
+    {
+      "label": "UNet tiny (16x16)",
+      "B": 1, "H": 8, "N": 256, "D": 128,
+      "dispatch_mfa": false, "mfa_ms": 0.52, "sdpa_ms": 0.39,
+      "ratio": 0.76, "winner": "SDPA", "correct": true
+    },
+    {
+      "label": "UNet high-res (32x32) D=64",
+      "B": 1, "H": 8, "N": 1024, "D": 64,
+      "dispatch_mfa": false, "mfa_ms": 0.87, "sdpa_ms": 0.68,
+      "ratio": 0.79, "winner": "SDPA", "correct": true
+    },
+    {
+      "label": "UNet SD low-res (64x64) D=64",
+      "B": 1, "H": 8, "N": 4096, "D": 64,
+      "dispatch_mfa": true, "mfa_ms": 4.33, "sdpa_ms": 5.08,
+      "ratio": 1.17, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "UNet SD low-res (64x64) D=128",
+      "B": 1, "H": 8, "N": 4096, "D": 128,
+      "dispatch_mfa": true, "mfa_ms": 6.90, "sdpa_ms": 9.70,
+      "ratio": 1.41, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "UNet SD B=2 (CFG) D=64",
+      "B": 2, "H": 8, "N": 4096, "D": 64,
+      "dispatch_mfa": true, "mfa_ms": 6.73, "sdpa_ms": 9.29,
+      "ratio": 1.38, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "UNet SD mid-res (128x128) D=64",
+      "B": 1, "H": 8, "N": 16384, "D": 64,
+      "dispatch_mfa": true, "mfa_ms": 48.47, "sdpa_ms": 72.05,
+      "ratio": 1.49, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "SeedVR2 DiT bs=29 (27x33x30)",
+      "B": 1, "H": 20, "N": 26730, "D": 128,
+      "dispatch_mfa": true, "mfa_ms": 598.16, "sdpa_ms": 988.24,
+      "ratio": 1.65, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "CogVideoX (DOVE/STAR/SparkVSR/Vivid-VR)",
+      "B": 1, "H": 30, "N": 70200, "D": 128,
+      "dispatch_mfa": true, "mfa_ms": 6134.6, "sdpa_ms": 10007.0,
+      "ratio": 1.63, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "Wan2.1 (FlashVSR) approx",
+      "B": 1, "H": 40, "N": 100000, "D": 128,
+      "dispatch_mfa": true, "mfa_ms": 16392.7, "sdpa_ms": 26839.1,
+      "ratio": 1.64, "winner": "MFA", "correct": true
+    },
+    {
+      "label": "SeedVR2 DiT bs=497 (27x33x125)",
+      "B": 1, "H": 20, "N": 111375, "D": 128,
+      "dispatch_mfa": true, "mfa_ms": 10184.8, "sdpa_ms": 16737.5,
+      "ratio": 1.64, "winner": "MFA", "correct": true
+    }
+  ],
+  "cross_attn": [
+    {
+      "label": "SD/SDXL text cross-attn D=64",
+      "B": 1, "H_q": 8, "N_q": 4096, "H_kv": 8, "N_kv": 77, "D": 64,
+      "mfa_ms": 1.09, "sdpa_ms": 0.76, "ratio": 0.70, "winner": "SDPA"
+    },
+    {
+      "label": "SD/SDXL text cross-attn D=128",
+      "B": 1, "H_q": 8, "N_q": 4096, "H_kv": 8, "N_kv": 77, "D": 128,
+      "mfa_ms": 0.65, "sdpa_ms": 1.05, "ratio": 1.60, "winner": "MFA"
+    },
+    {
+      "label": "DiT x CLIP-77 extreme ratio",
+      "B": 1, "H_q": 30, "N_q": 70200, "H_kv": 30, "N_kv": 77, "D": 128,
+      "mfa_ms": 21.0, "sdpa_ms": 14.8, "ratio": 0.70, "winner": "SDPA"
+    },
+    {
+      "label": "CogVideoX text cross-attn (226 text tokens)",
+      "B": 1, "H_q": 30, "N_q": 70200, "H_kv": 30, "N_kv": 226, "D": 128,
+      "mfa_ms": 48.0, "sdpa_ms": 37.7, "ratio": 0.79, "winner": "SDPA"
+    },
+    {
+      "label": "Wan2.1 text cross-attn",
+      "B": 1, "H_q": 40, "N_q": 100000, "H_kv": 40, "N_kv": 512, "D": 128,
+      "mfa_ms": 172.3, "sdpa_ms": 141.0, "ratio": 0.82, "winner": "SDPA"
+    },
+    {
+      "label": "LTX-2 video->audio cross-attn",
+      "B": 1, "H_q": 32, "N_q": 14000, "H_kv": 32, "N_kv": 2000, "D": 64,
+      "mfa_ms": 37.55, "sdpa_ms": 29.96, "ratio": 0.80, "winner": "SDPA"
+    },
+    {
+      "label": "LTX-2 audio->video cross-attn",
+      "B": 1, "H_q": 32, "N_q": 2000, "H_kv": 32, "N_kv": 14000, "D": 64,
+      "mfa_ms": 3.47, "sdpa_ms": 29.77, "ratio": 8.59, "winner": "MFA"
+    }
+  ]
+}

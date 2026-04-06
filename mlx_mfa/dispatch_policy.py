@@ -290,6 +290,7 @@ def should_use_mfa(
     is_m3_plus: bool,
     *,
     dtype=None,
+    kv_seq_len: Optional[int] = None,
     window_size: Optional[tuple] = None,
     sparse: bool = False,
     backend: str = "auto",
@@ -314,6 +315,9 @@ def should_use_mfa(
     dtype : optional
         Input dtype (``mx.float16`` / ``mx.bfloat16``) when available. Used
         for D=256 narrow routing, where f16 and bf16 regimes differ.
+    kv_seq_len : int, optional
+        KV sequence length S (when different from N, i.e. cross-attention).
+        When None, assumed equal to seq_len (self-attention).
     window_size : tuple, optional
         ``(left, right)`` sliding-window radii.  Non-negative left enables
         the window path, which always benefits from MFA tile-skipping.
@@ -363,6 +367,37 @@ def should_use_mfa(
                 f"-> {'MFA' if forced_d512 else 'SDPA'}"
             )
         return forced_d512
+
+    # Cross-attention routing (benchmarked M1 Max, 2026-04-06, DiT/UNet audit).
+    #
+    # When N_kv is much smaller than N_q, MFA's per-tile overhead dominates
+    # because there are too few K-tiles to amortize fixed costs:
+    #   N_kv≤512, N_q≥8192: SDPA wins 0.70-0.82x across D=64/128
+    #   N_kv≤77,  N_q=4096, D=128: MFA wins 1.60x (small N_q OK)
+    #   N_kv≤77,  N_q=4096, D=64:  SDPA wins 0.70x
+    #
+    # Conversely, when N_kv >> N_q (e.g. LTX-2 audio→video), MFA wins big
+    # (8.59x) because flash attention processes Q rows in tiles while SDPA
+    # materializes the full N_q × N_kv attention matrix.
+    _kv_len = kv_seq_len if kv_seq_len is not None else seq_len
+    if _kv_len != seq_len:
+        # Cross-attention: small N_kv with large N_q → SDPA
+        if _kv_len <= 512 and seq_len > 8192:
+            if _verbose:
+                print(
+                    f"[MFA dispatch] cross-attn small KV: N_q={seq_len} "
+                    f"N_kv={_kv_len} -> SDPA (few K-tiles, tile overhead dominates)"
+                )
+            return False
+        # Cross-attention: large N_kv with small N_q → MFA wins big
+        # (flash attention iterates K-tiles per Q-tile; fewer Q-tiles = less work)
+        if _kv_len >= 4096 and seq_len <= 4096:
+            if _verbose:
+                print(
+                    f"[MFA dispatch] cross-attn large KV: N_q={seq_len} "
+                    f"N_kv={_kv_len} -> MFA (few Q-tiles, flash attention wins)"
+                )
+            return True
 
     # Dense attention: check empirical crossover threshold.
     custom = _load_custom_table()

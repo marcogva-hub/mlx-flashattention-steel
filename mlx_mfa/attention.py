@@ -378,12 +378,13 @@ def flash_attention(
             use_mfa = True
         else:
             _is_m3 = _get_is_m3_plus_cached()
-            _cache_key = (head_dim, q.shape[2], causal, _is_m3, q.dtype, window_size, False)
+            _kv_len = k.shape[2]
+            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, q.dtype, window_size, False)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
                     head_dim, q.shape[2], causal, _is_m3,
-                    dtype=q.dtype,
+                    dtype=q.dtype, kv_seq_len=_kv_len,
                     window_size=window_size, sparse=False, backend=backend,
                 )
                 if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
