@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.26.0** — SVDQuantLinear (W4A16 + SVD low-rank correction) + GNA native Metal kernel (inline 3D window attention).
+Current version: **2.27.0** — native `attn_bias` Metal kernel + DiT/UNet dispatch audit.
 
 ## Foreword
 
@@ -26,9 +26,9 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.26.0 adds SVDQuantLinear (W4A16 linear layer with optional SVD low-rank
-correction for DiT model quantization) and a native GNA Metal kernel with
-inline 3D window attention and exact per-element masking.
+v2.27.0 adds native Metal `attn_bias` kernel support (additive bias on
+attention logits without SDPA fallback), a dispatch audit for 11 DiT/UNet
+architectures, and varlen validation for token merging workflows.
 See `CHANGELOG.md` for full details per version.
 
 Thank you for your interest, and let me know if you've been able to improve
@@ -47,6 +47,7 @@ on my work!
 - **TurboQuant** KV cache compression (Phase 1–4) production-ready.
 - **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
 - **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).
+- **Native `attn_bias`** additive bias on logits via Metal kernel (modes 1/2: per-KV and per-head per-KV broadcast).
 - Serving/runtime capability surface is now substantially expanded:
   - paged KV + packed varlen query support
   - paged continuous batching/remap
@@ -96,6 +97,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | TurboQuant KV compression (Phase 4) | Production | 5.33× K compression, WHT fused in kernel (1.1–1.4× faster) |
 | SVDQuantLinear | Production | W4A16 + rank-r FP16 correction; `quantize_model()` tree walker |
 | GNA native kernel | Production | Inline 3D window attention (D=128); exact per-element masking |
+| Native `attn_bias` | Production | Modes 1/2 via V2 STEEL; modes 0/3 SDPA fallback |
 | External cache adapter layer | Experimental groundwork | Concrete local backend provided; external backend integrations pending |
 
 ## Repository Guide
@@ -114,7 +116,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 
 | Status | Components |
 |---|---|
-| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression; SVDQuantLinear; GNA native kernel |
+| Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression; SVDQuantLinear; GNA native kernel; native `attn_bias` |
 | Narrow / conditional | D=256 causal long-N policy; Sage decode regimes; splitfuse/page-native runtime paths; hybrid local offload behavior |
 | Experimental | V3/V4/V5 families; external/LMCache-like backend extensions beyond local adapter |
 
@@ -144,6 +146,12 @@ q = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 k = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 v = mx.random.normal((1, 8, 1024, 128)).astype(mx.float16)
 out = flash_attention(q, k, v, causal=True)
+
+# Token merging proportional attention (native Metal, no SDPA fallback)
+merge_counts = mx.ones((1, 1, 1, 1024), dtype=mx.float16)
+merge_counts[..., :256] = 2.0   # first 256 tokens are merged pairs
+bias = mx.log(merge_counts)     # [1, 1, 1, N_kv] — mode 1 broadcast
+out_biased = flash_attention(q, k, v, attn_bias=bias)
 
 # GNA (Generalized Neighborhood Attention) — 3D window
 # Video: 8 frames of 32x32, local 3D window, sliding

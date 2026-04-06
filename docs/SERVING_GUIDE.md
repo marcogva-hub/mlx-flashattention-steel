@@ -215,7 +215,7 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 
 ---
 
-## 12) Component Status (v2.26.0)
+## 12) Component Status (v2.27.0)
 
 | Component | Status |
 |-----------|--------|
@@ -234,4 +234,5 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 | TurboQuant Phase 4 (optimal packing + WHT) | Production (v2.24.0) |
 | SVDQuantLinear (W4A16 + SVD correction) | Production (v2.25.0) |
 | GNA native kernel (3D window) | Production (v2.26.0) |
+| Native `attn_bias` (modes 1/2) | Production (v2.27.0) |
 | Remote/distributed offload | Deferred (M5+) |

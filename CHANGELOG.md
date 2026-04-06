@@ -4,6 +4,39 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.27.0] — 2026-04-06
+
+### Native `attn_bias` Metal Kernel
+- **Additive bias on attention logits** via V2 STEEL Metal kernel, eliminating
+  SDPA fallback for bias. At N=70K, SDPA materializes a ~37 GB score matrix;
+  the native kernel tiles computation and never materializes it.
+- **Mode 1** `[1,1,1,Nkv]`: per-KV broadcast bias (token merging, conditioning).
+- **Mode 2** `[1,H,1,Nkv]`: per-head per-KV bias (temporal distance, custom ALiBi).
+- Modes 0/3 (full bias) fall back to SDPA for now.
+- Compile-time `#define` gating: zero overhead when `attn_bias=None`.
+- Split-K excluded for bias (single-pass V2 only).
+- `KernelKey.has_attn_bias` + `attn_bias_mode` in shader cache.
+- Buffer index 10 for bias tensor.
+- C++ binding: `mfa_attention_bias_forward`.
+- 17 new tests in `tests/test_attn_bias_native.py`.
+
+### DiT/UNet Dispatch Audit
+- Verified and optimized dispatch routing for 11 VSR model architectures
+  (non-causal self-attention + asymmetric cross-attention shapes).
+- New report: `docs/audit_dit_dispatch_report.md`.
+
+### Varlen Validation for Token Merging
+- Benchmarked `flash_attention_varlen` vs padded dense across 5 scenarios.
+- Finding: padded dense is faster in most token merging cases (0.55–0.96×);
+  varlen wins only with >2:1 length disparity.
+- Correctness verified: bit-accurate (max_err at f16 epsilon level).
+- New report: `docs/varlen_pruning_validation.md`.
+- New benchmark: `benchmarks/bench_varlen_pruning.py`.
+
+### Documentation
+- All docs updated to v2.27.0.
+- 920+ tests pass.
+
 ## [2.26.0] — 2026-03-31
 
 ### GNA Native Metal Kernel

@@ -1,6 +1,6 @@
 # mlx-mfa Feature Coverage
 
-Version: **2.26.0**
+Version: **2.27.0**
 
 ## Attention Kernels
 
@@ -16,6 +16,7 @@ Version: **2.26.0**
 | Sliding window | Production | V2 O(1) kb_start + kb_lim clip |
 | RoPE (fused) | Production | Q+K rotation in kernel |
 | GNA (neighborhood) | Production | Native Metal kernel (D=128) + sparse fallback |
+| `attn_bias` (additive) | Production | Native Metal modes 1/2; SDPA fallback modes 0/3 |
 | Flash Decoding (split-KV) | Production | N_q<=4, S>=256 |
 | Native backward | Non-default | Benchmarked, not promoted |
 

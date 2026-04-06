@@ -193,3 +193,27 @@ LR overhead mostly 10-18%, except K>M case (36%) which may benefit from Phase 2 
 ### Confidence
 - Overall: HIGH
 - Risks: none — benchmark-only, no code changes
+
+---
+## [2026-04-06 02:00] v2.27.0 release: docs + version bump + publish
+
+### Plan
+- **Objective:** Bump to v2.27.0, update all docs, commit, tag, push
+- **Files to modify:** pyproject.toml, __init__.py, README.md, CLAUDE.md,
+  CHANGELOG.md, ARCHITECTURE.md, API_MANUAL.md, FEATURE_COVERAGE.md,
+  INVENTORY.md, SERVING_GUIDE.md
+
+### Changes made
+- Version bump 2.26.0 → 2.27.0 in pyproject.toml + __init__.py [HIGH]
+- README.md: version, attn_bias feature, usage example, status tables [HIGH]
+- CLAUDE.md: version, test count, feature table entry [HIGH]
+- CHANGELOG.md: full v2.27.0 entry (attn_bias, dispatch audit, varlen validation) [HIGH]
+- ARCHITECTURE.md: version, §7.9 attn_bias kernel docs, KernelType table, status [HIGH]
+- API_MANUAL.md: version, attn_bias parameter documentation [HIGH]
+- FEATURE_COVERAGE.md: version, attn_bias row [HIGH]
+- INVENTORY.md: version [HIGH]
+- SERVING_GUIDE.md: version, attn_bias status row [HIGH]
+
+### Confidence
+- Overall: HIGH
+- Risks: none — documentation-only changes + version bump

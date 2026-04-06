@@ -1,6 +1,6 @@
 # mlx-mfa Architecture
 
-Version: **2.26.0**
+Version: **2.27.0**
 
 ## 1) System Overview
 
@@ -216,6 +216,25 @@ WHT is self-inverse: `R^{-1} = R`.
 - Falls back to sparse path for backward and for configs outside D=128/f16/bf16.
 - Located in `csrc/mfa_gna_fwd.cpp`, dispatched as `GNAForward = 24`.
 
+## 7.9 Native `attn_bias` Metal Kernel (v2.27.0)
+
+- Additive bias on attention logits computed inside the V2 STEEL tiling loop,
+  applied after Q@K^T GEMM, before softmax. Bias is multiplied by `log2e`
+  (scores are in log2 domain).
+- **Mode 1** `[1,1,1,Nkv]`: single scalar per K position, broadcast to all
+  Q rows/heads/batches. One `device half` read per K tile position.
+- **Mode 2** `[1,H,1,Nkv]`: per-head per-KV bias. Indexed as
+  `bias[head_idx * Nkv + k_pos]`.
+- **Modes 0/3** (full bias): fall back to SDPA (would require BQ×BK tile loads).
+- Compile-time gated: `#define HAS_ATTN_BIAS 0/1` and `ATTN_BIAS_MODE 1/2`.
+  Zero overhead when `attn_bias=None`.
+- `KernelKey.has_attn_bias` (bool) + `attn_bias_mode` (uint8_t) in
+  `shader_cache.hpp`. Buffer index 10 for bias tensor.
+- Split-K dispatch excluded when `has_attn_bias=true` (split-K partial kernel
+  doesn't implement bias). Falls back to single-pass V2.
+- Metallib pipelines (async + precompiled) bypassed when `has_attn_bias=true`
+  (metallibs are pre-built without bias code).
+
 ## 8) Native Extension Architecture
 
 Core native files:
@@ -250,6 +269,7 @@ Selected entries relevant to production dispatch:
 | 21 | SteelForwardV4 | V4 direct device K reads (opt-in) |
 | 23 | SteelForwardV5 | V5 D-blocked BK=128 (opt-in) |
 | 24 | GNAForward | GNA inline 3D window (no block_mask) |
+| — | (V2 with has_attn_bias) | Additive bias modes 1/2 via SteelForwardV2 |
 | 27 | PagedVarlenForward | Fused packed varlen + paged KV |
 | 28 | PagedVarlenTQForward | TurboQuant packed uint8 K/V + centroids |
 
@@ -301,7 +321,7 @@ Deferred until future continuation (likely newer hardware generation):
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
 
-## 11) LLM Serving Layer Status (v2.26.0)
+## 11) LLM Serving Layer Status (v2.27.0)
 
 The serving layer is considered production-ready for local inference.
 See `docs/SERVING_GUIDE.md` for usage guide.
@@ -323,4 +343,5 @@ See `docs/SERVING_GUIDE.md` for usage guide.
 | TurboQuant Phase 4 (packing + WHT) | Production (v2.24.0) |
 | SVDQuantLinear | Production (v2.25.0) |
 | GNA native kernel | Production (v2.26.0) |
+| Native `attn_bias` | Production (v2.27.0) |
 | Remote/distributed offload | Deferred (M5+) |

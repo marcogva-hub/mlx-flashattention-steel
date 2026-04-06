@@ -89,6 +89,7 @@ mlx_mfa/
 tests/
   test_attention.py       -- Core attention tests (800+)
   test_gna_native.py      -- GNA native kernel tests (11)
+  test_attn_bias_native.py -- Native attn_bias kernel tests (17)
   test_svdquant.py        -- SVDQuant tests (21)
 benchmarks/               -- MFA vs MLX SDPA comparison
 scripts/check_env.py      -- Pre-build validation
@@ -141,7 +142,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.26.0 — 886 tests pass.
+v2.27.0 — 920 tests pass.
 
 | Track | Description | Status |
 |-------|-------------|--------|
@@ -170,6 +171,7 @@ v2.26.0 — 886 tests pass.
 | TurboQuant P4 | Optimal 3-bit packing (5.33×) + WHT fusion in kernel | Done (v2.24.0) |
 | SVDQuant P1 | SVDQuantLinear (W4A16 + rank-r FP16 correction) | Done (v2.25.0) |
 | GNA Native | Inline 3D window Metal kernel (forward-only, D=128) | Done (v2.26.0) |
+| attn_bias | Native Metal bias kernel (modes 1/2), DiT dispatch audit | Done (v2.27.0) |
 
 ## Post-Phase 1 Technical Notes
 

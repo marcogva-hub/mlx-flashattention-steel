@@ -1,6 +1,6 @@
 # mlx-mfa API Manual
 
-Version: **2.26.0**
+Version: **2.27.0**
 Public exports: **94 + `__version__`**
 
 This manual documents the retained public API surface for the freeze-prep
@@ -33,6 +33,20 @@ Notes:
 - Primary production API.
 - Supports GQA (`H_q % H_kv == 0`).
 - `backend="auto"` is policy-driven and benchmark-conservative.
+
+**`attn_bias` parameter** (v2.27.0):
+- Additive bias added to attention logits before softmax.
+- Supported broadcast shapes (native Metal kernel, no SDPA fallback):
+  - Mode 1: `[1, 1, 1, N_kv]` — per-KV position (token merging, conditioning)
+  - Mode 2: `[1, H, 1, N_kv]` — per-head per-KV (temporal distance, custom ALiBi)
+- SDPA fallback shapes (materializes full score matrix):
+  - Mode 3: `[1, H, N_q, N_kv]` — per-head full
+  - Mode 0: `[B, H, N_q, N_kv]` — full
+- Must be same dtype as Q/K/V (float16 or bfloat16 for native path).
+- Incompatible with `alibi_slopes` (raises ValueError if both set).
+- Backward pass uses SDPA recomputation (native kernel is forward-only for bias).
+- Use cases: token merging (`log(merge_count)`), temporal distance bias,
+  cross-attention conditioning, custom ALiBi variants.
 
 ### `flash_attention_kvcache(...)`
 
