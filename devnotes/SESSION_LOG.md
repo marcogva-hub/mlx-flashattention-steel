@@ -170,3 +170,26 @@ LR overhead mostly 10-18%, except K>M case (36%) which may benefit from Phase 2 
 ### Confidence
 - Overall: HIGH
 - Risks: none — split-K exclusion is the same pattern used for block_mask
+
+---
+## [2026-04-06 01:00] A3: Varlen validation for token merging/pruning
+
+### Plan
+- **Objective:** Benchmark varlen vs padded dense for token-merged sequences
+- **Files created:** `benchmarks/bench_varlen_pruning.py`, `docs/varlen_pruning_validation.md`
+- **Dependencies impacted:** none (benchmark-only)
+
+### Changes made
+- `benchmarks/bench_varlen_pruning.py` — 5 scenarios, cu_seqlens rebuild, correctness check [HIGH]
+- `docs/varlen_pruning_validation.md` — full report with tables + recommendations [HIGH]
+
+### Key findings
+- Varlen SLOWER than padded dense in most token merging scenarios (0.55–0.96×)
+- Varlen wins only when length disparity > 2:1 (SeedVR2: 1.19× D=64)
+- cu_seqlens rebuild: 0.004ms (negligible)
+- Correctness: bit-accurate (max_err = f16 epsilon)
+- Recommendation: default to padded dense for token merging; use varlen only for mixed-length batches
+
+### Confidence
+- Overall: HIGH
+- Risks: none — benchmark-only, no code changes
