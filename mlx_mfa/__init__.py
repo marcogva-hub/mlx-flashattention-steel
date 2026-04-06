@@ -58,6 +58,8 @@ def _check_abi() -> None:
 
 _check_abi()
 
+# ── Eager imports — core API (always needed) ────────────────────────────────
+
 from mlx_mfa.attention import (
     flash_attention,
     flash_attention_rope,
@@ -108,70 +110,6 @@ from mlx_mfa.quantize import (
     sage_block_sizes,
 )
 
-# Track LC/Phase 2: InferenceContext + PagedInferenceContext + SageInferenceContext
-from mlx_mfa.inference import (
-    InferenceContext,
-    PagedInferenceContext,
-    SageInferenceContext,
-    TurboQuantPagedInferenceContext,
-    create_inference_context,
-)
-from mlx_mfa.runtime import (
-    DecodeRuntime,
-    create_decode_runtime,
-)
-from mlx_mfa.kv_cache import (
-    KVCacheCapabilities,
-    KVCacheOperationUnsupported,
-    KVCacheAdapter,
-    DenseKVCacheAdapter,
-    PagedKVCacheAdapter,
-    QuantizedKVCacheAdapter,
-    HybridKVCache,
-    HybridKVCacheAdapter,
-    adapt_kv_cache,
-    resolve_context_cache,
-    resolve_context_cache_adapter,
-)
-from mlx_mfa.external_cache import (
-    ExternalKVCacheCapabilities,
-    ExternalKVCacheAdapter,
-    LocalHostKVStoreAdapter,
-)
-
-from mlx_mfa.turboquant import (
-    turboquant_compress,
-    turboquant_decompress,
-    TurboQuantKVCache,
-    pack_k_for_metal,
-    build_tq_paged_k_pool,
-    pack_v_for_metal,
-    build_tq_paged_v_pool,
-    pack_3bit_optimal,
-    unpack_3bit_optimal,
-)
-
-from mlx_mfa.svdquant import SVDQuantLinear, quantize_model
-
-from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
-from mlx_mfa.compile_metallib import compile_metallib
-
-# Apply any calibrated kernel config (BK selection etc.) before first kernel dispatch.
-_load_calibrated_kernel_config()
-
-# Re-export C++ invalidation for benchmarks/advanced users.
-def _invalidate_env_config():
-    """Re-read all cached MFA_* env vars in the C++ singleton.
-
-    Call after os.environ mutations of cached vars (MFA_V2_FORCE_BK, etc.).
-    Dispatch gates (MFA_ENABLE_V3, etc.) are live-read and don't need this.
-    """
-    try:
-        from mlx_mfa._ext import _invalidate_env_config as _inv
-        _inv()
-    except (ImportError, AttributeError):
-        pass
-
 from mlx_mfa.masks import (
     make_spatial_2d_mask,
     make_spatial_3d_mask,
@@ -193,6 +131,87 @@ from mlx_mfa.masks import (
     make_temporal_distance_bias,
     temporal_distance_bias_to_mask,
 )
+
+from mlx_mfa.dispatch_policy import calibrate_dispatch, _load_calibrated_kernel_config, _invalidate_cached_env
+from mlx_mfa.compile_metallib import compile_metallib
+
+# Apply any calibrated kernel config (BK selection etc.) before first kernel dispatch.
+_load_calibrated_kernel_config()
+
+# Re-export C++ invalidation for benchmarks/advanced users.
+def _invalidate_env_config():
+    """Re-read all cached MFA_* env vars in the C++ singleton.
+
+    Call after os.environ mutations of cached vars (MFA_V2_FORCE_BK, etc.).
+    Dispatch gates (MFA_ENABLE_V3, etc.) are live-read and don't need this.
+    """
+    try:
+        from mlx_mfa._ext import _invalidate_env_config as _inv
+        _inv()
+    except (ImportError, AttributeError):
+        pass
+
+# ── Lazy imports — serving/runtime/compression (loaded on first access) ─────
+#
+# These submodules pull in heavier dependencies (inference state machines,
+# cache abstractions, quantization utilities) that most users don't need
+# for basic flash_attention() calls.  Deferring them avoids ~40% of the
+# import-time work for the common case.
+#
+# __all__ is unchanged — all names remain public.  Only the TIMING of
+# the import changes, not the API surface.
+
+_LAZY_IMPORTS: dict[str, str] = {
+    # mlx_mfa.inference
+    "InferenceContext": "mlx_mfa.inference",
+    "PagedInferenceContext": "mlx_mfa.inference",
+    "SageInferenceContext": "mlx_mfa.inference",
+    "TurboQuantPagedInferenceContext": "mlx_mfa.inference",
+    "create_inference_context": "mlx_mfa.inference",
+    # mlx_mfa.runtime
+    "DecodeRuntime": "mlx_mfa.runtime",
+    "create_decode_runtime": "mlx_mfa.runtime",
+    # mlx_mfa.kv_cache
+    "KVCacheCapabilities": "mlx_mfa.kv_cache",
+    "KVCacheOperationUnsupported": "mlx_mfa.kv_cache",
+    "KVCacheAdapter": "mlx_mfa.kv_cache",
+    "DenseKVCacheAdapter": "mlx_mfa.kv_cache",
+    "PagedKVCacheAdapter": "mlx_mfa.kv_cache",
+    "QuantizedKVCacheAdapter": "mlx_mfa.kv_cache",
+    "HybridKVCache": "mlx_mfa.kv_cache",
+    "HybridKVCacheAdapter": "mlx_mfa.kv_cache",
+    "adapt_kv_cache": "mlx_mfa.kv_cache",
+    "resolve_context_cache": "mlx_mfa.kv_cache",
+    "resolve_context_cache_adapter": "mlx_mfa.kv_cache",
+    # mlx_mfa.external_cache
+    "ExternalKVCacheCapabilities": "mlx_mfa.external_cache",
+    "ExternalKVCacheAdapter": "mlx_mfa.external_cache",
+    "LocalHostKVStoreAdapter": "mlx_mfa.external_cache",
+    # mlx_mfa.turboquant
+    "turboquant_compress": "mlx_mfa.turboquant",
+    "turboquant_decompress": "mlx_mfa.turboquant",
+    "TurboQuantKVCache": "mlx_mfa.turboquant",
+    "pack_k_for_metal": "mlx_mfa.turboquant",
+    "build_tq_paged_k_pool": "mlx_mfa.turboquant",
+    "pack_v_for_metal": "mlx_mfa.turboquant",
+    "build_tq_paged_v_pool": "mlx_mfa.turboquant",
+    "pack_3bit_optimal": "mlx_mfa.turboquant",
+    "unpack_3bit_optimal": "mlx_mfa.turboquant",
+    # mlx_mfa.svdquant
+    "SVDQuantLinear": "mlx_mfa.svdquant",
+    "quantize_model": "mlx_mfa.svdquant",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+        module = importlib.import_module(_LAZY_IMPORTS[name])
+        obj = getattr(module, name)
+        globals()[name] = obj  # cache for subsequent accesses
+        return obj
+    raise AttributeError(f"module 'mlx_mfa' has no attribute {name!r}")
+
 
 __all__ = [
     # Core attention

@@ -77,29 +77,6 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
         self._records: dict[int, dict[str, Any]] = {}
         self._last_prefetch: Optional[dict[str, Any]] = None
 
-    @staticmethod
-    def _to_numpy_preserve(arr) -> tuple[np.ndarray, str]:
-        if arr.dtype == mx.bfloat16:
-            # NumPy lacks native bfloat16 support; store as float32 and restore.
-            return np.array(arr.astype(mx.float32)), "bfloat16"
-        if arr.dtype == mx.float16:
-            return np.array(arr), "float16"
-        if arr.dtype == mx.float32:
-            return np.array(arr), "float32"
-        # Fallback for uncommon dtypes.
-        return np.array(arr.astype(mx.float32)), str(arr.dtype)
-
-    @staticmethod
-    def _restore_mx(arr_np: np.ndarray, original_dtype: str):
-        out = mx.array(arr_np)
-        if original_dtype == "bfloat16":
-            return out.astype(mx.bfloat16)
-        if original_dtype == "float16":
-            return out.astype(mx.float16)
-        if original_dtype == "float32":
-            return out.astype(mx.float32)
-        return out
-
     def put(self, seq_id: int, k, v, *, meta: Optional[dict[str, Any]] = None) -> None:
         sid = int(seq_id)
         # Store mx.array directly — zero-copy on Apple Silicon unified memory.

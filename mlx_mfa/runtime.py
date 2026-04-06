@@ -46,9 +46,9 @@ QueryLayout = Literal["batched", "packed"]
 def _build_secondary_cache_for_context(context) -> Any:
     """Construct a same-shape secondary cache for hybrid tiering."""
     from mlx_mfa.attention import DenseKVCache, PagedKVCache
+    from mlx_mfa.inference import InferenceContext, PagedInferenceContext
 
-    cls_name = type(context).__name__
-    if cls_name == "InferenceContext":
+    if isinstance(context, InferenceContext):
         return DenseKVCache(
             context.B,
             context.H_kv,
@@ -56,7 +56,7 @@ def _build_secondary_cache_for_context(context) -> Any:
             max_seq_len=context.max_seq_len,
             dtype=context.dtype,
         )
-    if cls_name == "PagedInferenceContext":
+    if isinstance(context, PagedInferenceContext):
         return PagedKVCache(
             context.num_blocks,
             context.block_size,
@@ -66,7 +66,7 @@ def _build_secondary_cache_for_context(context) -> Any:
         )
     raise ValueError(
         "Hybrid cache secondary tier is currently supported only for dense/paged "
-        f"contexts, got {cls_name!r}"
+        f"contexts, got {type(context).__name__!r}"
     )
 
 

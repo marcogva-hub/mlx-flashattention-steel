@@ -1470,7 +1470,7 @@ class TestSparseBackwardSteel:
         assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
         assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
         assert mx.all(mx.isfinite(dv)).item(), "dV has non-finite values"
-        mx.metal.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
+        mx.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
 
     def test_steel_sparse_value_and_grad(self):
         """mx.value_and_grad must work with steel_sparse backward."""
@@ -1497,7 +1497,7 @@ class TestSparseBackwardSteel:
         assert mx.isfinite(loss_val).item(), "loss is non-finite"
         assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
         assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
-        mx.metal.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
+        mx.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
 
 
 # ==========================================================================
@@ -9774,7 +9774,7 @@ class TestSageKVCache:
         assert out.shape == (B, H_q, N, self.D)
         assert ctx.seqlen == N
         assert mx.all(mx.isfinite(out)).item()
-        mx.metal.clear_cache()
+        mx.clear_cache()
 
     def test_sage_inference_context_step_shape(self):
         """SageInferenceContext step appends to cache and returns correct shape."""
@@ -9795,7 +9795,7 @@ class TestSageKVCache:
         assert out.shape == (B, H_q, 1, self.D)
         assert ctx.seqlen == N + 1
         assert mx.all(mx.isfinite(out)).item()
-        mx.metal.clear_cache()
+        mx.clear_cache()
 
     def test_sage_inference_context_reset(self):
         """SageInferenceContext reset clears the cache."""
@@ -10261,7 +10261,7 @@ class TestSmartDispatch:
         # Flush the Metal buffer pool to prevent stale-buffer NaN from prior
         # large backward tests leaking into uninitialized allocations.
         if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
-            mx.metal.clear_cache()
+            mx.clear_cache()
         B, H, N, D = 1, 2, 32, 64
         mx.random.seed(99)
         q = mx.random.normal([B, H, N, D]).astype(mx.float32)

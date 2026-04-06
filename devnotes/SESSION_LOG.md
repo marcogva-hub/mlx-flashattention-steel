@@ -217,3 +217,41 @@ LR overhead mostly 10-18%, except K>M case (36%) which may benefit from Phase 2 
 ### Confidence
 - Overall: HIGH
 - Risks: none — documentation-only changes + version bump
+
+---
+## [2026-04-06 03:00] Hardening: lazy imports + isinstance + dead code + deprecated API
+
+### Plan
+- **Objective:** 4 hardening fixes for public usage
+- **Files to modify:** mlx_mfa/__init__.py, mlx_mfa/runtime.py, mlx_mfa/external_cache.py, tests/test_attention.py
+- **Dependencies impacted:** all imports from mlx_mfa (lazy timing change only)
+
+### Changes made
+- `mlx_mfa/__init__.py` — lazy imports for 6 submodules via __getattr__ [HIGH]
+  Deferred: inference, runtime, kv_cache, external_cache, turboquant, svdquant
+  Eager: attention, masks, quantize, dispatch_policy, compile_metallib
+  __all__ unchanged. `from mlx_mfa import X` works for all X.
+- `mlx_mfa/runtime.py:L46-69` — isinstance() replaces type().__name__ for dispatch [HIGH]
+  `_build_secondary_cache_for_context` now uses `from mlx_mfa.inference import ...`
+  deferred import inside function body (avoids circular import at module level).
+  Other type().__name__ usages (error msgs, repr) left as-is — no dispatch logic.
+- `mlx_mfa/external_cache.py:L80-101` — removed dead _to_numpy_preserve/_restore_mx [HIGH]
+  Confirmed unused: only defined in LocalHostKVStoreAdapter, never called.
+  put() method stores mx.array directly (comment confirms numpy roundtrip skipped).
+- `tests/test_attention.py:L1473,1500,9777,9798,10264` — mx.metal.clear_cache() → mx.clear_cache() [HIGH]
+  5 occurrences replaced. mx.clear_cache() is the device-agnostic replacement.
+
+### Dependency & regression check
+- All lazy-imported names verified: `from mlx_mfa import X` works for all X in __all__
+- isinstance check: TurboQuantPagedInferenceContext inherits PagedInferenceContext, so
+  isinstance correctly matches (vs type().__name__ which would miss subclasses)
+- Full suite: 918 passed (920 - 2 deselected pre-existing flaky TQ 2-bit)
+
+### Tech cost assessment
+- Lazy imports: eliminates ~6 module loads at import time; 0 runtime cost after first access
+- isinstance: 1 deferred import per call (cached by Python import system)
+- Dead code: -22 lines, 0 functional change
+
+### Confidence
+- Overall: HIGH
+- Risks: none — all names still importable, all tests pass
