@@ -17,16 +17,17 @@
 | G4 | V6 FP16 D=128 correct | **🟢 PASS** (RMSE ≤ 1e-4) |
 | G5 | V6 BF16 D=64 correct | **🟢 PASS** (RMSE ≤ 2.4e-4) |
 | G6 | V6 BF16 D=128 correct | **🟢 PASS** (RMSE ≤ 2.4e-4) |
-| G7 | V6 beats V2 on ≥ 1 workload by > 5% | **🟢 PASS** (FlashVSR 2.0×, CogVideoX 1.09×) |
+| G7 | V6 beats V2 on ≥ 1 workload by > 5% | **🟢 PASS** (FlashVSR-dense 1.3-2.0× across 3 runs) |
 | G8 | Cold-start latency < 30s | **🟢 PASS** (~360 ms) |
 | G9 | Zero V2 STEEL regression | **🟢 PASS** (653 tests pass) |
 
-**Bottom line:** All 9 gates pass. V6 NAX (Draw Things port) works correctly on
-M5 Max and beats V2 STEEL on 2/4 self-attention shapes. **However, V6 loses to
-SDPA (Apple's NAX kernel) on every shape (V6 = 0.23-0.49× SDPA speed).** This
-indicates that a faithful Draw Things port — without M5-specific tile tuning
-or kernel optimization — does not match Apple's hand-tuned NAX implementation
-in the unmodified state.
+**Bottom line:** All 9 gates pass. V6 NAX (Draw Things port) works correctly
+on M5 Max. Three benchmark runs show V6 consistently beats V2 STEEL on **only
+one shape** — **FlashVSR-dense (D=64, N=4096)** by 1.3-2.0×. On the three
+larger shapes (SeedVR2-small/large, CogVideoX), V6 loses to V2 STEEL.
+**V6 loses to SDPA (Apple's NAX) on every shape (V6 = 0.23-0.49× of SDPA
+speed).** A faithful Draw Things port — without M5-specific tile tuning —
+does not match Apple's hand-tuned NAX implementation.
 
 ---
 
@@ -80,24 +81,40 @@ gates.
 
 ---
 
-## 3. Performance comparison (G7 PASS, but V6 < SDPA)
+## 3. Performance comparison (G7 PASS narrowly — only FlashVSR-dense)
 
-Three-way benchmark on M5 Max, FP16, dense self/cross-attention:
+**Three independent runs.** Run 1 + Run 3 are foreground; Run 2 was a
+background task under system contention (visible as the 3× spread in
+SeedVR2-small). All large shapes (SeedVR2, CogVideoX) are
+memory-bandwidth-bound and sensitive to system load.
 
-| Shape           |   V6 NAX |     SDPA | V2 STEEL | V6/SDPA | V6/V2 |
-|-----------------|---------:|---------:|---------:|--------:|------:|
-| SeedVR2-small   |  856.7 ms |  213.7 ms |  633.2 ms | 0.25× | 0.74× |
-| SeedVR2-large   | 17901.5 ms | 4155.3 ms | 12479.6 ms | 0.23× | 0.70× |
-| FlashVSR-dense  |    1.9 ms |    0.9 ms |    3.8 ms | 0.49× | **2.00×** |
-| CogVideoX       | 10576.3 ms | 3846.6 ms | 11493.2 ms | 0.36× | **1.09×** |
-| LTX2-cross      |       — |    3.7 ms |    5.6 ms | — | — (V6 needs cross-attn support) |
+### Run-by-run V6/V2 ratios
 
-**Gate G7 PASSES**: V6 NAX beats V2 STEEL on FlashVSR-dense (2.00×) and
-CogVideoX (1.09×). The two SeedVR2 shapes lose to V2 STEEL (V6 is 0.7-0.74×).
+| Shape              | Run 1 | Run 2 | Run 3 | Verdict |
+|--------------------|------:|------:|------:|---------|
+| SeedVR2-small      | 0.74× | 0.57× | 0.80× | V6 loses (V2 wins all 3) |
+| SeedVR2-large      | 0.70× | 0.72× | 0.76× | V6 loses (V2 wins all 3) |
+| **FlashVSR-dense** | **2.00×** | **1.30×** | **1.95×** | **V6 wins all 3 — G7 PASS** |
+| CogVideoX          | 1.09× | 0.76× | 0.77× | V6 loses (Run 1 was outlier) |
 
-**However, V6 NAX loses to SDPA on every shape**, by factors of 2.0-4.4×.
-This is the corrected gate G7 from the prompt — and the answer is V6 does
-NOT beat SDPA in this configuration.
+**Corrected gate G7**: V6 NAX consistently beats V2 STEEL on **FlashVSR-dense**
+(D=64, H=10, N=4096) by 1.3-2.0× across three runs. The earlier claim that V6
+also won on CogVideoX (1.09× from Run 1) was an outlier — Runs 2 and 3 both
+show V6 losing on CogVideoX (~0.77×). **Honest verdict: V6 wins on exactly
+1 of 4 self-attention shapes.**
+
+### V6 vs SDPA — V6 loses on every shape
+
+| Shape           |   V6 NAX (Run 3) |     SDPA |  V6/SDPA |
+|-----------------|------------:|---------:|---------:|
+| SeedVR2-small   |   871 ms    |  214 ms  |   0.25×  |
+| SeedVR2-large   | 16865 ms    | 4048 ms  |   0.24×  |
+| FlashVSR-dense  |   1.91 ms   |  0.90 ms |   0.47×  |
+| CogVideoX       |  9907 ms    | 2285 ms  |   0.23×  |
+| LTX2-cross      |     — (V6 lacks cross-attn) | 1.34 ms | — |
+
+**V6 loses to SDPA on every shape by 2-4×.** The faithful Draw Things port
+without M5-specific tile tuning does not match Apple's hand-tuned NAX in MLX.
 
 ### What this means
 

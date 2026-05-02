@@ -1,83 +1,86 @@
 {
-  "timestamp": "2026-05-02",
-  "machine": "Apple M5 Max (40 cores, 128 GB)",
-  "software": "MLX 0.31.2 / mlx-mfa 2.28.1+v6 / MSL 4.0",
-  "note": "V6 NAX = Draw Things NAAttention port. SDPA = Apple NAX in MLX. V2 STEEL = mlx-mfa pre-NAX kernel.",
-  "results": [
-    {
-      "name": "SeedVR2-small",
-      "B": 1,
-      "Hq": 20,
-      "Hk": 20,
-      "N_q": 26730,
-      "N_kv": 26730,
-      "D": 128,
-      "dtype": "mlx.core.float16",
-      "v6_nax_ms": 856.6817079990869,
-      "sdpa_ms": 213.7031250022119,
-      "v2_steel_ms": 633.2232920030947,
-      "v6_vs_sdpa_speedup": 0.24945452086440448,
-      "v6_vs_v2_speedup": 0.7391581798589887
+    "timestamp": "2026-05-03",
+    "machine": "Apple M5 Max (40 cores, 128 GB)",
+    "software": "MLX 0.31.2 / mlx-mfa 2.28.1 + V6 NAX (feat/v6-nax) / MSL 4.0",
+    "note": "Three independent runs to assess variance. Run 1 + 3 foreground, Run 2 background. V6 NAX = Draw Things NAAttention port, no tile tuning. SDPA = Apple's NAX in MLX. V2 STEEL = mlx-mfa pre-NAX kernel forced via backend='mfa'.",
+    "protocol": {
+        "warmup_iterations": 3,
+        "measured_iterations": 10,
+        "metric": "p50 (median ms) of perf_counter() around mx.eval(out)",
+        "synchronization": "mx.synchronize() before and after"
     },
-    {
-      "name": "SeedVR2-large",
-      "B": 1,
-      "Hq": 20,
-      "Hk": 20,
-      "N_q": 111375,
-      "N_kv": 111375,
-      "D": 128,
-      "dtype": "mlx.core.float16",
-      "v6_nax_ms": 17901.529582995863,
-      "sdpa_ms": 4155.250125004386,
-      "v2_steel_ms": 12479.564749999554,
-      "v6_vs_sdpa_speedup": 0.23211704372744416,
-      "v6_vs_v2_speedup": 0.6971228180330202
+    "runs": [
+        {
+            "name": "Run 1 (foreground)",
+            "results": [
+                {"shape": "SeedVR2-small", "v6_ms": 856.68, "sdpa_ms": 213.70, "v2_ms": 633.22, "v6/v2": 0.74},
+                {"shape": "SeedVR2-large", "v6_ms": 17901.53, "sdpa_ms": 4155.25, "v2_ms": 12479.56, "v6/v2": 0.70},
+                {"shape": "FlashVSR-dense", "v6_ms": 1.89, "sdpa_ms": 0.92, "v2_ms": 3.80, "v6/v2": 2.00},
+                {"shape": "CogVideoX", "v6_ms": 10576.28, "sdpa_ms": 3846.56, "v2_ms": 11493.21, "v6/v2": 1.09},
+                {"shape": "LTX2-cross", "v6_ms": null, "sdpa_ms": 3.65, "v2_ms": 5.64}
+            ]
+        },
+        {
+            "name": "Run 2 (background, contended system)",
+            "results": [
+                {"shape": "SeedVR2-small", "v6_ms": 2769.98, "sdpa_ms": 433.25, "v2_ms": 1586.99, "v6/v2": 0.57},
+                {"shape": "SeedVR2-large", "v6_ms": 17921.03, "sdpa_ms": 4413.09, "v2_ms": 12819.83, "v6/v2": 0.72},
+                {"shape": "FlashVSR-dense", "v6_ms": 2.95, "sdpa_ms": 1.01, "v2_ms": 3.82, "v6/v2": 1.30},
+                {"shape": "CogVideoX", "v6_ms": 10006.61, "sdpa_ms": 2369.07, "v2_ms": 7625.21, "v6/v2": 0.76},
+                {"shape": "LTX2-cross", "v6_ms": null, "sdpa_ms": 1.39, "v2_ms": 1.05}
+            ]
+        },
+        {
+            "name": "Run 3 (foreground)",
+            "results": [
+                {"shape": "SeedVR2-small", "v6_ms": 871.20, "sdpa_ms": 213.66, "v2_ms": 699.73, "v6/v2": 0.80},
+                {"shape": "SeedVR2-large", "v6_ms": 16864.92, "sdpa_ms": 4048.25, "v2_ms": 12816.61, "v6/v2": 0.76},
+                {"shape": "FlashVSR-dense", "v6_ms": 1.91, "sdpa_ms": 0.90, "v2_ms": 3.72, "v6/v2": 1.95},
+                {"shape": "CogVideoX", "v6_ms": 9907.34, "sdpa_ms": 2284.92, "v2_ms": 7619.68, "v6/v2": 0.77},
+                {"shape": "LTX2-cross", "v6_ms": null, "sdpa_ms": 1.34, "v2_ms": 1.04}
+            ]
+        }
+    ],
+    "summary_across_runs": {
+        "FlashVSR-dense": {
+            "v6_ms_range": [1.89, 2.95],
+            "v2_ms_range": [3.72, 3.82],
+            "v6_vs_v2_range": [1.30, 2.00],
+            "verdict": "V6 consistently beats V2 (1.30-2.00x). G7 PASS."
+        },
+        "SeedVR2-small": {
+            "v6_ms_range": [856.68, 2769.98],
+            "v2_ms_range": [633.22, 1586.99],
+            "v6_vs_v2_range": [0.57, 0.80],
+            "verdict": "V6 consistently loses to V2."
+        },
+        "SeedVR2-large": {
+            "v6_ms_range": [16864.92, 17921.03],
+            "v2_ms_range": [12479.56, 12819.83],
+            "v6_vs_v2_range": [0.70, 0.76],
+            "verdict": "V6 consistently loses to V2 (V6 ~0.73x V2)."
+        },
+        "CogVideoX": {
+            "v6_ms_range": [9907.34, 10576.28],
+            "v2_ms_range": [7619.68, 11493.21],
+            "v6_vs_v2_range": [0.76, 1.09],
+            "verdict": "Run 1 (1.09x) was outlier — Runs 2, 3 show V6 loses (~0.77x V2). Net loss."
+        },
+        "LTX2-cross": {
+            "verdict": "V6 NAX does not yet support cross-attention (N_q != N_kv)."
+        },
+        "v6_vs_sdpa_summary": "V6 consistently loses to SDPA on every shape (V6 = 0.16-0.49x of SDPA speed). Apple's NAX kernel beats the faithful Draw Things port."
     },
-    {
-      "name": "FlashVSR-dense",
-      "B": 1,
-      "Hq": 10,
-      "Hk": 10,
-      "N_q": 4096,
-      "N_kv": 4096,
-      "D": 64,
-      "dtype": "mlx.core.float16",
-      "v6_nax_ms": 1.8935420011985116,
-      "sdpa_ms": 0.9192079960484989,
-      "v2_steel_ms": 3.7957499953336082,
-      "v6_vs_sdpa_speedup": 0.48544367934098587,
-      "v6_vs_v2_speedup": 2.0045766045490936
-    },
-    {
-      "name": "CogVideoX",
-      "B": 1,
-      "Hq": 30,
-      "Hk": 30,
-      "N_q": 70200,
-      "N_kv": 70200,
-      "D": 128,
-      "dtype": "mlx.core.float16",
-      "v6_nax_ms": 10576.278333996015,
-      "sdpa_ms": 3846.5637499975855,
-      "v2_steel_ms": 11493.212375004077,
-      "v6_vs_sdpa_speedup": 0.36369728826380515,
-      "v6_vs_v2_speedup": 1.0866972305428746
-    },
-    {
-      "name": "LTX2-cross",
-      "B": 1,
-      "Hq": 8,
-      "Hk": 8,
-      "N_q": 2048,
-      "N_kv": 14000,
-      "D": 64,
-      "dtype": "mlx.core.float16",
-      "v6_nax_ms": NaN,
-      "sdpa_ms": 3.654832995380275,
-      "v2_steel_ms": 5.640625000523869,
-      "v6_vs_sdpa_speedup": NaN,
-      "v6_vs_v2_speedup": NaN
+    "gates": {
+        "G1_compile": "PASS",
+        "G2_runs": "PASS",
+        "G3_fp16_d64_correct": "PASS (RMSE <= 9e-5)",
+        "G4_fp16_d128_correct": "PASS (RMSE <= 1e-4)",
+        "G5_bf16_d64_correct": "PASS (RMSE <= 2.4e-4)",
+        "G6_bf16_d128_correct": "PASS (RMSE <= 2.4e-4)",
+        "G7_v6_beats_v2_one_workload": "PASS (FlashVSR-dense 1.30-2.00x across 3 runs)",
+        "G7_corrected_v6_beats_sdpa": "FAIL (V6 loses to SDPA on every shape)",
+        "G8_cold_start_under_30s": "PASS (~360 ms)",
+        "G9_zero_v2_regression": "PASS (653 tests pass)"
     }
-  ]
 }
