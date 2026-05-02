@@ -185,7 +185,7 @@ void MFAPagedKVGather::eval_gpu(
     params.pool_block_stride = block_size_ * H_ * D_;
     params.pool_tok_stride   = H_ * D_;
 
-    auto& enc = dev.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
     enc.set_compute_pipeline_state(pipeline);
     enc.set_input_array(pool,        0);
     enc.set_output_array(out,        1);
