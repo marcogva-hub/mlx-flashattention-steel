@@ -2217,6 +2217,16 @@ def flash_attention_sparse(
             mask_2d = block_mask.any(axis=0)
         return _sparse_fallback_sdpa(q, k, v, mask_2d, BQ, BK, scale, causal)
 
+    # M5+ workaround: the V1 STEEL sparse kernel mis-reads `(long)p->NK`
+    # under the Metal 4 compiler shipped with macOS 26 + M5 hardware,
+    # producing incorrect mask offsets (qb * NK/2 instead of qb * NK).
+    # See docs/v6-nax/sparse-bug-investigation.md for full root-cause notes.
+    # Until a kernel-level fix lands, route sparse to an SDPA-based
+    # fallback that preserves per-head mask shape for correctness.
+    info = get_device_info()
+    if info.get("is_m5_plus"):
+        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
+
     impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)
     q = mx.contiguous(q)
     k = mx.contiguous(k)
@@ -2836,6 +2846,77 @@ def _sparse_fallback_sdpa(
             mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
         )
         float_bias = float_bias + causal_m
+    return mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=scale, mask=float_bias
+    )
+
+
+def _sparse_fallback_sdpa_perhead(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    block_mask: mx.array,
+    scale: float,
+    causal: bool,
+) -> mx.array:
+    """SDPA fallback for sparse that PRESERVES per-head and per-batch masks.
+
+    Used as the M5+ workaround for the Metal-compiler miscompile in the
+    V1 STEEL sparse kernel. Unlike _sparse_fallback_sdpa (which only
+    handles 2-D masks), this version expands 2-D / 3-D / 4-D masks
+    into a [B, H, N, S] float bias tensor and passes it to SDPA, so
+    per-head and per-batch differences are preserved.
+
+    block_mask shapes supported:
+      - 2-D [NQ, NK]:        broadcast to all B, H
+      - 3-D [H, NQ, NK]:     broadcast across B
+      - 4-D [B, H, NQ, NK]:  per-batch per-head
+    """
+    B, H, N, _ = q.shape
+    S = k.shape[2]
+    NQ_dim = -2
+    NK_dim = -1
+    NQ = block_mask.shape[NQ_dim]
+    NK = block_mask.shape[NK_dim]
+    BQ_actual = (N + NQ - 1) // NQ
+    BK_actual = (S + NK - 1) // NK
+
+    # Expand bool mask to [B, H, NQ, NK] regardless of input shape.
+    if block_mask.ndim == 2:
+        # [NQ, NK] -> [1, 1, NQ, NK] -> broadcast to [B, H, NQ, NK]
+        full_mask = block_mask[None, None, :, :]
+        full_mask = mx.broadcast_to(full_mask, (B, H, NQ, NK))
+    elif block_mask.ndim == 3:
+        # [H, NQ, NK] -> [1, H, NQ, NK] -> broadcast to [B, H, NQ, NK]
+        full_mask = block_mask[None, :, :, :]
+        full_mask = mx.broadcast_to(full_mask, (B, H, NQ, NK))
+    elif block_mask.ndim == 4:
+        full_mask = block_mask
+    else:
+        raise ValueError(f"unsupported mask ndim {block_mask.ndim}")
+
+    # Repeat-expand each block to BQ_actual rows and BK_actual cols.
+    # [B, H, NQ, NK] -> [B, H, NQ, BQ, NK, BK] -> [B, H, NQ*BQ, NK*BK]
+    expanded = full_mask[:, :, :, None, :, None]
+    expanded = mx.broadcast_to(
+        expanded, (B, H, NQ, BQ_actual, NK, BK_actual)
+    )
+    expanded = expanded.reshape(B, H, NQ * BQ_actual, NK * BK_actual)
+    # Trim to actual [N, S] in case BQ/BK don't divide evenly.
+    expanded = expanded[:, :, :N, :S]
+
+    # bool -> float (True=0, False=-inf)
+    neg_inf = mx.array(float("-inf"), dtype=q.dtype)
+    zero = mx.array(0.0, dtype=q.dtype)
+    float_bias = mx.where(expanded, zero, neg_inf)
+
+    if causal:
+        causal_m = mx.triu(
+            mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+        )
+        # Broadcast causal mask over [B, H]; SDPA broadcasts itself but be explicit.
+        float_bias = float_bias + causal_m
+
     return mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=float_bias
     )

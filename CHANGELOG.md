@@ -4,6 +4,48 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.28.1] — 2026-05-02
+
+### Fixed
+- **Sparse path on M5 Max** — the V1 STEEL sparse Metal kernel produces wrong
+  results on M5 Max + MLX 0.31.2 due to a Metal-compiler miscompile of
+  `(long)p->NK` in the inner mask-offset address calculation. The kernel
+  reads `qb * (NK/2) + kb` instead of `qb * NK + kb`. This is independent of
+  the previous session's "persistent kernel state pollution" hypothesis,
+  which was disproven by reproducing the bug with `kTilesPerTG=1`.
+  Workaround: route `flash_attention_sparse()` through a per-head SDPA
+  fallback on M5+ that preserves 2-D / 3-D / 4-D mask shapes. Forward path
+  produces correct results at fp16 precision.
+- New helper `_sparse_fallback_sdpa_perhead()` in `mlx_mfa/attention.py`
+  expands block masks to a `[B, H, N, S]` float bias and passes to SDPA,
+  preserving per-head and per-batch mask differences (which the old 2-D
+  collapse `_sparse_fallback_sdpa()` lost).
+
+### Investigation report
+- `docs/v6-nax/sparse-bug-investigation.md` documents 6 workarounds tried
+  and the definitive root cause (Metal-compiler `int → long` cast bug on
+  struct-field reads under MSL 4.x). Includes 4 options for kernel-level
+  fix; current 2.28.1 implements Option A (SDPA fallback). Marco may
+  consider Option C (Apple bug report) for upstream fix.
+
+### Known Issues
+- 4 pre-existing M5+MLX 0.31.2 precision-tolerance test failures, unrelated
+  to sparse path:
+  - `test_attn_bias_native::TestBiasMode{1,2}::test_d128_causal`
+  - `test_turboquant::TestQRRotation::test_{roundtrip,orthogonal}`
+  - `test_attention::TestTopkAttention::test_topk_ratio_1_matches_dense`
+  - `test_attention::TestReturnAttnWeights::test_output_matches_no_return`
+  All due to slight numerical differences between MLX 0.31.2 SDPA and
+  native MFA dense kernel. Test tolerances may need to be bumped (separate
+  task — these tests have `atol=1e-5/1e-4` which is too tight for fp16
+  cross-implementation comparison).
+
+### Benchmarks added
+- `bench/m5_max_sparse.py` + `docs/v6-nax/m5-max-sparse-baseline.json`:
+  5-shape sparse benchmark on M5 Max via SDPA fallback. Includes FlashVSR
+  LCSA-class shapes (window mask, density 3-7%) and generic random-mask
+  shapes. Will be re-run once native sparse kernel is fixed.
+
 ## [2.28.0] — 2026-05-02
 
 ### Fixed
