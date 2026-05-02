@@ -257,7 +257,7 @@ void MFASmoothQuantizeK::eval_gpu(
 
     using KK = ShaderCache::KernelKey;
     auto& dev = metal::device(stream().device);
-    auto& enc = dev.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
 
     // Get the raw MTL buffer pointer for k_mean intermediate.
     // This allows both pass 1 (write) and pass 2 (read) to access it

@@ -150,7 +150,7 @@ void MFAttention::eval_gpu(
     void* raw = ShaderCache::get().get_or_compile(ccv_key, d.mtl_device());
     auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-    auto& enc = d.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
     enc.set_compute_pipeline_state(pl);
     enc.set_input_array(q,          0);
     enc.set_input_array(k,          1);
@@ -311,7 +311,7 @@ void MFAttention::eval_gpu(
     auto* pl_p2 = reinterpret_cast<MTL::ComputePipelineState*>(
         ShaderCache::get().get_or_compile(key_p2, d.mtl_device()));
 
-    auto& enc = d.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
 
     // ── Phase 1 dispatch ──────────────────────────────────────────────────
     enc.set_compute_pipeline_state(pl_p1);
@@ -504,7 +504,7 @@ void MFAttention::eval_gpu(
         auto* pl_sk2 = reinterpret_cast<MTL::ComputePipelineState*>(
             ShaderCache::get().get_or_compile(key_sk_reduce, d.mtl_device()));
 
-        auto& enc_sk = d.get_command_encoder(stream().index);
+        auto& enc_sk = mlx::core::metal::get_command_encoder(stream());
 
         // ── Phase 1: V2 split-K partial ────────────────────────────────────
         enc_sk.set_compute_pipeline_state(pl_sk1);
@@ -629,7 +629,7 @@ void MFAttention::eval_gpu(
       sp4.mask_batch_stride = 0;
       sp4.mask_head_stride  = 0;
 
-      auto& enc4 = d.get_command_encoder(stream().index);
+      auto& enc4 = mlx::core::metal::get_command_encoder(stream());
       enc4.set_compute_pipeline_state(pipeline4);
       enc4.set_input_array(q,          0);
       enc4.set_input_array(k,          1);
@@ -734,7 +734,7 @@ void MFAttention::eval_gpu(
       sp5.mask_batch_stride = 0;  // V5 excludes sparse (has_block_mask) in eligibility guard
       sp5.mask_head_stride  = 0;
 
-      auto& enc5 = d.get_command_encoder(stream().index);
+      auto& enc5 = mlx::core::metal::get_command_encoder(stream());
       enc5.set_compute_pipeline_state(pipeline5);
       enc5.set_input_array(q,          0);
       enc5.set_input_array(k,          1);
@@ -852,7 +852,7 @@ void MFAttention::eval_gpu(
       sp3.mask_batch_stride = 0;
       sp3.mask_head_stride  = 0;
 
-      auto& enc3 = d.get_command_encoder(stream().index);
+      auto& enc3 = mlx::core::metal::get_command_encoder(stream());
       enc3.set_compute_pipeline_state(pipeline3);
       enc3.set_input_array(q,          0);
       enc3.set_input_array(k,          1);
@@ -968,7 +968,7 @@ void MFAttention::eval_gpu(
       sp2.attn_bias_mode    = params_.attn_bias_mode;
       sp2.attn_bias_nkv     = S;  // N_kv for bias indexing
 
-      auto& enc2 = d.get_command_encoder(stream().index);
+      auto& enc2 = mlx::core::metal::get_command_encoder(stream());
       enc2.set_compute_pipeline_state(pipeline2);
       enc2.set_input_array(q,          0);
       enc2.set_input_array(k,          1);
@@ -1102,7 +1102,7 @@ void MFAttention::eval_gpu(
       sp_ds.attn_bias_mode    = params_.attn_bias_mode;
       sp_ds.attn_bias_nkv     = S;
 
-      auto& enc_ds = d.get_command_encoder(stream().index);
+      auto& enc_ds = mlx::core::metal::get_command_encoder(stream());
       enc_ds.set_compute_pipeline_state(pipeline_ds);
       enc_ds.set_input_array(q,          0);
       enc_ds.set_input_array(k,          1);
@@ -1228,7 +1228,7 @@ void MFAttention::eval_gpu(
   }
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
-  auto& enc = d.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
 
   // Buffers: Q=0, K=1, V=2, O=3, L=4, params=5, (block_mask=6 if sparse)
@@ -1458,7 +1458,7 @@ void MFABackwardQuery::eval_gpu(
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
   enc.set_input_array(q,            0);
   enc.set_input_array(k,            1);
@@ -1563,7 +1563,7 @@ void MFABackwardKeyValue::eval_gpu(
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
   enc.set_input_array(q,          0);
   enc.set_input_array(k,          1);
@@ -1669,7 +1669,7 @@ void MFASteelBwdDQ::eval_gpu(
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
   enc.set_input_array(q,     0);
   enc.set_input_array(k,     1);
@@ -1777,7 +1777,7 @@ void MFASteelBwdDKV::eval_gpu(
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
   enc.set_input_array(q,     0);
   enc.set_input_array(k,     1);
@@ -2272,7 +2272,7 @@ void MFAVarlenAttention::eval_gpu(
   void* raw = ShaderCache::get().get_or_compile(key, dev.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
   enc.set_input_array(q,            0);
   enc.set_input_array(k,            1);
@@ -2460,7 +2460,7 @@ void MFAPagedSteelForward::eval_gpu(
   pp.H_kv              = H_kv;
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
 
   // Buffer layout: Q=0, k_pool=1, v_pool=2, block_table=3, seq_lens=4,
@@ -2689,7 +2689,7 @@ void MFASageForward::eval_gpu(
   sp.k_scale_stride_h  = NK_blocks;
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
 
   // Buffer layout (CP2): Q=0, K_int8=1, V=2, O=3, L=4, params=5, K_scale=6
@@ -2897,7 +2897,7 @@ void MFAGNAForward::eval_gpu(
   gna.dim12 = params_.dim1 * params_.dim2;
 
   // ── Dispatch ────────────────────────────────────────────────────────────
-  auto& enc = dev.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pipeline);
 
   enc.set_input_array (q, 0);
@@ -3058,7 +3058,7 @@ void MFAPagedVarlenForward::eval_gpu(
   auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
   // Dispatch
-  auto& enc = d.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pl);
   enc.set_input_array(q,            0);
   enc.set_input_array(k_pool,       1);
@@ -3222,7 +3222,7 @@ void MFAPagedVarlenTQForward::eval_gpu(
   auto* pl  = reinterpret_cast<MTL::ComputePipelineState*>(raw);
 
   // Dispatch
-  auto& enc = d.get_command_encoder(stream().index);
+  auto& enc = mlx::core::metal::get_command_encoder(stream());
   enc.set_compute_pipeline_state(pl);
   enc.set_input_array(q,            0);
   enc.set_input_array(k_pool_tq,    1);

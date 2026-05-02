@@ -167,7 +167,7 @@ void MFAScatterKV::eval_gpu(
     constexpr int THREADS = 256;
     const int num_tg = (total_elems + THREADS - 1) / THREADS;
 
-    auto& enc = dev.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
     enc.set_compute_pipeline_state(pipeline);
     enc.set_output_array(pool_out, 0);
     enc.set_input_array(pool,     1);

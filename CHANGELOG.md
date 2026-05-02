@@ -4,6 +4,43 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.28.0] — 2026-05-02
+
+### Fixed
+- **Compilation against MLX >= 0.31.0** — adapt to two breaking changes between
+  MLX 0.31.0 and 0.31.2:
+  1. `Device::get_command_encoder(int index)` was removed (PR #3316
+     "Decouple CommandEncoder from Device" + #3264 "Merge DeviceStream into
+     CommandEncoder"). Replaced 23 call sites across 5 files (`mfa_attention.cpp`,
+     `mfa_quantize.cpp`, `mfa_scatter.cpp`, `mfa_paged_gather.cpp`,
+     `mfa_smooth_quant.cpp`) with the new free function
+     `mlx::core::metal::get_command_encoder(stream())`.
+  2. nanobind upstream bumped `NB_INTERNALS_VERSION` 17 → 19. MLX 0.31.2 is
+     built against nanobind v2.12 (NB_INTERNALS_VERSION=19); our extension was
+     pinned to v2.10 (NB_INTERNALS_VERSION=17). Capsule key mismatch silently
+     made `mlx::core::array` "incompatible" between modules at runtime
+     (TypeError on every binding call). Bumped FetchContent tag to v2.12.0.
+
+### Changed
+- **Minimum MLX version bumped to 0.31.0** (`pyproject.toml` build + runtime
+  deps). Earlier MLX is no longer supported because `metal::get_command_encoder`
+  free function only exists since 0.31.x.
+- **nanobind v2.10.0 → v2.12.0** (CMakeLists.txt FetchContent_Declare).
+
+### Known Issues
+- **18 sparse-attention test failures on MLX 0.31.2** (`flash_attention_sparse`,
+  GNA, top-k, sparse backward). Pattern: NaN appears at Q-tile 1+ in the V1
+  STEEL sparse kernel, while Q-tile 0 is correct. Root cause is consistent
+  with MLX 0.31.2's CommandEncoder refactor (PR #3348 "thread-local",
+  #3282 "smart pointers") exposing a latent buffer-state assumption in the
+  persistent-kernel pattern (`kTilesPerTG = 4`). **Dense attention paths
+  (V1, V2, V3, V4, V5, paged-varlen, flash decode) are unaffected.**
+  Tracking issue: investigate kernel-level threadgroup memory init for
+  multi-tile-per-TG dispatch.
+- 2 numerical-precision failures in `test_turboquant.py::TestQRRotation`
+  (tolerance 1e-4 vs observed 5e-3). MLX 0.31.2 may have changed QR
+  decomposition precision; tolerance may need bump.
+
 ## [2.27.0] — 2026-04-06
 
 ### Native `attn_bias` Metal Kernel

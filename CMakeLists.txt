@@ -64,13 +64,19 @@ message(STATUS "MLX library: ${MLX_LIB}")
 # MLX 0.31.1 builds nanobind via CMake FetchContent (PR #2949), producing
 # capsule key: __nb_internals_v17_system_libcpp_abi1_mlx__
 # We use the same method to guarantee ABI compatibility.
-# nanobind v2.10.0 → NB_INTERNALS_VERSION=17 (matches MLX 0.31.x).
+# Version mapping (NB_INTERNALS_VERSION → nanobind tag):
+#   v17 → nanobind v2.10.x  (MLX 0.31.0 / 0.31.1)
+#   v18 → nanobind v2.11.x
+#   v19 → nanobind v2.12.x  (MLX 0.31.2+)
+# nanobind capsule key includes NB_INTERNALS_VERSION, so a mismatch silently
+# breaks cross-extension type sharing (mlx::core::array passed via Python
+# becomes "incompatible" to nanobind's type matcher).
 # If MLX upgrades nanobind, update the GIT_TAG here to match.
 include(FetchContent)
 FetchContent_Declare(
   nanobind
   GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-  GIT_TAG        v2.10.0
+  GIT_TAG        v2.12.0
   GIT_SHALLOW    ON
 )
 FetchContent_MakeAvailable(nanobind)

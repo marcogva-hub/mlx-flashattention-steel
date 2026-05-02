@@ -1,10 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.9", "mlx>=0.18.0"]
+requires = ["scikit-build-core>=0.9", "mlx>=0.31.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-mfa"
-version = "2.27.0"
+version = "2.28.0"
 description = "Benchmark-backed Metal Flash Attention backends for MLX on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.18.0", "numpy"]
+dependencies = ["mlx>=0.31.0", "numpy"]
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"

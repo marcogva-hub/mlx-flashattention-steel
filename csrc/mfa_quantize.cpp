@@ -183,7 +183,7 @@ void MFAQuantizePerBlock::eval_gpu(
 
     QuantizeBlockParams params{B_, H_, N_, D_, block_size_, N_blocks_};
 
-    auto& enc = dev.get_command_encoder(stream().index);
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
     enc.set_compute_pipeline_state(pipeline);
     enc.set_input_array(x,          0);
     enc.set_output_array(out_int8,  1);
