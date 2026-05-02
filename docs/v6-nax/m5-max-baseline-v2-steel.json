@@ -1,0 +1,346 @@
+{
+  "timestamp": "2026-05-02T19:13:52.204742+00:00",
+  "machine_info": {
+    "machine": "arm64",
+    "mac_model": "Mac17,6",
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5",
+    "python_version": "3.11.14",
+    "mlx_version": "0.31.2",
+    "mlx_mfa_version": "2.28.0",
+    "mlx_device_info": {
+      "device_name": "Apple M5 Max",
+      "max_recommended_working_set_size": 115448725504,
+      "memory_size": 137438953472,
+      "architecture": "applegpu_g17s",
+      "max_buffer_length": 86586540032,
+      "resource_limit": 499000
+    },
+    "mfa_device_info": {
+      "device_name": "Apple M5 Max",
+      "gpu_family_gen": 17,
+      "is_m3_plus": true,
+      "is_m5_plus": true,
+      "chip_name": "M5",
+      "gpu_cores": 40,
+      "extension_available": true
+    }
+  },
+  "benchmark_config": {
+    "warmup_iterations": 3,
+    "measured_iterations": 10,
+    "mlx_mfa_kernel": "V2 STEEL (automatic dispatch via flash_attention)",
+    "comparison_baseline": "mx.fast.scaled_dot_product_attention (SDPA)"
+  },
+  "results": [
+    {
+      "name": "SeedVR2-small",
+      "shape": {
+        "B": 1,
+        "H": 20,
+        "N_q": 26730,
+        "N_kv": 26730,
+        "D": 128
+      },
+      "dtype": "float16",
+      "scale": 0.08838834764831843,
+      "input_size_mb": 391.6,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        200.604,
+        189.409,
+        182.852,
+        204.12,
+        188.429,
+        200.606,
+        203.122,
+        193.442,
+        196.636,
+        195.781
+      ],
+      "p50_ms": 196.636,
+      "mean_ms": 195.5,
+      "min_ms": 182.852,
+      "max_ms": 204.12,
+      "status": "OK",
+      "m1_max_comparison": {
+        "m1_max_p50_ms": 598.16,
+        "m1_max_H": 20,
+        "speedup_m5_over_m1": 3.04,
+        "source": "docs/audit_dit_dispatch_results.json (mlx-mfa v2.26.0, MLX 0.31.x)",
+        "note": null
+      }
+    },
+    {
+      "name": "SeedVR2-large",
+      "shape": {
+        "B": 1,
+        "H": 20,
+        "N_q": 111375,
+        "N_kv": 111375,
+        "D": 128
+      },
+      "dtype": "float16",
+      "scale": 0.08838834764831843,
+      "input_size_mb": 1631.5,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        4377.497,
+        4154.825,
+        4552.125,
+        4545.661,
+        4758.323,
+        4751.272,
+        4847.458,
+        4783.219,
+        4868.484,
+        4882.068
+      ],
+      "p50_ms": 4758.323,
+      "mean_ms": 4652.093,
+      "min_ms": 4154.825,
+      "max_ms": 4882.068,
+      "status": "OK",
+      "m1_max_comparison": {
+        "m1_max_p50_ms": 10184.8,
+        "m1_max_H": 20,
+        "speedup_m5_over_m1": 2.14,
+        "source": "docs/audit_dit_dispatch_results.json (mlx-mfa v2.26.0, MLX 0.31.x)",
+        "note": null
+      }
+    },
+    {
+      "name": "FlashVSR-dense",
+      "shape": {
+        "B": 1,
+        "H": 10,
+        "N_q": 4096,
+        "N_kv": 4096,
+        "D": 64
+      },
+      "dtype": "float16",
+      "scale": 0.125,
+      "input_size_mb": 15.0,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        1.126,
+        1.179,
+        3.397,
+        1.463,
+        1.261,
+        1.231,
+        1.285,
+        1.344,
+        1.277,
+        1.292
+      ],
+      "p50_ms": 1.285,
+      "mean_ms": 1.486,
+      "min_ms": 1.126,
+      "max_ms": 3.397,
+      "status": "OK",
+      "m1_max_comparison": {
+        "m1_max_p50_ms": 6.73,
+        "m1_max_H": 8,
+        "speedup_m5_over_m1": 5.24,
+        "source": "docs/audit_dit_dispatch_results.json (mlx-mfa v2.26.0, MLX 0.31.x)",
+        "note": "H mismatch"
+      }
+    },
+    {
+      "name": "CogVideoX",
+      "shape": {
+        "B": 1,
+        "H": 30,
+        "N_q": 70200,
+        "N_kv": 70200,
+        "D": 128
+      },
+      "dtype": "float16",
+      "scale": 0.08838834764831843,
+      "input_size_mb": 1542.5,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        2801.937,
+        2459.925,
+        2621.292,
+        2686.987,
+        2538.292,
+        2627.691,
+        2699.976,
+        2579.103,
+        2845.058,
+        2598.984
+      ],
+      "p50_ms": 2627.691,
+      "mean_ms": 2645.925,
+      "min_ms": 2459.925,
+      "max_ms": 2845.058,
+      "status": "OK",
+      "m1_max_comparison": {
+        "m1_max_p50_ms": 6134.6,
+        "m1_max_H": 30,
+        "speedup_m5_over_m1": 2.33,
+        "source": "docs/audit_dit_dispatch_results.json (mlx-mfa v2.26.0, MLX 0.31.x)",
+        "note": null
+      }
+    },
+    {
+      "name": "LTX2-cross",
+      "shape": {
+        "B": 1,
+        "H": 8,
+        "N_q": 2048,
+        "N_kv": 14000,
+        "D": 64
+      },
+      "dtype": "float16",
+      "scale": 0.125,
+      "input_size_mb": 29.3,
+      "correctness_rmse": 0.07214858382940292,
+      "times_ms": [
+        1.318,
+        1.328,
+        1.31,
+        1.676,
+        1.488,
+        2.253,
+        1.222,
+        1.341,
+        1.446,
+        1.344
+      ],
+      "p50_ms": 1.344,
+      "mean_ms": 1.473,
+      "min_ms": 1.222,
+      "max_ms": 2.253,
+      "status": "OK"
+    },
+    {
+      "name": "small-D64",
+      "shape": {
+        "B": 1,
+        "H": 8,
+        "N_q": 1024,
+        "N_kv": 1024,
+        "D": 64
+      },
+      "dtype": "float16",
+      "scale": 0.125,
+      "input_size_mb": 3.0,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        0.265,
+        0.244,
+        0.283,
+        0.26,
+        0.345,
+        0.456,
+        0.337,
+        0.27,
+        0.288,
+        0.278
+      ],
+      "p50_ms": 0.283,
+      "mean_ms": 0.303,
+      "min_ms": 0.244,
+      "max_ms": 0.456,
+      "status": "OK"
+    },
+    {
+      "name": "small-D128",
+      "shape": {
+        "B": 1,
+        "H": 8,
+        "N_q": 1024,
+        "N_kv": 1024,
+        "D": 128
+      },
+      "dtype": "float16",
+      "scale": 0.08838834764831843,
+      "input_size_mb": 6.0,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        0.519,
+        0.364,
+        0.347,
+        0.363,
+        0.349,
+        0.373,
+        0.563,
+        0.457,
+        0.371,
+        0.365
+      ],
+      "p50_ms": 0.371,
+      "mean_ms": 0.407,
+      "min_ms": 0.347,
+      "max_ms": 0.563,
+      "status": "OK"
+    },
+    {
+      "name": "small-D64-bf16",
+      "shape": {
+        "B": 1,
+        "H": 8,
+        "N_q": 1024,
+        "N_kv": 1024,
+        "D": 64
+      },
+      "dtype": "bfloat16",
+      "scale": 0.125,
+      "input_size_mb": 3.0,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        0.39,
+        0.38,
+        0.317,
+        0.284,
+        0.289,
+        0.352,
+        0.3,
+        0.276,
+        0.26,
+        0.323
+      ],
+      "p50_ms": 0.317,
+      "mean_ms": 0.317,
+      "min_ms": 0.26,
+      "max_ms": 0.39,
+      "status": "OK"
+    },
+    {
+      "name": "small-D128-bf16",
+      "shape": {
+        "B": 1,
+        "H": 8,
+        "N_q": 1024,
+        "N_kv": 1024,
+        "D": 128
+      },
+      "dtype": "bfloat16",
+      "scale": 0.08838834764831843,
+      "input_size_mb": 6.0,
+      "correctness_rmse": 0.0,
+      "times_ms": [
+        0.465,
+        0.441,
+        0.321,
+        0.423,
+        0.461,
+        0.391,
+        0.376,
+        0.532,
+        0.33,
+        0.334
+      ],
+      "p50_ms": 0.423,
+      "mean_ms": 0.407,
+      "min_ms": 0.321,
+      "max_ms": 0.532,
+      "status": "OK"
+    }
+  ],
+  "m1_max_comparison_note": "M1 Max numbers from docs/audit_dit_dispatch_results.json (M1 Max 32 GPU cores, mlx-mfa v2.26.0). Different mlx-mfa version but V2 STEEL kernel was stable. Speedup factors should be reliable to within 5-10%."
+}
