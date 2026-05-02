@@ -108,3 +108,79 @@ std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code) {
 }
 
 }  // namespace mlx_mfa
+
+// === Draw-Things-port forward kernel: source generation + JIT compile ===
+// Test that the ported NAAttentionKernel produces a valid MSL 4 string and
+// that the runtime metal compiler accepts it.
+
+#include "mfa/v6_nax/NAAttentionKernel.hpp"
+
+namespace mlx_mfa {
+
+std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk,
+                                      int dtype_code) {
+  // dtype_code: 0=FP16, 1=BF16
+  GEMMOperandPrecision input_prec = (dtype_code == 1)
+      ? GEMMOperandPrecision::BF16
+      : GEMMOperandPrecision::FP16;
+
+  // Memory precisions (Q, K, V, O all input precision; intermediates float).
+  AttentionOperands<GEMMOperandPrecision> mp;
+  mp[AttentionOperand::Q] = input_prec;
+  mp[AttentionOperand::K] = input_prec;
+  mp[AttentionOperand::V] = input_prec;
+  mp[AttentionOperand::O] = input_prec;
+  mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
+  mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
+  mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
+
+  // Block dimensions: parallelization, traversal, head.
+  // For D=64: BQ=32 BK=32; for D=128: BQ=32 BK=32. Conservative defaults.
+  unsigned short BQ = 32;
+  unsigned short BK = 32;
+  simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)head_dim);
+
+  NAAttentionKernelDescriptor desc(
+      blockDims, (unsigned short)head_dim, (unsigned short)Hq,
+      (unsigned short)Hk, /*executionSIMDGroups=*/4, /*checkCEdge1=*/true, mp,
+      AttentionKernelType::forward, /*scale=*/1.0f / 8.0f,
+      /*bypassThreadgroupMemory=*/false);
+
+  NAAttentionKernel kernel(desc);
+  return kernel.source;
+}
+
+// Forward decl from v6_nax_compile.mm
+void* v6_nax_compile_with_constants(
+    const std::string& source, const std::string& function_name,
+    void* raw_device,
+    uint32_t R, uint32_t C, uint32_t Q_bs, uint32_t K_bs,
+    uint32_t V_bs, uint32_t O_bs);
+
+std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code) {
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto& d = mlx::core::metal::device(s.device);
+  void* mtl_device = d.mtl_device();
+
+  std::string source = v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);
+
+  // Use trial values for function constants. The Draw Things kernel takes
+  // R, C, and batch strides as function constants. Set them to a 64×64
+  // trial to test compilation.
+  uint32_t R = 64, C = 64;
+  uint32_t qbs = (uint32_t)(Hq * head_dim * R);
+  uint32_t kbs = (uint32_t)(Hk * head_dim * C);
+  uint32_t vbs = kbs;
+  uint32_t obs = qbs;
+
+  try {
+    void* pipeline = v6_nax_compile_with_constants(
+        source, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
+    (void)pipeline;
+    return "OK";
+  } catch (const std::exception& e) {
+    return std::string("FAIL: ") + e.what();
+  }
+}
+
+}  // namespace mlx_mfa

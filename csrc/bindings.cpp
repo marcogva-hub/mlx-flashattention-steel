@@ -12,8 +12,11 @@
 
 #include "mfa_attention.hpp"
 #include "mfa_env.hpp"
+#include "shader_cache.hpp"
 
 namespace mlx_mfa {
+// estimate_gpu_cores defined in mfa_steel_fwd_v2.cpp
+int estimate_gpu_cores(const std::string& device_name, int arch_gen);
 // V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp).
 std::string v6_nax_probe_msl4();
 std::string v6_nax_probe_mpp();
@@ -21,6 +24,13 @@ std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
+// Draw Things port: source generation + JIT compile
+std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
+std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
+// V6 NAX forward (returns O, L)
+std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, bool causal);
 }  // namespace mlx_mfa
 
 #include "mfa_paged_gather.hpp"
@@ -28,7 +38,6 @@ bool device_has_nax_bf16();
 #include "mfa_scatter.hpp"
 #include "mfa_smooth_quant.hpp"
 #include "mfa_steel_fwd_v2.hpp"
-#include "shader_cache.hpp"
 
 namespace nb = nanobind;
 
@@ -287,6 +296,27 @@ NB_MODULE(_ext, m) {
         },
         nb::arg("head_dim"), nb::arg("dtype_code"),
         "Compile the V6 NAX forward kernel (D, dtype). Returns 'OK' or 'FAIL: <err>'.");
+  m.def("v6_nax_dt_generate_source",
+        [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("Hq"), nb::arg("Hk"), nb::arg("dtype_code"),
+        "Generate MSL 4 source from the Draw Things NAAttention port (no compile).");
+  m.def("v6_nax_dt_compile",
+        [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_dt_compile(head_dim, Hq, Hk, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("Hq"), nb::arg("Hk"), nb::arg("dtype_code"),
+        "JIT-compile the Draw Things port. Returns 'OK' or 'FAIL: <err>'.");
+
+  m.def("v6_nax_forward",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, bool causal) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("causal") = false,
+        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16.");
 
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);
