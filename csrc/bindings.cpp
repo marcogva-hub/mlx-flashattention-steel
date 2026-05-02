@@ -12,6 +12,17 @@
 
 #include "mfa_attention.hpp"
 #include "mfa_env.hpp"
+
+namespace mlx_mfa {
+// V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp).
+std::string v6_nax_probe_msl4();
+std::string v6_nax_probe_mpp();
+std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
+// V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
+bool device_has_neural_accelerators();
+bool device_has_nax_bf16();
+}  // namespace mlx_mfa
+
 #include "mfa_paged_gather.hpp"
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
@@ -255,6 +266,28 @@ NB_MODULE(_ext, m) {
   //                          Correct per-variant: M1 Max=32, M1 base=8, M2 Max=38, …
   //                          Falls back to conservative gen-based estimate for
   //                          unknown names (simulator, future hardware).
+  // V6 NAX bring-up probes — JIT-compile minimal MSL 4 + MPP kernels via
+  // mlx-mfa's shader cache. Used by Phase 0 Task 0.1 to gate the rest of
+  // the V6 NAX implementation.
+  m.def("v6_nax_probe_msl4", []() -> std::string {
+    return mlx_mfa::v6_nax_probe_msl4();
+  }, "Probe: compile a minimal MSL 4.0 stub. Returns 'OK' or 'FAIL: <err>'.");
+  m.def("v6_nax_probe_mpp", []() -> std::string {
+    return mlx_mfa::v6_nax_probe_mpp();
+  }, "Probe: compile MSL 4 + MPP matmul2d stub. Returns 'OK' or 'FAIL: <err>'.");
+  m.def("device_has_neural_accelerators", []() -> bool {
+    return mlx_mfa::device_has_neural_accelerators();
+  }, "True iff the GPU has NAX (Apple GPU family 10+, M5 family).");
+  m.def("device_has_nax_bf16", []() -> bool {
+    return mlx_mfa::device_has_nax_bf16();
+  }, "True iff NAX is available AND macOS >= 26.1 (MPP bf16 support).");
+  m.def("v6_nax_probe_forward_compile",
+        [](int head_dim, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_probe_forward_compile(head_dim, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("dtype_code"),
+        "Compile the V6 NAX forward kernel (D, dtype). Returns 'OK' or 'FAIL: <err>'.");
+
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);
     auto& d = mlx::core::metal::device(s.device);
@@ -269,6 +302,8 @@ NB_MODULE(_ext, m) {
     nb::dict info;
     info["gpu_family_gen"] = gen;
     info["is_m3_plus"]     = (gen >= 15);
+    info["is_m5_plus"]     = (gen >= 17);
+    info["has_nax"]        = (gen >= 17);
     info["device_name"]    = dev_name;
     info["gpu_cores"]      = cores;
     return info;

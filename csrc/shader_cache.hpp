@@ -74,11 +74,13 @@ class ShaderCache {
       // 25-26: reserved
       PagedVarlenForward         = 27,  // Fused packed varlen Q + paged KV gather
       PagedVarlenTQForward       = 28,  // TurboQuant: packed uint8 K + centroid dequant
-      // --- M5+ / Metal 4 stubs (A19+, gen >= 17) ---
-      // Metal4TensorOps = 22,  // Reserved: Metal 4 cooperative tensor API
-      //                         // MTLTensor / cooperative tensor ops (A19+/M5+).
-      //                         // Not yet implemented; M5+ hardware required.
-      //                         // Dispatch stub in mfa_attention.cpp gated on is_m5_plus.
+      // --- V6 NAX: MPP cooperative tensor attention (M5+/Apple10) ---
+      // Uses MetalPerformancePrimitives matmul2d for Q@K^T and P@V GEMMs.
+      // Compiled with MSL 4.0 (required for `<metal_tensor>` and MPP).
+      // Strict support matrix: D ∈ {64,128}, FP16/BF16, dense forward only,
+      // no causal/mask/bias/softcap/window/sparse/RoPE in v1.
+      // See docs/v6-nax/ for the architecture and implementation notes.
+      SteelForwardV6NAX          = 22,  // V6 NAX: MPP-accelerated forward (M5+, MSL 4)
     };
 
     KernelType type;
@@ -115,13 +117,14 @@ class ShaderCache {
   void   clear();
   size_t size() { std::lock_guard<std::mutex> lock(mtx_); return cache_.size(); }
 
- private:
-  ShaderCache() = default;
-
+  // Public for V6 NAX bring-up probe. Caller owns the returned pipeline.
   void* compile_shader(
       const std::string& source,
       const std::string& function_name,
       void* device);
+
+ private:
+  ShaderCache() = default;
 
   std::mutex mtx_;
   std::unordered_map<KernelKey, void*, KernelKeyHash> cache_;
