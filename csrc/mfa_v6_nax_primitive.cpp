@@ -94,13 +94,22 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
   mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
 
+  // Tile dimensions: Phase 3B autoresearch overrides via env vars.
+  // BLOCK_R = parallelization (rows per simdgroup) - default 32
+  // BLOCK_C = traversal block (K columns) - default 32
+  // executionSIMDGroups - default 4
+  // BLOCK_D = head dimension (always full HEAD_DIM in v1)
   unsigned short BQ = 32, BK = 32;
+  uint16_t exec_sg = 4;
+  if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
+  if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
+  if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) exec_sg = (uint16_t)std::atoi(env_sg);
   simd::ushort3 blockDims =
       simd::make_ushort3(BQ, BK, (unsigned short)head_dim);
 
   NAAttentionKernelDescriptor desc(
       blockDims, (unsigned short)head_dim, (unsigned short)Hq,
-      (unsigned short)Hk, /*executionSIMDGroups=*/4,
+      (unsigned short)Hk, /*executionSIMDGroups=*/exec_sg,
       /*checkCEdge1=*/true, mp, AttentionKernelType::forward,
       /*scale=*/1.0f / std::sqrt((float)head_dim),
       /*bypassThreadgroupMemory=*/false,
@@ -163,8 +172,18 @@ public:
     uint32_t vbs = kbs;
     uint32_t obs = qbs;
 
+    // Tile params (env vars override default for autoresearch).
+    unsigned short BQ = 32, BK = 32;
+    uint16_t executionSIMDGroups = 4;
+    if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
+    if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
+    if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) executionSIMDGroups = (uint16_t)std::atoi(env_sg);
+
+    // Include tile params in cache key so different configs get different pipelines.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
-              R, C, qbs, kbs, vbs, obs};
+              R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
+              qbs + ((uint32_t)executionSIMDGroups << 24),
+              kbs, vbs, obs};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -180,8 +199,6 @@ public:
       v6_pipelines[key] = pipeline;
     }
 
-    unsigned short BQ = 32, BK = 32;
-    uint16_t executionSIMDGroups = 4;
     unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
     unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
 

@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-05-03",
+  "machine": "Apple M5 Max",
+  "results": [
+    {
+      "name": "FlashVSR-dense",
+      "v6_tuned_ms": 1.4803,
+      "v6_default_ms": 1.920040995173622,
+      "sdpa_ms": 0.913167001272086,
+      "v2_steel_ms": 3.7074580031912774,
+      "v6_tuned_vs_sdpa": 0.616879687409367,
+      "v6_tuned_vs_v2": 2.5045315160381527
+    },
+    {
+      "name": "SeedVR2-small",
+      "v6_tuned_ms": 231.2706,
+      "v6_default_ms": 881.6700410025078,
+      "sdpa_ms": 205.6302089986275,
+      "v2_steel_ms": 637.5876660022186,
+      "v6_tuned_vs_sdpa": 0.8891325097034707,
+      "v6_tuned_vs_v2": 2.7568902662172303
+    },
+    {
+      "name": "CogVideoX",
+      "v6_tuned_ms": 2870.4756,
+      "v6_default_ms": 10828.31812499353,
+      "sdpa_ms": 2507.003207996604,
+      "v2_steel_ms": 7744.501749999472,
+      "v6_tuned_vs_sdpa": 0.8733755507263687,
+      "v6_tuned_vs_v2": 2.6979855707533176
+    },
+    {
+      "name": "SeedVR2-large",
+      "v6_tuned_ms": 4659.2849,
+      "v6_default_ms": 18549.721582996426,
+      "sdpa_ms": 4493.95620800351,
+      "v2_steel_ms": 11997.022290997847,
+      "v6_tuned_vs_sdpa": 0.9645162947652139,
+      "v6_tuned_vs_v2": 2.5748634282908625
+    }
+  ]
+}
