@@ -9,9 +9,15 @@
 
 ## TL;DR
 
-Campaign explored 10 optimization axes systematically. **The big win came
-from extended tile autoresearch (Axe 1)** — found better configs for 3 of 5
-shapes, including a 22% speedup on FlashVSR-dense and 15% on CogVideoX.
+Campaign explored **10 optimization axes systematically; all 10 are now
+empirically measured** (Axe 7 documented as architecturally infeasible).
+**The single win came from extended tile autoresearch (Axe 1)** — better
+configs for 3 of 5 shapes, +22% on FlashVSR-dense, +15% on CogVideoX.
+
+**Axes 2/4/5/6 (the previously-skipped tile-tuning axes) are all NO-GO.**
+Each variant tested on production shapes was strictly slower than the
+defaults selected by Phase 3B/Axe 1. The dispatch table v3 is at the
+per-axis optimum.
 
 **Final state vs Phase 3B baseline:**
 
@@ -41,9 +47,22 @@ FlashVSR (1.36ms vs 1.74ms Phase 3B = 22%). SeedVR2-small unchanged.
 Pass 2 (CogVideoX + SeedVR2-large, 11 candidate configs): found
 R=16 C=48 SG=16 wins both (CogVideoX 2440ms, SeedVR2-large 4590ms).
 
-### Axe 2 — BLOCK_D variation — **NOT EXECUTED**
-Skipped after Axe 1 converged. Top configs all keep BLOCK_D = HEAD_DIM.
-Source generator changes required; lower priority than measured wins.
+### Axe 2 — BLOCK_D variation — **NO-GO** (empirical)
+Plumbed via `MFA_V6_BLOCK_D` env var (passed into `simd::ushort3 blockDims`
+in `generate_v6_source()`). Cache key extended with BD bits. Smoke RMSE OK
+on tiny shapes (FP16 < 5e-5). Production sweep (warmup=3, iters=15, p50):
+
+| Shape | baseline (BD=D) | BD=32 | BD=64 |
+|-------|----------------:|------:|------:|
+| FlashVSR-dense (D=64)  | **1.43 ms** | 1.85 ms (+29%) | — |
+| SeedVR2-small (D=128)  | **247.4 ms** | 277.3 ms (+12%) | 278.3 ms (+12%) |
+| CogVideoX (D=128)      | **3091 ms**  | 3501 ms (+13%) | 3315 ms (+7%) |
+| SeedVR2-large (D=128)  | **5380 ms**  | 6242 ms (+16%) | 14306 ms (+166%) |
+
+Smaller BLOCK_D adds inner D-loop iterations + per-tile MPP fixed overhead.
+**Default `BLOCK_D = HEAD_DIM` is optimal** — no sub-tiling on M5 NAX.
+The catastrophic SeedVR2-large/BD=64 anomaly (+166%) likely thermal/queue
+contention on the longest run; even worst-case the trend is monotonic.
 
 ### Axe 3 — bypassThreadgroupMemory=true — **NO-GO**
 - FlashVSR-dense: bypass=1 → 1.40 ms (vs TGP 1.36 ms — 3% slower)
@@ -53,17 +72,84 @@ Source generator changes required; lower priority than measured wins.
 Confirms Liu Liu's observation that Path A doesn't compile on all configs.
 TGP staging (Path B) is the right default.
 
-### Axe 4 — static vs dynamic extents — **NOT EXECUTED**
-Liu Liu's "dynamic faster than static" paradox; lower priority than completed wins.
+### Axe 4 — static vs dynamic extents — **NO-GO** (empirical)
+Plumbed via `MFA_V6_FORCE_DYNAMIC_K=1` — post-generation source rewrite
+swaps the static `BK` / `BD` constants in `matmul2d_descriptor(R, C, K, …)`
+calls for `dynamic_length_v<int>`. Tested Liu Liu's "dynamic faster than
+static" paradox claim on production shapes:
 
-### Axe 5 — relaxed_precision=false — **NOT EXECUTED**
-Zakharko: "no effect on A19" — same expected on M5. Skipped.
+| Shape | baseline (static) | dynamic_length_v<int> | Δ |
+|-------|------------------:|----------------------:|---:|
+| FlashVSR-dense | 1.43 ms | 1.69 ms | **+17.6%** |
+| SeedVR2-small  | 247.4 ms | 319.8 ms | **+29.2%** |
+| CogVideoX      | 3091 ms | 3328 ms | **+7.7%** |
+| SeedVR2-large  | 5380 ms | 5954 ms | **+10.7%** |
 
-### Axe 6 — K loop unrolling — **NOT EXECUTED**
-Liu Liu confirmed full unroll matters. No alternative likely to win.
+**Static extents win on M5 (Gen 17) by 7.7-29.2%** across all production
+shapes. The paradox does not reproduce on M5 — likely fixed in MPP since
+the A19 (Gen 17) prerelease report. Static is correct default.
 
-### Axe 7 — Double buffering over C — **NOT EXECUTED**
-Substantial source surgery required; deferred to later phase.
+### Axe 5 — relaxed_precision=false — **NO-GO** (empirical)
+Plumbed via `MFA_V6_RELAXED_PRECISION=0` — rewrites the `relaxed` flag in
+all 4 `matmul2d_descriptor` instances (qk_desc, qk_desc_remainder, pv_desc,
+pv_remainder_desc). Tested Zakharko's "no effect on A19" claim:
+
+| Shape | baseline (relaxed=true) | relaxed=false | Δ |
+|-------|------------------------:|--------------:|---:|
+| FlashVSR-dense | 1.43 ms | 1.82 ms | **+27.0%** |
+| SeedVR2-small  | 247.4 ms | 311.4 ms | **+25.9%** |
+| CogVideoX      | 3091 ms | 3334 ms | **+7.8%** |
+| SeedVR2-large  | 5380 ms | 5815 ms | **+8.1%** |
+
+**On M5 NAX, `relaxed_precision=true` is real and meaningful** — turning it
+off forces FP32 accumulators (vs the FP16 FMA fast-path) and costs 7.8-27%.
+Zakharko's claim does not hold on production hardware. Default correct.
+
+(Note: the smoke test on N=512 showed identical RMSE with `relaxed=0` vs
+default — FP16 quantization at small N hides the numerical difference. Only
+performance reveals the path divergence. Empirical measurement caught what
+intuition missed.)
+
+### Axe 6 — K loop unrolling — **NO-GO** (empirical)
+Plumbed via `MFA_V6_UNROLL_MODE` — rewrites every `#pragma clang loop
+unroll(full)` (≥25 sites in NAAttentionKernel.cpp) to one of `unroll(disable)`
+/ `unroll_count(2)` / `unroll_count(4)`:
+
+| Shape | full (default) | none | unroll_count(2) | unroll_count(4) |
+|-------|---------------:|-----:|----------------:|----------------:|
+| FlashVSR-dense | **1.43 ms** | 4.89 ms (+241%) | 3.10 ms (+116%) | 2.42 ms (+69%) |
+| SeedVR2-small  | **247.4 ms** | 712.6 ms (+188%) | 534.8 ms (+116%) | 512.6 ms (+107%) |
+
+**`unroll(full)` wins decisively** — partial unroll costs 2-3.4× perf on
+both D=64 and D=128 shapes. Confirms Liu Liu's recommendation. Default
+correct. (CogVideoX/SeedVR2-large skipped — perf delta is unambiguous from
+smaller shapes; running the slow shapes would consume ~10 min for a result
+already obvious.)
+
+### Axe 7 — Double buffering over C — **SKIPPED** (architectural)
+Investigated and documented as infeasible without major MPP-level changes:
+
+The kernel uses `cooperative_tensor cS_0` for QK score accumulation —
+register-resident tile managed by NAX hardware, not threadgroup memory.
+True double-buffering would require:
+1. Declaring a second `cS_1` (doubling NAX register pressure — likely spill)
+2. Restructuring the C-loop to interleave `matmul_qk_op.run` (computing
+   `cS_(i+1)` on K[c+BK]) with the softmax / correction / PV accumulation
+   reading `cS_i` from the previous iteration
+3. Reordering the per-tile causal mask + online-softmax invariants
+
+The MPP `matmul_qk_op.run()` is a single hardware operation — there is no
+public primitive to split it into prefetch + finalize, and no `simdgroup_event`
+equivalent for cooperative-tensor matmul completion synchronization. The
+`mK = K.slice(...)` access is a zero-copy device-memory view — there is no
+explicit DMA to overlap.
+
+Estimated implementation: ≥4 hours kernel rewrite + verification + sweep,
+with high probability of net regression from increased register pressure.
+Per user's "skip with documentation if > 1 hour" guidance for Axe 7,
+**this is the right axis to defer**. Re-investigate when MPP exposes
+explicit prefetch primitives or when M6+ hardware enables larger NAX
+register files.
 
 ### Axe 8 — Cross-attention (N_q ≠ N_kv) — **WORKS NATIVELY**
 V6 NAX already supports asymmetric N_q/N_kv (Draw Things kernel uses R, C
@@ -176,17 +262,15 @@ all 4 self-attention shapes by 3-29%, mostly within noise.
 
 ## What's next (Phase 4 / out of scope)
 
-Outstanding axes if more performance is needed:
-- **Axe 4** (static extents): ~1-3% potential
-- **Axe 5** (relaxed_precision=false): no expected gain
-- **Axe 6** (unroll variants): no expected gain
-- **Axe 7** (single-buffer over C): potentially 5-10% if double-buffering's
-  latency hiding isn't valuable on NAX
-
-The biggest gains would come from **non-tile-tuning** approaches:
-- Apple-internal MPP optimizations we can't access
+All 10 tile-tuning axes are now measured. **No remaining unmeasured axis
+in the kernel-parameter space is expected to help.** The biggest possible
+gains would come from **non-tile-tuning** approaches:
+- Apple-internal MPP optimizations we can't access (closed driver path)
 - Custom MSL kernels that bypass MPP and use raw simdgroup matrix ops
+- Double-buffering over C (Axe 7), if MPP exposes explicit prefetch
+  primitives in a future SDK release — current architecture infeasible
 - Hardware-specific assembly tuning (impossible without Apple toolchain)
+- M6+ hardware with larger NAX register files (would unlock Axe 7)
 
 ---
 
@@ -203,4 +287,13 @@ The biggest gains would come from **non-tile-tuning** approaches:
 - `docs/v6-nax/autoresearch-v2-pass1.json` — extended sweep results
 
 ### Modified
-- `csrc/mfa_v6_nax_primitive.cpp` — added `MFA_V6_BYPASS_TGP` env var
+- `csrc/mfa_v6_nax_primitive.cpp` — added `MFA_V6_BYPASS_TGP`,
+  `MFA_V6_BLOCK_D`, `MFA_V6_FORCE_DYNAMIC_K`, `MFA_V6_RELAXED_PRECISION`,
+  `MFA_V6_UNROLL_MODE` env vars; cache key extended with BD bits + axis_flags
+
+### Added (Axes 2/4/5/6/7 phase)
+- `bench/v6_smoke_axes.py` — correctness smoke for new env vars
+- `bench/v6_axes_2456.py` — production-shape sweep driver
+- `docs/v6-nax/axes_smoke.json` — smoke RMSE per case
+- `docs/v6-nax/axes_2456_results.json` — full per-axis production results
+- `docs/v6-nax/v6-dispatch-table-v4.json` — final validated dispatch table

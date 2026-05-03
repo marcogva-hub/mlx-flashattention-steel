@@ -94,20 +94,27 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
   mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
 
-  // Tile dimensions: Phase 3B autoresearch overrides via env vars.
-  // BLOCK_R = parallelization (rows per simdgroup) - default 32
-  // BLOCK_C = traversal block (K columns) - default 32
-  // executionSIMDGroups - default 4
-  // BLOCK_D = head dimension (always full HEAD_DIM in v1)
+  // Tile dimensions: env vars override defaults (autoresearch).
+  //   MFA_V6_BLOCK_R   — parallelization (rows per simdgroup) default 32
+  //   MFA_V6_BLOCK_C   — traversal block (K cols) default 32
+  //   MFA_V6_EXEC_SG   — simdgroups per threadgroup default 4
+  //   MFA_V6_BLOCK_D   — head sub-tile default = head_dim (full)
+  //   MFA_V6_BYPASS_TGP — Path A (cooperative→cooperative) default 0
+  // Post-generation source string overrides:
+  //   MFA_V6_FORCE_DYNAMIC_K — force dynamic_length_v<int> for K constants
+  //   MFA_V6_RELAXED_PRECISION — 0 disables relaxed_precision in matmul2d
+  //   MFA_V6_UNROLL_MODE — full | none | 2 | 4 — pragma loop unroll setting
   unsigned short BQ = 32, BK = 32;
   uint16_t exec_sg = 4;
   bool bypass_tgp = false;
+  unsigned short BD = (unsigned short)head_dim;
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
   if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) exec_sg = (uint16_t)std::atoi(env_sg);
   if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
+  if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
   simd::ushort3 blockDims =
-      simd::make_ushort3(BQ, BK, (unsigned short)head_dim);
+      simd::make_ushort3(BQ, BK, BD);
 
   NAAttentionKernelDescriptor desc(
       blockDims, (unsigned short)head_dim, (unsigned short)Hq,
@@ -118,7 +125,86 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       /*isCausal=*/isCausal, /*masked=*/false);
 
   NAAttentionKernel kern(desc);
-  return kern.source;
+  std::string source = kern.source;
+
+  // ── Post-generation substitutions for Axes 4, 5, 6 ──────────────────────
+  // Helper: replace ALL occurrences of `from` with `to` in `s`.
+  auto replace_all = [](std::string& s, const std::string& from,
+                        const std::string& to) {
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+      s.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+
+  // Axe 4: force dynamic_length_v even when K%32==0 (paradox test).
+  if (const char* env_dk = std::getenv("MFA_V6_FORCE_DYNAMIC_K")) {
+    if (std::atoi(env_dk) != 0) {
+      // The static K values appear inside matmul2d_descriptor(R, C, K, ...).
+      // We swap any static numeric K (28, 32, 48, 64, 80, 96, 128, ...) for
+      // `dynamic_length_v<int>` only inside matmul2d_descriptor calls. Doing
+      // a coarse regex-like replace is fragile; instead we look for the
+      // already-substituted K constants and replace them.
+      // For simplicity, we replace the BLOCK_C value (BK) and BD/HEAD_DIM
+      // when they appear as the third arg of matmul2d_descriptor.
+      // (The remainder qk_desc uses HEAD_DIMENSION_REMAINDER which is small
+      // and may not be a multiple of 32 — leave it alone.)
+      std::string bk_str = std::to_string(BK);
+      std::string bd_str = std::to_string(BD);
+      // Only swap if BK or BD are multiples of 32 (otherwise dynamic is
+      // already in use). NB: the SUBSTITUTION targets must be unique in
+      // the source — they appear inside `matmul2d_descriptor(R, C, K, ...)`
+      // which is precisely where we want them.
+      if (BK % 32 == 0) {
+        // Substring " " + bk_str + ", false, false," is the PV descriptor's
+        // K position; ", false, true, true" is the QK descriptor's flags.
+        // Use safer marker — replace " <BK>, false, false, true," etc.
+        std::string find_pv = ", " + bk_str + ", false, false, true,";
+        std::string find_qk = ", " + bk_str + ", false, true, true,";
+        replace_all(source, find_pv, ", dynamic_length_v<int>, false, false, true,");
+        replace_all(source, find_qk, ", dynamic_length_v<int>, false, true, true,");
+      }
+      if (BD % 32 == 0 && BD != BK) {
+        std::string find_qk_d = ", " + bd_str + ", false, true, true,";
+        replace_all(source, find_qk_d, ", dynamic_length_v<int>, false, true, true,");
+      }
+    }
+  }
+
+  // Axe 5: relaxed_precision toggle.
+  // matmul2d_descriptor(R, C, K, leftT, rightT, /*relaxed*/ true, ...)
+  if (const char* env_rp = std::getenv("MFA_V6_RELAXED_PRECISION")) {
+    if (std::atoi(env_rp) == 0) {
+      // Find ", true, true, matmul2d_descriptor::mode" → ", true, false, ..."
+      // and ", false, true, true, matmul2d_descriptor::mode" → ", false, true, false, ..."
+      // and ", false, false, true, matmul2d_descriptor::mode" → ", false, false, false, ..."
+      replace_all(source,
+                  ", true, true, matmul2d_descriptor::mode",
+                  ", true, false, matmul2d_descriptor::mode");
+      replace_all(source,
+                  ", false, true, true, matmul2d_descriptor::mode",
+                  ", false, true, false, matmul2d_descriptor::mode");
+      replace_all(source,
+                  ", false, false, true, matmul2d_descriptor::mode",
+                  ", false, false, false, matmul2d_descriptor::mode");
+    }
+  }
+
+  // Axe 6: K-loop unroll mode override.
+  if (const char* env_un = std::getenv("MFA_V6_UNROLL_MODE")) {
+    std::string mode = env_un;
+    std::string replacement;
+    if (mode == "full") replacement = "#pragma clang loop unroll(full)";
+    else if (mode == "none") replacement = "#pragma clang loop unroll(disable)";
+    else if (mode == "2") replacement = "#pragma clang loop unroll_count(2)";
+    else if (mode == "4") replacement = "#pragma clang loop unroll_count(4)";
+    else replacement = "#pragma clang loop unroll(full)";  // fallback
+    replace_all(source, "#pragma clang loop unroll(full)", replacement);
+  }
+
+  return source;
 }
 
 }  // namespace
@@ -178,16 +264,32 @@ public:
     unsigned short BQ = 32, BK = 32;
     uint16_t executionSIMDGroups = 4;
     bool bypass_tgp = false;
+    unsigned short BD = (unsigned short)D;
+    int axis_flags = 0;
     if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
     if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
     if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) executionSIMDGroups = (uint16_t)std::atoi(env_sg);
     if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
+    if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
+    // Axes 4-6 affect the kernel source — fold them into a flag for cache.
+    if (const char* env_dk = std::getenv("MFA_V6_FORCE_DYNAMIC_K"))
+      if (std::atoi(env_dk) != 0) axis_flags |= 0x01;
+    if (const char* env_rp = std::getenv("MFA_V6_RELAXED_PRECISION"))
+      if (std::atoi(env_rp) == 0) axis_flags |= 0x02;
+    if (const char* env_un = std::getenv("MFA_V6_UNROLL_MODE")) {
+      std::string m(env_un);
+      if (m == "none") axis_flags |= 0x04;
+      else if (m == "2") axis_flags |= 0x08;
+      else if (m == "4") axis_flags |= 0x10;
+    }
 
-    // Include tile params + bypass flag in cache key.
+    // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
-              qbs + ((uint32_t)executionSIMDGroups << 24) + ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
-              kbs, vbs, obs};
+              qbs + ((uint32_t)executionSIMDGroups << 24) +
+                    ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
+              kbs + ((uint32_t)BD << 16) + ((uint32_t)axis_flags << 24),
+              vbs, obs};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
