@@ -339,3 +339,86 @@ STATUS: COMPLETE
   numerical equivalence at small N hides path divergence that only shows
   up in production-scale performance. Per-axis empirical measurement
   caught what intuition (Zakharko's "no effect on A19" claim) missed.
+
+---
+## [2026-05-03 17:30] [CLAUDE] Investigation sprint — Draw Things v2 + MLX PRs + Metal profile + TGP memory + Apple NAX kernel
+STATUS: COMPLETE
+
+### Plan
+- Objective: 5-task investigation sprint to find sources of the V6 NAX
+  perf gap to SDPA outside the tile-tuning parameter space.
+- Files to create: `docs/v6-nax/{draw-things-v2-analysis,mlx-pr-analysis,
+  v6-metal-profile,m5-threadgroup-memory,apple-sdpa-nax-analysis,
+  investigation-sprint-summary}.md`
+- Files NOT to modify: kernel sources (sprint is read-only investigation).
+
+### Changes
+- `docs/v6-nax/draw-things-v2-analysis.md` — NEW: Refutes the user's
+  premise. The `/v2/` directory was migrated INTO `/kernels/` on March
+  6, 2026 (commit `0bf97fca`). Our port (May 3) IS v2 — bit-identical
+  source generator, 99-line diff = framework adapt only. [HIGH][VERIFIED]
+- `docs/v6-nax/mlx-pr-analysis.md` — NEW: 3 of 4 PRs CLOSED. Only #3307
+  (chunked SDPA) is technique-applicable. [HIGH][VERIFIED]
+- `docs/v6-nax/v6-metal-profile.md` — NEW: GPU trace capture verified
+  via `mx.metal.start_capture()`. Saved
+  `captures/v6_flashvsr_dense.gputrace`. Static register-pressure
+  analysis: ~22.7 KB/simdgroup. [HIGH][DEDUCED for register estimates]
+- `docs/v6-nax/m5-threadgroup-memory.md` — NEW: Verified
+  `maxThreadgroupMemoryLength = 32768` via direct Metal API call. The
+  "dynamic shader core memory" hypothesis does not relax this cap.
+  [HIGH][VERIFIED]
+- `docs/v6-nax/apple-sdpa-nax-analysis.md` — NEW: Apple's
+  `steel_attention_nax.h` uses `metal_simdgroup_matrix` + custom
+  `NAXFrag/NAXTile` (LOW level), NOT MPP `matmul2d_descriptor`. Tile
+  config BQ=64 BK=32 WM=4 WN=1 (128 threads/TG). Layout is BHND.
+  [HIGH][VERIFIED]
+- `docs/v6-nax/investigation-sprint-summary.md` — NEW: Executive
+  synthesis. Identifies the abstraction-layer gap (MPP vs raw
+  simdgroup_matrix) as the most plausible explanation for the 5-7pp
+  V6/SDPA efficiency gap. Recommends Sprint 2 priorities. [HIGH]
+- `docs/v6-nax/captures/v6_flashvsr_dense.gputrace` — first V6 GPU
+  trace, openable in Xcode Instruments. [HIGH]
+
+### Dependency & regression check
+- Read-only sprint. No code modified. Existing tests unchanged.
+- Verified `mx.metal.start_capture()` works without affecting V6
+  correctness (RMSE 4e-5 maintained on FlashVSR-dense smoke).
+
+### Tech cost
+- ~5 MB disk for `.gputrace` bundle. No runtime/compile-time cost.
+
+### Validation
+- Ran: `git log --since=2026-03-06 -- 'lib/nnc/mfa/kernels/NAAttentionKernel.cpp'`
+  to confirm we have post-migrate commits through April 28. [VERIFIED]
+- Ran: `diff csrc/mfa/v6_nax/NAAttentionKernel.cpp /tmp/ccv-latest/...`
+  → 99 lines, all framework adaptation. [VERIFIED]
+- Ran: `clang++ -fobjc-arc /tmp/probe_device.mm` then executed →
+  `maxThreadgroupMemoryLength: 32768 bytes`. [VERIFIED]
+- Ran: `.venv/bin/python` capturing `v6_flashvsr_dense.gputrace` →
+  bundle created, ~3-10 MB, openable. [VERIFIED]
+- Validated: All 5 task hypotheses tested against ground truth. 3
+  premises refuted (v1/v2 confusion; dynamic TGP memory; PR
+  applicability), 1 premise confirmed (Apple uses different abstraction).
+
+### Git
+- WIP — uncommitted; branch `feat/v6-nax`. Will commit after this entry.
+
+### While-I'm-here
+- None — strictly read-only.
+
+### Key findings (for next handoff)
+
+| Finding | Evidence |
+|---------|----------|
+| We have v2 (not v1) | `git mv v2/* kernels/` at `0bf97fca` (March 6); our port May 3 |
+| Bit-identical kernel source generator | 99-line diff, all framework |
+| Apple uses `simdgroup_matrix` not MPP | `steel_attention_nax.h:218-230` |
+| TGP memory cap is real (32 KB) | Direct Metal API probe |
+| Only PR #3307 (chunked) is applicable | 3 of 4 CLOSED; SeedVR2-large qualifies |
+
+### Sprint 2 priority order
+1. Profile existing `.gputrace` in Instruments (1 hour)
+2. Implement chunked-K for N>65K — PR #3307 pattern (1-2 days)
+3. Switch V6 to BHND layout to eliminate transposes (~3 days)
+4. Reimplement V6 forward with `simdgroup_matrix` mirroring Apple (~2 weeks)
+

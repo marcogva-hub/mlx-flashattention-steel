@@ -59,3 +59,5 @@ PROMPT_PHASE_*.md
 TODO.md
 _build_manual/
 *.varlen_append
+
+docs/v6-nax/captures/
