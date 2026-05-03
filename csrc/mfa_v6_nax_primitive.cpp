@@ -101,9 +101,11 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // BLOCK_D = head dimension (always full HEAD_DIM in v1)
   unsigned short BQ = 32, BK = 32;
   uint16_t exec_sg = 4;
+  bool bypass_tgp = false;
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
   if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) exec_sg = (uint16_t)std::atoi(env_sg);
+  if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
   simd::ushort3 blockDims =
       simd::make_ushort3(BQ, BK, (unsigned short)head_dim);
 
@@ -112,7 +114,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       (unsigned short)Hk, /*executionSIMDGroups=*/exec_sg,
       /*checkCEdge1=*/true, mp, AttentionKernelType::forward,
       /*scale=*/1.0f / std::sqrt((float)head_dim),
-      /*bypassThreadgroupMemory=*/false,
+      /*bypassThreadgroupMemory=*/bypass_tgp,
       /*isCausal=*/isCausal, /*masked=*/false);
 
   NAAttentionKernel kern(desc);
@@ -175,14 +177,16 @@ public:
     // Tile params (env vars override default for autoresearch).
     unsigned short BQ = 32, BK = 32;
     uint16_t executionSIMDGroups = 4;
+    bool bypass_tgp = false;
     if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
     if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
     if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) executionSIMDGroups = (uint16_t)std::atoi(env_sg);
+    if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
 
-    // Include tile params in cache key so different configs get different pipelines.
+    // Include tile params + bypass flag in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
-              qbs + ((uint32_t)executionSIMDGroups << 24),
+              qbs + ((uint32_t)executionSIMDGroups << 24) + ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
               kbs, vbs, obs};
     void* pipeline = nullptr;
     {
