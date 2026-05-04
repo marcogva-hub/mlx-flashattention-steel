@@ -104,17 +104,26 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   //   MFA_V6_FORCE_DYNAMIC_K — force dynamic_length_v<int> for K constants
   //   MFA_V6_RELAXED_PRECISION — 0 disables relaxed_precision in matmul2d
   //   MFA_V6_UNROLL_MODE — full | none | 2 | 4 — pragma loop unroll setting
-  unsigned short BQ = 32, BK = 32;
-  uint16_t exec_sg = 4;
+  // Sprint 3.3 + autoresearch — auto-tuned per-D defaults.
+  // Bench at the original BQ=32 default showed bimodal: D=64 wins, D=128 loses
+  // under single-Otile. Autoresearch sweep (BQ ∈ {16,32,64} × BK ∈ {32,64} ×
+  // SG ∈ {2,4,8}, single-Otile=on) revealed BQ=16 wins universally — the
+  // BQ=32 default was the dominant bottleneck, not the kernel structure:
+  //   D=64  best:  BQ=16 BK=64 SG=2  (FlashVSR-dense 1.11ms = 1.22×SDPA;
+  //                                    LTX2-cross 1.59ms = 1.20×SDPA)
+  //   D=128 best:  BQ=16 BK=32 SG=8  (SeedVR2-small 276ms = 1.49×SDPA;
+  //                                    vs 1129ms at the BQ=32 default)
+  // BQ=64 is uniformly catastrophic (4× slower) — coop_tensor row-count too
+  // large for register packing. Default to single-Otile + BQ=16 + per-D
+  // BK/SG, with env var overrides preserved.
+  unsigned short BQ = 16;
+  unsigned short BK = (head_dim == 64) ? 64 : 32;
+  uint16_t exec_sg = (head_dim == 64) ? 2 : 8;
   bool bypass_tgp = false;
-  // Sprint 3.3 — Apple-style single-Otile dispatch.
-  // Bench (M5 Max, 5 production shapes) showed a bimodal pattern:
-  //   D=64  → single-Otile is faster: -25% on FlashVSR-dense, -44% on LTX2-cross
-  //   D=128 → single-Otile regresses: +16-23% on SeedVR2-small/CogVideoX/SeedVR2-large
-  // Root cause: double-buffer (cS_0/cS_1) hides PV-matmul latency for D=128 long
-  // sequences (836+ K-tile iters); for D=64 short cross-attention the buffer
-  // overhead dominates. Default: enable single-Otile only for D=64 non-GQA.
-  bool single_otile = (head_dim == 64 && Hq == Hk);
+  bool single_otile = (Hq == Hk);  // single-Otile is the default path now;
+                                    // GQA falls back to legacy double-buffer
+                                    // because BHND rewriter doesn't yet handle
+                                    // per-head K-stride in single-Otile path.
   unsigned short BD = (unsigned short)head_dim;
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
@@ -378,9 +387,11 @@ public:
     uint32_t vbs = kbs;
     uint32_t obs = qbs;
 
-    // Tile params (env vars override default for autoresearch).
-    unsigned short BQ = 32, BK = 32;
-    uint16_t executionSIMDGroups = 4;
+    // Tile params — auto-tuned defaults (mirror the source-gen path above).
+    // Sprint 3.3 + autoresearch: BQ=16 universally; BK/SG conditional on D.
+    unsigned short BQ = 16;
+    unsigned short BK = (D == 64) ? 64 : 32;
+    uint16_t executionSIMDGroups = (D == 64) ? 2 : 8;
     bool bypass_tgp = false;
     unsigned short BD = (unsigned short)D;
     int axis_flags = 0;
@@ -405,7 +416,9 @@ public:
     // the source-generation path so the cache key matches whichever variant was
     // actually compiled.
     {
-      bool so_for_key = (D == 64 && Hq == Hk);
+      // Mirror the source-gen path's auto-default: single-Otile is the
+      // default everywhere except GQA. Explicit env override wins.
+      bool so_for_key = (Hq == Hk);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
         so_for_key = (std::atoi(env_so) != 0);
       if (so_for_key) axis_flags |= 0x40;

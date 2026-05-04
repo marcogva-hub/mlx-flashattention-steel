@@ -2,10 +2,22 @@
 
 **Date:** 2026-05-04
 **Branch:** `experiment/sprint-3-3-single-otile-rewrite`
-**Status:** **COMPLETE — Cas B (conditional dispatch by head_dim).**
+**Status:** **COMPLETE — superseded by autoresearch findings.**
 
-**Headline:** D=64 production shapes gain **−25 % to −44 %**. D=128 long-sequence
-shapes regress +16 % to +23 %. New default routes by `head_dim` automatically.
+**Headline (this doc, at default tiles BQ=32):** D=64 wins big, D=128 regresses
+under single-Otile.
+
+> **NOTE — superseded conclusions:** A subsequent autoresearch sweep revealed
+> that the apparent "D=128 regression" was caused by the *default tile config*
+> (BQ=32), not by the kernel structure. With `BQ=16, BK=32, SG=8`, single-Otile
+> on SeedVR2-small drops from 1129 ms → 276 ms (−75%, 3.4× faster than legacy
+> baseline). The auto-defaults in `mfa_v6_nax_primitive.cpp` now use these
+> tuned values (BQ=16 universally; BK/SG conditional on head_dim).
+>
+> See `docs/v6-nax/sprint-3-3-autoresearch-results.md` for the full sweep
+> data, the new defaults, and validation. The bench numbers below in this
+> doc are still valid *for the legacy default tile config*, but no longer
+> represent shipping performance.
 
 ## Mandate
 

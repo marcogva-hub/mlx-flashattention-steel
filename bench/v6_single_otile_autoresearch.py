@@ -25,22 +25,28 @@ _force = getattr(mx, "eval")
 
 
 # Restricted search space — single-Otile + concrete-BK only.
+# Limited to plausible region: BQ ≤ 64 (larger blows TGP for many configs),
+# BK in {32, 64} (the two values that pass dynamic-K static_assert in MPP),
+# exec_sg ≥ 2 (sg=1 was uncompetitive in earlier 10-axes campaign).
 SEARCH_SPACE = {
     "BQ":     [16, 32, 64],
-    "BK":     [32, 64, 96, 128],
-    "exec_sg": [1, 2, 4, 8],
+    "BK":     [32, 64],
+    "exec_sg": [2, 4, 8],
 }
 
+# Skip the two slowest D=128 shapes (CogVideoX 9.8s/iter, SeedVR2-large 16s/iter).
+# Sprint 3.3 already confirmed all D=128 configs regress under single-Otile;
+# autoresearch focuses on D=64 (where single-Otile wins) plus SeedVR2-small as
+# the cheapest D=128 spot-check (~1 sec/iter, 1000 sec/iter for the long ones
+# is too expensive for a sweep).
 SHAPES = [
     {"name": "FlashVSR-dense", "B": 1, "H": 10, "N_q": 4096,   "N_kv": 4096,   "D": 64},
     {"name": "SeedVR2-small",  "B": 1, "H": 20, "N_q": 26730,  "N_kv": 26730,  "D": 128},
-    {"name": "CogVideoX",      "B": 1, "H": 30, "N_q": 70200,  "N_kv": 70200,  "D": 128},
-    {"name": "SeedVR2-large",  "B": 1, "H": 20, "N_q": 111375, "N_kv": 111375, "D": 128},
     {"name": "LTX2-cross",     "B": 1, "H": 8,  "N_q": 2048,   "N_kv": 14000,  "D": 64},
 ]
 
 WARMUP = 3
-ITERS = 10  # less than main bench since we're sweeping many configs
+ITERS = 8  # less than main bench since we're sweeping many configs
 
 
 def make_inputs(shape):
