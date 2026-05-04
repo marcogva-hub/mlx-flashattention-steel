@@ -39,6 +39,11 @@ struct NAAttentionKernel {
   bool isCausal;
   bool masked;
   bool isVarlen;
+  // Sprint 3.3 — Apple-style single-Otile kernel variant.
+  // When true, loopForward() dispatches to loopForwardSingleTile() which emits
+  // a kernel with: single cS (no double-buffer), forced kBlocks=1, always-bypass
+  // cP cooperative tensor (no P_buf staging), mem_none barriers, K-loop step BK.
+  bool singleOtileMode;
 
   // mlx-mfa: takes a threadgroup-memory-length hint instead of a pipeline.
   // Returns the bytes to allocate at threadgroup(0) for the dispatch.
@@ -63,6 +68,7 @@ private:
   void createConstants(CodeWriter &source) const noexcept;
   void loopForward(CodeWriter &source) const noexcept;
   void loopForwardSingleCausal(CodeWriter &source) const noexcept;
+  void loopForwardSingleTile(CodeWriter &source) const noexcept;
   void loopBackwardQuery(CodeWriter &source) const noexcept;
   void loopBackwardKeyValue(CodeWriter &source) const noexcept;
   std::string createComputeD() const noexcept;
