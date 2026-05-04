@@ -584,3 +584,89 @@ SDPA is unrelated to coverage.
 future V6 kernel modification can be re-verified by re-running
 `bench/v6_coverage_diagnostic_v2.py`.
 
+
+---
+## [2026-05-04 01:45] [CLAUDE] V6 NAX vs SDPA — profiling sprint (CPU-side + .gputrace capture)
+STATUS: COMPLETE
+
+### Plan
+- Objective: Profile V6 NAX vs SDPA to identify where the 5-7pp efficiency
+  gap is. Capture 4 .gputrace bundles (V6+SDPA × FlashVSR+SeedVR2-small);
+  attempt programmatic counter extraction; if not possible, do thorough
+  CPU-side profiling and document the limit.
+- Files to create: `bench/v6_cpu_profile.py`,
+  `docs/v6-nax/profiling-counters.md`, `docs/v6-nax/profiling-counters.json`,
+  `docs/v6-nax/v6-vs-sdpa-profiling-analysis.md`,
+  `docs/v6-nax/captures/{v6,sdpa}_{flashvsr,seedvr2_small}.gputrace` (gitignored).
+
+### Changes
+- `bench/v6_cpu_profile.py` — NEW: CPU-side profiler measuring
+  end-to-end attention time, transposes+contiguous breakdown, kernel-only
+  implied time, peak memory delta. ITERS=20, p50 reported. [HIGH]
+- `docs/v6-nax/profiling-counters.json` — raw timing/memory data. [HIGH]
+- `docs/v6-nax/profiling-counters.md` — bundle structure analysis +
+  CPU-extractable data + static dispatch counts. Documents that GPU
+  counters are in Apple's proprietary MTSP/xdic binary format, requiring
+  Xcode GUI for full extraction. [HIGH]
+- `docs/v6-nax/v6-vs-sdpa-profiling-analysis.md` — synthesis +
+  hypothesis validation + Sprint 2 priorities (data-justified). [HIGH]
+- `docs/v6-nax/captures/{v6,sdpa}_{flashvsr,seedvr2_small}.gputrace` —
+  4 traces, 4.4 GB total, gitignored. [HIGH]
+
+### Findings (programmatic)
+
+**Timing breakdown (p50 ms, ITERS=20)**:
+| Shape | full V6 | transp+contig | kernel-only | SDPA | V6/SDPA |
+|-------|--------:|--------------:|------------:|-----:|--------:|
+| FlashVSR-dense | 1.510 | 0.175 (11.6%) | 1.334 | 0.995 | 1.517× |
+| SeedVR2-small | 274.6 | 1.893 (0.7%) | 272.7 | 222.7 | 1.233× |
+
+**Peak memory delta**:
+| Shape | V6 peak Δ | SDPA peak Δ | V6 extra |
+|-------|----------:|------------:|---------:|
+| FlashVSR-dense | 21.1 MB | 5.4 MB | +15.7 MB (3.9×) |
+| SeedVR2-small | 549.6 MB | 139.0 MB | +410.6 MB (4.0×) |
+
+**Static dispatch count**:
+| Path | Dispatches |
+|------|-----------:|
+| V6 NAX | ~4 (3× contiguous + main kernel) |
+| SDPA NAX | 1 |
+
+### Hypothesis validation
+| Hypothesis | Status | Evidence |
+|------------|--------|----------|
+| 1. MPP dispatch overhead | PARTIALLY CONFIRMED | 4× dispatches; transp 11.6% of FlashVSR end-to-end; but kernel-only V6/SDPA = 1.22-1.34× → MPP cost is in the kernel itself, not surrounding ops |
+| 2. Register spill | NOT TESTABLE | Needs Xcode counter access |
+| 3. Suboptimal tile size | PARTIALLY INVALIDATED | 245-config sweep + 10-axis campaign converged on current configs |
+| 4. Bandwidth-bound | INVALIDATED | Both V6 and SDPA at AI > 1500 (compute-bound by roofline) |
+
+**Decision-grade conclusion**: Even excluding transpose overhead, V6
+kernel-only is 1.22-1.34× SDPA. The MPP abstraction-layer ceiling is
+real and dominates. BHND layout switch saves 4× peak memory but only
+0.7-12% of time. Full counter analysis needs Xcode GUI on captured traces.
+
+### Dependency & regression check
+- No code modified ✓ (pure profiling)
+- Existing tests unchanged ✓
+- Captures saved for future Xcode analysis ✓
+
+### Tech cost
+- 4 GPU traces × ~1 GB avg = 4.4 GB disk (gitignored).
+- CPU profiler: ITERS=20 × 4 ops × 2 shapes = ~10s on small / ~3 min on SeedVR2-small.
+
+### Validation
+- Ran: `.venv/bin/python /tmp/capture_traces.py` (4 traces saved)
+- Ran: `.venv/bin/python bench/v6_cpu_profile.py` (full timing/memory profiling)
+- Validated: timing variance < 7%, ratios stable across runs.
+
+### Sprint 2 priorities (data-justified, in order)
+1. Switch V6 to BHND layout (3 days, 4× peak memory + 5-12% time on small shapes)
+2. Open captured .gputrace in Xcode (1-2 hrs, ground-truth on Hypothesis 1/2)
+3. Implement chunked-K for N>65K (1-2 days, +5-15% on SeedVR2-large)
+4. Conditionally: simdgroup_matrix rewrite if priority #2 confirms MPP gap
+   (2-3 weeks, 0-22% upside)
+
+### Git
+- WIP — uncommitted; branch `feat/v6-nax`. Will commit after this entry.
+
