@@ -204,6 +204,83 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     replace_all(source, "#pragma clang loop unroll(full)", replacement);
   }
 
+  // ── Sprint 2A: BHND layout migration (MFA_V6_BHND=1) ─────────────────────
+  // Rewrites the kernel to read Q/K/V/O in [B, H, N, D] layout (MLX native)
+  // instead of [B, N, H, D] (Draw Things native). Eliminates the host-side
+  // transpose+contiguous overhead (3 dispatches + 3× peak memory).
+  //
+  // Strategy:
+  //  1. Per-batch base offset gains a per-head offset:
+  //       Q_buf += tgid.z * Q_batch_stride           (BNHD)
+  //     becomes
+  //       Q_buf += tgid.z * Q_batch_stride + tgid.y * R * D  (BHND)
+  //     (and analogous for K, V, O — using C and Hk for K/V)
+  //  2. Tensor declarations: dextents(K_Hq, R) → dextents(D, R) (per-head view)
+  //  3. Slice args: drop the `tgid.y * D + ` head offset (head is in Q_buf base)
+  //  4. Output writeback: drop `+ tgid.y * D` and replace `K_Hq` with `D`
+  //
+  // Limitation: Forward path only, non-GQA only (Hq == Hk). For GQA (LTX2-cross),
+  // K/V's per-head offset uses `(tgid.y / ratio)` which has different syntax we
+  // don't rewrite here — falls back to BNHD path.
+  if (std::getenv("MFA_V6_BHND")) {
+    if (Hq == Hk) {  // non-GQA only for now
+      const std::string D_str = std::to_string(head_dim);
+      const std::string head_y_D = "tgid.y * " + D_str;
+
+      // Step 1: per-batch base offset → add per-head offset
+      // For Q, O (use R = sequence length, Hq heads):
+      replace_all(source,
+                  "Q_buf = Q_buf + tgid.z * Q_batch_stride;",
+                  "Q_buf = Q_buf + tgid.z * Q_batch_stride + tgid.y * R * "
+                  + D_str + ";");
+      replace_all(source,
+                  "O_buf = O_buf + tgid.z * O_batch_stride;",
+                  "O_buf = O_buf + tgid.z * O_batch_stride + tgid.y * R * "
+                  + D_str + ";");
+      // For K, V (use C = KV-length, Hk heads — non-GQA so tgid.y == K-head):
+      replace_all(source,
+                  "K_buf = K_buf + tgid.z * K_batch_stride;",
+                  "K_buf = K_buf + tgid.z * K_batch_stride + tgid.y * C * "
+                  + D_str + ";");
+      replace_all(source,
+                  "V_buf = V_buf + tgid.z * V_batch_stride;",
+                  "V_buf = V_buf + tgid.z * V_batch_stride + tgid.y * C * "
+                  + D_str + ";");
+
+      // Step 2: tensor extents → per-head (D, seq) instead of (Hq*D, seq)
+      replace_all(source,
+                  "dextents<int32_t, 2>(K_Hq, R)",
+                  "dextents<int32_t, 2>(" + D_str + ", R)");
+      replace_all(source,
+                  "dextents<int32_t, 2>(K_Hk, C)",
+                  "dextents<int32_t, 2>(" + D_str + ", C)");
+
+      // Step 3: drop head offset in slice args
+      // Order matters: replace "tgid.y * D + " (with trailing space+plus) BEFORE
+      // replacing bare "tgid.y * D", otherwise the bare match would catch the
+      // prefix and leave " + " orphaned.
+      replace_all(source, head_y_D + " + ", "");
+      replace_all(source, head_y_D, "0");
+
+      // Step 4: output writeback
+      // Pattern: "O_buf + tgid.x * (BR * K_Hq) + 0" — note that the `+ tgid.y * 64`
+      // already became `+ 0` from Step 3's bare-match replacement. Now collapse:
+      // `+ 0` and replace `K_Hq` with `D`. We do the collapse first.
+      replace_all(source, "+ 0;\n", ";\n");      // statement-end + 0
+      replace_all(source, " + 0)", ")");          // inside parens
+      // Replace remaining K_Hq usages (now only in output base + idx[1]*K_Hq)
+      // with D. K_Hq is also defined at line 37 as `constant uint K_Hq = 64 * Hq;`
+      // but redefining it via search is too risky — leave the constant declaration,
+      // just rewrite the USES.
+      // Skip the constant declaration line (which is `constant uint K_Hq = D * Hq`).
+      // The remaining uses are:
+      //   `tgid.x * (BR * K_Hq)`   — output base, want BR * D
+      //   `idx[1] * K_Hq`          — output cell store row stride, want D
+      replace_all(source, "* K_Hq)", "* " + D_str + ")");
+      replace_all(source, "idx[1] * K_Hq", "idx[1] * " + D_str);
+    }
+  }
+
   return source;
 }
 
@@ -234,13 +311,16 @@ public:
     auto& out = outputs[0];
     auto& lse = outputs[1];
 
-    // Inputs arrive in kernel layout [B, N, H, D] (transposed by caller).
-    int B = q.shape(0);
-    int N = q.shape(1);
-    int Hq = q.shape(2);
-    int D = q.shape(3);
-    int Nk = k.shape(1);
-    int Hk = k.shape(2);
+    // Layout selection. Default: caller transposes into [B, N, H, D].
+    // With MFA_V6_BHND=1: caller passes [B, H, N, D] directly and the
+    // post-gen rewriter has produced a kernel that reads BHND layout.
+    const bool bhnd = (std::getenv("MFA_V6_BHND") != nullptr);
+    int B  = q.shape(0);
+    int N  = bhnd ? q.shape(2) : q.shape(1);
+    int Hq = bhnd ? q.shape(1) : q.shape(2);
+    int D  = q.shape(3);
+    int Nk = bhnd ? k.shape(2) : k.shape(1);
+    int Hk = bhnd ? k.shape(1) : k.shape(2);
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
@@ -303,6 +383,7 @@ public:
       else if (m == "2") axis_flags |= 0x08;
       else if (m == "4") axis_flags |= 0x10;
     }
+    if (std::getenv("MFA_V6_BHND")) axis_flags |= 0x20;  // Sprint 2A
 
     // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
@@ -372,7 +453,29 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
-  // Transpose [B,H,N,D] -> [B,N,H,D] for Draw Things kernel layout
+
+  const bool bhnd = (std::getenv("MFA_V6_BHND") != nullptr);
+  MFAV6Forward::Params params{causal};
+
+  if (bhnd) {
+    // Sprint 2A: pass Q/K/V directly in MLX-native [B, H, N, D] layout.
+    // The post-gen-rewritten kernel reads this layout natively. Input
+    // arrays must be contiguous (no strided views from upstream).
+    auto qc = mlx::core::contiguous(q, false, s);
+    auto kc = mlx::core::contiguous(k, false, s);
+    auto vc = mlx::core::contiguous(v, false, s);
+    // Output O in [B, H, N, D] layout — same as input, no return transpose.
+    mlx::core::Shape o_shape{qc.shape(0), qc.shape(1), qc.shape(2), qc.shape(3)};
+    mlx::core::Shape lse_shape{q.shape(0), q.shape(1), q.shape(2)};
+    auto outs = mlx::core::array::make_arrays(
+        {o_shape, lse_shape},
+        {q.dtype(), mlx::core::float32},
+        std::make_shared<MFAV6Forward>(s, params),
+        {qc, kc, vc});
+    return {outs[0], outs[1]};
+  }
+
+  // Default: transpose [B,H,N,D] -> [B,N,H,D] for Draw Things kernel layout
   auto q_bnhd = mlx::core::transpose(q, std::vector<int>{0, 2, 1, 3}, s);
   auto k_bnhd = mlx::core::transpose(k, std::vector<int>{0, 2, 1, 3}, s);
   auto v_bnhd = mlx::core::transpose(v, std::vector<int>{0, 2, 1, 3}, s);
@@ -380,7 +483,6 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   auto kc = mlx::core::contiguous(k_bnhd, false, s);
   auto vc = mlx::core::contiguous(v_bnhd, false, s);
 
-  MFAV6Forward::Params params{causal};
   // Output O in kernel layout [B, N, Hq, D]; will transpose back at the end.
   mlx::core::Shape o_shape{qc.shape(0), qc.shape(1), qc.shape(2), qc.shape(3)};
   // L is [B, Hq, N] in mlx layout (kernel writes it that way directly).

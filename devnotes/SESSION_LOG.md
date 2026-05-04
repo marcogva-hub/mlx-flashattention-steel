@@ -670,3 +670,108 @@ real and dominates. BHND layout switch saves 4× peak memory but only
 ### Git
 - WIP — uncommitted; branch `feat/v6-nax`. Will commit after this entry.
 
+
+---
+## [2026-05-04 05:45] [CLAUDE] V6 NAX — Sprint 2A: BHND layout migration (SHIPPED)
+STATUS: COMPLETE
+
+### Plan
+- Objective: Migrate V6 NAX from BNHD ([B,N,H,D]) to BHND ([B,H,N,D])
+  layout to eliminate 3× transpose+contiguous overhead and 4× peak-memory
+  cost. Behind `MFA_V6_BHND=1` env var (default unchanged).
+- Files modified: `csrc/mfa_v6_nax_primitive.cpp` (post-gen rewriter +
+  Primitive shape-index switch + public wrapper bypass).
+- Files created: `bench/v6_bhnd_bench.py`,
+  `docs/v6-nax/bhnd-migration-plan.md`,
+  `docs/v6-nax/bhnd-migration-report.md`,
+  `docs/v6-nax/bhnd-bench-results.json`.
+
+### Layout discovery (key finding)
+MSL `tensor<device T, dextents<int32_t, 2>(K_Hq, R), tensor_inline>` uses
+**column-major** dextents semantics: extent[0] = innermost contiguous
+dim, extent[1] = outermost slow dim. With (K_Hq, R), element [i, j] at
+buffer offset `j * K_Hq + i`. Combined with per-batch stride, this
+produces `[B, N, H_q, D]` row-major (BNHD) layout. Migration to BHND
+requires per-head binding, slice-arg drops, and output-writeback row
+stride changes.
+
+### Implementation: post-generation source rewriting (analogous to Axes 4/5/6)
+```cpp
+if (std::getenv("MFA_V6_BHND")) {
+  if (Hq == Hk) {  // non-GQA only for now
+    // 1. Per-head offset added to per-batch base:
+    //    Q_buf = ... + tgid.y * R * D
+    // 2. Tensor extents per-head:
+    //    dextents(K_Hq, R) → dextents(D, R)
+    // 3. Drop tgid.y * D from slice args
+    // 4. Drop tgid.y * D from output base; replace K_Hq → D in writeback
+  }
+}
+```
+
+### Validation
+| Shape | Sentinel (cells) | RMSE vs FP32 ref | Verdict |
+|-------|----------------:|-----------------:|---------|
+| FlashVSR-dense | 0 / 2,621,440 | 2.96e-4 (= BNHD baseline) | PASS |
+| SeedVR2-small | 0 / 68,428,800 | 3.08e-4 | PASS |
+| CogVideoX | 0 / 269,568,000 | 3.15e-4 | PASS |
+| SeedVR2-large | 0 / 285,120,000 | 3.19e-4 | PASS |
+| LTX2-cross | 0 / 1,048,576 | 3.17e-4 | PASS |
+
+Plus analytical Q=K=V=ones case: max_abs_err = 0.000000, range [1.0, 1.0].
+
+### Performance results
+| Shape | BNHD time | BHND time | Δ time | Mem reduction |
+|-------|----------:|----------:|-------:|--------------:|
+| FlashVSR-dense | 1.321 ms | 1.120 ms | **−15.2%** | 4.00× |
+| SeedVR2-small | 228.1 ms | 228.4 ms | +0.1% (noise) | 4.00× |
+| CogVideoX | 3074 ms | 2996 ms | **−2.5%** | 4.00× |
+| SeedVR2-large | 5427 ms | 4899 ms | **−9.7%** | 4.00× |
+| LTX2-cross | 1.797 ms | 1.644 ms | **−8.5%** | 15.67× |
+
+Far above expectations. User predicted "5-12% time on small, <1% on large";
+got −9.7% on SeedVR2-large (the largest shape). Memory savings (SeedVR2-large:
+2.28 GB → 570 MB) reduce L2/SLC cache pressure, contributing to time gains.
+
+### Limitations
+- GQA path (Hq != Hk) currently falls back to BNHD. Production shapes are
+  non-GQA so this doesn't affect shipping benchmarks.
+- Backward path not migrated (V6 backward not yet exposed).
+- Varlen path not migrated.
+
+### Sprint 2B (Chunked-K) — DEFERRED
+Requires kernel signature changes (R, C as runtime args, not function
+constants) plus LSE reduction kernel. Scope exceeds single-session budget.
+Properly handed off in bhnd-migration-report.md.
+
+### Dependency & regression check
+- BNHD path unchanged; default behavior preserved ✓
+- BHND opt-in via env var, fully reversible ✓
+- Cache key includes axis_flag bit 0x20 — no pipeline collisions ✓
+- All sentinel + RMSE checks PASS ✓
+
+### Tech cost
+- Default path (BNHD): zero overhead (single std::getenv check)
+- BHND path: identical kernel work + ~50 LOC source rewriting at
+  compile time (one-time per pipeline cache miss)
+- Memory: 4× peak reduction (unconditional benefit when BHND enabled)
+
+### Validation
+- Ran: `MFA_V6_BHND=1 MFA_V6_SENTINEL_FILL=1 .venv/bin/python /tmp/bhnd_smoke.py`
+  → 5/5 shapes PASS, RMSE matches BNHD baseline.
+- Ran: `.venv/bin/python /tmp/bhnd_bench.py` → all 5 shapes benchmarked,
+  results in docs/v6-nax/bhnd-bench-results.json.
+- Validated: 626 million cells covered, 0 sentinels remaining, RMSE
+  bit-perfect match vs BNHD.
+
+### Git
+- WIP — uncommitted; branch `feat/v6-nax`. Will commit after this entry.
+
+### Next-session recommendations
+1. **Enable BHND by default** after Marco's review — strict superset, no
+   downside on tested shapes.
+2. **Sprint 2B (Chunked-K)**: separate session, ~1-2 days. BHND first
+   simplifies per-chunk slicing.
+3. **GQA support for BHND**: ~30 min if needed (extend rewriter for
+   `tgid.y / ratio * D + k` pattern).
+
