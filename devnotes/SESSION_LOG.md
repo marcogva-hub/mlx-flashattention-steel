@@ -885,3 +885,93 @@ remaining 13% would require ~2-3 weeks of kernel rewrite for
 potentially 5-15% gain. Defer to a separate workstream when budget
 allows; not blocking for current production usage.
 
+---
+## [2026-05-04 11:35] [CLAUDE] Sprint 3.1: causal masking — Scenario A confirmed
+STATUS: COMPLETE
+
+- Change: none (analysis-only sprint) [VERIFIED]
+- Finding: V6 NAX already implements all three Apple-style causal optimizations
+  (`kb_lim` ↔ `single_c_edge` line 806; `kb_min_causal` ↔ `causal_mask_0` lines 863/893;
+  per-element check fused into softmax line 951, 960). V6 has an extra optimization
+  Apple lacks: tail block gated on `causal_last_column` (line 1056).
+- Doc: `docs/v6-nax/causal-masking-analysis.md` (citations + mapping table) [VERIFIED]
+- Ran: `grep -n` over NAAttentionKernel.cpp; ranged Read of `steel_attention_nax.h:140-260`
+  and `NAAttentionKernel.cpp:790-906`.
+- Validated: cross-citation table matches read content; no code modified.
+- Git: WIP — uncommitted (only the new doc); branch `feat/v6-nax`.
+- Pivot: Sprint 3.2 (bypassThreadgroupMemory re-test post-BHND) per user instruction.
+  Note for Sprint 3.2: env var is `MFA_V6_BYPASS_TGP` (already exposed at
+  `csrc/mfa_v6_nax_primitive.cpp:114`), not `MFA_V6_BYPASS_TGMEM` as the brief assumes.
+
+---
+## [2026-05-04 12:40] [CLAUDE] Sprint 3.2: bypassThreadgroupMemory re-test — Cas C
+STATUS: COMPLETE
+
+### Plan
+Re-test `MFA_V6_BYPASS_TGP=1` post-BHND to see if Apple's no-tgmem pattern
+unlocks the claimed 3-7% gain. Three cases per brief: A (bypass wins everywhere),
+B (mixed → conditional), C (no net gain → keep flag off, pivot to Sprint 3.3).
+
+### Tâche 1 — compile + correctness [VERIFIED]
+- Default tiles BQ=32 BK=32 SG=4: bypass compiles + correct on D=64 and D=128.
+- BQ=16 BK=64 SG=16 D=64: bypass compiles + correct.
+- BQ=16 BK=48 SG=16 D=128: bypass FAILS at compile time. Captured exact reason —
+  `MPPTensorOpsMatMul2dImpl.h:4209` static_assert: "Inner dimension cannot be
+  dynamic with input cooperative tensors". The PV matmul descriptor falls back
+  to `dynamic_length_v<int>` for K which is incompatible with cooperative-left
+  in Apple's MPP. Hard upstream constraint, not patchable from our side.
+- The 10-axes NO-GO verdict was correct *for that specific config* but does
+  not generalize.
+
+### Tâche 2 — bench [VERIFIED]
+M5 Max, default tiles, 5 production shapes, warmup=5, 3×15 iters, median-of-medians.
+All correctness checks passed (RMSE bit-identical between bypass on/off):
+
+| Shape | baseline | bypass | Δ |
+|---|---:|---:|---:|
+| FlashVSR-dense (D=64)  | 1.82 ms  | 1.61 ms  | **−11.65%** |
+| LTX2-cross (D=64)      | 2.59 ms  | 3.05 ms  | +17.51% |
+| SeedVR2-small (D=128)  | 916 ms   | 1037 ms  | +13.29% |
+| CogVideoX (D=128)      | 9634 ms  | 11754 ms | +22.01% |
+| SeedVR2-large (D=128)  | 15161 ms | 15300 ms | +0.92% (noise) |
+
+1 win, 3 losses, 1 noise. Verdict: **Cas C — keep bypass off as default.**
+
+### Root cause of D=128 regression [DEDUCED]
+V6 generator (from Draw Things) splits PV-output across head-dim sub-tiles:
+kBlocks = ⌈D/BD⌉ cooperative `cO_i` accumulators. Bypass adds `cP` to the live
+register set:
+- D=64: live coop tensors = cP + cO_0 + cO_1 = 3
+- D=128: live coop tensors = cP + cO_0..cO_3 = 5
+
+Five live cooperative tensors exceed what the Metal compiler can keep in SIMD
+registers → spill → slower than the threadgroup-roundtrip path it was supposed
+to save. Apple's `steel_attention_nax.h` avoids this because its kernel uses a
+**single `Otile`** in registers (line 143-144), not kBlocks-split accumulators.
+The structural difference is exactly Sprint 3.3's premise.
+
+### Files
+- `bench/v6_bypass_tgp_bench.py` (added) — repeatable bench script
+- `docs/v6-nax/bypass-tgp-bench.json` (added) — raw timings
+- `docs/v6-nax/sprint-3-2-bypass-tgmem-results.md` (added) — full analysis
+
+### Validation
+- Ran: `nohup .venv/bin/python bench/v6_bypass_tgp_bench.py > outputs/v6_bypass_bench.log 2>&1 &`
+- Bench runtime: ~17 min (PID 82295, completed)
+- Validated: 5/5 correctness OK; timing table; deterministic compile-fail explanation.
+
+### Tech cost
+- Bench script: 130 LOC, isolated, no production code change.
+- No source generator modification. No new pipeline cache pollution (env-var
+  flagged config keys remain distinct from default).
+
+### Git
+- WIP — uncommitted; branch `feat/v6-nax`. Will commit docs + bench script
+  after this entry (Cas C: docs-only commit per brief).
+
+### Implication for Sprint 3.3
+The kBlocks-split cO structure is the same root cause that limits V6's ceiling
+vs SDPA on M5+. Replicating Apple's no-tgmem advantage requires rewriting the
+PV-output structure to a single cooperative O accumulator — not flag-flipping.
+Sprint 3.3 (source generator rewrite) is empirically validated as the
+highest-impact lever from here.
