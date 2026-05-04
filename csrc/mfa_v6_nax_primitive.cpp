@@ -250,6 +250,27 @@ public:
     out.set_data(mlx::core::allocator::malloc(out.nbytes()));
     lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
 
+    // DIAGNOSTIC ONLY (MFA_V6_SENTINEL_FILL=1): host-fill the output
+    // buffer with a sentinel pattern before kernel dispatch. Apple
+    // Silicon unified memory: host writes to data<T>() are visible to
+    // the GPU once the encoder is committed. Any cell still equal to
+    // the sentinel after dispatch is provably *not* written by the
+    // kernel — direct detection of the Day J `tensor_inline + matmul2d`
+    // partial-output bug.
+    //   FP16 0x7E00 = signaling NaN; mathematically impossible from
+    //   correct softmax(QK^T)·V on finite inputs.
+    //   FP32 LSE: 0x7FC00000 = FP32 quiet NaN.
+    if (std::getenv("MFA_V6_SENTINEL_FILL")) {
+      const uint16_t fp16_sentinel = 0x7E00;
+      uint16_t* o_ptr = out.data<uint16_t>();
+      const size_t o_n = out.nbytes() / sizeof(uint16_t);
+      for (size_t i = 0; i < o_n; ++i) o_ptr[i] = fp16_sentinel;
+      const uint32_t fp32_sentinel = 0x7FC00000u;
+      uint32_t* l_ptr = lse.data<uint32_t>();
+      const size_t l_n = lse.nbytes() / sizeof(uint32_t);
+      for (size_t i = 0; i < l_n; ++i) l_ptr[i] = fp32_sentinel;
+    }
+
     auto& d = mlx::core::metal::device(stream().device);
     void* mtl_device = d.mtl_device();
 

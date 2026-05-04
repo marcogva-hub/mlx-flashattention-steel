@@ -494,3 +494,93 @@ construction.
 **Scenario A confirmed.** Sprint 2 plan (Instruments profiling →
 chunked-K → BHND layout → simdgroup_matrix rewrite) proceeds as
 previously scoped. No kernel reconstruction needed.
+
+---
+## [2026-05-04 01:15] [CLAUDE] V6 NAX — coverage diagnostic v2 (rigorous protocol)
+STATUS: COMPLETE
+
+### Plan
+- Objective: Re-verify V6 NAX coverage with a rigorous protocol that
+  addresses the three methodological weaknesses of v1 (`mx.clear_cache()`
+  doesn't guarantee zero pages; "exact == 0.0" too narrow; V2/SDPA
+  controls don't validate methodology). Three independent tests, each
+  individually sufficient to detect Day J's `tensor_inline + matmul2d`
+  partial-output bug.
+- Files modified: `csrc/mfa_v6_nax_primitive.cpp` (add sentinel fill).
+- Files created: `bench/v6_coverage_diagnostic_v2.py`,
+  `docs/v6-nax/v6_coverage_results_v2.json`,
+  `docs/v6-nax/v6-tile-coverage-results-v2.md`.
+
+### Changes
+- `csrc/mfa_v6_nax_primitive.cpp:251-271` — added `MFA_V6_SENTINEL_FILL=1`
+  env-var gate. After `out.set_data()` and `lse.set_data()`, host-fill
+  buffers via `data<uint16_t>()` / `data<uint32_t>()` with FP16 sNaN
+  (0x7E00) / FP32 NaN (0x7FC00000) sentinels. Apple Silicon unified
+  memory makes host writes visible to GPU after encoder commit.
+  Permanent — zero default-path cost. [HIGH][VERIFIED]
+- `bench/v6_coverage_diagnostic_v2.py` — three-test driver:
+  Test 1 (sentinel fill on V6), Test 2 (FP32 reference RMSE for V6/V2/SDPA),
+  Test 3 (Q=K=V=ones analytical case). Subprocess-per-test isolation. [HIGH]
+- `docs/v6-nax/v6_coverage_results_v2.json` — raw per-test data. [HIGH]
+- `docs/v6-nax/v6-tile-coverage-results-v2.md` — analysis with v1
+  critique addressed + structural explanation. [HIGH]
+
+### Methodology validation (negative control)
+Temporarily added `MFA_V6_SKIP_DISPATCH=1` to bind encoder but skip
+v6_nax_dispatch. Confirmed:
+  - With skip + sentinel: 16384/16384 sentinels remain → host-fill reaches
+    GPU memory.
+  - With dispatch + sentinel: 0/16384 sentinels → kernel writes every cell.
+SKIP_DISPATCH removed post-validation (one-time tool); SENTINEL_FILL kept.
+
+### Results — Scenario A confirmed by 3 independent tests
+| Test | Cells/cases | V6 result | Verdict |
+|------|------------|-----------|---------|
+| 1 (sentinel) | 626,786,816 O cells + 156,750 LSE cells across 5 shapes | 0 sentinels remaining | PASS |
+| 2 (FP32 RMSE) | V6 vs FP32 SDPA ref, 5 shapes | RMSE 2.96e-4 to 3.19e-4; rel-err > 5%: 0%; rel-err > 50%: 0 | PASS |
+| 3 (analytical) | Q=K=V=ones, B=1 H=1 N=128 D=64 | max_abs_err 0.000000, range [1.0, 1.0], 0 sentinels | PASS |
+
+V2 STEEL Test 2 RMSE 1.24e-3 to 6.35e-3 (looser than V6 due to FP16
+GEMM accumulator vs V6's FP32 cooperative_tensor accumulator), but 0
+cells with rel err > 50% — uniform numerical drift, not garbage.
+SDPA RMSE 1.41e-4 (FP16 quantization floor).
+
+### Dependency & regression check
+- Sentinel fill is opt-in via env var; default path unchanged ✓
+- All 3 production kernels still produce correct output with sentinel
+  enabled (validated via Test 2 RMSE) ✓
+- No test file modifications.
+
+### Tech cost
+- Default path: zero overhead (env var check is one std::getenv call).
+- With MFA_V6_SENTINEL_FILL=1: O(out.nbytes()/2) memset on host. For
+  CogVideoX (269M cells × 2B), ~540 MB host write — adds ~1-2ms one-time
+  per call. Acceptable for diagnostic use.
+
+### Validation
+- Ran: `MFA_V6_SENTINEL_FILL=1 MFA_V6_SKIP_DISPATCH=1 python /tmp/sentinel_neg_control.py`
+  → 16384/16384 sentinels remain. Negative control validates host-fill
+  reaches GPU memory.
+- Ran: `MFA_V6_SENTINEL_FILL=1 python /tmp/sentinel_smoke.py` → 0
+  sentinels remain post-dispatch. Confirms kernel writes every cell.
+- Ran: `.venv/bin/python bench/v6_coverage_diagnostic_v2.py` (5 shapes ×
+  3 kernels × 3 tests, ~3.5 min wall) → all V6 tests PASS.
+- Validated: Three independent rigorous tests all return Scenario A.
+  V1's verdict was correct; v2 provides incontestable evidence.
+
+### Git
+- WIP — uncommitted; branch `feat/v6-nax`. Will commit after this entry.
+
+### Verdict
+**Scenario A confirmed with rigorous evidence.** V6 NAX writes every
+output cell with FP32-accumulator-grade precision. The Day J
+`tensor_inline + matmul2d` bug does not manifest in our kernel. Sprint 2
+plan (Instruments profiling → chunked-K → BHND layout → simdgroup_matrix
+rewrite) proceeds as previously scoped — the 5-7pp efficiency gap to
+SDPA is unrelated to coverage.
+
+### Reusable artifact
+`MFA_V6_SENTINEL_FILL=1` is now a permanent regression-test gate. Any
+future V6 kernel modification can be re-verified by re-running
+`bench/v6_coverage_diagnostic_v2.py`.
+
