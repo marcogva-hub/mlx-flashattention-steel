@@ -35,6 +35,9 @@ struct NAAttentionKernelDescriptor {
   bool isCausal;
   bool masked;
   bool isVarlen;
+  // Sprint 3.3 — Apple-style single-Otile kernel variant.
+  // Set after construction (no new constructor); defaulted to false on all paths.
+  bool singleOtileMode = false;
 
   AttentionOperands<GEMMOperandPrecision> memoryPrecisions;
   AttentionKernelType type;

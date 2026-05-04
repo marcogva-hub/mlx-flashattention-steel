@@ -975,3 +975,88 @@ vs SDPA on M5+. Replicating Apple's no-tgmem advantage requires rewriting the
 PV-output structure to a single cooperative O accumulator — not flag-flipping.
 Sprint 3.3 (source generator rewrite) is empirically validated as the
 highest-impact lever from here.
+
+---
+## [2026-05-04 14:50] [CLAUDE] Sprint 3.3: Apple-style single-Otile rewrite — Cas B
+STATUS: COMPLETE
+
+### Plan
+Marco mandate: rewrite V6 NAX forward path with Apple's `steel_attention_nax.h`
+patterns. Full autonomy, ~90-120 min budget. No push.
+
+### Implementation [VERIFIED]
+- New method `NAAttentionKernel::loopForwardSingleTile()` (~270 LOC) emitting an
+  MSL 4 kernel with: single cS (no double-buffer), forced kBlocks=1, always-bypass
+  cP cooperative tensor, mem_none barriers, K-loop step BK (not 2·BK).
+- Wired via `singleOtileMode` field on the descriptor (pipeline cache hashes it),
+  env var `MFA_V6_NAX_SINGLE_OTILE`, and `axis_flags` bit 0x40 in the V6Key.
+- Dispatched from `loopForward()` for non-causal/non-masked/non-varlen path; the
+  causal path keeps using `loopForwardSingleCausal` unchanged.
+
+### Scope deviations from brief
+- Softmax state stayed cooperative_tensor (cM/cL/correction) instead of
+  metal::vec — MPP's `reduce_rows()` returns coop_tensor; switching to
+  metal::vec would mean bypassing MPP's reduction primitive (out of risk
+  budget for 90-min mandate). Documented in results doc.
+- Autoresearch script written (`bench/v6_single_otile_autoresearch.py`) but
+  not executed — bench + conditional-dispatch validation consumed the budget.
+
+### Bench results (M5 Max, 5 production BHND shapes) [VERIFIED]
+Default tiles BQ=32 BK=32 SG=4. Correctness: RMSE matches baseline to 4+ sig
+figs everywhere; SeedVR2-large RMSE *improved* 20× (5.79e-5 → 2.93e-6).
+
+| Shape | baseline | singleOtile | Δ | V6/SDPA: base → st |
+|---|---:|---:|---:|---|
+| FlashVSR-dense (D=64) | 1.81 ms | **1.35 ms** | **−25.41%** | 1.98× → **1.47×** |
+| LTX2-cross (D=64) | 2.99 ms | **1.69 ms** | **−43.70%** | 2.25× → **1.27×** |
+| SeedVR2-small (D=128) | 936 ms | 1144 ms | +22.23% | 5.06× → 6.18× |
+| CogVideoX (D=128) | 9832 ms | 11436 ms | +16.32% | 4.32× → 5.03× |
+| SeedVR2-large (D=128) | 15911 ms | 19547 ms | +22.85% | 3.91× → 4.81× |
+
+**Cas B**: clean bimodal split by head_dim. D=64 wins big; D=128 regresses big.
+
+### Decision shipped: conditional default by head_dim
+`csrc/mfa_v6_nax_primitive.cpp` now defaults `single_otile = (head_dim == 64
+&& Hq == Hk)`. Explicit `MFA_V6_NAX_SINGLE_OTILE` env var still wins. The
+axis_flags cache key bit mirrors the same logic so the pipeline cache stays
+coherent. GQA shapes fall back to legacy (BHND rewriter doesn't yet handle
+the per-head K-stride for single-Otile; affects no production shape).
+
+Default-dispatch correctness re-tested across D=64 and D=128, square and
+cross-attention shapes — all PASS, RMSE 1e-5 to 5e-5.
+
+### Why bimodal? [DEDUCED]
+Double-buffer hides PV-matmul latency for long-N D=128 (836+ K-tile iters,
+65K MACs/iter). For short D=64 (64-450 iters, 32K MACs/iter), the buffering
+overhead exceeds the latency-hiding benefit. The threshold is
+deterministic per head_dim, hence the clean default.
+
+### Implications
+- **D=64 ceiling closed within MPP API**: single-Otile is the right path.
+  Further D=64 gain requires API switch (NAXFrag::mma, Apple's path) — out
+  of scope.
+- **D=128 ceiling unchanged**: ~4-5× V6/SDPA gap remains; closing it
+  requires a structural rewrite (simdgroup_matrix path or similar), NOT
+  another tweak to the MPP cooperative_tensor scaffolding. Empirical
+  evidence: every cooperative_tensor-level change attempted in sprints
+  3.1, 3.2, and now 3.3 fails to help D=128 long sequences.
+
+### Files
+- Modified: `csrc/mfa/v6_nax/NAAttentionKernel.{cpp,hpp}`,
+  `csrc/mfa/v6_nax/NAAttentionKernelDescriptor.{cpp,hpp}`,
+  `csrc/mfa_v6_nax_primitive.cpp`
+- Added: `bench/v6_single_otile_bench.py`,
+  `bench/v6_single_otile_autoresearch.py`,
+  `docs/v6-nax/sprint-3-3-single-otile-bench.json`,
+  `docs/v6-nax/sprint-3-3-single-otile-results.md`
+
+### Validation
+- Build: clean
+- Smoke (B=1 H=4 N=256/1024): 6/6 PASS, RMSE within 4 sig figs of baseline
+- Production bench: 5/5 correctness PASS; results table above
+- Default-dispatch correctness re-test: 5/5 PASS without env override
+
+### Git
+- Branch: `experiment/sprint-3-3-single-otile-rewrite` (from `feat/v6-nax`)
+- WIP — uncommitted; will commit after this entry. No push.
+

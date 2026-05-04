@@ -107,12 +107,24 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   unsigned short BQ = 32, BK = 32;
   uint16_t exec_sg = 4;
   bool bypass_tgp = false;
+  // Sprint 3.3 — Apple-style single-Otile dispatch.
+  // Bench (M5 Max, 5 production shapes) showed a bimodal pattern:
+  //   D=64  → single-Otile is faster: -25% on FlashVSR-dense, -44% on LTX2-cross
+  //   D=128 → single-Otile regresses: +16-23% on SeedVR2-small/CogVideoX/SeedVR2-large
+  // Root cause: double-buffer (cS_0/cS_1) hides PV-matmul latency for D=128 long
+  // sequences (836+ K-tile iters); for D=64 short cross-attention the buffer
+  // overhead dominates. Default: enable single-Otile only for D=64 non-GQA.
+  bool single_otile = (head_dim == 64 && Hq == Hk);
   unsigned short BD = (unsigned short)head_dim;
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
   if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) exec_sg = (uint16_t)std::atoi(env_sg);
   if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
+  // Explicit env override (set 0 or 1) wins over the auto-default above.
+  if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE")) single_otile = (std::atoi(env_so) != 0);
   if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
+  // Sprint 3.3: single-Otile mode forces bypass on (the new path always uses cP).
+  if (single_otile) bypass_tgp = true;
   simd::ushort3 blockDims =
       simd::make_ushort3(BQ, BK, BD);
 
@@ -123,6 +135,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       /*scale=*/1.0f / std::sqrt((float)head_dim),
       /*bypassThreadgroupMemory=*/bypass_tgp,
       /*isCausal=*/isCausal, /*masked=*/false);
+  desc.singleOtileMode = single_otile;
 
   NAAttentionKernel kern(desc);
   std::string source = kern.source;
@@ -388,6 +401,15 @@ public:
       else if (m == "4") axis_flags |= 0x10;
     }
     if (params_.bhnd) axis_flags |= 0x20;  // Sprint 2A — BHND layout
+    // Sprint 3.3 — single-Otile cache key. Mirror the auto-default logic from
+    // the source-generation path so the cache key matches whichever variant was
+    // actually compiled.
+    {
+      bool so_for_key = (D == 64 && Hq == Hk);
+      if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
+        so_for_key = (std::atoi(env_so) != 0);
+      if (so_for_key) axis_flags |= 0x40;
+    }
 
     // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,

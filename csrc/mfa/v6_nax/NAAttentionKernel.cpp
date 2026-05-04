@@ -44,6 +44,7 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
   isCausal = descriptor.isCausal;
   masked = descriptor.masked;
   isVarlen = descriptor.isVarlen;
+  singleOtileMode = descriptor.singleOtileMode;
 
   // mlx-mfa: produce MSL 4 source string only. mlx-mfa's shader cache
   // performs the actual MTL::Library / pipeline state creation.
@@ -1375,6 +1376,13 @@ void NAAttentionKernel::loopForward(CodeWriter &source) const noexcept {
     loopForwardSingleCausal(source);
     return;
   }
+  // Sprint 3.3 — Apple-style single-Otile variant for non-causal, non-masked,
+  // non-varlen forward path. Emits a kernel with single cS (no double-buffer),
+  // forced kBlocks=1, always-bypass cP, mem_none barriers, K-loop step BK.
+  if (singleOtileMode) {
+    loopForwardSingleTile(source);
+    return;
+  }
   source.SetValue("MEMORY_NAME_Q", memoryName(AttentionOperand::Q));
   source.SetValue("MEMORY_NAME_K", memoryName(AttentionOperand::K));
   source.SetValue("MEMORY_NAME_V", memoryName(AttentionOperand::V));
@@ -1926,6 +1934,324 @@ source += R"(
     }
   }
 source += R"(
+      }
+    }
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+      if (cM.is_valid_element(k)) {
+        auto idx = cM.get_multidimensional_index(k);
+        float L_sram = cM[k] + fast::log2(cL[k]);
+        L[idx[0]] = ({{MEMORY_NAME_L}})L_sram;
+      }
+    }
+  }
+)";
+}
+
+// Sprint 3.3 — Apple-style single-Otile forward kernel.
+//
+// Differences from loopForward():
+//   - Single cS (no cS_0 / cS_1 double-buffering): K-loop step = BK, not 2·BK.
+//   - Forced kBlocks=1: a single cO_0 covering full BD = head_dim.
+//   - Always bypass tgmem: cP is a left-input cooperative_tensor (no P_buf).
+//   - mem_none barriers (mem_threadgroup is unused since P_buf is gone).
+//   - C_remainder is always handled in the trailing block (checkCEdge1 path
+//     is irrelevant — we always pre-clamp the inner loop and re-run with
+//     dynamic K for the partial tail).
+//
+// Limitations:
+//   - Non-causal, non-masked, non-varlen only (loopForward dispatches accordingly).
+//   - The softmax state (cM, cL, correction) remains a cooperative_tensor (the
+//     brief calls for metal::vec, but reduce_rows() returns a coop_tensor and
+//     swapping it out requires bypassing MPP's row-reduction primitive — out
+//     of scope for this sprint).
+void NAAttentionKernel::loopForwardSingleTile(CodeWriter &source) const noexcept {
+  source.SetValue("MEMORY_NAME_Q", memoryName(AttentionOperand::Q));
+  source.SetValue("MEMORY_NAME_K", memoryName(AttentionOperand::K));
+  source.SetValue("MEMORY_NAME_V", memoryName(AttentionOperand::V));
+  source.SetValue("MEMORY_NAME_O", memoryName(AttentionOperand::O));
+  source.SetValue("MEMORY_NAME_L", memoryName(AttentionOperand::L));
+  source.SetValue("HEAD_DIMENSION", std::to_string(headDimension));
+  source.SetValue("HEAD_DIMENSION_REMAINDER", std::to_string(headDimension % blockDimensions[2]));
+  if (blockDimensions[1] % 32 == 0) {
+    source.SetValue("BLOCK_DIMENSIONS_TRAVERSAL_OR_DYNAMIC_LENGTH_V", std::to_string(blockDimensions[1]));
+  } else {
+    source.SetValue("BLOCK_DIMENSIONS_TRAVERSAL_OR_DYNAMIC_LENGTH_V", "dynamic_length_v<int>");
+  }
+  if (blockDimensions[2] % 32 == 0) {
+    source.SetValue("BLOCK_DIMENSIONS_HEAD_OR_DYNAMIC_LENGTH_V", std::to_string(blockDimensions[2]));
+  } else {
+    source.SetValue("BLOCK_DIMENSIONS_HEAD_OR_DYNAMIC_LENGTH_V", "dynamic_length_v<int>");
+  }
+  if ((headDimension % blockDimensions[2]) % 32 == 0) {
+    source.SetValue("HEAD_DIMENSION_REMAINDER_OR_DYNAMIC_LENGTH_V", std::to_string(headDimension % blockDimensions[2]));
+  } else {
+    source.SetValue("HEAD_DIMENSION_REMAINDER_OR_DYNAMIC_LENGTH_V", "dynamic_length_v<int>");
+  }
+  if (Hq != Hk) {
+    source.SetValue("H_HK_RATIO", "/ " + std::to_string(Hq / Hk));
+  } else {
+    source.SetValue("H_HK_RATIO", "");
+  }
+  source.SetValue("DOT_SCALE", dotProductScale(scale, false));
+
+  // Setup: tensors, descriptors, cooperative_tensors. Note that we do NOT
+  // declare the `P` threadgroup tensor — bypass is forced on, so cP replaces it.
+  source += R"(
+  auto Q = tensor<device {{MEMORY_NAME_Q}},  dextents<int32_t, 2>, tensor_inline>(Q_buf, dextents<int32_t, 2>(K_Hq, R));
+  auto K = tensor<device {{MEMORY_NAME_K}},  dextents<int32_t, 2>, tensor_inline>(K_buf, dextents<int32_t, 2>(K_Hk, C));
+  auto V = tensor<device {{MEMORY_NAME_V}},  dextents<int32_t, 2>, tensor_inline>(V_buf, dextents<int32_t, 2>(K_Hk, C));
+  constexpr auto qk_desc = matmul2d_descriptor({{BLOCK_DIMENSIONS_PARALLELIZATION}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}, {{BLOCK_DIMENSIONS_HEAD_OR_DYNAMIC_LENGTH_V}}, false, true, true, matmul2d_descriptor::mode::multiply_accumulate);
+  matmul2d<qk_desc, execution_simdgroups<1>> matmul_qk_op;
+)";
+  if (headDimension % blockDimensions[2] > 0) {
+    source += R"(
+  constexpr auto qk_desc_remainder = matmul2d_descriptor({{BLOCK_DIMENSIONS_PARALLELIZATION}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}, {{HEAD_DIMENSION_REMAINDER_OR_DYNAMIC_LENGTH_V}}, false, true, true, matmul2d_descriptor::mode::multiply_accumulate);
+  matmul2d<qk_desc_remainder, execution_simdgroups<1>> matmul_qk_op_remainder;
+)";
+  }
+  source += R"(
+  auto mQ = Q.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_PARALLELIZATION}}>(tgid.y * {{HEAD_DIMENSION}}, tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}});
+  auto mK = K.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y * {{HEAD_DIMENSION}}, 0);
+  // Single S accumulator (no double-buffer) — the structural change vs loopForward().
+  auto cS = matmul_qk_op.get_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+  auto cM = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+  auto cL = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+  auto correction = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+  #pragma clang loop unroll(full)
+  for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+    if (cM.is_valid_element(k)) {
+      cM[k] = -numeric_limits<float>::infinity();
+      cL[k] = numeric_limits<float>::denorm_min();
+    }
+  }
+  auto mV = V.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(0, 0);
+  constexpr auto pv_desc = matmul2d_descriptor({{BLOCK_DIMENSIONS_PARALLELIZATION}}, {{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL_OR_DYNAMIC_LENGTH_V}}, false, false, true, matmul2d_descriptor::mode::multiply_accumulate);
+  matmul2d<pv_desc, execution_simdgroups<1>> matmul_pv_op;
+  // Always-bypass: cP is a cooperative_tensor (no P_buf threadgroup staging).
+  auto cP = matmul_pv_op.get_left_input_cooperative_tensor<{{MEMORY_NAME_O}}, {{MEMORY_NAME_V}}, float>();
+  // Forced kBlocks=1: a single cO_0 covers the full BD == head_dim.
+  auto cO_0 = matmul_pv_op.get_destination_cooperative_tensor<decltype(cP), decltype(mV), float>();
+
+  // Main K-loop — single buffer, step = BLOCK_DIMENSIONS_TRAVERSAL (not _2).
+  // Iterates over [0, C_aligned) where C_aligned = C - C_remainder. The
+  // tail (C_remainder columns) is processed in a separate dynamic-K block
+  // after the loop.
+  for (uint c = 0; c < (C - C_remainder); c += {{BLOCK_DIMENSIONS_TRAVERSAL}}) {
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        cS[k] = 0;
+      }
+    }
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < K_edge; k += {{BLOCK_DIMENSIONS_HEAD}}) {
+      auto mQ = Q.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_PARALLELIZATION}}>(tgid.y * {{HEAD_DIMENSION}} + k, tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}});
+      auto mK = K.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + k, c);
+      matmul_qk_op.run(mQ, mK, cS);
+    }
+)";
+  if (headDimension % blockDimensions[2] > 0) {
+    source.SetValue("HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER", std::to_string(headDimension - (headDimension % blockDimensions[2])));
+    source += R"(
+    {
+      auto mQ = Q.slice<{{HEAD_DIMENSION_REMAINDER}}, {{BLOCK_DIMENSIONS_PARALLELIZATION}}>(tgid.y * {{HEAD_DIMENSION}} + {{HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER}}, tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}});
+      auto mK = K.slice<{{HEAD_DIMENSION_REMAINDER}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + {{HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER}}, c);
+      matmul_qk_op_remainder.run(mQ, mK, cS);
+    }
+)";
+  }
+  source += R"(
+    // Online max reduce.
+    auto cM_new = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+    reduce_rows(cS, cM_new, reduction_operation::max, -numeric_limits<float>::infinity());
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+      if (cM.is_valid_element(k)) {
+        correction[k] = 1;
+        const float M_new = cM_new[k] * {{DOT_SCALE}};
+        if (M_new > cM[k]) {
+          correction[k] = fast::exp2(cM[k] - M_new);
+          cM[k] = M_new;
+        }
+      }
+    }
+    // Softmax: cS becomes cP (in cooperative-tensor, no tgmem staging).
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        auto it = cS.get_iterator(k);
+        auto dst_it = cM.map_iterator(it);
+        cS[k] = fast::exp2(cS[k] * {{DOT_SCALE}} - *dst_it);
+      }
+    }
+    // Online sum reduce.
+    auto cL_new = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+    reduce_rows(cS, cL_new, reduction_operation::sum, (float)0);
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cL.get_capacity(); ++k) {
+      if (cL.is_valid_element(k)) {
+        cL[k] = cL[k] * correction[k] + cL_new[k];
+      }
+    }
+    // First-iter init OR online correction of the running output accumulator.
+    if (c == 0) {
+      #pragma clang loop unroll(full)
+      for (unsigned short k = 0; k < cO_0.get_capacity(); ++k) {
+        if (cO_0.is_valid_element(k)) {
+          cO_0[k] = 0;
+        }
+      }
+    } else {
+      #pragma clang loop unroll(full)
+      for (unsigned short k = 0; k < cO_0.get_capacity(); ++k) {
+        if (cO_0.is_valid_element(k)) {
+          auto it = cO_0.get_iterator(k);
+          auto dst_it = correction.map_iterator(it);
+          cO_0[k] *= *dst_it;
+        }
+      }
+    }
+    // Stage softmax output into cP (cooperative_tensor copy in registers).
+    simdgroup_barrier(mem_flags::mem_none);
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        cP[k] = ({{MEMORY_NAME_O}})cS[k];
+      }
+    }
+    // PV matmul — single cO_0 covers full BD = head_dim (kBlocks=1).
+    auto mV_0 = V.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + 0, c);
+    matmul_pv_op.run(cP, mV_0, cO_0);
+  }
+)";
+  // Tail block: process the C_remainder columns (always — we don't use the
+  // checkCEdge1 pre-padding trick here).
+  source += R"(
+  if (C_remainder > 0) {
+    // Init cS: -inf for invalid columns (>= C_remainder), 0 elsewhere.
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        auto idx = cS.get_multidimensional_index(k);
+        cS[k] = idx[0] >= (int)C_remainder ? -numeric_limits<float>::infinity() : 0;
+      }
+    }
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < K_edge; k += {{BLOCK_DIMENSIONS_HEAD}}) {
+      auto mQ = Q.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_PARALLELIZATION}}>(tgid.y * {{HEAD_DIMENSION}} + k, tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}});
+      auto mK = K.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + k, C - C_remainder);
+      matmul_qk_op.run(mQ, mK, cS);
+    }
+)";
+  if (headDimension % blockDimensions[2] > 0) {
+    source.SetValue("HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER", std::to_string(headDimension - (headDimension % blockDimensions[2])));
+    source += R"(
+    {
+      auto mQ = Q.slice<{{HEAD_DIMENSION_REMAINDER}}, {{BLOCK_DIMENSIONS_PARALLELIZATION}}>(tgid.y * {{HEAD_DIMENSION}} + {{HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER}}, tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}});
+      auto mK = K.slice<{{HEAD_DIMENSION_REMAINDER}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + {{HEAD_DIMENSION_HEAD_DIMENSION_REMAINDER}}, C - C_remainder);
+      matmul_qk_op_remainder.run(mQ, mK, cS);
+    }
+)";
+  }
+  source += R"(
+    // Online max reduce.
+    auto cM_new = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+    reduce_rows(cS, cM_new, reduction_operation::max, -numeric_limits<float>::infinity());
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+      if (cM.is_valid_element(k)) {
+        correction[k] = 1;
+        const float M_new = cM_new[k] * {{DOT_SCALE}};
+        if (M_new > cM[k]) {
+          correction[k] = fast::exp2(cM[k] - M_new);
+          cM[k] = M_new;
+        }
+      }
+    }
+    // Softmax (zero-out invalid columns explicitly via idx check).
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        auto it = cS.get_iterator(k);
+        auto dst_it = cM.map_iterator(it);
+        auto idx = cS.get_multidimensional_index(k);
+        if (idx[0] >= (int)C_remainder) {
+          cS[k] = 0;
+        } else {
+          cS[k] = fast::exp2(cS[k] * {{DOT_SCALE}} - *dst_it);
+        }
+      }
+    }
+    // Online sum reduce.
+    auto cL_new = matmul_qk_op.get_row_reduction_destination_cooperative_tensor<decltype(mQ), decltype(mK), float>();
+    reduce_rows(cS, cL_new, reduction_operation::sum, (float)0);
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cL.get_capacity(); ++k) {
+      if (cL.is_valid_element(k)) {
+        cL[k] = cL[k] * correction[k] + cL_new[k];
+      }
+    }
+    // Correct the running cO_0. (No first-iter init guard here: if the main
+    // loop processed at least one tile, cO_0 is already initialized; if C
+    // happened to be smaller than BLOCK_DIMENSIONS_TRAVERSAL so the main loop
+    // didn't run, cO_0 still holds zeros from get_destination_cooperative_tensor.)
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cO_0.get_capacity(); ++k) {
+      if (cO_0.is_valid_element(k)) {
+        auto it = cO_0.get_iterator(k);
+        auto dst_it = correction.map_iterator(it);
+        cO_0[k] *= *dst_it;
+      }
+    }
+    // Stage cS into cP and run dynamic-K PV matmul over the remainder.
+    simdgroup_barrier(mem_flags::mem_none);
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cS.get_capacity(); ++k) {
+      if (cS.is_valid_element(k)) {
+        cP[k] = ({{MEMORY_NAME_O}})cS[k];
+      }
+    }
+    auto mV_tail = V.slice<{{BLOCK_DIMENSIONS_HEAD}}, {{BLOCK_DIMENSIONS_TRAVERSAL}}>(tgid.y {{H_HK_RATIO}}* {{HEAD_DIMENSION}} + 0, C - C_remainder);
+    matmul_pv_op.run(cP, mV_tail, cO_0);
+  }
+)";
+  // Output writeback (identical structure to loopForward(), kBlocks=1).
+  source += R"(
+  auto O = O_buf + tgid.x * ({{BLOCK_DIMENSIONS_PARALLELIZATION}} * K_Hq) + tgid.y * {{HEAD_DIMENSION}};
+  auto L = L_buf + tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}};
+  if (R_remainder > 0 && tgid.x * {{BLOCK_DIMENSIONS_PARALLELIZATION}} >= R_edge) {
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cO_0.get_capacity(); ++k) {
+      if (cO_0.is_valid_element(k)) {
+        auto idx = cO_0.get_multidimensional_index(k);
+        if (idx[1] < (int)R_remainder) {
+          auto it = cO_0.get_iterator(k);
+          auto dst_it = cL.map_iterator(it);
+          auto L_reciprocal = fast::divide(1, *dst_it);
+          O[idx[0] + idx[1] * K_Hq] = ({{MEMORY_NAME_O}})(cO_0[k] * L_reciprocal);
+        }
+      }
+    }
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+      if (cM.is_valid_element(k)) {
+        auto idx = cM.get_multidimensional_index(k);
+        if (idx[0] < (int)R_remainder) {
+          float L_sram = cM[k] + fast::log2(cL[k]);
+          L[idx[0]] = ({{MEMORY_NAME_L}})L_sram;
+        }
+      }
+    }
+  } else {
+    #pragma clang loop unroll(full)
+    for (unsigned short k = 0; k < cO_0.get_capacity(); ++k) {
+      if (cO_0.is_valid_element(k)) {
+        auto it = cO_0.get_iterator(k);
+        auto dst_it = cL.map_iterator(it);
+        auto L_reciprocal = fast::divide(1, *dst_it);
+        auto idx = cO_0.get_multidimensional_index(k);
+        O[idx[0] + idx[1] * K_Hq] = ({{MEMORY_NAME_O}})(cO_0[k] * L_reciprocal);
       }
     }
     #pragma clang loop unroll(full)
