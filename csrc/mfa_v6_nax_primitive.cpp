@@ -81,7 +81,7 @@ std::mutex v6_mtx;
 std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
 
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
-                                bool isCausal) {
+                                bool isCausal, bool bhnd) {
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -222,7 +222,10 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Limitation: Forward path only, non-GQA only (Hq == Hk). For GQA (LTX2-cross),
   // K/V's per-head offset uses `(tgid.y / ratio)` which has different syntax we
   // don't rewrite here — falls back to BNHD path.
-  if (std::getenv("MFA_V6_BHND")) {
+  // Sprint 2A: BHND mode is now the DEFAULT (gated by Params, not env var).
+  // Caller decides per-call. GQA shapes (Hq != Hk) auto-fall-back to BNHD.
+  // Legacy BNHD path can be force-enabled via MFA_V6_BNHD_LEGACY=1 in caller.
+  if (bhnd) {
     if (Hq == Hk) {  // non-GQA only for now
       const std::string D_str = std::to_string(head_dim);
       const std::string head_y_D = "tgid.y * " + D_str;
@@ -291,6 +294,7 @@ class MFAV6Forward : public mlx::core::Primitive {
 public:
   struct Params {
     bool causal;
+    bool bhnd;  // Sprint 2A: layout flag, decided by caller per-call.
   };
 
   MFAV6Forward(mlx::core::Stream stream, Params params)
@@ -311,10 +315,10 @@ public:
     auto& out = outputs[0];
     auto& lse = outputs[1];
 
-    // Layout selection. Default: caller transposes into [B, N, H, D].
-    // With MFA_V6_BHND=1: caller passes [B, H, N, D] directly and the
-    // post-gen rewriter has produced a kernel that reads BHND layout.
-    const bool bhnd = (std::getenv("MFA_V6_BHND") != nullptr);
+    // Layout selection (Sprint 2A): per-call via Params, decided by wrapper.
+    // BHND is the default; BNHD is opt-in via MFA_V6_BNHD_LEGACY=1 (caller-side)
+    // or auto-fallback for GQA shapes (Hq != Hk).
+    const bool bhnd = params_.bhnd;
     int B  = q.shape(0);
     int N  = bhnd ? q.shape(2) : q.shape(1);
     int Hq = bhnd ? q.shape(1) : q.shape(2);
@@ -383,7 +387,7 @@ public:
       else if (m == "2") axis_flags |= 0x08;
       else if (m == "4") axis_flags |= 0x10;
     }
-    if (std::getenv("MFA_V6_BHND")) axis_flags |= 0x20;  // Sprint 2A
+    if (params_.bhnd) axis_flags |= 0x20;  // Sprint 2A — BHND layout
 
     // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
@@ -400,7 +404,7 @@ public:
     }
     if (!pipeline) {
       std::string src = generate_v6_source(
-          D, Hq, Hk, dtype_code, params_.causal);
+          D, Hq, Hk, dtype_code, params_.causal, params_.bhnd);
       pipeline = v6_nax_compile_with_constants(
           src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -426,7 +430,8 @@ public:
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV6Forward*>(&other);
-    return p && p->params_.causal == params_.causal;
+    return p && p->params_.causal == params_.causal
+             && p->params_.bhnd == params_.bhnd;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -454,11 +459,19 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
-  const bool bhnd = (std::getenv("MFA_V6_BHND") != nullptr);
-  MFAV6Forward::Params params{causal};
+  // Sprint 2A — Layout selection (BHND default since 2026-05-04):
+  //   - BNHD legacy path forced via MFA_V6_BNHD_LEGACY=1
+  //   - GQA shapes (Hq != Hk) auto-fallback to BNHD (rewriter only handles
+  //     non-GQA; LTX2-cross is non-GQA so this rarely triggers)
+  const int Hq_from_input = q.shape(1);
+  const int Hk_from_input = k.shape(1);
+  const bool legacy_opt_in = (std::getenv("MFA_V6_BNHD_LEGACY") != nullptr);
+  const bool can_bhnd = (Hq_from_input == Hk_from_input);
+  const bool bhnd = !legacy_opt_in && can_bhnd;
+  MFAV6Forward::Params params{causal, bhnd};
 
   if (bhnd) {
-    // Sprint 2A: pass Q/K/V directly in MLX-native [B, H, N, D] layout.
+    // Pass Q/K/V directly in MLX-native [B, H, N, D] layout.
     // The post-gen-rewritten kernel reads this layout natively. Input
     // arrays must be contiguous (no strided views from upstream).
     auto qc = mlx::core::contiguous(q, false, s);
@@ -475,7 +488,8 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     return {outs[0], outs[1]};
   }
 
-  // Default: transpose [B,H,N,D] -> [B,N,H,D] for Draw Things kernel layout
+  // Legacy / GQA-fallback: transpose [B,H,N,D] -> [B,N,H,D] for Draw Things
+  // kernel layout. Used when MFA_V6_BNHD_LEGACY=1 or when shape is GQA.
   auto q_bnhd = mlx::core::transpose(q, std::vector<int>{0, 2, 1, 3}, s);
   auto k_bnhd = mlx::core::transpose(k, std::vector<int>{0, 2, 1, 3}, s);
   auto v_bnhd = mlx::core::transpose(v, std::vector<int>{0, 2, 1, 3}, s);
