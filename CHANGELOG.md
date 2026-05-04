@@ -4,6 +4,64 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.29.0] — 2026-05-05
+
+### Added — V6 NAX single-Otile + autoresearch retuning (M5+)
+
+- **`loopForwardSingleTile()`** — Apple-style single-buffer V6 NAX forward
+  kernel. ~270 LOC in `csrc/mfa/v6_nax/NAAttentionKernel.cpp`. Single cS (no
+  double-buffer cS_0/cS_1), forced kBlocks=1, always-bypass cP cooperative
+  tensor (no `P_buf` threadgroup staging), `mem_none` barriers, K-loop step
+  BK (not 2·BK).
+- **Autoresearch-tuned tile defaults**: BQ=16 universal; BK=64 for D=64,
+  BK=32 for D=128; SG=2 for D=64, SG=8 for D=128. Plumbed in both the
+  source-gen path and the cache-key/dispatch path of
+  `csrc/mfa_v6_nax_primitive.cpp`.
+- **Auto-default kernel variant by Hq==Hk**: non-GQA shapes get single-Otile
+  by default; GQA shapes fall back to legacy `loopForward()` (double-buffer)
+  because the BHND rewriter doesn't yet handle per-head K-stride for
+  single-Otile.
+- New env vars (all with auto-defaults): `MFA_V6_NAX_SINGLE_OTILE` (on/off),
+  `MFA_V6_BLOCK_R` / `_C` / `EXEC_SG` / `BLOCK_D` for tile overrides,
+  `MFA_V6_BYPASS_TGP` (forced on by single-Otile).
+- `docs/v6-nax/README.md` — V6 NAX architecture summary + sprint chronology.
+- `docs/v6-nax/env-vars.md` — full env var reference.
+- `bench/v6_single_otile_bench.py` — reproducible single-Otile bench.
+- `bench/v6_single_otile_autoresearch.py` — tile-config sweep script.
+
+### Performance — V6 NAX on M5 Max (5 production VSR/DiT shapes)
+
+V6/SDPA closed from 1.98×–5.06× (v2.28.x default tiles) to 1.20×–2.06×:
+
+| Shape (D)               | v2.28.x | v2.29.0 | Δ      | V6/SDPA   |
+|-------------------------|--------:|--------:|-------:|-----------|
+| FlashVSR-dense (64)     | 1.81 ms | 1.11 ms | -38.7% | → 1.22×   |
+| LTX2-cross (64)         | 2.99 ms | 1.59 ms | -46.8% | → 1.20×   |
+| SeedVR2-small (128)     | 936 ms  | 276 ms  | -70.5% | → 1.49×   |
+| CogVideoX (128)         | 9633 ms | 3060 ms | -68.2% | → 1.35×   |
+| SeedVR2-large (128)     | 16030 ms| 8392 ms | -47.6% | → 2.06×   |
+
+Bonus: SeedVR2-large RMSE 5.79e-5 → 2.93e-6 (20× more stable) under the
+single-Otile path — single-buffer commits each row reduction before the
+next K-tile overwrites, eliminating cross-tile FP16↔FP32 rounding error
+that the double-buffer accumulated.
+
+### Investigation logs (informational, no code change)
+
+- **Sprint 3.1** — V6 NAX already implements all three Apple-style causal-skip
+  optimizations from `steel_attention_nax.h` (loop bound, mask gate,
+  per-element check). Plus an extra V6-only tail-block gate. No code change
+  recommended. See `docs/v6-nax/causal-masking-analysis.md`.
+- **Sprint 3.2** — `bypassThreadgroupMemory` at legacy tiles regresses on
+  D=128 (Cas C). Kept off as a default. With single-Otile + new tiles,
+  bypass is forced on automatically. See
+  `docs/v6-nax/sprint-3-2-bypass-tgmem-results.md`.
+
+### Documentation
+
+- README — performance table updated for v2.29.0; added M5 Max V6 NAX
+  section; clarified the M1 Max highlights remain the M1-Max-specific story.
+
 ## [2.28.1] — 2026-05-02
 
 ### Fixed

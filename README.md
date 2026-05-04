@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.27.0** — native `attn_bias` Metal kernel + DiT/UNet dispatch audit.
+Current version: **2.29.0** — V6 NAX single-Otile rewrite + autoresearch retuning (M5+).
 
 ## Foreword
 
@@ -26,7 +26,14 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.27.0 adds native Metal `attn_bias` kernel support (additive bias on
+v2.29.0 ships **V6 NAX single-Otile** for M5+ hardware: an Apple-style
+single-buffer kernel (`loopForwardSingleTile`) with autoresearch-tuned
+default tile config (BQ=16 universal, per-D BK/SG). On M5 Max, V6 NAX
+now runs at 1.20×–2.06× SDPA across the 5 production VSR/DiT shapes
+(was 1.98×–5.06× before this release). See the M5 Max table below and
+`docs/v6-nax/sprint-3-3-autoresearch-results.md` for the full sweep data.
+
+v2.27.0 added native Metal `attn_bias` kernel support (additive bias on
 attention logits without SDPA fallback), a dispatch audit for 11 DiT/UNet
 architectures, and varlen validation for token merging workflows.
 See `CHANGELOG.md` for full details per version.
@@ -68,6 +75,29 @@ on my work!
   distributed cache infrastructure.
 - Future major hardware-specific optimization work is deferred pending newer
   Apple hardware (M5+).
+
+## V6 NAX on M5 Max — production VSR/DiT shapes (v2.29.0)
+
+V6 NAX is the M5+ kernel path (Apple Neural Accelerators via MPP).
+With single-Otile + autoresearch-tuned tiles, all 5 production shapes
+sit between 1.20× and 2.06× SDPA on M5 Max — closing the bulk of the
+gap that existed at v2.28.x (1.98× to 5.06× SDPA).
+
+| Shape (B, H, N, D)                | V6 NAX | SDPA | V6/SDPA |
+|---|---:|---:|---:|
+| FlashVSR-dense (1, 10, 4096, 64)  | 1.11 ms | 0.91 ms | 1.22× |
+| LTX2-cross (1, 8, 2048→14000, 64) | 1.59 ms | 1.33 ms | 1.20× |
+| SeedVR2-small (1, 20, 26730, 128) | 276 ms  | 185 ms  | 1.49× |
+| CogVideoX (1, 30, 70200, 128)     | 3060 ms | 2275 ms | 1.35× |
+| SeedVR2-large (1, 20, 111375, 128)| 8392 ms | 4067 ms | 2.06× |
+
+vs v2.28.x (legacy default tiles BQ=32 BK=32 SG=4): 25–70 % faster on
+all 5 shapes. Bonus: SeedVR2-large RMSE went from 5.79e-5 → 2.93e-6
+(20× more stable) under the new defaults.
+
+The bulk of the speedup came from a parameter sweep at the API
+boundary, not from the kernel rewrite alone — see the lesson in
+`docs/v6-nax/sprint-3-3-autoresearch-results.md`.
 
 ## Best M1 Max Benchmark Highlights
 
