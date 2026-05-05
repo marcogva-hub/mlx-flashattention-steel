@@ -4,6 +4,85 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.30.0] — 2026-05-05
+
+### Added
+
+- **Sprint A.1 — tgmem allocation cleanup**: `threadgroupMemoryAllocation()`
+  now returns 0 for the forward path when single-Otile + bypass are both
+  on (P_buf is never used). Previously allocated 8-16 KB of unused
+  tgmem per dispatch. 3-LOC fix; gains 2-4% on the long-N D=128 shapes.
+- **Sprint B — GQA single-Otile path**: BHND rewriter extended to handle
+  `Hq != Hk && Hq % Hk == 0`. GQA shapes now use the single-Otile kernel
+  path in BHND layout (no host transpose roundtrip), gaining 7-14% over
+  v2.29.0 legacy double-buffer + BNHD on 4 GQA shapes (Hq=32/Hk=8,
+  Hq=16/Hk=4, Hq=40/Hk=8, Hq=8/Hk=2). The closest V6 has gotten to
+  SDPA on M5 Max: GQA-Hq32-Hk8 D=128 at **1.06× SDPA** (was n/a — GQA
+  fell back to legacy in v2.29.0).
+- **Sprint G — dispatch v6 default tuning**: Sprint C+G multi-run sweep
+  identified two consistent improvements over v2.29.0+S3.6:
+  - D=64: SG=4 (was SG=2) — FlashVSR-dense −6.4 % consistent.
+  - D=128, N≥100000: BK=64 SG=8 (new branch; was BK=32 SG=16) —
+    SeedVR2-large −11.7 % consistent.
+  Existing default for D=128 N<100k (BK=32, SG=8 if N<50k else SG=16)
+  preserved.
+
+### Performance — V6 NAX on M5 Max (all shapes BHND, multi-run validated)
+
+| Shape | v6/SDPA |
+|---|---:|
+| FlashVSR-dense (D=64)        | 1.30× |
+| LTX2-cross (D=64)            | 1.13× |
+| SeedVR2-small (D=128 small)  | 1.42× |
+| CogVideoX (D=128 mid)        | 1.74×* |
+| SeedVR2-large (D=128 large)  | 1.58× |
+| GQA-Hq32-Hk8 D=128           | **1.06×** ⭐ |
+| GQA-Hq16-Hk4 D=64            | 1.17× |
+| GQA-Hq40-Hk8 D=128           | 1.16× |
+| GQA-Hq8-Hk2  D=64            | 1.18× |
+
+*CogVideoX measurement is thermal-state-affected (4 hours of continuous
+GPU work during the campaign). Within-session A/B comparison remains
+the trustworthy reference for dispatch decisions.
+
+### Investigated but not implemented (informational)
+
+- **Sprint A.2 swizzle**: Apple's `steel_attention_nax.h` doesn't use
+  swizzle — only their GEMM does. Implementation would yield no gain.
+- **Sprint A.3 ld_padding**: V6 NAX uses device tensors for Q/K/V
+  (not threadgroup-staged). Bank-conflict padding has nothing to apply
+  to. Architecturally inapplicable.
+- **Sprint D per-loop unroll**: 101 separate `#pragma clang loop unroll`
+  directives in source generator; per-loop control would require ~50+
+  LOC of categorization. S3.5's global sweep already showed `full` wins
+  by 1.3-2.4× — no expected gain from finer-grained variants.
+- **Sprint E pipeline state attributes**: `max_total_threads_per_threadgroup`
+  via `MTLComputePipelineDescriptor` would help register-pressure-bound
+  kernels, but single-Otile is already register-light by design.
+  Implementation deferred until profiling identifies threadgroup
+  attributes as the bottleneck.
+- **Sprint F compile-time vs runtime function constants**: V6 NAX
+  already uses the right split. Tile dimensions must be source-time
+  (MPP `matmul2d_descriptor` requires constexpr); R/C/batch strides
+  are Metal function constants. Nothing left to swap.
+
+### Lessons from v2.30 campaign
+
+1. **Thermal state matters at hour-scale benches**. The same config can
+   measure 25-30% slower at hour 4 than at hour 0 of continuous GPU work.
+   Cross-session pre-vs-post comparison is confounded; use within-session
+   A/B for shipping decisions.
+2. **SG=8 vs SG=16 for SeedVR2-small flipped 4 times** across runs of the
+   exact same config. Below the 15% multi-run threshold, M5 Max variance
+   is large enough that "this config wins" claims must come from at
+   least 5-run methodology *and* show consistent direction across multiple
+   independent benches. Conservative dispatch v6 ships only changes that
+   pass this bar.
+3. **Investigate the target before implementing.** The brief assumed
+   Apple's GEMM optimizations apply to attention; checking
+   `steel_attention_nax.h` showed they don't. 5 minutes of grep saved
+   2-3 hours of dead-end source-gen extension.
+
 ## [2.29.0] — 2026-05-05
 
 ### Added — V6 NAX single-Otile + autoresearch retuning (M5+)

@@ -117,17 +117,24 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // large for register packing. Default to single-Otile + BQ=16 + per-D
   // BK/SG, with env var overrides preserved.
   unsigned short BQ = 16;
-  unsigned short BK = (head_dim == 64) ? 64 : 32;
-  // S3.6 (multi-run methodology): D=128 SG default is N-conditional.
-  //   N < 50000 (e.g. SeedVR2-small at 26730): SG=8 (wins by 28% over SG=16)
-  //   N >= 50000 (CogVideoX 70200, SeedVR2-large 111375): SG=16 (wins -10%
-  //   on SeedVR2-large, noise on CogVideoX)
-  // D=64 stays at SG=2 (Tier 1 winner across both FlashVSR and LTX2).
+  // Dispatch v6 (v2.30, Sprint C+G multi-run): refined per-shape defaults.
+  //   D=64:  BK=64 SG=4 (was SG=2; FlashVSR-dense -6.4% in Sprint G)
+  //   D=128, N <  50000: BK=32 SG=8 (SeedVR2-small variance keeps SG=8)
+  //   D=128, 50k ≤ N < 100k: BK=32 SG=16 (CogVideoX noise; preserves S3.6)
+  //   D=128, N >= 100000: BK=64 SG=8 (SeedVR2-large -11.7% in Sprint G)
+  // D=64 sweep: BQ=16 BK=64 SG=4 wins both FlashVSR (1.07ms) and LTX2 (1.43ms).
+  unsigned short BK;
   uint16_t exec_sg;
   if (head_dim == 64) {
-    exec_sg = 2;
-  } else {
-    exec_sg = (R >= 50000) ? 16 : 8;
+    BK = 64; exec_sg = 4;
+  } else {  // D=128
+    if (R >= 100000) {
+      BK = 64; exec_sg = 8;
+    } else if (R >= 50000) {
+      BK = 32; exec_sg = 16;
+    } else {
+      BK = 32; exec_sg = 8;
+    }
   }
   bool bypass_tgp = false;
   // Sprint B (v2.30): BHND rewriter now handles GQA — single-Otile is the
@@ -457,16 +464,21 @@ public:
     uint32_t obs = qbs;
 
     // Tile params — auto-tuned defaults (mirror the source-gen path above).
-    // Sprint 3.3 + autoresearch: BQ=16 universally; BK/SG conditional on D.
-    // S3.6 multi-run methodology: D=128 SG is also N-conditional
-    // (R=N_q < 50000 -> SG=8; R >= 50000 -> SG=16).
+    // Dispatch v6 (Sprint C+G): D=64 SG=4; D=128 3-way N-conditional with
+    // BK shift at N>=100000.
     unsigned short BQ = 16;
-    unsigned short BK = (D == 64) ? 64 : 32;
+    unsigned short BK;
     uint16_t executionSIMDGroups;
     if (D == 64) {
-      executionSIMDGroups = 2;
-    } else {
-      executionSIMDGroups = ((int)R >= 50000) ? 16 : 8;
+      BK = 64; executionSIMDGroups = 4;
+    } else {  // D=128
+      if ((int)R >= 100000) {
+        BK = 64; executionSIMDGroups = 8;
+      } else if ((int)R >= 50000) {
+        BK = 32; executionSIMDGroups = 16;
+      } else {
+        BK = 32; executionSIMDGroups = 8;
+      }
     }
     bool bypass_tgp = false;
     unsigned short BD = (unsigned short)D;
