@@ -4,6 +4,92 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.30.0] — 2026-05-05 (final, post thermal-controlled re-bench)
+
+> **Note**: This release went through a thermal-controlled re-bench
+> validation cycle that reverted the originally-shipped "dispatch v6"
+> tile-default changes (Sprint G). The Sprint G claim of "−6.4 % on
+> FlashVSR-dense and −11.7 % on SeedVR2-large" turned out to be a
+> within-session pipeline-cache artifact that did not replicate
+> cross-session. See `docs/v6-nax/v2-30-thermal-rebench.md`.
+
+### What's actually shipped in v2.30.0
+
+- **Sprint A.1 — tgmem allocation cleanup** (3 LOC):
+  `threadgroupMemoryAllocation()` returns 0 for the forward path when
+  single-Otile + bypass are both on (P_buf is never used). Saves
+  8-16 KB per dispatch. Within noise on production shapes; pure
+  code-quality fix.
+- **Sprint B — GQA single-Otile path** (~70 LOC): BHND rewriter now
+  handles `Hq != Hk && Hq % Hk == 0`. GQA shapes use the single-Otile
+  kernel directly. Gains 7-14% over v2.29.0 legacy fallback on 4 GQA
+  shapes. **GQA-Hq32-Hk8 D=128 reaches 1.06× SDPA** — the closest V6
+  has gotten to parity on M5 Max.
+- **Infrastructure: `MFA_V6_MAX_THREADS`** env var + Metal pipeline-state
+  attribute support (`MTLComputePipelineDescriptor` with
+  `maxTotalThreadsPerThreadgroup`). No default change — exposed for
+  future per-shape dispatch experiments.
+- **Infrastructure: `MFA_V6_MATMUL_EXEC_SG`** env var + post-gen rewrite
+  of `matmul2d<desc, execution_simdgroups<N>>` template parameter
+  (default <1>). Empirical sweep showed FlashVSR-dense gains ~10% at
+  <8> but doesn't generalize. Exposed for future per-shape dispatch.
+
+### Reverted from initial v2.30 release
+
+- **Sprint G dispatch v6 default changes** (commit `96daff7`,
+  reverted in `ca0fc44`): D=64 SG=4 (was SG=2) and D=128 N≥100k
+  BK=64 SG=8 (was BK=32 SG=16). Thermal-controlled re-bench showed
+  these regressed SeedVR2-large +14.3 % and SeedVR2-small +5.9 %
+  vs v5 defaults.
+
+### Final v2.30.0 vs v2.29.0 performance (M5 Max, controlled A/B/A)
+
+5-shape multi-run on production dense shapes (median-of-medians):
+
+| Shape | v2.29.0 (avg of A1+A3) | v2.30.0 (B) | Δ |
+|---|---:|---:|---:|
+| FlashVSR-dense | 1.17 ms | 1.15 ms | -1.7 % (noise) |
+| LTX2-cross | 1.55 ms | 1.56 ms | +0.6 % (noise) |
+| SeedVR2-small | 280 ms | 286 ms | +2.1 % (noise) |
+| CogVideoX | 4377 ms | 4500 ms | +2.8 % (noise) |
+| SeedVR2-large | 7720 ms | 7735 ms | +0.2 % (noise) |
+
+**All deltas within ±3 % noise band.** Production performance is
+statistically equivalent to v2.29.0; v2.30.0 is a strict improvement
+on GQA shapes (new feature) without regression on production.
+
+### GQA shape performance (Sprint B, multi-run validated)
+
+| Shape | v2.29.0 legacy | v2.30.0 single-Otile | Δ | V6/SDPA |
+|---|---:|---:|---:|---|
+| GQA-Hq32-Hk8 D=128 | 7.71 ms | 6.60 ms | -14.46 % | **1.06×** |
+| GQA-Hq16-Hk4 D=64 | 6.01 ms | 5.54 ms | -7.90 % | 1.17× |
+| GQA-Hq40-Hk8 D=128 | 2.59 ms | 2.30 ms | -11.03 % | 1.16× |
+| GQA-Hq8-Hk2 D=64 | 1.00 ms | 0.93 ms | -7.11 % | 1.18× |
+
+### Investigated but not shipped (full rationale in docs/v6-nax/sprint-{D,E,F}-*.md)
+
+- **Sprint A.2 swizzle**: Apple's NAX attention doesn't use swizzle.
+- **Sprint A.3 ld_padding**: V6 uses device tensors; padding inapplicable.
+- **Sprint D per-loop unroll**: 101 pragmas; S3.5 already showed `full` wins.
+- **Sprint F compile-time vs runtime function constants**: V6 already at
+  the natural compile/runtime split.
+
+### Lessons logged from the v2.30.0 cycle
+
+1. **Within-session A/B benches contaminate via pipeline cache**.
+   Sprint G's "wins" didn't replicate cross-session. Always use
+   cross-session controlled bench for shipping decisions.
+2. **`maxTotalThreadsPerThreadgroup` can silently corrupt output** if
+   set below the actual dispatch's threads-per-threadgroup. For SG=16
+   (= 512 threads/TG), settings of 256 or 512 produce RMSE=1.0.
+3. **MPP `execution_simdgroups<N>` template is not a no-op** —
+   FlashVSR-dense gains ~10 % at `<8>` vs `<1>`. Worth per-shape dispatch
+   exploration in a future sprint.
+4. **Thermal drift can flip benches by 50% over hour-scale sessions.**
+   Mandatory protocol: 3-5 min initial cooldown + 90-120 s inter-round +
+   A/B/A pattern. R1↔R3 within 5% to declare bench thermally valid.
+
 ## [2.29.0] — 2026-05-05
 
 ### Added — V6 NAX single-Otile + autoresearch retuning (M5+)

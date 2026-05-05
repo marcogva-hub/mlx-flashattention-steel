@@ -117,12 +117,11 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // large for register packing. Default to single-Otile + BQ=16 + per-D
   // BK/SG, with env var overrides preserved.
   unsigned short BQ = 16;
+  // Dispatch v5 (REVERTED from v2.30 dispatch v6 — thermal-controlled
+  // re-bench showed v6 regresses SeedVR2-large +14.3% and SeedVR2-small
+  // +5.9% vs v5; Sprint G's "wins" were within-session pipeline-cache
+  // artifacts that didn't replicate cross-session).
   unsigned short BK = (head_dim == 64) ? 64 : 32;
-  // S3.6 (multi-run methodology): D=128 SG default is N-conditional.
-  //   N < 50000 (e.g. SeedVR2-small at 26730): SG=8 (wins by 28% over SG=16)
-  //   N >= 50000 (CogVideoX 70200, SeedVR2-large 111375): SG=16 (wins -10%
-  //   on SeedVR2-large, noise on CogVideoX)
-  // D=64 stays at SG=2 (Tier 1 winner across both FlashVSR and LTX2).
   uint16_t exec_sg;
   if (head_dim == 64) {
     exec_sg = 2;
@@ -130,10 +129,9 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     exec_sg = (R >= 50000) ? 16 : 8;
   }
   bool bypass_tgp = false;
-  bool single_otile = (Hq == Hk);  // single-Otile is the default path now;
-                                    // GQA falls back to legacy double-buffer
-                                    // because BHND rewriter doesn't yet handle
-                                    // per-head K-stride in single-Otile path.
+  // Sprint B (v2.30): BHND rewriter now handles GQA — single-Otile is the
+  // default for both non-GQA and GQA-divisible (Hq % Hk == 0).
+  bool single_otile = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
   unsigned short BD = (unsigned short)head_dim;
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
@@ -236,6 +234,21 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     replace_all(source, "#pragma clang loop unroll(full)", replacement);
   }
 
+  // Sprint 3 (v2.30) — MFA_V6_MATMUL_EXEC_SG override.
+  // The source generator always emits `execution_simdgroups<1>` in the
+  // matmul2d<desc, execution_simdgroups<N>> template parameter, which tells
+  // MPP how many simdgroups cooperate on a single matmul instance.
+  // <1> = each simdgroup runs independent instances. <N> = N cooperate.
+  // Apple hardcodes <1> in steel_attention_nax.h; we test if higher values
+  // help our access pattern.
+  if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
+    int v = std::atoi(env_mes);
+    if (v == 2 || v == 4 || v == 8) {
+      std::string replacement = "execution_simdgroups<" + std::to_string(v) + ">";
+      replace_all(source, "execution_simdgroups<1>", replacement);
+    }
+  }
+
   // ── Sprint 2A: BHND layout migration (MFA_V6_BHND=1) ─────────────────────
   // Rewrites the kernel to read Q/K/V/O in [B, H, N, D] layout (MLX native)
   // instead of [B, N, H, D] (Draw Things native). Eliminates the host-side
@@ -258,7 +271,67 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Caller decides per-call. GQA shapes (Hq != Hk) auto-fall-back to BNHD.
   // Legacy BNHD path can be force-enabled via MFA_V6_BNHD_LEGACY=1 in caller.
   if (bhnd) {
-    if (Hq == Hk) {  // non-GQA only for now
+    // Sprint B (v2.30) — GQA support extension. The original BHND rewriter
+    // (Sprint 2A) only handled Hq == Hk because the patterns for K/V slice
+    // args (`tgid.y / ratio * D`) differ from Q/O patterns (`tgid.y * D`).
+    // The new branch below handles Hq != Hk by emitting per-KV-head offsets
+    // `(tgid.y / ratio) * C * D` in the K/V buffer bases.
+    if (Hq != Hk && Hq % Hk == 0) {
+      const int ratio = Hq / Hk;
+      const std::string D_str = std::to_string(head_dim);
+      const std::string ratio_str = std::to_string(ratio);
+      // Q, O patterns use raw tgid.y (Q-head index, Hq heads).
+      const std::string head_y_D = "tgid.y * " + D_str;
+      // K, V patterns from the source emitter look like `tgid.y / RATIO* D`
+      // (note: no space before '*'; the H_HK_RATIO substitution
+      // is "/ <ratio>" so the literal becomes "tgid.y / 4* 128").
+      const std::string head_y_div_D = "tgid.y / " + ratio_str + "* " + D_str;
+
+      // Step 1: per-batch base offset → add per-head offset
+      replace_all(source,
+                  "Q_buf = Q_buf + tgid.z * Q_batch_stride;",
+                  "Q_buf = Q_buf + tgid.z * Q_batch_stride + tgid.y * R * "
+                  + D_str + ";");
+      replace_all(source,
+                  "O_buf = O_buf + tgid.z * O_batch_stride;",
+                  "O_buf = O_buf + tgid.z * O_batch_stride + tgid.y * R * "
+                  + D_str + ";");
+      // K/V use the KV-head index (tgid.y / ratio).
+      replace_all(source,
+                  "K_buf = K_buf + tgid.z * K_batch_stride;",
+                  "K_buf = K_buf + tgid.z * K_batch_stride + (tgid.y / "
+                  + ratio_str + ") * C * " + D_str + ";");
+      replace_all(source,
+                  "V_buf = V_buf + tgid.z * V_batch_stride;",
+                  "V_buf = V_buf + tgid.z * V_batch_stride + (tgid.y / "
+                  + ratio_str + ") * C * " + D_str + ";");
+
+      // Step 2: tensor extents → per-head (D, seq).
+      replace_all(source,
+                  "dextents<int32_t, 2>(K_Hq, R)",
+                  "dextents<int32_t, 2>(" + D_str + ", R)");
+      replace_all(source,
+                  "dextents<int32_t, 2>(K_Hk, C)",
+                  "dextents<int32_t, 2>(" + D_str + ", C)");
+
+      // Step 3: drop head offset in slice args. Order matters: the longer
+      // K/V pattern (`tgid.y / 4* 128`) is a SUBSTRING-shape that must be
+      // matched BEFORE the Q/O bare pattern (`tgid.y * 128`); otherwise the
+      // bare match would catch the leading `tgid.y` and mangle the GQA
+      // expression. Match-with-trailing-plus first to handle composite
+      // expressions inside slice args.
+      replace_all(source, head_y_div_D + " + ", "");  // K/V slices with `+ k` follow-on
+      replace_all(source, head_y_div_D, "0");          // bare K/V slice arg
+      replace_all(source, head_y_D + " + ", "");      // Q/O slices with `+ k`
+      replace_all(source, head_y_D, "0");              // bare Q/O slice arg
+
+      // Step 4: output writeback (same as non-GQA).
+      replace_all(source, "+ 0;\n", ";\n");
+      replace_all(source, " + 0)", ")");
+      replace_all(source, "* K_Hq)", "* " + D_str + ")");
+      replace_all(source, "idx[1] * K_Hq", "idx[1] * " + D_str);
+    }
+    else if (Hq == Hk) {  // non-GQA only for now
       const std::string D_str = std::to_string(head_dim);
       const std::string head_y_D = "tgid.y * " + D_str;
 
@@ -398,9 +471,9 @@ public:
     uint32_t obs = qbs;
 
     // Tile params — auto-tuned defaults (mirror the source-gen path above).
-    // Sprint 3.3 + autoresearch: BQ=16 universally; BK/SG conditional on D.
-    // S3.6 multi-run methodology: D=128 SG is also N-conditional
-    // (R=N_q < 50000 -> SG=8; R >= 50000 -> SG=16).
+    // Dispatch v6 (Sprint C+G): D=64 SG=4; D=128 3-way N-conditional with
+    // BK shift at N>=100000.
+    // Dispatch v5 (REVERTED from v2.30 dispatch v6).
     unsigned short BQ = 16;
     unsigned short BK = (D == 64) ? 64 : 32;
     uint16_t executionSIMDGroups;
@@ -433,12 +506,31 @@ public:
     // the source-generation path so the cache key matches whichever variant was
     // actually compiled.
     {
-      // Mirror the source-gen path's auto-default: single-Otile is the
-      // default everywhere except GQA. Explicit env override wins.
-      bool so_for_key = (Hq == Hk);
+      // Sprint B (v2.30): single-Otile default mirrors the GQA-supporting
+      // logic in the source-gen path. Both non-GQA and GQA-divisible.
+      bool so_for_key = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
         so_for_key = (std::atoi(env_so) != 0);
       if (so_for_key) axis_flags |= 0x40;
+    }
+    // Sprint E (v2.30) — MFA_V6_MAX_THREADS env var changes pipeline state
+    // attribute (maxTotalThreadsPerThreadgroup). Different settings produce
+    // different compiled pipelines; encode in the cache key.
+    if (const char* env_mt = std::getenv("MFA_V6_MAX_THREADS")) {
+      int v = std::atoi(env_mt);
+      // Encode with 3 bits in axis_flags 0x80/0x100/0x200 — discrete buckets.
+      if (v > 0 && v <= 256) axis_flags |= 0x80;
+      else if (v > 256 && v <= 384) axis_flags |= 0x100;
+      else if (v > 384 && v <= 512) axis_flags |= 0x180;
+      else if (v > 512 && v <= 768) axis_flags |= 0x200;
+      // 769-1024 maps to default (0) — no bit set.
+    }
+    // MFA_V6_MATMUL_EXEC_SG (v2.30 piste) — encode in axis_flags.
+    if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
+      int v = std::atoi(env_mes);
+      if (v == 2) axis_flags |= 0x400;
+      else if (v == 4) axis_flags |= 0x800;
+      else if (v == 8) axis_flags |= 0xC00;
     }
 
     // Include all tile + flag params in cache key.
@@ -518,7 +610,9 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   const int Hq_from_input = q.shape(1);
   const int Hk_from_input = k.shape(1);
   const bool legacy_opt_in = (std::getenv("MFA_V6_BNHD_LEGACY") != nullptr);
-  const bool can_bhnd = (Hq_from_input == Hk_from_input);
+  // Sprint B (v2.30): BHND rewriter now handles GQA (Hq % Hk == 0).
+  const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
+                        (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
   const bool bhnd = !legacy_opt_in && can_bhnd;
   MFAV6Forward::Params params{causal, bhnd};
 

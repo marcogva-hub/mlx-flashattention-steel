@@ -13,6 +13,21 @@ namespace mlx_mfa {
 
 // Compile and return a pipeline state with function constants R, C, and
 // batch strides set to provided values.
+//
+// v2.30 Sprint E: optional max_threads_hint (>0) uses MTLComputePipelineDescriptor
+// to set maxTotalThreadsPerThreadgroup, giving the compiler an explicit upper
+// bound so it can use more registers per thread (lower TG co-residency, higher
+// per-thread register count). Default 0 = use Metal's default (typically 1024).
+//
+// Read from MFA_V6_MAX_THREADS env var per-call (no plumbing through C++ API).
+static uint32_t v6_max_threads_hint_from_env() {
+  if (const char* env = std::getenv("MFA_V6_MAX_THREADS")) {
+    int v = std::atoi(env);
+    if (v > 0 && v <= 1024) return (uint32_t)v;
+  }
+  return 0;  // 0 = default
+}
+
 void* v6_nax_compile_with_constants(
     const std::string& source,
     const std::string& function_name,
@@ -54,8 +69,21 @@ void* v6_nax_compile_with_constants(
       throw std::runtime_error(msg);
     }
 
-    id<MTLComputePipelineState> pipeline =
-        [device newComputePipelineStateWithFunction:function error:&error];
+    id<MTLComputePipelineState> pipeline = nil;
+    uint32_t max_hint = v6_max_threads_hint_from_env();
+    if (max_hint > 0) {
+      // Sprint E: explicit max_total_threads_per_threadgroup gives the
+      // compiler an upper bound for register-pressure decisions.
+      MTLComputePipelineDescriptor* desc = [[MTLComputePipelineDescriptor alloc] init];
+      desc.computeFunction = function;
+      desc.maxTotalThreadsPerThreadgroup = max_hint;
+      pipeline = [device newComputePipelineStateWithDescriptor:desc
+                                                       options:0
+                                                    reflection:nil
+                                                         error:&error];
+    } else {
+      pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    }
     if (!pipeline) {
       std::string msg = "V6 pipeline creation failed";
       if (error) msg += std::string(": ") + [[error localizedDescription] UTF8String];
