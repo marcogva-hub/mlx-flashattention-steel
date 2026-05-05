@@ -1435,3 +1435,74 @@ regressions vs v2.29.0.
 - Plus the upcoming final-docs commit. No push.
 - Marco reviews and merges manually.
 
+---
+## [2026-05-05 14:00] [CLAUDE] Sprint G dispatch v6 — thermal-stable re-bench (revert vindicated)
+STATUS: COMPLETE
+
+### Plan
+- Objective: re-test dispatch v6 under iStat performance fan profile to
+  determine whether the v2.30.0 revert was justified or a thermal artifact.
+- Files: experiment branch `experiment/sprint-g-rebench-thermal-stable`
+  carries the dispatch v6 reapplication (commit `6ed6325`); docs +
+  scripts land on `feat/v6-nax`.
+
+### Methodology
+Cross-session A/B/A with subprocess isolation:
+- R1: feat/v6-nax (dispatch v5, baseline) — 3 runs × shape median
+- 120s inter-round cooldown
+- R2: experiment branch (dispatch v6 reapplied)
+- 120s inter-round cooldown
+- R3: feat/v6-nax (thermal validation)
+
+Each round: clean `git checkout` + `pip install -e . --force-reinstall` +
+fresh subprocess. 30s inter-shape cooldown. Bench calls
+`_ext.v6_nax_forward` directly (V6 NAX kernel) — fix vs the mandate's
+draft which routed via `mlx_mfa.attention()` → STEEL/SDPA.
+
+### Thermal validation [VERIFIED]
+R1↔R3 drift (both v5, ~25 min apart): 4 of 5 shapes ≤ 6%. Down from
+≥ 50% in the original session (Apple default fan). iStat performance
+profile validated as the methodology requirement on M5 Max.
+
+### Results — dispatch v6 vs v5 (avg(R1,R3)) [VERIFIED]
+| Shape | v5 | v6 | Δ | Verdict |
+|---|---:|---:|---:|---|
+| FlashVSR-dense (D=64) | 1.14* | 1.15 | neutral | warmed |
+| LTX2-cross (D=64) | 1.55 | 1.53 | neutral | warmed |
+| SeedVR2-small (D=128) | 267.67 | 266.54 | -0.42% | unchanged config |
+| CogVideoX (D=128) | 2957.62 | 2943.30 | -0.48% | unchanged config |
+| **SeedVR2-large (D=128)** | **5589.04** | **6331.13** | **+13.27%** ⚠️ | **regresses** |
+
+SeedVR2-large v6 runs ['6057.47','6391.72','6331.13'] vs v5 R1
+[5352-5460] and R3 [5703-5963] — well outside both ranges. Real signal.
+
+### Conclusion — Scenario B [VERIFIED]
+Dispatch v6 modifications are neutral on D=64 + D=128 small N
+(unchanged or warmed-config noise) and regress +13.3% on D=128 large N.
+The v2.30.0 revert was correct. No thermal-throttling-hidden gain.
+
+### Action
+- Keep dispatch v5 as production default. Close the question.
+- Branch `experiment/sprint-g-rebench-thermal-stable` retained for
+  historical traceability; **NOT** merged.
+
+### Lessons confirmed
+1. iStat performance fan profile is mandatory on M5 Max for stable
+   D=128 long-running benches.
+2. Cross-session A/B/A with committed source state is the trustworthy
+   methodology. Within-session A/B contaminates via pipeline cache.
+3. Sprint G's original "wins" were systematic within-session contamination,
+   not thermal artifacts.
+
+### Validation
+- Ran: `bash bench/sprint_g_aba_wrapper.sh` (background, completed)
+- Validated: `outputs/sprint-g-rebench-thermal-stable.json` 3 rounds × 5
+  shapes × 3 runs each; correctness OK (rmse < 5e-3) on all shapes both
+  branches; SeedVR2-large v6 runs all outside v5 R1+R3 ranges.
+
+### Git
+- Branch: `feat/v6-nax` for the docs + bench scripts (this commit)
+- Branch: `experiment/sprint-g-rebench-thermal-stable` (`6ed6325`)
+  isolated, not merged
+- No version bump, no production code change.
+
