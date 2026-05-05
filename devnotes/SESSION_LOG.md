@@ -1149,3 +1149,78 @@ last 20-50% but the urgency dropped massively. More valuable next moves:
 sparse / flash-decode / paged paths under the new defaults to see if they
 also gain.
 
+---
+## [2026-05-05 02:30] [CLAUDE] v2.29.0 release: cleanup + merge + docs + autoresearch campaign
+STATUS: COMPLETE
+
+### Section 1 — Cleanup, merge, version bump [VERIFIED]
+- Pytest on `experiment/sprint-3-3-single-otile-rewrite`: 914 pass; 5
+  pre-existing flaky failures (also fail on `feat/v6-nax` baseline) —
+  not Sprint 3.3 regressions.
+- Sentinel coverage 100% on all 5 production shapes (626M cells, 0
+  unwritten).
+- Merged to `feat/v6-nax` with `--no-ff` (commit 3df87c1).
+- Version bump 2.28.1 → 2.29.0 (`mlx_mfa/__init__.py` + `pyproject.toml`).
+- Cleanup: 4.5 GB of `.gputrace` captures deleted; `outputs/` and
+  `docs/audit_dit_dispatch_output.log` added to .gitignore.
+- New `docs/v6-nax/env-vars.md` listing all V6 NAX env vars.
+- Cleanup commit 8490ebb.
+
+### Section 2 — Documentation [VERIFIED]
+- README updated for v2.29.0 (version line + Foreword + new "V6 NAX on
+  M5 Max" performance table).
+- CHANGELOG: full 2.29.0 entry covering single-Otile rewrite,
+  autoresearch retuning, env vars, sprint cross-references.
+- New `docs/v6-nax/README.md` summarizing V6 NAX architecture, sprint
+  chronology, performance table, limitations, lessons.
+- Commit af80043.
+
+### Section 3 — Autoresearch campaign [VERIFIED]
+6 sections planned; outcomes:
+
+| Section | Outcome | Code change? |
+|---|---|---|
+| S3.1 fine BQ × BK × SG sweep (216 configs, tiered) | confirmed v2.29.0 D=64 default; flagged SG=16 D=128 (later refuted by S3.6) | No |
+| S3.2 execution_simdgroups | skipped — coverage already adequate via S3.1 | No |
+| S3.3 bypass_tgp re-test | not testable post-Sprint-3.3 (single-Otile forces bypass) | No |
+| S3.4 ld_padding + swizzle | deferred (~150-250 LOC source-gen extension) | No |
+| S3.5 loop unroll modes | confirmed `full` is optimal everywhere | No |
+| **S3.6 N-conditional SG (multi-run synthesis)** | **D=128 SG default N-dependent: SG=16 for N≥50k, SG=8 below** | **Yes (5 LOC)** |
+
+S3.6 multi-run finding (5 runs × 6-8 iters median, M5 Max):
+- SeedVR2-small (N=26730):  SG=8 wins by **+28.51%** vs SG=16
+- CogVideoX (N=70200):       SG=16 wins by -2.75% (noise)
+- SeedVR2-large (N=111375): SG=16 wins by **-10.42%**
+
+Implementation: `csrc/mfa_v6_nax_primitive.cpp` now has N-conditional
+SG default in both source-gen and cache-key paths.
+`generate_v6_source()` gained an optional `int R` parameter.
+Validated correctness on all 5 production shapes — all PASS.
+
+Commits: f83180b (S3.1 + scripts/docs for 3.2-3.5), 3453859 (S3.5 + S3.6).
+
+### Lessons logged
+1. **Single-run autoresearch can flip winners by 28% on M5 Max.**
+   Multi-run methodology (5 runs minimum, median-of-medians) is the
+   bar for shipping decisions with deltas <15 %.
+2. **Tile config can be N-dependent**, not just D-dependent. v2.29.0's
+   first auto-default was head_dim-only; now SG is N-conditional for D=128.
+3. **Run-to-run variance on M5 Max is ~5-15 %** and varies by shape
+   (largest on small-N; tighter on large-N where wall time dominates).
+
+### Final v2.29.0 + dispatch v5 performance (M5 Max)
+| Shape | v2.28.x | v2.29.0+v5 | Total Δ |
+|---|---:|---:|---:|
+| FlashVSR-dense (D=64) | 1.81 ms | 1.11 ms | -38.7% |
+| LTX2-cross (D=64) | 2.99 ms | 1.59 ms | -46.8% |
+| SeedVR2-small (D=128, N<50k) | 936 ms | ~290 ms | -69.0% |
+| CogVideoX (D=128, N=70k) | 9633 ms | ~3349 ms | -65.2% |
+| SeedVR2-large (D=128, N=111k) | 16030 ms | **7244 ms** | **-54.8%** |
+
+V6/SDPA closed from 1.98×-5.06× (v2.28.x) to 1.20×-1.78× (v2.29.0+v5).
+
+### Git
+- Branch: `feat/v6-nax`
+- Commits this session: 3df87c1, 8490ebb, af80043, f83180b, 3453859.
+- Plus the upcoming SESSION_LOG commit for this entry. No push.
+
