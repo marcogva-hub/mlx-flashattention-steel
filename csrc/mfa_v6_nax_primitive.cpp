@@ -81,7 +81,7 @@ std::mutex v6_mtx;
 std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
 
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
-                                bool isCausal, bool bhnd) {
+                                bool isCausal, bool bhnd, int R = 0) {
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -118,7 +118,17 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // BK/SG, with env var overrides preserved.
   unsigned short BQ = 16;
   unsigned short BK = (head_dim == 64) ? 64 : 32;
-  uint16_t exec_sg = (head_dim == 64) ? 2 : 8;
+  // S3.6 (multi-run methodology): D=128 SG default is N-conditional.
+  //   N < 50000 (e.g. SeedVR2-small at 26730): SG=8 (wins by 28% over SG=16)
+  //   N >= 50000 (CogVideoX 70200, SeedVR2-large 111375): SG=16 (wins -10%
+  //   on SeedVR2-large, noise on CogVideoX)
+  // D=64 stays at SG=2 (Tier 1 winner across both FlashVSR and LTX2).
+  uint16_t exec_sg;
+  if (head_dim == 64) {
+    exec_sg = 2;
+  } else {
+    exec_sg = (R >= 50000) ? 16 : 8;
+  }
   bool bypass_tgp = false;
   bool single_otile = (Hq == Hk);  // single-Otile is the default path now;
                                     // GQA falls back to legacy double-buffer
@@ -389,9 +399,16 @@ public:
 
     // Tile params — auto-tuned defaults (mirror the source-gen path above).
     // Sprint 3.3 + autoresearch: BQ=16 universally; BK/SG conditional on D.
+    // S3.6 multi-run methodology: D=128 SG is also N-conditional
+    // (R=N_q < 50000 -> SG=8; R >= 50000 -> SG=16).
     unsigned short BQ = 16;
     unsigned short BK = (D == 64) ? 64 : 32;
-    uint16_t executionSIMDGroups = (D == 64) ? 2 : 8;
+    uint16_t executionSIMDGroups;
+    if (D == 64) {
+      executionSIMDGroups = 2;
+    } else {
+      executionSIMDGroups = ((int)R >= 50000) ? 16 : 8;
+    }
     bool bypass_tgp = false;
     unsigned short BD = (unsigned short)D;
     int axis_flags = 0;
@@ -439,7 +456,7 @@ public:
     }
     if (!pipeline) {
       std::string src = generate_v6_source(
-          D, Hq, Hk, dtype_code, params_.causal, params_.bhnd);
+          D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R);
       pipeline = v6_nax_compile_with_constants(
           src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
       std::lock_guard<std::mutex> lock(v6_mtx);
