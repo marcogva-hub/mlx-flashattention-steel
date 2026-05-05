@@ -234,6 +234,21 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     replace_all(source, "#pragma clang loop unroll(full)", replacement);
   }
 
+  // Sprint 3 (v2.30) — MFA_V6_MATMUL_EXEC_SG override.
+  // The source generator always emits `execution_simdgroups<1>` in the
+  // matmul2d<desc, execution_simdgroups<N>> template parameter, which tells
+  // MPP how many simdgroups cooperate on a single matmul instance.
+  // <1> = each simdgroup runs independent instances. <N> = N cooperate.
+  // Apple hardcodes <1> in steel_attention_nax.h; we test if higher values
+  // help our access pattern.
+  if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
+    int v = std::atoi(env_mes);
+    if (v == 2 || v == 4 || v == 8) {
+      std::string replacement = "execution_simdgroups<" + std::to_string(v) + ">";
+      replace_all(source, "execution_simdgroups<1>", replacement);
+    }
+  }
+
   // ── Sprint 2A: BHND layout migration (MFA_V6_BHND=1) ─────────────────────
   // Rewrites the kernel to read Q/K/V/O in [B, H, N, D] layout (MLX native)
   // instead of [B, N, H, D] (Draw Things native). Eliminates the host-side
@@ -497,6 +512,25 @@ public:
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
         so_for_key = (std::atoi(env_so) != 0);
       if (so_for_key) axis_flags |= 0x40;
+    }
+    // Sprint E (v2.30) — MFA_V6_MAX_THREADS env var changes pipeline state
+    // attribute (maxTotalThreadsPerThreadgroup). Different settings produce
+    // different compiled pipelines; encode in the cache key.
+    if (const char* env_mt = std::getenv("MFA_V6_MAX_THREADS")) {
+      int v = std::atoi(env_mt);
+      // Encode with 3 bits in axis_flags 0x80/0x100/0x200 — discrete buckets.
+      if (v > 0 && v <= 256) axis_flags |= 0x80;
+      else if (v > 256 && v <= 384) axis_flags |= 0x100;
+      else if (v > 384 && v <= 512) axis_flags |= 0x180;
+      else if (v > 512 && v <= 768) axis_flags |= 0x200;
+      // 769-1024 maps to default (0) — no bit set.
+    }
+    // MFA_V6_MATMUL_EXEC_SG (v2.30 piste) — encode in axis_flags.
+    if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
+      int v = std::atoi(env_mes);
+      if (v == 2) axis_flags |= 0x400;
+      else if (v == 4) axis_flags |= 0x800;
+      else if (v == 8) axis_flags |= 0xC00;
     }
 
     // Include all tile + flag params in cache key.
