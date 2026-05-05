@@ -55,6 +55,15 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
 
 unsigned short NAAttentionKernel::threadgroupMemoryAllocation() const noexcept {
   if (type.value == AttentionKernelType::forward) {
+    // Sprint A.1 (v2.30) — single-Otile + bypass forward kernel never uses
+    // P_buf threadgroup memory (cP cooperative_tensor takes its place).
+    // Allocating ~BQ*BK*SG*sizeof(O) anyway burns 8-16KB of the 32KB
+    // threadgroup budget for nothing, halving threadgroup co-residency on
+    // M5+ (tgmem-limited occupancy floor). Skip when both flags imply zero
+    // tgmem need.
+    if (singleOtileMode && bypassThreadgroupMemory) {
+      return 0;
+    }
     unsigned short threadgroupMemoryAllocation = blockDimensions[0] * blockDimensions[1] * executionSIMDGroups * memoryPrecisions[AttentionOperand::O].value().size();
     return threadgroupMemoryAllocation;
   }
