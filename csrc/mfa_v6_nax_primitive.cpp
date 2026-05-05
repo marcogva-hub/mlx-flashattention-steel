@@ -117,24 +117,16 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // large for register packing. Default to single-Otile + BQ=16 + per-D
   // BK/SG, with env var overrides preserved.
   unsigned short BQ = 16;
-  // Dispatch v6 (v2.30, Sprint C+G multi-run): refined per-shape defaults.
-  //   D=64:  BK=64 SG=4 (was SG=2; FlashVSR-dense -6.4% in Sprint G)
-  //   D=128, N <  50000: BK=32 SG=8 (SeedVR2-small variance keeps SG=8)
-  //   D=128, 50k ≤ N < 100k: BK=32 SG=16 (CogVideoX noise; preserves S3.6)
-  //   D=128, N >= 100000: BK=64 SG=8 (SeedVR2-large -11.7% in Sprint G)
-  // D=64 sweep: BQ=16 BK=64 SG=4 wins both FlashVSR (1.07ms) and LTX2 (1.43ms).
-  unsigned short BK;
+  // Dispatch v5 (REVERTED from v2.30 dispatch v6 — thermal-controlled
+  // re-bench showed v6 regresses SeedVR2-large +14.3% and SeedVR2-small
+  // +5.9% vs v5; Sprint G's "wins" were within-session pipeline-cache
+  // artifacts that didn't replicate cross-session).
+  unsigned short BK = (head_dim == 64) ? 64 : 32;
   uint16_t exec_sg;
   if (head_dim == 64) {
-    BK = 64; exec_sg = 4;
-  } else {  // D=128
-    if (R >= 100000) {
-      BK = 64; exec_sg = 8;
-    } else if (R >= 50000) {
-      BK = 32; exec_sg = 16;
-    } else {
-      BK = 32; exec_sg = 8;
-    }
+    exec_sg = 2;
+  } else {
+    exec_sg = (R >= 50000) ? 16 : 8;
   }
   bool bypass_tgp = false;
   // Sprint B (v2.30): BHND rewriter now handles GQA — single-Otile is the
@@ -466,19 +458,14 @@ public:
     // Tile params — auto-tuned defaults (mirror the source-gen path above).
     // Dispatch v6 (Sprint C+G): D=64 SG=4; D=128 3-way N-conditional with
     // BK shift at N>=100000.
+    // Dispatch v5 (REVERTED from v2.30 dispatch v6).
     unsigned short BQ = 16;
-    unsigned short BK;
+    unsigned short BK = (D == 64) ? 64 : 32;
     uint16_t executionSIMDGroups;
     if (D == 64) {
-      BK = 64; executionSIMDGroups = 4;
-    } else {  // D=128
-      if ((int)R >= 100000) {
-        BK = 64; executionSIMDGroups = 8;
-      } else if ((int)R >= 50000) {
-        BK = 32; executionSIMDGroups = 16;
-      } else {
-        BK = 32; executionSIMDGroups = 8;
-      }
+      executionSIMDGroups = 2;
+    } else {
+      executionSIMDGroups = ((int)R >= 50000) ? 16 : 8;
     }
     bool bypass_tgp = false;
     unsigned short BD = (unsigned short)D;
