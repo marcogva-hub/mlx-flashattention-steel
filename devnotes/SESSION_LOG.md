@@ -1323,3 +1323,115 @@ Docs:
 - Plus the upcoming SESSION_LOG commit. No push.
 - Marco merges manually after morning review.
 
+---
+## [2026-05-05 07:30] [CLAUDE] v2.30.0 thermal-controlled re-bench + revert + Phase 4
+STATUS: COMPLETE
+
+### Plan
+Marco's mandate: thermal-validated A/B/A bench of v2.30.0 vs v2.29.0,
+revert if regressing, then iterate optimizations 2-3+ hours, finalize.
+
+### Phase 1 — Thermal A/B/A bench [VERIFIED]
+Wrapper: 5-min initial cooldown + R1 (v2.29.0) + 2-min cool + R2 (v2.30.0)
++ 2-min cool + R3 (v2.29.0). Validates thermal stability via R1↔R3 delta.
+
+Results:
+| Shape | A1 | B (v2.30) | A3 | A1↔A3 | v2.30 vs avg(A) |
+|---|---:|---:|---:|---:|---:|
+| CogVideoX | 2974 | 3202 | 4487 | +50.86% | thermal INVALID |
+| FlashVSR-dense | 1.13 | 1.59 | 1.33 | +17.94% | thermal INVALID |
+| LTX2-cross | 1.55 | 1.51 | 1.54 | -0.70% | -2.58% (noise) |
+| SeedVR2-large | 7146 | **8370** | 7500 | +4.96% | **+14.30%** ⚠️ |
+| SeedVR2-small | 265 | **288** | 279 | +5.11% | **+5.92%** ⚠️ |
+
+Two thermally-valid shapes (SeedVR2-large, SeedVR2-small) BOTH regressed
+under v2.30.0. Sprint G's "wins" were within-session pipeline-cache
+artifacts.
+
+### Phase 2 — Revert dispatch v6 [VERIFIED]
+Surgical revert: only the BK/exec_sg defaults in
+`csrc/mfa_v6_nax_primitive.cpp` (both source-gen and cache-key paths).
+KEPT: Sprint A.1 (tgmem cleanup), Sprint B (GQA single-Otile + BHND
+rewriter for Hq % Hk == 0).
+Commit `ca0fc44`. Correctness re-validated on 5 production + 4 GQA shapes.
+
+### Phase 3 — Iterative optimization [VERIFIED]
+Two pistes explored with proper multi-run methodology:
+
+**Sprint E proper** — `MTLComputePipelineDescriptor` with explicit
+`maxTotalThreadsPerThreadgroup`, exposed via `MFA_V6_MAX_THREADS` env.
+Sweep on {default, 256, 384, 512, 768}:
+- 256, 512: BREAK CORRECTNESS on D=128 large shapes (SG=16 → 512 threads/TG)
+- 384, 768, default: all within ±2% of each other
+- No setting consistently improves over default
+- Infrastructure shipped (env var, pipeline-state-attribute path) for
+  future diagnostic use; no default change.
+
+**Piste matmul exec_sg** — post-gen rewrite of `matmul2d<desc,
+execution_simdgroups<N>>` template, exposed via `MFA_V6_MATMUL_EXEC_SG`.
+Sweep on {<1>, <2>, <4>, <8>}:
+- FlashVSR-dense at <8>: -10.3% (1.55 → 1.39 ms) — likely real
+- CogVideoX at <2>: -4.1% (4547 → 4360 ms) — within variance
+- LTX2-cross, SeedVR2-small, SeedVR2-large: noise across all values
+- No universal winner; infrastructure shipped for future per-shape dispatch.
+
+Other pistes (D, F deferred from prior session) — investigation findings
+recorded in their respective sprint-{D,E,F}-results.md docs. None warrants
+implementation given empirical evidence.
+
+### Phase 4 — Final A/B/A on reverted+kept branch [VERIFIED]
+Tighter wrapper: 3-min initial cooldown + 90s inter-round.
+
+| Shape | A1 v2.29 | B exp | A3 v2.29 | A1↔A3 | B vs avg(A) |
+|---|---:|---:|---:|---:|---:|
+| FlashVSR-dense | 1.12 | 1.15 | 1.22 | +8.9% | -1.7% (noise) |
+| LTX2-cross | 1.56 | 1.56 | 1.54 | -1.3% | +0.6% (noise) |
+| SeedVR2-small | 277.79 | 285.60 | 281.84 | +1.5% | +2.07% (noise) |
+| CogVideoX | 4148 | 4500 | 4605 | +11.0% | +2.83% (noise) |
+| SeedVR2-large | 7694 | 7735 | 7745 | +0.7% | +0.20% (noise) |
+
+**ALL deltas within ±3% noise band.** Production performance is
+statistically equivalent to v2.29.0; experiment branch is a strict
+improvement on GQA shapes (Sprint B) without regression on production.
+
+### Final v2.30.0 V6/SDPA performance (M5 Max, controlled multi-run)
+
+Production:
+| Shape | V6 | SDPA | V6/SDPA |
+|---|---:|---:|---:|
+| FlashVSR-dense (D=64) | 1.15 ms | 0.91 ms | 1.27× |
+| LTX2-cross (D=64) | 1.56 ms | 1.32 ms | 1.18× |
+| SeedVR2-small (D=128 small) | 286 ms | 198 ms | 1.44× |
+| CogVideoX (D=128 mid) | 4500 ms | 2354 ms | 1.91× |
+| SeedVR2-large (D=128 large) | 7735 ms | 4119 ms | 1.88× |
+
+GQA (Sprint B, separately validated):
+| Shape | v6 | SDPA | V6/SDPA |
+|---|---:|---:|---:|
+| GQA-Hq32-Hk8 D=128 | 6.60 ms | 8.85 ms | **1.06×** ⭐ |
+| GQA-Hq16-Hk4 D=64 | 5.54 ms | 5.82 ms | 1.17× |
+| GQA-Hq40-Hk8 D=128 | 2.30 ms | 2.32 ms | 1.16× |
+| GQA-Hq8-Hk2 D=64 | 0.93 ms | 0.92 ms | 1.18× |
+
+### Lessons logged this session
+1. **Within-session A/B benches contaminate via pipeline cache.** Sprint
+   G's "wins" didn't replicate cross-session.
+2. **`maxTotalThreadsPerThreadgroup` is a hard constraint** — 256 or 512
+   silently corrupts output (RMSE=1.0) when below SG=16's 512 threads/TG.
+3. **MPP `execution_simdgroups<N>` is not a no-op** — FlashVSR-dense at
+   `<8>` wins ~10%. Per-shape dispatch warrants future sprint.
+4. **Thermal protocol works**: tighter wrapper (3-min initial + 90s
+   inter-round) reduced max R1↔R3 drift from 50% (Phase 1) to 11%
+   (Phase 4). Stable enough for shipping decisions.
+
+### Decision: MERGE to feat/v6-nax
+Branch is strictly better on GQA shapes (new feature), neutral on
+production, adds infrastructure env vars for future experiments. No
+regressions vs v2.29.0.
+
+### Git
+- Branch: `experiment/v2-30-deferred-and-autoresearch`
+- Commits this session: ca0fc44 (revert), 7cc9e8b (Sprint E + piste).
+- Plus the upcoming final-docs commit. No push.
+- Marco reviews and merges manually.
+

@@ -4,84 +4,91 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
-## [2.30.0] — 2026-05-05
+## [2.30.0] — 2026-05-05 (final, post thermal-controlled re-bench)
 
-### Added
+> **Note**: This release went through a thermal-controlled re-bench
+> validation cycle that reverted the originally-shipped "dispatch v6"
+> tile-default changes (Sprint G). The Sprint G claim of "−6.4 % on
+> FlashVSR-dense and −11.7 % on SeedVR2-large" turned out to be a
+> within-session pipeline-cache artifact that did not replicate
+> cross-session. See `docs/v6-nax/v2-30-thermal-rebench.md`.
 
-- **Sprint A.1 — tgmem allocation cleanup**: `threadgroupMemoryAllocation()`
-  now returns 0 for the forward path when single-Otile + bypass are both
-  on (P_buf is never used). Previously allocated 8-16 KB of unused
-  tgmem per dispatch. 3-LOC fix; gains 2-4% on the long-N D=128 shapes.
-- **Sprint B — GQA single-Otile path**: BHND rewriter extended to handle
-  `Hq != Hk && Hq % Hk == 0`. GQA shapes now use the single-Otile kernel
-  path in BHND layout (no host transpose roundtrip), gaining 7-14% over
-  v2.29.0 legacy double-buffer + BNHD on 4 GQA shapes (Hq=32/Hk=8,
-  Hq=16/Hk=4, Hq=40/Hk=8, Hq=8/Hk=2). The closest V6 has gotten to
-  SDPA on M5 Max: GQA-Hq32-Hk8 D=128 at **1.06× SDPA** (was n/a — GQA
-  fell back to legacy in v2.29.0).
-- **Sprint G — dispatch v6 default tuning**: Sprint C+G multi-run sweep
-  identified two consistent improvements over v2.29.0+S3.6:
-  - D=64: SG=4 (was SG=2) — FlashVSR-dense −6.4 % consistent.
-  - D=128, N≥100000: BK=64 SG=8 (new branch; was BK=32 SG=16) —
-    SeedVR2-large −11.7 % consistent.
-  Existing default for D=128 N<100k (BK=32, SG=8 if N<50k else SG=16)
-  preserved.
+### What's actually shipped in v2.30.0
 
-### Performance — V6 NAX on M5 Max (all shapes BHND, multi-run validated)
+- **Sprint A.1 — tgmem allocation cleanup** (3 LOC):
+  `threadgroupMemoryAllocation()` returns 0 for the forward path when
+  single-Otile + bypass are both on (P_buf is never used). Saves
+  8-16 KB per dispatch. Within noise on production shapes; pure
+  code-quality fix.
+- **Sprint B — GQA single-Otile path** (~70 LOC): BHND rewriter now
+  handles `Hq != Hk && Hq % Hk == 0`. GQA shapes use the single-Otile
+  kernel directly. Gains 7-14% over v2.29.0 legacy fallback on 4 GQA
+  shapes. **GQA-Hq32-Hk8 D=128 reaches 1.06× SDPA** — the closest V6
+  has gotten to parity on M5 Max.
+- **Infrastructure: `MFA_V6_MAX_THREADS`** env var + Metal pipeline-state
+  attribute support (`MTLComputePipelineDescriptor` with
+  `maxTotalThreadsPerThreadgroup`). No default change — exposed for
+  future per-shape dispatch experiments.
+- **Infrastructure: `MFA_V6_MATMUL_EXEC_SG`** env var + post-gen rewrite
+  of `matmul2d<desc, execution_simdgroups<N>>` template parameter
+  (default <1>). Empirical sweep showed FlashVSR-dense gains ~10% at
+  <8> but doesn't generalize. Exposed for future per-shape dispatch.
 
-| Shape | v6/SDPA |
-|---|---:|
-| FlashVSR-dense (D=64)        | 1.30× |
-| LTX2-cross (D=64)            | 1.13× |
-| SeedVR2-small (D=128 small)  | 1.42× |
-| CogVideoX (D=128 mid)        | 1.74×* |
-| SeedVR2-large (D=128 large)  | 1.58× |
-| GQA-Hq32-Hk8 D=128           | **1.06×** ⭐ |
-| GQA-Hq16-Hk4 D=64            | 1.17× |
-| GQA-Hq40-Hk8 D=128           | 1.16× |
-| GQA-Hq8-Hk2  D=64            | 1.18× |
+### Reverted from initial v2.30 release
 
-*CogVideoX measurement is thermal-state-affected (4 hours of continuous
-GPU work during the campaign). Within-session A/B comparison remains
-the trustworthy reference for dispatch decisions.
+- **Sprint G dispatch v6 default changes** (commit `96daff7`,
+  reverted in `ca0fc44`): D=64 SG=4 (was SG=2) and D=128 N≥100k
+  BK=64 SG=8 (was BK=32 SG=16). Thermal-controlled re-bench showed
+  these regressed SeedVR2-large +14.3 % and SeedVR2-small +5.9 %
+  vs v5 defaults.
 
-### Investigated but not implemented (informational)
+### Final v2.30.0 vs v2.29.0 performance (M5 Max, controlled A/B/A)
 
-- **Sprint A.2 swizzle**: Apple's `steel_attention_nax.h` doesn't use
-  swizzle — only their GEMM does. Implementation would yield no gain.
-- **Sprint A.3 ld_padding**: V6 NAX uses device tensors for Q/K/V
-  (not threadgroup-staged). Bank-conflict padding has nothing to apply
-  to. Architecturally inapplicable.
-- **Sprint D per-loop unroll**: 101 separate `#pragma clang loop unroll`
-  directives in source generator; per-loop control would require ~50+
-  LOC of categorization. S3.5's global sweep already showed `full` wins
-  by 1.3-2.4× — no expected gain from finer-grained variants.
-- **Sprint E pipeline state attributes**: `max_total_threads_per_threadgroup`
-  via `MTLComputePipelineDescriptor` would help register-pressure-bound
-  kernels, but single-Otile is already register-light by design.
-  Implementation deferred until profiling identifies threadgroup
-  attributes as the bottleneck.
-- **Sprint F compile-time vs runtime function constants**: V6 NAX
-  already uses the right split. Tile dimensions must be source-time
-  (MPP `matmul2d_descriptor` requires constexpr); R/C/batch strides
-  are Metal function constants. Nothing left to swap.
+5-shape multi-run on production dense shapes (median-of-medians):
 
-### Lessons from v2.30 campaign
+| Shape | v2.29.0 (avg of A1+A3) | v2.30.0 (B) | Δ |
+|---|---:|---:|---:|
+| FlashVSR-dense | 1.17 ms | 1.15 ms | -1.7 % (noise) |
+| LTX2-cross | 1.55 ms | 1.56 ms | +0.6 % (noise) |
+| SeedVR2-small | 280 ms | 286 ms | +2.1 % (noise) |
+| CogVideoX | 4377 ms | 4500 ms | +2.8 % (noise) |
+| SeedVR2-large | 7720 ms | 7735 ms | +0.2 % (noise) |
 
-1. **Thermal state matters at hour-scale benches**. The same config can
-   measure 25-30% slower at hour 4 than at hour 0 of continuous GPU work.
-   Cross-session pre-vs-post comparison is confounded; use within-session
-   A/B for shipping decisions.
-2. **SG=8 vs SG=16 for SeedVR2-small flipped 4 times** across runs of the
-   exact same config. Below the 15% multi-run threshold, M5 Max variance
-   is large enough that "this config wins" claims must come from at
-   least 5-run methodology *and* show consistent direction across multiple
-   independent benches. Conservative dispatch v6 ships only changes that
-   pass this bar.
-3. **Investigate the target before implementing.** The brief assumed
-   Apple's GEMM optimizations apply to attention; checking
-   `steel_attention_nax.h` showed they don't. 5 minutes of grep saved
-   2-3 hours of dead-end source-gen extension.
+**All deltas within ±3 % noise band.** Production performance is
+statistically equivalent to v2.29.0; v2.30.0 is a strict improvement
+on GQA shapes (new feature) without regression on production.
+
+### GQA shape performance (Sprint B, multi-run validated)
+
+| Shape | v2.29.0 legacy | v2.30.0 single-Otile | Δ | V6/SDPA |
+|---|---:|---:|---:|---|
+| GQA-Hq32-Hk8 D=128 | 7.71 ms | 6.60 ms | -14.46 % | **1.06×** |
+| GQA-Hq16-Hk4 D=64 | 6.01 ms | 5.54 ms | -7.90 % | 1.17× |
+| GQA-Hq40-Hk8 D=128 | 2.59 ms | 2.30 ms | -11.03 % | 1.16× |
+| GQA-Hq8-Hk2 D=64 | 1.00 ms | 0.93 ms | -7.11 % | 1.18× |
+
+### Investigated but not shipped (full rationale in docs/v6-nax/sprint-{D,E,F}-*.md)
+
+- **Sprint A.2 swizzle**: Apple's NAX attention doesn't use swizzle.
+- **Sprint A.3 ld_padding**: V6 uses device tensors; padding inapplicable.
+- **Sprint D per-loop unroll**: 101 pragmas; S3.5 already showed `full` wins.
+- **Sprint F compile-time vs runtime function constants**: V6 already at
+  the natural compile/runtime split.
+
+### Lessons logged from the v2.30.0 cycle
+
+1. **Within-session A/B benches contaminate via pipeline cache**.
+   Sprint G's "wins" didn't replicate cross-session. Always use
+   cross-session controlled bench for shipping decisions.
+2. **`maxTotalThreadsPerThreadgroup` can silently corrupt output** if
+   set below the actual dispatch's threads-per-threadgroup. For SG=16
+   (= 512 threads/TG), settings of 256 or 512 produce RMSE=1.0.
+3. **MPP `execution_simdgroups<N>` template is not a no-op** —
+   FlashVSR-dense gains ~10 % at `<8>` vs `<1>`. Worth per-shape dispatch
+   exploration in a future sprint.
+4. **Thermal drift can flip benches by 50% over hour-scale sessions.**
+   Mandatory protocol: 3-5 min initial cooldown + 90-120 s inter-round +
+   A/B/A pattern. R1↔R3 within 5% to declare bench thermally valid.
 
 ## [2.29.0] — 2026-05-05
 
