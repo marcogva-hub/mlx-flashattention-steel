@@ -1665,3 +1665,48 @@ Per CLAUDE_V6_NAX.md §8, not attributed to V34.
    but the two flakes I found today are in `test_attention.py`,
    not in test_v6_nax*. Worth updating the guardrail.
 
+
+---
+## [2026-05-06 14:00] [CLAUDE] Sprint V34-FORWARD-MAX — Sprints 1+2 (causal port + LSE writeback)
+STATUS: COMPLETE
+
+### Plan
+- Objective: Maximize V34 forward path coverage. (1) port causal forward to V34 NAX-direct (currently falls back to legacy MPP), (2) fix V34 silently uninit LSE buffer.
+- Files modified: `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (V34 generator), `csrc/v6_nax_compile.mm` (host params), `csrc/mfa_v6_nax_primitive.cpp` (dispatch), `docs/v6-nax/v34-causal-results.md` (Sprint 1 report).
+- Dependencies impacted: V34 dispatch gates (causal exclusion removed), V34 kernel signature gains `device float* L_buf [[buffer(5)]]`, lse buffer binding moves to buffer(5) on V34 path while legacy keeps buffer(4).
+
+### Changes
+- Sprint 1 — Causal port (commit `16a6d36`):
+  - `NAAttentionKernel.cpp:~2700-2900` — `#define V34_DO_CAUSAL`, `kb_lim`/`kb_min_causal` setup, per-element fragment causal mask after `kL_rem` mask. Apple `steel_attention_nax.h:175-303` pattern. [HIGH] [VERIFIED]
+  - `NAAttentionKernel.cpp:171` — V34 dispatch gate: removed `!isCausal` exclusion. [HIGH] [VERIFIED]
+  - `csrc/v6_nax_compile.mm:197-214` — `V34ParamsHost` gains `int qL_off`; `v34_dispatch` accepts `bool causal`; sets `params.qL_off = causal ? max(0, kL - qL) : 0`. [HIGH] [VERIFIED]
+  - `csrc/mfa_v6_nax_primitive.cpp` — V34 dispatch gates updated (removed causal exclusion); pass `params_.causal` to `v34_dispatch`. [HIGH] [VERIFIED]
+- Sprint 2 — LSE writeback (commit `7259981`):
+  - `NAAttentionKernel.cpp` — V34 kernel gains `device float* L_buf [[buffer(5)]]`; LSE writeback block before `Otile.store` using `NAXFrag::get_coord()` lane filter (`fn==0`), writes `L_row[row_local] = max_score[i] + log2(sum_score[i])` per row (kRowsPerThread=TQ*2). [HIGH] [VERIFIED]
+  - `csrc/mfa_v6_nax_primitive.cpp` — `enc.set_output_array(lse, 5)` on V34 path; legacy keeps `set_output_array(lse, 4)`. [HIGH] [VERIFIED]
+
+### Dependency & regression check
+- Callers verified: V34 dispatch is gated behind `MFA_V6_USE_V34=1` env var + shape-aware policy (D=128, or D=64 with N_kv>8000); legacy path unaffected. [VERIFIED]
+- Test coverage: existing `tests/test_v6_nax.py` covers V34 forward; this session's validation was direct subprocess scripts (`/tmp/v34_causal_test.py`, `/tmp/v34_lse_test.py`) since no test currently asserts LSE finiteness on V34 — flag as gap. [DEDUCED]
+
+### Tech cost
+- Memory: V34_BQ * 4 bytes per warp for new L_row writes (one float per row, scattered through TG). Negligible.
+- Kernels: separate pipelines per `V34_DO_CAUSAL` value (compile-time gate), so per-element causal mask is dead-code-eliminated on non-causal kernels. Cache pressure: 2× (causal+non-causal), already bounded by existing dispatch.
+
+### Validation
+- Ran (Sprint 1): `MFA_V6_USE_V34=1 .venv/bin/python /tmp/v34_causal_test.py` across 12 shapes (3 non-causal regression-check + 9 causal LLM-style). All RMSE FP32 < 1e-4 vs SDPA reference. Llama-prefill-4k V34/legacy = 1.04× SDPA at parity.
+- Ran (Sprint 2): `MFA_V6_USE_V34=1 .venv/bin/python /tmp/v34_lse_test.py` across {FlashVSR-dense D=64, SeedVR2-small D=128, Llama-prefill-2k D=128 causal}. LSE RMSE FP32 ∈ [1.08e-06, 5.43e-06] vs numpy `max + log2(sum exp2(...))` reference. `mx.all(mx.isfinite(lse))` = True.
+- Validated: O outputs unchanged from v2.31.0 baseline (FlashVSR-dense 3.60e-06, Llama-prefill-2k causal 9.82e-06, SeedVR2-large 8.98e-07). LSE numerically correct vs reference under same shapes.
+
+### Git
+- Sprint 1: `16a6d36` (`feat(v6-nax): V34 causal port — Apple steel_attention_nax.h:175-303 pattern`)
+- Sprint 2: `7259981` (`fix(v6-nax): V34 LSE writeback — was silently uninit (Sprint 2)`)
+- branch `experiment/v34-forward-max`. Not pushed (per mandate, Marco merges manually).
+
+### Open follow-ups
+- Sprint 3 (`align_Q`/`align_K` compile-time `#define`s, ~2-5% on aligned shapes): deferred. Requires multi-site edits in `NAAttentionKernel.cpp` wrapping `is_last_q`/`is_last_k` branches with `#if V34_ALIGN_Q/K`, plus dedicated cache-key fields in V6Key (no bit-packing per CLAUDE_V6_NAX.md). 2-3h scope.
+- Sprint 4 (FlashVSR-dense D=64 -39% V34 regression): pending. Tile sweep needed.
+- Sprint 5 (V34 autoresearch parametric WM × BQ × BK sweep): pending.
+- Cross-session A/B/A perf validation deferred to release phase per mandate.
+- Test-coverage gap: no automated test asserts V34 LSE finiteness — should add to `tests/test_v6_nax.py` before v2.32.0 release.
+- SESSION_LOG.md is at 1667 lines — past 1200 mandatory rotation threshold (Rule 1c). Suggest rotation before next major phase.
