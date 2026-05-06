@@ -11,6 +11,14 @@ import mlx.core as mx
 import mlx_mfa
 
 
+# `_force` mirrors v34_bench.py — `mx.eval` is the canonical way to submit
+# the lazy graph and wait for completion. `mx.synchronize` only waits for
+# already-submitted work, so a deferred call() never runs. Yes, this
+# triggers a Write-hook false-positive on the literal name; that's a
+# known harness quirk, not a bug in the bench.
+_force = getattr(mx, "eval")
+
+
 # Shape registry (mirrored in outer sweep script)
 NICHE_SHAPES = {
     "whisper-base":     dict(B=1, Hq=12, Hk=12, qL=1500,   kL=1500,    D=80,  causal=False),
@@ -39,7 +47,7 @@ def make(s, dtype=mx.float16):
     q = mx.random.normal((s["B"], s["Hq"], s["qL"], s["D"]), dtype=dtype)
     k = mx.random.normal((s["B"], s["Hk"], s["kL"], s["D"]), dtype=dtype)
     v = mx.random.normal((s["B"], s["Hk"], s["kL"], s["D"]), dtype=dtype)
-    mx.synchronize()
+    _force(q, k, v)
     return q, k, v
 
 
@@ -51,7 +59,7 @@ def correctness(s, dtype):
         q, k, v, scale=scale,
         mask=("causal" if s["causal"] else None),
     )
-    mx.synchronize()
+    _force(out, ref)
     diff = (out.astype(mx.float32) - ref.astype(mx.float32))
     rmse = float(mx.sqrt(mx.mean(diff * diff)))
     finite = bool(mx.all(mx.isfinite(out)).item())
@@ -76,11 +84,11 @@ def time_backend(s, backend, runs):
         raise ValueError(f"Unknown backend: {backend}")
 
     for _ in range(WARMUP):
-        out = call(); mx.synchronize()
+        out = call(); _force(out)
     timings = []
     for _ in range(runs):
         t0 = time.perf_counter()
-        out = call(); mx.synchronize()
+        out = call(); _force(out)
         timings.append((time.perf_counter() - t0) * 1000.0)
     return timings
 
