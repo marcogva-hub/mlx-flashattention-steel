@@ -18,6 +18,9 @@ bool NAAttentionKernelDescriptor::operator==(
       masked == rhs.masked &&
       isVarlen == rhs.isVarlen &&
       singleOtileMode == rhs.singleOtileMode &&
+      useV34 == rhs.useV34 &&
+      v34AlignQ == rhs.v34AlignQ &&
+      v34AlignK == rhs.v34AlignK &&
       type == rhs.type &&
       scale == rhs.scale;
 }
@@ -36,6 +39,12 @@ std::size_t std::hash<NAAttentionKernelDescriptor>::operator()(
       (uint16_t)(hash.masked ? 1 : 0), (uint16_t)(hash.isVarlen ? 1 : 0)}));
   combine_32(seed, pack_32(simd::ushort2{
       (uint16_t)(hash.singleOtileMode ? 1 : 0), 0}));
+  // Sprint V34-FORWARD-MAX (Sprint 3): V34 + align_Q/align_K dedicated bits.
+  combine_32(seed, pack_32(simd::uchar4{
+      (uint8_t)(hash.useV34 ? 1 : 0),
+      (uint8_t)(hash.v34AlignQ ? 1 : 0),
+      (uint8_t)(hash.v34AlignK ? 1 : 0),
+      0}));
   return seed;
 }
 

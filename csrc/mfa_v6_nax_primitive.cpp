@@ -68,13 +68,19 @@ struct V6Key {
   uint16_t v34_BQ = 0;
   uint16_t v34_BK = 0;
   uint16_t v34_WM = 0;
+  // Sprint V34-FORWARD-MAX (Sprint 3): align_Q / align_K compile-time gates.
+  // (qL % v34_BQ == 0) / (kL % v34_BK == 0). Different alignment combos
+  // produce different compiled pipelines (boundary branches DCE'd or not).
+  bool v34_align_Q = false;
+  bool v34_align_K = false;
   bool operator==(const V6Key& o) const {
     return head_dim == o.head_dim && Hq == o.Hq && Hk == o.Hk &&
            dtype == o.dtype && isCausal == o.isCausal &&
            R == o.R && C == o.C &&
            qbs == o.qbs && kbs == o.kbs && vbs == o.vbs && obs == o.obs &&
            use_v34 == o.use_v34 && v34_BQ == o.v34_BQ &&
-           v34_BK == o.v34_BK && v34_WM == o.v34_WM;
+           v34_BK == o.v34_BK && v34_WM == o.v34_WM &&
+           v34_align_Q == o.v34_align_Q && v34_align_K == o.v34_align_K;
   }
 };
 struct V6KeyHash {
@@ -91,6 +97,8 @@ struct V6KeyHash {
     h ^= std::hash<uint16_t>{}(k.v34_BQ) << 9;
     h ^= std::hash<uint16_t>{}(k.v34_BK) << 10;
     h ^= std::hash<uint16_t>{}(k.v34_WM) << 11;
+    h ^= std::hash<bool>{}(k.v34_align_Q) << 12;
+    h ^= std::hash<bool>{}(k.v34_align_K) << 13;
     return h;
   }
 };
@@ -101,7 +109,9 @@ std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 bool isCausal, bool bhnd, int R = 0,
                                 bool use_v34_override = false,
-                                bool use_v34_explicit = false) {
+                                bool use_v34_explicit = false,
+                                bool v34_align_Q = false,
+                                bool v34_align_K = false) {
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -207,6 +217,12 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = single_otile;
   desc.useV34 = use_v34;
+  // Sprint V34-FORWARD-MAX (Sprint 3): align_Q/align_K compile-time gates.
+  // Caller (eval_gpu) computes (qL % v34_BQ == 0) / (kL % v34_BK == 0) and
+  // passes them in. When use_v34 is false, both stay false (legacy path
+  // doesn't consult these).
+  desc.v34AlignQ = use_v34 && v34_align_Q;
+  desc.v34AlignK = use_v34 && v34_align_K;
 
   NAAttentionKernel kern(desc);
   std::string source = kern.source;
@@ -624,6 +640,19 @@ public:
       }
     }
 
+    // Sprint V34-FORWARD-MAX (Sprint 3): align_Q / align_K compile-time
+    // gates. R == qL, C == kL on this dispatch path. Disable env var
+    // (MFA_V6_V34_DISABLE_ALIGN=1) for A/B testing.
+    bool v34_align_Q = false;
+    bool v34_align_K = false;
+    if (use_v34) {
+      v34_align_Q = (R % v34_BQ == 0);
+      v34_align_K = (C % v34_BK == 0);
+      if (const char* env_da = std::getenv("MFA_V6_V34_DISABLE_ALIGN")) {
+        if (std::atoi(env_da) != 0) { v34_align_Q = false; v34_align_K = false; }
+      }
+    }
+
     // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
@@ -631,7 +660,8 @@ public:
                     ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
               kbs + ((uint32_t)BD << 16) + ((uint32_t)axis_flags << 24),
               vbs, obs,
-              use_v34, v34_BQ, v34_BK, v34_WM};
+              use_v34, v34_BQ, v34_BK, v34_WM,
+              v34_align_Q, v34_align_K};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -641,7 +671,8 @@ public:
     if (!pipeline) {
       std::string src = generate_v6_source(
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
-          /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true);
+          /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true,
+          /*v34_align_Q=*/v34_align_Q, /*v34_align_K=*/v34_align_K);
       if (use_v34) {
         // V34 uses no FCs (params via struct buffer).
         pipeline = v34_compile(src, "attention", mtl_device);

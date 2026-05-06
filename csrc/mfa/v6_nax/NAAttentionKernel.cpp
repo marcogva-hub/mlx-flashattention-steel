@@ -47,6 +47,8 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
   isVarlen = descriptor.isVarlen;
   singleOtileMode = descriptor.singleOtileMode;
   useV34 = descriptor.useV34;
+  v34AlignQ = descriptor.v34AlignQ;
+  v34AlignK = descriptor.v34AlignK;
 
   // mlx-mfa: produce MSL 4 source string only. mlx-mfa's shader cache
   // performs the actual MTL::Library / pipeline state creation.
@@ -2740,6 +2742,14 @@ struct ExpSubOp {
   ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
   // V34_DO_CAUSAL is compile-time per kernel — different pipeline for causal/non-causal.
   ss << "#define V34_DO_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  // Sprint V34-FORWARD-MAX (Sprint 3): align_Q / align_K compile-time gates
+  // (Apple steel_attention_nax.h uses runtime function constants 200/201;
+  // we already JIT a fresh pipeline per dispatch so #define is equivalent).
+  // When set, the boundary branches `is_last_q`/`is_last_k` become
+  // `constexpr bool ... = false`, statically eliminating the load_rows /
+  // store_rows / kL_rem-mask paths.
+  ss << "#define V34_ALIGN_Q " << (v34AlignQ ? 1 : 0) << "\n";
+  ss << "#define V34_ALIGN_K " << (v34AlignK ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"MSL(
 struct V34Params {
@@ -2805,12 +2815,25 @@ void attention(
     max_score[i] = Limits<float>::finite_min;
   }
 
-  // Last-block flags (Apple lines 189-194)
+  // Last-block flags (Apple lines 189-194).
+  // Sprint V34-FORWARD-MAX (Sprint 3): when V34_ALIGN_Q/K is set, the
+  // alignment boundaries are guaranteed (qL%BQ==0 / kL%BK==0). is_last_q /
+  // is_last_k are constexpr false, letting AIR DCE the boundary branches
+  // (load_rows / store_rows / kL_rem mask) at compile time.
+#if V34_ALIGN_Q
+  constexpr bool is_last_q = false;
+  const short lim_rows_q = V34_BQ - tm;
+#else
   const int NQ_aligned = params.qL / V34_BQ;
-  const int NK_aligned = params.kL / V34_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
   const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34_BQ) - tm;
+#endif
+#if V34_ALIGN_K
+  constexpr short lim_rows_k = V34_BK;
+#else
+  const int NK_aligned = params.kL / V34_BK;
   const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34_BK);
+#endif
 
   // Causal K-loop bounds (Apple steel_attention_nax.h:175-187):
   //   kb_lim       = ceil((q_max + qL_off) / BK)  — last K-tile this Q-tile sees
@@ -2832,7 +2855,11 @@ void attention(
 
   // === K-loop (Apple lines 197-457) ===
   for (int kb = 0; kb < kb_lim; kb++) {
+#if V34_ALIGN_K
+    constexpr bool is_last_k = false;
+#else
     const bool is_last_k = (kb == NK_aligned);
+#endif
 
     using stile_t = NAXTile<float, V34_TQ, V34_TK>;
     stile_t Stile;

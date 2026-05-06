@@ -45,6 +45,12 @@ struct NAAttentionKernelDescriptor {
   // Forward non-causal single-Otile only (production VSR hot path).
   // Requires BQ % (WM * 16) == 0 and BD % 16 == 0.
   bool useV34 = false;
+  // V34 align_Q / align_K — Apple steel_attention_nax.h FCs 200/201, but
+  // implemented as compile-time #defines (we already JIT a fresh pipeline
+  // per dispatch). Set when (qL % BQ == 0) / (kL % BK == 0) so the kernel
+  // can dead-code-eliminate is_last_q / is_last_k boundary branches.
+  bool v34AlignQ = false;
+  bool v34AlignK = false;
 
   AttentionOperands<GEMMOperandPrecision> memoryPrecisions;
   AttentionKernelType type;

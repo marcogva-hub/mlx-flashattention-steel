@@ -47,6 +47,9 @@ struct NAAttentionKernel {
 
   // V34 — see descriptor.
   bool useV34;
+  // Sprint V34-FORWARD-MAX (Sprint 3): V34 align_Q / align_K compile-time gates.
+  bool v34AlignQ;
+  bool v34AlignK;
 
   // mlx-mfa: takes a threadgroup-memory-length hint instead of a pipeline.
   // Returns the bytes to allocate at threadgroup(0) for the dispatch.
