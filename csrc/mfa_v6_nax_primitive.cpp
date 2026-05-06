@@ -188,10 +188,12 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // single-Otile-eligible shape.
   if (use_v34 && !single_otile) use_v34 = false;
   // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
-  // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
+  // Per-D defaults (Sprint V34-FORWARD-MAX Sprint 4 update):
+  //   D=64  → BQ=32 BK=32 WM=2  (was BK=64; sweep showed BK=32 wins 23-41%)
+  //   D=128 → BQ=64 BK=32 WM=4
   // Override via env vars below.
   unsigned short v34_BQ = (head_dim == 64) ? 32 : 64;
-  unsigned short v34_BK = (head_dim == 64) ? 64 : 32;
+  unsigned short v34_BK = (head_dim == 64) ? 32 : 32;
   uint16_t v34_WM = (head_dim == 64) ? 2 : 4;
   if (use_v34) {
     if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
@@ -606,14 +608,14 @@ public:
     // V34 dispatch — mirror source-gen default logic.
     // Default: ON for D=128 (cross-session bench shows +33-40% vs legacy,
     //   3 shapes reach SDPA parity).
-    // Default: OFF for D=64 small-N (FlashVSR-style regresses -39%).
-    // Default: ON for D=64 with N_kv > 8000 (LTX2-style asymmetric wins +18%).
+    // Sprint V34-FORWARD-MAX (Sprint 4): D=64 default ON for all shapes
+    //   (was: only N_kv > 8000). Tile sweep with BQ=32 BK=32 WM=2 shows
+    //   V34 beats legacy by 23-41% across all D=64 production shapes.
     // Override via env var MFA_V6_USE_V34={0,1}.
     bool use_v34;
     if (D == 128) {
       use_v34 = true;
-    } else if (D == 64 && Nk > 8000) {
-      // LTX2-cross style asymmetric: V34 wins ~+18%.
+    } else if (D == 64) {
       use_v34 = true;
     } else {
       use_v34 = false;
@@ -621,7 +623,7 @@ public:
     if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
       use_v34 = (std::atoi(env_v34) != 0);
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
-    unsigned short v34_BK = (D == 64) ? 64 : 32;
+    unsigned short v34_BK = (D == 64) ? 32 : 32;
     uint16_t v34_WM = (D == 64) ? 2 : 4;
     {
       bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
