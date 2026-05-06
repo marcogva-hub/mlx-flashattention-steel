@@ -98,7 +98,9 @@ std::mutex v6_mtx;
 std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
 
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
-                                bool isCausal, bool bhnd, int R = 0) {
+                                bool isCausal, bool bhnd, int R = 0,
+                                bool use_v34_override = false,
+                                bool use_v34_explicit = false) {
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -160,12 +162,17 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Sprint 3.3: single-Otile mode forces bypass on (the new path always uses cP).
   if (single_otile) bypass_tgp = true;
 
-  // V34 — env-var-gated NAX-direct rewrite. Forward non-causal single-Otile
-  // hot path only. V34 ignores the legacy BQ/BK/SG defaults and uses its own
-  // per-D defaults (BQ = WM*16, BK tunable). Falls back to legacy if causal
-  // or non-single-Otile or shape doesn't fit V34 constraints.
-  bool use_v34 = false;
-  if (const char* env_v34 = std::getenv("MFA_V6_USE_V34")) use_v34 = (std::atoi(env_v34) != 0);
+  // V34 — NAX-direct rewrite. Caller (eval_gpu) decides via use_v34_explicit
+  // based on shape (D, Nk). Default fallback when not explicit: D=128 → ON.
+  // Forward, non-causal, single-Otile-eligible only.
+  bool use_v34;
+  if (use_v34_explicit) {
+    use_v34 = use_v34_override;
+  } else {
+    use_v34 = (head_dim == 128);  // source-gen-only default (without Nk info)
+    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
+      use_v34 = (std::atoi(env_v34) != 0);
+  }
   if (use_v34 && (isCausal || !single_otile)) use_v34 = false;
   // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
   // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
@@ -577,14 +584,26 @@ public:
       else if (v == 8) axis_flags |= 0xC00;
     }
 
-    // V34 detection — mirror source-gen logic (active iff env var on AND
-    // shape compatible: non-causal + single-Otile-eligible).
-    bool use_v34 = false;
+    // V34 dispatch — mirror source-gen default logic.
+    // Default: ON for D=128 (cross-session bench shows +33-40% vs legacy,
+    //   3 shapes reach SDPA parity).
+    // Default: OFF for D=64 small-N (FlashVSR-style regresses -39%).
+    // Default: ON for D=64 with N_kv > 8000 (LTX2-style asymmetric wins +18%).
+    // Override via env var MFA_V6_USE_V34={0,1}.
+    bool use_v34;
+    if (D == 128) {
+      use_v34 = true;
+    } else if (D == 64 && Nk > 8000) {
+      // LTX2-cross style asymmetric: V34 wins ~+18%.
+      use_v34 = true;
+    } else {
+      use_v34 = false;
+    }
+    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
+      use_v34 = (std::atoi(env_v34) != 0);
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
     uint16_t v34_WM = (D == 64) ? 2 : 4;
-    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
-      use_v34 = (std::atoi(env_v34) != 0);
     {
       bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
@@ -616,7 +635,8 @@ public:
     }
     if (!pipeline) {
       std::string src = generate_v6_source(
-          D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R);
+          D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
+          /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true);
       if (use_v34) {
         // V34 uses no FCs (params via struct buffer).
         pipeline = v34_compile(src, "attention", mtl_device);

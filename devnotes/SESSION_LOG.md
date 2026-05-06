@@ -1506,3 +1506,88 @@ The v2.30.0 revert was correct. No thermal-throttling-hidden gain.
   isolated, not merged
 - No version bump, no production code change.
 
+---
+## [2026-05-06 02:50] [CLAUDE] V34 NAX-direct — sprint final SHIPPED
+STATUS: COMPLETE
+
+### Plan
+NAX-direct rewrite. Apple's `steel_attention_nax.h` uses
+`NAXFrag::mma` + `NAXTile` directly, sidestepping the MPP
+cooperative_tensor `<N>` distribution problem that blocked V33.
+
+### Phase 0 — Apple reference mapping [VERIFIED]
+Read `~/code/mlx-source/.../steel/attn/`. Wrote
+`docs/v6-nax/v34-apple-reference-mapping.md` with citations.
+Key insight: Apple's `NAXFrag::mma` (nax.h:393-456) uses
+`mpp::tensor_ops::matmul2d` INSIDE the static method with
+`metal::execution_simdgroup` (singular `<1>`). Cooperative_tensors
+ephemeral; no cross-SG state. Multi-SG parallelism comes from
+per-SG row partitioning at kernel level (`tm = 16 * TQ * sgid`).
+
+### Phase 1 — Compile probe [VERIFIED]
+`csrc/v34_probe.cpp` — inlines ~17.7KB of Apple helpers + minimal
+QK matmul. Compiles clean with MSL 4.0. Commit `10fadc3`.
+
+### Phase 2-3 — V34 kernel + correctness [VERIFIED]
+`createV34Source()` ~700 LOC in NAAttentionKernel.cpp. Self-contained
+MSL following steel_attention_nax.h:73-482.
+
+5 production shapes RMSE FP32 vs SDPA (subprocess isolated):
+FlashVSR-dense 3.60e-06, LTX2-cross 1.76e-06, SeedVR2-small
+1.75e-06, CogVideoX 1.11e-06, SeedVR2-large 8.98e-07. All within
+FP16 noise floor; 4-30× MORE stable than legacy. Commit `663be95`.
+
+### Phase 4 — Cross-session A/B/A bench [VERIFIED]
+~32 min wallclock. 4/5 shapes drift R1↔R3 < 8%.
+
+| Shape | Legacy ms | V34 ms | Δ | V34/SDPA |
+|---|---:|---:|---:|---:|
+| FlashVSR-dense | 1.12 | 1.55 | -39% | 1.633× |
+| LTX2-cross | 1.75 | 1.42 | **+19%** | **1.075×** |
+| SeedVR2-small | 265.13 | 170.92 | **+36%** | **0.890× ⭐** |
+| CogVideoX | 3610.79 | 2399.19 | **+34%** | **1.033×** |
+| SeedVR2-large | 6776.12 | 4042.73 | **+40%** | **1.008×** |
+
+V34 wins +18-40% on 4/5; 3 reach SDPA parity; SeedVR2-small beats
+SDPA. Closes the historic D=128 long-N gap. Commit `0efe95f`.
+
+### Phase 5 — Production dispatch [VERIFIED]
+Shape-aware dispatch in eval_gpu:
+- D=128 → V34 default
+- D=64 N_kv > 8000 → V34 default (LTX2 win)
+- Else → legacy (FlashVSR small-N regression -39% under V34)
+- Env var override: MFA_V6_USE_V34={0,1}
+
+Verified: default dispatch routes 4/5 shapes to V34 (RMSE ~1e-6)
+and FlashVSR-dense to legacy (RMSE ~1e-5). Distinct fingerprints
+confirm correct dispatch.
+
+### Action
+- **V34 SHIPPED as production default** on 4/5 production shapes.
+- Branch `experiment/v34-nax-direct` ready to merge to feat/v6-nax.
+- v2.31.0 release candidate.
+
+### Validation
+- Cross-session A/B/A bench: 15 records, all correctness_ok=true.
+- Subprocess-isolated correctness on 5 shapes (forced V34 ON).
+- Default dispatch verified via subprocess fingerprint test.
+
+### Git
+- Branch: `experiment/v34-nax-direct`
+- Commits: `007b922`, `10fadc3`, `663be95`, `0efe95f`, +final docs.
+- No push, no merge yet (Marco merges manually).
+
+### Lessons logged
+1. **Apple uses NAX-direct, not cooperative_tensor at <N>**.
+   `NAXFrag::mma` creates ephemeral cooperative_tensors at `<1>`.
+   Multi-SG parallelism via per-SG row partition at kernel level.
+2. **Self-contained MSL emit works** (~17.7KB inlined helpers).
+3. **V34 numerics 4-30× better than legacy** — simd_shuffle_xor
+   manual reductions bit-exact vs MPP's tile-boundary FP rounding.
+4. **Shape-aware dispatch beats one-size-fits-all**.
+5. **The V33 SG>1 ceiling was abstraction-level**: existed for MPP
+   cooperative_tensor `<N>` but NOT for the NAX layer underneath.
+   Apple operates one layer below MPP. So can we.
+6. **Budget honored**: ≈ 6-7h focused work, well within mandate's
+   "1.5 days". No re-escalation.
+
