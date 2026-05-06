@@ -480,12 +480,25 @@ def should_use_mfa(
         # Cross-attention: large N_kv with small N_q → MFA wins big
         # (flash attention iterates K-tiles per Q-tile; fewer Q-tiles = less work)
         if _kv_len >= 4096 and seq_len <= 4096:
-            if _verbose:
-                print(
-                    f"[MFA dispatch] cross-attn large KV: N_q={seq_len} "
-                    f"N_kv={_kv_len} -> MFA (few Q-tiles, flash attention wins)"
-                )
-            return True
+            # v2.32.0 — M5+ NAX qualification: pure-decode patterns (qL ≤ 16,
+            # e.g. llama generation qL=1) win on SDPA's sdpa_vector path
+            # rather than MFA's flash-decode kernel. Sprint A measured 1.9-2.6×
+            # SDPA wins on llama-decode-8k/32k. Cross-attn (qL > 16, e.g.
+            # ltx2-cross qL=2048 kL=14000) stays on MFA where it wins ~11%.
+            if has_nax and seq_len <= 16:
+                if _verbose:
+                    print(
+                        f"[MFA dispatch] M5+ NAX decode pattern: N_q={seq_len} "
+                        f"N_kv={_kv_len} -> falling through to NAX SDPA route"
+                    )
+                # Fall through to the has_nax block below.
+            else:
+                if _verbose:
+                    print(
+                        f"[MFA dispatch] cross-attn large KV: N_q={seq_len} "
+                        f"N_kv={_kv_len} -> MFA (few Q-tiles, flash attention wins)"
+                    )
+                return True
 
     # v2.32.0 — M5+ NAX SDPA routing.
     # Apple's `steel_attention_nax.h` is the optimal forward path on canonical

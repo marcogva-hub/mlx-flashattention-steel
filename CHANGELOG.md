@@ -48,14 +48,69 @@ For shapes outside these conditions, mlx-mfa's existing kernels are used:
 
 ### Empirical kernel sweep (Sprint A)
 
-`bench/v32_kernel_sweep.py` benches 15 niche shapes × 3 backends
-(`sdpa`, `mfa`, `auto`) under subprocess isolation, 5 runs per config,
-180s initial / 60s inter-shape cooldowns. Results in
-`docs/v6-nax/v32-kernel-sweep.json`. The dispatch carve-out hook
-(`_should_use_mfa_m5_nax_carveout()` in `mlx_mfa/dispatch_policy.py`)
-encodes any specific shape-corners where mlx-mfa beats SDPA NAX.
+`bench/v32_kernel_sweep.py` benched 15 niche / canonical shapes × 3
+backends (`sdpa`, `mfa`, `auto`) on M5 Max under subprocess isolation,
+5 runs per config. Headline result: **SDPA wins 11/15 shapes by
+1.9-5.3×; MFA wins 1 shape (ltx2-cross D=64 asymmetric, +11%); 3
+shapes (D=80, 96, 192) have MFA unsupported and fall back to SDPA**.
 
-[Carve-out details inserted after Sprint A.6 analysis completes.]
+Per-shape data in [`docs/v6-nax/v32-kernel-sweep.json`](docs/v6-nax/v32-kernel-sweep.json),
+verdict table in [`docs/v6-nax/v32-niche-shape-dispatch.md`](docs/v6-nax/v32-niche-shape-dispatch.md).
+
+Notable wins (Sprint A, M5 Max):
+
+| Shape | sdpa ms | mfa ms | mfa/sdpa |
+|---|---:|---:|---:|
+| canonical-d128-4k | 3.73 | 13.49 | **3.61×** SDPA |
+| llama-prefill-8k (D=128 causal) | 11.07 | 42.00 | **3.79×** SDPA |
+| seedvr2-small (D=128 26k²) | 161 | 630 | **3.92×** SDPA |
+| cogvideox (D=128 70k²) | 2112 | 7052 | **3.34×** SDPA |
+| llama-decode-32k (qL=1, kL=32k) | 0.62 | 2.32 | **3.73×** SDPA |
+| **ltx2-cross (D=64 2k×14k)** | 1.35 | 1.21 | **0.89× MFA** |
+
+Cross-attn rule refinement (Sprint A finding): the existing
+`kv_seq_len ≥ 4096 ∧ seq_len ≤ 4096 → MFA` rule was tuned for LTX-2
+cross-attn (qL=2048, kL=14000) where MFA wins; on M5+ NAX it incorrectly
+caught LLM decode patterns (qL=1, kL≥4096) where SDPA's `sdpa_vector`
+path wins 1.9-2.6×. The rule is now qualified with `has_nax ∧ seq_len
+≤ 16 → fall through to NAX SDPA route`. ltx2-cross still routes to
+MFA (seq_len=2048 > 16); decode shapes route to SDPA.
+
+The carve-out hook `_should_use_mfa_m5_nax_carveout()` is preserved
+for future empirical findings, but currently returns False unconditionally
+(no carve-outs needed for v2.32.0).
+
+### Wrapper bug fixes surfaced during Sprint A
+
+Two pre-existing wrapper bugs were uncovered while instrumenting the
+sweep harness — both materially affecting v2.32.0's strategic value:
+
+**Bug 1**: `flash_attention(backend='sdpa')` did not actually force SDPA
+on `head_dim ∈ {64,128,256,512}`. The smart-dispatch block at line 426
+of `attention.py` only handled `backend='auto'`; the else-branch set
+`use_mfa = _mfa_capable` (True for canonical D), routing
+`backend='sdpa'` calls down the MFA path despite the docstring claim.
+Fix: explicit `elif backend == 'sdpa': use_mfa = False`.
+
+**Bug 2**: SDPA fallback paths (`_fallback_sdpa()` + the early
+`backend='sdpa'` return) materialized an explicit triu causal mask
+matrix instead of using `mask='causal'` (string form). On M5+ this
+diverted SDPA away from Apple's `steel_attention_nax.h` fast path,
+running ~2× slower than direct `mx.fast.scaled_dot_product_attention`.
+Fix: pass `mask=('causal' if causal else None)` directly when no
+attn_bias is supplied.
+
+Combined effect on M5 Max, D=128 4096² causal:
+
+| Path | Before | After |
+|---|---:|---:|
+| `flash_attention(backend='auto')` | 6.31 ms | **3.10 ms** |
+| `flash_attention(backend='sdpa')` | 6.32 ms | **3.08 ms** |
+| `mx.fast.scaled_dot_product_attention(..., mask='causal')` | 3.08 ms | 3.08 ms (reference) |
+
+These bugs predate v2.32.0 and affected anyone using `backend='sdpa'`
+or relying on the SDPA fallback (M3/M4/M5). v2.32.0 would have routed
+canonical M5+ shapes to a slow SDPA path without these fixes.
 
 ### New env vars
 

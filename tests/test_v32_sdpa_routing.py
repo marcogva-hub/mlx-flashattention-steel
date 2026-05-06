@@ -49,15 +49,32 @@ def test_should_use_mfa_canonical_d64_routes_to_sdpa():
     assert res is False
 
 
-def test_should_use_mfa_decode_keeps_mfa_on_nax():
-    """M5+ NAX, qL≤8 decode → MFA (sdpa_vector path is non-NAX, mlx-mfa
-    flash-decode is competitive)."""
+def test_should_use_mfa_decode_routes_to_sdpa_on_nax():
+    """M5+ NAX, decode pattern (qL=1, kL≥4096) → SDPA.
+
+    Sprint A measured SDPA's sdpa_vector path winning 1.9-2.6× over
+    MFA flash-decode on M5+ NAX (llama-decode-8k/32k). The cross-attn
+    rule that previously routed this to MFA is now qualified with
+    `has_nax ∧ seq_len ≤ 16 → fall through to NAX SDPA route`.
+    """
     res = dispatch_policy.should_use_mfa(
         128, 1, False, True, has_nax=True, kv_seq_len=8192, dtype=mx.float16,
     )
-    # Either the NAX qL≤8 branch returns True directly, or the cross-attn
-    # branch (large kL) returns True earlier — both are correct.
-    assert res is True
+    assert res is False, "M5+ NAX decode should route to SDPA per Sprint A"
+
+
+def test_should_use_mfa_cross_attn_keeps_mfa_on_nax():
+    """M5+ NAX, real cross-attn (qL>16, kL>=4096) → MFA.
+
+    Sprint A measured ltx2-cross (qL=2048, kL=14000, D=64) at MFA +11%
+    over SDPA. The cross-attn rule routes this to MFA via the existing
+    `_kv_len >= 4096 ∧ seq_len <= 4096 → MFA` branch, which fires when
+    seq_len > 16 (i.e., not pure decode).
+    """
+    res = dispatch_policy.should_use_mfa(
+        64, 2048, False, True, has_nax=True, kv_seq_len=14000, dtype=mx.float16,
+    )
+    assert res is True, "M5+ NAX legitimate cross-attn should keep MFA per Sprint A"
 
 
 def test_force_sdpa_route_overrides_dispatch():
