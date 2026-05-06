@@ -41,10 +41,22 @@ The carve-out hook (`_should_use_mfa_m5_nax_carveout()`) is populated from
 Sprint A's empirical kernel sweep results; default returns False (canonical
 M5+ NAX → SDPA).
 
-## Architecture (V6 NAX primitive — used when MFA selected)
+## Architecture (V6 NAX primitive — direct-binding access only)
 
-When MFA is selected by the routing layer, `MFAV6NAXForward` selects between
-three kernel variants:
+**Important access-pattern clarification (v2.32.0)**: `MFAV6NAXForward`
+is accessible only via the direct binding `_ext.v6_nax_forward()`. It is
+**not** routed to from `mlx_mfa.flash_attention()` on any path. The public
+`flash_attention()` API uses the `MFAttention` primitive (STEEL kernel
+family — V1/V2/V3/V4/V5) when it doesn't fall back to SDPA.
+
+V6 NAX and V34 therefore exist as:
+- A research/bench path callable explicitly (`bench/v34_bench.py`,
+  `bench/v32_multisession_capture.py` etc.)
+- An implementation reference for `steel_attention_nax.h`
+- A regression canary against future MLX upstream NAX changes
+
+When called via the direct binding, `MFAV6NAXForward` selects between three
+kernel variants:
 
 | Variant | When | Source |
 |---|---|---|

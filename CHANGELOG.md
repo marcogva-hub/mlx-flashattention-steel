@@ -92,20 +92,26 @@ benchmarks:
 - `CLAUDE_V6_NAX.md` Artifact #5 — methodology rule for marketing-grade
   benchmarks (multi-session repro required before perf claims published)
 
-### V34 status
+### V34 / V6 NAX status — clarification
 
-The V34 NAX-direct kernel (shipped in v2.31.0) **remains in the codebase**
-and is used:
+The V34 NAX-direct kernel (shipped in v2.31.0) and the V6 NAX legacy path
+are **accessible only via the direct binding `_ext.v6_nax_forward()`** —
+used by `bench/v34_bench.py`, `bench/v32_multisession_capture.py`, and
+similar tools. The public `mlx_mfa.flash_attention()` API has never
+routed through V6 NAX/V34; it has always used the STEEL kernel family
+(V1/V2/V3/V4/V5) via `MFAttention`. v2.31.0 introduced V34 as a research
+path with bench data; it was not part of the production dispatch.
 
-- For shapes routed via `MFA_DISABLE_SDPA_ROUTE=1` (testing/benchmarking)
-- As the V6 NAX path's default when MFA is selected (e.g., D=128 long-kL
-  decode patterns caught by cross-attn rule, D=256/512 shapes outside
-  SDPA NAX coverage but eligible for V6 NAX)
-- As a regression canary against future MLX upstream changes
+v2.32.0 modifies the **production dispatch** (the path users actually
+hit through `flash_attention()`) to route canonical M5+ NAX shapes to
+SDPA. STEEL kernels still handle non-canonical shapes, sliding window,
+sparse, attn_bias, decode patterns, etc.
 
-V34 is not removed — it's part of the toolkit and a documented
-implementation reference for `steel_attention_nax.h` patterns
-(`csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source`).
+The V6 NAX/V34 source remains in the codebase as:
+- An implementation reference for `steel_attention_nax.h` patterns
+  (`csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source`)
+- The kernel exercised by `v34_bench.py` for cross-session perf studies
+- A regression canary against future MLX upstream changes
 
 ### Tests
 
