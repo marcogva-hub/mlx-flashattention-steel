@@ -294,17 +294,28 @@ def flash_attention(
         )
 
     # --- backend='sdpa': unconditional SDPA fallback -------------------------
+    # v2.32.0 fix: when no attn_bias is provided, use mask="causal" (string)
+    # to take SDPA's fast causal path. On M5+ this routes through Apple's
+    # NAX kernel directly. The previous code materialized an explicit triu
+    # mask which forced SDPA off the NAX fast path (~2× regression).
     if backend == "sdpa":
-        mask = attn_bias  # may be None
+        _scale = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
+        if attn_bias is None:
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=_scale,
+                mask=("causal" if causal else None),
+            )
+        # When attn_bias is supplied, must materialize a combined mask (the
+        # string-form mask doesn't compose with additive bias).
+        mask = attn_bias
         if causal:
             N, S = q.shape[2], k.shape[2]
             causal_mask = mx.triu(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
             )
-            mask = causal_mask if mask is None else causal_mask + mask
+            mask = causal_mask + mask
         return mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=(scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])),
-            mask=mask,
+            q, k, v, scale=_scale, mask=mask,
         )
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
@@ -451,6 +462,11 @@ def flash_attention(
                     _dispatch_decision_cache.clear()
                 _dispatch_decision_cache[_cache_key] = _cached
             use_mfa = _cached
+    elif backend == "sdpa":
+        # v2.32.0 fix: backend="sdpa" must force use_mfa=False (was previously
+        # routing to MFA for D∈{64,128,256,512} because `use_mfa = _mfa_capable`
+        # ignored the explicit sdpa request).
+        use_mfa = False
     else:
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
@@ -3516,16 +3532,15 @@ def _fallback_sdpa(
     causal: bool,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
-    """Fallback to ``mx.fast.scaled_dot_product_attention``."""
-    mask = None
-    if causal:
-        N, S = q.shape[2], k.shape[2]
-        mask = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=q.dtype),
-            k=S - N + 1,
-        )
+    """Fallback to ``mx.fast.scaled_dot_product_attention``.
+
+    For causal masks, pass ``mask="causal"`` (string form) which routes
+    through SDPA's optimized causal path — on M5+ that uses Apple's NAX
+    kernel directly. Materializing an explicit triu matrix bypasses NAX
+    and runs ~2× slower (was the prior behavior; v2.32.0 fix).
+    """
     return mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=mask,
+        q, k, v, scale=scale, mask=("causal" if causal else None),
     )
 
 
