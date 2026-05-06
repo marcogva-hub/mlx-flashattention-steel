@@ -2003,3 +2003,45 @@ STATUS: COMPLETE
 - v2.31.1 bug-fix-only release scope (separate sprint, decoupled from perf-claim question)
 - SESSION_LOG.md now ~2000 lines — Rule 1c rotation overdue.
 
+
+---
+## [2026-05-06 19:00] [CLAUDE] v2.32.0 drift diagnostic — multi-session protocol prepared
+STATUS: COMPLETE
+
+### Decision (Marco)
+After Phase A diagnostic results:
+1. Multi-session protocol → **APPROVED, proceed in next session**
+2. v2.31.0 PyPI/CHANGELOG addendum → **WAIT for multi-session results**
+3. v2.31.1 bug-fix-only release → **DEFER indefinitely**
+4. CLAUDE_V6_NAX.md Artifact #5 merge → **NOT YET** (proposal stays in `docs/v6-nax/v32-claude-md-artifact-5-proposal.md`)
+
+### Multi-session infrastructure prepared this session
+- `bench/v32_multisession_capture.py` — runs one session: captures conditions (sw_vers, uptime, Metal cache size + age range, time-of-day bucket), optionally clears cache, runs A/B/A bench across 5 production shapes, appends record to shared JSON dataset.
+  - macOS 26 cache path auto-detected via `getconf DARWIN_USER_CACHE_DIR` (no hardcoded user-specific path) [VERIFIED]
+  - Subprocess isolation per round (CLAUDE_V6_NAX.md Artifact #1) [VERIFIED]
+- `bench/v32_multisession_aggregate.py` — aggregates across sessions, prints per-shape median/range/variance, flags any session reproducing v2.31.0's slow regime within ±10%.
+- `docs/v6-nax/v32-multisession-protocol.md` — protocol doc with 3-5 session conditions matrix (cold-boot morning, post-boot stable, afternoon sustained, optional cleared-cache + cold-boot, optional late-night) and decision rules after multi-session collection.
+
+### Validation
+- Both scripts smoke-tested via `importlib.util.spec_from_file_location` import — clean imports, paths resolve correctly. [VERIFIED]
+- No bench data file yet (`docs/v6-nax/v32-multisession-data.json` — created by first session run).
+
+### Next session priorities
+1. Run S1 (cold-boot morning conditions) via `bench/v32_multisession_capture.py --label "S1-..."`
+2. Run S2 (~30 min after S1, same morning, no cache clear) — same command, different label
+3. After 3+ sessions → aggregate via `bench/v32_multisession_aggregate.py`
+4. Based on aggregate: decide v2.31.0 PyPI addendum + CLAUDE_V6_NAX.md merge
+
+### Tech cost
+- Each session takes ~30 min (5 shapes × A/B/A with 3 runs/round + cooldowns)
+- Detached via `run_in_background` per Rule 12a is OK (the wrapper script handles cooldowns internally)
+
+### Git
+- Diagnostic deliverables committed at `7520962`
+- Multi-session infrastructure to be committed below
+
+### Open follow-ups
+- Multi-session execution (next session)
+- All other decisions (Marco) pending multi-session data
+- SESSION_LOG.md ~2050 lines — Rule 1c rotation overdue.
+
