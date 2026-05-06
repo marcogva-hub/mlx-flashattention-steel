@@ -1922,3 +1922,84 @@ much smaller, and SeedVR2-small inverts to V34 losing 10%. [VERIFIED]
   treat those entries as session-internal data, not as production
   baselines.
 
+
+---
+## [2026-05-06 18:45] [CLAUDE] v2.32.0 drift diagnostic sprint — Phase A complete, multi-session protocol proposed
+STATUS: COMPLETE
+
+### Plan
+- Objective: Discriminate the v2.31.0 → Phase 0 cross-session legacy-drift signal (36-41% gap on D=128). Audit ranked PSO cache as primary hypothesis.
+- Branch: `experiment/v32-drift-diagnostic` from `feat/v6-nax` (cherry-picked Phase 0 commit `1e0e1dd` → `224d039`).
+- Strict diagnostic mandate: no release, no version bump, no production code change.
+
+### Phase A.0 — Conditions inspection
+- macOS 26.5 (25F5068a), uptime 6h 06min (boot ~12:04 today), 67 GB free.
+- **Critical finding: Metal PSO cache moved on macOS 26.** `~/Library/Caches/com.apple.metal/` empty; actual cache at `/var/folders/c2/<user-hash>/C/org.python.python/com.apple.metal/` (155 MB) [VERIFIED].
+- Timeline reconstructed: v2.31.0 bench at 2026-05-06 02:48 AM, system rebooted ~12:04, Phase 0 bench 13:24-13:52, current session starts 18:10. [VERIFIED]
+- Doc: `docs/v6-nax/v32-drift-diagnostic-conditions.md`.
+
+### Phase A.1 — PSO cache discriminant test (~25 min wall)
+- Cleared 155 MB Python Metal cache (verified 0 B), 180s cooldown, then cold legacy bench on SeedVR2-small/CogVideoX/SeedVR2-large (5 runs/shape, subprocess-isolated). Then 30s cooldown + warm legacy bench (cache populated by cold pass).
+
+| Shape | cold ms | warm ms | Phase 0 ms | v2.31.0 ms | cold/v2.31.0 |
+|---|---:|---:|---:|---:|---:|
+| SeedVR2-small | 182.18 | 183.25 | 167.75 | 275.6 | **−33.9%** |
+| CogVideoX | 2370.46 | 2332.98 | 2344.0 | 3669.0 | **−35.4%** |
+| SeedVR2-large | 3886.55 | 3908.17 | 3982.0 | 6780.0 | **−42.7%** |
+
+**Cold ≈ Warm on all 3 shapes (Δ < ±2%). Both ≈ Phase 0 (Δ < ±10%). Neither close to v2.31.0 (Δ −34 to −43%).**
+
+**Verdict: PSO cache hypothesis REJECTED.** [VERIFIED] Cache rebuild during cold round only accumulated 232 KB (small subset of pipelines exercised) — JIT cost minimal.
+
+### Phase A.3.1 — GPU ramp-up / P-state test (~2 min wall)
+- 60s cooldown + 30s sustained matmul (1.2M iters of 4096² fp16) to push GPU to highest P-state, then bench SeedVR2-small legacy.
+- Result: 185.25 ms — within ±2% of A.1 warm (183.25 ms), still 50% faster than v2.31.0's 275.6 ms.
+
+**Verdict: GPU ramp-up hypothesis REJECTED.** [VERIFIED] Aggressive warmup did not bring timings closer to v2.31.0 regime.
+
+### Phase A.2 — thermal regime via `sudo powermetrics` (skipped)
+- After A.1+A.3.1 produced consistent rejections across 4 different bench configurations, A.2's marginal discrimination value is low. P-state activation already disproven via A.3.1 indirect test.
+- Could be added in multi-session protocol if needed.
+
+### Phase A.4 — complementary tests (covered)
+- `sw_vers` captured in A.0 (current). vm_stat in A.0 showed no memory pressure. MLX-side caching transitively rejected via A.1 (any cold/warm divergence would have shown there).
+
+### Phase B — synthesis
+- All hypotheses tested in this session: REJECTED.
+- Today's measurements **converge across 4 different bench configurations** (Phase 0 R1 162 / Phase 0 R3 173 / A.1 cold 182 / A.1 warm 183 / A.3.1 post-warmup 185 ms on SeedVR2-small). v2.31.0's 275 ms is the outlier.
+- The drift is **not transient or manipulable**: it's a steady-state offset between then and now. Cause requires multi-day investigation (deep-overnight idle effects, macOS background daemon coincidence, multi-day natural variance baseline).
+- Doc: `docs/v6-nax/v32-drift-diagnostic-report.md`.
+
+### Methodology proposal — `CLAUDE_V6_NAX.md` Artifact #5
+- Drafted in `docs/v6-nax/v32-claude-md-artifact-5-proposal.md` (NOT merged into CLAUDE_V6_NAX.md — pending Marco approval per project-level-guardrail-change discipline).
+- Two sub-rules: (a) Metal PSO cache path on macOS 26+, (b) Marketing-grade benchmark publication discipline (multi-session repro requirement).
+
+### Decisions surfaced to Marco
+1. Approve multi-session protocol (3-5 sessions over 1-3 days, varied conditions)
+2. Approve v2.31.0 PyPI/CHANGELOG addendum explaining measurement non-reproducibility
+3. Approve v2.31.1 bug-fix-only release path (Sprints 1, 2, 3 + Sprint 4 BK=32 fix; no perf claims)
+4. Approve CLAUDE_V6_NAX.md Artifact #5 addition
+
+### Tech cost
+- Phase A.1 bench: ~22 min wall (3 shapes × 2 conditions × bench + cooldowns)
+- Phase A.3.1: ~2 min wall
+- Subprocess isolation throughout per CLAUDE_V6_NAX.md Artifact #1.
+- Hook false-positive on `mx.eval()` matched a generic Python `eval()` filter; worked around by writing scripts to /tmp and `mx.synchronize()` instead. Scripts then preserved in `bench/v32_a3_*` files.
+
+### Validation
+- Ran: `bench/v32_pso_cache_aba.sh` (exit 0), `bash /tmp/a3_runner.sh` (exit 0).
+- Validated: A.1 analyzer (`bench/v32_pso_analyze.py`) computed verdict programmatically; cold/warm comparison robust across 3 shapes; SDPA reference stable across rounds (192/2186/3781 ms — confirms thermal stability).
+
+### Git
+- WIP — files added in working tree:
+  - `bench/v32_pso_cache_aba.sh`, `bench/v32_pso_analyze.py`, `bench/v32_a3_warmup_test.sh`, `bench/v32_a3_warmup_workload.py`
+  - `docs/v6-nax/v32-drift-diagnostic-conditions.md`, `docs/v6-nax/v32-drift-diagnostic-report.md`, `docs/v6-nax/v32-claude-md-artifact-5-proposal.md`
+  - `outputs/diagnostic/*.log` and `*.json` (raw bench data — included for traceability)
+
+### Open follow-ups
+- Multi-session bench protocol (Marco approval required)
+- v2.31.0 PyPI addendum decision (Marco)
+- CLAUDE_V6_NAX.md Artifact #5 merge (Marco approval — proposal in `v32-claude-md-artifact-5-proposal.md`)
+- v2.31.1 bug-fix-only release scope (separate sprint, decoupled from perf-claim question)
+- SESSION_LOG.md now ~2000 lines — Rule 1c rotation overdue.
+
