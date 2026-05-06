@@ -2770,11 +2770,10 @@ void attention(
     const device T* V [[buffer(2)]],
     device T* O [[buffer(3)]],
     constant V34Params& params [[buffer(4)]],
+    device float* L_buf [[buffer(5)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
-
-  (void)simd_lane_id;  // pacify compiler
 
   // === Per-batch + per-head + per-Q-block ptr offsets (Apple lines 102-117) ===
   ulong3 tidl{tid.x, tid.y, tid.z};
@@ -3006,6 +3005,47 @@ void attention(
     rcp[i] = 1.f / sum_score[i];
   }
   Otile.template row_bin_op<MulOp>(rcp);
+
+  // LSE writeback. L shape: (B, Hq, qL). Stride pattern:
+  //   L_batch_stride = Hq * qL  (derivable from Q_strides[0] / Q_strides[1])
+  //   L_head_stride  = qL
+  //   L_row_stride   = 1
+  // Each row is uniquely written by exactly ONE lane via the fn==0 filter:
+  // NAXFrag::get_coord() returns (fn, fm) where fn ∈ {0,4,8,12} and fm ∈
+  // [0,8). Lanes with fn == 0 own row positions {fm, fm+8} (fm ∈ 0..7,
+  // covering all 16 rows of one 16x16 fragment, see nax.h:45-50).
+  // With kRowsPerThread = TQ * 2, max_score/sum_score[iq*2+ii] hold values
+  // for row (iq*16 + ii*kElemRowsJump + fm). L stores `max + log2(sum)`,
+  // matching the legacy mfa_attention convention.
+  {
+    const short2 lse_sc = otile_t::NAXFrag_t::get_coord();
+    const short lse_fm = lse_sc.y;
+    const short lse_fn = lse_sc.x;
+    if (lse_fn == 0) {
+      const ulong L_head_stride = ulong(params.qL);
+      // Q_strides[0] = Hq * qL * D, Q_strides[1] = qL * D, so
+      // L_batch_stride = Hq * qL = Q_strides[0] / D = Q_strides[0] / Q_strides[2].
+      const ulong L_batch_stride =
+          ulong(params.Q_strides[0]) / ulong(params.Q_strides[2]);
+      device float* L_row = L_buf
+          + tidl.z * L_batch_stride
+          + tidl.y * L_head_stride
+          + ulong(int(tid.x) * V34_BQ + tm);
+      const int row_lim = is_last_q ? int(lim_rows_q) : V34_BQ;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ii = 0; ii < 2; ii++) {
+          const short row_local = iq * 16 + ii * 8 + lse_fm;
+          if (row_local < row_lim) {
+            const float lse_val = max_score[iq * 2 + ii]
+                                + fast::log2(sum_score[iq * 2 + ii]);
+            L_row[row_local] = lse_val;
+          }
+        }
+      }
+    }
+  }
 
   // Store O (Apple lines 471-481)
   O += tm * int(params.O_strides[2]);

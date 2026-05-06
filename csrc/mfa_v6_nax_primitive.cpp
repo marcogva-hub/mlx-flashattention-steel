@@ -658,7 +658,11 @@ public:
     enc.set_input_array(k, 1);
     enc.set_input_array(v, 2);
     enc.set_output_array(out, 3);
-    if (!use_v34) enc.set_output_array(lse, 4);  // V34 uses buffer(4) for params struct
+    if (use_v34) {
+      enc.set_output_array(lse, 5);  // V34: buffer(5) = L_buf (4 = params)
+    } else {
+      enc.set_output_array(lse, 4);  // legacy: buffer(4) = lse
+    }
 
     if (use_v34) {
       v34_dispatch(
