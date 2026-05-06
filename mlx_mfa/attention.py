@@ -96,6 +96,7 @@ except ImportError:
 # adds ~5% overhead at sub-millisecond workloads.
 # ---------------------------------------------------------------------------
 _cached_is_m3_plus: "bool | None" = None
+_cached_has_nax: "bool | None" = None
 
 
 def _get_is_m3_plus_cached() -> bool:
@@ -105,6 +106,18 @@ def _get_is_m3_plus_cached() -> bool:
         info = get_device_info()
         _cached_is_m3_plus = bool(info.get("is_m3_plus", False))
     return _cached_is_m3_plus
+
+
+def _get_has_nax_cached() -> bool:
+    """Return cached `device_has_neural_accelerators()` (M5+ NAX)."""
+    global _cached_has_nax
+    if _cached_has_nax is None:
+        try:
+            from mlx_mfa._ext import device_has_neural_accelerators as _has_nax
+            _cached_has_nax = bool(_has_nax())
+        except (ImportError, AttributeError):
+            _cached_has_nax = False
+    return _cached_has_nax
 
 
 # ---------------------------------------------------------------------------
@@ -423,14 +436,16 @@ def flash_attention(
             use_mfa = True
         else:
             _is_m3 = _get_is_m3_plus_cached()
+            _has_nax = _get_has_nax_cached()
             _kv_len = k.shape[2]
-            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, q.dtype, window_size, False)
+            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
                     head_dim, q.shape[2], causal, _is_m3,
                     dtype=q.dtype, kv_seq_len=_kv_len,
                     window_size=window_size, sparse=False, backend=backend,
+                    has_nax=_has_nax,
                 )
                 if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
                     _dispatch_decision_cache.clear()

@@ -120,6 +120,33 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
+# M5+ NAX thresholds: Apple's `steel_attention_nax.h` is the optimal forward
+# path on canonical shapes (D∈{64,128}, qL>8, no exotic features). v2.32.0
+# routes forward to MLX SDPA on those shapes — V34 NAX-direct matches it but
+# does not beat it cross-session. Non-canonical D and decode (qL≤8) keep
+# mlx-mfa kernels because SDPA's NAX path doesn't cover them on M5+.
+#
+# 999_999 means "always route to SDPA at this (D, causal) regardless of N".
+# Carve-outs (specific shape-corners where mlx-mfa wins despite canonical
+# match) are encoded in `_should_use_mfa_m5_nax_carveout()`.
+_M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
+    # D=64 canonical: SDPA NAX wins. Route SDPA. Carve-outs handle specific
+    # MFA-winning shapes (e.g., FlashVSR-dense) inline.
+    (64,  True):  999_999,
+    (64,  False): 999_999,
+    # D=128 canonical: SDPA NAX wins. v2.31.0 V34 results showed parity
+    # within session; cross-session diagnostic showed legacy/MFA path
+    # depends on environmental conditions whereas SDPA NAX is stable.
+    (128, True):  999_999,
+    (128, False): 999_999,
+    # D=256/512: SDPA's NAX path doesn't cover these. Keep V2 D-split etc.
+    # (Defer to non-NAX thresholds for these head_dims.)
+    (256, True):  999_999,
+    (256, False): 999_999,
+    (512, True):  _D512_CONSERVATIVE_MIN_N,
+    (512, False): _D512_CONSERVATIVE_MIN_N,
+}
+
 _verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
 
 # Native STEEL backward policy (targeted, benchmark-backed only).
@@ -283,6 +310,52 @@ def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
     return _custom_thresholds
 
 
+def _should_use_mfa_m5_nax_carveout(
+    head_dim: int,
+    seq_len: int,
+    kv_seq_len: int,
+    causal: bool,
+    dtype_key: Optional[str],
+) -> bool:
+    """Return True if shape is in mlx-mfa's empirically-verified niche on M5+ NAX.
+
+    The default policy on M5+ NAX is to route forward attention to MLX SDPA,
+    because Apple's `steel_attention_nax.h` matches V34 NAX-direct on canonical
+    shapes (D∈{64,128}, qL>8). This function encodes Sprint A's empirical
+    findings: specific (head_dim, qL, kL, causal) combinations where
+    mlx-mfa kernels still win despite the canonical match.
+
+    Returns True ⇒ route to mlx-mfa (override SDPA-default).
+    Returns False ⇒ route to SDPA.
+
+    Carve-outs (Sprint A.6, v2.32.0):
+
+    [Filled in after the kernel sweep completes.]
+    """
+    # Decode shapes (qL ≤ 8) are handled before reaching this function:
+    # the wrapper-level routing keeps them on mlx-mfa because SDPA uses
+    # sdpa_vector (non-NAX) for qL ≤ 8 — and our flash-decode kernel is
+    # competitive with sdpa_vector. So this function only sees qL > 8.
+    #
+    # Cross-attention with N_kv >> N_q is also handled before reaching
+    # here (already routed to MFA in should_use_mfa cross-attn branch).
+    #
+    # Sprint A carve-outs go below — empirically verified shapes where
+    # mlx-mfa beats SDPA NAX on M5+.
+
+    # ──────────────────────────────────────────────────────────────────
+    # Sprint A.6 carve-outs — UPDATE AFTER docs/v6-nax/v32-kernel-sweep
+    # analysis. Conservative default: no carve-out (route to SDPA).
+    # ──────────────────────────────────────────────────────────────────
+
+    # Example placeholder pattern (commented until A.6 confirms):
+    # if head_dim == 64 and seq_len == 4096 and kv_seq_len == 4096 and not causal:
+    #     # FlashVSR-dense self-attention: mlx-mfa V34/V6 wins ~+20% (Sprint 4)
+    #     return True
+
+    return False  # default: route to SDPA on canonical M5+ NAX
+
+
 def should_use_mfa(
     head_dim: int,
     seq_len: int,
@@ -294,6 +367,7 @@ def should_use_mfa(
     window_size: Optional[tuple] = None,
     sparse: bool = False,
     backend: str = "auto",
+    has_nax: bool = False,
 ) -> bool:
     """Decide whether the MFA Metal kernel should be used for this config.
 
@@ -334,6 +408,20 @@ def should_use_mfa(
         if _verbose:
             print(f"[MFA dispatch] backend=sdpa forced -> SDPA")
         return False
+
+    # v2.32.0 — explicit SDPA-routing overrides (highest priority after backend=).
+    force_sdpa = os.environ.get("MFA_FORCE_SDPA_ROUTE")
+    if force_sdpa == "1":
+        if _verbose:
+            print(f"[MFA dispatch] MFA_FORCE_SDPA_ROUTE=1 -> SDPA")
+        return False
+    disable_sdpa = os.environ.get("MFA_DISABLE_SDPA_ROUTE")
+    if disable_sdpa == "1":
+        # Disable the v2.32.0 strategic SDPA routing; fall through to
+        # M3+/legacy thresholds. Mainly for benchmarking / regression checks.
+        has_nax = False
+        if _verbose:
+            print(f"[MFA dispatch] MFA_DISABLE_SDPA_ROUTE=1 -> falling through to legacy thresholds")
 
     # Sliding-window and block-sparse ALWAYS use MFA: tile-skip guarantees speedup.
     # window_size=(left, right): MFA when either dimension is set (>=0).
@@ -399,10 +487,44 @@ def should_use_mfa(
                 )
             return True
 
+    # v2.32.0 — M5+ NAX SDPA routing.
+    # Apple's `steel_attention_nax.h` is the optimal forward path on canonical
+    # shapes (D∈{64,128}, no exotic features). Route to SDPA on those.
+    # Carve-outs (Sprint A empirical findings) keep mlx-mfa for specific
+    # shape-corners where mlx-mfa wins despite the canonical match.
+    #
+    # Decode patterns (qL ≤ 8, kL >> qL) are caught by the cross-attn rule
+    # above (kL ≥ 4096 and qL ≤ 4096 → MFA). Short symmetric small-N (e.g.
+    # N=8, S=64) falls through to standard thresholds — for D=64 non-causal
+    # those say SDPA on M3+/M5+, which is the right answer (small SDPA call
+    # is fine, no need to invoke MFA flash-decode for N=8 self-attn).
+    if has_nax:
+        # Canonical D=64 / D=128 (any N >= ~16 not handled by cross-attn rule):
+        # Sprint A.6 findings determine carve-outs; default = SDPA.
+        dtype_key_carve = _dispatch_dtype_key(dtype)
+        if head_dim in (64, 128):
+            keep_mfa = _should_use_mfa_m5_nax_carveout(
+                head_dim=head_dim,
+                seq_len=seq_len,
+                kv_seq_len=_kv_len,
+                causal=causal,
+                dtype_key=dtype_key_carve,
+            )
+            if keep_mfa:
+                if _verbose:
+                    print(f"[MFA dispatch] M5+ NAX carve-out match D={head_dim} N={seq_len} causal={causal} -> MFA")
+                return True
+            if _verbose:
+                print(f"[MFA dispatch] M5+ NAX canonical D={head_dim} N={seq_len} causal={causal} -> SDPA (Apple's steel_attention_nax.h is optimal)")
+            return False
+        # D=256/512 not covered by SDPA NAX — fall through to standard table.
+
     # Dense attention: check empirical crossover threshold.
     custom = _load_custom_table()
     if custom is not None:
         thresholds = custom
+    elif has_nax:
+        thresholds = _M5_NAX_THRESHOLDS
     elif is_m3_plus:
         thresholds = _M3_THRESHOLDS
     else:
