@@ -168,7 +168,8 @@ std::string NAAttentionKernel::createSource() const noexcept {
   // V34 path: emit a self-contained Apple-style attention_nax kernel. Skips
   // legacy createConstants/createBufferBindings/loopForward — the V34 source
   // has its own kernel signature, params struct, and BHND-correct addressing.
-  if (useV34 && type.value == AttentionKernelType::forward && !isCausal && !masked && !isVarlen) {
+  if (useV34 && type.value == AttentionKernelType::forward && !masked && !isVarlen) {
+    // V34 path now handles both causal and non-causal forward.
     return createV34Source();
   }
 
@@ -2737,6 +2738,8 @@ struct ExpSubOp {
   ss << "#define V34_TD " << TD << "\n";
   ss << "#define V34_TK " << TK << "\n";
   ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
+  // V34_DO_CAUSAL is compile-time per kernel — different pipeline for causal/non-causal.
+  ss << "#define V34_DO_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"MSL(
 struct V34Params {
@@ -2747,6 +2750,11 @@ struct V34Params {
   int NK;        // ceil(kL/BK)
   int qL_rem;    // last-block remainder rows (0 means aligned)
   int kL_rem;    // last-block remainder cols (0 means aligned)
+  // qL_off — offset of query position 0 in the K sequence. Used for
+  // causal: at decode (qL < kL) typically qL_off = kL - qL so that
+  // query position i sees keys 0..(qL_off + i). For prefill (qL == kL)
+  // qL_off = 0. (Apple AttnParams::qL_off, steel_attention_nax.h:180-186)
+  int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   // Apple convention (steel_attention_nax.h:104-117).
   long Q_strides[3];  // [batch, head, seq]; D-stride implicit = 1
@@ -2804,7 +2812,24 @@ void attention(
   const bool is_last_q = (int(tid.x) == NQ_aligned);
   const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34_BQ) - tm;
   const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34_BK);
-  const int kb_lim = params.NK;
+
+  // Causal K-loop bounds (Apple steel_attention_nax.h:175-187):
+  //   kb_lim       = ceil((q_max + qL_off) / BK)  — last K-tile this Q-tile sees
+  //   kb_min_causal = floor((q_min + qL_off) / BK) — first K-tile that needs masking
+  // For non-causal: kb_lim = NK, kb_min_causal = NK (so the per-element mask
+  // branch is dead-code).
+  int kb_lim = params.NK;
+  int kb_min_causal = params.NK;
+#if V34_DO_CAUSAL
+  {
+    int q_max = (int(tid.x) + 1) * V34_BQ + params.qL_off;
+    kb_lim = (q_max + V34_BK - 1) / V34_BK;
+    kb_lim = min(params.NK, kb_lim);
+    int q_min = int(tid.x) * V34_BQ + params.qL_off;
+    if (q_min < 0) q_min = 0;
+    kb_min_causal = q_min / V34_BK;
+  }
+#endif
 
   // === K-loop (Apple lines 197-457) ===
   for (int kb = 0; kb < kb_lim; kb++) {
@@ -2879,6 +2904,38 @@ void attention(
         }
       }
     }
+
+#if V34_DO_CAUSAL
+    // Per-element causal mask (Apple lines 278-303). Only K-tiles whose
+    // global col range overlaps with the per-row diagonal need masking
+    // (kb >= kb_min_causal). Earlier K-tiles are entirely below diagonal
+    // (no mask needed) and the K-loop already stopped at kb_lim past it.
+    if (kb >= kb_min_causal) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = stile_t::NAXFrag_t::get_coord();
+      const short sm = sc_c.y;
+      const short sn_c = sc_c.x;
+      const int base_row = int(tid.x) * V34_BQ + params.qL_off + tm;
+      const int base_col = kb * V34_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < stile_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < stile_t::kFragThrCols; jj++) {
+              const auto r = base_row + iq * 16 + ii * stile_t::kFragRowsJump + sm;
+              const auto c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * stile_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
 
     // Online softmax (Apple lines 380-409)
     metal::vec<float, kRowsPT> new_max;

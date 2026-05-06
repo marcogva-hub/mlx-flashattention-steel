@@ -5,6 +5,7 @@
 
 #include "shader_cache.hpp"
 #include <Metal/Metal.h>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -198,6 +199,7 @@ struct V34ParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
 };
 
@@ -208,7 +210,8 @@ void v34_dispatch(
     int Hq, int Hk,
     int batchDimension,
     int head_dim,
-    unsigned short BQ, unsigned short BK, uint16_t WM) {
+    unsigned short BQ, unsigned short BK, uint16_t WM,
+    bool causal) {
   @autoreleasepool {
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
 
@@ -223,6 +226,9 @@ void v34_dispatch(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;          // 0 if aligned
     params.kL_rem = kL % BK;          // 0 if aligned
+    // qL_off: for causal, query position 0 ↔ key position (kL - qL) when
+    // qL < kL (decode style); else 0. Non-causal: 0.
+    params.qL_off = causal ? std::max(0, kL - qL) : 0;
     // BHND strides: Q is [B, Hq, qL, D] contiguous → strides (Hq*qL*D, qL*D, D, 1).
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;

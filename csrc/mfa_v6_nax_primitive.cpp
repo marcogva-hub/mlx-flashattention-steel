@@ -45,7 +45,8 @@ void* v34_compile(const std::string& source, const std::string& function_name, v
 void v34_dispatch(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
-    unsigned short BQ, unsigned short BK, uint16_t WM);
+    unsigned short BQ, unsigned short BK, uint16_t WM,
+    bool causal);
 
 namespace {
 
@@ -173,7 +174,9 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
       use_v34 = (std::atoi(env_v34) != 0);
   }
-  if (use_v34 && (isCausal || !single_otile)) use_v34 = false;
+  // V34 now supports causal (Sprint V34-FORWARD-MAX). Still requires
+  // single-Otile-eligible shape.
+  if (use_v34 && !single_otile) use_v34 = false;
   // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
   // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
   // Override via env vars below.
@@ -608,7 +611,9 @@ public:
       bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
         so_for_v34 = (std::atoi(env_so) != 0);
-      if (use_v34 && (params_.causal || !so_for_v34)) use_v34 = false;
+      // V34 now supports causal (Sprint V34-FORWARD-MAX). Still requires
+      // single-Otile-eligible shape.
+      if (use_v34 && !so_for_v34) use_v34 = false;
     }
     if (use_v34) {
       if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
@@ -659,7 +664,8 @@ public:
       v34_dispatch(
           pipeline, &enc,
           (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
-          v34_BQ, v34_BK, v34_WM);
+          v34_BQ, v34_BK, v34_WM,
+          /*causal=*/params_.causal);
     } else {
       unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
       unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
