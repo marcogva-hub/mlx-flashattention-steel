@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.31.0** — V34 NAX-direct rewrite. M5 Max V6 NAX reaches SDPA parity on D=128; SeedVR2-small at 0.89× actually beats SDPA.
+Current version: **2.32.0** — SDPA routing for M5+ NAX. Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
 
 ## Foreword
 
@@ -26,7 +26,39 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.31.0 ships the **V34 NAX-direct rewrite**. V6 NAX's forward hot path now
+v2.32.0 introduces a **strategic shift in dispatch on M5+ NAX hardware**.
+Apple's MLX 0.31.2 ships an excellent NAX-based SDPA kernel
+(`steel_attention_nax.h`) that matches the V34 NAX-direct path mlx-mfa
+shipped in v2.31.0 — and Apple's kernel benefits from continuous upstream
+tuning. Rather than compete on a surface where Apple has structural
+advantages, mlx-mfa now **routes forward attention to MLX SDPA on M5+
+when SDPA covers the shape and feature set optimally**, and keeps native
+kernels for everything else:
+
+- `head_dim ∉ {64, 128}` (D=80, D=96, D=192, D=256, D=512) → mlx-mfa
+- Block-sparse / LCSA mask                                 → mlx-mfa
+- Additive attention bias (modes 1, 2)                     → mlx-mfa native bias kernel
+- Sliding window                                           → mlx-mfa STEEL window kernel
+- Backward pass                                            → mlx-mfa (Apple's NAX backward NYI)
+- All M1–M4 hardware (no NAX)                              → mlx-mfa V2/V3/V6 NAX legacy
+- Specific empirical carve-outs from Sprint A sweep        → mlx-mfa
+
+Override via `MFA_DISABLE_SDPA_ROUTE=1` (recovers v2.31.0 dispatch on M5+).
+This preserves mlx-mfa as a unified attention toolkit across all Apple
+Silicon generations while stopping unnecessary competition with Apple's
+upstream optimizations on shapes Apple covers well.
+
+The v2.31.0 performance numbers (V34 +33-40% wins on D=128) were measured
+under specific environmental conditions that did not reproduce in the
+v2.32.0 cross-session diagnostic. v2.32.0 ships with reproducible-conditions
+methodology baked into the bench infrastructure (`bench/v32_multisession_capture.py`,
+`docs/v6-nax/v32-multisession-protocol.md`, `CLAUDE_V6_NAX.md` Artifact #5).
+The architectural improvements that motivated v2.31.0 (V34 NAX-direct
+forward kernel, multi-SG parallelism via per-SG row partitioning) remain
+in the codebase as a regression canary and as the dispatched path when
+`MFA_DISABLE_SDPA_ROUTE=1` is set.
+
+v2.31.0 shipped the **V34 NAX-direct rewrite**. V6 NAX's forward hot path
 uses Apple's `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
 (the pattern from `steel_attention_nax.h`), bypassing MPP cooperative_tensor
 constraints that previously imposed `execution_simdgroups<1>`. Multi-SG

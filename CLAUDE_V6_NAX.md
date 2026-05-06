@@ -51,9 +51,9 @@ Ce sont les building blocks de référence. Tout ce qui s'éloigne de ce pattern
 
 ---
 
-## 2. Méthodologie obligatoire — quatre artifacts déjà rencontrés
+## 2. Méthodologie obligatoire — cinq artifacts déjà rencontrés
 
-Quatre fois en cette campagne, des décisions de shipping ont été contaminées par des artifacts méthodologiques. Internalise les leçons :
+Cinq fois en cette campagne, des décisions de shipping ont été contaminées par des artifacts méthodologiques. Internalise les leçons :
 
 ### Artifact #1 — Pipeline cache contamination within-session
 **Sprint G dispatch v6** : v6 mesuré -11.7% within-session, +14.3% en cross-session contrôlé.
@@ -71,6 +71,65 @@ Quatre fois en cette campagne, des décisions de shipping ont été contaminées
 ### Artifact #4 — Env var change without kernel cache invalidation
 **V33 SG=1 baseline** : `os.environ["MFA_V6_EXEC_SG"] = "2"` puis dispatch dans le même process Python ne re-compile pas le kernel — le cache retourne la pipeline `<1>`. RMSE rapportée 5e-3, RMSE réelle 2.5e-2.
 **Règle** : tout changement d'env var qui affecte le code généré nécessite **un nouveau process Python**. Pas de boucle in-process sur env vars.
+
+### Artifact #5 — Cross-session perf claims publishable only after multi-condition repro
+
+**Findings v2.31.0 → v2.32.0 cross-session diagnostic** (2026-05-06) :
+36-43% drift sur le legacy D=128 path entre le bench v2.31.0 (02:48 AM,
+post-overnight idle) et la re-bench Phase 0 à 13:24 PM le même jour.
+Hypothèse PSO cache testée et **rejetée** (cold-cache et warm-cache
+benches produisent des timings identiques à ±2%). Hypothèse GPU ramp-up /
+P-state testée et **rejetée** (post-30s-aggressive-warmup bench match
+no-warmup bench à ±2%). Le drift n'est **pas un artifact transient
+manipulable** — c'est un offset steady-state entre v2.31.0 et la session
+courante, au-delà de la discrimination session-feasible.
+
+**Sub-rule 5a — Metal PSO cache path on macOS 26+**
+
+Le cache a été déplacé de `~/Library/Caches/com.apple.metal/`
+(empty/obsolete sur macOS 26) vers per-application :
+
+```
+$DARWIN_USER_CACHE_DIR/<bundle-id>/com.apple.metal/
+```
+
+Pour notre `.venv/bin/python` bench process : bundle `org.python.python`.
+Resolve via `getconf DARWIN_USER_CACHE_DIR`. Tout step "clear cache" dans
+les scripts de diagnostic doit utiliser ce path, pas l'ancien
+`~/Library/Caches`.
+
+**Sub-rule 5b — Marketing-grade benchmark publication discipline**
+
+Avant de publier des perf claims dans CHANGELOG / README / PyPI :
+
+1. **Cross-session repro across 3+ sessions** with different times of
+   day and different pre-bench states (cold-boot morning vs mid-day
+   sustained vs after long idle).
+2. **Document each session's conditions** : time of day, hardware
+   uptime at bench start, Metal cache size before clear, macOS
+   version (`sw_vers`), `GPU Active` percentage from `sudo powermetrics`
+   in idle (must be < 5%).
+3. **Use median of session medians**, not within-session statistics.
+4. **Single-session bench results are STAGING data**, not publication
+   data. Always pair with at least one re-bench in a different session.
+
+**Why** : a single well-controlled within-session A/B/A is sufficient
+for *engineering decisions* (e.g., dispatch choice within the project),
+but insufficient for *external publication*. v2.31.0's perf claims —
+based on a single A/B/A session — depended on measurement-time conditions
+we cannot reproduce on demand.
+
+**Anti-pattern** : single-session bench within hours of code changes.
+The pipeline cache state and chip thermal regime at that moment may not
+represent typical user experience.
+
+**v2.32.0 strategic implication** : on M5+ NAX, forward attention on
+canonical shapes (D∈{64,128}, qL>8) routes to `mx.fast.scaled_dot_product_
+attention` which uses Apple's `steel_attention_nax.h`. mlx-mfa's V34
+NAX-direct path matches but does not beat Apple's kernel cross-session,
+and Apple's kernel benefits from continuous upstream tuning. Routing
+to SDPA preserves mlx-mfa as a unified toolkit while stopping unnecessary
+competition with Apple on shapes Apple covers well.
 
 ### Conséquence pratique
 
