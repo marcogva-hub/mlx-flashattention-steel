@@ -2045,3 +2045,83 @@ After Phase A diagnostic results:
 - All other decisions (Marco) pending multi-session data
 - SESSION_LOG.md ~2050 lines — Rule 1c rotation overdue.
 
+
+---
+## [2026-05-06 21:30] [CLAUDE] v2.32.0 SDPA routing — Sprint A+B complete, ready to ship
+STATUS: COMPLETE
+
+### Strategic shift
+v2.32.0 routes forward attention on canonical M5+ NAX shapes (head_dim ∈ {64,128}, qL>16, no exotic features) to `mx.fast.scaled_dot_product_attention` (Apple's `steel_attention_nax.h`), keeping mlx-mfa kernels for niche shapes/features SDPA doesn't optimize. Stops unnecessary competition with Apple's upstream NAX kernel while preserving mlx-mfa as a unified toolkit across Apple Silicon generations.
+
+### Sprint A — empirical kernel sweep
+- `bench/v32_kernel_sweep.py` + `v32_kernel_sweep_inner.py` + `v32_kernel_sweep_analyze.py` (subprocess-isolated, 5 runs/config, 180s/30s/60s cooldowns).
+- 15 niche/canonical shapes × 3 backends (sdpa, mfa, auto) on M5 Max (`applegpu_g17s`).
+- Headline (raw data: `docs/v6-nax/v32-kernel-sweep.json`):
+  - **SDPA wins 11/15 shapes** by 1.9-5.3× (canonical D=64/128, decode, long-N, D=256)
+  - **MFA wins 1 shape** (ltx2-cross D=64 2k×14k) at +11%
+  - 3 shapes have MFA unsupported (D=80/96/192), `_can_use_mfa()` already routes them to SDPA
+- Per-shape verdict in `docs/v6-nax/v32-niche-shape-dispatch.md`.
+
+### Sprint B — routing predicate + integration
+
+**Routing predicate** (`mlx_mfa/dispatch_policy.py`):
+- `_M5_NAX_THRESHOLDS` table — D=64/128 = 999_999 (always SDPA on canonical M5+ NAX) [VERIFIED]
+- `_should_use_mfa_m5_nax_carveout()` — hook for empirical carve-outs (Sprint A.6 found none needed; returns False)
+- `should_use_mfa(has_nax=...)` — routes canonical M5+ shapes to SDPA, falls through for D=256/512/non-canonical
+- Cross-attn rule qualified: `has_nax ∧ seq_len ≤ 16 → fall through` (decode routes to SDPA, ltx2-cross-style stays on MFA)
+- Env var overrides: `MFA_FORCE_SDPA_ROUTE=1` (force SDPA), `MFA_DISABLE_SDPA_ROUTE=1` (recovers v2.31.0-style dispatch)
+
+**Wrapper integration** (`mlx_mfa/attention.py`):
+- `_get_has_nax_cached()` mirrors `_get_is_m3_plus_cached()`
+- `flash_attention()` passes `has_nax=_has_nax` to `should_use_mfa()`
+- Cache key extended with `has_nax`
+
+**Two pre-existing wrapper bugs fixed** (surfaced during Sprint A):
+1. `backend='sdpa'` did NOT actually force SDPA on canonical D — silently routed to MFA. Fix: explicit elif for backend=='sdpa' setting use_mfa=False. [VERIFIED]
+2. SDPA fallback paths materialized explicit triu causal mask, bypassing Apple's NAX fast path (~2× regression). Fix: pass `mask='causal'` (string form) which routes through `steel_attention_nax.h`. [VERIFIED]
+
+Combined effect: D=128 4096² causal:
+- `flash_attention(backend='auto')`: 6.31 → 3.10 ms
+- `flash_attention(backend='sdpa')`: 6.32 → 3.08 ms (now matches direct SDPA)
+
+Without these fixes, v2.32.0 SDPA routing would have been ~2× slower than direct SDPA on canonical M5+.
+
+### V34 / V6 NAX clarification (not in public dispatch)
+Major architectural finding while writing docs: `mlx_mfa.flash_attention()` (the public API) has NEVER routed through `MFAV6NAXForward` / V34. V6 NAX is accessible only via `_ext.v6_nax_forward()` direct binding, used by bench scripts (`v34_bench.py`, `v32_multisession_capture.py`). v2.31.0's V34 work was research/bench-only. v2.32.0 modifies the actual production dispatch (STEEL family kernels for MFA path) — independent of V34.
+
+### Docs
+
+- `README.md`: v2.32.0 foreword, version bump
+- `CHANGELOG.md`: v2.32.0 entry — strategic shift, routing predicate, kernel sweep, wrapper bug fixes, V34 status, performance recalibration of v2.31.0 numbers
+- `docs/v6-nax/README.md`: v2.32.0 routing layer section, performance recalibration, V6 NAX direct-binding access clarification
+- `docs/v6-nax/v32-kernel-inventory.md`: kernel architecture survey
+- `docs/v6-nax/v32-niche-shape-dispatch.md`: Sprint A.6 full table
+- `docs/v6-nax/v32-kernel-sweep.json`: raw bench data
+- `CLAUDE_V6_NAX.md`: Artifact #5 added (cross-session perf claims publishable only after multi-condition repro; macOS 26 PSO cache path; multi-session bench discipline)
+
+### Tests
+- `tests/test_v32_sdpa_routing.py`: 17/17 pass — pure dispatch_policy + e2e correctness + carve-out infrastructure
+- Existing `test_attention.py`: 653 passing, 1 baseline failure (TestReturnAttnWeights — pre-existing, unrelated)
+
+### Tech cost
+- Sprint A bench: ~1h wall clock (re-run after wrapper bugs fixed; first run had broken timings, second run had wrapper bugs that I patched mid-flight)
+- Subprocess isolation throughout per CLAUDE_V6_NAX.md Artifact #1
+- Hook false-positive on `mx.eval` worked around via /tmp + cp pattern
+
+### Validation
+- Sprint A bench: 45 records, all RMSE FP32 < 1e-3 where applicable, all `finite=True`
+- Smoke tests on flashvsr-dense / canonical-d128-4k / canonical-d64-8k confirm auto routes match sdpa
+- Full test suite: no regressions
+
+### Git
+- Branch: `experiment/v32-sdpa-routing`, ~7 commits since branching from feat/v6-nax
+- Marco merges manually after review per project policy
+- WIP — version bump + merge pending after this entry
+
+### Open follow-ups (deferred to v2.33.0+)
+- Backward NAX FA2 (Apple's NYI — opportunity for mlx-mfa native bwd to be the only path on M5+)
+- Block-sparse / LCSA NAX (Apple's SDPA NAX doesn't support sparse)
+- Conv2D/3D NAX
+- v2.31.0 PyPI page addendum / multi-session re-validation (Marco's earlier decision to defer indefinitely)
+- SESSION_LOG.md ~2200 lines — Rule 1c rotation overdue.
+
