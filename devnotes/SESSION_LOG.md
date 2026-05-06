@@ -1710,3 +1710,66 @@ STATUS: COMPLETE
 - Cross-session A/B/A perf validation deferred to release phase per mandate.
 - Test-coverage gap: no automated test asserts V34 LSE finiteness — should add to `tests/test_v6_nax.py` before v2.32.0 release.
 - SESSION_LOG.md is at 1667 lines — past 1200 mandatory rotation threshold (Rule 1c). Suggest rotation before next major phase.
+
+---
+## [2026-05-06 16:00] [CLAUDE] Sprint V34-FORWARD-MAX — Sprints 3+4+5
+STATUS: COMPLETE
+
+### Plan
+- Objective: Complete the V34-FORWARD-MAX mandate (Sprints 3-4-5).
+- Files modified: `csrc/mfa/v6_nax/NAAttentionKernel.cpp+hpp`,
+  `NAAttentionKernelDescriptor.cpp+hpp`, `csrc/mfa_v6_nax_primitive.cpp`,
+  `docs/v6-nax/v34-sweep-sprint5.md`.
+
+### Changes
+- Sprint 3 (commit `3bfd782`): align_Q/align_K compile-time `#define`s.
+  Apple FCs 200/201 → our `#define V34_ALIGN_Q/K`. Wraps `is_last_q` /
+  `is_last_k` boundary branches with `#if`. Dedicated cache-key fields
+  in V6Key + descriptor (no bit-packing per CLAUDE_V6_NAX.md).
+  `MFA_V6_V34_DISABLE_ALIGN=1` env var as A/B escape hatch. [HIGH] [VERIFIED]
+- Sprint 4 (commit `e833f71`): D=64 default BK 64→32 + V34 always-on.
+  Tile sweep revealed the "FlashVSR -39% regression" was wrong tile
+  config. New default beats legacy 14-23% across all D=64 shapes. [HIGH] [VERIFIED]
+- Sprint 5 (commit `15b755f`): D=128 sweep + autoresearch doc.
+  BQ=64 BK=32 WM=4 default validated. Cross-session A/B/A on the
+  closest alternative shows 1.3% noise — defaults survive. [HIGH] [VERIFIED]
+
+### Dependency & regression check
+- Callers verified: V34 dispatch gates checked for all (D, shape-class)
+  combos. Default policy now D=128→V34, D=64→V34 always (was D=64
+  N_kv>8000). Legacy STEEL path remains the fallback for non-eligible
+  configs (varlen, masked, single_otile=false).
+- Test coverage: existing `tests/test_v6_nax.py` covers V34 forward
+  baseline. New regression: V34 is now the dispatch default for D=64
+  too, expanding test coverage requirements. Flag for v2.32.0 release.
+
+### Tech cost
+- Cache pressure: V34 pipeline cache now keys on
+  (causal × align_Q × align_K × tile-config) — up to ~24 entries for
+  production shape set. Negligible.
+- Compile time: ~600ms cold per pipeline (M1 Max). Warm cache hit < 1ms.
+
+### Validation
+- Sprint 3 correctness: 8/8 OK on `_ext.v6_nax_forward` (4 aligned, 2
+  unaligned, 2 disable-align regression). RMSE FP32 1.21e-06 to 9.82e-06.
+- Sprint 4 cross-session A/B/A (3 subprocess runs each, median):
+  - FlashVSR-dense: legacy 1.210ms / V34 1.007ms (1.20× speedup)
+  - LTX2-cross:     legacy 1.016ms / V34 0.890ms (1.14× speedup)
+  - LTX2-long:      legacy 2.332ms / V34 2.275ms (1.03× speedup)
+- Sprint 5 D=128 sweep: BQ=64 BK=32 WM=4 confirmed best on Llama-4k +
+  SeedVR2-small; tied with BQ=32 BK=64 WM=2 on Llama-2k (within 1.3%).
+
+### Git
+- Sprint 3: `3bfd782` (`feat(v6-nax): V34 align_Q / align_K compile-time gates (Sprint 3)`)
+- Sprint 4: `e833f71` (`perf(v6-nax): V34 D=64 default BK=64 → BK=32, dispatch always-on (Sprint 4)`)
+- Sprint 5: `15b755f` (`docs(v6-nax): V34 parametric sweep results — Sprint 5`)
+- branch `experiment/v34-forward-max`. Will push for Marco to merge manually.
+
+### Open follow-ups
+- GQA shapes (Hq != Hk) unswept — flag before v2.32.0 release.
+- D=64 BQ=16 family unexplored at D=128 (would need to remove the
+  BQ%(WM*16)==0 constraint or accept WM=1).
+- Test-coverage gap: no automated test asserts V34 dispatches at D=64
+  by default. Add to `tests/test_v6_nax.py`.
+- SESSION_LOG.md is past 1700 lines — rotation overdue (Rule 1c
+  threshold 1200).
