@@ -1,20 +1,36 @@
-# V6 NAX — overview (v2.29.0)
+# V6 NAX — overview (v2.31.0)
 
 V6 NAX is the mlx-mfa attention path targeting Apple M5+ Neural Accelerators
-(NAX) via Metal Performance Primitives (`mpp::tensor_ops::matmul2d`). It's the
-fastest path on M5+ for the dense self/cross-attention production shapes
-shipped in mlx-mfa.
+(NAX). Two kernel families coexist: V34 (NAX-direct via `NAXFrag::mma` /
+`NAXTile`, the Apple `steel_attention_nax.h` pattern) and legacy V6 NAX (via
+MPP `mpp::tensor_ops::matmul2d` cooperative_tensor). V34 ships as the default
+on shapes where it wins; legacy retained where V34 regresses.
 
-## Architecture (post-Sprint 3.3)
+## Architecture (post-V34, v2.31.0)
 
-Two kernel variants, selected per-call by the primitive:
+Three kernel variants, selected per-call by the primitive:
 
 | Variant | When | Source |
 |---|---|---|
-| **`loopForwardSingleTile()`** (Apple-style) | Default for non-GQA (`Hq == Hk`). Single cS, kBlocks=1, always-bypass cP cooperative tensor, `mem_none` barriers, K-loop step BK. | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (~270 LOC, added in Sprint 3.3) |
-| **`loopForward()`** (legacy double-buffer) | Fallback for GQA (`Hq != Hk`) — the BHND rewriter doesn't yet handle per-head K-stride for single-Otile. Also reachable via `MFA_V6_NAX_SINGLE_OTILE=0`. | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (legacy, from Draw Things port) |
+| **`createV34Source()`** (NAX-direct) | Default for D=128 (any shape), and D=64 with `N_kv > 8000` (e.g. LTX2-cross). Self-contained MSL emit (~17.7 KB inlined Apple helpers + ~400 LOC kernel body). Uses Apple's `NAXFrag::mma` directly with `metal::execution_simdgroup` (singular) — no MPP cooperative_tensor at `<N>`. | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source` (~700 LOC, added in Sprint V34) |
+| **`loopForwardSingleTile()`** (legacy single-Otile, Apple-style via MPP) | Default for D=64 small-N (FlashVSR-dense style — V34 regresses ~39% on small symmetric self-attention). Single cS, kBlocks=1, always-bypass cP cooperative tensor, `mem_none` barriers. | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::loopForwardSingleTile` (~270 LOC, added in Sprint 3.3) |
+| **`loopForward()`** (legacy double-buffer) | Fallback for GQA (`Hq != Hk && Hq % Hk != 0`) and causal forward. Also reachable via `MFA_V6_NAX_SINGLE_OTILE=0`. | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (legacy, from Draw Things port) |
 
-Auto-tuned default tile config (Sprint 3.3 autoresearch on M5 Max):
+Auto-tuned default tile config:
+
+**V34 (NAX-direct):**
+
+| Param | D=64 | D=128 |
+|---|---|---|
+| `BQ` (parallelization rows) | 32 | 64 |
+| `BK` (traversal columns)    | 64 | 32 |
+| `WM` (warps per TG)         | 2 | 4 |
+| `BD` (head-dim block)       | head_dim | head_dim |
+
+V34 constraints: `BQ % (WM * 16) == 0`, `BD % 16 == 0`, `TQ = BQ / (WM * 16) == 1`.
+Tunable via `MFA_V6_V34_BQ` / `MFA_V6_V34_BK` / `MFA_V6_V34_WM`.
+
+**Legacy V6 NAX (Sprint 3.3 autoresearch defaults):**
 
 | Param | Default |
 |---|---|
@@ -33,21 +49,28 @@ MLX-native `[B, H, N, D]` directly, no transpose. Override with
 GQA shapes (Hq != Hk) auto-fall-back to BNHD because the BHND rewriter
 doesn't yet handle the per-head K-stride pattern.
 
-## Performance (M5 Max)
+## Performance (M5 Max, v2.31.0)
 
-5 production VSR/DiT shapes, single-Otile + auto-tuned tiles:
+5 production VSR/DiT shapes, V34 NAX-direct + auto-tuned tiles
+(cross-session multi-run, iStat performance fan profile):
 
-| Shape | V6 NAX | SDPA | V6/SDPA |
-|---|---:|---:|---:|
-| FlashVSR-dense (D=64)  | 1.11 ms  | 0.91 ms  | 1.22× |
-| LTX2-cross (D=64)      | 1.59 ms  | 1.33 ms  | 1.20× |
-| SeedVR2-small (D=128)  | 276 ms   | 185 ms   | 1.49× |
-| CogVideoX (D=128)      | 3060 ms  | 2275 ms  | 1.35× |
-| SeedVR2-large (D=128)  | 8392 ms  | 4067 ms  | 2.06× |
+| Shape | Path | V6 NAX | SDPA | V6/SDPA |
+|---|---|---:|---:|---:|
+| FlashVSR-dense (D=64)  | legacy | 1.12 ms   | 0.91 ms   | 1.23× |
+| LTX2-cross (D=64)      | **V34** | 1.42 ms  | 1.32 ms   | **1.07×** |
+| SeedVR2-small (D=128)  | **V34** | 170.92 ms | 191.95 ms | **0.89× ⭐** |
+| CogVideoX (D=128)      | **V34** | 2399.19 ms | 2322.89 ms | **1.03×** |
+| SeedVR2-large (D=128)  | **V34** | 4042.73 ms | 4010.68 ms | **1.01×** |
 
-Numerical: SeedVR2-large RMSE 5.79e-5 → 2.93e-6 (20× more stable) under
-the new defaults — single-buffer commits each row reduction before the
-next K-tile overwrites, eliminating cross-tile FP16↔FP32 rounding error.
+V34 ships +18 to +40% gains over legacy on 4/5 shapes; **3 reach SDPA parity
+(1.01×–1.07×)**; **SeedVR2-small at 0.89× actually beats SDPA**. The historic
+D=128 long-N gap (legacy was 1.5×–2.0× SDPA) is closed. See
+[`v34-results.md`](v34-results.md) and [`v34-aba.json`](v34-aba.json) for raw data.
+
+Numerical: V34 RMSE FP32 vs SDPA reference is **9e-7 to 4e-6 across all 5
+shapes — 4–30× more stable than legacy V6 NAX**. Manual `simd_shuffle_xor`
+row reductions on FP32 accumulators (in `NAXFrag::row_reduce`) are bit-exact;
+MPP's `reduce_rows` had tile-boundary FP rounding artifacts.
 
 ## Sprints chronology
 
@@ -59,13 +82,28 @@ next K-tile overwrites, eliminating cross-tile FP16↔FP32 rounding error.
 | 3.2 | bypassThreadgroupMemory at legacy tiles — Cas C (regressed); kept off | [sprint-3-2-bypass-tgmem-results.md](sprint-3-2-bypass-tgmem-results.md) |
 | 3.3 (main) | Single-Otile rewrite — bimodal at default tiles (Cas B) | [sprint-3-3-single-otile-results.md](sprint-3-3-single-otile-results.md) |
 | 3.3 (autoresearch) | Tile sweep — invalidated 3.3's "D=128 ceiling" conclusion; new defaults ship 25-70% gains across all 5 shapes | [sprint-3-3-autoresearch-results.md](sprint-3-3-autoresearch-results.md) |
+| V33 (debug) | Hybrid bridge approach blocked by MPP cooperative_tensor `<N>` cross-SG distribution opacity (~2.5e-2 RMSE at SG>1) | [v33-sg-gt-1-debug-report.md](v33-sg-gt-1-debug-report.md) |
+| V34 | NAX-direct rewrite via `NAXFrag::mma` / `NAXTile` — bypasses MPP cooperative_tensor entirely. SDPA parity on D=128 (3 shapes) and D=64 N≥2048 (1 shape). SeedVR2-small beats SDPA at 0.89×. | [v34-results.md](v34-results.md), [v34-apple-reference-mapping.md](v34-apple-reference-mapping.md) |
 
 ## Limitations
 
-1. **GQA shapes** (Hq != Hk) use the legacy double-buffered `loopForward`. Porting BHND rewriter to handle per-head K-stride for single-Otile is a backlog item (~30 min).
-2. **D=128 long-N residual gap**: ~1.35-2.06× SDPA. Cause unconfirmed post-autoresearch — likely intrinsic MPP overhead vs Apple's NAXFrag::mma. Closing it would require API switch (NAXFrag, like Apple's `steel_attention_nax.h`).
-3. **Backward path** is not implemented for V6 NAX. Falls back to `mx.vjp(SDPA)`.
-4. **Causal path** uses `loopForwardSingleCausal` which has not been rewritten in single-Otile style. Still the legacy double-buffer kernel, but Sprint 3.1 verified it already implements all three Apple-style causal-skip optimizations.
+1. **GQA shapes with `Hq % Hk != 0`** still use the legacy double-buffered
+   `loopForward`. Sprint B (v2.30.0) extended single-Otile to GQA-divisible;
+   the irregular-GQA case is a backlog item.
+2. **FlashVSR-dense (D=64 small-N self-attention)** uses legacy V6 NAX
+   because V34 regresses ~39% there. The legacy 1.23× SDPA is the current
+   floor on this shape; closing further would need either V34 with a
+   smaller WM=1 / BQ=16 configuration (constraint: `BQ >= WM * 16`), or
+   a different kernel structure for small-N dense.
+3. **Backward path** is not implemented for V6 NAX. Falls back to
+   `mx.vjp(SDPA)`.
+4. **Causal path** uses `loopForwardSingleCausal` (legacy MPP). V34 not
+   yet ported to causal — Apple's reference at
+   `steel_attention_nax.h:278-303` shows the masking pattern; mechanical
+   port for a future sprint.
+5. **V34 doesn't yet write `lse`** (logsumexp output). Backward via
+   `mx.vjp(SDPA)` doesn't need it, but any user reading L from V34
+   output would get uninitialized data.
 
 ## Lessons logged
 
@@ -73,7 +111,22 @@ next K-tile overwrites, eliminating cross-tile FP16↔FP32 rounding error.
 
 ## References
 
-- Apple `steel_attention_nax.h` — `.venv/lib/python3.11/site-packages/mlx/include/mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h`
+- Apple `steel_attention_nax.h` (V34's primary reference) —
+  `.venv/lib/python3.11/site-packages/mlx/include/mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h`
+  (or `~/code/mlx-source/mlx/backend/metal/kernels/steel/attn/kernels/steel_attention_nax.h`)
+- Apple `nax.h` — `BaseNAXFrag` (`mma`, `load`, `store`, `row_reduce`,
+  `row_bin_op`, `get_coord`) and `NAXTile<T, TQ, TD>` template.
+  `~/code/mlx-source/mlx/backend/metal/kernels/steel/attn/nax.h`
+- Apple `defines.h` / `utils/integral_constant.h` / `kernels/utils.h::Limits` —
+  helpers inlined into V34's emitted MSL.
 - Draw Things port — original `NAAttention*` headers under `csrc/mfa/v6_nax/`
-- Bench scripts — `bench/v6_*.py`
-- Env vars — [`env-vars.md`](env-vars.md)
+- V6 NAX guardrails: [`../../CLAUDE_V6_NAX.md`](../../CLAUDE_V6_NAX.md) — methodology
+  rules accumulated through v2.27.0–v2.31.0 (subprocess isolation,
+  cache-key correctness, V33 lessons).
+- V34 sprint docs:
+  [`v34-apple-reference-mapping.md`](v34-apple-reference-mapping.md),
+  [`v34-results.md`](v34-results.md),
+  [`v34-aba.json`](v34-aba.json).
+- Bench scripts — `bench/v6_*.py`, `bench/v34_*.py/sh`
+- Env vars — [`env-vars.md`](env-vars.md). New in v2.31.0:
+  `MFA_V6_USE_V34`, `MFA_V6_V34_BQ`, `MFA_V6_V34_BK`, `MFA_V6_V34_WM`.

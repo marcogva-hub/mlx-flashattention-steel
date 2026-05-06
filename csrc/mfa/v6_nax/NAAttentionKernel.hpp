@@ -45,6 +45,9 @@ struct NAAttentionKernel {
   // cP cooperative tensor (no P_buf staging), mem_none barriers, K-loop step BK.
   bool singleOtileMode;
 
+  // V34 — see descriptor.
+  bool useV34;
+
   // mlx-mfa: takes a threadgroup-memory-length hint instead of a pipeline.
   // Returns the bytes to allocate at threadgroup(0) for the dispatch.
   unsigned short threadgroupMemoryAllocation() const noexcept;
@@ -69,6 +72,7 @@ private:
   void loopForward(CodeWriter &source) const noexcept;
   void loopForwardSingleCausal(CodeWriter &source) const noexcept;
   void loopForwardSingleTile(CodeWriter &source) const noexcept;
+  std::string createV34Source() const noexcept;
   void loopBackwardQuery(CodeWriter &source) const noexcept;
   void loopBackwardKeyValue(CodeWriter &source) const noexcept;
   std::string createComputeD() const noexcept;

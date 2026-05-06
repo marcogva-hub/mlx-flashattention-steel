@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.30.0** — V6 NAX dispatch v6 (Sprint C/G multi-run tuned) + GQA single-Otile path + tgmem cleanup.
+Current version: **2.31.0** — V34 NAX-direct rewrite. M5 Max V6 NAX reaches SDPA parity on D=128; SeedVR2-small at 0.89× actually beats SDPA.
 
 ## Foreword
 
@@ -26,18 +26,31 @@ upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
 obtain much better results, thanks to the improvements Apple has been adding
 to its silicon.
 
-v2.30.0 extends v2.29.0's V6 NAX work along three axes: (1) **GQA
+v2.31.0 ships the **V34 NAX-direct rewrite**. V6 NAX's forward hot path now
+uses Apple's `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
+(the pattern from `steel_attention_nax.h`), bypassing MPP cooperative_tensor
+constraints that previously imposed `execution_simdgroups<1>`. Multi-SG
+parallelism comes from per-SG row partitioning at the kernel level
+(`tm = 16 * TQ * sgid`), not via cooperative_tensor distribution — so the
+V33 cross-SG opacity issue disappears entirely.
+
+The historic D=128 long-N gap is **closed**: production VSR/DiT shapes
+that were stuck at 1.5–1.7× SDPA now run at SDPA parity. **SeedVR2-small
+at 0.89× SDPA actually beats SDPA**, the first time V6 NAX has dipped
+below 1.0× on a production shape. Numerics also improve 4–30× over legacy
+because the manual `simd_shuffle_xor` row reductions on FP32 accumulators
+inside `NAXFrag::row_reduce` are bit-exact, vs MPP's `reduce_rows` which
+had tile-boundary FP rounding artifacts. Dispatch is shape-aware: V34 is
+default for D=128 and D=64 N≥2048, legacy stays for D=64 small-N
+(FlashVSR-dense regresses under V34 — root cause TBD).
+
+v2.30.0 extended v2.29.0's V6 NAX work along three axes: (1) **GQA
 single-Otile** — the BHND rewriter now handles `Hq % Hk == 0` so GQA
 shapes use the single-Otile kernel directly, gaining 7-14% over the
-v2.29.0 legacy fallback; (2) **dispatch v6** — Sprint C+G multi-run
-sweep identified D=64 SG=4 (-6.4% on FlashVSR) and D=128 N≥100k →
-BK=64 SG=8 (-11.7% on SeedVR2-large) as consistent wins over v2.29.0
-defaults; (3) **tgmem allocation cleanup** — single-Otile + bypass
-no longer allocates the unused P_buf threadgroup memory.
-
-The closest V6 has reached SDPA: **GQA-Hq32-Hk8 D=128 at 1.06× SDPA**
-on M5 Max — within reach of parity for one shape class. Production
-dense shapes range from 1.13× (LTX2-cross) to 1.74× SDPA (CogVideoX).
+v2.29.0 legacy fallback; (2) **dispatch v5** (the v6 attempt was reverted
+after thermal-controlled re-bench); (3) **tgmem allocation cleanup** —
+single-Otile + bypass no longer allocates the unused P_buf threadgroup
+memory.
 
 v2.29.0 shipped **V6 NAX single-Otile** for M5+ hardware: an Apple-style
 single-buffer kernel (`loopForwardSingleTile`) with autoresearch-tuned
@@ -86,8 +99,8 @@ on my work!
 - Future major hardware-specific optimization work is deferred pending newer
   Apple hardware (M5+).
 
-[See the v2.30.0 V6 NAX performance section above (M5 Max + GQA) for
-current numbers; the v2.29.0 numbers were the previous milestone.]
+[See the v2.31.0 V6 NAX foreword above and the "Best M5 Max Benchmark
+Highlights (v2.31.0)" table below for current numbers.]
 
 ## Best M1 Max Benchmark Highlights
 
@@ -101,6 +114,33 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 | Sliding window | up to ~**21x** vs full SDPA | Tile-skip regime remains strongest |
 | D=256 | narrow causal long-N wins (for example ~**1.16x** at N=16384 f16) | Keep narrow policy only |
 | D=512 | decision pass found **no broad wins** | SDPA-default remains correct |
+
+## Best M5 Max Benchmark Highlights (v2.31.0)
+
+V6 NAX path on production VSR/DiT shapes (cross-session multi-run, iStat performance fan profile).
+The shape-aware dispatch picks V34 (NAX-direct) where it wins, legacy V6 NAX otherwise.
+
+| Shape | D | Path | V6 NAX vs SDPA |
+|---|---|---|---|
+| FlashVSR-dense | 64 | legacy | 1.23× SDPA |
+| LTX2-cross | 64 | **V34** | **1.07× SDPA** |
+| SeedVR2-small | 128 | **V34** | **0.89× SDPA ⭐ (beats SDPA)** |
+| CogVideoX | 128 | **V34** | **1.03× SDPA** (parity) |
+| SeedVR2-large | 128 | **V34** | **1.01× SDPA** (parity) |
+
+GQA shapes (Sprint B single-Otile path, legacy V6 NAX):
+
+| Shape | V6 NAX vs SDPA |
+|---|---|
+| GQA-Hq32-Hk8 D=128 | 1.06× ⭐ |
+| GQA-Hq16-Hk4 D=64 | 1.17× |
+| GQA-Hq40-Hk8 D=128 | 1.16× |
+| GQA-Hq8-Hk2 D=64 | 1.18× |
+
+Numerical: V34 RMSE FP32 vs SDPA reference is 9e-7 to 4e-6 across all 5 shapes —
+4–30× more stable than legacy V6 NAX (1.5e-5 to 6e-6). Manual simd_shuffle_xor row
+reductions on FP32 accumulators are bit-exact, vs MPP's reduce_rows which had
+tile-boundary FP rounding.
 
 ## Serving/Runtime Capability Summary
 

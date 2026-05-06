@@ -21,6 +21,8 @@ int estimate_gpu_cores(const std::string& device_name, int arch_gen);
 std::string v6_nax_probe_msl4();
 std::string v6_nax_probe_mpp();
 std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
+std::string v34_probe_source();
+std::string v34_probe_compile_test(void* mtl_device_raw);
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
@@ -296,6 +298,14 @@ NB_MODULE(_ext, m) {
         },
         nb::arg("head_dim"), nb::arg("dtype_code"),
         "Compile the V6 NAX forward kernel (D, dtype). Returns 'OK' or 'FAIL: <err>'.");
+  m.def("v34_probe_source", []() -> std::string {
+    return mlx_mfa::v34_probe_source();
+  });
+  m.def("v34_probe_compile", []() -> std::string {
+    auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+    auto& d = mlx::core::metal::device(s.device);
+    return mlx_mfa::v34_probe_compile_test(d.mtl_device());
+  });
   m.def("v6_nax_dt_generate_source",
         [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
           return mlx_mfa::v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);
