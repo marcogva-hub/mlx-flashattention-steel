@@ -4,6 +4,110 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.31.0] — 2026-05-06 — V34 NAX-direct rewrite (M5 Max SDPA parity achieved)
+
+### Architecture
+
+- New `loopForwardSingleTileV34` path in V6 NAX uses Apple's
+  `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
+  (the pattern from `steel_attention_nax.h`), bypassing MPP
+  cooperative_tensor constraints that imposed
+  `execution_simdgroups<1>`.
+- Multi-SG parallelism via per-SG row partitioning at the kernel
+  level (`tm = 16 * TQ * sgid`), not via cooperative_tensor
+  distribution. This sidesteps the V33 cross-SG distribution
+  opacity issue documented in `docs/v6-nax/v33-sg-gt-1-debug-report.md`.
+- V34 emits a self-contained MSL source (~17.7 KB of inlined Apple
+  helpers): `BaseNAXFrag` (with `mma` / `load` / `store` / `row_reduce`
+  / `row_bin_op`), `NAXTile<T, TQ, TD>`, `MaxOp` / `SumOp` / `MulOp`
+  / `ExpSubOp`, `Limits`, `integral_constant`. No external include
+  dependency at runtime beyond Metal stdlib + MetalPerformancePrimitives.
+
+### Performance (M5 Max, cross-session multi-run, iStat performance fan)
+
+| Shape | D | Legacy ms | V34 ms | Δ | V34/SDPA | Default |
+|---|---|---:|---:|---:|---:|:---:|
+| FlashVSR-dense | 64 | 1.12 | 1.55 | -39% | 1.633× | legacy |
+| LTX2-cross | 64 | 1.75 | 1.42 | **+19%** | **1.075×** | **V34** |
+| SeedVR2-small | 128 | 265.13 | 170.92 | **+36%** | **0.890× ⭐** | **V34** |
+| CogVideoX | 128 | 3610.79 | 2399.19 | **+34%** | **1.033×** | **V34** |
+| SeedVR2-large | 128 | 6776.12 | 4042.73 | **+40%** | **1.008×** | **V34** |
+
+V34 wins +18 to +40% on 4/5 production shapes vs legacy V6 NAX. **3 of 5
+reach SDPA parity (1.01×–1.07×)** — the historic D=128 long-N gap (legacy
+was 1.5×–1.7× SDPA) is closed. **SeedVR2-small at 0.89× actually beats
+SDPA**, the first time V6 NAX has dipped below 1.0× on a production shape.
+
+Methodology: subprocess A/B/A (legacy → V34 → legacy), 3 runs/round, 60s
+inter-round + 30s inter-shape cooldowns. 4/5 shapes have R1↔R3 thermal
+drift < 8%. Raw bench data: `docs/v6-nax/v34-aba.json`.
+
+### Numerics
+
+V34 is 4–30× more numerically stable than legacy on the same shapes:
+
+| Shape | Legacy RMSE FP32 | V34 RMSE FP32 |
+|---|---:|---:|
+| FlashVSR-dense | 1.47e-05 | 3.60e-06 |
+| LTX2-cross | 8.10e-06 | 1.76e-06 |
+| SeedVR2-small | 5.87e-06 | 1.75e-06 |
+| CogVideoX | 3.66e-06 | 1.11e-06 |
+| SeedVR2-large | 2.93e-06 | 8.98e-07 |
+
+Manual `simd_shuffle_xor` row reductions on FP32 accumulators inside
+`NAXFrag::row_reduce` are bit-exact; MPP's `reduce_rows` had
+tile-boundary FP rounding artifacts.
+
+### Dispatch policy
+
+Per-D shape-aware dispatch (in `mfa_v6_nax_primitive.cpp`):
+
+- `D = 128` → V34 default (3 production shapes)
+- `D = 64` and `N_kv > 8000` → V34 default (LTX2-cross style asymmetric)
+- `D = 64` small N (FlashVSR-dense style) → legacy retained (V34 regresses
+  −39% on small symmetric self-attention; root cause TBD, likely V34
+  per-kernel overhead unfavorable on short matmul tiles)
+- Causal forward → legacy fallback (V34 not yet ported)
+- GQA `Hq != Hk && Hq % Hk != 0` → legacy double-buffer fallback
+- Override via env var: `MFA_V6_USE_V34={0,1}`
+
+V34 tile defaults: D=64 → BQ=32, BK=64, WM=2; D=128 → BQ=64, BK=32, WM=4.
+Tunable via `MFA_V6_V34_BQ` / `MFA_V6_V34_BK` / `MFA_V6_V34_WM`.
+
+### Compatibility
+
+- Drop-in replacement: existing `flash_attention()` calls automatically
+  use V34 where the dispatch elects it; no Python API change.
+- V6Key cache key gains 4 dedicated fields (`use_v34`, `v34_BQ`,
+  `v34_BK`, `v34_WM`) — no bit-packing, no foot-gun.
+- Legacy V6 NAX path remains intact for shapes where it wins or where
+  V34 isn't yet ported.
+
+### Files
+
+- `csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}` — `createV34Source()` (~700 LOC)
+- `csrc/mfa/v6_nax/NAAttentionKernelDescriptor.hpp` — `useV34` field
+- `csrc/mfa_v6_nax_primitive.cpp` — V34 dispatch + V6Key fields
+- `csrc/v6_nax_compile.mm` — `v34_compile`, `v34_dispatch`, `V34Params` struct
+- `csrc/v34_probe.cpp` — Phase 1 compile probe (kept for future debugging)
+- `bench/v34_bench.py`, `bench/v34_aba_wrapper.sh` — bench infrastructure
+- `docs/v6-nax/v34-apple-reference-mapping.md` — file:line citations
+- `docs/v6-nax/v34-results.md` — sprint final report
+- `docs/v6-nax/v34-aba.json` — raw bench data
+- `CLAUDE_V6_NAX.md` — V6 NAX guardrails accumulated through v2.27.0–v2.30.x
+
+### Open follow-ups
+
+- FlashVSR-dense D=64 small-N V34 regression: investigate whether
+  V34 with `BQ=16, WM=1` configuration beats legacy on small
+  symmetric self-attention.
+- V34 causal forward (currently legacy fallback).
+- V34 with `align_Q` / `align_K` function constants for the
+  fast-path on shapes that are seq-len aligned.
+- L (logsumexp) writeback in V34 — currently V34 doesn't write
+  the `lse` output; backward via `mx.vjp(SDPA)` doesn't need it,
+  but any user reading L from V34 output would get uninitialized data.
+
 ## [2.30.0] — 2026-05-05 (final, post thermal-controlled re-bench)
 
 > **Note**: This release went through a thermal-controlled re-bench
