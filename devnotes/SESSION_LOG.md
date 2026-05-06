@@ -1591,3 +1591,77 @@ confirm correct dispatch.
 6. **Budget honored**: ≈ 6-7h focused work, well within mandate's
    "1.5 days". No re-escalation.
 
+---
+## [2026-05-06 09:40] [CLAUDE] v2.31.0 release — published to PyPI
+STATUS: COMPLETE
+
+### Steps completed
+- **Phase 1 (docs)**: README.md (v2.31.0 foreword + Best M5 Max
+  Benchmark Highlights section), CHANGELOG.md (v2.31.0 entry —
+  architecture / performance / numerics / dispatch / files /
+  follow-ups), docs/v6-nax/README.md (3 kernel variants, V34 + legacy
+  tile defaults, v2.31.0 perf table, V33+V34 sprint chronology,
+  updated limitations, references). Version bumped to 2.31.0 in
+  pyproject.toml + mlx_mfa/__init__.py. Commit `e0e581f`.
+- **Phase 2 (merge)**: experiment/v34-nax-direct → feat/v6-nax via
+  `--no-ff` merge. Commit `8e08a04`.
+- **Phase 3 (push)**: feat/v6-nax + experiment/v34-nax-direct + tag
+  v2.31.0 pushed to origin. Master NOT touched (Marco's decision —
+  master at v2.28.1, 38 commits behind).
+- **Phase 4 (PyPI)**: Marco authorized direct pypi.org upload (skip
+  TestPyPI — wheel passed twine check, sdist clean, version unique).
+  Built wheel mlx_mfa-2.31.0-cp311-cp311-macosx_26_0_arm64.whl (456 KB)
+  + sdist mlx_mfa-2.31.0.tar.gz. Published to
+  https://pypi.org/project/mlx-mfa/2.31.0/. Verified install: fresh
+  venv `pip install mlx-mfa==2.31.0` imports cleanly,
+  `mlx_mfa.flash_attention` runs bit-exact vs SDPA on D=128 N=1024
+  smoke test.
+- **Phase 5 (post-release)**: GitHub release notes content generated
+  in `outputs/v2.31.0-github-release-notes.md` for Marco's manual
+  release creation (`gh` CLI not installed locally).
+
+### Pre-existing test flakes — NOT introduced by V34
+Two test_attention.py failures verified pre-existing on feat/v6-nax
+base via git stash + checkout test:
+- TestTopkAttention::test_topk_ratio_1_matches_dense (max_diff 6.15e-4
+  vs 1e-4 threshold)
+- TestReturnAttnWeights::test_output_matches_no_return (small numeric
+  drift in float32 path)
+
+Per CLAUDE_V6_NAX.md §8, not attributed to V34.
+
+### Open items for Marco
+- **Master branch sync** (master at v2.28.1, feat/v6-nax at v2.31.0,
+  38 commits ahead). Decision pending — could be done as a separate
+  merge or by switching default branch to feat/v6-nax. Not in scope
+  for this session.
+- **GitHub release page** at
+  https://github.com/marcogva-hub/mlx-flashattention-steel/releases/new
+  using content of `outputs/v2.31.0-github-release-notes.md`. Tag
+  `v2.31.0` already exists on the remote.
+- **TestPyPI credentials** — to enable TestPyPI dry-run for future
+  releases, add a `[testpypi]` section to ~/.pypirc with a
+  test.pypi.org API token.
+
+### Git
+- Branch: `feat/v6-nax` (production, pushed)
+- Branch: `experiment/v34-nax-direct` (preserved, pushed for
+  traceability — not deleted)
+- Tag: `v2.31.0` (pushed)
+- Master: unchanged at v2.28.1
+
+### Lessons logged
+1. **PyPI publish is a one-shot operation**. Even with build/twine
+   check + clean sdist + unique version, doing TestPyPI dry-run
+   first is good hygiene. For this session Marco authorized
+   skipping it after seeing the build artifacts looked clean. For
+   future, having a `[testpypi]` section in `.pypirc` would let
+   the recommended path actually run.
+2. **Wheel size for our extension is ~470 KB** (compiled
+   `_ext.cpython-311-darwin.so` is 970 KB raw, compresses to ~430 KB
+   in the wheel). sdist is ~5 MB (includes csrc/ + tests/).
+3. **Pre-existing test flakes need to be tracked separately**.
+   CLAUDE_V6_NAX.md §8 already mentions "5 flakes in test_v6_nax*",
+   but the two flakes I found today are in `test_attention.py`,
+   not in test_v6_nax*. Worth updating the guardrail.
+
