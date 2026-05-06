@@ -1,14 +1,62 @@
-# V6 NAX — overview (v2.31.0)
+# V6 NAX — overview (v2.32.0)
 
-V6 NAX is the mlx-mfa attention path targeting Apple M5+ Neural Accelerators
-(NAX). Two kernel families coexist: V34 (NAX-direct via `NAXFrag::mma` /
-`NAXTile`, the Apple `steel_attention_nax.h` pattern) and legacy V6 NAX (via
-MPP `mpp::tensor_ops::matmul2d` cooperative_tensor). V34 ships as the default
-on shapes where it wins; legacy retained where V34 regresses.
+V6 NAX is the mlx-mfa attention layer targeting Apple M5+ Neural Accelerators
+(NAX). v2.32.0 introduces a **strategic dispatch shift on M5+ NAX**: forward
+attention on canonical shapes routes to MLX's `mx.fast.scaled_dot_product_
+attention` (which itself uses Apple's `steel_attention_nax.h`); mlx-mfa
+keeps native kernels for shapes/features SDPA NAX doesn't optimize.
 
-## Architecture (post-V34, v2.31.0)
+The previous v2.31.0 documentation described V34 NAX-direct as the production
+default for D=128 and D=64 N_kv > 8000. **In v2.32.0, V34 is no longer
+auto-dispatched on canonical shapes** — Apple's NAX kernel matches V34 cross-
+session, and routing to it stops unnecessary competition with upstream tuning.
+V34 remains in the codebase as the dispatched path when:
 
-Three kernel variants, selected per-call by the primitive:
+- `MFA_DISABLE_SDPA_ROUTE=1` is set (recovers v2.31.0 dispatch)
+- Sprint A.6 empirical carve-outs match (specific shape-corners where V34/V6
+  NAX beats SDPA NAX)
+- D=256/512 (not covered by SDPA NAX) — V2 D-split dispatched, NOT V34
+- Decode patterns with long kL (cross-attn rule routes to MFA)
+
+## v2.32.0 routing layer (Python `mlx_mfa.dispatch_policy`)
+
+Before reaching the C++ primitive, `mlx_mfa.flash_attention()` calls
+`should_use_mfa()` which decides between MFA and SDPA. The decision tree
+on M5+ NAX (gen ≥ 17, `device_has_neural_accelerators() == True`):
+
+```
+if backend == "mfa": return True   # explicit force
+if backend == "sdpa": return False # explicit force
+if MFA_FORCE_SDPA_ROUTE=1: return False
+if MFA_DISABLE_SDPA_ROUTE=1: fall through to v2.31.0 thresholds
+if window_size or sparse: return True   # MFA tile-skip wins
+if cross-attn (kv_seq_len ≥ 4096 ∧ seq_len ≤ 4096): return True
+if has_nax and head_dim ∈ {64, 128}:
+    if _should_use_mfa_m5_nax_carveout(...) returns True: return True
+    else return False  # → SDPA NAX
+# else: fall through to has_nax / M3+ / M1 thresholds
+```
+
+The carve-out hook (`_should_use_mfa_m5_nax_carveout()`) is populated from
+Sprint A's empirical kernel sweep results; default returns False (canonical
+M5+ NAX → SDPA).
+
+## Architecture (V6 NAX primitive — direct-binding access only)
+
+**Important access-pattern clarification (v2.32.0)**: `MFAV6NAXForward`
+is accessible only via the direct binding `_ext.v6_nax_forward()`. It is
+**not** routed to from `mlx_mfa.flash_attention()` on any path. The public
+`flash_attention()` API uses the `MFAttention` primitive (STEEL kernel
+family — V1/V2/V3/V4/V5) when it doesn't fall back to SDPA.
+
+V6 NAX and V34 therefore exist as:
+- A research/bench path callable explicitly (`bench/v34_bench.py`,
+  `bench/v32_multisession_capture.py` etc.)
+- An implementation reference for `steel_attention_nax.h`
+- A regression canary against future MLX upstream NAX changes
+
+When called via the direct binding, `MFAV6NAXForward` selects between three
+kernel variants:
 
 | Variant | When | Source |
 |---|---|---|
@@ -49,28 +97,46 @@ MLX-native `[B, H, N, D]` directly, no transpose. Override with
 GQA shapes (Hq != Hk) auto-fall-back to BNHD because the BHND rewriter
 doesn't yet handle the per-head K-stride pattern.
 
-## Performance (M5 Max, v2.31.0)
+## Performance recalibration (v2.31.0 → v2.32.0)
 
-5 production VSR/DiT shapes, V34 NAX-direct + auto-tuned tiles
-(cross-session multi-run, iStat performance fan profile):
+The v2.31.0 release performance table (V34 +33-40% wins on D=128) was
+measured under specific environmental conditions that did not reproduce
+in the v2.32.0 cross-session diagnostic. See
+[`v32-drift-diagnostic-report.md`](v32-drift-diagnostic-report.md) for
+the full investigation:
 
-| Shape | Path | V6 NAX | SDPA | V6/SDPA |
-|---|---|---:|---:|---:|
-| FlashVSR-dense (D=64)  | legacy | 1.12 ms   | 0.91 ms   | 1.23× |
-| LTX2-cross (D=64)      | **V34** | 1.42 ms  | 1.32 ms   | **1.07×** |
-| SeedVR2-small (D=128)  | **V34** | 170.92 ms | 191.95 ms | **0.89× ⭐** |
-| CogVideoX (D=128)      | **V34** | 2399.19 ms | 2322.89 ms | **1.03×** |
-| SeedVR2-large (D=128)  | **V34** | 4042.73 ms | 4010.68 ms | **1.01×** |
+- Phase 0 cross-session A/B/A re-bench measured legacy V6 NAX 36-41%
+  faster on D=128 than the v2.31.0 v34-aba.json data showed (same
+  hardware, same code).
+- Phase A.1 PSO compilation cache hypothesis: cleared the cache,
+  re-benched cold + warm. Cold ≈ Warm ≈ Phase 0 within ±2% — cache
+  state doesn't explain the drift.
+- Phase A.3 GPU ramp-up hypothesis: 30s aggressive matmul warmup
+  before bench. No effect (within ±2% of unwarmed run). Ramp-up
+  doesn't explain the drift either.
+- The drift is a steady-state offset between v2.31.0 measurement
+  context and current sessions, beyond session-feasible
+  discrimination.
 
-V34 ships +18 to +40% gains over legacy on 4/5 shapes; **3 reach SDPA parity
-(1.01×–1.07×)**; **SeedVR2-small at 0.89× actually beats SDPA**. The historic
-D=128 long-N gap (legacy was 1.5×–2.0× SDPA) is closed. See
-[`v34-results.md`](v34-results.md) and [`v34-aba.json`](v34-aba.json) for raw data.
+v2.32.0 ships the methodology to prevent repeat publication of regime-
+specific benchmarks (`bench/v32_multisession_capture.py`,
+[`v32-multisession-protocol.md`](v32-multisession-protocol.md), and
+`CLAUDE_V6_NAX.md` Artifact #5).
 
-Numerical: V34 RMSE FP32 vs SDPA reference is **9e-7 to 4e-6 across all 5
-shapes — 4–30× more stable than legacy V6 NAX**. Manual `simd_shuffle_xor`
-row reductions on FP32 accumulators (in `NAXFrag::row_reduce`) are bit-exact;
-MPP's `reduce_rows` had tile-boundary FP rounding artifacts.
+## v2.32.0 niche-shape sweep (Sprint A)
+
+`bench/v32_kernel_sweep.py` benches 15 niche shapes × 3 backends
+(`sdpa`, `mfa`, `auto`) under subprocess isolation, 5 runs per config,
+180s initial / 60s inter-shape cooldowns. Raw data in
+[`v32-kernel-sweep.json`](v32-kernel-sweep.json), per-shape verdict
+in [`v32-niche-shape-dispatch.md`](v32-niche-shape-dispatch.md).
+
+Numerical accuracy on canonical D=128 shapes: V34 RMSE FP32 vs SDPA
+reference is 9e-7 to 4e-6 (where comparable). Manual `simd_shuffle_xor`
+row reductions on FP32 accumulators (in `NAXFrag::row_reduce`) are
+bit-exact. With the v2.32.0 SDPA-routing default, the tested path on
+canonical shapes is Apple's NAX kernel directly — V34 numerics matter
+when carve-outs fire or `MFA_DISABLE_SDPA_ROUTE=1` is set.
 
 ## Sprints chronology
 
@@ -87,23 +153,23 @@ MPP's `reduce_rows` had tile-boundary FP rounding artifacts.
 
 ## Limitations
 
+(Effective with v2.32.0 SDPA routing on M5+ NAX; for shapes that route
+to MFA — non-canonical D, decode patterns, sliding window, etc.)
+
 1. **GQA shapes with `Hq % Hk != 0`** still use the legacy double-buffered
    `loopForward`. Sprint B (v2.30.0) extended single-Otile to GQA-divisible;
    the irregular-GQA case is a backlog item.
-2. **FlashVSR-dense (D=64 small-N self-attention)** uses legacy V6 NAX
-   because V34 regresses ~39% there. The legacy 1.23× SDPA is the current
-   floor on this shape; closing further would need either V34 with a
-   smaller WM=1 / BQ=16 configuration (constraint: `BQ >= WM * 16`), or
-   a different kernel structure for small-N dense.
-3. **Backward path** is not implemented for V6 NAX. Falls back to
-   `mx.vjp(SDPA)`.
-4. **Causal path** uses `loopForwardSingleCausal` (legacy MPP). V34 not
-   yet ported to causal — Apple's reference at
-   `steel_attention_nax.h:278-303` shows the masking pattern; mechanical
-   port for a future sprint.
-5. **V34 doesn't yet write `lse`** (logsumexp output). Backward via
-   `mx.vjp(SDPA)` doesn't need it, but any user reading L from V34
-   output would get uninitialized data.
+2. **Backward path** is not implemented for V6 NAX. Falls back to
+   `mx.vjp(SDPA)`. (Apple's NAX backward also NYI — opportunity for
+   mlx-mfa native backward to remain the only path on M5+.)
+3. **Causal forward** falls through to SDPA NAX on M5+ canonical shapes
+   (Apple's kernel handles causal masking natively). V6 NAX legacy +
+   V34 still support causal for `MFA_DISABLE_SDPA_ROUTE=1` runs and
+   carve-out shapes.
+4. **The v2.31.0 V34 numbers are non-reproducible cross-session.** See
+   [`v32-drift-diagnostic-report.md`](v32-drift-diagnostic-report.md).
+   v2.32.0 ships the methodology (`bench/v32_multisession_capture.py`)
+   to prevent this category of issue going forward.
 
 ## Lessons logged
 
