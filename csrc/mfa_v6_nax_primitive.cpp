@@ -41,6 +41,12 @@ void v6_nax_dispatch(
     unsigned short BQ, uint16_t executionSIMDGroups,
     unsigned short tgmem_bytes);
 
+void* v34_compile(const std::string& source, const std::string& function_name, void* raw_device);
+void v34_dispatch(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+
 namespace {
 
 uint32_t ceil_log2_u32(uint32_t x) {
@@ -56,11 +62,18 @@ struct V6Key {
   int head_dim, Hq, Hk, dtype;
   bool isCausal;
   uint32_t R, C, qbs, kbs, vbs, obs;
+  // V34 — dedicated cache-key fields (no bit-packing).
+  bool use_v34 = false;
+  uint16_t v34_BQ = 0;
+  uint16_t v34_BK = 0;
+  uint16_t v34_WM = 0;
   bool operator==(const V6Key& o) const {
     return head_dim == o.head_dim && Hq == o.Hq && Hk == o.Hk &&
            dtype == o.dtype && isCausal == o.isCausal &&
            R == o.R && C == o.C &&
-           qbs == o.qbs && kbs == o.kbs && vbs == o.vbs && obs == o.obs;
+           qbs == o.qbs && kbs == o.kbs && vbs == o.vbs && obs == o.obs &&
+           use_v34 == o.use_v34 && v34_BQ == o.v34_BQ &&
+           v34_BK == o.v34_BK && v34_WM == o.v34_WM;
   }
 };
 struct V6KeyHash {
@@ -73,6 +86,10 @@ struct V6KeyHash {
     h ^= std::hash<uint32_t>{}(k.R) << 5;
     h ^= std::hash<uint32_t>{}(k.C) << 6;
     h ^= std::hash<uint32_t>{}(k.qbs) << 7;
+    h ^= std::hash<bool>{}(k.use_v34) << 8;
+    h ^= std::hash<uint16_t>{}(k.v34_BQ) << 9;
+    h ^= std::hash<uint16_t>{}(k.v34_BK) << 10;
+    h ^= std::hash<uint16_t>{}(k.v34_WM) << 11;
     return h;
   }
 };
@@ -142,17 +159,44 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
   // Sprint 3.3: single-Otile mode forces bypass on (the new path always uses cP).
   if (single_otile) bypass_tgp = true;
-  simd::ushort3 blockDims =
-      simd::make_ushort3(BQ, BK, BD);
+
+  // V34 — env-var-gated NAX-direct rewrite. Forward non-causal single-Otile
+  // hot path only. V34 ignores the legacy BQ/BK/SG defaults and uses its own
+  // per-D defaults (BQ = WM*16, BK tunable). Falls back to legacy if causal
+  // or non-single-Otile or shape doesn't fit V34 constraints.
+  bool use_v34 = false;
+  if (const char* env_v34 = std::getenv("MFA_V6_USE_V34")) use_v34 = (std::atoi(env_v34) != 0);
+  if (use_v34 && (isCausal || !single_otile)) use_v34 = false;
+  // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
+  // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
+  // Override via env vars below.
+  unsigned short v34_BQ = (head_dim == 64) ? 32 : 64;
+  unsigned short v34_BK = (head_dim == 64) ? 64 : 32;
+  uint16_t v34_WM = (head_dim == 64) ? 2 : 4;
+  if (use_v34) {
+    if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
+    if (const char* env_bk = std::getenv("MFA_V6_V34_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
+    if (const char* env_wm = std::getenv("MFA_V6_V34_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
+    // Validate: BQ % (WM*16) == 0
+    if (v34_BQ % (v34_WM * 16) != 0 || head_dim % 16 != 0) {
+      use_v34 = false;  // fall back to legacy if invalid config
+    }
+  }
+
+  simd::ushort3 blockDims = use_v34
+      ? simd::make_ushort3(v34_BQ, v34_BK, BD)
+      : simd::make_ushort3(BQ, BK, BD);
+  uint16_t exec_sg_for_desc = use_v34 ? v34_WM : exec_sg;
 
   NAAttentionKernelDescriptor desc(
       blockDims, (unsigned short)head_dim, (unsigned short)Hq,
-      (unsigned short)Hk, /*executionSIMDGroups=*/exec_sg,
+      (unsigned short)Hk, /*executionSIMDGroups=*/exec_sg_for_desc,
       /*checkCEdge1=*/true, mp, AttentionKernelType::forward,
       /*scale=*/1.0f / std::sqrt((float)head_dim),
       /*bypassThreadgroupMemory=*/bypass_tgp,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = single_otile;
+  desc.useV34 = use_v34;
 
   NAAttentionKernel kern(desc);
   std::string source = kern.source;
@@ -533,13 +577,37 @@ public:
       else if (v == 8) axis_flags |= 0xC00;
     }
 
+    // V34 detection — mirror source-gen logic (active iff env var on AND
+    // shape compatible: non-causal + single-Otile-eligible).
+    bool use_v34 = false;
+    unsigned short v34_BQ = (D == 64) ? 32 : 64;
+    unsigned short v34_BK = (D == 64) ? 64 : 32;
+    uint16_t v34_WM = (D == 64) ? 2 : 4;
+    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
+      use_v34 = (std::atoi(env_v34) != 0);
+    {
+      bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
+      if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
+        so_for_v34 = (std::atoi(env_so) != 0);
+      if (use_v34 && (params_.causal || !so_for_v34)) use_v34 = false;
+    }
+    if (use_v34) {
+      if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
+      if (const char* env_bk = std::getenv("MFA_V6_V34_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
+      if (const char* env_wm = std::getenv("MFA_V6_V34_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
+      if (v34_BQ % (v34_WM * 16) != 0 || D % 16 != 0) {
+        use_v34 = false;
+      }
+    }
+
     // Include all tile + flag params in cache key.
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
               qbs + ((uint32_t)executionSIMDGroups << 24) +
                     ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
               kbs + ((uint32_t)BD << 16) + ((uint32_t)axis_flags << 24),
-              vbs, obs};
+              vbs, obs,
+              use_v34, v34_BQ, v34_BK, v34_WM};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -549,27 +617,38 @@ public:
     if (!pipeline) {
       std::string src = generate_v6_source(
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R);
-      pipeline = v6_nax_compile_with_constants(
-          src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
+      if (use_v34) {
+        // V34 uses no FCs (params via struct buffer).
+        pipeline = v34_compile(src, "attention", mtl_device);
+      } else {
+        pipeline = v6_nax_compile_with_constants(
+            src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
+      }
       std::lock_guard<std::mutex> lock(v6_mtx);
       v6_pipelines[key] = pipeline;
     }
-
-    unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
-    unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
     enc.set_input_array(q, 0);
     enc.set_input_array(k, 1);
     enc.set_input_array(v, 2);
     enc.set_output_array(out, 3);
-    enc.set_output_array(lse, 4);
+    if (!use_v34) enc.set_output_array(lse, 4);  // V34 uses buffer(4) for params struct
 
-    v6_nax_dispatch(
-        pipeline, &enc,
-        nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
-        R, (uint32_t)Hq, (uint32_t)B,
-        BQ, executionSIMDGroups, tgmem);
+    if (use_v34) {
+      v34_dispatch(
+          pipeline, &enc,
+          (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
+          v34_BQ, v34_BK, v34_WM);
+    } else {
+      unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
+      unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
+      v6_nax_dispatch(
+          pipeline, &enc,
+          nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+          R, (uint32_t)Hq, (uint32_t)B,
+          BQ, executionSIMDGroups, tgmem);
+    }
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {

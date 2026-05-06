@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <sstream>
 
 namespace {
 
@@ -45,6 +46,7 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
   masked = descriptor.masked;
   isVarlen = descriptor.isVarlen;
   singleOtileMode = descriptor.singleOtileMode;
+  useV34 = descriptor.useV34;
 
   // mlx-mfa: produce MSL 4 source string only. mlx-mfa's shader cache
   // performs the actual MTL::Library / pipeline state creation.
@@ -163,6 +165,13 @@ unsigned short NAAttentionKernel::blockSequenceLength(AttentionOperand operand) 
 // MARK: - NAAttentionKernel+Source
 
 std::string NAAttentionKernel::createSource() const noexcept {
+  // V34 path: emit a self-contained Apple-style attention_nax kernel. Skips
+  // legacy createConstants/createBufferBindings/loopForward — the V34 source
+  // has its own kernel signature, params struct, and BHND-correct addressing.
+  if (useV34 && type.value == AttentionKernelType::forward && !isCausal && !masked && !isVarlen) {
+    return createV34Source();
+  }
+
   CodeWriter source;
   const bool lowPrecisionInputs =
       memoryPrecisions[AttentionOperand::Q].value() != GEMMOperandPrecision::FP32;
@@ -2273,6 +2282,686 @@ void NAAttentionKernel::loopForwardSingleTile(CodeWriter &source) const noexcept
     }
   }
 )";
+}
+
+// V34 — self-contained Apple-style attention_nax kernel using NAX-direct
+// primitives (NAXTile / NAXFrag::mma). Replaces the legacy MPP cooperative_tensor
+// path that was capped at execution_simdgroups<1> by Apple's static_asserts.
+//
+// Architecture (mirrors steel_attention_nax.h:73-482):
+//   - Each TG: one Q-block × one head × one batch. Grid: (NQ, H, B).
+//   - WM simdgroups per TG cooperate by row-partitioning BQ:
+//     each SG handles `kU * TQ = BQ / WM` rows.
+//   - QK matmul: NAXFrag::mma with two C frags + two B frags, transpose_b=true_type.
+//   - Softmax: row_reduce<MaxOp>, row_bin_op<ExpSubOp>, row_reduce<SumOp> on Stile.
+//   - Apply factor to Otile via row_bin_op<MulOp>(factor) (online correction).
+//   - PV matmul: NAXFrag::mma with two C frags + two B frags, transpose_b=false_type.
+//   - Final normalize: Otile *= rcp(sum_score) via row_bin_op<MulOp>.
+//
+// Scope: forward, non-causal, non-masked, non-varlen, single-Otile only.
+// BHND layout (computes all addressing from AttnParams strides[3]).
+// align_Q / align_K hardcoded to false for safety (uses load_rows / store_rows
+// per Apple's safe path; can be specialized later via FCs).
+//
+// Apple file:line citations are inline at each substitution site.
+std::string NAAttentionKernel::createV34Source() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;
+  const int kU = 16;
+  const int TQ = BQ / (WM * kU);   // expected = 1 per Apple's static_assert
+  const int TD = BD / kU;          // 4 for D=64, 8 for D=128
+  const int TK = BK / kU;          // BK / 16
+  (void)TQ; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  const float dot_scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n";
+  ss << "\n";
+  ss << "// Inlined Apple steel/* helpers (verbatim from ~/code/mlx-source).\n";
+
+  // === Inline Apple helpers (~17.7KB of verbatim Apple code) ===
+  ss << R"MSL(
+// === defines.h ===
+#define STEEL_CONST static constant constexpr const
+#define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
+
+// === utils/type_traits.h (subset) ===
+#pragma METAL internals : enable
+namespace metal {
+template <typename T> struct is_empty : metal::bool_constant<__is_empty(T)> {};
+template <typename T> struct pointer_element {};
+template <typename T> struct pointer_element<thread T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<device T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<constant T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<threadgroup T*> { using type = remove_cv_t<T>; };
+template <typename T> using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
+}
+#pragma METAL internals : disable
+
+// === utils/integral_constant.h (subset) ===
+#pragma METAL internals : enable
+namespace mlx { namespace steel {
+template <typename T, T v> struct integral_constant {
+  static constexpr constant T value = v;
+  using value_type = T;
+  using type = integral_constant;
+  METAL_FUNC constexpr operator value_type() const noexcept { return value; }
+};
+template <bool B> using bool_constant = integral_constant<bool, B>;
+using true_type = bool_constant<true>;
+using false_type = bool_constant<false>;
+template <int val> using Int = integral_constant<int, val>;
+#define integral_const_binop(__op__, __operator__)          \
+  template <typename T, T tv, typename U, U uv>             \
+  METAL_FUNC constexpr auto __operator__(                   \
+      integral_constant<T, tv>, integral_constant<U, uv>) { \
+    constexpr auto res = tv __op__ uv;                      \
+    return integral_constant<decltype(res), res>{};         \
+  }
+integral_const_binop(+, operator+);
+integral_const_binop(-, operator-);
+integral_const_binop(*, operator*);
+integral_const_binop(/, operator/);
+template <int start, int stop, int step, typename F>
+constexpr void const_for_loop(F f) {
+  if constexpr (start < stop) {
+    constexpr auto idx = Int<start>{};
+    f(idx);
+    const_for_loop<start + step, stop, step, F>(f);
+  }
+}
+#undef integral_const_binop
+}}
+#pragma METAL internals : disable
+
+// === Limits<float/half/bfloat> (Apple kernels/utils.h:55-70) ===
+template <typename U> struct Limits {
+  static const constant U max = metal::numeric_limits<U>::max();
+  static const constant U min = metal::numeric_limits<U>::min();
+  static const constant U finite_max = metal::numeric_limits<U>::max();
+  static const constant U finite_min = metal::numeric_limits<U>::min();
+};
+template <> struct Limits<float> {
+  static constexpr constant float max = metal::numeric_limits<float>::infinity();
+  static constexpr constant float min = -metal::numeric_limits<float>::infinity();
+  static constexpr constant float finite_max = metal::numeric_limits<float>::max();
+  static constexpr constant float finite_min = -metal::numeric_limits<float>::max();
+};
+
+// === Apple steel/attn/nax.h — BaseNAXFrag + NAXTile (verbatim, nax.h:27-817) ===
+namespace mlx { namespace steel {
+
+struct BaseNAXFrag {
+  STEEL_CONST short kFragRows = 16;
+  STEEL_CONST short kFragCols = 16;
+  STEEL_CONST short kElemsPerFrag = (kFragRows * kFragCols) / 32;
+  STEEL_CONST short kElemRows = 2;
+  STEEL_CONST short kElemCols = 4;
+  STEEL_CONST short kElemRowsJump = 8;
+
+  template <typename U>
+  using dtype_frag_t = typename metal::vec<U, kElemsPerFrag>;
+
+  METAL_FUNC static short2 get_coord() {
+    const ushort simd_lane_id = __metal_get_thread_index_in_simdgroup(ushort());
+    const short qid = simd_lane_id >> 2;
+    const short fm = ((qid & 4) | ((simd_lane_id >> 1) & 3));
+    const short fn = ((qid & 2) | (simd_lane_id & 1)) * 4;
+    return short2{fn, fm};
+  }
+
+  template <typename T, typename SrcPtrType, typename StrX, typename StrY,
+            typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void load(
+      thread dtype_frag_t<T>& dst, SrcPtrType src,
+      StrX str_x, StrY str_y, OffX off_x = {}, OffY off_y = {}) {
+    const short2 sc = get_coord();
+    src += sc.y * str_x + sc.x * str_y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if constexpr (metal::is_same_v<StrY, Int<1>>) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + c + j]);
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j) * str_y]);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename SrcPtrType, typename StrX, typename StrY,
+            typename LimX, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void load_rows(
+      thread dtype_frag_t<T>& dst, SrcPtrType src,
+      StrX str_x, StrY str_y, LimX lim_x, OffX off_x = {}, OffY off_y = {}) {
+    const short2 sc = get_coord();
+    src += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if (r < lx) {
+        if constexpr (metal::is_same_v<StrY, Int<1>>) {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j)]);
+          }
+        } else {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j) * str_y]);
+          }
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = T(0);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename DstPtrType, typename StrX, typename StrY,
+            typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void store(
+      const thread dtype_frag_t<T>& src, DstPtrType dst,
+      StrX str_x, StrY str_y, OffX off_x = {}, OffY off_y = {}) {
+    using U = metal::pointer_element_t<DstPtrType>;
+    const short2 sc = get_coord();
+    dst += sc.y * str_x + sc.x * str_y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if constexpr (metal::is_same_v<StrY, Int<1>>) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[r * str_x + c + j] = static_cast<U>(src[i * kElemCols + j]);
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename DstPtrType, typename StrX, typename StrY,
+            typename LimX, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void store_rows(
+      const thread dtype_frag_t<T>& src, DstPtrType dst,
+      StrX str_x, StrY str_y, LimX lim_x, OffX off_x = {}, OffY off_y = {}) {
+    using U = metal::pointer_element_t<DstPtrType>;
+    const short2 sc = get_coord();
+    dst += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if (r < lx) {
+        if constexpr (metal::is_same_v<StrY, Int<1>>) {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[r * str_x + c + j] = static_cast<U>(src[i * kElemCols + j]);
+          }
+        } else {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
+          }
+        }
+      }
+    }
+  }
+
+  template <typename Op, typename T>
+  METAL_FUNC static constexpr void row_reduce(
+      thread const dtype_frag_t<T>& inp_vals, thread T* reduced_vals) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      T thr_reduce = Op::apply(
+          Op::apply(inp_vals[i * kElemCols + 0], inp_vals[i * kElemCols + 1]),
+          Op::apply(inp_vals[i * kElemCols + 2], inp_vals[i * kElemCols + 3]));
+      T qgr_reduce = simd_shuffle_xor(thr_reduce, ushort(1));
+      qgr_reduce = Op::apply(thr_reduce, qgr_reduce);
+      T sgr_reduce = simd_shuffle_xor(qgr_reduce, ushort(8));
+      sgr_reduce = Op::apply(qgr_reduce, sgr_reduce);
+      reduced_vals[i] = Op::apply(reduced_vals[i], sgr_reduce);
+    }
+  }
+
+  template <typename Op, typename T>
+  METAL_FUNC static constexpr void row_bin_op(
+      thread dtype_frag_t<T>& inp_vals, thread T* row_vals) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kElemCols; j++) {
+        inp_vals[i * kElemCols + j] = Op::apply(inp_vals[i * kElemCols + j], row_vals[i]);
+      }
+    }
+  }
+
+  template <typename CType, typename AType, typename BType,
+            bool transpose_a = false, bool transpose_b = false>
+  METAL_FUNC static constexpr void mma(
+      thread dtype_frag_t<CType>& Cn0, thread dtype_frag_t<CType>& Cn1,
+      const thread dtype_frag_t<AType>& A, metal::bool_constant<transpose_a>,
+      const thread dtype_frag_t<BType>& Bn0, const thread dtype_frag_t<BType>& Bn1,
+      metal::bool_constant<transpose_b>) {
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        16, 32, 16, transpose_a, transpose_b, true,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+    auto ct_a = gemm_op.template get_left_input_cooperative_tensor<AType, BType, CType>();
+    auto ct_b = gemm_op.template get_right_input_cooperative_tensor<AType, BType, CType>();
+    auto ct_c = gemm_op.template get_destination_cooperative_tensor<decltype(ct_a), decltype(ct_b), CType>();
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) ct_a[i] = A[i];
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      ct_b[i] = Bn0[i];
+      ct_b[kElemsPerFrag + i] = Bn1[i];
+    }
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      ct_c[i] = Cn0[i];
+      ct_c[kElemsPerFrag + i] = Cn1[i];
+    }
+    gemm_op.run(ct_a, ct_b, ct_c);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      Cn0[i] = ct_c[i];
+      Cn1[i] = ct_c[kElemsPerFrag + i];
+    }
+  }
+};
+
+template <typename T, short kTileRows_, short kTileCols_, class NAXFrag_ = BaseNAXFrag>
+struct NAXTile {
+  using NAXFrag_t = NAXFrag_;
+  using elem_type = T;
+  STEEL_CONST short kFragRows = NAXFrag_t::kFragRows;
+  STEEL_CONST short kFragCols = NAXFrag_t::kFragCols;
+  STEEL_CONST short kElemsPerFrag = NAXFrag_t::kElemsPerFrag;
+  STEEL_CONST short kTileRows = kTileRows_;
+  STEEL_CONST short kTileCols = kTileCols_;
+  STEEL_CONST short kRows = kTileRows * kFragRows;
+  STEEL_CONST short kCols = kTileCols * kFragCols;
+  STEEL_CONST short kNumFrags = kTileRows * kTileCols;
+  STEEL_CONST short kElemsPerTile = kNumFrags * kElemsPerFrag;
+  STEEL_CONST short kFragThrRows = NAXFrag_t::kElemRows;
+  STEEL_CONST short kFragThrCols = NAXFrag_t::kElemCols;
+  STEEL_CONST short kFragRowsJump = NAXFrag_t::kElemRowsJump;
+  STEEL_CONST short kRowsPerThread = kTileRows * NAXFrag_t::kElemRows;
+  STEEL_CONST short kColsPerThread = kTileCols * NAXFrag_t::kElemCols;
+
+  typedef typename NAXFrag_t::template dtype_frag_t<T> frag_type;
+  frag_type val_frags[kNumFrags];
+
+  METAL_FUNC NAXTile() thread {}
+
+  METAL_FUNC constexpr void clear() {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kNumFrags; ++i) val_frags[i] = frag_type(0);
+  }
+
+  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) {
+    return val_frags[i * kTileCols + j];
+  }
+  METAL_FUNC constexpr const thread frag_type& frag_at(const short i, const short j) const {
+    return val_frags[i * kTileCols + j];
+  }
+
+  METAL_FUNC thread elem_type* elems() {
+    return reinterpret_cast<thread elem_type*>(val_frags);
+  }
+
+  template <typename Op>
+  METAL_FUNC void row_reduce(thread metal::vec<T, kRowsPerThread>& vals) const {
+    auto vptr = (thread T*)(&vals);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows; ++i) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols; ++j) {
+        NAXFrag_t::template row_reduce<Op>(frag_at(i, j), &vptr[i * kFragThrRows]);
+      }
+    }
+  }
+
+  template <typename Op>
+  METAL_FUNC void row_bin_op(thread metal::vec<T, kRowsPerThread>& vals) {
+    auto vptr = (thread T*)(&vals);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows; ++i) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols; ++j) {
+        NAXFrag_t::template row_bin_op<Op>(frag_at(i, j), &vptr[i * kFragThrRows]);
+      }
+    }
+  }
+
+  template <typename U>
+  METAL_FUNC void load(const device U* src, const int ld) {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::load(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
+                        idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void store(device U* dst, const int ld) const {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::store(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
+                         idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void load_rows(const device U* src, const int ld, const short n_rows) {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::load_rows(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
+                             n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void store_rows(device U* dst, const int ld, const short n_rows) const {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::store_rows(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
+                              n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+};
+
+}}  // namespace mlx::steel
+
+// === Operator structs (steel_attention_nax.h:31-71) ===
+struct MaxOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return metal::max(x, y); }
+};
+struct SumOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return x + y; }
+};
+struct MulOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return x * y; }
+};
+struct ExpSubOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return fast::exp2(x - y); }
+};
+)MSL";
+
+  // === V34 kernel ===
+  ss << "\n// V34 kernel — Apple steel_attention_nax.h:73-482 pattern\n";
+  ss << "using T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n";
+  ss << "\n";
+  ss << "#define V34_BQ " << BQ << "\n";
+  ss << "#define V34_BK " << BK << "\n";
+  ss << "#define V34_BD " << BD << "\n";
+  ss << "#define V34_WM " << WM << "\n";
+  ss << "#define V34_TQ " << TQ << "\n";
+  ss << "#define V34_TD " << TD << "\n";
+  ss << "#define V34_TK " << TK << "\n";
+  ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
+  ss << "\n";
+  ss << R"MSL(
+struct V34Params {
+  int qL;        // query seq len
+  int kL;        // key seq len
+  int gqa_factor;
+  int NQ;        // ceil(qL/BQ)
+  int NK;        // ceil(kL/BK)
+  int qL_rem;    // last-block remainder rows (0 means aligned)
+  int kL_rem;    // last-block remainder cols (0 means aligned)
+  // BHND strides (sequence stride = D, encoded in stride[2]).
+  // Apple convention (steel_attention_nax.h:104-117).
+  long Q_strides[3];  // [batch, head, seq]; D-stride implicit = 1
+  long K_strides[3];
+  long V_strides[3];
+  long O_strides[3];
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34_WM * 32)]]
+void attention(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    device T* O [[buffer(3)]],
+    constant V34Params& params [[buffer(4)]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;  // pacify compiler
+
+  // === Per-batch + per-head + per-Q-block ptr offsets (Apple lines 102-117) ===
+  ulong3 tidl{tid.x, tid.y, tid.z};
+  Q += tidl.z * params.Q_strides[0]
+     + tidl.y * params.Q_strides[1]
+     + tidl.x * V34_BQ * params.Q_strides[2];
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+  K += tidl.z * params.K_strides[0] + kv_head_idx * params.K_strides[1];
+  V += tidl.z * params.V_strides[0] + kv_head_idx * params.V_strides[1];
+  O += tidl.z * params.O_strides[0]
+     + tidl.y * params.O_strides[1]
+     + tidl.x * V34_BQ * params.O_strides[2];
+
+  const float scale2 = V34_DOT_SCALE;  // scale * log2e (precomputed)
+
+  // === MMA tiles + softmax state (Apple lines 127-166) ===
+  using otile_t = NAXTile<float, V34_TQ, V34_TD>;
+  otile_t Otile;
+  Otile.clear();
+
+  const short tm = 16 * V34_TQ * simd_group_id;
+  Q += tm * int(params.Q_strides[2]);
+
+  constexpr short kRowsPT = otile_t::kRowsPerThread;
+  metal::vec<float, kRowsPT> max_score;
+  metal::vec<float, kRowsPT> sum_score{0};
+  STEEL_PRAGMA_UNROLL
+  for (short i = 0; i < kRowsPT; ++i) {
+    max_score[i] = Limits<float>::finite_min;
+  }
+
+  // Last-block flags (Apple lines 189-194)
+  const int NQ_aligned = params.qL / V34_BQ;
+  const int NK_aligned = params.kL / V34_BK;
+  const bool is_last_q = (int(tid.x) == NQ_aligned);
+  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34_BQ) - tm;
+  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34_BK);
+  const int kb_lim = params.NK;
+
+  // === K-loop (Apple lines 197-457) ===
+  for (int kb = 0; kb < kb_lim; kb++) {
+    const bool is_last_k = (kb == NK_aligned);
+
+    using stile_t = NAXTile<float, V34_TQ, V34_TK>;
+    stile_t Stile;
+    Stile.clear();
+
+    // QK matmul (Apple lines 206-246)
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34_TD; id++) {
+          NAXTile<T, 1, 1> Qtile;
+          NAXTile<T, 2, 1> Ktile;
+
+          const int Q_load_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_load_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+
+          if (is_last_q) {
+            Qtile.load_rows(Q + Q_load_off, int(params.Q_strides[2]), lim_rows_q - iq * 16);
+          } else {
+            Qtile.load(Q + Q_load_off, int(params.Q_strides[2]));
+          }
+
+          if (is_last_k) {
+            Ktile.load_rows(K + K_load_off, int(params.K_strides[2]), lim_rows_k - ik * 16);
+          } else {
+            Ktile.load(K + K_load_off, int(params.K_strides[2]));
+          }
+
+          stile_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qtile.frag_at(0, 0),
+              metal::false_type{},
+              Ktile.frag_at(0, 0),
+              Ktile.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // Scale (Apple lines 248-252)
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < stile_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= scale2;
+    }
+
+    // Mask out length sequence on last K block (Apple lines 254-276)
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = stile_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < stile_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < stile_t::kFragThrCols; jj++) {
+              const auto loc = ii * stile_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+    // Online softmax (Apple lines 380-409)
+    metal::vec<float, kRowsPT> new_max;
+    metal::vec<float, kRowsPT> factor;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; ++i) new_max[i] = max_score[i];
+
+    Stile.template row_reduce<MaxOp>(new_max);
+    Stile.template row_bin_op<ExpSubOp>(new_max);
+
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; ++i) {
+      factor[i] = fast::exp2(max_score[i] - new_max[i]);
+      max_score[i] = new_max[i];
+    }
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; ++i) {
+      sum_score[i] = sum_score[i] * factor[i];
+    }
+    Stile.template row_reduce<SumOp>(sum_score);
+
+    // Apply factor to Otile (Apple line 412)
+    Otile.template row_bin_op<MulOp>(factor);
+
+    simdgroup_barrier(mem_flags::mem_none);
+
+    // PV matmul (Apple lines 417-452)
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34_TD; id += 2) {
+        if (V34_BD == 128) {
+          if (id == 4) {
+            threadgroup_barrier(mem_flags::mem_none);
+          }
+        }
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34_TK; ik++) {
+          NAXTile<T, 1, 2> Vtile;
+          const int V_load_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+          if (is_last_k) {
+            Vtile.load_rows(V + V_load_off, int(params.V_strides[2]), lim_rows_k - ik * 16);
+          } else {
+            Vtile.load(V + V_load_off, int(params.V_strides[2]));
+          }
+          otile_t::NAXFrag_t::mma(
+              Otile.frag_at(iq, id),
+              Otile.frag_at(iq, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::false_type{},
+              Vtile.frag_at(0, 0),
+              Vtile.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    K += V34_BK * int(params.K_strides[2]);
+    V += V34_BK * int(params.V_strides[2]);
+  }
+
+  // Normalize output (Apple lines 461-469)
+  threadgroup_barrier(mem_flags::mem_none);
+
+  metal::vec<float, kRowsPT> rcp;
+  STEEL_PRAGMA_UNROLL
+  for (short i = 0; i < kRowsPT; ++i) {
+    rcp[i] = 1.f / sum_score[i];
+  }
+  Otile.template row_bin_op<MulOp>(rcp);
+
+  // Store O (Apple lines 471-481)
+  O += tm * int(params.O_strides[2]);
+  if (is_last_q) {
+    if (lim_rows_q <= 0) return;
+    Otile.store_rows(O, int(params.O_strides[2]), lim_rows_q);
+  } else {
+    Otile.store(O, int(params.O_strides[2]));
+  }
+}
+)MSL";
+
+  return ss.str();
 }
 
 void NAAttentionKernel::loopBackwardQuery(CodeWriter &source) const noexcept {

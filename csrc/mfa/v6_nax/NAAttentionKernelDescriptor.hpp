@@ -39,6 +39,13 @@ struct NAAttentionKernelDescriptor {
   // Set after construction (no new constructor); defaulted to false on all paths.
   bool singleOtileMode = false;
 
+  // V34 — NAX-direct rewrite (Sprint V34).
+  // When true, generates an Apple steel_attention_nax.h-style kernel using
+  // NAXTile / NAXFrag::mma directly (no MPP cooperative_tensor at <N>).
+  // Forward non-causal single-Otile only (production VSR hot path).
+  // Requires BQ % (WM * 16) == 0 and BD % 16 == 0.
+  bool useV34 = false;
+
   AttentionOperands<GEMMOperandPrecision> memoryPrecisions;
   AttentionKernelType type;
   float scale;

@@ -152,4 +152,99 @@ void v6_nax_dispatch(
   }
 }
 
+// V34 — pipeline compile (no function constants; V34 uses a struct buffer
+// instead of FCs for params).
+void* v34_compile(
+    const std::string& source,
+    const std::string& function_name,
+    void* raw_device) {
+  @autoreleasepool {
+    id<MTLDevice> device = (__bridge id<MTLDevice>)raw_device;
+    NSError* error = nil;
+
+    NSString* src = [NSString stringWithUTF8String:source.c_str()];
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    opts.languageVersion = (MTLLanguageVersion)((4 << 16) + 0);
+
+    id<MTLLibrary> library = [device newLibraryWithSource:src
+                                                  options:opts
+                                                    error:&error];
+    if (!library) {
+      std::string msg = "V34 library compile failed";
+      if (error) msg += std::string(": ") + [[error localizedDescription] UTF8String];
+      throw std::runtime_error(msg);
+    }
+
+    NSString* fnName = [NSString stringWithUTF8String:function_name.c_str()];
+    id<MTLFunction> function = [library newFunctionWithName:fnName];
+    if (!function) {
+      throw std::runtime_error("V34 function not found: " + function_name);
+    }
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) {
+      std::string msg = "V34 pipeline creation failed";
+      if (error) msg += std::string(": ") + [[error localizedDescription] UTF8String];
+      throw std::runtime_error(msg);
+    }
+    return (void*)CFBridgingRetain(pipeline);
+  }
+}
+
+// V34 dispatcher — Apple-style grid (NQ, H, B) with TG size 32*WM.
+// Params struct is set via setBytes:length:atIndex: at buffer 4 (Apple convention).
+struct V34ParamsHost {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
+};
+
+void v34_dispatch(
+    void* pipeline_raw,
+    void* enc_raw,
+    int qL, int kL,
+    int Hq, int Hk,
+    int batchDimension,
+    int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM) {
+  @autoreleasepool {
+    auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
+
+    enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
+
+    // Build params struct (Apple AttnParams subset).
+    V34ParamsHost params{};
+    params.qL = qL;
+    params.kL = kL;
+    params.gqa_factor = Hq / Hk;
+    params.NQ = (qL + BQ - 1) / BQ;
+    params.NK = (kL + BK - 1) / BK;
+    params.qL_rem = qL % BQ;          // 0 if aligned
+    params.kL_rem = kL % BK;          // 0 if aligned
+    // BHND strides: Q is [B, Hq, qL, D] contiguous → strides (Hq*qL*D, qL*D, D, 1).
+    params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.Q_strides[1] = (int64_t)qL * head_dim;
+    params.Q_strides[2] = (int64_t)head_dim;
+    params.K_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.K_strides[1] = (int64_t)kL * head_dim;
+    params.K_strides[2] = (int64_t)head_dim;
+    params.V_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.V_strides[1] = (int64_t)kL * head_dim;
+    params.V_strides[2] = (int64_t)head_dim;
+    params.O_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.O_strides[1] = (int64_t)qL * head_dim;
+    params.O_strides[2] = (int64_t)head_dim;
+
+    enc.set_bytes(params, 4);
+
+    // Dispatch grid (NQ, H, B), TG size (32*WM, 1, 1).
+    uint32_t NQ = (qL + BQ - 1) / BQ;
+    enc.dispatch_threadgroups(
+        MTL::Size::Make((size_t)NQ, (size_t)Hq, (size_t)batchDimension),
+        MTL::Size::Make((size_t)32 * (size_t)WM, 1, 1));
+  }
+}
+
 }  // namespace mlx_mfa
