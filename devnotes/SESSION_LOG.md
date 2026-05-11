@@ -2564,3 +2564,53 @@ production shapes: up2_resnet0_chunk_cap, up2_resnet_full,
 up2_resnet0_peakflops, up3_resnet_chunk_cap). Chunking already done in
 1.2; Phase 1.3 is mostly instrumentation + breadth tests.
 
+
+---
+## [2026-05-11 16:00] [CLAUDE] Phase 1.3 close: working-set + per-chunk eval
+STATUS: COMPLETE
+
+### Plan
+- Objective: working-set instrumentation + 16 GB hard gate + multi-shape
+  validation per prompt §D.
+- Files to modify: mlx_mfa/conv_nax.py, tests/test_conv_nax.py.
+
+### Changes
+- mlx_mfa/conv_nax.py: estimate_working_set() helper, sanity assert
+  uses it as hard gate, per-chunk async_eval+synchronize() to bound
+  peak GPU memory [HIGH][VERIFIED]
+- tests/test_conv_nax.py: 4 new Phase 1.3 tests (15 total) [HIGH][VERIFIED]
+- docs/conv-nax/conv-nax-phase1_3-{inventory,decisions,results,data.json}
+  [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Phase 1.1+1.2 tests: 11/11 PASS unchanged
+- Pre-existing 6 failures unchanged
+- Sprint A V6 NAX untouched
+
+### Tech cost
+- +96 LOC in mlx_mfa/conv_nax.py
+- +106 LOC in tests/test_conv_nax.py
+- Working-set estimator + per-chunk eval logic (n_chunks loop hook)
+- Sync overhead per chunk: ~50us, negligible vs ~10ms+ chunk matmul work
+
+### Validation
+- Ran: pytest tests/test_conv_nax.py -v → 15/15 PASS
+- Ran: large-shape probe (M=1.1M, 17 chunks) → peak 3.53 GB (was 32.29 GB
+  before per-chunk eval), rel_err 3.38e-5, NaN=0
+- Validated: all 6 production shapes under 16 GB hard gate
+
+### Git
+- `ca4b529` feat+test(conv-nax): Phase 1.3 working-set instrumentation + per-chunk eval
+- (next, this commit) docs(conv-nax): Phase 1.3 deliverables + SESSION_LOG
+
+### Key D-decisions in this phase
+- D23: Per-chunk forced eval (9× peak memory reduction)
+- D24: estimate_working_set() as canonical hard gate
+- D25: Estimator is a lower bound; ~1.5× factor for real-allocator overhead
+- D26: Phase 1.4 1×1×1 fast path design preview (input reshape, no copy)
+
+### Next concrete step
+Phase 1.4: 1×1×1 fast path. Per D26, just reshape input (B,T,H,W,C_in)
+→ (B*T*H*W, C_in) via metadata-only mx.reshape, dispatch matmul directly.
+Add fast-path detection + 4 tests.
+
