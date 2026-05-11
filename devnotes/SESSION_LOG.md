@@ -2337,3 +2337,76 @@ STATUS: COMPLETE (pending Marco R1 review)
    - MFAConv3DForward Primitive scaffolding
    - Smallest shape (mid_resnet) end-to-end correctness validated
 
+
+---
+## [2026-05-11 14:29] [CLAUDE] Phase 1.1 sub-phase 0: microbench methodology BLOCKER
+STATUS: BLOCKED
+
+### Plan
+- Objective: execute Phase 1.1 sub-phase 0 microbench (hard gate),
+  then conditionally scaffold MFAConv3DForward + mid_resnet tests.
+- Files to modify: bench/conv_nax_matmul2d_microbench.py (new harness);
+  conditionally csrc/mfa_conv3d_*.cpp + tests/test_conv3d_mid_resnet.py.
+- Dependencies impacted: none (no production code touched yet).
+
+### Changes
+- `bench/conv_nax_matmul2d_microbench.py` — NEW, 255 lines; defective
+  harness committed with BLOCKER header pointing at diagnostic
+  [HIGH][VERIFIED — defect confirmed by smoke test + Apple MPP header
+  + V6 NAX matmul2d call-site comparison].
+- `docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md` — NEW, full
+  diagnostic. Root cause + 3 paths forward + CC recommendation.
+
+### Dependency & regression check
+- No production code changed. csrc/ untouched. tests/ untouched.
+- Sprint A test territory untouched.
+- pre-existing untracked files (.claude/, devnotes/v2.32.0-release-notes.md)
+  left unchanged per Rule 5 (out of scope).
+
+### Tech cost
+- Zero kernel / primitive / binding code authored.
+- One defective harness + one diagnostic doc committed for traceability.
+
+### Validation
+- Ran: smoke test of harness on 2 shapes (mid_resnet, probe_floor),
+  no §4 cooldowns, single session.
+- Validated: smoke result FAILS sanity bar — mid_resnet reports
+  101 TFLOPS (>2.6× NAX FP16 peak of 38 TF, physically impossible).
+  Root cause traced via Apple MPP header read + V6 NAX call-site
+  comparison: descriptor M/N/K are PER-TILE dims, not full-matrix.
+  See blocker diagnostic for details.
+
+### Git
+- `5e57430` docs(conv-nax): Phase 1.1 microbench methodology BLOCKER
+  + diagnostic; branch `experiment/conv-nax-phase1_1`.
+
+### Methodology error — short form
+- matmul2d_descriptor(M, N, K) takes PER-TILE dims (≤128).
+- Full-matrix coverage requires grid dispatch
+  MTLSize(ceil(M_full/M_tile), ceil(N_full/N_tile), 1).
+- Harness passes full (20480, 13824, 512) as descriptor params +
+  dispatches 1 TG → non-physical reading.
+- V6 NAX confirmation: csrc/mfa/v6_nax/NAAttentionKernel.cpp:775
+  uses BLOCK_DIMENSIONS_* (≤128) + grid dispatch.
+- Harness lacked sentinel-fill correctness check, so defect slipped
+  past smoke. Sprint 3-equivalent failure mode.
+
+### Next concrete step Marco takes
+1. Read `docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md`
+   (~200 lines, 5–10 min).
+2. Choose Path A (fix harness, then 3-session gate; ~3–4h CC, ~45–80
+   min real per Marco calibration) vs Path B (V6 NAX measurement
+   proxy; ~30 min) vs Path C (defer Sprint C).
+3. Reply with direction. For Path A: optional pointer on K-tiling
+   pattern (single matmul2d with `dynamic_length_v<int>` K vs explicit
+   K-chunk loop with `multiply_accumulate` mode) preempts one
+   sub-investigation cycle.
+
+### Open questions for R1 protocol
+- Is the 30 TF gate threshold the right bar, or should it be relaxed
+  given V6 NAX's empirically-measured 38–43% of peak on attention
+  workloads (~14.4–16.3 TF, matches MLX conv baseline)?
+- If Path A: should the corrected harness also measure full-matrix
+  vs per-tile separately, to distinguish hardware ceiling from
+  dispatch-overhead ceiling?
+
