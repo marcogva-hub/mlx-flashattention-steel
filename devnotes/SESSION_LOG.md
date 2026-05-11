@@ -2239,3 +2239,101 @@ Review Phase 0 survey at `docs/conv-nax/survey-report.md`. Marco reads
 (separate prompt; takes the survey as input and produces detailed
 algorithmic design doc).
 
+
+---
+## [2026-05-11 14:30] [CLAUDE] Sprint C Phase 1.0 — Conv3D NAX design doc
+STATUS: COMPLETE (pending Marco R1 review)
+
+### Branch
+`experiment/conv-nax-phase1_0_design` (off `experiment/conv-nax-phase0-survey`).
+5 atomic commits per Phase 1.0 prompt §3 commit layout.
+
+### Plan
+- Objective: produce design doc that Phase 1.1 implementation works from.
+- Output: docs/conv-nax/conv-nax-design.md (816 lines, 12 sections).
+- Companion: docs/conv-nax/conv-nax-phase1_0-decisions.md (decision log).
+- No code, no benches, no primitives.
+
+### Major decisions rendered
+1. **Algorithm: Option α (materialized chunked im2col + matmul2d)**.
+   Estimated 297 ms on up3_resnet0 (largest shape) = 44% faster than MLX
+   baseline 530 ms, 43% over theoretical floor 207 ms.
+2. **Conv2D: deferred entirely** (zero current ROI on SeedVR2 VAE; trigger
+   mini-sprint when workload surfaces).
+3. **Unified ConvKey cache** (single map, Kind enum field) — avoiding
+   Sprint A's three-maps tech debt.
+4. **Weight pre-pack: Python-side at module init** (Option b).
+5. **Sub-phase 0 microbench as Phase 1.1 precondition** — measure
+   sustained matmul2d FP16 TFLOPS on 24-cell (M,K,N) grid before any
+   primitive implementation, decision gate at 30/20 TFLOPS.
+6. **Per-cluster tile defaults**: Cluster 1a (N=128) M_tile=16 N_tile=128
+   exec_sg=8; Cluster 1b (N=256) M_tile=16 N_tile=64 exec_sg=16;
+   Cluster 2 (N=512) M_tile=16 N_tile=64 exec_sg=16. Plus 5-knob
+   autoresearch env grid for Phase 1.3.
+7. **3 oracles + sentinel** validation (PyTorch CPU FP32 + MLX
+   conv_general + sentinel fill, per Sprint A precedent).
+8. **6-sub-phase Phase 1 breakdown**: 16-27h Phase 1.x total, Sprint A
+   §4-compliant cooldown protocol for Phase 1.5 perf sweep.
+9. **10-risk register** ranked HIGH (sustained TFLOPS, im2col memory) →
+   LOW (BF16, MPP API churn), with mitigation per risk.
+10. **R1 in-place commits** for revisions (Sprint A precedent).
+
+### Headline quantitative anchors (§1 of design doc)
+- Phase 0 baseline: 2,643 ms per SeedVR2 VAE decoder forward (6 kernels)
+- Theoretical NAX min: 1,033 ms
+- Headroom at peak: 1,610 ms (60.9% reduction)
+- Realistic 70%-peak Sprint C target: 1,127 ms savings (42.6% reduction)
+- MLX measured at 38-40% of theoretical NAX peak (2.55× ratio over min)
+- Headroom mechanism: MLX conv uses legacy 8×8 simdgroup MMA; NAX is
+  unused. NAX peak ~38 TFLOPS FP16 vs legacy ~5-10 TFLOPS effective.
+
+### Dependency & regression check
+- No production code changed (design doc only).
+- Branch contains only docs/conv-nax/* additions (verified
+  `git diff feat/conv-nax --stat`: 3 new files = design doc + decisions
+  + SESSION_LOG entry).
+- Sprint A test territory untouched.
+- pre-existing untracked files left unchanged.
+
+### Tech cost
+- 816-line design doc + 176-line decisions companion + SESSION_LOG entry.
+- 5 atomic commits sequentially in single CC session.
+- Zero kernel/primitive/binding code.
+
+### Validation
+- Cross-section consistency confirmed (§ headings match prompt §4 spec).
+- All 13 Phase 1.0 exit criteria met (per prompt §7):
+  - §1-§12 sections populated with substantive content
+  - Major decisions (algorithm, Conv2D defer, cache key) rendered with
+    explicit rationale
+  - Per-shape chunk_M sizing table populated for all 6 production shapes
+  - Sub-phase 0 microbench spec concrete (M/K/N grid, decision gate)
+  - MFAConv3DForward Primitive class structure documented
+  - Unified ConvKey design (no three-maps debt)
+  - Per-cluster tile recommendations
+  - 3-oracle validation + RMSE bars + sentinel
+  - 6-sub-phase breakdown with effort + exit criteria
+  - 10-risk register with likelihood + mitigation
+  - §10 Conv2D defer decision with explicit rationale
+  - §11 Flash-VAED complementarity matrix
+  - §12 R1 open questions enumerated (10 items)
+  - decisions.md captures the 10 major choices
+
+### Git
+- 5ce4b80 docs(conv-nax): Phase 1.0 design doc skeleton
+- af4fe6b docs(conv-nax): Conv3D algorithm specification + chunking
+- 27667f0 docs(conv-nax): Primitive class structure + cache key + tiles
+- 4824b9f docs(conv-nax): validation strategy + sub-phase breakdown + risks
+- (next, this commit) docs(conv-nax): Conv2D + Flash-VAED + Phase 1.0 close
+
+### Next concrete step Marco takes
+1. Read design doc §1 strategic context + sign-off paragraph at end of §12 first.
+2. Review full doc end-to-end (~30-45 min).
+3. Open R1 revision discussion if any changes needed (in-place commits to
+   this branch).
+4. Once approved (R1 or original), kick off Phase 1.1 prompt — separate
+   prompt that takes this design doc as input and implements:
+   - Sub-phase 0 microbench (matmul2d sustained TFLOPS measurement)
+   - MFAConv3DForward Primitive scaffolding
+   - Smallest shape (mid_resnet) end-to-end correctness validated
+

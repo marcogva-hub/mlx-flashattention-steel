@@ -667,13 +667,150 @@ If a SeedVR2 VAE variant ships in BF16 (currently FP16-only per `profiling_basel
 
 ## 10. Conv2D inclusion / deferral
 
-[skeleton — fills in Commit 5]
+**Decision: defer Conv2D entirely** from Sprint C scope. Re-evaluate when a Conv2D workload surfaces.
+
+### 10.1 Rationale
+
+**Zero current ROI on the target workload.** Per `architecture_map.json` op_type_breakdown (surveyed at `survey-report.md` §5.1):
+
+| Op type | FLOPs % |
+|---|---:|
+| Conv3d_3x3x3 | 91.94% |
+| Conv3d_1x1x1 | 7.23% |
+| Attention_Matmul | 0.76% |
+| GroupNorm | 0.03% |
+| Linear_Attention | 0.04% |
+| **Conv2D (any size)** | **0%** |
+
+SeedVR2 VAE decoder has no Conv2D ops. None. Implementing Sprint C Conv2D would deliver 0% wall-clock improvement on the actual target.
+
+### 10.2 Scope-discipline reasoning
+
+Three reasons to defer rather than build "for completeness":
+1. **Time efficiency**: ~4-6h CC time saved across Sprint C by skipping Phase 1.6.
+2. **Cognitive load**: Phase 1.x focuses entirely on Conv3D's chunking + implicit-GEMM dynamics. Adding Conv2D dilutes the iteration loops, the autoresearch grid, the test surface.
+3. **Cleaner Phase 1.5 ship/shelve verdict**: Conv2D ratios at 0% workload weight would obscure Conv3D-only metrics.
+
+### 10.3 When to add Conv2D (future mini-sprint)
+
+Trigger conditions for opening a focused Conv2D mini-sprint:
+- A VSR pipeline emerges that uses Conv2D heavily (e.g., a 2D-encoder + 3D-decoder VAE, or a 2D-only frame-by-frame super-res model).
+- An attention-projection conv layer (1×1 Conv2D used as fast linear layer) appears in a Marco workload.
+- General community ask for `mlx_mfa.conv2d_nax` — unlikely given mlx-mfa is attention-focused, but possible.
+
+### 10.4 Conv2D mini-sprint scope (when triggered)
+
+Estimated 4-6h CC time:
+- `MFAConv2DForward` primitive: directly wrap `mpp::tensor_ops::convolution2d` (Apple-exposed primitive per survey §4).
+- Same source-gen + nanobind binding pattern as Conv3D (and V6 NAX).
+- ConvKey enum already accommodates this via `Kind::Conv2DDirect` (§5.1).
+- Validation: 3 oracles, RMSE bars per §7.
+
+The structural work is mostly copy/paste from Conv3D Primitive + adjust for `convolution2d` instead of `matmul2d`. The hard mental work (im2col, chunking, NAX wrapping) is reusable.
+
+### 10.5 What the deferral does NOT mean
+
+- Sprint C is NOT committing to Conv2D-eventually-never. It is deferring until value is demonstrated by a workload.
+- The Phase 0 finding (Apple's `mpp::tensor_ops::convolution2d` exists and is NAX-aware) is preserved as institutional knowledge — when the time comes to wrap it, the path is clear.
+- The ConvKey enum design (§5.1) explicitly allows for Conv2DDirect kind, so future addition is a single-line enum change plus the Conv2D-specific source-gen.
 
 ## 11. Relation to Flash-VAED
 
-[skeleton — fills in Commit 5]
+**Flash-VAED**: SeedVR2 VAE distillation effort (Marco's repo at `~/code/SeedVR2_VAE_Flash-VAED`). Architecture-level optimization. Phase 0 identified up_block_2 and up_block_3 as combined ~65% of decoder wall-clock; recommended operator substitution (not pruning) as the right Phase 1 direction. Phase 0 is currently blocked on an anomalous PSNR 17.0 dB baseline that needs re-measurement on real video clips before Phase 1 can begin.
+
+**Sprint C**: Conv3D NAX kernel-level optimization. Same target VAE, complementary axis. No dependency between Flash-VAED and Sprint C — they target different abstraction layers.
+
+### 11.1 Complementarity matrix
+
+| | **Flash-VAED succeeds** | **Flash-VAED stalls / shelves** |
+|---|---|---|
+| **Sprint C succeeds** | Stack: fewer Conv3D 3×3×3 calls (architecture wins) × faster per call (kernel wins). Maximum end-to-end speedup. | Sprint C standalone: 42.6% realistic decoder wall-clock reduction (per Phase 0 ROI). VAE workload accelerated without architecture change. |
+| **Sprint C shelves** | Flash-VAED standalone: fewer/different Conv3D ops × MLX legacy speed. Smaller win than the joint scenario. | Status quo: no decoder acceleration. |
+
+The matrix shows Sprint C's value proposition is **positive in both Flash-VAED outcomes**. Kernel-level wins don't depend on architecture-level wins. The 99.17% Conv3D dominance is a structural property of any Conv3D-based VAE; Sprint C makes that structural pattern faster regardless of what specific Conv3D operations the model uses.
+
+### 11.2 Complementarity matrix at residual-operations level
+
+If Flash-VAED's Phase 1 succeeds and replaces some Conv3D 3×3×3 ops with factorized alternatives (e.g., 1×3×3 + 3×1×1, or 1×1×1 + 3×3×1 + 1×1×3), the residual operations are smaller Conv3D variants. Sprint C still applies:
+
+| Operation form | Sprint C path |
+|---|---|
+| Conv3D 3×3×3 (current) | Implicit GEMM via matmul2d (this design) |
+| Conv3D 1×1×1 (current) | Fast path: direct matmul2d (§8.4) |
+| Conv3D 1×K_H×K_W (factorized spatial) | Implicit GEMM with smaller K_total (= K_H × K_W × C_in) |
+| Conv3D K_T×1×1 (factorized temporal) | Implicit GEMM with smaller K_total (= K_T × C_in) |
+| Conv3D 1×3×3 (Flash-VAED candidate) | Implicit GEMM with K_total = 9 × C_in (3× smaller than current) |
+
+Smaller K_total means smaller matmul (less compute per output), so the per-call wall-clock drops further. But the proportion of FLOPs absorbed by Sprint C's NAX matmul vs other ops (bandwidth-bound element-wise, fused activations, etc.) may shift toward bandwidth-bound — at which point Sprint C's value flattens. This is a Phase 1.5 post-measurement consideration, not a Phase 1.0 design concern.
+
+### 11.3 Sequencing
+
+Sprint C does NOT wait for Flash-VAED. The two efforts can proceed in parallel. If Flash-VAED ships first, Sprint C's Phase 1.5 perf sweep should re-validate against the new shape distribution. If Sprint C ships first, Flash-VAED Phase 1 implementation can adopt Sprint C's kernel chain immediately.
+
+No technical conflict, no priority inversion, no shared dependencies. The two efforts are clean axes.
 
 ## 12. Open questions / R1 revision targets
 
-[skeleton — fills in Commit 5]
+Explicit open questions to be resolved by either R1 revision (post-Marco-review) or by sub-phase 0 microbench in Phase 1.1:
+
+### 12.1 Quantitative measurements (sub-phase 0 microbench)
+
+1. **True sustained `matmul2d` FP16 TFLOPS on production shape ranges.** The 38 TFLOPS peak figure may overstate actual sustained throughput at our M-skewed shapes. Phase 1.1 microbench (§3) measures the 24-cell grid; results drive R1 revision of §1 ROI claims if sustained < 30 TFLOPS.
+
+2. **Empirical chunk_M sweet spot vs the 4 GB heuristic.** Phase 1.3 measures whether 4 GB budget chunks are perf-optimal or if smaller chunks (better cache locality, more dispatches) or larger chunks (less dispatch overhead, more memory pressure) win on specific shapes.
+
+3. **`matmul2d` execution scope constraint on Conv3D-relevant shape ranges.** Sub-phase 0 microbench verifies that `execution_simdgroup` is usable; if not, fall back to `execution_threadgroup` with expected 5-10% overhead.
+
+4. **Implicit GEMM accumulation precision: FP32 accum w/ FP16 inputs.** Verify `matmul2d`'s `relaxed_precision=true` flag supports our matmul shapes; the V6 NAX precedent confirms it for attention but Conv3D K=13,824 is much deeper.
+
+### 12.2 Design-level open questions
+
+5. **Weight pre-packing option (a) vs (b).** §4.3 recommends Option (b) (Python-side pre-pack at module init). R1 may revisit if performance-critical and Primitive-owned pre-pack proves significantly faster.
+
+6. **Conv1D coverage decision.** Currently deferred per Sprint C charter. Confirm in R1 review that no current Marco workload uses Conv1D.
+
+7. **Causal Conv3D vs symmetric Conv3D as separate Primitive variants?** Currently §4.1 has a single Primitive that handles both via the asymmetric `pad_T_lo`/`pad_T_hi` Params fields. R1 may decide to split into two specialized Primitives if the causal branch's source-gen complexity warrants it.
+
+### 12.3 Strategic open questions
+
+8. **Sprint C ship/shelve verdict trigger conditions.** §8.5 thresholds are aligned with Sprint A R1; R1 review may tighten or loosen based on Marco's risk appetite.
+
+9. **Phase 1.6 Conv2D mini-sprint criteria.** §10 lists trigger conditions; R1 may refine.
+
+10. **Production integration scope (Phase 2).** Out of Sprint C charter currently. The Phase 1.5 ship verdict informs whether Phase 2 is auto-triggered or requires a separate planning sprint.
+
+### 12.4 R1 revision protocol
+
+Per Sprint A precedent (Phase 1.0 design doc had R1-R3 revisions in response to Marco's review):
+- R1 = first revision pass post-review.
+- Revisions are additions/amendments to this document, not separate documents.
+- Each R1 revision is a single commit on this branch with message `docs(conv-nax): Phase 1.0 design R1 revisions (Marco feedback)`.
+- Open questions in §12 are the primary loci for R1 changes; other sections may also be updated to maintain cross-doc consistency.
+- After Marco approves R1 (or a subsequent revision), Phase 1.1 work begins on a new branch `experiment/conv-nax-phase1_1`.
+
+---
+
+## Phase 1.0 sign-off
+
+**Phase 1.0 status**: design document complete; Phase 1.1 unblocked pending Marco's R1 review.
+
+**Major decisions rendered**:
+- Algorithm: Option α (materialized chunked im2col + `matmul2d`).
+- Conv2D: deferred to future mini-sprint (zero current ROI on SeedVR2 VAE target).
+- Cache: unified ConvKey with Kind enum (no Sprint A three-maps debt).
+- Per-shape chunk_M auto-select formula + env override.
+- Sub-phase 0 microbench as Phase 1.1 precondition.
+- Tile defaults per cluster + autoresearch grid.
+- 3-oracle validation strategy (PyTorch CPU FP32 + MLX `conv_general` + sentinel).
+- 6-sub-phase Phase 1 breakdown (16-27h estimated).
+- 10-risk register with likelihood + mitigation per risk.
+
+**Marco reads §1 (strategic context) + §10 sign-off paragraph first** to know whether Phase 1.0 is approval-ready or needs R1 revision before Phase 1.1.
+
+**Next concrete step Marco takes**:
+1. Review this design doc end-to-end (~30-45 min).
+2. Open R1 revision discussion via comments in §12 if any changes needed.
+3. Once approved (R1 or original), kick off Phase 1.1 prompt (separate prompt) that takes this design doc as input and implements the sub-phase 0 microbench + Primitive scaffolding.
+
+If at any point during R1 review the recommendation needs to change (e.g., Option β becomes attractive due to a Marco insight, or Conv2D scope expands due to a surfaced workload), this design doc is revised in-place — the §12.4 R1 revision protocol covers the process.
 
