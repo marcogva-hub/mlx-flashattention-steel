@@ -1,17 +1,29 @@
-"""Conv3D NAX forward — Phase 1.1 single-chunk implementation.
+"""Conv3D NAX forward — Phase 1.2 multi-chunk implementation.
 
-Scope: Phase 1.1 sub-phase B (mid_resnet shape, single-chunk, forward
-only, FP16, channels-last layout). Multi-chunk + chunking heuristic +
-1x1x1 fast path + asymmetric pad_T are deferred to Phase 1.2-1.5.
+Scope (cumulative through Phase 1.2):
+  - All single-chunk shapes (mid_resnet from Phase 1.1)
+  - Multi-chunk shapes (up1_resnet via M-chunking; Phase 1.3 generalizes)
+  - Asymmetric / causal pad_T (pad_T_left != pad_T_right)
+  - K_T=1 special case (effectively 2D conv per temporal slice)
+  - All forward, FP16/BF16, channels-last layout
 
 Per docs/conv-nax/conv-nax-design.md decision D3: this module orchestrates
 two JIT Metal kernels via mx.fast.metal_kernel:
 
-  1. Im2col3D — gathers (B*T_out*H_out*W_out, K_T*K_H*K_W*C_in) buffer
-     from (B, T, H, W, C_in) input + (stride, pad, dil, K_T, K_H, K_W)
+  1. Im2col3D — gathers (M_chunk, K_T*K_H*K_W*C_in) buffer from full
+     (B, T, H, W, C_in) input via stride/pad/dil addressing. Takes
+     M_OFFSET as a compile-time constant so chunks read correct input
+     positions.
   2. matmul2d  — lifts the V6-NAX-validated MPP matmul2d kernel from
-     bench/conv_nax_matmul2d_microbench.py, dispatches one TG per
-     (32x32) output tile with K-loop accumulation.
+     bench/conv_nax_matmul2d_microbench.py. With M_chunk × K × 2 bytes
+     < 2 GB per chunk, the int32-byte-address overflow bug in MPP
+     matmul2d (Phase 1.2 root-cause, fired at row 77696 for K=13824)
+     is avoided.
+
+Chunking heuristic (Phase 1.2 — refined in Phase 1.3):
+  chunk_M_max = 2^31 / (K * dtype_bytes), aligned down to M_TILE=32.
+  Then n_chunks = ceil(M_total / chunk_M_max),
+       chunk_M  = round_up(M_total / n_chunks, M_TILE).
 
 Layout (channels-last, matches mx.conv_general convention):
   input  : (B, T, H, W, C_in)
@@ -40,10 +52,30 @@ _KERNEL_CACHE: dict = {}
 
 
 def _conv_key(B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-              K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW, dtype):
-    """ConvKey per design D3: (Kind=Conv3DForward, all shape/conv params, dtype)."""
+              K_T, K_H, K_W, sT, sH, sW,
+              pT_l, pT_r, pH_l, pH_r, pW_l, pW_r,
+              dT, dH, dW, dtype, m_offset, m_chunk):
+    """ConvKey per design D3: (Kind=Conv3DForward, shape/conv params, chunk).
+
+    Per Phase 1.2: keyed by (m_offset, m_chunk) so each chunk gets its own
+    compiled (im2col, matmul) pair. Asymmetric padding fully encoded.
+    """
     return ("Conv3DForward", B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-            K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW, str(dtype))
+            K_T, K_H, K_W, sT, sH, sW,
+            pT_l, pT_r, pH_l, pH_r, pW_l, pW_r,
+            dT, dH, dW, str(dtype), m_offset, m_chunk)
+
+
+# Phase 1.2 root-cause: MPP matmul2d uses int32 internally for byte
+# addresses. The im2col output (size M_chunk × K × dtype_bytes) must
+# stay below 2^31 bytes (2 GiB) to avoid silent NaN-producing overflow
+# at byte_addr >= 2^31. Tested: at K=13824 f16, NaN starts deterministically
+# at row 77696 in the output buffer.
+INT32_BYTE_BUDGET = 2**31  # 2,147,483,648 bytes
+SAFETY_HEADROOM = 0.875    # Use 87.5% of int32 max, accounting for matmul2d
+                           # internal address tricks (cooperative tensor +
+                           # tile offsets + per-thread fragment addresses).
+                           # Empirical: 0.95 * 2^31 fires NaN at K=13824.
 
 
 # ---------------------------------------------------------------------
@@ -135,17 +167,25 @@ def _matmul2d_source(M: int, K: int, N: int) -> str:
 
 
 def _im2col3d_source(B, T, H, W, C_in, T_out, H_out, W_out,
-                     K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW) -> str:
-    """Im2col for Conv3D channels-last.
+                     K_T, K_H, K_W, sT, sH, sW,
+                     pT_l, pH_l, pW_l, dT, dH, dW,
+                     m_offset, m_chunk) -> str:
+    """Im2col for Conv3D channels-last with per-chunk m_offset.
 
-    Output: (M, K) row-major where
-      M = B*T_out*H_out*W_out
+    Output: (M_CHUNK, K) row-major where
+      M_CHUNK = m_chunk (size of this chunk's row count, <= M_total)
       K = K_T*K_H*K_W*C_in
-    Each thread writes one (m, k) element.
+    Each thread writes one (m_local, k) element.
 
-    Input layout: (B, T, H, W, C_in) row-major
-    Output layout: (M, K) row-major
+    m_global = m_local + M_OFFSET is used to compute (b, t_out, h_out, w_out).
+    Input layout: (B, T, H, W, C_in) row-major.
+    Output layout: (M_CHUNK, K) row-major.
     Padding: zero-fill for out-of-bounds spatial coords.
+
+    pT_l, pH_l, pW_l are the LEFT (low-index) paddings. The im2col only
+    needs the left-pad because the right-pad's effect on output T_out is
+    handled by the Python caller in T_out computation; here we only need
+    to translate output coords to input coords.
     """
     return f"""
     constexpr uint cB    = {B};
@@ -162,24 +202,26 @@ def _im2col3d_source(B, T, H, W, C_in, T_out, H_out, W_out,
     constexpr int  csT   = {sT};
     constexpr int  csH   = {sH};
     constexpr int  csW   = {sW};
-    constexpr int  cpT   = {pT};
-    constexpr int  cpH   = {pH};
-    constexpr int  cpW   = {pW};
+    constexpr int  cpTl  = {pT_l};
+    constexpr int  cpHl  = {pH_l};
+    constexpr int  cpWl  = {pW_l};
     constexpr int  cdT   = {dT};
     constexpr int  cdH   = {dH};
     constexpr int  cdW   = {dW};
+    constexpr uint cMoff = {m_offset};
+    constexpr uint cMchk = {m_chunk};
     constexpr uint cKvol = cKT * cKH * cKW;
     constexpr uint cKfull = cKvol * cCin;
-    constexpr uint cM     = cB * cTout * cHout * cWout;
 
-    // Thread index covers (m, k) flattened.
+    // Thread index covers (m_local, k) flattened.
     uint tid = thread_position_in_grid.x;
-    if (tid >= cM * cKfull) return;
-    uint m = tid / cKfull;
-    uint k = tid - m * cKfull;
+    if (tid >= cMchk * cKfull) return;
+    uint m_local = tid / cKfull;
+    uint k = tid - m_local * cKfull;
+    uint m_global = m_local + cMoff;
 
-    // Unravel m -> (b, t_out, h_out, w_out)
-    uint rem_m = m;
+    // Unravel m_global -> (b, t_out, h_out, w_out)
+    uint rem_m = m_global;
     uint w_out = rem_m % cWout; rem_m /= cWout;
     uint h_out = rem_m % cHout; rem_m /= cHout;
     uint t_out = rem_m % cTout; rem_m /= cTout;
@@ -192,9 +234,9 @@ def _im2col3d_source(B, T, H, W, C_in, T_out, H_out, W_out,
     uint k_h  = rem_k % cKH;  rem_k /= cKH;
     uint k_t  = rem_k;
 
-    int t_in = (int)t_out * csT + (int)k_t * cdT - cpT;
-    int h_in = (int)h_out * csH + (int)k_h * cdH - cpH;
-    int w_in = (int)w_out * csW + (int)k_w * cdW - cpW;
+    int t_in = (int)t_out * csT + (int)k_t * cdT - cpTl;
+    int h_in = (int)h_out * csH + (int)k_h * cdH - cpHl;
+    int w_in = (int)w_out * csW + (int)k_w * cdW - cpWl;
 
     half v = (half)0.0h;
     if (t_in >= 0 && t_in < (int)cT &&
@@ -204,32 +246,46 @@ def _im2col3d_source(B, T, H, W, C_in, T_out, H_out, W_out,
                      + (uint)w_in * cCin + c_in;
         v = X[in_idx];
     }}
-    Im2col[m * cKfull + k] = v;
+    // Write to (m_local, k) within this chunk's buffer.
+    Im2col[m_local * cKfull + k] = v;
 """
 
 
-def _make_kernels(key, M, K, N, B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-                  K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW):
-    """Compile and cache the (im2col, matmul) kernel pair for a ConvKey."""
+def _make_kernels(key, m_chunk, K, N, B, T, H, W, C_in, T_out, H_out, W_out,
+                  C_out, K_T, K_H, K_W, sT, sH, sW,
+                  pT_l, pT_r, pH_l, pH_r, pW_l, pW_r,
+                  dT, dH, dW, m_offset):
+    """Compile and cache (im2col, matmul) for one chunk.
+
+    m_chunk = number of output rows in THIS chunk.
+    m_offset = where this chunk's rows start in the full M.
+
+    pT_r/pH_r/pW_r aren't used inside the im2col kernel (only pT_l etc.)
+    but are still part of the ConvKey so asymmetric pad configurations
+    cache distinctly. Right-pad affects T_out/H_out/W_out which are
+    computed Python-side.
+    """
     if key in _KERNEL_CACHE:
         return _KERNEL_CACHE[key]
 
     im2col = mx.fast.metal_kernel(
         name=f"im2col3d_{B}_{T}_{H}_{W}_{C_in}_{K_T}{K_H}{K_W}_"
-             f"s{sT}{sH}{sW}_p{pT}{pH}{pW}_d{dT}{dH}{dW}",
+             f"s{sT}{sH}{sW}_pl{pT_l}{pH_l}{pW_l}_pr{pT_r}{pH_r}{pW_r}_"
+             f"d{dT}{dH}{dW}_off{m_offset}_chk{m_chunk}",
         input_names=["X"],
         output_names=["Im2col"],
         source=_im2col3d_source(B, T, H, W, C_in, T_out, H_out, W_out,
                                 K_T, K_H, K_W, sT, sH, sW,
-                                pT, pH, pW, dT, dH, dW),
+                                pT_l, pH_l, pW_l, dT, dH, dW,
+                                m_offset, m_chunk),
         header=_IM2COL_HEADER,
         ensure_row_contiguous=True,
     )
     mm = mx.fast.metal_kernel(
-        name=f"conv3d_matmul2d_{M}_{K}_{N}",
+        name=f"conv3d_matmul2d_{m_chunk}_{K}_{N}",
         input_names=["A", "B"],
         output_names=["C"],
-        source=_matmul2d_source(M, K, N),
+        source=_matmul2d_source(m_chunk, K, N),
         header=_MATMUL_HEADER,
         ensure_row_contiguous=True,
     )
@@ -237,11 +293,81 @@ def _make_kernels(key, M, K, N, B, T, H, W, C_in, T_out, H_out, W_out, C_out,
     return im2col, mm
 
 
+def _compute_chunk_layout(M_total, K, dtype_bytes):
+    """Plan M-chunks so each chunk's im2col buffer < INT32_BYTE_BUDGET * SAFETY.
+
+    Returns list of (m_offset, m_chunk) pairs summing to M_total.
+    Chunks are uniform M_TILE-aligned except possibly the last.
+    """
+    max_chunk_bytes = int(INT32_BYTE_BUDGET * SAFETY_HEADROOM)
+    max_chunk_M = max_chunk_bytes // (K * dtype_bytes)
+    # Align down to M_TILE so each chunk is tile-aligned (helps matmul
+    # remainder handling).
+    max_chunk_M = (max_chunk_M // M_TILE) * M_TILE
+    if max_chunk_M < M_TILE:
+        # Pathological: K so large that even one tile-row overflows int32.
+        # This is a structural blocker; would need a different algorithm.
+        raise ValueError(
+            f"conv_nax: K={K} too large for chunking — even one M_TILE row "
+            f"({M_TILE * K * dtype_bytes} bytes) overflows int32 budget."
+        )
+
+    if M_total <= max_chunk_M:
+        return [(0, M_total)]
+
+    n_chunks = (M_total + max_chunk_M - 1) // max_chunk_M
+    # Distribute M_total approximately evenly across n_chunks, aligned to M_TILE.
+    base = (M_total // n_chunks // M_TILE) * M_TILE
+    if base == 0:
+        base = M_TILE
+    chunks = []
+    remaining = M_total
+    offset = 0
+    for i in range(n_chunks):
+        if i == n_chunks - 1:
+            m_chunk = remaining
+        else:
+            m_chunk = base
+            remaining -= m_chunk
+        chunks.append((offset, m_chunk))
+        offset += m_chunk
+    # Verify total
+    total = sum(c[1] for c in chunks)
+    assert total == M_total, f"chunk layout {chunks} sums to {total}, want {M_total}"
+    return chunks
+
+
+# ---------------------------------------------------------------------
+# Padding normalization: accept int, 3-tuple of int (symmetric), or
+# 3-tuple of (left,right) pairs (asymmetric, including causal pad_T).
+# ---------------------------------------------------------------------
+def _normalize_padding(padding):
+    """Return ((pT_l,pT_r), (pH_l,pH_r), (pW_l,pW_r))."""
+    if isinstance(padding, int):
+        v = padding
+        return ((v, v), (v, v), (v, v))
+    if not (isinstance(padding, (tuple, list)) and len(padding) == 3):
+        raise ValueError(f"conv_nax: padding must be int or 3-tuple, got {padding}")
+    out = []
+    for i, p in enumerate(padding):
+        if isinstance(p, int):
+            out.append((p, p))
+        elif isinstance(p, (tuple, list)) and len(p) == 2 and \
+             all(isinstance(x, int) for x in p):
+            out.append((int(p[0]), int(p[1])))
+        else:
+            raise ValueError(
+                f"conv_nax: padding axis {i} must be int or (left,right) "
+                f"int-pair, got {p}"
+            )
+    return tuple(out)
+
+
 # ---------------------------------------------------------------------
 # Sanity asserts (design doc §4, 8 categories).
 # ---------------------------------------------------------------------
 def _sanity_asserts(x: mx.array, w: mx.array, stride, padding, dilation):
-    """Throw if Phase 1.1 single-chunk constraints not met."""
+    """Throw if Phase 1.2 constraints not met. Returns shape tuple."""
     # Category 1: dtype
     if x.dtype not in (mx.float16, mx.bfloat16):
         raise ValueError(f"conv_nax: dtype {x.dtype} not in (f16, bf16)")
@@ -261,61 +387,62 @@ def _sanity_asserts(x: mx.array, w: mx.array, stride, padding, dilation):
         raise ValueError(f"conv_nax: C_in mismatch x={x.shape[-1]} "
                          f"w={w.shape[-1]}")
 
-    # Category 4: stride/padding/dilation triple
-    for name, v in [("stride", stride), ("padding", padding),
-                    ("dilation", dilation)]:
+    # Category 4: stride/dilation triples + padding normalization
+    for name, v in [("stride", stride), ("dilation", dilation)]:
         if not (isinstance(v, (tuple, list)) and len(v) == 3):
-            raise ValueError(f"conv_nax: {name} must be a 3-tuple (T,H,W); "
-                             f"got {v}")
+            raise ValueError(f"conv_nax: {name} must be 3-tuple (T,H,W); got {v}")
         for vi in v:
-            if not isinstance(vi, int) or vi < (1 if name != "padding" else 0):
+            if not isinstance(vi, int) or vi < 1:
                 raise ValueError(f"conv_nax: {name}={v} contains invalid int")
+    pad_norm = _normalize_padding(padding)
+    (pT_l, pT_r), (pH_l, pH_r), (pW_l, pW_r) = pad_norm
+    for pname, pv in (("pT_l", pT_l), ("pT_r", pT_r), ("pH_l", pH_l),
+                      ("pH_r", pH_r), ("pW_l", pW_l), ("pW_r", pW_r)):
+        if pv < 0:
+            raise ValueError(f"conv_nax: {pname}={pv} negative")
 
     # Category 5: kernel size positive
     for i, ax in enumerate(("K_T", "K_H", "K_W")):
         if w.shape[1 + i] < 1:
             raise ValueError(f"conv_nax: {ax}={w.shape[1+i]} < 1")
 
-    # Category 6: input spatial extent must accommodate kernel
+    # Category 6: input spatial extent must accommodate kernel after pad
     B, T, H, W, C_in = x.shape
     C_out, K_T, K_H, K_W, _ = w.shape
     sT, sH, sW = stride
-    pT, pH, pW = padding
     dT, dH, dW = dilation
-    eff_T = T + 2 * pT - dT * (K_T - 1) - 1
-    eff_H = H + 2 * pH - dH * (K_H - 1) - 1
-    eff_W = W + 2 * pW - dW * (K_W - 1) - 1
+    eff_T = T + pT_l + pT_r - dT * (K_T - 1) - 1
+    eff_H = H + pH_l + pH_r - dH * (K_H - 1) - 1
+    eff_W = W + pW_l + pW_r - dW * (K_W - 1) - 1
     if eff_T < 0 or eff_H < 0 or eff_W < 0:
         raise ValueError(f"conv_nax: input too small for kernel after padding: "
                          f"eff_T={eff_T} eff_H={eff_H} eff_W={eff_W}")
 
-    # Category 7: single-chunk feasibility (Phase 1.1 only — Phase 1.3 adds
-    # multi-chunk). Compute working set:
-    #   im2col buffer = M * K * dtype_bytes
     T_out = eff_T // sT + 1
     H_out = eff_H // sH + 1
     W_out = eff_W // sW + 1
     M = B * T_out * H_out * W_out
     K = C_in * K_T * K_H * K_W
     dtype_bytes = 2  # f16 / bf16
+
+    # Category 7: total work feasibility (Phase 1.2 chunking handles
+    # per-chunk addressing; budget here is just sanity on TOTAL work).
+    # Cap at 16 GB total im2col to catch implausible shapes.
     im2col_bytes = M * K * dtype_bytes
-    # Phase 1.1 budget: 8 GB single-chunk im2col (loose; mid_resnet uses ~540MB)
-    PHASE1_1_BUDGET = 8 * 1024**3
-    if im2col_bytes > PHASE1_1_BUDGET:
+    PHASE_BUDGET = 16 * 1024**3
+    if im2col_bytes > PHASE_BUDGET:
         raise ValueError(
-            f"conv_nax: im2col buffer ~{im2col_bytes/1e9:.2f} GB exceeds "
-            f"Phase 1.1 single-chunk budget ({PHASE1_1_BUDGET/1e9:.0f} GB). "
-            f"Multi-chunk loop is Phase 1.3 scope; use mx.conv_general for "
-            f"this shape until then."
+            f"conv_nax: total im2col working set ~{im2col_bytes/1e9:.2f} GB "
+            f"exceeds Phase 1.2 budget ({PHASE_BUDGET/1e9:.0f} GB). "
+            f"Phase 1.3 will add streaming for shapes beyond this."
         )
 
-    # Category 8: alignment to tile dims
-    # M_TILE = N_TILE = 32 — fine if M, N have remainder (handled by bounds
-    # check in store loop). Just verify N (=C_out) reasonable.
+    # Category 8: alignment / plausibility
     if C_out <= 0 or C_out > 65536:
         raise ValueError(f"conv_nax: implausible C_out={C_out}")
 
-    return B, T, H, W, C_in, T_out, H_out, W_out, C_out, K_T, K_H, K_W, M, K
+    return (B, T, H, W, C_in, T_out, H_out, W_out, C_out,
+            K_T, K_H, K_W, M, K, pad_norm)
 
 
 # ---------------------------------------------------------------------
@@ -325,28 +452,34 @@ def conv3d_nax_forward(
     x: mx.array,
     w: mx.array,
     stride: Tuple[int, int, int] = (1, 1, 1),
-    padding: Tuple[int, int, int] = (0, 0, 0),
+    padding=(0, 0, 0),
     dilation: Tuple[int, int, int] = (1, 1, 1),
+    *,
+    causal_pad_t: bool = False,
 ) -> mx.array:
-    """NAX-accelerated Conv3D forward, single-chunk, channels-last.
+    """NAX-accelerated Conv3D forward (multi-chunk), channels-last.
 
     Equivalent to:
         mx.conv_general(x, w, stride=stride, padding=padding,
                         kernel_dilation=dilation)
 
-    But routes through implicit-GEMM via MPP matmul2d. Phase 1.1 scope:
-    - single-chunk only (im2col working set < 8 GB)
+    But routes through implicit-GEMM via MPP matmul2d. Phase 1.2 scope:
+    - multi-chunk along M (auto-chunked when M × K × 2 > 1.75 GB)
     - forward only (no VJP)
     - fp16 / bf16 only
     - channels-last layout
-    - symmetric padding only (asymmetric/causal pad_T = Phase 1.2)
+    - symmetric OR asymmetric (causal) padding
 
     Args:
         x: input array, shape (B, T, H, W, C_in), dtype f16 or bf16.
         w: weight array, shape (C_out, K_T, K_H, K_W, C_in), same dtype.
         stride: (sT, sH, sW), default (1,1,1).
-        padding: (pT, pH, pW) symmetric padding, default (0,0,0).
+        padding: either int, 3-tuple of int (symmetric), or 3-tuple of
+            (left, right) pairs (asymmetric). Default (0,0,0).
         dilation: (dT, dH, dW), default (1,1,1).
+        causal_pad_t: if True, override pT to (K_T-1, 0) for causal
+            temporal padding (no future-frame leakage). pH/pW from
+            `padding` are still honored.
 
     Returns:
         Output array, shape (B, T_out, H_out, W_out, C_out), same dtype.
@@ -355,48 +488,83 @@ def conv3d_nax_forward(
         ValueError: if any sanity check fails (8 categories, see source).
     """
     sT, sH, sW = stride
-    pT, pH, pW = padding
     dT, dH, dW = dilation
 
+    # Apply causal_pad_t override BEFORE sanity asserts so the padding
+    # 8-cat assert sees the final values.
+    if causal_pad_t:
+        K_T_for_causal = w.shape[1]
+        if isinstance(padding, int):
+            padding = ((K_T_for_causal - 1, 0), (padding, padding), (padding, padding))
+        elif isinstance(padding, (tuple, list)) and len(padding) == 3:
+            # Replace pT axis with the causal pair; keep pH, pW as given.
+            padding = ((K_T_for_causal - 1, 0), padding[1], padding[2])
+
     (B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-     K_T, K_H, K_W, M, K) = _sanity_asserts(x, w, stride, padding, dilation)
+     K_T, K_H, K_W, M, K, pad_norm) = _sanity_asserts(
+        x, w, stride, padding, dilation)
+    (pT_l, pT_r), (pH_l, pH_r), (pW_l, pW_r) = pad_norm
     N = C_out
 
     # Reshape weight to (C_out, K_T*K_H*K_W*C_in) row-major (no copy if
     # channels-last input is contiguous over the last 4 dims).
     w_flat = w.reshape(C_out, K_T * K_H * K_W * C_in)
 
-    key = _conv_key(B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-                    K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW, x.dtype)
-    im2col_kernel, mm_kernel = _make_kernels(
-        key, M, K, N, B, T, H, W, C_in, T_out, H_out, W_out, C_out,
-        K_T, K_H, K_W, sT, sH, sW, pT, pH, pW, dT, dH, dW)
+    # Plan M-chunks (Phase 1.2 chunking).
+    dtype_bytes = 2  # f16 / bf16
+    chunks = _compute_chunk_layout(M, K, dtype_bytes)
 
-    # Step 1: im2col -- M*K elements, 1 thread per element.
-    total_elems = M * K
-    THREADS_PER_TG_IM2COL = 256
-    grid_x = (total_elems + THREADS_PER_TG_IM2COL - 1) // THREADS_PER_TG_IM2COL
-    im2col_buf = im2col_kernel(
-        inputs=[x],
-        output_shapes=[(M, K)],
-        output_dtypes=[x.dtype],
-        grid=(grid_x * THREADS_PER_TG_IM2COL, 1, 1),
-        threadgroup=(THREADS_PER_TG_IM2COL, 1, 1),
-    )[0]
+    chunk_outputs = []
+    for (m_offset, m_chunk) in chunks:
+        key = _conv_key(B, T, H, W, C_in, T_out, H_out, W_out, C_out,
+                        K_T, K_H, K_W, sT, sH, sW,
+                        pT_l, pT_r, pH_l, pH_r, pW_l, pW_r,
+                        dT, dH, dW, x.dtype, m_offset, m_chunk)
+        im2col_kernel, mm_kernel = _make_kernels(
+            key, m_chunk, K, N, B, T, H, W, C_in, T_out, H_out, W_out, C_out,
+            K_T, K_H, K_W, sT, sH, sW,
+            pT_l, pT_r, pH_l, pH_r, pW_l, pW_r,
+            dT, dH, dW, m_offset)
 
-    # Step 2: matmul2d  (M, K) @ (N, K)^T = (M, N), grid one TG per output tile.
-    n_tg_x = (N + N_TILE - 1) // N_TILE
-    n_tg_y = (M + M_TILE - 1) // M_TILE
-    flat = mm_kernel(
-        inputs=[im2col_buf, w_flat],
-        output_shapes=[(M, N)],
-        output_dtypes=[x.dtype],
-        grid=(n_tg_x * TG_THREADS, n_tg_y, 1),
-        threadgroup=(TG_THREADS, 1, 1),
-    )[0]
+        # Step 1: im2col for this chunk -- (m_chunk × K) elements.
+        chunk_elems = m_chunk * K
+        THREADS_PER_TG_IM2COL = 256
+        grid_x = (chunk_elems + THREADS_PER_TG_IM2COL - 1) // THREADS_PER_TG_IM2COL
+        im2col_buf = im2col_kernel(
+            inputs=[x],
+            output_shapes=[(m_chunk, K)],
+            output_dtypes=[x.dtype],
+            grid=(grid_x * THREADS_PER_TG_IM2COL, 1, 1),
+            threadgroup=(THREADS_PER_TG_IM2COL, 1, 1),
+        )[0]
 
-    # Step 3: reshape (M, N) -> (B, T_out, H_out, W_out, C_out)
+        # Step 2: matmul2d (m_chunk, K) @ (N, K)^T = (m_chunk, N).
+        n_tg_x = (N + N_TILE - 1) // N_TILE
+        n_tg_y = (m_chunk + M_TILE - 1) // M_TILE
+        chunk_flat = mm_kernel(
+            inputs=[im2col_buf, w_flat],
+            output_shapes=[(m_chunk, N)],
+            output_dtypes=[x.dtype],
+            grid=(n_tg_x * TG_THREADS, n_tg_y, 1),
+            threadgroup=(TG_THREADS, 1, 1),
+        )[0]
+        chunk_outputs.append(chunk_flat)
+
+    # Concatenate chunk outputs and reshape to (B, T_out, H_out, W_out, C_out).
+    if len(chunk_outputs) == 1:
+        flat = chunk_outputs[0]
+    else:
+        flat = mx.concatenate(chunk_outputs, axis=0)
     return flat.reshape(B, T_out, H_out, W_out, C_out)
 
 
-__all__ = ["conv3d_nax_forward"]
+def get_chunk_plan(M_total: int, K: int, dtype_bytes: int = 2):
+    """Public helper: return the chunking plan for a given (M, K, dtype).
+
+    Useful for tests and Phase 1.3 working-set instrumentation. Returns
+    a list of (m_offset, m_chunk) tuples.
+    """
+    return _compute_chunk_layout(M_total, K, dtype_bytes)
+
+
+__all__ = ["conv3d_nax_forward", "get_chunk_plan"]
