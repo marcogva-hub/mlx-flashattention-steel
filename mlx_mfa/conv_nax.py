@@ -590,7 +590,7 @@ def _dispatch_1x1x1_fast_path(x_flat, w_flat, chunks, M, K_eff, N,
 # ---------------------------------------------------------------------
 # Public API.
 # ---------------------------------------------------------------------
-def conv3d_nax_forward(
+def _conv3d_nax_forward_python_legacy(
     x: mx.array,
     w: mx.array,
     stride: Tuple[int, int, int] = (1, 1, 1),
@@ -599,7 +599,11 @@ def conv3d_nax_forward(
     *,
     causal_pad_t: bool = False,
 ) -> mx.array:
-    """NAX-accelerated Conv3D forward (multi-chunk), channels-last.
+    """Phase 1.x Python orchestrator (Sprint D legacy reference path).
+
+    Preserved for Track D.1 migration validation tests + as a diagnostic
+    fallback. Production users should call `conv3d_nax_forward()` which
+    routes through the C++ `_ext.conv3d_nax_forward` binding.
 
     Equivalent to:
         mx.conv_general(x, w, stride=stride, padding=padding,
@@ -754,4 +758,129 @@ def get_chunk_plan(M_total: int, K: int, dtype_bytes: int = 2):
     return _compute_chunk_layout(M_total, K, dtype_bytes)
 
 
-__all__ = ["conv3d_nax_forward", "get_chunk_plan", "estimate_working_set"]
+def _normalize_padding_to_6tuple(padding, K_T_for_causal=None, causal_pad_t=False):
+    """Convert padding (int | 3-tuple of int | 3-tuple of pairs) to flat 6-tuple.
+
+    Returns (pT_l, pT_r, pH_l, pH_r, pW_l, pW_r). Applies causal_pad_t
+    override (pad_T = (K_T-1, 0)) when causal_pad_t=True.
+    """
+    if causal_pad_t and K_T_for_causal is None:
+        raise ValueError("causal_pad_t=True requires K_T_for_causal")
+    # First normalize to nested form ((pT_l,pT_r),(pH_l,pH_r),(pW_l,pW_r))
+    if isinstance(padding, int):
+        pn = ((padding, padding), (padding, padding), (padding, padding))
+    elif isinstance(padding, (tuple, list)) and len(padding) == 3:
+        pn = tuple(
+            (p, p) if isinstance(p, int) else (int(p[0]), int(p[1]))
+            for p in padding
+        )
+    elif isinstance(padding, (tuple, list)) and len(padding) == 6 and \
+         all(isinstance(p, int) for p in padding):
+        # Already in flat 6-tuple form -- accept directly
+        pn = ((padding[0], padding[1]), (padding[2], padding[3]),
+              (padding[4], padding[5]))
+    else:
+        raise ValueError(f"conv_nax: padding must be int, 3-tuple, "
+                         f"3-tuple-of-pairs, or 6-tuple; got {padding}")
+    if causal_pad_t:
+        pn = ((K_T_for_causal - 1, 0), pn[1], pn[2])
+    return (pn[0][0], pn[0][1], pn[1][0], pn[1][1], pn[2][0], pn[2][1])
+
+
+def conv3d_nax_forward(
+    x: mx.array,
+    w: mx.array,
+    stride: Tuple[int, int, int] = (1, 1, 1),
+    padding=(0, 0, 0),
+    dilation: Tuple[int, int, int] = (1, 1, 1),
+    chunk_M: int = 0,
+    *,
+    causal_pad_t: bool = False,
+) -> mx.array:
+    """NAX-accelerated Conv3D forward, channels-last, multi-chunk.
+
+    Sprint D thin wrapper: delegates dispatch to the C++ Primitive
+    (`_ext.conv3d_nax_forward`). Python's job is input normalization
+    (padding shape conversion + causal_pad_t flag handling) and friendly
+    error messages; the heavy lifting (chunking, im2col, matmul2d) runs
+    in C++.
+
+    Equivalent to::
+
+        mx.conv_general(x, w, stride=stride, padding=padding,
+                        kernel_dilation=dilation)
+
+    but routes through MPP matmul2d on M5+ Apple Silicon, achieving a
+    median 1.64× speedup over `mx.conv_general` on SeedVR2 VAE
+    production shapes (Sprint C Phase 1.5 ship-default verdict).
+
+    Args:
+        x: input array, shape `(B, T, H, W, C_in)`, dtype `float16` or
+            `bfloat16`. Channels-last layout (matches `mx.conv_general`).
+        w: weight array, shape `(C_out, K_T, K_H, K_W, C_in)`, same dtype.
+        stride: `(sT, sH, sW)`, default `(1, 1, 1)`. Only stride=1 is
+            currently supported across all dims.
+        padding: int, 3-tuple of int (symmetric), 3-tuple of (left, right)
+            pairs (asymmetric), or flat 6-tuple
+            `(pT_l, pT_r, pH_l, pH_r, pW_l, pW_r)`.
+        dilation: `(dT, dH, dW)`, default `(1, 1, 1)`. Only dilation=1
+            is currently supported.
+        chunk_M: 0 = auto from int32-byte-offset heuristic (recommended).
+            Override only for benchmarking; the auto value respects the
+            MPP matmul2d int32 internal addressing invariant.
+        causal_pad_t: if True, override `pT` to `(K_T-1, 0)` for causal
+            temporal padding (no future-frame leakage in video conv).
+            `pH`, `pW` from `padding` are still honored.
+
+    Returns:
+        Output array, shape `(B, T_out, H_out, W_out, C_out)`, same dtype.
+
+    Raises:
+        ValueError: padding format invalid.
+        RuntimeError: shape/dtype constraints violated (C++ side); see
+            `_ext.conv3d_nax_forward` for the canonical list.
+
+    Example:
+        >>> import mlx.core as mx
+        >>> from mlx_mfa.conv_nax import conv3d_nax_forward
+        >>> x = mx.random.normal((1, 5, 64, 64, 512)).astype(mx.float16)
+        >>> w = mx.random.normal((512, 3, 3, 3, 512)).astype(mx.float16)
+        >>> y = conv3d_nax_forward(x, w, padding=(1, 1, 1))
+        >>> y.shape
+        (1, 5, 64, 64, 512)
+
+    Diagnostic env vars:
+        MFA_CONV_NAX_USE_PYTHON_LEGACY=1 — route through the Phase 1.x
+            Python orchestrator instead of the C++ Primitive. Useful for
+            bisecting any regression. Not for production use.
+    """
+    # Python-side validation: normalize padding to 6-tuple, apply causal flag.
+    K_T = int(w.shape[1])
+    flat_pad = _normalize_padding_to_6tuple(
+        padding, K_T_for_causal=K_T, causal_pad_t=causal_pad_t)
+
+    # Diagnostic escape hatch: route through Phase 1.x Python orchestrator.
+    if os.environ.get("MFA_CONV_NAX_USE_PYTHON_LEGACY", "") == "1":
+        # The legacy orchestrator accepts the same padding form, plus
+        # causal_pad_t kwarg.
+        return _conv3d_nax_forward_python_legacy(
+            x, w, stride=tuple(stride), padding=padding,
+            dilation=tuple(dilation), causal_pad_t=causal_pad_t)
+
+    # Production path: C++ binding.
+    from mlx_mfa import _ext
+    return _ext.conv3d_nax_forward(
+        x, w,
+        stride=tuple(stride),
+        padding=flat_pad,
+        dilation=tuple(dilation),
+        chunk_M=int(chunk_M),
+    )
+
+
+__all__ = [
+    "conv3d_nax_forward",
+    "get_chunk_plan",
+    "estimate_working_set",
+    "_conv3d_nax_forward_python_legacy",
+]
