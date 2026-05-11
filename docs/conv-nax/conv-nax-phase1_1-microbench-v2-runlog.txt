@@ -1,0 +1,45 @@
+=== microbench v2 -- 3 sessions §4-compliant ===
+Start: 2026-05-11T13:49:28Z
+Branch: experiment/conv-nax-phase1_1
+HEAD: 318c978
+
+--- session 1 of 3 starting at 2026-05-11T13:49:28Z ---
+--- round cooldown 90s starting at 2026-05-11T14:01:56Z ---
+--- session 2 of 3 starting at 2026-05-11T14:03:26Z ---
+[harness v2] session=v2_S2
+[harness v2] tile=(32x32x32) exec_sg=1 tg_threads=32
+[harness v2] smoke gate (M=128, K=64, N=64)...
+[harness v2] smoke: rmse=0.000000 max=0.000000 out_mag=0.7808 inf=0 nan=0 -> PASS
+[harness v2] initial cooldown 180.0s
+  mid_resnet                   M=   20480 K= 13824 N= 512  median=     6.76ms  TF=42.87  (112.8% peak)
+  up1_resnet                   M=  147456 K= 13824 N= 512  median=    90.83ms  TF=22.98  ( 60.5% peak)
+  up2_resnet0_chunk_cap        M=  297000 K= 13824 N= 256  median=    58.76ms  TF=35.77  ( 94.1% peak)
+  up3_resnet_chunk_cap         M=  594000 K=  3456 N= 128  median=    12.92ms  TF=40.66  (107.0% peak)
+  up2_resnet_full              M= 1114112 K=  6912 N= 256  median=    78.40ms  TF=50.29  (132.3% peak)
+  up2_resnet0_peakflops        M= 1114112 K= 13824 N= 256  median=  1963.37ms  TF= 4.02  ( 10.6% peak)
+  probe_floor                  M=    4096 K= 13824 N= 512  median=     2.78ms  TF=20.87  ( 54.9% peak)
+  probe_ramp                   M=    8192 K= 13824 N= 512  median=     2.79ms  TF=41.53  (109.3% peak)
+  up3_resnet0_full             SKIP  (working set ~62.7 GB > 34 GB)
+
+[harness v2] session 'v2_S2' -> docs/conv-nax/conv-nax-phase1_1-matmul2d-microbench-v2.json
+--- round cooldown 90s starting at 2026-05-11T14:15:59Z ---
+--- session 3 of 3 starting at 2026-05-11T14:17:29Z ---
+[harness v2] session=v2_S3
+[harness v2] tile=(32x32x32) exec_sg=1 tg_threads=32
+[harness v2] smoke gate (M=128, K=64, N=64)...
+[harness v2] smoke: rmse=0.000000 max=0.000000 out_mag=0.7808 inf=0 nan=0 -> PASS
+[harness v2] initial cooldown 180.0s
+  mid_resnet                   M=   20480 K= 13824 N= 512  median=     6.23ms  TF=46.51  (122.4% peak)
+  up1_resnet                   M=  147456 K= 13824 N= 512  median=    76.21ms  TF=27.39  ( 72.1% peak)
+  up2_resnet0_chunk_cap        M=  297000 K= 13824 N= 256  median=    48.87ms  TF=43.01  (113.2% peak)
+  up3_resnet_chunk_cap         M=  594000 K=  3456 N= 128  median=    12.71ms  TF=41.35  (108.8% peak)
+  up2_resnet_full              M= 1114112 K=  6912 N= 256  median=    78.27ms  TF=50.38  (132.6% peak)
+  up2_resnet0_peakflops        M= 1114112 K= 13824 N= 256  median=  2103.99ms  TF= 3.75  (  9.9% peak)
+  probe_floor                  M=    4096 K= 13824 N= 512  median=     2.72ms  TF=21.33  ( 56.1% peak)
+  probe_ramp                   M=    8192 K= 13824 N= 512  median=     2.73ms  TF=42.54  (112.0% peak)
+  up3_resnet0_full             SKIP  (working set ~62.7 GB > 34 GB)
+
+[harness v2] session 'v2_S3' -> docs/conv-nax/conv-nax-phase1_1-matmul2d-microbench-v2.json
+
+End: 2026-05-11T14:30:00Z
+Data: docs/conv-nax/conv-nax-phase1_1-matmul2d-microbench-v2.json
