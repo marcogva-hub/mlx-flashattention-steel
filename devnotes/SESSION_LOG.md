@@ -2125,3 +2125,117 @@ Major architectural finding while writing docs: `mlx_mfa.flash_attention()` (the
 - v2.31.0 PyPI page addendum / multi-session re-validation (Marco's earlier decision to defer indefinitely)
 - SESSION_LOG.md ~2200 lines — Rule 1c rotation overdue.
 
+
+---
+## [2026-05-11 13:10] [CLAUDE] Sprint C Phase 0 — Conv2D/3D NAX survey + baseline bench
+STATUS: COMPLETE
+
+### Branch
+`experiment/conv-nax-phase0-survey` (off `feat/conv-nax` off `feat/v6-nax`)
+2 commits: audit+harness (65a5d34), bench data+verdict (this commit).
+
+### Plan
+- Objective: Phase 0 survey + Steel-legacy conv baseline characterization
+  for Sprint C (Conv2D/3D NAX). Read+measure pass; no kernel work.
+- Deliverable: `docs/conv-nax/survey-report.md` with 12 sections informing
+  Phase 1.0 design.
+
+### Findings
+1. **MLX 0.31.2 conv stack: zero NAX usage.** All 5 backends (depthwise,
+   implicit_gemm 2D, implicit_gemm 2D general, winograd 2D, implicit_gemm
+   3D, explicit_gemm ND) include `steel/gemm/mma.h` which uses legacy
+   `metal::simdgroup_matrix<T, 8, 8>` MMA (A14+ hardware). Zero
+   `is_nax_available()`, zero `FamilyApple9/10` check, zero
+   `mpp::tensor_ops::*` usage. Compare `steel_attention_nax.h:3` which
+   DOES include `nax.h`.
+
+2. **mlx-mfa zero-conv confirmed.** Greenfield.
+
+3. **Apple MPP exposes `mpp::tensor_ops::convolution2d`** at
+   `/System/Library/Frameworks/MetalPerformancePrimitives.framework/`
+   `Headers/MPPTensorOpsConvolution2d.h`. NHWC activation, HWIO weights,
+   groups=1, multiply/accumulate modes, cooperative_tensor destination.
+   **No `convolution3d` primitive** — Conv3D must route via either
+   per-temporal-slice Conv2D loops, implicit-GEMM via matmul2d, or
+   hand-rolled NAXFrag.
+
+4. **Target workload: 99.17% Conv3D-bound.** SeedVR2 VAE decoder
+   profiling (`~/code/SeedVR2_VAE_Flash-VAED/results/phase0/`):
+   Conv3d_3x3x3 = 91.94% FLOPs, Conv3d_1x1x1 = 7.23%, attention = 0.76%.
+   Sprint C is the ≥130× larger ROI sprint than Sprint A's V34 backward
+   target.
+
+5. **Baseline bench (3 sessions, §4-compliant)**: max cross-session
+   variance 4.5% (vs Sprint A V34's 30-87% at same protocol). MLX
+   achieves 37-40% of theoretical NAX peak, consistent 2.52-2.67×
+   ratio over theoretical min across all 6 shapes.
+
+| Shape | Median ms | Theory ms | Ratio | Range% |
+|---|---:|---:|---:|---:|
+| up2_resnet_256to256 | 264.9 | 103.8 | 2.55× | 0.1 |
+| up3_resnet_128to128 | 261.2 | 103.8 | 2.52× | 0.5 |
+| up3_resnet0_256to128 | 529.9 | 207.5 | 2.55× | 3.5 |
+| up1_resnet_512to512 | 141.8 | 54.9 | 2.58× | 3.9 |
+| mid_resnet_512to512 | 20.4 | 7.6 | 2.68× | 4.5 |
+| up2_resnet0_512to256 | 533.6 | 207.5 | 2.57× | 3.9 |
+
+6. **Per-decoder ROI**: baseline 2643 ms vs theoretical 1033 ms.
+   Headroom 1610 ms (60.9% reduction at peak), realistic 1127 ms
+   savings (42.6% reduction) at 70% NAX utilization Phase 1 target.
+
+7. **Recommended approach (Option F, §10 of survey)**: hybrid wrap
+   `mpp::tensor_ops::convolution2d` for Conv2D + implicit-GEMM-via-
+   `mpp::tensor_ops::matmul2d` for Conv3D. Structurally analogous to
+   V6 NAX's wrap of matmul2d.
+
+### Verdict — Phase 0 PROCEED to Phase 1.0 design
+The Conv NAX opportunity is large, measurable, and the technical path
+is clear:
+- Conv2D: wrap MPP `convolution2d` (Phase 1.1)
+- Conv3D: implicit-GEMM via matmul2d (Phase 1.3)
+- Sub-phase breakdown in survey §11
+
+### Open data gaps (§9 of survey)
+- Apple's NAX peak for `convolution2d` specifically (vs `matmul2d`)
+  not characterized. Phase 1.0 includes a microbench analogous to
+  Sprint 3's MPP-vs-simdgroup.
+- Conv3D im2col memory pressure on largest shapes: up3_resnet0
+  expansion to 61.6 GB if naively materialized. Phase 1 must tile.
+
+### Dependency & regression check
+- Zero production code touched (verified: `git diff feat/v6-nax --stat`
+  shows only `bench/conv_nax_baseline.py`, `docs/conv-nax/*.md`,
+  `docs/conv-nax/*.json` — all additive, none touching production
+  kernel/Primitive/Python wrapper code).
+- 978 tests collect on this branch; Sprint A's test_v6_nax.py (which
+  lives on the experiment/v6-nax-backward-phase* branches) is not on
+  this branch by design — Sprint C does not touch Sprint A's territory.
+- Import smoke (mlx_mfa version, flash_attention, mx.conv_general)
+  all OK.
+
+### Tech cost
+- 3 new docs/conv-nax/ artifacts (~600 lines markdown + 800 lines JSON)
+- 1 new bench harness (181 LOC, §4-compliant)
+- Zero new C++ / Python production code
+- Wall-clock for the 3-session baseline bench: 33.6 min
+
+### Validation
+- Ran: `nohup /tmp/run_conv_baseline.sh > /tmp/conv_baseline_master.log
+  2>&1 &` (master PID 76100)
+- All 3 sessions completed at §4-compliant cooldowns with
+  `deviation_from_§4: False`
+- Cross-session variance 0.1-4.5% on all 6 shapes — exceptional
+  stability vs Sprint A V34 backward
+
+### Git
+- 65a5d34 docs(conv-nax): Sprint C Phase 0 — survey audit + baseline
+  harness (pre-bench)
+- (next) bench(conv-nax): 3-session baseline data + survey ROI/§8
+  filled + Phase 0 closing entry
+
+### Next concrete step Marco takes
+Review Phase 0 survey at `docs/conv-nax/survey-report.md`. Marco reads
+§1 (executive summary) first. Then kick off Phase 1.0 design prompt
+(separate prompt; takes the survey as input and produces detailed
+algorithmic design doc).
+

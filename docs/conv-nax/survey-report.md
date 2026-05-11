@@ -17,6 +17,8 @@ Sprint C targets MLX 0.31.2's conv stack, which **does not use NAX on M5+**. Eve
 
 The theoretical NAX bound on the 6 representative VAE Conv3D shapes ranges from 7.6 ms (mid_block 512→512) to 207.5 ms (up3 resnet 256→128 at 1×17×512×512). All shapes are heavily compute-bound (AI 1700–6600 FLOPs/byte vs M5 Max ridge ≈95) — no shape sits in the bandwidth-bound regime, so the bottleneck is NAX utilization, not memory traffic.
 
+**Baseline bench (3 sessions, §4-compliant 90/60/180s cooldowns, completed 13:04 of 2026-05-11)** quantifies the opportunity: MLX achieves a **strikingly consistent 38-40% of theoretical NAX peak** across every shape (ratio 2.52-2.67× over theoretical min). Cross-session variance is 0.1-4.5% — exceptional stability vs Sprint A's V34 backward (which had 30-87% range at the same protocol). Per decoder forward, the 6 conv kernels consume **2643 ms baseline** vs **1033 ms theoretical minimum** = headroom of **1610 ms (60.9% potential reduction)** at theoretical peak, **1127 ms (42.6% reduction)** at a realistic 70%-of-peak Sprint C target. Sprint C's ROI is **decisively positive**.
+
 ## 2. MLX 0.31.2 state on conv NAX
 
 Reading the MLX 0.31.2 source at `~/code/mlx-source/`:
@@ -203,11 +205,78 @@ Total GFLOPs (one decoder forward, summed across the 6 shapes × call frequency 
 
 ## 7. ROI ranking
 
-[PENDING — fills in after baseline bench completes at ~13:05]
+Call counts per VAE decoder forward (from the architecture in `~/code/Vivid-VR/mlx_vividvr/vae_cogvideox.py:587-741` and the SeedVR2 decoder3D structure):
+
+| up-block | resnet calls × shape |
+|---|---|
+| mid_block | 2 × mid_resnet shape (512→512, T=5, HW=64) |
+| up_block_0 | 3 × mid_resnet shape (same as mid_block resnets) |
+| up_block_1 | 3 × up1_resnet shape (512→512, T=9, HW=128) |
+| up_block_2 | 1 × up2_resnet0 (512→256) + 2 × up2_resnet (256→256), all T=17 HW=256 |
+| up_block_3 | 1 × up3_resnet0 (256→128) + 2 × up3_resnet (128→128), all T=17 HW=512 |
+
+Combined call counts per decoder forward:
+- mid_resnet shape: **5 calls** (2 mid + 3 up_block_0)
+- up1_resnet shape: **3 calls**
+- up2_resnet0 shape: **1 call**
+- up2_resnet shape: **2 calls**
+- up3_resnet0 shape: **1 call**
+- up3_resnet shape: **2 calls**
+
+ROI per shape = call_count × (baseline_time − theoretical_min):
+
+| Rank | Shape | Baseline | Theory | Headroom × calls | Total savings |
+|---:|---|---:|---:|---:|---:|
+| 1 | up2_resnet0_512to256_T17_HW256_k3 | 533.6 ms | 207.5 ms | 1 × 326.1 ms | **326.1 ms** |
+| 2 | up3_resnet0_256to128_T17_HW512_k3 | 529.9 ms | 207.5 ms | 1 × 322.4 ms | **322.4 ms** |
+| 3 | up2_resnet_256to256_T17_HW256_k3 | 264.9 ms | 103.8 ms | 2 × 161.1 ms | **322.3 ms** |
+| 4 | up3_resnet_128to128_T17_HW512_k3 | 261.2 ms | 103.8 ms | 2 × 157.4 ms | **314.9 ms** |
+| 5 | up1_resnet_512to512_T9_HW128_k3 | 141.8 ms | 54.9 ms | 3 × 86.9 ms | **260.7 ms** |
+| 6 | mid_resnet_512to512_T5_HW64_k3 | 20.4 ms | 7.6 ms | 5 × 12.8 ms | **63.9 ms** |
+
+**Top-3 ROI cluster: large-spatial Conv3D 3×3×3 on T=17 (the up_blocks 2/3 family).** All four shapes in ranks 1-4 share these properties:
+- T=17 (peak temporal extent after upsampling)
+- HW ≥ 256 (large spatial)
+- Channels 128-512 (mid-to-high)
+
+Phase 1 implementation should target this cluster first — each shape contributes 314-326 ms per call, the largest absolute wins.
+
+**Cluster characterization for Phase 1.0 design**:
+- M (= N·T·H·W) ranges 1.1M–4.5M for the top-4 cluster — large enough that NAX matmul should easily fill the GPU (vs Sprint 3's tiny-matmul TFLOPS-floor case where compute couldn't saturate)
+- K (= 27·C_in) is small: 3456-6912. The Conv3D 3×3×3 inner dim is well-suited to a single matmul2d call (sufficient depth for FMA pipelining, not so deep that it'd push tile choices toward latency-hiding patterns)
+- N_out (= C_out) is modest: 128-512 — within the natural matmul2d output tile range
+
+The top-3 cluster is at the **NAX sweet spot** for matmul throughput. Sprint C's headroom claim (1.5-2.5× wall-clock realistic) is well-grounded on these shapes specifically.
 
 ## 8. Bench data summary
 
-[PENDING — fills in after baseline bench completes. Source: `docs/conv-nax/conv-nax-phase0-baseline-data.json`, 3 sessions × 6 shapes × 5 runs each, §4-compliant cooldowns.]
+3 sessions × 6 shapes × 5 runs each. §4-compliant cooldowns (90s round / 60s shape / 180s initial). Cross-session variance check (§4.2 threshold = 10%) passes on all shapes.
+
+| Shape | S1 (ms) | S2 (ms) | S3 (ms) | Median | Range% | Theory (ms) | Ratio | §4.2 |
+|---|---:|---:|---:|---:|---:|---:|---:|:---:|
+| up2_resnet_256to256_T17_HW256_k3 | 265.2 | 264.9 | 264.9 | **264.9** | 0.1% | 103.8 | 2.55× | ✓ |
+| up3_resnet_128to128_T17_HW512_k3 | 262.5 | 261.2 | 261.1 | **261.2** | 0.5% | 103.8 | 2.52× | ✓ |
+| up3_resnet0_256to128_T17_HW512_k3 | 511.6 | 530.0 | 529.9 | **529.9** | 3.5% | 207.5 | 2.55× | ✓ |
+| up1_resnet_512to512_T9_HW128_k3 | 136.5 | 141.8 | 141.8 | **141.8** | 3.9% | 54.9 | 2.58× | ✓ |
+| mid_resnet_512to512_T5_HW64_k3 | 19.8 | 20.7 | 20.4 | **20.4** | 4.5% | 7.6 | 2.68× | ✓ |
+| up2_resnet0_512to256_T17_HW256_k3 | 513.8 | 533.8 | 533.6 | **533.6** | 3.9% | 207.5 | 2.57× | ✓ |
+
+**Headline: MLX 0.31.2 conv on M5 Max achieves 37-40% of theoretical NAX peak, with ~2.55× consistent ratio over theoretical min.** All shapes pass §4.2 cross-session variance gate.
+
+Per-decoder-forward totals (6 kernels × call counts):
+- Baseline: **2643 ms** (sum of per-shape median × call count)
+- Theoretical NAX peak: **1033 ms**
+- Headroom: **1610 ms (60.9% reduction at peak)**
+- Realistic Sprint C target (70% of peak NAX utilization): **1127 ms savings (42.6% reduction)**
+
+Bench session timeline:
+- S1: 12:30:43 → 12:39:54 (started initial-cooldown, finished all 6 shapes)
+- S2: 12:42:54 → 12:52:06
+- S3: 12:55:06 → 13:04:17
+- Total wall: 33.6 min, exactly within prediction.
+
+Raw data: `docs/conv-nax/conv-nax-phase0-baseline-data.json` (3 session records).
+Consolidated analysis: `docs/conv-nax/baseline-summary.json`.
 
 ## 9. Open questions / data gaps
 
