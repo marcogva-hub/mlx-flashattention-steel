@@ -1,0 +1,154 @@
+{
+  "phase": "1.5",
+  "branch": "experiment/conv-nax-phase1_5",
+  "date_utc": "2026-05-11",
+  "run_window": {
+    "start_utc": "2026-05-11T15:03:12.673177+00:00",
+    "end_utc": "2026-05-11T15:24:41.618625+00:00",
+    "sessions": 3
+  },
+  "verdict": "SHIP_DEFAULT",
+  "verdict_reason": "median dominant ratio 1.64\u00d7 \u2265 1.2\u00d7 threshold",
+  "median_dominant_ratio": 1.6418,
+  "min_dominant_ratio": 1.0214,
+  "max_dominant_ratio": 2.2582,
+  "per_shape": {
+    "mid_resnet": {
+      "ratios_per_session": [
+        2.2685,
+        2.2582,
+        2.2198
+      ],
+      "ratio_median": 2.2582,
+      "range_pct": 2.15,
+      "nax_median_ms": 8.729,
+      "mlx_median_ms": 19.712,
+      "nax_TFLOPS": 33.212,
+      "mlx_TFLOPS": 14.708,
+      "aba_drift_max_pct": 2.347,
+      "variance_flag": "confident (<10%)"
+    },
+    "up1_resnet": {
+      "ratios_per_session": [
+        2.0139,
+        2.0006,
+        1.9133
+      ],
+      "ratio_median": 2.0006,
+      "range_pct": 5.03,
+      "nax_median_ms": 68.176,
+      "mlx_median_ms": 136.394,
+      "nax_TFLOPS": 30.617,
+      "mlx_TFLOPS": 15.304,
+      "aba_drift_max_pct": 3.983,
+      "variance_flag": "confident (<10%)"
+    },
+    "up2_resnet0_chunk_cap": {
+      "ratios_per_session": [
+        1.6425,
+        1.6361,
+        1.5934
+      ],
+      "ratio_median": 1.6361,
+      "range_pct": 3.0,
+      "nax_median_ms": 84.011,
+      "mlx_median_ms": 137.454,
+      "nax_TFLOPS": 25.022,
+      "mlx_TFLOPS": 15.293,
+      "aba_drift_max_pct": 2.243,
+      "variance_flag": "confident (<10%)"
+    },
+    "up3_resnet_chunk_cap": {
+      "ratios_per_session": [
+        1.0214,
+        1.019,
+        1.0233
+      ],
+      "ratio_median": 1.0214,
+      "range_pct": 0.43,
+      "nax_median_ms": 33.414,
+      "mlx_median_ms": 34.07,
+      "nax_TFLOPS": 15.699,
+      "mlx_TFLOPS": 15.396,
+      "aba_drift_max_pct": 1.221,
+      "variance_flag": "confident (<10%)"
+    },
+    "up2_resnet_full": {
+      "ratios_per_session": [
+        1.6475,
+        1.6556,
+        1.6015
+      ],
+      "ratio_median": 1.6475,
+      "range_pct": 3.28,
+      "nax_median_ms": 155.242,
+      "mlx_median_ms": 255.822,
+      "nax_TFLOPS": 25.398,
+      "mlx_TFLOPS": 15.412,
+      "aba_drift_max_pct": 1.352,
+      "variance_flag": "confident (<10%)"
+    },
+    "up2_resnet0_peakflops": {
+      "ratios_per_session": [
+        1.6404,
+        1.5433,
+        1.5338
+      ],
+      "ratio_median": 1.5433,
+      "range_pct": 6.91,
+      "nax_median_ms": 341.858,
+      "mlx_median_ms": 527.58,
+      "nax_TFLOPS": 23.067,
+      "mlx_TFLOPS": 14.947,
+      "aba_drift_max_pct": 3.891,
+      "variance_flag": "confident (<10%)"
+    }
+  },
+  "preflight_correctness": {
+    "shapes_tested": 6,
+    "shapes_passed": 6,
+    "max_rel_err": 0.000237,
+    "bar": 0.001,
+    "oracle": "mx.conv_general on (x, w).astype(f32)"
+  },
+  "per_session_smoke_gate": {
+    "shape": "M=3072 K=1728",
+    "bar_rel_err": 0.001,
+    "results": [
+      {
+        "session": "p15_S1",
+        "rel_err": 1.477552212170989e-05,
+        "passed": true
+      },
+      {
+        "session": "p15_S2",
+        "rel_err": 1.477552212170989e-05,
+        "passed": true
+      },
+      {
+        "session": "p15_S3",
+        "rel_err": 1.477552212170989e-05,
+        "passed": true
+      }
+    ]
+  },
+  "methodology": {
+    "pattern": "A/B/A (NAX \u2192 MLX \u2192 NAX), 5 runs per direction",
+    "cooldowns_s": {
+      "shape": 60,
+      "round": 90,
+      "initial": 180
+    },
+    "sessions": 3,
+    "subprocess_isolation": true,
+    "conditions_sidecar": true,
+    "aba_drift_bar_pct": 10,
+    "cross_session_variance_bar_pct": 10
+  },
+  "decision_tree": {
+    "ship_default_threshold": 1.2,
+    "opt_in_lower": 0.9,
+    "shelve_below": 0.9,
+    "high_variance_count_for_shelve": 3
+  }
+}

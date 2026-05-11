@@ -2662,3 +2662,68 @@ instruction this may be deferred if no remaining budget; I'll attempt
 it as the next phase. Plan: 6 shapes × A/B/A × 3 sessions × §4 cooldowns
 + ship-shelve-decision.md per Sprint A precedent.
 
+
+---
+## [2026-05-11 17:20] [CLAUDE] Phase 1.5 close + Sprint C Phase 1.x SHIP-DEFAULT
+STATUS: COMPLETE
+
+### Plan
+- Objective: Phase 1.5 perf sweep + ship/shelve decision per Marco's
+  directive (enchaîner 1.2→1.5 without deferral).
+- Files to add: bench/conv_nax_phase1_5_harness.py, conv_nax_phase1_5_analysis.py,
+  docs/conv-nax/conv-nax-phase1_5-*, docs/conv-nax/ship-shelve-decision.md.
+
+### Changes
+- bench/conv_nax_phase1_5_harness.py (222 LOC) — A/B/A perf harness with §4
+  cooldowns + per-session smoke gate (Phase 1.1 lesson) [HIGH][VERIFIED]
+- bench/conv_nax_phase1_5_analysis.py (157 LOC) — cross-session analysis +
+  decision tree application [HIGH][VERIFIED]
+- docs/conv-nax/conv-nax-phase1_5-{inventory,decisions,results,data.json}
+  — 5 deliverables [HIGH][VERIFIED]
+- docs/conv-nax/ship-shelve-decision.md (254 LOC, 10 sections) — the
+  actionable Sprint C conclusion [HIGH][VERIFIED]
+
+### Dependency & regression check
+- 20 conv_nax tests still PASS (no production-code changes).
+- 6 pre-existing failures unchanged.
+- Sprint A V6 NAX untouched.
+
+### Validation
+- Pre-flight correctness gate: 6/6 shapes PASS (max rel_err 2.37e-4 vs FP32)
+- Per-session smoke gate: 3/3 PASS (rel_err 1.5e-5)
+- A/B/A drift: 0.1-2.2% (bar 10%)
+- Cross-session variance: 0.4-6.9% (bar 10%)
+- Ran: bench/conv_nax_phase1_5_harness.py × 3 sessions, §4 cooldowns
+- Ran: bench/conv_nax_phase1_5_analysis.py → verdict SHIP_DEFAULT
+
+### Per-shape median ratios (3 sessions)
+- mid_resnet:             2.26× (NAX 33.2 TF vs MLX 14.7 TF)
+- up1_resnet:             2.00× (NAX 30.5 TF vs MLX 15.3 TF)
+- up2_resnet0_chunk_cap:  1.64× (NAX 25.0 TF vs MLX 15.3 TF)
+- up3_resnet_chunk_cap:   1.02× parity (NAX 15.7 TF vs MLX 15.4 TF, K=3456)
+- up2_resnet_full:        1.65× (NAX 25.4 TF vs MLX 15.4 TF)
+- up2_resnet0_peakflops:  1.54× (NAX 24.0 TF vs MLX 15.2 TF)
+
+Median dominant: 1.64×. Min 1.02× (above 0.9× shelve floor).
+**VERDICT: SHIP-DEFAULT.**
+
+### Git
+- 6fad957 bench(conv-nax): Phase 1.5 perf-sweep harness
+- (next) docs+bench(conv-nax): Phase 1.5 close + ship-shelve-decision
+
+### Key D-decisions in this phase
+- D30: A/B/A bench pattern per Sprint A precedent (drift 0.1-2.2% observed)
+- D31: Per-session correctness smoke gate (Phase 1.1 lesson applied)
+- D32: Decision tree interprets "≥ 1.2× across dominant" as median, not min;
+       caveat documents K=3456 parity case
+
+### Sprint C Phase 1.x — COMPLETE
+Phases 1.0 (design) → 1.1 (microbench + mid_resnet) → 1.2 (chunking +
+asym pad + K_T=1) → 1.3 (working-set instr) → 1.4 (1×1×1 fast path) →
+1.5 (perf + ship-shelve). 20 conv_nax tests PASS. Ship-default
+verdict ratified.
+
+### Recommended next sprint
+Sprint D — C++ MFAConv3DForward Primitive migration per D15 + D32
+ratification. See ship-shelve-decision.md §8-9.
+
