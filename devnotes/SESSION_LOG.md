@@ -2614,3 +2614,51 @@ Phase 1.4: 1×1×1 fast path. Per D26, just reshape input (B,T,H,W,C_in)
 → (B*T*H*W, C_in) via metadata-only mx.reshape, dispatch matmul directly.
 Add fast-path detection + 4 tests.
 
+
+---
+## [2026-05-11 16:25] [CLAUDE] Phase 1.4 close: 1×1×1 fast path
+STATUS: COMPLETE
+
+### Plan
+- Objective: 1×1×1 fast path -- skip im2col when K_T=K_H=K_W=1 with no
+  padding/stride extras, per design D26.
+- Files to modify: mlx_mfa/conv_nax.py, tests/test_conv_nax.py.
+
+### Changes
+- mlx_mfa/conv_nax.py: is_pointwise detection + _dispatch_1x1x1_fast_path
+  + _make_pointwise_matmul_kernel + MFA_CONV_NAX_NO_FAST_PATH env var
+  [HIGH][VERIFIED]
+- tests/test_conv_nax.py: 5 new Phase 1.4 tests (20 total) [HIGH][VERIFIED]
+- docs/conv-nax/conv-nax-phase1_4-* deliverables [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Phase 1.1+1.2+1.3 tests: 15/15 PASS unchanged
+- Pre-existing 6 failures unchanged
+- Sprint A untouched
+
+### Tech cost
+- +88 LOC in mlx_mfa/conv_nax.py
+- +165 LOC in tests/test_conv_nax.py
+- Reuses _matmul2d_source() kernel with separate cache key
+- No new Metal kernels authored
+
+### Validation
+- Ran: pytest tests/test_conv_nax.py -v → 20/20 PASS
+- Validated: fast path 0.672 ms median vs general 0.791 ms (15% speedup)
+- Validated: fast vs general bit-exact (rmse=0) at this shape
+
+### Git
+- 6d8e6a6 feat+test(conv-nax): Phase 1.4 -- 1×1×1 fast path
+- (next, this commit) docs(conv-nax): Phase 1.4 deliverables + SESSION_LOG
+
+### Key D-decisions in this phase
+- D27: Strict 1×1×1 detection (K=1,1,1 AND zero pad AND unit stride)
+- D28: Reshape-only no-copy reliance on channels-last layout invariant
+- D29: MFA_CONV_NAX_NO_FAST_PATH=1 env-var escape hatch (vs API kwarg)
+
+### Next concrete step
+Phase 1.5 (final): perf sweep + ship/shelve decision. Per Marco's
+instruction this may be deferred if no remaining budget; I'll attempt
+it as the next phase. Plan: 6 shapes × A/B/A × 3 sessions × §4 cooldowns
++ ship-shelve-decision.md per Sprint A precedent.
+
