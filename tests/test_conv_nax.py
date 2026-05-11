@@ -216,3 +216,183 @@ if __name__ == "__main__":
     print("test 3 PASS: vs mx.conv_general (rel < 1e-4)")
     test_mid_resnet_sentinel_coverage()
     print("test 4 PASS: sentinel coverage")
+
+
+# =====================================================================
+# Phase 1.2 — up1_resnet + causal pad_T + K_T=1 routing
+# =====================================================================
+
+UP1_RESNET = dict(B=1, T=9, H=128, W=128, C_in=512, C_out=512,
+                  K_T=3, K_H=3, K_W=3,
+                  stride=(1, 1, 1), padding=(1, 1, 1), dilation=(1, 1, 1))
+
+
+def test_up1_resnet_finite_shape_dtype():
+    """Phase 1.2: up1_resnet shape (M=147456) requires chunking."""
+    cfg = UP1_RESNET
+    x, w = _make_inputs(cfg)
+    y = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                           padding=cfg["padding"], dilation=cfg["dilation"])
+    mx.async_eval(y); mx.synchronize()
+    assert y.shape == (cfg["B"], cfg["T"], cfg["H"], cfg["W"], cfg["C_out"])
+    assert y.dtype == mx.float16
+    y_f32 = y.astype(mx.float32)
+    assert int(mx.sum(mx.isnan(y_f32))) == 0, "NaN in up1_resnet output (chunking failed?)"
+    assert int(mx.sum(mx.isinf(y_f32))) == 0
+
+
+@pytest.mark.skipif(not HAS_TORCH, reason="torch not available")
+def test_up1_resnet_vs_torch_cpu_fp32():
+    """Phase 1.2: up1_resnet vs PyTorch CPU FP32 oracle (hard gate)."""
+    cfg = UP1_RESNET
+    x, w = _make_inputs(cfg)
+    y = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                           padding=cfg["padding"], dilation=cfg["dilation"])
+    mx.async_eval(y); mx.synchronize()
+    x_np = np.array(x.astype(mx.float32))
+    w_np = np.array(w.astype(mx.float32))
+    x_pt = torch.from_numpy(x_np).permute(0, 4, 1, 2, 3).contiguous()
+    w_pt = torch.from_numpy(w_np).permute(0, 4, 1, 2, 3).contiguous()
+    y_pt = torch.nn.functional.conv3d(
+        x_pt, w_pt,
+        stride=list(cfg["stride"]),
+        padding=list(cfg["padding"]),
+        dilation=list(cfg["dilation"]),
+    )
+    y_ref = y_pt.permute(0, 2, 3, 4, 1).contiguous().numpy()
+    y_nax = np.array(y.astype(mx.float32))
+    err = np.abs(y_nax - y_ref)
+    rmse = float(np.sqrt(np.mean(err * err)))
+    mag = float(np.abs(y_ref).max())
+    rel = rmse / mag
+    assert rel < 1e-3, f"up1 vs torch CPU FP32: rel={rel:.4e}"
+
+
+def test_up1_resnet_vs_mlx_conv_general():
+    """Phase 1.2: up1_resnet vs MLX baseline (tight bar)."""
+    cfg = UP1_RESNET
+    x, w = _make_inputs(cfg)
+    y_nax = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                               padding=cfg["padding"], dilation=cfg["dilation"])
+    y_mlx = mx.conv_general(x, w, stride=list(cfg["stride"]),
+                            padding=list(cfg["padding"]),
+                            kernel_dilation=list(cfg["dilation"]))
+    mx.async_eval(y_nax, y_mlx); mx.synchronize()
+    err = mx.abs(y_nax.astype(mx.float32) - y_mlx.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    mag = float(mx.max(mx.abs(y_mlx.astype(mx.float32))))
+    rel = rmse / mag
+    assert rel < 1e-4, f"up1 vs mx.conv_general: rel={rel:.4e}"
+
+
+def test_up1_resnet_sentinel_coverage():
+    """Phase 1.2: up1_resnet sentinel coverage across all 3 chunks."""
+    cfg = UP1_RESNET
+    x, w = _make_inputs(cfg)
+    y = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                           padding=cfg["padding"], dilation=cfg["dilation"])
+    mx.async_eval(y); mx.synchronize()
+    y_f32 = y.astype(mx.float32)
+    assert int(mx.sum(mx.isnan(y_f32))) == 0
+    assert int(mx.sum(mx.isinf(y_f32))) == 0
+    # Verify boundary cells around chunk edges (chunks at offsets 0, 49152, 98304
+    # → these correspond to (T, H, W) = (0, 0, 0), (3, 0, 0), (6, 0, 0) per
+    # M = (B*T*H*W) layout. Probe first cell of each chunk.
+    y_mlx = mx.conv_general(x, w, stride=list(cfg["stride"]),
+                            padding=list(cfg["padding"]),
+                            kernel_dilation=list(cfg["dilation"]))
+    mx.async_eval(y_mlx); mx.synchronize()
+    # Probe chunk boundaries (M_total = 147456, chunks of 49152 each).
+    # m_offset 0    -> (b=0, t=0, h=0, w=0)
+    # m_offset 49152 -> (b=0, t=3, h=0, w=0)
+    # m_offset 98304 -> (b=0, t=6, h=0, w=0)
+    for (t_idx, label) in [(0, "chunk0_start"), (3, "chunk1_start"),
+                            (6, "chunk2_start")]:
+        diff = mx.abs(y[0, t_idx, 0, 0, :].astype(mx.float32) -
+                      y_mlx[0, t_idx, 0, 0, :].astype(mx.float32))
+        mag_here = float(mx.max(mx.abs(y_mlx[0, t_idx, 0, 0, :].astype(mx.float32))))
+        rel_here = float(mx.max(diff)) / max(mag_here, 1e-6)
+        assert rel_here < 1e-3, (
+            f"chunk boundary {label} (t={t_idx}) drift: rel={rel_here:.4e}"
+        )
+
+
+# =====================================================================
+# Causal pad_T (asymmetric)
+# =====================================================================
+
+def test_mid_resnet_causal_pad_t():
+    """Phase 1.2: causal pad_T = (K_T-1, 0) -- video-decoder convention.
+
+    Validates that asymmetric padding addressing in the im2col kernel
+    correctly handles pad_T_left != pad_T_right.
+    """
+    cfg = MID_RESNET
+    x, w = _make_inputs(cfg)
+    # K_T = 3 → causal pad_T = (2, 0). pH, pW remain symmetric.
+    y_nax = conv3d_nax_forward(x, w,
+                               stride=cfg["stride"],
+                               padding=((2, 0), (1, 1), (1, 1)),
+                               dilation=cfg["dilation"])
+    # Oracle: mx.conv_general supports asymmetric padding via tuple-of-pairs?
+    # In MLX 0.31+, padding can be `tuple[Sequence[int], Sequence[int]]` -- low, high.
+    y_mlx = mx.conv_general(x, w,
+                            stride=list(cfg["stride"]),
+                            padding=([2, 1, 1], [0, 1, 1]),
+                            kernel_dilation=list(cfg["dilation"]))
+    mx.async_eval(y_nax, y_mlx); mx.synchronize()
+    assert y_nax.shape == y_mlx.shape, (
+        f"causal pad_T shape mismatch: nax={y_nax.shape} mlx={y_mlx.shape}"
+    )
+    err = mx.abs(y_nax.astype(mx.float32) - y_mlx.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    mag = float(mx.max(mx.abs(y_mlx.astype(mx.float32))))
+    rel = rmse / mag
+    assert rel < 1e-4, f"causal pad_T rel={rel:.4e}"
+
+
+def test_mid_resnet_causal_pad_t_flag():
+    """Phase 1.2: causal_pad_t=True flag must produce same as explicit pad."""
+    cfg = MID_RESNET
+    x, w = _make_inputs(cfg)
+    y_explicit = conv3d_nax_forward(x, w,
+                                    stride=cfg["stride"],
+                                    padding=((2, 0), (1, 1), (1, 1)),
+                                    dilation=cfg["dilation"])
+    y_flag = conv3d_nax_forward(x, w,
+                                stride=cfg["stride"],
+                                padding=(0, 1, 1),
+                                dilation=cfg["dilation"],
+                                causal_pad_t=True)
+    mx.async_eval(y_explicit, y_flag); mx.synchronize()
+    err = mx.abs(y_explicit.astype(mx.float32) - y_flag.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    assert rmse == 0, f"causal_pad_t flag should be bit-exact same as explicit: rmse={rmse}"
+
+
+# =====================================================================
+# K_T=1 routing (effectively per-frame 2D conv)
+# =====================================================================
+
+def test_kt1_routing():
+    """Phase 1.2: K_T=1 conv -- effectively 2D per temporal slice.
+
+    With K_T=1, the kernel volume is K_H*K_W*C_in (not 27*C_in).
+    Validates that the general path handles this special K compile-time
+    constant correctly.
+    """
+    cfg = dict(B=1, T=5, H=64, W=64, C_in=512, C_out=512,
+               K_T=1, K_H=3, K_W=3,
+               stride=(1, 1, 1), padding=(0, 1, 1), dilation=(1, 1, 1))
+    x, w = _make_inputs(cfg)
+    y_nax = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                               padding=cfg["padding"], dilation=cfg["dilation"])
+    y_mlx = mx.conv_general(x, w, stride=list(cfg["stride"]),
+                            padding=list(cfg["padding"]),
+                            kernel_dilation=list(cfg["dilation"]))
+    mx.async_eval(y_nax, y_mlx); mx.synchronize()
+    err = mx.abs(y_nax.astype(mx.float32) - y_mlx.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    mag = float(mx.max(mx.abs(y_mlx.astype(mx.float32))))
+    rel = rmse / mag
+    assert rel < 1e-4, f"K_T=1 routing rel={rel:.4e}"
