@@ -396,3 +396,112 @@ def test_kt1_routing():
     mag = float(mx.max(mx.abs(y_mlx.astype(mx.float32))))
     rel = rmse / mag
     assert rel < 1e-4, f"K_T=1 routing rel={rel:.4e}"
+
+
+# =====================================================================
+# Phase 1.3 — multi-chunk + working-set instrumentation
+# =====================================================================
+
+from mlx_mfa.conv_nax import estimate_working_set, get_chunk_plan, \
+    PHASE_1_3_WORKING_SET_HARD_GATE
+
+
+def test_working_set_all_production_shapes_within_gate():
+    """All 6 production shapes from design §3.1 must fit within 16 GB."""
+    shapes = [
+        ("mid_resnet",             20480,   13824, 512),
+        ("up1_resnet",             147456,  13824, 512),
+        ("up2_resnet0_chunk_cap",  297000,  13824, 256),
+        ("up3_resnet_chunk_cap",   594000,  3456,  128),
+        ("up2_resnet_full",        1114112, 6912,  256),
+        ("up2_resnet0_peakflops",  1114112, 13824, 256),
+    ]
+    for name, M, K, N in shapes:
+        ws = estimate_working_set(M, K, N, dtype_bytes=2)
+        assert ws["within_hard_gate"], (
+            f"{name}: total_peak={ws['total_peak_bytes']/1e9:.2f} GB "
+            f"exceeds hard gate ({PHASE_1_3_WORKING_SET_HARD_GATE/1e9:.0f} GB)"
+        )
+        assert ws["n_chunks"] >= 1
+        assert ws["per_chunk_im2col_bytes"] < 2**31, (
+            f"{name}: per-chunk im2col exceeds int32 byte budget"
+        )
+
+
+def test_working_set_chunk_plan_correctness():
+    """Chunks sum to M_total + are M_TILE-aligned (except possibly last)."""
+    M_TILE_EXPECTED = 32
+    cases = [
+        (20480, 13824),    # 1 chunk
+        (147456, 13824),   # 3 chunks
+        (297000, 13824),   # 5 chunks
+        (1114112, 6912),   # ~9 chunks
+        (1114112, 13824),  # ~17 chunks
+    ]
+    for M, K in cases:
+        plan = get_chunk_plan(M, K, dtype_bytes=2)
+        # Sum to M
+        total = sum(c[1] for c in plan)
+        assert total == M, f"M={M}, K={K}: chunks sum to {total}, want {M}"
+        # M_TILE alignment of non-last chunks
+        for i, (offset, m_chunk) in enumerate(plan[:-1]):
+            assert offset % M_TILE_EXPECTED == 0, (
+                f"M={M}: chunk {i} offset {offset} not M_TILE-aligned"
+            )
+            assert m_chunk % M_TILE_EXPECTED == 0, (
+                f"M={M}: chunk {i} m_chunk={m_chunk} not M_TILE-aligned"
+            )
+        # Offsets monotonic + contiguous
+        for i in range(1, len(plan)):
+            assert plan[i][0] == plan[i-1][0] + plan[i-1][1]
+
+
+def test_working_set_oversize_rejected_by_sanity():
+    """Phase 1.3 hard gate: shapes with total_peak >= 16 GB are rejected."""
+    # Construct a shape whose peak_total > 16 GB: very large M with large N
+    # forces big chunk im2col + big concat output.
+    # M = 8e6, K=6912, N=512: chunk_im2col = 1.7 GB, concat = 8.2 GB, total
+    # peak ~= 9.9 GB (still under 16 GB). Need bigger.
+    # M = 16e6, K=6912, N=512: concat = 16.4 GB → exceeds.
+    cfg = dict(B=1, T=64, H=500, W=500, C_in=256, C_out=512,
+               K_T=3, K_H=3, K_W=3,
+               stride=(1, 1, 1), padding=(1, 1, 1), dilation=(1, 1, 1))
+    # M = 64*500*500 = 16,000,000. K = 27*256 = 6912. N = 512.
+    # concat_out = 16e6 * 512 * 2 = 16.4 GB → exceeds 16 GB gate.
+    # Don't actually allocate the tensors -- use a probe that hits the
+    # sanity assert before allocation.
+    M_probe = cfg["B"] * cfg["T"] * cfg["H"] * cfg["W"]
+    K_probe = cfg["C_in"] * cfg["K_T"] * cfg["K_H"] * cfg["K_W"]
+    ws = estimate_working_set(M_probe, K_probe, cfg["C_out"])
+    assert not ws["within_hard_gate"], (
+        f"oversize sanity: total_peak={ws['total_peak_bytes']/1e9:.2f} GB "
+        f"should exceed 16 GB gate"
+    )
+
+
+def test_multi_chunk_correctness_5chunks():
+    """5-chunk shape — validates the 5-chunk path."""
+    # M = 11 * 150 * 180 = 297000, K = 13824, N = 256 → 5 chunks.
+    cfg = dict(B=1, T=11, H=150, W=180, C_in=512, C_out=256,
+               K_T=3, K_H=3, K_W=3,
+               stride=(1, 1, 1), padding=(1, 1, 1), dilation=(1, 1, 1))
+    x, w = _make_inputs(cfg, seed=42)
+    plan = get_chunk_plan(cfg["B"] * cfg["T"] * cfg["H"] * cfg["W"],
+                         cfg["C_in"] * cfg["K_T"] * cfg["K_H"] * cfg["K_W"], 2)
+    assert len(plan) >= 5, f"expected ≥5 chunks, got {len(plan)}: {plan}"
+
+    y_nax = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                               padding=cfg["padding"], dilation=cfg["dilation"])
+    y_mlx = mx.conv_general(x, w, stride=list(cfg["stride"]),
+                            padding=list(cfg["padding"]),
+                            kernel_dilation=list(cfg["dilation"]))
+    mx.async_eval(y_nax, y_mlx); mx.synchronize()
+
+    y_nax_f32 = y_nax.astype(mx.float32)
+    assert int(mx.sum(mx.isnan(y_nax_f32))) == 0
+    assert int(mx.sum(mx.isinf(y_nax_f32))) == 0
+    err = mx.abs(y_nax_f32 - y_mlx.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    mag = float(mx.max(mx.abs(y_mlx.astype(mx.float32))))
+    rel = rmse / mag
+    assert rel < 1e-4, f"5-chunk rel={rel:.4e}"

@@ -338,6 +338,62 @@ def _compute_chunk_layout(M_total, K, dtype_bytes):
 
 
 # ---------------------------------------------------------------------
+# Phase 1.3 — working-set instrumentation.
+#
+# Per design doc §4.2.3 + prompt §D: peak im2col allocation + matmul
+# output per chunk; per-shape working set; total transient memory.
+# The Python orchestrator path doesn't ping-pong buffers (each chunk
+# allocates fresh), so peak is bounded by max(chunk_M × K + chunk_M × N).
+# ---------------------------------------------------------------------
+
+PHASE_1_3_WORKING_SET_HARD_GATE = 16 * 1024**3  # 16 GB
+
+
+def estimate_working_set(M_total, K, N, dtype_bytes=2):
+    """Estimate per-chunk + total transient working set in bytes.
+
+    Returns a dict:
+      - chunks: list of (m_offset, m_chunk)
+      - per_chunk_im2col_bytes: max across chunks
+      - per_chunk_matmul_out_bytes: max across chunks
+      - per_chunk_peak_bytes: per_chunk im2col + per_chunk matmul_out
+      - concat_out_bytes: M_total × N × dtype (only if >1 chunk)
+      - total_peak_bytes: rough upper bound on peak GPU allocation
+        (~= max chunk peak + concat output, assuming MLX can reclaim
+        chunk i's im2col before chunk i+1's matmul output is allocated;
+        in practice MLX's lazy graph may hold all chunk outputs until
+        the concat — so we report the conservative concat_held estimate.)
+      - within_hard_gate: bool, true iff total_peak_bytes < 16 GB
+    """
+    chunks = _compute_chunk_layout(M_total, K, dtype_bytes)
+    per_chunk_im2col = max(c[1] for c in chunks) * K * dtype_bytes
+    per_chunk_matmul_out = max(c[1] for c in chunks) * N * dtype_bytes
+    per_chunk_peak = per_chunk_im2col + per_chunk_matmul_out
+
+    if len(chunks) > 1:
+        # MLX lazy: chunk outputs accumulate until concat, plus current
+        # chunk's im2col is live during its matmul.
+        concat_out_bytes = M_total * N * dtype_bytes
+        # Conservative upper bound: all chunk outputs held + current im2col.
+        total_peak_bytes = concat_out_bytes + per_chunk_im2col
+    else:
+        concat_out_bytes = 0
+        total_peak_bytes = per_chunk_peak
+
+    return {
+        "chunks": chunks,
+        "n_chunks": len(chunks),
+        "per_chunk_im2col_bytes": per_chunk_im2col,
+        "per_chunk_matmul_out_bytes": per_chunk_matmul_out,
+        "per_chunk_peak_bytes": per_chunk_peak,
+        "concat_out_bytes": concat_out_bytes,
+        "total_peak_bytes": total_peak_bytes,
+        "within_hard_gate": total_peak_bytes < PHASE_1_3_WORKING_SET_HARD_GATE,
+        "hard_gate_bytes": PHASE_1_3_WORKING_SET_HARD_GATE,
+    }
+
+
+# ---------------------------------------------------------------------
 # Padding normalization: accept int, 3-tuple of int (symmetric), or
 # 3-tuple of (left,right) pairs (asymmetric, including causal pad_T).
 # ---------------------------------------------------------------------
@@ -425,16 +481,19 @@ def _sanity_asserts(x: mx.array, w: mx.array, stride, padding, dilation):
     K = C_in * K_T * K_H * K_W
     dtype_bytes = 2  # f16 / bf16
 
-    # Category 7: total work feasibility (Phase 1.2 chunking handles
-    # per-chunk addressing; budget here is just sanity on TOTAL work).
-    # Cap at 16 GB total im2col to catch implausible shapes.
-    im2col_bytes = M * K * dtype_bytes
-    PHASE_BUDGET = 16 * 1024**3
-    if im2col_bytes > PHASE_BUDGET:
+    # Category 7: working-set feasibility (Phase 1.3 hard gate).
+    # Per design §4.2.3: peak transient = MLX-held chunk outputs +
+    # in-flight im2col. Estimated via estimate_working_set.
+    ws = estimate_working_set(M, K, C_out, dtype_bytes)
+    if not ws["within_hard_gate"]:
         raise ValueError(
-            f"conv_nax: total im2col working set ~{im2col_bytes/1e9:.2f} GB "
-            f"exceeds Phase 1.2 budget ({PHASE_BUDGET/1e9:.0f} GB). "
-            f"Phase 1.3 will add streaming for shapes beyond this."
+            f"conv_nax: estimated peak working set "
+            f"{ws['total_peak_bytes']/1e9:.2f} GB exceeds Phase 1.3 hard gate "
+            f"({ws['hard_gate_bytes']/1e9:.0f} GB). "
+            f"chunks={ws['n_chunks']}, per_chunk_im2col="
+            f"{ws['per_chunk_im2col_bytes']/1e9:.2f} GB, "
+            f"concat_out={ws['concat_out_bytes']/1e9:.2f} GB. "
+            f"Shape too large for unstreamed evaluation; use mx.conv_general."
         )
 
     # Category 8: alignment / plausibility
@@ -515,6 +574,13 @@ def conv3d_nax_forward(
     chunks = _compute_chunk_layout(M, K, dtype_bytes)
 
     chunk_outputs = []
+    n_chunks = len(chunks)
+    # When multi-chunking, force per-chunk eval so MLX's lazy graph
+    # doesn't accumulate all chunks' im2col buffers simultaneously
+    # (Phase 1.3 root-cause: observed 32 GB peak with 17 lazy-held
+    # chunks of 1.81 GB each at 1.114 M shape). Per-chunk eval bounds
+    # peak to one chunk's transient work + accumulated outputs.
+    force_per_chunk_eval = n_chunks > 1
     for (m_offset, m_chunk) in chunks:
         key = _conv_key(B, T, H, W, C_in, T_out, H_out, W_out, C_out,
                         K_T, K_H, K_W, sT, sH, sW,
@@ -548,6 +614,12 @@ def conv3d_nax_forward(
             grid=(n_tg_x * TG_THREADS, n_tg_y, 1),
             threadgroup=(TG_THREADS, 1, 1),
         )[0]
+        if force_per_chunk_eval:
+            # Force realization: chunk_flat now contains data; im2col_buf
+            # is released by MLX's garbage collector. Next iteration starts
+            # fresh, bounding peak transient memory to one chunk's worth.
+            mx.async_eval(chunk_flat)
+            mx.synchronize()
         chunk_outputs.append(chunk_flat)
 
     # Concatenate chunk outputs and reshape to (B, T_out, H_out, W_out, C_out).
@@ -567,4 +639,4 @@ def get_chunk_plan(M_total: int, K: int, dtype_bytes: int = 2):
     return _compute_chunk_layout(M_total, K, dtype_bytes)
 
 
-__all__ = ["conv3d_nax_forward", "get_chunk_plan"]
+__all__ = ["conv3d_nax_forward", "get_chunk_plan", "estimate_working_set"]
