@@ -410,15 +410,260 @@ Autoresearch budget: 5 knobs × ~3 values each × 6 shapes × 3 sessions × ~5s/
 
 ## 7. Validation strategy
 
-[skeleton — fills in Commit 4]
+Three oracles, mirroring Sprint A's pattern (`docs/v6-nax/backward-nax-fa2-design.md` §7 precedent): each catches a different class of bug.
+
+### 7.1 Oracle 1: PyTorch CPU FP32
+
+Ground truth. Compute Conv3D via `torch.nn.functional.conv3d` on FP32 CPU tensors. The CPU FP32 path has no NAX, no MMA precision issues, no chunking — it is the pure mathematical reference.
+
+Pseudocode:
+```
+x_torch = from_numpy(asarray(x_mlx).astype(float32))
+w_torch = from_numpy(asarray(w_mlx).astype(float32))
+# PyTorch is NCDHW, MLX is NDHWC. Permute appropriately.
+y_ref = F.conv3d(x_torch.permute(0, 4, 1, 2, 3),
+                 w_torch.permute(0, 4, 1, 2, 3),
+                 stride=stride, padding=pad).permute(0, 2, 3, 4, 1)
+```
+
+**RMSE bar**: < 1e-3 for FP16 conv output vs FP32 reference. Justification: FP16 has ~3 decimal digits of precision; summation over K_total = 13,824 elements at max accumulates ~log10(13824) ≈ 4 ulps of rounding error per output element. 1e-3 is the natural noise floor.
+
+### 7.2 Oracle 2: MLX existing `mx.conv_general`
+
+Cross-check. Compute the same conv on the same input via MLX's current implementation (legacy Steel path). Compare RMSE.
+
+Pseudocode:
+```
+y_baseline = mx.conv_general(x_mlx, w_mlx, stride=..., padding=..., ...)
+y_nax     = mlx_mfa.conv3d_nax(x_mlx, w_mlx, stride=..., padding=..., ...)
+mx.async_eval(y_baseline, y_nax); mx.synchronize()
+diff = mx.abs(y_baseline - y_nax)
+rmse = float(mx.sqrt(mx.mean(diff * diff)))
+```
+
+**RMSE bar**: < 1e-4. Both paths are FP16 on GPU; differences are only matmul accumulation order. Tighter than Oracle 1 because both paths share the FP16 precision class.
+
+If RMSE > 1e-4 against `mx.conv_general` but < 1e-3 against PyTorch FP32: Sprint C path is correct; MLX baseline has a precision quirk (unlikely but possible — document and trust PyTorch as primary).
+
+If RMSE > 1e-3 against PyTorch FP32: a real correctness bug exists. Stop, debug, do not proceed with perf tuning.
+
+### 7.3 Oracle 3: Sentinel-fill coverage gate
+
+Catches addressing bugs that pass RMSE on average but miss boundary rows.
+
+Pseudocode:
+```
+os.environ["MFA_CONV3D_SENTINEL_FILL"] = "1"
+y_nax = mlx_mfa.conv3d_nax(x_mlx, w_mlx, ...)
+mx.async_eval(y_nax); mx.synchronize()
+# Sentinel = float('-inf') (cannot appear from any real conv on finite inputs).
+out_np = asarray(y_nax)
+n_sentinel = int(sum(isneginf(out_np)))
+assert n_sentinel == 0, f"{n_sentinel} output cells were not written"
+```
+
+The Primitive initializes Y to `-INFINITY` when the env var is set (analogous to V6 NAX `MFA_V6_SENTINEL_FILL` at `csrc/mfa_v6_nax_primitive.cpp:340-349`). After the chunked dispatch, every Y cell must be written; any remaining `-INFINITY` indicates a coverage bug (e.g., chunk boundary miscalculation, off-by-one in `m_global → (batch, t_out, h_out, w_out)`).
+
+Sentinel cost: negligible — one extra fill kernel per call, < 1 ms.
+
+### 7.4 Test shape coverage
+
+| Shape category | Used for | Why |
+|---|---|---|
+| 6 production shapes (per `survey-report.md` §5.3) | All 3 oracles, every sub-phase | Real workload coverage |
+| Tile-sized variants (HW=32×32, T=2, fewer channels) | Oracles 1 & 3, sub-phase 1.1 development | Fast iteration; per-iter compute ~10ms |
+| Edge cases (kernel=1×1×1, kernel=5×5×5, asymmetric pad_T) | Oracle 1, sub-phase 1.2 | Sanity-check indexing math beyond dominant 3×3×3 |
+| Causal Conv3D specific (asymmetric pad_T) | All 3 oracles, sub-phase 1.2 | Verify the causal indexing branch |
+
+### 7.5 Test infrastructure
+
+Per Sprint A precedent: `tests/test_conv3d_nax.py` (parallel to `tests/test_v6_nax.py`). Pytest markers:
+- `correctness` — Oracle 1 & 2 (run on every commit)
+- `coverage` — Oracle 3 sentinel-fill (run on every commit)
+- `extended` — large-shape correctness validation (skipped by default, run pre-merge)
+
+Sprint C tests live in their own module to avoid coupling with Sprint A's `tests/test_v6_nax.py`. Cross-validation against V6 NAX state is unnecessary — Conv3D and V6 NAX share no kernel code.
 
 ## 8. Sub-phase breakdown
 
-[skeleton — fills in Commit 4]
+Phase 1 sequence with realistic effort estimates and per-sub-phase exit criteria.
+
+### 8.1 Phase 1.1 — sub-phase 0 microbench + scaffolding (3-5h)
+
+Sub-phase 0 microbench per §3 of this design doc. **The microbench is the precondition for all subsequent work.** Output: `docs/conv-nax/matmul2d-sustained-tflops.json` with per-(M,K,N) measured sustained TFLOPS. Decision gate (§3) determines whether Phase 1.0 design needs R1 revision before proceeding.
+
+In parallel with microbench (overlap acceptable since microbench is mostly wall-clock cooldown time):
+- `MFAConv3DForward` Primitive scaffolding: header, `.cpp` skeleton, nanobind binding stub.
+- Smallest shape end-to-end: mid_resnet_512to512_T5_HW64_k3 (single chunk; tractable for first integration).
+- Im2col writer kernel source-gen scaffolding (templated MSL emission).
+
+**Exit criteria**:
+- [ ] Sub-phase 0 microbench output JSON exists.
+- [ ] Decision gate evaluated; design doc R1 revision OR proceed-as-designed determination recorded.
+- [ ] mid_resnet shape: RMSE < 1e-3 vs PyTorch CPU FP32 (Oracle 1).
+- [ ] mid_resnet shape: sentinel coverage 100% (Oracle 3).
+- [ ] `tests/test_conv3d_nax.py::test_mid_resnet_correctness` passes.
+
+### 8.2 Phase 1.2 — im2col kernel + single-chunk shapes (4-6h)
+
+Im2col writer kernel: full source-gen with all template variants (kernel size, stride, dilation, pad symmetric vs asymmetric).
+
+Single-chunk shapes coverage: mid_resnet (already done in 1.1), up1_resnet. These M < chunk_M cases exercise the `n_chunks = 1` path entirely.
+
+Edge cases:
+- Asymmetric pad_T (causal Conv3D).
+- kernel_size = 1 (Conv3D 1×1×1 — fast path; see §8.4).
+- Tile-sized variants for tight debugging cycles.
+
+**Exit criteria**:
+- [ ] All single-chunk shapes pass all 3 oracles.
+- [ ] Asymmetric pad_T case verified against PyTorch causal Conv3D.
+- [ ] Sentinel coverage 100% on every tested shape.
+
+### 8.3 Phase 1.3 — multi-chunk + working-set tracking (4-6h)
+
+Multi-chunk dispatch loop: full chunking iteration in the Primitive. Double-buffered ping-pong via two pre-allocated im2col buffers.
+
+Working-set tracker: instrument the Primitive to record peak memory via `mx.metal.get_peak_memory()` per call. Assert peak < 16 GB on the largest shape (up3_resnet0).
+
+Multi-chunk shapes coverage: up2_resnet (4 chunks), up3_resnet (8 chunks), up3_resnet0 (15 chunks), up2_resnet0 (8 chunks).
+
+Tile autoresearch on Cluster 1 + 2 envvar grid (§6.4). Initial defaults from §6.2; sweep on N_tile / exec_sg / chunk_M; pick per-cluster winner.
+
+**Exit criteria**:
+- [ ] All 6 shapes pass all 3 oracles.
+- [ ] Peak working set < 16 GB on the largest shape.
+- [ ] Per-shape tile defaults updated in code from autoresearch winners.
+
+### 8.4 Phase 1.4 — Conv3D 1×1×1 specialization (1-2h)
+
+The Conv3D 1×1×1 case (7.23% of decoder FLOPs per architecture map) is structurally trivial:
+- K_total = 1 × 1 × 1 × C_in = C_in (no spatial-kernel expansion)
+- The im2col step is a no-op — A[m, k] = X[batch, t, h, w, k] = X reshaped as [M × C_in]
+- Direct matmul2d call on X (reshaped) and W (reshaped as [C_in × C_out])
+
+Fast path: detect `K_T == K_H == K_W == 1 && stride == 1 && pad == 0` in the Primitive. Skip im2col kernel, directly matmul2d.
+
+**Exit criteria**:
+- [ ] Conv3D 1×1×1 fast path detected and dispatched correctly.
+- [ ] RMSE < 1e-3 vs PyTorch CPU on a 1×1×1 shape.
+- [ ] Visible improvement over multi-chunk-with-trivial-im2col fallback on the same shape.
+
+### 8.5 Phase 1.5 — perf sweep + ship/shelve decision (4-8h, ≥2h is wall-clock cooldown)
+
+§4-compliant cooldowns (90s round / 60s shape / 180s initial), A/B/A round drift per Sprint A precedent.
+
+Per-shape measurement: (V6 NAX-style) median of 5 runs per session × 3 sessions sequential. Compare vs MLX baseline (`mx.conv_general`).
+
+Comparison framework:
+- Per-shape ratio = MLX baseline median / Sprint C median. > 1.0 = Sprint C faster.
+- Cross-session range: must be < 10% per §4.2 to be considered defensible.
+- Per-shape headline = median of session-medians (Sprint A precedent).
+
+**Ship/shelve decision tree** (Sprint A R1 pattern):
+- Headline ratio ≥ 1.2× on the dominant cluster (top-4 ROI shapes): **ship as opt-in**. User-facing API: `mlx_mfa.conv3d_nax(x, w, ...)` direct binding. No autograd promotion (Sprint A V34 backward precedent: research-direct binding stays research-direct until autograd-promotion case is justified separately).
+- Headline ratio 0.9-1.2×: **opt-in research-direct only**. Document the perf characterization but don't promote to default routing.
+- Headline ratio < 0.9× OR ≥ 3 of 6 shapes inconclusive at §4 protocol: **shelve** per Sprint A §4.3 escalation. Document the variance source; preserve the kernel chain as research-direct binding.
+
+**Note on threshold calibration**: Phase 0 measured MLX baseline at 2.55× over theoretical. To beat MLX by 1.2×, Sprint C must reach **2.55 / 1.2 = 2.13× of theoretical peak**, equivalent to ~47% of NAX peak sustained TFLOPS. To beat MLX by 1.5×, Sprint C needs ~57% of NAX peak. Both targets are plausible given Apple's published peak figures, but the sub-phase 0 microbench (§3) confirms before Phase 1.2 begins.
+
+**Exit criteria**:
+- [ ] §4-compliant 3-session bench data captured.
+- [ ] Per-shape headline + cross-session range computed.
+- [ ] Ship/shelve decision rendered + documented in `docs/conv-nax/conv3d-ship-shelve-decision.md`.
+- [ ] Final perf table + verdict appended to design doc as §13 (added post-Phase 1.5).
+
+### 8.6 Phase 1.6 — (optional) Conv2D forward (4-6h)
+
+Deferred per §10. Triggered if a Conv2D workload surfaces. Implementation: `MFAConv2DForward` primitive wrapping `mpp::tensor_ops::convolution2d` directly (analogous to V6 NAX wrapping `matmul2d`). Same source-gen + cache key pattern (already accommodated in ConvKey enum via `Conv2DDirect` kind).
+
+### 8.7 Total Sprint C effort
+
+| Sub-phase | Hours | Cumulative |
+|---|---:|---:|
+| 1.1 microbench + scaffold | 3-5 | 3-5 |
+| 1.2 im2col + single chunk | 4-6 | 7-11 |
+| 1.3 multi-chunk + working set | 4-6 | 11-17 |
+| 1.4 1×1×1 specialization | 1-2 | 12-19 |
+| 1.5 perf sweep + decision | 4-8 | 16-27 |
+| 1.6 (optional) Conv2D | 4-6 | 20-33 if included |
+
+**Phase 1.x total: 16-27h CC work** (excluding sub-phase 1.6). Comparable to Sprint A Phase 1.x scope. With sub-phase 1.6, 20-33h.
 
 ## 9. Risks register
 
-[skeleton — fills in Commit 4]
+Ten risks identified, each with likelihood + mitigation. Rank-ordered by impact-to-Sprint-C.
+
+### 9.1 Sub-phase 0 microbench reveals sustained TFLOPS << peak [HIGH IMPACT]
+
+The 38 TFLOPS NAX FP16 peak figure is from Apple's balanced-square `matmul2d` benchmarks. Our workload is heavily M-skewed (M up to 4.5M, K up to 13.8K, N as low as 128). If matmul2d sustained on our shapes is < 30 TFLOPS, Phase 0 ROI revises downward (per §3 decision gate).
+
+**Likelihood**: Medium-high. Apple's peak figures are typically achievable on balanced shapes but degrade by 20-40% on heavily-skewed shapes (M ≫ K ≫ N or similar).
+**Mitigation**: §3 microbench is the gate. If sustained TFLOPS measures < 20: R1 revision of this design doc; possible recommendation to pivot to Sprint B (block-sparse) per Phase 0 fallback option.
+
+### 9.2 Im2col memory pressure on largest shapes [HIGH IMPACT]
+
+up3_resnet0 needs 61.6 GB unchunked. Forced chunking is correct, but the §2.3 4 GB budget × 2 (ping-pong) = 8 GB peak working set + ~30 GB pipeline activations + ~10 GB other = ~48 GB. M5 Max has 128 GB unified, but other concurrent workloads (VSR pipeline, decoder context, etc.) may push total above safe limits.
+
+**Likelihood**: High — this is forced by data sizes.
+**Mitigation**: §2.3 chunking strategy is the answer. Validate empirically in 1.3 via `mx.metal.get_peak_memory()` tracker; assert peak working set < 16 GB on every shape. If 16 GB ceiling is breached: reduce chunk_M proportionally, accept higher n_chunks count and slightly slower wall-clock from extra dispatch overhead.
+
+### 9.3 Causal Conv3D asymmetric pad_T edge cases [MEDIUM IMPACT]
+
+SeedVR2 / CogVideoX VAEs use asymmetric pad_T (left = K_T - 1, right = 0) per `vae_cogvideox.py:166-173`. The im2col indexing must support asymmetric padding correctly. Off-by-one bugs in this branch are subtle: they produce visually plausible outputs that diverge slightly from PyTorch reference.
+
+**Likelihood**: Medium — this is a well-understood pattern but easy to misimplement.
+**Mitigation**: Oracle 1 (PyTorch CPU FP32) against an explicit causal Conv3D test case is the catch. Phase 1.2 exit criteria require asymmetric-pad_T case verified. Add a dedicated test in `test_conv3d_nax.py::test_causal_pad_t`.
+
+### 9.4 MPP `matmul2d` execution scope constraint [MEDIUM IMPACT]
+
+Survey §4.3 noted that MPP's `convolution2d` is restricted to `execution_threadgroup` scope (not `execution_simdgroup`). Whether `matmul2d` has the same restriction at our M/K/N ranges is unverified. The §3 microbench may reveal this — if `matmul2d` cannot dispatch from a single simdgroup at our shapes, per-chunk overhead increases.
+
+**Likelihood**: Low-medium. V6 NAX uses `matmul2d` with `execution_simdgroup` successfully for the attention matmul; the same primitive should work for our Conv3D chunked matmul.
+**Mitigation**: Verify in sub-phase 0 microbench. If scope restriction kicks in: use `execution_threadgroup` per dispatch with multiple TGs to fill the grid; expected overhead 5-10% (acceptable).
+
+### 9.5 MLX `mx.conv_general` oracle precision quirk [LOW IMPACT]
+
+If MLX's existing Conv3D has subtle pad/dilation edge case bugs, our cross-validation passes (Oracle 2 RMSE < 1e-4) despite divergence from PyTorch FP32. We'd be matching a buggy reference.
+
+**Likelihood**: Low — MLX is well-tested; the SeedVR2 VAE pipeline already runs correctly on MLX 0.31.2.
+**Mitigation**: Trust PyTorch CPU FP32 (Oracle 1) as primary; MLX as sanity check only. If Oracle 1 RMSE > 1e-3 OR Oracle 2 RMSE > 1e-4 but Oracle 1 RMSE < 1e-3: investigate MLX baseline divergence, document, proceed with our path.
+
+### 9.6 NHWC vs NCHW layout overhead [MEDIUM IMPACT]
+
+SeedVR2 VAE intermediate tensors are NCHW in the PyTorch source (per `phase0_profiling.py`). The MLX port (`vae_cogvideox.py`) presumably handles layout conversion at module boundaries. Each `mlx_mfa.conv3d_nax` call expects NDHWC inputs — if the upstream module produces NCHW, an upstream transpose adds cost.
+
+**Likelihood**: High — this is the typical interop pattern.
+**Mitigation**: Document the requirement clearly in the user-facing API docstring. Sprint C does NOT absorb the transpose cost; the user is responsible for layout. If the SeedVR2 VAE MLX port wants Sprint C optimization, it should standardize on NDHWC internally (a one-time refactor at the VAE module level, separate from Sprint C).
+
+### 9.7 Implicit GEMM accumulation precision [LOW IMPACT]
+
+For very deep K=13,824 contractions, FP16 accumulation may overflow on extreme inputs. Standard FlashAttention / matmul wisdom: use FP32 accumulator with FP16 inputs (relaxed_precision mode in matmul2d).
+
+**Likelihood**: Low for VAE inputs (normalized via GroupNorm, magnitudes typically ≤ 5).
+**Mitigation**: If matmul2d's `relaxed_precision=true` flag is available (V6 NAX uses it for attention at `mfa_v6_nax_primitive.cpp:177`), enable it. Sub-phase 0 microbench verifies via Oracle 1 RMSE comparison.
+
+### 9.8 Flash-VAED race condition (work in parallel) [LOW IMPACT, complementary]
+
+Flash-VAED might ship operator substitution (e.g., 1×3×3 + 3×1×1 factorization replacing 3×3×3) that changes the Conv3D shape distribution before Sprint C's Phase 1.5 lands. The §5.3 shape inventory may be partially stale by then.
+
+**Likelihood**: Low — Flash-VAED Phase 0 still blocked on baseline (anomalous PSNR 17.0 dB).
+**Mitigation**: Sprint C is kernel-level — applies to any Conv3D 3×3×3 shape that survives architecture-level optimization. Even Flash-VAED's factorized form would benefit from the same NAX-routed implicit GEMM (smaller K but same primitive). The two efforts are complementary (§11).
+
+### 9.9 macOS 26.x MPP API changes [LOW IMPACT]
+
+Apple may revise `mpp::tensor_ops::matmul2d` API in 26.5+ or later. Sprint A's V6 NAX uses `MFA_REQUIRE_MSL4` pattern to version-gate.
+
+**Likelihood**: Low-medium. Apple's APIs tend to be stable across minor releases but the MPP framework is relatively new (introduced in macOS 26.0 per survey).
+**Mitigation**: Version-gate the Sprint C wrapper (mirror V6 NAX `MFA_REQUIRE_MSL4`). If API changes: catch the compile failure early, document, defer until Apple stabilizes.
+
+### 9.10 BF16 dtype request late in cycle [LOW IMPACT]
+
+If a SeedVR2 VAE variant ships in BF16 (currently FP16-only per `profiling_baseline.json`), Sprint C must support BF16. The implementation work is small (add BF16 path to source-gen, like V6 NAX does), but adds testing surface.
+
+**Likelihood**: Low for SeedVR2 VAE.
+**Mitigation**: Initial design targets FP16 only (this design doc explicitly). BF16 added as Phase 1.7 if needed, ~2-3h work.
+
 
 ## 10. Conv2D inclusion / deferral
 
