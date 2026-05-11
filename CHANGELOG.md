@@ -4,6 +4,52 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.33.1] — 2026-05-12 — `flash_attention_sparse` M5+ fast-fallback
+
+### Fixed
+
+- **`flash_attention_sparse` perf regression on M5+ Apple Silicon.** The
+  v2.33.0 M5+ dispatch path (`_sparse_fallback_sdpa_perhead`) expanded
+  the block mask to a `[B, H, N, S]` float bias on every call, adding
+  ~3 ms of broadcast / reshape / `mx.where` work that ran in parallel
+  with the SDPA call — producing a constant **2.07-2.10× wall-clock
+  overhead** vs calling `mx.fast.scaled_dot_product_attention` directly
+  with a prebuilt float bias. Surfaced by Sprint B Phase 0 baseline bench
+  (`docs/lcsa-nax/survey-report.md` §3 + §8 + `docs/sparse-fallback-audit.md`).
+- **Fast-fallback (v2.33.1):** the M5+ path now caches the expanded float
+  bias by `id(block_mask) + shape + dtype + (B, H, N, S, target_dtype)`.
+  Cache HIT (mask reused across calls — common production pattern, e.g.
+  build mask once per forward pass) drops the expansion cost to a dict
+  lookup, recovering full `mx.fast.scaled_dot_product_attention`-direct
+  performance (**1.01× ratio measured**, within 10% target).
+  Cache MISS (fresh mask each call, e.g. FlashVSR's per-layer
+  `generate_draft_block_mask_mlx`) falls back to the same expansion as
+  v2.33.0 — no regression, no improvement at the call site.
+- LRU cache bounded to 8 entries; users with extreme memory footprint
+  can manually clear via `mlx_mfa.attention._SPARSE_BIAS_CACHE.clear()`.
+- Float bias is cached (NOT a bool mask) to preserve the v2.33.0 semantic
+  that an all-False Q-row produces NaN softmax
+  (`test_all_false_mask_row_gives_nan_or_zero`).
+
+### Notes
+
+- This is a **dispatch-routing fix**, not a NAX-native sparse implementation.
+  The NAX-native sparse-aware path is in development as Sprint B Phase 1.x;
+  expected speedups vs MLX SDPA dense+mask are 3-15× depending on density
+  (see `docs/lcsa-nax/survey-report.md` §10 — Recommended approach).
+- **Pre-M5 hardware (M1-M4) dispatch path is unchanged.** M1-M4 still
+  routes through the C++ STEEL V1 sparse kernel via
+  `_make_mfa_sparse_custom`. The patch modifies only the
+  `_sparse_fallback_sdpa_perhead` internal function which is reached
+  only on M5+ per `attention.py`'s `if info.get("is_m5_plus"):` dispatch
+  check. Three new tests in `TestSparseM5PlusFastFallback` guard this.
+
+### Internal
+
+- `docs/sparse-fallback-audit.md` — Sprint B Phase 0 follow-up: per-step
+  timing breakdown of the v2.33.0 overhead, fix strategy rationale, and
+  cache-hit vs cache-miss expected behavior.
+
 ## [2.33.0] — 2026-05-11 — Conv3D NAX production path
 
 ### Added
