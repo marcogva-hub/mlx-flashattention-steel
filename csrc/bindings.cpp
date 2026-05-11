@@ -1,6 +1,7 @@
 /// mlx-mfa nanobind bindings.
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -40,6 +41,9 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 #include "mfa_scatter.hpp"
 #include "mfa_smooth_quant.hpp"
 #include "mfa_steel_fwd_v2.hpp"
+#include "mfa_conv_nax.hpp"
+
+#include <array>
 
 namespace nb = nanobind;
 
@@ -756,6 +760,36 @@ NB_MODULE(_ext, m) {
   m.def("_invalidate_env_config", []() {
       mlx_mfa::MFAEnvConfig::invalidate();
   }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
+
+  // ====================================================================
+  // Sprint D — Conv3D NAX C++ Primitive entry point.
+  // Routes mlx_mfa.conv_nax.conv3d_nax_forward through C++ instead of
+  // the Phase 1.x Python orchestrator (saves ~50-100 µs Python dispatch
+  // overhead per call). The Metal kernels are identical (frozen from
+  // Sprint C); only the orchestration moved from Python to C++.
+  // ====================================================================
+  m.def("conv3d_nax_forward",
+      [](const mlx::core::array& x,
+         const mlx::core::array& w,
+         std::array<int, 3> stride,
+         std::array<int, 6> padding,
+         std::array<int, 3> dilation,
+         int chunk_M) {
+        mlx_mfa::ConvPad pad{
+            padding[0], padding[1],
+            padding[2], padding[3],
+            padding[4], padding[5]};
+        return mlx_mfa::conv3d_nax_forward(x, w, stride, pad, dilation, chunk_M);
+      },
+      nb::arg("x"), nb::arg("w"),
+      nb::arg("stride") = std::array<int, 3>{1, 1, 1},
+      nb::arg("padding") = std::array<int, 6>{0, 0, 0, 0, 0, 0},
+      nb::arg("dilation") = std::array<int, 3>{1, 1, 1},
+      nb::arg("chunk_M") = 0,
+      "Conv3D NAX forward via MPP matmul2d + im2col chunking. "
+      "x: (B,T,H,W,C_in) f16/bf16. w: (C_out,K_T,K_H,K_W,C_in). "
+      "padding: 6-tuple (T_left,T_right,H_left,H_right,W_left,W_right). "
+      "chunk_M: 0 = auto from int32-byte-budget heuristic.");
 
   m.attr("__version__") = "2.22.0";
 }
