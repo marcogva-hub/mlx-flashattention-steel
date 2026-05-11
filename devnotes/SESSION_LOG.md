@@ -2511,3 +2511,56 @@ STATUS: HANDOFF_READY
 7. `bb492f2` HANDOFF doc for Phases 1.2-1.5
 8. (this commit) final close: §4 microbench data + results + SESSION_LOG
 
+
+---
+## [2026-05-11 15:50] [CLAUDE] Phase 1.2 close: chunking + asymmetric pad + K_T=1
+STATUS: COMPLETE
+
+### Plan
+- Objective: enchaîner Phase 1.2 (up1_resnet + causal pad_T + K_T=1)
+  per Marco's directive to not defer except Phase 1.5.
+- Files to modify: mlx_mfa/conv_nax.py, tests/test_conv_nax.py.
+- Dependencies impacted: none (no production code in csrc/ touched).
+
+### Changes
+- `mlx_mfa/conv_nax.py:1-470` -- M-chunking + asymmetric pad + causal_pad_t
+  [HIGH][VERIFIED]
+- `tests/test_conv_nax.py:218-398` -- 7 new Phase 1.2 tests [HIGH][VERIFIED]
+- `docs/conv-nax/conv-nax-phase1_2-*` -- 4 deliverables [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Phase 1.1 mid_resnet tests still PASS (4/4 unchanged).
+- 6 pre-existing failures unchanged. 0 new failures.
+- Sprint A V6 NAX untouched.
+
+### Tech cost
+- 168 LOC mlx_mfa/conv_nax.py (chunking + asymmetric pad).
+- 180 LOC tests/test_conv_nax.py (7 new tests).
+- 0 kernels added; existing matmul2d source unchanged (same kernel,
+  different M_FULL compile-time constant per chunk).
+- Cache size grows: 1 (im2col, matmul) pair per (shape × m_offset × m_chunk).
+  For typical workloads with <5 chunks per shape, growth is bounded.
+
+### Validation
+- Ran: `pytest tests/test_conv_nax.py -v` → 11/11 PASS
+- Ran: 3-session bit-exact repro on up1_resnet → identical to 10 decimals
+- Ran: full pytest tests/ → 931 pass + 11 conv_nax = 942 total, 6 pre-existing fails unchanged
+- Validated: rel_err 3.23e-5 vs mx.conv_general on up1_resnet (chunked path);
+  rel_err 2.95e-5 on mid_resnet (single-chunk path, unchanged)
+
+### Git
+- `8a099dd` feat(conv-nax): M-chunking + asymmetric padding (Phase 1.2 core)
+- `46f7645` test(conv-nax): Phase 1.2 -- up1_resnet + causal pad_T + K_T=1
+- (next, this commit) docs(conv-nax): Phase 1.2 deliverables + SESSION_LOG
+
+### Phase 1.1 HANDOFF Pitfall 5 → resolved
+- Root cause: MPP matmul2d int32 byte-address overflow at 2^31 bytes.
+- Fix: M-chunking with chunk_M × K × dtype_bytes < 2^31 × 0.875.
+- See decisions.md D18 + results.md NaN investigation section.
+
+### Next concrete step
+Phase 1.3: working-set instrumentation + multi-shape validation (other 4
+production shapes: up2_resnet0_chunk_cap, up2_resnet_full,
+up2_resnet0_peakflops, up3_resnet_chunk_cap). Chunking already done in
+1.2; Phase 1.3 is mostly instrumentation + breadth tests.
+
