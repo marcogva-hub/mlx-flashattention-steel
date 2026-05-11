@@ -1,0 +1,48 @@
+=== LCSA baseline -- 3 sessions §4-compliant ===
+Start: 2026-05-11T21:48:01Z
+Branch: experiment/lcsa-nax-phase0-survey
+HEAD: 39b9ade
+
+--- session 1 at 2026-05-11T21:48:01Z ---
+[lcsa-nax phase 0] session=lcsa_S1
+[lcsa-nax phase 0] correctness smoke gate...
+  smoke: rel_err=0.0000e+00  density=0.531  NaN=0  -> PASS
+[lcsa-nax phase 0] initial cooldown 180.0s
+  lcsa_small_seq4k                 N= 4096 H=12 density= 0.24  MFA=   6.10ms  SDPA=   2.93ms  ratio=0.48× drift= 0.2%
+  lcsa_small_seq4k_sparse          N= 4096 H=12 density= 0.07  MFA=   5.97ms  SDPA=   2.82ms  ratio=0.47× drift= 1.8%
+  lcsa_mid_seq8k                   N= 8192 H=12 density= 0.12  MFA=  22.72ms  SDPA=  11.03ms  ratio=0.49× drift= 2.6%
+  lcsa_mid_seq8k_sparse            N= 8192 H=12 density= 0.03  MFA=  22.61ms  SDPA=  10.72ms  ratio=0.47× drift= 0.3%
+  lcsa_large_seq16k                N=16384 H=12 density= 0.12  MFA=  91.81ms  SDPA=  47.21ms  ratio=0.51× drift= 0.1%
+  lcsa_large_seq16k_sparse         N=16384 H=12 density= 0.03  MFA=  91.94ms  SDPA=  47.13ms  ratio=0.51× drift= 0.0%
+
+[lcsa-nax phase 0] session 'lcsa_S1' → docs/lcsa-nax/lcsa-nax-phase0-baseline-data.json
+--- round cooldown 90s at 2026-05-11T21:57:06Z ---
+--- session 2 at 2026-05-11T21:58:36Z ---
+[lcsa-nax phase 0] session=lcsa_S2
+[lcsa-nax phase 0] correctness smoke gate...
+  smoke: rel_err=0.0000e+00  density=0.531  NaN=0  -> PASS
+[lcsa-nax phase 0] initial cooldown 180.0s
+  lcsa_small_seq4k                 N= 4096 H=12 density= 0.24  MFA=   5.84ms  SDPA=   2.81ms  ratio=0.48× drift= 1.4%
+  lcsa_small_seq4k_sparse          N= 4096 H=12 density= 0.07  MFA=   5.93ms  SDPA=   2.83ms  ratio=0.48× drift= 0.8%
+  lcsa_mid_seq8k                   N= 8192 H=12 density= 0.12  MFA=  22.66ms  SDPA=  10.68ms  ratio=0.47× drift= 1.0%
+  lcsa_mid_seq8k_sparse            N= 8192 H=12 density= 0.03  MFA=  22.61ms  SDPA=  10.77ms  ratio=0.48× drift= 0.2%
+  lcsa_large_seq16k                N=16384 H=12 density= 0.12  MFA=  92.46ms  SDPA=  47.08ms  ratio=0.51× drift= 0.5%
+  lcsa_large_seq16k_sparse         N=16384 H=12 density= 0.03  MFA=  92.71ms  SDPA=  47.40ms  ratio=0.51× drift= 0.2%
+
+[lcsa-nax phase 0] session 'lcsa_S2' → docs/lcsa-nax/lcsa-nax-phase0-baseline-data.json
+--- round cooldown 90s at 2026-05-11T22:07:41Z ---
+--- session 3 at 2026-05-11T22:09:12Z ---
+[lcsa-nax phase 0] session=lcsa_S3
+[lcsa-nax phase 0] correctness smoke gate...
+  smoke: rel_err=0.0000e+00  density=0.531  NaN=0  -> PASS
+[lcsa-nax phase 0] initial cooldown 180.0s
+  lcsa_small_seq4k                 N= 4096 H=12 density= 0.24  MFA=   5.89ms  SDPA=   2.80ms  ratio=0.48× drift= 0.4%
+  lcsa_small_seq4k_sparse          N= 4096 H=12 density= 0.07  MFA=   6.02ms  SDPA=   2.88ms  ratio=0.48× drift= 2.0%
+  lcsa_mid_seq8k                   N= 8192 H=12 density= 0.12  MFA=  23.11ms  SDPA=  10.95ms  ratio=0.47× drift= 0.3%
+  lcsa_mid_seq8k_sparse            N= 8192 H=12 density= 0.03  MFA=  23.12ms  SDPA=  10.83ms  ratio=0.47× drift= 0.2%
+  lcsa_large_seq16k                N=16384 H=12 density= 0.12  MFA=  93.03ms  SDPA=  47.39ms  ratio=0.51× drift= 0.6%
+  lcsa_large_seq16k_sparse         N=16384 H=12 density= 0.03  MFA=  92.97ms  SDPA=  47.16ms  ratio=0.51× drift= 0.2%
+
+[lcsa-nax phase 0] session 'lcsa_S3' → docs/lcsa-nax/lcsa-nax-phase0-baseline-data.json
+
+End: 2026-05-11T22:18:17Z

@@ -255,3 +255,83 @@ LR overhead mostly 10-18%, except K>M case (36%) which may benefit from Phase 2 
 ### Confidence
 - Overall: HIGH
 - Risks: none — all names still importable, all tests pass
+
+---
+## [2026-05-11 22:25] [CLAUDE] Sprint B Phase 0 close: LCSA / block-sparse NAX survey
+STATUS: COMPLETE
+
+### Plan
+- Objective: survey + bottleneck characterization for LCSA / block-sparse
+  attention NAX -- read + measure pass per Sprint B Phase 0 prompt §1.
+- Files to add: bench/lcsa_nax_baseline.py, bench/lcsa_nax_phase0_analysis.py,
+  docs/lcsa-nax/survey-report.md, raw + analysis JSON, runlog.
+
+### Changes
+- bench/lcsa_nax_baseline.py: A/B/A 3-session §4-compliant harness with
+  smoke gate (Phase 1.1 lesson). 6 shapes covering FlashVSR LCSA range
+  (4k/8k/16k N × dense/sparse window).
+- bench/lcsa_nax_phase0_analysis.py: cross-session medians + theoretical
+  bound (25 TF NAX sustained from Sprint C; 410 GB/s HBM M5 Max) +
+  headroom ranking.
+- docs/lcsa-nax/survey-report.md: 538-line survey, all 12 sections
+  populated.
+
+### Dependency & regression check
+- No production code changed (Phase 0 is read + measure only).
+- Master 914-test baseline unchanged.
+- Sprint A + Sprint C branches frozen.
+
+### Validation
+- Ran: bench/lcsa_nax_baseline.py × 3 sessions in nohup, §4 cooldowns,
+  21:48-22:18 UTC (30 min).
+- Smoke gate (all 3 sessions): rel_err=0.0 vs MLX SDPA+float-bias on
+  smoke shape. PASS.
+- Cross-session variance per shape: 0.58-4.38% (well within §B.7 10% bar).
+
+### Key findings
+- §2 MLX 0.31.2: NO block-skip on M5+; SDPA mask is dense compute + bias.
+- §3 mlx-mfa M5+: flash_attention_sparse falls back to
+  _sparse_fallback_sdpa_perhead() (mask expansion to [B,H,N,S] float
+  bias → dense SDPA). Zero block-skip on M5+ today.
+- §4 Apple MPP NAX: only dense matmul2d + convolution2d. No sparse
+  primitive. get_mask() is tile-boundary check, not sparsity.
+- §5 FlashVSR: WAN DiT dim=1536 H=12 D=128, window=(2,8,8)=128 tokens.
+  30 sparse-attention calls per forward pass at identical shape.
+  SparkVSR audit: no LCSA usage (sparse refs are RAFT-dataset only).
+- §6 theoretical bound: all shapes compute-bound (not bandwidth);
+  bound 0.13-4.02 ms across shape range.
+- §7 ROI ranking: top cluster is large-N (16k) sparse-density (0.03),
+  44.73× headroom, 1.38 s saved per forward pass.
+- §8 bench: MFA-sparse 0.5× SDPA across all shapes (mask-expansion
+  overhead); density has NO effect on either timing (both dense).
+- §10 recommended: Option α (block-skip dispatch via dense matmul2d) --
+  Sprint C Conv3D template applies directly.
+
+### Tech cost
+- Phase 0 produced ZERO production code. All deliverable is doc + data.
+- 265 LOC bench harness Python.
+- 130 LOC analysis tool Python.
+- 538 LOC survey report Markdown.
+
+### Verdict for Marco
+**PROCEED to Phase 1.0 design.** Median headroom 16.38×, max 44.73×
+on M5 Max FlashVSR-style LCSA shapes. Realistic block-skip speedup
+projection: 3-15× depending on density, after Sprint C-precedent
+50% efficiency derate. ~15-30 seconds attention budget unlocked per
+21-frame FlashVSR inference run.
+
+### Git
+- 83bd223 bench(lcsa-nax): Phase 0 baseline harness
+- f71128b docs+bench(lcsa-nax): Phase 0 survey skeleton + analysis tool
+- (next, this commit) docs+bench(lcsa-nax): Phase 0 final data +
+  consolidated survey + SESSION_LOG
+
+### Next concrete step for Marco
+1. Read survey-report.md §1 (verdict) + §10 (recommended approach) +
+   §12 (sign-off). ~10 min.
+2. If approved: kick off Sprint B Phase 1.0 prompt -- design doc that
+   takes this survey as input + Sprint C Phase 1.0 design as template.
+3. Phase 1.0 produces: algorithm + tile shapes + primitive class +
+   validation strategy + sub-phase breakdown + risks register. Then
+   Phase 1.x implementation sprints follow (5-phase pattern per Sprint C).
+
