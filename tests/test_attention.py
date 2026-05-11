@@ -13,6 +13,8 @@ Test classes:
 
 import math
 import os
+import statistics
+import time
 
 import mlx.core as mx
 import numpy as np
@@ -1498,6 +1500,181 @@ class TestSparseBackwardSteel:
         assert mx.all(mx.isfinite(dq)).item(), "dQ has non-finite values"
         assert mx.all(mx.isfinite(dk)).item(), "dK has non-finite values"
         mx.clear_cache()  # flush Metal buffer pool to prevent stale-buffer NaN in downstream tests
+
+
+# ==========================================================================
+# v2.33.1 — flash_attention_sparse M5+ fast-fallback regression guards
+# ==========================================================================
+
+class TestSparseM5PlusFastFallback:
+    """Tests for the v2.33.1 M5+ fast-fallback (cached float bias).
+
+    Sprint B Phase 0 surveyed `flash_attention_sparse` at 2.07-2.10×
+    slower than `mx.fast.scaled_dot_product_attention` with prebuilt
+    float bias on M5+ Apple Silicon. v2.33.1 patches the M5+ dispatch
+    path to cache the expanded float bias by `id(block_mask)`, so reused
+    masks hit the cache (within 10% of SDPA-direct). See
+    `docs/sparse-fallback-audit.md` for the audit.
+
+    These tests guard against regression: if anyone inadvertently
+    re-introduces per-call mask-expansion overhead, the perf-guard
+    test fails loudly.
+    """
+
+    def test_sparse_m5plus_fallback_correctness_equivalence(self):
+        """Post-patch output is bit-exact vs MLX SDPA + manually-built float bias.
+
+        Equivalence bar: rmse = 0 (bit-exact). The fast-fallback computes
+        the SAME float bias as the pre-patch v2.33.0 code, just cached.
+        Bit-exactness is the natural target — any non-zero error means
+        the patch changed semantics (which it does not).
+        """
+        # lcsa_small_seq4k from Sprint B Phase 0
+        B, H, N, D = 1, 12, 4096, 128
+        mx.random.seed(0)
+        q = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        mask = make_sliding_window_mask(N, window_size=512, head_dim=D)
+        mx.async_eval(q, k, v, mask); mx.synchronize()
+
+        BQ, BK = _steel_block_config(D)
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        scale = 1.0 / math.sqrt(D)
+
+        # Reference: SDPA with manually-built float bias (the v2.33.0
+        # baseline path's output, materialized here for comparison).
+        full_mask = mx.broadcast_to(mask[None, None, :, :], (B, H, NQ, NK))
+        expanded = full_mask[:, :, :, None, :, None]
+        expanded = mx.broadcast_to(expanded, (B, H, NQ, BQ, NK, BK))
+        expanded = expanded.reshape(B, H, NQ * BQ, NK * BK)[:, :, :N, :N]
+        neg_inf = mx.array(float("-inf"), dtype=q.dtype)
+        zero = mx.array(0.0, dtype=q.dtype)
+        bias = mx.where(expanded, zero, neg_inf)
+        mx.async_eval(bias); mx.synchronize()
+
+        y_ref = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=bias)
+        y_mfa = flash_attention_sparse(q, k, v, mask, scale=scale, causal=False)
+        mx.async_eval(y_ref, y_mfa); mx.synchronize()
+
+        err = mx.abs(y_ref.astype(mx.float32) - y_mfa.astype(mx.float32))
+        rmse = float(mx.sqrt(mx.mean(err * err)))
+        # Bit-exact target: fast-fallback computes the same float bias.
+        assert rmse == 0.0, (
+            f"post-patch flash_attention_sparse not bit-exact vs "
+            f"SDPA+float-bias: rmse={rmse:.6e}"
+        )
+
+    @pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
+    def test_sparse_m5plus_perf_regression_guard(self):
+        """Cache-hit pattern: MFA within 10% of SDPA-direct on M5+.
+
+        Pattern: same `block_mask` Python object reused across 5 timed
+        calls (after warmup). This is the common production pattern
+        (build mask once per forward, reuse across attention calls)
+        and is the v2.33.1 cache target.
+
+        v2.33.0 baseline: MFA was 2.07× SDPA-direct (Sprint B Phase 0).
+        v2.33.1 target:   MFA ≤ 1.10× SDPA-direct (within 10%).
+
+        Skipped on non-M5+ hardware (the fast-fallback path is M5+ only).
+        """
+        from mlx_mfa import get_device_info
+        info = get_device_info()
+        if not info.get("is_m5_plus"):
+            pytest.skip(
+                "M5+ fast-fallback only — skipping on pre-M5 hardware")
+
+        B, H, N, D = 1, 12, 4096, 128
+        mx.random.seed(0)
+        q = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        k = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        v = (mx.random.uniform(shape=(B, H, N, D)) * 0.1).astype(mx.float16)
+        mask = make_sliding_window_mask(N, window_size=512, head_dim=D)
+        mx.async_eval(q, k, v, mask); mx.synchronize()
+
+        BQ, BK = _steel_block_config(D)
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        scale = 1.0 / math.sqrt(D)
+
+        # Prebuilt bias for the SDPA-direct baseline (outside timed loop).
+        full_mask = mx.broadcast_to(mask[None, None, :, :], (B, H, NQ, NK))
+        expanded = full_mask[:, :, :, None, :, None]
+        expanded = mx.broadcast_to(expanded, (B, H, NQ, BQ, NK, BK))
+        expanded = expanded.reshape(B, H, NQ * BQ, NK * BK)[:, :, :N, :N]
+        neg_inf = mx.array(float("-inf"), dtype=q.dtype)
+        zero = mx.array(0.0, dtype=q.dtype)
+        bias = mx.where(expanded, zero, neg_inf)
+        mx.async_eval(bias); mx.synchronize()
+
+        # Warmup MFA path — populates the LRU cache for `mask`.
+        for _ in range(3):
+            y = flash_attention_sparse(q, k, v, mask, scale=scale, causal=False)
+            mx.async_eval(y); mx.synchronize()
+        # Warmup SDPA-direct.
+        for _ in range(3):
+            y = mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask=bias)
+            mx.async_eval(y); mx.synchronize()
+
+        # Time MFA (cache-hit on every call).
+        mfa_times = []
+        for _ in range(5):
+            mx.synchronize()
+            t0 = time.perf_counter()
+            y = flash_attention_sparse(q, k, v, mask, scale=scale, causal=False)
+            mx.async_eval(y); mx.synchronize()
+            mfa_times.append(time.perf_counter() - t0)
+
+        # Time SDPA-direct (bias pre-built outside loop).
+        sdpa_times = []
+        for _ in range(5):
+            mx.synchronize()
+            t0 = time.perf_counter()
+            y = mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=scale, mask=bias)
+            mx.async_eval(y); mx.synchronize()
+            sdpa_times.append(time.perf_counter() - t0)
+
+        t_mfa = statistics.median(mfa_times)
+        t_sdpa = statistics.median(sdpa_times)
+        ratio = t_mfa / t_sdpa
+        # 10% tolerance per v2.33.1 patch §3.
+        assert ratio <= 1.10, (
+            f"v2.33.1 perf regression guard: MFA/SDPA ratio = {ratio:.3f}× "
+            f"(MFA {t_mfa*1000:.2f}ms vs SDPA {t_sdpa*1000:.2f}ms). "
+            f"Target: ≤ 1.10×. v2.33.0 baseline: 2.07×. "
+            f"Cache-hit pattern should reach ≤ 1.10×; if this fails, the "
+            f"id-keyed cache is not being hit (regression in _SPARSE_BIAS_CACHE "
+            f"in mlx_mfa/attention.py)."
+        )
+
+    def test_sparse_m1m4_path_unchanged(self):
+        """The M5+ fast-fallback patch does NOT touch the M1-M4 path.
+
+        v2.33.1 modifies only `_sparse_fallback_sdpa_perhead`, which is
+        reached on M5+ per `attention.py`'s `if info.get("is_m5_plus"):`
+        check. M1-M4 still routes via `_make_mfa_sparse_custom` → C++
+        STEEL V1 sparse kernel.
+
+        This is a code-level guard: if a future patch removes the
+        is_m5_plus dispatch check or rewires the M1-M4 path,
+        this test catches it.
+        """
+        import inspect
+        src = inspect.getsource(flash_attention_sparse)
+        assert 'is_m5_plus' in src, (
+            "flash_attention_sparse must retain the is_m5_plus dispatch check"
+        )
+        assert '_sparse_fallback_sdpa_perhead' in src, (
+            "flash_attention_sparse must retain the M5+ fast-fallback route"
+        )
+        assert '_make_mfa_sparse_custom' in src, (
+            "flash_attention_sparse must retain the M1-M4 STEEL sparse path"
+        )
 
 
 # ==========================================================================

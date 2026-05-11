@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.33.0** — Conv3D NAX SHIP-DEFAULT (Sprint C+D). Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
+Current version: **2.33.1** — Conv3D NAX SHIP-DEFAULT + sparse attention M5+ fast-fallback. Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
 
 ## Foreword
 
@@ -354,6 +354,29 @@ model = patch_seedvr2_vae(model)
 # profile to route through conv3d_nax_forward(). Skips ineligible layers
 # (logged with reason). Restorable via patch_seedvr2_vae(model, restore=True).
 ```
+
+## Sparse attention on M5+ (v2.33.1)
+
+`mlx_mfa.flash_attention_sparse(q, k, v, block_mask, ...)` is the
+block-sparse attention API for FlashVSR / SparkVSR / similar LCSA
+patterns. On M5+ Apple Silicon it routes through MLX's SDPA after
+expanding the block mask to a float bias, with the expanded bias
+cached by `id(block_mask)` since **v2.33.1**.
+
+- **Cache HIT** (same `block_mask` Python object reused across attention
+  calls — common production pattern: build mask once per forward pass):
+  full SDPA-direct performance recovered; <10% overhead vs calling
+  `mx.fast.scaled_dot_product_attention` with a prebuilt bias.
+- **Cache MISS** (fresh mask each call — e.g. FlashVSR's per-DiT-layer
+  `generate_draft_block_mask_mlx`): falls back to the v2.33.0 expansion
+  path; no faster, no slower.
+
+The NAX-native block-skip path that exploits sparsity at the kernel level
+is in development as Sprint B Phase 1.x (expected 3-15× speedup at typical
+LCSA density — see `docs/lcsa-nax/survey-report.md` §10).
+
+Pre-M5 hardware (M1-M4) is unchanged: routes through the native C++
+STEEL V1 sparse kernel that already skips masked tiles.
 
 ## License
 

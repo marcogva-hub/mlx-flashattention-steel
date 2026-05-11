@@ -791,6 +791,6 @@ NB_MODULE(_ext, m) {
       "padding: 6-tuple (T_left,T_right,H_left,H_right,W_left,W_right). "
       "chunk_M: 0 = auto from int32-byte-budget heuristic.");
 
-  // _ext.__version__ removed in v2.33.0 — single SoT in mlx_mfa.__version__
-  // (was hardcoded "2.22.0", 11 versions stale).
+  // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__
+  // (was hardcoded "2.22.0", 11 versions stale). See release-flow-validation-report.md §C.3.
 }
