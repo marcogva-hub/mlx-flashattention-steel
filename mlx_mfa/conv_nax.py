@@ -505,6 +505,89 @@ def _sanity_asserts(x: mx.array, w: mx.array, stride, padding, dilation):
 
 
 # ---------------------------------------------------------------------
+# Phase 1.4 — 1×1×1 fast path internals.
+# ---------------------------------------------------------------------
+import os
+
+
+def _conv_disable_fast_path() -> bool:
+    """Env-var escape hatch: MFA_CONV_NAX_NO_FAST_PATH=1 forces general path.
+
+    Used by tests to compare fast-path output against general-path output
+    (sanity), and by callers who need to bypass the fast path for any
+    diagnostic reason.
+    """
+    return os.environ.get("MFA_CONV_NAX_NO_FAST_PATH", "") == "1"
+
+
+def _make_pointwise_matmul_kernel(m_chunk: int, K: int, N: int, dtype):
+    """Compile (or fetch from cache) a matmul kernel for a 1×1×1 chunk.
+
+    The matmul kernel here is the SAME as the general path's (no im2col
+    transpose tricks needed) -- the only difference is that we skip the
+    im2col preamble.
+    """
+    key = ("Pointwise1x1x1Matmul", m_chunk, K, N, str(dtype))
+    if key in _KERNEL_CACHE:
+        return _KERNEL_CACHE[key]
+
+    kernel = mx.fast.metal_kernel(
+        name=f"conv3d_1x1x1_matmul2d_{m_chunk}_{K}_{N}",
+        input_names=["A", "B"],
+        output_names=["C"],
+        source=_matmul2d_source(m_chunk, K, N),
+        header=_MATMUL_HEADER,
+        ensure_row_contiguous=True,
+    )
+    _KERNEL_CACHE[key] = kernel
+    return kernel
+
+
+def _dispatch_1x1x1_fast_path(x_flat, w_flat, chunks, M, K_eff, N,
+                              B, T_out, H_out, W_out, C_out, dtype):
+    """Run the chunked matmul-only path for 1×1×1 conv.
+
+    Mirrors the general path's chunk loop but skips im2col. K here is
+    C_in (not 27 × C_in).
+    """
+    chunk_outputs = []
+    n_chunks = len(chunks)
+    force_per_chunk_eval = n_chunks > 1
+
+    for (m_offset, m_chunk) in chunks:
+        # Slice the flattened input to this chunk's rows. Row-major
+        # contiguous, so this is metadata-only -- but with
+        # ensure_row_contiguous=True on the kernel, MLX may still copy
+        # the slice. For the single-chunk case (the common case), just
+        # pass x_flat directly to avoid that copy.
+        if n_chunks == 1:
+            x_chunk = x_flat
+        else:
+            x_chunk = x_flat[m_offset:m_offset + m_chunk, :]
+
+        mm_kernel = _make_pointwise_matmul_kernel(m_chunk, K_eff, N, dtype)
+        n_tg_x = (N + N_TILE - 1) // N_TILE
+        n_tg_y = (m_chunk + M_TILE - 1) // M_TILE
+        chunk_flat = mm_kernel(
+            inputs=[x_chunk, w_flat],
+            output_shapes=[(m_chunk, N)],
+            output_dtypes=[dtype],
+            grid=(n_tg_x * TG_THREADS, n_tg_y, 1),
+            threadgroup=(TG_THREADS, 1, 1),
+        )[0]
+        if force_per_chunk_eval:
+            mx.async_eval(chunk_flat)
+            mx.synchronize()
+        chunk_outputs.append(chunk_flat)
+
+    if len(chunk_outputs) == 1:
+        flat = chunk_outputs[0]
+    else:
+        flat = mx.concatenate(chunk_outputs, axis=0)
+    return flat.reshape(B, T_out, H_out, W_out, C_out)
+
+
+# ---------------------------------------------------------------------
 # Public API.
 # ---------------------------------------------------------------------
 def conv3d_nax_forward(
@@ -564,6 +647,38 @@ def conv3d_nax_forward(
         x, w, stride, padding, dilation)
     (pT_l, pT_r), (pH_l, pH_r), (pW_l, pW_r) = pad_norm
     N = C_out
+
+    # ==================================================================
+    # Phase 1.4 — 1×1×1 fast path.
+    #
+    # When K_T = K_H = K_W = 1 AND all paddings are zero AND all strides
+    # are 1, the convolution degenerates to a pointwise matmul:
+    #   y[b,t,h,w,c_out] = sum_{c_in} x[b,t,h,w,c_in] × w[c_out, c_in]
+    # No spatial expansion: K = C_in (not 27 × C_in for 3×3×3).
+    # Im2col becomes the identity → we can dispatch matmul directly on
+    # the input via metadata-only mx.reshape (channels-last layout makes
+    # this a no-copy operation).
+    #
+    # See D26 in conv-nax-phase1_3-decisions.md for the design rationale.
+    # ==================================================================
+    is_pointwise = (
+        K_T == 1 and K_H == 1 and K_W == 1
+        and pT_l == 0 and pT_r == 0 and pH_l == 0 and pH_r == 0
+        and pW_l == 0 and pW_r == 0
+        and sT == 1 and sH == 1 and sW == 1
+    )
+    if is_pointwise and not _conv_disable_fast_path():
+        # Reshape input (B, T, H, W, C_in) -> (M, C_in) via metadata only.
+        # Since channels-last is row-major contiguous, the reshape is free.
+        x_flat = x.reshape(M, C_in)
+        # Weight is already (C_out, 1, 1, 1, C_in); flatten to (C_out, C_in).
+        w_flat_pw = w.reshape(C_out, C_in)
+        # Plan chunks based on the smaller K = C_in (vs K_T*K_H*K_W*C_in).
+        dtype_bytes = 2
+        chunks_pw = _compute_chunk_layout(M, C_in, dtype_bytes)
+        return _dispatch_1x1x1_fast_path(
+            x_flat, w_flat_pw, chunks_pw, M, C_in, N,
+            B, T_out, H_out, W_out, C_out, x.dtype)
 
     # Reshape weight to (C_out, K_T*K_H*K_W*C_in) row-major (no copy if
     # channels-last input is contiguous over the last 4 dims).
