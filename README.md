@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.32.0** — SDPA routing for M5+ NAX. Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
+Current version: **2.33.0** — Conv3D NAX SHIP-DEFAULT (Sprint C+D). Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
 
 ## Foreword
 
