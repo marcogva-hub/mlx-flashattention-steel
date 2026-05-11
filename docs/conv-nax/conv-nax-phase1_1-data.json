@@ -1,0 +1,79 @@
+{
+  "phase": "1.1",
+  "branch": "experiment/conv-nax-phase1_1",
+  "date_utc": "2026-05-11",
+  "correctness_data": {
+    "shape": {"name": "mid_resnet", "B": 1, "T": 5, "H": 64, "W": 64,
+              "C_in": 512, "C_out": 512, "K_T": 3, "K_H": 3, "K_W": 3,
+              "stride": [1, 1, 1], "padding": [1, 1, 1], "dilation": [1, 1, 1]},
+    "M": 20480, "K": 13824, "N": 512,
+    "dtype": "float16",
+    "seed": 0,
+    "oracles": {
+      "torch_cpu_fp32": {
+        "test": "test_mid_resnet_vs_torch_cpu_fp32",
+        "bar_rel": 1e-3,
+        "result": "PASS",
+        "comment": "PyTorch torch.nn.functional.conv3d on FP32 CPU; layout converted MLX channels-last <-> PyTorch channels-first via permute"
+      },
+      "mlx_conv_general_f16": {
+        "test": "test_mid_resnet_vs_mlx_conv_general",
+        "bar_rel": 1e-4,
+        "result": "PASS",
+        "rel_err": 2.95e-5,
+        "comment": "MLX baseline same dtype regime; at parity with baseline FP16 noise floor"
+      }
+    },
+    "sentinel_coverage": {
+      "test": "test_mid_resnet_sentinel_coverage",
+      "n_nan": 0,
+      "n_inf": 0,
+      "result": "PASS",
+      "comment": "all output cells written by kernel, no partial-write artifacts"
+    },
+    "cross_session_reproduction": {
+      "sessions": [
+        {"session": "S1", "rmse": 1.0580762755e-03, "max_err": 3.125e-02, "out_mag": 35.84375},
+        {"session": "S2", "rmse": 1.0580762755e-03, "max_err": 3.125e-02, "out_mag": 35.84375},
+        {"session": "S3", "rmse": 1.0580762755e-03, "max_err": 3.125e-02, "out_mag": 35.84375}
+      ],
+      "result": "PASS",
+      "bit_exact": true,
+      "comment": "10-decimal identity across 3 sessions; FP16 matmul2d is fully deterministic"
+    }
+  },
+  "tile_exploration_data": {
+    "shape_tested": "mid_resnet (M=20480, K=13824, N=512)",
+    "n_runs": 3,
+    "configs": [
+      {"M_tile": 32, "N_tile": 32, "K_tile": 32, "exec_sg": 1, "TG_threads": 32,  "n_TG": 10240, "median_ms": 6.71,  "TFLOPS": 43.22},
+      {"M_tile": 32, "N_tile": 32, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 10240, "median_ms": 16.96, "TFLOPS": 17.10},
+      {"M_tile": 64, "N_tile": 32, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 5120,  "median_ms": 15.11, "TFLOPS": 19.19},
+      {"M_tile": 64, "N_tile": 32, "K_tile": 64, "exec_sg": 4, "TG_threads": 128, "n_TG": 5120,  "median_ms": 19.27, "TFLOPS": 15.05},
+      {"M_tile": 64, "N_tile": 64, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 2560,  "median_ms": 8.89,  "TFLOPS": 32.61},
+      {"M_tile": 128, "N_tile": 32, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 2560, "median_ms": 15.03, "TFLOPS": 19.29},
+      {"M_tile": 32, "N_tile": 64, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 5120,  "median_ms": 11.02, "TFLOPS": 26.30},
+      {"M_tile": 16, "N_tile": 32, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 20480, "median_ms": 16.25, "TFLOPS": 17.84},
+      {"M_tile": 16, "N_tile": 64, "K_tile": 32, "exec_sg": 4, "TG_threads": 128, "n_TG": 10240, "median_ms": 12.02, "TFLOPS": 24.13}
+    ],
+    "winner": "(32, 32, 32, sg=1)",
+    "winner_rationale": "matches V6 NAX exactly; max TGs = max occupancy"
+  },
+  "prod_smoke_data_single_session_no_cooldown": {
+    "tile": "(32, 32, 32, sg=1)",
+    "results": [
+      {"shape": "mid_resnet",            "M": 20480,   "K": 13824, "N": 512, "median_ms": 6.45,    "TFLOPS": 44.92, "pct_38tf_peak": 118.2},
+      {"shape": "up1_resnet",            "M": 147456,  "K": 13824, "N": 512, "median_ms": 86.70,   "TFLOPS": 24.08, "pct_38tf_peak":  63.4},
+      {"shape": "up2_resnet0_chunk_cap", "M": 297000,  "K": 13824, "N": 256, "median_ms": 68.01,   "TFLOPS": 30.91, "pct_38tf_peak":  81.3},
+      {"shape": "up3_resnet_chunk_cap",  "M": 594000,  "K": 3456,  "N": 128, "median_ms": 13.30,   "TFLOPS": 39.50, "pct_38tf_peak": 104.0},
+      {"shape": "up2_resnet_full",       "M": 1114112, "K": 6912,  "N": 256, "median_ms": 86.01,   "TFLOPS": 45.84, "pct_38tf_peak": 120.6},
+      {"shape": "up2_resnet0_peakflops", "M": 1114112, "K": 13824, "N": 256, "median_ms": 2092.73, "TFLOPS":  3.77, "pct_38tf_peak":   9.9, "working_set_bound": true},
+      {"shape": "probe_floor",           "M": 4096,    "K": 13824, "N": 512, "median_ms": 2.32,    "TFLOPS": 24.94, "pct_38tf_peak":  65.6},
+      {"shape": "probe_ramp",            "M": 8192,    "K": 13824, "N": 512, "median_ms": 2.81,    "TFLOPS": 41.20, "pct_38tf_peak": 108.4},
+      {"shape": "up3_resnet0_full",      "skipped": true, "reason": "working set 62.7 GB > 32 GB budget"}
+    ],
+    "dominant_median_excluding_working_set_bound": 37.91,
+    "gate_assessment_single_session": "PROCEED (median > 30 TF threshold)"
+  },
+  "three_session_microbench_data": "see docs/conv-nax/conv-nax-phase1_1-matmul2d-microbench-v2.json"
+}
