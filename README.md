@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.32.0** — SDPA routing for M5+ NAX. Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
+Current version: **2.33.0** — Conv3D NAX SHIP-DEFAULT (Sprint C+D). Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
 
 ## Foreword
 
@@ -276,6 +276,83 @@ out_step = rt.step(
     mx.random.normal((1, 8, 1, 128)).astype(mx.float16),
     mx.random.normal((1, 8, 1, 128)).astype(mx.float16),
 )
+```
+
+## Conv3D NAX support (M5+ Apple Silicon)
+
+mlx-mfa includes a NAX-accelerated 3D convolution path for shapes matching
+the SeedVR2 VAE production profile. Sprint C v1.x landed a SHIP-DEFAULT
+verdict (median **1.64×** speedup vs `mx.conv_general` across 6 production
+shapes); Sprint D migrated the dispatch from Python orchestrator to a
+C++ `_ext.conv3d_nax_forward` binding.
+
+### Quickstart
+
+```python
+import mlx.core as mx
+from mlx_mfa.conv_nax import conv3d_nax_forward
+
+# Channels-last layout: (B, T, H, W, C_in)
+x = mx.random.normal((1, 5, 64, 64, 512)).astype(mx.float16)
+w = mx.random.normal((512, 3, 3, 3, 512)).astype(mx.float16)  # (C_out, K_T, K_H, K_W, C_in)
+y = conv3d_nax_forward(x, w, stride=(1,1,1), padding=(1,1,1), dilation=(1,1,1))
+# y.shape == (1, 5, 64, 64, 512)
+```
+
+### Supported shapes
+
+- 3D inputs in `(N, T, H, W, C_in)` channels-last layout (matches `mx.conv_general`)
+- `3×3×3` and `1×1×1` kernels (other small kernels may work but are not in the validated set)
+- FP16 dtype (BF16 supported in code paths but not yet on the validated bench set)
+- `stride = (1, 1, 1)`, `dilation = (1, 1, 1)`
+- Symmetric padding (int or 3-tuple) **or** asymmetric padding via
+  3-tuple of `(left, right)` pairs **or** flat 6-tuple
+  `(T_left, T_right, H_left, H_right, W_left, W_right)`. Causal video
+  conv: `causal_pad_t=True` flag or `padding=((K_T-1, 0), (pH,pH), (pW,pW))`.
+
+### Expected speedup vs `mx.conv_general` (M5 Max, FP16)
+
+| Shape profile (SeedVR2 VAE) | M | K | Speedup |
+|---|---:|---:|---:|
+| mid_resnet (small M, K=13824) |     20,480 | 13824 | **2.26×** |
+| up1_resnet (med M, K=13824)   |    147,456 | 13824 | **2.00×** |
+| up2_resnet0_chunk_cap         |    297,000 | 13824 | **1.64×** |
+| up3_resnet_chunk_cap (K=3456) |    592,896 |  3456 | 1.02× (parity) |
+| up2_resnet_full               |  1,114,112 |  6912 | **1.65×** |
+| up2_resnet0_peakflops         |  1,114,112 | 13824 | **1.54×** |
+
+Median across the SeedVR2 VAE production set: **1.64×**. See
+[`docs/conv-nax/ship-shelve-decision.md`](docs/conv-nax/ship-shelve-decision.md)
+for the full 3-session §4-compliant methodology.
+
+### Caveats
+
+- At **K ≤ 3456** (small `in_channels`), speedup approaches parity (~1.0×)
+  as the workload becomes bandwidth-bound. No regression, just no gain.
+- **int32 byte-offset chunking invariant.** MPP `matmul2d` uses int32 for
+  internal byte addresses; single-buffer reads beyond `2^31` bytes produce
+  NaN. `conv3d_nax_forward()` auto-chunks `M` to keep each chunk's
+  im2col buffer below the safety limit (`2^31 × 0.875` bytes). Users
+  don't need to think about this; documenting it because it's the
+  Sprint C Phase 1.2 lesson learned and the institutional rule for any
+  future MPP-based code in this repo.
+- **C++ entry point.** Production dispatch goes through
+  `mlx_mfa._ext.conv3d_nax_forward` (Sprint D migration). The Python
+  orchestrator is preserved as
+  `_conv3d_nax_forward_python_legacy` for diagnostics; toggle via
+  `MFA_CONV_NAX_USE_PYTHON_LEGACY=1`.
+
+### Integration with SeedVR2 VAE
+
+For drop-in replacement in SeedVR2 VAE Python code (or any MLX model
+using `mx.conv_general` for Conv3D):
+
+```python
+from mlx_mfa.integrations.seedvr2_vae import patch_seedvr2_vae
+model = patch_seedvr2_vae(model)
+# Walks model modules, swaps Conv3D layers matching the NAX-eligible
+# profile to route through conv3d_nax_forward(). Skips ineligible layers
+# (logged with reason). Restorable via patch_seedvr2_vae(model, restore=True).
 ```
 
 ## License

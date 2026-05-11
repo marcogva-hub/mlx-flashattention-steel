@@ -643,3 +643,112 @@ def test_conv3d_nax_1x1x1_fast_equals_general():
     assert rmse == 0.0, (
         f"fast vs general path divergence: rmse={rmse} -- must be bit-exact"
     )
+
+
+# =====================================================================
+# Sprint D Track C — patch_seedvr2_vae patcher
+# =====================================================================
+
+import mlx.nn as nn
+from mlx_mfa.integrations.seedvr2_vae import patch_seedvr2_vae, is_patched
+
+
+class _MockVAEBlock(nn.Module):
+    """Mock SeedVR2 VAE block: 3 Conv3d layers, 2 eligible + 1 ineligible.
+
+    Used when actual SeedVR2 VAE Python is not locally available. The
+    structure mirrors a typical VAE Conv3d block: pre-conv (3×3×3),
+    pointwise mixer (1×1×1), and a wider kernel (5×5×5) that should
+    skip the patch and route through standard mx.conv_general.
+    """
+    def __init__(self, C=64):
+        super().__init__()
+        self.conv_a = nn.Conv3d(C, C, kernel_size=3, padding=1)  # eligible
+        self.conv_b = nn.Conv3d(C, C, kernel_size=1, padding=0)  # eligible (1x1x1)
+        self.conv_c = nn.Conv3d(C, C, kernel_size=5, padding=2)  # ineligible (5x5x5)
+
+    def __call__(self, x):
+        x = self.conv_a(x)
+        x = self.conv_b(x)
+        x = self.conv_c(x)
+        return x
+
+
+def _make_mock_model_f16(C=64):
+    m = _MockVAEBlock(C=C)
+    # Cast all Conv3d weights/biases to f16
+    for _, mod in m.named_modules():
+        if isinstance(mod, nn.Conv3d):
+            mod.weight = mod.weight.astype(mx.float16)
+            if mod.bias is not None:
+                mod.bias = mod.bias.astype(mx.float16)
+    return m
+
+
+def test_patcher_correctness():
+    """Patched model output matches un-patched within FP16 noise."""
+    m = _make_mock_model_f16(C=64)
+    mx.random.seed(0)
+    x = (mx.random.uniform(shape=(1, 4, 16, 16, 64)) * 0.1).astype(mx.float16)
+    mx.async_eval(x); mx.synchronize()
+    y_orig = m(x)
+    m_patched = patch_seedvr2_vae(m)
+    y_patched = m_patched(x)
+    mx.async_eval(y_orig, y_patched); mx.synchronize()
+    err = mx.abs(y_orig.astype(mx.float32) - y_patched.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    mag = float(mx.max(mx.abs(y_orig.astype(mx.float32))))
+    rel = rmse / mag if mag > 0 else 0.0
+    assert rel < 1e-3, f"patched vs unpatched rel={rel:.4e} exceeds 1e-3"
+
+
+def test_patcher_idempotent():
+    """Patching twice produces same state as patching once."""
+    m = _make_mock_model_f16(C=64)
+    patch_seedvr2_vae(m)
+    count_after_first = sum(
+        1 for _, mod in m.named_modules()
+        if getattr(mod, "_conv_nax_patched", False)
+    )
+    patch_seedvr2_vae(m)  # second call
+    count_after_second = sum(
+        1 for _, mod in m.named_modules()
+        if getattr(mod, "_conv_nax_patched", False)
+    )
+    assert count_after_first == count_after_second == 2, (
+        f"idempotency violated: first={count_after_first} "
+        f"second={count_after_second}, expected 2"
+    )
+
+
+def test_patcher_skips_ineligible():
+    """5×5×5 conv must NOT be patched; reason logged."""
+    m = _make_mock_model_f16(C=64)
+    patch_seedvr2_vae(m)
+    # conv_a (3×3×3) and conv_b (1×1×1) patched; conv_c (5×5×5) NOT.
+    assert getattr(m.conv_a, "_conv_nax_patched", False) is True
+    assert getattr(m.conv_b, "_conv_nax_patched", False) is True
+    assert getattr(m.conv_c, "_conv_nax_patched", False) is False
+
+
+def test_patcher_restore():
+    """patch then restore → bit-exact identical to un-patched original."""
+    m = _make_mock_model_f16(C=64)
+    mx.random.seed(0)
+    x = (mx.random.uniform(shape=(1, 4, 16, 16, 64)) * 0.1).astype(mx.float16)
+    mx.async_eval(x); mx.synchronize()
+    y_orig = m(x)
+    mx.async_eval(y_orig); mx.synchronize()
+    assert is_patched(m) is False
+    patch_seedvr2_vae(m)
+    assert is_patched(m) is True
+    patch_seedvr2_vae(m, restore=True)
+    assert is_patched(m) is False
+    y_restored = m(x)
+    mx.async_eval(y_restored); mx.synchronize()
+    err = mx.abs(y_orig.astype(mx.float32) - y_restored.astype(mx.float32))
+    rmse = float(mx.sqrt(mx.mean(err * err)))
+    assert rmse < 1e-6, (
+        f"restore not bit-exact: rmse={rmse} -- restore should be a no-op "
+        f"on path correctness"
+    )

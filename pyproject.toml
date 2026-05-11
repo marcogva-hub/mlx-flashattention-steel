@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-mfa"
-version = "2.32.0"
+version = "2.33.0"
 description = "Benchmark-backed Metal Flash Attention backends for MLX on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
