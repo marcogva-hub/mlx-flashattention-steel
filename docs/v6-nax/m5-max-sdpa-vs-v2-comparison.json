@@ -1,0 +1,66 @@
+{
+    "timestamp": "2026-05-02",
+    "machine": "Apple M5 Max (40 cores, 128 GB)",
+    "software": "macOS 26.5, MLX 0.31.2, mlx-mfa 2.28.1, MSL 3.1+ / 4.0",
+    "purpose": "Measure SDPA (Apple NAX) vs forced V2 STEEL on M5 production shapes",
+    "protocol": {
+        "warmup_iterations": 3,
+        "measured_iterations": 10,
+        "metric": "p50 (median) of perf_counter() around mx.eval(out)",
+        "synchronization": "mx.synchronize() before and after"
+    },
+    "results": [
+        {
+            "name": "SeedVR2-small",
+            "shape": {"B": 1, "H": 20, "N_q": 26730, "N_kv": 26730, "D": 128},
+            "dtype": "float16",
+            "sdpa_p50_ms": 176.58,
+            "v2_steel_forced_p50_ms": 633.30,
+            "sdpa_speedup_over_v2": 3.59,
+            "winner": "SDPA (Apple NAX)"
+        },
+        {
+            "name": "SeedVR2-large",
+            "shape": {"B": 1, "H": 20, "N_q": 111375, "N_kv": 111375, "D": 128},
+            "dtype": "float16",
+            "sdpa_p50_ms": 4323.69,
+            "v2_steel_forced_p50_ms": 12654.14,
+            "sdpa_speedup_over_v2": 2.93,
+            "winner": "SDPA (Apple NAX)"
+        },
+        {
+            "name": "FlashVSR-dense",
+            "shape": {"B": 1, "H": 10, "N_q": 4096, "N_kv": 4096, "D": 64},
+            "dtype": "float16",
+            "sdpa_p50_ms": 0.93,
+            "v2_steel_forced_p50_ms": 3.80,
+            "sdpa_speedup_over_v2": 4.09,
+            "winner": "SDPA (Apple NAX)"
+        },
+        {
+            "name": "CogVideoX",
+            "shape": {"B": 1, "H": 30, "N_q": 70200, "N_kv": 70200, "D": 128},
+            "dtype": "float16",
+            "sdpa_p50_ms": 2462.26,
+            "v2_steel_forced_p50_ms": 7244.84,
+            "sdpa_speedup_over_v2": 2.94,
+            "winner": "SDPA (Apple NAX)"
+        },
+        {
+            "name": "LTX2-cross",
+            "shape": {"B": 1, "H_q": 8, "H_kv": 8, "N_q": 2048, "N_kv": 14000, "D": 64},
+            "dtype": "float16",
+            "sdpa_p50_ms": 1.31,
+            "v2_steel_forced_p50_ms": 1.03,
+            "sdpa_speedup_over_v2": 0.79,
+            "winner": "MFA V2 STEEL (asymmetric cross-attn)",
+            "note": "Only shape where V2 STEEL beats SDPA — Apple's NAX kernel does not optimize for asymmetric N_q != N_kv."
+        }
+    ],
+    "summary": {
+        "self_attention": "SDPA (Apple NAX) is 2.9-4.1x faster than V2 STEEL.",
+        "cross_attention_asymmetric": "V2 STEEL is 1.27x faster than SDPA on LTX2-class shapes.",
+        "implication": "On M5 Max, the existing dispatch policy already routes self-attention to SDPA (which uses Apple NAX). Building V6 NAX in mlx-mfa for self-attention would compete with Apple's own NAX kernel — much harder than competing with V2 STEEL.",
+        "real_v6_value": "Asymmetric cross-attention + features SDPA lacks (paged-KV, varlen, sparse, attn_bias)."
+    }
+}

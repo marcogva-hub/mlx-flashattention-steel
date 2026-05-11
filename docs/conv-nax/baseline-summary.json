@@ -1,0 +1,92 @@
+{
+  "per_shape": {
+    "up2_resnet_256to256_T17_HW256_k3": {
+      "session_medians": [
+        265.16733400058,
+        264.9201250169426,
+        264.86966595984995
+      ],
+      "headline_ms": 264.9201250169426,
+      "cross_sess_range_pct": 0.11236142996347379,
+      "theory_min_ms": 103.75736783494736,
+      "ratio_measured_over_theory": 2.5532656672475142,
+      "headroom_ms": 161.16275718199526
+    },
+    "up3_resnet_128to128_T17_HW512_k3": {
+      "session_medians": [
+        262.5012089847587,
+        261.2260830355808,
+        261.07283402234316
+      ],
+      "headline_ms": 261.2260830355808,
+      "cross_sess_range_pct": 0.546796455322186,
+      "theory_min_ms": 103.75736783494736,
+      "ratio_measured_over_theory": 2.517662971666048,
+      "headroom_ms": 157.46871520063345
+    },
+    "up3_resnet0_256to128_T17_HW512_k3": {
+      "session_medians": [
+        511.6332499892451,
+        529.955624951981,
+        529.9069999600761
+      ],
+      "headline_ms": 529.9069999600761,
+      "cross_sess_range_pct": 3.4576586012482107,
+      "theory_min_ms": 207.51473566989472,
+      "ratio_measured_over_theory": 2.5535873307957693,
+      "headroom_ms": 322.39226429018134
+    },
+    "up1_resnet_512to512_T9_HW128_k3": {
+      "session_medians": [
+        136.46970799891278,
+        141.84345898684114,
+        141.8452079524286
+      ],
+      "headline_ms": 141.84345898684114,
+      "cross_sess_range_pct": 3.7897411638942864,
+      "theory_min_ms": 54.930371206736844,
+      "ratio_measured_over_theory": 2.5822410420821074,
+      "headroom_ms": 86.91308778010429
+    },
+    "mid_resnet_512to512_T5_HW64_k3": {
+      "session_medians": [
+        19.834916980471462,
+        20.659292000345886,
+        20.406708994414657
+      ],
+      "headline_ms": 20.406708994414657,
+      "cross_sess_range_pct": 4.039725465287206,
+      "theory_min_ms": 7.629218223157895,
+      "ratio_measured_over_theory": 2.6748099736447033,
+      "headroom_ms": 12.777490771256762
+    },
+    "up2_resnet0_512to256_T17_HW256_k3": {
+      "session_medians": [
+        513.768709031865,
+        533.7547499802895,
+        533.626708027441
+      ],
+      "headline_ms": 533.626708027441,
+      "cross_sess_range_pct": 3.7453224600213852,
+      "theory_min_ms": 207.51473566989472,
+      "ratio_measured_over_theory": 2.571512361783844,
+      "headroom_ms": 326.11197235754634
+    }
+  },
+  "call_counts": {
+    "mid_resnet_512to512_T5_HW64_k3": 5,
+    "up1_resnet_512to512_T9_HW128_k3": 3,
+    "up2_resnet0_512to256_T17_HW256_k3": 1,
+    "up2_resnet_256to256_T17_HW256_k3": 2,
+    "up3_resnet0_256to128_T17_HW512_k3": 1,
+    "up3_resnet_128to128_T17_HW512_k3": 2
+  },
+  "totals": {
+    "baseline_ms": 2643.3900460251607,
+    "theory_min_ms": 1032.996147415579,
+    "max_savings_ms": 1610.3938986095818,
+    "realistic_70pct_savings_ms": 1127.2757290267073,
+    "max_reduction_pct": 60.9215390301978,
+    "realistic_reduction_pct": 42.64507732113846
+  }
+}

@@ -1,0 +1,1027 @@
+{
+  "records": [
+    {
+      "shape": "whisper-base",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 12,
+        "Hk": 12,
+        "qL": 1500,
+        "kL": 1500,
+        "D": 80,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 1.63783300013165,
+      "runs_ms": [
+        1.6992080018098932,
+        1.6842910008563194,
+        1.63783300013165,
+        1.4978339968365617,
+        1.31883400172228
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "whisper-base",
+      "backend": "mfa",
+      "error": "flash_attention(backend='mfa'): unsupported configuration \u2014 head_dim=80, dtype=mlx.core.float16, v_dim_mismatch=False. Supported: head_dim\u2208{64,128,256,512}, dtype\u2208{f16,bf16,f32}."
+    },
+    {
+      "shape": "whisper-base",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 12,
+        "Hk": 12,
+        "qL": 1500,
+        "kL": 1500,
+        "D": 80,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 1.2157499986642506,
+      "runs_ms": [
+        1.3585419983428437,
+        1.2157499986642506,
+        1.2822919998143334,
+        1.038083999446826,
+        1.148584000475239
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "gpt-neo-d96",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 16,
+        "Hk": 16,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 96,
+        "causal": true
+      },
+      "backend": "sdpa",
+      "median_ms": 2.065500000753673,
+      "runs_ms": [
+        2.2318749979604036,
+        2.1259589993860573,
+        2.0481670035223942,
+        2.065500000753673,
+        2.001625001867069
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "gpt-neo-d96",
+      "backend": "mfa",
+      "error": "flash_attention(backend='mfa'): unsupported configuration \u2014 head_dim=96, dtype=mlx.core.float16, v_dim_mismatch=False. Supported: head_dim\u2208{64,128,256,512}, dtype\u2208{f16,bf16,f32}."
+    },
+    {
+      "shape": "gpt-neo-d96",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 16,
+        "Hk": 16,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 96,
+        "causal": true
+      },
+      "backend": "auto",
+      "median_ms": 2.019999999902211,
+      "runs_ms": [
+        2.1137500007171184,
+        2.019999999902211,
+        1.9577910024963785,
+        2.0234590010659304,
+        1.9283330002508592
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "codestral-d192",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 192,
+        "causal": true
+      },
+      "backend": "sdpa",
+      "median_ms": 4.798124999069842,
+      "runs_ms": [
+        4.77679200048442,
+        4.796958000952145,
+        4.798124999069842,
+        4.820374997507315,
+        4.826208001759369
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "codestral-d192",
+      "backend": "mfa",
+      "error": "flash_attention(backend='mfa'): unsupported configuration \u2014 head_dim=192, dtype=mlx.core.float16, v_dim_mismatch=False. Supported: head_dim\u2208{64,128,256,512}, dtype\u2208{f16,bf16,f32}."
+    },
+    {
+      "shape": "codestral-d192",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 192,
+        "causal": true
+      },
+      "backend": "auto",
+      "median_ms": 4.780041999765672,
+      "runs_ms": [
+        4.823374998522922,
+        4.755541998747503,
+        4.72112499846844,
+        4.805166001460748,
+        4.780041999765672
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "custom-d256",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 256,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 1.3400419993558899,
+      "runs_ms": [
+        1.7269580021093134,
+        1.5921660015010275,
+        1.3400419993558899,
+        1.269874999707099,
+        1.244374998350395
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "custom-d256",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 256,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 3.071084000112023,
+      "runs_ms": [
+        3.3612499973969534,
+        3.063834003114607,
+        3.062583000428276,
+        3.071084000112023,
+        3.141208002489293
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "custom-d256",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 256,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 1.1762079993786756,
+      "runs_ms": [
+        1.183666001452366,
+        1.1825000001408625,
+        1.1762079993786756,
+        1.0128329995495733,
+        1.0458340002514888
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 8192,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 0.49245799891650677,
+      "runs_ms": [
+        0.5473329983942676,
+        0.4687079999712296,
+        0.5726250019506551,
+        0.4867079987889156,
+        0.49245799891650677
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 8192,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 0.9477919993514661,
+      "runs_ms": [
+        0.9839999984251335,
+        0.9477919993514661,
+        0.9297090000472963,
+        0.9480410008109175,
+        0.9470000004512258
+      ],
+      "rmse": 7.428880508086877e-06,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 8192,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 1.0365419984736945,
+      "runs_ms": [
+        1.066875000105938,
+        1.0365419984736945,
+        1.0452079986862373,
+        0.9766250004759058,
+        1.0137079989362974
+      ],
+      "rmse": 7.428880508086877e-06,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-32k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 32768,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 0.6217089976416901,
+      "runs_ms": [
+        0.6195839996507857,
+        0.6103749983594753,
+        0.7246669993037358,
+        0.6217089976416901,
+        0.7006250016274862
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-32k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 32768,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 2.3172079963842407,
+      "runs_ms": [
+        2.532082999096019,
+        2.376707998337224,
+        2.3172079963842407,
+        2.214957999967737,
+        2.183583997975802
+      ],
+      "rmse": 3.5577900234784465e-06,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-decode-32k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 1,
+        "kL": 32768,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 1.640916001633741,
+      "runs_ms": [
+        1.640916001633741,
+        1.6652919985062908,
+        1.6461249979329295,
+        1.6069160010374617,
+        1.5714170003775507
+      ],
+      "rmse": 3.5577900234784465e-06,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "flashvsr-dense",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 10,
+        "Hk": 10,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 1.6757499979576096,
+      "runs_ms": [
+        1.7134590016212314,
+        1.6757499979576096,
+        1.698916999885114,
+        1.5557500009890646,
+        1.3500839995685965
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "flashvsr-dense",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 10,
+        "Hk": 10,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 3.5996250007883646,
+      "runs_ms": [
+        3.450415999395773,
+        3.6620419996324927,
+        3.5996250007883646,
+        3.6177500005578622,
+        3.5854169982485473
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "flashvsr-dense",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 10,
+        "Hk": 10,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 0.965750001341803,
+      "runs_ms": [
+        1.2404170010995585,
+        0.986458999250317,
+        0.965750001341803,
+        0.9552079973218497,
+        0.9110829996643588
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-2k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "sdpa",
+      "median_ms": 1.467917001718888,
+      "runs_ms": [
+        1.8930830010503996,
+        1.5475840009457897,
+        1.467917001718888,
+        1.2667499977396801,
+        1.1389160026737954
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-2k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "mfa",
+      "median_ms": 3.897249996953178,
+      "runs_ms": [
+        4.633417000150075,
+        4.273999998986255,
+        3.897249996953178,
+        3.534833998855902,
+        3.4361250000074506
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-2k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 2048,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "auto",
+      "median_ms": 1.3908750006521586,
+      "runs_ms": [
+        1.9219580026401673,
+        1.502582999819424,
+        1.3908750006521586,
+        1.202000003104331,
+        1.0930829994322266
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "sdpa",
+      "median_ms": 3.0435000007855706,
+      "runs_ms": [
+        3.0755420011701062,
+        3.083416999288602,
+        3.0400420000660233,
+        3.0358750009327196,
+        3.0435000007855706
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "mfa",
+      "median_ms": 11.128791000373894,
+      "runs_ms": [
+        11.065750000852859,
+        11.128791000373894,
+        11.678625000058673,
+        11.128624999400927,
+        11.624791997746797
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "auto",
+      "median_ms": 3.032958000403596,
+      "runs_ms": [
+        3.037916001630947,
+        3.032958000403596,
+        3.062749998207437,
+        3.0224170004657935,
+        3.0309169997053687
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "sdpa",
+      "median_ms": 11.071375000028638,
+      "runs_ms": [
+        11.159334000694798,
+        11.071375000028638,
+        11.110374998679617,
+        10.993125000823056,
+        11.006749999069143
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "mfa",
+      "median_ms": 41.99983299986343,
+      "runs_ms": [
+        41.825416999927256,
+        42.02037499999278,
+        41.99983299986343,
+        41.95941699799732,
+        42.00450000280398
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "llama-prefill-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 32,
+        "Hk": 8,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 128,
+        "causal": true
+      },
+      "backend": "auto",
+      "median_ms": 11.052750000089873,
+      "runs_ms": [
+        11.066457998822443,
+        10.998459001712035,
+        11.073333000240382,
+        11.052750000089873,
+        11.027333999663824
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "ltx2-cross",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 14000,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 1.3532919983845204,
+      "runs_ms": [
+        1.7893750009534415,
+        1.542124999104999,
+        1.3025419975747354,
+        1.301750002312474,
+        1.3532919983845204
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "ltx2-cross",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 14000,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 1.2055410006723832,
+      "runs_ms": [
+        1.401917001203401,
+        1.226708001922816,
+        1.2055410006723832,
+        1.01879100111546,
+        1.0859159992833156
+      ],
+      "rmse": 0.07212571054697037,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "ltx2-cross",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 8,
+        "Hk": 8,
+        "qL": 2048,
+        "kL": 14000,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 1.125208000303246,
+      "runs_ms": [
+        1.463915999920573,
+        1.1311660018691327,
+        1.125208000303246,
+        1.0487500003364403,
+        1.0081659966090228
+      ],
+      "rmse": 0.07212571054697037,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "seedvr2-small",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 26730,
+        "kL": 26730,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 160.7995000013034,
+      "runs_ms": [
+        160.77075000066543,
+        160.7995000013034,
+        160.88733300057356,
+        162.24712500115857,
+        160.20075000051293
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "seedvr2-small",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 26730,
+        "kL": 26730,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 630.0637919994188,
+      "runs_ms": [
+        644.7293749988603,
+        628.153999998176,
+        627.3989589972189,
+        632.3519159996067,
+        630.0637919994188
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "seedvr2-small",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 26730,
+        "kL": 26730,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 161.68595799899776,
+      "runs_ms": [
+        159.6581250014424,
+        161.36650000044028,
+        161.71024999857764,
+        161.8803339988517,
+        161.68595799899776
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "cogvideox",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 30,
+        "Hk": 30,
+        "qL": 70200,
+        "kL": 70200,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 2112.307708001026,
+      "runs_ms": [
+        2090.814541999862,
+        2112.307708001026,
+        2105.638249999174,
+        2135.921500001132,
+        2160.8489169993845
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "cogvideox",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 30,
+        "Hk": 30,
+        "qL": 70200,
+        "kL": 70200,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 7052.214041999832,
+      "runs_ms": [
+        7138.401750002231,
+        7042.855750001763,
+        7052.214041999832,
+        7076.809624999441,
+        6942.2014160008985
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "cogvideox",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 30,
+        "Hk": 30,
+        "qL": 70200,
+        "kL": 70200,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 2139.7926669997105,
+      "runs_ms": [
+        2128.5042080016865,
+        2151.284208001016,
+        2139.7926669997105,
+        2133.2519999996293,
+        2187.0055409999622
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d128-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 3.7335410015657544,
+      "runs_ms": [
+        4.7814999998081475,
+        3.7335410015657544,
+        3.626416000770405,
+        4.0681250029592775,
+        3.6198340021655895
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d128-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 13.489166998624569,
+      "runs_ms": [
+        13.480832996719982,
+        13.489166998624569,
+        13.566583002102561,
+        13.873459000024013,
+        13.370583001233172
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d128-4k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 4096,
+        "kL": 4096,
+        "D": 128,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 3.6621670005843043,
+      "runs_ms": [
+        3.8179580005817115,
+        3.599083000153769,
+        3.720708002219908,
+        3.5928750003222376,
+        3.6621670005843043
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d64-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "sdpa",
+      "median_ms": 5.740917000366608,
+      "runs_ms": [
+        5.696000000170898,
+        5.740917000366608,
+        5.838707998918835,
+        5.873666999832494,
+        5.7014580015675165
+      ],
+      "rmse": null,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d64-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "mfa",
+      "median_ms": 30.48833399952855,
+      "runs_ms": [
+        29.829415998392506,
+        30.48833399952855,
+        30.585958000301616,
+        30.96187499977532,
+        30.13454199754051
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    },
+    {
+      "shape": "canonical-d64-8k",
+      "shape_dims": {
+        "B": 1,
+        "Hq": 20,
+        "Hk": 20,
+        "qL": 8192,
+        "kL": 8192,
+        "D": 64,
+        "causal": false
+      },
+      "backend": "auto",
+      "median_ms": 5.909833998885006,
+      "runs_ms": [
+        5.929041999479523,
+        5.8389170008013025,
+        5.680000002030283,
+        6.168292002257658,
+        5.909833998885006
+      ],
+      "rmse": 0.0,
+      "finite": true,
+      "supported": true
+    }
+  ]
+}

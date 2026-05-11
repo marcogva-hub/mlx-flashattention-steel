@@ -435,10 +435,18 @@ void* ShaderCache::compile_shader(
 
     NSString* src = [NSString stringWithUTF8String:source.c_str()];
     MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-    // Allow the compiler to see the full Metal standard library.
-    // 3.1+ required: bfloat4 vector type (bfloat scalar added in 3.0,
-    // bfloat2/4 vectors added in 3.1 / macOS 14).
-    opts.languageVersion = MTLLanguageVersion3_1;
+    // Default: MSL 3.1 — bfloat2/4 vectors (added in macOS 14, 3.1+).
+    // V6 NAX kernels need MSL 4.0 for `<metal_tensor>` + MPP cooperative
+    // tensor APIs. Detect via the marker `// MFA_REQUIRE_MSL4` injected at
+    // the top of the source by the V6 generator.
+    if (source.find("// MFA_REQUIRE_MSL4") != std::string::npos) {
+      // MTLLanguageVersion4_0 (M5+, macOS 26 / iOS 19+).
+      // Use the integer encoding to stay compatible with older SDKs that
+      // may not have MTLLanguageVersion4_0 in their headers.
+      opts.languageVersion = (MTLLanguageVersion)((4 << 16) + 0);
+    } else {
+      opts.languageVersion = MTLLanguageVersion3_1;
+    }
 
     id<MTLLibrary> library = [device newLibraryWithSource:src
                                                   options:opts
