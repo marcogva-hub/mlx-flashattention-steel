@@ -2727,3 +2727,75 @@ verdict ratified.
 Sprint D — C++ MFAConv3DForward Primitive migration per D15 + D32
 ratification. See ship-shelve-decision.md §8-9.
 
+
+---
+## [2026-05-11 17:45] [CLAUDE] Sprint D close: Conv3D NAX production integration
+STATUS: COMPLETE
+
+### Plan
+- Objective: operationalize Sprint C ship-default verdict via 4 parallel
+  tracks (A C++ Primitive, B README/CHANGELOG, C patch_seedvr2_vae, D
+  migration validation).
+- Files to add/modify: csrc/mfa_conv_nax.{hpp,cpp}, csrc/bindings.cpp,
+  CMakeLists.txt, mlx_mfa/conv_nax.py refactor, mlx_mfa/integrations/seedvr2_vae.py,
+  README.md, CHANGELOG.md, pyproject.toml, tests + benches + 5 deliverables.
+
+### Changes
+- Track A: C++ free function + mlx::core::fast::metal_kernel dispatch
+  (D33 pragmatic choice). 511 LOC C++ added. Same kernels, same dispatch,
+  no algorithm changes.
+- Track B: README Conv3D NAX section, CHANGELOG v2.33.0, version bump.
+- Track C: patch_seedvr2_vae with __class__ swap (D34, after instance
+  __call__ override silently failed). 4 patcher tests PASS.
+- Track D: 6 migration tests (C++ vs Python equivalence on all
+  production shapes) + perf parity bench (mid_resnet + peakflops bookends).
+- 5 deliverables + this SESSION_LOG entry.
+
+### Dependency & regression check
+- 24 conv_nax tests PASS (was 20; +4 patcher)
+- 6 migration tests PASS (new)
+- 931 pre-existing tests unchanged
+- 6 pre-existing failures unchanged (same as Sprint C close)
+- 0 new regressions
+
+### Validation
+- C++ binding builds clean
+- pytest tests/test_conv_nax.py + test_conv_nax_migration.py: 30/30 PASS
+- Full suite: 961 PASS
+- Patcher A/B speedup: 2.29× (matches Phase 1.5 mid_resnet ratio 2.26×)
+- Perf parity ratio drift: -2.04% to +2.61% across bookends (within ±5% bar)
+- Migration correctness: 6/6 shapes rel_err < 1e-5 vs Python orchestrator
+
+### Tech cost
+- ~511 LOC C++ (kernel source builders ported from Python f-strings)
+- ~211 LOC patcher Python
+- ~180 LOC tests Python
+- ~220 LOC bench Python
+- ~500 LOC deliverable docs
+
+### Git
+- 8db62ed feat(conv-nax): MFAConv3DForward C++ entry point + binding
+- e8f2755 refactor(conv-nax): Python orchestrator delegates to C++
+- c2fc480 docs(conv-nax): README + CHANGELOG v2.33.0 + version bump
+- c282747 feat+test(conv-nax): patch_seedvr2_vae + 4 tests
+- 33780a0 test+bench(conv-nax): Track D migration + Track C patcher fix
+- (next, this commit) docs(conv-nax): Sprint D deliverables + SESSION_LOG
+
+### Key D-decisions in this sprint
+- D33: C++ free function via mlx::core::fast::metal_kernel (vs Primitive
+       subclass). Functionally equivalent; mechanical migration.
+- D34: Patcher uses __class__ swap, not instance __call__ override
+       (Python's special-method-on-type rule).
+- D35: Python legacy orchestrator preserved as
+       `_conv3d_nax_forward_python_legacy` + env var escape hatch.
+- D36: Sprint D perf bench is single-session sanity, not §4-compliant
+       re-sweep. Phase 1.5 numbers remain canonical.
+
+### Sprint D operationalizes Sprint C ship-default
+mlx_mfa.conv_nax.conv3d_nax_forward() is now production-ready:
+- C++-routed (50-100 µs Python overhead removed)
+- Documented in README + CHANGELOG
+- Integrable via patch_seedvr2_vae(model) drop-in
+- Validated against Python orchestrator + Phase 1.5 perf data
+- v2.33.0 ready for Marco's manual `git tag` + `twine upload`
+
