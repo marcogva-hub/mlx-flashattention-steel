@@ -4,6 +4,61 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.33.0] — 2026-05-11 — Conv3D NAX production path
+
+### Added
+
+- **Conv3D NAX path for M5+ Apple Silicon** — Sprint C v1.x ship-default
+  verdict ratified, Sprint D production-integrated.
+  - `mlx_mfa.conv_nax.conv3d_nax_forward(x, w, stride, padding, dilation, ...)` —
+    routed through MPP `matmul2d` for Conv3D `3×3×3` and `1×1×1` FP16.
+    **Median 1.64× speedup** vs `mx.conv_general` on SeedVR2 VAE production
+    shapes (range 1.02× to 2.26×).
+  - `mlx_mfa.integrations.seedvr2_vae.patch_seedvr2_vae(model)` —
+    drop-in patcher for any MLX model using `mx.conv_general` Conv3D.
+    Walks model modules, swaps eligible Conv3D layers to route through
+    `conv3d_nax_forward`. Restorable via `restore=True`.
+  - Supports symmetric **or** asymmetric padding (e.g., causal video conv:
+    `padding=((K_T-1, 0), (pH, pH), (pW, pW))` or `causal_pad_t=True`).
+  - Automatic M-chunking respects MPP `matmul2d` int32 byte-offset
+    invariant — single-buffer reads stay strictly below `2^31` bytes.
+    The Sprint C Phase 1.2 lesson learned, encoded as a runtime assert.
+  - 1×1×1 fast path: skips im2col entirely (metadata-only input reshape +
+    direct matmul on smaller K = C_in). ~15% wall-clock speedup at small
+    shapes; bit-exact identity to the general path.
+- **C++ `_ext.conv3d_nax_forward` binding** — Sprint D Track A migration
+  of the Phase 1.x Python orchestrator to C++. Removes ~50-100 µs Python
+  dispatch overhead per call. Implementation uses
+  `mlx::core::fast::metal_kernel` internally — Metal kernels frozen
+  from Sprint C (no algorithm or kernel changes).
+
+### Documentation
+
+- `docs/conv-nax/` — Sprint C v1.0-v1.5 deliverables (design doc,
+  per-phase inventory/decisions/results/data) + `ship-shelve-decision.md`
+  (the actionable Sprint C conclusion).
+- `docs/conv-nax/conv-nax-prod-*.md` — Sprint D production-integration
+  deliverables.
+- `README.md` — new `Conv3D NAX support` section with quickstart, supported
+  shapes, expected speedups, caveats, integration.
+
+### Internal
+
+- Unified `ConvKey` cache pattern (no per-Kind-separate maps).
+- Multi-session §4-compliant bench methodology (90s round / 60s shape /
+  180s initial cooldowns) applied to Phase 1.5 ship verdict; protocol
+  inherited from Sprint A.
+- Sentinel-fill + RMSE-vs-oracle smoke gate pattern (Phase 1.1 lesson)
+  applied to all conv-nax harnesses.
+
+### Known caveats
+
+- At `K ≤ 3456` (small `in_channels`), speedup is at parity with MLX
+  baseline. No regression, just no gain.
+- BF16 path is wired but not yet on the validated bench set; treat as
+  experimental until a Sprint D follow-up adds BF16 tests.
+- Conv3D backward (VJP) is out of scope for this release; forward-only.
+
 ## [2.32.0] — 2026-05-06 — SDPA routing for M5+ NAX
 
 ### Strategic shift
