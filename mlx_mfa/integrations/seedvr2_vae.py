@@ -90,21 +90,29 @@ def _eligibility_check(m: Any) -> Tuple[bool, str]:
     return (True, "eligible")
 
 
-def _make_patched_call(module: nn.Conv3d):
-    """Build a closure that dispatches via conv3d_nax_forward instead."""
-    stride = _module_stride(module)
-    padding = _module_padding(module)
-    dilation = _module_dilation(module)
+def _make_patched_class(orig_class, stride, padding, dilation):
+    """Build a dynamic subclass of `orig_class` that overrides __call__.
 
-    def patched_call(x: mx.array) -> mx.array:
-        # The module's weight may have been frozen, quantized, swapped --
-        # we read it fresh each call.
-        return conv3d_nax_forward(
-            x, module.weight,
+    Python's __call__ resolution is on the TYPE, not the instance. So
+    to intercept `mod(x)`, we swap `mod.__class__` to a subclass whose
+    __call__ dispatches via conv3d_nax_forward. The original class is
+    saved on the instance for restore.
+    """
+    def patched_call(self, x):
+        # Read weight + bias fresh each call (handles weight swap, quantize).
+        y = conv3d_nax_forward(
+            x, self.weight,
             stride=stride, padding=padding, dilation=dilation,
         )
+        if "bias" in self:
+            y = y + self.bias
+        return y
 
-    return patched_call
+    return type(
+        f"_NAXPatched_{orig_class.__name__}",
+        (orig_class,),
+        {"__call__": patched_call},
+    )
 
 
 def patch_seedvr2_vae(
@@ -142,13 +150,8 @@ def patch_seedvr2_vae(
     for name, mod in model.named_modules():
         if restore:
             if getattr(mod, _PATCH_MARKER_ATTR, False):
-                orig = getattr(mod, _ORIG_CALL_ATTR)
-                # Restore __call__ by removing the instance attribute that
-                # was set during patching.
-                try:
-                    delattr(mod, "__call__")
-                except AttributeError:
-                    pass
+                orig_class = getattr(mod, _ORIG_CALL_ATTR)
+                mod.__class__ = orig_class  # type: ignore[assignment]
                 setattr(mod, _PATCH_MARKER_ATTR, False)
                 if hasattr(mod, _ORIG_CALL_ATTR):
                     delattr(mod, _ORIG_CALL_ATTR)
@@ -157,23 +160,19 @@ def patch_seedvr2_vae(
 
         ok, reason = _eligibility_check(mod)
         if ok:
-            # Save original __call__ (bound method of the class).
-            # MLX Module: __call__ is defined at the class level. Storing
-            # the bound method on the instance won't survive restore via
-            # delattr because the class-level __call__ is what gets used
-            # again. We replace the instance __call__ attribute, which
-            # takes precedence over class __call__ when Python resolves
-            # mod(x). On restore, delattr brings back the class __call__.
-            orig_call = mod.__class__.__call__  # class-level callable
-            setattr(mod, _ORIG_CALL_ATTR, orig_call)
-            # Bind a per-instance patched __call__ that closes over `mod`.
-            patched_call = _make_patched_call(mod)
-            # Python's instance attribute resolution: setting `mod.__call__`
-            # only works for some pyobject types. For mlx.nn.Module (which
-            # subclasses dict), instance __call__ override IS supported via
-            # the module's typical attribute machinery.
-            # Use type.__setattr__ to bypass any property setter.
-            object.__setattr__(mod, "__call__", patched_call)
+            # Swap __class__ to a dynamic subclass with overridden __call__.
+            # Python's __call__ resolution is on TYPE not INSTANCE, so
+            # instance-level __call__ override does NOT work; class swap
+            # is the canonical Python pattern for per-instance method
+            # override.
+            stride = _module_stride(mod)
+            padding = _module_padding(mod)
+            dilation = _module_dilation(mod)
+            orig_class = mod.__class__
+            patched_class = _make_patched_class(orig_class, stride, padding,
+                                                dilation)
+            setattr(mod, _ORIG_CALL_ATTR, orig_class)
+            mod.__class__ = patched_class  # type: ignore[assignment]
             setattr(mod, _PATCH_MARKER_ATTR, True)
             patched.append(name)
             if verbose:
