@@ -18,6 +18,7 @@
 #include <mlx/ops.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -335,13 +336,17 @@ mlx::core::array conv3d_nax_forward(
   int N = C_out;
 
   // 1×1×1 fast path detection (Phase 1.4 D11).
+  // Env-var escape hatch MFA_CONV_NAX_NO_FAST_PATH=1 (propagated to C++
+  // in Sprint D so tests + diagnostics behave identically to Phase 1.4).
   bool is_pointwise =
       (K_T == 1 && K_H == 1 && K_W == 1 &&
        pad.T_left == 0 && pad.T_right == 0 &&
        pad.H_left == 0 && pad.H_right == 0 &&
        pad.W_left == 0 && pad.W_right == 0 &&
        sT == 1 && sH == 1 && sW == 1);
-  if (is_pointwise) {
+  const char* no_fast = std::getenv("MFA_CONV_NAX_NO_FAST_PATH");
+  bool fast_path_disabled = (no_fast != nullptr && std::string(no_fast) == "1");
+  if (is_pointwise && !fast_path_disabled) {
     return dispatch_pointwise_fast_path(x, w, B, T, H, W, C_in, C_out);
   }
 
