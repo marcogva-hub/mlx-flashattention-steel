@@ -40,10 +40,15 @@ DOMINANT_SHAPES = {
     "up2_resnet_full", "up2_resnet0_peakflops",
 }
 
-M_TILE = 64
+# Tile config: (32, 32, 32, sg=1) wins on M-skewed shapes (mid_resnet:
+# 43 TF vs 19 TF for (64,32,32,sg=4)). Matches V6 NAX choice exactly
+# (csrc/mfa/v6_nax/NAAttentionKernel.cpp:775 uses BQ=BK=BD=32, sg=1).
+# Verified correct via /tmp/verify_tile_correctness.py: RMSE within
+# FP16 noise floor (rel_err = 2.5e-5 at K=13824, sqrt(K)*eps bound).
+M_TILE = 32
 N_TILE = 32
 K_TILE = 32
-EXEC_SIMDGROUPS = 4
+EXEC_SIMDGROUPS = 1
 TG_THREADS = 32 * EXEC_SIMDGROUPS
 
 SMOKE_M, SMOKE_K, SMOKE_N = 128, 64, 64
