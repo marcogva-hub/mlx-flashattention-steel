@@ -1,0 +1,55 @@
+{
+    "_comment": "V6 NAX dispatch table v4. Configs unchanged from v3/final (Phase 3B + Axe 1 winners) but every tile-tuning axis is now empirically validated as optimal (Axes 2/4/5/6 NO-GO, Axe 7 architecturally skipped). See optimization-campaign-report.md.",
+    "_validated_axes": {
+        "BLOCK_R, BLOCK_C, EXEC_SG (Axe 1)": "245-config sweep",
+        "bypassThreadgroupMemory (Axe 3)": "NO-GO (compile failure or +3%)",
+        "BLOCK_D (Axe 2)": "NO-GO — sub-tiling +7-166%; default = HEAD_DIM",
+        "static vs dynamic_length_v (Axe 4)": "NO-GO — dynamic +7.7-29.2%",
+        "relaxed_precision (Axe 5)": "NO-GO — relaxed=false costs +7.8-27%",
+        "unroll mode (Axe 6)": "NO-GO — partial unroll +69-241%",
+        "double-buffer cS (Axe 7)": "SKIPPED — architecturally infeasible without MPP prefetch primitive"
+    },
+    "_kernel_defaults": {
+        "BLOCK_D": "= HEAD_DIM (no sub-tiling)",
+        "FORCE_DYNAMIC_K": false,
+        "RELAXED_PRECISION": true,
+        "UNROLL_MODE": "full",
+        "BYPASS_TGP": false
+    },
+    "FlashVSR-dense": {
+        "BLOCK_R": 16,
+        "BLOCK_C": 64,
+        "EXEC_SG": 16,
+        "p50_ms": 1.32,
+        "shape": {"B": 1, "H": 10, "N_q": 4096, "N_kv": 4096, "D": 64, "dtype": "float16"}
+    },
+    "SeedVR2-small": {
+        "BLOCK_R": 16,
+        "BLOCK_C": 48,
+        "EXEC_SG": 16,
+        "p50_ms": 241.95,
+        "shape": {"B": 1, "H": 20, "N_q": 26730, "N_kv": 26730, "D": 128, "dtype": "float16"}
+    },
+    "CogVideoX": {
+        "BLOCK_R": 16,
+        "BLOCK_C": 48,
+        "EXEC_SG": 16,
+        "p50_ms": 2817.20,
+        "shape": {"B": 1, "H": 30, "N_q": 70200, "N_kv": 70200, "D": 128, "dtype": "float16"}
+    },
+    "SeedVR2-large": {
+        "BLOCK_R": 16,
+        "BLOCK_C": 48,
+        "EXEC_SG": 16,
+        "p50_ms": 4706.28,
+        "shape": {"B": 1, "H": 20, "N_q": 111375, "N_kv": 111375, "D": 128, "dtype": "float16"}
+    },
+    "LTX2-cross": {
+        "BLOCK_R": 16,
+        "BLOCK_C": 64,
+        "EXEC_SG": 8,
+        "p50_ms": 1.74,
+        "shape": {"B": 1, "H_q": 8, "H_kv": 8, "N_q": 2048, "N_kv": 14000, "D": 64, "dtype": "float16"},
+        "_note": "V2 STEEL still wins on this asymmetric shape (1.05ms) — V6 not preferred here"
+    }
+}

@@ -1,0 +1,4552 @@
+{
+  "tier1": [
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 5.682875002094079
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 7.829562498955056
+        }
+      },
+      "t1_total": 13.512437501049135
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 5.462354005430825
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 7.913854504295159
+        }
+      },
+      "t1_total": 13.376208509725984
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 5.525708002096508
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 7.6002499990863726
+        }
+      },
+      "t1_total": 13.12595800118288
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 5.743791494751349
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 8.767062499828171
+        }
+      },
+      "t1_total": 14.51085399457952
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 5.7568124975659885
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 8.373771008336917
+        }
+      },
+      "t1_total": 14.130583505902905
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 6.15656250010943
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 8.898041502106935
+        }
+      },
+      "t1_total": 15.054604002216365
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 6.167021005239803
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 9.087249993172009
+        }
+      },
+      "t1_total": 15.254270998411812
+    },
+    {
+      "BQ": 8,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 6.879582993860822
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 9.557978497468866
+        }
+      },
+      "t1_total": 16.43756149132969
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.0787504951586016
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.459770997229498
+        }
+      },
+      "t1_total": 12.5385214923881
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 4.990541499864776
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.385520504612941
+        }
+      },
+      "t1_total": 12.376062004477717
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.059499999333639
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.3911040017264895
+        }
+      },
+      "t1_total": 12.450604001060128
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.428041498817038
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.428603996231686
+        }
+      },
+      "t1_total": 12.856645495048724
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.4888125087018125
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.401437505905051
+        }
+      },
+      "t1_total": 12.890250014606863
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.834229006723035
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.4880415049847215
+        }
+      },
+      "t1_total": 13.322270511707757
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 5.791499999759253
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 7.795938006893266
+        }
+      },
+      "t1_total": 13.587438006652519
+    },
+    {
+      "BQ": 8,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 6.24647899530828
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 9.357896000437904
+        }
+      },
+      "t1_total": 15.604374995746184
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 6.648853996011894
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 8.949187002144754
+        }
+      },
+      "t1_total": 15.598040998156648
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 6.814708496676758
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 8.931729498726781
+        }
+      },
+      "t1_total": 15.74643799540354
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 6.876061997900251
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 8.987041503132787
+        }
+      },
+      "t1_total": 15.863103501033038
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 6.963478997931816
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 9.453437494812533
+        }
+      },
+      "t1_total": 16.41691649274435
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 6.998249999014661
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 9.187895499053411
+        }
+      },
+      "t1_total": 16.186145498068072
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 7.275291500263847
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 9.494271005678456
+        }
+      },
+      "t1_total": 16.769562505942304
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 7.184499998402316
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 9.915041999192908
+        }
+      },
+      "t1_total": 17.099541997595225
+    },
+    {
+      "BQ": 8,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 8.388562491745688
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 12.436479002644774
+        }
+      },
+      "t1_total": 20.82504149439046
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 7.599166492582299
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.072458000853658
+        }
+      },
+      "t1_total": 18.671624493435957
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 7.652187996427529
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.342146004608367
+        }
+      },
+      "t1_total": 18.994334001035895
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 7.9160000022966415
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.095395995653234
+        }
+      },
+      "t1_total": 19.011395997949876
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 7.87995800783392
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.49789599730866
+        }
+      },
+      "t1_total": 19.37785400514258
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 7.987375007360242
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.257208498136606
+        }
+      },
+      "t1_total": 19.24458350549685
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 8.195854003133718
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 11.17762549984036
+        }
+      },
+      "t1_total": 19.373479502974078
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 8.136646007187665
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 12.005103504634462
+        }
+      },
+      "t1_total": 20.141749511822127
+    },
+    {
+      "BQ": 8,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 9.722562499518972
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 14.102646004175767
+        }
+      },
+      "t1_total": 23.82520850369474
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 12,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2959164960193448
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.5995415014913306
+        }
+      },
+      "t1_total": 2.8954579975106753
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1477289954200387
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6023119969759136
+        }
+      },
+      "t1_total": 2.7500409923959523
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1436870117904618
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6434585049864836
+        }
+      },
+      "t1_total": 2.7871455167769454
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2317709988565184
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6930830024648458
+        }
+      },
+      "t1_total": 2.924854001321364
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1926670049433596
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7779585032258183
+        }
+      },
+      "t1_total": 2.970625508169178
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2999999962630682
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.151729495381005
+        }
+      },
+      "t1_total": 3.4517294916440733
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2051044905092567
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.75797900010366
+        }
+      },
+      "t1_total": 2.9630834906129166
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.6211249967454933
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.4270629946840927
+        }
+      },
+      "t1_total": 4.048187991429586
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2933750040247105
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.6440625040559098
+        }
+      },
+      "t1_total": 2.9374375080806203
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.1816460028057918
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.5371039989986457
+        }
+      },
+      "t1_total": 2.7187500018044375
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.0912704965448938
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.4781454956391826
+        }
+      },
+      "t1_total": 2.5694159921840765
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.1114379958598875
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.5430420025950298
+        }
+      },
+      "t1_total": 2.6544799984549172
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.125187503930647
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.6476039963890798
+        }
+      },
+      "t1_total": 2.7727915003197268
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2595204971148632
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.966395997442305
+        }
+      },
+      "t1_total": 3.2259164945571683
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2616459935088642
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.7069999958039261
+        }
+      },
+      "t1_total": 2.9686459893127903
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.6665834918967448
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 2.593561999674421
+        }
+      },
+      "t1_total": 4.260145491571166
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.743228996929247
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.9538960041245446
+        }
+      },
+      "t1_total": 3.6971250010537915
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.6132085002027452
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.8339375019422732
+        }
+      },
+      "t1_total": 3.4471460021450184
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5324375053751282
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.8959579974762164
+        }
+      },
+      "t1_total": 3.4283955028513446
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5425210076500662
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.006041497224942
+        }
+      },
+      "t1_total": 3.548562504875008
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.485895503719803
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.0245624909875914
+        }
+      },
+      "t1_total": 3.5104579947073944
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.7915415082825348
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.492583000275772
+        }
+      },
+      "t1_total": 4.284124508558307
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5354169881902635
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.998145497054793
+        }
+      },
+      "t1_total": 3.5335624852450565
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 2.7809374951175414
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 3.8978119991952553
+        }
+      },
+      "t1_total": 6.678749494312797
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.4103749999776483
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 2.9624580056406558
+        }
+      },
+      "t1_total": 4.372833005618304
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.3574789991253056
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 3.0842915002722293
+        }
+      },
+      "t1_total": 4.441770499397535
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.2956249993294477
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 2.947396002127789
+        }
+      },
+      "t1_total": 4.243021001457237
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.2903329989057966
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 3.084562500589527
+        }
+      },
+      "t1_total": 4.374895499495324
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.2893539969809353
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 3.2549159950576723
+        }
+      },
+      "t1_total": 4.544269992038608
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.4480000027106144
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 3.7086250085849315
+        }
+      },
+      "t1_total": 5.156625011295546
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.3212709964136593
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 3.0539585059159435
+        }
+      },
+      "t1_total": 4.375229502329603
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.6567915008636191
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 4.618729493813589
+        }
+      },
+      "t1_total": 6.275520994677208
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 20,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        },
+        "LTX2-cross": {
+          "status": "FAIL",
+          "error": "V6 library compile failed: In file included from program_source:4:\nIn file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:\n/System/Lib"
+        }
+      }
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 7.233166994410567
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.015958505799063
+        }
+      },
+      "t1_total": 19.24912550020963
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 6.442895501095336
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.30362500064075
+        }
+      },
+      "t1_total": 18.746520501736086
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 7.926438003778458
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.11145849811146
+        }
+      },
+      "t1_total": 20.037896501889918
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 7.791041505697649
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.427146000845823
+        }
+      },
+      "t1_total": 20.218187506543472
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 7.9752709934837185
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.607354496140033
+        }
+      },
+      "t1_total": 20.58262548962375
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 8.236562498495914
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 12.085437498171814
+        }
+      },
+      "t1_total": 20.321999996667728
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 8.347561990376562
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 13.990396000735927
+        }
+      },
+      "t1_total": 22.33795799111249
+    },
+    {
+      "BQ": 24,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 9.597416501492262
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 11.125041499326471
+        }
+      },
+      "t1_total": 20.722458000818733
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 7.7068124955985695
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 11.998271002084948
+        }
+      },
+      "t1_total": 19.705083497683518
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 7.768083502014633
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 11.938229501538444
+        }
+      },
+      "t1_total": 19.706313003553078
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 7.853396004065871
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 11.608062501181848
+        }
+      },
+      "t1_total": 19.46145850524772
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 7.864332990720868
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 11.72150050115306
+        }
+      },
+      "t1_total": 19.585833491873927
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 8.158666001691017
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 12.278021000383887
+        }
+      },
+      "t1_total": 20.436687002074905
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 8.522187505150214
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 11.672104497847613
+        }
+      },
+      "t1_total": 20.194292002997827
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 9.418332992936485
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 13.660208504006732
+        }
+      },
+      "t1_total": 23.078541496943217
+    },
+    {
+      "BQ": 24,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 8.86002049810486
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 10.266812503687106
+        }
+      },
+      "t1_total": 19.126833001791965
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 8.492104498145636
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 12.1840004940168
+        }
+      },
+      "t1_total": 20.676104992162436
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 7.7925829973537475
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 12.507124505646061
+        }
+      },
+      "t1_total": 20.29970750299981
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 8.923958506784402
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 12.41743750142632
+        }
+      },
+      "t1_total": 21.341396008210722
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 8.731812500627711
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 12.296208500629291
+        }
+      },
+      "t1_total": 21.028021001257002
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 9.235186997102574
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 13.74981250410201
+        }
+      },
+      "t1_total": 22.984999501204584
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 9.416624998266343
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 13.507854004274122
+        }
+      },
+      "t1_total": 22.924479002540465
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 11.05535399983637
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 15.345812498708256
+        }
+      },
+      "t1_total": 26.401166498544626
+    },
+    {
+      "BQ": 24,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 10.419895996164996
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 11.738187000446487
+        }
+      },
+      "t1_total": 22.158082996611483
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 9.631125496525783
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 12.922437505039852
+        }
+      },
+      "t1_total": 22.553563001565635
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 9.469041491684038
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 13.86162500421051
+        }
+      },
+      "t1_total": 23.330666495894548
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 10.347187497245613
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 13.877145502192434
+        }
+      },
+      "t1_total": 24.224332999438047
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 10.21393749397248
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 13.753416504187044
+        }
+      },
+      "t1_total": 23.967353998159524
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 10.53137500275625
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 14.983229004428722
+        }
+      },
+      "t1_total": 25.51460400718497
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 10.85243749548681
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 14.825937498244457
+        }
+      },
+      "t1_total": 25.678374993731268
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 11.863520507176872
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 17.44322950253263
+        }
+      },
+      "t1_total": 29.306750009709504
+    },
+    {
+      "BQ": 24,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 12.727604007523041
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 13.837145503202919
+        }
+      },
+      "t1_total": 26.56474951072596
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.4073754937271588
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.5685415055486374
+        }
+      },
+      "t1_total": 2.975916999275796
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.374583000142593
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6031460036174394
+        }
+      },
+      "t1_total": 2.9777290037600324
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.390125005855225
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7269164964091033
+        }
+      },
+      "t1_total": 3.1170415022643283
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.4470834939857014
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.6098749949596822
+        }
+      },
+      "t1_total": 4.056958488945384
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.3986664998810738
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6933334991335869
+        }
+      },
+      "t1_total": 3.0919999990146607
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.5552709955954924
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.7963954998995177
+        }
+      },
+      "t1_total": 4.35166649549501
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.5134375062189065
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7396664989064448
+        }
+      },
+      "t1_total": 3.2531040051253513
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 2.2584170001209714
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 3.027562503120862
+        }
+      },
+      "t1_total": 5.285979503241833
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.5415835005114786
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 3.1301250055548735
+        }
+      },
+      "t1_total": 4.671708506066352
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.5829789990675636
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 3.2334379939129576
+        }
+      },
+      "t1_total": 4.816416992980521
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.566999992064666
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 3.5489375004544854
+        }
+      },
+      "t1_total": 5.115937492519151
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.5581670013489202
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 4.678520999732427
+        }
+      },
+      "t1_total": 6.2366880010813475
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.571583496115636
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 3.412687001400627
+        }
+      },
+      "t1_total": 4.984270497516263
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.9009375100722536
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 4.924542001390364
+        }
+      },
+      "t1_total": 6.825479511462618
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.738749495416414
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 3.4966875027748756
+        }
+      },
+      "t1_total": 5.23543699819129
+    },
+    {
+      "BQ": 32,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 2.599457999167498
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 5.017646501073614
+        }
+      },
+      "t1_total": 7.617104500241112
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.643500000180211
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 4.232854502333794
+        }
+      },
+      "t1_total": 7.876354502514005
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.5308750011608936
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 4.203625496302266
+        }
+      },
+      "t1_total": 7.734500497463159
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.5172494972357526
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 4.753645494929515
+        }
+      },
+      "t1_total": 8.270894992165267
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.7926039949525148
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 5.813145995489322
+        }
+      },
+      "t1_total": 9.605749990441836
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.7474794953595847
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 4.610999996657483
+        }
+      },
+      "t1_total": 8.358479492017068
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 4.183333003311418
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 6.072604497603606
+        }
+      },
+      "t1_total": 10.255937500915024
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 3.9572080058860593
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 4.576145998726133
+        }
+      },
+      "t1_total": 8.533354004612193
+    },
+    {
+      "BQ": 32,
+      "BK": 96,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 5.541249993257225
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 6.385749999026302
+        }
+      },
+      "t1_total": 11.926999992283527
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.4317294955835678
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 5.135562503710389
+        }
+      },
+      "t1_total": 7.567291999293957
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.3915834972285666
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 5.339166498742998
+        }
+      },
+      "t1_total": 7.730749995971564
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.2786045010434464
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 6.0937079979339615
+        }
+      },
+      "t1_total": 8.372312498977408
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.404875005595386
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 7.618687493959442
+        }
+      },
+      "t1_total": 10.023562499554828
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.3256665081134997
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 5.753749996074475
+        }
+      },
+      "t1_total": 8.079416504187975
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.608395996503532
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 8.196583505196031
+        }
+      },
+      "t1_total": 10.804979501699563
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 2.571853998233564
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 5.866396000783425
+        }
+      },
+      "t1_total": 8.438249999016989
+    },
+    {
+      "BQ": 32,
+      "BK": 128,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 3.82960400020238
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 9.085583500564098
+        }
+      },
+      "t1_total": 12.915187500766478
+    }
+  ],
+  "tier2": [
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.0912704965448938
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.4781454956391826
+        }
+      },
+      "t1_total": 2.5694159921840765,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          395.0416869993205,
+          392.73670799593674,
+          398.89056249376154
+        ],
+        "median_of_medians": 395.0416869993205
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.1114379958598875
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.5430420025950298
+        }
+      },
+      "t1_total": 2.6544799984549172,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          463.78535449912306,
+          470.613104502263,
+          481.0219790015253
+        ],
+        "median_of_medians": 470.613104502263
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.1816460028057918
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.5371039989986457
+        }
+      },
+      "t1_total": 2.7187500018044375,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          545.5766040031449,
+          552.5802914926317,
+          552.0642084957217
+        ],
+        "median_of_medians": 552.0642084957217
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1477289954200387
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6023119969759136
+        }
+      },
+      "t1_total": 2.7500409923959523,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          457.26381249551196,
+          469.3350629968336,
+          473.9551250022487
+        ],
+        "median_of_medians": 469.3350629968336
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.125187503930647
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.6476039963890798
+        }
+      },
+      "t1_total": 2.7727915003197268,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          391.1026460045832,
+          394.1939164942596,
+          391.67477050068555
+        ],
+        "median_of_medians": 391.67477050068555
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1436870117904618
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6434585049864836
+        }
+      },
+      "t1_total": 2.7871455167769454,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          346.5178339974955,
+          350.7669794926187,
+          357.9975004977314
+        ],
+        "median_of_medians": 350.7669794926187
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2959164960193448
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.5995415014913306
+        }
+      },
+      "t1_total": 2.8954579975106753,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          659.3751249965862,
+          656.4037920034025,
+          648.616624501301
+        ],
+        "median_of_medians": 656.4037920034025
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2317709988565184
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6930830024648458
+        }
+      },
+      "t1_total": 2.924854001321364,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          421.0546250033076,
+          416.7070210023667,
+          439.82724950183183
+        ],
+        "median_of_medians": 421.0546250033076
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2933750040247105
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.6440625040559098
+        }
+      },
+      "t1_total": 2.9374375080806203,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          746.4764795004157,
+          732.6940415005083,
+          729.5339999982389
+        ],
+        "median_of_medians": 732.6940415005083
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2051044905092567
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.75797900010366
+        }
+      },
+      "t1_total": 2.9630834906129166,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          318.67062500532484,
+          326.80172900290927,
+          315.41002100129845
+        ],
+        "median_of_medians": 318.67062500532484
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2616459935088642
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.7069999958039261
+        }
+      },
+      "t1_total": 2.9686459893127903,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          391.9613954931265,
+          407.85864549980033,
+          385.04633349657524
+        ],
+        "median_of_medians": 391.9613954931265
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1926670049433596
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7779585032258183
+        }
+      },
+      "t1_total": 2.970625508169178,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          330.8441665067221,
+          316.610354493605,
+          325.8693954994669
+        ],
+        "median_of_medians": 325.8693954994669
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.4073754937271588
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.5685415055486374
+        }
+      },
+      "t1_total": 2.975916999275796,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1281.7791670022416,
+          1224.1880834990297,
+          1187.116374996549
+        ],
+        "median_of_medians": 1224.1880834990297
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.374583000142593
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6031460036174394
+        }
+      },
+      "t1_total": 2.9777290037600324,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1156.547958496958,
+          1152.1242495073238,
+          1148.899479492684
+        ],
+        "median_of_medians": 1152.1242495073238
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.3986664998810738
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6933334991335869
+        }
+      },
+      "t1_total": 3.0919999990146607,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1151.134395506233,
+          1132.7232289986569,
+          1138.1882499917992
+        ],
+        "median_of_medians": 1138.1882499917992
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.390125005855225
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7269164964091033
+        }
+      },
+      "t1_total": 3.1170415022643283,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1126.5404374935315,
+          1123.3433749948745,
+          1122.0571875019232
+        ],
+        "median_of_medians": 1123.3433749948745
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2595204971148632
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.966395997442305
+        }
+      },
+      "t1_total": 3.2259164945571683,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          393.8346869981615,
+          399.92712499952177,
+          398.1521454988979
+        ],
+        "median_of_medians": 398.1521454988979
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.5134375062189065
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7396664989064448
+        }
+      },
+      "t1_total": 3.2531040051253513,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1165.9794789957232,
+          1163.3465835038805,
+          1175.0053124997066
+        ],
+        "median_of_medians": 1165.9794789957232
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5324375053751282
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.8959579974762164
+        }
+      },
+      "t1_total": 3.4283955028513446,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          617.8726669895696,
+          636.0308750008699,
+          646.4372085029026
+        ],
+        "median_of_medians": 636.0308750008699
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.6132085002027452
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.8339375019422732
+        }
+      },
+      "t1_total": 3.4471460021450184,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          705.0539374977234,
+          714.98387450265,
+          720.3182290031691
+        ],
+        "median_of_medians": 714.98387450265
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2999999962630682
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.151729495381005
+        }
+      },
+      "t1_total": 3.4517294916440733,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          327.8922704994329,
+          337.3935830022674,
+          338.9995004981756
+        ],
+        "median_of_medians": 337.3935830022674
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.485895503719803
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.0245624909875914
+        }
+      },
+      "t1_total": 3.5104579947073944,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          734.1701664918219,
+          721.735749997606,
+          709.8574375049793
+        ],
+        "median_of_medians": 721.735749997606
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5354169881902635
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.998145497054793
+        }
+      },
+      "t1_total": 3.5335624852450565,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          760.0507915049093,
+          748.2993750018068,
+          758.2712290022755
+        ],
+        "median_of_medians": 758.2712290022755
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.5425210076500662
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.006041497224942
+        }
+      },
+      "t1_total": 3.548562504875008,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          758.7787290030974,
+          782.1938955021324,
+          764.0941874997225
+        ],
+        "median_of_medians": 764.0941874997225
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 1,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.743228996929247
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 1.9538960041245446
+        }
+      },
+      "t1_total": 3.6971250010537915,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          831.5328124954249,
+          840.9438540038536,
+          845.5255630033207
+        ],
+        "median_of_medians": 840.9438540038536
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.6211249967454933
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.4270629946840927
+        }
+      },
+      "t1_total": 4.048187991429586,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          876.2492495006882,
+          881.2419790046988,
+          859.1958535034792
+        ],
+        "median_of_medians": 876.2492495006882
+      }
+    },
+    {
+      "BQ": 32,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.4470834939857014
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.6098749949596822
+        }
+      },
+      "t1_total": 4.056958488945384,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          1188.914583006408,
+          1183.5464584946749,
+          1175.2122289981344
+        ],
+        "median_of_medians": 1183.5464584946749
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 128,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4633246792072896e-05,
+          "median_ms": 1.2956249993294477
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.098119906208012e-06,
+          "median_ms": 2.947396002127789
+        }
+      },
+      "t1_total": 4.243021001457237,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          800.417729500623,
+          825.6677919926005,
+          830.3556874961942
+        ],
+        "median_of_medians": 825.6677919926005
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 24,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.6665834918967448
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 2.593561999674421
+        }
+      },
+      "t1_total": 4.260145491571166,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          853.9828755019698,
+          845.9576874956838,
+          857.0181879986194
+        ],
+        "median_of_medians": 853.9828755019698
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 96,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4639704204455484e-05,
+          "median_ms": 1.7915415082825348
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10003712103935e-06,
+          "median_ms": 2.492583000275772
+        }
+      },
+      "t1_total": 4.284124508558307,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          721.14006200718,
+          743.018437497085,
+          742.0565415086458
+        ],
+        "median_of_medians": 742.0565415086458
+      }
+    }
+  ],
+  "tier3": [
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2051044905092567
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.75797900010366
+        }
+      },
+      "t1_total": 2.9630834906129166,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          318.67062500532484,
+          326.80172900290927,
+          315.41002100129845
+        ],
+        "median_of_medians": 318.67062500532484
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            3071.226812498935,
+            3214.60295849829,
+            3173.7383750005392
+          ],
+          "median_of_medians": 3173.7383750005392
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7665.51108299609,
+            7524.907062492275,
+            7547.3776044964325
+          ],
+          "median_of_medians": 7547.3776044964325
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1926670049433596
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.7779585032258183
+        }
+      },
+      "t1_total": 2.970625508169178,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          330.8441665067221,
+          316.610354493605,
+          325.8693954994669
+        ],
+        "median_of_medians": 325.8693954994669
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            3874.8236044993973,
+            3927.9056459999993,
+            4018.433333498251
+          ],
+          "median_of_medians": 3927.9056459999993
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7062.8065210039495,
+            7466.879063009401,
+            7186.383521002426
+          ],
+          "median_of_medians": 7186.383521002426
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2999999962630682
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 2.151729495381005
+        }
+      },
+      "t1_total": 3.4517294916440733,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          327.8922704994329,
+          337.3935830022674,
+          338.9995004981756
+        ],
+        "median_of_medians": 337.3935830022674
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            4190.112645504996,
+            4104.236270504771,
+            4209.444833002635
+          ],
+          "median_of_medians": 4190.112645504996
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7118.026083000586,
+            7188.045167000382,
+            7427.307562495116
+          ],
+          "median_of_medians": 7188.045167000382
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1436870117904618
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6434585049864836
+        }
+      },
+      "t1_total": 2.7871455167769454,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          346.5178339974955,
+          350.7669794926187,
+          357.9975004977314
+        ],
+        "median_of_medians": 350.7669794926187
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            4277.404124994064,
+            4284.79268749652,
+            4225.766042000032
+          ],
+          "median_of_medians": 4277.404124994064
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7867.313103997731,
+            7895.934354004567,
+            7478.3998540006
+          ],
+          "median_of_medians": 7867.313103997731
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 8,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.125187503930647
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.6476039963890798
+        }
+      },
+      "t1_total": 2.7727915003197268,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          391.1026460045832,
+          394.1939164942596,
+          391.67477050068555
+        ],
+        "median_of_medians": 391.67477050068555
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            3960.4152704923763,
+            3817.055250001431,
+            3812.5478334986838
+          ],
+          "median_of_medians": 3817.055250001431
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            6742.007937500603,
+            6756.341145999613,
+            6696.595874993363
+          ],
+          "median_of_medians": 6742.007937500603
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 16,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2616459935088642
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.7069999958039261
+        }
+      },
+      "t1_total": 2.9686459893127903,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          391.9613954931265,
+          407.85864549980033,
+          385.04633349657524
+        ],
+        "median_of_medians": 391.9613954931265
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            3702.0861460041488,
+            3720.5677079982706,
+            3649.4152919985936
+          ],
+          "median_of_medians": 3702.0861460041488
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            6781.036603999382,
+            6797.983771000872,
+            6757.175166501838
+          ],
+          "median_of_medians": 6781.036603999382
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 4,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.0912704965448938
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.4781454956391826
+        }
+      },
+      "t1_total": 2.5694159921840765,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          395.0416869993205,
+          392.73670799593674,
+          398.89056249376154
+        ],
+        "median_of_medians": 395.0416869993205
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            4363.480416999664,
+            4378.958478999266,
+            4385.636833496392
+          ],
+          "median_of_medians": 4378.958478999266
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7526.738208500319,
+            7537.694979495427,
+            7475.225541493273
+          ],
+          "median_of_medians": 7526.738208500319
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 64,
+      "SG": 12,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4653304788225796e-05,
+          "median_ms": 1.2595204971148632
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.10398705652915e-06,
+          "median_ms": 1.966395997442305
+        }
+      },
+      "t1_total": 3.2259164945571683,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          393.8346869981615,
+          399.92712499952177,
+          398.1521454988979
+        ],
+        "median_of_medians": 398.1521454988979
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            3946.224812505534,
+            3930.226729498827,
+            3913.1130620007752
+          ],
+          "median_of_medians": 3930.226729498827
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            6852.1532289960305,
+            6876.138749998063,
+            6854.373707996274
+          ],
+          "median_of_medians": 6854.373707996274
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 6,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.2317709988565184
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6930830024648458
+        }
+      },
+      "t1_total": 2.924854001321364,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          421.0546250033076,
+          416.7070210023667,
+          439.82724950183183
+        ],
+        "median_of_medians": 421.0546250033076
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            4081.709083497117,
+            4060.4762500006473,
+            4055.5423330006306
+          ],
+          "median_of_medians": 4060.4762500006473
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            7620.385958500265,
+            7548.637874999258,
+            7749.795813004312
+          ],
+          "median_of_medians": 7620.385958500265
+        }
+      }
+    },
+    {
+      "BQ": 16,
+      "BK": 32,
+      "SG": 2,
+      "per_shape": {
+        "FlashVSR-dense": {
+          "status": "OK",
+          "rmse": 1.4663052752439398e-05,
+          "median_ms": 1.1477289954200387
+        },
+        "LTX2-cross": {
+          "status": "OK",
+          "rmse": 8.107112080324441e-06,
+          "median_ms": 1.6023119969759136
+        }
+      },
+      "t1_total": 2.7500409923959523,
+      "tier2_seedvr2_small": {
+        "status": "OK",
+        "run_medians": [
+          457.26381249551196,
+          469.3350629968336,
+          473.9551250022487
+        ],
+        "median_of_medians": 469.3350629968336
+      },
+      "tier3": {
+        "CogVideoX": {
+          "status": "OK",
+          "run_medians": [
+            5345.527417004632,
+            5437.814812503348,
+            5441.674541500106
+          ],
+          "median_of_medians": 5437.814812503348
+        },
+        "SeedVR2-large": {
+          "status": "OK",
+          "run_medians": [
+            9081.241833497188,
+            9023.526520497398,
+            9362.740395998117
+          ],
+          "median_of_medians": 9081.241833497188
+        }
+      }
+    }
+  ]
+}

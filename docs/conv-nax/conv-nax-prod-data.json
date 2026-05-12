@@ -1,0 +1,90 @@
+{
+  "phase": "D",
+  "branch": "experiment/conv-nax-prod-sprint-d",
+  "date_utc": "2026-05-11",
+  "verdict": "MIGRATION_SHIPPED",
+  "tracks": {
+    "A_cpp_primitive": {
+      "deliverables": [
+        "csrc/mfa_conv_nax.hpp",
+        "csrc/mfa_conv_nax.cpp",
+        "_ext.conv3d_nax_forward binding",
+        "mlx_mfa.conv_nax thin wrapper"
+      ],
+      "approach": "C++ free function + mlx::core::fast::metal_kernel (D33)",
+      "loc_added_cpp": 511,
+      "kernels_unchanged": true
+    },
+    "B_documentation": {
+      "deliverables": [
+        "README.md Conv3D NAX section",
+        "CHANGELOG.md v2.33.0",
+        "pyproject.toml 2.32.0 -> 2.33.0"
+      ]
+    },
+    "C_patcher": {
+      "deliverables": [
+        "mlx_mfa.integrations.seedvr2_vae.patch_seedvr2_vae",
+        "mlx_mfa.integrations.seedvr2_vae.is_patched",
+        "4 patcher tests",
+        "bench/conv_nax_patcher_ab.py"
+      ],
+      "ab_speedup": 2.29,
+      "ab_speedup_bar": 1.2,
+      "smoke_rel_err": 4.27e-05,
+      "implementation_note": "uses __class__ swap (D34), not instance __call__ override"
+    },
+    "D_validation": {
+      "deliverables": [
+        "tests/test_conv_nax_migration.py (6 parametrized)",
+        "bench/conv_nax_migration_perf.py"
+      ],
+      "cpp_vs_python_equivalence": {
+        "shapes_tested": 6,
+        "shapes_passed": 6,
+        "bar_rel_err": 1e-05
+      },
+      "perf_parity_bookends": [
+        {
+          "shape": "mid_resnet",
+          "cpp_ms": 9.41,
+          "phase1_5_ms": 8.7,
+          "abs_drift_pct": 8.12,
+          "cpp_ratio": 2.21,
+          "phase1_5_ratio": 2.26,
+          "ratio_drift_pct": -2.04,
+          "within_5pct_ratio_bar": true
+        },
+        {
+          "shape": "up2_resnet0_peakflops",
+          "cpp_ms": 336.73,
+          "phase1_5_ms": 332.4,
+          "abs_drift_pct": 1.3,
+          "cpp_ratio": 1.58,
+          "phase1_5_ratio": 1.54,
+          "ratio_drift_pct": 2.61,
+          "within_5pct_ratio_bar": true
+        }
+      ]
+    }
+  },
+  "tests": {
+    "phase_1_x_unchanged": 20,
+    "sprint_d_patcher": 4,
+    "sprint_d_migration": 6,
+    "total_conv_nax": 30,
+    "full_suite": 961,
+    "preexisting_failures": 6,
+    "new_failures": 0
+  },
+  "version_bump": {
+    "from": "2.32.0",
+    "to": "2.33.0"
+  },
+  "next_steps": [
+    "Manual: git tag v2.33.0 + python -m build + twine upload",
+    "Sprint E (optional): BF16 path + K<3456 perf characterization",
+    "Future: Conv3D backward (VJP) for training workloads",
+    "Future: full Primitive subclass if mx.compile integration needed"
+  ]
+}

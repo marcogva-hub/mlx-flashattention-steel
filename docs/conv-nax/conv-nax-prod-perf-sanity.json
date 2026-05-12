@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "shape": "mid_resnet",
+      "nax_median_ms": 9.406333963852376,
+      "mlx_median_ms": 20.824250008445233,
+      "ratio": 2.213853993327347,
+      "phase1_5_nax_ms": 8.7,
+      "phase1_5_ratio": 2.26,
+      "nax_ms_drift_pct": 8.118781193705477,
+      "ratio_drift_pct": -2.0418587023297743
+    },
+    {
+      "shape": "up2_resnet0_peakflops",
+      "nax_median_ms": 336.7274579941295,
+      "mlx_median_ms": 532.0791659760289,
+      "ratio": 1.5801478416568724,
+      "phase1_5_nax_ms": 332.4,
+      "phase1_5_ratio": 1.54,
+      "nax_ms_drift_pct": 1.3018826697140589,
+      "ratio_drift_pct": 2.6070027049917113
+    }
+  ],
+  "all_within_5pct": false
+}

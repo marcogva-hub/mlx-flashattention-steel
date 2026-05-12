@@ -96,6 +96,7 @@ except ImportError:
 # adds ~5% overhead at sub-millisecond workloads.
 # ---------------------------------------------------------------------------
 _cached_is_m3_plus: "bool | None" = None
+_cached_has_nax: "bool | None" = None
 
 
 def _get_is_m3_plus_cached() -> bool:
@@ -105,6 +106,18 @@ def _get_is_m3_plus_cached() -> bool:
         info = get_device_info()
         _cached_is_m3_plus = bool(info.get("is_m3_plus", False))
     return _cached_is_m3_plus
+
+
+def _get_has_nax_cached() -> bool:
+    """Return cached `device_has_neural_accelerators()` (M5+ NAX)."""
+    global _cached_has_nax
+    if _cached_has_nax is None:
+        try:
+            from mlx_mfa._ext import device_has_neural_accelerators as _has_nax
+            _cached_has_nax = bool(_has_nax())
+        except (ImportError, AttributeError):
+            _cached_has_nax = False
+    return _cached_has_nax
 
 
 # ---------------------------------------------------------------------------
@@ -281,17 +294,28 @@ def flash_attention(
         )
 
     # --- backend='sdpa': unconditional SDPA fallback -------------------------
+    # v2.32.0 fix: when no attn_bias is provided, use mask="causal" (string)
+    # to take SDPA's fast causal path. On M5+ this routes through Apple's
+    # NAX kernel directly. The previous code materialized an explicit triu
+    # mask which forced SDPA off the NAX fast path (~2× regression).
     if backend == "sdpa":
-        mask = attn_bias  # may be None
+        _scale = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
+        if attn_bias is None:
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=_scale,
+                mask=("causal" if causal else None),
+            )
+        # When attn_bias is supplied, must materialize a combined mask (the
+        # string-form mask doesn't compose with additive bias).
+        mask = attn_bias
         if causal:
             N, S = q.shape[2], k.shape[2]
             causal_mask = mx.triu(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
             )
-            mask = causal_mask if mask is None else causal_mask + mask
+            mask = causal_mask + mask
         return mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=(scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])),
-            mask=mask,
+            q, k, v, scale=_scale, mask=mask,
         )
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
@@ -423,19 +447,26 @@ def flash_attention(
             use_mfa = True
         else:
             _is_m3 = _get_is_m3_plus_cached()
+            _has_nax = _get_has_nax_cached()
             _kv_len = k.shape[2]
-            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, q.dtype, window_size, False)
+            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
                     head_dim, q.shape[2], causal, _is_m3,
                     dtype=q.dtype, kv_seq_len=_kv_len,
                     window_size=window_size, sparse=False, backend=backend,
+                    has_nax=_has_nax,
                 )
                 if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
                     _dispatch_decision_cache.clear()
                 _dispatch_decision_cache[_cache_key] = _cached
             use_mfa = _cached
+    elif backend == "sdpa":
+        # v2.32.0 fix: backend="sdpa" must force use_mfa=False (was previously
+        # routing to MFA for D∈{64,128,256,512} because `use_mfa = _mfa_capable`
+        # ignored the explicit sdpa request).
+        use_mfa = False
     else:
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
@@ -2851,6 +2882,82 @@ def _sparse_fallback_sdpa(
     )
 
 
+# v2.33.1 — fast-fallback: bounded LRU cache for expanded float-bias masks.
+# Keyed by `(id(block_mask), block_mask.shape, block_mask.dtype, B, H, N, S,
+# target_dtype)`. Cache HIT when the user reuses the same `block_mask` Python
+# object across multiple `flash_attention_sparse` calls (common pattern:
+# build mask once per forward pass, call attention many times). Cache MISS
+# falls back to the full expansion — no slower than v2.33.0, just no faster.
+#
+# Float bias is cached (NOT a bool mask) to preserve the v2.33.0 semantic
+# that an all-False Q-row produces NaN softmax (test_all_false_mask_row_gives_nan_or_zero).
+# MLX SDPA with a bool mask treats all-False rows as "no attention" → finite
+# garbage, not NaN — would break callers relying on the NaN signal.
+#
+# See `docs/sparse-fallback-audit.md` for the audit + perf breakdown.
+_SPARSE_BIAS_CACHE: "dict[tuple, mx.array]" = {}
+_SPARSE_BIAS_CACHE_MAX = 8
+
+
+def _get_or_build_expanded_float_bias(
+    block_mask: mx.array, B: int, H: int, N: int, S: int,
+    target_dtype: "mx.Dtype",
+) -> mx.array:
+    """Return the [B, H, N, S] float bias expanded from a block-level mask.
+
+    Cached by `id(block_mask) + shape + dtype` so repeated calls with the
+    same Python object hit the cache. See `docs/sparse-fallback-audit.md`.
+
+    Float bias semantics: True → 0.0, False → -inf. Preserved exactly from
+    v2.33.0 to keep all-False-row → NaN behavior intact.
+    """
+    cache_key = (
+        id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
+        B, H, N, S, str(target_dtype),
+    )
+    cached = _SPARSE_BIAS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    NQ = block_mask.shape[-2]
+    NK = block_mask.shape[-1]
+    BQ_actual = (N + NQ - 1) // NQ
+    BK_actual = (S + NK - 1) // NK
+
+    # Expand bool mask to [B, H, NQ, NK] regardless of input shape.
+    if block_mask.ndim == 2:
+        full_mask = mx.broadcast_to(block_mask[None, None, :, :], (B, H, NQ, NK))
+    elif block_mask.ndim == 3:
+        full_mask = mx.broadcast_to(block_mask[None, :, :, :], (B, H, NQ, NK))
+    elif block_mask.ndim == 4:
+        full_mask = block_mask
+    else:
+        raise ValueError(f"unsupported mask ndim {block_mask.ndim}")
+
+    # Repeat-expand each block to BQ_actual rows and BK_actual cols.
+    # [B, H, NQ, NK] → [B, H, NQ, BQ, NK, BK] → [B, H, NQ*BQ, NK*BK]
+    expanded = full_mask[:, :, :, None, :, None]
+    expanded = mx.broadcast_to(
+        expanded, (B, H, NQ, BQ_actual, NK, BK_actual)
+    )
+    expanded = expanded.reshape(B, H, NQ * BQ_actual, NK * BK_actual)
+    # Trim to actual [N, S] in case BQ/BK don't divide evenly.
+    expanded = expanded[:, :, :N, :S]
+
+    # bool → float (True=0, False=-inf) — preserves all-False-row → NaN behavior.
+    neg_inf = mx.array(float("-inf"), dtype=target_dtype)
+    zero = mx.array(0.0, dtype=target_dtype)
+    float_bias = mx.where(expanded, zero, neg_inf)
+    # Materialize so subsequent cache hits pay zero compute.
+    mx.async_eval(float_bias); mx.synchronize()
+
+    # LRU-bounded eviction (insertion-order dict).
+    if len(_SPARSE_BIAS_CACHE) >= _SPARSE_BIAS_CACHE_MAX:
+        _SPARSE_BIAS_CACHE.pop(next(iter(_SPARSE_BIAS_CACHE)))
+    _SPARSE_BIAS_CACHE[cache_key] = float_bias
+    return float_bias
+
+
 def _sparse_fallback_sdpa_perhead(
     q: mx.array,
     k: mx.array,
@@ -2871,44 +2978,23 @@ def _sparse_fallback_sdpa_perhead(
       - 2-D [NQ, NK]:        broadcast to all B, H
       - 3-D [H, NQ, NK]:     broadcast across B
       - 4-D [B, H, NQ, NK]:  per-batch per-head
+
+    v2.33.1 fast-fallback: cache the expanded float bias by id(block_mask).
+    When the user reuses the same block_mask Python object across calls
+    (common pattern: build mask once per forward pass, reuse across
+    attention calls), the cache hit drops the expansion cost from ~3 ms
+    to a dict lookup — recovering full SDPA-direct performance. Fresh
+    masks each call (e.g., FlashVSR's per-layer regen) still pay the
+    expansion cost but at no worse than v2.33.0. See
+    `docs/sparse-fallback-audit.md` for the audit + benchmarks.
     """
     B, H, N, _ = q.shape
     S = k.shape[2]
-    NQ_dim = -2
-    NK_dim = -1
-    NQ = block_mask.shape[NQ_dim]
-    NK = block_mask.shape[NK_dim]
-    BQ_actual = (N + NQ - 1) // NQ
-    BK_actual = (S + NK - 1) // NK
 
-    # Expand bool mask to [B, H, NQ, NK] regardless of input shape.
-    if block_mask.ndim == 2:
-        # [NQ, NK] -> [1, 1, NQ, NK] -> broadcast to [B, H, NQ, NK]
-        full_mask = block_mask[None, None, :, :]
-        full_mask = mx.broadcast_to(full_mask, (B, H, NQ, NK))
-    elif block_mask.ndim == 3:
-        # [H, NQ, NK] -> [1, H, NQ, NK] -> broadcast to [B, H, NQ, NK]
-        full_mask = block_mask[None, :, :, :]
-        full_mask = mx.broadcast_to(full_mask, (B, H, NQ, NK))
-    elif block_mask.ndim == 4:
-        full_mask = block_mask
-    else:
-        raise ValueError(f"unsupported mask ndim {block_mask.ndim}")
-
-    # Repeat-expand each block to BQ_actual rows and BK_actual cols.
-    # [B, H, NQ, NK] -> [B, H, NQ, BQ, NK, BK] -> [B, H, NQ*BQ, NK*BK]
-    expanded = full_mask[:, :, :, None, :, None]
-    expanded = mx.broadcast_to(
-        expanded, (B, H, NQ, BQ_actual, NK, BK_actual)
-    )
-    expanded = expanded.reshape(B, H, NQ * BQ_actual, NK * BK_actual)
-    # Trim to actual [N, S] in case BQ/BK don't divide evenly.
-    expanded = expanded[:, :, :N, :S]
-
-    # bool -> float (True=0, False=-inf)
-    neg_inf = mx.array(float("-inf"), dtype=q.dtype)
-    zero = mx.array(0.0, dtype=q.dtype)
-    float_bias = mx.where(expanded, zero, neg_inf)
+    # Cache-hit fast path: skip the expansion + float conversion when
+    # the same block_mask object has been seen before at this shape.
+    float_bias = _get_or_build_expanded_float_bias(
+        block_mask, B, H, N, S, q.dtype)
 
     if causal:
         causal_m = mx.triu(
@@ -3501,16 +3587,15 @@ def _fallback_sdpa(
     causal: bool,
     stream: Optional[mx.Stream] = None,
 ) -> mx.array:
-    """Fallback to ``mx.fast.scaled_dot_product_attention``."""
-    mask = None
-    if causal:
-        N, S = q.shape[2], k.shape[2]
-        mask = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=q.dtype),
-            k=S - N + 1,
-        )
+    """Fallback to ``mx.fast.scaled_dot_product_attention``.
+
+    For causal masks, pass ``mask="causal"`` (string form) which routes
+    through SDPA's optimized causal path — on M5+ that uses Apple's NAX
+    kernel directly. Materializing an explicit triu matrix bypasses NAX
+    and runs ~2× slower (was the prior behavior; v2.32.0 fix).
+    """
     return mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=mask,
+        q, k, v, scale=scale, mask=("causal" if causal else None),
     )
 
 

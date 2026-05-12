@@ -1,6 +1,7 @@
 /// mlx-mfa nanobind bindings.
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -12,12 +13,37 @@
 
 #include "mfa_attention.hpp"
 #include "mfa_env.hpp"
+#include "shader_cache.hpp"
+
+namespace mlx_mfa {
+// estimate_gpu_cores defined in mfa_steel_fwd_v2.cpp
+int estimate_gpu_cores(const std::string& device_name, int arch_gen);
+// V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp).
+std::string v6_nax_probe_msl4();
+std::string v6_nax_probe_mpp();
+std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
+std::string v34_probe_source();
+std::string v34_probe_compile_test(void* mtl_device_raw);
+// V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
+bool device_has_neural_accelerators();
+bool device_has_nax_bf16();
+// Draw Things port: source generation + JIT compile
+std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
+std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
+// V6 NAX forward (returns O, L)
+std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, bool causal);
+}  // namespace mlx_mfa
+
 #include "mfa_paged_gather.hpp"
 #include "mfa_quantize.hpp"
 #include "mfa_scatter.hpp"
 #include "mfa_smooth_quant.hpp"
 #include "mfa_steel_fwd_v2.hpp"
-#include "shader_cache.hpp"
+#include "mfa_conv_nax.hpp"
+
+#include <array>
 
 namespace nb = nanobind;
 
@@ -255,6 +281,57 @@ NB_MODULE(_ext, m) {
   //                          Correct per-variant: M1 Max=32, M1 base=8, M2 Max=38, …
   //                          Falls back to conservative gen-based estimate for
   //                          unknown names (simulator, future hardware).
+  // V6 NAX bring-up probes — JIT-compile minimal MSL 4 + MPP kernels via
+  // mlx-mfa's shader cache. Used by Phase 0 Task 0.1 to gate the rest of
+  // the V6 NAX implementation.
+  m.def("v6_nax_probe_msl4", []() -> std::string {
+    return mlx_mfa::v6_nax_probe_msl4();
+  }, "Probe: compile a minimal MSL 4.0 stub. Returns 'OK' or 'FAIL: <err>'.");
+  m.def("v6_nax_probe_mpp", []() -> std::string {
+    return mlx_mfa::v6_nax_probe_mpp();
+  }, "Probe: compile MSL 4 + MPP matmul2d stub. Returns 'OK' or 'FAIL: <err>'.");
+  m.def("device_has_neural_accelerators", []() -> bool {
+    return mlx_mfa::device_has_neural_accelerators();
+  }, "True iff the GPU has NAX (Apple GPU family 10+, M5 family).");
+  m.def("device_has_nax_bf16", []() -> bool {
+    return mlx_mfa::device_has_nax_bf16();
+  }, "True iff NAX is available AND macOS >= 26.1 (MPP bf16 support).");
+  m.def("v6_nax_probe_forward_compile",
+        [](int head_dim, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_probe_forward_compile(head_dim, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("dtype_code"),
+        "Compile the V6 NAX forward kernel (D, dtype). Returns 'OK' or 'FAIL: <err>'.");
+  m.def("v34_probe_source", []() -> std::string {
+    return mlx_mfa::v34_probe_source();
+  });
+  m.def("v34_probe_compile", []() -> std::string {
+    auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+    auto& d = mlx::core::metal::device(s.device);
+    return mlx_mfa::v34_probe_compile_test(d.mtl_device());
+  });
+  m.def("v6_nax_dt_generate_source",
+        [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("Hq"), nb::arg("Hk"), nb::arg("dtype_code"),
+        "Generate MSL 4 source from the Draw Things NAAttention port (no compile).");
+  m.def("v6_nax_dt_compile",
+        [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
+          return mlx_mfa::v6_nax_dt_compile(head_dim, Hq, Hk, dtype_code);
+        },
+        nb::arg("head_dim"), nb::arg("Hq"), nb::arg("Hk"), nb::arg("dtype_code"),
+        "JIT-compile the Draw Things port. Returns 'OK' or 'FAIL: <err>'.");
+
+  m.def("v6_nax_forward",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, bool causal) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("causal") = false,
+        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16.");
+
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);
     auto& d = mlx::core::metal::device(s.device);
@@ -269,6 +346,8 @@ NB_MODULE(_ext, m) {
     nb::dict info;
     info["gpu_family_gen"] = gen;
     info["is_m3_plus"]     = (gen >= 15);
+    info["is_m5_plus"]     = (gen >= 17);
+    info["has_nax"]        = (gen >= 17);
     info["device_name"]    = dev_name;
     info["gpu_cores"]      = cores;
     return info;
@@ -682,5 +761,36 @@ NB_MODULE(_ext, m) {
       mlx_mfa::MFAEnvConfig::invalidate();
   }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
 
-  m.attr("__version__") = "2.22.0";
+  // ====================================================================
+  // Sprint D — Conv3D NAX C++ Primitive entry point.
+  // Routes mlx_mfa.conv_nax.conv3d_nax_forward through C++ instead of
+  // the Phase 1.x Python orchestrator (saves ~50-100 µs Python dispatch
+  // overhead per call). The Metal kernels are identical (frozen from
+  // Sprint C); only the orchestration moved from Python to C++.
+  // ====================================================================
+  m.def("conv3d_nax_forward",
+      [](const mlx::core::array& x,
+         const mlx::core::array& w,
+         std::array<int, 3> stride,
+         std::array<int, 6> padding,
+         std::array<int, 3> dilation,
+         int chunk_M) {
+        mlx_mfa::ConvPad pad{
+            padding[0], padding[1],
+            padding[2], padding[3],
+            padding[4], padding[5]};
+        return mlx_mfa::conv3d_nax_forward(x, w, stride, pad, dilation, chunk_M);
+      },
+      nb::arg("x"), nb::arg("w"),
+      nb::arg("stride") = std::array<int, 3>{1, 1, 1},
+      nb::arg("padding") = std::array<int, 6>{0, 0, 0, 0, 0, 0},
+      nb::arg("dilation") = std::array<int, 3>{1, 1, 1},
+      nb::arg("chunk_M") = 0,
+      "Conv3D NAX forward via MPP matmul2d + im2col chunking. "
+      "x: (B,T,H,W,C_in) f16/bf16. w: (C_out,K_T,K_H,K_W,C_in). "
+      "padding: 6-tuple (T_left,T_right,H_left,H_right,W_left,W_right). "
+      "chunk_M: 0 = auto from int32-byte-budget heuristic.");
+
+  // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__
+  // (was hardcoded "2.22.0", 11 versions stale). See release-flow-validation-report.md §C.3.
 }

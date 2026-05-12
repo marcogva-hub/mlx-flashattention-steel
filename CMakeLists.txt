@@ -106,6 +106,15 @@ set(MFA_SOURCES
   csrc/mfa_steel_fwd_v5.cpp
   csrc/mfa_steel_paged_varlen_fwd.cpp
   csrc/mfa_steel_paged_varlen_tq_fwd.cpp
+  csrc/v6_nax_probe.cpp
+  csrc/v34_probe.cpp
+  csrc/v6_nax_detect.mm
+  csrc/v6_nax_compile.mm
+  csrc/mfa_steel_fwd_v6_nax.cpp
+  csrc/mfa_v6_nax_primitive.cpp
+  csrc/mfa_conv_nax.cpp
+  csrc/mfa/v6_nax/NAAttentionKernelDescriptor.cpp
+  csrc/mfa/v6_nax/NAAttentionKernel.cpp
   csrc/shader_cache.mm
   # ccv-derived Metal shader generator
   csrc/mfa/AttentionKernel.cpp

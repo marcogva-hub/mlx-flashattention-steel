@@ -4,6 +4,564 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.33.1] — 2026-05-12 — `flash_attention_sparse` M5+ fast-fallback
+
+### Fixed
+
+- **`flash_attention_sparse` perf regression on M5+ Apple Silicon.** The
+  v2.33.0 M5+ dispatch path (`_sparse_fallback_sdpa_perhead`) expanded
+  the block mask to a `[B, H, N, S]` float bias on every call, adding
+  ~3 ms of broadcast / reshape / `mx.where` work that ran in parallel
+  with the SDPA call — producing a constant **2.07-2.10× wall-clock
+  overhead** vs calling `mx.fast.scaled_dot_product_attention` directly
+  with a prebuilt float bias. Surfaced by Sprint B Phase 0 baseline bench
+  (`docs/lcsa-nax/survey-report.md` §3 + §8 + `docs/sparse-fallback-audit.md`).
+- **Fast-fallback (v2.33.1):** the M5+ path now caches the expanded float
+  bias by `id(block_mask) + shape + dtype + (B, H, N, S, target_dtype)`.
+  Cache HIT (mask reused across calls — common production pattern, e.g.
+  build mask once per forward pass) drops the expansion cost to a dict
+  lookup, recovering full `mx.fast.scaled_dot_product_attention`-direct
+  performance (**1.01× ratio measured**, within 10% target).
+  Cache MISS (fresh mask each call, e.g. FlashVSR's per-layer
+  `generate_draft_block_mask_mlx`) falls back to the same expansion as
+  v2.33.0 — no regression, no improvement at the call site.
+- LRU cache bounded to 8 entries; users with extreme memory footprint
+  can manually clear via `mlx_mfa.attention._SPARSE_BIAS_CACHE.clear()`.
+- Float bias is cached (NOT a bool mask) to preserve the v2.33.0 semantic
+  that an all-False Q-row produces NaN softmax
+  (`test_all_false_mask_row_gives_nan_or_zero`).
+
+### Notes
+
+- This is a **dispatch-routing fix**, not a NAX-native sparse implementation.
+  The NAX-native sparse-aware path is in development as Sprint B Phase 1.x;
+  expected speedups vs MLX SDPA dense+mask are 3-15× depending on density
+  (see `docs/lcsa-nax/survey-report.md` §10 — Recommended approach).
+- **Pre-M5 hardware (M1-M4) dispatch path is unchanged.** M1-M4 still
+  routes through the C++ STEEL V1 sparse kernel via
+  `_make_mfa_sparse_custom`. The patch modifies only the
+  `_sparse_fallback_sdpa_perhead` internal function which is reached
+  only on M5+ per `attention.py`'s `if info.get("is_m5_plus"):` dispatch
+  check. Three new tests in `TestSparseM5PlusFastFallback` guard this.
+
+### Internal
+
+- `docs/sparse-fallback-audit.md` — Sprint B Phase 0 follow-up: per-step
+  timing breakdown of the v2.33.0 overhead, fix strategy rationale, and
+  cache-hit vs cache-miss expected behavior.
+
+## [2.33.0] — 2026-05-11 — Conv3D NAX production path
+
+### Added
+
+- **Conv3D NAX path for M5+ Apple Silicon** — Sprint C v1.x ship-default
+  verdict ratified, Sprint D production-integrated.
+  - `mlx_mfa.conv_nax.conv3d_nax_forward(x, w, stride, padding, dilation, ...)` —
+    routed through MPP `matmul2d` for Conv3D `3×3×3` and `1×1×1` FP16.
+    **Median 1.64× speedup** vs `mx.conv_general` on SeedVR2 VAE production
+    shapes (range 1.02× to 2.26×).
+  - `mlx_mfa.integrations.seedvr2_vae.patch_seedvr2_vae(model)` —
+    drop-in patcher for any MLX model using `mx.conv_general` Conv3D.
+    Walks model modules, swaps eligible Conv3D layers to route through
+    `conv3d_nax_forward`. Restorable via `restore=True`.
+  - Supports symmetric **or** asymmetric padding (e.g., causal video conv:
+    `padding=((K_T-1, 0), (pH, pH), (pW, pW))` or `causal_pad_t=True`).
+  - Automatic M-chunking respects MPP `matmul2d` int32 byte-offset
+    invariant — single-buffer reads stay strictly below `2^31` bytes.
+    The Sprint C Phase 1.2 lesson learned, encoded as a runtime assert.
+  - 1×1×1 fast path: skips im2col entirely (metadata-only input reshape +
+    direct matmul on smaller K = C_in). ~15% wall-clock speedup at small
+    shapes; bit-exact identity to the general path.
+- **C++ `_ext.conv3d_nax_forward` binding** — Sprint D Track A migration
+  of the Phase 1.x Python orchestrator to C++. Removes ~50-100 µs Python
+  dispatch overhead per call. Implementation uses
+  `mlx::core::fast::metal_kernel` internally — Metal kernels frozen
+  from Sprint C (no algorithm or kernel changes).
+
+### Documentation
+
+- `docs/conv-nax/` — Sprint C v1.0-v1.5 deliverables (design doc,
+  per-phase inventory/decisions/results/data) + `ship-shelve-decision.md`
+  (the actionable Sprint C conclusion).
+- `docs/conv-nax/conv-nax-prod-*.md` — Sprint D production-integration
+  deliverables.
+- `README.md` — new `Conv3D NAX support` section with quickstart, supported
+  shapes, expected speedups, caveats, integration.
+
+### Internal
+
+- Unified `ConvKey` cache pattern (no per-Kind-separate maps).
+- Multi-session §4-compliant bench methodology (90s round / 60s shape /
+  180s initial cooldowns) applied to Phase 1.5 ship verdict; protocol
+  inherited from Sprint A.
+- Sentinel-fill + RMSE-vs-oracle smoke gate pattern (Phase 1.1 lesson)
+  applied to all conv-nax harnesses.
+
+### Known caveats
+
+- At `K ≤ 3456` (small `in_channels`), speedup is at parity with MLX
+  baseline. No regression, just no gain.
+- BF16 path is wired but not yet on the validated bench set; treat as
+  experimental until a Sprint D follow-up adds BF16 tests.
+- Conv3D backward (VJP) is out of scope for this release; forward-only.
+
+## [2.32.0] — 2026-05-06 — SDPA routing for M5+ NAX
+
+### Strategic shift
+
+mlx-mfa's dispatch on M5+ NAX hardware now routes forward attention to
+`mx.fast.scaled_dot_product_attention` on canonical shapes where Apple's
+`steel_attention_nax.h` is the optimal NAX path. mlx-mfa retains its
+native kernels for shapes and features SDPA doesn't optimize. This
+preserves mlx-mfa as a unified attention toolkit across Apple Silicon
+generations while stopping unnecessary competition with Apple's upstream
+NAX kernel on the canonical shape regime.
+
+The MLX 0.31.2 audit and the v2.31.0 → v2.32.0 cross-session diagnostic
+(`docs/v6-nax/v32-drift-diagnostic-report.md`) concluded that V34 NAX-direct
+matches Apple's NAX kernel cross-session but does not consistently beat it.
+v2.31.0's headline `+33-40% V34 wins on D=128` reflected within-session
+conditions that did not reproduce in subsequent measurements.
+
+### Routing predicate
+
+Forward attention (in `mlx_mfa.flash_attention`) routes to MLX SDPA when
+ALL of the following hold:
+
+- Hardware: M5+ NAX (`device_has_neural_accelerators()` returns True)
+- `head_dim ∈ {64, 128}` (canonical SDPA NAX targets)
+- Not a long-kL decode pattern (already MFA-routed by the cross-attn rule
+  `kv_seq_len ≥ 4096 ∧ seq_len ≤ 4096 → MFA`)
+- No empirical carve-out from the Sprint A kernel sweep
+- No backend or env-var override (see below)
+
+For shapes outside these conditions, mlx-mfa's existing kernels are used:
+
+- `head_dim ∈ {80, 96, 192}` → SDPA (mlx-mfa doesn't support these)
+- `head_dim ∈ {256, 512}` → mlx-mfa V2 D-split (SDPA NAX doesn't target)
+- Block-sparse / LCSA mask → mlx-mfa sparse kernel
+- Additive `attn_bias` (modes 1, 2) → mlx-mfa native bias kernel
+- Sliding window → mlx-mfa STEEL window kernel
+- Backward pass → mlx-mfa backward (Apple's NAX backward NYI)
+- Causal forward routes through SDPA NAX too on M5+ (Apple's kernel
+  handles causal masking natively)
+- M1–M4 hardware → mlx-mfa M3+ / V2 thresholds (NAX not available)
+
+### Empirical kernel sweep (Sprint A)
+
+`bench/v32_kernel_sweep.py` benched 15 niche / canonical shapes × 3
+backends (`sdpa`, `mfa`, `auto`) on M5 Max under subprocess isolation,
+5 runs per config. Headline result: **SDPA wins 11/15 shapes by
+1.9-5.3×; MFA wins 1 shape (ltx2-cross D=64 asymmetric, +11%); 3
+shapes (D=80, 96, 192) have MFA unsupported and fall back to SDPA**.
+
+Per-shape data in [`docs/v6-nax/v32-kernel-sweep.json`](docs/v6-nax/v32-kernel-sweep.json),
+verdict table in [`docs/v6-nax/v32-niche-shape-dispatch.md`](docs/v6-nax/v32-niche-shape-dispatch.md).
+
+Notable wins (Sprint A, M5 Max):
+
+| Shape | sdpa ms | mfa ms | mfa/sdpa |
+|---|---:|---:|---:|
+| canonical-d128-4k | 3.73 | 13.49 | **3.61×** SDPA |
+| llama-prefill-8k (D=128 causal) | 11.07 | 42.00 | **3.79×** SDPA |
+| seedvr2-small (D=128 26k²) | 161 | 630 | **3.92×** SDPA |
+| cogvideox (D=128 70k²) | 2112 | 7052 | **3.34×** SDPA |
+| llama-decode-32k (qL=1, kL=32k) | 0.62 | 2.32 | **3.73×** SDPA |
+| **ltx2-cross (D=64 2k×14k)** | 1.35 | 1.21 | **0.89× MFA** |
+
+Cross-attn rule refinement (Sprint A finding): the existing
+`kv_seq_len ≥ 4096 ∧ seq_len ≤ 4096 → MFA` rule was tuned for LTX-2
+cross-attn (qL=2048, kL=14000) where MFA wins; on M5+ NAX it incorrectly
+caught LLM decode patterns (qL=1, kL≥4096) where SDPA's `sdpa_vector`
+path wins 1.9-2.6×. The rule is now qualified with `has_nax ∧ seq_len
+≤ 16 → fall through to NAX SDPA route`. ltx2-cross still routes to
+MFA (seq_len=2048 > 16); decode shapes route to SDPA.
+
+The carve-out hook `_should_use_mfa_m5_nax_carveout()` is preserved
+for future empirical findings, but currently returns False unconditionally
+(no carve-outs needed for v2.32.0).
+
+### Wrapper bug fixes surfaced during Sprint A
+
+Two pre-existing wrapper bugs were uncovered while instrumenting the
+sweep harness — both materially affecting v2.32.0's strategic value:
+
+**Bug 1**: `flash_attention(backend='sdpa')` did not actually force SDPA
+on `head_dim ∈ {64,128,256,512}`. The smart-dispatch block at line 426
+of `attention.py` only handled `backend='auto'`; the else-branch set
+`use_mfa = _mfa_capable` (True for canonical D), routing
+`backend='sdpa'` calls down the MFA path despite the docstring claim.
+Fix: explicit `elif backend == 'sdpa': use_mfa = False`.
+
+**Bug 2**: SDPA fallback paths (`_fallback_sdpa()` + the early
+`backend='sdpa'` return) materialized an explicit triu causal mask
+matrix instead of using `mask='causal'` (string form). On M5+ this
+diverted SDPA away from Apple's `steel_attention_nax.h` fast path,
+running ~2× slower than direct `mx.fast.scaled_dot_product_attention`.
+Fix: pass `mask=('causal' if causal else None)` directly when no
+attn_bias is supplied.
+
+Combined effect on M5 Max, D=128 4096² causal:
+
+| Path | Before | After |
+|---|---:|---:|
+| `flash_attention(backend='auto')` | 6.31 ms | **3.10 ms** |
+| `flash_attention(backend='sdpa')` | 6.32 ms | **3.08 ms** |
+| `mx.fast.scaled_dot_product_attention(..., mask='causal')` | 3.08 ms | 3.08 ms (reference) |
+
+These bugs predate v2.32.0 and affected anyone using `backend='sdpa'`
+or relying on the SDPA fallback (M3/M4/M5). v2.32.0 would have routed
+canonical M5+ shapes to a slow SDPA path without these fixes.
+
+### New env vars
+
+- `MFA_FORCE_SDPA_ROUTE=1` — force SDPA route regardless of dispatch
+  policy (testing/benchmarking).
+- `MFA_DISABLE_SDPA_ROUTE=1` — disable v2.32.0 strategic routing; fall
+  through to v2.31.0-style M3+/legacy thresholds. Recovers previous
+  behavior on M5+ for A/B comparison.
+
+### Performance recalibration (v2.31.0 follow-up)
+
+v2.31.0's release perf table claimed V34 wins of +33-40% on D=128 self-
+attention shapes. Cross-session re-bench in v2.32.0 Phase 0 measured
+those shapes again and found V34 at parity-or-slight-edge with legacy V6
+NAX, depending on environmental conditions. The legacy V6 NAX path
+itself measured 36-41% faster in Phase 0 than at v2.31.0 release time —
+same hardware, same code, no source change.
+
+Phase A diagnostic (`docs/v6-nax/v32-drift-diagnostic-report.md`) tested
+PSO compilation cache and GPU ramp-up hypotheses, both rejected. The
+drift is a steady-state offset between v2.31.0 measurement context and
+current sessions, beyond session-feasible discrimination. v2.31.0's
+numbers were measured under conditions we cannot reproduce on demand.
+
+v2.32.0's response is **not** to claim better numbers — it's to ship
+the methodology that prevents repeat publication of regime-specific
+benchmarks:
+
+- `bench/v32_multisession_capture.py` — single-session capture with
+  conditions metadata (sw_vers, uptime, Metal cache state, cooldowns)
+- `bench/v32_multisession_aggregate.py` — aggregates across sessions,
+  flags any reproduction of a target regime
+- `docs/v6-nax/v32-multisession-protocol.md` — protocol matrix
+- `CLAUDE_V6_NAX.md` Artifact #5 — methodology rule for marketing-grade
+  benchmarks (multi-session repro required before perf claims published)
+
+### V34 / V6 NAX status — clarification
+
+The V34 NAX-direct kernel (shipped in v2.31.0) and the V6 NAX legacy path
+are **accessible only via the direct binding `_ext.v6_nax_forward()`** —
+used by `bench/v34_bench.py`, `bench/v32_multisession_capture.py`, and
+similar tools. The public `mlx_mfa.flash_attention()` API has never
+routed through V6 NAX/V34; it has always used the STEEL kernel family
+(V1/V2/V3/V4/V5) via `MFAttention`. v2.31.0 introduced V34 as a research
+path with bench data; it was not part of the production dispatch.
+
+v2.32.0 modifies the **production dispatch** (the path users actually
+hit through `flash_attention()`) to route canonical M5+ NAX shapes to
+SDPA. STEEL kernels still handle non-canonical shapes, sliding window,
+sparse, attn_bias, decode patterns, etc.
+
+The V6 NAX/V34 source remains in the codebase as:
+- An implementation reference for `steel_attention_nax.h` patterns
+  (`csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source`)
+- The kernel exercised by `v34_bench.py` for cross-session perf studies
+- A regression canary against future MLX upstream changes
+
+### Tests
+
+`tests/test_v32_sdpa_routing.py` — 16 tests covering:
+
+- Pure dispatch_policy decisions (canonical → SDPA, decode → MFA,
+  env var overrides, M3+/M1 unchanged, backend overrides)
+- End-to-end correctness (D=128/D=64 canonical, D=80 fallback,
+  decode pattern, MFA_DISABLE_SDPA_ROUTE env var)
+- Carve-out infrastructure (hook returns boolean, default False)
+
+All 16 pass. Existing test suite unchanged (1 pre-existing failure
+flagged in CLAUDE_V6_NAX.md §8 still reproduces on baseline; not
+introduced by v2.32.0).
+
+### API compat
+
+- `mlx_mfa.flash_attention(q, k, v, ...)` API unchanged.
+- `MFA_DISABLE_SDPA_ROUTE=1` recovers v2.31.0-exact behavior on M5+.
+- All v2.31.0 functionality intact: backend='mfa', backend='sdpa',
+  alibi, softcap, window_size, return_lse, etc.
+
+### Files
+
+- `mlx_mfa/dispatch_policy.py` — `_M5_NAX_THRESHOLDS`, `_should_use_mfa_m5_nax_carveout()`,
+  `should_use_mfa(has_nax=...)`, env var overrides
+- `mlx_mfa/attention.py` — `_get_has_nax_cached()`, `flash_attention()` passes
+  `has_nax` to dispatch
+- `tests/test_v32_sdpa_routing.py` — 16 tests
+- `bench/v32_kernel_sweep.py` + `_inner.py` + `_analyze.py` — Sprint A sweep harness
+- `docs/v6-nax/v32-kernel-inventory.md` — kernel architecture survey
+- `docs/v6-nax/v32-kernel-sweep.json` — Sprint A raw data
+- `docs/v6-nax/v32-niche-shape-dispatch.md` — Sprint A.6 dispatch table
+- `CLAUDE_V6_NAX.md` — Artifact #5 added (cross-session perf methodology)
+
+### Open follow-ups
+
+- Multi-session protocol execution (next sprint) to re-validate v2.31.0
+  numbers across multiple environmental conditions. May lead to a
+  v2.31.0 PyPI page addendum with corrected perf characteristics.
+- Backward NAX FA2 (Apple's NYI) — opportunity for mlx-mfa native
+  backward to remain the only path on M5+
+- Block-sparse / LCSA NAX — Apple's SDPA NAX doesn't support sparse
+  block masks; mlx-mfa keeps this niche
+- Conv2D/3D NAX — separate primitive class
+
+## [2.31.0] — 2026-05-06 — V34 NAX-direct rewrite (M5 Max SDPA parity achieved)
+
+### Architecture
+
+- New `loopForwardSingleTileV34` path in V6 NAX uses Apple's
+  `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
+  (the pattern from `steel_attention_nax.h`), bypassing MPP
+  cooperative_tensor constraints that imposed
+  `execution_simdgroups<1>`.
+- Multi-SG parallelism via per-SG row partitioning at the kernel
+  level (`tm = 16 * TQ * sgid`), not via cooperative_tensor
+  distribution. This sidesteps the V33 cross-SG distribution
+  opacity issue documented in `docs/v6-nax/v33-sg-gt-1-debug-report.md`.
+- V34 emits a self-contained MSL source (~17.7 KB of inlined Apple
+  helpers): `BaseNAXFrag` (with `mma` / `load` / `store` / `row_reduce`
+  / `row_bin_op`), `NAXTile<T, TQ, TD>`, `MaxOp` / `SumOp` / `MulOp`
+  / `ExpSubOp`, `Limits`, `integral_constant`. No external include
+  dependency at runtime beyond Metal stdlib + MetalPerformancePrimitives.
+
+### Performance (M5 Max, cross-session multi-run, iStat performance fan)
+
+| Shape | D | Legacy ms | V34 ms | Δ | V34/SDPA | Default |
+|---|---|---:|---:|---:|---:|:---:|
+| FlashVSR-dense | 64 | 1.12 | 1.55 | -39% | 1.633× | legacy |
+| LTX2-cross | 64 | 1.75 | 1.42 | **+19%** | **1.075×** | **V34** |
+| SeedVR2-small | 128 | 265.13 | 170.92 | **+36%** | **0.890× ⭐** | **V34** |
+| CogVideoX | 128 | 3610.79 | 2399.19 | **+34%** | **1.033×** | **V34** |
+| SeedVR2-large | 128 | 6776.12 | 4042.73 | **+40%** | **1.008×** | **V34** |
+
+V34 wins +18 to +40% on 4/5 production shapes vs legacy V6 NAX. **3 of 5
+reach SDPA parity (1.01×–1.07×)** — the historic D=128 long-N gap (legacy
+was 1.5×–1.7× SDPA) is closed. **SeedVR2-small at 0.89× actually beats
+SDPA**, the first time V6 NAX has dipped below 1.0× on a production shape.
+
+Methodology: subprocess A/B/A (legacy → V34 → legacy), 3 runs/round, 60s
+inter-round + 30s inter-shape cooldowns. 4/5 shapes have R1↔R3 thermal
+drift < 8%. Raw bench data: `docs/v6-nax/v34-aba.json`.
+
+### Numerics
+
+V34 is 4–30× more numerically stable than legacy on the same shapes:
+
+| Shape | Legacy RMSE FP32 | V34 RMSE FP32 |
+|---|---:|---:|
+| FlashVSR-dense | 1.47e-05 | 3.60e-06 |
+| LTX2-cross | 8.10e-06 | 1.76e-06 |
+| SeedVR2-small | 5.87e-06 | 1.75e-06 |
+| CogVideoX | 3.66e-06 | 1.11e-06 |
+| SeedVR2-large | 2.93e-06 | 8.98e-07 |
+
+Manual `simd_shuffle_xor` row reductions on FP32 accumulators inside
+`NAXFrag::row_reduce` are bit-exact; MPP's `reduce_rows` had
+tile-boundary FP rounding artifacts.
+
+### Dispatch policy
+
+Per-D shape-aware dispatch (in `mfa_v6_nax_primitive.cpp`):
+
+- `D = 128` → V34 default (3 production shapes)
+- `D = 64` and `N_kv > 8000` → V34 default (LTX2-cross style asymmetric)
+- `D = 64` small N (FlashVSR-dense style) → legacy retained (V34 regresses
+  −39% on small symmetric self-attention; root cause TBD, likely V34
+  per-kernel overhead unfavorable on short matmul tiles)
+- Causal forward → legacy fallback (V34 not yet ported)
+- GQA `Hq != Hk && Hq % Hk != 0` → legacy double-buffer fallback
+- Override via env var: `MFA_V6_USE_V34={0,1}`
+
+V34 tile defaults: D=64 → BQ=32, BK=64, WM=2; D=128 → BQ=64, BK=32, WM=4.
+Tunable via `MFA_V6_V34_BQ` / `MFA_V6_V34_BK` / `MFA_V6_V34_WM`.
+
+### Compatibility
+
+- Drop-in replacement: existing `flash_attention()` calls automatically
+  use V34 where the dispatch elects it; no Python API change.
+- V6Key cache key gains 4 dedicated fields (`use_v34`, `v34_BQ`,
+  `v34_BK`, `v34_WM`) — no bit-packing, no foot-gun.
+- Legacy V6 NAX path remains intact for shapes where it wins or where
+  V34 isn't yet ported.
+
+### Files
+
+- `csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}` — `createV34Source()` (~700 LOC)
+- `csrc/mfa/v6_nax/NAAttentionKernelDescriptor.hpp` — `useV34` field
+- `csrc/mfa_v6_nax_primitive.cpp` — V34 dispatch + V6Key fields
+- `csrc/v6_nax_compile.mm` — `v34_compile`, `v34_dispatch`, `V34Params` struct
+- `csrc/v34_probe.cpp` — Phase 1 compile probe (kept for future debugging)
+- `bench/v34_bench.py`, `bench/v34_aba_wrapper.sh` — bench infrastructure
+- `docs/v6-nax/v34-apple-reference-mapping.md` — file:line citations
+- `docs/v6-nax/v34-results.md` — sprint final report
+- `docs/v6-nax/v34-aba.json` — raw bench data
+- `CLAUDE_V6_NAX.md` — V6 NAX guardrails accumulated through v2.27.0–v2.30.x
+
+### Open follow-ups
+
+- FlashVSR-dense D=64 small-N V34 regression: investigate whether
+  V34 with `BQ=16, WM=1` configuration beats legacy on small
+  symmetric self-attention.
+- V34 causal forward (currently legacy fallback).
+- V34 with `align_Q` / `align_K` function constants for the
+  fast-path on shapes that are seq-len aligned.
+- L (logsumexp) writeback in V34 — currently V34 doesn't write
+  the `lse` output; backward via `mx.vjp(SDPA)` doesn't need it,
+  but any user reading L from V34 output would get uninitialized data.
+
+## [2.30.0] — 2026-05-05 (final, post thermal-controlled re-bench)
+
+> **Note**: This release went through a thermal-controlled re-bench
+> validation cycle that reverted the originally-shipped "dispatch v6"
+> tile-default changes (Sprint G). The Sprint G claim of "−6.4 % on
+> FlashVSR-dense and −11.7 % on SeedVR2-large" turned out to be a
+> within-session pipeline-cache artifact that did not replicate
+> cross-session. See `docs/v6-nax/v2-30-thermal-rebench.md`.
+
+### What's actually shipped in v2.30.0
+
+- **Sprint A.1 — tgmem allocation cleanup** (3 LOC):
+  `threadgroupMemoryAllocation()` returns 0 for the forward path when
+  single-Otile + bypass are both on (P_buf is never used). Saves
+  8-16 KB per dispatch. Within noise on production shapes; pure
+  code-quality fix.
+- **Sprint B — GQA single-Otile path** (~70 LOC): BHND rewriter now
+  handles `Hq != Hk && Hq % Hk == 0`. GQA shapes use the single-Otile
+  kernel directly. Gains 7-14% over v2.29.0 legacy fallback on 4 GQA
+  shapes. **GQA-Hq32-Hk8 D=128 reaches 1.06× SDPA** — the closest V6
+  has gotten to parity on M5 Max.
+- **Infrastructure: `MFA_V6_MAX_THREADS`** env var + Metal pipeline-state
+  attribute support (`MTLComputePipelineDescriptor` with
+  `maxTotalThreadsPerThreadgroup`). No default change — exposed for
+  future per-shape dispatch experiments.
+- **Infrastructure: `MFA_V6_MATMUL_EXEC_SG`** env var + post-gen rewrite
+  of `matmul2d<desc, execution_simdgroups<N>>` template parameter
+  (default <1>). Empirical sweep showed FlashVSR-dense gains ~10% at
+  <8> but doesn't generalize. Exposed for future per-shape dispatch.
+
+### Reverted from initial v2.30 release
+
+- **Sprint G dispatch v6 default changes** (commit `96daff7`,
+  reverted in `ca0fc44`): D=64 SG=4 (was SG=2) and D=128 N≥100k
+  BK=64 SG=8 (was BK=32 SG=16). Thermal-controlled re-bench showed
+  these regressed SeedVR2-large +14.3 % and SeedVR2-small +5.9 %
+  vs v5 defaults.
+
+### Final v2.30.0 vs v2.29.0 performance (M5 Max, controlled A/B/A)
+
+5-shape multi-run on production dense shapes (median-of-medians):
+
+| Shape | v2.29.0 (avg of A1+A3) | v2.30.0 (B) | Δ |
+|---|---:|---:|---:|
+| FlashVSR-dense | 1.17 ms | 1.15 ms | -1.7 % (noise) |
+| LTX2-cross | 1.55 ms | 1.56 ms | +0.6 % (noise) |
+| SeedVR2-small | 280 ms | 286 ms | +2.1 % (noise) |
+| CogVideoX | 4377 ms | 4500 ms | +2.8 % (noise) |
+| SeedVR2-large | 7720 ms | 7735 ms | +0.2 % (noise) |
+
+**All deltas within ±3 % noise band.** Production performance is
+statistically equivalent to v2.29.0; v2.30.0 is a strict improvement
+on GQA shapes (new feature) without regression on production.
+
+### GQA shape performance (Sprint B, multi-run validated)
+
+| Shape | v2.29.0 legacy | v2.30.0 single-Otile | Δ | V6/SDPA |
+|---|---:|---:|---:|---|
+| GQA-Hq32-Hk8 D=128 | 7.71 ms | 6.60 ms | -14.46 % | **1.06×** |
+| GQA-Hq16-Hk4 D=64 | 6.01 ms | 5.54 ms | -7.90 % | 1.17× |
+| GQA-Hq40-Hk8 D=128 | 2.59 ms | 2.30 ms | -11.03 % | 1.16× |
+| GQA-Hq8-Hk2 D=64 | 1.00 ms | 0.93 ms | -7.11 % | 1.18× |
+
+### Investigated but not shipped (full rationale in docs/v6-nax/sprint-{D,E,F}-*.md)
+
+- **Sprint A.2 swizzle**: Apple's NAX attention doesn't use swizzle.
+- **Sprint A.3 ld_padding**: V6 uses device tensors; padding inapplicable.
+- **Sprint D per-loop unroll**: 101 pragmas; S3.5 already showed `full` wins.
+- **Sprint F compile-time vs runtime function constants**: V6 already at
+  the natural compile/runtime split.
+
+### Lessons logged from the v2.30.0 cycle
+
+1. **Within-session A/B benches contaminate via pipeline cache**.
+   Sprint G's "wins" didn't replicate cross-session. Always use
+   cross-session controlled bench for shipping decisions.
+2. **`maxTotalThreadsPerThreadgroup` can silently corrupt output** if
+   set below the actual dispatch's threads-per-threadgroup. For SG=16
+   (= 512 threads/TG), settings of 256 or 512 produce RMSE=1.0.
+3. **MPP `execution_simdgroups<N>` template is not a no-op** —
+   FlashVSR-dense gains ~10 % at `<8>` vs `<1>`. Worth per-shape dispatch
+   exploration in a future sprint.
+4. **Thermal drift can flip benches by 50% over hour-scale sessions.**
+   Mandatory protocol: 3-5 min initial cooldown + 90-120 s inter-round +
+   A/B/A pattern. R1↔R3 within 5% to declare bench thermally valid.
+
+## [2.29.0] — 2026-05-05
+
+### Added — V6 NAX single-Otile + autoresearch retuning (M5+)
+
+- **`loopForwardSingleTile()`** — Apple-style single-buffer V6 NAX forward
+  kernel. ~270 LOC in `csrc/mfa/v6_nax/NAAttentionKernel.cpp`. Single cS (no
+  double-buffer cS_0/cS_1), forced kBlocks=1, always-bypass cP cooperative
+  tensor (no `P_buf` threadgroup staging), `mem_none` barriers, K-loop step
+  BK (not 2·BK).
+- **Autoresearch-tuned tile defaults**: BQ=16 universal; BK=64 for D=64,
+  BK=32 for D=128; SG=2 for D=64, SG=8 for D=128. Plumbed in both the
+  source-gen path and the cache-key/dispatch path of
+  `csrc/mfa_v6_nax_primitive.cpp`.
+- **Auto-default kernel variant by Hq==Hk**: non-GQA shapes get single-Otile
+  by default; GQA shapes fall back to legacy `loopForward()` (double-buffer)
+  because the BHND rewriter doesn't yet handle per-head K-stride for
+  single-Otile.
+- New env vars (all with auto-defaults): `MFA_V6_NAX_SINGLE_OTILE` (on/off),
+  `MFA_V6_BLOCK_R` / `_C` / `EXEC_SG` / `BLOCK_D` for tile overrides,
+  `MFA_V6_BYPASS_TGP` (forced on by single-Otile).
+- `docs/v6-nax/README.md` — V6 NAX architecture summary + sprint chronology.
+- `docs/v6-nax/env-vars.md` — full env var reference.
+- `bench/v6_single_otile_bench.py` — reproducible single-Otile bench.
+- `bench/v6_single_otile_autoresearch.py` — tile-config sweep script.
+
+### Performance — V6 NAX on M5 Max (5 production VSR/DiT shapes)
+
+V6/SDPA closed from 1.98×–5.06× (v2.28.x default tiles) to 1.20×–2.06×:
+
+| Shape (D)               | v2.28.x | v2.29.0 | Δ      | V6/SDPA   |
+|-------------------------|--------:|--------:|-------:|-----------|
+| FlashVSR-dense (64)     | 1.81 ms | 1.11 ms | -38.7% | → 1.22×   |
+| LTX2-cross (64)         | 2.99 ms | 1.59 ms | -46.8% | → 1.20×   |
+| SeedVR2-small (128)     | 936 ms  | 276 ms  | -70.5% | → 1.49×   |
+| CogVideoX (128)         | 9633 ms | 3060 ms | -68.2% | → 1.35×   |
+| SeedVR2-large (128)     | 16030 ms| 8392 ms | -47.6% | → 2.06×   |
+
+Bonus: SeedVR2-large RMSE 5.79e-5 → 2.93e-6 (20× more stable) under the
+single-Otile path — single-buffer commits each row reduction before the
+next K-tile overwrites, eliminating cross-tile FP16↔FP32 rounding error
+that the double-buffer accumulated.
+
+### Investigation logs (informational, no code change)
+
+- **Sprint 3.1** — V6 NAX already implements all three Apple-style causal-skip
+  optimizations from `steel_attention_nax.h` (loop bound, mask gate,
+  per-element check). Plus an extra V6-only tail-block gate. No code change
+  recommended. See `docs/v6-nax/causal-masking-analysis.md`.
+- **Sprint 3.2** — `bypassThreadgroupMemory` at legacy tiles regresses on
+  D=128 (Cas C). Kept off as a default. With single-Otile + new tiles,
+  bypass is forced on automatically. See
+  `docs/v6-nax/sprint-3-2-bypass-tgmem-results.md`.
+
+### Documentation
+
+- README — performance table updated for v2.29.0; added M5 Max V6 NAX
+  section; clarified the M1 Max highlights remain the M1-Max-specific story.
+
 ## [2.28.1] — 2026-05-02
 
 ### Fixed

@@ -1,0 +1,3762 @@
+{
+  "timestamp": "2026-05-03T02:55:58.793126+00:00",
+  "machine": "Apple M5 Max",
+  "search_space": {
+    "BLOCK_R": [
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "BLOCK_C": [
+      16,
+      32,
+      48,
+      64,
+      80,
+      96,
+      128
+    ],
+    "EXEC_SG": [
+      2,
+      4,
+      8,
+      12,
+      16,
+      24,
+      32
+    ]
+  },
+  "warmup": 1,
+  "iters": 3,
+  "total_seconds": 764.8275137500023,
+  "results": {
+    "FlashVSR-dense": {
+      "shape": {
+        "name": "FlashVSR-dense",
+        "B": 1,
+        "H": 10,
+        "N_q": 4096,
+        "N_kv": 4096,
+        "D": 64,
+        "dtype": "float16"
+      },
+      "configs": [
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 6.6551,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 5.988,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 6.2508,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 6.7691,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 6.9603,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 6.8743,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 6.9866,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 5.8135,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 5.116,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 5.2009,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 5.3606,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 6.0978,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": 5.732,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": 6.4635,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 5.2616,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 6.7787,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 5.1454,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": 5.64,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": 5.2306,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": 6.1868,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": 7.48,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 6.4699,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 5.0747,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 6.5778,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": 5.423,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": 5.5645,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": 5.5465,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": 5.9253,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 5.2864,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 5.3757,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": 6.242,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": 6.1472,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": 5.4381,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": 6.0025,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 6.179,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 5.972,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": 6.8357,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": 7.9652,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": 7.0547,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 8.0539,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 6.7867,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": 7.3787,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": 6.8025,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": 6.9392,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 3.7766,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 3.5117,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 3.7038,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 3.9914,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 4.1548,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 4.6933,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 3.3252,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 2.9802,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 2.426,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 1.7124,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 2.648,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 1.867,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": 2.8215,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": 2.7267,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 2.7237,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 2.5558,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 1.8095,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": 2.899,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": 2.0083,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 2.6432,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 1.4284,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 1.8763,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": 2.8021,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": 1.356,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 3.8835,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 2.7159,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": 2.5543,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": 2.4082,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 61440B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 2.7407,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 1.6133,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": 2.0667,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 2.4353,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 2.1124,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": 2.3815,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 3.5923,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 6.8333,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 4.7196,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 6.4028,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 6.3383,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 5.9667,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 4.4624,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 2.879,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 1.9438,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 2.7602,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 3.2848,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 2.5457,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 3.2403,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 3.1843,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 3.1365,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 3.1241,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 2.8781,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 3.6786,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 5.2143,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 5.426,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 61440B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 122880B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 163840B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 4.2582,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 4.0762,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 5.2921,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 4.7621,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 9.5044,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 11.2608,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 10.6538,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 13.3043,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 9.6517,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 5.541,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 5.3448,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 5.7856,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 8.6171,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 8.5705,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 6.5742,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 5.6842,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 9.6438,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 122880B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 163840B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 245760B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 327680B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 6.6105,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 294912B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 393216B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 7.5637,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 393216B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 524288B > 32KB"
+        }
+      ],
+      "best": {
+        "block_r": 16,
+        "block_c": 64,
+        "exec_sg": 16,
+        "p50_ms": 1.356,
+        "valid": true
+      }
+    },
+    "SeedVR2-small": {
+      "shape": {
+        "name": "SeedVR2-small",
+        "B": 1,
+        "H": 20,
+        "N_q": 26730,
+        "N_kv": 26730,
+        "D": 128,
+        "dtype": "float16"
+      },
+      "configs": [
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 4,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "RuntimeError: V6 library compile failed: In file included from program_source:4: In file included from /System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d."
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 1167.987,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 1107.3639,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 1085.1425,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 1121.9952,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 1109.3851,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 2135.3364,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 2826.983,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 1822.1651,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 1566.7418,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 1403.9876,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 1458.8163,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 1255.8708,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": 2267.0857,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": 2993.0089,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 2087.9605,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 1748.9249,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 1590.0844,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": 1684.7914,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": 1156.1907,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": 2176.9612,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": 3089.3518,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 1398.7276,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 1281.3971,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 1276.5422,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": 1313.6608,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": 1141.2333,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": 1915.2059,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": 2491.4813,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 1299.996,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 1239.2364,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": 1247.4026,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": 1216.8171,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": 1175.1293,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": 1767.1234,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 1781.8747,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 1413.1915,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": 1381.3668,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": 1660.7302,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": 1632.8328,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 1829.2579,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 1780.3438,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": 1783.3177,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": 1661.6849,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": 1663.7635,
+          "valid": true
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 8,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 562.9364,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 514.0943,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 520.2344,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 557.486,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 575.5004,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 1276.5508,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 1632.6705,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 853.8959,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 880.5254,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 880.4155,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 913.296,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 878.754,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": 1133.5715,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": 1290.2097,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 714.6467,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 733.3362,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 372.5248,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": 560.715,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": 231.0315,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 777.8549,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 779.5587,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 801.245,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": 768.362,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": 807.8854,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 852.2402,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 849.202,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": 844.8121,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": 852.1314,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 61440B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 864.3967,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 1026.8713,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": 851.4375,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 1125.8437,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 1042.0679,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": 910.8754,
+          "valid": true
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 16,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 1746.3135,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 1747.3408,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 1768.4377,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 1839.4127,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 1792.9658,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": 2435.039,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": 2736.2592,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 1005.4854,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 1037.3715,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 1069.0564,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": 1018.6308,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": 1046.4803,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 1139.4407,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 1133.8147,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": 1128.3148,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 36864B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 913.8683,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 927.4762,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": 946.3875,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 900.0026,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": 926.9234,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 61440B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 122880B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 163840B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 931.71,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": 942.0563,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 998.0583,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": 951.3503,
+          "valid": true
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 32,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 2,
+          "p50_ms": 3296.3358,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 4,
+          "p50_ms": 3371.1576,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 8,
+          "p50_ms": 3363.0368,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 12,
+          "p50_ms": 3271.9979,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 16,
+          "p50_ms": 3387.2231,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 16,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 2,
+          "p50_ms": 1936.8141,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 4,
+          "p50_ms": 1975.0913,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 8,
+          "p50_ms": 2009.3448,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 32,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 2,
+          "p50_ms": 1559.3336,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 4,
+          "p50_ms": 1607.5795,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 73728B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 48,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 2,
+          "p50_ms": 1588.3784,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 4,
+          "p50_ms": 1646.2692,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 64,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 2,
+          "p50_ms": 1431.8208,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 40960B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 81920B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 122880B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 163840B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 245760B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 80,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 327680B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 2,
+          "p50_ms": 1300.3951,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 49152B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 98304B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 147456B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 294912B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 96,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 393216B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 2,
+          "p50_ms": 1257.8304,
+          "valid": true
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 4,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 65536B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 8,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 131072B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 12,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 196608B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 16,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 262144B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 24,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 393216B > 32KB"
+        },
+        {
+          "block_r": 64,
+          "block_c": 128,
+          "exec_sg": 32,
+          "p50_ms": null,
+          "valid": false,
+          "error": "tgmem 524288B > 32KB"
+        }
+      ],
+      "best": {
+        "block_r": 16,
+        "block_c": 48,
+        "exec_sg": 16,
+        "p50_ms": 231.0315,
+        "valid": true
+      }
+    }
+  }
+}
