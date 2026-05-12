@@ -3689,3 +3689,108 @@ Documented in docs/v6-nax/v34-backward-option-beta-design-hints.md:
 V34 backward NAX-direct monolithic rearchitect (Option β) per memory #30
 roadmap, ~1 week CC. Bonus follow-up patch: V34 forward EXEC_SG shape-aware
 heuristic for free +32% on mid_d128.
+
+---
+## [2026-05-12 21:30] [CLAUDE] Sprint U / v2.36.0 — Unification + auto-default principle
+STATUS: COMPLETE
+
+### Plan
+Sprint U per architectural unification prompt:
+- Section A: docs/RELEASE_PHILOSOPHY.md + CLAUDE.md + CLAUDE_V6_NAX.md amendments
+- Section B: flash_attention_sparse M5+ auto-routes to sparse_attention_dispatch
+- Section C: auto-on-import hooks (mx.conv_general → conv3d_nax_forward)
+- Section D: README + CHANGELOG v2.36.0
+- Section E: v2.36.0 release flow (multi-SoT bump + tag + PyPI + GH)
+
+### Changes (sectioned)
+
+Section A (docs amendments — independent value, applies forward):
+- `docs/RELEASE_PHILOSOPHY.md` (207 LOC) — auto-default principle canonical [HIGH][VERIFIED]
+- `CLAUDE_V6_NAX.md` §5.X — pre-tag auto-default audit checklist [HIGH][VERIFIED]
+- `CLAUDE.md` — auto-default principle reminder near the top [HIGH][VERIFIED]
+
+Section B (sparse auto-route):
+- `mlx_mfa/attention.py:2219-2241` — M5+ symmetric-BT mask early auto-route
+  to sparse_attention_dispatch [HIGH][VERIFIED]
+- `tests/test_sprint_u_sparse_routing.py` (4 tests, three-axis) [HIGH][VERIFIED]
+
+Section C (auto-hooks):
+- `mlx_mfa/_auto_hooks.py` (NEW, 222 LOC) — install_hooks / uninstall_hooks /
+  hooks_status + mx.conv_general → conv3d_nax_forward routing [HIGH][VERIFIED]
+- `mlx_mfa/__init__.py` — mlx_mfa.enable() / disable() / hooks_status() public
+  API + auto-install at import unless MFA_DISABLE_AUTO_HOOKS=1 [HIGH][VERIFIED]
+- `tests/test_sprint_u_auto_hooks.py` (9 tests, three-axis) [HIGH][VERIFIED]
+
+Section D (release docs):
+- `pyproject.toml` + `mlx_mfa/__init__.py` 2.35.0 → 2.36.0
+- `README.md` header + new "Minimal Usage (auto-default)" + "Three usage levels" sections
+- `CHANGELOG.md` [2.36.0] entry with migration notes
+- `docs/sprint-u/sprint-u-{inventory,decisions}.md` (5-deliverables docs)
+- `docs/releases/v2.36.0-release-notes.md` (GitHub release notes)
+
+Section E (release flow):
+- Merged feat/sprint-u-unification → master (b7befb5)
+- Tagged v2.36.0 annotated, pushed to origin
+- Built wheel + sdist, twine check PASSED
+- twine upload to PyPI → live at https://pypi.org/project/mlx-mfa/2.36.0/
+- gh release create v2.36.0 → live at https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.36.0
+
+### Dependency & regression check
+- Pre-Sprint-U: 52 LCSA + integration + V2 tests
+- Sprint U adds: 4 sparse-auto-routing + 9 auto-hook = +13 tests
+- Joint suite at v2.36.0: 65/65 pass
+- No public API signature changes; v2.35.0 user code continues to work
+- All patchers (patch_seedvr2_vae, patch_flashvsr_lcsa, patch_mlx_lm) remain
+  available as expert API
+
+### Tech cost
+- mlx_mfa/_auto_hooks.py: 222 LOC, zero runtime cost when hooks pass-through
+  to vanilla mx.conv_general (ineligible shapes)
+- Hooked path: ~30µs overhead per eligible call (eligibility check + dispatch
+  branch), dwarfed by the 1-10ms Conv3D cost
+- Auto-install at import: ~5-10ms one-time cost per Python process
+
+### Validation
+- Ran: `pytest tests/test_lcsa_nax*.py tests/test_flashvsr_lcsa*.py
+   tests/test_sprint_u*.py -q` → 65/65 pass
+- Ran: subprocess MFA_DISABLE_AUTO_HOOKS=1 test → install correctly suppressed
+- Ran: enable/disable cycle → idempotent, marker attribute tracking works
+- Ran: twine check → both wheel + sdist PASSED
+- Ran: PyPI upload → mlx_mfa-2.36.0 live
+- Ran: gh release create → release page live
+
+### Git
+- master tip: b7befb5 (Sprint U merge)
+- tag: v2.36.0 (annotated, pushed)
+- PyPI: https://pypi.org/project/mlx-mfa/2.36.0/
+- GitHub release: https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.36.0
+
+### Key learnings encoded
+1. **Auto-default principle codified** in docs/RELEASE_PHILOSOPHY.md as the
+   canonical user-experience target. Three usage levels (default / explicit /
+   expert) replace the implicit assumption that explicit API + patcher were
+   primary paths.
+2. **Pre-tag audit checklist** in CLAUDE_V6_NAX.md §5.X enforces the
+   principle for future releases.
+3. **Three-axis validation applied to Sprint U itself**: §3.5 rule caught
+   what mainline tests might have missed (asymmetric STEEL mask compatibility
+   issue at design time — addressed by moving auto-route BEFORE validator).
+4. **`__mlx_mfa_hook__` marker pattern** for hook detection is the same
+   pattern used by other libraries that hook MLX/PyTorch — interop-friendly.
+
+### Future-work register (post v2.36.0)
+1. **V2 sparse default flip**: pending sub-1ms methodology resolution.
+   When resolved, change `csrc/mfa_sparse_attention.cpp:read_kernel_version_env()`
+   default from "v1" to "v2" — one-line change. Sprint U makes this transparent.
+2. **patch_sparkvsr_sliding_window companion patcher**: still tracked.
+3. **V34 backward Option β NAX-direct rearchitect**: next architectural sprint.
+   Auto-default principle applies — V34 backward auto-routes via flash_attention()
+   VJP when validated.
+4. **V34 forward EXEC_SG shape-aware heuristic**: free +32% on D=128 mid shapes
+   per Sprint A V34 investigation finding.
+
+### Next prompt
+Per memory #30 roadmap + this sprint's exit state:
+- V34 backward Option β implementation, OR
+- EXEC_SG shape-aware patch (smaller win-now option)
+Marco's choice.
