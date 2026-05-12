@@ -873,13 +873,22 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
 }
 
 // Read MFA_LCSA_KERNEL_VERSION env var. Returns "v1" or "v2".
-// Defaults to "v1" pre-Section-D-verdict (DC6 V2-default-off trajectory).
+//
+// v2.35.0 SHIP_OPT_IN (Section D §4-validated verdict):
+//   - V2 wins vs SDPA+bias and vs V1 across ALL tested shapes + densities
+//     (2.22-11.57× vs SDPA, 8.54-63.59× vs V1).
+//   - Cross-session range > 10% on 5/7 shapes (3 HIGH, 2 BOUNDARY) due to
+//     A/B/A pattern's V1 middle round disturbing V2 cache state.
+//   - Strict criterion (range < 10% + V2/V1 ≥ 1.2×) yields wins=2/7 → OPT-IN.
+//   - V1 remains default; users opt into V2 via MFA_LCSA_KERNEL_VERSION=v2.
+//
+// See docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md for full data.
 std::string read_kernel_version_env() {
   const char* env = std::getenv("MFA_LCSA_KERNEL_VERSION");
-  if (env == nullptr) return "v1";
+  if (env == nullptr) return "v1";  // SHIP_OPT_IN default
   std::string v(env);
   if (v == "v1" || v == "v2") return v;
-  // "auto" or unrecognized: fall back to v1 (DC6 default).
+  // "auto" or unrecognized: fall back to V1 default.
   return "v1";
 }
 

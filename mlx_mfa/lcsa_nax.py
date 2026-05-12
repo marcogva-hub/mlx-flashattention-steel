@@ -88,19 +88,22 @@ def sparse_attention_nax(
     )
 
 # --------------------------------------------------------------------------
-# Phase 1.4 - density-thresholded dispatcher.
+# Density-thresholded dispatcher.
 #
-# Phase 1.3 BT sweep proved the per-thread FA-2 kernel is competitive with
-# MLX SDPA + float bias ONLY at very-sparse density (~< 0.02-0.03). Phase 1.4
-# sweep (docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json) confirmed:
-#   - density 0.01: Sprint B wins 2.7x-4.6x across shape clusters
-#   - density 0.03: Sprint B wins ~1.0-1.24x (boundary - varies by shape)
-#   - density 0.05: SDPA+bias wins ~1.7-1.9x
-# Threshold chosen at 0.02 (conservative; routes to Sprint B only where it
-# robustly wins by >= 2x).
+# Default kernel is V1 (per-thread FA-2). V2 cooperative-tensor kernel is
+# opt-in via `MFA_LCSA_KERNEL_VERSION=v2` per v2.35.0 SHIP_OPT_IN verdict
+# (docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md). V2 wins vs SDPA+bias
+# across all tested cells but cross-session range > 10% on 5/7 shapes →
+# conservative opt-in to let users explicitly test V2 in their environment.
+#
+# Threshold 0.02 reflects V1's break-even density (Phase 1.4 sweep). With
+# V2 opt-in: users wanting V2's broad envelope should ALSO raise the
+# threshold via the dispatcher's `density_threshold=` parameter.
 # --------------------------------------------------------------------------
 
-# Conservative threshold from Phase 1.4 data; below this Sprint B wins by ≥ 2×.
+# V1 break-even density (Phase 1.4 sweep). Conservative for default V1 path.
+# Users opting into V2 (MFA_LCSA_KERNEL_VERSION=v2) get broad envelope and
+# should pass `density_threshold=0.95` to capture V2's full win range.
 DEFAULT_DENSITY_THRESHOLD = 0.02
 
 

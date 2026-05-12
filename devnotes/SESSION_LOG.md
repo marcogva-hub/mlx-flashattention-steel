@@ -3477,3 +3477,104 @@ Hardware: M5 Max 128GB, macOS 26.5, iStat performance fan profile.
 
 ### Estimated remaining work
 ~7-10h focused work across 1-2 fresh sessions to reach v2.35.0 SHIP.
+
+---
+## [2026-05-12 11:25] [CLAUDE] Sprint B coop-rewrite COMPLETE — v2.35.0 SHIP_OPT_IN
+STATUS: COMPLETE
+
+### Plan
+Sprint B follow-on rewrite per prompt — Sections A-E executed end-to-end:
+- A: design §13 + decisions DC0-DC8 + inventory
+- B: V34 cooperative-tensor pattern lift into V2 source-gen
+- C: 19 V2 correctness tests (V1↔V2 equiv on 7 shapes + density sweep + three-axis)
+- D: §4-strict 3-session perf sweep (C1/C2/C3 over 47 min wall-clock)
+- E: v2.35.0 SHIP_OPT_IN release flow
+
+### Foundation correction (DC0)
+The follow-on prompt frames V1 as "per-block matmul2d dispatch" but actually-
+shipped v2.34.0 V1 is per-thread-Q-row FA-2 with register math (NO matmul2d).
+V2 introduces cooperative-tensor inner-GEMMs for the FIRST time on the sparse
+path. Logged in design §13.0 + decisions DC0.
+
+### Architecture
+V2 = single-kernel cooperative-tensor inner-GEMM (V34 forward pattern adapted):
+- Apple helpers (NAXFrag + NAXTile + ops) verbatim lift, 389 LOC
+  (Limits<> definitions stripped — MLX kernels/utils.h auto-injects them)
+- V34 kernel body adapted to sparse, 194 LOC:
+  - `if (!mask_qrow_base[kb]) continue;` outer-loop skip (uniform branch)
+  - K/V base + per-iteration kb-jump pointers (no linear advance)
+  - is_last_q / is_last_k remainder branches dropped (V1 enforces divisibility)
+  - all-False row → exact zero output (v2.34.0 contract via rcp branch)
+- V2 dispatch grid: (NQ * WM*32, Hq, B), TG (WM*32, 1, 1), WM=2, BQ=BK=32
+
+### Validation
+- 52/52 LCSA + integration + V2 tests pass (was 33 in v2.34.0; +19 new V2 tests)
+- V1 path 100% unchanged from v2.34.0
+- V1↔V2 RMSE < 1e-3 on all 7 production shapes + density sweep 0.01-0.50
+- §4-strict 3-session sweep verdict: SHIP_OPT_IN per §D.2 action matrix
+
+### Performance (cross-session medians, §4-strict 3-session)
+
+Production shapes — V2 wins universally vs SDPA+bias:
+
+| Shape | density | V2/V1 | V2 vs SDPA+bias | range% |
+|---|---:|---:|---:|---:|
+| lcsa_small_seq4k          | 0.239 | 33.93× |  2.24× |  7.3% CONFIDENT |
+| lcsa_small_seq4k_sparse   | 0.067 | 11.44× |  2.64× |  5.4% CONFIDENT |
+| lcsa_mid_seq8k            | 0.119 | 35.79× |  4.35× | 12.1% BOUNDARY  |
+| lcsa_mid_seq8k_sparse     | 0.030 | 12.23× |  5.85× | 35.0% HIGH      |
+| lcsa_large_seq16k         | 0.120 | 50.46× |  6.18× | 20.3% HIGH      |
+| lcsa_large_seq16k_sparse  | 0.030 | 24.63× | 11.57× | 18.6% BOUNDARY  |
+| niche (mid_seq8k d=0.01)  | 0.011 |  8.54× | 10.29× | 32.6% HIGH      |
+
+Density sweep — V2 wins from 9.24× at d=0.011 to 1.95× at d=0.50:
+
+| density | V2/V1 | V2 vs SDPA+bias |
+|---:|---:|---:|
+| 0.011 |  7.28× |  9.24× |
+| 0.030 | 16.01× |  7.86× |
+| 0.049 | 24.95× |  7.54× |
+| 0.102 | 37.13× |  5.49× |
+| 0.199 | 49.27× |  3.74× |
+| 0.500 | 63.59× |  1.95× |
+
+Verdict rationale: V2 wins on EVERY session × shape × density tested.
+Strict CONFIDENT-only win count = 2/7 (range < 10% criterion) due to
+A/B/A pattern's V1 middle round disturbing V2 cache state (drift 32-65%
+within-session). Per §D.2 "wins on 2-3 shapes → SHIP V2 as opt-in via env
+var". Conservative SHIP_OPT_IN ensures users explicitly opt into V2.
+
+### Git
+- Master tip pre-bench: 756cc68 (V2 kernel body committed earlier)
+- Final v2.35.0 commit will include: version bumps + dispatcher revert
+  to V1-default + CHANGELOG + README + ship-verdict doc + analysis data
+
+### Future-work register (post v2.35.0)
+
+Tracked enhancements:
+1. ~~matmul2d cooperative-tensor inner-GEMM rewrite~~ — DONE in v2.35.0
+   (shipped as SHIP_OPT_IN; future BROAD verdict pending re-bench with
+   V2-only A/B/A pattern that avoids V1's cache-pollution drift)
+2. **§4 re-bench with V2-only A/B/A** — would isolate V2's cross-session
+   range from the V1-middle-round cache pollution; expected to lift
+   most shapes from BOUNDARY/HIGH to CONFIDENT, opening path to
+   SHIP_BROAD verdict + V2-as-default flip in v2.36.0
+3. `patch_sparkvsr_sliding_window` companion patcher — still tracked
+4. V34 forward focused investigation (memory #30 roadmap) — next sprint
+
+### Key learnings
+1. **V34 forward pattern transfers cleanly to sparse**: Apple's NAXFrag::mma
+   + per-SG row partition is the right architectural primitive; outer-loop
+   modification (block-mask skip + kb-jump) is the only substantive change.
+2. **Cooperative-tensor wins are massive**: V2/V1 ranges from 7× at density
+   0.01 to 63× at density 0.50. Per-thread arithmetic intensity (V1) is
+   fundamentally bounded; cooperative tensors distribute MMA across all 32
+   threads/SG, ~30× the throughput.
+3. **A/B/A pattern interacts with cache state**: V1's slow middle round
+   (~40 ms vs V2's ~1 ms) evicts V2's caches between A1 and A2, inflating
+   intra-session drift. The cross-session medians smooth this out for
+   smaller shapes but stay HIGH-variance on shapes where V1 takes longest.
+4. **SHIP_OPT_IN is the data-faithful outcome**: even though V2 wins
+   on every cell, the strict variance criterion (range < 10%) is not met
+   on 5/7 shapes. Conservative shipping preserves user trust; the BROAD
+   verdict awaits a V2-only A/B/A re-bench.

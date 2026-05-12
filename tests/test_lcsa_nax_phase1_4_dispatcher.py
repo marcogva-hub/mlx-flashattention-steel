@@ -118,7 +118,9 @@ def test_dispatch_precomputed_density_skips_reduction():
 
 
 def test_default_threshold_value():
-    """Phase 1.4 fixes threshold at 0.02 (data-grounded conservative)."""
+    """v2.35.0 keeps threshold at 0.02 (V1 break-even) per SHIP_OPT_IN verdict.
+    Users opting into V2 via MFA_LCSA_KERNEL_VERSION=v2 should pass
+    `density_threshold=0.95` explicitly to capture V2's broad envelope."""
     assert DEFAULT_DENSITY_THRESHOLD == 0.02
 
 

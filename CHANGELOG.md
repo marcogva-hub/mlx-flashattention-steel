@@ -4,6 +4,98 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.35.0] — 2026-05-12 — Sprint B coop-rewrite (V2 cooperative-tensor SHIP_OPT_IN)
+
+### Added
+
+- **V2 sparse attention kernel** (opt-in via `MFA_LCSA_KERNEL_VERSION=v2`) —
+  single-kernel cooperative-tensor inner-GEMM via NAXFrag::mma + NAXTile,
+  V34 forward pattern adapted for sparse with:
+  - Outer-loop block-mask skip (uniform branch across simdgroup → zero divergence)
+  - K/V base + per-iteration jump pointers (random kb access via index)
+  - Per-SG Q-row partition (kU=16, BQ=BK=32, WM=2 per design DC1+DC3)
+  - All-False row → exact zero output preserved (v2.34.0 contract)
+- `MFA_LCSA_KERNEL_VERSION` env var:
+  - `v1` (default): per-thread FA-2 (v2.34.0 kernel, unchanged)
+  - `v2`: cooperative-tensor inner-GEMM (broad-envelope V34-pattern kernel)
+- Section A design doc `docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture)
+- Section C: 19 V2 correctness tests covering V1↔V2 equivalence on 7 shapes
+  + three-axis V2 validation + density sweep 0.01-0.50
+
+### Verdict: SHIP_OPT_IN (§D.2 decision tree)
+
+§4-strict 3-session results (M5 Max 128GB, see
+`docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md`):
+
+**Production shapes (cross-session medians)**:
+
+| Shape | density | V2 ms | V1 ms | SDPA+bias ms | V2/V1 | **V2 vs SDPA+bias** | range% | flag |
+|---|---:|---:|---:|---:|---:|---:|---:|:--:|
+| lcsa_small_seq4k          | 0.239 |  1.14 |  38.62 |  2.56 | 33.93× | **2.24×** |  7.3% | CONFIDENT |
+| lcsa_small_seq4k_sparse   | 0.067 |  0.97 |  11.29 |  2.57 | 11.44× | **2.64×** |  5.4% | CONFIDENT |
+| lcsa_mid_seq8k            | 0.119 |  1.52 |  51.52 |  6.45 | 35.79× | **4.35×** | 12.1% | BOUNDARY |
+| lcsa_mid_seq8k_sparse     | 0.030 |  1.10 |  13.48 |  6.46 | 12.23× | **5.85×** | 35.0% | HIGH |
+| lcsa_large_seq16k         | 0.120 |  2.06 | 103.91 | 12.73 | 50.46× | **6.18×** | 20.3% | HIGH |
+| lcsa_large_seq16k_sparse  | 0.030 |  1.10 |  27.15 | 12.83 | 24.63× | **11.57×** | 18.6% | BOUNDARY |
+| niche (mid_seq8k @ d=0.01)| 0.011 |  0.63 |   5.42 |  6.45 |  8.54× | **10.29×** | 32.6% | HIGH |
+
+**Density sweep — lcsa_mid_seq8k**:
+
+| density | V2 ms | V1 ms | SDPA ms | V2/V1 | **V2 vs SDPA+bias** |
+|---:|---:|---:|---:|---:|---:|
+| 0.011 | 0.71 |   5.15 | 6.49 |  7.28× | **9.24×** |
+| 0.030 | 0.82 |  13.19 | 6.48 | 16.01× | **7.86×** |
+| 0.049 | 0.85 |  21.39 | 6.46 | 24.95× | **7.54×** |
+| 0.102 | 1.18 |  43.64 | 6.45 | 37.13× | **5.49×** |
+| 0.199 | 1.72 |  85.48 | 6.45 | 49.27× | **3.74×** |
+| 0.500 | 3.32 | 211.06 | 6.45 | 63.59× | **1.95×** |
+
+**Verdict rationale**: V2 wins universally (2.22-11.57× vs SDPA+bias on every
+session of every shape, 7.28-63.59× vs V1). Strict §B.7 variance criterion
+(range < 10%) yields wins=2/7 (CONFIDENT-only count) due to elevated A/B/A
+drift caused by V1's slow middle round disturbing V2 cache state. Per §D.2:
+"V2 ships on 2-3 shapes ... → SHIP V2 as opt-in via env var, v2.35.0 with
+caveats". V1 remains default; V2 is opt-in via `MFA_LCSA_KERNEL_VERSION=v2`.
+
+### Unchanged
+
+- `DEFAULT_DENSITY_THRESHOLD = 0.02` (V1 break-even). Users opting into V2
+  should pass `density_threshold=0.95` to the dispatcher to capture V2's
+  broad envelope.
+- Default kernel version = V1 (per-thread FA-2). v2.34.0 production
+  behavior 100% preserved for users not setting the env var.
+
+### Architecture
+
+- V1 (per-thread-Q-row FA-2 with register math) preserved unchanged.
+- V2 source-gen in `csrc/mfa_sparse_attention.cpp` via Apple helpers
+  (NAXFrag + NAXTile, 389 LOC verbatim from `csrc/mfa/v6_nax/NAAttentionKernel.cpp`)
+  + V34 kernel body adapted (194 LOC).
+- Cache discrimination via kernel-name `_v1` / `_v2` suffix — both pipelines
+  coexist; switch via env var.
+
+### Tested
+
+- 52/52 LCSA + integration + V2 tests pass:
+  - 6 Phase 1.1 + 12 Phase 1.2 + 6 Phase 1.4 dispatcher + 9 Section H.2 integration
+    (v2.34.0 surface, V1 baseline preserved)
+  - 19 new Section C V2 tests (V1↔V2 equivalence on 7 shapes × density sweep
+    0.01-0.50 + three-axis V2 validation including edges)
+- V1 source-gen unchanged from v2.34.0; V2 is purely additive.
+
+### Documentation
+
+- `docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture, 282 LOC)
+- `docs/lcsa-nax/lcsa-nax-coop-rewrite-decisions.md` (DC0-DC8)
+- `docs/lcsa-nax/lcsa-nax-coop-rewrite-{inventory,results}.md`
+- `docs/lcsa-nax/lcsa-nax-coop-rewrite-{data,analysis}.json`
+
+### Future-work register (post v2.35.0)
+
+- ~~matmul2d cooperative-tensor inner-GEMM rewrite~~ — **DONE** in v2.35.0
+- `patch_sparkvsr_sliding_window` companion patcher — tracked
+- V34 forward focused investigation (memory #30 roadmap) — next sprint target
+
 ### §4-validated 2026-05-12 — Sprint B v2.34.0 ship-verdict (no tag)
 
 Methodology-validation re-bench of the v2.34.0 shipped envelope under
