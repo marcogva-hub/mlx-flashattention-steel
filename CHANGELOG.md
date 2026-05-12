@@ -4,6 +4,86 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.36.1] — 2026-05-13 — Canonical methodology + shape-aware V2 sparse default
+
+### Changed (transparent for users)
+
+- **Shape-aware V2 sparse default on M5+.** `decide_auto_version()` now
+  routes sparse-attention shapes with `qL × kL × D ≥ 2.15e9` (= 4096 ×
+  4096 × 128, the smallest tested work product) to V2 automatically.
+  V2's broad envelope (1.95-13.86× vs SDPA+bias per 3-session canonical
+  bench) activates transparently for these shapes. Sub-threshold shapes
+  keep V1 default conservatively (no canonical-protocol data to validate
+  them — DC9 empirical-calibration rule).
+  - `MFA_LCSA_KERNEL_VERSION=v2` forces V2 universally (override).
+  - `MFA_LCSA_KERNEL_VERSION=v1` forces V1 universally (override).
+  - Unset: shape-aware default applies.
+
+  This honors the auto-default principle (Sprint U / v2.36.0): V2
+  graduates to default for the regime where cross-session validation
+  is achievable.
+
+### Added
+
+- `mlx_mfa.lcsa_nax.decide_auto_version(density, qL, kL, D)` — public
+  Python function exposing the shape-aware routing decision. Returns
+  `"v1"` or `"v2"`. Honors `MFA_LCSA_KERNEL_VERSION` env override.
+- `_ext.sparse_attention_forward` now accepts an explicit
+  `kernel_version: str` parameter (defaults to empty string for
+  backward compatibility). Thread-safe alternative to env-var-based
+  routing.
+
+### Methodology
+
+- **Canonical Apple Silicon benchmark protocol adopted for sub-1.5ms
+  kernels** (`docs/methodology/canonical-protocol.md`). Replaces §4-strict
+  cooldown protocol where the latter fails due to GPU power-state cycling.
+  §4-strict remains canonical for ≥1.5ms kernels. Selection rule
+  documented in `CLAUDE_V6_NAX.md` §4.3.
+- **Sub-1ms variance methodology thread CLOSED.** Two REGRESSION sprints
+  (mx.matmul v2.36.0, matched-workload 2026-05-12) + six-source web
+  research convergence (Apple Developer Forums thread 692062, Feng et al.
+  arXiv 2501.14925, MLX docs, WWDC25 Session 315, Draw Things MFA v2.5
+  NA, MLX GitHub Discussion #1571) confirmed userspace P-state lock is
+  unavailable and warmup-during-cooldown is mechanically incompatible
+  with the measurement regime. Path-forward registry closed: option 1
+  FALSIFIED, option 2 SKIPPED, option 3 deferred, **option 4 ACTIVATED**
+  via this release.
+
+### Validated
+
+- 7 production shapes re-benchmarked under canonical methodology
+  (3 sessions, ratio analysis): 6 CONFIDENT + 1 BOUNDARY,
+  0 HIGH_VARIANCE. All 3 v2.36.0 HIGH-variance shapes graduated to
+  CONFIDENT under canonical. See
+  `docs/methodology/canonical-bench-results.md` for full data.
+- 77/77 tests pass (65 pre-existing LCSA / Sprint U / FlashVSR tests +
+  12 new three-axis tests for shape-aware decide_auto_version).
+
+### Unchanged
+
+- v2.35.0 V2 kernel source code preserved.
+- v2.36.0 auto-default infrastructure preserved (auto-on-import hooks,
+  `flash_attention_sparse` → `sparse_attention_dispatch` routing,
+  Conv3D NAX via `mx.conv_general` hook).
+- All public API signatures preserved (additive only: new
+  `kernel_version` binding param defaults to empty for compatibility).
+- All patchers (`patch_seedvr2_vae`, `patch_flashvsr_lcsa`,
+  `patch_mlx_lm`) preserved as expert API.
+
+### Notes for v2.36.0 users upgrading
+
+- If you have `MFA_LCSA_KERNEL_VERSION=v2` set in your environment:
+  this still works exactly as before, V2 is forced for all shapes.
+  You can now unset it and rely on shape-aware default for most use cases.
+- If you have no env setting: v2.36.1 transparently activates V2 for
+  shapes ≥ 4096 × 4096 × 128 work product. Expect 1.95-13.86× speedup
+  vs the v2.36.0 SDPA fallback path on FlashVSR-class workloads.
+- If you use sub-threshold sparse attention shapes: V1 remains default.
+  Set `MFA_LCSA_KERNEL_VERSION=v2` if you want V2 unconditionally on
+  small shapes too (accept that canonical-protocol validation does not
+  cover these shapes yet).
+
 ## [2.36.0] — 2026-05-12 — Sprint U: Unification main + auto-default principle
 
 ### Changed (transparent for users)

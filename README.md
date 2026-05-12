@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.36.0** — Sprint U: Unification + auto-default principle. **`import mlx_mfa` now activates all validated optimizations transparently** — eligible `mx.conv_general` calls on M5+ auto-route through Conv3D NAX (~1.6× speedup on 3×3×3 / 1×1×1 FP16/BF16); `flash_attention_sparse` on M5+ auto-routes to the NAX-aware dispatcher. No `patch_seedvr2_vae(model)` call required for default usage. Escape hatch: `MFA_DISABLE_AUTO_HOOKS=1` or `mlx_mfa.disable()`. See `docs/RELEASE_PHILOSOPHY.md` for the auto-default principle. Prior ship-defaults preserved: Conv3D NAX (v2.33.0), sparse M5+ fast-fallback (v2.33.1), V2 cooperative-tensor SHIP_OPT_IN (v2.35.0 — via `MFA_LCSA_KERNEL_VERSION=v2`).
+Current version: **2.36.1** — Sprint Option β: canonical Apple Silicon benchmark methodology adopted for sub-1.5ms kernels (`docs/methodology/canonical-protocol.md`) + **shape-aware V2 sparse default**. The V2 cooperative-tensor kernel that shipped opt-in in v2.35.0 now activates transparently for sparse-attention shapes ≥ `qL × kL × D ≥ 2.15e9` (= 4096 × 4096 × 128 work product) — 1.95-13.86× vs SDPA+bias across the validated regime per 3-session canonical bench. Sub-threshold shapes keep V1 conservatively (no canonical-protocol data to validate them). Escape hatches: `MFA_LCSA_KERNEL_VERSION=v1` forces V1 universally; `=v2` forces V2 universally. Prior ship-defaults preserved (Sprint U auto-on-import hooks, Conv3D NAX, sparse fast-fallback). See `docs/methodology/canonical-bench-results.md` for calibration data.
 
 ## Minimal Usage (auto-default)
 
