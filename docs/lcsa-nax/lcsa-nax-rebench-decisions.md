@@ -103,9 +103,63 @@ Plain-text per-session runlog written to
 `docs/lcsa-nax/rebench-runlog-S{N}.txt` via shell redirection in the
 invocation loop.
 
-## §E — Decisions taken or to take post-bench
+## §E — Decisions taken post-bench
 
-To be filled in after analysis (§5 / Section D of the prompt):
-- variance characterization result
-- delta vs single-session result
-- action-matrix outcome (v2.34.1 doc-only / doc-only-merge-no-tag / etc.)
+Filled in 2026-05-12 09:48 UTC+1, after 3-session re-bench analysis.
+
+### E.1 Variance characterization result
+
+- **6 / 7 shapes CONFIDENT** (cross-session range < 10%). Moderate-density
+  shapes are rock-solid stable (0.1–3.2% range).
+- **1 / 7 shape BOUNDARY**: `lcsa_mid_seq8k_very_sparse` (niche) at
+  10.0% cross-session range.
+- **0 HIGH** variance shapes.
+
+The BOUNDARY signal on the niche shape is driven entirely by S1's 21.0%
+A/B/A drift (cold-cache first-NAX-block artifact). S2 and S3 niche ratios
+are 2.281× and 2.288× (range ~0.3%); excluding S1, the niche shape would
+be CONFIDENT. Documented in the verdict doc's "Niche-shape BOUNDARY
+caveat" section.
+
+### E.2 Delta vs single-session result
+
+- **Max |ratio delta| = 6.9%** (niche shape: 2.45× → 2.28×).
+- All moderate-density shape deltas are +2.1% to +4.8% (slight upward
+  correction; Phase 1.4 sweep was marginally pessimistic).
+- All deltas within ±15% gate (no caveat-mandate from this axis).
+
+### E.3 Action-matrix outcome
+
+Per prompt §D.3 action matrix: row "Some boundary | Any" →
+**DOC_UPDATE_WITH_CAVEATS**.
+
+The all-CONFIDENT-required `V2_34_1_DOC_ONLY_RELEASE` branch is blocked
+by the niche shape's BOUNDARY flag. Doc-only merge to master is the
+correct outcome.
+
+### E.4 Why no v2.34.1 release
+
+Decision logic in `bench/lcsa_nax_rebench_analysis.py` requires
+`boundary_count == 0` for the v2.34.1 branch. The niche shape's 10.0%
+range falls inside the BOUNDARY band (10-20%) by 0.0% margin. A different
+cache-warmup story for S1 might have landed S1's niche ratio at 2.25×
+instead of 2.06×, collapsing range to ~3% and triggering the auto-tag
+branch. The decision-tree result is data-faithful, not artificial: the
+§4 protocol's finding is "structural niche perf is 2.28×, but cache
+state at first NAX-touch in a fresh process can pull individual sessions
+down to ~2.06×". That's a real caveat worth shipping.
+
+### E.5 Notes for the next sprint
+
+The matmul2d cooperative-tensor inner-GEMM rewrite (tracked in Sprint B
+future-work register) would resolve this cache-warmup sensitivity:
+matmul2d's cooperative-tensor distribution amortizes per-block cache
+state across the simdgroup's threads, so the kernel's first-call cost
+is structurally smoother than the per-thread FA-2 we shipped. The rewrite
+also extends niche from density < 0.02 to density ~0.20+ (covering
+FlashVSR-typical 0.07-0.24).
+
+Recommendation: matmul2d rewrite is now the **highest-leverage remaining
+Sprint B item**. A future sprint targeting this rewrite should re-execute
+the §4 protocol post-implementation; if all 7 shapes land CONFIDENT, that
+sprint can auto-tag a real v2.34.1 or v2.35.0 via the same decision tree.

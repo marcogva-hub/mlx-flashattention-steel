@@ -3295,3 +3295,86 @@ Sprint B Phase 1.x complete and shipped as v2.34.0. 8 commits, 33 tests,
    API even though it's narrower than initially scoped.
 5. **Hook-around-eval workaround**: bash heredoc bypasses CC PreToolUse
    security_reminder_hook false-positives on `mx.async_eval` substring.
+
+---
+## [2026-05-12 09:50] [CLAUDE] Sprint B §4-strict 3-session re-bench
+STATUS: COMPLETE
+
+### Plan
+- Methodology validation re-bench of Sprint B Phase 1.5 ship envelope
+  under §4-strict 3-session subprocess-isolated protocol. No production
+  code changes. Doc-only deliverable + optional v2.34.1 release if all
+  shapes CONFIDENT.
+
+### Changes
+- `bench/lcsa_nax_phase1_5_harness.py` - new §4-strict harness (Sprint C
+  pattern); 7 shapes × A/B/A × 5 runs/direction [HIGH][VERIFIED]
+- `bench/lcsa_nax_rebench_analysis.py` - cross-session analysis +
+  decision tree application [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-rebench-{inventory,decisions,results,data,analysis}.{md,json}`
+  - 5 deliverables docs [HIGH][VERIFIED]
+- `docs/lcsa-nax/rebench-runlog-S{1,2,3}.txt` - per-session stdout
+- `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` - §4-validated update [HIGH][VERIFIED]
+- `CHANGELOG.md` [Unreleased] §4-validation note [HIGH][VERIFIED]
+- `docs/releases/v2.34.1-release-notes.md.template` - prepared but not
+  used (no v2.34.1 release triggered)
+
+### Dependency & regression check
+- 33 / 33 LCSA + integration tests still pass (no production code touched).
+- No changes to mlx_mfa.lcsa_nax, integrations.flashvsr_lcsa, or C++ kernel.
+
+### Tech cost
+- Wall-clock: 27 min (3 sessions × ~9 min each, subprocess-isolated)
+- §4 cooldowns: 180/60/90s as specified
+- Smoke gate per session: rmse 1e-6 PASS (3/3 sessions)
+- No NaN, no Inf, no exit codes != 0
+
+### Validation
+- Ran: `nohup /tmp/run_rebench.sh > /tmp/rebench_master.log 2>&1 &`
+  (3 sequential sessions, 09:20:42 → 09:47:51)
+- Validated:
+  - 6/7 shapes CONFIDENT (cross-session range < 10%)
+  - 1/7 BOUNDARY (lcsa_mid_seq8k_very_sparse niche, 10.0% range driven
+    by S1 cold-cache 21% A/B/A drift; S2+S3 alone → 0.3% range)
+  - 0 HIGH variance shapes
+  - Max |Δ| vs Phase 1.4 single-session = 6.9% (within ±15% gate)
+  - Niche-win regime NOT overturned (2.28× ≫ 1.5× threshold)
+- Action chosen: **DOC_UPDATE_WITH_CAVEATS** per §D.3 action matrix
+  (1 boundary shape blocks all-CONFIDENT auto-tag branch).
+
+### Git
+- `64fccf3` ship-verdict + CHANGELOG update on
+  `experiment/lcsa-nax-rebench-section4-strict`
+- pending: SESSION_LOG entry commit (this entry) + merge to master
+
+### Key findings encoded
+1. **§4 protocol surfaces structural niche perf as 2.28× median**, not
+   the single-session-reported 2.45×. The single-session number was at
+   the high end of cache-warmth luck. The shipped envelope is now
+   characterized as 2.06-2.29× cross-session.
+2. **The BOUNDARY signal is mechanism-specific**: cache state at first
+   NAX-kernel touch in a fresh process. S1's cold-cache → 21% A/B/A
+   drift. S2+S3 → 2% drift. The per-thread FA-2 kernel's first-block
+   cost is sensitive to D-major K array prefetch state. The matmul2d
+   cooperative-tensor rewrite is the structural fix (next sprint).
+3. **No v2.34.1 release**: decision-tree row "Some boundary | Any" →
+   DOC_UPDATE_WITH_CAVEATS. The auto-tag branch requires all 7 shapes
+   CONFIDENT. One BOUNDARY shape (the niche) blocks the tag. Doc-only
+   merge to master preserves the §4-validated badge in the ship-verdict
+   doc without bumping the production version.
+4. **Moderate-density shapes are rock-solid**: 0.99-1.01× cross-session
+   ratios across all 6 moderate clusters confirm the dispatcher's
+   route-to-SDPA-bias path is structurally identical to the v2.33.1
+   path (the no-regression claim is now §4-validated).
+
+### Future-work register update (post §4 validation)
+1. ~~§4-compliant 3-session re-bench for GA confidence~~ - **DONE** (this sprint)
+2. matmul2d cooperative-tensor inner-GEMM rewrite (~4-6h, extends niche
+   from density < 0.02 to ~0.20+ AND resolves niche-shape cache-warmup
+   BOUNDARY signal) - **highest-leverage remaining Sprint B item**
+3. `patch_sparkvsr_sliding_window` companion patcher - still tracked
+
+### Next
+- Merge experiment/lcsa-nax-rebench-section4-strict → master (no tag).
+- Per memory #30 roadmap: V34 forward focused investigation is the
+  next prompt's target.
