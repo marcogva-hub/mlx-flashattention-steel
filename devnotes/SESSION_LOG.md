@@ -335,3 +335,56 @@ projection: 3-15× depending on density, after Sprint C-precedent
    validation strategy + sub-phase breakdown + risks register. Then
    Phase 1.x implementation sprints follow (5-phase pattern per Sprint C).
 
+
+---
+## [2026-05-12 00:50] [CLAUDE] Sprint B Phase 1.0 design doc + v2.33.x release
+STATUS: COMPLETE
+
+### Section A — v2.33.x release flow (autonomous execution)
+- Multi-SoT version fix applied to both Sprint D base + v2.33.1 patch
+  base (mlx_mfa/__init__.py + README header + bindings.cpp `__version__`
+  removal — single source of truth in mlx_mfa.__version__).
+- Sprint D merged → master → tag v2.33.0 created.
+- v2.33.1 patch + version fix merged → master → tag v2.33.1 created
+  (with merge conflicts on version-string files resolved in favor of
+  v2.33.1 final state).
+- Built wheels for both versions (mlx_mfa-2.33.0-* + mlx_mfa-2.33.1-*).
+- twine upload --skip-existing: both versions live on PyPI.
+- git push origin master --tags: both tags pushed to GitHub.
+- gh release create for v2.33.0 + v2.33.1: release pages live.
+
+### Section B — Sprint B Phase 1.0 design
+- docs/lcsa-nax/lcsa-nax-design.md (488 lines, 12 sections):
+  §1 strategic context (FlashVSR LCSA + SparkVSR, additive to v2.33.1)
+  §2 algorithm (block-skip dispatch via NAX matmul2d, online softmax)
+  §3 sub-phase 0 microbench requirement (targeted re-bench at per-tile
+     shapes; gate ≥ 5 TF)
+  §4 MFASparseAttentionForward C++ Primitive via fast::metal_kernel
+  §5 unified SparseAttnKey cache (D3 from start)
+  §6 BT defaults per cluster (32 if density>0.10, else 64)
+  §7 three-axis validation (output sane + path entered + edges)
+  §8 5-sub-phase breakdown (1.1 microbench+scaffold, 1.2 shapes+causal,
+     1.3 BT autoresearch, 1.4 very-sparse fast path, 1.5 perf sweep)
+  §9 10-risk register
+  §10 FlashVSR per-call-regen scope (Sprint B addresses what v2.33.1
+      cannot)
+  §11 relation to v2.33.1 (additive, dispatcher pattern)
+  §12 10 open questions / R1 revision targets
+- docs/lcsa-nax/lcsa-nax-phase1_0-decisions.md (154 lines, B-D1 to B-D10):
+  B-D1 Option α, B-D2 fast::metal_kernel from Phase 1.1,
+  B-D3 unified cache, B-D4 BT defaults, B-D5 targeted microbench,
+  B-D6 three-axis mandatory, B-D7 all-False row → 0, B-D8 causal handling,
+  B-D9 additive to flash_attention_sparse, B-D10 patcher integration.
+
+### Git
+- Tags v2.33.0, v2.33.1 created + pushed
+- PyPI: mlx-mfa 2.33.0 + 2.33.1 published
+- GitHub: release pages for both tags
+- master: ae5f265 (merged Sprint D + v2.33.1 + version fix)
+- experiment/lcsa-nax-phase1_0_design: design doc + decisions
+
+### Next concrete step
+Sprint B Phase 1.1: sub-phase 0 microbench check + scaffold
+MFASparseAttentionForward + smallest LCSA shape end-to-end.
+Branch experiment/lcsa-nax-phase1_1 from feat/lcsa-nax post-design-merge.
+
