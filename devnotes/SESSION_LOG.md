@@ -3060,3 +3060,85 @@ STATUS: COMPLETE
 ### Next
 - Phase 1.2: 5 more production shapes (mid_seq8k, large_seq16k + sparse
   variants), 3-D / 4-D mask, causal=true, asymmetric qL ≠ kL.
+
+---
+## [2026-05-12 16:30] [CLAUDE] Sprint B Phase 1.2: extended axes
+STATUS: COMPLETE
+
+### Plan
+- Objective: extend Phase 1.1 scaffold to 5 production shapes + bf16 dtype +
+  3-D/4-D mask + causal=true + asymmetric qL!=kL per design S8 row Phase 1.2.
+- Files to modify:
+  - edit: csrc/mfa_sparse_attention.cpp (source generator + entry signature)
+  - edit: mlx_mfa/lcsa_nax.py (docstring update)
+  - new:  tests/test_lcsa_nax_phase1_2.py (12-test extended suite)
+- Dependencies impacted: none externally (pure additive); kernel signature
+  unchanged (existing callers still work).
+
+### Changes
+- `csrc/mfa_sparse_attention.cpp:41-148` - sparse_kernel_source now
+  parameterized on (dtype_str, mask_ndim, causal). mask_base_expr generated
+  per ndim. causal emits k_tile <= q_tile bound + within-tile triangular
+  mask (`if (k_tile == q_tile && kc > row_in_tile) acc = NEG_INF`).
+  [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:160-247` - entry function: dtype accepts
+  bfloat16, block_tile accepts 64, mask_ndim ∈ {2,3,4} with shape check per
+  ndim, causal=true requires qL==kL. [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:36-39` - SPARSE_HEADER_BF16 = SPARSE_HEADER
+  (bfloat lives in metal_stdlib; no separate metal_bf16 header). [HIGH][VERIFIED]
+- `mlx_mfa/lcsa_nax.py` - docstring + module header updated to Phase 1.2
+  capabilities. [HIGH][VERIFIED]
+- `tests/test_lcsa_nax_phase1_2.py` - 12 tests covering all new axes. [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: sparse_attention_nax() Python wrapper signature
+  unchanged (Q, K, V, block_mask, block_tile=32, scale=None, causal=False).
+  Phase 1.1 test suite re-run: 6/6 still pass.
+- Test coverage: 5 production shape clusters + bf16 + 3-D + 4-D + causal +
+  asymmetric. Gaps remaining for Phase 1.3: BT=128 (register pressure
+  forces matmul2d rewrite); for Phase 1.4: very-sparse density < 0.05 fast
+  path (currently same code path).
+
+### Tech cost
+- Compile: ~25s incremental
+- Memory: bf16 same as fp16 (2 bytes/elem); causal adds 1 cmp/elem; mask
+  ndim 3/4 unchanged per-tile cost.
+- Register pressure: at BT=64 D=128 per-thread state ~1.5 KB likely
+  triggers spill to private memory. Phase 1.2 prioritizes correctness;
+  Phase 1.3 matmul2d-based rewrite removes spill via cooperative tensors.
+
+### Validation
+- Ran: `pytest tests/test_lcsa_nax_phase1_2.py -v` -> 12/12 pass
+- Ran: `pytest tests/test_lcsa_nax_phase1_1.py tests/test_lcsa_nax_phase1_2.py -q`
+  -> 18/18 pass
+- Validated:
+  - 5 production shapes (small_seq4k_sparse density 0.07; mid_seq8k 0.12;
+    mid_seq8k_sparse 0.03; large_seq16k 0.12; large_seq16k_sparse 0.03)
+    each RMSE < 5e-3 vs SDPA+bias.
+  - bf16 RMSE < 2e-2 vs bf16 SDPA+bias (higher noise floor expected; bf16
+    has 3 fewer mantissa bits than fp16).
+  - 3-D mask: per-head-different sparsity matches per-head SDPA RMSE 5e-3.
+  - 4-D mask: per-(b,h) sparsity matches per-(b,h) SDPA RMSE 5e-3.
+  - causal: matches mx.fast.scaled_dot_product_attention(mask="causal")
+    RMSE 5e-3.
+  - causal future-positions test: perturbing K/V at positions >= qL/2
+    leaves O[:, :, :qL/2, :] identical to 1e-4 (proves causal isolation).
+  - asymmetric qL=2048 kL=4096 (cross-attention pattern) RMSE 5e-3.
+
+### Git
+- `2e7486c` on `experiment/lcsa-nax-phase1_2`
+
+### Phase 1.2 learnings encoded
+- MSL `bfloat` is native to <metal_stdlib>; no `<metal_bf16>` include
+  needed (causes file-not-found error).
+- mask_ndim 3/4 use simple per-axis base-pointer offset emission - clean
+  parameterization, no kernel re-architecture needed.
+- causal triangular within-tile mask is one extra conditional in the
+  scores loop. The "k_tile <= q_tile" loop bound is the primary skip;
+  the within-tile mask handles the diagonal-tile partial-causal case.
+- Register pressure on BT=64 D=128 is functional but suboptimal -
+  Phase 1.3 cooperative-tensor matmul2d rewrite is where perf is earned.
+
+### Next
+- Phase 1.3: BT x WM autoresearch (per cluster) + potential matmul2d
+  swap-in for inner GEMMs.
