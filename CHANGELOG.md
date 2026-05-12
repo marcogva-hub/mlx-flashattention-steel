@@ -4,6 +4,70 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.34.0] — 2026-05-12 — Sprint B Sparse Attention NAX (narrow-niche ship)
+
+### Added
+
+- **`mlx_mfa.lcsa_nax.sparse_attention_nax(Q, K, V, block_mask, *, block_tile, scale, causal)`**
+  — block-sparse attention via per-Q-tile threadgroup dispatch with online
+  softmax (FA-2). Capabilities:
+  - dtype: float16 + bfloat16
+  - head_dim ∈ {64, 128}
+  - block_tile ∈ {16, 32, 64} (default 16 per Phase 1.3 winner)
+  - mask ndim ∈ {2 (NQ, NK), 3 (Hq, NQ, NK), 4 (B, Hq, NQ, NK)}
+  - causal=True: per-tile-future-skip + within-tile triangular mask
+  - asymmetric qL ≠ kL (cross-attention)
+  - precondition: mask total bytes ≥ 4096 (constant-address-space avoidance)
+
+- **`mlx_mfa.lcsa_nax.sparse_attention_dispatch(...)`** — density-thresholded
+  router. Routes to the NAX kernel when density < 0.02, otherwise falls
+  through to `mx.fast.scaled_dot_product_attention` + float bias. Supports
+  optional `precomputed_bias` (caller-cached) for cache-HIT performance.
+
+- **`mlx_mfa.lcsa_nax.DEFAULT_DENSITY_THRESHOLD = 0.02`** — exposed for
+  callers wanting to inspect/override the routing boundary.
+
+- **C++ Primitive scaffold**: `csrc/mfa_sparse_attention.{hpp,cpp}` —
+  free-function entry point using `mlx::core::fast::metal_kernel` for JIT
+  Metal kernel dispatch (Sprint D D33 pattern).
+
+### Performance
+
+Phase 1.4 sweep (M5 Max, 5 runs/cell, precomputed_bias passed):
+
+| Cluster | density | dispatcher ratio vs SDPA+bias |
+|---|---:|---:|
+| lcsa_small_seq4k  | 0.01 | **4.57×** |
+| lcsa_mid_seq8k    | 0.01 | **2.45×** |
+| lcsa_large_seq16k | 0.01 | **2.67×** |
+| lcsa_*            | 0.03-0.10 | 0.95-1.02× (within measurement noise) |
+
+Single-session data. §4-compliant 3-session re-bench recommended for GA.
+
+### Tested
+
+- 24 tests in Phase 1 surface (6 Phase 1.1 + 12 Phase 1.2 + 6 Phase 1.4
+  dispatcher). Joint surface 24/24 pass.
+- Three-axis validation (oracle correctness + path entered + edges
+  preserved) discipline maintained throughout.
+
+### Deferred (tracked for follow-up sprint)
+
+- `mpp::tensor_ops::matmul2d` cooperative-tensor inner-GEMM rewrite that
+  would extend the niche from density < 0.02 to ~0.20+ (reference pattern
+  at `csrc/mfa/v6_nax/NAAttentionKernel.cpp:775`, estimated 4-6h work).
+- §4-compliant 3-session perf re-bench for ship-default-grade confidence.
+- `patch_flashvsr_lcsa` and `patch_sparkvsr_sliding_window` integration
+  patchers (Section H of original Sprint B plan).
+
+### Documentation
+
+- `docs/lcsa-nax/lcsa-nax-design.md` (Phase 1.0)
+- `docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json` (sub-phase 0)
+- `docs/lcsa-nax/lcsa-nax-phase1_3-bt-sweep.json` + `phase1_3-results.md`
+- `docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json` + `phase1_4-results.md`
+- `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md`
+
 ## [2.33.1] — 2026-05-12 — `flash_attention_sparse` M5+ fast-fallback
 
 ### Fixed
