@@ -4,7 +4,48 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.35.0** — Sprint B coop-rewrite (V2 cooperative-tensor inner-GEMM kernel, V34 forward pattern adapted). V2 wins **1.95–11.57× vs MLX SDPA+bias** across density [0.01, 0.50] on M5+ Apple Silicon. Shipped as **SHIP_OPT_IN**: V1 (v2.34.0 per-thread FA-2) remains the default; V2 opt-in via `MFA_LCSA_KERNEL_VERSION=v2`. Cross-session range elevated due to A/B/A cache pollution → conservative opt-in pending second §4 with V2-only A/B/A pattern. Prior ship-defaults preserved: Conv3D NAX (v2.33.0) + sparse M5+ fast-fallback (v2.33.1). Forward attention on canonical shapes (D∈{64,128}) routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
+Current version: **2.36.0** — Sprint U: Unification + auto-default principle. **`import mlx_mfa` now activates all validated optimizations transparently** — eligible `mx.conv_general` calls on M5+ auto-route through Conv3D NAX (~1.6× speedup on 3×3×3 / 1×1×1 FP16/BF16); `flash_attention_sparse` on M5+ auto-routes to the NAX-aware dispatcher. No `patch_seedvr2_vae(model)` call required for default usage. Escape hatch: `MFA_DISABLE_AUTO_HOOKS=1` or `mlx_mfa.disable()`. See `docs/RELEASE_PHILOSOPHY.md` for the auto-default principle. Prior ship-defaults preserved: Conv3D NAX (v2.33.0), sparse M5+ fast-fallback (v2.33.1), V2 cooperative-tensor SHIP_OPT_IN (v2.35.0 — via `MFA_LCSA_KERNEL_VERSION=v2`).
+
+## Minimal Usage (auto-default)
+
+```python
+import mlx.core as mx
+import mlx_mfa  # auto-installs optimization hooks at import
+
+# Eligible Conv3D shapes on M5+ auto-route to NAX (~1.6× faster):
+y = mx.conv_general(x, weight, padding=(1, 1, 1))
+
+# Sparse attention on M5+ auto-routes to NAX-aware dispatcher:
+from mlx_mfa import flash_attention_sparse
+out = flash_attention_sparse(q, k, v, block_mask)
+```
+
+## Three usage levels
+
+1. **Default (auto-on-import)** — `import mlx_mfa` activates all validated
+   optimizations transparently. See above.
+2. **Explicit API** — `from mlx_mfa import flash_attention, sparse_attention_dispatch, ...`
+   for direct calls when you need control or mlx-mfa-specific features
+   (varlen, paged, TurboQuant, etc.).
+3. **Expert mode** — `patch_seedvr2_vae(model)`, `patch_flashvsr_lcsa(model)`,
+   `patch_mlx_lm()` for granular per-module control + verbose logging.
+
+## Disabling auto-hooks
+
+```bash
+# Global disable via env var
+export MFA_DISABLE_AUTO_HOOKS=1
+python your_script.py
+```
+
+```python
+# Programmatic disable / re-enable (idempotent)
+import mlx_mfa
+mlx_mfa.disable()  # restore vanilla MLX
+# ... your benchmark ...
+mlx_mfa.enable()   # restore mlx-mfa hooks
+mlx_mfa.hooks_status()  # introspection dict
+```
 
 ## Foreword
 
