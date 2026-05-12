@@ -1,0 +1,266 @@
+{
+  "n_sessions": 3,
+  "n_shapes": 7,
+  "rows": [
+    {
+      "shape": "lcsa_small_seq4k",
+      "n_sessions": 3,
+      "median_ratio": 0.9883949490420846,
+      "min_ratio": 0.9875073333222812,
+      "max_ratio": 0.9887285635497983,
+      "cross_session_range_pct": 0.12355690695310098,
+      "max_aba_drift_pct": 1.036806054254616,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.1,
+      "phase1_5_ref_ratio": 0.96,
+      "ratio_delta_pct": 2.957807191883814,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 0.9875073333222812,
+          "aba_drift_pct": 1.036806054254616
+        },
+        {
+          "session_id": "S2",
+          "ratio": 0.9883949490420846,
+          "aba_drift_pct": 0.39767526458130925
+        },
+        {
+          "session_id": "S3",
+          "ratio": 0.9887285635497983,
+          "aba_drift_pct": 0.5042249340468741
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_small_seq4k_sparse",
+      "n_sessions": 3,
+      "median_ratio": 0.9897773163844641,
+      "min_ratio": 0.9811252463763466,
+      "max_ratio": 1.0126124754981134,
+      "cross_session_range_pct": 3.1812437606456605,
+      "max_aba_drift_pct": 6.7780054937714285,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.1,
+      "phase1_5_ref_ratio": 0.96,
+      "ratio_delta_pct": 3.101803790048346,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 0.9811252463763466,
+          "aba_drift_pct": 6.7780054937714285
+        },
+        {
+          "session_id": "S2",
+          "ratio": 0.9897773163844641,
+          "aba_drift_pct": 2.841384458062055
+        },
+        {
+          "session_id": "S3",
+          "ratio": 1.0126124754981134,
+          "aba_drift_pct": 5.947920981464536
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_mid_seq8k",
+      "n_sessions": 3,
+      "median_ratio": 1.0007430665344497,
+      "min_ratio": 0.9947902345853834,
+      "max_ratio": 1.0119329379224367,
+      "cross_session_range_pct": 1.7129974626172575,
+      "max_aba_drift_pct": 0.9640566579738962,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.1,
+      "phase1_5_ref_ratio": 0.98,
+      "ratio_delta_pct": 2.116639442290784,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 1.0007430665344497,
+          "aba_drift_pct": 0.6868137015560336
+        },
+        {
+          "session_id": "S2",
+          "ratio": 1.0119329379224367,
+          "aba_drift_pct": 0.9640566579738962
+        },
+        {
+          "session_id": "S3",
+          "ratio": 0.9947902345853834,
+          "aba_drift_pct": 0.3509305680063987
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_mid_seq8k_sparse",
+      "n_sessions": 3,
+      "median_ratio": 1.0062407489664296,
+      "min_ratio": 1.0039557347432442,
+      "max_ratio": 1.01117419889121,
+      "cross_session_range_pct": 0.7173694918815706,
+      "max_aba_drift_pct": 2.668456553270562,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.03,
+      "phase1_5_ref_ratio": 0.96,
+      "ratio_delta_pct": 4.816744684003084,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 1.0039557347432442,
+          "aba_drift_pct": 0.832009032760273
+        },
+        {
+          "session_id": "S2",
+          "ratio": 1.01117419889121,
+          "aba_drift_pct": 0.04917545461651249
+        },
+        {
+          "session_id": "S3",
+          "ratio": 1.0062407489664296,
+          "aba_drift_pct": 2.668456553270562
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_large_seq16k",
+      "n_sessions": 3,
+      "median_ratio": 0.9910630508906076,
+      "min_ratio": 0.9883078087108725,
+      "max_ratio": 1.0062995489450464,
+      "cross_session_range_pct": 1.8153981442457925,
+      "max_aba_drift_pct": 0.9042207213174752,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.1,
+      "phase1_5_ref_ratio": 0.95,
+      "ratio_delta_pct": 4.322426409537652,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 0.9883078087108725,
+          "aba_drift_pct": 0.057214376248391534
+        },
+        {
+          "session_id": "S2",
+          "ratio": 0.9910630508906076,
+          "aba_drift_pct": 0.9042207213174752
+        },
+        {
+          "session_id": "S3",
+          "ratio": 1.0062995489450464,
+          "aba_drift_pct": 0.7905847201452485
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_large_seq16k_sparse",
+      "n_sessions": 3,
+      "median_ratio": 0.9963280583031145,
+      "min_ratio": 0.9962232877331576,
+      "max_ratio": 1.0006957356922546,
+      "cross_session_range_pct": 0.4488931052201983,
+      "max_aba_drift_pct": 0.7102958614263567,
+      "variance_flag": "CONFIDENT",
+      "phase1_5_ref_density": 0.03,
+      "phase1_5_ref_ratio": 1.0,
+      "ratio_delta_pct": -0.367194169688545,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 1.0006957356922546,
+          "aba_drift_pct": 0.35940263267898337
+        },
+        {
+          "session_id": "S2",
+          "ratio": 0.9962232877331576,
+          "aba_drift_pct": 0.12500603808167593
+        },
+        {
+          "session_id": "S3",
+          "ratio": 0.9963280583031145,
+          "aba_drift_pct": 0.7102958614263567
+        }
+      ]
+    },
+    {
+      "shape": "lcsa_mid_seq8k_very_sparse",
+      "n_sessions": 3,
+      "median_ratio": 2.2811136334426614,
+      "min_ratio": 2.058757215755166,
+      "max_ratio": 2.2875084494955256,
+      "cross_session_range_pct": 10.028050790048876,
+      "max_aba_drift_pct": 20.951989309890827,
+      "variance_flag": "BOUNDARY",
+      "phase1_5_ref_density": 0.01,
+      "phase1_5_ref_ratio": 2.45,
+      "ratio_delta_pct": -6.893321083973011,
+      "samples": [
+        {
+          "session_id": "S1",
+          "ratio": 2.058757215755166,
+          "aba_drift_pct": 20.951989309890827
+        },
+        {
+          "session_id": "S2",
+          "ratio": 2.2811136334426614,
+          "aba_drift_pct": 1.969305485537089
+        },
+        {
+          "session_id": "S3",
+          "ratio": 2.2875084494955256,
+          "aba_drift_pct": 2.818540200070241
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "confident_count": 6,
+    "boundary_count": 1,
+    "high_variance_count": 0,
+    "max_abs_delta_pct": 6.893321083973011,
+    "niche_overturned": false
+  },
+  "action": "DOC_UPDATE_WITH_CAVEATS",
+  "action_text": "1 boundary shape(s) (10-20% range). Update ship-verdict with \u00a74 numbers + boundary caveats; no tag.",
+  "session_conditions": [
+    {
+      "session_id": "S1",
+      "conditions": {
+        "timestamp_utc": "2026-05-12T08:23:43.118101+00:00",
+        "platform": "macOS-26.5-arm64-arm-64bit",
+        "sw_vers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t25F5068a",
+        "uptime": "9:23  up 5 days, 21:20, 4 users, load averages: 2.62 2.85 2.43",
+        "uname": "Darwin MBP-de-Marco.lan 25.5.0 Darwin Kernel Version 25.5.0: Thu Apr 23 21:23:38 PDT 2026; root:xnu-12377.121.5~4/RELEASE_ARM64_T6050 arm64",
+        "boottime": "{ sec = 1778065444, usec = 34302 } Wed May  6 12:04:04 2026",
+        "mlx_version": "0.31.2",
+        "mlx_mfa_version": "2.34.0"
+      }
+    },
+    {
+      "session_id": "S2",
+      "conditions": {
+        "timestamp_utc": "2026-05-12T08:32:44.521177+00:00",
+        "platform": "macOS-26.5-arm64-arm-64bit",
+        "sw_vers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t25F5068a",
+        "uptime": "9:32  up 5 days, 21:29, 4 users, load averages: 1.77 1.90 2.08",
+        "uname": "Darwin MBP-de-Marco.lan 25.5.0 Darwin Kernel Version 25.5.0: Thu Apr 23 21:23:38 PDT 2026; root:xnu-12377.121.5~4/RELEASE_ARM64_T6050 arm64",
+        "boottime": "{ sec = 1778065444, usec = 34302 } Wed May  6 12:04:04 2026",
+        "mlx_version": "0.31.2",
+        "mlx_mfa_version": "2.34.0"
+      }
+    },
+    {
+      "session_id": "S3",
+      "conditions": {
+        "timestamp_utc": "2026-05-12T08:41:45.889646+00:00",
+        "platform": "macOS-26.5-arm64-arm-64bit",
+        "sw_vers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t25F5068a",
+        "uptime": "9:41  up 5 days, 21:38, 4 users, load averages: 2.88 2.23 2.12",
+        "uname": "Darwin MBP-de-Marco.lan 25.5.0 Darwin Kernel Version 25.5.0: Thu Apr 23 21:23:38 PDT 2026; root:xnu-12377.121.5~4/RELEASE_ARM64_T6050 arm64",
+        "boottime": "{ sec = 1778065444, usec = 34302 } Wed May  6 12:04:04 2026",
+        "mlx_version": "0.31.2",
+        "mlx_mfa_version": "2.34.0"
+      }
+    }
+  ]
+}
