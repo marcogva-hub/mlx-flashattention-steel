@@ -1,0 +1,20 @@
+[mw section4 harness] session=M3
+[mw section4 harness] warmup gap: 50ms (downclock threshold: < 100ms)
+[mw section4 harness] warmup workload: sparse_attention_nax B=1 H=4 qL=kL=2048 D=64 BT=16 density=0.1
+[mw section4 harness] correctness smoke...
+  smoke: rmse=5.0998e-08 -> PASS
+[mw section4 harness] warmup density_actual=0.101
+[mw section4 harness] single warmup dispatch: 2445.3us (target <= 10000us for <= 20% duty cycle)
+[mw section4 harness] priming GPU (100 matched-workload dispatches)...
+[mw section4 harness] initial cooldown 180.0s (matched-workload-family)
+  fired 3133 warmup dispatches during initial cooldown
+  lcsa_small_seq4k                 d=0.239 V2=  1.477ms SDPA=  2.610ms ratio= 1.77x drift=12.6%
+  lcsa_small_seq4k_sparse          d=0.067 V2=  1.371ms SDPA=  3.135ms ratio= 2.29x drift=24.3%
+  lcsa_mid_seq8k                   d=0.119 V2=  2.002ms SDPA=  6.552ms ratio= 3.27x drift=30.9%
+  lcsa_mid_seq8k_sparse            d=0.030 V2=  1.488ms SDPA=  6.463ms ratio= 4.35x drift=105.0%
+  lcsa_large_seq16k                d=0.120 V2=  2.204ms SDPA= 12.922ms ratio= 5.86x drift=11.9%
+  lcsa_large_seq16k_sparse         d=0.030 V2=  1.609ms SDPA= 12.753ms ratio= 7.93x drift= 6.6%
+  lcsa_mid_seq8k_very_sparse       d=0.011 V2=  1.169ms SDPA=  6.528ms ratio= 5.59x drift=81.6%
+
+[mw section4 harness] session 'M3' -> docs/methodology/matched-workload-data.json
+[mw section4 harness] total warmup dispatches: 31318 across 21 cooldown intervals
