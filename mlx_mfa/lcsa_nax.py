@@ -25,6 +25,7 @@ Sprint B's envelope.
 from __future__ import annotations
 
 import math
+import os
 from typing import Optional
 
 import mlx.core as mx
@@ -35,6 +36,65 @@ try:
 except ImportError:
     _ext = None
     _HAS_EXT = False
+
+
+# ---------------------------------------------------------------------------
+# v2.36.1 — shape-aware V2 sparse default per canonical methodology
+# (`docs/methodology/canonical-protocol.md`).
+#
+# Calibrated from 3-session canonical re-bench
+# (`docs/methodology/canonical-bench-results.md`):
+#   - 7/7 tested shapes graduate V2-eligible (6 CONFIDENT + 1 BOUNDARY,
+#     0 HIGH_VARIANCE)
+#   - Smallest tested work product: qL=4096, kL=4096, D=128 -> 2.15e9
+#   - Below this work product, no canonical-protocol data exists. To
+#     honor DC9 (empirical calibration, not extrapolation), we keep
+#     V1 default for shapes smaller than the smallest tested.
+#
+# Users can override via `MFA_LCSA_KERNEL_VERSION=v1` or `=v2` env var.
+# ---------------------------------------------------------------------------
+_V2_DEFAULT_WORK_THRESHOLD = 2_147_483_648  # = 4096 * 4096 * 128
+
+
+def decide_auto_version(
+    density: float, qL: int, kL: int, D: int = 128
+) -> str:
+    """Shape-aware V2 sparse attention default per canonical methodology.
+
+    v2.36.1: V2 sparse graduates to default for shapes where canonical
+    benchmark methodology (docs/methodology/canonical-protocol.md) yields
+    CONFIDENT or BOUNDARY cross-session ratio. Shapes smaller than the
+    smallest tested work product keep V1 conservatively (no canonical
+    data to validate them).
+
+    Decision order:
+      1. Env override: MFA_LCSA_KERNEL_VERSION=v1 or =v2 wins unconditionally
+      2. Shape-aware threshold: qL * kL * D >= 2.15e9 -> "v2"
+      3. Otherwise -> "v1"
+
+    Args:
+        density: block-mask density (currently unused in the threshold
+            but accepted for future refinement per DC9 note).
+        qL: query sequence length.
+        kL: key sequence length.
+        D: per-head dimension. Default 128 (production V2 set).
+
+    Returns:
+        "v1" or "v2".
+
+    See docs/methodology/canonical-bench-results.md for calibration data.
+    """
+    # Env override has highest priority (preserves v2.35.0 SHIP_OPT_IN
+    # contract for users who already set the env var).
+    env = os.environ.get("MFA_LCSA_KERNEL_VERSION", "").strip().lower()
+    if env in ("v1", "v2"):
+        return env
+
+    # Shape-aware default per canonical-methodology calibration.
+    work_product = qL * kL * D
+    if work_product >= _V2_DEFAULT_WORK_THRESHOLD:
+        return "v2"
+    return "v1"
 
 
 def sparse_attention_nax(
@@ -80,11 +140,22 @@ def sparse_attention_nax(
         )
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])
+    # v2.36.1: shape-aware default routing via explicit kernel_version
+    # param.  Empty string falls back to MFA_LCSA_KERNEL_VERSION env var
+    # (legacy v2.35.0 path).  Density is not part of the threshold yet
+    # (DC9 note); pass 1.0 as a placeholder.
+    kernel_version = decide_auto_version(
+        density=1.0,
+        qL=Q.shape[2],
+        kL=K.shape[2],
+        D=Q.shape[-1],
+    )
     return _ext.sparse_attention_forward(
         Q, K, V, block_mask,
         block_tile=block_tile,
         causal=causal,
         scale=float(scale),
+        kernel_version=kernel_version,
     )
 
 # --------------------------------------------------------------------------
@@ -193,5 +264,6 @@ def sparse_attention_dispatch(
 __all__ = [
     "sparse_attention_nax",
     "sparse_attention_dispatch",
+    "decide_auto_version",
     "DEFAULT_DENSITY_THRESHOLD",
 ]

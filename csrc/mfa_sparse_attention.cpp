@@ -901,7 +901,8 @@ mlx::core::array sparse_attention_forward(
     const mlx::core::array& block_mask,
     int block_tile,
     bool causal,
-    float scale) {
+    float scale,
+    const std::string& kernel_version) {
   // Sanity asserts
   if (Q.ndim() != 4 || K.ndim() != 4 || V.ndim() != 4) {
     throw std::runtime_error("sparse_attention: Q, K, V must be 4-D (B, H, L, D)");
@@ -989,10 +990,18 @@ mlx::core::array sparse_attention_forward(
 
   std::string dtype_str = is_f16 ? "half" : "bfloat";
 
-  // Section B-scaffold dispatch: V1 by default, V2 via MFA_LCSA_KERNEL_VERSION=v2.
-  // DC5 cache discrimination via "_v1" / "_v2" suffix in kernel name. DC6 default
-  // remains V1 until Section D perf sweep verdict.
-  std::string version = read_kernel_version_env();
+  // v2.36.1 dispatch resolution order:
+  //   1. Explicit `kernel_version` param (Python-side shape-aware
+  //      decide_auto_version() in mlx_mfa.lcsa_nax). Highest priority.
+  //   2. MFA_LCSA_KERNEL_VERSION env var (legacy v2.35.0 path).
+  //   3. Internal default ("v1") per read_kernel_version_env().
+  // DC5 cache discrimination via "_v1" / "_v2" suffix in kernel name.
+  std::string version;
+  if (kernel_version == "v1" || kernel_version == "v2") {
+    version = kernel_version;
+  } else {
+    version = read_kernel_version_env();
+  }
 
   // V2 eligibility (per design §13 + DC3):
   //   D ∈ {64, 128}, BT == 32, dtype = float16, causal = false, mask_ndim ∈ {2,3,4}

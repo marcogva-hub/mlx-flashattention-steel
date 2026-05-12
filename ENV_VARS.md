@@ -56,6 +56,7 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_FORCE_D512_PATH` | str | unset | Force D=512 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
 | `MFA_FORCE_NATIVE_BWD` | str | unset | Force native backward: `1` → native kernel, `0` → SDPA VJP |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
+| `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **v2.36.1**: when unset, `decide_auto_version()` picks V2 for `qL × kL × D ≥ 2.15e9` (validated under canonical-protocol) and V1 below. `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
 

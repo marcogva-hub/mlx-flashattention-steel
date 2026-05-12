@@ -45,6 +45,11 @@ mlx::core::array sparse_attention_forward(
     const mlx::core::array& block_mask,
     int block_tile,
     bool causal,
-    float scale);
+    float scale,
+    // v2.36.1: explicit kernel-version override. Empty string falls back
+    // to MFA_LCSA_KERNEL_VERSION env var (legacy v2.35.0 path).  When
+    // non-empty, takes precedence over env var (used by Python-side
+    // shape-aware decide_auto_version() in mlx_mfa.lcsa_nax).
+    const std::string& kernel_version = "");
 
 }  // namespace mlx_mfa

@@ -259,9 +259,16 @@ edge tests), the cost of a silent bug shipping to PyPI is large.
 
 ---
 
-## 4. Thermal protocol M5 Max
+## 4. Benchmark protocol — dual regime (M5 Max)
 
-Le M5 Max sous Marco utilise le profil de ventilation **iStat Menus performance** (pas le profil Apple par défaut qui throttle agressivement). Température GPU sous charge ~70°C, drift R1↔R3 typiquement <6%.
+Le M5 Max sous Marco utilise le profil de ventilation **iStat Menus performance** (pas le profil Apple par défaut qui throttle agressivement). Température GPU sous charge ~70°C.
+
+**Two protocols are canonical, selected by measured-kernel wall-clock regime.**
+§4.1 (§4-strict cooldown) for ≥1.5ms kernels; §4.2 (canonical warmup +
+continuous) for sub-1.5ms kernels. They are complementary, not competing —
+they serve different measurement regimes.
+
+### §4.1 — §4-strict cooldown protocol (canonical for ≥1.5ms wall-clock kernels)
 
 Cooldowns recommandés :
 - 3 min initial cool-down avant le premier round
@@ -269,7 +276,46 @@ Cooldowns recommandés :
 - 60s entre shapes pendant un round
 - Si drift R1↔R3 > 10%, étendre les cooldowns
 
-### §4.X — Sub-1ms kernel measurement caveat (M5 Max)
+This protocol is canonical for shapes where wall-clock ≥ 1.5ms. The
+kernel's own runtime keeps the GPU busy enough to dampen power-state
+variance during measurement; the §4 idle cooldowns then ensure thermal
+stability across runs. Cross-session range CONFIDENT (<10%) is
+achievable under this protocol.
+
+### §4.2 — Canonical warmup + continuous (sub-1.5ms wall-clock kernels)
+
+For shapes where wall-clock < 1.5ms, the §4-strict protocol fails per
+two REGRESSION sprints (mx.matmul v2.36.0, matched-workload 2026-05-12)
+and per web research convergence (Apple Developer Forums thread 692062,
+Feng et al. arXiv 2501.14925, MLX docs, WWDC25 Session 315, Draw Things
+MFA v2.5 NA release post Nov 2025, MLX GitHub Discussion #1571). See
+`docs/methodology/canonical-protocol.md` for full methodology and
+rationale.
+
+Specification:
+- 10 warmup iters + 100 continuous timed iters per direction per shape
+- `mx.eval` synchronisation inside both loops
+- p50 / p95 / p99 / mean / min / max stats per direction
+- Ratio analysis V2/SDPA cross-session (more stable than absolute)
+- Verdict: CONFIDENT <10% / BOUNDARY 10-20% / HIGH_VARIANCE >20% on
+  cross-session **ratio** range (not absolute timing range)
+
+### §4.3 — Protocol selection rule
+
+Pre-bench, estimate wall-clock per shape from prior data:
+
+| Regime | Protocol |
+|---|---|
+| ≥ 1.5ms | §4-strict (§4.1) |
+| < 1.5ms | canonical warmup + continuous (§4.2) |
+| Unknown | run §4.1 first, switch to §4.2 if wall-clock < 1.5ms confirmed |
+
+### §4.X — Sub-1ms kernel measurement caveat (M5 Max) — RESOLVED via §4.2
+
+The sub-1ms variance issue surfaced in v2.36.0 V2-only re-bench is now
+mechanistically explained and methodologically addressed via §4.2
+(canonical warmup + continuous protocol). This section preserves the
+historical record of the resolution.
 
 Kernels with wall-clock median ≤ 1.4 ms exhibit cross-session variance
 from **GPU power-state cycling during §4 idle cooldowns**. The 90s/60s/180s
@@ -294,9 +340,9 @@ runs slower.
 - Wall-clock median ≤ 1.4 ms → power-state-sensitive, §4 cooldowns CONFOUND measurement
 - Wall-clock median ≥ 2.0 ms → §4 cooldowns work fine, kernel keeps GPU busy enough
 
-**Methodology guidance for sub-1.5ms kernels (under active investigation):**
+**Resolution path** (closed 2026-05-13):
 
-Two warmup protocols have now been tested and both produced a
+Two warmup-during-cooldown protocols were tested and both produced a
 **REGRESSION verdict**:
 
 | Protocol | Date | HIGH→CONFIDENT | CONFIDENT regressed | Verdict |
@@ -304,53 +350,43 @@ Two warmup protocols have now been tested and both produced a
 | v2.36.0 — 256×256 FP16 matmul, 50ms gap | 2026-05-12 | 2/3 | 3/4 | REGRESSION |
 | Matched-workload family — sparse_attention_nax B=1 H=4 qL=kL=2048 D=64 BT=16, 50ms gap | 2026-05-12 | **0/3** | **3/4** | REGRESSION |
 
-The matched-workload protocol was the canonical "path-forward option 1"
-from the prior diagnostic. It hypothesized that same-kernel-family warmup
-would hold GPU power state WITHOUT polluting the measured kernel's L2.
-**Falsified.** It regressed a DIFFERENT set of CONFIDENT shapes than the
-matmul protocol did (e.g., `mid_seq8k` regressed under matched-workload
-but survived under matmul; `large_seq16k_sparse` regressed under matmul
-but survived under matched-workload).
+Web research convergence (6 sources cited in
+`docs/methodology/canonical-protocol.md`) confirmed Apple's hardware
+design intentionally excludes userspace P-state lock. No warmup-during-
+cooldown approach can fully resolve sub-1ms variance under §4-strict-
+style protocols. The canonical Apple Silicon methodology (warmup +
+continuous, ratio analysis — §4.2) is the appropriate tool for this
+regime.
 
 **Consolidated finding**: every warmup mechanism that holds GPU power
 state above the < 100ms downclock threshold inevitably perturbs the
-measured kernel's cache state in a shape-specific way. No single warmup
-workload is universally non-polluting. The variance is real (not a
-measurement artifact) and the kernel has shape-dependent sensitivity to
-cache state.
+measured kernel's cache state in a shape-specific way. The variance is
+real (not a measurement artifact). The fix is not a better warmup but
+a different measurement regime: §4.2 measures continuous back-to-back
+iterations, bypassing the cooldown-induced power-state cycling entirely.
 
-Until a clean methodology is established, the practical guidance is:
-
-- **For kernels ≥ 2.0 ms wall-clock**: §4 cooldowns work fine, ship via
-  standard 3-session §4-strict protocol.
-- **For sub-1.5 ms kernels**: cross-session variance characterization is
-  not yet possible under any tested protocol. SHIP_OPT_IN is the
-  conservative verdict regardless of perf ratio magnitude. Explicit
-  opt-in via env var (`MFA_LCSA_KERNEL_VERSION=v2` for the v2.35.0 case)
-  preserves user agency.
-
-**Revised path-forward registry** (option 1 falsified):
+**Path-forward registry (CLOSED 2026-05-13):**
 
 | Option | Status |
 |---|---|
 | 1. Matched-workload family | FALSIFIED 2026-05-12 |
-| 2. Heartbeat-only (single-threadgroup, no buffer access) | promoted as next attempt |
-| 3. Metal API power-state lock | unknown — needs Apple API research |
-| 4. Shape-aware default (V2 only for ≥2ms shapes) | viable pragmatic fallback |
+| 2. Heartbeat register-only warmup | **SKIPPED** per Marco strategic decision (Option β: methodology pivot) |
+| 3. Metal API power-state lock | deferred — low-EV given confirmed userspace exclusion |
+| 4. Shape-aware ≥X-ms default | **ACTIVATED 2026-05-13 via v2.36.1** |
 
-**Recommendation**: prioritize option 2 (heartbeat) for the next
-methodology sprint. A register-only kernel that does no buffer access
-might hold GPU clock state without any cache footprint at all. If
-option 2 also fails, option 4 is the SHIP_BROAD landing path for V2
-(narrower envelope but guaranteed clean).
+Sub-1ms methodology thread closed. Future sub-ms kernel work follows
+§4.2 canonical protocol. v2.36.1 ships shape-aware
+`decide_auto_version()` calibrated empirically from §4.2 data; V2
+default activates for shapes where cross-session ratio range is
+CONFIDENT under canonical methodology.
 
 References:
-- `docs/methodology/matched-workload-results.md` (REGRESSION verdict)
-- `docs/methodology/matched-workload-diagnostic.md` (root cause + revised path forward)
-- `docs/methodology/matched-workload-decisions.md` (DM1-DM10 design rationale)
-- `docs/methodology/matched-workload-inventory.md` (hypothesis + acceptance criteria)
-- `bench/methodology/matched_workload_harness.py` + `analysis.py` (this sprint)
-- `docs/methodology/matched-workload-{data,analysis}.json` + `runlog-M{1,2,3}.txt` (raw bench)
+- `docs/methodology/canonical-protocol.md` (canonical §4.2 spec + 6 web research sources)
+- `docs/methodology/canonical-bench-results.md` (v2.36.1 calibration data)
+- `docs/methodology/matched-workload-results.md` (REGRESSION verdict 2026-05-12)
+- `docs/methodology/matched-workload-diagnostic.md` (option 1 falsification analysis)
+- `bench/methodology/canonical_warmup_continuous_harness.py` (§4.2 reference implementation)
+- `bench/methodology/matched_workload_harness.py` (historical option 1 implementation)
 - prior `experiment/methodology-sub1ms-protocol` branch (v2.36.0 matmul protocol artifacts, preserved for archaeology — not merged to master)
 
 ---
