@@ -59,9 +59,12 @@ SHAPES = [
 SMOKE_CFG = (1, 4, 4, 4096, 4096, 128, 0.10, 32, 9999)
 SMOKE_RMSE_BAR = 1e-3
 
-# Warmup config (DM2): smaller D + smaller qL/kL than ANY measured shape
-WARMUP_CFG = dict(B=1, Hq=4, Hk=4, qL=512, kL=512, D=64, density=0.10,
-                  BT=32, seed=42424242)
+# Warmup config (DM2): smaller D + smaller qL/kL + smaller BT than ANY
+# measured shape. qL=kL=2048 chosen so the 2D bool mask is 128x128 = 16
+# KB (safely above the 4096-byte MLX small-buffer-inlining threshold;
+# qL=kL=512 was below it and was rejected by the kernel).
+WARMUP_CFG = dict(B=1, Hq=4, Hk=4, qL=2048, kL=2048, D=64, density=0.10,
+                  BT=16, seed=42424242)
 
 
 # ---------------------------------------------------------------------------

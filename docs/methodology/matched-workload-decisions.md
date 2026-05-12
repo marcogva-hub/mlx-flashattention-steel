@@ -18,7 +18,7 @@ and cache pattern at the same time.
 
 [VERIFIED] via diagnostic doc analysis. [HIGH] confidence.
 
-## DM2 — Warmup shape: B=1 H=4 qL=kL=512 D=64 BT=32 density=0.10
+## DM2 — Warmup shape: B=1 H=4 qL=kL=2048 D=64 BT=16 density=0.10
 
 **Decision**: warmup workload uses different shape than ANY measured
 shape in the 7-shape Sprint B set.
@@ -26,14 +26,26 @@ shape in the 7-shape Sprint B set.
 | Measured shapes | Warmup shape | Why different |
 |---|---|---|
 | D=128 (all 7 shapes) | **D=64** | Different shader instantiation → no Q_smem/K_smem cache-line aliasing |
-| qL=kL ∈ {4096, 8192, 16384} | **qL=kL=512** | 8-32× smaller → working set ≤ private L1 |
+| qL=kL ∈ {4096, 8192, 16384} | **qL=kL=2048** | 2-8× smaller, still satisfies mask-size constraint |
+| BT=32 (all 7 shapes) | **BT=16** | Different tile size → distinct kernel instantiation |
 | H ∈ {4, 8, 12} | H=4 | Smallest grid → minimum threadgroup contention |
 | density ∈ {0.01, 0.03, 0.07, 0.12, 0.24} | density=0.10 | Mid-range, exercises sparse path |
 
-**Working set estimate** (warmup): Q/K/V ≈ 3 × (1 × 4 × 512 × 64 × 2B)
-= **768 KB**. But active per dispatch is one BT=32 tile: Q_tile + K_tile
-+ V_tile ≈ 3 × (32 × 64 × 2B) = **12 KB** — fits in per-SM L1 (well
-below the M5 Max ~192 KB private L1 per core). No spill to cluster L2.
+**Initial design** picked qL=kL=512, but MLX inlines buffers < 4096 bytes
+into constant address space while the JIT kernel emits device-qualified
+pointers. A 2D bool mask at qL=kL=512 BT=32 is only 16×16 = 256 bytes,
+which fails the kernel's `mask total bytes >= 4096` precondition.
+Bumping to qL=kL=2048 BT=16 gives a 128×128 = 16 KB mask, comfortably
+above the threshold while keeping working set smaller than ANY measured
+shape.
+
+**Working set estimate** (warmup): Q/K/V ≈ 3 × (1 × 4 × 2048 × 64 × 2B)
+= **3 MB**. Active per dispatch is one BT=16 tile: Q_tile + K_tile +
+V_tile ≈ 3 × (16 × 64 × 2B) = **6 KB** — fits in per-core L1 (well
+below the M5 Max ~192 KB private L1 per core). The full 3 MB resident
+set goes to cluster L2 but that is **a different region** from the
+D=128 measured kernels' working set (different shader, different smem
+tile shapes, different stride patterns → distinct cache lines).
 
 **Working set estimate** (measured, mid_seq8k): Q_tile + K_tile + V_tile
 at BT=32 D=128 ≈ 3 × (32 × 128 × 2B) = **24 KB** active per dispatch
