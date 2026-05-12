@@ -165,6 +165,100 @@ Médiane des médianes pour la stabilité (pas la moyenne).
 
 ---
 
+## 3.5 Dispatch-path modification — three-axis validation rule
+
+Any patch that modifies a dispatch decision, routing logic, or kernel
+selection path must validate three distinct axes before shipping:
+
+1. **Output sanity** — correctness oracle (PyTorch CPU FP32 cross-check,
+   RMSE bar, sentinel-fill coverage gate). Catches: physically
+   impossible outputs, addressing bugs that leave gaps, kernel
+   miscompiles that produce garbage.
+2. **Path entered** — perf or sanity A/B bench that detects whether the
+   new path is actually taken. Catches: dispatch elision (silent no-op
+   overrides, Python `__call__` type-vs-instance dunder lookup
+   gotchas, fallback paths that engage when they shouldn't, env-var
+   propagation gaps between Python and C++).
+3. **Edges preserved** — semantic edge-case tests for NaN propagation,
+   all-zero / all-masked inputs, denormal inputs, boundary conditions.
+   Catches: optimizations that are bit-exact on mainline cases but
+   break edge semantics other code depends on.
+
+**Mainline correctness alone is insufficient.** The Sprint C → D →
+v2.33.1 arc surfaced one silent bug per axis, each caught by the
+corresponding gate class. All three axes are mandatory for
+dispatch-path patches.
+
+### Practical checklist
+
+Before tagging a release that modifies dispatch:
+
+- [ ] **Output sanity gate**: smoke test with sentinel-fill + oracle
+      RMSE check on a small shape, BEFORE any production-shape timing.
+      The smoke gate's pre-flight signature must include a non-trivial
+      correctness verification — not just "did it run".
+- [ ] **Path-entered gate**: A/B perf comparison between the old and new
+      paths on at least one representative shape. If perf ratio is
+      ~1.00× when the new path is supposed to be faster, the new path
+      isn't actually engaged (dead override / fallback engagement).
+- [ ] **Edges preserved gate**: run the full pre-existing test suite,
+      with NaN/Inf checks active. Any test that was passing before the
+      patch and now fails — even if "the new behavior is reasonable" —
+      indicates an edge-case semantic shift that downstream code may
+      rely on.
+
+### Worked examples (silent bugs caught by each axis)
+
+**Sprint C Phase 1.1 (Output sanity).** `bench/conv_nax_matmul2d_microbench.py`
+v1 reported 101 TFLOPS on M5 Max (NAX FP16 peak is 38 TF). Microbench passed
+because there was no correctness check on its output — just timing. The
+methodology bug was caught by adding a sentinel-fill + `mx.matmul(A.f32, B.f32)`
+oracle check on a tiny shape (M=128, K=64, N=64) as a pre-flight gate.
+After fix: RMSE=0 on the smoke shape, production timings physically plausible
+(43 TF on `mid_resnet`). Reference: `docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md`.
+
+**Sprint D Track C (Path entered).** `patch_seedvr2_vae(model)` initially used
+`object.__setattr__(mod, "__call__", patched_fn)`. Python's `__call__`
+resolution looks up the TYPE, not the instance — the override was dead.
+All 4 correctness tests passed (because both paths called the same
+class-level `__call__`). The A/B perf bench in `bench/conv_nax_patcher_ab.py`
+measured speedup 1.00× and revealed the dead override. Fix: `mod.__class__ = ...`
+swap to a dynamically-created subclass with overridden `__call__`. After
+fix: 2.29× speedup (matches Phase 1.5 `mid_resnet` 2.26× ratio).
+Reference: `docs/conv-nax/conv-nax-prod-decisions.md` D34.
+
+**v2.33.1 patch (Edges preserved).** Initial fast-fallback design substituted
+bool mask for float bias to skip `mx.where` (~1.3 ms saved unconditionally).
+Bit-exact on normal cases — all correctness equivalence tests passed. But
+MLX SDPA with all-False bool mask produces finite garbage (no attention),
+while the float-bias all-`-inf` row produces NaN softmax (the semantic
+downstream code depends on for "no information available" detection).
+Caught by the existing `test_all_false_mask_row_gives_nan_or_zero` test
+failing on the first revision. Revised patch caches the FLOAT BIAS (not
+bool mask), preserving the NaN-for-fully-masked-rows contract.
+Reference: `docs/sparse-fallback-audit.md` + commit `9e0ab6a`.
+
+### When to apply
+
+This rule applies to any patch that:
+- Changes the kernel selection (`if config_X: use_kernel_A else: use_kernel_B`)
+- Routes through a different fallback or fast path
+- Swaps `__call__` / `forward` methods (patchers, decorators)
+- Modifies the M1-vs-M3 vs M5+ hardware dispatch
+- Adds or removes a cache layer (id-keyed, lru-keyed, content-keyed)
+- Inlines or unrolls a previous indirect dispatch
+
+It does NOT apply to:
+- Pure refactors that preserve the exact dispatch graph
+- New API surfaces that don't touch existing routing
+- Documentation, tests, build-system changes
+
+When in doubt, apply the three axes anyway — the cost is small (a
+focused A/B bench + a `find . -name "test_*.py" -exec` of the existing
+edge tests), the cost of a silent bug shipping to PyPI is large.
+
+---
+
 ## 4. Thermal protocol M5 Max
 
 Le M5 Max sous Marco utilise le profil de ventilation **iStat Menus performance** (pas le profil Apple par défaut qui throttle agressivement). Température GPU sous charge ~70°C, drift R1↔R3 typiquement <6%.
@@ -174,6 +268,66 @@ Cooldowns recommandés :
 - 90s entre rounds (A→B, B→A)
 - 60s entre shapes pendant un round
 - Si drift R1↔R3 > 10%, étendre les cooldowns
+
+### §4.X — Sub-1ms kernel measurement caveat (M5 Max)
+
+Kernels with wall-clock median ≤ 1.4 ms exhibit cross-session variance
+from **GPU power-state cycling during §4 idle cooldowns**. The 90s/60s/180s
+periods are sufficient for thermal stability on ≥ 2ms kernels but
+introduce power-state-cycle variance for sub-1.5ms kernels.
+
+**Empirical anchor.** v2.36.0 V2-only re-bench Section D control bench
+(2026-05-12) measured `lcsa_mid_seq8k_sparse`:
+
+- R1 (first dispatch in fresh session) : 0.87 ms
+- R2 (after 90s idle) : 1.82 ms — **109% slowdown**, not warmup
+- R3 (after another 90s idle) : 1.91 ms
+
+This is the opposite of typical cache-warmup behavior (warmup makes
+things faster, not slower). The mechanism is M5 Max aggressive GPU
+power management — 90s idle is sufficient for the GPU to downclock
+its clocks/voltage. The next dispatch hits a cooler power state and
+runs slower.
+
+**Diagnostic separator (M5 Max):**
+
+- Wall-clock median ≤ 1.4 ms → power-state-sensitive, §4 cooldowns CONFOUND measurement
+- Wall-clock median ≥ 2.0 ms → §4 cooldowns work fine, kernel keeps GPU busy enough
+
+**Methodology guidance for sub-1.5ms kernels (under active investigation):**
+the naive continuous-workload protocol (interleaved warmup dispatches
+during cooldown periods) was tested in the 2026-05-12 methodology sprint
+and produced a **REGRESSION verdict** — it resolved variance on 2/3 v2.36.0
+HIGH-variance shapes but regressed 3/4 v2.36.0 CONFIDENT shapes. See
+`docs/methodology/sub1ms-protocol-diagnostic.md` for the full analysis.
+
+Root cause of the regression: the warmup workload (small matmul, ~50µs
+dispatch on a 256×256 FP16 shape) competes with the measured kernel for
+GPU L2 / scheduling state. A small workload sufficient to hold GPU power
+state high is still large enough to perturb cache state in a way that
+matters for sub-1.5ms shapes.
+
+Until a clean methodology is established, the practical guidance is:
+
+- **For kernels ≥ 2.0 ms wall-clock**: §4 cooldowns work fine, ship via
+  standard 3-session §4-strict protocol.
+- **For sub-1.5 ms kernels**: cross-session variance characterization is
+  not yet possible under either idle-cooldown or continuous-workload
+  protocol. SHIP_OPT_IN is the conservative verdict regardless of perf
+  ratio magnitude. Explicit opt-in via env var (`MFA_LCSA_KERNEL_VERSION=v2`
+  for the v2.35.0 case) preserves user agency.
+
+Candidate next-sprint ideas tracked in
+`docs/methodology/sub1ms-protocol-diagnostic.md` §"Path forward":
+matched-workload-family warmup, sub-millisecond heartbeat-only warmup,
+Metal power-state API investigation, accept-the-trade-off (≥1.5ms
+shapes only get auto-default).
+
+References:
+- `docs/methodology/sub1ms-protocol-results.md` (REGRESSION analysis)
+- `docs/methodology/sub1ms-protocol-diagnostic.md` (root cause + path forward)
+- `docs/methodology/downclock-threshold-data.json` (Section B empirical anchor)
+- `docs/lcsa-nax/v2-only-rebench-diagnostic.md` (originating STOP diagnostic)
 
 ---
 
