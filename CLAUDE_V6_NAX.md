@@ -295,39 +295,61 @@ runs slower.
 - Wall-clock median ≥ 2.0 ms → §4 cooldowns work fine, kernel keeps GPU busy enough
 
 **Methodology guidance for sub-1.5ms kernels (under active investigation):**
-the naive continuous-workload protocol (interleaved warmup dispatches
-during cooldown periods) was tested in the 2026-05-12 methodology sprint
-and produced a **REGRESSION verdict** — it resolved variance on 2/3 v2.36.0
-HIGH-variance shapes but regressed 3/4 v2.36.0 CONFIDENT shapes. See
-`docs/methodology/sub1ms-protocol-diagnostic.md` for the full analysis.
 
-Root cause of the regression: the warmup workload (small matmul, ~50µs
-dispatch on a 256×256 FP16 shape) competes with the measured kernel for
-GPU L2 / scheduling state. A small workload sufficient to hold GPU power
-state high is still large enough to perturb cache state in a way that
-matters for sub-1.5ms shapes.
+Two warmup protocols have now been tested and both produced a
+**REGRESSION verdict**:
+
+| Protocol | Date | HIGH→CONFIDENT | CONFIDENT regressed | Verdict |
+|---|---|:--:|:--:|:--:|
+| v2.36.0 — 256×256 FP16 matmul, 50ms gap | 2026-05-12 | 2/3 | 3/4 | REGRESSION |
+| Matched-workload family — sparse_attention_nax B=1 H=4 qL=kL=2048 D=64 BT=16, 50ms gap | 2026-05-12 | **0/3** | **3/4** | REGRESSION |
+
+The matched-workload protocol was the canonical "path-forward option 1"
+from the prior diagnostic. It hypothesized that same-kernel-family warmup
+would hold GPU power state WITHOUT polluting the measured kernel's L2.
+**Falsified.** It regressed a DIFFERENT set of CONFIDENT shapes than the
+matmul protocol did (e.g., `mid_seq8k` regressed under matched-workload
+but survived under matmul; `large_seq16k_sparse` regressed under matmul
+but survived under matched-workload).
+
+**Consolidated finding**: every warmup mechanism that holds GPU power
+state above the < 100ms downclock threshold inevitably perturbs the
+measured kernel's cache state in a shape-specific way. No single warmup
+workload is universally non-polluting. The variance is real (not a
+measurement artifact) and the kernel has shape-dependent sensitivity to
+cache state.
 
 Until a clean methodology is established, the practical guidance is:
 
 - **For kernels ≥ 2.0 ms wall-clock**: §4 cooldowns work fine, ship via
   standard 3-session §4-strict protocol.
 - **For sub-1.5 ms kernels**: cross-session variance characterization is
-  not yet possible under either idle-cooldown or continuous-workload
-  protocol. SHIP_OPT_IN is the conservative verdict regardless of perf
-  ratio magnitude. Explicit opt-in via env var (`MFA_LCSA_KERNEL_VERSION=v2`
-  for the v2.35.0 case) preserves user agency.
+  not yet possible under any tested protocol. SHIP_OPT_IN is the
+  conservative verdict regardless of perf ratio magnitude. Explicit
+  opt-in via env var (`MFA_LCSA_KERNEL_VERSION=v2` for the v2.35.0 case)
+  preserves user agency.
 
-Candidate next-sprint ideas tracked in
-`docs/methodology/sub1ms-protocol-diagnostic.md` §"Path forward":
-matched-workload-family warmup, sub-millisecond heartbeat-only warmup,
-Metal power-state API investigation, accept-the-trade-off (≥1.5ms
-shapes only get auto-default).
+**Revised path-forward registry** (option 1 falsified):
+
+| Option | Status |
+|---|---|
+| 1. Matched-workload family | FALSIFIED 2026-05-12 |
+| 2. Heartbeat-only (single-threadgroup, no buffer access) | promoted as next attempt |
+| 3. Metal API power-state lock | unknown — needs Apple API research |
+| 4. Shape-aware default (V2 only for ≥2ms shapes) | viable pragmatic fallback |
+
+**Recommendation**: prioritize option 2 (heartbeat) for the next
+methodology sprint. A register-only kernel that does no buffer access
+might hold GPU clock state without any cache footprint at all. If
+option 2 also fails, option 4 is the SHIP_BROAD landing path for V2
+(narrower envelope but guaranteed clean).
 
 References:
-- `docs/methodology/sub1ms-protocol-results.md` (REGRESSION analysis)
-- `docs/methodology/sub1ms-protocol-diagnostic.md` (root cause + path forward)
-- `docs/methodology/downclock-threshold-data.json` (Section B empirical anchor)
-- `docs/lcsa-nax/v2-only-rebench-diagnostic.md` (originating STOP diagnostic)
+- `docs/methodology/matched-workload-results.md` (REGRESSION verdict)
+- `docs/methodology/matched-workload-diagnostic.md` (root cause + revised path forward)
+- `docs/methodology/matched-workload-decisions.md` (DM1-DM10 design rationale)
+- prior `experiment/methodology-sub1ms-protocol` branch (v2.36.0 matmul protocol artifacts, preserved for archaeology)
+- `experiment/sub1ms-matched-workload` branch (this sprint's harness + raw data)
 
 ---
 

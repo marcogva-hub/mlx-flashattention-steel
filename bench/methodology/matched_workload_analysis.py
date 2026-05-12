@@ -157,7 +157,8 @@ def render_md(rows, verdict, conditions, n_sessions, warmup_counters,
     L.append("")
     L.append("**Methodology**: V2 -> SDPA+bias -> V2 A/B/A with "
              "matched-workload-family cooldowns (50ms warmup gap, "
-             "small sparse_attention_nax dispatch with D=64 qL=kL=512 BT=32).")
+             "small sparse_attention_nax dispatch with B=1 H=4 "
+             "qL=kL=2048 D=64 BT=16 density=0.10).")
     L.append("**Hardware**: M5 Max 128GB, macOS 26.5.")
     L.append("**Hypothesis under test**: matched-workload warmup eliminates "
              "GPU power-state downclock variance WITHOUT competing for L2 "
