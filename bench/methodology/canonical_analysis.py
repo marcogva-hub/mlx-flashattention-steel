@@ -106,10 +106,23 @@ def calibrate_threshold(rows):
     ineligible_work = [r["work_product"] for r in rows if not r["v2_default_eligible"]]
     if not eligible_work:
         return {"threshold": None,
-                "rationale": "No CONFIDENT/BOUNDARY shapes found - V2 stays SHIP_OPT_IN"}
+                "rationale": "No CONFIDENT/BOUNDARY shapes found - V2 stays SHIP_OPT_IN",
+                "eligible_work_min": None, "eligible_work_max": None,
+                "ineligible_work_min": (min(ineligible_work)
+                                        if ineligible_work else None),
+                "ineligible_work_max": (max(ineligible_work)
+                                        if ineligible_work else None),
+                "clean_inflection": False}
     if not ineligible_work:
         return {"threshold": 0,
-                "rationale": "All shapes CONFIDENT/BOUNDARY - V2 ships unconditionally"}
+                "rationale": ("All shapes CONFIDENT/BOUNDARY under "
+                              "canonical methodology - V2 ships "
+                              "unconditionally for the tested shape regime"),
+                "eligible_work_min": min(eligible_work),
+                "eligible_work_max": max(eligible_work),
+                "ineligible_work_min": None,
+                "ineligible_work_max": None,
+                "clean_inflection": True}
     # Threshold = smallest work product among eligible shapes
     threshold = min(eligible_work)
     return {
@@ -167,12 +180,14 @@ def render_md(rows, calibration, conditions, n_sessions):
              if calibration.get("threshold") else "- **No threshold**: see rationale.")
     L.append(f"- **Rationale**: {calibration['rationale']}")
     if calibration.get("threshold") is not None:
-        L.append(f"- Eligible work range: "
-                 f"[{calibration['eligible_work_min']:.2e}, "
-                 f"{calibration['eligible_work_max']:.2e}]")
-        L.append(f"- Ineligible work range: "
-                 f"[{calibration['ineligible_work_min']:.2e}, "
-                 f"{calibration['ineligible_work_max']:.2e}]")
+        if calibration.get("eligible_work_min") is not None:
+            L.append(f"- Eligible work range: "
+                     f"[{calibration['eligible_work_min']:.2e}, "
+                     f"{calibration['eligible_work_max']:.2e}]")
+        if calibration.get("ineligible_work_min") is not None:
+            L.append(f"- Ineligible work range: "
+                     f"[{calibration['ineligible_work_min']:.2e}, "
+                     f"{calibration['ineligible_work_max']:.2e}]")
         L.append(f"- Clean inflection: {calibration['clean_inflection']}")
     L.append("")
     L.append("## Per-session samples")
