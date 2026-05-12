@@ -213,7 +213,64 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'mlx_mfa' has no attribute {name!r}")
 
 
+# ── Auto-hook installation (Sprint U / v2.36.0) ─────────────────────────────
+#
+# Per docs/RELEASE_PHILOSOPHY.md auto-default principle: import-time hook
+# installation that auto-routes eligible mx.conv_general calls through
+# conv3d_nax_forward on M5+ hardware. Set MFA_DISABLE_AUTO_HOOKS=1 to skip.
+
+from mlx_mfa._auto_hooks import (
+    install_hooks as _install_hooks,
+    uninstall_hooks as _uninstall_hooks,
+    hooks_status as _hooks_status,
+)
+
+
+def enable():
+    """Manually (re-)install mlx-mfa auto-hooks.
+
+    Hooks are automatically installed at import time unless
+    MFA_DISABLE_AUTO_HOOKS=1 is set in the environment. This function
+    is idempotent (multiple calls are no-ops) and is primarily useful
+    after a manual disable() or for explicit control flows.
+
+    Returns True if hooks were newly installed, False if already installed
+    or disabled via env var.
+    """
+    return _install_hooks()
+
+
+def disable():
+    """Uninstall mlx-mfa auto-hooks. Restores vanilla MLX behavior.
+
+    Useful for benchmarking (A/B comparison vs mlx-mfa optimizations).
+    Idempotent. Existing explicit API calls (flash_attention*, etc.) and
+    patchers (patch_seedvr2_vae, etc.) remain available regardless.
+
+    Returns True if hooks were uninstalled, False if not installed.
+    """
+    return _uninstall_hooks()
+
+
+def hooks_status():
+    """Return a dict describing current auto-hook state.
+
+    Keys: installed, log (install/uninstall events), m5_plus (whether
+    auto-routing eligibility check would pass), auto_hooks_disabled_env
+    (whether MFA_DISABLE_AUTO_HOOKS=1 is set).
+    """
+    return _hooks_status()
+
+
+# Auto-install at import unless MFA_DISABLE_AUTO_HOOKS=1
+_install_hooks()
+
+
 __all__ = [
+    # Sprint U / v2.36.0 auto-hook public API
+    "enable",
+    "disable",
+    "hooks_status",
     # Core attention
     "flash_attention",
     "flash_attention_rope",
