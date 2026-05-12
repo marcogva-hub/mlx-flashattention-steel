@@ -1,20 +1,17 @@
-/// Sprint B Sparse Attention NAX — implementation.
+/// Sprint B Sparse Attention NAX - implementation.
 ///
-/// Phase 1.1 scaffold: per-thread-Q-row FA-2 kernel with block-mask skip.
-/// Each threadgroup processes one (b, hq, q_tile); each thread handles one
-/// Q row within the tile. Online softmax in distributed registers. No
-/// matmul2d yet (Phase 1.3 swaps in matmul2d once correctness is locked).
+/// Phase 1.1: per-thread-Q-row FA-2 kernel with block-mask skip. FP16, BT in
+/// {16, 32}, 2-D mask, causal=false.
 ///
-/// Layout assumptions (verified at entry):
-///   Q: (B, Hq, qL, D) row-major
-///   K, V: (B, Hk, kL, D) row-major, Hq % Hk == 0
-///   block_mask: (NQ, NK) bool where NQ=qL/BT, NK=kL/BT
+/// Phase 1.2 (this version):
+///   - dtype: float16 + bfloat16
+///   - block_tile: 16, 32, 64
+///   - mask ndim: 2 (NQ, NK), 3 (Hq, NQ, NK), 4 (B, Hq, NQ, NK)
+///   - causal: false + true (per-tile skip future + within-tile triangular)
+///   - asymmetric qL != kL (cross-attention) supported
 ///
-/// Phase 1.1 limits (relaxed in 1.2 / 1.3):
-///   - dtype: float16 only
-///   - block_tile: 16 or 32 only (register pressure)
-///   - mask: 2-D only
-///   - causal: false only
+/// Phase 1.3 will swap inner GEMMs to mpp::tensor_ops::matmul2d for BT > 64
+/// and to lift register-pressure constraints.
 
 #include "mfa_sparse_attention.hpp"
 
@@ -36,11 +33,31 @@ const std::string SPARSE_HEADER = R"(
 using namespace metal;
 )";
 
+// bfloat is provided directly by <metal_stdlib> on Apple Silicon Metal SDK;
+// no separate <metal_bf16> header. Kept as named alias for clarity.
+const std::string& SPARSE_HEADER_BF16 = SPARSE_HEADER;
+
 // JIT shader source. Per-thread Q-row processing inside a per-(b, hq, q_tile)
 // threadgroup. Online softmax. Block mask scanned at K-tile granularity.
+//
+// dtype_str: "half" or "bfloat" - Metal Shading Language scalar type
+// mask_ndim: 2 (NQ, NK), 3 (Hq, NQ, NK), 4 (B, Hq, NQ, NK)
+// causal: when true emit per-tile-skip + within-tile triangular mask
 std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
-                                  int BT, int NQ, int NK, float scale) {
+                                  int BT, int NQ, int NK, float scale,
+                                  const std::string& dtype_str,
+                                  int mask_ndim, bool causal) {
   int gqa_factor = Hq / Hk;
+  // Offset expression into block_mask for this (b, hq, q_tile).
+  std::string mask_base_expr;
+  if (mask_ndim == 2) {
+    mask_base_expr = "block_mask + q_tile * cNK";
+  } else if (mask_ndim == 3) {
+    mask_base_expr = "block_mask + hq * cNQ * cNK + q_tile * cNK";
+  } else {  // 4
+    mask_base_expr = "block_mask + b * cHq * cNQ * cNK + hq * cNQ * cNK + q_tile * cNK";
+  }
+
   std::ostringstream os;
   os << "    // Per-shape constants compiled in\n"
      << "    constexpr uint cB        = " << B << ";\n"
@@ -68,18 +85,18 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
      << "    const uint q_abs       = q_tile * cBT + row_in_tile;\n"
      << "\n"
      << "    // Base pointers (BHND row-major)\n"
-     << "    device const half* Q_base = Q\n"
+     << "    device const " << dtype_str << "* Q_base = Q\n"
      << "        + b  * cHq * cQL * cD\n"
      << "        + hq *       cQL * cD\n"
      << "        + q_abs *          cD;\n"
-     << "    device const half* K_b_hk = K\n"
+     << "    device const " << dtype_str << "* K_b_hk = K\n"
      << "        + b  * cHk * cKL * cD\n"
      << "        + hk *       cKL * cD;\n"
-     << "    device const half* V_b_hk = V\n"
+     << "    device const " << dtype_str << "* V_b_hk = V\n"
      << "        + b  * cHk * cKL * cD\n"
      << "        + hk *       cKL * cD;\n"
-     << "    device const bool*  M_base = block_mask + q_tile * cNK;\n"
-     << "    device half*        O_base = O\n"
+     << "    device const bool* M_base = " << mask_base_expr << ";\n"
+     << "    device "       << dtype_str << "* O_base = O\n"
      << "        + b  * cHq * cQL * cD\n"
      << "        + hq *       cQL * cD\n"
      << "        + q_abs *          cD;\n"
@@ -95,23 +112,34 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
      << "    #pragma clang loop unroll(full)\n"
      << "    for (uint d = 0; d < cD; ++d) o_vec[d] = 0.0f;\n"
      << "\n"
-     << "    // Block-mask scan + tile inner loop\n"
-     << "    for (uint k_tile = 0; k_tile < cNK; ++k_tile) {\n"
-     << "        if (!M_base[k_tile]) continue;\n"
+     << "    // Block-mask scan + tile inner loop\n";
+  if (causal) {
+    os << "    // Causal: skip future tiles entirely (k_tile > q_tile).\n"
+       << "    for (uint k_tile = 0; k_tile <= q_tile; ++k_tile) {\n";
+  } else {
+    os << "    for (uint k_tile = 0; k_tile < cNK; ++k_tile) {\n";
+  }
+  os << "        if (!M_base[k_tile]) continue;\n"
      << "\n"
-     << "        // (1) Score row: s[k_col] = (q · K[k_tile*BT + k_col]) * scale\n"
+     << "        // (1) Score row: s[k_col] = (q . K[k_tile*BT + k_col]) * scale\n"
      << "        float s[cBT];\n"
      << "        float m_tile = NEG_INF;\n"
      << "        #pragma clang loop unroll(full)\n"
      << "        for (uint kc = 0; kc < cBT; ++kc) {\n"
-     << "            device const half* K_row = K_b_hk + (k_tile * cBT + kc) * cD;\n"
+     << "            device const " << dtype_str
+              << "* K_row = K_b_hk + (k_tile * cBT + kc) * cD;\n"
      << "            float acc = 0.0f;\n"
      << "            #pragma clang loop unroll(full)\n"
      << "            for (uint d = 0; d < cD; ++d) {\n"
      << "                acc += q_vec[d] * float(K_row[d]);\n"
      << "            }\n"
-     << "            acc *= cSCALE;\n"
-     << "            s[kc] = acc;\n"
+     << "            acc *= cSCALE;\n";
+  if (causal) {
+    // Within-tile triangular: on the diagonal tile (k_tile == q_tile), mask
+    // any (row_in_tile, kc) where kc > row_in_tile (future-of-this-row).
+    os << "            if (k_tile == q_tile && kc > row_in_tile) acc = NEG_INF;\n";
+  }
+  os << "            s[kc] = acc;\n"
      << "            m_tile = max(m_tile, acc);\n"
      << "        }\n"
      << "\n"
@@ -142,14 +170,14 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
      << "        m_run = m_new;\n"
      << "    }\n"
      << "\n"
-     << "    // (4) Finalize: divide by l_run; write back. All-False row → zero.\n"
+     << "    // (4) Finalize: divide by l_run; write back. All-False row -> zero.\n"
      << "    if (l_run <= 0.0f) {\n"
      << "        #pragma clang loop unroll(full)\n"
-     << "        for (uint d = 0; d < cD; ++d) O_base[d] = half(0.0f);\n"
+     << "        for (uint d = 0; d < cD; ++d) O_base[d] = " << dtype_str << "(0.0f);\n"
      << "    } else {\n"
      << "        float inv_l = 1.0f / l_run;\n"
      << "        #pragma clang loop unroll(full)\n"
-     << "        for (uint d = 0; d < cD; ++d) O_base[d] = half(o_vec[d] * inv_l);\n"
+     << "        for (uint d = 0; d < cD; ++d) O_base[d] = " << dtype_str << "(o_vec[d] * inv_l);\n"
      << "    }\n";
   return os.str();
 }
@@ -164,26 +192,28 @@ mlx::core::array sparse_attention_forward(
     int block_tile,
     bool causal,
     float scale) {
-  // Sanity asserts (8 categories per design §4)
+  // Sanity asserts
   if (Q.ndim() != 4 || K.ndim() != 4 || V.ndim() != 4) {
     throw std::runtime_error("sparse_attention: Q, K, V must be 4-D (B, H, L, D)");
   }
-  if (Q.dtype() != mlx::core::float16 ||
-      K.dtype() != mlx::core::float16 ||
-      V.dtype() != mlx::core::float16) {
-    throw std::runtime_error("sparse_attention: Phase 1.1 supports float16 only");
+  // Phase 1.2: float16 + bfloat16
+  bool is_f16 = (Q.dtype() == mlx::core::float16);
+  bool is_bf16 = (Q.dtype() == mlx::core::bfloat16);
+  if (!is_f16 && !is_bf16) {
+    throw std::runtime_error("sparse_attention: dtype must be float16 or bfloat16");
+  }
+  if (K.dtype() != Q.dtype() || V.dtype() != Q.dtype()) {
+    throw std::runtime_error("sparse_attention: Q, K, V dtype must match");
   }
   if (block_mask.dtype() != mlx::core::bool_) {
     throw std::runtime_error("sparse_attention: block_mask must be bool");
   }
-  if (block_mask.ndim() != 2) {
-    throw std::runtime_error("sparse_attention: Phase 1.1 supports 2-D mask only");
+  int mask_ndim = static_cast<int>(block_mask.ndim());
+  if (mask_ndim != 2 && mask_ndim != 3 && mask_ndim != 4) {
+    throw std::runtime_error("sparse_attention: block_mask.ndim must be 2, 3, or 4");
   }
-  if (causal) {
-    throw std::runtime_error("sparse_attention: Phase 1.1 supports causal=false only");
-  }
-  if (block_tile != 16 && block_tile != 32) {
-    throw std::runtime_error("sparse_attention: Phase 1.1 supports BT ∈ {16, 32} only");
+  if (block_tile != 16 && block_tile != 32 && block_tile != 64) {
+    throw std::runtime_error("sparse_attention: block_tile must be 16, 32, or 64");
   }
   int B  = static_cast<int>(Q.shape(0));
   int Hq = static_cast<int>(Q.shape(1));
@@ -207,48 +237,67 @@ mlx::core::array sparse_attention_forward(
     throw std::runtime_error("sparse_attention: qL, kL must be multiples of block_tile");
   }
   if (D != 64 && D != 128) {
-    throw std::runtime_error("sparse_attention: Phase 1.1 supports D ∈ {64, 128} only");
+    throw std::runtime_error("sparse_attention: head_dim must be 64 or 128");
   }
   int NQ = qL / block_tile;
   int NK = kL / block_tile;
-  if (static_cast<int>(block_mask.shape(0)) != NQ ||
-      static_cast<int>(block_mask.shape(1)) != NK) {
-    throw std::runtime_error("sparse_attention: block_mask shape != (NQ, NK)");
+  // Mask shape check per ndim
+  if (mask_ndim == 2) {
+    if (static_cast<int>(block_mask.shape(0)) != NQ ||
+        static_cast<int>(block_mask.shape(1)) != NK) {
+      throw std::runtime_error("sparse_attention: 2-D block_mask shape != (NQ, NK)");
+    }
+  } else if (mask_ndim == 3) {
+    if (static_cast<int>(block_mask.shape(0)) != Hq ||
+        static_cast<int>(block_mask.shape(1)) != NQ ||
+        static_cast<int>(block_mask.shape(2)) != NK) {
+      throw std::runtime_error("sparse_attention: 3-D block_mask shape != (Hq, NQ, NK)");
+    }
+  } else {  // 4
+    if (static_cast<int>(block_mask.shape(0)) != B ||
+        static_cast<int>(block_mask.shape(1)) != Hq ||
+        static_cast<int>(block_mask.shape(2)) != NQ ||
+        static_cast<int>(block_mask.shape(3)) != NK) {
+      throw std::runtime_error("sparse_attention: 4-D block_mask shape != (B, Hq, NQ, NK)");
+    }
+  }
+  if (causal && qL != kL) {
+    throw std::runtime_error("sparse_attention: causal=true requires qL == kL");
   }
   if (scale <= 0.0f) {
     throw std::runtime_error("sparse_attention: scale must be > 0");
   }
-  // Phase 1.1 requires the bool mask to land in Metal device (not constant)
-  // address space. MLX inlines buffers < ~4 KB as constant. Production shapes
-  // (lcsa_small_seq4k and beyond) produce masks >= 16 KB -> device. Reject
-  // smaller masks loudly so users hit a clear error instead of MSL compile
-  // failures. Phase 1.2 will support both via emitted-qualifier branching.
-  int mask_bytes = NQ * NK;  // bool = 1 byte per element
+  // Address-space precondition (Phase 1.1 carry-over)
+  long long mask_bytes = 1LL;
+  for (int i = 0; i < mask_ndim; ++i) mask_bytes *= static_cast<long long>(block_mask.shape(i));
   if (mask_bytes < 4096) {
     throw std::runtime_error(
-        "sparse_attention: Phase 1.1 requires NQ*NK >= 4096 (use qL, kL >= "
-        "2048 with BT=32, or qL, kL >= 1024 with BT=16). Smaller masks "
-        "trigger MLX constant-address-space inlining which Phase 1.1 does "
-        "not yet handle.");
+        "sparse_attention: mask total bytes < 4096 (use larger qL, kL, "
+        "or higher mask ndim). MLX inlines small buffers in constant "
+        "address space; the JIT kernel emits device-qualified pointer.");
   }
 
-  std::string name = "sparse_attn_" +
+  std::string dtype_str = is_f16 ? "half" : "bfloat";
+  std::string name = "sparse_attn_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
-      std::to_string(D) + "_BT" + std::to_string(block_tile);
+      std::to_string(D) + "_BT" + std::to_string(block_tile) +
+      "_M" + std::to_string(mask_ndim) +
+      (causal ? "_c" : "_nc");
 
+  const std::string& header = is_bf16 ? SPARSE_HEADER_BF16 : SPARSE_HEADER;
   auto kernel = mlx::core::fast::metal_kernel(
       name,
       {"Q", "K", "V", "block_mask"},
       {"O"},
-      sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK, scale),
-      SPARSE_HEADER,
+      sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK, scale,
+                            dtype_str, mask_ndim, causal),
+      header,
       /*ensure_row_contiguous=*/true,
       /*atomic_outputs=*/false);
 
   int bt = block_tile;
   int b_nq = B * NQ;
-  // grid total threads = (BT, Hq, B*NQ); threadgroup = (BT, 1, 1)
   auto outs = kernel(
       {Q, K, V, block_mask},
       {mlx::core::Shape{B, Hq, qL, D}},
