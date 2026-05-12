@@ -3142,3 +3142,57 @@ STATUS: COMPLETE
 ### Next
 - Phase 1.3: BT x WM autoresearch (per cluster) + potential matmul2d
   swap-in for inner GEMMs.
+
+---
+## [2026-05-12 18:30] [CLAUDE] Sprint B Phase 1.3-1.5: BT sweep, dispatcher, SHIP verdict
+STATUS: COMPLETE
+
+### Plan
+- Phase 1.3: BT autoresearch sweep across {16, 32, 64} x 6 LCSA clusters.
+- Phase 1.4: density-thresholded dispatcher (route to Sprint B when sparse,
+  fall through to SDPA+bias otherwise).
+- Phase 1.5: ship/shelve verdict from Phase 1.3+1.4 data.
+
+### Changes
+- `bench/lcsa_nax_phase1_3_bt_sweep.py` - BT autoresearch harness [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_3-bt-sweep.json` - Phase 1.3 raw data
+- `docs/lcsa-nax/lcsa-nax-phase1_3-results.md` - findings + reframing
+- `mlx_mfa/lcsa_nax.py:104-185` - sparse_attention_dispatch +
+  DEFAULT_DENSITY_THRESHOLD=0.02 + _bool_mask_to_float_bias helper [HIGH][VERIFIED]
+- `bench/lcsa_nax_phase1_4_dispatcher_sweep.py` - 3-shape x 4-density x
+  3-path sweep [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json` - Phase 1.4 raw data
+- `docs/lcsa-nax/lcsa-nax-phase1_4-results.md` - dispatcher results + ship rec
+- `tests/test_lcsa_nax_phase1_4_dispatcher.py` - 6 dispatcher correctness tests [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` - SHIP verdict matrix
+
+### Validation
+- Phase 1.3: BT sweep across 6 LCSA clusters. BT=16 wins uniformly. Best
+  ratio vs SDPA+bias: 0.07-1.02x. The per-thread FA-2 kernel is uncompetitive
+  at moderate density; **niche is very-sparse only**.
+- Phase 1.4: dispatcher with threshold=0.02 + precomputed_bias passed:
+  - density 0.01: 2.45-4.6x SDPA+bias (Sprint B routed in, wins)
+  - density 0.03-0.10: 0.95-1.02x (dispatcher routes to SDPA, matches)
+- All 24 LCSA tests pass (6 Phase 1.1 + 12 Phase 1.2 + 6 Phase 1.4 dispatcher).
+- Phase 1.5: SHIP verdict for narrow-niche v2.34.0. matmul2d rewrite deferred.
+
+### Git
+- `657afbf` ship verdict commit (latest on `experiment/lcsa-nax-phase1_3`)
+- branch: `experiment/lcsa-nax-phase1_3` (Phase 1.3+1.4+1.5 work)
+
+### Key learnings
+- Phase 1.3 reframing was the most important Phase 1.x finding: Sprint B's
+  niche is very-sparse (density < 0.02-0.03), not all-sparse. Sprint C's
+  ship-default model (one kernel beats SDPA across all production shapes)
+  does not apply to the current per-thread FA-2 kernel.
+- The dispatcher pattern + caller-pre-built bias (matching v2.33.1
+  cache-HIT) is the right ergonomics for narrow-niche ship.
+- A matmul2d-based kernel rewrite (cooperative tensors per
+  csrc/mfa/v6_nax/NAAttentionKernel.cpp:775) is the natural follow-up
+  sprint. It would extend niche to broader densities and is tracked as
+  high-leverage future work.
+
+### Next
+- Merge experiment/lcsa-nax-phase1_3 -> feat/lcsa-nax.
+- Section H (deferred to next session): v2.34.0 release flow (CHANGELOG,
+  version bump, integration patchers, merge to master, tag, PyPI).
