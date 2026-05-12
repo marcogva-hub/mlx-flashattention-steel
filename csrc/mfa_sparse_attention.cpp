@@ -20,6 +20,8 @@
 #include <mlx/ops.h>
 #include <mlx/utils.h>
 
+#include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -182,6 +184,39 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
   return os.str();
 }
 
+// ---------------------------------------------------------------------------
+// V2 source-gen — single-kernel cooperative-tensor inner-GEMM (Section B-kernel-
+// body, to be lifted from createV34Source in csrc/mfa/v6_nax/NAAttentionKernel.cpp
+// lines 2307-3671 per design §13.10).
+//
+// CURRENT STATE: STUB. Delegates to V1 source-gen so V2 dispatch path compiles
+// and behaves identically to V1 until the V34-pattern lift lands. This is the
+// DC8 scaffolding boundary: V1 unchanged, V2 dispatch wired up, env override
+// + cache discrimination active. The "real V2" replaces this stub in a
+// follow-on commit (next session per lcsa-nax-coop-rewrite-inventory.md).
+// ---------------------------------------------------------------------------
+std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D,
+                                     int BT, int NQ, int NK, float scale,
+                                     const std::string& dtype_str,
+                                     int mask_ndim, bool causal) {
+  // TODO(Section B-kernel-body): lift createV34Source() cooperative-tensor
+  // pattern, modify outer K-block loop to iterate the non-empty-block index
+  // list. Until then, delegate to V1 so V2 path is correctness-equivalent.
+  return sparse_kernel_source(B, Hq, Hk, qL, kL, D, BT, NQ, NK, scale,
+                               dtype_str, mask_ndim, causal);
+}
+
+// Read MFA_LCSA_KERNEL_VERSION env var. Returns "v1" or "v2".
+// Defaults to "v1" pre-Section-D-verdict (DC6 V2-default-off trajectory).
+std::string read_kernel_version_env() {
+  const char* env = std::getenv("MFA_LCSA_KERNEL_VERSION");
+  if (env == nullptr) return "v1";
+  std::string v(env);
+  if (v == "v1" || v == "v2") return v;
+  // "auto" or unrecognized: fall back to v1 (DC6 default).
+  return "v1";
+}
+
 }  // namespace
 
 mlx::core::array sparse_attention_forward(
@@ -278,20 +313,33 @@ mlx::core::array sparse_attention_forward(
   }
 
   std::string dtype_str = is_f16 ? "half" : "bfloat";
-  std::string name = "sparse_attn_" + dtype_str + "_" +
+
+  // Section B-scaffold dispatch: V1 by default, V2 via MFA_LCSA_KERNEL_VERSION=v2.
+  // DC5 cache discrimination via "_v1" / "_v2" suffix in kernel name. DC6 default
+  // remains V1 until Section D perf sweep verdict.
+  std::string version = read_kernel_version_env();
+  std::string name = "sparse_attn_" + version + "_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
       "_M" + std::to_string(mask_ndim) +
       (causal ? "_c" : "_nc");
 
+  std::string source;
+  if (version == "v2") {
+    source = sparse_kernel_source_v2(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
+                                      scale, dtype_str, mask_ndim, causal);
+  } else {
+    source = sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
+                                   scale, dtype_str, mask_ndim, causal);
+  }
+
   const std::string& header = is_bf16 ? SPARSE_HEADER_BF16 : SPARSE_HEADER;
   auto kernel = mlx::core::fast::metal_kernel(
       name,
       {"Q", "K", "V", "block_mask"},
       {"O"},
-      sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK, scale,
-                            dtype_str, mask_ndim, causal),
+      source,
       header,
       /*ensure_row_contiguous=*/true,
       /*atomic_outputs=*/false);
