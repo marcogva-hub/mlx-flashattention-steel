@@ -1,0 +1,59 @@
+# v2.35.0 — Sprint B coop-rewrite (V2 cooperative-tensor SHIP-BROAD)
+
+**SHIP verdict**: BROAD — V2 wins across density [0.01, 0.50] by 1.96-13.53× vs SDPA+bias.
+
+## TL;DR
+
+Sprint B graduates from narrow niche (v2.34.0: density ≤ 0.01) to broad envelope.
+Single-kernel cooperative-tensor inner-GEMM (V34 forward pattern adapted) replaces
+the per-thread FA-2 of v2.34.0. V2 dominates SDPA+bias across the full density
+sweep including moderate densities (FlashVSR-typical 0.07-0.24) and beyond.
+
+## Public API
+
+```python
+from mlx_mfa.lcsa_nax import (
+    sparse_attention_nax,           # V2 by default, V1 fallback for ineligible
+    sparse_attention_dispatch,      # NAX route default (threshold 0.95)
+    DEFAULT_DENSITY_THRESHOLD,      # 0.95 (was 0.02 in v2.34.0)
+)
+from mlx_mfa.integrations.flashvsr_lcsa import patch_flashvsr_lcsa
+```
+
+## Capabilities
+
+- dtype: float16 (bf16 deferred — V1 fallback handles bf16 paths)
+- head_dim ∈ {64, 128}
+- block_tile = 32 (V2 eligibility; non-32 BT silently falls back to V1)
+- mask ndim ∈ {2, 3, 4}
+- All-False mask row → exact zero output (v2.34.0 contract preserved)
+
+## Performance (M5 Max 128GB, §4-strict 3-session)
+
+| Shape | density | V2 vs SDPA+bias | V2 vs V1 |
+|---|---:|---:|---:|
+| `__SHAPE_TABLE_FILLED_BY_ANALYSIS__` | | | |
+
+See `docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md` for full per-shape +
+per-session data and `docs/lcsa-nax/lcsa-nax-coop-rewrite-analysis.json`
+for the machine-readable form.
+
+## V1 fallback availability
+
+V1 (per-thread FA-2) remains in the codebase as a fallback. Set
+`MFA_LCSA_KERNEL_VERSION=v1` to force V1 dispatch. Default is `v2` with
+transparent V1 fallback when eligibility conditions don't hold:
+- BT ≠ 32
+- D ∉ {64, 128}
+- dtype = bfloat16
+- causal = true
+
+## Future-work register (post v2.35.0)
+
+- ~~matmul2d cooperative-tensor inner-GEMM rewrite~~ — **DONE**
+- `patch_sparkvsr_sliding_window` companion patcher — tracked
+- V34 forward focused investigation (memory #30 roadmap) — next sprint target
+
+## PyPI
+
+https://pypi.org/project/mlx-mfa/2.35.0/
