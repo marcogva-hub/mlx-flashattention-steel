@@ -2984,3 +2984,79 @@ STATUS: COMPLETE
 - Phase 1.1 main work: scaffold MFASparseAttentionForward C++ Primitive
   (csrc/mfa_sparse_attention_primitive.{hpp,cpp}) + Python wrapper
   + 6-test three-axis-validation end-to-end on lcsa_small_seq4k.
+
+---
+## [2026-05-12 14:00] [CLAUDE] Sprint B Phase 1.1: scaffold + lcsa_small_seq4k end-to-end
+STATUS: COMPLETE
+
+### Plan
+- Objective: scaffold MFASparseAttentionForward (free-function via
+  fast::metal_kernel per B-D2) + smallest LCSA shape correctness via 6-test
+  three-axis validation suite.
+- Files to modify:
+  - new: csrc/mfa_sparse_attention.{hpp,cpp}
+  - new: mlx_mfa/lcsa_nax.py
+  - new: tests/test_lcsa_nax_phase1_1.py
+  - edit: csrc/bindings.cpp (add binding)
+  - edit: CMakeLists.txt (add source)
+- Dependencies impacted: nanobind module surface (additive only)
+
+### Changes
+- `csrc/mfa_sparse_attention.hpp:36` - sparse_attention_forward signature
+  (Q, K, V, block_mask, block_tile, causal, scale) [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:34-128` - sparse_kernel_source per-thread
+  Q-row FA-2 source generator with online softmax + block-mask scan [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:160-216` - sanity asserts (8 categories)
+  + NQ*NK >= 4096 precondition (constant-addr-space avoidance) [HIGH][VERIFIED]
+- `csrc/bindings.cpp:794-815` - nanobind binding [HIGH][VERIFIED]
+- `CMakeLists.txt:115` - source added to mlx_mfa_ext [HIGH][VERIFIED]
+- `mlx_mfa/lcsa_nax.py:31-77` - sparse_attention_nax public API [HIGH][VERIFIED]
+- `tests/test_lcsa_nax_phase1_1.py` - 6 tests (axis 1: 2, axis 2: 2, axis 3: 2) [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: 0 internal callers (new public API). v2.33.1 sparse fast-
+  fallback path independent (no modification).
+- Test coverage: covered for Phase 1.1 production shape; gaps flagged for
+  Phase 1.2 (3-D / 4-D mask, BT > 32, bfloat16, causal=true, asymmetric qL/kL)
+
+### Tech cost
+- Compile: ~30s incremental for new source
+- Kernel JIT: one cache miss per unique (B, Hq, Hk, qL, kL, D, BT) shape
+- Memory: peak ~5 MB per dispatch at lcsa_small_seq4k (Q+K+V+O+mask)
+- Per-thread reg pressure: BT*D FP32 acc + D FP32 q_vec = ~32+128 floats =
+  640 bytes/thread. Tight but within Apple Silicon register file at BT=32.
+
+### Validation
+- Ran: `CMAKE_ARGS="-DPython_EXECUTABLE=.venv/bin/python" .venv/bin/python -m pip install --no-build-isolation -e .` (build success)
+- Ran: `.venv/bin/python -m pytest tests/test_lcsa_nax_phase1_1.py -v`
+- Validated: 6 / 6 pass.
+  - test_axis1_correctness_vs_sdpa_dense_full_mask: RMSE 3e-6 << 1e-3 bar
+  - test_axis1_correctness_vs_sdpa_bias_random_density: density-0.24 mask
+  - test_axis2_path_entered_extension_available: extension loads
+  - test_axis2_smaller_kernel_dispatch_not_oom: full shape OK, no NaN/Inf
+  - test_axis3_all_false_row_zero_output: masked row max abs = 0.0 exact
+  - test_axis3_diagonal_only_mask_causal_correctness: matches SDPA+diag-bias
+- Regression: existing test suite re-run, 6 PRE-EXISTING failures unrelated
+  to sparse attention (Topk attn, return_attn_weights, attn_bias mode 1/2
+  d128 causal, TurboQuant QR rotation). Sprint B added 6 passing tests, 0
+  regressions on sparse-attention surface.
+
+### Git
+- `32e653f` sub-phase 0 microbench
+- `d00cd52` sub-phase 0 SESSION_LOG entry
+- (next commit) Phase 1.1 main scaffold + 6 tests
+- branch `experiment/lcsa-nax-phase1_1`
+
+### Phase 1.1 follow-up notes
+- ABI gotcha: MLX `fast::metal_kernel` inlines buffers < ~4 KB as `constant`
+  address space, >= 4 KB as `device`. The bool mask qualifier in the JIT
+  source must match. Phase 1.1 enforces NQ*NK >= 4096 → always device.
+  Phase 1.2 will emit dual-qualifier variants chosen at runtime.
+- Per-thread register-FA-2 kernel chosen over matmul2d for Phase 1.1 to lock
+  correctness first. Phase 1.3 swaps inner GEMMs to mpp::tensor_ops::matmul2d
+  (the Phase 0 hypothesis being tested; sub-phase 0 microbench confirmed 5.20
+  TF feasibility at production tile granularity).
+
+### Next
+- Phase 1.2: 5 more production shapes (mid_seq8k, large_seq16k + sparse
+  variants), 3-D / 4-D mask, causal=true, asymmetric qL ≠ kL.
