@@ -3578,3 +3578,114 @@ Tracked enhancements:
    on every cell, the strict variance criterion (range < 10%) is not met
    on 5/7 shapes. Conservative shipping preserves user trust; the BROAD
    verdict awaits a V2-only A/B/A re-bench.
+
+---
+## [2026-05-12 19:45] [CLAUDE] V34 forward investigation — 5-hypothesis attribution
+STATUS: COMPLETE
+
+### Plan
+Per V34 forward investigation prompt: isolate empirically the sources of
+V34 forward's documented +18-40% gains via 5 controlled experiments,
+encode findings in CLAUDE_V6_NAX.md §4.5, produce design hints for V34
+backward Option β.
+
+### Foundation correction (logged during execution)
+Critical pre-eval finding: `flash_attention(backend="mfa")` routes
+V34-eligible shapes through STEEL forward kernels, NOT through the V34
+path in mfa_v6_nax_primitive.cpp. To exercise V34 vs predecessor via
+`MFA_V6_USE_V34` env, the harness calls `_ext.v6_nax_forward()` directly.
+This finding was logged in inventory + decisions before bench launch.
+
+In v2.35.0 production, V34 forward is NOT the active forward kernel for
+typical user calls — STEEL kernels handle most shapes. V34 wins documented
+in v2.32.0 were measured via the `_ext.v6_nax_forward()` entry directly.
+
+### Methodology
+Per DI1: env-var toggles (existing V34 autoresearch infrastructure)
+substituted for the prompt's variant-source-gen approach. Per DI3:
+single-session §4-strict (cooldowns 180/60/90s, A/B/A pattern, 5 runs/
+direction) — magnitude already established by v2.32.0; this investigation
+focuses on mechanism attribution where single-session is adequate.
+
+### Changes
+- `bench/v34_forward_investigation_harness.py` (323 LOC) - unified 5-probe
+  harness via MFA_V6_* env toggles [HIGH][VERIFIED]
+- `bench/v34_forward_investigation_analysis.py` (234 LOC) - cross-shape
+  analysis + verdict classification [HIGH][VERIFIED]
+- `docs/v6-nax/v34-forward-investigation-{inventory,decisions}.md` -
+  DI1-DI8 + 7-env-knob mapping
+- `docs/v6-nax/v34-forward-mechanisms.md` (190 LOC) - synthesis doc
+- `docs/v6-nax/v34-forward-investigation-{data,analysis}.json` - raw + agg
+- `docs/v6-nax/v34-investig-runlog.txt` - per-probe stdout
+- `docs/v6-nax/v34-backward-option-beta-design-hints.md` (182 LOC) -
+  Section I design hints for follow-on backward sprint
+- `CLAUDE_V6_NAX.md` §4.5 - V34 forward mechanistic findings canonical reference
+
+### Bench results (84 min wall-clock, 5 probes × 4 shapes)
+
+| Probe | Hypothesis | Median ratio | Verdict |
+|---|---|---:|:--:|
+| B+C+E aggregate | V34 vs predecessor | **1.184×** | **CONFIRMED** |
+| A_low (SG=2) | TGP occupancy low | 0.971× | NULL |
+| A_high (SG=8) | TGP occupancy high | **0.837×** | **REVERSE** ⚠ |
+| D_R (BLOCK_R=64) | register pressure Q-tile | 0.989× | NULL |
+| D_C (BLOCK_C=64) | register pressure K-tile | 1.022× | NULL |
+
+Anti-pattern finding (Hyp A REVERSE): V34's default `EXEC_SG=4` is
+sub-optimal for D=128 mid shapes. SG=8 wins +32% on lcsa_mid_seq8k_d128
+(4096×4096 D=128). Large_d128 (8192×8192) is already saturated (1.00×
+no benefit). This is a free perf win available via a shape-aware
+heuristic patch to V34 — tracked as follow-up.
+
+### Source-level structural confirmations (Section A.1, independent of bench)
+- B: V34 uses `simdgroup_barrier(mem_none)` only (line 2906) vs
+  predecessor `threadgroup_barrier(mem_threadgroup)` (lines 1059, 1290).
+- C: V34 `NAXFrag::row_reduce` (line 2889 → simd_shuffle_xor at 2546)
+  vs predecessor `mpp::reduce_rows(...)` (lines 931, 1011, 1178, 1259,
+  1535, 1585, 1807, 1838, 2085, 2108, 2178, 2206).
+- E: V34 M5-tuned BQ/BK/WM (mfa_v6_nax_primitive.cpp:605-607); predecessor
+  inherits MPP autotune.
+
+### Validation (three-axis per §3.5 — applied to investigation itself)
+- AXIS 1 output sanity: per-probe smoke gate (V34 vs SDPA ref, RMSE 4e-8) PASS
+- AXIS 2 path entered: V34 vs predecessor max abs err 4e-6 (FP16 noise floor,
+  distinct kernels) confirms env var toggle works
+- AXIS 3 edges preserved: no production code touched; V34 + predecessor +
+  STEEL paths unchanged
+
+### Git
+- branch `experiment/v34-forward-investigation`
+- 4 commits on branch (inventory + decisions, harness + analysis,
+  amendments + docs, SESSION_LOG entry)
+- merge to master: §4.5 amendment + 5 deliverables docs
+- master remains at d4a876a + this merge
+
+### Key findings encoded for future work
+1. **B+C+E bundle CONFIRMED at +18%** (1.184× ratio) — matches v2.32.0
+   ship documentation's +18-40% range bottom. The middle/upper of that
+   range came from shape-specific peaks.
+2. **A FALSIFIED at baseline + REVERSE finding**: V34 default EXEC_SG=4
+   is sub-optimal. EXEC_SG=8 wins +32% on mid_d128. Recommendation:
+   shape-aware heuristic in V34 dispatcher (SG=8 for mid, SG=4 for large
+   already saturated).
+3. **D NULL**: V34 tile defaults not register-bottlenecked. Stable design
+   choice across shape range. Small shapes benefit from LARGER tile but
+   this is shape-specific tuning, not register pressure.
+
+### V34 backward Option β design hints (Section I)
+Documented in docs/v6-nax/v34-backward-option-beta-design-hints.md:
+- B+C+E bundle directly transferable to dQ kernel
+- B (cross-SG sync elim) adaptable to dK/dV with ≤1 threadgroup_barrier
+  per K-tile pattern
+- C (simd_shuffle_xor) applies to ALL row-reductions in backward
+  (softmax recompute + dS rowsum + D accumulator)
+- E (M5-tuned defaults) carry-over, with EXEC_SG=8 default for D=128 mid
+  shapes per Hyp A finding
+- D NULL transfers as "design constraint OK"
+- dK/dV register pressure higher than forward (16 KB FP32 accumulator per SG)
+  — recommend BK=32, BQ=32 starting defaults
+
+### Next prompt
+V34 backward NAX-direct monolithic rearchitect (Option β) per memory #30
+roadmap, ~1 week CC. Bonus follow-up patch: V34 forward EXEC_SG shape-aware
+heuristic for free +32% on mid_d128.

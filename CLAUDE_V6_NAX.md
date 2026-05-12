@@ -331,6 +331,53 @@ References:
 
 ---
 
+## 4.5 V34 forward mechanistic findings (référence canonique)
+
+Les gains V34 forward documentés en v2.32.0 (+18-40% vs prédécesseurs)
+ont été décomposés empiriquement en investigation 2026-05-12
+(`docs/v6-nax/v34-forward-mechanisms.md`) :
+
+| Hypothèse | Statut | Mécanisme |
+|---|---|---|
+| B — cross-SG sync elim | **CONFIRMÉE** (structurelle + bundle) | V34: `simdgroup_barrier(mem_none)` only; predecessors: `threadgroup_barrier(mem_threadgroup)` |
+| C — simd_shuffle_xor vs MPP reduce | **CONFIRMÉE** (structurelle + bundle) | V34: `NAXFrag::row_reduce` → `simd_shuffle_xor`; predecessors: `mpp::reduce_rows` |
+| E — Apple defaults mis-tunés pour M5 | **CONFIRMÉE** (structurelle + bundle) | V34: BQ/BK/WM tunés M5; predecessor: MPP autotune par défaut |
+| **B+C+E aggregate** | **CONFIRMÉE: ratio 1.184× (+18%)** | Probe `MFA_V6_USE_V34=0` vs `=1` sur 3 shapes ≥1.4ms |
+| A — TGP occupancy | **FALSIFIÉE au baseline + REVERSE à SG=8** | V34's default `EXEC_SG=4` est sub-optimal pour mid_d128; SG=8 gagne +32% |
+| D — register pressure | **NULL** | V34 tile defaults ne sont pas register-bottlenecked |
+
+### Mécanismes à appliquer dans tout nouveau kernel NAX-direct sur M5+
+
+1. **Cross-SG sync minimization** — utiliser `simdgroup_barrier(mem_none)`
+   pour les barrières intra-SG; réserver `threadgroup_barrier(mem_threadgroup)`
+   aux cas où l'accumulation cross-SG est strictement nécessaire (idéalement
+   ≤1 par K-tile).
+2. **NAXFrag::row_reduce** pour les réductions softmax row-wise plutôt que
+   `mpp::reduce_rows`. Le shuffle-xor pattern est plus rapide que la cooperative
+   tensor reduction.
+3. **M5-tuned BQ/BK/WM defaults** — ne pas hériter des Apple MPP defaults
+   aveuglément. V34 forward defaults reference: BQ=32/BK=32/WM=2 (D=64),
+   BQ=64/BK=32/WM=4 (D=128). À noter (anti-pattern A) : EXEC_SG=4 est
+   sub-optimal pour D=128 mid shapes; SG=8 unlock +32% sur mid_d128.
+
+### Anti-patterns identifiés
+
+- **V34's default `EXEC_SG=4` for D=128 mid shapes** : sous-tuné. Un
+  follow-up patch pourrait introduire une heuristique shape-aware
+  (`EXEC_SG=8` pour qL∈[2048, 4096], `EXEC_SG=4` pour qL≥8192 où le
+  baseline est déjà saturé). Voir `docs/v6-nax/v34-forward-mechanisms.md`
+  §"Implications".
+
+- **Hériter des Apple MPP autotune defaults aveuglément** : H. E confirmée
+  empiriquement. Tout nouveau kernel NAX-direct doit explicitement
+  caractériser ses tile-shape defaults pour M5 Max.
+
+Référence implémentation : `csrc/mfa/v6_nax/NAAttentionKernel.cpp`
+`createV34Source()` (lignes 2307-3671) + `csrc/mfa_v6_nax_primitive.cpp`
+`generate_v6_source()` (env knob dispatch).
+
+---
+
 ## 5. Correctness avant tout
 
 Avant TOUTE mesure de timing :
