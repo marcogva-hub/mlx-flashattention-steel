@@ -388,6 +388,29 @@ Si une seule shape fail correctness, **skip cette config**, ne tente pas de la s
 
 ---
 
+## 5.X Pre-tag auto-default audit (Sprint U / v2.36.0+)
+
+Before any PyPI release, CC verifies (in addition to multi-SoT version
+audit per v2.33.x lesson):
+
+- [ ] New code paths that ship validated optimizations are auto-routed
+      through existing mlx-mfa public surfaces (`flash_attention*`,
+      `sparse_attention*`, `conv3d_nax_forward`, etc.)
+- [ ] Auto-on-import hooks register the new optimization if it requires
+      hooking external `mx.*` surfaces (see `mlx_mfa/_auto_hooks.py`)
+- [ ] Env-var opt-in present only for:
+      (a) transitional state (validation pending)
+      (b) escape hatch (e.g., `MFA_DISABLE_AUTO_HOOKS` for benchmarking)
+      (c) A/B comparison knob (e.g., `MFA_LCSA_KERNEL_VERSION` pre-graduation)
+- [ ] Named patchers documented as expert-mode, not primary path
+- [ ] README primary usage path is `import mlx_mfa` + normal MLX usage
+- [ ] Migration documented in CHANGELOG if optimization graduates from
+      opt-in to default
+
+See `docs/RELEASE_PHILOSOPHY.md` for the full principle.
+
+---
+
 ## 6. Scope discipline — pas de re-escalade prématurée
 
 Quatre sessions successives ont eu CC qui a re-escaladé un sprint en "multi-session scope" malgré un mandat explicite d'aller au bout. Internalise :
