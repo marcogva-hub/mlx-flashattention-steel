@@ -348,8 +348,10 @@ References:
 - `docs/methodology/matched-workload-results.md` (REGRESSION verdict)
 - `docs/methodology/matched-workload-diagnostic.md` (root cause + revised path forward)
 - `docs/methodology/matched-workload-decisions.md` (DM1-DM10 design rationale)
-- prior `experiment/methodology-sub1ms-protocol` branch (v2.36.0 matmul protocol artifacts, preserved for archaeology)
-- `experiment/sub1ms-matched-workload` branch (this sprint's harness + raw data)
+- `docs/methodology/matched-workload-inventory.md` (hypothesis + acceptance criteria)
+- `bench/methodology/matched_workload_harness.py` + `analysis.py` (this sprint)
+- `docs/methodology/matched-workload-{data,analysis}.json` + `runlog-M{1,2,3}.txt` (raw bench)
+- prior `experiment/methodology-sub1ms-protocol` branch (v2.36.0 matmul protocol artifacts, preserved for archaeology — not merged to master)
 
 ---
 
