@@ -804,18 +804,22 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& block_mask,
          int block_tile,
          bool causal,
-         float scale) {
+         float scale,
+         const std::string& kernel_version) {
         return mlx_mfa::sparse_attention_forward(
-            Q, K, V, block_mask, block_tile, causal, scale);
+            Q, K, V, block_mask, block_tile, causal, scale, kernel_version);
       },
       nb::arg("Q"), nb::arg("K"), nb::arg("V"),
       nb::arg("block_mask"),
       nb::arg("block_tile") = 32,
       nb::arg("causal") = false,
       nb::arg("scale") = 0.0f,
+      nb::arg("kernel_version") = std::string(""),
       "Sprint B block-sparse attention forward (NAX). "
       "Q/K/V: (B, H, L, D) f16. block_mask: (NQ, NK) bool. "
-      "Phase 1.1: D in {64, 128}, BT in {16, 32}, mask 2-D, causal=false.");
+      "Phase 1.1: D in {64, 128}, BT in {16, 32}, mask 2-D, causal=false. "
+      "v2.36.1: kernel_version param overrides MFA_LCSA_KERNEL_VERSION env "
+      "(thread-safe alternative for Python-side shape-aware decide_auto_version).");
 
   // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__
   // (was hardcoded "2.22.0", 11 versions stale). See release-flow-validation-report.md §C.3.
