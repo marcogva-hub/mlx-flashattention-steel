@@ -486,3 +486,234 @@ proceed with Phase 1.0 → 1.5 arc.
 > Sprint C precedent applies throughout. v2.33.1 cached-SDPA path
 > remains as fallback (§11). Phase 1.5 ship-default likely given Phase 0
 > projected 3-15× speedup at FlashVSR-typical density.
+
+---
+
+## §13 — Architecture v2: single-kernel cooperative-tensor inner-GEMM
+
+**Status**: design locked 2026-05-12 (Sprint B follow-on rewrite).
+**Branch**: `feat/lcsa-nax-coop-rewrite` (composed from `experiment/lcsa-nax-coop-*`).
+**Reference pattern**: `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2307-3671`
+(`createV34Source()` — V34 forward, 1364 LOC of cooperative-tensor MSL
+source-gen).
+
+### §13.0 Foundation correction — what v2.34.0 V1 actually is
+
+The Sprint B follow-on prompt frames V1 as "per-block matmul2d dispatch".
+**The actually-shipped v2.34.0 V1 is a per-thread-Q-row FA-2 kernel with
+register-level math, NO matmul2d**. This is documented in:
+
+- `csrc/mfa_sparse_attention.cpp:3` — "Phase 1.1: per-thread-Q-row FA-2
+  kernel with block-mask skip"
+- `docs/lcsa-nax/lcsa-nax-phase1_3-results.md` — "Why per-thread FA-2 is
+  uncompetitive"
+- Phase 1.0 design §2-4 — Option α chose the per-thread approach for
+  first-iteration simplicity; Phase 1.3 BT sweep documented its
+  performance ceiling.
+
+The proposed V2 architectural shift is therefore even bigger than the
+prompt implies: introducing **cooperative-tensor inner-GEMMs for the
+first time on the sparse path**, not replacing one matmul2d pattern with
+another. The performance ceiling unlocked is correspondingly larger
+(V1's per-thread arithmetic intensity is fundamentally bounded by single-
+thread issue rate; cooperative tensors distribute MMA work across 32
+threads per simdgroup).
+
+This correction doesn't change the rewrite's value proposition — it
+*strengthens* it.
+
+### §13.1 Motivation
+
+Per §4-validated rebench (`lcsa-nax-rebench-results.md`), V1 shows two
+structural limitations:
+
+1. **Per-thread arithmetic intensity dominates wall-clock at moderate
+   density**: V1's per-thread Q-row FA-2 issues ~1 muladd per cycle per
+   thread. At density 0.03-0.20, kept K-tiles produce enough compute that
+   matmul2d-style throughput (~32 muladds per cycle per simdgroup via
+   cooperative-tensor MMA) would shift the break-even point well into
+   FlashVSR/SparkVSR territory (typical density 0.07-0.24).
+
+2. **First-touch cache state at S1 produces 21% A/B/A drift on niche-win
+   shape**: V1's per-thread mask scan + register-loaded q_vec + per-K-
+   tile per-thread dot products mean the first NAX-block in a fresh
+   process pays cold L2 + register file warmup cost amortized poorly
+   across only that one block. With single-kernel iteration of N-many
+   non-empty blocks, first-block warmup is amortized across N blocks
+   within the same kernel launch.
+
+V2 collapses both issues with one architectural change.
+
+### §13.2 Algorithm
+
+For each forward call:
+
+1. **Host-side (Primitive `eval_gpu`)**: build a compact non-empty-block
+   index list from `block_mask` — N_nonempty × 2 entries of `(qi, ki)`
+   int32 block indices, sorted by `(qi, ki)` lexically for cache-friendly
+   in-kernel access. Allocated as MLX device array.
+2. **Single kernel launch** per (B, Hq) — grid `(SG_count_per_Q, Hq, B)`,
+   each simdgroup handles a slice of Q rows.
+3. **Inside kernel** (per SG `s`):
+   - Per-SG Q-row range: `[s * kU, (s + 1) * kU)` where `kU = 16` per
+     V34 forward.
+   - Outer loop: iterate the non-empty-block index list (or a per-SG
+     sub-range thereof, see §13.3).
+   - For each non-empty `(qi, ki)` pair whose `qi` overlaps this SG's
+     Q-row range:
+     - Load `Qtile` (BQ × BD) at qi-offset — already in registers from
+       the previous iteration if same qi (cache hit on Q).
+     - Load `Ktile` (BK × BD) at ki-offset.
+     - `NAXFrag::mma` Q @ K^T → `Stile` (BQ × BK cooperative tensor at
+       `execution_simdgroups<1>`).
+     - Online softmax row update: `m_new = max(m, max_row(Stile))`,
+       `factor = exp(m - m_new)`, `Otile *= factor`, `m = m_new`.
+     - Load `Vtile` (BK × BD).
+     - `NAXFrag::mma` P @ V → accumulate into `Otile`.
+   - After all assigned blocks: `Otile /= l_final`, store to output.
+
+This is **structurally identical to V34 forward's "iterate K blocks,
+per-SG row partition" pattern**, except the K-block iteration is replaced
+by non-empty-block-index iteration (which inherently subsumes the
+block-mask skip).
+
+### §13.3 Per-SG block partitioning (DC1)
+
+**Decision DC1**: Q-row block-row partitioning. SG `s` handles
+`Q[s * kU : (s + 1) * kU, :]`. Each SG iterates only those non-empty
+`(qi, ki)` blocks where `qi == s` (or `qi` overlaps SG `s`'s row range
+for cases where `BQ > kU`).
+
+Two refinement options:
+- **DC1a**: SG `s` scans the full index list and skips entries whose `qi`
+  isn't assigned to it. O(N_nonempty) scan per SG, branch-predictor
+  friendly if list is qi-sorted.
+- **DC1b**: Host-side builds per-SG sub-ranges of the index list
+  (qi-bucketed). Each SG reads only its sub-range. O(N_nonempty / SG_count)
+  per SG.
+
+**Recommendation**: DC1a for simplicity; DC1b if perf sweep shows
+list-iteration dominates (unlikely given N_nonempty is typically < 256
+for FlashVSR shapes).
+
+Different SGs operate on disjoint Q-row sets → no cross-SG cooperative-
+tensor state ever needed → matches V34 forward's clean per-SG isolation.
+
+### §13.4 Non-empty-block index list (DC2)
+
+**Decision DC2**: host-side scan of `block_mask` to produce a compact
+`(N_nonempty, 2)` int32 device array of `(qi, ki)` pairs.
+
+Cost analysis:
+- N_blocks for FlashVSR-typical shapes: 16-1024 (BT=16, qL=kL ∈ {4096,
+  8192, 16384}).
+- Host-side scan: O(N_blocks) ~ 1-10 µs per call. Negligible.
+- Alternative (in-kernel scan): O(N_blocks × per-block-check-cost) every
+  kernel run, plus per-thread divergent branches. Worse on both axes.
+
+**Storage layout**: `(N_nonempty, 2)` int32 row-major, with column 0 =
+qi, column 1 = ki. Sorted by (qi, ki). This is the SAME pattern Sprint C
+used for chunk-table layouts and matches NAX cache-line expectations.
+
+### §13.5 NAXFrag::mma inner-GEMM tile shape (DC3)
+
+**Decision DC3**: match V34 forward defaults per `head_dim`:
+
+| D | BQ | BK | WM | TQ | TK | TD |
+|---|---:|---:|---:|---:|---:|---:|
+| 64  | 32 | 32 | 2 | 1 | 2 | 4 |
+| 128 | 64 | 32 | 4 | 1 | 2 | 8 |
+
+These were Sprint A V34 forward Sprint 4 optimized for M5 Max. Same
+hardware applies to the sparse rewrite. Sprint B Phase 1.3 BT sweep
+chose BT=16 for V1's per-thread kernel due to register pressure; V2
+moves register pressure to cooperative-tensor distribution so BT=BQ can
+expand (back to 32 or 64). This is a property of the cooperative-tensor
+shift, NOT a separate Phase 1.3-style tuning.
+
+### §13.6 Backward-compatibility and dispatch (DC4)
+
+**Decision DC4**: V1 source-gen stays unchanged in `sparse_kernel_source`
+(`csrc/mfa_sparse_attention.cpp`). V2 lives in a new function
+`sparse_kernel_source_v2` (same file). The Primitive `eval_gpu` selects
+V1 or V2 via:
+
+| `MFA_LCSA_KERNEL_VERSION` env | Behavior |
+|---|---|
+| `v2` | Force V2 |
+| `v1` | Force V1 (fallback safety) |
+| unset / `auto` (default) | Heuristic: V2 if shape qualifies; V1 otherwise |
+
+The heuristic is initially conservative (V1 default until Section D
+perf sweep validates V2). After SHIP verdict, the heuristic flips to
+V2-as-default with V1 only for fallback (e.g., D ∉ {64, 128}, asymmetric
+edge cases V2 doesn't yet handle).
+
+This preserves v2.34.0 dispatch behavior as fallback while the new path
+stabilizes. Multi-environment overrides ensure debuggability.
+
+### §13.7 Cache key extension (DC5)
+
+**Decision DC5**: extend `SparseAttnKey` with a kernel-version field
+(or use the existing `Kind` enum to discriminate). Two compiled
+pipelines coexist in the cache per `(B, Hq, Hk, qL, kL, D, BT, dtype,
+mask_ndim, causal)` tuple — one for V1, one for V2.
+
+```cpp
+struct SparseAttnKey {
+  enum class Kind {
+    SparseAttn3D_V1,   // existing per-thread FA-2
+    SparseAttn3D_V2,   // new cooperative-tensor inner-GEMM
+    // Reserved: SparseAttnVarlen, SparseAttn1x1x1Fast, ...
+  };
+  Kind kind;
+  // ... rest unchanged
+};
+```
+
+Memory: 2 × max pipeline-state size (~ 100 KB worst case). Negligible.
+
+### §13.8 Risks
+
+| Risk | Likelihood | Mitigation |
+|---|:---:|---|
+| Cooperative-tensor MSL compile errors are notoriously cryptic | High | Lift V34's exact pattern; modify only outer loop; iterate small. Phase B build-iterate loop budget: 1-2h. |
+| V2 produces wrong output (silent FP corruption) at non-empty-block boundaries | Medium | V1↔V2 equivalence test on all 7 shapes RMSE < 1e-3 before any perf claim. |
+| V2 perf at niche density 0.01 is LOWER than V1 (single-block, no list iteration benefit) | Medium | Auto dispatch keeps V1 for niche; V2 only ships if it wins at moderate density (0.03+) where V1 lost. |
+| Cache-warmup BOUNDARY persists in V2 (S1 drift unchanged) | Low | Even partial fix at the niche shape + density envelope extension justifies SHIP; document residual variance. |
+| Non-empty-block index-list overhead dominates at very-sparse density | Low | N_nonempty ≪ N_blocks at density 0.01 → list is tiny → overhead minimal. |
+| BT=32/64 register pressure in V2 differs from V1 in unexpected way | Medium | Cooperative tensors distribute register pressure across SG → typically lower per-thread than V1; sanity-check via build success + correctness. |
+
+### §13.9 Sub-phases (Section A → E breakdown)
+
+| Sub-phase | Scope | Expected duration |
+|---|---|---|
+| A | Design doc §13 + decisions DC1-DC5 + inventory | ~1h |
+| B | Implementation: Primitive dispatch + cache key + index-list builder + V2 source-gen kernel body + build-iterate | ~3-6h (multi-session) |
+| C | Correctness: V1↔V2 equivalence + three-axis V2 | ~45min |
+| D | §4-strict 3-session perf sweep + density-sweep (0.01→0.50) + ship/shelve verdict | ~2h (mostly bench wall-clock) |
+| E (cond.) | v2.35.0 release flow if SHIP | ~30min |
+| **Total** | | **~7-10h** across 2-3 sessions |
+
+### §13.10 Relation to Sprint A V34 forward
+
+V2 architecturally IS the sparse analogue of V34 forward. The single
+substantive difference is the outer-loop iteration domain:
+
+- V34 forward: `for k_block in 0..nK_blocks` (every K-block visited)
+- V2 sparse: `for nb in 0..N_nonempty: (qi, ki) = index_list[nb]; ...`
+  (only non-empty blocks visited, retrieved from compact index)
+
+Everything else — Apple helpers, NAXFrag/NAXTile, operator structs,
+per-SG row partitioning, softmax accumulation, output normalization —
+is verbatim lift from V34. This minimizes implementation risk and
+maximizes leverage on Sprint A's proven validation.
+
+### §13.11 Shelve trigger (if V2 doesn't earn ship)
+
+If Section D verdict is SHELVE (V2 ships on ≤ 1 shape OR pervasive
+regressions): V1 remains the production path. V2 source-gen + builder
++ dispatch hook stay in the codebase as research-direct (env-overrideable
+via `MFA_LCSA_KERNEL_VERSION=v2`) — no public API change, no version
+bump. Document in `lcsa-nax-coop-rewrite-results.md` why the architectural
+hypothesis didn't transfer.
