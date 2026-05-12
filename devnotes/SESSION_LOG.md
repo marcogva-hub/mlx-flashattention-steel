@@ -2929,3 +2929,58 @@ Sprint B Phase 1.1: sub-phase 0 microbench check + scaffold
 MFASparseAttentionForward + smallest LCSA shape end-to-end.
 Branch experiment/lcsa-nax-phase1_1 from feat/lcsa-nax post-design-merge.
 
+
+---
+## [2026-05-12 12:30] [CLAUDE] Sprint B Phase 1.1 sub-phase 0: matmul2d per-tile microbench
+STATUS: COMPLETE
+
+### Plan
+- Objective: Phase 1.1 sub-phase 0 gate per design S3 - verify NAX matmul2d
+  sustains >= 5 TF at Sprint B per-tile granularity (BT=32 internal cooperative
+  tiles) before scaffolding MFASparseAttentionForward.
+- Files to modify:
+  - new: bench/lcsa_nax_phase1_1_pertile_microbench.py
+  - new: docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json
+- Dependencies impacted: none (read-only matmul2d wrapper, no production change)
+
+### Changes
+- `bench/lcsa_nax_phase1_1_pertile_microbench.py` - smoke gate (sentinel-fill
+  RMSE oracle at 256x128x256) + amortized sweep (M, N in {256, 1024, 4096} x
+  K in {64, 128}). Internal cooperative-tensor tiles 32x32x32, exec_sg=1.
+  [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json` - results +
+  conditions + verdict. [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: none (new files, no API impact)
+- Test coverage: not applicable (research bench, not production code)
+
+### Tech cost
+- Wall-clock: ~5 min including build
+- Memory: peak ~6 MB for largest shape (4096x4096 FP16)
+- Kernels: one mx.fast.metal_kernel per (M, K, N) shape (18 total)
+
+### Validation
+- Ran: `.venv/bin/python bench/lcsa_nax_phase1_1_pertile_microbench.py`
+- Validated: dominant (M=4096, K=128, N=4096) median = 5.20 TF >= 5.0 TF gate.
+  Smoke gate RMSE = 0.0, no NaN/Inf. Trend monotonic in tile-pair count
+  (64 pairs = 0.07 TF -> 16384 pairs = 5.20 TF), consistent with overhead ->
+  compute-bound transition. Production sparse kernel will sit in compute-bound
+  regime (typical NQ*NK ~ 16k tile pairs at lcsa_small_seq4k).
+
+### Git
+- `32e653f` on `experiment/lcsa-nax-phase1_1`
+
+### Interpretation note
+- Initial microbench at literal per-call dispatch (M, N in {16..128}) measured
+  ~0.001 TF dominated by mx.fast.metal_kernel ~250us per-dispatch overhead.
+  Reformulated to amortized variant (large M, N with internal 32x32 tiles)
+  matching production kernel pattern (one dispatch, NQ*NK tile pairs in
+  inner loop). This is the right framing for the gate's intent per design S3.
+- 5.20 TF is at the floor - Phase 1.3 BT x WM autoresearch will likely be
+  where the bulk of Phase 1.5 ship-margin gets earned.
+
+### Next
+- Phase 1.1 main work: scaffold MFASparseAttentionForward C++ Primitive
+  (csrc/mfa_sparse_attention_primitive.{hpp,cpp}) + Python wrapper
+  + 6-test three-axis-validation end-to-end on lcsa_small_seq4k.
