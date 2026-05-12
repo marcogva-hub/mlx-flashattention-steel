@@ -2216,6 +2216,30 @@ def flash_attention_sparse(
             f"got shape {list(block_mask.shape)}"
         )
 
+    # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
+    # BQ/BK validator. If the mask is symmetric (BT-block), we route through
+    # sparse_attention_dispatch which has its own validator. Otherwise we
+    # fall through to STEEL's asymmetric validator below.
+    info = get_device_info()
+    if info.get("is_m5_plus"):
+        import os as _os
+        _disable_auto = _os.environ.get("MFA_DISABLE_AUTO_HOOKS") == "1"
+        if not _disable_auto and block_mask.ndim >= 2:
+            nq = block_mask.shape[-2]
+            nk = block_mask.shape[-1]
+            if nq > 0 and nk > 0 and N % nq == 0 and S % nk == 0:
+                bt_q = N // nq
+                bt_k = S // nk
+                if bt_q == bt_k and bt_q in (16, 32, 64):
+                    # Symmetric mask → auto-route to lcsa_nax dispatcher
+                    from mlx_mfa.lcsa_nax import sparse_attention_dispatch
+                    return sparse_attention_dispatch(
+                        q, k, v, block_mask,
+                        block_tile=bt_q,
+                        scale=scale,
+                        causal=causal,
+                    )
+
     BQ, BK = _steel_block_config(D)
     NQ_expected = (N + BQ - 1) // BQ
     NK_expected = (S + BK - 1) // BK
@@ -2250,10 +2274,10 @@ def flash_attention_sparse(
 
     # M5+ workaround: the V1 STEEL sparse kernel mis-reads `(long)p->NK`
     # under the Metal 4 compiler shipped with macOS 26 + M5 hardware,
-    # producing incorrect mask offsets (qb * NK/2 instead of qb * NK).
-    # See docs/v6-nax/sparse-bug-investigation.md for full root-cause notes.
-    # Until a kernel-level fix lands, route sparse to an SDPA-based
-    # fallback that preserves per-head mask shape for correctness.
+    # producing incorrect mask offsets. See docs/v6-nax/sparse-bug-investigation.md.
+    # Sprint U (v2.36.0): symmetric-BT masks auto-route earlier (above).
+    # Asymmetric STEEL-style masks (BQ=32, BK=16) and MFA_DISABLE_AUTO_HOOKS=1
+    # paths fall through to this SDPA fallback (the v2.35.0 behavior).
     info = get_device_info()
     if info.get("is_m5_plus"):
         return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)

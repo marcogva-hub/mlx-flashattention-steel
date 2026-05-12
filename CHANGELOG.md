@@ -4,6 +4,83 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.36.0] — 2026-05-12 — Sprint U: Unification main + auto-default principle
+
+### Changed (transparent for users)
+
+- **Auto-on-import**: `import mlx_mfa` now installs optimization hooks at
+  import time. Eligible `mx.conv_general` calls on M5+ (3×3×3 / 1×1×1
+  kernel, FP16/BF16, stride=1, dilation=1, groups=1, !flip) auto-route
+  to `conv3d_nax_forward` — ~1.6× speedup vs vanilla MLX without any
+  user code change. Pre-v2.36.0 users had to call `patch_seedvr2_vae(model)`
+  explicitly; that patcher remains available as expert API for verbose
+  logging and per-module control.
+
+- **`flash_attention_sparse` on M5+ auto-routes** to
+  `mlx_mfa.lcsa_nax.sparse_attention_dispatch` when the mask shape is
+  compatible (symmetric BT ∈ {16, 32, 64}). V1 NAX kernel is the
+  dispatcher's default for density < 0.02; SDPA + float bias for moderate
+  density. Asymmetric STEEL-shape masks (BQ=32, BK=16) and
+  `MFA_DISABLE_AUTO_HOOKS=1` paths fall through to the pre-Sprint-U
+  `_sparse_fallback_sdpa_perhead` behavior.
+
+### Added
+
+- `mlx_mfa.enable()` + `mlx_mfa.disable()` + `mlx_mfa.hooks_status()`
+  public API for explicit hook control (benchmarking / debugging).
+- `MFA_DISABLE_AUTO_HOOKS=1` env var prevents auto-hook install at import.
+- `mlx_mfa/_auto_hooks.py` (222 LOC) — auto-hook installation module.
+- `docs/RELEASE_PHILOSOPHY.md` (207 LOC) — canonical auto-default principle.
+- `CLAUDE_V6_NAX.md` §5.X — pre-tag auto-default audit checklist.
+- `CLAUDE.md` auto-default principle reminder near the top.
+- `tests/test_sprint_u_sparse_routing.py` (4 tests) — Section B validation.
+- `tests/test_sprint_u_auto_hooks.py` (9 tests) — Section C validation.
+
+### Unchanged (backward compatibility)
+
+- All existing public API signatures preserved.
+- `MFA_LCSA_KERNEL_VERSION=v2` remains opt-in (sub-1ms methodology
+  validation pending per `docs/methodology/sub1ms-protocol-diagnostic.md`).
+  Once methodology resolved, V2 graduates to default via `decide_auto_version()`
+  flip — zero user code change.
+- All named patchers (`patch_seedvr2_vae`, `patch_flashvsr_lcsa`,
+  `patch_mlx_lm`) remain available as expert API.
+- v2.35.0 production code preserved (V2 kernel + STEEL V1 sparse + Conv3D NAX
+  + flash_attention dispatch all unchanged).
+
+### Tests
+
+Joint LCSA + integration + Sprint U test suite: **65/65 pass**:
+- 6 Phase 1.1 + 12 Phase 1.2 + 6 Phase 1.4 dispatcher (v2.34.0 surface)
+- 19 Phase B V2 coop-rewrite (v2.35.0 surface)
+- 9 FlashVSR LCSA integration (v2.34.0 Section H.2 surface)
+- 4 Section B sparse auto-routing (this release)
+- 9 Section C auto-hook lifecycle (this release)
+
+### Migration notes for v2.35.x users upgrading
+
+1. If you were calling `patch_seedvr2_vae(model)`: your code continues to
+   work. Optionally remove the call — `import mlx_mfa` now handles it.
+2. If you were calling `flash_attention_sparse(...)` on M5+: expect a perf
+   improvement at very-sparse density when your mask is symmetric BT
+   (NAX-aware dispatcher now active). No code change required.
+3. If you depend on vanilla MLX behavior for any reason: set
+   `MFA_DISABLE_AUTO_HOOKS=1` or call `mlx_mfa.disable()` after import.
+4. If you want to verify whether auto-hooks are active: call
+   `mlx_mfa.hooks_status()`.
+
+### Philosophy (new canonical doc: `docs/RELEASE_PHILOSOPHY.md`)
+
+Every PyPI release of mlx-mfa must be fully functional transparently for
+users. Validated optimizations activate by default without requiring user
+code changes. Opt-in mechanisms (env vars, named patchers) are transitional
+(validation pending) or expert-mode (granular control), never the primary
+documented user path.
+
+Three usage levels: Default (auto-on-import, 90% of users) / Explicit API
+(advanced users) / Expert mode (research/debug). See the doc for the full
+principle, anti-patterns, and pre-tag audit checklist.
+
 ## [2.35.0] — 2026-05-12 — Sprint B coop-rewrite (V2 cooperative-tensor SHIP_OPT_IN)
 
 ### Added

@@ -5,6 +5,28 @@ NEVER delete, move, or `rm -rf` the repository directory.
 ALWAYS `git push origin master` before starting any destructive operation.
 NEVER run `rm -rf` on any path containing the repo root.
 
+## Auto-default principle (Sprint U, 2026-05-12)
+
+Every PyPI release of `mlx-mfa` must be **fully functional transparently**
+for users. When implementing a new optimization:
+
+1. **Default path**: integrate auto-routing through existing mlx-mfa
+   public surfaces (`flash_attention*`, `sparse_attention*`,
+   `conv3d_nax_forward`, etc.) OR register a hook in
+   `mlx_mfa/_auto_hooks.py::install_hooks()` if external `mx.*` surface
+   needs patching.
+2. **Validation pending**: if the optimization can't ship as default
+   yet (e.g., methodology issues, perf claim unconfirmed), introduce
+   an env var (`MFA_*`) as transitional opt-in. Document the path to
+   default in CHANGELOG.
+3. **Granular control**: if the optimization needs per-module decisions,
+   ship a named patcher (`patch_<feature>`) as expert API. Document but
+   don't make it primary.
+
+Pre-tag audit checklist in `CLAUDE_V6_NAX.md` §5.X enforces this. See
+`docs/RELEASE_PHILOSOPHY.md` for the canonical statement and three
+usage levels (default / explicit / expert).
+
 ## Python environment
 Always use the project venv: `~/code/mlx-mfa-v2/.venv`
 
