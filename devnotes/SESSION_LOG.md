@@ -3378,3 +3378,102 @@ STATUS: COMPLETE
 - Merge experiment/lcsa-nax-rebench-section4-strict → master (no tag).
 - Per memory #30 roadmap: V34 forward focused investigation is the
   next prompt's target.
+
+---
+## [2026-05-12 10:30] [CLAUDE] Sprint B coop-rewrite — Section A + B-scaffold
+STATUS: HANDOFF_READY
+
+### Plan
+- Sprint B follow-on coop-rewrite per architectural rewrite prompt.
+- This session executes: Section A (design + decisions + inventory) +
+  Section B-scaffold (Primitive dispatch + V2 source-gen stub).
+- Next session executes: Section B-kernel-body (V34 cooperative-tensor
+  pattern lift, ~3-6h focused) + Section C-E.
+
+### Foundation correction (logged in design §13.0 + decisions DC0)
+The follow-on prompt frames V1 as "per-block matmul2d dispatch". Actually-
+shipped v2.34.0 V1 is a per-thread-Q-row FA-2 kernel with register math,
+NO matmul2d. Corrected in design doc + decisions log; rewrite plan stands
+unchanged (its value proposition is in fact STRENGTHENED by the correction —
+V2 introduces cooperative-tensor inner-GEMMs for the first time on the
+sparse path, not just refining an existing matmul2d pattern).
+
+### Changes
+- `docs/lcsa-nax/lcsa-nax-design.md:454-719` - §13 v2 architecture doc
+  (282 LOC, 11 subsections) [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-coop-rewrite-decisions.md` - DC0-DC8 [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-coop-rewrite-inventory.md` - 5-deliverables-doc
+  inventory + 7-shape Section D plan [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:36-46` - includes (<cstdlib>, <cstring>) [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:160-178` - sparse_kernel_source_v2() stub
+  + read_kernel_version_env() helper [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:280-308` - dispatch path V1/V2 selection
+  + cache-name discrimination [HIGH][VERIFIED]
+
+### Dependency & regression check
+- 33/33 LCSA + integration tests pass post-scaffold (V1 baseline preserved).
+- Manual V1↔V2 stub swap: bit-exact output (max abs err 0.0, rmse 0.0).
+- V1 path 100% unchanged. V2 stub delegates to V1.
+
+### Tech cost
+- Compile: ~25s incremental.
+- Memory: zero new persistent allocation (cache holds one extra compiled
+  pipeline per shape when V2 is requested — same as v2.33.0 cache pattern).
+
+### Validation
+- Ran: `CMAKE_ARGS=... .venv/bin/python -m pip install --no-build-isolation -e .`
+- Ran: `pytest tests/test_lcsa_nax_phase1_1.py tests/test_lcsa_nax_phase1_2.py
+   tests/test_lcsa_nax_phase1_4_dispatcher.py
+   tests/test_flashvsr_lcsa_integration.py -q` -> 33/33 pass
+- Ran: manual V1↔V2 env-swap test on lcsa_small_seq4k @ density 0.1 ->
+  bit-exact identical output.
+
+### Git
+- branch `experiment/lcsa-nax-coop-design` at `2b88a02` (Section A + B-scaffold)
+- pending: merge `experiment/lcsa-nax-coop-design` → `feat/lcsa-nax-coop-rewrite`
+- pending: merge `feat/lcsa-nax-coop-rewrite` → `master` (preserve scaffold
+  visibility for next-session resume; V1 default keeps zero user-facing impact)
+
+### Handoff details
+
+Resume command (next session):
+```bash
+cd /Users/marcomarcelino/code/mlx-mfa-v2
+# Verify state
+git log --oneline -3
+.venv/bin/python -m pytest tests/test_lcsa_nax_phase1_*.py tests/test_flashvsr_lcsa_integration.py -q
+# Should report: 33 passed
+# Read design + decisions
+cat docs/lcsa-nax/lcsa-nax-design.md | sed -n '454,719p'
+cat docs/lcsa-nax/lcsa-nax-coop-rewrite-decisions.md
+# Then implement Section B-kernel-body per §13.10 reference pattern:
+#   csrc/mfa/v6_nax/NAAttentionKernel.cpp:2307-3671 (createV34Source, 1364 LOC)
+#   Modify outer K-block loop -> non-empty-block-index-list iteration
+#   Modify kernel signature -> add nonempty_indices buffer + N_nonempty count
+```
+
+Environment: same .venv, mlx 0.31.2, mlx_mfa 2.34.0+ (pre-version-bump).
+Hardware: M5 Max 128GB, macOS 26.5, iStat performance fan profile.
+
+### Pitfalls (known)
+- Cooperative-tensor MSL compile errors are notoriously cryptic. Lift V34
+  pattern verbatim; modify only the outer loop (the prompt's design §13.10
+  invariant). Test incrementally: scaffold V2 source-gen returning empty
+  kernel first, then add NAXFrag::mma section, then add softmax.
+- Section B-kernel-body needs to add an extra kernel input (`nonempty_indices`)
+  to the metal_kernel(...) call. MLX `fast::metal_kernel` takes input_names
+  list — extend from {"Q","K","V","block_mask"} to {"Q","K","V","block_mask",
+  "nonempty_indices"}. Per Phase 1.2 ABI gotcha: int32 arrays > 4 KB land
+  in `device` address space.
+- Per-SG Q-row partition (DC1a) requires emitting per-SG bounds in MSL.
+  V34 forward source-gen at NAAttentionKernel.cpp:2400-2500 has the SG-id
+  derivation pattern to reuse.
+
+### Suggested next for CODEX (or CLAUDE next session)
+1. Section B-kernel-body kernel implementation
+2. Section C correctness validation (V1↔V2 equivalence + three-axis V2)
+3. Section D §4-strict perf sweep + density sweep + ship/shelve verdict
+4. Section E (cond.) v2.35.0 release flow
+
+### Estimated remaining work
+~7-10h focused work across 1-2 fresh sessions to reach v2.35.0 SHIP.
