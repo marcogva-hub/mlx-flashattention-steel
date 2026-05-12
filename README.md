@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.33.1** — Conv3D NAX SHIP-DEFAULT + sparse attention M5+ fast-fallback. Forward attention on canonical shapes (D∈{64,128}) now routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
+Current version: **2.34.0** — Sprint B narrow-niche Sparse Attention NAX (very-sparse density ≤ 0.01 → 2.45-4.6× speedup via `sparse_attention_dispatch()` density router). Prior ship-defaults preserved: Conv3D NAX (v2.33.0) + sparse M5+ fast-fallback (v2.33.1). Forward attention on canonical shapes (D∈{64,128}) routes to Apple's `steel_attention_nax.h`; mlx-mfa keeps native kernels for niche / non-canonical shapes.
 
 ## Foreword
 

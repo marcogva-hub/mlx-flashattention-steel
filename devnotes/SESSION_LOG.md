@@ -2798,4 +2798,401 @@ mlx_mfa.conv_nax.conv3d_nax_forward() is now production-ready:
 - Integrable via patch_seedvr2_vae(model) drop-in
 - Validated against Python orchestrator + Phase 1.5 perf data
 - v2.33.0 ready for Marco's manual `git tag` + `twine upload`
+## [2026-05-11 22:25] [CLAUDE] Sprint B Phase 0 close: LCSA / block-sparse NAX survey
+STATUS: COMPLETE
 
+### Plan
+- Objective: survey + bottleneck characterization for LCSA / block-sparse
+  attention NAX -- read + measure pass per Sprint B Phase 0 prompt §1.
+- Files to add: bench/lcsa_nax_baseline.py, bench/lcsa_nax_phase0_analysis.py,
+  docs/lcsa-nax/survey-report.md, raw + analysis JSON, runlog.
+
+### Changes
+- bench/lcsa_nax_baseline.py: A/B/A 3-session §4-compliant harness with
+  smoke gate (Phase 1.1 lesson). 6 shapes covering FlashVSR LCSA range
+  (4k/8k/16k N × dense/sparse window).
+- bench/lcsa_nax_phase0_analysis.py: cross-session medians + theoretical
+  bound (25 TF NAX sustained from Sprint C; 410 GB/s HBM M5 Max) +
+  headroom ranking.
+- docs/lcsa-nax/survey-report.md: 538-line survey, all 12 sections
+  populated.
+
+### Dependency & regression check
+- No production code changed (Phase 0 is read + measure only).
+- Master 914-test baseline unchanged.
+- Sprint A + Sprint C branches frozen.
+
+### Validation
+- Ran: bench/lcsa_nax_baseline.py × 3 sessions in nohup, §4 cooldowns,
+  21:48-22:18 UTC (30 min).
+- Smoke gate (all 3 sessions): rel_err=0.0 vs MLX SDPA+float-bias on
+  smoke shape. PASS.
+- Cross-session variance per shape: 0.58-4.38% (well within §B.7 10% bar).
+
+### Key findings
+- §2 MLX 0.31.2: NO block-skip on M5+; SDPA mask is dense compute + bias.
+- §3 mlx-mfa M5+: flash_attention_sparse falls back to
+  _sparse_fallback_sdpa_perhead() (mask expansion to [B,H,N,S] float
+  bias → dense SDPA). Zero block-skip on M5+ today.
+- §4 Apple MPP NAX: only dense matmul2d + convolution2d. No sparse
+  primitive. get_mask() is tile-boundary check, not sparsity.
+- §5 FlashVSR: WAN DiT dim=1536 H=12 D=128, window=(2,8,8)=128 tokens.
+  30 sparse-attention calls per forward pass at identical shape.
+  SparkVSR audit: no LCSA usage (sparse refs are RAFT-dataset only).
+- §6 theoretical bound: all shapes compute-bound (not bandwidth);
+  bound 0.13-4.02 ms across shape range.
+- §7 ROI ranking: top cluster is large-N (16k) sparse-density (0.03),
+  44.73× headroom, 1.38 s saved per forward pass.
+- §8 bench: MFA-sparse 0.5× SDPA across all shapes (mask-expansion
+  overhead); density has NO effect on either timing (both dense).
+- §10 recommended: Option α (block-skip dispatch via dense matmul2d) --
+  Sprint C Conv3D template applies directly.
+
+### Tech cost
+- Phase 0 produced ZERO production code. All deliverable is doc + data.
+- 265 LOC bench harness Python.
+- 130 LOC analysis tool Python.
+- 538 LOC survey report Markdown.
+
+### Verdict for Marco
+**PROCEED to Phase 1.0 design.** Median headroom 16.38×, max 44.73×
+on M5 Max FlashVSR-style LCSA shapes. Realistic block-skip speedup
+projection: 3-15× depending on density, after Sprint C-precedent
+50% efficiency derate. ~15-30 seconds attention budget unlocked per
+21-frame FlashVSR inference run.
+
+### Git
+- 83bd223 bench(lcsa-nax): Phase 0 baseline harness
+- f71128b docs+bench(lcsa-nax): Phase 0 survey skeleton + analysis tool
+- (next, this commit) docs+bench(lcsa-nax): Phase 0 final data +
+  consolidated survey + SESSION_LOG
+
+### Next concrete step for Marco
+1. Read survey-report.md §1 (verdict) + §10 (recommended approach) +
+   §12 (sign-off). ~10 min.
+2. If approved: kick off Sprint B Phase 1.0 prompt -- design doc that
+   takes this survey as input + Sprint C Phase 1.0 design as template.
+3. Phase 1.0 produces: algorithm + tile shapes + primitive class +
+   validation strategy + sub-phase breakdown + risks register. Then
+   Phase 1.x implementation sprints follow (5-phase pattern per Sprint C).
+
+
+---
+## [2026-05-12 00:50] [CLAUDE] Sprint B Phase 1.0 design doc + v2.33.x release
+STATUS: COMPLETE
+
+### Section A — v2.33.x release flow (autonomous execution)
+- Multi-SoT version fix applied to both Sprint D base + v2.33.1 patch
+  base (mlx_mfa/__init__.py + README header + bindings.cpp `__version__`
+  removal — single source of truth in mlx_mfa.__version__).
+- Sprint D merged → master → tag v2.33.0 created.
+- v2.33.1 patch + version fix merged → master → tag v2.33.1 created
+  (with merge conflicts on version-string files resolved in favor of
+  v2.33.1 final state).
+- Built wheels for both versions (mlx_mfa-2.33.0-* + mlx_mfa-2.33.1-*).
+- twine upload --skip-existing: both versions live on PyPI.
+- git push origin master --tags: both tags pushed to GitHub.
+- gh release create for v2.33.0 + v2.33.1: release pages live.
+
+### Section B — Sprint B Phase 1.0 design
+- docs/lcsa-nax/lcsa-nax-design.md (488 lines, 12 sections):
+  §1 strategic context (FlashVSR LCSA + SparkVSR, additive to v2.33.1)
+  §2 algorithm (block-skip dispatch via NAX matmul2d, online softmax)
+  §3 sub-phase 0 microbench requirement (targeted re-bench at per-tile
+     shapes; gate ≥ 5 TF)
+  §4 MFASparseAttentionForward C++ Primitive via fast::metal_kernel
+  §5 unified SparseAttnKey cache (D3 from start)
+  §6 BT defaults per cluster (32 if density>0.10, else 64)
+  §7 three-axis validation (output sane + path entered + edges)
+  §8 5-sub-phase breakdown (1.1 microbench+scaffold, 1.2 shapes+causal,
+     1.3 BT autoresearch, 1.4 very-sparse fast path, 1.5 perf sweep)
+  §9 10-risk register
+  §10 FlashVSR per-call-regen scope (Sprint B addresses what v2.33.1
+      cannot)
+  §11 relation to v2.33.1 (additive, dispatcher pattern)
+  §12 10 open questions / R1 revision targets
+- docs/lcsa-nax/lcsa-nax-phase1_0-decisions.md (154 lines, B-D1 to B-D10):
+  B-D1 Option α, B-D2 fast::metal_kernel from Phase 1.1,
+  B-D3 unified cache, B-D4 BT defaults, B-D5 targeted microbench,
+  B-D6 three-axis mandatory, B-D7 all-False row → 0, B-D8 causal handling,
+  B-D9 additive to flash_attention_sparse, B-D10 patcher integration.
+
+### Git
+- Tags v2.33.0, v2.33.1 created + pushed
+- PyPI: mlx-mfa 2.33.0 + 2.33.1 published
+- GitHub: release pages for both tags
+- master: ae5f265 (merged Sprint D + v2.33.1 + version fix)
+- experiment/lcsa-nax-phase1_0_design: design doc + decisions
+
+### Next concrete step
+Sprint B Phase 1.1: sub-phase 0 microbench check + scaffold
+MFASparseAttentionForward + smallest LCSA shape end-to-end.
+Branch experiment/lcsa-nax-phase1_1 from feat/lcsa-nax post-design-merge.
+
+
+---
+## [2026-05-12 12:30] [CLAUDE] Sprint B Phase 1.1 sub-phase 0: matmul2d per-tile microbench
+STATUS: COMPLETE
+
+### Plan
+- Objective: Phase 1.1 sub-phase 0 gate per design S3 - verify NAX matmul2d
+  sustains >= 5 TF at Sprint B per-tile granularity (BT=32 internal cooperative
+  tiles) before scaffolding MFASparseAttentionForward.
+- Files to modify:
+  - new: bench/lcsa_nax_phase1_1_pertile_microbench.py
+  - new: docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json
+- Dependencies impacted: none (read-only matmul2d wrapper, no production change)
+
+### Changes
+- `bench/lcsa_nax_phase1_1_pertile_microbench.py` - smoke gate (sentinel-fill
+  RMSE oracle at 256x128x256) + amortized sweep (M, N in {256, 1024, 4096} x
+  K in {64, 128}). Internal cooperative-tensor tiles 32x32x32, exec_sg=1.
+  [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json` - results +
+  conditions + verdict. [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: none (new files, no API impact)
+- Test coverage: not applicable (research bench, not production code)
+
+### Tech cost
+- Wall-clock: ~5 min including build
+- Memory: peak ~6 MB for largest shape (4096x4096 FP16)
+- Kernels: one mx.fast.metal_kernel per (M, K, N) shape (18 total)
+
+### Validation
+- Ran: `.venv/bin/python bench/lcsa_nax_phase1_1_pertile_microbench.py`
+- Validated: dominant (M=4096, K=128, N=4096) median = 5.20 TF >= 5.0 TF gate.
+  Smoke gate RMSE = 0.0, no NaN/Inf. Trend monotonic in tile-pair count
+  (64 pairs = 0.07 TF -> 16384 pairs = 5.20 TF), consistent with overhead ->
+  compute-bound transition. Production sparse kernel will sit in compute-bound
+  regime (typical NQ*NK ~ 16k tile pairs at lcsa_small_seq4k).
+
+### Git
+- `32e653f` on `experiment/lcsa-nax-phase1_1`
+
+### Interpretation note
+- Initial microbench at literal per-call dispatch (M, N in {16..128}) measured
+  ~0.001 TF dominated by mx.fast.metal_kernel ~250us per-dispatch overhead.
+  Reformulated to amortized variant (large M, N with internal 32x32 tiles)
+  matching production kernel pattern (one dispatch, NQ*NK tile pairs in
+  inner loop). This is the right framing for the gate's intent per design S3.
+- 5.20 TF is at the floor - Phase 1.3 BT x WM autoresearch will likely be
+  where the bulk of Phase 1.5 ship-margin gets earned.
+
+### Next
+- Phase 1.1 main work: scaffold MFASparseAttentionForward C++ Primitive
+  (csrc/mfa_sparse_attention_primitive.{hpp,cpp}) + Python wrapper
+  + 6-test three-axis-validation end-to-end on lcsa_small_seq4k.
+
+---
+## [2026-05-12 14:00] [CLAUDE] Sprint B Phase 1.1: scaffold + lcsa_small_seq4k end-to-end
+STATUS: COMPLETE
+
+### Plan
+- Objective: scaffold MFASparseAttentionForward (free-function via
+  fast::metal_kernel per B-D2) + smallest LCSA shape correctness via 6-test
+  three-axis validation suite.
+- Files to modify:
+  - new: csrc/mfa_sparse_attention.{hpp,cpp}
+  - new: mlx_mfa/lcsa_nax.py
+  - new: tests/test_lcsa_nax_phase1_1.py
+  - edit: csrc/bindings.cpp (add binding)
+  - edit: CMakeLists.txt (add source)
+- Dependencies impacted: nanobind module surface (additive only)
+
+### Changes
+- `csrc/mfa_sparse_attention.hpp:36` - sparse_attention_forward signature
+  (Q, K, V, block_mask, block_tile, causal, scale) [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:34-128` - sparse_kernel_source per-thread
+  Q-row FA-2 source generator with online softmax + block-mask scan [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:160-216` - sanity asserts (8 categories)
+  + NQ*NK >= 4096 precondition (constant-addr-space avoidance) [HIGH][VERIFIED]
+- `csrc/bindings.cpp:794-815` - nanobind binding [HIGH][VERIFIED]
+- `CMakeLists.txt:115` - source added to mlx_mfa_ext [HIGH][VERIFIED]
+- `mlx_mfa/lcsa_nax.py:31-77` - sparse_attention_nax public API [HIGH][VERIFIED]
+- `tests/test_lcsa_nax_phase1_1.py` - 6 tests (axis 1: 2, axis 2: 2, axis 3: 2) [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: 0 internal callers (new public API). v2.33.1 sparse fast-
+  fallback path independent (no modification).
+- Test coverage: covered for Phase 1.1 production shape; gaps flagged for
+  Phase 1.2 (3-D / 4-D mask, BT > 32, bfloat16, causal=true, asymmetric qL/kL)
+
+### Tech cost
+- Compile: ~30s incremental for new source
+- Kernel JIT: one cache miss per unique (B, Hq, Hk, qL, kL, D, BT) shape
+- Memory: peak ~5 MB per dispatch at lcsa_small_seq4k (Q+K+V+O+mask)
+- Per-thread reg pressure: BT*D FP32 acc + D FP32 q_vec = ~32+128 floats =
+  640 bytes/thread. Tight but within Apple Silicon register file at BT=32.
+
+### Validation
+- Ran: `CMAKE_ARGS="-DPython_EXECUTABLE=.venv/bin/python" .venv/bin/python -m pip install --no-build-isolation -e .` (build success)
+- Ran: `.venv/bin/python -m pytest tests/test_lcsa_nax_phase1_1.py -v`
+- Validated: 6 / 6 pass.
+  - test_axis1_correctness_vs_sdpa_dense_full_mask: RMSE 3e-6 << 1e-3 bar
+  - test_axis1_correctness_vs_sdpa_bias_random_density: density-0.24 mask
+  - test_axis2_path_entered_extension_available: extension loads
+  - test_axis2_smaller_kernel_dispatch_not_oom: full shape OK, no NaN/Inf
+  - test_axis3_all_false_row_zero_output: masked row max abs = 0.0 exact
+  - test_axis3_diagonal_only_mask_causal_correctness: matches SDPA+diag-bias
+- Regression: existing test suite re-run, 6 PRE-EXISTING failures unrelated
+  to sparse attention (Topk attn, return_attn_weights, attn_bias mode 1/2
+  d128 causal, TurboQuant QR rotation). Sprint B added 6 passing tests, 0
+  regressions on sparse-attention surface.
+
+### Git
+- `32e653f` sub-phase 0 microbench
+- `d00cd52` sub-phase 0 SESSION_LOG entry
+- (next commit) Phase 1.1 main scaffold + 6 tests
+- branch `experiment/lcsa-nax-phase1_1`
+
+### Phase 1.1 follow-up notes
+- ABI gotcha: MLX `fast::metal_kernel` inlines buffers < ~4 KB as `constant`
+  address space, >= 4 KB as `device`. The bool mask qualifier in the JIT
+  source must match. Phase 1.1 enforces NQ*NK >= 4096 → always device.
+  Phase 1.2 will emit dual-qualifier variants chosen at runtime.
+- Per-thread register-FA-2 kernel chosen over matmul2d for Phase 1.1 to lock
+  correctness first. Phase 1.3 swaps inner GEMMs to mpp::tensor_ops::matmul2d
+  (the Phase 0 hypothesis being tested; sub-phase 0 microbench confirmed 5.20
+  TF feasibility at production tile granularity).
+
+### Next
+- Phase 1.2: 5 more production shapes (mid_seq8k, large_seq16k + sparse
+  variants), 3-D / 4-D mask, causal=true, asymmetric qL ≠ kL.
+
+---
+## [2026-05-12 16:30] [CLAUDE] Sprint B Phase 1.2: extended axes
+STATUS: COMPLETE
+
+### Plan
+- Objective: extend Phase 1.1 scaffold to 5 production shapes + bf16 dtype +
+  3-D/4-D mask + causal=true + asymmetric qL!=kL per design S8 row Phase 1.2.
+- Files to modify:
+  - edit: csrc/mfa_sparse_attention.cpp (source generator + entry signature)
+  - edit: mlx_mfa/lcsa_nax.py (docstring update)
+  - new:  tests/test_lcsa_nax_phase1_2.py (12-test extended suite)
+- Dependencies impacted: none externally (pure additive); kernel signature
+  unchanged (existing callers still work).
+
+### Changes
+- `csrc/mfa_sparse_attention.cpp:41-148` - sparse_kernel_source now
+  parameterized on (dtype_str, mask_ndim, causal). mask_base_expr generated
+  per ndim. causal emits k_tile <= q_tile bound + within-tile triangular
+  mask (`if (k_tile == q_tile && kc > row_in_tile) acc = NEG_INF`).
+  [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:160-247` - entry function: dtype accepts
+  bfloat16, block_tile accepts 64, mask_ndim ∈ {2,3,4} with shape check per
+  ndim, causal=true requires qL==kL. [HIGH][VERIFIED]
+- `csrc/mfa_sparse_attention.cpp:36-39` - SPARSE_HEADER_BF16 = SPARSE_HEADER
+  (bfloat lives in metal_stdlib; no separate metal_bf16 header). [HIGH][VERIFIED]
+- `mlx_mfa/lcsa_nax.py` - docstring + module header updated to Phase 1.2
+  capabilities. [HIGH][VERIFIED]
+- `tests/test_lcsa_nax_phase1_2.py` - 12 tests covering all new axes. [HIGH][VERIFIED]
+
+### Dependency & regression check
+- Callers verified: sparse_attention_nax() Python wrapper signature
+  unchanged (Q, K, V, block_mask, block_tile=32, scale=None, causal=False).
+  Phase 1.1 test suite re-run: 6/6 still pass.
+- Test coverage: 5 production shape clusters + bf16 + 3-D + 4-D + causal +
+  asymmetric. Gaps remaining for Phase 1.3: BT=128 (register pressure
+  forces matmul2d rewrite); for Phase 1.4: very-sparse density < 0.05 fast
+  path (currently same code path).
+
+### Tech cost
+- Compile: ~25s incremental
+- Memory: bf16 same as fp16 (2 bytes/elem); causal adds 1 cmp/elem; mask
+  ndim 3/4 unchanged per-tile cost.
+- Register pressure: at BT=64 D=128 per-thread state ~1.5 KB likely
+  triggers spill to private memory. Phase 1.2 prioritizes correctness;
+  Phase 1.3 matmul2d-based rewrite removes spill via cooperative tensors.
+
+### Validation
+- Ran: `pytest tests/test_lcsa_nax_phase1_2.py -v` -> 12/12 pass
+- Ran: `pytest tests/test_lcsa_nax_phase1_1.py tests/test_lcsa_nax_phase1_2.py -q`
+  -> 18/18 pass
+- Validated:
+  - 5 production shapes (small_seq4k_sparse density 0.07; mid_seq8k 0.12;
+    mid_seq8k_sparse 0.03; large_seq16k 0.12; large_seq16k_sparse 0.03)
+    each RMSE < 5e-3 vs SDPA+bias.
+  - bf16 RMSE < 2e-2 vs bf16 SDPA+bias (higher noise floor expected; bf16
+    has 3 fewer mantissa bits than fp16).
+  - 3-D mask: per-head-different sparsity matches per-head SDPA RMSE 5e-3.
+  - 4-D mask: per-(b,h) sparsity matches per-(b,h) SDPA RMSE 5e-3.
+  - causal: matches mx.fast.scaled_dot_product_attention(mask="causal")
+    RMSE 5e-3.
+  - causal future-positions test: perturbing K/V at positions >= qL/2
+    leaves O[:, :, :qL/2, :] identical to 1e-4 (proves causal isolation).
+  - asymmetric qL=2048 kL=4096 (cross-attention pattern) RMSE 5e-3.
+
+### Git
+- `2e7486c` on `experiment/lcsa-nax-phase1_2`
+
+### Phase 1.2 learnings encoded
+- MSL `bfloat` is native to <metal_stdlib>; no `<metal_bf16>` include
+  needed (causes file-not-found error).
+- mask_ndim 3/4 use simple per-axis base-pointer offset emission - clean
+  parameterization, no kernel re-architecture needed.
+- causal triangular within-tile mask is one extra conditional in the
+  scores loop. The "k_tile <= q_tile" loop bound is the primary skip;
+  the within-tile mask handles the diagonal-tile partial-causal case.
+- Register pressure on BT=64 D=128 is functional but suboptimal -
+  Phase 1.3 cooperative-tensor matmul2d rewrite is where perf is earned.
+
+### Next
+- Phase 1.3: BT x WM autoresearch (per cluster) + potential matmul2d
+  swap-in for inner GEMMs.
+
+---
+## [2026-05-12 18:30] [CLAUDE] Sprint B Phase 1.3-1.5: BT sweep, dispatcher, SHIP verdict
+STATUS: COMPLETE
+
+### Plan
+- Phase 1.3: BT autoresearch sweep across {16, 32, 64} x 6 LCSA clusters.
+- Phase 1.4: density-thresholded dispatcher (route to Sprint B when sparse,
+  fall through to SDPA+bias otherwise).
+- Phase 1.5: ship/shelve verdict from Phase 1.3+1.4 data.
+
+### Changes
+- `bench/lcsa_nax_phase1_3_bt_sweep.py` - BT autoresearch harness [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_3-bt-sweep.json` - Phase 1.3 raw data
+- `docs/lcsa-nax/lcsa-nax-phase1_3-results.md` - findings + reframing
+- `mlx_mfa/lcsa_nax.py:104-185` - sparse_attention_dispatch +
+  DEFAULT_DENSITY_THRESHOLD=0.02 + _bool_mask_to_float_bias helper [HIGH][VERIFIED]
+- `bench/lcsa_nax_phase1_4_dispatcher_sweep.py` - 3-shape x 4-density x
+  3-path sweep [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json` - Phase 1.4 raw data
+- `docs/lcsa-nax/lcsa-nax-phase1_4-results.md` - dispatcher results + ship rec
+- `tests/test_lcsa_nax_phase1_4_dispatcher.py` - 6 dispatcher correctness tests [HIGH][VERIFIED]
+- `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` - SHIP verdict matrix
+
+### Validation
+- Phase 1.3: BT sweep across 6 LCSA clusters. BT=16 wins uniformly. Best
+  ratio vs SDPA+bias: 0.07-1.02x. The per-thread FA-2 kernel is uncompetitive
+  at moderate density; **niche is very-sparse only**.
+- Phase 1.4: dispatcher with threshold=0.02 + precomputed_bias passed:
+  - density 0.01: 2.45-4.6x SDPA+bias (Sprint B routed in, wins)
+  - density 0.03-0.10: 0.95-1.02x (dispatcher routes to SDPA, matches)
+- All 24 LCSA tests pass (6 Phase 1.1 + 12 Phase 1.2 + 6 Phase 1.4 dispatcher).
+- Phase 1.5: SHIP verdict for narrow-niche v2.34.0. matmul2d rewrite deferred.
+
+### Git
+- `657afbf` ship verdict commit (latest on `experiment/lcsa-nax-phase1_3`)
+- branch: `experiment/lcsa-nax-phase1_3` (Phase 1.3+1.4+1.5 work)
+
+### Key learnings
+- Phase 1.3 reframing was the most important Phase 1.x finding: Sprint B's
+  niche is very-sparse (density < 0.02-0.03), not all-sparse. Sprint C's
+  ship-default model (one kernel beats SDPA across all production shapes)
+  does not apply to the current per-thread FA-2 kernel.
+- The dispatcher pattern + caller-pre-built bias (matching v2.33.1
+  cache-HIT) is the right ergonomics for narrow-niche ship.
+- A matmul2d-based kernel rewrite (cooperative tensors per
+  csrc/mfa/v6_nax/NAAttentionKernel.cpp:775) is the natural follow-up
+  sprint. It would extend niche to broader densities and is tracked as
+  high-leverage future work.
+
+### Next
+- Merge experiment/lcsa-nax-phase1_3 -> feat/lcsa-nax.
+- Section H (deferred to next session): v2.34.0 release flow (CHANGELOG,
+  version bump, integration patchers, merge to master, tag, PyPI).

@@ -42,6 +42,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 #include "mfa_smooth_quant.hpp"
 #include "mfa_steel_fwd_v2.hpp"
 #include "mfa_conv_nax.hpp"
+#include "mfa_sparse_attention.hpp"
 
 #include <array>
 
@@ -790,6 +791,31 @@ NB_MODULE(_ext, m) {
       "x: (B,T,H,W,C_in) f16/bf16. w: (C_out,K_T,K_H,K_W,C_in). "
       "padding: 6-tuple (T_left,T_right,H_left,H_right,W_left,W_right). "
       "chunk_M: 0 = auto from int32-byte-budget heuristic.");
+
+  // ====================================================================
+  // Sprint B Phase 1.1 — Sparse Attention NAX free-function entry point.
+  // Block-skip dispatch via per-Q-tile threadgroups + per-thread Q-row
+  // FA-2. Phase 1.3 swaps inner GEMMs to mpp::tensor_ops::matmul2d.
+  // ====================================================================
+  m.def("sparse_attention_forward",
+      [](const mlx::core::array& Q,
+         const mlx::core::array& K,
+         const mlx::core::array& V,
+         const mlx::core::array& block_mask,
+         int block_tile,
+         bool causal,
+         float scale) {
+        return mlx_mfa::sparse_attention_forward(
+            Q, K, V, block_mask, block_tile, causal, scale);
+      },
+      nb::arg("Q"), nb::arg("K"), nb::arg("V"),
+      nb::arg("block_mask"),
+      nb::arg("block_tile") = 32,
+      nb::arg("causal") = false,
+      nb::arg("scale") = 0.0f,
+      "Sprint B block-sparse attention forward (NAX). "
+      "Q/K/V: (B, H, L, D) f16. block_mask: (NQ, NK) bool. "
+      "Phase 1.1: D in {64, 128}, BT in {16, 32}, mask 2-D, causal=false.");
 
   // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__
   // (was hardcoded "2.22.0", 11 versions stale). See release-flow-validation-report.md §C.3.
