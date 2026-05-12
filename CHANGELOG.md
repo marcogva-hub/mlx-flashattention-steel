@@ -4,6 +4,49 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### §4-validated 2026-05-12 — Sprint B v2.34.0 ship-verdict (no tag)
+
+Methodology-validation re-bench of the v2.34.0 shipped envelope under
+§4-strict 3-session subprocess-isolated protocol (180s initial / 60s
+inter-shape / 90s inter-round CLI knob, A/B/A pattern with
+`sparse_attention_dispatch` cache-HIT pattern as A and
+`mx.fast.scaled_dot_product_attention(mask=bias)` as B). Single-session
+shipped numbers in `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` are
+structurally validated.
+
+**§4 outcome**:
+- 6/7 shapes CONFIDENT (<10% cross-session range)
+- 1/7 BOUNDARY (niche shape, 10.0% range driven by S1 cold-cache 21%
+  A/B/A drift artifact; S2+S3 collapse to ~0.3% range)
+- 0 HIGH variance
+- Max |Δ| vs Phase 1.4 single-session = 6.9% (well within ±15% gate)
+- Niche-win regime NOT overturned: 2.28× median ≫ 1.5× threshold
+
+**Action**: DOC_UPDATE_WITH_CAVEATS per Section D decision tree — one
+BOUNDARY shape blocks the all-CONFIDENT auto-tag branch. No v2.34.1 tag.
+Production code at v2.34.0 unchanged.
+
+**Niche-win ratio range corrected**: shipped envelope was reported as
+"2.45-4.6× at density ≤ 0.01" from single-session Phase 1.4 data. §4
+median is **2.28× with cross-session range 2.06-2.29×** depending on
+cache warmup state. The 2.45× single-session number was at the high
+end of cache-warmth luck; structural production-steady-state ratio is
+~2.28×.
+
+**New artifacts**:
+- `bench/lcsa_nax_phase1_5_harness.py` — §4-strict harness (Sprint C pattern)
+- `bench/lcsa_nax_rebench_analysis.py` — cross-session analysis tool
+- `docs/lcsa-nax/lcsa-nax-rebench-{data,results,analysis}.{json,md}`
+- `docs/lcsa-nax/lcsa-nax-rebench-decisions.md` (audit + decisions log)
+- `docs/lcsa-nax/lcsa-nax-rebench-inventory.md`
+
+**Future-work register update**:
+- ~~§4-compliant 3-session re-bench~~ — DONE
+- matmul2d cooperative-tensor inner-GEMM rewrite — tracked, now the
+  highest-leverage follow-on (would resolve BOUNDARY cache-warmup
+  sensitivity AND extend niche to density ~0.20+)
+- `patch_sparkvsr_sliding_window` — tracked
+
 ## [2.34.0] — 2026-05-12 — Sprint B Sparse Attention NAX (narrow-niche ship)
 
 ### Added
