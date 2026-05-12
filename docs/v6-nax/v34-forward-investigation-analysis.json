@@ -1,0 +1,320 @@
+{
+  "probes": [
+    {
+      "name": "B+C+E_aggregate_predecessor_vs_v34",
+      "hypotheses": "B, C, E (bundled)",
+      "interpretation": "V34 baseline vs predecessor aggregate gain",
+      "baseline_env": {
+        "MFA_V6_USE_V34": "1"
+      },
+      "alt_env": {
+        "MFA_V6_USE_V34": "0"
+      },
+      "shapes": [
+        {
+          "shape": "v34_small_d64",
+          "qL": 1024,
+          "D": 64,
+          "alt_ms": 0.5036249931436032,
+          "baseline_ms": 0.4963329993188381,
+          "ratio": 1.014691736867733,
+          "drift": 3.9595315682257137,
+          "verdict": "NULL"
+        },
+        {
+          "shape": "v34_small_d128",
+          "qL": 1024,
+          "D": 128,
+          "alt_ms": 0.9243334934581071,
+          "baseline_ms": 0.8226659847423434,
+          "ratio": 1.1235829736507286,
+          "drift": 5.871058394310028,
+          "verdict": "CONFIRMED"
+        },
+        {
+          "shape": "v34_mid_d128",
+          "qL": 4096,
+          "D": 128,
+          "alt_ms": 3.632229520007968,
+          "baseline_ms": 3.045499965082854,
+          "ratio": 1.1926545925634748,
+          "drift": 1.5975096588890978,
+          "verdict": "CONFIRMED"
+        },
+        {
+          "shape": "v34_large_d128",
+          "qL": 8192,
+          "D": 128,
+          "alt_ms": 13.141000497853383,
+          "baseline_ms": 11.175749998074025,
+          "ratio": 1.175849540309871,
+          "drift": 0.5419034807797665,
+          "verdict": "CONFIRMED"
+        }
+      ],
+      "median_ratio_usable": 1.184252066436673,
+      "verdict": "CONFIRMED",
+      "n_usable_shapes": 2
+    },
+    {
+      "name": "A_tgp_low_sg2",
+      "hypotheses": "A (TGP occupancy via EXEC_SG=2)",
+      "interpretation": "Lower SG count \u2192 expect slowdown",
+      "baseline_env": {
+        "MFA_V6_USE_V34": "1"
+      },
+      "alt_env": {
+        "MFA_V6_USE_V34": "1",
+        "MFA_V6_EXEC_SG": "2"
+      },
+      "shapes": [
+        {
+          "shape": "v34_small_d64",
+          "qL": 1024,
+          "D": 64,
+          "alt_ms": 0.6067084905225784,
+          "baseline_ms": 0.48095802776515484,
+          "ratio": 1.2614582884534484,
+          "drift": 7.587797454066802,
+          "verdict": "CONFIRMED"
+        },
+        {
+          "shape": "v34_small_d128",
+          "qL": 1024,
+          "D": 128,
+          "alt_ms": 0.904187501873821,
+          "baseline_ms": 0.8859999943524599,
+          "ratio": 1.0205276609901714,
+          "drift": 10.213740315855947,
+          "verdict": "NULL"
+        },
+        {
+          "shape": "v34_mid_d128",
+          "qL": 4096,
+          "D": 128,
+          "alt_ms": 3.0749999859835953,
+          "baseline_ms": 3.264040977228433,
+          "ratio": 0.9420837567408984,
+          "drift": 0.14918527766565892,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_large_d128",
+          "qL": 8192,
+          "D": 128,
+          "alt_ms": 11.163708491949365,
+          "baseline_ms": 11.165000032633543,
+          "ratio": 0.9998843223752437,
+          "drift": 0.07990685939670016,
+          "verdict": "NULL"
+        }
+      ],
+      "median_ratio_usable": 0.9709840395580711,
+      "verdict": "NULL",
+      "n_usable_shapes": 2
+    },
+    {
+      "name": "A_tgp_high_sg8",
+      "hypotheses": "A (TGP occupancy via EXEC_SG=8)",
+      "interpretation": "Higher SG count \u2192 may speed up or trigger spill",
+      "baseline_env": {
+        "MFA_V6_USE_V34": "1"
+      },
+      "alt_env": {
+        "MFA_V6_USE_V34": "1",
+        "MFA_V6_EXEC_SG": "8"
+      },
+      "shapes": [
+        {
+          "shape": "v34_small_d64",
+          "qL": 1024,
+          "D": 64,
+          "alt_ms": 0.5155829712748528,
+          "baseline_ms": 0.5526249879039824,
+          "ratio": 0.9329707895228841,
+          "drift": 14.882729324031505,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_small_d128",
+          "qL": 1024,
+          "D": 128,
+          "alt_ms": 0.8187914791051298,
+          "baseline_ms": 0.8523750002495944,
+          "ratio": 0.9606000631944501,
+          "drift": 42.10243808906359,
+          "verdict": "NOISY (drift=42%)"
+        },
+        {
+          "shape": "v34_mid_d128",
+          "qL": 4096,
+          "D": 128,
+          "alt_ms": 3.0647710082121193,
+          "baseline_ms": 4.532666003797203,
+          "ratio": 0.67615196126179,
+          "drift": 2.2499725647090614,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_large_d128",
+          "qL": 8192,
+          "D": 128,
+          "alt_ms": 11.141062510432675,
+          "baseline_ms": 11.172416037879884,
+          "ratio": 0.9971936663170343,
+          "drift": 1.1598266728216902,
+          "verdict": "NULL"
+        }
+      ],
+      "median_ratio_usable": 0.8366728137894122,
+      "verdict": "REVERSE",
+      "n_usable_shapes": 2
+    },
+    {
+      "name": "D_block_r_64",
+      "hypotheses": "D (register pressure via BLOCK_R=64)",
+      "interpretation": "Larger Q tile \u2192 more registers \u2192 spill if too large",
+      "baseline_env": {
+        "MFA_V6_USE_V34": "1"
+      },
+      "alt_env": {
+        "MFA_V6_USE_V34": "1",
+        "MFA_V6_BLOCK_R": "64"
+      },
+      "shapes": [
+        {
+          "shape": "v34_small_d64",
+          "qL": 1024,
+          "D": 64,
+          "alt_ms": 0.6119579775258899,
+          "baseline_ms": 0.5828750436194241,
+          "ratio": 1.0498956581257488,
+          "drift": 10.176413142028679,
+          "verdict": "PARTIAL"
+        },
+        {
+          "shape": "v34_small_d128",
+          "qL": 1024,
+          "D": 128,
+          "alt_ms": 0.8584585157223046,
+          "baseline_ms": 1.2847079779021442,
+          "ratio": 0.6682129561646523,
+          "drift": 6.283002722533647,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_mid_d128",
+          "qL": 4096,
+          "D": 128,
+          "alt_ms": 3.025311976671219,
+          "baseline_ms": 3.082667011767626,
+          "ratio": 0.9813943462341335,
+          "drift": 1.234589576256367,
+          "verdict": "NULL"
+        },
+        {
+          "shape": "v34_large_d128",
+          "qL": 8192,
+          "D": 128,
+          "alt_ms": 11.147708486532792,
+          "baseline_ms": 11.184957984369248,
+          "ratio": 0.996669679234512,
+          "drift": 0.5035851852830586,
+          "verdict": "NULL"
+        }
+      ],
+      "median_ratio_usable": 0.9890320127343227,
+      "verdict": "NULL",
+      "n_usable_shapes": 2
+    },
+    {
+      "name": "D_block_c_64",
+      "hypotheses": "D (register pressure via BLOCK_C=64)",
+      "interpretation": "Larger K tile \u2192 more registers in S/P accumulators",
+      "baseline_env": {
+        "MFA_V6_USE_V34": "1"
+      },
+      "alt_env": {
+        "MFA_V6_USE_V34": "1",
+        "MFA_V6_BLOCK_C": "64"
+      },
+      "shapes": [
+        {
+          "shape": "v34_small_d64",
+          "qL": 1024,
+          "D": 64,
+          "alt_ms": 0.5913749919272959,
+          "baseline_ms": 0.9902500314638019,
+          "ratio": 0.5971976502268996,
+          "drift": 1.562045866436002,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_small_d128",
+          "qL": 1024,
+          "D": 128,
+          "alt_ms": 0.8247915247920901,
+          "baseline_ms": 0.9521250030957162,
+          "ratio": 0.8662639066408117,
+          "drift": 2.9774141080742256,
+          "verdict": "REVERSE"
+        },
+        {
+          "shape": "v34_mid_d128",
+          "qL": 4096,
+          "D": 128,
+          "alt_ms": 3.1663544941693544,
+          "baseline_ms": 3.0797499930486083,
+          "ratio": 1.028120627101623,
+          "drift": 3.895987259248389,
+          "verdict": "NULL"
+        },
+        {
+          "shape": "v34_large_d128",
+          "qL": 8192,
+          "D": 128,
+          "alt_ms": 11.44095798372291,
+          "baseline_ms": 11.265458015259355,
+          "ratio": 1.015578591498529,
+          "drift": 3.5835723830883346,
+          "verdict": "NULL"
+        }
+      ],
+      "median_ratio_usable": 1.021849609300076,
+      "verdict": "NULL",
+      "n_usable_shapes": 2
+    }
+  ],
+  "summary": [
+    {
+      "name": "B+C+E_aggregate_predecessor_vs_v34",
+      "hypotheses": "B, C, E (bundled)",
+      "median_ratio": 1.184252066436673,
+      "verdict": "CONFIRMED"
+    },
+    {
+      "name": "A_tgp_low_sg2",
+      "hypotheses": "A (TGP occupancy via EXEC_SG=2)",
+      "median_ratio": 0.9709840395580711,
+      "verdict": "NULL"
+    },
+    {
+      "name": "A_tgp_high_sg8",
+      "hypotheses": "A (TGP occupancy via EXEC_SG=8)",
+      "median_ratio": 0.8366728137894122,
+      "verdict": "REVERSE"
+    },
+    {
+      "name": "D_block_r_64",
+      "hypotheses": "D (register pressure via BLOCK_R=64)",
+      "median_ratio": 0.9890320127343227,
+      "verdict": "NULL"
+    },
+    {
+      "name": "D_block_c_64",
+      "hypotheses": "D (register pressure via BLOCK_C=64)",
+      "median_ratio": 1.021849609300076,
+      "verdict": "NULL"
+    }
+  ]
+}
