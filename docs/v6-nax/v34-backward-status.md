@@ -299,3 +299,126 @@ Phase 3 will quantify the perf gain vs STEEL backward.
 - 4 new dK/dV correctness tests + auto-routing tests.
 
 Expected Phase 2 wall-clock: ~4-6h CC.  dK/dV is structurally more complex than dQ (cross-SG reduction, larger register pressure for combined dK+dV accumulator).
+
+---
+
+## Phase 2 GREEN — 2026-05-13 (kernels + integration + SHIP_OPT_IN posture)
+
+**Sprint progression**: Phase 1 dQ + Phase 2 dK/dV kernels + `flash_attention()`
+VJP integration all functionally complete and correctness-validated.
+**SHIP_OPT_IN** per auto-default principle (perf optimization deferred).
+
+### Phase 2 Section D — dK/dV kernel implementation
+
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp`: `createV34BackwardKeyValueSource()`
+  ~620 LOC.  Single-SG (WM=1) design: one TG per K-tile, one simdgroup
+  iterates over all Q-tiles, accumulates dK + dV in per-SG FP32 NAX tiles.
+  Algorithm per Q-tile inner iteration: D pre-compute → S=Q@K^T → log2
+  scale → P=row_bin_op<ExpSubOp>(lse_log2) → dV+=P^T@dO → dP=dO@V^T →
+  dP-=D → dS=P*dP → dK+=dS^T@Q.  Post-loop: dK*=scale, store dK + dV.
+  Uses `transpose_a=true` MMA (new code path not exercised by V34 forward).
+- `csrc/v6_nax_compile.mm`: `v34_dispatch_bwd_kv` (buffers Q..dV=0..7,
+  params=8, grid (NK, H, B) TG=32).
+- `csrc/mfa_v6_nax_primitive.cpp`: `MFAV34BwdKeyValue` Primitive +
+  `v6_nax_backward_kv()` public function.
+- `csrc/bindings.cpp`: `_ext.v6_nax_backward_kv` nanobind binding.
+
+8 correctness tests (tests/test_v34_backward_kv.py), all PASS:
+- D=128 FP16 qL=kL=512: dK RMSE 1.6e-8 / dV RMSE 1.5e-6 vs SDPA-vjp
+- D=128 FP16 qL=kL=1024, BF16, D=64 force_v34, asymmetric, batch=2 H=8,
+  output shapes, finiteness.
+
+### Phase 2 Section E — flash_attention() VJP integration
+
+`mlx_mfa/attention.py` `_make_mfa_custom` vjp branch updated to route
+through V34 backward kernels when:
+- `MFA_ENABLE_V34_BACKWARD=1` env var set (SHIP_OPT_IN per perf regression)
+- M5+ NAX available
+- D ∈ {64, 128}
+- FP16/BF16
+- Not causal/windowed/softcap
+- DC12 routing parity (D=128 always; D=64 only with Nk>8000)
+
+Default (env unset): falls back to existing STEEL/SDPA-vjp dispatch.
+
+6 integration tests (tests/test_flash_attention_v34_backward.py), all PASS:
+- Opt-in correctness on D=128 FP16 qL=1024 + qL=512 + BF16
+- Path-entered verification (V34-on vs V34-off produce different output)
+- Default-off behaviour (fallback = SDPA-vjp identical)
+- DC12 routing parity (D=64 small-Nk falls back even with env=1)
+
+### Phase 3 (partial) — Perf characterization
+
+Quick single-session bench M5 Max FP16 D=128:
+
+| Shape | V34 backward p50 | SDPA-vjp p50 | Ratio |
+|---|---:|---:|---:|
+| qL=1024 | 1.547 ms | 0.521 ms | 0.34× |
+| qL=2048 | 4.177 ms | 1.377 ms | 0.33× |
+| qL=4096 | 17.542 ms | 5.101 ms | 0.29× |
+| qL=8192 | 77.802 ms | 20.224 ms | 0.26× |
+
+**V34 backward is 3-4× SLOWER than SDPA-vjp** on tested shapes.  Per
+prompt §7 failure-mode handling: "If still slow after 3 checks: ship as
+opt-in via MFA_ENABLE_V34_BACKWARD=1 (default off). Auto-default
+principle says transparent only when validated."
+
+Likely root causes (Phase 4-deferred optimization targets):
+1. **WM=1 single-SG dK/dV design** — 32 threads/TG vs SDPA's higher
+   occupancy.  Multi-SG dK/dV with cross-SG reduction would lift this.
+2. **Re-forward at backward time** — current integration recomputes
+   (O, lse) via V34 forward because STEEL forward's lse is log2-domain
+   (incompatible with V34 backward's natural-log assumption).  Doubles
+   forward cost on the backward pass.
+3. **Three sequential kernel dispatches** — V34 forward (recompute) →
+   dQ → dK/dV.  Each has launch overhead.
+
+### Ship posture: SHIP_OPT_IN
+
+V2.37.0 release **deferred** until perf parity (or better) vs SDPA-vjp.
+The kernels themselves are correct (108/108 tests pass); they just need
+optimization before they can SHIP_BROAD.
+
+Users can opt into V34 backward via `MFA_ENABLE_V34_BACKWARD=1` for
+benchmarking + perf research.  Default behaviour (env unset) preserves
+v2.36.1-exact behavior.
+
+### Test totals
+
+- 77 v2.36.1 pre-existing tests
+- 7 V34 forward lse tests
+- 10 V34 backward dQ correctness tests
+- 8 V34 backward dK/dV correctness tests
+- 6 `flash_attention()` VJP integration tests (SHIP_OPT_IN posture)
+- **Total: 108/108 pass.  Zero regressions.**
+
+### Git
+
+- Branch: `experiment/v34-backward-option-beta-v2` (off master 70f807c).
+- Commits: 3 (Phase 1 dQ kernel, Phase 2 dK/dV kernel, Phase 2 Section E
+  integration + SHIP_OPT_IN flip).
+- Pushed to origin at each phase checkpoint.
+- **NOT merged to master.**  Master stays at 70f807c v2.36.1.
+- v2.36.1 LIVE on PyPI unchanged.
+
+### Next sprint candidates (Phase 4 prerequisites)
+
+1. **dK/dV multi-SG optimization**: lift WM=1 → WM=4 with cross-SG
+   reduction via threadgroup memory.  Expected 2-4× perf gain on dK/dV
+   alone.  Implementation surface: ~100 LOC kernel changes + barrier
+   discipline.  Risk: register pressure on the per-SG accumulator
+   (dK + dV = 32 KB at BK=32 D=128).
+2. **Forward-fusion**: emit V34 forward writing lse in either log2 OR
+   natural-log domain (env-controlled), so STEEL forward's existing
+   lse can be consumed directly by V34 backward without re-forward.
+   Or: extend V34 backward to optionally consume log2-domain lse
+   (param `lse_is_log2: bool`), avoiding re-forward when STEEL forward
+   was used.
+3. **dispatch_policy V34 backward shape-aware default**: post-optimization,
+   define the regime where V34 backward beats SDPA-vjp; flip
+   `MFA_ENABLE_V34_BACKWARD` default to ON there per auto-default
+   principle.
+4. **EXEC_SG autoresearch sweep** (Phase 3 Section G) — once multi-SG
+   is enabled, sweep SG counts on the canonical 7-shape Sprint B set.
+5. **v2.37.0 release**: after perf parity (or better) confirmed via
+   canonical methodology.

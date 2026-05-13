@@ -4210,3 +4210,134 @@ Sprint scope estimate per design hints doc remains "~1 week CC work" —
 realistic budget for the full V34 backward sprint with this lse
 infrastructure in place.
 
+
+---
+## [2026-05-13 02:30] [CLAUDE] V34 backward Option β sprint — Phase 1 + Phase 2 COMPLETE (SHIP_OPT_IN)
+STATUS: HANDOFF_READY
+
+### Plan
+Restart V34 backward Option β sprint with BLK1 resolved (V34 forward
+lse-write patch landed on master 2026-05-13).  Implement dQ + dK/dV
+NAX-direct backward kernels + flash_attention() VJP integration.
+Ship status per perf validation outcome.
+
+### Changes (Phase 1 + Phase 2 combined)
+
+Phase 1 — dQ kernel:
+- csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}: createV34BackwardQuerySource()
+  ~880 LOC NAX-direct backward dQ source generator [HIGH][VERIFIED]
+- csrc/v6_nax_compile.mm: v34_dispatch_bwd_query [HIGH][VERIFIED]
+- csrc/mfa_v6_nax_primitive.cpp: MFAV34BwdQuery Primitive +
+  v6_nax_backward_query() public function [HIGH][VERIFIED]
+- csrc/bindings.cpp: _ext.v6_nax_backward_query binding [HIGH][VERIFIED]
+- tests/test_v34_backward_dq.py: 10 correctness tests, all PASS
+  (D=128 FP16 RMSE 1.6e-8 vs SDPA-vjp; D=64 force_v34; BF16; asymmetric;
+  batch=2 H=8; remainder rows; shapes; finiteness) [HIGH][VERIFIED]
+
+Phase 2 — dK/dV kernel:
+- csrc/mfa/v6_nax/NAAttentionKernel.cpp: createV34BackwardKeyValueSource()
+  ~620 LOC single-SG (WM=1) NAX-direct dK/dV [HIGH][VERIFIED]
+- csrc/v6_nax_compile.mm: v34_dispatch_bwd_kv [HIGH][VERIFIED]
+- csrc/mfa_v6_nax_primitive.cpp: MFAV34BwdKeyValue Primitive +
+  v6_nax_backward_kv() public function [HIGH][VERIFIED]
+- csrc/bindings.cpp: _ext.v6_nax_backward_kv binding [HIGH][VERIFIED]
+- tests/test_v34_backward_kv.py: 8 correctness tests, all PASS
+  (D=128 FP16: dK RMSE 1.6e-8 dV RMSE 1.5e-6; BF16; D=64 force_v34;
+  asymmetric; batch=2; output shapes; finiteness) [HIGH][VERIFIED]
+
+Phase 2 Section E — flash_attention() VJP integration:
+- mlx_mfa/attention.py: _make_mfa_custom vjp branch routes through
+  V34 backward kernels on M5+ eligible shapes when
+  MFA_ENABLE_V34_BACKWARD=1 (SHIP_OPT_IN) [HIGH][VERIFIED]
+- tests/test_flash_attention_v34_backward.py: 6 integration tests,
+  all PASS [HIGH][VERIFIED]
+
+Design refresh:
+- DC12: V34 backward routing-parity constraint (must match V34 forward
+  routing — fall back STEEL for shapes routing through legacy v6_nax)
+- DC13: incremental Phase 1 ship — dQ standalone Primitive; dK/dV in
+  Phase 2
+
+### Dependency & regression check
+- Master at 70f807c v2.36.1 unchanged.
+- v2.36.1 LIVE on PyPI unchanged.
+- Total tests: 108/108 pass (77 v2.36.1 pre-existing + 7 V34 forward lse
+  + 10 dQ correctness + 8 dK/dV correctness + 6 integration).
+- Zero regressions.
+- Integration default-OFF preserves v2.36.1-exact behavior.
+
+### Bench results (V34 backward vs SDPA-vjp, M5 Max FP16 D=128)
+| Shape | V34 bwd ms | SDPA-vjp ms | Ratio |
+|---|---:|---:|---:|
+| qL=1024 | 1.547 | 0.521 | 0.34× (SLOWER) |
+| qL=2048 | 4.177 | 1.377 | 0.33× |
+| qL=4096 | 17.542 | 5.101 | 0.29× |
+| qL=8192 | 77.802 | 20.224 | 0.26× |
+
+**V34 backward is 3-4× SLOWER than SDPA-vjp**.  Per prompt §7
+failure-mode: SHIP_OPT_IN posture (default off, env enable).  Auto-
+default principle preserves v2.36.1 behavior.
+
+### Likely perf regression causes (deferred optimization targets)
+1. WM=1 single-SG dK/dV (32 threads/TG vs SDPA higher occupancy)
+2. Re-forward at backward time (STEEL log2-lse incompatible with V34
+   natural-log, so V34 fwd re-run)
+3. Three sequential kernel dispatches (V34 fwd → dQ → dK/dV)
+
+### Tech cost
+- ~1500 LOC of new Metal source generation across two kernels
+- 24 new tests (correctness + integration), 0 regression
+- C++ rebuild integrated cleanly
+
+### Validation
+- Ran: pytest full LCSA/Sprint U/shape-aware/v34_forward_lse/
+  v34_backward_dq/v34_backward_kv/flash_attention_v34_backward → 108/108 PASS
+- Validated AXIS 1 (output sanity): dQ RMSE 1.6e-8, dK RMSE 1.6e-8,
+  dV RMSE 1.5e-6 vs SDPA-vjp reference (all FP32-floor accurate)
+- Validated AXIS 2 (path entered): V34-on vs V34-off produce
+  numerically different gradients on eligible shapes
+- Validated AXIS 3 (edges preserved): all 77 v2.36.1 tests still pass,
+  default-off path = SDPA-vjp identity (0.0 RMSE)
+- Validated PERF: 3-4× slower than SDPA-vjp → SHIP_OPT_IN posture
+
+### Git
+- Branch: experiment/v34-backward-option-beta-v2 from master 70f807c
+- 4 commits on branch (dQ kernel, dK/dV kernel, Phase 2 integration +
+  SHIP_OPT_IN flip, STATUS doc)
+- Pushed to origin at each phase checkpoint
+- NOT merged to master.  v2.36.1 LIVE on PyPI unchanged.
+- NO release flow.
+
+### Key findings encoded
+1. **dQ + dK/dV kernels FUNCTIONALLY CORRECT**: both produce gradients
+   matching SDPA-vjp within FP32/FP16 noise floor.
+2. **B+C+E bundle TRANSFERS CLEANLY to backward**: cross-SG sync elim
+   (simdgroup_barrier only), simd_shuffle_xor row-reduce
+   (NAXFrag::row_reduce<SumOp>), M5-tuned defaults — all working in dQ
+   and dK/dV as in V34 forward.
+3. **transpose_a=true MMA works**: new code path not exercised by V34
+   forward; correctness validated for both dV = P^T @ dO and dK = dS^T @ Q.
+4. **Auto-default principle PROTECTED**: SHIP_OPT_IN posture means
+   users on v2.36.1 (or future v2.37.x default users) see ZERO
+   behavioral change.  V34 backward available behind env var for
+   research + benchmarking until perf parity achieved.
+5. **Perf regression is OPTIMIZATION not CORRECTNESS**: dK/dV WM=1
+   single-SG is the dominant bottleneck.  Multi-SG dK/dV +
+   forward-fusion are well-scoped follow-up optimization sprints.
+
+### Suggested next sprint
+**dK/dV multi-SG optimization** (~1-2 days CC):
+- Lift WM=1 → WM=4 with cross-SG reduction via threadgroup memory.
+- Expected 2-4× perf gain on dK/dV alone.
+- Register pressure: per-SG (dK + dV) = 8 KB at WM=4 BK=32 D=128 (vs
+  32 KB at WM=1) — comfortable.
+
+**Forward-fusion** (~1 day CC):
+- Extend V34 backward to optionally consume log2-domain lse (param),
+  eliminating the re-forward at backward time.  Or have STEEL forward
+  emit natural-log lse alongside log2 (extra device write).
+
+After both: re-bench under canonical methodology.  If V34 backward
+beats SDPA-vjp broadly → flip `MFA_ENABLE_V34_BACKWARD` default to ON
+per auto-default principle → v2.37.0 release.
+
