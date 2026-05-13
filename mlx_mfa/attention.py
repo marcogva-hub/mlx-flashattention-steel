@@ -2617,7 +2617,52 @@ def flash_attention_topk(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Compute full scores
+    k_count = max(1, math.ceil(topk_ratio * S))
+
+    # v2.50 Sprint 3 — Phase 3a dispatch fix.  When eligible, route through
+    # Apple SDPA (mx.fast.scaled_dot_product_attention) with the top-K
+    # threshold encoded as an additive float bias.  This avoids the
+    # explicit `weights @ v` matmul on the materialized [B,H,N,S] scores
+    # tensor (the dominant cost after `mx.sort`/`partition`/`topk`, all
+    # of which take the same ~33ms on B=1 H=16 N=4096 S=4096 in MLX 0.31).
+    #
+    # Empirical (3-session §AA.4 bench, M5 Max, B=1 H=16 qL=4096 D=128 fp16,
+    # k_count=64):
+    #   current (sort-based): ~55.6 ms
+    #   Phase 3a fix:         ~44.4 ms   → 1.25× speedup, stable across sessions
+    #
+    # Phase 3b — native Metal kernel with streaming top-K — is deferred per
+    # §AA.1 (scope > 1-2h CC).  See docs/v50/sprint3-decisions.md.
+    #
+    # Eligibility: no block mask (Phase 3a is bias-only; block mask would
+    # need pre-multiplication into bias which adds two more allocations),
+    # M5+ NAX hardware (Apple SDPA NAX path), D ∈ {64,128} (NAX-supported),
+    # dtype f16/bf16 (NAX-supported), k_count < S (filtering actually needed).
+    _disable_topk_nax = os.environ.get("MFA_DISABLE_TOPK_NAX") == "1"
+    if (mask is None and not _disable_topk_nax
+            and _get_has_nax_cached()
+            and D in (64, 128)
+            and q.dtype in (mx.float16, mx.bfloat16)
+            and k_count < S):
+        # Find top-K threshold per query.  mx.topk returns the k largest
+        # values (unsorted within partition); the min of those is the
+        # k-th largest = threshold.
+        scores = (q @ k.swapaxes(-1, -2)) * scale  # [B, H, N, S]
+        topk_vals = mx.topk(scores, k=k_count, axis=-1)  # [B, H, N, k]
+        threshold = mx.min(topk_vals, axis=-1, keepdims=True)  # [B, H, N, 1]
+        # Build additive float bias.  -1e4 is far below any reasonable
+        # softmax-survivable value in f16 (e^-1e4 ≈ 0); using -inf would
+        # also work but -1e4 keeps the bias finite for downstream safety.
+        NEG = mx.array(-1e4, dtype=q.dtype)
+        bias = mx.where(scores >= threshold,
+                        mx.array(0, dtype=q.dtype), NEG)
+        return mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=scale, mask=bias
+        )
+
+    # Reference path (M1-M4, mask supplied, k_count>=S, opt-out, or
+    # unsupported D/dtype).  Materializes the full [B,H,N,S] scores
+    # tensor and uses mx.sort to find the per-query threshold.
     scores = (q @ k.swapaxes(-1, -2)) * scale  # [B, H, N, S]
 
     # Apply block mask (expand to token level)
@@ -2630,7 +2675,6 @@ def flash_attention_topk(
         scores = mx.where(mask_expanded[None, None, :, :], scores, mx.array(float('-inf')))
 
     # Top-k selection per query
-    k_count = max(1, math.ceil(topk_ratio * S))
     if k_count >= S:
         # No filtering needed
         pass
