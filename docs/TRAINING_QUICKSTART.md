@@ -76,7 +76,9 @@ The V34 forward kernel also writes natural-log lse to device memory
 (BLK1 patch), enabling backward to recompute softmax P without
 re-running forward.
 
-## Performance characterization (M5 Max FP16 D=128)
+## Performance characterization (M5 Max FP16)
+
+### D=128 (SHIP_OPT_IN for research)
 
 | qL | V34 backward | SDPA-vjp | V34 / SDPA |
 |---|---:|---:|---:|
@@ -85,15 +87,41 @@ re-running forward.
 | 4096 | 12.77ms | 5.31ms | 2.40× |
 | 8192 | 48.93ms | 20.37ms | 2.40× |
 
-V34 backward is currently 2.2-2.4× slower than SDPA-vjp.  This is the
-**architectural floor** for this algorithm — dK kernel inherently does
-~2× the work of dV (extra `dO @ V^T` matmul required by FA-2 dK
-formula).  Apple's SDPA-vjp uses a different algorithm (likely fused
-single-kernel dK+dV with TGP cross-SG reduction) that V34 backward
-would require major restructure to match.
+For D=128, V34 backward is 2.2-2.4× slower than SDPA-vjp.  Apple's
+SDPA-vjp uses a different algorithm (likely fused single-kernel
+dK+dV with TGP cross-SG reduction) that V34 backward would require
+major restructure to match.
 
-For now, V34 backward is research infrastructure: useful for studying
-NAX backward attention but not a perf win over SDPA-vjp on M5 Max.
+### D=64 — V34 backward WINS at large shapes
+
+| qL=kL | V34 backward | SDPA-vjp | V34 / SDPA |
+|---|---:|---:|---:|
+| 256 | 0.62ms | 0.46ms | 1.37× (slower) |
+| 512 | 0.81ms | 0.48ms | 1.68× (slower) |
+| 1024 | 0.61ms | 0.46ms | 1.32× (slower) |
+| **2048** | **0.91ms** | **1.31ms** | **0.70× ← V34 WINS** |
+| **4096** | **2.61ms** | **4.81ms** | **0.54× ← V34 WINS** |
+| **8192** | **9.77ms** | **17.69ms** | **0.55× ← V34 WINS** |
+
+**For D=64 large shapes (qL × kL ≥ 4M = 2048²), V34 backward is
+1.4-1.85× FASTER than SDPA-vjp.**  Clear perf win for D=64 training
+workloads (e.g., FlashVSR class with larger qL, LTX2-style cross-
+attention).
+
+Why D=64 wins where D=128 doesn't: the dK kernel's extra dO@V^T
+matmul scales with D, so smaller D → smaller dK overhead → better
+ratio.  Combined with the multi-SG WM=4 Q-row partition's clean
+softmax handling, D=64 large shapes get genuine throughput
+improvement on M5 Max NAX hardware.
+
+### Recommendation
+
+- **D=64 training with qL ≥ 2048**: enable V34 backward
+  (`MFA_ENABLE_V34_BACKWARD=1`) — significant speedup over SDPA-vjp.
+- **D=64 training with qL < 2048**: V34 backward is slower; stick
+  with default (SDPA-vjp).
+- **D=128 training**: V34 backward correctness-validated but slower;
+  research use cases only.
 
 ## Environment variables (advanced users)
 

@@ -4734,3 +4734,67 @@ posture preserved).
 - Tests passing: 116/116
 - v2.37.0 LIVE on PyPI: https://pypi.org/project/mlx-mfa/2.37.0/
 - v2.37.0 GitHub release: https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.37.0
+
+---
+## [2026-05-13 06:00] [CLAUDE] D=64 V34 backward PARITY+WIN finding
+STATUS: COMPLETE
+
+### Discovery
+Final post-DC12-relaxation bench across D=64 shapes revealed
+unexpected MAJOR PERF WIN:
+
+| D=64 qL=kL | V34 backward | SDPA-vjp | V34 / SDPA |
+|---|---:|---:|---:|
+| 256 | 0.62ms | 0.46ms | 1.37× (slower) |
+| 512 | 0.81ms | 0.48ms | 1.68× (slower) |
+| 1024 | 0.61ms | 0.46ms | 1.32× (slower) |
+| **2048** | **0.91ms** | **1.31ms** | **0.70× ← V34 WINS** |
+| **4096** | **2.61ms** | **4.81ms** | **0.54× ← V34 WINS** |
+| **8192** | **9.77ms** | **17.69ms** | **0.55× ← V34 WINS** |
+
+For D=64 large shapes (qL × kL ≥ 4M = 2048²), V34 backward is 1.4-1.85×
+FASTER than SDPA-vjp.  The earlier "architectural floor" of 2.4× SDPA
+identified at D=128 does NOT apply at D=64.
+
+### Mechanism
+The dK kernel's extra dO@V^T matmul scales with D (smaller D → smaller
+dK overhead).  At D=64, dK kernel work is proportionally less, and the
+multi-SG WM=4 Q-row partition's clean softmax handling on M5 NAX
+delivers genuine throughput improvement.
+
+D=128's architectural disadvantage was that the dK kernel scales by D²
+(matmul cost), while compute throughput at FP16 NAX is hardware-fixed.
+At D=64, the same NAX hardware can keep up with dK + dV work.
+
+### Implication
+- D=64 large shapes (qL ≥ 2048): V34 backward CLEAR WIN, recommended
+  for training workloads
+- D=64 small shapes (qL < 2048): V34 backward 1.3-1.7× slower, stick
+  with SDPA-vjp
+- D=128: V34 backward 2.2-2.4× slower across all qL (architectural
+  floor real for D=128)
+
+This is a SHAPE-AWARE perf characterization that wasn't visible without
+the D=64 small-Nk DC12 relaxation enabling broader bench coverage.
+
+### Docs updated
+- CHANGELOG.md [Unreleased] entry highlighting D=64 perf win
+- docs/TRAINING_QUICKSTART.md with shape-aware recommendation
+
+### Why not flip default ON for D=64 large?
+The forward path would also route through V34 forward (force_v34=True
+in _impl) — V34 forward on D=64 small-Nk is slightly slower than
+legacy v6_nax forward.  For forward-only inference users, this would
+be a regression.  Auto-default principle: only flip default when
+transparent win for ALL eligible callers.
+
+Future enhancement: detect forward-only vs forward+backward at runtime
+(complex with MLX lazy autograd) OR have separate "training" entry
+point that uses V34 forward + backward as the default.
+
+### Sprint exit
+v2.37.0 + post-release DC12 relaxation + D=64 perf win documented.
+SHIP_OPT_IN posture preserved.  Users with D=64 training workloads
+now have clear guidance: set MFA_ENABLE_V34_BACKWARD=1 for 1.4-1.85×
+backward speedup on qL ≥ 2048.
+

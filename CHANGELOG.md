@@ -13,7 +13,30 @@ All notable changes to mlx-mfa are documented here.
   with Nk ≤ 8000 (FlashVSR-class shapes) fell through to SDPA-vjp; now
   V34 backward kernels handle them.  Correctness validated within FP16
   floor (dQ RMSE 9.7e-8, dK RMSE 1.0e-7, dV RMSE 4.2e-4 vs SDPA-vjp).
-  Perf unchanged (V34 backward still SHIP_OPT_IN at 2.2-2.4× SDPA-vjp).
+
+- **MAJOR PERF FINDING — V34 backward at D=64 large shapes WINS vs
+  SDPA-vjp** (1.4-1.85× faster):
+
+  | D=64 shape (qL=kL) | V34 backward | SDPA-vjp | V34 / SDPA |
+  |---|---:|---:|---:|
+  | 256 | 0.62ms | 0.46ms | 1.37× (slower) |
+  | 512 | 0.81ms | 0.48ms | 1.68× (slower) |
+  | 1024 | 0.61ms | 0.46ms | 1.32× (slower) |
+  | **2048** | **0.91ms** | **1.31ms** | **0.70× ← V34 WINS** |
+  | **4096** | **2.61ms** | **4.81ms** | **0.54× ← V34 WINS** |
+  | **8192** | **9.77ms** | **17.69ms** | **0.55× ← V34 WINS** |
+
+  The "architectural floor" of 2.4× SDPA-vjp identified at D=128 does
+  NOT apply at D=64.  At D=64 large shapes (qL × kL ≥ 4M = 2048²),
+  V34 backward is 1.4-1.85× faster than SDPA-vjp.  This is a clear
+  perf win for D=64 training workloads (e.g., FlashVSR class with
+  larger qL, LTX2-style cross-attention).
+
+  V34 backward remains SHIP_OPT_IN (`MFA_ENABLE_V34_BACKWARD=1`) by
+  default to avoid changing forward-pass routing on users who don't
+  do backward (forcing V34 forward routing has small forward-only
+  perf cost on D=64 small-Nk).  When `MFA_ENABLE_V34_BACKWARD=1` is
+  set, training on D=64 large shapes is now faster than SDPA-vjp.
 
 ## [2.37.0] — 2026-05-13 — V34 backward NAX-direct kernels (SHIP_OPT_IN)
 
