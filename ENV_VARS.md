@@ -57,6 +57,11 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_FORCE_NATIVE_BWD` | str | unset | Force native backward: `1` → native kernel, `0` → SDPA VJP |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
 | `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **v2.36.1**: when unset, `decide_auto_version()` picks V2 for `qL × kL × D ≥ 2.15e9` (validated under canonical-protocol) and V1 below. `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
+| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0**: opt in to V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal/window/softcap). Default off (SDPA-vjp fallback preserves v2.36.1 behavior). V34 backward is currently 2.2-2.4× slower than SDPA-vjp at qL=8192 (architectural floor); ship status SHIP_OPT_IN for research / future-optimization use cases. |
+| `MFA_V34BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V34 backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
+| `MFA_V34BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
+| `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
+| `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
 
