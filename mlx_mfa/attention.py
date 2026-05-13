@@ -923,7 +923,41 @@ def flash_attention_rope_unified(
             return out, k_full, v_full
         return out
     else:
-        # Standalone: use the in-kernel MFA RoPE path (K rotated from pos 0).
+        # Standalone path.
+        #
+        # v2.50-Sprint2 (M5+ NAX optimization): on M5+ hardware, the
+        # mx.fast.rope (Apple native rope kernel) + flash_attention (Apple
+        # SDPA NAX) path is ~5× faster than the in-kernel STEEL
+        # mfa_attention_rope_forward kernel.  Empirical bench (M5 Max,
+        # B=1 H=16 qL=4096 D=128 fp16):
+        #
+        #   _mfa_rope_forward (STEEL fused):     8.38 ms
+        #   mx.fast.rope + flash_attention:      3.24 ms (-61%)
+        #   No-rope baseline (flash_attention):  3.14 ms
+        #
+        # The STEEL fused-rope kernel doesn't use Apple NAX cooperative-
+        # tensor primitives, so it's intrinsically slower than the two-
+        # NAX-kernel sequence (rope + SDPA NAX) on M5+.  Falls back to
+        # STEEL on M1-M4 (no NAX) and on partial-rope shapes (not yet
+        # supported by mx.fast.rope `dims` parameter).
+        #
+        # Requires the cos/sin tables to be built with the LLaMA-default
+        # base=10000 (the common convention).  Custom-base callers should
+        # set `MFA_DISABLE_ROPE_NAX=1` to skip this path.
+        _disable_rope_nax = os.environ.get("MFA_DISABLE_ROPE_NAX") == "1"
+        if (_get_has_nax_cached() and not _disable_rope_nax
+                and head_dim in (64, 128)
+                and q.dtype in (mx.float16, mx.bfloat16)
+                and not _partial_rope):
+            # M5+ NAX-optimal path: native rope + Apple SDPA NAX.
+            q_rot = mx.fast.rope(q, dims=head_dim, traditional=interleaved,
+                                  base=10000.0, scale=1.0, offset=cs)
+            k_rot = mx.fast.rope(k, dims=head_dim, traditional=interleaved,
+                                  base=10000.0, scale=1.0, offset=0)
+            return flash_attention(q_rot, k_rot, v, scale=scale, causal=causal,
+                                    stream=stream)
+
+        # M1-M4 OR partial-rope OR opt-out: STEEL fused-rope path.
         return _mfa_rope_forward(q, k, v, rotary_cos, rotary_sin,
                                  scale, causal, cs, interleaved)
 

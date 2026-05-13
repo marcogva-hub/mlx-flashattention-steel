@@ -11,6 +11,23 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Sprint 2 (v2.50, flash_attention_rope_unified M5+ NAX path)**: added
+  M5+ NAX-optimal early-return in `flash_attention_rope_unified`
+  standalone path.  Replaces the STEEL `_mfa_rope_forward` fused-rope
+  kernel with the **`mx.fast.rope` (Apple native rope Metal kernel) +
+  `flash_attention` (Apple SDPA NAX)** pair on M5+ hardware.  Empirical:
+  ~4× speedup at B=1 H=16 qL=4096 D=128 fp16 non-causal standalone
+  (8.09ms → 1.99ms, -75% wall time).  The audit framed this as
+  "host-side RoPE preprocessing overhead requiring fused-RoPE NAX
+  kernel"; Sprint 2 investigation found the real bottleneck was the
+  STEEL fused-rope kernel itself (pre-NAX design) — no new kernel work
+  needed, just dispatch routing.  Eligibility: M5+ hardware, D ∈ {64,
+  128}, fp16/bf16, full rotation.  Partial rope, fp32, M1-M4, and
+  cache-mode/paged-mode callers preserved unchanged.  Assumes
+  `base=10000.0` (LLaMA standard).  Opt-out via `MFA_DISABLE_ROPE_NAX=1`
+  for custom-base callers.  See `docs/v50/sprint2-decisions.md` for
+  bench data + the audit's framing inversion.
+
 - **Sprint 1 (v2.50, sparse density threshold recalibration)**: raised
   `mlx_mfa/lcsa_nax.py::DEFAULT_DENSITY_THRESHOLD` from `0.02` to `1.01`
   per empirical density sweep on M5 Max showing LCSA NAX wins at EVERY
