@@ -11,6 +11,28 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Sprint 3 Phase 3a (v2.50, flash_attention_topk M5+ NAX dispatch)**:
+  added M5+ NAX-optimal early-return in `flash_attention_topk`.  When
+  eligible (M5+ hardware, no block mask, D ∈ {64,128}, fp16/bf16,
+  k_count < S), the top-K threshold is computed via `mx.topk + mx.min`
+  and encoded as a float additive bias passed to
+  `mx.fast.scaled_dot_product_attention` — avoiding the materialised
+  `weights @ v` matmul on the [B,H,N,S]=1GB scores tensor of the
+  reference path.  Empirical (3-session §AA.4 bench, M5 Max, B=1 H=16
+  qL=4096 D=128 fp16 k_count=64): ~1.25× speedup (55.6 ms → 44.4 ms,
+  -20% wall time, range 1.250-1.256 across sessions).  The audit
+  framed this as "L effort, native top-K kernel needed".  §AA.5 premise
+  validation revealed a **partial inversion**: Apple primitives deliver
+  1.25× via ~50 LOC dispatch fix; the remaining 14× gap vs dense SDPA
+  is architectural (score-tensor materialisation + global threshold
+  finding ~33 ms — `mx.partition`, `mx.topk`, `mx.sort` all the same
+  cost on MLX 0.31) and requires a native streaming top-K Metal kernel
+  (Phase 3b, **deferred** per §AA.1 — see
+  `docs/v50/sprint3-status-phase3b.md`).  M1-M4, block-mask, fp32,
+  topk_ratio≥1 paths preserved unchanged.  Opt-out via
+  `MFA_DISABLE_TOPK_NAX=1`.  See `docs/v50/sprint3-decisions.md` for
+  full empirical data + framing analysis + skill invocations log.
+
 - **Sprint 2 (v2.50, flash_attention_rope_unified M5+ NAX path)**: added
   M5+ NAX-optimal early-return in `flash_attention_rope_unified`
   standalone path.  Replaces the STEEL `_mfa_rope_forward` fused-rope
