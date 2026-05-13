@@ -422,3 +422,107 @@ v2.36.1-exact behavior.
    is enabled, sweep SG counts on the canonical 7-shape Sprint B set.
 5. **v2.37.0 release**: after perf parity (or better) confirmed via
    canonical methodology.
+
+---
+
+## Phase 2.O1 — WM=2 K-row partition dK/dV: FALSIFIED 2026-05-13
+
+**Optimization attempt**: lift dK/dV from WM=1 single-SG to WM=2 with
+K-row partition (each SG owns 16 rows = BK/WM of dK + dV; all SGs
+redundantly compute Stile and dPtile; each SG accumulates into its
+disjoint K-row partition; no cross-SG reduction needed).
+
+**Hypothesis**: 2× threads at WM=2 should yield ~1.5-2× speedup on
+the GEMM portion (dV=P^T@dO and dK=dS^T@Q) while paying 2× redundant
+compute on softmax (Q@K^T, exp, dP=dO@V^T).  Net expected ~1.5×
+speedup.
+
+**Bench result (M5 Max FP16 D=128)**:
+
+| Shape | WM=1 dK/dV | WM=2 dK/dV | Speedup |
+|---|---:|---:|---:|
+| qL=1024 | 1.30 ms | 1.69 ms | **0.77×** (-23%) |
+| qL=2048 | 3.56 ms | 4.71 ms | **0.76×** (-24%) |
+| qL=4096 | 13.86 ms | 17.34 ms | **0.80×** (-20%) |
+| qL=8192 | 55.87 ms | 66.52 ms | **0.84×** (-16%) |
+
+**Verdict: FALSIFIED**.  WM=2 K-row partition is 16-24% SLOWER than
+WM=1.  The redundant softmax compute tax (2× Q@K^T + 2× exp + 2× dP
+matmul) exceeds the GEMM savings (~50% reduction on P^T@dO and
+dS^T@Q).  Net regression.
+
+**Mechanism**: softmax operations (Q@K^T matmul, ExpSubOp, dP=dO@V^T
+matmul) collectively account for ~75% of the per-Q-tile inner-loop
+work.  GEMM portion (P^T@dO accumulation and dS^T@Q accumulation)
+is ~25%.  At WM=2 K-row partition:
+- Softmax: 2× compute (replicated across SGs) → no speedup (2 SGs
+  doing same work consumes 2× threads).
+- GEMM: 1× total compute split across 2 SGs → 2× speedup.
+
+Net: (2× softmax + 0.5× GEMM) × original work = 0.75 × 2 + 0.25 × 0.5
+= 1.625× compute relative to WM=1, which translates to ~1.6× wall-
+clock at same thread occupancy.  Observed 1.2-1.3× wall-clock (less
+than predicted because thread occupancy at WM=2 actually doubles).
+
+Empirical falsification confirms the redundant-compute tax dominates
+in this regime.
+
+**Reverted state**:
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34BackwardKeyValueSource()`
+  reverted to WM=1 single-SG kernel.
+- `csrc/mfa_v6_nax_primitive.cpp` Primitive defaults reverted to WM=1
+  BQ=32 BK=(64 D=64; 32 D=128).
+- 108/108 tests pass post-revert.  v2.36.1 LIVE on PyPI unchanged.
+
+**Next-attempt design (Phase 2.O2 candidate)**:
+**Q-row partition + TGP streaming reduction**.
+- Each SG handles BQ/WM Q-rows (matches V34 forward partition pattern).
+- Softmax: row-wise within SG, no cross-SG sync needed (Q-row
+  partition makes row-wise reductions intra-SG).
+- Each SG's dK_accum + dV_accum holds per-Q-row-partition
+  contribution to the FULL BK × D output.
+- After Q-loop: cross-SG reduction via TGP streaming row-by-row
+  (4 SGs × 128 FP32 = 2 KB per row × 32 rows = bounded TGP usage
+  well under M5's 32 KB TGP limit).
+
+Per-SG register state at BQ=64 BK=32 WM=4:
+- Stile: 2 × 2 = 4 frags × 8 elements × 4B × 32 lanes = 4 KB
+- dPtile: 4 KB
+- dK_accum: 2 × 8 = 16 frags × 8 × 4 × 32 = 16 KB
+- dV_accum: 16 KB
+- Total: ~40 KB.  OVER M5 register file (~32 KB per SG).
+
+Mitigation: split dK and dV into separate kernel dispatches (each ~24 KB
+per SG, fits comfortably).  Trade: 2× kernel launch overhead.
+
+Or: WM=2 Q-row partition with BQ=32:
+- Per-SG: BQ/WM=16 Q-rows, BK=32 full
+- Stile per SG: 1 × 2 = 2 frags = 2 KB
+- dPtile per SG: 2 KB
+- dK_accum: 16 KB (each SG holds full BK × D)
+- dV_accum: 16 KB
+- Total: ~36 KB.  Still over edge.
+
+**Conclusion**: Q-row partition WITHOUT splitting dK/dV is constrained
+by register pressure on M5 Max.  Path forward likely requires
+splitting dK + dV into two separate kernel dispatches.
+
+**Sprint exit**: WM=1 default preserved.  Negative finding documented.
+Future "dK/dV multi-SG Phase 2.O2" sprint should attempt Q-row
+partition with two-kernel split (dK kernel + dV kernel) to manage
+register pressure.
+
+### Bench update (post-revert)
+
+V34 backward via flash_attention(backend="mfa") + MFA_ENABLE_V34_BACKWARD=1
+on M5 Max FP16 D=128 (component breakdown):
+
+| qL | fwd | dQ | dK/dV | total | SDPA-vjp | Ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| 1024 | 0.30 | 0.45 | 1.30 | 2.05ms | 0.52ms | 0.25× |
+| 2048 | 0.41 | 1.05 | 3.56 | 5.02ms | 1.38ms | 0.28× |
+| 4096 | 0.97 | 2.97 | 13.86 | 17.80ms | 5.10ms | 0.29× |
+| 8192 | 2.99 | 11.58 | 55.87 | 70.43ms | 20.22ms | 0.29× |
+
+V34 backward remains 3-4× slower than SDPA-vjp.  SHIP_OPT_IN posture
+preserved.  Optimization deferred to follow-up sprints.

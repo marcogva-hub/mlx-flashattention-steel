@@ -4341,3 +4341,110 @@ After both: re-bench under canonical methodology.  If V34 backward
 beats SDPA-vjp broadly → flip `MFA_ENABLE_V34_BACKWARD` default to ON
 per auto-default principle → v2.37.0 release.
 
+
+---
+## [2026-05-13 03:30] [CLAUDE] V34 backward optimization sprint Phase 2.O1 — WM=2 K-row partition FALSIFIED
+STATUS: COMPLETE
+
+### Plan
+Lift dK/dV kernel from WM=1 single-SG to WM=2 K-row partition (each SG
+owns BK/WM=16 rows of dK + dV; all SGs redundantly compute Stile and
+dPtile; each SG accumulates into disjoint K-row partition; no cross-SG
+reduction needed).
+
+**Hypothesis**: 1.5-2× speedup on dK/dV from 2× thread occupancy on
+the GEMM portion (dV=P^T@dO, dK=dS^T@Q), partially offset by 2×
+redundant softmax compute.
+
+### Changes (then reverted)
+- csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34BackwardKeyValueSource()
+  - `dkv_t = NAXTile<float, 1, V34BWDKV_TD>` (1 K-row-frag per SG)
+  - dV and dK GEMM loops collapsed `for ik` outer to `my_ik = simd_group_id`
+  - Per-SG K-row offset on device write
+- csrc/mfa_v6_nax_primitive.cpp: Primitive default WM=1 → WM=2 with BK=32
+
+Result: 14/14 dK/dV + integration tests pass.  Code correct.
+
+### Bench (FALSIFICATION)
+M5 Max FP16 D=128, dK/dV kernel only:
+| Shape | WM=1 | WM=2 | Speedup |
+|---|---:|---:|---:|
+| qL=1024 | 1.30ms | 1.69ms | 0.77× |
+| qL=2048 | 3.56ms | 4.71ms | 0.76× |
+| qL=4096 | 13.86ms | 17.34ms | 0.80× |
+| qL=8192 | 55.87ms | 66.52ms | 0.84× |
+
+**WM=2 is 16-24% SLOWER than WM=1**.  Empirical falsification of
+hypothesis.
+
+### Mechanism (confirmed by component analysis)
+Per-Q-tile inner loop has ~75% softmax cost (Q@K^T + ExpSubOp +
+dP=dO@V^T) and ~25% GEMM cost (P^T@dO + dS^T@Q accumulators).
+- WM=2 K-row partition: softmax replicates across 2 SGs (no speedup,
+  uses 2× threads); GEMM splits across 2 SGs (2× speedup).
+- Net: 0.75 × 1 + 0.25 × 0.5 = 0.875× of WM=1 GEMM cost on a per-
+  thread basis.  But: 2× threads doing same softmax = 2× SG utilization
+  with 1× total throughput → softmax wall-clock unchanged but uses 2×
+  hardware.  GEMM cuts to ~50%.
+- Aggregate observed slowdown: ~1.2-1.3× wall-clock = softmax taxes
+  dominate.
+
+### Revert applied
+- Kernel structure restored to WM=1 NAXTile<float, V34BWDKV_TK,
+  V34BWDKV_TD>; full ik loops; full dK/dV device write.
+- Primitive defaults: WM=1, BK=(64 D=64; 32 D=128), BQ=32.
+- 108/108 tests pass post-revert.  v2.36.1 LIVE on PyPI unchanged.
+
+### Three-axis validation
+- AXIS 1 (output sanity): WM=2 produced correct gradients (14 tests passed)
+  before revert.  Falsification is perf, not correctness.
+- AXIS 2 (path entered): bench confirmed WM=2 dispatch engaged (different
+  kernel signature than WM=1).
+- AXIS 3 (edges preserved): post-revert, all 108 pre-existing tests
+  still pass.  No correctness regression.
+
+### Strategic finding for next-attempt
+**Q-row partition** (not K-row) avoids redundant softmax compute
+because softmax is row-wise — each SG can softmax its own Q-row slice
+independently.  But Q-row partition requires cross-SG reduction of
+dK + dV partials at end of Q-loop:
+- WM=4 BQ=64 BK=32: per-SG dK + dV accum = 32 KB (M5 register edge)
+- Cross-SG sum via TGP: 4 SGs × 32 KB = 128 KB → doesn't fit in
+  M5's 32 KB TGP all at once
+
+Mitigation: streaming row-by-row reduction (each row 2 KB per partial
+× 4 SGs = 8 KB TGP at a time; iterate 32 rows).  Bounded TGP usage,
+moderate overhead.
+
+OR: split into separate dK and dV kernels (each ~24 KB per SG, fits
+comfortably).  Trade: 2× kernel launch overhead.
+
+### Sprint exit
+SHIP_OPT_IN posture preserved (MFA_ENABLE_V34_BACKWARD=1 still gates
+V34 backward; default off).  Negative finding documented thoroughly.
+
+### Git
+- Branch: experiment/v34-backward-option-beta-v2
+- Commits: revert kernel + WM=1 default + STATUS doc update
+- Push to origin
+
+### Suggested next sprint
+"V34 backward dK/dV Q-row partition with two-kernel split"
+(~2-3 days CC):
+1. Split current dK/dV kernel into dK kernel + dV kernel
+2. Each kernel WM=4 Q-row partition (per-SG handles BQ/WM Q-rows)
+3. Cross-SG reduction at end of Q-loop via TGP streaming (single 16 KB
+   accumulator → 4 SGs × 16 KB = 64 KB partials; stream per-row reduction)
+4. Re-bench under canonical methodology; target perf parity vs SDPA-vjp
+
+Component timing target at qL=8192:
+- V34 forward (recompute): 3ms
+- V34 dQ: ~12ms (already WM=4)
+- V34 dK kernel: 4-7ms (with proper multi-SG)
+- V34 dV kernel: 4-7ms
+- Total: ~25-30ms vs SDPA-vjp 20ms = 1.25-1.5× ratio
+
+If Q-row partition delivers expected gain, V34 backward reaches near-
+parity with SDPA-vjp.  At that point, flip `MFA_ENABLE_V34_BACKWARD`
+default to ON per auto-default principle, ship v2.37.0.
+

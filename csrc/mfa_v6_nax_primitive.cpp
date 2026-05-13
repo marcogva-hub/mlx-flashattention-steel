@@ -1070,8 +1070,13 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     if (D != 64 && D != 128)
       throw std::runtime_error("V34 bwd dKdV: D must be 64 or 128");
 
-    // Phase 2 defaults: WM=1 single-SG; BQ=32; BK = D=64?64:32.
-    // No env overrides yet (Phase 3 tuning).
+    // Phase 2 defaults: WM=1 single-SG; BQ=32; BK=(D==64?64:32).
+    // Phase 2.O1 (2026-05-13): WM=2 K-row partition was attempted and
+    // FALSIFIED empirically (0.77-0.84× regression vs WM=1).  The
+    // redundant softmax compute across SGs taxed more than the GEMM
+    // partition saved.  Reverted to WM=1.  See v34-backward-status.md
+    // §"Phase 2.O1 falsified" for next-attempt design (Q-row partition
+    // + TGP streaming reduction).
     unsigned short BQ = 32;
     unsigned short BK = (D == 64) ? 64 : 32;
     uint16_t WM = 1;

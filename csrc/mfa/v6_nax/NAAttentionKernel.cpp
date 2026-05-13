@@ -5059,7 +5059,7 @@ void attention_bwd_kv(
     uint3 tid [[threadgroup_position_in_grid]]) {
 
   (void)simd_lane_id;
-  (void)simd_group_id;  // WM=1 → only SG 0
+  (void)simd_group_id;  // WM=1 single-SG (WM=2 K-partition falsified Phase 2.O1)
 
   // === Per-batch + per-head + per-K-block ptr offsets ===
   // Grid (NK, H, B): tid.x = K-tile index, tid.y = head, tid.z = batch.
@@ -5099,6 +5099,12 @@ void attention_bwd_kv(
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
   // === Accumulators ===
+  // Phase 2.O1 finding (2026-05-13): WM=2 K-row partition was implemented
+  // and FALSIFIED empirically (0.77-0.84× speedup = 20-25% REGRESSION vs
+  // WM=1).  The redundant softmax compute across SGs taxes more than the
+  // GEMM partition saves.  Reverted to WM=1 single-SG with full BK rows
+  // per SG.  Q-row partition (with TGP streaming reduction) is the
+  // recommended next-sprint approach — see status doc.
   using dkv_t = NAXTile<float, V34BWDKV_TK, V34BWDKV_TD>;
   dkv_t dK_accum, dV_accum;
   dK_accum.clear();
@@ -5253,8 +5259,6 @@ void attention_bwd_kv(
     // Stile holds P now.
 
     // --- dV_accum += P^T @ dO  (compute BEFORE dS = P*(...) overwrites P) ---
-    // C = dV [BK, D], A = P [BQ, BK]^T → [BK, BQ], B = dO [BQ, D].
-    // MMA spec: 1 A frag, 2 C frags (consecutive D cols), 2 B frags (consecutive D cols).
     STEEL_PRAGMA_UNROLL
     for (short ik = 0; ik < V34BWDKV_TK; ik++) {
       STEEL_PRAGMA_UNROLL
