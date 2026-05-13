@@ -199,6 +199,8 @@ struct V34ParamsHost {
   int NQ, NK;
   int qL_rem, kL_rem;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
+  // v2.36.x lse-write patch (must mirror V34Params layout exactly).
+  int64_t L_strides[3];
 };
 
 void v34_dispatch(
@@ -236,6 +238,11 @@ void v34_dispatch(
     params.O_strides[0] = (int64_t)Hq * qL * head_dim;
     params.O_strides[1] = (int64_t)qL * head_dim;
     params.O_strides[2] = (int64_t)head_dim;
+    // lse is FP32 contiguous [B, Hq, qL] -> strides (Hq*qL, qL, 1).
+    // No D dimension, so L_strides[2] = 1 (per-row element stride).
+    params.L_strides[0] = (int64_t)Hq * qL;
+    params.L_strides[1] = (int64_t)qL;
+    params.L_strides[2] = (int64_t)1;
 
     enc.set_bytes(params, 4);
 

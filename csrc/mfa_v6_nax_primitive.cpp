@@ -639,6 +639,17 @@ public:
           /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true);
       if (use_v34) {
         // V34 uses no FCs (params via struct buffer).
+        if (std::getenv("MFA_V34_DUMP_SOURCE")) {
+          fprintf(stderr, "=== V34 source for BQ=%d BK=%d BD=%d WM=%d ===\n",
+                  (int)v34_BQ, (int)v34_BK, (int)D, (int)v34_WM);
+          auto pos = src.find("// === lse write");
+          if (pos != std::string::npos) {
+            fprintf(stderr, "%s\n=== ===\n",
+                    src.substr(pos, 800).c_str());
+          } else {
+            fprintf(stderr, "(lse write marker not found!)\n");
+          }
+        }
         pipeline = v34_compile(src, "attention", mtl_device);
       } else {
         pipeline = v6_nax_compile_with_constants(
@@ -653,7 +664,15 @@ public:
     enc.set_input_array(k, 1);
     enc.set_input_array(v, 2);
     enc.set_output_array(out, 3);
-    if (!use_v34) enc.set_output_array(lse, 4);  // V34 uses buffer(4) for params struct
+    if (!use_v34) {
+      enc.set_output_array(lse, 4);  // Legacy path: buffer 4 is lse.
+    } else {
+      // v2.36.x BLK1 patch: V34 forward now writes lse to buffer 5
+      // (buffer 4 holds the V34Params struct via set_bytes).  Per
+      // docs/v6-nax/v34-backward-decisions.md DC0 — lse is required
+      // input infrastructure for V34 backward dQ/dK/dV kernels.
+      enc.set_output_array(lse, 5);
+    }
 
     if (use_v34) {
       v34_dispatch(
