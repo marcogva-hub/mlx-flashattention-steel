@@ -3587,23 +3587,24 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     dQ = _bwd_ext.v6_nax_backward_query(
         q, k, v, O_v34, L_v34, dO, D, scale)
 
-    # v2.39.0 Phase C.1.a: MFA_V34_BWD_KERNEL env var routes between:
-    #   "auto" (default): split for all D (Option γ outcome δ — see below)
+    # MFA_V34_BWD_KERNEL env var routes between:
+    #   "auto" (default): fused for D=64 (post-v2.39.1 H1 fix), split for D=128
     #   "fused": force fused kernel (Option γ) — D=64 only, raises for D=128
     #   "split": force split dV/dK kernels (v2.38.1 path)
     #   "legacy_fused": force legacy WM=1 fused kernel (pre-v2.38.0)
     # Back-compat: `MFA_V34BWD_USE_FUSED=1` still recognized → legacy_fused.
     #
-    # v2.39.0 empirical finding (outcome δ): fused kernel ships as available
-    # but NOT auto-default.  Despite /metal-kernel-dev audit predicting
-    # ~10% K-bandwidth-amortization win, M5 Max 3-session bench shows fused
-    # is 25-33% SLOWER than split at qL≥4096 (likely register-pressure-
-    # induced spilling or L1 cache already absorbs split's K-reload).  At
-    # qL=2048 fused is at parity.  Auto-default stays on split; fused is
-    # opt-in for users who want to characterize on their workloads or for
-    # future-sprint perf-tuning experiments.  Numerical correctness verified
-    # bit-identical (RMSE=0 vs split, /mlx-debug-forensics HIGH SHIP).
-    # See docs/v6-nax/v39-0-option-gamma-results.md for the full δ analysis.
+    # v2.39.1 outcome α: H1 register pressure CONFIRMED + fix shipped.
+    # The v2.39.0 outcome δ regression was caused by per-SG register
+    # spilling at the fused kernel's default BK=32 (TK=2).  Sprint v2.39.1
+    # investigation lowered the default to BK=16 (TK=1) in the Primitive,
+    # which halves the dK_accum + dV_accum FP32 footprint and brings the
+    # kernel below the M5 NAX compiler's spill threshold.  Empirical:
+    # fused-BK16 1.01-1.12× faster than split-D_vec at qL ∈ {2048, 16384};
+    # all v2.38.1 SDPA-vjp speedups (1.95×/1.89×/1.87× at qL ∈ {4096, 8192,
+    # 16384}) preserved exactly.  See `docs/v6-nax/v39-1-investigation-
+    # synthesis.md` for full investigation evidence (H1 confirmed, H3
+    # falsified, H2 partial-supporting).
     _kernel_mode = os.environ.get("MFA_V34_BWD_KERNEL", "auto").lower()
     if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
         _kernel_mode = "legacy_fused"
@@ -3611,9 +3612,9 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     head_dim = q.shape[3]
     _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
 
-    # Resolve "auto" → split (per v2.39.0 outcome δ).
+    # Resolve "auto" → fused (D=64, post-v2.39.1 H1 fix) or split (D=128).
     if _kernel_mode == "auto":
-        _kernel_mode = "split"
+        _kernel_mode = "fused" if head_dim == 64 else "split"
 
     if _kernel_mode == "legacy_fused":
         # Legacy WM=1 fused dK+dV (kept as escape hatch for one release).
