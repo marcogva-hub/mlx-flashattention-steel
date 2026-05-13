@@ -3621,14 +3621,19 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     """
     if not _get_has_nax_cached():
         return False
-    # v2.50 Sprint 4 Phase 4b: PARTIALLY IMPLEMENTED.  Forward (Phase 4a)
-    # + dQ kernel (Phase 4b partial) now support causal masking; the 4
-    # K-parallel backward kernels (dKV, split dV, split dK, fused dKdV)
-    # do NOT yet have causal masking and would produce wrong dK/dV.
-    # Eligibility gate retained on causal until all 5 backward kernels
-    # are updated.  See `docs/v50/sprint4-status-phase4b-complete.md`.
+    # v2.50 Phase 4b-complete (Prompt 3) — PARTIAL.  Critical compile_v34_
+    # backward_pipeline isCausal=false hardcoded bug FIXED (was making Prompt
+    # 2 Phase 4b dQ a silent no-op).  dQ kernel now produces correct causal
+    # gradients (RMSE 8.7e-6 at qL=2048 D=64 fp16).  The 4 K-parallel kernels
+    # (dV split, dK split, dKV legacy fused, dKdV fused) have causal mask
+    # blocks compiled in but produce dV with structural ~25× under-counting
+    # residual (RMSE 2.7e-3 vs 1e-3 bound).  Causal eligibility gate
+    # retained on `causal=True` until the K-parallel kernel residual is
+    # resolved.  Production: causal callers fall back to SDPA-vjp
+    # (bit-identical, safe).  See `docs/v50/phase-4b-complete-decisions.md`
+    # for full investigation evidence and recommended next steps.
     if causal:
-        return False  # Phase 4b-complete deferred (K-parallel kernels)
+        return False
     if head_dim not in (64, 128):
         return False
     if dtype not in (mx.float16, mx.bfloat16):
@@ -3638,7 +3643,7 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     return True
 
 
-def _v34_backward_vjp(q, k, v, O, L, dO, scale):
+def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
     """V34 backward VJP dispatch — extracted from `_make_mfa_custom`
     per Sprint v2.38.0 DP2-HIGH-01 compound finding.
 
@@ -3646,6 +3651,13 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     eligibility via `_v34_eligible()` before invoking this helper —
     no internal eligibility check (would be redundant with caller
     site).
+
+    v2.50 Phase 4b-complete (Prompt 3): added `causal` parameter.
+    Threaded through to each binding so each Primitive instantiates
+    its kernel with V34BWD*_CAUSAL macro set correctly.  Pre-Prompt-3
+    `compile_v34_backward_pipeline` hardcoded isCausal=false, making
+    my Prompt 2 Phase 4b dQ work a silent no-op — that latent bug
+    was discovered during Prompt 3 validation.
 
     Routing:
     - dQ: always via `v6_nax_backward_query` (single Primitive)
@@ -3673,7 +3685,7 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     D = mx.sum(dO.astype(mx.float32) * O_v34.astype(mx.float32), axis=-1)
 
     dQ = _bwd_ext.v6_nax_backward_query(
-        q, k, v, O_v34, L_v34, dO, D, scale)
+        q, k, v, O_v34, L_v34, dO, D, scale, causal)
 
     # MFA_V34_BWD_KERNEL env var routes between:
     #   "auto" (default): fused for D=64 (post-v2.39.1 H1 fix), split for D=128
@@ -3712,7 +3724,7 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     if _kernel_mode == "legacy_fused":
         # Legacy WM=1 fused dK+dV (kept as escape hatch for one release).
         dK, dV = _bwd_ext.v6_nax_backward_kv(
-            q, k, v, O_v34, L_v34, dO, D, scale)
+            q, k, v, O_v34, L_v34, dO, D, scale, causal)
     elif _kernel_mode == "fused":
         # Option γ fused dK+dV — single kernel, K-bandwidth amortization.
         # Phase C.1.a (v2.39.0/.1): D=64.  Phase C.1.b (v2.40.0-internal
@@ -3727,16 +3739,16 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
                 f"Use MFA_V34_BWD_KERNEL=split (or unset) for D={head_dim}."
             )
         dKp, dVp = _bwd_ext.v6_nax_backward_fused_dkdv_raw(
-            q, k, v, L_v34, dO, D, scale, _wm)
+            q, k, v, L_v34, dO, D, scale, _wm, causal)
         dK = mx.sum(dKp, axis=2).astype(q.dtype)
         dV = mx.sum(dVp, axis=2).astype(q.dtype)
     else:
         # Split path (MFA_V34_BWD_KERNEL=split forced; auto routes here for
         # D ∉ {64, 128}).  split-dV doesn't need D (dV = P^T @ dO; no dS term).
         dVp = _bwd_ext.v6_nax_backward_dv_raw(
-            q, k, v, L_v34, dO, scale, _wm)
+            q, k, v, L_v34, dO, scale, _wm, causal)
         dKp = _bwd_ext.v6_nax_backward_dk_raw(
-            q, k, v, O_v34, L_v34, dO, D, scale, _wm)
+            q, k, v, O_v34, L_v34, dO, D, scale, _wm, causal)
         dV = mx.sum(dVp, axis=2).astype(q.dtype)
         dK = mx.sum(dKp, axis=2).astype(q.dtype)
 
@@ -3850,7 +3862,9 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # `_v34_eligible()` and `_v34_backward_vjp()` per Sprint
             # v2.38.0 DP2-HIGH-01 compound (audit M4-MEDIUM-01).
             if _v34_eligible(q.shape[3], q.dtype, causal):
-                dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale)
+                # v2.50 Phase 4b-complete: pass causal through so V34 backward
+                # kernels compile with V34BWD*_CAUSAL=1 macro.
+                dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale, causal)
             else:
                 # Native STEEL backward is narrowly policy-gated from benchmark data.
                 # Current auto policy is conservative and defaults to SDPA VJP unless

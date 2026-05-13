@@ -822,6 +822,7 @@ void* compile_v34_backward_pipeline(
     SourceGenFn source_gen_fn,
     const char* kernel_fn_name,
     void* mtl_device,
+    bool isCausal = false,  // v2.50 Phase 4b-complete (Prompt 3): plumbed through
     const char* dump_env_var = nullptr,
     const char* dump_label = nullptr,
     const char* dump_path_env_var = nullptr) {
@@ -840,6 +841,10 @@ void* compile_v34_backward_pipeline(
 
   // Kernel descriptor (12-arg constructor; AttentionKernelType ignored by
   // V34 backward source generators which switch on the source-gen method).
+  // v2.50 Phase 4b-complete (Prompt 3): isCausal now plumbed through so
+  // V34BWD*_CAUSAL macros get the correct compile-time value.  Pre-Prompt-3
+  // this was hardcoded to false — a latent bug that silently made my
+  // Prompt 2 Phase 4b dQ causal mask a no-op in production.
   simd::ushort3 blockDims =
       simd::make_ushort3(BQ, BK, (unsigned short)D);
   NAAttentionKernelDescriptor desc(
@@ -849,7 +854,7 @@ void* compile_v34_backward_pipeline(
       AttentionKernelType::forward,  // placeholder; ignored by V34 backward
       /*scale=*/scale,
       /*bypassThreadgroupMemory=*/false,
-      /*isCausal=*/false, /*masked=*/false);
+      /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = true;
   desc.useV34 = true;
 
@@ -895,10 +900,12 @@ struct V34BwdQKey {
   int dtype_code;  // 0=fp16, 1=bf16
   unsigned short v34_BQ, v34_BK;
   uint16_t v34_WM;
+  bool causal;  // v2.50 Phase 4b-complete: separate pipeline cache per causal flag
   bool operator==(const V34BwdQKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
-        && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM;
+        && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
+        && causal == o.causal;
   }
 };
 struct V34BwdQKeyHash {
@@ -910,6 +917,7 @@ struct V34BwdQKeyHash {
     h ^= std::hash<uint16_t>{}(k.v34_BQ) << 4;
     h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
     h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
     return h;
   }
 };
@@ -920,8 +928,10 @@ std::unordered_map<V34BwdQKey, void*, V34BwdQKeyHash> v34_bwdq_pipelines;
 
 class MFAV34BwdQuery : public mlx::core::Primitive {
  public:
-  MFAV34BwdQuery(mlx::core::Stream s, float scale)
-      : mlx::core::Primitive(s), scale_(scale) {}
+  // v2.50 Phase 4b-complete (Prompt 3): causal added to constructor.
+  // Default false preserves prior signature; new code should pass causal.
+  MFAV34BwdQuery(mlx::core::Stream s, float scale, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
 
   const char* name() const override { return "MFAV34BwdQuery"; }
 
@@ -975,7 +985,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdQKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM};
+    V34BwdQKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
@@ -984,10 +994,11 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     }
     if (!pipeline) {
       // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      // v2.50 Phase 4b-complete (Prompt 3): causal_ plumbed through.
       pipeline = compile_v34_backward_pipeline(
           D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardQuerySource(); },
-          "attention_bwd_q", mtl_device,
+          "attention_bwd_q", mtl_device, causal_,
           "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ", nullptr);
       std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
       v34_bwdq_pipelines[key] = pipeline;
@@ -1012,7 +1023,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV34BwdQuery*>(&other);
-    return p && p->scale_ == scale_;
+    return p && p->scale_ == scale_ && p->causal_ == causal_;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1022,6 +1033,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
 
  private:
   float scale_;
+  bool causal_;  // v2.50 Phase 4b-complete (Prompt 3)
 };
 
 // Public Python-callable: V34 backward dQ.
@@ -1044,7 +1056,7 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale) {
+    float scale, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dQ: Q must be 4D");
   if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
     throw std::runtime_error("V34 bwd dQ: Hq must be multiple of Hk");
@@ -1063,7 +1075,7 @@ mlx::core::array v6_nax_backward_query(
   auto outs = mlx::core::array::make_arrays(
       {dq_shape},
       {q.dtype()},
-      std::make_shared<MFAV34BwdQuery>(s, scale),
+      std::make_shared<MFAV34BwdQuery>(s, scale, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
@@ -1083,10 +1095,12 @@ struct V34BwdKVKey {
   int dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
+  bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   bool operator==(const V34BwdKVKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
   }
 };
 struct V34BwdKVKeyHash {
@@ -1098,6 +1112,7 @@ struct V34BwdKVKeyHash {
     h ^= std::hash<uint16_t>{}(k.BQ) << 4;
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
     return h;
   }
 };
@@ -1108,8 +1123,8 @@ std::unordered_map<V34BwdKVKey, void*, V34BwdKVKeyHash> v34_bwdkv_pipelines;
 
 class MFAV34BwdKeyValue : public mlx::core::Primitive {
  public:
-  MFAV34BwdKeyValue(mlx::core::Stream s, float scale)
-      : mlx::core::Primitive(s), scale_(scale) {}
+  MFAV34BwdKeyValue(mlx::core::Stream s, float scale, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
 
   const char* name() const override { return "MFAV34BwdKeyValue"; }
 
@@ -1170,7 +1185,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
@@ -1182,7 +1197,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
       pipeline = compile_v34_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardKeyValueSource(); },
-          "attention_bwd_kv", mtl_device,
+          "attention_bwd_kv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in legacy fused
       std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
       v34_bwdkv_pipelines[key] = pipeline;
@@ -1206,7 +1221,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV34BwdKeyValue*>(&other);
-    return p && p->scale_ == scale_;
+    return p && p->scale_ == scale_ && p->causal_ == causal_;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1220,6 +1235,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
 
  private:
   float scale_;
+  bool causal_;  // v2.50 Phase 4b-complete (Prompt 3)
 };
 
 std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
@@ -1227,7 +1243,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale) {
+    float scale, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dKdV: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -1244,7 +1260,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
   auto outs = mlx::core::array::make_arrays(
       {dk_shape, dk_shape},
       {q.dtype(), q.dtype()},
-      std::make_shared<MFAV34BwdKeyValue>(s, scale),
+      std::make_shared<MFAV34BwdKeyValue>(s, scale, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return {outs[0], outs[1]};
 }
@@ -1266,10 +1282,12 @@ struct V34BwdVKey {
   int dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
+  bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   bool operator==(const V34BwdVKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
   }
 };
 struct V34BwdVKeyHash {
@@ -1281,6 +1299,7 @@ struct V34BwdVKeyHash {
     h ^= std::hash<uint16_t>{}(k.BQ) << 4;
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
     return h;
   }
 };
@@ -1291,8 +1310,8 @@ std::unordered_map<V34BwdVKey, void*, V34BwdVKeyHash> v34_bwdv_pipelines;
 
 class MFAV34BwdDV : public mlx::core::Primitive {
  public:
-  MFAV34BwdDV(mlx::core::Stream s, float scale, uint16_t wm)
-      : mlx::core::Primitive(s), scale_(scale), wm_(wm) {}
+  MFAV34BwdDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
   const char* name() const override { return "MFAV34BwdDV"; }
 
@@ -1342,7 +1361,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    V34BwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
@@ -1354,7 +1373,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
       pipeline = compile_v34_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardDVSource(); },
-          "attention_bwd_dv", mtl_device,
+          "attention_bwd_dv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dV
       std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
       v34_bwdv_pipelines[key] = pipeline;
@@ -1374,7 +1393,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV34BwdDV*>(&other);
-    return p && p->scale_ == scale_ && p->wm_ == wm_;
+    return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1389,6 +1408,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
  private:
   float scale_;
   uint16_t wm_;
+  bool causal_;
 };
 
 // Returns dV_partials FP32 [B, Hq, WM, kL, D].  Caller must mx.sum(axis=2)
@@ -1396,7 +1416,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
 mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
-    const mlx::core::array& d_o, float scale, int wm) {
+    const mlx::core::array& d_o, float scale, int wm, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dV: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -1411,7 +1431,7 @@ mlx::core::array v6_nax_backward_dv_raw(
   auto outs = mlx::core::array::make_arrays(
       {dvp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDV>(s, scale, (uint16_t)wm),
+      std::make_shared<MFAV34BwdDV>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc});
   return outs[0];
 }
@@ -1433,10 +1453,12 @@ struct V34BwdKKey {
   int dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
+  bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   bool operator==(const V34BwdKKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
   }
 };
 struct V34BwdKKeyHash {
@@ -1448,6 +1470,7 @@ struct V34BwdKKeyHash {
     h ^= std::hash<uint16_t>{}(k.BQ) << 4;
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
     return h;
   }
 };
@@ -1458,8 +1481,8 @@ std::unordered_map<V34BwdKKey, void*, V34BwdKKeyHash> v34_bwdk_pipelines;
 
 class MFAV34BwdDK : public mlx::core::Primitive {
  public:
-  MFAV34BwdDK(mlx::core::Stream s, float scale, uint16_t wm)
-      : mlx::core::Primitive(s), scale_(scale), wm_(wm) {}
+  MFAV34BwdDK(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
   const char* name() const override { return "MFAV34BwdDK"; }
 
@@ -1511,7 +1534,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    V34BwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
@@ -1523,7 +1546,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
       pipeline = compile_v34_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardDKSource(); },
-          "attention_bwd_dk", mtl_device,
+          "attention_bwd_dk", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dK
       std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
       v34_bwdk_pipelines[key] = pipeline;
@@ -1547,7 +1570,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV34BwdDK*>(&other);
-    return p && p->scale_ == scale_ && p->wm_ == wm_;
+    return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1561,6 +1584,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
  private:
   float scale_;
   uint16_t wm_;
+  bool causal_;
 };
 
 mlx::core::array v6_nax_backward_dk_raw(
@@ -1568,7 +1592,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale, int wm) {
+    float scale, int wm, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dK: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -1585,7 +1609,7 @@ mlx::core::array v6_nax_backward_dk_raw(
   auto outs = mlx::core::array::make_arrays(
       {dkp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDK>(s, scale, (uint16_t)wm),
+      std::make_shared<MFAV34BwdDK>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
@@ -1609,10 +1633,12 @@ struct V34BwdFusedKey {
   int dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
+  bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   bool operator==(const V34BwdFusedKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
   }
 };
 struct V34BwdFusedKeyHash {
@@ -1624,6 +1650,7 @@ struct V34BwdFusedKeyHash {
     h ^= std::hash<uint16_t>{}(k.BQ) << 4;
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
     return h;
   }
 };
@@ -1634,8 +1661,8 @@ std::unordered_map<V34BwdFusedKey, void*, V34BwdFusedKeyHash> v34_bwd_fused_pipe
 
 class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
  public:
-  MFAV34BwdFusedDKDV(mlx::core::Stream s, float scale, uint16_t wm)
-      : mlx::core::Primitive(s), scale_(scale), wm_(wm) {}
+  MFAV34BwdFusedDKDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
   const char* name() const override { return "MFAV34BwdFusedDKDV"; }
 
@@ -1711,7 +1738,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
@@ -1725,7 +1752,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
       pipeline = compile_v34_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSource(); },
-          "attention_bwd_fused_dkdv", mtl_device,
+          "attention_bwd_fused_dkdv", mtl_device, causal_,
           "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH");
       std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
       v34_bwd_fused_pipelines[key] = pipeline;
@@ -1748,7 +1775,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV34BwdFusedDKDV*>(&other);
-    return p && p->scale_ == scale_ && p->wm_ == wm_;
+    return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1762,6 +1789,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
  private:
   float scale_;
   uint16_t wm_;
+  bool causal_;
 };
 
 std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
@@ -1769,7 +1797,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o,
     const mlx::core::array& d_vec,
-    float scale, int wm) {
+    float scale, int wm, bool causal) {
   if (q.ndim() != 4)
     throw std::runtime_error("V34 bwd fused dKdV: Q must be 4D");
   if (q.shape(3) != 64 && q.shape(3) != 128)
@@ -1790,7 +1818,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
   auto outs = mlx::core::array::make_arrays(
       {partial_shape, partial_shape},
       {mlx::core::float32, mlx::core::float32},
-      std::make_shared<MFAV34BwdFusedDKDV>(s, scale, (uint16_t)wm),
+      std::make_shared<MFAV34BwdFusedDKDV>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc, dvc});
   return {outs[0], outs[1]};  // dK_partials, dV_partials
 }
