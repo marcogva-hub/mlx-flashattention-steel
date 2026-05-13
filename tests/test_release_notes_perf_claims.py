@@ -250,8 +250,12 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
     - `expected == "sdpa_fallback"`: AUTO gradients MUST be bit-identical
       to SDPA reference (V34 did NOT engage; correct fallback).
     """
-    # Set documented env vars
+    # Set documented env vars; clear all routing-related env vars first
+    # so external session state doesn't leak into the parameterized test.
     monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
+    monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
+    monkeypatch.delenv("MFA_V34_BWD_KERNEL", raising=False)  # v2.39.0 (outcome δ)
+    monkeypatch.delenv("MFA_V34BWD_USE_FUSED", raising=False)  # v2.38.0 legacy
     for k, val in claim["env"].items():
         monkeypatch.setenv(k, val)
 

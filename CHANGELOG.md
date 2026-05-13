@@ -4,6 +4,115 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.39.0] — 2026-05-13 — Option γ fused dK+dV (D=64) — outcome δ (opt-in)
+
+> **Scope contract.**  This release adds the Option γ fused dK+dV kernel
+> as a complete architectural component (kernel + Primitive + binding +
+> env var contract + parity test harness) but ships it as **opt-in**,
+> NOT auto-default.  Empirical M5 Max characterization showed the fused
+> kernel is 25-33% SLOWER than v2.38.1's split kernels at qL≥4096 — the
+> exact opposite of the `/metal-kernel-dev` audit's ~10% improvement
+> prediction.  Net effect on users: **identical to v2.38.1** (auto-default
+> routes to split, all v2.38.1 perf claims preserved).  Honest scope:
+> no fused-perf claim is made.
+
+### Added — fused kernel infrastructure (opt-in)
+
+- **`createV34BackwardFusedDKDVSource()`** — new MSL source generator
+  combining split-dV + split-dK into a single Q-loop per K-tile.  Order
+  constraint: `dV_accum += P^T @ dO` precedes `dS = P * dP` overwriting
+  Stile in place (audit-validated; see source `// === ORDER-CRITICAL ===`).
+  Reuses `naxHelpersBlock()` (Sprint v2.38.x extracted).
+- **`MFAV34BwdFusedDKDV`** Primitive — single-dispatch `MLX::Primitive`
+  emitting (dK_partials, dV_partials) both `[B, Hq, WM, kL, D]` FP32.
+- **`v6_nax_backward_fused_dkdv_raw`** nanobind binding — D=64 only this
+  PR (Phase C.1.a per audit staging); raises at C++ for D=128.
+- **`MFA_V34_BWD_KERNEL` env var contract** — `auto | fused | split |
+  legacy_fused`.  Default `auto` routes to **split** per outcome δ.
+  Back-compat: `MFA_V34BWD_USE_FUSED=1` (v2.38.0 legacy) still recognized
+  as `legacy_fused`.
+- **`tests/test_v39_fused_dkdv.py`** — 17 tests: fused vs split parity
+  across qL ∈ {2048, 4096, 8192} (RMSE=0 bit-identical observed),
+  fused-vs-SDPA tolerance, AUTO routing, env override coverage, GQA-
+  eligibility, dtype coverage (fp16 + bf16).
+
+### Empirical outcome δ — no perf claim
+
+Per the blueprint decision tree:
+
+| Outcome | Description | Action |
+|---|---|---|
+| ~~(γ-broadened)~~ | D=64 fused wins ≥10%, broaden carve-out | not observed |
+| ~~(γ-marginal)~~ | D=64 fused wins 5-10% | not observed |
+| **(δ)** | **Regression vs split** | **HALT auto-routing; ship opt-in; document** |
+
+Bench data (PUBLIC AUTO API, M5 Max, 3 sessions × 4w+12i, variance ratios < 1.05):
+
+| qL | fused (ms) | split (ms) | fused/split | Verdict |
+|---|---|---|---|---|
+| 2048 | 4.68 | 4.65 | 0.992× | parity |
+| **4096** | 13.79 | 9.22 | **0.669×** | **-33%** |
+| **8192** | 54.85 | 37.18 | **0.677×** | **-32%** |
+| **16384** | 231.24 | 169.89 | **0.735×** | **-27%** |
+
+Fixed: B=2, H=8, D=64, fp16, non-causal.  Variance across 3 sessions
+all <1.05 → finding is reproducible, not noise.  Full hypotheses for the
+regression (register pressure, L1 cache, occupancy reduction) documented
+in `docs/v6-nax/v39-0-option-gamma-results.md`.
+
+### Correctness verified (HIGH confidence)
+
+- **17/17 v39 fused tests pass** on M5 NAX hardware.
+- **RMSE = 0** (bit-identical) between fused and split outputs across
+  qL ∈ {2048, 4096, 8192} — the fused kernel performs the same FP
+  operations in the same order as split kernels (verified via source
+  inspection + `/mlx-debug-forensics` audit).
+- `/mlx-debug-forensics` 5-axis byte-equivalence audit: HIGH confidence
+  SHIP.  Order constraint preserved; buffer indices, strides, allocations,
+  scale application all cross-verified.
+- All 50 prior V34 + helper + v32-routing + perf-claim tests still pass.
+- All v2.38.1 perf claims preserved unchanged (auto-default = split).
+
+### Why ship as architectural addition despite δ outcome
+
+1. **Reusable infrastructure** — the fused source generator (~440 LOC)
+   is a foundation for future fusion-tuning sprints (different blocking,
+   different WM, TGP streaming reduction, D=128 with register-budget
+   controls).
+2. **`MFA_V34_BWD_KERNEL` env var contract** documents the routing
+   decision space for users + reviewers.
+3. **`test_v39_fused_dkdv.py` parity harness** becomes the verification
+   scaffold for future iterations.
+4. **Honest documentation** of the negative finding — the audit's
+   K-bandwidth-amortization hypothesis was wrong on M5 Max; investigation
+   foundation banked for v2.39.1+ work.
+
+### Files changed
+
+```
+csrc/mfa/v6_nax/NAAttentionKernel.hpp           | +12  (declaration)
+csrc/mfa/v6_nax/NAAttentionKernel.cpp           | +442 (createV34BackwardFusedDKDVSource)
+csrc/v6_nax_compile.mm                          | +95  (V34BwdFusedParamsHost + dispatcher)
+csrc/mfa_v6_nax_primitive.cpp                   | +166 (MFAV34BwdFusedDKDV + public function)
+csrc/bindings.cpp                               | +28  (binding + forward decl)
+mlx_mfa/attention.py                            | +29/-11 (MFA_V34_BWD_KERNEL env routing)
+tests/test_v39_fused_dkdv.py                    | +257 (new — 17 tests)
+benchmarks/bench_v39_0_fused_dkdv.py            | +130 (new — 3-arm bench)
+benchmarks/results/v39_0/*.json                 | +4 files (3 sessions + summary)
+docs/v6-nax/v39-0-option-gamma-results.md       | +130 (new — outcome δ analysis)
+```
+
+### Roadmap
+
+- **v2.39.1**: investigate fused-kernel regression via Metal frame
+  capture + register-pressure profiling; either re-attempt with
+  register-budget controls (`MFA_V6_MAX_THREADS`) or accept that
+  fusion is structurally non-beneficial on M5 NAX and remove the
+  opt-in surface.
+- **v2.40.0**: Primitive boilerplate consolidation (P3-HIGH-01, ~200 LOC
+  dedup across the 4 V34 backward Primitives) — unblocked once fused
+  kernel's fate is settled.
+
 ## [2.38.1] — 2026-05-13 — D_vec precompute (M2-HIGH-01)
 
 D = rowsum(dO ⊙ O) is now precomputed once on host via MLX

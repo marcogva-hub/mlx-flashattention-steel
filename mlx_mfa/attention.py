@@ -3587,15 +3587,55 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     dQ = _bwd_ext.v6_nax_backward_query(
         q, k, v, O_v34, L_v34, dO, D, scale)
 
-    # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
-    # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq, WM,
-    # kL, D] FP32; sum over WM axis + cast to T.
-    # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
+    # v2.39.0 Phase C.1.a: MFA_V34_BWD_KERNEL env var routes between:
+    #   "auto" (default): split for all D (Option γ outcome δ — see below)
+    #   "fused": force fused kernel (Option γ) — D=64 only, raises for D=128
+    #   "split": force split dV/dK kernels (v2.38.1 path)
+    #   "legacy_fused": force legacy WM=1 fused kernel (pre-v2.38.0)
+    # Back-compat: `MFA_V34BWD_USE_FUSED=1` still recognized → legacy_fused.
+    #
+    # v2.39.0 empirical finding (outcome δ): fused kernel ships as available
+    # but NOT auto-default.  Despite /metal-kernel-dev audit predicting
+    # ~10% K-bandwidth-amortization win, M5 Max 3-session bench shows fused
+    # is 25-33% SLOWER than split at qL≥4096 (likely register-pressure-
+    # induced spilling or L1 cache already absorbs split's K-reload).  At
+    # qL=2048 fused is at parity.  Auto-default stays on split; fused is
+    # opt-in for users who want to characterize on their workloads or for
+    # future-sprint perf-tuning experiments.  Numerical correctness verified
+    # bit-identical (RMSE=0 vs split, /mlx-debug-forensics HIGH SHIP).
+    # See docs/v6-nax/v39-0-option-gamma-results.md for the full δ analysis.
+    _kernel_mode = os.environ.get("MFA_V34_BWD_KERNEL", "auto").lower()
     if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
+        _kernel_mode = "legacy_fused"
+
+    head_dim = q.shape[3]
+    _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+
+    # Resolve "auto" → split (per v2.39.0 outcome δ).
+    if _kernel_mode == "auto":
+        _kernel_mode = "split"
+
+    if _kernel_mode == "legacy_fused":
+        # Legacy WM=1 fused dK+dV (kept as escape hatch for one release).
         dK, dV = _bwd_ext.v6_nax_backward_kv(
             q, k, v, O_v34, L_v34, dO, D, scale)
+    elif _kernel_mode == "fused":
+        # Option γ fused dK+dV — single kernel, K-bandwidth amortization.
+        # D=64 only this PR (Phase C.1.a); D=128 raises loudly per Rule 8
+        # rather than silently falling back to split (avoids user
+        # mis-configuration surprises).
+        if head_dim != 64:
+            raise ValueError(
+                f"MFA_V34_BWD_KERNEL=fused requires head_dim=64 "
+                f"(Phase C.1.a scope); got head_dim={head_dim}.  "
+                f"Use MFA_V34_BWD_KERNEL=split (or unset) for D={head_dim}."
+            )
+        dKp, dVp = _bwd_ext.v6_nax_backward_fused_dkdv_raw(
+            q, k, v, L_v34, dO, D, scale, _wm)
+        dK = mx.sum(dKp, axis=2).astype(q.dtype)
+        dV = mx.sum(dVp, axis=2).astype(q.dtype)
     else:
-        _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+        # Split path (default for D=128 in auto; or MFA_V34_BWD_KERNEL=split).
         # split-dV doesn't need D (dV = P^T @ dO; no dS term).
         dVp = _bwd_ext.v6_nax_backward_dv_raw(
             q, k, v, L_v34, dO, scale, _wm)

@@ -70,6 +70,17 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm);
+// V34 backward FUSED dK+dV (Sprint v2.39.0 Phase C.1.a, Option γ).  Single
+// kernel computes both gradients in one K-tile load (K-bandwidth amortization
+// per /metal-kernel-dev audit).  D=64 only this PR; D=128 deferred to
+// Phase C.1.b.  Returns (dK_partials, dV_partials) both [B, Hq, WM, kL, D]
+// FP32; caller reduces via mx.sum(axis=2) and casts to T.
+std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    float scale, int wm);
 }  // namespace mlx_mfa
 
 #include "mfa_paged_gather.hpp"
@@ -433,6 +444,25 @@ NB_MODULE(_ext, m) {
         "V34 backward dK-only multi-SG kernel (Phase 2.O2 sister to dV).  "
         "WM=4 Q-row partition. Returns dK_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.");
+
+  m.def("v6_nax_backward_fused_dkdv_raw",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& lse,
+           const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
+           float scale, int wm) {
+          return mlx_mfa::v6_nax_backward_fused_dkdv_raw(
+              q, k, v, lse, d_o, d_vec, scale, wm);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
+        nb::arg("scale"), nb::arg("wm") = 4,
+        "V34 backward FUSED dK+dV kernel (Sprint v2.39.0 Phase C.1.a, "
+        "Option γ).  Single kernel computes both gradients in one K-tile "
+        "load (K-bandwidth amortization per /metal-kernel-dev audit).  "
+        "D=64 only this PR.  Returns (dK_partials, dV_partials) both "
+        "[B, Hq, WM, kL, D] FP32; caller reduces via mx.sum(axis=2) and "
+        "casts to T.  Consumes v2.38.1 D_vec precompute.");
 
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);

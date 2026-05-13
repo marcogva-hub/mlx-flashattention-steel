@@ -4,26 +4,25 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.38.1** — D_vec precompute (Sprint 2 audit M2-HIGH-01).
-D = rowsum(dO ⊙ O) is now precomputed once on host via MLX and passed
-as a shared device buffer to the V34 backward kernels (dQ + split-dK +
-legacy-fused-dKdV).  Eliminates 2 in-kernel rowsums per default-path
-V34 backward call.  **Measured perf delta via PUBLIC AUTO API on M5 Max
-(`MFA_ENABLE_V34_BACKWARD=1`, all D=64 non-causal f16 V34-eligible shapes):**
+Current version: **2.39.0** — Option γ fused dK+dV kernel ships as
+**opt-in** (Sprint 2 audit M3-HIGH-02, Phase C.1.a).  Empirical outcome
+δ: despite the `/metal-kernel-dev` audit predicting ~10% K-bandwidth-
+amortization win, M5 Max 3-session bench showed fused **25-33% slower
+than split** at qL≥4096.  Correctness verified bit-identical (RMSE=0
+vs split, 17/17 parity tests pass).  Architectural addition preserved
+as foundation for future fusion-tuning sprints.
 
-| qL | v2.37.3 V34 (ms) | v2.38.1 V34 (ms) | Δ wall | v2.37.3 spd | v2.38.1 spd |
-|---|---|---|---|---|---|
-| 4096 | 10.57 | **9.59** | **-9.3%** | 1.75× | **1.91×** |
-| 8192 | 39.90 | **38.27** | -4.1% | 1.79× | **1.87×** |
-| 16384 | 170.81 | **166.33** | -2.6% | 1.75× | **1.80×** |
+**Auto-default routes to split (v2.38.1 D_vec path); fused is opt-in
+via `MFA_V34_BWD_KERNEL=fused`.**  Net effect on users: identical to
+v2.38.1.  D=64 V34 backward speedups vs SDPA-vjp preserved (1.91× /
+1.87× / 1.80× at qL ∈ {4096, 8192, 16384} per v2.38.1 baseline).
 
-Improvement decays with qL as the eliminated rowsum work shrinks
-relative to K-loop time.  D=128 unchanged — AUTO API routes D=128 to
-SDPA-vjp (v2.37.2 carve-out is D=64 hard-gated), parity preserved.
+See `docs/v6-nax/v39-0-option-gamma-results.md` for the full δ
+analysis (regression hypotheses, methodology, decision-tree rationale).
+Honest scope discipline: no fused-perf claim in CHANGELOG.
 
-Builds on **v2.38.0** (refactor + cleanup release: helper extraction,
-dormant placeholder deletion, investigation foundation docs).  See
-`docs/v6-nax/v38-1-perf-claim-audit.md` for full §Z reproduction details.
+Builds on **v2.38.1** (D_vec precompute → 1.91× / 1.87× / 1.80× speedups
+preserved) and **v2.38.0** (refactor + cleanup, investigation foundation).
 
 Net effect on users: identical to v2.37.3.  The v2.37.x perf-claim
 audit (`docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new
