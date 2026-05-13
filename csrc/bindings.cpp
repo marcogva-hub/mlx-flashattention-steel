@@ -43,6 +43,7 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale);
 // V34 backward dK/dV (V34 backward Option β Phase 2).  Single-SG WM=1
 // kernel; one TG per K-tile.  Returns (dK, dV) shaped [B, Hq, kL, D]
@@ -51,10 +52,12 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale);
 // V34 backward dV-only Phase 2.O2 multi-SG (Q-row partition).  Returns
 // dV_partials [B, Hq, WM, kL, D] FP32.  Caller reduces via mx.sum(axis=2)
 // and casts to T to obtain final dV [B, Hq, kL, D].
+// NOTE: dV does NOT need D (= rowsum(dO⊙O)) — dV = P^T @ dO; no dS term.
 mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
@@ -65,6 +68,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm);
 }  // namespace mlx_mfa
 
@@ -372,31 +376,34 @@ NB_MODULE(_ext, m) {
         [](const mlx::core::array& q, const mlx::core::array& k,
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
            float scale) {
-          return mlx_mfa::v6_nax_backward_query(q, k, v, o, lse, d_o, scale);
+          return mlx_mfa::v6_nax_backward_query(q, k, v, o, lse, d_o, d_vec, scale);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
-        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"),
+        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"),
         "V34 backward dQ kernel (Option β Phase 1). Consumes O + lse from "
-        "V34 forward.  Returns dQ.  Routing constraint per DC12: caller "
-        "must ensure V34-forward-eligible shape (D=128 always; D=64 with "
-        "Nk>8000).  M5+ only; D in {64,128}; FP16/BF16; no causal/sparse.");
+        "V34 forward + D=rowsum(dO⊙O) precomputed (v2.38.1).  Returns dQ.  "
+        "Routing constraint per DC12: caller must ensure V34-forward-eligible "
+        "shape (D=128 always; D=64 with Nk>8000).  M5+ only; D in {64,128}; "
+        "FP16/BF16; no causal/sparse.");
 
   m.def("v6_nax_backward_kv",
         [](const mlx::core::array& q, const mlx::core::array& k,
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
            float scale) {
-          return mlx_mfa::v6_nax_backward_kv(q, k, v, o, lse, d_o, scale);
+          return mlx_mfa::v6_nax_backward_kv(q, k, v, o, lse, d_o, d_vec, scale);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
-        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"),
+        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"),
         "V34 backward dK/dV kernel (Option β Phase 2). Single-SG (WM=1) "
         "design. Returns (dK, dV) shaped [B, Hq, kL, D] each (per-Q-head; "
         "GQA reduction is caller's responsibility).  Routing constraint "
-        "per DC12 same as v6_nax_backward_query.");
+        "per DC12 same as v6_nax_backward_query.  D=rowsum(dO⊙O) precomputed (v2.38.1).");
 
   m.def("v6_nax_backward_dv_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
@@ -409,17 +416,19 @@ NB_MODULE(_ext, m) {
         nb::arg("scale"), nb::arg("wm") = 4,
         "V34 backward dV-only multi-SG kernel (Phase 2.O2).  WM=4 default "
         "with Q-row partition.  Returns dV_partials [B, Hq, WM, kL, D] FP32; "
-        "caller reduces via mx.sum(axis=2) and casts to T.");
+        "caller reduces via mx.sum(axis=2) and casts to T.  "
+        "Does NOT take D (= rowsum(dO⊙O)) — dV = P^T @ dO has no dS term.");
 
   m.def("v6_nax_backward_dk_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
            float scale, int wm) {
-          return mlx_mfa::v6_nax_backward_dk_raw(q, k, v, o, lse, d_o, scale, wm);
+          return mlx_mfa::v6_nax_backward_dk_raw(q, k, v, o, lse, d_o, d_vec, scale, wm);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
-        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"),
+        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"), nb::arg("wm") = 4,
         "V34 backward dK-only multi-SG kernel (Phase 2.O2 sister to dV).  "
         "WM=4 Q-row partition. Returns dK_partials [B, Hq, WM, kL, D] FP32; "

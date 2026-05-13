@@ -3764,7 +3764,9 @@ void NAAttentionKernel::loopBackwardKeyValue(CodeWriter &source) const noexcept 
 // Algorithm (FA-2 backward dQ pattern):
 //   1. Pre-loop:
 //      a. Load lse[i] from device, multiply by log2(e) to get lse_log2.
-//      b. Load O + dO, compute D[i] = rowsum(dO[i] ⊙ O[i]) via row_reduce<SumOp>.
+//      b. Load D[i] = rowsum(dO[i] ⊙ O[i]) from device buffer (v2.38.1:
+//         precomputed once on host via MLX, shared with split-dK + legacy-
+//         fused-dKdV kernels; previously recomputed inline per kernel).
 //   2. K-loop:
 //      a. S = Q @ K^T (NAXFrag::mma).
 //      b. S *= scale * log2(e) → S_log2.
@@ -3848,6 +3850,7 @@ struct V34BwdQParams {
   long L_strides[3];   // lse strides (FP32, [B, Hq, qL])
   long dO_strides[3];  // dO strides (same layout as Q)
   long dQ_strides[3];  // dQ strides (same layout as Q)
+  long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
 [[kernel, max_total_threads_per_threadgroup(V34BWD_WM * 32)]]
@@ -3860,6 +3863,7 @@ void attention_bwd_q(
     const device T* dO [[buffer(5)]],
     device T* dQ [[buffer(6)]],
     constant V34BwdQParams& params [[buffer(7)]],
+    device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
@@ -3886,6 +3890,10 @@ void attention_bwd_q(
   dQ += tidl.z * params.dQ_strides[0]
       + tidl.y * params.dQ_strides[1]
       + tidl.x * V34BWD_BQ * params.dQ_strides[2];
+  // v2.38.1: D buffer per-batch/per-head/per-Q-block offset.
+  D  += tidl.z * params.D_strides[0]
+      + tidl.y * params.D_strides[1]
+      + tidl.x * V34BWD_BQ * params.D_strides[2];
 
   // Per-SG row offset within the Q-block.
   const short tm = 16 * V34BWD_TQ * simd_group_id;
@@ -3894,6 +3902,7 @@ void attention_bwd_q(
   L  += tm * int(params.L_strides[2]);
   dO += tm * int(params.dO_strides[2]);
   dQ += tm * int(params.dQ_strides[2]);
+  D  += tm * int(params.D_strides[2]);  // v2.38.1
 
   // Last-block flags.
   const int NQ_aligned = params.qL / V34BWD_BQ;
@@ -3950,44 +3959,34 @@ void attention_bwd_q(
     }
   }
 
-  // === Step 2: compute D[i] = rowsum(dO[i] ⊙ O[i]) ===
-  // Load O and dO tiles (FP16/BF16), element-wise multiply into FP32 tile,
-  // then row_reduce<SumOp> to per-row D scalars.
-  metal::vec<float, kRowsPT> D_vec{0};
+  // === Step 2: load D[i] = rowsum(dO[i] ⊙ O[i]) from device buffer ===
+  // v2.38.1: D is precomputed once on host via MLX (`mx.sum(dO*O, axis=-1)`)
+  // and shared between dQ + split-dK + legacy-fused-dKdV kernels.  Replaces
+  // an inline tile load + FP32 multiply + row_reduce.  Saves 1 rowsum per
+  // V34 backward dQ call.
+  //
+  // Mirrors the lse-load pattern above (Step 1): each lane reads its owned
+  // rows from the device buffer using `NAXFrag::get_coord()` + kElemRows /
+  // kElemRowsJump.  Multiple lanes covering the same row → coalesced read.
+  metal::vec<float, kRowsPT> D_vec;
   {
-    using io_t = NAXTile<T, V34BWD_TQ, V34BWD_TD>;
-    io_t Otile_in, dOtile_in;
-
-    // Load O tile (entire BQ × D).
+    const short2 sc = dq_accum_t::NAXFrag_t::get_coord();
+    constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
+    constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
     STEEL_PRAGMA_UNROLL
     for (short iq = 0; iq < V34BWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWD_TD; id++) {
-        NAXTile<T, 1, 1> Ofrag, dOfrag;
-        const int O_off = iq * 16 * int(params.O_strides[2]) + id * 16;
-        const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
-        if (is_last_q) {
-          Ofrag.load_rows(O + O_off, int(params.O_strides[2]),
-                          lim_rows_q - iq * 16);
-          dOfrag.load_rows(dO + dO_off, int(params.dO_strides[2]),
-                           lim_rows_q - iq * 16);
-        } else {
-          Ofrag.load(O + O_off, int(params.O_strides[2]));
-          dOfrag.load(dO + dO_off, int(params.dO_strides[2]));
-        }
-        Otile_in.frag_at(iq, id) = Ofrag.frag_at(0, 0);
-        dOtile_in.frag_at(iq, id) = dOfrag.frag_at(0, 0);
+      for (short i = 0; i < kElemRows; i++) {
+        const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
+        const short row_idx = iq * kElemRows + i;
+        const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+        // Out-of-range rows: D=0 → contributes 0 to dS (P=0 there anyway
+        // via the lse=+inf trick above).
+        D_vec[row_idx] = in_range
+            ? D[local_row * int(params.D_strides[2])]
+            : 0.0f;
       }
     }
-
-    // Element-wise multiply into FP32 tile, then row-reduce.
-    NAXTile<float, V34BWD_TQ, V34BWD_TD> dot_prod;
-    STEEL_PRAGMA_UNROLL
-    for (short ii = 0; ii < dot_prod.kElemsPerTile; ii++) {
-      dot_prod.elems()[ii] =
-          (float)Otile_in.elems()[ii] * (float)dOtile_in.elems()[ii];
-    }
-    dot_prod.template row_reduce<SumOp>(D_vec);
   }
 
   // === Step 3: K-loop ===
@@ -4279,6 +4278,7 @@ struct V34BwdKVParams {
   long dO_strides[3];
   long dK_strides[3];
   long dV_strides[3];
+  long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
 [[kernel, max_total_threads_per_threadgroup(V34BWDKV_WM * 32)]]
@@ -4292,6 +4292,7 @@ void attention_bwd_kv(
     device T* dK [[buffer(6)]],
     device T* dV [[buffer(7)]],
     constant V34BwdKVParams& params [[buffer(8)]],
+    device const float* D [[buffer(9)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
@@ -4308,6 +4309,8 @@ void attention_bwd_kv(
   O  += tidl.z * params.O_strides[0]  + tidl.y * params.O_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
+  // v2.38.1: D buffer per-batch/per-Hq-head offset (D indexed by query head).
+  D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
   // K/V/dK/dV indexed by KV head (Hk) — apply GQA factor.
   ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
@@ -4365,6 +4368,8 @@ void attention_bwd_kv(
     const device T* O_q  = O  + qb * V34BWDKV_BQ * int(params.O_strides[2]);
     const device float* L_q = L + qb * V34BWDKV_BQ * int(params.L_strides[2]);
     const device T* dO_q = dO + qb * V34BWDKV_BQ * int(params.dO_strides[2]);
+    // v2.38.1: D buffer Q-block offset (mirror L_q).
+    const device float* D_q = D + qb * V34BWDKV_BQ * int(params.D_strides[2]);
 
     // --- Load lse, convert to log2 domain ---
     using s_q_t = NAXTile<float, V34BWDKV_TQ, V34BWDKV_TK>;
@@ -4391,39 +4396,26 @@ void attention_bwd_kv(
       }
     }
 
-    // --- Compute D[i] = rowsum(dO[i] ⊙ O[i]) ---
-    metal::vec<float, kRowsPT_q> D_vec{0};
+    // --- v2.38.1: load D[i] = rowsum(dO[i] ⊙ O[i]) from device buffer ---
+    // D is precomputed on host via MLX, shared with dQ + split-dK kernels.
+    // Mirrors the lse-load pattern above; coalesced reads across lanes.
+    metal::vec<float, kRowsPT_q> D_vec;
     {
-      using io_t = NAXTile<T, V34BWDKV_TQ, V34BWDKV_TD>;
-      io_t Otile_in, dOtile_in;
-
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
       for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDKV_TD; id++) {
-          NAXTile<T, 1, 1> Ofrag, dOfrag;
-          const int O_off = iq * 16 * int(params.O_strides[2]) + id * 16;
-          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
-          if (is_last_q) {
-            Ofrag.load_rows(O_q + O_off, int(params.O_strides[2]),
-                            lim_rows_q - iq * 16);
-            dOfrag.load_rows(dO_q + dO_off, int(params.dO_strides[2]),
-                             lim_rows_q - iq * 16);
-          } else {
-            Ofrag.load(O_q + O_off, int(params.O_strides[2]));
-            dOfrag.load(dO_q + dO_off, int(params.dO_strides[2]));
-          }
-          Otile_in.frag_at(iq, id) = Ofrag.frag_at(0, 0);
-          dOtile_in.frag_at(iq, id) = dOfrag.frag_at(0, 0);
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+          D_vec[row_idx] = in_range
+              ? D_q[local_row * int(params.D_strides[2])]
+              : 0.0f;
         }
       }
-      NAXTile<float, V34BWDKV_TQ, V34BWDKV_TD> dot_prod;
-      STEEL_PRAGMA_UNROLL
-      for (short ii = 0; ii < dot_prod.kElemsPerTile; ii++) {
-        dot_prod.elems()[ii] =
-            (float)Otile_in.elems()[ii] * (float)dOtile_in.elems()[ii];
-      }
-      dot_prod.template row_reduce<SumOp>(D_vec);
     }
 
     // --- QK matmul: S = Q @ K^T ---
@@ -4986,6 +4978,7 @@ struct V34BwdKParams {
   long L_strides[3];
   long dO_strides[3];
   long dKp_strides[4];  // [B, Hq, WM, kL, D] FP32; D stride=1 implicit
+  long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
 [[kernel, max_total_threads_per_threadgroup(V34BWDK_WM * 32)]]
@@ -4998,6 +4991,7 @@ void attention_bwd_dk(
     const device T* dO [[buffer(5)]],
     device float* dK_partials [[buffer(6)]],
     constant V34BwdKParams& params [[buffer(7)]],
+    device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
@@ -5014,6 +5008,8 @@ void attention_bwd_dk(
       + tidl.x * V34BWDK_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
       + tidl.x * V34BWDK_BK * params.V_strides[2];
+  // v2.38.1: D buffer per-batch/per-Hq-head offset (D indexed by query head).
+  D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
   dK_partials += tidl.z * params.dKp_strides[0]
               +  tidl.y * params.dKp_strides[1]
@@ -5053,6 +5049,9 @@ void attention_bwd_dk(
                               + sg_q_offset * int(params.dO_strides[2]);
     const device float* L_qs = L + qb * V34BWDK_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
+    // v2.38.1: D buffer Q-block + SG-row offset (mirror L_qs).
+    const device float* D_qs = D + qb * V34BWDK_BQ * int(params.D_strides[2])
+                                + sg_q_offset * int(params.D_strides[2]);
 
     // --- Load lse, scale to log2 domain ---
     metal::vec<float, kRowsPT_q> lse_log2;
@@ -5077,38 +5076,26 @@ void attention_bwd_dk(
       }
     }
 
-    // --- D = rowsum(dO ⊙ O) ---
-    metal::vec<float, kRowsPT_q> D_vec{0};
+    // --- v2.38.1: load D = rowsum(dO ⊙ O) from device buffer (precomputed) ---
+    // D is precomputed on host via MLX, shared with dQ + legacy-fused kernels.
+    // Mirrors the lse-load pattern above; coalesced reads across lanes.
+    metal::vec<float, kRowsPT_q> D_vec;
     {
-      using io_t = NAXTile<T, V34BWDK_TQ, V34BWDK_TD>;
-      io_t Otile_in, dOtile_in;
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
       for (short iq = 0; iq < V34BWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDK_TD; id++) {
-          NAXTile<T, 1, 1> Ofrag, dOfrag;
-          const int O_off = iq * 16 * int(params.O_strides[2]) + id * 16;
-          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
-          if (is_last_q) {
-            Ofrag.load_rows(O_qs + O_off, int(params.O_strides[2]),
-                            sg_lim_q - iq * 16);
-            dOfrag.load_rows(dO_qs + dO_off, int(params.dO_strides[2]),
-                             sg_lim_q - iq * 16);
-          } else {
-            Ofrag.load(O_qs + O_off, int(params.O_strides[2]));
-            dOfrag.load(dO_qs + dO_off, int(params.dO_strides[2]));
-          }
-          Otile_in.frag_at(iq, id) = Ofrag.frag_at(0, 0);
-          dOtile_in.frag_at(iq, id) = dOfrag.frag_at(0, 0);
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          D_vec[row_idx] = in_range
+              ? D_qs[local_row * int(params.D_strides[2])]
+              : 0.0f;
         }
       }
-      NAXTile<float, V34BWDK_TQ, V34BWDK_TD> dot_prod;
-      STEEL_PRAGMA_UNROLL
-      for (short ii = 0; ii < dot_prod.kElemsPerTile; ii++) {
-        dot_prod.elems()[ii] =
-            (float)Otile_in.elems()[ii] * (float)dOtile_in.elems()[ii];
-      }
-      dot_prod.template row_reduce<SumOp>(D_vec);
     }
 
     // --- S = Q[SG-rows] @ K^T ---
