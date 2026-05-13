@@ -36,18 +36,39 @@ For per-commit history, see `git log`.  For per-release content, see
 | **Sprint 3: mlx-mfa specialized skills** | 2026-05-13 | Skill creation | doc-only — created `/mlx-mfa-perf-audit`, `/mlx-mfa-release-audit`, `/mlx-mfa-bench-methodology`; deferred `/mlx-mfa-kernel-design` post-helpers-refactor | `docs/skills/README.md`, `docs/skills/installation.md` |
 | **Sprint 4: §AA hardening** | 2026-05-13 | Procedural | doc-only — §AA upgraded from "recommended" to MANDATORY BLOCKING with halt protocol; templates pre-include Skill invocations table; first /mlx-mfa-release-audit dry-run validated | `CLAUDE_V6_NAX.md` §AA.1-§AA.4 + `docs/templates/` + `docs/audits/aa-hardening-dryrun.md` |
 
-## v2.38.x — architectural cleanup (THIS sprint)
+## v2.38.x — architectural cleanup → shipped releases
 
 | Sprint | Date | Type | Outcome | Primary deliverable docs |
 |---|---|---|---|---|
-| **v2.38.x cleanup** | 2026-05-13 | Refactor + observability | TBD (Phase E decides α doc-only or β v2.38.1) | `docs/v6-nax/v38x-cleanup-decisions.md` + this doc (`docs/SPRINT_HISTORY.md`) + `docs/PERF_CLAIMS.md` |
+| **v2.38.x cleanup** | 2026-05-13 | Refactor + observability | (α) doc-only merge → folded into v2.38.0 release; Phase A/B/C/D infrastructure shipped. | `docs/v6-nax/v38x-cleanup-decisions.md` + this doc (`docs/SPRINT_HISTORY.md`) + `docs/PERF_CLAIMS.md` |
+| **v2.38.0** | 2026-05-13 | Refactor cleanup release | Helper extraction (`_v34_eligible`, `_v34_backward_vjp`) + dead placeholder deletion + investigation foundation docs. **No perf claim.** | `CHANGELOG.md` `[2.38.0]` + `docs/v6-nax/v38-implementation-decisions.md` |
+| **v2.38.1** | 2026-05-13 | Perf optimization release | D_vec precompute device buffer; **D=64 V34 backward 1.91× / 1.87× / 1.80× vs SDPA-vjp at qL∈{4096,8192,16384}** (was 1.75-1.79× v2.37.3); D=128 unchanged (carve-out D=64 hard-gated). | `CHANGELOG.md` `[2.38.1]` + `docs/v6-nax/v38-1-implementation-decisions.md` + `docs/v6-nax/v38-1-perf-claim-audit.md` |
 
-Phases:
+Phases of original v2.38.x cleanup:
 - **A: Dispatch consolidation** (M5-HIGH-01) — v2.37.2 carve-out moved into dedicated `_v34_backward_carveout()` function; a placeholder `_should_use_mfa_m5_nax_carveout()` was retained for genuine Sprint A.6 hooks but was **subsequently deleted in v2.38.0 P3 Phase C** (dormant since v2.32.0, no Sprint A.6 carve-outs ever materialized; if a future Sprint A.6 surfaces empirically-validated MFA-winning shapes on M5+ NAX canonical D, re-introduce a named function from the `head_dim ∈ {64, 128}` branch in `should_use_mfa()`). ✓ Committed `f7a04ce`.
 - **B: Apple helpers refactor** (M1-HIGH-01 + M3-HIGH-01) — extracted 390-LOC helpers from 5 generators into `naxHelpersBlock()` static method; byte-identical forward kernel source verified; -1541 LOC net. ✓ Committed `c509b4b`.
-- **C: Observability triad** (quality) — `docs/PERF_CLAIMS.md` registry + `mlx_mfa.diagnostics()` runtime introspection + `docs/SPRINT_HISTORY.md` (this file).  ⏳ in progress.
-- **D: /mlx-mfa-kernel-design skill** — unblocked by Phase B; encodes consolidated kernel-design patterns.  ⏳ pending.
-- **E: Release decision via `/mlx-mfa-release-audit`** — α doc-only vs β v2.38.1 patch.  ⏳ pending.
+- **C: Observability triad** (quality) — `docs/PERF_CLAIMS.md` registry (now extended with v2.38.1 D_vec rows) + `mlx_mfa.diagnostics()` runtime introspection + `docs/SPRINT_HISTORY.md` (this file).  ✓ Done; extended in v2.38.1.
+- **D: /mlx-mfa-kernel-design skill** — unblocked by Phase B; encodes consolidated kernel-design patterns.  ✓ Created at `~/.claude/skills/mlx-mfa-kernel-design/`.
+- **E: Release decision via `/mlx-mfa-release-audit`** — α doc-only chosen; Sprint v2.38.x infrastructure folded into v2.38.0 cleanup release. ✓ Decision DC5.
+
+## v2.38.1 — D_vec precompute (M2-HIGH-01)
+
+Single-phase optimization sprint.  D = rowsum(dO ⊙ O) precomputed once on host via MLX and passed as shared device buffer to V34 backward kernels (dQ + split-dK + legacy-fused-dKdV).  Eliminates 2 in-kernel rowsums per default-path V34 backward call.
+
+| Phase | Status | Commit / artefact |
+|---|---|---|
+| A.1-A.6: D_vec wire-up (3 kernels + 3 Primitives + 3 bindings + `_v34_backward_vjp`) | ✓ Committed | `bf62af0` |
+| A.7: Three-axis validation + /mlx-debug-forensics | ✓ HIGH SHIP | 5-axis byte-equivalence audit |
+| A.8: /mlx-mfa-bench-methodology + /mlx-mfa-perf-audit + /mlx-mfa-release-audit | ✓ SHIP-green all gates | `3f4b786` (bench data + audit doc + CHANGELOG) |
+| Release: tag + PyPI + GH | ✓ LIVE | https://pypi.org/project/mlx-mfa/2.38.1/ |
+
+Perf delta (PUBLIC AUTO API, M5 Max NAX, 3 sessions × 4w+12i):
+- D=64 qL=4096:  10.57ms → 9.59ms  (-9.3% wall, 1.75× → **1.91×** vs SDPA-vjp)
+- D=64 qL=8192:  39.90ms → 38.27ms (-4.1% wall, 1.79× → **1.87×**)
+- D=64 qL=16384: 170.81ms → 166.33ms (-2.6% wall, 1.75× → **1.80×**)
+- D=128: unchanged (carve-out D=64 hard-gated; AUTO routes to SDPA-vjp)
+
+Variance ratios all <1.15 per §AA.4.  Improvement decays with qL as eliminated rowsum work shrinks relative to K-loop time.
 
 ---
 
