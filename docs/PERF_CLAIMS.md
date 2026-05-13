@@ -14,12 +14,15 @@ verifies all active claims are still REACHABLE.
 
 ---
 
-## Active claims (as of v2.37.3 + v2.38.x cleanup)
+## Active claims (as of v2.38.1)
 
 | Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
 |---|---|---|---|---|---|
-| `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
-| `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
+| `v2.38.1_d64_qL4096_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=4096 V34 backward **1.91×** vs SDPA-vjp (was 1.75× v2.37.3 under identical conditions; D_vec precompute saves 2 in-kernel rowsums) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(B=2,H=8,qL=4096,D=64) fp16 non-causal` | REACHABLE (2026-05-13, /mlx-mfa-perf-audit verified, 3-session median 1.91× variance 1.03) |
+| `v2.38.1_d64_qL8192_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=8192 V34 backward **1.87×** vs SDPA-vjp (was 1.79× v2.37.3) | `MFA_ENABLE_V34_BACKWARD=1` | Same with `qL=8192` | REACHABLE (3-session median 1.87× variance 1.10) |
+| `v2.38.1_d64_qL16384_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=16384 V34 backward **1.80×** vs SDPA-vjp (was 1.75× v2.37.3) | `MFA_ENABLE_V34_BACKWARD=1` | Same with `qL=16384` | REACHABLE (3-session median 1.80× variance 1.10) |
+| `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
+| `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
 | `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | D=128 V34 backward = research-only; AUTO path falls back to SDPA-vjp at parity | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `D=128` | REACHABLE — bit-identical to SDPA reference (correct fallback) |
 | `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | D=64 qL=2048: carve-out below threshold; AUTO falls back to SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=2048` | REACHABLE (correct fallback) |
 | `v2.37.3_d64_qL8192_env_unset_no_v34` | v2.37.3 | Without `MFA_ENABLE_V34_BACKWARD=1`, V34 backward NEVER engages | env unset | Same shape, env clear | REACHABLE (correct fallback) |
