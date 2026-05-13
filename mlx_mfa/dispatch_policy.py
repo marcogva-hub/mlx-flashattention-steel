@@ -317,43 +317,87 @@ def _should_use_mfa_m5_nax_carveout(
     causal: bool,
     dtype_key: Optional[str],
 ) -> bool:
-    """Return True if shape is in mlx-mfa's empirically-verified niche on M5+ NAX.
+    """**Canonical-path** M5+ NAX carve-out hook (Sprint A.6 follow-up).
 
-    The default policy on M5+ NAX is to route forward attention to MLX SDPA,
-    because Apple's `steel_attention_nax.h` matches V34 NAX-direct on canonical
-    shapes (D∈{64,128}, qL>8). This function encodes Sprint A's empirical
-    findings: specific (head_dim, qL, kL, causal) combinations where
-    mlx-mfa kernels still win despite the canonical match.
+    Called from `should_use_mfa()` line 519 inside the `if has_nax:` branch
+    for `head_dim in (64, 128)`.  The default policy on M5+ NAX is to route
+    forward attention to MLX SDPA (because Apple's `steel_attention_nax.h`
+    matches V34 NAX-direct on canonical shapes).  This function returns
+    True if a shape is in an empirically-validated niche where mlx-mfa
+    kernels beat SDPA on M5+ NAX.
 
-    Returns True ⇒ route to mlx-mfa (override SDPA-default).
-    Returns False ⇒ route to SDPA.
+    **History:**
+    - v2.32.0: created as placeholder (Sprint A.6 hook).  No empirical
+      Sprint A.6 carve-outs ever materialized; returns False.
+    - v2.37.2: a separate V34-backward carve-out lived inline in
+      `flash_attention()` body.  Audit M5-HIGH-01 flagged the inline
+      location.
+    - v2.38.x (this sprint): the V34-backward carve-out was moved to a
+      DEDICATED function `_v34_backward_carveout()` below.  This
+      function (the canonical-path hook) stays dormant pending genuine
+      Sprint A.6 empirical findings.
 
-    Carve-outs (Sprint A.6, v2.32.0):
-
-    [Filled in after the kernel sweep completes.]
+    **Why separate from `_v34_backward_carveout()`:**
+    The two carve-outs have DIFFERENT semantic concerns:
+    - This one: "for shapes where SDPA NAX should be the default,
+      route to mlx-mfa if and only if mlx-mfa empirically wins on a
+      canonical shape (no env-var opt-in; no softcap / alibi /
+      return_lse coupling)."
+    - `_v34_backward_carveout()`: "for D=64 training workloads,
+      engage V34 backward via env-var opt-in WHEN the flash_attention
+      call site doesn't have conflicting concerns (softcap=0, alibi
+      None, return_lse False, K/V same-dtype)."
+    Conflating them caused a silent behavior change at the canonical-
+    path call site for softcap≠0 + env=1 + D=64 qL≥4096 shapes.
     """
-    # Decode shapes (qL ≤ 8) are handled before reaching this function:
-    # the wrapper-level routing keeps them on mlx-mfa because SDPA uses
-    # sdpa_vector (non-NAX) for qL ≤ 8 — and our flash-decode kernel is
-    # competitive with sdpa_vector. So this function only sees qL > 8.
-    #
-    # Cross-attention with N_kv >> N_q is also handled before reaching
-    # here (already routed to MFA in should_use_mfa cross-attn branch).
-    #
-    # Sprint A carve-outs go below — empirically verified shapes where
-    # mlx-mfa beats SDPA NAX on M5+.
+    # Decode shapes (qL ≤ 8) handled before reaching here.  Cross-attn
+    # also handled upstream.  This function only sees self-attn qL > 8.
+    return False  # no canonical-path carve-outs active (Sprint A.6 dormant)
 
-    # ──────────────────────────────────────────────────────────────────
-    # Sprint A.6 carve-outs — UPDATE AFTER docs/v6-nax/v32-kernel-sweep
-    # analysis. Conservative default: no carve-out (route to SDPA).
-    # ──────────────────────────────────────────────────────────────────
 
-    # Example placeholder pattern (commented until A.6 confirms):
-    # if head_dim == 64 and seq_len == 4096 and kv_seq_len == 4096 and not causal:
-    #     # FlashVSR-dense self-attention: mlx-mfa V34/V6 wins ~+20% (Sprint 4)
-    #     return True
+def _v34_backward_carveout(
+    head_dim: int,
+    seq_len: int,
+    causal: bool,
+    dtype_key: Optional[str],
+) -> bool:
+    """**flash_attention()-level** V34-backward eligibility carve-out
+    (v2.37.2 → v2.38.x consolidated).
 
-    return False  # default: route to SDPA on canonical M5+ NAX
+    Called ONLY from `flash_attention()` body when `use_mfa` would
+    otherwise be False.  Caller is responsible for the outer guards
+    (`softcap == 0`, `alibi_slopes is None`, `not return_lse`, K/V
+    same-dtype, `backend == "auto"`) — this function tests only the
+    shape + env predicate.
+
+    Returns True if the shape qualifies for the V34-backward NAX-direct
+    path (1.81-1.82× faster than SDPA-vjp at D=64 qL=4096-8192 per
+    v2.37.2 perf finding).  Without the carve-out + outer guards, the
+    public `flash_attention()` autograd path silently falls back to
+    SDPA-vjp (v2.37.0/v2.37.1 silent integration bug).
+
+    **History:**
+    - v2.37.2: narrow predicate inline in `flash_attention()` body
+    - v2.38.x (this sprint): extracted here per Sprint 2 audit
+      M5-HIGH-01.  Single source of truth for V34-backward routing.
+
+    **Currently active predicate:**
+    D=64, qL ≥ 4096, non-causal, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.
+
+    Future broadening (e.g., D=128 if Option γ proves out) extends
+    this function rather than introducing new inline overrides.
+    """
+    # dtype_key values: "float16" / "bfloat16" / None per
+    # _dispatch_dtype_key().  NOT "fp16" / "bf16".
+    if (
+        head_dim == 64
+        and seq_len >= 4096
+        and not causal
+        and dtype_key in ("float16", "bfloat16")
+        and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+    ):
+        return True
+    return False
 
 
 def should_use_mfa(

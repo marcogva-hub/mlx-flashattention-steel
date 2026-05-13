@@ -471,39 +471,36 @@ def flash_attention(
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
     if not use_mfa:
-        # v2.37.2: V34-backward carve-out.  When `MFA_ENABLE_V34_BACKWARD=1`
-        # is set and the shape qualifies for V34 backward perf win on M5+
-        # NAX (D=64, qL ≥ 4096, non-causal, f16/bf16), force the MFA path
-        # so that the custom-vjp _impl can route the backward through V34
-        # kernels.  Without this carve-out, `should_use_mfa` returns False
-        # for non-causal D=64/128 (STEEL forward isn't competitive at
-        # those shapes), which silently falls back to SDPA-vjp and skips
-        # V34 backward entirely.  The forward cost is small (~0.25ms at
-        # qL=8192) and the backward win is large (1.4-1.8×); net fwd+bwd
-        # is 1.4-1.8× faster than SDPA-vjp.
-        #
-        # Excluded:
-        # - D=128: backward 2.0-2.4× slower than SDPA-vjp (architectural
-        #   floor), net loss even with parity forward.  Research only —
-        #   users opting in for D=128 must force backend='mfa'.
-        # - D=64 qL < 4096: small-shape win doesn't amortize forward
-        #   overhead; net loss.
-        # - causal: V34 backward doesn't support causal (DC3 deferred).
+        # v2.38.x: V34-backward carve-out consolidated into
+        # `dispatch_policy._should_use_mfa_m5_nax_carveout()` per
+        # Sprint 2 audit M5-HIGH-01.  Single source of truth for all
+        # M5+ NAX carve-out routing.  This block applies the carve-out
+        # decision when:
+        #   - backend == "auto" (user hasn't forced a backend)
+        #   - softcap / alibi / return_lse paths don't pre-empt
+        #   - same-dtype K and V (mixed-dtype is handled separately above)
+        # The dispatch_policy function reads MFA_ENABLE_V34_BACKWARD,
+        # shape, dtype, and causal directly to decide.
         if (
             backend == "auto"
             and softcap == 0.0
             and alibi_slopes is None
             and not return_lse
-            and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
             and _get_has_nax_cached()
-            and head_dim == 64
-            and q.shape[2] >= 4096
-            and q.dtype in (mx.float16, mx.bfloat16)
             and k.dtype == q.dtype
             and v.dtype == q.dtype
-            and not causal
         ):
-            use_mfa = True  # fall through to MFA path → V34 backward eligible
+            from mlx_mfa.dispatch_policy import (
+                _v34_backward_carveout,
+                _dispatch_dtype_key,
+            )
+            if _v34_backward_carveout(
+                head_dim=head_dim,
+                seq_len=q.shape[2],
+                causal=causal,
+                dtype_key=_dispatch_dtype_key(q.dtype),
+            ):
+                use_mfa = True  # MFA path → V34 backward eligible
 
     if not use_mfa:
         if softcap != 0.0:
