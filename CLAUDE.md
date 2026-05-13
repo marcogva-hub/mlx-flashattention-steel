@@ -55,17 +55,53 @@ and short-circuits to SDPA fallback before the V34 env-var check
 runs.  100% of tests passed (every test used `backend="mfa"` forced
 path).  Reference audit: `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
-## Python environment
-Always use the project venv: `~/code/mlx-mfa-v2/.venv`
+## Canonical Python environment (2026-05-13)
 
-Build extension:
+Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the
+single source of truth.**  Any other venv directories (e.g., legacy
+`venv/`, archived as `venv.deprecated.YYYY-MM-DD/`) are deprecated and
+must NOT be used.  See Sprint 1 venv-consolidation
+(`chore/venv-consolidation`, 2026-05-13) for rationale.
+
+**All tools required for the workflow live in `.venv/`:**
+
+| Tool | Form | Verify with |
+|---|---|---|
+| `twine` | binary `.venv/bin/twine` | `test -f .venv/bin/twine` |
+| `build` | Python module (not a binary) | `.venv/bin/python -c "import build"` |
+| `pytest` | binary `.venv/bin/pytest` | `test -f .venv/bin/pytest` |
+| `mlx` | importable package | `.venv/bin/python -c "import mlx.core"` |
+
+Note: `build` ships as a Python module only — it does NOT install a
+`bin/build` executable.  Use `.venv/bin/python -m build` to invoke it.
+Checking for it via `test -f .venv/bin/build` will always fail; use
+the import check instead.  This subtlety caused a false "twine not
+found" diagnosis in the v2.37.3 release session — the actual problem
+was using `which twine` (which searches `$PATH`, not the venv) instead
+of `.venv/bin/twine` (which works fine).
+
+**If any tool is missing**, install in-place: `.venv/bin/pip install
+<tool>`.  Do NOT create a fresh venv to "start clean" — that's how the
+deprecated `venv/` came to exist alongside `.venv/`.
+
+**Before any release flow**, run the sanity check:
+
+```bash
+bash scripts/check_venv.sh
+```
+
+This is enforced as a pre-tag gate per `CLAUDE_V6_NAX.md` §X.5.
+
+### Build extension
+
 ```bash
 cd ~/code/mlx-mfa-v2
 CMAKE_ARGS="-DPython_EXECUTABLE=.venv/bin/python" \
   .venv/bin/python -m pip install --no-build-isolation -e .
 ```
 
-Run tests:
+### Run tests
+
 ```bash
 .venv/bin/python -m pytest tests/ -q
 ```
