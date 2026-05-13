@@ -11,6 +11,30 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Sprint C (v2.40.x-internal, P3-HIGH-01)**: V34 backward Primitive
+  pipeline-compile boilerplate consolidation.  Extracted ~125 LOC of
+  duplicated descriptor-setup + source-gen + compile pattern across
+  the 5 V34 backward Primitives (`MFAV34BwdQuery`, `MFAV34BwdKeyValue`,
+  `MFAV34BwdDV`, `MFAV34BwdDK`, `MFAV34BwdFusedDKDV`) into a single
+  `compile_v34_backward_pipeline` helper in
+  `csrc/mfa_v6_nax_primitive.cpp`.  Pure refactor: same
+  `AttentionOperands` + `NAAttentionKernelDescriptor` construction,
+  same source-generator dispatch via lambda, same `v34_compile`
+  invocation.  Source-dump hooks unified (env-gated, optional file
+  output) — previously inline only in 2 of 5 Primitives; now
+  uniformly available to all 5 via helper args.  **Net -37 LOC raw
+  diff; ~85 LOC of duplicated logic eliminated**; future V34
+  backward kernel additions (block-sparse, causal, additional D
+  values) plug into the helper without re-deriving the pattern.
+  79/79 tests pass; D=64 fused-BK16 perf preserved within session
+  noise.  Zero user-visible change.  See
+  `docs/v6-nax/primitive-consolidation-decisions.md`.
+
+  *Minor stderr-format change* (env-gated, invisible by default):
+  `MFA_V34BWD_DUMP_SOURCE=1` on MFAV34BwdQuery now prints the full
+  source body in addition to the header (was: header only).  All 5
+  Primitive dump hooks now share a uniform stderr format.
+
 - **Sprint A (v2.39.2-internal, M2-HIGH-01 follow-up)**: broadened
   the v2.37.2 V34-backward carve-out floor from `qL ≥ 4096` to
   `qL ≥ 2048`.  After v2.39.1's BK=16 fix the fused kernel reaches

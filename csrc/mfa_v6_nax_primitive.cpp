@@ -795,6 +795,95 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 // Phase 1 trades compile-once-per-cell for code simplicity.
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// v2.40.x-internal Sprint C (P3-HIGH-01): V34 backward pipeline-compile helper.
+// Consolidates the ~30-40 LOC of pipeline-cache-miss boilerplate duplicated
+// across all 5 V34 backward Primitives (MFAV34BwdQuery, MFAV34BwdKeyValue,
+// MFAV34BwdDV, MFAV34BwdDK, MFAV34BwdFusedDKDV) into a single helper.
+// Pure refactor: produces byte-identical generated source as before; only
+// the C++ boilerplate around source-gen + compile is consolidated.
+//
+// Each caller still owns its own pipeline-cache mutex + map (the cache keys
+// differ per Primitive).  The helper handles:
+//   1. AttentionOperands precision setup (FP16/BF16 inputs, FP32 S/P/L)
+//   2. NAAttentionKernelDescriptor construction (singleOtileMode + useV34)
+//   3. Optional source-dump hook (env-gated via MFA_V34BWD*_DUMP_SOURCE +
+//      optional MFA_V34BWD*_DUMP_PATH for file output)
+//   4. Source string generation via caller-provided lambda
+//   5. Final v34_compile() invocation
+// -----------------------------------------------------------------------------
+namespace {
+
+template <typename SourceGenFn>
+void* compile_v34_backward_pipeline(
+    int D, int Hq, int Hk, int dtype_code,
+    unsigned short BQ, unsigned short BK, uint16_t WM,
+    float scale,
+    SourceGenFn source_gen_fn,
+    const char* kernel_fn_name,
+    void* mtl_device,
+    const char* dump_env_var = nullptr,
+    const char* dump_label = nullptr,
+    const char* dump_path_env_var = nullptr) {
+  // Build memoryPrecisions (FP16/BF16 inputs, FP32 intermediates).
+  GEMMOperandPrecision input_prec = (dtype_code == 1)
+      ? GEMMOperandPrecision::BF16
+      : GEMMOperandPrecision::FP16;
+  AttentionOperands<GEMMOperandPrecision> mp;
+  mp[AttentionOperand::Q] = input_prec;
+  mp[AttentionOperand::K] = input_prec;
+  mp[AttentionOperand::V] = input_prec;
+  mp[AttentionOperand::O] = input_prec;
+  mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
+  mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
+  mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
+
+  // Kernel descriptor (12-arg constructor; AttentionKernelType ignored by
+  // V34 backward source generators which switch on the source-gen method).
+  simd::ushort3 blockDims =
+      simd::make_ushort3(BQ, BK, (unsigned short)D);
+  NAAttentionKernelDescriptor desc(
+      blockDims, (unsigned short)D, (unsigned short)Hq,
+      (unsigned short)Hk, /*executionSIMDGroups=*/WM,
+      /*checkCEdge1=*/false, mp,
+      AttentionKernelType::forward,  // placeholder; ignored by V34 backward
+      /*scale=*/scale,
+      /*bypassThreadgroupMemory=*/false,
+      /*isCausal=*/false, /*masked=*/false);
+  desc.singleOtileMode = true;
+  desc.useV34 = true;
+
+  // Source generation via caller's lambda.
+  NAAttentionKernel ker(desc);
+  std::string src = source_gen_fn(ker);
+
+  // Optional source-dump hook.
+  if (dump_env_var && std::getenv(dump_env_var)) {
+    const char* path = dump_path_env_var ? std::getenv(dump_path_env_var) : nullptr;
+    const char* label = dump_label ? dump_label : kernel_fn_name;
+    if (path) {
+      FILE* f = fopen(path, "w");
+      if (f) {
+        fwrite(src.data(), 1, src.size(), f);
+        fclose(f);
+        fprintf(stderr,
+                "[v2.40.x] %s source dumped to %s "
+                "(D=%d BQ=%d BK=%d WM=%d, %zu bytes)\n",
+                label, path, D, (int)BQ, (int)BK, (int)WM, src.size());
+      }
+    } else {
+      fprintf(stderr,
+              "=== %s source (D=%d BQ=%d BK=%d WM=%d) length=%zu bytes ===\n%s\n",
+              label, D, (int)BQ, (int)BK, (int)WM, src.size(), src.c_str());
+    }
+  }
+
+  return v34_compile(src, kernel_fn_name, mtl_device);
+}
+
+}  // namespace
+
+
 void v34_dispatch_bwd_query(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
@@ -894,43 +983,12 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
       if (it != v34_bwdq_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // Build memoryPrecisions via Reference::operator=(Value) pattern.
-      GEMMOperandPrecision input_prec = (dtype_code == 1)
-          ? GEMMOperandPrecision::BF16
-          : GEMMOperandPrecision::FP16;
-      AttentionOperands<GEMMOperandPrecision> mp;
-      mp[AttentionOperand::Q] = input_prec;
-      mp[AttentionOperand::K] = input_prec;
-      mp[AttentionOperand::V] = input_prec;
-      mp[AttentionOperand::O] = input_prec;
-      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
-
-      simd::ushort3 blockDims =
-          simd::make_ushort3(v34_BQ, v34_BK, (unsigned short)D);
-      // Use the 12-arg constructor (with isVarlen).
-      NAAttentionKernelDescriptor desc(
-          blockDims, (unsigned short)D, (unsigned short)Hq,
-          (unsigned short)Hk, /*executionSIMDGroups=*/v34_WM,
-          /*checkCEdge1=*/false, mp,
-          AttentionKernelType::forward,  // placeholder; ker.createV34BackwardQuerySource()
-                                         // ignores .type
-          /*scale=*/scale_,
-          /*bypassThreadgroupMemory=*/false,
-          /*isCausal=*/false, /*masked=*/false);
-      desc.singleOtileMode = true;
-      desc.useV34 = true;
-
-      NAAttentionKernel ker(desc);
-      std::string src = ker.createV34BackwardQuerySource();
-
-      if (std::getenv("MFA_V34BWD_DUMP_SOURCE")) {
-        fprintf(stderr, "=== V34 bwd dQ source (D=%d) length=%zu bytes ===\n",
-                D, src.size());
-      }
-
-      pipeline = v34_compile(src, "attention_bwd_q", mtl_device);
+      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardQuerySource(); },
+          "attention_bwd_q", mtl_device,
+          "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ", nullptr);
       std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
       v34_bwdq_pipelines[key] = pipeline;
     }
@@ -1120,33 +1178,12 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
       if (it != v34_bwdkv_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      GEMMOperandPrecision input_prec = (dtype_code == 1)
-          ? GEMMOperandPrecision::BF16
-          : GEMMOperandPrecision::FP16;
-      AttentionOperands<GEMMOperandPrecision> mp;
-      mp[AttentionOperand::Q] = input_prec;
-      mp[AttentionOperand::K] = input_prec;
-      mp[AttentionOperand::V] = input_prec;
-      mp[AttentionOperand::O] = input_prec;
-      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
-
-      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
-      NAAttentionKernelDescriptor desc(
-          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
-          /*executionSIMDGroups=*/WM,
-          /*checkCEdge1=*/false, mp,
-          AttentionKernelType::forward,
-          /*scale=*/scale_,
-          /*bypassThreadgroupMemory=*/false,
-          /*isCausal=*/false, /*masked=*/false);
-      desc.singleOtileMode = true;
-      desc.useV34 = true;
-
-      NAAttentionKernel ker(desc);
-      std::string src = ker.createV34BackwardKeyValueSource();
-      pipeline = v34_compile(src, "attention_bwd_kv", mtl_device);
+      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardKeyValueSource(); },
+          "attention_bwd_kv", mtl_device,
+          nullptr, nullptr, nullptr);  // no dump hook in legacy fused
       std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
       v34_bwdkv_pipelines[key] = pipeline;
     }
@@ -1313,31 +1350,12 @@ class MFAV34BwdDV : public mlx::core::Primitive {
       if (it != v34_bwdv_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      GEMMOperandPrecision input_prec = (dtype_code == 1)
-          ? GEMMOperandPrecision::BF16
-          : GEMMOperandPrecision::FP16;
-      AttentionOperands<GEMMOperandPrecision> mp;
-      mp[AttentionOperand::Q] = input_prec;
-      mp[AttentionOperand::K] = input_prec;
-      mp[AttentionOperand::V] = input_prec;
-      mp[AttentionOperand::O] = input_prec;
-      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
-      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
-      NAAttentionKernelDescriptor desc(
-          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
-          /*executionSIMDGroups=*/WM,
-          /*checkCEdge1=*/false, mp,
-          AttentionKernelType::forward,
-          /*scale=*/scale_,
-          /*bypassThreadgroupMemory=*/false,
-          /*isCausal=*/false, /*masked=*/false);
-      desc.singleOtileMode = true;
-      desc.useV34 = true;
-      NAAttentionKernel ker(desc);
-      std::string src = ker.createV34BackwardDVSource();
-      pipeline = v34_compile(src, "attention_bwd_dv", mtl_device);
+      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardDVSource(); },
+          "attention_bwd_dv", mtl_device,
+          nullptr, nullptr, nullptr);  // no dump hook in split-dV
       std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
       v34_bwdv_pipelines[key] = pipeline;
     }
@@ -1501,31 +1519,12 @@ class MFAV34BwdDK : public mlx::core::Primitive {
       if (it != v34_bwdk_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      GEMMOperandPrecision input_prec = (dtype_code == 1)
-          ? GEMMOperandPrecision::BF16
-          : GEMMOperandPrecision::FP16;
-      AttentionOperands<GEMMOperandPrecision> mp;
-      mp[AttentionOperand::Q] = input_prec;
-      mp[AttentionOperand::K] = input_prec;
-      mp[AttentionOperand::V] = input_prec;
-      mp[AttentionOperand::O] = input_prec;
-      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
-      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
-      NAAttentionKernelDescriptor desc(
-          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
-          /*executionSIMDGroups=*/WM,
-          /*checkCEdge1=*/false, mp,
-          AttentionKernelType::forward,
-          /*scale=*/scale_,
-          /*bypassThreadgroupMemory=*/false,
-          /*isCausal=*/false, /*masked=*/false);
-      desc.singleOtileMode = true;
-      desc.useV34 = true;
-      NAAttentionKernel ker(desc);
-      std::string src = ker.createV34BackwardDKSource();
-      pipeline = v34_compile(src, "attention_bwd_dk", mtl_device);
+      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardDKSource(); },
+          "attention_bwd_dk", mtl_device,
+          nullptr, nullptr, nullptr);  // no dump hook in split-dK
       std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
       v34_bwdk_pipelines[key] = pipeline;
     }
@@ -1720,50 +1719,14 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
       if (it != v34_bwd_fused_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      GEMMOperandPrecision input_prec = (dtype_code == 1)
-          ? GEMMOperandPrecision::BF16
-          : GEMMOperandPrecision::FP16;
-      AttentionOperands<GEMMOperandPrecision> mp;
-      mp[AttentionOperand::Q] = input_prec;
-      mp[AttentionOperand::K] = input_prec;
-      mp[AttentionOperand::V] = input_prec;
-      mp[AttentionOperand::O] = input_prec;
-      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
-      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
-      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
-      NAAttentionKernelDescriptor desc(
-          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
-          /*executionSIMDGroups=*/WM,
-          /*checkCEdge1=*/false, mp,
-          AttentionKernelType::forward,
-          /*scale=*/scale_,
-          /*bypassThreadgroupMemory=*/false,
-          /*isCausal=*/false, /*masked=*/false);
-      desc.singleOtileMode = true;
-      desc.useV34 = true;
-      NAAttentionKernel ker(desc);
-      std::string src = ker.createV34BackwardFusedDKDVSource();
-      // v2.39.1: source-dump hook for investigation (mirrors split-path
-      // hook at line 928).  Dumps to stderr or to file via MFA_V34BWDF_DUMP_PATH.
-      if (std::getenv("MFA_V34BWDF_DUMP_SOURCE")) {
-        const char* path = std::getenv("MFA_V34BWDF_DUMP_PATH");
-        if (path) {
-          FILE* f = fopen(path, "w");
-          if (f) {
-            fwrite(src.data(), 1, src.size(), f);
-            fclose(f);
-            fprintf(stderr, "[v2.39.1] V34 bwd fused source dumped to %s "
-                            "(D=%d BQ=%d BK=%d WM=%d, %zu bytes)\n",
-                    path, D, (int)BQ, (int)BK, (int)WM, src.size());
-          }
-        } else {
-          fprintf(stderr, "=== V34 bwd fused source (D=%d BQ=%d BK=%d WM=%d) "
-                          "length=%zu bytes ===\n%s\n",
-                  D, (int)BQ, (int)BK, (int)WM, src.size(), src.c_str());
-        }
-      }
-      pipeline = v34_compile(src, "attention_bwd_fused_dkdv", mtl_device);
+      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      // Fused path keeps source-dump hook (set MFA_V34BWDF_DUMP_SOURCE=1;
+      // optional MFA_V34BWDF_DUMP_PATH=<file> for file output).
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSource(); },
+          "attention_bwd_fused_dkdv", mtl_device,
+          "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH");
       std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
       v34_bwd_fused_pipelines[key] = pipeline;
     }
