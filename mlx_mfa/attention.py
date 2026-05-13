@@ -3507,6 +3507,105 @@ def _mfa_alibi_forward(
     return impl(q, k, v, alibi_slopes)
 
 
+def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
+    """V34 NAX-direct backward eligibility predicate.
+
+    Extracted from `_make_mfa_custom` per Sprint v2.38.0 DP2-HIGH-01
+    compound finding (audit M4-MEDIUM-01).  Consolidates the predicate
+    that was previously duplicated at two call sites within
+    `_make_mfa_custom` (forward-fusion check + backward eligibility
+    check).
+
+    Returns True if the V34 backward path should engage:
+    - `MFA_ENABLE_V34_BACKWARD=1` env var set
+    - M5+ NAX hardware available (cached check)
+    - head_dim ∈ {64, 128}
+    - dtype is fp16 or bf16
+    - not causal (DC3 deferred — V34 backward doesn't support causal)
+
+    This is the SECOND-line eligibility check.  `flash_attention()` body
+    does the FIRST-line check via `_v34_backward_carveout()` in
+    `dispatch_policy.py` (which adds qL ≥ 4096 + same-K/V-dtype gates
+    to enforce end-to-end perf-win envelope).  If a request reaches
+    `_make_mfa_custom`, the carve-out already passed; this helper
+    re-verifies the shape-independent predicate at the closure level.
+
+    NOTE — does NOT include D_vec precompute (deferred to v2.38.1).
+
+    Testing note: env-var reads via `os.environ` are monkeypatch-able
+    in tests.  `_get_has_nax_cached()` is a process-global cache —
+    non-NAX-hardware testing requires monkey-patching the cached
+    function or a runtime-injection wrapper (currently out of scope
+    since production deployment is M5+ NAX).
+    """
+    if not _get_has_nax_cached():
+        return False
+    if causal:
+        return False  # DC3 deferred
+    if head_dim not in (64, 128):
+        return False
+    if dtype not in (mx.float16, mx.bfloat16):
+        return False
+    if os.environ.get("MFA_ENABLE_V34_BACKWARD") != "1":
+        return False
+    return True
+
+
+def _v34_backward_vjp(q, k, v, O, L, dO, scale):
+    """V34 backward VJP dispatch — extracted from `_make_mfa_custom`
+    per Sprint v2.38.0 DP2-HIGH-01 compound finding.
+
+    Returns (dQ, dK, dV).  Caller is responsible for verifying V34
+    eligibility via `_v34_eligible()` before invoking this helper —
+    no internal eligibility check (would be redundant with caller
+    site).
+
+    Routing:
+    - dQ: always via `v6_nax_backward_query` (single Primitive)
+    - dV + dK: split kernels (default WM=4, Phase 2.O2) UNLESS
+      `MFA_V34BWD_USE_FUSED=1` set → legacy WM=1 fused kernel
+    - Split path: 3 kernels (dQ + dV partials + dK partials) +
+      Python `mx.sum(axis=2)` reduction over WM slot dim
+
+    NOTE — no D_vec precompute in this version (deferred to v2.38.1).
+    The 3 kernels each recompute `D[i] = rowsum(dO ⊙ O)` inline as
+    they have since v2.37.0.
+
+    v2.38.1 D_vec precompute insertion point: ABOVE the `dQ = ...`
+    call line below.  Add `D = mx.sum(dO.astype(mx.float32) *
+    O.astype(mx.float32), axis=-1)` once, then thread `D` as an
+    extra arg to each of the 3 v6_nax_backward_* bindings (which
+    will also gain a D param in their C++ signatures + Primitive
+    eval_gpu buffer bindings + kernel-source D-buffer reads).
+    """
+    from mlx_mfa import _ext as _bwd_ext
+
+    # Phase 2.O3 forward-fusion convention: O and L are already V34's
+    # outputs (natural-log lse) when V34 backward is enabled — see
+    # `_make_mfa_custom._impl` for the force_v34=True forward path.
+    O_v34, L_v34 = O, L
+
+    dQ = _bwd_ext.v6_nax_backward_query(q, k, v, O_v34, L_v34, dO, scale)
+
+    # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
+    # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq, WM,
+    # kL, D] FP32; sum over WM axis + cast to T.
+    # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
+    if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
+        dK, dV = _bwd_ext.v6_nax_backward_kv(
+            q, k, v, O_v34, L_v34, dO, scale)
+    else:
+        _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+        dVp = _bwd_ext.v6_nax_backward_dv_raw(
+            q, k, v, L_v34, dO, scale, _wm)
+        dKp = _bwd_ext.v6_nax_backward_dk_raw(
+            q, k, v, O_v34, L_v34, dO, scale, _wm)
+        dV = mx.sum(dVp, axis=2).astype(q.dtype)
+        dK = mx.sum(dKp, axis=2).astype(q.dtype)
+
+    return dQ, dK, dV
+
+
 @functools.lru_cache(maxsize=64)
 def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                      window_left: int = -1, window_right: int = -1):
@@ -3549,18 +3648,10 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # forward via V34 (natural-log lse) so backward consumes it
             # directly without recompute.  Saves ~5-8ms at qL=8192 by
             # eliminating both STEEL forward AND V34 forward recompute.
-            head_dim_fwd = q.shape[3]
-            _nk_fwd = k.shape[2]
-            _use_v34_fwd_for_bwd = (
-                os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
-                and _get_has_nax_cached()
-                and head_dim_fwd in (64, 128)
-                and q.dtype in (mx.float16, mx.bfloat16)
-                and not causal
-                # v2.37.0+: drop the Nk>8000 constraint — we now pass
-                # force_v34=True to v6_nax_forward to ensure V34 routing.
-            )
-            if _use_v34_fwd_for_bwd:
+            # Eligibility predicate extracted to `_v34_eligible()` per
+            # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
+            # the backward-side check below pre-refactor).
+            if _v34_eligible(q.shape[3], q.dtype, causal):
                 from mlx_mfa._ext import v6_nax_forward as _v6_fwd
                 # v2.37.0+: force V34 forward routing so lse is natural-log
                 # (V34 backward consumes natural-log lse).  This extends
@@ -3606,50 +3697,15 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
         elif softcap == 0.0:
             # V34 backward NAX-direct (Option β sprint, v2.36.x post-BLK1):
-            # SHIP_OPT_IN per auto-default principle: kernels are
-            # functionally correct (RMSE matches SDPA-vjp within FP16
-            # floor) but currently slower than SDPA-vjp (3-4× regression
-            # on M5 Max at WM=1 single-SG design; multi-SG dK/dV +
-            # forward-fusion optimization deferred to follow-up sprint).
+            # SHIP_OPT_IN per auto-default principle.  Opt-in via
+            # `MFA_ENABLE_V34_BACKWARD=1`.  Default routes to STEEL
+            # backward / SDPA-vjp per existing dispatch.
             #
-            # Opt-in: set MFA_ENABLE_V34_BACKWARD=1 to engage.
-            # Default (env unset or anything other than "1"): fall back
-            # to STEEL backward / SDPA-vjp per existing dispatch.
-            head_dim_ = q.shape[3]
-            _Nk_for_v34 = k.shape[2]
-            _v34_bwd_eligible = (
-                os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
-                and _get_has_nax_cached()
-                and head_dim_ in (64, 128)
-                and q.dtype in (mx.float16, mx.bfloat16)
-                and not causal
-                # v2.37.0+: DC12 routing parity relaxed — we now force V34
-                # forward routing in _impl (force_v34=True) so V34 backward
-                # works on D=64 small-Nk too.
-            )
-            if _v34_bwd_eligible:
-                from mlx_mfa import _ext as _bwd_ext
-                # Phase 2.O3: O and L from forward are already V34's outputs
-                # (natural-log lse) when V34 backward is enabled — see _impl
-                # above.  No V34 forward recompute needed.
-                O_v34, L_v34 = O, L
-                dQ = _bwd_ext.v6_nax_backward_query(
-                    q, k, v, O_v34, L_v34, dO, scale)
-                # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
-                # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq,
-                # WM, kL, D] FP32; sum over WM axis + cast to T.
-                # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
-                if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
-                    dK, dV = _bwd_ext.v6_nax_backward_kv(
-                        q, k, v, O_v34, L_v34, dO, scale)
-                else:
-                    _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
-                    dVp = _bwd_ext.v6_nax_backward_dv_raw(
-                        q, k, v, L_v34, dO, scale, _wm)
-                    dKp = _bwd_ext.v6_nax_backward_dk_raw(
-                        q, k, v, O_v34, L_v34, dO, scale, _wm)
-                    dV = mx.sum(dVp, axis=2).astype(q.dtype)
-                    dK = mx.sum(dKp, axis=2).astype(q.dtype)
+            # Eligibility predicate + 3-kernel dispatch extracted to
+            # `_v34_eligible()` and `_v34_backward_vjp()` per Sprint
+            # v2.38.0 DP2-HIGH-01 compound (audit M4-MEDIUM-01).
+            if _v34_eligible(q.shape[3], q.dtype, causal):
+                dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale)
             else:
                 # Native STEEL backward is narrowly policy-gated from benchmark data.
                 # Current auto policy is conservative and defaults to SDPA VJP unless
