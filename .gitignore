@@ -13,6 +13,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+# Deprecated venvs (post 2026-05-13 Sprint 1 consolidation; canonical is .venv/)
+venv.deprecated.*
 
 # IDE
 .vscode/

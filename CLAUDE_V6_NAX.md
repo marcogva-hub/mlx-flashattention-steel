@@ -525,6 +525,42 @@ audit per v2.33.x lesson):
 
 See `docs/RELEASE_PHILOSOPHY.md` for the full principle.
 
+### §X.5 — Tool availability verification (added 2026-05-13)
+
+Before any version bump or release flow, the canonical `.venv/` must
+have all required release-flow tools available.  This was added after
+the v2.37.3 release session surfaced a false "twine not found"
+diagnosis caused by using `which twine` (which searches `$PATH`, not
+the venv) instead of `.venv/bin/twine` — and after the Sprint 1
+venv-consolidation cleanup eliminated the ambiguous legacy `venv/`
+that accumulated alongside `.venv/`.
+
+Pre-tag gate:
+
+- [ ] `bash scripts/check_venv.sh` runs clean (exit 0)
+- [ ] `.venv/bin/twine` and `.venv/bin/pytest` exist as binaries
+- [ ] `.venv/bin/python -c "import build"` succeeds (note: `build` is a
+      Python module only, NOT a binary — checking for `.venv/bin/build`
+      will always fail and is the wrong test)
+- [ ] `.venv/bin/python -c "import mlx.core, mlx_mfa"` succeeds (catches
+      editable-install drift after kernel changes)
+
+CI variant (check-only, no auto-install):
+
+```bash
+bash scripts/check_venv.sh --no-install
+# Exit 0  → all tools present
+# Exit 2  → at least one tool missing; install before tagging
+```
+
+The script is array-driven: adding a new release-flow tool (e.g.,
+`ruff` for linting, `mypy` for type-check gate) is a one-line edit
+to the `BINARY_TOOLS` or `MODULE_TOOLS` array in the script — no
+second edit needed.
+
+Reference: `CLAUDE.md` "Canonical Python environment" section + Sprint 1
+venv-consolidation (`chore/venv-consolidation`, 2026-05-13).
+
 ---
 
 ## §Z. Public API path testing rule (added 2026-05-13)
