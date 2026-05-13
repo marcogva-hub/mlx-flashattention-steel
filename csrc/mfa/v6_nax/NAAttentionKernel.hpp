@@ -59,6 +59,12 @@ struct NAAttentionKernel {
   /// MTL::Device (mlx-mfa's shader cache compiles the source separately).
   NAAttentionKernel(NAAttentionKernelDescriptor descriptor);
 
+  /// V34 backward dQ source generator (public — called by
+  /// MFAV34BwdQuery::eval_gpu in csrc/mfa_v6_nax_primitive.cpp).
+  /// Implementation in NAAttentionKernel.cpp (Phase 1 Section B of V34
+  /// backward Option β sprint).
+  std::string createV34BackwardQuerySource() const noexcept;
+
 private:
   // Helpers that build operand-name and stride strings for the source.
   std::string memoryName(AttentionOperand operand) const noexcept;

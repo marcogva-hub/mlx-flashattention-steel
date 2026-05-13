@@ -234,3 +234,68 @@ forward must fall back to STEEL backward.  Add this as DC12 in
 All Phase 1 Section A design artifacts (DC0-DC11) remain valid.  Phase 1
 Section B (dQ kernel implementation) is no longer blocked.  Restart prompt
 should reference this patch as foundation infrastructure.
+
+---
+
+## Phase 1 GREEN — 2026-05-13 (dQ kernel shipped)
+
+**Sprint restart**: BLK1 resolved (V34 forward writes natural-log lse).  V34 backward Option β sprint resumed.  **Phase 1 (dQ kernel + Primitive + binding + tests) COMPLETE.**
+
+### Phase 1 Section A — Design refresh
+
+- DC0-DC11 from prior session remain valid.
+- **DC12 added**: V34 backward routing-parity constraint.  V34 backward must only engage on V34-forward-eligible shapes (D=128 always; D=64 with Nk>8000).  D=64 small-Nk falls back to STEEL backward (legacy v6_nax forward path's lse-write is log2-domain, incompatible).
+- **DC13 added**: incremental Phase 1 shipping — dQ standalone Primitive + binding; dK/dV gets separate Primitive in Phase 2.
+
+### Phase 1 Section B — Implementation
+
+- `csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}`: `createV34BackwardQuerySource()` ~880 LOC method appended.  Self-contained Apple-style NAX-direct backward dQ kernel mirroring `createV34Source()` structure.  Inner loop: D pre-compute, K-loop with QK^T recompute → softmax via `ExpSubOp` → dP=dO@V^T → dS=P*(dP-D) → dQ+=dS@K.  All GEMMs via `NAXFrag::mma`; all row reductions via `NAXFrag::row_reduce<SumOp>`.
+- `csrc/v6_nax_compile.mm`: `v34_dispatch_bwd_query` helper added.  Buffers Q=0, K=1, V=2, O=3, L=4, dO=5, dQ=6, params=7.
+- `csrc/mfa_v6_nax_primitive.cpp`: `MFAV34BwdQuery` Primitive class + `v6_nax_backward_query()` public function.  Per-(D, dtype, tile) pipeline cache via `v34_bwdq_pipelines` map.  M5-tuned defaults per DC7 (D=64: BQ=32 BK=64 WM=2; D=128: BQ=64 BK=32 WM=4).  Env overrides: `MFA_V34BWD_{BQ,BK,WM}`.
+- `csrc/bindings.cpp`: `_ext.v6_nax_backward_query(Q, K, V, O, lse, dO, scale) -> dQ` nanobind binding.
+
+### Phase 1 Section C — Correctness validation
+
+10 new tests, **all PASS** (under tight RMSE bounds vs MLX SDPA-vjp reference):
+
+| Test | Result |
+|---|---|
+| D=128 FP16 qL=kL=512 | RMSE 1.6e-8 maxerr 6e-8 PASS |
+| D=128 FP16 qL=kL=2048 | PASS |
+| D=128 BF16 qL=kL=1024 | PASS |
+| D=64 FP16 force_v34 (small-Nk) | PASS |
+| D=64 FP16 large-Nk natural V34 (Nk=8192) | PASS |
+| D=128 asymmetric qL=512 kL=2048 | PASS |
+| D=128 batch=2 H=8 qL=kL=512 | PASS |
+| D=128 remainder rows qL=510 | PASS |
+| Shape + dtype preservation | PASS |
+| Finiteness (no NaN/Inf) | PASS |
+
+**Full regression**: 94/94 tests pass (77 v2.36.1 pre-existing + 7 V34 forward lse + 10 V34 backward dQ).  Zero regressions.
+
+### Mechanistic transfer of B+C+E bundle (validated)
+
+The hypothesis from V34 forward investigation (`v34-forward-mechanisms.md`) that the B+C+E bundle (cross-SG sync elim + simd_shuffle_xor row-reduce + M5-tuned defaults) transfers cleanly to backward is **CONFIRMED** by the dQ kernel implementation:
+
+- **B (cross-SG sync elim)**: dQ kernel uses only `simdgroup_barrier(mem_none)` per K-tile (intra-SG, lightweight).  No `threadgroup_barrier(mem_threadgroup)` in the K-loop except the optional one inside the dS @ K GEMM (matches V34 forward PV pattern at line 2915).
+- **C (simd_shuffle_xor row reduce)**: all row reductions use `NAXFrag::row_reduce<SumOp>` (the simd_shuffle_xor path).  No `mpp::reduce_rows` anywhere.  D accumulator + lse-broadcast use this pattern.
+- **E (M5-tuned defaults)**: dQ kernel uses explicit BQ/BK/WM defaults matching V34 forward; bypasses Apple MPP autotune.
+
+Phase 3 will quantify the perf gain vs STEEL backward.
+
+### Git
+
+- Branch: `experiment/v34-backward-option-beta-v2` from master `70f807c` (post-BLK1).
+- ~7 atomic commits expected on the branch (kernel source-gen, dispatch helper, Primitive, binding, tests, STATUS update).
+- Push to origin after STATUS commit.
+- NO merge to master, NO release.  Phase 2 (dK/dV) needs to complete before considering v2.37.0.
+
+### Next: Phase 2 (dK/dV kernel + integration)
+
+- `createV34BackwardKeyValueSource()`: K-outer dispatch with Q-tile inner loop.  Per-SG dK/dV accumulators FP32; cross-SG reduction at end with ≤1 `threadgroup_barrier`.  Per DC7 starting defaults BK=32 BQ=32 WM=4 (D=128).
+- `MFAV34BwdKeyValue` Primitive + binding (returns `(dK, dV)` pair).
+- Combined dispatcher `v6_nax_backward(Q,K,V,O,lse,dO,scale) -> (dQ,dK,dV)` wrapping both Primitives.
+- `flash_attention()` custom_vjp routes V34 backward on eligible shapes per DC10+DC12.
+- 4 new dK/dV correctness tests + auto-routing tests.
+
+Expected Phase 2 wall-clock: ~4-6h CC.  dK/dV is structurally more complex than dQ (cross-SG reduction, larger register pressure for combined dK+dV accumulator).
