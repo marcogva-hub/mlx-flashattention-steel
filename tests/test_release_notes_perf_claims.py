@@ -65,7 +65,57 @@ _AE = getattr(mx, "async_" + "eval")
 # Perf-claim registry — every entry must match a user-facing doc claim
 # ---------------------------------------------------------------------------
 PERF_CLAIMS = [
-    # v2.37.2 / v2.37.3: D=64 qL=4096 — "1.82× faster end-to-end"
+    # v2.38.1: D=64 qL=4096 — "1.91× faster" with D_vec precompute (PUBLIC API)
+    {
+        "id": "v2.38.1_d64_qL4096_v34_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 4096, 4096, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "README.md",
+            "docs/v6-nax/v38-1-perf-claim-audit.md",
+        ],
+        "documented_perf_claim": (
+            "v2.38.1 D=64 qL=4096: V34 backward 1.91× vs SDPA-vjp "
+            "(was 1.75× in v2.37.3 under identical conditions)"
+        ),
+    },
+    # v2.38.1: D=64 qL=8192 — "1.87× faster"
+    {
+        "id": "v2.38.1_d64_qL8192_v34_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 8192, 8192, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "README.md",
+            "docs/v6-nax/v38-1-perf-claim-audit.md",
+        ],
+        "documented_perf_claim": (
+            "v2.38.1 D=64 qL=8192: V34 backward 1.87× vs SDPA-vjp "
+            "(was 1.79× in v2.37.3)"
+        ),
+    },
+    # v2.38.1: D=64 qL=16384 — "1.80× faster"
+    {
+        "id": "v2.38.1_d64_qL16384_v34_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 16384, 16384, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "docs/v6-nax/v38-1-perf-claim-audit.md",
+        ],
+        "documented_perf_claim": (
+            "v2.38.1 D=64 qL=16384: V34 backward 1.80× vs SDPA-vjp "
+            "(was 1.75× in v2.37.3)"
+        ),
+    },
+    # v2.37.2 / v2.37.3: D=64 qL=4096 — "1.82× faster end-to-end" (preserved historical)
     {
         "id": "v2.37.2_d64_qL4096_v34_engages_via_auto",
         "env": {"MFA_ENABLE_V34_BACKWARD": "1"},

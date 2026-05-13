@@ -4,20 +4,26 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.38.0** — Refactor + cleanup release.  Pure
-Python+doc reorganization on top of v2.37.3; **no kernel touches,
-no public-API change, no measured perf delta**.  Consolidates the
-triplicated V34-eligibility predicate into `_v34_eligible()` +
-`_v34_backward_vjp()` helpers (Sprint 2 audit M4-MEDIUM-01); deletes
-the dormant `_should_use_mfa_m5_nax_carveout()` placeholder
-(unreferenced since v2.32.0; no Sprint A.6 carve-outs ever
-materialized); refreshes stale comments in `attention.py` and
-the JIT-MSL emitter helpers in `csrc/mfa/v6_nax/NAAttentionKernel.cpp`
-(comment-only, compiled shader bytes byte-identical to v2.37.3).  Ships the
-**v2.38.0 investigation foundation** (TGP-overhead empirical
-measurement + multi-pass code-review findings) as a doc artefact;
-the implementation-side Option γ + D_vec precompute work is
-deferred to v2.38.1+ per the Path Y scope decision.
+Current version: **2.38.1** — D_vec precompute (Sprint 2 audit M2-HIGH-01).
+D = rowsum(dO ⊙ O) is now precomputed once on host via MLX and passed
+as a shared device buffer to the V34 backward kernels (dQ + split-dK +
+legacy-fused-dKdV).  Eliminates 2 in-kernel rowsums per default-path
+V34 backward call.  **Measured perf delta via PUBLIC AUTO API on M5 Max
+(`MFA_ENABLE_V34_BACKWARD=1`, all D=64 non-causal f16 V34-eligible shapes):**
+
+| qL | v2.37.3 V34 (ms) | v2.38.1 V34 (ms) | Δ wall | v2.37.3 spd | v2.38.1 spd |
+|---|---|---|---|---|---|
+| 4096 | 10.57 | **9.59** | **-9.3%** | 1.75× | **1.91×** |
+| 8192 | 39.90 | **38.27** | -4.1% | 1.79× | **1.87×** |
+| 16384 | 170.81 | **166.33** | -2.6% | 1.75× | **1.80×** |
+
+Improvement decays with qL as the eliminated rowsum work shrinks
+relative to K-loop time.  D=128 unchanged — AUTO API routes D=128 to
+SDPA-vjp (v2.37.2 carve-out is D=64 hard-gated), parity preserved.
+
+Builds on **v2.38.0** (refactor + cleanup release: helper extraction,
+dormant placeholder deletion, investigation foundation docs).  See
+`docs/v6-nax/v38-1-perf-claim-audit.md` for full §Z reproduction details.
 
 Net effect on users: identical to v2.37.3.  The v2.37.x perf-claim
 audit (`docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new
