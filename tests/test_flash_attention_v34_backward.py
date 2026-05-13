@@ -233,3 +233,56 @@ def test_v34_bwd_v2372_carveout_inactive_without_env():
     assert _rmse(dQ, dQ_ref) == 0.0
     assert _rmse(dK, dK_ref) == 0.0
     assert _rmse(dV, dV_ref) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v2.38.x regression: outer flash_attention guards prevent V34 carve-out
+# from engaging when softcap/alibi/return_lse are involved.  Catches the
+# silent behavior change that the Phase A consolidation pre-merge review
+# surfaced (split _should_use_mfa_m5_nax_carveout into canonical-path
+# placeholder + _v34_backward_carveout flash_attention-level concern).
+# ---------------------------------------------------------------------------
+def test_v38x_carveout_does_not_engage_with_softcap_nonzero(enable_v34_bwd):
+    """v2.38.x: even with env=1 + qualifying shape, softcap≠0 must NOT
+    engage the V34 carve-out.  The outer guards in flash_attention()
+    delegation block exclude this combination by design.  Without these
+    guards (Phase A consolidation bug), V34 would silently engage and
+    bypass _softcap_sdpa_ref."""
+    from mlx_mfa import flash_attention
+
+    q, k, v = _make(1, 4, 4, 4096, 4096, 64, 61, mx.float16)
+    scale = 1.0 / math.sqrt(64)
+
+    # Reference: SDPA + softcap (the path flash_attention SHOULD take
+    # since the carve-out's outer guards exclude softcap≠0).
+    def softcap_loss(q_, k_, v_):
+        scores = (q_ @ k_.swapaxes(-1, -2)) * scale
+        scaled = 0.5 * mx.tanh(scores / 0.5)  # softcap=0.5
+        p = mx.softmax(scaled.astype(mx.float32), axis=-1).astype(q_.dtype)
+        return (p @ v_).sum()
+
+    def fa_loss(q_, k_, v_):
+        return flash_attention(q_, k_, v_, softcap=0.5).sum()
+
+    g_ref = mx.grad(softcap_loss, argnums=(0, 1, 2))(q, k, v)
+    g_fa = mx.grad(fa_loss, argnums=(0, 1, 2))(q, k, v)
+    _AE(*g_ref, *g_fa); mx.synchronize()
+
+    # The flash_attention softcap path should produce gradients in the
+    # SAME order-of-magnitude as the softcap reference — NOT bit-flagged
+    # as "V34 carve-out engaged silently routing through plain MFA".
+    # We don't assert bit-identical because flash_attention's softcap
+    # reference path may differ slightly from this hand-rolled formula,
+    # but the V34 backward would produce VASTLY different gradients
+    # (different log2 scaling, different softmax normalization).
+    for ref, fa in zip(g_ref, g_fa):
+        # Per-element relative error — softcap path should match within
+        # FP16 noise floor.  V34 carve-out engagement would produce
+        # cross-domain errors (different scaling regime).
+        rel = _rmse(ref, fa) / max(_rmse(ref, mx.zeros_like(ref)), 1e-6)
+        assert rel < 0.5, (
+            f"softcap+env=1+D=64 qL=4096 produced gradients far from "
+            f"softcap reference (rel_rmse={rel:.3f}).  This indicates "
+            f"the V34 carve-out silently engaged despite softcap≠0 — "
+            f"the Phase A consolidation bug has regressed."
+        )

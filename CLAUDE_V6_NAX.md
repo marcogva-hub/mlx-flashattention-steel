@@ -825,7 +825,7 @@ The mlx-mfa-specialized skills created in Sprint 3 (see
 | Post-bench "X× speedup" / "Y% speedup" discovery | /mlx-code-review | **/mlx-mfa-perf-audit** |
 | Pre-version-bump | /mlx-code-review + /repo-release-prep | **/mlx-mfa-release-audit** |
 | Pre-bench sub-ms work | /metal-kernel-dev | **/mlx-mfa-bench-methodology** |
-| New kernel write (>200 LOC source generator) | /metal-kernel-dev | **/mlx-mfa-kernel-design** (deferred to post-Sprint-6; see `docs/skills/README.md` for deferral rationale) |
+| New kernel write (>200 LOC source generator) | /metal-kernel-dev | **/mlx-mfa-kernel-design** (UNBLOCKED v2.38.x Phase B; mandatory) |
 
 When an mlx-mfa-* automation skill exists for a checkpoint, invocation
 of that skill satisfies the §AA mandatory requirement.  The general

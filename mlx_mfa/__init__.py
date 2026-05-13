@@ -262,6 +262,93 @@ def hooks_status():
     return _hooks_status()
 
 
+def diagnostics() -> dict:
+    """Return a structured runtime-diagnostics dict for support / debug.
+
+    Aggregates state that otherwise requires querying multiple modules
+    (auto-hooks status, NAX detection, env vars, carve-out eligibility,
+    version) into a single call.  Useful for:
+
+    - User bug reports: paste output of `mlx_mfa.diagnostics()` so the
+      issue can be triaged against the full runtime state
+    - CI checks: `assert mlx_mfa.diagnostics()["auto_hooks"]["installed"]`
+    - /mlx-mfa-release-audit Check 3 (auto-default principle): the
+      runner can call diagnostics() instead of probing internal
+      attributes by name
+
+    Output structure (stable contract; safe to log / serialize as JSON):
+        {
+            "version": "X.Y.Z",
+            "mlx_version": "..." or None,
+            "platform": {"is_m3_plus": bool, "is_m5_plus": bool,
+                         "has_nax": bool},
+            "auto_hooks": {"installed": bool, "log": [...]},
+            "active_env_vars": {"MFA_*": "value", ...},
+            "carveout_eligibility": {
+                "<shape_label>": bool, ...
+            },
+        }
+    """
+    import os
+    from mlx_mfa.attention import _get_is_m3_plus_cached, _get_has_nax_cached
+    from mlx_mfa.dispatch_policy import (
+        _v34_backward_carveout,
+        _dispatch_dtype_key,
+    )
+
+    # MLX version (best-effort; older mlx may not have __version__)
+    try:
+        import mlx.core
+        _mlx_ver = getattr(mlx.core, "__version__", None)
+    except Exception:
+        _mlx_ver = None
+
+    # Platform capability snapshot.  has_nax IS the M5+ indicator
+    # (NAX is M5+ only); we don't ship is_m5_plus as a separate field
+    # to avoid the tautology (would always equal has_nax).
+    _is_m3 = _get_is_m3_plus_cached()
+    _has_nax = _get_has_nax_cached()
+
+    # Auto-hooks state
+    _hs = _hooks_status()
+
+    # Active MFA_* env vars (snapshot at call time)
+    _env = {k: v for k, v in os.environ.items() if k.startswith("MFA_")}
+
+    # Carve-out eligibility for representative shapes.  Calls the
+    # public dispatch_policy hook so the answer matches what
+    # flash_attention() would actually decide.
+    import mlx.core as mx
+    fp16 = _dispatch_dtype_key(mx.float16)
+    bf16 = _dispatch_dtype_key(mx.bfloat16)
+    _carveout = {
+        "d64_qL4096_fp16_noncausal": _v34_backward_carveout(
+            head_dim=64, seq_len=4096, causal=False, dtype_key=fp16),
+        "d64_qL8192_fp16_noncausal": _v34_backward_carveout(
+            head_dim=64, seq_len=8192, causal=False, dtype_key=fp16),
+        "d64_qL4096_bf16_noncausal": _v34_backward_carveout(
+            head_dim=64, seq_len=4096, causal=False, dtype_key=bf16),
+        "d64_qL2048_fp16_noncausal": _v34_backward_carveout(
+            head_dim=64, seq_len=2048, causal=False, dtype_key=fp16),
+        "d128_qL8192_fp16_noncausal": _v34_backward_carveout(
+            head_dim=128, seq_len=8192, causal=False, dtype_key=fp16),
+        "d64_qL4096_fp16_causal": _v34_backward_carveout(
+            head_dim=64, seq_len=4096, causal=True, dtype_key=fp16),
+    }
+
+    return {
+        "version": __version__,
+        "mlx_version": _mlx_ver,
+        "platform": {
+            "is_m3_plus": _is_m3,
+            "has_nax": _has_nax,  # M5+ indicator; NAX is M5+-only
+        },
+        "auto_hooks": _hs,
+        "active_env_vars": _env,
+        "carveout_eligibility": _carveout,
+    }
+
+
 # Auto-install at import unless MFA_DISABLE_AUTO_HOOKS=1
 _install_hooks()
 
@@ -271,6 +358,7 @@ __all__ = [
     "enable",
     "disable",
     "hooks_status",
+    "diagnostics",
     # Core attention
     "flash_attention",
     "flash_attention_rope",
