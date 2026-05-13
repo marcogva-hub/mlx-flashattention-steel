@@ -200,22 +200,117 @@ def test_fused_opt_in_at_d64_still_works(monkeypatch):
         assert not bool(mx.any(mx.isinf(g))), f"{name} Inf"
 
 
-def test_fused_at_d128_raises_loudly(monkeypatch):
-    """MFA_V34_BWD_KERNEL=fused with D=128 raises ValueError (Rule 8 loud failure).
+def test_fused_at_d128_works_via_direct_binding(monkeypatch):
+    """v2.40.0-internal Sprint B: D=128 fused kernel correctness via DIRECT
+    binding (PUBLIC AUTO API does NOT reach D=128 fused).
 
-    Phase C.1.a fused kernel is D=64 only; D=128 implementation is deferred
-    to Phase C.1.b.  Silent fallback to split on D=128 inside the helper
-    would mask user mis-configuration, so we raise a clear error per
-    CLAUDE.md "loud failure" rule.
+    Phase C.1.a (v2.39.0/.1) shipped fused for D=64.  Phase C.1.b
+    (v2.40.0-internal Sprint B) lifted the D=64-only hard-gate so the
+    D-parameterized source generator covers D=128 too.  HOWEVER:
 
-    Note: this defensive check only fires for INTERNAL callers (callers of
-    `_v34_backward_vjp` directly) since the AUTO dispatch carve-out is
-    D=64-only and routes D=128 to SDPA-vjp upstream of the helper.  We
-    test the helper directly to verify the safety net.
+      - dispatch_policy.should_use_mfa(D=128) returns False (threshold
+        999_999 in `_M5_NAX_THRESHOLDS[(128, False)]`)
+      - _v34_backward_carveout(D=128) returns False (D=64 hard-gated)
+
+    So `mx.grad(flash_attention(..., backend="auto"))` at D=128 routes
+    to SDPA-vjp fallback BEFORE `_make_mfa_custom` even constructs the
+    vjp closure.  MFA_V34_BWD_KERNEL=fused is ignored at D=128 via
+    PUBLIC API.
+
+    Architectural ship: the kernel is reachable via direct C++ binding
+    `_ext.v6_nax_backward_fused_dkdv_raw`.  This test verifies the
+    kernel produces correct (~FP16-tolerance) gradients at D=128 when
+    invoked directly.  Bench data (also via direct binding) shows
+    fused regresses 3-7% vs split at qL ≤ 8192, parity at qL=16384 —
+    outcome (γ) per blueprint, no auto-default change, no perf claim.
+
+    See `docs/v6-nax/v40-0-internal-decisions.md` for full methodology.
+    """
+    from mlx_mfa._ext import (
+        v6_nax_backward_fused_dkdv_raw,
+        v6_nax_backward_dv_raw,
+        v6_nax_backward_dk_raw,
+        v6_nax_forward,
+    )
+
+    B, H, qL, D = 1, 4, 4096, 128
+    mx.random.seed(99)
+    q = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
+    k = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
+    v = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
+    dO = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
+    _flush(q, k, v, dO)
+    # Run V34 forward to get O + natural-log lse (force_v34=True is critical:
+    # V34 backward kernels expect natural-log lse, not log2 from legacy).
+    O, L = v6_nax_forward(q, k, v, False, True)
+    _flush(O, L); mx.synchronize()
+    # Precompute D_vec per v2.38.1 contract
+    D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
+    _flush(D_vec); mx.synchronize()
+
+    scale = 1.0 / math.sqrt(D)
+    WM = 4
+
+    # Fused: single kernel computes both dK and dV partials
+    dKp_f, dVp_f = v6_nax_backward_fused_dkdv_raw(
+        q, k, v, L, dO, D_vec, scale, WM)
+    _flush(dKp_f, dVp_f); mx.synchronize()
+    dK_f = mx.sum(dKp_f, axis=2).astype(mx.float16)
+    dV_f = mx.sum(dVp_f, axis=2).astype(mx.float16)
+
+    # Split: separate dV + dK kernels (reference)
+    dVp_s = v6_nax_backward_dv_raw(q, k, v, L, dO, scale, WM)
+    dKp_s = v6_nax_backward_dk_raw(q, k, v, O, L, dO, D_vec, scale, WM)
+    _flush(dKp_s, dVp_s); mx.synchronize()
+    dK_s = mx.sum(dKp_s, axis=2).astype(mx.float16)
+    dV_s = mx.sum(dVp_s, axis=2).astype(mx.float16)
+
+    # Finite gradients
+    for g, name in [(dK_f, "dK_fused"), (dV_f, "dV_fused")]:
+        assert not bool(mx.any(mx.isnan(g))), f"{name} NaN"
+        assert not bool(mx.any(mx.isinf(g))), f"{name} Inf"
+
+    # RMSE bit-identical-or-near-identical to split (FP16 ULP tolerance,
+    # ~2e-5 measured in v2.40.0-internal smoke; same magnitude as v2.38.1
+    # D_vec drift vs SDPA).
+    assert _rmse(dK_f, dK_s) <= 1e-3, f"dK fused vs split RMSE: {_rmse(dK_f, dK_s)}"
+    assert _rmse(dV_f, dV_s) <= 1e-3, f"dV fused vs split RMSE: {_rmse(dV_f, dV_s)}"
+
+
+def test_d128_fused_unreachable_via_public_api(monkeypatch):
+    """v2.40.0-internal Sprint B: document that PUBLIC AUTO API does NOT
+    engage the D=128 fused kernel.  See decisions doc §"Empirical bench data".
+
+    This test is REGRESSION coverage: if a future sprint broadens the
+    carve-out to include D=128 OR raises the should_use_mfa threshold,
+    this test must be updated.  Until then, it codifies the "D=128 PUBLIC
+    API routes to SDPA-vjp" contract.
+    """
+    from mlx_mfa.dispatch_policy import (
+        should_use_mfa, _v34_backward_carveout, _dispatch_dtype_key,
+    )
+    fp16_key = _dispatch_dtype_key(mx.float16)
+    # Both predicates block D=128 V34 backward via AUTO
+    assert should_use_mfa(
+        head_dim=128, seq_len=4096, causal=False,
+        is_m3_plus=True, has_nax=True, dtype=mx.float16,
+    ) is False
+    assert _v34_backward_carveout(
+        head_dim=128, seq_len=4096, causal=False, dtype_key=fp16_key,
+    ) is False
+
+
+def test_fused_at_d256_still_raises_loudly(monkeypatch):
+    """MFA_V34_BWD_KERNEL=fused with D=256 raises ValueError (Rule 8 loud failure).
+
+    Phase C.1.a + C.1.b cover D ∈ {64, 128}.  D=256 and other head_dim
+    values are not supported by the fused kernel — silent fallback would
+    mask user mis-configuration, so we raise a clear error.
     """
     from mlx_mfa.attention import _v34_backward_vjp
 
-    B, H, qL, D = 1, 4, 4096, 128
+    B, H, qL, D = 1, 4, 2048, 256
+    mx.random.seed(100)
     q = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
     k = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
     v = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
@@ -227,7 +322,7 @@ def test_fused_at_d128_raises_loudly(monkeypatch):
     monkeypatch.setenv("MFA_V34_BWD_KERNEL", "fused")
     scale = 1.0 / math.sqrt(D)
 
-    with pytest.raises(ValueError, match="head_dim=64"):
+    with pytest.raises(ValueError, match="head_dim"):
         dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale)
         _flush(dQ, dK, dV)
         mx.synchronize()

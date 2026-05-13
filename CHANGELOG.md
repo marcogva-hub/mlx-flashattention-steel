@@ -21,6 +21,51 @@ All notable changes to mlx-mfa are documented here.
   (was: silent SDPA-vjp fallback).  **No speedup claim** — qL=2048 is
   parity, not a win.  qL=1024 and below still correctly fall back
   (regresses 15% / 50% empirically; kept out of the carve-out).
+- **Sprint B (v2.40.0-internal, Phase C.1.b)**: enabled the D=128
+  fused dK+dV kernel path **architecturally only** — there is **no
+  user-visible change at D=128 via the PUBLIC AUTO API**.
+
+  The source generator was already D-parameterized; only the C++
+  Primitive + public-function hard-gates (`D != 64` → `D ∉ {64, 128}`)
+  required lifting.  The kernel itself works correctly at D=128
+  (verified via direct C++ binding: dK/dV fused vs split RMSE ~2e-5,
+  within FP16 ULP tolerance).
+
+  **Critical methodology correction** (caught by `/mlx-debug-forensics`
+  HIGH SHIP-blocker, matching the v2.37.0/v2.37.1 §Z institutional
+  pattern): an initial bench through `mx.grad(flash_attention(...))`
+  appeared to show D=128 fused vs split parity, but was actually
+  measuring SDPA-vjp three times.  Both
+  `dispatch_policy.should_use_mfa(D=128)` (threshold 999_999) AND
+  `_v34_backward_carveout(D=128)` (D=64 hard-gated) block before
+  `_make_mfa_custom`'s vjp closure registers.  `MFA_V34_BWD_KERNEL=fused`
+  is ignored at D=128 via PUBLIC API.
+
+  Honest re-measurement via DIRECT C++ binding (correct V34 forward
+  outputs + natural-log lse + precomputed D_vec):
+
+  | qL | fused-BK16 (ms) | split (ms) | fused/split | Δ |
+  |---|---|---|---|---|
+  | 2048 | 6.78 | 6.58 | 0.971× | -3% |
+  | 4096 | 27.66 | 25.62 | 0.926× | **-7%** |
+  | 8192 | 105.57 | 99.04 | 0.938× | **-6%** |
+  | 16384 | 439.17 | 446.57 | 1.017× | +2% (parity) |
+
+  D=128 fused **regresses 3-7% vs split at qL ≤ 8192** when reached
+  via direct binding — a smaller-magnitude echo of v2.39.0 outcome
+  δ at D=64.  Same register-pressure mechanism; D=128's higher
+  arithmetic intensity partially amortizes the spill cost but
+  doesn't eliminate it.
+
+  Outcome (γ) per blueprint decision tree: **no auto-default change,
+  no perf claim**.  Architectural consolidation preserved as
+  foundation: the D-parameterized fused source generator + Primitive
+  + binding now support D ∈ {64, 128}, enabling future kernel
+  composition work (block-sparse, causal) at both head dims without
+  re-implementation.
+
+  See `docs/v6-nax/v40-0-internal-decisions.md` for full DC1-DC4
+  decision rationale + methodology correction details.
 
 ## [2.39.1] — 2026-05-13 — Option γ outcome α — register-pressure root-cause + fix
 
