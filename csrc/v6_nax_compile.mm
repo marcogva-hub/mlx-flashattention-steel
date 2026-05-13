@@ -198,6 +198,10 @@ struct V34ParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 — causal offset (0 for standalone forward; nonzero
+  // for decode/prefill-with-history).  Field order MUST match device-
+  // side V34Params struct in NAAttentionKernel.cpp::createV34Source().
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   // v2.36.x lse-write patch (must mirror V34Params layout exactly).
   int64_t L_strides[3];
@@ -225,6 +229,10 @@ void v34_dispatch(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;          // 0 if aligned
     params.kL_rem = kL % BK;          // 0 if aligned
+    // v2.50 Sprint 4 — qL_off=0 for standalone forward.  Decode/prefill-
+    // with-history would pass nonzero offset, but v34_dispatch is currently
+    // only called from MFAV6Forward which always assumes qL_off=0.
+    params.qL_off = 0;
     // BHND strides: Q is [B, Hq, qL, D] contiguous → strides (Hq*qL*D, qL*D, D, 1).
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
@@ -265,6 +273,8 @@ struct V34BwdQParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dQ_strides[3];
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
@@ -291,6 +301,7 @@ void v34_dispatch_bwd_query(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;
     params.kL_rem = kL % BK;
+    params.qL_off = 0;  // v2.50 Sprint 4 — standalone forward/backward (decode would set this nonzero)
     // BHND strides: Q is [B, Hq, qL, D] -> (Hq*qL*D, qL*D, D).  Same for K/V/O/dO/dQ.
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
@@ -344,6 +355,8 @@ struct V34BwdKVParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dK_strides[3], dV_strides[3];
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
@@ -369,6 +382,7 @@ void v34_dispatch_bwd_kv(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;
     params.kL_rem = kL % BK;
+    params.qL_off = 0;  // v2.50 Sprint 4 — standalone forward/backward (decode would set this nonzero)
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
     params.Q_strides[2] = (int64_t)head_dim;
@@ -425,6 +439,8 @@ struct V34BwdVParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3];
   int64_t L_strides[3], dO_strides[3];
   int64_t dVp_strides[4];  // [B, Hq, WM, kL] strides; D stride=1 implicit
@@ -450,6 +466,7 @@ void v34_dispatch_bwd_dv(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;
     params.kL_rem = kL % BK;
+    params.qL_off = 0;  // v2.50 Sprint 4 — standalone forward/backward (decode would set this nonzero)
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
     params.Q_strides[2] = (int64_t)head_dim;
@@ -495,6 +512,8 @@ struct V34BwdKParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3];
   int64_t dKp_strides[4];
@@ -521,6 +540,7 @@ void v34_dispatch_bwd_dk(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;
     params.kL_rem = kL % BK;
+    params.qL_off = 0;  // v2.50 Sprint 4 — standalone forward/backward (decode would set this nonzero)
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
     params.Q_strides[2] = (int64_t)head_dim;
@@ -573,6 +593,8 @@ struct V34BwdFusedParamsHost {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3];
   int64_t L_strides[3], dO_strides[3];
   int64_t dKp_strides[4];
@@ -600,6 +622,7 @@ void v34_dispatch_bwd_fused_dkdv(
     params.NK = (kL + BK - 1) / BK;
     params.qL_rem = qL % BQ;
     params.kL_rem = kL % BK;
+    params.qL_off = 0;  // v2.50 Sprint 4 — standalone forward/backward (decode would set this nonzero)
     params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
     params.Q_strides[1] = (int64_t)qL * head_dim;
     params.Q_strides[2] = (int64_t)head_dim;

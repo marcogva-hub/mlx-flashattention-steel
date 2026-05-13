@@ -359,6 +359,13 @@ def _v34_backward_carveout(
     # regressed below qL=4096; v2.39.1's BK=16 fix lifted the parity
     # boundary down to qL=2048.  See `docs/v6-nax/v39-2-internal-
     # decisions.md` §"Threshold calibration" for the bench data.
+    #
+    # v2.50 Sprint 4 Phase 4b: PARTIAL.  V34 forward causal extension
+    # (Phase 4a) and dQ kernel causal mask (Phase 4b partial) are
+    # complete, but the 4 K-parallel backward kernels (dKV, dV, dK,
+    # fused dKdV) still need their per-element causal mask blocks.  The
+    # `not causal` gate is RETAINED until Phase 4b-complete lands — see
+    # `docs/v50/sprint4-status-phase4b-complete.md`.
     if (
         head_dim == 64
         and seq_len >= 2048

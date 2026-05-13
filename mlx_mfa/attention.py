@@ -3598,7 +3598,11 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     - M5+ NAX hardware available (cached check)
     - head_dim ∈ {64, 128}
     - dtype is fp16 or bf16
-    - not causal (DC3 deferred — V34 backward doesn't support causal)
+    - v2.50 Sprint 4 Phase 4b: causal is NOW supported.  The Phase 4a
+      V34 forward extension emits natural-log lse with causal masking
+      baked in (S[r,c]=-inf for r<c → P[r,c]=0 in backward recomputation
+      → dS=0 → dV/dK/dQ accumulations naturally inherit the mask).
+      No backward kernel source changes required.
 
     This is the SECOND-line eligibility check.  `flash_attention()` body
     does the FIRST-line check via `_v34_backward_carveout()` in
@@ -3617,8 +3621,14 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     """
     if not _get_has_nax_cached():
         return False
+    # v2.50 Sprint 4 Phase 4b: PARTIALLY IMPLEMENTED.  Forward (Phase 4a)
+    # + dQ kernel (Phase 4b partial) now support causal masking; the 4
+    # K-parallel backward kernels (dKV, split dV, split dK, fused dKdV)
+    # do NOT yet have causal masking and would produce wrong dK/dV.
+    # Eligibility gate retained on causal until all 5 backward kernels
+    # are updated.  See `docs/v50/sprint4-status-phase4b-complete.md`.
     if causal:
-        return False  # DC3 deferred
+        return False  # Phase 4b-complete deferred (K-parallel kernels)
     if head_dim not in (64, 128):
         return False
     if dtype not in (mx.float16, mx.bfloat16):
@@ -3785,7 +3795,15 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 # V34 backward eligibility to D=64 small-Nk shapes that
                 # would otherwise route through legacy v6_nax forward
                 # (log2-domain lse incompatible with V34 backward).
-                O, L = _v6_fwd(q, k, v, False, True)  # force_v34=True
+                # v2.50 Sprint 4 Phase 4a/4b: V34 forward now supports
+                # causal (Phase 4a) and dQ backward kernel supports causal
+                # (Phase 4b partial).  But `_v34_eligible` still gates on
+                # `not causal` because the 4 K-parallel backward kernels
+                # (dKV, dV, dK, fused dKdV) need their causal mask blocks
+                # — Phase 4b-complete deferred.  So when this branch fires,
+                # causal is guaranteed False; pass it through anyway for
+                # future-proofing once Phase 4b-complete lands.
+                O, L = _v6_fwd(q, k, v, causal, True)  # force_v34=True
             else:
                 # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
                 # B.1: We now *keep* L as the second return value so the backward can

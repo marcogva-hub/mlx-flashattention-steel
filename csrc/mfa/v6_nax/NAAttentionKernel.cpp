@@ -168,7 +168,11 @@ std::string NAAttentionKernel::createSource() const noexcept {
   // V34 path: emit a self-contained Apple-style attention_nax kernel. Skips
   // legacy createConstants/createBufferBindings/loopForward — the V34 source
   // has its own kernel signature, params struct, and BHND-correct addressing.
-  if (useV34 && type.value == AttentionKernelType::forward && !isCausal && !masked && !isVarlen) {
+  // v2.50 Sprint 4 Phase 4a: V34 forward now supports causal masking
+  // (Apple steel_attention_nax.h:176-187,279-301 pattern, kb_lim shrink +
+  // per-element causal mask).  Block mask + varlen still excluded — those
+  // route to legacy STEEL.
+  if (useV34 && type.value == AttentionKernelType::forward && !masked && !isVarlen) {
     return createV34Source();
   }
 
@@ -2756,6 +2760,9 @@ std::string NAAttentionKernel::createV34Source() const noexcept {
   ss << "#define V34_TD " << TD << "\n";
   ss << "#define V34_TK " << TK << "\n";
   ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4a: causal masking baked in as a compile-time
+  // constant so the non-causal source remains bit-identical to pre-Sprint-4.
+  ss << "#define V34_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"MSL(
 struct V34Params {
@@ -2766,6 +2773,14 @@ struct V34Params {
   int NK;        // ceil(kL/BK)
   int qL_rem;    // last-block remainder rows (0 means aligned)
   int kL_rem;    // last-block remainder cols (0 means aligned)
+  // v2.50 Sprint 4 Phase 4a — causal offset for prefill-with-history /
+  // decode cases.  Standalone forward passes qL_off=0; decode with KV
+  // cache of length P passes qL_off=P so the causal diagonal is
+  // (row + qL_off) < col → mask.  Apple convention
+  // (steel_attention_nax.h:179-187).  Field exists unconditionally so
+  // host-side V34ParamsHost layout is stable across causal/non-causal
+  // pipelines; field is simply unused when V34_CAUSAL==0.
+  int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   // Apple convention (steel_attention_nax.h:104-117).
   long Q_strides[3];  // [batch, head, seq]; D-stride implicit = 1
@@ -2829,7 +2844,31 @@ void attention(
   const bool is_last_q = (int(tid.x) == NQ_aligned);
   const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34_BQ) - tm;
   const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34_BK);
+
+  // v2.50 Sprint 4 Phase 4a — causal K-loop bound + mask-start tile
+  // (Apple steel_attention_nax.h:176-187).  For causal:
+  //   q_max = (tid.x+1)*BQ + qL_off   — last query row's absolute pos + 1
+  //   kb_lim = ceil(q_max / BK)        — K-tiles past q_max are guaranteed masked
+  //   kb_min_causal = q_min / BK       — first K-tile that overlaps the diagonal
+  //                                       q_min = tid.x*BQ + qL_off
+  // For non-causal: defaults preserved (kb_lim=NK, kb_min_causal=NK so the
+  // per-element causal mask branch is never taken).
+#if V34_CAUSAL
+  int kb_lim;
+  int kb_min_causal;
+  {
+    int q_max = (int(tid.x) + 1) * V34_BQ + params.qL_off;
+    kb_lim = (q_max + V34_BK - 1) / V34_BK;
+    kb_lim = metal::min(params.NK, kb_lim);
+    int q_min = int(tid.x) * V34_BQ + params.qL_off;
+    q_min = metal::max(0, q_min);
+    kb_min_causal = q_min / V34_BK;
+  }
+#else
   const int kb_lim = params.NK;
+  // kb_min_causal not declared in non-causal path — the causal mask
+  // branch below is guarded by #if V34_CAUSAL so the symbol is absent.
+#endif
 
   // === K-loop (Apple lines 197-457) ===
   for (int kb = 0; kb < kb_lim; kb++) {
@@ -2904,6 +2943,40 @@ void attention(
         }
       }
     }
+
+    // v2.50 Sprint 4 Phase 4a — causal mask (Apple lines 279-301).
+    // Only run for K-tiles that overlap or cross the causal diagonal
+    // (kb >= kb_min_causal); earlier tiles are entirely below the diagonal
+    // and never need masking, later tiles past kb_lim are already skipped.
+    // Per-element predicate: mask if absolute query row < absolute key col.
+#if V34_CAUSAL
+    if (kb >= kb_min_causal) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = stile_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;   // col base within fragment
+      const short sm_c = sc_c.y;   // row base within fragment
+      const int base_row = int(tid.x) * V34_BQ + params.qL_off + tm;
+      const int base_col = kb * V34_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < stile_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < stile_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * stile_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * stile_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
 
     // Online softmax (Apple lines 380-409)
     metal::vec<float, kRowsPT> new_max;
@@ -3832,6 +3905,9 @@ std::string NAAttentionKernel::createV34BackwardQuerySource() const noexcept {
   ss << "#define V34BWD_TK " << TK << "\n";
   ss << "#define V34BWD_SCALE " << scale << "f\n";
   ss << "#define V34BWD_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b — causal masking baked in as compile-time
+  // constant so non-causal source remains bit-identical to pre-Sprint-4.
+  ss << "#define V34BWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"BWDMSL(
 struct V34BwdQParams {
@@ -3842,6 +3918,9 @@ struct V34BwdQParams {
   int NK;
   int qL_rem;
   int kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset.  Field order MUST match
+  // V34BwdQParamsHost in v6_nax_compile.mm.
+  int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   long Q_strides[3];
   long K_strides[3];
@@ -4064,6 +4143,40 @@ void attention_bwd_q(
         }
       }
     }
+
+    // v2.50 Sprint 4 Phase 4b — causal mask (mirror forward).  Setting
+    // S[r,c] = -inf for r<c → exp2(-inf - lse) = 0 → P[r,c] = 0 → dS = 0
+    // at masked positions → dQ accumulation naturally skips them.  Without
+    // this, backward computes P over the unmasked S using the causal-masked
+    // lse from forward, producing huge (incorrect) gradients for c>r.
+#if V34BWD_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;   // col base within fragment
+      const short sm_c = sc_c.y;   // row base within fragment
+      const int base_row = int(tid.x) * V34BWD_BQ + params.qL_off + tm;
+      const int base_col = kb * V34BWD_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWD_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
 
     // P = exp2(S - lse_log2)  (so P[i, j] = softmax_j(S_natural[i, .]))
     Stile.template row_bin_op<ExpSubOp>(lse_log2);
