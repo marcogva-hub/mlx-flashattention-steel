@@ -179,6 +179,39 @@ selection path must validate three distinct axes before shipping:
    overrides, Python `__call__` type-vs-instance dunder lookup
    gotchas, fallback paths that engage when they shouldn't, env-var
    propagation gaps between Python and C++).
+
+   **Critical sub-rule (added 2026-05-13 post-v2.37.0/v2.37.1 silent
+   integration bug):** the path-entered exercise MUST use the public
+   user-facing API path (e.g., `flash_attention(...)` with default
+   `backend="auto"` + the documented env vars), not just forced or
+   internal paths (e.g., `backend="mfa"` override or direct calls to
+   `_ext.*` C++ bindings).
+
+   Rationale: tests that force the MFA path bypass `should_use_mfa()`
+   and therefore cannot detect dispatch-gate regressions on the
+   user-facing surface. v2.37.0/v2.37.1 shipped with 100% test pass
+   yet the documented perf claim was unreachable because every
+   correctness test used `backend="mfa"` while users call with the
+   default `backend="auto"`. Reference incident:
+   `docs/v6-nax/v2.37.x-perf-claim-audit.md` and §Z below.
+
+   **Required test pattern** (apply to any new auto-routing feature):
+
+   ```python
+   # INSUFFICIENT — only tests forced path; bypasses should_use_mfa()
+   def test_routes_when_forced():
+       out = flash_attention(q, k, v, backend="mfa")
+       # ...
+
+   # REQUIRED — also tests default path the user actually calls
+   def test_routes_via_default_api(monkeypatch):
+       monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+       out = flash_attention(q, k, v)  # default backend="auto"
+       # instrument or differential-bench to verify the new kernel fires
+   ```
+
+   Both patterns are required. The default-backend test is the
+   minimum bar for "path entered" axis to be considered satisfied.
 3. **Edges preserved** — semantic edge-case tests for NaN propagation,
    all-zero / all-masked inputs, denormal inputs, boundary conditions.
    Catches: optimizations that are bit-exact on mainline cases but
@@ -198,9 +231,14 @@ Before tagging a release that modifies dispatch:
       The smoke gate's pre-flight signature must include a non-trivial
       correctness verification — not just "did it run".
 - [ ] **Path-entered gate**: A/B perf comparison between the old and new
-      paths on at least one representative shape. If perf ratio is
-      ~1.00× when the new path is supposed to be faster, the new path
-      isn't actually engaged (dead override / fallback engagement).
+      paths on at least one representative shape, **using the public
+      user-facing API path** (`flash_attention(...)` with default
+      `backend="auto"` + documented env vars), not forced backends or
+      direct `_ext.*` calls. If perf ratio is ~1.00× when the new path
+      is supposed to be faster, the new path isn't actually engaged
+      (dead override / fallback engagement / dispatch gate blocking
+      the routing). See §Z for the broader rule on public API path
+      validation.
 - [ ] **Edges preserved gate**: run the full pre-existing test suite,
       with NaN/Inf checks active. Any test that was passing before the
       patch and now fails — even if "the new behavior is reasonable" —
@@ -226,6 +264,24 @@ measured speedup 1.00× and revealed the dead override. Fix: `mod.__class__ = ..
 swap to a dynamically-created subclass with overridden `__call__`. After
 fix: 2.29× speedup (matches Phase 1.5 `mid_resnet` 2.26× ratio).
 Reference: `docs/conv-nax/conv-nax-prod-decisions.md` D34.
+
+**v2.37.0/v2.37.1 (Path entered, public API sub-rule).** V34 backward
+kernels shipped as SHIP_OPT_IN with the documented claim "D=64 qL ≥ 2048:
+1.4-1.85× faster than SDPA-vjp". All 8 V34 backward correctness tests
+passed — but every test forced `backend="mfa"`, which bypasses
+`should_use_mfa()`. For non-causal D ∈ {64, 128}, `should_use_mfa()`
+returns False, and `flash_attention()` returned via `_fallback_sdpa()`
+BEFORE the V34 backward env-var check could engage the custom-vjp
+chain. Users following the documented API setup
+(`MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(...))`) got
+SDPA-vjp silently. Direct `_ext.v6_nax_*` kernel calls confirmed the
+1.81× speedup existed at kernel level — unreachable through the
+public API. Caught only by manual investigation; not by the test suite.
+After fix (v2.37.2): narrow carve-out in `flash_attention()` engages
+V34 when env + shape qualify; differential benches via the default
+`backend="auto"` path now show 1.81-1.82× speedup. Reference:
+`docs/releases/v2.37.2-release-notes.md` and
+`docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
 **v2.33.1 patch (Edges preserved).** Initial fast-fallback design substituted
 bool mask for float bias to skip `mx.where` (~1.3 ms saved unconditionally).
