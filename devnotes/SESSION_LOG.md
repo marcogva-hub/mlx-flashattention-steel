@@ -4089,3 +4089,133 @@ Per memory #30 roadmap + Option β closure:
   bench tool for V34 backward sub-1ms shapes + future Conv2D NAX +
   any other sub-ms kernel work. Reusable institutional infrastructure.
 
+
+---
+## [2026-05-13 01:00] [CLAUDE] V34 backward Option β sprint — Phase 1 Section A complete, Phase 1 Section B BLOCKED on BLK1
+STATUS: HANDOFF_READY
+
+### Plan
+Implement V34 backward NAX-direct kernels (dQ + dK/dV) per
+`docs/v6-nax/v34-backward-option-beta-design-hints.md`. Ship v2.37.0
+autonomously over overnight session.
+
+### Changes (Phase 1 Section A only)
+- `docs/v6-nax/v34-backward-inventory.md` (NEW, ~95 lines) — scope, shape
+  catalog, BLK1 (lse-from-forward blocker) analysis with 4 resolution
+  options [HIGH][VERIFIED]
+- `docs/v6-nax/v34-backward-decisions.md` (NEW, ~250 lines) — DC0 (lse
+  blocker, Marco-decision-required) + DC1-DC11 (kernel split, accumulator
+  types, scope deferrals, loop direction, P recompute, D accumulator,
+  M5-tuned defaults, autoresearch plan, three-axis tests, auto-default
+  integration, escape hatch) [HIGH][VERIFIED]
+- `docs/v6-nax/v34-backward-status.md` (NEW, ~165 lines) — single source
+  of truth on sprint state, "what CC did / didn't do / why halted"
+  [HIGH][VERIFIED]
+- `docs/v6-nax/v34-backward-results.md` (stub for Phase 3)
+- `docs/v6-nax/v34-backward-data.json` (empty list, Phase 3)
+
+### Foundation read (Phase 1 Section A.1-A.3)
+- `docs/v6-nax/v34-backward-option-beta-design-hints.md` (182 lines) [VERIFIED]
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source()` lines
+  2307-2964 (658 LOC V34 forward source structure) [VERIFIED]
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp::loopBackwardQuery()` line 2967
+  (STEEL MPP backward dQ reference, algorithm pattern) [VERIFIED]
+- `csrc/mfa_v6_nax_primitive.cpp::v6_nax_forward()` line 696
+  (V34 forward Primitive — declares lse output but kernel doesn't
+  write it) [VERIFIED]
+
+### Critical finding: BLK1 — lse-from-forward not written by V34 forward
+V34 forward kernel signature (line 2759) has 5 buffers: Q, K, V, O, params.
+**No `L` (lse) buffer.** The Primitive `eval_gpu` allocates lse_shape array
+(line 491) but the kernel never writes to it. The lse output is dead
+storage.
+
+The design hints doc (line 28) assumed "lse from forward, passed as input
+to backward" — this assumption does not hold against the production
+forward code. V34 backward dQ recomputes P = softmax(QK^T - lse), so lse
+is required infrastructure.
+
+Four resolution options enumerated. Recommendation: option (a) — extend
+V34 forward to write lse (~50 LOC patch, re-bench V34 forward
+post-patch under canonical methodology). This requires Marco's decision
+because original prompt §1 listed "Forward V34 changes" as out of scope
+(intended for EXEC_SG heuristic, but the wording covers lse-write too).
+
+### Why CC halted at this checkpoint
+Per prompt §7 "If a phase blocks unresolvable, leave clean branch state
++ explicit STATUS doc for next-session pickup; do NOT force-ship."
+
+BLK1 requires either (a) authorization to expand sprint scope to include
+forward-kernel modification, or (b) acceptance of alternative resolution
+(adds latency/coupling), or (c) de-scope to docs-only checkpoint release.
+
+The responsible action is to surface this clearly rather than autonomously
+writing dQ kernel code that depends on lse infrastructure that doesn't
+exist (the resulting code would silently fail at runtime).
+
+### Scope re-assessment
+Design hints doc own estimate (line 178): "estimate ~1 week CC work".
+Prompt estimated 11-15h. After Phase 1 Section A reading, CC honest
+assessment is the design hints doc's ~1 week estimate is correct —
+this is a multi-day engineering effort even with BLK1 resolved
+(2 new Metal NAX kernels from scratch, ~600-900 LOC each of Metal
+source generation against Apple-internal NAX cooperative tensor API
+with no public docs).
+
+CC is exiting at the Phase 1 Section A checkpoint per prompt §7
+"Run out of overnight time — Phase 1 only completed" pattern.
+
+### Dependency & regression check
+- No production code touched. Master at `1e0b36e` v2.36.1 unchanged.
+- v2.36.1 LIVE on PyPI + GitHub — no impact.
+- 77/77 tests still pass (not re-run this session — no code changes).
+- No version bump. No release artifacts.
+
+### Tech cost
+- This session: ~30 min CC time on Section A reading + design docs.
+- Branch `experiment/v34-backward-option-beta` cut from master.
+- 3 substantive docs + 2 stubs added under `docs/v6-nax/`.
+
+### Validation
+- Ran: foundation file reads via Read + grep + sed [VERIFIED]
+- Validated: BLK1 is real — confirmed by direct read of V34 kernel
+  signature (line 2759-2768, 5 buffers no L) AND V34 Primitive
+  eval_gpu (line 466-512, lse allocated but no encoder.setBuffer
+  for L found)
+
+### Git
+- Branch: `experiment/v34-backward-option-beta` from master `1e0b36e`.
+- This commit + push to origin pending after SESSION_LOG.
+- No merge to master (Phase 4 deliverable, not reached).
+- No tag (v2.37.0 not shipped).
+
+### Key findings encoded
+1. **BLK1 is the blocker** — V34 forward doesn't write lse; design hints
+   doc implicitly assumed it does. Marco needs to choose resolution
+   option (a)/(b)/(c)/(d) or de-scope.
+2. **Sprint scope vs estimate mismatch** — design hints doc's own ~1-week
+   estimate is honest; the overnight estimate is optimistic given the
+   complexity of writing 2 new Metal NAX kernels from scratch.
+3. **Design phase deliverables solid** — DC0-DC11 decisions cover all
+   open questions; future restart of Phase 1 Section B has clean design
+   foundation to build on.
+4. **Three-axis discipline applied to the sprint itself** — Section A
+   axis-3 (edges preserved) caught BLK1 before code was written.
+
+### Three-axis self-validation of this Phase 1 Section A work
+- AXIS 1 (output sanity): N/A (no code, only docs)
+- AXIS 2 (path entered): N/A (no dispatch logic)
+- AXIS 3 (edges preserved): **CAUGHT BLK1** — design hints doc assumption
+  about lse availability falsified against production V34 forward source.
+  Catch was made before any dQ kernel code committed. The discipline is
+  working at the design-phase level too.
+
+### Suggested next
+For Marco on wake:
+1. Read `docs/v6-nax/v34-backward-status.md` (single source of truth).
+2. Decide on BLK1 resolution: option (a), (b), (c), (d), or de-scope.
+3. If (a) authorized: re-prompt CC as a fresh sprint focused first on
+   lse-write patch + V34 forward re-bench, then return to V34 backward
+   Phase 1 Section B as a fresh autonomous sprint with clearer time
+   budget.
+
