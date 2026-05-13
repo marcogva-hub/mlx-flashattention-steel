@@ -471,11 +471,10 @@ def flash_attention(
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
     if not use_mfa:
-        # v2.38.x: V34-backward carve-out consolidated into
-        # `dispatch_policy._should_use_mfa_m5_nax_carveout()` per
-        # Sprint 2 audit M5-HIGH-01.  Single source of truth for all
-        # M5+ NAX carve-out routing.  This block applies the carve-out
-        # decision when:
+        # V34-backward carve-out via `dispatch_policy._v34_backward_carveout()`
+        # (v2.37.2 narrow predicate, consolidated v2.38.x).  Single source
+        # of truth for V34-backward M5+ NAX auto-routing.  Applies the
+        # carve-out decision when:
         #   - backend == "auto" (user hasn't forced a backend)
         #   - softcap / alibi / return_lse paths don't pre-empt
         #   - same-dtype K and V (mixed-dtype is handled separately above)

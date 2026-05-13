@@ -193,13 +193,25 @@ def test_disable_sdpa_route_env_var_e2e():
 # ── Carve-out infrastructure tests ─────────────────────────────────────
 
 
-def test_carveout_function_exists_and_returns_false_by_default():
-    """Sprint A.6 carve-outs use _should_use_mfa_m5_nax_carveout(...).
-    With no carve-outs configured, it returns False (default to SDPA)."""
-    res = dispatch_policy._should_use_mfa_m5_nax_carveout(
-        head_dim=128, seq_len=4096, kv_seq_len=4096,
-        causal=False, dtype_key="float16",
+def test_m5_nax_canonical_path_routes_to_sdpa_by_default():
+    """v2.32.0 default policy: on M5+ NAX hardware, canonical D=64/D=128
+    shapes route to SDPA (Apple's steel_attention_nax.h is optimal there).
+
+    The earlier `_should_use_mfa_m5_nax_carveout()` placeholder hook was
+    deleted in v2.38.0 (dormant since v2.32.0; no Sprint A.6 carve-outs
+    ever materialized).  The default-to-SDPA behavior at the canonical
+    path is now inline in `should_use_mfa()` itself.  If a future
+    Sprint A.6 surfaces empirically-validated MFA-winning shapes on M5+
+    NAX canonical D, re-introduce a named function and call it from the
+    `if head_dim in (64, 128):` branch.
+
+    This test validates the v2.32.0 default via the PUBLIC routing
+    API (per §Z public API path testing rule).
+    """
+    res = dispatch_policy.should_use_mfa(
+        head_dim=128, seq_len=4096, causal=False,
+        is_m3_plus=True, dtype=mx.float16, kv_seq_len=4096,
+        has_nax=True,
     )
-    # Default behavior — Sprint A.6 carve-outs may extend this.
-    # The default must be False (SDPA wins on canonical M5 NAX).
-    assert isinstance(res, bool)
+    # Canonical M5+ NAX path must default to SDPA → False
+    assert res is False
