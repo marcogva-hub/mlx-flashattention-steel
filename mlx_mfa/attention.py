@@ -3566,16 +3566,11 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     - Split path: 3 kernels (dQ + dV partials + dK partials) +
       Python `mx.sum(axis=2)` reduction over WM slot dim
 
-    NOTE — no D_vec precompute in this version (deferred to v2.38.1).
-    The 3 kernels each recompute `D[i] = rowsum(dO ⊙ O)` inline as
-    they have since v2.37.0.
-
-    v2.38.1 D_vec precompute insertion point: ABOVE the `dQ = ...`
-    call line below.  Add `D = mx.sum(dO.astype(mx.float32) *
-    O.astype(mx.float32), axis=-1)` once, then thread `D` as an
-    extra arg to each of the 3 v6_nax_backward_* bindings (which
-    will also gain a D param in their C++ signatures + Primitive
-    eval_gpu buffer bindings + kernel-source D-buffer reads).
+    v2.38.1: D = rowsum(dO ⊙ O) is precomputed once on host via MLX
+    and passed to the kernels that need it (dQ + split-dK + legacy
+    fused-dKdV).  Split-dV does NOT take D — dV = P^T @ dO has no
+    dS term, so D is not needed there.  Each per-call save: 2
+    redundant in-kernel rowsums on the default split path.
     """
     from mlx_mfa import _ext as _bwd_ext
 
@@ -3584,7 +3579,13 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     # `_make_mfa_custom._impl` for the force_v34=True forward path.
     O_v34, L_v34 = O, L
 
-    dQ = _bwd_ext.v6_nax_backward_query(q, k, v, O_v34, L_v34, dO, scale)
+    # v2.38.1: precompute D = rowsum(dO ⊙ O) in FP32 once, shape [B, Hq, qL].
+    # Shared across the kernels below.  Cast to FP32 for numerical parity
+    # with what the inline rowsum used to produce.
+    D = mx.sum(dO.astype(mx.float32) * O_v34.astype(mx.float32), axis=-1)
+
+    dQ = _bwd_ext.v6_nax_backward_query(
+        q, k, v, O_v34, L_v34, dO, D, scale)
 
     # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
     # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq, WM,
@@ -3592,13 +3593,14 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
     if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
         dK, dV = _bwd_ext.v6_nax_backward_kv(
-            q, k, v, O_v34, L_v34, dO, scale)
+            q, k, v, O_v34, L_v34, dO, D, scale)
     else:
         _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+        # split-dV doesn't need D (dV = P^T @ dO; no dS term).
         dVp = _bwd_ext.v6_nax_backward_dv_raw(
             q, k, v, L_v34, dO, scale, _wm)
         dKp = _bwd_ext.v6_nax_backward_dk_raw(
-            q, k, v, O_v34, L_v34, dO, scale, _wm)
+            q, k, v, O_v34, L_v34, dO, D, scale, _wm)
         dV = mx.sum(dVp, axis=2).astype(q.dtype)
         dK = mx.sum(dKp, axis=2).astype(q.dtype)
 

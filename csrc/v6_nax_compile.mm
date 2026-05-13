@@ -267,6 +267,7 @@ struct V34BwdQParamsHost {
   int qL_rem, kL_rem;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dQ_strides[3];
+  int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
 void v34_dispatch_bwd_query(
@@ -314,6 +315,10 @@ void v34_dispatch_bwd_query(
     params.dQ_strides[0] = (int64_t)Hq * qL * head_dim;
     params.dQ_strides[1] = (int64_t)qL * head_dim;
     params.dQ_strides[2] = (int64_t)head_dim;
+    // v2.38.1: D is contiguous [B, Hq, qL] FP32 (precomputed via MLX).
+    params.D_strides[0] = (int64_t)Hq * qL;
+    params.D_strides[1] = (int64_t)qL;
+    params.D_strides[2] = (int64_t)1;
 
     enc.set_bytes(params, 7);
 
@@ -341,6 +346,7 @@ struct V34BwdKVParamsHost {
   int qL_rem, kL_rem;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dK_strides[3], dV_strides[3];
+  int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
 void v34_dispatch_bwd_kv(
@@ -390,6 +396,10 @@ void v34_dispatch_bwd_kv(
     params.dV_strides[0] = (int64_t)Hq * kL * head_dim;
     params.dV_strides[1] = (int64_t)kL * head_dim;
     params.dV_strides[2] = (int64_t)head_dim;
+    // v2.38.1: D is contiguous [B, Hq, qL] FP32 (precomputed via MLX).
+    params.D_strides[0] = (int64_t)Hq * qL;
+    params.D_strides[1] = (int64_t)qL;
+    params.D_strides[2] = (int64_t)1;
 
     enc.set_bytes(params, 8);
 
@@ -488,6 +498,7 @@ struct V34BwdKParamsHost {
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3];
   int64_t dKp_strides[4];
+  int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
 void v34_dispatch_bwd_dk(
@@ -532,6 +543,10 @@ void v34_dispatch_bwd_dk(
     params.dKp_strides[1] = (int64_t)WM * kL * head_dim;
     params.dKp_strides[2] = (int64_t)kL * head_dim;
     params.dKp_strides[3] = (int64_t)head_dim;
+    // v2.38.1: D is contiguous [B, Hq, qL] FP32 (precomputed via MLX).
+    params.D_strides[0] = (int64_t)Hq * qL;
+    params.D_strides[1] = (int64_t)qL;
+    params.D_strides[2] = (int64_t)1;
 
     enc.set_bytes(params, 7);
 

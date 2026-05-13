@@ -843,13 +843,14 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
                 std::vector<mlx::core::array>& outputs) override {
-    // inputs: [Q, K, V, O, L, dO]
+    // inputs: [Q, K, V, O, L, dO, D]  — D added v2.38.1
     const auto& q   = inputs[0];
     const auto& k   = inputs[1];
     const auto& v   = inputs[2];
     const auto& o   = inputs[3];
     const auto& lse = inputs[4];
     const auto& d_o = inputs[5];
+    const auto& d_vec = inputs[6];  // v2.38.1: precomputed rowsum(dO⊙O)
     auto& dq        = outputs[0];
 
     if (q.ndim() != 4)
@@ -942,6 +943,8 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     enc.set_input_array(lse, 4);
     enc.set_input_array(d_o, 5);
     enc.set_output_array(dq, 6);
+    // params at buffer 7 via enc.set_bytes in dispatcher.
+    enc.set_input_array(d_vec, 8);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
 
     v34_dispatch_bwd_query(
         pipeline, &enc,
@@ -982,6 +985,7 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dQ: Q must be 4D");
   if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
@@ -995,13 +999,14 @@ mlx::core::array v6_nax_backward_query(
   auto oc = mlx::core::contiguous(o, false, s);
   auto lsec = mlx::core::contiguous(lse, false, s);
   auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);  // v2.38.1
 
   mlx::core::Shape dq_shape{qc.shape(0), qc.shape(1), qc.shape(2), qc.shape(3)};
   auto outs = mlx::core::array::make_arrays(
       {dq_shape},
       {q.dtype()},
       std::make_shared<MFAV34BwdQuery>(s, scale),
-      {qc, kc, vc, oc, lsec, dOc});
+      {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
 
@@ -1057,7 +1062,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
                 std::vector<mlx::core::array>& outputs) override {
-    // inputs: [Q, K, V, O, L, dO]
+    // inputs: [Q, K, V, O, L, dO, D]  — D added v2.38.1
     // outputs: [dK, dV]
     const auto& q   = inputs[0];
     const auto& k   = inputs[1];
@@ -1065,6 +1070,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     const auto& o   = inputs[3];
     const auto& lse = inputs[4];
     const auto& d_o = inputs[5];
+    const auto& d_vec = inputs[6];  // v2.38.1: precomputed rowsum(dO⊙O)
     auto& dk = outputs[0];
     auto& dv = outputs[1];
 
@@ -1154,6 +1160,8 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     enc.set_input_array(d_o, 5);
     enc.set_output_array(dk, 6);
     enc.set_output_array(dv, 7);
+    // params at buffer 8 via enc.set_bytes in dispatcher.
+    enc.set_input_array(d_vec, 9);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
 
     v34_dispatch_bwd_kv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                         (int)B, (int)D, BQ, BK, WM);
@@ -1181,6 +1189,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dKdV: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
@@ -1191,6 +1200,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
   auto oc = mlx::core::contiguous(o, false, s);
   auto lsec = mlx::core::contiguous(lse, false, s);
   auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);  // v2.38.1
 
   // dK/dV shape: [B, Hq, kL, D] per Q-head (matches SDPA-vjp output).
   mlx::core::Shape dk_shape{qc.shape(0), qc.shape(1), kc.shape(2), qc.shape(3)};
@@ -1198,7 +1208,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
       {dk_shape, dk_shape},
       {q.dtype(), q.dtype()},
       std::make_shared<MFAV34BwdKeyValue>(s, scale),
-      {qc, kc, vc, oc, lsec, dOc});
+      {qc, kc, vc, oc, lsec, dOc, dvc});
   return {outs[0], outs[1]};
 }
 
@@ -1442,13 +1452,15 @@ class MFAV34BwdDK : public mlx::core::Primitive {
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
                 std::vector<mlx::core::array>& outputs) override {
-    // inputs: [Q, K, V, O, L, dO]; outputs: [dK_partials [B, Hq, WM, kL, D] FP32]
+    // inputs: [Q, K, V, O, L, dO, D]  — D added v2.38.1
+    // outputs: [dK_partials [B, Hq, WM, kL, D] FP32]
     const auto& q   = inputs[0];
     const auto& k   = inputs[1];
     const auto& v   = inputs[2];
     const auto& o   = inputs[3];
     const auto& lse = inputs[4];
     const auto& d_o = inputs[5];
+    const auto& d_vec = inputs[6];  // v2.38.1: precomputed rowsum(dO⊙O)
     auto& dkp = outputs[0];
 
     const int B  = q.shape(0);
@@ -1526,6 +1538,9 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     enc.set_input_array(lse, 4);
     enc.set_input_array(d_o, 5);
     enc.set_output_array(dkp, 6);
+    // params at buffer 7 via enc.set_bytes in dispatcher.
+    enc.set_input_array(d_vec, 8);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
+
 
     v34_dispatch_bwd_dk(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                         (int)B, (int)D, BQ, BK, WM);
@@ -1553,6 +1568,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm) {
   if (q.ndim() != 4) throw std::runtime_error("V34 bwd dK: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
@@ -1563,6 +1579,7 @@ mlx::core::array v6_nax_backward_dk_raw(
   auto oc = mlx::core::contiguous(o, false, s);
   auto lsec = mlx::core::contiguous(lse, false, s);
   auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);  // v2.38.1
 
   mlx::core::Shape dkp_shape{qc.shape(0), qc.shape(1), wm,
                               kc.shape(2), qc.shape(3)};
@@ -1570,7 +1587,7 @@ mlx::core::array v6_nax_backward_dk_raw(
       {dkp_shape},
       {mlx::core::float32},
       std::make_shared<MFAV34BwdDK>(s, scale, (uint16_t)wm),
-      {qc, kc, vc, oc, lsec, dOc});
+      {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
 

@@ -4,6 +4,100 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.38.1] — 2026-05-13 — D_vec precompute (M2-HIGH-01)
+
+D = rowsum(dO ⊙ O) is now precomputed once on host via MLX
+(`mx.sum(dO * O, axis=-1).astype(mx.float32)`) and passed as a shared
+device buffer to the V34 backward kernels that previously recomputed
+it inline.  Eliminates 2 redundant in-kernel rowsums per default-path
+V34 backward call.
+
+### Measured perf delta (PUBLIC AUTO API, M5 Max NAX)
+
+Reproduce via `mx.grad(flash_attention(..., backend="auto"))` with
+`MFA_ENABLE_V34_BACKWARD=1`.  All shapes: B=2, H=8, non-causal, f16,
+4 warmup + 12 timed iters, median ms.  v2.38.1 results are 3-session
+medians (variance ratios <1.15 per §AA.4); v2.37.3 reference is
+single-session under identical conditions.
+
+| qL | v2.37.3 V34 (ms) | v2.38.1 V34 (ms) | Δ wall | v2.37.3 spd vs SDPA | v2.38.1 spd vs SDPA |
+|---|---|---|---|---|---|
+| **4096** | 10.57 | **9.59** | **-9.3%** | 1.75× | **1.91×** |
+| **8192** | 39.90 | **38.27** | -4.1% | 1.79× | **1.87×** |
+| **16384** | 170.81 | **166.33** | -2.6% | 1.75× | **1.80×** |
+
+Improvement DECAYS with qL: the eliminated rowsum work is a larger
+relative share at smaller qL.  All claimed numbers reachable via the
+documented PUBLIC AUTO API path per §Z (see reproduction snippet in
+`docs/v6-nax/v38-1-perf-claim-audit.md`).
+
+### Honest scope
+
+- **D=64 only**.  The v2.37.2 carve-out (`dispatch_policy._v34_backward_carveout`)
+  is D=64 hard-gated (`head_dim == 64` predicate).  D=128 always routes
+  to SDPA-vjp via the AUTO API; D=128 V34 backward kernels exist (and
+  now contain the D_vec read) but are not user-reachable via AUTO.
+- **D=128 unchanged**: same SDPA-vjp path as v2.37.3.  No regression,
+  no new claim.  Sprint v2.39.0 (Option γ fused dK+dV) will revisit
+  whether the AUTO carve-out can broaden — the architectural floor at
+  D=128 is the dK kernel's `dO @ V^T` matmul (v2.38.0 investigation
+  foundation), independent of D_vec work.
+- **qL-dependent**: ship only at qL ≥ 4096 per the existing v2.37.2
+  carve-out.  No new env vars, no new opt-ins.
+
+### Architecture (`docs/v6-nax/v38-1-implementation-decisions.md`)
+
+- DC1: D precomputed via MLX dispatch (one extra kernel, amortized
+  across 2 saved in-kernel rowsums).
+- DC2: D buffer at last buffer slot per kernel (8 for dQ + split-dK,
+  9 for legacy fused-dKdV).
+- DC3: split-dV doesn't compute D (dV = P^T @ dO; no dS term) and
+  doesn't even take O as input — left untouched.
+- DC4: per-lane device read mirrors existing `lse` load pattern
+  (`NAXFrag::get_coord()` + `kElemRows` + `kElemRowsJump`); lane-to-row
+  mapping is identical so `row_bin_op<SubOp>(D_vec)` operates correctly.
+
+### Files changed
+
+```
+csrc/bindings.cpp                     | 16 +/- (d_vec arg to 3 bindings)
+csrc/mfa/v6_nax/NAAttentionKernel.cpp | ~80 +/- (D buffer + per-kernel reads)
+csrc/mfa_v6_nax_primitive.cpp         | ~30 +/- (eval_gpu + public funcs)
+csrc/v6_nax_compile.mm                | ~25 +/- (host params + dispatchers)
+mlx_mfa/attention.py                  | ~10 +/- (precompute + thread D)
+docs/v6-nax/v38-1-implementation-decisions.md | +135 (new)
+docs/v6-nax/v38-1-perf-claim-audit.md         | +150 (new)
+benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
+```
+
+### Validation
+
+- 41/41 V34 + helper + v32-routing tests pass (M5 NAX engaged via
+  `MFA_ENABLE_V34_BACKWARD=1`).
+- 11/11 fused-path tests pass (`MFA_V34BWD_USE_FUSED=1`).
+- Axis-2 PUBLIC API: `mx.grad(flash_attention(...))` on D=64 qL=4096
+  non-causal f16 — dQ/dK/dV RMSE all ~2e-5 vs SDPA reference (within
+  FP16 tolerance, consistent across all 3 gradient tensors → no
+  kernel-specific drift).
+- `/mlx-debug-forensics`: HIGH confidence SHIP (5-axis byte-equivalence
+  audit covering lane mapping, OOR handling, D strides, FP32 parity,
+  buffer-index conflicts).
+- `/mlx-mfa-bench-methodology`: blueprint adopted (5 shapes, 3 sessions,
+  PUBLIC AUTO API entry).
+- `/mlx-mfa-perf-audit`: MEDIUM → after corrections (D=128 framing,
+  removed nonexistent `MFA_ENABLE_V34_D128` env reference) → SHIP.
+- `/mlx-mfa-release-audit`: HIGH SHIP (6/6 gates pass).
+
+### Roadmap
+
+- **v2.38.2**: Apple helpers refactor (M1-HIGH-01 + M3-HIGH-01) +
+  observability triad + `/mlx-mfa-kernel-design` skill creation.
+- **v2.39.0**: Option γ fused dK+dV evaluation under TGP-streaming
+  pattern (unblocked by v2.38.0 P1/P2 investigation foundation;
+  premise corrected — TGP overhead negligible, real D=128 floor is
+  dK matmul work) + V34 backward Primitive boilerplate consolidation
+  (P3-HIGH-01).
+
 ## [2.38.0] — 2026-05-13 — Refactor + cleanup release (Path Y)
 
 > **Scope contract.**  Pure Python + documentation refactor on top of
