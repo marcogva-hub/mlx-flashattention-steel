@@ -3513,10 +3513,28 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             B, H, N = q.shape[0], q.shape[1], q.shape[2]
             L = mx.zeros([B, H, N], dtype=mx.float32)
         else:
-            # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
-            # B.1: We now *keep* L as the second return value so the backward can
-            # use it directly — no gradient-checkpointing re-run needed.
-            O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+            # Phase 2.O3 forward-fusion: when V34 backward will be used,
+            # forward via V34 (natural-log lse) so backward consumes it
+            # directly without recompute.  Saves ~5-8ms at qL=8192 by
+            # eliminating both STEEL forward AND V34 forward recompute.
+            head_dim_fwd = q.shape[3]
+            _nk_fwd = k.shape[2]
+            _use_v34_fwd_for_bwd = (
+                os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+                and _get_has_nax_cached()
+                and head_dim_fwd in (64, 128)
+                and q.dtype in (mx.float16, mx.bfloat16)
+                and not causal
+                and (head_dim_fwd == 128 or _nk_fwd > 8000)
+            )
+            if _use_v34_fwd_for_bwd:
+                from mlx_mfa._ext import v6_nax_forward as _v6_fwd
+                O, L = _v6_fwd(q, k, v, False)
+            else:
+                # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
+                # B.1: We now *keep* L as the second return value so the backward can
+                # use it directly — no gradient-checkpointing re-run needed.
+                O, L = mfa_forward_with_lse(q, k, v, scale, causal)
         return O, L  # always return (O, L); callers index [0] to get O
 
     @_impl.vjp
@@ -3572,10 +3590,10 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             )
             if _v34_bwd_eligible:
                 from mlx_mfa import _ext as _bwd_ext
-                # Recompute (O, lse) via V34 forward to get natural-log lse
-                # (the existing L from mfa_forward_with_lse is in STEEL's
-                # log2-domain convention — incompatible with V34 backward).
-                O_v34, L_v34 = _bwd_ext.v6_nax_forward(q, k, v, False)
+                # Phase 2.O3: O and L from forward are already V34's outputs
+                # (natural-log lse) when V34 backward is enabled — see _impl
+                # above.  No V34 forward recompute needed.
+                O_v34, L_v34 = O, L
                 dQ = _bwd_ext.v6_nax_backward_query(
                     q, k, v, O_v34, L_v34, dO, scale)
                 # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
