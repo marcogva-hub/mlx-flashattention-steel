@@ -401,3 +401,145 @@ void v34_dispatch_bwd_kv(
 }
 
 }  // namespace mlx_mfa
+
+// =============================================================================
+// V34 backward dV-only dispatcher (Phase 2.O2 — WM=4 Q-row partition).
+// Buffers: Q=0, K=1, V=2, L=3, dO=4, dV_partials=5, params=6.
+// Grid (NK, Hq, B), TG size 32*WM.
+// =============================================================================
+
+namespace mlx_mfa {
+
+struct V34BwdVParamsHost {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  int64_t Q_strides[3], K_strides[3], V_strides[3];
+  int64_t L_strides[3], dO_strides[3];
+  int64_t dVp_strides[4];  // [B, Hq, WM, kL] strides; D stride=1 implicit
+};
+
+void v34_dispatch_bwd_dv(
+    void* pipeline_raw,
+    void* enc_raw,
+    int qL, int kL,
+    int Hq, int Hk,
+    int batchDimension,
+    int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM) {
+  @autoreleasepool {
+    auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
+    enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
+
+    V34BwdVParamsHost params{};
+    params.qL = qL;
+    params.kL = kL;
+    params.gqa_factor = Hq / Hk;
+    params.NQ = (qL + BQ - 1) / BQ;
+    params.NK = (kL + BK - 1) / BK;
+    params.qL_rem = qL % BQ;
+    params.kL_rem = kL % BK;
+    params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.Q_strides[1] = (int64_t)qL * head_dim;
+    params.Q_strides[2] = (int64_t)head_dim;
+    params.K_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.K_strides[1] = (int64_t)kL * head_dim;
+    params.K_strides[2] = (int64_t)head_dim;
+    params.V_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.V_strides[1] = (int64_t)kL * head_dim;
+    params.V_strides[2] = (int64_t)head_dim;
+    params.L_strides[0] = (int64_t)Hq * qL;
+    params.L_strides[1] = (int64_t)qL;
+    params.L_strides[2] = (int64_t)1;
+    params.dO_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.dO_strides[1] = (int64_t)qL * head_dim;
+    params.dO_strides[2] = (int64_t)head_dim;
+    // dV_partials shape: [B, Hq, WM, kL, D] FP32 contiguous.
+    // Strides: B*Hq*WM*kL*D, Hq*WM*kL*D, WM*kL*D, kL*D (then D=1 implicit).
+    params.dVp_strides[0] = (int64_t)Hq * WM * kL * head_dim;
+    params.dVp_strides[1] = (int64_t)WM * kL * head_dim;
+    params.dVp_strides[2] = (int64_t)kL * head_dim;
+    params.dVp_strides[3] = (int64_t)head_dim;
+
+    enc.set_bytes(params, 6);
+
+    uint32_t NK = (kL + BK - 1) / BK;
+    enc.dispatch_threadgroups(
+        MTL::Size::Make((size_t)NK, (size_t)Hq, (size_t)batchDimension),
+        MTL::Size::Make((size_t)32 * (size_t)WM, 1, 1));
+  }
+}
+
+}  // namespace mlx_mfa
+
+// =============================================================================
+// V34 backward dK-only dispatcher (Phase 2.O2 sister to dV dispatcher).
+// Buffers: Q=0, K=1, V=2, O=3, L=4, dO=5, dK_partials=6, params=7.
+// =============================================================================
+
+namespace mlx_mfa {
+
+struct V34BwdKParamsHost {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
+  int64_t L_strides[3], dO_strides[3];
+  int64_t dKp_strides[4];
+};
+
+void v34_dispatch_bwd_dk(
+    void* pipeline_raw,
+    void* enc_raw,
+    int qL, int kL,
+    int Hq, int Hk,
+    int batchDimension,
+    int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM) {
+  @autoreleasepool {
+    auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
+    enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
+
+    V34BwdKParamsHost params{};
+    params.qL = qL;
+    params.kL = kL;
+    params.gqa_factor = Hq / Hk;
+    params.NQ = (qL + BQ - 1) / BQ;
+    params.NK = (kL + BK - 1) / BK;
+    params.qL_rem = qL % BQ;
+    params.kL_rem = kL % BK;
+    params.Q_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.Q_strides[1] = (int64_t)qL * head_dim;
+    params.Q_strides[2] = (int64_t)head_dim;
+    params.K_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.K_strides[1] = (int64_t)kL * head_dim;
+    params.K_strides[2] = (int64_t)head_dim;
+    params.V_strides[0] = (int64_t)Hk * kL * head_dim;
+    params.V_strides[1] = (int64_t)kL * head_dim;
+    params.V_strides[2] = (int64_t)head_dim;
+    params.O_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.O_strides[1] = (int64_t)qL * head_dim;
+    params.O_strides[2] = (int64_t)head_dim;
+    params.L_strides[0] = (int64_t)Hq * qL;
+    params.L_strides[1] = (int64_t)qL;
+    params.L_strides[2] = (int64_t)1;
+    params.dO_strides[0] = (int64_t)Hq * qL * head_dim;
+    params.dO_strides[1] = (int64_t)qL * head_dim;
+    params.dO_strides[2] = (int64_t)head_dim;
+    params.dKp_strides[0] = (int64_t)Hq * WM * kL * head_dim;
+    params.dKp_strides[1] = (int64_t)WM * kL * head_dim;
+    params.dKp_strides[2] = (int64_t)kL * head_dim;
+    params.dKp_strides[3] = (int64_t)head_dim;
+
+    enc.set_bytes(params, 7);
+
+    uint32_t NK = (kL + BK - 1) / BK;
+    enc.dispatch_threadgroups(
+        MTL::Size::Make((size_t)NK, (size_t)Hq, (size_t)batchDimension),
+        MTL::Size::Make((size_t)32 * (size_t)WM, 1, 1));
+  }
+}
+
+}  // namespace mlx_mfa

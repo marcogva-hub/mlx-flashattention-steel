@@ -69,6 +69,18 @@ struct NAAttentionKernel {
   /// and accumulates partial dK + dV in per-SG FP32 NAX tiles.  Returns
   /// (dK, dV) written to device.  No cross-SG reduction needed.
   std::string createV34BackwardKeyValueSource() const noexcept;
+  /// V34 backward dV-only kernel (Phase 2.O2 — multi-SG Q-row partition).
+  /// WM=4 BQ=64 BK=32 D=128: each SG handles BQ/WM=16 Q-rows.  Softmax is
+  /// intra-SG (no replication tax).  Each SG writes its dV partial
+  /// (BK × D, contributions from its 16 Q-rows × NQ Q-tiles) to a unique
+  /// slot in dV_partials [B, Hq, WM, kL, D] FP32.  Python wrapper reduces
+  /// via mx.sum(axis=2) and casts to T.
+  std::string createV34BackwardDVSource() const noexcept;
+  /// V34 backward dK-only kernel (Phase 2.O2 sister kernel).  Same WM=4
+  /// Q-row partition architecture but adds D = rowsum(dO⊙O), dP = dO@V^T,
+  /// dS = P*(dP-D), and dK_accum += dS^T @ Q.  Output: dK_partials [B, Hq,
+  /// WM, kL, D] FP32; Python wrapper reduces via mx.sum(axis=2) and casts.
+  std::string createV34BackwardDKSource() const noexcept;
 
 private:
   // Helpers that build operand-name and stride strings for the source.

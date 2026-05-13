@@ -3578,8 +3578,21 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 O_v34, L_v34 = _bwd_ext.v6_nax_forward(q, k, v, False)
                 dQ = _bwd_ext.v6_nax_backward_query(
                     q, k, v, O_v34, L_v34, dO, scale)
-                dK, dV = _bwd_ext.v6_nax_backward_kv(
-                    q, k, v, O_v34, L_v34, dO, scale)
+                # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
+                # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq,
+                # WM, kL, D] FP32; sum over WM axis + cast to T.
+                # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
+                if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
+                    dK, dV = _bwd_ext.v6_nax_backward_kv(
+                        q, k, v, O_v34, L_v34, dO, scale)
+                else:
+                    _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+                    dVp = _bwd_ext.v6_nax_backward_dv_raw(
+                        q, k, v, L_v34, dO, scale, _wm)
+                    dKp = _bwd_ext.v6_nax_backward_dk_raw(
+                        q, k, v, O_v34, L_v34, dO, scale, _wm)
+                    dV = mx.sum(dVp, axis=2).astype(q.dtype)
+                    dK = mx.sum(dKp, axis=2).astype(q.dtype)
             else:
                 # Native STEEL backward is narrowly policy-gated from benchmark data.
                 # Current auto policy is conservative and defaults to SDPA VJP unless
