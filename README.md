@@ -4,23 +4,33 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.37.2** — Patch release fixing silent fallback in the
-V34 backward integration. v2.37.0/v2.37.1 documented "1.4-1.85× faster than
-SDPA-vjp" at D=64 qL ≥ 2048, but the public `flash_attention()` autograd
-path was silently routing through SDPA-vjp because `should_use_mfa()`
-returns False for non-causal D=64/128 (STEEL forward isn't competitive at
-those shapes). v2.37.2 adds a narrow carve-out: when `MFA_ENABLE_V34_BACKWARD=1`
-is set AND the shape qualifies for V34 backward win (D=64, qL ≥ 4096,
-non-causal, f16/bf16, NAX), `flash_attention()` routes forward through
-V34/MFA so the custom-vjp engages V34 backward. **End-to-end backward is
-now actually 1.81× faster than SDPA-vjp at D=64 qL=8192**, matching the
-release-notes claim.
+Current version: **2.37.3** — Doc-correction patch release following
+the v2.37.x perf-claim audit
+(`docs/v6-nax/v2.37.x-perf-claim-audit.md`).  Codifies two new
+institutional rules (`CLAUDE_V6_NAX.md` §Z public API path testing
+rule, §AA skill invocation checkpoints) and corrects two unreachable
+claims that shipped in v2.37.0/v2.37.1:
 
-**Engagement envelope** (auto via `MFA_ENABLE_V34_BACKWARD=1`):
-- D=64, qL ≥ 4096, non-causal, f16/bf16 → 1.41-1.81× end-to-end backward win
-- D=64 qL < 4096: not engaged (V34 loses end-to-end vs SDPA-vjp)
-- D=128, any qL: not engaged (V34 backward 2.0-2.4× slower; research only — force via `backend='mfa'`)
-- causal: not engaged (V34 backward causal deferred to DC3)
+- v2.37.1 "D=64 qL=2048: V34 wins 1.44×" → **retracted** (current
+  canonical-methodology bench shows 1.15× kernel-level / ~1.06×
+  end-to-end win, within measurement noise; v2.37.2 carve-out
+  correctly does not engage at qL=2048)
+- v2.37.0 "D=128 V34 backward 2.2-2.4× slower than SDPA-vjp" →
+  **reclassified** as research characterization requiring
+  `backend="mfa"` override; the public AUTO API correctly falls
+  back to SDPA-vjp at parity (no user-facing impact)
+
+**Reachable via public AUTO API** (carve-out shipped v2.37.2,
+preserved in v2.37.3):
+- D=64, qL ≥ 4096, non-causal, f16/bf16, M5+ NAX, env
+  `MFA_ENABLE_V34_BACKWARD=1` → **1.81-1.82× faster end-to-end
+  backward vs SDPA-vjp**
+- All other shapes: AUTO path defaults to SDPA-vjp — correct,
+  no user action needed
+
+See `docs/TRAINING_QUICKSTART.md` for the updated user-facing perf
+recommendation and `docs/v6-nax/v2.37.x-perf-claim-audit.md` for
+the per-claim reachability audit that drove these corrections.
 
 D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). Default (env unset) preserves v2.36.1-exact behavior. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 

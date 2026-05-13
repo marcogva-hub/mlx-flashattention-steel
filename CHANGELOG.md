@@ -4,6 +4,82 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.37.3] — 2026-05-13 — Institutional amendment + perf claim corrections
+
+### Added — institutional rules
+
+- **`CLAUDE_V6_NAX.md` §Z** (Public API path testing rule): every
+  performance claim documented in release notes / CHANGELOG / README
+  / training guides MUST be reproducible via the documented user-
+  facing API call path with the env vars / config a user would set,
+  NOT via internal kernel benchmarks or forced-backend
+  (`backend="mfa"`) measurements.  Includes 6-step reproducibility
+  template, prohibitions, requirements, and crosswalk to existing
+  rules.
+- **`CLAUDE_V6_NAX.md` §AA** (Skill invocation checkpoints):
+  mandatory `/mlx-code-review`, `/metal-kernel-dev`, `/repo-release-prep`
+  invocations at specific decision points (perf discoveries,
+  FALSIFIED outcomes, pre-merge, pre-release, post-doc-with-perf-claims).
+- **`CLAUDE_V6_NAX.md` §3.5 amendment** (axis 2 — path entered):
+  path-entered exercise MUST use the public user-facing API path,
+  not just forced or internal paths.  New required test pattern
+  documented; v2.37.0/v2.37.1 added to the silent-bugs-caught
+  worked-examples collection.
+- **`CLAUDE.md` top-level reminder** of §Z + §AA at session start.
+- **`docs/RELEASE_PHILOSOPHY.md`** new subsection "Public API path
+  validation" codifying the corollary that auto-default validation
+  must use the public API path.
+
+### Added — audit + regression test
+
+- **`docs/v6-nax/v2.37.x-perf-claim-audit.md`** — per-claim
+  reachability audit of all quantified perf claims in v2.37.0,
+  v2.37.1, v2.37.2 release notes and `docs/TRAINING_QUICKSTART.md`.
+  Reproduces each claim under AUTO path, MFA-forced path, and SDPA
+  baseline.  Verdicts: 4 / 11 reachable via AUTO; 5 / 11 reachable
+  only via MFA-forced (D=128 research characterization);
+  1 / 11 overstated at any path (v2.37.1 qL=2048 win).
+- **`tests/test_release_notes_perf_claims.py`** — parameterized
+  regression test ensuring every documented perf claim engages the
+  expected kernel via `mx.grad(flash_attention(...))` with default
+  `backend="auto"`.  Future releases must pass this test before
+  tagging.
+
+### Corrected — overstated / unreachable perf claims
+
+- **v2.37.1 D=64 qL=2048 "V34 wins 1.44×" — retracted.**  Current
+  canonical-methodology bench (`§4.2`) shows 1.15× kernel-level win
+  and ≈1.06× end-to-end win, within measurement noise.  The v2.37.2
+  carve-out correctly does not engage V34 backward at qL=2048; the
+  AUTO path defaults to SDPA-vjp.  `docs/TRAINING_QUICKSTART.md`
+  updated: the qL=2048 row no longer carries the "V34 WINS" badge.
+- **v2.37.0 D=128 "V34 backward 2.2-2.4× slower than SDPA-vjp" —
+  reclassified.**  Numbers are valid kernel-isolation
+  characterization but require `backend="mfa"` explicit override
+  to reach; the documented `MFA_ENABLE_V34_BACKWARD=1` env-var
+  setup with default `backend="auto"` does NOT engage V34 at D=128
+  (carve-out is D=64 only).  Public AUTO API correctly falls back
+  to SDPA-vjp at parity.  `docs/TRAINING_QUICKSTART.md` updated:
+  D=128 table flagged as research-only kernel characterization.
+
+The original v2.37.0 and v2.37.1 release-notes files are preserved
+as historical record (no rewrite); this v2.37.3 entry supersedes
+their perf claims.
+
+### Unchanged
+
+- v2.37.2 carve-out in `flash_attention()` preserved exactly
+  (D=64, qL ≥ 4096, non-causal, f16/bf16, NAX, env=1)
+- All V34 backward kernels (dQ + multi-SG dK/dV WM=4)
+- All public API signatures
+- v2.36.x infrastructure
+
+### Migration
+
+No code changes required.  Doc-only corrections.  Users following
+the v2.37.2 + v2.37.3 user-facing guidance get the documented perf
+without surprise.
+
 ## [2.37.2] — 2026-05-13 — V34 backward integration bugfix
 
 ### Fixed

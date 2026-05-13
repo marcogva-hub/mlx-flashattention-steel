@@ -78,50 +78,87 @@ re-running forward.
 
 ## Performance characterization (M5 Max FP16)
 
-### D=128 (SHIP_OPT_IN for research)
+> **v2.37.3 audit note (2026-05-13):** the per-shape tables below
+> were originally measured via `backend="mfa"` forced path
+> (kernel-isolation regime), which is NOT the path users hit by
+> default.  Post-v2.37.2 carve-out, the public `backend="auto"` API
+> engages V34 backward ONLY for **D=64, qL ≥ 4096, non-causal,
+> fp16/bf16, NAX**.  Outside that envelope, the AUTO path falls back
+> to SDPA-vjp at parity.  The tables in the D=128 and D=64-small
+> subsections below describe **kernel-isolation** behavior accessible
+> only via `backend="mfa"`; they are research characterization, not
+> user-facing perf.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`
+> for the per-claim reachability audit.
 
-| qL | V34 backward | SDPA-vjp | V34 / SDPA |
+### D=64 — V34 backward wins (user-facing, reachable via public AUTO API)
+
+For D=64, qL ≥ 4096, non-causal training (e.g., FlashVSR class,
+LTX2-style cross-attention), V34 backward is genuinely faster than
+SDPA-vjp **through the documented public API**.  No `backend` override
+needed — just set `MFA_ENABLE_V34_BACKWARD=1` and call
+`flash_attention(...)` normally:
+
+| qL=kL | V34 backward (AUTO) | SDPA-vjp | Speedup |
 |---|---:|---:|---:|
-| 1024 | 1.07ms | 0.50ms | 2.13× |
-| 2048 | 3.22ms | 1.54ms | 2.09× |
-| 4096 | 12.77ms | 5.31ms | 2.40× |
-| 8192 | 48.93ms | 20.37ms | 2.40× |
+| **4096** | **2.65 ms** | **4.83 ms** | **1.82× faster** |
+| **8192** | **9.78 ms** | **17.67 ms** | **1.81× faster** |
 
-For D=128, V34 backward is 2.2-2.4× slower than SDPA-vjp.  Apple's
-SDPA-vjp uses a different algorithm (likely fused single-kernel
-dK+dV with TGP cross-SG reduction) that V34 backward would require
-major restructure to match.
+These numbers are reproducible with the snippet in the Usage section
+above (M5 Max, B=1, H=4, fp16, canonical methodology §4.2).
 
-### D=64 — V34 backward WINS at large shapes
+### D=64 — small qL (research characterization, NOT user-facing)
 
-| qL=kL | V34 backward | SDPA-vjp | V34 / SDPA |
+For D=64 qL ≤ 2048, V34 backward is at parity or slower than
+SDPA-vjp end-to-end.  The v2.37.2 carve-out does NOT engage V34 here,
+so the public AUTO API correctly defaults to SDPA-vjp.  Kernel-isolation
+numbers (via `backend="mfa"`) for reference:
+
+| qL | V34 (mfa-forced) | SDPA-vjp | Ratio | End-to-end win? |
+|---|---:|---:|---:|---:|
+| 256 | 0.46 ms | 0.34 ms | 1.35× | No (V34 slower) |
+| 512 | 0.51 ms | 0.37 ms | 1.39× | No |
+| 1024 | 0.73 ms | 0.64 ms | 1.13× | No |
+| 2048 | 1.23 ms | 1.42 ms | 0.87× (1.15× win at kernel level) | ~1.06× — within noise |
+
+The original v2.37.1 release notes claimed "qL=2048: V34 wins 1.44×".
+The current canonical-methodology bench shows 1.15× kernel-level win,
+≈1.06× end-to-end — within measurement noise.  This row was **retracted
+in v2.37.3** (see `docs/v6-nax/v2.37.x-perf-claim-audit.md`).
+
+### D=128 — research-only kernel characterization
+
+V34 backward is 2.0-2.4× SLOWER than SDPA-vjp at D=128 due to an
+architectural floor (extra dO@V^T matmul scales with D²; at D=128 the
+dK accumulator approaches register-spill threshold on M5 Max).
+
+**The v2.37.2 carve-out does NOT engage V34 for D=128**, so the public
+`backend="auto"` API correctly falls back to SDPA-vjp at parity.  These
+numbers are reachable only via `backend="mfa"` explicit override and
+are kernel-characterization, not user-facing perf:
+
+| qL | V34 (mfa-forced) | SDPA-vjp | Ratio |
 |---|---:|---:|---:|
-| 256 | 0.62ms | 0.46ms | 1.37× (slower) |
-| 512 | 0.81ms | 0.48ms | 1.68× (slower) |
-| 1024 | 0.61ms | 0.46ms | 1.32× (slower) |
-| **2048** | **0.91ms** | **1.31ms** | **0.70× ← V34 WINS** |
-| **4096** | **2.61ms** | **4.81ms** | **0.54× ← V34 WINS** |
-| **8192** | **9.77ms** | **17.69ms** | **0.55× ← V34 WINS** |
+| 1024 | 1.12 ms | 0.50 ms | 2.22× slower |
+| 2048 | 3.22 ms | 1.42 ms | 2.27× slower |
+| 4096 | 12.33 ms | 5.49 ms | 2.25× slower |
+| 8192 | 48.46 ms | 20.18 ms | 2.40× slower |
 
-**For D=64 large shapes (qL × kL ≥ 4M = 2048²), V34 backward is
-1.4-1.85× FASTER than SDPA-vjp.**  Clear perf win for D=64 training
-workloads (e.g., FlashVSR class with larger qL, LTX2-style cross-
-attention).
-
-Why D=64 wins where D=128 doesn't: the dK kernel's extra dO@V^T
-matmul scales with D, so smaller D → smaller dK overhead → better
-ratio.  Combined with the multi-SG WM=4 Q-row partition's clean
-softmax handling, D=64 large shapes get genuine throughput
-improvement on M5 Max NAX hardware.
+The previously documented D=128 V34 backward path is **research
+infrastructure only**.  Users training at D=128 should not set
+`MFA_ENABLE_V34_BACKWARD=1` — the carve-out won't engage and the
+default SDPA-vjp path is correct.
 
 ### Recommendation
 
-- **D=64 training with qL ≥ 2048**: enable V34 backward
-  (`MFA_ENABLE_V34_BACKWARD=1`) — significant speedup over SDPA-vjp.
-- **D=64 training with qL < 2048**: V34 backward is slower; stick
-  with default (SDPA-vjp).
-- **D=128 training**: V34 backward correctness-validated but slower;
-  research use cases only.
+- **D=64 training with qL ≥ 4096**: set `MFA_ENABLE_V34_BACKWARD=1`
+  and call `flash_attention(...)` normally — V34 backward engages
+  automatically via the v2.37.2 carve-out and delivers **1.81-1.82×
+  speedup** over SDPA-vjp.
+- **D=64 training with qL < 4096**: don't bother setting the env —
+  the carve-out's shape gate keeps you on SDPA-vjp anyway.
+- **D=128 training**: leave the env unset; AUTO path defaults to
+  SDPA-vjp which is the correct choice.  Setting `MFA_ENABLE_V34_BACKWARD=1`
+  has no effect at D=128 (carve-out doesn't engage).
 
 ## Environment variables (advanced users)
 
