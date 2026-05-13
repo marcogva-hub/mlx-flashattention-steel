@@ -451,6 +451,10 @@ public:
   struct Params {
     bool causal;
     bool bhnd;  // Sprint 2A: layout flag, decided by caller per-call.
+    // v2.37.0 V34 backward integration: force V34 forward routing even
+    // on D=64 small-Nk shapes (which by default route to legacy v6_nax).
+    // Caller passes true when V34 backward will consume the lse.
+    bool force_v34 = false;
   };
 
   MFAV6Forward(mlx::core::Stream stream, Params params)
@@ -591,7 +595,11 @@ public:
     // Default: ON for D=64 with N_kv > 8000 (LTX2-style asymmetric wins +18%).
     // Override via env var MFA_V6_USE_V34={0,1}.
     bool use_v34;
-    if (D == 128) {
+    if (params_.force_v34) {
+      // v2.37.0: caller (V34 backward integration) requires V34 forward
+      // to produce natural-log lse.  Override default routing.
+      use_v34 = true;
+    } else if (D == 128) {
       use_v34 = true;
     } else if (D == 64 && Nk > 8000) {
       // LTX2-cross style asymmetric: V34 wins ~+18%.
@@ -714,7 +722,7 @@ private:
 // We transpose Q/K/V into kernel layout, dispatch, then transpose O back.
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal) {
+    const mlx::core::array& v, bool causal, bool force_v34) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
   int D = q.shape(3);
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
@@ -732,7 +740,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
                         (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
   const bool bhnd = !legacy_opt_in && can_bhnd;
-  MFAV6Forward::Params params{causal, bhnd};
+  MFAV6Forward::Params params{causal, bhnd, force_v34};
 
   if (bhnd) {
     // Pass Q/K/V directly in MLX-native [B, H, N, D] layout.

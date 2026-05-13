@@ -131,13 +131,23 @@ def test_v34_bwd_default_off_falls_back():
     assert _rmse(dV, dV_ref) == 0.0
 
 
-def test_v34_bwd_optin_d64_small_nk_still_falls_back(enable_v34_bwd):
-    """Per DC12 routing parity: D=64 small-Nk falls back even with
-    V34 enabled (V34 forward doesn't engage there)."""
+def test_v34_bwd_optin_d64_small_nk_engages_v34(enable_v34_bwd):
+    """v2.37.0+: DC12 routing-parity constraint RELAXED.  V34 backward
+    now engages for D=64 small-Nk shapes (v6_nax_forward called with
+    force_v34=True so V34 forward path emits natural-log lse).
+
+    Pre-v2.37.0 this case fell through to SDPA-vjp; now V34 NAX kernels
+    handle it.  Verify (a) correctness vs SDPA-vjp within FP16/FP32
+    floor, (b) V34 path is engaged (output differs from SDPA-vjp by
+    FP16 rounding)."""
     q, k, v = _make(1, 4, 4, 512, 512, 64, 47, mx.float16)
     scale = 1.0 / math.sqrt(64)
     dQ, dK, dV = _grads(q, k, v)
     dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
-    assert _rmse(dQ, dQ_ref) == 0.0
-    assert _rmse(dK, dK_ref) == 0.0
-    assert _rmse(dV, dV_ref) == 0.0
+    # (a) Correctness within FP16/FP32 noise floor
+    assert _rmse(dQ, dQ_ref) < 1e-3
+    assert _rmse(dK, dK_ref) < 1e-3
+    assert _rmse(dV, dV_ref) < 1e-2
+    # (b) V34 path engaged (non-zero diff vs identical SDPA-vjp fallback)
+    assert _rmse(dQ, dQ_ref) > 0.0, (
+        "V34 backward did not engage on D=64 small-Nk")

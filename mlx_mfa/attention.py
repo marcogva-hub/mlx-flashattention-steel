@@ -3525,11 +3525,17 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 and head_dim_fwd in (64, 128)
                 and q.dtype in (mx.float16, mx.bfloat16)
                 and not causal
-                and (head_dim_fwd == 128 or _nk_fwd > 8000)
+                # v2.37.0+: drop the Nk>8000 constraint — we now pass
+                # force_v34=True to v6_nax_forward to ensure V34 routing.
             )
             if _use_v34_fwd_for_bwd:
                 from mlx_mfa._ext import v6_nax_forward as _v6_fwd
-                O, L = _v6_fwd(q, k, v, False)
+                # v2.37.0+: force V34 forward routing so lse is natural-log
+                # (V34 backward consumes natural-log lse).  This extends
+                # V34 backward eligibility to D=64 small-Nk shapes that
+                # would otherwise route through legacy v6_nax forward
+                # (log2-domain lse incompatible with V34 backward).
+                O, L = _v6_fwd(q, k, v, False, True)  # force_v34=True
             else:
                 # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
                 # B.1: We now *keep* L as the second return value so the backward can
@@ -3585,8 +3591,9 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 and head_dim_ in (64, 128)
                 and q.dtype in (mx.float16, mx.bfloat16)
                 and not causal
-                # DC12 routing parity: must match V34 forward routing rules.
-                and (head_dim_ == 128 or _Nk_for_v34 > 8000)
+                # v2.37.0+: DC12 routing parity relaxed — we now force V34
+                # forward routing in _impl (force_v34=True) so V34 backward
+                # works on D=64 small-Nk too.
             )
             if _v34_bwd_eligible:
                 from mlx_mfa import _ext as _bwd_ext

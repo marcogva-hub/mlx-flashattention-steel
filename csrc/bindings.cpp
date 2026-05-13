@@ -30,10 +30,12 @@ bool device_has_nax_bf16();
 // Draw Things port: source generation + JIT compile
 std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
 std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
-// V6 NAX forward (returns O, L)
+// V6 NAX forward (returns O, L).  v2.37.0: optional force_v34 to route
+// V34 forward path even on D=64 small-Nk shapes (used by V34 backward
+// integration to obtain natural-log lse).
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal);
+    const mlx::core::array& v, bool causal, bool force_v34 = false);
 // V34 backward dQ (V34 backward Option β Phase 1).  Returns dQ; consumes
 // O + lse from V34 forward.  Routing constraint per DC12: caller must
 // ensure V34-forward-eligible shape (D=128 always; D=64 with Nk>8000).
@@ -356,12 +358,15 @@ NB_MODULE(_ext, m) {
 
   m.def("v6_nax_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,
-           const mlx::core::array& v, bool causal) {
-          return mlx_mfa::v6_nax_forward(q, k, v, causal);
+           const mlx::core::array& v, bool causal, bool force_v34) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v34);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("causal") = false,
-        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16.");
+        nb::arg("force_v34") = false,
+        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16. "
+        "v2.37.0: force_v34=True overrides default routing to ensure V34 forward "
+        "path (used by V34 backward integration for natural-log lse).");
 
   m.def("v6_nax_backward_query",
         [](const mlx::core::array& q, const mlx::core::array& k,
