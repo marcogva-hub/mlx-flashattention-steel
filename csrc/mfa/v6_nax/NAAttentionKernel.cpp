@@ -4373,6 +4373,9 @@ std::string NAAttentionKernel::createV34BackwardKeyValueSource() const noexcept 
   ss << "#define V34BWDKV_TK " << TK << "\n";
   ss << "#define V34BWDKV_SCALE " << scale << "f\n";
   ss << "#define V34BWDKV_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking gated
+  // by compile-time macro so non-causal source remains bit-identical.
+  ss << "#define V34BWDKV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"BWDKVMSL(
 struct V34BwdKVParams {
@@ -4383,6 +4386,9 @@ struct V34BwdKVParams {
   int NK;
   int qL_rem;
   int kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset.  Field exists
+  // unconditionally so host-side V34BwdKVParamsHost layout matches.
+  int qL_off;
   long Q_strides[3];
   long K_strides[3];
   long V_strides[3];
@@ -4597,6 +4603,42 @@ void attention_bwd_kv(
       }
     }
 
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dKV legacy
+    // fused kernel.  WM=1 single-SG (Phase 2.O1 finding) → no SG Q-row partition.
+    // K-parallel kernel: tid.x = K-block, qb in Q-loop.
+    //   base_row = qb * BQ + qL_off   (Q in loop)
+    //   base_col = tid.x * BK         (K parallel, no SG partition for WM=1)
+    // Setting S[r,c] = -inf for r<c → exp2(-inf - lse) = 0 → P = 0 → dS = 0
+    // → dK_accum + dV_accum naturally skip masked positions.
+#if V34BWDKV_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDKV_BQ + params.qL_off;
+      const int base_col = int(tid.x) * V34BWDKV_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
     // P = exp2(S - lse_log2)
     Stile.template row_bin_op<ExpSubOp>(lse_log2);
     // Stile holds P now.
@@ -4791,6 +4833,8 @@ std::string NAAttentionKernel::createV34BackwardDVSource() const noexcept {
   ss << "#define V34BWDV_TD " << TD << "\n";
   ss << "#define V34BWDV_TK " << TK << "\n";
   ss << "#define V34BWDV_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
+  ss << "#define V34BWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
 
   ss << R"BWDVMSL(
@@ -4799,6 +4843,8 @@ struct V34BwdVParams {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset (host struct match)
+  int qL_off;
   long Q_strides[3];   // [B, Hq, qL, D]
   long K_strides[3];   // [B, Hk, kL, D]
   long V_strides[3];   // [B, Hk, kL, D]
@@ -4973,6 +5019,39 @@ void attention_bwd_dv(
       }
     }
 
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dV split.
+    // K-parallel kernel with per-SG Q-row partition (sg_q_offset).
+    //   base_row = qb * BQ + qL_off + sg_q_offset
+    //   base_col = tid.x * BK
+#if V34BWDV_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDV_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDV_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
     // P = exp2(S - lse_log2)
     Stile.template row_bin_op<ExpSubOp>(lse_log2);
     // Stile holds P now.
@@ -5076,7 +5155,9 @@ std::string NAAttentionKernel::createV34BackwardDKSource() const noexcept {
   ss << "#define V34BWDK_TD " << TD << "\n";
   ss << "#define V34BWDK_TK " << TK << "\n";
   ss << "#define V34BWDK_SCALE " << scale << "f\n";
-  ss << "#define V34BWDK_SCALE_LOG2E " << scale_log2e << "f\n\n";
+  ss << "#define V34BWDK_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
+  ss << "#define V34BWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDKMSL(
 struct V34BwdKParams {
@@ -5084,6 +5165,8 @@ struct V34BwdKParams {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset (host struct match)
+  int qL_off;
   long Q_strides[3];
   long K_strides[3];
   long V_strides[3];
@@ -5273,6 +5356,38 @@ void attention_bwd_dk(
         }
       }
     }
+
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dK split.
+    // K-parallel with per-SG Q-row partition (sg_q_offset).
+#if V34BWDK_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDK_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDK_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
     Stile.template row_bin_op<ExpSubOp>(lse_log2);
     // Stile holds P.
 
@@ -5443,7 +5558,9 @@ std::string NAAttentionKernel::createV34BackwardFusedDKDVSource() const noexcept
   ss << "#define V34BWDF_TD " << TD << "\n";
   ss << "#define V34BWDF_TK " << TK << "\n";
   ss << "#define V34BWDF_SCALE " << scale << "f\n";
-  ss << "#define V34BWDF_SCALE_LOG2E " << scale_log2e << "f\n\n";
+  ss << "#define V34BWDF_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
+  ss << "#define V34BWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDFMSL(
 struct V34BwdFusedParams {
@@ -5451,6 +5568,8 @@ struct V34BwdFusedParams {
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset (host struct match)
+  int qL_off;
   long Q_strides[3];
   long K_strides[3];
   long V_strides[3];
@@ -5649,6 +5768,39 @@ void attention_bwd_fused_dkdv(
         }
       }
     }
+
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for fused
+    // dKdV.  K-parallel with per-SG Q-row partition (sg_q_offset).
+    // ORDER-CRITICAL preserved: mask is on Stile holding S, before
+    // row_bin_op<ExpSubOp> converts to P, before P^T @ dO uses P.
+#if V34BWDF_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDF_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDF_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
 
     // P = exp2(S - lse_log2).  Stile holds P after this.
     Stile.template row_bin_op<ExpSubOp>(lse_log2);

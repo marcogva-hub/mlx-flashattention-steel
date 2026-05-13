@@ -346,6 +346,8 @@ def _v34_backward_carveout(
 
     **Currently active predicate:**
     D=64, qL ≥ 2048, non-causal, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.
+    Causal kept GATED OUT in production until the K-parallel kernel dV
+    residual is resolved (v2.50 Phase 4b-complete Prompt 3 partial state).
 
     Future broadening (e.g., D=128 if Option γ proves out at v2.40.0-
     internal) extends this function rather than introducing new inline
@@ -354,18 +356,18 @@ def _v34_backward_carveout(
     # dtype_key values: "float16" / "bfloat16" / None per
     # _dispatch_dtype_key().  NOT "fp16" / "bf16".
     #
-    # v2.39.2-internal: qL floor lowered from 4096 to 2048.  The v2.37.2
-    # original 4096 floor was conservative because v2.39.0 fused-BK=32
-    # regressed below qL=4096; v2.39.1's BK=16 fix lifted the parity
-    # boundary down to qL=2048.  See `docs/v6-nax/v39-2-internal-
-    # decisions.md` §"Threshold calibration" for the bench data.
+    # v2.39.2-internal: qL floor lowered from 4096 to 2048.
     #
-    # v2.50 Sprint 4 Phase 4b: PARTIAL.  V34 forward causal extension
-    # (Phase 4a) and dQ kernel causal mask (Phase 4b partial) are
-    # complete, but the 4 K-parallel backward kernels (dKV, dV, dK,
-    # fused dKdV) still need their per-element causal mask blocks.  The
-    # `not causal` gate is RETAINED until Phase 4b-complete lands — see
-    # `docs/v50/sprint4-status-phase4b-complete.md`.
+    # v2.50 Phase 4b-complete (Prompt 3) — PARTIAL.  Critical compile_v34_
+    # backward_pipeline isCausal=false hardcoded bug FIXED (was making
+    # Prompt 2 Phase 4b dQ a silent no-op).  dQ kernel now produces
+    # correct causal gradients (RMSE 8.7e-6 at qL=2048 D=64 fp16,
+    # well within bounds).  The 4 K-parallel kernels (dV split, dK split,
+    # dKV legacy fused, dKdV fused) have causal mask blocks compiled
+    # in but produce dV with structural ~25× under-counting residual
+    # (RMSE 2.7e-3 vs 1e-3 bound).  Gate kept on `causal=True` until
+    # the residual is resolved in a focused future session.
+    # See `docs/v50/phase-4b-complete-decisions.md`.
     if (
         head_dim == 64
         and seq_len >= 2048

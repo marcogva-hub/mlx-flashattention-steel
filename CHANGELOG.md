@@ -11,6 +11,36 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Phase 4b-complete.A — CRITICAL bug fix (v2.50, Prompt 3 Section B)**:
+  Fixed `compile_v34_backward_pipeline` (v2.40.x Sprint C consolidation
+  helper) which hardcoded `isCausal=false` when constructing the
+  `NAAttentionKernelDescriptor`. This was a latent bug that made my
+  Prompt 2 Phase 4b dQ causal mask block a silent no-op — the
+  `#define V34BWD_CAUSAL` macro always evaluated to 0 regardless of
+  the caller's causal flag. Detected via source-dump inspection
+  (`MFA_V34BWDF_DUMP_SOURCE=1`). Plumbed `isCausal` through:
+  - 5 V34Bwd*Key cache structs (added `bool causal` field + hash)
+  - 5 MFAV34Bwd* Primitive classes (added `causal_` member + ctor arg)
+  - 5 raw helpers + 5 nanobind bindings (added `bool causal` param)
+  - Python `_v34_backward_vjp` (threaded `causal` to each binding call)
+
+  **Empirical**: dQ kernel causal mask now fires correctly. V34 backward
+  dQ RMSE at D=64 qL=2048 fp16 causal = **8.7e-6** (well within bounds),
+  was effectively non-causal pre-fix.
+
+  Phase 4b-complete.B — added per-element causal mask blocks to the
+  4 K-parallel kernels (dV split, dK split, dKV legacy fused, dKdV
+  fused). Mask blocks compiled-in but produce dV with structural
+  ~25× under-counting residual (RMSE 2.7e-3 vs 1e-3 bound). Production
+  eligibility gates (`_v34_eligible`, `_v34_backward_carveout`)
+  RETAIN `not causal` constraint — production callers using
+  `flash_attention(causal=True)` continue to use SDPA-vjp fallback
+  (bit-identical, safe). K-parallel residual deferred to a focused
+  future session (~2-3h CC); Sprint 5 (V34 backward block-sparse)
+  bundled with this resolution because it extends the same kernels.
+  See `docs/v50/phase-4b-complete-decisions.md` for full investigation
+  evidence and recommended next steps.
+
 - **Sprint 4 Phase 4a + dQ partial (v2.50, V34 causal extension infrastructure)**:
   V34 forward kernel (`createV34Source()`) now supports causal masking
   via Apple SDPA NAX pattern (`steel_attention_nax.h:176-187,279-301`)

@@ -44,7 +44,7 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale);
+    float scale, bool causal);
 // V34 backward dK/dV (V34 backward Option β Phase 2).  Single-SG WM=1
 // kernel; one TG per K-tile.  Returns (dK, dV) shaped [B, Hq, kL, D]
 // each (per-Q-head; GQA reduction is caller's responsibility).
@@ -53,7 +53,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale);
+    float scale, bool causal);
 // V34 backward dV-only Phase 2.O2 multi-SG (Q-row partition).  Returns
 // dV_partials [B, Hq, WM, kL, D] FP32.  Caller reduces via mx.sum(axis=2)
 // and casts to T to obtain final dV [B, Hq, kL, D].
@@ -61,7 +61,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
 mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
-    const mlx::core::array& d_o, float scale, int wm);
+    const mlx::core::array& d_o, float scale, int wm, bool causal);
 // V34 backward dK-only Phase 2.O2 (sister kernel).  Same shape contract
 // as dV; takes additional O input (for D = rowsum(dO⊙O)).
 mlx::core::array v6_nax_backward_dk_raw(
@@ -69,7 +69,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
-    float scale, int wm);
+    float scale, int wm, bool causal);
 // V34 backward FUSED dK+dV (Sprint v2.39.0 Phase C.1.a, Option γ).  Single
 // kernel computes both gradients in one K-tile load (K-bandwidth amortization
 // per /metal-kernel-dev audit).  D=64 only this PR; D=128 deferred to
@@ -80,7 +80,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o,
     const mlx::core::array& d_vec,
-    float scale, int wm);
+    float scale, int wm, bool causal);
 }  // namespace mlx_mfa
 
 #include "mfa_paged_gather.hpp"
@@ -388,12 +388,12 @@ NB_MODULE(_ext, m) {
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
            const mlx::core::array& d_vec,
-           float scale) {
-          return mlx_mfa::v6_nax_backward_query(q, k, v, o, lse, d_o, d_vec, scale);
+           float scale, bool causal) {
+          return mlx_mfa::v6_nax_backward_query(q, k, v, o, lse, d_o, d_vec, scale, causal);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
-        nb::arg("scale"),
+        nb::arg("scale"), nb::arg("causal") = false,
         "V34 backward dQ kernel (Option β Phase 1). Consumes O + lse from "
         "V34 forward + D=rowsum(dO⊙O) precomputed (v2.38.1).  Returns dQ.  "
         "Routing constraint per DC12: caller must ensure V34-forward-eligible "
@@ -405,12 +405,12 @@ NB_MODULE(_ext, m) {
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
            const mlx::core::array& d_vec,
-           float scale) {
-          return mlx_mfa::v6_nax_backward_kv(q, k, v, o, lse, d_o, d_vec, scale);
+           float scale, bool causal) {
+          return mlx_mfa::v6_nax_backward_kv(q, k, v, o, lse, d_o, d_vec, scale, causal);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
-        nb::arg("scale"),
+        nb::arg("scale"), nb::arg("causal") = false,
         "V34 backward dK/dV kernel (Option β Phase 2). Single-SG (WM=1) "
         "design. Returns (dK, dV) shaped [B, Hq, kL, D] each (per-Q-head; "
         "GQA reduction is caller's responsibility).  Routing constraint "
@@ -419,12 +419,12 @@ NB_MODULE(_ext, m) {
   m.def("v6_nax_backward_dv_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
            const mlx::core::array& v, const mlx::core::array& lse,
-           const mlx::core::array& d_o, float scale, int wm) {
-          return mlx_mfa::v6_nax_backward_dv_raw(q, k, v, lse, d_o, scale, wm);
+           const mlx::core::array& d_o, float scale, int wm, bool causal) {
+          return mlx_mfa::v6_nax_backward_dv_raw(q, k, v, lse, d_o, scale, wm, causal);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"),
-        nb::arg("scale"), nb::arg("wm") = 4,
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
         "V34 backward dV-only multi-SG kernel (Phase 2.O2).  WM=4 default "
         "with Q-row partition.  Returns dV_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.  "
@@ -435,12 +435,12 @@ NB_MODULE(_ext, m) {
            const mlx::core::array& v, const mlx::core::array& o,
            const mlx::core::array& lse, const mlx::core::array& d_o,
            const mlx::core::array& d_vec,
-           float scale, int wm) {
-          return mlx_mfa::v6_nax_backward_dk_raw(q, k, v, o, lse, d_o, d_vec, scale, wm);
+           float scale, int wm, bool causal) {
+          return mlx_mfa::v6_nax_backward_dk_raw(q, k, v, o, lse, d_o, d_vec, scale, wm, causal);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
-        nb::arg("scale"), nb::arg("wm") = 4,
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
         "V34 backward dK-only multi-SG kernel (Phase 2.O2 sister to dV).  "
         "WM=4 Q-row partition. Returns dK_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.");
@@ -450,13 +450,13 @@ NB_MODULE(_ext, m) {
            const mlx::core::array& v, const mlx::core::array& lse,
            const mlx::core::array& d_o,
            const mlx::core::array& d_vec,
-           float scale, int wm) {
+           float scale, int wm, bool causal) {
           return mlx_mfa::v6_nax_backward_fused_dkdv_raw(
-              q, k, v, lse, d_o, d_vec, scale, wm);
+              q, k, v, lse, d_o, d_vec, scale, wm, causal);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
-        nb::arg("scale"), nb::arg("wm") = 4,
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
         "V34 backward FUSED dK+dV kernel (Sprint v2.39.0 Phase C.1.a, "
         "Option γ).  Single kernel computes both gradients in one K-tile "
         "load (K-bandwidth amortization per /metal-kernel-dev audit).  "
