@@ -272,10 +272,67 @@ def test_legacy_fused_env_var_backcompat(monkeypatch):
 
 def test_v37_carveout_still_eligible_at_d64_qL4096(monkeypatch):
     """v2.37.2 carve-out (D=64 qL≥4096 auto-default) preserved post-v2.39.0."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
     from mlx_mfa.dispatch_policy import _v34_backward_carveout
     assert _v34_backward_carveout(
         head_dim=64, seq_len=4096, causal=False, dtype_key="float16"
     ) is True
+
+
+# ── v2.39.2-internal: carve-out broadened from qL≥4096 to qL≥2048 ────
+
+def test_v39_2_internal_carveout_engages_at_qL2048(monkeypatch):
+    """v2.39.2-internal Sprint A: carve-out broadened to qL≥2048.
+
+    v2.39.1 BK=16 fused achieves parity with SDPA-vjp at qL=2048
+    (3-session variance 1.004; see docs/v6-nax/v39-2-internal-decisions.md).
+    """
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=2048, causal=False, dtype_key="float16"
+    ) is True
+
+
+def test_v39_2_internal_carveout_engages_at_qL3072(monkeypatch):
+    """v2.39.2-internal: qL=3072 (between old 4096 floor and new 2048 floor)."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=3072, causal=False, dtype_key="float16"
+    ) is True
+
+
+def test_v39_2_internal_carveout_rejects_below_qL2048(monkeypatch):
+    """v2.39.2-internal: qL=1024 still rejected (regresses vs SDPA-vjp at -15%)."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=1024, causal=False, dtype_key="float16"
+    ) is False
+    # qL=1536 also below the conservative 2048 floor
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=1536, causal=False, dtype_key="float16"
+    ) is False
+
+
+def test_v39_2_internal_carveout_rejects_qL_at_boundary_minus_1(monkeypatch):
+    """v2.39.2-internal: qL=2047 (one below new floor) still rejected."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=2047, causal=False, dtype_key="float16"
+    ) is False
+
+
+def test_v39_2_internal_carveout_preserves_d128_exclusion(monkeypatch):
+    """v2.39.2-internal: D=128 still excluded at all qL (carve-out D=64-only)."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    for qL in (2048, 4096, 8192):
+        assert _v34_backward_carveout(
+            head_dim=128, seq_len=qL, causal=False, dtype_key="float16"
+        ) is False
 
 
 def test_v38_1_d_vec_still_functional(monkeypatch):

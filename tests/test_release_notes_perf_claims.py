@@ -199,22 +199,44 @@ PERF_CLAIMS = [
             "to SDPA-vjp at parity (carve-out is D=64 only)"
         ),
     },
-    # v2.37.3 retracted: D=64 qL=2048 — MUST fall back to SDPA-vjp via AUTO
-    # (v2.37.1 claim "1.44× win" retracted; v2.37.2 carve-out is qL≥4096)
+    # v2.39.2-internal: D=64 qL=2048 now ENGAGES V34 backward (at parity).
+    # The v2.37.2/v2.37.3 floor was qL≥4096; v2.39.2-internal lowered it to
+    # qL≥2048 after v2.39.1 BK=16 fused kernel achieved parity with SDPA-vjp
+    # at qL=2048 (3-session variance 1.004; see docs/v6-nax/v39-2-internal-
+    # decisions.md).  V34 engages but at parity — no speedup claim.
     {
-        "id": "v2.37.3_d64_qL2048_auto_falls_back_to_sdpa",
+        "id": "v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity",
         "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
         "shape": (1, 4, 2048, 2048, 64),
         "dtype": mx.float16,
-        "expected": "sdpa_fallback",
+        "expected": "v34_backward",
         "documented_in": [
-            "docs/releases/v2.37.3-release-notes.md",
-            "docs/TRAINING_QUICKSTART.md",
+            "docs/v6-nax/v39-2-internal-decisions.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
-            "D=64 qL=2048: v2.37.1 '1.44× win' retracted; v2.37.2 "
-            "carve-out correctly does not engage (qL < 4096 floor)"
+            "v2.39.2-internal D=64 qL=2048: V34 backward engages via AUTO "
+            "at parity with SDPA-vjp (3-session variance 1.004; no speedup "
+            "claim but contract-honest engagement per env-var opt-in)"
+        ),
+    },
+    # v2.37.3 retracted (historical record): D=64 qL=1024 still falls back
+    # to SDPA-vjp via AUTO.  Below the v2.39.2-internal broadened qL=2048
+    # floor.  Preserves the "below-floor MUST fall back" coverage that the
+    # v2.37.3 qL=2048 row used to provide.
+    {
+        "id": "v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 1024, 1024, 64),
+        "dtype": mx.float16,
+        "expected": "sdpa_fallback",
+        "documented_in": [
+            "docs/v6-nax/v39-2-internal-decisions.md",
+            "CHANGELOG.md",
+        ],
+        "documented_perf_claim": (
+            "D=64 qL=1024: below v2.39.2-internal carve-out floor (regresses "
+            "15% vs SDPA-vjp empirically); carve-out correctly does not engage"
         ),
     },
     # v2.37.3: env unset — V34 must NOT engage anywhere
