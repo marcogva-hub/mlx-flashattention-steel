@@ -945,6 +945,23 @@ MFA_V6_SENTINEL_FILL=1 .venv/bin/python bench/v6_coverage_diagnostic_v2.py
 
 Marco doit pouvoir comprendre TOUS les choix techniques en lisant les rapports, sans avoir à interpréter le code.
 
+### §10.1 — Templates (added 2026-05-13, Sprint 4)
+
+Use the templates in `docs/templates/` as starting points:
+
+- `docs/templates/sprint_decisions_template.md` — pre-includes the
+  §AA.2 Skill invocations table so it cannot be forgotten
+- `docs/templates/sprint_status_template.md` — same pattern for
+  status docs
+
+Per §AA.2, EVERY sprint deliverable doc must include a populated
+Skill invocations table.  The templates make this mechanical: copy
+the template, fill in the rows as the sprint progresses, ship.
+
+If a §AA mandatory checkpoint did not fire during the sprint,
+document inapplicability with one row (`N/A | N/A | inapplicable:
+<reason>`) — silent absence is indistinguishable from forgetting.
+
 ---
 
 ## 11. Si tu te retrouves à inventer une approche non-Apple
