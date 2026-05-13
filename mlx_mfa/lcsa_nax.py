@@ -161,21 +161,57 @@ def sparse_attention_nax(
 # --------------------------------------------------------------------------
 # Density-thresholded dispatcher.
 #
+# Routing logic:
+#   density < density_threshold:  sparse_attention_nax (NAX kernel, LCSA path)
+#   density >= density_threshold: SDPA + expanded float bias
+#
 # Default kernel is V1 (per-thread FA-2). V2 cooperative-tensor kernel is
 # opt-in via `MFA_LCSA_KERNEL_VERSION=v2` per v2.35.0 SHIP_OPT_IN verdict
 # (docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md). V2 wins vs SDPA+bias
 # across all tested cells but cross-session range > 10% on 5/7 shapes →
 # conservative opt-in to let users explicitly test V2 in their environment.
 #
-# Threshold 0.02 reflects V1's break-even density (Phase 1.4 sweep). With
-# V2 opt-in: users wanting V2's broad envelope should ALSO raise the
-# threshold via the dispatcher's `density_threshold=` parameter.
+# v2.50-Sprint1 empirical recalibration (M5+ NAX hardware):
+# The v2.50-NAX-coverage audit (docs/audits/v50-nax-coverage/) measured
+# flash_attention_sparse 1.26× slower than dense SDPA at density 0.023 on
+# M5 Max — root-caused to the dispatcher routing density >= 0.02 to the
+# SDPA+bias path on M5+, where the bias expansion overhead exceeds the
+# compute savings.
+#
+# Sprint 1 density sweep (M5 Max, B=1 H=12 qL=kL=4096 D=128 fp16 BT=32):
+#
+#   density | NAX (ms) | SDPA+bias (ms) | dense SDPA (ms) | NAX wins?
+#   0.0156  |   0.77   |   2.63         |   2.44          | YES (NAX/dense 0.32×)
+#   0.0233  |   0.38   |   2.62         |   2.38          | YES (NAX/dense 0.16×)
+#   0.0463  |   0.43   |   2.63         |   2.44          | YES (NAX/dense 0.18×)
+#   0.0841  |   0.51   |   2.63         |   2.42          | YES (NAX/dense 0.21×)
+#   0.1573  |   0.64   |   2.57         |   2.39          | YES (NAX/dense 0.27×)
+#   0.2947  |   0.91   |   2.60         |   2.39          | YES (NAX/dense 0.38×)
+#   0.5327  |   1.39   |   2.59         |   2.39          | YES (NAX/dense 0.58×)
+#   0.7539  |   1.83   |   2.63         |   2.40          | YES (NAX/dense 0.76×)
+#   0.9019  |   2.18   |     —          |   2.42          | YES (NAX/dense 0.90×)
+#   0.9515  |   2.24   |     —          |   2.38          | YES (NAX/dense 0.94×)
+#   0.9906  |   2.32   |     —          |   2.39          | YES (NAX/dense 0.97×)
+#   1.0000  |   2.33   |     —          |   2.40          | YES (NAX/dense 0.97×)
+#
+# LCSA NAX wins at EVERY density level on M5+.  The SDPA+bias path is
+# never optimal on M5+ NAX hardware.  Threshold raised from 0.02 to 1.01
+# to always route through NAX on M5+ (preserves dispatcher interface for
+# non-M5 callers; M1/M3 callers continue to use threshold=0.02 explicit if
+# they invoke this dispatcher).
+#
+# Historical context: the 0.02 threshold was V1's break-even on older
+# hardware (Phase 1.4 sweep, M1/M3 V1 sparse STEEL kernel).  M5+ NAX V2
+# inverts the trade-off — per-tile dispatch overhead is fully amortized by
+# the cooperative-tensor MMA primitives, and tile-skip via block_mask is
+# nearly free.
 # --------------------------------------------------------------------------
 
-# V1 break-even density (Phase 1.4 sweep). Conservative for default V1 path.
-# Users opting into V2 (MFA_LCSA_KERNEL_VERSION=v2) get broad envelope and
-# should pass `density_threshold=0.95` to capture V2's full win range.
-DEFAULT_DENSITY_THRESHOLD = 0.02
+# M5+ NAX optimal default: always route to NAX (1.01 > 1.0 means density
+# never exceeds the threshold).  v2.50-Sprint1 empirical recalibration.
+# Non-NAX callers should pass `density_threshold=0.02` explicitly to
+# preserve the V1 break-even semantics for M1/M3 STEEL paths.
+DEFAULT_DENSITY_THRESHOLD = 1.01
 
 
 def _bool_mask_to_float_bias(block_mask, BT, qL, kL, target_dtype):

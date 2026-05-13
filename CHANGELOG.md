@@ -11,6 +11,24 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Sprint 1 (v2.50, sparse density threshold recalibration)**: raised
+  `mlx_mfa/lcsa_nax.py::DEFAULT_DENSITY_THRESHOLD` from `0.02` to `1.01`
+  per empirical density sweep on M5 Max showing LCSA NAX wins at EVERY
+  density level (0.016 → 1.0, NAX/dense ratio 0.16-0.97× depending on
+  density).  The 0.02 default was calibrated for the V1 sparse STEEL
+  kernel on M1/M3; the V2 NAX cooperative-tensor kernel (`sparse_attention_nax`)
+  has fundamentally different perf characteristics (per-tile dispatch
+  amortized by MMA primitives).  Empirical impact: `flash_attention_sparse`
+  on M5+ at audit shape (density 0.023, B=1 H=12 qL=4096 D=128 fp16
+  BT=32) was 2.97 ms via SDPA+bias path; now routes to NAX at 0.38 ms —
+  **~6× speedup**.  Audit framing empirically inverted; bool-mask
+  substitution (Layer 1 from older `docs/sparse-fallback-audit.md`)
+  FALSIFIED — bool mask 1.085× slower than float bias on current MLX
+  0.31.  Float-bias cache (Layer 2) already shipped v2.33.1.  Backward-
+  compat preserved via explicit `density_threshold=0.02` param for M1/M3
+  V1 STEEL callers.  See `docs/v50/sprint1-decisions.md` for full sweep
+  data + framing correction + skill invocations log.
+
 - **Sprint C (v2.40.x-internal, P3-HIGH-01)**: V34 backward Primitive
   pipeline-compile boilerplate consolidation.  Extracted ~125 LOC of
   duplicated descriptor-setup + source-gen + compile pattern across
