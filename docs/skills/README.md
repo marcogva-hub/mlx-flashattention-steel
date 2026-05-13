@@ -15,7 +15,7 @@ bug.
 | `/mlx-mfa-perf-audit` | Verify a perf claim is reachable via the public API | After "X× speedup" discovery; pre-release; auditing past claims | **Yes** |
 | `/mlx-mfa-release-audit` | 7-check pre-tag gate (§X + §X.5 + §Z + §AA + tests + CHANGELOG) | Before ANY version bump or PyPI upload | **Yes** |
 | `/mlx-mfa-bench-methodology` | Auto-select §4-strict vs canonical protocol; cross-session ratio analysis | All sub-ms perf work; cross-session variance characterization | **Yes** |
-| `/mlx-mfa-kernel-design` | (DEFERRED) New kernel scaffolding | New kernel write | **Deferred to post-Sprint-6** |
+| `/mlx-mfa-kernel-design` | New V34 kernel scaffolding + register budget pre-flight | New kernel write / register-pressure decisions | **Yes** (unblocked v2.38.x Phase B) |
 
 Skill definitions live in `~/.claude/skills/<skill-name>/`.  See
 `installation.md` for setup on a fresh dev machine.
@@ -86,36 +86,45 @@ Protocol selection follows §4.3:
 `docs/methodology/canonical-protocol.md`;
 `bench/methodology/canonical_warmup_continuous_harness.py`.
 
-## `/mlx-mfa-kernel-design` — deferred (rationale)
+## `/mlx-mfa-kernel-design` — UNBLOCKED v2.38.x Phase B (2026-05-13)
 
-Sprint 2's audit (`docs/audits/v37-systematic-audit.md`) identified
-reusable kernel-design patterns:
-- Duplicated Apple steel helpers (~390 LOC × 4 generators)
-- B+C+E bundle pattern for backward gradient flow
-- Register-budget math for NAXFrag tile sizing
-- Source-generator template with cache-key sync
+Sprint 3 deferred this skill pending the Apple helpers refactor
+(M1-HIGH-01 + M3-HIGH-01 from Sprint 2 audit) which consolidated
+~390 LOC of duplicated kernel helpers into the shared
+`naxHelpersBlock()` static method in
+`csrc/mfa/v6_nax/NAAttentionKernel.cpp`.
 
-However, these patterns are **scattered across the codebase** as of
-v2.37.3.  Encoding them in a `/mlx-mfa-kernel-design` skill now would
-freeze incomplete patterns and create maintenance debt.
+Sprint v2.38.x Phase B executed that refactor (commit `c509b4b`).
+With patterns now in ONE location, this skill encodes:
 
-**Decision:** create this skill **after Sprint 6** (Apple helpers
-refactor — extracts the ~390 LOC into a shared
-`emitAppleHelpers()` method).  At that point:
-- Patterns are consolidated in one location
-- Register-budget math has empirical baselines from Option γ
-  (Sprint 3 perf work, deferred)
-- B+C+E bundle has a single reference implementation in the fused
-  kernel
+- `naxHelpersBlock()` invocation pattern (no inline duplication)
+- B+C+E+I mechanism bundle (Barriers / Compute / Exponent /
+  Index math) marker template
+- Register-budget pre-flight math (per-lane / per-SG / per-CU
+  accounting against M5's 64 KB CU register file)
+- Three-axis test scaffold per `CLAUDE_V6_NAX.md` §3.5
+- Source-generator template (parameter resolution, raw-string
+  marker selection, kernel-proper structure)
 
-Creating the skill prematurely would either:
-- Document scattered patterns that contradict the post-refactor
-  layout
-- Force premature pattern extraction that the audit was designed
-  to defer
+Sprint 3 deferral rationale quote:
 
-Per the Sprint 3 prompt: "incomplete patterns are worse than no
-skill."  Documented decision.  Revisit post-Sprint 6.
+> "Patterns are scattered across the codebase as of v2.37.3.
+> Encoding them in a skill now would freeze incomplete patterns
+> and create maintenance debt.  Decision: create this skill
+> after Sprint 6 [Apple helpers refactor] consolidates the
+> patterns."
+
+Resolution: Sprint v2.38.x Phase B = "Sprint 6" in the Sprint 3
+sequence numbering.  Skill created Phase D of same sprint.
+
+**Smoke-test confirmation:**
+- `--kernel-type backward_fused_dkdv --head-dim 64 BK=32 WM=4`
+  correctly returns FAIL (would exceed M5 CU register file by
+  ~26 KB) with mitigation recommendation pointing to the Phase 2.O2
+  split-kernel pattern that historically resolved this.
+- `--kernel-type forward --head-dim 128 BK=32 WM=4` correctly returns
+  MARGINAL with ~14 KB margin — matches Sprint 2 audit M1-NON-ACT-01
+  analytic finding.
 
 ## Skill invocation protocol
 
