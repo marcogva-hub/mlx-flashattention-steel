@@ -1,0 +1,82 @@
+{
+  "device": "Apple M5 Max",
+  "is_m5_plus": true,
+  "groups": {
+    "g1_dense_canonical": {
+      "shape": {
+        "B": 1,
+        "H": 12,
+        "qL": 4096,
+        "D": 128,
+        "dtype": "f16",
+        "causal": false
+      },
+      "flash_attention_auto_ms": 2.375270996708423,
+      "mx_fast_sdpa_ms": 2.402437006821856,
+      "flash_attention_mfa_ms": 8.186812017811462,
+      "verdict": "auto correctly routes to Apple SDPA NAX (A) \u2014 ratio=0.989\u00d7"
+    },
+    "g1b_dense_causal_d64": {
+      "shape": {
+        "B": 1,
+        "H_q": 32,
+        "H_kv": 8,
+        "qL": 4096,
+        "D": 64,
+        "dtype": "f16",
+        "causal": true
+      },
+      "flash_attention_auto_ms": 1.3474794977810234,
+      "mx_fast_sdpa_ms": 1.366853975923732
+    },
+    "g2_paged": {
+      "shape": {
+        "n_seqs": 1,
+        "page_size": 16,
+        "S_kv": 4096,
+        "D": 64,
+        "H_q": 32,
+        "H_kv": 8
+      },
+      "flash_attention_paged_ms": 0.46270800521597266,
+      "mx_fast_sdpa_flat_ms": 0.273812998784706
+    },
+    "g3_sparse_symmetric": {
+      "shape": {
+        "B": 1,
+        "H": 12,
+        "qL": 4096,
+        "D": 128,
+        "BT": 32,
+        "NQ": 128,
+        "NK": 128
+      },
+      "flash_attention_sparse_ms": 2.974582981551066,
+      "mx_fast_sdpa_ms": 2.3579374828841537
+    },
+    "g4_gna": {
+      "error": "flash_attention_gna() got an unexpected keyword argument 'spatial_shape'"
+    },
+    "g5_topk": {
+      "shape": {
+        "B": 1,
+        "H": 16,
+        "qL": 4096,
+        "D": 128,
+        "topk_ratio": 0.0156
+      },
+      "flash_attention_topk_ms": 55.35306202364154,
+      "mx_fast_sdpa_ms": 3.2256664999295026
+    },
+    "g6_sage": {
+      "shape": {
+        "B": 1,
+        "H": 16,
+        "qL": 4096,
+        "D": 128
+      },
+      "sage_attention_ms": 14.803770987782627,
+      "mx_fast_sdpa_ms": 3.1537079776171595
+    }
+  }
+}
