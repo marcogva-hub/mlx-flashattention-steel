@@ -4671,3 +4671,66 @@ remaining lever toward parity.
    on first call (~1-2s startup latency improvement).  Build-system
    integration required.
 
+
+---
+## [2026-05-13 05:50] [CLAUDE] Post-v2.37.0: DC12 routing-parity constraint RELAXED
+STATUS: COMPLETE
+
+### Plan
+Extend V34 backward eligibility to D=64 small-Nk shapes by adding
+force_v34 parameter to _ext.v6_nax_forward.  When V34 backward is
+enabled, flash_attention VJP forces V34 forward routing to ensure
+natural-log lse is produced (compatible with V34 backward's softmax
+recompute expectation).
+
+### Changes
+- csrc/mfa_v6_nax_primitive.cpp: MFAV6Forward::Params adds force_v34
+  bool; eval_gpu routing checks force_v34 first to override default
+  D=64 small-Nk → legacy v6_nax routing.
+- csrc/bindings.cpp: v6_nax_forward optional force_v34=False kwarg.
+- mlx_mfa/attention.py:
+  - _impl forward-fusion path: pass force_v34=True to v6_nax_forward
+    when V34 backward will consume the lse
+  - _backward eligibility check: drop the Nk>8000 constraint on D=64
+    (DC12 routing parity relaxed)
+- tests/test_flash_attention_v34_backward.py: updated test to verify
+  V34 engages on D=64 small-Nk + correctness within FP16 floor
+
+### Validation
+- D=64 qL=kL=512 V34 backward: dQ RMSE 9.7e-8 (FP32 floor), dK RMSE
+  1.0e-7, dV RMSE 4.2e-4 (FP16 floor) vs SDPA-vjp reference
+- V34-on vs V34-off output differs (path-entered axis-2 confirmed)
+- 116/116 tests pass post-change
+
+### Three-axis validation
+- AXIS 1 (output sanity): RMSE within FP16/FP32 floor on D=64 small-Nk
+- AXIS 2 (path entered): V34-on output differs from V34-off (confirms
+  V34 NAX kernels engaged via force_v34 routing)
+- AXIS 3 (edges preserved): D=128 paths unchanged; default-off path
+  identical; all 77 pre-existing tests still pass
+
+### Git
+- Master: ce128a4 (was 3e5f7d0)
+- v2.37.0 PyPI release unchanged (this is a post-release improvement)
+- Users on v2.37.0 get this fix on next PyPI upload (v2.37.1 or v2.38.0)
+
+### Insight
+The DC12 routing-parity constraint was a temporary workaround driven by
+V34 forward's pre-BLK1 lse incompatibility.  Once BLK1 patch shipped
+(v2.37.0), V34 forward writes natural-log lse correctly; force_v34=True
+extends V34's routing reach to ALL D ∈ {64, 128} shapes, not just the
+ones where V34 was the natural-routing default.
+
+This expands V34 backward coverage to a previously-deferred shape regime
+(D=64 small-Nk, FlashVSR-class).  Backward training on those shapes can
+now use V34 NAX kernels (still ~2× slower than SDPA-vjp; SHIP_OPT_IN
+posture preserved).
+
+### Session totals (post-DC12-relaxation)
+- Commits this session: 11
+- Lines of code added: ~2500 (1500 Metal source-gen, 500 C++ Primitive,
+  300 Python integration, 200 tests)
+- Tests added: 39 (V34 backward kernels + integration)
+- Tests passing: 116/116
+- v2.37.0 LIVE on PyPI: https://pypi.org/project/mlx-mfa/2.37.0/
+- v2.37.0 GitHub release: https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.37.0

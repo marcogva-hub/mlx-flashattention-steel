@@ -4,6 +4,17 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### Added (post-v2.37.0 improvements)
+
+- **V34 backward eligibility expanded to D=64 small-Nk** (formerly DC12-
+  blocked).  Added `force_v34` parameter to `_ext.v6_nax_forward` so the
+  flash_attention VJP can ensure natural-log lse is produced even on
+  shapes that default-route to legacy v6_nax forward.  Previously, D=64
+  with Nk ≤ 8000 (FlashVSR-class shapes) fell through to SDPA-vjp; now
+  V34 backward kernels handle them.  Correctness validated within FP16
+  floor (dQ RMSE 9.7e-8, dK RMSE 1.0e-7, dV RMSE 4.2e-4 vs SDPA-vjp).
+  Perf unchanged (V34 backward still SHIP_OPT_IN at 2.2-2.4× SDPA-vjp).
+
 ## [2.37.0] — 2026-05-13 — V34 backward NAX-direct kernels (SHIP_OPT_IN)
 
 ### Added
