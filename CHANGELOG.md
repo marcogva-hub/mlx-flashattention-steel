@@ -2,7 +2,25 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased]
+## [Unreleased — for v2.50]
+
+> **Accumulation contract**: this section accumulates internal sprint
+> work for the eventual v2.50 bundle release.  Master advances but
+> **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
+> bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
+
+### Changed (transparent for users)
+
+- **Sprint A (v2.39.2-internal, M2-HIGH-01 follow-up)**: broadened
+  the v2.37.2 V34-backward carve-out floor from `qL ≥ 4096` to
+  `qL ≥ 2048`.  After v2.39.1's BK=16 fix the fused kernel reaches
+  parity with SDPA-vjp at qL=2048 (3-session variance 1.004; see
+  `docs/v6-nax/v39-2-internal-decisions.md` §"Threshold calibration").
+  Users with `MFA_ENABLE_V34_BACKWARD=1` on D=64 non-causal fp16/bf16
+  shapes at qL∈[2048, 4096) now engage the V34 backward fused path
+  (was: silent SDPA-vjp fallback).  **No speedup claim** — qL=2048 is
+  parity, not a win.  qL=1024 and below still correctly fall back
+  (regresses 15% / 50% empirically; kept out of the carve-out).
 
 ## [2.39.1] — 2026-05-13 — Option γ outcome α — register-pressure root-cause + fix
 

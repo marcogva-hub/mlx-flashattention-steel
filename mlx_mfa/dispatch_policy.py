@@ -335,20 +335,33 @@ def _v34_backward_carveout(
 
     **History:**
     - v2.37.2: narrow predicate inline in `flash_attention()` body
-    - v2.38.x (this sprint): extracted here per Sprint 2 audit
+    - v2.38.x (consolidation): extracted here per Sprint 2 audit
       M5-HIGH-01.  Single source of truth for V34-backward routing.
+    - v2.39.2-internal (Sprint A): broadened threshold from
+      `qL >= 4096` to `qL >= 2048` after v2.39.1 BK=16 fix made the
+      fused kernel reach parity-with-SDPA-vjp at qL=2048 (3-session
+      cross-session variance 1.004; see `docs/v6-nax/v39-2-internal-
+      decisions.md`).  Below qL=2048, fused regresses vs SDPA-vjp
+      (qL=1024: 0.85×, qL=512: 0.50×) — kept out of the carve-out.
 
     **Currently active predicate:**
-    D=64, qL ≥ 4096, non-causal, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.
+    D=64, qL ≥ 2048, non-causal, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.
 
-    Future broadening (e.g., D=128 if Option γ proves out) extends
-    this function rather than introducing new inline overrides.
+    Future broadening (e.g., D=128 if Option γ proves out at v2.40.0-
+    internal) extends this function rather than introducing new inline
+    overrides.
     """
     # dtype_key values: "float16" / "bfloat16" / None per
     # _dispatch_dtype_key().  NOT "fp16" / "bf16".
+    #
+    # v2.39.2-internal: qL floor lowered from 4096 to 2048.  The v2.37.2
+    # original 4096 floor was conservative because v2.39.0 fused-BK=32
+    # regressed below qL=4096; v2.39.1's BK=16 fix lifted the parity
+    # boundary down to qL=2048.  See `docs/v6-nax/v39-2-internal-
+    # decisions.md` §"Threshold calibration" for the bench data.
     if (
         head_dim == 64
-        and seq_len >= 4096
+        and seq_len >= 2048
         and not causal
         and dtype_key in ("float16", "bfloat16")
         and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
