@@ -1,7 +1,65 @@
 # mlx-mfa Inventory
 
-Version: **2.27.0**
-Regenerated: 2026-03-31
+Version: **2.39.1** (PyPI) + master `82acc55` (post-Sprint A/B/C v2.39.x-v2.40.x-internal accumulation)
+Regenerated: 2026-05-13 (v50-nax-coverage audit)
+
+> **For canonical NAX path coverage**, see `docs/HARDWARE_SUPPORT.md`.
+
+## Public-API surface (v2.39.1)
+
+22 `flash_attention*` functions + 3 `sage_attention*` functions exposed
+via `mlx_mfa.__all__`.  Full per-function classification is in
+`docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`.
+
+## Major modules + current LOC (2026-05-13 snapshot)
+
+| File | Lines (approx) | Notes |
+|---|---|---|
+| `mlx_mfa/attention.py` | 6058 | +472 LOC since v2.27.0 — V34 backward integration (v2.37.x-v2.39.x), helper extraction (v2.38.0), Sprint A carve-out broadening |
+| `mlx_mfa/dispatch_policy.py` | 1037 | +199 LOC — V34 backward carve-out, M5+ NAX thresholds, custom dispatch table support |
+| `mlx_mfa/__init__.py` | 467 | +173 LOC — auto-hooks installation log, diagnostics() function, 22 attention export update |
+| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | 5800+ | V34 forward + 4 backward source generators (post Sprint A/B Phase B helper extraction) |
+| `csrc/mfa_v6_nax_primitive.cpp` | 1800+ | 4 V34 backward Primitives (post Sprint C boilerplate consolidation) |
+| `csrc/v6_nax_compile.mm` | 600+ | 4 dispatchers (BwdQ, BwdKV legacy, BwdDV split, BwdDK split, BwdFusedDKDV v2.39.0+) |
+
+## Native extension (csrc/) recent additions
+
+| Component | Version | LOC | Purpose |
+|---|---|---|---|
+| V34 forward NAX-direct kernel (`createV34Source`) | v2.31.0 | ~1100 | Apple-style NAX with cooperative tensor MMA primitives |
+| V34 backward dQ kernel (`createV34BackwardQuerySource`) | v2.37.0 | ~470 | Per-Q-block dQ accumulation |
+| V34 backward split dV kernel (`createV34BackwardDVSource`) | v2.37.0 | ~300 | WM=4 Q-row partition |
+| V34 backward split dK kernel (`createV34BackwardDKSource`) | v2.37.0 | ~350 | WM=4 sister kernel to dV |
+| V34 backward legacy fused dKdV (`createV34BackwardKeyValueSource`) | v2.37.0 | ~440 | WM=1 single-SG, gated by `MFA_V34BWD_USE_FUSED=1` |
+| V34 backward fused dK+dV (`createV34BackwardFusedDKDVSource`) | v2.39.0+ | ~440 | Option γ — D=64 (auto-default) + D=128 (opt-in via Sprint B) |
+| D_vec precompute device buffer | v2.38.1 | host + 3 kernels | Eliminates 2 in-kernel rowsums per V34 backward call |
+| `naxHelpersBlock()` shared helper | v2.38.x Phase B | -1541 LOC dedup | Extracted from 5 source generators |
+| V34 backward Primitive consolidation | v2.40.0-internal Sprint C | -68 LOC | `v34_get_or_compile_pipeline<Key, Hash>` template helper |
+
+## Test suites
+
+| Suite | Tests | Notes |
+|---|---|---|
+| `tests/test_v39_fused_dkdv.py` | 26 | Option γ fused tests (Sprint A/B/C accumulating) |
+| `tests/test_v34_helpers.py` | 16 | `_v34_eligible` + `_v34_backward_vjp` direct |
+| `tests/test_v32_sdpa_routing.py` | 19 | Dispatch policy + carve-out (incl. Sprint A qL=2048 threshold) |
+| `tests/test_flash_attention_v34_backward.py` | 11 | V34 backward end-to-end via PUBLIC API |
+| `tests/test_release_notes_perf_claims.py` | 12 | §Z regression: every documented perf claim reachable via PUBLIC API |
+| `tests/test_attention.py` | ~700 | Core attention suite (unchanged scope from v2.27.0) |
+| `tests/test_v34_bwd_multisg.py` | pre-existing failures unrelated to internal sprints (see Sprint B audit) | — |
+
+## Internal-mode accumulation contract
+
+Post-v2.39.1, master accumulates internal sprints (Sprint A v2.39.2-internal,
+Sprint B v2.40.0-internal, Sprint C v2.40.x-internal) **without bumping the
+PyPI version**.  pyproject.toml + `mlx_mfa/__init__.py:__version__` + README
+banner all remain at `2.39.1` until the v2.50 bundle release.
+
+CHANGELOG `[Unreleased — for v2.50]` section accumulates entries.  At v2.50
+ship time, this section is renamed to `[2.50.0] — <date>`.
+
+See `docs/audits/v50-nax-coverage/03-sprint-sequence.md` for the 5-sprint
+plan to reach v2.50.
 
 ## Scope
 

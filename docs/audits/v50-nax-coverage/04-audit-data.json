@@ -1,0 +1,139 @@
+{
+  "audit_date": "2026-05-13",
+  "master_tip": "82acc55",
+  "pypi_version": "2.39.1",
+  "hardware": {
+    "device": "Apple M5 Max",
+    "gpu_family_gen": 17,
+    "is_m5_plus": true,
+    "ram_gb": 128,
+    "macos": "26.4"
+  },
+  "methodology": {
+    "warmup_iters": 4,
+    "timed_iters": 12,
+    "stat": "median",
+    "sessions": 1,
+    "note": "Breadth-not-depth audit: single-session per dispatch group. Multi-session variance characterization deferred to per-implementation sprints (Sprint 1-5)."
+  },
+  "groups_bench_results_ms": {
+    "g1_dense_canonical": {
+      "shape": "B=1 H=12 qL=4096 D=128 f16 non-causal",
+      "flash_attention_auto_ms": 2.38,
+      "mx_fast_sdpa_ms": 2.40,
+      "flash_attention_mfa_forced_ms": 8.19,
+      "auto_vs_sdpa_ratio": 0.989,
+      "mfa_vs_sdpa_ratio": 3.408,
+      "verdict": "A NAX-optimal"
+    },
+    "g1b_llm_causal_d64": {
+      "shape": "B=1 H_q=32 H_kv=8 qL=4096 D=64 f16 causal",
+      "flash_attention_auto_ms": 1.35,
+      "mx_fast_sdpa_ms": 1.37,
+      "auto_vs_sdpa_ratio": 0.986,
+      "verdict": "A NAX-optimal"
+    },
+    "g2_paged_decode": {
+      "shape": "B=1 H_q=32 H_kv=8 S_kv=4096 D=64 decode page_size=16",
+      "flash_attention_paged_ms": 0.46,
+      "mx_fast_sdpa_flat_kv_ms": 0.27,
+      "ratio": 1.690,
+      "note": "SDPA-flat baseline assumes pre-materialized [B,H,S,D] from pages; not apples-to-apples since page materialization cost not counted",
+      "verdict": "B opportunity but XL effort and Apple SDPA NAX has no paged path; deprioritized for v2.50"
+    },
+    "g3_sparse_lcsa_symmetric_low_density": {
+      "shape": "B=1 H=12 qL=4096 D=128 f16 BT=32 ~3-active-blocks/row",
+      "flash_attention_sparse_ms": 2.97,
+      "mx_fast_sdpa_dense_ms": 2.36,
+      "ratio": 1.262,
+      "verdict": "B opportunity: add density threshold to LCSA dispatcher"
+    },
+    "g3b_sparse_asymmetric": {
+      "shape": "B=1 H=12 qL=4096 D=128 f16 asym BQ=32 BK=16",
+      "flash_attention_sparse_ms": 2.96,
+      "mx_fast_sdpa_dense_ms": 2.48,
+      "ratio": 1.195,
+      "note": "Confirms docs/sparse-fallback-audit.md mask-expansion overhead pattern (less severe than 2.10× documented in older audit; possibly post-v2.33 improvements or different mask density)",
+      "verdict": "B opportunity: apply Layer 1 (bool mask) + Layer 2 (LRU cache)"
+    },
+    "g4_gna_sliding_window": {
+      "shape": "B=1 H=16 qL=4096 D=128 f16 window=(2,4,4) stride=(1,1,1)",
+      "flash_attention_gna_ms": 2.89,
+      "mx_fast_sdpa_dense_ms": 3.06,
+      "ratio": 0.942,
+      "verdict": "A NAX-optimal — sliding-window pattern wins vs dense"
+    },
+    "g5_topk": {
+      "shape": "B=1 H=16 qL=4096 D=128 f16 topk_ratio=0.0156 (K=64)",
+      "flash_attention_topk_ms": 55.35,
+      "mx_fast_sdpa_dense_ms": 3.23,
+      "ratio": 17.160,
+      "verdict": "B opportunity HIGH: function unusable at scale (Python ref since v2.13.0)"
+    },
+    "g6_sage_full_forward": {
+      "shape": "B=1 H=16 qL=4096 D=128 f16",
+      "sage_attention_ms": 14.80,
+      "mx_fast_sdpa_dense_ms": 3.15,
+      "ratio": 4.694,
+      "note": "Python-side quantize overhead dominates (per CLAUDE.md historical note)",
+      "verdict": "B opportunity LOW: sage_attention_prequantized + sage_attention_kvcache likely A (TBD bench)"
+    },
+    "g7_rope_unified": {
+      "shape": "B=1 H=16 qL=4096 D=128 f16 + rope tables",
+      "flash_attention_rope_unified_ms": 7.97,
+      "mx_fast_sdpa_no_rope_ms": 3.14,
+      "extra_ratio_vs_sdpa": 1.537,
+      "absolute_rope_overhead_ms": 4.83,
+      "verdict": "B opportunity MEDIUM: host-side RoPE rotation is a hot per-call cost"
+    },
+    "g8_kvcache_dense_cross_attention": {
+      "shape": "B=1 H=16 qL_q=1024 S_kv=4096 D=128 f16 non-causal",
+      "flash_attention_kvcache_ms": 1.04,
+      "mx_fast_sdpa_ms": 1.05,
+      "ratio": 0.992,
+      "verdict": "A NAX-optimal — wrapper dispatches dense SDPA NAX cleanly"
+    }
+  },
+  "function_classification": {
+    "B.1_flash_attention": {"group": "G1", "verdict": "A", "effort": null},
+    "B.2_flash_attention_rope_unified": {"group": "G7", "verdict": "B", "effort": "S/M", "priority": "MEDIUM (Tier 1 Sprint 2)"},
+    "B.3_flash_attention_rope": {"group": "G7 wrapper", "verdict": "B (inherits B.2)", "effort": "inherits"},
+    "B.4_sage_attention": {"group": "G6", "verdict": "B", "effort": "L", "priority": "LOW (deferred post-v2.50)"},
+    "B.5_sage_attention_prequantized": {"group": "G6", "verdict": "likely A (TBD bench)", "effort": null},
+    "B.6_sage_attention_kvcache": {"group": "G6", "verdict": "likely A (TBD bench)", "effort": null},
+    "B.7_flash_attention_kvcache_rope_append": {"group": "G7 + G2", "verdict": "B", "effort": "M", "priority": "MEDIUM (Tier 1 Sprint 4, after Sprint 2 rope)"},
+    "B.8_flash_attention_kvcache": {"group": "G1/G8 dense", "verdict": "A (dense path)", "effort": null, "note": "paged sub-path inherits B.16 gap"},
+    "B.9_flash_attention_sparse": {"group": "G3", "verdict": "B (both sub-paths)", "effort": "S", "priority": "HIGH (Tier 1 Sprint 1)"},
+    "B.10_flash_attention_gna": {"group": "G4", "verdict": "A", "effort": null},
+    "B.11_flash_attention_topk": {"group": "G5", "verdict": "B HIGH", "effort": "L", "priority": "HIGH (Tier 1 Sprint 3)"},
+    "B.12_flash_attention_speculative_verify": {"group": "composite", "verdict": "likely A (TBD bench dense sub-path)", "effort": null},
+    "B.13_flash_attention_speculative_verify_paged": {"group": "composite + G2", "verdict": "likely B (inherits B.16)", "effort": "inherits"},
+    "B.14_flash_attention_splitfuse": {"group": "composite", "verdict": "TBD bench", "effort": null},
+    "B.15_flash_attention_varlen": {"group": "G2", "verdict": "B XL deprioritized", "effort": "XL"},
+    "B.16_flash_attention_paged": {"group": "G2", "verdict": "B XL deprioritized", "effort": "XL"},
+    "B.17_flash_attention_paged_varlen": {"group": "G2", "verdict": "B XL deprioritized", "effort": "XL"},
+    "B.18_flash_attention_qkv_packed": {"group": "G1 re-dispatch", "verdict": "A", "effort": null},
+    "B.19_flash_attention_kv_packed": {"group": "G1 re-dispatch", "verdict": "A", "effort": null},
+    "B.20_flash_attention_varlen_qkv_packed": {"group": "G2 re-dispatch", "verdict": "B inherits B.15", "effort": "inherits"},
+    "B.21_flash_attention_varlen_kv_packed": {"group": "G2 re-dispatch", "verdict": "B inherits B.15", "effort": "inherits"},
+    "B.22_flash_attention_paged_varlen_turboquant": {"group": "G2", "verdict": "B XL deprioritized", "effort": "XL"}
+  },
+  "v50_ship_recommendation": {
+    "tier1_sprints": [
+      "Sprint 1: flash_attention_sparse density threshold + bool-mask cache (S, ~1h)",
+      "Sprint 2: Fused RoPE NAX in V34 forward kernel + wire into flash_attention_rope_unified (S/M, ~2h)",
+      "Sprint 3: Top-K native Metal kernel (L, ~5h)"
+    ],
+    "tier2_sprints": [
+      "Sprint 4: V34 backward causal NAX (M, ~2h)",
+      "Sprint 5: V34 backward sparse NAX (M, ~2h)"
+    ],
+    "tier3_deferred": [
+      "B.15, B.16, B.17, B.22 paged-NAX variants (XL each, dependent on Apple roadmap)",
+      "B.4 sage fused-quantize NAX (L, narrow workload value)",
+      "D ∉ {64, 128} backward (memory roadmap)"
+    ],
+    "total_tier1_2_estimate_hours_cc": 12,
+    "total_tier1_2_focused_sessions": 5
+  }
+}
