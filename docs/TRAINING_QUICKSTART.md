@@ -104,7 +104,11 @@ needed — just set `MFA_ENABLE_V34_BACKWARD=1` and call
 | **8192** | **9.78 ms** | **17.67 ms** | **1.81× faster** |
 
 These numbers are reproducible with the snippet in the Usage section
-above (M5 Max, B=1, H=4, fp16, canonical methodology §4.2).
+above (M5 Max, B=1, H=4, fp16, canonical methodology §4.2)
+within a ~5% measurement-noise band — re-running the same bench
+yields values like 2.71 ms / 4.94 ms / 9.91 ms / 18.10 ms (same
+1.81-1.82× speedup ratio).  See
+`docs/v6-nax/v2.37.x-perf-claim-audit.md` for the raw audit table.
 
 ### D=64 — small qL (research characterization, NOT user-facing)
 

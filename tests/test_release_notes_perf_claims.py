@@ -242,13 +242,25 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
             f"Investigate kernel correctness regression."
         )
     elif claim["expected"] == "sdpa_fallback":
-        # AUTO must fall back to SDPA-vjp → bit-identical gradients.
-        # If diff is non-zero, the AUTO path engaged something other than
-        # SDPA-vjp (e.g., carve-out fired when it shouldn't have).
-        assert total_diff == 0.0, (
+        # AUTO must fall back to SDPA-vjp → gradients identical to the
+        # SDPA reference up to numerical-noise tolerance.
+        #
+        # The strict `== 0.0` check was relaxed to `< 1e-7` per the pre-
+        # merge code review (MEDIUM finding 2026-05-13).  Rationale:
+        # `flash_attention()`'s `_fallback_sdpa` and the reference
+        # `_grad_sdpa` both call `mx.fast.scaled_dot_product_attention`
+        # with the same scale, producing bit-identical gradients today.
+        # But future MLX SDPA-vjp internal reordering (fused softmax-
+        # then-matmul, or a Python cast inside one path and not the
+        # other) could introduce tiny-non-zero RMSE without actually
+        # engaging V34 backward.  1e-7 is well below FP16-rounding
+        # noise (V34-engaged gradients show ~1e-4 RMSE) but absorbs
+        # any future float-reordering drift on the SDPA fallback path.
+        assert total_diff < 1e-7, (
             f"Perf claim '{claim['id']}' expected SDPA fallback via AUTO "
-            f"path but gradients differ from SDPA reference "
-            f"(RMSE q={diff_q}, k={diff_k}, v={diff_v}). "
+            f"path but gradients differ from SDPA reference far above "
+            f"numerical-noise tolerance "
+            f"(RMSE q={diff_q}, k={diff_k}, v={diff_v}, total={total_diff}). "
             f"This means a routing carve-out engaged for a shape/config "
             f"where the docs say it shouldn't. "
             f"Documented in: {claim['documented_in']}. "
