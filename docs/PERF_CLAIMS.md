@@ -1,0 +1,110 @@
+# mlx-mfa perf claims registry
+
+**Canonical** registry of perf claims documented in user-facing docs
+(README, TRAINING_QUICKSTART, CHANGELOG, release notes).  Per
+`CLAUDE_V6_NAX.md` §Z (public API path testing rule), every claim
+here must be reproducible via the public API path with the documented
+env vars.
+
+This doc is the human-readable counterpart to
+`tests/test_release_notes_perf_claims.py` (the executable §Z
+enforcement).  Every entry here has a corresponding `PERF_CLAIMS`
+list entry in that file.  Pre-tag `/mlx-mfa-release-audit` Check 4
+verifies all active claims are still REACHABLE.
+
+---
+
+## Active claims (as of v2.37.3 + v2.38.x cleanup)
+
+| Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
+|---|---|---|---|---|---|
+| `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
+| `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
+| `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | D=128 V34 backward = research-only; AUTO path falls back to SDPA-vjp at parity | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `D=128` | REACHABLE — bit-identical to SDPA reference (correct fallback) |
+| `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | D=64 qL=2048: carve-out below threshold; AUTO falls back to SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=2048` | REACHABLE (correct fallback) |
+| `v2.37.3_d64_qL8192_env_unset_no_v34` | v2.37.3 | Without `MFA_ENABLE_V34_BACKWARD=1`, V34 backward NEVER engages | env unset | Same shape, env clear | REACHABLE (correct fallback) |
+
+### Reproduce snippet template (per §Z)
+
+```python
+import os
+os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+import time, statistics
+import mlx.core as mx
+import mlx_mfa
+
+mx.random.seed(0)
+q = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16) * 0.1
+k = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16) * 0.1
+v = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16) * 0.1
+mx.synchronize()
+
+def loss(q, k, v):
+    return mlx_mfa.flash_attention(q, k, v).sum()  # default backend="auto"
+
+grad_fn = mx.grad(loss, argnums=(0, 1, 2))
+for _ in range(4):
+    g = grad_fn(q, k, v); mx.synchronize()
+
+ts = []
+for _ in range(12):
+    t0 = time.perf_counter()
+    g = grad_fn(q, k, v); mx.synchronize()
+    ts.append((time.perf_counter() - t0) * 1000)
+print(f"V34 backward: {statistics.median(ts):.2f} ms")
+# M5 Max, fp16: ~9.78-9.91 ms (vs SDPA-vjp ~17.67-18.10 ms = 1.81× faster)
+```
+
+---
+
+## Retracted claims (historical record — DO NOT REINSTATE)
+
+| Claim ID | Version intro | Version retracted | Reason |
+|---|---|---|---|
+| `v2.37.1_d64_qL2048_v34_wins_1.44x` | v2.37.1 | v2.37.3 | Overstated.  Current canonical-methodology bench shows 1.15× kernel-level / ~1.06× end-to-end win, within measurement noise.  v2.37.2 carve-out correctly does not engage at qL=2048.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`. |
+
+## Reclassified claims (kernel characterization, not user-facing)
+
+These remain in research / methodology docs but were REMOVED from
+user-facing release notes / README / TRAINING_QUICKSTART because the
+AUTO path doesn't engage their measured kernel.
+
+| Claim ID | Version intro | Reclassified in | Reason |
+|---|---|---|---|
+| `v2.37.0_d128_v34_22_24x_slower` | v2.37.0 | v2.37.3 | D=128 V34 backward 2.2-2.4× slower than SDPA-vjp at kernel level.  AUTO path correctly never engages D=128 V34 (architectural-floor research only).  Numbers reproducible via `backend="mfa"` forced path; not user-facing perf. |
+
+---
+
+## How to add a new claim
+
+Per `CLAUDE_V6_NAX.md` §Z + §AA mandatory blocking:
+
+1. **Discovery** — bench shows "X× speedup" or "Y% faster"
+2. **Invoke `/mlx-mfa-perf-audit`** with the claim's documented API
+   call + env vars + shape regime.  Verdict must be REACHABLE.
+3. **Add an entry to `tests/test_release_notes_perf_claims.py`**
+   `PERF_CLAIMS` list with `id`, `env`, `shape`, `dtype`, `expected`,
+   `documented_in`, `documented_perf_claim`.  Tests must pass.
+4. **Add a row to this doc's "Active claims" table** with the
+   `claim_id` matching step 3.
+5. **CHANGELOG entry** for the release must include the Reproduce
+   snippet (template above).
+6. **Pre-tag `/mlx-mfa-release-audit` Check 4** verifies the test
+   passes; doc audit verifies row presence here.
+
+If a claim is later overstated (per re-bench under canonical
+methodology) or reclassified (kernel-only, not user-facing), MOVE
+it to the appropriate historical-record table — do NOT delete.
+Audit trail preservation is the §Z institutional discipline.
+
+---
+
+## Cross-references
+
+- `CLAUDE_V6_NAX.md` §Z (public API path testing rule)
+- `CLAUDE_V6_NAX.md` §AA.2 (skill invocation evidence)
+- `CLAUDE_V6_NAX.md` §AA.4 (pre-tag enforcement via /mlx-mfa-release-audit)
+- `tests/test_release_notes_perf_claims.py` (executable enforcement)
+- `docs/v6-nax/v2.37.x-perf-claim-audit.md` (the audit that drove §Z creation)
+- `docs/skills/README.md` (/mlx-mfa-perf-audit skill)
+- `~/.claude/skills/mlx-mfa-perf-audit/SKILL.md` (skill definition)
