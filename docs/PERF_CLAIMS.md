@@ -14,7 +14,15 @@ verifies all active claims are still REACHABLE.
 
 ---
 
-## Active claims (as of v2.38.1)
+## Active claims (as of v2.39.0)
+
+Note: v2.39.0 introduces Option γ fused dK+dV kernel as opt-in but
+makes **no perf claim** for it.  Empirical outcome δ (25-33% regression
+vs split on M5 Max) documented in `docs/v6-nax/v39-0-option-gamma-results.md`.
+Auto-default routes to split (v2.38.1 D_vec path).  All v2.38.1 perf
+claims below preserved unchanged at v2.39.0.
+
+
 
 | Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
 |---|---|---|---|---|---|

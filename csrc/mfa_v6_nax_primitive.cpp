@@ -1591,4 +1591,205 @@ mlx::core::array v6_nax_backward_dk_raw(
   return outs[0];
 }
 
+
+// =============================================================================
+// V34 backward FUSED dK+dV Primitive (Sprint v2.39.0 Phase C.1.a, Option γ).
+// Combines split-dV + split-dK into a single kernel dispatch.  Per-SG-slot
+// outputs to dK_partials + dV_partials [B, Hq, WM, kL, D] FP32 each;
+// caller reduces via mx.sum(axis=2) and casts to T.
+// =============================================================================
+
+void v34_dispatch_bwd_fused_dkdv(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+
+struct V34BwdFusedKey {
+  int D;
+  int Hq, Hk;
+  int dtype_code;
+  unsigned short BQ, BK;
+  uint16_t WM;
+  bool operator==(const V34BwdFusedKey& o) const {
+    return D == o.D && Hq == o.Hq && Hk == o.Hk
+        && dtype_code == o.dtype_code
+        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+  }
+};
+struct V34BwdFusedKeyHash {
+  size_t operator()(const V34BwdFusedKey& k) const {
+    size_t h = std::hash<int>{}(k.D);
+    h ^= std::hash<int>{}(k.Hq) << 1;
+    h ^= std::hash<int>{}(k.Hk) << 2;
+    h ^= std::hash<int>{}(k.dtype_code) << 3;
+    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
+    h ^= std::hash<uint16_t>{}(k.BK) << 5;
+    h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    return h;
+  }
+};
+namespace {
+std::mutex v34_bwd_fused_mtx;
+std::unordered_map<V34BwdFusedKey, void*, V34BwdFusedKeyHash> v34_bwd_fused_pipelines;
+}
+
+class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
+ public:
+  MFAV34BwdFusedDKDV(mlx::core::Stream s, float scale, uint16_t wm)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm) {}
+
+  const char* name() const override { return "MFAV34BwdFusedDKDV"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAV34BwdFusedDKDV: CPU eval not supported");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    // inputs: [Q, K, V, L, dO, D]  — note: no O input (fused kernel uses
+    // precomputed D from v2.38.1 and does not need O for D recompute).
+    // outputs: [dK_partials, dV_partials] both [B, Hq, WM, kL, D] FP32.
+    const auto& q   = inputs[0];
+    const auto& k   = inputs[1];
+    const auto& v   = inputs[2];
+    const auto& lse = inputs[3];
+    const auto& d_o = inputs[4];
+    const auto& d_vec = inputs[5];
+    auto& dkp = outputs[0];
+    auto& dvp = outputs[1];
+
+    const int B  = q.shape(0);
+    const int Hq = q.shape(1);
+    const int N  = q.shape(2);
+    const int D  = q.shape(3);
+    const int Hk = k.shape(1);
+    const int Nk = k.shape(2);
+
+    // Phase C.1.a: D=64 only.  D=128 is rejected at the Python-routing
+    // layer; this is a defensive check inside the Primitive.
+    if (D != 64)
+      throw std::runtime_error("V34 bwd fused dKdV: D=64 only (Phase C.1.a)");
+
+    unsigned short BQ = 64;
+    unsigned short BK = 32;
+    uint16_t WM = wm_;
+    if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
+      BQ = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDF_BK"))
+      BK = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDF_WM"))
+      WM = (uint16_t)std::atoi(e);
+
+    int dtype_code;
+    if (q.dtype() == mlx::core::float16) dtype_code = 0;
+    else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+    else throw std::runtime_error("V34 bwd fused dKdV: only FP16/BF16");
+
+    dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
+    dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
+
+    auto& dev = mlx::core::metal::device(stream().device);
+    void* mtl_device = dev.mtl_device();
+
+    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
+      auto it = v34_bwd_fused_pipelines.find(key);
+      if (it != v34_bwd_fused_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      GEMMOperandPrecision input_prec = (dtype_code == 1)
+          ? GEMMOperandPrecision::BF16
+          : GEMMOperandPrecision::FP16;
+      AttentionOperands<GEMMOperandPrecision> mp;
+      mp[AttentionOperand::Q] = input_prec;
+      mp[AttentionOperand::K] = input_prec;
+      mp[AttentionOperand::V] = input_prec;
+      mp[AttentionOperand::O] = input_prec;
+      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
+      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
+      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
+      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
+      NAAttentionKernelDescriptor desc(
+          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
+          /*executionSIMDGroups=*/WM,
+          /*checkCEdge1=*/false, mp,
+          AttentionKernelType::forward,
+          /*scale=*/scale_,
+          /*bypassThreadgroupMemory=*/false,
+          /*isCausal=*/false, /*masked=*/false);
+      desc.singleOtileMode = true;
+      desc.useV34 = true;
+      NAAttentionKernel ker(desc);
+      std::string src = ker.createV34BackwardFusedDKDVSource();
+      pipeline = v34_compile(src, "attention_bwd_fused_dkdv", mtl_device);
+      std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
+      v34_bwd_fused_pipelines[key] = pipeline;
+    }
+
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_input_array(lse, 3);
+    enc.set_input_array(d_o, 4);
+    enc.set_output_array(dkp, 5);
+    enc.set_output_array(dvp, 6);
+    // params at buffer 7 via enc.set_bytes in dispatcher.
+    enc.set_input_array(d_vec, 8);
+
+    v34_dispatch_bwd_fused_dkdv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+                                 (int)B, (int)D, BQ, BK, WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV34BwdFusedDKDV*>(&other);
+    return p && p->scale_ == scale_ && p->wm_ == wm_;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    auto qs = inputs[0].shape();
+    auto ks = inputs[1].shape();
+    mlx::core::Shape s{qs[0], qs[1], (int)wm_, ks[2], qs[3]};
+    return {s, s};  // dKp + dVp same shape
+  }
+
+ private:
+  float scale_;
+  uint16_t wm_;
+};
+
+std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    float scale, int wm) {
+  if (q.ndim() != 4)
+    throw std::runtime_error("V34 bwd fused dKdV: Q must be 4D");
+  if (q.shape(3) != 64)
+    throw std::runtime_error("V34 bwd fused dKdV: D=64 only (Phase C.1.a)");
+
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+  auto lsec = mlx::core::contiguous(lse, false, s);
+  auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);
+
+  mlx::core::Shape partial_shape{qc.shape(0), qc.shape(1), wm,
+                                  kc.shape(2), qc.shape(3)};
+  auto outs = mlx::core::array::make_arrays(
+      {partial_shape, partial_shape},
+      {mlx::core::float32, mlx::core::float32},
+      std::make_shared<MFAV34BwdFusedDKDV>(s, scale, (uint16_t)wm),
+      {qc, kc, vc, lsec, dOc, dvc});
+  return {outs[0], outs[1]};  // dK_partials, dV_partials
+}
+
 }  // namespace mlx_mfa

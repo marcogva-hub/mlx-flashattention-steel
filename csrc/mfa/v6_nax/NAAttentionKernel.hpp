@@ -81,6 +81,15 @@ struct NAAttentionKernel {
   /// dS = P*(dP-D), and dK_accum += dS^T @ Q.  Output: dK_partials [B, Hq,
   /// WM, kL, D] FP32; Python wrapper reduces via mx.sum(axis=2) and casts.
   std::string createV34BackwardDKSource() const noexcept;
+  /// V34 backward FUSED dK+dV kernel (Option γ, Sprint v2.39.0 Phase C.1.a).
+  /// Single kernel computes both gradients in one K-tile load (the structural
+  /// ~10% perf win is K-bandwidth amortization, not just softmax fusion per
+  /// /metal-kernel-dev audit 2026-05-13).  WM=4 Q-row partition; per-SG-slot
+  /// device writes to dK_partials + dV_partials.  D=64 only; D=128 falls
+  /// back to split kernels (separate PR per blueprint staging).  Order
+  /// constraint: dV_accum += P^T @ dO MUST precede dS = P * dP overwriting
+  /// Stile (see blueprint §"Order of operations").  Consumes v2.38.1 D_vec.
+  std::string createV34BackwardFusedDKDVSource() const noexcept;
 
 private:
   // Helpers that build operand-name and stride strings for the source.
