@@ -32,14 +32,18 @@ if MFA_DISABLE_SDPA_ROUTE=1: fall through to v2.31.0 thresholds
 if window_size or sparse: return True   # MFA tile-skip wins
 if cross-attn (kv_seq_len ≥ 4096 ∧ seq_len ≤ 4096): return True
 if has_nax and head_dim ∈ {64, 128}:
-    if _should_use_mfa_m5_nax_carveout(...) returns True: return True
-    else return False  # → SDPA NAX
+    return False  # canonical M5+ NAX → SDPA
+# V34-backward training carve-out: `_v34_backward_carveout()` in dispatch_policy
+#   (env-var opt-in, called from flash_attention() body, NOT from should_use_mfa)
 # else: fall through to has_nax / M3+ / M1 thresholds
 ```
 
-The carve-out hook (`_should_use_mfa_m5_nax_carveout()`) is populated from
-Sprint A's empirical kernel sweep results; default returns False (canonical
-M5+ NAX → SDPA).
+The canonical-path placeholder (`_should_use_mfa_m5_nax_carveout()`) was
+deleted in v2.38.0 (dormant since v2.32.0; no Sprint A.6 carve-outs ever
+materialized).  V34-backward env-var carve-out is in
+`_v34_backward_carveout()`.  If a future Sprint A.6 surfaces empirically-
+validated MFA-winning canonical shapes, re-introduce a named function and
+call it from the `if head_dim in (64, 128):` branch.
 
 ## Architecture (V6 NAX primitive — direct-binding access only)
 

@@ -4,12 +4,26 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.37.3** — Doc-correction patch release following
-the v2.37.x perf-claim audit
-(`docs/v6-nax/v2.37.x-perf-claim-audit.md`).  Codifies two new
+Current version: **2.38.0** — Refactor + cleanup release.  Pure
+Python+doc reorganization on top of v2.37.3; **no kernel touches,
+no public-API change, no measured perf delta**.  Consolidates the
+triplicated V34-eligibility predicate into `_v34_eligible()` +
+`_v34_backward_vjp()` helpers (Sprint 2 audit M4-MEDIUM-01); deletes
+the dormant `_should_use_mfa_m5_nax_carveout()` placeholder
+(unreferenced since v2.32.0; no Sprint A.6 carve-outs ever
+materialized); refreshes stale comments in `attention.py` and
+the JIT-MSL emitter helpers in `csrc/mfa/v6_nax/NAAttentionKernel.cpp`
+(comment-only, compiled shader bytes byte-identical to v2.37.3).  Ships the
+**v2.38.0 investigation foundation** (TGP-overhead empirical
+measurement + multi-pass code-review findings) as a doc artefact;
+the implementation-side Option γ + D_vec precompute work is
+deferred to v2.38.1+ per the Path Y scope decision.
+
+Net effect on users: identical to v2.37.3.  The v2.37.x perf-claim
+audit (`docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new
 institutional rules (`CLAUDE_V6_NAX.md` §Z public API path testing
-rule, §AA skill invocation checkpoints) and corrects two unreachable
-claims that shipped in v2.37.0/v2.37.1:
+rule, §AA skill invocation checkpoints) remain in force.  v2.37.x
+claim corrections (carried over unchanged):
 
 - v2.37.1 "D=64 qL=2048: V34 wins 1.44×" → **retracted** (current
   canonical-methodology bench shows 1.15× kernel-level / ~1.06×

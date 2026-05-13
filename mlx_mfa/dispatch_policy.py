@@ -127,8 +127,10 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
 # mlx-mfa kernels because SDPA's NAX path doesn't cover them on M5+.
 #
 # 999_999 means "always route to SDPA at this (D, causal) regardless of N".
-# Carve-outs (specific shape-corners where mlx-mfa wins despite canonical
-# match) are encoded in `_should_use_mfa_m5_nax_carveout()`.
+# V34-backward training carve-out (env-var opt-in, D=64 qL≥4096) is in
+# `_v34_backward_carveout()` further down.  The earlier
+# `_should_use_mfa_m5_nax_carveout()` canonical-path hook was deleted in
+# v2.38.0 (dormant since v2.32.0; no Sprint A.6 carve-outs materialized).
 _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
     # D=64 canonical: SDPA NAX wins. Route SDPA. Carve-outs handle specific
     # MFA-winning shapes (e.g., FlashVSR-dense) inline.
@@ -308,51 +310,6 @@ def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
     except Exception as exc:  # noqa: BLE001
         print(f"[MFA dispatch] WARNING: failed to load {path!r}: {exc}")
     return _custom_thresholds
-
-
-def _should_use_mfa_m5_nax_carveout(
-    head_dim: int,
-    seq_len: int,
-    kv_seq_len: int,
-    causal: bool,
-    dtype_key: Optional[str],
-) -> bool:
-    """**Canonical-path** M5+ NAX carve-out hook (Sprint A.6 follow-up).
-
-    Called from `should_use_mfa()` line 519 inside the `if has_nax:` branch
-    for `head_dim in (64, 128)`.  The default policy on M5+ NAX is to route
-    forward attention to MLX SDPA (because Apple's `steel_attention_nax.h`
-    matches V34 NAX-direct on canonical shapes).  This function returns
-    True if a shape is in an empirically-validated niche where mlx-mfa
-    kernels beat SDPA on M5+ NAX.
-
-    **History:**
-    - v2.32.0: created as placeholder (Sprint A.6 hook).  No empirical
-      Sprint A.6 carve-outs ever materialized; returns False.
-    - v2.37.2: a separate V34-backward carve-out lived inline in
-      `flash_attention()` body.  Audit M5-HIGH-01 flagged the inline
-      location.
-    - v2.38.x (this sprint): the V34-backward carve-out was moved to a
-      DEDICATED function `_v34_backward_carveout()` below.  This
-      function (the canonical-path hook) stays dormant pending genuine
-      Sprint A.6 empirical findings.
-
-    **Why separate from `_v34_backward_carveout()`:**
-    The two carve-outs have DIFFERENT semantic concerns:
-    - This one: "for shapes where SDPA NAX should be the default,
-      route to mlx-mfa if and only if mlx-mfa empirically wins on a
-      canonical shape (no env-var opt-in; no softcap / alibi /
-      return_lse coupling)."
-    - `_v34_backward_carveout()`: "for D=64 training workloads,
-      engage V34 backward via env-var opt-in WHEN the flash_attention
-      call site doesn't have conflicting concerns (softcap=0, alibi
-      None, return_lse False, K/V same-dtype)."
-    Conflating them caused a silent behavior change at the canonical-
-    path call site for softcap≠0 + env=1 + D=64 qL≥4096 shapes.
-    """
-    # Decode shapes (qL ≤ 8) handled before reaching here.  Cross-attn
-    # also handled upstream.  This function only sees self-attn qL > 8.
-    return False  # no canonical-path carve-outs active (Sprint A.6 dormant)
 
 
 def _v34_backward_carveout(
@@ -557,20 +514,14 @@ def should_use_mfa(
     # is fine, no need to invoke MFA flash-decode for N=8 self-attn).
     if has_nax:
         # Canonical D=64 / D=128 (any N >= ~16 not handled by cross-attn rule):
-        # Sprint A.6 findings determine carve-outs; default = SDPA.
-        dtype_key_carve = _dispatch_dtype_key(dtype)
+        # v2.32.0 default = SDPA on M5+ NAX (Apple's steel_attention_nax.h is
+        # optimal there).  The `_should_use_mfa_m5_nax_carveout()` placeholder
+        # was deleted in v2.38.0 (dormant since v2.32.0; no Sprint A.6
+        # carve-outs ever materialized).  If a future Sprint A.6 surfaces
+        # empirically-validated MFA-winning shapes on M5+ NAX canonical D,
+        # re-introduce a named function (not inline conditionals) and
+        # call it here.
         if head_dim in (64, 128):
-            keep_mfa = _should_use_mfa_m5_nax_carveout(
-                head_dim=head_dim,
-                seq_len=seq_len,
-                kv_seq_len=_kv_len,
-                causal=causal,
-                dtype_key=dtype_key_carve,
-            )
-            if keep_mfa:
-                if _verbose:
-                    print(f"[MFA dispatch] M5+ NAX carve-out match D={head_dim} N={seq_len} causal={causal} -> MFA")
-                return True
             if _verbose:
                 print(f"[MFA dispatch] M5+ NAX canonical D={head_dim} N={seq_len} causal={causal} -> SDPA (Apple's steel_attention_nax.h is optimal)")
             return False

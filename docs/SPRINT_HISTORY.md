@@ -43,7 +43,7 @@ For per-commit history, see `git log`.  For per-release content, see
 | **v2.38.x cleanup** | 2026-05-13 | Refactor + observability | TBD (Phase E decides α doc-only or β v2.38.1) | `docs/v6-nax/v38x-cleanup-decisions.md` + this doc (`docs/SPRINT_HISTORY.md`) + `docs/PERF_CLAIMS.md` |
 
 Phases:
-- **A: Dispatch consolidation** (M5-HIGH-01) — v2.37.2 carve-out moved into dedicated `_v34_backward_carveout()` function; placeholder `_should_use_mfa_m5_nax_carveout()` kept dormant for genuine Sprint A.6 hooks. ✓ Committed `f7a04ce`.
+- **A: Dispatch consolidation** (M5-HIGH-01) — v2.37.2 carve-out moved into dedicated `_v34_backward_carveout()` function; a placeholder `_should_use_mfa_m5_nax_carveout()` was retained for genuine Sprint A.6 hooks but was **subsequently deleted in v2.38.0 P3 Phase C** (dormant since v2.32.0, no Sprint A.6 carve-outs ever materialized; if a future Sprint A.6 surfaces empirically-validated MFA-winning shapes on M5+ NAX canonical D, re-introduce a named function from the `head_dim ∈ {64, 128}` branch in `should_use_mfa()`). ✓ Committed `f7a04ce`.
 - **B: Apple helpers refactor** (M1-HIGH-01 + M3-HIGH-01) — extracted 390-LOC helpers from 5 generators into `naxHelpersBlock()` static method; byte-identical forward kernel source verified; -1541 LOC net. ✓ Committed `c509b4b`.
 - **C: Observability triad** (quality) — `docs/PERF_CLAIMS.md` registry + `mlx_mfa.diagnostics()` runtime introspection + `docs/SPRINT_HISTORY.md` (this file).  ⏳ in progress.
 - **D: /mlx-mfa-kernel-design skill** — unblocked by Phase B; encodes consolidated kernel-design patterns.  ⏳ pending.

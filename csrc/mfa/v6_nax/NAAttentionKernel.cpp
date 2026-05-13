@@ -2738,9 +2738,9 @@ std::string NAAttentionKernel::createV34Source() const noexcept {
   ss << "using namespace metal;\n";
   ss << "using namespace mpp::tensor_ops;\n";
   ss << "\n";
-  ss << "// Inlined Apple steel/* helpers (verbatim from ~/code/mlx-source).\n";
+  ss << "// Apple steel/* helpers (verbatim from ~/code/mlx-source).\n";
 
-  // === Inline Apple helpers (~17.7KB of verbatim Apple code) ===
+  // === Apple NAX helpers (shared via naxHelpersBlock(), extracted Sprint v2.38.x Phase B) ===
   ss << naxHelpersBlock();
 
   // === V34 kernel ===
@@ -3807,8 +3807,7 @@ std::string NAAttentionKernel::createV34BackwardQuerySource() const noexcept {
   ss << "using namespace metal;\n";
   ss << "using namespace mpp::tensor_ops;\n";
   ss << "\n";
-  ss << "// === Inline Apple NAX helpers (verbatim from V34 forward) ===\n";
-  ss << "// FUTURE-CLEANUP: extract to naxHelpersSource() and share with forward.\n";
+  ss << "// === Apple NAX helpers (shared via naxHelpersBlock(), extracted Sprint v2.38.x Phase B) ===\n";
 
   ss << naxHelpersBlock();
 
