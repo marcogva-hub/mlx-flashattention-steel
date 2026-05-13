@@ -4,6 +4,8 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.37.1] — 2026-05-13 — V34 backward post-release improvements
+
 ### Added (post-v2.37.0 improvements)
 
 - **V34 backward eligibility expanded to D=64 small-Nk** (formerly DC12-

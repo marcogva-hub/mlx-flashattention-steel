@@ -4,7 +4,11 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.37.0** — Sprint Option β architectural addition: **V34 backward NAX-direct kernels** (dQ + dK/dV multi-SG WM=4 Q-row partition) ship as SHIP_OPT_IN. With `MFA_ENABLE_V34_BACKWARD=1`, `flash_attention()` autograd routes backward through V34 NAX kernels on M5+ for eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal/window/softcap). V34 backward kernels are correctness-validated (RMSE matches SDPA-vjp within FP16 floor) but currently 2.2-2.4× slower than SDPA-vjp at qL=8192 due to dK kernel's inherent 2× work over dV (extra dO@V^T matmul); architectural floor near hardware peak. Apple's NAX backward is NYI in MLX framework — mlx-mfa V34 backward is the only path for NAX-accelerated backward attention on M5+. Default (env unset) preserves v2.36.1-exact behavior (SDPA-vjp fallback). All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+Current version: **2.37.1** — Sprint Option β architectural addition: **V34 backward NAX-direct kernels** (dQ + dK/dV multi-SG WM=4 Q-row partition) ship as SHIP_OPT_IN. With `MFA_ENABLE_V34_BACKWARD=1`, `flash_attention()` autograd routes backward through V34 NAX kernels on M5+ for eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal/window/softcap).
+
+**D=64 large shapes (qL ≥ 2048): V34 backward is 1.4-1.85× FASTER than SDPA-vjp** — clear perf win for D=64 training (FlashVSR/LTX2-class). See `docs/TRAINING_QUICKSTART.md` for the shape-aware recommendation. v2.37.1 also extends V34 backward eligibility to D=64 small-Nk shapes (formerly DC12-blocked) via new `force_v34` parameter.
+
+D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). Default (env unset) preserves v2.36.1-exact behavior. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 
