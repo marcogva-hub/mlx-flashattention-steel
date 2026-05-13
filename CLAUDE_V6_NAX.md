@@ -826,6 +826,7 @@ The mlx-mfa-specialized skills created in Sprint 3 (see
 | Pre-version-bump | /mlx-code-review + /repo-release-prep | **/mlx-mfa-release-audit** |
 | Pre-bench sub-ms work | /metal-kernel-dev | **/mlx-mfa-bench-methodology** |
 | New kernel write (>200 LOC source generator) | /metal-kernel-dev | **/mlx-mfa-kernel-design** (UNBLOCKED v2.38.x Phase B; mandatory) |
+| **Before audit-prescribed kernel sprint (§AA.5 premise validation)** | manual `dir(mx)` + bench | **/mlx-mfa-apple-primitives-coverage** (added 2026-05-14 post-Sprint-3+4 retrospective) |
 
 When an mlx-mfa-* automation skill exists for a checkpoint, invocation
 of that skill satisfies the §AA mandatory requirement.  The general
@@ -878,6 +879,90 @@ the actual attribute name in `_auto_hooks.py` turned out to be
 `_HOOKS_INSTALLED` (uppercase).  Without the disagreement-resolution
 clause, the skill would have produced a false BLOCKED that humans
 would have manually overridden — instead, the skill got fixed.
+
+---
+
+### §AA.5 — Premise validation discipline (added 2026-05-14, Sprint 3+4 retrospective)
+
+Before committing to an audit-prescribed implementation, **verify
+empirically that the audit's premise still holds**.  Three sprints in
+v2.50 (Sprint 1 density threshold, Sprint 2 rope NAX, Sprint 3 top-K)
+discovered that the audit's framing was at least partially inverted —
+Apple primitives delivered the win in 30-50 LOC rather than the
+prescribed L-effort kernel build.  One sprint (Sprint 4) discovered
+the audit's scope estimate was 1.5-2× too optimistic.
+
+**Pattern that must trigger the premise-validation check**:
+- Audit prescribes "build new Metal kernel" or "extend kernel
+  significantly" at S/M/L effort
+- Premise check (~30 min) before committing to implementation:
+  1. List all `mx.fast.*`, `mx.*` primitives that operate on this
+     operand pattern (use `dir(mx)`, `dir(mx.fast)`)
+  2. Bench candidate primitive-based dispatch paths against the
+     audit's measured regression
+  3. Decompose audit's measurement by component (matmul vs sort vs
+     softmax vs reduce) to identify the actual bottleneck
+  4. Determine outcome:
+     - **Full inversion**: Apple primitive recovers the full
+       regression → ship dispatch fix, no kernel work
+     - **Partial inversion**: Apple primitive recovers part of the
+       regression → ship dispatch fix + document why kernel work
+       remains needed
+     - **Confirmation**: audit's prescription is empirically correct
+       → proceed with kernel implementation
+
+**§AA.5 is a BLOCKING gate**: cannot proceed to implementation phase
+of a kernel-build sprint without a §AA.5 premise check section in
+the sprint deliverable doc.  Templates updated in §10.1 to require a
+"Premise validation" section adjacent to "Skill invocations".
+
+### Why §AA.5 was needed
+
+The audit's effort estimate is necessarily produced without the
+kernel-implementation-time investigation that surfaces these
+inversions.  Sprint 1 demonstrated this acutely: the audit
+prescribed bool-mask substitution (Layer 1 from a 2025 doc); the
+v2.50 empirical check on MLX 0.31 found bool 1.085× SLOWER than
+float bias (FALSIFIED), and the actual win came from a one-line
+density threshold change.  Without §AA.5, Sprint 1 would have
+shipped a no-op bool-mask substitution and missed the 6× win.
+
+### §AA.5 evidence template
+
+Every kernel-build sprint deliverable doc MUST include:
+
+```markdown
+## §AA.5 Premise validation
+
+**Audit prescription**: <verbatim from audit>
+
+**Available Apple primitives checked**:
+- `mx.<primitive_1>`: <signature, applicable scope>
+- `mx.fast.<primitive_2>`: <signature, applicable scope>
+- ...
+
+**Candidate primitive-based paths benched**:
+| Path | Latency | Speedup vs current |
+|---|---|---|
+| <current> | X ms | 1.00× |
+| <candidate A> | Y ms | N× |
+| ...
+
+**Premise verdict**: <FULL_INVERSION / PARTIAL_INVERSION / CONFIRMATION>
+
+**Rationale**: <one paragraph explaining what the empirical data tells us>
+```
+
+If verdict is FULL_INVERSION: ship dispatch fix; kernel sprint cancelled.
+If PARTIAL_INVERSION: ship dispatch fix AND scope-correct the kernel
+work needed for the remainder.
+If CONFIRMATION: proceed with kernel implementation as scoped.
+
+### Related: audit framing inversions catalogue
+
+See `docs/v50/audit-framing-inversions.md` for the empirically-validated
+list of audit framing inversions through v2.50.  Update this doc each
+time a sprint surfaces a new inversion or confirms an audit prediction.
 
 ---
 

@@ -68,6 +68,7 @@ automate the mandatory checkpoints:
 | Pre-version-bump (canonical pre-tag gate) | `/mlx-mfa-release-audit` |
 | Sub-ms bench / cross-session variance | `/mlx-mfa-bench-methodology` |
 | New kernel write | `/mlx-mfa-kernel-design` (deferred post-Sprint-6) |
+| Before audit-prescribed kernel sprint (§AA.5 premise validation) | `/mlx-mfa-apple-primitives-coverage` (added 2026-05-14 post-Sprint-3+4 retrospective) |
 
 Every sprint deliverable doc MUST include a "Skill invocations"
 table per §AA.2 (templates in `docs/templates/`).  Empty/missing
@@ -75,8 +76,22 @@ table = audit fails.  `/mlx-mfa-release-audit` Check 5 enforces this
 before any version bump.
 
 See `docs/skills/README.md` for the full mlx-mfa-* skill set +
-invocation patterns.  See `CLAUDE_V6_NAX.md` §AA.1-§AA.4 for the
-hardened rule + halt protocol.
+invocation patterns.  See `CLAUDE_V6_NAX.md` §AA.1-§AA.5 for the
+hardened rule + halt protocol + premise validation discipline.
+
+## §AA.5 premise validation (added 2026-05-14)
+
+Before committing to any audit-prescribed kernel sprint, run a
+**premise validation check** (~30 min) per `CLAUDE_V6_NAX.md` §AA.5:
+
+1. Inventory available Apple/MLX primitives (`dir(mx)`, `dir(mx.fast)`)
+2. Component-decompose the audit's measured regression
+3. Bench candidate primitive-based dispatch paths
+4. Issue verdict: **FULL_INVERSION** / **PARTIAL_INVERSION** / **CONFIRMATION**
+
+Three sprints in v2.50 found the audit's framing inverted (Sprints 1, 2)
+or partially inverted (Sprint 3).  See `docs/v50/audit-framing-inversions.md`
+for the empirically-validated catalogue.
 
 ## Canonical Python environment (2026-05-13)
 
