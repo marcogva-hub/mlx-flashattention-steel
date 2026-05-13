@@ -3612,7 +3612,12 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
     head_dim = q.shape[3]
     _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
 
-    # Resolve "auto" → fused (D=64, post-v2.39.1 H1 fix) or split (D=128).
+    # Resolve "auto" → fused (D=64, post-v2.39.1 H1 fix) or split (D=128
+    # per v2.40.0-internal Sprint B outcome γ: D=128 fused at parity with
+    # split (~1.00× ratio, no measurable win) — keep split as auto-default
+    # to preserve v2.38.1 D=128 behavior; fused opens via opt-in
+    # MFA_V34_BWD_KERNEL=fused for D=128.  See docs/v6-nax/v40-0-internal-
+    # decisions.md for the empirical bench data.
     if _kernel_mode == "auto":
         _kernel_mode = "fused" if head_dim == 64 else "split"
 
@@ -3622,13 +3627,15 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
             q, k, v, O_v34, L_v34, dO, D, scale)
     elif _kernel_mode == "fused":
         # Option γ fused dK+dV — single kernel, K-bandwidth amortization.
-        # D=64 only this PR (Phase C.1.a); D=128 raises loudly per Rule 8
-        # rather than silently falling back to split (avoids user
-        # mis-configuration surprises).
-        if head_dim != 64:
+        # Phase C.1.a (v2.39.0/.1): D=64.  Phase C.1.b (v2.40.0-internal
+        # Sprint B): D=128 added.  Source generator is D-parameterized;
+        # default BK=16 applies at both D values per v2.39.1 staging
+        # learning.  D ∉ {64, 128} raises loudly per Rule 8 rather than
+        # silently falling back to split (avoids user mis-configuration).
+        if head_dim not in (64, 128):
             raise ValueError(
-                f"MFA_V34_BWD_KERNEL=fused requires head_dim=64 "
-                f"(Phase C.1.a scope); got head_dim={head_dim}.  "
+                f"MFA_V34_BWD_KERNEL=fused requires head_dim ∈ {{64, 128}} "
+                f"(Phase C.1.a + C.1.b scope); got head_dim={head_dim}.  "
                 f"Use MFA_V34_BWD_KERNEL=split (or unset) for D={head_dim}."
             )
         dKp, dVp = _bwd_ext.v6_nax_backward_fused_dkdv_raw(
@@ -3636,8 +3643,8 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale):
         dK = mx.sum(dKp, axis=2).astype(q.dtype)
         dV = mx.sum(dVp, axis=2).astype(q.dtype)
     else:
-        # Split path (default for D=128 in auto; or MFA_V34_BWD_KERNEL=split).
-        # split-dV doesn't need D (dV = P^T @ dO; no dS term).
+        # Split path (MFA_V34_BWD_KERNEL=split forced; auto routes here for
+        # D ∉ {64, 128}).  split-dV doesn't need D (dV = P^T @ dO; no dS term).
         dVp = _bwd_ext.v6_nax_backward_dv_raw(
             q, k, v, L_v34, dO, scale, _wm)
         dKp = _bwd_ext.v6_nax_backward_dk_raw(

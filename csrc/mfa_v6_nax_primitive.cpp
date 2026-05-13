@@ -1666,18 +1666,31 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     const int Hk = k.shape(1);
     const int Nk = k.shape(2);
 
-    // Phase C.1.a: D=64 only.  D=128 is rejected at the Python-routing
-    // layer; this is a defensive check inside the Primitive.
-    if (D != 64)
-      throw std::runtime_error("V34 bwd fused dKdV: D=64 only (Phase C.1.a)");
+    // Phase C.1.a (v2.39.0/.1): D=64 only.
+    // v2.40.0-internal (Sprint B): D=128 added.  Source generator was
+    // already D-parameterized; gate lifted after empirical bench at
+    // D=128 BK=16 confirmed no register-pressure regression vs split.
+    // See docs/v6-nax/v40-0-internal-decisions.md.
+    if (D != 64 && D != 128)
+      throw std::runtime_error(
+          "V34 bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
 
     // v2.39.1: default BK=16 (was 32 in v2.39.0).  The v2.39.0 BK=32
-    // default caused per-SG register spilling (H1 confirmed by Sprint
-    // v2.39.1 investigation — see docs/v6-nax/v39-1-investigation-
+    // default caused per-SG register spilling at D=64 (H1 confirmed by
+    // Sprint v2.39.1 investigation — see docs/v6-nax/v39-1-investigation-
     // synthesis.md).  BK=16 halves dK_accum + dV_accum register
-    // footprint and brings the kernel below the M5 NAX compiler's
-    // spill threshold, recovering 1.01-1.12× speedup vs split across
-    // qL ∈ {2048, 16384}.
+    // footprint at D=64 and brings the kernel below the M5 NAX
+    // compiler's spill threshold, recovering 1.01-1.12× speedup vs
+    // split across qL ∈ {2048, 16384}.
+    //
+    // v2.40.0-internal: D=128 reuses BK=16 default.  At D=128 BK=16
+    // the per-lane accumulator footprint doubles vs D=64 BK=16 (~512 B
+    // vs ~256 B per lane combined dK_accum + dV_accum), matching the
+    // v2.39.0 spill-boundary footprint in accumulator B/lane terms.
+    // Empirical bench (Sprint B Phase B.5) characterizes whether the
+    // higher arithmetic intensity at D=128 amortizes any residual
+    // spill cost.  Override via MFA_V34BWDF_BK if benchmarking
+    // alternatives.
     unsigned short BQ = 64;
     unsigned short BK = 16;
     uint16_t WM = wm_;
@@ -1796,8 +1809,9 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
     float scale, int wm) {
   if (q.ndim() != 4)
     throw std::runtime_error("V34 bwd fused dKdV: Q must be 4D");
-  if (q.shape(3) != 64)
-    throw std::runtime_error("V34 bwd fused dKdV: D=64 only (Phase C.1.a)");
+  if (q.shape(3) != 64 && q.shape(3) != 128)
+    throw std::runtime_error(
+        "V34 bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
