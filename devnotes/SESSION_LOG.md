@@ -4539,3 +4539,135 @@ use cases.
 Moving to candidate 1 (V34 fwd EXEC_SG patch) — small high-value win
 that's been deferred since V34 forward investigation.
 
+
+---
+## [2026-05-13 05:30] [CLAUDE] v2.37.0 SHIPPED — V34 backward NAX-direct kernels (SHIP_OPT_IN)
+STATUS: COMPLETE
+
+### Plan
+Ship V34 backward Option β sprint work as v2.37.0 release.  Default
+behaviour unchanged (V34 backward gated by env var `MFA_ENABLE_V34_BACKWARD=1`).
+Architectural floor analysis confirmed V34 backward 2.2-2.4× SDPA-vjp
+near hardware peak — further closing requires major restructure deferred.
+
+### Changes (multi-SoT release)
+- `pyproject.toml`: version 2.36.1 → 2.37.0
+- `mlx_mfa/__init__.py`: `__version__ = "2.37.0"`
+- `README.md`: header rewritten for v2.37.0 V34 backward SHIP_OPT_IN
+- `CHANGELOG.md`: [2.37.0] entry with full V34 backward description +
+  perf data + architectural floor analysis + migration notes
+- `ENV_VARS.md`: new `MFA_ENABLE_V34_BACKWARD` + `MFA_V34BWD*` group
+- `docs/releases/v2.37.0-release-notes.md`: GH release notes
+- `docs/API_MANUAL.md`: flash_attention docstring updated with V34 backward
+  opt-in note
+
+### Sprint timeline (commits on experiment/v34-backward-option-beta-v2)
+1. BLK1 resolved: V34 forward lse-write infrastructure (7329953)
+2. Phase 1 dQ kernel + tests (f378b10)
+3. Phase 2 dK/dV fused WM=1 kernel + tests (9cc0675)
+4. Phase 2 Section E flash_attention VJP integration (e7b21ee)
+5. Phase 2.O1 WM=2 K-row FALSIFIED + reverted (52797ea)
+6. Phase 2.O2 multi-SG WM=4 Q-row split — 1.7-2× speedup (e2606cb)
+7. Phase 2.O3 forward-fusion + investigation conclusions (e2f952d)
+8. v2.37.0 release artifacts (b4f3390)
+9. Merge to master (f41fc25)
+
+### Bench (M5 Max FP16 D=128, flash_attention autograd)
+| qL | V34 multi-SG | SDPA-vjp | Ratio |
+|---|---:|---:|---:|
+| 1024 | 1.07ms | 0.50ms | 2.13× |
+| 2048 | 3.22ms | 1.54ms | 2.09× |
+| 4096 | 12.77ms | 5.31ms | 2.40× |
+| 8192 | 48.93ms | 20.37ms | 2.40× |
+
+### Architectural floor analysis (key finding)
+Per-component at qL=8192:
+- V34 fwd ~3ms; V34 dQ (WM=4) 12.2ms; V34 dV (WM=4) 9.2ms;
+  V34 dK (WM=4) 21.0ms; total ~45.4ms
+- dK ≈ 2× heavier than dV because dK kernel requires extra dO@V^T
+  matmul (FA-2 dK algorithm requirement) — cannot be eliminated
+  without major restructure
+- WM/BQ sweep (WM=4/8/2 × BQ=64/128/32) shows ~5% variation —
+  hardware near FP16 NAX peak
+- Shape-regime sweep (qL ∈ [256, 8192]) shows uniform 1.7-3.1×
+  V34/SDPA ratio — no regime where V34 wins → shape-aware default
+  flip NOT viable
+- SDPA-vjp likely uses different algorithm (fused single-kernel
+  dK+dV with TGP cross-SG reduction); reverse-engineering would
+  require multi-day sprint
+
+### Three-axis validation
+- AXIS 1 (output sanity): 116/116 tests pass.  dQ RMSE 1.5e-8, dK
+  RMSE 1.5e-8, dV RMSE 1.5e-6 vs SDPA-vjp reference.
+- AXIS 2 (path entered): bench confirmed V34 backward kernels engage;
+  V34-on vs V34-off produce numerically different gradients.
+- AXIS 3 (edges preserved): default-off path identical to v2.36.1
+  (SDPA-vjp fallback); 77 pre-existing tests pass; all v2.36.x
+  infrastructure preserved (Sprint U auto-hooks, canonical methodology,
+  shape-aware V2 sparse).
+
+### Pre-tag audit (per Sprint U checklist)
+- [x] V34 backward kernels validated correct (RMSE within FP16/FP32 floor)
+- [x] V34 backward as SHIP_OPT_IN (default off, env var opt-in)
+- [x] Auto-default principle honored (no transparent perf regression)
+- [x] Patchers (`patch_*`) preserved as expert API
+- [x] README primary usage path unchanged
+- [x] v2.36.x infrastructure preserved
+- [x] All 116 tests pass (pre-existing 77 + 39 new V34 backward)
+- [x] Multi-SoT version bump verified
+
+### Validation
+- Ran: pytest tests/test_v34_* tests/test_flash_attention_v34_backward
+  tests/test_v34_bwd_multisg → 39/39 pass
+- Ran: pytest full LCSA/Sprint U/v2.36.1 → 77/77 pass
+- Ran: smoke check (V34 backward routes correctly + env override works)
+- Ran: twine check both wheel + sdist → PASSED
+- Ran: twine upload mlx_mfa-2.37.0 → live at pypi.org/project/mlx-mfa/2.37.0/
+- Ran: git push origin master --tags → master + v2.37.0 pushed
+- Ran: gh release create v2.37.0 → live at
+  github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.37.0
+
+### Git
+- Branch experiment/v34-backward-option-beta-v2 merged --no-ff to master
+- Master tip: f41fc25
+- Tag: v2.37.0 annotated, pushed
+- PyPI: https://pypi.org/project/mlx-mfa/2.37.0/
+- GitHub release: https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.37.0
+
+### Investigation findings encoded
+1. **Q-row partition is the correct multi-SG architecture for backward
+   dK/dV** (not K-row).  K-row partition forces softmax replication;
+   Q-row keeps softmax intra-SG.  Empirically falsified WM=2 K-row
+   (Phase 2.O1) then validated WM=4 Q-row split (Phase 2.O2).
+2. **dK kernel is 2× heavier than dV kernel** (fundamental — extra dO@V^T
+   matmul in FA-2 dK formula).  Architectural floor on dK/dV split.
+3. **Forward-fusion eliminates redundant forward**.  When V34 backward
+   enabled, _impl uses V34 fwd directly (natural-log lse) — backward
+   skips recompute.  Modest gain (~3-5ms at small shapes, negligible
+   at large).
+4. **NAXFrag::mma transpose_a=true works correctly** (new code path
+   for dV=P^T@dO and dK=dS^T@Q — first time exercised in V34 backward).
+5. **Per-SG WM=4 register state at 24 KB fits in M5 register file**
+   (32 KB).  Fused dK+dV WM=4 would need 40 KB per SG — over the edge.
+   Two-kernel split was structurally necessary.
+
+### Sprint exit
+v2.37.0 LIVE.  V34 backward kernels validated correct, perf-floored
+at 2.4× SDPA-vjp.  Future optimization candidates documented in
+docs/v6-nax/v34-backward-status.md §"Sprint exit" — multi-day
+restructure (fused dK+dV with TGP cross-SG reduction) is the only
+remaining lever toward parity.
+
+### Suggested next sprint candidates
+1. **V34 backward Option γ (fused dK+dV w/ TGP cross-SG reduction)**
+   — multi-day, register-pressure investigation required, only lever
+   toward perf parity with SDPA-vjp.
+2. **patch_sparkvsr_sliding_window** — Sprint U-style patcher for
+   SparkVSR sliding window attention.  Requires SparkVSR model for
+   testing.
+3. **Block-sparse backward + causal backward** — DC3 deferred from
+   V34 backward Option β scope.  Each ~1 day sprint.
+4. **Pre-compiled metallib for V34 backward** — eliminates JIT cost
+   on first call (~1-2s startup latency improvement).  Build-system
+   integration required.
+

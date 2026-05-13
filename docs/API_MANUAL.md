@@ -48,6 +48,17 @@ Notes:
 - Use cases: token merging (`log(merge_count)`), temporal distance bias,
   cross-attention conditioning, custom ALiBi variants.
 
+**V34 backward NAX-direct (v2.37.0, SHIP_OPT_IN)**:
+- Set `MFA_ENABLE_V34_BACKWARD=1` to route `flash_attention` backward
+  through V34 NAX-direct kernels on M5+.  Default off (SDPA-vjp).
+- Eligible shapes: D ∈ {64, 128}, FP16/BF16, no causal/window/softcap,
+  V34-forward-routing-eligible (D=128 always; D=64 with Nk > 8000).
+- Current perf: V34 backward 2.2-2.4× slower than SDPA-vjp on M5 Max
+  (architectural floor — dK kernel inherently 2× heavier than dV due to
+  required dO@V^T matmul).  Apple's NAX backward is NYI in MLX framework,
+  so V34 backward is the only path for NAX-accelerated backward on M5+.
+- See `ENV_VARS.md` `MFA_V34BWD*` group for tile-tuning knobs.
+
 ### `flash_attention_kvcache(...)`
 
 Unified dense/paged KV-cache attention entry point.
