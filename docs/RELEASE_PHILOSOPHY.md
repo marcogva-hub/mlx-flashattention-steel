@@ -126,6 +126,54 @@ multi-SoT version audit per the v2.33.x lesson):
 - [ ] Migration documented in CHANGELOG if optimization graduates from
       opt-in to default
 
+## Public API path validation (added 2026-05-13)
+
+The auto-default principle states that "every PyPI release must be
+fully functional transparently for users."  This implies a strict
+corollary that was not formally codified pre-v2.37.0:
+
+**Validation of auto-default activation (and of any perf claim
+shipped to users) MUST happen via the public user-facing API path**,
+with the env vars / configuration documented as required.  Internal
+kernel benchmarks and forced-backend (e.g., `backend="mfa"`)
+measurements are NECESSARY but INSUFFICIENT.
+
+When a feature graduates from opt-in to auto-default — OR when a perf
+claim ships in release notes / README / training guides — the
+validation bench must:
+
+- Use the documented public API call (`mlx_mfa.flash_attention(...)`
+  with default `backend="auto"`, `mx.grad(flash_attention(...))`, etc.)
+- Include shape regimes the auto-default targets / the claim
+  documents
+- Be reproducible by users following only the documented API + env
+  setup — no internal flags, no forced backends, no direct `_ext.*`
+  calls
+
+### Reference incident (v2.37.0 / v2.37.1)
+
+v2.37.0 and v2.37.1 shipped to PyPI with the documented perf claim
+"D=64 qL ≥ 2048: V34 backward is 1.4-1.85× FASTER than SDPA-vjp."
+The claim held at kernel level (direct `_ext.v6_nax_*` calls did
+deliver the speedup) but was unreachable through the public
+`flash_attention()` autograd path because `should_use_mfa()` returns
+False for non-causal D ∈ {64, 128} and short-circuits to SDPA
+fallback before the V34 backward env-var check could engage.  All
+correctness tests passed because every test used `backend="mfa"`,
+bypassing `should_use_mfa()` and the dispatch gate that broke the
+user-facing path.
+
+Fix: v2.37.2 added a narrow carve-out in `flash_attention()` that
+forces `use_mfa=True` when env + shape qualify, so the V34 backward
+custom-vjp actually engages.  Differential bench via the default
+`backend="auto"` path now confirms 1.81-1.82× speedup at D=64
+qL∈{4096, 8192}.
+
+See `CLAUDE_V6_NAX.md` §Z for the full rule and the
+reproducibility-checklist template every perf claim must pass.
+See `docs/v6-nax/v2.37.x-perf-claim-audit.md` for the per-claim
+audit that grew out of this incident.
+
 ## When opt-in is appropriate
 
 Opt-in via **env var** is appropriate when:

@@ -179,6 +179,39 @@ selection path must validate three distinct axes before shipping:
    overrides, Python `__call__` type-vs-instance dunder lookup
    gotchas, fallback paths that engage when they shouldn't, env-var
    propagation gaps between Python and C++).
+
+   **Critical sub-rule (added 2026-05-13 post-v2.37.0/v2.37.1 silent
+   integration bug):** the path-entered exercise MUST use the public
+   user-facing API path (e.g., `flash_attention(...)` with default
+   `backend="auto"` + the documented env vars), not just forced or
+   internal paths (e.g., `backend="mfa"` override or direct calls to
+   `_ext.*` C++ bindings).
+
+   Rationale: tests that force the MFA path bypass `should_use_mfa()`
+   and therefore cannot detect dispatch-gate regressions on the
+   user-facing surface. v2.37.0/v2.37.1 shipped with 100% test pass
+   yet the documented perf claim was unreachable because every
+   correctness test used `backend="mfa"` while users call with the
+   default `backend="auto"`. Reference incident:
+   `docs/v6-nax/v2.37.x-perf-claim-audit.md` and §Z below.
+
+   **Required test pattern** (apply to any new auto-routing feature):
+
+   ```python
+   # INSUFFICIENT — only tests forced path; bypasses should_use_mfa()
+   def test_routes_when_forced():
+       out = flash_attention(q, k, v, backend="mfa")
+       # ...
+
+   # REQUIRED — also tests default path the user actually calls
+   def test_routes_via_default_api(monkeypatch):
+       monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+       out = flash_attention(q, k, v)  # default backend="auto"
+       # instrument or differential-bench to verify the new kernel fires
+   ```
+
+   Both patterns are required. The default-backend test is the
+   minimum bar for "path entered" axis to be considered satisfied.
 3. **Edges preserved** — semantic edge-case tests for NaN propagation,
    all-zero / all-masked inputs, denormal inputs, boundary conditions.
    Catches: optimizations that are bit-exact on mainline cases but
@@ -198,9 +231,14 @@ Before tagging a release that modifies dispatch:
       The smoke gate's pre-flight signature must include a non-trivial
       correctness verification — not just "did it run".
 - [ ] **Path-entered gate**: A/B perf comparison between the old and new
-      paths on at least one representative shape. If perf ratio is
-      ~1.00× when the new path is supposed to be faster, the new path
-      isn't actually engaged (dead override / fallback engagement).
+      paths on at least one representative shape, **using the public
+      user-facing API path** (`flash_attention(...)` with default
+      `backend="auto"` + documented env vars), not forced backends or
+      direct `_ext.*` calls. If perf ratio is ~1.00× when the new path
+      is supposed to be faster, the new path isn't actually engaged
+      (dead override / fallback engagement / dispatch gate blocking
+      the routing). See §Z for the broader rule on public API path
+      validation.
 - [ ] **Edges preserved gate**: run the full pre-existing test suite,
       with NaN/Inf checks active. Any test that was passing before the
       patch and now fails — even if "the new behavior is reasonable" —
@@ -226,6 +264,24 @@ measured speedup 1.00× and revealed the dead override. Fix: `mod.__class__ = ..
 swap to a dynamically-created subclass with overridden `__call__`. After
 fix: 2.29× speedup (matches Phase 1.5 `mid_resnet` 2.26× ratio).
 Reference: `docs/conv-nax/conv-nax-prod-decisions.md` D34.
+
+**v2.37.0/v2.37.1 (Path entered, public API sub-rule).** V34 backward
+kernels shipped as SHIP_OPT_IN with the documented claim "D=64 qL ≥ 2048:
+1.4-1.85× faster than SDPA-vjp". All 8 V34 backward correctness tests
+passed — but every test forced `backend="mfa"`, which bypasses
+`should_use_mfa()`. For non-causal D ∈ {64, 128}, `should_use_mfa()`
+returns False, and `flash_attention()` returned via `_fallback_sdpa()`
+BEFORE the V34 backward env-var check could engage the custom-vjp
+chain. Users following the documented API setup
+(`MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(...))`) got
+SDPA-vjp silently. Direct `_ext.v6_nax_*` kernel calls confirmed the
+1.81× speedup existed at kernel level — unreachable through the
+public API. Caught only by manual investigation; not by the test suite.
+After fix (v2.37.2): narrow carve-out in `flash_attention()` engages
+V34 when env + shape qualify; differential benches via the default
+`backend="auto"` path now show 1.81-1.82× speedup. Reference:
+`docs/releases/v2.37.2-release-notes.md` and
+`docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
 **v2.33.1 patch (Edges preserved).** Initial fast-fallback design substituted
 bool mask for float bias to skip `mx.where` (~1.3 ms saved unconditionally).
@@ -468,6 +524,186 @@ audit per v2.33.x lesson):
       opt-in to default
 
 See `docs/RELEASE_PHILOSOPHY.md` for the full principle.
+
+---
+
+## §Z. Public API path testing rule (added 2026-05-13)
+
+Every performance claim documented in release notes, CHANGELOG entries,
+README, training guides, or any user-facing public doc MUST be
+reproducible via the documented user-facing API call path with the
+same env vars / configuration a user would set, NOT via internal
+kernel benchmarks or forced-backend (e.g., `backend="mfa"`)
+measurements.
+
+### Reference incident
+
+v2.37.0 / v2.37.1 silent integration bug (2026-05-13).  Release notes
+documented "D=64 qL ≥ 2048: V34 backward is 1.4-1.85× FASTER than
+SDPA-vjp."  At kernel level the speedup existed (direct
+`_ext.v6_nax_backward_dv_raw` calls achieved 1.81-1.82× faster than
+SDPA-vjp).  Through the documented public API
+(`mx.grad(flash_attention(...))` with `MFA_ENABLE_V34_BACKWARD=1`),
+the speedup was unreachable: `should_use_mfa()` returns False for
+non-causal D ∈ {64, 128}, `flash_attention()` returned via
+`_fallback_sdpa()` before the V34 backward env-var check could
+engage the custom-vjp.  Users following the docs got SDPA-vjp
+silently.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md` and
+v2.37.2 release notes.
+
+### Reproducibility template
+
+For every "X× faster" or "Y% speedup" or "Z ms vs W ms" claim, run
+this audit checklist before tagging:
+
+- [ ] What is the documented public API call the user makes?
+      (`mx.grad(flash_attention(...))`, `mlx_mfa.flash_attention(...)`,
+      etc.)
+- [ ] What env vars are documented as required?
+      (`MFA_ENABLE_V34_BACKWARD=1`, `MFA_LCSA_KERNEL_VERSION=v34`, etc.)
+- [ ] What's the documented shape regime?  (D=64 + qL ≥ 4096, sparse
+      density ≥ X, etc.)
+- [ ] Reproduce the measurement using ONLY the documented API + env +
+      shape.  Verify the kernel claimed responsible for the speedup
+      actually engages (instrument the dispatch path with a counter
+      or differential bench: if "feature ON" and "feature OFF" produce
+      identical timings, the feature isn't engaging).
+- [ ] Compare against the documented baseline (typically SDPA-vjp or
+      vanilla SDPA) using the same public API path.
+- [ ] If kernel doesn't engage via documented path → claim is
+      unreachable → either fix routing (§3.5 axis 2) OR correct /
+      remove the claim from user-facing docs.
+
+### What this rule prohibits
+
+- Documenting a kernel-isolation benchmark result as if it were
+  end-to-end user perf (e.g., bench `_ext.v6_nax_backward_dk(...)` and
+  claim "X× faster backward" without checking that
+  `mx.grad(flash_attention(...))` actually routes to it).
+- Documenting a forced-backend (`backend="mfa"`) result as if it
+  applied to default user behavior.
+- Stating shape regime in vague terms ("D=64 fast") without specifying
+  the exact public-API engagement criteria (which env vars, which
+  routing conditions, which shape thresholds).
+- Quoting kernel-only timing tables in release notes / README /
+  training guides without a paired end-to-end measurement via the
+  public API.
+
+### What this rule requires
+
+- Every release that contains perf claims runs the perf-claim
+  reachability test suite (`tests/test_release_notes_perf_claims.py`)
+  before tagging.  The suite is the executable form of this rule.
+- Every perf-claim docstring / CHANGELOG entry includes a "Reproduce"
+  snippet showing the exact public API call + env setup the claim
+  rests on.  Example:
+
+  ```python
+  # Reproduce: D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp
+  import os; os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+  import mlx.core as mx, mlx_mfa
+  q = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16)
+  k = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16)
+  v = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16)
+  def loss(q, k, v):
+      return mlx_mfa.flash_attention(q, k, v).sum()  # default backend
+  dQ, dK, dV = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+  ```
+
+- If a perf finding is genuinely kernel-isolation-only (research
+  characterization, autoresearch sweep, profiling-grade microbench),
+  it goes in research docs (`docs/v6-nax/*-investigation.md`,
+  `devnotes/*`), NOT in user-facing release notes / README /
+  training guides.
+
+### Crosswalk to existing rules
+
+- §3.5 axis 2 (path entered) — public API sub-rule: same content
+  applied to tests rather than release notes.
+- §5.X (pre-tag auto-default audit) — extended below: pre-tag audit
+  must also pass perf-claim reachability checks.
+- §AA (skill invocation checkpoints, below) — `/mlx-code-review`
+  invocation is mandatory post-doc-creation with perf claims.
+
+### Updated pre-tag checklist (extends §5.X)
+
+Before any PyPI release that mentions perf in user-facing docs:
+
+- [ ] Run `pytest tests/test_release_notes_perf_claims.py -v` — ALL
+      parameterized claims pass.
+- [ ] For each new claim added since last release: add a parameterized
+      entry to `PERF_CLAIMS` in that test file.
+- [ ] Each claim's "Reproduce" snippet in release notes is a valid
+      executable script under the project venv.
+
+---
+
+## §AA. Skill invocation checkpoints (added 2026-05-13)
+
+CC has access to specialized slash-command skills (e.g.,
+`/mlx-code-review`, `/metal-kernel-dev`, `/mlx-debug-forensics`,
+`/repo-release-prep`).  These were underused in the v2.37.0/v2.37.1
+sprint (only one `/mlx-code-review` invocation across the whole
+SHIP_OPT_IN chain), which contributed to the silent integration bug
+shipping.  This section codifies mandatory invocation points to
+ensure systematic use.
+
+### Mandatory invocations
+
+| Trigger | Skill | Why |
+|---|---|---|
+| Pre-kernel-design / new kernel write (>200 LOC of generator) | `/metal-kernel-dev` | Register budget, tile layout, NAX primitives availability |
+| Post-kernel impl, pre-correctness-tests | `/mlx-debug-forensics` | Anticipate silent corruption modes (NAX cooperative-tensor edge cases, transposeState, padding) |
+| Post-bench discovery of "X× speedup" (kernel OR forced-backend) | `/mlx-code-review` | Methodology audit, public API path engagement verification (§Z) |
+| Any FALSIFIED outcome (REGRESSION verdict, hypothesis disproved) | `/mlx-code-review` | Audit that the falsification methodology is sound (not noise / methodology bug) |
+| Pre-merge to master (any branch) | `/mlx-code-review` | Final review of diff against repo conventions, code quality, test coverage |
+| Pre-version-bump (any release) | `/mlx-code-review` (full) + `/repo-release-prep` | Multi-SoT version audit, CHANGELOG correctness, release notes generation |
+| Pre-release tag | `/repo-release-prep` | Multi-SoT audit, release artifact preparation |
+| Register-spill suspicion / WM-BK-BQ default change | `/metal-kernel-dev` | Register pressure math, NAXFrag scope sizing, tile-fit verification |
+| Post-doc-creation (README / quickstart / training guides) with perf claims | `/mlx-code-review` | Verify §Z compliance: every claim reachable via public API |
+
+### Recommended invocations (not mandatory)
+
+| Trigger | Skill |
+|---|---|
+| Model integration questions (FlashVSR, SeedVR2, SparkVSR, etc.) | `/mlx-model-porting` |
+| Architectural cross-sprint planning | `/cc-prompt-orchestrator` |
+| User-facing TUI work | `/inference-console` |
+
+### What this rule prohibits
+
+- Shipping a perf claim to PyPI without `/mlx-code-review` audit of
+  the claim's reachability.
+- Merging kernel changes to master without `/mlx-code-review` on the
+  full diff.
+- Changing WM / BK / BQ defaults without `/metal-kernel-dev` audit of
+  register pressure math.
+- Implicit "I read the code, looks fine" review in lieu of
+  `/mlx-code-review`.
+
+### Invocation protocol
+
+When a checkpoint fires:
+
+1. CC invokes the skill with relevant context (file paths, recent
+   changes, bench data, hypothesis under test).
+2. CC acts on the skill's findings (applies fixes, flags concerns,
+   updates STATUS doc).
+3. CC logs the invocation in the relevant sprint deliverable doc
+   (decisions.md, status.md, audit.md) with a brief summary of
+   findings — institutional memory across sessions.
+
+Skill invocations are visible institutional memory: they appear in
+the session log and let future CC sessions audit the rigor of prior
+work.
+
+### Reference incident retrospective
+
+v2.37.0/v2.37.1: `/mlx-code-review` applied post-Phase 2 Section E
+(test-coverage review) would likely have surfaced the gap — every V34
+backward correctness test forced `backend="mfa"`, never exercising the
+default backend the perf claim implicitly relied on.  §AA forces that
+review checkpoint by name.
 
 ---
 
