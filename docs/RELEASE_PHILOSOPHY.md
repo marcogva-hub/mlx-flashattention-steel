@@ -174,6 +174,50 @@ reproducibility-checklist template every perf claim must pass.
 See `docs/v6-nax/v2.37.x-perf-claim-audit.md` for the per-claim
 audit that grew out of this incident.
 
+## §AA mandatory enforcement (added 2026-05-13, Sprint 4)
+
+The auto-default principle (and every prior gate in this doc) now
+has a **mechanical enforcer**: `/mlx-mfa-release-audit`
+(`CLAUDE_V6_NAX.md` §AA.4).  This skill is the canonical pre-tag
+gate.  Before any version bump, CC invokes:
+
+```
+/mlx-mfa-release-audit target_version=<new_version>
+```
+
+The skill verifies, in one mechanical pass:
+
+1. **Multi-SoT version bump** — `pyproject.toml`, `mlx_mfa/__init__.py`,
+   `README.md` header all match `target_version` (the v2.33.x lesson)
+2. **Tool availability** — `.venv/` canonical via
+   `scripts/check_venv.sh` (Sprint 1)
+3. **Auto-default principle** — auto-hooks install on import (this
+   doc's core mandate)
+4. **Public API path validation** — every CHANGELOG perf claim
+   reachable via documented public API (§Z; Sprint 2 institutional
+   amendment)
+5. **Skill invocation log** — sprint deliverable docs contain
+   populated `§AA.2` Skill-invocations tables
+6. **Test suite full pass** — `pytest tests/` exits 0 (excluding
+   documented FP16-noise flakes)
+7. **CHANGELOG entry** — `[target_version]` heading present, with
+   `### Added` / `### Fixed` / `### Changed`, and Reproduce snippet
+   for any quantified perf claim
+
+Skill verdict `BLOCKED` **halts the release flow** before any tag,
+build, or upload.  There is no manual override.  The earlier "Pre-tag
+audit checklist" above remains as documentation reference but is no
+longer the enforcer.
+
+Skill output is JSON-structured; CI can gate on exit codes:
+- `0` → GREEN, proceed
+- `1` → GREEN_WITH_ADVISORY, proceed but address advisories next release
+- `2` → BLOCKED, fix findings and re-invoke
+
+See `docs/skills/README.md` for the full mlx-mfa-* skill set and
+`CLAUDE_V6_NAX.md` §AA.4 for the canonical-gate rule and disagreement-
+resolution policy.
+
 ## When opt-in is appropriate
 
 Opt-in via **env var** is appropriate when:
