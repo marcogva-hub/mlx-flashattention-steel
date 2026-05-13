@@ -4089,3 +4089,124 @@ Per memory #30 roadmap + Option β closure:
   bench tool for V34 backward sub-1ms shapes + future Conv2D NAX +
   any other sub-ms kernel work. Reusable institutional infrastructure.
 
+
+---
+## [2026-05-13 01:30] [CLAUDE] V34 forward lse-write patch — BLK1 RESOLVED (no release)
+STATUS: COMPLETE
+
+### Plan
+Patch V34 forward kernel to write lse (log-sum-exp) per row to device
+memory.  BLK1 surfaced in prior V34 backward Option β sprint Phase 1
+Section A (see SESSION_LOG entry 2026-05-13 01:00).  Per
+`docs/v6-nax/v34-backward-decisions.md` §DC0, option (a) authorized by
+Marco.  This is a focused infrastructure patch — NO release flow, master
+tip advances but v2.36.1 stays LIVE on PyPI.
+
+### Changes (Phase A-D)
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp`: V34Params + L buffer arg +
+  lse-write block in kernel body [HIGH][VERIFIED]
+- `csrc/v6_nax_compile.mm`: V34ParamsHost + L_strides populate
+  [HIGH][VERIFIED]
+- `csrc/mfa_v6_nax_primitive.cpp`: bind buffer 5 for V34 path +
+  optional MFA_V34_DUMP_SOURCE diagnostic [HIGH][VERIFIED]
+- `tests/test_v34_forward_lse.py` (NEW, 7 tests, all axis-1 + lse
+  correctness + finiteness + last-block remainder) [HIGH][VERIFIED]
+- `bench/v34_forward_lse/canonical_bench.py` (NEW, ~110 LOC) — 3-session
+  canonical-style bench [HIGH][VERIFIED]
+- `docs/v6-nax/v34-forward-lse-patch.md` (NEW, ~120 lines) — full
+  Phase A-E record + correctness + perf data + routing constraint
+- `docs/v6-nax/v34-forward-lse-bench-data.json` (raw 3-session bench)
+- `docs/v6-nax/v34-backward-status.md` — BLK1 RESOLVED addendum
+- `docs/v6-nax/v34-backward-{inventory,decisions,results,data}.{md,json}`:
+  pulled from experiment/v34-backward-option-beta branch onto master
+
+### Phase outcomes
+- **Phase A** (design): insertion point identified at line 2944 (after
+  Otile normalize, before Otile store); row indexing pattern mapped
+  (lane with fn==0 writes 2 rows per V34_TQ frag).
+- **Phase B** (implementation): kernel + Primitive + bindings patched,
+  rebuild clean.  Initial smoke surfaced formula bug (max_score is in
+  log2 domain via V34's scale*log2(e) pre-multiplication; corrected by
+  multiplying max_score by ln(2) before adding log(sum_score)).
+- **Phase C** (correctness): 7/7 new tests pass; 77/77 pre-existing tests
+  pass; total 84/84.  RMSE lse 3e-7 FP16 vs mx.logsumexp reference.
+- **Phase D** (re-bench): 3-session canonical-style; 3/4 shapes
+  CONFIDENT (≥1ms shapes show <0.7% cross-session range); 1 shape
+  (qL=1024 D=128 sub-ms) shows 56% range due to known §4.2 power-state
+  regime, ratio-analysis would cancel.  No perf regression detectable.
+- **Phase E** (merge): docs assembled, branch merged via --no-ff.
+
+### Routing constraint discovered
+V34 forward engages by default only for: D=128 always; D=64 with
+Nk > 8000.  D=64 small-Nk shapes (FlashVSR-style) route through legacy
+v6_nax (MPP) path whose lse-write differs (log2 domain).  This patch
+ONLY fixes V34 path.  V34 backward (next sprint) must auto-route to
+match — backward shapes that go through legacy forward must fall back
+to STEEL backward.  Documented as a constraint to add as DC12 when V34
+backward sprint restarts.
+
+### Three-axis self-validation
+- AXIS 1 (output sanity) PASS: V34 forward O unchanged vs SDPA
+  reference (RMSE < 1e-3 FP16, both D=64 and D=128).
+- AXIS 2 (path entered) PASS: lse buffer populated (no NaN/Inf), values
+  match mx.logsumexp reference within FP32 matmul accumulation floor.
+- AXIS 3 (edges preserved) PASS: 77/77 pre-existing tests still pass,
+  legacy v6_nax path unchanged, V34 forward perf unchanged.
+
+### Dependency & regression check
+- V34Params struct grew by 3 longs (24 bytes); V34ParamsHost mirror
+  updated correspondingly.  No ABI break (set_bytes binds the full
+  struct).
+- v6_pipelines cache key unchanged (no new dimensions added) → existing
+  cached pipelines correctly invalidated by source-string difference
+  (pipeline-compile is cache-miss on first call post-patch).
+- Other production paths unchanged: STEEL backward, sparse V2, Conv3D
+  NAX, Sprint U auto-hooks all preserved.
+
+### Tech cost
+- Lse-write adds ~1 log() + 1 FP32 store per qL row per Q-block.  For
+  qL=4096 D=128: ~4096 ops, negligible vs ~32M ops in K-loop.
+- No register pressure increase (max_score, sum_score already live).
+
+### Validation
+- Ran: pytest tests/test_v34_forward_lse.py -v → 7/7 PASS
+- Ran: pytest full LCSA/Sprint U/shape-aware/v34-lse → 84/84 PASS
+- Ran: 3-session perf bench → 3/4 CONFIDENT, no regression
+- Validated: lse RMSE 3e-7 FP16 vs mx.logsumexp (3 orders of magnitude
+  tighter than 1e-4 target — matches FP32 matmul accumulation floor)
+
+### Git
+- Branch: `feat/v34-forward-lse-write` from master `1e0b36e`.
+- 7-8 atomic commits (param structs, kernel signature, kernel body,
+  Primitive binding, tests, bench, docs).
+- Merge to master next: --no-ff per project convention.
+- **NO tag.  NO build wheel.  NO twine upload.  NO gh release.**
+  v2.36.1 stays LIVE on PyPI as the current published version.
+- v2.37.0 happens later when V34 backward kernels complete (separate
+  fresh sprint).
+
+### Key findings encoded
+1. **Formula bug caught early**: V34 forward keeps softmax state in log2
+   domain (via scale*log2(e) + fast::exp2).  Initial formula
+   `max_score + log(sum_score)` produced systematic 0.4% offset; fix
+   `max_score * ln(2) + log(sum_score)` gives RMSE 3e-7.  This is the
+   same kind of "design-phase axis-3" catch as the BLK1 discovery
+   itself — the test against an FP32 reference made the systematic
+   offset visible as a non-FP16-noise pattern.
+2. **Routing constraint surfaced**: D=64 small-Nk default-routes to
+   legacy.  V34 backward sprint scope clarified (was previously unclear).
+3. **BLK1 fully resolved**: V34 forward now writes natural-log lse per
+   `(O, lse)` Apple SDPA-NAX output contract.
+
+### Next prompt for Marco when resuming
+V34 backward Option β sprint restart.  Reference:
+- `docs/v6-nax/v34-backward-status.md` (now with BLK1 RESOLVED addendum)
+- `docs/v6-nax/v34-backward-decisions.md` (DC0-DC11 still valid; add DC12
+  for routing-parity constraint)
+- `docs/v6-nax/v34-forward-lse-patch.md` (foundation infrastructure
+  reference)
+
+Sprint scope estimate per design hints doc remains "~1 week CC work" —
+realistic budget for the full V34 backward sprint with this lse
+infrastructure in place.
+

@@ -2753,6 +2753,11 @@ struct V34Params {
   long K_strides[3];
   long V_strides[3];
   long O_strides[3];
+  // v2.36.x lse-write patch (BLK1 resolution per
+  // docs/v6-nax/v34-backward-decisions.md DC0).  lse is [B, Hq, qL] FP32
+  // contiguous; per-element stride is always 1 (no D dimension), so
+  // L_strides[2] = 1 typically.
+  long L_strides[3];
 };
 
 [[kernel, max_total_threads_per_threadgroup(V34_WM * 32)]]
@@ -2762,6 +2767,7 @@ void attention(
     const device T* V [[buffer(2)]],
     device T* O [[buffer(3)]],
     constant V34Params& params [[buffer(4)]],
+    device float* L [[buffer(5)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
@@ -2949,6 +2955,65 @@ void attention(
     rcp[i] = 1.f / sum_score[i];
   }
   Otile.template row_bin_op<MulOp>(rcp);
+
+  // === lse write (v2.36.x BLK1 resolution per
+  // docs/v6-nax/v34-backward-decisions.md DC0) ===
+  //
+  // V34 forward keeps softmax state in LOG2 domain (S is scaled by
+  // log2(e), max_score holds max(S_log2), sum_score holds
+  // sum(exp2(S_log2 - max_score)) = sum(exp(S_natural - max_natural))).
+  //
+  // To produce lse in natural-log convention (matching mx.logsumexp and
+  // STEEL forward write convention used by backward kernels):
+  //   lse_natural = max_score * ln(2) + log(sum_score)
+  // because max_score = log2(e) * max_natural, so dividing by log2(e)
+  // (equivalently multiplying by ln(2)) recovers natural-log max.
+  // sum_score is already invariant under the domain change.
+  //
+  // Layout: each lane in the simdgroup holds 2*V34_TQ row-state entries
+  // (kRowsPT = otile_t::kRowsPerThread = V34_TQ * kElemRows where
+  // kElemRows=2).  The 4 lanes covering the same row-group share the
+  // same row_reduce result (sum/max), so only ONE lane per row must
+  // write.  By convention we elect the lane with fn==0 (= get_coord().x).
+  //
+  // Row addressing: tile-row offset = iq*16 + fm + i*kElemRowsJump where
+  //   fm = get_coord().y (lane's row-base within the 16-row fragment)
+  //   kElemRowsJump = 8 (2-row stride within a frag)
+  //   iq ∈ [0, V34_TQ) — fragment row index
+  //   i  ∈ [0, kElemRows) — intra-frag row index
+  // The base q-row pointer was advanced by tm rows above (see Q load);
+  // we now advance L the same way.
+  {
+    const short2 sc_lse = otile_t::NAXFrag_t::get_coord();
+    if (sc_lse.x == 0) {
+      device float* L_row = L
+          + tidl.z * params.L_strides[0]
+          + tidl.y * params.L_strides[1]
+          + tidl.x * V34_BQ * params.L_strides[2]
+          + tm * params.L_strides[2];
+      constexpr short kElemRows_lse = otile_t::NAXFrag_t::kElemRows;
+      constexpr short kElemRowsJump_lse = otile_t::NAXFrag_t::kElemRowsJump;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kElemRows_lse; i++) {
+          const short local_row = iq * 16 + sc_lse.y + i * kElemRowsJump_lse;
+          const short row_idx = iq * kElemRows_lse + i;
+          const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+          if (in_range) {
+            const float s = sum_score[row_idx];
+            constexpr float ln2 = 0.6931471805599453f;  // log(2)
+            // Edge: s == 0 only if no K-tile contributed (impossible for
+            // dense non-causal forward; defensive only).
+            const float lse_val = (s > 0.f)
+                ? (max_score[row_idx] * ln2 + metal::log(s))
+                : -Limits<float>::finite_max;
+            L_row[local_row * params.L_strides[2]] = lse_val;
+          }
+        }
+      }
+    }
+  }
 
   // Store O (Apple lines 471-481)
   O += tm * int(params.O_strides[2]);
