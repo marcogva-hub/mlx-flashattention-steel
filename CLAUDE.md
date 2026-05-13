@@ -55,6 +55,29 @@ and short-circuits to SDPA fallback before the V34 env-var check
 runs.  100% of tests passed (every test used `backend="mfa"` forced
 path).  Reference audit: `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
+## §AA mandatory blocking (added 2026-05-13, Sprint 4)
+
+`CLAUDE_V6_NAX.md` §AA skill invocation checkpoints are **MANDATORY
+BLOCKING gates**, not advisory.  Missing invocations halt the
+workflow.  Sprint 3 created mlx-mfa-* specialized skills that
+automate the mandatory checkpoints:
+
+| Checkpoint | Automation skill |
+|---|---|
+| Perf discovery ("X× speedup" / "Y% speedup") | `/mlx-mfa-perf-audit` |
+| Pre-version-bump (canonical pre-tag gate) | `/mlx-mfa-release-audit` |
+| Sub-ms bench / cross-session variance | `/mlx-mfa-bench-methodology` |
+| New kernel write | `/mlx-mfa-kernel-design` (deferred post-Sprint-6) |
+
+Every sprint deliverable doc MUST include a "Skill invocations"
+table per §AA.2 (templates in `docs/templates/`).  Empty/missing
+table = audit fails.  `/mlx-mfa-release-audit` Check 5 enforces this
+before any version bump.
+
+See `docs/skills/README.md` for the full mlx-mfa-* skill set +
+invocation patterns.  See `CLAUDE_V6_NAX.md` §AA.1-§AA.4 for the
+hardened rule + halt protocol.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the

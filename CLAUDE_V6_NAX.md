@@ -741,6 +741,144 @@ backward correctness test forced `backend="mfa"`, never exercising the
 default backend the perf claim implicitly relied on.  §AA forces that
 review checkpoint by name.
 
+### §AA.1 — Mandatory blocking enforcement (added 2026-05-13, Sprint 4)
+
+The mandatory invocations in the table above are NOT advisory.  They
+are **blocking gates**.  If a checkpoint is reached and the required
+skill is not invoked, CC MUST:
+
+1. **Halt the current workflow** before proceeding with the next action
+2. **Surface the gap explicitly** via the STATUS doc or session message
+   (e.g., "§AA violation: /mlx-mfa-perf-audit not invoked at perf
+   discovery checkpoint; halting before merge.")
+3. **Invoke the required skill** before continuing
+4. **Log the invocation** in the relevant sprint deliverable doc
+
+**"Halt the current workflow" means** (mechanical definition, not
+judgment-based):
+
+- Do NOT start the next tool call (Edit / Write / Bash / git commit)
+  that would advance the workflow toward the gated outcome (merge,
+  tag, build, upload).
+- Complete the in-flight READ-ONLY tool call (Read / Grep / Glob /
+  Bash `git status` etc.) if any — these don't mutate state.
+- Switch context to invoke the required skill BEFORE any state-
+  mutating action.
+- Partial state from before the halt (uncommitted edits, staged
+  files) is NOT rolled back — the skill invocation operates on the
+  current working tree as-is.
+
+Violations of §AA mandatory checkpoints constitute a **procedural
+failure** equivalent to a failing three-axis test (§3.5).  They block
+merge to master, block version bumps, block PyPI releases.
+
+**There is no manual override.**  If a checkpoint is genuinely
+inapplicable (e.g., a doc-only release with no kernel changes), CC
+documents the inapplicability in the sprint deliverable doc with
+reasoning, but the audit (§AA.2) still records the decision.
+
+### §AA.2 — Skill invocation evidence in sprint docs (added 2026-05-13)
+
+Every sprint deliverable doc (`decisions.md`, `results.md`, `status.md`,
+`docs/audits/*.md`, `docs/sprints/*.md`) MUST include a "Skill
+invocations" section in this format:
+
+```markdown
+## Skill invocations
+
+| Skill | Decision point | Timestamp (ISO) | Findings count | Action taken |
+|---|---|---|---|---|
+| /mlx-code-review | pre-merge of audit_runner.py | 2026-05-13T14:23Z | 2 MEDIUM, 3 LOW | MEDIUM fixed before commit |
+| /mlx-mfa-perf-audit | claim audit v2.37.4_d64 | 2026-05-13T15:01Z | 1 (REACHABLE) | Verdict captured in CHANGELOG |
+```
+
+Empty or missing section → **audit fails**.  The
+`/mlx-mfa-release-audit` skill's Check 5 (skill invocation log audit)
+verifies this section is populated before any version bump.
+
+**Check 5 enforcement boundary (honest scope):** Check 5 currently
+verifies *presence* of a populated table with non-empty rows.  It
+does NOT cross-reference each row against the §AA.3 checkpoint
+category matrix.  Coverage of all mandatory checkpoints is on the
+sprint author — a sprint that genuinely had a perf discovery and
+silently skipped `/mlx-mfa-perf-audit` could still pass Check 5 by
+listing only other invocations.  Future audit work may tighten
+Check 5 to flag missing categories; for now, the rule depends on
+sprint-author honesty for category coverage, while Check 5
+mechanizes the floor (no empty / missing tables).
+
+Templates for sprint deliverable docs live in `docs/templates/`:
+- `sprint_decisions_template.md`
+- `sprint_status_template.md`
+
+These templates pre-include the Skill-invocations table so CC cannot
+forget to fill it.  When starting a new sprint deliverable, copy from
+the template.
+
+### §AA.3 — Reference to mlx-mfa-* skills (Sprint 3 deliverables)
+
+The mlx-mfa-specialized skills created in Sprint 3 (see
+`docs/skills/README.md`) automate specific §AA checkpoints:
+
+| Checkpoint | General skill | Automation skill (preferred) |
+|---|---|---|
+| Post-bench "X× speedup" / "Y% speedup" discovery | /mlx-code-review | **/mlx-mfa-perf-audit** |
+| Pre-version-bump | /mlx-code-review + /repo-release-prep | **/mlx-mfa-release-audit** |
+| Pre-bench sub-ms work | /metal-kernel-dev | **/mlx-mfa-bench-methodology** |
+| New kernel write (>200 LOC source generator) | /metal-kernel-dev | **/mlx-mfa-kernel-design** (deferred to post-Sprint-6; see `docs/skills/README.md` for deferral rationale) |
+
+When an mlx-mfa-* automation skill exists for a checkpoint, invocation
+of that skill satisfies the §AA mandatory requirement.  The general
+skill remains available for cases not covered by the specialized
+skill — e.g., reviewing a Python refactor that doesn't touch a
+documented perf claim still needs `/mlx-code-review`, not
+`/mlx-mfa-perf-audit`.
+
+### §AA.4 — Pre-tag enforcement via /mlx-mfa-release-audit
+
+Before any version bump (and therefore any PyPI release), CC MUST
+invoke:
+
+```
+/mlx-mfa-release-audit target_version=<new_version>
+```
+
+If verdict is `BLOCKED`, the release flow halts.  CC does NOT
+proceed to:
+- Multi-SoT version bump (`pyproject.toml`, `mlx_mfa/__init__.py`,
+  `README.md`)
+- `git tag vX.Y.Z`
+- `python -m build`
+- `twine upload`
+- `gh release create`
+
+The blocking findings are addressed and `/mlx-mfa-release-audit` is
+re-invoked until `GREEN` (or `GREEN_WITH_ADVISORY` with documented
+advisory-acceptance).
+
+This is the **canonical pre-tag gate**.  The earlier §X manual
+checklist remains as a backup / documentation reference, but
+`/mlx-mfa-release-audit` is now the mechanical enforcer.  In case of
+disagreement between the manual checklist and the skill's verdict
+(e.g., the skill flags BLOCKED but a human reviewer believes the
+release is fine), the skill is authoritative — the disagreement
+means either:
+- The skill caught something the human missed (most likely), OR
+- The skill needs to be updated (Sprint-3-style amendment, separate
+  branch)
+
+Either way, the release flow halts until the disagreement is
+resolved.
+
+**Concrete past case anchoring the "skill needs updating" path:**
+Sprint 4 itself amended `/mlx-mfa-release-audit` Check 3 from
+probing a hardcoded `_hooks_installed` attribute to defensive
+introspection of any `*install*`/`*hook*` boolean attribute, after
+the actual attribute name in `_auto_hooks.py` turned out to be
+`_HOOKS_INSTALLED` (uppercase).  Without the disagreement-resolution
+clause, the skill would have produced a false BLOCKED that humans
+would have manually overridden — instead, the skill got fixed.
+
 ---
 
 ## 6. Scope discipline — pas de re-escalade prématurée
@@ -840,6 +978,23 @@ MFA_V6_SENTINEL_FILL=1 .venv/bin/python bench/v6_coverage_diagnostic_v2.py
 5. **SESSION_LOG entry** dans `devnotes/SESSION_LOG.md` — résumé exécutif lisible en 2 minutes
 
 Marco doit pouvoir comprendre TOUS les choix techniques en lisant les rapports, sans avoir à interpréter le code.
+
+### §10.1 — Templates (added 2026-05-13, Sprint 4)
+
+Use the templates in `docs/templates/` as starting points:
+
+- `docs/templates/sprint_decisions_template.md` — pre-includes the
+  §AA.2 Skill invocations table so it cannot be forgotten
+- `docs/templates/sprint_status_template.md` — same pattern for
+  status docs
+
+Per §AA.2, EVERY sprint deliverable doc must include a populated
+Skill invocations table.  The templates make this mechanical: copy
+the template, fill in the rows as the sprint progresses, ship.
+
+If a §AA mandatory checkpoint did not fire during the sprint,
+document inapplicability with one row (`N/A | N/A | inapplicable:
+<reason>`) — silent absence is indistinguishable from forgetting.
 
 ---
 
