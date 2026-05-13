@@ -4557,3 +4557,829 @@ void attention_bwd_q(
   return ss.str();
 }
 
+
+
+// =============================================================================
+// V34 backward dK/dV kernel — single-SG (WM=1) NAX-direct implementation.
+//
+// Grid: (NK, H, B).  One TG per K-tile.  WM=1 (single SG per TG).
+// Single SG iterates over ALL Q-tiles, accumulating partial dK + dV in
+// FP32 NAX tiles in registers.  No cross-SG reduction needed.  After
+// Q-loop, store dK + dV directly to device.
+//
+// Algorithm (FA-2 backward dK/dV per K-tile):
+//   1. Pre-loop: clear dK_accum, dV_accum (FP32 NAX tiles [BK, D]).
+//   2. Q-loop (q_tile = 0..NQ-1):
+//      a. Load Q-tile, dO-tile, O-tile, lse-row from device.
+//      b. Compute D[i] = rowsum(dO[i] ⊙ O[i]) for this Q-tile.
+//      c. S = Q @ K^T (NAXFrag::mma, transpose_b=true).
+//      d. S *= scale*log2(e) → log2 domain.
+//      e. row_bin_op<ExpSubOp>(lse_log2) → P = exp(S_nat - lse_nat).
+//      f. dP = dO @ V^T (NAXFrag::mma, transpose_b=true).
+//      g. dP -= D (row_bin_op<SubOp>).
+//      h. dS = P * dP (element-wise; Stile becomes dS).
+//      i. dV_accum += P^T @ dO  (NAXFrag::mma, transpose_a=true).
+//         WAIT: at step (h) Stile has been overwritten with dS.  Need to
+//         compute dV BEFORE the P → dS transformation, OR keep P
+//         separately.  Approach: compute dV first using P (in Stile),
+//         then transform Stile → dS for dK accumulation.
+//   3. Post-loop: cast accumulators FP32 → T, store dK + dV.
+//
+// Register budget (per-SG): dK_accum + dV_accum = 2 × BK × D × FP32
+//   D=128, BK=32: 2 × 32 × 128 × 4 = 32 KB per SG (at register edge).
+//   D=64,  BK=64: 2 × 64 × 64  × 4 = 32 KB per SG (same).
+// =============================================================================
+std::string NAAttentionKernel::createV34BackwardKeyValueSource() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;  // Should be 1 for this kernel.
+  const int kU = 16;
+  const int TQ = BQ / kU;            // BQ-rows-per-frag = BQ/16
+  const int TD = BD / kU;
+  const int TK = BK / kU;
+  (void)TQ; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  const float scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n";
+  ss << "\n";
+  ss << R"BWDKVHELPERS(
+// === defines.h ===
+#define STEEL_CONST static constant constexpr const
+#define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
+
+// === utils/type_traits.h (subset) ===
+#pragma METAL internals : enable
+namespace metal {
+template <typename T> struct is_empty : metal::bool_constant<__is_empty(T)> {};
+template <typename T> struct pointer_element {};
+template <typename T> struct pointer_element<thread T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<device T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<constant T*> { using type = remove_cv_t<T>; };
+template <typename T> struct pointer_element<threadgroup T*> { using type = remove_cv_t<T>; };
+template <typename T> using pointer_element_t = typename pointer_element<remove_cv_t<T>>::type;
+}
+#pragma METAL internals : disable
+
+// === utils/integral_constant.h (subset) ===
+#pragma METAL internals : enable
+namespace mlx { namespace steel {
+template <typename T, T v> struct integral_constant {
+  static constexpr constant T value = v;
+  using value_type = T;
+  using type = integral_constant;
+  METAL_FUNC constexpr operator value_type() const noexcept { return value; }
+};
+template <bool B> using bool_constant = integral_constant<bool, B>;
+using true_type = bool_constant<true>;
+using false_type = bool_constant<false>;
+template <int val> using Int = integral_constant<int, val>;
+#define integral_const_binop(__op__, __operator__)          \
+  template <typename T, T tv, typename U, U uv>             \
+  METAL_FUNC constexpr auto __operator__(                   \
+      integral_constant<T, tv>, integral_constant<U, uv>) { \
+    constexpr auto res = tv __op__ uv;                      \
+    return integral_constant<decltype(res), res>{};         \
+  }
+integral_const_binop(+, operator+);
+integral_const_binop(-, operator-);
+integral_const_binop(*, operator*);
+integral_const_binop(/, operator/);
+template <int start, int stop, int step, typename F>
+constexpr void const_for_loop(F f) {
+  if constexpr (start < stop) {
+    constexpr auto idx = Int<start>{};
+    f(idx);
+    const_for_loop<start + step, stop, step, F>(f);
+  }
+}
+#undef integral_const_binop
+}}
+#pragma METAL internals : disable
+
+// === Limits<float/half/bfloat> (Apple kernels/utils.h:55-70) ===
+template <typename U> struct Limits {
+  static const constant U max = metal::numeric_limits<U>::max();
+  static const constant U min = metal::numeric_limits<U>::min();
+  static const constant U finite_max = metal::numeric_limits<U>::max();
+  static const constant U finite_min = metal::numeric_limits<U>::min();
+};
+template <> struct Limits<float> {
+  static constexpr constant float max = metal::numeric_limits<float>::infinity();
+  static constexpr constant float min = -metal::numeric_limits<float>::infinity();
+  static constexpr constant float finite_max = metal::numeric_limits<float>::max();
+  static constexpr constant float finite_min = -metal::numeric_limits<float>::max();
+};
+
+// === Apple steel/attn/nax.h — BaseNAXFrag + NAXTile (verbatim, nax.h:27-817) ===
+namespace mlx { namespace steel {
+
+struct BaseNAXFrag {
+  STEEL_CONST short kFragRows = 16;
+  STEEL_CONST short kFragCols = 16;
+  STEEL_CONST short kElemsPerFrag = (kFragRows * kFragCols) / 32;
+  STEEL_CONST short kElemRows = 2;
+  STEEL_CONST short kElemCols = 4;
+  STEEL_CONST short kElemRowsJump = 8;
+
+  template <typename U>
+  using dtype_frag_t = typename metal::vec<U, kElemsPerFrag>;
+
+  METAL_FUNC static short2 get_coord() {
+    const ushort simd_lane_id = __metal_get_thread_index_in_simdgroup(ushort());
+    const short qid = simd_lane_id >> 2;
+    const short fm = ((qid & 4) | ((simd_lane_id >> 1) & 3));
+    const short fn = ((qid & 2) | (simd_lane_id & 1)) * 4;
+    return short2{fn, fm};
+  }
+
+  template <typename T, typename SrcPtrType, typename StrX, typename StrY,
+            typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void load(
+      thread dtype_frag_t<T>& dst, SrcPtrType src,
+      StrX str_x, StrY str_y, OffX off_x = {}, OffY off_y = {}) {
+    const short2 sc = get_coord();
+    src += sc.y * str_x + sc.x * str_y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if constexpr (metal::is_same_v<StrY, Int<1>>) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + c + j]);
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j) * str_y]);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename SrcPtrType, typename StrX, typename StrY,
+            typename LimX, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void load_rows(
+      thread dtype_frag_t<T>& dst, SrcPtrType src,
+      StrX str_x, StrY str_y, LimX lim_x, OffX off_x = {}, OffY off_y = {}) {
+    const short2 sc = get_coord();
+    src += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if (r < lx) {
+        if constexpr (metal::is_same_v<StrY, Int<1>>) {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j)]);
+          }
+        } else {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j) * str_y]);
+          }
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[i * kElemCols + j] = T(0);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename DstPtrType, typename StrX, typename StrY,
+            typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void store(
+      const thread dtype_frag_t<T>& src, DstPtrType dst,
+      StrX str_x, StrY str_y, OffX off_x = {}, OffY off_y = {}) {
+    using U = metal::pointer_element_t<DstPtrType>;
+    const short2 sc = get_coord();
+    dst += sc.y * str_x + sc.x * str_y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if constexpr (metal::is_same_v<StrY, Int<1>>) {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[r * str_x + c + j] = static_cast<U>(src[i * kElemCols + j]);
+        }
+      } else {
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < kElemCols; j++) {
+          dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
+        }
+      }
+    }
+  }
+
+  template <typename T, typename DstPtrType, typename StrX, typename StrY,
+            typename LimX, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void store_rows(
+      const thread dtype_frag_t<T>& src, DstPtrType dst,
+      StrX str_x, StrY str_y, LimX lim_x, OffX off_x = {}, OffY off_y = {}) {
+    using U = metal::pointer_element_t<DstPtrType>;
+    const short2 sc = get_coord();
+    dst += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      if (r < lx) {
+        if constexpr (metal::is_same_v<StrY, Int<1>>) {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[r * str_x + c + j] = static_cast<U>(src[i * kElemCols + j]);
+          }
+        } else {
+          STEEL_PRAGMA_UNROLL
+          for (short j = 0; j < kElemCols; j++) {
+            dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
+          }
+        }
+      }
+    }
+  }
+
+  template <typename Op, typename T>
+  METAL_FUNC static constexpr void row_reduce(
+      thread const dtype_frag_t<T>& inp_vals, thread T* reduced_vals) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      T thr_reduce = Op::apply(
+          Op::apply(inp_vals[i * kElemCols + 0], inp_vals[i * kElemCols + 1]),
+          Op::apply(inp_vals[i * kElemCols + 2], inp_vals[i * kElemCols + 3]));
+      T qgr_reduce = simd_shuffle_xor(thr_reduce, ushort(1));
+      qgr_reduce = Op::apply(thr_reduce, qgr_reduce);
+      T sgr_reduce = simd_shuffle_xor(qgr_reduce, ushort(8));
+      sgr_reduce = Op::apply(qgr_reduce, sgr_reduce);
+      reduced_vals[i] = Op::apply(reduced_vals[i], sgr_reduce);
+    }
+  }
+
+  template <typename Op, typename T>
+  METAL_FUNC static constexpr void row_bin_op(
+      thread dtype_frag_t<T>& inp_vals, thread T* row_vals) {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kElemCols; j++) {
+        inp_vals[i * kElemCols + j] = Op::apply(inp_vals[i * kElemCols + j], row_vals[i]);
+      }
+    }
+  }
+
+  template <typename CType, typename AType, typename BType,
+            bool transpose_a = false, bool transpose_b = false>
+  METAL_FUNC static constexpr void mma(
+      thread dtype_frag_t<CType>& Cn0, thread dtype_frag_t<CType>& Cn1,
+      const thread dtype_frag_t<AType>& A, metal::bool_constant<transpose_a>,
+      const thread dtype_frag_t<BType>& Bn0, const thread dtype_frag_t<BType>& Bn1,
+      metal::bool_constant<transpose_b>) {
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        16, 32, 16, transpose_a, transpose_b, true,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+    auto ct_a = gemm_op.template get_left_input_cooperative_tensor<AType, BType, CType>();
+    auto ct_b = gemm_op.template get_right_input_cooperative_tensor<AType, BType, CType>();
+    auto ct_c = gemm_op.template get_destination_cooperative_tensor<decltype(ct_a), decltype(ct_b), CType>();
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) ct_a[i] = A[i];
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      ct_b[i] = Bn0[i];
+      ct_b[kElemsPerFrag + i] = Bn1[i];
+    }
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      ct_c[i] = Cn0[i];
+      ct_c[kElemsPerFrag + i] = Cn1[i];
+    }
+    gemm_op.run(ct_a, ct_b, ct_c);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemsPerFrag; i++) {
+      Cn0[i] = ct_c[i];
+      Cn1[i] = ct_c[kElemsPerFrag + i];
+    }
+  }
+};
+
+template <typename T, short kTileRows_, short kTileCols_, class NAXFrag_ = BaseNAXFrag>
+struct NAXTile {
+  using NAXFrag_t = NAXFrag_;
+  using elem_type = T;
+  STEEL_CONST short kFragRows = NAXFrag_t::kFragRows;
+  STEEL_CONST short kFragCols = NAXFrag_t::kFragCols;
+  STEEL_CONST short kElemsPerFrag = NAXFrag_t::kElemsPerFrag;
+  STEEL_CONST short kTileRows = kTileRows_;
+  STEEL_CONST short kTileCols = kTileCols_;
+  STEEL_CONST short kRows = kTileRows * kFragRows;
+  STEEL_CONST short kCols = kTileCols * kFragCols;
+  STEEL_CONST short kNumFrags = kTileRows * kTileCols;
+  STEEL_CONST short kElemsPerTile = kNumFrags * kElemsPerFrag;
+  STEEL_CONST short kFragThrRows = NAXFrag_t::kElemRows;
+  STEEL_CONST short kFragThrCols = NAXFrag_t::kElemCols;
+  STEEL_CONST short kFragRowsJump = NAXFrag_t::kElemRowsJump;
+  STEEL_CONST short kRowsPerThread = kTileRows * NAXFrag_t::kElemRows;
+  STEEL_CONST short kColsPerThread = kTileCols * NAXFrag_t::kElemCols;
+
+  typedef typename NAXFrag_t::template dtype_frag_t<T> frag_type;
+  frag_type val_frags[kNumFrags];
+
+  METAL_FUNC NAXTile() thread {}
+
+  METAL_FUNC constexpr void clear() {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kNumFrags; ++i) val_frags[i] = frag_type(0);
+  }
+
+  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) {
+    return val_frags[i * kTileCols + j];
+  }
+  METAL_FUNC constexpr const thread frag_type& frag_at(const short i, const short j) const {
+    return val_frags[i * kTileCols + j];
+  }
+
+  METAL_FUNC thread elem_type* elems() {
+    return reinterpret_cast<thread elem_type*>(val_frags);
+  }
+
+  template <typename Op>
+  METAL_FUNC void row_reduce(thread metal::vec<T, kRowsPerThread>& vals) const {
+    auto vptr = (thread T*)(&vals);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows; ++i) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols; ++j) {
+        NAXFrag_t::template row_reduce<Op>(frag_at(i, j), &vptr[i * kFragThrRows]);
+      }
+    }
+  }
+
+  template <typename Op>
+  METAL_FUNC void row_bin_op(thread metal::vec<T, kRowsPerThread>& vals) {
+    auto vptr = (thread T*)(&vals);
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kTileRows; ++i) {
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kTileCols; ++j) {
+        NAXFrag_t::template row_bin_op<Op>(frag_at(i, j), &vptr[i * kFragThrRows]);
+      }
+    }
+  }
+
+  template <typename U>
+  METAL_FUNC void load(const device U* src, const int ld) {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::load(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
+                        idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void store(device U* dst, const int ld) const {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::store(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
+                         idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void load_rows(const device U* src, const int ld, const short n_rows) {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::load_rows(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
+                             n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void store_rows(device U* dst, const int ld, const short n_rows) const {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::store_rows(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
+                              n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+};
+
+}}  // namespace mlx::steel
+
+// === Operator structs (steel_attention_nax.h:31-71) ===
+struct MaxOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return metal::max(x, y); }
+};
+struct SumOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return x + y; }
+};
+struct MulOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return x * y; }
+};
+struct ExpSubOp {
+  template <typename T>
+  METAL_FUNC static constexpr T apply(T x, T y) { return fast::exp2(x - y); }
+};
+)BWDKVHELPERS";
+
+  ss << "\n// V34 backward dK/dV kernel\n";
+  ss << "using T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n";
+  ss << "\n";
+  ss << "struct SubOp {\n";
+  ss << "  template <typename U>\n";
+  ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
+  ss << "};\n\n";
+  ss << "#define V34BWDKV_BQ " << BQ << "\n";
+  ss << "#define V34BWDKV_BK " << BK << "\n";
+  ss << "#define V34BWDKV_BD " << BD << "\n";
+  ss << "#define V34BWDKV_WM " << WM << "\n";
+  ss << "#define V34BWDKV_TQ " << TQ << "\n";
+  ss << "#define V34BWDKV_TD " << TD << "\n";
+  ss << "#define V34BWDKV_TK " << TK << "\n";
+  ss << "#define V34BWDKV_SCALE " << scale << "f\n";
+  ss << "#define V34BWDKV_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "\n";
+  ss << R"BWDKVMSL(
+struct V34BwdKVParams {
+  int qL;
+  int kL;
+  int gqa_factor;
+  int NQ;
+  int NK;
+  int qL_rem;
+  int kL_rem;
+  long Q_strides[3];
+  long K_strides[3];
+  long V_strides[3];
+  long O_strides[3];
+  long L_strides[3];
+  long dO_strides[3];
+  long dK_strides[3];
+  long dV_strides[3];
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34BWDKV_WM * 32)]]
+void attention_bwd_kv(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    const device T* O [[buffer(3)]],
+    const device float* L [[buffer(4)]],
+    const device T* dO [[buffer(5)]],
+    device T* dK [[buffer(6)]],
+    device T* dV [[buffer(7)]],
+    constant V34BwdKVParams& params [[buffer(8)]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;
+  (void)simd_group_id;  // WM=1 → only SG 0
+
+  // === Per-batch + per-head + per-K-block ptr offsets ===
+  // Grid (NK, H, B): tid.x = K-tile index, tid.y = head, tid.z = batch.
+  ulong3 tidl{tid.x, tid.y, tid.z};
+
+  // Q/O/L/dO indexed by query head (Hq).
+  Q  += tidl.z * params.Q_strides[0]  + tidl.y * params.Q_strides[1];
+  O  += tidl.z * params.O_strides[0]  + tidl.y * params.O_strides[1];
+  L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
+  dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
+
+  // K/V/dK/dV indexed by KV head (Hk) — apply GQA factor.
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+  K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
+      + tidl.x * V34BWDKV_BK * params.K_strides[2];
+  V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
+      + tidl.x * V34BWDKV_BK * params.V_strides[2];
+
+  // dK/dV outputs: with GQA, multiple Q-heads contribute to the same KV head.
+  // For this Phase 1 implementation, write per Q-head (one dK/dV per (b, hq, k)
+  // slice).  Caller is responsible for summing across heads if GQA reduction
+  // is wanted.  Per DC12: most production v34-backward shapes are Hq==Hk.
+  // We use Q-head indexing for dK/dV writes to match SDPA-vjp output layout.
+  dK += tidl.z * params.dK_strides[0] + tidl.y * params.dK_strides[1]
+      + tidl.x * V34BWDKV_BK * params.dK_strides[2];
+  dV += tidl.z * params.dV_strides[0] + tidl.y * params.dV_strides[1]
+      + tidl.x * V34BWDKV_BK * params.dV_strides[2];
+
+  // Last-K-block flag.
+  const int NK_aligned = params.kL / V34BWDKV_BK;
+  const int NQ_aligned = params.qL / V34BWDKV_BQ;
+  const bool is_last_k = (int(tid.x) == NK_aligned);
+  const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
+      ? params.kL_rem : V34BWDKV_BK;
+  const int nq_full = params.qL / V34BWDKV_BQ;
+  const int nq_rem = params.qL % V34BWDKV_BQ;
+  const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
+
+  // === Accumulators ===
+  using dkv_t = NAXTile<float, V34BWDKV_TK, V34BWDKV_TD>;
+  dkv_t dK_accum, dV_accum;
+  dK_accum.clear();
+  dV_accum.clear();
+
+  // === Q-loop ===
+  // Process one Q-tile at a time.  Per iteration:
+  //   - Compute S = Q @ K^T
+  //   - Recompute P via softmax (using lse from forward)
+  //   - Compute dP = dO @ V^T, D = rowsum(dO ⊙ O), dS = P*(dP - D)
+  //   - dV_accum += P^T @ dO
+  //   - dK_accum += dS^T @ Q
+  for (int qb = 0; qb < q_loop; qb++) {
+    const bool is_last_q = (qb == NQ_aligned);
+    const short lim_rows_q = (params.qL_rem > 0 && is_last_q)
+        ? params.qL_rem : V34BWDKV_BQ;
+
+    // Per-q-tile pointers.
+    const device T* Q_q  = Q  + qb * V34BWDKV_BQ * int(params.Q_strides[2]);
+    const device T* O_q  = O  + qb * V34BWDKV_BQ * int(params.O_strides[2]);
+    const device float* L_q = L + qb * V34BWDKV_BQ * int(params.L_strides[2]);
+    const device T* dO_q = dO + qb * V34BWDKV_BQ * int(params.dO_strides[2]);
+
+    // --- Load lse, convert to log2 domain ---
+    using s_q_t = NAXTile<float, V34BWDKV_TQ, V34BWDKV_TK>;
+    constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
+    metal::vec<float, kRowsPT_q> lse_log2;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      constexpr float log2e_f = 1.4426950408889634f;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+          if (in_range) {
+            lse_log2[row_idx] = L_q[local_row * int(params.L_strides[2])] * log2e_f;
+          } else {
+            lse_log2[row_idx] = Limits<float>::finite_max;  // P=0 for OOR rows
+          }
+        }
+      }
+    }
+
+    // --- Compute D[i] = rowsum(dO[i] ⊙ O[i]) ---
+    metal::vec<float, kRowsPT_q> D_vec{0};
+    {
+      using io_t = NAXTile<T, V34BWDKV_TQ, V34BWDKV_TD>;
+      io_t Otile_in, dOtile_in;
+
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDKV_TD; id++) {
+          NAXTile<T, 1, 1> Ofrag, dOfrag;
+          const int O_off = iq * 16 * int(params.O_strides[2]) + id * 16;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          if (is_last_q) {
+            Ofrag.load_rows(O_q + O_off, int(params.O_strides[2]),
+                            lim_rows_q - iq * 16);
+            dOfrag.load_rows(dO_q + dO_off, int(params.dO_strides[2]),
+                             lim_rows_q - iq * 16);
+          } else {
+            Ofrag.load(O_q + O_off, int(params.O_strides[2]));
+            dOfrag.load(dO_q + dO_off, int(params.dO_strides[2]));
+          }
+          Otile_in.frag_at(iq, id) = Ofrag.frag_at(0, 0);
+          dOtile_in.frag_at(iq, id) = dOfrag.frag_at(0, 0);
+        }
+      }
+      NAXTile<float, V34BWDKV_TQ, V34BWDKV_TD> dot_prod;
+      STEEL_PRAGMA_UNROLL
+      for (short ii = 0; ii < dot_prod.kElemsPerTile; ii++) {
+        dot_prod.elems()[ii] =
+            (float)Otile_in.elems()[ii] * (float)dOtile_in.elems()[ii];
+      }
+      dot_prod.template row_reduce<SumOp>(D_vec);
+    }
+
+    // --- QK matmul: S = Q @ K^T ---
+    s_q_t Stile;
+    Stile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDKV_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDKV_TD; id++) {
+          NAXTile<T, 1, 1> Qfrag;
+          NAXTile<T, 2, 1> Kfrag;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag.load_rows(Q_q + Q_off, int(params.Q_strides[2]),
+                            lim_rows_q - iq * 16);
+          } else {
+            Qfrag.load(Q_q + Q_off, int(params.Q_strides[2]));
+          }
+          if (is_last_k) {
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Kfrag.load(K + K_off, int(params.K_strides[2]));
+          }
+          s_q_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qfrag.frag_at(0, 0),
+              metal::false_type{},
+              Kfrag.frag_at(0, 0),
+              Kfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // Scale into log2 domain.
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= V34BWDKV_SCALE_LOG2E;
+    }
+
+    // Mask out-of-range K columns to -inf so exp2 produces 0.
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+    // P = exp2(S - lse_log2)
+    Stile.template row_bin_op<ExpSubOp>(lse_log2);
+    // Stile holds P now.
+
+    // --- dV_accum += P^T @ dO  (compute BEFORE dS = P*(...) overwrites P) ---
+    // C = dV [BK, D], A = P [BQ, BK]^T → [BK, BQ], B = dO [BQ, D].
+    // MMA spec: 1 A frag, 2 C frags (consecutive D cols), 2 B frags (consecutive D cols).
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDKV_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+          NAXTile<T, 1, 2> dOfrag2;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag2.load_rows(dO_q + dO_off, int(params.dO_strides[2]),
+                              lim_rows_q - iq * 16);
+          } else {
+            dOfrag2.load(dO_q + dO_off, int(params.dO_strides[2]));
+          }
+          dkv_t::NAXFrag_t::mma(
+              dV_accum.frag_at(ik, id),
+              dV_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},   // transpose_a: P^T
+              dOfrag2.frag_at(0, 0),
+              dOfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    // --- dP = dO @ V^T ---
+    using dp_t = NAXTile<float, V34BWDKV_TQ, V34BWDKV_TK>;
+    dp_t dPtile;
+    dPtile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDKV_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDKV_TD; id++) {
+          NAXTile<T, 1, 1> dOfrag;
+          NAXTile<T, 2, 1> Vfrag;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          const int V_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag.load_rows(dO_q + dO_off, int(params.dO_strides[2]),
+                             lim_rows_q - iq * 16);
+          } else {
+            dOfrag.load(dO_q + dO_off, int(params.dO_strides[2]));
+          }
+          if (is_last_k) {
+            Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Vfrag.load(V + V_off, int(params.V_strides[2]));
+          }
+          dp_t::NAXFrag_t::mma(
+              dPtile.frag_at(iq, ik),
+              dPtile.frag_at(iq, ik + 1),
+              dOfrag.frag_at(0, 0),
+              metal::false_type{},
+              Vfrag.frag_at(0, 0),
+              Vfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // dP -= D
+    dPtile.template row_bin_op<SubOp>(D_vec);
+
+    // dS = P * (dP - D)  (element-wise; overwrite Stile with dS).
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= dPtile.elems()[ii];
+    }
+    // Stile holds dS now.
+
+    // --- dK_accum += dS^T @ Q ---
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDKV_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+          NAXTile<T, 1, 2> Qfrag2;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag2.load_rows(Q_q + Q_off, int(params.Q_strides[2]),
+                             lim_rows_q - iq * 16);
+          } else {
+            Qfrag2.load(Q_q + Q_off, int(params.Q_strides[2]));
+          }
+          dkv_t::NAXFrag_t::mma(
+              dK_accum.frag_at(ik, id),
+              dK_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},   // transpose_a: dS^T
+              Qfrag2.frag_at(0, 0),
+              Qfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    simdgroup_barrier(mem_flags::mem_none);
+  }  // end Q-loop
+
+  // === Post-loop: dK_accum *= scale (∇_K of QK^T*s = s*dS^T@Q) ===
+  {
+    constexpr short kRowsPT_k = dkv_t::kRowsPerThread;
+    metal::vec<float, kRowsPT_k> scale_vec;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDKV_SCALE;
+    dK_accum.template row_bin_op<MulOp>(scale_vec);
+  }
+
+  // === Store dK + dV (cast FP32 → T) ===
+  if (is_last_k) {
+    if (lim_rows_k <= 0) return;
+    dK_accum.store_rows(dK, int(params.dK_strides[2]), lim_rows_k);
+    dV_accum.store_rows(dV, int(params.dV_strides[2]), lim_rows_k);
+  } else {
+    dK_accum.store(dK, int(params.dK_strides[2]));
+    dV_accum.store(dV, int(params.dV_strides[2]));
+  }
+}
+)BWDKVMSL";
+
+  return ss.str();
+}
+

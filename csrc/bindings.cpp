@@ -42,6 +42,14 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     float scale);
+// V34 backward dK/dV (V34 backward Option β Phase 2).  Single-SG WM=1
+// kernel; one TG per K-tile.  Returns (dK, dV) shaped [B, Hq, kL, D]
+// each (per-Q-head; GQA reduction is caller's responsibility).
+std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    float scale);
 }  // namespace mlx_mfa
 
 #include "mfa_paged_gather.hpp"
@@ -355,6 +363,21 @@ NB_MODULE(_ext, m) {
         "V34 forward.  Returns dQ.  Routing constraint per DC12: caller "
         "must ensure V34-forward-eligible shape (D=128 always; D=64 with "
         "Nk>8000).  M5+ only; D in {64,128}; FP16/BF16; no causal/sparse.");
+
+  m.def("v6_nax_backward_kv",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& o,
+           const mlx::core::array& lse, const mlx::core::array& d_o,
+           float scale) {
+          return mlx_mfa::v6_nax_backward_kv(q, k, v, o, lse, d_o, scale);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("o"), nb::arg("lse"), nb::arg("d_o"),
+        nb::arg("scale"),
+        "V34 backward dK/dV kernel (Option β Phase 2). Single-SG (WM=1) "
+        "design. Returns (dK, dV) shaped [B, Hq, kL, D] each (per-Q-head; "
+        "GQA reduction is caller's responsibility).  Routing constraint "
+        "per DC12 same as v6_nax_backward_query.");
 
   m.def("get_device_info", []() -> nb::dict {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);

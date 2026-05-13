@@ -997,4 +997,196 @@ mlx::core::array v6_nax_backward_query(
   return outs[0];
 }
 
+// =============================================================================
+// V34 backward dK/dV — Phase 2 Primitive (single-SG WM=1 design).
+// =============================================================================
+
+void v34_dispatch_bwd_kv(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+
+struct V34BwdKVKey {
+  int D;
+  int Hq, Hk;
+  int dtype_code;
+  unsigned short BQ, BK;
+  uint16_t WM;
+  bool operator==(const V34BwdKVKey& o) const {
+    return D == o.D && Hq == o.Hq && Hk == o.Hk
+        && dtype_code == o.dtype_code
+        && BQ == o.BQ && BK == o.BK && WM == o.WM;
+  }
+};
+struct V34BwdKVKeyHash {
+  size_t operator()(const V34BwdKVKey& k) const {
+    size_t h = std::hash<int>{}(k.D);
+    h ^= std::hash<int>{}(k.Hq) << 1;
+    h ^= std::hash<int>{}(k.Hk) << 2;
+    h ^= std::hash<int>{}(k.dtype_code) << 3;
+    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
+    h ^= std::hash<uint16_t>{}(k.BK) << 5;
+    h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    return h;
+  }
+};
+namespace {
+std::mutex v34_bwdkv_mtx;
+std::unordered_map<V34BwdKVKey, void*, V34BwdKVKeyHash> v34_bwdkv_pipelines;
+}
+
+class MFAV34BwdKeyValue : public mlx::core::Primitive {
+ public:
+  MFAV34BwdKeyValue(mlx::core::Stream s, float scale)
+      : mlx::core::Primitive(s), scale_(scale) {}
+
+  const char* name() const override { return "MFAV34BwdKeyValue"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAV34BwdKeyValue: CPU eval not supported");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    // inputs: [Q, K, V, O, L, dO]
+    // outputs: [dK, dV]
+    const auto& q   = inputs[0];
+    const auto& k   = inputs[1];
+    const auto& v   = inputs[2];
+    const auto& o   = inputs[3];
+    const auto& lse = inputs[4];
+    const auto& d_o = inputs[5];
+    auto& dk = outputs[0];
+    auto& dv = outputs[1];
+
+    const int B  = q.shape(0);
+    const int Hq = q.shape(1);
+    const int N  = q.shape(2);
+    const int D  = q.shape(3);
+    const int Hk = k.shape(1);
+    const int Nk = k.shape(2);
+
+    if (D != 64 && D != 128)
+      throw std::runtime_error("V34 bwd dKdV: D must be 64 or 128");
+
+    // Phase 2 defaults: WM=1 single-SG; BQ=32; BK = D=64?64:32.
+    // No env overrides yet (Phase 3 tuning).
+    unsigned short BQ = 32;
+    unsigned short BK = (D == 64) ? 64 : 32;
+    uint16_t WM = 1;
+    if (const char* e = std::getenv("MFA_V34BWDKV_BQ"))
+      BQ = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDKV_BK"))
+      BK = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDKV_WM"))
+      WM = (uint16_t)std::atoi(e);
+
+    int dtype_code;
+    if (q.dtype() == mlx::core::float16) dtype_code = 0;
+    else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+    else throw std::runtime_error("V34 bwd dKdV: only FP16/BF16");
+
+    dk.set_data(mlx::core::allocator::malloc(dk.nbytes()));
+    dv.set_data(mlx::core::allocator::malloc(dv.nbytes()));
+
+    auto& dev = mlx::core::metal::device(stream().device);
+    void* mtl_device = dev.mtl_device();
+
+    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM};
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
+      auto it = v34_bwdkv_pipelines.find(key);
+      if (it != v34_bwdkv_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      GEMMOperandPrecision input_prec = (dtype_code == 1)
+          ? GEMMOperandPrecision::BF16
+          : GEMMOperandPrecision::FP16;
+      AttentionOperands<GEMMOperandPrecision> mp;
+      mp[AttentionOperand::Q] = input_prec;
+      mp[AttentionOperand::K] = input_prec;
+      mp[AttentionOperand::V] = input_prec;
+      mp[AttentionOperand::O] = input_prec;
+      mp[AttentionOperand::S] = GEMMOperandPrecision::FP32;
+      mp[AttentionOperand::P] = GEMMOperandPrecision::FP32;
+      mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
+
+      simd::ushort3 blockDims = simd::make_ushort3(BQ, BK, (unsigned short)D);
+      NAAttentionKernelDescriptor desc(
+          blockDims, (unsigned short)D, (unsigned short)Hq, (unsigned short)Hk,
+          /*executionSIMDGroups=*/WM,
+          /*checkCEdge1=*/false, mp,
+          AttentionKernelType::forward,
+          /*scale=*/scale_,
+          /*bypassThreadgroupMemory=*/false,
+          /*isCausal=*/false, /*masked=*/false);
+      desc.singleOtileMode = true;
+      desc.useV34 = true;
+
+      NAAttentionKernel ker(desc);
+      std::string src = ker.createV34BackwardKeyValueSource();
+      pipeline = v34_compile(src, "attention_bwd_kv", mtl_device);
+      std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
+      v34_bwdkv_pipelines[key] = pipeline;
+    }
+
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_input_array(o, 3);
+    enc.set_input_array(lse, 4);
+    enc.set_input_array(d_o, 5);
+    enc.set_output_array(dk, 6);
+    enc.set_output_array(dv, 7);
+
+    v34_dispatch_bwd_kv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+                        (int)B, (int)D, BQ, BK, WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV34BwdKeyValue*>(&other);
+    return p && p->scale_ == scale_;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    // dK/dV produced per Q-head: shape [B, Hq, kL, D] each.
+    auto qs = inputs[0].shape();
+    auto ks = inputs[1].shape();
+    mlx::core::Shape dk_shape{qs[0], qs[1], ks[2], qs[3]};
+    return {dk_shape, dk_shape};
+  }
+
+ private:
+  float scale_;
+};
+
+std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    float scale) {
+  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dKdV: Q must be 4D");
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+  auto oc = mlx::core::contiguous(o, false, s);
+  auto lsec = mlx::core::contiguous(lse, false, s);
+  auto dOc = mlx::core::contiguous(d_o, false, s);
+
+  // dK/dV shape: [B, Hq, kL, D] per Q-head (matches SDPA-vjp output).
+  mlx::core::Shape dk_shape{qc.shape(0), qc.shape(1), kc.shape(2), qc.shape(3)};
+  auto outs = mlx::core::array::make_arrays(
+      {dk_shape, dk_shape},
+      {q.dtype(), q.dtype()},
+      std::make_shared<MFAV34BwdKeyValue>(s, scale),
+      {qc, kc, vc, oc, lsec, dOc});
+  return {outs[0], outs[1]};
+}
+
 }  // namespace mlx_mfa

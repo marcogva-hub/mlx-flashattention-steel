@@ -64,6 +64,11 @@ struct NAAttentionKernel {
   /// Implementation in NAAttentionKernel.cpp (Phase 1 Section B of V34
   /// backward Option β sprint).
   std::string createV34BackwardQuerySource() const noexcept;
+  /// V34 backward dK/dV source generator (Phase 2 of V34 backward Option β).
+  /// Single-SG (WM=1) kernel; one TG per K-tile iterates over all Q-tiles
+  /// and accumulates partial dK + dV in per-SG FP32 NAX tiles.  Returns
+  /// (dK, dV) written to device.  No cross-SG reduction needed.
+  std::string createV34BackwardKeyValueSource() const noexcept;
 
 private:
   // Helpers that build operand-name and stride strings for the source.
