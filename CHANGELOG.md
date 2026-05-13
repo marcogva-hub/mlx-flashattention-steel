@@ -11,6 +11,30 @@ All notable changes to mlx-mfa are documented here.
 
 ### Changed (transparent for users)
 
+- **Sprint 4 Phase 4a + dQ partial (v2.50, V34 causal extension infrastructure)**:
+  V34 forward kernel (`createV34Source()`) now supports causal masking
+  via Apple SDPA NAX pattern (`steel_attention_nax.h:176-187,279-301`)
+  — per-block `kb_lim` shrink + per-element `r < c → -inf` mask, gated
+  by compile-time `V34_CAUSAL` macro so non-causal source remains
+  bit-identical pre/post Sprint 4.  V34 backward dQ kernel
+  (`createV34BackwardQuerySource()`) mirrors with `V34BWD_CAUSAL` mask
+  block.  Audit-prescribed L (~3-6h CC) effort, this session ships
+  Phase 4a (~2h) + Phase 4b dQ (~30min) as infrastructure.  Phase 4b-
+  complete (4 remaining K-parallel backward kernels: dKV legacy fused,
+  split dV, split dK, fused dKdV) DEFERRED per §AA.1 — Prompt 1 STATUS
+  doc's prediction that "backward kernels likely need NO source
+  changes" empirically FALSIFIED (dQ exceeded SDPA-vjp reference by
+  2144× without backward causal mask).  See
+  `docs/v50/sprint4-status-phase4b-complete.md`.  Production behavior
+  unchanged: `_v34_eligible(causal=True)` and
+  `_v34_backward_carveout(causal=True)` both retain their `not causal`
+  clauses — `flash_attention(causal=True)` callers continue to use
+  SDPA-vjp fallback (bit-identical verified in
+  `test_sprint4_flash_attention_causal_uses_sdpa_vjp`).  See
+  `docs/v50/sprint4-decisions.md` for full empirical data + audit
+  framing correction.  Updates the Sprint 4 Prompt 1 STATUS doc
+  (`docs/v50/sprint4-status.md`) with corrected scope.
+
 - **Sprint 3 Phase 3a (v2.50, flash_attention_topk M5+ NAX dispatch)**:
   added M5+ NAX-optimal early-return in `flash_attention_topk`.  When
   eligible (M5+ hardware, no block mask, D ∈ {64,128}, fp16/bf16,
