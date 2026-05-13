@@ -4,6 +4,141 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.38.0] — 2026-05-13 — Refactor + cleanup release (Path Y)
+
+> **Scope contract.**  Pure Python + documentation refactor on top of
+> v2.37.3.  **No kernel touches** (the only `.cpp` edit is comment-only
+> inside the JIT MSL emitter strings — compiled shader bytes are
+> byte-identical to v2.37.3).  **No public-API surface change** —
+> `flash_attention*`, `dispatch_policy.should_use_mfa`, all auto-hooks,
+> all env-var contracts are preserved exactly.  **No measured perf
+> delta** — this release intentionally makes no speedup, latency, or
+> throughput claim of any kind.  Net effect on users is identical to
+> v2.37.3.
+
+### Refactored — internal consolidation
+
+- **`mlx_mfa/attention.py`** — extracted two module-level helpers from
+  `_make_mfa_custom` (Sprint v2.38.0 P3 Phase B, addressing Sprint 2
+  audit M4-MEDIUM-01 + DP2-HIGH-01 compound):
+  - `_v34_eligible(head_dim, dtype, causal) -> bool` — the V34 NAX-
+    direct backward eligibility predicate.  Previously duplicated at
+    two call sites within `_make_mfa_custom` (forward-fusion check +
+    backward dispatch check); the inline checks now delegate to this
+    helper.  Truth table is byte-equivalent across all 5 predicate
+    axes (`_get_has_nax_cached`, `head_dim ∈ {64, 128}`, `dtype ∈
+    {fp16, bf16}`, `not causal`, `MFA_ENABLE_V34_BACKWARD == "1"`).
+  - `_v34_backward_vjp(q, k, v, O, L, dO, scale) -> (dQ, dK, dV)` —
+    V34 backward VJP dispatch (dQ kernel + multi-SG WM=4 split-dV/dK
+    by default, fused single-kernel via `MFA_V34BWD_USE_FUSED=1`).
+    Caller verifies eligibility via `_v34_eligible()` before invoking.
+- **`mlx_mfa/dispatch_policy.py`** — deleted the dormant placeholder
+  `_should_use_mfa_m5_nax_carveout()` (Sprint v2.38.0 P3 Phase C,
+  addressing DP1-MEDIUM-01).  The function was introduced in v2.32.0
+  as a hook for future Sprint A.6 canonical-path M5 NAX carve-outs,
+  always returned `False`, and no Sprint A.6 carve-outs ever
+  materialized.  The caller at `should_use_mfa()` now inlines
+  `return False` at the canonical-path branch (`head_dim ∈ {64, 128}`)
+  with an explanatory comment.  If a future sprint surfaces
+  empirically-validated MFA-winning shapes on M5+ NAX canonical D,
+  re-introduce a named function and call it from that same branch.
+- **Stale-comment cleanup** — refreshed 4 comments referencing the
+  pre-v2.38.x state across `mlx_mfa/attention.py:474`,
+  `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2741`,
+  `csrc/mfa/v6_nax/NAAttentionKernel.cpp:~3810`, and the
+  `dispatch_policy.py` module-level comment block.  The MSL emitter
+  string edits are comment-only — they do not change the JIT-compiled
+  Metal shader.  Now point to `_v34_backward_carveout()` (the v2.37.2
+  narrow predicate, retained) as the active hook and document the
+  Sprint v2.38.x `naxHelpersBlock()` extraction.
+
+### Added — tests + docs
+
+- **`tests/test_v34_helpers.py`** — 13 tests covering the new helpers
+  (10 truth-table cases for `_v34_eligible`, 3 dispatch-correctness
+  cases for `_v34_backward_vjp`).  All pass.
+- **`tests/test_v32_sdpa_routing.py`** — replaced
+  `test_carveout_function_exists_and_returns_false_by_default`
+  (called the deleted private function → would AttributeError) with
+  `test_m5_nax_canonical_path_routes_to_sdpa_by_default`, which
+  asserts the same default-to-SDPA behavior via the **public**
+  `dispatch_policy.should_use_mfa(...)` API per `CLAUDE_V6_NAX.md` §Z.
+  The replacement is a strict superset of the original coverage
+  (stricter assertion: `is False` vs `isinstance(bool)`; public API
+  per §Z; exercises the actual production routing path).
+- **`docs/v6-nax/v38-implementation-decisions.md`** — sprint
+  decisions record (DC1 Path Y pivot rationale; DC2 helper signature
+  without D_vec; §AA skill-invocation log).
+- **`docs/v6-nax/README.md`**, **`docs/SPRINT_HISTORY.md`** — active-
+  doc references to the deleted placeholder updated to reflect the
+  post-v2.38.0 state.  Historical references in `CHANGELOG.md`,
+  `devnotes/v2.32.0-release-notes.md`, `devnotes/SESSION_LOG.md`,
+  and `docs/audits/v37-systematic-audit.md` are preserved verbatim
+  as historical record.
+
+### Investigation foundation (carried from v2.38.0 P1/P2)
+
+The earlier v2.38.0 investigation phases (committed before P3 Path Y)
+established two architectural findings that inform v2.38.1+ work and
+ship with this release as documentation only:
+
+- **TGP-overhead empirical measurement** — design-doc estimate of
+  51 ms at qL=8192 was overstated by ~100×; actual measurement is
+  0.976 µs/K-iter (= ~0.5 ms total at qL=8192).  This removes the
+  TGP-streaming blocker from the Option γ design space.
+- **Architectural floor identified** — the dK kernel's extra
+  `dO @ V^T` matmul puts a structural floor on V34-backward
+  parity-at-D=128 against SDPA-vjp.  (α) UNIVERSAL_AUTO_DEFAULT is
+  unreachable; (γ) CONFIRMED_OPT_IN_BROADENED is the realistic
+  ceiling for v2.38.1+.
+
+These findings are documented in
+`docs/v6-nax/v38-implementation-decisions.md`.  The implementation-side
+work (D_vec precompute, Option γ fused dK+dV) is **deferred to v2.38.1+**
+per the Path Y scope decision (Sprint 2 audit invalidated the
+original v2.38.0 P3 premise that D_vec infrastructure was already
+half-wired — see decisions doc DC1 for the full reasoning).
+
+### Path forward (v2.38.1+ roadmap)
+
+- **v2.38.1**: D_vec operand precompute (`AttentionOperand::D` wiring
+  — fresh greenfield, 1-day CC estimate); Option γ fused dK+dV
+  evaluation under TGP-streaming pattern (unblocked by Phase A's
+  empirical TGP measurement).
+- **v2.39.0**: legacy Draw-Things-port backward kernels (which DO
+  have `AttentionOperand::D`) consolidation with V34 NAX-direct
+  pathway, contingent on D_vec landing.
+
+### Validation
+
+- **41/41** V34 + helper + v32-routing tests pass on M1 dev hardware
+  (NAX-only tests skip as expected; full NAX suite re-verified
+  separately on M5+ NAX hardware via the pre-tag
+  `/mlx-mfa-release-audit` canonical gate).
+- **Phase D corruption audit** (`/mlx-debug-forensics`): LOW risk,
+  safe to ship.  5-axis predicate truth table preserved byte-for-byte
+  across both refactored call sites; `_v34_backward_vjp` is a byte-
+  identical extraction; test replacement is a strict superset.
+- **Phase D perf-claim audit** (`/mlx-mfa-perf-audit`): HIGH confidence
+  no perf claim is possible from this sprint scope.  Kernel diff is
+  comment-only; no new benchmark files; `docs/PERF_CLAIMS.md` registry
+  untouched.  Only quantitative numbers in this CHANGELOG are LOC
+  deltas and test counts.
+
+### LOC delta
+
+```
+csrc/mfa/v6_nax/NAAttentionKernel.cpp |   7 ±   (comment-only in MSL strings)
+docs/SPRINT_HISTORY.md                |   2 ±
+docs/v6-nax/README.md                 |  14 ±
+mlx_mfa/attention.py                  | 175 ±   (Phase B helper extraction)
+mlx_mfa/dispatch_policy.py            | -45    (Phase C deletion, net)
+tests/test_v32_sdpa_routing.py        |  30 ±   (Phase C test fix per §Z)
+tests/test_v34_helpers.py             | +217   (Phase B new test file)
+```
+
+Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
+
 ## [2.37.3] — 2026-05-13 — Institutional amendment + perf claim corrections
 
 ### Added — institutional rules
