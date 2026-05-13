@@ -4,6 +4,109 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.37.0] — 2026-05-13 — V34 backward NAX-direct kernels (SHIP_OPT_IN)
+
+### Added
+
+- **V34 backward NAX-direct kernels** for M5+: `_ext.v6_nax_backward_query`
+  (dQ), `_ext.v6_nax_backward_kv` (fused dK/dV WM=1), `_ext.v6_nax_backward_dv_raw`
+  + `_ext.v6_nax_backward_dk_raw` (multi-SG WM=4 split via Q-row partition).
+  Apple's NAX backward is NYI in MLX framework — these kernels are the only
+  path for NAX-accelerated backward attention on M5+.
+
+- **`flash_attention()` autograd integration** for V34 backward: when
+  `MFA_ENABLE_V34_BACKWARD=1` is set, the VJP routes through V34 backward
+  kernels on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal /
+  window / softcap, V34-forward-routing-eligible).  Default (env unset):
+  STEEL backward / SDPA-vjp fallback (v2.36.1-exact behavior).
+
+- **V34 forward lse-write** (BLK1 infrastructure): V34 forward kernel
+  now writes per-row natural-log lse to device memory (previously dead
+  storage).  Enables V34 backward dQ to recompute softmax P from forward
+  state without re-running forward.
+
+- **Forward-fusion**: when V34 backward is enabled, `_make_mfa_custom`
+  uses V34 forward (natural-log lse) directly instead of STEEL forward,
+  eliminating both STEEL fwd and V34 fwd-recompute at backward time.
+
+### Methodology
+
+- V34 backward Option β sprint methodology: started from V34 forward
+  investigation's B+C+E bundle (cross-SG sync elim + simd_shuffle_xor +
+  M5-tuned defaults) — all three mechanisms transferred cleanly to
+  backward.  Phase 2.O1 (WM=2 K-row partition) FALSIFIED empirically
+  (16-24% regression vs WM=1 due to softmax replication tax); Phase 2.O2
+  (WM=4 Q-row partition + two-kernel split) delivers 1.7-2× speedup.
+
+- Hit architectural floor at 2.4× SDPA-vjp (qL=8192): dK kernel inherently
+  ~2× heavier than dV (extra dO@V^T matmul required by FA-2 dK formula).
+  Further closing requires major restructure (e.g., fused dK+dV with TGP
+  cross-SG reduction — register pressure on M5).
+
+### Validated
+
+- 39 new tests covering V34 backward kernels (dQ + dK/dV correctness vs
+  SDPA-vjp, multi-SG variants, integration through flash_attention VJP,
+  routing-parity constraints).  RMSE 1.5e-8 (FP32 floor) for dQ + dK;
+  RMSE 1.5e-6 (FP16 round-trip floor) for dV.
+- Full regression: 116/116 tests pass (77 v2.36.1 + 39 V34 backward).
+  Zero regressions.
+
+### Ship status: SHIP_OPT_IN
+
+V34 backward is functionally correct but 2.2-2.4× slower than SDPA-vjp
+on M5 Max at qL=8192.  Per auto-default principle (Sprint U), default
+behavior unchanged for users.  Opt-in via `MFA_ENABLE_V34_BACKWARD=1`
+for research / benchmarking.
+
+### Performance (M5 Max FP16 D=128 via `flash_attention()` autograd)
+
+| qL | V34 multi-SG | SDPA-vjp | Ratio |
+|---|---:|---:|---:|
+| 1024 | 1.07ms | 0.50ms | 2.13× |
+| 2048 | 3.22ms | 1.54ms | 2.09× |
+| 4096 | 12.77ms | 5.31ms | 2.40× |
+| 8192 | 48.93ms | 20.37ms | 2.40× |
+
+Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
+
+### Internal env vars (advanced users)
+
+- `MFA_ENABLE_V34_BACKWARD=1` — opt into V34 backward path.
+- `MFA_V34BWD_USE_FUSED=1` — fall back to WM=1 fused dK/dV kernel
+  (instead of WM=4 split; for benchmarking).
+- `MFA_V34BWD_WM` (default 4) — WM for multi-SG dK/dV split kernels.
+- `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` — per-kernel tile
+  overrides for dV (researchers).
+- `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` — per-kernel tile
+  overrides for dK.
+
+### Unchanged
+
+- All v2.36.x infrastructure preserved (shape-aware V2 sparse, canonical
+  methodology, Sprint U auto-on-import hooks, Conv3D NAX).
+- All public API signatures preserved.
+- All patchers preserved as expert API.
+- v2.36.1 default behavior unchanged for users who don't set
+  `MFA_ENABLE_V34_BACKWARD=1`.
+
+### Notes for v2.36.1 users upgrading
+
+- No code changes required; V34 backward is opt-in.
+- For training workloads on M5+ FP16 D∈{64,128}: set
+  `MFA_ENABLE_V34_BACKWARD=1` to evaluate V34 backward kernels.
+  Expect slower runtime than SDPA-vjp on current hardware (this is
+  research infrastructure, not a perf optimization).
+
+### Deferred to follow-up sprints
+
+- Multi-SG dK kernel optimization (deferred — architectural floor at 2.4×
+  SDPA-vjp confirmed).
+- Block-sparse backward (DC3 deferred from V34 backward sprint scope).
+- Causal backward (DC3 deferred).
+- D ∉ {64, 128} backward (falls back to STEEL).
+- Softcap / ALiBi / TurboQuant backward (kept on STEEL).
+
 ## [2.36.1] — 2026-05-13 — Canonical methodology + shape-aware V2 sparse default
 
 ### Changed (transparent for users)

@@ -232,3 +232,58 @@ STEEL backward for benchmarking + debugging.
 Documented in `ENV_VARS.md` Dispatch Policy section.
 
 [HIGH].
+
+## DC12 — V34 backward routing-parity constraint (post-BLK1 finding)
+
+**Decision**: V34 backward auto-routing eligibility must MATCH V34
+forward routing eligibility.  V34 backward only consumes lse produced
+by V34 forward (natural-log convention per BLK1 patch).  Shapes that
+route through legacy v6_nax forward must fall back to STEEL backward.
+
+**V34 forward routing (per `csrc/mfa_v6_nax_primitive.cpp` lines 593-600)**:
+- D=128: V34 always
+- D=64 with Nk > 8000: V34
+- D=64 with Nk ≤ 8000: legacy v6_nax (MPP) — V34 NOT engaged
+
+**V34 backward eligibility check** (in `flash_attention()` custom_vjp):
+```python
+if (_get_has_nax_cached()
+    and head_dim in (64, 128)
+    and q.dtype in (mx.float16, mx.bfloat16)
+    and not causal  # deferred per DC3
+    # NEW DC12: forward must have routed through V34
+    and (head_dim == 128 or k.shape[-2] > 8000)
+    and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"):
+    dQ, dK, dV = v6_nax_backward(q, k, v, O, lse, dO, scale)
+else:
+    # STEEL fallback via mx.vjp(_fallback_sdpa)
+```
+
+**Rationale**: discovered during V34 forward lse-write patch testing
+(2026-05-13).  V34 forward returns dead lse storage (allocated but
+unwritten) on D=64 small-Nk shapes routed through legacy.  Until the
+legacy path also writes natural-log lse (deferred to future
+infrastructure sprint), V34 backward must defensively restrict to
+V34-forward-eligible shapes.
+
+[HIGH] — verified by direct read of Primitive routing logic
+2026-05-13.
+
+## DC13 — Single-kernel-dispatch for dQ skeleton (Phase 1B scope)
+
+**Decision**: implement dQ kernel as a self-contained Metal source
+generator `createV34BackwardQuerySource()` paralleling
+`createV34Source()` structurally.  Standalone Primitive +
+`_ext.v6_nax_backward_query(Q, K, V, O, lse, dO, scale) -> dQ`.
+
+dK/dV gets a SEPARATE Primitive + binding in Phase 2 (per DC1
+two-kernel split).  Combined `v6_nax_backward(...) -> (dQ, dK, dV)`
+dispatcher arrives in Phase 2 Section E.
+
+**Rationale**: incremental shipping.  dQ alone is testable end-to-end
+(it consumes lse from forward + dO and produces dQ, which can be
+compared against STEEL backward dQ output directly).  dK/dV adds
+cross-SG accumulation complexity not present in dQ; isolating dQ
+keeps Phase 1 scope manageable.
+
+[HIGH].

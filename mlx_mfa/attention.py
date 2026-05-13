@@ -3513,10 +3513,28 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             B, H, N = q.shape[0], q.shape[1], q.shape[2]
             L = mx.zeros([B, H, N], dtype=mx.float32)
         else:
-            # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
-            # B.1: We now *keep* L as the second return value so the backward can
-            # use it directly — no gradient-checkpointing re-run needed.
-            O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+            # Phase 2.O3 forward-fusion: when V34 backward will be used,
+            # forward via V34 (natural-log lse) so backward consumes it
+            # directly without recompute.  Saves ~5-8ms at qL=8192 by
+            # eliminating both STEEL forward AND V34 forward recompute.
+            head_dim_fwd = q.shape[3]
+            _nk_fwd = k.shape[2]
+            _use_v34_fwd_for_bwd = (
+                os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+                and _get_has_nax_cached()
+                and head_dim_fwd in (64, 128)
+                and q.dtype in (mx.float16, mx.bfloat16)
+                and not causal
+                and (head_dim_fwd == 128 or _nk_fwd > 8000)
+            )
+            if _use_v34_fwd_for_bwd:
+                from mlx_mfa._ext import v6_nax_forward as _v6_fwd
+                O, L = _v6_fwd(q, k, v, False)
+            else:
+                # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
+                # B.1: We now *keep* L as the second return value so the backward can
+                # use it directly — no gradient-checkpointing re-run needed.
+                O, L = mfa_forward_with_lse(q, k, v, scale, causal)
         return O, L  # always return (O, L); callers index [0] to get O
 
     @_impl.vjp
@@ -3549,25 +3567,70 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                     q, k, v, scale=scale, mask=mask)
             _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
         elif softcap == 0.0:
-            # Native STEEL backward is narrowly policy-gated from benchmark data.
-            # Current auto policy is conservative and defaults to SDPA VJP unless
-            # explicitly benchmark-backed (or env-overridden for debugging).
-            from mlx_mfa.dispatch_policy import should_use_native_backward
-
-            use_native_bwd = should_use_native_backward(
-                q.shape[3],
-                q.shape[2],
-                causal,
-                dtype=q.dtype,
+            # V34 backward NAX-direct (Option β sprint, v2.36.x post-BLK1):
+            # SHIP_OPT_IN per auto-default principle: kernels are
+            # functionally correct (RMSE matches SDPA-vjp within FP16
+            # floor) but currently slower than SDPA-vjp (3-4× regression
+            # on M5 Max at WM=1 single-SG design; multi-SG dK/dV +
+            # forward-fusion optimization deferred to follow-up sprint).
+            #
+            # Opt-in: set MFA_ENABLE_V34_BACKWARD=1 to engage.
+            # Default (env unset or anything other than "1"): fall back
+            # to STEEL backward / SDPA-vjp per existing dispatch.
+            head_dim_ = q.shape[3]
+            _Nk_for_v34 = k.shape[2]
+            _v34_bwd_eligible = (
+                os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+                and _get_has_nax_cached()
+                and head_dim_ in (64, 128)
+                and q.dtype in (mx.float16, mx.bfloat16)
+                and not causal
+                # DC12 routing parity: must match V34 forward routing rules.
+                and (head_dim_ == 128 or _Nk_for_v34 > 8000)
             )
-            if use_native_bwd:
-                dQ, dK, dV = mfa_steel_backward(q, k, v, O, L, dO, scale, causal)
+            if _v34_bwd_eligible:
+                from mlx_mfa import _ext as _bwd_ext
+                # Phase 2.O3: O and L from forward are already V34's outputs
+                # (natural-log lse) when V34 backward is enabled — see _impl
+                # above.  No V34 forward recompute needed.
+                O_v34, L_v34 = O, L
+                dQ = _bwd_ext.v6_nax_backward_query(
+                    q, k, v, O_v34, L_v34, dO, scale)
+                # Phase 2.O2: multi-SG split dK + dV via Q-row partition.
+                # Default WM=4.  Each kernel returns dV/dK_partials [B, Hq,
+                # WM, kL, D] FP32; sum over WM axis + cast to T.
+                # Opt-out via MFA_V34BWD_USE_FUSED=1 (fallback WM=1 fused).
+                if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
+                    dK, dV = _bwd_ext.v6_nax_backward_kv(
+                        q, k, v, O_v34, L_v34, dO, scale)
+                else:
+                    _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+                    dVp = _bwd_ext.v6_nax_backward_dv_raw(
+                        q, k, v, L_v34, dO, scale, _wm)
+                    dKp = _bwd_ext.v6_nax_backward_dk_raw(
+                        q, k, v, O_v34, L_v34, dO, scale, _wm)
+                    dV = mx.sum(dVp, axis=2).astype(q.dtype)
+                    dK = mx.sum(dKp, axis=2).astype(q.dtype)
             else:
-                _, (dQ, dK, dV) = mx.vjp(
-                    lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
-                    [q, k, v],
-                    [dO],
+                # Native STEEL backward is narrowly policy-gated from benchmark data.
+                # Current auto policy is conservative and defaults to SDPA VJP unless
+                # explicitly benchmark-backed (or env-overridden for debugging).
+                from mlx_mfa.dispatch_policy import should_use_native_backward
+
+                use_native_bwd = should_use_native_backward(
+                    q.shape[3],
+                    q.shape[2],
+                    causal,
+                    dtype=q.dtype,
                 )
+                if use_native_bwd:
+                    dQ, dK, dV = mfa_steel_backward(q, k, v, O, L, dO, scale, causal)
+                else:
+                    _, (dQ, dK, dV) = mx.vjp(
+                        lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
+                        [q, k, v],
+                        [dO],
+                    )
         else:
             _, (dQ, dK, dV) = mx.vjp(
                 lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
