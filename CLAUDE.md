@@ -27,6 +27,34 @@ Pre-tag audit checklist in `CLAUDE_V6_NAX.md` §5.X enforces this. See
 `docs/RELEASE_PHILOSOPHY.md` for the canonical statement and three
 usage levels (default / explicit / expert).
 
+## Public API path + skill checkpoints (2026-05-13)
+
+Two institutional rules added to `CLAUDE_V6_NAX.md` §Z + §AA after the
+v2.37.0/v2.37.1 silent integration bug:
+
+1. **Every perf claim in release notes / CHANGELOG / public docs must
+   be reproducible via the documented public API path** (e.g.,
+   `mx.grad(flash_attention(...))` with default `backend="auto"` and
+   documented env vars), NOT just internal kernel benchmarks or
+   forced-backend (`backend="mfa"`) measurements.  See §Z.  This is
+   enforced by `tests/test_release_notes_perf_claims.py` — every
+   parameterized claim must reach its kernel via the default API or
+   the test fails.
+
+2. **Mandatory skill invocations at critical decision points**:
+   `/mlx-code-review` pre-merge, pre-release, at perf discoveries, at
+   FALSIFIED outcomes, and post-doc-creation when perf claims are
+   involved.  `/metal-kernel-dev` pre-kernel-design and at register-
+   pressure decisions.  `/repo-release-prep` pre-release tag.  See
+   §AA for the full mandatory/recommended matrix.
+
+Both rules trace to the v2.37.0/v2.37.1 silent integration bug:
+documented "D=64 1.4-1.85× faster" was unreachable via the public API
+because `should_use_mfa()` returns False for non-causal D ∈ {64, 128}
+and short-circuits to SDPA fallback before the V34 env-var check
+runs.  100% of tests passed (every test used `backend="mfa"` forced
+path).  Reference audit: `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
+
 ## Python environment
 Always use the project venv: `~/code/mlx-mfa-v2/.venv`
 
