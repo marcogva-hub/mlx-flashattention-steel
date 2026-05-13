@@ -151,3 +151,85 @@ def test_v34_bwd_optin_d64_small_nk_engages_v34(enable_v34_bwd):
     # (b) V34 path engaged (non-zero diff vs identical SDPA-vjp fallback)
     assert _rmse(dQ, dQ_ref) > 0.0, (
         "V34 backward did not engage on D=64 small-Nk")
+
+
+# ---------------------------------------------------------------------------
+# v2.37.2 regression: backend="auto" carve-out actually engages V34 backward
+# ---------------------------------------------------------------------------
+def _grads_auto(q, k, v):
+    """Backward through default backend='auto' — does NOT force MFA."""
+    def loss(q_, k_, v_):
+        return flash_attention(q_, k_, v_).sum()  # backend defaults to "auto"
+    g = mx.grad(loss, argnums=(0, 1, 2))
+    dQ, dK, dV = g(q, k, v)
+    _AE(dQ, dK, dV); mx.synchronize()
+    return dQ, dK, dV
+
+
+def test_v34_bwd_v2372_carveout_engages_on_d64_qL4096(enable_v34_bwd):
+    """v2.37.2 fix: `should_use_mfa` returns False for non-causal D=64,
+    so the public flash_attention() autograd path silently fell back to
+    SDPA-vjp in v2.37.0/v2.37.1 — defeating the documented MFA_ENABLE_V34_BACKWARD
+    contract.
+
+    The v2.37.2 carve-out forces use_mfa=True when env=1 and shape
+    qualifies (D=64, qL ≥ 4096, non-causal, f16/bf16, NAX) so the
+    custom-vjp _impl is constructed and V34 backward actually engages.
+
+    Regression check: V34 backward output must differ from SDPA-vjp by
+    a non-zero FP16-rounding amount (proves V34 path engaged, not SDPA
+    fallback)."""
+    q, k, v = _make(1, 4, 4, 4096, 4096, 64, 51, mx.float16)
+    scale = 1.0 / math.sqrt(64)
+    dQ, dK, dV = _grads_auto(q, k, v)
+    dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
+    # Correctness within FP16 floor
+    assert _rmse(dQ, dQ_ref) < 1e-3
+    assert _rmse(dK, dK_ref) < 1e-3
+    assert _rmse(dV, dV_ref) < 1e-2
+    # Engagement: V34 path must produce different bits than SDPA fallback
+    assert _rmse(dQ, dQ_ref) > 0.0, (
+        "v2.37.2 carve-out failed: V34 backward did NOT engage via "
+        "backend='auto' at D=64 qL=4096 — silent SDPA fallback")
+
+
+def test_v34_bwd_v2372_carveout_does_not_engage_below_threshold(enable_v34_bwd):
+    """v2.37.2 carve-out is shape-gated: qL < 4096 should NOT engage V34
+    (V34 loses end-to-end at small Nk vs SDPA-vjp).  The carve-out only
+    fires when the perf win is real.  At qL=1024 the path falls back
+    to SDPA-vjp and produces bit-identical gradients."""
+    q, k, v = _make(1, 4, 4, 1024, 1024, 64, 53, mx.float16)
+    scale = 1.0 / math.sqrt(64)
+    dQ, dK, dV = _grads_auto(q, k, v)
+    dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
+    # Must be bit-identical: both paths are SDPA-vjp on the same inputs.
+    assert _rmse(dQ, dQ_ref) == 0.0
+    assert _rmse(dK, dK_ref) == 0.0
+    assert _rmse(dV, dV_ref) == 0.0
+
+
+def test_v34_bwd_v2372_carveout_does_not_engage_d128(enable_v34_bwd):
+    """v2.37.2 carve-out is D-gated to D=64: V34 backward at D=128 is
+    2.0-2.4× slower than SDPA-vjp (architectural floor).  The carve-out
+    must NOT engage for D=128 — fallback to SDPA-vjp via auto dispatch."""
+    q, k, v = _make(1, 4, 4, 4096, 4096, 128, 55, mx.float16)
+    scale = 1.0 / math.sqrt(128)
+    dQ, dK, dV = _grads_auto(q, k, v)
+    dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
+    # Must be bit-identical: both paths are SDPA-vjp.
+    assert _rmse(dQ, dQ_ref) == 0.0
+    assert _rmse(dK, dK_ref) == 0.0
+    assert _rmse(dV, dV_ref) == 0.0
+
+
+def test_v34_bwd_v2372_carveout_inactive_without_env():
+    """Without MFA_ENABLE_V34_BACKWARD=1, the carve-out must NOT fire
+    even for qualifying shape.  Default behavior preserved."""
+    q, k, v = _make(1, 4, 4, 4096, 4096, 64, 57, mx.float16)
+    scale = 1.0 / math.sqrt(64)
+    dQ, dK, dV = _grads_auto(q, k, v)
+    dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
+    # Without env, must be bit-identical SDPA-vjp.
+    assert _rmse(dQ, dQ_ref) == 0.0
+    assert _rmse(dK, dK_ref) == 0.0
+    assert _rmse(dV, dV_ref) == 0.0

@@ -471,6 +471,41 @@ def flash_attention(
         use_mfa = _mfa_capable  # backend='mfa' forces True; not capable → False
 
     if not use_mfa:
+        # v2.37.2: V34-backward carve-out.  When `MFA_ENABLE_V34_BACKWARD=1`
+        # is set and the shape qualifies for V34 backward perf win on M5+
+        # NAX (D=64, qL ≥ 4096, non-causal, f16/bf16), force the MFA path
+        # so that the custom-vjp _impl can route the backward through V34
+        # kernels.  Without this carve-out, `should_use_mfa` returns False
+        # for non-causal D=64/128 (STEEL forward isn't competitive at
+        # those shapes), which silently falls back to SDPA-vjp and skips
+        # V34 backward entirely.  The forward cost is small (~0.25ms at
+        # qL=8192) and the backward win is large (1.4-1.8×); net fwd+bwd
+        # is 1.4-1.8× faster than SDPA-vjp.
+        #
+        # Excluded:
+        # - D=128: backward 2.0-2.4× slower than SDPA-vjp (architectural
+        #   floor), net loss even with parity forward.  Research only —
+        #   users opting in for D=128 must force backend='mfa'.
+        # - D=64 qL < 4096: small-shape win doesn't amortize forward
+        #   overhead; net loss.
+        # - causal: V34 backward doesn't support causal (DC3 deferred).
+        if (
+            backend == "auto"
+            and softcap == 0.0
+            and alibi_slopes is None
+            and not return_lse
+            and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+            and _get_has_nax_cached()
+            and head_dim == 64
+            and q.shape[2] >= 4096
+            and q.dtype in (mx.float16, mx.bfloat16)
+            and k.dtype == q.dtype
+            and v.dtype == q.dtype
+            and not causal
+        ):
+            use_mfa = True  # fall through to MFA path → V34 backward eligible
+
+    if not use_mfa:
         if softcap != 0.0:
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:

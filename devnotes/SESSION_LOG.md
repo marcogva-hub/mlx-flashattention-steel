@@ -4798,3 +4798,119 @@ SHIP_OPT_IN posture preserved.  Users with D=64 training workloads
 now have clear guidance: set MFA_ENABLE_V34_BACKWARD=1 for 1.4-1.85×
 backward speedup on qL ≥ 2048.
 
+
+---
+## [2026-05-13 11:30] [CLAUDE] v2.37.2: V34 backward integration bugfix — silent SDPA fallback
+STATUS: COMPLETE
+
+### Plan
+- Objective: investigate continued V34 backward perf vs SDPA-vjp on D=128;
+  per user directive "if no perf parity, continue investigation by testing
+  other possible ways to improve perf"
+- Files to modify: `mlx_mfa/attention.py` (carve-out), `CHANGELOG.md`,
+  README.md, `mlx_mfa/__init__.py`, `pyproject.toml`,
+  `tests/test_flash_attention_v34_backward.py` (regression tests)
+
+### Investigation findings
+
+1. **BK=16 D=128 finding from pre-compaction did NOT reproduce.**  Bench
+   on current v2.37.1 source: end-to-end backward at D=128 qL=8192 is
+   19.6-19.9ms regardless of BK ∈ {16, 32, 64}.  The pre-compaction
+   "BK=16 wins ~37%" measurement was either from a pre-forward-fusion
+   state or measured kernels in isolation.  After v2.37.0 forward-fusion
+   landed, the BK choice has no measurable impact on end-to-end backward
+   at D=128. [VERIFIED — /tmp/v34_bk_verify.py output above]
+
+2. **CRITICAL: silent SDPA-vjp fallback bug discovered.**  The v2.37.0/
+   v2.37.1 releases advertised "1.4-1.85× faster than SDPA-vjp" at D=64
+   large shapes, but the public `flash_attention()` autograd path
+   silently routed through SDPA-vjp.  Root cause:
+   - `flash_attention()` calls `should_use_mfa()` at line ~455
+   - `should_use_mfa()` returns False for non-causal D∈{64,128} on M5
+     NAX (STEEL forward isn't competitive at those shapes)
+   - line 473 `if not use_mfa: return _fallback_sdpa(...)` returns BEFORE
+     `_make_mfa_custom` is ever called
+   - Setting `MFA_ENABLE_V34_BACKWARD=1` had no observable effect
+     through `mx.grad(flash_attention(...))`
+   - Existing tests passed because they used `backend="mfa"` to force
+     the MFA path, bypassing `should_use_mfa()`.  Default `backend="auto"`
+     was untested. [VERIFIED — /tmp/v34_routing_verify.py shows all three
+     paths (V34 OFF / V34 ON / SDPA-direct) give identical 19.8ms]
+
+3. **Direct kernel perf confirms release-notes claims at kernel level:**
+   - D=64 qL=4096-8192: V34 backward 1.66-2.0× FASTER than SDPA-vjp
+   - D=64 qL=1024-2048: V34 backward SLOWER (small-shape overhead)
+   - D=128 all qL: V34 backward 1.92-2.91× SLOWER (architectural floor)
+   [VERIFIED — /tmp/v34_direct_d64.py output]
+
+### Changes
+- `mlx_mfa/attention.py:473-486` — added narrow carve-out before the SDPA
+  fallback return.  When `MFA_ENABLE_V34_BACKWARD=1` AND shape qualifies
+  for end-to-end V34 backward win (D=64, qL ≥ 4096, non-causal, f16/bf16
+  same-dtype K/V, NAX, backend='auto'), force `use_mfa = True` so the
+  MFA path runs and the custom-vjp engages V34 backward kernels.
+  [HIGH] [VERIFIED]
+- `CHANGELOG.md` — [2.37.2] entry documenting the silent-fallback bug,
+  fix, engagement envelope, perf table, correctness validation, and
+  migration note.  [HIGH] [VERIFIED]
+- `README.md:7-21` — updated to v2.37.2 with corrected engagement
+  envelope; clarified that v2.37.0/v2.37.1 numbers were unreachable via
+  public API.  [HIGH] [VERIFIED]
+- `mlx_mfa/__init__.py:30` — 2.37.1 → 2.37.2.  [HIGH] [VERIFIED]
+- `pyproject.toml:8` — 2.37.1 → 2.37.2.  [HIGH] [VERIFIED]
+- `tests/test_flash_attention_v34_backward.py` — 4 new regression tests:
+  - `test_v34_bwd_v2372_carveout_engages_on_d64_qL4096` — engagement
+    proven by non-zero diff vs SDPA reference
+  - `test_v34_bwd_v2372_carveout_does_not_engage_below_threshold` —
+    qL=1024 must remain bit-identical SDPA-vjp
+  - `test_v34_bwd_v2372_carveout_does_not_engage_d128` — D=128 must
+    remain bit-identical SDPA-vjp (architectural-floor exclusion)
+  - `test_v34_bwd_v2372_carveout_inactive_without_env` — env-unset case
+    preserves default behavior
+  [HIGH] [VERIFIED]
+
+### Dependency & regression check
+- Callers verified: only `flash_attention()` reads `should_use_mfa()` in
+  this codepath; the carve-out lives strictly between the
+  `should_use_mfa()` check and the SDPA fallback return.  No other entry
+  points affected.  `flash_attention_sparse`, `flash_attention_kvcache`,
+  `flash_attention_rope_unified` route through separate paths and are
+  unchanged.
+- Test coverage: 4 new regression tests cover engagement and non-
+  engagement at the 4 corners of the shape envelope (D=64 ≥4096,
+  D=64 <4096, D=128, env-unset).  All 10 V34 backward tests pass.
+
+### Tech cost
+- Complexity: +14 LOC in attention.py (one extra if-statement before
+  fallback).  No new compile-time path.
+- Memory / kernels / I/O: zero impact for users who don't set env.
+  When env=1 + shape qualifies, replaces SDPA-vjp (~17.7ms at D=64
+  qL=8192) with V34 backward (~9.8ms).
+
+### Validation
+- Ran: `pytest tests/test_flash_attention_v34_backward.py -q` → 10/10 pass
+- Ran: full bench /tmp/v34_carveout_verify.py at D∈{64,128} × qL∈{1024,2048,4096,8192}
+- Validated: end-to-end backward at D=64 qL=4096 = 2.65ms (V34) vs 4.83ms
+  (SDPA) = 1.82× faster; D=64 qL=8192 = 9.78ms vs 17.67ms = 1.81×.
+  D=128 correctly falls back to SDPA-vjp.
+
+### Git
+- Pending commit on branch `master` (will create after this log entry)
+
+### Pitfalls observed during investigation
+- Hypothesis tested and rejected: "BK=16 D=128 gives 37% speedup."  This
+  finding from pre-compaction did not reproduce on current source.  Likely
+  measured pre-forward-fusion or at the kernel level only.  Future
+  benchers: measure end-to-end (mx.grad of public API), not isolated
+  kernels.
+- The bug went undetected because all V34 backward correctness tests use
+  `backend="mfa"` (force MFA path).  Future tests for V34 features must
+  exercise `backend="auto"` (the user-facing default) at least once.
+
+### Follow-up
+- v2.37.2 patch release (PyPI upload pending user signal)
+- Tag `v2.37.2` after commit
+- Consider: should the carve-out be REMOVED in favor of auto-default in
+  v2.38.0?  Specifically: when env=1, route ALL non-causal D=64 ≥4096
+  through V34 by default (no need for env opt-in).  Pros: zero-config
+  win for users.  Cons: needs broader validation across model families.

@@ -4,9 +4,23 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.37.1** — Sprint Option β architectural addition: **V34 backward NAX-direct kernels** (dQ + dK/dV multi-SG WM=4 Q-row partition) ship as SHIP_OPT_IN. With `MFA_ENABLE_V34_BACKWARD=1`, `flash_attention()` autograd routes backward through V34 NAX kernels on M5+ for eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal/window/softcap).
+Current version: **2.37.2** — Patch release fixing silent fallback in the
+V34 backward integration. v2.37.0/v2.37.1 documented "1.4-1.85× faster than
+SDPA-vjp" at D=64 qL ≥ 2048, but the public `flash_attention()` autograd
+path was silently routing through SDPA-vjp because `should_use_mfa()`
+returns False for non-causal D=64/128 (STEEL forward isn't competitive at
+those shapes). v2.37.2 adds a narrow carve-out: when `MFA_ENABLE_V34_BACKWARD=1`
+is set AND the shape qualifies for V34 backward win (D=64, qL ≥ 4096,
+non-causal, f16/bf16, NAX), `flash_attention()` routes forward through
+V34/MFA so the custom-vjp engages V34 backward. **End-to-end backward is
+now actually 1.81× faster than SDPA-vjp at D=64 qL=8192**, matching the
+release-notes claim.
 
-**D=64 large shapes (qL ≥ 2048): V34 backward is 1.4-1.85× FASTER than SDPA-vjp** — clear perf win for D=64 training (FlashVSR/LTX2-class). See `docs/TRAINING_QUICKSTART.md` for the shape-aware recommendation. v2.37.1 also extends V34 backward eligibility to D=64 small-Nk shapes (formerly DC12-blocked) via new `force_v34` parameter.
+**Engagement envelope** (auto via `MFA_ENABLE_V34_BACKWARD=1`):
+- D=64, qL ≥ 4096, non-causal, f16/bf16 → 1.41-1.81× end-to-end backward win
+- D=64 qL < 4096: not engaged (V34 loses end-to-end vs SDPA-vjp)
+- D=128, any qL: not engaged (V34 backward 2.0-2.4× slower; research only — force via `backend='mfa'`)
+- causal: not engaged (V34 backward causal deferred to DC3)
 
 D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). Default (env unset) preserves v2.36.1-exact behavior. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 

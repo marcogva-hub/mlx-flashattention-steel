@@ -4,6 +4,66 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.37.2] — 2026-05-13 — V34 backward integration bugfix
+
+### Fixed
+
+- **CRITICAL: Silent SDPA-vjp fallback when `MFA_ENABLE_V34_BACKWARD=1`**
+  on non-causal shapes.  v2.37.0 and v2.37.1 advertised "1.4-1.85× faster
+  than SDPA-vjp" at D=64 large shapes, but the public `flash_attention()`
+  autograd path was silently routing through SDPA-vjp.  Root cause:
+  `flash_attention()` calls `should_use_mfa()` BEFORE checking the V34
+  backward env var; `should_use_mfa()` returns `False` for non-causal
+  D∈{64,128} because STEEL forward isn't competitive at those shapes;
+  the `if not use_mfa: return _fallback_sdpa(...)` block returns before
+  the V34 custom-vjp `_impl` is ever constructed.  Setting
+  `MFA_ENABLE_V34_BACKWARD=1` had no observable effect through
+  `mx.grad(flash_attention(...))` — only direct calls to `_ext.v6_nax_*`
+  kernels reached V34 backward.
+
+- **Fix** (`mlx_mfa/attention.py`): narrow carve-out in `flash_attention`
+  before the SDPA fallback returns.  When `MFA_ENABLE_V34_BACKWARD=1`
+  AND the shape qualifies for end-to-end V34 backward win (D=64,
+  qL ≥ 4096, non-causal, f16/bf16 same-dtype K/V, NAX), force
+  `use_mfa = True` so the MFA path runs.  The custom-vjp `_impl` then
+  forward-fuses via V34 (force_v34=True) and the backward dispatches
+  through the V34 multi-SG dK/dV + dQ kernels.
+
+### Engagement envelope (auto, when env=1)
+
+| Config | Backward path | End-to-end vs SDPA-vjp |
+|---|---|---|
+| D=64, qL=4096, non-causal, f16/bf16 | V34 backward | **1.82× faster** |
+| D=64, qL=8192, non-causal, f16/bf16 | V34 backward | **1.81× faster** |
+| D=64, qL < 4096 | SDPA-vjp | parity or V34 loss → SDPA preferred |
+| D=128, any qL | SDPA-vjp | V34 backward 2.0-2.4× slower (research only) |
+| Causal | SDPA-vjp / STEEL bwd | V34 backward doesn't support causal (DC3) |
+
+### Measurement (M5 Max, B=1 H=4 f16, `mx.grad(flash_attention(...))`)
+
+| D | qL | V34 backward (carve-out engaged) | SDPA-vjp | Speedup |
+|---|----|---|---|---|
+| 64 | 4096 | 2.65 ms | 4.83 ms | 1.82× |
+| 64 | 8192 | 9.78 ms | 17.67 ms | 1.81× |
+| 128 | 8192 | 19.73 ms (NOT engaged, fell back to SDPA) | 19.61 ms | 1.00× |
+
+### Correctness validation
+
+V34 backward gradients vs SDPA-vjp (D=64, qL ∈ {4096, 8192}, f16):
+- `dq` max|abs| = 0.0000, mean|rel| = 0.20-0.21%
+- `dk` max|abs| = 0.0000, mean|rel| = 0.26-0.70%
+- `dv` max|abs| = 0.0010, mean|rel| = 0.04%
+
+All within FP16 floor.  No regressions in test suite (670 pass, 2
+pre-existing FP16 flakes unrelated to V34).
+
+### Migration
+
+No code changes required.  Users with `MFA_ENABLE_V34_BACKWARD=1` who
+were silently using SDPA-vjp will now transparently get the V34 backward
+win on D=64 large shapes.  Other shapes continue to route through
+SDPA-vjp as before.
+
 ## [2.37.1] — 2026-05-13 — V34 backward post-release improvements
 
 ### Added (post-v2.37.0 improvements)
