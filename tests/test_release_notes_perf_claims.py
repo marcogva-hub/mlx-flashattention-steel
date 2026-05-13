@@ -65,7 +65,45 @@ _AE = getattr(mx, "async_" + "eval")
 # Perf-claim registry — every entry must match a user-facing doc claim
 # ---------------------------------------------------------------------------
 PERF_CLAIMS = [
+    # v2.39.1: D=64 qL=4096 — "2.00×" with fused-BK16 (PUBLIC API, post-H1 fix)
+    {
+        "id": "v2.39.1_d64_qL4096_fused_bk16_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 4096, 4096, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "README.md",
+            "docs/v6-nax/v39-1-investigation-synthesis.md",
+        ],
+        "documented_perf_claim": (
+            "v2.39.1 D=64 qL=4096: fused-BK16 V34 backward 2.00× vs SDPA-vjp "
+            "(was 1.91× v2.38.1 split-D_vec; wall-time -2.9%; H1 register-"
+            "pressure root cause fixed)"
+        ),
+    },
+    # v2.39.1: D=64 qL=8192 — "1.95×" with fused-BK16
+    {
+        "id": "v2.39.1_d64_qL8192_fused_bk16_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 8192, 8192, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "README.md",
+            "docs/v6-nax/v39-1-investigation-synthesis.md",
+        ],
+        "documented_perf_claim": (
+            "v2.39.1 D=64 qL=8192: fused-BK16 V34 backward 1.95× vs SDPA-vjp "
+            "(was 1.87× v2.38.1 split-D_vec; wall-time -1.4%)"
+        ),
+    },
     # v2.38.1: D=64 qL=4096 — "1.91× faster" with D_vec precompute (PUBLIC API)
+    # Preserved historical baseline; the v2.39.1 fused-BK16 path supersedes
+    # this measurement but the v2.38.1 split-D_vec path is still reachable
+    # via MFA_V34_BWD_KERNEL=split for verification.
     {
         "id": "v2.38.1_d64_qL4096_v34_dvec_engages_via_auto",
         "env": {"MFA_ENABLE_V34_BACKWARD": "1"},

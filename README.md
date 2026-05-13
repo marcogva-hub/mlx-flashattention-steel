@@ -4,25 +4,38 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.39.0** — Option γ fused dK+dV kernel ships as
-**opt-in** (Sprint 2 audit M3-HIGH-02, Phase C.1.a).  Empirical outcome
-δ: despite the `/metal-kernel-dev` audit predicting ~10% K-bandwidth-
-amortization win, M5 Max 3-session bench showed fused **25-33% slower
-than split** at qL≥4096.  Correctness verified bit-identical (RMSE=0
-vs split, 17/17 parity tests pass).  Architectural addition preserved
-as foundation for future fusion-tuning sprints.
+Current version: **2.39.1** — Option γ outcome **α**: H1 register pressure
+root-caused + fixed.  The v2.39.0 outcome δ regression (-25% to -33% on
+the fused dK+dV kernel) traced to per-SG register spilling at the
+default BK=32 (TK=2 → two 8KB FP32 accumulators per SG).  Sprint v2.39.1
+investigation lowered the default to BK=16 (TK=1), halving the
+accumulator footprint and bringing the kernel under the M5 NAX
+compiler's spill threshold.  Auto-default flipped back to fused for D=64.
 
-**Auto-default routes to split (v2.38.1 D_vec path); fused is opt-in
-via `MFA_V34_BWD_KERNEL=fused`.**  Net effect on users: identical to
-v2.38.1.  D=64 V34 backward speedups vs SDPA-vjp preserved (1.91× /
-1.87× / 1.80× at qL ∈ {4096, 8192, 16384} per v2.38.1 baseline).
+**Measured speedups vs SDPA-vjp** (M5 Max, 3-session × 4w+12i median,
+PUBLIC AUTO API `mx.grad(flash_attention(..., backend="auto"))` +
+`MFA_ENABLE_V34_BACKWARD=1`):
 
-See `docs/v6-nax/v39-0-option-gamma-results.md` for the full δ
-analysis (regression hypotheses, methodology, decision-tree rationale).
-Honest scope discipline: no fused-perf claim in CHANGELOG.
+| qL | v2.39.1 speedup | wall-time | Δ vs v2.38.1 |
+|---|---|---|---|
+| **4096** | **2.00×** | 9.31 ms | -2.9% |
+| **8192** | **1.95×** | 37.73 ms | -1.4% |
+| 16384 | 1.72× (3-sess) | 176.4 ms | thermal-drift footnote* |
 
-Builds on **v2.38.1** (D_vec precompute → 1.91× / 1.87× / 1.80× speedups
-preserved) and **v2.38.0** (refactor + cleanup, investigation foundation).
+\* qL=16384 3-session median 1.72× shows monotonic decline (1.88 →
+1.72 → 1.67) attributable to thermal drift; fresh-machine spot-check
+1.89×.  Session 1 representative of typical interactive workloads.
+
+Investigation evidence: H1 register pressure CONFIRMED; H3 occupancy
+FALSIFIED; H2 cache absorption partial-supporting.  Full record at
+`docs/v6-nax/v39-1-investigation-synthesis.md`.
+
+Net effect on users: identical to v2.38.1 or modestly better.  No new
+env vars required.  `MFA_V34_BWD_KERNEL=split` available as opt-out.
+
+Builds on **v2.39.0** (Option γ fused kernel architectural addition,
+outcome δ documented), **v2.38.1** (D_vec precompute), **v2.38.0**
+(refactor + cleanup, investigation foundation).
 
 Net effect on users: identical to v2.37.3.  The v2.37.x perf-claim
 audit (`docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new

@@ -1671,8 +1671,15 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     if (D != 64)
       throw std::runtime_error("V34 bwd fused dKdV: D=64 only (Phase C.1.a)");
 
+    // v2.39.1: default BK=16 (was 32 in v2.39.0).  The v2.39.0 BK=32
+    // default caused per-SG register spilling (H1 confirmed by Sprint
+    // v2.39.1 investigation — see docs/v6-nax/v39-1-investigation-
+    // synthesis.md).  BK=16 halves dK_accum + dV_accum register
+    // footprint and brings the kernel below the M5 NAX compiler's
+    // spill threshold, recovering 1.01-1.12× speedup vs split across
+    // qL ∈ {2048, 16384}.
     unsigned short BQ = 64;
-    unsigned short BK = 32;
+    unsigned short BK = 16;
     uint16_t WM = wm_;
     if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);
@@ -1724,6 +1731,25 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
       desc.useV34 = true;
       NAAttentionKernel ker(desc);
       std::string src = ker.createV34BackwardFusedDKDVSource();
+      // v2.39.1: source-dump hook for investigation (mirrors split-path
+      // hook at line 928).  Dumps to stderr or to file via MFA_V34BWDF_DUMP_PATH.
+      if (std::getenv("MFA_V34BWDF_DUMP_SOURCE")) {
+        const char* path = std::getenv("MFA_V34BWDF_DUMP_PATH");
+        if (path) {
+          FILE* f = fopen(path, "w");
+          if (f) {
+            fwrite(src.data(), 1, src.size(), f);
+            fclose(f);
+            fprintf(stderr, "[v2.39.1] V34 bwd fused source dumped to %s "
+                            "(D=%d BQ=%d BK=%d WM=%d, %zu bytes)\n",
+                    path, D, (int)BQ, (int)BK, (int)WM, src.size());
+          }
+        } else {
+          fprintf(stderr, "=== V34 bwd fused source (D=%d BQ=%d BK=%d WM=%d) "
+                          "length=%zu bytes ===\n%s\n",
+                  D, (int)BQ, (int)BK, (int)WM, src.size(), src.c_str());
+        }
+      }
       pipeline = v34_compile(src, "attention_bwd_fused_dkdv", mtl_device);
       std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
       v34_bwd_fused_pipelines[key] = pipeline;

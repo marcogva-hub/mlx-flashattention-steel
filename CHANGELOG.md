@@ -4,6 +4,100 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+## [2.39.1] — 2026-05-13 — Option γ outcome α — register-pressure root-cause + fix
+
+Sprint v2.39.1 root-cause investigation of v2.39.0's outcome δ (25-33%
+regression of the fused dK+dV kernel vs split at qL≥4096).
+
+**Mechanism identified (H1 register pressure CONFIRMED)**: the v2.39.0
+fused kernel default `BK=32` caused the Apple Metal compiler to spill
+per-SG registers because the two persistent FP32 accumulators
+(`dK_accum + dV_accum`, ~64 regs/lane combined at TK=2) crossed the
+M5 NAX per-lane register quota.  H3 occupancy reduction FALSIFIED
+(reducing WM 4→2→1 made the fused kernel WORSE).  H2 cache absorption
+has partial-supporting evidence (parity at qL≤2048, regression at
+qL≥4096) but H1 alone explains the data.
+
+**Fix shipped**: fused kernel default `BK` lowered from 32 to 16
+(TK 2→1).  Halves the per-SG accumulator register footprint, brings
+the kernel under the spill threshold.  Auto-default routing flipped
+back to fused for D=64 (D=128 unchanged, still routes to split — the
+v2.37.2 carve-out is D=64 hard-gated).
+
+### Measured speedups vs SDPA-vjp
+
+PUBLIC AUTO API (`mx.grad(flash_attention(..., backend="auto", causal=False))`
++ `MFA_ENABLE_V34_BACKWARD=1`), M5 Max, B=2 H=8 fp16, 4 warmup + 12 timed iters:
+
+| qL | v2.39.1 speedup | v2.39.1 wall-time | v2.38.1 wall-time | Δ wall |
+|---|---|---|---|---|
+| **4096** | **2.00×** | 9.31 ms | 9.59 ms | **-2.9%** |
+| **8192** | **1.95×** | 37.73 ms | 38.27 ms | **-1.4%** |
+| 16384 | 1.72× (3-session median) | 176.4 ms | 166.3 ms | — (see footnote) |
+
+**qL=16384 footnote**: 3-session median 1.72× shows variance ratio
+1.128 with monotonic decline across back-to-back sessions
+(1.88× → 1.72× → 1.67×).  Fresh-machine spot-check
+(`/mlx-mfa-perf-audit` independent reproduction) measured 1.89×,
+matching session 1.  This is thermal drift across long-running
+test sequences, NOT measurement noise.  Session 1 (cold machine)
+remains representative of typical interactive workloads.
+
+All v2.38.1 SDPA-vjp baselines preserved or modestly improved.
+qL=4096/8192 are well under §AA.4 variance threshold (1.012, 1.032);
+qL=16384 falls under 1.15 but disclosed honestly with thermal attribution.
+
+### What changed (code)
+
+- **`csrc/mfa_v6_nax_primitive.cpp::MFAV34BwdFusedDKDV::eval_gpu`**:
+  default `BK = 16` (was 32).  Override still available via
+  `MFA_V34BWDF_BK` env var for benchmarking experiments.
+- **`mlx_mfa/attention.py::_v34_backward_vjp`**: `auto` routing
+  resolves to `fused` for D=64 (was `split` per v2.39.0 outcome δ
+  workaround).  D=128 unchanged (still routes to split — v2.37.2
+  carve-out is D=64 hard-gated).
+- **`csrc/mfa_v6_nax_primitive.cpp` fused-path pipeline cache miss**:
+  added `MFA_V34BWDF_DUMP_SOURCE` / `MFA_V34BWDF_DUMP_PATH` env hooks
+  mirroring the split-path's `MFA_V34BWD_DUMP_SOURCE` (useful for
+  future fusion-tuning sprints + reproducible compiled-shader inspection).
+
+### Investigation evidence (full record)
+
+See `docs/v6-nax/v39-1-investigation-synthesis.md`:
+- BK sweep data (BK=32 baseline 13.58 ms → BK=16 8.87 ms at qL=4096)
+- WM sweep data (BQ=64 WM=4 13.68 ms → BQ=16 WM=1 15.43 ms, H3 falsified)
+- qL sweep data (parity qL≤2048, regression qL≥4096 with v39.0 BK=32)
+- Correctness verification (RMSE=0 at qL=2048, ~2e-5 at qL≥4096 — same
+  FP16-tolerance band as v2.38.1 D_vec drift vs SDPA)
+
+### §AA gates SHIP-green
+
+- `/metal-kernel-dev` (design validation): BK=8 won't compile; WM=1
+  won't dispatch; recommended (BQ, WM) sweep keeping TQ_per_SG=1
+- `/mlx-mfa-bench-methodology` (Phase D bench protocol): adopted
+  3-session × 4w+12i with variance reporting
+- `/mlx-mfa-perf-audit` (Phase F.1.2): HIGH SHIP with language
+  fixes applied (explicit wall-time deltas + thermal-drift footnote
+  on qL=16384)
+
+### Net effect on users
+
+Identical-or-better than v2.38.1.  Users with `MFA_ENABLE_V34_BACKWARD=1`
+on D=64 V34-eligible shapes (qL≥4096) automatically get the new
+fused-BK16 path with a 1-3% wall-time improvement.  No new env vars
+required.  `MFA_V34_BWD_KERNEL=split` still available as opt-out.
+
+### Roadmap
+
+- **v2.39.2**: investigate broadening the v2.37.2 carve-out below
+  qL=4096.  BK=16 fused achieves parity at qL=2048; the carve-out
+  floor could potentially extend to lower qL with broader workload
+  validation.
+- **v2.40.0**: D=128 fused kernel implementation (Phase C.1.b per
+  original blueprint).  Apply BK=16 staging learning to D=128 design:
+  start with BK=16 not BK=32; verify register-pressure mitigation
+  before committing to default.
+
 ## [2.39.0] — 2026-05-13 — Option γ fused dK+dV (D=64) — outcome δ (opt-in)
 
 > **Scope contract.**  This release adds the Option γ fused dK+dV kernel

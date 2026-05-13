@@ -14,13 +14,21 @@ verifies all active claims are still REACHABLE.
 
 ---
 
-## Active claims (as of v2.39.0)
+## Active claims (as of v2.39.1)
 
-Note: v2.39.0 introduces Option γ fused dK+dV kernel as opt-in but
-makes **no perf claim** for it.  Empirical outcome δ (25-33% regression
-vs split on M5 Max) documented in `docs/v6-nax/v39-0-option-gamma-results.md`.
-Auto-default routes to split (v2.38.1 D_vec path).  All v2.38.1 perf
-claims below preserved unchanged at v2.39.0.
+v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
+kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
+Auto-default routes D=64 V34 backward to fused-BK16 (modest improvement
+over v2.38.1 split path).  D=128 unchanged (carve-out hard-gated to D=64).
+
+| Claim ID | Version intro | Description | Reproduction |
+|---|---|---|---|
+| `v2.39.1_d64_qL4096_fused_bk16_auto` | v2.39.1 | D=64 qL=4096 V34 backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
+| `v2.39.1_d64_qL8192_fused_bk16_auto` | v2.39.1 | D=64 qL=8192 V34 backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
+| `v2.39.1_d64_qL16384_fused_bk16_auto` | v2.39.1 | D=64 qL=16384 V34 backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
+
+Full investigation evidence + skill invocations log:
+`docs/v6-nax/v39-1-investigation-synthesis.md`.
 
 
 

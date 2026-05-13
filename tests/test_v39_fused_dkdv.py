@@ -142,26 +142,25 @@ def test_fused_d64_matches_sdpa_vjp(monkeypatch):
 
 # ── Axis 2: path entered via PUBLIC API ───────────────────────────────
 
-def test_auto_default_engages_split_for_d64(monkeypatch):
-    """v2.39.0 outcome δ: MFA_V34_BWD_KERNEL=auto routes D=64 to SPLIT.
+def test_auto_default_engages_fused_for_d64(monkeypatch):
+    """v2.39.1 outcome α: MFA_V34_BWD_KERNEL=auto routes D=64 to FUSED.
 
-    The fused kernel ships as available (Option γ correctness verified
-    bit-identical to split) but is NOT auto-default — bench characterization
-    showed 25-33% regression vs split at qL≥4096 on M5 Max despite the
-    audit's K-bandwidth-amortization prediction.  Fused remains opt-in
-    via MFA_V34_BWD_KERNEL=fused for users who want to characterize on
-    their own workloads.  See docs/v6-nax/v39-0-option-gamma-results.md.
+    The v2.39.0 outcome δ regression was root-caused to H1 register pressure
+    at the default BK=32 and fixed in v2.39.1 by lowering BK to 16.  Auto
+    now defaults to fused for D=64.  Correctness preserved within FP16
+    tolerance (~2e-5 RMSE vs split, same as v2.38.1 D_vec drift vs SDPA).
+    See docs/v6-nax/v39-1-investigation-synthesis.md.
     """
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=1)
     scale = 1.0 / math.sqrt(D)
     monkeypatch.setenv("MFA_V34_BWD_KERNEL", "auto")
     dqa, dka, dva = _grads(q, k, v, dO, scale, "auto")
-    dqs, dks, dvs = _grads(q, k, v, dO, scale, "split")
-    # auto and split produce identical gradients on D=64 (auto→split per δ).
-    assert _rmse(dqa, dqs) == 0.0
-    assert _rmse(dka, dks) == 0.0
-    assert _rmse(dva, dvs) == 0.0
+    dqf, dkf, dvf = _grads(q, k, v, dO, scale, "fused")
+    # auto and fused produce identical gradients on D=64 (auto→fused per α).
+    assert _rmse(dqa, dqf) == 0.0
+    assert _rmse(dka, dkf) == 0.0
+    assert _rmse(dva, dvf) == 0.0
 
 
 def test_auto_default_engages_split_for_d128(monkeypatch):
