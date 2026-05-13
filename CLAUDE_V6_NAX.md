@@ -741,6 +741,110 @@ backward correctness test forced `backend="mfa"`, never exercising the
 default backend the perf claim implicitly relied on.  §AA forces that
 review checkpoint by name.
 
+### §AA.1 — Mandatory blocking enforcement (added 2026-05-13, Sprint 4)
+
+The mandatory invocations in the table above are NOT advisory.  They
+are **blocking gates**.  If a checkpoint is reached and the required
+skill is not invoked, CC MUST:
+
+1. **Halt the current workflow** before proceeding with the next action
+2. **Surface the gap explicitly** via the STATUS doc or session message
+   (e.g., "§AA violation: /mlx-mfa-perf-audit not invoked at perf
+   discovery checkpoint; halting before merge.")
+3. **Invoke the required skill** before continuing
+4. **Log the invocation** in the relevant sprint deliverable doc
+
+Violations of §AA mandatory checkpoints constitute a **procedural
+failure** equivalent to a failing three-axis test (§3.5).  They block
+merge to master, block version bumps, block PyPI releases.
+
+**There is no manual override.**  If a checkpoint is genuinely
+inapplicable (e.g., a doc-only release with no kernel changes), CC
+documents the inapplicability in the sprint deliverable doc with
+reasoning, but the audit (§AA.2) still records the decision.
+
+### §AA.2 — Skill invocation evidence in sprint docs (added 2026-05-13)
+
+Every sprint deliverable doc (`decisions.md`, `results.md`, `status.md`,
+`docs/audits/*.md`, `docs/sprints/*.md`) MUST include a "Skill
+invocations" section in this format:
+
+```markdown
+## Skill invocations
+
+| Skill | Decision point | Timestamp (ISO) | Findings count | Action taken |
+|---|---|---|---|---|
+| /mlx-code-review | pre-merge of audit_runner.py | 2026-05-13T14:23Z | 2 MEDIUM, 3 LOW | MEDIUM fixed before commit |
+| /mlx-mfa-perf-audit | claim audit v2.37.4_d64 | 2026-05-13T15:01Z | 1 (REACHABLE) | Verdict captured in CHANGELOG |
+```
+
+Empty or missing section → **audit fails**.  The
+`/mlx-mfa-release-audit` skill's Check 5 (skill invocation log audit)
+verifies this section is populated before any version bump.
+
+Templates for sprint deliverable docs live in `docs/templates/`:
+- `sprint_decisions_template.md`
+- `sprint_status_template.md`
+
+These templates pre-include the Skill-invocations table so CC cannot
+forget to fill it.  When starting a new sprint deliverable, copy from
+the template.
+
+### §AA.3 — Reference to mlx-mfa-* skills (Sprint 3 deliverables)
+
+The mlx-mfa-specialized skills created in Sprint 3 (see
+`docs/skills/README.md`) automate specific §AA checkpoints:
+
+| Checkpoint | General skill | Automation skill (preferred) |
+|---|---|---|
+| Post-bench "X× speedup" / "Y% speedup" discovery | /mlx-code-review | **/mlx-mfa-perf-audit** |
+| Pre-version-bump | /mlx-code-review + /repo-release-prep | **/mlx-mfa-release-audit** |
+| Pre-bench sub-ms work | /metal-kernel-dev | **/mlx-mfa-bench-methodology** |
+| New kernel write (>200 LOC source generator) | /metal-kernel-dev | **/mlx-mfa-kernel-design** (deferred to post-Sprint-6; see `docs/skills/README.md` for deferral rationale) |
+
+When an mlx-mfa-* automation skill exists for a checkpoint, invocation
+of that skill satisfies the §AA mandatory requirement.  The general
+skill remains available for cases not covered by the specialized
+skill — e.g., reviewing a Python refactor that doesn't touch a
+documented perf claim still needs `/mlx-code-review`, not
+`/mlx-mfa-perf-audit`.
+
+### §AA.4 — Pre-tag enforcement via /mlx-mfa-release-audit
+
+Before any version bump (and therefore any PyPI release), CC MUST
+invoke:
+
+```
+/mlx-mfa-release-audit target_version=<new_version>
+```
+
+If verdict is `BLOCKED`, the release flow halts.  CC does NOT
+proceed to:
+- Multi-SoT version bump (`pyproject.toml`, `mlx_mfa/__init__.py`,
+  `README.md`)
+- `git tag vX.Y.Z`
+- `python -m build`
+- `twine upload`
+- `gh release create`
+
+The blocking findings are addressed and `/mlx-mfa-release-audit` is
+re-invoked until `GREEN` (or `GREEN_WITH_ADVISORY` with documented
+advisory-acceptance).
+
+This is the **canonical pre-tag gate**.  The earlier §X manual
+checklist remains as a backup / documentation reference, but
+`/mlx-mfa-release-audit` is now the mechanical enforcer.  In case of
+disagreement between the manual checklist and the skill's verdict
+(e.g., the skill flags BLOCKED but a human reviewer believes the
+release is fine), the skill is authoritative — the disagreement
+means either:
+- The skill caught something the human missed (most likely), OR
+- The skill needs to be updated (Sprint-3-style amendment, separate
+  branch)
+
+Either way, the release flow halts until the disagreement is
+resolved.
+
 ---
 
 ## 6. Scope discipline — pas de re-escalade prématurée
