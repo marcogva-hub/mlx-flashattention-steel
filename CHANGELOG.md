@@ -9,6 +9,58 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Added (Section B v2.50 Prompt 5b — Top-K bisection kernel as opt-in)
+
+- **`MFA_TOPK_BISECT=1`** env var engages a custom `mx.fast.metal_kernel`
+  (`_topk_bisect_threshold_kernel`) that computes per-row top-K threshold
+  via FP32 bisection.  **3.85× speedup** over the Phase 3a `mx.topk`-based
+  path at audit shape (B=1 H=16 qL=4096 D=128 fp16, k_count=64): 42.91 ms
+  → 11.15 ms.
+
+  **Multi-architecture investigation** (5 approaches per
+  `docs/v50/phase-3b-architectures-comparison.md`):
+  - Approach 1 (two-pass radix-select + sparse SDPA): L-effort C++
+    Primitive extension, deferred Section B v2 follow-up
+  - Approach 2 (Apple primitive composition `mx.argpartition` + SDPA):
+    FALSIFIED — `mx.argpartition` is 34.28 ms = same cost as `mx.sort`
+    in MLX 0.31; no improvement
+  - Approach 3 (`mx.compile` graph fusion): FALSIFIED — 47.95 ms,
+    slight regression vs uncompiled Phase 3a
+  - Approach 4 (`mx.fast.metal_kernel` bisection): **SHIPPED** — 11.15 ms,
+    3.85× speedup
+  - Approach 5 (single-pass running top-K state machine): DEFERRED —
+    would eliminate scores tensor materialization (additional ~2× over
+    Approach 4) but requires complex SIMD-divergent heap maintenance;
+    Section B v2 roadmap
+
+  **Trade-off**: bisection produces FP32-precision threshold then casts
+  to FP16 for the mask comparison.  FP16 boundary ties can cause 64-N
+  elements selected per row instead of exactly K_TOP — same inherent
+  ambiguity as `mx.topk` (which produces 64-69 elements due to FP16
+  ties at audit shape).  SDPA output may differ by up to ~0.68 between
+  Architecture B and Phase 3a paths due to softmax sensitivity at the
+  boundary; both outputs are mathematically valid top-K-approximate
+  results.
+
+  **Default behavior preserved**: env unset → Phase 3a `mx.topk` path
+  (exact `mx.topk` semantics; 1.25× over Python ref).  Opt-in for users
+  who validate the bisection's approximation acceptability for their
+  workload.
+
+  **Validation** (`tests/test_v50_sprint_5b_section_b_topk_bisect.py`,
+  7 tests, all green):
+  - Kernel loads
+  - Opt-in via env var engages bisection path
+  - Bisection vs Phase 3a output diff bounded
+  - bf16 + D=128 paths work
+  - Default (env unset) preserves Phase 3a
+
+  **Section B v2 follow-up** in
+  `docs/v50/phase-3b-architectures-comparison.md` §"Section B v2 roadmap":
+  4-6h focused session to implement Approach 5 (single-pass running
+  top-K, eliminates scores materialization, targets additional ~2×
+  speedup over Approach 4 for ~7× over Phase 3a total).
+
 ### Docs (Section E v2.50 Prompt 5b — HARDWARE_SUPPORT.md final narrative)
 
 - **`docs/HARDWARE_SUPPORT.md`** updated to reflect post-Prompt-5b

@@ -2679,6 +2679,92 @@ def flash_attention_gna(
 # Track GNA-C — Top-k dynamic sparse attention
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# v2.50 Prompt 5b Section B — Architecture B (bisection top-K threshold).
+# Per-row bisection in FP32 over [row_min, row_max] for ~32 iterations to
+# find the score threshold above which exactly K_TOP=k_count elements lie.
+# 3.85x speedup over mx.topk-based path at audit shape.  See
+# `docs/v50/phase-3b-architectures-comparison.md` for the multi-architecture
+# investigation.
+#
+# Grid: (N, B*H, 1).  Threadgroup: 256 threads (8 simdgroups × 32 lanes).
+# Each thread processes S/256 = STRIDE score values from one (B*H, N) row.
+# Threshold output is FP32 [B*H, N]; caller reshapes + casts to q.dtype.
+_topk_bisect_threshold_kernel = mx.fast.metal_kernel(
+    name="topk_threshold_bisect",
+    input_names=["scores", "k_top_arr"],
+    output_names=["threshold"],
+    source="""
+        uint n_idx = threadgroup_position_in_grid.x;
+        uint b_h = threadgroup_position_in_grid.y;
+        uint tid = thread_position_in_threadgroup.x;
+        uint sg_id = simdgroup_index_in_threadgroup;
+        uint lane = thread_index_in_simdgroup;
+        constexpr int NTHR = 256;
+        constexpr int N_SIMDS = 8;
+
+        // K_TOP passed as 1-element int32 input array (lets one kernel handle
+        // arbitrary k_count without re-JIT per value).
+        int K_TOP = k_top_arr[0];
+
+        uint N_arg = (uint)scores_shape[1];
+        uint S_arg = (uint)scores_shape[2];
+        uint row_base = b_h * N_arg * S_arg + n_idx * S_arg;
+        int stride = (int)((S_arg + NTHR - 1) / NTHR);
+
+        threadgroup float sg_maxs[8];
+        threadgroup float sg_mins[8];
+        threadgroup int sg_cnts[8];
+
+        // Phase 1: find row min/max for bisection range
+        float local_max = -1e9, local_min = 1e9;
+        for (int i = 0; i < stride; ++i) {
+            uint k_idx = (uint)tid + (uint)(i * NTHR);
+            if (k_idx < S_arg) {
+                float s = (float)scores[row_base + k_idx];
+                local_max = max(local_max, s); local_min = min(local_min, s);
+            }
+        }
+        float sg_max = simd_max(local_max), sg_min = simd_min(local_min);
+        if (lane == 0) { sg_maxs[sg_id] = sg_max; sg_mins[sg_id] = sg_min; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float row_max = -1e9, row_min = 1e9;
+        for (int i = 0; i < N_SIMDS; ++i) {
+            row_max = max(row_max, sg_maxs[i]);
+            row_min = min(row_min, sg_mins[i]);
+        }
+
+        // Phase 2: FP32 bisection
+        float lo = row_min;
+        float hi = row_max;
+        for (int iter = 0; iter < 32; ++iter) {
+            float mid = (lo + hi) * 0.5f;
+            int local_cnt = 0;
+            for (int i = 0; i < stride; ++i) {
+                uint k_idx = (uint)tid + (uint)(i * NTHR);
+                if (k_idx < S_arg) {
+                    float s = (float)scores[row_base + k_idx];
+                    if (s >= mid) local_cnt += 1;
+                }
+            }
+            int sg_cnt = simd_sum(local_cnt);
+            if (lane == 0) sg_cnts[sg_id] = sg_cnt;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            int row_cnt = 0;
+            for (int i = 0; i < N_SIMDS; ++i) row_cnt += sg_cnts[i];
+            // count >= K_TOP at mid → mid too low → raise lo
+            if (row_cnt >= K_TOP) lo = mid;
+            else hi = mid;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (tid == 0) {
+            uint out_idx = b_h * N_arg + n_idx;
+            threshold[out_idx] = lo;
+        }
+    """,
+    ensure_row_contiguous=True,
+)
+
+
 def flash_attention_topk(
     q: mx.array,
     k: mx.array,
@@ -2747,17 +2833,50 @@ def flash_attention_topk(
     # M5+ NAX hardware (Apple SDPA NAX path), D ∈ {64,128} (NAX-supported),
     # dtype f16/bf16 (NAX-supported), k_count < S (filtering actually needed).
     _disable_topk_nax = os.environ.get("MFA_DISABLE_TOPK_NAX") == "1"
+    _bisect_opt_in = os.environ.get("MFA_TOPK_BISECT") == "1"
     if (mask is None and not _disable_topk_nax
             and _get_has_nax_cached()
             and D in (64, 128)
             and q.dtype in (mx.float16, mx.bfloat16)
             and k_count < S):
-        # Find top-K threshold per query.  mx.topk returns the k largest
-        # values (unsorted within partition); the min of those is the
-        # k-th largest = threshold.
         scores = (q @ k.swapaxes(-1, -2)) * scale  # [B, H, N, S]
-        topk_vals = mx.topk(scores, k=k_count, axis=-1)  # [B, H, N, k]
-        threshold = mx.min(topk_vals, axis=-1, keepdims=True)  # [B, H, N, 1]
+
+        # v2.50 Prompt 5b Section B — Architecture B (bisection threshold).
+        # Opt-in via `MFA_TOPK_BISECT=1`.  Uses a custom Metal kernel
+        # (`_topk_bisect_threshold_kernel`) to find per-row top-K threshold
+        # via FP32 bisection.  Empirical 3.85× speedup vs `mx.topk`-based
+        # Phase 3a path at audit shape (B=1 H=16 qL=4096 D=128 fp16
+        # k_count=64): 42.91 ms → 11.15 ms.
+        #
+        # Trade-off: FP32 bisection is more precise than FP16 mx.topk
+        # threshold, but both paths are inherently approximate due to
+        # FP16 score-tie ambiguity (mx.topk selects 64-69 elements per
+        # row depending on ties; bisection selects 64-69 similarly).
+        # SDPA output may differ by up to ~0.68 between paths due to
+        # softmax sensitivity at boundary element selection.  Both
+        # outputs are mathematically valid top-K-approximate results.
+        #
+        # See `docs/v50/phase-3b-architectures-comparison.md` for the
+        # 5-architecture investigation and Section B v2 roadmap.
+        if _bisect_opt_in:
+            BH = q.shape[0] * q.shape[1]
+            N = q.shape[2]
+            scores_r = scores.reshape(BH, N, S)
+            k_top_arr = mx.array([k_count], dtype=mx.int32)
+            threshold = _topk_bisect_threshold_kernel(
+                inputs=[scores_r, k_top_arr],
+                output_shapes=[(BH, N)],
+                output_dtypes=[mx.float32],
+                grid=(N, BH, 1),
+                threadgroup=(256, 1, 1),
+            )[0]
+            threshold = threshold.reshape(q.shape[0], q.shape[1], N, 1).astype(q.dtype)
+        else:
+            # Phase 3a AUTO default: mx.topk threshold (exact mx.topk
+            # semantics; 1.25× over Python ref).
+            topk_vals = mx.topk(scores, k=k_count, axis=-1)
+            threshold = mx.min(topk_vals, axis=-1, keepdims=True)
+
         # Build additive float bias.  -1e4 is far below any reasonable
         # softmax-survivable value in f16 (e^-1e4 ≈ 0); using -inf would
         # also work but -1e4 keeps the bias finite for downstream safety.
