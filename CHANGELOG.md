@@ -9,6 +9,54 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Added (Section A v2.50 Prompt 5b — V34 backward block-sparse NAX PoC + scaffold)
+
+- **`v6_nax_backward_dv_sparse_raw` C++ binding** ships native block-sparse
+  V34 backward dV kernel (proof-of-concept; full 5-kernel extension is
+  Section A v2 follow-up per Marco's Option 3 PoC + scaffold scope).
+
+  **What this PoC delivers**:
+  - New source generator `createV34BackwardDVSparseSource()` in
+    `NAAttentionKernel.cpp` (~320 LOC).  Mirrors dense dV kernel with
+    one structural addition: per-Q-tile `block_mask[qb, k_tile]` scan
+    at Q-loop entry; skips entire Q-tile contribution when inactive
+    (zero divergence — uniform across SG).
+  - New `v34_dispatch_bwd_dv_sparse` dispatcher (`v6_nax_compile.mm`),
+    `MFAV34BwdDVSparse` Primitive + `V34BwdVSparseKey` cache key
+    (`mfa_v6_nax_primitive.cpp`), `v6_nax_backward_dv_sparse_raw` C++
+    helper + nanobind binding (`bindings.cpp`).
+
+  **Validation** (`tests/test_v50_sprint_5b_section_a_sparse_dv_poc.py`,
+  7 tests, all green):
+  - All-True mask → bit-identical to dense dV (max_diff = 0.0) —
+    proves dispatch + cache + Primitive + binding wire through correctly.
+  - All-False mask → zero output — proves sparse-skip control flow.
+  - Partial mask → finite non-trivial output.
+  - bf16 path works.
+  - D=128 path works (Section D broadening pairs naturally).
+  - 2-D mask only at PoC stage; 3-D/4-D rejected (Section A v2 broadens).
+
+  **Math gap documented** (`docs/v50/sprint-5b-section-a-scaffold.md`):
+  The PoC kernel's sparse-skip is structurally correct but mathematically
+  only valid when paired with a sparse forward that returns L (lse
+  over only active blocks).  With dense V34 forward L, the
+  sparse-skip semantics don't match (dense forward produces non-zero
+  P for all qb tiles; skipping any in backward misses contributions).
+  Section A v2 follow-up: extend `sparse_attention_nax` to return L
+  (small C++ change), then extend the other 4 V34 backward kernels
+  (dQ, dK split, fused dKdV, legacy fused dKV) with the same
+  sparse-skip pattern.  Estimated 4-6h focused session.
+
+  **Section A v2 roadmap** in
+  `docs/v50/sprint-5b-section-a-scaffold.md` §"Section A v2 follow-up
+  roadmap" — 7 numbered steps with effort estimates.
+
+  **PoC currently exposed only as private `_ext.v6_nax_backward_dv_sparse_raw`
+  binding** — not wired into `flash_attention_sparse` backward path.
+  Section C `_sparse_nax_with_sdpa_vjp` wrapper remains the production
+  sparse backward (correct gradients across all densities; pays dense
+  cost).
+
 ### Added (Section D v2.50 Prompt 5b — D=128 V34 backward broadening)
 
 - **D=128 V34 backward NOW engages via PUBLIC AUTO API** when

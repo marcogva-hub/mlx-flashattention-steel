@@ -5103,6 +5103,325 @@ void attention_bwd_dv(
 
 
 // =============================================================================
+// V34 backward dV SPARSE kernel — Prompt 5b Section A PoC.
+//
+// Identical to createV34BackwardDVSource() with one structural addition: a
+// per-Q-tile block_mask scan in the Q-loop.  When block_mask[qb, tid.x] is
+// false, the entire Q-tile contribution to dV[k_base] is skipped (the
+// inactive blocks DON'T contribute P^T @ dO since their P values are
+// zero by the sparsity contract).
+//
+// Mask layout: 2-D (NQ, NK) bool — broadcast across (B, Hq).  This is the
+// most common mask shape produced by `make_causal_block_mask` and
+// `make_sliding_window_mask`.  Higher mask_ndim (3-D, 4-D) falls back to
+// dense via Python-level routing.
+//
+// Sparse skip is uniform across the SIMD group (all threads check the same
+// scalar block_mask entry) → zero warp divergence.  Pattern mirrors
+// csrc/mfa_sparse_attention.cpp forward LCSA sparse scan.
+//
+// Output identical to dense dV kernel: dV_partials [B, Hq, WM, kL, D] FP32.
+// =============================================================================
+std::string NAAttentionKernel::createV34BackwardDVSparseSource() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;
+  const int kU = 16;
+  const int TQ_per_SG = BQ / (WM * kU);
+  const int TD = BD / kU;
+  const int TK = BK / kU;
+  (void)TQ_per_SG; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  const float scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n";
+  ss << "\n";
+
+  ss << naxHelpersBlock();
+
+  ss << "\nusing T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n\n";
+  ss << "#define V34BWDV_BQ " << BQ << "\n";
+  ss << "#define V34BWDV_BK " << BK << "\n";
+  ss << "#define V34BWDV_BD " << BD << "\n";
+  ss << "#define V34BWDV_WM " << WM << "\n";
+  ss << "#define V34BWDV_TQ " << TQ_per_SG << "\n";
+  ss << "#define V34BWDV_TD " << TD << "\n";
+  ss << "#define V34BWDV_TK " << TK << "\n";
+  ss << "#define V34BWDV_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V34BWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V34BWDV_SPARSE 1\n";
+  ss << "\n";
+
+  ss << R"BWDVSPMSL(
+struct V34BwdVSparseParams {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  int qL_off;
+  long Q_strides[3];
+  long K_strides[3];
+  long V_strides[3];
+  long L_strides[3];
+  long dO_strides[3];
+  long dVp_strides[4];
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34BWDV_WM * 32)]]
+void attention_bwd_dv_sparse(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    const device float* L [[buffer(3)]],
+    const device T* dO [[buffer(4)]],
+    device float* dV_partials [[buffer(5)]],
+    constant V34BwdVSparseParams& params [[buffer(6)]],
+    const device bool* block_mask [[buffer(7)]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;
+
+  ulong3 tidl{tid.x, tid.y, tid.z};
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+
+  Q  += tidl.z * params.Q_strides[0]  + tidl.y * params.Q_strides[1];
+  dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
+  L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
+  K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
+      + tidl.x * V34BWDV_BK * params.K_strides[2];
+  V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
+      + tidl.x * V34BWDV_BK * params.V_strides[2];
+
+  dV_partials += tidl.z * params.dVp_strides[0]
+              +  tidl.y * params.dVp_strides[1]
+              +  simd_group_id * params.dVp_strides[2]
+              +  tidl.x * V34BWDV_BK * params.dVp_strides[3];
+
+  const short sg_q_offset = 16 * V34BWDV_TQ * simd_group_id;
+
+  const int NQ_aligned = params.qL / V34BWDV_BQ;
+  const int NK_aligned = params.kL / V34BWDV_BK;
+  const bool is_last_k = (int(tid.x) == NK_aligned);
+  const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
+      ? params.kL_rem : V34BWDV_BK;
+  const int nq_full = params.qL / V34BWDV_BQ;
+  const int nq_rem = params.qL % V34BWDV_BQ;
+  const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
+
+  using dv_t = NAXTile<float, V34BWDV_TK, V34BWDV_TD>;
+  dv_t dV_accum;
+  dV_accum.clear();
+
+  using s_q_t = NAXTile<float, V34BWDV_TQ, V34BWDV_TK>;
+  constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
+
+  // === PROMPT 5B SECTION A SPARSE BASE: 2-D mask [NQ, NK] ===
+  // Per-TG mask base pointer for this K-tile (tid.x).
+  // 2-D mask broadcast across (B, Hq) → all TGs in (b, hq) see same column tid.x.
+  const int NK_total = params.NK;
+
+  for (int qb = 0; qb < q_loop; qb++) {
+    // ===== SPARSE SKIP (Prompt 5b Section A PoC) =====
+    // For full-blocks (qb < NQ_aligned), check block_mask[qb, tid.x].
+    // For the last partial block (qb == NQ_aligned && qL_rem > 0), the mask
+    // is sized for NQ_aligned and doesn't have an entry for the partial row.
+    // We treat partial blocks as always-active (conservative — partial blocks
+    // are at the boundary, sparse patterns rarely zero them).
+    if (qb < NQ_aligned) {
+      bool tile_active = block_mask[qb * NK_total + int(tid.x)];
+      if (!tile_active) {
+        // Skip entire Q-tile: P would be zero so P^T @ dO contributes zero.
+        continue;
+      }
+    }
+    // ===== END SPARSE SKIP =====
+
+    const bool is_last_q = (qb == NQ_aligned);
+    const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
+        ? params.qL_rem : V34BWDV_BQ;
+    const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
+    if (is_last_q && sg_lim_q <= 0) continue;
+
+    const device T* Q_qs  = Q  + qb * V34BWDV_BQ * int(params.Q_strides[2])
+                              + sg_q_offset * int(params.Q_strides[2]);
+    const device T* dO_qs = dO + qb * V34BWDV_BQ * int(params.dO_strides[2])
+                              + sg_q_offset * int(params.dO_strides[2]);
+    const device float* L_qs = L + qb * V34BWDV_BQ * int(params.L_strides[2])
+                                + sg_q_offset * int(params.L_strides[2]);
+
+    metal::vec<float, kRowsPT_q> lse_log2;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      constexpr float log2e_f = 1.4426950408889634f;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          if (in_range) {
+            lse_log2[row_idx] = L_qs[local_row * int(params.L_strides[2])] * log2e_f;
+          } else {
+            lse_log2[row_idx] = Limits<float>::finite_max;
+          }
+        }
+      }
+    }
+
+    s_q_t Stile;
+    Stile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDV_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDV_TD; id++) {
+          NAXTile<T, 1, 1> Qfrag;
+          NAXTile<T, 2, 1> Kfrag;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag.load_rows(Q_qs + Q_off, int(params.Q_strides[2]),
+                            sg_lim_q - iq * 16);
+          } else {
+            Qfrag.load(Q_qs + Q_off, int(params.Q_strides[2]));
+          }
+          if (is_last_k) {
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Kfrag.load(K + K_off, int(params.K_strides[2]));
+          }
+          s_q_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qfrag.frag_at(0, 0),
+              metal::false_type{},
+              Kfrag.frag_at(0, 0),
+              Kfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= V34BWDV_SCALE_LOG2E;
+    }
+
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+#if V34BWDV_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDV_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDV_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
+    Stile.template row_bin_op<ExpSubOp>(lse_log2);
+
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDV_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDV_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+          NAXTile<T, 1, 2> dOfrag2;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag2.load_rows(dO_qs + dO_off, int(params.dO_strides[2]),
+                              sg_lim_q - iq * 16);
+          } else {
+            dOfrag2.load(dO_qs + dO_off, int(params.dO_strides[2]));
+          }
+          dv_t::NAXFrag_t::mma(
+              dV_accum.frag_at(ik, id),
+              dV_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},
+              dOfrag2.frag_at(0, 0),
+              dOfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    simdgroup_barrier(mem_flags::mem_none);
+  }
+
+  if (is_last_k) {
+    if (lim_rows_k <= 0) return;
+    dV_accum.store_rows(dV_partials, int(params.dVp_strides[3]), lim_rows_k);
+  } else {
+    dV_accum.store(dV_partials, int(params.dVp_strides[3]));
+  }
+}
+)BWDVSPMSL";
+
+  return ss.str();
+}
+
+
+// =============================================================================
 // V34 backward dK-only kernel — WM=4 Q-row partition with per-SG slot output.
 // Phase 2.O2 sister kernel to createV34BackwardDVSource().  Adds D = rowsum(
 // dO⊙O), dP = dO@V^T, dS = P*(dP-D), and dK_accum += dS^T@Q.

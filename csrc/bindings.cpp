@@ -62,6 +62,13 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal);
+// V34 backward dV SPARSE — Prompt 5b Section A PoC.  Skips inactive Q-tiles
+// per block_mask scan.  Mask layout 2-D [NQ, NK] bool only at PoC stage.
+mlx::core::array v6_nax_backward_dv_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_o, const mlx::core::array& block_mask,
+    float scale, int wm, bool causal);
 // V34 backward dK-only Phase 2.O2 (sister kernel).  Same shape contract
 // as dV; takes additional O input (for D = rowsum(dO⊙O)).
 mlx::core::array v6_nax_backward_dk_raw(
@@ -429,6 +436,24 @@ NB_MODULE(_ext, m) {
         "with Q-row partition.  Returns dV_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.  "
         "Does NOT take D (= rowsum(dO⊙O)) — dV = P^T @ dO has no dS term.");
+
+  m.def("v6_nax_backward_dv_sparse_raw",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& lse,
+           const mlx::core::array& d_o, const mlx::core::array& block_mask,
+           float scale, int wm, bool causal) {
+          return mlx_mfa::v6_nax_backward_dv_sparse_raw(
+              q, k, v, lse, d_o, block_mask, scale, wm, causal);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("lse"), nb::arg("d_o"), nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
+        "V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).  Iterates "
+        "only active Q-tiles per block_mask scan.  Mask must be 2-D [NQ, NK] "
+        "bool.  Returns dV_partials [B, Hq, WM, kL, D] FP32; caller reduces "
+        "via mx.sum(axis=2) + casts to T.  Other 4 V34 backward kernels (dQ, "
+        "dK split, fused dKdV, legacy fused dKV) remain dense in Section A "
+        "PoC scaffold — see docs/v50/sprint-5b-section-a-scaffold.md.");
 
   m.def("v6_nax_backward_dk_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,

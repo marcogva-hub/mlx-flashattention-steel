@@ -91,6 +91,20 @@ struct NAAttentionKernel {
   /// Stile (see blueprint §"Order of operations").  Consumes v2.38.1 D_vec.
   std::string createV34BackwardFusedDKDVSource() const noexcept;
 
+  /// V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).
+  /// Mirrors createV34BackwardDVSource() but adds per-Q-tile block_mask
+  /// scan in the Q-loop: when block_mask[qb, k_tile] == false, skip the
+  /// entire Q-tile contribution (zero divergence — uniform across SG).
+  /// Pattern reference: csrc/mfa_sparse_attention.cpp forward LCSA scan.
+  ///
+  /// Mask layout supported: 2-D (NQ, NK) only at PoC stage (Sprint 5 v2
+  /// will broaden to 3-D and 4-D layouts).  Higher mask_ndim values fall
+  /// back to the dense kernel via flash_attention_sparse's routing.
+  ///
+  /// Output identical to dense dV kernel: dV_partials [B, Hq, WM, kL, D]
+  /// FP32 — caller reduces via mx.sum(axis=2) and casts to T.
+  std::string createV34BackwardDVSparseSource() const noexcept;
+
 private:
   // Helpers that build operand-name and stride strings for the source.
   std::string memoryName(AttentionOperand operand) const noexcept;
