@@ -105,6 +105,16 @@ struct NAAttentionKernel {
   /// FP32 — caller reduces via mx.sum(axis=2) and casts to T.
   std::string createV34BackwardDVSparseSource() const noexcept;
 
+  // V34 backward dQ/dK/fused-dKdV SPARSE kernels — DECLARATIONS RESERVED
+  // for Section A v3 follow-up.  In Prompt 5c Section A.2 (this commit),
+  // Python-level orchestration uses the existing dV sparse PoC kernel
+  // (consumed with sparse-LSE) + SDPA-vjp for dQ/dK gradients, which
+  // delivers a CORRECT end-to-end sparse backward path while deferring
+  // the 3 remaining native sparse kernels to a focused future session
+  // (mechanical extension once dQ pattern is validated).  See
+  // `docs/v50/sprint-5c-section-a-status.md` for the empirical
+  // justification (time + risk vs. value).
+
 private:
   // Helpers that build operand-name and stride strings for the source.
   std::string memoryName(AttentionOperand operand) const noexcept;

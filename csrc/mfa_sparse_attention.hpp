@@ -52,4 +52,25 @@ mlx::core::array sparse_attention_forward(
     // shape-aware decide_auto_version() in mlx_mfa.lcsa_nax).
     const std::string& kernel_version = "");
 
+/// v2.50 Prompt 5c Section A — sparse forward returning (O, L) with sparse-L.
+///
+/// Identical semantics to `sparse_attention_forward` but ALSO returns the
+/// per-row log-sum-exp (natural-log domain) computed over only the active
+/// blocks.  Required by V34 backward sparse kernels to consume the same
+/// LSE convention as the forward (Pattern #5 LSE consistency).
+///
+/// All-False rows produce L = -INFINITY (sentinel; consumer must handle).
+///
+/// V1 kernel only at PoC stage (V2 kernel extension is Section A v3
+/// follow-up — V2 uses cooperative-tensor inner-GEMM that requires more
+/// extensive lse-tracking restructure).
+std::pair<mlx::core::array, mlx::core::array> sparse_attention_forward_with_lse(
+    const mlx::core::array& Q,
+    const mlx::core::array& K,
+    const mlx::core::array& V,
+    const mlx::core::array& block_mask,
+    int block_tile,
+    bool causal,
+    float scale);
+
 }  // namespace mlx_mfa

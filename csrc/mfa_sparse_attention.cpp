@@ -641,7 +641,8 @@ const std::string V2_SPARSE_HEADER = V2_SPARSE_HEADER_PREFIX + V2_APPLE_HELPERS_
 std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
                                   int BT, int NQ, int NK, float scale,
                                   const std::string& dtype_str,
-                                  int mask_ndim, bool causal) {
+                                  int mask_ndim, bool causal,
+                                  bool emit_lse = false) {
   int gqa_factor = Hq / Hk;
   // Offset expression into block_mask for this (b, hq, q_tile).
   std::string mask_base_expr;
@@ -694,8 +695,14 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
      << "    device "       << dtype_str << "* O_base = O\n"
      << "        + b  * cHq * cQL * cD\n"
      << "        + hq *       cQL * cD\n"
-     << "        + q_abs *          cD;\n"
-     << "\n"
+     << "        + q_abs *          cD;\n";
+  if (emit_lse) {
+    os << "    device float* L_base = L\n"
+       << "        + b  * cHq * cQL\n"
+       << "        + hq *       cQL\n"
+       << "        + q_abs;\n";
+  }
+  os << "\n"
      << "    // Per-thread state\n"
      << "    float q_vec[cD];\n"
      << "    #pragma clang loop unroll(full)\n"
@@ -774,6 +781,18 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
      << "        #pragma clang loop unroll(full)\n"
      << "        for (uint d = 0; d < cD; ++d) O_base[d] = " << dtype_str << "(o_vec[d] * inv_l);\n"
      << "    }\n";
+  if (emit_lse) {
+    // v2.50 Prompt 5c Section A.1 — write per-row sparse-LSE (natural-log).
+    // L[r] = m_run + log(l_run) for active rows; -INFINITY for all-False rows
+    // (sentinel; consumer must handle).  Required by V34 backward sparse to
+    // consume same convention.
+    os << "    // Write sparse-LSE (natural log).  All-False rows → -INFINITY.\n"
+       << "    if (l_run <= 0.0f) {\n"
+       << "        L_base[0] = -INFINITY;\n"
+       << "    } else {\n"
+       << "        L_base[0] = m_run + log(l_run);\n"
+       << "    }\n";
+  }
   return os.str();
 }
 
@@ -1073,6 +1092,126 @@ mlx::core::array sparse_attention_forward(
       false,
       mlx::core::default_stream(mlx::core::Device::gpu));
   return outs[0];
+}
+
+
+// =============================================================================
+// v2.50 Prompt 5c Section A.1 — sparse_attention_forward returning (O, L)
+//
+// V1 kernel only at PoC stage.  Mirrors sparse_attention_forward dispatch
+// with emit_lse=true forcing the source generator to also write per-row
+// natural-log LSE into the L output buffer.  L shape is (B, Hq, qL) FP32.
+// All-False rows write L = -INFINITY (sentinel; consumer must handle).
+//
+// V2 kernel doesn't yet support LSE return (uses cooperative-tensor inner
+// GEMM that requires more extensive lse-tracking restructure — Section A
+// v3 follow-up).  V2 path silently falls back to V1 here so the (O, L)
+// contract is honored.
+// =============================================================================
+std::pair<mlx::core::array, mlx::core::array>
+sparse_attention_forward_with_lse(
+    const mlx::core::array& Q,
+    const mlx::core::array& K,
+    const mlx::core::array& V,
+    const mlx::core::array& block_mask,
+    int block_tile,
+    bool causal,
+    float scale) {
+  // Sanity asserts (identical to sparse_attention_forward; small inline
+  // duplication is preferable to factor-out for clarity).
+  if (Q.ndim() != 4 || K.ndim() != 4 || V.ndim() != 4) {
+    throw std::runtime_error("sparse_attention: Q, K, V must be 4-D (B, H, L, D)");
+  }
+  bool is_f16 = (Q.dtype() == mlx::core::float16);
+  bool is_bf16 = (Q.dtype() == mlx::core::bfloat16);
+  if (!is_f16 && !is_bf16) {
+    throw std::runtime_error("sparse_attention: dtype must be float16 or bfloat16");
+  }
+  if (K.dtype() != Q.dtype() || V.dtype() != Q.dtype()) {
+    throw std::runtime_error("sparse_attention: Q, K, V dtype must match");
+  }
+  if (block_mask.dtype() != mlx::core::bool_) {
+    throw std::runtime_error("sparse_attention: block_mask must be bool");
+  }
+  int mask_ndim = static_cast<int>(block_mask.ndim());
+  if (mask_ndim != 2 && mask_ndim != 3 && mask_ndim != 4) {
+    throw std::runtime_error("sparse_attention: block_mask.ndim must be 2, 3, or 4");
+  }
+  if (block_tile != 16 && block_tile != 32 && block_tile != 64) {
+    throw std::runtime_error("sparse_attention: block_tile must be 16, 32, or 64");
+  }
+  int B  = static_cast<int>(Q.shape(0));
+  int Hq = static_cast<int>(Q.shape(1));
+  int qL = static_cast<int>(Q.shape(2));
+  int D  = static_cast<int>(Q.shape(3));
+  int Hk = static_cast<int>(K.shape(1));
+  int kL = static_cast<int>(K.shape(2));
+  if (Hq % Hk != 0) {
+    throw std::runtime_error("sparse_attention: Hq must be multiple of Hk (GQA)");
+  }
+  if (qL % block_tile != 0 || kL % block_tile != 0) {
+    throw std::runtime_error("sparse_attention: qL, kL must be multiples of block_tile");
+  }
+  if (D != 64 && D != 128) {
+    throw std::runtime_error("sparse_attention: head_dim must be 64 or 128");
+  }
+  int NQ = qL / block_tile;
+  int NK = kL / block_tile;
+  // Mask shape check per ndim (subset of full validation; full validation
+  // happens via sparse_attention_forward when called).
+  if (mask_ndim == 2) {
+    if (static_cast<int>(block_mask.shape(0)) != NQ ||
+        static_cast<int>(block_mask.shape(1)) != NK) {
+      throw std::runtime_error("sparse_attention: 2-D block_mask shape != (NQ, NK)");
+    }
+  }
+  long long mask_bytes = 1LL;
+  for (int i = 0; i < mask_ndim; ++i)
+    mask_bytes *= static_cast<long long>(block_mask.shape(i));
+  if (mask_bytes < 4096) {
+    throw std::runtime_error(
+        "sparse_attention: mask total bytes < 4096 (use larger qL, kL, "
+        "or higher mask ndim).");
+  }
+
+  std::string dtype_str = is_f16 ? "half" : "bfloat";
+
+  std::string name = "sparse_attn_v1_lse_" + dtype_str + "_" +
+      std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
+      "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
+      std::to_string(D) + "_BT" + std::to_string(block_tile) +
+      "_M" + std::to_string(mask_ndim) +
+      (causal ? "_c" : "_nc");
+
+  std::string source = sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile,
+                                             NQ, NK, scale, dtype_str,
+                                             mask_ndim, causal,
+                                             /*emit_lse=*/true);
+  std::string header = is_bf16 ? SPARSE_HEADER_BF16 : SPARSE_HEADER;
+
+  auto kernel = mlx::core::fast::metal_kernel(
+      name,
+      {"Q", "K", "V", "block_mask"},
+      {"O", "L"},  // dual output
+      source,
+      header,
+      /*ensure_row_contiguous=*/true,
+      /*atomic_outputs=*/false);
+
+  std::tuple<int, int, int> grid = std::make_tuple(block_tile, Hq, B * NQ);
+  std::tuple<int, int, int> tg = std::make_tuple(block_tile, 1, 1);
+
+  auto outs = kernel(
+      {Q, K, V, block_mask},
+      {mlx::core::Shape{B, Hq, qL, D}, mlx::core::Shape{B, Hq, qL}},
+      {Q.dtype(), mlx::core::float32},  // O dtype = Q; L dtype = fp32
+      grid,
+      tg,
+      {},
+      std::nullopt,
+      false,
+      mlx::core::default_stream(mlx::core::Device::gpu));
+  return {outs[0], outs[1]};
 }
 
 }  // namespace mlx_mfa

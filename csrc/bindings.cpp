@@ -977,6 +977,30 @@ NB_MODULE(_ext, m) {
       "v2.36.1: kernel_version param overrides MFA_LCSA_KERNEL_VERSION env "
       "(thread-safe alternative for Python-side shape-aware decide_auto_version).");
 
+  // v2.50 Prompt 5c Section A.1 — sparse forward returning (O, L).
+  m.def("sparse_attention_forward_with_lse",
+      [](const mlx::core::array& Q,
+         const mlx::core::array& K,
+         const mlx::core::array& V,
+         const mlx::core::array& block_mask,
+         int block_tile,
+         bool causal,
+         float scale) {
+        auto [O, L] = mlx_mfa::sparse_attention_forward_with_lse(
+            Q, K, V, block_mask, block_tile, causal, scale);
+        return nb::make_tuple(O, L);
+      },
+      nb::arg("Q"), nb::arg("K"), nb::arg("V"),
+      nb::arg("block_mask"),
+      nb::arg("block_tile") = 32,
+      nb::arg("causal") = false,
+      nb::arg("scale") = 0.0f,
+      "Block-sparse attention forward returning (O, L).  L is per-row "
+      "natural-log LSE over only the active blocks (sparse-LSE), required "
+      "by V34 backward sparse kernels for LSE consistency.  All-False rows "
+      "write L = -INFINITY (sentinel).  V1 kernel only at PoC stage "
+      "(v2.50 Prompt 5c Section A.1).");
+
   // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__
   // (was hardcoded "2.22.0", 11 versions stale). See release-flow-validation-report.md §C.3.
 }

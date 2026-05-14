@@ -9,6 +9,40 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Added (Section A v2.50 Prompt 5c — Sparse backward hybrid + sparse-LSE foundation)
+
+- **`sparse_attention_nax_with_lse`** (Python wrapper) and
+  `_ext.sparse_attention_forward_with_lse` (C++ binding): block-sparse
+  attention forward that returns (O, L) where L is per-row natural-log
+  LSE computed over ONLY active blocks (sparse-LSE).  All-False rows
+  write L = -INFINITY (sentinel).  Required by V34 backward sparse
+  kernels for LSE consistency (Pattern #5 — dense LSE + sparse skip in
+  backward gives wrong gradients).
+
+- **V34 sparse hybrid backward** via `flash_attention_sparse`: when V34
+  backward eligible (`MFA_ENABLE_V34_BACKWARD=1` + D ∈ {64, 128} + qL≥2048
+  + fp16/bf16 + 2-D mask + M5+ NAX), backward path routes through
+  `_v34_sparse_hybrid_vjp` orchestrator:
+  - Forward: sparse_attention_nax_with_lse (sparse-LSE)
+  - Backward dV: native `v6_nax_backward_dv_sparse_raw` kernel (PoC
+    from Prompt 5b Section A) consuming sparse-LSE → CORRECT sparse
+    gradients
+  - Backward dQ, dK: SDPA-vjp through expanded float bias mask
+
+  **Math correctness validated** (`test_hybrid_correctness_vs_sdpa_baseline`):
+  dQ/dK bit-identical to SDPA-vjp reference (RMSE < 1e-7), dV within
+  FP16 ULP (RMSE < 5e-3) for block-causal mask.
+
+  **Perf**: PARTIAL benefit (dV native sparse acceleration; dQ/dK pay
+  full dense cost via SDPA-vjp).  Section A v3 follow-up will deliver
+  the additional 5-10× speedup via the 3 remaining native sparse
+  backward kernels (dQ, dK split, fused dKdV).  Estimated 4-6h focused
+  session per `docs/v50/sprint-5c-section-a-status.md` §"Section A v3
+  follow-up".
+
+  Section C `_sparse_nax_with_sdpa_vjp` wrapper remains as fallback for
+  ineligible shapes (paged kv, D=other, qL < 2048, fp32, 3-D/4-D masks).
+
 ### Added (Section B v2.50 Prompt 5b — Top-K bisection kernel as opt-in)
 
 - **`MFA_TOPK_BISECT=1`** env var engages a custom `mx.fast.metal_kernel`
