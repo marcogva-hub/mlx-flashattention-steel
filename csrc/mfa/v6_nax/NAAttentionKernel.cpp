@@ -3988,7 +3988,11 @@ void attention_bwd_q(
   const int NQ_aligned = params.qL / V34BWD_BQ;
   const int NK_aligned = params.kL / V34BWD_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
-  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ) - tm;
+  // v2.50 Prompt 5e HIGH-2 fix: guard against (qL_rem - tm) underflow
+  // when tm > qL_rem (some SGs entirely beyond live rows in WM=4 partial
+  // Q-block).  Pre-fix: cast-to-short wrap → out-of-range tile loads.
+  const short lim_rows_q = (short)max(0,
+      (int)((params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ)) - (int)tm);
   const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34BWD_BK);
   const int kb_lim = params.NK;
 
@@ -6385,7 +6389,11 @@ void attention_bwd_q_sparse(
   const int NQ_aligned = params.qL / V34BWD_BQ;
   const int NK_aligned = params.kL / V34BWD_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
-  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ) - tm;
+  // v2.50 Prompt 5e HIGH-2 fix: guard against (qL_rem - tm) underflow
+  // when tm > qL_rem (some SGs entirely beyond live rows in WM=4 partial
+  // Q-block).  Pre-fix: cast-to-short wrap → out-of-range tile loads.
+  const short lim_rows_q = (short)max(0,
+      (int)((params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ)) - (int)tm);
   const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34BWD_BK);
   const int kb_lim = params.NK;
 

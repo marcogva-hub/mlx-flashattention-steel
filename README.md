@@ -4,7 +4,37 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.39.1** — Option γ outcome **α**: H1 register pressure
+Current PyPI version: **2.39.1**.  Master is staged for **v2.50**
+release (internal-mode accumulation per `CHANGELOG.md
+[Unreleased — for v2.50]`).
+
+### v2.50 highlights (master `53c914c`, staged for release)
+
+- **Top-K bisection kernel** AUTO production default (Prompt 5c): 3.85×
+  speedup over Phase 3a `mx.topk`-based path at audit shape.
+- **V34 backward broadened to D ∈ {64, 128}** (Prompt 5b Section D):
+  split kernels engage at parity with SDPA-vjp for D=128 + qL≥2048.
+- **D=128 + causal + attn_bias mode 1/2** correctness fix (Prompt 5b
+  Section C): V1 STEEL silent bias-drop bug resolved via V2 routing.
+- **Sparse backward** via Prompt 5c hybrid orchestrator (NAX sparse
+  forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse
+  kernels SHIPPED (Prompt 5d) but routed via opt-in
+  `MFA_V34_BWD_SPARSE_NATIVE=1` per **Pattern #6** empirical finding
+  (Apple SDPA NAX outpaces V34 NAX backward on M5+ at most shapes).
+- **Sprint 4 V34 backward causal** production-active (D=64 + D=128)
+  via Prompt 4 multi-gate dispatch fix.
+
+Detailed v2.50 chronology + decisions: `docs/v50/sprint-5d-decisions.md`.
+Hardware support matrix: `docs/HARDWARE_SUPPORT.md`.
+Environment variables: `ENV_VARS.md`.
+Perf claims registry: `docs/PERF_CLAIMS.md`.
+Known debt: `docs/v50/known-debt-v2.50.md`.
+
+---
+
+### v2.39.1 PyPI (currently shipped)
+
+Option γ outcome **α**: H1 register pressure
 root-caused + fixed.  The v2.39.0 outcome δ regression (-25% to -33% on
 the fused dK+dV kernel) traced to per-SG register spilling at the
 default BK=32 (TK=2 → two 8KB FP32 accumulators per SG).  Sprint v2.39.1

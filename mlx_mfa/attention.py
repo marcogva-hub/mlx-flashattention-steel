@@ -2387,10 +2387,18 @@ def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
 def _v34_sparse_hybrid_vjp(q, k, v, block_mask, bt, scale, causal):
     """v2.50 Prompt 5c Section A.2 — V34 sparse hybrid backward entry.
 
-    DEPRECATED in v2.50 Prompt 5d Section A.4: full native orchestrator
-    `_v34_backward_vjp_sparse_full_native` replaces this for shapes
-    eligible for native kernels.  Hybrid preserved as fallback for
-    shapes outside native envelope (and back-compat).
+    v2.50 Prompt 5d Section A.4 + Prompt 5e Pattern #6 verification:
+    THIS IS THE PRODUCTION DEFAULT for V34 sparse backward when env-
+    gated by `MFA_ENABLE_V34_BACKWARD=1`.  Earlier Prompt 5d note
+    labeled this DEPRECATED in favor of full native, but Pattern #6
+    empirical bench (VSR shape, all densities) showed V34 native is
+    slower than SDPA-vjp dense.  Routing reverted to hybrid which uses
+    Apple SDPA NAX for dQ/dK backward.  See
+    `docs/v50/section-a-v3-empirical-verification.md`.
+
+    Full-native opt-in available via `MFA_V34_BWD_SPARSE_NATIVE=1` for
+    research/benchmark (typically slower than hybrid on M5+ per Pattern
+    #6).
     """
     impl = _make_v34_sparse_hybrid_vjp(float(scale), bool(causal), int(bt))
     return impl(q, k, v, block_mask)
@@ -3040,6 +3048,12 @@ def flash_attention_topk(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
+    # v2.50 Prompt 5e KD-4 fix: validate topk_ratio loudly per Rule 8
+    # (loud failure preferred over silent coerce).
+    if not (0.0 < topk_ratio <= 1.0):
+        raise ValueError(
+            f"topk_ratio must satisfy 0.0 < ratio <= 1.0; got {topk_ratio}"
+        )
     k_count = max(1, math.ceil(topk_ratio * S))
 
     # v2.50 Sprint 3 — Phase 3a dispatch fix.  When eligible, route through

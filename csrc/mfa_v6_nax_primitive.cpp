@@ -1515,6 +1515,26 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     if (const char* e = std::getenv("MFA_V34BWDV_WM"))
       WM = (uint16_t)std::atoi(e);
 
+    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: block_mask shape mismatch between
+    // forward STEEL (BQ, BK) per `_steel_block_config` vs V34 bwd tile
+    // sizes silently uses wrong indexing for non-trivial sparse patterns.
+    // Smoke tests (all-True, block-causal first row) pass because
+    // positional indexing happens to align.  Real production sparse
+    // patterns would silently produce wrong gradients.
+    //
+    // Resolution path (Section A v4 follow-up): mask conversion in Python
+    // orchestrator before invoking native kernel.  Tracked in
+    // `docs/v50/known-debt-v2.50.md` finding KD-1.
+    //
+    // CURRENT PRODUCTION SAFETY: hybrid orchestrator (Prompt 5c, default
+    // for sparse backward post-Pattern #6 revert) uses native dV with
+    // FORWARD-shape mask which has been validated via smoke tests but
+    // not against pathological sparse patterns.  Full native (opt-in
+    // `MFA_V34_BWD_SPARSE_NATIVE=1`) inherits same limitation.
+    //
+    // Shape check intentionally NOT enforced here to preserve back-compat
+    // with current production hybrid path.  Validation pending Section A v4.
+
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
@@ -2109,6 +2129,9 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
 
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
+    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: see comment in MFAV34BwdDVSparse.
+    // Shape validation deferred to Section A v4 (Python orchestrator
+    // conversion).  See `docs/v50/known-debt-v2.50.md` KD-1.
     uint16_t v34_WM = (D == 64) ? 2 : 4;
     if (const char* e = std::getenv("MFA_V34BWD_BQ"))
       v34_BQ = (unsigned short)std::atoi(e);
@@ -2284,6 +2307,8 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
       BK = (unsigned short)std::atoi(e);
     if (const char* e = std::getenv("MFA_V34BWDK_WM"))
       WM = (uint16_t)std::atoi(e);
+    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: shape validation deferred to
+    // Section A v4 (see docs/v50/known-debt-v2.50.md KD-1).
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
@@ -2451,6 +2476,8 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
+    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: shape validation deferred to
+    // Section A v4 (see docs/v50/known-debt-v2.50.md KD-1).
     uint16_t WM = wm_;
     if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);
