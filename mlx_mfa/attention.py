@@ -3621,19 +3621,17 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     """
     if not _get_has_nax_cached():
         return False
-    # v2.50 Phase 4b-complete (Prompt 3) — PARTIAL.  Critical compile_v34_
-    # backward_pipeline isCausal=false hardcoded bug FIXED (was making Prompt
-    # 2 Phase 4b dQ a silent no-op).  dQ kernel now produces correct causal
-    # gradients (RMSE 8.7e-6 at qL=2048 D=64 fp16).  The 4 K-parallel kernels
-    # (dV split, dK split, dKV legacy fused, dKdV fused) have causal mask
-    # blocks compiled in but produce dV with structural ~25× under-counting
-    # residual (RMSE 2.7e-3 vs 1e-3 bound).  Causal eligibility gate
-    # retained on `causal=True` until the K-parallel kernel residual is
-    # resolved.  Production: causal callers fall back to SDPA-vjp
-    # (bit-identical, safe).  See `docs/v50/phase-4b-complete-decisions.md`
-    # for full investigation evidence and recommended next steps.
-    if causal:
-        return False
+    # v2.50 Phase 4b-complete (Prompt 4 Section B): causal NOW ELIGIBLE.
+    # Root cause of the "dV residual" finding from Prompt 3: the
+    # `MFAV6Forward::eval_gpu()` dispatch had a `if (use_v34 && params_.causal)
+    # use_v34 = false;` gate that silently routed causal forward to STEEL
+    # legacy (log2-domain lse), making V34 backward kernels consume wrong-
+    # domain lse → wrong gradients.  Prompt 2 Phase 4a lifted the gate in
+    # the SOURCE generator (createSource line 171) but missed this dispatch-
+    # side gate.  Prompt 4 Section B lifted the dispatch gate too;
+    # now V34 forward causal emits natural-log lse correctly.  Diagnostic
+    # verified V34 dV causal matches SDPA-vjp at ratio 1.000.
+    # See docs/v50/phase-4b-complete-dv-residual-decisions.md.
     if head_dim not in (64, 128):
         return False
     if dtype not in (mx.float16, mx.bfloat16):

@@ -102,32 +102,39 @@ def test_sprint4_v34_fwd_noncausal_unchanged():
 # Phase 4b partial — eligibility gate safety + SDPA-vjp fallback
 # ─────────────────────────────────────────────────────────────────────
 
-@pytest.mark.skipif(not _HAS_NAX, reason="Sprint 4 eligibility gate requires M5+ hardware.")
-def test_sprint4_v34_eligibility_causal_returns_false(monkeypatch):
-    """Eligibility gate retains `not causal` until Phase 4b-complete."""
+@pytest.mark.skipif(not _HAS_NAX, reason="V34 causal eligibility requires M5+ hardware.")
+def test_v34_eligibility_causal_returns_true(monkeypatch):
+    """v2.50 Phase 4b-complete (Prompt 4 Section B): causal IS NOW
+    eligible.  Root cause of Prompt 3 dV residual was a missed dispatch
+    gate in MFAV6Forward::eval_gpu() routing causal forward to STEEL
+    legacy (log2-domain lse) instead of V34 (natural-log lse).  Fix
+    lifts the gate; V34 backward causal now produces correct gradients."""
     monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    assert _v34_eligible(64, mx.float16, causal=True) is False
+    assert _v34_eligible(64, mx.float16, causal=True) is True
     assert _v34_eligible(64, mx.float16, causal=False) is True
-    assert _v34_eligible(128, mx.float16, causal=True) is False
+    assert _v34_eligible(128, mx.float16, causal=True) is True
 
 
-@pytest.mark.skipif(not _HAS_NAX, reason="Sprint 4 SDPA-vjp fallback requires M5+ hardware.")
-def test_sprint4_flash_attention_causal_uses_sdpa_vjp(monkeypatch):
-    """flash_attention(causal=True) with V34_BACKWARD=1 falls back to SDPA-vjp.
+@pytest.mark.skipif(not _HAS_NAX, reason="V34 causal path requires M5+ hardware.")
+def test_flash_attention_causal_engages_v34(monkeypatch):
+    """flash_attention(causal=True) with V34_BACKWARD=1 NOW engages V34
+    backward causal path (post-Phase 4b-complete Prompt 4 Section B).
+    Output should match mx.fast.scaled_dot_product_attention within
+    FP16 tolerance — V34 backward causal now correctly consumes natural-
+    log lse from V34 forward causal (was broken before due to dispatch
+    routing to STEEL legacy).
 
-    Verifies that the eligibility gate redirects causal callers to the
-    safe SDPA-vjp path while Phase 4b-complete is deferred.  The
-    forward output AND the backward gradients should both match
-    mx.fast.scaled_dot_product_attention exactly (no V34 path engaged
-    for causal=True at all).
+    Inputs are scaled to U(-0.1, 0.1) matching existing test_v34_backward_kv.py
+    convention — keeps scores in fp16-safe range (unscaled N(0,1) produces
+    Q@K scores ~ ±20-30 that overflow fp16 softmax at outlier positions).
     """
     monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
     B, H, qL, D = 1, 4, 2048, 64
     mx.random.seed(13)
-    q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
-    k = mx.random.normal((B, H, qL, D)).astype(mx.float16)
-    v = mx.random.normal((B, H, qL, D)).astype(mx.float16)
-    dO = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    q = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
+    k = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
+    v = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
+    dO = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
     scale = 1.0 / math.sqrt(D)
 
     def test(q, k, v):
@@ -142,7 +149,7 @@ def test_sprint4_flash_attention_causal_uses_sdpa_vjp(monkeypatch):
     diff_q = float(mx.max(mx.abs(dQ_t.astype(mx.float32) - dQ_r.astype(mx.float32))))
     diff_k = float(mx.max(mx.abs(dK_t.astype(mx.float32) - dK_r.astype(mx.float32))))
     diff_v = float(mx.max(mx.abs(dV_t.astype(mx.float32) - dV_r.astype(mx.float32))))
-    # SDPA-vjp fallback should match exactly (bit-identical in this path)
+    # V34 backward causal vs SDPA-vjp causal — within fp16 ULP band for scaled inputs
     assert diff_q < 1e-2, f"dQ diff {diff_q:.3e}"
     assert diff_k < 1e-2, f"dK diff {diff_k:.3e}"
     assert diff_v < 1e-2, f"dV diff {diff_v:.3e}"

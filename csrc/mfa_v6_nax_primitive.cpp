@@ -173,7 +173,13 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
       use_v34 = (std::atoi(env_v34) != 0);
   }
-  if (use_v34 && (isCausal || !single_otile)) use_v34 = false;
+  // v2.50 Prompt 4 Section B: lift `isCausal` constraint.  Prompt 2
+  // Phase 4a added V34 forward causal kernel support but missed this
+  // dispatch-side gate — causal was silently routing to STEEL legacy
+  // (log2-domain lse) instead of V34 (natural-log lse), making
+  // V34 backward consume wrong-domain lse and produce wrong gradients.
+  // Now V34 forward + V34 backward causal both engage when force_v34=True.
+  if (use_v34 && !single_otile) use_v34 = false;
   // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
   // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
   // Override via env vars below.
@@ -616,7 +622,14 @@ public:
       bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
         so_for_v34 = (std::atoi(env_so) != 0);
-      if (use_v34 && (params_.causal || !so_for_v34)) use_v34 = false;
+      // v2.50 Prompt 4 Section B: lift causal constraint here too.
+      // Prompt 2 Phase 4a added V34 forward causal kernel support but
+      // missed this dispatch gate — causal was silently routing to
+      // STEEL legacy (which emits log2-domain lse) instead of V34
+      // (which emits natural-log lse).  V34 backward consumed wrong-
+      // domain lse and produced wrong gradients.  See
+      // docs/v50/phase-4b-complete-dv-residual-decisions.md.
+      if (use_v34 && !so_for_v34) use_v34 = false;
     }
     if (use_v34) {
       if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);

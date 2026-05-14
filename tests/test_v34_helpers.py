@@ -70,11 +70,15 @@ class TestV34Eligible:
         monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
         assert _v34_eligible(64, mx.bfloat16, causal=False) is True
 
-    def test_d64_fp16_causal_returns_false(self, monkeypatch):
-        """Causal excluded per DC3 deferred — V34 backward doesn't
-        support causal masking."""
+    def test_d64_fp16_causal_returns_true(self, monkeypatch):
+        """v2.50 Phase 4b-complete (Prompt 4 Section B): causal is now
+        eligible.  Root cause was a missed dispatch gate in
+        MFAV6Forward::eval_gpu() routing causal forward to STEEL legacy
+        (log2-domain lse) instead of V34 (natural-log lse).  Fix lifts
+        the dispatch gate; V34 backward causal now produces correct
+        gradients (RMSE within FP floor)."""
         monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-        assert _v34_eligible(64, mx.float16, causal=True) is False
+        assert _v34_eligible(64, mx.float16, causal=True) is True
 
     def test_d64_fp32_returns_false(self, monkeypatch):
         """fp32 excluded: V34 backward kernels are fp16/bf16 only."""

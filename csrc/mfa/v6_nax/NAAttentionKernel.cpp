@@ -3097,6 +3097,7 @@ void attention(
             constexpr float ln2 = 0.6931471805599453f;  // log(2)
             // Edge: s == 0 only if no K-tile contributed (impossible for
             // dense non-causal forward; defensive only).
+            // Formula: lse_natural = max_log2 * ln2 + log(sum) = max_natural + log(sum).
             const float lse_val = (s > 0.f)
                 ? (max_score[row_idx] * ln2 + metal::log(s))
                 : -Limits<float>::finite_max;
