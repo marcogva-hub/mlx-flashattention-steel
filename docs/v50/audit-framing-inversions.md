@@ -182,6 +182,62 @@ infrastructure).
    mask blocks; Sprint 5 (block-sparse) extends the SAME 4 kernels.
    Bundle these in one session to avoid infrastructure duplication.
 
+6. **Incomplete-fix dispatch-chain pattern (Pattern #5 — v2.50 Prompt 4).**
+
+   When a kernel takes inputs from N upstream sites in a dispatch
+   chain (forward → backward → routing → fallback), a "fix" that
+   addresses M < N of those sites silently leaves the kernel consuming
+   incompatible inputs from the unfixed remainder.  Each site reads
+   correct in isolation; the residual only manifests as numerical
+   drift in the final output, with no localised stack-trace pointing
+   at the culprit.
+
+   **Empirical case** (v2.50 Prompt 4 Section B — dV residual):
+   V34 backward dV kernel consumes `lse` produced by the forward.  Two
+   eligibility gates routed forward to V34 (natural-log lse), but a
+   THIRD gate in `MFAV6Forward::eval_gpu()` routed *causal* forward
+   to STEEL legacy (log2-domain lse).  The dV kernel decoded
+   `exp(score - lse)` correctly for non-causal (gates 1+2 fixed) but
+   produced ~0.4 dV residual for causal (gate 3 still routed to STEEL,
+   yielding log2 lse interpreted as natural log).
+
+   **Detection technique**: sentinel writes (see
+   `docs/methodology/kernel-debugging.md`).  Inject a uniquely-valued
+   constant into the dispatch-active code path; observe via
+   `mx.eval`-then-print whether the sentinel reaches the output.
+   Absence of the sentinel proves a different code path is active.
+   This is faster than gradient bisection and more precise than
+   "which kernel was called" debugger inspection.
+
+   **Multi-gate audit requirement**: see `CLAUDE_V6_NAX.md` §AA.5.x
+   amendment.  Before declaring any kernel-input compatibility fix
+   complete, enumerate ALL dispatch sites that produce that input and
+   verify each one was patched to the new convention.  Single-site
+   fixes for multi-site inputs are insufficient.
+
+   **Cross-references**:
+   - `docs/v6-nax/v50-prompt4-sectionb-dv-residual-RESOLVED.md`
+     (full investigation log)
+   - `docs/methodology/kernel-debugging.md` §2 (sentinel writes)
+   - `CLAUDE_V6_NAX.md` §AA.5.x (multi-gate audit amendment)
+
+7. **Misleading xfail rationales conceal real bugs (Section B).**
+
+   Three of six xfail decorations investigated in v2.50 Prompt 5a
+   Section B used high-level conceptual rationales ("accuracy",
+   "API compatibility") when the actual root cause was either:
+   (a) overly tight tolerance below the FP16 ULP floor, or (b) a
+   `RuntimeError` in a code path the test inadvertently exercised
+   (e.g., NAX small-mask buffer rejection).  Future contributors
+   investigating xfails were forced to re-discover the empirical
+   failure mode each time.
+
+   **Discipline**: `pytest.mark.xfail(reason=...)` must include the
+   actual observed failure mode (e.g., `max_diff = 0.30 vs atol 5e-2`
+   or `raises RuntimeError: mask < 4096 bytes`), not just a category.
+   See `docs/v50/sprint-prompt5a-sectionB-xfails-status.md` Pattern
+   observations section.
+
 ## Doc maintenance
 
 - Add a new entry to the Catalogue on every sprint that surfaces a
