@@ -9,6 +9,58 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
+
+Per Marco's Prompt 5d directive, empirical bench verification at VSR
+audit shape (B=1 H=12 qL=4096 D=128 fp16 BT=32) of V34 native sparse
+backward (4 kernels, all math-correct) revealed:
+
+| Density | SDPA-vjp dense | V34 hybrid | V34 full native |
+|---|---|---|---|
+| 0.1 | 17.41 ms | 34.84 ms (0.50×) | 22.58 ms (0.77×) |
+| 0.3 | 17.40 ms | 68.20 ms (0.26×) | 60.67 ms (0.29×) |
+| 0.5 | 16.71 ms | 102.01 ms (0.16×) | 98.18 ms (0.17×) |
+| 1.0 | 16.93 ms | 175.09 ms (0.10×) | 181.07 ms (0.09×) |
+
+**V34 native sparse loses to Apple SDPA NAX at all VSR densities**.
+The Sprint 5 "10× speedup at d=0.1" projection is empirically falsified.
+
+**Pattern #6 inversion** (added to
+`docs/v50/audit-framing-inversions.md`): Apple primitive M5+
+optimization level falsifies custom-kernel speedup projections.
+Apple SDPA NAX on M5+ is sufficiently optimized that custom V34-style
+NAX backward kernels (even with sparse-skip algorithmic
+optimization) cannot outpace it at audit-relevant shapes.  Sister
+pattern to Pattern #2 (Sprint 2 `mx.fast.rope` discovery).
+
+Empirical mandate for future sprints: bench is MANDATORY before
+extending custom kernel coverage when Apple SDPA NAX is in the
+comparison path on M5+.
+
+### Changed (Section A v3 — V34 backward sparse routing REVERTED per Pattern #6)
+
+`flash_attention_sparse` dispatch reverted to Prompt 5c hybrid
+orchestrator (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK)
+when V34 backward eligible.  This is the production-optimal routing
+per Pattern #6 empirical finding.
+
+Full native (Prompt 5d, 4 sparse kernels) is now OPT-IN via
+`MFA_V34_BWD_SPARSE_NATIVE=1` env var (research/benchmark access;
+typically slower than hybrid on M5+).
+
+### Decided (Section B v3 — Approach 5 SKIPPED per Pattern #6 inference)
+
+Approach 5 (Top-K state machine + custom Metal PASS-2 scatter-gather
+attention kernel) SKIPPED.  Per `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`:
+
+The PASS-2 custom Metal kernel would replace Apple SDPA NAX (used by
+Architecture B's PASS-2).  Per Section A v3 empirical pattern (Apple
+SDPA NAX > V34 NAX backward on M5+), PASS-2 custom would be slower
+than Architecture B — Scenario 3 architectural deadend.
+
+Architecture B (Prompt 5c AUTO production default) retained as M5+
+Top-K production path.
+
 ### Added (Section A v3 — v2.50 Prompt 5d — V34 backward sparse FULL NATIVE)
 
 Marco's explicit Prompt 5c Option 1 choice ("Complete A.2 dQ + dK split

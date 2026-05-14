@@ -64,8 +64,8 @@ the Prompt 4 multi-gate causal fix.
 | Backward dense **D=128** non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D) | **(A)** parity coverage extension; no speedup |
 | Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct** (env-gated, post-Prompt 4 multi-gate fix) | **(A)** production-active |
 | Backward causal **D=128** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D + Prompt 4 multi-gate fix) | **(A)** parity coverage extension |
-| Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | Section C `_sparse_nax_with_sdpa_vjp` wrapper (correct gradients across all densities) | **(A)** correctness restored; **(B)** perf — Section A v2 follow-up for native sparse skip |
-| Backward block-sparse (asymmetric / 3-D/4-D mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `_sparse_nax_with_sdpa_vjp` wrapper | **(B)** dense-cost wrap; native sparse pending Section A v2 |
+| Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | **Prompt 5c hybrid orchestrator** (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse kernels SHIPPED (Prompt 5d) but routed via opt-in `MFA_V34_BWD_SPARSE_NATIVE=1` only — empirical bench at VSR shape shows Apple SDPA NAX wins over V34 NAX backward (Pattern #6). | **(A)** correctness; production-optimal routing |
+| Backward block-sparse (asymmetric / 3-D/4-D mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `_sparse_nax_with_sdpa_vjp` wrapper (Section C) | **(A)** SDPA-vjp wins on M5+ per Pattern #6 |
 | Backward D=256/D=512 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **(B)** architectural floor; out of v2.50 scope |
 
 **Section A v2 follow-up** (deferred to focused session): native sparse
@@ -115,8 +115,26 @@ Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
 |---|---|---|
 | Paged-NAX variants (varlen + paged + paged_varlen) | XL each | Apple SDPA NAX has no paged path; would anticipate Apple's roadmap for marginal gain |
 | Sage attention fused-quantize NAX | L | Narrow workload (long-context int8 KV training); production-active via STEEL fused |
-| Section A v2 — 4 remaining V34 backward kernels sparse extension | 4-6h focused | Section A PoC + scaffold shipped; mechanical extension |
 | D=256/D=512 backward | — | Architectural floor (memory roadmap dependency) |
+| V34 backward block-sparse FULL NATIVE routing default | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  4 native sparse kernels SHIPPED Prompt 5d, but routing default is Prompt 5c hybrid because Apple SDPA NAX backward outpaces V34 native sparse at VSR audit shape (0.09×-0.77× across densities).  Native available via opt-in `MFA_V34_BWD_SPARSE_NATIVE=1` for research.  See `docs/v50/section-a-v3-empirical-verification.md`. |
+| Top-K Approach 5 (state machine + custom PASS-2 attention) | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  Architecture B (Apple SDPA NAX bias-mask PASS-2) is empirically optimal; custom PASS-2 would be slower per Section A v3 evidence (Apple SDPA NAX > V34 NAX backward on M5+).  See `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`. |
+
+### General M5+ routing narrative
+
+v2.50 production routing prioritizes **empirically-optimal path per
+shape/operation, not exhaustive custom-kernel implementation**.  Per
+Pattern #6 (Apple primitive M5+ optimization level), custom NAX
+kernels are shipped where they empirically win, and Apple SDPA NAX
+paths are used where they win.  This results in:
+
+- **V34 NAX-direct optimal for dense forward** (Sprint 1 density
+  threshold fix + Section D D=128 broadening)
+- **Apple SDPA NAX optimal for backward** (including sparse backward
+  via Prompt 5c hybrid: NAX sparse forward + SDPA-vjp backward)
+- **Architecture B (bisection + Apple SDPA NAX) optimal for Top-K**
+  (Prompt 5c AUTO default)
+- **Custom NAX backward sparse kernels SHIPPED but research opt-in**
+  (Prompt 5d, available for benchmarking + future hardware re-test)
 
 ## v2.50 readiness criteria
 

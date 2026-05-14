@@ -221,7 +221,62 @@ infrastructure).
    - `docs/methodology/kernel-debugging.md` §2 (sentinel writes)
    - `CLAUDE_V6_NAX.md` §AA.5.x (multi-gate audit amendment)
 
-7. **Misleading xfail rationales conceal real bugs (Section B).**
+7. **Pattern #6 — Apple primitive M5+ optimization level falsifies custom-kernel speedup projections (v2.50 Prompt 5d).**
+
+   When a sprint projects "X× speedup via custom NAX kernel" based on
+   theoretical pattern reasoning (e.g., sparse-skip should win at low
+   density), and Apple SDPA NAX is in the comparison path on M5+
+   hardware, the projection must be **empirically validated** before
+   committing to the custom kernel implementation.  M5+ Apple SDPA NAX
+   is sufficiently optimized that custom V34-style NAX kernels —
+   even with algorithmically-superior optimizations like sparse-skip
+   or top-K filtering — cannot outpace it at audit-relevant shapes.
+
+   **Empirical case** (v2.50 Prompt 5d Section A v3):
+   Sprint 5 native sparse backward was projected to deliver 10×
+   speedup at density 0.1 (FlashVSR-typical) via 4 native V34 NAX
+   backward kernels.  Implementation completed (3 new kernels + dV
+   PoC, all math-correct).  Bench at VSR shape (B=1 H=12 qL=4096
+   D=128 fp16) shows:
+
+   | Density | SDPA-vjp | V34 hybrid | V34 full native |
+   |---|---|---|---|
+   | 0.1 | 17.41 ms | 34.84 ms | 22.58 ms (0.77× SDPA) |
+   | 1.0 | 16.93 ms | 175.09 ms | 181.07 ms (0.09× SDPA) |
+
+   V34 native is 0.09×–0.77× SDPA-vjp dense at all tested densities.
+   The projected 10× speedup does not materialize because the
+   projection assumed V34 dense kernels were at parity with SDPA-vjp
+   on M5+ (Sprint B v2.40.0-internal validated parity-or-slight-
+   regression for D=128 dense; sparse extension inherits that
+   overhead).
+
+   **Inversion verdict**: Sprint 5 sparse projection FALSIFIED at VSR
+   audit shape.  Production routing reverts to Prompt 5c hybrid (NAX
+   sparse forward preserves Sprint 1 forward win + SDPA-vjp backward
+   leverages Apple SDPA NAX optimization).
+
+   **Sister pattern to Pattern #2** (Sprint 2 `mx.fast.rope` discovery):
+   Apple primitive coverage was broader than audit framing assumed,
+   eliminating the perceived gap before kernel work.  Pattern #6 is
+   the inverse: custom kernel was implemented BUT empirical bench
+   confirms Apple primitive is still optimal.
+
+   **Rule for future sprints**: empirical bench is MANDATORY before
+   extending custom kernel coverage when Apple SDPA NAX is in the
+   comparison path on M5+.  Use the `/mlx-mfa-bench-methodology` skill
+   3-session protocol at the audit-target shape BEFORE committing to
+   implementation.  This extends `/mlx-mfa-apple-primitives-coverage`
+   §AA.5 premise-check protocol — coverage check alone is insufficient
+   on M5+ where Apple primitives have been heavily optimized.
+
+   **Cross-references**:
+   - `docs/v50/section-a-v3-empirical-verification.md` (full bench data)
+   - `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`
+     (Approach 5 deferred per Scenario 3 inference)
+   - `docs/v50/sprint-5d-section-a-status.md` (Section A native code)
+
+8. **Misleading xfail rationales conceal real bugs (Section B).**
 
    Three of six xfail decorations investigated in v2.50 Prompt 5a
    Section B used high-level conceptual rationales ("accuracy",

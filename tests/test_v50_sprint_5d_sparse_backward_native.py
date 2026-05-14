@@ -121,7 +121,7 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
 class TestV34SparseFullNativeEndToEnd:
     @_skipif_no_nax
     def test_native_d64_block_causal_matches_sdpa(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -149,7 +149,7 @@ class TestV34SparseFullNativeEndToEnd:
 
     @_skipif_no_nax
     def test_native_d128_block_causal_matches_sdpa(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 128
         BT = 32
         NQ = NK = qL // BT
@@ -177,7 +177,7 @@ class TestV34SparseFullNativeEndToEnd:
 
     @_skipif_no_nax
     def test_native_engages_via_public_api_d64(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -216,7 +216,7 @@ class TestDensitySweep:
     @_skipif_no_nax
     @pytest.mark.parametrize("density", [0.1, 0.3, 0.5, 1.0])
     def test_d64_random_mask_density_matches_sdpa(self, monkeypatch, density):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
