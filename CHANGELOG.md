@@ -9,6 +9,62 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Added (Section A v3 — v2.50 Prompt 5d — V34 backward sparse FULL NATIVE)
+
+Marco's explicit Prompt 5c Option 1 choice ("Complete A.2 dQ + dK split
++ fused dKdV + full integration") is now delivered.  3 new native sparse
+backward kernels join the dV PoC from Prompt 5b Section A:
+
+- **dQ sparse**: `createV34BackwardQuerySparseSource()` with per-K-tile
+  block_mask scan + pre-advance pointer handling
+- **dK split sparse**: `createV34BackwardDKSparseSource()` with
+  per-Q-tile sparse-skip
+- **Fused dK+dV sparse**: `createV34BackwardFusedDKDVSparseSource()`
+  with ORDER-CRITICAL preserved via atomic `continue`
+
+Each kernel plumbed end-to-end: source generator + Primitive class +
+cache key + dispatch function + raw helper + nanobind binding.
+
+**Python full-native orchestrator** `_v34_backward_vjp_sparse_full_native`
+replaces Prompt 5c hybrid for eligible shapes (D ∈ {64, 128}, qL>=2048,
+fp16/bf16, 2-D mask, M5+ NAX, `MFA_ENABLE_V34_BACKWARD=1`).  AUTO
+routing: D=64 → fused dKdV; D=128 → split (per Sprint B outcome γ +
+Section D Prompt 5b broadening).
+
+**Validation** (`tests/test_v50_sprint_5d_sparse_backward_native.py`,
+11 tests, all green):
+- 3 new sparse kernels bit-identical to dense for all-True mask
+- D=64 + D=128 block-causal mask vs SDPA-vjp baseline within FP16 ULP
+- Density sweep 0.1 / 0.3 / 0.5 / 1.0 all gradients correct
+- Section C wrapper fallback preserved for env-unset
+
+**⚠️ PERF WARNING — empirical finding**:
+
+The Sprint 5 "10× speedup at d=0.1" projection from earlier docs does
+NOT materialize at the audit shape (VSR B=1 H=12 qL=4096 D=128 fp16):
+
+| Density | Native backward | SDPA-vjp baseline | Ratio |
+|---|---|---|---|
+| 0.1 | 23.48 ms | 17.83 ms | 0.76× (slower) |
+| 1.0 | 198.10 ms | 17.50 ms | 0.09× (much slower) |
+
+Apple SDPA NAX (via `mx.fast.scaled_dot_product_attention` autograd)
+is highly optimized on M5+; V34 backward kernels (sparse or dense)
+can't outpace it except in narrow cases (D=64 small-H low-density
+~1.13× faster at d=0.1).
+
+The full native path is **mathematically correct** but **slower than
+SDPA-vjp at most shapes**.  This finding warrants Marco's input on
+production routing strategy:
+- Scenario 1 (current): full native as default; users opt-out via
+  env unset to get Section C wrapper (SDPA-vjp throughout)
+- Scenario 2 (alternative): empirical AUTO routing per shape;
+  Section C wrapper for shapes where SDPA-vjp wins, native for
+  narrow advantage cases
+
+See `docs/v50/sprint-5d-section-a-status.md` for the full empirical
+characterization + routing decision matrix.
+
 ### Changed (Section B v2.50 Prompt 5c — Top-K bisection PROMOTED to AUTO default)
 
 - **Architecture B (bisection kernel) is now the AUTO production default

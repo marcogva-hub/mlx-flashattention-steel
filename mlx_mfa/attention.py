@@ -2387,12 +2387,86 @@ def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
 def _v34_sparse_hybrid_vjp(q, k, v, block_mask, bt, scale, causal):
     """v2.50 Prompt 5c Section A.2 — V34 sparse hybrid backward entry.
 
-    Forward via sparse NAX; backward dV via native sparse kernel + dQ/dK
-    via SDPA-vjp with bias mask.  Delivers CORRECT sparse gradients with
-    partial perf win (dV acceleration); full 5-kernel native sparse
-    backward is Section A v3 follow-up.
+    DEPRECATED in v2.50 Prompt 5d Section A.4: full native orchestrator
+    `_v34_backward_vjp_sparse_full_native` replaces this for shapes
+    eligible for native kernels.  Hybrid preserved as fallback for
+    shapes outside native envelope (and back-compat).
     """
     impl = _make_v34_sparse_hybrid_vjp(float(scale), bool(causal), int(bt))
+    return impl(q, k, v, block_mask)
+
+
+# ---------------------------------------------------------------------------
+# v2.50 Prompt 5d Section A.4 — V34 backward sparse FULL NATIVE orchestrator
+# ---------------------------------------------------------------------------
+# Replaces Prompt 5c hybrid orchestrator that routed dQ/dK via SDPA-vjp
+# dense.  Now uses native sparse kernels for all 4 gradients:
+#   - Forward: sparse_attention_nax_with_lse (sparse-LSE)
+#   - dQ: native v6_nax_backward_query_sparse_raw kernel
+#   - dV: native v6_nax_backward_dv_sparse_raw kernel (Prompt 5b PoC)
+#   - dK: either fused (D=64) or split (D=128) per AUTO selection
+@functools.lru_cache(maxsize=64)
+def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
+    @mx.custom_function
+    def _impl(q, k, v, block_mask):
+        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        O, L = sparse_attention_nax_with_lse(
+            q, k, v, block_mask,
+            block_tile=bt, scale=scale, causal=causal)
+        return O
+
+    @_impl.vjp
+    def _backward(primals, cotangents, outputs):
+        q, k, v, block_mask = primals
+        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
+
+        # Re-run sparse forward to get O and sparse-L for backward.
+        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        from mlx_mfa import _ext as _ext_inner
+        O_fwd, L_sparse = sparse_attention_nax_with_lse(
+            q, k, v, block_mask,
+            block_tile=bt, scale=scale, causal=causal)
+
+        # Compute D_vec = rowsum(dO * O_fwd) in FP32 for the sparse kernels.
+        D_vec = mx.sum(dO.astype(mx.float32) * O_fwd.astype(mx.float32), axis=-1)
+
+        # === Native sparse backward kernels ===
+        # dQ via native sparse (single tile output)
+        dQ = _ext_inner.v6_nax_backward_query_sparse_raw(
+            q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask, scale, causal)
+
+        # AUTO routing: D=64 → fused dKdV, D=128 → split (per Sprint B
+        # outcome γ + Prompt 5b Section D broadening — fused regresses
+        # at D=128, split preferred).
+        head_dim = q.shape[3]
+        _wm = 4
+        if head_dim == 64:
+            dKp, dVp = _ext_inner.v6_nax_backward_fused_dkdv_sparse_raw(
+                q, k, v, L_sparse, dO, D_vec, block_mask, scale, _wm, causal)
+            dK = mx.sum(dKp, axis=2).astype(q.dtype)
+            dV = mx.sum(dVp, axis=2).astype(q.dtype)
+        else:  # D=128
+            dKp = _ext_inner.v6_nax_backward_dk_sparse_raw(
+                q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask, scale, _wm, causal)
+            dVp = _ext_inner.v6_nax_backward_dv_sparse_raw(
+                q, k, v, L_sparse, dO, block_mask, scale, _wm, causal)
+            dK = mx.sum(dKp, axis=2).astype(q.dtype)
+            dV = mx.sum(dVp, axis=2).astype(q.dtype)
+
+        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+
+    return _impl
+
+
+def _v34_backward_vjp_sparse_full_native(q, k, v, block_mask, bt, scale, causal):
+    """v2.50 Prompt 5d Section A.4 — Full native V34 sparse backward entry.
+
+    Replaces Prompt 5c hybrid: dQ + dK + dV all via native sparse
+    kernels.  Forward via sparse_attention_nax_with_lse; backward routes
+    through fused dKdV (D=64) or split (D=128) per Sprint B outcome γ
+    + Section D broadening.
+    """
+    impl = _make_v34_sparse_full_native_vjp(float(scale), bool(causal), int(bt))
     return impl(q, k, v, block_mask)
 
 
@@ -2533,7 +2607,11 @@ def flash_attention_sparse(
                             and block_mask.ndim == 2  # PoC scope
                         )
                         if _v34_hybrid_eligible:
-                            return _v34_sparse_hybrid_vjp(
+                            # v2.50 Prompt 5d Section A.4: route to FULL
+                            # NATIVE orchestrator (replaces Prompt 5c
+                            # hybrid).  All 4 gradients via native sparse
+                            # kernels (dQ, dV PoC + dK split + fused dKdV).
+                            return _v34_backward_vjp_sparse_full_native(
                                 q, k, v, block_mask, bt_q, scale, causal
                             )
                         # Default symmetric-bt M5+ path: Section C wrapper.

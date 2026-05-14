@@ -105,15 +105,26 @@ struct NAAttentionKernel {
   /// FP32 — caller reduces via mx.sum(axis=2) and casts to T.
   std::string createV34BackwardDVSparseSource() const noexcept;
 
-  // V34 backward dQ/dK/fused-dKdV SPARSE kernels — DECLARATIONS RESERVED
-  // for Section A v3 follow-up.  In Prompt 5c Section A.2 (this commit),
-  // Python-level orchestration uses the existing dV sparse PoC kernel
-  // (consumed with sparse-LSE) + SDPA-vjp for dQ/dK gradients, which
-  // delivers a CORRECT end-to-end sparse backward path while deferring
-  // the 3 remaining native sparse kernels to a focused future session
-  // (mechanical extension once dQ pattern is validated).  See
-  // `docs/v50/sprint-5c-section-a-status.md` for the empirical
-  // justification (time + risk vs. value).
+  /// v2.50 Prompt 5d Section A.1 — V34 backward dQ SPARSE kernel.
+  /// Mirrors createV34BackwardQuerySource() but adds per-K-tile
+  /// block_mask scan in the K-loop with pre-advance of K and V pointers
+  /// before continue.  Mask layout: 2-D [NQ, NK] bool.  Sparse-LSE
+  /// consistency: kernel consumes L from sparse forward
+  /// (sparse_attention_forward_with_lse, Prompt 5c).
+  std::string createV34BackwardQuerySparseSource() const noexcept;
+
+  /// v2.50 Prompt 5d Section A.2 — V34 backward dK SPARSE kernel.
+  /// Same Q-loop structure as dV sparse (PoC, Prompt 5b).  Sparse-skip
+  /// per Q-tile: skip Q-tile contribution to dK when block_mask
+  /// [qb, tid.x] == false.  Mask layout: 2-D.
+  std::string createV34BackwardDKSparseSource() const noexcept;
+
+  /// v2.50 Prompt 5d Section A.3 — V34 backward FUSED dK+dV SPARSE.
+  /// ORDER-CRITICAL constraint preserved: sparse-skip `continue` skips
+  /// both dV and dK updates atomically before any P/dS computation.
+  /// D=64 + D=128 variants (post-Sprint B v2.40.0-internal + Section D
+  /// Prompt 5b broadening).  Mask layout: 2-D.
+  std::string createV34BackwardFusedDKDVSparseSource() const noexcept;
 
 private:
   // Helpers that build operand-name and stride strings for the source.

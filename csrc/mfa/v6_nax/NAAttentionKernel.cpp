@@ -6252,3 +6252,1256 @@ void attention_bwd_fused_dkdv(
   return ss.str();
 }
 
+std::string NAAttentionKernel::createV34BackwardQuerySparseSource() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;
+  const int kU = 16;
+  const int TQ = BQ / (WM * kU);
+  const int TD = BD / kU;
+  const int TK = BK / kU;
+  (void)TQ; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  // Natural-domain scale (1/sqrt(D)); precompute log2-domain version.
+  const float scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n";
+  ss << "\n";
+  ss << "// === Apple NAX helpers (shared via naxHelpersBlock(), extracted Sprint v2.38.x Phase B) ===\n";
+
+  ss << naxHelpersBlock();
+
+  ss << "\n// V34 backward dQ kernel — Apple-style NAX-direct\n";
+  ss << "using T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n";
+  ss << "\n";
+  ss << "// SubOp functor (needed for row_bin_op<SubOp> in backward; not in\n";
+  ss << "// V34 forward helpers because forward doesn't use plain subtraction).\n";
+  ss << "struct SubOp {\n";
+  ss << "  template <typename U>\n";
+  ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
+  ss << "};\n\n";
+  ss << "#define V34BWD_BQ " << BQ << "\n";
+  ss << "#define V34BWD_BK " << BK << "\n";
+  ss << "#define V34BWD_BD " << BD << "\n";
+  ss << "#define V34BWD_WM " << WM << "\n";
+  ss << "#define V34BWD_TQ " << TQ << "\n";
+  ss << "#define V34BWD_TD " << TD << "\n";
+  ss << "#define V34BWD_TK " << TK << "\n";
+  ss << "#define V34BWD_SCALE " << scale << "f\n";
+  ss << "#define V34BWD_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b — causal masking baked in as compile-time
+  // constant so non-causal source remains bit-identical to pre-Sprint-4.
+  ss << "#define V34BWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V34BWDQ_SPARSE 1\n";
+  ss << "\n";
+  ss << R"BWDQSPMSL(
+struct V34BwdQParams {
+  int qL;
+  int kL;
+  int gqa_factor;
+  int NQ;
+  int NK;
+  int qL_rem;
+  int kL_rem;
+  // v2.50 Sprint 4 Phase 4b — causal offset.  Field order MUST match
+  // V34BwdQParamsHost in v6_nax_compile.mm.
+  int qL_off;
+  // BHND strides (sequence stride = D, encoded in stride[2]).
+  long Q_strides[3];
+  long K_strides[3];
+  long V_strides[3];
+  long O_strides[3];
+  long L_strides[3];   // lse strides (FP32, [B, Hq, qL])
+  long dO_strides[3];  // dO strides (same layout as Q)
+  long dQ_strides[3];  // dQ strides (same layout as Q)
+  long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34BWD_WM * 32)]]
+void attention_bwd_q_sparse(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    const device T* O [[buffer(3)]],
+    const device float* L [[buffer(4)]],
+    const device T* dO [[buffer(5)]],
+    device T* dQ [[buffer(6)]],
+    constant V34BwdQParams& params [[buffer(7)]],
+    device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
+    const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D [NQ, NK] sparse mask
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;
+
+  // === Per-batch + per-head + per-Q-block ptr offsets ===
+  ulong3 tidl{tid.x, tid.y, tid.z};
+  Q  += tidl.z * params.Q_strides[0]
+      + tidl.y * params.Q_strides[1]
+      + tidl.x * V34BWD_BQ * params.Q_strides[2];
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+  K  += tidl.z * params.K_strides[0] + kv_head_idx * params.K_strides[1];
+  V  += tidl.z * params.V_strides[0] + kv_head_idx * params.V_strides[1];
+  O  += tidl.z * params.O_strides[0]
+      + tidl.y * params.O_strides[1]
+      + tidl.x * V34BWD_BQ * params.O_strides[2];
+  L  += tidl.z * params.L_strides[0]
+      + tidl.y * params.L_strides[1]
+      + tidl.x * V34BWD_BQ * params.L_strides[2];
+  dO += tidl.z * params.dO_strides[0]
+      + tidl.y * params.dO_strides[1]
+      + tidl.x * V34BWD_BQ * params.dO_strides[2];
+  dQ += tidl.z * params.dQ_strides[0]
+      + tidl.y * params.dQ_strides[1]
+      + tidl.x * V34BWD_BQ * params.dQ_strides[2];
+  // v2.38.1: D buffer per-batch/per-head/per-Q-block offset.
+  D  += tidl.z * params.D_strides[0]
+      + tidl.y * params.D_strides[1]
+      + tidl.x * V34BWD_BQ * params.D_strides[2];
+
+  // Per-SG row offset within the Q-block.
+  const short tm = 16 * V34BWD_TQ * simd_group_id;
+  Q  += tm * int(params.Q_strides[2]);
+  O  += tm * int(params.O_strides[2]);
+  L  += tm * int(params.L_strides[2]);
+  dO += tm * int(params.dO_strides[2]);
+  dQ += tm * int(params.dQ_strides[2]);
+  D  += tm * int(params.D_strides[2]);  // v2.38.1
+
+  // Last-block flags.
+  const int NQ_aligned = params.qL / V34BWD_BQ;
+  const int NK_aligned = params.kL / V34BWD_BK;
+  const bool is_last_q = (int(tid.x) == NQ_aligned);
+  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ) - tm;
+  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34BWD_BK);
+  const int kb_lim = params.NK;
+
+  // === MMA tile types ===
+  using dq_accum_t = NAXTile<float, V34BWD_TQ, V34BWD_TD>;  // dQ FP32 accumulator
+  using s_t       = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // S (= Q@K^T scaled)
+  using dp_t      = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // dP (= dO@V^T)
+
+  dq_accum_t dQ_accum;
+  dQ_accum.clear();
+
+  constexpr short kRowsPT = dq_accum_t::kRowsPerThread;
+
+  // === Step 1: load lse, convert to log2 domain ===
+  // lse from forward is natural-log; V34 inner-loop uses log2 domain via
+  // scale*log2(e) and exp2.  Multiply lse by log2(e) once so that
+  // row_bin_op<ExpSubOp>(lse_log2) below computes exp2(S_log2 - lse_log2)
+  // = exp(S_natural - lse_natural) = correct softmax P.
+  metal::vec<float, kRowsPT> lse_log2;
+  {
+    // Each lane owns kRowsPT rows in the SG; load each row's lse and scale.
+    // Lane → row mapping uses get_coord() the same way row_reduce maps
+    // partial-sum results.  Convention: lane with fn==0 reads lse[row].
+    // Other lanes need to receive the value too (so each thread's lse_log2
+    // vec is populated correctly for row_bin_op).  Use simd_shuffle_xor or
+    // simd_broadcast to share.  Simpler approach: ALL lanes load lse[row]
+    // for their owned rows (redundant device reads but correct).  4 lanes
+    // covering the same row will read the same memory — coalesced, cheap.
+    const short2 sc = dq_accum_t::NAXFrag_t::get_coord();
+    constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
+    constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
+    constexpr float log2e_f = 1.4426950408889634f;
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < kElemRows; i++) {
+        const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
+        const short row_idx = iq * kElemRows + i;
+        const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+        // Out-of-range rows: set lse_log2 to +inf so exp2(S - inf) = 0,
+        // which gives P=0, dS=0, no contribution to dQ for those rows.
+        if (in_range) {
+          lse_log2[row_idx] = L[local_row * int(params.L_strides[2])] * log2e_f;
+        } else {
+          lse_log2[row_idx] = Limits<float>::finite_max;  // ~+inf
+        }
+      }
+    }
+  }
+
+  // === Step 2: load D[i] = rowsum(dO[i] ⊙ O[i]) from device buffer ===
+  // v2.38.1: D is precomputed once on host via MLX (`mx.sum(dO*O, axis=-1)`)
+  // and shared between dQ + split-dK + legacy-fused-dKdV kernels.  Replaces
+  // an inline tile load + FP32 multiply + row_reduce.  Saves 1 rowsum per
+  // V34 backward dQ call.
+  //
+  // Mirrors the lse-load pattern above (Step 1): each lane reads its owned
+  // rows from the device buffer using `NAXFrag::get_coord()` + kElemRows /
+  // kElemRowsJump.  Multiple lanes covering the same row → coalesced read.
+  metal::vec<float, kRowsPT> D_vec;
+  {
+    const short2 sc = dq_accum_t::NAXFrag_t::get_coord();
+    constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
+    constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < kElemRows; i++) {
+        const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
+        const short row_idx = iq * kElemRows + i;
+        const bool in_range = (!is_last_q) || (local_row < lim_rows_q);
+        // Out-of-range rows: D=0 → contributes 0 to dS (P=0 there anyway
+        // via the lse=+inf trick above).
+        D_vec[row_idx] = in_range
+            ? D[local_row * int(params.D_strides[2])]
+            : 0.0f;
+      }
+    }
+  }
+
+  // === Step 3: K-loop ===
+  for (int kb = 0; kb < kb_lim; kb++) {
+    // === v2.50 Prompt 5d Section A sparse-skip (2-D mask [NQ, NK]) ===
+    {
+      const int qb_idx = int(tid.x);
+      const int nk_total = params.NK;
+      bool tile_active = block_mask[qb_idx * nk_total + kb];
+      if (!tile_active) {
+        K += V34BWD_BK * int(params.K_strides[2]);
+        V += V34BWD_BK * int(params.V_strides[2]);
+        continue;
+      }
+    }
+    const bool is_last_k = (kb == NK_aligned);
+
+    s_t Stile;
+    Stile.clear();
+
+    // QK matmul: S = Q @ K^T (NAXFrag::mma, transpose_b=true).
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWD_TD; id++) {
+          NAXTile<T, 1, 1> Qfrag;
+          NAXTile<T, 2, 1> Kfrag;
+
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+
+          if (is_last_q) {
+            Qfrag.load_rows(Q + Q_off, int(params.Q_strides[2]),
+                            lim_rows_q - iq * 16);
+          } else {
+            Qfrag.load(Q + Q_off, int(params.Q_strides[2]));
+          }
+          if (is_last_k) {
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Kfrag.load(K + K_off, int(params.K_strides[2]));
+          }
+
+          s_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qfrag.frag_at(0, 0),
+              metal::false_type{},
+              Kfrag.frag_at(0, 0),
+              Kfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // Scale S into log2 domain.
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= V34BWD_SCALE_LOG2E;
+    }
+
+    // Mask out length sequence on last K block (mirrors forward, but here
+    // out-of-range K columns must produce P=0 so they don't contribute to
+    // dQ or D).  Setting S to -inf yields exp2(-inf - lse) = 0.
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = s_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWD_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_t::kFragThrCols; jj++) {
+              const auto loc = ii * s_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+    // v2.50 Sprint 4 Phase 4b — causal mask (mirror forward).  Setting
+    // S[r,c] = -inf for r<c → exp2(-inf - lse) = 0 → P[r,c] = 0 → dS = 0
+    // at masked positions → dQ accumulation naturally skips them.  Without
+    // this, backward computes P over the unmasked S using the causal-masked
+    // lse from forward, producing huge (incorrect) gradients for c>r.
+#if V34BWD_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;   // col base within fragment
+      const short sm_c = sc_c.y;   // row base within fragment
+      const int base_row = int(tid.x) * V34BWD_BQ + params.qL_off + tm;
+      const int base_col = kb * V34BWD_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWD_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
+    // P = exp2(S - lse_log2)  (so P[i, j] = softmax_j(S_natural[i, .]))
+    Stile.template row_bin_op<ExpSubOp>(lse_log2);
+    // Stile now holds P in registers.
+
+    // dP = dO @ V^T (NAXFrag::mma, transpose_b=true).
+    dp_t dPtile;
+    dPtile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWD_TD; id++) {
+          NAXTile<T, 1, 1> dOfrag;
+          NAXTile<T, 2, 1> Vfrag;
+
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          const int V_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+
+          if (is_last_q) {
+            dOfrag.load_rows(dO + dO_off, int(params.dO_strides[2]),
+                             lim_rows_q - iq * 16);
+          } else {
+            dOfrag.load(dO + dO_off, int(params.dO_strides[2]));
+          }
+          if (is_last_k) {
+            Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Vfrag.load(V + V_off, int(params.V_strides[2]));
+          }
+
+          dp_t::NAXFrag_t::mma(
+              dPtile.frag_at(iq, ik),
+              dPtile.frag_at(iq, ik + 1),
+              dOfrag.frag_at(0, 0),
+              metal::false_type{},
+              Vfrag.frag_at(0, 0),
+              Vfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // dP -= D_vec (broadcast across cols of each row).
+    dPtile.template row_bin_op<SubOp>(D_vec);
+
+    // dS = P * (dP - D)  (element-wise; Stile holds P, dPtile holds dP-D).
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= dPtile.elems()[ii];
+    }
+    // Stile now holds dS.
+
+    simdgroup_barrier(mem_flags::mem_none);
+
+    // dQ_accum += dS @ K  (NAXFrag::mma, transpose_b=false).  Mirrors the
+    // P @ V pattern from V34 forward.
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWD_TD; id += 2) {
+        if (V34BWD_BD == 128) {
+          if (id == 4) {
+            threadgroup_barrier(mem_flags::mem_none);
+          }
+        }
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWD_TK; ik++) {
+          NAXTile<T, 1, 2> Kfrag2;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          if (is_last_k) {
+            Kfrag2.load_rows(K + K_off, int(params.K_strides[2]),
+                             lim_rows_k - ik * 16);
+          } else {
+            Kfrag2.load(K + K_off, int(params.K_strides[2]));
+          }
+          dq_accum_t::NAXFrag_t::mma(
+              dQ_accum.frag_at(iq, id),
+              dQ_accum.frag_at(iq, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::false_type{},
+              Kfrag2.frag_at(0, 0),
+              Kfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    K += V34BWD_BK * int(params.K_strides[2]);
+    V += V34BWD_BK * int(params.V_strides[2]);
+  }  // end K-loop
+
+  threadgroup_barrier(mem_flags::mem_none);
+
+  // === Step 4: dQ_accum *= scale  (= 1/sqrt(D)) ===
+  // Convention: dQ = ∇_Q (Q @ K^T * scale) backward = scale * (dS @ K).
+  // We accumulated dS @ K above; multiply by scale here.
+  {
+    metal::vec<float, kRowsPT> scale_vec;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; i++) scale_vec[i] = V34BWD_SCALE;
+    dQ_accum.template row_bin_op<MulOp>(scale_vec);
+  }
+
+  // === Step 5: store dQ ===
+  // dQ_accum is FP32 NAXTile [TQ × TD]; store as T (FP16/BF16) to device.
+  if (is_last_q) {
+    if (lim_rows_q <= 0) return;
+    dQ_accum.store_rows(dQ, int(params.dQ_strides[2]), lim_rows_q);
+  } else {
+    dQ_accum.store(dQ, int(params.dQ_strides[2]));
+  }
+}
+)BWDQSPMSL";
+
+  return ss.str();
+}
+std::string NAAttentionKernel::createV34BackwardDKSparseSource() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;
+  const int kU = 16;
+  const int TQ_per_SG = BQ / (WM * kU);
+  const int TD = BD / kU;
+  const int TK = BK / kU;
+  (void)TQ_per_SG; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  const float scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n\n";
+
+  ss << naxHelpersBlock();
+
+  ss << "\nusing T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n\n";
+  ss << "struct SubOp {\n";
+  ss << "  template <typename U>\n";
+  ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
+  ss << "};\n\n";
+  ss << "#define V34BWDK_BQ " << BQ << "\n";
+  ss << "#define V34BWDK_BK " << BK << "\n";
+  ss << "#define V34BWDK_BD " << BD << "\n";
+  ss << "#define V34BWDK_WM " << WM << "\n";
+  ss << "#define V34BWDK_TQ " << TQ_per_SG << "\n";
+  ss << "#define V34BWDK_TD " << TD << "\n";
+  ss << "#define V34BWDK_TK " << TK << "\n";
+  ss << "#define V34BWDK_SCALE " << scale << "f\n";
+  ss << "#define V34BWDK_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
+  ss << "#define V34BWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+
+  ss << R"BWDKSPMSL(
+struct V34BwdKParams {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset (host struct match)
+  int qL_off;
+  long Q_strides[3];
+  long K_strides[3];
+  long V_strides[3];
+  long O_strides[3];
+  long L_strides[3];
+  long dO_strides[3];
+  long dKp_strides[4];  // [B, Hq, WM, kL, D] FP32; D stride=1 implicit
+  long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34BWDK_WM * 32)]]
+void attention_bwd_dk_sparse(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    const device T* O [[buffer(3)]],
+    const device float* L [[buffer(4)]],
+    const device T* dO [[buffer(5)]],
+    device float* dK_partials [[buffer(6)]],
+    constant V34BwdKParams& params [[buffer(7)]],
+    device const float* D [[buffer(8)]],
+    const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D sparse mask  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;
+  ulong3 tidl{tid.x, tid.y, tid.z};
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+
+  Q  += tidl.z * params.Q_strides[0]  + tidl.y * params.Q_strides[1];
+  O  += tidl.z * params.O_strides[0]  + tidl.y * params.O_strides[1];
+  dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
+  L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
+  K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
+      + tidl.x * V34BWDK_BK * params.K_strides[2];
+  V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
+      + tidl.x * V34BWDK_BK * params.V_strides[2];
+  // v2.38.1: D buffer per-batch/per-Hq-head offset (D indexed by query head).
+  D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
+
+  dK_partials += tidl.z * params.dKp_strides[0]
+              +  tidl.y * params.dKp_strides[1]
+              +  simd_group_id * params.dKp_strides[2]
+              +  tidl.x * V34BWDK_BK * params.dKp_strides[3];
+
+  const short sg_q_offset = 16 * V34BWDK_TQ * simd_group_id;
+
+  const int NQ_aligned = params.qL / V34BWDK_BQ;
+  const int NK_aligned = params.kL / V34BWDK_BK;
+  const bool is_last_k = (int(tid.x) == NK_aligned);
+  const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
+      ? params.kL_rem : V34BWDK_BK;
+  const int nq_full = params.qL / V34BWDK_BQ;
+  const int nq_rem = params.qL % V34BWDK_BQ;
+  const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
+
+  using dk_t = NAXTile<float, V34BWDK_TK, V34BWDK_TD>;
+  dk_t dK_accum;
+  dK_accum.clear();
+
+  using s_q_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+  constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
+
+  for (int qb = 0; qb < q_loop; qb++) {
+    // === v2.50 Prompt 5d Section A sparse-skip ===
+    if (qb < (params.qL / V34BWDK_BQ)) {
+      const int nk_total = params.NK;
+      bool tile_active = block_mask[qb * nk_total + int(tid.x)];
+      if (!tile_active) continue;
+    }
+    const bool is_last_q = (qb == NQ_aligned);
+    const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
+        ? params.qL_rem : V34BWDK_BQ;
+    const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
+    if (is_last_q && sg_lim_q <= 0) continue;
+
+    const device T* Q_qs  = Q  + qb * V34BWDK_BQ * int(params.Q_strides[2])
+                              + sg_q_offset * int(params.Q_strides[2]);
+    const device T* O_qs  = O  + qb * V34BWDK_BQ * int(params.O_strides[2])
+                              + sg_q_offset * int(params.O_strides[2]);
+    const device T* dO_qs = dO + qb * V34BWDK_BQ * int(params.dO_strides[2])
+                              + sg_q_offset * int(params.dO_strides[2]);
+    const device float* L_qs = L + qb * V34BWDK_BQ * int(params.L_strides[2])
+                                + sg_q_offset * int(params.L_strides[2]);
+    // v2.38.1: D buffer Q-block + SG-row offset (mirror L_qs).
+    const device float* D_qs = D + qb * V34BWDK_BQ * int(params.D_strides[2])
+                                + sg_q_offset * int(params.D_strides[2]);
+
+    // --- Load lse, scale to log2 domain ---
+    metal::vec<float, kRowsPT_q> lse_log2;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      constexpr float log2e_f = 1.4426950408889634f;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          if (in_range) {
+            lse_log2[row_idx] = L_qs[local_row * int(params.L_strides[2])] * log2e_f;
+          } else {
+            lse_log2[row_idx] = Limits<float>::finite_max;
+          }
+        }
+      }
+    }
+
+    // --- v2.38.1: load D = rowsum(dO ⊙ O) from device buffer (precomputed) ---
+    // D is precomputed on host via MLX, shared with dQ + legacy-fused kernels.
+    // Mirrors the lse-load pattern above; coalesced reads across lanes.
+    metal::vec<float, kRowsPT_q> D_vec;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          D_vec[row_idx] = in_range
+              ? D_qs[local_row * int(params.D_strides[2])]
+              : 0.0f;
+        }
+      }
+    }
+
+    // --- S = Q[SG-rows] @ K^T ---
+    s_q_t Stile;
+    Stile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDK_TD; id++) {
+          NAXTile<T, 1, 1> Qfrag;
+          NAXTile<T, 2, 1> Kfrag;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag.load_rows(Q_qs + Q_off, int(params.Q_strides[2]),
+                            sg_lim_q - iq * 16);
+          } else {
+            Qfrag.load(Q_qs + Q_off, int(params.Q_strides[2]));
+          }
+          if (is_last_k) {
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Kfrag.load(K + K_off, int(params.K_strides[2]));
+          }
+          s_q_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qfrag.frag_at(0, 0),
+              metal::false_type{},
+              Kfrag.frag_at(0, 0),
+              Kfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= V34BWDK_SCALE_LOG2E;
+    }
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dK split.
+    // K-parallel with per-SG Q-row partition (sg_q_offset).
+#if V34BWDK_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDK_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDK_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
+    Stile.template row_bin_op<ExpSubOp>(lse_log2);
+    // Stile holds P.
+
+    // --- dP = dO @ V^T ---
+    using dp_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+    dp_t dPtile;
+    dPtile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDK_TD; id++) {
+          NAXTile<T, 1, 1> dOfrag;
+          NAXTile<T, 2, 1> Vfrag;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          const int V_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag.load_rows(dO_qs + dO_off, int(params.dO_strides[2]),
+                             sg_lim_q - iq * 16);
+          } else {
+            dOfrag.load(dO_qs + dO_off, int(params.dO_strides[2]));
+          }
+          if (is_last_k) {
+            Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Vfrag.load(V + V_off, int(params.V_strides[2]));
+          }
+          dp_t::NAXFrag_t::mma(
+              dPtile.frag_at(iq, ik),
+              dPtile.frag_at(iq, ik + 1),
+              dOfrag.frag_at(0, 0),
+              metal::false_type{},
+              Vfrag.frag_at(0, 0),
+              Vfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+    dPtile.template row_bin_op<SubOp>(D_vec);
+
+    // dS = P * (dP - D); overwrites Stile.
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= dPtile.elems()[ii];
+    }
+
+    // --- dK_accum += dS^T @ Q[SG-rows] ---
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDK_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDK_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+          NAXTile<T, 1, 2> Qfrag2;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag2.load_rows(Q_qs + Q_off, int(params.Q_strides[2]),
+                             sg_lim_q - iq * 16);
+          } else {
+            Qfrag2.load(Q_qs + Q_off, int(params.Q_strides[2]));
+          }
+          dk_t::NAXFrag_t::mma(
+              dK_accum.frag_at(ik, id),
+              dK_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},
+              Qfrag2.frag_at(0, 0),
+              Qfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    simdgroup_barrier(mem_flags::mem_none);
+  }  // end Q-loop
+
+  // dK *= scale
+  {
+    constexpr short kRowsPT_k = dk_t::kRowsPerThread;
+    metal::vec<float, kRowsPT_k> scale_vec;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDK_SCALE;
+    dK_accum.template row_bin_op<MulOp>(scale_vec);
+  }
+
+  if (is_last_k) {
+    if (lim_rows_k <= 0) return;
+    dK_accum.store_rows(dK_partials, int(params.dKp_strides[3]), lim_rows_k);
+  } else {
+    dK_accum.store(dK_partials, int(params.dKp_strides[3]));
+  }
+}
+)BWDKSPMSL";
+
+  return ss.str();
+}
+std::string NAAttentionKernel::createV34BackwardFusedDKDVSparseSource() const noexcept {
+  const int BQ = blockDimensions[0];
+  const int BK = blockDimensions[1];
+  const int BD = headDimension;
+  const int WM = executionSIMDGroups;
+  const int kU = 16;
+  const int TQ_per_SG = BQ / (WM * kU);
+  const int TD = BD / kU;
+  const int TK = BK / kU;
+  (void)TQ_per_SG; (void)TD; (void)TK;
+
+  const bool is_bf16 =
+      memoryPrecisions[AttentionOperand::Q].value() == GEMMOperandPrecision::BF16;
+  const char* dtype_str = is_bf16 ? "bfloat" : "half";
+  const float scale_log2e = scale * 1.4426950408889634f;
+
+  std::ostringstream ss;
+  ss << "// MFA_REQUIRE_MSL4\n";
+  ss << "#include <metal_stdlib>\n";
+  ss << "#include <metal_simdgroup>\n";
+  ss << "#include <metal_simdgroup_matrix>\n";
+  ss << "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+  ss << "using namespace metal;\n";
+  ss << "using namespace mpp::tensor_ops;\n\n";
+
+  ss << naxHelpersBlock();
+
+  ss << "\nusing T = " << dtype_str << ";\n";
+  ss << "using namespace mlx::steel;\n\n";
+  ss << "struct SubOp {\n";
+  ss << "  template <typename U>\n";
+  ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
+  ss << "};\n\n";
+  ss << "#define V34BWDF_BQ " << BQ << "\n";
+  ss << "#define V34BWDF_BK " << BK << "\n";
+  ss << "#define V34BWDF_BD " << BD << "\n";
+  ss << "#define V34BWDF_WM " << WM << "\n";
+  ss << "#define V34BWDF_TQ " << TQ_per_SG << "\n";
+  ss << "#define V34BWDF_TD " << TD << "\n";
+  ss << "#define V34BWDF_TK " << TK << "\n";
+  ss << "#define V34BWDF_SCALE " << scale << "f\n";
+  ss << "#define V34BWDF_SCALE_LOG2E " << scale_log2e << "f\n";
+  // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
+  ss << "#define V34BWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+
+  ss << R"BWDFSPMSL(
+struct V34BwdFusedParams {
+  int qL, kL;
+  int gqa_factor;
+  int NQ, NK;
+  int qL_rem, kL_rem;
+  // v2.50 Sprint 4 Phase 4b-complete — causal offset (host struct match)
+  int qL_off;
+  long Q_strides[3];
+  long K_strides[3];
+  long V_strides[3];
+  long L_strides[3];
+  long dO_strides[3];
+  long dKp_strides[4];  // [B, Hq, WM, kL, D] FP32; D stride=1 implicit
+  long dVp_strides[4];  // [B, Hq, WM, kL, D] FP32; D stride=1 implicit
+  long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL])
+};
+
+[[kernel, max_total_threads_per_threadgroup(V34BWDF_WM * 32)]]
+void attention_bwd_fused_dkdv_sparse(
+    const device T* Q [[buffer(0)]],
+    const device T* K [[buffer(1)]],
+    const device T* V [[buffer(2)]],
+    const device float* L [[buffer(3)]],
+    const device T* dO [[buffer(4)]],
+    device float* dK_partials [[buffer(5)]],
+    device float* dV_partials [[buffer(6)]],
+    constant V34BwdFusedParams& params [[buffer(7)]],
+    device const float* D [[buffer(8)]],
+    const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D sparse mask
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint3 tid [[threadgroup_position_in_grid]]) {
+
+  (void)simd_lane_id;
+  // Grid (NK, Hq, B). Each TG owns 1 K-tile, WM SGs partition Q-rows.
+
+  ulong3 tidl{tid.x, tid.y, tid.z};
+  ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
+
+  Q  += tidl.z * params.Q_strides[0]  + tidl.y * params.Q_strides[1];
+  dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
+  L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
+  K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
+      + tidl.x * V34BWDF_BK * params.K_strides[2];
+  V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
+      + tidl.x * V34BWDF_BK * params.V_strides[2];
+  // D buffer indexed by query head (Hq), same as L.
+  D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
+
+  // Per-SG dK_partials slot: [b, hq, sg, k_base, d] → 4 strides + D-stride=1.
+  dK_partials += tidl.z * params.dKp_strides[0]
+              +  tidl.y * params.dKp_strides[1]
+              +  simd_group_id * params.dKp_strides[2]
+              +  tidl.x * V34BWDF_BK * params.dKp_strides[3];
+  dV_partials += tidl.z * params.dVp_strides[0]
+              +  tidl.y * params.dVp_strides[1]
+              +  simd_group_id * params.dVp_strides[2]
+              +  tidl.x * V34BWDF_BK * params.dVp_strides[3];
+
+  const short sg_q_offset = 16 * V34BWDF_TQ * simd_group_id;
+
+  const int NQ_aligned = params.qL / V34BWDF_BQ;
+  const int NK_aligned = params.kL / V34BWDF_BK;
+  const bool is_last_k = (int(tid.x) == NK_aligned);
+  const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
+      ? params.kL_rem : V34BWDF_BK;
+  const int nq_full = params.qL / V34BWDF_BQ;
+  const int nq_rem = params.qL % V34BWDF_BQ;
+  const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
+
+  // Per-SG accumulators (FP32, both persistent across Q-loop).
+  using dk_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
+  using dv_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
+  dk_t dK_accum;
+  dv_t dV_accum;
+  dK_accum.clear();
+  dV_accum.clear();
+
+  using s_q_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+  constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
+
+  // === Q-loop: fused dK + dV accumulation per K-tile ===
+  for (int qb = 0; qb < q_loop; qb++) {
+    // === v2.50 Prompt 5d Section A sparse-skip (ORDER-CRITICAL preserved) ===
+    if (qb < (params.qL / V34BWDF_BQ)) {
+      const int nk_total = params.NK;
+      bool tile_active = block_mask[qb * nk_total + int(tid.x)];
+      if (!tile_active) continue;
+    }
+    const bool is_last_q = (qb == NQ_aligned);
+    const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
+        ? params.qL_rem : V34BWDF_BQ;
+    const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
+    if (is_last_q && sg_lim_q <= 0) continue;
+
+    const device T* Q_qs  = Q  + qb * V34BWDF_BQ * int(params.Q_strides[2])
+                              + sg_q_offset * int(params.Q_strides[2]);
+    const device T* dO_qs = dO + qb * V34BWDF_BQ * int(params.dO_strides[2])
+                              + sg_q_offset * int(params.dO_strides[2]);
+    const device float* L_qs = L + qb * V34BWDF_BQ * int(params.L_strides[2])
+                                + sg_q_offset * int(params.L_strides[2]);
+    const device float* D_qs = D + qb * V34BWDF_BQ * int(params.D_strides[2])
+                                + sg_q_offset * int(params.D_strides[2]);
+
+    // --- Load lse for SG's 16 rows, scale to log2 domain ---
+    metal::vec<float, kRowsPT_q> lse_log2;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      constexpr float log2e_f = 1.4426950408889634f;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          if (in_range) {
+            lse_log2[row_idx] = L_qs[local_row * int(params.L_strides[2])] * log2e_f;
+          } else {
+            lse_log2[row_idx] = Limits<float>::finite_max;  // → P=0 for OOR
+          }
+        }
+      }
+    }
+
+    // --- v2.38.1: load D = rowsum(dO ⊙ O) from device buffer ---
+    metal::vec<float, kRowsPT_q> D_vec;
+    {
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
+      constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short i = 0; i < kEr; i++) {
+          const short local_row = iq * 16 + sc.y + i * kErJ;
+          const short row_idx = iq * kEr + i;
+          const bool in_range = (!is_last_q) || (local_row < sg_lim_q);
+          D_vec[row_idx] = in_range
+              ? D_qs[local_row * int(params.D_strides[2])]
+              : 0.0f;
+        }
+      }
+    }
+
+    // --- S = Q[SG-rows] @ K^T ---
+    s_q_t Stile;
+    Stile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDF_TD; id++) {
+          NAXTile<T, 1, 1> Qfrag;
+          NAXTile<T, 2, 1> Kfrag;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag.load_rows(Q_qs + Q_off, int(params.Q_strides[2]),
+                            sg_lim_q - iq * 16);
+          } else {
+            Qfrag.load(Q_qs + Q_off, int(params.Q_strides[2]));
+          }
+          if (is_last_k) {
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Kfrag.load(K + K_off, int(params.K_strides[2]));
+          }
+          s_q_t::NAXFrag_t::mma(
+              Stile.frag_at(iq, ik),
+              Stile.frag_at(iq, ik + 1),
+              Qfrag.frag_at(0, 0),
+              metal::false_type{},
+              Kfrag.frag_at(0, 0),
+              Kfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+
+    // Scale into log2 domain.
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= V34BWDF_SCALE_LOG2E;
+    }
+
+    // Mask last-K columns to -inf.
+    if (is_last_k) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc = s_q_t::NAXFrag_t::get_coord();
+      const short sn = sc.x;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+          const short col_pos = ik * 16 + sn;
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = ((col_pos + jj) < lim_rows_k) ? fg[loc] : neg_inf;
+            }
+          }
+        }
+      }
+    }
+
+    // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for fused
+    // dKdV.  K-parallel with per-SG Q-row partition (sg_q_offset).
+    // ORDER-CRITICAL preserved: mask is on Stile holding S, before
+    // row_bin_op<ExpSubOp> converts to P, before P^T @ dO uses P.
+#if V34BWDF_CAUSAL
+    {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = qb * V34BWDF_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V34BWDF_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+          thread auto& fg = Stile.frag_at(iq, ik);
+          STEEL_PRAGMA_UNROLL
+          for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj = 0; jj < s_q_t::kFragThrCols; jj++) {
+              const int r = base_row + iq * 16
+                          + ii * s_q_t::kFragRowsJump + sm_c;
+              const int c = base_col + ik * 16 + jj + sn_c;
+              const auto loc = ii * s_q_t::kFragThrCols + jj;
+              fg[loc] = (r < c) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+#endif
+
+    // P = exp2(S - lse_log2).  Stile holds P after this.
+    Stile.template row_bin_op<ExpSubOp>(lse_log2);
+
+    // === ORDER-CRITICAL: dV_accum += P^T @ dO BEFORE Stile is overwritten ===
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDF_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+          NAXTile<T, 1, 2> dOfrag2;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag2.load_rows(dO_qs + dO_off, int(params.dO_strides[2]),
+                              sg_lim_q - iq * 16);
+          } else {
+            dOfrag2.load(dO_qs + dO_off, int(params.dO_strides[2]));
+          }
+          dv_t::NAXFrag_t::mma(
+              dV_accum.frag_at(ik, id),
+              dV_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},   // transpose_a: P^T
+              dOfrag2.frag_at(0, 0),
+              dOfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    // --- dP = dO @ V^T ---
+    using dp_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+    dp_t dPtile;
+    dPtile.clear();
+    STEEL_PRAGMA_UNROLL
+    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      STEEL_PRAGMA_UNROLL
+      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short id = 0; id < V34BWDF_TD; id++) {
+          NAXTile<T, 1, 1> dOfrag;
+          NAXTile<T, 2, 1> Vfrag;
+          const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
+          const int V_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+          if (is_last_q) {
+            dOfrag.load_rows(dO_qs + dO_off, int(params.dO_strides[2]),
+                             sg_lim_q - iq * 16);
+          } else {
+            dOfrag.load(dO_qs + dO_off, int(params.dO_strides[2]));
+          }
+          if (is_last_k) {
+            Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
+                            lim_rows_k - ik * 16);
+          } else {
+            Vfrag.load(V + V_off, int(params.V_strides[2]));
+          }
+          dp_t::NAXFrag_t::mma(
+              dPtile.frag_at(iq, ik),
+              dPtile.frag_at(iq, ik + 1),
+              dOfrag.frag_at(0, 0),
+              metal::false_type{},
+              Vfrag.frag_at(0, 0),
+              Vfrag.frag_at(1, 0),
+              metal::true_type{});
+        }
+      }
+    }
+    // dP -= D_vec (per-row broadcast).
+    dPtile.template row_bin_op<SubOp>(D_vec);
+
+    // dS = P * (dP - D); overwrites Stile in place (P is consumed).
+    STEEL_PRAGMA_UNROLL
+    for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
+      Stile.elems()[ii] *= dPtile.elems()[ii];
+    }
+
+    // --- dK_accum += dS^T @ Q[SG-rows] ---
+    STEEL_PRAGMA_UNROLL
+    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+      STEEL_PRAGMA_UNROLL
+      for (short id = 0; id < V34BWDF_TD; id += 2) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+          NAXTile<T, 1, 2> Qfrag2;
+          const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
+          if (is_last_q) {
+            Qfrag2.load_rows(Q_qs + Q_off, int(params.Q_strides[2]),
+                             sg_lim_q - iq * 16);
+          } else {
+            Qfrag2.load(Q_qs + Q_off, int(params.Q_strides[2]));
+          }
+          dk_t::NAXFrag_t::mma(
+              dK_accum.frag_at(ik, id),
+              dK_accum.frag_at(ik, id + 1),
+              Stile.frag_at(iq, ik),
+              metal::true_type{},
+              Qfrag2.frag_at(0, 0),
+              Qfrag2.frag_at(0, 1),
+              metal::false_type{});
+        }
+      }
+    }
+
+    simdgroup_barrier(mem_flags::mem_none);
+  }  // end Q-loop
+
+  // dK *= scale (matches split-dK; dV is not scaled — P already absorbs it).
+  {
+    constexpr short kRowsPT_k = dk_t::kRowsPerThread;
+    metal::vec<float, kRowsPT_k> scale_vec;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDF_SCALE;
+    dK_accum.template row_bin_op<MulOp>(scale_vec);
+  }
+
+  // === Per-SG-slot device write for both gradients ===
+  if (is_last_k) {
+    if (lim_rows_k <= 0) return;
+    dK_accum.store_rows(dK_partials, int(params.dKp_strides[3]), lim_rows_k);
+    dV_accum.store_rows(dV_partials, int(params.dVp_strides[3]), lim_rows_k);
+  } else {
+    dK_accum.store(dK_partials, int(params.dKp_strides[3]));
+    dV_accum.store(dV_partials, int(params.dVp_strides[3]));
+  }
+}
+)BWDFSPMSL";
+
+  return ss.str();
+}
