@@ -208,18 +208,35 @@ def test_v34_bwd_v2372_carveout_does_not_engage_below_threshold(enable_v34_bwd):
     assert _rmse(dV, dV_ref) == 0.0
 
 
-def test_v34_bwd_v2372_carveout_does_not_engage_d128(enable_v34_bwd):
-    """v2.37.2 carve-out is D-gated to D=64: V34 backward at D=128 is
-    2.0-2.4× slower than SDPA-vjp (architectural floor).  The carve-out
-    must NOT engage for D=128 — fallback to SDPA-vjp via auto dispatch."""
+def test_v34_bwd_v2372_carveout_does_not_engage_d128_below_floor(enable_v34_bwd):
+    """v2.50 Prompt 5b Section D: carve-out broadened to D=128 + qL>=2048.
+    BELOW that floor (qL=1024 here), carve-out still does NOT engage for
+    D=128 — fallback to SDPA-vjp via auto dispatch.  Replaces the prior
+    pre-broadening test that asserted D=128 always falls back."""
+    q, k, v = _make(1, 4, 4, 1024, 1024, 128, 55, mx.float16)
+    scale = 1.0 / math.sqrt(128)
+    dQ, dK, dV = _grads_auto(q, k, v)
+    dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
+    # Must be bit-identical: both paths are SDPA-vjp (qL=1024 below floor).
+    assert _rmse(dQ, dQ_ref) == 0.0
+    assert _rmse(dK, dK_ref) == 0.0
+    assert _rmse(dV, dV_ref) == 0.0
+
+
+def test_v34_bwd_carveout_engages_d128_above_floor(enable_v34_bwd):
+    """v2.50 Prompt 5b Section D: D=128 + qL>=2048 + fp16 NOW engages
+    V34 backward split kernels via AUTO.  Gradients differ from SDPA-vjp
+    by FP16 rounding (non-zero RMSE) — engagement signature."""
     q, k, v = _make(1, 4, 4, 4096, 4096, 128, 55, mx.float16)
     scale = 1.0 / math.sqrt(128)
     dQ, dK, dV = _grads_auto(q, k, v)
     dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
-    # Must be bit-identical: both paths are SDPA-vjp.
-    assert _rmse(dQ, dQ_ref) == 0.0
-    assert _rmse(dK, dK_ref) == 0.0
-    assert _rmse(dV, dV_ref) == 0.0
+    # V34 split engaged → gradients NOT bit-identical (FP16 rounding diff)
+    diffs = [_rmse(dQ, dQ_ref), _rmse(dK, dK_ref), _rmse(dV, dV_ref)]
+    assert max(diffs) > 1e-9, (
+        f"D=128 qL=4096 V34 backward should engage via AUTO; "
+        f"max diff vs SDPA = {max(diffs):.2e}"
+    )
 
 
 def test_v34_bwd_v2372_carveout_inactive_without_env():

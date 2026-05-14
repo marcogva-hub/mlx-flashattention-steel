@@ -277,27 +277,37 @@ def test_fused_at_d128_works_via_direct_binding(monkeypatch):
     assert _rmse(dV_f, dV_s) <= 1e-3, f"dV fused vs split RMSE: {_rmse(dV_f, dV_s)}"
 
 
-def test_d128_fused_unreachable_via_public_api(monkeypatch):
-    """v2.40.0-internal Sprint B: document that PUBLIC AUTO API does NOT
-    engage the D=128 fused kernel.  See decisions doc §"Empirical bench data".
+def test_d128_split_engages_via_public_api(monkeypatch):
+    """v2.50 Prompt 5b Section D: PUBLIC AUTO API engages V34 split kernels
+    for D=128.  Updated from prior "unreachable_via_public_api" test that
+    codified the pre-broadening "D=128 PUBLIC API routes to SDPA-vjp"
+    contract.  Per Sprint B v2.40.0-internal Phase C.1.b, D=128 split
+    kernels achieve parity with SDPA-vjp (RMSE ~2e-5); Prompt 5b Section
+    D broadens the carve-out.
 
-    This test is REGRESSION coverage: if a future sprint broadens the
-    carve-out to include D=128 OR raises the should_use_mfa threshold,
-    this test must be updated.  Until then, it codifies the "D=128 PUBLIC
-    API routes to SDPA-vjp" contract.
+    Test is REGRESSION coverage: if a future sprint NARROWS the carve-out
+    back to D=64-only, this test must be updated.  D=128 fused remains
+    OPT-IN (not auto-default per outcome γ); only D=128 split engages via
+    AUTO.
     """
     from mlx_mfa.dispatch_policy import (
         should_use_mfa, _v34_backward_carveout, _dispatch_dtype_key,
     )
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
     fp16_key = _dispatch_dtype_key(mx.float16)
-    # Both predicates block D=128 V34 backward via AUTO
+    # `should_use_mfa` still returns False for D=128 (V34 backward path
+    # routes via carve-out, NOT through the legacy MFA path).  This is
+    # the design intent — V34 backward broadening doesn't change MFA
+    # forward routing.
     assert should_use_mfa(
         head_dim=128, seq_len=4096, causal=False,
         is_m3_plus=True, has_nax=True, dtype=mx.float16,
     ) is False
+    # The carve-out NOW returns True for D=128 + qL>=2048 + fp16 + env=1
+    # (post-Prompt 5b Section D broadening).
     assert _v34_backward_carveout(
         head_dim=128, seq_len=4096, causal=False, dtype_key=fp16_key,
-    ) is False
+    ) is True
 
 
 def test_fused_at_d256_still_raises_loudly(monkeypatch):
@@ -420,14 +430,28 @@ def test_v39_2_internal_carveout_rejects_qL_at_boundary_minus_1(monkeypatch):
     ) is False
 
 
-def test_v39_2_internal_carveout_preserves_d128_exclusion(monkeypatch):
-    """v2.39.2-internal: D=128 still excluded at all qL (carve-out D=64-only)."""
+def test_v50_prompt5b_d128_eligibility_broadened(monkeypatch):
+    """v2.50 Prompt 5b Section D: D=128 NOW eligible at qL>=2048 (carve-out
+    broadened from D=64-only).  Test replaces former
+    `test_v39_2_internal_carveout_preserves_d128_exclusion` which codified
+    the pre-broadening "D=128 excluded" contract.  Sprint B v2.40.0-internal
+    Phase C.1.b empirically validated D=128 split kernels at parity with
+    SDPA-vjp (RMSE ~2e-5)."""
     monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
     from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    # D=128 at qL>=2048 now eligible
     for qL in (2048, 4096, 8192):
         assert _v34_backward_carveout(
             head_dim=128, seq_len=qL, causal=False, dtype_key="float16"
-        ) is False
+        ) is True
+    # Below qL floor still ineligible
+    assert _v34_backward_carveout(
+        head_dim=128, seq_len=1024, causal=False, dtype_key="float16"
+    ) is False
+    # D=64 unchanged
+    assert _v34_backward_carveout(
+        head_dim=64, seq_len=4096, causal=False, dtype_key="float16"
+    ) is True
 
 
 def test_v38_1_d_vec_still_functional(monkeypatch):

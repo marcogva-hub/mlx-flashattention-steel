@@ -202,22 +202,28 @@ PERF_CLAIMS = [
         ],
         "documented_perf_claim": "D=64 qL=8192: V34 backward 1.81× faster than SDPA-vjp",
     },
-    # v2.37.3 reclassified: D=128 — MUST fall back to SDPA-vjp via AUTO
-    # (V34 backward is research-only, requires backend="mfa")
+    # v2.50 Prompt 5b Section D: D=128 broadened.  V34 backward NOW
+    # ENGAGES via AUTO for D=128 + qL>=2048 + fp16/bf16 (split kernels
+    # per Sprint B v2.40.0-internal outcome γ — at parity with SDPA-vjp,
+    # ~RMSE 2e-5).  Provided as coverage extension for D=128 training;
+    # perf gain not guaranteed at D=128 (parity is the empirical floor).
+    # See `docs/v50/sprint-5b-section-d-dispatch-audit.md`.
     {
-        "id": "v2.37.3_d128_qL8192_auto_falls_back_to_sdpa",
+        "id": "v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity",
         "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 128),
         "dtype": mx.float16,
-        "expected": "sdpa_fallback",
+        "expected": "v34_backward",
         "documented_in": [
-            "docs/releases/v2.37.3-release-notes.md",
-            "docs/TRAINING_QUICKSTART.md",
+            "docs/v50/sprint-5b-section-d-dispatch-audit.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
-            "D=128 V34 backward is research-only; AUTO path falls back "
-            "to SDPA-vjp at parity (carve-out is D=64 only)"
+            "v2.50 Prompt 5b Section D: D=128 qL=8192 V34 backward "
+            "engages via AUTO at parity with SDPA-vjp (Sprint B v2.40.0-"
+            "internal empirical RMSE ~2e-5; cohérence narrative "
+            "'V34 backward couvre D=64 + D=128' prime sur perf gain "
+            "marginal — no speedup claim, contract-honest engagement)"
         ),
     },
     # v2.39.2-internal: D=64 qL=2048 now ENGAGES V34 backward (at parity).
