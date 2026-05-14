@@ -129,11 +129,27 @@ class TestTopKArchitectureBBisect:
         assert np.isfinite(out_np).all()
 
     @_skipif_no_nax
-    def test_env_unset_uses_phase_3a(self, monkeypatch):
+    def test_env_unset_uses_bisect_default(self, monkeypatch):
+        """v2.50 Prompt 5c Section B: bisection PROMOTED to AUTO default.
+        Env unset → engages bisection kernel (not Phase 3a as in Prompt 5b)."""
         monkeypatch.delenv("MFA_TOPK_BISECT", raising=False)
+        monkeypatch.delenv("MFA_DISABLE_TOPK_BISECT", raising=False)
         B, H, N, D = 1, 4, 512, 64
         S = 512
         q, k, v = _make_qkv(B, H, N, D, S, seed=105)
+        out = flash_attention_topk(q, k, v, topk_ratio=64.0/S)
+        mx.eval(out); mx.synchronize()
+        out_np = np.array(out.astype(mx.float32))
+        assert np.isfinite(out_np).all()
+
+    @_skipif_no_nax
+    def test_opt_out_via_disable_env(self, monkeypatch):
+        """Section B Phase B.5 promotion: MFA_DISABLE_TOPK_BISECT=1 reverts
+        to Phase 3a mx.topk semantics (legacy path preserved)."""
+        monkeypatch.setenv("MFA_DISABLE_TOPK_BISECT", "1")
+        B, H, N, D = 1, 4, 512, 64
+        S = 512
+        q, k, v = _make_qkv(B, H, N, D, S, seed=106)
         out = flash_attention_topk(q, k, v, topk_ratio=64.0/S)
         mx.eval(out); mx.synchronize()
         out_np = np.array(out.astype(mx.float32))

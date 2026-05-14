@@ -9,6 +9,38 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Changed (Section B v2.50 Prompt 5c — Top-K bisection PROMOTED to AUTO default)
+
+- **Architecture B (bisection kernel) is now the AUTO production default
+  for `flash_attention_topk`**.  Empirically validated 3.85× speedup
+  over Phase 3a (mx.topk-based) at audit shape, with comparable FP16
+  boundary semantics (both produce 64-69 elements per row due to
+  inherent ties).
+
+  **Env semantics (post-promotion)**:
+  - (unset) → bisection kernel (AUTO default)
+  - `MFA_DISABLE_TOPK_BISECT=1` → revert to Phase 3a mx.topk (legacy)
+  - `MFA_DISABLE_TOPK_NAX=1` → Python reference (opt out entirely)
+  - `MFA_TOPK_BISECT=1` → deprecated (redundant; AUTO default; back-compat)
+
+  **Approach 5 (single-pass running top-K state machine) deferred to
+  Section B v3** focused follow-up.  Per `docs/v50/phase-3b-approach-5-decision.md`:
+  full Approach 5 requires scatter-gather PASS-2 attention which is
+  NOT natively supported by Apple SDPA NAX (mx.fast.scaled_dot_product_attention
+  accepts contiguous K/V + mask, not indexed K/V).  Workarounds:
+  (a) custom Metal kernel for filtered SDPA (XL effort, 8-12h),
+  (b) materialize K/V via mx.take (eliminates savings),
+  (c) bias mask with -INFINITY at non-top-K positions (equivalent to
+  Architecture B).  Approach 5 v3 may explore (a) post-v2.50.
+
+  **Test updates**:
+  - `test_v50_topk_nax.py::test_sprint3_topk_nax_matches_reference` →
+    renamed `test_sprint3_topk_nax_phase3a_matches_reference`, forces
+    `MFA_DISABLE_TOPK_BISECT=1` to preserve original Phase 3a semantic
+  - `test_v50_sprint_5b_section_b_topk_bisect.py::test_env_unset_uses_phase_3a`
+    → renamed `test_env_unset_uses_bisect_default`
+  - New `test_opt_out_via_disable_env` validates legacy opt-out
+
 ### Added (Section A v2.50 Prompt 5c — Sparse backward hybrid + sparse-LSE foundation)
 
 - **`sparse_attention_nax_with_lse`** (Python wrapper) and

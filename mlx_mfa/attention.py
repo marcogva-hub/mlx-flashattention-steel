@@ -2960,8 +2960,27 @@ def flash_attention_topk(
     # need pre-multiplication into bias which adds two more allocations),
     # M5+ NAX hardware (Apple SDPA NAX path), D ∈ {64,128} (NAX-supported),
     # dtype f16/bf16 (NAX-supported), k_count < S (filtering actually needed).
+    # v2.50 Prompt 5c Section B — Architecture B (bisection) PROMOTED to
+    # AUTO production default per empirical Phase B.5 Scenario 1: 3.85×
+    # speedup over Phase 3a + comparable FP16 boundary semantics + no
+    # implementation-feasibility blockers.
+    #
+    # Approach 5 (single-pass running top-K state machine with scatter-
+    # gather PASS-2) was investigated as Section B v3 follow-up: requires
+    # custom Metal kernel for filtered SDPA (Apple SDPA NAX doesn't
+    # natively support indexed K/V); estimated XL effort (8-12h focused).
+    # See `docs/v50/phase-3b-approach-5-decision.md`.
+    #
+    # Env vars:
+    #   MFA_DISABLE_TOPK_NAX=1   : opt out entirely (revert to ref path)
+    #   MFA_DISABLE_TOPK_BISECT=1: prefer Phase 3a mx.topk over bisection
+    #                              (legacy; preserves exact mx.topk semantics)
+    #   (deprecated) MFA_TOPK_BISECT=1: previously opt-in; now redundant
+    #                              with the AUTO default — kept for back-compat
     _disable_topk_nax = os.environ.get("MFA_DISABLE_TOPK_NAX") == "1"
-    _bisect_opt_in = os.environ.get("MFA_TOPK_BISECT") == "1"
+    _disable_bisect = os.environ.get("MFA_DISABLE_TOPK_BISECT") == "1"
+    # Bisection IS the default; opt-out requires explicit env.
+    _bisect_opt_in = not _disable_bisect
     if (mask is None and not _disable_topk_nax
             and _get_has_nax_cached()
             and D in (64, 128)
