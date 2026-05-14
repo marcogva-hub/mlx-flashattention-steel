@@ -9,6 +9,22 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Docs (Section E v2.50 Prompt 5b — HARDWARE_SUPPORT.md final narrative)
+
+- **`docs/HARDWARE_SUPPORT.md`** updated to reflect post-Prompt-5b
+  state.  Forward + backward matrices show coverage outcomes:
+  - D=128 + causal + attn_bias mode 1/2 → V2 STEEL bias-aware
+    (Section C fix)
+  - D=128 V34 backward broadened to AUTO path (Section D)
+  - Sparse backward PoC dV kernel scaffolded; full 5-kernel extension
+    is Section A v2 follow-up
+  - Top-K native Metal kernel (Section B selected architecture)
+- NAX-opportunities Tier 1+2 marked as SHIPPED; Tier 3 deferrals
+  documented with rationale (paged-NAX anticipates Apple roadmap;
+  Section A v2 is incremental perf on already-correct production
+  Section C wrapper).
+- Full skill invocations log across Sprints 1-5 + Prompt 5b per §AA.2.
+
 ### Fixed (Section C v2.50 Prompt 5b — D=128 attn_bias mode 1/2 causal bug RESOLVED)
 
 - **`flash_attention(q, k, v, attn_bias=bias, causal=True)` with D=128**
