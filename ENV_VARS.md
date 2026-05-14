@@ -62,6 +62,12 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_V34BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
 | `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
 | `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
+| `MFA_V34_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal**: V34 backward kernel mode selection.  `auto` → D=64 fused, D=128 split (per Sprint B outcome γ).  `fused` → forced fused (D ∈ {64, 128}; D=128 may regress 3-7%).  `split` → forced split-dKdV (works for any D ∈ {64, 128}).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` is empirically optimal. |
+| `MFA_V34_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V34 backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V34 NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `docs/v50/section-a-v3-empirical-verification.md`. |
+| `MFA_TOPK_BISECT` | bool | unset (deprecated) | **v2.50 Prompt 5b** opt-in for Top-K bisection kernel.  **Deprecated v2.50 Prompt 5c**: bisection promoted to AUTO default; this env var is now redundant and ignored.  Preserved for back-compat. |
+| `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
+| `MFA_DISABLE_TOPK_NAX` | bool | unset | Disable Top-K NAX dispatch entirely; falls back to Python reference (very slow at scale, for correctness comparison). |
+| `MFA_DISABLE_ROPE_NAX` | bool | unset | **Sprint 2**: opt-out of `mx.fast.rope` dispatch path in `flash_attention_rope_unified`; falls back to STEEL host-side RoPE. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
 
