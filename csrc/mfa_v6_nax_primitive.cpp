@@ -2018,4 +2018,538 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
   return {outs[0], outs[1]};  // dK_partials, dV_partials
 }
 
+
+// =============================================================================
+// v2.50 Prompt 5d Section A — Sparse plumbing for dQ, dK split, fused dKdV.
+// =============================================================================
+
+void v34_dispatch_bwd_query_sparse(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+void v34_dispatch_bwd_dk_sparse(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+void v34_dispatch_bwd_fused_dkdv_sparse(
+    void* pipeline_raw, void* enc_raw,
+    int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
+
+// ─────────────────────────────────────────────────────────────────────
+// MFAV34BwdQuerySparse
+// ─────────────────────────────────────────────────────────────────────
+struct V34BwdQSparseKey {
+  int D, Hq, Hk, dtype_code;
+  unsigned short v34_BQ, v34_BK;
+  uint16_t v34_WM;
+  bool causal;
+  bool operator==(const V34BwdQSparseKey& o) const {
+    return D == o.D && Hq == o.Hq && Hk == o.Hk
+        && dtype_code == o.dtype_code
+        && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
+        && causal == o.causal;
+  }
+};
+struct V34BwdQSparseKeyHash {
+  size_t operator()(const V34BwdQSparseKey& k) const {
+    size_t h = std::hash<int>{}(k.D);
+    h ^= std::hash<int>{}(k.Hq) << 1;
+    h ^= std::hash<int>{}(k.Hk) << 2;
+    h ^= std::hash<int>{}(k.dtype_code) << 3;
+    h ^= std::hash<uint16_t>{}(k.v34_BQ) << 4;
+    h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
+    h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
+    return h;
+  }
+};
+namespace {
+std::mutex v34_bwdq_sparse_mtx;
+std::unordered_map<V34BwdQSparseKey, void*, V34BwdQSparseKeyHash>
+    v34_bwdq_sparse_pipelines;
+}
+
+class MFAV34BwdQuerySparse : public mlx::core::Primitive {
+ public:
+  MFAV34BwdQuerySparse(mlx::core::Stream s, float scale, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
+
+  const char* name() const override { return "MFAV34BwdQuerySparse"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAV34BwdQuerySparse: CPU eval not supported");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    const auto& q   = inputs[0];
+    const auto& k   = inputs[1];
+    const auto& v   = inputs[2];
+    const auto& o   = inputs[3];
+    const auto& lse = inputs[4];
+    const auto& d_o = inputs[5];
+    const auto& d_vec = inputs[6];
+    const auto& block_mask = inputs[7];
+    auto& dq  = outputs[0];
+
+    if (q.ndim() != 4)
+      throw std::runtime_error("V34 bwd dQ sparse: Q must be 4D");
+    const int B  = q.shape(0);
+    const int Hq = q.shape(1);
+    const int N  = q.shape(2);
+    const int D  = q.shape(3);
+    const int Hk = k.shape(1);
+    const int Nk = k.shape(2);
+    if (D != 64 && D != 128)
+      throw std::runtime_error("V34 bwd dQ sparse: D must be 64 or 128");
+    if (block_mask.ndim() != 2)
+      throw std::runtime_error("V34 bwd dQ sparse: block_mask must be 2-D [NQ, NK]");
+
+    unsigned short v34_BQ = (D == 64) ? 32 : 64;
+    unsigned short v34_BK = (D == 64) ? 64 : 32;
+    uint16_t v34_WM = (D == 64) ? 2 : 4;
+    if (const char* e = std::getenv("MFA_V34BWD_BQ"))
+      v34_BQ = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWD_BK"))
+      v34_BK = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWD_WM"))
+      v34_WM = (uint16_t)std::atoi(e);
+
+    int dtype_code;
+    if (q.dtype() == mlx::core::float16) dtype_code = 0;
+    else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+    else throw std::runtime_error("V34 bwd dQ sparse: only FP16/BF16");
+
+    dq.set_data(mlx::core::allocator::malloc(dq.nbytes()));
+
+    auto& dev = mlx::core::metal::device(stream().device);
+    void* mtl_device = dev.mtl_device();
+
+    V34BwdQSparseKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_};
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v34_bwdq_sparse_mtx);
+      auto it = v34_bwdq_sparse_pipelines.find(key);
+      if (it != v34_bwdq_sparse_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardQuerySparseSource(); },
+          "attention_bwd_q_sparse", mtl_device, causal_,
+          "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ sparse", nullptr);
+      std::lock_guard<std::mutex> lock(v34_bwdq_sparse_mtx);
+      v34_bwdq_sparse_pipelines[key] = pipeline;
+    }
+
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_input_array(o, 3);
+    enc.set_input_array(lse, 4);
+    enc.set_input_array(d_o, 5);
+    enc.set_output_array(dq, 6);
+    enc.set_input_array(d_vec, 8);
+    enc.set_input_array(block_mask, 9);
+
+    v34_dispatch_bwd_query_sparse(
+        pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+        (int)B, (int)D, v34_BQ, v34_BK, v34_WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV34BwdQuerySparse*>(&other);
+    return p && p->scale_ == scale_ && p->causal_ == causal_;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    return {inputs[0].shape()};
+  }
+
+ private:
+  float scale_;
+  bool causal_;
+};
+
+mlx::core::array v6_nax_backward_query_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
+    float scale, bool causal) {
+  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dQ sparse: Q must be 4D");
+  if (block_mask.ndim() != 2)
+    throw std::runtime_error("V34 bwd dQ sparse: block_mask must be 2-D");
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+  auto oc = mlx::core::contiguous(o, false, s);
+  auto lsec = mlx::core::contiguous(lse, false, s);
+  auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);
+  auto bmc = mlx::core::contiguous(block_mask, false, s);
+
+  auto outs = mlx::core::array::make_arrays(
+      {qc.shape()},
+      {qc.dtype()},
+      std::make_shared<MFAV34BwdQuerySparse>(s, scale, causal),
+      {qc, kc, vc, oc, lsec, dOc, dvc, bmc});
+  return outs[0];
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// MFAV34BwdDKSparse — dK split sparse
+// ─────────────────────────────────────────────────────────────────────
+struct V34BwdKSparseKey {
+  int D, Hq, Hk, dtype_code;
+  unsigned short BQ, BK;
+  uint16_t WM;
+  bool causal;
+  bool operator==(const V34BwdKSparseKey& o) const {
+    return D == o.D && Hq == o.Hq && Hk == o.Hk
+        && dtype_code == o.dtype_code
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
+  }
+};
+struct V34BwdKSparseKeyHash {
+  size_t operator()(const V34BwdKSparseKey& k) const {
+    size_t h = std::hash<int>{}(k.D);
+    h ^= std::hash<int>{}(k.Hq) << 1;
+    h ^= std::hash<int>{}(k.Hk) << 2;
+    h ^= std::hash<int>{}(k.dtype_code) << 3;
+    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
+    h ^= std::hash<uint16_t>{}(k.BK) << 5;
+    h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
+    return h;
+  }
+};
+namespace {
+std::mutex v34_bwdk_sparse_mtx;
+std::unordered_map<V34BwdKSparseKey, void*, V34BwdKSparseKeyHash>
+    v34_bwdk_sparse_pipelines;
+}
+
+class MFAV34BwdDKSparse : public mlx::core::Primitive {
+ public:
+  MFAV34BwdDKSparse(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
+
+  const char* name() const override { return "MFAV34BwdDKSparse"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAV34BwdDKSparse: CPU eval not supported");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    const auto& q   = inputs[0];
+    const auto& k   = inputs[1];
+    const auto& v   = inputs[2];
+    const auto& o   = inputs[3];
+    const auto& lse = inputs[4];
+    const auto& d_o = inputs[5];
+    const auto& d_vec = inputs[6];
+    const auto& block_mask = inputs[7];
+    auto& dkp = outputs[0];
+
+    const int B  = q.shape(0);
+    const int Hq = q.shape(1);
+    const int N  = q.shape(2);
+    const int D  = q.shape(3);
+    const int Hk = k.shape(1);
+    const int Nk = k.shape(2);
+
+    if (D != 64 && D != 128)
+      throw std::runtime_error("V34 bwd dK sparse: D must be 64 or 128");
+    if (block_mask.ndim() != 2)
+      throw std::runtime_error("V34 bwd dK sparse: block_mask must be 2-D");
+
+    unsigned short BQ = 64;
+    unsigned short BK = 32;
+    uint16_t WM = wm_;
+    if (const char* e = std::getenv("MFA_V34BWDK_BQ"))
+      BQ = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDK_BK"))
+      BK = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDK_WM"))
+      WM = (uint16_t)std::atoi(e);
+
+    int dtype_code;
+    if (q.dtype() == mlx::core::float16) dtype_code = 0;
+    else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+    else throw std::runtime_error("V34 bwd dK sparse: only FP16/BF16");
+
+    dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
+
+    auto& dev = mlx::core::metal::device(stream().device);
+    void* mtl_device = dev.mtl_device();
+
+    V34BwdKSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v34_bwdk_sparse_mtx);
+      auto it = v34_bwdk_sparse_pipelines.find(key);
+      if (it != v34_bwdk_sparse_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardDKSparseSource(); },
+          "attention_bwd_dk_sparse", mtl_device, causal_,
+          nullptr, nullptr, nullptr);
+      std::lock_guard<std::mutex> lock(v34_bwdk_sparse_mtx);
+      v34_bwdk_sparse_pipelines[key] = pipeline;
+    }
+
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_input_array(o, 3);
+    enc.set_input_array(lse, 4);
+    enc.set_input_array(d_o, 5);
+    enc.set_output_array(dkp, 6);
+    enc.set_input_array(d_vec, 8);
+    enc.set_input_array(block_mask, 9);
+
+    v34_dispatch_bwd_dk_sparse(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+                                (int)B, (int)D, BQ, BK, WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV34BwdDKSparse*>(&other);
+    return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    auto qs = inputs[0].shape();
+    auto ks = inputs[1].shape();
+    mlx::core::Shape s{qs[0], qs[1], (int)wm_, ks[2], qs[3]};
+    return {s};
+  }
+
+ private:
+  float scale_;
+  uint16_t wm_;
+  bool causal_;
+};
+
+mlx::core::array v6_nax_backward_dk_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
+    float scale, int wm, bool causal) {
+  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dK sparse: Q must be 4D");
+  if (block_mask.ndim() != 2)
+    throw std::runtime_error("V34 bwd dK sparse: block_mask must be 2-D");
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+  auto oc = mlx::core::contiguous(o, false, s);
+  auto lsec = mlx::core::contiguous(lse, false, s);
+  auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);
+  auto bmc = mlx::core::contiguous(block_mask, false, s);
+
+  mlx::core::Shape dkp_shape{qc.shape(0), qc.shape(1), wm,
+                              kc.shape(2), qc.shape(3)};
+  auto outs = mlx::core::array::make_arrays(
+      {dkp_shape},
+      {mlx::core::float32},
+      std::make_shared<MFAV34BwdDKSparse>(s, scale, (uint16_t)wm, causal),
+      {qc, kc, vc, oc, lsec, dOc, dvc, bmc});
+  return outs[0];
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// MFAV34BwdFusedDKDVSparse — fused dKdV sparse
+// ─────────────────────────────────────────────────────────────────────
+struct V34BwdFSparseKey {
+  int D, Hq, Hk, dtype_code;
+  unsigned short BQ, BK;
+  uint16_t WM;
+  bool causal;
+  bool operator==(const V34BwdFSparseKey& o) const {
+    return D == o.D && Hq == o.Hq && Hk == o.Hk
+        && dtype_code == o.dtype_code
+        && BQ == o.BQ && BK == o.BK && WM == o.WM
+        && causal == o.causal;
+  }
+};
+struct V34BwdFSparseKeyHash {
+  size_t operator()(const V34BwdFSparseKey& k) const {
+    size_t h = std::hash<int>{}(k.D);
+    h ^= std::hash<int>{}(k.Hq) << 1;
+    h ^= std::hash<int>{}(k.Hk) << 2;
+    h ^= std::hash<int>{}(k.dtype_code) << 3;
+    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
+    h ^= std::hash<uint16_t>{}(k.BK) << 5;
+    h ^= std::hash<uint16_t>{}(k.WM) << 6;
+    h ^= std::hash<bool>{}(k.causal) << 7;
+    return h;
+  }
+};
+namespace {
+std::mutex v34_bwdf_sparse_mtx;
+std::unordered_map<V34BwdFSparseKey, void*, V34BwdFSparseKeyHash>
+    v34_bwdf_sparse_pipelines;
+}
+
+class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
+ public:
+  MFAV34BwdFusedDKDVSparse(mlx::core::Stream s, float scale, uint16_t wm,
+                          bool causal = false)
+      : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
+
+  const char* name() const override { return "MFAV34BwdFusedDKDVSparse"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("MFAV34BwdFusedDKDVSparse: CPU eval not supported");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    const auto& q   = inputs[0];
+    const auto& k   = inputs[1];
+    const auto& v   = inputs[2];
+    const auto& lse = inputs[3];
+    const auto& d_o = inputs[4];
+    const auto& d_vec = inputs[5];
+    const auto& block_mask = inputs[6];
+    auto& dkp = outputs[0];
+    auto& dvp = outputs[1];
+
+    const int B  = q.shape(0);
+    const int Hq = q.shape(1);
+    const int N  = q.shape(2);
+    const int D  = q.shape(3);
+    const int Hk = k.shape(1);
+    const int Nk = k.shape(2);
+
+    if (D != 64 && D != 128)
+      throw std::runtime_error("V34 bwd fused-dKdV sparse: D must be 64 or 128");
+    if (block_mask.ndim() != 2)
+      throw std::runtime_error("V34 bwd fused-dKdV sparse: block_mask must be 2-D");
+
+    unsigned short BQ = 64;
+    unsigned short BK = 32;
+    uint16_t WM = wm_;
+    if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
+      BQ = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDF_BK"))
+      BK = (unsigned short)std::atoi(e);
+    if (const char* e = std::getenv("MFA_V34BWDF_WM"))
+      WM = (uint16_t)std::atoi(e);
+
+    int dtype_code;
+    if (q.dtype() == mlx::core::float16) dtype_code = 0;
+    else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
+    else throw std::runtime_error("V34 bwd fused-dKdV sparse: only FP16/BF16");
+
+    dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
+    dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
+
+    auto& dev = mlx::core::metal::device(stream().device);
+    void* mtl_device = dev.mtl_device();
+
+    V34BwdFSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v34_bwdf_sparse_mtx);
+      auto it = v34_bwdf_sparse_pipelines.find(key);
+      if (it != v34_bwdf_sparse_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      pipeline = compile_v34_backward_pipeline(
+          D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSparseSource(); },
+          "attention_bwd_fused_dkdv_sparse", mtl_device, causal_,
+          nullptr, nullptr, nullptr);
+      std::lock_guard<std::mutex> lock(v34_bwdf_sparse_mtx);
+      v34_bwdf_sparse_pipelines[key] = pipeline;
+    }
+
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_input_array(lse, 3);
+    enc.set_input_array(d_o, 4);
+    enc.set_output_array(dkp, 5);
+    enc.set_output_array(dvp, 6);
+    enc.set_input_array(d_vec, 8);
+    enc.set_input_array(block_mask, 9);
+
+    v34_dispatch_bwd_fused_dkdv_sparse(pipeline, &enc, (int)N, (int)Nk,
+                                        (int)Hq, (int)Hk, (int)B, (int)D,
+                                        BQ, BK, WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV34BwdFusedDKDVSparse*>(&other);
+    return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    auto qs = inputs[0].shape();
+    auto ks = inputs[1].shape();
+    mlx::core::Shape s{qs[0], qs[1], (int)wm_, ks[2], qs[3]};
+    return {s, s};
+  }
+
+ private:
+  float scale_;
+  uint16_t wm_;
+  bool causal_;
+};
+
+std::pair<mlx::core::array, mlx::core::array>
+v6_nax_backward_fused_dkdv_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_o, const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
+    float scale, int wm, bool causal) {
+  if (q.ndim() != 4) throw std::runtime_error("V34 bwd fused-dKdV sparse: Q must be 4D");
+  if (block_mask.ndim() != 2)
+    throw std::runtime_error("V34 bwd fused-dKdV sparse: block_mask must be 2-D");
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
+  auto lsec = mlx::core::contiguous(lse, false, s);
+  auto dOc = mlx::core::contiguous(d_o, false, s);
+  auto dvc = mlx::core::contiguous(d_vec, false, s);
+  auto bmc = mlx::core::contiguous(block_mask, false, s);
+
+  mlx::core::Shape partials_shape{qc.shape(0), qc.shape(1), wm,
+                                   kc.shape(2), qc.shape(3)};
+  auto outs = mlx::core::array::make_arrays(
+      {partials_shape, partials_shape},
+      {mlx::core::float32, mlx::core::float32},
+      std::make_shared<MFAV34BwdFusedDKDVSparse>(s, scale, (uint16_t)wm, causal),
+      {qc, kc, vc, lsec, dOc, dvc, bmc});
+  return {outs[0], outs[1]};
+}
+
 }  // namespace mlx_mfa

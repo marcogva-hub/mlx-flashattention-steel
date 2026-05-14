@@ -62,12 +62,33 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal);
-// V34 backward dV SPARSE — Prompt 5b Section A PoC.  Skips inactive Q-tiles
-// per block_mask scan.  Mask layout 2-D [NQ, NK] bool only at PoC stage.
+// V34 backward dV SPARSE — Prompt 5b Section A PoC.
 mlx::core::array v6_nax_backward_dv_sparse_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, const mlx::core::array& block_mask,
+    float scale, int wm, bool causal);
+// v2.50 Prompt 5d Section A — dQ + dK split + fused dKdV sparse.
+mlx::core::array v6_nax_backward_query_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
+    float scale, bool causal);
+mlx::core::array v6_nax_backward_dk_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& o,
+    const mlx::core::array& lse, const mlx::core::array& d_o,
+    const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
+    float scale, int wm, bool causal);
+std::pair<mlx::core::array, mlx::core::array>
+v6_nax_backward_fused_dkdv_sparse_raw(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_o, const mlx::core::array& d_vec,
+    const mlx::core::array& block_mask,
     float scale, int wm, bool causal);
 // V34 backward dK-only Phase 2.O2 (sister kernel).  Same shape contract
 // as dV; takes additional O input (for D = rowsum(dO⊙O)).
@@ -448,12 +469,56 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"), nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).  Iterates "
-        "only active Q-tiles per block_mask scan.  Mask must be 2-D [NQ, NK] "
-        "bool.  Returns dV_partials [B, Hq, WM, kL, D] FP32; caller reduces "
-        "via mx.sum(axis=2) + casts to T.  Other 4 V34 backward kernels (dQ, "
-        "dK split, fused dKdV, legacy fused dKV) remain dense in Section A "
-        "PoC scaffold — see docs/v50/sprint-5b-section-a-scaffold.md.");
+        "V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).");
+
+  // v2.50 Prompt 5d Section A: 3 new sparse backward kernels.
+  m.def("v6_nax_backward_query_sparse_raw",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& o,
+           const mlx::core::array& lse, const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
+           const mlx::core::array& block_mask,
+           float scale, bool causal) {
+          return mlx_mfa::v6_nax_backward_query_sparse_raw(
+              q, k, v, o, lse, d_o, d_vec, block_mask, scale, causal);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("o"),
+        nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
+        nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("causal") = false,
+        "V34 backward dQ sparse kernel (Prompt 5d Section A.1).");
+
+  m.def("v6_nax_backward_dk_sparse_raw",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& o,
+           const mlx::core::array& lse, const mlx::core::array& d_o,
+           const mlx::core::array& d_vec,
+           const mlx::core::array& block_mask,
+           float scale, int wm, bool causal) {
+          return mlx_mfa::v6_nax_backward_dk_sparse_raw(
+              q, k, v, o, lse, d_o, d_vec, block_mask, scale, wm, causal);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("o"),
+        nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
+        nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
+        "V34 backward dK split sparse kernel (Prompt 5d Section A.2).");
+
+  m.def("v6_nax_backward_fused_dkdv_sparse_raw",
+        [](const mlx::core::array& q, const mlx::core::array& k,
+           const mlx::core::array& v, const mlx::core::array& lse,
+           const mlx::core::array& d_o, const mlx::core::array& d_vec,
+           const mlx::core::array& block_mask,
+           float scale, int wm, bool causal) {
+          auto p = mlx_mfa::v6_nax_backward_fused_dkdv_sparse_raw(
+              q, k, v, lse, d_o, d_vec, block_mask, scale, wm, causal);
+          return nb::make_tuple(p.first, p.second);
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
+        nb::arg("block_mask"),
+        nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
+        "V34 backward fused dK+dV sparse kernel (Prompt 5d Section A.3).");
 
   m.def("v6_nax_backward_dk_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
