@@ -677,10 +677,26 @@ def should_use_native_backward(
     supported = causal and (head_dim in (64, 128)) and (dtype_key is not None)
 
     force = os.environ.get("MFA_FORCE_NATIVE_BWD")
+    if force == "1":
+        # v2.50 Prompt 5f Phase E — KD-5 disposition: STEEL backward at
+        # D=128 N≥2048 has a known zeroed-blocks bug (see KD-5 in
+        # docs/v50/known-debt-v2.50.md).  V34 backward NAX-direct is
+        # the production path.  This env var routes through legacy
+        # STEEL backward and is now deprecated.
+        import warnings
+        warnings.warn(
+            "MFA_FORCE_NATIVE_BWD=1 routes through legacy STEEL backward "
+            "kernels which have a known correctness bug at D=128 N>=2048 "
+            "(zeroed output blocks for query rows >= 1024 — see KD-5 in "
+            "docs/v50/known-issues-v2.50.md).  The V34 backward NAX-direct "
+            "path (production default) is unaffected.  MFA_FORCE_NATIVE_BWD "
+            "is deprecated as of v2.50.0 and will be removed in v2.51+.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return supported
     if force == "0":
         return False
-    if force == "1":
-        return supported
 
     if not supported:
         return False

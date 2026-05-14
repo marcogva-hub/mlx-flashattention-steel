@@ -112,6 +112,23 @@ All notable changes to mlx-mfa are documented here.
 
   Resolves KD-4 from the v2.50 known-debt registry.
 
+### Deprecated (Prompt 5f Phase E — KD-5 disposition)
+
+- **`MFA_FORCE_NATIVE_BWD=1`** env var deprecated.  Routes through
+  legacy STEEL backward kernels which have a known correctness bug at
+  D=128 N≥2048 (zeroed output blocks for query rows ≥ 1024 — see KD-5
+  in `docs/v50/known-issues-v2.50.md`).  The V34 backward NAX-direct
+  path (production default per Section D Prompt 5b broadening) is
+  unaffected.
+
+  Setting `MFA_FORCE_NATIVE_BWD=1` now emits a `DeprecationWarning`.
+  The env var will be removed in v2.51+ once V34 backward is fully
+  established as the sole non-SDPA backward path.
+
+  3 new regression tests in `tests/test_v50_prompt_5f_kd5_deprecation.py`
+  cover the deprecation warning behavior (fires on `=1`, silent on
+  `=0` and on unset env).
+
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR

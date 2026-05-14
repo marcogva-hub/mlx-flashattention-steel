@@ -142,7 +142,13 @@ ValueError otherwise.
 
 ---
 
-## KD-5 — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEFERRED)
+## KD-5 — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEPRECATED v2.50.0 Prompt 5f Phase E)
+
+**v2.50.0 Phase E disposition**: `MFA_FORCE_NATIVE_BWD=1` now emits a
+`DeprecationWarning` pointing to this entry.  V34 backward NAX-direct
+(production default) is unaffected.  STEEL backward kernel itself
+retained for research-only access via the env var; both production
+xfails preserved.  Target removal: v2.51+.
 
 **Identified by**: Prompt 5a Section B + clarified in Prompt 5b
 Section D.  Documented in `docs/v50/known-issues-v2.50.md`.
@@ -171,6 +177,6 @@ is production.
 | KD-2 | MEDIUM | ~~2-3ms perf overhead in hybrid backward~~ | **RESOLVED v2.50.0 Prompt 5f Phase B** (~1.33ms saved) |
 | KD-3 | LOW | ~~Defensive code (not currently a bug)~~ | **RESOLVED v2.50.0 Prompt 5f Phase C** |
 | KD-4 | LOW | ~~Silent coerce of bad topk_ratio~~ | **RESOLVED v2.50.0 (Prompt 5e Phase 1 fix + Prompt 5f Phase D tests)** |
-| KD-5 | (preserved xfail) | None (research-only path) | post-v2.50 |
+| KD-5 | (preserved xfail) | None (research-only path) | **DEPRECATED v2.50.0 Prompt 5f Phase E**; target removal v2.51+ |
 
 None of KD-1 through KD-5 block v2.50 ship per scope analysis.
