@@ -40,7 +40,7 @@ engaging at:
 | `flash_attention_sparse` (symmetric block_mask) | STEEL sparse V1 | STEEL sparse V1 | **LCSA NAX** dispatcher (Sprint 1 density fix) | **(A)** 6× at audit shape |
 | `flash_attention_sparse` (asymmetric mask) | STEEL sparse V1 | STEEL sparse V1 | `_sparse_fallback_sdpa_perhead` | **(B)** mask expansion overhead |
 | `flash_attention_gna` | STEEL GNA | STEEL GNA | STEEL GNA + sparse fallback | **(A)** sliding-window wins vs dense |
-| `flash_attention_topk` | Python ref (17× regression) | Python ref | **Native Top-K Metal kernel** (Prompt 5b Section B selected arch) | **(A)** regression eliminated |
+| `flash_attention_topk` | Python ref (17× regression) | Python ref | **Bisection Metal kernel (AUTO default, Prompt 5c Section B promotion)** — 3.85× over Phase 3a; Phase 3a available via `MFA_DISABLE_TOPK_BISECT=1` | **(A)** regression eliminated; AUTO default delivers max speedup |
 | `flash_attention_speculative_verify` | composite of paged + dense | inherits | inherits | TBD (likely **A** for dense sub-path) |
 | `flash_attention_speculative_verify_paged` | composite + paged | inherits | inherits | inherits paged-NAX gap |
 | `flash_attention_splitfuse` | composite prefill + decode | inherits | inherits | TBD pending bench |

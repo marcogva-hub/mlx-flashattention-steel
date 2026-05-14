@@ -41,8 +41,17 @@ _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 @pytest.mark.parametrize("D", [64, 128])
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize("topk_ratio", [0.016, 0.0625, 0.25])
-def test_sprint3_topk_nax_matches_reference(monkeypatch, D, dtype, topk_ratio):
-    """NAX dispatch output matches reference within fp16 ULP tolerance."""
+def test_sprint3_topk_nax_phase3a_matches_reference(monkeypatch, D, dtype, topk_ratio):
+    """Phase 3a NAX dispatch (mx.topk-based, legacy path post-Prompt 5c
+    Section B promotion of bisection to AUTO default) matches reference
+    within fp16 ULP tolerance.
+
+    v2.50 Prompt 5c Section B: bisection is now AUTO default (3.85×
+    speedup); Phase 3a remains via `MFA_DISABLE_TOPK_BISECT=1` opt-out.
+    This test validates Phase 3a path correctness (preserves original
+    Sprint 3 semantic).  Separate test
+    `test_sprint5b_section_b_topk_bisect.py::test_bisect_approximates_phase_3a`
+    validates bisection's relaxed-tolerance correctness."""
     B, H, qL = 1, 4, 2048
     mx.random.seed(42)
     q = mx.random.normal((B, H, qL, D)).astype(dtype)
@@ -50,8 +59,9 @@ def test_sprint3_topk_nax_matches_reference(monkeypatch, D, dtype, topk_ratio):
     v = mx.random.normal((B, H, qL, D)).astype(dtype)
     _flush(q, k, v); mx.synchronize()
 
-    # Default (NAX dispatch on M5+)
+    # Force Phase 3a (legacy mx.topk semantics)
     monkeypatch.delenv("MFA_DISABLE_TOPK_NAX", raising=False)
+    monkeypatch.setenv("MFA_DISABLE_TOPK_BISECT", "1")
     o_nax = flash_attention_topk(q, k, v, topk_ratio=topk_ratio)
     _flush(o_nax); mx.synchronize()
 
@@ -64,7 +74,7 @@ def test_sprint3_topk_nax_matches_reference(monkeypatch, D, dtype, topk_ratio):
         o_nax.astype(mx.float32) - o_ref.astype(mx.float32))))
     tol = 5e-3 if dtype == mx.float16 else 2e-2
     assert max_diff < tol, (
-        f"NAX vs reference diff {max_diff:.3e} exceeds {tol} "
+        f"Phase 3a NAX vs reference diff {max_diff:.3e} exceeds {tol} "
         f"({dtype}, D={D}, ratio={topk_ratio})"
     )
 
