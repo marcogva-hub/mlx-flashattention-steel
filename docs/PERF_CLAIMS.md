@@ -23,9 +23,9 @@ over v2.38.1 split path).  D=128 unchanged (carve-out hard-gated to D=64).
 
 | Claim ID | Version intro | Description | Reproduction |
 |---|---|---|---|
-| `v2.39.1_d64_qL4096_fused_bk16_auto` | v2.39.1 | D=64 qL=4096 V34 backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
-| `v2.39.1_d64_qL8192_fused_bk16_auto` | v2.39.1 | D=64 qL=8192 V34 backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
-| `v2.39.1_d64_qL16384_fused_bk16_auto` | v2.39.1 | D=64 qL=16384 V34 backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
+| `v2.39.1_d64_qL4096_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=4096 V34 backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
+| `v2.39.1_d64_qL8192_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=8192 V34 backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
+| `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=16384 V34 backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
 
 Full investigation evidence + skill invocations log:
 `docs/v6-nax/v39-1-investigation-synthesis.md`.
@@ -40,8 +40,22 @@ Full investigation evidence + skill invocations log:
 | `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
 | `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
 | `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | D=128 V34 backward = research-only; AUTO path falls back to SDPA-vjp at parity | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `D=128` | REACHABLE — bit-identical to SDPA reference (correct fallback) |
-| `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | D=64 qL=2048: carve-out below threshold; AUTO falls back to SDPA-vjp | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=2048` | REACHABLE (correct fallback) |
 | `v2.37.3_d64_qL8192_env_unset_no_v34` | v2.37.3 | Without `MFA_ENABLE_V34_BACKWARD=1`, V34 backward NEVER engages | env unset | Same shape, env clear | REACHABLE (correct fallback) |
+
+### Internal claims (v2.39.2-internal — below-public-floor coverage)
+
+v2.39.2-internal lowered the V34 backward carve-out floor from `qL≥4096`
+to `qL≥2048` after the v2.39.1 BK=16 fused kernel achieved parity with
+SDPA-vjp at qL=2048 (3-session variance 1.004; see
+`docs/v6-nax/v39-2-internal-decisions.md`).  These claims preserve §Z
+coverage for the new floor boundary.  Internal-mode only — not promoted
+to user-facing release notes because no speedup at qL=2048 (parity-only
+engagement preserves contract honesty per env-var opt-in).
+
+| Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
+|---|---|---|---|---|---|
+| `v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity` | v2.39.2-internal | D=64 qL=2048 V34 backward engages via AUTO at parity with SDPA-vjp (3-session variance 1.004; no speedup but contract-honest engagement) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,2048,64) fp16 non-causal` | REACHABLE (parity engagement, v2.39.2-internal) |
+| `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa` | v2.39.2-internal | D=64 qL=1024: below v2.39.2-internal carve-out floor (regresses ~15% vs SDPA-vjp empirically); carve-out correctly does not engage | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=1024` | REACHABLE (correct fallback below new floor) |
 
 ### Reproduce snippet template (per §Z)
 
@@ -91,6 +105,7 @@ AUTO path doesn't engage their measured kernel.
 | Claim ID | Version intro | Reclassified in | Reason |
 |---|---|---|---|
 | `v2.37.0_d128_v34_22_24x_slower` | v2.37.0 | v2.37.3 | D=128 V34 backward 2.2-2.4× slower than SDPA-vjp at kernel level.  AUTO path correctly never engages D=128 V34 (architectural-floor research only).  Numbers reproducible via `backend="mfa"` forced path; not user-facing perf. |
+| `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | v2.39.2-internal | Superseded by `v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity` (Internal claims table).  The v2.39.2-internal carve-out floor was lowered from `qL≥4096` → `qL≥2048` after BK=16 fused kernel achieved parity at qL=2048.  qL=2048 now ENGAGES at parity (not fallback).  Below-floor fallback coverage preserved by `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa`. |
 
 ---
 

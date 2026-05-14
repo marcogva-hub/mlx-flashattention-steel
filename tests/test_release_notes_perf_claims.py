@@ -137,6 +137,27 @@ PERF_CLAIMS = [
             "(was 1.79× in v2.37.3)"
         ),
     },
+    # v2.39.1: D=64 qL=16384 — "1.72× faster" with fused-BK16 (PUBLIC API)
+    # Same physical engagement as v2.38.1 entry below but under v2.39.1 routing
+    # convention (default kernel = fused-BK16; v2.38.1 split-D_vec reachable
+    # via MFA_V34_BWD_KERNEL=split).  Both rows live for §Z audit-trail
+    # preservation per `docs/PERF_CLAIMS.md` Active claims.
+    {
+        "id": "v2.39.1_d64_qL16384_fused_bk16_engages_via_auto",
+        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "shape": (1, 4, 16384, 16384, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": [
+            "CHANGELOG.md",
+            "docs/v6-nax/v39-1-investigation-synthesis.md",
+        ],
+        "documented_perf_claim": (
+            "v2.39.1 D=64 qL=16384: fused-BK16 V34 backward 1.72× vs SDPA-vjp "
+            "(3-session median; fresh-machine 1.89×; thermal drift across "
+            "back-to-back sessions)"
+        ),
+    },
     # v2.38.1: D=64 qL=16384 — "1.80× faster"
     {
         "id": "v2.38.1_d64_qL16384_v34_dvec_engages_via_auto",
