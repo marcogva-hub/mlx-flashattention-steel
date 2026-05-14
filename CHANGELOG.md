@@ -102,6 +102,16 @@ All notable changes to mlx-mfa are documented here.
 
   Resolves KD-3 from the v2.50 known-debt registry.
 
+### Tests (Prompt 5f Phase D — KD-4 topk_ratio validation regression coverage)
+
+- 5 new regression tests in `tests/test_v50_prompt_5f_kd4_topk_validation.py`
+  exercising the ValueError paths for `topk_ratio` ∈ {0, negative, >1.0}
+  and the success paths for very-small-positive + exactly-1.0.  The
+  validation logic itself was already in place from Prompt 5e Phase 1
+  (KD-4 marked fixed); Phase D adds the coverage that locks the fix.
+
+  Resolves KD-4 from the v2.50 known-debt registry.
+
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR

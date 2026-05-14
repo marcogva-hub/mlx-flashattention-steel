@@ -125,7 +125,11 @@ unreachable.  But brittle.
 
 ---
 
-## KD-4 — `topk_ratio` parameter validation (LOW severity)
+## KD-4 — `topk_ratio` parameter validation (LOW severity) — **RESOLVED v2.50.0 Prompt 5f Phase D (regression coverage; fix landed Prompt 5e Phase 1)**
+
+**RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase D, regression tests).
+Validation logic shipped in Prompt 5e Phase 1; Phase D adds 5 explicit
+regression tests in `tests/test_v50_prompt_5f_kd4_topk_validation.py`.
 
 **Identified by**: Phase 1.1 Python code review (H4 finding).
 
@@ -166,7 +170,7 @@ is production.
 | KD-1 | HIGH | ~~Hybrid path silently wrong on pathological masks~~ | **RESOLVED v2.50.0 Prompt 5f Phase A** |
 | KD-2 | MEDIUM | ~~2-3ms perf overhead in hybrid backward~~ | **RESOLVED v2.50.0 Prompt 5f Phase B** (~1.33ms saved) |
 | KD-3 | LOW | ~~Defensive code (not currently a bug)~~ | **RESOLVED v2.50.0 Prompt 5f Phase C** |
-| KD-4 | LOW | Silent coerce of bad topk_ratio | v2.50.1 cleanup |
+| KD-4 | LOW | ~~Silent coerce of bad topk_ratio~~ | **RESOLVED v2.50.0 (Prompt 5e Phase 1 fix + Prompt 5f Phase D tests)** |
 | KD-5 | (preserved xfail) | None (research-only path) | post-v2.50 |
 
 None of KD-1 through KD-5 block v2.50 ship per scope analysis.
