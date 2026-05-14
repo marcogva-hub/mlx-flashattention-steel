@@ -2608,6 +2608,10 @@ def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
         # AUTO routing: D=64 → fused dKdV, D=128 → split (per Sprint B
         # outcome γ + Prompt 5b Section D broadening — fused regresses
         # at D=128, split preferred).
+        # v2.50 Prompt 5f Phase C — KD-3 fix: explicit head_dim branches.
+        # Pre-fix used `else: # D=128` which would silently accept D=256
+        # if the outer guard ever broadened.  Defensive `else: raise` now
+        # catches any future regression.
         if head_dim == 64:
             # FusedDKDV: (BQ=64, BK=32) regardless of D
             block_mask_dkdv = _convert_mask_for_v34_bwd_kernel(
@@ -2616,7 +2620,7 @@ def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
                 q, k, v, L_sparse, dO, D_vec, block_mask_dkdv, scale, _wm, causal)
             dK = mx.sum(dKp, axis=2).astype(q.dtype)
             dV = mx.sum(dVp, axis=2).astype(q.dtype)
-        else:  # D=128
+        elif head_dim == 128:
             # dK Sparse: (BQ=64, BK=32) — same as dV
             block_mask_dk = _convert_mask_for_v34_bwd_kernel(
                 block_mask, bt, "dK", head_dim)
@@ -2628,6 +2632,12 @@ def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
                 q, k, v, L_sparse, dO, block_mask_dv, scale, _wm, causal)
             dK = mx.sum(dKp, axis=2).astype(q.dtype)
             dV = mx.sum(dVp, axis=2).astype(q.dtype)
+        else:
+            raise ValueError(
+                f"V34 sparse full-native backward: unsupported head_dim={head_dim}; "
+                f"expected 64 or 128. Outer dispatch guard (_v34_hybrid_eligible) "
+                f"should have prevented this. See KD-3 in known-debt-v2.50.md."
+            )
 
         return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
 

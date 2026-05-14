@@ -91,6 +91,17 @@ All notable changes to mlx-mfa are documented here.
 
   This resolves KD-2 from the v2.50 known-debt registry.
 
+### Fixed (Prompt 5f Phase C — KD-3 implicit D=128 fallthrough)
+
+- **`_v34_backward_vjp_sparse_full_native` head_dim dispatch hardened**:
+  the prior `if head_dim == 64: ...; else: # D=128` pattern would have
+  silently accepted `D=256` (or any other value) if the outer guard
+  `_v34_hybrid_eligible` ever broadened.  Replaced with explicit
+  `elif head_dim == 128: ...; else: raise ValueError`.  Defensive
+  code change; no behavioral difference under current dispatch guards.
+
+  Resolves KD-3 from the v2.50 known-debt registry.
+
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR

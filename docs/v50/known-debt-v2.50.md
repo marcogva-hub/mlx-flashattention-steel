@@ -103,7 +103,11 @@ is fast at low density).  Not a perf blocker; cosmetic.
 
 ---
 
-## KD-3 — Implicit D=128 fallthrough in dispatch (LOW severity)
+## KD-3 — Implicit D=128 fallthrough in dispatch (LOW severity) — **RESOLVED v2.50.0 Prompt 5f Phase C**
+
+**RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase C).  `else: # D=128`
+replaced with `elif head_dim == 128: ...; else: raise ValueError` in
+`_v34_backward_vjp_sparse_full_native`.
 
 **Identified by**: Phase 1.1 Python code review (H3 finding).
 
@@ -161,7 +165,7 @@ is production.
 |---|---|---|---|
 | KD-1 | HIGH | ~~Hybrid path silently wrong on pathological masks~~ | **RESOLVED v2.50.0 Prompt 5f Phase A** |
 | KD-2 | MEDIUM | ~~2-3ms perf overhead in hybrid backward~~ | **RESOLVED v2.50.0 Prompt 5f Phase B** (~1.33ms saved) |
-| KD-3 | LOW | Defensive code (not currently a bug) | v2.50.1 cleanup |
+| KD-3 | LOW | ~~Defensive code (not currently a bug)~~ | **RESOLVED v2.50.0 Prompt 5f Phase C** |
 | KD-4 | LOW | Silent coerce of bad topk_ratio | v2.50.1 cleanup |
 | KD-5 | (preserved xfail) | None (research-only path) | post-v2.50 |
 
