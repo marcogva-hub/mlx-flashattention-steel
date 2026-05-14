@@ -158,6 +158,50 @@ def sparse_attention_nax(
         kernel_version=kernel_version,
     )
 
+
+def sparse_attention_nax_with_lse(
+    Q: mx.array,
+    K: mx.array,
+    V: mx.array,
+    block_mask: mx.array,
+    *,
+    block_tile: int = 32,
+    scale: Optional[float] = None,
+    causal: bool = False,
+):
+    """v2.50 Prompt 5c Section A.1 — sparse forward returning (O, L_sparse).
+
+    L is per-row natural-log LSE computed over ONLY active blocks
+    (sparse-LSE).  All-False rows return L = -INFINITY (sentinel; consumer
+    must handle).
+
+    Required by V34 backward sparse kernels for LSE consistency
+    (Pattern #5 — dense LSE + sparse skip in backward gives wrong
+    gradients; consistent sparse-LSE forward + sparse backward gives
+    correct gradients).
+
+    Constraints (V1 kernel only at PoC stage):
+      - 2-D mask (NQ, NK) bool — 3-D / 4-D fall back to dense
+        sparse_attention_nax (no LSE return)
+      - D in {64, 128}, BT in {16, 32, 64}, fp16/bf16
+      - mask total bytes >= 4096 (MLX inlines small buffers)
+
+    Returns:
+      (O, L): O is (B, Hq, qL, D) same dtype as Q; L is (B, Hq, qL) FP32
+    """
+    if not _HAS_EXT:
+        raise RuntimeError(
+            "sparse_attention_nax_with_lse requires the C++ extension."
+        )
+    if scale is None:
+        scale = 1.0 / math.sqrt(Q.shape[-1])
+    return _ext.sparse_attention_forward_with_lse(
+        Q, K, V, block_mask,
+        block_tile=block_tile,
+        causal=causal,
+        scale=float(scale),
+    )
+
 # --------------------------------------------------------------------------
 # Density-thresholded dispatcher.
 #
