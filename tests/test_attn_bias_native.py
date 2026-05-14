@@ -89,15 +89,17 @@ class TestBiasMode1(unittest.TestCase):
     def test_d64_non_causal(self):
         self._run(2, 8, 128, 128, 64, causal=False)
 
-    @pytest.mark.xfail(
-        reason="v2.50 Prompt 4 Section A: pre-existing attn_bias mode 1 + "
-        "d128 + causal combination produces max_err ~0.30 (vs 0.05 tol). "
-        "Bug pre-dates v2.50; isolated to (d=128, causal=True, mode 1 bias). "
-        "d64 non-causal + d128 cross-attention paths work correctly.  "
-        "Real bug — escalate for post-v2.50 dedicated investigation.",
-        strict=False,
-    )
     def test_d128_causal(self):
+        """v2.50 Prompt 5b Section C: RESOLVED.  Root cause was a routing
+        bug — for M3+ + D<=128 + causal, dispatch short-circuited to V1
+        STEEL kernel via the `m3_prefers_v1` gate.  V1 STEEL has params
+        struct fields for has_attn_bias / attn_bias_mode but NO actual
+        code emits the bias addition (the bias was silently dropped, so
+        output was SDPA(causal) without the bias contribution → max_err
+        ~0.30).  Fix: exclude `has_attn_bias` from `m3_prefers_v1` gate
+        so D=128 + causal + bias routes to V2 (which has bias addition
+        at mfa_steel_fwd_v2.cpp:609-645).  Slight perf cost vs V1 but
+        correctness > perf for this narrow combo."""
         self._run(2, 8, 128, 128, 128, causal=True)
 
     def test_cross_attention(self):
@@ -136,14 +138,12 @@ class TestBiasMode2(unittest.TestCase):
     def test_d64_non_causal(self):
         self._run(2, 8, 128, 128, 64)
 
-    @pytest.mark.xfail(
-        reason="v2.50 Prompt 4 Section A: pre-existing attn_bias mode 2 + "
-        "d128 + causal combination produces max_err ~0.32 (vs 0.05 tol). "
-        "Same root cause family as TestBiasMode1::test_d128_causal — "
-        "real bug, escalate for post-v2.50 dedicated investigation.",
-        strict=False,
-    )
     def test_d128_causal(self):
+        """v2.50 Prompt 5b Section C: RESOLVED.  Same root cause as
+        TestBiasMode1::test_d128_causal — V1 STEEL kernel routed via
+        `m3_prefers_v1` gate doesn't implement bias addition.  Fix
+        excludes has_attn_bias from the gate; D=128 + causal + bias
+        routes to V2."""
         self._run(2, 8, 128, 128, 128, causal=True)
 
     def test_gqa(self):
