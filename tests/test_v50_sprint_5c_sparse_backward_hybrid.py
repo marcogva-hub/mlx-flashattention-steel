@@ -140,12 +140,11 @@ class TestV34SparseHybrid:
         dQ_r, dK_r, dV_r = mx.grad(loss_r, argnums=(0, 1, 2))(q, k, v)
         mx.eval(dQ_h, dK_h, dV_h, dQ_r, dK_r, dV_r); mx.synchronize()
 
-        # v2.50 Prompt 5d Section A.4: hybrid orchestrator superseded by full
-        # native (Section A.4).  dQ/dK now go through native sparse kernels
-        # (not SDPA-vjp as in Prompt 5c hybrid) → small FP16 ULP diff
-        # instead of bit-identical.  Math correctness preserved.
-        assert _rmse(dQ_h, dQ_r) < 5e-3, f"dQ RMSE = {_rmse(dQ_h, dQ_r):.4e}"
-        assert _rmse(dK_h, dK_r) < 5e-3, f"dK RMSE = {_rmse(dK_h, dK_r):.4e}"
+        # v2.50 Prompt 5d Section B v3 verification: dispatch reverted to
+        # Prompt 5c hybrid (empirically production-optimal per Pattern #6).
+        # dQ/dK via SDPA-vjp → bit-identical; dV via native sparse → FP16 ULP.
+        assert _rmse(dQ_h, dQ_r) < 1e-7, f"dQ RMSE = {_rmse(dQ_h, dQ_r):.4e}"
+        assert _rmse(dK_h, dK_r) < 1e-7, f"dK RMSE = {_rmse(dK_h, dK_r):.4e}"
         assert _rmse(dV_h, dV_r) < 5e-3, f"dV RMSE = {_rmse(dV_h, dV_r):.4e}"
 
     @_skipif_no_nax

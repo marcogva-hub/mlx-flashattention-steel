@@ -2607,11 +2607,34 @@ def flash_attention_sparse(
                             and block_mask.ndim == 2  # PoC scope
                         )
                         if _v34_hybrid_eligible:
-                            # v2.50 Prompt 5d Section A.4: route to FULL
-                            # NATIVE orchestrator (replaces Prompt 5c
-                            # hybrid).  All 4 gradients via native sparse
-                            # kernels (dQ, dV PoC + dK split + fused dKdV).
-                            return _v34_backward_vjp_sparse_full_native(
+                            # v2.50 Prompt 5d Section B v3 verification:
+                            # Empirical bench (3-session, VSR shape B=1 H=12
+                            # qL=4096 D=128 fp16) confirms Apple SDPA NAX
+                            # via SDPA-vjp dense IS production-optimal:
+                            #
+                            # | density | SDPA-vjp | hybrid | full-native |
+                            # |---|---|---|---|
+                            # | 0.1     | 17.41ms | 34.84ms | 22.58ms     |
+                            # | 1.0     | 16.93ms | 175ms   | 181ms       |
+                            #
+                            # Pattern #6 inversion: V34 custom kernels can't
+                            # outpace Apple SDPA NAX on M5+ at most shapes.
+                            # See docs/v50/audit-framing-inversions.md.
+                            #
+                            # Default routes to Prompt 5c hybrid (preserves
+                            # NAX sparse forward win + SDPA-vjp backward;
+                            # this is the production contract from
+                            # master f8e4748 per Marco's directive).
+                            # `MFA_V34_BWD_SPARSE_NATIVE=1` opt-in routes
+                            # to full native (research/benchmark; usually
+                            # slower than hybrid).
+                            _native_opt_in = os.environ.get(
+                                "MFA_V34_BWD_SPARSE_NATIVE") == "1"
+                            if _native_opt_in:
+                                return _v34_backward_vjp_sparse_full_native(
+                                    q, k, v, block_mask, bt_q, scale, causal
+                                )
+                            return _v34_sparse_hybrid_vjp(
                                 q, k, v, block_mask, bt_q, scale, causal
                             )
                         # Default symmetric-bt M5+ path: Section C wrapper.
