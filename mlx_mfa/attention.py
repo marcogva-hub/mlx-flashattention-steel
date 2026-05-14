@@ -2313,6 +2313,157 @@ def _sparse_nax_with_sdpa_vjp(q, k, v, block_mask, bt, scale, causal):
 # would deliver an additional 5-10× speedup at d=0.1 — Section A v3
 # follow-up.  This hybrid ships the dV-sparse speedup TODAY while
 # preserving correctness across all densities.
+
+# ---------------------------------------------------------------------------
+# v2.50 Prompt 5f Phase A — KD-1 V34 backward sparse mask shape conversion
+# ---------------------------------------------------------------------------
+# The 4 V34 backward sparse kernels (dQ + dV + dK split + fused dKdV) index
+# `block_mask` using kernel-specific tile sizes.  But the production caller
+# `flash_attention_sparse` produces a symmetric BT-block mask (NQ=qL/BT,
+# NK=kL/BT) where BT ∈ {16, 32, 64}.  The kernels' tile geometries differ
+# from BT in most cases, producing wrong gradients for pathological sparse
+# patterns (block-diagonal, random low density).
+#
+# Per-kernel target tile geometries:
+#   - dQ Sparse:   D=64 → (BQ=32, BK=64);  D=128 → (BQ=64, BK=32)
+#   - dV Sparse:   (BQ=64, BK=32) regardless of D
+#   - dK Sparse:   (BQ=64, BK=32) regardless of D
+#   - FusedDKDV:   (BQ=64, BK=32) regardless of D
+#
+# The helper below converts the BT-block mask to the target kernel's tile
+# geometry with conservative semantics:
+#   - Downsample (target tile larger than source): OR-reduce so the target
+#     is ACTIVE iff ANY source tile in its coverage was ACTIVE (no false
+#     negatives that would skip needed computation).
+#   - Upsample (target tile smaller than source): broadcast — each source
+#     tile expands into multiple target tiles, all inheriting the source
+#     value.
+# See `docs/v50/known-debt-v2.50.md` KD-1 for the resolution roadmap.
+
+# Per-kernel target tile geometries.  Keep in sync with C++ Primitives:
+#   - MFAV34BwdQuerySparse  (csrc/mfa_v6_nax_primitive.cpp:2093+)
+#   - MFAV34BwdDVSparse     (csrc/mfa_v6_nax_primitive.cpp:1473+)
+#   - MFAV34BwdDKSparse     (csrc/mfa_v6_nax_primitive.cpp:2265+)
+#   - MFAV34BwdFusedDKDVSparse (csrc/mfa_v6_nax_primitive.cpp:2440+)
+_V34_BWD_SPARSE_KERNEL_TILES: dict = {
+    # (kernel_name, head_dim) → (target_BQ, target_BK)
+    ("dQ", 64):   (32, 64),
+    ("dQ", 128):  (64, 32),
+    ("dV", 64):   (64, 32),
+    ("dV", 128):  (64, 32),
+    ("dK", 64):   (64, 32),
+    ("dK", 128):  (64, 32),
+    ("DKDV", 64):  (64, 32),
+    ("DKDV", 128): (64, 32),
+}
+
+
+def _convert_mask_for_v34_bwd_kernel(
+    block_mask: mx.array,
+    bt: int,
+    kernel_name: str,
+    head_dim: int,
+) -> mx.array:
+    """Convert a BT-block sparse mask to the V34 backward sparse kernel's
+    expected tile geometry.
+
+    Args:
+        block_mask: bool mask shaped [..., NQ_src, NK_src] where
+            NQ_src = qL // bt, NK_src = kL // bt.  Supports 2-D, 3-D, or
+            4-D mask with batch/head prefix dims.
+        bt:         Source block-tile size (BT ∈ {16, 32, 64}; both Q and K
+            axes share BT in the M5+ NAX auto-route path).
+        kernel_name: One of {"dQ", "dV", "dK", "DKDV"} selecting which
+            target kernel geometry to convert to.
+        head_dim:   Head dimension ∈ {64, 128}.
+
+    Returns:
+        bool mask shaped [..., NQ_target, NK_target] where
+        (NQ_target, NK_target) match the target kernel's tile grid.
+
+    Raises:
+        ValueError if axis sizes are not divisible by the required
+        factor (mask size + bt + kernel geometry incompatible).
+
+    Semantics:
+        - Downsample: OR-reduce (conservative — no false negatives).
+        - Upsample: broadcast via mx.repeat (each source tile becomes
+          multiple target tiles sharing the source value).
+    """
+    key = (kernel_name, head_dim)
+    if key not in _V34_BWD_SPARSE_KERNEL_TILES:
+        raise ValueError(
+            f"_convert_mask_for_v34_bwd_kernel: unsupported "
+            f"(kernel_name={kernel_name!r}, head_dim={head_dim})"
+        )
+    target_BQ, target_BK = _V34_BWD_SPARSE_KERNEL_TILES[key]
+    source_BQ = source_BK = int(bt)
+
+    if block_mask.dtype != mx.bool_:
+        block_mask = block_mask.astype(mx.bool_)
+
+    NQ_src = int(block_mask.shape[-2])
+    NK_src = int(block_mask.shape[-1])
+
+    # ---- Q axis transform ----
+    if target_BQ > source_BQ:
+        if target_BQ % source_BQ != 0:
+            raise ValueError(
+                f"Q-axis downsample requires target_BQ ({target_BQ}) "
+                f"divisible by source_BQ ({source_BQ})"
+            )
+        factor_q = target_BQ // source_BQ
+        if NQ_src % factor_q != 0:
+            raise ValueError(
+                f"Q-axis downsample: NQ_src ({NQ_src}) not divisible by "
+                f"factor_q ({factor_q}); kernel={kernel_name} D={head_dim} bt={bt}"
+            )
+        prefix = block_mask.shape[:-2]
+        block_mask = block_mask.reshape(
+            *prefix, NQ_src // factor_q, factor_q, NK_src
+        )
+        block_mask = mx.any(block_mask, axis=-2)
+        NQ_src = NQ_src // factor_q
+    elif target_BQ < source_BQ:
+        if source_BQ % target_BQ != 0:
+            raise ValueError(
+                f"Q-axis upsample requires source_BQ ({source_BQ}) "
+                f"divisible by target_BQ ({target_BQ})"
+            )
+        factor_q = source_BQ // target_BQ
+        block_mask = mx.repeat(block_mask, factor_q, axis=-2)
+        NQ_src = NQ_src * factor_q
+
+    # ---- K axis transform ----
+    if target_BK > source_BK:
+        if target_BK % source_BK != 0:
+            raise ValueError(
+                f"K-axis downsample requires target_BK ({target_BK}) "
+                f"divisible by source_BK ({source_BK})"
+            )
+        factor_k = target_BK // source_BK
+        if NK_src % factor_k != 0:
+            raise ValueError(
+                f"K-axis downsample: NK_src ({NK_src}) not divisible by "
+                f"factor_k ({factor_k}); kernel={kernel_name} D={head_dim} bt={bt}"
+            )
+        prefix = block_mask.shape[:-2]
+        block_mask = block_mask.reshape(
+            *prefix, NQ_src, NK_src // factor_k, factor_k
+        )
+        block_mask = mx.any(block_mask, axis=-1)
+    elif target_BK < source_BK:
+        if source_BK % target_BK != 0:
+            raise ValueError(
+                f"K-axis upsample requires source_BK ({source_BK}) "
+                f"divisible by target_BK ({target_BK})"
+            )
+        factor_k = source_BK // target_BK
+        block_mask = mx.repeat(block_mask, factor_k, axis=-1)
+
+    return block_mask
+
+
 @functools.lru_cache(maxsize=64)
 def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
     @mx.custom_function
@@ -2347,8 +2498,16 @@ def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
         # P = exp(QK^T*scale - L_sparse) sums to 1 only over active K-blocks
         # (inactive scores aren't normalized into the softmax → effectively 0).
         # dV[k_base] = sum over ACTIVE qb of P^T @ dO = sparse contribution.
+        #
+        # v2.50 Prompt 5f Phase A — KD-1 fix: convert mask from BT-block
+        # geometry to dV Sparse kernel geometry (BQ=64, BK=32 regardless of
+        # D).  Without this, pathological sparse patterns silently produce
+        # wrong gradients.  See `_convert_mask_for_v34_bwd_kernel` docstring.
+        D = q.shape[3]
+        block_mask_dv = _convert_mask_for_v34_bwd_kernel(
+            block_mask, bt, "dV", D)
         dV_partials = _ext_inner.v6_nax_backward_dv_sparse_raw(
-            q, k, v, L_sparse, dO, block_mask,
+            q, k, v, L_sparse, dO, block_mask_dv,
             scale, 4, causal)
         dV_native = mx.sum(dV_partials, axis=2).astype(q.dtype)
 
@@ -2439,25 +2598,37 @@ def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
         D_vec = mx.sum(dO.astype(mx.float32) * O_fwd.astype(mx.float32), axis=-1)
 
         # === Native sparse backward kernels ===
-        # dQ via native sparse (single tile output)
+        # v2.50 Prompt 5f Phase A — KD-1 fix: each kernel has its own tile
+        # geometry; convert mask per-kernel before dispatch.
+        head_dim = q.shape[3]
+        _wm = 4
+        # dQ Sparse: D=64 → (BQ=32, BK=64); D=128 → (BQ=64, BK=32)
+        block_mask_dq = _convert_mask_for_v34_bwd_kernel(
+            block_mask, bt, "dQ", head_dim)
         dQ = _ext_inner.v6_nax_backward_query_sparse_raw(
-            q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask, scale, causal)
+            q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask_dq, scale, causal)
 
         # AUTO routing: D=64 → fused dKdV, D=128 → split (per Sprint B
         # outcome γ + Prompt 5b Section D broadening — fused regresses
         # at D=128, split preferred).
-        head_dim = q.shape[3]
-        _wm = 4
         if head_dim == 64:
+            # FusedDKDV: (BQ=64, BK=32) regardless of D
+            block_mask_dkdv = _convert_mask_for_v34_bwd_kernel(
+                block_mask, bt, "DKDV", head_dim)
             dKp, dVp = _ext_inner.v6_nax_backward_fused_dkdv_sparse_raw(
-                q, k, v, L_sparse, dO, D_vec, block_mask, scale, _wm, causal)
+                q, k, v, L_sparse, dO, D_vec, block_mask_dkdv, scale, _wm, causal)
             dK = mx.sum(dKp, axis=2).astype(q.dtype)
             dV = mx.sum(dVp, axis=2).astype(q.dtype)
         else:  # D=128
+            # dK Sparse: (BQ=64, BK=32) — same as dV
+            block_mask_dk = _convert_mask_for_v34_bwd_kernel(
+                block_mask, bt, "dK", head_dim)
+            block_mask_dv = _convert_mask_for_v34_bwd_kernel(
+                block_mask, bt, "dV", head_dim)
             dKp = _ext_inner.v6_nax_backward_dk_sparse_raw(
-                q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask, scale, _wm, causal)
+                q, k, v, O_fwd, L_sparse, dO, D_vec, block_mask_dk, scale, _wm, causal)
             dVp = _ext_inner.v6_nax_backward_dv_sparse_raw(
-                q, k, v, L_sparse, dO, block_mask, scale, _wm, causal)
+                q, k, v, L_sparse, dO, block_mask_dv, scale, _wm, causal)
             dK = mx.sum(dKp, axis=2).astype(q.dtype)
             dV = mx.sum(dVp, axis=2).astype(q.dtype)
 

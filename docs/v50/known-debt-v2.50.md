@@ -6,7 +6,12 @@ item carries: severity, current production impact, resolution roadmap.
 
 ---
 
-## KD-1 — V34 backward sparse kernel mask shape mismatch (HIGH severity)
+## KD-1 — V34 backward sparse kernel mask shape mismatch (HIGH severity) — **RESOLVED v2.50.0 Prompt 5f Phase A**
+
+**RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase A).  See CHANGELOG
+v2.50 Phase A entry + `mlx_mfa/attention.py::_convert_mask_for_v34_bwd_kernel`
++ 17 tests in `tests/test_v50_prompt_5f_kd1_mask_shape_fix.py` +
+C++ shape validation in 4 sparse Primitives (`csrc/mfa_v6_nax_primitive.cpp`).
 
 **Identified by**: Phase 1.2 C++ code review (`docs/v50/prompt-5e-code-review-cpp.md`
 HIGH-1 finding).
@@ -148,7 +153,7 @@ is production.
 
 | ID | Severity | Production-active impact | Resolution sprint |
 |---|---|---|---|
-| KD-1 | HIGH | Hybrid path silently wrong on pathological masks (D=128 only) | v2.50.1 (Section A v4) |
+| KD-1 | HIGH | ~~Hybrid path silently wrong on pathological masks~~ | **RESOLVED v2.50.0 Prompt 5f Phase A** |
 | KD-2 | MEDIUM | 2-3ms perf overhead in hybrid backward | v2.50.1 cleanup |
 | KD-3 | LOW | Defensive code (not currently a bug) | v2.50.1 cleanup |
 | KD-4 | LOW | Silent coerce of bad topk_ratio | v2.50.1 cleanup |

@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <mutex>
@@ -1515,25 +1516,26 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     if (const char* e = std::getenv("MFA_V34BWDV_WM"))
       WM = (uint16_t)std::atoi(e);
 
-    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: block_mask shape mismatch between
-    // forward STEEL (BQ, BK) per `_steel_block_config` vs V34 bwd tile
-    // sizes silently uses wrong indexing for non-trivial sparse patterns.
-    // Smoke tests (all-True, block-causal first row) pass because
-    // positional indexing happens to align.  Real production sparse
-    // patterns would silently produce wrong gradients.
-    //
-    // Resolution path (Section A v4 follow-up): mask conversion in Python
-    // orchestrator before invoking native kernel.  Tracked in
-    // `docs/v50/known-debt-v2.50.md` finding KD-1.
-    //
-    // CURRENT PRODUCTION SAFETY: hybrid orchestrator (Prompt 5c, default
-    // for sparse backward post-Pattern #6 revert) uses native dV with
-    // FORWARD-shape mask which has been validated via smoke tests but
-    // not against pathological sparse patterns.  Full native (opt-in
-    // `MFA_V34_BWD_SPARSE_NATIVE=1`) inherits same limitation.
-    //
-    // Shape check intentionally NOT enforced here to preserve back-compat
-    // with current production hybrid path.  Validation pending Section A v4.
+    // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
+    // Python orchestrator (`_convert_mask_for_v34_bwd_kernel` in attention.py)
+    // converts BT-block masks to this kernel's tile geometry before dispatch.
+    // Runtime check guards against future regressions or direct callers.
+    {
+      const int expected_NQ = (N + BQ - 1) / BQ;
+      const int expected_NK = (Nk + BK - 1) / BK;
+      const int mask_NQ = block_mask.shape(-2);
+      const int mask_NK = block_mask.shape(-1);
+      if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
+        std::ostringstream oss;
+        oss << "V34 bwd dV sparse: block_mask shape ["
+            << mask_NQ << ", " << mask_NK << "] does not match expected ["
+            << expected_NQ << ", " << expected_NK << "] for tile geometry "
+            << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
+            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << "in mlx_mfa/attention.py (KD-1 resolution).";
+        throw std::runtime_error(oss.str());
+      }
+    }
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
@@ -2129,9 +2131,6 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
 
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
-    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: see comment in MFAV34BwdDVSparse.
-    // Shape validation deferred to Section A v4 (Python orchestrator
-    // conversion).  See `docs/v50/known-debt-v2.50.md` KD-1.
     uint16_t v34_WM = (D == 64) ? 2 : 4;
     if (const char* e = std::getenv("MFA_V34BWD_BQ"))
       v34_BQ = (unsigned short)std::atoi(e);
@@ -2139,6 +2138,24 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
       v34_BK = (unsigned short)std::atoi(e);
     if (const char* e = std::getenv("MFA_V34BWD_WM"))
       v34_WM = (uint16_t)std::atoi(e);
+
+    // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
+    {
+      const int expected_NQ = (N + v34_BQ - 1) / v34_BQ;
+      const int expected_NK = (Nk + v34_BK - 1) / v34_BK;
+      const int mask_NQ = block_mask.shape(-2);
+      const int mask_NK = block_mask.shape(-1);
+      if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
+        std::ostringstream oss;
+        oss << "V34 bwd dQ sparse: block_mask shape ["
+            << mask_NQ << ", " << mask_NK << "] does not match expected ["
+            << expected_NQ << ", " << expected_NK << "] for tile geometry "
+            << "(BQ=" << v34_BQ << ", BK=" << v34_BK << ") at qL=" << N
+            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << "in mlx_mfa/attention.py (KD-1 resolution).";
+        throw std::runtime_error(oss.str());
+      }
+    }
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
@@ -2307,8 +2324,23 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
       BK = (unsigned short)std::atoi(e);
     if (const char* e = std::getenv("MFA_V34BWDK_WM"))
       WM = (uint16_t)std::atoi(e);
-    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: shape validation deferred to
-    // Section A v4 (see docs/v50/known-debt-v2.50.md KD-1).
+    // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
+    {
+      const int expected_NQ = (N + BQ - 1) / BQ;
+      const int expected_NK = (Nk + BK - 1) / BK;
+      const int mask_NQ = block_mask.shape(-2);
+      const int mask_NK = block_mask.shape(-1);
+      if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
+        std::ostringstream oss;
+        oss << "V34 bwd dK sparse: block_mask shape ["
+            << mask_NQ << ", " << mask_NK << "] does not match expected ["
+            << expected_NQ << ", " << expected_NK << "] for tile geometry "
+            << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
+            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << "in mlx_mfa/attention.py (KD-1 resolution).";
+        throw std::runtime_error(oss.str());
+      }
+    }
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
@@ -2476,8 +2508,6 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
-    // v2.50 Prompt 5e HIGH-1 KNOWN-DEBT: shape validation deferred to
-    // Section A v4 (see docs/v50/known-debt-v2.50.md KD-1).
     uint16_t WM = wm_;
     if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);
@@ -2485,6 +2515,24 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
       BK = (unsigned short)std::atoi(e);
     if (const char* e = std::getenv("MFA_V34BWDF_WM"))
       WM = (uint16_t)std::atoi(e);
+
+    // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
+    {
+      const int expected_NQ = (N + BQ - 1) / BQ;
+      const int expected_NK = (Nk + BK - 1) / BK;
+      const int mask_NQ = block_mask.shape(-2);
+      const int mask_NK = block_mask.shape(-1);
+      if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
+        std::ostringstream oss;
+        oss << "V34 bwd fused-dKdV sparse: block_mask shape ["
+            << mask_NQ << ", " << mask_NK << "] does not match expected ["
+            << expected_NQ << ", " << expected_NK << "] for tile geometry "
+            << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
+            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << "in mlx_mfa/attention.py (KD-1 resolution).";
+        throw std::runtime_error(oss.str());
+      }
+    }
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;

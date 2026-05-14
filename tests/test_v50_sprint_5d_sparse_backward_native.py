@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from mlx_mfa import flash_attention_sparse, get_device_info
+from mlx_mfa.attention import _convert_mask_for_v34_bwd_kernel
 
 _AE = getattr(mx, "async_" + "eval")
 _DEV = get_device_info()
@@ -55,7 +56,10 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         mx.eval(O, L); mx.synchronize()
         D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
         mx.eval(D_vec); mx.synchronize()
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_); _AE(mask_all); mx.synchronize()
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        # v2.50 Prompt 5f Phase A KD-1: convert to dQ kernel geometry.
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dQ", D)
+        _AE(mask_all); mx.synchronize()
 
         dQ_sparse = _ext.v6_nax_backward_query_sparse_raw(
             q, k, v, O, L, dO, D_vec, mask_all, scale, False)
@@ -77,7 +81,9 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         mx.eval(O, L); mx.synchronize()
         D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
         mx.eval(D_vec); mx.synchronize()
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_); _AE(mask_all); mx.synchronize()
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dK", D)
+        _AE(mask_all); mx.synchronize()
 
         dKp_sparse = _ext.v6_nax_backward_dk_sparse_raw(
             q, k, v, O, L, dO, D_vec, mask_all, scale, 4, False)
@@ -101,7 +107,9 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         mx.eval(O, L); mx.synchronize()
         D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
         mx.eval(D_vec); mx.synchronize()
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_); _AE(mask_all); mx.synchronize()
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "DKDV", D)
+        _AE(mask_all); mx.synchronize()
 
         dKp_s, dVp_s = _ext.v6_nax_backward_fused_dkdv_sparse_raw(
             q, k, v, L, dO, D_vec, mask_all, scale, 4, False)

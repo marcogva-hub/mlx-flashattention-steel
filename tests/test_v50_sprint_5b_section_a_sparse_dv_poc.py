@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from mlx_mfa import get_device_info
+from mlx_mfa.attention import _convert_mask_for_v34_bwd_kernel
 
 _AE = getattr(mx, "async_" + "eval")
 _DEV = get_device_info()
@@ -61,7 +62,10 @@ class TestSectionAdVSparsePoC:
         O, L = _ext.v6_nax_forward(q, k, v, False, True)
         mx.eval(O, L); mx.synchronize()
 
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        # v2.50 Prompt 5f Phase A KD-1: convert BT-block mask to dV kernel
+        # geometry (BQ=64, BK=32) before direct kernel call.
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -94,7 +98,8 @@ class TestSectionAdVSparsePoC:
         O, L = _ext.v6_nax_forward(q, k, v, False, True)
         mx.eval(O, L); mx.synchronize()
 
-        mask_none = mx.zeros((NQ, NK), dtype=mx.bool_)
+        mask_none_bt = mx.zeros((NQ, NK), dtype=mx.bool_)
+        mask_none = _convert_mask_for_v34_bwd_kernel(mask_none_bt, BT, "dV", D)
         _AE(mask_none); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -121,7 +126,8 @@ class TestSectionAdVSparsePoC:
         mx.eval(O, L); mx.synchronize()
 
         mask_np = np.eye(NQ, NK, dtype=bool)
-        mask = mx.array(mask_np)
+        mask_bt = mx.array(mask_np)
+        mask = _convert_mask_for_v34_bwd_kernel(mask_bt, BT, "dV", D)
         _AE(mask); mx.synchronize()
 
         dV_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -147,7 +153,8 @@ class TestSectionAdVSparsePoC:
         O, L = _ext.v6_nax_forward(q, k, v, False, True)
         mx.eval(O, L); mx.synchronize()
 
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -178,7 +185,8 @@ class TestSectionAdVSparsePoC:
         O, L = _ext.v6_nax_forward(q, k, v, False, True)
         mx.eval(O, L); mx.synchronize()
 
-        mask_all = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
+        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(

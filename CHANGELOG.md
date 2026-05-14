@@ -9,6 +9,66 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Fixed (Prompt 5f Phase A — KD-1 V34 backward sparse mask shape mismatch, HIGH correctness)
+
+- **V34 backward sparse mask shape mismatch (CORRECTNESS UPGRADE from
+  undefined buffer-overread to well-defined coarsened semantics)**.
+
+  Pre-fix mechanism: the 4 V34 backward sparse kernels (dQ + dV + dK
+  split + fused dKdV) indexed `block_mask` using kernel-specific tile
+  sizes (mostly BQ=64, BK=32; dQ at D=64 uses BQ=32, BK=64).  Production
+  callers via `flash_attention_sparse` pass a symmetric BT-block mask
+  with NQ=qL/BT, NK=kL/BT at BT ∈ {16, 32, 64}.  When source granularity
+  differed from the target (D=128 + BT∈{16,32}; D=64 + BT∈{16,32,64};
+  most non-trivial combinations), the kernel performed an out-of-bounds
+  read on `block_mask` resulting in undefined gradient values (NaN /
+  garbage / occasionally aligned-by-accident).
+
+  Smoke tests (all-True mask, block-causal first-row pattern) happened
+  to pass because the mask values aligned regardless of indexing.  But
+  pathological sparse patterns (block-diagonal, random low density,
+  alternating bands) silently produced wrong gradients.
+
+  Fix: `_convert_mask_for_v34_bwd_kernel` (in `mlx_mfa/attention.py`)
+  converts the BT-block mask to each kernel's target tile geometry
+  before dispatch.  Conservative semantics:
+  - **Downsample** (target tile larger than source): OR-reduce so the
+    target tile is ACTIVE iff ANY source tile in its coverage was
+    ACTIVE.  Guarantees no false negatives (no needed computation
+    is skipped).  May slightly over-include K-tiles in the gradient
+    computation (false positives are correctness-safe).
+  - **Upsample** (target tile smaller than source): broadcast via
+    `mx.repeat`.  Each source tile expands into multiple target tiles,
+    all sharing the source value.
+
+  C++ shape validation was re-added to the 4 sparse Primitives
+  (`MFAV34BwdDVSparse`, `MFAV34BwdQuerySparse`, `MFAV34BwdDKSparse`,
+  `MFAV34BwdFusedDKDVSparse`) to catch future mask-shape regressions
+  with a descriptive error message pointing to the conversion helper.
+
+  Tests added:
+  - 17 new tests in `tests/test_v50_prompt_5f_kd1_mask_shape_fix.py`
+    covering 6 unit tests of the conversion helper, 8 pathological
+    pattern tests (block-diagonal + random-density at D ∈ {64, 128} × density
+    ∈ {0.1, 0.3, 0.5}), and 3 C++ shape-validation tests (negative +
+    positive).
+  - PoC tests (`test_v50_sprint_5b_section_a_sparse_dv_poc.py`) and
+    full-native tests (`test_v50_sprint_5d_sparse_backward_native.py`)
+    updated to apply the conversion helper before direct kernel calls
+    (documenting the API contract).
+
+  Production posture:
+  - Hybrid orchestrator (default) and full-native opt-in
+    (`MFA_V34_BWD_SPARSE_NATIVE=1`) both consume the conversion helper.
+  - Source masks that ALIGN with the kernel target geometry are
+    unchanged (no-op conversion).
+  - Source masks FINER than the kernel target are conservatively
+    coarsened (slight over-inclusion in dV; dQ/dK in the hybrid path
+    continue to use fine-granularity SDPA-vjp with the original
+    mask).
+
+  This resolves KD-1 from the v2.50 known-debt registry.
+
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR
