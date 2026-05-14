@@ -9,6 +9,50 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Fixed (Section B v2.50 Prompt 4 — Phase 4b-complete dV residual RESOLVED)
+
+- **V34 backward causal end-to-end NOW WORKS on M5+**.  The Prompt 3
+  "dV K-parallel residual" (ratio ~0.039, 10× under-counting) is fully
+  resolved.  Prompt 3's hypothesis about fragment transpose semantics
+  was wrong — actual root cause was **two missed dispatch gates** in
+  `MFAV6Forward::eval_gpu()` and `generate_v6_source()` that silently
+  routed `causal=True` forward to STEEL legacy (log2-domain lse)
+  instead of V34 (natural-log lse).  Prompt 2 Phase 4a lifted the
+  gate at `createSource()` line 171 but missed the dispatch-side
+  gates at lines 176 and 625.  V34 backward then consumed wrong-
+  domain lse → all gradients wrong.
+
+  **Fix**: 2-line change in `csrc/mfa_v6_nax_primitive.cpp` (remove
+  `params_.causal ||` from both dispatch gates), plus lift the
+  Python eligibility gates in `_v34_eligible` and
+  `_v34_backward_carveout`.  V34 forward causal now emits natural-log
+  lse correctly; V34 backward causal kernels consume it and produce
+  correct gradients.
+
+  **Validation**:
+  - Diagnostic with Q=K=V=dO=1 (qL=64 D=64 causal): V34 dV ratio 1.000
+    vs SDPA-vjp reference (pre-fix: ratio 0.015 at c=0)
+  - Production validation at qL=2048 D=64 fp16 causal (scaled inputs):
+    dQ max_diff 2.4e-7, dK max_diff 1.0e-3, dV max_diff 9.2e-4 — all
+    within fp16 ULP bounds vs SDPA-vjp
+  - `_v34_eligible(D=64, fp16, causal=True)` = True (was False)
+  - `flash_attention(q, k, v, causal=True)` with `MFA_ENABLE_V34_BACKWARD=1`
+    now engages V34 backward NAX-direct kernels (was falling back to
+    SDPA-vjp silently)
+
+  Production impact: LLM training causal scenarios with V34 backward
+  enabled now get NAX-accelerated backward gradients on M5+ for
+  D=64 qL≥2048 fp16/bf16.  See
+  `docs/v50/phase-4b-complete-dv-residual-decisions.md` for full
+  investigation + framing-inversion classification (5th inversion
+  pattern: "incomplete-fix" — multi-gate dispatch chain partially
+  lifted).
+
+  Sprint 5 (V34 backward block-sparse) was BLOCKED on Phase 4b-complete
+  being clean; with this fix shipped, Sprint 5 is unblocked.  Sprint 5
+  implementation deferred to Prompt 5 release flow OR focused future
+  session (~2-3h CC).
+
 ### Fixed (Section A v2.50 Prompt 4 — Test cleanup pre-release)
 
 - **50 pre-existing test failures categorized and resolved** for clean

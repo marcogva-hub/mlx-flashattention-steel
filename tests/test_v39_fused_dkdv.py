@@ -476,7 +476,14 @@ def test_v34_eligible_d128_still_engages_for_split_path(monkeypatch):
     assert _v34_eligible(128, mx.float16, causal=False) is True
 
 
-def test_v34_eligible_causal_false():
-    """Causal still falsified at the eligibility predicate (DC3 deferred)."""
+def test_v34_eligible_causal_true():
+    """v2.50 Phase 4b-complete (Prompt 4 Section B): causal now eligible.
+    Root cause of Prompt 3 dV residual was a missed dispatch gate at
+    MFAV6Forward::eval_gpu() routing causal forward to STEEL legacy
+    (log2-domain lse) instead of V34 (natural-log lse).  Fix lifts gate;
+    V34 backward causal now produces correct gradients."""
+    import os
+    os.environ['MFA_ENABLE_V34_BACKWARD'] = '1'
     from mlx_mfa.attention import _v34_eligible
-    assert _v34_eligible(64, mx.float16, causal=True) is False
+    assert _v34_eligible(64, mx.float16, causal=True) is True
+    del os.environ['MFA_ENABLE_V34_BACKWARD']

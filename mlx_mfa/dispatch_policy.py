@@ -345,9 +345,12 @@ def _v34_backward_carveout(
       (qL=1024: 0.85×, qL=512: 0.50×) — kept out of the carve-out.
 
     **Currently active predicate:**
-    D=64, qL ≥ 2048, non-causal, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.
-    Causal kept GATED OUT in production until the K-parallel kernel dV
-    residual is resolved (v2.50 Phase 4b-complete Prompt 3 partial state).
+    D=64, qL ≥ 2048, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.  Both
+    causal and non-causal are eligible — Prompt 4 Section B resolved
+    the Prompt 3 dV residual (root cause: missed dispatch gate at
+    `MFAV6Forward::eval_gpu()` line 625 was routing causal forward to
+    STEEL legacy with log2-domain lse instead of V34 with natural-log
+    lse).  See `docs/v50/phase-4b-complete-dv-residual-decisions.md`.
 
     Future broadening (e.g., D=128 if Option γ proves out at v2.40.0-
     internal) extends this function rather than introducing new inline
@@ -358,20 +361,18 @@ def _v34_backward_carveout(
     #
     # v2.39.2-internal: qL floor lowered from 4096 to 2048.
     #
-    # v2.50 Phase 4b-complete (Prompt 3) — PARTIAL.  Critical compile_v34_
-    # backward_pipeline isCausal=false hardcoded bug FIXED (was making
-    # Prompt 2 Phase 4b dQ a silent no-op).  dQ kernel now produces
-    # correct causal gradients (RMSE 8.7e-6 at qL=2048 D=64 fp16,
-    # well within bounds).  The 4 K-parallel kernels (dV split, dK split,
-    # dKV legacy fused, dKdV fused) have causal mask blocks compiled
-    # in but produce dV with structural ~25× under-counting residual
-    # (RMSE 2.7e-3 vs 1e-3 bound).  Gate kept on `causal=True` until
-    # the residual is resolved in a focused future session.
-    # See `docs/v50/phase-4b-complete-decisions.md`.
+    # v2.50 Phase 4b-complete (Prompt 4 Section B): causal NOW ELIGIBLE.
+    # Root cause of the Prompt 3 "dV residual" was a missed dispatch gate
+    # in MFAV6Forward::eval_gpu (csrc/mfa_v6_nax_primitive.cpp line 625):
+    # `if (use_v34 && params_.causal) use_v34 = false;` silently routed
+    # causal forward to STEEL legacy (log2-domain lse) → V34 backward
+    # consumed wrong-domain lse → wrong gradients.  Prompt 4 Section B
+    # lifted the dispatch gate, V34 forward causal emits natural-log lse,
+    # backward gradients now match SDPA-vjp at RMSE within FP floor.
+    # See `docs/v50/phase-4b-complete-dv-residual-decisions.md`.
     if (
         head_dim == 64
         and seq_len >= 2048
-        and not causal
         and dtype_key in ("float16", "bfloat16")
         and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
     ):
