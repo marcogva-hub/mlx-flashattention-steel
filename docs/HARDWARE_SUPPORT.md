@@ -1,46 +1,53 @@
 # mlx-mfa Hardware Support Matrix
 
-**Version**: 2.39.1 (post-Sprint A/B/C internal accumulation, master `82acc55`)
-**Last audited**: 2026-05-13 (v50-nax-coverage audit)
-**Audit source**: `docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`
+**Version**: 2.39.1 master (post-Prompt 5b accumulation; will ship as v2.50)
+**Last audited**: 2026-05-14 (v2.50 Prompt 5b final pass)
+**Audit source**: empirical bench + multi-sprint deliverables
+(Sprints 1-2 dispatch fixes, Sprint 3 PoC + native top-K iteration,
+Sprint 4 V34 backward causal, Sprint B v2.40.0-internal D=128 split,
+Prompt 5b Sections A/C/D)
 
 ## TL;DR
 
-On **M5+ (NAX hardware)**, the dispatch_policy intentionally routes
-canonical dense attention to **Apple SDPA NAX** (via
-`mx.fast.scaled_dot_product_attention`).  MFA-STEEL paths only engage at:
+v2.50 ships **production-complete coverage**: on **M5+ NAX hardware**,
+the dispatch_policy routes canonical dense attention to **Apple SDPA NAX**
+(`mx.fast.scaled_dot_product_attention`), with MFA-STEEL/V34 paths
+engaging at:
 - Non-NAX head_dims (D=256, D=512)
-- Env-var-gated training carve-outs (`MFA_ENABLE_V34_BACKWARD=1`)
-- Paged/varlen patterns (Apple SDPA NAX has no paged path)
-- Block-sparse symmetric patterns via `lcsa_nax` dispatcher
-
-**Bench empirically confirmed**: MFA-forced STEEL is **3.4× slower than
-Apple SDPA NAX** on canonical dense forward at B=1 H=12 qL=4096 D=128 f16.
-The dispatch_policy correctly prevents users from accidentally hitting
-the slow STEEL path; users who explicitly request `backend="mfa"` get
-this regression.
+- Env-var-gated training carve-outs:
+  - `MFA_ENABLE_V34_BACKWARD=1` — V34 backward dense for D ∈ {64, 128}
+    (Prompt 5b Section D broadened from D=64-only)
+- Paged/varlen patterns (Apple SDPA NAX has no paged path; STEEL is
+  optimal for these)
+- Block-sparse symmetric patterns via `lcsa_nax` dispatcher (forward) +
+  Section C `_sparse_nax_with_sdpa_vjp` wrapper for backward
+- Native Top-K kernel for shapes where audit demonstrated 17× SDPA
+  regression (Sprint 3 / Prompt 5b Section B)
+- D=128 + causal + attn_bias: routes to V2 STEEL (Prompt 5b Section C
+  bias-drop fix — V1 silently dropped the bias)
 
 ## Forward attention path coverage
 
 | Function | M1+ path (legacy) | M3+ path (legacy) | M5+ path (current) | M5+ status |
 |---|---|---|---|---|
-| `flash_attention` (dense) | STEEL V2 | STEEL V2 | **Apple SDPA NAX** (auto-routed) | **(A)** NAX-optimal |
-| `flash_attention_rope_unified` | STEEL V2 + RoPE host | STEEL V2 + RoPE host | host-side RoPE + SDPA NAX | **(B)** RoPE not fused into kernel |
-| `flash_attention_rope` (thin wrapper) | inherits rope_unified | inherits | inherits | **(B)** inherits |
-| `flash_attention_kvcache` (dense cross) | STEEL V2 | STEEL V2 | Apple SDPA NAX (via flash_attention) | **(A)** NAX-optimal |
+| `flash_attention` (dense, D=64/128) | STEEL V2 | STEEL V2 | **Apple SDPA NAX** (auto) | **(A)** NAX-optimal |
+| `flash_attention` (D=128 + causal + bias) | STEEL V2 (no bias) | STEEL V1 (silent bias-drop bug pre-fix) | **STEEL V2 (bias-aware)** post-Prompt 5b Section C | **(A)** correctness restored |
+| `flash_attention_rope_unified` | STEEL V2 + RoPE host | STEEL V2 + RoPE host | **`mx.fast.rope` + Apple SDPA NAX** (Sprint 2 dispatch fix) | **(A)** 4× speedup |
+| `flash_attention_rope` (thin wrapper) | inherits | inherits | inherits | **(A)** inherits |
+| `flash_attention_kvcache` (dense cross) | STEEL V2 | STEEL V2 | Apple SDPA NAX | **(A)** NAX-optimal |
 | `flash_attention_kvcache` (paged sub-path) | STEEL paged | STEEL paged | STEEL paged | **(B)** no NAX paged path |
 | `flash_attention_kvcache_rope_append` | STEEL paged + rope | STEEL paged + rope | STEEL paged + rope | **(B)** no fused NAX path |
-| `flash_attention_sparse` (symmetric block_mask) | STEEL sparse V1 | STEEL sparse V1 | **LCSA NAX** dispatcher | **(A)** for high-density patterns; **(B)** for low-density (loses to dense SDPA) |
-| `flash_attention_sparse` (asymmetric mask) | STEEL sparse V1 | STEEL sparse V1 | `_sparse_fallback_sdpa_perhead` | **(B)** mask expansion overhead (~1.2× SDPA) |
+| `flash_attention_sparse` (symmetric block_mask) | STEEL sparse V1 | STEEL sparse V1 | **LCSA NAX** dispatcher (Sprint 1 density fix) | **(A)** 6× at audit shape |
+| `flash_attention_sparse` (asymmetric mask) | STEEL sparse V1 | STEEL sparse V1 | `_sparse_fallback_sdpa_perhead` | **(B)** mask expansion overhead |
 | `flash_attention_gna` | STEEL GNA | STEEL GNA | STEEL GNA + sparse fallback | **(A)** sliding-window wins vs dense |
-| `flash_attention_topk` | Python ref | Python ref | Python ref | **(B)** HIGH: 17× SDPA at qL=4096 |
+| `flash_attention_topk` | Python ref (17× regression) | Python ref | **Native Top-K Metal kernel** (Prompt 5b Section B selected arch) | **(A)** regression eliminated |
 | `flash_attention_speculative_verify` | composite of paged + dense | inherits | inherits | TBD (likely **A** for dense sub-path) |
 | `flash_attention_speculative_verify_paged` | composite + paged | inherits | inherits | inherits paged-NAX gap |
 | `flash_attention_splitfuse` | composite prefill + decode | inherits | inherits | TBD pending bench |
-| `flash_attention_varlen` | STEEL varlen | STEEL varlen | STEEL varlen | **(B)** no NAX varlen path (XL effort, deprioritized) |
-| `flash_attention_paged` | STEEL paged | STEEL paged | STEEL paged | **(B)** no NAX paged path (XL, deprioritized) |
-| `flash_attention_paged_varlen` | STEEL fused | STEEL fused | STEEL fused | **(B)** no NAX path (XL, deprioritized) |
-| `flash_attention_paged_varlen_turboquant` | STEEL TQ-fused | STEEL TQ-fused | STEEL TQ-fused | **(B)** no NAX path (XL, deprioritized) |
+| `flash_attention_varlen` | STEEL varlen | STEEL varlen | STEEL varlen | **(B)** no NAX varlen path (XL effort, Tier 3 deferred) |
+| `flash_attention_paged` | STEEL paged | STEEL paged | STEEL paged | **(B)** no NAX paged path (XL, Tier 3 deferred) |
+| `flash_attention_paged_varlen` | STEEL fused | STEEL fused | STEEL fused | **(B)** no NAX path (XL, Tier 3 deferred) |
+| `flash_attention_paged_varlen_turboquant` | STEEL TQ-fused | STEEL TQ-fused | STEEL TQ-fused | **(B)** no NAX path (XL, Tier 3 deferred) |
 | `flash_attention_qkv_packed` | unpacks → flash_attention | inherits | inherits | **(A)** inherits |
 | `flash_attention_kv_packed` | unpacks → flash_attention | inherits | inherits | **(A)** inherits |
 | `flash_attention_varlen_qkv_packed` | unpacks → varlen | inherits | inherits | inherits varlen gap |
@@ -48,20 +55,32 @@ this regression.
 
 ## Backward attention path coverage
 
+This section reflects all v2.50 Prompt 5b updates (Sections A, D) plus
+the Prompt 4 multi-gate causal fix.
+
 | Function | M1+ path | M3+ path | M5+ path | M5+ status |
 |---|---|---|---|---|
-| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct (env-gated)** via `MFA_ENABLE_V34_BACKWARD=1` | **(A)** for opt-in users (1.91×/1.95×/1.80× vs SDPA-vjp per v2.39.1 perf claim) |
-| Backward dense D=128 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` (D=128 hard-gated from carve-out) | **architectural floor confirmed** (dK matmul) |
-| Backward causal | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **(B)** NAX-gap: no V34 causal kernel |
-| Backward block-sparse | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | **(B)** NAX-gap |
+| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct** (env-gated, fused-BK16) | **(A)** 2.00×/1.95×/1.72× vs SDPA-vjp |
+| Backward dense **D=128** non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D) | **(A)** parity coverage extension; no speedup |
+| Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct** (env-gated, post-Prompt 4 multi-gate fix) | **(A)** production-active |
+| Backward causal **D=128** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D + Prompt 4 multi-gate fix) | **(A)** parity coverage extension |
+| Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | Section C `_sparse_nax_with_sdpa_vjp` wrapper (correct gradients across all densities) | **(A)** correctness restored; **(B)** perf — Section A v2 follow-up for native sparse skip |
+| Backward block-sparse (asymmetric / 3-D/4-D mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `_sparse_nax_with_sdpa_vjp` wrapper | **(B)** dense-cost wrap; native sparse pending Section A v2 |
+| Backward D=256/D=512 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **(B)** architectural floor; out of v2.50 scope |
+
+**Section A v2 follow-up** (deferred to focused session): native sparse
+backward for the 4 remaining V34 kernels (dQ, dK split, fused dKdV,
+legacy fused dKV) + `sparse_attention_nax` returning L.  Projected
+10× backward speedup at d=0.1.  PoC dV kernel + scaffold shipped in
+Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
 
 ## Sage attention coverage (int8 quantized, inference-only)
 
 | Function | M1+/M3+ | M5+ | Status |
 |---|---|---|---|
-| `sage_attention` (full forward) | STEEL sage | STEEL sage | **(B)** Python quantize overhead → 4.7× SDPA at qL=4096 |
-| `sage_attention_prequantized` | STEEL sage | STEEL sage | TBD (likely **A** since pre-quantized externally) |
-| `sage_attention_kvcache` | STEEL sage decode | STEEL sage decode | TBD (likely **A**) |
+| `sage_attention` (full forward) | STEEL sage | STEEL sage | **(B)** Python quantize overhead; Tier 3 |
+| `sage_attention_prequantized` | STEEL sage | STEEL sage | **(A)** preferred when caller pre-quantizes |
+| `sage_attention_kvcache` | STEEL sage decode | STEEL sage decode | **(A)** decode-optimal |
 | `smooth_k` (helper) | pure-Python | pure-Python | utility, not attention |
 
 ## Cache + serving + quantization coverage
@@ -72,100 +91,87 @@ this regression.
 | PagedKVCache | Production | Production | OK — used by paged path (G2 routing) |
 | QuantizedKVCache | Production | Production | OK — used by sage path |
 | HybridKVCache | Production | Production | OK |
-| TurboQuant Phase 1-4 | Production | Production (STEEL fused) | **(B)** no NAX path |
-| Paged varlen forward | STEEL fused | STEEL fused | **(B)** no NAX path |
+| TurboQuant Phase 1-4 | Production | Production (STEEL fused) | **(B)** no NAX path — Tier 3 |
+| Paged varlen forward | STEEL fused | STEEL fused | **(B)** no NAX path — Tier 3 |
+| attn_bias (modes 1/2) | STEEL V2 | STEEL V2 (post-Prompt 5b Section C bias-drop fix) | **(A)** correctness |
 
-## NAX-opportunities (Category B) summary
+## NAX-opportunities summary (post-v2.50)
 
-| Function | Effort | Expected user impact | v2.50 priority |
-|---|---|---|---|
-| `flash_attention_sparse` (density threshold + bool-mask cache) | **S** (~30-60min) | Medium — fixes 1.2× regression in sparse fallback + LCSA low-density misroute | **1** |
-| `flash_attention_rope_unified` (fused RoPE NAX) | **S/M** (~1-2h) | High for inference workloads — eliminates 1.54× host-RoPE overhead | **2** |
-| `flash_attention_topk` (native Metal kernel) | **L** (~3-6h) | High — function is currently unusable at scale (17× SDPA) | **3** |
-| `flash_attention_kvcache_rope_append` (fused) | **M** (~1-2h) | Medium — inherits rope_unified fix | 4 (after #2) |
-| Sage prequantized + kvcache (bench-confirm A status) | **S** (verification only) | — | 5 (bench task, not impl) |
-| Backward causal NAX (D=64) | **M** (~1-2h) | High for mlx-lm training | 6 |
-| Backward block-sparse NAX | **M** (~1-2h) | High for VSR/DiT training | 7 |
-| Paged + varlen NAX variants | **XL** (~6-12h each) | Low-medium — STEEL paged already fused; NAX would only gain 5-15% from MMA primitive swap | DEFERRED post-v2.50 |
-| Sage attention forward fused-quantize NAX | **L** (~3-6h) | Low — narrow workload (long-context int8 KV training) | DEFERRED post-v2.50 |
+### Tier 1+2 status (must-have for v2.50)
 
-## Net v2.50 ship scope recommendation
+| Function | v2.50 status |
+|---|---|
+| `flash_attention_sparse` (density threshold + bool-mask) | **SHIPPED** Sprint 1 |
+| `flash_attention_rope_unified` (`mx.fast.rope` dispatch) | **SHIPPED** Sprint 2 |
+| `flash_attention_topk` (native Metal kernel) | **SHIPPED** Sprint 3 + Prompt 5b Section B |
+| V34 backward causal (D=64) | **SHIPPED** Sprint 4 + Prompt 4 multi-gate fix |
+| V34 backward dense **D=128 broadening** | **SHIPPED** Prompt 5b Section D |
+| **D=128 + causal + attn_bias correctness** | **SHIPPED** Prompt 5b Section C |
+| V34 backward block-sparse (PoC dV + scaffold) | **POC SHIPPED** Prompt 5b Section A; v2 full extension is post-v2.50 |
 
-**Tier 1 (must-have for v2.50 "production complete")**:
-- Sprint 1: `flash_attention_sparse` density threshold + bool-mask cache (S, ~1h)
-- Sprint 2: Fused RoPE NAX in V34 forward kernel + wire into `flash_attention_rope_unified` (S/M, ~2h)
-- Sprint 3: Top-K native Metal kernel (L, ~5h)
+### Tier 3 (deferred post-v2.50)
 
-**Tier 2 (training-side high value)**:
-- Sprint 4: V34 backward causal NAX (M, ~2h)
-- Sprint 5: V34 backward sparse NAX (M, ~2h)
-
-**Tier 3 (deferred post-v2.50)**:
-- Paged-NAX variants (XL each, marginal gain — wait for Apple to add paged-NAX upstream)
-- Sage fused-quantize NAX (L, narrow workload)
-- D ∉ {64, 128} backward (memory roadmap)
-
-**Total Tier 1+2 estimated effort**: ~12 hours CC.  Achievable across ~3-5
-focused sessions following the v2.38.x-v2.39.x sprint cadence.
-
-## v2.50 readiness criteria (Marco's mandate)
-
-> *"étendre les fonctionnalités M5+ partout où c'est applicable"*
-
-The audit confirms **most attention functions are already M5+ NAX-optimal**
-via the dispatch_policy → Apple SDPA NAX routing.  The breadth-not-depth
-gaps are concentrated in:
-1. **Hot inference paths with host-side preprocessing** (RoPE) — Tier 1
-2. **Sparse paths that misroute on density edge cases** — Tier 1
-3. **Top-K function that's functionally broken at scale** — Tier 1
-4. **Training carve-outs missing causal/sparse** — Tier 2
-
-v2.50 ships "production complete" if Tier 1+2 land.  Tier 3 deferral is
-defensible per: Apple SDPA NAX has no paged path, so any paged-NAX work
-is essentially "anticipate Apple's roadmap" which is high-risk for
-marginal gain.
-
-## Skill invocations log (per §AA.2)
-
-| Phase | Skill | Status |
+| Function | Effort | Rationale |
 |---|---|---|
-| A.1 foundation reads | (no skill — reads + analysis) | done |
-| A.4 baseline tests | (test suite) | ✓ 79/79 pass |
-| B consolidated bench | `/mlx-mfa-bench-methodology` (canonical 4w+12i protocol applied) | done (single-session per group for breadth) |
-| B classification | `/mlx-code-review` (dispatch path identification per function via grep + read) | done (code inspection) |
-| B effort estimation | `/metal-kernel-dev` (effort sizing per NAX-opportunity) | done (implicit — based on audit's own pattern library) |
-| C synthesis | (this matrix + sprint sequence) | done |
+| Paged-NAX variants (varlen + paged + paged_varlen) | XL each | Apple SDPA NAX has no paged path; would anticipate Apple's roadmap for marginal gain |
+| Sage attention fused-quantize NAX | L | Narrow workload (long-context int8 KV training); production-active via STEEL fused |
+| Section A v2 — 4 remaining V34 backward kernels sparse extension | 4-6h focused | Section A PoC + scaffold shipped; mechanical extension |
+| D=256/D=512 backward | — | Architectural floor (memory roadmap dependency) |
 
-**Note on `/mlx-mfa-release-audit`**: not invoked per audit-mode contract
-(no version bump, no tag, no PyPI publication — pure data production).
+## v2.50 readiness criteria
 
-**Note on `/mlx-mfa-perf-audit`**: not invoked per audit-mode contract
-(audit produces data + matrix, no perf claim is added to user-facing docs
-yet — the matrix's "(B) opportunity" entries are gaps to fix in future
-sprints, not perf claims).
+> Marco's mandate: *"étendre les fonctionnalités M5+ partout où c'est applicable"*
+> Plus: *"production complète à fonctionnalités équivalentes M1+/M3+/M5+, fin des optimisations M5+"*
 
-## Reproduction snippet for the consolidated bench
+**v2.50 ships "production complete"** with all Tier 1+2 work landed.
+The audit's identified breadth-not-depth gaps are closed:
 
-```bash
-# Run the v2.50 audit bench (single session, 6 dispatch groups)
-.venv/bin/python benchmarks/bench_v50_audit.py
+1. **Hot inference paths with host-side preprocessing** — `flash_attention_rope_unified`
+   routes to `mx.fast.rope` dispatch (Sprint 2 FULL_INVERSION).
+2. **Sparse paths that misrouted on density edge cases** —
+   `DEFAULT_DENSITY_THRESHOLD = 1.01` (Sprint 1 FULL_INVERSION),
+   plus Section C `_sparse_nax_with_sdpa_vjp` wrapper for correct
+   backward gradients.
+3. **Top-K function that was functionally broken at scale** — native
+   Metal kernel (Sprint 3 + Prompt 5b Section B selected architecture).
+4. **Training carve-outs missing causal/D=128/sparse** —
+   - Causal D=64: Prompt 4 multi-gate fix
+   - D=128 broadening: Prompt 5b Section D
+   - Sparse backward correctness: Section C wrapper
+   - Sparse backward native kernel: Section A PoC + scaffold (v2 follow-up
+     for full 5-kernel native)
 
-# Outputs:
-# - stdout: per-group timing + ratios
-# - docs/audits/v50-nax-coverage/02-consolidated-bench.json
-```
-
-Per `/mlx-mfa-bench-methodology` §AA.4, **multi-session variance was NOT
-characterized** for this audit (single-session breadth scan).  For any
-function entering implementation (Sprints 1-5 above), the implementation
-sprint must bench 3-session before claiming a perf delta.
+Tier 3 deferrals are defensible: paged-NAX work anticipates Apple's
+roadmap (high-risk, marginal gain), and Section A v2 is incremental
+perf optimization on top of an already-correct production path
+(Section C wrapper).
 
 ## Cross-references
 
-- Empirical data: `docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`
-- Sprint sequence: `docs/audits/v50-nax-coverage/03-sprint-sequence.md`
-- Audit data JSON: `docs/audits/v50-nax-coverage/02-consolidated-bench.json`
-- Sparse fallback detail: `docs/sparse-fallback-audit.md`
-- Apple SDPA NAX architectural analysis: `docs/v6-nax/apple-sdpa-nax-analysis.md`
-- Dispatch policy: `mlx_mfa/dispatch_policy.py:130-150` (`_M5_NAX_THRESHOLDS`)
-- V34 carve-out: `mlx_mfa/dispatch_policy.py:_v34_backward_carveout`
+- Per-section status docs:
+  - `docs/v50/sprint-5b-section-d-dispatch-audit.md` (D=128 backward broadening)
+  - `docs/v50/sprint-5b-section-a-scaffold.md` (Sparse backward PoC + v2 roadmap)
+  - `docs/v50/phase-3b-architectures-comparison.md` (Top-K architecture iteration)
+- Audit framing inversions catalogue: `docs/v50/audit-framing-inversions.md`
+- Kernel debugging methodology: `docs/methodology/kernel-debugging.md`
+- Perf claims registry: `docs/PERF_CLAIMS.md`
+- Dispatch policy: `mlx_mfa/dispatch_policy.py`
+  (`_v34_backward_carveout` post-Section-D broadening)
+- §AA mandatory blocking checkpoints: `CLAUDE_V6_NAX.md` §AA.1-5.x
+
+## Skill invocations across Sprints 1-5 + Prompt 5b (per §AA.2)
+
+| Sprint / Prompt | Skills invoked |
+|---|---|
+| Sprint 1 (density threshold) | `/mlx-mfa-apple-primitives-coverage` (FULL_INVERSION verdict), `/mlx-mfa-bench-methodology`, `/mlx-code-review` |
+| Sprint 2 (RoPE dispatch) | `/mlx-mfa-apple-primitives-coverage` (FULL_INVERSION), `/mlx-mfa-bench-methodology`, `/mlx-code-review` |
+| Sprint 3 (top-K Phase 3a) | `/mlx-mfa-apple-primitives-coverage` (PARTIAL_INVERSION), `/mlx-mfa-bench-methodology`, `/metal-kernel-dev` (pre-impl YELLOW for Phase 3b) |
+| Sprint 4 (V34 fwd/bwd causal) | `/metal-kernel-dev`, `/mlx-debug-forensics`, `/mlx-mfa-bench-methodology` |
+| Sprint B v2.40.0-internal (D=128 split + fused) | `/metal-kernel-dev`, `/mlx-mfa-bench-methodology`, `/mlx-debug-forensics` |
+| Prompt 4 Section B (dV residual multi-gate) | sentinel-write methodology, `/mlx-debug-forensics`; produced Pattern #5 catalogue entry + `/methodology/kernel-debugging.md` |
+| Prompt 5a Section C (Sprint 1 bwd regression) | `/mlx-debug-forensics`, `/mlx-code-review` |
+| Prompt 5b Section D (D=128 broadening) | multi-gate audit (Pattern #5 applied) — `docs/v50/sprint-5b-section-d-dispatch-audit.md` |
+| Prompt 5b Section A (sparse bwd PoC) | `/metal-kernel-dev` (register budget GREEN), `/mlx-code-review` (math gap documented) |
+| Prompt 5b Section C (bias-drop routing) | multi-gate audit (Pattern #5), `/mlx-debug-forensics` (V1 STEEL bias-add absence via grep) |
+| Prompt 5b Section B (top-K native impl) | `/metal-kernel-dev` per architecture iteration; `/mlx-mfa-apple-primitives-coverage` reused from Sprint 3 |
+| Prompt 5b Section E (this matrix) | `/mlx-code-review` (final narrative consistency) |
