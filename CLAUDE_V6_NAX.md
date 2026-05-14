@@ -964,6 +964,59 @@ See `docs/v50/audit-framing-inversions.md` for the empirically-validated
 list of audit framing inversions through v2.50.  Update this doc each
 time a sprint surfaces a new inversion or confirms an audit prediction.
 
+### §AA.5.x — Multi-gate audit requirement (added 2026-05-14, v2.50 Prompt 4 retrospective)
+
+**Rule**: when an investigation surfaces a kernel-input compatibility
+issue (e.g., LSE convention, scale convention, dtype packing, buffer
+layout), the fix MUST enumerate ALL dispatch sites that produce that
+input — not just the one the failing test touches.
+
+**Why**: v2.50 Prompt 4 found that the V34 backward dV residual was
+caused by an "incomplete-fix dispatch-chain" — two upstream gates
+were patched to route to V34 forward (natural-log LSE), but a third
+gate in `MFAV6Forward::eval_gpu()` continued routing causal forward
+to STEEL legacy (log2-domain LSE).  The V34 backward consumed the
+log2 LSE as if it were natural-log, producing ~0.4 dV residual.  Each
+of the three dispatch sites read correct in isolation; only the
+unfixed third site's interaction with the V34 backward exposed the
+incompleteness.  See Pattern #5 in
+`docs/v50/audit-framing-inversions.md`.
+
+**Audit checklist** before declaring any kernel-input fix complete:
+
+1. **Identify the input contract**.  What format/convention does the
+   consumer kernel expect?  Document it explicitly (e.g., "V34 backward
+   consumes lse in natural-log domain").
+
+2. **Enumerate ALL producer sites**.  Use `grep -rn "set_output\|write.*lse"`
+   or equivalent for the input.  For each producer:
+   - Is it currently producing the expected format?
+   - Could it dispatch through this code path for the failing test?
+
+3. **Verify each producer site individually**.  Use sentinel writes
+   per `docs/methodology/kernel-debugging.md` §2 to confirm which
+   producer is actually active for the failing test.
+
+4. **Cross-check with eligibility gates**.  Producer sites are often
+   guarded by eligibility predicates (`_v34_eligible`, `_v34_backward_carveout`,
+   etc.).  A fix to one gate is insufficient if another gate routes
+   the failing test to a different producer.
+
+5. **Document the gate-set in the fix's commit message**.  Future
+   investigators encountering related residuals will know which gates
+   were verified at fix-time vs which need fresh verification.
+
+**Anti-pattern**: don't trust "the failing test now passes" as proof
+of completeness.  The test may have stopped exercising the buggy
+producer path while leaving the bug latent in other dispatch routes.
+
+**Cross-references**:
+- `docs/methodology/kernel-debugging.md` (sentinel writes + LSE
+  consistency techniques)
+- `docs/v50/audit-framing-inversions.md` §6 (Pattern #5 catalogue entry)
+- `docs/v6-nax/v50-prompt4-sectionb-dv-residual-RESOLVED.md` (full
+  empirical case)
+
 ---
 
 ## 6. Scope discipline — pas de re-escalade prématurée

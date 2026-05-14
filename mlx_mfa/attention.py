@@ -2395,11 +2395,23 @@ def flash_attention_sparse(
                 bt_q = N // nq
                 bt_k = S // nk
                 if bt_q == bt_k and bt_q in (16, 32, 64):
-                    # Symmetric mask → custom_function wraps NAX forward +
-                    # SDPA-vjp backward (Sprint 1 backward regression fix).
-                    return _sparse_nax_with_sdpa_vjp(
-                        q, k, v, block_mask, bt_q, scale, causal
-                    )
+                    # NAX small-mask guard: kernel requires mask total bytes
+                    # >= 4096 (MLX inlines smaller buffers in constant address
+                    # space — the JIT kernel emits a device-qualified pointer
+                    # incompatible with that lowering).  For small N×S problems
+                    # (typical in unit tests), fall through to STEEL sparse
+                    # below which handles small masks via per-thread loads.
+                    # Bool element size is 1 byte → total bytes = product of
+                    # all mask dims.
+                    mask_bytes = 1
+                    for _dim in block_mask.shape:
+                        mask_bytes *= int(_dim)
+                    if mask_bytes >= 4096:
+                        # Symmetric mask → custom_function wraps NAX forward +
+                        # SDPA-vjp backward (Sprint 1 backward regression fix).
+                        return _sparse_nax_with_sdpa_vjp(
+                            q, k, v, block_mask, bt_q, scale, causal
+                        )
 
     BQ, BK = _steel_block_config(D)
     NQ_expected = (N + BQ - 1) // BQ

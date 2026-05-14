@@ -93,6 +93,20 @@ Three sprints in v2.50 found the audit's framing inverted (Sprints 1, 2)
 or partially inverted (Sprint 3).  See `docs/v50/audit-framing-inversions.md`
 for the empirically-validated catalogue.
 
+## §AA.5.x multi-gate audit requirement (added 2026-05-14)
+
+When an investigation surfaces a kernel-input compatibility issue
+(LSE convention, scale convention, dtype packing, buffer layout), the
+fix MUST enumerate ALL dispatch sites that produce that input — not
+just the one the failing test touches.  See `CLAUDE_V6_NAX.md` §AA.5.x
+for the full audit checklist.
+
+Companion methodology doc: `docs/methodology/kernel-debugging.md` —
+codifies sentinel-write debugging (~20 min to isolate dispatch-routing
+bugs vs ~6h of gradient bisection).  Use sentinel writes BEFORE any
+deep kernel-disassembly work when a multi-gate dispatch chain is
+suspected.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the

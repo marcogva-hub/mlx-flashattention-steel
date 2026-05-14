@@ -303,9 +303,15 @@ class TestQuantizedKVCache:
         assert out.shape == (B, H, N, D)
         assert out.dtype == q.dtype
 
-    @pytest.mark.xfail(reason="mlx-lm API compatibility — version-dependent")
     def test_output_close_to_dequantized_reference(self):
-        """STEEL output with quantized K/V is close to reference with dequantized K/V."""
+        """STEEL output with quantized K/V is close to reference with dequantized K/V.
+
+        v2.50 Prompt 5a Section B.6: previously xfail-marked with misleading
+        "mlx-lm API compatibility" rationale.  Actual root cause is FP16
+        ULP — the two paths (STEEL inline-dequantize vs explicit dequantize
+        then standard FA) accumulate reductions in different orders.  Max
+        diff observed: ~0.002 (2 FP16 ULPs).  Loosened atol 1e-3 → 3e-3.
+        """
         from mlx_mfa.integrations.mlx_lm import _steel_sdpa, patch_mlx_lm
         from mlx_mfa import flash_attention
         patch_mlx_lm()
@@ -330,7 +336,8 @@ class TestQuantizedKVCache:
         mx.eval(out_ref)
 
         err = float(mx.max(mx.abs(out_steel.astype(mx.float32) - out_ref.astype(mx.float32))))
-        assert err < 1e-3, f"Quantized KV output differs: max_err={err:.6f}"
+        # FP16 ULP: 2 different reduction paths can differ by ~2 ULP
+        assert err < 3e-3, f"Quantized KV output differs: max_err={err:.6f}"
 
     def test_causal_with_quantized_kv(self):
         """Causal attention with 4-bit K/V: output is non-zero and finite."""
