@@ -2,12 +2,18 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased — for v2.50]
+## [2.50.0] — 2026-05-14
 
-> **Accumulation contract**: this section accumulates internal sprint
-> work for the eventual v2.50 bundle release.  Master advances but
-> **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
-> bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
+**v2.50.0 ships M5+ NAX coverage core production-complete.**
+Empirically-grounded routing across V34 NAX-direct kernels, Apple SDPA
+NAX, and custom Metal kernels per shape/operation per Pattern #6
+(Apple NAX optimization level) finding.
+
+This release closes a 14-prompt v2.50 sprint (Sprints A/B/C internal +
+Prompts 1-5f) accumulated against v2.39.1 since 2026-05-13.  All
+known-debt items KD-1..KD-4 are resolved; KD-5 (legacy STEEL backward
+research-only path) is formally deprecated with a `DeprecationWarning`
+on the `MFA_FORCE_NATIVE_BWD=1` env var.
 
 ### Fixed (Prompt 5f Phase A — KD-1 V34 backward sparse mask shape mismatch, HIGH correctness)
 

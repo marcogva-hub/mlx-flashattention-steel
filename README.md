@@ -4,9 +4,9 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current PyPI version: **2.39.1**.  Master is staged for **v2.50**
-release (internal-mode accumulation per `CHANGELOG.md
-[Unreleased — for v2.50]`).
+Current PyPI version: **2.50.0**.  See `CHANGELOG.md [2.50.0]` for the
+release notes and `docs/MIGRATION_v2.39.1_to_v2.50.0.md` for migration
+guidance from v2.39.1.
 
 ### v2.50 highlights (master `53c914c`, staged for release)
 
