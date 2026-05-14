@@ -45,7 +45,10 @@ def _v34_bwd_dq(q, k, v, dO, scale):
     """V34 forward to get (O, lse), then V34 backward dQ."""
     O, lse = _ext.v6_nax_forward(q, k, v, False)
     _mat(O, lse)
-    dQ = _ext.v6_nax_backward_query(q, k, v, O, lse, dO, scale)
+    # v2.38.1: D = rowsum(dO * O) precomputed on host (was inline pre-v2.38.1)
+    D = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
+    _mat(D)
+    dQ = _ext.v6_nax_backward_query(q, k, v, O, lse, dO, D, scale)
     _mat(dQ)
     return dQ
 
