@@ -118,10 +118,17 @@ def test_dispatch_precomputed_density_skips_reduction():
 
 
 def test_default_threshold_value():
-    """v2.35.0 keeps threshold at 0.02 (V1 break-even) per SHIP_OPT_IN verdict.
-    Users opting into V2 via MFA_LCSA_KERNEL_VERSION=v2 should pass
-    `density_threshold=0.95` explicitly to capture V2's broad envelope."""
-    assert DEFAULT_DENSITY_THRESHOLD == 0.02
+    """v2.50 Sprint 1 (Prompt 1) raised threshold 0.02 → 1.01 based on
+    empirical bench showing LCSA NAX wins at all densities on M5+ for
+    forward.  See `docs/v50/sprint1-decisions.md`.
+
+    Note: this introduced a backward regression on M5+ for `mx.grad`
+    via sparse path (see `docs/v50/sprint1-backward-regression-status.md`).
+    The forward perf win is preserved; backward callers must pass
+    `density_threshold=0.02` explicitly to override Sprint 1 default OR
+    use `backward='steel_sparse'` to route through a kernel with vjp.
+    """
+    assert DEFAULT_DENSITY_THRESHOLD == 1.01
 
 
 def test_dispatch_causal_path():

@@ -43,7 +43,10 @@ def _make(B, Hq, Hk, qL, kL, D, seed, dtype):
 def _bwd_kv(q, k, v, dO, scale):
     O, lse = _ext.v6_nax_forward(q, k, v, False)
     _mat(O, lse)
-    dK, dV = _ext.v6_nax_backward_kv(q, k, v, O, lse, dO, scale)
+    # v2.38.1: D = rowsum(dO * O) precomputed
+    D = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
+    _mat(D)
+    dK, dV = _ext.v6_nax_backward_kv(q, k, v, O, lse, dO, D, scale)
     _mat(dK, dV)
     return dK, dV
 
