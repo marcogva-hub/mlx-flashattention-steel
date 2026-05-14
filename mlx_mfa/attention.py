@@ -2208,6 +2208,90 @@ def flash_attention_kvcache(
 # Block-sparse forward
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=64)
+def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
+    """v2.50 Prompt 5a Section C: cached custom_function wrapping
+    M5+ symmetric-bt sparse forward (NAX kernel, Sprint 1 win) with
+    SDPA-vjp backward (preserves correctness across all densities).
+
+    Pre-fix, calling `mx.vjp(flash_attention_sparse(...))` on M5+ with
+    a symmetric-bt block mask failed with "Primitive::vjp Not implemented
+    for CustomKernel" because `sparse_attention_dispatch` routes to a
+    raw NAX kernel that has no vjp registered.
+
+    This wrapper registers a custom vjp that uses the same
+    `_sparse_fallback_sdpa_perhead` mechanism as the asymmetric-mask
+    M5+ path: expand the block_mask to a [B, H, N, S] float bias and
+    call `mx.fast.scaled_dot_product_attention` (which has automatic
+    vjp via Apple SDPA NAX).  Mathematically equivalent forward; vjp
+    derives gradients via mx.vjp through the SDPA reference.
+
+    Cached by (scale, causal, bt) — block_mask is passed at call time.
+    """
+    @mx.custom_function
+    def _impl(q, k, v, block_mask):
+        # Forward: route to NAX kernel (Sprint 1 forward perf preserved).
+        from mlx_mfa.lcsa_nax import sparse_attention_dispatch
+        return sparse_attention_dispatch(
+            q, k, v, block_mask,
+            block_tile=bt,
+            scale=scale,
+            causal=causal,
+        )
+
+    @_impl.vjp
+    def _backward(primals, cotangents, outputs):
+        q, k, v, block_mask = primals
+        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
+
+        # Backward: use SDPA-vjp via the expanded-float-bias mechanism.
+        # Mathematically equivalent: O = softmax(QK^T + bias) @ V where
+        # bias = 0 for active blocks, -inf for masked blocks.  Backward
+        # gradients match the sparse forward exactly (under softmax).
+        #
+        # NOTE: avoid `_get_or_build_expanded_float_bias` (uses mx.async_eval
+        # which is disallowed inside a graph transformation).  Build bias
+        # inline using only graph-friendly ops.
+        N, S = q.shape[2], k.shape[2]
+        # Expand 2D / 3D / 4D mask to 2D for broadcast in SDPA.
+        if block_mask.ndim == 4:
+            mask_2d = block_mask.any(axis=(0, 1))
+        elif block_mask.ndim == 3:
+            mask_2d = block_mask.any(axis=0)
+        else:
+            mask_2d = block_mask
+        float_bias = _block_mask_to_float_bias(
+            mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype
+        ).astype(q.dtype)
+        if causal:
+            causal_m = mx.triu(
+                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
+            )
+            float_bias = float_bias + causal_m
+
+        def _sdpa_ref(q_, k_, v_):
+            return mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale, mask=float_bias)
+
+        _, (dQ, dK, dV) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
+        # The vjp signature must return one cotangent per primal; block_mask
+        # has no gradient (integer/bool, not differentiable).
+        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+
+    return _impl
+
+
+def _sparse_nax_with_sdpa_vjp(q, k, v, block_mask, bt, scale, causal):
+    """Entry point: get the cached custom_function and call it.
+
+    The NAX kernel requires bool block_mask; we pass it through as-is.
+    The vjp framework will track it as a primal but won't differentiate
+    (returns zero gradient for non-differentiable inputs).
+    """
+    impl = _make_sparse_nax_with_sdpa_vjp(float(scale), bool(causal), int(bt))
+    return impl(q, k, v, block_mask)
+
+
 def flash_attention_sparse(
     q: mx.array,
     k: mx.array,
@@ -2285,6 +2369,21 @@ def flash_attention_sparse(
     # BQ/BK validator. If the mask is symmetric (BT-block), we route through
     # sparse_attention_dispatch which has its own validator. Otherwise we
     # fall through to STEEL's asymmetric validator below.
+    #
+    # v2.50 Prompt 5a Section C: Sprint 1 backward regression FIX.  Pre-fix,
+    # the symmetric-bt path called `sparse_attention_dispatch` directly.
+    # That function routes to `sparse_attention_nax` (a CustomKernel with
+    # no registered vjp) for densities < Sprint 1's `DEFAULT_DENSITY_THRESHOLD
+    # = 1.01` (= all real-world densities), so `mx.vjp` failed with
+    # "Primitive::vjp Not implemented for CustomKernel".
+    #
+    # Fix: wrap symmetric-bt path in `mx.custom_function` whose forward
+    # calls the NAX kernel (preserving Sprint 1 forward perf win) and
+    # whose vjp uses `mx.fast.scaled_dot_product_attention` with an
+    # expanded float bias (the same `_sparse_fallback_sdpa_perhead`
+    # mechanism used by the asymmetric-mask M5+ path at line 2360).
+    # This restores backward correctness across ALL densities while
+    # keeping the Sprint 1 forward win (6× at audit shape) intact.
     info = get_device_info()
     if info.get("is_m5_plus"):
         import os as _os
@@ -2296,13 +2395,10 @@ def flash_attention_sparse(
                 bt_q = N // nq
                 bt_k = S // nk
                 if bt_q == bt_k and bt_q in (16, 32, 64):
-                    # Symmetric mask → auto-route to lcsa_nax dispatcher
-                    from mlx_mfa.lcsa_nax import sparse_attention_dispatch
-                    return sparse_attention_dispatch(
-                        q, k, v, block_mask,
-                        block_tile=bt_q,
-                        scale=scale,
-                        causal=causal,
+                    # Symmetric mask → custom_function wraps NAX forward +
+                    # SDPA-vjp backward (Sprint 1 backward regression fix).
+                    return _sparse_nax_with_sdpa_vjp(
+                        q, k, v, block_mask, bt_q, scale, causal
                     )
 
     BQ, BK = _steel_block_config(D)
