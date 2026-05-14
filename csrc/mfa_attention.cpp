@@ -887,7 +887,18 @@ void MFAttention::eval_gpu(
     // On M3+ hardware, reduced TGP bandwidth makes barriers more expensive.
     // Skip V2 for this regime, falling through to V1.
     // Override: set MFA_FORCE_V2=1 to bypass this guard (benchmarking).
+    //
+    // v2.50 Prompt 5b Section C: EXCEPTION for has_attn_bias.  V1 STEEL kernel
+    // does NOT implement bias addition (params struct has the fields but no
+    // code emits the bias-add).  Sending D<=128 + causal + bias to V1 silently
+    // drops the bias → wrong output (max_err ~0.30 vs SDPA reference for
+    // mode 1/2).  Force-route to V2 when bias is present so the bias addition
+    // logic at mfa_steel_fwd_v2.cpp:609-645 is exercised.  V2 perf at
+    // D<=128 causal is slightly slower than V1, but correctness > perf for
+    // this narrow combo.  Test coverage: tests/test_attn_bias_native.py
+    // ::TestBiasMode{1,2}::test_d128_causal.
     const bool m3_prefers_v1 = is_m3_plus_steel && D <= 128 && params_.causal
+                               && !params_.has_attn_bias
                                && !MFAEnvConfig::force_v2();
     const bool v2_eligible =
         (dtype_code != 2) &&

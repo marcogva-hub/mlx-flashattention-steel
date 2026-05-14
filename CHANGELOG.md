@@ -9,6 +9,39 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Fixed (Section C v2.50 Prompt 5b — D=128 attn_bias mode 1/2 causal bug RESOLVED)
+
+- **`flash_attention(q, k, v, attn_bias=bias, causal=True)` with D=128**
+  NOW produces correct output for bias modes 1/2.  Previously, max_err
+  ~0.30 vs `mx.fast.scaled_dot_product_attention(..., mask=bias+causal)`
+  reference (xfail B.1 from Prompt 5a Section B).
+
+  **Root cause** (multi-gate audit per Pattern #5): for M3+ hardware
+  with D≤128 and causal=True, dispatch short-circuited to V1 STEEL
+  kernel via the `m3_prefers_v1` gate at `csrc/mfa_attention.cpp:892`.
+  V1 STEEL has `has_attn_bias` and `attn_bias_mode` fields in its
+  params struct but NO actual code emits the bias addition (verified
+  via `grep -n "attn_bias" csrc/mfa_steel_fwd.cpp` — only 3 hits, all
+  in the struct definition).  The bias was silently dropped → output
+  was effectively `SDPA(causal)` without the bias contribution.
+  Working paths (D=64 non-causal, D=128 cross-attention) didn't hit
+  the m3_prefers_v1 gate and routed to V2 which has correct bias
+  addition at `mfa_steel_fwd_v2.cpp:609-645`.
+
+  **Fix**: exclude `has_attn_bias` from the `m3_prefers_v1` short-circuit
+  predicate.  D=128 + causal + bias now routes to V2 STEEL, exercising
+  the bias addition code path.
+
+  **Validation**: 2 xfails resolved:
+  - `tests/test_attn_bias_native.py::TestBiasMode1::test_d128_causal`
+  - `tests/test_attn_bias_native.py::TestBiasMode2::test_d128_causal`
+
+  **Perf impact**: V2 STEEL is slightly slower than V1 at D≤128 causal
+  due to shared KV_smem requiring more barriers/tile.  The slight
+  regression applies ONLY when bias is present — bias-free paths
+  preserve V1 fast path.  Correctness > perf for the bias+causal+D=128
+  narrow combo.
+
 ### Added (Section A v2.50 Prompt 5b — V34 backward block-sparse NAX PoC + scaffold)
 
 - **`v6_nax_backward_dv_sparse_raw` C++ binding** ships native block-sparse
