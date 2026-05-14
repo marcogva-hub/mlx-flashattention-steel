@@ -9,6 +9,55 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Added (Section D v2.50 Prompt 5b — D=128 V34 backward broadening)
+
+- **D=128 V34 backward NOW engages via PUBLIC AUTO API** when
+  `MFA_ENABLE_V34_BACKWARD=1` + `qL >= 2048` + fp16/bf16 (Option A
+  Marco directive: coverage cohérence > perf marginal).
+
+  **Foundation**: Sprint B v2.40.0-internal Phase C.1.b empirically
+  validated D=128 split kernels at parity with SDPA-vjp (RMSE ~2e-5;
+  fused regresses 3-7%, split preferred as auto-default per
+  `attention.py:3828`).  Sole code change: `_v34_backward_carveout`
+  predicate broadened from `head_dim == 64` to `head_dim in (64, 128)`.
+
+  **Multi-gate audit per Pattern #5**: 8 dispatch gates audited
+  (`docs/v50/sprint-5b-section-d-dispatch-audit.md`); all downstream
+  infrastructure (`_v34_eligible`, `_v34_backward_vjp` routing,
+  `MFAV6Backward::eval_gpu`, `compile_v34_backward_pipeline`, C++
+  cache keys) was already permissive — only the carve-out gate
+  required lifting.
+
+  **Validation** (`tests/test_v50_sprint_5b_d128_backward.py`,
+  18 tests): D=128 V34 backward gradients match `mx.vjp(SDPA)`
+  baseline at RMSE < 5e-3 (FP16 ULP floor) across qL ∈ {2048, 4096,
+  8192}, causal + non-causal, fp16 + bf16; below-floor (qL=1024)
+  + fp32 + env-unset paths all bit-identical to SDPA fallback;
+  D=64 path unchanged.
+
+  **Perf claim**: PARITY at D=128 (no speedup over SDPA-vjp,
+  contract-honest engagement preserves cohérence narrative).  See
+  `v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity`
+  in `docs/PERF_CLAIMS.md`.
+
+  **Test updates** (3 prior tests asserted the now-superseded
+  "D=128 falls back" contract):
+  - `test_flash_attention_v34_backward.py::test_v34_bwd_v2372_carveout_does_not_engage_d128`
+    → split into `_below_floor` (preserved fallback) and
+    `_above_floor` (new engagement test).
+  - `test_v39_fused_dkdv.py::test_d128_fused_unreachable_via_public_api`
+    → renamed to `_split_engages_via_public_api`, updated to assert
+    carve-out NOW returns True for D=128.
+  - `test_v39_fused_dkdv.py::test_v39_2_internal_carveout_preserves_d128_exclusion`
+    → renamed to `test_v50_prompt5b_d128_eligibility_broadened`.
+
+  **Clarified xfail** (`TestNativeBackwardRouting[128-2048, 128-4096]`):
+  rationale updated to reflect that these test the STEEL backward
+  kernel (`MFA_FORCE_NATIVE_BWD=1` → `MFASteelBwdDQ`/`MFASteelBwdDKV`),
+  NOT V34 backward.  STEEL backward has a separate D=128 tile-loop
+  bug (zeros beyond row 1024); V34 backward D=128 production path
+  is correct and unaffected.
+
 ### Fixed (Section C v2.50 Prompt 5a — Sprint 1 backward regression RESOLVED)
 
 - **`mx.grad(flash_attention_sparse(...))` NOW WORKS on M5+** for

@@ -370,8 +370,19 @@ def _v34_backward_carveout(
     # lifted the dispatch gate, V34 forward causal emits natural-log lse,
     # backward gradients now match SDPA-vjp at RMSE within FP floor.
     # See `docs/v50/phase-4b-complete-dv-residual-decisions.md`.
+    #
+    # v2.50 Prompt 5b Section D: D=128 broadened.  Sprint B v2.40.0-internal
+    # Phase C.1.b empirically validated D=128 split kernels at parity with
+    # SDPA-vjp (RMSE ~2e-5; fused regresses 3-7% at D=128 — split preferred
+    # as auto-default per attention.py:3828).  Provided as coverage extension
+    # for D=128 training scenarios; perf gain not guaranteed at D=128 (per
+    # Sprint B architectural finding).  Cohérence narrative "V34 backward
+    # couvre D=64 + D=128" prime sur perf gain marginal.  Multi-gate audit
+    # per Pattern #5 confirmed all downstream gates (G2-G8) already
+    # permissive — sole code change is this carve-out line.  See
+    # `docs/v50/sprint-5b-section-d-dispatch-audit.md`.
     if (
-        head_dim == 64
+        head_dim in (64, 128)
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
         and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"

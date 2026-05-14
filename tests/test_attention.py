@@ -10917,20 +10917,26 @@ class TestNativeBackwardRouting:
         (64, 2048),
         (64, 4096),
         pytest.param(128, 2048, marks=pytest.mark.xfail(
-            reason="v2.50 Prompt 5a Section B.5: D=128 V34 backward is "
-            "research-only (carve-out is D=64 — see "
-            "`v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` in "
-            "docs/PERF_CLAIMS.md).  Forced native kernel produces zeroed "
-            "blocks for query rows beyond first ~1024 → real kernel bug "
-            "isolated to D=128 backward.  Production path correctly falls "
-            "back to SDPA-vjp; this test exercises `MFA_FORCE_NATIVE_BWD=1` "
-            "research mode.  Escalate for post-v2.50 dedicated investigation."
+            reason="v2.50 Prompt 5a Section B.5 (rationale clarified in "
+            "Prompt 5b Section D): `MFA_FORCE_NATIVE_BWD=1` routes through "
+            "STEEL backward kernel (MFASteelBwdDQ + MFASteelBwdDKV), NOT "
+            "V34 backward.  STEEL backward at D=128 N>=2048 produces "
+            "zeroed blocks for query rows beyond ~1024 (16×BQ tile-loop "
+            "termination bug) → max_diff ~0.41.  Production AUTO path "
+            "correctly bypasses this: post-Prompt 5b Section D, D=128 + "
+            "qL>=2048 + `MFA_ENABLE_V34_BACKWARD=1` routes through V34 "
+            "split kernels (validated by "
+            "`test_v50_sprint_5b_d128_backward.py`).  This xfail captures "
+            "the STEEL backward kernel bug specifically — separate from "
+            "V34 broadening.  Escalate STEEL backward D=128 kernel fix for "
+            "post-v2.50 dedicated investigation (STEEL backward path is "
+            "legacy; V34 is the production path going forward)."
         )),
         pytest.param(128, 4096, marks=pytest.mark.xfail(
-            reason="Same root cause as D=128 N=2048; D=128 forced-native "
-            "backward zeroes out tail blocks beyond ~1024 rows.  "
-            "Production AUTO path falls back to SDPA-vjp; D=128 backward "
-            "kernel is research-only."
+            reason="Same STEEL backward D=128 tile-loop bug as "
+            "test[128-2048].  V34 backward D=128 production path "
+            "(post-Prompt 5b Section D broadening) is unaffected — see "
+            "`test_v50_sprint_5b_d128_backward.py` for V34 D=128 coverage."
         )),
     ])
     def test_target_shapes_native_backward_matches_sdpa_gradients(self, monkeypatch, D, N):
