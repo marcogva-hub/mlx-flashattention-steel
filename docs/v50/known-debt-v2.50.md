@@ -75,7 +75,13 @@ correctness depends on this.  NOT BLOCKING v2.50 release because:
 
 ---
 
-## KD-2 — `_v34_sparse_hybrid_vjp` and `_v34_backward_vjp_sparse_full_native` recompute forward (MEDIUM severity)
+## KD-2 — `_v34_sparse_hybrid_vjp` and `_v34_backward_vjp_sparse_full_native` recompute forward (MEDIUM severity) — **RESOLVED v2.50.0 Prompt 5f Phase B**
+
+**RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase B).  Both orchestrators
+now consume `(O, L)` via the `outputs` parameter of `custom_function`,
+matching `_make_mfa_sparse_custom` Section C pattern.  Bench at VSR
+shape (B=1 H=12 qL=4096 D=128 fp16 BT=32 d=0.1): pre-fix 34.84ms,
+post-fix 33.51ms (3-session range 33.35-33.58ms) = ~1.33ms saving.
 
 **Identified by**: Phase 1.1 Python code review (H1 finding).
 
@@ -154,7 +160,7 @@ is production.
 | ID | Severity | Production-active impact | Resolution sprint |
 |---|---|---|---|
 | KD-1 | HIGH | ~~Hybrid path silently wrong on pathological masks~~ | **RESOLVED v2.50.0 Prompt 5f Phase A** |
-| KD-2 | MEDIUM | 2-3ms perf overhead in hybrid backward | v2.50.1 cleanup |
+| KD-2 | MEDIUM | ~~2-3ms perf overhead in hybrid backward~~ | **RESOLVED v2.50.0 Prompt 5f Phase B** (~1.33ms saved) |
 | KD-3 | LOW | Defensive code (not currently a bug) | v2.50.1 cleanup |
 | KD-4 | LOW | Silent coerce of bad topk_ratio | v2.50.1 cleanup |
 | KD-5 | (preserved xfail) | None (research-only path) | post-v2.50 |

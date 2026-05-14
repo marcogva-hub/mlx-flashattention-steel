@@ -2466,30 +2466,27 @@ def _convert_mask_for_v34_bwd_kernel(
 
 @functools.lru_cache(maxsize=64)
 def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
+    # v2.50 Prompt 5f Phase B — KD-2 fix: forward returns (O, L) so the
+    # backward consumes both via the `outputs` parameter of custom_function,
+    # eliminating the forward recompute (~2-3ms saving at VSR shape d=0.1).
+    # Mirrors `_make_mfa_sparse_custom` pattern (Section C wrapper).
     @mx.custom_function
     def _impl(q, k, v, block_mask):
-        # Forward: sparse NAX with sparse-LSE return.  Falls back to
-        # dense-LSE sparse forward when LSE-aware path unavailable
-        # (e.g., V2 kernel doesn't yet support LSE return).
         from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
         O, L = sparse_attention_nax_with_lse(
             q, k, v, block_mask,
             block_tile=bt, scale=scale, causal=causal)
-        # Note: L is consumed in the vjp closure for native dV sparse.
-        # Forward returns just O; L is computed but only used in backward.
-        return O
+        # Return both — L is consumed in vjp via outputs parameter.
+        return O, L
 
     @_impl.vjp
     def _backward(primals, cotangents, outputs):
         q, k, v, block_mask = primals
-        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
-        # Recompute sparse forward to get sparse-L (cheap; could be cached
-        # via primal trace in a future optimization).
-        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        # cotangents is (dO, dL) — dL is zero (L not consumed downstream).
+        dO, _dL = cotangents
+        # Consume forward outputs via the trace (no recompute).
+        O_fwd, L_sparse = outputs
         from mlx_mfa import _ext as _ext_inner
-        O_fwd, L_sparse = sparse_attention_nax_with_lse(
-            q, k, v, block_mask,
-            block_tile=bt, scale=scale, causal=causal)
         N, S = q.shape[2], k.shape[2]
 
         # === dV via native sparse kernel ===
@@ -2560,7 +2557,10 @@ def _v34_sparse_hybrid_vjp(q, k, v, block_mask, bt, scale, causal):
     #6).
     """
     impl = _make_v34_sparse_hybrid_vjp(float(scale), bool(causal), int(bt))
-    return impl(q, k, v, block_mask)
+    # impl now returns (O, L); the entry function exposes only O (L is the
+    # backward's internal saved tensor per KD-2 fix).
+    O, _L = impl(q, k, v, block_mask)
+    return O
 
 
 # ---------------------------------------------------------------------------
@@ -2574,25 +2574,22 @@ def _v34_sparse_hybrid_vjp(q, k, v, block_mask, bt, scale, causal):
 #   - dK: either fused (D=64) or split (D=128) per AUTO selection
 @functools.lru_cache(maxsize=64)
 def _make_v34_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
+    # v2.50 Prompt 5f Phase B — KD-2 fix: same outputs-parameter pattern
+    # as the hybrid orchestrator.
     @mx.custom_function
     def _impl(q, k, v, block_mask):
         from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
         O, L = sparse_attention_nax_with_lse(
             q, k, v, block_mask,
             block_tile=bt, scale=scale, causal=causal)
-        return O
+        return O, L
 
     @_impl.vjp
     def _backward(primals, cotangents, outputs):
         q, k, v, block_mask = primals
-        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
-
-        # Re-run sparse forward to get O and sparse-L for backward.
-        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        dO, _dL = cotangents
+        O_fwd, L_sparse = outputs
         from mlx_mfa import _ext as _ext_inner
-        O_fwd, L_sparse = sparse_attention_nax_with_lse(
-            q, k, v, block_mask,
-            block_tile=bt, scale=scale, causal=causal)
 
         # Compute D_vec = rowsum(dO * O_fwd) in FP32 for the sparse kernels.
         D_vec = mx.sum(dO.astype(mx.float32) * O_fwd.astype(mx.float32), axis=-1)
@@ -2646,7 +2643,8 @@ def _v34_backward_vjp_sparse_full_native(q, k, v, block_mask, bt, scale, causal)
     + Section D broadening.
     """
     impl = _make_v34_sparse_full_native_vjp(float(scale), bool(causal), int(bt))
-    return impl(q, k, v, block_mask)
+    O, _L = impl(q, k, v, block_mask)
+    return O
 
 
 def flash_attention_sparse(

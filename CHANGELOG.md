@@ -69,6 +69,28 @@ All notable changes to mlx-mfa are documented here.
 
   This resolves KD-1 from the v2.50 known-debt registry.
 
+### Fixed (Prompt 5f Phase B — KD-2 forward recompute elimination in V34 sparse orchestrators)
+
+- **V34 sparse backward orchestrator forward recompute eliminated**:
+  `_v34_sparse_hybrid_vjp` and `_v34_backward_vjp_sparse_full_native`
+  now return `(O, L)` from their `_impl` and consume both via the
+  `outputs` parameter of `custom_function`, matching the pattern in
+  `_make_mfa_sparse_custom._backward` (Section C wrapper).  The
+  redundant `sparse_attention_nax_with_lse(q, k, v, ...)` recompute
+  inside the backward closure is gone.
+
+  Bench (VSR shape B=1 H=12 qL=4096 D=128 fp16 BT=32 density 0.1,
+  3 sessions × 10 iterations each, mx.grad of `flash_attention_sparse`):
+  - Pre-Phase-B (Prompt 5d snapshot): 34.84ms median
+  - Post-Phase-B: 33.51ms median (range 33.35-33.58ms)
+  - Reduction: ~1.33ms (≈4% of total backward time)
+
+  The orchestrator entry functions continue to expose only `O` (the
+  `L` is unpacked and discarded after `_impl(...)` returns).  Public API
+  unchanged.
+
+  This resolves KD-2 from the v2.50 known-debt registry.
+
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR
