@@ -1214,10 +1214,6 @@ class TestSparseBackwardTiled:
     # ── correctness against sdpa reference ──────────────────────────────────
 
     @pytest.mark.parametrize("D", [64, 128])
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_sdpa_sparse_matches_sdpa_dense(self, D):
         """sdpa_sparse gradients must match sdpa (dense) reference for all-true mask."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -1278,10 +1274,6 @@ class TestSparseBackwardTiled:
     # ── finite / shape tests ─────────────────────────────────────────────────
 
     @pytest.mark.parametrize("D", [64, 128])
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_sdpa_sparse_gradients_finite(self, D):
         """sdpa_sparse gradients must be finite (no NaN/Inf)."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -1296,10 +1288,6 @@ class TestSparseBackwardTiled:
         assert np.all(np.isfinite(dv)), f"D={D}: dV has non-finite values"
 
     @pytest.mark.parametrize("D", [64, 128])
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_sdpa_sparse_gradient_shapes(self, D):
         """dQ/dK/dV shapes must match Q/K/V shapes."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -1396,10 +1384,6 @@ class TestSparseBackwardSteel:
         )
 
     @pytest.mark.parametrize("D", [64, 128])
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_steel_sparse_all_true_matches_sdpa(self, D):
         """All-true mask: steel_sparse grads must match sdpa dense reference."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -1421,10 +1405,6 @@ class TestSparseBackwardSteel:
         np.testing.assert_allclose(dv_sp, dv_ref, atol=2e-2, err_msg="dV mismatch")
 
     @pytest.mark.parametrize("D", [64, 128])
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_steel_sparse_causal_block_mask(self, D):
         """Causal block mask: steel_sparse must match sdpa with causal=True."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -1472,10 +1452,6 @@ class TestSparseBackwardSteel:
         from mlx_mfa._ext import mfa_steel_backward_sparse
         assert callable(mfa_steel_backward_sparse)
 
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_steel_sparse_gqa_shape_and_finite(self):
         """GQA (H_q=4, H_kv=2) steel_sparse backward: shapes and finite."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
@@ -3591,10 +3567,6 @@ def _disable_gna_native_for_backward():
 class TestGNABackward:
     """Gradient tests for flash_attention_gna() via sparse backward path."""
 
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_gna_backward_no_nan(self):
         """GNA backward produces finite gradients."""
         from mlx_mfa import flash_attention_gna
@@ -3620,10 +3592,6 @@ class TestGNABackward:
         assert dk.abs().max().item() > 1e-6, "dK is zero"
         assert dv.abs().max().item() > 1e-6, "dV is zero"
 
-    @pytest.mark.xfail(
-        reason="Sprint 1 backward regression — NAX kernel no vjp on M5+ for symmetric block masks at density < 1.01; see docs/v50/sprint1-backward-regression-status.md",
-        strict=False,
-    )
     def test_gna_backward_fullwindow_matches_dense(self):
         """GNA backward with full window should match dense backward."""
         from mlx_mfa import flash_attention_gna, flash_attention

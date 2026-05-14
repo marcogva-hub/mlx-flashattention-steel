@@ -9,6 +9,44 @@ All notable changes to mlx-mfa are documented here.
 > **PyPI stays at v2.39.1** until the v2.50 ship date.  No version
 > bumps, no tags, no twine uploads occur between v2.39.1 and v2.50.
 
+### Fixed (Section C v2.50 Prompt 5a — Sprint 1 backward regression RESOLVED)
+
+- **`mx.grad(flash_attention_sparse(...))` NOW WORKS on M5+** for
+  symmetric block masks across all densities.  The Prompt 4 Section A
+  finding that Sprint 1's `DEFAULT_DENSITY_THRESHOLD = 0.02 → 1.01`
+  silently broke backward (8 tests xfail'd) is fully resolved.
+
+  **Root cause**: `flash_attention_sparse` symmetric-bt M5+ branch
+  called `sparse_attention_dispatch` directly — a raw call to the
+  NAX `sparse_attention_nax` CustomKernel that has no registered vjp.
+  Pre-Sprint-1 the routing went to SDPA+bias path which has automatic
+  vjp via `mx.fast.sdpa`; post-Sprint-1 the threshold change forced
+  ALL real-world-density masks to the NAX path → autograd failed
+  with `Primitive::vjp Not implemented for CustomKernel`.
+
+  **Fix**: Wrap M5+ symmetric-bt sparse path in `mx.custom_function`:
+  - Forward closure: calls `sparse_attention_dispatch` → NAX kernel
+    (Sprint 1 forward perf win preserved — 6× at audit shape)
+  - Backward closure: uses `mx.vjp` through
+    `mx.fast.scaled_dot_product_attention` with expanded float bias
+    (Apple SDPA NAX's automatic vjp)
+  - Mathematically equivalent: softmax(QK^T + bias) @ V where bias=0
+    for active blocks, -inf for masked
+
+  Tests: 1186 passed (was 1173), 10 xfailed (was 18), 0 unexpected
+  failures.  8 Sprint-1-affected tests + 5 parametrized variants now
+  pass deterministically.
+
+  Production impact: Training pipelines using `mx.grad` over sparse
+  attention (FlashVSR, STCDiT, etc.) on M5+ now have correct backward
+  gradients.  Sprint 1 forward perf win unchanged.  Unblocks Sprint 5
+  (V34 backward block-sparse, Section A of this prompt) which needs
+  a working SDPA-vjp baseline as the reference for V34 NAX-direct
+  backward.
+
+  Per `docs/v50/sprint1-backward-regression-RESOLVED.md` for full
+  investigation evidence + Pattern #5 multi-gate audit application.
+
 ### Fixed (Section B v2.50 Prompt 4 — Phase 4b-complete dV residual RESOLVED)
 
 - **V34 backward causal end-to-end NOW WORKS on M5+**.  The Prompt 3
