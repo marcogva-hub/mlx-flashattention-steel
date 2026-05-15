@@ -89,6 +89,52 @@ in `mlx_mfa.integrations.mlx_lm` (verbose dispatch logging + per-call
 counters).  See `docs/v50/prompt-5g-section-b-hooks-inventory.md` for
 the audit verdict that no additional hooks need Pattern #8 fixes.
 
+### Verified (Prompt 5g Phase D — Multi-model NAX engagement smoke tests)
+
+- **NAX Conv3D path engagement verified across VSR portfolio**: 5
+  integration smoke tests in `tests/integration/test_smoke_vsr_models_v2_50_1.py`
+  confirm `_patched_conv_general` engages NAX (no fallbacks) for the
+  canonical input patterns of SeedVR2 (fp32 + fp16 Pattern #8 root-
+  cause shape), FlashVSR (matched fp16), STCDiT (fp32 + fp16
+  preconditioner), and SparkVSR (fp32 + fp16 mixed kernel sizes).
+  Portfolio aggregate (sequential): 16 engagements, 0 fallbacks.
+
+  Hook telemetry confirms M5 Neural Engine Conv3D acceleration is
+  active in production VSR inference pipelines.  Empirical user-side
+  validation (pre-Phase-D): SeedVR2 inference fans-to-max physical
+  evidence; Phase D adds the measurable, repeatable hook-level
+  verification.
+
+  See `docs/v50/prompt-5g-section-d-smoke-test-findings.md`.
+
+### Codified (Prompt 5g Phase E — Pattern #8 institutional learning)
+
+- **Pattern #8 codified** in `docs/v50/audit-framing-inversions.md`:
+  "Silent hook fallback masking unused optimization path".  Full case
+  study covering the `_auto_hooks.py::conv3d_nax_forward` v2.36.0 →
+  v2.50.0 silent break, detection requirements, prevention
+  infrastructure (Phase C telemetry), and sister-pattern relationships
+  to Pattern #2 / Pattern #5 / Pattern #6.
+
+- **Three mlx-mfa-* skills amended** to prevent Pattern #8 recurrence:
+  - `/mlx-code-review` — auto-hooks compatibility contract check;
+    flag hook patches with input contract stricter than baseline
+    primitive's contract.
+  - `/mlx-mfa-perf-audit` — hook engagement verification for hooked-
+    primitive perf claims; reject any claim where the hook didn't
+    actually execute during bench.
+  - `/mlx-mfa-release-audit` — Check 8 added: auto-hooks compatibility
+    contract verification via smoke tests with hook-telemetry stats.
+
+- **`CLAUDE_V6_NAX.md` §AA.6 amendment**: audit scope must include
+  stable-but-unverified production-critical code (auto-hooks, dispatch
+  policy, cache keys, compile pipeline branching), not just
+  modifications since last release.  Rationale: Prompt 5e audit scope
+  was "modifications since v2.39.1" which excluded the v2.36.0
+  `_auto_hooks.py` code where KD-6 lived — bug survived ~6 weeks of
+  releases because audit scope excluded stable code regardless of
+  production criticality.
+
 ## [2.50.0] — 2026-05-14
 
 **v2.50.0 ships M5+ NAX coverage core production-complete.**

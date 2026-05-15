@@ -293,6 +293,104 @@ infrastructure).
    See `docs/v50/sprint-prompt5a-sectionB-xfails-status.md` Pattern
    observations section.
 
+## Pattern #8 — Silent hook fallback masking unused optimization path (v2.50.1 Prompt 5g finding)
+
+**Symptom**: production code ships with "optimization path enabled"
+(hook installed, NAX kernel compiled, dispatch policy set) but the
+optimization NEVER executes in production.  Users see correct outputs
+via baseline fallback so the bug is invisible from output inspection
+alone.  Performance matches baseline expectations within noise.
+
+**Mechanism**: auto-hooks patching MLX primitives globally can fail
+when input contracts mismatch (dtype, shape, kwargs, etc.).  In
+mlx-mfa's case, the failure raised `RuntimeError` at graph-evaluation
+time, which user pipelines silently absorbed via downstream `try/except`
+wrappers — masquerading as "code works" while the optimization was
+never engaged.  The two failure modes produce identical user-visible
+behavior:
+
+1. Hook code path: NAX kernel dispatched
+2. Actual execution path: MLX baseline (user's try/except caught the
+   hook's exception)
+3. User observation: correct output, baseline performance
+4. Detection: only possible via instrumentation (hook telemetry from
+   Phase C) OR via post-hoc bench comparison if baseline expectations
+   are documented
+
+**Concrete case observed**: `_auto_hooks.py::conv3d_nax_forward`
+(introduced v2.36.0, root cause fixed v2.50.1 Prompt 5g Phase A).
+The hook enforced `weight.dtype in {fp16, bf16}` but missed the more
+fundamental requirement that the **C++ NAX kernel** required
+`x.dtype == w.dtype`.  MLX baseline `mx.conv_general` accepts mismatched
+dtypes via automatic promotion.  VSR VAE encoders pass fp32 input +
+fp16 weights — this raised `RuntimeError: conv_nax: x.dtype != w.dtype`
+on every call -> silent absorption by user pipelines -> M5 Neural Engine
+fixed-function Conv3D acceleration **NEVER executed in any production
+inference run between v2.36.0 and v2.50.0**.
+
+While validating the fix, a **second independent bug** surfaced: the
+bf16 NAX kernel path triggers a Metal shader compilation failure in
+MLX upstream `utils.h:502` (im2col helper `half` vs `bfloat16_t` type
+mismatch).  This had also been broken since v2.36.0 — zero user reports
+because no production workload exercised the bf16 path (KD-7 tracks
+this).
+
+**Detection requires**:
+
+1. **Hooks log/warn on fallback path engagement** (Pattern #8 telemetry
+   introduced Prompt 5g Phase C — `mlx_mfa.get_hook_stats()`).
+2. **Integration tests verify hook actually executes** for representative
+   input patterns (Phase D smoke tests across user models).
+3. **Audit scope includes stable-but-unverified production-critical
+   code**, not just modifications since last release (Prompt 5e audit
+   scope limitation that contributed to this bug surviving — see SS-AA
+   amendment).
+4. **Cross-version bench comparison**: if v(N+1) "added optimization"
+   shows no perf delta vs v(N), investigate whether the optimization
+   actually engages — the v2.36.0 release notes mentioned NAX Conv3D
+   speedups that were never user-visible because the path was unreachable.
+
+**Prevention** (institutionalized in Prompt 5g):
+
+- `/mlx-code-review` skill amended: flag hook patches with input
+  contract stricter than the patched primitive's baseline contract.
+- `/mlx-mfa-perf-audit` skill amended: require "hook actually executes"
+  verification via telemetry stats for any perf claim related to
+  hooked primitives.
+- `/mlx-mfa-release-audit` skill amended: 8th check added — auto-hooks
+  compatibility contract preserved vs MLX baseline.
+- `CLAUDE_V6_NAX.md` SS-AA scope discipline amended: audit scope must
+  include stable-but-unverified production-critical code.
+
+**Sister patterns**:
+
+- Pattern #2 (`mx.fast.rope` discovery) — Apple primitive beats custom
+  kernel; mlx-mfa wasn't using the Apple primitive even though it was
+  available.
+- Pattern #5 (incomplete-fix dispatch-chain) — dispatch policy
+  decisions that propagate through multiple code paths can silently
+  break when any link in the chain has a stale assumption.
+- Pattern #6 (Apple SDPA NAX optimization level) — empirical bench
+  falsifies projection; the "expected" speedup never materializes.
+- **Pattern #8 distinguishes** by: optimization path EXISTS but never
+  EXECUTES.  Unlike Pattern #6 ("wrong projection"), Pattern #8 is
+  "silent non-engagement" — the code is correct but unreachable.
+
+**Generalizable lesson**: when patching global primitives via hooks,
+the **compatibility contract with the patched primitive is part of
+the public API**.  Tightening any input check creates a silent break
+that masquerades as performance regression at best, or correctness
+bug at worst.  Audit scope for hooks must include the patched
+primitive's documented contract behavior, not just the eligibility
+heuristic the hook author had in mind when writing it.
+
+**Cross-references**:
+- `docs/v50/known-debt-v2.50.md` KD-6 (resolved) + KD-7 (open bf16 path)
+- `docs/v50/prompt-5g-section-b-hooks-inventory.md` (full audit verdict)
+- `docs/v50/prompt-5g-section-d-smoke-test-findings.md` (portfolio engagement validation)
+- `docs/HOOK_TELEMETRY.md` (detection infrastructure)
+- `mlx_mfa/_auto_hooks.py::_patched_conv_general` (fix implementation)
+
 ## Doc maintenance
 
 - Add a new entry to the Catalogue on every sprint that surfaces a

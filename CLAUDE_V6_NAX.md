@@ -1171,3 +1171,52 @@ les règles méthodologiques accumulées depuis les sprints v2.27.0 à v2.30.x.
 MLX source local : `~/code/mlx-source` — référence Apple obligatoire pour
 toute question sur le comportement MPP/NAX.
 ```
+
+---
+
+### §AA.6 — Stable-but-unverified production-critical code in audit scope (added 2026-05-15, v2.50.1 Prompt 5g retrospective)
+
+**Rule**: pre-release audit scope must include stable code that is
+production-critical, not just code modified since the last release.
+This specifically applies to:
+
+- **Auto-hooks patching MLX primitives globally** (Pattern #8
+  vulnerability — e.g., `_auto_hooks.py::_patched_conv_general`).
+- **Dispatch policy decisions** consumed by multiple code paths.
+- **Cache key construction** (Pattern #5 vulnerability).
+- **Compile pipeline branching logic** (Pattern #5 vulnerability).
+
+**Audit framework** must explicitly include "stable production-critical
+code" as a separate scope category alongside "modifications since
+last release" in inventory phase.
+
+**Rationale**: Prompt 5e audit scope was "modifications since v2.39.1"
+which missed `_auto_hooks.py::conv3d_nax_forward` (unchanged since
+v2.36.0).  The bug — a dtype-mismatch silent break where the C++ NAX
+kernel required `x.dtype == w.dtype` but the Python eligibility check
+only verified the weight side — survived from v2.36.0 through v2.50.0
+because audit scope excluded stable code regardless of production
+criticality.  Every VSR VAE encoder call hit `RuntimeError` for ~6
+weeks of production releases; user pipelines silently absorbed the
+exception, masquerading as "everything works" while the M5 Neural
+Engine NAX Conv3D acceleration NEVER engaged.  See Pattern #8 in
+`docs/v50/audit-framing-inversions.md` for the full case study and
+`docs/v50/known-debt-v2.50.md` KD-6/KD-7.
+
+**Concrete checklist** for stable-but-unverified production-critical
+code:
+
+1. **Inventory all global hooks** (`grep -rn 'mx\.\(.*\) = ' src/`).
+   Document each hook's: patched primitive, eligibility contract,
+   fallback path.
+2. **Compare hook eligibility vs patched primitive's documented
+   contract**.  Tighter eligibility = Pattern #8 risk.
+3. **Verify hook telemetry** is in place (e.g.,
+   `mlx_mfa.get_hook_stats()`).  Releases without telemetry are
+   flying blind.
+4. **Run integration smoke tests** that assert hook engagement
+   (`executed > 0`, `fallback == 0`) for representative production
+   patterns.
+5. **Cross-version bench delta check**: if v(N+1) "added optimization"
+   shows no measurable perf delta vs v(N), investigate whether the
+   optimization actually engages — it may be a Pattern #8 ghost.
