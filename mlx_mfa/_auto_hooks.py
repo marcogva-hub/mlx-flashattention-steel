@@ -68,7 +68,13 @@ def _conv3d_nax_eligible(weight, stride, padding, kernel_dilation, groups, flip)
     """Return True if a conv_general call is Conv3D NAX-eligible."""
     if not hasattr(weight, "shape") or len(weight.shape) != 5:
         return False
-    if weight.dtype not in (mx.float16, mx.bfloat16):
+    # v2.50.1 Prompt 5g Phase A — KD-7: bf16 weight path is broken at
+    # the MLX upstream Metal shader im2col helper (utils.h:502 —
+    # half vs bfloat16_t type mismatch).  Fails at graph-evaluation time
+    # with "Unable to build metal library from source".  Tightened
+    # eligibility to fp16 only until upstream MLX fix lands (see KD-7
+    # in docs/v50/known-debt-v2.50.md).
+    if weight.dtype != mx.float16:
         return False
     # weight shape: (C_out, K_T, K_H, K_W, C_in)
     K_T, K_H, K_W = weight.shape[1], weight.shape[2], weight.shape[3]
@@ -152,13 +158,66 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
             groups=groups, flip=flip,
             **kwargs,
         )
-    return conv3d_nax_forward(
-        input, weight,
-        stride=(1, 1, 1),
-        padding=pad_6tuple,
-        dilation=(1, 1, 1),
-        chunk_M=0,
-    )
+
+    # v2.50.1 Prompt 5g Phase A — KD-6 / Pattern #8 dtype cast fix.
+    #
+    # The NAX C++ kernel requires `x.dtype == w.dtype` AND both must be
+    # fp16/bf16 (see csrc/mfa_conv_nax.cpp:295).  But MLX baseline
+    # `mx.conv_general` accepts mismatched dtypes via automatic promotion.
+    # VSR VAE encoders pass fp32 input + fp16 weights — this raised
+    # `RuntimeError: conv_nax: x.dtype != w.dtype` on every call from
+    # v2.36.0 (auto-hooks introduction) through v2.50.0, with user
+    # pipelines silently absorbing the exception via downstream try/except
+    # wrappers (Pattern #8 mechanism — see audit-framing-inversions.md).
+    #
+    # Fix: cast input to weight dtype before NAX dispatch; restore the
+    # baseline output dtype after the kernel call.  Weight dtype is
+    # guaranteed to be fp16 or bf16 by `_conv3d_nax_eligible`.
+    orig_input_dtype = input.dtype
+    if input.dtype != weight.dtype:
+        input = input.astype(weight.dtype)
+    try:
+        result = conv3d_nax_forward(
+            input, weight,
+            stride=(1, 1, 1),
+            padding=pad_6tuple,
+            dilation=(1, 1, 1),
+            chunk_M=0,
+        )
+    except Exception:
+        # Defensive fallback: if NAX dispatch fails for any reason
+        # (unexpected runtime error, hardware feature missing, etc.),
+        # revert to MLX baseline rather than propagating.  Telemetry
+        # in Phase C records this as a fallback event.
+        return _ORIGINAL_CONV_GENERAL(
+            input.astype(orig_input_dtype), weight,
+            stride=stride, padding=padding,
+            kernel_dilation=kernel_dilation,
+            input_dilation=input_dilation,
+            groups=groups, flip=flip,
+            **kwargs,
+        )
+
+    # Restore baseline output dtype.  MLX baseline `mx.conv_general` with
+    # mismatched input/weight dtypes promotes to the higher-precision
+    # type.  Common case: fp32 input + fp16 weight → baseline output fp32.
+    # NAX produced fp16 output (weight dtype) which we cast up to
+    # preserve the API contract.
+    if orig_input_dtype != weight.dtype and result.dtype != orig_input_dtype:
+        # Cast back only when the original input was higher-precision
+        # than weight (typical: fp32 input → fp16/bf16 weight → fp32 out).
+        # For weight-higher-than-input mismatches (rare), MLX baseline
+        # would promote upward too, so cast to the broader type.
+        if orig_input_dtype == mx.float32:
+            result = result.astype(mx.float32)
+        elif (orig_input_dtype, weight.dtype) in {
+            (mx.float16, mx.bfloat16), (mx.bfloat16, mx.float16)
+        }:
+            # MLX promotes fp16+bf16 → fp32.  Match that contract.
+            result = result.astype(mx.float32)
+        else:
+            result = result.astype(orig_input_dtype)
+    return result
 
 
 def install_hooks() -> bool:

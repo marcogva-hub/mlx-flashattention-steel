@@ -169,6 +169,78 @@ is production.
 
 ---
 
+## KD-6 — `_auto_hooks.py::conv3d_nax_forward` dtype mismatch (HIGH correctness/perf) — **RESOLVED v2.50.1 Prompt 5g Phase A**
+
+**Identified by**: Prompt 5g Phase A audit (Pattern #8 root cause).
+
+**Mechanism**: `_auto_hooks.py` (v2.36.0+) routes eligible Conv3D shapes
+to `_ext.conv3d_nax_forward`.  The eligibility check verifies
+`weight.dtype in {fp16, bf16}` but NOT that `input.dtype == weight.dtype`.
+The C++ NAX kernel (`csrc/mfa_conv_nax.cpp:295`) strictly requires
+`x.dtype == w.dtype`, raising `RuntimeError: conv_nax: x.dtype != w.dtype`
+on every mismatched call.
+
+**Production impact**: VSR VAE encoders pass fp32 input + fp16 weights —
+the dominant pattern in user pipelines (SeedVR2, FlashVSR, etc.).  Every
+inference call from v2.36.0 through v2.50.0 hit this exception, which
+user-side pipelines silently absorbed via downstream try/except wrappers
+(masquerading as "everything works" while the M5 Neural Engine NAX
+Conv3D path NEVER executed).  This is the textbook Pattern #8 case
+(see `docs/v50/audit-framing-inversions.md`).
+
+**RESOLUTION DATE**: 2026-05-15 (Prompt 5g Phase A).
+
+**Fix**: `_auto_hooks.py::_patched_conv_general` now casts `input` to
+`weight.dtype` before NAX dispatch and restores the baseline output
+dtype after the kernel call.  Defensive `try/except` falls back to MLX
+baseline on any unexpected NAX failure.  23 regression tests in
+`tests/test_v50_prompt_5g_conv3d_nax_dtype_compatibility.py` cover all
+9 (input × weight) dtype combinations.
+
+---
+
+## KD-7 — Conv3D NAX bf16 weight path broken at MLX upstream Metal shader (HIGH defect) — OPEN
+
+**Identified by**: Prompt 5g Phase A audit (discovered while validating KD-6 fix).
+
+**Mechanism**: When `_ext.conv3d_nax_forward` is invoked with bf16
+inputs/weights, the MLX Metal backend fails to compile the im2col helper
+shader.  Error from MLX upstream
+`mlx/backend/metal/kernels/utils.h:502`:
+
+```
+error: assigning to 'half' from incompatible type 'const device bfloat16_t'
+error: assigning to 'bfloat16_t' from incompatible type 'half'
+```
+
+The im2col helper has hardcoded `half` types and doesn't dispatch
+correctly for `bfloat16_t`.  Affects ALL bf16 conv3d_nax dispatches
+(matched or mismatched).
+
+**Production impact**: Users with bf16 weights HAVE NEVER engaged NAX
+Conv3D since v2.36.0 — the path raises at graph-evaluation time.  Since
+the overwhelming majority of VSR VAE workloads use fp16 weights (KD-6
+resolution unblocked that path), the bf16 path was never exercised in
+production.
+
+**Phase A mitigation**: tighten eligibility — `weight.dtype != mx.float16`
+disqualifies the call from NAX dispatch.  bf16 weights now correctly
+fall back to MLX baseline (which works).  Regression test
+`test_conv3d_bf16_weight_falls_back_to_baseline` locks the behavior.
+
+**Resolution roadmap**: upstream MLX bf16 im2col helper fix, OR mlx-mfa
+can provide a bf16-specialized NAX kernel path (avoiding the broken
+upstream helper).  Either approach is deeper kernel work — not in
+Prompt 5g scope.  Target: v2.51 or v2.50.x patch sprint depending on
+user demand.
+
+**Severity rationale**: HIGH defect (existing functionality completely
+broken) but LOW production-active impact (zero user reports between
+v2.36.0 and v2.50.0 — the path was unreachable in practice).  No KD-7
+work blocks v2.50.1 ship.
+
+---
+
 ## Summary
 
 | ID | Severity | Production-active impact | Resolution sprint |
@@ -178,5 +250,7 @@ is production.
 | KD-3 | LOW | ~~Defensive code (not currently a bug)~~ | **RESOLVED v2.50.0 Prompt 5f Phase C** |
 | KD-4 | LOW | ~~Silent coerce of bad topk_ratio~~ | **RESOLVED v2.50.0 (Prompt 5e Phase 1 fix + Prompt 5f Phase D tests)** |
 | KD-5 | (preserved xfail) | None (research-only path) | **DEPRECATED v2.50.0 Prompt 5f Phase E**; target removal v2.51+ |
+| KD-6 | HIGH | ~~`_auto_hooks.py::conv3d_nax_forward` dtype mismatch silently broke NAX path~~ | **RESOLVED v2.50.1 Prompt 5g Phase A** |
+| KD-7 | HIGH defect (LOW production-active) | bf16 weight path broken at upstream MLX Metal im2col | OPEN — eligibility tightened to fp16-only as Phase A mitigation; target v2.51 |
 
 None of KD-1 through KD-5 block v2.50 ship per scope analysis.

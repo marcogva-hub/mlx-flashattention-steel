@@ -2,6 +2,55 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased — for v2.50.1]
+
+> **Accumulation contract**: this section accumulates work for the
+> v2.50.1 hotfix release.  Master advances but PyPI stays at v2.50.0
+> until v2.50.1 ship date (Prompt 5i).  No version bumps, no tags,
+> no twine uploads until then.
+
+### Fixed (Prompt 5g Phase A — KD-6 conv3d_nax_forward dtype mismatch + KD-7 bf16 mitigation)
+
+- **KD-6 RESOLVED — Pattern #8 root cause closure**: `_auto_hooks.py`
+  (v2.36.0+) routed eligible Conv3D shapes to `_ext.conv3d_nax_forward`
+  whose C++ kernel strictly requires `x.dtype == w.dtype`.  The hook
+  eligibility check verified `weight.dtype ∈ {fp16, bf16}` but not the
+  input/weight dtype match.  Every VSR VAE encoder call (fp32 input +
+  fp16 weight pattern) raised `RuntimeError: conv_nax: x.dtype != w.dtype`
+  from v2.36.0 through v2.50.0, with user pipelines silently absorbing
+  the exception via downstream `try/except` wrappers.
+
+  Production impact: the M5 Neural Engine fixed-function Conv3D
+  acceleration path **never executed in production** between v2.36.0
+  and v2.50.0 — users saw correct outputs (via baseline fallback in
+  their pipelines) at baseline performance, masquerading as "everything
+  works."  See Pattern #8 in `docs/v50/audit-framing-inversions.md`.
+
+  Fix: `_patched_conv_general` now casts `input` to `weight.dtype`
+  before NAX dispatch and restores the baseline output dtype after the
+  kernel call (preserves the MLX promotion contract).  Defensive
+  `try/except` falls back to MLX baseline on any unexpected NAX
+  failure.
+
+  23 regression tests in
+  `tests/test_v50_prompt_5g_conv3d_nax_dtype_compatibility.py` cover all
+  9 (input × weight) dtype combinations: 9 no-crash + 9 baseline shape/
+  dtype match + 5 specific patterns (VAE fp32+fp16, matched fp16,
+  bf16/fp32 fallback, ineligible kernel size).
+
+- **KD-7 OPEN (Phase A mitigation)**: while validating KD-6 fix,
+  discovered the bf16 weight path triggers a Metal shader compile
+  failure in MLX upstream `utils.h:502` im2col helper (`half` vs
+  `bfloat16_t` type mismatch).  Affects all bf16 conv3d_nax dispatches
+  (matched or mismatched).  Eligibility tightened to fp16-weight-only
+  as Phase A mitigation — bf16 weights now correctly fall back to MLX
+  baseline.  Tracked as KD-7 in `docs/v50/known-debt-v2.50.md` for
+  v2.51 resolution (upstream MLX fix or mlx-mfa bf16-specialized
+  kernel).
+
+  Zero production-active impact: the bf16 NAX path was unreachable
+  since v2.36.0; no user reports.
+
 ## [2.50.0] — 2026-05-14
 
 **v2.50.0 ships M5+ NAX coverage core production-complete.**
