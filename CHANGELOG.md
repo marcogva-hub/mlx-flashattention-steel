@@ -51,6 +51,44 @@ All notable changes to mlx-mfa are documented here.
   Zero production-active impact: the bf16 NAX path was unreachable
   since v2.36.0; no user reports.
 
+### Added (Prompt 5g Phase C — Hook telemetry infrastructure for Pattern #8 prevention)
+
+- **`mlx_mfa.get_hook_stats()` public API**: returns a snapshot of per-
+  hook execution/fallback counters.  Users can verify NAX optimization
+  paths are actually engaged for their workload (Pattern #8 prevention).
+  Returns `dict[str, dict[str, int]]` with `executed`, `fallback`,
+  `fallback_reasons` (capped at 10 distinct reasons per hook), and the
+  current telemetry `mode`.
+
+- **`mlx_mfa.reset_hook_stats()` public API**: clears all counters; useful
+  for scoping measurements to a specific code block.
+
+- **`MLX_MFA_HOOK_TELEMETRY` env var** controls telemetry verbosity:
+  - `off`: zero overhead (early-return); no counters maintained
+  - `summary` (default): per-hook dict-increment counters; ~1% overhead
+    at microbench scale, <0.1% at production scale
+  - `verbose`: summary + `UserWarning` per fallback (developer mode for
+    active debugging)
+
+- **Telemetry integration in `_patched_conv_general`**: every dispatch
+  decision records either `executed[conv3d_nax_forward]++` (NAX engaged)
+  or `fallback[conv3d_nax_forward]++` with reason classification (not
+  M5+, weight dtype unsupported, kernel constraint, padding form,
+  NAX dispatch exception, etc.).
+
+- **Documentation**: `docs/HOOK_TELEMETRY.md` covers API, modes,
+  overhead measurements, and Pattern #8 diagnostic examples.
+
+- 10 new regression tests in
+  `tests/test_v50_prompt_5g_hook_telemetry.py` cover all 3 modes,
+  counter semantics, reason cap, snapshot independence, and re-import
+  edge case.
+
+This infrastructure mirrors the per-call stats pattern already shipped
+in `mlx_mfa.integrations.mlx_lm` (verbose dispatch logging + per-call
+counters).  See `docs/v50/prompt-5g-section-b-hooks-inventory.md` for
+the audit verdict that no additional hooks need Pattern #8 fixes.
+
 ## [2.50.0] — 2026-05-14
 
 **v2.50.0 ships M5+ NAX coverage core production-complete.**

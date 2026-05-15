@@ -223,6 +223,8 @@ from mlx_mfa._auto_hooks import (
     install_hooks as _install_hooks,
     uninstall_hooks as _uninstall_hooks,
     hooks_status as _hooks_status,
+    get_hook_stats,
+    reset_hook_stats,
 )
 
 
@@ -367,6 +369,9 @@ __all__ = [
     "enable",
     "disable",
     "hooks_status",
+    # v2.50.1 Prompt 5g Phase C — hook telemetry (Pattern #8 prevention)
+    "get_hook_stats",
+    "reset_hook_stats",
     "diagnostics",
     # Core attention
     "flash_attention",

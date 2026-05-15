@@ -30,6 +30,8 @@ See docs/RELEASE_PHILOSOPHY.md for the auto-default principle.
 from __future__ import annotations
 
 import os
+import warnings
+from collections import defaultdict
 from typing import Any, Callable, Optional
 
 import mlx.core as mx
@@ -41,6 +43,92 @@ _INSTALL_LOG: list[str] = []
 
 # Eligible Conv3D kernel shapes per seedvr2_vae patcher convention.
 _ELIGIBLE_KERNEL_SIZES = {(3, 3, 3), (1, 1, 1)}
+
+# ---------------------------------------------------------------------------
+# v2.50.1 Prompt 5g Phase C — Hook telemetry infrastructure (Pattern #8 prevention).
+# ---------------------------------------------------------------------------
+# The auto-hooked Conv3D NAX path silently fell back to MLX baseline from
+# v2.36.0 through v2.50.0 due to a dtype-mismatch contract gap (KD-6).  The
+# bug was invisible because no telemetry surfaced fallback events.
+#
+# Telemetry modes (controlled via `MLX_MFA_HOOK_TELEMETRY` env var):
+#   - "off"     : zero overhead; no counters maintained.  Use for max perf.
+#   - "summary" : default; per-hook executed/fallback counters maintained
+#                 in process memory.  Read via `mlx_mfa.get_hook_stats()`.
+#                 Overhead: a single dict increment per call.
+#   - "verbose" : developer mode; in addition to summary counters, emit a
+#                 `UserWarning` on every fallback event.  Useful when
+#                 actively debugging why an optimization isn't engaging.
+
+_HOOK_TELEMETRY_MODE = os.environ.get("MLX_MFA_HOOK_TELEMETRY", "summary").lower()
+if _HOOK_TELEMETRY_MODE not in ("off", "summary", "verbose"):
+    # Unknown value → default to summary (safe).
+    _HOOK_TELEMETRY_MODE = "summary"
+
+_HOOK_EXECUTION_STATS: dict = {
+    "executed": defaultdict(int),
+    "fallback": defaultdict(int),
+    # Capped at 10 reasons per hook to bound memory (defensive against
+    # high-frequency unique-reason fallbacks).
+    "fallback_reasons": defaultdict(list),
+}
+
+
+def _record_hook_execution(hook_name: str) -> None:
+    """Increment executed counter for `hook_name`.  No-op in 'off' mode."""
+    if _HOOK_TELEMETRY_MODE == "off":
+        return
+    _HOOK_EXECUTION_STATS["executed"][hook_name] += 1
+
+
+def _record_hook_fallback(hook_name: str, reason: str) -> None:
+    """Increment fallback counter for `hook_name` and record up to 10
+    distinct reason strings.  In 'verbose' mode, emit a UserWarning.
+    No-op in 'off' mode."""
+    if _HOOK_TELEMETRY_MODE == "off":
+        return
+    _HOOK_EXECUTION_STATS["fallback"][hook_name] += 1
+    reasons = _HOOK_EXECUTION_STATS["fallback_reasons"][hook_name]
+    if len(reasons) < 10 and reason not in reasons:
+        reasons.append(reason)
+    if _HOOK_TELEMETRY_MODE == "verbose":
+        warnings.warn(
+            f"mlx-mfa hook '{hook_name}' fell back to MLX baseline: {reason}. "
+            f"NAX optimization NOT applied for this call.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def get_hook_stats() -> dict:
+    """Return a snapshot of hook execution statistics.
+
+    Useful for verifying that NAX optimization paths are actually
+    engaged for your workload.  If `fallback[hook_name] > 0`, the
+    NAX path is not being used for some calls — `fallback_reasons[hook_name]`
+    surfaces up to 10 distinct reasons (capped to bound memory).
+
+    Telemetry mode (`mode` key) is controlled via the
+    `MLX_MFA_HOOK_TELEMETRY` environment variable (off / summary [default]
+    / verbose).
+    """
+    return {
+        "executed": dict(_HOOK_EXECUTION_STATS["executed"]),
+        "fallback": dict(_HOOK_EXECUTION_STATS["fallback"]),
+        "fallback_reasons": {
+            k: list(v)
+            for k, v in _HOOK_EXECUTION_STATS["fallback_reasons"].items()
+        },
+        "mode": _HOOK_TELEMETRY_MODE,
+    }
+
+
+def reset_hook_stats() -> None:
+    """Reset all hook telemetry counters to zero.  Useful for scoping
+    measurements around a specific code block."""
+    _HOOK_EXECUTION_STATS["executed"].clear()
+    _HOOK_EXECUTION_STATS["fallback"].clear()
+    _HOOK_EXECUTION_STATS["fallback_reasons"].clear()
 
 
 def _is_m5_plus() -> bool:
@@ -125,6 +213,21 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
         or not _conv3d_nax_eligible(weight, stride, padding,
                                      kernel_dilation, groups, flip)
         or (in_dil is not None and in_dil != (1, 1, 1))):
+        # Telemetry: record fallback with reason classification.
+        if not _is_m5_plus():
+            _record_hook_fallback("conv3d_nax_forward", "not M5+ hardware")
+        elif in_dil is not None and in_dil != (1, 1, 1):
+            _record_hook_fallback("conv3d_nax_forward",
+                                   f"input_dilation {in_dil} != (1,1,1)")
+        else:
+            # Eligibility failed; surface the specific reason for debugging.
+            if not hasattr(weight, "shape") or len(weight.shape) != 5:
+                reason = "weight not 5-D (not Conv3D)"
+            elif weight.dtype != mx.float16:
+                reason = f"weight dtype {weight.dtype} not fp16 (KD-7 bf16 disabled)"
+            else:
+                reason = "kernel/stride/dilation/groups/flip constraint failed"
+            _record_hook_fallback("conv3d_nax_forward", reason)
         return _ORIGINAL_CONV_GENERAL(
             input, weight,
             stride=stride, padding=padding,
@@ -137,6 +240,8 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     # Normalize padding into 6-tuple for conv3d_nax_forward
     pad_6tuple = _normalize_padding_to_6tuple(padding)
     if pad_6tuple is None or any(p < 0 for p in pad_6tuple):
+        _record_hook_fallback("conv3d_nax_forward",
+                               f"unsupported padding form: {padding}")
         return _ORIGINAL_CONV_GENERAL(
             input, weight,
             stride=stride, padding=padding,
@@ -150,6 +255,8 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     try:
         from mlx_mfa._ext import conv3d_nax_forward
     except ImportError:
+        _record_hook_fallback("conv3d_nax_forward",
+                               "C++ extension not available")
         return _ORIGINAL_CONV_GENERAL(
             input, weight,
             stride=stride, padding=padding,
@@ -184,11 +291,12 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
             dilation=(1, 1, 1),
             chunk_M=0,
         )
-    except Exception:
+    except Exception as e:
         # Defensive fallback: if NAX dispatch fails for any reason
         # (unexpected runtime error, hardware feature missing, etc.),
-        # revert to MLX baseline rather than propagating.  Telemetry
-        # in Phase C records this as a fallback event.
+        # revert to MLX baseline rather than propagating.
+        _record_hook_fallback("conv3d_nax_forward",
+                               f"NAX dispatch raised: {type(e).__name__}: {str(e)[:120]}")
         return _ORIGINAL_CONV_GENERAL(
             input.astype(orig_input_dtype), weight,
             stride=stride, padding=padding,
@@ -197,6 +305,9 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
             groups=groups, flip=flip,
             **kwargs,
         )
+
+    # NAX path engaged successfully — record execution.
+    _record_hook_execution("conv3d_nax_forward")
 
     # Restore baseline output dtype.  MLX baseline `mx.conv_general` with
     # mismatched input/weight dtypes promotes to the higher-precision
