@@ -4,9 +4,13 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current PyPI version: **2.50.0**.  See `CHANGELOG.md [2.50.0]` for the
-release notes and `docs/MIGRATION_v2.39.1_to_v2.50.0.md` for migration
-guidance from v2.39.1.
+Current PyPI version: **2.50.1**.  Critical performance-unlock patch:
+the M5 Neural Engine Conv3D acceleration path now executes natively
+(was silently blocked by a dtype-handling bug since v2.36.0).  Flagship
+benchmark: SeedVR2 3B fp16 VSR 895-frame 432p runs in ~533s on M5 Max
+— **3.10× faster** than M1 Max optimized baseline.  See `CHANGELOG.md
+[2.50.1]`, `docs/MIGRATION_v2.50.0_to_v2.50.1.md`, and
+`docs/HOOK_TELEMETRY.md`.
 
 ### v2.50 highlights (master `53c914c`, staged for release)
 
