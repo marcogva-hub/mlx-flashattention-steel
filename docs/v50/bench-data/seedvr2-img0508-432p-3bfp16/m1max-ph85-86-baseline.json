@@ -1,0 +1,30 @@
+{
+  "phase_id": "Ph85/86 (best 3B native)",
+  "timestamp": "2026-03-30",
+  "workload": {
+    "input": "IMG_0508.mp4",
+    "frames": 895,
+    "input_resolution": "176x144",
+    "output_resolution": "528x432",
+    "model": "SeedVR2 3B fp16",
+    "config": "native unified encode+decode + native DiT + batch_size=9 + no quantize + no offload"
+  },
+  "hardware": {
+    "device": "MacBook Pro M1 Max",
+    "ram_gb": 32,
+    "os": "macOS 26.4 (approx)"
+  },
+  "mlx_mfa": {
+    "version": "pre-v2.40 native attention stack",
+    "commit": "pre-NAX baseline"
+  },
+  "timings_seconds": {
+    "p1_unified_encode": 370,
+    "p2_dit_3b_fp16": 360,
+    "p3_unified_decode": 900,
+    "p4_post_process": 22,
+    "total": 1655
+  },
+  "hook_stats": null,
+  "notes": "M1 Max best-known-good native baseline. Reference for cross-hardware comparisons."
+}
