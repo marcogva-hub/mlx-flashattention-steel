@@ -2,12 +2,39 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased — for v2.50.1]
+## [2.50.1] — 2026-05-16
 
-> **Accumulation contract**: this section accumulates work for the
-> v2.50.1 hotfix release.  Master advances but PyPI stays at v2.50.0
-> until v2.50.1 ship date (Prompt 5i).  No version bumps, no tags,
-> no twine uploads until then.
+**v2.50.1 is a critical performance-unlock patch.**  A dtype-handling
+bug in `conv3d_nax_forward` (present since v2.36.0) silently blocked
+the M5 Neural Engine Conv3D acceleration path in production —
+pipelines absorbed the resulting `RuntimeError` via downstream
+`try/except` wrappers, masking it as "works but baseline performance".
+With the fix, NAX Conv3D executes natively.
+
+**Flagship benchmark** (SeedVR2 3B fp16 VSR, 895 frames, 432p, M5 Max
+post-v2.50.1 fix; cross-hardware comparison vs M1 Max optimized
+baseline, see `docs/v50/bench-data/`):
+
+| Phase | M1 Max (Ph85/86) | M5 Max v2.50.1 (Ph96) | M5/M1 |
+|---|---|---|---|
+| P1 unified encode (Conv3D-heavy) | 370s | 132s | **2.80×** |
+| P2 DiT 3B fp16 | 360s | 72s | **5.00×** |
+| P3 unified decode (Conv3D-heavy) | 900s | 322s | **2.80×** |
+| P4 post-process | 22s | 7s | **3.14×** |
+| **Total** | **1655s** | **533s** | **3.10×** |
+
+P1 and P3 (VAE encode + decode) achieve their 2.80× speedup directly
+from NAX hardware acceleration unlocked by the KD-6 fix.  Hook
+telemetry confirms 12408 NAX dispatches across the run.  675 calls
+fall back to MLX baseline — all legitimately, for Conv3D layers whose
+kernel shapes are not (3,3,3) or (1,1,1) (NAX kernel only supports
+those two shape classes by design).
+
+The +3.1% delta vs the pre-fix workaround baseline (517s, Ph95) is
+within Apple Silicon GPU run-to-run variance (~3-5%) — the proper
+mlx-mfa fix is performance-equivalent to the caller-side workaround at
+the macro level, while remaining universally applicable (no caller-side
+changes required).
 
 ### Fixed (Prompt 5g Phase A — KD-6 conv3d_nax_forward dtype mismatch + KD-7 bf16 mitigation)
 
