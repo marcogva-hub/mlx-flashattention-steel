@@ -4,11 +4,30 @@
 
 **Date**: 2026-05-16
 
+## Install status — DONE
+
+**INSTALLED** in `~/code/venv_mlx_vae_gemini` (Python 3.14.3) via:
+```bash
+~/code/venv_mlx_vae_gemini/bin/pip install --force-reinstall --no-deps \
+  /Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0-cp314-cp314-macosx_26_0_arm64.whl
+```
+
+Replaced prior `mlx-mfa 2.50.0` (PyPI install, missing KD-6 fix).
+Post-install smoke verified:
+- module path resolves to venv site-packages
+  (`/Users/marcomarcelino/code/venv_mlx_vae_gemini/lib/python3.14/site-packages/mlx_mfa/__init__.py`)
+- M5+ detected (Apple M5 Max, gen 17, 40 GPU cores)
+- C++ extension loads (`extension_available: True`)
+- Hooks installed (`installed: True, M5+=True`)
+- Telemetry API present (`get_hook_stats`, `reset_hook_stats`)
+- KD-6 functional smoke: fp32 input + fp16 weight Conv3D
+  → `executed.conv3d_nax_forward = 1, fallback = 0`, output finite
+
 ## Wheel artifacts
 
-**Wheel path** (install this):
+**Wheel path** (cp314, installed in SeedVR2 venv):
 ```
-/Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0-cp311-cp311-macosx_26_0_arm64.whl
+/Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0-cp314-cp314-macosx_26_0_arm64.whl
 ```
 
 **Sdist** (source distribution, for reference):
@@ -16,9 +35,17 @@
 /Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0.tar.gz
 ```
 
-**Sha256 checksums**:
-- wheel: `a66bcad72dc45a925ecb72b194a66ffb1a8ed6f7a8cbde77e51b8ae64aa91b96`
-- sdist: `7583ff4a51d91d38f977fd137251b68623587516d31721a2bd3e17ea64362fef`
+**Sha256 checksums** (cp314 build):
+- wheel: `ac5bdb9af8c44f109d8440998ff11f5ec7e47a3485ba1be8810846e95e1da101`
+- sdist: `ab156b2061e1a03c76b595cf6dfb259658b7803ae0bd95e1740801c428813773`
+
+**Note**: The initial wheel was built with `cp311` against the
+mlx-mfa-v2 dev `.venv` (Python 3.11), but the SeedVR2 inference venv
+at `~/code/venv_mlx_vae_gemini` is Python 3.14.3.  Wheel was rebuilt
+with `cp314` against that venv's Python.  All build dependencies
+(build 1.4.3, cmake 4.3.2, nanobind 2.10.2, scikit_build_core 0.12.2,
+twine 6.2.0, mlx 0.31.2) were present in
+`~/code/venv_mlx_vae_gemini`.
 
 ## Version identifier
 
@@ -73,15 +100,17 @@ Isolated install smoke test (fresh venv at `/tmp/mlx_mfa_wheel_test`):
 
 ## Install instructions for SeedVR2 session
 
-In the SeedVR2 venv (whichever Python environment SeedVR2's inference runs in):
+**No action required from the SeedVR2 session for install** — the wheel
+has already been installed in `~/code/venv_mlx_vae_gemini` (see "Install
+status" above).  Skip to "Benchmark validation checklist" below.
 
+If a re-install is ever needed (e.g., the venv was rebuilt):
 ```bash
-# Force reinstall over any existing mlx-mfa, do not touch other packages
-<seedvr2-venv>/bin/pip install --force-reinstall --no-deps \
-  /Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0-cp311-cp311-macosx_26_0_arm64.whl
+~/code/venv_mlx_vae_gemini/bin/pip install --force-reinstall --no-deps \
+  /Users/marcomarcelino/code/mlx-mfa-v2/dist/mlx_mfa-2.50.0-cp314-cp314-macosx_26_0_arm64.whl
 
 # Verify
-<seedvr2-venv>/bin/python -c "
+~/code/venv_mlx_vae_gemini/bin/python -c "
 import mlx_mfa
 print('version:', mlx_mfa.__version__)
 print('telemetry API:', hasattr(mlx_mfa, 'get_hook_stats') and hasattr(mlx_mfa, 'reset_hook_stats'))
@@ -89,21 +118,12 @@ print('hooks_status:', mlx_mfa.hooks_status())
 "
 ```
 
-Expected output:
-```
-version: 2.50.0
-telemetry API: True
-hooks_status: {'installed': True, 'log': ['mlx_mfa auto-hooks installed: ... M5+=True'], 'm5_plus': True, 'auto_hooks_disabled_env': False}
-```
-
 Notes:
 - `--no-deps` avoids disturbing other SeedVR2 venv packages (mlx, mlx-metal, etc.)
 - `--force-reinstall` overrides any existing `mlx-mfa` (including the PyPI v2.50.0
   install — this is intentional; we want this wheel's post-5g code).
-- Python version must be 3.11.x.  The wheel is `cp311` and not compatible with
-  Python 3.12 / 3.13 / 3.14.  If SeedVR2 runs on a different Python version,
-  build a wheel for that interpreter via:
-  `CMAKE_ARGS="-DPython_EXECUTABLE=$(which python3.X)" python -m build`
+- Wheel is `cp314` for Python 3.14.x.  If the venv Python ever changes,
+  rebuild via: `CMAKE_ARGS="-DPython_EXECUTABLE=<target-python>" <target-python> -m build`
 
 ## Benchmark validation checklist for SeedVR2 session
 
