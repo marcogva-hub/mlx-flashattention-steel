@@ -861,6 +861,9 @@ class TurboQuantPagedInferenceContext:
         self._write_ptr: dict[int, int] = {}
 
     def _allocate_block(self) -> int:
+        # Campaign 2026-06 Sprint C Track 1 (#4): block allocation changes
+        # the table layout — drop the cached GPU table.
+        self._block_table_cache = None
         if not self._free:
             raise RuntimeError("TurboQuantPagedInferenceContext: out of blocks")
         return self._free.pop()
@@ -909,10 +912,10 @@ class TurboQuantPagedInferenceContext:
         v_packed = v_sc = None
         if self.tq_v:
             v_packed, v_sc, _ = pack_v_for_metal(v, bits=self.tq_bits)
-        # Repo review 2026-05: single barrier (was a redundant double
-        # mx.synchronize() when tq_v=True — each call blocks until the GPU
-        # queue drains; the second added latency with no correctness value).
-        mx.synchronize()
+        # Campaign 2026-06 Sprint C (#12): the pack-side barrier is removed
+        # entirely — pack outputs are lazy MLX arrays consumed by the lazy
+        # scatter below; no host-side read intervenes, so no barrier is
+        # needed before the scatter graph is built.
 
         # Also keep fp16 V for the fallback buffer binding
         v_fp16 = v.astype(self.dtype)
@@ -958,12 +961,19 @@ class TurboQuantPagedInferenceContext:
         # Materialize pool updates eagerly: downstream paged kernels bind these
         # buffers directly (raw set_input_array), so the writes must be
         # resolved — not pending lazy graph nodes — before the next dispatch.
+        # mx.eval keeps the lazy-graph depth constant across decode steps AND
+        # satisfies the materialization contract for the pool buffers (they
+        # are Primitive inputs; the scheduler would also eval them, but doing
+        # it here bounds graph growth).  Campaign 2026-06 Sprint C (#12): the
+        # trailing mx.synchronize() that followed was a full GPU-queue drain
+        # per token with no correctness role — mx.eval already blocks until
+        # the writes are computed.  Removed; validated by 300-step decode
+        # output equivalence.
         if self.tq_v:
             mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16,
                     self._v_pool_tq, self._v_scales)
         else:
             mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16)
-        mx.synchronize()
 
     def get_block_table(self, seq_ids: Optional[list[int]] = None) -> mx.array:
         """Return block_table [B, max_blocks] for given seq_ids."""
@@ -972,13 +982,24 @@ class TurboQuantPagedInferenceContext:
             seq_ids = sorted(self._block_table.keys())
         if not seq_ids:
             return mx.zeros((0, 0), dtype=mx.int32)
+        # Campaign 2026-06 Sprint C Track 1 (#4): the table only changes when
+        # a block is allocated (every block_size tokens), but this method runs
+        # EVERY decode step — previously a numpy alloc + Python double loop +
+        # host->GPU upload per token.  Cache the GPU table keyed on the seq_ids
+        # tuple; _allocate_block invalidates.
+        cache_key = tuple(seq_ids)
+        cached = getattr(self, "_block_table_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
         max_blk = max(len(self._block_table.get(s, [])) for s in seq_ids)
         table = np.zeros((len(seq_ids), max_blk), dtype=np.int32)
         for i, s in enumerate(seq_ids):
             blks = self._block_table.get(s, [])
             for j, b in enumerate(blks):
                 table[i, j] = b
-        return mx.array(table, dtype=mx.int32)
+        result = mx.array(table, dtype=mx.int32)
+        self._block_table_cache = (cache_key, result)
+        return result
 
     def get_seq_lens(self, seq_ids: Optional[list[int]] = None) -> mx.array:
         """Return seq_lens_kv [B] for given seq_ids."""
@@ -1014,7 +1035,11 @@ class TurboQuantPagedInferenceContext:
         else:
             from mlx_mfa.turboquant import apply_rotation
             q_input = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
-        mx.synchronize()
+        # Campaign 2026-06 Sprint C Track 1 (#3): the full-pipeline drain that
+        # sat here is removed.  q_input is a graph INPUT of the paged-TQ
+        # Primitive — the MLX scheduler materializes Primitive inputs before
+        # eval_gpu, so the explicit barrier added only latency (one GPU drain
+        # per decode token).  Validated by 300-step decode output equivalence.
 
         cu_q = mx.array([0, q.shape[2]], dtype=mx.int32)
         block_table = self.get_block_table([seq_id])

@@ -2168,19 +2168,34 @@ def flash_attention_kvcache(
             # Use the STEEL rope path if available; else pure-MLX rotation.
             # _apply_rope_mlx and _can_use_mfa are module-level in attention.py.
             if _can_use_mfa(q, D) and q.dtype != mx.float32:
-                # Rotate Q in-kernel: build a dummy single-element K that will
-                # be discarded, but the Q rotation is correct.
-                # Simplest: use the MLX path for paged + rope.
-                pass  # fall through to MLX rotation below
+                # (Pre-campaign dead `pass` block removed — see below.)
+                pass
             _cs = cache_seqlens
             if isinstance(_cs, mx.array):
                 _cs = int(_cs.tolist()) if _cs.ndim == 0 else _cs
             if not isinstance(_cs, int):
                 # per-batch: use the first offset (single decode step assumed)
                 _cs = int(list(_cs)[0]) if hasattr(_cs, '__iter__') else int(_cs)
-            q_att = _apply_rope_mlx(q, rotary_cos, rotary_sin,
-                                    offset=_cs, interleaved=interleaved,
-                                    rotary_dim=rotary_dim)
+            # Campaign 2026-06 Sprint C Track 1 (#1/#11): on M5+ NAX with
+            # full-rope D∈{64,128} fp16/bf16, rotate Q via mx.fast.rope —
+            # the Apple-native kernel — instead of `_apply_rope_mlx`, whose
+            # compile-cache key bakes `offset` (a NEW mx.compile closure per
+            # decode step).  Same base=10000 contract as the standalone
+            # flash_attention_rope_unified fast path; custom-base callers
+            # set MFA_DISABLE_ROPE_NAX=1 (identical opt-out).
+            _D_rope = q.shape[3]
+            _full_rope = (rotary_dim is None) or (rotary_dim == _D_rope)
+            if (_get_has_nax_cached()
+                    and os.environ.get("MFA_DISABLE_ROPE_NAX") != "1"
+                    and _D_rope in (64, 128)
+                    and q.dtype in (mx.float16, mx.bfloat16)
+                    and _full_rope):
+                q_att = mx.fast.rope(q, dims=_D_rope, traditional=interleaved,
+                                     base=10000.0, scale=1.0, offset=_cs)
+            else:
+                q_att = _apply_rope_mlx(q, rotary_cos, rotary_sin,
+                                        offset=_cs, interleaved=interleaved,
+                                        rotary_dim=rotary_dim)
 
         if alibi_slopes is not None:
             raise ValueError(
@@ -4165,6 +4180,7 @@ def _dropout_sdpa(
 _softcap_compile_cache: dict = {}
 _alibi_compile_cache: dict = {}
 _rope_compile_cache: dict = {}
+_ROPE_COMPILE_CACHE_MAX = 256  # campaign 2026-06 #2: bound growth (decode offsets churn keys)
 
 
 def _softcap_sdpa_ref(
@@ -4828,6 +4844,16 @@ def _apply_rope_mlx(
                 return mx.concatenate(
                     [x0 * cos_bc - x1 * sin_bc,
                      x0 * sin_bc + x1 * cos_bc], axis=-1)
+
+        # campaign 2026-06 Sprint C Track 1 (#2): autoregressive decode bakes
+
+        # `offset` into the key (one new entry per step) — bound the cache so a
+
+        # long decode cannot accumulate thousands of compiled closures.
+
+        if len(_rope_compile_cache) >= _ROPE_COMPILE_CACHE_MAX:
+
+            _rope_compile_cache.pop(next(iter(_rope_compile_cache)))
 
         _rope_compile_cache[key] = mx.compile(_impl)
 

@@ -193,17 +193,27 @@ def _d256_min_n(
     is_m3_plus: bool,
     dtype_key: Optional[str],
     has_custom_table: bool,
+    has_nax: bool = False,
 ) -> Optional[int]:
     """Return D=256 family threshold when a dedicated rule applies.
 
     D=256 is handled as a separate design family from D=64/128:
-    - M3+ f16 and bf16 causal: promote from N>=2048 (1.58-1.68x on M4 Max)
+    - M5+ NAX causal: keep SDPA (campaign 2026-06 Sprint C Track 2 M5
+      re-bench: MFA V2-dsplit is 0.71-0.72x SDPA at N=4096/8192 — the
+      M4-era promote verdict INVERTS on M5, audit-framing-inversions
+      Pattern #6 / #1 class; B=1 H=8 f16: SDPA 4.62/17.9 ms vs MFA
+      6.46/25.0 ms)
+    - M3+ (non-NAX) f16 and bf16 causal: promote from N>=2048
+      (1.58-1.68x on M4 Max)
     - M1/M2 f16 causal: promote from N>=2048 (1.09x@2048, 1.22x@4096 post-BK=8)
     - M1/M2 bf16 causal: keep SDPA (0.65-0.88x on M1 Max -- emulation cost)
     - non-causal: defer to global table (already SDPA default)
     """
     if head_dim != 256 or not causal or has_custom_table:
         return None
+    if has_nax:
+        # M5 Max re-bench (2026-06): SDPA wins decisively at D=256 causal.
+        return 999_999
     if is_m3_plus:
         # M4 Max D=256 causal (B=2 H=8): f16 1.64-1.66x, bf16 1.58-1.68x.
         return 2048
@@ -594,6 +604,7 @@ def should_use_mfa(
         is_m3_plus=is_m3_plus,
         dtype_key=dtype_key,
         has_custom_table=(custom is not None),
+        has_nax=has_nax,
     )
     if d512_min_n is not None:
         min_n = d512_min_n

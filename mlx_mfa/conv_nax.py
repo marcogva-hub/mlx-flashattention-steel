@@ -772,7 +772,32 @@ def get_chunk_plan(M_total: int, K: int, dtype_bytes: int = 2):
     return _compute_chunk_layout(M_total, K, dtype_bytes)
 
 
+# Campaign 2026-06 Sprint C Track 1 (#13): memoize the padding parse.
+# VAE inference calls conv3d_nax_forward thousands of times with constant
+# padding; the isinstance/unpack pass is per-call waste.  Manual memo (not
+# lru_cache) so unhashable inputs (lists) fall through to direct parse.
+_PADDING_MEMO: dict = {}
+
+
 def _normalize_padding_to_6tuple(padding, K_T_for_causal=None, causal_pad_t=False):
+    try:
+        memo_key = (padding, K_T_for_causal, causal_pad_t)
+    except TypeError:
+        memo_key = None
+    if memo_key is not None:
+        cached = _PADDING_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
+    result = _normalize_padding_to_6tuple_impl(padding, K_T_for_causal, causal_pad_t)
+    if memo_key is not None and len(_PADDING_MEMO) < 256:
+        try:
+            _PADDING_MEMO[memo_key] = result
+        except TypeError:
+            pass
+    return result
+
+
+def _normalize_padding_to_6tuple_impl(padding, K_T_for_causal=None, causal_pad_t=False):
     """Convert padding (int | 3-tuple of int | 3-tuple of pairs) to flat 6-tuple.
 
     Returns (pT_l, pT_r, pH_l, pH_r, pW_l, pW_r). Applies causal_pad_t
