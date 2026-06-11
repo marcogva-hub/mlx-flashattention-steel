@@ -18,6 +18,7 @@
 /// K_smem before the GEMM).
 
 #include "mfa_steel_fwd.hpp"
+#include "mfa_env.hpp"
 #include "mfa_steel_fwd_v4.hpp"
 #include <sstream>
 
@@ -26,7 +27,7 @@ namespace mlx_mfa {
 std::string generate_steel_v4_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
-  const bool no_padding  = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const bool no_padding = MFAEnvConfig::no_padding();  // load-time frozen (repo review 2026-05)
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
   const int D            = key.head_dim;

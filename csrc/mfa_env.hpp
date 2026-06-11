@@ -26,6 +26,16 @@ struct MFAEnvConfig {
   static bool force_v2()     { return env_bool("MFA_FORCE_V2"); }
   static int  force_splitk() { return env_tristate("MFA_FORCE_SPLITK"); }
 
+  // Repo review 2026-05: MFA_NO_PADDING changes the GENERATED Metal source
+  // (smem padding expression) but is absent from the shader-cache KernelKey.
+  // A mid-process toggle therefore returned a stale kernel compiled with the
+  // other padding mode.  Freezing the value at first read makes the env var
+  // load-time-only: consistent kernels and keys for the whole process.
+  static bool no_padding() {
+    static const bool v = env_bool("MFA_NO_PADDING");
+    return v;
+  }
+
   // ── Architecture override (int, 0 = use hardware detection) ────
   int force_gen;        // MFA_FORCE_GEN — override GPU architecture gen
 

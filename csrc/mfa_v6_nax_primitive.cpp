@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <CoreFoundation/CoreFoundation.h>  // CFRelease for pipeline-cache race handling
 
 namespace mlx_mfa {
 
@@ -63,6 +64,15 @@ struct V6Key {
   int head_dim, Hq, Hk, dtype;
   bool isCausal;
   uint32_t R, C, qbs, kbs, vbs, obs;
+  // Repo review 2026-05: tile/config params as dedicated fields.  These were
+  // previously bit-packed into the high bits of R/C/qbs/kbs (e.g.
+  // `qbs + (SG << 24)`), which collides once the stride exceeds 2^24 —
+  // routine at production shapes (H=8, N=16384, D=128 → qbs = 2^24 exactly).
+  // A collision returns a pipeline compiled for different tile sizes →
+  // silently wrong kernel.
+  uint16_t cfg_BQ = 0, cfg_BK = 0, cfg_SG = 0, cfg_BD = 0;
+  uint8_t  cfg_axis_flags = 0;
+  bool     cfg_bypass_tgp = false;
   // V34 — dedicated cache-key fields (no bit-packing).
   bool use_v34 = false;
   uint16_t v34_BQ = 0;
@@ -73,6 +83,9 @@ struct V6Key {
            dtype == o.dtype && isCausal == o.isCausal &&
            R == o.R && C == o.C &&
            qbs == o.qbs && kbs == o.kbs && vbs == o.vbs && obs == o.obs &&
+           cfg_BQ == o.cfg_BQ && cfg_BK == o.cfg_BK && cfg_SG == o.cfg_SG &&
+           cfg_BD == o.cfg_BD && cfg_axis_flags == o.cfg_axis_flags &&
+           cfg_bypass_tgp == o.cfg_bypass_tgp &&
            use_v34 == o.use_v34 && v34_BQ == o.v34_BQ &&
            v34_BK == o.v34_BK && v34_WM == o.v34_WM;
   }
@@ -87,6 +100,18 @@ struct V6KeyHash {
     h ^= std::hash<uint32_t>{}(k.R) << 5;
     h ^= std::hash<uint32_t>{}(k.C) << 6;
     h ^= std::hash<uint32_t>{}(k.qbs) << 7;
+    // Repo review 2026-05: kbs/vbs/obs participate in operator== but were
+    // absent from the hash — GQA shapes (kbs != qbs) clustered into one
+    // bucket, degrading lookups to a linear scan over colliders.
+    h ^= std::hash<uint32_t>{}(k.kbs) << 12;
+    h ^= std::hash<uint32_t>{}(k.vbs) << 13;
+    h ^= std::hash<uint32_t>{}(k.obs) << 14;
+    h ^= std::hash<uint16_t>{}(k.cfg_BQ) << 15;
+    h ^= std::hash<uint16_t>{}(k.cfg_BK) << 16;
+    h ^= std::hash<uint16_t>{}(k.cfg_SG) << 17;
+    h ^= std::hash<uint16_t>{}(k.cfg_BD) << 18;
+    h ^= std::hash<uint8_t>{}(k.cfg_axis_flags) << 19;
+    h ^= std::hash<bool>{}(k.cfg_bypass_tgp) << 20;
     h ^= std::hash<bool>{}(k.use_v34) << 8;
     h ^= std::hash<uint16_t>{}(k.v34_BQ) << 9;
     h ^= std::hash<uint16_t>{}(k.v34_BK) << 10;
@@ -97,6 +122,24 @@ struct V6KeyHash {
 
 std::mutex v6_mtx;
 std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
+
+// Repo review 2026-05: race-safe pipeline cache insert.  The double-checked
+// pattern (probe under lock → compile WITHOUT lock → store under lock) lets
+// two threads compile the same key concurrently; the second store used to
+// overwrite the first without releasing it, leaking the displaced
+// MTLComputePipelineState (held via CFBridgingRetain in v6_nax_compile.mm).
+// emplace + CFRelease-on-loss makes the insert race-safe and leak-free.
+template <typename Map, typename Key>
+static void* cache_insert_or_release(Map& map, std::mutex& mtx,
+                                     const Key& key, void* pipeline) {
+  std::lock_guard<std::mutex> lock(mtx);
+  auto [it, inserted] = map.emplace(key, pipeline);
+  if (!inserted) {
+    CFRelease((CFTypeRef)pipeline);  // another thread won; drop our copy
+    return it->second;
+  }
+  return pipeline;
+}
 
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 bool isCausal, bool bhnd, int R = 0,
@@ -527,8 +570,16 @@ public:
 
     uint32_t R = (uint32_t)N;
     uint32_t C = (uint32_t)Nk;
-    uint32_t qbs = (uint32_t)(Hq * N * D);
-    uint32_t kbs = (uint32_t)(Hk * Nk * D);
+    // Repo review 2026-05: compute strides in int64 before narrowing —
+    // `Hq * N * D` in int32 is UB for products > 2^31; the wrapped value
+    // would address wrong GPU memory silently.  Guard the uint32 ceiling.
+    const int64_t qbs64 = (int64_t)Hq * N * D;
+    const int64_t kbs64 = (int64_t)Hk * Nk * D;
+    if (qbs64 > (int64_t)UINT32_MAX || kbs64 > (int64_t)UINT32_MAX)
+      throw std::runtime_error(
+          "V6 NAX: batch stride exceeds uint32 (H*N*D too large)");
+    uint32_t qbs = (uint32_t)qbs64;
+    uint32_t kbs = (uint32_t)kbs64;
     uint32_t vbs = kbs;
     uint32_t obs = qbs;
 
@@ -642,12 +693,12 @@ public:
     }
 
     // Include all tile + flag params in cache key.
+    // Repo review 2026-05: tile/config params moved from bit-packed high
+    // bits of R/C/qbs/kbs to dedicated key fields (see V6Key comment).
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
-              R + ((uint32_t)BQ << 24), C + ((uint32_t)BK << 24),
-              qbs + ((uint32_t)executionSIMDGroups << 24) +
-                    ((uint32_t)(bypass_tgp ? 1 : 0) << 31),
-              kbs + ((uint32_t)BD << 16) + ((uint32_t)axis_flags << 24),
-              vbs, obs,
+              R, C, qbs, kbs, vbs, obs,
+              BQ, BK, executionSIMDGroups, BD,
+              (uint8_t)axis_flags, bypass_tgp,
               use_v34, v34_BQ, v34_BK, v34_WM};
     void* pipeline = nullptr;
     {
@@ -677,8 +728,7 @@ public:
         pipeline = v6_nax_compile_with_constants(
             src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
       }
-      std::lock_guard<std::mutex> lock(v6_mtx);
-      v6_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v6_pipelines, v6_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -714,8 +764,14 @@ public:
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV6Forward*>(&other);
+    // Repo review 2026-05: force_v34 MUST participate — a force_v34=true
+    // forward emits natural-log LSE (consumed by V34 backward) while the
+    // default path emits log2-domain LSE.  Without this term, MLX graph
+    // dedup could conflate the two nodes, feeding log2 LSE into a backward
+    // expecting natural log (silently wrong gradients).
     return p && p->params_.causal == params_.causal
-             && p->params_.bhnd == params_.bhnd;
+             && p->params_.bhnd == params_.bhnd
+             && p->params_.force_v34 == params_.force_v34;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -915,11 +971,16 @@ struct V34BwdQKey {
   unsigned short v34_BQ, v34_BK;
   uint16_t v34_WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline cache per causal flag
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdQKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdQKeyHash {
@@ -932,6 +993,7 @@ struct V34BwdQKeyHash {
     h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
     h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -999,7 +1061,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdQKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_};
+    V34BwdQKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
@@ -1014,8 +1076,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardQuerySource(); },
           "attention_bwd_q", mtl_device, causal_,
           "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ", nullptr);
-      std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
-      v34_bwdq_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdq_pipelines, v34_bwdq_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1110,11 +1171,16 @@ struct V34BwdKVKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdKVKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdKVKeyHash {
@@ -1127,6 +1193,7 @@ struct V34BwdKVKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -1199,7 +1266,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
@@ -1213,8 +1280,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardKeyValueSource(); },
           "attention_bwd_kv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in legacy fused
-      std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
-      v34_bwdkv_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdkv_pipelines, v34_bwdkv_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1297,11 +1363,16 @@ struct V34BwdVKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdVKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdVKeyHash {
@@ -1314,6 +1385,7 @@ struct V34BwdVKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -1375,7 +1447,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
@@ -1389,8 +1461,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardDVSource(); },
           "attention_bwd_dv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dV
-      std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
-      v34_bwdv_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdv_pipelines, v34_bwdv_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1443,13 +1514,18 @@ struct V34BwdVSparseKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   // is_sparse implicit (this struct only used for sparse kernels) but
   // included for future-proofing if a single cache holds both variants.
   bool operator==(const V34BwdVSparseKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdVSparseKeyHash {
@@ -1462,6 +1538,7 @@ struct V34BwdVSparseKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -1547,7 +1624,7 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdVSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdVSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdv_sparse_mtx);
@@ -1560,8 +1637,7 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardDVSparseSource(); },
           "attention_bwd_dv_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      std::lock_guard<std::mutex> lock(v34_bwdv_sparse_mtx);
-      v34_bwdv_sparse_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdv_sparse_pipelines, v34_bwdv_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1671,11 +1747,16 @@ struct V34BwdKKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdKKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdKKeyHash {
@@ -1688,6 +1769,7 @@ struct V34BwdKKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -1751,7 +1833,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
@@ -1765,8 +1847,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardDKSource(); },
           "attention_bwd_dk", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dK
-      std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
-      v34_bwdk_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdk_pipelines, v34_bwdk_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1851,11 +1932,16 @@ struct V34BwdFusedKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdFusedKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdFusedKeyHash {
@@ -1868,6 +1954,7 @@ struct V34BwdFusedKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -1955,7 +2042,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
@@ -1971,8 +2058,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSource(); },
           "attention_bwd_fused_dkdv", mtl_device, causal_,
           "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH");
-      std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
-      v34_bwd_fused_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwd_fused_pipelines, v34_bwd_fused_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2066,11 +2152,16 @@ struct V34BwdQSparseKey {
   unsigned short v34_BQ, v34_BK;
   uint16_t v34_WM;
   bool causal;
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdQSparseKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdQSparseKeyHash {
@@ -2083,6 +2174,7 @@ struct V34BwdQSparseKeyHash {
     h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
     h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -2167,7 +2259,7 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdQSparseKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_};
+    V34BwdQSparseKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdq_sparse_mtx);
@@ -2180,8 +2272,7 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardQuerySparseSource(); },
           "attention_bwd_q_sparse", mtl_device, causal_,
           "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ sparse", nullptr);
-      std::lock_guard<std::mutex> lock(v34_bwdq_sparse_mtx);
-      v34_bwdq_sparse_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdq_sparse_pipelines, v34_bwdq_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2253,11 +2344,16 @@ struct V34BwdKSparseKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdKSparseKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdKSparseKeyHash {
@@ -2270,6 +2366,7 @@ struct V34BwdKSparseKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -2352,7 +2449,7 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdKSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdk_sparse_mtx);
@@ -2365,8 +2462,7 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardDKSparseSource(); },
           "attention_bwd_dk_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      std::lock_guard<std::mutex> lock(v34_bwdk_sparse_mtx);
-      v34_bwdk_sparse_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdk_sparse_pipelines, v34_bwdk_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2443,11 +2539,16 @@ struct V34BwdFSparseKey {
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;
+  // Repo review 2026-05: scale is baked into the Metal source
+  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // cache key or a second scale silently reuses the first's kernel.
+  float scale;
   bool operator==(const V34BwdFSparseKey& o) const {
     return D == o.D && Hq == o.Hq && Hk == o.Hk
         && dtype_code == o.dtype_code
         && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal;
+        && causal == o.causal
+        && scale == o.scale;
   }
 };
 struct V34BwdFSparseKeyHash {
@@ -2460,6 +2561,7 @@ struct V34BwdFSparseKeyHash {
     h ^= std::hash<uint16_t>{}(k.BK) << 5;
     h ^= std::hash<uint16_t>{}(k.WM) << 6;
     h ^= std::hash<bool>{}(k.causal) << 7;
+    h ^= std::hash<float>{}(k.scale) << 16;
     return h;
   }
 };
@@ -2545,7 +2647,7 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdFSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_};
+    V34BwdFSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v34_bwdf_sparse_mtx);
@@ -2558,8 +2660,7 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
           [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSparseSource(); },
           "attention_bwd_fused_dkdv_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      std::lock_guard<std::mutex> lock(v34_bwdf_sparse_mtx);
-      v34_bwdf_sparse_pipelines[key] = pipeline;
+      pipeline = cache_insert_or_release(v34_bwdf_sparse_pipelines, v34_bwdf_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());

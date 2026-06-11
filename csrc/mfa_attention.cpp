@@ -134,10 +134,12 @@ void MFAttention::eval_gpu(
     fwd_p.H_Hk_ratio       = static_cast<uint32_t>(H / Hk);
     fwd_p.dot_product_scale = params_.scale * static_cast<float>(M_LOG2E);
     fwd_p.causal           = params_.causal ? 1u : 0u;
-    fwd_p.Q_batch_stride   = static_cast<uint32_t>(H  * N * D);
-    fwd_p.K_batch_stride   = static_cast<uint32_t>(Hk * S * D);
-    fwd_p.V_batch_stride   = static_cast<uint32_t>(Hk * S * D);
-    fwd_p.O_batch_stride   = static_cast<uint32_t>(H  * N * D);
+    // Repo review 2026-05: compute in int64 before narrowing — `H * N * D`
+    // as int32 overflows (UB) for H*N*D > 2^31 before the uint32_t cast.
+    fwd_p.Q_batch_stride   = static_cast<uint32_t>((int64_t)H  * N * D);
+    fwd_p.K_batch_stride   = static_cast<uint32_t>((int64_t)Hk * S * D);
+    fwd_p.V_batch_stride   = static_cast<uint32_t>((int64_t)Hk * S * D);
+    fwd_p.O_batch_stride   = static_cast<uint32_t>((int64_t)H  * N * D);
 
     using KK = ShaderCache::KernelKey;
     KK ccv_key{ KK::KernelType::AttentionForward,
@@ -208,8 +210,16 @@ void MFAttention::eval_gpu(
     auto cfgv1 = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
     BQ_fd = cfgv1.BQ; BK_fd = cfgv1.BK; WM_fd = cfgv1.WM; WN_fd = cfgv1.WN;
   }
+  // Repo review 2026-05: `!params_.has_rope` guard added.  The flash-decode
+  // partial kernel does not generate RoPE code (Phase-1 key hardcodes
+  // has_rope=false and the Metal params struct lacks rope fields).  Latent
+  // gap — the public API currently routes RoPE decode via
+  // mfa_attention_rope_forward, never reaching here with has_rope=true —
+  // but any future routing change would silently drop rotary embeddings.
+  // RoPE decode falls through to split-K / V2 / V1 which implement it.
   const bool use_flash_decode = (N <= 4 && S >= 256 && dtype_code != 2
-                                 && !params_.has_block_mask);
+                                 && !params_.has_block_mask
+                                 && !params_.has_rope);
   if (use_flash_decode) {
     int num_splits = compute_num_splits(S, BK_fd);
     int BQ_s = BQ_fd, BK_s = BK_fd, WM_s = WM_fd, WN_s = WN_fd;
@@ -637,12 +647,12 @@ void MFAttention::eval_gpu(
       enc4.set_output_array(out,       3);
       enc4.set_output_array(logsumexp, 4);
       enc4.set_bytes(sp4,              5);
-      if (params_.has_block_mask) {
-        enc4.set_input_array(inputs[3], 6);
-      }
+      // Repo review 2026-05: dead `has_block_mask` branch removed — the V4
+      // eligibility guard excludes block masks (`!params_.has_block_mask`),
+      // so inside this block has_block_mask is always false and alibi (when
+      // present) is always inputs[3].
       if (params_.has_alibi) {
-        int alibi_idx = 3 + (params_.has_block_mask ? 1 : 0);
-        enc4.set_input_array(inputs[alibi_idx], 9);
+        enc4.set_input_array(inputs[3], 9);
       }
 
       enc4.dispatch_threadgroups(
@@ -1318,9 +1328,15 @@ std::vector<mlx::core::array> MFAttention::vjp(
 
   // Route f16/bf16 D≤128 to the STEEL backward kernels.
   // GQA (H_q != H_kv) is supported: gqa_factor is set in BwdDQ/BwdDKV.
+  // Repo review 2026-05: `!has_block_mask` guard added.  The STEEL backward
+  // path passes 7 inputs to BwdDQ, but BwdDQ::eval_gpu asserts
+  // `7 + (has_block_mask ? 1 : 0)` — a sparse primitive reaching this vjp
+  // directly (bypassing the Python sparse custom_function) would trip the
+  // assertion / UB.  Sparse backward must use the dedicated sparse path.
   const bool use_steel_bwd =
       (q.dtype() != mlx::core::float32) &&
-      (D_val <= 128);
+      (D_val <= 128) &&
+      !params_.has_block_mask;
 
   std::vector<mlx::core::array> all_grads;
 
@@ -1747,7 +1763,15 @@ void MFASteelBwdDKV::eval_gpu(
 
   const auto cfg = select_steel_block_config(D, /*is_low_prec=*/dtype_code != 2,
                                              is_m3_plus);
-  const int BQ = cfg.BQ, BK = cfg.BK, BD = cfg.BD;
+  const int BQ = cfg.BQ, BD = cfg.BD;
+  // KD-5 root-cause fix (repo review 2026-05): generate_steel_backward_dkv_source
+  // overrides BK to 16 for D > 64 (mfa_steel_bwd.cpp: `BK = (BD <= 64) ? cfg.BK : 16`).
+  // Pre-fix, this dispatch used cfg.BK (= 32 on M3+ for D=128), launching
+  // NK = ceil(S/32) threadgroups while the compiled kernel processes 16 K-rows
+  // each at 16-row strides — leaving K-rows beyond NK*16 unwritten (dK/dV
+  // zeroed for the upper half of rows at D=128 N>=2048 on M3+).  The grid and
+  // params BK MUST mirror the generator's override.
+  const int BK = (D <= 64) ? cfg.BK : 16;
   const int NK = (S + BK - 1) / BK;
   const int NQ = (N + BQ - 1) / BQ;
   // dKV kernel hardcodes WM=1 (single simdgroup, no inter-warp race).

@@ -4252,7 +4252,8 @@ def _mfa_alibi_forward(
     return impl(q, k, v, alibi_slopes)
 
 
-def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
+def _v34_eligible(head_dim: int, dtype, causal: bool,
+                  scale: "float | None" = None) -> bool:
     """V34 NAX-direct backward eligibility predicate.
 
     Extracted from `_make_mfa_custom` per Sprint v2.38.0 DP2-HIGH-01
@@ -4305,6 +4306,13 @@ def _v34_eligible(head_dim: int, dtype, causal: bool) -> bool:
     if dtype not in (mx.float16, mx.bfloat16):
         return False
     if os.environ.get("MFA_ENABLE_V34_BACKWARD") != "1":
+        return False
+    # Repo review 2026-05: the V34 forward kernel (v6_nax_forward) does not
+    # accept a scale parameter — it bakes 1/sqrt(D) into the Metal source.
+    # A custom scale routed through the V34 fusion branch would silently use
+    # the default scale.  Gate eligibility on default scale; non-default
+    # scale falls back to mfa_forward_with_lse / SDPA-vjp which honor it.
+    if scale is not None and abs(scale - 1.0 / math.sqrt(head_dim)) > 1e-9:
         return False
     return True
 
@@ -4466,7 +4474,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate extracted to `_v34_eligible()` per
             # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
             # the backward-side check below pre-refactor).
-            if _v34_eligible(q.shape[3], q.dtype, causal):
+            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale):
                 from mlx_mfa._ext import v6_nax_forward as _v6_fwd
                 # v2.37.0+: force V34 forward routing so lse is natural-log
                 # (V34 backward consumes natural-log lse).  This extends
@@ -4527,7 +4535,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate + 3-kernel dispatch extracted to
             # `_v34_eligible()` and `_v34_backward_vjp()` per Sprint
             # v2.38.0 DP2-HIGH-01 compound (audit M4-MEDIUM-01).
-            if _v34_eligible(q.shape[3], q.dtype, causal):
+            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale):
                 # v2.50 Phase 4b-complete: pass causal through so V34 backward
                 # kernels compile with V34BWD*_CAUSAL=1 macro.
                 dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale, causal)

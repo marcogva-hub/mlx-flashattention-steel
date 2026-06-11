@@ -140,7 +140,7 @@ std::string generate_steel_v2_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
   // MFA_NO_PADDING=1: set all smem padding to 0 (for benchmarking bank-conflict cost).
-  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const bool no_padding = MFAEnvConfig::no_padding();  // load-time frozen (repo review 2026-05)
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
   const int D          = key.head_dim;
@@ -892,7 +892,7 @@ struct MFASteelParams {
 std::string generate_steel_v2_dsplit_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
-  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const bool no_padding = MFAEnvConfig::no_padding();  // load-time frozen (repo review 2026-05)
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
   const int D          = key.head_dim;  // 256 or 512
@@ -1631,7 +1631,7 @@ int compute_v2_num_splits(int total_tgs, int kL, int BK, int gpu_cores, bool for
 std::string generate_steel_v2_splitk_partial_source(const ShaderCache::KernelKey& key) {
   using KK = ShaderCache::KernelKey;
 
-  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const bool no_padding = MFAEnvConfig::no_padding();  // load-time frozen (repo review 2026-05)
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
   const int D      = key.head_dim;

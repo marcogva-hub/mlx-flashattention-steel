@@ -11,6 +11,7 @@
 /// negligible vs the GEMM compute per active tile.
 
 #include "mfa_gna_fwd.hpp"
+#include "mfa_env.hpp"
 #include "mfa_steel_fwd.hpp"       // append_metal_headers_and_defines, shared templates
 #include "mfa_steel_fwd_v2.hpp"    // select_steel_v2_block_config
 
@@ -25,7 +26,7 @@ std::string generate_gna_forward_source(const ShaderCache::KernelKey& key) {
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
   // MFA_NO_PADDING=1: set all smem padding to 0 (for benchmarking bank-conflict cost).
-  const bool no_padding = (std::getenv("MFA_NO_PADDING") != nullptr);
+  const bool no_padding = MFAEnvConfig::no_padding();  // load-time frozen (repo review 2026-05)
   const std::string pad_expr = no_padding ? "0" : "16 / sizeof(T)";
 
   auto cfg = select_steel_v2_block_config(D, key.is_m3_plus);
