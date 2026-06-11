@@ -275,9 +275,15 @@ class MFASteelBwdDQ : public mlx::core::Primitive {
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto* o = dynamic_cast<const MFASteelBwdDQ*>(&other);
     if (!o) return false;
+    // Campaign 2026-06 Sprint A (A-2): has_block_mask selects a different
+    // compiled kernel (sparse= in the ShaderCache key) — it must
+    // participate in CSE equality.  Defensive: dense (7 inputs) and
+    // sparse (8 inputs) nodes differ in arity so today's CSE cannot
+    // conflate them, but the predicate must stand on its own.
     return params_.head_dim == o->params_.head_dim &&
            params_.scale    == o->params_.scale    &&
-           params_.causal   == o->params_.causal;
+           params_.causal   == o->params_.causal   &&
+           params_.has_block_mask == o->params_.has_block_mask;
   }
 
  private:
@@ -319,9 +325,11 @@ class MFASteelBwdDKV : public mlx::core::Primitive {
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto* o = dynamic_cast<const MFASteelBwdDKV*>(&other);
     if (!o) return false;
+    // Campaign 2026-06 Sprint A (A-3): same rationale as MFASteelBwdDQ.
     return params_.head_dim == o->params_.head_dim &&
            params_.scale    == o->params_.scale    &&
-           params_.causal   == o->params_.causal;
+           params_.causal   == o->params_.causal   &&
+           params_.has_block_mask == o->params_.has_block_mask;
   }
 
  private:
@@ -620,7 +628,12 @@ class MFAPagedVarlenTQForward : public mlx::core::Primitive {
            params_.D == o->params_.D &&
            params_.block_size == o->params_.block_size &&
            params_.tq_bits == o->params_.tq_bits &&
-           params_.tq_v_enabled == o->params_.tq_v_enabled;
+           params_.tq_v_enabled == o->params_.tq_v_enabled &&
+           // Campaign 2026-06 Sprint A (A-4): tq_wht_enabled changes the
+           // numerical output (in-kernel Walsh-Hadamard transform of the
+           // dequantized K) with IDENTICAL input arrays — without this
+           // term, mx.compile CSE conflates WHT-on and WHT-off nodes.
+           params_.tq_wht_enabled == o->params_.tq_wht_enabled;
   }
 
  private:

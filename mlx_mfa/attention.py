@@ -477,7 +477,14 @@ def flash_attention(
                 os.environ.get("MFA_DISABLE_SDPA_ROUTE"),
                 os.environ.get("MFA_FORCE_D256_PATH"),
                 os.environ.get("MFA_FORCE_D512_PATH"),
+                # MFA_FORCE_SPLITK is consumed by the C++ split-K routing,
+                # not by should_use_mfa — kept in the key defensively so a
+                # future Python-side read cannot silently go stale.
                 os.environ.get("MFA_FORCE_SPLITK"),
+                # Campaign 2026-06 Sprint A (A-5): the custom dispatch
+                # table is a DOCUMENTED runtime override; its path must
+                # invalidate cached decisions when it changes.
+                os.environ.get("MLX_MFA_DISPATCH_TABLE"),
             )
             _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False, _env_key)
             _cached = _dispatch_decision_cache.get(_cache_key)

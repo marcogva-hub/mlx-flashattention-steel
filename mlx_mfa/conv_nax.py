@@ -612,7 +612,11 @@ def _conv3d_nax_forward_python_legacy(
     But routes through implicit-GEMM via MPP matmul2d. Phase 1.2 scope:
     - multi-chunk along M (auto-chunked when M × K × 2 > 1.75 GB)
     - forward only (no VJP)
-    - fp16 / bf16 only
+    - fp16 ONLY (campaign 2026-06 Sprint A, A-8): the embedded matmul2d
+      Metal source hardcodes ``device half`` buffer casts — a bf16 input
+      would be bitwise type-punned as fp16 and produce silently wrong
+      values.  bf16 is rejected loudly below (the C++ production path is
+      also fp16-only per KD-7).
     - channels-last layout
     - symmetric OR asymmetric (causal) padding
 
@@ -633,6 +637,16 @@ def _conv3d_nax_forward_python_legacy(
     Raises:
         ValueError: if any sanity check fails (8 categories, see source).
     """
+    # Campaign 2026-06 Sprint A (A-8): the matmul2d kernel source casts
+    # buffers as `device half*`.  bf16 through this path is a silent
+    # type-pun (wrong values) — fail loudly per Rule 8.
+    if x.dtype != mx.float16 or w.dtype != mx.float16:
+        raise ValueError(
+            "_conv3d_nax_forward_python_legacy supports fp16 only "
+            f"(got x={x.dtype}, w={w.dtype}); the embedded matmul2d Metal "
+            "source hardcodes half-precision buffer casts.  Use the C++ "
+            "production path (conv3d_nax_forward) or mx.conv_general."
+        )
     sT, sH, sW = stride
     dT, dH, dW = dilation
 

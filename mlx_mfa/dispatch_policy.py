@@ -171,7 +171,7 @@ _NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
 
 # Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
-_custom_table_loaded = False
+_custom_table_path_loaded: str = "\x00unloaded"  # sentinel != any real path incl. ''
 
 
 def _dispatch_dtype_key(dtype) -> Optional[str]:
@@ -289,12 +289,21 @@ def _splitk_env_key(
 
 
 def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
-    """Load a JSON dispatch table if MLX_MFA_DISPATCH_TABLE is set."""
-    global _custom_thresholds, _custom_table_loaded
-    if _custom_table_loaded:
-        return _custom_thresholds
-    _custom_table_loaded = True
+    """Load a JSON dispatch table if MLX_MFA_DISPATCH_TABLE is set.
+
+    Campaign 2026-06 Sprint A (A-5): the module docstring documents this
+    env var as a RUNTIME override, but a process-lifetime ``_custom_table_loaded``
+    flag previously froze the first-read value forever — later changes to
+    the env var were silently ignored.  The cache is now keyed on the
+    path value: changing (or clearing) MLX_MFA_DISPATCH_TABLE mid-process
+    reloads (or drops) the table, honoring the documented contract.
+    """
+    global _custom_thresholds, _custom_table_path_loaded
     path = os.environ.get("MLX_MFA_DISPATCH_TABLE", "")
+    if path == _custom_table_path_loaded:
+        return _custom_thresholds  # includes the unset/"" disabled case
+    _custom_table_path_loaded = path
+    _custom_thresholds = None
     if not path:
         return None
     try:

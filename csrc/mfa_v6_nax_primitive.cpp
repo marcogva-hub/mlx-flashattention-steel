@@ -71,7 +71,14 @@ struct V6Key {
   // A collision returns a pipeline compiled for different tile sizes →
   // silently wrong kernel.
   uint16_t cfg_BQ = 0, cfg_BK = 0, cfg_SG = 0, cfg_BD = 0;
-  uint8_t  cfg_axis_flags = 0;
+  // Campaign 2026-06 Sprint A (A-1): uint16_t, NOT uint8_t — axis_flags
+  // accumulates up to bit 11 (MFA_V6_MAX_THREADS buckets use bits 7-9,
+  // MFA_V6_MATMUL_EXEC_SG uses bits 10-11).  A uint8_t silently truncated
+  // bits 8-11 to zero, aliasing distinct pipeline configs to one key
+  // (e.g. MATMUL_EXEC_SG=4 reused the EXEC_SG=1 pipeline).  The loss
+  // predates the 2026-05 bit-packing fix: the old `axis_flags << 24`
+  // encoding overflowed the same bits out of the 32-bit word.
+  uint16_t cfg_axis_flags = 0;
   bool     cfg_bypass_tgp = false;
   // V34 — dedicated cache-key fields (no bit-packing).
   bool use_v34 = false;
@@ -110,7 +117,7 @@ struct V6KeyHash {
     h ^= std::hash<uint16_t>{}(k.cfg_BK) << 16;
     h ^= std::hash<uint16_t>{}(k.cfg_SG) << 17;
     h ^= std::hash<uint16_t>{}(k.cfg_BD) << 18;
-    h ^= std::hash<uint8_t>{}(k.cfg_axis_flags) << 19;
+    h ^= std::hash<uint16_t>{}(k.cfg_axis_flags) << 19;
     h ^= std::hash<bool>{}(k.cfg_bypass_tgp) << 20;
     h ^= std::hash<bool>{}(k.use_v34) << 8;
     h ^= std::hash<uint16_t>{}(k.v34_BQ) << 9;
@@ -335,20 +342,15 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     replace_all(source, "#pragma clang loop unroll(full)", replacement);
   }
 
-  // Sprint 3 (v2.30) — MFA_V6_MATMUL_EXEC_SG override.
-  // The source generator always emits `execution_simdgroups<1>` in the
-  // matmul2d<desc, execution_simdgroups<N>> template parameter, which tells
-  // MPP how many simdgroups cooperate on a single matmul instance.
-  // <1> = each simdgroup runs independent instances. <N> = N cooperate.
-  // Apple hardcodes <1> in steel_attention_nax.h; we test if higher values
-  // help our access pattern.
-  if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
-    int v = std::atoi(env_mes);
-    if (v == 2 || v == 4 || v == 8) {
-      std::string replacement = "execution_simdgroups<" + std::to_string(v) + ">";
-      replace_all(source, "execution_simdgroups<1>", replacement);
-    }
-  }
+  // Campaign 2026-06 Sprint A: the v2.30 MFA_V6_MATMUL_EXEC_SG experiment
+  // knob (blind replace_all of execution_simdgroups<1> with <N>) is REMOVED.
+  // Current MetalPerformancePrimitives headers statically require single-SG
+  // scope for the cooperative-tensor map_index/operand-layout patterns this
+  // source uses — <N> for N>1 fails compilation with static_asserts.  The
+  // knob only ever "worked" post-v2.30 because the cache key truncated its
+  // axis_flags bits (10-11) to zero, silently aliasing every override to
+  // the <1> pipeline (a Pattern #8-style ghost: the knob was a no-op).
+  // Fixing the key truncation (A-1) surfaced the incompatibility loudly.
 
   // ── Sprint 2A: BHND layout migration (MFA_V6_BHND=1) ─────────────────────
   // Rewrites the kernel to read Q/K/V/O in [B, H, N, D] layout (MLX native)
@@ -638,13 +640,9 @@ public:
       else if (v > 512 && v <= 768) axis_flags |= 0x200;
       // 769-1024 maps to default (0) — no bit set.
     }
-    // MFA_V6_MATMUL_EXEC_SG (v2.30 piste) — encode in axis_flags.
-    if (const char* env_mes = std::getenv("MFA_V6_MATMUL_EXEC_SG")) {
-      int v = std::atoi(env_mes);
-      if (v == 2) axis_flags |= 0x400;
-      else if (v == 4) axis_flags |= 0x800;
-      else if (v == 8) axis_flags |= 0xC00;
-    }
+    // MFA_V6_MATMUL_EXEC_SG encoding removed (campaign 2026-06 Sprint A) —
+    // the substitution it keyed is gone (statically illegal on current MPP;
+    // see the note in the source-substitution section above).
 
     // V34 dispatch — mirror source-gen default logic.
     // Default: ON for D=128 (cross-session bench shows +33-40% vs legacy,
@@ -698,7 +696,7 @@ public:
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R, C, qbs, kbs, vbs, obs,
               BQ, BK, executionSIMDGroups, BD,
-              (uint8_t)axis_flags, bypass_tgp,
+              (uint16_t)axis_flags, bypass_tgp,
               use_v34, v34_BQ, v34_BK, v34_WM};
     void* pipeline = nullptr;
     {
