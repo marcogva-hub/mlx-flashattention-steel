@@ -449,7 +449,21 @@ def flash_attention(
             _is_m3 = _get_is_m3_plus_cached()
             _has_nax = _get_has_nax_cached()
             _kv_len = k.shape[2]
-            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False)
+            # Repo review 2026-05: `should_use_mfa` reads dispatch-steering
+            # env vars at call time (MFA_FORCE_SDPA_ROUTE, MFA_DISABLE_SDPA_ROUTE,
+            # MFA_FORCE_D256_PATH, MFA_FORCE_D512_PATH, MFA_FORCE_SPLITK).
+            # They MUST participate in the cache key or a mid-process env
+            # mutation (ubiquitous in tests; possible in user scripts) returns
+            # the stale pre-mutation decision for any already-seen shape.
+            # Five dict lookups (~0.3µs) are negligible vs the Metal dispatch.
+            _env_key = (
+                os.environ.get("MFA_FORCE_SDPA_ROUTE"),
+                os.environ.get("MFA_DISABLE_SDPA_ROUTE"),
+                os.environ.get("MFA_FORCE_D256_PATH"),
+                os.environ.get("MFA_FORCE_D512_PATH"),
+                os.environ.get("MFA_FORCE_SPLITK"),
+            )
+            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False, _env_key)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
@@ -2252,17 +2266,16 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
         # NOTE: avoid `_get_or_build_expanded_float_bias` (uses mx.async_eval
         # which is disallowed inside a graph transformation).  Build bias
         # inline using only graph-friendly ops.
+        #
+        # Repo review 2026-05: 3-D/4-D masks were previously collapsed to 2-D
+        # via `.any()` (cross-head UNION) — the forward used the full per-head
+        # mask, so backward gradients were computed against a denser mask than
+        # the forward (wrong gradients for per-head masks).  The nd helper
+        # preserves head/batch dims; SDPA broadcasts [H,N,S] / [B,H,N,S] masks.
         N, S = q.shape[2], k.shape[2]
-        # Expand 2D / 3D / 4D mask to 2D for broadcast in SDPA.
-        if block_mask.ndim == 4:
-            mask_2d = block_mask.any(axis=(0, 1))
-        elif block_mask.ndim == 3:
-            mask_2d = block_mask.any(axis=0)
-        else:
-            mask_2d = block_mask
-        float_bias = _block_mask_to_float_bias(
-            mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype
-        ).astype(q.dtype)
+        float_bias = _block_mask_to_float_bias_nd(
+            block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype
+        )
         if causal:
             causal_m = mx.triu(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
@@ -2852,14 +2865,12 @@ def flash_attention_sparse(
                 f"4-D block_mask shape[1]={block_mask.shape[1]} must equal H={H}"
             )
 
-    # Collapse to 2-D for fallback SDPA (no per-head routing in pure Python).
+    # Repo review 2026-05: the no-extension fallback previously collapsed
+    # 3-D/4-D masks to 2-D via `.any()` (cross-head union) — per-head masks
+    # produced wrong (denser) attention.  _sparse_fallback_sdpa now expands
+    # via the ndim-preserving bias helper.
     if not _ext_available():
-        mask_2d = block_mask
-        if block_mask.ndim == 4:
-            mask_2d = block_mask.any(axis=(0, 1))
-        elif block_mask.ndim == 3:
-            mask_2d = block_mask.any(axis=0)
-        return _sparse_fallback_sdpa(q, k, v, mask_2d, BQ, BK, scale, causal)
+        return _sparse_fallback_sdpa(q, k, v, block_mask, BQ, BK, scale, causal)
 
     # M5+ workaround: the V1 STEEL sparse kernel mis-reads `(long)p->NK`
     # under the Metal 4 compiler shipped with macOS 26 + M5 hardware,
@@ -2917,13 +2928,20 @@ def _make_mfa_sparse_custom(
         dO, _dL = cotangents  # dL is zero (L not consumed downstream)
         O, L    = outputs
 
-        # Derive the 2-D collapsed mask from the primal mask_uint8.
-        # mask_uint8 may be 2-D, 3-D [H,NQ,NK], or 4-D [B,H,NQ,NK].
+        # Repo review 2026-05: the tile-level backward kernels (steel_sparse,
+        # sdpa_sparse) index a 2-D mask only.  Collapsing 3-D/4-D masks via
+        # `.any()` silently computed gradients against the cross-head UNION
+        # of the per-head masks the forward actually used — wrong gradients.
+        # Per Rule 8 (loud failure): reject per-head masks for the 2-D-only
+        # backends; the default backward='sdpa' handles them correctly below.
+        if mask_uint8.ndim > 2 and backward in ("steel_sparse", "sdpa_sparse"):
+            raise ValueError(
+                f"backward='{backward}' supports 2-D block masks only "
+                f"(got {mask_uint8.ndim}-D). Per-head/per-batch masks "
+                f"require backward='sdpa' (the default), which preserves "
+                f"per-head gradient semantics."
+            )
         _block_mask_2d = mask_uint8
-        if mask_uint8.ndim == 4:
-            _block_mask_2d = mask_uint8.any(axis=(0, 1))
-        elif mask_uint8.ndim == 3:
-            _block_mask_2d = mask_uint8.any(axis=0)
 
         if backward == "steel_sparse":
             # Native STEEL sparse backward — Metal kernel skips inactive tiles.
@@ -2971,8 +2989,11 @@ def _make_mfa_sparse_custom(
             return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
 
         # Dense SDPA backward (correct, no sparsity speedup).
-        float_mask = _block_mask_to_float_bias(
-            _block_mask_2d, q.shape[2], k.shape[2], scale_q_dtype=q.dtype
+        # Repo review 2026-05: nd helper preserves per-head/per-batch mask
+        # dims (previously collapsed to a cross-head union — wrong grads).
+        float_mask = _block_mask_to_float_bias_nd(
+            mask_uint8.astype(mx.bool_), q.shape[2], k.shape[2],
+            scale_q_dtype=q.dtype
         )
         if causal:
             N, S = q.shape[2], k.shape[2]
@@ -3660,6 +3681,38 @@ def _block_mask_to_float_bias(
     return float_bias.astype(scale_q_dtype)
 
 
+def _block_mask_to_float_bias_nd(
+    block_mask: mx.array,
+    seq_q: int,
+    seq_k: int,
+    scale_q_dtype: mx.Dtype = mx.float32,
+) -> mx.array:
+    """Expand a bool block mask [..., NQ, NK] to a float additive bias
+    [..., N, S], PRESERVING leading batch/head dims.
+
+    Repo review 2026-05: the backward closures previously collapsed 3-D
+    [H, NQ, NK] / 4-D [B, H, NQ, NK] masks to 2-D via ``.any()`` — a
+    cross-head UNION.  The forward computed per-head sparse attention,
+    so the backward gradients were computed against a denser mask than
+    the forward used (non-zero gradients for positions some heads had
+    masked out).  This helper is the graph-safe (no eval/synchronize)
+    ndim-preserving replacement; the result broadcasts against SDPA's
+    [B, H, N, S] mask contract.
+
+    True → 0.0 (include), False → -inf (mask out).
+    """
+    NQ, NK = int(block_mask.shape[-2]), int(block_mask.shape[-1])
+    BQ_actual = (seq_q + NQ - 1) // NQ
+    BK_actual = (seq_k + NK - 1) // NK
+    lead = tuple(block_mask.shape[:-2])
+    fb = mx.where(block_mask, mx.array(0.0), mx.array(float("-inf")))
+    fb = fb.reshape(*lead, NQ, 1, NK, 1)
+    fb = mx.broadcast_to(fb, (*lead, NQ, BQ_actual, NK, BK_actual))
+    fb = fb.reshape(*lead, NQ * BQ_actual, NK * BK_actual)
+    fb = fb[..., :seq_q, :seq_k]
+    return fb.astype(scale_q_dtype)
+
+
 def _sparse_fallback_sdpa(
     q: mx.array,
     k: mx.array,
@@ -3670,9 +3723,13 @@ def _sparse_fallback_sdpa(
     scale: float,
     causal: bool,
 ) -> mx.array:
-    """Dense SDPA fallback for flash_attention_sparse (used when C++ ext absent)."""
+    """Dense SDPA fallback for flash_attention_sparse (used when C++ ext absent).
+
+    Repo review 2026-05: accepts 2-D/3-D/4-D masks; per-head and per-batch
+    semantics preserved via the ndim-preserving bias expansion.
+    """
     N, S = q.shape[2], k.shape[2]
-    float_bias = _block_mask_to_float_bias(block_mask, N, S, q.dtype)
+    float_bias = _block_mask_to_float_bias_nd(block_mask, N, S, q.dtype)
     if causal:
         causal_m = mx.triu(
             mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
@@ -3696,7 +3753,7 @@ def _sparse_fallback_sdpa(
 # garbage, not NaN — would break callers relying on the NaN signal.
 #
 # See `docs/sparse-fallback-audit.md` for the audit + perf breakdown.
-_SPARSE_BIAS_CACHE: "dict[tuple, mx.array]" = {}
+_SPARSE_BIAS_CACHE: "dict[tuple, tuple[mx.array, mx.array]]" = {}  # key -> (mask_ref, bias)
 _SPARSE_BIAS_CACHE_MAX = 8
 
 
@@ -3716,9 +3773,14 @@ def _get_or_build_expanded_float_bias(
         id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
         B, H, N, S, str(target_dtype),
     )
+    # Repo review 2026-05: entries store (mask_ref, bias).  Holding a strong
+    # reference to the keyed mask prevents the id()-ABA hazard: a GC'd mask's
+    # address could be reused by a NEW same-shape mask, and the id()-keyed
+    # entry would return the OLD mask's bias.  While the entry lives, the
+    # mask object lives, so its id() cannot be recycled.
     cached = _SPARSE_BIAS_CACHE.get(cache_key)
     if cached is not None:
-        return cached
+        return cached[1]
 
     NQ = block_mask.shape[-2]
     NK = block_mask.shape[-1]
@@ -3755,7 +3817,8 @@ def _get_or_build_expanded_float_bias(
     # LRU-bounded eviction (insertion-order dict).
     if len(_SPARSE_BIAS_CACHE) >= _SPARSE_BIAS_CACHE_MAX:
         _SPARSE_BIAS_CACHE.pop(next(iter(_SPARSE_BIAS_CACHE)))
-    _SPARSE_BIAS_CACHE[cache_key] = float_bias
+    # Store the mask alongside the bias — see ABA note at the cache probe.
+    _SPARSE_BIAS_CACHE[cache_key] = (block_mask, float_bias)
     return float_bias
 
 

@@ -144,23 +144,30 @@ def _steel_sdpa(
     # D.9: use getattr to avoid double attribute lookup (hasattr + attr access)
     _cache_bits = getattr(cache, "bits", None) if cache is not None else None
     if _cache_bits is not None:
+        # Repo review 2026-05: only the tuple UNPACKING falls back gracefully
+        # (unknown container format from a future mlx-lm version).  A failure
+        # in mx.dequantize itself is a real integration bug and is no longer
+        # swallowed — pre-fix, the bare `except Exception` passed the original
+        # (still-tuple) keys/values to _original_sdpa, which then failed with
+        # an obscure type error far from the root cause (Rule 8 violation).
         try:
             q_k_data, q_k_scales, q_k_biases = keys
             q_v_data, q_v_scales, q_v_biases = values
-            keys = mx.dequantize(
-                q_k_data, q_k_scales, q_k_biases,
-                cache.group_size, _cache_bits,
-                dtype=queries.dtype,
-            )
-            values = mx.dequantize(
-                q_v_data, q_v_scales, q_v_biases,
-                cache.group_size, _cache_bits,
-                dtype=queries.dtype,
-            )
-        except Exception:
-            # Unexpected format (e.g., future quantization modes): fall back.
+        except (TypeError, ValueError):
+            # Unexpected container format (e.g., future quantization modes):
+            # fall back with the original objects intact.
             _stat_fallback_calls += 1
             return _original_sdpa(queries, keys, values, cache, scale, mask, sinks)
+        keys = mx.dequantize(
+            q_k_data, q_k_scales, q_k_biases,
+            cache.group_size, _cache_bits,
+            dtype=queries.dtype,
+        )
+        values = mx.dequantize(
+            q_v_data, q_v_scales, q_v_biases,
+            cache.group_size, _cache_bits,
+            dtype=queries.dtype,
+        )
 
     D = queries.shape[-1]
     dtype = queries.dtype

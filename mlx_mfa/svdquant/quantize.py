@@ -61,6 +61,12 @@ def quantize_model(
     }
 
     def _quantize_layer(path: str, linear: nn.Linear) -> SVDQuantLinear:
+        # Repo review 2026-05: idempotence guard.  A custom class_predicate
+        # matching SVDQuantLinear (already-quantized) would re-quantize the
+        # packed int4 weight — silently corrupting it.  The default predicate
+        # excludes these, but custom predicates must be safe too.
+        if isinstance(linear, SVDQuantLinear):
+            return linear
         W = linear.weight  # [M, K]
         M, K = W.shape
         has_bias = hasattr(linear, "bias") and linear.bias is not None

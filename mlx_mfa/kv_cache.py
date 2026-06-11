@@ -542,6 +542,16 @@ class HybridKVCache:
             self._last_access_tick.clear()
             self._last_access_event = None
             self._last_prefetch_action = None
+            # Repo review 2026-05: a full reset previously left these event
+            # records (and the tick counter) from the prior session — `state`
+            # reported an empty residency map alongside stale last_promotion/
+            # last_eviction entries.  Clear everything on full reset.
+            self._last_promotion = None
+            self._last_demotion = None
+            self._last_eviction = None
+            self._last_reload = None
+            self._last_prefetch_intent = None
+            self._tick = 0
         else:
             sid = int(seq_id)
             self._residency.pop(sid, None)

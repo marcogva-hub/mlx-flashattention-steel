@@ -1367,6 +1367,14 @@ def make_strided_mask(
         mask = make_strided_mask(8192, window_size=256, global_stride=512)
         out = flash_attention_sparse(q, k, v, mask)
     """
+    # Repo review 2026-05: validate before the integer divisions below —
+    # global_stride=0 raised a bare numpy ZeroDivisionError (Rule 8: fail
+    # loudly with an informative message instead).
+    if global_stride <= 0:
+        raise ValueError(
+            f"make_strided_mask: global_stride must be >= 1, got {global_stride}"
+        )
+
     BQ, BK = _bq_bk(head_dim)
     NQ = (seq_len + BQ - 1) // BQ
     NK = (seq_len + BK - 1) // BK

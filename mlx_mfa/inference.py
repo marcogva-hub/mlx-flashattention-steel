@@ -909,7 +909,9 @@ class TurboQuantPagedInferenceContext:
         v_packed = v_sc = None
         if self.tq_v:
             v_packed, v_sc, _ = pack_v_for_metal(v, bits=self.tq_bits)
-            mx.synchronize()
+        # Repo review 2026-05: single barrier (was a redundant double
+        # mx.synchronize() when tq_v=True — each call blocks until the GPU
+        # queue drains; the second added latency with no correctness value).
         mx.synchronize()
 
         # Also keep fp16 V for the fallback buffer binding
