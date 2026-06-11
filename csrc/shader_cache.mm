@@ -9,6 +9,7 @@
 /// (gated so zero overhead in production).
 
 #include "shader_cache.hpp"
+#include "mfa_key_tie.hpp"
 #include "mfa_shader_gen.hpp"
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_bwd.hpp"
@@ -47,52 +48,12 @@ ShaderCache& ShaderCache::get() {
 // ---------------------------------------------------------------------------
 
 bool ShaderCache::KernelKey::operator==(const KernelKey& other) const {
-  return type      == other.type      &&
-         head_dim  == other.head_dim  &&
-         block_q   == other.block_q   &&
-         block_k   == other.block_k   &&
-         block_d   == other.block_d   &&
-         n_warps   == other.n_warps   &&
-         causal    == other.causal    &&
-         sparse    == other.sparse    &&
-         is_m3_plus == other.is_m3_plus &&
-         has_rope          == other.has_rope          &&
-         rope_interleaved  == other.rope_interleaved  &&
-         has_softcap       == other.has_softcap       &&
-         has_alibi         == other.has_alibi         &&
-         has_attn_bias     == other.has_attn_bias     &&
-         attn_bias_mode    == other.attn_bias_mode    &&
-         has_window        == other.has_window        &&
-         dtype        == other.dtype        &&
-         gqa_factor   == other.gqa_factor;
+  // Track 6: derived from the tie() declaration — cannot diverge.
+  return tie() == other.tie();
 }
 
 size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
-  // FNV-1a mix
-  size_t h = 14695981039346656037ULL;
-  auto mix = [&h](uint64_t val) {
-    h ^= val;
-    h *= 1099511628211ULL;
-  };
-  mix(static_cast<uint64_t>(k.type));
-  mix(static_cast<uint64_t>(k.head_dim));
-  mix(static_cast<uint64_t>(k.block_q));
-  mix(static_cast<uint64_t>(k.block_k));
-  mix(static_cast<uint64_t>(k.block_d));
-  mix(static_cast<uint64_t>(k.n_warps));
-  mix(static_cast<uint64_t>(k.causal));
-  mix(static_cast<uint64_t>(k.sparse));
-  mix(static_cast<uint64_t>(k.is_m3_plus));
-  mix(static_cast<uint64_t>(k.has_rope));
-  mix(static_cast<uint64_t>(k.rope_interleaved));
-  mix(static_cast<uint64_t>(k.has_softcap));
-  mix(static_cast<uint64_t>(k.has_alibi));
-  mix(static_cast<uint64_t>(k.has_attn_bias));
-  mix(static_cast<uint64_t>(k.attn_bias_mode));
-  mix(static_cast<uint64_t>(k.has_window));
-  mix(static_cast<uint64_t>(k.dtype));
-  mix(static_cast<uint64_t>(k.gqa_factor));
-  return h;
+  return mlx_mfa_keys::hash_tie(k.tie());
 }
 
 // ---------------------------------------------------------------------------

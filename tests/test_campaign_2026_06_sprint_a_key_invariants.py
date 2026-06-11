@@ -81,9 +81,24 @@ def test_key_struct_fields_in_eq_and_hash(struct_name):
     fields = _fields(body)
     assert fields, f"{struct_name}: no fields parsed — parser drift, fix the test"
 
-    # operator== may be inline in the struct OR defined out-of-line in a
-    # sibling .mm/.cpp (KernelKey: declared in shader_cache.hpp, defined
-    # in shader_cache.mm).
+    # Track 6 (campaign 2026-06): tie()-migrated structs declare the
+    # affecting-input set ONCE via `auto tie() const { return std::tie(...); }`
+    # and derive == and hash from it mechanically — they cannot diverge.
+    # For those structs the invariant becomes: every declared field appears
+    # in the tie list.
+    tie_m = re.search(r"std::tie\((.*?)\)\s*;", _extract_struct_body(src, struct_name), re.S)
+    if tie_m:
+        tie_fields = [t.strip() for t in tie_m.group(1).split(",")]
+        missing_tie = [f for f in fields if f not in tie_fields]
+        assert not missing_tie, (
+            f"{struct_name}: fields ABSENT from tie() declaration "
+            f"(== and hash derive from tie — an untied field is invisible "
+            f"to both, C1-class hazard): {missing_tie}")
+        return  # tie-derived == and hash cannot omit a tied field
+
+    # Legacy pattern: operator== may be inline in the struct OR defined
+    # out-of-line in a sibling .mm/.cpp (KernelKey: declared in
+    # shader_cache.hpp, defined in shader_cache.mm).
     full_struct = _extract_struct_body(src, struct_name)
     eq_m = re.search(r"bool operator==\s*\([^)]*\)\s*const\s*\{(.*?)\}",
                      full_struct, re.S)

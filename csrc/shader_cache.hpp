@@ -9,6 +9,7 @@
 /// are heap-managed outside the C++ type system (ARC-safe).
 
 #pragma once
+#include <tuple>
 
 #include <cstdint>
 #include <mutex>
@@ -102,6 +103,10 @@ class ShaderCache {
     uint8_t dtype;       // 0=f16, 1=bf16, 2=f32
     int  gqa_factor;     // H_q / H_kv; 1 = standard MHA (baked into shader as #define)
 
+    // Track 6: single declaration of the affecting-input set.
+    auto tie() const {
+      return std::tie(type, head_dim, block_q, block_k, block_d, n_warps, causal, sparse, is_m3_plus, has_rope, rope_interleaved, has_softcap, has_alibi, has_attn_bias, attn_bias_mode, has_window, dtype, gqa_factor);
+    }
     bool operator==(const KernelKey& other) const;
   };
 

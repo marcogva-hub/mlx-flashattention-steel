@@ -5,6 +5,7 @@
 /// merged into MFAttention::eval_gpu() in mfa_attention.cpp as a fast-path.
 
 #include "shader_cache.hpp"
+#include "mfa_key_tie.hpp"
 #include "mfa/v6_nax/NAAttentionKernel.hpp"
 
 #include <mlx/mlx.h>
@@ -20,6 +21,8 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <tuple>
+#include <utility>
 #include <CoreFoundation/CoreFoundation.h>  // CFRelease for pipeline-cache race handling
 
 namespace mlx_mfa {
@@ -85,46 +88,16 @@ struct V6Key {
   uint16_t v34_BQ = 0;
   uint16_t v34_BK = 0;
   uint16_t v34_WM = 0;
-  bool operator==(const V6Key& o) const {
-    return head_dim == o.head_dim && Hq == o.Hq && Hk == o.Hk &&
-           dtype == o.dtype && isCausal == o.isCausal &&
-           R == o.R && C == o.C &&
-           qbs == o.qbs && kbs == o.kbs && vbs == o.vbs && obs == o.obs &&
-           cfg_BQ == o.cfg_BQ && cfg_BK == o.cfg_BK && cfg_SG == o.cfg_SG &&
-           cfg_BD == o.cfg_BD && cfg_axis_flags == o.cfg_axis_flags &&
-           cfg_bypass_tgp == o.cfg_bypass_tgp &&
-           use_v34 == o.use_v34 && v34_BQ == o.v34_BQ &&
-           v34_BK == o.v34_BK && v34_WM == o.v34_WM;
+  // Track 6: single declaration of the affecting-input set.
+  auto tie() const {
+    return std::tie(head_dim, Hq, Hk, dtype, isCausal, R, C, qbs, kbs, vbs,
+                    obs, cfg_BQ, cfg_BK, cfg_SG, cfg_BD, cfg_axis_flags,
+                    cfg_bypass_tgp, use_v34, v34_BQ, v34_BK, v34_WM);
   }
+  bool operator==(const V6Key& o) const { return tie() == o.tie(); }
 };
 struct V6KeyHash {
-  size_t operator()(const V6Key& k) const {
-    size_t h = std::hash<int>{}(k.head_dim);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype) << 3;
-    h ^= std::hash<bool>{}(k.isCausal) << 4;
-    h ^= std::hash<uint32_t>{}(k.R) << 5;
-    h ^= std::hash<uint32_t>{}(k.C) << 6;
-    h ^= std::hash<uint32_t>{}(k.qbs) << 7;
-    // Repo review 2026-05: kbs/vbs/obs participate in operator== but were
-    // absent from the hash — GQA shapes (kbs != qbs) clustered into one
-    // bucket, degrading lookups to a linear scan over colliders.
-    h ^= std::hash<uint32_t>{}(k.kbs) << 12;
-    h ^= std::hash<uint32_t>{}(k.vbs) << 13;
-    h ^= std::hash<uint32_t>{}(k.obs) << 14;
-    h ^= std::hash<uint16_t>{}(k.cfg_BQ) << 15;
-    h ^= std::hash<uint16_t>{}(k.cfg_BK) << 16;
-    h ^= std::hash<uint16_t>{}(k.cfg_SG) << 17;
-    h ^= std::hash<uint16_t>{}(k.cfg_BD) << 18;
-    h ^= std::hash<uint16_t>{}(k.cfg_axis_flags) << 19;
-    h ^= std::hash<bool>{}(k.cfg_bypass_tgp) << 20;
-    h ^= std::hash<bool>{}(k.use_v34) << 8;
-    h ^= std::hash<uint16_t>{}(k.v34_BQ) << 9;
-    h ^= std::hash<uint16_t>{}(k.v34_BK) << 10;
-    h ^= std::hash<uint16_t>{}(k.v34_WM) << 11;
-    return h;
-  }
+  size_t operator()(const V6Key& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 
 std::mutex v6_mtx;
@@ -973,27 +946,11 @@ struct V34BwdQKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdQKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdQKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdQKeyHash {
-  size_t operator()(const V34BwdQKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.v34_BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdQKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdq_mtx;
@@ -1173,27 +1130,11 @@ struct V34BwdKVKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdKVKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdKVKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdKVKeyHash {
-  size_t operator()(const V34BwdKVKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdKVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdkv_mtx;
@@ -1365,27 +1306,11 @@ struct V34BwdVKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdVKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdVKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdVKeyHash {
-  size_t operator()(const V34BwdVKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdv_mtx;
@@ -1518,27 +1443,11 @@ struct V34BwdVSparseKey {
   float scale;
   // is_sparse implicit (this struct only used for sparse kernels) but
   // included for future-proofing if a single cache holds both variants.
-  bool operator==(const V34BwdVSparseKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdVSparseKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdVSparseKeyHash {
-  size_t operator()(const V34BwdVSparseKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdVSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdv_sparse_mtx;
@@ -1749,27 +1658,11 @@ struct V34BwdKKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdKKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdKKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdKKeyHash {
-  size_t operator()(const V34BwdKKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdKKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdk_mtx;
@@ -1934,27 +1827,11 @@ struct V34BwdFusedKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdFusedKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdFusedKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdFusedKeyHash {
-  size_t operator()(const V34BwdFusedKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdFusedKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwd_fused_mtx;
@@ -2154,27 +2031,11 @@ struct V34BwdQSparseKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdQSparseKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && v34_BQ == o.v34_BQ && v34_BK == o.v34_BK && v34_WM == o.v34_WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdQSparseKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdQSparseKeyHash {
-  size_t operator()(const V34BwdQSparseKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.v34_BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.v34_BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.v34_WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdQSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdq_sparse_mtx;
@@ -2346,27 +2207,11 @@ struct V34BwdKSparseKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdKSparseKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdKSparseKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdKSparseKeyHash {
-  size_t operator()(const V34BwdKSparseKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdKSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdk_sparse_mtx;
@@ -2541,27 +2386,11 @@ struct V34BwdFSparseKey {
   // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  bool operator==(const V34BwdFSparseKey& o) const {
-    return D == o.D && Hq == o.Hq && Hk == o.Hk
-        && dtype_code == o.dtype_code
-        && BQ == o.BQ && BK == o.BK && WM == o.WM
-        && causal == o.causal
-        && scale == o.scale;
-  }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V34BwdFSparseKey& o) const { return tie() == o.tie(); }
 };
 struct V34BwdFSparseKeyHash {
-  size_t operator()(const V34BwdFSparseKey& k) const {
-    size_t h = std::hash<int>{}(k.D);
-    h ^= std::hash<int>{}(k.Hq) << 1;
-    h ^= std::hash<int>{}(k.Hk) << 2;
-    h ^= std::hash<int>{}(k.dtype_code) << 3;
-    h ^= std::hash<uint16_t>{}(k.BQ) << 4;
-    h ^= std::hash<uint16_t>{}(k.BK) << 5;
-    h ^= std::hash<uint16_t>{}(k.WM) << 6;
-    h ^= std::hash<bool>{}(k.causal) << 7;
-    h ^= std::hash<float>{}(k.scale) << 16;
-    return h;
-  }
+  size_t operator()(const V34BwdFSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
 std::mutex v34_bwdf_sparse_mtx;
