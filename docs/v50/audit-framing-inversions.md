@@ -276,6 +276,16 @@ infrastructure).
      (Approach 5 deferred per Scenario 3 inference)
    - `docs/v50/sprint-5d-section-a-status.md` (Section A native code)
 
+   **2026-05 external application**: the whole-repo review correctly
+   applied this pattern by DECLINING V3/V4/V5 STEEL-variant perf
+   promotion despite all 22 accuracy variants passing on M5 Max —
+   recognizing that M1-era perf verdicts (V3 0.77–0.88× V2, V5
+   0.60–0.90× V2) require a dedicated M5 bench campaign per §AA.4
+   before any dispatch change.  The accuracy xfail markers were
+   removed (they now guard regressions as real passes); perf promotion
+   was correctly NOT attempted on stale evidence.  Re-bench of
+   V3/V4/V5 on M5 is a tracked campaign candidate (Sprint C scope).
+
 8. **Misleading xfail rationales conceal real bugs (Section B).**
 
    Three of six xfail decorations investigated in v2.50 Prompt 5a
@@ -390,6 +400,74 @@ heuristic the hook author had in mind when writing it.
 - `docs/v50/prompt-5g-section-d-smoke-test-findings.md` (portfolio engagement validation)
 - `docs/HOOK_TELEMETRY.md` (detection infrastructure)
 - `mlx_mfa/_auto_hooks.py::_patched_conv_general` (fix implementation)
+
+## Pattern #9 — Generator/dispatch hardcoded-constant mismatch (silent partial-write) (2026-05 whole-repo review, KD-5 root cause)
+
+**Symptom**: output correct on a PREFIX of the K/N dimension, zeroed
+(or stale) beyond a threshold equal to `NK · BK_source`, where
+`BK_source` is the value hardcoded in the MSL generator preamble —
+NOT the `cfg.BK` used to compute the threadgroup launch count.  In
+the KD-5 instance: dK/dV zeroed for rows ≥ 1024 at N=2048, D=128 on
+M3+ (cfg.BK=32), correct on M1 (cfg.BK=16).
+
+**Mechanism**: a dimension constant (BK/BN/BD/tile size) is computed
+one way on the dispatch side (`eval_gpu`, from `select_steel_block_config`)
+and hardcoded another way in the source generator (C++/MSL preamble
+override such as `const int BK = (BD <= 64) ? cfg.BK : 16`).  When the
+two diverge for some (D, dtype, causal, hardware-gen) cell, the launch
+grid and the kernel's internal striding disagree:
+
+1. Dispatch launches `NK = ceil(S / BK_dispatch)` threadgroups.
+2. The compiled kernel processes `BK_source` rows per threadgroup at
+   `BK_source`-row strides.
+3. Rows beyond `NK · BK_source` are never written — silent partial
+   write that LOOKS like a fundamental kernel limitation.
+
+**Concrete case observed**: `MFASteelBwdDKV::eval_gpu` used `cfg.BK`
+(= 32 on M3+ at D=128) for NK / params / cache key, while
+`generate_steel_backward_dkv_source` hardcodes `BK = (BD <= 64) ?
+cfg.BK : 16`.  Carried for multiple weeks as "deprecated STEEL backward
+debt slated for v2.51 removal" (KD-5); fixed by one expression — the
+dispatch BK now mirrors the generator override.  Both xfails removed;
+all 4 TestNativeBackwardRouting shapes assert against SDPA-VJP and pass.
+
+**Why it hid**: the divergence only manifests on hardware/config cells
+where the two values differ.  On the cell where they coincide (M1,
+BK=16 both sides) behavior is correct, so the bug masquerades as
+hardware-specific and gets filed as deprecated debt.  Compounding
+factor: the KD entry recorded the SYMPTOM ("STEEL backward zeroes
+blocks at D=128 N≥2048") without the MECHANISM, which let it sit as
+accepted debt — see the KD-ledger lesson in `known-debt-v2.50.md` KD-5.
+
+**Prevention rule**: for every kernel with dimension constants, the
+dispatch-side and source-side values MUST be asserted equal per
+(D, dtype, causal) cell of the dispatch table.  Enforced by
+`/mlx-mfa-release-audit` gate #9 (source/dispatch block-dimension
+consistency) and §AA.7 in `CLAUDE_V6_NAX.md`.
+
+**Generalization**: any constant that appears in BOTH the launch-grid
+computation AND the kernel source is a mismatch candidate.  Enumerate
+them per kernel: BK, BN, BD, tile rows/cols, SIMD group counts (WM/WN),
+threadgroup memory sizes.  Generator-side conditional overrides
+(`(cond) ? cfg.X : <literal>`) are the highest-risk construct — grep
+for reassignments of cfg-derived names inside generators.
+
+**Lesson linkage**:
+- Reinforces **Pattern #1** (Apple-primitive/audit framing): never
+  accept "fundamentally broken" as a permanent verdict without
+  re-deriving the mechanism.
+- Sister to **Pattern #5** (incomplete-fix dispatch-chain): both are
+  multi-site consistency failures where one link holds a stale value.
+- Sister to **Pattern #7** (misleading xfail rationales): the xfail
+  text encoded the wrong theory ("16×BQ tile-loop termination bug"),
+  steering later readers away from the true mechanism.
+
+**Cross-references**:
+- `csrc/mfa_attention.cpp` MFASteelBwdDKV dispatch (fix site, comment block)
+- `csrc/mfa_steel_bwd.cpp` generate_steel_backward_dkv_source (override site)
+- `docs/v50/known-debt-v2.50.md` KD-5 (resolution entry)
+- `docs/v50/repo-review-2026-05-report.md` (discovery context)
+- `~/.claude/skills/jit-kernel-cache-audit` Audit 1 (generic procedure)
 
 ## Doc maintenance
 
