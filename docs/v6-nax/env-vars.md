@@ -50,7 +50,8 @@ dispatch is shape-aware:
 | `MFA_V6_V34_BQ` | per-D auto (`D=64 → 32`, `D=128 → 64`) | V34 parallelization rows per Q-tile. Constraint: `BQ % (WM × 16) == 0`. |
 | `MFA_V6_V34_BK` | per-D auto (`D=64 → 32` since v2.32.0; `D=128 → 32`) | V34 traversal columns per K-tile. v2.32.0 changed D=64 default from 64 → 32 after Sprint 4 sweep showed BK=32 wins +14–20%. |
 | `MFA_V6_V34_WM` | per-D auto (`D=64 → 2`, `D=128 → 4`) | V34 simdgroups per threadgroup. |
-| `MFA_V6_V34_DISABLE_ALIGN` | unset | If set to `1`, disables Sprint 3's compile-time `align_Q` / `align_K` specialization — V34 always uses the unaligned kernel even on shapes where `qL % BQ == 0` and `kL % BK == 0`. Use for A/B perf comparison; perf-neutral at our pipeline-cache scale (24 entries) per Sprint 3 measurements, kept as escape hatch. |
+<!-- MFA_V6_V34_DISABLE_ALIGN removed (campaign 2026-06 Track 0): documented but never
+     wired (no getenv site exists).  Re-add only if the alignment toggle is implemented. -->
 
 ## Source-generator post-modification flags (from older sprints)
 

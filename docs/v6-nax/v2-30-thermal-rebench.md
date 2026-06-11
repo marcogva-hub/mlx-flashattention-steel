@@ -1,5 +1,12 @@
 # v2.30.0 thermal-controlled re-bench + revert + iterative optimization
 
+> **INVALIDATION NOTE (campaign 2026-06 Sprint C Track 0)**: every row in this
+> document that varies `MFA_V6_MATMUL_EXEC_SG` measured NOTHING — the knob was a
+> silent no-op ghost from v2.30 until its removal in Sprint A (its cache-key bits
+> were truncated, so all values aliased to the SG=1 pipeline; the substitution is
+> also statically illegal on current MPP headers).  The `MFA_V6_MAX_THREADS`
+> dimensions of the same sweeps remain valid.  See Pattern #9 + Sprint A report.
+
 **Date:** 2026-05-05 06:50 (post-overnight session)
 **Decision:** **Revert dispatch v6. Keep Sprint A.1 + Sprint B.**
 

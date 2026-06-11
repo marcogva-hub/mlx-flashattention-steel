@@ -66,7 +66,7 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
 | `MFA_V34_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal**: V34 backward kernel mode selection.  `auto` → D=64 fused, D=128 split (per Sprint B outcome γ).  `fused` → forced fused (D ∈ {64, 128}; D=128 may regress 3-7%).  `split` → forced split-dKdV (works for any D ∈ {64, 128}).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` is empirically optimal. |
 | `MFA_V34_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V34 backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V34 NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `docs/v50/section-a-v3-empirical-verification.md`. |
-| `MFA_TOPK_BISECT` | bool | unset (deprecated) | **v2.50 Prompt 5b** opt-in for Top-K bisection kernel.  **Deprecated v2.50 Prompt 5c**: bisection promoted to AUTO default; this env var is now redundant and ignored.  Preserved for back-compat. |
+| `MFA_TOPK_BISECT` | bool | unset | **GHOST (campaign 2026-06 Track 0)**: not read by ANY code path — setting it is a no-op.  Bisection is the AUTO default; the live opt-out is `MFA_DISABLE_TOPK_BISECT`.  Row retained for historical reference only. |
 | `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
 | `MFA_DISABLE_TOPK_NAX` | bool | unset | Disable Top-K NAX dispatch entirely; falls back to Python reference (very slow at scale, for correctness comparison). |
 | `MFA_DISABLE_ROPE_NAX` | bool | unset | **Sprint 2**: opt-out of `mx.fast.rope` dispatch path in `flash_attention_rope_unified`; falls back to STEEL host-side RoPE. |
@@ -92,10 +92,27 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 |---|---|---|---|
 | `MFA_CONV_NAX_NO_FAST_PATH` | bool | unset | Bypass the 1×1×1 fast path in Conv3D NAX (forces the general path; used by perf tests). |
 | `MFA_CONV_NAX_USE_PYTHON_LEGACY` | bool | unset | Route Conv3D NAX through the Phase 1.x legacy Python implementation (debug). |
-| `MFA_REQUIRE_MSL4` | bool | unset | C++-side gate requiring Metal Shading Language 4 support for V34 probe / NAX compile paths. |
+| `MFA_REQUIRE_MSL4` | (not an env var) | — | **Corrected (campaign 2026-06 Track 0)**: this is a SOURCE-STRING SENTINEL (`// MFA_REQUIRE_MSL4` comment in generated Metal), detected by `shader_cache.mm` to select MTLLanguageVersion4_0.  It is never read from the environment. |
 
 ## Calibration (dynamic keys, not cached)
 
 | Variable pattern | Type | Description |
 |-----------------|------|-------------|
 | `MFA_SPLITK_MAX_N_D{D}_C{0\|1}_A{0\|1}_W{0\|1}` | int | Per-config max N for split-K dispatch |
+
+## V34 backward tile overrides + diagnostics (documented campaign 2026-06 Track 0)
+
+All gated behind `MFA_ENABLE_V34_BACKWARD=1`; expert/bench knobs.  Values flow
+into the pipeline cache keys (live; Sprint A verified key completeness).
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MFA_V34BWD_BQ` / `MFA_V34BWD_BK` | int | auto | dQ kernel tile override (pairs with documented `MFA_V34BWD_WM`). |
+| `MFA_V34BWDKV_BQ` / `MFA_V34BWDKV_BK` / `MFA_V34BWDKV_WM` | int | auto | Legacy fused dK+dV kernel tile overrides. |
+| `MFA_V34BWDF_BQ` / `MFA_V34BWDF_BK` / `MFA_V34BWDF_WM` | int | auto | Fused dKdV kernel tile overrides. |
+| `MFA_V6_SENTINEL_FILL` | bool | unset | Debug: pre-fill V6 output/LSE buffers with sNaN before dispatch (dispatch-routing forensics). |
+| `MFA_V34_DUMP_SOURCE` / `MFA_V34BWD_DUMP_SOURCE` | bool | unset | Debug: dump generated V34 fwd/bwd Metal source to stderr on pipeline-cache miss. |
+
+Interaction notes (campaign 2026-06 Track 0):
+- `MFA_V6_EXEC_SG` has NO effect when the V34 path is selected (`v34_WM` overrides it).
+- `MFA_V6_BYPASS_TGP=0` is a no-op when single-Otile mode auto-fires (forced true).
