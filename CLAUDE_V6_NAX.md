@@ -1220,3 +1220,38 @@ code:
 5. **Cross-version bench delta check**: if v(N+1) "added optimization"
    shows no measurable perf delta vs v(N), investigate whether the
    optimization actually engages — it may be a Pattern #8 ghost.
+
+### §AA.7 — Dispatch/source constant parity is in audit scope (added 2026-06 campaign Sprint B)
+
+Any dimension constant (block size, tile size, SIMD/threadgroup size,
+threadgroup-memory size) that appears in BOTH the dispatch-side
+launch-grid computation AND the source-side kernel generator MUST be
+verified equal per dispatch-table cell (D × dtype × causal × kernel
+direction × hardware-gen branch).
+
+A divergence produces **silent partial-write corruption** that presents
+as a hardware-specific "limitation" and tends to be misfiled as
+deprecated debt: the bug only manifests on cells where the two values
+differ, so the developer's machine (taking the consistent branch)
+shows correct behavior.  Reference case: KD-5 — `MFASteelBwdDKV`
+dispatched with cfg.BK=32 (M3+, D=128) while the generator hardcodes
+BK=16 for D>64; carried for weeks as "deprecated STEEL backward debt",
+fixed by one expression in the 2026-05 whole-repo review.  See
+Pattern #9 in `docs/v50/audit-framing-inversions.md`.
+
+**Enforcement**: `/mlx-mfa-release-audit` Check 9 (source/dispatch
+block-dimension consistency) runs the per-(kernel, constant) parity
+checklist at every pre-tag gate.  Any mismatch is a CRITICAL finding.
+
+**Scope extension of §AA.6**: stable-but-unverified kernels with
+hardcoded generator constants are explicitly in audit scope — "this
+kernel hasn't changed in N releases" is not an exemption, because the
+divergence may be activated by a DISPATCH-side change (new hardware
+branch, new cfg table entry) without any generator edit.
+
+**KD-ledger discipline corollary**: a KD entry describing a kernel as
+fundamentally limited MUST record the failure MECHANISM, not just the
+symptom.  KD-5 sat as accepted debt precisely because it recorded
+"zeroes blocks at D=128 N≥2048" (symptom) with a speculative theory
+("tile-loop termination bug") instead of a derived mechanism.  A KD
+entry without a mechanism is an OPEN INVESTIGATION, not a verdict.
