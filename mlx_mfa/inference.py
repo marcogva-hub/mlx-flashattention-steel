@@ -917,13 +917,18 @@ class TurboQuantPagedInferenceContext:
         # Also keep fp16 V for the fallback buffer binding
         v_fp16 = v.astype(self.dtype)
 
-        # Write tokens into pool blocks
-        k_np = np.array(k_packed)[0].transpose(1, 0, 2)  # [N_new, H_kv, packed_D]
-        ks_np = np.array(k_sc.astype(mx.float32))[0].transpose(1, 0)  # [N_new, H_kv]
-        v_fp16_np = np.array(v_fp16)[0].transpose(1, 0, 2)  # [N_new, H_kv, D]
+        # Write tokens into pool blocks.
+        # Repo review 2026-05: previously round-tripped every tensor through
+        # numpy (np.array(...) = GPU sync + device→host copy, then per-block
+        # mx.array(...) host→device uploads) — 3-5 full transfers per decode
+        # token.  Now sliced/transposed natively in MLX; data never leaves
+        # the GPU.  [1, H_kv, N_new, X] → [N_new, H_kv, X] via swapaxes.
+        k_tok = mx.swapaxes(k_packed[0], 0, 1)            # [N_new, H_kv, packed_D]
+        ks_tok = mx.swapaxes(k_sc[0].astype(mx.float32), 0, 1)  # [N_new, H_kv]
+        v_tok = mx.swapaxes(v_fp16[0], 0, 1)              # [N_new, H_kv, D]
         if self.tq_v:
-            vp_np = np.array(v_packed)[0].transpose(1, 0, 2)
-            vs_np = np.array(v_sc.astype(mx.float32))[0].transpose(1, 0)
+            vp_tok = mx.swapaxes(v_packed[0], 0, 1)
+            vs_tok = mx.swapaxes(v_sc[0].astype(mx.float32), 0, 1)
 
         blocks = self._block_table[seq_id]
         wp = self._write_ptr[seq_id]
@@ -938,18 +943,26 @@ class TurboQuantPagedInferenceContext:
             blk_id = blocks[-1]
             end = written + space
 
-            # Scatter into pool
-            self._k_pool[blk_id, wp:wp + space] = mx.array(k_np[written:end])
-            self._k_scales[blk_id, wp:wp + space] = mx.array(ks_np[written:end])
-            self._v_pool_fp16[blk_id, wp:wp + space] = mx.array(v_fp16_np[written:end])
+            # Scatter into pool (GPU-side slice assignment; no host copies)
+            self._k_pool[blk_id, wp:wp + space] = k_tok[written:end]
+            self._k_scales[blk_id, wp:wp + space] = ks_tok[written:end]
+            self._v_pool_fp16[blk_id, wp:wp + space] = v_tok[written:end]
             if self.tq_v:
-                self._v_pool_tq[blk_id, wp:wp + space] = mx.array(vp_np[written:end])
-                self._v_scales[blk_id, wp:wp + space] = mx.array(vs_np[written:end])
+                self._v_pool_tq[blk_id, wp:wp + space] = vp_tok[written:end]
+                self._v_scales[blk_id, wp:wp + space] = vs_tok[written:end]
 
             wp += space
             written += space
 
         self._write_ptr[seq_id] = wp
+        # Materialize pool updates eagerly: downstream paged kernels bind these
+        # buffers directly (raw set_input_array), so the writes must be
+        # resolved — not pending lazy graph nodes — before the next dispatch.
+        if self.tq_v:
+            mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16,
+                    self._v_pool_tq, self._v_scales)
+        else:
+            mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16)
         mx.synchronize()
 
     def get_block_table(self, seq_ids: Optional[list[int]] = None) -> mx.array:

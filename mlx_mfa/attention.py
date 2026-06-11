@@ -120,6 +120,22 @@ def _get_has_nax_cached() -> bool:
     return _cached_has_nax
 
 
+_cached_is_m5_plus: "bool | None" = None
+
+
+def _get_is_m5_plus_cached() -> bool:
+    """Return cached is_m5_plus to avoid repeated MTLDevice queries.
+
+    Repo review 2026-05: flash_attention_sparse previously called
+    get_device_info() (uncached Metal API) up to twice per invocation.
+    """
+    global _cached_is_m5_plus
+    if _cached_is_m5_plus is None:
+        info = get_device_info()
+        _cached_is_m5_plus = bool(info.get("is_m5_plus", False))
+    return _cached_is_m5_plus
+
+
 # ---------------------------------------------------------------------------
 # Internal: bias shape classification
 # ---------------------------------------------------------------------------
@@ -2762,8 +2778,9 @@ def flash_attention_sparse(
     # mechanism used by the asymmetric-mask M5+ path at line 2360).
     # This restores backward correctness across ALL densities while
     # keeping the Sprint 1 forward win (6× at audit shape) intact.
-    info = get_device_info()
-    if info.get("is_m5_plus"):
+    # Repo review 2026-05: cached M5+ probe (was an uncached Metal API call
+    # per invocation — up to twice per flash_attention_sparse call).
+    if _get_is_m5_plus_cached():
         import os as _os
         _disable_auto = _os.environ.get("MFA_DISABLE_AUTO_HOOKS") == "1"
         if not _disable_auto and block_mask.ndim >= 2:
@@ -2878,8 +2895,7 @@ def flash_attention_sparse(
     # Sprint U (v2.36.0): symmetric-BT masks auto-route earlier (above).
     # Asymmetric STEEL-style masks (BQ=32, BK=16) and MFA_DISABLE_AUTO_HOOKS=1
     # paths fall through to this SDPA fallback (the v2.35.0 behavior).
-    info = get_device_info()
-    if info.get("is_m5_plus"):
+    if _get_is_m5_plus_cached():
         return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
 
     impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)

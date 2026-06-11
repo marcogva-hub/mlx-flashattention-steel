@@ -131,13 +131,23 @@ def reset_hook_stats() -> None:
     _HOOK_EXECUTION_STATS["fallback_reasons"].clear()
 
 
+# Repo review 2026-05: module-level cache.  The docstring claimed "Cached"
+# but the function called get_device_info() (Metal API queries) on EVERY
+# mx.conv_general invocation — twice on the fallback branch.  Hardware
+# cannot change at runtime; cache the result once.
+_M5_PLUS_CACHE: "bool | None" = None
+
+
 def _is_m5_plus() -> bool:
-    """Cached M5+ detection via get_device_info()."""
-    try:
-        from mlx_mfa.attention import get_device_info
-        return bool(get_device_info().get("is_m5_plus"))
-    except Exception:
-        return False
+    """Cached M5+ detection via get_device_info() (computed once per process)."""
+    global _M5_PLUS_CACHE
+    if _M5_PLUS_CACHE is None:
+        try:
+            from mlx_mfa.attention import get_device_info
+            _M5_PLUS_CACHE = bool(get_device_info().get("is_m5_plus"))
+        except Exception:
+            _M5_PLUS_CACHE = False
+    return _M5_PLUS_CACHE
 
 
 def _normalize_int_or_tuple(v, n_dims):
@@ -208,13 +218,16 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     Ineligible shapes pass through to original mx.conv_general unchanged.
     """
     # Fast path: original call when not eligible OR not M5+ OR input_dilation != 1
+    # Repo review 2026-05: single _is_m5_plus() call captured in a local —
+    # the fallback branch previously called it twice per conv invocation.
+    _m5 = _is_m5_plus()
     in_dil = _normalize_int_or_tuple(input_dilation, 3) if hasattr(weight, "shape") and len(weight.shape) == 5 else None
-    if (not _is_m5_plus()
+    if (not _m5
         or not _conv3d_nax_eligible(weight, stride, padding,
                                      kernel_dilation, groups, flip)
         or (in_dil is not None and in_dil != (1, 1, 1))):
         # Telemetry: record fallback with reason classification.
-        if not _is_m5_plus():
+        if not _m5:
             _record_hook_fallback("conv3d_nax_forward", "not M5+ hardware")
         elif in_dil is not None and in_dil != (1, 1, 1):
             _record_hook_fallback("conv3d_nax_forward",
