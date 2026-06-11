@@ -159,6 +159,26 @@ The MFA_FORCE_NATIVE_BWD deprecation (Phase E) remains in place —
 V34 backward is still the production path — but the STEEL backward
 kernel is now CORRECT, changing the v2.51 removal calculus.
 
+**Pattern cross-reference** (campaign 2026-06 Sprint B): this failure
+class is codified as **Pattern #9** (generator/dispatch
+hardcoded-constant mismatch → silent partial-write) in
+`docs/v50/audit-framing-inversions.md`, enforced by
+`/mlx-mfa-release-audit` Check 9 and `CLAUDE_V6_NAX.md` §AA.7.
+
+**Ledger lesson** (why this sat as accepted debt): the original KD-5
+entry recorded the SYMPTOM ("STEEL backward zeroes blocks at D=128
+N≥2048") plus a speculative theory ("16×BQ tile-loop termination bug")
+instead of a derived MECHANISM.  KD entries describing something as a
+fundamental limitation MUST carry the mechanism — a KD entry without
+one is an open investigation, not a verdict (§AA.7 corollary).
+
+**Marco-gated candidate** (flag only, NOT executed in the campaign):
+with STEEL backward now correct, the `MFA_FORCE_NATIVE_BWD`
+DeprecationWarning and the v2.51 removal plan are reconsiderable.
+Changing default backward routing is a user-visible dispatch-policy
+decision — requires Marco's call, plus an M5 perf re-bench of STEEL
+backward vs V34 backward vs SDPA-vjp before any promotion.
+
 (Previous entry below for history:)
 
 ## KD-5 (historical) — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEPRECATED v2.50.0 Prompt 5f Phase E)
