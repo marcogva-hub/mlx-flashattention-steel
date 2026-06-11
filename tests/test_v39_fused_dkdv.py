@@ -507,7 +507,11 @@ def test_v34_eligible_causal_true():
     (log2-domain lse) instead of V34 (natural-log lse).  Fix lifts gate;
     V34 backward causal now produces correct gradients."""
     import os
+    # Repo review 2026-05: try/finally so an assertion failure cannot leak
+    # MFA_ENABLE_V34_BACKWARD into the rest of the session.
     os.environ['MFA_ENABLE_V34_BACKWARD'] = '1'
-    from mlx_mfa.attention import _v34_eligible
-    assert _v34_eligible(64, mx.float16, causal=True) is True
-    del os.environ['MFA_ENABLE_V34_BACKWARD']
+    try:
+        from mlx_mfa.attention import _v34_eligible
+        assert _v34_eligible(64, mx.float16, causal=True) is True
+    finally:
+        del os.environ['MFA_ENABLE_V34_BACKWARD']

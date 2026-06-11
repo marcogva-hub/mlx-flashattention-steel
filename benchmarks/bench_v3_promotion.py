@@ -2,6 +2,8 @@
 """V3 promotion verification: compare V3 (default) vs V2 (MFA_DISABLE_V3=1) vs SDPA."""
 import math, os, sys
 import mlx.core as mx
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).parent))  # repo review 2026-05: allow `python benchmarks/<f>.py` from repo root
 from bench_utils import med
 
 SEED = 42

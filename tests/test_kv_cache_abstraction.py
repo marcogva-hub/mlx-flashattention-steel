@@ -323,7 +323,6 @@ class TestCacheAbstractionRuntimeFlows:
         assert out.shape == (1, 4, 4, 64)
         assert rt.seq_length() == 12
 
-    @pytest.mark.xfail(reason="Speculative step — accepted_prefix_lens mismatch")
     def test_speculative_step_still_works_with_adapter_fallback(self):
         rt = create_decode_runtime(
             backend="dense",
@@ -456,7 +455,6 @@ class TestCacheAbstractionRuntimeFlows:
                 D=64,
             )
 
-    @pytest.mark.xfail(reason="Speculative step — accepted_prefix_lens mismatch")
     def test_hybrid_runtime_speculative_step_compatibility(self):
         rt = create_decode_runtime(
             backend="dense",
@@ -559,7 +557,6 @@ class TestCacheAbstractionRuntimeFlows:
         assert st["reload_count"] >= 1
         assert rt.seq_length() == 10
 
-    @pytest.mark.xfail(reason="Speculative step — accepted_prefix_lens mismatch")
     def test_hybrid_runtime_speculative_after_offload(self):
         rt = create_decode_runtime(
             backend="dense",

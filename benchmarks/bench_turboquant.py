@@ -10,6 +10,8 @@ import time
 
 import mlx.core as mx
 
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).parent))  # repo review 2026-05: allow `python benchmarks/<f>.py` from repo root
 from bench_utils import med
 
 

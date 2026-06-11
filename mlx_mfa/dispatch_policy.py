@@ -686,11 +686,12 @@ def should_use_native_backward(
         import warnings
         warnings.warn(
             "MFA_FORCE_NATIVE_BWD=1 routes through legacy STEEL backward "
-            "kernels which have a known correctness bug at D=128 N>=2048 "
-            "(zeroed output blocks for query rows >= 1024 — see KD-5 in "
-            "docs/v50/known-issues-v2.50.md).  The V34 backward NAX-direct "
-            "path (production default) is unaffected.  MFA_FORCE_NATIVE_BWD "
-            "is deprecated as of v2.50.0 and will be removed in v2.51+.",
+            "kernels.  (The former KD-5 D=128 zeroed-blocks bug was fixed "
+            "in the post-v2.50.1 repo review — dispatch/generator BK "
+            "mismatch — so results are now correct, but the path remains "
+            "non-production.)  The V34 backward NAX-direct path is the "
+            "production default.  MFA_FORCE_NATIVE_BWD is deprecated as "
+            "of v2.50.0; removal timing is under review post-fix.",
             DeprecationWarning,
             stacklevel=2,
         )

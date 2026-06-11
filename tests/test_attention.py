@@ -7544,7 +7544,6 @@ class TestSpeculativeVerify:
         assert mx.all(mx.isfinite(lse)).item(), "lse has non-finite values"
         assert mx.all(mx.isfinite(lp)).item(), "target_logprobs has non-finite values"
 
-    @pytest.mark.xfail(reason="Speculative verify — pre-existing logic issue")
     def test_output_matches_flash_attention(self):
         """out must match flash_attention output (lse is bonus)."""
         from mlx_mfa import flash_attention_speculative_verify, flash_attention
@@ -7563,7 +7562,6 @@ class TestSpeculativeVerify:
             rtol=1e-4, atol=1e-4,
         )
 
-    @pytest.mark.xfail(reason="Speculative verify — pre-existing logic issue")
     def test_logprobs_are_negative(self):
         """Log-probabilities must be ≤ 0."""
         from mlx_mfa import flash_attention_speculative_verify
@@ -9060,7 +9058,6 @@ class TestDecodeRuntimeFactory:
         assert lse.shape == (2, 4, 3)
         assert lp.shape == (2, 3)
 
-    @pytest.mark.xfail(reason="Speculative step — accepted_prefix_lens mismatch")
     def test_speculative_step_full_accept_and_metadata(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
@@ -9100,7 +9097,6 @@ class TestDecodeRuntimeFactory:
         assert rt.metadata["speculative_step_active"] is True
         assert rt.metadata["last_speculative_step"]["tokens"] == 4
 
-    @pytest.mark.xfail(reason="Speculative step — accepted_prefix_lens mismatch")
     def test_speculative_step_partial_accept_with_draft_logprobs(self):
         from mlx_mfa import create_decode_runtime
         rt = create_decode_runtime(
@@ -10499,7 +10495,6 @@ class TestSmartDispatch:
             err_msg="auto large-N D=64 causal output differs from mfa backend",
         )
 
-    @pytest.mark.xfail(reason="Mixed dtype dispatch — flaky Metal GPU non-determinism")
     def test_mixed_dtype_routes_mfa(self):
         """Mixed-dtype (f32 Q + f16 K/V) always routes to MFA, not SDPA (NaN guard)."""
         import mlx.core as mx
@@ -10913,31 +10908,17 @@ class TestNativeBackwardRouting:
         n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="0")
         assert n_calls == 0
 
+    # Repo review 2026-05: the D=128 N>=2048 xfails (KD-5 "zeroed blocks")
+    # are REMOVED — root cause found and fixed: MFASteelBwdDKV dispatch
+    # computed the grid with cfg.BK (=32 on M3+ for D=128) while the
+    # generator overrides BK to 16 for D>64, leaving K-rows beyond NK*16
+    # unwritten.  Dispatch BK now mirrors the generator override
+    # (mfa_attention.cpp) and STEEL backward D=128 matches SDPA-VJP.
     @pytest.mark.parametrize("D,N", [
         (64, 2048),
         (64, 4096),
-        pytest.param(128, 2048, marks=pytest.mark.xfail(
-            reason="v2.50 Prompt 5a Section B.5 (rationale clarified in "
-            "Prompt 5b Section D): `MFA_FORCE_NATIVE_BWD=1` routes through "
-            "STEEL backward kernel (MFASteelBwdDQ + MFASteelBwdDKV), NOT "
-            "V34 backward.  STEEL backward at D=128 N>=2048 produces "
-            "zeroed blocks for query rows beyond ~1024 (16×BQ tile-loop "
-            "termination bug) → max_diff ~0.41.  Production AUTO path "
-            "correctly bypasses this: post-Prompt 5b Section D, D=128 + "
-            "qL>=2048 + `MFA_ENABLE_V34_BACKWARD=1` routes through V34 "
-            "split kernels (validated by "
-            "`test_v50_sprint_5b_d128_backward.py`).  This xfail captures "
-            "the STEEL backward kernel bug specifically — separate from "
-            "V34 broadening.  Escalate STEEL backward D=128 kernel fix for "
-            "post-v2.50 dedicated investigation (STEEL backward path is "
-            "legacy; V34 is the production path going forward)."
-        )),
-        pytest.param(128, 4096, marks=pytest.mark.xfail(
-            reason="Same STEEL backward D=128 tile-loop bug as "
-            "test[128-2048].  V34 backward D=128 production path "
-            "(post-Prompt 5b Section D broadening) is unaffected — see "
-            "`test_v50_sprint_5b_d128_backward.py` for V34 D=128 coverage."
-        )),
+        (128, 2048),
+        (128, 4096),
     ])
     def test_target_shapes_native_backward_matches_sdpa_gradients(self, monkeypatch, D, N):
         """Target causal shapes: force-native gradients should match SDPA-VJP gradients."""
@@ -11306,7 +11287,6 @@ class TestSteelV3:
         (128, 1024, True), (128, 1024, False),
         (128, 4096, True), (128, 4096, False),
     ])
-    @pytest.mark.xfail(reason="V3 experimental kernel — accuracy varies by config")
     def test_v3_matches_v2(self, D, N, causal):
         """V3 output matches V2 output within f16 tolerance."""
         import os as _os
@@ -11413,7 +11393,6 @@ class TestSteelV4:
         (128, 256, True), (128, 256, False),
         (128, 1024, True),
     ])
-    @pytest.mark.xfail(reason="V4 experimental kernel — accuracy varies by config")
     def test_v4_matches_v2(self, D, N, causal):
         """V4 output matches V2 (or SDPA) within f16 tolerance."""
         import os as _os
@@ -11843,7 +11822,6 @@ class TestSteelV5DirectReads:
         (128, 2048, False),
         (128, 2048, True),
     ])
-    @pytest.mark.xfail(reason="V5 direct reads experimental — accuracy varies by config")
     def test_v5_direct_reads_matches_sdpa(self, D, N, causal):
         """V5 M3+ direct reads must match SDPA within f16 tolerance."""
         mx.random.seed(77)

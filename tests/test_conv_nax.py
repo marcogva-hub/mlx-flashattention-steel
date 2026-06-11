@@ -607,11 +607,15 @@ def test_conv3d_nax_1x1x1_faster_than_general_path():
             times.append(time.perf_counter() - t0)
         return statistics.median(times)
 
-    # Fast path
-    t_fast = time_path(None)
-    # Force general path via env var
-    t_general = time_path("1")
-    os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
+    # Repo review 2026-05: try/finally so an exception inside time_path
+    # cannot leak MFA_CONV_NAX_NO_FAST_PATH into the rest of the session.
+    try:
+        # Fast path
+        t_fast = time_path(None)
+        # Force general path via env var
+        t_general = time_path("1")
+    finally:
+        os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
 
     # Fast must be measurably faster -- allow some noise margin (10%).
     # Real observation: ~15% speedup at this small shape; the bar of
@@ -630,13 +634,16 @@ def test_conv3d_nax_1x1x1_fast_equals_general():
     cfg = ONE_BY_ONE_CFG
     x, w = _make_inputs(cfg)
 
-    os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
-    y_fast = conv3d_nax_forward(x, w, stride=cfg["stride"],
-                                padding=cfg["padding"], dilation=cfg["dilation"])
-    os.environ["MFA_CONV_NAX_NO_FAST_PATH"] = "1"
-    y_general = conv3d_nax_forward(x, w, stride=cfg["stride"],
-                                   padding=cfg["padding"], dilation=cfg["dilation"])
-    os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
+    # Repo review 2026-05: try/finally guards env leakage on exception.
+    try:
+        os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
+        y_fast = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                                    padding=cfg["padding"], dilation=cfg["dilation"])
+        os.environ["MFA_CONV_NAX_NO_FAST_PATH"] = "1"
+        y_general = conv3d_nax_forward(x, w, stride=cfg["stride"],
+                                       padding=cfg["padding"], dilation=cfg["dilation"])
+    finally:
+        os.environ.pop("MFA_CONV_NAX_NO_FAST_PATH", None)
     mx.async_eval(y_fast, y_general); mx.synchronize()
     err = mx.abs(y_fast.astype(mx.float32) - y_general.astype(mx.float32))
     rmse = float(mx.sqrt(mx.mean(err * err)))

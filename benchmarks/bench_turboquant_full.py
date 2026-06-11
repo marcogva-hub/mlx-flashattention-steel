@@ -21,6 +21,8 @@ import mlx.core as mx
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).parent))  # repo review 2026-05: allow `python benchmarks/<f>.py` from repo root
 from bench_utils import med, check_mfa_available
 
 check_mfa_available()

@@ -1,7 +1,7 @@
 # mlx-mfa Hardware Support Matrix
 
-**Version**: 2.39.1 master (post-Prompt 5b accumulation; will ship as v2.50)
-**Last audited**: 2026-05-14 (v2.50 Prompt 5b final pass)
+**Version**: 2.50.1 (shipped 2026-05-16)
+**Last audited**: 2026-05 repo review (post-v2.50.1; KD-5 STEEL backward D=128 fix, hook telemetry, conv NAX dtype fix)
 **Audit source**: empirical bench + multi-sprint deliverables
 (Sprints 1-2 dispatch fixes, Sprint 3 PoC + native top-K iteration,
 Sprint 4 V34 backward causal, Sprint B v2.40.0-internal D=128 split,

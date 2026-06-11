@@ -49,11 +49,16 @@ def benchmark_row(B, H, N, D, causal, dtype, n_warmup, n_iter):
         n_warmup, n_iter)
 
     # V2 path (disable V3 so V2 is chosen)
+    # Repo review 2026-05: try/finally — an exception inside _measure
+    # previously leaked MFA_DISABLE_V3, silently forcing all remaining
+    # rows onto the V2 path (wrong benchmark numbers, no error).
     os.environ["MFA_DISABLE_V3"] = "1"
-    v2_ms = _measure(
-        lambda q=q, k=k, v=v, s=scale, c=causal: _mfa_forward(q, k, v, s, c),
-        n_warmup, n_iter)
-    del os.environ["MFA_DISABLE_V3"]
+    try:
+        v2_ms = _measure(
+            lambda q=q, k=k, v=v, s=scale, c=causal: _mfa_forward(q, k, v, s, c),
+            n_warmup, n_iter)
+    finally:
+        os.environ.pop("MFA_DISABLE_V3", None)
 
     # V3 path (default — V3 checked before V2)
     v3_ms = _measure(

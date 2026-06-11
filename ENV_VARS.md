@@ -52,12 +52,14 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
+| `MFA_FORCE_SDPA_ROUTE` | bool | unset | Force SDPA routing on M5+ NAX regardless of shape/dtype (debug/benchmark override). *(documented repo review 2026-05)* |
+| `MFA_DISABLE_SDPA_ROUTE` | bool | unset | Disable the M5+ SDPA route; dispatch falls through to M3+/M1-M2 thresholds. *(documented repo review 2026-05)* |
 | `MFA_FORCE_D256_PATH` | str | unset | Force D=256 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
 | `MFA_FORCE_D512_PATH` | str | unset | Force D=512 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
 | `MFA_FORCE_NATIVE_BWD` | str | unset | Force native backward: `1` → native kernel, `0` → SDPA VJP |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
 | `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **v2.36.1**: when unset, `decide_auto_version()` picks V2 for `qL × kL × D ≥ 2.15e9` (validated under canonical-protocol) and V1 below. `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
-| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0**: opt in to V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal/window/softcap). Default off (SDPA-vjp fallback preserves v2.36.1 behavior). V34 backward is currently 2.2-2.4× slower than SDPA-vjp at qL=8192 (architectural floor); ship status SHIP_OPT_IN for research / future-optimization use cases. |
+| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.50): opt in to V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, qL ≥ 2048; **causal AND non-causal eligible** as of v2.50 Prompt 4 Section B — the "no causal" restriction is obsolete). Default off (SDPA-vjp fallback). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. |
 | `MFA_V34BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V34 backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
 | `MFA_V34BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
 | `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
@@ -81,6 +83,16 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_IR_INVESTIGATE` | bool | false | Dump Metal IR during shader compilation |
 | `MFA_DISABLE_ASYNC` | bool | false | Disable precompiled async metallib lookup |
 | `MFA_DISABLE_GNA_NATIVE` | bool | false | Disable native GNA kernel; fall back to sparse path |
+
+## Conv NAX (Python + C++ side)
+
+*(documented repo review 2026-05)*
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MFA_CONV_NAX_NO_FAST_PATH` | bool | unset | Bypass the 1×1×1 fast path in Conv3D NAX (forces the general path; used by perf tests). |
+| `MFA_CONV_NAX_USE_PYTHON_LEGACY` | bool | unset | Route Conv3D NAX through the Phase 1.x legacy Python implementation (debug). |
+| `MFA_REQUIRE_MSL4` | bool | unset | C++-side gate requiring Metal Shading Language 4 support for V34 probe / NAX compile paths. |
 
 ## Calibration (dynamic keys, not cached)
 

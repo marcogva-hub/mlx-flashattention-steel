@@ -2,6 +2,53 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased — post-v2.50.1 repo review]
+
+Whole-repo review (2026-05, post-v2.50.1): 5 parallel review passes over
+all Python + C++ + tests + benchmarks + docs; ~30 findings implemented
+across 4 commit waves with per-wave test validation.
+
+### Fixed
+- **KD-5 ROOT CAUSE (STEEL backward D=128 zeroed blocks)**: dispatch
+  grid used cfg.BK (=32 on M3+) while the generator hardcodes BK=16 for
+  D>64 — K-rows beyond NK*16 never written.  Dispatch now mirrors the
+  generator override; both xfails removed, all target shapes match
+  SDPA-VJP.
+- **Per-head sparse backward gradients**: 3-D/4-D block masks were
+  collapsed to a cross-head UNION in four backward/fallback paths while
+  the forward used the per-head mask — wrong gradients for head-varying
+  masks.  New ndim-preserving bias expansion; steel_sparse/sdpa_sparse
+  (2-D-only kernels) now raise loudly for ndim>2.
+- **scale in V34 backward pipeline cache keys** (9 structs): two
+  backward passes with different scales reused the first's compiled
+  kernel (scale is baked into the Metal source).
+- **V6Key bit-packing collisions**: tile params packed into stride high
+  bits collided at production shapes (qbs = 2^24 at H=8 N=16384 D=128);
+  dedicated key fields now.
+- **MFAV6Forward::is_equivalent missing force_v34** (LSE-domain mixup
+  via graph dedup); **int32 stride overflow** (2 files); **pipeline
+  cache CFBridgingRetain leak** on concurrent compile (10 sites);
+  **V34 fusion scale gate** (custom scale silently dropped — latent);
+  **flash-decode RoPE guard** (latent); **dispatch decision cache now
+  keyed on steering env vars**; **_SPARSE_BIAS_CACHE id()-ABA** fix;
+  make_strided_mask(0) ValueError; HybridKVCache.reset stale metadata;
+  mlx_lm dequantize exception no longer swallowed; svdquant
+  idempotence guard.
+
+### Performance
+- Conv hook dispatch overhead -27% (M5+ probe cached); rope decode
+  loop -28%; TurboQuant paged append -32% per decode token (numpy
+  round-trips eliminated — data never leaves the GPU);
+  flash_attention_sparse -4% (cached M5+ probe).
+
+### Tests / docs
+- 13 stale xfail markers removed (34 xpassing tests now genuinely
+  guard regressions, incl. V3/V4/V5 experimental kernels — all pass
+  on M5 Max); env-var leakage guarded at 4 test/bench sites; 7
+  benchmark scripts runnable from repo root; ENV_VARS.md +5 missing
+  vars + stale V34 text fixed; HARDWARE_SUPPORT/PERF_CLAIMS headers
+  updated; Python 3.13/3.14 classifiers.
+
 ## [2.50.1] — 2026-05-16
 
 **v2.50.1 is a critical performance-unlock patch.**  A dtype-handling

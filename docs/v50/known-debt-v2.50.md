@@ -142,7 +142,26 @@ ValueError otherwise.
 
 ---
 
-## KD-5 — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEPRECATED v2.50.0 Prompt 5f Phase E)
+## KD-5 — STEEL backward D=128 N≥2048 zeroed-blocks bug — **ROOT CAUSE FIXED, repo review 2026-05 (post-v2.50.1)**
+
+**RESOLUTION**: whole-repo review found the root cause in ~30 min of
+targeted reading: `MFASteelBwdDKV::eval_gpu` computed the launch grid
+with `cfg.BK` (= 32 on M3+ for D=128) while
+`generate_steel_backward_dkv_source` overrides `BK = (BD <= 64) ?
+cfg.BK : 16`.  NK = ceil(S/32) threadgroups each processed 16 K-rows
+at 16-row strides — K-rows beyond NK*16 were never written (dK/dV
+zeroed for the upper half at D=128 N>=2048 on M3+; invisible on M1
+where cfg.BK is already 16).  Fix: dispatch BK mirrors the generator
+override (csrc/mfa_attention.cpp).  Both xfails removed; all 4
+TestNativeBackwardRouting target shapes now PASS against SDPA-VJP.
+
+The MFA_FORCE_NATIVE_BWD deprecation (Phase E) remains in place —
+V34 backward is still the production path — but the STEEL backward
+kernel is now CORRECT, changing the v2.51 removal calculus.
+
+(Previous entry below for history:)
+
+## KD-5 (historical) — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEPRECATED v2.50.0 Prompt 5f Phase E)
 
 **v2.50.0 Phase E disposition**: `MFA_FORCE_NATIVE_BWD=1` now emits a
 `DeprecationWarning` pointing to this entry.  V34 backward NAX-direct
@@ -249,7 +268,7 @@ work blocks v2.50.1 ship.
 | KD-2 | MEDIUM | ~~2-3ms perf overhead in hybrid backward~~ | **RESOLVED v2.50.0 Prompt 5f Phase B** (~1.33ms saved) |
 | KD-3 | LOW | ~~Defensive code (not currently a bug)~~ | **RESOLVED v2.50.0 Prompt 5f Phase C** |
 | KD-4 | LOW | ~~Silent coerce of bad topk_ratio~~ | **RESOLVED v2.50.0 (Prompt 5e Phase 1 fix + Prompt 5f Phase D tests)** |
-| KD-5 | (preserved xfail) | None (research-only path) | **DEPRECATED v2.50.0 Prompt 5f Phase E**; target removal v2.51+ |
+| KD-5 | (preserved xfail) | ~~None (research-only path)~~ | **ROOT CAUSE FIXED post-v2.50.1 repo review** (BK dispatch/generator mismatch); xfails removed |
 | KD-6 | HIGH | ~~`_auto_hooks.py::conv3d_nax_forward` dtype mismatch silently broke NAX path~~ | **RESOLVED v2.50.1 Prompt 5g Phase A** |
 | KD-7 | HIGH defect (LOW production-active) | bf16 weight path broken at upstream MLX Metal im2col | OPEN — eligibility tightened to fp16-only as Phase A mitigation; target v2.51 |
 
