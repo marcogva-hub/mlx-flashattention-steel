@@ -170,10 +170,14 @@ def _conv3d_nax_eligible(weight, stride, padding, kernel_dilation, groups, flip)
     # v2.50.1 Prompt 5g Phase A — KD-7: bf16 weight path is broken at
     # the MLX upstream Metal shader im2col helper (utils.h:502 —
     # half vs bfloat16_t type mismatch).  Fails at graph-evaluation time
-    # with "Unable to build metal library from source".  Tightened
-    # eligibility to fp16 only until upstream MLX fix lands (see KD-7
-    # in docs/v50/known-debt-v2.50.md).
-    if weight.dtype != mx.float16:
+    # with "Unable to build metal library from source".
+    #
+    # Sprint III-1 (KD-7 lift): bf16 is now admissible — but ONLY via the
+    # MPP convolution2d branch, which performs no im2col at all.  The
+    # wrapper enforces the MPP sub-gate via _conv3d_bf16_mpp_eligible();
+    # bf16 shapes outside it fall back to the original op (the legacy
+    # im2col path remains fp16-only until the upstream MLX fix lands).
+    if weight.dtype not in (mx.float16, mx.bfloat16):
         return False
     # weight shape: (C_out, K_T, K_H, K_W, C_in)
     K_T, K_H, K_W = weight.shape[1], weight.shape[2], weight.shape[3]
@@ -187,6 +191,34 @@ def _conv3d_nax_eligible(weight, stride, padding, kernel_dilation, groups, flip)
         return False
     d = _normalize_int_or_tuple(kernel_dilation, 3)
     if d is None or d != (1, 1, 1):
+        return False
+    return True
+
+
+def _conv3d_bf16_mpp_eligible(input, weight, pad_6tuple) -> bool:
+    """Sprint III-1 (KD-7): bf16 conv3d is only safe through the MPP
+    convolution2d branch (no im2col).  Mirror the C++ MPP gate
+    (csrc/mfa_conv_nax.cpp conv3d_nax_forward) so bf16 never reaches the
+    legacy path, whose upstream im2col helper fails at graph-eval time.
+    k=3x3x3 / stride / dilation / groups / flip are already enforced by
+    _conv3d_nax_eligible.
+    """
+    import os as _os
+    if _os.environ.get("MFA_DISABLE_CONV3D_MPP") == "1":
+        return False  # MPP off -> bf16 would hit the broken legacy path
+    if not hasattr(input, "shape") or len(input.shape) != 5:
+        return False
+    B, _T, H, W, C_in = input.shape
+    C_out = weight.shape[0]
+    # k must be exactly 3x3x3 for MPP (the eligible-kernel set may admit
+    # other sizes for the legacy path).
+    if (weight.shape[1], weight.shape[2], weight.shape[3]) != (3, 3, 3):
+        return False
+    if B != 1 or pad_6tuple != (1, 1, 1, 1, 1, 1):
+        return False
+    if H % 8 != 0 or W % 8 != 0:
+        return False
+    if C_in % 16 != 0 or C_in < 32 or C_out % 16 != 0 or C_out < 32:
         return False
     return True
 
@@ -237,8 +269,8 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
             # Eligibility failed; surface the specific reason for debugging.
             if not hasattr(weight, "shape") or len(weight.shape) != 5:
                 reason = "weight not 5-D (not Conv3D)"
-            elif weight.dtype != mx.float16:
-                reason = f"weight dtype {weight.dtype} not fp16 (KD-7 bf16 disabled)"
+            elif weight.dtype not in (mx.float16, mx.bfloat16):
+                reason = f"weight dtype {weight.dtype} not fp16/bf16"
             else:
                 reason = "kernel/stride/dilation/groups/flip constraint failed"
             _record_hook_fallback("conv3d_nax_forward", reason)
@@ -256,6 +288,22 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     if pad_6tuple is None or any(p < 0 for p in pad_6tuple):
         _record_hook_fallback("conv3d_nax_forward",
                                f"unsupported padding form: {padding}")
+        return _ORIGINAL_CONV_GENERAL(
+            input, weight,
+            stride=stride, padding=padding,
+            kernel_dilation=kernel_dilation,
+            input_dilation=input_dilation,
+            groups=groups, flip=flip,
+            **kwargs,
+        )
+
+    # Sprint III-1 (KD-7): bf16 weights are only safe through the MPP
+    # branch; anything outside its gate falls back to the original op.
+    if weight.dtype == mx.bfloat16 and not _conv3d_bf16_mpp_eligible(
+            input, weight, pad_6tuple):
+        _record_hook_fallback(
+            "conv3d_nax_forward",
+            "bf16 outside MPP gate (KD-7: legacy im2col bf16 broken upstream)")
         return _ORIGINAL_CONV_GENERAL(
             input, weight,
             stride=stride, padding=padding,

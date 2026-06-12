@@ -268,3 +268,34 @@ STATUS: COMPLETE
 
 ### Fixed point
 - Phase II exhaustion fixed point DECLARED MET (all four II-8 addendum mandatories closed + zero-finding fresh pass). Remaining work = Marco-gated decision queue in PHASE-II-CLOSE.md.
+
+---
+## [2026-06-12 17:55] [CLAUDE] Phase III-1: KD-7 bf16 conv lift — PROMOTED default-on
+STATUS: COMPLETE
+
+### Plan
+- Objective: II-2R-style probe of the bf16 MPP convolution2d variant, then promote (widen the II-9 gate) or decline.
+- Files: csrc/mfa_conv_nax.cpp, mlx_mfa/_auto_hooks.py, new lock tests, perf-claims registry + doc.
+
+### Changes
+- `csrc/mfa_conv_nax.cpp` — conv3d_mpp_source dtype-parameterized; dtype in cache name; MPP gate fp16∨bf16; loud bf16-legacy-path guard [HIGH] [VERIFIED]
+- `mlx_mfa/_auto_hooks.py` — bf16 admitted iff _conv3d_bf16_mpp_eligible (mirrors C++ gate + env opt-out); non-MPP bf16 falls back upstream bit-identically [HIGH] [VERIFIED]
+- `tests/test_phase3_iii1_conv_bf16.py` — 6 locks [VERIFIED]
+- `tests/test_release_notes_perf_claims.py` — conv claim kind (telemetry reachability); ii9_* fp16 §Z-row gap closed + iii1_* bf16 row [VERIFIED]
+- `docs/PERF_CLAIMS.md` + `tests/test_perf_claims_doc_sync.py` — 2 rows; grammar ii\d+ → i{2,3}\d+ [VERIFIED]
+
+### Key results
+- Probe: bf16 variant IMPLEMENTED (rel ≤0.9%, 99.9-100% bitmatch vs mx.conv3d bf16) [VERIFIED]
+- Bench (public path, 3 sessions): 2.43x / 2.66x / 2.62x / 1.40x vs pre-lift bf16 (Apple fallback) [VERIFIED]
+- Fresh finding queued for III-4: C=16 correct in BOTH dtypes via isolated probe — contradicts II-9's production-path measurement; C>=32 gate left untouched [probe VERIFIED]
+
+### Dependency & regression check
+- Callers: conv3d_mpp_dispatch (1 site), hook wrapper (conv_general + conv3d delegate). fp16 path bitwise-unchanged (lock).
+- Test coverage: covered (6 locks + 2 claim params + 69 existing conv tests).
+
+### Validation
+- Ran: probe script, 3x3-session bench pre/post, MFA_HOOK_TELEMETRY=on engagement checks, full suite
+- Validated: suite 1417 passed + 2 skipped; engagement + fallback telemetry-verified; claims REACHABLE
+
+### Git
+- committed below; branch master

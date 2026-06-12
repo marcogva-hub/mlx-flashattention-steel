@@ -294,8 +294,15 @@ mlx::core::array dispatch_pointwise_fast_path(
 // stride 1, dilation 1, symmetric pad (1,1,1) ("same"/centered — the
 // primitive's native convention), H%TW==0, W%TH==0, C_in/C_out %16==0.
 // Weights must be pre-packed to [K_T][K_H][K_W][C_in][C_out].
+//
+// Sprint III-1 (KD-7): dtype-parameterized — `mtype` is the MSL scalar
+// ("half" or "bfloat").  The bf16 MPP variant
+// (__tensorops_impl_convolution2d_op_run_cooperative_dv_bf_dv_bf_f32)
+// was probed II-2R-style: implemented at runtime, rel err <= 0.9%
+// (single bf16 store rounding), 99.9-100% bit-identical to mx.conv3d
+// bf16 across the production forms.
 std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
-                              int TW, int TH) {
+                              int TW, int TH, const std::string& mtype) {
   std::ostringstream ss;
   ss << R"(
   uint3 tgid = threadgroup_position_in_grid;
@@ -317,7 +324,7 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
   convolution2d<desc, metal::execution_simdgroups<4>> op;
   op.set_offsets(int2(x0, y0));
 
-  device half* Dframe = Out + (ulong)t * )" << ((int64_t)H * W * O) << R"(;
+  device )" << mtype << R"(* Dframe = Out + (ulong)t * )" << ((int64_t)H * W * O) << R"(;
   auto tD = tensor(Dframe, extents<int32_t, )"
      << O << ", " << W << ", " << H << R"(, 1>());
   auto tDs = tD.slice(0, x0, y0, 0);
@@ -357,7 +364,7 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
       const int xx = idx[1];
       const int yy = idx[2];
       Dframe[((ulong)(y0 + yy) * )" << W << R"( + (ulong)(x0 + xx)) * )"
-     << O << R"( + oo] = (half)cOut[i];
+     << O << R"( + oo] = ()" << mtype << R"()cOut[i];
     }
   }
 )";
@@ -377,13 +384,17 @@ using namespace mpp::tensor_ops;
 mlx::core::array conv3d_mpp_dispatch(
     const mlx::core::array& x, const mlx::core::array& w_packed,
     int T, int H, int W, int C_in, int C_out, int TW, int TH) {
-  std::string name = "conv3d_mpp_" + std::to_string(T) + "_" +
+  // III-1: MSL scalar follows the input dtype; the dtype is part of the
+  // kernel name (cache-key discipline — Sprint A class).
+  const std::string mtype =
+      (x.dtype() == mlx::core::bfloat16) ? "bfloat" : "half";
+  std::string name = "conv3d_mpp_" + mtype + "_" + std::to_string(T) + "_" +
       std::to_string(H) + "x" + std::to_string(W) + "_" +
       std::to_string(C_in) + "_" + std::to_string(C_out) + "_t" +
       std::to_string(TW) + "x" + std::to_string(TH);
   auto kernel = mlx::core::fast::metal_kernel(
       name, {"X", "Wp"}, {"Out"},
-      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH),
+      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH, mtype),
       CONV2D_MPP_HEADER,
       /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
   int tiles = (W / TW) * (H / TH);
@@ -474,7 +485,14 @@ mlx::core::array conv3d_nax_forward(
     const char* mpp_dis = std::getenv("MFA_DISABLE_CONV3D_MPP");
     bool mpp_enabled =
         !(mpp_dis != nullptr && std::string(mpp_dis) == "1");
-    if (mpp_enabled && x.dtype() == mlx::core::float16 && B == 1 &&
+    // III-1 (KD-7): bf16 admitted after the II-2R-style runtime probe
+    // (variant implemented; rel err <= 0.9%; bench 1.4-2.7x vs the
+    // pre-lift public bf16 path — Apple mx.conv3d via hook fallback —
+    // at the II-9 cells, 3 sessions, medians).
+    if (mpp_enabled &&
+        (x.dtype() == mlx::core::float16 ||
+         x.dtype() == mlx::core::bfloat16) &&
+        B == 1 &&
         K_T == 3 && K_H == 3 && K_W == 3 &&
         sT == 1 && sH == 1 && sW == 1 &&
         dT == 1 && dH == 1 && dW == 1 &&
@@ -517,6 +535,22 @@ mlx::core::array conv3d_nax_forward(
   bool fast_path_disabled = (no_fast != nullptr && std::string(no_fast) == "1");
   if (is_pointwise && !fast_path_disabled) {
     return dispatch_pointwise_fast_path(x, w, B, T, H, W, C_in, C_out);
+  }
+
+  // Sprint III-1 (KD-7): the materialized-im2col path below uses the
+  // upstream MLX im2col helper, which is broken for bf16 (utils.h:502
+  // half vs bfloat16_t mismatch -> graph-eval-time "Unable to build
+  // metal library").  Fail loudly at CALL time instead (Rule 8); the
+  // auto-hook routes only MPP-eligible bf16 shapes here and falls back
+  // upstream for the rest, so this guard is defense-in-depth for raw
+  // C++ API users.
+  if (x.dtype() == mlx::core::bfloat16) {
+    throw std::runtime_error(
+        "conv_nax: bf16 is only supported via the MPP convolution2d path "
+        "(B=1, k=3x3x3, stride 1, dilation 1, pad (1,1,1), H/W % 8 == 0, "
+        "C_in/C_out >= 32 and % 16 == 0, MFA_DISABLE_CONV3D_MPP unset). "
+        "The legacy im2col path is fp16-only (KD-7: upstream MLX bf16 "
+        "im2col bug). Use fp16 or an MPP-eligible shape.");
   }
 
   // Flatten weight (C_out, K_T*K_H*K_W*C_in) row-major.

@@ -33,7 +33,8 @@ DOC_PATH = REPO_ROOT / "docs" / "PERF_CLAIMS.md"
 # either backticked `v2.X.Y_name` or plain v2.X.Y_name in table cells.
 # Phase II-12: ID grammar widened — campaign-sprint claims use
 # `ii<NN>_...` ids alongside the original `v2.X.Y_...` form.
-CLAIM_ID_PATTERN = re.compile(r"`((?:v2\.\d+\.\d+|ii\d+)_[\w.]+)`")
+# Phase III-1: widened again for Phase III sprint ids (`iii<NN>_...`).
+CLAIM_ID_PATTERN = re.compile(r"`((?:v2\.\d+\.\d+|i{2,3}\d+)_[\w.]+)`")
 
 
 def _parse_doc_active_claim_ids() -> set:

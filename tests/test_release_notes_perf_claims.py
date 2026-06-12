@@ -294,6 +294,36 @@ PERF_CLAIMS = [
             "MFA_DISABLE_V34_BACKWARD=1 restores SDPA-vjp bit-exactly"
         ),
     },
+    # --- conv3d MPP claims (II-9 fp16 promotion + III-1 KD-7 bf16 lift).
+    # `shape` is (T, H, W, C_in, C_out); engagement detected via the
+    # auto-hook telemetry executed counter (install_hooks + mx.conv3d is
+    # the documented public path).
+    {
+        "id": "ii9_conv3d_t16_64x64_c128_fp16_mpp_default",
+        "env": {},
+        "shape": (16, 64, 64, 128, 128),
+        "dtype": mx.float16,
+        "expected": "conv3d_mpp",
+        "documented_in": ["CHANGELOG.md"],
+        "documented_perf_claim": (
+            "conv3d via the MPP convolution2d primitive, default-on: "
+            "2.3-2.5x vs the materialized-im2col path at T8/T16 64x64 "
+            "C128 (II-9, 3 sessions, medians)"
+        ),
+    },
+    {
+        "id": "iii1_conv3d_t16_64x64_c128_bf16_mpp_default",
+        "env": {},
+        "shape": (16, 64, 64, 128, 128),
+        "dtype": mx.bfloat16,
+        "expected": "conv3d_mpp",
+        "documented_in": ["CHANGELOG.md"],
+        "documented_perf_claim": (
+            "bf16 conv3d via MPP (KD-7 lift): 1.4-2.7x vs the pre-lift "
+            "public bf16 path (Apple mx.conv3d fallback) at the II-9 "
+            "cells (III-1, 3 sessions, medians)"
+        ),
+    },
 ]
 
 
@@ -352,6 +382,49 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
     - `expected == "sdpa_fallback"`: AUTO gradients MUST be bit-identical
       to SDPA reference (V34 did NOT engage; correct fallback).
     """
+    # --- conv3d MPP claims (II-9 / III-1): engagement via the auto-hook
+    # telemetry executed counter through the documented public path
+    # (install_hooks -> mx.conv3d).
+    if claim["expected"] == "conv3d_mpp":
+        monkeypatch.delenv("MFA_DISABLE_CONV3D_MPP", raising=False)
+        for kk, vv in claim["env"].items():
+            monkeypatch.setenv(kk, vv)
+        from mlx_mfa import _auto_hooks as ah
+        ah.install_hooks()
+        monkeypatch.setattr(ah, "_HOOK_TELEMETRY_MODE", "on")
+        T, H, W, C_in, C_out = claim["shape"]
+        mx.random.seed(5)
+        x = (mx.random.normal((1, T, H, W, C_in)) * 0.5).astype(claim["dtype"])
+        w = (mx.random.normal((C_out, 3, 3, 3, C_in)) * 0.1).astype(claim["dtype"])
+        mx.eval(x, w)
+        before = ah._HOOK_EXECUTION_STATS["executed"]["conv3d_nax_forward"]
+        out = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
+        mx.eval(out)
+        after = ah._HOOK_EXECUTION_STATS["executed"]["conv3d_nax_forward"]
+        assert after > before, (
+            f"Perf claim '{claim['id']}' is UNREACHABLE via public API path. "
+            f"Documented in: {claim['documented_in']}. "
+            f"Claim text: {claim['documented_perf_claim']}. "
+            f"mx.conv3d (hooked) did not engage conv3d_nax_forward — "
+            f"per CLAUDE_V6_NAX.md §Z, fix the routing or correct the claim."
+        )
+        orig = ah._ORIGINAL_CONV3D if ah._ORIGINAL_CONV3D is not None else None
+        assert orig is not None
+        ref = orig(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
+        mx.eval(ref)
+        a = np.asarray(out.astype(mx.float32))
+        b = np.asarray(ref.astype(mx.float32))
+        # Absolute bar at these fixed unit-scale fixtures (II-9 measured
+        # 0.0039-0.0078 fp16; III-1 probe 0.031-0.062 bf16 — single
+        # store-rounding of the dtype).  10x headroom over measured.
+        abs_bar = 0.05 if claim["dtype"] == mx.float16 else 0.3
+        max_abs = float(np.abs(a - b).max())
+        assert max_abs < abs_bar, (
+            f"conv3d MPP engaged but output deviates from the original op "
+            f"beyond the dtype floor (max abs {max_abs:.4f} >= {abs_bar})"
+        )
+        return
+
     # Set documented env vars; clear all routing-related env vars first
     # so external session state doesn't leak into the parameterized test.
     monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
