@@ -4355,7 +4355,8 @@ def _mfa_alibi_forward(
 
 
 def _v34_eligible(head_dim: int, dtype, causal: bool,
-                  scale: "float | None" = None) -> bool:
+                  scale: "float | None" = None,
+                  seq_len: "int | None" = None) -> bool:
     """V34 NAX-direct backward eligibility predicate.
 
     Extracted from `_make_mfa_custom` per Sprint v2.38.0 DP2-HIGH-01
@@ -4407,7 +4408,17 @@ def _v34_eligible(head_dim: int, dtype, causal: bool,
         return False
     if dtype not in (mx.float16, mx.bfloat16):
         return False
-    if os.environ.get("MFA_ENABLE_V34_BACKWARD") != "1":
+    # Phase II-0 (campaign 2026-06, Marco-approved): D=64 CAUSAL DEFAULT-ON
+    # (2.2-2.6x vs SDPA-vjp, Phase-I Track 2).  Requires the caller to pass
+    # seq_len (>= 2048 — V34 regresses below: 0.85x @ 1024, 0.50x @ 512).
+    # Opt-out: MFA_DISABLE_V34_BACKWARD=1.  Calls without seq_len (tests,
+    # legacy) keep the env-opt-in behavior unchanged.
+    _default_on = (
+        head_dim == 64 and causal
+        and seq_len is not None and seq_len >= 2048
+        and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
+    )
+    if not _default_on and os.environ.get("MFA_ENABLE_V34_BACKWARD") != "1":
         return False
     # Repo review 2026-05: the V34 forward kernel (v6_nax_forward) does not
     # accept a scale parameter — it bakes 1/sqrt(D) into the Metal source.
@@ -4528,6 +4539,20 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
         dV = mx.sum(dVp, axis=2).astype(q.dtype)
         dK = mx.sum(dKp, axis=2).astype(q.dtype)
 
+    # Phase II-0 (campaign 2026-06): GQA gradient-shape fix.  The V34
+    # backward kernels emit dK/dV with H_q heads (each query head writes
+    # its own dK slice); correct GQA gradients are the GROUP-SUM over the
+    # query heads sharing each KV head — shape [B, H_kv, S, D], matching
+    # SDPA-vjp.  This latent shape bug existed in the opt-in path since
+    # v2.37.0 (few users hit it: env-gated + GQA); surfaced by the
+    # Phase II-0 promotion's axis-3 edge validation.
+    Hq, Hk = q.shape[1], k.shape[1]
+    if Hq != Hk:
+        ratio = Hq // Hk
+        B, S, Dh = dK.shape[0], dK.shape[2], dK.shape[3]
+        dK = dK.reshape(B, Hk, ratio, S, Dh).sum(axis=2)
+        dV = dV.reshape(B, Hk, ratio, S, Dh).sum(axis=2)
+
     return dQ, dK, dV
 
 
@@ -4576,7 +4601,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate extracted to `_v34_eligible()` per
             # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
             # the backward-side check below pre-refactor).
-            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale):
+            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
                 from mlx_mfa._ext import v6_nax_forward as _v6_fwd
                 # v2.37.0+: force V34 forward routing so lse is natural-log
                 # (V34 backward consumes natural-log lse).  This extends
@@ -4637,7 +4662,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate + 3-kernel dispatch extracted to
             # `_v34_eligible()` and `_v34_backward_vjp()` per Sprint
             # v2.38.0 DP2-HIGH-01 compound (audit M4-MEDIUM-01).
-            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale):
+            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
                 # v2.50 Phase 4b-complete: pass causal through so V34 backward
                 # kernels compile with V34BWD*_CAUSAL=1 macro.
                 dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale, causal)

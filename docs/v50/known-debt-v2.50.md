@@ -155,9 +155,12 @@ where cfg.BK is already 16).  Fix: dispatch BK mirrors the generator
 override (csrc/mfa_attention.cpp).  Both xfails removed; all 4
 TestNativeBackwardRouting target shapes now PASS against SDPA-VJP.
 
-The MFA_FORCE_NATIVE_BWD deprecation (Phase E) remains in place —
-V34 backward is still the production path — but the STEEL backward
-kernel is now CORRECT, changing the v2.51 removal calculus.
+The MFA_FORCE_NATIVE_BWD deprecation (Phase E) remains in place,
+**rationale reworded "superseded" (Phase II-0, Marco-approved)**: the
+flag is redundant — auto dispatch selects the optimal backward per cell
+(V34 D=64 causal default-on at 2.2-2.6x since Phase II-0; SDPA-vjp at
+D=128 where V34/STEEL lose) — not a workaround for broken kernels.
+Removal remains Marco-gated.
 
 **Pattern cross-reference** (campaign 2026-06 Sprint B): this failure
 class is codified as **Pattern #9** (generator/dispatch

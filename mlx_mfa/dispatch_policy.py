@@ -400,6 +400,21 @@ def _v34_backward_carveout(
     # per Pattern #5 confirmed all downstream gates (G2-G8) already
     # permissive — sole code change is this carve-out line.  See
     # `docs/v50/sprint-5b-section-d-dispatch-audit.md`.
+    # Phase II-0 (campaign 2026-06, Marco-approved): D=64 CAUSAL is
+    # DEFAULT-ON.  Phase-I Track 2 measured 2.2-2.6x vs SDPA-vjp at
+    # N in {2048, 4096, 8192} (1.37 vs 2.98 ms ... 17.47 vs 44.54 ms,
+    # B=1 H=8 fp16, 3-block median).  Opt-out: MFA_DISABLE_V34_BACKWARD=1.
+    # The broader envelope (D=64 non-causal, D=128) remains opt-in via
+    # MFA_ENABLE_V34_BACKWARD=1 (D=128 V34 backward measured SLOWER than
+    # SDPA-vjp: 0.46-0.58x — coverage, not perf).
+    if (
+        head_dim == 64
+        and causal
+        and seq_len >= 2048
+        and dtype_key in ("float16", "bfloat16")
+        and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
+    ):
+        return True
     if (
         head_dim in (64, 128)
         and seq_len >= 2048
@@ -705,13 +720,14 @@ def should_use_native_backward(
         # STEEL backward and is now deprecated.
         import warnings
         warnings.warn(
-            "MFA_FORCE_NATIVE_BWD=1 routes through legacy STEEL backward "
-            "kernels.  (The former KD-5 D=128 zeroed-blocks bug was fixed "
-            "in the post-v2.50.1 repo review — dispatch/generator BK "
-            "mismatch — so results are now correct, but the path remains "
-            "non-production.)  The V34 backward NAX-direct path is the "
-            "production default.  MFA_FORCE_NATIVE_BWD is deprecated as "
-            "of v2.50.0; removal timing is under review post-fix.",
+            "MFA_FORCE_NATIVE_BWD is deprecated: SUPERSEDED, not broken.  "
+            "STEEL backward is correct at every cell (the KD-5 "
+            "dispatch/generator BK mismatch was fixed in the 2026-05 "
+            "review; rmse ~4e-5 at the formerly-affected cells), but the "
+            "auto dispatch now selects the optimal backward per cell — "
+            "V34 NAX-direct at D=64 causal (2.2-2.6x, default-on since "
+            "Phase II-0), SDPA-vjp elsewhere — making this flag redundant. "
+            "Removal remains a future Marco-gated step.",
             DeprecationWarning,
             stacklevel=2,
         )
