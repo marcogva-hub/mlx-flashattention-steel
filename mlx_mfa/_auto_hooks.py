@@ -39,6 +39,7 @@ import mlx.core as mx
 
 _HOOKS_INSTALLED = False
 _ORIGINAL_CONV_GENERAL: Optional[Callable] = None
+_ORIGINAL_CONV3D: Optional[Callable] = None
 _INSTALL_LOG: list[str] = []
 
 # Eligible Conv3D kernel shapes per seedvr2_vae patcher convention.
@@ -344,9 +345,32 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     return result
 
 
+def _patched_conv3d(input, weight, stride=1, padding=0, dilation=1,
+                    groups=1, *, stream=None):
+    """Auto-route eligible mx.conv3d calls to conv3d_nax_forward on M5+.
+
+    Phase II-7 (campaign 2026-06): `mlx.nn.Conv3d.__call__` invokes
+    `mx.conv3d` DIRECTLY — it never touches `mx.conv_general` — so
+    every standard MLX model bypassed the conv_general hook entirely
+    (telemetry showed 0 executed / 0 fallback after 20 nn-style conv3d
+    calls).  This violated the Auto-default principle (CLAUDE.md): the
+    NAX conv path was unreachable for plain `mlx.nn` models.  Delegate
+    into `_patched_conv_general`, which owns eligibility, telemetry,
+    dtype-contract restoration, and the original-op fallback
+    (mx.conv_general with flip=False is mathematically identical to
+    mx.conv3d).
+    """
+    kwargs = {} if stream is None else {"stream": stream}
+    return _patched_conv_general(
+        input, weight, stride=stride, padding=padding,
+        kernel_dilation=dilation, input_dilation=1,
+        groups=groups, flip=False, **kwargs,
+    )
+
+
 def install_hooks() -> bool:
     """Install auto-hooks. Idempotent. Returns True if hooks were newly installed."""
-    global _HOOKS_INSTALLED, _ORIGINAL_CONV_GENERAL
+    global _HOOKS_INSTALLED, _ORIGINAL_CONV_GENERAL, _ORIGINAL_CONV3D
 
     if _HOOKS_INSTALLED:
         return False
@@ -368,18 +392,25 @@ def install_hooks() -> bool:
     # remain valid (e.g., test bypass via _ORIGINAL_CONV_GENERAL).
     mx.conv_general = _patched_conv_general
 
+    # Phase II-7: also patch mx.conv3d — the surface mlx.nn.Conv3d
+    # actually calls (see _patched_conv3d docstring).
+    if not hasattr(mx.conv3d, "__mlx_mfa_hook__"):
+        _ORIGINAL_CONV3D = mx.conv3d
+        _patched_conv3d.__mlx_mfa_hook__ = True
+        mx.conv3d = _patched_conv3d
+
     _HOOKS_INSTALLED = True
     _INSTALL_LOG.append(
         f"mlx_mfa auto-hooks installed: "
-        f"mx.conv_general -> conv3d_nax_forward for eligible Conv3D shapes "
-        f"(M5+={_is_m5_plus()})"
+        f"mx.conv_general + mx.conv3d -> conv3d_nax_forward for eligible "
+        f"Conv3D shapes (M5+={_is_m5_plus()})"
     )
     return True
 
 
 def uninstall_hooks() -> bool:
     """Restore original behavior. Idempotent."""
-    global _HOOKS_INSTALLED, _ORIGINAL_CONV_GENERAL
+    global _HOOKS_INSTALLED, _ORIGINAL_CONV_GENERAL, _ORIGINAL_CONV3D
 
     if not _HOOKS_INSTALLED:
         return False
@@ -387,6 +418,9 @@ def uninstall_hooks() -> bool:
     if _ORIGINAL_CONV_GENERAL is not None:
         mx.conv_general = _ORIGINAL_CONV_GENERAL
         _ORIGINAL_CONV_GENERAL = None
+    if _ORIGINAL_CONV3D is not None:
+        mx.conv3d = _ORIGINAL_CONV3D
+        _ORIGINAL_CONV3D = None
 
     _HOOKS_INSTALLED = False
     _INSTALL_LOG.append("mlx_mfa auto-hooks uninstalled")

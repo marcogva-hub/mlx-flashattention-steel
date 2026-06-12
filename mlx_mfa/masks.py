@@ -589,47 +589,63 @@ def make_lcsa_mask(
             patch_size=patch_size,
         )
 
-    spatial_np = np.array(spatial_mask)  # [NQ, NK]
-    NQ, NK = spatial_np.shape
+    NQ, NK = spatial_mask.shape
     actual_top_k = min(top_k, NK)
 
-    # Stage 2: coarse QK^T scores — average-pooled tile representations
+    # Stage 2: coarse QK^T scores — average-pooled tile representations.
+    #
+    # Phase II-7 (campaign 2026-06): fully on-GPU in MLX.  The previous
+    # implementation copied Q and K to numpy (two GPU->CPU transfers of
+    # the full tensors), pooled tiles in a per-tile Python loop (385
+    # np.mean calls at the FlashVSR audit shape), and ran the einsum on
+    # CPU — 11.2 ms per call, 3x the cost of the sparse attention it
+    # serves, paid on EVERY call in LCSA's per-layer dynamic-mask
+    # pattern.  The MLX version keeps everything on-GPU and lazy.
     BQ, BK = _bq_bk(head_dim)
     N = q.shape[2]
     S = k.shape[2]
+    B, H = q.shape[0], q.shape[1]
+    D = q.shape[3]
 
-    def pool_tiles(x_np: np.ndarray, tile_size: int, num_tiles: int, total: int) -> np.ndarray:
-        B, H, _, D = x_np.shape
-        pooled = np.zeros((B, H, num_tiles, D), dtype=np.float32)
-        for ti in range(num_tiles):
-            t_start = ti * tile_size
-            t_end = min(t_start + tile_size, total)
-            pooled[:, :, ti, :] = x_np[:, :, t_start:t_end, :].mean(axis=2)
-        return pooled
+    def _pool_tiles_mx(x: mx.array, tile: int, num_tiles: int, total: int) -> mx.array:
+        """Tile-mean over the sequence axis, ragged tail handled."""
+        xf = x.astype(mx.float32)
+        full = total // tile
+        parts = []
+        if full > 0:
+            parts.append(
+                xf[:, :, : full * tile, :]
+                .reshape(B, H, full, tile, D)
+                .mean(axis=3)
+            )
+        if full < num_tiles:  # ragged last tile
+            parts.append(xf[:, :, full * tile : total, :].mean(axis=2, keepdims=True))
+        return parts[0] if len(parts) == 1 else mx.concatenate(parts, axis=2)
 
-    q_np = np.array(q.astype(mx.float32))
-    k_np = np.array(k.astype(mx.float32))
-    q_pooled = pool_tiles(q_np, BQ, NQ, N)  # [B, H, NQ, D]
-    k_pooled = pool_tiles(k_np, BK, NK, S)  # [B, H, NK, D]
+    q_pooled = _pool_tiles_mx(q, BQ, NQ, N)  # [B, H, NQ, D] fp32
+    k_pooled = _pool_tiles_mx(k, BK, NK, S)  # [B, H, NK, D] fp32
 
-    scores_avg = np.einsum("bhqd,bhkd->bhqk", q_pooled, k_pooled).mean(axis=(0, 1))  # [NQ, NK]
+    # Per-head coarse scores, then mean over (B, H) — same as the
+    # original einsum("bhqd,bhkd->bhqk").mean(axis=(0, 1)).
+    scores_avg = (q_pooled @ k_pooled.transpose(0, 1, 3, 2)).mean(axis=(0, 1))  # [NQ, NK]
 
-    # Mask out tiles outside the spatial window with -inf, then take top_k
-    scores_masked = np.where(spatial_np, scores_avg, -np.inf)
+    spatial_b = spatial_mask.astype(mx.bool_)
+    neg_inf = mx.array(float("-inf"), dtype=scores_avg.dtype)
+    scores_masked = mx.where(spatial_b, scores_avg, neg_inf)
 
-    mask_np = np.zeros((NQ, NK), dtype=bool)
-    for qi in range(NQ):
-        row = scores_masked[qi]
-        active_count = int(spatial_np[qi].sum())
-        k_to_keep = min(actual_top_k, active_count)
-        if k_to_keep == 0:
-            continue
-        topk_idx = np.argpartition(row, -k_to_keep)[-k_to_keep:]
-        # Only keep those that are within the spatial window
-        valid = topk_idx[spatial_np[qi, topk_idx]]
-        mask_np[qi, valid] = True
-
-    return mx.array(mask_np)
+    # Per-row top-k with variable keep-count (min(top_k, active_count)),
+    # vectorized via dense descending ranks: rank[r, c] = position of
+    # column c in row r's descending score order.  Non-spatial entries
+    # are -inf -> rank last, so `rank < top_k` keeps the top-k active
+    # tiles (or all actives when fewer than top_k); `& spatial` drops
+    # any -inf entries that slip under the rank bound on short rows.
+    # (Tie-breaking among exactly-equal scores may differ from the old
+    # np.argpartition selection — the selected COUNT and the "top-k
+    # highest" contract are preserved.)
+    order = mx.argsort(-scores_masked, axis=-1)
+    ranks = mx.argsort(order, axis=-1)
+    keep = mx.logical_and(ranks < actual_top_k, spatial_b)
+    return keep
 
 
 # ---------------------------------------------------------------------------
