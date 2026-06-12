@@ -115,3 +115,33 @@ STATUS: COMPLETE
 - inversion-fix commit + close commit; branch master; pushed
 
 ### Phase II closed. Exhaustion criterion met after one in-round finding (fixed, clean re-pass).
+
+---
+## [2026-06-12 13:30] [CLAUDE] Sprint II-2R Phase R.0+R.1: int8 contradiction RESOLVED — char-vs-int8_t artifact; R.2 gate GO (QK+PV variant)
+STATUS: IN_PROGRESS
+
+### Plan
+- Objective: reconcile II-2/II-5 int8 contradiction; conditional XL build
+- Files: csrc/mpp_int8_bench.mm (char->int8_t), sprint-II-2R-reconciliation.md
+
+### Changes
+- `csrc/mpp_int8_bench.mm` — all legacy variants char->int8_t; header rewritten to reconciled story [HIGH] [VERIFIED]
+- `docs/.../sprint-II-2R-reconciliation.md` — verdict + compile matrix + R.1 gate evidence + R.2 plan
+
+### Validation
+- Ran: dtype x dims x form compile matrix (13 variants); corrected in-repo probe; V34-vs-SDPA + quant-cost bench; accuracy simulation; suite
+- Validated: int8 IS implemented (II-2 probe used `char` != int8_t — type-spelling artifact); full-coop (16,32,16) = 2.00x, device-tensor 64x64x128 compiles but 0.995x (no int8 MMA mode); QK-only declined by accounting (1.01-1.13x net); QK+PV GO (1.13-1.37x ceiling, cos 0.99995 at unit scale); 1391 passed
+
+### Git
+- `289e6f6` + gate-evidence commit; branch master; pushed
+
+### Resume command (R.2 build, next session)
+- Read docs/v50/campaign-2026-06/phase2/sprint-II-2R-reconciliation.md R.2 plan
+- Template: MFA_V34_DUMP_SOURCE=1 dump of v6_nax_forward (D=128) as the kernel skeleton; BaseNAXFrag::mma is already the (16,32,16) paired form — add int8_t/int32 variant
+- Env: .venv/bin/python; rebuild via CMAKE_ARGS="-DPython_EXECUTABLE=$PWD/.venv/bin/python" pip install --no-build-isolation -e .
+
+### Pitfalls for R.2
+- ONLY the full-coop register form has the 2.00x (device-tensor int8 = fp16 speed) — do not use .load()/device-tensor matmuls for QK/PV
+- `char` != `int8_t` in MSL templates (the II-2 artifact — use int8_t everywhere)
+- coop-coop dims must be {16,32} with >= one 32; (16,16,16) rejected
+- P-quant per-row for PV-int8: fold V zero-point via row-sum identity (P rows sum to 1 AFTER softmax — the zp term = zp_s weighted sum, needs the same P @ ones accounting as the simulation)
