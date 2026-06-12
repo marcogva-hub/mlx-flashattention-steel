@@ -5003,3 +5003,24 @@ STATUS: COMPLETE
 ### Key findings
 - Decode floor quantified: TQ attend kernel 14x dense SDPA (kernel-bound; feeds II-5 decode ledger; _v_pool_fp16 50MB kept when tq_v=True) [VERIFIED]
 - Non-causal D=64 bwd: V34-split opt-in 1.88x, unit-scale errs 4e-4..2e-3 — promotion decision data for Marco [VERIFIED]
+
+---
+## [2026-06-12 12:05] [CLAUDE] Phase II Sprint II-8 + PHASE-II-CLOSE: exhaustion met
+STATUS: COMPLETE
+
+### Plan
+- Objective: exhaustion meta-sweep (fresh dispatch+numerics+profiling passes) -> PHASE-II-CLOSE.md
+- Files: mlx_mfa/attention.py (carve-out fwd fix), PHASE-II-CLOSE.md
+
+### Changes
+- `mlx_mfa/attention.py` _make_mfa_custom — carve-out forward now Apple SDPA (bit-identical) + 1-elem sentinel L; VJP recomputes V34 (O,L) pair [HIGH] [VERIFIED]
+- `docs/.../PHASE-II-CLOSE.md` — phase ledger + lessons + Marco decision queue
+
+### Validation
+- Ran: 7-cell interleaved dispatch sweep + numerics battery + suite x2
+- Validated: zero inversions (0.998-1.056); fwd inversion 1.19x -> 1.00-1.03x; grad cells 2.06/2.57/2.58x (>= promotion floor); battery 10/10; 1391 passed x2
+
+### Git
+- inversion-fix commit + close commit; branch master; pushed
+
+### Phase II closed. Exhaustion criterion met after one in-round finding (fixed, clean re-pass).
