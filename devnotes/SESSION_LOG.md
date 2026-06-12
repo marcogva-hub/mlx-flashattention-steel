@@ -4914,3 +4914,35 @@ STATUS: COMPLETE
   v2.38.0?  Specifically: when env=1, route ALL non-causal D=64 ≥4096
   through V34 by default (no need for env opt-in).  Pros: zero-config
   win for users.  Cons: needs broader validation across model families.
+
+---
+## [2026-06-12 08:31] [CLAUDE] Phase II Sprint II-5: Deep Literature Autoresearch — int8 DECLINE FALSIFIED (2.00x gate pass)
+STATUS: COMPLETE
+
+### Plan
+- Objective: exhaustive 2025-2026 technique survey (7+ families, web primary sources), filter vs Pattern #6, probe survivors, report
+- Files to modify: csrc/mpp_int8_bench.mm (cider-form variant), docs/.../phase2/sprint-II-5-report.md
+- Dependencies impacted: none (bench binding + docs only)
+
+### Changes
+- `csrc/mpp_int8_bench.mm:1-130,180-230` — cider-form (16,32,16 full-coop) int8 variant tried first; run_bench flops param; header records falsification [HIGH] [VERIFIED]
+- `docs/v50/campaign-2026-06/phase2/sprint-II-5-report.md` — 28 techniques, 21 declined w/ reason, 3 probes executed, dispositions [HIGH] [VERIFIED]
+
+### Dependency & regression check
+- Callers verified: mpp_int8_microbench() binding unchanged signature; bench-only
+- Test coverage: full suite 1380 passed post-rebuild
+
+### Tech cost
+- None on production paths (diagnostic binding only)
+
+### Validation
+- Ran: standalone probes (int8 GEMM bit-exact vs CPU; conv2d impulse test; cider bench_sdpa 102 configs) + .venv/bin/python -m pytest tests/ -q
+- Validated: int8 264.9 TOPS vs fp16 132.6 TF = 2.00x in-repo (kill gate >=1.3 PASS); conv2d deterministic + convention identified; cider decode 1.0-1.24x (CONFIRMED-NARROW); suite 1380 passed
+
+### Git
+- `c480c51` (probe) + report commit follows; branch master
+
+### Key findings
+- II-2 false negative root cause: full-coop int8 requires M,N,K in {16,32}; II-2 probed only 64x64x128 [VERIFIED]
+- NEW: MPP convolution2d primitive in 26.4 SDK — implemented, deterministic, centered xcorr NHWC/HWIO; multi-TG tiling unresolved (follow-up queued); may supersede fused-im2col XL candidate [VERIFIED]
+- Marco decision items: int8 kernel sprint sequencing (revived), cider GQA-decode port (1.0-1.24x narrow window)
