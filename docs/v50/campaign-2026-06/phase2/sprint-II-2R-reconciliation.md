@@ -127,3 +127,55 @@ D=64 deferred until the variant proves out at D=128).
 5. Bench: vs Apple SDPA NAX (the real dispatch), full quant cost
    included, 3 sessions median; promote/decline on the measured
    number.  Kill: < 1.10x at D=128 N=8192.
+
+## Phase R.2 — build outcome: ATTENTION-LEVEL DECLINE (kill gate)
+
+A complete int8 attention forward prototype was built and validated
+(`benchmarks/probes/sage_int8_proto.mm`): D=128, BQ=64/WM=4/BK=32,
+online fp32 softmax, full-cooperative (16,32,16) int8 QK, three PV
+variants.  Correctness vs fp32 reference at every step:
+
+| variant | accuracy (N=1024) | kernel ms N=4096 | N=8192 |
+|---|---|--:|--:|
+| int8 QK + int8 PV (127-fixed P, per-channel V) | cos 0.999720, rmse 0.0012 | 3.02 | 12.22 |
+| int8 QK + int8 PV, (16,32,16)x2 chained | same | 3.05 | 12.22 |
+| int8 QK + fp16 PV (variant A) | **cos 0.999958, rmse 0.0005** | 3.48 | 14.14 |
+| + persistent coop-dest accumulators | same | 3.72 | 15.17 |
+| Apple SDPA NAX (baseline) | (ref) | **2.99** | **11.25** |
+
+Best attention-level result: **0.92x SDPA kernel-only; ~0.80x net**
+with the quant pass (+0.63/+1.21 ms).  Kill gate (>= 1.10x net at
+D=128 N=8192): **missed by ~40%.  DECLINED.**
+
+**Why the 2.00x MMA advantage does not survive** (ablation-measured,
+N=8192): QK mma chain + loads = 1.69 ms; softmax/dequant/P-staging
+tax = 2.4 ms; PV stage = 8.2 ms — and the PV cost is INVARIANT to
+dtype (int8/fp16), descriptor shape ((16,32,32) vs (16,32,16)x2), and
+transpose flags.  The cooperative-tensor API's per-tile fragment
+lifecycle (dest create/zero/elementwise-readback ~10 us/cycle, gmi
+staging, elementwise fills) dominates; packed 4-byte loads and
+persistent accumulators both REGRESSED (the latter via register
+pressure — the v2.39.0 spill lesson again).  Draw Things' 1.24-1.41x
+exists because their kernel absorbs these costs with hand-built TGM
+pipelines below the public cooperative-tensor API.
+
+**Remaining viable path (Marco-gated, NOT executed)**: integrating
+int8 QK (and PV) into the production V34 generator, which already
+reaches SDPA parity (0.99x) with its mature staging.  Projection from
+measured components: QK-only ~1.11x at N=8192 only (thin); QK+PV
+~1.33x at N=8192 / ~1.13x at N=4096, net of quant.  That is deep
+surgery on the 8k-line NAAttentionKernel.cpp generator — a dedicated
+sprint if the thin-but-real win at long-N is wanted.  The prototype,
+ablation data, and coordinate-table techniques transfer directly.
+
+## Sprint verdict
+
+- R.0: contradiction resolved (char-vs-int8_t + dims matrix).  Both
+  prior reports' mechanisms corrected; probe fixed in-tree.
+- R.1: GO was correctly conditional — and the build phase converted it
+  to a measured DECLINE at the kill gate, which is the gate working
+  as designed.
+- The II-2 report's decline now stands, SUPERSEDED IN REASON: not
+  "primitive unimplemented" (false) but "primitive 2.00x advantage is
+  consumed by the cooperative-tensor API tax at attention level"
+  (measured).

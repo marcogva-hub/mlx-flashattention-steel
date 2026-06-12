@@ -145,3 +145,26 @@ STATUS: IN_PROGRESS
 - `char` != `int8_t` in MSL templates (the II-2 artifact — use int8_t everywhere)
 - coop-coop dims must be {16,32} with >= one 32; (16,16,16) rejected
 - P-quant per-row for PV-int8: fold V zero-point via row-sum identity (P rows sum to 1 AFTER softmax — the zp term = zp_s weighted sum, needs the same P @ ones accounting as the simulation)
+
+---
+## [2026-06-12 15:10] [CLAUDE] Sprint II-2R Phase R.2: int8 attention kernel BUILT + DECLINED at kill gate (0.92x kernel / 0.80x net)
+STATUS: COMPLETE
+
+### Plan
+- Objective: full Sage-NAX int8 attention build per R.1 GO; promote/decline on attention-level bench
+- Files: benchmarks/probes/sage_int8_proto.mm (new), reconciliation report extended
+
+### Changes
+- Prototype kernel: D=128 online-softmax fwd, full-coop (16,32,16) int8 QK; 3 PV variants benched (int8/int8-chained/fp16) + 2 structural opts (packed loads, persistent dests) — all measured, best 12.22ms vs SDPA 11.25 [HIGH] [VERIFIED]
+
+### Validation
+- Ran: per-step correctness vs fp32 CPU reference (cos up to 0.999958); ablation decomposition (QK 1.69 / softmax 2.4 / PV 8.2 ms); kernel timing medians; full suite
+- Validated: kill gate (>=1.10x net) MISSED by ~40% -> DECLINED with evidence; 1391 passed
+
+### Git
+- decline commit; branch master; pushed
+
+### Key findings
+- The 2.00x int8 MMA advantage is consumed by cooperative-tensor API lifecycle tax (dest cycles ~10us, elementwise staging) — dtype/shape/transpose-invariant [VERIFIED by ablation]
+- Packed 4-byte loads REGRESSED (byte loads fine on M5); persistent coop dests REGRESSED (register pressure, v2.39.0 class) [VERIFIED]
+- Marco-gated residual: V34-generator-integrated int8 projects 1.11-1.33x at N=8192 only — dedicated-sprint scale
