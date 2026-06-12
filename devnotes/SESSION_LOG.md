@@ -223,3 +223,12 @@ STATUS: COMPLETE (items 1,3,4 clean/closed; item 2 partially — fixed point NOT
 - Item 4: run-to-run determinism contract HOLDS; batch-invariance = feature -> Marco backlog [VERIFIED]
 - Item 2: production vector closed (II-6); 52 directed repro rounds clean; stress canary (opt-in MFA_POOL_STRESS=1) makes residual reproducible ~1/6 IN-SUITE only; root-cause = dedicated session; FIXED POINT NOT DECLARED [VERIFIED flake, mechanism UNCERTAIN]
 - Suite: 1399 passed + 1 skipped x3 | Git: commit + push
+
+---
+## [2026-06-12 22:50] [CLAUDE] Sprints II-12 + II-13: non-causal D=64 bwd PROMOTED (1.72-2.01x); hook-coverage audit COMPLETE (zero gaps, Pattern #8 structural)
+STATUS: COMPLETE
+
+- II-12: both carve-out predicates widened; three-axis at hardened bar (std-12 errors == established causal floor); fwd bit-SDPA 1.023 interleaved; GQA H_kv; bench 1.72/1.94/2.01x; contract tests + ii12_* perf-claim registry; +5 locks [VERIFIED]
+- II-12 bonus: first-line carve-out now mirrors the default-scale gate (non-default scale no longer detours via STEEL fwd) [VERIFIED]
+- II-13: 11 entry points enumerated+classified; zero remaining gaps on M5; M1-gated SDPA hook = flagged-unbenched ledger item; telemetry engagement tests + completeness registry + anti-silence check (5 tests) [VERIFIED]
+- Suite: 1409 passed + 1 skipped x2 | Git: commits + push
