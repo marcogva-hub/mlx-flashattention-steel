@@ -76,9 +76,14 @@ class TestDefaultOnEligibility:
         monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
         assert _v34_eligible(64, mx.float16, causal=True, seq_len=1024) is False
 
-    def test_non_causal_not_widened(self, monkeypatch):
+    def test_non_causal_default_on_ii12(self, monkeypatch):
+        """Phase II-12: non-causal D=64 is NOW default-on (1.72-2.01x via
+        the clean split kernel; same envelope + opt-out as causal)."""
         monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        assert _v34_eligible(64, mx.float16, causal=False, seq_len=4096) is False
+        monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
+        assert _v34_eligible(64, mx.float16, False, seq_len=4096) is True
+        monkeypatch.setenv("MFA_DISABLE_V34_BACKWARD", "1")
+        assert _v34_eligible(64, mx.float16, False, seq_len=4096) is False
 
     def test_d128_not_widened(self, monkeypatch):
         monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)

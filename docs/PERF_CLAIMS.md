@@ -40,7 +40,8 @@ Full investigation evidence + skill invocations log:
 | `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
 | `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
 | `v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity` | v2.50 Prompt 5b | D=128 qL=8192 V34 backward engages via AUTO (split kernels, Sprint B v2.40.0-internal outcome γ) at parity with SDPA-vjp (~RMSE 2e-5).  Coverage extension; no speedup claim | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,8192,128) fp16` | REACHABLE (parity engagement, v2.50 Prompt 5b Section D) |
-| `v2.37.3_d64_qL8192_env_unset_no_v34` | v2.37.3 | Without `MFA_ENABLE_V34_BACKWARD=1`, V34 backward NEVER engages | env unset | Same shape, env clear | REACHABLE (correct fallback) |
+| `ii12_d64_qL8192_default_on_v34` | II-12 (2026-06) | D=64 backward (causal + non-causal) default-on via the clean V34 split kernel, 1.7-2.7x vs SDPA-vjp | env unset | B=1 H=4 qL=8192 D=64 fp16 | REACHABLE (default) |
+| `ii12_d64_qL8192_optout_sdpa` | II-12 (2026-06) | `MFA_DISABLE_V34_BACKWARD=1` restores SDPA-vjp bit-exactly | opt-out env | Same shape | REACHABLE (opt-out) |
 
 ### Internal claims (v2.39.2-internal — below-public-floor coverage)
 

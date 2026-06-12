@@ -31,7 +31,9 @@ DOC_PATH = REPO_ROOT / "docs" / "PERF_CLAIMS.md"
 
 # Pattern matches `claim_id` strings as they appear in markdown tables:
 # either backticked `v2.X.Y_name` or plain v2.X.Y_name in table cells.
-CLAIM_ID_PATTERN = re.compile(r"`(v2\.\d+\.\d+_[\w.]+)`")
+# Phase II-12: ID grammar widened — campaign-sprint claims use
+# `ii<NN>_...` ids alongside the original `v2.X.Y_...` form.
+CLAIM_ID_PATTERN = re.compile(r"`((?:v2\.\d+\.\d+|ii\d+)_[\w.]+)`")
 
 
 def _parse_doc_active_claim_ids() -> set:

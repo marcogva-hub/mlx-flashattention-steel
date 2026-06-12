@@ -526,6 +526,12 @@ def flash_attention(
             and _get_has_nax_cached()
             and k.dtype == q.dtype
             and v.dtype == q.dtype
+            # Phase II-12: mirror _v34_eligible's scale gate at the
+            # first line — a non-default scale would enter the custom
+            # path only to be rejected inside and land on the STEEL
+            # forward (worse fp16 floor than SDPA at sharp scales).
+            and (scale is None
+                 or abs(scale - 1.0 / math.sqrt(head_dim)) < 1e-9)
         ):
             from mlx_mfa.dispatch_policy import (
                 _v34_backward_carveout,
@@ -4534,8 +4540,13 @@ def _v34_eligible(head_dim: int, dtype, causal: bool,
     # seq_len (>= 2048 — V34 regresses below: 0.85x @ 1024, 0.50x @ 512).
     # Opt-out: MFA_DISABLE_V34_BACKWARD=1.  Calls without seq_len (tests,
     # legacy) keep the env-opt-in behavior unchanged.
+    # Phase II-12 (campaign 2026-06, Marco-directed): non-causal D=64
+    # NOW default-on too (II-7 measured 1.88x via the clean split
+    # kernel, unit-scale errs <= 2e-3).  Same envelope as the II-0
+    # causal promotion; forward stays Apple SDPA (II-8 carve-out
+    # lesson), VJP recomputes the V34 pair; split kernel only (II-6).
     _default_on = (
-        head_dim == 64 and causal
+        head_dim == 64
         and seq_len is not None and seq_len >= 2048
         and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
     )

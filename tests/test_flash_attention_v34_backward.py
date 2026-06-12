@@ -239,17 +239,24 @@ def test_v34_bwd_carveout_engages_d128_above_floor(enable_v34_bwd):
     )
 
 
-def test_v34_bwd_v2372_carveout_inactive_without_env():
-    """Without MFA_ENABLE_V34_BACKWARD=1, the carve-out must NOT fire
-    even for qualifying shape.  Default behavior preserved."""
+def test_v34_bwd_v2372_carveout_default_on_ii12(monkeypatch):
+    """Phase II-12 contract UPDATE: the non-causal D=64 carve-out is now
+    DEFAULT-ON (1.72-2.01x via the clean split kernel).  Default engages
+    V34 (V34-floor rmse vs SDPA-vjp); the opt-out restores bit-identical
+    SDPA-vjp."""
     q, k, v = _make(1, 4, 4, 4096, 4096, 64, 57, mx.float16)
     scale = 1.0 / math.sqrt(64)
+    monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
     dQ, dK, dV = _grads_auto(q, k, v)
     dQ_ref, dK_ref, dV_ref = _sdpa_grads(q, k, v, scale)
-    # Without env, must be bit-identical SDPA-vjp.
-    assert _rmse(dQ, dQ_ref) == 0.0
-    assert _rmse(dK, dK_ref) == 0.0
-    assert _rmse(dV, dV_ref) == 0.0
+    assert _rmse(dQ, dQ_ref) < 5e-3
+    assert _rmse(dK, dK_ref) < 5e-3
+    assert _rmse(dV, dV_ref) < 5e-3
+    monkeypatch.setenv("MFA_DISABLE_V34_BACKWARD", "1")
+    dQ2, dK2, dV2 = _grads_auto(q, k, v)
+    assert _rmse(dQ2, dQ_ref) == 0.0
+    assert _rmse(dK2, dK_ref) == 0.0
+    assert _rmse(dV2, dV_ref) == 0.0
 
 
 # ---------------------------------------------------------------------------

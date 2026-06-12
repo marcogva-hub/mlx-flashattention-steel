@@ -158,3 +158,40 @@ class TestAutoRoutesSplit:
         for name, x, y in zip(("dQ", "dK", "dV"), g_auto, g_split):
             same = bool(mx.all(x == y).item())
             assert same, f"{name}: auto != forced-split (routing regressed)"
+
+
+@_skipif_no_nax
+class TestNonCausalPromotionII12:
+    """Phase II-12 locks: non-causal D=64 backward default-on via the
+    clean split kernel; forward stays bit-SDPA; GQA at H_kv."""
+
+    def test_unit_scale_elementwise(self):
+        q, k, v = _mk(1.0, seed=7)
+        s = 1.0 / math.sqrt(64)
+        g = _grads(lambda a, b, c: flash_attention(a, b, c, causal=False), q, k, v)
+        gr = _grads(lambda a, b, c: mx.fast.scaled_dot_product_attention(
+            a, b, c, scale=s), q, k, v)
+        for name, x, y in zip(("dQ", "dK", "dV"), g, gr):
+            maxerr = float(mx.max(mx.abs(
+                x.astype(mx.float32) - y.astype(mx.float32))).item())
+            assert maxerr < 0.1, f"{name} non-causal err {maxerr}"
+
+    def test_adversarial_finite(self):
+        q, k, v = _mk(12.0, seed=7)
+        g = _grads(lambda a, b, c: flash_attention(a, b, c, causal=False), q, k, v)
+        for name, x in zip(("dQ", "dK", "dV"), g):
+            assert int(mx.sum(~mx.isfinite(x.astype(mx.float32))).item()) == 0, name
+
+    def test_forward_stays_sdpa_bit_identical(self):
+        q, k, v = _mk(1.0, seed=1, N=4096)
+        o1 = flash_attention(q, k, v, causal=False)
+        o2 = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / 8.0)
+        mx.eval(o1, o2)
+        assert bool(mx.all(o1 == o2).item()), \
+            "non-causal forward not bit-SDPA (II-8 carve-out lesson regressed)"
+
+    def test_gqa_hkv_shapes(self):
+        q, k, v = _mk(1.0, seed=9, N=2048, Hkv=2)
+        g = _grads(lambda a, b, c: flash_attention(a, b, c, causal=False), q, k, v)
+        assert tuple(g[1].shape) == (1, 2, 2048, 64), "dK not at H_kv"
+        assert tuple(g[2].shape) == (1, 2, 2048, 64), "dV not at H_kv"

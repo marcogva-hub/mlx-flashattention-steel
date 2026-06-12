@@ -266,17 +266,32 @@ PERF_CLAIMS = [
             "15% vs SDPA-vjp empirically); carve-out correctly does not engage"
         ),
     },
-    # v2.37.3: env unset — V34 must NOT engage anywhere
+    # Phase II-12 contract UPDATE (was: env unset -> never engage).
+    # D=64 backward (causal AND non-causal) is now DEFAULT-ON at
+    # qL >= 2048 via the clean split kernel (II-0 + II-12 promotions);
+    # the opt-out env restores SDPA-vjp exactly.
     {
-        "id": "v2.37.3_d64_qL8192_env_unset_no_v34",
-        "env": {},  # MFA_ENABLE_V34_BACKWARD NOT set
+        "id": "ii12_d64_qL8192_default_on_v34",
+        "env": {},  # default: V34 split engages
+        "shape": (1, 4, 8192, 8192, 64),
+        "dtype": mx.float16,
+        "expected": "v34_backward",
+        "documented_in": ["README.md", "CHANGELOG.md"],
+        "documented_perf_claim": (
+            "Default behavior: D=64 backward routes to the V34 split "
+            "kernel (1.7-2.7x vs SDPA-vjp); opt-out via "
+            "MFA_DISABLE_V34_BACKWARD=1"
+        ),
+    },
+    {
+        "id": "ii12_d64_qL8192_optout_sdpa",
+        "env": {"MFA_DISABLE_V34_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
         "expected": "sdpa_fallback",
         "documented_in": ["README.md", "CHANGELOG.md"],
         "documented_perf_claim": (
-            "Default behavior (env unset): AUTO path uses SDPA-vjp; "
-            "V34 backward never engages without explicit opt-in"
+            "MFA_DISABLE_V34_BACKWARD=1 restores SDPA-vjp bit-exactly"
         ),
     },
 ]

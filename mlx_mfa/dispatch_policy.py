@@ -407,9 +407,10 @@ def _v34_backward_carveout(
     # The broader envelope (D=64 non-causal, D=128) remains opt-in via
     # MFA_ENABLE_V34_BACKWARD=1 (D=128 V34 backward measured SLOWER than
     # SDPA-vjp: 0.46-0.58x — coverage, not perf).
+    # Phase II-12: causal AND non-causal D=64 default-on (non-causal
+    # measured 1.88x via the clean split kernel, II-7; same opt-out).
     if (
         head_dim == 64
-        and causal
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
         and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
