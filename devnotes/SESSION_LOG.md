@@ -325,3 +325,12 @@ STATUS: COMPLETE
 
 ### Git
 - committed below; branch master
+
+---
+## [2026-06-12 19:50] [CLAUDE] Phase III-3: v2.51.0 tagged release (PyPI + GH)
+STATUS: COMPLETE
+
+- Change: 3-SoT bump 2.50.1→2.51.0 + CHANGELOG [2.51.0] (both Unreleased sections folded + Phase II late + Phase III items + 3 Reproduce snippets) + README header [VERIFIED]
+- Audit: /mlx-mfa-release-audit GREEN (7 checks; 1 advisory = claim-id naming, substance satisfied); gate#9 programmatic pass; check_venv pass; stressed suite 1431 passed [VERIFIED]
+- Ran: python -m build; twine check+upload; gh release create with artifacts | Validated: https://pypi.org/project/mlx-mfa/2.51.0/ + GH release tag v2.51.0 live
+- Git: abdaa8d (release commit), tag v2.51.0, pushed
