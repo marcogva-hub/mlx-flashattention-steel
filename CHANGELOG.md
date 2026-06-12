@@ -49,6 +49,45 @@ across 4 commit waves with per-wave test validation.
   vars + stale V34 text fixed; HARDWARE_SUPPORT/PERF_CLAIMS headers
   updated; Python 3.13/3.14 classifiers.
 
+## [Unreleased — campaign 2026-06 + Phase II]
+
+Fable 5 exhaustive audit/optimization campaign (Sprints B→A→C complete,
+Phase II in progress).  Full reports: `docs/v50/campaign-2026-06/`.
+
+### Added
+- **V34 backward D=64 causal DEFAULT-ON** (Phase II-0, Marco-approved):
+  2.2-2.7× vs SDPA-vjp at qL≥2048 incl. GQA/MQA; opt-out
+  `MFA_DISABLE_V34_BACKWARD=1`.
+- CacheKey tie() enforcement layer (`csrc/mfa_key_tie.hpp`): the
+  cache-key omission class is structurally impossible; static invariant
+  test guards the tie declarations.
+- Static cache-key invariant test + 5 new cache-key fixes beyond the
+  2026-05 four (axis-flags truncation CRITICAL, tq_wht_enabled
+  is_equivalent HIGH, dispatch-table runtime contract, 2 defensive).
+
+### Fixed
+- **GQA gradient shapes in V34 backward** (latent since v2.37.0): dK/dV
+  now group-summed to [B, H_kv, S, D]; was returning H_q-shaped grads
+  on the opt-in path.
+- D=256-causal M5 dispatch inversion (1.38×: SDPA wins all 9 grid
+  cells; M4-era promote reverted for M5+ only).
+
+### Performance
+- TurboQuant decode: 3 redundant GPU drains removed (~2%,
+  bit-identical) + per-token block-table upload eliminated.
+- Paged RoPE on M5+: mx.fast.rope replaces per-step mx.compile churn.
+- conv3d padding parse memoized; rope compile cache bounded.
+
+### Deprecated
+- `MFA_FORCE_NATIVE_BWD` rationale reworded **superseded** (correct
+  everywhere post-KD-5; auto dispatch selects optimal backward per
+  cell).  Removal remains Marco-gated.
+
+### Institutional
+- Pattern #9 (generator/dispatch constant mismatch) + release-audit
+  gate #9 + §AA.7; 83-knob ledger (1 ghost removed, 1 ghost corrected,
+  2 stale-docs fixed, 10 documented); v2.30 EXEC_SG sweeps invalidated.
+
 ## [2.50.1] — 2026-05-16
 
 **v2.50.1 is a critical performance-unlock patch.**  A dtype-handling
