@@ -27,6 +27,7 @@ import os
 from typing import Optional, Union, Sequence
 
 import mlx.core as mx
+import numpy as np
 
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
@@ -3860,6 +3861,101 @@ def _get_or_build_expanded_float_bias(
     return float_bias
 
 
+_SPARSE_ROWFIX_CACHE: "dict[tuple, tuple[mx.array, object]]" = {}  # key -> (mask_ref, row_active or None)
+_SPARSE_ROWFIX_CACHE_MAX = 8
+
+
+def _get_sparse_row_active(
+    block_mask: mx.array, B: int, H: int, N: int, S: int, causal: bool,
+) -> "mx.array | None":
+    """Element-level query-row activity for the SDPA+bias sparse fallback.
+
+    Returns None when EVERY query row has at least one active (and, for
+    causal, causally reachable) block — the common case, decided once
+    per (mask, shape, causal) and cached, so the fast path costs a dict
+    lookup.  Otherwise returns a [B?, H?, N, 1] bool mask (True = row
+    has active attention) for the all-False-row zero fixup.
+
+    Causal is applied at BLOCK granularity: block (r, c) is causally
+    reachable iff its first key column c*BK <= last query row of the
+    block + (S - N).  This matches the native kernel's tile-level loop
+    bound, which is what produces the zero-row contract.
+    """
+    cache_key = (
+        id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
+        B, H, N, S, bool(causal),
+    )
+    cached = _SPARSE_ROWFIX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached[1]
+
+    NQ = block_mask.shape[-2]
+    NK = block_mask.shape[-1]
+    BQ_actual = (N + NQ - 1) // NQ
+    BK_actual = (S + NK - 1) // NK
+
+    # Host-side (numpy) computation throughout: this helper runs inside
+    # the forward that mx.vjp/custom_function may be tracing, where a
+    # mid-graph .item()/async_eval on derived tensors caused
+    # order-dependent Metal buffer-pool contamination in the full suite
+    # (3 unrelated tests flaked).  The mask is a non-differentiated bool
+    # input, so materializing it host-side once per cache entry is safe.
+    mask_np = np.asarray(block_mask.astype(mx.bool_))
+
+    if causal:
+        # Block (r, c) causally reachable iff c*BK <= (r+1)*BQ - 1 + (S - N).
+        r_idx = np.arange(NQ)[:, None]
+        c_idx = np.arange(NK)[None, :]
+        reachable = (c_idx * BK_actual) <= ((r_idx + 1) * BQ_actual - 1 + (S - N))
+        mask_np = np.logical_and(mask_np, reachable)
+
+    block_row_active = mask_np.any(axis=-1)  # [..., NQ]
+    result: "mx.array | None" = None
+    if not bool(block_row_active.all()):
+        # Expand block rows to element rows, trim to N, add key axis.
+        expanded = np.repeat(block_row_active, BQ_actual, axis=-1)[..., :N]
+        # Shape to broadcast against out [B, H, N, D]: [..., N, 1].
+        while expanded.ndim < 3:
+            expanded = expanded[None]
+        result = mx.array(expanded[..., None])
+
+    if len(_SPARSE_ROWFIX_CACHE) >= _SPARSE_ROWFIX_CACHE_MAX:
+        _SPARSE_ROWFIX_CACHE.pop(next(iter(_SPARSE_ROWFIX_CACHE)))
+    # Strong mask ref prevents the id()-ABA hazard (same pattern as
+    # _SPARSE_BIAS_CACHE).
+    _SPARSE_ROWFIX_CACHE[cache_key] = (block_mask, result)
+    return result
+
+
+_SPARSE_SANITIZED_BIAS_CACHE: "dict[tuple, tuple[mx.array, mx.array]]" = {}
+_SPARSE_SANITIZED_BIAS_CACHE_MAX = 8
+
+
+def _get_sanitized_bias(
+    block_mask: mx.array, float_bias: mx.array, row_active: mx.array,
+    B: int, H: int, N: int, S: int, causal: bool,
+) -> mx.array:
+    """Cached bias with all-inactive query rows set to 0 instead of -inf.
+
+    Built once per (mask, shape, dtype, causal) and KEPT ALIVE so the
+    -inf-laden tensor never cycles through the Metal buffer pool (see
+    the pool-poisoning note at the call site)."""
+    cache_key = (
+        id(block_mask), tuple(block_mask.shape),
+        B, H, N, S, bool(causal), str(float_bias.dtype),
+    )
+    cached = _SPARSE_SANITIZED_BIAS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached[1]
+    sanitized = mx.where(
+        row_active, float_bias, mx.array(0.0, dtype=float_bias.dtype))
+    mx.async_eval(sanitized); mx.synchronize()
+    if len(_SPARSE_SANITIZED_BIAS_CACHE) >= _SPARSE_SANITIZED_BIAS_CACHE_MAX:
+        _SPARSE_SANITIZED_BIAS_CACHE.pop(next(iter(_SPARSE_SANITIZED_BIAS_CACHE)))
+    _SPARSE_SANITIZED_BIAS_CACHE[cache_key] = (block_mask, sanitized)
+    return sanitized
+
+
 def _sparse_fallback_sdpa_perhead(
     q: mx.array,
     k: mx.array,
@@ -3905,9 +4001,34 @@ def _sparse_fallback_sdpa_perhead(
         # Broadcast causal mask over [B, H]; SDPA broadcasts itself but be explicit.
         float_bias = float_bias + causal_m
 
-    return mx.fast.scaled_dot_product_attention(
+    # Phase II-6 (campaign 2026-06): honor the native sparse-kernel
+    # contract for all-False rows.  The STEEL/V34 sparse kernels write
+    # ZEROS for a query row with no active blocks (locked by the Track-B
+    # "all-false row" test); SDPA with an all--inf bias row produces NaN
+    # (softmax 0/0).  The v2.50 Sprint-1 dispatch migration silently
+    # swapped most M5 sparse shapes onto this path, changing the public
+    # semantics from zeros to NaN.  Fixup (rare path, cached decision):
+    # 1. swap in a SANITIZED bias (inactive rows 0 instead of -inf) so
+    #    SDPA never computes the NaN rows.  The sanitized bias is built
+    #    once and CACHED ALIVE — building it per call would release an
+    #    -inf-laden temporary into the Metal buffer pool on every call,
+    #    which flaked 3 unrelated finite-value kernel tests in the
+    #    suite (stale-buffer sensitivity; same class as the
+    #    mx.clear_cache() notes in MEMORY.md).  NaN-output-then-mask
+    #    has the same pool-poisoning problem with NaN buffers.
+    # 2. zero those output rows to restore the kernel contract (the
+    #    sanitized rows otherwise attend uniformly).
+    row_active = _get_sparse_row_active(block_mask, B, H, N, S, causal)
+    if row_active is not None:
+        float_bias = _get_sanitized_bias(
+            block_mask, float_bias, row_active, B, H, N, S, causal)
+
+    out = mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=float_bias
     )
+    if row_active is not None:
+        out = mx.where(row_active, out, mx.array(0.0, dtype=out.dtype))
+    return out
 
 
 # ---------------------------------------------------------------------------
