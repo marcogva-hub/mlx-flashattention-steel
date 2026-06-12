@@ -5,15 +5,29 @@
 /// Kill threshold (recorded in sprint-C-report): int8 < 1.3x fp16
 /// sustained means the Sage-NAX int8 kernel sprint dies at the gate.
 ///
-/// Sprint II-5 REVISION (2026-06-12): the II-2 verdict "int8
-/// unimplemented, all binding forms static_assert" is FALSIFIED.
-/// int8 matmul2d IS implemented on macOS 26.4 / M5 in the
-/// full-cooperative form with fragment dims M,N,K each in {16,32}
-/// (header static_assert enforces this for coop-operand int8; the
-/// II-2 probe only tried 64x64x128 tiles, which is the actual
-/// constraint that fired — the "Unsupported type" diagnostic was
-/// misleading).  Working configuration (matches Mininglamp-AI/cider
-/// w8a8_matmul.metal, MIT, and Draw Things Metal Quantized Attention):
+/// Sprint II-2R RECONCILIATION (2026-06-12, supersedes the II-5
+/// revision note below and the II-2 verdict): int8 matmul2d IS
+/// implemented on macOS 26.4 / M5 in BOTH the device-tensor forms
+/// (including 64x64x128 — II-2's exact tile) AND the full-cooperative
+/// form.  The II-2 probe failed on a TYPE SPELLING bug: it declared
+/// operands as `char`, which in Metal C++ is a distinct type from
+/// `int8_t` (= `signed char`); MPP's dispatch is keyed on
+/// `__is_same_v<T, int8_t>` / `uint8_t` exactly, so `char` falls
+/// through every combo list in every form.  All five II-2 variants
+/// used `char` → all five failed → "unimplemented" was a probe
+/// artifact, not a runtime gap.  (The full-coop variant additionally
+/// violated the coop-coop dims constraint: M,N,K each in {16,32}
+/// with at least one == 32 — that constraint applies ONLY when both
+/// inputs are cooperative tensors; device-tensor forms accept the
+/// big tiles.)  All variants below now use `int8_t`.
+/// Compile matrix (verified 2026-06-12): full-coop int8 16x32x16 /
+/// 32x32x16 / 32x32x32 OK, 16x16x16 + 64x64x128 dims-rejected;
+/// device-tensor int8 16x32x16 / 32x32x32 / 64x64x32 / 64x64x128 OK.
+///
+/// Sprint II-5 historical note (diagnosis incomplete — kept for the
+/// record): the II-5 probe established the working full-coop
+/// configuration (matches Mininglamp-AI/cider w8a8_matmul.metal, MIT,
+/// and Draw Things Metal Quantized Attention):
 ///   matmul2d_descriptor(16, 32, 16, false, true, true,
 ///                       mode::multiply_accumulate)
 ///   matmul2d<desc, metal::execution_simdgroup>
@@ -133,8 +147,8 @@ using namespace mpp::tensor_ops;
 
 kernel void )MSL";
   ss << fn_name << R"MSL((
-    tensor<device char, dextents<int32_t, 2>> A,
-    tensor<device char, dextents<int32_t, 2>> B,
+    tensor<device int8_t, dextents<int32_t, 2>> A,
+    tensor<device int8_t, dextents<int32_t, 2>> B,
     tensor<device int, dextents<int32_t, 2>> C,
     uint3 tgid [[threadgroup_position_in_grid]])
 {
@@ -278,7 +292,7 @@ std::string mpp_int8_microbench() {
     out << "fp16=" << tf_f16 << " TF";
     try {
       double tf_i8 = run_bench(
-          mtl_device, bench_kernel_src("char", "int", "mm_i8", reps),
+          mtl_device, bench_kernel_src("int8_t", "int", "mm_i8", reps),
           "mm_i8", 1, 4, reps, tgs, iters);
       out << " int8/i32=" << tf_i8 << " TOPS ratio=" << (tf_i8 / tf_f16);
     } catch (const std::exception&) {
@@ -286,13 +300,13 @@ std::string mpp_int8_microbench() {
       // MPP version — try the mixed char x char -> float destination.
       try {
         double tf_i8f = run_bench(
-            mtl_device, bench_kernel_src("char", "float", "mm_i8f", reps),
+            mtl_device, bench_kernel_src("int8_t", "float", "mm_i8f", reps),
             "mm_i8f", 1, 4, reps, tgs, iters);
         out << " int8/f32dest=" << tf_i8f << " TOPS ratio=" << (tf_i8f / tf_f16);
       } catch (const std::exception& e2) {
         try {
           double tf_i8h = run_bench(
-              mtl_device, bench_kernel_src("char", "half", "mm_i8h", reps),
+              mtl_device, bench_kernel_src("int8_t", "half", "mm_i8h", reps),
               "mm_i8h", 1, 2, reps, tgs, iters);
           out << " int8/f16dest=" << tf_i8h << " TOPS ratio=" << (tf_i8h / tf_f16);
         } catch (const std::exception&) {
@@ -300,7 +314,7 @@ std::string mpp_int8_microbench() {
           try {
             double tf_i8c = run_bench(
                 mtl_device,
-                bench_kernel_coop_src("char", "int", "mm_i8c", reps),
+                bench_kernel_coop_src("int8_t", "int", "mm_i8c", reps),
                 "mm_i8c", 1, 4, reps, tgs, iters);
             out << " int8/coop_i32=" << tf_i8c << " TOPS ratio="
                 << (tf_i8c / tf_f16);
