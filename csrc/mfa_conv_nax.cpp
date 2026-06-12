@@ -276,6 +276,132 @@ mlx::core::array dispatch_pointwise_fast_path(
   return mlx::core::reshape(flat, {B, T, H, W, C_out});
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Sprint II-9 (campaign 2026-06): conv3d via the native MPP
+// convolution2d primitive — eliminates the materialized im2col entirely
+// (II-4: 62% of small-K time).  conv3d decomposes as K_T accumulated 2D
+// convolutions (multiply_accumulate into a cooperative destination).
+//
+// Tiling semantics (resolved II-9 R.0; matches liuliu/ccv
+// NAConv3DKernel.cpp production usage): descriptor dest dims = the
+// PER-THREADGROUP tile, source dims = whole frame; destination handle
+// SLICED to the tile origin; set_offsets(x0, y0) positions the source
+// sampling window ((x, y) order).  Cooperative destination per the
+// liuliu/example_matmul_metal4 finding (direct dest-tensor writes pass
+// on macOS but are incorrect on M5 iPad).
+//
+// Eligibility (checked by the caller branch): fp16, B==1, k=3x3x3,
+// stride 1, dilation 1, symmetric pad (1,1,1) ("same"/centered — the
+// primitive's native convention), H%TW==0, W%TH==0, C_in/C_out %16==0.
+// Weights must be pre-packed to [K_T][K_H][K_W][C_in][C_out].
+std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
+                              int TW, int TH) {
+  std::ostringstream ss;
+  ss << R"(
+  uint3 tgid = threadgroup_position_in_grid;
+  const uint tiles_x = )" << (W / TW) << R"(;
+  const uint tw = tgid.x % tiles_x;
+  const uint th = tgid.x / tiles_x;
+  const uint t  = tgid.y;
+  const int x0 = (int)(tw * )" << TW << R"();
+  const int y0 = (int)(th * )" << TH << R"();
+
+  constexpr auto desc = convolution2d_descriptor(
+      int4()" << O << ", " << TW << ", " << TH << R"(, 1),
+      int4()" << C << ", " << W << ", " << H << R"(, 1),
+      int2(3, 3),
+      convolution2d_activation_layout::nhwc,
+      convolution2d_weights_layout::hwio,
+      int2(1, 1), int2(1, 1), 1, false,
+      convolution2d_descriptor::mode::multiply_accumulate);
+  convolution2d<desc, metal::execution_simdgroups<4>> op;
+  op.set_offsets(int2(x0, y0));
+
+  device half* Dframe = Out + (ulong)t * )" << ((int64_t)H * W * O) << R"(;
+  auto tD = tensor(Dframe, extents<int32_t, )"
+     << O << ", " << W << ", " << H << R"(, 1>());
+  auto tDs = tD.slice(0, x0, y0, 0);
+
+  auto tA0 = tensor(X, extents<int32_t, )"
+     << C << ", " << W << ", " << H << R"(, 1>());
+  auto tW0 = tensor(Wp, extents<int32_t, )"
+     << O << ", " << C << R"(, 3, 3>());
+  // FLOAT cooperative destination: fp32 accumulation across the
+  // kh/kw/C reduction AND the kt taps (the half-dest variant
+  // accumulated in fp16 and failed the repo's 1e-5-rel parity bars
+  // vs the fp32-accumulating legacy GEMM).  store() converts to the
+  // half output tensor once at the end.
+  auto cOut = op.get_destination_cooperative_tensor<
+      decltype(tA0), decltype(tW0), float>();
+  for (ushort i = 0; i < cOut.get_capacity(); ++i)
+    if (cOut.is_valid_element(i)) cOut[i] = 0.0f;
+
+  for (short kt = 0; kt < 3; ++kt) {
+    const int tf = (int)t + kt - 1;
+    if (tf < 0 || tf >= )" << T << R"() continue;   // zero temporal pad
+    auto tA = tensor(X + (ulong)tf * )" << ((int64_t)H * W * C) << R"(,
+                     extents<int32_t, )"
+     << C << ", " << W << ", " << H << R"(, 1>());
+    auto tW = tensor(Wp + (ulong)kt * 9 * )" << ((int64_t)C * O) << R"(,
+                     extents<int32_t, )"
+     << O << ", " << C << R"(, 3, 3>());
+    op.run(tA, tW, cOut);
+  }
+  // Elementwise store with (half) conversion: float coop dest cannot
+  // store() directly into the half tensor view (no matching overload).
+  // gmi index space matches the dest tile (channel, x, y, n).
+  for (ushort i = 0; i < cOut.get_capacity(); ++i) {
+    if (cOut.is_valid_element(i)) {
+      auto idx = cOut.get_multidimensional_index(i);
+      const int oo = idx[0];
+      const int xx = idx[1];
+      const int yy = idx[2];
+      Dframe[((ulong)(y0 + yy) * )" << W << R"( + (ulong)(x0 + xx)) * )"
+     << O << R"( + oo] = (half)cOut[i];
+    }
+  }
+)";
+  return ss.str();
+}
+
+const std::string CONV2D_MPP_HEADER = R"(
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MPPTensorOpsConvolution2d.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+)";
+
+// w must be the PACKED weights [3,3,3,C_in,C_out] (caller transposes
+// the repo layout (C_out,3,3,3,C_in) via {1,2,3,4,0}).
+mlx::core::array conv3d_mpp_dispatch(
+    const mlx::core::array& x, const mlx::core::array& w_packed,
+    int T, int H, int W, int C_in, int C_out, int TW, int TH) {
+  std::string name = "conv3d_mpp_" + std::to_string(T) + "_" +
+      std::to_string(H) + "x" + std::to_string(W) + "_" +
+      std::to_string(C_in) + "_" + std::to_string(C_out) + "_t" +
+      std::to_string(TW) + "x" + std::to_string(TH);
+  auto kernel = mlx::core::fast::metal_kernel(
+      name, {"X", "Wp"}, {"Out"},
+      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH),
+      CONV2D_MPP_HEADER,
+      /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
+  int tiles = (W / TW) * (H / TH);
+  auto outs = kernel(
+      {x, w_packed},
+      {mlx::core::Shape{1, T, H, W, C_out}},
+      {x.dtype()},
+      // grid is expressed in THREADS (MLX metal_kernel convention):
+      // (tiles * 128, T, 1) with 128-thread threadgroups.
+      {tiles * 128, T, 1},
+      {128, 1, 1},
+      {},
+      std::nullopt,
+      false,
+      mlx::core::default_stream(mlx::core::Device::gpu));
+  return outs[0];
+}
+
 }  // namespace
 
 mlx::core::array conv3d_nax_forward(
@@ -334,6 +460,49 @@ mlx::core::array conv3d_nax_forward(
   int M = B * T_out * H_out * W_out;
   int K = K_T * K_H * K_W * C_in;
   int N = C_out;
+
+  // Sprint II-9: MPP convolution2d path (fused — no materialized
+  // im2col; II-4's 62%-of-time lever).  PROMOTED DEFAULT-ON for the
+  // eligible envelope below after the three-axis gate (fp16-floor
+  // parity across the shape grid, path-entered timing proof,
+  // edge-cases preserved).  Measured on the production surface
+  // (weight repack included): 2.36x at T8 64x64 C128 (the K=3456
+  // headline cell), 1.83x at T8 32x32 C256, 1.14-1.38x small cells.
+  // Opt-out: MFA_DISABLE_CONV3D_MPP=1 (build-phase opt-in flag
+  // MFA_CONV3D_MPP=1 retained as a force-enable for diagnostics).
+  {
+    const char* mpp_dis = std::getenv("MFA_DISABLE_CONV3D_MPP");
+    bool mpp_enabled =
+        !(mpp_dis != nullptr && std::string(mpp_dis) == "1");
+    if (mpp_enabled && x.dtype() == mlx::core::float16 && B == 1 &&
+        K_T == 3 && K_H == 3 && K_W == 3 &&
+        sT == 1 && sH == 1 && sW == 1 &&
+        dT == 1 && dH == 1 && dW == 1 &&
+        pad.T_left == 1 && pad.T_right == 1 &&
+        pad.H_left == 1 && pad.H_right == 1 &&
+        pad.W_left == 1 && pad.W_right == 1 &&
+        // C=16 measured WRONG through the primitive (err 0.17-0.31 vs
+        // legacy; C>=32 exact) — undocumented MPP constraint; gate at 32.
+        C_in % 16 == 0 && C_in >= 32 &&
+        C_out % 16 == 0 && C_out >= 32) {
+      // Occupancy-aware tile pick: 16x16 amortizes best but needs
+      // enough threadgroups to cover the GPU (32 TGs at the
+      // T8/32x32/C256 cell measured 0.85x — underoccupied on 40
+      // cores).  Prefer 16x16 only when it yields >= 64 TGs.
+      int TW = 0, TH = 0;
+      if (H % 16 == 0 && W % 16 == 0 &&
+          (int64_t)(W / 16) * (H / 16) * T >= 64) { TW = 16; TH = 16; }
+      else if (H % 8 == 0 && W % 8 == 0) { TW = 8; TH = 8; }
+      if (TW != 0) {
+        // Pack weights (C_out,3,3,3,C_in) -> [3][3][3][C_in][C_out].
+        // transpose is a lazy view; ensure_row_contiguous in the kernel
+        // forces the contiguous copy.
+        auto w_packed = mlx::core::transpose(w, {1, 2, 3, 4, 0});
+        return conv3d_mpp_dispatch(x, w_packed, T, H, W, C_in, C_out,
+                                   TW, TH);
+      }
+    }
+  }
 
   // 1×1×1 fast path detection (Phase 1.4 D11).
   // Env-var escape hatch MFA_CONV_NAX_NO_FAST_PATH=1 (propagated to C++

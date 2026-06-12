@@ -168,3 +168,27 @@ STATUS: COMPLETE
 - The 2.00x int8 MMA advantage is consumed by cooperative-tensor API lifecycle tax (dest cycles ~10us, elementwise staging) — dtype/shape/transpose-invariant [VERIFIED by ablation]
 - Packed 4-byte loads REGRESSED (byte loads fine on M5); persistent coop dests REGRESSED (register pressure, v2.39.0 class) [VERIFIED]
 - Marco-gated residual: V34-generator-integrated int8 projects 1.11-1.33x at N=8192 only — dedicated-sprint scale
+
+---
+## [2026-06-12 17:20] [CLAUDE] Sprint II-9: conv3d MPP convolution2d path PROMOTED (2.30-2.51x, no hand-fused kernel needed)
+STATUS: COMPLETE
+
+### Plan
+- Objective: eliminate im2col materialization (II-4's 62% lever); MPP primitive first per Pattern #6
+- Files: csrc/mfa_conv_nax.cpp (conv3d_mpp_source/dispatch + gated branch), report
+
+### Changes
+- `csrc/mfa_conv_nax.cpp` — MPP convolution2d path: kT-accumulated conv2d, float coop dest, occupancy-aware tiles, default-on within envelope (fp16, B1, k3^3, s1, d1, pad1, HW%8, C>=32&%16); opt-out MFA_DISABLE_CONV3D_MPP [HIGH] [VERIFIED]
+
+### Validation
+- Ran: 8-variant tiling sweep + ccv production-code confirmation (web) + prototype vs CPU ref + production parity grid + edge sweep + 3-session bench + suite x2
+- Validated: tiling semantics resolved (tile desc + sliced dest + set_offsets=source-window + coop dest); fp16-floor parity; 2.30-2.51x headline cells (91-96% of the 2.6x ceiling); fallbacks diff 0.0; KD-7 gate intact; 1391 passed x2
+
+### Git
+- promotion commit + report; branch master; pushed
+
+### Key findings
+- C=16 WRONG through the primitive (0.17-0.31 err; C>=32 exact) — undocumented constraint, gated [VERIFIED]
+- half coop dest = fp16 accumulation -> failed 1e-5 parity bars; float dest required [VERIFIED]
+- MPP impl lists bf16 conv variants — potential KD-7 lift for the envelope (S probe, ledger) [VERIFIED declared, implementation UNCERTAIN]
+- Fused-im2col XL ledger item RETIRED (superseded by primitive promotion)
