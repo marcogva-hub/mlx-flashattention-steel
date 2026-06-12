@@ -24,6 +24,7 @@ std::string v6_nax_probe_mpp();
 std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
 std::string v34_probe_source();
 std::string v34_probe_compile_test(void* mtl_device_raw);
+std::string mpp_int8_microbench();  // Phase II-2 kill-gate
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
@@ -386,6 +387,9 @@ NB_MODULE(_ext, m) {
     auto& d = mlx::core::metal::device(s.device);
     return mlx_mfa::v34_probe_compile_test(d.mtl_device());
   });
+  m.def("mpp_int8_microbench", []() -> std::string {
+    return mlx_mfa::mpp_int8_microbench();
+  }, "Phase II-2 kill-gate: MPP matmul2d int8 vs fp16 sustained throughput at attention tiles.");
   m.def("v6_nax_dt_generate_source",
         [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
           return mlx_mfa::v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);

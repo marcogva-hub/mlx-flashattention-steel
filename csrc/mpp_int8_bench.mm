@@ -1,0 +1,244 @@
+/// mpp_int8_bench.mm — Phase II-2 (campaign 2026-06) §AA.5 kill-gate
+/// microbench: MPP matmul2d sustained throughput, int8 vs fp16, at
+/// attention tile shapes (M=64, N=64, K=128 — the Sage QK^T tile).
+///
+/// Kill threshold (recorded in sprint-C-report): int8 < 1.3x fp16
+/// sustained means the Sage-NAX int8 kernel sprint dies at the gate.
+///
+/// Dispatches via raw Metal (GPU-side timing from MTLCommandBuffer
+/// GPUStart/EndTime), compiled through ShaderCache::compile_shader
+/// (the MFA_REQUIRE_MSL4 sentinel selects MTLLanguageVersion4 — MPP
+/// headers cannot compile through mx.fast.metal_kernel, verified
+/// Sprint C).
+
+#include "shader_cache.hpp"
+#include <mlx/backend/metal/device.h>
+#import <Metal/Metal.h>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <sstream>
+
+namespace mlx_mfa {
+
+// Cooperative-destination variant: the int8 path may only be implemented
+// for cooperative destination tensors (the Draw Things NAInt8 pattern).
+static std::string bench_kernel_coop_src(const char* in_ty, const char* acc_ty,
+                                         const char* fn_name, int reps) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL4
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+kernel void )MSL";
+  ss << fn_name << R"MSL((
+    tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> A,
+    tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> B,
+    tensor<device )MSL" << acc_ty << R"MSL(, dextents<int32_t, 2>> C,
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = matmul2d_descriptor(
+        64, 64, 128, false, false, true);
+    matmul2d<desc, execution_simdgroups<1>> op;
+
+    auto mA = A.slice(0, (int)tgid.y * 64);
+    auto mB = B.slice((int)tgid.x * 64, 0);
+    auto cC = op.get_destination_cooperative_tensor<
+        decltype(mA), decltype(mB), )MSL" << acc_ty << R"MSL(>();
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) {
+        op.run(mA, mB, cC);
+    }
+    auto mC = C.slice((int)tgid.x * 64, (int)tgid.y * 64);
+    cC.store(mC);
+}
+)MSL";
+  return ss.str();
+}
+
+// Full-cooperative form: char inputs loaded into cooperative operand
+// tensors (registers), cooperative int32 destination — the Draw Things
+// NAInt8 register-level pattern.
+static std::string bench_kernel_fullcoop_src(const char* fn_name, int reps) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL4
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+kernel void )MSL";
+  ss << fn_name << R"MSL((
+    tensor<device char, dextents<int32_t, 2>> A,
+    tensor<device char, dextents<int32_t, 2>> B,
+    tensor<device int, dextents<int32_t, 2>> C,
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = matmul2d_descriptor(
+        64, 64, 128, false, false, true);
+    matmul2d<desc, execution_simdgroups<1>> op;
+
+    auto ctA = op.get_left_input_cooperative_tensor<
+        decltype(A), decltype(B), int>();
+    auto ctB = op.get_right_input_cooperative_tensor<
+        decltype(A), decltype(B), int>();
+    auto ctC = op.get_destination_cooperative_tensor<
+        decltype(ctA), decltype(ctB), int>();
+    ctA.load(A.slice(0, (int)tgid.y * 64));
+    ctB.load(B.slice((int)tgid.x * 64, 0));
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) {
+        op.run(ctA, ctB, ctC);
+    }
+    ctC.store(C.slice((int)tgid.x * 64, (int)tgid.y * 64));
+}
+)MSL";
+  return ss.str();
+}
+
+static std::string bench_kernel_src(const char* in_ty, const char* acc_ty,
+                                    const char* fn_name, int reps) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL4
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+kernel void )MSL";
+  ss << fn_name << R"MSL((
+    tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> A,
+    tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> B,
+    tensor<device )MSL" << acc_ty << R"MSL(, dextents<int32_t, 2>> C,
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = matmul2d_descriptor(
+        64, 64, 128, false, false, true);
+    matmul2d<desc, execution_simdgroups<1>> op;
+
+    auto mA = A.slice(0, (int)tgid.y * 64);
+    auto mB = B.slice((int)tgid.x * 64, 0);
+    auto mC = C.slice((int)tgid.x * 64, (int)tgid.y * 64);
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) {
+        op.run(mA, mB, mC);
+    }
+}
+)MSL";
+  return ss.str();
+}
+
+static double run_bench(void* mtl_device_raw, const std::string& src,
+                        const char* fn_name, size_t elem_in, size_t elem_acc,
+                        int reps, int tgs, int iters) {
+  id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device_raw;
+  void* pso_raw = ShaderCache::get().compile_shader(src, fn_name,
+                                                    mtl_device_raw);
+  id<MTLComputePipelineState> pso =
+      (__bridge id<MTLComputePipelineState>)pso_raw;
+
+  // A: [64*tgs_y, 128]; B: [128, 64*tgs_x]; C: [64*tgs_x, 64*tgs_y].
+  // Use a tgs x 1 grid: A rows = 64*tgs, B cols = 64.
+  const size_t M = 64ull * tgs, K = 128, N = 64;
+  id<MTLBuffer> bufA = [device newBufferWithLength:M * K * elem_in
+                                           options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufB = [device newBufferWithLength:K * N * elem_in
+                                           options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufC = [device newBufferWithLength:M * N * elem_acc
+                                           options:MTLResourceStorageModeShared];
+  memset([bufA contents], 1, M * K * elem_in);
+  memset([bufB contents], 1, K * N * elem_in);
+
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  std::vector<double> times;
+  for (int it = 0; it < iters + 3; ++it) {
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:pso];
+    // MSL4 tensor arguments bind as buffers in declaration order.
+    [enc setBuffer:bufA offset:0 atIndex:0];
+    [enc setBuffer:bufB offset:0 atIndex:1];
+    [enc setBuffer:bufC offset:0 atIndex:2];
+    [enc dispatchThreadgroups:MTLSizeMake(1, tgs, 1)
+        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if ([cb error]) {
+      throw std::runtime_error(
+          std::string("dispatch error: ") +
+          [[[cb error] localizedDescription] UTF8String]);
+    }
+    if (it >= 3) times.push_back([cb GPUEndTime] - [cb GPUStartTime]);
+  }
+  std::sort(times.begin(), times.end());
+  const double med = times[times.size() / 2];
+  const double flops = 2.0 * 64 * 64 * 128 * (double)reps * tgs;
+  return flops / med / 1e12;  // TFLOPS (or TOPS for int8)
+}
+
+std::string mpp_int8_microbench() {
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto& d = mlx::core::metal::device(s.device);
+  void* mtl_device = d.mtl_device();
+
+  const int reps = 512, tgs = 160, iters = 30;
+  std::ostringstream out;
+  try {
+    double tf_f16 = run_bench(
+        mtl_device, bench_kernel_src("half", "float", "mm_f16", reps),
+        "mm_f16", 2, 4, reps, tgs, iters);
+    out << "fp16=" << tf_f16 << " TF";
+    try {
+      double tf_i8 = run_bench(
+          mtl_device, bench_kernel_src("char", "int", "mm_i8", reps),
+          "mm_i8", 1, 4, reps, tgs, iters);
+      out << " int8/i32=" << tf_i8 << " TOPS ratio=" << (tf_i8 / tf_f16);
+    } catch (const std::exception&) {
+      // int32 destination unsupported for plain device tensors on this
+      // MPP version — try the mixed char x char -> float destination.
+      try {
+        double tf_i8f = run_bench(
+            mtl_device, bench_kernel_src("char", "float", "mm_i8f", reps),
+            "mm_i8f", 1, 4, reps, tgs, iters);
+        out << " int8/f32dest=" << tf_i8f << " TOPS ratio=" << (tf_i8f / tf_f16);
+      } catch (const std::exception& e2) {
+        try {
+          double tf_i8h = run_bench(
+              mtl_device, bench_kernel_src("char", "half", "mm_i8h", reps),
+              "mm_i8h", 1, 2, reps, tgs, iters);
+          out << " int8/f16dest=" << tf_i8h << " TOPS ratio=" << (tf_i8h / tf_f16);
+        } catch (const std::exception&) {
+          // Final variant: cooperative destination (Draw Things NAInt8 form).
+          try {
+            double tf_i8c = run_bench(
+                mtl_device,
+                bench_kernel_coop_src("char", "int", "mm_i8c", reps),
+                "mm_i8c", 1, 4, reps, tgs, iters);
+            out << " int8/coop_i32=" << tf_i8c << " TOPS ratio="
+                << (tf_i8c / tf_f16);
+          } catch (const std::exception&) {
+            try {
+              double tf_i8fc = run_bench(
+                  mtl_device, bench_kernel_fullcoop_src("mm_i8fc", reps),
+                  "mm_i8fc", 1, 4, reps, tgs, iters);
+              out << " int8/fullcoop=" << tf_i8fc << " TOPS ratio="
+                  << (tf_i8fc / tf_f16);
+            } catch (const std::exception& e5) {
+              out << " int8=ALL_VARIANTS_FAIL (plain i32/f32/f16, coop-dest "
+                  << "i32, full-coop i32): "
+                  << std::string(e5.what()).substr(0, 300);
+            }
+          }
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    return std::string("FAIL fp16 baseline: ") + e.what();
+  }
+  return out.str();
+}
+
+}  // namespace mlx_mfa

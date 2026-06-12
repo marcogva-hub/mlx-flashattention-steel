@@ -110,6 +110,7 @@ set(MFA_SOURCES
   csrc/v34_probe.cpp
   csrc/v6_nax_detect.mm
   csrc/v6_nax_compile.mm
+  csrc/mpp_int8_bench.mm
   csrc/mfa_steel_fwd_v6_nax.cpp
   csrc/mfa_v6_nax_primitive.cpp
   csrc/mfa_conv_nax.cpp
