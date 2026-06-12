@@ -867,6 +867,27 @@ void* compile_v34_backward_pipeline(
     const char* dump_env_var = nullptr,
     const char* dump_label = nullptr,
     const char* dump_path_env_var = nullptr) {
+  // Phase II-6 (campaign 2026-06): paired-MMA TK guard.  Every V34
+  // backward generator emits the S-recompute as a PAIRED 16x32x16 MMA
+  // (`for (ik = 0; ik < TK; ik += 2)` writing frag_at(iq, ik) AND
+  // frag_at(iq, ik+1)).  MPP cooperative matmul2d has no 16x16x16 form
+  // (header static_assert: at least one of M,N,K must be 32), so TK
+  // (= BK/16) MUST be even.  BK=16 (TK=1) reads 16 K-rows past the
+  // tile AND writes one fragment out of bounds — silent gradient
+  // corruption that scales exponentially with score magnitude (II-6
+  // finding: fused dKdV default BK=16 since v2.39.1 produced dV errors
+  // 4x the gradient magnitude at unit-scale inputs and inf at std>=2).
+  // Loud failure per Rule 8 — this also guards the MFA_V34BWD*_BK env
+  // overrides on every backward Primitive.
+  if (BK == 0 || BK % 32 != 0) {
+    throw std::runtime_error(
+        std::string("V34 backward '") + kernel_fn_name +
+        "': BK must be a positive multiple of 32 (paired 16x32x16 MMA "
+        "requires TK = BK/16 even; MPP has no 16x16x16 cooperative "
+        "matmul). Got BK=" + std::to_string((int)BK) +
+        ". The v2.39.1 fused-kernel BK=16 default was numerically "
+        "invalid and is withdrawn (Phase II-6).");
+  }
   // Build memoryPrecisions (FP16/BF16 inputs, FP32 intermediates).
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
@@ -1880,24 +1901,30 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
       throw std::runtime_error(
           "V34 bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
 
-    // v2.39.1: default BK=16 (was 32 in v2.39.0).  The v2.39.0 BK=32
-    // default caused per-SG register spilling at D=64 (H1 confirmed by
-    // Sprint v2.39.1 investigation — see docs/v6-nax/v39-1-investigation-
-    // synthesis.md).  BK=16 halves dK_accum + dV_accum register
-    // footprint at D=64 and brings the kernel below the M5 NAX
-    // compiler's spill threshold, recovering 1.01-1.12× speedup vs
-    // split across qL ∈ {2048, 16384}.
+    // Phase II-6 (campaign 2026-06): default BK restored to 32.
     //
-    // v2.40.0-internal: D=128 reuses BK=16 default.  At D=128 BK=16
-    // the per-lane accumulator footprint doubles vs D=64 BK=16 (~512 B
-    // vs ~256 B per lane combined dK_accum + dV_accum), matching the
-    // v2.39.0 spill-boundary footprint in accumulator B/lane terms.
-    // Empirical bench (Sprint B Phase B.5) characterizes whether the
-    // higher arithmetic intensity at D=128 amortizes any residual
-    // spill cost.  Override via MFA_V34BWDF_BK if benchmarking
-    // alternatives.
+    // HISTORY + CORRECTION: v2.39.1 lowered the default to BK=16 to fix
+    // the v2.39.0 register-spill regression (H1) and measured
+    // "1.01-1.12x vs split".  That configuration was NUMERICALLY
+    // INVALID: every backward generator emits the S-recompute as a
+    // paired 16x32x16 MMA (ik += 2 over TK), so BK=16 (TK=1) read 16
+    // K-rows past the tile and wrote one S-fragment out of bounds —
+    // silent gradient corruption scaling exponentially with score
+    // magnitude (invisible at the test fixtures' 0.1-scale inputs;
+    // dV errors 4x gradient magnitude at unit scale; inf at std>=2).
+    // The v2.39.1 perf number was therefore measured on corrupt math
+    // and is WITHDRAWN.  Pattern #9 instance: Primitive changed the
+    // dispatch constant; generator's even-TK assumption not re-audited.
+    //
+    // BK=32 is the minimum valid block (TK=2).  At D=64 this is the
+    // v2.39.0 spill-regression config — which is why `auto` now routes
+    // to the split kernels (attention.py `_v34_backward_vjp`); fused
+    // remains reachable via MFA_V34_BWD_KERNEL=fused for benchmarking.
+    // A true TK=1 generator variant (scratch second fragment) is a
+    // Marco-gated future item.  compile_v34_backward_pipeline() now
+    // rejects BK % 32 != 0 loudly for ALL backward Primitives.
     unsigned short BQ = 64;
-    unsigned short BK = 16;
+    unsigned short BK = 32;
     uint16_t WM = wm_;
     if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);

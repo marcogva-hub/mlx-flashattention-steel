@@ -27,10 +27,16 @@ _skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V34 requires M5+ NAX")
 
 
 def _mk(B, Hq, Hkv, N, D, seed):
+    # Phase II-6: fixture magnitude raised 0.1 -> 1.0.  The 0.1-scale
+    # fixtures exponentially suppressed the paired-MMA BK=16 corruption
+    # (P = exp2(wrong-S - L) errors shrink with score magnitude) and
+    # let the II-0 promotion gate pass over a corrupt fused kernel.
+    # Unit scale is the realistic activation envelope; the II-6 lock
+    # file additionally tests std 2.0 and 12.0.
     mx.random.seed(seed)
-    q = (mx.random.normal((B, Hq, N, D)) * 0.1).astype(mx.float16)
-    k = (mx.random.normal((B, Hkv, N, D)) * 0.1).astype(mx.float16)
-    v = (mx.random.normal((B, Hkv, N, D)) * 0.1).astype(mx.float16)
+    q = mx.random.normal((B, Hq, N, D)).astype(mx.float16)
+    k = mx.random.normal((B, Hkv, N, D)).astype(mx.float16)
+    v = mx.random.normal((B, Hkv, N, D)).astype(mx.float16)
     _eval_force(q, k, v)
     return q, k, v
 

@@ -4499,14 +4499,26 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
     head_dim = q.shape[3]
     _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
 
-    # Resolve "auto" → fused (D=64, post-v2.39.1 H1 fix) or split (D=128
-    # per v2.40.0-internal Sprint B outcome γ: D=128 fused at parity with
-    # split (~1.00× ratio, no measurable win) — keep split as auto-default
-    # to preserve v2.38.1 D=128 behavior; fused opens via opt-in
-    # MFA_V34_BWD_KERNEL=fused for D=128.  See docs/v6-nax/v40-0-internal-
-    # decisions.md for the empirical bench data.
+    # Resolve "auto" → split for ALL head dims (Phase II-6, campaign
+    # 2026-06).
+    #
+    # CORRECTION of the v2.39.1/v2.40.0 routing: "auto" previously
+    # resolved to fused for D=64 on the strength of the v2.39.1
+    # "fused-BK16 1.01-1.12x vs split" finding.  II-6 numerics audit
+    # found fused's BK=16 default was numerically INVALID — the paired
+    # 16x32x16 MMA in the S-recompute requires TK = BK/16 even; at
+    # BK=16 it read 16 K-rows past the tile and wrote one fragment out
+    # of bounds, silently corrupting dK/dV (errors 4x gradient magnitude
+    # at unit-scale inputs, inf at input std >= 2; invisible at the
+    # 0.1-scale test fixtures).  The v2.39.1 perf edge was measured on
+    # corrupt math and is withdrawn.  At the minimum-valid BK=32, fused
+    # is the v2.39.0 spill-regression config — so split (BK=32, clean,
+    # 1.87-1.95x vs SDPA-vjp per v2.38.1) is the correct auto default.
+    # Fused stays reachable via MFA_V34_BWD_KERNEL=fused (now loudly
+    # BK-guarded in C++).  See docs/v50/campaign-2026-06/phase2/
+    # sprint-II-6-report.md.
     if _kernel_mode == "auto":
-        _kernel_mode = "fused" if head_dim == 64 else "split"
+        _kernel_mode = "split"
 
     if _kernel_mode == "legacy_fused":
         # Legacy WM=1 fused dK+dV (kept as escape hatch for one release).
