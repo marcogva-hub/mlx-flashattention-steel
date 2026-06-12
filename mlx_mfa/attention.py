@@ -4735,21 +4735,34 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
             # the backward-side check below pre-refactor).
             if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
-                from mlx_mfa._ext import v6_nax_forward as _v6_fwd
-                # v2.37.0+: force V34 forward routing so lse is natural-log
-                # (V34 backward consumes natural-log lse).  This extends
-                # V34 backward eligibility to D=64 small-Nk shapes that
-                # would otherwise route through legacy v6_nax forward
-                # (log2-domain lse incompatible with V34 backward).
-                # v2.50 Sprint 4 Phase 4a/4b: V34 forward now supports
-                # causal (Phase 4a) and dQ backward kernel supports causal
-                # (Phase 4b partial).  But `_v34_eligible` still gates on
-                # `not causal` because the 4 K-parallel backward kernels
-                # (dKV, dV, dK, fused dKdV) need their causal mask blocks
-                # — Phase 4b-complete deferred.  So when this branch fires,
-                # causal is guaranteed False; pass it through anyway for
-                # future-proofing once Phase 4b-complete lands.
-                O, L = _v6_fwd(q, k, v, causal, True)  # force_v34=True
+                # Phase II-8 (campaign 2026-06): forward on Apple SDPA,
+                # NOT the V34 forward.  The previous Phase-2.O3 fusion
+                # ran the V34 forward here so the backward could consume
+                # its natural-log lse without recompute — but that made
+                # every PURE-FORWARD call on the carve-out cells
+                # (D=64, causal, qL>=2048) pay the V34 forward, which is
+                # 1.19x SLOWER than SDPA at qL=8192 (II-8 sweep: 1.64 vs
+                # 1.38 ms) — a dispatch-map inversion for inference
+                # callers, who vastly outnumber training callers on
+                # causal cells.  The backward now recomputes the V34
+                # (O, L) pair itself (`_v34_backward_vjp` call site),
+                # costing one extra forward per backward (~+8% on the
+                # grad step; promoted grad-cell ratios become
+                # 2.0-2.45x vs SDPA-vjp, still >= the II-0 floor) while
+                # restoring forward parity AND bit-SDPA-identical
+                # forward outputs.  L here is a sentinel; the VJP's V34
+                # branch ignores it (re-derives eligibility with the
+                # same predicate).
+                O = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=scale,
+                    mask="causal" if causal else None)
+                # 1-element sentinel (NOT [B, H, N]): the full-size zeros
+                # fill cost ~0.04-0.09 ms per forward call at these
+                # shapes — measurable against a 0.33 ms SDPA.  The VJP's
+                # V34 branch never reads L (re-derives eligibility and
+                # recomputes the V34 pair); no other consumer sees this
+                # internal L.
+                L = mx.zeros([1], dtype=mx.float32)  # sentinel
             else:
                 # Fast path: mfa_forward_with_lse returns both O and L in one kernel.
                 # B.1: We now *keep* L as the second return value so the backward can
@@ -4798,7 +4811,17 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
                 # v2.50 Phase 4b-complete: pass causal through so V34 backward
                 # kernels compile with V34BWD*_CAUSAL=1 macro.
-                dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale, causal)
+                #
+                # Phase II-8: the forward now runs Apple SDPA (saved O is
+                # the SDPA output; saved L is a sentinel — see the
+                # forward-fusion comment in `_impl`).  Recompute the V34
+                # (O, L) pair here: the backward kernels need the
+                # natural-log lse, and D = rowsum(dO . O) should use the
+                # O consistent with that lse.
+                from mlx_mfa._ext import v6_nax_forward as _v6_fwd
+                O_v34, L_v34 = _v6_fwd(q, k, v, causal, True)  # force_v34
+                dQ, dK, dV = _v34_backward_vjp(
+                    q, k, v, O_v34, L_v34, dO, scale, causal)
             else:
                 # Native STEEL backward is narrowly policy-gated from benchmark data.
                 # Current auto policy is conservative and defaults to SDPA VJP unless
