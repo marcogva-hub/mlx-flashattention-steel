@@ -31,6 +31,7 @@ Context-manager form::
 from __future__ import annotations
 
 import math
+import os
 from typing import Optional
 
 import mlx.core as mx
@@ -1086,6 +1087,35 @@ class TurboQuantPagedInferenceContext:
         cu_q = mx.array([0, q.shape[2]], dtype=mx.int32)
         block_table = self.get_block_table([seq_id])
         seq_lens = self.get_seq_lens([seq_id])
+
+        # Sprint III-2 (campaign 2026-06): single-token decode routes to
+        # gather/dequant kernels + Apple SDPA by default — §AA.5 inverted
+        # the fused-dequant premise on M5 (fused TQ attend = 14x dense;
+        # this path lands near the dense decode floor, 7.6-8.3x faster
+        # than fused at the II-7 ladder cells before the kernels, more
+        # after).  Opt-out restores the fused kernel:
+        # MFA_DISABLE_TQ_DECODE_SDPA=1.  N_q > 1 keeps the fused kernel
+        # (its causal-offset semantics).  V reads the fp16 pool (always
+        # maintained) — faster AND more accurate than packed V.
+        if (q.shape[2] == 1
+                and os.environ.get("MFA_DISABLE_TQ_DECODE_SDPA") != "1"):
+            from mlx_mfa.tq_decode import tq_decode_attend
+            if self.wht_in_kernel:
+                # Fused path would rotate in-kernel; this path needs the
+                # rotated q explicitly.
+                from mlx_mfa.turboquant import apply_rotation
+                q_rot = apply_rotation(
+                    q.astype(mx.float32), "wht").astype(self.dtype)
+            else:
+                q_rot = q_input  # already rotated above
+            S = self.seq_length(seq_id)
+            n_blocks = (S + self.block_size - 1) // self.block_size
+            return tq_decode_attend(
+                q_rot, self._k_pool, self._v_pool_fp16,
+                self._k_scales, self._k_centroids,
+                block_table[0][:n_blocks], S,
+                scale=scale, block_size=self.block_size,
+                tq_bits=self.tq_bits, stream=self.stream)
 
         return flash_attention_paged_varlen_turboquant(
             q_input, self._k_pool, self._v_pool_fp16,

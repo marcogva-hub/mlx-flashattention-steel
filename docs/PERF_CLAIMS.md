@@ -44,6 +44,7 @@ Full investigation evidence + skill invocations log:
 | `ii12_d64_qL8192_optout_sdpa` | II-12 (2026-06) | `MFA_DISABLE_V34_BACKWARD=1` restores SDPA-vjp bit-exactly | opt-out env | Same shape | REACHABLE (opt-out) |
 | `ii9_conv3d_t16_64x64_c128_fp16_mpp_default` | II-9 (2026-06; row added III-1) | conv3d via the MPP convolution2d primitive, default-on: 2.3-2.5x vs the materialized-im2col path (T8/T16 64x64 C128) | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | `install_hooks(); mx.conv3d(x, w)` with x `(1,16,64,64,128)` w `(128,3,3,3,128)` fp16, pad (1,1,1) | REACHABLE (default; telemetry-verified) |
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | III-1 (2026-06, KD-7 lift) | bf16 conv3d via MPP: 1.4-2.7x vs the pre-lift public bf16 path (Apple mx.conv3d fallback) at the II-9 cells | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | Same shapes in bf16 | REACHABLE (default; telemetry-verified) |
+| `iii2_tq_paged_decode_step_default` | III-2 (2026-06) | TQ paged decode step 6.0x (S=4K) to 14.4x (S=16K) faster via per-step gather/dequant kernels + Apple SDPA (attend-only 13.8-22.1x vs the fused TQ kernel) | env unset (opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`) | `TurboQuantPagedInferenceContext.step(q, k, v)` N_q=1, B=1 Hq=32 Hkv=8 D=128 tq3b | REACHABLE (default; kernel-cache-verified) |
 
 ### Internal claims (v2.39.2-internal — below-public-floor coverage)
 

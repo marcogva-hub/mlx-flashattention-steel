@@ -324,6 +324,23 @@ PERF_CLAIMS = [
             "cells (III-1, 3 sessions, medians)"
         ),
     },
+    # --- TQ paged decode (III-2): step() N_q=1 routes to gather/dequant
+    # kernels + Apple SDPA by default.  Engagement detected via the
+    # tq_decode kernel-cache population through the public step() path.
+    {
+        "id": "iii2_tq_paged_decode_step_default",
+        "env": {},
+        "shape": (1, 8, 512, 512, 128),  # (B, Hq, S0, S0, D); Hkv=2
+        "dtype": mx.float16,
+        "expected": "tq_decode_sdpa",
+        "documented_in": ["CHANGELOG.md"],
+        "documented_perf_claim": (
+            "TurboQuant paged decode step 6.0x (S=4K) to 14.4x (S=16K) "
+            "faster via per-step gather/dequant kernels + Apple SDPA "
+            "(attend-only 13.8-22.1x vs the fused TQ kernel); opt-out "
+            "MFA_DISABLE_TQ_DECODE_SDPA=1"
+        ),
+    },
 ]
 
 
@@ -423,6 +440,43 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
             f"conv3d MPP engaged but output deviates from the original op "
             f"beyond the dtype floor (max abs {max_abs:.4f} >= {abs_bar})"
         )
+        return
+
+    # --- TQ paged decode claim (III-2): engagement via the tq_decode
+    # kernel cache through the documented public step() path.
+    if claim["expected"] == "tq_decode_sdpa":
+        monkeypatch.delenv("MFA_DISABLE_TQ_DECODE_SDPA", raising=False)
+        from mlx_mfa import tq_decode
+        from mlx_mfa.inference import TurboQuantPagedInferenceContext
+        _B, Hq, S0, _S, D = claim["shape"]
+        Hkv = 2
+        ctx = TurboQuantPagedInferenceContext(
+            num_blocks=S0 // 64 + 8, block_size=64, H_kv=Hkv, D=D,
+            tq_bits=3)
+        mx.random.seed(3)
+        k0 = mx.random.normal((1, Hkv, S0, D), dtype=claim["dtype"])
+        v0 = mx.random.normal((1, Hkv, S0, D), dtype=claim["dtype"])
+        q0 = mx.random.normal((1, Hq, S0, D), dtype=claim["dtype"])
+        mx.eval(k0, v0, q0)
+        mx.eval(ctx.prefill(q0, k0, v0))
+        q = mx.random.normal((1, Hq, 1, D), dtype=claim["dtype"])
+        kn = mx.zeros((1, Hkv, 1, D), dtype=claim["dtype"])
+        vn = mx.zeros((1, Hkv, 1, D), dtype=claim["dtype"])
+        mx.eval(q, kn, vn)
+        before = len(tq_decode._K_DEQUANT_KERNELS)
+        cache_key = (D, Hkv, 64, 3)
+        tq_decode._K_DEQUANT_KERNELS.pop(cache_key, None)
+        out = ctx.step(q, kn, vn)
+        mx.eval(out)
+        assert cache_key in tq_decode._K_DEQUANT_KERNELS, (
+            f"Perf claim '{claim['id']}' is UNREACHABLE via public API "
+            f"path: step() did not route to the tq_decode gather/dequant "
+            f"path with env={claim['env']}. "
+            f"Claim text: {claim['documented_perf_claim']}. "
+            f"Per CLAUDE_V6_NAX.md §Z, fix the routing or correct the claim."
+        )
+        assert bool(mx.all(mx.isfinite(out.astype(mx.float32))).item())
+        del before
         return
 
     # Set documented env vars; clear all routing-related env vars first

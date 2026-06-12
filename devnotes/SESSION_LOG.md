@@ -299,3 +299,29 @@ STATUS: COMPLETE
 
 ### Git
 - committed below; branch master
+
+---
+## [2026-06-12 19:10] [CLAUDE] Phase III-2: paged/TQ decode — §AA.5 FULL_INVERSION, PROMOTED + fused 2/4-bit corruption fix
+STATUS: COMPLETE
+
+### Plan
+- Objective: close the II-7 decode floor (fused TQ attend = 14x dense); cider transplant only if §AA.5 confirms.
+- Files: mlx_mfa/tq_decode.py (new), mlx_mfa/inference.py, csrc/mfa_steel_paged_varlen_tq_fwd.cpp, locks, claims.
+
+### Changes
+- `mlx_mfa/tq_decode.py` — NEW: K-dequant (2/3/4-bit) + V-gather elementwise kernels + tq_decode_attend; config-tuple kernel caches [HIGH] [VERIFIED]
+- `mlx_mfa/inference.py` — step() N_q=1 default-routes to new path; opt-out MFA_DISABLE_TQ_DECODE_SDPA=1; N_q>1 stays fused [HIGH] [VERIFIED]
+- `csrc/mfa_steel_paged_varlen_tq_fwd.cpp` — FIX: K+V dequant emitted 3-bit bit-planar extraction unconditionally; tq_bits=2/4 silently wrong since the kernel landed (0.147-0.150 unit-scale vs ground truth; ~49 at std 8); runtime bit-width branches added [HIGH] [VERIFIED]
+- `tests/test_phase3_iii2_tq_decode.py` — 11 locks incl. ground-truth arbitration of BOTH paths [VERIFIED]
+- claims registry + PERF_CLAIMS.md — iii2_tq_paged_decode_step_default [VERIFIED]
+
+### Key results
+- §AA.5 FULL_INVERSION: dequant+sdpa beats fused 7.6x BEFORE kernels; with kernels attend 13.8x/22.1x, step 5.99x/14.42x (S=4K/16K); gap to dense floor 22.8x → 1.66x [VERIFIED]
+- tq_v=True semantics: new path reads always-maintained fp16 V pool — more accurate than packed-V (documented; V-quant-noise lock bar) [VERIFIED]
+
+### Validation
+- Ran: §AA.5 probe, component decomposition, bits×magnitude matrix vs Python ground truth, determinism x10, full validation script, full suite
+- Validated: suite 1428 passed + 2 skipped; fused now ground-truth-exact at 2/3/4 bits; claim REACHABLE
+
+### Git
+- committed below; branch master

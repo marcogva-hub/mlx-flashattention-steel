@@ -368,21 +368,36 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
     ss << "\n";
-    // Bit-planar 3-bit extraction: 32 indices → 3 bit-planes × 4 bytes = 12 bytes/group
-    ss << "            const int group = d / 32;\n";
-    ss << "            const int lane  = d % 32;\n";
-    ss << "            const int byte_in_lane = lane / 8;\n";
-    ss << "            const int bit_in_byte  = lane % 8;\n";
-    ss << "            const int base_off = (int)((long)phys * p->pool_block_stride_k\n";
+    // Index extraction per bit-width.  Sprint III-2 FIX: this block was
+    // the 3-bit bit-planar form UNCONDITIONALLY — tq_bits=2/4 read the
+    // pool with the wrong layout and produced silently-wrong K since the
+    // kernel landed (arbitrated vs Python ground-truth dequant: fused
+    // 0.147-0.150 max-abs wrong at unit scale, growing with magnitude).
+    //   3-bit: bit-planar, 32 indices -> 3 planes x 4 B = 12 B/group
+    //   2-bit: 4 indices/byte;  4-bit: 2 indices/byte (pack_k_for_metal)
+    ss << "            const int row_off = (int)((long)phys * p->pool_block_stride_k\n";
     ss << "                              + tok_in_blk * p->pool_tok_stride_k\n";
-    ss << "                              + kv_head * p->packed_D\n";
-    ss << "                              + group * 12);\n";
-    ss << "            const uchar b0 = k_pool_tq[base_off + 0 * 4 + byte_in_lane];\n";
-    ss << "            const uchar b1 = k_pool_tq[base_off + 1 * 4 + byte_in_lane];\n";
-    ss << "            const uchar b2 = k_pool_tq[base_off + 2 * 4 + byte_in_lane];\n";
-    ss << "            const uchar idx = ((b0 >> bit_in_byte) & 1)\n";
-    ss << "                            | (((b1 >> bit_in_byte) & 1) << 1)\n";
-    ss << "                            | (((b2 >> bit_in_byte) & 1) << 2);\n";
+    ss << "                              + kv_head * p->packed_D);\n";
+    ss << "            uchar idx;\n";
+    ss << "            if (tq_bits == 3) {\n";
+    ss << "              const int group = d / 32;\n";
+    ss << "              const int lane  = d % 32;\n";
+    ss << "              const int byte_in_lane = lane / 8;\n";
+    ss << "              const int bit_in_byte  = lane % 8;\n";
+    ss << "              const int base_off = row_off + group * 12;\n";
+    ss << "              const uchar b0 = k_pool_tq[base_off + 0 * 4 + byte_in_lane];\n";
+    ss << "              const uchar b1 = k_pool_tq[base_off + 1 * 4 + byte_in_lane];\n";
+    ss << "              const uchar b2 = k_pool_tq[base_off + 2 * 4 + byte_in_lane];\n";
+    ss << "              idx = ((b0 >> bit_in_byte) & 1)\n";
+    ss << "                  | (((b1 >> bit_in_byte) & 1) << 1)\n";
+    ss << "                  | (((b2 >> bit_in_byte) & 1) << 2);\n";
+    ss << "            } else if (tq_bits == 2) {\n";
+    ss << "              const uchar pbyte = k_pool_tq[row_off + d / 4];\n";
+    ss << "              idx = (pbyte >> ((d % 4) * 2)) & 3;\n";
+    ss << "            } else {\n";
+    ss << "              const uchar pbyte = k_pool_tq[row_off + d / 2];\n";
+    ss << "              idx = (pbyte >> ((d % 2) * 4)) & 15;\n";
+    ss << "            }\n";
     // Centroid lookup → fp16 value
     ss << "            const T centroid_val = k_centroids_smem[idx];\n";
     // Per-vector scale: k_scales[phys * block_size * H_kv + tok_in_blk * H_kv + kv_head]
@@ -482,20 +497,31 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
     // V-TQ branch: uniform branch (all threads take same path), zero divergence cost
     ss << "            if (p->tq_v_enabled) {\n";
-    ss << "              const int vgroup = d / 32;\n";
-    ss << "              const int vlane  = d % 32;\n";
-    ss << "              const int vbyte_in_lane = vlane / 8;\n";
-    ss << "              const int vbit_in_byte  = vlane % 8;\n";
-    ss << "              const int vbase_off = (int)((long)phys * p->tq_v_pool_block_stride\n";
+    // Sprint III-2 FIX: same 3-bit-only-layout bug as the K path —
+    // branch on tq_bits (V packing mirrors pack_k_for_metal layouts).
+    ss << "              const int vrow_off = (int)((long)phys * p->tq_v_pool_block_stride\n";
     ss << "                                   + tok_in_blk * p->tq_v_pool_tok_stride\n";
-    ss << "                                   + kv_head * p->packed_D\n";
-    ss << "                                   + vgroup * 12);\n";
-    ss << "              const uchar vb0 = v_pool_tq[vbase_off + 0 * 4 + vbyte_in_lane];\n";
-    ss << "              const uchar vb1 = v_pool_tq[vbase_off + 1 * 4 + vbyte_in_lane];\n";
-    ss << "              const uchar vb2 = v_pool_tq[vbase_off + 2 * 4 + vbyte_in_lane];\n";
-    ss << "              const uchar v_idx = ((vb0 >> vbit_in_byte) & 1)\n";
-    ss << "                                | (((vb1 >> vbit_in_byte) & 1) << 1)\n";
-    ss << "                                | (((vb2 >> vbit_in_byte) & 1) << 2);\n";
+    ss << "                                   + kv_head * p->packed_D);\n";
+    ss << "              uchar v_idx;\n";
+    ss << "              if (tq_bits == 3) {\n";
+    ss << "                const int vgroup = d / 32;\n";
+    ss << "                const int vlane  = d % 32;\n";
+    ss << "                const int vbyte_in_lane = vlane / 8;\n";
+    ss << "                const int vbit_in_byte  = vlane % 8;\n";
+    ss << "                const int vbase_off = vrow_off + vgroup * 12;\n";
+    ss << "                const uchar vb0 = v_pool_tq[vbase_off + 0 * 4 + vbyte_in_lane];\n";
+    ss << "                const uchar vb1 = v_pool_tq[vbase_off + 1 * 4 + vbyte_in_lane];\n";
+    ss << "                const uchar vb2 = v_pool_tq[vbase_off + 2 * 4 + vbyte_in_lane];\n";
+    ss << "                v_idx = ((vb0 >> vbit_in_byte) & 1)\n";
+    ss << "                      | (((vb1 >> vbit_in_byte) & 1) << 1)\n";
+    ss << "                      | (((vb2 >> vbit_in_byte) & 1) << 2);\n";
+    ss << "              } else if (tq_bits == 2) {\n";
+    ss << "                const uchar vpbyte = v_pool_tq[vrow_off + d / 4];\n";
+    ss << "                v_idx = (vpbyte >> ((d % 4) * 2)) & 3;\n";
+    ss << "              } else {\n";
+    ss << "                const uchar vpbyte = v_pool_tq[vrow_off + d / 2];\n";
+    ss << "                v_idx = (vpbyte >> ((d % 2) * 4)) & 15;\n";
+    ss << "              }\n";
     ss << "              const T v_centroid_val = v_centroids_smem[v_idx];\n";
     ss << "              const float vscale = v_scales[\n";
     ss << "                  (long)phys * p->block_size * p->H_kv\n";
