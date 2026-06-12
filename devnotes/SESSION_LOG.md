@@ -4975,3 +4975,31 @@ STATUS: COMPLETE
 - v2.39.1 fused BK=16 was numerically invalid (paired 16x32x16 MMA needs TK even); its 1.01-1.12x claim WITHDRAWN; II-0 gate missed it due to 0.1-scale fixtures [VERIFIED]
 - M5 sparse fallback NaN-on-all-false-rows semantics regression vs kernel contract — fixed [VERIFIED]
 - OPEN (II-7/II-8): Metal pool stale-value sensitivity in 3 kernels (repro in report) [VERIFIED flake, mechanism UNCERTAIN]
+
+---
+## [2026-06-12 11:20] [CLAUDE] Phase II Sprint II-7: profiling-driven hunt — LCSA 15.4x + conv3d hook coverage
+STATUS: COMPLETE
+
+### Plan
+- Objective: profile 4 representative harnesses, optimize empirical hot spots, document floors
+- Files: benchmarks/profile_ii7_harnesses.py (new), mlx_mfa/masks.py, mlx_mfa/_auto_hooks.py
+
+### Changes
+- `mlx_mfa/masks.py` make_lcsa_mask — numpy CPU path (GPU->CPU copies + Python pooling loop + CPU einsum) → on-GPU MLX (15.4x: 11.19→0.73ms; full LCSA loop 3.3x) [HIGH] [VERIFIED]
+- `mlx_mfa/_auto_hooks.py` — mx.conv3d now patched (mlx.nn.Conv3d bypassed the conv_general-only hook; 0-engagement telemetry proof); delegates to _patched_conv_general [HIGH] [VERIFIED]
+- `benchmarks/profile_ii7_harnesses.py` — 4 harnesses with build/eval split
+
+### Dependency & regression check
+- Callers: make_lcsa_mask public API unchanged (return type mx bool mask); hook install/uninstall symmetric
+- Test coverage: 57 LCSA tests + suite 1391 passed x3
+
+### Validation
+- Ran: harness suite before/after + cProfile + decode ladder + pytest x3
+- Validated: full-loop after-state monotonically non-worse on all 4 harnesses; LCSA mask 15.4x; conv3d routing parity max_err 0.008
+
+### Git
+- perf(lcsa)+fix(hooks) commit + report commit; branch master
+
+### Key findings
+- Decode floor quantified: TQ attend kernel 14x dense SDPA (kernel-bound; feeds II-5 decode ledger; _v_pool_fp16 50MB kept when tq_v=True) [VERIFIED]
+- Non-causal D=64 bwd: V34-split opt-in 1.88x, unit-scale errs 4e-4..2e-3 — promotion decision data for Marco [VERIFIED]
