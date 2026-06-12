@@ -5238,21 +5238,35 @@ void attention_bwd_dv_sparse(
   // 2-D mask broadcast across (B, Hq) → all TGs in (b, hq) see same column tid.x.
   const int NK_total = params.NK;
 
-  for (int qb = 0; qb < q_loop; qb++) {
-    // ===== SPARSE SKIP (Prompt 5b Section A PoC) =====
-    // For full-blocks (qb < NQ_aligned), check block_mask[qb, tid.x].
-    // For the last partial block (qb == NQ_aligned && qL_rem > 0), the mask
-    // is sized for NQ_aligned and doesn't have an entry for the partial row.
-    // We treat partial blocks as always-active (conservative — partial blocks
-    // are at the boundary, sparse patterns rarely zero them).
-    if (qb < NQ_aligned) {
-      bool tile_active = block_mask[qb * NK_total + int(tid.x)];
-      if (!tile_active) {
-        // Skip entire Q-tile: P would be zero so P^T @ dO contributes zero.
-        continue;
+  // === Phase II-14 sparse-skip restructure: COMPACTED ACTIVE LIST ===
+  // A data-dependent `continue` inside the Q-loop around the live
+  // cooperative-tensor accumulator (dV_accum persists across iterations)
+  // intermittently dropped single-lane fragments back to .clear() state
+  // (root-caused on the fused dKdV twin; same hazard class here).  Fix:
+  // build the active-qb list up front, then run a uniform counted loop
+  // with zero in-loop branching — same execution shape as the dense twin.
+  // Partial last block (qb == NQ_aligned) is always-active (mask is sized
+  // for NQ_aligned; conservative — P^T @ dO is exact regardless).
+  threadgroup ushort ii14_active_qbs[1024];
+  threadgroup int ii14_n_active;
+  {
+    // qL/BQ <= 1024 covers qL <= 65536 at BQ=64; the host guard at the
+    // sparse dispatch site rejects larger (loud, Rule 8).
+    if (simd_group_id == 0 && simd_lane_id == 0) {
+      int n = 0;
+      for (int qb = 0; qb < q_loop; ++qb) {
+        const bool act = (qb >= NQ_aligned)
+            || bool(block_mask[qb * NK_total + int(tid.x)]);
+        if (act) ii14_active_qbs[n++] = (ushort)qb;
       }
+      ii14_n_active = n;
     }
-    // ===== END SPARSE SKIP =====
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  const int n_active_qb = ii14_n_active;
+
+  for (int qb_ii = 0; qb_ii < n_active_qb; qb_ii++) {
+    const int qb = (int)ii14_active_qbs[qb_ii];
 
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
@@ -6514,18 +6528,39 @@ void attention_bwd_q_sparse(
   }
 
   // === Step 3: K-loop ===
-  for (int kb = 0; kb < kb_lim; kb++) {
-    // === v2.50 Prompt 5d Section A sparse-skip (2-D mask [NQ, NK]) ===
-    {
+  // Phase II-14 sparse-skip restructure: COMPACTED ACTIVE LIST.  The
+  // data-dependent `continue` around the live cooperative-tensor
+  // accumulator (dQ_accum persists across K-tiles) is the lane-fragment
+  // -loss hazard class root-caused on the fused dKdV kernel.  Build the
+  // active-kb list up front, then run a uniform counted loop with zero
+  // in-loop branching; K/V are rebased per active tile (the skip path
+  // used to advance them incrementally).
+  threadgroup ushort ii14_active_kbs[1024];
+  threadgroup int ii14_n_active;
+  {
+    // kL/BK <= 1024 covers kL <= 65536 at BK=64; the host guard at the
+    // sparse dispatch site rejects larger (loud, Rule 8).
+    if (simd_group_id == 0 && simd_lane_id == 0) {
+      int n = 0;
       const int qb_idx = int(tid.x);
       const int nk_total = params.NK;
-      bool tile_active = block_mask[qb_idx * nk_total + kb];
-      if (!tile_active) {
-        K += V34BWD_BK * int(params.K_strides[2]);
-        V += V34BWD_BK * int(params.V_strides[2]);
-        continue;
+      for (int kb = 0; kb < kb_lim; ++kb) {
+        if (bool(block_mask[qb_idx * nk_total + kb])) {
+          ii14_active_kbs[n++] = (ushort)kb;
+        }
       }
+      ii14_n_active = n;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  const int n_active_kb = ii14_n_active;
+  const device T* const K_base = K;
+  const device T* const V_base = V;
+
+  for (int kb_ii = 0; kb_ii < n_active_kb; kb_ii++) {
+    const int kb = (int)ii14_active_kbs[kb_ii];
+    K = K_base + kb * V34BWD_BK * int(params.K_strides[2]);
+    V = V_base + kb * V34BWD_BK * int(params.V_strides[2]);
     const bool is_last_k = (kb == NK_aligned);
 
     s_t Stile;
@@ -6723,8 +6758,9 @@ void attention_bwd_q_sparse(
       }
     }
 
-    K += V34BWD_BK * int(params.K_strides[2]);
-    V += V34BWD_BK * int(params.V_strides[2]);
+    // II-14: K/V rebased from K_base/V_base at the top of each active
+    // iteration — no incremental advance.
+    simdgroup_barrier(mem_flags::mem_none);
   }  // end K-loop
 
   threadgroup_barrier(mem_flags::mem_none);
@@ -6869,13 +6905,33 @@ void attention_bwd_dk_sparse(
   using s_q_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
-  for (int qb = 0; qb < q_loop; qb++) {
-    // === v2.50 Prompt 5d Section A sparse-skip ===
-    if (qb < (params.qL / V34BWDK_BQ)) {
+  // === Phase II-14 sparse-skip restructure: COMPACTED ACTIVE LIST ===
+  // Same lane-fragment-loss hazard class as the fused dKdV kernel: a
+  // data-dependent `continue` around the live cooperative-tensor
+  // accumulator (dK_accum persists across iterations).  Build the
+  // active-qb list up front, then run a uniform counted loop.
+  threadgroup ushort ii14_active_qbs[1024];
+  threadgroup int ii14_n_active;
+  {
+    // qL/BQ <= 1024 covers qL <= 65536 at BQ=64; the host guard at the
+    // sparse dispatch site rejects larger (loud, Rule 8).
+    if (simd_group_id == 0 && simd_lane_id == 0) {
+      int n = 0;
+      const int masked_qbs = params.qL / V34BWDK_BQ;
       const int nk_total = params.NK;
-      bool tile_active = block_mask[qb * nk_total + int(tid.x)];
-      if (!tile_active) continue;
+      for (int qb = 0; qb < q_loop; ++qb) {
+        const bool act = (qb >= masked_qbs)
+            || bool(block_mask[qb * nk_total + int(tid.x)]);
+        if (act) ii14_active_qbs[n++] = (ushort)qb;
+      }
+      ii14_n_active = n;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  const int n_active_qb = ii14_n_active;
+
+  for (int qb_ii = 0; qb_ii < n_active_qb; qb_ii++) {
+    const int qb = (int)ii14_active_qbs[qb_ii];
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
         ? params.qL_rem : V34BWDK_BQ;
@@ -7259,13 +7315,40 @@ void attention_bwd_fused_dkdv_sparse(
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // === Q-loop: fused dK + dV accumulation per K-tile ===
-  for (int qb = 0; qb < q_loop; qb++) {
-    // === v2.50 Prompt 5d Section A sparse-skip (ORDER-CRITICAL preserved) ===
-    if (qb < (params.qL / V34BWDF_BQ)) {
+  // === Phase II-14 sparse-skip restructure: COMPACTED ACTIVE LIST ===
+  // Root-cause fix for the II-6/II-8 intermittent flake (single-lane
+  // cooperative-accumulator fragments reverting to .clear() zeros,
+  // ~2/5 standalone with `continue`, ~1/30 with a body-wrap): ANY
+  // data-dependent branch inside the Q-loop around the live
+  // cooperative-tensor accumulators (dK_accum/dV_accum persist across
+  // the whole loop) intermittently loses lane fragment state.  The
+  // dense twin — a plain counted loop with no in-loop branch — never
+  // exhibits it.  Fix the CLASS: precompute the active-qb list ONCE
+  // (threadgroup memory, uniform), then run a counted loop with ZERO
+  // in-loop branching — the exact execution shape of the dense kernel.
+  threadgroup ushort ii14_active_qbs[1024];
+  threadgroup int ii14_n_active;
+  {
+    // qL/BQ <= 1024 covers qL <= 65536 at BQ=64; the host guard in
+    // compile_v34_backward_pipeline rejects larger (loud, Rule 8).
+    if (simd_group_id == 0 && simd_lane_id == 0) {
+      int n = 0;
+      const int masked_qbs = params.qL / V34BWDF_BQ;
       const int nk_total = params.NK;
-      bool tile_active = block_mask[qb * nk_total + int(tid.x)];
-      if (!tile_active) continue;
+      for (int qb = 0; qb < q_loop; ++qb) {
+        const bool act = (qb >= masked_qbs)
+            || bool(block_mask[qb * nk_total + int(tid.x)]);
+        if (act) ii14_active_qbs[n++] = (ushort)qb;
+      }
+      ii14_n_active = n;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  const int n_active_qb = ii14_n_active;
+
+  for (int qb_ii = 0; qb_ii < n_active_qb; qb_ii++) {
+    const int qb = (int)ii14_active_qbs[qb_ii];
+    {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
         ? params.qL_rem : V34BWDF_BQ;
@@ -7526,6 +7609,7 @@ void attention_bwd_fused_dkdv_sparse(
       }
     }
 
+    }  // II-14 active-list body
     simdgroup_barrier(mem_flags::mem_none);
   }  // end Q-loop
 

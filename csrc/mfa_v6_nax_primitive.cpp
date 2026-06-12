@@ -1603,6 +1603,14 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     // buffer(6) = params set inside dispatch helper via enc.set_bytes
     enc.set_input_array(block_mask, 7);
 
+    // Phase II-14: the sparse generator's active-qb list is a fixed
+    // 1024-entry threadgroup array; reject qL beyond it loudly.
+    if ((N + BQ - 1) / BQ > 1024) {
+      throw std::runtime_error(
+          "V34 sparse dV: qL/BQ exceeds the 1024-entry active-list "
+          "capacity (qL=" + std::to_string((int)N) +
+          ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
+    }
     v34_dispatch_bwd_dv_sparse(pipeline, &enc, (int)N, (int)Nk,
                                (int)Hq, (int)Hk, (int)B, (int)D, BQ, BK, WM);
   }
@@ -2198,6 +2206,14 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     enc.set_input_array(d_vec, 8);
     enc.set_input_array(block_mask, 9);
 
+    // Phase II-14: the sparse generator's active-kb list is a fixed
+    // 1024-entry threadgroup array; reject kL beyond it loudly.
+    if ((Nk + v34_BK - 1) / v34_BK > 1024) {
+      throw std::runtime_error(
+          "V34 sparse dQ: kL/BK exceeds the 1024-entry active-list "
+          "capacity (kL=" + std::to_string((int)Nk) +
+          ", BK=" + std::to_string((int)v34_BK) + ") — II-14 restructure.");
+    }
     v34_dispatch_bwd_query_sparse(
         pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
         (int)B, (int)D, v34_BQ, v34_BK, v34_WM);
@@ -2372,6 +2388,14 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     enc.set_input_array(d_vec, 8);
     enc.set_input_array(block_mask, 9);
 
+    // Phase II-14: the sparse generator's active-qb list is a fixed
+    // 1024-entry threadgroup array; reject qL beyond it loudly.
+    if ((N + BQ - 1) / BQ > 1024) {
+      throw std::runtime_error(
+          "V34 sparse dK: qL/BQ exceeds the 1024-entry active-list "
+          "capacity (qL=" + std::to_string((int)N) +
+          ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
+    }
     v34_dispatch_bwd_dk_sparse(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                                 (int)B, (int)D, BQ, BK, WM);
   }
@@ -2554,6 +2578,14 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     enc.set_input_array(d_vec, 8);
     enc.set_input_array(block_mask, 9);
 
+    // Phase II-14: the sparse generator's active-qb list is a fixed
+    // 1024-entry threadgroup array; reject qL beyond it loudly.
+    if ((N + BQ - 1) / BQ > 1024) {
+      throw std::runtime_error(
+          "V34 sparse fused dKdV: qL/BQ exceeds the 1024-entry active-"
+          "list capacity (qL=" + std::to_string((int)N) +
+          ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
+    }
     v34_dispatch_bwd_fused_dkdv_sparse(pipeline, &enc, (int)N, (int)Nk,
                                         (int)Hq, (int)Hk, (int)B, (int)D,
                                         BQ, BK, WM);

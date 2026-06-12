@@ -232,3 +232,39 @@ STATUS: COMPLETE
 - II-12 bonus: first-line carve-out now mirrors the default-scale gate (non-default scale no longer detours via STEEL fwd) [VERIFIED]
 - II-13: 11 entry points enumerated+classified; zero remaining gaps on M5; M1-gated SDPA hook = flagged-unbenched ledger item; telemetry engagement tests + completeness registry + anti-silence check (5 tests) [VERIFIED]
 - Suite: 1409 passed + 1 skipped x2 | Git: commits + push
+
+---
+## [2026-06-12 14:16] [CLAUDE] Phase II-14: pool-residual root cause + structural class fix + Phase II fixed-point declaration
+STATUS: COMPLETE
+
+### Plan
+- Objective: make the "buffer-pool stale-value residual" reliably reproducible, find the exact mechanism, fix the CLASS structurally, drive stress canaries to zero (>=30 consecutive), declare the Phase II exhaustion fixed point.
+- Files to modify: csrc/mfa/v6_nax/NAAttentionKernel.cpp, csrc/mfa_v6_nax_primitive.cpp, new tripwire test, PHASE-II-CLOSE.md, sprint report.
+- Dependencies impacted: 4 sparse V34 backward generators (fused dKdV, dV, dK, dQ) + their 4 dispatch sites.
+
+### Changes
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp` — all 4 sparse backward generators: replaced data-dependent `if (!tile_active) continue;` (around live cooperative accumulators) with compacted active-tile list in threadgroup memory + uniform counted loop; dQ-sparse K/V rebased per active tile (was incremental advance) [HIGH] [VERIFIED]
+- `csrc/mfa_v6_nax_primitive.cpp` — 4 loud host guards: active-list capacity ceil(qL/BQ) (resp. ceil(kL/BK) for dQ) > 1024 throws (Rule 8) [HIGH] [VERIFIED]
+- `tests/test_v50_sprint_5e_ii14_pool_tripwire.py` — NEW permanent stress-gated tripwire (victim config, raw-partials bitwise, x5 amplification) [HIGH] [VERIFIED]
+- `docs/v50/campaign-2026-06/phase2/sprint-II-14-report.md` — NEW sprint report (repro, mechanism, fix, ladder) [VERIFIED]
+- `docs/v50/campaign-2026-06/phase2/PHASE-II-CLOSE.md` — II-2R/II-9..II-14 ledger rows, fixed-point declaration, refreshed Marco-gated decision queue, lessons #6-#7 [VERIFIED]
+
+### Root cause (key finding)
+- NOT buffer-pool reuse: divergent values are .clear() zeros (content-independent), single-lane fragments, random (head, simdgroup, K-tile) regions. Mechanism = data-dependent branch inside loop carrying cooperative-tensor accumulator state; fires even with all-true masks (~2/5 standalone); SUPPRESSED in full-suite context (47 clean stressed suite runs were misleading) [VERIFIED empirically; compiler-level attribution DEDUCED]
+
+### Dependency & regression check
+- Callers verified: 4 sparse dispatch sites in mfa_v6_nax_primitive.cpp (only callers of the 4 generators); attention.py routing unchanged.
+- Test coverage: covered — 29 sparse-backward tests + new tripwire + canary; existing public sparse tests pass.
+
+### Tech cost
+- Common path (dense): zero by construction (untouched). Sparse: one single-thread <=1024-entry scan + 1 barrier per TG; loop trips = active count. Skip benefit re-measured intact (tridiag 7-15x faster than all-true).
+
+### Validation
+- Ran: fused determinism script x60; /tmp/ii14_split_determinism.py (8 configs x30); tripwire standalone x30; canary standalone x30; MFA_POOL_STRESS=1 pytest tests/ x3; default pytest x2; /tmp/ii14_perf_spot.py; /tmp/ii14_freshpass.py (meta-sweep)
+- Validated: 0/60 + 0/29x8 nondet, bitwise sparse==dense at all-true, 30/30 + 30/30 canaries, 1411 passed x3 stressed (+x2 default pending at log time, confirmed before commit), fresh pass zero-finding (fwd 1.005-1.035, grads 2.52/1.89x, conv 2.31/1.73x)
+
+### Git
+- committed this entry's changes on `master` (sha in commit below); pushed
+
+### Fixed point
+- Phase II exhaustion fixed point DECLARED MET (all four II-8 addendum mandatories closed + zero-finding fresh pass). Remaining work = Marco-gated decision queue in PHASE-II-CLOSE.md.
