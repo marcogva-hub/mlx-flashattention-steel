@@ -5,6 +5,25 @@
 /// Kill threshold (recorded in sprint-C-report): int8 < 1.3x fp16
 /// sustained means the Sage-NAX int8 kernel sprint dies at the gate.
 ///
+/// Sprint II-5 REVISION (2026-06-12): the II-2 verdict "int8
+/// unimplemented, all binding forms static_assert" is FALSIFIED.
+/// int8 matmul2d IS implemented on macOS 26.4 / M5 in the
+/// full-cooperative form with fragment dims M,N,K each in {16,32}
+/// (header static_assert enforces this for coop-operand int8; the
+/// II-2 probe only tried 64x64x128 tiles, which is the actual
+/// constraint that fired — the "Unsupported type" diagnostic was
+/// misleading).  Working configuration (matches Mininglamp-AI/cider
+/// w8a8_matmul.metal, MIT, and Draw Things Metal Quantized Attention):
+///   matmul2d_descriptor(16, 32, 16, false, true, true,
+///                       mode::multiply_accumulate)
+///   matmul2d<desc, metal::execution_simdgroup>
+///   get_*_cooperative_tensor<int8_t, int8_t, int32_t>()
+///   element-wise register fill (no .load() from device tensor<>).
+/// Measured sustained (II-5 standalone probe, M5 Max, 320 TGs x 4 SGs):
+///   int8/i32 233 TOPS vs f16/f16 124 TFLOPS = 1.88x  → GATE PASSES.
+/// The cider-form variant below is tried FIRST; the historical II-2
+/// variants are retained for regression tracking across macOS updates.
+///
 /// Dispatches via raw Metal (GPU-side timing from MTLCommandBuffer
 /// GPUStart/EndTime), compiled through ShaderCache::compile_shader
 /// (the MFA_REQUIRE_MSL4 sentinel selects MTLLanguageVersion4 — MPP
@@ -20,6 +39,48 @@
 #include <sstream>
 
 namespace mlx_mfa {
+
+// Cider-form variant (Sprint II-5, the WORKING int8 binding): full-
+// cooperative operands at fragment dims (16,32,16) — the only dims the
+// MPP header's static_assert admits for coop-operand int8 — with
+// element-type template args and element-wise register fill.  One
+// simdgroup per threadgroup; C is a plain device pointer sink.
+static std::string bench_kernel_ciderform_src(const char* in_ty,
+                                              const char* acc_ty,
+                                              const char* fn_name, int reps) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL4
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+
+kernel void )MSL";
+  ss << fn_name << R"MSL((
+    const device )MSL" << in_ty << R"MSL(* A [[buffer(0)]],
+    const device )MSL" << in_ty << R"MSL(* B [[buffer(1)]],
+    device )MSL" << acc_ty << R"MSL(* C [[buffer(2)]],
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        16, 32, 16, false, true, true,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> op;
+    auto a = op.get_left_input_cooperative_tensor<
+        )MSL" << in_ty << ", " << in_ty << ", " << acc_ty << R"MSL(>();
+    auto b = op.get_right_input_cooperative_tensor<
+        )MSL" << in_ty << ", " << in_ty << ", " << acc_ty << R"MSL(>();
+    auto c = op.get_destination_cooperative_tensor<
+        decltype(a), decltype(b), )MSL" << acc_ty << R"MSL(>();
+    for (ushort i = 0; i < a.get_capacity(); ++i) a[i] = A[i & 63];
+    for (ushort i = 0; i < b.get_capacity(); ++i) b[i] = B[i & 63];
+    for (ushort i = 0; i < c.get_capacity(); ++i) c[i] = 0;
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) op.run(a, b, c);
+    C[tgid.y] = c[0];  // sink defeats DCE
+}
+)MSL";
+  return ss.str();
+}
 
 // Cooperative-destination variant: the int8 path may only be implemented
 // for cooperative destination tensors (the Draw Things NAInt8 pattern).
@@ -132,7 +193,10 @@ kernel void )MSL";
 
 static double run_bench(void* mtl_device_raw, const std::string& src,
                         const char* fn_name, size_t elem_in, size_t elem_acc,
-                        int reps, int tgs, int iters) {
+                        int reps, int tgs, int iters,
+                        // FLOPs per rep per threadgroup; default = the
+                        // historical 64x64x128 device-tensor tile.
+                        double flops_per_rep_tg = 2.0 * 64 * 64 * 128) {
   id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device_raw;
   void* pso_raw = ShaderCache::get().compile_shader(src, fn_name,
                                                     mtl_device_raw);
@@ -175,7 +239,7 @@ static double run_bench(void* mtl_device_raw, const std::string& src,
   }
   std::sort(times.begin(), times.end());
   const double med = times[times.size() / 2];
-  const double flops = 2.0 * 64 * 64 * 128 * (double)reps * tgs;
+  const double flops = flops_per_rep_tg * (double)reps * tgs;
   return flops / med / 1e12;  // TFLOPS (or TOPS for int8)
 }
 
@@ -186,6 +250,27 @@ std::string mpp_int8_microbench() {
 
   const int reps = 512, tgs = 160, iters = 30;
   std::ostringstream out;
+
+  // Sprint II-5: cider-form (16,32,16 full-coop) — the binding that
+  // actually works for int8 on macOS 26.4.  Tried first; same form for
+  // fp16 so the kill-gate ratio is apples-to-apples.  Higher reps/tgs
+  // because the per-rep tile is 32x smaller than 64x64x128.
+  try {
+    const int cf_reps = 20000, cf_tgs = 1280, cf_iters = 9;
+    const double cf_flops = 2.0 * 16 * 32 * 16;
+    double cf_f16 = run_bench(
+        mtl_device, bench_kernel_ciderform_src("half", "half", "cf_f16", cf_reps),
+        "cf_f16", 2, 2, cf_reps, cf_tgs, cf_iters, cf_flops);
+    double cf_i8 = run_bench(
+        mtl_device, bench_kernel_ciderform_src("int8_t", "int32_t", "cf_i8", cf_reps),
+        "cf_i8", 1, 4, cf_reps, cf_tgs, cf_iters, cf_flops);
+    out << "ciderform16x32x16: fp16=" << cf_f16 << " TF int8/i32=" << cf_i8
+        << " TOPS ratio=" << (cf_i8 / cf_f16) << " | legacy64x64x128: ";
+  } catch (const std::exception& e) {
+    out << "ciderform16x32x16=FAIL(" << std::string(e.what()).substr(0, 200)
+        << ") | legacy64x64x128: ";
+  }
+
   try {
     double tf_f16 = run_bench(
         mtl_device, bench_kernel_src("half", "float", "mm_f16", reps),
