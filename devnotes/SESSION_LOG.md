@@ -203,3 +203,13 @@ STATUS: COMPLETE
 - mx.argpartition measured 35ms (sort-grade) — primitive route dead [VERIFIED]
 - Artifact: benchmarks/probes/topk_approach5_pass1.mm; second negative closes Approach 5
 - Ran: probes + component benches | Validated: above | Git: decline commit, pushed
+
+---
+## [2026-06-12 19:40] [CLAUDE] Sprint II-11: cider GQA-decode ported + benched; auto-dispatch DECLINED, expert API shipped
+STATUS: COMPLETE
+
+- Port: mlx_mfa/gqa_decode_cider.py (MIT attribution; 2-pass, runtime N/strides — no per-token recompile) [VERIFIED]
+- Correctness: FP-floor vs SDPA across GQA 1..32/MQA/dtypes (6 locks) [VERIFIED]
+- Post-port grid (3 sessions): consistent wins ONLY at factor>=8 S=32K (1.06-1.17x); rest ties/loses — window narrower than II-5 in-cider (launch overhead) [VERIFIED]
+- Decision: no auto-dispatch (sliver vs maintenance, per sprint license); expert API tier 3; Marco flag for gated dispatch + the paged/TQ transplant follow-up
+- Ran: grid bench + suite | Validated: 1397 passed | Git: commit + push
