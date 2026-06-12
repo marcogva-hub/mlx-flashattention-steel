@@ -192,3 +192,14 @@ STATUS: COMPLETE
 - half coop dest = fp16 accumulation -> failed 1e-5 parity bars; float dest required [VERIFIED]
 - MPP impl lists bf16 conv variants — potential KD-7 lift for the envelope (S probe, ledger) [VERIFIED declared, implementation UNCERTAIN]
 - Fused-im2col XL ledger item RETIRED (superseded by primitive promotion)
+
+---
+## [2026-06-12 18:30] [CLAUDE] Sprint II-10: refined Approach-5 top-K BUILT + DECLINED (0.75-0.89x); Approach 5 closed permanently
+STATUS: COMPLETE
+
+- PASS-1 built matmul-grade (fp16 MPP mma + owner-lane register heaps + TGM staging): 6.94ms at audit shape — kill gate (8ms) passed; score-set parity vs CPU [VERIFIED]
+- Full composed path 12.81ms vs Architecture B 11.34 (0.89x); N=2048: 4.04 vs 3.03 (0.75x) — DECLINED [VERIFIED]
+- Blueprint under-modeled scatter floor (2.26ms vs 0.5-1 projected) + selection tax; ArchB's threshold-elementwise-bias is structurally tight
+- mx.argpartition measured 35ms (sort-grade) — primitive route dead [VERIFIED]
+- Artifact: benchmarks/probes/topk_approach5_pass1.mm; second negative closes Approach 5
+- Ran: probes + component benches | Validated: above | Git: decline commit, pushed
