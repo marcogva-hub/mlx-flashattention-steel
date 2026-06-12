@@ -2,7 +2,93 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased — post-v2.50.1 repo review]
+## [2.51.0] — 2026-06-12 — campaign release (Phases I–III)
+
+The 2026-06 exhaustive audit/optimization campaign, tagged at its
+Phase-III close: Sprints B→A→C, Phase II (II-0…II-14, closed at its
+exhaustion fixed point), and Phase III gain-capture sprints III-1/III-2.
+Full campaign record: `docs/v50/campaign-2026-06/`.
+
+### Added (Phase II late + Phase III)
+- **conv3d via the Apple MPP convolution2d primitive, DEFAULT-ON**
+  (II-9): no materialized im2col; fp16 2.3–2.5× vs the legacy path at
+  T8/T16 64×64 C128.  Opt-out `MFA_DISABLE_CONV3D_MPP=1`.
+  Claim id `ii9_conv3d_t16_64x64_c128_fp16_mpp_default`.
+- **bf16 conv3d via MPP (KD-7 lifted, III-1)**: 1.4–2.7× vs the
+  pre-lift public bf16 path; bf16 routes ONLY through the MPP branch
+  (the legacy im2col path stays fp16-only — upstream MLX bf16 im2col
+  bug; loud guard).  Claim id
+  `iii1_conv3d_t16_64x64_c128_bf16_mpp_default`.
+
+  Reproduce:
+  ```python
+  from mlx_mfa._auto_hooks import install_hooks; install_hooks()
+  import mlx.core as mx
+  x = mx.random.normal((1, 16, 64, 64, 128)).astype(mx.bfloat16)
+  w = mx.random.normal((128, 3, 3, 3, 128)).astype(mx.bfloat16)
+  out = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))  # MPP engages
+  ```
+- **Non-causal D=64 V34 backward DEFAULT-ON** (II-12): 1.72–2.01× vs
+  SDPA-vjp via the clean split kernel; forward stays bit-identical to
+  Apple SDPA.  Same opt-out as causal.  Claim ids `ii12_*`.
+
+  Reproduce:
+  ```python
+  import mlx.core as mx, mlx_mfa
+  q = k = v = mx.random.normal((1, 4, 8192, 64)).astype(mx.float16)
+  g = mx.grad(lambda a, b, c: mlx_mfa.flash_attention(a, b, c).sum(),
+              argnums=(0, 1, 2))(q, k, v)   # V34 split engages
+  ```
+- **TurboQuant paged decode rebuilt (III-2)**: single-token `step()`
+  routes to per-step gather/dequant kernels + Apple SDPA — steps
+  6.0× (S=4K) to 14.4× (S=16K) faster; attend-only 13.8–22.1× vs the
+  fused TQ kernel; gap to the dense-decode floor shrinks from ~23× to
+  1.7×.  Opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`.  Claim id
+  `iii2_tq_paged_decode_step_default`.
+
+  Reproduce:
+  ```python
+  from mlx_mfa.inference import TurboQuantPagedInferenceContext
+  ctx = TurboQuantPagedInferenceContext(num_blocks=96, block_size=256,
+                                        H_kv=8, D=128, tq_bits=3)
+  ctx.prefill(q0, k0, v0)          # [1,32,S,128] / [1,8,S,128] fp16
+  out = ctx.step(q, k_new, v_new)  # N_q=1 -> gather/dequant + SDPA
+  ```
+- cider-style GQA decode kernel as **expert API** (II-11, MIT):
+  `from mlx_mfa.gqa_decode_cider import gqa_decode_cider`.
+- LCSA mask build GPU-vectorized: 11.19 ms → 0.73 ms (15.4×, II-7).
+- `mx.conv3d` auto-hook (II-7): plain `mlx.nn` models now reach the
+  NAX conv path (previously only `mx.conv_general` was patched).
+
+### Fixed (Phase II late + Phase III)
+- **Fused TQ kernel silently wrong at tq_bits ∈ {2, 4}** (III-2,
+  latent since the kernel landed): K and V dequant emitted the 3-bit
+  bit-planar extraction unconditionally; 2/4-bit pools were read with
+  the wrong layout (0.15 max-abs at unit scale, ~49 at std 8).
+  Runtime bit-width branches added; ground-truth parity locks at all
+  bit-widths.
+- **V34 fused-dKdV BK=16 paired-MMA out-of-bounds** (II-6, CRITICAL):
+  silent dK/dV corruption on the promoted path at unit+ scale; BK
+  guard + auto→split + unit-scale/adversarial locks; promotion
+  re-validated 2.15–2.67×.
+- **Sparse backward lane-fragment loss** (II-14): data-dependent
+  `continue` around live cooperative-tensor accumulators in all 4
+  sparse V34 backward generators intermittently dropped single-lane
+  fragments (~2/5 standalone; suppressed in-suite).  Class-fixed via
+  compacted active-list + uniform loop; 30/30 + 30/30 stress canaries.
+- Sparse all-False-row contract: NaN → zeros (II-6).
+- Forward carve-out pure-forward inversion (II-8): forward is now
+  bit-SDPA-identical on carve-out cells; V34 pair recomputed in VJP.
+
+### Notes
+- M5-class hardware (NAX) is where the campaign's promoted paths
+  engage; M1–M4 behavior is unchanged.
+- Declined with evidence (full reports in `docs/v50/campaign-2026-06/`):
+  int8 attention end-to-end (~0.80×), streaming/filtered top-K
+  Approach 5 (two builds), cider auto-dispatch (narrow window),
+  TK=1 fused variant.
+
+### From the post-v2.50.1 whole-repo review (2026-05)
 
 Whole-repo review (2026-05, post-v2.50.1): 5 parallel review passes over
 all Python + C++ + tests + benchmarks + docs; ~30 findings implemented
@@ -49,10 +135,10 @@ across 4 commit waves with per-wave test validation.
   vars + stale V34 text fixed; HARDWARE_SUPPORT/PERF_CLAIMS headers
   updated; Python 3.13/3.14 classifiers.
 
-## [Unreleased — campaign 2026-06 + Phase II]
+### From campaign Sprints B→A→C + Phase II core (2026-06)
 
-Fable 5 exhaustive audit/optimization campaign (Sprints B→A→C complete,
-Phase II in progress).  Full reports: `docs/v50/campaign-2026-06/`.
+Fable 5 exhaustive audit/optimization campaign (Sprints B→A→C,
+Phase II-0…II-5).  Full reports: `docs/v50/campaign-2026-06/`.
 
 ### Added
 - **V34 backward D=64 causal DEFAULT-ON** (Phase II-0, Marco-approved):
