@@ -6028,6 +6028,12 @@ void attention_bwd_fused_dkdv(
     }
 
     // --- S = Q[SG-rows] @ K^T ---
+    // Phase II-8 addendum item 3: odd-TK tail.  At TK odd (BK=16) the
+    // paired mma's final iteration would read 16 K-rows past the tile
+    // and write frag_at(iq, TK) out of bounds (the v2.39.1
+    // corruption); the tail zero-fills the second K fragment
+    // (load_rows lim <= 16) and routes the second output to a scratch
+    // fragment.  Compile-time branch (folds away at even TK).
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
@@ -6046,20 +6052,36 @@ void attention_bwd_fused_dkdv(
           } else {
             Qfrag.load(Q_qs + Q_off, int(params.Q_strides[2]));
           }
-          if (is_last_k) {
-            Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
-                            lim_rows_k - ik * 16);
+          if ((V34BWDF_TK & 1) && (ik + 1 == V34BWDF_TK)) {
+            const short tail_lim = is_last_k
+                ? (short)min((int)(lim_rows_k - ik * 16), 16)
+                : (short)16;
+            Kfrag.load_rows(K + K_off, int(params.K_strides[2]), tail_lim);
+            thread s_q_t::frag_type scratch;
+            s_q_t::NAXFrag_t::mma(
+                Stile.frag_at(iq, ik),
+                scratch,
+                Qfrag.frag_at(0, 0),
+                metal::false_type{},
+                Kfrag.frag_at(0, 0),
+                Kfrag.frag_at(1, 0),
+                metal::true_type{});
           } else {
-            Kfrag.load(K + K_off, int(params.K_strides[2]));
+            if (is_last_k) {
+              Kfrag.load_rows(K + K_off, int(params.K_strides[2]),
+                              lim_rows_k - ik * 16);
+            } else {
+              Kfrag.load(K + K_off, int(params.K_strides[2]));
+            }
+            s_q_t::NAXFrag_t::mma(
+                Stile.frag_at(iq, ik),
+                Stile.frag_at(iq, ik + 1),
+                Qfrag.frag_at(0, 0),
+                metal::false_type{},
+                Kfrag.frag_at(0, 0),
+                Kfrag.frag_at(1, 0),
+                metal::true_type{});
           }
-          s_q_t::NAXFrag_t::mma(
-              Stile.frag_at(iq, ik),
-              Stile.frag_at(iq, ik + 1),
-              Qfrag.frag_at(0, 0),
-              metal::false_type{},
-              Kfrag.frag_at(0, 0),
-              Kfrag.frag_at(1, 0),
-              metal::true_type{});
         }
       }
     }
@@ -6157,6 +6179,7 @@ void attention_bwd_fused_dkdv(
     }
 
     // --- dP = dO @ V^T ---
+    // II-8 item 3: odd-TK tail (see the S-recompute loop above).
     using dp_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
     dp_t dPtile;
     dPtile.clear();
@@ -6176,20 +6199,36 @@ void attention_bwd_fused_dkdv(
           } else {
             dOfrag.load(dO_qs + dO_off, int(params.dO_strides[2]));
           }
-          if (is_last_k) {
-            Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
-                            lim_rows_k - ik * 16);
+          if ((V34BWDF_TK & 1) && (ik + 1 == V34BWDF_TK)) {
+            const short tail_lim = is_last_k
+                ? (short)min((int)(lim_rows_k - ik * 16), 16)
+                : (short)16;
+            Vfrag.load_rows(V + V_off, int(params.V_strides[2]), tail_lim);
+            thread dp_t::frag_type scratch;
+            dp_t::NAXFrag_t::mma(
+                dPtile.frag_at(iq, ik),
+                scratch,
+                dOfrag.frag_at(0, 0),
+                metal::false_type{},
+                Vfrag.frag_at(0, 0),
+                Vfrag.frag_at(1, 0),
+                metal::true_type{});
           } else {
-            Vfrag.load(V + V_off, int(params.V_strides[2]));
+            if (is_last_k) {
+              Vfrag.load_rows(V + V_off, int(params.V_strides[2]),
+                              lim_rows_k - ik * 16);
+            } else {
+              Vfrag.load(V + V_off, int(params.V_strides[2]));
+            }
+            dp_t::NAXFrag_t::mma(
+                dPtile.frag_at(iq, ik),
+                dPtile.frag_at(iq, ik + 1),
+                dOfrag.frag_at(0, 0),
+                metal::false_type{},
+                Vfrag.frag_at(0, 0),
+                Vfrag.frag_at(1, 0),
+                metal::true_type{});
           }
-          dp_t::NAXFrag_t::mma(
-              dPtile.frag_at(iq, ik),
-              dPtile.frag_at(iq, ik + 1),
-              dOfrag.frag_at(0, 0),
-              metal::false_type{},
-              Vfrag.frag_at(0, 0),
-              Vfrag.frag_at(1, 0),
-              metal::true_type{});
         }
       }
     }

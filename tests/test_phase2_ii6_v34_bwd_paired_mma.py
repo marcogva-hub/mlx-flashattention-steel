@@ -36,6 +36,16 @@ _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 _skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V34 requires M5+ NAX")
 
 
+@pytest.fixture(autouse=True)
+def _clear_metal_cache():
+    """These tests deliberately fill buffers with inf/NaN (adversarial
+    magnitudes, guard exceptions).  Clear the Metal buffer pool after
+    each test so recycled buffers can't contaminate later lazy-zeros
+    tests (known stale-buffer pattern, see MEMORY.md v1.3.0 notes)."""
+    yield
+    mx.clear_cache()
+
+
 def _grads(fn, q, k, v):
     g = mx.grad(lambda a, b, c: fn(a, b, c).sum(), argnums=(0, 1, 2))(q, k, v)
     mx.eval(*g)
@@ -105,14 +115,26 @@ class TestBKGuard:
                 q, k, v, L, dO, 1.0 / 8.0, 4, True)
             mx.eval(out)
 
-    def test_fused_bk16_raises(self, monkeypatch):
-        monkeypatch.setenv("MFA_V34BWDF_BK", "16")
+    def test_fused_bk16_now_legal_and_bk_nonmult16_raises(self, monkeypatch):
+        """II-8 addendum item 3 UPDATE: the fused generator gained the
+        odd-TK tail (zeroed second K fragment + scratch dest), so BK=16
+        is now LEGAL on the fused kernel (validated at unit +
+        adversarial scale; measured exactly at parity with split).
+        Non-multiples of 16 still raise; split kernels (no tail) still
+        reject BK=16 — covered by test_split_dv_bk16_raises above."""
         from mlx_mfa import _ext
         q, k, v = _mk(1.0, seed=3, N=256)
         L = mx.zeros((1, 8, 256))
         dO = mx.ones_like(q)
         D0 = mx.zeros((1, 8, 256))
         mx.eval(L, dO, D0)
+        # BK=16: legal post-II-8 (odd-TK tail)
+        monkeypatch.setenv("MFA_V34BWDF_BK", "16")
+        out = _ext.v6_nax_backward_fused_dkdv_raw(
+            q, k, v, L, dO, D0, 1.0 / 8.0, 4, True)
+        mx.eval(*out)
+        # BK=24 (not a multiple of 16): still loud
+        monkeypatch.setenv("MFA_V34BWDF_BK", "24")
         with pytest.raises(Exception, match="multiple of 32"):
             out = _ext.v6_nax_backward_fused_dkdv_raw(
                 q, k, v, L, dO, D0, 1.0 / 8.0, 4, True)

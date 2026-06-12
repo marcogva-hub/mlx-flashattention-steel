@@ -213,3 +213,13 @@ STATUS: COMPLETE
 - Post-port grid (3 sessions): consistent wins ONLY at factor>=8 S=32K (1.06-1.17x); rest ties/loses — window narrower than II-5 in-cider (launch overhead) [VERIFIED]
 - Decision: no auto-dispatch (sliver vs maintenance, per sprint license); expert API tier 3; Marco flag for gated dispatch + the paged/TQ transplant follow-up
 - Ran: grid bench + suite | Validated: 1397 passed | Git: commit + push
+
+---
+## [2026-06-12 21:30] [CLAUDE] II-8 addendum: gate#9 programmatic (3rd site FIXED), TK=1 closed (parity->decline), determinism classified, pool residual = fixed-point blocker
+STATUS: COMPLETE (items 1,3,4 clean/closed; item 2 partially — fixed point NOT declared)
+
+- Item 1: THIRD Pattern-#9 site (V34 forward MFA_V6_V34_BK unguarded) found+guarded x2 sites; tests/test_phase2_ii8_gate9_parity.py enumerates all paired-MMA sites; release-audit gate #9 programmatic [VERIFIED]
+- Item 3: odd-TK tail in dense fused generator (BOTH paired loops — dP was a latent 2nd path); correct at noise floor + adversarial mags; fused-BK16 == split +-0.2% -> DECLINED; v2.39.1 win confirmed corrupt-math artifact [VERIFIED]
+- Item 4: run-to-run determinism contract HOLDS; batch-invariance = feature -> Marco backlog [VERIFIED]
+- Item 2: production vector closed (II-6); 52 directed repro rounds clean; stress canary (opt-in MFA_POOL_STRESS=1) makes residual reproducible ~1/6 IN-SUITE only; root-cause = dedicated session; FIXED POINT NOT DECLARED [VERIFIED flake, mechanism UNCERTAIN]
+- Suite: 1399 passed + 1 skipped x3 | Git: commit + push

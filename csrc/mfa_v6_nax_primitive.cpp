@@ -218,6 +218,19 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     if (v34_BQ % (v34_WM * 16) != 0 || head_dim % 16 != 0) {
       use_v34 = false;  // fall back to legacy if invalid config
     }
+    // Phase II-8 addendum (Pattern #9, THIRD site): the V34 forward
+    // generator emits the QK matmul as a PAIRED 16x32x16 MMA
+    // (`for (ik = 0; ik < V34_TK; ik += 2)` — NAAttentionKernel.cpp
+    // ~line 2885), so V34_TK = BK/16 must be even.  MFA_V6_V34_BK=16
+    // (or any non-multiple of 32) would reproduce the II-6 backward
+    // out-of-bounds corruption in the FORWARD.  Loud failure per
+    // Rule 8 (env override only — defaults 64/32 are valid).
+    if (v34_BK == 0 || v34_BK % 32 != 0) {
+      throw std::runtime_error(
+          "V34 forward: BK must be a positive multiple of 32 (paired "
+          "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
+          std::to_string((int)v34_BK) + " (MFA_V6_V34_BK).");
+    }
   }
 
   simd::ushort3 blockDims = use_v34
@@ -661,6 +674,15 @@ public:
       if (v34_BQ % (v34_WM * 16) != 0 || D % 16 != 0) {
         use_v34 = false;
       }
+      // Phase II-8 addendum (Pattern #9, third site — see the guard in
+      // the other dispatch path above): paired-MMA forward requires
+      // BK % 32 == 0.
+      if (use_v34 && (v34_BK == 0 || v34_BK % 32 != 0)) {
+        throw std::runtime_error(
+            "V34 forward: BK must be a positive multiple of 32 (paired "
+            "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
+            std::to_string((int)v34_BK) + " (MFA_V6_V34_BK).");
+      }
     }
 
     // Include all tile + flag params in cache key.
@@ -866,7 +888,8 @@ void* compile_v34_backward_pipeline(
     bool isCausal = false,  // v2.50 Phase 4b-complete (Prompt 3): plumbed through
     const char* dump_env_var = nullptr,
     const char* dump_label = nullptr,
-    const char* dump_path_env_var = nullptr) {
+    const char* dump_path_env_var = nullptr,
+    bool generator_handles_odd_tk = false) {
   // Phase II-6 (campaign 2026-06): paired-MMA TK guard.  Every V34
   // backward generator emits the S-recompute as a PAIRED 16x32x16 MMA
   // (`for (ik = 0; ik < TK; ik += 2)` writing frag_at(iq, ik) AND
@@ -879,14 +902,16 @@ void* compile_v34_backward_pipeline(
   // 4x the gradient magnitude at unit-scale inputs and inf at std>=2).
   // Loud failure per Rule 8 — this also guards the MFA_V34BWD*_BK env
   // overrides on every backward Primitive.
-  if (BK == 0 || BK % 32 != 0) {
+  if (BK == 0 || BK % 16 != 0 ||
+      (BK % 32 != 0 && !generator_handles_odd_tk)) {
     throw std::runtime_error(
         std::string("V34 backward '") + kernel_fn_name +
         "': BK must be a positive multiple of 32 (paired 16x32x16 MMA "
         "requires TK = BK/16 even; MPP has no 16x16x16 cooperative "
         "matmul). Got BK=" + std::to_string((int)BK) +
         ". The v2.39.1 fused-kernel BK=16 default was numerically "
-        "invalid and is withdrawn (Phase II-6).");
+        "invalid and is withdrawn (Phase II-6).  BK%16 configs are "
+        "accepted ONLY for generators with the II-8 odd-TK tail.");
   }
   // Build memoryPrecisions (FP16/BF16 inputs, FP32 intermediates).
   GEMMOperandPrecision input_prec = (dtype_code == 1)
@@ -1959,7 +1984,8 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
           [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSource(); },
           "attention_bwd_fused_dkdv", mtl_device, causal_,
-          "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH");
+          "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH",
+          /*generator_handles_odd_tk=*/true);  // II-8 item 3 tail
       pipeline = cache_insert_or_release(v34_bwd_fused_pipelines, v34_bwd_fused_mtx, key, pipeline);
     }
 
