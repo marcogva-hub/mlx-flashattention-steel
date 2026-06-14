@@ -644,3 +644,13 @@ STATUS: COMPLETE
 - PHASE-III-CLOSE.md updated to record the decision. No outward release action taken (no tag/PyPI/GH).
 - Phase III CLOSED. master clean, no pending immediate action.
 - Git: doc commit below; pushed.
+
+---
+## [2026-06-14 10:00] [CLAUDE] return_lse causal-backward report — ALREADY FIXED (P5-1, aaede0d); test dtype-coverage extended
+STATUS: COMPLETE
+
+- Marco reported the return_lse causal-backward NaN/garbage-grad bug (matches III-4 pass-5 P5-1 discovery; report cited pre-fix line numbers + 1478 baseline → predates the fix).
+- VERIFIED already fixed on HEAD: mx.grad(flash_attention(...,return_lse=True)[0].sum()) is finite + bit-exact (0.0) to the no-lse path = SDPA-vjp GT, across fp16/bf16/fp32 × D=64/128. Fix = `_make_mfa_custom_lse` custom_function (commit aaede0d, pass 5). No code change needed.
+- Gap addressed: the P5 regression test was fp16-only. Extended `TestP5ReturnLseBackward::test_return_lse_grad_matches_sdpa_vjp` to parametrize dtype {fp16,bf16,fp32} × (N,D) × causal — the bug had dtype-specific symptoms so all three are locked. Corrected the invariant: return_lse grad == SDPA-vjp GT within dtype floor (NOT bit-exact to the no-lse path, which uses the V34 backward at D=64/qL>=2048 cells, differing by fp16 floor 0.0012).
+- Ran: P5 test (19 passed), full suite | Validated: 1501 passed + 2 skipped (was 1489; +12 = the new dtype/causal P5 cells)
+- Git: test commit below; branch master; not pushed yet (awaiting nothing — pushing)

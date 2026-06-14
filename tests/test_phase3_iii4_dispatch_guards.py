@@ -182,25 +182,44 @@ class TestP5ReturnLseBackward:
     2-output C++ vjp corrupted dQ/dK/dV (NaN at large shapes).  Now
     routed through a custom_function with an SDPA-vjp backward."""
 
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16, mx.float32])
     @pytest.mark.parametrize("causal", [True, False])
     @pytest.mark.parametrize("N,D", [(512, 64), (2048, 64), (2048, 128)])
-    def test_return_lse_grad_matches_sdpa_vjp(self, causal, N, D):
+    def test_return_lse_grad_matches_sdpa_vjp(self, causal, N, D, dtype):
+        # P5-1 had DTYPE-SPECIFIC symptoms (NaN in fp16/bf16, ~1e32 garbage
+        # in fp32), so the lock covers all three dtypes x {D=64,128} x
+        # {causal, non-causal}.  The bug was causal+return_lse-specific.
         sc = 1.0 / math.sqrt(D)
         mx.random.seed(1)
-        q = mx.random.normal((1, 4, N, D)).astype(mx.float16)
-        k = mx.random.normal((1, 4, N, D)).astype(mx.float16)
-        v = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        q = mx.random.normal((1, 4, N, D)).astype(dtype)
+        k = mx.random.normal((1, 4, N, D)).astype(dtype)
+        v = mx.random.normal((1, 4, N, D)).astype(dtype)
         mx.eval(q, k, v)
+        # Ground truth = SDPA-vjp.  The return_lse path routes through
+        # _make_mfa_custom_lse (SDPA-vjp backward), so it must match GT to
+        # the dtype floor.  NOTE: the no-return_lse path is NOT necessarily
+        # bit-identical — at the V34-eligible cells (D=64, qL>=2048) it uses
+        # the V34 backward (default-on, II-12), which differs from SDPA-vjp
+        # by the fp16 floor.  So the invariant is "return_lse grad == SDPA-
+        # vjp GT within floor", and "within floor of no-return_lse" (both
+        # are within floor of GT), NOT bit-exact to no-return_lse.
         g = mx.grad(lambda a: flash_attention(
             a, k, v, scale=sc, causal=causal, return_lse=True)[0].sum())(q)
+        g_nolse = mx.grad(lambda a: flash_attention(
+            a, k, v, scale=sc, causal=causal).sum())(q)
         gr = mx.grad(lambda a: mx.fast.scaled_dot_product_attention(
             a, k, v, scale=sc, mask="causal" if causal else None).sum())(q)
-        mx.eval(g, gr)
+        mx.eval(g, g_nolse, gr)
         a = np.array(g.astype(mx.float32))
         b = np.array(gr.astype(mx.float32))
-        assert not np.isnan(a).any(), "return_lse grad produced NaN"
-        assert float(np.max(np.abs(a - b))) < 5e-3, \
-            "return_lse dQ != SDPA-vjp (P5-1 regressed)"
+        c = np.array(g_nolse.astype(mx.float32))
+        assert not np.isnan(a).any() and not np.isinf(a).any(), \
+            f"return_lse grad non-finite (dtype={dtype}, causal={causal})"
+        bound = 5e-3 if dtype != mx.bfloat16 else 5e-2  # bf16: 8 mantissa bits
+        assert float(np.max(np.abs(a - b))) < bound, \
+            "return_lse dQ != SDPA-vjp ground truth (P5-1 regressed)"
+        assert float(np.max(np.abs(a - c))) < bound, \
+            "return_lse grad diverges from no-return_lse grad (P5-1 regressed)"
 
     def test_lse_value_still_returned(self):
         sc = 1.0 / 8.0
