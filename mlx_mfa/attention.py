@@ -3754,6 +3754,12 @@ def flash_attention_topk(
     # Softmax + weighted sum
     weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(q.dtype)
     out = weights @ v
+    # III-4 pass-3 F1: a fully-masked query tile leaves a row all -inf;
+    # softmax(all -inf) = NaN.  Match the II-6 empty-row -> ZEROS contract
+    # (the dedicated sparse Metal kernels emit zeros) instead of silently
+    # propagating NaN.  A row is dead iff it has no finite score.
+    row_active = mx.any(mx.isfinite(scores), axis=-1, keepdims=True)
+    out = mx.where(row_active, out, mx.zeros_like(out))
     return out
 
 

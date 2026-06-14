@@ -4666,6 +4666,21 @@ class TestKVCacheAppendUnified:
         mx.eval(out)
         assert out.shape == (B, H, N, D)
         assert mx.all(mx.isfinite(out)).item()
+        # III-4 pass-3 (F4 strengthening): the cache was empty, so q attends
+        # ONLY to the freshly-appended (k, v) — the result must equal
+        # single-token SDPA over them.  This exercises the fp32-q / fp16-pool
+        # cast path (Class A) and asserts CORRECTNESS, not just finiteness
+        # (the prior shape+finite assert silently passed reinterpreted
+        # garbage before the pass-2 cast fix).
+        ref = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float16), k.astype(mx.float16), v.astype(mx.float16),
+            scale=1.0 / math.sqrt(D))
+        mx.eval(ref)
+        np.testing.assert_allclose(
+            np.array(out.astype(mx.float32)), np.array(ref.astype(mx.float32)),
+            rtol=1e-2, atol=5e-3,
+            err_msg="paged-append fp32-q/fp16-pool output != single-token SDPA",
+        )
 
 
 # ---------------------------------------------------------------------------

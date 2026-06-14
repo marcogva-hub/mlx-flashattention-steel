@@ -344,8 +344,18 @@ def sparse_attention_dispatch(
             for _ in range(bias.ndim - 2):
                 causal_bias = mx.expand_dims(causal_bias, 0)
         bias = bias + causal_bias
-    return mx.fast.scaled_dot_product_attention(
+    out = mx.fast.scaled_dot_product_attention(
         Q, K, V, scale=scale, mask=bias)
+    # III-4 pass-3 F2: a fully-masked query row makes the bias row all
+    # -inf; mx.fast.scaled_dot_product_attention returns NaN there.  The
+    # NAX kernel branch (above) emits ZEROS for empty rows; match it (the
+    # II-6 empty-row contract) so the two dispatch branches agree.  A row
+    # is active iff it has at least one unmasked (bias == 0) key.  The
+    # [..., qL, 1] activity mask broadcasts over the value dim of
+    # out [..., qL, D].
+    row_active = (mx.max(bias, axis=-1, keepdims=True) >= 0)
+    out = mx.where(row_active, out, mx.zeros_like(out))
+    return out
 
 
 __all__ = [

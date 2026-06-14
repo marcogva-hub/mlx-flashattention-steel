@@ -448,3 +448,54 @@ STATUS: COMPLETE
 
 ### Git
 - not applicable (audit-only, no edits); branch master
+
+---
+## [2026-06-14 06:30] [CLAUDE] Phase III-4 pass 2: fresh re-audit — grid-spec clean, regression clean, dtype+window classes found+fixed
+STATUS: COMPLETE
+
+### Findings (3 agents)
+- Grid-spec class sweep: CLEAN — topk grid-undercount was isolated; all 9 production mx.fast.metal_kernel dispatches correct (indexing↔grid↔coverage).
+- Regression + general re-audit: all 10 pass-1 fixes live-verified PASS (not over-broad); svdquant/quantize/dispatch_policy/runtime/fwd-bwd-consistency CLEAN. One LOW [FIXED-doc]: flash_attention_gna native forward-only grad note.
+- dtype/§AA.5.x multi-gate: Class A (6 dtype-reinterpret entries) [FIXED — loud guard + kvcache cast]; Class B (window fwd/bwd anchor inconsistency) [FIXED via backward-matches-forward 0-anchor; forward→S-N attempt reverted after exposing a latent Apple-Metal small-N-windowed late-dispatch abort]; Class C (sparse geometry) CLEAN.
+
+### Changes
+- `mlx_mfa/attention.py` — `_assert_kv_dtype_matches_q` guard at 6 expert entries (paged/varlen/paged-varlen/TQ/sage/gna); q→pool cast at 2 kvcache paged sites; windowed backward oracle anchor matched to forward (`(causal and N<S)?S-N:0`); flash_attention_gna autograd docstring note [VERIFIED]
+- `csrc/mfa_attention.cpp` — qL_off window-inclusive change applied then REVERTED (caused Metal abort); net no C++ change vs pass-1
+- `tests/test_phase3_iii4_dispatch_guards.py` — TestB1WindowConsistency (fwd anchor + fwd/bwd agree, ±causal); `tests/test_attention.py` window refs unchanged from pass-1 (causal-conditional)
+
+### Validation
+- Ran: per-finding probes (B1 fwd-vs-bwd 3.19 confirmed; A1 paged mismatch repro; D8/D13 holds), full suite x5
+- Validated: 1474 passed + 2 skipped (4/5 runs; 1 intermittent pre-existing verbose-capture flake, passes in isolation). No Metal abort with N=256 B1 variant.
+
+### Git
+- pass-2 commit below; branch master. Pass 3 required (pass 2 found real material).
+
+---
+## [2026-06-14 07:30] [CLAUDE] Phase III-4 pass 3: correctness audit — numerical edge cases + backward at adversarial scale
+STATUS: COMPLETE
+
+### Plan
+- Objective: CORRECTNESS audit (Job 1 numerical edge cases; Job 2 every differentiable path vs SDPA-vjp at std 1 AND std 8). Areas passes 1-2 under-covered.
+- Files to modify: NONE (audit-only per task). Probes in /tmp only.
+
+### Findings (report-only, repro-confirmed)
+- F1 [VERIFIED repro] MEDIUM: flash_attention_topk(mask=...) ref path (attention.py:3741) — a fully-masked query tile → mx.where(mask,scores,-inf) → softmax(all -inf) → all-NaN rows. Repro: q,k,v (1,1,64,64) f16, mask (2,2) bool tile0=False, topk_ratio=0.5 → rows 0..31 all NaN (32/32). Default path (mask=None, NAX bias, -1e4) is SAFE (never empties a row). Inconsistent with II-6 sparse all-False-row→zeros contract. This is the advertised FlashVSR LCSA use case (locality mask + top-K).
+- F2 [VERIFIED repro] MEDIUM (conf HIGH): sparse_attention_dispatch (lcsa_nax.py:266 _bool_mask_to_float_bias) — fully-masked tile produces NaN on the SDPA+bias branch but ZEROS on the NAX-kernel branch. Same input, density-dependent result, one NaN. Repro: (1,4,1024,128) f16 BT=16, bm[:,:,3,:]=False → density=2.0 SDPA+bias rows all NaN; density=0.0 NAX rows all zero. Default threshold 1.01 routes NAX (safe); SDPA+bias reached when caller passes density_threshold=0.02 (M1/M3) or precomputed_bias.
+- ROOT CAUSE shared: NaN inherited from mx.fast.scaled_dot_product_attention itself on an all--inf row (verified: raw SDPA NaNs). mlx-mfa's -inf bias-expansion paths feed it; dedicated sparse kernels emit zeros. Suggested fix: clamp empty rows post-SDPA (mx.where(rowsum(mask)==-inf-equiv, 0, out)) OR use a large-finite-negative bias (-1e4 / -3e4) like the topk default path, to match the II-6 zeros contract across all bias-expansion paths.
+
+### Verified CLEAN (with numbers)
+- Job 1 edge cases CLEAN: NaN-input propagation (Rule 8) — flash_attention/causal/sparse/topk-NAX/sage/GNA-native all PROPAGATE injected NaN (none silently zero/clamp). fp16 overflow std=12 — no Inf on flash_attention/topk/sparse/sage/GNA (max |out| ≤ 54, max-subtract holds). Odd head dims (48/80/96/100/130) fall back cleanly to SDPA, finite. Zero-length varlen segment [32,0,48] (correct [B,H,total,D] layout) — OK, finite, both STEEL and f32 split-concat (first probe used wrong [total,H,D] layout — false alarm). Windowed empty cases (causal (8,0),(0,0); non-causal (0,0)) finite. GNA self-window (1,1,1) finite (structurally never empty).
+- Job 2 backward CLEAN vs independent SDPA-vjp / manual ref at std 1 AND std 8:
+  - V34 native backward (MFA_ENABLE_V34_BACKWARD=1, D=64 qL=2048, kernel CONFIRMED engaging — fwd matches): unit fp16 dQ 0.0016/bf16 0.0056; std8 fp16 ≤0.048. std8 bf16 "HIGH" (dQ 0.32) PROVEN to be bf16 precision not kernel error — V34-vs-fp32GT (0.225) is CLOSER than bf16-SDPA-vs-fp32GT (0.371).
+  - alibi (≤0.013), plain window(64,0) (≤0.078 std8), softcap+window D2 class (≤0.0046), softcap-only (0.0000) — all match manual ref; D2 fix holds (same feature-applied fn fwd↔bwd).
+  - sparse backward all 3: sdpa/sdpa_sparse/steel_sparse ≤0.046 std8.
+  - GQA/MQA (Hkv=1,2): bit-exact, dK/dV shape correctly = H_kv.
+  - rope (base-10000 interleaved): bit-exact 0.0000. packed QKV [B,H,N,3,D] + KV [B,H,N,2,D]: bit-exact 0.0000.
+- GNA-native autograd: forward-only (no vjp) → mx.grad raises loudly (pass-2 confirmed; MFA_DISABLE_GNA_NATIVE=1 routes differentiable sparse). Not a silent-grad bug.
+
+### Validation
+- Ran: 9 /tmp probe scripts (.venv python, M5 Max): job1_empty/edge/varlen0b/gna_sage_ovf/lcsa2/nan_input; job2_ref/v34native/v34_bf16check/features/sparse_bwd/rope_packed/packed2; sdpa_baseline.
+- Validated: F1 (32/32 NaN rows), F2 (NaN vs zero by density), shared root cause (raw SDPA NaN), all CLEAN paths with measured rel-errors above.
+
+### Git
+- not applicable (audit-only, no repo edits); branch master. Pass 3 found 2 real MEDIUM (empty-row contract gap). Recommend a pass-3 FIX cycle for F1/F2 then re-audit.

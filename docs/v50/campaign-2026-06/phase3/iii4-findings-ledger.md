@@ -103,3 +103,13 @@ F1 note: fused V-TQ CORRECT at bits 2/3/4 vs DE-ROTATED ground truth (2e-4); fir
   - Class C (sparse block-mask geometry) — [CLEAN] fully covered; no geometry-drift consumer beyond the 3 pass-1 D4 sites (V2-V5 exclude masks at eligibility; parameterized sparse threads explicit block_tile; V34 NAX arch-independent).
 
 ## PASS 2 verdict: NOT zero-finding (Class A 6 entries + Class B inconsistency = real material). Pass 3 required.
+
+## PASS 3 (fresh re-audit, 2026-06-14)
+- [CLEAN/PASS] Regression + C++ eval_gpu deep sweep (agent ac921b2): all 3 pass-2 fixes verified PASS (dtype guard not over-broad, operand lists correct, uint8-skip right; kvcache q→pool casts correct direction + output restore; windowed backward q_off bit-identical to forward kernel formula at all causal/window/N<S combos; D2 softcap-in-window-backward intact). C++ eval_gpu: EVERY primitive cache-key complete + overflow-safe (int64 offsets) + is_equivalent complete (12 primitives + conv tabulated). TQ cache-key omitting tq_bits/packed_D CORRECT (runtime branches, one kernel serves all bit-widths post III-2). V6 fwd omitting scale CORRECT (fixed 1/sqrt(D)). ONE LOW [FIXED]: test_kvcache_k_new_paged_succeeds asserted finite-not-correct → strengthened to single-token SDPA oracle compare (F4 class).
+- [FINDINGS] Numerical edge + backward correctness (agent a2a5b8f, 13 empirical probes):
+  - F1 MEDIUM [FIXED+locked]: flash_attention_topk(mask=...) reference path -inf'd a fully-masked tile → softmax NaN. Zeroed dead rows (II-6 contract). Default mask=None path was already safe (-1e4).
+  - F2 MEDIUM [FIXED+locked]: lcsa_nax.sparse_attention_dispatch SDPA+bias branch NaN'd empty rows while the NAX kernel branch zeroed them (branches DISAGREED). Both now zero (II-6 contract). tests/test_phase3_iii4_empty_row.py.
+  - Shared root cause: -inf bias row → mx.fast.scaled_dot_product_attention NaNs; sparse Metal kernels emit zeros. Fix aligns the 2 remaining bias-expansion paths to the zeros contract.
+  - [CLEAN, measured]: NaN-input PROPAGATES on every fwd path (Rule 8 clean, no silent clamp); fp16 std12 no Inf (max|out|≤54); odd dims fall back to SDPA; zero-length varlen segment clean. EVERY differentiable path correct at unit AND std-8: V34 bwd D64 causal+noncausal (fp16/bf16; std8-bf16 "blowup" PROVEN bf16-precision via fp32-GT triangulation), alibi/window/softcap+window (D2 holds)/softcap, sparse bwd ×3, GQA/MQA bit-exact + H_kv shape, rope/packed-QKV/packed-KV bit-exact, GNA forward-only grad raises loudly.
+
+## PASS 3 verdict: 2 MEDIUM (F1/F2 empty-row, same root cause) + 1 LOW (test gap) — all FIXED. Backward + numerical surfaces CLEAN. Pass 4 required (pass 3 found material).
