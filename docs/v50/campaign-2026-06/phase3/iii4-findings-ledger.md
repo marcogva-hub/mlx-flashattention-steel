@@ -113,3 +113,15 @@ F1 note: fused V-TQ CORRECT at bits 2/3/4 vs DE-ROTATED ground truth (2e-4); fir
   - [CLEAN, measured]: NaN-input PROPAGATES on every fwd path (Rule 8 clean, no silent clamp); fp16 std12 no Inf (max|out|≤54); odd dims fall back to SDPA; zero-length varlen segment clean. EVERY differentiable path correct at unit AND std-8: V34 bwd D64 causal+noncausal (fp16/bf16; std8-bf16 "blowup" PROVEN bf16-precision via fp32-GT triangulation), alibi/window/softcap+window (D2 holds)/softcap, sparse bwd ×3, GQA/MQA bit-exact + H_kv shape, rope/packed-QKV/packed-KV bit-exact, GNA forward-only grad raises loudly.
 
 ## PASS 3 verdict: 2 MEDIUM (F1/F2 empty-row, same root cause) + 1 LOW (test gap) — all FIXED. Backward + numerical surfaces CLEAN. Pass 4 required (pass 3 found material).
+
+## PASS 4 (F1/F2-class §AA.5.x sweep, 2026-06-14)
+Swept EVERY -inf bias-expansion → SDPA site for the empty-row class:
+- [FIXED] _sparse_fallback_sdpa (no-ext fallback) — unsanitized -inf bias; added row-active zeroing (one more F1/F2 sibling, CI/no-GPU only).
+- [CLEAN] causal masks (7 sites): never empty a row (diagonal key q always present).
+- [CLEAN] windowed SDPA fallback (attention.py:709): diagonal key q always in-window → never empty.
+- [CLEAN] topk_stream (215): k_count>=1 always scatters >=1 zero; also Approach-5 declined/dead code.
+- [CLEAN] _sparse_fallback_sdpa_perhead (M5 main): already sanitized (II-6 _get_sanitized_bias).
+- [CLEAN, probed] sparse BACKWARD with a fully-masked tile: dQ/dK/dV no NaN (II-6 sanitization + custom vjp handle it); forward zeros the masked tile.
+Empty-row class CLOSED. Suite 1478 passed +2 skipped (x2).
+
+## PASS 4 verdict: 1 sibling fixed; class fully closed. A fresh zero-finding full pass (pass 5) is needed to declare the fixed point.

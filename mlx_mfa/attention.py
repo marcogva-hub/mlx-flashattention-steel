@@ -4154,9 +4154,15 @@ def _sparse_fallback_sdpa(
             mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
         )
         float_bias = float_bias + causal_m
-    return mx.fast.scaled_dot_product_attention(
+    out = mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=float_bias
     )
+    # III-4 pass-4 (F1/F2 class closure): the M5+ perhead path sanitizes
+    # empty rows (II-6 `_get_sanitized_bias`); this no-ext fallback did
+    # not.  Zero fully-masked rows so all sparse forward paths share the
+    # empty-row -> zeros contract.
+    row_active = (mx.max(float_bias, axis=-1, keepdims=True) >= 0)
+    return mx.where(row_active, out, mx.zeros_like(out))
 
 
 # v2.33.1 — fast-fallback: bounded LRU cache for expanded float-bias masks.

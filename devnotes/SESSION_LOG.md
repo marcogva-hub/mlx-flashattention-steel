@@ -499,3 +499,14 @@ STATUS: COMPLETE
 
 ### Git
 - not applicable (audit-only, no repo edits); branch master. Pass 3 found 2 real MEDIUM (empty-row contract gap). Recommend a pass-3 FIX cycle for F1/F2 then re-audit.
+
+---
+## [2026-06-14 07:30] [CLAUDE] Phase III-4 pass 3: empty-row contract fix + backward/numerical clean
+STATUS: COMPLETE
+
+- F1/F2 [FIXED+locked]: flash_attention_topk(mask) + lcsa_nax.sparse_attention_dispatch SDPA+bias branch NaN'd fully-masked query rows (the NAX branch zeroed them — inconsistent). Both aligned to the II-6 empty-row→zeros contract. tests/test_phase3_iii4_empty_row.py (4 locks). [VERIFIED]
+- C++ eval_gpu deep sweep (12 primitives + conv): cache-key complete + overflow-safe + is_equivalent complete; CLEAN.
+- All 3 pass-2 fixes regression-verified PASS; test_kvcache_k_new_paged_succeeds strengthened to SDPA oracle (F4).
+- Numerical/backward sweep (13 empirical probes): NaN-propagation Rule-8 clean; fp16 overflow safe; EVERY differentiable path correct at unit+std8 (V34/alibi/window/softcap+window/sparse×3/GQA/rope/packed); std8-bf16 V34 "blowup" proven bf16-precision not kernel bug.
+- Ran: per-finding probes + new locks + full suite x3 | Validated: 1478 passed + 2 skipped (x3 stable)
+- Git: pass-3 commit below; pass 4 required (pass 3 found material).
