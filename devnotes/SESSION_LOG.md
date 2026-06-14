@@ -635,3 +635,12 @@ STATUS: COMPLETE
 
 ### Git
 - close docs commit below; branch master; pushed
+
+---
+## [2026-06-14 09:20] [CLAUDE] Phase III release decision: HOLD (Marco)
+STATUS: COMPLETE
+
+- Marco decision: HOLD — no v2.51.1 patch release. III-4 fixes (2 CRITICALs + ~71 correctness fixes) stay committed/validated on master (through 8c9cbff), to bundle into a later release (e.g. v2.52.0 with int8) rather than ship standalone now. The 2 CRITICALs are knowingly unreleased on PyPI until then.
+- PHASE-III-CLOSE.md updated to record the decision. No outward release action taken (no tag/PyPI/GH).
+- Phase III CLOSED. master clean, no pending immediate action.
+- Git: doc commit below; pushed.

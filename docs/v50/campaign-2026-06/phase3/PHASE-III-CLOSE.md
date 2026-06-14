@@ -50,22 +50,26 @@ peripheral pre-existing bug per pass, converging to a zero-finding pass.
 - Zero known correctness bugs in any class swept across 9 passes.
 - master pushed through `d8614ea`.
 
-## Release note (Marco-gated — REQUIRES A DECISION)
+## Release note (Marco DECISION 2026-06-14: HOLD — no release yet)
 
 **v2.51.0 on PyPI (shipped in III-3) does NOT contain the III-4 audit
 fixes** — including the two CRITICALs (topk grid, `return_lse`
 backward) and ~71 further correctness fixes, which all landed *after*
-the tag. A follow-up **v2.51.1 patch release** capturing the III-4
-fixes is strongly recommended (two CRITICALs in a shipped version),
-but the version bump + outward release is Marco's call per the
-campaign rules. The 9-gate `/mlx-mfa-release-audit` would run again
-pre-tag.
+the tag, committed/validated on master through `8c9cbff`.
+
+**Marco's decision: HOLD — no follow-up release yet.** master stays
+as-is; the III-4 fixes remain committed but unreleased, to be bundled
+into a later release (e.g. with int8 V34 integration as v2.52.0) rather
+than shipped as a standalone v2.51.1 patch now. The 2 CRITICALs are
+therefore knowingly unreleased on PyPI until that bundled release.
+When the release happens, the 9-gate `/mlx-mfa-release-audit` runs
+again pre-tag and the CHANGELOG must credit the III-4 correctness fixes.
 
 ## Marco-gated decision queue
 
 | Item | Evidence | Effort |
 |---|---|---|
-| **v2.51.1 patch release** capturing III-4 fixes | 2 CRITICALs + ~71 correctness fixes shipped-version-missing | S (release flow) |
+| Bundled release (III-4 fixes + int8/follow-ups) capturing the 2 CRITICALs + ~71 fixes | per Marco's HOLD decision — defer to a later version, not a standalone v2.51.1 | S–M (release flow) |
 | int8 V34-generator integration (Sage-NAX revival) | 2.00× gate pass; II-2R projects 1.11–1.33× end-to-end | L/XL |
 | cider tier-3: paged/TQ decode transplant | TQ floor closed by III-2; cider expert API in-tree | M |
 | Non-causal windowed S-N anchoring + the small-N windowed Metal-abort | III-4 B1: forward keeps 0-anchor (documented); true position-based non-causal windows need the latent Apple-Metal small-N-windowed late-dispatch abort root-caused first | M (kernel + Metal investigation) |
@@ -88,6 +92,7 @@ https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.51.0
 Both gain candidates dispositioned (III-1 + III-2, both promoted), the
 campaign release shipped (III-3, v2.51.0), and the fresh exhaustive
 audit run to its repeat-until-clean fixed point (III-4, 9 passes,
-zero-finding). The one open item requiring Marco is the v2.51.1
-patch-release decision (the III-4 fixes are committed and validated but
-not yet on PyPI).
+zero-finding).  Release follow-up decided by Marco (2026-06-14): HOLD —
+the III-4 fixes stay committed/validated on master, to ship in a later
+bundled release rather than a standalone v2.51.1 now.  Phase III is
+closed; no open items pending an immediate action.
