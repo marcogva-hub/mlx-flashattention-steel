@@ -510,3 +510,37 @@ STATUS: COMPLETE
 - Numerical/backward sweep (13 empirical probes): NaN-propagation Rule-8 clean; fp16 overflow safe; EVERY differentiable path correct at unit+std8 (V34/alibi/window/softcap+window/sparse×3/GQA/rope/packed); std8-bf16 V34 "blowup" proven bf16-precision not kernel bug.
 - Ran: per-finding probes + new locks + full suite x3 | Validated: 1478 passed + 2 skipped (x3 stable)
 - Git: pass-3 commit below; pass 4 required (pass 3 found material).
+
+---
+## [2026-06-14 08:45] [CLAUDE] Phase III-4 pass 5: convergence-confirmation audit (no file edits)
+STATUS: COMPLETE
+
+### Plan
+- Objective: determine whether a fresh full pass is ZERO-FINDING (terminates the audit loop). Job 1 = regression-check passes 1-4 fixes by RUNNING; Job 2 = fresh breadth re-derivation across NaN/dtype/grid/fwd-bwd/cache-key/silent-except classes.
+- Files to modify: NONE (audit-only). Probes in /tmp only.
+
+### Job 1 — ALL PASS (ran, with numbers)
+- empty-row zeros (3 paths): NORMAL masks do NOT zero/NaN live rows. topk(full mask) rel 9e-4; lcsa dispatch NAX rel 6e-4 + SDPA+bias rel 4e-4 (zr=0 nan=0 both); _sparse_fallback_sdpa rel 2e-4.
+- 6 dtype guards: same-dtype calls all no-raise; mismatch raises; uint8 skipped. (suite-covered)
+- windowed causal backward: MFA-f16 vs f32-fallback-vjp max(dQ,dK,dV) rel 0.0019.
+- kvcache q->pool cast: conditional no-op on same-dtype (suite-covered).
+- topk grid (N*256): full-row correctness, worst rel row>=8 = 0.082 vs GT top-k.
+- Full suite: **1478 passed, 2 skipped, exit 0** (matches pass-3/4 baseline).
+
+### Job 2 — NOT ZERO-FINDING. One CRITICAL pre-existing bug.
+- **P5-1 CRITICAL [VERIFIED, deterministic, public-path, pre-existing]**: `mx.grad`/`mx.value_and_grad` through `flash_attention(..., return_lse=True, causal=True)` returns BROKEN gradients (fp16/bf16: NaN; fp32: ~1e32 garbage / zeros). no-lse path matches SDPA-vjp GT bit-exact (rel 0.0); return_lse path rel 1.0 vs GT. Reachable via DEFAULT backend="auto", no env vars, D∈{64,128}, any shape. NON-causal return_lse is FINE → bug is causal+return_lse+MFA-custom path (`_make_mfa_custom`, attention.py ~5117 fwd `return O,L` / ~5180 vjp). Root: two-output custom_function vjp mis-handles the pruned L output's cotangent when only O is in the loss. `_fallback_sdpa_with_lse` (non-MFA) backward is FINITE → MFA-custom-path specific. Structure identical at e5c5b1b (pre-III-4) → PRE-EXISTING, not a pass-1..4 regression. Test gap: no test grads a return_lse output (grep confirmed).
+  Minimal cold repro (3/3 fresh procs): `o,l=flash_attention(q,k,v,causal=True,return_lse=True); mx.grad(lambda q: flash_attention(q,k,v,causal=True,return_lse=True)[0].sum())(q)` → NaN.
+
+### Verified CLEAN (actively looked, with evidence)
+- NaN/empty-reduction beyond fixed paths: topk_stream (DEAD code, no importers), cider divide-by-zero guarded (line 188), tq_decode SDPA, causal never empties diagonal row — CLEAN.
+- dtype-reinterpret beyond 6 guards: gqa_decode_cider derives T from q + reads k/v unvalidated, BUT mixed-dtype LOUD-fails at MSL compile (not silent corrupt) AND is unexported/unreached — not a finding.
+- Grid-spec: all 9 metal_kernel dispatches re-verified (grid-in-threads ↔ threadgroup ↔ indexing): conv im2col/matmul2d, cider p1/p2, topk bisect, topk_stream — CLEAN.
+- Fwd/bwd mismatch (chunked_prefill/speculative_verify/splitfuse/shared_prefix/rope-append): all compose flash_attention (no separate vjp) → splitfuse bwd rel 0.0 vs fa; rope_unified grad finite; alibi vjp matches manual ref rel 0.001; main/sparse/alibi/V34/windowed custom vjps all differentiate the SAME feature-applied function. (speculative_verify inherits P5-1 only via return_lse — same bug.)
+- Cache-key/id()-keyed/silent-except: id()-caches all include shape+dtype; compile_metallib/_auto_hooks except-blocks are capability-detection graceful-degrade (conservative defaults, not Rule-8 corruption). lse log2 domain IS documented (attention.py:274,322). CLEAN.
+
+### Validation
+- Ran: full suite (1478p/2s/exit0); job1_regression.py (15/15 PASS); job2_fwdbwd.py; ~11 /tmp isolation probes for P5-1 (cross dtype/shape/seed/cold-proc/value_and_grad/SDPA-GT).
+- Validated: P5-1 = rel 1.0 vs SDPA-vjp GT, deterministic 3/3 fresh procs, no-lse rel 0.0; all CLEAN classes with measured numbers above.
+
+### Git
+- not applicable (audit-only, no repo edits); branch master. Pass 5 is NOT zero-finding (1 CRITICAL pre-existing return_lse-backward bug). Audit loop must continue: fix P5-1, then pass 6.

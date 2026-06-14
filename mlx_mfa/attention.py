@@ -722,8 +722,17 @@ def flash_attention(
                 "or window_size on the MFA path (the kernel-LSE shortcut "
                 "would silently drop them). Use backend='sdpa' fallbacks or "
                 "compute LSE separately.")
-        from mlx_mfa._ext import mfa_forward_with_lse
-        O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+        # III-4 P5-1 FIX (CRITICAL): route through a custom_function so
+        # mx.grad gets a CORRECT backward.  The prior code called the raw
+        # `mfa_forward_with_lse` C++ Primitive directly — and its vjp is
+        # the exact broken 2-output path that `_make_mfa_custom` exists
+        # to bypass (the C++ vjp reads outputs[1]/L as garbage, corrupting
+        # dQ/dK/dV → wrong grads, NaN at large shapes).  This wrapper
+        # returns the REAL (O, L) but differentiates O via SDPA-vjp; the
+        # logsumexp L carries no training signal (dL is ignored, the
+        # standard convention).
+        impl = _make_mfa_custom_lse(scale, causal)
+        O, L = impl(q, k, v)
         return O, L
 
     return _mfa_forward(q, k, v, scale, causal, softcap, window_left,
@@ -5084,6 +5093,40 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
         dV = dV.reshape(B, Hk, ratio, S, Dh).sum(axis=2)
 
     return dQ, dK, dV
+
+
+@functools.lru_cache(maxsize=32)
+def _make_mfa_custom_lse(scale: float, causal: bool):
+    """III-4 P5-1: custom_function for the ``return_lse=True`` path.
+
+    Forward returns the REAL ``(O, L)`` from the fused kernel; backward
+    differentiates ``O`` via SDPA-vjp (bit-exact to ground truth) and
+    IGNORES the logsumexp cotangent ``dL`` (the standard convention — L
+    carries no training signal; you train on O).  This replaces the
+    direct ``mfa_forward_with_lse`` Primitive call, whose 2-output C++
+    vjp produced corrupt/NaN gradients.
+    """
+    from mlx_mfa._ext import mfa_forward_with_lse
+
+    @mx.custom_function
+    def _impl(q, k, v):
+        O, L = mfa_forward_with_lse(q, k, v, scale, causal)
+        return O, L
+
+    @_impl.vjp
+    def _backward(primals, cotangents, output):
+        q, k, v = primals
+        dO, _dL = cotangents  # ignore dL (no training signal on the LSE)
+
+        def _sdpa(q_, k_, v_):
+            return mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale,
+                mask=("causal" if causal else None))
+
+        _, (dQ, dK, dV) = mx.vjp(_sdpa, [q, k, v], [dO])
+        return dQ, dK, dV
+
+    return _impl
 
 
 @functools.lru_cache(maxsize=64)

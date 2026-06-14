@@ -125,3 +125,10 @@ Swept EVERY -inf bias-expansion → SDPA site for the empty-row class:
 Empty-row class CLOSED. Suite 1478 passed +2 skipped (x2).
 
 ## PASS 4 verdict: 1 sibling fixed; class fully closed. A fresh zero-finding full pass (pass 5) is needed to declare the fixed point.
+
+## PASS 5 (convergence-confirmation, 2026-06-14)
+- [CLEAN/PASS] Job-1 regression: ALL pass 1-4 fixes verified by RUNNING (empty-row zeroing doesn't zero live rows; 6 dtype guards no-false-raise; windowed causal bwd rel 0.0019; topk grid full-row correct; suite 1478). 
+- [FIXED+locked] P5-1 CRITICAL (pre-existing, found via active grad-probing): mx.grad through flash_attention(return_lse=True) gave corrupt/NaN gradients (the raw mfa_forward_with_lse C++ Primitive's 2-output vjp — the exact path _make_mfa_custom exists to bypass). Confirmed wrong for causal AND non-causal (err 3.7→2682, NaN at large N/D). Fix: _make_mfa_custom_lse custom_function — real (O,L) forward, SDPA-vjp backward on dO (dL ignored, standard). Post-fix bit-exact to SDPA-vjp (0.0) all shapes/dtypes. tests/test_phase3_iii4_dispatch_guards.py::TestP5ReturnLseBackward (8 cells). Test gap closed (no test gradded a return_lse output before).
+- [CLEAN, probed] beyond P5-1: NaN/empty-reduction (topk_stream dead, cider guarded); dtype (gqa_decode_cider loud-fails at compile, unreached); grid-spec (9 kernels re-confirmed); fwd/bwd (chunked_prefill/speculative/splitfuse/shared_prefix all compose flash_attention, no separate vjp); cache-key/id/silent-except clean.
+
+## PASS 5 verdict: 1 CRITICAL (P5-1) fixed. Pass 6 required.

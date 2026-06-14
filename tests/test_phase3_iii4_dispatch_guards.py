@@ -172,3 +172,44 @@ class TestB1WindowConsistency:
                 x.astype(mx.float32) - y.astype(mx.float32))).item())
             assert err < 5e-3, (
                 f"{name} fwd/bwd window-anchor disagree (causal={causal}): {err}")
+
+
+@_skipif_no_nax
+class TestP5ReturnLseBackward:
+    """III-4 pass-5 P5-1 (CRITICAL): mx.grad through
+    flash_attention(return_lse=True) must produce CORRECT gradients.
+    The prior code called the raw mfa_forward_with_lse Primitive whose
+    2-output C++ vjp corrupted dQ/dK/dV (NaN at large shapes).  Now
+    routed through a custom_function with an SDPA-vjp backward."""
+
+    @pytest.mark.parametrize("causal", [True, False])
+    @pytest.mark.parametrize("N,D", [(512, 64), (2048, 64), (2048, 128)])
+    def test_return_lse_grad_matches_sdpa_vjp(self, causal, N, D):
+        sc = 1.0 / math.sqrt(D)
+        mx.random.seed(1)
+        q = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        k = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        v = mx.random.normal((1, 4, N, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        g = mx.grad(lambda a: flash_attention(
+            a, k, v, scale=sc, causal=causal, return_lse=True)[0].sum())(q)
+        gr = mx.grad(lambda a: mx.fast.scaled_dot_product_attention(
+            a, k, v, scale=sc, mask="causal" if causal else None).sum())(q)
+        mx.eval(g, gr)
+        a = np.array(g.astype(mx.float32))
+        b = np.array(gr.astype(mx.float32))
+        assert not np.isnan(a).any(), "return_lse grad produced NaN"
+        assert float(np.max(np.abs(a - b))) < 5e-3, \
+            "return_lse dQ != SDPA-vjp (P5-1 regressed)"
+
+    def test_lse_value_still_returned(self):
+        sc = 1.0 / 8.0
+        mx.random.seed(2)
+        q = mx.random.normal((1, 4, 512, 64)).astype(mx.float16)
+        k = mx.random.normal((1, 4, 512, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 512, 64)).astype(mx.float16)
+        mx.eval(q, k, v)
+        O, L = flash_attention(q, k, v, scale=sc, causal=True, return_lse=True)
+        mx.eval(O, L)
+        assert tuple(L.shape) == (1, 4, 512)
+        assert bool(mx.all(mx.isfinite(L)).item())
