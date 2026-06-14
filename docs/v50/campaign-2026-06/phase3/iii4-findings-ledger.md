@@ -132,3 +132,10 @@ Empty-row class CLOSED. Suite 1478 passed +2 skipped (x2).
 - [CLEAN, probed] beyond P5-1: NaN/empty-reduction (topk_stream dead, cider guarded); dtype (gqa_decode_cider loud-fails at compile, unreached); grid-spec (9 kernels re-confirmed); fwd/bwd (chunked_prefill/speculative/splitfuse/shared_prefix all compose flash_attention, no separate vjp); cache-key/id/silent-except clean.
 
 ## PASS 5 verdict: 1 CRITICAL (P5-1) fixed. Pass 6 required.
+
+## PASS 6 (exhaustive gradient-probe sweep, 2026-06-14)
+Empirically gradded ALL 17 feature×option combos (fp16+bf16, N=512 + N=4096/D=128) vs independent references; inventoried all 11 custom_function vjps.
+- [CLEAN] every differentiable path matches its reference within fp16/bf16 floor; P5-1 return_lse confirmed FIXED (bit-exact 0.0); double-grad clean; GQA dK/dV H_kv-shaped; sage + GNA-native raise loudly (no silent wrong grad). All 11 vjps verified forward↔backward consistent (the P5-1 mismatch class does not recur).
+- [FIXED] combo-1 LOW (loud, not silent): full [B,H,Nq,Nkv] fp32 attn_bias + fp16 q crashed at the SDPA fallback (mask dtype promotion) while the native per-KV kernel handled it. Cast bias→q.dtype in the fallback. Verified no-crash, bit-exact, grad clean.
+
+## PASS 6 verdict: gradient-probe class EXHAUSTED clean; 1 LOW usability fixed. Pass 7 (final convergence confirmation) required.

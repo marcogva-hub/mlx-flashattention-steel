@@ -488,7 +488,13 @@ def flash_attention(
                             RuntimeWarning,
                         )
         # Modes 0/3 or MFA unavailable: SDPA fallback
-        mask = attn_bias
+        # III-4 pass-6 (combo-1): the native per-KV kernel promotes the
+        # bias dtype, but this SDPA fallback fed the raw attn_bias to
+        # mx.fast.scaled_dot_product_attention, which raises "Mask type
+        # must promote to output type" for an fp32 bias against an fp16 q.
+        # Cast the bias to q's dtype so the full-bias path matches the
+        # native path's tolerance (loud crash -> works).
+        mask = attn_bias if attn_bias.dtype == q.dtype else attn_bias.astype(q.dtype)
         if causal:
             N, S = q.shape[2], k.shape[2]
             causal_mask = mx.triu(
