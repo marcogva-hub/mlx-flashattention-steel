@@ -275,6 +275,10 @@ def sparse_attention_dispatch(
     V,
     block_mask,
     *,
+    # III-4 R10: this dispatcher defaults block_tile=16 (FlashVSR LCSA
+    # convention), whereas the lower-level sparse_attention_nax* helpers
+    # default to 32.  Intentional — callers pass an explicit block_tile
+    # matching their mask; the default only applies to the FlashVSR path.
     block_tile=16,
     scale=None,
     causal=False,
@@ -295,7 +299,10 @@ def sparse_attention_dispatch(
         causal: only supported on the Sprint B path. If True and the dispatcher
             chooses the SDPA path, an explicit causal bias is added to the
             block_mask bias before SDPA dispatch.
-        density_threshold: route boundary. Default 0.02 from Phase 1.4 data.
+        density_threshold: route boundary. Default
+            ``DEFAULT_DENSITY_THRESHOLD`` (1.01 since v2.50-Sprint1 — always
+            route to NAX on M5+; pass 0.02 explicitly for the M1/M3 STEEL
+            V1 break-even semantics). (III-4 R10: was documented as 0.02.)
         density: optional pre-computed density (avoids a reduction per call).
         precomputed_bias: optional pre-built (qL, kL) float bias - if the
             caller already has the float bias (cache-HIT pattern from v2.33.1),

@@ -229,6 +229,10 @@ class HybridKVCache:
         self._offloaded_seq_ids: set[int] = set()
         self._pinned_seq_ids: set[int] = set()
         self._prefetch_intent: set[int] = set()
+        # III-4 R4 FIX: tombstones for sequences evicted without a secondary/
+        # external tier (drop_no_secondary) — their history is gone, so any
+        # later touch must fail loudly instead of silently restarting the seq.
+        self._evicted_seq_ids: set[int] = set()
 
         # Recency / event metadata.
         self._tick = 0
@@ -311,6 +315,11 @@ class HybridKVCache:
             return
         if self._secondary_adapter is not None:
             self._copy_seq(self._primary_adapter, self._secondary_adapter, sid)
+            # III-4 R2 FIX: the demoted sequence must vacate the primary (hot)
+            # tier after the copy — without this reset its blocks stay
+            # allocated and the hot tier exhausts (mirrors the
+            # external-offload branch above).
+            self._primary_adapter.reset(seq_id=sid)
             self._set_residency(sid, "cold", reason=reason)
             self._demotion_count += 1
             self._last_demotion = {
@@ -323,6 +332,10 @@ class HybridKVCache:
             self._residency.pop(sid, None)
             self._hot_seq_ids.discard(sid)
             self._cold_seq_ids.discard(sid)
+            # III-4 R4 FIX: record the dropped sequence as a tombstone — its
+            # KV history is irrecoverable (no secondary/external tier), so a
+            # later append/access must raise instead of silently restarting.
+            self._evicted_seq_ids.add(sid)
             self._eviction_count += 1
             self._last_eviction = {
                 "seq_id": sid,
@@ -388,6 +401,32 @@ class HybridKVCache:
 
     def _ensure_hot(self, seq_id: int, *, reason: str) -> None:
         sid = int(seq_id)
+        # III-4 R4 FIX: sequences evicted via drop_no_secondary lost their KV
+        # history permanently — touching them again must fail loudly (the
+        # tombstone is cleared only by an explicit reset of that seq_id).
+        if sid in self._evicted_seq_ids:
+            raise KVCacheOperationUnsupported(
+                f"Sequence {sid} history was evicted (no secondary/external "
+                f"tier to demote to); its KV state is irrecoverable. Call "
+                f"reset(seq_id={sid}) to explicitly restart the sequence."
+            )
+        # III-4 R3 FIX: a single-seq primary (e.g. DenseKVCache ignores
+        # seq_id) silently interleaves distinct sequences into one buffer —
+        # the unknown-residency path below would infer a second sid as "hot"
+        # from the first sequence's length. Reject a second distinct seq_id
+        # before any state is touched (a single non-zero sid is fine: the
+        # primary ignores the id, so one tracked sequence stays coherent).
+        if not self._primary_adapter.capabilities.multi_seq:
+            other_sids = [s for s in self._residency if s != sid]
+            if other_sids:
+                raise KVCacheOperationUnsupported(
+                    f"HybridKVCache primary tier "
+                    f"({self._primary_adapter.kind}) tracks a single "
+                    f"sequence; seq_id={sid} would silently interleave with "
+                    f"already-tracked seq_id(s) {sorted(other_sids)}. Use a "
+                    f"multi-seq primary (e.g. PagedKVCache) for "
+                    f"multi-sequence workloads."
+                )
         tier = self._residency.get(sid)
         if tier == "hot":
             self._touch(sid, reason=reason)
@@ -539,6 +578,8 @@ class HybridKVCache:
             self._offloaded_seq_ids.clear()
             self._pinned_seq_ids.clear()
             self._prefetch_intent.clear()
+            # III-4 R4 FIX: explicit full reset clears eviction tombstones.
+            self._evicted_seq_ids.clear()
             self._last_access_tick.clear()
             self._last_access_event = None
             self._last_prefetch_action = None
@@ -560,6 +601,8 @@ class HybridKVCache:
             self._offloaded_seq_ids.discard(sid)
             self._pinned_seq_ids.discard(sid)
             self._prefetch_intent.discard(sid)
+            # III-4 R4 FIX: explicit per-seq reset clears the tombstone.
+            self._evicted_seq_ids.discard(sid)
             self._last_access_tick.pop(sid, None)
         return self
 

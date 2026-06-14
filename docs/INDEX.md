@@ -1,5 +1,9 @@
 # Documentation Index
 
+> NOTE (2026-06-12): links below are repo-root-relative (open from the
+> repository root). Index predates v2.50/v2.51; the 2026-06 campaign
+> record lives in `docs/v50/campaign-2026-06/` (not yet indexed).
+
 ## Where to start
 
 [README.md](README.md) — project overview • [CHANGELOG.md](CHANGELOG.md) — version history • [HARDWARE_SUPPORT.md](docs/HARDWARE_SUPPORT.md) — platform routing

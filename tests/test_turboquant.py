@@ -314,6 +314,10 @@ class TestInnerProductQuality:
 
         # Attention output should be close (softmax dampens quantization noise)
         max_diff = (ref.astype(mx.float32) - approx.astype(mx.float32)).abs().max().item()
+        # III-4 F13: 1.0 is acceptable here because this is a lossy-compression
+        # QUALITY test (3-bit K), not a kernel-correctness lock — quality is
+        # backed by the Pearson-correlation assert below; exact kernel
+        # correctness is locked by the decompress-GT tests in this file.
         assert max_diff < 1.0, f"Attention output max diff {max_diff}"
         corr = _pearson_corr(ref, approx)
         assert corr > 0.98, f"Attention output correlation {corr:.4f}"
@@ -754,10 +758,19 @@ class TestTurboQuantFusedKernel:
 
     @pytest.mark.parametrize("bits", [2, 4])
     def test_fused_other_bitwidths(self, bits):
-        """Fused TQ kernel with 2-bit and 4-bit."""
+        """Fused TQ kernel with 2-bit and 4-bit matches decompress GT.
+
+        III-4 F3: upgraded from finiteness-only to a ground-truth
+        comparison (decompress-path reference, same recipe as
+        test_fused_vs_decompress_noncausal): the fused kernel's inline
+        dequant must match Python decompress -> SDPA with the SAME
+        quantization, so the residual is kernel-vs-python numerics only.
+        """
         _skip_if_no_ext()
         from mlx_mfa import flash_attention_paged_varlen_turboquant
-        from mlx_mfa.turboquant import apply_rotation
+        from mlx_mfa.turboquant import (
+            apply_rotation, turboquant_compress, turboquant_decompress,
+        )
 
         mx.random.seed(805 + bits)
         H_q, H_kv, D = 4, 4, 64
@@ -787,6 +800,15 @@ class TestTurboQuantFusedKernel:
         assert out.shape == q_pack.shape
         out_np = np.array(out.astype(mx.float32))
         assert np.all(np.isfinite(out_np)), f"NaN/Inf with {bits}-bit"
+
+        # Ground truth: Python decompress (same quantization) -> SDPA
+        # in the original (un-rotated) space with the original Q.
+        c = turboquant_compress(k, bits=bits, use_qjl=False, rotation="wht")
+        k_decomp = turboquant_decompress(c).astype(mx.float16)
+        gt = mx.fast.scaled_dot_product_attention(q, k_decomp, v, scale=scale)
+        mx.synchronize()
+        err = np.abs(out_np - np.array(gt.astype(mx.float32))).max()
+        assert err < 0.1, f"{bits}-bit fused vs decompress GT max_abs={err:.4f}"
 
     def test_pack_k_for_metal_roundtrip(self):
         """pack_k_for_metal indices roundtrip to correct centroid values."""
@@ -1128,7 +1150,8 @@ class TestWHTKernelFusion:
     """Tests for in-kernel Walsh-Hadamard transform on Q."""
 
     @pytest.mark.parametrize("D", [64, 128])
-    def test_wht_fused_matches_python_wht(self, D):
+    @pytest.mark.parametrize("bits", [2, 3, 4])  # III-4 F2: was bits=3 only
+    def test_wht_fused_matches_python_wht(self, D, bits):
         """Kernel WHT on unrotated Q matches Python WHT on pre-rotated Q."""
         _skip_if_no_ext()
         from mlx_mfa import flash_attention_paged_varlen_turboquant
@@ -1136,7 +1159,6 @@ class TestWHTKernelFusion:
 
         mx.random.seed(920)
         H_q, H_kv = 4, 4
-        bits = 3
         block_size = 16
         scale = 1.0 / math.sqrt(D)
 

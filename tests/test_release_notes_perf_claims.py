@@ -111,8 +111,9 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v34_backward",
         "documented_in": [
+            # III-4 DOC-11 FIX: README does not carry the 1.91× figure
+            # (verified by grep) — CHANGELOG + audit doc only.
             "CHANGELOG.md",
-            "README.md",
             "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
@@ -128,8 +129,9 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v34_backward",
         "documented_in": [
+            # III-4 DOC-11 FIX: README does not carry the 1.87× figure
+            # (verified by grep) — CHANGELOG + audit doc only.
             "CHANGELOG.md",
-            "README.md",
             "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
@@ -289,7 +291,9 @@ PERF_CLAIMS = [
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
         "expected": "sdpa_fallback",
-        "documented_in": ["README.md", "CHANGELOG.md"],
+        # III-4 DOC-11 FIX: README never documents the opt-out env var
+        # (verified by grep) — the claim lives in CHANGELOG only.
+        "documented_in": ["CHANGELOG.md"],
         "documented_perf_claim": (
             "MFA_DISABLE_V34_BACKWARD=1 restores SDPA-vjp bit-exactly"
         ),

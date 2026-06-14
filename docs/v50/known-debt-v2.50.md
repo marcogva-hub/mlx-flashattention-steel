@@ -241,7 +241,12 @@ baseline on any unexpected NAX failure.  23 regression tests in
 
 ---
 
-## KD-7 — Conv3D NAX bf16 weight path broken at MLX upstream Metal shader (HIGH defect) — OPEN
+## KD-7 — Conv3D NAX bf16 weight path broken at MLX upstream Metal shader (HIGH defect) — LIFTED in v2.51.0
+
+**Status (2026-06-12)**: LIFTED in v2.51.0 (Sprint III-1): bf16 conv3d
+ships via the MPP convolution2d branch; the upstream MLX im2col bf16
+bug still blocks the LEGACY path (fp16-only there).  The record below
+is kept as history.
 
 **Identified by**: Prompt 5g Phase A audit (discovered while validating KD-6 fix).
 
@@ -293,6 +298,6 @@ work blocks v2.50.1 ship.
 | KD-4 | LOW | ~~Silent coerce of bad topk_ratio~~ | **RESOLVED v2.50.0 (Prompt 5e Phase 1 fix + Prompt 5f Phase D tests)** |
 | KD-5 | (preserved xfail) | ~~None (research-only path)~~ | **ROOT CAUSE FIXED post-v2.50.1 repo review** (BK dispatch/generator mismatch); xfails removed |
 | KD-6 | HIGH | ~~`_auto_hooks.py::conv3d_nax_forward` dtype mismatch silently broke NAX path~~ | **RESOLVED v2.50.1 Prompt 5g Phase A** |
-| KD-7 | HIGH defect (LOW production-active) | bf16 weight path broken at upstream MLX Metal im2col | OPEN — eligibility tightened to fp16-only as Phase A mitigation; target v2.51 |
+| KD-7 | HIGH defect (LOW production-active) | ~~bf16 weight path broken at upstream MLX Metal im2col~~ | **LIFTED in v2.51.0 (Sprint III-1)**: bf16 conv3d ships via the MPP convolution2d branch; the upstream MLX im2col bf16 bug still blocks the LEGACY path (fp16-only there) |
 
 None of KD-1 through KD-5 block v2.50 ship per scope analysis.

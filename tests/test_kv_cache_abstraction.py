@@ -276,6 +276,87 @@ class TestKVCacheAdapters:
         assert k_hist.shape == (1, 4, 3, 64)
         assert v_hist.shape == (1, 4, 3, 64)
 
+    def test_hybrid_demote_to_secondary_frees_primary(self):
+        # III-4 R2 FIX regression: demotion to the secondary tier must reset
+        # the sequence in the primary — otherwise its pool blocks leak.
+        hot_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        cold_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        hybrid = HybridKVCache(
+            hot_ctx._cache,
+            secondary_cache=cold_ctx._cache,
+            hot_seq_capacity=1,
+        )
+        free_before = len(hot_ctx._cache._free)
+        k0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        assert len(hot_ctx._cache._free) < free_before
+        hybrid.append(k1, v1, seq_id=1)  # capacity pressure demotes seq 0
+
+        assert hybrid.state["residency_map"][0] == "cold"
+        # Primary tier must no longer hold seq 0 ...
+        assert hybrid._primary_adapter.seq_length(0) == 0
+        # ... and its pool blocks must be back in the free list (only the
+        # blocks for the resident seq 1 remain allocated).
+        blocks_for_seq1 = (2 + 8 - 1) // 8
+        assert len(hot_ctx._cache._free) == free_before - blocks_for_seq1
+        # The demoted history must still be readable (promotion path).
+        k_hist = hybrid.k_for_attention(0)
+        mx.eval(k_hist)
+        assert k_hist.shape == (1, 4, 3, 64)
+
+    def test_hybrid_single_seq_primary_rejects_second_seq_id(self):
+        # III-4 R3 FIX regression: DenseKVCache ignores seq_id — a second
+        # distinct sid over a single-seq primary must raise, not interleave.
+        dense_ctx = InferenceContext(B=1, H_kv=4, D=64, max_seq_len=32)
+        hybrid = HybridKVCache(dense_ctx._cache, hot_seq_capacity=1)
+        k = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k, v, seq_id=0)
+        with pytest.raises(KVCacheOperationUnsupported, match="single"):
+            hybrid.append(k, v, seq_id=1)
+
+    def test_hybrid_eviction_without_secondary_tombstones_seq(self):
+        # III-4 R4 FIX regression: eviction with no secondary/external tier
+        # destroys the history — later touches of the victim must raise, and
+        # an explicit per-seq reset clears the tombstone.
+        hot_ctx = PagedInferenceContext(
+            num_blocks=32,
+            block_size=8,
+            H_kv=4,
+            D=64,
+        )
+        hybrid = HybridKVCache(hot_ctx._cache, hot_seq_capacity=1)
+        k0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        v0 = mx.random.normal((1, 4, 3, 64)).astype(mx.float16)
+        k1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        v1 = mx.random.normal((1, 4, 2, 64)).astype(mx.float16)
+        hybrid.append(k0, v0, seq_id=0)
+        hybrid.append(k1, v1, seq_id=1)  # forces eviction of seq 0 (drop)
+        assert hybrid.state["last_eviction"]["mode"] == "drop_no_secondary"
+
+        with pytest.raises(KVCacheOperationUnsupported, match="evicted"):
+            hybrid.append(k0, v0, seq_id=0)
+        with pytest.raises(KVCacheOperationUnsupported, match="evicted"):
+            hybrid.k_for_attention(0)
+
+        # Explicit reset of the victim clears the tombstone.
+        hybrid.reset(seq_id=0)
+        hybrid.append(k0, v0, seq_id=0)
+        assert hybrid.state["residency_map"][0] == "hot"
+
 
 class TestCacheAbstractionRuntimeFlows:
     @pytest.fixture(autouse=True)

@@ -39,12 +39,15 @@ _skipif_no_nax = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _mk(B, H, qL, D, dtype, seed):
+def _mk(B, H, qL, D, dtype, seed, mag=1.0):
+    # III-4 F9: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    q = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(dtype)
-    k = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(dtype)
-    v = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(dtype)
-    dO = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(dtype)
+    q = (mx.random.normal((B, H, qL, D)) * mag).astype(dtype)
+    k = (mx.random.normal((B, H, qL, D)) * mag).astype(dtype)
+    v = (mx.random.normal((B, H, qL, D)) * mag).astype(dtype)
+    dO = (mx.random.normal((B, H, qL, D)) * mag).astype(dtype)
     _AE(q, k, v, dO); mx.synchronize()
     return q, k, v, dO
 
@@ -308,3 +311,16 @@ class TestV34BackwardCarveoutD128:
         assert _v34_backward_carveout(
             head_dim=64, seq_len=1024, causal=False, dtype_key="float16"
         ) is False
+
+
+@_skipif_no_nax
+def test_adversarial_magnitude_finite(monkeypatch):
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep the
+    D=128 V34 backward gradients finite (fp16-overflow guard)."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    q, k, v, dO = _mk(1, 4, 2048, 128, mx.float16, 99, mag=8.0)
+    dQ, dK, dV = _grad_auto(q, k, v, dO, causal=False)
+    _AE(dQ, dK, dV); mx.synchronize()
+    for name, g in (("dQ", dQ), ("dK", dK), ("dV", dV)):
+        assert np.isfinite(np.array(g.astype(mx.float32))).all(), \
+            f"{name} non-finite at std-8 inputs"

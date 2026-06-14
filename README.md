@@ -13,7 +13,7 @@ sparse-backward nondeterminism class fix and a fused-TQ-kernel
 2/4-bit correctness fix.  See `CHANGELOG.md [2.51.0]` and
 `docs/v50/campaign-2026-06/` for the full campaign record.
 
-### v2.50 highlights (master `53c914c`, staged for release)
+### v2.50 highlights (shipped 2026-05)
 
 - **Top-K bisection kernel** AUTO production default (Prompt 5c): 3.85×
   speedup over Phase 3a `mx.topk`-based path at audit shape.
@@ -37,7 +37,12 @@ Known debt: `docs/v50/known-debt-v2.50.md`.
 
 ---
 
-### v2.39.1 PyPI (currently shipped)
+### v2.39.1 era (historical)
+
+Historical record: since v2.51.0 the V34 backward D=64 path (causal +
+non-causal) is **default-on** — see the version header at the top of
+this README; the opt-in env vars described below reflect the v2.39.x
+state.
 
 Option γ outcome **α**: H1 register pressure
 root-caused + fixed.  The v2.39.0 outcome δ regression (-25% to -33% on
@@ -99,7 +104,7 @@ See `docs/TRAINING_QUICKSTART.md` for the updated user-facing perf
 recommendation and `docs/v6-nax/v2.37.x-perf-claim-audit.md` for
 the per-claim reachability audit that drove these corrections.
 
-D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). Default (env unset) preserves v2.36.1-exact behavior. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 
@@ -107,7 +112,8 @@ D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware
 import mlx.core as mx
 import mlx_mfa  # auto-installs optimization hooks at import
 
-# Eligible Conv3D shapes on M5+ auto-route to NAX (~1.6× faster):
+# Eligible Conv3D shapes on M5+ auto-route to NAX (2.3–2.5× fp16 /
+# 1.4–2.7× bf16 via the MPP convolution2d primitive):
 y = mx.conv_general(x, weight, padding=(1, 1, 1))
 
 # Sparse attention on M5+ auto-routes to NAX-aware dispatcher:
@@ -416,6 +422,12 @@ out_step = rt.step(
 
 ## Conv3D NAX support (M5+ Apple Silicon)
 
+Since v2.50.2/v2.51.0 the default Conv3D path is the Apple MPP
+`convolution2d` primitive (fp16 2.3–2.5×, bf16 1.4–2.7× vs
+`mx.conv_general`); the figures below describe the legacy
+materialized-im2col path, which is non-default and reachable via
+`MFA_DISABLE_CONV3D_MPP=1`.
+
 mlx-mfa includes a NAX-accelerated 3D convolution path for shapes matching
 the SeedVR2 VAE production profile. Sprint C v1.x landed a SHIP-DEFAULT
 verdict (median **1.64×** speedup vs `mx.conv_general` across 6 production
@@ -491,25 +503,17 @@ model = patch_seedvr2_vae(model)
 # (logged with reason). Restorable via patch_seedvr2_vae(model, restore=True).
 ```
 
-## Sparse attention on M5+ (v2.33.1)
+## Sparse attention on M5+
 
 `mlx_mfa.flash_attention_sparse(q, k, v, block_mask, ...)` is the
 block-sparse attention API for FlashVSR / SparkVSR / similar LCSA
-patterns. On M5+ Apple Silicon it routes through MLX's SDPA after
-expanding the block mask to a float bias, with the expanded bias
-cached by `id(block_mask)` since **v2.33.1**.
+patterns. On M5+ Apple Silicon it routes through the NAX-aware
+dispatcher (`lcsa_nax.sparse_attention_dispatch`) by default since
+**v2.36.1**, selecting NAX sparse kernels by shape and density.
 
-- **Cache HIT** (same `block_mask` Python object reused across attention
-  calls — common production pattern: build mask once per forward pass):
-  full SDPA-direct performance recovered; <10% overhead vs calling
-  `mx.fast.scaled_dot_product_attention` with a prebuilt bias.
-- **Cache MISS** (fresh mask each call — e.g. FlashVSR's per-DiT-layer
-  `generate_draft_block_mask_mlx`): falls back to the v2.33.0 expansion
-  path; no faster, no slower.
-
-The NAX-native block-skip path that exploits sparsity at the kernel level
-is in development as Sprint B Phase 1.x (expected 3-15× speedup at typical
-LCSA density — see `docs/lcsa-nax/survey-report.md` §10).
+On non-NAX hardware where the dispatcher does not engage, the
+historical v2.33.x fallback applies: SDPA with the block mask
+expanded to a float bias (bias cached by `id(block_mask)`).
 
 Pre-M5 hardware (M1-M4) is unchanged: routes through the native C++
 STEEL V1 sparse kernel that already skips masked tiles.

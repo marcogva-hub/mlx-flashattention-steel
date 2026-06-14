@@ -55,11 +55,14 @@ def env_var(name, value):
             os.environ[name] = prev
 
 
-def _make_inputs(B=1, H=4, qL=4096, kL=4096, D=128, seed=0):
+def _make_inputs(B=1, H=4, qL=4096, kL=4096, D=128, seed=0, mag=1.0):
+    # III-4 F7: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    Q = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
-    K = (mx.random.uniform(-1.0, 1.0, (B, H, kL, D)) * 0.1).astype(mx.float16)
-    V = (mx.random.uniform(-1.0, 1.0, (B, H, kL, D)) * 0.1).astype(mx.float16)
+    Q = (mx.random.normal((B, H, qL, D)) * mag).astype(mx.float16)
+    K = (mx.random.normal((B, H, kL, D)) * mag).astype(mx.float16)
+    V = (mx.random.normal((B, H, kL, D)) * mag).astype(mx.float16)
     mx.async_eval(Q, K, V); mx.synchronize()
     return Q, K, V
 
@@ -171,3 +174,15 @@ def test_axis3_low_density_routes_to_nax():
             f"At density {density_actual} < {DEFAULT_DENSITY_THRESHOLD}, "
             "dispatcher should route to sparse_attention_nax (NAX path)"
         )
+
+
+def test_adversarial_magnitude_finite():
+    """III-4 F7: adversarial-magnitude (std 8) inputs must stay finite
+    through the auto-routed flash_attention_sparse path."""
+    B, H, qL, kL, D, BT = 1, 4, 4096, 4096, 128, 16
+    Q, K, V = _make_inputs(B, H, qL, kL, D, seed=50, mag=8.0)
+    mask = _bool_mask_2d(qL // BT, kL // BT, density=0.1, seed=51)
+    O = flash_attention_sparse(Q, K, V, mask)
+    mx.async_eval(O); mx.synchronize()
+    assert np.isfinite(np.array(O.astype(mx.float32))).all(), \
+        "non-finite auto-routed sparse output at std-8 inputs"

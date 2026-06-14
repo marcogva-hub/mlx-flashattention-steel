@@ -25,12 +25,15 @@ def _clean_env(monkeypatch):
     yield
 
 
-def _make(B, Hq, qL, D, seed, dtype):
+def _make(B, Hq, qL, D, seed, dtype, mag=1.0):
+    # III-4 F9: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    k = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    v = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    dO = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
+    q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    k = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    v = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    dO = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
     _mat(q, k, v, dO)
     return q, k, v, dO
 
@@ -59,6 +62,7 @@ def test_dv_multisg_d128_fp16_qL1024_wm4():
     dV = mx.sum(dVp, axis=2).astype(mx.float16); _mat(dV)
     _, dV_ref = _ref_dkdv(q, k, v, dO, scale)
     rmse = _rmse(dV, dV_ref)
+    # III-4 F9: unit-scale retrofit, measured floor rmse 3.7e-5 (M5 Max).
     assert rmse < 1e-2, f"dV multi-SG RMSE {rmse:.4e}"
 
 
@@ -93,6 +97,7 @@ def test_dk_multisg_d128_fp16_qL1024_wm4():
     dKp = _ext.v6_nax_backward_dk_raw(q, k, v, O, lse, dO, D, scale, 4)
     dK = mx.sum(dKp, axis=2).astype(mx.float16); _mat(dK)
     dK_ref, _ = _ref_dkdv(q, k, v, dO, scale)
+    # III-4 F9: unit-scale retrofit, measured floor rmse 4.1e-5 (M5 Max).
     assert _rmse(dK, dK_ref) < 1e-3
 
 
@@ -140,3 +145,19 @@ def test_dk_multisg_finiteness():
     dK = mx.sum(dKp, axis=2).astype(mx.float16); _mat(dK)
     arr = np.array(dK.astype(mx.float32))
     assert not np.isnan(arr).any() and not np.isinf(arr).any()
+
+
+def test_multisg_adversarial_magnitude_finite():
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep the
+    multi-SG dK/dV partials finite (fp16-overflow guard)."""
+    q, k, v, dO = _make(1, 4, 512, 128, 50, mx.float16, mag=8.0)
+    scale = 1.0 / math.sqrt(128)
+    O, lse = _ext.v6_nax_forward(q, k, v, False); _mat(O, lse)
+    D = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1); _mat(D)
+    dVp = _ext.v6_nax_backward_dv_raw(q, k, v, lse, dO, scale, 4)
+    dKp = _ext.v6_nax_backward_dk_raw(q, k, v, O, lse, dO, D, scale, 4)
+    dV = mx.sum(dVp, axis=2); dK = mx.sum(dKp, axis=2); _mat(dV, dK)
+    assert np.isfinite(np.array(dV.astype(mx.float32))).all(), \
+        "dV non-finite at std-8 inputs"
+    assert np.isfinite(np.array(dK.astype(mx.float32))).all(), \
+        "dK non-finite at std-8 inputs"

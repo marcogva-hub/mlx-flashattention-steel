@@ -5,26 +5,29 @@ training workloads on M5+ Apple Silicon.  Apple's NAX backward is NYI
 in the MLX framework — mlx-mfa V34 backward is the only path for
 NAX-accelerated backward attention on M5+.
 
-## Status: SHIP_OPT_IN
+## Status: DEFAULT-ON for D=64 (since v2.51.0)
 
-V34 backward kernels are correctness-validated (RMSE matches MLX's
-autograd of `mx.fast.scaled_dot_product_attention` within FP16/FP32
-noise floor) but currently 2.2-2.4× slower than SDPA-vjp on M5 Max at
-qL=8192.  Default behavior is unchanged: backward routes through the
-existing STEEL backward or SDPA-vjp fallback.
+V34 backward for **D=64 (causal + non-causal)** is **DEFAULT-ON since
+v2.51.0**: on M5-class hardware, fp16/bf16, qL ≥ 2048, it engages
+automatically at **1.7-2.7× FASTER** than SDPA-vjp — no env var
+needed.  Opt out with `MFA_DISABLE_V34_BACKWARD=1`.
 
-To opt in, set `MFA_ENABLE_V34_BACKWARD=1`.
+**D=128 remains opt-in** via `MFA_ENABLE_V34_BACKWARD=1` (parity with
+SDPA-vjp, not a speedup).  Kernels are correctness-validated (RMSE
+matches MLX's autograd of `mx.fast.scaled_dot_product_attention`
+within FP16/FP32 noise floor).
 
 ## Quick example
 
 ```python
 import os
+# Only needed for D=128 — D=64 is default-on since v2.51.0.
 os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
 
 import mlx.core as mx
 import mlx_mfa
 
-# Eligible shapes: D in {64, 128}, FP16/BF16, no causal/window/softcap.
+# Eligible shapes: D in {64, 128}, FP16/BF16, no window/softcap.
 B, Hq, qL, D = 1, 4, 4096, 128
 q = mx.random.normal((B, Hq, qL, D), dtype=mx.float16)
 k = mx.random.normal((B, Hq, qL, D), dtype=mx.float16)
@@ -44,11 +47,14 @@ mx.synchronize()
 
 V34 backward engages when ALL conditions are met:
 
-- `MFA_ENABLE_V34_BACKWARD=1` set
+- D=64: on by default since v2.51.0 (opt-out
+  `MFA_DISABLE_V34_BACKWARD=1`); D=128: `MFA_ENABLE_V34_BACKWARD=1` set
 - M5+ hardware (cached check via `_get_has_nax_cached()`)
 - `head_dim` in {64, 128}
 - dtype is FP16 or BF16
-- No causal, window_size, softcap, alibi_slopes
+- qL ≥ 2048
+- No window_size, softcap, alibi_slopes (causal IS supported —
+  causal + non-causal both default-on at D=64)
 - Forward routes through V34 (D=128 always; D=64 with force_v34=True
   v2.37.0+ post-release patch enables this for D=64 small-Nk too)
 
@@ -88,15 +94,16 @@ re-running forward.
 > subsections below describe **kernel-isolation** behavior accessible
 > only via `backend="mfa"`; they are research characterization, not
 > user-facing perf.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`
-> for the per-claim reachability audit.
+> for the per-claim reachability audit.  (Superseded by v2.51.0:
+> D=64 causal + non-causal is now default-on — see Status above.)
 
 ### D=64 — V34 backward wins (user-facing, reachable via public AUTO API)
 
-For D=64, qL ≥ 4096, non-causal training (e.g., FlashVSR class,
-LTX2-style cross-attention), V34 backward is genuinely faster than
-SDPA-vjp **through the documented public API**.  No `backend` override
-needed — just set `MFA_ENABLE_V34_BACKWARD=1` and call
-`flash_attention(...)` normally:
+For D=64, qL ≥ 2048, causal or non-causal training (e.g., FlashVSR
+class, LTX2-style cross-attention), V34 backward is genuinely faster
+than SDPA-vjp **through the documented public API** at **1.7-2.7×**.
+Since v2.51.0 no env var or `backend` override is needed — just call
+`flash_attention(...)` normally.  Representative v2.37.x measurements:
 
 | qL=kL | V34 backward (AUTO) | SDPA-vjp | Speedup |
 |---|---:|---:|---:|
@@ -131,7 +138,12 @@ in v2.37.3** (see `docs/v6-nax/v2.37.x-perf-claim-audit.md`).
 
 ### D=128 — research-only kernel characterization
 
-V34 backward is 2.0-2.4× SLOWER than SDPA-vjp at D=128 due to an
+> **v2.50+ update:** the split kernels now engage at **parity** with
+> SDPA-vjp for D=128 + qL ≥ 2048 when opted in via
+> `MFA_ENABLE_V34_BACKWARD=1`.  The table below is the pre-v2.50
+> characterization of the original kernels.
+
+The original V34 backward was 2.0-2.4× SLOWER than SDPA-vjp at D=128 due to an
 architectural floor (extra dO@V^T matmul scales with D²; at D=128 the
 dK accumulator approaches register-spill threshold on M5 Max).
 
@@ -147,22 +159,21 @@ are kernel-characterization, not user-facing perf:
 | 4096 | 12.33 ms | 5.49 ms | 2.25× slower |
 | 8192 | 48.46 ms | 20.18 ms | 2.40× slower |
 
-The previously documented D=128 V34 backward path is **research
-infrastructure only**.  Users training at D=128 should not set
-`MFA_ENABLE_V34_BACKWARD=1` — the carve-out won't engage and the
-default SDPA-vjp path is correct.
+For D=128, `MFA_ENABLE_V34_BACKWARD=1` engages the split kernels at
+parity with SDPA-vjp — correct but not faster.  Leaving the env unset
+keeps the default SDPA-vjp path, which is equally correct.
 
 ### Recommendation
 
-- **D=64 training with qL ≥ 4096**: set `MFA_ENABLE_V34_BACKWARD=1`
-  and call `flash_attention(...)` normally — V34 backward engages
-  automatically via the v2.37.2 carve-out and delivers **1.81-1.82×
-  speedup** over SDPA-vjp.
-- **D=64 training with qL < 4096**: don't bother setting the env —
-  the carve-out's shape gate keeps you on SDPA-vjp anyway.
-- **D=128 training**: leave the env unset; AUTO path defaults to
-  SDPA-vjp which is the correct choice.  Setting `MFA_ENABLE_V34_BACKWARD=1`
-  has no effect at D=128 (carve-out doesn't engage).
+- **D=64 training (qL ≥ 2048, causal or non-causal)**: no env var
+  needed since v2.51.0 — V34 backward engages by default and delivers
+  **1.7-2.7× speedup** over SDPA-vjp.  Opt out with
+  `MFA_DISABLE_V34_BACKWARD=1` if needed.
+- **D=64 training with qL < 2048**: the shape gate keeps you on
+  SDPA-vjp; nothing to configure.
+- **D=128 training**: optional opt-in via `MFA_ENABLE_V34_BACKWARD=1`
+  engages the split kernels at parity (not a speedup); leaving it
+  unset keeps SDPA-vjp.  Either way is correct.
 
 ## Environment variables (advanced users)
 
@@ -170,7 +181,8 @@ See `ENV_VARS.md` for the full list.  V34 backward-related:
 
 | Variable | Purpose |
 |---|---|
-| `MFA_ENABLE_V34_BACKWARD=1` | Opt into V34 backward (default off). |
+| `MFA_ENABLE_V34_BACKWARD=1` | Opt-in for D=128 only; D=64 is default-on since v2.51.0. |
+| `MFA_DISABLE_V34_BACKWARD=1` | Opt out of the default-on D=64 backward (causal + non-causal). |
 | `MFA_V34BWD_USE_FUSED=1` | Fall back to WM=1 fused dK/dV kernel (vs multi-SG split). |
 | `MFA_V34BWD_WM` | WM for multi-SG split (default 4). |
 | `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | dV tile overrides (researchers). |
@@ -183,7 +195,8 @@ Deferred to follow-up sprints:
 - Block-sparse backward (set `MFA_ENABLE_V34_BACKWARD=1` has no effect
   when `flash_attention_sparse` is used; falls back to STEEL sparse
   backward).
-- Causal backward (causal=True → falls back to STEEL causal backward).
+- ~~Causal backward~~ — no longer deferred: causal backward shipped
+  in v2.50 (Sprint 4) and is default-on for D=64 since v2.51.0.
 - D not in {64, 128} backward (falls back to STEEL).
 - Softcap / ALiBi / TurboQuant backward (kept on STEEL).
 - Multi-batch GQA where Hq > Hk (dK/dV output is per-Q-head; caller

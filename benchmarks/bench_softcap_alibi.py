@@ -59,12 +59,6 @@ def bench_alibi(B: int, H: int, N: int, D: int, causal: bool, dtype) -> dict:
     slopes = mx.array([2 ** (-8 * (h + 1) / H) for h in range(H)], dtype=mx.float32)
     mx.eval(q, k, v, slopes)
 
-    try:
-        from mlx_mfa.attention import flash_attention_alibi as _fa_alibi  # type: ignore
-        has_alibi = True
-    except ImportError:
-        has_alibi = False
-
     def _sdpa_alibi_ref():
         """ALiBi reference: add linear bias in log domain before softmax."""
         S = k.shape[2]
@@ -78,14 +72,16 @@ def bench_alibi(B: int, H: int, N: int, D: int, causal: bool, dtype) -> dict:
         scores = mx.matmul(q, mx.transpose(k, [0, 1, 3, 2])) * scale + bias
         return mx.matmul(mx.softmax(scores.astype(mx.float32), axis=-1).astype(q.dtype), v)
 
+    # III-4 F16: flash_attention_alibi no longer exists (the silent
+    # ImportError guard dropped the mfa_alibi row from every run); ALiBi
+    # is now a kwarg on the public flash_attention API.
     fns = {
         "sdpa_ref":       lambda: _fallback_sdpa(q, k, v, scale, causal),
         "sdpa_alibi_ref": _sdpa_alibi_ref,
         "mfa_plain":      lambda: flash_attention(q, k, v, scale=scale, causal=causal),
+        "mfa_alibi":      lambda: flash_attention(q, k, v, scale=scale, causal=causal,
+                                                  alibi_slopes=slopes),
     }
-    if has_alibi:
-        from mlx_mfa.attention import flash_attention_alibi as _fa_alibi  # noqa: F811
-        fns["mfa_alibi"] = lambda: _fa_alibi(q, k, v, slopes, scale=scale, causal=causal)
 
     return _bench(fns)
 

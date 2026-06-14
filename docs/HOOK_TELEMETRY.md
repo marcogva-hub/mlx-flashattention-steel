@@ -1,8 +1,8 @@
 # Hook telemetry (Pattern #8 prevention)
 
 mlx-mfa ships with auto-installed hooks that route eligible operations
-through accelerated kernels (currently: `mx.conv_general` → NAX Conv3D
-on M5+).  Hook telemetry surfaces whether those optimization paths
+through accelerated kernels (currently: `mx.conv_general` and
+`mx.conv3d` → NAX Conv3D on M5+).  Hook telemetry surfaces whether those optimization paths
 actually engage for your workload.
 
 This addresses **Pattern #8** — silent hook fallback masking unused
@@ -102,13 +102,15 @@ Fallback events: 0
 
 If you see `Fallback events > 0`, the eligibility check is rejecting
 some calls.  Common reasons:
-- `weight dtype X not fp16 (KD-7 bf16 disabled)` — bf16 weight; see KD-7
+- `weight dtype {dtype} not fp16/bf16` — unsupported weight dtype
+- `bf16 outside MPP gate (KD-7: legacy im2col bf16 broken upstream)` —
+  bf16 weight on a shape outside the MPP gate (III-1)
 - `not M5+ hardware` — running on M4 or earlier
 - `weight not 5-D (not Conv3D)` — input is 2D/4D conv
 
 ## See also
 
 - `docs/v50/audit-framing-inversions.md` — Pattern #8 codification
-- `docs/v50/known-debt-v2.50.md` — KD-6 (resolved) and KD-7 (open)
+- `docs/v50/known-debt-v2.50.md` — KD-6 (resolved) and KD-7 (lifted in v2.51.0 — bf16 routes via MPP)
 - `mlx_mfa/_auto_hooks.py` — implementation
 - `ENV_VARS.md` — full env var reference

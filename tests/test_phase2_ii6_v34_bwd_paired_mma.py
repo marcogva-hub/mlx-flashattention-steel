@@ -52,22 +52,30 @@ def _grads(fn, q, k, v):
     return g
 
 
-def _mk(mag, seed, N=4096, Hq=8, Hkv=8, D=64):
+def _mk(mag, seed, N=4096, Hq=8, Hkv=8, D=64, dtype=mx.float16):
     mx.random.seed(seed)
-    q = (mx.random.normal((1, Hq, N, D)) * mag).astype(mx.float16)
-    k = (mx.random.normal((1, Hkv, N, D)) * mag).astype(mx.float16)
-    v = (mx.random.normal((1, Hkv, N, D)) * mag).astype(mx.float16)
+    q = (mx.random.normal((1, Hq, N, D)) * mag).astype(dtype)
+    k = (mx.random.normal((1, Hkv, N, D)) * mag).astype(dtype)
+    v = (mx.random.normal((1, Hkv, N, D)) * mag).astype(dtype)
     mx.eval(q, k, v)
     return q, k, v
+
+
+# III-4 F6: per-element max-err bounds vs SDPA-vjp inside the promoted
+# V34 envelope.  Measured floors (M5 Max, N=4096 D=64, seeds 7/42):
+# fp16 0.004-0.008, bf16 0.016-0.0625 (8 mantissa bits).  Bounds set
+# ~10x (fp16) / 4x (bf16) above the measured floor.
+_BWD_MAXERR = {mx.float16: 0.1, mx.bfloat16: 0.25}
 
 
 @_skipif_no_nax
 class TestUnitScaleCorrectness:
     """Per-element max-err vs SDPA-vjp at input std 1.0 (NOT 0.1)."""
 
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
     @pytest.mark.parametrize("seed", [7, 42])
-    def test_default_on_matches_sdpa_vjp_elementwise(self, seed):
-        q, k, v = _mk(1.0, seed)
+    def test_default_on_matches_sdpa_vjp_elementwise(self, seed, dtype):
+        q, k, v = _mk(1.0, seed, dtype=dtype)
         s = 1.0 / math.sqrt(64)
         g = _grads(lambda a, b, c: flash_attention(a, b, c, causal=True), q, k, v)
         gr = _grads(lambda a, b, c: mx.fast.scaled_dot_product_attention(
@@ -75,13 +83,15 @@ class TestUnitScaleCorrectness:
         # fp16 noise floor for these shapes is ~0.008 (measured: split
         # and legacy_fused both land at 0.004-0.008).  The paired-MMA
         # corruption produced 22-130.  Bound set 10x above noise.
+        # III-4 F6: bf16 floor measured at 0.016-0.0625 -> bound 0.25.
+        bound = _BWD_MAXERR[dtype]
         for name, x, y in zip(("dQ", "dK", "dV"), g, gr):
             maxerr = float(mx.max(mx.abs(
                 x.astype(mx.float32) - y.astype(mx.float32))).item())
-            assert maxerr < 0.1, (
+            assert maxerr < bound, (
                 f"{name} per-element max err {maxerr:.4f} vs SDPA-vjp at "
-                f"unit-scale inputs (seed={seed}) — paired-MMA class "
-                f"corruption regressed?")
+                f"unit-scale inputs (seed={seed}, dtype={dtype}) — "
+                f"paired-MMA class corruption regressed?")
 
 
 @_skipif_no_nax
@@ -165,16 +175,19 @@ class TestNonCausalPromotionII12:
     """Phase II-12 locks: non-causal D=64 backward default-on via the
     clean split kernel; forward stays bit-SDPA; GQA at H_kv."""
 
-    def test_unit_scale_elementwise(self):
-        q, k, v = _mk(1.0, seed=7)
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    def test_unit_scale_elementwise(self, dtype):
+        # III-4 F6: bf16 added; measured floors fp16 0.001, bf16 0.0156.
+        q, k, v = _mk(1.0, seed=7, dtype=dtype)
         s = 1.0 / math.sqrt(64)
         g = _grads(lambda a, b, c: flash_attention(a, b, c, causal=False), q, k, v)
         gr = _grads(lambda a, b, c: mx.fast.scaled_dot_product_attention(
             a, b, c, scale=s), q, k, v)
+        bound = _BWD_MAXERR[dtype]
         for name, x, y in zip(("dQ", "dK", "dV"), g, gr):
             maxerr = float(mx.max(mx.abs(
                 x.astype(mx.float32) - y.astype(mx.float32))).item())
-            assert maxerr < 0.1, f"{name} non-causal err {maxerr}"
+            assert maxerr < bound, f"{name} non-causal {dtype} err {maxerr}"
 
     def test_adversarial_finite(self):
         q, k, v = _mk(12.0, seed=7)

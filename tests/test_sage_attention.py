@@ -172,6 +172,10 @@ class TestSageKernel:
     """Numerical correctness of the SageAttention Metal kernel."""
 
     # Tolerance for int8 attention: max absolute error <= TOL.
+    # III-4 F13: 0.30 (and 0.50 causal) are acceptable because sage is a
+    # LOSSY int8-quantized path — per-block int8 quantization error
+    # dominates — and causal max error varies +-0.2 across runs from
+    # documented Metal GPU non-determinism (see MEMORY.md v1.2.0 notes).
     TOL = 0.30
 
     def _check(self, q, k, v, causal=False, atol=0.30):

@@ -91,20 +91,40 @@ class TestTopKArchitectureBBisect:
         scores = (q @ k.swapaxes(-1, -2)) * scale
         scores_r = scores.reshape(B*H, N, S)
         k_top_arr = mx.array([k_count], dtype=mx.int32)
+        # III-4 D-TOPK FIX: grid.x must be N * threadgroup.x (the kernel
+        # uses one 256-thread threadgroup per row).  The old grid.x=N
+        # wrote only the first 8 rows per head; the rest read stale pool
+        # memory — which this test missed because the stale values were
+        # usually benign zeros until an adversarial test ran first.
+        _TG = 256
         threshold = _topk_bisect_threshold_kernel(
             inputs=[scores_r, k_top_arr],
             output_shapes=[(B*H, N)],
             output_dtypes=[mx.float32],
-            grid=(N, B*H, 1),
-            threadgroup=(256, 1, 1),
+            grid=(N * _TG, B*H, 1),
+            threadgroup=(_TG, 1, 1),
         )[0]
         mx.eval(threshold)
         thresh_np = np.array(threshold)
         # All thresholds must be finite
         assert np.isfinite(thresh_np).all(), "Bisection produced NaN/Inf"
-        # Thresholds should be within the score range (sanity check)
-        assert thresh_np.min() >= float(mx.min(scores).astype(mx.float32)) - 1.0
-        assert thresh_np.max() <= float(mx.max(scores).astype(mx.float32)) + 1.0
+        # Thresholds must lie within the row's score range — the
+        # bisection lo/hi are clamped to [row_min, row_max], so an
+        # out-of-range value means a row was never written (stale pool).
+        smin = float(mx.min(scores).astype(mx.float32))
+        smax = float(mx.max(scores).astype(mx.float32))
+        assert thresh_np.min() >= smin - 1e-3, (
+            f"threshold {thresh_np.min()} < score min {smin} — "
+            f"unwritten (stale) output row")
+        assert thresh_np.max() <= smax + 1e-3, (
+            f"threshold {thresh_np.max()} > score max {smax} — "
+            f"unwritten (stale) output row (the D-TOPK grid bug)")
+        # Per-row: every threshold must be within ITS row's [min,max].
+        rmin = np.array(mx.min(scores_r, axis=-1).astype(mx.float32))
+        rmax = np.array(mx.max(scores_r, axis=-1).astype(mx.float32))
+        assert (thresh_np >= rmin - 1e-3).all() and \
+               (thresh_np <= rmax + 1e-3).all(), \
+            "a threshold fell outside its row's score range (stale row)"
 
     @_skipif_no_nax
     def test_bf16_path(self, monkeypatch):

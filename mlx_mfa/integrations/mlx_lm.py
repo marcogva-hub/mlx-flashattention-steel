@@ -197,6 +197,16 @@ def _steel_sdpa(
     #   - any other mask type: fall back (boolean array, etc.)
     if mask == "causal" or mask is None:
         _is_causal = (mask == "causal")
+        # III-4 R1 FIX (CRITICAL): the STEEL kernels anchor sliding
+        # windows at q_pos = qb*BQ + qL_off + row, but qL_off = S - N is
+        # only applied when causal (csrc/mfa_attention.cpp).  A windowed
+        # NON-causal decode step (N_q << S) therefore anchored the window
+        # at position 0 and attended ONLY to key 0 (measured: output
+        # bit-identical to SDPA over k[0:1]).  For decode (mask is None,
+        # queries are the LAST N_q positions) causal masking is the
+        # correct semantic anyway — force it so qL_off engages.
+        if _window_left >= 0 and not _is_causal:
+            _is_causal = True
         _stat_steel_calls += 1
         if _is_gqa:
             _stat_gqa_calls += 1

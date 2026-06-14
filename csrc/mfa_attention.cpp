@@ -1148,7 +1148,17 @@ void MFAttention::eval_gpu(
   }  // end if (!MFA_DISABLE_V2) — D-split block
 
   // ── STEEL V1 tile config (f16 / bf16, or V2-disabled fallback) ───────────
-  auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3_plus_steel);
+  // III-4 D4 FIX: block masks are built and validated Python-side with
+  // the BASE (non-M3+) geometry — `_steel_block_config(128)` = (BQ=32,
+  // BK=16) unconditionally.  Passing is_m3_plus here made the D=128
+  // sparse kernel index `block_mask[qb * NK + kb]` with NK = ceil(S/32)
+  // against a buffer whose row stride is ceil(S/16) — silently wrong
+  // sparse output on M3/M4 at D=128.  Force the base config whenever a
+  // block mask is bound so kernel NK matches the mask geometry
+  // (mirrors the V2/V5 sparse exclusions, which exist for this reason).
+  auto cfg = select_steel_block_config(
+      D, /*is_low_prec=*/true,
+      params_.has_block_mask ? false : is_m3_plus_steel);
   int BQ = cfg.BQ;
   int BK = cfg.BK;
   int WM = cfg.WM;  // n_warps
@@ -1654,8 +1664,12 @@ void MFASteelBwdDQ::eval_gpu(
   else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else                                        dtype_code = 2;
 
-  const auto cfg = select_steel_block_config(D, /*is_low_prec=*/dtype_code != 2,
-                                             is_m3_plus);
+  // III-4 D4 FIX (sparse geometry, same class as the forward site):
+  // block masks are built Python-side with the BASE config; force it
+  // when a mask is bound so kernel NK matches the mask row stride.
+  const auto cfg = select_steel_block_config(
+      D, /*is_low_prec=*/dtype_code != 2,
+      params_.has_block_mask ? false : is_m3_plus);
   const int BQ = cfg.BQ, BK = cfg.BK, BD = cfg.BD, WM = cfg.WM;
   const int NQ = (N + BQ - 1) / BQ;
   const int NK = (S + BK - 1) / BK;
@@ -1761,8 +1775,10 @@ void MFASteelBwdDKV::eval_gpu(
   else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
   else                                        dtype_code = 2;
 
-  const auto cfg = select_steel_block_config(D, /*is_low_prec=*/dtype_code != 2,
-                                             is_m3_plus);
+  // III-4 D4 FIX: base config under block masks (see MFASteelBwdDQ note).
+  const auto cfg = select_steel_block_config(
+      D, /*is_low_prec=*/dtype_code != 2,
+      params_.has_block_mask ? false : is_m3_plus);
   const int BQ = cfg.BQ, BD = cfg.BD;
   // KD-5 root-cause fix (repo review 2026-05): generate_steel_backward_dkv_source
   // overrides BK to 16 for D > 64 (mfa_steel_bwd.cpp: `BK = (BD <= 64) ? cfg.BK : 16`).

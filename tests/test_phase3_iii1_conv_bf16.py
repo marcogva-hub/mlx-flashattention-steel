@@ -46,23 +46,32 @@ def _orig_conv3d(x, w):
 
 @pytest.fixture(autouse=True)
 def _hooks():
+    # III-4 F11: restore pre-test hook state in teardown so this file
+    # does not leak installed hooks into tests that rely on the
+    # unpatched ops (test_conv_nax.py references torch/mx.conv_general).
+    was_installed = ah._HOOKS_INSTALLED
     ah.install_hooks()
     yield
+    if not was_installed:
+        ah.uninstall_hooks()
 
 
 @_skipif_no_nax
 class TestBF16MPPEngagement:
     @pytest.mark.parametrize("cell", [(8, 64, 64, 128, 128),
                                       (8, 32, 32, 256, 256)])
-    def test_engages_and_matches(self, cell):
+    def test_engages_and_matches(self, cell, monkeypatch):
         T, H, W, C, O = cell
+        # III-4 F11: force telemetry on so the engagement assert can
+        # never be vacuously skipped (the old if-guard silently passed
+        # when MLX_MFA_HOOK_TELEMETRY=off).
+        monkeypatch.setattr(ah, "_HOOK_TELEMETRY_MODE", "summary")
         x, w = _mk(T, H, W, C, O)
         before = ah._HOOK_EXECUTION_STATS["executed"]["conv3d_nax_forward"]
         out = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
         mx.eval(out)
         after = ah._HOOK_EXECUTION_STATS["executed"]["conv3d_nax_forward"]
-        if ah._HOOK_TELEMETRY_MODE != "off":
-            assert after > before, "bf16 MPP cell did not engage the hook"
+        assert after > before, "bf16 MPP cell did not engage the hook"
         ref = _orig_conv3d(x, w)
         mx.eval(ref)
         a = np.asarray(out.astype(mx.float32))
@@ -70,7 +79,11 @@ class TestBF16MPPEngagement:
         rel = np.abs(a - b) / np.maximum(np.abs(b), 1e-3)
         assert float(rel.max()) < 1e-2, f"bf16 MPP rel err {rel.max():.4f}"
 
-    def test_fp16_path_unchanged_bitwise(self):
+    def test_fp16_path_deterministic(self):
+        """III-4 F5: determinism lock for the fp16 path (same call twice
+        is bit-identical).  This is NOT a correctness check — fp16 conv
+        correctness is locked in test_conv_nax.py against the torch CPU
+        FP32 ground truth."""
         x, w = _mk(8, 32, 32, 64, 64, dtype=mx.float16)
         out = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
         out2 = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))

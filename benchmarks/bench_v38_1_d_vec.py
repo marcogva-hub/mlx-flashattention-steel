@@ -103,16 +103,16 @@ def main():
         # ARM 1: V34 backward (D_vec engaged on v2.38.1)
         os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
         os.environ.pop("MFA_DISABLE_V34_BACKWARD", None)
-        if opt_in:
-            os.environ["MFA_ENABLE_V34_D128"] = "1"
-        else:
-            os.environ.pop("MFA_ENABLE_V34_D128", None)
+        # III-4 F15: MFA_ENABLE_V34_D128 was a GHOST env (read nowhere in
+        # mlx_mfa or csrc) — the env-gated arm was deleted.  The real knob
+        # is MFA_ENABLE_V34_BACKWARD (set above); D=128 routing is decided
+        # by the dispatch itself.  `opt_in` is kept in the report row as a
+        # shape annotation only.
         v34 = _bench_shape(B, H, qL, D, dtype)
 
         # ARM 2: SDPA-vjp baseline
         os.environ["MFA_DISABLE_V34_BACKWARD"] = "1"
         os.environ.pop("MFA_ENABLE_V34_BACKWARD", None)
-        os.environ.pop("MFA_ENABLE_V34_D128", None)
         sdpa = _bench_shape(B, H, qL, D, dtype)
 
         speedup = sdpa["med_ms"] / v34["med_ms"]

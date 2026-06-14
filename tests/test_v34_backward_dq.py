@@ -31,12 +31,15 @@ def force_v34(monkeypatch):
     yield
 
 
-def _make_qkv_do(B, Hq, Hk, qL, kL, D, seed, dtype):
+def _make_qkv_do(B, Hq, Hk, qL, kL, D, seed, dtype, mag=1.0):
+    # III-4 F9: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    k = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
-    v = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
-    dO = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
+    q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    k = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
+    v = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
+    dO = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
     _mat(q, k, v, dO)
     return q, k, v, dO
 
@@ -62,7 +65,12 @@ def _sdpa_vjp_dq(q, k, v, dO, scale):
     return dQ_ref
 
 
-def _check_dq_rmse(q, k, v, dO, scale, *, fp16_bound=1e-3, bf16_bound=1e-4):
+def _check_dq_rmse(q, k, v, dO, scale, *, fp16_bound=1e-3, bf16_bound=1e-3):
+    # III-4 F9: unit-scale retrofit, measured floor (M5 Max, 512x512
+    # D=128 fp16) dQ rmse 5.7e-5.  bf16_bound default raised to 1e-3
+    # (bf16 has 3 fewer mantissa bits than fp16; the old 1e-4 default
+    # was below the fp16 unit-scale margin and every bf16 caller
+    # already overrode it to 1e-3).
     dQ = _v34_bwd_dq(q, k, v, dO, scale)
     dQ_ref = _sdpa_vjp_dq(q, k, v, dO, scale)
     err = np.abs(np.array(dQ.astype(mx.float32)) -
@@ -159,3 +167,13 @@ def test_v34_bwd_dq_no_nan_or_inf():
     arr = np.array(dQ.astype(mx.float32))
     assert not np.isnan(arr).any(), "dQ contains NaN"
     assert not np.isinf(arr).any(), "dQ contains Inf"
+
+
+def test_v34_bwd_dq_adversarial_magnitude_finite():
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep dQ
+    finite (fp16-overflow guard, V34 backward-dQ kernel family)."""
+    q, k, v, dO = _make_qkv_do(1, 4, 4, 512, 512, 128, seed=52,
+                               dtype=mx.float16, mag=8.0)
+    dQ = _v34_bwd_dq(q, k, v, dO, 1.0 / math.sqrt(128))
+    assert np.isfinite(np.array(dQ.astype(mx.float32))).all(), \
+        "dQ non-finite at std-8 inputs"

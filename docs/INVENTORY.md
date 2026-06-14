@@ -1,7 +1,6 @@
 # mlx-mfa Inventory
 
-Version: **2.39.1** (PyPI) + master `82acc55` (post-Sprint A/B/C v2.39.x-v2.40.x-internal accumulation)
-Regenerated: 2026-05-13 (v50-nax-coverage audit)
+Version: **2.51.0** (PyPI) — header updated 2026-06-12; module/LOC tables below are a 2026-05-13 snapshot (regeneration pending)
 
 > **For canonical NAX path coverage**, see `docs/HARDWARE_SUPPORT.md`.
 

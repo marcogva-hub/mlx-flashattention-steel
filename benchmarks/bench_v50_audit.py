@@ -85,13 +85,12 @@ def main():
     # direct mx.fast (the underlying call when M5+ routes to SDPA)
     sdpa_ms = timed_ms(lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=scale))
     # force mfa (where supported)
-    os.environ["MFA_FORCE_BACKEND"] = "mfa"
+    # III-4 F17: removed the dead MFA_FORCE_BACKEND env write — that env
+    # is read nowhere; the backend="mfa" kwarg below is the real mechanism.
     try:
         mfa_ms = timed_ms(lambda: flash_attention(q, k, v, scale=scale, causal=False, backend="mfa"))
     except Exception as e:
         mfa_ms = -1
-    finally:
-        os.environ.pop("MFA_FORCE_BACKEND", None)
 
     print(f"  flash_attention auto = {auto_ms:.2f} ms")
     print(f"  mx.fast.SDPA direct  = {sdpa_ms:.2f} ms")

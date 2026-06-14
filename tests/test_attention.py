@@ -1092,6 +1092,11 @@ class TestSparseAttentionKernel:
         second_tile = np.array(out[0, 0, BQ:, :].astype(mx.float32))
         assert np.all(second_tile == 0.0) or np.all(np.isnan(second_tile)), \
             "Expected 0 or NaN for fully masked rows"
+        # III-4 F12: this test deliberately produces NaN-filled buffers;
+        # flush the Metal buffer pool so recycled buffers can't
+        # contaminate later lazy-zeros tests (same pattern as the
+        # steel_sparse backward test below).
+        mx.clear_cache()
 
     @pytest.mark.parametrize("D", [128, 256])
     def test_sparse_backward(self, D):
@@ -3255,6 +3260,36 @@ class TestSinkAndReferenceFrameMasks:
         assert with_sink.sum() >= no_sink.sum(), \
                                 "Sinks should add more active tiles"
 
+    def test_sink_window_covers_all_in_window_pairs(self):
+        """III-4 R6 FIX regression: the tile-level window left edge is
+        anchored at q_start - window_size (union over queries in the tile),
+        not q_end - window_size. Every (q_tile, k_tile) with ANY in-window
+        (q, k) token pair must be active (brute-force token reference)."""
+        from mlx_mfa import make_sink_window_mask
+        N = 256; ws = 64
+        head_dim = 64  # BQ = BK = 32
+        BQ, BK = 32, 32
+        mask_np = np.array(
+            make_sink_window_mask(N, ws, num_sink_tokens=0, head_dim=head_dim)
+        )
+        NQ = (N + BQ - 1) // BQ
+        NK = (N + BK - 1) // BK
+        assert mask_np.shape == (NQ, NK)
+        for qt in range(NQ):
+            q_lo, q_hi = qt * BQ, min(qt * BQ + BQ, N)
+            for kt in range(NK):
+                k_lo, k_hi = kt * BK, min(kt * BK + BK, N)
+                any_in_window = any(
+                    (q - ws) <= k_pos <= q
+                    for q in range(q_lo, q_hi)
+                    for k_pos in range(k_lo, k_hi)
+                )
+                if any_in_window:
+                    assert mask_np[qt, kt], (
+                        f"tile ({qt},{kt}) has an in-window (q,k) pair but "
+                        f"is inactive"
+                    )
+
     def test_sink_plus_causal(self):
         """Causal mode: no future K-tiles, but sinks still visible."""
         from mlx_mfa import make_sink_window_mask
@@ -3566,16 +3601,22 @@ class TestGNAAttention:
         assert not np.any(np.isnan(np.array(out.astype(mx.float32))))
 
 
-@pytest.fixture(autouse=True, scope="class")
-def _disable_gna_native_for_backward():
-    """Native GNA kernel is forward-only; backward tests must use sparse path."""
-    os.environ["MFA_DISABLE_GNA_NATIVE"] = "1"
-    yield
-    os.environ.pop("MFA_DISABLE_GNA_NATIVE", None)
-
-
 class TestGNABackward:
     """Gradient tests for flash_attention_gna() via sparse backward path."""
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _disable_gna_native_for_backward(self):
+        """Native GNA kernel is forward-only; backward tests must use the
+        sparse path.
+
+        III-4 F10: this fixture was MODULE-level autouse with
+        scope="class", which applied it to EVERY class in the module —
+        the whole file silently tested the sparse fallback instead of
+        the production GNA-native path.  Scoped to this class only.
+        """
+        os.environ["MFA_DISABLE_GNA_NATIVE"] = "1"
+        yield
+        os.environ.pop("MFA_DISABLE_GNA_NATIVE", None)
 
     def test_gna_backward_no_nan(self):
         """GNA backward produces finite gradients."""
@@ -3862,6 +3903,20 @@ class TestStridedMask:
         mask_local = make_strided_mask(4096, window_size=256, global_stride=999999, head_dim=self.D)
         mask_both = make_strided_mask(4096, window_size=256, global_stride=512, head_dim=self.D)
         assert int(mask_both.sum().item()) > int(mask_local.sum().item())
+
+    def test_strided_mask_position_zero_in_stride_set(self):
+        """III-4 R11 FIX regression: position 0 belongs to the global stride
+        set {0, gs, 2*gs, ...} — the first K-tile must be active for ALL
+        Q-tiles, including those far outside the local window."""
+        from mlx_mfa.masks import make_strided_mask
+        # window_size=2 keeps the local window tiny; gs=128 means only
+        # positions {0, 128} are global — K-tile 0 holds position 0.
+        mask = make_strided_mask(256, window_size=2, global_stride=128,
+                                 head_dim=self.D)
+        mask_np = np.array(mask)
+        assert mask_np[:, 0].all(), (
+            "K-tile containing position 0 must be globally visible"
+        )
 
     def test_strided_mask_with_sparse(self):
         """End-to-end sparse attention."""
@@ -5696,6 +5751,98 @@ class TestPagedBackward:
         max_err = mx.max(mx.abs(dq_paged - dq_ref)).item()
         assert max_err < 0.05, f"dQ paged vs ref max err = {max_err}"
 
+    def test_paged_causal_backward_heterogeneous_seq_lens(self):
+        """III-4 D5 FIX regression: causal backward with heterogeneous
+        kv_lens and N_q > 1.  The forward slices each row to its own kv_len
+        (query i of row b sits at causal position kv_len_b - N_q + i); the
+        old backward mask anchored ALL rows at max_kv_len, producing wrong
+        grads for every row with kv_len < max_kv_len.  Reference: per-row
+        sliced SDPA with the true per-row causal positions."""
+        from mlx_mfa import flash_attention_paged
+        import math
+        B, H, N_q, D, block_size = 2, 4, 4, 64, 16
+        kv_lens = [48, 32]
+        mx.random.seed(31)
+        q, k_p, v_p, bt, sl = self._make_paged(
+            B, H, H, N_q, D, kv_lens, block_size=block_size)
+        mx.eval(q, k_p, v_p, bt, sl)
+        scale = 1.0 / math.sqrt(D)
+
+        # Reconstruct contiguous per-row K/V from the (sequential) pool.
+        bt_list = bt.tolist()
+
+        def _row_kv(b):
+            n_blk = kv_lens[b] // block_size
+            blks_k = [k_p[bt_list[b][lb]] for lb in range(n_blk)]
+            blks_v = [v_p[bt_list[b][lb]] for lb in range(n_blk)]
+            k_row = mx.concatenate(blks_k, axis=0)  # [kv_len, H, D]
+            v_row = mx.concatenate(blks_v, axis=0)
+            return (k_row.transpose(1, 0, 2)[None],
+                    v_row.transpose(1, 0, 2)[None])  # [1, H, kv_len, D]
+
+        def _row_causal_mask(kv_len):
+            q_pos = mx.arange(kv_len - N_q, kv_len, dtype=mx.int32)[:, None]
+            k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
+            return mx.where(
+                k_pos <= q_pos,
+                mx.zeros((N_q, kv_len), dtype=mx.float16),
+                mx.full((N_q, kv_len), float("-inf"), dtype=mx.float16),
+            )
+
+        def loss_paged(q_):
+            return flash_attention_paged(
+                q_, k_p, v_p, bt, sl, scale=scale, causal=True,
+                block_size=block_size).sum()
+
+        def loss_ref(q_):
+            total = mx.zeros(())
+            for b in range(B):
+                k_b, v_b = _row_kv(b)
+                out_b = mx.fast.scaled_dot_product_attention(
+                    q_[b:b + 1], k_b, v_b, scale=scale,
+                    mask=_row_causal_mask(kv_lens[b]))
+                total = total + out_b.sum()
+            return total
+
+        dq_paged = mx.grad(loss_paged)(q)
+        dq_ref = mx.grad(loss_ref)(q)
+        mx.eval(dq_paged, dq_ref)
+        max_err_q = mx.max(mx.abs(dq_paged - dq_ref)).item()
+        assert max_err_q < 0.05, (
+            f"dQ paged-causal vs per-row SDPA ref max err = {max_err_q}"
+        )
+
+        # dK through the pool: scatter per-row reference grads back to pool.
+        def loss_paged_k(k_p_):
+            return flash_attention_paged(
+                q, k_p_, v_p, bt, sl, scale=scale, causal=True,
+                block_size=block_size).sum()
+
+        dk_paged = mx.grad(loss_paged_k)(k_p)
+
+        def loss_ref_kb(k_row, b):
+            v_b = _row_kv(b)[1]
+            out_b = mx.fast.scaled_dot_product_attention(
+                q[b:b + 1], k_row, v_b, scale=scale,
+                mask=_row_causal_mask(kv_lens[b]))
+            return out_b.sum()
+
+        max_err_k = 0.0
+        for b in range(B):
+            k_b = _row_kv(b)[0]
+            dk_ref_b = mx.grad(loss_ref_kb)(k_b, b)[0]  # [H, kv_len, D]
+            n_blk = kv_lens[b] // block_size
+            for lb in range(n_blk):
+                phys = bt_list[b][lb]
+                ref_tile = dk_ref_b[
+                    :, lb * block_size:(lb + 1) * block_size, :
+                ].transpose(1, 0, 2)  # [bs, H, D]
+                err = mx.max(mx.abs(dk_paged[phys] - ref_tile)).item()
+                max_err_k = max(max_err_k, err)
+        assert max_err_k < 0.05, (
+            f"dK paged-causal vs per-row SDPA ref max err = {max_err_k}"
+        )
+
     # ── Track IF — dK/dV scatter ──────────────────────────────────────────
 
     def test_paged_dk_shape(self):
@@ -6797,8 +6944,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, L = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                              scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"D=64 non-causal diff={diff:.4e}"
@@ -6818,8 +6965,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"D=128 non-causal diff={diff:.4e}"
@@ -6839,8 +6986,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"D=256 non-causal diff={diff:.4e}"
@@ -6860,8 +7007,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < 1e-2, f"bf16 diff={diff:.4e}"
@@ -6882,11 +7029,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        # Reference: expand K/V to H_q
-        k_exp = mx.repeat(k, 2, axis=1)
-        v_exp = mx.repeat(v, 2, axis=1)
-        O_ref = flash_attention(q, k_exp, v_exp, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)  # SDPA handles GQA natively
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"GQA 2:1 diff={diff:.4e}"
@@ -6906,8 +7050,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=True, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=True)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask="causal")
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"causal diff={diff:.4e}"
@@ -6928,8 +7072,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"cross-block diff={diff:.4e}"
@@ -6950,8 +7094,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"decode N_q=1 diff={diff:.4e}"
@@ -6971,8 +7115,8 @@ class TestPagedSteelForward:
         from mlx_mfa._ext import mfa_paged_steel_forward
         O_paged, _ = mfa_paged_steel_forward(q, pool_k, pool_v, table, lens,
                                               scale=scale, causal=False, block_size=bs)
-        from mlx_mfa import flash_attention
-        O_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        # III-4 F4: reference is MLX SDPA (ground truth), not flash_attention
+        O_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         mx.eval(O_paged, O_ref)
         diff = float(mx.abs(O_paged.astype(mx.float32) - O_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"S=1024 diff={diff:.4e}"
@@ -7011,7 +7155,7 @@ class TestPagedSteelForward:
         pool_k, pool_v, table, lens = _build_pool(k, v, bs)
         out_paged = flash_attention_paged(q, pool_k, pool_v, table, lens,
                                           scale=scale, causal=False, block_size=bs)
-        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)  # III-4 F4: SDPA GT
         mx.eval(out_paged, out_ref)
         diff = float(mx.abs(out_paged.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"flash_attention_paged diff={diff:.4e}"
@@ -7034,7 +7178,7 @@ class TestPagedFlashDecode:
 
     # ── 1. N_q=1, S=512 non-causal ───────────────────────────────────────
     def test_decode_s512_noncausal(self):
-        from mlx_mfa import flash_attention_paged, flash_attention
+        from mlx_mfa import flash_attention_paged
         mx.random.seed(20)
         B, H, N, S, D = 1, 4, 1, 512, 128
         bs = 64
@@ -7046,14 +7190,14 @@ class TestPagedFlashDecode:
         pool_k, pool_v, table, lens = _build_pool(k, v, bs)
         out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
                                        scale=scale, causal=False, block_size=bs)
-        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)  # III-4 F4: SDPA GT
         mx.eval(out_pd, out_ref)
         diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"N=1 S=512 non-causal diff={diff:.4e}"
 
     # ── 2. N_q=1, S=1024 causal ─────────────────────────────────────────
     def test_decode_s1024_causal(self):
-        from mlx_mfa import flash_attention_paged, flash_attention
+        from mlx_mfa import flash_attention_paged
         mx.random.seed(21)
         B, H, N, S, D = 1, 4, 1, 1024, 128
         bs = 64
@@ -7065,14 +7209,14 @@ class TestPagedFlashDecode:
         pool_k, pool_v, table, lens = _build_pool(k, v, bs)
         out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
                                        scale=scale, causal=True, block_size=bs)
-        out_ref = flash_attention(q, k, v, scale=scale, causal=True)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask="causal")  # III-4 F4: SDPA GT
         mx.eval(out_pd, out_ref)
         diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"N=1 S=1024 causal diff={diff:.4e}"
 
     # ── 3. N_q=4, S=512 (boundary of flash decode activation) ────────────
     def test_decode_nq4_s512(self):
-        from mlx_mfa import flash_attention_paged, flash_attention
+        from mlx_mfa import flash_attention_paged
         mx.random.seed(22)
         B, H, N, S, D = 2, 8, 4, 512, 64
         bs = 64
@@ -7084,14 +7228,14 @@ class TestPagedFlashDecode:
         pool_k, pool_v, table, lens = _build_pool(k, v, bs)
         out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
                                        scale=scale, causal=False, block_size=bs)
-        out_ref = flash_attention(q, k, v, scale=scale, causal=False)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)  # III-4 F4: SDPA GT
         mx.eval(out_pd, out_ref)
         diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"N=4 S=512 diff={diff:.4e}"
 
     # ── 4. GQA 4:1, N_q=1, S=512 ─────────────────────────────────────────
     def test_decode_gqa(self):
-        from mlx_mfa import flash_attention_paged, flash_attention
+        from mlx_mfa import flash_attention_paged
         mx.random.seed(23)
         H_q, H_kv = 8, 2
         B, N, S, D = 1, 1, 512, 64
@@ -7104,10 +7248,7 @@ class TestPagedFlashDecode:
         pool_k, pool_v, table, lens = _build_pool(k, v, bs)
         out_pd = flash_attention_paged(q, pool_k, pool_v, table, lens,
                                        scale=scale, causal=False, block_size=bs)
-        # Reference: expand K/V to H_q
-        k_exp = mx.repeat(k, H_q // H_kv, axis=1)
-        v_exp = mx.repeat(v, H_q // H_kv, axis=1)
-        out_ref = flash_attention(q, k_exp, v_exp, scale=scale, causal=False)
+        out_ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)  # III-4 F4: SDPA GT (native GQA)
         mx.eval(out_pd, out_ref)
         diff = float(mx.abs(out_pd.astype(mx.float32) - out_ref.astype(mx.float32)).max())
         assert diff < self.TOL, f"GQA 4:1 decode diff={diff:.4e}"
@@ -10516,6 +10657,16 @@ class TestSmartDispatch:
         import numpy as np
         assert np.all(np.isfinite(np.array(out.astype(mx.float32)))), \
             "mixed-dtype auto dispatch produced NaN — not routed to MFA"
+        # III-4 PASS1-REGRESSION FIX: finiteness alone let silent garbage
+        # through — eval_gpu keyed the kernel dtype on q alone, so an f32
+        # kernel reinterpreted f16 K/V buffers (max_err ~15, NaN only when
+        # the Metal buffer pool recycled dirty allocations).  Assert
+        # numerical agreement with an explicitly-cast SDPA ground truth.
+        ref = mx.fast.scaled_dot_product_attention(
+            q, k.astype(mx.float32), v.astype(mx.float32), scale=D ** -0.5)
+        max_err = float(mx.abs(out - ref).max())
+        assert max_err < 5e-3, \
+            f"mixed-dtype output diverges from cast-SDPA ground truth: {max_err}"
 
     def test_calibrate_dispatch_returns_dict(self):
         """calibrate_dispatch() is importable and returns a threshold dict."""

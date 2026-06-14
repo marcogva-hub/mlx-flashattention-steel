@@ -45,11 +45,14 @@ def env_version(v):
             os.environ["MFA_LCSA_KERNEL_VERSION"] = prev
 
 
-def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0):
+def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0, mag=1.0):
+    # III-4 F7: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    Q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(mx.float16)
-    K = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
-    V = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
+    Q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(mx.float16)
+    K = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
+    V = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
     mx.async_eval(Q, K, V); mx.synchronize()
     return Q, K, V
 
@@ -95,6 +98,7 @@ def test_axis1_v1_v2_equivalence_per_shape(name, B, Hq, Hk, qL, kL, D, density, 
 
     err = np.abs(np.array(O1.astype(mx.float32)) - np.array(O2.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
+    # III-4 F7: unit-scale retrofit, measured floor rmse 2.6e-5 (M5 Max).
     assert rmse < 1e-3, f"{name}: V1 vs V2 RMSE {rmse} exceeds 1e-3"
     assert not np.isnan(np.array(O2.astype(mx.float32))).any(), \
         f"{name}: V2 produced NaN"
@@ -196,6 +200,7 @@ def test_axis3_v2_all_true_matches_v1_dense():
                         np.array(O2.astype(mx.float32)))
     rmse_v2_ref = float(np.sqrt((err_v2_ref ** 2).mean()))
     rmse_v1_v2 = float(np.sqrt((err_v1_v2 ** 2).mean()))
+    # III-4 F7: unit-scale retrofit, measured floor rmse 4.1e-6 (M5 Max).
     assert rmse_v2_ref < 1e-3, f"V2 all-True RMSE vs SDPA: {rmse_v2_ref}"
     assert rmse_v1_v2 < 1e-3, f"V1 vs V2 all-True RMSE: {rmse_v1_v2}"
 
@@ -238,3 +243,17 @@ def test_density_sweep_v1_v2_equivalence(density):
                  np.array(O2.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
     assert rmse < 1e-3, f"density={density}: V1 vs V2 RMSE {rmse}"
+
+
+def test_adversarial_magnitude_finite():
+    """III-4 F7: adversarial-magnitude (std 8) inputs must stay finite on
+    BOTH kernel versions (fp16-overflow guard, coop-V2 kernel family)."""
+    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 32
+    Q, K, V = _make_inputs(B, Hq, Hk, qL, kL, D, seed=500, mag=8.0)
+    mask = _random_mask(qL // BT, kL // BT, 0.10, 501)
+    for ver in ("v1", "v2"):
+        with env_version(ver):
+            O = sparse_attention_nax(Q, K, V, mask, block_tile=BT)
+        mx.async_eval(O); mx.synchronize()
+        assert np.isfinite(np.array(O.astype(mx.float32))).all(), \
+            f"{ver}: non-finite output at std-8 inputs"

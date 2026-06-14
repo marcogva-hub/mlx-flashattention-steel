@@ -2,6 +2,7 @@
 
 All `MFA_*` env vars controlling dispatch and kernel configuration.
 Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attention.cpp`.
+M5/V34 tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 
 ## Dispatch Gates
 
@@ -59,8 +60,8 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_FORCE_NATIVE_BWD` | bool | unset | **DEPRECATED — superseded** (Phase II-0 reword): STEEL backward is CORRECT everywhere post-KD-5-fix, but auto dispatch now selects the optimal backward per cell (V34 at D=64 causal default-on, SDPA-vjp elsewhere) — the flag is redundant, not a workaround.  Also note: unreachable via the public API on M5 without `backend="mfa"` (forward routes to SDPA first).  Removal is Marco-gated. |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
 | `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **v2.36.1**: when unset, `decide_auto_version()` picks V2 for `qL × kL × D ≥ 2.15e9` (validated under canonical-protocol) and V1 below. `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
-| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.50): opt in to V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, qL ≥ 2048; **causal AND non-causal eligible** as of v2.50 Prompt 4 Section B — the "no causal" restriction is obsolete). Default off (SDPA-vjp fallback). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. |
-| `MFA_DISABLE_V34_BACKWARD` | bool | unset | **Phase II-0**: opt-OUT of the V34 backward D=64-causal DEFAULT-ON promotion (2.2-2.6x vs SDPA-vjp, qL>=2048, fp16/bf16, M5+; incl. GQA/MQA post shape-fix).  Set =1 to restore SDPA-vjp at that cell. |
+| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.51.0): opt-in for **D=128 only** — D=64 (causal + non-causal) is **default-on since v2.51.0** and needs no env var. Enables V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (FP16/BF16, qL ≥ 2048). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. |
+| `MFA_DISABLE_V34_BACKWARD` | bool | unset | **Phase II-0 / v2.51.0**: opt-OUT of the default-on V34 backward D=64 (causal + non-causal) promotion (1.7-2.7x vs SDPA-vjp, qL>=2048, fp16/bf16, M5+; incl. GQA/MQA post shape-fix).  Set =1 to restore SDPA-vjp at that cell. |
 | `MFA_V34BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V34 backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
 | `MFA_V34BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
 | `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
@@ -71,6 +72,8 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 | `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
 | `MFA_DISABLE_TOPK_NAX` | bool | unset | Disable Top-K NAX dispatch entirely; falls back to Python reference (very slow at scale, for correctness comparison). |
 | `MFA_DISABLE_ROPE_NAX` | bool | unset | **Sprint 2**: opt-out of `mx.fast.rope` dispatch path in `flash_attention_rope_unified`; falls back to STEEL host-side RoPE. |
+| `MFA_DISABLE_TQ_DECODE_SDPA` | bool | unset | **v2.51.0**: opt-out of the default TurboQuant paged-decode (N_q=1) gather/dequant + Apple SDPA path (6.0-14.4x); falls back to the fused TQ kernel path. |
+| `MFA_DISABLE_AUTO_HOOKS` | bool | unset | Disable auto-hook installation at `import mlx_mfa` (`_auto_hooks.py::install_hooks()`); no `mx.*` surfaces are patched. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
 | `MLX_MFA_HOOK_TELEMETRY` | str | `summary` | **v2.50.1 Prompt 5g Phase C**: hook execution/fallback telemetry mode (Pattern #8 prevention).  Values: `off` (zero overhead, no counters), `summary` (default; per-hook executed/fallback counters readable via `mlx_mfa.get_hook_stats()`), `verbose` (summary + `UserWarning` per fallback for active debugging).  See `docs/HOOK_TELEMETRY.md`. |
@@ -93,6 +96,7 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 |---|---|---|---|
 | `MFA_CONV_NAX_NO_FAST_PATH` | bool | unset | Bypass the 1×1×1 fast path in Conv3D NAX (forces the general path; used by perf tests). |
 | `MFA_CONV_NAX_USE_PYTHON_LEGACY` | bool | unset | Route Conv3D NAX through the Phase 1.x legacy Python implementation (debug). |
+| `MFA_DISABLE_CONV3D_MPP` | bool | unset | **v2.50.2/v2.51.0**: opt-out of the default MPP `convolution2d` conv3d path (fp16 2.3-2.5x, bf16 1.4-2.7x); falls back to the legacy materialized-im2col path (fp16-only there, KD-7). |
 | `MFA_REQUIRE_MSL4` | (not an env var) | — | **Corrected (campaign 2026-06 Track 0)**: this is a SOURCE-STRING SENTINEL (`// MFA_REQUIRE_MSL4` comment in generated Metal), detected by `shader_cache.mm` to select MTLLanguageVersion4_0.  It is never read from the environment. |
 
 ## Calibration (dynamic keys, not cached)
@@ -103,7 +107,8 @@ Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attenti
 
 ## V34 backward tile overrides + diagnostics (documented campaign 2026-06 Track 0)
 
-All gated behind `MFA_ENABLE_V34_BACKWARD=1`; expert/bench knobs.  Values flow
+All apply when the V34 backward path is active (default-on for D=64
+since v2.51.0; D=128 via `MFA_ENABLE_V34_BACKWARD=1`); expert/bench knobs.  Values flow
 into the pipeline cache keys (live; Sprint A verified key completeness).
 
 | Variable | Type | Default | Description |
@@ -113,6 +118,7 @@ into the pipeline cache keys (live; Sprint A verified key completeness).
 | `MFA_V34BWDF_BQ` / `MFA_V34BWDF_BK` / `MFA_V34BWDF_WM` | int | auto | Fused dKdV kernel tile overrides. |
 | `MFA_V6_SENTINEL_FILL` | bool | unset | Debug: pre-fill V6 output/LSE buffers with sNaN before dispatch (dispatch-routing forensics). |
 | `MFA_V34_DUMP_SOURCE` / `MFA_V34BWD_DUMP_SOURCE` | bool | unset | Debug: dump generated V34 fwd/bwd Metal source to stderr on pipeline-cache miss. |
+| `MFA_V34BWDF_DUMP_SOURCE` / `MFA_V34BWDF_DUMP_PATH` | bool / path | unset | Debug: dump the generated fused-dKdV MSL source (to stderr, or to the file given by `MFA_V34BWDF_DUMP_PATH`). |
 
 Interaction notes (campaign 2026-06 Track 0):
 - `MFA_V6_EXEC_SG` has NO effect when the V34 path is selected (`v34_WM` overrides it).

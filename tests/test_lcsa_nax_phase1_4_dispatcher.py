@@ -28,11 +28,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0):
+def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0, mag=1.0):
+    # III-4 F7: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    Q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(mx.float16)
-    K = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
-    V = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
+    Q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(mx.float16)
+    K = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
+    V = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
     mx.async_eval(Q, K, V); mx.synchronize()
     return Q, K, V
 
@@ -73,7 +76,11 @@ def test_dispatch_routes_moderate_density_to_sdpa():
     mx.async_eval(O_disp, O_sdpa); mx.synchronize()
     err = np.abs(np.array(O_disp.astype(mx.float32)) -
                  np.array(O_sdpa.astype(mx.float32)))
-    assert err.max() < 1e-5, "Dispatcher at density 0.10 should match SDPA+bias"
+    # III-4 F7: unit-scale retrofit, measured floor max-abs 2.44e-4 (M5 Max).
+    # Under the Sprint-1 default threshold (1.01) density 0.10 routes to
+    # NAX, so this is a CROSS-path comparison at the fp16 noise floor —
+    # the old 1e-5 bound only held because 0.1-scale outputs were tiny.
+    assert err.max() < 1e-3, "Dispatcher at density 0.10 should match SDPA+bias"
 
 
 def test_dispatch_threshold_override():
@@ -152,3 +159,21 @@ def test_dispatch_causal_path():
                  np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
     assert rmse < 5e-3, f"causal dispatcher RMSE {rmse} too high"
+
+
+def test_adversarial_magnitude_finite():
+    """III-4 F7: adversarial-magnitude (std 8) inputs must stay finite
+    through the dispatcher (fp16-overflow guard, dispatcher family)."""
+    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 16
+    NQ, NK = qL // BT, kL // BT
+    rng = np.random.default_rng(61)
+    bm = (rng.random((NQ, NK)) < 0.01).astype(np.bool_)
+    for q in range(NQ):
+        if not bm[q].any():
+            bm[q, q % NK] = True
+    mask = mx.array(bm)
+    Q, K, V = _make_inputs(B, Hq, Hk, qL, kL, D, seed=62, mag=8.0)
+    O = sparse_attention_dispatch(Q, K, V, mask, block_tile=BT)
+    mx.async_eval(O); mx.synchronize()
+    assert np.isfinite(np.array(O.astype(mx.float32))).all(), \
+        "non-finite dispatcher output at std-8 inputs"

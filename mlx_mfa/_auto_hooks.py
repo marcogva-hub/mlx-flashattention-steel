@@ -343,6 +343,10 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     # baseline output dtype after the kernel call.  Weight dtype is
     # guaranteed to be fp16 or bf16 by `_conv3d_nax_eligible`.
     orig_input_dtype = input.dtype
+    # III-4 D14 FIX: keep a handle on the UNCAST input — the defensive
+    # fallback below must re-run the baseline on the original array, not on
+    # a precision-truncated round-trip (fp32 -> fp16 -> fp32 loses bits).
+    orig_input = input
     if input.dtype != weight.dtype:
         input = input.astype(weight.dtype)
     try:
@@ -359,8 +363,10 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
         # revert to MLX baseline rather than propagating.
         _record_hook_fallback("conv3d_nax_forward",
                                f"NAX dispatch raised: {type(e).__name__}: {str(e)[:120]}")
+        # III-4 D14 FIX: re-run the baseline on the pristine original input
+        # (input.astype(orig_input_dtype) was a lossy down-up round trip).
         return _ORIGINAL_CONV_GENERAL(
-            input.astype(orig_input_dtype), weight,
+            orig_input, weight,
             stride=stride, padding=padding,
             kernel_dilation=kernel_dilation,
             input_dilation=input_dilation,

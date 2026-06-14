@@ -5,14 +5,14 @@ Phase 4a: V34 forward kernel (`createV34Source()`) now supports causal
 masking via Apple SDPA NAX pattern (steel_attention_nax.h:176-187,
 279-301): per-block `kb_lim` shrink + per-element `r < c → -inf` mask.
 
-Phase 4b partial: V34 backward dQ kernel (`createV34BackwardQuerySource()`)
-mirrors the forward causal mask block.  4 K-parallel backward kernels
-(dKV, split dV, split dK, fused dKdV) are NOT yet causal-aware —
-Phase 4b-complete deferred (see `docs/v50/sprint4-status-phase4b-complete.md`).
+Phase 4b-complete (Prompt 4 Section B): the causal eligibility gate was
+LIFTED — `_v34_eligible(..., causal=True)` returns True and V34 backward
+causal produces correct gradients (the Prompt 3 dV residual was a missed
+dispatch gate routing causal forward to STEEL legacy / log2-domain lse).
 
-Eligibility gate (`_v34_eligible`) retains `not causal` so production
-callers using `flash_attention(causal=True)` continue to use SDPA-vjp
-fallback for the backward pass.
+III-4 F14: module docstring updated — it previously said causal was
+excluded and that `flash_attention(causal=True)` fell back to SDPA-vjp,
+which contradicted test_v34_eligibility_causal_returns_true below.
 
 These tests verify:
   - V34 forward causal output matches mx.fast.scaled_dot_product_attention(mask='causal')
@@ -21,7 +21,7 @@ These tests verify:
     introduced no regression on the non-causal path)
   - lse from V34 forward causal is finite, natural-log domain
   - Production `flash_attention(causal=True)` with MFA_ENABLE_V34_BACKWARD=1
-    falls back cleanly to SDPA-vjp (eligibility gate retained for safety)
+    ENGAGES the V34 backward causal path and matches SDPA-vjp gradients
 """
 import math
 import os
@@ -124,17 +124,18 @@ def test_flash_attention_causal_engages_v34(monkeypatch):
     log lse from V34 forward causal (was broken before due to dispatch
     routing to STEEL legacy).
 
-    Inputs are scaled to U(-0.1, 0.1) matching existing test_v34_backward_kv.py
-    convention — keeps scores in fp16-safe range (unscaled N(0,1) produces
-    Q@K scores ~ ±20-30 that overflow fp16 softmax at outlier positions).
+    III-4 F9: retrofitted to unit-scale N(0,1) inputs (was U(-0.1,0.1)
+    with a comment claiming N(0,1) overflows fp16 softmax — empirically
+    FALSE on M5: max-softmax subtraction keeps it finite; measured
+    floors at unit scale are dQ/dK 2.9e-3, dV 2.0e-3).
     """
     monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
     B, H, qL, D = 1, 4, 2048, 64
     mx.random.seed(13)
-    q = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
-    k = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
-    v = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
-    dO = (mx.random.uniform(-1.0, 1.0, (B, H, qL, D)) * 0.1).astype(mx.float16)
+    q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    k = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    v = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    dO = mx.random.normal((B, H, qL, D)).astype(mx.float16)
     scale = 1.0 / math.sqrt(D)
 
     def test(q, k, v):
@@ -149,7 +150,32 @@ def test_flash_attention_causal_engages_v34(monkeypatch):
     diff_q = float(mx.max(mx.abs(dQ_t.astype(mx.float32) - dQ_r.astype(mx.float32))))
     diff_k = float(mx.max(mx.abs(dK_t.astype(mx.float32) - dK_r.astype(mx.float32))))
     diff_v = float(mx.max(mx.abs(dV_t.astype(mx.float32) - dV_r.astype(mx.float32))))
-    # V34 backward causal vs SDPA-vjp causal — within fp16 ULP band for scaled inputs
+    # V34 backward causal vs SDPA-vjp causal.
+    # III-4 F9: unit-scale retrofit, measured floors (M5 Max) dQ/dK
+    # 2.9e-3, dV 2.0e-3 — bound 1e-2 is ~3.4x above floor.
     assert diff_q < 1e-2, f"dQ diff {diff_q:.3e}"
     assert diff_k < 1e-2, f"dK diff {diff_k:.3e}"
     assert diff_v < 1e-2, f"dV diff {diff_v:.3e}"
+
+
+@pytest.mark.skipif(not _HAS_NAX, reason="V34 causal path requires M5+ hardware.")
+def test_adversarial_magnitude_finite(monkeypatch):
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep the V34
+    causal backward gradients finite (fp16-overflow guard)."""
+    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    B, H, qL, D = 1, 4, 2048, 64
+    mx.random.seed(17)
+    q = (mx.random.normal((B, H, qL, D)) * 8.0).astype(mx.float16)
+    k = (mx.random.normal((B, H, qL, D)) * 8.0).astype(mx.float16)
+    v = (mx.random.normal((B, H, qL, D)) * 8.0).astype(mx.float16)
+    dO = (mx.random.normal((B, H, qL, D)) * 8.0).astype(mx.float16)
+    scale = 1.0 / math.sqrt(D)
+
+    def f(q, k, v):
+        return flash_attention(q, k, v, scale=scale, causal=True)
+
+    _, (dQ, dK, dV) = mx.vjp(f, [q, k, v], [dO])
+    _flush(dQ, dK, dV); mx.synchronize()
+    for name, g in (("dQ", dQ), ("dK", dK), ("dV", dV)):
+        assert bool(mx.all(mx.isfinite(g.astype(mx.float32))).item()), \
+            f"{name} non-finite at std-8 inputs"

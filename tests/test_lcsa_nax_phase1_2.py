@@ -34,11 +34,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_inputs(B, Hq, Hk, qL, kL, D, *, dtype=mx.float16, seed=0):
+def _make_inputs(B, Hq, Hk, qL, kL, D, *, dtype=mx.float16, seed=0, mag=1.0):
+    # III-4 F7: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    Q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    K = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
-    V = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
+    Q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    K = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
+    V = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
     mx.async_eval(Q, K, V); mx.synchronize()
     return Q, K, V
 
@@ -104,6 +107,7 @@ def test_axis1_correctness_lcsa_production_shapes(shape_name, qL, kL, density,
     mx.async_eval(O_ref); mx.synchronize()
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
+    # III-4 F7: unit-scale retrofit, measured floor rmse 7.7e-6 (M5 Max).
     assert rmse < 5e-3, f"{shape_name}: RMSE {rmse} too high (density={density})"
     assert not np.isnan(np.array(O.astype(mx.float32))).any(), \
         f"{shape_name}: NaN in output"
@@ -132,7 +136,8 @@ def test_axis1_bf16_correctness_vs_sdpa_bias():
     mx.async_eval(O_ref); mx.synchronize()
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
-    # bf16 noise floor is higher (3 mantissa bits less than fp16)
+    # bf16 noise floor is higher (3 mantissa bits less than fp16).
+    # III-4 F7: unit-scale retrofit, measured floor rmse 7.6e-5 (M5 Max).
     assert rmse < 2e-2, f"bf16 RMSE {rmse} too high"
     assert O.dtype == mx.bfloat16
 
@@ -243,6 +248,7 @@ def test_axis1_causal_matches_sdpa_causal():
     mx.async_eval(O_ref); mx.synchronize()
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
+    # III-4 F7: unit-scale retrofit, measured floor rmse 2.9e-5 (M5 Max).
     assert rmse < 5e-3, f"causal RMSE {rmse} too high vs SDPA causal"
 
 
@@ -293,3 +299,21 @@ def test_axis1_asymmetric_cross_attn_correctness():
     rmse = float(np.sqrt((err ** 2).mean()))
     assert rmse < 5e-3, f"Asymmetric qL=2048 kL=4096 RMSE {rmse} too high"
     assert O.shape == (B, Hq, qL, D)
+
+
+def test_adversarial_magnitude_finite():
+    """III-4 F7: adversarial-magnitude (std 8) inputs must stay finite
+    (fp16-overflow guard for the sparse NAX kernel family)."""
+    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 32
+    NQ, NK = qL // BT, kL // BT
+    rng = np.random.default_rng(81)
+    bm_np = (rng.random((NQ, NK)) < 0.25).astype(np.bool_)
+    for q in range(NQ):
+        if not bm_np[q].any():
+            bm_np[q, q] = True
+    mask = mx.array(bm_np)
+    Q, K, V = _make_inputs(B, Hq, Hk, qL, kL, D, seed=82, mag=8.0)
+    O = sparse_attention_nax(Q, K, V, mask, block_tile=BT)
+    mx.async_eval(O); mx.synchronize()
+    assert np.isfinite(np.array(O.astype(mx.float32))).all(), \
+        "non-finite output at std-8 inputs"

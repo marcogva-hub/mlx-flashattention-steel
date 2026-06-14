@@ -49,28 +49,33 @@ def _mkctx(bits, mag=1.0, **kw):
     return ctx, q
 
 
+def _dequant_paged(pool, scales, tbl, bits, S):
+    """Python dequant of a TQ-packed paged pool -> [1, Hkv, S, D] fp16."""
+    p = pool[tbl]
+    s = scales[tbl]
+    nbk = p.shape[0]
+    if bits == 3:
+        # 3-bit uses the bit-planar layout (pack_3bit_optimal), NOT the
+        # sequential layout unpack_indices assumes.
+        pd = _compute_packed_d(D, 3)
+        idx = unpack_3bit_optimal(p.reshape(nbk * BS * Hkv, pd), D)
+    else:
+        idx = unpack_indices(
+            p.reshape(-1), nbk * BS * Hkv * D, bits).reshape(
+                nbk * BS * Hkv, D)
+    d = dequantize_from_indices(idx, bits)
+    d = d * s.reshape(-1)[:, None]
+    out = mx.transpose(d.reshape(nbk * BS, Hkv, D)[:S], (1, 0, 2))[None]
+    return out.astype(mx.float16)
+
+
 def _ground_truth(ctx, q_rot, bits):
     """Python dequant -> sdpa (independent of both kernel paths)."""
     table = ctx.get_block_table([0])
     S = ctx.seq_length(0)
     nb = (S + BS - 1) // BS
     tbl = table[0][:nb]
-    kp = ctx._k_pool[tbl]
-    ks = ctx._k_scales[tbl]
-    nbk = kp.shape[0]
-    if bits == 3:
-        # 3-bit uses the bit-planar layout (pack_3bit_optimal), NOT the
-        # sequential layout unpack_indices assumes.
-        pd = _compute_packed_d(D, 3)
-        idx = unpack_3bit_optimal(kp.reshape(nbk * BS * Hkv, pd), D)
-    else:
-        idx = unpack_indices(
-            kp.reshape(-1), nbk * BS * Hkv * D, bits).reshape(
-                nbk * BS * Hkv, D)
-    kd = dequantize_from_indices(idx, bits)
-    kd = kd * ks.reshape(-1)[:, None]
-    K = mx.transpose(kd.reshape(nbk * BS, Hkv, D)[:S], (1, 0, 2))[None]
-    K = K.astype(mx.float16)
+    K = _dequant_paged(ctx._k_pool, ctx._k_scales, tbl, bits, S)
     V = mx.transpose(
         ctx._v_pool_fp16[tbl].reshape(-1, Hkv, D)[:S], (1, 0, 2))[None]
     out = mx.fast.scaled_dot_product_attention(q_rot, K, V, scale=SCALE)
@@ -122,6 +127,44 @@ class TestDecodePathGroundTruth:
         assert _maxabs(out, gt) < 5e-3, (
             f"fused kernel tq_bits={bits} deviates from ground truth — "
             f"the III-2 bit-width unpack fix regressed")
+
+    @pytest.mark.parametrize("bits", [2, 3, 4])
+    def test_fused_v_tq_matches_ground_truth(self, bits):
+        """III-4 F1: ground-truth lock for the fused V-TQ path
+        (tq_v_enabled=True).
+
+        With tq_v=True, V is WHT-rotated then TQ-packed at append time.
+        The fused kernel computes P @ V_rot (rotated output space) and
+        the wrapper de-rotates the result (WHT is self-inverse).  Ground
+        truth must therefore be de-rotated too:
+        apply_rotation(sdpa(q_rot, K_deq, V_rot_deq), "wht").
+        Measured agreement ~2e-4; bar 5e-3.
+        """
+        ctx, q = _mkctx(bits, tq_v=True)
+        q_rot = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        mx.eval(q_rot)
+        table = ctx.get_block_table([0])
+        S = ctx.seq_length(0)
+        nb = (S + BS - 1) // BS
+        tbl = table[0][:nb]
+        K = _dequant_paged(ctx._k_pool, ctx._k_scales, tbl, bits, S)
+        V_rot = _dequant_paged(ctx._v_pool_tq, ctx._v_scales, tbl, bits, S)
+        out_rot = mx.fast.scaled_dot_product_attention(
+            q_rot, K, V_rot, scale=SCALE)
+        gt = apply_rotation(
+            out_rot.astype(mx.float32), "wht").astype(mx.float16)
+        mx.eval(gt)
+        from mlx_mfa.attention import flash_attention_paged_varlen_turboquant
+        cu_q = mx.array([0, 1], dtype=mx.int32)
+        lens = ctx.get_seq_lens([0])
+        out = flash_attention_paged_varlen_turboquant(
+            q_rot, ctx._k_pool, ctx._v_pool_fp16, table, lens, cu_q,
+            ctx._k_centroids, ctx._k_scales, scale=SCALE, causal=True,
+            block_size=BS, tq_bits=bits, tq_v_enabled=True,
+            tq_wht_enabled=False, v_pool_tq=ctx._v_pool_tq,
+            v_centroids=ctx._v_centroids, v_scales=ctx._v_scales)
+        mx.eval(out)
+        assert _maxabs(out, gt) < 5e-3, f"fused V-TQ bits={bits}"
 
 
 class TestStepRouting:

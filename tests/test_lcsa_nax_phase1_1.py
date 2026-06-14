@@ -30,11 +30,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0):
+def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0, mag=1.0):
+    # III-4 F7: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    Q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(mx.float16)
-    K = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
-    V = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(mx.float16)
+    Q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(mx.float16)
+    K = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
+    V = (mx.random.normal((B, Hk, kL, D)) * mag).astype(mx.float16)
     mx.async_eval(Q, K, V); mx.synchronize()
     return Q, K, V
 
@@ -82,6 +85,7 @@ def test_axis1_correctness_vs_sdpa_dense_full_mask():
     mx.async_eval(O_ref); mx.synchronize()
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
+    # III-4 F7: unit-scale retrofit, measured floor rmse 4.1e-6 (M5 Max).
     assert rmse < 1e-3, f"All-True mask RMSE {rmse} too high vs dense SDPA"
     assert not np.isnan(np.array(O.astype(mx.float32))).any()
 
@@ -97,7 +101,8 @@ def test_axis1_correctness_vs_sdpa_bias_random_density():
     mx.async_eval(O_ref); mx.synchronize()
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
-    # Sparse + FP16 vs dense+bias+FP16 has marginally higher noise floor
+    # Sparse + FP16 vs dense+bias+FP16 has marginally higher noise floor.
+    # III-4 F7: unit-scale retrofit, measured floor rmse 7.7e-6 (M5 Max).
     assert rmse < 5e-3, f"Random sparse RMSE {rmse} too high vs SDPA+bias"
 
 
@@ -152,3 +157,14 @@ def test_axis3_diagonal_only_mask_causal_correctness():
     err = np.abs(np.array(O.astype(mx.float32)) - np.array(O_ref.astype(mx.float32)))
     rmse = float(np.sqrt((err ** 2).mean()))
     assert rmse < 5e-3, f"Diagonal-only mask RMSE {rmse} too high"
+
+
+def test_adversarial_magnitude_finite():
+    """III-4 F7: adversarial-magnitude (std 8) inputs must stay finite
+    (fp16-overflow guard for the sparse NAX kernel family)."""
+    Q, K, V = _make_inputs(B, Hq, Hk, qL, kL, D, seed=47, mag=8.0)
+    mask = _make_block_mask_random(density=0.24, seed=3)
+    O = sparse_attention_nax(Q, K, V, mask, block_tile=BT)
+    mx.async_eval(O); mx.synchronize()
+    assert np.isfinite(np.array(O.astype(mx.float32))).all(), \
+        "non-finite output at std-8 inputs"

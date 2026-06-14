@@ -30,12 +30,15 @@ def force_v34(monkeypatch):
     yield
 
 
-def _make(B, Hq, Hk, qL, kL, D, seed, dtype):
+def _make(B, Hq, Hk, qL, kL, D, seed, dtype, mag=1.0):
+    # III-4 F9: unit-scale inputs (normal, std 1.0; was uniform*0.1).
+    # The II-6 lesson: 0.1-scale fixtures dilute localized kernel
+    # corruption below the rmse gates.
     mx.random.seed(seed)
-    q = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
-    k = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
-    v = (mx.random.uniform(-1.0, 1.0, (B, Hk, kL, D)) * 0.1).astype(dtype)
-    dO = (mx.random.uniform(-1.0, 1.0, (B, Hq, qL, D)) * 0.1).astype(dtype)
+    q = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
+    k = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
+    v = (mx.random.normal((B, Hk, kL, D)) * mag).astype(dtype)
+    dO = (mx.random.normal((B, Hq, qL, D)) * mag).astype(dtype)
     _mat(q, k, v, dO)
     return q, k, v, dO
 
@@ -59,7 +62,11 @@ def _ref_dkv(q, k, v, dO, scale):
     return dK_ref, dV_ref
 
 
-def _check(q, k, v, dO, scale, *, dk_bound=1e-4, dv_bound=1e-3):
+def _check(q, k, v, dO, scale, *, dk_bound=5e-4, dv_bound=1e-3):
+    # III-4 F9: unit-scale retrofit, measured floors (M5 Max, 512x512
+    # D=128 fp16): dK rmse 5.7e-5, dV rmse 5.1e-5.  dk_bound raised
+    # 1e-4 -> 5e-4 (the old bound was only 1.8x above the unit-scale
+    # floor); dv_bound unchanged (20x margin).
     dK, dV = _bwd_kv(q, k, v, dO, scale)
     dK_ref, dV_ref = _ref_dkv(q, k, v, dO, scale)
     err_k = np.abs(np.array(dK.astype(mx.float32)) -
@@ -122,3 +129,14 @@ def test_v34_bwd_kv_finiteness():
     assert not np.isinf(arrK).any(), "dK contains Inf"
     assert not np.isnan(arrV).any(), "dV contains NaN"
     assert not np.isinf(arrV).any(), "dV contains Inf"
+
+
+def test_v34_bwd_kv_adversarial_magnitude_finite():
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep dK/dV
+    finite (fp16-overflow guard, V34 backward-KV kernel family)."""
+    q, k, v, dO = _make(1, 4, 4, 512, 512, 128, 52, mx.float16, mag=8.0)
+    dK, dV = _bwd_kv(q, k, v, dO, 1.0 / math.sqrt(128))
+    arrK = np.array(dK.astype(mx.float32))
+    arrV = np.array(dV.astype(mx.float32))
+    assert np.isfinite(arrK).all(), "dK non-finite at std-8 inputs"
+    assert np.isfinite(arrV).all(), "dV non-finite at std-8 inputs"

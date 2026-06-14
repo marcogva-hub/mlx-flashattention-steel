@@ -241,6 +241,14 @@ def gqa_decode_cider(q: mx.array, k: mx.array, v: mx.array,
         raise ValueError("gqa_decode_cider: decode only (N_q == 1)")
     if Hq % Hkv != 0:
         raise ValueError("gqa_decode_cider: Hq must be a multiple of Hkv")
+    # III-4 R12 FIX: the kernel splits D over BD=32 lanes (qk_per_thread =
+    # D / BD, integer division) — a non-multiple of 32 (e.g. D=80) silently
+    # truncates the head dimension and produces wrong output.
+    if D % 32 != 0:
+        raise ValueError(
+            f"gqa_decode_cider: head_dim must be a multiple of 32 "
+            f"(kernel tiles D over 32 SIMD lanes), got D={D}"
+        )
     gqa = Hq // Hkv
     if scale is None:
         scale = 1.0 / math.sqrt(D)

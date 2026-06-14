@@ -945,8 +945,12 @@ def make_sink_window_mask(
     sink_ok = np.zeros(NK, dtype=bool)
     sink_ok[:num_sink_tiles] = True  # [NK]
 
-    # Window: Q-tile's last token is at q_end; window covers [q_end - window_size, q_end]
-    window_lo = np.maximum(0, q_end[:, None] - window_size)  # [NQ, 1]
+    # Window: the union over all queries in the Q-tile covers
+    # [q_start - window_size, q_end] — the EARLIEST query in the tile
+    # (q_start) anchors the left edge.
+    # III-4 R6 FIX: using q_end here under-approximated the left edge by
+    # up to BQ-1 tokens and dropped active tiles (6/42 at S=256 ws=64).
+    window_lo = np.maximum(0, q_start[:, None] - window_size)  # [NQ, 1]
     # K-tile active in window if k_start <= q_end AND k_end >= window_lo
     window_ok = (k_start[None, :] <= q_end[:, None]) & (k_end[None, :] >= window_lo)
 
@@ -1406,11 +1410,15 @@ def make_strided_mask(
     half_win = window_size // 2 + max(BQ, BK)
     local_active = np.abs(q_centers[:, None] - k_centers[None, :]) <= half_win
 
-    # Global stride: K-tile contains at least one token aligned with stride
-    # floor((k_end - 1) / stride) > floor((k_start - 1) / stride) means
-    # the tile spans a stride boundary
+    # Global stride: K-tile contains at least one token aligned with the
+    # stride set {0, gs, 2*gs, ...}. The tile [k_start, k_end-1] contains a
+    # multiple of gs iff floor((k_end-1)/gs) >= ceil(k_start/gs).
+    # III-4 R11 FIX: the previous boundary test
+    # ((k_end-1)//gs > (max(k_start,1)-1)//gs) excluded position 0 from the
+    # stride set — the first K-tile was inactive unless the window covered it.
     k_has_strided = (
-        (k_ends - 1) // global_stride > (np.maximum(k_starts, 1) - 1) // global_stride
+        (k_ends - 1) // global_stride
+        >= (k_starts + global_stride - 1) // global_stride
     )
     global_active = np.broadcast_to(k_has_strided[None, :], (NQ, NK))
 

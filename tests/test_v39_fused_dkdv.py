@@ -37,12 +37,15 @@ def _enable_v34_backward(monkeypatch):
     yield
 
 
-def _make_inputs(B, H, qL, D, dtype=mx.float16, seed=0):
+def _make_inputs(B, H, qL, D, dtype=mx.float16, seed=0, mag=1.0):
+    # III-4 F9: unit-scale inputs (std 1.0; was *0.1).  The II-6
+    # lesson: 0.1-scale fixtures dilute localized kernel corruption
+    # below the rmse gates.
     mx.random.seed(seed)
-    q = mx.random.normal((B, H, qL, D)).astype(dtype) * 0.1
-    k = mx.random.normal((B, H, qL, D)).astype(dtype) * 0.1
-    v = mx.random.normal((B, H, qL, D)).astype(dtype) * 0.1
-    dO = mx.random.normal((B, H, qL, D)).astype(dtype) * 0.1
+    q = mx.random.normal((B, H, qL, D)).astype(dtype) * mag
+    k = mx.random.normal((B, H, qL, D)).astype(dtype) * mag
+    v = mx.random.normal((B, H, qL, D)).astype(dtype) * mag
+    dO = mx.random.normal((B, H, qL, D)).astype(dtype) * mag
     _flush(q, k, v, dO)
     return q, k, v, dO
 
@@ -234,11 +237,12 @@ def test_fused_at_d128_works_via_direct_binding(monkeypatch):
     )
 
     B, H, qL, D = 1, 4, 4096, 128
+    # III-4 F9: unit-scale inputs (was *0.1).
     mx.random.seed(99)
-    q = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
-    k = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
-    v = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
-    dO = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
+    q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    k = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    v = mx.random.normal((B, H, qL, D)).astype(mx.float16)
+    dO = mx.random.normal((B, H, qL, D)).astype(mx.float16)
     _flush(q, k, v, dO)
     # Run V34 forward to get O + natural-log lse (force_v34=True is critical:
     # V34 backward kernels expect natural-log lse, not log2 from legacy).
@@ -515,3 +519,14 @@ def test_v34_eligible_causal_true():
         assert _v34_eligible(64, mx.float16, causal=True) is True
     finally:
         del os.environ['MFA_ENABLE_V34_BACKWARD']
+
+
+def test_v39_adversarial_magnitude_finite():
+    """III-4 F9: adversarial-magnitude (std 8) inputs must keep the
+    fused-dKdV gradients finite (fp16-overflow guard)."""
+    q, k, v, dO = _make_inputs(1, 4, 2048, 128, seed=101, mag=8.0)
+    scale = 1.0 / math.sqrt(128)
+    dq, dk, dv = _grads(q, k, v, dO, scale, "fused")
+    for name, g in (("dQ", dq), ("dK", dk), ("dV", dv)):
+        finite = bool(mx.all(mx.isfinite(g.astype(mx.float32))).item())
+        assert finite, f"{name} non-finite at std-8 inputs"

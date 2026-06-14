@@ -840,6 +840,16 @@ class TurboQuantPagedInferenceContext:
         else:
             self._v_pool_tq = None
             self._v_scales = None
+        # III-4 R9: the fp16 V pool is maintained UNCONDITIONALLY (even at
+        # tq_v=True) because the III-2 default decode path reads it
+        # directly (it is faster and more accurate than dequantizing
+        # packed V).  At tq_v=True both pools therefore exist and append()
+        # packs V into _v_pool_tq AND writes _v_pool_fp16 — the packed V
+        # only earns its keep for the FUSED multi-token kernel path
+        # (MFA_DISABLE_TQ_DECODE_SDPA=1).  The "~8x KV compression" Phase-3
+        # figure is the fused-kernel property, not this context's
+        # steady-state footprint.  Marco-queue item: make the packed-V
+        # pool lazy/optional when only the III-2 decode path is used.
         self._v_pool_fp16 = mx.zeros(
             (num_blocks, block_size, H_kv, D), dtype=dtype
         )
@@ -850,16 +860,23 @@ class TurboQuantPagedInferenceContext:
         self._k_centroids = centroids_f32.astype(mx.float16)
         self._v_centroids = centroids_f32.astype(mx.float16) if tq_v else None
 
-        # Materialise pool allocations
+        # Materialise pool allocations: the paged kernels bind these buffers
+        # directly, so the zero-fills must be computed up front.
+        # III-4 R8 FIX: mx.synchronize() alone never evaluated the lazy
+        # zeros — mx.eval(*pools) is the materialization primitive here.
         pools = [self._k_pool, self._k_scales, self._v_pool_fp16]
         if tq_v:
             pools.extend([self._v_pool_tq, self._v_scales])
-        mx.synchronize()
+        mx.eval(*pools)
 
         # Block management (same as PagedKVCache)
         self._free: list[int] = list(range(num_blocks))
         self._block_table: dict[int, list[int]] = {}
         self._write_ptr: dict[int, int] = {}
+        # III-4 R7 FIX: the GPU block-table cache (keyed on seq_ids tuple,
+        # filled by get_block_table, invalidated by _allocate_block) must
+        # exist from construction — previously created lazily via setattr.
+        self._block_table_cache: Optional[tuple] = None
 
     def _allocate_block(self) -> int:
         # Campaign 2026-06 Sprint C Track 1 (#4): block allocation changes
@@ -889,6 +906,9 @@ class TurboQuantPagedInferenceContext:
         elif seq_id in self._block_table:
             self._free.extend(self._block_table.pop(seq_id))
             self._write_ptr.pop(seq_id, None)
+        # III-4 R7 FIX: reset frees blocks, so the cached GPU table is stale
+        # — a survivor here would serve freed/reassigned block ids.
+        self._block_table_cache = None
         return self
 
     def append(self, k: mx.array, v: mx.array, *, seq_id: int = 0) -> None:
@@ -992,6 +1012,14 @@ class TurboQuantPagedInferenceContext:
         cached = getattr(self, "_block_table_cache", None)
         if cached is not None and cached[0] == cache_key:
             return cached[1]
+        # III-4 R15: TQ pads the block table with 0 (vs PagedKVCache's -1
+        # sentinel).  Safe here because the fused/decode kernels bound
+        # their reads by seq_lens_kv and never index past the active
+        # block count, so the padding value is never dereferenced.  Kept
+        # at 0 (not -1) deliberately: a -1 physical block id would be an
+        # out-of-bounds pool index if a future kernel ever read it, while
+        # 0 aliases a valid (if wrong-sequence) block — both rely on the
+        # seq_lens bound, but 0 fails safe.
         max_blk = max(len(self._block_table.get(s, [])) for s in seq_ids)
         table = np.zeros((len(seq_ids), max_blk), dtype=np.int32)
         for i, s in enumerate(seq_ids):
@@ -1082,7 +1110,10 @@ class TurboQuantPagedInferenceContext:
         else:
             from mlx_mfa.turboquant import apply_rotation
             q_input = apply_rotation(q.astype(mx.float32), "wht").astype(self.dtype)
-        mx.synchronize()
+        # III-4 R5 FIX: the bare mx.synchronize() that followed was a full
+        # GPU-queue drain per decode token with no correctness role — q_input
+        # is a Primitive graph input, so the scheduler materializes it before
+        # dispatch (missed Sprint-C site; same class as the append() drain).
 
         cu_q = mx.array([0, q.shape[2]], dtype=mx.int32)
         block_table = self.get_block_table([seq_id])

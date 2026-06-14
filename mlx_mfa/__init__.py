@@ -200,6 +200,10 @@ _LAZY_IMPORTS: dict[str, str] = {
     # mlx_mfa.svdquant
     "SVDQuantLinear": "mlx_mfa.svdquant",
     "quantize_model": "mlx_mfa.svdquant",
+    # mlx_mfa.lcsa_nax — III-4 doc-audit fix: README documents
+    # `from mlx_mfa import sparse_attention_dispatch`; honor the
+    # documented contract.
+    "sparse_attention_dispatch": "mlx_mfa.lcsa_nax",
 }
 
 
@@ -477,5 +481,7 @@ __all__ = [
     # SVDQuant W4A16 quantization
     "SVDQuantLinear",
     "quantize_model",
+    # LCSA NAX sparse dispatcher (III-4 doc-audit: README-documented import)
+    "sparse_attention_dispatch",
     "__version__",
 ]

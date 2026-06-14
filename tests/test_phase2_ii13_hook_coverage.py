@@ -32,8 +32,14 @@ _EXPECTED_PATCHED = ["conv_general", "conv3d"]
 
 @pytest.fixture(autouse=True)
 def _hooks():
+    # III-4 F11: restore pre-test hook state in teardown so this file
+    # does not leak installed hooks into tests that rely on the
+    # unpatched ops (test_conv_nax.py references torch/mx.conv_general).
+    was_installed = _auto_hooks._HOOKS_INSTALLED
     _auto_hooks.install_hooks()
     yield
+    if not was_installed:
+        _auto_hooks.uninstall_hooks()
 
 
 class TestCompleteness:

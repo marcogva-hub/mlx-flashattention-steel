@@ -334,3 +334,96 @@ STATUS: COMPLETE
 - Audit: /mlx-mfa-release-audit GREEN (7 checks; 1 advisory = claim-id naming, substance satisfied); gate#9 programmatic pass; check_venv pass; stressed suite 1431 passed [VERIFIED]
 - Ran: python -m build; twine check+upload; gh release create with artifacts | Validated: https://pypi.org/project/mlx-mfa/2.51.0/ + GH release tag v2.51.0 live
 - Git: abdaa8d (release commit), tag v2.51.0, pushed
+---
+## [2026-06-12 18:08] [CLAUDE] Fix: III-4 doc-vs-code audit corrections (14-item batch, docs-only)
+STATUS: COMPLETE
+
+### Plan
+- Objective: apply verified doc-vs-code audit fixes post-v2.51.0 (V34 D=64 default-on, MPP conv3d default, TQ decode SDPA route, NAX sparse dispatch, KD-7 lifted)
+- Files to modify: README.md, ENV_VARS.md, CLAUDE.md, docs/{HOOK_TELEMETRY,TRAINING_QUICKSTART,INVENTORY,INDEX,PERF_CLAIMS}.md, docs/v50/known-debt-v2.50.md
+- Dependencies impacted: none (docs only; no .py/.cpp touched per task constraint)
+
+### Changes
+- `README.md:16` — v2.50 highlights retitled "(shipped 2026-05)" [HIGH] [VERIFIED]
+- `README.md:40-46` — v2.39.1 section retitled "(historical)" + default-on note; L108 stale "env unset preserves v2.36.1" reworded [HIGH] [VERIFIED]
+- `README.md:116` — conv snippet ~1.6× → 2.3-2.5× fp16 / 1.4-2.7× bf16 via MPP [HIGH] [VERIFIED per task spec]
+- `README.md:423-428` — Conv3D NAX section: MPP-default lead-in; legacy figures flagged non-default (MFA_DISABLE_CONV3D_MPP=1) [HIGH] [VERIFIED]
+- `README.md:507-519` — sparse M5+ section rewritten: NAX dispatcher default since v2.36.1; bias-expansion kept as fallback note [HIGH] [VERIFIED]
+- `ENV_VARS.md:5,63-64,77-78,98,107-108,118-119` — V34 enable/disable rows corrected (D=64 default-on v2.51.0); new rows MFA_DISABLE_CONV3D_MPP / MFA_DISABLE_TQ_DECODE_SDPA / MFA_DISABLE_AUTO_HOOKS / MFA_V34BWDF_DUMP_SOURCE+PATH; §104 "all gated behind" fixed; cross-ref to docs/v6-nax/env-vars.md [HIGH] [VERIFIED]
+- `docs/HOOK_TELEMETRY.md:4,105-107,114` — conv_general+conv3d hooked; fallback-reason strings updated (KD-7 III-1); KD-7 lifted [HIGH] [VERIFIED per task spec]
+- `docs/TRAINING_QUICKSTART.md:8-18,27,45-56,90-92,95-99,134-176,179-180,190` — Status → DEFAULT-ON D=64 (1.7-2.7×), opt-out documented; SHIP_OPT_IN/"2.2-2.4× slower"/carve-out opt-in language fixed throughout; causal "not supported" bullet lifted [HIGH] [VERIFIED]
+- `docs/INVENTORY.md:3` — header → 2.51.0, tables flagged 2026-05-13 snapshot [HIGH] [VERIFIED]
+- `docs/INDEX.md:3-5` — top note: repo-root-relative links, campaign-2026-06 not yet indexed [HIGH] [VERIFIED]
+- `docs/PERF_CLAIMS.md:17` — header v2.50.1 → v2.51.0 (only change in file) [HIGH] [VERIFIED]
+- `CLAUDE.md:283` — Current status → v2.51.0, 1429 tests; table flagged historical [HIGH] [VERIFIED]
+- `docs/v50/known-debt-v2.50.md:244-249,303` — KD-7 marked LIFTED v2.51.0 (Sprint III-1), original text kept as history [HIGH] [VERIFIED]
+
+### Dependency & regression check
+- Callers verified: n/a (docs); tests/test_release_notes_perf_claims.py intentionally untouched per task spec
+- Test coverage: tests/test_perf_claims_doc_sync.py covers PERF_CLAIMS.md sync; no automated coverage for README/ENV_VARS prose (gap flagged, pre-existing)
+
+### Tech cost
+- None (documentation only)
+
+### Validation
+- Ran: `.venv/bin/pytest tests/test_perf_claims_doc_sync.py -q`
+- Validated: 4 passed in 0.07s
+
+### Git
+- WIP — uncommitted; branch master.  NOTE: pre-existing uncommitted changes in csrc/mfa_steel_paged_varlen_tq_fwd.cpp, mlx_mfa/{__init__,attention,integrations/mlx_lm}.py + new iii4-findings-ledger.md were already in the tree before this session; not touched here.
+---
+## [2026-06-13 01:53] [CLAUDE] Phase III-4: complete interrupted fix batch + root-cause order-dependent failure
+STATUS: COMPLETE
+
+### Plan
+- Objective: finish the interrupted III-4 audit-fix batch (R6/R11/DOC-11 verification), root-cause the order-dependent test_mixed_dtype_routes_mfa failure, update ledger, green suite x2.
+- Files to modify: mlx_mfa/attention.py, tests/test_attention.py, docs/v50/campaign-2026-06/phase3/iii4-findings-ledger.md
+- Dependencies impacted: flash_attention dispatch (all backends), flash_attention_kvcache paged-append.
+
+### Changes
+- `mlx_mfa/attention.py:~499` — PASS1-REGRESSION FIX: cast K/V to q.dtype BEFORE dispatch (eval_gpu keys kernel dtype on q alone, csrc/mfa_attention.cpp:111-114; f32 kernel reinterpreted f16 K/V buffers → silent garbage max_err ~15, NaN when buffer pool dirty) [HIGH] [VERIFIED — poisoned-pool repro: max_err 15.6 → 7.5e-4]
+- `mlx_mfa/attention.py:~2073` — paged-append: cast k_new/v_new to pool dtype before _mfa_scatter_kv_cpp (raw byte scatter of f32 into f16 pool wrote reinterpreted halves incl. NaN/inf patterns) [HIGH] [VERIFIED — single-key append now bit-exact vs V]
+- `tests/test_attention.py:test_mixed_dtype_routes_mfa` — strengthened with cast-SDPA ground-truth assert (finiteness alone passed garbage) [HIGH] [VERIFIED]
+- `docs/v50/.../iii4-findings-ledger.md` — D5,D11,D12,D14,D15,D17,D18,R2-R8,R11,R12,DOC-11 → [FIXED]; PASS1-REGRESSION entry added [VERIFIED — all markers + tests inspected]
+- NOTE: R6/R11 masks.py fixes + regression tests and DOC-11 repointing were ALREADY present (previous agent got further than its snapshot indicated); verified complete, no re-edit needed.
+
+### Dependency & regression check
+- Callers verified: all flash_attention backends see uniform dtypes post-cast (mixed-dtype MFA routing decision preserved); paged-append scatter+fallback both covered.
+- Test coverage: gap flagged — direct flash_attention_paged / varlen entries with mixed-dtype user inputs not audited (same class); deferred to pass 2 (ledger note).
+
+### Tech cost
+- Lazy astype on mixed-dtype inputs only — no cost on the common uniform-dtype path.
+
+### Validation
+- Ran: `.venv/bin/pytest tests/ -q` twice
+- Validated: run1 1435 passed/2 skipped/0 failed; run2 1435 passed/2 skipped/0 failed. Repro scripts confirmed numerical correctness (7.5e-4 vs SDPA; bit-exact paged append).
+
+### Git
+- WIP — uncommitted; branch master
+
+---
+## [2026-06-14 04:40] [CLAUDE] Phase III-4 pass 1: fresh-eyes whole-repo audit — 5 agents, 66 findings, all dispositioned
+STATUS: COMPLETE
+
+### Plan
+- Objective: fresh-eyes whole-repo audit (re-derive from code, not prior reports), fix/promote/decline each with evidence, repeat until zero-finding.
+- 5 parallel agents: Python dispatch core (18), Python runtime (15), C++ kernels (1), tests/benchmarks (17), docs (15).
+
+### Findings dispositioned (66 total; highlights)
+- D-TOPK CRITICAL [VERIFIED+locked]: topk bisect threshold kernel grid mis-specified (grid.x=N threads → only N/256 threadgroups → only first 8 query rows/head written, rest stale pool). Promoted AUTO-default kernel was selecting top-K for ~8/N rows. grid.x=N*256 fix + per-row range assert. Exposed by the F-batch adversarial tests (the post-restart "flaky test").
+- D1 CRITICAL: backend="sdpa" early return dropped softcap/alibi/window/return_lse — gated to plain case.
+- R1 CRITICAL [VERIFIED repro]: patch_mlx_lm windowed decode attended only to key 0 (causal=False + window, qL_off only applies causal) — force causal in windowed decode.
+- mixed-dtype silent corruption [VERIFIED, resume agent]: kernel dtype from q alone reinterpreted f16 K/V as f32 — cast K/V to q.dtype.
+- D4 HIGH: M3/M4 D=128 sparse mask geometry (Python BK=16 vs C++ BK=32) — base config when has_block_mask (fwd+bwdDQ+bwdDKV).
+- D7 MEDIUM [VERIFIED real, fwd 0.67/grads 1.1 at N=100]: bias-expansion re-tiled non-divisible-N masks — _expansion_tile + 6 sites.
+- D16 MEDIUM [VERIFIED real, dV RMSE 0.506]: native sparse backward OR-downsample contaminated grads — bt>=64 gate.
+- D2/D3/D5/D6/D8/D9/D10/D11/D12/D13/D14/D15/D17/D18 + R2-R8/R12/R15: feature-combo raises, softcap+window grads, paged batched causal, force_kernel, carve-out guards, RoPE table verify, hybrid cache demotion/multi-seq, silent-catch cleanups.
+- TQ pool int64 offsets (CXX-1); 13 doc-staleness fixes; F1-F17 test retrofit (bf16 V34 GT, LCSA unit-scale, V-TQ GT, GNA fixture) — NO new kernel corruption found at unit scale.
+- F8 + R13/R14 DEFERRED→Marco queue (hardware-coverage / perf-debt).
+
+### Validation
+- Ran: full suite x several, MFA_POOL_STRESS=1 x2, per-fix targeted probes + new lock files (iii4 d7/d16/dispatch_guards), rebuilt C++
+- Validated: default 1470 passed + 2 skipped (x3), stressed 1472 (x2). One non-reproducing cold-run failure not recurring in 8+ subsequent runs incl. stressed (tracked).
+
+### Git
+- pass-1 commit below; branch master. Pass 2 (fresh re-audit) pending.

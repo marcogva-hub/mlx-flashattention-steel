@@ -24,6 +24,7 @@ from __future__ import annotations
 import functools
 import math
 import os
+import warnings
 from typing import Optional, Union, Sequence
 
 import mlx.core as mx
@@ -52,6 +53,15 @@ _should_use_mfa_fn = None
 # CP4: auto-warmup flag — set to True after the first MFA-capable call triggers
 # kernel pre-compilation for the most common shapes.
 _auto_warmup_done: bool = False
+
+# III-4 D15 FIX: once-per-session flag so a failing native attn_bias kernel
+# warns exactly once instead of spamming every call (output stays correct
+# via the SDPA fallback).
+_attn_bias_native_warned: bool = False
+
+# III-4 D18 FIX: same once-per-session pattern for the native GNA kernel's
+# RuntimeError fallback (sparse mask path keeps the output correct).
+_gna_native_warned: bool = False
 
 
 class DispatchPolicy:
@@ -250,15 +260,16 @@ def flash_attention(
         attn_bias: Optional additive bias added to attention scores before
             softmax, broadcastable to ``[B, H, N, S]``.  Can be used for
             padding masks (``-inf`` for padding positions), relative position
-            encodings, or any per-element score adjustment.  When provided,
-            the call always falls back to
-            ``mx.fast.scaled_dot_product_attention`` (which accepts it as the
-            ``mask`` argument).  **This is an intentional architectural
-            decision**: the MFA Metal kernel uses fused online softmax with no
-            generic additive-bias buffer; adding one would require a separate
-            pre-pass and negate the bandwidth savings.  Use ``alibi_slopes``
-            for relative-position biases (handled natively in Metal).
-            Mutually exclusive with ``alibi_slopes`` and ``softcap``.
+            encodings, or any per-element score adjustment.  Per-KV biases
+            (modes 1/2 — shapes broadcastable along the query axis, e.g.
+            ``[B, H, 1, S]`` or ``[B, 1, 1, S]``) dispatch to a native Metal
+            bias kernel (v2.27.0) when the MFA extension is available; full
+            ``[B, H, N, S]``-style biases (modes 0/3) and any kernel-
+            ineligible configuration fall back to
+            ``mx.fast.scaled_dot_product_attention`` (which accepts the bias
+            as the ``mask`` argument).  Use ``alibi_slopes`` for relative-
+            position biases (handled natively in Metal).  Mutually exclusive
+            with ``alibi_slopes`` and ``softcap``.
         backend: Backend selection.  One of:
 
             * ``"auto"`` *(default)*: use benchmark-backed dispatch policy.
@@ -315,7 +326,18 @@ def flash_attention(
     # to take SDPA's fast causal path. On M5+ this routes through Apple's
     # NAX kernel directly. The previous code materialized an explicit triu
     # mask which forced SDPA off the NAX fast path (~2× regression).
-    if backend == "sdpa":
+    #
+    # III-4 D1 FIX (CRITICAL): this early return previously fired for ANY
+    # backend="sdpa" call, silently DROPPING softcap, alibi_slopes,
+    # window_size, dropout_p, return_lse, and return_attn_weights (e.g.
+    # return_lse=True returned a single array that unpacked into batch
+    # halves).  It now short-circuits only for the plain case; feature
+    # combinations fall through to the full path, where backend="sdpa"
+    # forces use_mfa=False and each feature takes its SDPA-based fallback.
+    if (backend == "sdpa"
+            and softcap == 0.0 and alibi_slopes is None
+            and window_size is None and dropout_p == 0.0
+            and not return_lse and not return_attn_weights):
         _scale = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
         if attn_bias is None:
             return mx.fast.scaled_dot_product_attention(
@@ -334,6 +356,33 @@ def flash_attention(
         return mx.fast.scaled_dot_product_attention(
             q, k, v, scale=_scale, mask=mask,
         )
+
+    # III-4 D3/D6 FIX: return_lse composes with none of these features on
+    # ANY path (every fallback would silently drop one side).  Raise
+    # loudly (Rule 8) instead of returning the wrong thing.
+    if return_lse and (softcap != 0.0 or alibi_slopes is not None
+                       or window_size is not None or attn_bias is not None):
+        raise ValueError(
+            "flash_attention(return_lse=True) is not supported in "
+            "combination with softcap, alibi_slopes, window_size, or "
+            "attn_bias — no implemented path returns the LSE of the "
+            "feature-modified attention.")
+
+    # III-4 D6 FIX: the docstring declares attn_bias mutually exclusive
+    # with alibi_slopes and softcap, and alibi incompatible with softcap,
+    # but nothing enforced it — the dispatch silently DROPPED one feature
+    # (e.g. attn_bias + softcap returned bias-only attention).  Raise on
+    # the genuinely-incompatible combinations (Rule 8).
+    if attn_bias is not None and (softcap != 0.0 or alibi_slopes is not None):
+        raise ValueError(
+            "flash_attention: attn_bias is mutually exclusive with "
+            "softcap and alibi_slopes (the kernels apply only one "
+            "additive-bias source). Combine them into attn_bias yourself "
+            "or drop one.")
+    if alibi_slopes is not None and softcap != 0.0:
+        raise ValueError(
+            "flash_attention: alibi_slopes and softcap cannot be combined "
+            "(no kernel path applies both). Use one.")
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
         raise ValueError(
@@ -391,13 +440,28 @@ def flash_attention(
     if attn_bias is not None:
         bias_mode = _classify_bias_shape(attn_bias, q, k)
         if bias_mode in (1, 2) and _can_use_mfa(q, head_dim) and not v_dim_mismatch:
+            # III-4 D15 FIX: the previous bare `except Exception: pass`
+            # silently retired the native kernel (§Z class).  ImportError
+            # (extension not built) stays silent; any other failure warns
+            # once per session — output remains correct via SDPA fallback.
             try:
                 from mlx_mfa._ext import mfa_attention_bias_forward
-                return mfa_attention_bias_forward(
-                    q, k, v, attn_bias, bias_mode, scale, causal,
-                )
-            except Exception:
-                pass  # fall through to SDPA
+            except ImportError:
+                pass  # extension not built — SDPA fallback below
+            else:
+                try:
+                    return mfa_attention_bias_forward(
+                        q, k, v, attn_bias, bias_mode, scale, causal,
+                    )
+                except Exception as e:
+                    global _attn_bias_native_warned
+                    if not _attn_bias_native_warned:
+                        _attn_bias_native_warned = True
+                        warnings.warn(
+                            f"native attn_bias kernel failed, falling back "
+                            f"to SDPA: {e}",
+                            RuntimeWarning,
+                        )
         # Modes 0/3 or MFA unavailable: SDPA fallback
         mask = attn_bias
         if causal:
@@ -448,6 +512,22 @@ def flash_attention(
             f"Supported: head_dim∈{{64,128,256,512}}, dtype∈{{f16,bf16,f32}}."
         )
 
+    # III-4 PASS1-REGRESSION FIX (mixed-dtype kernel corruption): the MFA
+    # eval_gpu derives the kernel dtype from q ALONE (csrc/mfa_attention.cpp
+    # dtype_code, L111-114) and never validates K/V dtypes.  An f32 kernel
+    # handed f16 K/V buffers reinterprets 2-byte halves as 4-byte floats —
+    # silent garbage output (max_err ~15 vs SDPA), surfacing as NaN whenever
+    # the Metal buffer pool recycles dirty allocations (order-dependent test
+    # failures).  The old comment claiming "MFA handles the cast internally"
+    # was wrong.  Cast K/V to q.dtype BEFORE any dispatch so every downstream
+    # path (MFA kernel, SDPA fallback — which also NaNs on mixed dtypes) sees
+    # uniform dtypes.  Detection happens first so the documented mixed-dtype
+    # MFA routing below is preserved.
+    _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
+    if _mixed_dtype:
+        k = k.astype(q.dtype)
+        v = v.astype(q.dtype)
+
     # Phase 1.1 — smart dispatch: only activate MFA when it is expected to be
     # faster than SDPA based on empirical crossover thresholds.
     # Window-size and sparse are handled inside should_use_mfa (always MFA).
@@ -457,9 +537,10 @@ def flash_attention(
         if _should_use_mfa_fn is None:
             from mlx_mfa.dispatch_policy import should_use_mfa as _fn
             _should_use_mfa_fn = _fn
-        # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch: MFA handles
-        # the cast internally, but mx.fast.sdpa produces NaN on mixed dtypes.
-        _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
+        # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch and route
+        # to MFA (documented behavior).  K/V were already cast to q.dtype
+        # above (III-4 PASS1-REGRESSION FIX) — the kernel now sees uniform
+        # dtypes; this branch only preserves the historical routing decision.
         if _mixed_dtype:
             use_mfa = True
         else:
@@ -526,6 +607,14 @@ def flash_attention(
             and _get_has_nax_cached()
             and k.dtype == q.dtype
             and v.dtype == q.dtype
+            # III-4 D9 FIX: the V34 backward kernels assume D_v == D_qk
+            # and N_q == S_kv.  V-dim-mismatch (Track AE) and
+            # cross-attention shapes previously slipped through this
+            # carve-out into V34 backward — an envelope the kernels were
+            # never validated (or benched) on; the C++ validation only
+            # checks q.  Gate both explicitly.
+            and v.shape[3] == head_dim
+            and k.shape[2] == q.shape[2]
             # Phase II-12: mirror _v34_eligible's scale gate at the
             # first line — a non-default scale would enter the custom
             # path only to be rejected inside and land on the STEEL
@@ -598,12 +687,23 @@ def flash_attention(
 
     # Track FX-1: return_lse — use mfa_forward_with_lse to get L for free.
     # D.5: contiguity is now enforced inside mfa_forward_with_lse C++ binding.
+    # III-4 D3 FIX: the kernel-LSE shortcut takes neither softcap nor a
+    # window — it silently computed plain dense attention for those
+    # combinations.  Raise loudly (Rule 8) instead of dropping features.
     if return_lse:
+        if softcap != 0.0 or window_left >= 0 or window_right >= 0:
+            raise ValueError(
+                "flash_attention(return_lse=True) does not support softcap "
+                "or window_size on the MFA path (the kernel-LSE shortcut "
+                "would silently drop them). Use backend='sdpa' fallbacks or "
+                "compute LSE separately.")
         from mlx_mfa._ext import mfa_forward_with_lse
         O, L = mfa_forward_with_lse(q, k, v, scale, causal)
         return O, L
 
-    return _mfa_forward(q, k, v, scale, causal, softcap, window_left, window_right, stream)
+    return _mfa_forward(q, k, v, scale, causal, softcap, window_left,
+                        window_right, stream,
+                        force_kernel=(backend == "mfa"))
 
 
 def make_rope_3d_tables(
@@ -709,6 +809,51 @@ def make_rope_3d_tables(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Track JB — Unified RoPE entry point
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# III-4 D13: verdict cache for the NAX-rope table check.  Keyed by
+# (id(cos), id(sin), shape, head_dim, interleaved, dtype) and holds a
+# strong ref to the tables so the id() cannot be recycled (same
+# id-ABA discipline as the sparse-bias caches).
+_ROPE_NAX_TABLE_VERDICT: dict = {}
+
+
+def _rope_tables_match_base10000(rotary_cos, rotary_sin, head_dim,
+                                 interleaved, dtype) -> bool:
+    """III-4 D13: is the user's rope equivalent to mx.fast.rope(base=10000)?
+
+    The NAX fast path replaces the user tables with mx.fast.rope at
+    base=10000; if the caller built cos/sin with a different base
+    (LLaMA-3 5e5, NTK/linear scaling), that path is silently wrong.
+    Verify by applying BOTH the user tables and mx.fast.rope to a fixed
+    probe at position 1 (position 0 is identity) and comparing.  Cached.
+    """
+    if rotary_cos is None or rotary_sin is None:
+        return False
+    key = (id(rotary_cos), id(rotary_sin), tuple(rotary_cos.shape),
+           int(head_dim), bool(interleaved), str(dtype))
+    cached = _ROPE_NAX_TABLE_VERDICT.get(key)
+    if cached is not None:
+        return cached[1]
+    try:
+        # Varied small probe over 2 positions; pos 1 differs iff bases differ.
+        base_row = ((mx.arange(head_dim, dtype=mx.float32) % 7) - 3) * 0.1
+        probe = mx.broadcast_to(
+            base_row.reshape(1, 1, 1, head_dim), (1, 1, 2, head_dim)).astype(dtype)
+        user = _apply_rope_mlx(probe, rotary_cos, rotary_sin, offset=0,
+                               interleaved=interleaved, rotary_dim=None)
+        nax = mx.fast.rope(probe, dims=head_dim, traditional=interleaved,
+                           base=10000.0, scale=1.0, offset=0)
+        mx.eval(user, nax)
+        ok = float(mx.max(mx.abs(
+            user.astype(mx.float32) - nax.astype(mx.float32))).item()) < 1e-2
+    except Exception:
+        # Any layout the probe path can't handle → be safe, use STEEL.
+        ok = False
+    if len(_ROPE_NAX_TABLE_VERDICT) >= 128:
+        _ROPE_NAX_TABLE_VERDICT.clear()
+    _ROPE_NAX_TABLE_VERDICT[key] = (rotary_cos, ok)  # strong ref
+    return ok
+
 
 def flash_attention_rope_unified(
     q: mx.array,
@@ -988,11 +1133,22 @@ def flash_attention_rope_unified(
         # Requires the cos/sin tables to be built with the LLaMA-default
         # base=10000 (the common convention).  Custom-base callers should
         # set `MFA_DISABLE_ROPE_NAX=1` to skip this path.
+        #
+        # III-4 D13 FIX: this path replaced the user's rotary_cos/rotary_sin
+        # with mx.fast.rope(base=10000) UNCONDITIONALLY — any non-default
+        # base (LLaMA-3 base=5e5, NTK/linear scaling, custom tables)
+        # silently produced wrong rotations, with the only protection a
+        # comment the function cannot read.  Now the tables are verified
+        # equivalent to base=10000 (cached probe compare); a mismatch
+        # falls back to the STEEL fused-rope path, which uses the actual
+        # tables.
         _disable_rope_nax = os.environ.get("MFA_DISABLE_ROPE_NAX") == "1"
         if (_get_has_nax_cached() and not _disable_rope_nax
                 and head_dim in (64, 128)
                 and q.dtype in (mx.float16, mx.bfloat16)
-                and not _partial_rope):
+                and not _partial_rope
+                and _rope_tables_match_base10000(
+                    rotary_cos, rotary_sin, head_dim, interleaved, q.dtype)):
             # M5+ NAX-optimal path: native rope + Apple SDPA NAX.
             q_rot = mx.fast.rope(q, dims=head_dim, traditional=interleaved,
                                   base=10000.0, scale=1.0, offset=cs)
@@ -1606,7 +1762,7 @@ def _steel_block_config(head_dim: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def make_causal_block_mask(seq_len: int, head_dim: int = 128) -> mx.array:
-    """Block-causal mask: True where the K-block's last token index <= Q-block's first.
+    """Block-causal mask: True where the K-block's FIRST token <= Q-block's LAST token (k_start <= q_end).
 
     Args:
         seq_len:  Sequence length.
@@ -1977,6 +2133,34 @@ def flash_attention_kvcache(
                     "flash_attention_kvcache: paged-append with cache_batch_idx "
                     "is not currently supported."
                 )
+            # III-4 D11 FIX: the paged-append attend call below
+            # (flash_attention_paged) takes none of these — they were
+            # accepted and silently dropped.
+            if softcap != 0.0:
+                raise ValueError(
+                    "flash_attention_kvcache: softcap is not supported in "
+                    "paged-append mode."
+                )
+            if alibi_slopes is not None:
+                raise ValueError(
+                    "flash_attention_kvcache: alibi_slopes is not supported "
+                    "in paged-append mode."
+                )
+            if window_size is not None:
+                raise ValueError(
+                    "flash_attention_kvcache: window_size is not supported "
+                    "in paged-append mode."
+                )
+            # III-4 PASS1-REGRESSION FIX (same mixed-dtype class, paged-append
+            # gate): `_mfa_scatter_kv_cpp` writes k_new/v_new rows into the
+            # pool buffer-wise — an f32 k_new scattered into an f16 pool
+            # stores reinterpreted bytes (garbage halves, including NaN/inf
+            # bit patterns).  Pools are the dtype source of truth; cast the
+            # appended rows to match before either scatter path runs.
+            if k_new.dtype != k_cache.dtype:
+                k_new = k_new.astype(k_cache.dtype)
+            if v_new.dtype != v_cache.dtype:
+                v_new = v_new.astype(v_cache.dtype)
             num_blks = k_cache.shape[0]
             blk_sz   = k_cache.shape[1]
             H_kv_p   = k_cache.shape[2]
@@ -1996,8 +2180,18 @@ def flash_attention_kvcache(
                         "flash_attention_kvcache: rotary_sin required with "
                         "rotary_cos in paged-append mode."
                     )
-                _cs_p = seq_lens_list_p[0] if len(seq_lens_list_p) == 1 else int(
-                    min(seq_lens_list_p))
+                # III-4 D10 FIX: heterogeneous per-sequence offsets cannot
+                # share one rotation — rotating every row at min(seq_lens)
+                # silently mis-positions all longer sequences.  Raise (Rule 8).
+                if len(set(int(x) for x in seq_lens_list_p)) > 1:
+                    raise ValueError(
+                        "flash_attention_kvcache paged-append RoPE: "
+                        "heterogeneous seq_lens "
+                        f"{seq_lens_list_p} need per-row rotary offsets, "
+                        "which this path does not implement. Rotate Q/K "
+                        "per sequence before calling, or use equal "
+                        "seq_lens.")
+                _cs_p = int(seq_lens_list_p[0])
                 q_to_att, k_new = _apply_rope_to_qk(
                     q, k_new, rotary_cos, rotary_sin,
                     q_offset=_cs_p, k_offset=_cs_p,
@@ -2163,6 +2357,13 @@ def flash_attention_kvcache(
             raise ValueError(
                 "flash_attention_kvcache: window_size is not supported in paged mode."
             )
+        # III-4 D11 FIX: softcap was accepted and silently dropped in paged
+        # mode (flash_attention_paged has no softcap) — raise like
+        # window_size/alibi_slopes.
+        if softcap != 0.0:
+            raise ValueError(
+                "flash_attention_kvcache: softcap is not supported in paged mode."
+            )
 
         # Apply RoPE to Q only (keys are pre-rotated in the cache).
         q_att = q
@@ -2181,8 +2382,21 @@ def flash_attention_kvcache(
             if isinstance(_cs, mx.array):
                 _cs = int(_cs.tolist()) if _cs.ndim == 0 else _cs
             if not isinstance(_cs, int):
-                # per-batch: use the first offset (single decode step assumed)
-                _cs = int(list(_cs)[0]) if hasattr(_cs, '__iter__') else int(_cs)
+                # III-4 D10 FIX: silently using the first offset rotated
+                # every row at row 0's position.  Accept per-batch offsets
+                # only when they are all equal; raise otherwise (Rule 8).
+                if hasattr(_cs, '__iter__'):
+                    _vals = [int(x) for x in list(_cs)]
+                    if len(set(_vals)) > 1:
+                        raise ValueError(
+                            "flash_attention_kvcache paged RoPE: "
+                            f"heterogeneous cache_seqlens {_vals} need "
+                            "per-row rotary offsets, which this path does "
+                            "not implement. Rotate per sequence before "
+                            "calling, or use equal cache_seqlens.")
+                    _cs = _vals[0]
+                else:
+                    _cs = int(_cs)
             # Campaign 2026-06 Sprint C Track 1 (#1/#11): on M5+ NAX with
             # full-rope D∈{64,128} fp16/bf16, rotate Q via mx.fast.rope —
             # the Apple-native kernel — instead of `_apply_rope_mlx`, whose
@@ -2318,8 +2532,10 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
         # the forward (wrong gradients for per-head masks).  The nd helper
         # preserves head/batch dims; SDPA broadcasts [H,N,S] / [B,H,N,S] masks.
         N, S = q.shape[2], k.shape[2]
+        _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
         float_bias = _block_mask_to_float_bias_nd(
-            block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype
+            block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
+            tile_q=_tq, tile_k=_tk,
         )
         if causal:
             causal_m = mx.triu(
@@ -2444,7 +2660,14 @@ def _convert_mask_for_v34_bwd_kernel(
         factor (mask size + bt + kernel geometry incompatible).
 
     Semantics:
-        - Downsample: OR-reduce (conservative — no false negatives).
+        - Downsample: OR-reduce.  CAUTION (III-4 D16): OR-downsampling is
+          only safe for FORWARD tile-skip.  The backward kernels compute
+          P = exp(s - L) for every position inside an active tile, so a
+          coarse tile merging active+inactive source tiles injects
+          contributions the forward masked out (wrong gradients —
+          measured dV RMSE 0.5 at bt=32 D=64).  Dispatch gates on
+          bt >= 64 so no production caller downsamples; all-true masks
+          (tests) are unaffected (OR of all-true = all-true).
         - Upsample: broadcast via mx.repeat (each source tile becomes
           multiple target tiles sharing the source value).
     """
@@ -2578,8 +2801,10 @@ def _make_v34_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
             mask_2d = block_mask.any(axis=0)
         else:
             mask_2d = block_mask
+        _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
         float_bias = _block_mask_to_float_bias(
-            mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype
+            mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
+            tile_q=_tq, tile_k=_tk,
         ).astype(q.dtype)
         if causal:
             causal_m = mx.triu(
@@ -2758,6 +2983,11 @@ def flash_attention_sparse(
         ``backward="steel_sparse"``: native Metal sparse backward (fastest for
         low-density masks); requires f16/bf16, D≤128.
 
+        On M5+ NAX hardware the symmetric-block-mask auto-route (Sprint U)
+        supplies its own backward (SDPA-vjp with an expanded float bias, or
+        the V34 hybrid when opted in) — the requested ``backward`` value is
+        validated but NOT consulted on that route.  (III-4 D12 note.)
+
     Example::
 
         mask = make_sliding_window_mask(4096, window_size=512)
@@ -2786,6 +3016,14 @@ def flash_attention_sparse(
         raise ValueError(
             "block_mask must be 2-D [NQ, NK], 3-D [H, NQ, NK], or 4-D [B, H, NQ, NK]; "
             f"got shape {list(block_mask.shape)}"
+        )
+    # III-4 D12 FIX: an invalid backward value was silently accepted (the
+    # string is only consulted deep inside the custom-vjp closure, and not
+    # at all on the M5+ auto-route) — validate at entry.
+    if backward not in ("sdpa", "sdpa_sparse", "steel_sparse"):
+        raise ValueError(
+            f"flash_attention_sparse: backward must be one of "
+            f"'sdpa', 'sdpa_sparse', 'steel_sparse'; got {backward!r}"
         )
 
     # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
@@ -2845,12 +3083,25 @@ def flash_attention_sparse(
                         # follow-up.
                         _v34_bwd_env = os.environ.get(
                             "MFA_ENABLE_V34_BACKWARD") == "1"
+                        # III-4 D16 FIX: bt must be >= the largest backward
+                        # kernel tile dim (64 for every entry in
+                        # _V34_BWD_SPARSE_KERNEL_TILES) so the mask
+                        # conversion never OR-DOWNSAMPLES.  A downsampled
+                        # mask merges active+inactive source tiles; the
+                        # backward kernels skip at tile granularity only,
+                        # so P = exp(s - L) is computed for positions the
+                        # FORWARD masked out (absent from L) — measured dV
+                        # RMSE 0.506 / dK max-abs 1.17 vs the token-level
+                        # reference at bt=32 D=64 with a non-uniform mask.
+                        # Finer masks route to the default SDPA-vjp path
+                        # below (correct at any bt).
                         _v34_hybrid_eligible = (
                             _v34_bwd_env
                             and D in (64, 128)
                             and N >= 2048 and S >= 2048
                             and q.dtype in (mx.float16, mx.bfloat16)
                             and block_mask.ndim == 2  # PoC scope
+                            and bt_q >= 64
                         )
                         if _v34_hybrid_eligible:
                             # v2.50 Prompt 5d Section B v3 verification:
@@ -3036,9 +3287,10 @@ def _make_mfa_sparse_custom(
         # Dense SDPA backward (correct, no sparsity speedup).
         # Repo review 2026-05: nd helper preserves per-head/per-batch mask
         # dims (previously collapsed to a cross-head union — wrong grads).
+        _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
         float_mask = _block_mask_to_float_bias_nd(
             mask_uint8.astype(mx.bool_), q.shape[2], k.shape[2],
-            scale_q_dtype=q.dtype
+            scale_q_dtype=q.dtype, tile_q=_tq, tile_k=_tk,
         )
         if causal:
             N, S = q.shape[2], k.shape[2]
@@ -3148,8 +3400,20 @@ def flash_attention_gna(
                 stride[0], stride[1], stride[2],
                 stream=stream,
             )
-        except (ImportError, RuntimeError):
-            pass  # Fall through to sparse mask path
+        except ImportError:
+            pass  # Extension not built — sparse mask path below
+        except RuntimeError as e:
+            # III-4 D18 FIX: a RuntimeError here silently retires the native
+            # GNA kernel for the call (§Z class) — keep the sparse fallback
+            # but surface the failure once per session.
+            global _gna_native_warned
+            if not _gna_native_warned:
+                _gna_native_warned = True
+                warnings.warn(
+                    f"native GNA kernel failed, falling back to sparse "
+                    f"mask path: {e}",
+                    RuntimeWarning,
+                )
 
     # Fallback: build block mask and dispatch through sparse path (supports VJP backward)
     from mlx_mfa.masks import make_gna_mask
@@ -3370,12 +3634,23 @@ def flash_attention_topk(
             N = q.shape[2]
             scores_r = scores.reshape(BH, N, S)
             k_top_arr = mx.array([k_count], dtype=mx.int32)
+            # III-4 D-TOPK FIX (CRITICAL): the kernel uses ONE threadgroup
+            # of 256 threads PER ROW (threadgroup_position_in_grid.x =
+            # n_idx, cooperating over S scores).  `mx.fast.metal_kernel`
+            # grid is in THREADS, so grid.x must be N * 256 to launch N
+            # threadgroups in x.  The old grid.x=N launched only N/256
+            # threadgroups → only the first 8 query rows of each (B,H)
+            # head were written; every other threshold row read STALE
+            # pool memory (benign zeros usually, 7.x after an adversarial
+            # test — exposed by the III-4 suite).  Wrong top-K threshold
+            # → wrong sparse selection for all rows >= 8.
+            _TG = 256
             threshold = _topk_bisect_threshold_kernel(
                 inputs=[scores_r, k_top_arr],
                 output_shapes=[(BH, N)],
                 output_dtypes=[mx.float32],
-                grid=(N, BH, 1),
-                threadgroup=(256, 1, 1),
+                grid=(N * _TG, BH, 1),
+                threadgroup=(_TG, 1, 1),
             )[0]
             threshold = threshold.reshape(q.shape[0], q.shape[1], N, 1).astype(q.dtype)
         else:
@@ -3690,11 +3965,38 @@ def flash_attention_splitfuse(
     return out_prefill, out_decode
 
 
+def _expansion_tile(seq: int, n_tiles: int, kernel_tile) -> int:
+    """III-4 D7: tile size for block-mask -> token expansion.
+
+    Exact division is authoritative (NAX bt masks and aligned STEEL
+    masks).  For non-divisible seq the mask was validated against the
+    KERNEL geometry (ceil(seq / kernel_tile) tiles), so the kernel tile
+    must be used; re-deriving ceil(seq / n_tiles) silently re-tiles the
+    mask (D7).  Falls back to the legacy ceil only when the caller
+    cannot supply the kernel tile.
+    """
+    exact = seq // n_tiles if (n_tiles > 0 and seq % n_tiles == 0) else None
+    if exact is not None and exact in (16, 32, 64):
+        # Unambiguous NAX bt mask (bt set is {16, 32, 64}).
+        return exact
+    if kernel_tile is not None and n_tiles > 0 \
+            and (seq + int(kernel_tile) - 1) // int(kernel_tile) == n_tiles:
+        # Mask tile count matches the kernel-validated geometry — use the
+        # kernel tile (the exact-divide value, e.g. 25 at N=100/NQ=4, is
+        # NOT a legal tiling; the validator accepted ceil(N/32)=4 tiles).
+        return int(kernel_tile)
+    if exact is not None:
+        return exact
+    return (seq + n_tiles - 1) // n_tiles
+
+
 def _block_mask_to_float_bias(
     block_mask: mx.array,
     seq_q: int,
     seq_k: int,
     scale_q_dtype: mx.Dtype = mx.float32,
+    tile_q: Optional[int] = None,
+    tile_k: Optional[int] = None,
 ) -> mx.array:
     """Expand a bool block_mask [NQ, NK] to a float additive bias [N, S].
 
@@ -3702,12 +4004,16 @@ def _block_mask_to_float_bias(
     False → -inf    (mask out)
     """
     BQ, BK = block_mask.shape[0], block_mask.shape[1]
-    # Create a full float mask of shape [NQ*BQ, NK*BK] then slice to [N, S]
-    # block_mask is [NQ, NK] → repeat each element BQ/BK times
-    # Expand: [NQ, 1, NK, 1] → [NQ, BQ, NK, BK] → [NQ*BQ, NK*BK]
-    D = seq_q // block_mask.shape[0]   # BQ (approximate)
-    BQ_actual = (seq_q + block_mask.shape[0] - 1) // block_mask.shape[0]
-    BK_actual = (seq_k + block_mask.shape[1] - 1) // block_mask.shape[1]
+    # III-4 D7 FIX: tile size derivation.  When seq divides evenly the
+    # exact tile (seq // Ntiles) is correct for every mask source (NAX
+    # bt masks and aligned STEEL masks).  When it does NOT divide, the
+    # only legal geometry is the kernel's (STEEL ceil-validation) — the
+    # old ceil(seq/Ntiles) re-derivation produced a DIFFERENT tiling
+    # (e.g. N=100, BQ=32: NQ=4 -> 25-token tiles vs the kernel's 32),
+    # silently changing which tokens each mask block governs (measured
+    # forward 0.67 / grads up to 1.1 max-abs vs kernel semantics).
+    BQ_actual = _expansion_tile(seq_q, block_mask.shape[0], tile_q)
+    BK_actual = _expansion_tile(seq_k, block_mask.shape[1], tile_k)
 
     # float: True→0, False→-inf
     float_block = mx.where(block_mask, mx.array(0.0), mx.array(float("-inf")))
@@ -3731,6 +4037,8 @@ def _block_mask_to_float_bias_nd(
     seq_q: int,
     seq_k: int,
     scale_q_dtype: mx.Dtype = mx.float32,
+    tile_q: Optional[int] = None,
+    tile_k: Optional[int] = None,
 ) -> mx.array:
     """Expand a bool block mask [..., NQ, NK] to a float additive bias
     [..., N, S], PRESERVING leading batch/head dims.
@@ -3747,8 +4055,9 @@ def _block_mask_to_float_bias_nd(
     True → 0.0 (include), False → -inf (mask out).
     """
     NQ, NK = int(block_mask.shape[-2]), int(block_mask.shape[-1])
-    BQ_actual = (seq_q + NQ - 1) // NQ
-    BK_actual = (seq_k + NK - 1) // NK
+    # III-4 D7 FIX: see _block_mask_to_float_bias / _expansion_tile.
+    BQ_actual = _expansion_tile(seq_q, NQ, tile_q)
+    BK_actual = _expansion_tile(seq_k, NK, tile_k)
     lead = tuple(block_mask.shape[:-2])
     fb = mx.where(block_mask, mx.array(0.0), mx.array(float("-inf")))
     fb = fb.reshape(*lead, NQ, 1, NK, 1)
@@ -3774,7 +4083,9 @@ def _sparse_fallback_sdpa(
     semantics preserved via the ndim-preserving bias expansion.
     """
     N, S = q.shape[2], k.shape[2]
-    float_bias = _block_mask_to_float_bias_nd(block_mask, N, S, q.dtype)
+    _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
+    float_bias = _block_mask_to_float_bias_nd(
+        block_mask, N, S, q.dtype, tile_q=_tq, tile_k=_tk)
     if causal:
         causal_m = mx.triu(
             mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
@@ -3804,7 +4115,7 @@ _SPARSE_BIAS_CACHE_MAX = 8
 
 def _get_or_build_expanded_float_bias(
     block_mask: mx.array, B: int, H: int, N: int, S: int,
-    target_dtype: "mx.Dtype",
+    target_dtype: "mx.Dtype", head_dim_d7: int = 64,
 ) -> mx.array:
     """Return the [B, H, N, S] float bias expanded from a block-level mask.
 
@@ -3829,8 +4140,10 @@ def _get_or_build_expanded_float_bias(
 
     NQ = block_mask.shape[-2]
     NK = block_mask.shape[-1]
-    BQ_actual = (N + NQ - 1) // NQ
-    BK_actual = (S + NK - 1) // NK
+    # III-4 D7 FIX: exact-divide else KERNEL tile (see _expansion_tile).
+    _tq, _tk = _steel_block_config(head_dim_d7)
+    BQ_actual = _expansion_tile(N, NQ, _tq)
+    BK_actual = _expansion_tile(S, NK, _tk)
 
     # Expand bool mask to [B, H, NQ, NK] regardless of input shape.
     if block_mask.ndim == 2:
@@ -3873,6 +4186,7 @@ _SPARSE_ROWFIX_CACHE_MAX = 8
 
 def _get_sparse_row_active(
     block_mask: mx.array, B: int, H: int, N: int, S: int, causal: bool,
+    head_dim_d7: int = 64,
 ) -> "mx.array | None":
     """Element-level query-row activity for the SDPA+bias sparse fallback.
 
@@ -3897,8 +4211,10 @@ def _get_sparse_row_active(
 
     NQ = block_mask.shape[-2]
     NK = block_mask.shape[-1]
-    BQ_actual = (N + NQ - 1) // NQ
-    BK_actual = (S + NK - 1) // NK
+    # III-4 D7 FIX: exact-divide else KERNEL tile (see _expansion_tile).
+    _tq2, _tk2 = _steel_block_config(head_dim_d7)
+    BQ_actual = _expansion_tile(N, NQ, _tq2)
+    BK_actual = _expansion_tile(S, NK, _tk2)
 
     # Host-side (numpy) computation throughout: this helper runs inside
     # the forward that mx.vjp/custom_function may be tracing, where a
@@ -3998,7 +4314,7 @@ def _sparse_fallback_sdpa_perhead(
     # Cache-hit fast path: skip the expansion + float conversion when
     # the same block_mask object has been seen before at this shape.
     float_bias = _get_or_build_expanded_float_bias(
-        block_mask, B, H, N, S, q.dtype)
+        block_mask, B, H, N, S, q.dtype, head_dim_d7=q.shape[3])
 
     if causal:
         causal_m = mx.triu(
@@ -4024,7 +4340,8 @@ def _sparse_fallback_sdpa_perhead(
     #    has the same pool-poisoning problem with NaN buffers.
     # 2. zero those output rows to restore the kernel contract (the
     #    sanitized rows otherwise attend uniformly).
-    row_active = _get_sparse_row_active(block_mask, B, H, N, S, causal)
+    row_active = _get_sparse_row_active(
+        block_mask, B, H, N, S, causal, head_dim_d7=q.shape[3])
     if row_active is not None:
         float_bias = _get_sanitized_bias(
             block_mask, float_bias, row_active, B, H, N, S, causal)
@@ -4505,8 +4822,8 @@ def _v34_eligible(head_dim: int, dtype, causal: bool,
 
     This is the SECOND-line eligibility check.  `flash_attention()` body
     does the FIRST-line check via `_v34_backward_carveout()` in
-    `dispatch_policy.py` (which adds qL ≥ 4096 + same-K/V-dtype gates
-    to enforce end-to-end perf-win envelope).  If a request reaches
+    `dispatch_policy.py` (which adds qL ≥ 2048 (v2.39.2) + same-K/V-dtype
+    gates to enforce end-to-end perf-win envelope).  If a request reaches
     `_make_mfa_custom`, the carve-out already passed; this helper
     re-verifies the shape-independent predicate at the closure level.
 
@@ -4702,7 +5019,8 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
 
 @functools.lru_cache(maxsize=64)
 def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
-                     window_left: int = -1, window_right: int = -1):
+                     window_left: int = -1, window_right: int = -1,
+                     force_kernel: bool = False):
     """Return a custom-vjp MFA forward function for the given (scale, causal, softcap, window_left, window_right).
 
     ``lru_cache`` ensures the same Python function object (with its registered
@@ -4745,7 +5063,16 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate extracted to `_v34_eligible()` per
             # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
             # the backward-side check below pre-refactor).
-            if _v34_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
+            if (_v34_eligible(q.shape[3], q.dtype, causal,
+                              scale=scale, seq_len=q.shape[2])
+                    and not force_kernel):
+                # III-4 D8 FIX: `force_kernel` (backend="mfa") must run
+                # the actual MFA Metal forward, not SDPA — otherwise every
+                # forced-backend benchmark on V34-eligible cells silently
+                # measured SDPA (the v2.37.0 measurement-corruption class,
+                # mirror image).  When forced, fall to the
+                # mfa_forward_with_lse branch below.
+                #
                 # Phase II-8 (campaign 2026-06): forward on Apple SDPA,
                 # NOT the V34 forward.  The previous Phase-2.O3 fusion
                 # ran the V34 forward here so the backward could consume
@@ -4793,6 +5120,11 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
 
         if window_left >= 0 or window_right >= 0:
             # Windowed attention backward: re-run reference SDPA with window mask.
+            # III-4 D2 FIX: when softcap is ALSO set, the forward applies
+            # both (V2 kernel supports the combo), but this oracle
+            # previously ignored softcap — mx.grad returned gradients of
+            # the wrong function.  Apply tanh-softcap on explicit scores
+            # when softcap != 0 (mirrors _softcap_sdpa_ref).
             def _windowed_sdpa(q, k, v):
                 N, S = q.shape[2], k.shape[2]
                 q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
@@ -4807,6 +5139,13 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 mask = mx.where(in_win,
                                 mx.zeros((N, S), dtype=q.dtype),
                                 mx.full((N, S), float("-inf"), dtype=q.dtype))
+                if softcap != 0.0:
+                    s32 = (q.astype(mx.float32) @ k.astype(mx.float32)
+                           .swapaxes(-1, -2)) * scale
+                    s32 = softcap * mx.tanh(s32 / softcap)
+                    s32 = s32 + mask.astype(mx.float32)
+                    p = mx.softmax(s32, axis=-1)
+                    return (p @ v.astype(mx.float32)).astype(q.dtype)
                 return mx.fast.scaled_dot_product_attention(
                     q, k, v, scale=scale, mask=mask)
             _, (dQ, dK, dV) = mx.vjp(_windowed_sdpa, [q, k, v], [dO])
@@ -4874,6 +5213,7 @@ def _mfa_forward(
     window_left: int = -1,
     window_right: int = -1,
     stream: Optional[mx.Stream] = None,
+    force_kernel: bool = False,
 ) -> mx.array:
     """Dispatch through the MFA custom-vjp path.
 
@@ -4882,7 +5222,8 @@ def _mfa_forward(
     Row-major contiguity is enforced inside the C++ binding entry points
     (D.5 fix) — no need for Python-level mx.contiguous() here.
     """
-    impl = _make_mfa_custom(scale, causal, softcap, window_left, window_right)
+    impl = _make_mfa_custom(scale, causal, softcap, window_left,
+                            window_right, force_kernel)
     # _impl now returns (O, L); callers only need O.
     O, _L = impl(q, k, v)
     return O
@@ -6413,14 +6754,24 @@ def flash_attention_paged(
         )  # [B, 1, 1, max_kv_len]
         if causal:
             N_q, S = q_.shape[2], max_kv_len
-            q_idx = mx.arange(S - N_q, S, dtype=mx.int32)[:, None]
-            k_idx = mx.arange(S, dtype=mx.int32)[None, :]
+            # III-4 D5 FIX: the forward (_attn_per_seq) slices each row to
+            # its OWN kv_len, so query i of row b sits at causal position
+            # kv_lens[b] - N_q + i.  The old shared mask used
+            # arange(S - N_q, S) with S = max_kv_len for ALL rows — wrong
+            # grads for heterogeneous seq_lens with N_q > 1.  Build per-row
+            # q positions and broadcast into the [B, 1, N_q, S] mask
+            # alongside the pad mask.
+            q_pos = (
+                kv_lens_arr[:, None] - N_q
+                + mx.arange(N_q, dtype=mx.int32)[None, :]
+            )  # [B, N_q]
+            k_idx = mx.arange(S, dtype=mx.int32)  # [S]
             causal_m = mx.where(
-                k_idx <= q_idx,
-                mx.zeros((N_q, S), dtype=q_.dtype),
-                mx.full((N_q, S), float("-inf"), dtype=q_.dtype),
+                k_idx[None, None, :] <= q_pos[:, :, None],  # [B, N_q, S]
+                mx.zeros((1,), dtype=q_.dtype),
+                mx.full((1,), float("-inf"), dtype=q_.dtype),
             )
-            pad_mask = pad_mask + causal_m[None, None, :, :]
+            pad_mask = pad_mask + causal_m[:, None, :, :]
         _, (dQ, dK_pad, dV_pad) = mx.vjp(
             lambda qi, ki, vi: mx.fast.scaled_dot_product_attention(
                 qi, ki, vi, scale=scale, mask=pad_mask),

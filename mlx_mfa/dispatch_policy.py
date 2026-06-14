@@ -127,7 +127,8 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
 # mlx-mfa kernels because SDPA's NAX path doesn't cover them on M5+.
 #
 # 999_999 means "always route to SDPA at this (D, causal) regardless of N".
-# V34-backward training carve-out (env-var opt-in, D=64 qL≥4096) is in
+# V34-backward training carve-out (env-var opt-in, D=64 qL≥2048 since
+# v2.39.2) is in
 # `_v34_backward_carveout()` further down.  The earlier
 # `_should_use_mfa_m5_nax_carveout()` canonical-path hook was deleted in
 # v2.38.0 (dormant since v2.32.0; no Sprint A.6 carve-outs materialized).
@@ -141,8 +142,9 @@ _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
     # depends on environmental conditions whereas SDPA NAX is stable.
     (128, True):  999_999,
     (128, False): 999_999,
-    # D=256/512: SDPA's NAX path doesn't cover these. Keep V2 D-split etc.
-    # (Defer to non-NAX thresholds for these head_dims.)
+    # D=256/512: hard-disabled on M5 — D=256/512 SDPA wins all benched
+    # cells (III-4 D17 FIX: the previous "keep V2 D-split" note was stale;
+    # all four entries route to SDPA, incl. _D512_CONSERVATIVE_MIN_N=999_999).
     (256, True):  999_999,
     (256, False): 999_999,
     (512, True):  _D512_CONSERVATIVE_MIN_N,
@@ -1108,5 +1110,10 @@ def _load_calibrated_kernel_config() -> None:
             os.environ.setdefault(env_key, str(max_n))
             if _verbose:
                 print(f"[MFA dispatch] loaded {env_key}={max_n} from {table_path}")
-    except Exception:  # noqa: BLE001
-        pass  # silently skip — calibration is advisory
+    except Exception as exc:  # noqa: BLE001
+        # III-4 D18 FIX: calibration is advisory, but a malformed table must
+        # not vanish silently (Rule 8) — warn like _load_custom_table does.
+        print(
+            f"[MFA dispatch] WARNING: failed to load calibrated kernel "
+            f"config {table_path!r}: {exc}"
+        )
