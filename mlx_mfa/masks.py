@@ -759,7 +759,16 @@ def make_axial_temporal_mask(
     NQ = (N + BQ - 1) // BQ
     NK = (N + BK - 1) // BK
 
-    # Spatial position (x+y*pW) for each tile — min/max range
+    # Spatial position (x+y*pW) for each tile — min/max range.
+    # III-4 pass-8 F8-1 FIX: a tile's spatial set is {token % pHW : token
+    # in tile}.  Taking `% pHW` of only the first/last token is wrong when
+    # the tile spans >= pHW tokens (covers all positions) OR crosses a
+    # frame boundary (the modulo wraps: start%pHW > end%pHW gives an
+    # inverted range).  Both made the range-overlap test DROP active
+    # blocks (under-approximation — the strided/sink-window bug class).
+    # Compute the TRUE min/max of (token % pHW), over-approximating to the
+    # full [0, pHW-1] range whenever the tile spans a wrap (conservative —
+    # a block mask must never drop a valid attention pair).
     def tile_spatial_range(tile_size, num_tiles):
         smin = np.zeros(num_tiles, dtype=np.int32)
         smax = np.zeros(num_tiles, dtype=np.int32)
@@ -768,8 +777,16 @@ def make_axial_temporal_mask(
         for ti in range(num_tiles):
             t_start = ti * tile_size
             t_end = min(t_start + tile_size, N) - 1
-            smin[ti] = t_start % pHW
-            smax[ti] = t_end % pHW
+            span = t_end - t_start + 1
+            a, b = t_start % pHW, t_end % pHW
+            if span >= pHW or a > b:
+                # spans a full spatial cycle, or wraps a frame boundary
+                # (two disjoint sub-ranges) -> all positions present.
+                smin[ti] = 0
+                smax[ti] = pHW - 1
+            else:
+                smin[ti] = a
+                smax[ti] = b
             fmin[ti] = t_start // pHW
             fmax[ti] = t_end // pHW
         return smin, smax, fmin, fmax

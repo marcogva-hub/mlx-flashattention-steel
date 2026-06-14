@@ -3156,6 +3156,35 @@ class TestAxialMasks:
         # Must be sparser than full dense mask
         assert mask_np.mean() < 1.0, "Temporal mask should be sparse"
 
+    @pytest.mark.parametrize("H,W,T", [(3, 3, 12), (5, 5, 8), (6, 6, 6)])
+    def test_temporal_mask_nonpow2_grid_over_approximates(self, H, W, T):
+        """III-4 pass-8 F8-1: a NON-power-of-2 spatial grid makes pHW not
+        divide the tile sizes (BQ=32/BK=16), so a tile spans >= pHW tokens
+        or crosses a frame boundary.  The block mask must OVER-approximate
+        the token-level same-spatial-position relation (a block is active
+        iff ANY (q,k) token pair shares a spatial position); the pre-fix
+        `% pHW`-of-endpoints range DROPPED active blocks.  Verified vs a
+        brute-force token-level reference (the only existing test used
+        H=W=8 / pHW=64 which divides the tiles and hid this)."""
+        from mlx_mfa import make_axial_temporal_mask
+        from mlx_mfa.masks import _bq_bk
+        D = 128
+        pHW = H * W
+        bm = np.array(make_axial_temporal_mask(H, W, T, head_dim=D))
+        BQ, BK = _bq_bk(D)
+        N = pHW * T
+        NQ, NK = bm.shape
+        dropped = 0
+        for qi in range(NQ):
+            qs = set(t % pHW for t in range(qi * BQ, min(qi * BQ + BQ, N)))
+            for ki in range(NK):
+                ks = set(t % pHW for t in range(ki * BK, min(ki * BK + BK, N)))
+                if (qs & ks) and not bm[qi, ki]:
+                    dropped += 1
+        assert dropped == 0, (
+            f"axial-temporal mask dropped {dropped} active blocks at "
+            f"H={H} W={W} T={T} (pHW={pHW}) — F8-1 under-approximation")
+
     def test_axial_masks_complement(self):
         """Spatial | Temporal should have higher density than either alone."""
         from mlx_mfa import make_axial_spatial_mask, make_axial_temporal_mask

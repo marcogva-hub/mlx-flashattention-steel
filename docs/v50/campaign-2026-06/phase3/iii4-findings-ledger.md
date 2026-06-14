@@ -158,3 +158,10 @@ Job 2 fresh sweep of least-touched surfaces:
 - [CLEAN, probed] mlx_lm shim fallback completeness (sinks/array-mask/GQA/unsupported-D all correct); external_cache offload→onload bit-exact (fp16/bf16/fp32); conv3d MPP+legacy match conv_general (2e-4); V34 backward rel 7e-4; __init__ surface (101 __all__ + 33 lazy resolve); pyproject/CMake no numerics flags; bare excepts are capability-probe graceful-degrade (Rule-8 safe).
 
 ## PASS 7 verdict: 1 MEDIUM (F7-1 svdquant silent no-op) fixed. Pass 8 required.
+
+## PASS 8 (mask constructors + svdquant forward, 2026-06-14)
+- [CLEAN/PASS] F7-1 regression (direct-attr quantize 2 layers, compression 3.03); svdquant FORWARD numerics correct (rel-err monotonic in rank 0.067→0.060; manual reconstruction rel 0.001, correct sign/transpose/scale); suite 1486.
+- [FIXED+locked] F8-1 MEDIUM (pre-existing, same class as R6/R11): make_axial_temporal_mask (masks.py:771) computed per-tile spatial range as `% pHW` of first/last token only — wrong when a tile spans >=pHW tokens or crosses a frame boundary (modulo wraps → inverted range → DROPPED active blocks). Fixed: true min/max of (token%pHW), over-approx to full [0,pHW-1] on wrap. Verified 0 dropped blocks across power-of-2 AND non-pow2 grids (3x3/5x5/6x6). tests/test_attention.py::TestAxialMasks::test_temporal_mask_nonpow2_grid (the only prior test used H=W=8/pHW=64 which divides the tiles, hiding it).
+- [CLEAN, probed] ALL other ~18 mask constructors built + compared vs token-level reference (over-approximation correct, boundary off-by-ones, non-divisible sizes): CLEAN. mx.quantize/dequantize per-block roundtrip benign; _quant_runtime.py absent.
+
+## PASS 8 verdict: 1 MEDIUM (F8-1) fixed; mask-constructor family now FULLY swept (R6+R11+F8-1 were its 3 bugs, all fixed; every other constructor verified). Pass 9 required.
