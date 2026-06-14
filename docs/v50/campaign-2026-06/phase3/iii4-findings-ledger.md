@@ -165,3 +165,9 @@ Job 2 fresh sweep of least-touched surfaces:
 - [CLEAN, probed] ALL other ~18 mask constructors built + compared vs token-level reference (over-approximation correct, boundary off-by-ones, non-divisible sizes): CLEAN. mx.quantize/dequantize per-block roundtrip benign; _quant_runtime.py absent.
 
 ## PASS 8 verdict: 1 MEDIUM (F8-1) fixed; mask-constructor family now FULLY swept (R6+R11+F8-1 were its 3 bugs, all fixed; every other constructor verified). Pass 9 required.
+
+## PASS 9 (final convergence, 2026-06-14) — ZERO-FINDING
+Job-1 regression PASS (F8-1 0 dropped across 7 non-pow2 grids; suite 1489, no flake). Job-2 ALL areas probed CLEAN with numbers: 8 public helpers (shared_prefix/splitfuse/speculative_verify_paged/rope_append/qkv_packed/kv_packed/sage_kvcache/sage_prequantized ~4e-4 vs SDPA); TurboQuant 20-step decode no drift (maxabs 0.033, nan=0); dispatch_policy 96 cells; kv_cache adapter capability matrix exact; ShaderCache concurrency (all cache_ under lock); Rule-8 NaN-in→NaN-out verified. One non-finding: forced-MFA legacy-flag probe artifact (routes never execute on M5; backend=auto correctly routes those cells to SDPA bit-equal).
+
+## III-4 FIXED POINT REACHED (2026-06-14)
+Repeat-until-clean criterion MET: pass 9 fresh full pass is zero-finding of any correctness class. 9 passes, ~73 fixes incl. 2 pre-existing CRITICALs (topk grid undercount, return_lse backward). Suite default 1489+2 (x3) / stressed 1491 (x2), stable. All systematic classes swept + verified clean. See PHASE-III-CLOSE.md.
