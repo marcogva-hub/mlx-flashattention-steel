@@ -427,3 +427,24 @@ STATUS: COMPLETE
 
 ### Git
 - pass-1 commit below; branch master. Pass 2 (fresh re-audit) pending.
+
+---
+## [2026-06-14 05:30] [CLAUDE] Phase III-4 pass 2: fresh-eyes correctness re-audit (no file edits)
+STATUS: COMPLETE
+
+### Plan
+- Objective: independent re-derivation re-audit. Job 1 = regression-check pass-1's own fixes; Job 2 = sweep svdquant/quantize/dispatch_policy/runtime + fwd-bwd consistency.
+- Files to modify: NONE (audit-only per task).
+
+### Findings (no fixes applied; report-only)
+- Job 1: ALL pass-1 fixes re-verified PASS — return_lse/attn_bias/alibi/softcap raises (not over-broad; common paths + new guards live-tested), _expansion_tile D7 precedence (5 mask cases live-tested correct), force_kernel D8 (backend=mfa max_err 0.001 vs SDPA = real kernel, lru_cache key includes force_kernel), _rope_tables_match_base10000 D13 (no false-neg for legit base-10000 1D tables; 3D tables correctly route to STEEL), mixed-dtype cast (no-op same-dtype, live-confirmed), kv_cache R2/R3/R4 (tombstone set+checked+cleared symmetrically).
+- Job 2 CLEAN: svdquant linear/quantize (SVD math consistent fwd↔calib; idempotence guard correct; LOW: rank>min(M,K) leaves self.rank inconsistent w/ array shape, report-only), quantize.py per-block/smooth_k correct, dispatch_policy no v2.37.0-class short-circuit (V34 D=64 carve-out reachable via public auto path; conv MPP + TQ decode are separate hook/runtime paths default-on), runtime.py backend resolution sound.
+- Fwd/bwd (D2 class): alibi/sage-sparse/windowed+softcap backward oracles all differentiate the SAME feature-applied function — consistent.
+- LOW (pre-existing, documented, LOUD-fail not silent): flash_attention_gna native path (D=128/3D/f16) has no MFAGNAForward::vjp — mx.grad raises rather than falling back to sparse-path gradient. Documented forward-only; not a pass-1 regression.
+
+### Validation
+- Ran: live import + path probes (.venv python): 7 common paths OK+finite, 3 new guards raise correctly, D8 mfa==sdpa max_err 0.001, _expansion_tile 5 cases match expected.
+- Validated: zero defensible CRITICAL/HIGH findings; pass-1 batch confirmed correct.
+
+### Git
+- not applicable (audit-only, no edits); branch master

@@ -244,7 +244,7 @@ void MFAttention::eval_gpu(
     pp.NQ = NQ_s;
     pp.NQ_aligned = (N % BQ_s == 0) ? NQ_s : NQ_s - 1;
     pp.qL_rem     = (N % BQ_s == 0) ? BQ_s : (N % BQ_s);
-    pp.qL_off     = (params_.causal && N < S) ? (S - N) : 0;
+    pp.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
     pp.NK_total    = NK_total;
     pp.NK_aligned  = (S % BK_s == 0) ? NK_total : NK_total - 1;
     pp.kL_rem      = (S % BK_s == 0) ? BK_s : (S % BK_s);
@@ -440,7 +440,7 @@ void MFAttention::eval_gpu(
         sk_pp.NQ          = NQ2;
         sk_pp.NQ_aligned  = NQ2_aln;
         sk_pp.qL_rem      = (N % BQ2 == 0) ? BQ2 : (N % BQ2);
-        sk_pp.qL_off      = (params_.causal && N < S) ? (S - N) : 0;
+        sk_pp.qL_off      = (N < S && params_.causal) ? (S - N) : 0;
         sk_pp.NK_total    = NK2_total;
         sk_pp.NK_aligned  = NK2_aln;
         sk_pp.kL_rem      = (S % BK2 == 0) ? BK2 : (S % BK2);
@@ -2706,7 +2706,7 @@ void MFASageForward::eval_gpu(
   sp.kL_rem     = (S % BK == 0) ? BK : (S % BK);
   // For self-attention qL_off = 0; for decode with causal + N < S, offset the
   // causal mask so query at position i sees keys 0..(S-N+i).
-  sp.qL_off     = (params_.causal && N < S) ? (S - N) : 0;
+  sp.qL_off     = (N < S && params_.causal) ? (S - N) : 0;
   // RoPE fields unused (kept for struct layout compatibility)
   sp.rope_q_base     = 0;
   sp.rope_cos_stride = D / 2;

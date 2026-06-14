@@ -6021,8 +6021,10 @@ class TestSlidingWindow:
     def _ref_window(self, q, k, v, scale, causal, window_left):
         """Reference SDPA with explicit window mask.
 
-        Matches the STEEL kernel's qL_off logic: query positions are offset by
-        (S-N) only when causal=True and N<S; otherwise queries start at position 0.
+III-4 pass-2 B1: window anchor matches the kernel's qL_off —
+        S-N only when causal AND N<S, else 0 (non-causal windows anchor
+        at position 0; this is the documented forward convention, and the
+        backward oracle was made consistent with it).
         """
         N, S = q.shape[2], k.shape[2]
         q_off = (S - N) if (causal and N < S) else 0
@@ -6128,7 +6130,11 @@ class TestWindowRight:
     """
 
     def _ref_window(self, q, k, v, scale, causal, window_left, window_right):
-        """Reference SDPA with explicit bilateral window mask."""
+        """Reference SDPA with explicit bilateral window mask.
+
+III-4 pass-2 B1: anchor matches the kernel qL_off = (causal and
+        N<S) ? S-N : 0; see TestSlidingWindow.
+        """
         N, S = q.shape[2], k.shape[2]
         q_off = (S - N) if (causal and N < S) else 0
         q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]

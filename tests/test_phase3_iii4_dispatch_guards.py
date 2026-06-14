@@ -107,3 +107,68 @@ class TestD13RopeTableHonored:
         assert err < 1e-4, (
             f"custom-base rope not routed to the table-honoring path "
             f"(err {err} vs the opt-out reference) — D13 regressed")
+
+
+@_skipif_no_nax
+class TestB1WindowConsistency:
+    """III-4 pass-2 B1: the windowed forward and its backward oracle must
+    use the SAME window anchor.  Pre-fix the forward 0-anchored non-causal
+    windows while the backward oracle used S-N — gradients of a different
+    function than the forward computed.  Resolution: the backward now
+    matches the forward's documented anchor (qL_off = (causal && N<S) ?
+    S-N : 0).  (The forward kernel keeps 0-anchor for non-causal windows;
+    decode callers use causal=True for S-N anchoring.)
+    """
+
+    def _anchor_mask(self, N, S, wl, causal):
+        q_off = (S - N) if (causal and N < S) else 0
+        qi = mx.arange(q_off, q_off + N)[:, None]
+        ki = mx.arange(S)[None, :]
+        inwin = (ki >= qi - wl)
+        if causal:
+            inwin = inwin & (ki <= qi)
+        return mx.where(inwin, mx.zeros((N, S)),
+                        mx.full((N, S), float("-inf"))).astype(mx.float16)
+
+    @pytest.mark.parametrize("causal", [False, True])
+    def test_forward_matches_documented_anchor(self, causal):
+        B, H, D, S, N = 1, 4, 128, 512, 256
+        mx.random.seed(3)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        sc = 1.0 / math.sqrt(D)
+        wl = 64
+        out = flash_attention(q, k, v, scale=sc, causal=causal,
+                              window_size=(wl, 0 if causal else -1))
+        m = self._anchor_mask(N, S, wl, causal)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=m)
+        mx.eval(out, ref)
+        err = float(mx.max(mx.abs(
+            out.astype(mx.float32) - ref.astype(mx.float32))).item())
+        assert err < 5e-3, f"forward window anchor (causal={causal}): {err}"
+
+    @pytest.mark.parametrize("causal", [False, True])
+    def test_forward_backward_agree(self, causal):
+        B, H, D, S, N = 1, 4, 128, 512, 256
+        mx.random.seed(3)
+        q = mx.random.normal((B, H, N, D)).astype(mx.float16)
+        k = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        v = mx.random.normal((B, H, S, D)).astype(mx.float16)
+        mx.eval(q, k, v)
+        sc = 1.0 / math.sqrt(D)
+        wl = 64
+        dO = mx.ones_like(q)
+        m = self._anchor_mask(N, S, wl, causal)
+        _, g = mx.vjp(lambda a, b, c: flash_attention(
+            a, b, c, scale=sc, causal=causal,
+            window_size=(wl, 0 if causal else -1)), [q, k, v], [dO])
+        _, gr = mx.vjp(lambda a, b, c: mx.fast.scaled_dot_product_attention(
+            a, b, c, scale=sc, mask=m), [q, k, v], [dO])
+        mx.eval(*g, *gr)
+        for name, x, y in zip(("dQ", "dK", "dV"), g, gr):
+            err = float(mx.max(mx.abs(
+                x.astype(mx.float32) - y.astype(mx.float32))).item())
+            assert err < 5e-3, (
+                f"{name} fwd/bwd window-anchor disagree (causal={causal}): {err}")

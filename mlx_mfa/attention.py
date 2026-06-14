@@ -33,6 +33,31 @@ import numpy as np
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
+
+def _assert_kv_dtype_matches_q(q, named_arrays, fn_name):
+    """III-4 pass-2 Class A: the C++ attention kernels derive their dtype
+    from `q` alone and reinterpret K/V/pool buffers at that dtype — a
+    mismatched K/V dtype is read as raw bytes (silent garbage, NaN only
+    when the buffer pool recycles dirty memory).  The high-level
+    ``flash_attention`` casts K/V to q.dtype gracefully (common fp32-input
+    case), but the specialized serving entries (paged/varlen/sage/gna)
+    take pools/activations the caller fully controls, where a dtype
+    mismatch is a caller bug — fail loudly (Rule 8) instead of returning
+    silent garbage.  Packed (uint8) pools are skipped (expected dtype).
+    """
+    qd = q.dtype
+    for name, arr in named_arrays:
+        if arr is None:
+            continue
+        if arr.dtype == mx.uint8:  # packed TQ pool — not a value buffer
+            continue
+        if arr.dtype != qd:
+            raise ValueError(
+                f"{fn_name}: '{name}' dtype {arr.dtype} != q dtype {qd}. "
+                f"The kernel reads '{name}' at q's dtype; a mismatch yields "
+                f"silent garbage. Cast all value buffers to a common dtype "
+                f"before calling.")
+
 # Module-level caches (avoid repeated import probes / set allocations per call)
 _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
@@ -1543,6 +1568,8 @@ def sage_attention(
         v = mx.random.normal([1, 8, 2048, 128]).astype(mx.float16)
         out = sage_attention(q, k, v, causal=True)  # [1, 8, 2048, 128]
     """
+    _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "sage_attention")
+
     from mlx_mfa.quantize import (
         quantize_per_block,
         sage_block_sizes,
@@ -2289,10 +2316,20 @@ def flash_attention_kvcache(
             seq_lens_new = mx.array(
                 [sl + N_new_p for sl in seq_lens_list_p], dtype=mx.int32)
 
+            # III-4 pass-2 Class A: the paged kernel reads the pool at q's
+            # dtype.  kvcache callers commonly pass an fp32 query against an
+            # fp16 pool (the prior code silently reinterpreted the pool —
+            # finite-but-wrong, only the shape/finite asserts passed).  Cast
+            # q to the pool dtype (cheap: decode/append q is tiny), restore
+            # the caller's output dtype.
+            _q_paged = q_to_att.astype(k_pages_new.dtype) \
+                if q_to_att.dtype != k_pages_new.dtype else q_to_att
             out = flash_attention_paged(
-                q_to_att, k_pages_new, v_pages_new, block_table, seq_lens_new,
+                _q_paged, k_pages_new, v_pages_new, block_table, seq_lens_new,
                 scale=scale, causal=causal, block_size=blk_sz, stream=stream,
             )
+            if out.dtype != q_to_att.dtype:
+                out = out.astype(q_to_att.dtype)
             return out, k_pages_new, v_pages_new
         if cache_batch_idx is not None:
             raise ValueError(
@@ -2423,8 +2460,12 @@ def flash_attention_kvcache(
                 "flash_attention_kvcache: alibi_slopes is not supported in paged mode."
             )
 
-        return flash_attention_paged(
-            q_att,
+        # III-4 pass-2 Class A: cast q to the pool dtype (kernel reads the
+        # pool at q's dtype; fp32-q-vs-fp16-pool would be silent garbage).
+        _q_dec = q_att.astype(k_cache.dtype) \
+            if q_att.dtype != k_cache.dtype else q_att
+        _out_dec = flash_attention_paged(
+            _q_dec,
             k_cache,
             v_cache,
             block_table,
@@ -2435,6 +2476,9 @@ def flash_attention_kvcache(
             cache_batch_idx=cache_batch_idx,
             stream=stream,
         )
+        if _out_dec.dtype != q_att.dtype:
+            _out_dec = _out_dec.astype(q_att.dtype)
+        return _out_dec
 
     # ----------------------------------------------------------------
     # DENSE MODE
@@ -3353,6 +3397,17 @@ def flash_attention_gna(
     Returns:
         Output ``[B, H, N, D]``.
 
+    .. note::
+
+        Autograd (III-4 pass-2 LOW): on the native-kernel envelope
+        (D=128, 3-D window, f16/bf16) the forward dispatches
+        ``MFAGNAForward``, which is **forward-only** (no ``vjp``).
+        ``mx.grad`` on those shapes therefore raises rather than
+        silently returning wrong gradients.  To train through GNA,
+        route to the differentiable sparse path by setting
+        ``MFA_DISABLE_GNA_NATIVE=1`` (or use a non-native shape:
+        D != 128, or a 1-D/2-D window).
+
     Example::
 
         # Video: 8 frames of 32x32, local 3D window, sliding
@@ -3367,6 +3422,8 @@ def flash_attention_gna(
                                    window_size=(2, 8, 8),
                                    stride=(2, 8, 8))
     """
+    _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_gna")
+
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
         raise ValueError(
             "flash_attention_gna expects 4-D tensors [B, H, N, D]. "
@@ -5127,7 +5184,14 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # when softcap != 0 (mirrors _softcap_sdpa_ref).
             def _windowed_sdpa(q, k, v):
                 N, S = q.shape[2], k.shape[2]
-                q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
+                # III-4 pass-2 B1: match the FORWARD kernel's window anchor
+                # exactly (qL_off = (causal && N<S) ? S-N : 0).  Pre-fix this
+                # oracle used S-N unconditionally, so non-causal windowed
+                # gradients disagreed with the forward (which 0-anchors
+                # non-causal windows).  The forward's 0-anchor convention is
+                # the documented one; decode callers use causal=True (→ S-N).
+                q_off = (S - N) if (causal and N < S) else 0
+                q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]
                 k_idx = mx.arange(S, dtype=mx.int32)[None, :]
                 in_win = mx.ones((N, S), dtype=mx.bool_)
                 if window_left >= 0:
@@ -5613,6 +5677,8 @@ def flash_attention_varlen(
         cu_k = mx.array([0, 64, 192, 288])
         out = flash_attention_varlen(q, k, v, cu_q, cu_k, 128, 128)
     """
+    _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_varlen")
+
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
 
@@ -6522,6 +6588,8 @@ def flash_attention_paged(
         lens   = mx.array([48, 32], dtype=mx.int32)
         out    = flash_attention_paged(q, pool_k, pool_v, table, lens)
     """
+    _assert_kv_dtype_matches_q(q, [("k_pages", k_pages), ("v_pages", v_pages)], "flash_attention_paged")
+
     import mlx.core as mx
 
     B, H_q, N_q, D = q.shape
@@ -6883,6 +6951,8 @@ def flash_attention_paged_varlen(
     Returns:
         Packed output ``[1, H_q, total_q, D]``.
     """
+    _assert_kv_dtype_matches_q(q, [("k_pages", k_pages), ("v_pages", v_pages)], "flash_attention_paged_varlen")
+
     import mlx.core as mx
 
     if q.ndim != 4 or q.shape[0] != 1:
@@ -7448,6 +7518,8 @@ def flash_attention_paged_varlen_turboquant(
     Returns:
         Packed output ``[1, H_q, total_q, D]``.
     """
+    _assert_kv_dtype_matches_q(q, [("v_pages", v_pages), ("v_pool_tq", v_pool_tq)], "flash_attention_paged_varlen_turboquant")
+
     import math
     import mlx.core as mx
 
