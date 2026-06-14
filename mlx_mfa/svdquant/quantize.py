@@ -177,7 +177,20 @@ def _replace_layers(
     for name, child in model.children().items():
         full_path = f"{prefix}.{name}" if prefix else name
 
-        if isinstance(child, dict):
+        # III-4 pass-7 F7-1 FIX: `nn.Module` IS a `dict` subclass
+        # (issubclass(nn.Linear, dict) is True), so the dict branch must
+        # NOT run first — it would treat a direct `nn.Linear` attribute
+        # (the most common model structure) as a container, iterate its
+        # weight/bias arrays (not Modules), and replace NOTHING — while
+        # quantize_model reported success (silent no-op).  Check the
+        # nn.Module branch FIRST; the dict/list branches then handle only
+        # genuine non-Module containers of submodules.
+        if isinstance(child, nn.Module):
+            if predicate(full_path, child):
+                setattr(model, name, replacer(full_path, child))
+            else:
+                _replace_layers(child, predicate, replacer, prefix=full_path)
+        elif isinstance(child, dict):
             # Dict children (e.g., named submodules)
             real_dict = getattr(model, name)
             for k, v in real_dict.items():
@@ -195,8 +208,3 @@ def _replace_layers(
                     real_list[i] = replacer(path, v)
                 elif isinstance(v, nn.Module):
                     _replace_layers(v, predicate, replacer, prefix=path)
-        elif isinstance(child, nn.Module):
-            if predicate(full_path, child):
-                setattr(model, name, replacer(full_path, child))
-            else:
-                _replace_layers(child, predicate, replacer, prefix=full_path)

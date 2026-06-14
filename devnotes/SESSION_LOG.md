@@ -544,3 +544,34 @@ STATUS: COMPLETE
 
 ### Git
 - not applicable (audit-only, no repo edits); branch master. Pass 5 is NOT zero-finding (1 CRITICAL pre-existing return_lse-backward bug). Audit loop must continue: fix P5-1, then pass 6.
+
+---
+## [2026-06-14 06:26] [CLAUDE] Phase III-4 pass 7: TERMINATION-DECISION convergence audit (no code edits)
+STATUS: COMPLETE
+
+### Plan
+- Objective: decide whether a fresh full pass is ZERO-FINDING (terminates the repeat-until-clean loop). Job 1 = regression-check passes 1-6 fixes by RUNNING; Job 2 = fresh sweep of surfaces least-touched by passes 1-6.
+- Files to modify: NONE (audit-only; ledger doc only). Probes in /tmp.
+
+### Job 1 — ALL PASS (ran, with numbers)
+- P5-1 PASS: mx.grad(flash_attention(...,return_lse=True,causal=True)[0].sum()) bit-exact to SDPA-vjp (rel 0.0000) at N=4096/D=128 for fp16 AND bf16; L finite; fwd rel ~1e-3. no-lse cross-check rel 0.0000.
+- combo-1 PASS: fp32 [B,H,Nq,Nkv] attn_bias + fp16 q — no crash; fp32-bias==fp16-bias rel 0.0000; vs SDPA-GT rel 0.0000.
+- Full suite x2: 1485 passed + 2 skipped, exit 0 BOTH runs; no intermittent flake (the known verbose-capture flake did not surface).
+
+### Job 2 — NOT ZERO-FINDING. One MEDIUM silent-failure (pre-existing).
+- **F7-1 MEDIUM [VERIFIED, repro, pre-existing, Rule-8 silent]**: `mlx_mfa/svdquant/quantize.py:180` `_replace_layers` checks `isinstance(child, dict)` BEFORE `isinstance(child, nn.Module)` (line 198). But nn.Module IS a dict subclass (`issubclass(nn.Linear, dict)==True`). A model with a DIRECT `nn.Linear` attribute (`self.fc1=nn.Linear(...)` — the most common structure) is treated as a container, its `.items()` are weight/bias arrays (not Modules), so the Linear is NEVER replaced. `quantize_model` returns `{'layers':[],'overall_compression':1.0}` and the model runs UNQUANTIZED while reporting success. Works for nn.Sequential (.layers list) + nested submodules (dict-branch recurses to grandchildren) — exactly why ALL tests pass (every test uses nn.Sequential). Test gap: no direct-attribute test. Repro: `quantize_model(Net())` where Net has `self.fc1=nn.Linear(512,1024)` → 0 layers quantized, fc1 still type Linear, forward bit-identical to dense. Expert/opt-in API, forward-only, not in default attention path → MEDIUM (silent no-op that misleads), not CRITICAL.
+- Suggested fix: in `_replace_layers`, test `isinstance(child, nn.Module)` first (or exclude nn.Module from the `dict`/`list` container branches); add a direct-attribute regression test.
+
+### Verified CLEAN (actively looked, with numbers)
+- mlx_lm shim (live): sinks→fallback, array-mask→fallback, GQA→native STEEL (rel 7e-4, no fallback), unsupported-D→fallback, return=single array; mx.dequantize signature correct; R1 window fix intact.
+- external_cache offload→onload: bit-exact fp16/bf16/fp32 (zero-copy store, dtype+len preserved).
+- conv3d MPP+legacy: both match mx.conv_general norm_rmse 2e-4 (pad=1 production envelope) + explicit cross-corr 4e-4 (pad=0); bf16 loud-fails outside MPP envelope (correct). Earlier pad0-vs-conv_general 0.19 = test-reference-convention artifact, NOT kernel bug (confirmed via cross-corr).
+- V34 backward (env-gated, D=64 causal, M5): dQ/dK/dV rel 7e-4 vs SDPA-vjp, no NaN.
+- __init__: 101 __all__ + 33 lazy targets all resolve; hooks install clean. pyproject/CMake/check_venv: no version skew, no -ffast-math/-Ofast numerics flag. Bare excepts (attention.py 889 RoPE-probe / 1524 warmup; build tooling) = capability-probe/warmup graceful-degrade (Rule-8 safe). id()-caches all shape+dtype-keyed with strong-ref ABA guard.
+
+### Validation
+- Ran: /tmp/job1_p51.py, /tmp/job1_combo1.py; full suite x2 (1485p/2s/exit0 both); ~8 live probes (svdquant direct/seq/nested, mlx_lm shim, external_cache, conv3d MPP/legacy/crosscorr, V34 bwd, __init__ resolve).
+- Validated: F7-1 = 0 layers quantized on direct-attribute model (deterministic), all CLEAN surfaces with measured rel-errors above. P5-1/combo-1 regression bit-exact.
+
+### Git
+- not applicable (audit-only; only docs ledger touched); branch master. Pass 7 is NOT zero-finding (1 MEDIUM svdquant silent no-op). Loop must continue: fix quantize.py:180, add direct-attribute test, then pass 8.

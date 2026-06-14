@@ -176,6 +176,44 @@ class TestSVDQuantProperties:
 class TestQuantizeModel:
     """Tests for quantize_model() tree walker."""
 
+    def test_quantize_direct_attribute_model(self):
+        """III-4 pass-7 F7-1: a model with direct nn.Linear ATTRIBUTES
+        (self.fc1 = nn.Linear(...)) — the most common structure — must
+        be quantized.  nn.Module is a dict subclass, so a dict-branch-
+        first tree walk silently treated the Linear as a container and
+        replaced NOTHING while reporting success (overall_compression
+        1.0, 0 layers).  Every prior test used nn.Sequential and missed
+        it."""
+        class Net(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(512, 1024)
+                self.fc2 = nn.Linear(1024, 512)
+
+            def __call__(self, x):
+                return self.fc2(self.fc1(x))
+
+        model = Net()
+        x = mx.random.normal((4, 512))
+        mx.eval(x)
+        y_dense = model(x)
+        mx.eval(y_dense)
+
+        stats = quantize_model(model, bits=4, group_size=64, rank=16)
+
+        assert len(stats["layers"]) == 2, \
+            "direct-attribute Linears not quantized (F7-1 regressed)"
+        assert stats["overall_compression"] > 1.0
+        assert isinstance(model.fc1, SVDQuantLinear)
+        assert isinstance(model.fc2, SVDQuantLinear)
+        # Forward must run and reflect the quantization (not the dense op).
+        y_q = model(x)
+        mx.eval(y_q)
+        assert y_q.shape == (4, 512)
+        assert bool(mx.all(mx.isfinite(y_q)).item())
+        assert not bool(mx.allclose(y_q, y_dense, atol=1e-4).item()), \
+            "quantized forward identical to dense — quantization was a no-op"
+
     def test_quantize_sequential_rank0(self):
         """Quantize a simple sequential model without SVD."""
         model = nn.Sequential(
