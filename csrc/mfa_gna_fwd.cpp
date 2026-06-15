@@ -490,8 +490,16 @@ inline bool gna_tile_active(
   ss << "        STEEL_PRAGMA_UNROLL\n";
   ss << "        for (short id = 0; id < MFA_TD; id++) {\n";
   ss << "#if MFA_DIRECT_READS\n";
+  ss << "          // Partial final K-tile: clamp the key-row to the last valid\n";
+  ss << "          // key so the unbounded direct device read cannot return OOB\n";
+  ss << "          // NaN/stale-pool data for masked keys (P=0 there, but\n";
+  ss << "          // 0*NaN=NaN would corrupt O). See III-9 V2 fix (eb68af5);\n";
+  ss << "          // §AA.5.x multi-gate — same pattern as V2 single-pass.\n";
+  ss << "          short v_row = sm + (short)(ik * 8);\n";
+  ss << "          if (kb == p->NK_aligned && v_row >= p->kL_rem)\n";
+  ss << "            v_row = p->kL_rem - 1;\n";
   ss << "          Vtile.template load<T, 1, 1>(\n";
-  ss << "              V_cur + (long)(sm + (short)(ik * 8)) * V_stride\n";
+  ss << "              V_cur + (long)v_row * V_stride\n";
   ss << "                    + sn + (short)(id * 8),\n";
   ss << "              V_stride, 1);\n";
   ss << "#else\n";

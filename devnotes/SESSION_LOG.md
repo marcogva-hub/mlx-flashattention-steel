@@ -1026,3 +1026,18 @@ STATUS: BLOCKED
 - Ran: Workflow sweep + Class I re-run + lead repro (N=992 head-3 NaN deterministic w/ preamble; sentinel diag). Validated vs independent fp32 SDPA. Diagnostic edits reverted; tree clean; binary = clean HEAD 240b226.
 - Docs: sprint-III-9-report.md (per-class enumeration + finding + disposition). Pre-release gate NOT met; release HELD.
 - Git: report + log to commit; HEAD=240b226. Nothing released.
+
+---
+## [2026-06-16 15:30] [CLAUDE] III-9 iter 1+2 — V2 single-pass + GNA + V5 direct-V OOB fixed (multi-gate)
+STATUS: IN_PROGRESS
+
+- Iter 1 (commit eb68af5): V2 single-pass non-causal last-head OOB-V read (0*NaN). Fixed via kL_rem-1 V-row clamp on partial final tile. R.4 792-cfg sweep 0 fail; suite 1796 ×2; lock 28.
+- Iter 2 (this commit): §AA.5.x multi-gate — the SAME unbounded MFA_DIRECT_READS V-read partial-tile pattern existed in TWO sibling kernels NOT covered by eb68af5 (the F agent caught it; vindicates loop-until-clean):
+  - GNA native (mfa_gna_fwd.cpp:493) — DEFAULT-REACHABLE via flash_attention_gna (D=128/3D/f16|bf16/N%32!=0). HIGH. [VERIFIED real]
+  - STEEL V5 (mfa_steel_fwd_v5.cpp:384) — opt-in MFA_ENABLE_V5. MEDIUM. + falsified L373 comment corrected. [VERIFIED]
+  - Both fixed with the identical clamp. V4 safe (V via load_safe); sparse/top-K/conv/paged/V1/split-K/dsplit all safe.
+- Validation: GNA vs element-level fp32 GNA-mask+SDPA oracle (0 NaN, MAE 1e-4..5e-4, 8 cfg); V5 vs fp32 SDPA (0 NaN, MAE ≤9e-4, 20 cfg) — both under preamble pool-history + concurrent-alloc trigger. Suite 1820 passed ×2 (+24 GNA/V5 lock tests + 28 V2 lock).
+- Iter-2 sweep agents E and I died on API-overload → must re-run. recheck-lasthead clean.
+- Ran: GNA/V5 probes + pytest 1820 ×2. Validated vs independent fp32. Tree: csrc/mfa_gna_fwd.cpp + csrc/mfa_steel_fwd_v5.cpp + 1 new lock test to commit.
+- Git: eb68af5 (V2) committed; GNA+V5 commit below. HEAD will be the multi-gate commit. Nothing released.
+- NEXT: re-run E+I agents; iteration 3 full re-sweep to zero-finding = gate.

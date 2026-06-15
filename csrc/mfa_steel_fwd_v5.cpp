@@ -370,7 +370,12 @@ struct MFASteelParams {
   // Device path (MFA_DIRECT_READS=1): load V fragment directly from V_cur.
   //   V[sm + ik*8, dh*BD_tile + sn + id*8] = V_cur[(sm+ik*8)*V_stride + dh*BD_tile + sn + id*8]
   //   row_stride=V_stride=D (S-axis), col_stride=1 (D-axis).
-  //   Out-of-bounds rows (kb=NK_aligned): P values are 0 after K-boundary mask → safe.
+  //   Out-of-bounds rows (kb=NK_aligned): P is 0 after the K-boundary mask, but
+  //   the unbounded direct read still returns OOB NaN/stale-pool data for those
+  //   keys, and 0*NaN=NaN corrupts O (III-9: the V2 single-pass bug eb68af5 —
+  //   this comment's old "→ safe" claim was FALSIFIED). The key-row is therefore
+  //   clamped to the last valid key (kL_rem-1) on the partial final tile so the
+  //   read stays finite; 0*finite = 0 is the correct masked contribution.
   auto emit_v5_pv = [&](int dh) {
     ss << "    // ─ P@V: D-chunk dh=" << dh << " ─\n";
     ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -381,8 +386,12 @@ struct MFASteelParams {
     ss << "        for (short id = 0; id < MFA_BD_FRAGS; id++) {\n";
     ss << "#if MFA_DIRECT_READS\n";
     ss << "          // M3+: direct device read — no TGP copy, no barrier.\n";
+    ss << "          // Clamp key-row on the partial final tile (§AA.5.x, see header).\n";
+    ss << "          short v_row = sm + (short)(ik * 8);\n";
+    ss << "          if (kb == p->NK_aligned && v_row >= p->kL_rem)\n";
+    ss << "            v_row = p->kL_rem - 1;\n";
     ss << "          Vtile.template load<T, 1, 1>(\n";
-    ss << "              V_cur + (long)(sm + (short)(ik * 8)) * V_stride\n";
+    ss << "              V_cur + (long)v_row * V_stride\n";
     ss << "                    + " << (dh * BD_tile) << " + sn + (short)(id * 8),\n";
     ss << "              V_stride, 1);\n";
     ss << "#else\n";
