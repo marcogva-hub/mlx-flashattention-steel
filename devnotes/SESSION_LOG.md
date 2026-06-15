@@ -853,3 +853,18 @@ STATUS: IN_PROGRESS
 - Locus: V2 single-pass non-causal Q@K^T→Stile score population (or row_reduce/MFAExpSubOp). Next step: dump Stile/P for 1-tile non-causal, rebuild once, diff vs numpy → pins the line. Then fix + fp32-validate + re-bench + lock.
 - Findings doc updated (III-8 section). No code edited. Nothing released.
 - Git: doc + log commit below; branch master.
+
+---
+## [2026-06-15 23:00] [CLAUDE] III-8 repair session — NOT fixed; sub-component NOT reliably isolated (no guessed edit)
+STATUS: IN_PROGRESS
+
+- Marco scoped III-8 to REPAIR V2 single-pass non-causal. Outcome: NOT fixed. Made NO functional kernel edit (only temporary debug dumps, reverted; clean rebuild verified). Honest: could not reliably isolate the sub-component.
+- Reliable (unchanged/strengthened): deterministic (maxdiff 0.0, not a race); bug is the V2 single-pass non-causal COMPILED variant (causal variant correct, same largely-shared source, only kb_lim+mask differ); softmax normalization not the sole fault.
+- Instrumentation dead-ends (documented so next pass skips them):
+  1. Mid-kernel register dump of Stile/P (store_contiguous AND faithful element-wise frag_at) — UNRELIABLE. Control: dumping CAUSAL Stile (correct output) also yields "wrong" values vs true scores → the cooperative simdgroup-MMA fragment layout isn't faithfully serialized by naive per-lane writes + early-return perturbs state.
+  2. One-hot V (O=P): reliable for causal (P@V proven correct → causal lower-tri scores correct, MAE 1e-4), but CONFOUNDED for non-causal (O=P assumes P@V correct, which is an unproven suspect). So non-causal O≠P can't distinguish wrong-scores vs wrong-P@V.
+- RETRACTED the earlier "it's Q@K^T/scores" read (III-7 + first III-8 dumps) — it rested on the unreliable register dump.
+- Next reliable approaches: (a) layout-correct simd_shuffle fragment gather probe; (b) V2 single-pass vs split-K stage differential (localization aid only, lesson #11); (c) re-evaluate route-around (forced-mfa non-causal → V1/SDPA) given repair cost.
+- This non-default-reachable bug has now consumed III-7+III-8; resisting available diagnostics. No guessed edit (race risk > current localized non-default bug).
+- Findings doc updated (III-8 outcome section). Clean tree. Nothing released.
+- Git: doc + log commit below; branch master.

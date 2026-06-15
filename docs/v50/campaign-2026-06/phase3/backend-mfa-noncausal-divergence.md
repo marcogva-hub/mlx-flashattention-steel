@@ -179,3 +179,58 @@ regression test.
 **Status: STILL NOT FIXED.** The repair was not completed in III-8; the
 localization is now tight enough that the instrumentation step above should
 resolve it in a focused pass. No edit was made to the kernel (no guess).
+
+---
+
+## III-8 repair session — outcome: NOT fixed; sub-component NOT reliably isolated
+
+Marco scoped III-8 to repair. I instrumented extensively but did **not** land
+the fix and made **no functional kernel edit** (only temporary, reverted debug
+dumps). Critically, I could **not reliably isolate the sub-component** (Q@K^T
+vs softmax vs P@V), because every available probe was either unreliable or
+confounded. Documenting the dead-ends so the next pass doesn't repeat them:
+
+**Reliable facts (unchanged / strengthened):**
+- Deterministic across repeated runs (maxdiff 0.0) → **not a race**.
+- Bug is the V2 single-pass non-causal **compiled variant**; the causal
+  variant (separately JIT-compiled from the same largely-shared source) is
+  correct. Only `kb_lim` and the diagonal-mask block differ in source.
+- Softmax **normalization** is not the (sole) fault: with a reliable full-
+  pipeline probe the output distribution is well-formed.
+
+**Probes attempted and why each could not pin the sub-component:**
+1. **Mid-kernel register dump of Stile/P** (two methods: `store_contiguous`
+   and faithful element-wise `frag_at` with the masking code's (row,col)
+   map). **UNRELIABLE** — proven by a control: dumping the *causal* Stile
+   (whose output is correct) also yields "wrong" values vs the true scores,
+   and the two dtype/methods disagree. The cooperative simdgroup-MMA
+   fragment register layout is not faithfully serialized by a naive
+   per-lane write, and the early `return` perturbs state. **Do not trust
+   mid-kernel register dumps for this kernel without a layout-correct
+   gather (e.g. simd_shuffle-based) probe.**
+2. **One-hot V (O=P) recovery.** Reliable for **causal** (causal P@V is
+   proven correct by causal's correct real-V output) — and it shows causal
+   lower-triangle scores are correct (MAE 1e-4). But for **non-causal** it
+   is **confounded**: O=P assumes P@V is correct, which is exactly one of
+   the unproven suspects for the non-causal path — so a non-causal O≠P could
+   mean wrong scores OR wrong P@V, indistinguishably.
+
+**Net:** the sub-component (Q@K^T vs exp/reduce vs P@V) is **not reliably
+isolated**. The earlier "it's Q@K^T / the scores" read (III-7 + the first
+III-8 dumps) is **retracted** — it rested on the unreliable register dump.
+
+**Reliable next approaches (for a future focused pass):**
+- A **layout-correct fragment gather** probe (simd_shuffle the MMA fragment
+  into a known-order scratch buffer) so mid-kernel Stile/P can be trusted; OR
+- a **reference-impl differential**: compare the non-causal single-pass
+  output against the (correct) V2 split-K output stage-by-stage to localize
+  the divergence (kernel-vs-kernel as a localization aid only, per lesson
+  #11 — not as the correctness oracle); OR
+- re-evaluate the **route-around** option (forced-mfa non-causal → V1/SDPA),
+  which achieves correct output on the API surface at lower risk than a
+  blind kernel edit, given the repair is proving expensive to pin.
+
+**Effort note:** this non-default-reachable bug has now consumed III-7 + III-8.
+It is genuinely resisting the diagnostic methods tried. No guessed edit was
+made (a wrong barrier/MMA edit would risk a race — worse than the current
+localized, non-default bug).
