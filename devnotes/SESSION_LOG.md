@@ -654,3 +654,45 @@ STATUS: COMPLETE
 - Gap addressed: the P5 regression test was fp16-only. Extended `TestP5ReturnLseBackward::test_return_lse_grad_matches_sdpa_vjp` to parametrize dtype {fp16,bf16,fp32} × (N,D) × causal — the bug had dtype-specific symptoms so all three are locked. Corrected the invariant: return_lse grad == SDPA-vjp GT within dtype floor (NOT bit-exact to the no-lse path, which uses the V34 backward at D=64/qL>=2048 cells, differing by fp16 floor 0.0012).
 - Ran: P5 test (19 passed), full suite | Validated: 1501 passed + 2 skipped (was 1489; +12 = the new dtype/causal P5 cells)
 - Git: test commit below; branch master; not pushed yet (awaiting nothing — pushing)
+
+---
+## [2026-06-15 14:30] [CLAUDE] Sprint III-5: documentation overhaul + v2.52.0 release (coupled) — PUBLISHED
+STATUS: COMPLETE
+
+### Plan
+- Objective: bring all docs to the complete post-III-4 state as v2.52.0, run 9-gate audit, bump, tag, publish PyPI + GH, smoke-test the published wheel. Handle the "v2.51.0 contains 2 CRITICALs" situation explicitly. Marco pre-authorized the publish; only the v2.51.0 yank is Marco-gated.
+- Files: README.md, CHANGELOG.md, docs/PERF_CLAIMS.md, docs/v50/audit-framing-inversions.md, CLAUDE.md, pyproject.toml, mlx_mfa/__init__.py.
+
+### Changes
+- R.1 doc overhaul (3b89b51): README headline → v2.52.0; CHANGELOG [2.52.0] with ⚠ CRITICALs disclosure + upgrade directive (NOT buried) + III-4 fixes + v2.51.0 promotions (per-cell + Reproduce block) + DECLINED list + migration note; PERF_CLAIMS header bump + withdrawn v2.39.1 fused claim confirmed ABSENT; Pattern #9 (3 exhibits) + III-4 lessons #8/#9/#10. [VERIFIED]
+- R.2 release commit (fd8d278, distinct from docs): version 2.51.0→2.52.0 in pyproject.toml + __init__.py. Semver minor (no breaking API). [VERIFIED]
+
+### Validation
+- Ran: /mlx-mfa-release-audit (9 gates) → GREEN_WITH_ADVISORY (no blocking; advisory = carried-claim version strings, benign). Gate 9 (paired-MMA) 2 passed; §Z 21 claims reachable. Default suite 1501 passed/2 skipped; stressed + MFA_POOL_STRESS=1 canary 1503 ×2. twine check PASS ×2.
+- Validated: all 9 gates green → publish gate cleared.
+
+### R.4 publish (irreversible) — DONE
+- Tag v2.52.0 pushed (origin 83acf10…). PyPI live (https://pypi.org/project/mlx-mfa/2.52.0/, cp311 wheel + sdist). GH release published (not draft, both assets, CRITICALs disclosure in body). Confirmed: PyPI latest=2.52.0 both files; GH published; origin tag present. [VERIFIED]
+
+### R.6 post-publish smoke (clean py3.11 venv, published cp311 wheel) — 4/4 GREEN
+- CRITICAL#2 return_lse backward: grad finite + matches SDPA-vjp fp16/bf16/fp32.
+- CRITICAL#1 topk full-row coverage: all 512 rows written, 0 stale, first8/last8 0.95×.
+- HEADLINE V34 backward causal+non-causal: matches SDPA-vjp.
+- HEADLINE conv3d auto-hook fp16+bf16: deterministic (maxdiff 0.0) + matches fp32 (MAE/RMS 0.00014/0.00112).
+- Forensics note: initial conv check used degenerate 16ch shape → max-abs-rel artifact (0.19→8.09 from near-zero denom). Verified NAX conv deterministic + accurate at realistic channels; small-channel fp16 gap (~250× vs native fp16 at Cin=16) is pre-existing/out-of-scope → spawned background task. [VERIFIED]
+
+### Tech cost
+- None (docs + release; no kernel/code-path change).
+
+### Dependency & regression check
+- Callers verified: no public API signature change. Test coverage: 1501/1503 green; the two CRITICALs locked by TestP5ReturnLseBackward + topk full-row assertion.
+
+### OPEN (Marco-gated)
+- R.5 v2.51.0 disposition: Option A YANK (recommended — pip already resolves to 2.52.0; stops new pins to a known-corrupt release) vs Option B leave+disclose. Awaiting Marco. Do NOT yank without explicit go.
+- Small-channel fp16 conv3d accuracy: spawned background task (not a campaign regression).
+
+### Git
+- 3b89b51 (docs) + fd8d278 (release) + report commit below; merged/pushed as 73d5738; tag v2.52.0 pushed. Branch master.
+
+### Campaign close
+- Phase III + the full 2026-06 audit/optimization campaign CLOSED with v2.52.0 as the canonical release. Report: docs/v50/campaign-2026-06/phase3/sprint-III-5-report.md.
