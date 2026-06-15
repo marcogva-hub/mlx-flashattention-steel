@@ -102,6 +102,24 @@ EXEC_SIMDGROUPS = 1
 TG_THREADS = 32 * EXEC_SIMDGROUPS
 
 
+def _round_up_k_tile(K: int) -> int:
+    return ((K + K_TILE - 1) // K_TILE) * K_TILE
+
+
+def _pad_k(a: "mx.array", K: int, k_pad: int) -> "mx.array":
+    """Sprint III-6: zero-pad the contraction (last) axis up to a K_TILE
+    multiple.  _matmul2d_source's K-loop reads the final tile past K_FULL
+    when K % K_TILE != 0 (the slice<K_TILE,…> exceeds the tensor extent ->
+    OOB garbage; C_in=16 -> 0.10 MAE/RMS, C_in=31 -> NaN).  Zero
+    contraction terms contribute nothing, so the result is EXACT and the
+    K-loop only reads in-bounds.  Mirrors the C++ fix in mfa_conv_nax.cpp."""
+    if k_pad == K:
+        return a
+    pad_widths = [(0, 0)] * a.ndim
+    pad_widths[-1] = (0, k_pad - K)
+    return mx.pad(a, pad_widths)
+
+
 def _matmul2d_source(M: int, K: int, N: int) -> str:
     """Conv3D-specific matmul: C(M,N) = A(M,K) @ B(N,K)^T  via rightT=true.
 
@@ -114,7 +132,20 @@ def _matmul2d_source(M: int, K: int, N: int) -> str:
       B : (N, K)  -- flattened weight (C_out, K_T*K_H*K_W*C_in)
     Output:
       C : (M, N)  row-major
+
+    III-6 Rule-8 contract: the K-loop steps K_TILE at a time over [0, K)
+    and does NOT mask a partial final tile, so it is correct ONLY when K
+    is a multiple of K_TILE.  Callers MUST zero-pad the contraction
+    (_pad_k).  Refuse to generate for an unaligned K so any future caller
+    that forgets to pad fails LOUDLY here rather than silently reading
+    past the tensor extent (the small-channel corruption this sprint fixed).
     """
+    if K % K_TILE != 0:
+        raise ValueError(
+            f"_matmul2d_source: K={K} is not a multiple of K_TILE={K_TILE} "
+            "— the contraction must be zero-padded (_pad_k) before dispatch, "
+            "else the K-loop reads past the tensor extent (silent corruption)."
+        )
     return f"""
     constexpr uint M_FULL = {M};
     constexpr uint K_FULL = {K};
@@ -281,11 +312,14 @@ def _make_kernels(key, m_chunk, K, N, B, T, H, W, C_in, T_out, H_out, W_out,
         header=_IM2COL_HEADER,
         ensure_row_contiguous=True,
     )
+    # III-6: matmul contracts over the K_TILE-padded K (operands are
+    # zero-padded by the caller); im2col above stays at the true K.
+    k_pad = _round_up_k_tile(K)
     mm = mx.fast.metal_kernel(
-        name=f"conv3d_matmul2d_{m_chunk}_{K}_{N}",
+        name=f"conv3d_matmul2d_{m_chunk}_{k_pad}_{N}",
         input_names=["A", "B"],
         output_names=["C"],
-        source=_matmul2d_source(m_chunk, K, N),
+        source=_matmul2d_source(m_chunk, k_pad, N),
         header=_MATMUL_HEADER,
         ensure_row_contiguous=True,
     )
@@ -554,6 +588,11 @@ def _dispatch_1x1x1_fast_path(x_flat, w_flat, chunks, M, K_eff, N,
     n_chunks = len(chunks)
     force_per_chunk_eval = n_chunks > 1
 
+    # III-6: pad the contraction K to a K_TILE multiple (matmul2d partial-
+    # K-tile fix); w_flat is loop-invariant -> pad once.
+    k_pad = _round_up_k_tile(K_eff)
+    w_flat = _pad_k(w_flat, K_eff, k_pad)
+
     for (m_offset, m_chunk) in chunks:
         # Slice the flattened input to this chunk's rows. Row-major
         # contiguous, so this is metadata-only -- but with
@@ -564,8 +603,9 @@ def _dispatch_1x1x1_fast_path(x_flat, w_flat, chunks, M, K_eff, N,
             x_chunk = x_flat
         else:
             x_chunk = x_flat[m_offset:m_offset + m_chunk, :]
+        x_chunk = _pad_k(x_chunk, K_eff, k_pad)
 
-        mm_kernel = _make_pointwise_matmul_kernel(m_chunk, K_eff, N, dtype)
+        mm_kernel = _make_pointwise_matmul_kernel(m_chunk, k_pad, N, dtype)
         n_tg_x = (N + N_TILE - 1) // N_TILE
         n_tg_y = (m_chunk + M_TILE - 1) // M_TILE
         chunk_flat = mm_kernel(
@@ -702,6 +742,12 @@ def _conv3d_nax_forward_python_legacy(
     # channels-last input is contiguous over the last 4 dims).
     w_flat = w.reshape(C_out, K_T * K_H * K_W * C_in)
 
+    # III-6: pad the contraction K to a K_TILE multiple (matmul2d partial-
+    # K-tile fix); w_flat is loop-invariant -> pad once.  _make_kernels
+    # builds the matmul at the same k_pad; im2col stays at the true K.
+    k_pad = _round_up_k_tile(K)
+    w_flat = _pad_k(w_flat, K, k_pad)
+
     # Plan M-chunks (Phase 1.2 chunking).
     dtype_bytes = 2  # f16 / bf16
     chunks = _compute_chunk_layout(M, K, dtype_bytes)
@@ -736,8 +782,11 @@ def _conv3d_nax_forward_python_legacy(
             grid=(grid_x * THREADS_PER_TG_IM2COL, 1, 1),
             threadgroup=(THREADS_PER_TG_IM2COL, 1, 1),
         )[0]
+        # III-6: pad the im2col buffer's K axis to match w_flat / the
+        # k_pad-wide matmul kernel.
+        im2col_buf = _pad_k(im2col_buf, K, k_pad)
 
-        # Step 2: matmul2d (m_chunk, K) @ (N, K)^T = (m_chunk, N).
+        # Step 2: matmul2d (m_chunk, k_pad) @ (N, k_pad)^T = (m_chunk, N).
         n_tg_x = (N + N_TILE - 1) // N_TILE
         n_tg_y = (m_chunk + M_TILE - 1) // M_TILE
         chunk_flat = mm_kernel(

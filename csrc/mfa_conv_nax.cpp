@@ -60,11 +60,56 @@ int dtype_bytes_for(mlx::core::Dtype dtype) {
   throw std::runtime_error("conv_nax: unsupported dtype");
 }
 
+// ── Sprint III-6: matmul2d partial-K-tile fix ─────────────────────────
+// matmul2d_source tiles the K (contraction) axis in K_TILE-wide steps and
+// its K-loop reads the FINAL tile past K_FULL when K % K_TILE != 0 — the
+// `tA.slice<K_TILE,…>(k_start,…)` slice exceeds the declared tensor extent
+// and the cooperative load reads adjacent/OOB memory -> garbage
+// accumulation (C_in=16 -> MAE/RMS 0.11; C_in=31 -> NaN; see
+// docs/v50/campaign-2026-06/phase3/conv-small-channel-fix.md).  Since
+// K = C_in*taps and gcd(taps,32) makes K % 32 == 0 only at C_in % 32 == 0,
+// every K-unaligned shape corrupts.
+//
+// Fix: zero-pad BOTH matmul operands' K (last) axis up to a multiple of
+// K_TILE.  Zero contraction terms contribute nothing, so C is EXACT, and
+// the K-loop only ever reads in-bounds — every shape becomes the
+// already-correct K % K_TILE == 0 case.  K is compile-time in the JIT
+// source, so the padded K is baked into the kernel name (distinct cache
+// key per Sprint A discipline).  Cost: one pad copy + a slightly wider
+// matmul (at most +K_TILE-1 in K) when K is unaligned; nil when aligned.
+inline int round_up_k_tile(int K) {
+  return ((K + K_TILE - 1) / K_TILE) * K_TILE;
+}
+
+mlx::core::array pad_contraction_k(const mlx::core::array& a, int K, int k_pad,
+                                   mlx::core::StreamOrDevice s) {
+  if (k_pad == K) return a;  // already K_TILE-aligned — no-op
+  int last = static_cast<int>(a.ndim()) - 1;
+  return mlx::core::pad(
+      a, /*axes=*/{last}, /*low_pad_size=*/{0}, /*high_pad_size=*/{k_pad - K},
+      /*pad_value=*/mlx::core::array(0, a.dtype()), /*mode=*/"constant", s);
+}
+
 std::string matmul2d_source(int M, int K, int N) {
   // Conv3D matmul: C(M,N) = A(M,K) @ B(N,K)^T via rightT=true.
   // A is im2col buffer (M, K); B is flattened weight (N, K); both
   // row-major. matmul2d's rightT=true transposes B internally.
   // (Phase 1.1 D14 rightT bug history.)
+  //
+  // III-6 Rule-8 contract: the K-loop steps K_TILE at a time over
+  // [0, K) and does NOT mask a partial final tile, so it is correct ONLY
+  // when K is a multiple of K_TILE.  Callers MUST zero-pad the contraction
+  // (pad_contraction_k).  Refuse to generate for an unaligned K — any
+  // future dispatch site that forgets to pad fails LOUDLY here at JIT-gen
+  // time rather than silently reading past the tensor extent (the
+  // small-channel corruption this sprint fixed).
+  if (K % K_TILE != 0) {
+    throw std::runtime_error(
+        "matmul2d_source: K=" + std::to_string(K) + " is not a multiple of "
+        "K_TILE=" + std::to_string(K_TILE) + " — the contraction must be "
+        "zero-padded (pad_contraction_k) before dispatch, else the K-loop "
+        "reads past the tensor extent (silent corruption).");
+  }
   std::ostringstream os;
   os << "    constexpr uint M_FULL = " << M << ";\n"
      << "    constexpr uint K_FULL = " << K << ";\n"
@@ -239,23 +284,29 @@ mlx::core::array dispatch_pointwise_fast_path(
   std::vector<mlx::core::array> chunk_outputs;
   chunk_outputs.reserve(chunks.size());
   bool multi_chunk = chunks.size() > 1;
+  // III-6: pad the contraction (K = C_in) to a K_TILE multiple — w_flat is
+  // loop-invariant, pad once.
+  int k_pad = round_up_k_tile(C_in);
+  auto stream_pw = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto w_flat_pad = pad_contraction_k(w_flat, C_in, k_pad, stream_pw);
   for (const auto& [m_offset, m_chunk] : chunks) {
-    enforce_int32_byte_offset_invariant(m_chunk, C_in, dtype_bytes);
+    enforce_int32_byte_offset_invariant(m_chunk, k_pad, dtype_bytes);
     mlx::core::array x_chunk =
         multi_chunk
             ? mlx::core::slice(x_flat, {m_offset, 0},
                                 {m_offset + m_chunk, C_in}, {1, 1})
             : x_flat;
+    auto x_chunk_pad = pad_contraction_k(x_chunk, C_in, k_pad, stream_pw);
     std::string name = "conv3d_1x1x1_mm_" + std::to_string(m_chunk) + "_" +
-                       std::to_string(C_in) + "_" + std::to_string(C_out);
+                       std::to_string(k_pad) + "_" + std::to_string(C_out);
     auto kernel = mlx::core::fast::metal_kernel(
         name, {"A", "B"}, {"C"},
-        matmul2d_source(m_chunk, C_in, C_out), MATMUL_HEADER,
+        matmul2d_source(m_chunk, k_pad, C_out), MATMUL_HEADER,
         /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
     int n_tg_x = (C_out + N_TILE - 1) / N_TILE;
     int n_tg_y = (m_chunk + M_TILE - 1) / M_TILE;
     auto outs = kernel(
-        {x_chunk, w_flat},
+        {x_chunk_pad, w_flat_pad},
         {mlx::core::Shape{m_chunk, C_out}},
         {x.dtype()},
         {n_tg_x * TG_THREADS, n_tg_y, 1},
@@ -556,6 +607,14 @@ mlx::core::array conv3d_nax_forward(
   // Flatten weight (C_out, K_T*K_H*K_W*C_in) row-major.
   auto w_flat = mlx::core::reshape(w, {C_out, K});
 
+  // III-6: pad the contraction K to a K_TILE multiple (matmul2d partial-
+  // K-tile fix).  w_flat is loop-invariant → pad once; im2col buffers are
+  // padded per chunk below.
+  int k_pad = round_up_k_tile(K);
+  auto w_flat_pad =
+      pad_contraction_k(w_flat, K, k_pad,
+                        mlx::core::default_stream(mlx::core::Device::gpu));
+
   // Plan chunks. chunk_M_override > 0 means user-specified.
   int dtype_bytes = dtype_bytes_for(x.dtype());
   std::vector<std::pair<int, int>> chunks;
@@ -577,7 +636,7 @@ mlx::core::array conv3d_nax_forward(
   auto stream = mlx::core::default_stream(mlx::core::Device::gpu);
 
   for (const auto& [m_offset, m_chunk] : chunks) {
-    enforce_int32_byte_offset_invariant(m_chunk, K, dtype_bytes);
+    enforce_int32_byte_offset_invariant(m_chunk, k_pad, dtype_bytes);
 
     // Build im2col kernel for this chunk.
     std::string im2col_name =
@@ -616,19 +675,21 @@ mlx::core::array conv3d_nax_forward(
         false,
         stream);
     auto im2col_buf = im2col_outs[0];
+    // III-6: pad the im2col buffer's K axis to match w_flat_pad.
+    auto im2col_buf_pad = pad_contraction_k(im2col_buf, K, k_pad, stream);
 
     // Build matmul kernel for this chunk.
     std::string mm_name = "conv3d_matmul2d_" +
-        std::to_string(m_chunk) + "_" + std::to_string(K) + "_" +
+        std::to_string(m_chunk) + "_" + std::to_string(k_pad) + "_" +
         std::to_string(N);
     auto mm_kernel = mlx::core::fast::metal_kernel(
         mm_name, {"A", "B"}, {"C"},
-        matmul2d_source(m_chunk, K, N), MATMUL_HEADER,
+        matmul2d_source(m_chunk, k_pad, N), MATMUL_HEADER,
         /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
     int n_tg_x = (N + N_TILE - 1) / N_TILE;
     int n_tg_y = (m_chunk + M_TILE - 1) / M_TILE;
     auto mm_outs = mm_kernel(
-        {im2col_buf, w_flat},
+        {im2col_buf_pad, w_flat_pad},
         {mlx::core::Shape{m_chunk, N}},
         {x.dtype()},
         {n_tg_x * TG_THREADS, n_tg_y, 1},

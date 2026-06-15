@@ -527,3 +527,28 @@ each from a real bug it surfaced:
     adversarial scale, mixed dtypes, gradients through every feature.
     *Rule*: a regression test must vary the dimension the bug class lives
     in, not just exercise the happy-path shape.
+
+## III-6 institutional lesson (conv K-tail root-cause fix, 2026-06)
+
+11. **A low-precision kernel is validated against an INDEPENDENT
+    higher-precision reference — never against another kernel path.** The
+    conv3d small-channel corruption survived all 9 III-4 passes because
+    `test_fp16_still_works` compared the Python legacy GEMM against
+    `mx.conv_general` — but under installed hooks `mx.conv_general` routed
+    to the *same* broken matmul2d kernel. Two instances of one bug compared
+    equal → green. The trap generalizes: any test asserting
+    `kernel_A(x) ≈ kernel_B(x)` is blind to a bug both share — and "B" is
+    deceptively easy to route back into "A" via a hook, a shared helper, or
+    a fallback. *Rule*: the reference for a low-precision kernel must be (a)
+    an independent implementation (fp32 native / a PyTorch CPU oracle / a
+    different vendor primitive such as Apple SDPA for attention) AND (b)
+    computed at higher precision (fp32) so its own error floor is far below
+    the bug magnitude. When the reference is a hookable op, pin it to the
+    UNHOOKED original (`_ORIGINAL_CONV3D`), never the bare patched symbol.
+    *Sweep result (III-6)*: the only active instance was
+    `test_fp16_still_works` (fixed III-5 → C_in=32 + III-6 root-cause fix);
+    all other low-precision kernel tests already validate against an
+    independent fp32/SDPA/PyTorch reference. The root cause itself — the
+    matmul2d unmasked partial-K-tile — was fixed at the kernel level (K
+    zero-padded to a K_TILE multiple); `matmul2d_source` now refuses an
+    unaligned K (Rule 8) so a future unpadded caller fails loudly.
