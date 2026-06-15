@@ -766,3 +766,38 @@ STATUS: COMPLETE
 
 ### Git
 - cb76456 + deaafaf + 9d62d2e; tag v2.52.1; branch master; pushed. Report: docs/v50/campaign-2026-06/phase3/sprint-III-6-report.md.
+
+---
+## [2026-06-15 18:00] [CLAUDE] Sprint III-7: targeted sweep for the conv3d bug's hidden siblings
+STATUS: COMPLETE
+
+### Plan
+- Objective: hunt the 3 classes that let the conv3d bug survive 9 III-4 passes — (A) non-independent reference validation, (B) unmasked partial-tile read, (C) single-shape-class coverage. Confirm every suspect vs an INDEPENDENT fp32 reference. Fix structurally, lock with coverage.
+- Mode: one sub-agent per class (3 parallel general-purpose agents), then central verify + fix.
+
+### Findings
+- **Class A — CLEAN** [VERIFIED]. ~50 numerical-validation tests classified; 7 non-independent-reference categories re-probed vs fp32, all at dtype floor. Only ever-active instance was the conv test (fixed III-5/6).
+- **Class B — CLEAN** [VERIFIED]. conv matmul2d K-tail (fixed III-6) was the ONLY unmasked partial-tile read; all other kernels mask tails (load_safe + -inf). Sparse-attention gate is documented + Rule-8-guarded (the right model). Non-multiple probes vs fp32 all clean.
+- **Class C — 2 quantize_model bugs FIXED** [VERIFIED]. (1) bare top-level nn.Linear = silent no-op → now Rule-8 raise; (2) group-misaligned in_features raised mid-walk after partial mutation → default predicate skips cleanly + pre-validation pass makes custom-predicate misalignment fail atomically. Same lesson-#9 family the III-4 F7-1 fix partially closed.
+
+### Cross-class — new variant flagged to Marco (NOT fixed)
+- `backend="mfa"` non-causal D∈{64,128} fp16 diverges from fp32 SDPA (MAE ~0.12, verified). NOT default-reachable: dispatch_policy routes non-causal dense to SDPA for PERF (documented), so the kernel is never auto-selected + no test forces it. Class-B.2 cousin: a perf gate masking a latent correctness bug on a forced expert path. Disposition Marco's (Rule-8 raise vs kernel fix vs leave-documented).
+
+### Changes
+- `mlx_mfa/svdquant/quantize.py`: top-level-match Rule-8 raise; `_default_predicate` adds K%group_size==0; new `_validate_quantizable` pre-pass (atomicity). [VERIFIED]
+- Strengthened `tests/test_conv_nax_migration.py`: +fp32 independent anchor (both cpp & python-legacy), +3 non-%32 C_in shapes (16/31/48).
+- NEW `tests/test_iii7_quantize_model_guards.py` (7), `tests/test_iii7_attention_partial_n_coverage.py` (98 — partial-N fp16/bf16 attention vs fp32 SDPA).
+- `docs/v50/audit-framing-inversions.md`: III-7 sweep entry + new mechanism variant (perf-gate-masked forced-path bug).
+
+### Validation
+- Ran: full suite ×2 consecutive. Validated: 1671 passed, 2 skipped both runs (was 1563; +7 +98 +3). SVDQuant fixes verified behaviorally (raise/skip/atomic, un-mutated state). No default-path kernel/dispatch change → net perf non-worse.
+
+### Dependency & regression check
+- `_default_predicate` signature gained group_size (default 64); only caller is quantize_model (closure) + the new pre-pass. svdquant suite 22/22 unchanged.
+
+### Git
+- commits below; branch master. NOTHING RELEASED (Marco-gated): quantize_model fix disposition (patch v2.52.2 vs bundle) + the forced-MFA finding both await Marco.
+
+### Marco-gated queue
+- quantize_model Findings 1&2: fixed on master; release disposition pending.
+- backend="mfa" non-causal divergence: flagged, fix approach pending.

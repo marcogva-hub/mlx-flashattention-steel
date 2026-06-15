@@ -17,6 +17,10 @@ from mlx_mfa.conv_nax import (
 
 
 # 6 production shapes from Sprint C Phase 1.5 (matching the harness).
+# III-7 Class A/C: the original 6 are all C_in % 32 == 0 (the only regime
+# the matmul2d path was correct in pre-III-6). Added small + non-%32 C_in
+# shapes so the migration-equivalence test also exercises the
+# previously-broken regime (now fixed by the III-6 K-tail pad).
 SHAPES = [
     # (label, B, T, H, W, C_in, C_out, K_T, K_H, K_W)
     ("mid_resnet",             1,  5, 64,  64,  512, 512, 3, 3, 3),
@@ -25,6 +29,10 @@ SHAPES = [
     ("up3_resnet_chunk_cap",   1, 24, 128, 193, 128, 128, 3, 3, 3),
     ("up2_resnet_full",        1, 17, 256, 256, 256, 256, 3, 3, 3),
     ("up2_resnet0_peakflops",  1, 17, 256, 256, 512, 256, 3, 3, 3),
+    # III-7: previously-broken non-%32 / small C_in regime (K-tail fix).
+    ("small_cin16",            1,  4,  8,   8,   16,  64, 3, 3, 3),
+    ("nonmult_cin48",          1,  4,  8,   8,   48,  64, 3, 3, 3),
+    ("nonmult_cin31",          1,  4,  8,   8,   31,  64, 3, 3, 3),
 ]
 
 
@@ -67,3 +75,20 @@ def test_cpp_vs_python_equivalence(spec):
         f"{label}: cpp vs python_legacy diverged: "
         f"rmse={rmse:.6e} max={maxe:.4e} rel={rel:.4e} (bar 1e-5)"
     )
+
+    # III-7 lesson #11: cpp and python_legacy SHARE the matmul2d kernel, so
+    # the equivalence check above is blind to a bug both share (the exact
+    # conv3d trap). Anchor BOTH against an INDEPENDENT fp32 reference.
+    # fp32 mx.conv_general can never be hooked to NAX (NAX is fp16/bf16
+    # only), so it is independent regardless of installed-hook state.
+    y_f32 = mx.conv_general(x.astype(mx.float32), w.astype(mx.float32),
+                            stride=(1, 1, 1), padding=list(pad),
+                            kernel_dilation=(1, 1, 1))
+    mx.eval(y_f32)
+    ref_rms = float(mx.sqrt(mx.mean(y_f32 * y_f32)))
+    for name, y in (("cpp", y_cpp), ("python_legacy", y_py)):
+        assert not bool(mx.any(mx.isnan(y)).item()), f"{label}: NaN in {name}"
+        mae = float(mx.mean(mx.abs(y.astype(mx.float32) - y_f32))) / max(ref_rms, 1e-6)
+        assert mae < 0.01, (
+            f"{label}: {name} diverges from fp32 reference: MAE/RMS {mae:.5f} "
+            "(both paths could share a regression the equivalence check misses)")

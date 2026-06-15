@@ -552,3 +552,50 @@ each from a real bug it surfaced:
     matmul2d unmasked partial-K-tile — was fixed at the kernel level (K
     zero-padded to a K_TILE multiple); `matmul2d_source` now refuses an
     unaligned K (Rule 8) so a future unpadded caller fails loudly.
+
+## III-7 targeted sweep (hunt the conv3d bug's siblings, 2026-06)
+
+A dedicated three-class sweep (one sub-agent per class) hunted hidden
+siblings of the conv3d bug across the whole kernel surface, every suspect
+confirmed against an INDEPENDENT fp32 reference:
+
+- **Class A (non-independent reference)** — CLEAN. ~50 numerical-validation
+  tests classified; 7 non-independent-reference categories re-probed vs
+  fp32, all at the dtype floor. The only active instance was the III-5/6
+  conv one. Several passing-by-luck tests (cpp-vs-python-legacy migration,
+  topk-vs-fallback, LCSA-v1-vs-v2, context-vs-base) were strengthened to an
+  independent fp32 anchor — note the trick: **fp32 `mx.conv_general` is
+  inherently independent** because NAX only handles fp16/bf16, so an fp32
+  conv can never be hooked to the kernel under test regardless of hook
+  state.
+- **Class B (unmasked partial-tile read)** — CLEAN. The conv matmul2d
+  K-tail was the *only* unmasked partial-tile read; every other tiled
+  kernel (V6 NAX, STEEL V1/decode, sage, GNA, paged-varlen ±TQ) masks its
+  tail (`load_safe` + `-inf` score mask). The sparse-attention alignment
+  gate (`mfa_sparse_attention.cpp:966`) is the model of the *right* pattern
+  — it drops remainder branches but enforces `qL/kL % block_tile == 0` with
+  a documented, load-bearing Rule-8 raise. No latent unguarded gate found.
+- **Class C (single-shape coverage)** — found **2 `quantize_model`
+  findings** (same lesson-#9 silent-failure family the III-4 F7-1 fix only
+  partially closed): a bare top-level `nn.Linear` was a silent no-op (the
+  child-walker never tests the top-level module; can't setattr-replace
+  `self`), and a group-misaligned `in_features` raised mid-walk after
+  partial mutation. Both fixed (top-level → Rule-8 raise; default predicate
+  skips group-misaligned cleanly; a pre-validation pass makes a custom
+  predicate's misalignment fail atomically before any mutation). All other
+  accepted-but-untested regimes (partial-N attention at fp16/bf16, non-cubic
+  GNA, non-aligned paged/TQ seq) probed CLEAN vs fp32 — coverage gaps, now
+  locked with parametrized regression tests.
+
+**New mechanism variant** (Class B.2 cousin): a **perf-motivated dispatch
+gate can mask a latent correctness bug on a forced expert path**. The
+`backend="mfa"` non-causal D∈{64,128} forward diverges from fp32 SDPA
+(MAE ~0.12) on M5+/NAX, but `dispatch_policy` routes all non-causal dense
+to SDPA *for speed* (documented: "non-causal dense routes remain
+conservative SDPA"), so the broken kernel is never auto-selected and no
+test forces it — the exact "only reached when [a gate sends real traffic]
+elsewhere" structure of the conv3d bug, here masked by a perf gate rather
+than a correctness gate. Reachable only via the expert `backend="mfa"`
+escape hatch. Flagged to Marco (disposition: Rule-8 raise on the forced
+path vs kernel investigation vs leave-documented) — not the default path,
+fix has expert-API-contract implications.

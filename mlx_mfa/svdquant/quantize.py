@@ -52,7 +52,33 @@ def quantize_model(
         dict with per-layer stats and overall compression ratio.
     """
     if class_predicate is None:
-        class_predicate = _default_predicate
+        # III-7 Class C finding 2: the default predicate must also reject
+        # layers whose in-features are not divisible by group_size — else
+        # they pass the dims>=256 gate and `mx.quantize` raises mid-walk
+        # (after earlier layers were already mutated → partial state).
+        class_predicate = lambda path, module: _default_predicate(  # noqa: E731
+            path, module, group_size)
+
+    # III-7 Class C finding 1 (Rule 8): `quantize_model` mutates in place by
+    # setattr on the PARENT of each matching layer — so it cannot replace a
+    # top-level module that is itself a quantizable nn.Linear (there is no
+    # parent to setattr on).  Before III-7 this returned layers=[] and
+    # reported success — a silent no-op (the same F7-1 family the III-4
+    # pass-7 fix only partially closed).  Fail loudly with an actionable
+    # message instead.
+    if class_predicate("", model):
+        raise ValueError(
+            "quantize_model() mutates in place and cannot replace a "
+            "top-level nn.Linear (no parent to set the replacement on). "
+            "Wrap it in a container module, or build the layer directly: "
+            "SVDQuantLinear.from_linear(linear, bits=..., group_size=...)."
+        )
+
+    # III-7 Class C finding 2 (atomicity): validate group-size divisibility
+    # for EVERY layer a (possibly custom) predicate selects BEFORE mutating
+    # any — so a misaligned layer fails loudly up front with a clear message
+    # rather than raising deep inside mx.quantize after partial mutation.
+    _validate_quantizable(model, class_predicate, group_size)
 
     stats: dict = {
         "layers": [],
@@ -154,12 +180,65 @@ def quantize_model(
     return stats
 
 
-def _default_predicate(path: str, module: nn.Module) -> bool:
-    """Default predicate: quantize nn.Linear layers with both dims >= 256."""
+def _default_predicate(path: str, module: nn.Module,
+                       group_size: int = 64) -> bool:
+    """Default predicate: quantize nn.Linear layers with both dims >= 256
+    AND in-features (last weight dim) divisible by group_size.
+
+    The group_size divisibility is required by `mx.quantize`; including it
+    here means the default path SKIPS an unquantizable shape cleanly rather
+    than attempting it and raising mid-walk (III-7 Class C finding 2)."""
     if not isinstance(module, nn.Linear):
         return False
     M, K = module.weight.shape
-    return M >= _MIN_DIM and K >= _MIN_DIM
+    return M >= _MIN_DIM and K >= _MIN_DIM and K % group_size == 0
+
+
+def _validate_quantizable(model: nn.Module, predicate: Callable,
+                          group_size: int, prefix: str = "") -> None:
+    """Read-only pre-pass: raise if any predicate-selected nn.Linear has an
+    in-features dim not divisible by group_size, BEFORE any layer is mutated
+    (atomicity — III-7 Class C finding 2).  A custom class_predicate can
+    select such a layer; without this pass `mx.quantize` would raise deep in
+    the walk after earlier layers were already replaced, leaving the model
+    partially quantized."""
+    for name, child in model.children().items():
+        full_path = f"{prefix}.{name}" if prefix else name
+        if isinstance(child, nn.Module):
+            if predicate(full_path, child):
+                if isinstance(child, nn.Linear):
+                    K = child.weight.shape[1]
+                    if K % group_size != 0:
+                        raise ValueError(
+                            f"quantize_model: layer '{full_path}' has "
+                            f"in_features={K} not divisible by "
+                            f"group_size={group_size}; mx.quantize cannot "
+                            "quantize it. Exclude it via class_predicate or "
+                            "use a group_size that divides it.")
+            else:
+                _validate_quantizable(child, predicate, group_size, full_path)
+        elif isinstance(child, dict):
+            for k, v in getattr(model, name).items():
+                p = f"{full_path}.{k}"
+                if isinstance(v, nn.Module) and predicate(p, v):
+                    if isinstance(v, nn.Linear) and v.weight.shape[1] % group_size != 0:
+                        raise ValueError(
+                            f"quantize_model: layer '{p}' has in_features="
+                            f"{v.weight.shape[1]} not divisible by "
+                            f"group_size={group_size}.")
+                elif isinstance(v, nn.Module):
+                    _validate_quantizable(v, predicate, group_size, p)
+        elif isinstance(child, list):
+            for i, v in enumerate(getattr(model, name)):
+                p = f"{full_path}.{i}"
+                if isinstance(v, nn.Module) and predicate(p, v):
+                    if isinstance(v, nn.Linear) and v.weight.shape[1] % group_size != 0:
+                        raise ValueError(
+                            f"quantize_model: layer '{p}' has in_features="
+                            f"{v.weight.shape[1]} not divisible by "
+                            f"group_size={group_size}.")
+                elif isinstance(v, nn.Module):
+                    _validate_quantizable(v, predicate, group_size, p)
 
 
 def _replace_layers(
