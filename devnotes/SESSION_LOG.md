@@ -696,3 +696,36 @@ STATUS: COMPLETE
 
 ### Campaign close
 - Phase III + the full 2026-06 audit/optimization campaign CLOSED with v2.52.0 as the canonical release. Report: docs/v50/campaign-2026-06/phase3/sprint-III-5-report.md.
+
+---
+## [2026-06-15 16:00] [CLAUDE] Conv3D NAX small-channel fp16 accuracy gap — root cause + dispatch-gate fix
+STATUS: COMPLETE
+
+### Plan
+- Objective: investigate + fix the v2.52.0 post-release observation that the conv3d NAX auto-hook is inaccurate for small fp16 channel counts. Answer Q1 (root cause), Q2 (gate fix), Q3 (regression coverage).
+- Files: mlx_mfa/_auto_hooks.py; tests/test_iii5_conv_small_channel_accuracy.py (new); test fallout updates in 3 existing test files; doc.
+
+### Root cause (Q1) [VERIFIED]
+- conv3d_nax_forward has 2 paths: MPP convolution2d (C++-gated C_in/C_out %16==0 & >=32, fp32 accum — CORRECT) and a legacy im2col+matmul2d fallback. The legacy matmul2d K-loop reads partial K-tiles past K_FULL with no tail mask; K=C_in*27 is %32==0 iff C_in%32==0, and all such C_in take the MPP path — so the legacy path is reached ONLY when K%32!=0 → always numerically broken (C_in=16 → MAE/RMS 0.11; C_in=31 → NaN). Pointwise 1x1x1 + the Python legacy orchestrator share the same matmul2d kernel + bug.
+- Empirical boundary = C_in %16==0 AND >=32, EXACTLY the existing bf16 MPP gate. bf16 dispatch had the gate; fp16 did not → silent corruption. Single-shape-class coverage gap (III-4 lesson #10): every conv test used C>=32 %16==0.
+- Trap: test_fp16_still_works compared legacy vs mx.conv_general which (under hooks) routed to the SAME broken legacy kernel → two wrongs compared equal → green. Independent fp32 reference is the only trustworthy bar.
+
+### Changes (Q2 fix)
+- `mlx_mfa/_auto_hooks.py`: renamed `_conv3d_bf16_mpp_eligible` → `_conv3d_mpp_eligible`; applied it to BOTH fp16 and bf16 in `_patched_conv_general` (was bf16-only). Shapes outside the MPP envelope (incl. all 1x1x1 pointwise + small-channel) now fall back to native, counted in telemetry (Rule 8, no silent drop). [VERIFIED]
+
+### Tests (Q3)
+- NEW `tests/test_iii5_conv_small_channel_accuracy.py` (39): parametrized accuracy C_in∈{8..128}×fp16/bf16 vs fp32 ref (MAE/RMS<0.01); determinism; gate-predicate locks (pure-function, order-robust); pointwise gated out.
+- Fallout updates (tests encoded the buggy behavior): test_v50_prompt_5g_hook_telemetry (engagement fixture shape 16→32; fallback-reason → MPP gate); test_smoke_vsr_models_v2_50_1 (4 tests: small-channel input layers now correctly fall back — assert engaged+fallback==total + eligible-engage counts); test_campaign_2026_06_sprint_a_cache_keys::test_fp16_still_works (shape 16→32 where legacy GEMM is exact).
+
+### Validation
+- Ran: full suite `.venv/bin/python -m pytest tests/ -q`. Validated: 1540 passed, 2 skipped (was 1501; +39 new). Sweep confirms all fp16 C_in now match fp32 within dtype floor; MPP envelope still engages NAX (headline claim unaffected).
+
+### Dependency & regression check
+- `_conv3d_mpp_eligible` only referenced in _auto_hooks.py (verified grep). No public API change. Coverage gap closed by the new parametrized + predicate tests.
+
+### Scope NOT taken (proposed follow-ups)
+- Mask the matmul2d partial K-tile in the Metal kernel (true root cause; would let the gate re-widen to recover NAX perf on small-channel layers) — needs rebuild + revalidation.
+- Rule 8: make the C++ legacy path + Python legacy orchestrator RAISE for C_in%32!=0 instead of silently corrupting (defense-in-depth for raw _ext callers).
+
+### Git
+- commit below; branch master; pushed. Doc: docs/v50/campaign-2026-06/phase3/conv-small-channel-fix.md.

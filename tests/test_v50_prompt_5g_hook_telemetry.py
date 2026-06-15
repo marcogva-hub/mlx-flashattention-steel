@@ -41,8 +41,14 @@ def _reimport_mlx_mfa():
 
 def _mk_inputs(seed):
     mx.random.seed(seed)
-    x = (mx.random.normal((1, 4, 8, 8, 16), dtype=mx.float16) * 0.1)
-    w = (mx.random.normal((16, 3, 3, 3, 16), dtype=mx.float16) * 0.1)
+    # III-5 follow-up: C_in/C_out must be % 16 == 0 AND >= 32 to engage
+    # the NAX conv path.  C=16 (the prior value) is MPP-INELIGIBLE and now
+    # correctly falls back to native — engaging NAX there silently
+    # corrupted (legacy im2col partial-K-tile bug).  Use C=32 so these
+    # telemetry-engagement tests exercise a path that is both engaged and
+    # numerically correct.
+    x = (mx.random.normal((1, 4, 8, 8, 32), dtype=mx.float16) * 0.1)
+    w = (mx.random.normal((32, 3, 3, 3, 32), dtype=mx.float16) * 0.1)
     mx.eval(x, w); mx.synchronize()
     return x, w
 
@@ -102,18 +108,23 @@ def test_hook_executed_counter_increments_on_nax_engagement():
 def test_hook_fallback_counter_increments_on_ineligible():
     import mlx_mfa
     mlx_mfa.reset_hook_stats()
-    # bf16 weight is ineligible per KD-7 mitigation → fall back
+    # III-5 follow-up: C_in=16 is below the MPP envelope (need % 16 == 0
+    # AND >= 32) for BOTH dtypes, so the call falls back to native rather
+    # than reach the numerically-broken legacy NAX path.  The point of
+    # this test is that ineligibility is COUNTED, not silently dropped
+    # (Pattern #8 / Rule 8): a fallback with a recorded reason, not a
+    # silent no-op.
     mx.random.seed(101)
     x = (mx.random.normal((1, 4, 8, 8, 16), dtype=mx.float16) * 0.1)
-    w = (mx.random.normal((16, 3, 3, 3, 16), dtype=mx.bfloat16) * 0.1)
+    w = (mx.random.normal((16, 3, 3, 3, 16), dtype=mx.float16) * 0.1)
     mx.eval(x, w); mx.synchronize()
     y = mx.conv_general(x, w, stride=1, padding=1, kernel_dilation=1)
     mx.eval(y); mx.synchronize()
     stats = mlx_mfa.get_hook_stats()
     assert stats["fallback"]["conv3d_nax_forward"] >= 1
-    # Reason includes the dtype hint
+    # Reason names the MPP-gate constraint that was violated.
     reasons = stats["fallback_reasons"]["conv3d_nax_forward"]
-    assert any("bf16" in r or "bfloat" in r for r in reasons)
+    assert any("MPP gate" in r for r in reasons), reasons
 
 
 def test_fallback_reasons_capped_at_10():

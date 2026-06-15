@@ -174,9 +174,10 @@ def _conv3d_nax_eligible(weight, stride, padding, kernel_dilation, groups, flip)
     #
     # Sprint III-1 (KD-7 lift): bf16 is now admissible — but ONLY via the
     # MPP convolution2d branch, which performs no im2col at all.  The
-    # wrapper enforces the MPP sub-gate via _conv3d_bf16_mpp_eligible();
-    # bf16 shapes outside it fall back to the original op (the legacy
-    # im2col path remains fp16-only until the upstream MLX fix lands).
+    # wrapper enforces the MPP sub-gate via _conv3d_mpp_eligible() for
+    # BOTH dtypes; shapes outside it fall back to the original op (the
+    # legacy im2col path is unsafe — bf16 fails to compile upstream, fp16
+    # silently corrupts on partial K-tiles; III-5 follow-up).
     if weight.dtype not in (mx.float16, mx.bfloat16):
         return False
     # weight shape: (C_out, K_T, K_H, K_W, C_in)
@@ -195,11 +196,29 @@ def _conv3d_nax_eligible(weight, stride, padding, kernel_dilation, groups, flip)
     return True
 
 
-def _conv3d_bf16_mpp_eligible(input, weight, pad_6tuple) -> bool:
-    """Sprint III-1 (KD-7): bf16 conv3d is only safe through the MPP
-    convolution2d branch (no im2col).  Mirror the C++ MPP gate
-    (csrc/mfa_conv_nax.cpp conv3d_nax_forward) so bf16 never reaches the
-    legacy path, whose upstream im2col helper fails at graph-eval time.
+def _conv3d_mpp_eligible(input, weight, pad_6tuple) -> bool:
+    """Mirror the C++ conv3d_nax_forward MPP convolution2d gate
+    (csrc/mfa_conv_nax.cpp:492-505): the ONLY numerically-correct NAX
+    conv path is the MPP convolution2d branch.  Applies to BOTH fp16 and
+    bf16.
+
+    Two reasons a shape outside this envelope must fall back to the
+    native op rather than reach conv3d_nax_forward's legacy fallback:
+
+    1. bf16 (Sprint III-1, KD-7): the legacy im2col helper fails at
+       graph-eval time ("Unable to build metal library" — upstream MLX
+       utils.h:502 half-vs-bfloat16_t mismatch).
+    2. fp16 (III-5 follow-up): the legacy im2col+matmul2d path is
+       NUMERICALLY BROKEN for every shape that reaches it.  Its
+       matmul2d K-loop reads partial K-tiles past K_FULL with no tail
+       mask; K = C_in*27 is a multiple of the 32-wide K-tile iff
+       C_in % 32 == 0, and every such C_in already satisfies the MPP
+       gate (C_in % 16 == 0 and >= 32) and takes the MPP path.  So the
+       legacy path is reached only when K % 32 != 0 -> garbage
+       accumulation (C_in=16 -> ~0.11 MAE/RMS; C_in=31 -> NaN).  This
+       was invisible because every conv test used the MPP envelope
+       (single-shape-class gap; III-4 lesson #10).
+
     k=3x3x3 / stride / dilation / groups / flip are already enforced by
     _conv3d_nax_eligible.
     """
@@ -297,13 +316,19 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
             **kwargs,
         )
 
-    # Sprint III-1 (KD-7): bf16 weights are only safe through the MPP
-    # branch; anything outside its gate falls back to the original op.
-    if weight.dtype == mx.bfloat16 and not _conv3d_bf16_mpp_eligible(
-            input, weight, pad_6tuple):
+    # The MPP convolution2d branch is the ONLY numerically-correct NAX
+    # conv path (see _conv3d_mpp_eligible).  Both fp16 and bf16 must fall
+    # back to the native op outside the MPP envelope — bf16 because the
+    # legacy im2col helper fails to compile upstream (KD-7), fp16 because
+    # the legacy im2col+matmul2d path silently corrupts (III-5 follow-up:
+    # unmasked partial-K-tile reads; C_in=16 -> ~0.11 MAE/RMS, C_in=31 ->
+    # NaN).  Previously only bf16 was gated, so small-channel fp16 reached
+    # the broken legacy path and returned garbage.
+    if not _conv3d_mpp_eligible(input, weight, pad_6tuple):
         _record_hook_fallback(
             "conv3d_nax_forward",
-            "bf16 outside MPP gate (KD-7: legacy im2col bf16 broken upstream)")
+            "outside MPP gate (need C_in/C_out %16==0 & >=32, H/W %8==0, "
+            "B=1, pad=(1,1,1)); legacy NAX conv path is numerically unsafe")
         return _ORIGINAL_CONV_GENERAL(
             input, weight,
             stride=stride, padding=padding,

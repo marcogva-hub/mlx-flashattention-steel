@@ -90,11 +90,16 @@ def test_seedvr2_vae_pattern_fp32_input_fp16_weight_nax_engages():
     stats = mlx_mfa.get_hook_stats()
     engaged = stats["executed"].get("conv3d_nax_forward", 0)
     fallback = stats["fallback"].get("conv3d_nax_forward", 0)
-    assert engaged == 3, (
-        f"SeedVR2 fp32+fp16 pattern: NAX should engage 3 times, "
-        f"got engaged={engaged} fallback={fallback}; "
-        f"reasons={stats['fallback_reasons']}")
-    assert fallback == 0
+    # III-5 follow-up: layer 0 is C_in=16 (< 32) — MPP-INELIGIBLE, so it
+    # correctly falls back to the native op (the NAX legacy path silently
+    # corrupts small channels).  Layers 1-2 (C_in 32, 32) engage NAX.
+    # The invariant that matters: every conv is ACCOUNTED FOR (no silent
+    # drop — Rule 8 / Pattern #8), and the eligible layers do engage.
+    assert engaged + fallback == 3, (
+        f"all 3 convs must be accounted for; got engaged={engaged} "
+        f"fallback={fallback} reasons={stats['fallback_reasons']}")
+    assert engaged == 2, f"the 2 C>=32 layers must engage NAX, got {engaged}"
+    assert fallback == 1, f"the C_in=16 input layer must fall back, got {fallback}"
 
 
 @_skipif_no_nax
@@ -136,8 +141,16 @@ def test_stcdit_pattern_3d_conv_precondition_nax_engages():
     assert h.dtype == mx.float32
 
     stats = mlx_mfa.get_hook_stats()
-    assert stats["executed"].get("conv3d_nax_forward", 0) == 4
-    assert stats["fallback"].get("conv3d_nax_forward", 0) == 0
+    engaged = stats["executed"].get("conv3d_nax_forward", 0)
+    fallback = stats["fallback"].get("conv3d_nax_forward", 0)
+    # III-5 follow-up: layers 0-1 (C_in 8, 16) are below the MPP envelope
+    # (need %16==0 & >=32) and correctly fall back to native; layers 2-3
+    # (C_in 32, 64) engage NAX.
+    assert engaged + fallback == 4, (
+        f"all 4 convs accounted for; engaged={engaged} fallback={fallback} "
+        f"reasons={stats['fallback_reasons']}")
+    assert engaged == 2, f"the 2 C>=32 layers must engage NAX, got {engaged}"
+    assert fallback == 2, f"the 2 small-channel layers must fall back, got {fallback}"
 
 
 @_skipif_no_nax
@@ -153,7 +166,10 @@ def test_sparkvsr_cogvideox_backbone_pattern_nax_engages():
     ]
     h = _run_conv3d_loop(x, weights_enc, n_layers=2)
 
-    # 1x1x1 layers (pointwise, also NAX-eligible per _ELIGIBLE_KERNEL_SIZES)
+    # 1x1x1 pointwise layer.  III-5 follow-up: the pointwise NAX path uses
+    # the same matmul2d kernel whose K-tail is unmasked (correct only for
+    # C_in % 32 == 0), so the MPP gate now routes ALL non-3x3x3 convs to
+    # the native op for safety.  This pointwise conv therefore falls back.
     weights_1x1 = [
         _mk_conv3d_weight(128, 64, kT=1, kH=1, kW=1, dtype=mx.float16, seed=40),
     ]
@@ -163,15 +179,24 @@ def test_sparkvsr_cogvideox_backbone_pattern_nax_engages():
     assert h.dtype == mx.float32
 
     stats = mlx_mfa.get_hook_stats()
-    # 2 (3x3x3) + 1 (1x1x1) = 3 NAX engagements
-    assert stats["executed"].get("conv3d_nax_forward", 0) == 3
-    assert stats["fallback"].get("conv3d_nax_forward", 0) == 0
+    engaged = stats["executed"].get("conv3d_nax_forward", 0)
+    fallback = stats["fallback"].get("conv3d_nax_forward", 0)
+    # enc layer 0 (C_in=16) -> native; enc layer 1 (C_in=32) -> NAX;
+    # 1x1x1 pointwise -> native.  3 convs total, all accounted for.
+    assert engaged + fallback == 3, (
+        f"all 3 convs accounted for; engaged={engaged} fallback={fallback} "
+        f"reasons={stats['fallback_reasons']}")
+    assert engaged == 1, f"the one C>=32 3x3x3 layer must engage NAX, got {engaged}"
+    assert fallback == 2, f"C_in=16 + 1x1x1 must fall back, got {fallback}"
 
 
 @_skipif_no_nax
 def test_portfolio_aggregate_no_unexpected_fallbacks():
-    """Run all 4 model patterns back-to-back; aggregate stats must show
-    100% NAX engagement (this is the "post-fix sanity" assertion)."""
+    """Run all 4 model patterns back-to-back (one conv each).  III-5
+    follow-up: only FlashVSR's first conv is C_in=32 (MPP-eligible) — the
+    other three are C_in=16/8 input projections that correctly fall back
+    to native (the small-channel NAX path silently corrupts).  The
+    aggregate invariant: every conv is accounted for (no silent drop)."""
     mlx_mfa.reset_hook_stats()
 
     # SeedVR2
@@ -197,13 +222,17 @@ def test_portfolio_aggregate_no_unexpected_fallbacks():
     stats = mlx_mfa.get_hook_stats()
     engaged = stats["executed"].get("conv3d_nax_forward", 0)
     fallback = stats["fallback"].get("conv3d_nax_forward", 0)
-    assert engaged == 4, (
-        f"Portfolio aggregate: expected 4 NAX engagements (one per model), "
-        f"got engaged={engaged} fallback={fallback}; "
+    assert engaged + fallback == 4, (
+        f"Portfolio aggregate: all 4 convs must be accounted for (no "
+        f"silent drop), got engaged={engaged} fallback={fallback}; "
         f"reasons={stats['fallback_reasons']}")
-    assert fallback == 0, (
-        f"Portfolio aggregate: expected 0 fallbacks across all 4 models, "
-        f"got fallback={fallback}; reasons={stats['fallback_reasons']}")
+    assert engaged == 1, (
+        f"Portfolio aggregate: only FlashVSR's C_in=32 conv is MPP-eligible, "
+        f"expected 1 NAX engagement, got engaged={engaged}")
+    assert fallback == 3, (
+        f"Portfolio aggregate: the 3 small-channel (C_in 16/8) input convs "
+        f"must fall back to native, got fallback={fallback}; "
+        f"reasons={stats['fallback_reasons']}")
 
 
 # NOTE: a strict numerical-match smoke test was removed in Phase D

@@ -183,11 +183,26 @@ class TestLegacyConvDtypeContract:
     @pytest.mark.skipif(not _HAS_NAX, reason="legacy path benches on M5+")
     def test_fp16_still_works(self):
         from mlx_mfa.conv_nax import _conv3d_nax_forward_python_legacy
+        # III-5 follow-up: use C_in=32 (a multiple of 32) so K = C_in*27 is
+        # a multiple of the matmul2d 32-wide K-tile.  The legacy path's
+        # K-loop does not mask the partial tail tile, so it is only
+        # numerically correct when K % 32 == 0 (i.e. C_in % 32 == 0).  The
+        # prior C_in=16 shape exercised the broken tail and only "passed"
+        # because the reference (mx.conv_general under installed hooks)
+        # routed through the SAME broken legacy kernel — two equally-wrong
+        # outputs comparing equal.  This test asserts the A-8 DTYPE
+        # contract (fp16 works), so a correct-by-construction shape is
+        # right; the small-channel brokenness is covered (and gated) by
+        # test_iii5_conv_small_channel_accuracy.py.
         mx.random.seed(104)
-        x = (mx.random.normal((1, 4, 8, 8, 16)) * 0.1).astype(mx.float16)
-        w = (mx.random.normal((16, 3, 3, 3, 16)) * 0.1).astype(mx.float16)
+        x = (mx.random.normal((1, 4, 8, 8, 32)) * 0.1).astype(mx.float16)
+        w = (mx.random.normal((32, 3, 3, 3, 32)) * 0.1).astype(mx.float16)
         _eval_force(x, w)
         y = _conv3d_nax_forward_python_legacy(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
+        # At C_in=32 both the legacy GEMM and mx.conv_general (whether it
+        # routes to native or the MPP NAX path under installed hooks) are
+        # numerically correct, so this comparison is valid regardless of
+        # hook state.
         ref = mx.conv_general(x, w, stride=1, padding=1)
         _eval_force(y, ref)
         d = float(mx.max(mx.abs(y.astype(mx.float32) - ref.astype(mx.float32))))
