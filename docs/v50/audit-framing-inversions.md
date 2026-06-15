@@ -476,3 +476,54 @@ for reassignments of cfg-derived names inside generators.
 - Update the "Recurring patterns" section quarterly or when a new
   meta-pattern emerges.
 - Cross-reference each entry from the sprint's decisions/status doc.
+
+---
+
+## Pattern #9 — three exhibits (as of the III-4 audit)
+
+The generator/dispatch dimension-mismatch class now has THREE recorded
+exhibits, all enforced by `/mlx-mfa-release-audit` gate #9:
+1. **KD-5** (2026-05) — `MFASteelBwdDKV` dispatched `cfg.BK`=32 while the
+   generator hardcoded BK=16 for D>64 (above).
+2. **v2.39.1 fused-backward BK=16** — the fused dKdV default `BK=16`
+   (TK=1) vs the paired-MMA `ik += 2` requirement (TK even).
+3. **MFA_V6_V34_BK forward override** (II-8) — an unguarded env-var
+   forward override of BK, found during the Phase II-8 sweep.
+Gate #9 is now a programmatic test (`tests/test_phase2_ii8_gate9_parity.py`)
+asserting every paired-MMA emission site's BK is `% 32`-guarded.
+
+## III-4 institutional lessons (Phase III-4 audit, 2026-06)
+
+The 9-pass repeat-until-clean whole-repo audit added three meta-lessons,
+each from a real bug it surfaced:
+
+8. **MLX `grid` is total THREADS, not threadgroups.** A kernel indexed
+   by `threadgroup_position_in_grid.X` and reducing cooperatively over
+   its threads needs `grid.X = n_items_X × threadgroup.X`. The top-K
+   bisection kernel (a promoted AUTO-default) used `grid.x = N`, launching
+   only `N/256` threadgroups → it wrote thresholds for the first ~8 query
+   rows per head and the rest read **stale Metal-pool memory**. A CRITICAL
+   that passed tests because recycled buffers usually held benign zeros.
+   *Rule*: for every `mx.fast.metal_kernel`, assert the grid matches the
+   indexing mode (threadgroup-indexed → `n × tg_size`; thread-indexed →
+   `n` rounded up with an overshoot guard) AND that 100% of the output is
+   written (an undercount + a partially-written output = stale reads).
+
+9. **`isinstance(child, dict)` before `nn.Module` is a silent-no-op trap.**
+   `nn.Module` IS a `dict` subclass (`issubclass(nn.Linear, dict)` is
+   True). A tree walk that branches on `dict` first treats a direct
+   `nn.Linear` attribute (the most common model structure) as a container,
+   iterates its weight/bias arrays, and replaces nothing — while reporting
+   success. `quantize_model` was a silent no-op on direct-attribute models
+   for this reason. *Rule*: check `nn.Module` before `dict`/`list`.
+
+10. **Single-shape-class test suites hide entire bug families.** Every
+    III-4 bug that prior suites missed shared a "the only test used one
+    shape class" root: power-of-2 spatial grids (axial-temporal mask),
+    `nn.Sequential` (svdquant), 0.1-scale fixtures (II-6 paired-MMA),
+    same-dtype inputs (dtype-reinterpret), never-gradded feature combos
+    (`return_lse` backward). The audit's value came from deliberately
+    breaking each assumption — non-pow2 grids, direct attributes, unit +
+    adversarial scale, mixed dtypes, gradients through every feature.
+    *Rule*: a regression test must vary the dimension the bug class lives
+    in, not just exercise the happy-path shape.

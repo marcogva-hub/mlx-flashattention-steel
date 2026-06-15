@@ -4,14 +4,35 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.51.0** (PyPI).  The 2026-06 optimization-campaign
-release (Phases I–III): conv3d via the Apple MPP convolution2d
-primitive default-on (fp16 2.3–2.5×, bf16 1.4–2.7× — KD-7 lifted),
-V34 NAX backward D=64 default-on causal + non-causal (1.7–2.7× vs
-SDPA-vjp), TurboQuant paged decode steps 6.0–14.4× faster, plus a
-sparse-backward nondeterminism class fix and a fused-TQ-kernel
-2/4-bit correctness fix.  See `CHANGELOG.md [2.51.0]` and
-`docs/v50/campaign-2026-06/` for the full campaign record.
+Current version: **2.52.0** (PyPI).  The complete, corrected state of
+the 2026-06 optimization campaign (Phases I–III): the headline
+promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
+run repeat-until-clean to a zero-finding fixed point; ~73 fixes).
+
+**Headline promotions** (measured, per-cell, M5 NAX — not blanket
+claims):
+
+- conv3d via the Apple MPP convolution2d primitive, default-on —
+  **fp16 2.3–2.5×**, **bf16 1.4–2.7×** (KD-7 lifted) vs the legacy path
+  at T8/T16 64×64 C128.
+- V34 NAX backward D=64 default-on — causal **2.06–2.58×**, non-causal
+  **1.72–2.01×** vs SDPA-vjp (qL ≥ 2048); forward stays bit-identical to
+  Apple SDPA.
+- TurboQuant paged decode — single-token steps **6.0× (S=4K) to 14.4×
+  (S=16K)** faster (attend-only 13.8–22.1× vs the fused kernel).
+- D=256 causal M5 dispatch inversion corrected; LCSA mask build
+  **15.4×** (11.19 ms → 0.73 ms).
+
+> **⚠ Upgrade from v2.51.0.** v2.51.0 contains two pre-existing CRITICAL
+> silent-corruption bugs on default/promoted paths (the top-K threshold
+> kernel's Metal-grid undercount, and NaN gradients through
+> `return_lse=True`), both fixed in v2.52.0. Upgrade to v2.52.0. See
+> `CHANGELOG.md [2.52.0]`.
+
+New opt-in APIs: cider-style GQA-decode (`mlx_mfa.gqa_decode_cider`),
+hook telemetry (`mlx_mfa.get_hook_stats()`), the `mx.conv3d` auto-hook.
+Full campaign record: `CHANGELOG.md [2.52.0]` and
+`docs/v50/campaign-2026-06/` (`phase3/PHASE-III-CLOSE.md`).
 
 ### v2.50 highlights (shipped 2026-05)
 
