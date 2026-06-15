@@ -2,6 +2,59 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.52.1] — 2026-06-15 — conv3d small-channel correctness (kernel root-cause fix)
+
+v2.52.1 fixes a **silent-corruption bug present in v2.52.0 (and every
+release since the v2.50.x II-9 MPP conv lift)** affecting small-channel
+fp16 `mx.conv3d`.  Pure correctness patch — no new API, no breaking change.
+
+### ⚠ CRITICAL — upgrade from v2.52.0 (and earlier) to v2.52.1
+
+**The auto-hooked `conv3d` NAX path produced silently wrong output for
+small input-channel counts** (`C_in` not a multiple of 32 — e.g. the
+`C_in=8/16` first / input-projection convs of real VSR VAE encoders:
+SeedVR2, STCDiT, SparkVSR).  The kernel's `matmul2d` contraction loop read
+the final K-tile past the tensor extent with no partial-tile mask, so when
+`K = C_in × taps` was not a multiple of the 32-wide K-tile it accumulated
+out-of-bounds garbage (`C_in=16` → ~0.11 MAE/RMS; `C_in=31` → NaN).  fp16
+was affected; bf16 was already gated away from the path.  **Users on
+v2.52.0 or earlier who run conv3d with small input channels should upgrade
+to v2.52.1.**
+
+Invisible to the suite because every conv test used the MPP-envelope shape
+class (`C_in ≥ 32, %16==0`), and the one small-channel test compared the
+kernel against `mx.conv_general` which — under installed hooks — routed to
+the *same* broken kernel (two equally-wrong outputs comparing equal).
+Codified as institutional lesson #11: *a low-precision kernel is validated
+against an independent higher-precision reference (fp32), never another
+kernel path* (`docs/v50/audit-framing-inversions.md`).
+
+### Fixed
+
+- **`matmul2d` partial-K-tile (root cause).** The contraction K is now
+  zero-padded to a multiple of the 32-wide K-tile before dispatch
+  (`mfa_conv_nax.cpp` `pad_contraction_k`; `conv_nax.py` `_pad_k`) — zero
+  contraction terms contribute nothing, so the result is exact and the
+  K-loop only reads in-bounds.  Fixes **all three** entry points that
+  shared the kernel: the C++ legacy im2col path, the C++ 1×1×1 pointwise
+  path, and the Python `_conv3d_nax_forward_python_legacy` orchestrator.
+  All now match an fp32 reference within the dtype floor at every `C_in`.
+- **Rule-8 hardening.** `matmul2d_source` (C++ and Python) now refuses to
+  generate for a K that is not K_TILE-aligned, so any future dispatch site
+  that forgets to pad fails loudly at JIT-gen rather than silently
+  corrupting.
+
+### Routing (unchanged from v2.52.0's gate-out)
+
+The production auto-hook still routes small-channel and 1×1×1 convs to the
+native op: the bench (3-session median, canonical protocol) showed the NAX
+path is ~1.7× **slower** than native at small `C_in` (im2col +
+matmul-dispatch overhead dominates the tiny matmul; Pattern #6).  The
+kernel fix is correctness defence for raw-API / pointwise / Python-legacy
+callers and a guard against future re-widening, not a perf change.  The
+headline conv MPP claim (k=3³, `C_in/C_out ≥ 32, %16==0`: fp16 2.3–2.5×,
+bf16 1.4–2.7×) is unchanged.
+
 ## [2.52.0] — 2026-06-15 — campaign release (complete corrected state)
 
 v2.52.0 ships the complete, corrected state of the 2026-06
