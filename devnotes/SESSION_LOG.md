@@ -823,3 +823,18 @@ STATUS: HANDOFF_READY
 - Findings doc: docs/v50/campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md (signature, bisection, next steps).
 - NOT FIXED. Marco-gated fix approach: (a) repair V2 non-causal normalization/indexing (validate vs fp32), or (b) route forced-mfa non-causal to V1/SDPA + Rule-8 note (V2 non-causal has no production value since auto routes to SDPA). Then lock with a forced-mfa non-causal fp32 correctness test.
 - Git: findings doc + log commit below; branch master. Nothing released.
+
+---
+## [2026-06-15 19:30] [CLAUDE] forced-MFA non-causal — REFINED to V2 single-pass; mechanism narrowed (not yet fixed)
+STATUS: IN_PROGRESS
+
+- Marco approved "repair V2 non-causal". Deeper bisection refined the location:
+  - B·H∈{1,2} (under-occupied→split-K) correct; B·H≥4 (single-pass) wrong; MFA_FORCE_SPLITK=0 reproduces at ALL H incl H=1.
+  - => bug is in V2 SINGLE-PASS non-causal branch specifically. V1 non-causal correct; V2 causal single-pass correct; V2 split-K non-causal correct. [VERIFIED]
+- Mechanism narrowed: magnitude ~1.5× too large (norms ~2.6×) + per-row error DECREASES monotonically with q (Q-tile0 0.21→Q-tile7 0.085), deterministic. RULED OUT: final normalization (line 838, shared w/ causal), online softmax (line 721, "same as V1"), L write. Only causal-conditional diffs for N=256 are kb_lim + diagonal mask. => fault in V2 single-pass KV_smem preload/barrier/P@V machinery over the FULL non-causal tile range.
+- Repair is delicate barrier/smem work; NOT done this session (avoid rushed kernel edit → race risk). Findings doc updated with the exact reproduction + the code regions to read + the signature anchor.
+- Findings: docs/v50/campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md.
+- Git: doc + log commit below; branch master. Nothing released.
+
+### Next action
+- Repair: read V2 single-pass preload (~322-375) + per-iter V-load/K-preload/barriers (~775-831) + P@V; git-blame vs v1.4.0; fix; validate vs fp32 across D/N/dtype/B·H; lock with forced-single-pass non-causal regression test.
