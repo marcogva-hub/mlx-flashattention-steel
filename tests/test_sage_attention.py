@@ -192,6 +192,21 @@ class TestSageKernel:
             f"shape={q.shape} causal={causal}"
         )
 
+        # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
+        # The fp16 reference above runs at the SAME precision as the kernel, so
+        # a shared fp16-rounding bug could pass undetected.  Lock against the
+        # fp32 SDPA oracle (inputs cast to float32) — NOT patched by auto-hooks.
+        # Sage is a lossy int8 path; the int8 quantization noise dominates the
+        # fp16->fp32 oracle gap, so the same lossy tolerance applies.
+        q32, k32, v32 = q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32)
+        ref32 = reference_sdpa(q32, k32, v32, scale=scale, causal=causal)
+        mx.eval(ref32)
+        max_err32 = np.abs(np.array(ref32) - out_np).max()
+        assert max_err32 <= atol, (
+            f"fp32-oracle max_err={max_err32:.4f} > atol={atol:.4f}  "
+            f"shape={q.shape} causal={causal}"
+        )
+
     def test_d64_noncausal(self):
         q, k, v = rand_qkv(1, 4, 256, 64, seed=1)
         self._check(q, k, v, causal=False)
@@ -230,6 +245,16 @@ class TestSageKernel:
         mx.eval(ref, out)
         max_err = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
         assert max_err <= self.TOL, f"GQA max_err={max_err:.4f}"
+
+        # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
+        # fp16 reference shares the kernel's precision; add the fp32 oracle.
+        ref32 = reference_sdpa(
+            q.astype(mx.float32), k_exp.astype(mx.float32),
+            v_exp.astype(mx.float32), scale=scale,
+        )
+        mx.eval(ref32)
+        max_err32 = float(mx.max(mx.abs(out.astype(mx.float32) - ref32)))
+        assert max_err32 <= self.TOL, f"GQA fp32-oracle max_err={max_err32:.4f}"
 
     def test_batch_gt1(self):
         q, k, v = rand_qkv(2, 4, 256, 64, seed=6)

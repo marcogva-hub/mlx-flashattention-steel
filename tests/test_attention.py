@@ -9505,6 +9505,27 @@ class TestPagedVarlenQueries:
         assert out.shape == (1, H_q, sum(q_lens), D)
         assert diff < 5e-3, f"paged_varlen vs SDPA ref max diff {diff}"
 
+        # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
+        # The reference above runs SDPA at fp16 (kernel precision).  Lock the
+        # fused paged-varlen kernel against the per-sequence fp32 SDPA oracle
+        # (inputs cast to float32) — NOT patched by auto-hooks.
+        ref32_parts = []
+        for i in range(len(q_lens)):
+            qs, qe = int(cu_q[i].item()), int(cu_q[i + 1].item())
+            ref32_parts.append(
+                mx.fast.scaled_dot_product_attention(
+                    q_pack[:, :, qs:qe, :].astype(mx.float32),
+                    k_seqs[i].astype(mx.float32),
+                    v_seqs[i].astype(mx.float32),
+                    scale=scale,
+                )
+            )
+        ref32 = mx.concatenate(ref32_parts, axis=2)
+        mx.eval(ref32)
+        diff32 = float(mx.abs(out.astype(mx.float32) - ref32).max())
+        # fp16 kernel vs fp32 oracle: tolerance covers fp16 accumulation only.
+        assert diff32 < 2e-2, f"paged_varlen vs fp32 SDPA oracle max diff {diff32}"
+
     def test_paged_varlen_handles_zero_length_sequence(self):
         from mlx_mfa import flash_attention_paged_varlen
 

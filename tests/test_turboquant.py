@@ -644,6 +644,31 @@ class TestTurboQuantFusedKernel:
         # Fused and decompress paths should produce close results
         assert max_err < 0.1, f"max_abs_err={max_err:.4f} > 0.1"
 
+        # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
+        # The decompress->paged_varlen "reference" above is another mlx-mfa
+        # kernel path, NOT an independent reference.  Lock the fused TQ kernel
+        # against the decompress-then-fp32 SDPA oracle directly: the fused
+        # kernel's true target is attention over the TQ-decompressed K (original
+        # space) with the original (un-rotated) Q.  Inputs cast to fp32; the
+        # mx.fast.scaled_dot_product_attention oracle is NOT patched by
+        # auto-hooks.  B=1 single sequence → direct dense SDPA.
+        q_oracle = q_seqs[0].astype(mx.float32)            # [1, H_q, 8, D]
+        k_oracle = k_decomp_seqs[0].astype(mx.float32)     # [1, H_kv, 32, D]
+        v_oracle = v_seqs[0].astype(mx.float32)            # [1, H_kv, 32, D]
+        out_oracle = mx.fast.scaled_dot_product_attention(
+            q_oracle, k_oracle, v_oracle, scale=scale
+        )
+        mx.synchronize()
+        # out_fused is packed [1, H_q, total_q, D]; B=1 single seq → matches.
+        oracle_err = np.abs(
+            np.array(out_fused.astype(mx.float32)) - np.array(out_oracle)
+        ).max()
+        # 3-bit K-only TQ is lossy; tolerance covers quantization noise dampened
+        # by softmax (same regime as test_attention_output_close, max_diff<1.0).
+        assert oracle_err < 0.2, (
+            f"fused TQ vs fp32-decompress oracle max_abs_err={oracle_err:.4f} > 0.2"
+        )
+
     def test_fused_causal(self):
         """Fused TQ kernel with causal masking."""
         _skip_if_no_ext()
@@ -936,6 +961,32 @@ class TestTurboQuantFusedKernel:
 
         assert out_kv_tq.shape == out_k_only.shape
         assert mx.isfinite(out_kv_tq).all().item(), "V-TQ output has non-finite values"
+
+        # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
+        # The K-only vs K+V comparison above is two mlx-mfa kernel paths, not an
+        # independent reference, and only checks finiteness/shape.  Lock the
+        # K+V-TQ fused output against the decompress-then-fp32 SDPA oracle:
+        # original (un-rotated) Q, TQ-decompressed K (3-bit), original V in fp32.
+        # (V is additionally 3-bit quantized in the fused path; its softmax-
+        # weighted contribution adds bounded noise on top of the K-decompress
+        # oracle — covered by the tolerance.)  mx.fast.scaled_dot_product_attention
+        # is NOT patched by auto-hooks.
+        from mlx_mfa.turboquant import turboquant_compress, turboquant_decompress
+        c_k = turboquant_compress(k, bits=bits, use_qjl=False, rotation="wht")
+        k_dec = turboquant_decompress(c_k).astype(mx.float32)
+        mx.synchronize()
+        out_oracle = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k_dec, v.astype(mx.float32), scale=scale
+        )
+        mx.synchronize()
+        oracle_err = np.abs(
+            np.array(out_kv_tq.astype(mx.float32)) - np.array(out_oracle)
+        ).max()
+        # K+V both 3-bit lossy; tolerance covers compounded quantization noise
+        # dampened by softmax (same lossy regime as test_attention_output_close).
+        assert oracle_err < 0.3, (
+            f"K+V-TQ fused vs fp32 decompress oracle max_abs_err={oracle_err:.4f} > 0.3"
+        )
 
     def test_fused_v_tq_causal(self):
         """Fused V-TQ kernel with causal masking produces finite output."""

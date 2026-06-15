@@ -1117,3 +1117,16 @@ STATUS: COMPLETE
 - III-9 net: 1 lifetime bug (split-K/flash-decode) + 3 direct-V partial-tile OOB bugs (V2 single-pass, GNA [default-reachable], V5) — all fixed, all locked, all validated vs independent fp32. GNA was the only DEFAULT-reachable one.
 - Ran: 3 sweep iterations (workflows w8o0y0fru, w620e61ex + 4 standalone agents) + lead probes + pytest 1820 ×2 + multi-gate grep. Validated vs independent fp32 throughout (lesson #11).
 - Git: report + log commit below; HEAD will advance. NOTHING released — release is the separate Marco-gated step.
+
+---
+## [2026-06-16 19:00] [CLAUDE] III-10 final residual sweep — ZERO findings; FINAL GATE MET
+STATUS: COMPLETE
+
+- Bounded 3-target residual pass (Workflow w68lhdnp7), NOT a re-sweep of D-K (structurally complete in III-9). All clean, zero confirmed findings:
+- T1 (0*NaN meta-pattern beyond V): CLEAN. Complete-set enumeration of masked-arith device reads (K direct, attn_bias add, alibi, rotary) across V2 single-pass+D-split/GNA/V5. The V multiply was UNIQUE; every other site is mask-by-ASSIGN(-inf) applied BEFORE softmax (overwrites NaN), or head-bounded, or RoPE-smem-path. attn_bias[k_pos] OOB on partial tile is annihilated by the K-boundary mask ASSIGN (add emitted before mask). Probed clean vs fp32 under pool-history+concurrent trigger. No gathers exist. [VERIFIED]
+- T2 (MPP matmul2d/conv2d K alignment): CLEAN. VERSION CORRECTION: machine is macOS 26.6 (not 26.4/26.1). The 26.1 silent-K%32-cut does NOT reproduce on 26.6 — MPP enforces compile-time static_assert(k%16==0) (loud, %16 floor). Every production MPP site (conv matmul2d/convolution2d, NAX/steel-V6 matmul2d) guaranteed-by-gate (Rule-8 throw + pad_contraction_k; conv3d C%16&>=32 gate) or correct vs fp32. Repo %32 guards safe across both OS. [VERIFIED]
+- T3a (lifetime completeness): CLEAN. grep allocator::free = ZERO; every malloc output-backed or add_temporary; no third site. [VERIFIED]
+- T3b (fp32-coverage nits): CLOSED. 4 tests (turboquant fused-K + fused-K+V, sage _check + GQA, paged-varlen) gained independent fp32-cast oracle assertions (added alongside existing, not weakening). No fp32 divergence → locks real, no latent bug. All pass.
+- Ran: pytest tests/ 1820 passed, 2 skipped, ×2 (incl. new fp32 asserts). Validated vs independent fp32 (lesson #11). Tree: 3 test files edited (T3b) + report + log.
+- FINAL PRE-RELEASE GATE MET. Release scope (Marco-gated v2.53.0+): da737e7 + 240b226 + eb68af5 + eb5b890 + III-10 3b test locks + 2 III-7 quantize_model fixes. NOTHING released — separate Marco-gated step.
+- Git: report + log + 3 test files commit below; HEAD advances.
