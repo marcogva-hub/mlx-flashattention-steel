@@ -1,8 +1,12 @@
 # Investigation — `backend="mfa"` non-causal D∈{64,128} divergence
 
 **Date:** 2026-06-15 (III-7 follow-up; Marco chose "investigate the kernel")
-**Status:** LOCALIZED to STEEL V2 forward non-causal path. Root-cause-to-line
-+ fix is the continuation. **Not default-reachable** — see dispatch note.
+**Status:** **RESOLVED (III-8 close).** Root cause was NOT in the JIT source —
+it was the precompiled `async_v2.metallib` (`simdgroup_async_copy` DMA, removed
+from the macOS-26 AIR runtime) loaded *before* the JIT path for
+`SteelForwardV2` keys. Fix: gate the async fast-path off on macOS 26+ in
+`csrc/shader_cache.mm`; all V2 dispatch then uses the correct JIT path. See
+**§ Resolution (III-8)** at the bottom. **Not default-reachable** — see dispatch note.
 **Method:** independent fp32 reference (Apple SDPA at fp32) throughout; the
 auto-hooks do NOT patch `mx.fast.scaled_dot_product_attention`, so it is a
 genuinely independent attention oracle (lesson #11).
@@ -315,3 +319,83 @@ q-independent) — all ruled out. The q-dependence requires an in-kernel
 source with it (disable/alter candidate qb-using regions, re-measure
 attended-key count until it = N for all qb) to pin the line empirically, then
 fix + O-vs-fp32 + generalize + re-bench + lock. No guessed edit.
+
+---
+
+## § Resolution (III-8)
+
+**The bug is NOT in the JIT source.** It is the precompiled
+`mlx_mfa/precompiled/async_v2.metallib`.
+
+### Why the line was "open" — the tell we missed for 4 sprints
+III-8e's own finding was the smoking gun, misread: the `(qb+1)·BQ`-keys
+signature matched **no obvious line in `generate_steel_v2_source`** because
+**that source was never executing.** `shader_cache.mm::get_or_compile()` calls
+`try_async_pipeline()` *first* (before any JIT), and for `SteelForwardV2` keys
+on macOS 26 it returned a pipeline built from `async_v2.metallib`. That metallib
+uses `simdgroup_async_copy` (hardware DMA), which Apple **removed from the
+runtime AIR compiler in macOS 26** (confirmed by liuliu; see CLAUDE.md
+"simdgroup_async_copy — Definitive Status"). The broken DMA loads only a
+*partial, progressively-growing* K range — exactly `~(qb+1)·BQ` keys per
+Q-tile, which is what the uniform-P oracle measured. Causal coincidentally
+survives because its mask zeroes the unloaded keys; the default dispatch routes
+non-causal dense → SDPA, so only `backend="mfa"` (expert) reaches it.
+
+The four sprints of register dumps / static differential reading / oracle
+bisection of `generate_steel_v2_source` were **all inert** — they instrumented
+a binary that does not run on this machine. (Meta-lesson #14, audit-framing.)
+
+### How it was confirmed (not guessed)
+- **`MFA_DISABLE_ASYNC=1` differential:** the env var that skips
+  `try_async_pipeline` flips non-causal `backend="mfa"` from MAE ~0.12 → bit-
+  exact vs fp32. Source-only theories cannot explain an env var that bypasses
+  source compilation fixing it.
+- **Sentinel-write test:** a sentinel-777 store added to
+  `generate_steel_v2_source` never appeared in the output → the JIT source is
+  not the running binary for that key. (Sentinel-write debugging, §AA.5.x /
+  kernel-debugging.md.)
+
+### The fix
+`csrc/shader_cache.mm::try_async_pipeline()` — gate the async fast-path off on
+macOS 26+ (after the existing `SteelForwardV2`-only guard and the
+`MFA_DISABLE_ASYNC` check):
+
+```objc
+if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion >= 26) {
+  return nullptr;  // simdgroup_async_copy broken on macOS 26 → use JIT path
+}
+```
+
+All `SteelForwardV2` dispatch then falls through to the correct JIT path
+(`generate_steel_v2_source`, `preferAsyncCache=true` per-lane device reads),
+which was correct on macOS 26 all along.
+
+### Validation
+- **R.4 (O vs fp32):** full `backend="mfa"` sweep — D∈{64,128} × {fp16,bf16} ×
+  causal/non-causal × N∈{32,64,127,128,256,1000,4096} × B·H 4–16 — all correct
+  vs independent fp32 SDPA (lesson #11). Deterministic (maxdiff 0.0 across runs).
+- **R.5 (generalization):** the fix disables the broken metallib for **all** its
+  keys on macOS 26 (it only ever served `SteelForwardV2`); inherent, not
+  per-shape. Full suite **1728 passed, 2 skipped** with the fix + lock test.
+- **R.6 (re-bench + conditional promotion):** the JIT V2 forward is ~3–4×
+  *slower* than Apple SDPA on M5+, so the default auto-dispatch (≈ SDPA) is
+  already optimal and the async metallib was only reachable via `backend="mfa"`.
+  The fix is **correctness-only; no production perf impact; no promotion**
+  (consistent with the dispatch policy that routes non-causal dense → SDPA).
+- **R.7 (lock):** `tests/test_iii8_backend_mfa_noncausal.py` — fp32-parity sweep
+  + a forced-single-pass non-causal known-answer test
+  (`MFA_FORCE_SPLITK=0` autouse fixture) that asserts each Q-tile attends ALL
+  keys (`O[qb*32,0] == (N-1)/2`), precisely exercising the truncated path the
+  async metallib broke. 57 passed. This closes the v1.4.0 coverage illusion
+  (every prior V2 test used `backend="mfa"` causal or auto, never forced
+  non-causal single-pass).
+
+### ⚠ Separate, pre-existing bug found (flagged, NOT fixed here)
+While building R.7, the lock surfaced an **independent** bug: V2 **split-K**
+non-causal at **partial N** (N∈{127,160,191,224}, D=128) gives MAE ~7–16 vs
+fp32. This is NOT caused by — and not fixed by — the async gate: `try_async_pipeline`
+only ever served the **single-pass** path, so split-K always used JIT. It is a
+distinct defect in the split-K partial-N reduction/range handling, non-default-
+reachable (`backend="mfa"` + the split-K occupancy heuristic + partial N). The
+lock test scopes itself to single-pass (`MFA_FORCE_SPLITK=0`) to stay precise.
+**Follow-up sprint required** — see spawned task / III-9 candidate.

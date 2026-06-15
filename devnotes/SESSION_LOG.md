@@ -910,3 +910,47 @@ STATUS: IN_PROGRESS
 - Next: uniform-P probe is a reliable cheap ORACLE → bisect kernel source (disable/alter candidate qb-using regions, re-measure attended count until =N for all qb) to pin the line empirically, then fix+O-vs-fp32+generalize+rebench+lock. NO guessed edit.
 - Consumed III-7..III-8e. Non-default-reachable. Clean tree+binary. Nothing released. Codified lesson #13 (known-answer probe).
 - Git: doc + log commit below; branch master.
+
+---
+## [2026-06-16 06:00] [CLAUDE] III-8 RESOLVED — root cause = async_v2.metallib (NOT JIT source); fix + lock landed
+STATUS: COMPLETE
+
+### Plan
+- Objective: pin the line, fix the mechanism, O-vs-fp32, R.5 generalize, re-bench, lock (Marco's directive: understand+fix, no route-around).
+- Files modified: csrc/shader_cache.mm (fix), tests/test_iii8_backend_mfa_noncausal.py (lock, new), 3 docs.
+
+### Root cause (the 5-sprint misdirection resolved)
+- NOT in generate_steel_v2_source. `shader_cache.mm::try_async_pipeline()` is called FIRST and for SteelForwardV2 keys on macOS 26 served a pipeline built from precompiled `async_v2.metallib`. Its `simdgroup_async_copy` DMA (removed from macOS-26 AIR runtime, confirmed liuliu) loads only ~(qb+1)*BQ keys/Q-tile → the exact "q-dependent truncation" III-8e's uniform-P oracle measured. Causal survives (mask zeroes unloaded keys); default routes non-causal dense→SDPA so only backend="mfa" reached it. [VERIFIED]
+- III-8e's behavioral mechanism was CORRECT; the LOCATION was mis-attributed to JIT codegen. Tell missed: "signature matches NO obvious source line" ⇒ the source isn't running.
+
+### Changes
+- `csrc/shader_cache.mm:99-105` — gate try_async_pipeline off on macOS 26+ (NSProcessInfo majorVersion>=26 → return nullptr), after the SteelForwardV2-only guard + MFA_DISABLE_ASYNC check. Full root-cause comment in-code. [HIGH][VERIFIED]
+- `tests/test_iii8_backend_mfa_noncausal.py` — NEW lock: fp32-parity sweep D{64,128}×{fp16,bf16}×causal×N{32..4096} + forced-single-pass (MFA_FORCE_SPLITK=0 autouse fixture) non-causal known-answer test (each Q-tile attends ALL keys, O[qb*32,0]==(N-1)/2). 57 passed. Closes v1.4.0 coverage illusion.
+
+### Confirmation (not guessed)
+- MFA_DISABLE_ASYNC=1 differential: non-causal MAE ~0.12→bit-exact vs fp32 (env bypassing source compilation fixes it). [VERIFIED]
+- sentinel-777 write in JIT source never appeared → JIT ≠ running binary for that key. [VERIFIED]
+
+### Validation
+- R.4: full backend="mfa" sweep correct vs INDEPENDENT fp32 SDPA (lesson #11), deterministic maxdiff 0.0.
+- R.5: fix disables broken metallib for ALL its keys on macOS 26 (only served SteelForwardV2). Ran: `.venv/bin/python -m pytest tests/ -q` → 1728 passed, 2 skipped. Validated: full suite green + lock green.
+- R.6: JIT V2 fwd ~3-4× slower than Apple SDPA on M5+; async only reachable via backend="mfa" → correctness-only, NO perf impact, NO promotion (consistent with default→SDPA dispatch). [VERIFIED]
+- R.7 lock: 57 passed.
+
+### Separate pre-existing bug FLAGGED (not fixed)
+- V2 split-K non-causal partial-N (N∈{127,160,191,224}, D=128) → MAE ~7-16 vs fp32. Distinct from async (try_async only served single-pass; split-K always JIT). Non-default-reachable. Spawned follow-up task task_906dde0d.
+
+### Dependency & regression check
+- try_async_pipeline callers: only get_or_compile() (line 270); SteelForwardV2-only (line 75) — split-K never served by async. Verified.
+- Coverage: lock test added; full suite covers V2 causal+non-causal+auto.
+
+### Institutional codification
+- audit-framing-inversions.md lesson #14: confirm WHICH BINARY runs before debugging source (sentinel write / dispatch-env toggle / enumerate key loaders). The keystone lesson of the marathon.
+- backend-mfa-noncausal-divergence.md → RESOLVED (§ Resolution III-8).
+- sprint-III-8-resolution-report.md (new; §AA.2 skill table present).
+
+### Release disposition (Marco-gated)
+- Bundle V2 non-causal fix + the two III-7 quantize_model fixes → v2.52.2. Correctness-only, no API change, no perf claim. Awaiting Marco's go.
+
+### Git
+- WIP — about to commit shader_cache.mm + lock test + 3 docs + this log; branch master. Nothing released/tagged.

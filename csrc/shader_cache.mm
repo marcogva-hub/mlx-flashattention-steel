@@ -83,6 +83,26 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
     }
     return nullptr;
   }
+  // v2.52.2 (III-8e root cause): the async_v2.metallib uses
+  // `simdgroup_async_copy` (hardware DMA), which Apple REMOVED from the AIR
+  // runtime in macOS 26 (confirmed by liuliu; see CLAUDE.md "simdgroup_async_
+  // copy — Definitive Status").  On macOS 26+ the precompiled async metallib
+  // then loads only PARTIAL K tiles → wrong non-causal output (it attends
+  // ~(qb+1)*BQ keys; causal coincidentally survives because its mask zeroes
+  // the unloaded keys anyway).  This silently shipped because the default
+  // dispatch routes non-causal dense → SDPA and causal V2 happens to align
+  // with the truncation.  The JIT path (generate_steel_v2_source,
+  // preferAsyncCache=true per-lane device reads) is CORRECT on macOS 26 —
+  // verified bit-exact vs fp32 SDPA across D∈{64,128}, N, causal/non-causal.
+  // Skip the async fast path on macOS 26+ so all V2 dispatch uses the correct
+  // JIT path.
+  if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion >= 26) {
+    if (ir_debug) {
+      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: skipped (macOS 26+ — "
+            @"simdgroup_async_copy broken; using JIT path)");
+    }
+    return nullptr;
+  }
 
   @autoreleasepool {
     // Resolve precompiled dir relative to our shared library's location.

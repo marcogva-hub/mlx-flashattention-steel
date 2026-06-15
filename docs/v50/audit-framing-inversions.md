@@ -651,3 +651,39 @@ fix has expert-API-contract implications.
     pipeline OUTPUT reveal the internal quantity, and isolate stages by
     zeroing the upstream ones (Q=0 ⇒ uniform P). The output is always
     faithful; the fragment registers are not.
+
+## III-8 root-cause lesson — confirm WHICH BINARY runs before debugging source (#14)
+
+14. **Before debugging a kernel's SOURCE, confirm the source is the binary
+    that actually executes. A precompiled / AOT / async metallib loaded ahead
+    of the JIT path bypasses the source entirely — and every source-level
+    diagnostic run against it is inert.** The `backend="mfa"` non-causal
+    divergence consumed five sprints (III-7 → III-8e) of register dumps,
+    static causal-vs-non-causal differential reading, and oracle-bisection of
+    `generate_steel_v2_source` — **all inert**, because `shader_cache.mm`
+    calls `try_async_pipeline()` *first* and, for `SteelForwardV2` keys on
+    macOS 26, served a pipeline built from the precompiled `async_v2.metallib`.
+    That metallib uses `simdgroup_async_copy` (hardware DMA), which Apple
+    removed from the macOS-26 runtime AIR compiler; its broken DMA loads only
+    `~(qb+1)·BQ` keys per Q-tile → the exact "q-dependent key truncation"
+    III-8e's uniform-P oracle measured. **The behavioral mechanism was
+    correctly characterized; the LOCATION was mis-attributed to JIT codegen.**
+    The tell, in hindsight: III-8e concluded "the `(qb+1)·BQ` signature
+    matches NO obvious source line" — a signature that fits *no* source line
+    is itself evidence the source isn't running.
+    *Rule*: when investigating a kernel bug, the FIRST step (≤10 min, before
+    any source reading) is a **which-binary check**:
+    - (a) a **sentinel write** in the suspect JIT source — if it never appears
+      in the output, the JIT source is not the running binary (§AA.5.x,
+      kernel-debugging.md);
+    - (b) toggle any env that switches the dispatch/compile path
+      (`MFA_DISABLE_ASYNC`, AOT-vs-JIT, forced backend) — if it changes the
+      output, the bug is in path *selection*, not in the source you're reading;
+    - (c) enumerate every loader of that kernel key — `try_async_pipeline`,
+      precompiled-metallib, JIT — and note which wins for the failing key,
+      dtype, OS, and arch. The one that *wins* is the one to debug.
+    A precompiled metallib is invisible to source grep, git blame, and every
+    `generate_*_source` edit. Confirm execution provenance first; debug source
+    second. (Fix: gate the async fast-path off on macOS 26+ in
+    `shader_cache.mm::try_async_pipeline`; full write-up in
+    `campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md § Resolution`.)
