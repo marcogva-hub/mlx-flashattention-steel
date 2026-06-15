@@ -78,16 +78,24 @@ Net effect:
   1×1×1 pointwise now use native instead of NAX — a minor perf trade on
   uncommon shapes, no active §Z perf claim affected.
 
-## Scope NOT taken (recommended follow-ups)
+## Follow-ups — RESOLVED in Sprint III-6 (v2.52.1)
 
-- **Mask the `matmul2d` partial K-tile** in the Metal kernel (the true root
-  cause). Would make the legacy + pointwise paths correct for all C_in and
-  let the gate be re-widened to recover NAX perf on small-channel layers
-  (e.g. VAE input-projection convs). Requires a rebuild + revalidation.
-- **Rule 8 hardening:** make the C++ legacy path (and the Python legacy
-  orchestrator) raise loudly for `C_in % 32 != 0` rather than silently
-  corrupt, mirroring the existing bf16 raise — defense-in-depth for raw
-  `_ext` / `conv_nax` API callers that bypass the hook.
+Both follow-ups below were completed in III-6 (see
+`sprint-III-6-report.md`); they are no longer open.
+
+- **Mask the `matmul2d` partial K-tile (DONE).** Fixed at the kernel level
+  by zero-padding the contraction K to a K_TILE multiple before dispatch
+  (`pad_contraction_k` / `_pad_k`).  All three entry points (C++ legacy,
+  C++ pointwise, Python legacy) are now correct at every `C_in` vs an fp32
+  reference.  The gate was **NOT** re-widened: the III-6 R.2 bench showed
+  NAX is ~1.7× slower than native at small `C_in` (orchestration overhead
+  dominates; Pattern #6), so the production hook keeps routing
+  small-channel to native.  The kernel fix is correctness defence for
+  raw-API / pointwise / Python-legacy callers.
+- **Rule 8 hardening (DONE).** `matmul2d_source` (C++ and Python) now
+  refuses a non-K_TILE-aligned K, so any future unpadded caller fails
+  loudly at JIT-gen rather than silently corrupting.  (The pre-existing
+  bf16 raise on the legacy path is retained.)
 
 ## Real-model impact
 

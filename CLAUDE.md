@@ -280,7 +280,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.52.0 — 1501 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record).
+v2.52.1 — 1563 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record).
 
 | Track | Description | Status |
 |-------|-------------|--------|

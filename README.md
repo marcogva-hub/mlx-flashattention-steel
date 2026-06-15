@@ -4,10 +4,11 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.52.0** (PyPI).  The complete, corrected state of
+Current version: **2.52.1** (PyPI).  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
-run repeat-until-clean to a zero-finding fixed point; ~73 fixes).
+run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
+III-6 conv3d small-channel kernel root-cause fix.
 
 **Headline promotions** (measured, per-cell, M5 NAX — not blanket
 claims):
@@ -23,11 +24,12 @@ claims):
 - D=256 causal M5 dispatch inversion corrected; LCSA mask build
   **15.4×** (11.19 ms → 0.73 ms).
 
-> **⚠ Upgrade from v2.51.0.** v2.51.0 contains two pre-existing CRITICAL
-> silent-corruption bugs on default/promoted paths (the top-K threshold
-> kernel's Metal-grid undercount, and NaN gradients through
-> `return_lse=True`), both fixed in v2.52.0. Upgrade to v2.52.0. See
-> `CHANGELOG.md [2.52.0]`.
+> **⚠ Upgrade to v2.52.1.** v2.51.0 contains two pre-existing CRITICAL
+> silent-corruption bugs (top-K Metal-grid undercount; NaN gradients
+> through `return_lse=True`), fixed in v2.52.0. v2.52.0 in turn contains
+> a small-channel conv3d silent-corruption bug (`C_in` not a multiple of
+> 32 — real VSR VAE input-projection convs), fixed in v2.52.1. Upgrade to
+> **v2.52.1**. See `CHANGELOG.md [2.52.1]` / `[2.52.0]`.
 
 New opt-in APIs: cider-style GQA-decode (`mlx_mfa.gqa_decode_cider`),
 hook telemetry (`mlx_mfa.get_hook_stats()`), the `mx.conv3d` auto-hook.
