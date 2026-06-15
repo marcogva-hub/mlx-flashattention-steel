@@ -801,3 +801,25 @@ STATUS: COMPLETE
 ### Marco-gated queue
 - quantize_model Findings 1&2: fixed on master; release disposition pending.
 - backend="mfa" non-causal divergence: flagged, fix approach pending.
+
+---
+## [2026-06-15 18:20] [CLAUDE] III-7 Marco decisions + forced-MFA investigation opened
+STATUS: IN_PROGRESS
+
+- Marco decision 1: quantize_model Findings 1&2 → BUNDLE into next release (no v2.52.2). Fixes stay on master (c7e07ad).
+- Marco decision 2: backend="mfa" non-causal D∈{64,128} divergence → INVESTIGATE THE KERNEL (root-cause why non-causal MFA forward diverges; causal is correct).
+- Opened investigation (task #23). Forensic pass starting: localize kernel + code path, characterize shape/dtype dependence.
+- Git: not applicable (log entry only).
+
+---
+## [2026-06-15 18:45] [CLAUDE] forced-MFA non-causal divergence — LOCALIZED to STEEL V2 non-causal
+STATUS: HANDOFF_READY
+
+- Confirmed (independent fp32 SDPA): backend="mfa" non-causal D∈{64,128} fp16 MAE ~0.12 at all N (incl aligned); auto + causal-mfa correct (MAE 0.0).
+- Signature: output rows DUPLICATED (rows 0=1, 2=3 by norm) + magnitude ~2× → per-query-row index-collapse + softmax-normalization error. NOT a boundary bug.
+- Bisection (MFA_DISABLE_V2=1 → MAE 0.0; V3 disable no effect): bug is in STEEL V2 forward non-causal path (`csrc/mfa_steel_fwd_v2.cpp`). V1 non-causal correct; V2 causal correct. [VERIFIED]
+- Likely a regression from a post-v1.4.0 V2 change (V2 non-causal benched working in v1.4.0). git-blame is next.
+- Why never caught: dispatch_policy routes non-causal dense → SDPA for PERF (documented), so V2 non-causal never auto-selected; no test forces non-causal backend="mfa". Perf-gate-masked latent bug.
+- Findings doc: docs/v50/campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md (signature, bisection, next steps).
+- NOT FIXED. Marco-gated fix approach: (a) repair V2 non-causal normalization/indexing (validate vs fp32), or (b) route forced-mfa non-causal to V1/SDPA + Rule-8 note (V2 non-causal has no production value since auto routes to SDPA). Then lock with a forced-mfa non-causal fp32 correctness test.
+- Git: findings doc + log commit below; branch master. Nothing released.
