@@ -599,3 +599,31 @@ than a correctness gate. Reachable only via the expert `backend="mfa"`
 escape hatch. Flagged to Marco (disposition: Rule-8 raise on the forced
 path vs kernel investigation vs leave-documented) — not the default path,
 fix has expert-API-contract implications.
+
+## III-8/8c methodological lesson — cooperative-MMA kernels can't be debugged by register dumps
+
+12. **For cooperative-MMA (simdgroup-matrix) Metal kernels, mid-kernel
+    register dumps of an MMA tile are UNRELIABLE — diagnose via end-to-end
+    output vs an independent fp32 reference + static source differential.**
+    Chasing the V2 single-pass non-causal bug (III-8), two register-dump
+    methods (`store_contiguous` and faithful element-wise `frag_at`→memory)
+    both produced wrong-looking Stile/P values — but a control proved them
+    unreliable: **dumping the *causal* Stile (whose end-to-end output is
+    correct) also yielded wrong-looking scores**, and the two methods
+    disagreed. The cooperative simdgroup-matrix fragment lives in a
+    lane-distributed register layout that a naive per-lane write does not
+    serialize faithfully (and an early `return` to dump perturbs state).
+    Two conclusions were drawn from these dumps and then **retracted**
+    ("it's Q@K^T / the scores").
+    *Rule*: (a) the trustworthy signal for a cooperative-MMA kernel is the
+    **full-pipeline output O vs an independent fp32 reference**, not
+    mid-kernel register state; (b) a probe that depends on an unproven
+    component is **confounded, not conclusive** — the one-hot-V `O=P` trick
+    is reliable only when P@V is already proven correct (it was for causal,
+    NOT for the non-causal path under suspicion); (c) when only a few
+    source lines differ between a correct and a buggy variant, **static
+    causal-vs-non-causal differential reading + git archaeology** localize
+    far more reliably than instrumentation. To read an MMA fragment
+    mid-kernel when truly necessary, use a layout-correct `simd_shuffle`
+    gather into a known lane order, or a minimal standalone reproduction of
+    the MMA outside the full kernel — never a naive `frag_at`→memory dump.

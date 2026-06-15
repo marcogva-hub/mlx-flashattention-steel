@@ -868,3 +868,20 @@ STATUS: IN_PROGRESS
 - This non-default-reachable bug has now consumed III-7+III-8; resisting available diagnostics. No guessed edit (race risk > current localized non-default bug).
 - Findings doc updated (III-8 outcome section). Clean tree. Nothing released.
 - Git: doc + log commit below; branch master.
+
+---
+## [2026-06-16 00:30] [CLAUDE] III-8c static-diff reorientation — narrowed, NOT isolated; lesson #12 codified
+STATUS: IN_PROGRESS
+
+- Approach: abandoned register dumps (lesson #12). Static causal-vs-non-causal diff + git archaeology + O-vs-fp32 only.
+- R.1 exhaustive: EXACTLY 2 causal-conditionals in single-pass generator — kb_lim (435) + diagonal-mask (665). Both read correct; both original (81d801f7), unchanged. [VERIFIED]
+- R.2 archaeology: no v1.4.0 tag (v1.3.0→v2.5.0); code original. "v1.4.0 benched working" = COVERAGE ILLUSION (non-causal single-pass correctness never fp32-validated). NOT a regression — longstanding original bug. Contradiction resolved. [VERIFIED]
+- Reliable narrowing (O vs fp32): N=64 D=128 = 1 FULL tile, kb_lim=1 for BOTH → causal 0.0001, non-causal 0.19 → bug is purely mask-ABSENCE; col>row (future-key) positions' contributions wrong; causal masks them (never exercises), non-causal uses them. BK-independent (FORCE_BK=32 no fix). Deterministic. [VERIFIED]
+- Can't separate wrong-scores vs wrong-P@V (causal zeros col>row → no signal; dump unreliable; one-hot confounded). Subtle MMA-fragment issue at col>row, invisible to source reading.
+- Per prompt fallback: static diff + history did NOT isolate the line → reported honestly + scoped next fork (simd_shuffle gather OR standalone MMA repro). NO guessed edit.
+- Codified methodological lesson #12 (cooperative-MMA register dumps unreliable; diagnose via O-vs-fp32 + static diff) in audit-framing-inversions.md.
+- Docs: sprint-III-8c-report.md + findings-doc III-8c section + catalogue lesson #12. Clean tree (debug reverted). Nothing released.
+- Git: doc + log commit below; branch master.
+
+### Marco-gated fork
+- (1) simd_shuffle fragment-gather probe, (2) standalone MMA repro, (3) route-around (forced-mfa non-causal → V1/SDPA), or (4) pause. Repair spans III-7+III-8+III-8c without line-isolation. quantize_model III-7 fixes still queued for bundling.

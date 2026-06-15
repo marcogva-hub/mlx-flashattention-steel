@@ -234,3 +234,32 @@ III-8 dumps) is **retracted** — it rested on the unreliable register dump.
 It is genuinely resisting the diagnostic methods tried. No guessed edit was
 made (a wrong barrier/MMA edit would risk a race — worse than the current
 localized, non-default bug).
+
+---
+
+## III-8c (static-diff reorientation) — narrowed further; still not isolated
+
+Full report: `sprint-III-8c-report.md`. Register dumps abandoned (lesson #12).
+New reliable findings (O vs fp32 only):
+- **Exactly two source diffs** (causal vs non-causal single-pass): `kb_lim`
+  (435) and the diagonal-mask block (665). Both read correct; both original
+  (commit 81d801f7), unchanged.
+- **v1.4.0 contradiction RESOLVED**: no v1.4.0 tag; code is original. "Benched
+  working" = coverage illusion (non-causal single-pass correctness never
+  fp32-validated). Not a regression — longstanding original bug.
+- **Isolated to mask-absence on a single FULL tile**: N=64 D=128 (1 tile,
+  `kb_lim=1` for both causal+non-causal) — causal 0.0001, non-causal 0.19. The
+  only operative difference is the diagonal mask. → the **`col>row`
+  (future-key) positions' contributions are wrong**; causal masks them to zero
+  (so causal never exercises them), non-causal uses them.
+- **BK-independent** (`MFA_V2_FORCE_BK=32` doesn't fix it). Deterministic.
+- **Cannot separate wrong-scores vs wrong-P@V** for the `col>row` positions:
+  causal zeros them (no causal signal), and the dump (unreliable) / one-hot-V
+  (confounded for non-causal) probes can't decide. → a subtle MMA-fragment
+  issue at `col>row`, invisible to source reading.
+
+**Next fork (scoped, not executed):** (1) layout-correct `simd_shuffle`
+fragment gather to read `col>row` scores reliably; or (2) minimal standalone
+MMA reproduction (32×64 Q@K^T tile vs numpy). Marco's call: next-fork vs
+route-around (forced-mfa non-causal → V1/SDPA, low-risk correct API output)
+vs pause. No guessed edit. Not default-reachable; no release impact.
