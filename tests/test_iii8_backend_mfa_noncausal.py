@@ -1,5 +1,15 @@
 """III-8 lock — forced backend="mfa" non-causal correctness vs fp32.
 
+⚠ CORRECTION (III-9): the async-metallib root cause described below was a
+WRONG TURN. The actual `backend="mfa"` non-causal divergence was a split-K
+scratch-buffer LIFETIME bug (premature free of lazy-executed pO/pL), fixed in
+csrc/mfa_attention.cpp via enc.add_temporary — see
+docs/v50/campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md
+§ Resolution (III-9), and the real lock in tests/test_iii9_splitk_lifetime.py.
+This file (forced SINGLE-PASS) remains valid coverage of the single-pass
+non-causal path (which was never the bug), but its rationale below is historical.
+
+
 Root cause (docs/v50/campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md,
 RESOLVED in v2.52.2): the shipped `async_v2.metallib` uses
 `simdgroup_async_copy` (hardware DMA), which Apple removed from the AIR

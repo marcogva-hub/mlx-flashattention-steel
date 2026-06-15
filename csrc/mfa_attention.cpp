@@ -226,10 +226,20 @@ void MFAttention::eval_gpu(
     int TGP_s = WM_s * WN_s * 32;
 
     // ── Allocate scratch buffers pO and pL ─────────────────────────────────
+    // Scratch wrapped in arrays + registered as command-encoder temporaries
+    // (freed only after the command buffer completes — see III-9 root cause:
+    // encode-time free returned the pool memory while the lazy kernels were
+    // still pending, letting a concurrent allocation corrupt the reduce read).
     size_t pO_size = (size_t)num_splits * B * H * N * D * (dtype_code == 2 ? 4 : 2);
     size_t pL_size = (size_t)num_splits * B * H * N * sizeof(float);
-    auto pO_buf = mlx::core::allocator::malloc(pO_size);
-    auto pL_buf = mlx::core::allocator::malloc(pL_size);
+    mlx::core::array pO_arr(
+        mlx::core::allocator::malloc(pO_size),
+        {(int)num_splits, B, H, N, D}, q.dtype());
+    mlx::core::array pL_arr(
+        mlx::core::allocator::malloc(pL_size),
+        {(int)num_splits, B, H, N}, mlx::core::float32);
+    auto pO_buf = pO_arr.buffer();
+    auto pL_buf = pL_arr.buffer();
 
     // ── Build FlashDecodePartialParams ─────────────────────────────────────
     int NQ_s = (N + BQ_s - 1) / BQ_s;
@@ -354,9 +364,9 @@ void MFAttention::eval_gpu(
         MTL::Size::Make((size_t)N, (size_t)H, (size_t)B),
         MTL::Size::Make((size_t)reduce_tgp, 1, 1));
 
-    // Release scratch buffers (Metal retains them until command buffer completes)
-    mlx::core::allocator::free(pO_buf);
-    mlx::core::allocator::free(pL_buf);
+    // Lifetime: tie scratch to command-buffer completion (NOT encode time).
+    enc.add_temporary(pO_arr);
+    enc.add_temporary(pL_arr);
     return;
   }
 
@@ -426,10 +436,22 @@ void MFAttention::eval_gpu(
         const int NK2_aln = (S % BK2 == 0) ? NK2_total : NK2_total - 1;
 
         // ── Scratch buffers pO[num_splits, B, H, N, D] and pL[num_splits, B, H, N] ─
+        // Wrapped in arrays + registered as command-encoder temporaries so MLX
+        // frees them only AFTER the command buffer completes.  Freeing the raw
+        // allocator buffers at encode time (the previous approach) returned them
+        // to the pool while Phase 1/2 were still pending under lazy eval — a
+        // concurrent allocation could then reuse the memory and corrupt the
+        // not-yet-executed reduce (III-9 root cause).
         size_t pO_size = (size_t)num_splits * B * H * N * D * 2;  // f16/bf16 = 2 bytes
         size_t pL_size = (size_t)num_splits * B * H * N * sizeof(float);
-        auto pO_buf = mlx::core::allocator::malloc(pO_size);
-        auto pL_buf = mlx::core::allocator::malloc(pL_size);
+        mlx::core::array pO_arr(
+            mlx::core::allocator::malloc(pO_size),
+            {(int)num_splits, B, H, N, D}, q.dtype());
+        mlx::core::array pL_arr(
+            mlx::core::allocator::malloc(pL_size),
+            {(int)num_splits, B, H, N}, mlx::core::float32);
+        auto pO_buf = pO_arr.buffer();
+        auto pL_buf = pL_arr.buffer();
 
         // ── Build FlashDecodePartialParams for Phase 1 ─────────────────────
         FlashDecodePartialParams sk_pp{};
@@ -550,8 +572,9 @@ void MFAttention::eval_gpu(
             MTL::Size::Make((size_t)N, (size_t)H, (size_t)B),
             MTL::Size::Make((size_t)reduce_tgp, 1, 1));
 
-        mlx::core::allocator::free(pO_buf);
-        mlx::core::allocator::free(pL_buf);
+        // Lifetime: tie scratch to command-buffer completion (NOT encode time).
+        enc_sk.add_temporary(pO_arr);
+        enc_sk.add_temporary(pL_arr);
         return;
       }
     }

@@ -1,12 +1,17 @@
 # Investigation — `backend="mfa"` non-causal D∈{64,128} divergence
 
 **Date:** 2026-06-15 (III-7 follow-up; Marco chose "investigate the kernel")
-**Status:** **RESOLVED (III-8 close).** Root cause was NOT in the JIT source —
-it was the precompiled `async_v2.metallib` (`simdgroup_async_copy` DMA, removed
-from the macOS-26 AIR runtime) loaded *before* the JIT path for
-`SteelForwardV2` keys. Fix: gate the async fast-path off on macOS 26+ in
-`csrc/shader_cache.mm`; all V2 dispatch then uses the correct JIT path. See
-**§ Resolution (III-8)** at the bottom. **Not default-reachable** — see dispatch note.
+**Status:** **RESOLVED (III-9).** ⚠ The III-8 "async metallib root cause"
+below was a **WRONG TURN** — see **§ Resolution (III-9 — CORRECTED)** at the
+bottom for the actual root cause. In short: `backend="mfa"` non-causal D∈{64,128}
+dispatches to the V2 **split-K** path, which allocated `pO`/`pL` scratch and
+**freed it at encode time** while MLX's lazy execution left Phase 1/2 pending —
+a concurrent allocation reused the pool memory and corrupted the not-yet-run
+reduce. Fix: tie scratch lifetime to command-buffer completion via
+`enc.add_temporary` (`csrc/mfa_attention.cpp`). The III-8 async gate is
+*independently defensible* (the metallib's `simdgroup_async_copy` is genuinely
+broken on macOS 26) but did **not** fix this divergence — the async path was
+never even on the failing dispatch. **Not default-reachable** (auto→SDPA).
 **Method:** independent fp32 reference (Apple SDPA at fp32) throughout; the
 auto-hooks do NOT patch `mx.fast.scaled_dot_product_attention`, so it is a
 genuinely independent attention oracle (lesson #11).
@@ -399,3 +404,63 @@ distinct defect in the split-K partial-N reduction/range handling, non-default-
 reachable (`backend="mfa"` + the split-K occupancy heuristic + partial N). The
 lock test scopes itself to single-pass (`MFA_FORCE_SPLITK=0`) to stay precise.
 **Follow-up sprint required** — see spawned task / III-9 candidate.
+
+---
+
+## § Resolution (III-9 — CORRECTED ROOT CAUSE)
+
+**The III-8 async-metallib theory was wrong.** Applying lesson #14 (confirm
+which binary/path actually runs) with instrumentation showed `backend="mfa"`
+non-causal D∈{64,128} dispatches to the V2 **split-K** two-phase path
+(Phase 1 `SteelV2SplitKPartial` → Phase 2 `FlashDecodeReduce`), not the
+`SteelForwardV2` single-pass that `try_async_pipeline` serves. The async gate
+never touches the failing dispatch.
+
+### Actual root cause: premature free of lazy-executed scratch
+`csrc/mfa_attention.cpp` (split-K Phase 3, and the flash-decode Track-H path)
+allocated `pO`/`pL` scratch with `allocator::malloc` and **freed them at encode
+time** (`allocator::free`), with a comment assuming "Metal retains them until
+the command buffer completes." That is false under MLX's lazy execution:
+`dispatch_threadgroups` only *encodes*; the kernels run later at `mx.eval`. The
+encode-time free returned the pool memory immediately, so any allocation between
+the `flash_attention` call and `mx.eval` (the reference SDPA in a test, or any
+downstream layer in real use) could reuse it and **corrupt the not-yet-executed
+Phase-2 reduce read.**
+
+### Isolation ladder that pinned it (each vs independent fp32)
+| Probe | Result | Inference |
+|---|---|---|
+| per-split `pO` dump, 6× cold | reliably correct | partial kernel writes correct `pO` |
+| per-split `pL` dump, 6× cold | reliably correct | partial kernel writes correct `pL` |
+| `lse_max`/`sum_w`/`num_splits` dump | all correct | reduce Pass 1/2 correct |
+| numpy-combine(dumped `pO`,`pL`) | == fp32 (MAE 7e-5) | inputs + reduce math are sufficient |
+| `mx.eval(o)` **alone** | correct (4/4) | no bug without a concurrent alloc |
+| `mx.eval(o, concurrent_sdpa)` | garbage (5/5) | concurrent alloc corrupts it |
+| suppress the free (`MFA_NO_FREE`) | correct (4/4) | **the free is the cause** |
+
+This explains every earlier symptom: nondeterministic (allocator timing),
+"upper query rows garbage" (reduce reads after partial pool overwrite),
+"Q=0 uniform-P masks it" (those probes had no concurrent allocation),
+gen-independent (allocator, not hardware), output saturating to fp16 512.
+
+### Fix
+Wrap the scratch in `mlx::core::array`s and register them as command-encoder
+temporaries (`enc.add_temporary`), so MLX frees them **only after the command
+buffer completes**. Removed the encode-time `allocator::free`. Applied to BOTH
+the split-K path and the flash-decode path (same latent pattern — §AA.5.x
+multi-gate audit).
+
+### Validation
+- **R.4**: 576-config sweep (`force_splitk` 0/1/heuristic × D{64,128} × B·H ×
+  N{127..1000} × causal × {f16,bf16}) **with concurrent-allocation stress** →
+  0 split-K failures vs fp32.
+- **R.5**: full suite **1768 passed, 2 skipped, ×2 consecutive**.
+- **R.6**: lifetime-only change (no kernel compute change) → split-K perf
+  identical; non-default path.
+- **R.7 lock**: `tests/test_iii9_splitk_lifetime.py` (40) — forces split-K +
+  concurrent alloc + fp32 reference.
+
+### Separate items flagged (not fixed here)
+- single-pass D=64 N=1000 non-causal fp16: NaN only deep in the 576-config
+  exhaustive sweep; clean in isolation and a 30× warm loop. Pre-existing
+  memory-interaction artifact, distinct from this lifetime bug.

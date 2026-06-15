@@ -954,3 +954,61 @@ STATUS: COMPLETE
 
 ### Git
 - WIP — about to commit shader_cache.mm + lock test + 3 docs + this log; branch master. Nothing released/tagged.
+
+---
+## [2026-06-16 07:30] [CLAUDE] DECISION REVISIT — III-8 root cause FALSIFIED; real bug = V2 single-pass D=128 cold-start
+STATUS: BLOCKED
+
+- Prior: `[2026-06-16 06:00] [CLAUDE] III-8 RESOLVED` (commit da737e7) — claimed async_v2.metallib broken on macOS 26 = root cause; fix = gate async off. Labeled VERIFIED. **This is WRONG.** [CORRECTION of that entry]
+- New analysis (all VERIFIED on pristine HEAD da737e7, clean rebuild, NO debug edits):
+  - backend="mfa" NON-CAUSAL D=128 random-Q: COLD first-dispatch → MAE 13-36, NONDETERMINISTIC across processes (uninitialized/stale scratch memory). Within one process: 1st call wrong, subsequent correct (warm).
+  - CORRECT in every other case: V1 (MFA_DISABLE_V2=1) cold ✓; D=64 cold ✓; causal cold ✓; Q=0 uniform-P cold ✓ (masks it — zero scores); backend="auto" (production) cold ✓ (routes non-causal dense → SDPA).
+  - try_async_pipeline: GATE FIRES on macOS 26 (async skipped) → JIT path used → STILL garbage cold. So the async metallib was NEVER the cause; my III-8 gate is INERT (verified via MFA_TRACE_ASYNC fprintf: async never loaded; MFA_FORCE_ASYNC_ON_26 bypass irrelevant).
+  - Why III-8 misdiagnosed: (a) NSLog→unified-log (not stderr) hid that async wasn't loading; (b) III-8 debug-dump WRITES into v2 scratch buffers accidentally INITIALIZED the memory, masking the cold bug → reverting dumps re-exposed it; (c) the "warm" suite/lock (many tests/process) never sampled the cold first-dispatch.
+  - The III-7 "split-K partial-N MAE 7-16" and the III-8e "(qb+1)*BQ truncation" were the SAME cold-start garbage sampled at different shapes, mis-attributed.
+- Localized: V2 single-pass D=128 non-causal cold first-dispatch reads uninitialized memory. NOT async, NOT split-K, NOT a clean truncation. [VERIFIED]
+- Severity: NON-default-reachable (auto→SDPA; production safe). Expert backend="mfa" non-causal D=128 only. Real correctness bug.
+- Consequence: v2.52.2 MUST NOT ship as planned (headline III-8 fix inert + real bug open). da737e7 docs (RESOLVED) + lock test rationale + lesson #14 framing all need correction.
+- Instrumentation stashed: `git stash` "III-9 instrumentation" (SPLITK_DEBUG + TRACE + async-bypass) — available for the fix.
+- Ran: pristine HEAD clean rebuild + 5-proc cold sweep (13-36 MAE) + V1/D64/causal/Q0/auto cold (all correct). Validated vs independent fp32 SDPA (lesson #11).
+- Git: nothing committed this entry; binary = pristine HEAD; working tree clean (instrumentation stashed). Awaiting Marco decision on fork.
+
+---
+## [2026-06-16 09:00] [CLAUDE] III-9 — bug CONFIRMED in V2 split-K (not single-pass); race not yet line-pinned
+STATUS: IN_PROGRESS
+
+- Refines the 07:30 DECISION REVISIT. The failing case (B=1 H=4 N=128 D=128 non-causal backend=mfa) dispatches to V2 SPLIT-K (num_splits=2, BK=32), confirmed via MFA_SPLITK_DEBUG path trace — NOT single-pass. [VERIFIED]
+- Single-pass (MFA_FORCE_SPLITK=0): correct cold (0.00004). V1: correct. auto: correct. So bug is split-K-ONLY. [VERIFIED]
+- Nature: nondeterministic across processes w/ identical seed (MAE 12-36 N=128, ~6.8 N=256) = a RACE. Masked by Q=0 (uniform-P probe correct cold). Value-dependent (only real scores). Affects upper query rows (qb>=2), boundary varies run-to-run. o saturates to fp16 512.
+- RULED OUT (each tested): (a) FlashDecodeReduce kernel — purely per-element, no smem/barriers/cross-thread reduce, race-free [VERIFIED by read]; (b) unwritten pO/pL scratch — MFA_ZERO_SCRATCH memset didn't fix [VERIFIED]; (c) Phase1->Phase2 barrier insufficiency — Q=0 would also fail, it doesn't [VERIFIED]; (d) K-smem visibility race at Q@K^T — MFA_EXTRA_BARRIER didn't fix [VERIFIED]; (e) M3+-specific — MFA_FORCE_GEN=13 (sim-M1) ALSO fails (6.8) → gen-independent [VERIFIED].
+- Split-K-specific code (per-split K-range, empty-split path, pO/pL write) read in full: all structurally correct + consistent with single-pass. Race line NOT pinned.
+- Diagnostic edits in working tree (UNCOMMITTED, gated, harmless): mfa_attention.cpp MFA_SPLITK_DEBUG + MFA_ZERO_SCRATCH; shader_cache.mm MFA_TRACE_ASYNC + MFA_FORCE_ASYNC_ON_26 bypass; mfa_steel_fwd_v2.cpp MFA_EXTRA_BARRIER.
+- Ran: cold sweeps (single-pass/V1/auto/Q0 correct; split-K wrong both gens). Validated vs independent fp32 SDPA.
+- Git: nothing committed; HEAD=da737e7 (the now-falsified III-8 fix still on master, needs correction). Checkpointing with Marco: continue deep race-hunt vs ship correctness-safe split-K fallback now + hunt race separately.
+
+---
+## [2026-06-16 11:00] [CLAUDE] III-9 ROOT CAUSE FOUND + FIXED — split-K scratch lifetime (premature free)
+STATUS: COMPLETE
+
+### Root cause (rigorously confirmed, corrects BOTH III-8 and the 07:30/09:00 entries)
+- The V2 split-K path allocated pO/pL scratch via allocator::malloc and FREED them at ENCODE time (allocator::free, mfa_attention.cpp:566-567 split-K, :358-359 flash-decode), with a comment assuming "Metal retains them until the command buffer completes." FALSE: MLX is lazy — Phase1/Phase2 execute at mx.eval, LATER. The free returned the pool memory while the kernels were pending; a concurrent allocation (the reference SDPA, or any downstream op) reused it and corrupted the not-yet-executed reduce read. [VERIFIED]
+- Isolation ladder that pinned it: per-split pO AND pL dumps both reliably correct (6/6) vs fp32; numpy-combine(dumped pO/pL) == fp32 full (MAE 7e-5) → inputs+math correct; eval-o-ALONE correct (4/4) but eval(o, concurrent_sdpa) garbage; MFA_NO_FREE (suppress free) → correct (4/4). => premature free, not kernel logic.
+- Explains ALL prior confusion: nondeterministic (allocator timing), "later rows garbage" (reduce reads after partial pool overwrite), "Q=0 masked it" (uniform-P probes had NO concurrent alloc), gen-independent, o→fp16 512 saturation.
+- The III-8 "async metallib root cause" was a WRONG TURN (the async gate is inert for this bug; backend=mfa non-causal D=128 dispatches to SPLIT-K, traced via instrumentation, not the SteelForwardV2 single-pass that try_async serves). The async gate is independently defensible (simdgroup_async_copy IS broken on macOS 26) but did NOT fix the non-causal divergence.
+
+### Fix
+- mfa_attention.cpp: both split-K (Phase 3) and flash-decode (Track H) scratch now wrapped in mlx::core::array + registered via enc.add_temporary() → freed only after the command buffer completes. Removed the encode-time allocator::free.
+
+### Validation
+- R.4: 576-config sweep (force_splitk 0/1/heuristic × D{64,128} × B·H{(1,4),(1,8),(2,8)} × N{127..1000} × causal × {f16,bf16}) WITH concurrent-alloc stress → 0 split-K failures vs fp32. (2 NaN at single-pass D=64 N=1000 non-causal fp16 appear ONLY deep in the exhaustive sweep — clean in isolation + 30× warm loop; separate pre-existing memory-interaction artifact, NOT split-K, flagged.)
+- R.5: full suite 1768 passed, 2 skipped, ×2 consecutive (40 new III-9 lock tests included).
+- R.6: fix changes buffer LIFETIME only (no kernel compute change) → split-K perf identical. backend=mfa non-default; auto→SDPA unaffected.
+- R.7 lock: tests/test_iii9_splitk_lifetime.py (40) — forces split-K + concurrent alloc + fp32 ref.
+- Ran: pytest tests/ ×2 (1768 pass), R.4 sweep, isolation ladder. Validated vs independent fp32 SDPA (lesson #11).
+
+### Separate items flagged (NOT fixed)
+- single-pass D=64 N=1000 non-causal fp16: NaN only in 576-config exhaustive sweep, not isolation/30×-loop. Pre-existing, separate.
+- flash-decode had the SAME premature-free latent bug (fixed here too as part of the multi-gate audit, §AA.5.x).
+
+### Git
+- WIP — about to commit: mfa_attention.cpp fix + tests/test_iii9_splitk_lifetime.py + doc corrections + log. HEAD=da737e7 (III-8). Diagnostic edits all reverted; tree clean except the fix.

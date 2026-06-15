@@ -684,6 +684,21 @@ fix has expert-API-contract implications.
       dtype, OS, and arch. The one that *wins* is the one to debug.
     A precompiled metallib is invisible to source grep, git blame, and every
     `generate_*_source` edit. Confirm execution provenance first; debug source
-    second. (Fix: gate the async fast-path off on macOS 26+ in
-    `shader_cache.mm::try_async_pipeline`; full write-up in
-    `campaign-2026-06/phase3/backend-mfa-noncausal-divergence.md § Resolution`.)
+    second.
+
+    ⚠ **CORRECTION (III-9): the async metallib was NOT the root cause either.**
+    III-8 concluded "async metallib broken on macOS 26 = root cause" and shipped
+    a gate — but that was a *second* wrong turn. Applying THIS lesson properly
+    in III-9 (instrument the dispatch to see which path actually runs) showed
+    `backend="mfa"` non-causal D∈{64,128} dispatches to the V2 **split-K** path,
+    and the real bug was a **scratch-buffer lifetime error**: `pO`/`pL` freed at
+    encode time while MLX's lazy execution left the kernels pending, so a
+    concurrent allocation reused the pool memory and corrupted the not-yet-run
+    reduce. Fix: `enc.add_temporary` (tie scratch to command-buffer completion)
+    in `mfa_attention.cpp`. The async gate is independently defensible
+    (`simdgroup_async_copy` is genuinely broken on macOS 26) but inert for this
+    bug. **Meta-meta-lesson**: lesson #14's "which binary runs" must be applied
+    to the *actual failing dispatch* (here: split-K), not the first plausible
+    candidate (the async single-pass path) — verify the path with a dispatch
+    trace, not by assuming. Full write-up: `backend-mfa-noncausal-divergence.md
+    § Resolution (III-9 — CORRECTED)`.
