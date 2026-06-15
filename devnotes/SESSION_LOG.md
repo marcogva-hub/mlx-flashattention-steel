@@ -898,3 +898,15 @@ STATUS: IN_PROGRESS
 - Consumed III-7+III-8+III-8c+III-8d. Non-default-reachable. NO guessed edit. Clean tree (dump reverted).
 - Docs: sprint-III-8d-report.md + findings-doc III-8d section. Extended lesson #12 (accumulator frags not serializable by tile store even when sibling tile store works). Nothing released.
 - Git: doc + log commit below; branch master.
+
+---
+## [2026-06-16 04:00] [CLAUDE] III-8e — known-answer probe CRACKS the mechanism (behavioral); exact line open
+STATUS: IN_PROGRESS
+
+- Technique (institutional win, lesson #13): known-answer uniform-P probe — Q=0 ⇒ uniform P (isolates softmax+P@V from scores); V=ramp ⇒ O=mean(attended keys); V=indicator ⇒ attended set; V=ones ⇒ O=1.0 (P normalized). Reads effective attention through the CORRECT pipeline, no dump/confound, validated vs fp32. Cracked it where 4 sprints of register dumps/one-hot failed.
+- MECHANISM (reliable): non-causal single-pass attends exactly (qb+1)*BQ keys per Q-tile (qb=0→32,1→64,2→96,3→128 at BQ=32), tile-uniform, sub-tile granular = the causal q_max bound leaking into non-causal. Keys ≥ q_max are TRUNCATED (not attended), not miscomputed. [VERIFIED, no confound]
+- Resolves the 4-sprint paradox: causal masks ≥q_max anyway → truncation invisible to causal; only non-causal qb=0 visibly wrong. Subsumes earlier "col>row wrong"/"denominator" reads.
+- Exact line OPEN: (qb+1)*BQ-keys signature matches NO obvious source — kb_lim=NK (q-indep, 64≠32), causal kb_lim formula (64≠32), masks (gated/inactive at repro), dispatch params (correct, q-indep) — all ruled out. q-dependence needs an in-kernel qb-using key limit not found by static reading.
+- Next: uniform-P probe is a reliable cheap ORACLE → bisect kernel source (disable/alter candidate qb-using regions, re-measure attended count until =N for all qb) to pin the line empirically, then fix+O-vs-fp32+generalize+rebench+lock. NO guessed edit.
+- Consumed III-7..III-8e. Non-default-reachable. Clean tree+binary. Nothing released. Codified lesson #13 (known-answer probe).
+- Git: doc + log commit below; branch master.

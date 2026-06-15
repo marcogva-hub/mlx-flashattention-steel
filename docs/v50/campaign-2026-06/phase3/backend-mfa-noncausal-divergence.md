@@ -290,3 +290,28 @@ Full report: `sprint-III-8d-report.md`.
   on `col≤row`, then read `col>row`; or (2) escalate to the MLX
   MMA-primitive layer. Marco's call: dedicated fork session vs route-around
   interim. No guessed edit; not default-reachable.
+
+---
+
+## III-8e — MECHANISM CRACKED (behavioral, reliable); exact line still open
+
+Full report: `sprint-III-8e-report.md`. The known-answer uniform-P probe
+(Q=0 ⇒ uniform P; V=ramp ⇒ attended-key mean; V=indicator ⇒ attended set)
+cracked it reliably (no dump, no confound, validated vs fp32):
+
+**Non-causal single-pass attends exactly `(qb+1)·BQ` keys per Q-tile**
+(qb=0→32, qb=1→64, qb=2→96, qb=3→128 at BQ=32), tile-uniform, sub-tile
+granular. = the **causal `q_max=(qb+1)·BQ` key bound leaking into the
+non-causal path**. Keys ≥ q_max are **truncated (not attended), not
+miscomputed**. Resolves the four-sprint paradox: causal masks ≥q_max anyway.
+
+**Exact line OPEN**: the `(qb+1)·BQ`-keys signature matches NO obvious source
+— `kb_lim`=NK (q-independent, =64 keys not 32), causal kb_lim formula (=64
+not 32), masks (gated/inactive at the repro), dispatch params (correct,
+q-independent) — all ruled out. The q-dependence requires an in-kernel
+`qb`-using key limit not located by static reading.
+
+**Next**: the uniform-P probe is a reliable cheap ORACLE — bisect the kernel
+source with it (disable/alter candidate qb-using regions, re-measure
+attended-key count until it = N for all qb) to pin the line empirically, then
+fix + O-vs-fp32 + generalize + re-bench + lock. No guessed edit.

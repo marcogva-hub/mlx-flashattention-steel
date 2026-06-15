@@ -627,3 +627,27 @@ fix has expert-API-contract implications.
     mid-kernel when truly necessary, use a layout-correct `simd_shuffle`
     gather into a known lane order, or a minimal standalone reproduction of
     the MMA outside the full kernel — never a naive `frag_at`→memory dump.
+
+## III-8e methodological win — known-answer uniform-P probe (companion to #12)
+
+13. **To debug a cooperative-MMA attention kernel, read the EFFECTIVE
+    attention through the correct full pipeline with KNOWN-ANSWER inputs —
+    do not serialize the MMA fragment.** Lesson #12 said mid-kernel
+    register dumps are unfaithful (re-proven in III-8d via the mandatory
+    `col≤row` self-check). The technique that finally cracked the V2
+    non-causal mechanism (III-8e, after 4 sprints of failed register reads):
+    - **Q=0** ⇒ scores all 0 ⇒ **uniform P** regardless of any Q@K^T bug ⇒
+      isolates softmax-sum + P@V from the scores.
+    - **V[j,0]=j** (ramp) ⇒ `O[i,0]=Σ_j P[i,j]·j` = mean of the attended key
+      set ⇒ reveals WHICH keys are attended.
+    - **V=1[j∈S]** ⇒ `O[i,0]` = P-mass on set S ⇒ confirms the attended set;
+      **V=ones ⇒ O=1.0** self-checks that P is normalized.
+    Each probe reads through the *correct* O=P@V pipeline (no
+    fragment-serialization, no one-hot-O=P confound), validated vs fp32.
+    This pinned the mechanism reliably: non-causal single-pass attends only
+    `(qb+1)·BQ` keys (the causal `q_max` bound leaking in) — keys ≥ q_max are
+    truncated, not miscomputed. *Rule*: when an MMA-internal value resists
+    faithful serialization, design known-answer inputs that make the
+    pipeline OUTPUT reveal the internal quantity, and isolate stages by
+    zeroing the upstream ones (Q=0 ⇒ uniform P). The output is always
+    faithful; the fragment registers are not.
