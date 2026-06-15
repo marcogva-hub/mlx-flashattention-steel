@@ -885,3 +885,16 @@ STATUS: IN_PROGRESS
 
 ### Marco-gated fork
 - (1) simd_shuffle fragment-gather probe, (2) standalone MMA repro, (3) route-around (forced-mfa non-causal → V1/SDPA), or (4) pause. Repair spans III-7+III-8+III-8c without line-isolation. quantize_model III-7 fixes still queued for bundling.
+
+---
+## [2026-06-16 02:00] [CLAUDE] III-8d standalone-MMA prep — dump RIGOROUSLY closed via self-check; not isolated
+STATUS: IN_PROGRESS
+
+- Understood MMA: MFAMMAFrag=simdgroup_matrix<T,8,8>; Stile=Q@K^T accumulator tile; store<U,1,1> per-lane (base=i*8*ld+j*8, dst pre-offset by simd_coord); same store faithful for Otile.
+- MANDATED col<=row self-check (prompt R.2): causal Stile.store dump MAE 1.18 vs numpy on col<=row — a region causal output PROVES correct → store read UNFAITHFUL. causal vs noncausal dumps differ pre-mask (MAE 0.24, must be identical). RIGOROUSLY closes the register-dump approach (was inferred before, now proven). [VERIFIED]
+- Blocker pinpointed: kernel consumes Stile correctly via frag_at (causal works) but serializing Stile→memory via store is unfaithful despite identical store working for Otile → Q@K^T ACCUMULATOR tile layout differs (operand-vs-accumulator / WM row-mapping). 3 read methods defeated, all fail the self-check. Standalone harness uses same store → same blocker.
+- Mechanism localized (III-8c, reliable): wrong col>row contributions, single Q@K^T tile, non-causal single-pass. Reading col>row needs faithful accumulator serialization — the unsolved sub-problem.
+- Next fork: (1) derive exact accumulator lane→(row,col) layout via trivial numpy-parity single-MMA test (Q=I,K=I), validate col<=row, then read col>row; (2) escalate to MLX MMA-primitive layer. Marco's call: dedicated fork vs route-around interim.
+- Consumed III-7+III-8+III-8c+III-8d. Non-default-reachable. NO guessed edit. Clean tree (dump reverted).
+- Docs: sprint-III-8d-report.md + findings-doc III-8d section. Extended lesson #12 (accumulator frags not serializable by tile store even when sibling tile store works). Nothing released.
+- Git: doc + log commit below; branch master.

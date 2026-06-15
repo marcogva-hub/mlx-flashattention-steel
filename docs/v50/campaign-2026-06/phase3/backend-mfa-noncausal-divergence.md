@@ -263,3 +263,30 @@ fragment gather to read `col>row` scores reliably; or (2) minimal standalone
 MMA reproduction (32×64 Q@K^T tile vs numpy). Marco's call: next-fork vs
 route-around (forced-mfa non-causal → V1/SDPA, low-risk correct API output)
 vs pause. No guessed edit. Not default-reachable; no release impact.
+
+---
+
+## III-8d — standalone MMA prep + rigorous dump closure (still not isolated)
+
+Full report: `sprint-III-8d-report.md`.
+- Understood the MMA machinery: `MFAMMAFrag`=`simdgroup_matrix<T,8,8>`;
+  `Stile` is a Q@K^T **accumulator** tile; `store<U,1,1>` is a per-lane
+  write (`base=i*8*ld+j*8`, dst pre-offset by `simd_coord`).
+- **Mandated `col≤row` self-check RIGOROUSLY closes the register-dump
+  approach**: the causal `Stile.store` dump gives MAE **1.18** vs numpy on
+  `col≤row` — a region causal output PROVES correct — so the store read is
+  **unfaithful** (and causal vs non-causal dumps differ pre-mask, MAE 0.24,
+  though they must be identical). The kernel consumes `Stile` correctly via
+  `frag_at` (causal works) but **serializing it to memory via `store` is
+  unfaithful**, even though the identical `store` is faithful for `Otile`.
+- **Blocker:** reading the `col>row` scores requires a faithful
+  cooperative-MMA-**accumulator** serialization; 3 read methods
+  (`store_contiguous`, element-wise `frag_at`, `store`) all fail the
+  self-check. The kernel never serializes `Stile` to memory, so there's no
+  proven-faithful path to borrow. A standalone harness uses the same store
+  → same blocker.
+- **Next fork:** (1) derive the exact accumulator lane→(row,col) layout via
+  a trivial numpy-parity single-MMA test (Q=I,K=I, known scores), validate
+  on `col≤row`, then read `col>row`; or (2) escalate to the MLX
+  MMA-primitive layer. Marco's call: dedicated fork session vs route-around
+  interim. No guessed edit; not default-reachable.
