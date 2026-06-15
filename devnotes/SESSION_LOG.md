@@ -838,3 +838,18 @@ STATUS: IN_PROGRESS
 
 ### Next action
 - Repair: read V2 single-pass preload (~322-375) + per-iter V-load/K-preload/barriers (~775-831) + P@V; git-blame vs v1.4.0; fix; validate vs fp32 across D/N/dtype/B·H; lock with forced-single-pass non-causal regression test.
+
+---
+## [2026-06-15 21:00] [CLAUDE] III-8 repair attempt — localization tightened, NOT fixed (no guessed edit)
+STATUS: IN_PROGRESS
+
+- Marco scoped III-8 to REPAIR V2 single-pass non-causal. Outcome: substantial further localization, but the repair was NOT landed. Per the sprint rule ("do NOT guess a barrier/smem edit — read to the exact expression first") + race risk, I made NO kernel edit. Honest status: tightly localized, repair pending kernel instrumentation.
+- New facts (all vs independent fp32):
+  - Both code paths equally wrong (MFA_FORCE_GEN=14 smem == default M5+ direct) → bug in SHARED path-independent kernel code, NOT the barrier/smem machinery III-7 hypothesized. [VERIFIED]
+  - Non-causal path intrinsically broken: LAST query row (identical math to causal) is correct under causal (MAE 0.0) but wrong under non-causal (MAE 0.115). Not a key-subset issue. [VERIFIED]
+  - Params ruled out: V2 single-pass dispatch builds identical MFASteelParams for causal/non-causal (only qL_off, =0 when N==S). [VERIFIED]
+  - Present at 1 tile (N=16 MAE 0.28), dilutes with N (N=256 MAE 0.12). Longstanding (orig V2 commit 81d801f7), never caught (non-causal single-pass never auto-dispatched + untested). [VERIFIED]
+  - Per-row cosine(MFA,fp32) LOW (mean 0.36, max 0.66) → WRONG DIRECTION, not a per-row rescale → attention WEIGHTS P are wrong, not just the denominator. Corrects III-7's "denominator under-accumulated" framing. [VERIFIED]
+- Locus: V2 single-pass non-causal Q@K^T→Stile score population (or row_reduce/MFAExpSubOp). Next step: dump Stile/P for 1-tile non-causal, rebuild once, diff vs numpy → pins the line. Then fix + fp32-validate + re-bench + lock.
+- Findings doc updated (III-8 section). No code edited. Nothing released.
+- Git: doc + log commit below; branch master.
