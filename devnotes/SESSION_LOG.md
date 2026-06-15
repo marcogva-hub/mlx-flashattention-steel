@@ -729,3 +729,40 @@ STATUS: COMPLETE
 
 ### Git
 - commit below; branch master; pushed. Doc: docs/v50/campaign-2026-06/phase3/conv-small-channel-fix.md.
+
+---
+## [2026-06-15 17:30] [CLAUDE] Sprint III-6: matmul2d K-tail kernel fix + v2.52.1 release (coupled) — PUBLISHED
+STATUS: COMPLETE
+
+### Plan
+- Objective: fix the TRUE root cause of the conv3d small-channel corruption (the matmul2d unmasked partial-K-tile) at the kernel level so all three entry points are correct, bench whether to re-widen the gate (Pattern #6), add Rule-8 defense, ship ONE coupled v2.52.1 release. Marco directive: real fix, release once.
+- Skills: /metal-kernel-dev (fix design), /mlx-mfa-bench-methodology (R.2 gate decision), /mlx-mfa-release-audit (9 gates).
+
+### Changes
+- R.1 (cb76456): matmul2d partial-K-tile fixed by zero-padding contraction K to a K_TILE multiple before dispatch — pad_contraction_k (mfa_conv_nax.cpp) + _pad_k (conv_nax.py). Covers C++ legacy im2col, C++ 1x1x1 pointwise, Python legacy orchestrator. Rebuilt ext. [VERIFIED]
+- R.3 (cb76456): matmul2d_source (C++ + Python) refuses non-K_TILE-aligned K (Rule 8 — future unpadded caller fails loudly). [VERIFIED]
+- R.4 (cb76456): test_iii5 extended (TestFixedKernelPathsDirect — 3 entry points vs fp32 incl C_in=31; Rule-8 refusal lock; 62 tests). conftest.py Metal-pool clear_cache fence. Lesson #11 codified in audit-framing-inversions.md.
+
+### R.2 bench → gate decision [VERIFIED]
+- Canonical 3-session median, VAE first-layer shapes: C_in=8 tie(1.04), C_in=16 native wins(1.77x), C_in=24 native(1.73x), C_in=48 NAX wins(0.73, MPP path). DECISION: KEEP gate-out — native faster AND correct at small C_in (orchestration overhead dominates; Pattern #6). Kernel fix is correctness defence for raw-API/pointwise/Python callers, not perf re-widening.
+
+### Validation
+- R.1 verify: all three entry points MAE/RMS 0.00014 vs independent fp32 at C_in 8/16/17/24/31/33/40/48; C_in%32==0 unchanged. (Pre-fix: 0.11 / NaN.)
+- R.5: full suite green x2 (1563 passed, 2 skipped); pool canary green (122); pre-tag MFA_POOL_STRESS=1 full suite 1565 passed.
+- 9-gate audit: GREEN_WITH_ADVISORY (no blocking; advisory = no new PERF_CLAIMS entry / Reproduce snippet — v2.52.1 introduces NO new claim, headline carried unchanged; same benign class as III-5). Gate #9 programmatic 2 passed.
+- Post-publish smoke on PUBLISHED 2.52.1 wheel (clean py3.11 venv): 6/6 — conv3d small-channel kernel correct (C_in 8/16/31 vs fp32 incl prior-NaN case), Rule-8 guard, MPP fp16/bf16, V34 backward, return_lse, topk.
+
+### R.4 lesson #11 + sweep
+- Lesson: validate a low-precision kernel against an INDEPENDENT higher-precision reference (fp32), never another kernel path. (test_fp16_still_works compared the kernel vs mx.conv_general which under hooks WAS the same broken kernel.) Sweep: only instance was test_fp16_still_works (fixed III-5); all other low-prec tests use independent refs (Apple SDPA / PyTorch fp32 / unhooked native).
+
+### Release (irreversible) — DONE
+- Tag v2.52.1 (origin 1ae1b1b). PyPI live (https://pypi.org/project/mlx-mfa/2.52.1/, cp311 wheel+sdist). GH release published (both assets, CHANGELOG disclosure). Commits: cb76456 (fix) + deaafaf (docs) + 9d62d2e (release: version+CHANGELOG, distinct). [VERIFIED]
+
+### OPEN (Marco-gated)
+- v2.52.0 disposition: YANK recommended (contains conv3d small-channel silent-corruption; pip already resolves to 2.52.1). Manual PyPI web-UI step (PEP 592, no CLI). Awaiting Marco. Do NOT yank — already done? NO: v2.52.0 not yet yanked. Also v2.51.0 yank from III-5 may still be pending Marco.
+
+### Tech cost
+- Pad copy + slightly wider matmul (+<=K_TILE-1 in K) when K unaligned; nil when aligned. Negligible (small-channel routes to native anyway).
+
+### Git
+- cb76456 + deaafaf + 9d62d2e; tag v2.52.1; branch master; pushed. Report: docs/v50/campaign-2026-06/phase3/sprint-III-6-report.md.

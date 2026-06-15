@@ -96,9 +96,28 @@ regressions). The pre-existing bf16 legacy raise is retained.
 - Headline conv MPP / V34 / TQ claims unchanged; net perf non-worse
   (gate-out kept, kernel fix is correctness-only).
 
-## R.6 — Coupled v2.52.1 release
+## R.6 — Coupled v2.52.1 release — DONE
 
-(Recorded below on completion.)
+| Surface | State |
+|---|---|
+| Commits | `cb76456` (fix) · `deaafaf` (docs) · `9d62d2e` (release: version+CHANGELOG, distinct) |
+| Tag `v2.52.1` | origin `1ae1b1b` |
+| PyPI | live — https://pypi.org/project/mlx-mfa/2.52.1/ (cp311 wheel + sdist) |
+| GitHub release | published — both assets, CHANGELOG disclosure in body |
+| 9-gate audit | GREEN_WITH_ADVISORY (no blocking; advisory = no new PERF_CLAIMS/Reproduce — v2.52.1 has no new claim) |
+| Gate #9 programmatic | 2 passed |
+| Pre-tag pool-stress | 1565 passed |
+| Post-publish smoke (published wheel, clean venv) | **6/6** — conv3d small-channel kernel (C_in 8/16/31 vs fp32 incl prior-NaN), Rule-8 guard, MPP fp16/bf16, V34 backward, return_lse, topk |
+
+### v2.52.0 disposition (Marco-gated, OPEN)
+
+v2.52.0 contains the conv3d small-channel silent-corruption bug; v2.52.1
+fixes it and is live. **Recommendation: yank v2.52.0** (same disposition as
+v2.51.0 — a published version with a known silent-corruption bug on a
+default-reachable path is an external liability; yank is reversible,
+non-destructive, and `pip install mlx-mfa` already resolves to 2.52.1).
+Yank is a manual PyPI web-UI step (PEP 592, no CLI) — steps provided to
+Marco. Do NOT yank before v2.52.1 confirmed live (now satisfied).
 
 ## Validation
 - matmul2d K-tail masked; all three entry points correct at all C_in vs
