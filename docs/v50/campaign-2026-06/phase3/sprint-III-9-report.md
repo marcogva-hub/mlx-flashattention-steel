@@ -6,7 +6,12 @@
 **Purpose:** pre-release gate before the v2.53.0+ PyPI tag. Repeat-until-clean across the known
 classes (G–J) + the four lesson-driven new classes (D, E, F, K) + the flagged single-pass NaN.
 
-## Outcome: NOT yet clean — one real bug found (forced-path-only); release BLOCKED pending its disposition.
+## Outcome (final, after 3 iterations): PRE-RELEASE GATE MET.
+Iteration 1 found one real bug (V2 single-pass non-causal last-head OOB-V, forced-path-only);
+iteration 2 fixed it AND — via §AA.5.x multi-gate — found+fixed the same pattern in two sibling
+kernels (GNA native [default-reachable], STEEL V5); iteration 3 is zero-finding. Full timeline in
+**Iteration 2** and **Iteration 3** sections below; the iteration-1 narrative immediately following
+is preserved as the historical record. Final fix commits: 240b226, eb68af5, eb5b890.
 
 ## Per-class results (each backed by exhaustive enumeration; all validated vs independent fp32)
 
@@ -59,3 +64,53 @@ Classes D, G, H, I, J, K are clean and unlikely to regress from a single-pass di
 but will be re-confirmed in the closing iteration.
 
 ## Pre-release gate: NOT MET (one open finding). Release held.
+
+---
+
+## Iteration 2 — disposition applied + §AA.5.x multi-gate (found MORE material)
+
+Marco chose **fix the V2 single-pass kernel**. Root cause pinned: all failing N have a PARTIAL
+final K-tile; on M5's MFA_DIRECT_READS path the V direct-read had no bounds check, so for masked
+keys (P=0) past kL the OOB read returned NaN and **0 × NaN = NaN** corrupted the output. The last
+head sits at the end of the K/V buffer, so its over-read spilled into freed pool memory (hence
+pool-history/concurrent-alloc dependence + last-head-only + even-D-column MMA pattern). The
+K-boundary mask handles K (its OOB NaN is overwritten by -inf), but V flowed through 0×NaN.
+
+**Fix (eb68af5):** clamp the V direct-read key-row to the last valid key (kL_rem-1) on the partial
+final tile — OOB keys read a finite V; P=0 → 0×finite = 0 (correct masked contribution). R.4: 792-config
+sweep 0 failures; R.5: suite 1796 ×2; R.7 lock: test_iii9_v2_singlepass_lasthead.py (28).
+
+**Iteration-2 sweep then found the §AA.5.x miss:** the fix was scoped to ONE generator. The IDENTICAL
+unbounded direct-V-read pattern existed in TWO sibling kernels (the F agent caught it — vindicating
+loop-until-clean):
+- **GNA native** (`mfa_gna_fwd.cpp`) — **HIGH, DEFAULT-REACHABLE** via `flash_attention_gna` (D=128/3D/f16/N%32≠0).
+- **STEEL V5** (`mfa_steel_fwd_v5.cpp`) — MEDIUM, opt-in (`MFA_ENABLE_V5`); + a falsified "→ safe" comment.
+
+**Fix (eb5b890):** identical kL_rem-1 clamp applied to both; V5 comment corrected. **Multi-gate verified
+complete** (lead grep): the ONLY 3 device-direct-V-read sites (`V_cur`) are V2 single-pass / GNA / V5,
+all now clamped; every other kernel reads V from smem (`&Vs[...]`, load_safe zero-pad) → structurally
+safe. V4 reads only K directly (safe). GNA validated vs an independent element-level fp32 GNA-mask+SDPA
+oracle (0 NaN, MAE ≤5e-4); V5 vs fp32 SDPA (0 NaN, MAE ≤9e-4); both under the pool-history+concurrent-alloc trigger.
+
+## Iteration 3 — zero-finding (pre-release gate)
+
+Re-ran the classes whose verdict the V-read clamps could touch, on HEAD=eb5b890:
+- **recheck-lasthead**: CLEAN (V2 fix holds across the full envelope + regression set).
+- **E** (unfaithful-oracle): CLEAN — 3 fixed paths re-confirmed vs independent fp32; 3 LOW test-coverage
+  gaps flagged (turboquant/sage/varlen test refs not fp32-cast — confirmed correct by probe, not defects).
+- **F** (partial-tile): multi-gate verified COMPLETE (no 4th direct-V site).
+- **I** (numerical-edge): CLEAN — empty-row/NaN-propagation(Rule 8)/overflow/degenerate/short-S all clean;
+  all fixed paths + the separately-flagged D=64 N=1000 single-pass item re-confirmed clean (181 III-9 locks).
+- **D, G, H, J, K**: structurally invariant to a V-read clamp (no scratch lifetime, cache key, dispatch
+  routing, precompiled binary, gradient surface, or hook changes); CLEAN in iteration 1.
+
+Full suite **1820 passed, 2 skipped, ×2 consecutive**.
+
+## PRE-RELEASE GATE: MET.
+Every bug class hunted exhaustively (incl. the four lesson-driven classes); the final iteration is
+zero-finding. Release scope (Marco-gated, version 2.53.0+ per total scope):
+- `da737e7` — async metallib macOS-26 gate (defense; inert for the V2 bugs)
+- `240b226` — split-K / flash-decode scratch lifetime fix
+- `eb68af5` — V2 single-pass non-causal last-head OOB-V clamp
+- `eb5b890` — GNA + V5 multi-gate OOB-V clamp
+- the two III-7 quantize_model fixes (already on master)

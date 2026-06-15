@@ -1041,3 +1041,79 @@ STATUS: IN_PROGRESS
 - Ran: GNA/V5 probes + pytest 1820 ×2. Validated vs independent fp32. Tree: csrc/mfa_gna_fwd.cpp + csrc/mfa_steel_fwd_v5.cpp + 1 new lock test to commit.
 - Git: eb68af5 (V2) committed; GNA+V5 commit below. HEAD will be the multi-gate commit. Nothing released.
 - NEXT: re-run E+I agents; iteration 3 full re-sweep to zero-finding = gate.
+
+---
+## [2026-06-15 23:57] [CLAUDE] III-9 sweep Class E — unfaithful-oracle / never-independently-validated paths
+STATUS: COMPLETE
+
+### Objective
+Enumerate every public attention/compute entry path; classify independent-fp32-oracle
+coverage; probe uncovered/unfaithful paths vs independent fp32 SDPA (or uniform-P/element
+known answer) in fresh processes + heterogeneous preamble + concurrent-alloc; re-confirm
+the 3 fixed paths (split-K lifetime 240b226, V2 single-pass non-causal eb68af5, GNA+V5
+direct-V eb5b890).
+
+### Independent-fp32 test-coverage classification
+- FAITHFUL (fp32-cast SDPA or PyTorch-fp32 oracle in tests): flash_attention (test_attention
+  reference_sdpa), STEEL varlen (_ref_concat per-seg fp32 SDPA), paged_varlen (per-seq SDPA),
+  sparse (_ref_sparse_sdpa fp32 SDPA + float bias), conv3d_nax (PyTorch fp32 CPU + mx.conv_general).
+- UNFAITHFUL / mfa-vs-mfa for the kernel forward: turboquant fused (test compares
+  flash_attention_paged_varlen_turboquant vs flash_attention_paged_varlen — both mfa);
+  topk_ratio=1.0 (vs flash_attention backend=sdpa, ok but same-precision); some varlen
+  forward asserts vs flash_attention not SDPA. sage uses fp16 (not fp32-cast) SDPA reference.
+
+### Probes (fresh process + heterogeneous preamble + concurrent alloc; vs INDEPENDENT fp32 SDPA / element oracle)
+- sage D{64,128}×N{256,383,512}×causal×{f16,bf16}: MAE ~1e-3, no NaN/saturation. A few
+  MAX 0.30-0.54 (atol 0.30 noncausal) = sage's documented fp16 QUANTIZATION error; CONFIRMED
+  deterministic-in-distribution in isolation w/o preamble/concurrent (trials 0.22-0.52, MAE
+  stable). NOT a lifetime bug. [VERIFIED]
+- varlen (segs incl [1,200,16],[3,3,3] partial/short, D64/128, causal+non): MAE ≤1e-4. CLEAN.
+- paged_varlen (q/kv {[1]/[40],[1,1]/[33,65],[2,3]/[1,100]}, D64/128): MAE ≤4e-5. CLEAN.
+- topk r=1.0 vs fp32 SDPA: MAE ≤6e-5. CLEAN.
+- GNA partial-N (shp (4,8,8)/(3,9,9)/(5,5,5), N∈{256,243,125}): vs EXACT per-element window
+  oracle (formula lifted from csrc/mfa_gna_fwd.cpp L421-426 — first oracle attempt used wrong
+  centering grp-w//2; kernel uses (win-str)/2): MAE ≤9e-5. CLEAN.
+- sparse sliding-window D64/128: MAE ≤2e-5. CLEAN.
+- kvcache decode D64/128 S{40,130,257}: MAE ≤4e-5. CLEAN.
+- conv3d_nax vs fp32 mx.conv_general: MAE ≤3e-3. CLEAN.
+
+### Three fixed paths re-confirmed CLEAN under trigger (vs fp32 SDPA, with concurrent alloc)
+- split-K (MFA_FORCE_SPLITK=1, backend=mfa) D64/128 N{127,128,256,383} causal+non: MAE ≤7e-5.
+- V2 single-pass (MFA_FORCE_SPLITK=0, backend=mfa) non-causal at log trigger shapes
+  D64 N{224,992,1000,1023,1,2,16}, D128 N{383,1,2,256,512}: MAE ≤1.1e-4, no last-head NaN.
+- V5 partial-S (MFA_ENABLE_V5=1, backend=mfa) D128 N{130,255,383,511,1000,1023} causal+non:
+  MAE ≤6e-5. GNA partial-N covered above.
+
+### Findings
+- ZERO NEW real bugs. sage "FAIL" elements are quantization noise (path's own atol 0.30/0.50),
+  not corruption. GNA initial divergence was MY oracle error (wrong window formula), corrected.
+- Coverage gaps (LOW, "needs independent-fp32 lock", NOT bugs): (1) turboquant fused kernel
+  validated only vs mfa decompress path (mfa-vs-mfa); no fp32-SDPA-on-reconstructed-KV lock.
+  (2) sage uses fp16 (not fp32-cast) SDPA reference. (3) several varlen forward asserts vs
+  flash_attention rather than SDPA. All three independently confirmed correct by THIS sweep's
+  probes; the gap is in the committed test suite, not in correctness.
+
+### Validation
+- Ran: 3 fresh-process probe harnesses (debug/classE_probe{,2,3}.py — scratch, removed after),
+  all paths + 3 fixed paths, fresh process per path, preamble + concurrent alloc.
+- Validated: every probe vs independent fp32 mx.fast.scaled_dot_product_attention (lesson #11)
+  or exact element-window oracle (GNA). Criteria: MAE/MAX vs atol, NaN-free, no fp16 saturation.
+
+### Git
+- not applicable (read-only audit; scratch probes removed; tree clean). HEAD=eb5b890.
+
+### Verdict
+- Class E is CLEAN — zero NEW real bugs. The 3 fixed paths hold under trigger. Three
+  test-suite coverage gaps flagged (LOW) for independent-fp32 locks; none indicates a defect.
+
+---
+## [2026-06-16 17:00] [CLAUDE] III-9 iter 3 — zero-finding; PRE-RELEASE GATE MET
+STATUS: COMPLETE
+
+- Iteration 3 (HEAD=eb5b890): re-ran the classes the V-read clamps could touch — recheck-lasthead CLEAN, E CLEAN (3 fixed paths reconfirmed vs fp32; 3 LOW test-coverage-gap nits, not defects), I CLEAN (empty-row/NaN-prop/overflow/degenerate/short-S + all fixed paths + the D=64 N=1000 item reconfirmed; 181 III-9 locks), F multi-gate verified COMPLETE by lead grep (only 3 device-V sites: V2/GNA/V5, all clamped; every other V read is smem/load_safe). D/G/H/J/K structurally invariant to a V-read clamp + clean in iter1.
+- Full suite 1820 passed, 2 skipped, ×2 consecutive. Tree clean (agent scratch removed).
+- PRE-RELEASE GATE MET: every class hunted exhaustively (incl. 4 lesson-driven classes), final iteration zero-finding.
+- Release scope (Marco-gated, v2.53.0+): da737e7 (async gate) + 240b226 (split-K lifetime) + eb68af5 (V2 single-pass OOB-V) + eb5b890 (GNA+V5 multi-gate OOB-V) + 2 III-7 quantize_model fixes (on master).
+- III-9 net: 1 lifetime bug (split-K/flash-decode) + 3 direct-V partial-tile OOB bugs (V2 single-pass, GNA [default-reachable], V5) — all fixed, all locked, all validated vs independent fp32. GNA was the only DEFAULT-reachable one.
+- Ran: 3 sweep iterations (workflows w8o0y0fru, w620e61ex + 4 standalone agents) + lead probes + pytest 1820 ×2 + multi-gate grep. Validated vs independent fp32 throughout (lesson #11).
+- Git: report + log commit below; HEAD will advance. NOTHING released — release is the separate Marco-gated step.
