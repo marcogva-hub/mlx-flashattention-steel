@@ -1012,3 +1012,17 @@ STATUS: COMPLETE
 
 ### Git
 - WIP — about to commit: mfa_attention.cpp fix + tests/test_iii9_splitk_lifetime.py + doc corrections + log. HEAD=da737e7 (III-8). Diagnostic edits all reverted; tree clean except the fix.
+
+---
+## [2026-06-16 13:00] [CLAUDE] III-9 pre-release sweep — iteration 1: one real bug found (V2 single-pass non-causal, forced-path)
+STATUS: BLOCKED
+
+- Ran 9-agent parallel sweep (Workflow w8o0y0fru) across classes D,E,F,G,H,I,J,K + K-adjacent; one agent (I) died on a socket error, re-run standalone.
+- CLEAN (exhaustive enumeration, vs independent fp32): K (scratch lifetime — every malloc output-backed or add_temporary; zero allocator::free remain; both fixed sites re-verified; no third site), D (which-binary/macOS-26; async gate inert+correct, CP9 serves nothing), G (no new key/knob; invariant test green), H (vjp anchored to fp32 oracle), I (empty-row/NaN-propagation/overflow/degenerate all clean), J (hook coverage). [VERIFIED]
+- ONE REAL BUG (4 agents converged): V2 SINGLE-PASS non-causal backend="mfa" forced-path corrupts the LAST head's output (uninitialized/pool-history read; even-D-col MMA pattern) at D=64 N∈{224,992-1023}+short-S{1,2,3,4,16}, D=128 N=383+short-S{1,2}. Math on written cells correct (6e-6). NOT split-K (fixed), NOT async metallib. The genuine residual of the III-8 single-pass investigation. [VERIFIED vs fp32, multi-agent + lead repro]
+  - Sentinel pre-fill of out → kernel writes all cells when run ALONE; corruption only under concurrent alloc / heterogeneous pool history → uninitialized-read class, likely OOB read at last head for partial last K-tile (last head sits at K/V buffer end → over-read spills into freed pool memory → NaN).
+  - Reachability: NOT default (auto→SDPA clean, 0/24 poisoned configs). V1 clean, causal clean, split-K clean. Forced backend="mfa" only.
+- Disposition is Marco-gated (pre-authorized in findings doc): (1) fix the V2 single-pass kernel (hard pin), or (2) DECLINE V2 non-causal → route forced-mfa non-causal D∈{64,128} to V1 (clean, real MFA kernel) + Rule-8 note (correctness fix, removes silent-garbage path; non-default + slower-than-SDPA + 2nd bug in this path). Recommend (2).
+- Ran: Workflow sweep + Class I re-run + lead repro (N=992 head-3 NaN deterministic w/ preamble; sentinel diag). Validated vs independent fp32 SDPA. Diagnostic edits reverted; tree clean; binary = clean HEAD 240b226.
+- Docs: sprint-III-9-report.md (per-class enumeration + finding + disposition). Pre-release gate NOT met; release HELD.
+- Git: report + log to commit; HEAD=240b226. Nothing released.
