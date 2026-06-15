@@ -2,6 +2,166 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.52.0] — 2026-06-15 — campaign release (complete corrected state)
+
+v2.52.0 ships the complete, corrected state of the 2026-06
+audit/optimization campaign: the Phase III-4 fresh-eyes whole-repo
+audit (9 passes, repeat-until-clean to a zero-finding fixed point;
+~73 fixes) on top of everything in v2.51.0.  **This is the release
+all users should be on.**  Full campaign record:
+`docs/v50/campaign-2026-06/` (see `phase3/PHASE-III-CLOSE.md`).
+
+### ⚠ CRITICAL — upgrade from v2.51.0 (and earlier) to v2.52.0
+
+**v2.51.0 contains two pre-existing CRITICAL silent-corruption bugs on
+default / promoted public paths.** Both were caught only by the III-4
+audit's active probing (the test suite never exercised them) and are
+fixed in v2.52.0. **Users on v2.51.0 or earlier should upgrade to
+v2.52.0.**
+
+1. **top-K threshold kernel — Metal-grid undercount** (the promoted
+   AUTO-default `flash_attention_topk` bisection path). The kernel
+   dispatched `grid.x = N` but MLX `grid` is **total threads**, not
+   threadgroups — so only the first ~8 query rows per head were
+   written; every other row read **stale Metal-pool memory** → wrong
+   top-K selection → wrong attention output. It "passed" tests because
+   recycled buffers usually held benign zeros. Fixed: `grid.x = N ×
+   256`; per-row range assertion added.
+2. **`return_lse=True` backward — NaN/garbage gradients.** `mx.grad`
+   through `flash_attention(..., return_lse=True)` returned NaN
+   (fp16/bf16) or ~1e32 garbage (fp32) because the path called the raw
+   2-output `mfa_forward_with_lse` Primitive, whose C++ vjp mishandled
+   the pruned logsumexp cotangent. Fixed via a `custom_function`
+   (`_make_mfa_custom_lse`) with an SDPA-vjp backward; now bit-exact to
+   ground truth across fp16/bf16/fp32 × D∈{64,128}.
+
+### Fixed (III-4 audit, on top of v2.51.0)
+
+The 9-pass audit swept every systematic correctness class and verified
+each clean with empirical evidence (Metal grid-spec across all kernels;
+C++ `eval_gpu` cache-keys / int64 offsets / `is_equivalent` across 12
+primitives; dtype validation; all 17 feature×gradient combos + 11
+`custom_function` vjps; numerical edge cases; the empty-row contract;
+the full mask-constructor family; svdquant; dispatch table; kv-cache
+adapters; concurrency). Beyond the two CRITICALs:
+
+- **Mixed-dtype kernel reinterpretation** — the attention kernels
+  derived their dtype from `q` alone and reinterpreted K/V/pool buffers
+  at that dtype (silent garbage). The main `flash_attention` path now
+  casts K/V to `q.dtype`; the six specialized serving entries
+  (paged / varlen / paged-varlen / TQ / sage / gna) raise loudly on a
+  dtype mismatch (Rule 8); `flash_attention_kvcache` casts q to the
+  pool dtype.
+- **D=128 block-sparse mask geometry on M3/M4** — Python built the mask
+  with the base BK=16 while the C++ kernel ran BK=32 on M3/M4, mis-
+  indexing tile activity (forward + both STEEL backward sites fixed).
+- **Non-divisible-N block-mask expansion** (D7) — the bias-expansion
+  helpers re-tiled masks when `seq_len` was not a multiple of the kernel
+  tile, silently governing the wrong tokens (wrong forward AND
+  gradients); now use the kernel tile geometry.
+- **Sparse-backward downsample contamination** (D16) — the opt-in native
+  sparse backward injected forward-masked contributions when the mask
+  conversion OR-downsampled (dV RMSE ~0.5); gated to `bt >= 64`.
+- **Sliding-window decode anchoring** — windowed decode via
+  `patch_mlx_lm` attended only to key 0 (the `qL_off` offset applied
+  only when causal); the windowed forward/backward also disagreed for
+  non-causal short queries. Forward/backward anchoring made consistent;
+  softcap now applied in the windowed backward oracle.
+- **Empty-row → zeros contract** — a fully-masked query row produced
+  NaN in `flash_attention_topk(mask=...)` and the LCSA SDPA+bias
+  dispatch branch (the dedicated NAX kernels emit zeros); all
+  bias-expansion paths now match the II-6 zeros contract.
+- **`quantize_model` silent no-op on direct-attribute models** (F7-1) —
+  the svdquant tree walk tested `isinstance(child, dict)` before
+  `nn.Module` (which IS a `dict` subclass), so a model with direct
+  `nn.Linear` attributes (the common structure) was never quantized
+  while reporting success. Branch order fixed.
+- **`make_axial_temporal_mask` under-approximation** (F8-1) — the
+  per-tile spatial range used `% pHW` of only the endpoints, dropping
+  active blocks on non-power-of-2 spatial grids; now over-approximates
+  correctly.
+- **TurboQuant packed-pool int32 offset overflow** (CXX-1) — the K/V
+  gather byte offsets are now `long` end-to-end (overflowed int32 at
+  long-context pools).
+- **Contract / loud-failure hardening** — `backend="mfa"` now runs the
+  actual MFA kernel forward (was silently SDPA on V34-eligible cells);
+  the NAX RoPE fast path honors non-base-10000 user tables (custom
+  base/NTK/scaled tables route to the table-using path instead of
+  silently applying base=10000); mutually-exclusive feature combos
+  (`attn_bias`×softcap/alibi, alibi×softcap, `return_lse`×features)
+  raise instead of silently dropping a feature; heterogeneous paged
+  RoPE offsets raise; the V34 carve-out gates out V-dim-mismatch and
+  cross-attention shapes; the native attn_bias-kernel fallback narrowed
+  + telemetered; `attn_bias` fp32-bias / fp16-q promotion fixed.
+
+### Promotions (carried from v2.51.0 — measured, per-cell, M5 NAX)
+
+- **conv3d via the Apple MPP convolution2d primitive, DEFAULT-ON**
+  (II-9): no materialized im2col; **fp16 2.3–2.5×** vs the legacy path
+  at T8/T16 64×64 C128. Opt-out `MFA_DISABLE_CONV3D_MPP=1`.
+- **bf16 conv3d via MPP** (III-1, KD-7 lifted): **1.4–2.7×** vs the
+  pre-lift public bf16 path; bf16 routes only through the MPP branch
+  (the legacy im2col path stays fp16-only — upstream MLX bf16 bug; loud
+  guard). Envelope: B=1, k=3³, stride/dilation 1, pad 1, H/W % 8 == 0,
+  C_in/C_out % 16 == 0 and ≥ 32, float cooperative dest.
+- **V34 NAX backward D=64 DEFAULT-ON**, causal **2.06–2.58×** and
+  non-causal **1.72–2.01×** vs SDPA-vjp (qL ≥ 2048, fp16/bf16); forward
+  stays bit-identical to Apple SDPA. Opt-out `MFA_DISABLE_V34_BACKWARD=1`.
+- **TurboQuant paged decode** (III-2): single-token `step()` routes to
+  per-step gather/dequant kernels + Apple SDPA — **6.0× (S=4K) to
+  14.4× (S=16K)** faster steps (attend-only 13.8–22.1× vs the fused TQ
+  kernel). Opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`.
+- **D=256 causal M5 dispatch inversion** corrected (SDPA wins all M5
+  grid cells; the M4-era promote reverted for M5+).
+- **LCSA mask build** GPU-vectorized: 11.19 ms → 0.73 ms (**15.4×**).
+
+  Reproduce (each promotion is reachable via the documented public API
+  path; full per-claim snippets + the registry are in `docs/PERF_CLAIMS.md`
+  and enforced by `tests/test_release_notes_perf_claims.py`):
+  ```python
+  from mlx_mfa._auto_hooks import install_hooks; install_hooks()
+  import mlx.core as mx, mlx_mfa
+  from mlx_mfa.inference import TurboQuantPagedInferenceContext
+  # conv3d MPP (fp16 2.3-2.5x / bf16 1.4-2.7x) — auto-routes on M5:
+  x = mx.random.normal((1, 16, 64, 64, 128)).astype(mx.bfloat16)
+  w = mx.random.normal((128, 3, 3, 3, 128)).astype(mx.bfloat16)
+  _ = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
+  # V34 backward D=64 default-on (causal 2.06-2.58x / non-causal 1.72-2.01x):
+  q = k = v = mx.random.normal((1, 4, 8192, 64)).astype(mx.float16)
+  g = mx.grad(lambda a, b, c: mlx_mfa.flash_attention(a, b, c).sum(),
+              argnums=(0, 1, 2))(q, k, v)
+  # TurboQuant paged decode (step 6.0-14.4x): ctx.step(q, k_new, v_new) N_q=1
+  ```
+
+### New opt-in APIs
+
+- cider-style GQA-decode kernel (II-11, MIT): `from
+  mlx_mfa.gqa_decode_cider import gqa_decode_cider` (expert API; no
+  auto-dispatch — narrow on-device window).
+- Hook telemetry: `mlx_mfa.get_hook_stats()` /
+  `MLX_MFA_HOOK_TELEMETRY` (structural Pattern-#8 coverage detector).
+- `mx.conv3d` auto-hook (II-7): plain `mlx.nn` models reach the NAX
+  conv path (previously only `mx.conv_general` was patched).
+
+### Investigated and DECLINED (for the record — do not re-propose)
+
+- **int8 attention end-to-end**: ~0.80× (the MPP int8 coop-API tax
+  exceeds the matmul win at attention scale; II-2/II-2R).
+- **Streaming / filtered top-K (Approach 5)**: declined after two
+  independent builds (scalar-grade vs matmul).
+- **cider auto-dispatch**: narrow on-device window; shipped expert-only.
+- **TK=1 fused-backward variant**: the fused odd-TK tail made BK=16
+  legal; the variant is closed.
+
+### Migration
+
+No breaking API changes. Behavior changes are toward correctness:
+`backend="mfa"` now runs the kernel (not SDPA) on V34-eligible cells;
+the specialized serving entries raise on mixed input dtypes instead of
+silently corrupting; the NAX RoPE fast path falls back to the
+table-honoring path for non-base-10000 tables. The withdrawn v2.39.1
+fused-backward "1.01–1.12×" claim is not reinstated.
+
 ## [2.51.0] — 2026-06-12 — campaign release (Phases I–III)
 
 The 2026-06 exhaustive audit/optimization campaign, tagged at its
