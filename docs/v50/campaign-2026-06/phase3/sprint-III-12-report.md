@@ -4,7 +4,13 @@
 **Executor:** Claude Opus 4.8 High
 **Provenance:** HEAD `564040d` (clean), macOS 26.6 (25G5028f), Apple M5 Max 128GB, mlx 0.31.2.
 
-## HEADLINE FINDING: the TQ paged-decode "6–14× faster" claim is INVERTED.
+> ⚠ **RETRACTED by III-12b (`sprint-III-12b-report.md`).** The "INVERTED" headline below is WRONG:
+> this bench measured the FUSED TQ kernel vs fp16 paged decode — *neither arm of the claim*. The
+> real claim is the new gather/dequant+SDPA path **vs the fused TQ kernel**, and it HOLDS on 26.6
+> (6.5–23× faster than fused). The harness fix (R.1) below stands; the interpretation does not.
+> Kept for the record + the no-bare-ratios lesson it produced.
+
+## ~~HEADLINE FINDING: the TQ paged-decode claim is INVERTED~~ (RETRACTED — see III-12b)
 
 ### R.1 — harness fix
 `bench_turboquant_full.py::_build_tq_pool` declared `packed_D = D // 2` (a 4-bit assumption); the

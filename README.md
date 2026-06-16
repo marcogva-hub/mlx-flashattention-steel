@@ -19,21 +19,36 @@ to SDPA) — Apple's baselines got faster. Ratios vary with qL and thermal
 state; see `docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
 the full table + methodology.
 
-- V34 NAX backward D=64 default-on, vs SDPA-vjp — **strongly qL-dependent
-  on 26.6**: ~break-even at qL=2048, ~1.4–1.5× at qL=4096, **~2.1–2.5× at
-  qL=8192** (causal and non-causal similar). D=128 backward is now
-  **≈ break-even** on 26.6. Forward stays bit-identical to Apple SDPA.
+- V34 NAX backward D=64 default-on, **faster than SDPA-vjp** but **strongly
+  qL-dependent on 26.6**: ~break-even at qL=2048, ~1.4–1.5× at qL=4096,
+  **~2.1–2.5× faster at qL=8192** (e.g. causal qL=8192 `~25 ms vs ~49 ms`;
+  causal and non-causal similar). D=128 backward is now **≈ break-even** on
+  26.6. Forward stays bit-identical to Apple SDPA.
 - conv3d via the Apple MPP convolution2d primitive, default-on — fp16
   **~1.2–1.35× vs the legacy path** on 26.6 (T8/T16 64×64 C128); bf16
   **≈ parity** vs `mx.conv_general` (the legacy im2col path is fp16-only,
   KD-7, so bf16 has no legacy baseline). Correctness, not speed, is the
   reason it is default-on (legacy im2col silent-corruption history).
-- TurboQuant paged decode (single-token, S=4K–16K) and LCSA mask build:
-  **pending 26.6 re-measurement** (the decode bench harness needs a fix;
-  the prior "6–14×" / "15.4×" figures are earlier-OS and not yet
-  re-confirmed on 26.6).
+- TurboQuant paged decode `step()` (per-step gather/dequant + Apple SDPA,
+  default-on) — **6.5–23× faster than the prior fused TQ attend kernel it
+  replaced** (re-confirmed on 26.6: S=16K `0.75 ms vs 16.8 ms → ~22×`;
+  S=4K `~0.3–0.7 ms vs 4.3 ms → ~6.5–13×`). ⚠ This is **vs the old fused
+  TQ kernel**, NOT vs fp16 dense decode — the new path is still **~1.4–3×
+  *slower* than fp16 dense** (`0.75 ms vs 0.33 ms`). TurboQuant's net value
+  is the **~4–5× KV-memory reduction at cosine ~0.96** (longer context /
+  higher concurrency); the decode path now pays only a ~1.4–3× latency tax
+  vs fp16 dense, down from the old fused floor (~14–52×).
+- LCSA mask build: the "15.4×" figure is a **historical build-time**
+  improvement (the prior builder is gone), **not a current runtime speedup**.
 - D=256 causal M5 dispatch inversion: correctness fix (routes to the
   correct path), not a speed claim.
+
+*All ratios above state numerator vs denominator with direction (a bare
+"N×" is ambiguous — see `sprint-III-12b-report.md`). Numbers measured on
+macOS 26.6 / M5 Max, median of N sessions; large-size ratios carry ±30–40%
+run-to-run variance (clock-state bimodality). v2.55.0 is a **correctness
+release** — kernels are byte-identical to v2.52.1; the perf numbers moved
+because the OS/reference moved, not the kernels.*
 
 > **⚠ Upgrade to v2.52.1.** v2.51.0 contains two pre-existing CRITICAL
 > silent-corruption bugs (top-K Metal-grid undercount; NaN gradients

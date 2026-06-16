@@ -702,3 +702,22 @@ fix has expert-API-contract implications.
     candidate (the async single-pass path) — verify the path with a dispatch
     trace, not by assuming. Full write-up: `backend-mfa-noncausal-divergence.md
     § Resolution (III-9 — CORRECTED)`.
+
+## III-12b perf-claim lesson — state numerator, denominator, direction, absolute (no bare ratios)
+
+15. **A perf claim must state numerator, denominator, direction, AND an absolute (ms) — never a
+    bare ratio.** The TQ paged-decode flagship claim shipped in the README as "6–14× faster" with
+    NO baseline. That bare ratio was the new gather/dequant+SDPA path vs the *old fused TQ kernel*
+    (a real, correctly-directional 6–23× win, with ms absolutes in the III-2 report) — but with the
+    baseline dropped, a reader naturally assumes "vs fp16/SDPA", which is wrong (the new path is
+    ~1.4–3× *slower* than fp16 dense; its value is 4–5× KV memory). The ambiguity bit twice: it
+    misled readers, AND it misled Sprint III-12, which "re-measured" the claim by benching the
+    *fused kernel vs fp16* — neither arm of the claim — and concluded (wrongly) that the claim was
+    "inverted". III-12b recovered the true baseline from the record (PERF_CLAIMS.md + the III-2
+    report) and re-confirmed the claim on 26.6.
+    *Rule*: every documented perf number reads "X ms vs Y ms → Z× faster/slower than <named
+    baseline>". A `Z×` alone is ambiguous by construction — it cannot encode direction or baseline,
+    and that is exactly how a memory-feature shipped as a flagship "speedup" and how a re-measure
+    benched the wrong thing. Corollary (compounds #14): before "re-measuring" a claim, recover the
+    claim's exact path + baseline + metric from the record — measuring a plausible-but-different
+    comparison produces a confident wrong verdict.

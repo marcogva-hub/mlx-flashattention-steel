@@ -1,0 +1,2 @@
+S=4096: new_path=0.320ms  fused=4.316ms  dense_fp16=0.228ms  | fused/new=13.51x (claim: new is this much faster than fused)  | new/dense=1.40x (gap to fp16 floor)
+S=16384: new_path=0.748ms  fused=16.836ms  dense_fp16=0.330ms  | fused/new=22.49x (claim: new is this much faster than fused)  | new/dense=2.27x (gap to fp16 floor)
