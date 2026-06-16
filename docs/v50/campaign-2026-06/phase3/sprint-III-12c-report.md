@@ -88,8 +88,43 @@ substring check (`"2.55.0" not in test_src`) — now satisfied. Reachability tes
 
 ## Cut record
 
-_(appended at R.4 completion)_
+| Step | Result |
+|---|---|
+| III-12c doc commit (reframe + advisory) | `5a9f21c` |
+| Version bump 2.52.1 → 2.55.0 (own commit) | `3c2c8b4` (pyproject + `__init__` + README) |
+| 9-gate audit (post-bump) | **GREEN** — all 8 checks PASS, `recommendation: proceed_with_release` |
+| Annotated tag | `v2.55.0` (on `3c2c8b4`) |
+| Build | `mlx_mfa-2.55.0-cp311-cp311-macosx_26_0_arm64.whl` + `mlx_mfa-2.55.0.tar.gz`; `twine check` PASSED both |
+| PyPI | **LIVE** — https://pypi.org/project/mlx-mfa/2.55.0/ (wheel + sdist) |
+| GitHub release | **LIVE** (draft=false) — https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.55.0 |
+| Tag pushed | `origin v2.55.0` (+ `master` → `3c2c8b4`) |
 
-## Post-publish smoke
+## Post-publish smoke (clean env, **published** wheel from PyPI)
 
-_(appended at R.4 completion)_
+Clean venv → `pip install --no-cache-dir mlx-mfa==2.55.0` (pulled mlx 0.31.2) →
+ran from `/tmp` so the import resolved to the installed wheel
+(`site-packages/mlx_mfa/__init__.py`, `__version__ == 2.55.0`). All comparisons vs an
+**independent fp32 ground truth** (SDPA-fp32 for dense; vendored fp32 GNA reference) —
+lesson #11.
+
+| Path (the fix) | max_abs_err vs fp32 | finite |
+|---|---|---|
+| Fix 1 — V2 single-pass non-causal D=128 N=40 (last-head OOB) | 2.70e-5 | ✔ |
+| Fix 2 — GNA 3D (2,4,5) N=40 D=128 (**default-reachable** OOB) | 3.00e-5 | ✔ |
+| Fix 3 — STEEL V5 non-causal D=128 N=40 (opt-in, same OOB) | 2.70e-5 | ✔ |
+| Fix 4 — split-K decode ×8 under pool churn (scratch lifetime) | 1.02e-6 | ✔ (all 8) |
+| Sanity — forward auto causal D=128 N=512 ≈ SDPA | 7.24e-5 | ✔ |
+| Sanity — V34 backward grad | — | ✔ finite |
+| Sanity — TQ decode `step()` | — | ✔ finite |
+
+**Verdict: SMOKE PASSED** — the published wheel IS the fixed binary; all four
+correctness fixes verified on the real artifact. (The conv3d post-publish line was an
+INFO, not a failure: the smoke script passed a wrong weight-channel shape; conv is
+covered by the 1820-test suite that passed ×2 pre-cut on the identical source.)
+
+## Status
+
+**v2.55.0 SHIPPED.** Marco-gated release queue item (the cut) → DONE. This closes
+Phase III: every correctness bug hunted to structural completeness (§AA.5.x multi-gate),
+every perf claim re-measured + honestly framed on 26.6 against the reader-actionable
+baseline, every wrong turn corrected in the record (lessons #14, #15).

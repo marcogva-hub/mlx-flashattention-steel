@@ -1197,3 +1197,37 @@ STATUS: HANDOFF_READY
 - HELD for Marco's go: bump 3 SoT (pyproject/__init__/README) to 2.55.0 -> tag -> twine -> GH release. Nothing published.
 - Reports: sprint-III-12b-report.md (archaeology+correction), III-12 retracted-banner.
 - Git: PERF_CLAIMS + CHANGELOG-reproduce + log commit below; HEAD advances. Nothing released.
+
+---
+## [2026-06-16 24:05] [CLAUDE] III-12c COMPLETE — v2.55.0 SHIPPED (PyPI + GH live; post-publish smoke green)
+STATUS: COMPLETE
+
+### Changes
+- R.1 TQ reframe (README + PERF_CLAIMS + CHANGELOG): now LEADS with the user-actionable
+  trade-off — TQ paged decode trades ~1.4-3x decode latency for ~4-5x KV memory @ cos ~0.96
+  vs fp16 dense (0.75ms vs 0.33ms @S=16K; 32MB->~6.5MB @S=8K). "6.5-23x vs fused kernel"
+  kept as labelled secondary history (kernel gone -> not selectable). Lesson #15 extended:
+  lead with the denominator relevant to the reader. Commit `5a9f21c`.
+- R.2 advisory cleared: tests/test_release_notes_perf_claims.py iii2 de-staled (was
+  6.0-14.4x) + v2.55.0 stamp -> release-audit advisory_findings:[]. 17 reachability tests pass.
+- R.3: full suite 1820 pass x2 consecutive on clean HEAD; tree clean; 0 orphans; 4 scope
+  commits (da737e7+240b226+eb68af5+eb5b890) confirmed on master.
+
+### The cut (Marco GO)
+- Version bump 2.52.1->2.55.0 (own commit `3c2c8b4`). 9-gate audit: GREEN (all 8, incl Check 1).
+- Annotated tag v2.55.0. Build wheel+sdist (twine check PASSED). twine upload -> PyPI LIVE.
+- gh release (draft=false) + push master+tag -> GH LIVE.
+
+### Validation
+- Ran: clean-env `pip install mlx-mfa==2.55.0` from PyPI + /tmp/smoke_v2550.py
+- Validated: published wheel IS the fixed binary. 4 fixes vs fp32 — V2 non-causal 2.7e-5,
+  GNA non-32 (default-reachable) 3.0e-5, V5 2.7e-5, split-K x8/churn 1.0e-6, all finite.
+  forward-auto 7.2e-5, V34 grad finite, TQ decode finite. SMOKE PASSED.
+
+### URLs
+- PyPI: https://pypi.org/project/mlx-mfa/2.55.0/
+- GH:   https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.55.0
+
+### Git
+- `5a9f21c` (III-12c docs) + `3c2c8b4` (bump, tagged v2.55.0) pushed to origin/master.
+- Report: docs/v50/campaign-2026-06/phase3/sprint-III-12c-report.md. Phase III CLOSED.
