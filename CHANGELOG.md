@@ -2,6 +2,76 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.55.0] — 2026-06-16 — correctness release: backend="mfa"/GNA OOB + lifetime fixes; honest 26.6 perf re-statement
+
+v2.55.0 is a **correctness release**. It fixes four silent-corruption bugs on the
+expert `backend="mfa"` / GNA attention paths (Phase III-8→III-10), bundles the two
+III-7 `quantize_model` guards, and re-states the performance claims honestly after
+a full re-measurement on macOS 26.6 (Phase III-11→III-12b). **The attention/conv
+kernels are otherwise byte-identical to v2.52.1** — the perf numbers moved because
+Apple's primitives (SDPA-vjp, conv) got faster on 26.6, not because mlx-mfa changed.
+
+### ⚠ CRITICAL — GNA native: default-reachable NaN (upgrade directive)
+
+**`flash_attention_gna` (D=128, 3D window, f16/bf16, with a sequence length not a
+multiple of 32) could produce NaN/garbage output** on M5+ (the default MFA_DIRECT_READS
+path). On the partial final K-tile the kernel read V out of bounds; the masked keys'
+weights are 0, but `0 × NaN = NaN` corrupted the output (for the last head, the
+over-read spilled past the V buffer into freed pool memory, so it was pool-history /
+concurrent-allocation dependent — invisible in isolation). **This is the only
+DEFAULT-reachable bug of the four; GNA users with non-32-aligned 3D windows should
+upgrade to v2.55.0.** The other three are reachable only via the expert forced
+`backend="mfa"` path (`backend="auto"` routes non-causal dense to SDPA and was clean).
+
+### Fixed (correctness — Phase III-8→III-10)
+
+- **split-K / flash-decode scratch lifetime** (`240b226`). `pO`/`pL` decode scratch
+  was freed at *encode* time while MLX's lazy execution left the kernels pending; a
+  concurrent allocation reused the pool memory and corrupted the not-yet-run reduce.
+  Fixed via `enc.add_temporary` (lifetime tied to command-buffer completion). This was
+  the real root cause of the long-investigated `backend="mfa"` non-causal divergence.
+- **V2 single-pass non-causal last-head out-of-bounds V read** (`eb68af5`). Partial
+  final K-tile direct-read had no bounds check → `0 × NaN`. Fixed by clamping the V
+  read row to the last valid key.
+- **GNA native + STEEL V5 — same OOB-V pattern** (`eb5b890`, §AA.5.x multi-gate). The
+  identical unbounded direct-V partial-tile read in two sibling kernels (GNA
+  default-reachable; V5 opt-in), fixed with the same clamp. Verified by grep that
+  these were the only three device-direct-V-read sites.
+- **`quantize_model` guards** (III-7). Top-level `Linear` now raises under Rule 8
+  instead of silently mis-quantizing; `group_size` honored in the default predicate.
+
+### Record corrections (honest disclosure)
+
+Two earlier conclusions about the `backend="mfa"` non-causal divergence were wrong
+turns, corrected in the record: the async-metallib gate (`da737e7`, III-8) is
+**inert** for this bug (kept as defensible macOS-26 hygiene — `simdgroup_async_copy`
+is genuinely removed on macOS 26) but did not fix the divergence; and III-12's
+"TQ claim inverted" finding was retracted (it benched the wrong baseline). The real
+root causes were the scratch lifetime + the direct-V OOB reads above. See
+`docs/v50/campaign-2026-06/phase3/` (III-8 → III-12b reports) and
+`audit-framing-inversions.md` lessons #14, #15.
+
+### Performance — honest re-statement (re-measured macOS 26.6 / M5 Max)
+
+Apple improved SDPA-vjp and conv on 26.6, **shrinking mlx-mfa's relative speedups**
+on byte-identical kernels — not a regression. README/RESULTS now state every claim
+with numerator, denominator, direction, and an absolute (no bare ratios — lesson #15):
+
+- **Forward attention ≈ SDPA** (0.98–1.05×; routes to SDPA, net-non-worse).
+- **V34 backward D=64** faster than SDPA-vjp but qL-dependent: ~break-even at qL=2048,
+  ~1.4–1.5× at qL=4096, ~2.1–2.5× at qL=8192. D=128 backward now ≈ break-even.
+- **conv MPP** fp16 ~1.2–1.35× vs the legacy im2col path; bf16 ≈ parity vs
+  `mx.conv_general`. Default-on for correctness, not speed.
+- **TurboQuant paged decode** clarified: the new gather/dequant+SDPA `step()` path is
+  **6.5–23× faster than the prior *fused TQ kernel* it replaced** (re-confirmed on
+  26.6) — NOT vs fp16 dense (it is ~1.4–3× slower than fp16 dense). TQ's value is the
+  **~4–5× KV-memory reduction at cosine ~0.96**. The prior bare "6–14× faster" omitted
+  the baseline.
+- **LCSA "15.4×"** is a historical build-time improvement, not a runtime speedup.
+
+Large-size ratios carry ±30–40% run-to-run variance (clock-state bimodality); numbers
+are distributional. Full tables: `sprint-III-11-report.md`, `sprint-III-12b-report.md`.
+
 ## [2.52.1] — 2026-06-15 — conv3d small-channel correctness (kernel root-cause fix)
 
 v2.52.1 fixes a **silent-corruption bug present in v2.52.0 (and every
