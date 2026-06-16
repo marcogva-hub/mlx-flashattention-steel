@@ -328,21 +328,28 @@ PERF_CLAIMS = [
             "cells (III-1, 3 sessions, medians)"
         ),
     },
-    # --- TQ paged decode (III-2): step() N_q=1 routes to gather/dequant
-    # kernels + Apple SDPA by default.  Engagement detected via the
-    # tq_decode kernel-cache population through the public step() path.
+    # --- TQ paged decode (III-2; re-confirmed III-12b on 26.6; reframed
+    # III-12c for v2.55.0): step() N_q=1 routes to gather/dequant kernels +
+    # Apple SDPA by default.  Engagement detected via the tq_decode
+    # kernel-cache population through the public step() path.  The claim is
+    # framed by the USER-ACTIONABLE baseline (fp16 dense decode), per
+    # lesson #15 + III-12c — NOT the removed fused kernel.
     {
         "id": "iii2_tq_paged_decode_step_default",
         "env": {},
         "shape": (1, 8, 512, 512, 128),  # (B, Hq, S0, S0, D); Hkv=2
         "dtype": mx.float16,
         "expected": "tq_decode_sdpa",
-        "documented_in": ["CHANGELOG.md"],
+        "documented_in": ["CHANGELOG.md", "README.md", "docs/PERF_CLAIMS.md"],
         "documented_perf_claim": (
-            "TurboQuant paged decode step 6.0x (S=4K) to 14.4x (S=16K) "
-            "faster via per-step gather/dequant kernels + Apple SDPA "
-            "(attend-only 13.8-22.1x vs the fused TQ kernel); opt-out "
-            "MFA_DISABLE_TQ_DECODE_SDPA=1"
+            "v2.55.0: TurboQuant paged decode trades ~1.4-3x decode-step "
+            "latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs "
+            "fp16 dense decode (step() 0.75 ms vs 0.33 ms @ S=16K; KV 32 MB "
+            "-> ~6.5 MB @ S=8K); opt-in via TurboQuantPagedInferenceContext, "
+            "opt-out MFA_DISABLE_TQ_DECODE_SDPA=1. Secondary/internal history: "
+            "the gather/dequant+SDPA path is 6.5-23x faster than the removed "
+            "fused TQ kernel (0.75 ms vs 16.8 ms @ S=16K) -- not a selectable "
+            "baseline."
         ),
     },
 ]

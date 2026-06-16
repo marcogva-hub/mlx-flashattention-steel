@@ -62,11 +62,14 @@ with numerator, denominator, direction, and an absolute (no bare ratios — less
   ~1.4–1.5× at qL=4096, ~2.1–2.5× at qL=8192. D=128 backward now ≈ break-even.
 - **conv MPP** fp16 ~1.2–1.35× vs the legacy im2col path; bf16 ≈ parity vs
   `mx.conv_general`. Default-on for correctness, not speed.
-- **TurboQuant paged decode** clarified: the new gather/dequant+SDPA `step()` path is
-  **6.5–23× faster than the prior *fused TQ kernel* it replaced** (re-confirmed on
-  26.6) — NOT vs fp16 dense (it is ~1.4–3× slower than fp16 dense). TQ's value is the
-  **~4–5× KV-memory reduction at cosine ~0.96**. The prior bare "6–14× faster" omitted
-  the baseline.
+- **TurboQuant paged decode** re-stated to lead with the user's real choice: it
+  **trades ~1.4–3× decode-step latency for a ~4–5× KV-cache memory reduction at cosine
+  ~0.96, vs fp16 dense decode** (`step()` `0.75 ms vs 0.33 ms` @ S=16K; KV `32 MB →
+  ~6.5 MB` @ S=8K). Opt-in (`TurboQuantPagedInferenceContext`), not auto-routed. The
+  prior bare "6–14× faster" omitted the baseline; the restored "6.5–23× faster than the
+  *fused TQ kernel* it replaced" (`0.75 ms vs 16.8 ms` @ S=16K, re-confirmed 26.6) is
+  TRUE but is internal-optimization history — that kernel is gone, so it is not a
+  baseline a user can select. Lead with the actionable denominator (lesson #15 + III-12c).
 - **LCSA "15.4×"** is a historical build-time improvement, not a runtime speedup.
 
 Large-size ratios carry ±30–40% run-to-run variance (clock-state bimodality); numbers

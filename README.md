@@ -29,15 +29,17 @@ the full table + methodology.
   **≈ parity** vs `mx.conv_general` (the legacy im2col path is fp16-only,
   KD-7, so bf16 has no legacy baseline). Correctness, not speed, is the
   reason it is default-on (legacy im2col silent-corruption history).
-- TurboQuant paged decode `step()` (per-step gather/dequant + Apple SDPA,
-  default-on) — **6.5–23× faster than the prior fused TQ attend kernel it
-  replaced** (re-confirmed on 26.6: S=16K `0.75 ms vs 16.8 ms → ~22×`;
-  S=4K `~0.3–0.7 ms vs 4.3 ms → ~6.5–13×`). ⚠ This is **vs the old fused
-  TQ kernel**, NOT vs fp16 dense decode — the new path is still **~1.4–3×
-  *slower* than fp16 dense** (`0.75 ms vs 0.33 ms`). TurboQuant's net value
-  is the **~4–5× KV-memory reduction at cosine ~0.96** (longer context /
-  higher concurrency); the decode path now pays only a ~1.4–3× latency tax
-  vs fp16 dense, down from the old fused floor (~14–52×).
+- TurboQuant paged decode (opt-in KV compression via
+  `TurboQuantPagedInferenceContext` — *not* auto-routed; you choose the
+  trade-off) — **trades ~1.4–3× decode-step latency for a ~4–5× KV-cache
+  memory reduction at cosine ~0.96, vs fp16 dense decode** (`step()`:
+  `0.75 ms vs 0.33 ms` per step @ S=16K; KV cache e.g. `32 MB → ~6.5 MB`
+  @ S=8K). That is the user-facing choice: spend a little decode latency to
+  fit much longer context / higher concurrency in the same memory.
+  *(Internal-perf history, not a user-facing choice: the gather/dequant +
+  Apple-SDPA `step()` path is 6.5–23× faster than the fused TQ attend kernel
+  it replaced — `0.75 ms vs 16.8 ms` @ S=16K, re-confirmed on 26.6 — but that
+  prior kernel is gone, so it is context, not a baseline you can select.)*
 - LCSA mask build: the "15.4×" figure is a **historical build-time**
   improvement (the prior builder is gone), **not a current runtime speedup**.
 - D=256 causal M5 dispatch inversion: correctness fix (routes to the
