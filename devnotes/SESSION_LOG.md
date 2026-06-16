@@ -1130,3 +1130,29 @@ STATUS: COMPLETE
 - Ran: pytest tests/ 1820 passed, 2 skipped, ×2 (incl. new fp32 asserts). Validated vs independent fp32 (lesson #11). Tree: 3 test files edited (T3b) + report + log.
 - FINAL PRE-RELEASE GATE MET. Release scope (Marco-gated v2.53.0+): da737e7 + 240b226 + eb68af5 + eb5b890 + III-10 3b test locks + 2 III-7 quantize_model fixes. NOTHING released — separate Marco-gated step.
 - Git: report + log + 3 test files commit below; HEAD advances.
+
+---
+## [2026-06-16 02:30] [CLAUDE] III-11 re-bench (M5 Max, macOS 26.6, HEAD 6a7d79c) — V34 backward claim moved down
+STATUS: IN_PROGRESS
+
+- Provenance: HEAD 6a7d79c (clean), macOS 26.6 (25G5028f), Apple M5 Max 128GB, mlx 0.31.2. Bench via /mlx-mfa-bench-methodology dispatcher, 3 sessions, strict cooldown for ≥1.5ms.
+- FORWARD attention vs SDPA (canonical, N=4096): D64 c 0.98×, D128 c 1.05× (HIGH_VAR), D128 nc 0.98×, D128 c bf16 1.00× (HIGH_VAR), D256 c 0.99× (HIGH_VAR). => forward ≈ SDPA, net-non-worse. (HIGH_VAR = these sit in ≥1.5ms regime; conclusion ~1.0 robust. Forward is bit-identical-to-SDPA, NOT a speedup claim.)
+- V34 BACKWARD vs SDPA-vjp (strict, CONFIDENT/BOUNDARY, B=2 H=8): D64 causal N2048=1.29× N4096=2.00× N8192=1.94×; D64 non-causal N4096=1.29× N8192=1.88×; D128 causal N4096=0.99× N8192=1.00×.
+- FINDING (material): README headline V34 backward D=64 causal 2.06-2.58× / non-causal 1.72-2.01× MOVED DOWN on 26.6 to ~1.3-2.0× / ~1.3-1.9×; D=128 backward now BREAK-EVEN (~1.0×). [VERIFIED clean]
+  - Cause: OS 26.6 improved Apple SDPA-vjp (NOT a Phase III regression — backward NAX kernel byte-identical to v2.52.1; fixes were all forward-path). NOT a regression vs v2.52.1 (same binary measures same on 26.6). It IS a doc-accuracy issue (published numbers are v2.50-era).
+  - Caveat: measured at B=2 H=8; original claim's reference B/H not pinned — the ratio is occupancy/shape-dependent, so the exact published range may have used a different shape.
+- conv MPP + TQ decode: NOT yet re-measured (separate kernels untouched by Phase III; OS-sensitive). No dedicated methodology-protocol harness found in benchmarks/; the vs-legacy/decode claims need their own harness.
+- Net pool vs v2.52.1: NON-WORSE (identical kernels + perf-neutral correctness fixes). The V34 "move" is vs the DOC/earlier-OS, not vs v2.52.1.
+- Ran: dispatcher forward (canonical) + 2 backward batches (strict), 3 sessions. Bench friction: dispatcher emits JSON only at end (kills lose batch) → switched to small foreground batches; backward needs target=flash_attention_loss + baseline=sdpa_vjp.
+- Git: not committed (bench data in /tmp/iii11). Decision pending Marco: how to handle the moved V34 headline numbers + whether to re-measure conv/TQ before the v2.55.0 doc sync.
+
+---
+## [2026-06-16 03:30] [CLAUDE] III-11 cont. — conv clean re-bench: claims shrank to ~break-even + HIVAR; impasse surfaced
+STATUS: BLOCKED
+
+- conv MPP vs legacy (clean 4s-cooldown strict): T8 fp16 0.98× CONFIDENT, T16 fp16 1.30× HIGH_VAR. vs README 2.3-2.5×. The 2s-cooldown 1.7-2.0× was thermal-variance-contaminated (v2.36.0 incident class). conv bf16 "vs legacy" UNMEASURABLE (legacy im2col fp16-only, KD-7).
+- Combined with V34 backward (1.3-2.0× vs 2.06-2.58×; D=128 break-even): SYSTEMATIC — all v2.50-era headline speedups materially LOWER on 26.6 (Apple improved SDPA-vjp + conv baselines). NOT a regression (kernels byte-identical to v2.52.1; release perf-safe). The published numbers are stale + the originals may have been non-canonical point estimates.
+- Impasse: CONFIDENT re-measurement of ALL claims is blocked by (a) background-job kill limit (~5-8min) preventing full strict protocol at ≥10ms shapes, (b) inherent clock-state bimodality HIGH_VARIANCE at these sizes, (c) regime-dependence (conv cold ~1.0× vs warm ~1.7×). Report: sprint-III-11-report.md.
+- Solid: release perf-safe (non-worse vs v2.52.1); documented speedups don't hold on 26.6.
+- Recommendation: soften headline perf to OS-honest ranges + ship the correctness fixes (default-reachable GNA) now; do a dedicated perf-recharacterization sprint with fixed bench infra as fast-follow. Awaiting Marco.
+- Ran: dispatcher fwd + V34 bwd (strict) + conv (strict, per-config). Bench data /tmp/iii11. Report + log committed below. Nothing released.
