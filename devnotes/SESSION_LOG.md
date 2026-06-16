@@ -1156,3 +1156,19 @@ STATUS: BLOCKED
 - Solid: release perf-safe (non-worse vs v2.52.1); documented speedups don't hold on 26.6.
 - Recommendation: soften headline perf to OS-honest ranges + ship the correctness fixes (default-reachable GNA) now; do a dedicated perf-recharacterization sprint with fixed bench infra as fast-follow. Awaiting Marco.
 - Ran: dispatcher fwd + V34 bwd (strict) + conv (strict, per-config). Bench data /tmp/iii11. Report + log committed below. Nothing released.
+
+---
+## [2026-06-16 05:00] [CLAUDE] III-11 COMPLETE — bench infra fixed; full re-bench done; README synced to 26.6
+STATUS: COMPLETE
+
+- BENCH INFRA FIXED (Marco's ask): benchmarks/methodology/robust_pool_runner.py — detached nohup + incremental JSONL + per-spec subprocess isolation + idempotent resume. Survives the harness ~5-8min kill limit that blocked all prior attempts. Committed.
+- FULL CLEAN RE-BENCH (24 specs, ~1h detached, 0 errors, strict 4s-cooldown ×3 sessions, macOS 26.6, HEAD 6a7d79c). Raw: benchmarks/methodology/iii11_26.6_results.jsonl.
+  - Forward vs SDPA: 0.77-1.08× (≈SDPA; outliers = clock-state HIGH_VAR). Net-non-worse vs v2.52.1 CONFIRMED.
+  - V34 bwd D=64 vs SDPA-vjp: qL-dependent — N2048 0.86×, N4096 1.49×, N8192 2.52× (causal); nc 1.39×/2.09×. D=128 bwd ≈break-even (0.97-0.99×, reliable). Run-to-run swings ±30-40%.
+  - conv MPP fp16 vs legacy: 1.22-1.35×; bf16 vs conv_general ≈1.0-1.1×.
+- FINDING: Apple improved SDPA-vjp+conv on 26.6 → all compute-bound v2.50-era speedups materially LOWER + qL-dependent + high-variance. NOT a regression (kernels byte-identical to v2.52.1; release perf-safe). Documented precise ranges stale + not run-reproducible.
+- DOC SYNC (R.4): README headline claims rewritten to measured 26.6 values + OS-caveat + qL-dependence. V34 bwd → "~break-even@2048 to ~2.1-2.5×@8192; D=128 break-even"; conv → "~1.2-1.35× fp16, ≈parity bf16"; D=256 inversion reframed as correctness fix.
+- NOT measured (flagged fast-follow): TQ paged decode (bench_turboquant_full.py crashes in _build_tq_pool — harness bug, not kernel); LCSA 15.4× (historical build-time, old impl gone). README marks both "pending 26.6 re-measurement".
+- Ran: 24-spec detached pool + TQ bench (crashed) + dispatcher cross-checks. Validated vs independent fp32/SDPA-vjp. 
+- Git: robust_pool_runner.py + results committed; README + report + log commit below. Nothing released.
+- RELEASE STATUS: correctness gate MET (III-9/III-10); perf-safe (non-worse vs v2.52.1); docs now OS-honest. Ready for /mlx-mfa-release-audit (Marco-gated) + v2.55.0 tag. TQ-decode re-measure is a fast-follow, not a blocker.

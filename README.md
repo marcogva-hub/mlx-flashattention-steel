@@ -10,19 +10,30 @@ promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
 III-6 conv3d small-channel kernel root-cause fix.
 
-**Headline promotions** (measured, per-cell, M5 NAX — not blanket
-claims):
+**Performance** (measured, per-cell, M5 NAX). ⚠ **Re-measured on macOS
+26.6 (Sprint III-11):** Apple improved its primitives (SDPA-vjp, conv)
+between the OS these were first measured on and 26.6, so the relative
+speedups are **smaller and strongly shape-dependent on current macOS**.
+mlx-mfa is **not slower** (kernels unchanged; forward stays bit-identical
+to SDPA) — Apple's baselines got faster. Ratios vary with qL and thermal
+state; see `docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
+the full table + methodology.
 
-- conv3d via the Apple MPP convolution2d primitive, default-on —
-  **fp16 2.3–2.5×**, **bf16 1.4–2.7×** (KD-7 lifted) vs the legacy path
-  at T8/T16 64×64 C128.
-- V34 NAX backward D=64 default-on — causal **2.06–2.58×**, non-causal
-  **1.72–2.01×** vs SDPA-vjp (qL ≥ 2048); forward stays bit-identical to
-  Apple SDPA.
-- TurboQuant paged decode — single-token steps **6.0× (S=4K) to 14.4×
-  (S=16K)** faster (attend-only 13.8–22.1× vs the fused kernel).
-- D=256 causal M5 dispatch inversion corrected; LCSA mask build
-  **15.4×** (11.19 ms → 0.73 ms).
+- V34 NAX backward D=64 default-on, vs SDPA-vjp — **strongly qL-dependent
+  on 26.6**: ~break-even at qL=2048, ~1.4–1.5× at qL=4096, **~2.1–2.5× at
+  qL=8192** (causal and non-causal similar). D=128 backward is now
+  **≈ break-even** on 26.6. Forward stays bit-identical to Apple SDPA.
+- conv3d via the Apple MPP convolution2d primitive, default-on — fp16
+  **~1.2–1.35× vs the legacy path** on 26.6 (T8/T16 64×64 C128); bf16
+  **≈ parity** vs `mx.conv_general` (the legacy im2col path is fp16-only,
+  KD-7, so bf16 has no legacy baseline). Correctness, not speed, is the
+  reason it is default-on (legacy im2col silent-corruption history).
+- TurboQuant paged decode (single-token, S=4K–16K) and LCSA mask build:
+  **pending 26.6 re-measurement** (the decode bench harness needs a fix;
+  the prior "6–14×" / "15.4×" figures are earlier-OS and not yet
+  re-confirmed on 26.6).
+- D=256 causal M5 dispatch inversion: correctness fix (routes to the
+  correct path), not a speed claim.
 
 > **⚠ Upgrade to v2.52.1.** v2.51.0 contains two pre-existing CRITICAL
 > silent-corruption bugs (top-K Metal-grid undercount; NaN gradients

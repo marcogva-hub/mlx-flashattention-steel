@@ -14,10 +14,11 @@ subprocess isolation, strict 4s-cooldown for ≥1.5 ms shapes.
    systematic effect: Apple improved their primitives (SDPA-vjp, conv) between the OS the claims
    were measured on and 26.6, shrinking mlx-mfa's relative advantage. This is **not a regression**
    (mlx-mfa is non-worse), but the **published numbers are stale and over-optimistic on 26.6**.
-3. **The numbers are high-variance + regime-dependent at these kernel sizes** (clock-state
-   bimodality, §4.3) — single-ratio claims are unreliable without a CI, and CONFIDENT re-measurement
-   of every claim is **blocked in this environment** by a background-job kill limit (~5–8 min) that
-   prevents the full strict protocol (8 iters × 4s cooldown × 3 sessions) at the larger shapes.
+3. **The numbers are high-variance + qL/regime-dependent at these kernel sizes** (clock-state
+   bimodality, §4.3) — single-ratio claims swing ±30–40% run-to-run and are unreliable without a CI.
+   (The bench infrastructure was FIXED to complete the full strict re-bench — see the
+   **R.2/R.3 FULL CLEAN RE-BENCH** section below, which supersedes the "impasse" note. The
+   "blocked" framing in that note is historical; the detached runner resolved it.)
 
 ## Measured data (26.6, B=2 H=8 unless noted)
 
@@ -82,3 +83,57 @@ pre-tag confirmation, and it should not hold the **default-reachable GNA correct
 Options: (a) soften the headline perf language to OS-honest ranges + ship correctness now, re-bench
 properly as a fast-follow; (b) invest in the dedicated perf sprint with fixed infrastructure first.
 The correctness gate (III-9/III-10) is MET; the release is correctness-safe today.
+
+---
+
+## R.2/R.3 FULL CLEAN RE-BENCH (infra fixed) — authoritative 26.6 table
+
+Bench infrastructure fixed (`benchmarks/methodology/robust_pool_runner.py`: detached `nohup` +
+incremental JSONL + per-spec subprocess isolation + idempotent resume — survives the harness
+kill limit that blocked the earlier attempts). Full 24-spec catalog ran ~1h detached, **0 errors**,
+strict 4s-cooldown protocol, 3 sessions. Raw: `benchmarks/methodology/iii11_26.6_results.jsonl`.
+
+### Forward attention vs SDPA (production / auto path)
+All shapes 0.77–1.08× SDPA (the <0.9 and >1.05 outliers are HIGH_VARIANCE clock-state bimodality,
+not real deviations). **Production forward ≈ SDPA; net-non-worse vs v2.52.1. Confirmed.**
+
+### V34 backward vs SDPA-vjp (strict)
+| shape | 26.6 measured | verdict | README claim |
+|---|---|---|---|
+| D64 causal N2048 | 0.86× | BOUNDARY | 2.06–2.58× |
+| D64 causal N4096 | 1.49× | CONFIDENT | 2.06–2.58× |
+| D64 causal N8192 | 2.52× | CONFIDENT | 2.06–2.58× |
+| D64 non-causal N4096 | 1.39× | CONFIDENT | 1.72–2.01× |
+| D64 non-causal N8192 | 2.09× | CONFIDENT | 1.72–2.01× |
+| D128 causal N4096 | 0.97× | CONFIDENT | (broadened v2.50) |
+| D128 causal N8192 | 0.99× | CONFIDENT | (broadened v2.50) |
+→ **D=64 backward is strongly qL-dependent**: break-even at N=2048, ~1.4–1.5× at N=4096, ~2.1–2.5×
+at N=8192. The 2.06–2.58× claim holds only at the largest qL. **D=128 backward is break-even** (~1.0×,
+reliable across runs). Also: the same spec swings ±30–40% run-to-run (e.g. N4096 causal 1.49× here
+vs 2.00× in a prior run) — single precise numbers are not reproducible at these sizes.
+
+### conv MPP
+| shape | 26.6 measured | verdict | README claim |
+|---|---|---|---|
+| T8 fp16 vs legacy | 1.35× | HIGH_VAR | 2.3–2.5× |
+| T16 fp16 vs legacy | 1.22× | CONFIDENT | 2.3–2.5× |
+| T8 bf16 vs conv_general | 1.06× | HIGH_VAR | 1.4–2.7× |
+| T16 bf16 vs conv_general | 1.09× | HIGH_VAR | 1.4–2.7× |
+→ conv fp16 **~1.2–1.35×** vs legacy (was 2.3–2.5×); conv bf16 **~1.0×** vs `mx.conv_general` (the
+documented "vs legacy" baseline doesn't exist for bf16 — legacy im2col is fp16-only, KD-7).
+
+### Not measured (separate blockers)
+- **TQ paged decode (6–14×)**: `bench_turboquant_full.py` crashes in `_build_tq_pool` (a bench-harness
+  indexing bug, not a kernel bug) before producing numbers. Decode is memory-bandwidth-bound (3-bit
+  KV compression) — a different regime that may be more OS-stable — but it needs a harness fix to
+  re-measure. **Flagged for a fast-follow.**
+- **LCSA mask-build 15.4× (11.19→0.73 ms)**: a *historical* build-time improvement; the old impl is
+  gone, so only the current absolute build time is measurable, not the ratio.
+
+## Synthesis
+On macOS 26.6, Apple's primitives (SDPA-vjp, conv) improved, **systematically shrinking mlx-mfa's
+documented v2.50-era compute-bound speedups** — V34 backward and conv both materially lower, qL-
+dependent, and high-variance/run-unstable at these sizes. This is **not a regression** (kernels
+byte-identical to v2.52.1; production forward ≈ SDPA; release perf-safe), but the published precise
+ranges are stale and not reproducible on 26.6. **Doc action:** replace precise ranges with measured,
+qL-qualified, OS-caveated values (below); re-measure TQ decode after a harness fix.
