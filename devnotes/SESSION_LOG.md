@@ -1184,3 +1184,16 @@ STATUS: BLOCKED (Marco decision on flagship-claim framing)
 - FINDING is the III-12 headline: repo's biggest advertised number ("14.4x faster") is a latency slowdown ratio. Pre-existing doc error, not introduced by v2.55.0, but must be corrected before publishing. Surfaced to Marco for framing decision before rewriting the flagship README line.
 - Ran: bench_turboquant_full.py (full 9-config, detached) ×2 for stability. Data: benchmarks/methodology/iii12_tq_decode_26.6.log. Report: sprint-III-12-report.md.
 - Git: harness fix + report + log commit below. README flagship line NOT yet edited (Marco framing decision pending). Nothing released.
+
+---
+## [2026-06-16 08:00] [CLAUDE] III-12b COMPLETE — TQ claim confirmed (archaeology); v2.55.0 prepared; audit GREEN-except-version
+STATUS: HANDOFF_READY
+
+- R.1 archaeology: TQ "6-14x faster" = new gather/dequant+SDPA step() path vs the OLD FUSED TQ kernel (PERF_CLAIMS.md:47 + III-2 report, with ms absolutes). CASE 2 (claim real, baseline lost in README). III-12's "inverted" RETRACTED (it benched fused-vs-fp16, neither arm).
+- R.2 re-measure 26.6 (Hq=32 Hkv=8 D=128 tq3b, 2 runs): new vs fused = 6.5-13.5x@4K, ~22x@16K (0.75ms vs 16.8ms). Claim HOLDS. new vs fp16-dense = 1.4-3x SLOWER (the memory-for-latency trade). 
+- R.3 README/PERF_CLAIMS/CHANGELOG rewritten: TQ baseline-explicit (vs fused, NOT fp16; +fp16-dense gap; +4-5x KV memory value); every ratio states num/denom/direction/absolute; LCSA historical. Lesson #15 codified (no bare ratios; recover baseline before re-measuring).
+- R.4 gate: suite 1820 pass x2; tree clean; no orphan bench procs. CHANGELOG [2.55.0] drafted (4 correctness fixes incl. GNA DEFAULT-reachable CRITICAL + upgrade directive; 2 quantize_model; record corrections; honest perf). 9-gate /mlx-mfa-release-audit: ALL technical checks PASS (tool-avail, auto-default, public-API/perf-reachability, skill-log, test-suite, changelog); ONLY blocker = Check 1 version bump (2.52.1->2.55.0) = the intentional Marco-gated tag step. 1 cosmetic advisory (PERF_CLAIMS version-string tag).
+- Release scope: da737e7 + 240b226 + eb68af5 + eb5b890 + III-7 quantize_model + III-11/12/12b docs+bench. Version 2.55.0.
+- HELD for Marco's go: bump 3 SoT (pyproject/__init__/README) to 2.55.0 -> tag -> twine -> GH release. Nothing published.
+- Reports: sprint-III-12b-report.md (archaeology+correction), III-12 retracted-banner.
+- Git: PERF_CLAIMS + CHANGELOG-reproduce + log commit below; HEAD advances. Nothing released.

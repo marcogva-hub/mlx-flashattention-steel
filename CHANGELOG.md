@@ -72,6 +72,12 @@ with numerator, denominator, direction, and an absolute (no bare ratios — less
 Large-size ratios carry ±30–40% run-to-run variance (clock-state bimodality); numbers
 are distributional. Full tables: `sprint-III-11-report.md`, `sprint-III-12b-report.md`.
 
+**Reproduce** (macOS 26.6, M5 Max): attention fwd/bwd + conv —
+`benchmarks/methodology/robust_pool_runner.py` (detached, incremental;
+raw `iii11_26.6_results.jsonl`); TQ decode — `bench_turboquant_full.py`
+(raw `iii12b_tq_claim_26.6_run{1,2}.log`). Perf-claim reachability is
+gated by `tests/test_release_notes_perf_claims.py` + `docs/PERF_CLAIMS.md`.
+
 ## [2.52.1] — 2026-06-15 — conv3d small-channel correctness (kernel root-cause fix)
 
 v2.52.1 fixes a **silent-corruption bug present in v2.52.0 (and every
