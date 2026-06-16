@@ -1172,3 +1172,15 @@ STATUS: COMPLETE
 - Ran: 24-spec detached pool + TQ bench (crashed) + dispatcher cross-checks. Validated vs independent fp32/SDPA-vjp. 
 - Git: robust_pool_runner.py + results committed; README + report + log commit below. Nothing released.
 - RELEASE STATUS: correctness gate MET (III-9/III-10); perf-safe (non-worse vs v2.52.1); docs now OS-honest. Ready for /mlx-mfa-release-audit (Marco-gated) + v2.55.0 tag. TQ-decode re-measure is a fast-follow, not a blocker.
+
+---
+## [2026-06-16 06:30] [CLAUDE] III-12 — TQ decode re-bench: flagship "6-14x faster" claim is INVERTED (latency slowdown)
+STATUS: BLOCKED (Marco decision on flagship-claim framing)
+
+- R.1: fixed bench_turboquant_full.py _build_tq_pool crash (packed_D = D//2 [4-bit] -> (D*bits+7)//8 = 48 for bits=3); same fix in _kv_memory_mb. Timed lambdas are attend-only (build outside).
+- R.2: TQ paged decode re-measured 26.6, 9 configs. P3/fp16 (TQ-fused latency / fp16 latency) = 1.6-25.8x = TQ is 1.6-26x SLOWER than fp16 paged decode. Qwen 1seq 8K = 25.8x (RESULTS.md cited this exact config as "14.4x"). The "14.4x" is the P3/fp16 SLOWDOWN mislabeled as "faster". Run-to-run stable ~5% (memory-bound regime IS stable — measured, not assumed).
+- TQ value = MEMORY: fp16 16-128MB -> KV-TQ 3.25-26MB (~4-5x), cos 0.96-0.99. Latency cost from decompression dominating single-token decode. Explicit opt-in API (not auto-routed) -> no harmful auto-promotion; the DOC framing is the error.
+- R.3 verdict: TQ is a memory feature, not a speedup. "faster" framing wrong.
+- FINDING is the III-12 headline: repo's biggest advertised number ("14.4x faster") is a latency slowdown ratio. Pre-existing doc error, not introduced by v2.55.0, but must be corrected before publishing. Surfaced to Marco for framing decision before rewriting the flagship README line.
+- Ran: bench_turboquant_full.py (full 9-config, detached) ×2 for stability. Data: benchmarks/methodology/iii12_tq_decode_26.6.log. Report: sprint-III-12-report.md.
+- Git: harness fix + report + log commit below. README flagship line NOT yet edited (Marco framing decision pending). Nothing released.

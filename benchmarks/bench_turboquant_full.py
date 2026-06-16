@@ -86,7 +86,10 @@ def _build_tq_pool(k_seqs, v_seqs, block_size, bits=3):
     B = len(k_seqs)
     H_kv = k_seqs[0].shape[1]
     D = k_seqs[0].shape[3]
-    packed_D = D // 2
+    # III-12 harness fix: packed_D must match pack_k_for_metal's output (D*bits/8),
+    # NOT D//2 (which assumed 4-bit; the bench uses bits=3 -> 48 not 64, so the
+    # (chunk,H_kv,48) packed data could not broadcast into a (chunk,H_kv,64) slot).
+    packed_D = (D * bits + 7) // 8
     blocks_per_seq = [(int(k.shape[2]) + block_size - 1) // block_size for k in k_seqs]
     total_blocks = sum(blocks_per_seq)
     max_blocks = max(blocks_per_seq)
@@ -150,20 +153,23 @@ def _cosine_sim(a, b):
     return float(dot / (na * nb))
 
 
-def _kv_memory_mb(B, kv_lens, H_kv, D, mode="fp16"):
+def _kv_memory_mb(B, kv_lens, H_kv, D, mode="fp16", bits=3):
     """Estimate KV cache memory in MB."""
     total_tokens = sum(kv_lens) * B if isinstance(kv_lens[0], int) else sum(kv_lens)
+    # III-12: packed bytes per (token,head) = ceil(D*bits/8) (was D//2 = 4-bit
+    # assumption; bench uses bits=3 -> 48 not 64, so memory was overestimated).
+    packed_bytes = (D * bits + 7) // 8
     if mode == "fp16":
         # K + V both fp16: 2 * total_tokens * H_kv * D * 2 bytes
         return total_tokens * H_kv * D * 2 * 2 / (1024 * 1024)
     elif mode == "k_only_tq":
-        # K: packed_D uint8 + scales float32; V: fp16
-        k_bytes = total_tokens * H_kv * (D // 2 + 4)  # packed + scale
+        # K: packed uint8 + scales float32; V: fp16
+        k_bytes = total_tokens * H_kv * (packed_bytes + 4)  # packed + scale
         v_bytes = total_tokens * H_kv * D * 2
         return (k_bytes + v_bytes) / (1024 * 1024)
     elif mode == "kv_tq":
         # K+V both packed
-        kv_bytes = 2 * total_tokens * H_kv * (D // 2 + 4)
+        kv_bytes = 2 * total_tokens * H_kv * (packed_bytes + 4)
         return kv_bytes / (1024 * 1024)
     return 0.0
 
