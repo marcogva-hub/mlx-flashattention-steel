@@ -1730,3 +1730,22 @@ STATUS: COMPLETE
   M5?); V5 reachability (ineligible at all tested shapes).
 - Ran: sentinel env-toggle + fp32 oracle + threshold-source-lock + full suite. 1870 passed, 2
   skipped. No kernel/routing/threshold/bug change. 0 orphans. NOT tagged.
+
+---
+## [2026-06-17 21:30] [CLAUDE] AUDIT Phase B3 — backward family per-kernel audit
+STATUS: COMPLETE
+
+- Gradient correctness vs INDEPENDENT fp32 oracle (mx.vjp of MANUAL fp32 fwd, not another kernel,
+  lesson #11; oracle trusted via ~1e-7 agreement w/ SDPA-vjp on SDPA paths + FD check). All paths ×
+  dQ/dK/dV: err<=1.2e-4 (dV highest; dQ/dK<=5e-7). 6 locked cells.
+- PER-(path × gradient) which-binary map (native byte-DISTINCT from SDPA-vjp, Δ>0 — byte-lockable):
+  dense D128 = all SDPA-vjp; dense D64 causal/non-causal N>=2048 DEFAULT-ON = all NATIVE; sparse
+  DEFAULT = all SDPA-vjp; sparse opt-in MFA_ENABLE_V6_BACKWARD bt>=64 = HYBRID (native dV + SDPA-vjp
+  dQ/dK — confirms+completes B1 glimpse); sparse opt-in MFA_V6_BWD_SPARSE_NATIVE = all native.
+- Native bwd kernels: dQ=v6_nax_backward_query, dK/dV=kv/fused/split, sparse=*_sparse_raw; NAX
+  matmul2d, recompute O/L from sparse-LSE (Pattern #5), faithful 7-GEMM FA-2.
+- Threshold audit: carveout N>=2048 MEASURED; sparse bt>=64 is CORRECTNESS gate (mask OR-downsample
+  III-4 D16); D=128 default-off measured-slower. No overflow. Carry to E: sparse V1↔V2 2^31 PERF.
+- Comments fresh (PoC labels accurate; no edits).
+- Ran: fp32-oracle vjp + FD cross-check + per-gradient byteΔ + full suite. 1876 passed, 2 skipped.
+  No kernel/routing/threshold/bug change. 0 orphans. NOT tagged.

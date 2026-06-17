@@ -16,7 +16,13 @@ the canonical master plan lands.
   small-N, V2 non-causal, dsplit D=256/512, flash_decode N≤4, V4/V5 env-gated). All fp32-correct;
   variants byte-identical (timing/source-predicate lock, not byte). No arbitrary/overflow threshold
   (v3_min_N benchmark-derived; sparse 2^31 re-examined = benign Python calibration value).
-- **B3–B4 — remaining families** (backward; GNA exact-window / conv / topk / sage / paged-TQ). Pending.
+- **B3 — Backward family per-kernel audit**. DONE — `backward-family-spec.md` +
+  `tests/test_backward_family_lock.py` (6 cells) + `phase-B3-backward-report.md`. Per-(path×gradient)
+  which-binary mapped (byte-distinct native vs SDPA-vjp): dense D128=all SDPA-vjp; dense D64 N≥2048
+  default-on=all native; sparse default=all SDPA-vjp; sparse opt-in hybrid=native-dV-only; full-native
+  opt-in=all native. All gradients fp32-correct (err≤1.2e-4). Thresholds measured/correctness (no
+  overflow). Carry-forward to E: sparse V1↔V2 2^31 PERF validity.
+- **B4 — remaining family** (GNA exact-window / conv / topk / sage / paged-TQ). Pending, then Phase C.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +
