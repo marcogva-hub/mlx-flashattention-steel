@@ -1472,3 +1472,25 @@ STATUS: COMPLETE
 - Design: dense stays SDPA (keep-all-paths, already default); V6 NAX primitive stays expert/research (int64-safe post-A3-1, not promoted). Phased ladder gated on §0 prerequisite measure-gate.
 - Money-saving: avoided an L/XL kernel build that would lose to SDPA, measured before writing it.
 - Ran: v6nax_p0.py (P0.1/P0.5), header+shipping-bench check (P0.4), Day-J data (P0.2/P0.3). NO code changed. 0 orphans. Git: design report + probe below.
+
+---
+## [2026-06-17 11:00] [CLAUDE] V6 measurement gate — SCOPED-GO (non-dense ~3-4x headroom; route dense->SDPA, don't unify)
+STATUS: COMPLETE
+
+- Type: measurement gate, no kernel. Pre-flight: benchmark-measurement-correctness + nax-matmul2d skills.
+- Q1 headroom: CORRECTED the cited "18-25 TFLOPS" — that was APPARENT (dense-FLOPs on causal, 2x). EFFECTIVE
+  mlx-mfa STEEL simdgroup MMA = ~11 TFLOPS (measured: dense-mfa noncausal 11.1@D128, 13.2@D64; windowed V3 10.8,
+  block-sparse 11.4 — all share the MMA). SDPA effective (apples-to-apples, noncausal) = 44.9 TFLOPS (87% peak).
+  Headroom = 4.04x ceiling; ~3x realistic via the MPP cooperative-tensor form (V6/SDPA 1.3-1.5x gap, deduced).
+  Re-scope's "1.2-2x" UNDERSTATED it (apparent-vs-effective, incident #6). KEY: non-dense paths have NO SDPA
+  competition (SDPA dense-only) -> the gain is fully user-facing. GNA@N=512 = overhead-bound (0.1 TFLOPS, not a
+  valid regime); re-measure at large N. TQ-decode = sync-floor-bound (IV-0), not a throughput candidate.
+- Q2 unification: MFAttention is in-graph lazy Primitive (NOT raw-dispatch; 12-layer alternating ran ONE eval).
+  Switch cost: alternating 3.835ms/layer vs mean(dense 1.569, sparse 5.996)=3.78 -> ~1.5%/layer = sub-material.
+  Decode: in-graph -> no extra eval per switch. Verdict: DON'T unify; route dense->SDPA + separate non-dense NAX
+  (unify avoids no cost, risks dense<SDPA + maintenance liability of owning dense).
+- VERDICT: SCOPED-GO. Open V6 NAX for block-sparse + windowed/LCSA (port STEEL-simdgroup -> NAX-cooperative-tensor,
+  reuse V34 infra), route-dense->SDPA architecture. Ladder gated on increment-0 measuring REALIZED gain (the 4x is
+  a ceiling, not a result). If increment-0 below-material -> close, v2.56.0 terminus.
+- Ran: v6gate.py (Q1+Q2) + SDPA-vs-STEEL noncausal apples-to-apples. NO code/kernel. 0 orphans.
+- Git: measurement-gate-report.md + probes below. Cross-ref m5max sdpa-investigation re-scope.
