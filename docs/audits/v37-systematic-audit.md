@@ -29,9 +29,9 @@ follow-up sprints driven by HIGH-priority findings.
 
 | # | Module | LOC | Skills | Status |
 |---|---|---|---|---|
-| 1 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source()` | 2307→3036 (~729) | `/mlx-code-review` + `/metal-kernel-dev` | done |
-| 2 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34BackwardQuerySource()` | 3765→4591 (~826) | `/mlx-code-review` + `/metal-kernel-dev` | done |
-| 3 | `createV34BackwardDVSource()` + `createV34BackwardDKSource()` | 5412→6816 (~1404) + legacy 4592→5411 (~820) | `/mlx-code-review` + `/metal-kernel-dev` | done |
+| 1 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV6NAXSource()` | 2307→3036 (~729) | `/mlx-code-review` + `/metal-kernel-dev` | done |
+| 2 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV6NAXBackwardQuerySource()` | 3765→4591 (~826) | `/mlx-code-review` + `/metal-kernel-dev` | done |
+| 3 | `createV6NAXBackwardDVSource()` + `createV6NAXBackwardDKSource()` | 5412→6816 (~1404) + legacy 4592→5411 (~820) | `/mlx-code-review` + `/metal-kernel-dev` | done |
 | 4 | `mlx_mfa/attention.py::_make_mfa_custom` + VJP integration | ~200 (3513-3684) + carve-out (473-506) | `/mlx-code-review` + `/mlx-debug-forensics` | done |
 | 5 | `mlx_mfa/dispatch_policy.py` + `mlx_mfa/lcsa_nax.py` | 1029 + 269 | `/mlx-code-review` | done |
 
@@ -40,7 +40,7 @@ audit progresses.)
 
 ---
 
-## Module 1 — V34 forward (`createV34Source()`)
+## Module 1 — V6NAX forward (`createV6NAXSource()`)
 
 **Lines:** 2307–3036 (~729 LOC of generator code, emitting JIT MSL)
 **Skills applied:** `/mlx-code-review` (loaded session-prior),
@@ -56,24 +56,24 @@ audit progresses.)
 **M1-HIGH-01 — Apple helpers duplicated across 4+ generators (~390 LOC × 4)**
 - Category: D (Tech debt)
 - Confidence: High
-- Evidence: lines 2334–2725 (createV34Source) inline ~391 LOC of
+- Evidence: lines 2334–2725 (createV6NAXSource) inline ~391 LOC of
   verbatim Apple helpers (defines.h, type_traits.h subset,
   integral_constant.h subset, Limits<>, NAXFrag accessors, MaxOp /
   SumOp / MulOp / ExpSubOp structs, etc.).  The same block appears in
-  createV34BackwardQuerySource, createV34BackwardDVSource,
-  createV34BackwardDKSource (verified by grepping the marker
+  createV6NAXBackwardQuerySource, createV6NAXBackwardDVSource,
+  createV6NAXBackwardDKSource (verified by grepping the marker
   comments).  Net cost: ~1500 LOC of duplicated MSL inside the C++
-  generator.  CC noted this during the V34 backward sprint but
+  generator.  CC noted this during the V6NAX backward sprint but
   deferred refactor for safety.
 - Why it matters: every Apple-helper bugfix needs four edits; reading
-  any one V34 kernel requires scrolling past identical 390-line
+  any one V6NAX kernel requires scrolling past identical 390-line
   preamble.  Refactor cost is moderate (one shared `emitAppleHelpers()`
   private method in NAAttentionKernel, emit at the right point in
   source generation).  Risk: divergent context — if a helper needs to
   differ between forward and backward (e.g., a backward-only Op), the
   refactor needs an opt-in/opt-out switch.
 - Fix: extract `static std::string appleSteelHelpers(bool is_bf16)` in
-  `NAAttentionKernel.cpp` private namespace.  Each createV34* generator
+  `NAAttentionKernel.cpp` private namespace.  Each createV6NAX* generator
   calls it.  Add a CI grep guard ensuring no other call site duplicates
   the helpers verbatim.
 
@@ -82,7 +82,7 @@ audit progresses.)
 - Confidence: Medium
 - Evidence: lines 2917–2921:
   ```cpp
-  if (V34_BD == 128) {
+  if (V6NAX_BD == 128) {
     if (id == 4) {
       threadgroup_barrier(mem_flags::mem_none);
     }
@@ -106,7 +106,7 @@ audit progresses.)
 - Category: D (Tech debt)
 - Confidence: High
 - Evidence: line 2316.  TQ, TD, TK are all used downstream in the
-  generated MSL (via `#define V34_TQ`, etc.) but NOT in C++ scope —
+  generated MSL (via `#define V6NAX_TQ`, etc.) but NOT in C++ scope —
   so the void-casts pacify -Wunused-variable.  Mildly confusing for
   readers; could be replaced with `[[maybe_unused]]` attribute or a
   comment.
@@ -131,17 +131,17 @@ audit progresses.)
   registers — under M5 ~64KB CU register-file budget.  Comfortable
   headroom; no spill risk.  Documented for future-sprint reference.
 
-**M1-LOW-02 — `force_v34` parameter wired through but unused in forward generator**
+**M1-LOW-02 — `force_v6nax` parameter wired through but unused in forward generator**
 - Category: D
 - Confidence: Medium
-- Evidence: v2.37.0+ post-release patch (`ce128a4`) added `force_v34`
+- Evidence: v2.37.0+ post-release patch (`ce128a4`) added `force_v6nax`
   to `_ext.v6_nax_forward` Python binding to relax DC12 routing
   constraint.  The forward MSL generator itself does NOT consume this
   parameter — routing happens in the Primitive's eval_gpu before
-  source generation.  This is correct by design (force_v34 is a
+  source generation.  This is correct by design (force_v6nax is a
   Primitive-level switch, not a kernel-level one), but a 1-line
-  comment in `createV34Source` would clarify the scope boundary.
-- Fix: in createV34Source header, add: `// Note: force_v34 routing
+  comment in `createV6NAXSource` would clarify the scope boundary.
+- Fix: in createV6NAXSource header, add: `// Note: force_v6nax routing
   parameter is handled at Primitive::eval_gpu level (selects which
   source generator to call); not consumed in this MSL emitter.`
 
@@ -154,7 +154,7 @@ audit progresses.)
 
 ---
 
-## Module 2 — V34 backward dQ (`createV34BackwardQuerySource()`)
+## Module 2 — V6NAX backward dQ (`createV6NAXBackwardQuerySource()`)
 
 **Lines:** 3765–4591 (~826 LOC)
 **Skills applied:** `/mlx-code-review`, `/metal-kernel-dev`
@@ -176,24 +176,24 @@ audit progresses.)
   H=4, this is ~2048 fp32 FMAs per kernel × 3 kernels = ~6K duplicated
   FMAs.  Negligible per-FMA cost, but the duplicated load of O and dO
   is ~9 MB at qL=8192 D=128 — non-trivial bandwidth.
-- Why it matters: at D=128 qL=8192 the backward sum is 41.5 ms (V34
+- Why it matters: at D=128 qL=8192 the backward sum is 41.5 ms (V6NAX
   total) vs 19.7 ms (SDPA-vjp).  Even a 5-8% reduction from
   precomputing D_vec once and passing it as an extra device buffer
   would close part of the architectural-floor gap.
-- Fix: introduce a new MFAV34BwdD Primitive that produces
+- Fix: introduce a new MFAV6NAXBwdD Primitive that produces
   `D[B, Hq, qL] FP32` from O + dO in a single sweep (one extra
   dispatch); dQ/dV/dK kernels take `D` as buffer(N) instead of
   recomputing.  Risk: extra Primitive + binding + Python wiring is
   ~300 LOC of work for a ~5-8% win.  Worth a dedicated sprint if
   Option γ (fused dK+dV) doesn't subsume it.
-- Cross-reference: `docs/v6-nax/v34-backward-option-gamma-design.md` —
+- Cross-reference: `docs/v6-nax/v6nax-backward-option-gamma-design.md` —
   Option γ design fuses dK+dV which would also amortize D_vec across
   those two; this finding extends to also amortizing into dQ.
 
 **M2-MEDIUM-01 — Same empirical D=128 mid-loop barrier (extends M1-MEDIUM-01)**
-- Evidence: lines 4501–4505, identical pattern to V34 forward:
+- Evidence: lines 4501–4505, identical pattern to V6NAX forward:
   ```cpp
-  if (V34BWD_BD == 128) {
+  if (V6NAXBWD_BD == 128) {
     if (id == 4) {
       threadgroup_barrier(mem_flags::mem_none);
     }
@@ -204,7 +204,7 @@ audit progresses.)
   Removing it should be benched separately from forward's PV barrier.
 
 **M2-MEDIUM-02 — `(void)simd_lane_id;` stale (extends M1-MEDIUM-02)**
-- Same pattern, same fix.  Extends to all V34 backward kernel
+- Same pattern, same fix.  Extends to all V6NAX backward kernel
   generators.
 
 **M2-LOW-01 — Per-lane redundant lse load (deliberate, documented)**
@@ -220,9 +220,9 @@ audit progresses.)
 - Lines 4309–4315.  Each backward kernel converts natural-log lse →
   log2-domain.  Total per-kernel cost: ~BQ × log2e_multiply (negligible
   vs MB of GEMM work).
-- Alternative: V34 forward could write log2-domain lse and skip the
+- Alternative: V6NAX forward could write log2-domain lse and skip the
   conversion in all 3 backward kernels.  REJECTED: per DC0
-  (`docs/v6-nax/v34-backward-decisions.md`), lse contract is
+  (`docs/v6-nax/v6nax-backward-decisions.md`), lse contract is
   natural-log to match `mx.logsumexp` semantics and to support users
   consuming `return_lse=True` from `flash_attention()`.  Breaking
   this contract for ~0.001 ms savings is a bad trade.
@@ -249,10 +249,10 @@ audit progresses.)
 
 ---
 
-## Module 3 — V34 backward dV + dK
+## Module 3 — V6NAX backward dV + dK
 
-**Lines:** 5412–6816 (createV34BackwardDVSource 5412–6084 ~672, createV34BackwardDKSource 6085–6816 ~731)
-**Plus legacy fused kernel:** 4592–5411 (~820 LOC, gated `MFA_V34BWD_USE_FUSED=1`)
+**Lines:** 5412–6816 (createV6NAXBackwardDVSource 5412–6084 ~672, createV6NAXBackwardDKSource 6085–6816 ~731)
+**Plus legacy fused kernel:** 4592–5411 (~820 LOC, gated `MFA_V6BWD_USE_FUSED=1`)
 **Skills applied:** `/mlx-code-review`, `/metal-kernel-dev`
 **Recent changes:**
 - `e2606cb` — Phase 2.O2 multi-SG WM=4 split (1.7-2× speedup)
@@ -264,10 +264,10 @@ audit progresses.)
 **M3-HIGH-01 — Legacy fused dK/dV kernel (~820 LOC) lives on by env-gate only**
 - Category: D (Tech debt)
 - Confidence: High
-- Evidence: `createV34BackwardKeyValueSource()` (lines 4592–5411,
+- Evidence: `createV6NAXBackwardKeyValueSource()` (lines 4592–5411,
   ~820 LOC including its own copy of Apple helpers) is kept as a
   fallback path: `mlx_mfa/attention.py:3644-3645` shows
-  `MFA_V34BWD_USE_FUSED=1` as the only engagement trigger.  Default
+  `MFA_V6BWD_USE_FUSED=1` as the only engagement trigger.  Default
   is the Phase 2.O2 split (dV + dK kernels separately).  The legacy
   kernel:
     - Has been correctness-validated but is slower than the split
@@ -278,12 +278,12 @@ audit progresses.)
   load.  Every audit (this one included) has to consider whether
   the fused kernel could regress when the split kernels are
   modified.  Net cost-to-keep is rising.
-- Fix: delete `createV34BackwardKeyValueSource()` + the
-  `MFA_V34BWD_USE_FUSED` opt-out in attention.py.  Add a graveyard
+- Fix: delete `createV6NAXBackwardKeyValueSource()` + the
+  `MFA_V6BWD_USE_FUSED` opt-out in attention.py.  Add a graveyard
   pointer in CHANGELOG: "v2.37.x WM=1 fused dK/dV deleted as of
   v2.38.0 — split-kernel default has been correctness + perf
   validated since v2.37.0".  Alternative if Marco wants insurance:
-  move to a separate file `csrc/mfa/v6_nax/v34_legacy.cpp` with a
+  move to a separate file `csrc/mfa/v6_nax/v6nax_legacy.cpp` with a
   build-time flag, removing it from the default compilation unit.
 
 **M3-HIGH-02 — P recomputed independently in dV + dK kernels**
@@ -301,7 +301,7 @@ audit progresses.)
   ~256 Q-tiles per K-tile × ~256 K-tiles ≈ 16M extra exp2 calls
   duplicated between dV and dK.
 - Why it matters: this is exactly what Option γ
-  (`docs/v6-nax/v34-backward-option-gamma-design.md`) was designed
+  (`docs/v6-nax/v6nax-backward-option-gamma-design.md`) was designed
   to fix — fused dK+dV with shared P computation.  Per the audit
   numbers in the existing release notes, Option γ would close part
   of the 41.5ms → ~30ms gap at D=128 qL=8192.
@@ -319,7 +319,7 @@ profiled, NOT a bottleneck**
   read-once + write-half-size on M5 ~400 GB/s → ~160-200 µs.
   dV kernel itself runs ~9 ms direct.  Python reduction is ~2% of
   total backward.  NOT a bottleneck.
-- Why it matters: the Python `mx.sum` was visible in /tmp/v34_direct_d64.py
+- Why it matters: the Python `mx.sum` was visible in /tmp/v6nax_direct_d64.py
   bench output; the user wondered if it's a profile-worthy target.
   Per the back-of-envelope it isn't.  However, Option γ (fused
   kernel with TGP cross-SG reduction) would eliminate the partials
@@ -330,8 +330,8 @@ profiled, NOT a bottleneck**
 **M3-MEDIUM-01 — `dK_accum` FP32 BK×D register footprint at D=128 BK=32**
 - Category: C (Performance) — register pressure on M5 CU edge
 - Confidence: Medium (analytic, not measured)
-- Evidence: dK kernel's `using dk_t = NAXTile<float, V34BWDK_TK,
-  V34BWDK_TD>` — at D=128 BK=32: TK=2, TD=8, fp32 = 16 KB per SG
+- Evidence: dK kernel's `using dk_t = NAXTile<float, V6NAXBWDK_TK,
+  V6NAXBWDK_TD>` — at D=128 BK=32: TK=2, TD=8, fp32 = 16 KB per SG
   for dK_accum alone.  Combined with the K-loop's transient Stile
   (FP32 1×2 = 64B), dPtile (1×2 = 64B), Otile_in (fp16 1×8 = 128B),
   dOtile_in (1×8 = 128B), dot_prod (FP32 1×8 = 256B) — peak in the
@@ -347,9 +347,9 @@ profiled, NOT a bottleneck**
 - Fix: re-bench BK sweep AFTER Option γ lands.  Pure analysis here.
 
 **M3-MEDIUM-02 — Same empirical D=128 mid-loop barrier (extends M1/M2-MEDIUM-01)**
-- Same pattern as forward and bwd dQ kernels: `if (V34BWDV_BD == 128
+- Same pattern as forward and bwd dQ kernels: `if (V6NAXBWDV_BD == 128
   && id == 4) threadgroup_barrier(...)`.  Extends across all three
-  V34 backward kernels.  Same fix as M1-MEDIUM-01.
+  V6NAX backward kernels.  Same fix as M1-MEDIUM-01.
 
 **M3-MEDIUM-03 — D_vec recomputation in dK (mirror of M2-HIGH-01)**
 - The dK kernel (line 6640-6655) recomputes
@@ -407,13 +407,13 @@ slice falls past qL_rem**
 
 ### Findings
 
-**M4-HIGH-01 — Triple `os.environ.get("MFA_ENABLE_V34_BACKWARD")` reads create env-toggle race**
+**M4-HIGH-01 — Triple `os.environ.get("MFA_ENABLE_V6_BACKWARD")` reads create env-toggle race**
 - Category: A (silent correctness — if env toggles between reads)
 - Confidence: Medium (race window exists; user-triggered scenario is
   uncommon but plausible)
 - Evidence: per /mlx-debug-forensics §11 (input parity at API
   boundary) extended to "decision parity through a multi-stage call
-  chain".  The same `MFA_ENABLE_V34_BACKWARD == "1"` check is
+  chain".  The same `MFA_ENABLE_V6_BACKWARD == "1"` check is
   performed at THREE points in a single `mx.grad(flash_attention(...))`
   call:
   1. `flash_attention` carve-out (`attention.py:497`)
@@ -425,7 +425,7 @@ slice falls past qL_rem**
     - Carve-out fires (env=1) but `_impl` forward sees env=0 →
       STEEL forward writes **log2-domain** lse → backward expects
       **natural-log** lse → silent gradient corruption.
-    - `_impl` forward uses V34 (env=1) but backward sees env=0 →
+    - `_impl` forward uses V6NAX (env=1) but backward sees env=0 →
       `mfa_steel_backward` interprets natural-log lse as log2 →
       silent gradient corruption.
   These are corruption modes, not crashes, exactly the v2.37.0/v2.37.1
@@ -435,7 +435,7 @@ slice falls past qL_rem**
   set + unset env via `monkeypatch.setenv` outside the function
   scope, so test-grade env-toggle never crosses a forward/backward
   pair.  Future code that DOES toggle (e.g., a multi-step training
-  loop that selectively enables V34) could trip this.
+  loop that selectively enables V6NAX) could trip this.
 - Fix: read env-state ONCE inside `_impl` and pass through to
   `_backward` via a closure-captured constant.  Or: write the
   forward's decision into the output tuple (e.g., a 1-element
@@ -445,7 +445,7 @@ slice falls past qL_rem**
   and backward and asserts either (a) consistent behavior or (b) a
   loud error.  Today both paths silently disagree.
 
-**M4-MEDIUM-01 — V34-eligibility predicate duplicated 3 times (DRY violation)**
+**M4-MEDIUM-01 — V6NAX-eligibility predicate duplicated 3 times (DRY violation)**
 - Category: D (Tech debt)
 - Confidence: High
 - Evidence: same predicate `(env=="1") + has_nax + D∈{64,128} +
@@ -461,10 +461,10 @@ slice falls past qL_rem**
 - Why it matters: future "improvements" to one of the three will
   almost certainly forget to update the others.  Subsumes M4-HIGH-01:
   fixing M4-MEDIUM-01 via a single helper function (e.g.,
-  `_v34_path_eligible(q, k, v, causal) -> bool` cached at
+  `_v6nax_path_eligible(q, k, v, causal) -> bool` cached at
   `_impl`-construction time) eliminates both the duplication and the
   race window.
-- Fix: extract a single `_v34_path_active(q, k, v, causal)` function;
+- Fix: extract a single `_v6nax_path_active(q, k, v, causal)` function;
   call once at the top of `_impl`'s forward branch, capture in a
   closure variable, reuse in `_backward`.  Tests stay green because
   the predicate is unchanged.
@@ -495,12 +495,12 @@ slice falls past qL_rem**
   upcast into `flash_attention` so `_make_mfa_custom` always receives
   same-dtype inputs.
 
-**M4-MEDIUM-03 — Silent path engagement: no debug log when V34 engages**
+**M4-MEDIUM-03 — Silent path engagement: no debug log when V6NAX engages**
 - Category: D
 - Confidence: High
-- Evidence: there's no `MFA_DEBUG_V34_BWD` (or similar) print that
-  fires when the V34 backward path engages.  A user wondering "did
-  my env var take effect?" has to bench differentially (V34 OFF vs
+- Evidence: there's no `MFA_DEBUG_V6NAX_BWD` (or similar) print that
+  fires when the V6NAX backward path engages.  A user wondering "did
+  my env var take effect?" has to bench differentially (V6NAX OFF vs
   ON timings) — exactly what the v2.37.x audit had to do to discover
   the silent fallback.
 - Why it matters: this is the meta-cause of the v2.37.0/v2.37.1
@@ -516,7 +516,7 @@ slice falls past qL_rem**
 **M4-LOW-01 — `_get_has_nax_cached()` is cached, `os.environ.get(...)` is not — naming inconsistency**
 - Category: D (Style / parallel structure)
 - Confidence: High
-- Evidence: every V34 path check reads env fresh AND queries cached
+- Evidence: every V6NAX path check reads env fresh AND queries cached
   hardware capability.  Cached: NAX availability (hardware-static).
   Not cached: env var (intentionally dynamic).  Reasonable but worth
   documenting in a 2-line comment at the top of `_make_mfa_custom`.
@@ -532,7 +532,7 @@ slice falls past qL_rem**
 **M4-NON-ACT-02 — `dispatch_decision_cache` ignores env var in key**
 - `flash_attention` line 452: `_cache_key = (head_dim, qL, kL,
   causal, _is_m3, _has_nax, q.dtype, window_size, False)`.  Env var
-  not in key, so toggling MFA_ENABLE_V34_BACKWARD mid-session does
+  not in key, so toggling MFA_ENABLE_V6_BACKWARD mid-session does
   NOT invalidate `should_use_mfa()` results.  BUT the carve-out
   check (lines 473-506) is OUTSIDE the cache lookup, so the
   env-driven decision still flips correctly.  ✓ Documented for
@@ -573,7 +573,7 @@ calibrated), v2.37.x carve-out lives in attention.py
   # Example placeholder pattern (commented until A.6 confirms):
   # if head_dim == 64 and seq_len == 4096 and ... return True
   ```
-  The v2.37.2 carve-out (`MFA_ENABLE_V34_BACKWARD=1` + D=64 +
+  The v2.37.2 carve-out (`MFA_ENABLE_V6_BACKWARD=1` + D=64 +
   qL ≥ 4096 + non-causal + f16/bf16 + NAX) IS exactly the kind of
   empirical carve-out this placeholder was designed for.  Currently
   it lives in `flash_attention` (attention.py:492-506) — outside the
@@ -586,11 +586,11 @@ calibrated), v2.37.x carve-out lives in attention.py
   always returns False.  The placeholder has been sitting empty
   since v2.32.0.
 - Fix: extract the v2.37.2 carve-out into a new function
-  `_v34_backward_carveout(head_dim, seq_len, dtype, causal, has_nax)`
+  `_v6nax_backward_carveout(head_dim, seq_len, dtype, causal, has_nax)`
   in `dispatch_policy.py` (or fill in `_should_use_mfa_m5_nax_carveout`
   with this content).  `flash_attention` calls it once.  All routing
   policy lives in one module.  ~30 LOC change; pure refactor.
-- Cross-reference: M4-MEDIUM-01 (V34-eligibility predicate triplicate)
+- Cross-reference: M4-MEDIUM-01 (V6NAX-eligibility predicate triplicate)
   is partially subsumed by this — extracting the carve-out function
   also gives `_make_mfa_custom` a clean predicate to import and reuse.
 
@@ -730,23 +730,23 @@ to trip and is downgraded to HIGH.
 | ID | Module | Title | Effort | EV |
 |---|---|---|---|---|
 | **M3-HIGH-02** | bwd dV+dK | Implement Option γ — fused dK+dV with TGP cross-SG reduction, shared P computation across dV+dK | 2-3 days CC per design doc | 25-40% backward speedup at D=128; eliminates dV_partials/dK_partials buffers + Python mx.sum |
-| **M2-HIGH-01** | bwd dQ + bwd dV+dK | Precompute D_vec once via MFAV34BwdD Primitive; consume in dQ/dV/dK | 1 day CC (~300 LOC) | 5-8% backward speedup at D=128; eliminates 3× redundant D=rowsum(dO⊙O) work |
+| **M2-HIGH-01** | bwd dQ + bwd dV+dK | Precompute D_vec once via MFAV6NAXBwdD Primitive; consume in dQ/dV/dK | 1 day CC (~300 LOC) | 5-8% backward speedup at D=128; eliminates 3× redundant D=rowsum(dO⊙O) work |
 | **M5-HIGH-01** | dispatch_policy | Move v2.37.2 carve-out from `flash_attention` into `_should_use_mfa_m5_nax_carveout`; consolidates routing | 0.5 day (~30 LOC refactor) | Eliminates dead-stub placeholder, centralizes routing decisions, sets pattern for future carve-outs |
 | **M5-HIGH-02** | dispatch_policy + lcsa_nax | Document the `should_use_mfa(sparse=True)` → `sparse_attention_dispatch` decision-layer redundancy (doc-only) | 0.25 day | Future readers grasp the two-stage routing intent immediately |
-| **M3-HIGH-01** | bwd dK/dV legacy | Delete `createV34BackwardKeyValueSource()` (~820 LOC of dead-on-default code) + `MFA_V34BWD_USE_FUSED` opt-out | 0.5 day | -820 LOC tech debt; future audits no longer have to consider legacy fused path; clears a copy of the duplicated Apple helpers (cross-ref M1-HIGH-01) |
-| **M1-HIGH-01** | All four V34 kernels | Extract ~390 LOC of duplicated Apple steel/* helpers into `static std::string appleSteelHelpers(bool is_bf16)` shared method | 1 day (incl. test re-verify) | -1170 LOC duplication (3× after M3-HIGH-01 deletes legacy); future helper bugfixes need 1 edit not 4 |
+| **M3-HIGH-01** | bwd dK/dV legacy | Delete `createV6NAXBackwardKeyValueSource()` (~820 LOC of dead-on-default code) + `MFA_V6BWD_USE_FUSED` opt-out | 0.5 day | -820 LOC tech debt; future audits no longer have to consider legacy fused path; clears a copy of the duplicated Apple helpers (cross-ref M1-HIGH-01) |
+| **M1-HIGH-01** | All four V6NAX kernels | Extract ~390 LOC of duplicated Apple steel/* helpers into `static std::string appleSteelHelpers(bool is_bf16)` shared method | 1 day (incl. test re-verify) | -1170 LOC duplication (3× after M3-HIGH-01 deletes legacy); future helper bugfixes need 1 edit not 4 |
 | **M3-HIGH-03** | bwd dV+dK Python wrapper | Subsumed by M3-HIGH-02 (Option γ eliminates partials buffer); standalone profile says NOT a bottleneck (~2% of total) | — | (subsumed) |
-| **M4-HIGH-01** | _make_mfa_custom | Eliminate env-toggle race by capturing V34-eligibility decision at forward time, passing through to backward | 0.5 day (~50 LOC) — combines with M4-MEDIUM-01 | Closes silent-corruption window when env toggles mid-step; aligns with §Z principle of explicit decision parity |
+| **M4-HIGH-01** | _make_mfa_custom | Eliminate env-toggle race by capturing V6NAX-eligibility decision at forward time, passing through to backward | 0.5 day (~50 LOC) — combines with M4-MEDIUM-01 | Closes silent-corruption window when env toggles mid-step; aligns with §Z principle of explicit decision parity |
 
 ### MEDIUM
 
 | ID | Module | Title | Effort |
 |---|---|---|---|
-| M1-MEDIUM-01 / M2-MEDIUM-01 / M3-MEDIUM-02 | All V34 kernels | Document or remove empirical D=128 mid-loop barrier (`if id == 4`) | 0.5 day investigation + bench |
-| M1-MEDIUM-02 / M2-MEDIUM-02 | V34 forward + bwd dQ | Replace `(void)TQ; (void)TD; (void)TK;` pacify-compiler with comment or `[[maybe_unused]]` | 0.1 day |
+| M1-MEDIUM-01 / M2-MEDIUM-01 / M3-MEDIUM-02 | All V6NAX kernels | Document or remove empirical D=128 mid-loop barrier (`if id == 4`) | 0.5 day investigation + bench |
+| M1-MEDIUM-02 / M2-MEDIUM-02 | V6NAX forward + bwd dQ | Replace `(void)TQ; (void)TD; (void)TK;` pacify-compiler with comment or `[[maybe_unused]]` | 0.1 day |
 | M3-MEDIUM-01 | bwd dK | Re-bench BK sweep at D=128 AFTER Option γ lands (BK=16 may unlock further win once register pressure drops) | 0.5 day post-Option-γ |
 | M3-MEDIUM-03 | bwd dK | D_vec recompute in dK (subsumed by M2-HIGH-01 + M3-HIGH-02) | — |
-| M4-MEDIUM-01 | _make_mfa_custom | Extract `_v34_path_active()` helper; eliminates triplicate predicate; combine with M4-HIGH-01 fix | 0.25 day |
+| M4-MEDIUM-01 | _make_mfa_custom | Extract `_v6nax_path_active()` helper; eliminates triplicate predicate; combine with M4-HIGH-01 fix | 0.25 day |
 | M4-MEDIUM-02 | _make_mfa_custom | Document or harden mixed-dtype (q=fp32, k=v=fp16) path; add test | 0.5 day |
 | M4-MEDIUM-03 | _make_mfa_custom | Add `MFA_DEBUG_DISPATCH=1` debug log (mirrors dispatch_policy._verbose pattern, M5-LOW-01) | 0.25 day |
 | M5-MEDIUM-01 | dispatch_policy | `docs/dispatch-thresholds.md` registry with empirical-source citations | 0.5 day |
@@ -758,7 +758,7 @@ to trip and is downgraded to HIGH.
 | ID | Title |
 |---|---|
 | M1-LOW-01 | lse-write s>0 defensive branch (already documented; no action) |
-| M1-LOW-02 | Add 1-line comment to createV34Source noting `force_v34` is Primitive-level, not kernel-level |
+| M1-LOW-02 | Add 1-line comment to createV6NAXSource noting `force_v6nax` is Primitive-level, not kernel-level |
 | M2-LOW-01 | Per-lane redundant lse load (documented design choice; no action) |
 | M3-LOW-01 | Per-SG `continue` for empty Q-tiles (safe by SG semantics; no action) |
 | M4-LOW-01 | Docstring noting env-checks are intentionally dynamic vs hardware cached |
@@ -769,8 +769,8 @@ to trip and is downgraded to HIGH.
 
 | ID | Note |
 |---|---|
-| M1-NON-ACT-01 | V34 forward register budget at WM=4 D=128 — comfortable headroom |
-| M2-NON-ACT-01 | V34 bwd dQ register budget — Step 2 peak ~17 KB/lane, tight but works |
+| M1-NON-ACT-01 | V6NAX forward register budget at WM=4 D=128 — comfortable headroom |
+| M2-NON-ACT-01 | V6NAX bwd dQ register budget — Step 2 peak ~17 KB/lane, tight but works |
 | M2-NON-ACT-02 | Per-kernel lse → log2 conversion preserved by DC0 contract |
 | M3-NON-ACT-01 | Per-SG slot device write thread-safe by construction |
 | M3-NON-ACT-02 | WM=2 K-row partition FALSIFIED in 52797ea (historical only) |
@@ -783,11 +783,11 @@ to trip and is downgraded to HIGH.
 Based on HIGH findings + cross-references, suggested sprint sequence:
 
 ### Sprint 3: Option γ — fused dK+dV (M3-HIGH-02 + M3-HIGH-03 + dependency for M3-MEDIUM-01)
-- **Effort:** 2-3 days CC per `docs/v6-nax/v34-backward-option-gamma-design.md`
+- **Effort:** 2-3 days CC per `docs/v6-nax/v6nax-backward-option-gamma-design.md`
 - **Addresses:** M3-HIGH-02 (P duplication), M3-HIGH-03 (eliminates
   partials buffers), unlocks M3-MEDIUM-01 (BK sweep post-fusion)
 - **Expected wins:** 25-40% backward speedup at D=128 (closes part
-  of the architectural-floor gap); may also restore D=128 V34
+  of the architectural-floor gap); may also restore D=128 V6NAX
   backward to net win territory at some shapes (enabling carve-out
   expansion in M5-HIGH-01)
 - **Prerequisites:** none; design doc already exists
@@ -805,7 +805,7 @@ Based on HIGH findings + cross-references, suggested sprint sequence:
 ### Sprint 5: Dispatch consolidation (M5-HIGH-01 + M4-HIGH-01 + M4-MEDIUM-01)
 - **Effort:** 1 day total
 - **Addresses:** Move carve-out into dispatch_policy, eliminate
-  V34-eligibility predicate duplication, close env-toggle race
+  V6NAX-eligibility predicate duplication, close env-toggle race
 - **Expected wins:** clean architecture, future-proof for new
   carve-outs (e.g., if Option γ unlocks D=128 carve-out, the new
   shape gate is added in one place)
@@ -813,14 +813,14 @@ Based on HIGH findings + cross-references, suggested sprint sequence:
 
 ### Sprint 6: Apple helpers refactor (M1-HIGH-01 + M3-HIGH-01)
 - **Effort:** 1.5 days (delete legacy + extract helpers + re-test
-  all V34 kernels)
+  all V6NAX kernels)
 - **Addresses:** -1170 LOC of duplicated MSL inside C++ generator
   (after legacy deletion), faster future onboarding
 - **Expected wins:** -1170 LOC, single edit point for Apple-helper
   bugfixes
 - **Prerequisites:** lands AFTER Sprint 3 (Option γ may add a new
   generator that should also use the shared helpers from day 1)
-- **Risk:** medium — touches all V34 kernels; full test re-run
+- **Risk:** medium — touches all V6NAX kernels; full test re-run
   required; one canonical-shape bench to confirm no perf regression
 
 ### Sprint 7: Observability + doc registry (MEDIUM batch)
@@ -844,12 +844,12 @@ that compound the gains from Sprint 2 (institutional amendment).
 
 | # | Skill | Module | Findings count | Notes |
 |---|---|---|---|---|
-| 1 | /mlx-code-review | M1 — V34 forward | 4 | applied internalized rubric from prior sessions |
-| 2 | /metal-kernel-dev | M1 — V34 forward | 2 | rubric loaded this session |
-| 3 | /mlx-code-review | M2 — V34 bwd dQ | 3 | |
-| 4 | /metal-kernel-dev | M2 — V34 bwd dQ | 2 | |
-| 5 | /mlx-code-review | M3 — V34 bwd dV+dK | 5 | covers both kernels + legacy fused |
-| 6 | /metal-kernel-dev | M3 — V34 bwd dV+dK | 4 | |
+| 1 | /mlx-code-review | M1 — V6NAX forward | 4 | applied internalized rubric from prior sessions |
+| 2 | /metal-kernel-dev | M1 — V6NAX forward | 2 | rubric loaded this session |
+| 3 | /mlx-code-review | M2 — V6NAX bwd dQ | 3 | |
+| 4 | /metal-kernel-dev | M2 — V6NAX bwd dQ | 2 | |
+| 5 | /mlx-code-review | M3 — V6NAX bwd dV+dK | 5 | covers both kernels + legacy fused |
+| 6 | /metal-kernel-dev | M3 — V6NAX bwd dV+dK | 4 | |
 | 7 | /mlx-code-review | M4 — _make_mfa_custom | 4 | |
 | 8 | /mlx-debug-forensics | M4 — _make_mfa_custom | 3 | rubric loaded this session |
 | 9 | /mlx-code-review | M5 — dispatch_policy + lcsa_nax | 7 | |
@@ -863,10 +863,10 @@ treated as a single skill invocation).
 
 **OUT OF SCOPE** (flagged for future audits):
 - `mlx_mfa/_auto_hooks.py` (auto-hook installation race/idempotency)
-- `csrc/mfa_v6_nax_primitive.cpp` (V34 Primitive dispatch, separate
+- `csrc/mfa_v6_nax_primitive.cpp` (V6NAX Primitive dispatch, separate
   from MSL generators audited here)
 - `csrc/v6_nax_compile.mm` (dispatch helpers, Obj-C++ binding)
-- Test files (`tests/test_flash_attention_v34_backward.py` etc.)
+- Test files (`tests/test_flash_attention_v6nax_backward.py` etc.)
 - Build infrastructure (`scikit-build`, `CMakeLists.txt`)
 
 **Methodology caveats:**

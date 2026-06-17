@@ -93,7 +93,7 @@ regressions). The pre-existing bf16 legacy raise is retained.
   fixed with a `conftest.py` `mx.clear_cache()` fence (cannot mask
   intra-dispatch bugs; only removes cross-test pool bleed).
 - Pool-stress canary (`MFA_POOL_STRESS=1`) green (122).
-- Headline conv MPP / V34 / TQ claims unchanged; net perf non-worse
+- Headline conv MPP / V6NAX / TQ claims unchanged; net perf non-worse
   (gate-out kept, kernel fix is correctness-only).
 
 ## R.6 — Coupled v2.52.1 release — DONE
@@ -107,7 +107,7 @@ regressions). The pre-existing bf16 legacy raise is retained.
 | 9-gate audit | GREEN_WITH_ADVISORY (no blocking; advisory = no new PERF_CLAIMS/Reproduce — v2.52.1 has no new claim) |
 | Gate #9 programmatic | 2 passed |
 | Pre-tag pool-stress | 1565 passed |
-| Post-publish smoke (published wheel, clean venv) | **6/6** — conv3d small-channel kernel (C_in 8/16/31 vs fp32 incl prior-NaN), Rule-8 guard, MPP fp16/bf16, V34 backward, return_lse, topk |
+| Post-publish smoke (published wheel, clean venv) | **6/6** — conv3d small-channel kernel (C_in 8/16/31 vs fp32 incl prior-NaN), Rule-8 guard, MPP fp16/bf16, V6NAX backward, return_lse, topk |
 
 ### v2.52.0 disposition (Marco-gated, OPEN)
 

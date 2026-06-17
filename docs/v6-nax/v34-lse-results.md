@@ -1,34 +1,34 @@
-# V34 LSE writeback — Sprint 2 results
+# V6NAX LSE writeback — Sprint 2 results
 
 **Date:** 2026-05-06
-**Sprint:** V34-FORWARD-MAX Sprint 2 (LSE writeback)
-**Branch:** `experiment/v34-forward-max`
+**Sprint:** V6NAX-FORWARD-MAX Sprint 2 (LSE writeback)
+**Branch:** `experiment/v6nax-forward-max`
 **Commit:** `7259981`
 
 ## Summary
 
-Closes a silent uninitialized-buffer bug in V34: the kernel allocated the
+Closes a silent uninitialized-buffer bug in V6NAX: the kernel allocated the
 `lse` (log-sum-exp) output array via `enc.set_output_array(lse, …)` but
 never wrote to it. Any user reading the second `flash_attention()` output
-on the V34 path got garbage memory. After this sprint V34 writes the
+on the V6NAX path got garbage memory. After this sprint V6NAX writes the
 correct LSE per row, bit-exact against a numpy reference at FP32.
 
-This was listed as v2.31.0 open follow-up #4 (`v34-results.md` line 162-165).
+This was listed as v2.31.0 open follow-up #4 (`v6nax-results.md` line 162-165).
 
 ## What changed
 
-### Kernel signature (`createV34Source` in `NAAttentionKernel.cpp`)
+### Kernel signature (`createV6NAXSource` in `NAAttentionKernel.cpp`)
 
-V34 now binds `lse` at buffer slot 5 (the legacy MPP path keeps slot 4,
+V6NAX now binds `lse` at buffer slot 5 (the legacy MPP path keeps slot 4,
 because legacy uses a different host-side encoder layout):
 
 ```c
-kernel void v34_attention(
+kernel void v6nax_attention(
     device const T* Q [[buffer(0)]],
     device const T* K [[buffer(1)]],
     device const T* V [[buffer(2)]],
     device       T* O [[buffer(3)]],
-    constant V34Params& params [[buffer(4)]],
+    constant V6NAXParams& params [[buffer(4)]],
     device float* L_buf [[buffer(5)]],          // ← new
     ...
 )
@@ -60,7 +60,7 @@ we emit:
 
 `kRowsPerThread = TQ * 2` (each NAXFrag covers 2 rows per Q tile in the
 M-direction). `L_row` is the per-threadgroup L pointer offset to the row
-range owned by this SG (`L_buf + tid.x * V34_BQ + sgid * BQ_PER_SG`).
+range owned by this SG (`L_buf + tid.x * V6NAX_BQ + sgid * BQ_PER_SG`).
 
 The mathematical identity used:
 
@@ -68,7 +68,7 @@ The mathematical identity used:
 LSE(x) = log(sum(exp(x))) = max(x) + log(sum(exp(x - max(x))))
 ```
 
-V34's softmax operates in log2 domain (matches Apple's `steel_attention_nax.h`),
+V6NAX's softmax operates in log2 domain (matches Apple's `steel_attention_nax.h`),
 so the output is `max + log2(sum)` directly — no FP-domain conversion needed.
 Consumers that want natural log multiply by `ln(2)`. The legacy MPP path
 also writes in log2 domain, so this is a drop-in.
@@ -76,7 +76,7 @@ also writes in log2 domain, so this is a drop-in.
 ### Host dispatch
 
 `csrc/mfa_v6_nax_primitive.cpp` adds `enc.set_output_array(lse, 5)` on the
-V34 path; legacy unchanged at slot 4.
+V6NAX path; legacy unchanged at slot 4.
 
 ## Validation
 
@@ -87,8 +87,8 @@ numpy:
 
 ```python
 ref_lse = (max_qk + np.log2(np.sum(np.exp2(qk - max_qk), axis=-1)))
-v34_lse = np.array(_ext.v6_nax_forward(q, k, v, return_lse=True)[1])
-rmse = np.sqrt(np.mean((v34_lse - ref_lse) ** 2))
+v6nax_lse = np.array(_ext.v6_nax_forward(q, k, v, return_lse=True)[1])
+rmse = np.sqrt(np.mean((v6nax_lse - ref_lse) ** 2))
 ```
 
 ### Results
@@ -123,12 +123,12 @@ because nothing exercised the read path.
 
 ## Test-coverage gap (flagged)
 
-No automated test currently asserts V34 LSE finiteness. Add to
+No automated test currently asserts V6NAX LSE finiteness. Add to
 `tests/test_v6_nax.py` before v2.32.0 release:
 
 ```python
-def test_v34_lse_finite_and_matches_ref():
-    q, k, v = _make_v34_eligible_shape()
+def test_v6nax_lse_finite_and_matches_ref():
+    q, k, v = _make_v6nax_eligible_shape()
     o, lse = _ext.v6_nax_forward(q, k, v, return_lse=True)
     assert mx.all(mx.isfinite(lse))
     # Optionally: rmse vs numpy ref < 1e-3
@@ -136,8 +136,8 @@ def test_v34_lse_finite_and_matches_ref():
 
 ## Files
 
-- `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (`createV34Source`, ~+45 LOC)
-- `csrc/mfa_v6_nax_primitive.cpp` (`enc.set_output_array(lse, 5)` on V34 path)
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (`createV6NAXSource`, ~+45 LOC)
+- `csrc/mfa_v6_nax_primitive.cpp` (`enc.set_output_array(lse, 5)` on V6NAX path)
 
 ## Apple reference
 
@@ -149,4 +149,4 @@ def test_v34_lse_finite_and_matches_ref():
 ## Cross-link
 
 Originally listed as open follow-up in
-[`v34-results.md`](v34-results.md#open-items--future-work) (item 4).
+[`v6nax-results.md`](v6nax-results.md#open-items--future-work) (item 4).

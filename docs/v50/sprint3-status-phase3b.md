@@ -114,10 +114,10 @@ user demand.
 
 | Phase | Component | CC time |
 |---|---|---|
-| 3b.1 | Read existing V34/STEEL kernel templates + Apple NAX cooperative-tensor primitives | 30 min |
+| 3b.1 | Read existing V6NAX/STEEL kernel templates + Apple NAX cooperative-tensor primitives | 30 min |
 | 3b.2 | `/metal-kernel-dev` pre-impl: register budget + heap structure validation | 30 min |
 | 3b.3 | Pass-1 kernel: streaming top-K index selection generator (~400 LOC MSL) | 1.5h |
-| 3b.4 | Pass-2 kernel: gather-attention generator (~300 LOC MSL, mostly reused from V34) | 1h |
+| 3b.4 | Pass-2 kernel: gather-attention generator (~300 LOC MSL, mostly reused from V6NAX) | 1h |
 | 3b.5 | `csrc/mfa_topk_fwd.cpp`: MFATopKForward Primitive + eval_gpu | 45 min |
 | 3b.6 | `csrc/bindings.cpp`: `mfa_topk_forward` binding | 15 min |
 | 3b.7 | Routing in `flash_attention_topk` (Phase 3a fallback preserved) | 15 min |
@@ -141,21 +141,21 @@ needs careful design to cover (a) heap correctness vs exact sort,
   1.25× speedup, 17/17 tests pass, zero regressions in the 1112 pre-
   existing baseline tests.
 - **Test count post-merge**: 1129 passing (1112 baseline + 17 Sprint 3).
-- **50 pre-existing failures** (test_v34_backward_kv.py +
-  test_v34_bwd_multisg.py: D_vec API mismatch from v2.38.1) are
+- **50 pre-existing failures** (test_v6nax_backward_kv.py +
+  test_v6nax_bwd_multisg.py: D_vec API mismatch from v2.38.1) are
   unrelated to Sprint 3 and tracked separately.
 
 ## Recommended next steps for Phase 3b (dedicated future session)
 
 1. Read Apple NAX cooperative-tensor MMA primitive docs + existing
-   V34 forward kernel structure (`createV34Source()` in
+   V6NAX forward kernel structure (`createV6NAXSource()` in
    `csrc/mfa/v6_nax/NAAttentionKernel.cpp`)
 2. `/metal-kernel-dev` pre-impl for streaming heap data structure +
    register budget at D=64 and D=128
 3. Implement Pass-1 kernel (`createTopKIndicesSource()`)
 4. Verify Pass-1 produces correct top-K indices via bit-identical
    comparison to `mx.argpartition` on the same input
-5. Implement Pass-2 kernel (gather attention, mostly reused from V34)
+5. Implement Pass-2 kernel (gather attention, mostly reused from V6NAX)
 6. Three-axis validation + cross-session §AA.4 perf bench
 7. Update `flash_attention_topk` routing to call native kernel; keep
    Phase 3a path as fallback for unsupported edges (large k_count,

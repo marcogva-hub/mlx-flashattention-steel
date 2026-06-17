@@ -91,7 +91,7 @@ breaking public-env-var removal.)_
 
 | Item | Verdict |
 |---|---|
-| V34 backward block-sparse NAX | DECLINE (built+shipped+falsified; opt-in retained) |
+| V6NAX backward block-sparse NAX | DECLINE (built+shipped+falsified; opt-in retained) |
 | `MFA_FORCE_NATIVE_BWD` | **REMOVED v2.56.0** (deprecation cycle complete; kernel retained) |
 | V4 / V5 | CLEAN-KEEP (opt-in, correct) |
 | V3 | **VALIDATED on M5/26.6** (auto-routing keeps the faster kernel; framing corrected) |

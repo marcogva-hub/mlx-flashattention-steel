@@ -15,7 +15,7 @@ bug.
 | `/mlx-mfa-perf-audit` | Verify a perf claim is reachable via the public API | After "X× speedup" discovery; pre-release; auditing past claims | **Yes** |
 | `/mlx-mfa-release-audit` | 7-check pre-tag gate (§X + §X.5 + §Z + §AA + tests + CHANGELOG) | Before ANY version bump or PyPI upload | **Yes** |
 | `/mlx-mfa-bench-methodology` | Auto-select §4-strict vs canonical protocol; cross-session ratio analysis | All sub-ms perf work; cross-session variance characterization | **Yes** |
-| `/mlx-mfa-kernel-design` | New V34 kernel scaffolding + register budget pre-flight | New kernel write / register-pressure decisions | **Yes** (unblocked v2.38.x Phase B) |
+| `/mlx-mfa-kernel-design` | New V6NAX kernel scaffolding + register budget pre-flight | New kernel write / register-pressure decisions | **Yes** (unblocked v2.38.x Phase B) |
 
 Skill definitions live in `~/.claude/skills/<skill-name>/`.  See
 `installation.md` for setup on a fresh dev machine.
@@ -35,7 +35,7 @@ Skill definitions live in `~/.claude/skills/<skill-name>/`.  See
 (`preserve` / `retract` / `code_fix` / `reclassify_research_only`).
 
 Detection strategy: differential gradient RMSE (per
-`tests/test_release_notes_perf_claims.py` pattern).  V34 backward
+`tests/test_release_notes_perf_claims.py` pattern).  V6NAX backward
 vs SDPA-vjp gradients differ by FP16 rounding; SDPA fallback is
 bit-identical.
 

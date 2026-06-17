@@ -9,8 +9,8 @@ pass over factory/closure/is_equivalent constructs).
 | # | Cache | File:line | Maps | Value |
 |---|---|---|---|---|
 | 1 | `ShaderCache::cache_` | shader_cache.hpp:130 / .mm | KernelKey (18 fields) → PSO | pipeline (feeds 14+ generators: STEEL V1/V2/splitK/dsplit/V3/V4/V5, bwd dQ/dKV, sparse, GNA, sage, paged-varlen-TQ, flash-decode, ccv) |
-| 2 | `v6_pipelines` | mfa_v6_nax_primitive.cpp:124 | V6Key → PSO | V6 NAX fwd (legacy + V34) |
-| 3-11 | `v34_bwd{q,kv,v,v_sparse,k,fused,q_sparse,k_sparse,f_sparse}_pipelines` | same file | V34Bwd*Key → PSO | 9 V34 backward kernels |
+| 2 | `v6_pipelines` | mfa_v6_nax_primitive.cpp:124 | V6Key → PSO | V6 NAX fwd (legacy + V6NAX) |
+| 3-11 | `v6nax_bwd{q,kv,v,v_sparse,k,fused,q_sparse,k_sparse,f_sparse}_pipelines` | same file | V6NAXBwd*Key → PSO | 9 V6NAX backward kernels |
 
 ## C++ graph-dedup predicates (25 is_equivalent sites)
 

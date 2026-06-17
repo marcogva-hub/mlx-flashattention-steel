@@ -1,4 +1,4 @@
-# V34 backward NAX-direct — results (Phase 3 deliverable)
+# V6NAX backward NAX-direct — results (Phase 3 deliverable)
 
 **Status**: PENDING — Phase 3 not yet started.
 
@@ -10,7 +10,7 @@ Expected structure (per `docs/methodology/canonical-protocol.md` §4.2):
 
 ## Per-shape verdict
 
-| Shape | V34 backward ms | STEEL ms | Ratio | Range % | Verdict |
+| Shape | V6NAX backward ms | STEEL ms | Ratio | Range % | Verdict |
 |---|---:|---:|---:|---:|---|
 | ... | ... | ... | ... | ... | ... |
 

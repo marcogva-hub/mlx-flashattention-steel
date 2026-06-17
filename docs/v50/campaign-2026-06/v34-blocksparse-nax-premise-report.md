@@ -1,4 +1,4 @@
-# V34 Backward Block-Sparse NAX — Premise Validation (go/no-go)
+# V6NAX Backward Block-Sparse NAX — Premise Validation (go/no-go)
 
 **Date:** 2026-06-17
 **Executor:** Claude Opus 4.8 High
@@ -18,7 +18,7 @@ kernel work remains; nothing to greenlight.
 ## R.1 — Archaeology: the premise, recovered from the record (cited)
 
 **Original proposal (Prompt 5a, 2026-05-14)** — `docs/v50/sprint-5-prompt5a-status.md:10-14`:
-> "extend V34 backward kernels with native block-sparse iteration so that
+> "extend V6NAX backward kernels with native block-sparse iteration so that
 > `mx.grad(flash_attention_sparse(...))` would use NAX-direct backward kernels (skipping
 > inactive blocks) instead of falling back to SDPA-vjp with expanded bias."
 
@@ -33,27 +33,27 @@ empirical validation before a greenlight.**
 - **Prompt 5d** (`docs/v50/sprint-5d-decisions.md:5-20`) — per Marco's explicit Prompt 5c
   Option 1 mandate, **built and shipped** 4 native sparse backward kernels (dV PoC from 5b +
   dQ + dK-split + fused-dKdV at D=64/128), math-correctness validated.
-- **Live-code corroboration:** `csrc/mfa/v6_nax/NAAttentionKernel.cpp:5168` (`V34BWDV_SPARSE`),
-  `:6364` (`V34BWDQ_SPARSE`) + dK-split + fused-dKdV; 8 shipped tests in
+- **Live-code corroboration:** `csrc/mfa/v6_nax/NAAttentionKernel.cpp:5168` (`V6NAXBWDV_SPARSE`),
+  `:6364` (`V6NAXBWDQ_SPARSE`) + dK-split + fused-dKdV; 8 shipped tests in
   `tests/test_v50_sprint_5d_sparse_backward_native.py`; opt-in routed at
   `mlx_mfa/attention.py:3187-3192`.
 
 **Documentation-coherence finding:** the Marco-gated queue entry I authored last turn ("Sprint
-5 V34 backward block-sparse NAX extension — was premise-validation-pending; never greenlit")
+5 V6NAX backward block-sparse NAX extension — was premise-validation-pending; never greenlit")
 was **stale**. It was based on the 5a DEFERRED doc and missed the later 5d SHIP + 5c/5d
 empirical falsification. Corrected here and in the queue.
 
 ## R.2 — Buildability premise: **PROVEN BUILDABLE (built + shipped).**
 
-Not a question — a settled fact. The block-sparse mask gates which K-blocks the existing V34
-backward traversal visits (mirrors the V34 forward LCSA sparse iteration); it composes as a
-clean extension (`#if V34BWD*_SPARSE` mask blocks in the 4 K-parallel/dQ generators). The
+Not a question — a settled fact. The block-sparse mask gates which K-blocks the existing V6NAX
+backward traversal visits (mirrors the V6NAX forward LCSA sparse iteration); it composes as a
+clean extension (`#if V6NAXBWD*_SPARSE` mask blocks in the 4 K-parallel/dQ generators). The
 kernels exist, compile, dispatch, and pass dQ/dK/dV correctness vs SDPA-vjp (8 tests). dataflow
-verdict: **buildable as a V34 extension — confirmed empirically, not by reasoning.**
+verdict: **buildable as a V6NAX extension — confirmed empirically, not by reasoning.**
 
 ## R.3 — NAX-reachability premise: **REACHABLE (kernels run on M5 NAX) — but reachable ≠ wins.**
 
-Primary source: the 4 shipped kernels ARE V34 NAX backward kernels (cooperative-tensor MMA
+Primary source: the 4 shipped kernels ARE V6NAX NAX backward kernels (cooperative-tensor MMA
 path), and they execute on M5 NAX — benched live across two shapes (below). So NAX-reachability
 for this exact kernel shape (dQ/dK/dV, block-sparse, D∈{64,128}, fp16/bf16) is empirically
 **TRUE**. The Pattern #6 caveat: Apple's own SDPA-vjp ALSO runs on M5 NAX and is more highly
@@ -65,7 +65,7 @@ finding.)
 
 **Current path** (`mlx_mfa/attention.py:3193-3199`): `mx.grad(flash_attention_sparse)` on M5+
 routes by **default** to the Prompt 5c **hybrid** (NAX sparse forward + native sparse dV +
-SDPA-vjp dQ/dK); full-native (4 kernels) is opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`.
+SDPA-vjp dQ/dK); full-native (4 kernels) is opt-in `MFA_V6_BWD_SPARSE_NATIVE=1`.
 
 **Measured** — `docs/v50/section-a-v3-empirical-verification.md:19-33` (`mx.grad(loss)(q,k,v)`):
 
@@ -99,7 +99,7 @@ UNVERIFIED-BLOCKED: the premise is maximally verified (shipped kernels + cross-s
 
 **Nothing to build.** The kernels already exist, are correct, and are routed optimally:
 - **Default** (production): Prompt 5c hybrid — empirically optimal.
-- **Opt-in** (`MFA_V34_BWD_SPARSE_NATIVE=1`): full native — for the narrow D=64/small-H/low-d
+- **Opt-in** (`MFA_V6_BWD_SPARSE_NATIVE=1`): full native — for the narrow D=64/small-H/low-d
   regime, research benchmarking, and as a reference + future-hardware hedge (`section-a-v3:74-79`).
 
 A new AUTO carve-out for the 1.13× D=64/small-H/d=0.1 corner is also DECLINED: a single density

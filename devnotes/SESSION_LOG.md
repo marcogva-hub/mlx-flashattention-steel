@@ -39,7 +39,7 @@ STATUS: COMPLETE
 - Marco decision items: int8 kernel sprint sequencing (revived), cider GQA-decode port (1.0-1.24x narrow window)
 
 ---
-## [2026-06-12 10:05] [CLAUDE] Phase II Sprint II-6: numerics deep audit — CRITICAL V34 fused dKdV corruption found+fixed
+## [2026-06-12 10:05] [CLAUDE] Phase II Sprint II-6: numerics deep audit — CRITICAL V6NAX fused dKdV corruption found+fixed
 STATUS: COMPLETE
 
 ### Plan
@@ -47,12 +47,12 @@ STATUS: COMPLETE
 - Files: csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/attention.py, 2 new test files, docs
 
 ### Changes
-- `csrc/mfa_v6_nax_primitive.cpp` — BK%32 guard in compile_v34_backward_pipeline (all 8 bwd Primitives); fused default BK 16→32 [HIGH] [VERIFIED]
-- `mlx_mfa/attention.py` — _v34_backward_vjp auto→split; _get_sparse_row_active + _get_sanitized_bias (cached) + all-False-row zero fixup [HIGH] [VERIFIED]
-- tests: test_phase2_ii6_v34_bwd_paired_mma.py (7), test_phase2_ii6_sparse_allfalse_rows.py (4, subprocess-isolated); II-0 fixtures 0.1→1.0 scale
+- `csrc/mfa_v6_nax_primitive.cpp` — BK%32 guard in compile_v6nax_backward_pipeline (all 8 bwd Primitives); fused default BK 16→32 [HIGH] [VERIFIED]
+- `mlx_mfa/attention.py` — _v6nax_backward_vjp auto→split; _get_sparse_row_active + _get_sanitized_bias (cached) + all-False-row zero fixup [HIGH] [VERIFIED]
+- tests: test_phase2_ii6_v6nax_bwd_paired_mma.py (7), test_phase2_ii6_sparse_allfalse_rows.py (4, subprocess-isolated); II-0 fixtures 0.1→1.0 scale
 
 ### Dependency & regression check
-- Callers: all V34 bwd Primitives flow through guarded helper; sparse fixup local to _sparse_fallback_sdpa_perhead
+- Callers: all V6NAX bwd Primitives flow through guarded helper; sparse fixup local to _sparse_fallback_sdpa_perhead
 - Test coverage: +11 locks; suite 1391 passed x6 consecutive
 
 ### Validation
@@ -93,7 +93,7 @@ STATUS: COMPLETE
 
 ### Key findings
 - Decode floor quantified: TQ attend kernel 14x dense SDPA (kernel-bound; feeds II-5 decode ledger; _v_pool_fp16 50MB kept when tq_v=True) [VERIFIED]
-- Non-causal D=64 bwd: V34-split opt-in 1.88x, unit-scale errs 4e-4..2e-3 — promotion decision data for Marco [VERIFIED]
+- Non-causal D=64 bwd: V6NAX-split opt-in 1.88x, unit-scale errs 4e-4..2e-3 — promotion decision data for Marco [VERIFIED]
 
 ---
 ## [2026-06-12 12:05] [CLAUDE] Phase II Sprint II-8 + PHASE-II-CLOSE: exhaustion met
@@ -104,7 +104,7 @@ STATUS: COMPLETE
 - Files: mlx_mfa/attention.py (carve-out fwd fix), PHASE-II-CLOSE.md
 
 ### Changes
-- `mlx_mfa/attention.py` _make_mfa_custom — carve-out forward now Apple SDPA (bit-identical) + 1-elem sentinel L; VJP recomputes V34 (O,L) pair [HIGH] [VERIFIED]
+- `mlx_mfa/attention.py` _make_mfa_custom — carve-out forward now Apple SDPA (bit-identical) + 1-elem sentinel L; VJP recomputes V6NAX (O,L) pair [HIGH] [VERIFIED]
 - `docs/.../PHASE-II-CLOSE.md` — phase ledger + lessons + Marco decision queue
 
 ### Validation
@@ -129,7 +129,7 @@ STATUS: IN_PROGRESS
 - `docs/.../sprint-II-2R-reconciliation.md` — verdict + compile matrix + R.1 gate evidence + R.2 plan
 
 ### Validation
-- Ran: dtype x dims x form compile matrix (13 variants); corrected in-repo probe; V34-vs-SDPA + quant-cost bench; accuracy simulation; suite
+- Ran: dtype x dims x form compile matrix (13 variants); corrected in-repo probe; V6NAX-vs-SDPA + quant-cost bench; accuracy simulation; suite
 - Validated: int8 IS implemented (II-2 probe used `char` != int8_t — type-spelling artifact); full-coop (16,32,16) = 2.00x, device-tensor 64x64x128 compiles but 0.995x (no int8 MMA mode); QK-only declined by accounting (1.01-1.13x net); QK+PV GO (1.13-1.37x ceiling, cos 0.99995 at unit scale); 1391 passed
 
 ### Git
@@ -137,7 +137,7 @@ STATUS: IN_PROGRESS
 
 ### Resume command (R.2 build, next session)
 - Read docs/v50/campaign-2026-06/phase2/sprint-II-2R-reconciliation.md R.2 plan
-- Template: MFA_V34_DUMP_SOURCE=1 dump of v6_nax_forward (D=128) as the kernel skeleton; BaseNAXFrag::mma is already the (16,32,16) paired form — add int8_t/int32 variant
+- Template: MFA_V6_DUMP_SOURCE=1 dump of v6_nax_forward (D=128) as the kernel skeleton; BaseNAXFrag::mma is already the (16,32,16) paired form — add int8_t/int32 variant
 - Env: .venv/bin/python; rebuild via CMAKE_ARGS="-DPython_EXECUTABLE=$PWD/.venv/bin/python" pip install --no-build-isolation -e .
 
 ### Pitfalls for R.2
@@ -167,7 +167,7 @@ STATUS: COMPLETE
 ### Key findings
 - The 2.00x int8 MMA advantage is consumed by cooperative-tensor API lifecycle tax (dest cycles ~10us, elementwise staging) — dtype/shape/transpose-invariant [VERIFIED by ablation]
 - Packed 4-byte loads REGRESSED (byte loads fine on M5); persistent coop dests REGRESSED (register pressure, v2.39.0 class) [VERIFIED]
-- Marco-gated residual: V34-generator-integrated int8 projects 1.11-1.33x at N=8192 only — dedicated-sprint scale
+- Marco-gated residual: V6NAX-generator-integrated int8 projects 1.11-1.33x at N=8192 only — dedicated-sprint scale
 
 ---
 ## [2026-06-12 17:20] [CLAUDE] Sprint II-9: conv3d MPP convolution2d path PROMOTED (2.30-2.51x, no hand-fused kernel needed)
@@ -218,7 +218,7 @@ STATUS: COMPLETE
 ## [2026-06-12 21:30] [CLAUDE] II-8 addendum: gate#9 programmatic (3rd site FIXED), TK=1 closed (parity->decline), determinism classified, pool residual = fixed-point blocker
 STATUS: COMPLETE (items 1,3,4 clean/closed; item 2 partially — fixed point NOT declared)
 
-- Item 1: THIRD Pattern-#9 site (V34 forward MFA_V6_V34_BK unguarded) found+guarded x2 sites; tests/test_phase2_ii8_gate9_parity.py enumerates all paired-MMA sites; release-audit gate #9 programmatic [VERIFIED]
+- Item 1: THIRD Pattern-#9 site (V6NAX forward MFA_V6_NAX_BK unguarded) found+guarded x2 sites; tests/test_phase2_ii8_gate9_parity.py enumerates all paired-MMA sites; release-audit gate #9 programmatic [VERIFIED]
 - Item 3: odd-TK tail in dense fused generator (BOTH paired loops — dP was a latent 2nd path); correct at noise floor + adversarial mags; fused-BK16 == split +-0.2% -> DECLINED; v2.39.1 win confirmed corrupt-math artifact [VERIFIED]
 - Item 4: run-to-run determinism contract HOLDS; batch-invariance = feature -> Marco backlog [VERIFIED]
 - Item 2: production vector closed (II-6); 52 directed repro rounds clean; stress canary (opt-in MFA_POOL_STRESS=1) makes residual reproducible ~1/6 IN-SUITE only; root-cause = dedicated session; FIXED POINT NOT DECLARED [VERIFIED flake, mechanism UNCERTAIN]
@@ -240,7 +240,7 @@ STATUS: COMPLETE
 ### Plan
 - Objective: make the "buffer-pool stale-value residual" reliably reproducible, find the exact mechanism, fix the CLASS structurally, drive stress canaries to zero (>=30 consecutive), declare the Phase II exhaustion fixed point.
 - Files to modify: csrc/mfa/v6_nax/NAAttentionKernel.cpp, csrc/mfa_v6_nax_primitive.cpp, new tripwire test, PHASE-II-CLOSE.md, sprint report.
-- Dependencies impacted: 4 sparse V34 backward generators (fused dKdV, dV, dK, dQ) + their 4 dispatch sites.
+- Dependencies impacted: 4 sparse V6NAX backward generators (fused dKdV, dV, dK, dQ) + their 4 dispatch sites.
 
 ### Changes
 - `csrc/mfa/v6_nax/NAAttentionKernel.cpp` — all 4 sparse backward generators: replaced data-dependent `if (!tile_active) continue;` (around live cooperative accumulators) with compacted active-tile list in threadgroup memory + uniform counted loop; dQ-sparse K/V rebased per active tile (was incremental advance) [HIGH] [VERIFIED]
@@ -339,7 +339,7 @@ STATUS: COMPLETE
 STATUS: COMPLETE
 
 ### Plan
-- Objective: apply verified doc-vs-code audit fixes post-v2.51.0 (V34 D=64 default-on, MPP conv3d default, TQ decode SDPA route, NAX sparse dispatch, KD-7 lifted)
+- Objective: apply verified doc-vs-code audit fixes post-v2.51.0 (V6NAX D=64 default-on, MPP conv3d default, TQ decode SDPA route, NAX sparse dispatch, KD-7 lifted)
 - Files to modify: README.md, ENV_VARS.md, CLAUDE.md, docs/{HOOK_TELEMETRY,TRAINING_QUICKSTART,INVENTORY,INDEX,PERF_CLAIMS}.md, docs/v50/known-debt-v2.50.md
 - Dependencies impacted: none (docs only; no .py/.cpp touched per task constraint)
 
@@ -349,7 +349,7 @@ STATUS: COMPLETE
 - `README.md:116` — conv snippet ~1.6× → 2.3-2.5× fp16 / 1.4-2.7× bf16 via MPP [HIGH] [VERIFIED per task spec]
 - `README.md:423-428` — Conv3D NAX section: MPP-default lead-in; legacy figures flagged non-default (MFA_DISABLE_CONV3D_MPP=1) [HIGH] [VERIFIED]
 - `README.md:507-519` — sparse M5+ section rewritten: NAX dispatcher default since v2.36.1; bias-expansion kept as fallback note [HIGH] [VERIFIED]
-- `ENV_VARS.md:5,63-64,77-78,98,107-108,118-119` — V34 enable/disable rows corrected (D=64 default-on v2.51.0); new rows MFA_DISABLE_CONV3D_MPP / MFA_DISABLE_TQ_DECODE_SDPA / MFA_DISABLE_AUTO_HOOKS / MFA_V34BWDF_DUMP_SOURCE+PATH; §104 "all gated behind" fixed; cross-ref to docs/v6-nax/env-vars.md [HIGH] [VERIFIED]
+- `ENV_VARS.md:5,63-64,77-78,98,107-108,118-119` — V6NAX enable/disable rows corrected (D=64 default-on v2.51.0); new rows MFA_DISABLE_CONV3D_MPP / MFA_DISABLE_TQ_DECODE_SDPA / MFA_DISABLE_AUTO_HOOKS / MFA_V6BWDF_DUMP_SOURCE+PATH; §104 "all gated behind" fixed; cross-ref to docs/v6-nax/env-vars.md [HIGH] [VERIFIED]
 - `docs/HOOK_TELEMETRY.md:4,105-107,114` — conv_general+conv3d hooked; fallback-reason strings updated (KD-7 III-1); KD-7 lifted [HIGH] [VERIFIED per task spec]
 - `docs/TRAINING_QUICKSTART.md:8-18,27,45-56,90-92,95-99,134-176,179-180,190` — Status → DEFAULT-ON D=64 (1.7-2.7×), opt-out documented; SHIP_OPT_IN/"2.2-2.4× slower"/carve-out opt-in language fixed throughout; causal "not supported" bullet lifted [HIGH] [VERIFIED]
 - `docs/INVENTORY.md:3` — header → 2.51.0, tables flagged 2026-05-13 snapshot [HIGH] [VERIFIED]
@@ -418,7 +418,7 @@ STATUS: COMPLETE
 - D7 MEDIUM [VERIFIED real, fwd 0.67/grads 1.1 at N=100]: bias-expansion re-tiled non-divisible-N masks — _expansion_tile + 6 sites.
 - D16 MEDIUM [VERIFIED real, dV RMSE 0.506]: native sparse backward OR-downsample contaminated grads — bt>=64 gate.
 - D2/D3/D5/D6/D8/D9/D10/D11/D12/D13/D14/D15/D17/D18 + R2-R8/R12/R15: feature-combo raises, softcap+window grads, paged batched causal, force_kernel, carve-out guards, RoPE table verify, hybrid cache demotion/multi-seq, silent-catch cleanups.
-- TQ pool int64 offsets (CXX-1); 13 doc-staleness fixes; F1-F17 test retrofit (bf16 V34 GT, LCSA unit-scale, V-TQ GT, GNA fixture) — NO new kernel corruption found at unit scale.
+- TQ pool int64 offsets (CXX-1); 13 doc-staleness fixes; F1-F17 test retrofit (bf16 V6NAX GT, LCSA unit-scale, V-TQ GT, GNA fixture) — NO new kernel corruption found at unit scale.
 - F8 + R13/R14 DEFERRED→Marco queue (hardware-coverage / perf-debt).
 
 ### Validation
@@ -438,7 +438,7 @@ STATUS: COMPLETE
 
 ### Findings (no fixes applied; report-only)
 - Job 1: ALL pass-1 fixes re-verified PASS — return_lse/attn_bias/alibi/softcap raises (not over-broad; common paths + new guards live-tested), _expansion_tile D7 precedence (5 mask cases live-tested correct), force_kernel D8 (backend=mfa max_err 0.001 vs SDPA = real kernel, lru_cache key includes force_kernel), _rope_tables_match_base10000 D13 (no false-neg for legit base-10000 1D tables; 3D tables correctly route to STEEL), mixed-dtype cast (no-op same-dtype, live-confirmed), kv_cache R2/R3/R4 (tombstone set+checked+cleared symmetrically).
-- Job 2 CLEAN: svdquant linear/quantize (SVD math consistent fwd↔calib; idempotence guard correct; LOW: rank>min(M,K) leaves self.rank inconsistent w/ array shape, report-only), quantize.py per-block/smooth_k correct, dispatch_policy no v2.37.0-class short-circuit (V34 D=64 carve-out reachable via public auto path; conv MPP + TQ decode are separate hook/runtime paths default-on), runtime.py backend resolution sound.
+- Job 2 CLEAN: svdquant linear/quantize (SVD math consistent fwd↔calib; idempotence guard correct; LOW: rank>min(M,K) leaves self.rank inconsistent w/ array shape, report-only), quantize.py per-block/smooth_k correct, dispatch_policy no v2.37.0-class short-circuit (V6NAX D=64 carve-out reachable via public auto path; conv MPP + TQ decode are separate hook/runtime paths default-on), runtime.py backend resolution sound.
 - Fwd/bwd (D2 class): alibi/sage-sparse/windowed+softcap backward oracles all differentiate the SAME feature-applied function — consistent.
 - LOW (pre-existing, documented, LOUD-fail not silent): flash_attention_gna native path (D=128/3D/f16) has no MFAGNAForward::vjp — mx.grad raises rather than falling back to sparse-path gradient. Documented forward-only; not a pass-1 regression.
 
@@ -486,7 +486,7 @@ STATUS: COMPLETE
 ### Verified CLEAN (with numbers)
 - Job 1 edge cases CLEAN: NaN-input propagation (Rule 8) — flash_attention/causal/sparse/topk-NAX/sage/GNA-native all PROPAGATE injected NaN (none silently zero/clamp). fp16 overflow std=12 — no Inf on flash_attention/topk/sparse/sage/GNA (max |out| ≤ 54, max-subtract holds). Odd head dims (48/80/96/100/130) fall back cleanly to SDPA, finite. Zero-length varlen segment [32,0,48] (correct [B,H,total,D] layout) — OK, finite, both STEEL and f32 split-concat (first probe used wrong [total,H,D] layout — false alarm). Windowed empty cases (causal (8,0),(0,0); non-causal (0,0)) finite. GNA self-window (1,1,1) finite (structurally never empty).
 - Job 2 backward CLEAN vs independent SDPA-vjp / manual ref at std 1 AND std 8:
-  - V34 native backward (MFA_ENABLE_V34_BACKWARD=1, D=64 qL=2048, kernel CONFIRMED engaging — fwd matches): unit fp16 dQ 0.0016/bf16 0.0056; std8 fp16 ≤0.048. std8 bf16 "HIGH" (dQ 0.32) PROVEN to be bf16 precision not kernel error — V34-vs-fp32GT (0.225) is CLOSER than bf16-SDPA-vs-fp32GT (0.371).
+  - V6NAX native backward (MFA_ENABLE_V6_BACKWARD=1, D=64 qL=2048, kernel CONFIRMED engaging — fwd matches): unit fp16 dQ 0.0016/bf16 0.0056; std8 fp16 ≤0.048. std8 bf16 "HIGH" (dQ 0.32) PROVEN to be bf16 precision not kernel error — V6NAX-vs-fp32GT (0.225) is CLOSER than bf16-SDPA-vs-fp32GT (0.371).
   - alibi (≤0.013), plain window(64,0) (≤0.078 std8), softcap+window D2 class (≤0.0046), softcap-only (0.0000) — all match manual ref; D2 fix holds (same feature-applied fn fwd↔bwd).
   - sparse backward all 3: sdpa/sdpa_sparse/steel_sparse ≤0.046 std8.
   - GQA/MQA (Hkv=1,2): bit-exact, dK/dV shape correctly = H_kv.
@@ -494,7 +494,7 @@ STATUS: COMPLETE
 - GNA-native autograd: forward-only (no vjp) → mx.grad raises loudly (pass-2 confirmed; MFA_DISABLE_GNA_NATIVE=1 routes differentiable sparse). Not a silent-grad bug.
 
 ### Validation
-- Ran: 9 /tmp probe scripts (.venv python, M5 Max): job1_empty/edge/varlen0b/gna_sage_ovf/lcsa2/nan_input; job2_ref/v34native/v34_bf16check/features/sparse_bwd/rope_packed/packed2; sdpa_baseline.
+- Ran: 9 /tmp probe scripts (.venv python, M5 Max): job1_empty/edge/varlen0b/gna_sage_ovf/lcsa2/nan_input; job2_ref/v6naxnative/v6nax_bf16check/features/sparse_bwd/rope_packed/packed2; sdpa_baseline.
 - Validated: F1 (32/32 NaN rows), F2 (NaN vs zero by density), shared root cause (raw SDPA NaN), all CLEAN paths with measured rel-errors above.
 
 ### Git
@@ -507,7 +507,7 @@ STATUS: COMPLETE
 - F1/F2 [FIXED+locked]: flash_attention_topk(mask) + lcsa_nax.sparse_attention_dispatch SDPA+bias branch NaN'd fully-masked query rows (the NAX branch zeroed them — inconsistent). Both aligned to the II-6 empty-row→zeros contract. tests/test_phase3_iii4_empty_row.py (4 locks). [VERIFIED]
 - C++ eval_gpu deep sweep (12 primitives + conv): cache-key complete + overflow-safe + is_equivalent complete; CLEAN.
 - All 3 pass-2 fixes regression-verified PASS; test_kvcache_k_new_paged_succeeds strengthened to SDPA oracle (F4).
-- Numerical/backward sweep (13 empirical probes): NaN-propagation Rule-8 clean; fp16 overflow safe; EVERY differentiable path correct at unit+std8 (V34/alibi/window/softcap+window/sparse×3/GQA/rope/packed); std8-bf16 V34 "blowup" proven bf16-precision not kernel bug.
+- Numerical/backward sweep (13 empirical probes): NaN-propagation Rule-8 clean; fp16 overflow safe; EVERY differentiable path correct at unit+std8 (V6NAX/alibi/window/softcap+window/sparse×3/GQA/rope/packed); std8-bf16 V6NAX "blowup" proven bf16-precision not kernel bug.
 - Ran: per-finding probes + new locks + full suite x3 | Validated: 1478 passed + 2 skipped (x3 stable)
 - Git: pass-3 commit below; pass 4 required (pass 3 found material).
 
@@ -535,7 +535,7 @@ STATUS: COMPLETE
 - NaN/empty-reduction beyond fixed paths: topk_stream (DEAD code, no importers), cider divide-by-zero guarded (line 188), tq_decode SDPA, causal never empties diagonal row — CLEAN.
 - dtype-reinterpret beyond 6 guards: gqa_decode_cider derives T from q + reads k/v unvalidated, BUT mixed-dtype LOUD-fails at MSL compile (not silent corrupt) AND is unexported/unreached — not a finding.
 - Grid-spec: all 9 metal_kernel dispatches re-verified (grid-in-threads ↔ threadgroup ↔ indexing): conv im2col/matmul2d, cider p1/p2, topk bisect, topk_stream — CLEAN.
-- Fwd/bwd mismatch (chunked_prefill/speculative_verify/splitfuse/shared_prefix/rope-append): all compose flash_attention (no separate vjp) → splitfuse bwd rel 0.0 vs fa; rope_unified grad finite; alibi vjp matches manual ref rel 0.001; main/sparse/alibi/V34/windowed custom vjps all differentiate the SAME feature-applied function. (speculative_verify inherits P5-1 only via return_lse — same bug.)
+- Fwd/bwd mismatch (chunked_prefill/speculative_verify/splitfuse/shared_prefix/rope-append): all compose flash_attention (no separate vjp) → splitfuse bwd rel 0.0 vs fa; rope_unified grad finite; alibi vjp matches manual ref rel 0.001; main/sparse/alibi/V6NAX/windowed custom vjps all differentiate the SAME feature-applied function. (speculative_verify inherits P5-1 only via return_lse — same bug.)
 - Cache-key/id()-keyed/silent-except: id()-caches all include shape+dtype; compile_metallib/_auto_hooks except-blocks are capability-detection graceful-degrade (conservative defaults, not Rule-8 corruption). lse log2 domain IS documented (attention.py:274,322). CLEAN.
 
 ### Validation
@@ -566,11 +566,11 @@ STATUS: COMPLETE
 - mlx_lm shim (live): sinks→fallback, array-mask→fallback, GQA→native STEEL (rel 7e-4, no fallback), unsupported-D→fallback, return=single array; mx.dequantize signature correct; R1 window fix intact.
 - external_cache offload→onload: bit-exact fp16/bf16/fp32 (zero-copy store, dtype+len preserved).
 - conv3d MPP+legacy: both match mx.conv_general norm_rmse 2e-4 (pad=1 production envelope) + explicit cross-corr 4e-4 (pad=0); bf16 loud-fails outside MPP envelope (correct). Earlier pad0-vs-conv_general 0.19 = test-reference-convention artifact, NOT kernel bug (confirmed via cross-corr).
-- V34 backward (env-gated, D=64 causal, M5): dQ/dK/dV rel 7e-4 vs SDPA-vjp, no NaN.
+- V6NAX backward (env-gated, D=64 causal, M5): dQ/dK/dV rel 7e-4 vs SDPA-vjp, no NaN.
 - __init__: 101 __all__ + 33 lazy targets all resolve; hooks install clean. pyproject/CMake/check_venv: no version skew, no -ffast-math/-Ofast numerics flag. Bare excepts (attention.py 889 RoPE-probe / 1524 warmup; build tooling) = capability-probe/warmup graceful-degrade (Rule-8 safe). id()-caches all shape+dtype-keyed with strong-ref ABA guard.
 
 ### Validation
-- Ran: /tmp/job1_p51.py, /tmp/job1_combo1.py; full suite x2 (1485p/2s/exit0 both); ~8 live probes (svdquant direct/seq/nested, mlx_lm shim, external_cache, conv3d MPP/legacy/crosscorr, V34 bwd, __init__ resolve).
+- Ran: /tmp/job1_p51.py, /tmp/job1_combo1.py; full suite x2 (1485p/2s/exit0 both); ~8 live probes (svdquant direct/seq/nested, mlx_lm shim, external_cache, conv3d MPP/legacy/crosscorr, V6NAX bwd, __init__ resolve).
 - Validated: F7-1 = 0 layers quantized on direct-attribute model (deterministic), all CLEAN surfaces with measured rel-errors above. P5-1/combo-1 regression bit-exact.
 
 ### Git
@@ -651,7 +651,7 @@ STATUS: COMPLETE
 
 - Marco reported the return_lse causal-backward NaN/garbage-grad bug (matches III-4 pass-5 P5-1 discovery; report cited pre-fix line numbers + 1478 baseline → predates the fix).
 - VERIFIED already fixed on HEAD: mx.grad(flash_attention(...,return_lse=True)[0].sum()) is finite + bit-exact (0.0) to the no-lse path = SDPA-vjp GT, across fp16/bf16/fp32 × D=64/128. Fix = `_make_mfa_custom_lse` custom_function (commit aaede0d, pass 5). No code change needed.
-- Gap addressed: the P5 regression test was fp16-only. Extended `TestP5ReturnLseBackward::test_return_lse_grad_matches_sdpa_vjp` to parametrize dtype {fp16,bf16,fp32} × (N,D) × causal — the bug had dtype-specific symptoms so all three are locked. Corrected the invariant: return_lse grad == SDPA-vjp GT within dtype floor (NOT bit-exact to the no-lse path, which uses the V34 backward at D=64/qL>=2048 cells, differing by fp16 floor 0.0012).
+- Gap addressed: the P5 regression test was fp16-only. Extended `TestP5ReturnLseBackward::test_return_lse_grad_matches_sdpa_vjp` to parametrize dtype {fp16,bf16,fp32} × (N,D) × causal — the bug had dtype-specific symptoms so all three are locked. Corrected the invariant: return_lse grad == SDPA-vjp GT within dtype floor (NOT bit-exact to the no-lse path, which uses the V6NAX backward at D=64/qL>=2048 cells, differing by fp16 floor 0.0012).
 - Ran: P5 test (19 passed), full suite | Validated: 1501 passed + 2 skipped (was 1489; +12 = the new dtype/causal P5 cells)
 - Git: test commit below; branch master; not pushed yet (awaiting nothing — pushing)
 
@@ -677,7 +677,7 @@ STATUS: COMPLETE
 ### R.6 post-publish smoke (clean py3.11 venv, published cp311 wheel) — 4/4 GREEN
 - CRITICAL#2 return_lse backward: grad finite + matches SDPA-vjp fp16/bf16/fp32.
 - CRITICAL#1 topk full-row coverage: all 512 rows written, 0 stale, first8/last8 0.95×.
-- HEADLINE V34 backward causal+non-causal: matches SDPA-vjp.
+- HEADLINE V6NAX backward causal+non-causal: matches SDPA-vjp.
 - HEADLINE conv3d auto-hook fp16+bf16: deterministic (maxdiff 0.0) + matches fp32 (MAE/RMS 0.00014/0.00112).
 - Forensics note: initial conv check used degenerate 16ch shape → max-abs-rel artifact (0.19→8.09 from near-zero denom). Verified NAX conv deterministic + accurate at realistic channels; small-channel fp16 gap (~250× vs native fp16 at Cin=16) is pre-existing/out-of-scope → spawned background task. [VERIFIED]
 
@@ -750,7 +750,7 @@ STATUS: COMPLETE
 - R.1 verify: all three entry points MAE/RMS 0.00014 vs independent fp32 at C_in 8/16/17/24/31/33/40/48; C_in%32==0 unchanged. (Pre-fix: 0.11 / NaN.)
 - R.5: full suite green x2 (1563 passed, 2 skipped); pool canary green (122); pre-tag MFA_POOL_STRESS=1 full suite 1565 passed.
 - 9-gate audit: GREEN_WITH_ADVISORY (no blocking; advisory = no new PERF_CLAIMS entry / Reproduce snippet — v2.52.1 introduces NO new claim, headline carried unchanged; same benign class as III-5). Gate #9 programmatic 2 passed.
-- Post-publish smoke on PUBLISHED 2.52.1 wheel (clean py3.11 venv): 6/6 — conv3d small-channel kernel correct (C_in 8/16/31 vs fp32 incl prior-NaN case), Rule-8 guard, MPP fp16/bf16, V34 backward, return_lse, topk.
+- Post-publish smoke on PUBLISHED 2.52.1 wheel (clean py3.11 venv): 6/6 — conv3d small-channel kernel correct (C_in 8/16/31 vs fp32 incl prior-NaN case), Rule-8 guard, MPP fp16/bf16, V6NAX backward, return_lse, topk.
 
 ### R.4 lesson #11 + sweep
 - Lesson: validate a low-precision kernel against an INDEPENDENT higher-precision reference (fp32), never another kernel path. (test_fp16_still_works compared the kernel vs mx.conv_general which under hooks WAS the same broken kernel.) Sweep: only instance was test_fp16_still_works (fixed III-5); all other low-prec tests use independent refs (Apple SDPA / PyTorch fp32 / unhooked native).
@@ -1132,30 +1132,30 @@ STATUS: COMPLETE
 - Git: report + log + 3 test files commit below; HEAD advances.
 
 ---
-## [2026-06-16 02:30] [CLAUDE] III-11 re-bench (M5 Max, macOS 26.6, HEAD 6a7d79c) — V34 backward claim moved down
+## [2026-06-16 02:30] [CLAUDE] III-11 re-bench (M5 Max, macOS 26.6, HEAD 6a7d79c) — V6NAX backward claim moved down
 STATUS: IN_PROGRESS
 
 - Provenance: HEAD 6a7d79c (clean), macOS 26.6 (25G5028f), Apple M5 Max 128GB, mlx 0.31.2. Bench via /mlx-mfa-bench-methodology dispatcher, 3 sessions, strict cooldown for ≥1.5ms.
 - FORWARD attention vs SDPA (canonical, N=4096): D64 c 0.98×, D128 c 1.05× (HIGH_VAR), D128 nc 0.98×, D128 c bf16 1.00× (HIGH_VAR), D256 c 0.99× (HIGH_VAR). => forward ≈ SDPA, net-non-worse. (HIGH_VAR = these sit in ≥1.5ms regime; conclusion ~1.0 robust. Forward is bit-identical-to-SDPA, NOT a speedup claim.)
-- V34 BACKWARD vs SDPA-vjp (strict, CONFIDENT/BOUNDARY, B=2 H=8): D64 causal N2048=1.29× N4096=2.00× N8192=1.94×; D64 non-causal N4096=1.29× N8192=1.88×; D128 causal N4096=0.99× N8192=1.00×.
-- FINDING (material): README headline V34 backward D=64 causal 2.06-2.58× / non-causal 1.72-2.01× MOVED DOWN on 26.6 to ~1.3-2.0× / ~1.3-1.9×; D=128 backward now BREAK-EVEN (~1.0×). [VERIFIED clean]
+- V6NAX BACKWARD vs SDPA-vjp (strict, CONFIDENT/BOUNDARY, B=2 H=8): D64 causal N2048=1.29× N4096=2.00× N8192=1.94×; D64 non-causal N4096=1.29× N8192=1.88×; D128 causal N4096=0.99× N8192=1.00×.
+- FINDING (material): README headline V6NAX backward D=64 causal 2.06-2.58× / non-causal 1.72-2.01× MOVED DOWN on 26.6 to ~1.3-2.0× / ~1.3-1.9×; D=128 backward now BREAK-EVEN (~1.0×). [VERIFIED clean]
   - Cause: OS 26.6 improved Apple SDPA-vjp (NOT a Phase III regression — backward NAX kernel byte-identical to v2.52.1; fixes were all forward-path). NOT a regression vs v2.52.1 (same binary measures same on 26.6). It IS a doc-accuracy issue (published numbers are v2.50-era).
   - Caveat: measured at B=2 H=8; original claim's reference B/H not pinned — the ratio is occupancy/shape-dependent, so the exact published range may have used a different shape.
 - conv MPP + TQ decode: NOT yet re-measured (separate kernels untouched by Phase III; OS-sensitive). No dedicated methodology-protocol harness found in benchmarks/; the vs-legacy/decode claims need their own harness.
-- Net pool vs v2.52.1: NON-WORSE (identical kernels + perf-neutral correctness fixes). The V34 "move" is vs the DOC/earlier-OS, not vs v2.52.1.
+- Net pool vs v2.52.1: NON-WORSE (identical kernels + perf-neutral correctness fixes). The V6NAX "move" is vs the DOC/earlier-OS, not vs v2.52.1.
 - Ran: dispatcher forward (canonical) + 2 backward batches (strict), 3 sessions. Bench friction: dispatcher emits JSON only at end (kills lose batch) → switched to small foreground batches; backward needs target=flash_attention_loss + baseline=sdpa_vjp.
-- Git: not committed (bench data in /tmp/iii11). Decision pending Marco: how to handle the moved V34 headline numbers + whether to re-measure conv/TQ before the v2.55.0 doc sync.
+- Git: not committed (bench data in /tmp/iii11). Decision pending Marco: how to handle the moved V6NAX headline numbers + whether to re-measure conv/TQ before the v2.55.0 doc sync.
 
 ---
 ## [2026-06-16 03:30] [CLAUDE] III-11 cont. — conv clean re-bench: claims shrank to ~break-even + HIVAR; impasse surfaced
 STATUS: BLOCKED
 
 - conv MPP vs legacy (clean 4s-cooldown strict): T8 fp16 0.98× CONFIDENT, T16 fp16 1.30× HIGH_VAR. vs README 2.3-2.5×. The 2s-cooldown 1.7-2.0× was thermal-variance-contaminated (v2.36.0 incident class). conv bf16 "vs legacy" UNMEASURABLE (legacy im2col fp16-only, KD-7).
-- Combined with V34 backward (1.3-2.0× vs 2.06-2.58×; D=128 break-even): SYSTEMATIC — all v2.50-era headline speedups materially LOWER on 26.6 (Apple improved SDPA-vjp + conv baselines). NOT a regression (kernels byte-identical to v2.52.1; release perf-safe). The published numbers are stale + the originals may have been non-canonical point estimates.
+- Combined with V6NAX backward (1.3-2.0× vs 2.06-2.58×; D=128 break-even): SYSTEMATIC — all v2.50-era headline speedups materially LOWER on 26.6 (Apple improved SDPA-vjp + conv baselines). NOT a regression (kernels byte-identical to v2.52.1; release perf-safe). The published numbers are stale + the originals may have been non-canonical point estimates.
 - Impasse: CONFIDENT re-measurement of ALL claims is blocked by (a) background-job kill limit (~5-8min) preventing full strict protocol at ≥10ms shapes, (b) inherent clock-state bimodality HIGH_VARIANCE at these sizes, (c) regime-dependence (conv cold ~1.0× vs warm ~1.7×). Report: sprint-III-11-report.md.
 - Solid: release perf-safe (non-worse vs v2.52.1); documented speedups don't hold on 26.6.
 - Recommendation: soften headline perf to OS-honest ranges + ship the correctness fixes (default-reachable GNA) now; do a dedicated perf-recharacterization sprint with fixed bench infra as fast-follow. Awaiting Marco.
-- Ran: dispatcher fwd + V34 bwd (strict) + conv (strict, per-config). Bench data /tmp/iii11. Report + log committed below. Nothing released.
+- Ran: dispatcher fwd + V6NAX bwd (strict) + conv (strict, per-config). Bench data /tmp/iii11. Report + log committed below. Nothing released.
 
 ---
 ## [2026-06-16 05:00] [CLAUDE] III-11 COMPLETE — bench infra fixed; full re-bench done; README synced to 26.6
@@ -1164,10 +1164,10 @@ STATUS: COMPLETE
 - BENCH INFRA FIXED (Marco's ask): benchmarks/methodology/robust_pool_runner.py — detached nohup + incremental JSONL + per-spec subprocess isolation + idempotent resume. Survives the harness ~5-8min kill limit that blocked all prior attempts. Committed.
 - FULL CLEAN RE-BENCH (24 specs, ~1h detached, 0 errors, strict 4s-cooldown ×3 sessions, macOS 26.6, HEAD 6a7d79c). Raw: benchmarks/methodology/iii11_26.6_results.jsonl.
   - Forward vs SDPA: 0.77-1.08× (≈SDPA; outliers = clock-state HIGH_VAR). Net-non-worse vs v2.52.1 CONFIRMED.
-  - V34 bwd D=64 vs SDPA-vjp: qL-dependent — N2048 0.86×, N4096 1.49×, N8192 2.52× (causal); nc 1.39×/2.09×. D=128 bwd ≈break-even (0.97-0.99×, reliable). Run-to-run swings ±30-40%.
+  - V6NAX bwd D=64 vs SDPA-vjp: qL-dependent — N2048 0.86×, N4096 1.49×, N8192 2.52× (causal); nc 1.39×/2.09×. D=128 bwd ≈break-even (0.97-0.99×, reliable). Run-to-run swings ±30-40%.
   - conv MPP fp16 vs legacy: 1.22-1.35×; bf16 vs conv_general ≈1.0-1.1×.
 - FINDING: Apple improved SDPA-vjp+conv on 26.6 → all compute-bound v2.50-era speedups materially LOWER + qL-dependent + high-variance. NOT a regression (kernels byte-identical to v2.52.1; release perf-safe). Documented precise ranges stale + not run-reproducible.
-- DOC SYNC (R.4): README headline claims rewritten to measured 26.6 values + OS-caveat + qL-dependence. V34 bwd → "~break-even@2048 to ~2.1-2.5×@8192; D=128 break-even"; conv → "~1.2-1.35× fp16, ≈parity bf16"; D=256 inversion reframed as correctness fix.
+- DOC SYNC (R.4): README headline claims rewritten to measured 26.6 values + OS-caveat + qL-dependence. V6NAX bwd → "~break-even@2048 to ~2.1-2.5×@8192; D=128 break-even"; conv → "~1.2-1.35× fp16, ≈parity bf16"; D=256 inversion reframed as correctness fix.
 - NOT measured (flagged fast-follow): TQ paged decode (bench_turboquant_full.py crashes in _build_tq_pool — harness bug, not kernel); LCSA 15.4× (historical build-time, old impl gone). README marks both "pending 26.6 re-measurement".
 - Ran: 24-spec detached pool + TQ bench (crashed) + dispatcher cross-checks. Validated vs independent fp32/SDPA-vjp. 
 - Git: robust_pool_runner.py + results committed; README + report + log commit below. Nothing released.
@@ -1222,7 +1222,7 @@ STATUS: COMPLETE
 - Ran: clean-env `pip install mlx-mfa==2.55.0` from PyPI + /tmp/smoke_v2550.py
 - Validated: published wheel IS the fixed binary. 4 fixes vs fp32 — V2 non-causal 2.7e-5,
   GNA non-32 (default-reachable) 3.0e-5, V5 2.7e-5, split-K x8/churn 1.0e-6, all finite.
-  forward-auto 7.2e-5, V34 grad finite, TQ decode finite. SMOKE PASSED.
+  forward-auto 7.2e-5, V6NAX grad finite, TQ decode finite. SMOKE PASSED.
 
 ### URLs
 - PyPI: https://pypi.org/project/mlx-mfa/2.55.0/
@@ -1233,22 +1233,22 @@ STATUS: COMPLETE
 - Report: docs/v50/campaign-2026-06/phase3/sprint-III-12c-report.md. Phase III CLOSED.
 
 ---
-## [2026-06-17 00:30] [CLAUDE] V34 backward block-sparse NAX — premise validation → DECLINE (no build)
+## [2026-06-17 00:30] [CLAUDE] V6NAX backward block-sparse NAX — premise validation → DECLINE (no build)
 STATUS: COMPLETE
 
 ### Plan
-- Objective: go/no-go on the Marco-gated "V34 backward block-sparse NAX extension" item. PREMISE VALIDATION ONLY — no kernel.
+- Objective: go/no-go on the Marco-gated "V6NAX backward block-sparse NAX extension" item. PREMISE VALIDATION ONLY — no kernel.
 - Skill: /mlx-mfa-apple-primitives-coverage (§AA.5).
 
 ### Findings (archaeology recovered the premise from the record)
-- Original premise (sprint-5-prompt5a-status.md:10-14): native block-sparse iteration in V34 backward so mx.grad(flash_attention_sparse) skips inactive K-blocks instead of SDPA-vjp+bias. Projected 1.5-10x @ low density (sprint-5-prompt5a-status.md:53-58) — an ESTIMATE, never measured.
+- Original premise (sprint-5-prompt5a-status.md:10-14): native block-sparse iteration in V6NAX backward so mx.grad(flash_attention_sparse) skips inactive K-blocks instead of SDPA-vjp+bias. Projected 1.5-10x @ low density (sprint-5-prompt5a-status.md:53-58) — an ESTIMATE, never measured.
 - CORRECTION (doc-coherence): my prior-turn queue entry "never greenlit / premise-validation-pending" was STALE. Record shows it was greenlit (Marco Prompt 5c Opt.1), BUILT+SHIPPED (Prompt 5d: dQ+dK-split+fused-dKdV + 5b dV = 4 native sparse bwd kernels), math-validated (8 tests), routing falsified.
 - R.2 buildable: PROVEN (kernels exist: NAAttentionKernel.cpp:5168/6364; 8 tests; opt-in routed attention.py:3187).
 - R.3 NAX-reachable: TRUE empirically (kernels run on M5 NAX, benched). But reachable != wins (Pattern #6: Apple SDPA-vjp also on NAX, better-optimized).
 - R.4 win-bound: MEASURED, FALSIFIED (section-a-v3-empirical-verification.md:19-33). Native/SDPA = 0.77x@d0.1 -> 0.09x@d1.0 at VSR shape (SLOWER all densities). Only 1.13x at D=64/small-H/d=0.1 (too narrow for AUTO). 5a's 10x projection inverted by measurement.
 
 ### Verdict
-- R.5 DECLINE — first-class negative result. All-three-premises gate fails at R.4 (measured, not estimated). NOT unverified-blocked: maximally verified (shipped kernels + bench). Nothing to build — already routed optimally (5c hybrid default; full native opt-in MFA_V34_BWD_SPARSE_NATIVE=1).
+- R.5 DECLINE — first-class negative result. All-three-premises gate fails at R.4 (measured, not estimated). NOT unverified-blocked: maximally verified (shipped kernels + bench). Nothing to build — already routed optimally (5c hybrid default; full native opt-in MFA_V6_BWD_SPARSE_NATIVE=1).
 - New AUTO carve-out for the 1.13x corner also DECLINED (ghost-knob/Pattern #6 risk; opt-in covers it).
 
 ### Validation
@@ -1256,7 +1256,7 @@ STATUS: COMPLETE
 - Validated: verdict traces to primary sources (5a premise, 5d ship, section-a-v3 measured falsification, attention.py routing). NO kernel built.
 
 ### Git
-- docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md (new) + PHASE-III-CLOSE.md queue row + this log. Commit below. branch master.
+- docs/v50/campaign-2026-06/v6nax-blocksparse-nax-premise-report.md (new) + PHASE-III-CLOSE.md queue row + this log. Commit below. branch master.
 
 ---
 ## [2026-06-17 01:10] [CLAUDE] Queue Archaeology A — MFA_FORCE_NATIVE_BWD state of truth → REMOVE-ELIGIBLE (no action)
@@ -1266,8 +1266,8 @@ STATUS: COMPLETE
 - R.1 origin: v2.36-era debug/eval override forcing legacy STEEL backward (CHANGELOG:3348/1129). Deprecated v2.50.0 Prompt 5f Phase E — originally "BROKEN" (KD-5 zeroed-blocks D=128 N≥2048, MIGRATION:77 "target removal v2.51+"); reason SHIFTED to "SUPERSEDED, not broken" after 2026-05 review FIXED KD-5 (sprint-II-0:26).
 - R.2 live: sole reader dispatch_policy.py:717-739 (=1 warns+forces STEEL native; =0 off; else policy table). Sole caller attention.py:5306. Inert on default API (M5 forward→SDPA short-circuits the bwd branch); changes routing only on backend="mfa". Ghost-knob-on-public-path / weak escape-hatch on expert path; forced path wins NOWHERE.
 - R.3 public-contract: documented env var (ENV_VARS.md:60, MIGRATION, CHANGELOG; NOT README). Deprecation cycle ALREADY COMPLETE (announced v2.50.0→ now v2.55.0). Removal touches: dispatch_policy.py force-branches (keep policy table), test_v50_prompt_5f_kd5_deprecation.py + test_attention.py:11051-11159, ENV_VARS.md:60, cache-audit/01:37, CHANGELOG (Removed entry). KEEP STEEL kernel (keep-all-paths).
-- R.4 measured (NOT asserted): sprint-C Track 2 matrix — STEEL-bwd correct(rmse 4e-5) but dominated every cell (V34 2.2-2.6x@D64; SDPA-vjp@D128). 26.6 strengthens it. NOT stale-verdict.
-- R.5 VERDICT: REMOVE-ELIGIBLE, deprecation cycle complete. Queue entry ACCURATE (unlike V34). Only KEEP argument = thin research/determinism escape-hatch + standing "keep deprecated" steer.
+- R.4 measured (NOT asserted): sprint-C Track 2 matrix — STEEL-bwd correct(rmse 4e-5) but dominated every cell (V6NAX 2.2-2.6x@D64; SDPA-vjp@D128). 26.6 strengthens it. NOT stale-verdict.
+- R.5 VERDICT: REMOVE-ELIGIBLE, deprecation cycle complete. Queue entry ACCURATE (unlike V6NAX). Only KEEP argument = thin research/determinism escape-hatch + standing "keep deprecated" steer.
 - Ran: read-only archaeology + live-code grep. Validated: verdict traces to dispatch_policy.py:717-739 + sprint-C matrix + ENV_VARS:60 + MIGRATION:77. NO code changed.
 - Git: docs/v50/campaign-2026-06/queue-force-native-bwd-archaeology.md (new) + PHASE-III-CLOSE queue row + log. Commit below. branch master. Archaeology B next; Marco decides after both.
 
@@ -1315,7 +1315,7 @@ STATUS: HANDOFF_READY
 - bump 3 SoT -> 2.56.0 -> audit fully GREEN -> tag -> build -> twine -> gh release -> push tag ->
   post-publish smoke (flag inert on published wheel; V3 windowed routing correct vs fp32).
 
-### Marco-gated queue: FULLY CLOSED (V34 declined, flag removed, V4/V5 kept, V3 validated).
+### Marco-gated queue: FULLY CLOSED (V6NAX declined, flag removed, V4/V5 kept, V3 validated).
 
 ---
 ## [2026-06-17 03:30] [CLAUDE] Sprint IV-0 — decode-overhead + tech-debt analysis; 0 executed (sync-floor-bound, by design)
@@ -1490,13 +1490,13 @@ STATUS: COMPLETE
   Decode: in-graph -> no extra eval per switch. Verdict: DON'T unify; route dense->SDPA + separate non-dense NAX
   (unify avoids no cost, risks dense<SDPA + maintenance liability of owning dense).
 - VERDICT: SCOPED-GO. Open V6 NAX for block-sparse + windowed/LCSA (port STEEL-simdgroup -> NAX-cooperative-tensor,
-  reuse V34 infra), route-dense->SDPA architecture. Ladder gated on increment-0 measuring REALIZED gain (the 4x is
+  reuse V6NAX infra), route-dense->SDPA architecture. Ladder gated on increment-0 measuring REALIZED gain (the 4x is
   a ceiling, not a result). If increment-0 below-material -> close, v2.56.0 terminus.
 - Ran: v6gate.py (Q1+Q2) + SDPA-vs-STEEL noncausal apples-to-apples. NO code/kernel. 0 orphans.
 - Git: measurement-gate-report.md + probes below. Cross-ref m5max sdpa-investigation re-scope.
 
 ---
-## [2026-06-17 12:00] [CLAUDE] NAX cartography (Phase 1, read-only) — false premise corrected; V34→V6 rename planned (env-var flag)
+## [2026-06-17 12:00] [CLAUDE] NAX cartography (Phase 1, read-only) — false premise corrected; V6NAX→V6 rename planned (env-var flag)
 STATUS: HANDOFF_READY
 
 - Phase 1 (READ-ONLY): mapped NAX/STEEL × routed per path on the living code. KEY: the sparse forward
@@ -1511,8 +1511,8 @@ STATUS: HANDOFF_READY
   matmul2d->raw-simdgroup (SDPA's nax.h form) + tune occupancy — HARDER + uncertain, NOT a port.
   Measurement gate's SCOPED-GO RETRACTED (premise wrong). Re-gate on a raw-simdgroup-sparse prototype
   vs current matmul2d-sparse before committing (NEXT session).
-- Phase 2 rename: ~5000 V34 occ (1304 C++/801 py/2942 docs, 169 files) + 29 public env vars + MSL macros.
-  Scheme: V34->V6Nax/V6NAX. NAMING.md glossary preserves provenance. Stale comment mfa_sparse_attention.cpp:13.
+- Phase 2 rename: ~5000 V6NAX occ (1304 C++/801 py/2942 docs, 169 files) + 29 public env vars + MSL macros.
+  Scheme: V6NAX->V6Nax/V6NAX. NAMING.md glossary preserves provenance. Stale comment mfa_sparse_attention.cpp:13.
   ENV-VAR disposition FLAGGED to Marco (prompt mandate): option 1 alias-with-deprecation (preferred) vs
   option 2 break-next-minor. Mechanical rename executes after Marco's env-var call.
 - Ran: read-only code trace + the v6gate numbers (effective, plausibility-gated). NO code changed. 0 orphans.

@@ -2,7 +2,7 @@
 
 All `MFA_*` env vars controlling dispatch and kernel configuration.
 Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attention.cpp`.
-M5/V34 tuning knobs are documented in `docs/v6-nax/env-vars.md`.
+M5/V6NAX tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 
 ## Dispatch Gates
 
@@ -57,17 +57,17 @@ M5/V34 tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 | `MFA_DISABLE_SDPA_ROUTE` | bool | unset | Disable the M5+ SDPA route; dispatch falls through to M3+/M1-M2 thresholds. *(documented repo review 2026-05)* |
 | `MFA_FORCE_D256_PATH` | str | unset | Force D=256 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
 | `MFA_FORCE_D512_PATH` | str | unset | Force D=512 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
-| ~~`MFA_FORCE_NATIVE_BWD`~~ | — | — | **REMOVED v2.56.0.** Deprecated v2.50.0 ("target removal v2.51+"); removed after the deprecation cycle completed (5 minor versions of `DeprecationWarning`) — forced STEEL backward was dominated at every cell (V34 at D=64, SDPA-vjp at D=128; sprint-C Track 2). The env var is now inert. The STEEL backward kernel itself is retained (keep-all-paths) and reachable via the direct `_ext.mfa_steel_backward` binding; routing follows the benchmark-backed policy table. |
+| ~~`MFA_FORCE_NATIVE_BWD`~~ | — | — | **REMOVED v2.56.0.** Deprecated v2.50.0 ("target removal v2.51+"); removed after the deprecation cycle completed (5 minor versions of `DeprecationWarning`) — forced STEEL backward was dominated at every cell (V6NAX at D=64, SDPA-vjp at D=128; sprint-C Track 2). The env var is now inert. The STEEL backward kernel itself is retained (keep-all-paths) and reachable via the direct `_ext.mfa_steel_backward` binding; routing follows the benchmark-backed policy table. |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
 | `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **v2.36.1**: when unset, `decide_auto_version()` picks V2 for `qL × kL × D ≥ 2.15e9` (validated under canonical-protocol) and V1 below. `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
-| `MFA_ENABLE_V34_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.51.0): opt-in for **D=128 only** — D=64 (causal + non-causal) is **default-on since v2.51.0** and needs no env var. Enables V34 NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (FP16/BF16, qL ≥ 2048). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. |
-| `MFA_DISABLE_V34_BACKWARD` | bool | unset | **Phase II-0 / v2.51.0**: opt-OUT of the default-on V34 backward D=64 (causal + non-causal) promotion (1.7-2.7x vs SDPA-vjp, qL>=2048, fp16/bf16, M5+; incl. GQA/MQA post shape-fix).  Set =1 to restore SDPA-vjp at that cell. |
-| `MFA_V34BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V34 backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
-| `MFA_V34BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
-| `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
-| `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
-| `MFA_V34_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal**: V34 backward kernel mode selection.  `auto` → D=64 fused, D=128 split (per Sprint B outcome γ).  `fused` → forced fused (D ∈ {64, 128}; D=128 may regress 3-7%).  `split` → forced split-dKdV (works for any D ∈ {64, 128}).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` is empirically optimal. |
-| `MFA_V34_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V34 backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V34 NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `docs/v50/section-a-v3-empirical-verification.md`. |
+| `MFA_ENABLE_V6_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.51.0): opt-in for **D=128 only** — D=64 (causal + non-causal) is **default-on since v2.51.0** and needs no env var. Enables V6NAX NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (FP16/BF16, qL ≥ 2048). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. |
+| `MFA_DISABLE_V6_BACKWARD` | bool | unset | **Phase II-0 / v2.51.0**: opt-OUT of the default-on V6NAX backward D=64 (causal + non-causal) promotion (1.7-2.7x vs SDPA-vjp, qL>=2048, fp16/bf16, M5+; incl. GQA/MQA post shape-fix).  Set =1 to restore SDPA-vjp at that cell. |
+| `MFA_V6BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V6NAX backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
+| `MFA_V6BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
+| `MFA_V6BWDV_BQ`, `MFA_V6BWDV_BK`, `MFA_V6BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
+| `MFA_V6BWDK_BQ`, `MFA_V6BWDK_BK`, `MFA_V6BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
+| `MFA_V6_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal**: V6NAX backward kernel mode selection.  `auto` → D=64 fused, D=128 split (per Sprint B outcome γ).  `fused` → forced fused (D ∈ {64, 128}; D=128 may regress 3-7%).  `split` → forced split-dKdV (works for any D ∈ {64, 128}).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` is empirically optimal. |
+| `MFA_V6_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V6NAX backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V6NAX NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `docs/v50/section-a-v3-empirical-verification.md`. |
 | `MFA_TOPK_BISECT` | bool | unset | **GHOST (campaign 2026-06 Track 0)**: not read by ANY code path — setting it is a no-op.  Bisection is the AUTO default; the live opt-out is `MFA_DISABLE_TOPK_BISECT`.  Row retained for historical reference only. |
 | `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
 | `MFA_DISABLE_TOPK_NAX` | bool | unset | Disable Top-K NAX dispatch entirely; falls back to Python reference (very slow at scale, for correctness comparison). |
@@ -105,21 +105,21 @@ M5/V34 tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 |-----------------|------|-------------|
 | `MFA_SPLITK_MAX_N_D{D}_C{0\|1}_A{0\|1}_W{0\|1}` | int | Per-config max N for split-K dispatch |
 
-## V34 backward tile overrides + diagnostics (documented campaign 2026-06 Track 0)
+## V6NAX backward tile overrides + diagnostics (documented campaign 2026-06 Track 0)
 
-All apply when the V34 backward path is active (default-on for D=64
-since v2.51.0; D=128 via `MFA_ENABLE_V34_BACKWARD=1`); expert/bench knobs.  Values flow
+All apply when the V6NAX backward path is active (default-on for D=64
+since v2.51.0; D=128 via `MFA_ENABLE_V6_BACKWARD=1`); expert/bench knobs.  Values flow
 into the pipeline cache keys (live; Sprint A verified key completeness).
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `MFA_V34BWD_BQ` / `MFA_V34BWD_BK` | int | auto | dQ kernel tile override (pairs with documented `MFA_V34BWD_WM`). |
-| `MFA_V34BWDKV_BQ` / `MFA_V34BWDKV_BK` / `MFA_V34BWDKV_WM` | int | auto | Legacy fused dK+dV kernel tile overrides. |
-| `MFA_V34BWDF_BQ` / `MFA_V34BWDF_BK` / `MFA_V34BWDF_WM` | int | auto | Fused dKdV kernel tile overrides. |
+| `MFA_V6BWD_BQ` / `MFA_V6BWD_BK` | int | auto | dQ kernel tile override (pairs with documented `MFA_V6BWD_WM`). |
+| `MFA_V6BWDKV_BQ` / `MFA_V6BWDKV_BK` / `MFA_V6BWDKV_WM` | int | auto | Legacy fused dK+dV kernel tile overrides. |
+| `MFA_V6BWDF_BQ` / `MFA_V6BWDF_BK` / `MFA_V6BWDF_WM` | int | auto | Fused dKdV kernel tile overrides. |
 | `MFA_V6_SENTINEL_FILL` | bool | unset | Debug: pre-fill V6 output/LSE buffers with sNaN before dispatch (dispatch-routing forensics). |
-| `MFA_V34_DUMP_SOURCE` / `MFA_V34BWD_DUMP_SOURCE` | bool | unset | Debug: dump generated V34 fwd/bwd Metal source to stderr on pipeline-cache miss. |
-| `MFA_V34BWDF_DUMP_SOURCE` / `MFA_V34BWDF_DUMP_PATH` | bool / path | unset | Debug: dump the generated fused-dKdV MSL source (to stderr, or to the file given by `MFA_V34BWDF_DUMP_PATH`). |
+| `MFA_V6_DUMP_SOURCE` / `MFA_V6BWD_DUMP_SOURCE` | bool | unset | Debug: dump generated V6NAX fwd/bwd Metal source to stderr on pipeline-cache miss. |
+| `MFA_V6BWDF_DUMP_SOURCE` / `MFA_V6BWDF_DUMP_PATH` | bool / path | unset | Debug: dump the generated fused-dKdV MSL source (to stderr, or to the file given by `MFA_V6BWDF_DUMP_PATH`). |
 
 Interaction notes (campaign 2026-06 Track 0):
-- `MFA_V6_EXEC_SG` has NO effect when the V34 path is selected (`v34_WM` overrides it).
+- `MFA_V6_EXEC_SG` has NO effect when the V6NAX path is selected (`v6nax_WM` overrides it).
 - `MFA_V6_BYPASS_TGP=0` is a no-op when single-Otile mode auto-fires (forced true).

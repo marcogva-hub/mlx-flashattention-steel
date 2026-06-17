@@ -12,17 +12,17 @@ Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 | Version | Date | Major additions |
 |---|---|---|
 | v2.28-v2.36 | 2026-04 | Apple SDPA NAX auto-routing (`_M5_NAX_THRESHOLDS = 999_999`), LCSA NAX dispatcher, Conv3D NAX, auto-hooks (`_HOOKS_INSTALLED`) |
-| v2.37.0 | 2026-05-04 | V34 NAX-direct backward kernel (forward + dQ + split dV/dK) |
-| v2.37.1 | 2026-05-06 | V34 backward perf claim 1.4-1.85× (later retracted as overstated) |
-| v2.37.2 | 2026-05-08 | V34 backward carve-out (`_v34_backward_carveout`) — D=64 qL≥4096 |
+| v2.37.0 | 2026-05-04 | V6NAX NAX-direct backward kernel (forward + dQ + split dV/dK) |
+| v2.37.1 | 2026-05-06 | V6NAX backward perf claim 1.4-1.85× (later retracted as overstated) |
+| v2.37.2 | 2026-05-08 | V6NAX backward carve-out (`_v6nax_backward_carveout`) — D=64 qL≥4096 |
 | v2.37.3 | 2026-05-09 | Institutional rules §Z (public API testing) + §AA (mandatory skill checkpoints); perf claim audit + retraction |
-| v2.38.0 | 2026-05-13 | Refactor + cleanup: `_v34_eligible()` + `_v34_backward_vjp()` helper extraction; deletion of dormant placeholders |
-| v2.38.1 | 2026-05-13 | D_vec precompute device buffer (M2-HIGH-01): D=64 V34 backward 1.91× / 1.87× / 1.80× vs SDPA-vjp at qL∈{4096, 8192, 16384} |
+| v2.38.0 | 2026-05-13 | Refactor + cleanup: `_v6nax_eligible()` + `_v6nax_backward_vjp()` helper extraction; deletion of dormant placeholders |
+| v2.38.1 | 2026-05-13 | D_vec precompute device buffer (M2-HIGH-01): D=64 V6NAX backward 1.91× / 1.87× / 1.80× vs SDPA-vjp at qL∈{4096, 8192, 16384} |
 | v2.39.0 | 2026-05-13 | Option γ fused dK+dV (D=64) ships opt-in (outcome δ documented): BK=32 default caused -25 to -33% regression vs split |
 | v2.39.1 | 2026-05-13 | H1 register-pressure root-caused + fixed: BK default 32→16; auto-default flips back to fused-D=64; speedups 2.00× / 1.95× / 1.72× vs SDPA-vjp |
 | v2.39.2-internal (Sprint A) | 2026-05-13 | Carve-out broadened qL≥4096 → qL≥2048 (parity at qL=2048, 3-session variance 1.004) |
 | v2.40.0-internal (Sprint B) | 2026-05-13 | D=128 fused architectural enablement (gate lift); auto-default UNCHANGED (regression on direct binding 3-7% vs split; outcome γ) |
-| v2.40.x-internal (Sprint C) | 2026-05-13 | V34 backward Primitive pipeline-compile boilerplate consolidation (P3-HIGH-01) |
+| v2.40.x-internal (Sprint C) | 2026-05-13 | V6NAX backward Primitive pipeline-compile boilerplate consolidation (P3-HIGH-01) |
 | **next: v2.50** | TBD | Tier 1+2 sprints per `docs/audits/v50-nax-coverage/03-sprint-sequence.md` |
 
 
@@ -35,7 +35,7 @@ Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 | Dense non-causal D=64/128 | Production STEEL (M1/M2); SDPA on M3+ | **Apple SDPA NAX (auto-routed)** | same dispatch logic |
 | D=256 causal | Narrow STEEL | STEEL (no NAX path) | f16 both chips, bf16 M3+ only |
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
-| **V34 NAX-direct backward (D=64, opt-in v2.37.2+)** | N/A | **Production (env-gated `MFA_ENABLE_V34_BACKWARD=1`)** | qL≥2048 post-Sprint A; 1.91-2.00× SDPA-vjp |
+| **V6NAX NAX-direct backward (D=64, opt-in v2.37.2+)** | N/A | **Production (env-gated `MFA_ENABLE_V6_BACKWARD=1`)** | qL≥2048 post-Sprint A; 1.91-2.00× SDPA-vjp |
 | Block-sparse / window | Production | Tile-skip, up to 21x speedup |
 | Softcap | Production | V2 tanh in log2 domain |
 | ALiBi | Production | V2 bias addition |

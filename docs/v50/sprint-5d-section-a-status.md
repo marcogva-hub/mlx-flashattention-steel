@@ -1,4 +1,4 @@
-# v2.50 Prompt 5d Section A — V34 backward sparse FULL NATIVE
+# v2.50 Prompt 5d Section A — V6NAX backward sparse FULL NATIVE
 
 **Status**: 4 native sparse kernels (dV PoC + dQ + dK split + fused dKdV)
 + Python full-native orchestrator SHIPPED + tested.
@@ -6,23 +6,23 @@
 ## What ships (vs Prompt 5c hybrid that was the violation)
 
 Section A.0-A.3 (3 new sparse kernels):
-- `createV34BackwardQuerySparseSource()` — dQ kernel with per-K-tile
+- `createV6NAXBackwardQuerySparseSource()` — dQ kernel with per-K-tile
   block_mask scan + pre-advance pointer handling for `continue`
-- `createV34BackwardDKSparseSource()` — dK split kernel with per-Q-tile
+- `createV6NAXBackwardDKSparseSource()` — dK split kernel with per-Q-tile
   block_mask scan
-- `createV34BackwardFusedDKDVSparseSource()` — fused dK+dV with
+- `createV6NAXBackwardFusedDKDVSparseSource()` — fused dK+dV with
   ORDER-CRITICAL preserved (sparse-skip `continue` atomically skips
   both dV and dK updates)
 
 Each with:
-- 1 Primitive class (`MFAV34Bwd{Query,DK,FusedDKDV}Sparse`)
-- 1 cache key struct (`V34Bwd{Q,K,F}SparseKey`) + hash
-- 1 dispatch function (`v34_dispatch_bwd_{query,dk,fused_dkdv}_sparse`)
+- 1 Primitive class (`MFAV6NAXBwd{Query,DK,FusedDKDV}Sparse`)
+- 1 cache key struct (`V6NAXBwd{Q,K,F}SparseKey`) + hash
+- 1 dispatch function (`v6nax_dispatch_bwd_{query,dk,fused_dkdv}_sparse`)
 - 1 raw helper + nanobind binding (`v6_nax_backward_{query,dk,fused_dkdv}_sparse_raw`)
 
 Section A.4 (Python full-native orchestrator):
-- `_v34_backward_vjp_sparse_full_native` replaces Prompt 5c
-  `_v34_sparse_hybrid_vjp` for eligible shapes
+- `_v6nax_backward_vjp_sparse_full_native` replaces Prompt 5c
+  `_v6nax_sparse_hybrid_vjp` for eligible shapes
 - AUTO routing: D=64 → fused dKdV (single kernel for dK+dV);
   D=128 → split (per Sprint B outcome γ + Section D Prompt 5b)
 
@@ -68,11 +68,11 @@ D=64 small-H shape (B=1, H=4, qL=2048, D=64, fp16, BT=32):
 **Empirical finding**: native sparse is **slower than SDPA-vjp at most
 shapes**.  Only the narrow case of D=64 + small H + low density (~0.1)
 sees native marginally faster.  Apple SDPA NAX (the path SDPA-vjp goes
-through) is highly optimized; V34 backward kernels can't outpace it
+through) is highly optimized; V6NAX backward kernels can't outpace it
 except in narrow cases.
 
 **This contradicts the Sprint 5 "10× speedup at d=0.1" projection**
-documented in earlier sprint docs.  The projection assumed V34
+documented in earlier sprint docs.  The projection assumed V6NAX
 backward dense kernels were at parity with SDPA-vjp on M5+, which
 they're not at the audit shape (H=12).
 
@@ -111,7 +111,7 @@ The empirical finding belongs in CHANGELOG with explicit perf warning.
 | `csrc/mfa_v6_nax_primitive.cpp` | +3 Primitives + cache keys + helpers (~550 LOC) |
 | `csrc/v6_nax_compile.mm` | +3 dispatch functions (~170 LOC) |
 | `csrc/bindings.cpp` | +3 nanobind bindings + forward decls |
-| `mlx_mfa/attention.py` | `_v34_backward_vjp_sparse_full_native` + dispatch update |
+| `mlx_mfa/attention.py` | `_v6nax_backward_vjp_sparse_full_native` + dispatch update |
 | `tests/test_v50_sprint_5d_sparse_backward_native.py` | 11 tests |
 
 ## Skill invocations (§AA.2)

@@ -10,9 +10,9 @@
 | Test file | Failures | Cluster |
 |---|---|---|
 | `tests/test_attention.py` | 20 | Sparse RuntimeError (mask < 4096B) + 5 AssertionError edge cases |
-| `tests/test_v34_backward_dq.py` | 10 | TypeError (missing d_vec + causal args) |
-| `tests/test_v34_backward_kv.py` | 8 | TypeError (missing d_vec + causal args) |
-| `tests/test_v34_bwd_multisg.py` | 4 | TypeError (missing d_vec + causal args) |
+| `tests/test_v6nax_backward_dq.py` | 10 | TypeError (missing d_vec + causal args) |
+| `tests/test_v6nax_backward_kv.py` | 8 | TypeError (missing d_vec + causal args) |
+| `tests/test_v6nax_bwd_multisg.py` | 4 | TypeError (missing d_vec + causal args) |
 | `tests/test_perf_claims_doc_sync.py` | 2 | AssertionError (registry vs doc drift) |
 | `tests/test_turboquant.py` | 2 | AssertionError (QR roundtrip precision) |
 | `tests/test_attn_bias_native.py` | 2 | AssertionError (d128 causal max_err) |
@@ -35,9 +35,9 @@ Prompt 3 Section B `causal` parameter addition.
 The `causal` parameter has default False; only need to add it if the test exercises causal.
 
 **Affected tests**:
-- 10 in `test_v34_backward_dq.py`
-- 8 in `test_v34_backward_kv.py`
-- 4 in `test_v34_bwd_multisg.py`
+- 10 in `test_v6nax_backward_dq.py`
+- 8 in `test_v6nax_backward_kv.py`
+- 4 in `test_v6nax_bwd_multisg.py`
 
 **Estimated effort**: ~30 min — straightforward signature updates.
 

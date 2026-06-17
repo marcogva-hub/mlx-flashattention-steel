@@ -156,7 +156,7 @@ shown up as cold/warm divergence; none did).
 
 v2.31.0's published perf claims:
 
-| Shape | v2.31.0 V34 ms | v2.31.0 legacy ms | v2.31.0 V34 vs SDPA |
+| Shape | v2.31.0 V6NAX ms | v2.31.0 legacy ms | v2.31.0 V6NAX vs SDPA |
 |---|---:|---:|---:|
 | SeedVR2-small | 170.92 | 265.13 | 0.890× |
 | CogVideoX | 2399.19 | 3610.79 | 1.033× |
@@ -164,7 +164,7 @@ v2.31.0's published perf claims:
 
 These claims are **published on PyPI right now** (v2.31.0). They were
 measured under conditions we cannot reproduce. Phase 0 and Phase A
-together establish that, under steady-state conditions today, V34's
+together establish that, under steady-state conditions today, V6NAX's
 gain over legacy is much smaller than v2.31.0 claimed (or in
 SeedVR2-small's case, inverted).
 
@@ -191,7 +191,7 @@ options a/b/c/d. With Phase A's findings:
    2026-05-06 02:48 AM under conditions that cannot be reproduced in
    subsequent benches; investigation ongoing." This is honest and
    safe — readers who try to reproduce v2.31.0's numbers and get
-   smaller V34 gains have a context for the discrepancy.
+   smaller V6NAX gains have a context for the discrepancy.
 3. **Schedule multi-session bench protocol**: 3-5 sessions over 1-3
    days, varying:
    - Time of day (early AM after long idle vs afternoon mid-activity)
@@ -206,7 +206,7 @@ options a/b/c/d. With Phase A's findings:
    causal port, Sprint 2 LSE writeback, Sprint 3 align FCs) as
    **bug-fix-only v2.31.1** with no perf claims. These are independent
    of perf measurement and will land cleanly. They're the part of
-   the V34-FORWARD-MAX work that is unambiguously valuable regardless
+   the V6NAX-FORWARD-MAX work that is unambiguously valuable regardless
    of how the perf-claim question resolves.
 
 ### Methodology additions for `CLAUDE_V6_NAX.md`

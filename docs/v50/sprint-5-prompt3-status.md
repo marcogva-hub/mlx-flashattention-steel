@@ -1,17 +1,17 @@
-# v2.50 Sprint 5 — V34 backward block-sparse NAX — DEFERRED (Prompt 3)
+# v2.50 Sprint 5 — V6NAX backward block-sparse NAX — DEFERRED (Prompt 3)
 
 **Sprint date**: 2026-05-14
 **Status**: **DEFERRED — dependency on Phase 4b-complete.B (K-parallel kernel dV residual)**
 
 ## TL;DR
 
-Sprint 5 (V34 backward block-sparse) was scoped in the user's Prompt 3
+Sprint 5 (V6NAX backward block-sparse) was scoped in the user's Prompt 3
 prompt as "Section C: bundled with Phase 4b-complete per CC's recommendation
 Prompt 2, dependency resolved" — assuming Section B Phase 4b-complete would
 ship cleanly.
 
 Section B Phase 4b-complete this session shipped PARTIAL:
-- Critical `compile_v34_backward_pipeline` `isCausal=false` hardcoded bug
+- Critical `compile_v6nax_backward_pipeline` `isCausal=false` hardcoded bug
   fixed (Prompt 2's Phase 4b dQ was a silent no-op pre-fix — now WORKS)
 - dQ kernel causal validated (RMSE 8.7e-6 at qL=2048 D=64 fp16)
 - 4 K-parallel kernels (dV split, dK split, dKV legacy fused, dKdV fused)
@@ -31,7 +31,7 @@ the resolution + sparse extension in one focused session (~3-4h CC total).
 ## Why Sprint 5 cannot ship cleanly this session
 
 Sprint 5's design (per Prompt 3 Section C.1):
-- Add `block_mask` device buffer to V34Bwd*Params
+- Add `block_mask` device buffer to V6NAXBwd*Params
 - Per-tile early-exit when block_mask says tile is inactive
 - Per-element mask within partial tiles
 
@@ -58,18 +58,18 @@ The conflict isn't register pressure — it's the underlying dV correctness.
 
 1. **Phase 4b-complete.B kernel-debug** (~1.5-2h):
    - Add per-element sentinel writes to dV kernel
-   - Compare V34 dV vs Python-reference at per-(r, c) level
+   - Compare V6NAX dV vs Python-reference at per-(r, c) level
    - Identify the structural under-counting root cause
    - Fix the bug in one kernel; replicate to all 4 K-parallel kernels
    - Validate dV RMSE drops below 1e-3 bound across kernel modes
-   - Lift `_v34_eligible` and `_v34_backward_carveout` causal gates
+   - Lift `_v6nax_eligible` and `_v6nax_backward_carveout` causal gates
 
 2. **Sprint 5 block-sparse extension** (~1-2h, on top of working
    K-parallel kernels):
-   - Add `block_mask` buffer to V34Bwd*Params
-   - Add `#define V34BWD*_SPARSE` macro
+   - Add `block_mask` buffer to V6NAXBwd*Params
+   - Add `#define V6NAXBWD*_SPARSE` macro
    - Per-tile early-exit + per-element mask block
-   - Wire through to `flash_attention_sparse(backward='v34')` opt-in
+   - Wire through to `flash_attention_sparse(backward='v6nax')` opt-in
 
 3. **Three-axis validation + bench** (~30-60min):
    - Causal-only (Phase 4b-complete.B validation)

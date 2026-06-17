@@ -5,14 +5,14 @@ kernel), three-axis green at the campaign's hardened bar.
 
 ## Change
 
-Both carve-out predicates (`_v34_eligible._default_on`,
-`dispatch_policy._v34_backward_carveout`) widened: D=64 backward is
+Both carve-out predicates (`_v6nax_eligible._default_on`,
+`dispatch_policy._v6nax_backward_carveout`) widened: D=64 backward is
 default-on for causal AND non-causal at qL >= 2048 fp16/bf16; opt-out
-`MFA_DISABLE_V34_BACKWARD=1` restores SDPA-vjp bit-exactly.  Forward
+`MFA_DISABLE_V6_BACKWARD=1` restores SDPA-vjp bit-exactly.  Forward
 stays Apple SDPA (bit-identical; the II-8 carve-out lesson pre-applied)
-with the V34 pair recomputed in the VJP; split kernel only (II-6).
+with the V6NAX pair recomputed in the VJP; split kernel only (II-6).
 Bonus dispatch fix: the first-line carve-out now mirrors
-`_v34_eligible`'s default-scale gate, so non-default-scale calls never
+`_v6nax_eligible`'s default-scale gate, so non-default-scale calls never
 enter the custom path (previously they fell through to the STEEL
 forward with a worse fp16 floor — surfaced by the scale-discrimination
 test).
@@ -22,7 +22,7 @@ test).
 1. **Output at unit + adversarial scale** (never 0.1): unit errs
    dQ/dK/dV = 5e-4/2e-3/1e-3; std-2 <= 0.031; std-12 finite with
    errs 5.0/4.7/0.14 — matching the ESTABLISHED causal cell's floor at
-   the same magnitude (4.8/3.2/0.12), i.e. the V34 fp16 floor, not a
+   the same magnitude (4.8/3.2/0.12), i.e. the V6NAX fp16 floor, not a
    defect.
 2. **Path entered**: default-vs-opt-out timing differential 1.7-2.0x
    (below); BK%32 guard untouched; fused not engaged (auto=split).
@@ -32,7 +32,7 @@ test).
 
 ## Bench (3 sessions, medians, B=1 H=8 D=64 fp16 non-causal grad)
 
-| N | V34-split (default) | SDPA-vjp (opt-out) | speedup |
+| N | V6NAX-split (default) | SDPA-vjp (opt-out) | speedup |
 |--:|--:|--:|--:|
 | 2048 | 1.40 ms | 2.40 ms | **1.72x** |
 | 4096 | 4.76 ms | 9.22 ms | **1.94x** |

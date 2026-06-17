@@ -50,7 +50,7 @@ for future specialization if needed without forking the skill.
 - Doc audit: cross-references verified post-fix
 
 **DOCUMENTED AS KNOWN-DEBT** (v2.50.1 patch sprint targets):
-- KD-1: V34 backward sparse mask shape mismatch (HIGH; production
+- KD-1: V6NAX backward sparse mask shape mismatch (HIGH; production
   mitigated via hybrid SDPA-vjp default per Pattern #6)
 - KD-2: hybrid + full-native orchestrators recompute forward (MEDIUM)
 - KD-3: implicit D=128 fallthrough (LOW)
@@ -73,7 +73,7 @@ target_version=2.50.0` dry-run analysis:
 | Check | Status | Notes |
 |---|---|---|
 | 1. Tool availability (`check_venv.sh`) | PASS | `.venv/bin/python` + `twine` + `pytest` + `build` module verified Phase 2 |
-| 2. Auto-default principle | PASS | Top-K bisection AUTO; V34 backward via opt-in env (per design) |
+| 2. Auto-default principle | PASS | Top-K bisection AUTO; V6NAX backward via opt-in env (per design) |
 | 3. Public API path validation | PASS | `test_release_notes_perf_claims.py` 12 entries all REACHABLE |
 | 4. Skill invocation log | PASS | Per `docs/v50/sprint-5d-decisions.md` §AA.2 + Prompt 5e audit deliverables |
 | 5. Test suite full pass | PASS | 1249 passed, 2 xfailed (KD-5), 0 unexpected |

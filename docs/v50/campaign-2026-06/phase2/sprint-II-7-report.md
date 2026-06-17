@@ -9,7 +9,7 @@ reached the conv auto-hook** (it calls `mx.conv3d`, not
 conv; fixed.  (3) Decode-loop ladder quantified: the TQ attend kernel
 is the kernel-bound floor (14x dense SDPA) — feeds the II-5 decode
 ledger.  (4) Non-causal D=64 backward measured at **1.88x** via the
-clean V34 split kernel — promotion decision data for Marco.
+clean V6NAX split kernel — promotion decision data for Marco.
 
 ## Harnesses (benchmarks/profile_ii7_harnesses.py, committed)
 
@@ -20,7 +20,7 @@ eval (GPU) time.  M5 Max, fp16, medians of 30 (warmed).
 |---|---|--:|--:|--:|
 | DiT attn | N=4096 fwd | 0.016 | 1.41 | 1.1% |
 | DiT attn | N=8192 fwd | 0.022 | 4.66 | 0.5% |
-| DiT attn | N=4096 causal bwd (V34 split) | 0.081 | 8.80 | 0.9% |
+| DiT attn | N=4096 causal bwd (V6NAX split) | 0.081 | 8.80 | 0.9% |
 | DiT attn | N=4096 non-causal bwd (SDPA-vjp) | 0.069 | 17.92 | 0.4% |
 | VAE conv3d | T8 32x32 C256 | 0.034 | 1.42 | 2.3% |
 | VAE conv3d | T8 64x64 C128 (K=3456) | 0.038 | 2.06 | 1.8% |
@@ -99,7 +99,7 @@ diminishing returns vs the 4 ms kernel; documented, not chased.
 ## Promotion-decision data for Marco (NOT acted on)
 
 Non-causal D=64 backward (the DiT-training cell, deliberately excluded
-from the II-0 causal-only promotion): default SDPA-vjp 17.07 ms vs V34
+from the II-0 causal-only promotion): default SDPA-vjp 17.07 ms vs V6NAX
 split opt-in 9.07 ms = **1.88x**, unit-scale max errs dQ/dK/dV =
 4e-4/2e-3/1e-3 (clean split kernel, paired-MMA fix in).  With II-6's
 guard + unit-scale locks in place, the original promotion-blocker

@@ -1,4 +1,4 @@
-# Sprint II-10 — V34 XL Top-K Filtered-SDPA Variant (2026-06-12)
+# Sprint II-10 — V6NAX XL Top-K Filtered-SDPA Variant (2026-06-12)
 
 **Status**: COMPLETE — **DECLINED with bench; Approach 5 closed
 permanently** (second measured negative, after II-3's streaming build).

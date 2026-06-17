@@ -125,7 +125,7 @@ represent typical user experience.
 
 **v2.32.0 strategic implication** : on M5+ NAX, forward attention on
 canonical shapes (D∈{64,128}, qL>8) routes to `mx.fast.scaled_dot_product_
-attention` which uses Apple's `steel_attention_nax.h`. mlx-mfa's V34
+attention` which uses Apple's `steel_attention_nax.h`. mlx-mfa's V6NAX
 NAX-direct path matches but does not beat Apple's kernel cross-session,
 and Apple's kernel benefits from continuous upstream tuning. Routing
 to SDPA preserves mlx-mfa as a unified toolkit while stopping unnecessary
@@ -205,7 +205,7 @@ selection path must validate three distinct axes before shipping:
 
    # REQUIRED — also tests default path the user actually calls
    def test_routes_via_default_api(monkeypatch):
-       monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+       monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
        out = flash_attention(q, k, v)  # default backend="auto"
        # instrument or differential-bench to verify the new kernel fires
    ```
@@ -265,20 +265,20 @@ swap to a dynamically-created subclass with overridden `__call__`. After
 fix: 2.29× speedup (matches Phase 1.5 `mid_resnet` 2.26× ratio).
 Reference: `docs/conv-nax/conv-nax-prod-decisions.md` D34.
 
-**v2.37.0/v2.37.1 (Path entered, public API sub-rule).** V34 backward
+**v2.37.0/v2.37.1 (Path entered, public API sub-rule).** V6NAX backward
 kernels shipped as SHIP_OPT_IN with the documented claim "D=64 qL ≥ 2048:
-1.4-1.85× faster than SDPA-vjp". All 8 V34 backward correctness tests
+1.4-1.85× faster than SDPA-vjp". All 8 V6NAX backward correctness tests
 passed — but every test forced `backend="mfa"`, which bypasses
 `should_use_mfa()`. For non-causal D ∈ {64, 128}, `should_use_mfa()`
 returns False, and `flash_attention()` returned via `_fallback_sdpa()`
-BEFORE the V34 backward env-var check could engage the custom-vjp
+BEFORE the V6NAX backward env-var check could engage the custom-vjp
 chain. Users following the documented API setup
-(`MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(...))`) got
+(`MFA_ENABLE_V6_BACKWARD=1` + `mx.grad(flash_attention(...))`) got
 SDPA-vjp silently. Direct `_ext.v6_nax_*` kernel calls confirmed the
 1.81× speedup existed at kernel level — unreachable through the
 public API. Caught only by manual investigation; not by the test suite.
 After fix (v2.37.2): narrow carve-out in `flash_attention()` engages
-V34 when env + shape qualify; differential benches via the default
+V6NAX when env + shape qualify; differential benches via the default
 `backend="auto"` path now show 1.81-1.82× speedup. Reference:
 `docs/releases/v2.37.2-release-notes.md` and
 `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
@@ -447,20 +447,20 @@ References:
 
 ---
 
-## 4.5 V34 forward mechanistic findings (référence canonique)
+## 4.5 V6NAX forward mechanistic findings (référence canonique)
 
-Les gains V34 forward documentés en v2.32.0 (+18-40% vs prédécesseurs)
+Les gains V6NAX forward documentés en v2.32.0 (+18-40% vs prédécesseurs)
 ont été décomposés empiriquement en investigation 2026-05-12
-(`docs/v6-nax/v34-forward-mechanisms.md`) :
+(`docs/v6-nax/v6nax-forward-mechanisms.md`) :
 
 | Hypothèse | Statut | Mécanisme |
 |---|---|---|
-| B — cross-SG sync elim | **CONFIRMÉE** (structurelle + bundle) | V34: `simdgroup_barrier(mem_none)` only; predecessors: `threadgroup_barrier(mem_threadgroup)` |
-| C — simd_shuffle_xor vs MPP reduce | **CONFIRMÉE** (structurelle + bundle) | V34: `NAXFrag::row_reduce` → `simd_shuffle_xor`; predecessors: `mpp::reduce_rows` |
-| E — Apple defaults mis-tunés pour M5 | **CONFIRMÉE** (structurelle + bundle) | V34: BQ/BK/WM tunés M5; predecessor: MPP autotune par défaut |
-| **B+C+E aggregate** | **CONFIRMÉE: ratio 1.184× (+18%)** | Probe `MFA_V6_USE_V34=0` vs `=1` sur 3 shapes ≥1.4ms |
-| A — TGP occupancy | **FALSIFIÉE au baseline + REVERSE à SG=8** | V34's default `EXEC_SG=4` est sub-optimal pour mid_d128; SG=8 gagne +32% |
-| D — register pressure | **NULL** | V34 tile defaults ne sont pas register-bottlenecked |
+| B — cross-SG sync elim | **CONFIRMÉE** (structurelle + bundle) | V6NAX: `simdgroup_barrier(mem_none)` only; predecessors: `threadgroup_barrier(mem_threadgroup)` |
+| C — simd_shuffle_xor vs MPP reduce | **CONFIRMÉE** (structurelle + bundle) | V6NAX: `NAXFrag::row_reduce` → `simd_shuffle_xor`; predecessors: `mpp::reduce_rows` |
+| E — Apple defaults mis-tunés pour M5 | **CONFIRMÉE** (structurelle + bundle) | V6NAX: BQ/BK/WM tunés M5; predecessor: MPP autotune par défaut |
+| **B+C+E aggregate** | **CONFIRMÉE: ratio 1.184× (+18%)** | Probe `MFA_V6_USE_NAX=0` vs `=1` sur 3 shapes ≥1.4ms |
+| A — TGP occupancy | **FALSIFIÉE au baseline + REVERSE à SG=8** | V6NAX's default `EXEC_SG=4` est sub-optimal pour mid_d128; SG=8 gagne +32% |
+| D — register pressure | **NULL** | V6NAX tile defaults ne sont pas register-bottlenecked |
 
 ### Mécanismes à appliquer dans tout nouveau kernel NAX-direct sur M5+
 
@@ -472,16 +472,16 @@ ont été décomposés empiriquement en investigation 2026-05-12
    `mpp::reduce_rows`. Le shuffle-xor pattern est plus rapide que la cooperative
    tensor reduction.
 3. **M5-tuned BQ/BK/WM defaults** — ne pas hériter des Apple MPP defaults
-   aveuglément. V34 forward defaults reference: BQ=32/BK=32/WM=2 (D=64),
+   aveuglément. V6NAX forward defaults reference: BQ=32/BK=32/WM=2 (D=64),
    BQ=64/BK=32/WM=4 (D=128). À noter (anti-pattern A) : EXEC_SG=4 est
    sub-optimal pour D=128 mid shapes; SG=8 unlock +32% sur mid_d128.
 
 ### Anti-patterns identifiés
 
-- **V34's default `EXEC_SG=4` for D=128 mid shapes** : sous-tuné. Un
+- **V6NAX's default `EXEC_SG=4` for D=128 mid shapes** : sous-tuné. Un
   follow-up patch pourrait introduire une heuristique shape-aware
   (`EXEC_SG=8` pour qL∈[2048, 4096], `EXEC_SG=4` pour qL≥8192 où le
-  baseline est déjà saturé). Voir `docs/v6-nax/v34-forward-mechanisms.md`
+  baseline est déjà saturé). Voir `docs/v6-nax/v6nax-forward-mechanisms.md`
   §"Implications".
 
 - **Hériter des Apple MPP autotune defaults aveuglément** : H. E confirmée
@@ -489,7 +489,7 @@ ont été décomposés empiriquement en investigation 2026-05-12
   caractériser ses tile-shape defaults pour M5 Max.
 
 Référence implémentation : `csrc/mfa/v6_nax/NAAttentionKernel.cpp`
-`createV34Source()` (lignes 2307-3671) + `csrc/mfa_v6_nax_primitive.cpp`
+`createV6NAXSource()` (lignes 2307-3671) + `csrc/mfa_v6_nax_primitive.cpp`
 `generate_v6_source()` (env knob dispatch).
 
 ---
@@ -575,14 +575,14 @@ measurements.
 ### Reference incident
 
 v2.37.0 / v2.37.1 silent integration bug (2026-05-13).  Release notes
-documented "D=64 qL ≥ 2048: V34 backward is 1.4-1.85× FASTER than
+documented "D=64 qL ≥ 2048: V6NAX backward is 1.4-1.85× FASTER than
 SDPA-vjp."  At kernel level the speedup existed (direct
 `_ext.v6_nax_backward_dv_raw` calls achieved 1.81-1.82× faster than
 SDPA-vjp).  Through the documented public API
-(`mx.grad(flash_attention(...))` with `MFA_ENABLE_V34_BACKWARD=1`),
+(`mx.grad(flash_attention(...))` with `MFA_ENABLE_V6_BACKWARD=1`),
 the speedup was unreachable: `should_use_mfa()` returns False for
 non-causal D ∈ {64, 128}, `flash_attention()` returned via
-`_fallback_sdpa()` before the V34 backward env-var check could
+`_fallback_sdpa()` before the V6NAX backward env-var check could
 engage the custom-vjp.  Users following the docs got SDPA-vjp
 silently.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md` and
 v2.37.2 release notes.
@@ -596,7 +596,7 @@ this audit checklist before tagging:
       (`mx.grad(flash_attention(...))`, `mlx_mfa.flash_attention(...)`,
       etc.)
 - [ ] What env vars are documented as required?
-      (`MFA_ENABLE_V34_BACKWARD=1`, `MFA_LCSA_KERNEL_VERSION=v34`, etc.)
+      (`MFA_ENABLE_V6_BACKWARD=1`, `MFA_LCSA_KERNEL_VERSION=v6nax`, etc.)
 - [ ] What's the documented shape regime?  (D=64 + qL ≥ 4096, sparse
       density ≥ X, etc.)
 - [ ] Reproduce the measurement using ONLY the documented API + env +
@@ -635,8 +635,8 @@ this audit checklist before tagging:
   rests on.  Example:
 
   ```python
-  # Reproduce: D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp
-  import os; os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+  # Reproduce: D=64 qL=8192 V6NAX backward 1.81× faster than SDPA-vjp
+  import os; os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
   import mlx.core as mx, mlx_mfa
   q = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16)
   k = mx.random.normal((1, 4, 8192, 64), dtype=mx.float16)
@@ -736,7 +736,7 @@ work.
 ### Reference incident retrospective
 
 v2.37.0/v2.37.1: `/mlx-code-review` applied post-Phase 2 Section E
-(test-coverage review) would likely have surfaced the gap — every V34
+(test-coverage review) would likely have surfaced the gap — every V6NAX
 backward correctness test forced `backend="mfa"`, never exercising the
 default backend the perf claim implicitly relied on.  §AA forces that
 review checkpoint by name.
@@ -971,21 +971,21 @@ issue (e.g., LSE convention, scale convention, dtype packing, buffer
 layout), the fix MUST enumerate ALL dispatch sites that produce that
 input — not just the one the failing test touches.
 
-**Why**: v2.50 Prompt 4 found that the V34 backward dV residual was
+**Why**: v2.50 Prompt 4 found that the V6NAX backward dV residual was
 caused by an "incomplete-fix dispatch-chain" — two upstream gates
-were patched to route to V34 forward (natural-log LSE), but a third
+were patched to route to V6NAX forward (natural-log LSE), but a third
 gate in `MFAV6Forward::eval_gpu()` continued routing causal forward
-to STEEL legacy (log2-domain LSE).  The V34 backward consumed the
+to STEEL legacy (log2-domain LSE).  The V6NAX backward consumed the
 log2 LSE as if it were natural-log, producing ~0.4 dV residual.  Each
 of the three dispatch sites read correct in isolation; only the
-unfixed third site's interaction with the V34 backward exposed the
+unfixed third site's interaction with the V6NAX backward exposed the
 incompleteness.  See Pattern #5 in
 `docs/v50/audit-framing-inversions.md`.
 
 **Audit checklist** before declaring any kernel-input fix complete:
 
 1. **Identify the input contract**.  What format/convention does the
-   consumer kernel expect?  Document it explicitly (e.g., "V34 backward
+   consumer kernel expect?  Document it explicitly (e.g., "V6NAX backward
    consumes lse in natural-log domain").
 
 2. **Enumerate ALL producer sites**.  Use `grep -rn "set_output\|write.*lse"`
@@ -998,7 +998,7 @@ incompleteness.  See Pattern #5 in
    producer is actually active for the failing test.
 
 4. **Cross-check with eligibility gates**.  Producer sites are often
-   guarded by eligibility predicates (`_v34_eligible`, `_v34_backward_carveout`,
+   guarded by eligibility predicates (`_v6nax_eligible`, `_v6nax_backward_carveout`,
    etc.).  A fix to one gate is insufficient if another gate routes
    the failing test to a different producer.
 
@@ -1071,7 +1071,7 @@ struct V6Key {
 };
 ```
 
-Pour ajouter un paramètre (ex: `use_v34`), ajoute un champ dédié, mets à jour `operator==` ET `V6KeyHash::operator()`. Pas de raccourcis.
+Pour ajouter un paramètre (ex: `use_v6nax`), ajoute un champ dédié, mets à jour `operator==` ET `V6KeyHash::operator()`. Pas de raccourcis.
 
 ### 7.2 Post-generation rewriting
 
@@ -1142,7 +1142,7 @@ C'est probablement le signal qu'il faut s'arrêter et lire `~/code/mlx-source/ml
 
 Apple a pensé à ces problèmes. Leur code est dans le repo. Tu n'as pas besoin de réinventer si ça existe déjà.
 
-Le pattern hybride V33 (TG-memory bridge entre cooperative_tensor MPP) **est une approche non-Apple**. Apple ne fait pas ça. Apple opère un niveau en dessous (NAXFrag direct). C'est pour ça que le V33 hybrid a échoué et que V34 NAX-direct est la suite.
+Le pattern hybride V33 (TG-memory bridge entre cooperative_tensor MPP) **est une approche non-Apple**. Apple ne fait pas ça. Apple opère un niveau en dessous (NAXFrag direct). C'est pour ça que le V33 hybrid a échoué et que V6NAX NAX-direct est la suite.
 
 ---
 

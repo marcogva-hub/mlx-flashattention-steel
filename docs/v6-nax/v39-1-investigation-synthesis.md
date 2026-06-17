@@ -31,7 +31,7 @@ This halves the per-SG persistent FP32 accumulator footprint
 - BK=16 fused **at parity or modestly faster** than split for qL ∈ {2048, 8192}.
 - BK=16 fused **+12% over split** at qL=16384.
 - BK=16 fused **preserves all v2.38.1 SDPA-vjp speedups** (1.95× / 1.89× / 1.87× at qL ∈ {4096, 8192, 16384}).
-- Small-qL regression (qL ∈ {512, 1024}) is acceptable because those shapes are below the v2.37.2 carve-out threshold (qL≥4096) — AUTO path doesn't engage V34 backward there.
+- Small-qL regression (qL ∈ {512, 1024}) is acceptable because those shapes are below the v2.37.2 carve-out threshold (qL≥4096) — AUTO path doesn't engage V6NAX backward there.
 
 **Correctness**: fused-BK16 outputs verified bit-identical to split for
 qL=2048 (RMSE=0); ~2e-5 RMSE at qL∈{4096, 8192} (same FP16-tolerance
@@ -58,7 +58,7 @@ each = 16 regs/lane → below spill threshold.
 2. The BK=16 win is **monotonic across qL** in the parity-zone or
    better (qL ≥ 2048).  Small-qL slight regression (qL≤1024) suggests
    the smaller tile introduces loop-overhead that dominates when
-   K-loop iterations are too few — but this is below the V34 carve-out
+   K-loop iterations are too few — but this is below the V6NAX carve-out
    threshold so not user-impacting.
 
 3. The `MFA_V6_MAX_THREADS` knob having no effect supports H1
@@ -146,15 +146,15 @@ Outcome α applies cleanly here.
 ## v2.39.1 ship state recommendation
 
 1. **Change fused kernel default `BK` from 32 to 16** in
-   `csrc/mfa_v6_nax_primitive.cpp::MFAV34BwdFusedDKDV::eval_gpu`
+   `csrc/mfa_v6_nax_primitive.cpp::MFAV6NAXBwdFusedDKDV::eval_gpu`
    (currently line ~1675).
-2. **Flip auto-default routing** in `mlx_mfa/attention.py::_v34_backward_vjp`
+2. **Flip auto-default routing** in `mlx_mfa/attention.py::_v6nax_backward_vjp`
    from `"split"` back to `"fused"` for D=64 (reversing the v2.39.0
    outcome-δ workaround).  Auto resolves to fused at D=64; split at
    D=128 (unchanged from v2.39.0).
 3. **Run 3-session canonical bench** to confirm the BK=16 win is
    reproducible across sessions (variance ratio <1.15 per §AA.4).
-4. **Update `_v34_eligible()` if appropriate**: the BK=16 fused win
+4. **Update `_v6nax_eligible()` if appropriate**: the BK=16 fused win
    extends to qL=2048 (parity), so the v2.37.2 carve-out qL≥4096
    floor could potentially broaden.  Defer this decision to a
    separate v2.39.2 sprint after broader workload validation.

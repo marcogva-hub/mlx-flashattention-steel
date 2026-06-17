@@ -119,7 +119,7 @@ Doing 1.4 first would invert the dependency order: 1×1×1 fast path bypasses th
 **Rationale (§7 of design doc)**:
 - Three oracles each catch a different class of bug.
 - Oracle 1 = pure math reference; Oracle 2 = MLX-internal regression catch; Oracle 3 = coverage / addressing bugs that pass numerical RMSE.
-- Sprint A precedent: V6 NAX V34 backward used the same three-oracle pattern (PyTorch CPU FP32 + `mx.vjp` reference + STEEL comparison + sanity asserts).
+- Sprint A precedent: V6 NAX V6NAX backward used the same three-oracle pattern (PyTorch CPU FP32 + `mx.vjp` reference + STEEL comparison + sanity asserts).
 - Sentinel-fill specifically catches the "im2col missed a row" class of bug, which is subtle and easy to introduce.
 
 **Reversibility**: Oracle 2 may be removed if MLX's `conv_general` proves to have its own precision quirks. Oracle 1 + Oracle 3 are the minimum.

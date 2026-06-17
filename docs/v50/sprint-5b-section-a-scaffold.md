@@ -1,4 +1,4 @@
-# v2.50 Prompt 5b Section A — V34 backward block-sparse NAX (PoC + scaffold)
+# v2.50 Prompt 5b Section A — V6NAX backward block-sparse NAX (PoC + scaffold)
 
 **Scope** (per Marco's Option 3 decision): single proof-of-concept kernel
 (dV split) with native sparse iteration end-to-end + plumbing scaffold
@@ -11,18 +11,18 @@ forward returning L (see §Gap below).
 
 ## What this PoC ships
 
-1. **`createV34BackwardDVSparseSource()`** — new source generator in
+1. **`createV6NAXBackwardDVSparseSource()`** — new source generator in
    `csrc/mfa/v6_nax/NAAttentionKernel.cpp`.  Mirrors dense dV kernel
    with one structural addition: per-Q-tile `block_mask[qb, k_tile]`
    scan at the Q-loop entry; skips entire Q-tile contribution when
    inactive (zero divergence — uniform across SG).
 
-2. **`v34_dispatch_bwd_dv_sparse`** — dispatch helper in
+2. **`v6nax_dispatch_bwd_dv_sparse`** — dispatch helper in
    `csrc/v6_nax_compile.mm`.  Identical layout to dense dispatch; adds
    `block_mask` at buffer(7).
 
-3. **`MFAV34BwdDVSparse`** Primitive class + `V34BwdVSparseKey` cache
-   key + `v34_bwdv_sparse_pipelines` cache — in
+3. **`MFAV6NAXBwdDVSparse`** Primitive class + `V6NAXBwdVSparseKey` cache
+   key + `v6nax_bwdv_sparse_pipelines` cache — in
    `csrc/mfa_v6_nax_primitive.cpp`.
 
 4. **`v6_nax_backward_dv_sparse_raw`** — C++ helper + nanobind binding
@@ -90,24 +90,24 @@ To productionize this PoC:
    add `lse` output buffer, write L into it during the per-row scan.
    Add Python signature `sparse_attention_nax(..., return_lse: bool = False)`.
 
-2. **Extend the other 4 V34 backward kernels** with the same sparse-skip
+2. **Extend the other 4 V6NAX backward kernels** with the same sparse-skip
    pattern:
-   - `createV34BackwardQuerySource()` (dQ kernel): mask scan in K-loop
+   - `createV6NAXBackwardQuerySource()` (dQ kernel): mask scan in K-loop
      (different axis — dQ kernel iterates K-tiles per Q-tile)
-   - `createV34BackwardDKSource()`: mask scan in Q-loop (same pattern as
+   - `createV6NAXBackwardDKSource()`: mask scan in Q-loop (same pattern as
      dV — dK and dV share Q-loop structure)
-   - `createV34BackwardFusedDKDVSource()`: mask scan in Q-loop with
+   - `createV6NAXBackwardFusedDKDVSource()`: mask scan in Q-loop with
      ORDER-CRITICAL preservation (Phase C.1.a v2.39.0 fused order)
-   - `createV34BackwardKeyValueSource()` legacy fused: skip if production-active
+   - `createV6NAXBackwardKeyValueSource()` legacy fused: skip if production-active
 
 3. **5 corresponding Primitive classes + bindings** (mechanical, mirrors
-   `MFAV34BwdDVSparse` pattern).
+   `MFAV6NAXBwdDVSparse` pattern).
 
-4. **Python `_v34_backward_vjp_sparse(...)`** — orchestrates the 3
+4. **Python `_v6nax_backward_vjp_sparse(...)`** — orchestrates the 3
    K-parallel kernels + dQ kernel with consistent L.
 
-5. **`flash_attention_sparse` backward integration**: when M5+ + V34
-   backward eligible + `MFA_ENABLE_V34_BACKWARD=1` + block_mask 2-D,
+5. **`flash_attention_sparse` backward integration**: when M5+ + V6NAX
+   backward eligible + `MFA_ENABLE_V6_BACKWARD=1` + block_mask 2-D,
    route through native sparse backward.  Fall back to Section C
    `_sparse_nax_with_sdpa_vjp` wrapper for ineligible cases.
 
@@ -127,7 +127,7 @@ new piece).
 
 - Establishes the architectural pattern (validated bit-identical with
   all-True mask: dispatch + cache + Primitive + binding all working).
-- Proves the per-tile sparse-skip integrates with the V34 backward
+- Proves the per-tile sparse-skip integrates with the V6NAX backward
   kernel structure without breaking existing dense paths.
 - Documents the math gap empirically (RMSE 2.57e-3 traceable to L source).
 - Provides the scaffold so the v2 follow-up can mechanically extend the
@@ -137,10 +137,10 @@ new piece).
 
 | File | Change | LOC |
 |---|---|---|
-| `csrc/mfa/v6_nax/NAAttentionKernel.hpp` | Declaration `createV34BackwardDVSparseSource()` | +12 |
+| `csrc/mfa/v6_nax/NAAttentionKernel.hpp` | Declaration `createV6NAXBackwardDVSparseSource()` | +12 |
 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | New source generator (300+ LOC kernel + boilerplate) | +320 |
-| `csrc/v6_nax_compile.mm` | New `v34_dispatch_bwd_dv_sparse` dispatcher | +60 |
-| `csrc/mfa_v6_nax_primitive.cpp` | New `MFAV34BwdDVSparse` Primitive + cache + helper | +145 |
+| `csrc/v6_nax_compile.mm` | New `v6nax_dispatch_bwd_dv_sparse` dispatcher | +60 |
+| `csrc/mfa_v6_nax_primitive.cpp` | New `MFAV6NAXBwdDVSparse` Primitive + cache + helper | +145 |
 | `csrc/bindings.cpp` | Forward decl + binding `v6_nax_backward_dv_sparse_raw` | +25 |
 | `tests/test_v50_sprint_5b_section_a_sparse_dv_poc.py` | Validation tests | +90 |
 

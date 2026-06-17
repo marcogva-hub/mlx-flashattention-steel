@@ -15,11 +15,11 @@ avoid the v2.39.0 outcome δ regression pattern.
 **Critical methodology correction (caught by /mlx-debug-forensics)**: the
 initial Sprint B bench through `mx.grad(flash_attention(...))` measured
 SDPA-vjp three times, not fused vs split vs SDPA.  The PUBLIC AUTO API
-does NOT reach the V34 backward path at D=128: both
+does NOT reach the V6NAX backward path at D=128: both
 `dispatch_policy.should_use_mfa(D=128, ...)` (returns False due to
 `_M5_NAX_THRESHOLDS[(128, False)] = 999_999`) AND
-`_v34_backward_carveout(D=128, ...)` (D=64 hard-gated) block before
-`_make_mfa_custom`'s vjp closure registers.  `MFA_V34_BWD_KERNEL=fused`
+`_v6nax_backward_carveout(D=128, ...)` (D=64 hard-gated) block before
+`_make_mfa_custom`'s vjp closure registers.  `MFA_V6_BWD_KERNEL=fused`
 is ignored at D=128 via PUBLIC API.
 
 **Honest re-measurement via DIRECT C++ BINDING** (only way to reach the
@@ -38,7 +38,7 @@ qL=16384 does the higher arithmetic intensity amortize the residual
 register pressure.
 
 **Ship state**: outcome (γ) — auto-default UNCHANGED at D=128 (still
-routes to SDPA-vjp at the dispatch-policy level, never reaches V34
+routes to SDPA-vjp at the dispatch-policy level, never reaches V6NAX
 backward via AUTO).  The architectural consolidation (D-parameterized
 fused source generator + Primitive + binding now supports D=128) is
 preserved as foundation work.  The kernel is reachable for advanced
@@ -50,14 +50,14 @@ via `_ext.v6_nax_backward_fused_dkdv_raw` direct binding.
 ## DC1 — Implementation strategy: Option 1 (generic D-parameterized)
 
 **Decision**: use the existing D-parameterized source generator
-`createV34BackwardFusedDKDVSource()`.  The v2.39.0 implementation
+`createV6NAXBackwardFusedDKDVSource()`.  The v2.39.0 implementation
 already reads `BD = headDimension` from the kernel descriptor and
 derives `TD = BD/16` automatically.  No source-generator code change
 needed for D=128 — only the hard-gates in the Primitive + public
 function had to be lifted.
 
 **Alternative considered (Option 2)**: dedicated
-`createV34BackwardFusedDKDVSourceD128()` for D=128-specific tuning.
+`createV6NAXBackwardFusedDKDVSourceD128()` for D=128-specific tuning.
 Rejected because:
 1. The source generator scales cleanly through `BD` → `TD` template
    substitution — no D=128-specific code path required.
@@ -104,7 +104,7 @@ first-class verification step, not as theoretical-budget rubber stamp.
 
 ## DC3 — Auto-default routing: D=128 stays at split
 
-**Decision**: `_v34_backward_vjp` `auto` routing resolves D=128 to
+**Decision**: `_v6nax_backward_vjp` `auto` routing resolves D=128 to
 **split** (unchanged from v2.39.1).  D=64 routes to **fused** (per
 v2.39.1).
 
@@ -114,20 +114,20 @@ v2.39.1).
 - Conservative-by-design: preserves v2.38.1/v2.39.1 D=128 behavior
   exactly.
 - Users who want to experiment with D=128 fused can use
-  `MFA_V34_BWD_KERNEL=fused` explicit opt-in.
+  `MFA_V6_BWD_KERNEL=fused` explicit opt-in.
 
 ## DC4 — Carve-out broadening to D=128 deferred
 
-The v2.37.2 carve-out (`_v34_backward_carveout()` in dispatch_policy.py)
+The v2.37.2 carve-out (`_v6nax_backward_carveout()` in dispatch_policy.py)
 remains D=64-hard-gated.  Even with D=128 fused now available, broadening
 the carve-out to include D=128 would require:
 1. D=128 fused or split delivering ≥1.0× SDPA-vjp at qL≥some-threshold
 2. Empirical bench data justifying the threshold
 
-Current bench shows D=128 V34 backward at parity with SDPA-vjp
+Current bench shows D=128 V6NAX backward at parity with SDPA-vjp
 (~1.00× across all tested qL).  No clear win justifies the broadening
 work in this sprint.  Defer to a future sprint if SDPA-vjp regresses
-at D=128 large qL OR if a future kernel improvement makes V34 D=128
+at D=128 large qL OR if a future kernel improvement makes V6NAX D=128
 clearly faster.
 
 ## Empirical bench data (full) — DIRECT BINDING (PUBLIC API unreachable)
@@ -136,8 +136,8 @@ clearly faster.
 measured SDPA-vjp three times (PUBLIC API doesn't reach D=128 fused).
 `/mlx-debug-forensics` caught this matches the v2.37.0/v2.37.1 silent-
 integration pattern.  Replaced with DIRECT C++ BINDING bench using
-synthetic V34 forward outputs (correct natural-log lse via
-`v6_nax_forward(force_v34=True)` then `D_vec = mx.sum(dO_fp32 * O_fp32, -1)`):
+synthetic V6NAX forward outputs (correct natural-log lse via
+`v6_nax_forward(force_v6nax=True)` then `D_vec = mx.sum(dO_fp32 * O_fp32, -1)`):
 
 | qL | fused-BK16 (ms) | split (ms) | fused/split | Δ vs split |
 |---|---|---|---|---|
@@ -163,7 +163,7 @@ Observations:
    intensity per K-tile to hide the spill latency.
 
 **No PUBLIC API perf change**: at D=128 the AUTO API routes to SDPA-vjp
-via the dispatch-policy thresholds + carve-out (both block D=128 V34
+via the dispatch-policy thresholds + carve-out (both block D=128 V6NAX
 backward before `_make_mfa_custom`'s vjp closure registers).  The
 fused kernel ships as architectural addition only; users see no
 change at D=128 via `mx.grad(flash_attention(..., backend="auto"))`.
@@ -178,16 +178,16 @@ mx.grad smoke test).
 
 ### Axis 2 — PUBLIC API path entered
 
-`mx.grad(flash_attention(..., backend="auto"))` + `MFA_ENABLE_V34_BACKWARD=1`
+`mx.grad(flash_attention(..., backend="auto"))` + `MFA_ENABLE_V6_BACKWARD=1`
 at D=128 routes to split (auto-default per DC3).  Forcing fused via
-`MFA_V34_BWD_KERNEL=fused` engages the new D=128 fused path.
+`MFA_V6_BWD_KERNEL=fused` engages the new D=128 fused path.
 
 ### Axis 3 — Edges preserved
 
 - D=64 fused path unchanged (v2.39.1 perf claims preserved)
 - D=128 split path unchanged (v2.38.1 baseline preserved)
 - D=64 split path unchanged
-- All 78 existing tests pass (V39 fused + V34 + helpers + v32-routing
+- All 78 existing tests pass (V39 fused + V6NAX + helpers + v32-routing
   + perf-claims)
 - v2.37.2 carve-out behavior preserved (D=64 only, qL≥2048 per Sprint A)
 
@@ -195,7 +195,7 @@ at D=128 routes to split (auto-default per DC3).  Forcing fused via
 
 ### C++ (2 hard-gate lifts)
 
-- `csrc/mfa_v6_nax_primitive.cpp::MFAV34BwdFusedDKDV::eval_gpu`:
+- `csrc/mfa_v6_nax_primitive.cpp::MFAV6NAXBwdFusedDKDV::eval_gpu`:
   hard-gate `D != 64` → `D != 64 && D != 128` + updated comment block
   documenting v2.40.0-internal D=128 enablement + BK=16 staging
   rationale.
@@ -204,7 +204,7 @@ at D=128 routes to split (auto-default per DC3).  Forcing fused via
 
 ### Python (1 routing comment + 1 error-guard broadening)
 
-- `mlx_mfa/attention.py::_v34_backward_vjp`:
+- `mlx_mfa/attention.py::_v6nax_backward_vjp`:
   - `auto` resolution stays at `head_dim == 64 ? fused : split` per DC3.
   - `fused` mode error guard: `head_dim != 64` → `head_dim not in (64, 128)`
     (D=128 explicit opt-in now valid; D=256 etc. still raises loudly).
@@ -227,7 +227,7 @@ at D=128 routes to split (auto-default per DC3).  Forcing fused via
 
 - **No user-visible change at D=128 by default.** Auto-default routing
   for D=128 stays at split-D_vec path; v2.38.1 baselines preserved.
-- **Opt-in D=128 fused** via `MFA_V34_BWD_KERNEL=fused` for users who
+- **Opt-in D=128 fused** via `MFA_V6_BWD_KERNEL=fused` for users who
   want to experiment with the fused path or characterize on their own
   workloads (e.g., FlashVSR/STCDiT/CogVideoX D=128 backward training).
 - **Architectural consolidation**: D-parameterized fused source generator
@@ -238,7 +238,7 @@ at D=128 routes to split (auto-default per DC3).  Forcing fused via
 
 1. **No D=128 perf claim** in CHANGELOG.  D=128 fused at parity with
    split and SDPA-vjp; no measurable win to ship.
-2. **Architectural floor reaffirmed**: V34 backward D=128 stays at
+2. **Architectural floor reaffirmed**: V6NAX backward D=128 stays at
    parity with SDPA-vjp; the matmul work is the structural ceiling,
    not a fused-vs-split issue.
 3. **BK selection empirical**: BK=16 chosen via empirical bench (DC2),

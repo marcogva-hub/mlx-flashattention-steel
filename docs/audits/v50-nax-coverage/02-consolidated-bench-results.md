@@ -173,7 +173,7 @@ then-load).  This is a real win for inference workloads where RoPE is
 applied per-call.
 
 **Verdict**: **(B) NAX-opportunity, MEDIUM priority**.
-**Effort**: **S/M** — rope add to V34 forward NAX kernel.  The V34 forward
+**Effort**: **S/M** — rope add to V6NAX forward NAX kernel.  The V6NAX forward
 kernel already supports this (rope_q_base + rope_cos_stride params, per
 `csrc/mfa/v6_nax/NAAttentionKernel.cpp` ~line 2741 forward source).
 Wire-up effort: ~1-2h CC.

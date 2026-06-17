@@ -46,11 +46,11 @@ at D=128) but is academic.
 
 Causal fp16 backward, ms (B=1 H=8):
 
-| Cell | SDPA-vjp (default) | V34 (opt-in env) | STEEL-bwd¹ | Winner |
+| Cell | SDPA-vjp (default) | V6NAX (opt-in env) | STEEL-bwd¹ | Winner |
 |---|---|---|---|---|
-| D64 N2048 | 2.98 | **1.37 (2.2×)** | 2.68¹ | V34 |
-| D64 N4096 | 11.53 | **4.50 (2.6×)** | 8.36¹ | V34 |
-| D64 N8192 | 44.54 | **17.47 (2.5×)** | 31.30¹ | V34 |
+| D64 N2048 | 2.98 | **1.37 (2.2×)** | 2.68¹ | V6NAX |
+| D64 N4096 | 11.53 | **4.50 (2.6×)** | 8.36¹ | V6NAX |
+| D64 N8192 | 44.54 | **17.47 (2.5×)** | 31.30¹ | V6NAX |
 | D128 N2048 | **3.32** | 5.71 | 6.56¹ | SDPA-vjp |
 | D128 N4096 | **12.44** | 24.09 | 23.07¹ | SDPA-vjp |
 | D128 N8192 | **49.05** | 106.3 | 88.57¹ | SDPA-vjp |
@@ -59,14 +59,14 @@ Causal fp16 backward, ms (B=1 H=8):
 SDPA → the env var never engages); measured via backend="mfa".  Post-KD-5
 fix it is CORRECT everywhere (rmse 4e-5 incl. the previously-zeroed
 D=128 N≥2048 cells) and 1.12-1.42× faster than SDPA-bwd at D=64 on the
-forced path — but dominated by V34 there and by SDPA-vjp at D=128.
+forced path — but dominated by V6NAX there and by SDPA-vjp at D=128.
 
 **Recommendation for Marco** (defaults UNCHANGED pending sign-off):
-1. **Auto-promote V34 backward at D=64 causal** (qL≥2048, fp16/bf16,
+1. **Auto-promote V6NAX backward at D=64 causal** (qL≥2048, fp16/bf16,
    M5+): 2.2-2.6× training speedup, currently opt-in.  This is the
    single largest unexploited win in the repo.
 2. **Keep `MFA_FORCE_NATIVE_BWD` deprecated**: STEEL backward is now
-   correct (KD-5 fixed) but dominated at every cell by V34 or SDPA-vjp;
+   correct (KD-5 fixed) but dominated at every cell by V6NAX or SDPA-vjp;
    the deprecation rationale shifts from "broken" to "superseded".
 
 ## Tracks 3+4 — survey verdicts

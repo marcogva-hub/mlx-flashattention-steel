@@ -78,7 +78,7 @@ Before running each session, confirm:
 
 For analytical comparison:
 
-| Shape | v2.31.0 legacy | v2.31.0 V34 | Phase 0 + A legacy | Phase 0 + A V34 |
+| Shape | v2.31.0 legacy | v2.31.0 V6NAX | Phase 0 + A legacy | Phase 0 + A V6NAX |
 |---|---:|---:|---:|---:|
 | FlashVSR-dense | 1.115 | 1.55 (regression) | ~0.93 | ~0.95 |
 | LTX2-cross | 1.65 | 1.42 | 1.63 | 1.30 |
@@ -101,7 +101,7 @@ After 3+ sessions complete:
 
 ## What this protocol does NOT do
 
-- **Does not test V34 ramp-up specifically** — A.3.1 already rejected
+- **Does not test V6NAX ramp-up specifically** — A.3.1 already rejected
   that hypothesis at the SeedVR2-small scale; if multi-session reveals
   ramp-up matters at other shapes, add focused tests then.
 - **Does not vary macOS background activity** — that would need to be

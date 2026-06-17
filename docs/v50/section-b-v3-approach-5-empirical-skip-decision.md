@@ -7,7 +7,7 @@ AUTO production default per Prompt 5c) remains v2.50 Top-K production
 path.
 
 **This is NOT a deferral**.  This is an empirically-validated
-architectural conclusion: V34 custom NAX kernels can't outpace Apple
+architectural conclusion: V6NAX custom NAX kernels can't outpace Apple
 SDPA NAX on M5+ at most shapes.  See Pattern #6 in
 `docs/v50/audit-framing-inversions.md`.
 
@@ -19,7 +19,7 @@ Per Section B Phase B.5 decision tree in Prompt 5c/5d spec:
 > as architectural deadend, Architecture B reste AUTO.
 
 This was projected as "unlikely given heap-based design".  Empirical
-data from Section A v3 (Prompt 5d) inverts that projection: V34 custom
+data from Section A v3 (Prompt 5d) inverts that projection: V6NAX custom
 NAX kernels are slower than Apple SDPA NAX at most shapes on M5+,
 **including the dense path** (see Section A v3 empirical verification
 doc).
@@ -30,7 +30,7 @@ Approach 5 architecture:
 2. **PASS-2**: custom Metal attention kernel for scatter-gather K/V
    (Apple SDPA NAX doesn't natively support indexed K/V)
 
-The PASS-2 custom kernel would be a NEW V34-style attention kernel
+The PASS-2 custom kernel would be a NEW V6NAX-style attention kernel
 operating on filtered K/V positions.  Per Section A empirical pattern,
 **this custom kernel would be SLOWER than Apple SDPA NAX** (which
 Architecture B already uses for its PASS-2 via bias-mask).
@@ -42,7 +42,7 @@ than offset by PASS-2 custom kernel slowdown vs Apple SDPA NAX.
 
 B=1 H=12 qL=4096 D=128 fp16 BT=32, mx.grad backward:
 
-| Density | SDPA-vjp dense | V34 hybrid | V34 full native |
+| Density | SDPA-vjp dense | V6NAX hybrid | V6NAX full native |
 |---|---|---|---|
 | 0.1 | 17.41 ms | 34.84 ms (0.50×) | 22.58 ms (0.77×) |
 | 0.3 | 17.40 ms | 68.20 ms (0.26×) | 60.67 ms (0.29×) |
@@ -50,11 +50,11 @@ B=1 H=12 qL=4096 D=128 fp16 BT=32, mx.grad backward:
 | 1.0 | 16.93 ms | 175.09 ms (0.10×) | 181.07 ms (0.09×) |
 
 SDPA-vjp dense (the Apple SDPA NAX backward path) wins at **all 4
-densities** vs both V34-based paths.  Native sparse is fastest among
-V34 paths but still 0.77× SDPA-vjp at best (d=0.1).
+densities** vs both V6NAX-based paths.  Native sparse is fastest among
+V6NAX paths but still 0.77× SDPA-vjp at best (d=0.1).
 
 For Approach 5 PASS-2: a NEW custom attention kernel would be expected
-to perform similarly to V34 native (or worse, since it's a less-
+to perform similarly to V6NAX native (or worse, since it's a less-
 optimized first-iteration kernel).  vs Architecture B which uses
 Apple SDPA NAX with bias mask = same backbone as the SDPA-vjp baseline
 in this bench.

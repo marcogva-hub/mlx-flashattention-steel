@@ -8,7 +8,7 @@
 mlx-mfa exposes two C++ MLX primitives for forward attention:
 
 1. **`MFAttention`** (`csrc/mfa_attention.cpp`, ~3320 LOC) — STEEL family
-2. **`MFAV6NAXForward`** (`csrc/mfa_v6_nax_primitive.cpp`) — V6 NAX legacy + V34
+2. **`MFAV6NAXForward`** (`csrc/mfa_v6_nax_primitive.cpp`) — V6 NAX legacy + V6NAX
 
 Plus specialized primitives: `MFAVarlenAttention`, `MFAPagedSteelForward`,
 `MFASageForward`, `MFAGNAForward`, `MFAPagedVarlenForward`,
@@ -37,7 +37,7 @@ selected inside the C++ layer based on dtype, shape, hardware, and env vars.
 | 22 | `SteelForwardV6NAX` | V6 NAX legacy (MPP cooperative_tensor) | M5+, dispatched in MFAV6NAXForward (separate primitive) |
 | 23 | `SteelForwardV5` | V5 (D-blocked, BD_tile=32 BK=128) | opt-in via MFA_ENABLE_V5 (line 578) |
 | 24 | `GNAForward` | GNA 3D window inline | flash_attention_gna() entry |
-| 25 | (V34) | V34 NAX-direct via NAXFrag::mma | Inside MFAV6NAXForward when use_v34 = true |
+| 25 | (V6NAX) | V6NAX NAX-direct via NAXFrag::mma | Inside MFAV6NAXForward when use_v6nax = true |
 | 27 | `PagedVarlenForward` | Fused packed Q + paged KV | flash_attention_paged_varlen() entry |
 | 28 | `PagedVarlenTQForward` | TurboQuant paged | TQ KV cache flow |
 
@@ -54,8 +54,8 @@ selected inside the C++ layer based on dtype, shape, hardware, and env vars.
 | V3 (KT=20) | M3+ causal AND B*H≥4 AND N≥(1024/2048) | yes — M3+ default for D≤128 causal |
 | V4 (KT=21) | M3+, MFA_ENABLE_V4=1 | OFF by default (opt-in) |
 | V5 (KT=23) | MFA_ENABLE_V5=1 | OFF by default (opt-in) |
-| V6 NAX legacy (KT=22) | M5+, MFAV6NAXForward primitive, use_v34=false | yes for D=64 small-N (FlashVSR) |
-| V34 NAX-direct | M5+, MFAV6NAXForward, use_v34=true | yes for D=128 + D=64 N_kv>8000 |
+| V6 NAX legacy (KT=22) | M5+, MFAV6NAXForward primitive, use_v6nax=false | yes for D=64 small-N (FlashVSR) |
+| V6NAX NAX-direct | M5+, MFAV6NAXForward, use_v6nax=true | yes for D=128 + D=64 N_kv>8000 |
 | GNA (KT=24) | flash_attention_gna() entry | per call site |
 | Sage (KT=11) | backend="sage" or sage_attention() | per call site |
 
@@ -69,7 +69,7 @@ selected inside the C++ layer based on dtype, shape, hardware, and env vars.
 | `MFA_ENABLE_V4=1` | Opts into V4 (M3+ direct device reads) |
 | `MFA_ENABLE_V5=1` | Opts into V5 (D-blocked) |
 | `MFA_FORCE_SPLITK=0\|1` | Disable/force V2 split-K |
-| `MFA_V6_USE_V34=0\|1` | Force V34 OFF/ON within V6 NAX primitive |
+| `MFA_V6_USE_NAX=0\|1` | Force V6NAX OFF/ON within V6 NAX primitive |
 | `MFA_V6_NAX_SINGLE_OTILE=0\|1` | V6 NAX single-Otile vs double-buffered |
 | `MFA_FORCE_GEN=N` | Override architecture gen detection |
 

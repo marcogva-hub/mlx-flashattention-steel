@@ -1,4 +1,4 @@
-# v2.50 Sprint 4 — V34 backward causal NAX — HALTED (scope discovery)
+# v2.50 Sprint 4 — V6NAX backward causal NAX — HALTED (scope discovery)
 
 **Sprint date**: 2026-05-13
 **Branch**: `feat/v50-sprint4-bwd-causal` (Sprint 1+2 already merged to master)
@@ -6,84 +6,84 @@
 
 ## TL;DR
 
-The v2.50-NAX-coverage audit estimated Sprint 4 (V34 backward causal NAX)
+The v2.50-NAX-coverage audit estimated Sprint 4 (V6NAX backward causal NAX)
 at **M effort (~1-2h CC)**.  Investigation reveals the real scope is
-**L/XL (~5-7h CC)** because V34 **forward** does not yet support causal
-either — V34 forward causal extension is an undocumented prerequisite.
+**L/XL (~5-7h CC)** because V6NAX **forward** does not yet support causal
+either — V6NAX forward causal extension is an undocumented prerequisite.
 
 Per §AA.1 failure-mode handling, halting Sprint 4 + documenting the
 scope-correction.  Sprints 1+2 already merged to master successfully.
 Sprint 4 deferred to a dedicated future session with the corrected
 scope estimate.
 
-## Discovery: V34 forward gates on `!isCausal`
+## Discovery: V6NAX forward gates on `!isCausal`
 
 `csrc/mfa/v6_nax/NAAttentionKernel.cpp:171`:
 
 ```cpp
-if (useV34 && type.value == AttentionKernelType::forward
+if (useV6NAX && type.value == AttentionKernelType::forward
     && !isCausal && !masked && !isVarlen) {
-  return createV34Source();
+  return createV6NAXSource();
 }
 // else: fall through to legacy STEEL source generator
 ```
 
-The V34 forward kernel source generator (`createV34Source()`) is only
-emitted when `!isCausal`.  When causal is requested, V34 falls back to
+The V6NAX forward kernel source generator (`createV6NAXSource()`) is only
+emitted when `!isCausal`.  When causal is requested, V6NAX falls back to
 the legacy STEEL `loopForward` template which has its own causal
 implementation but emits **log2-domain lse**, not the natural-log lse
-that V34 backward kernels expect.
+that V6NAX backward kernels expect.
 
 Confirmed by code inspection:
 - `_make_mfa_custom` at `attention.py:3744`: hardcodes `_v6_fwd(q, k, v, False, True)` —
-  the `False` is causal, intentionally suppressed because V34 forward
+  the `False` is causal, intentionally suppressed because V6NAX forward
   doesn't support it.
-- `_v34_eligible` at `attention.py:3576-3577`: `if causal: return False  # DC3 deferred`.
+- `_v6nax_eligible` at `attention.py:3576-3577`: `if causal: return False  # DC3 deferred`.
 
 ## Why the audit underestimated
 
 The audit's Sprint 4 mandate (`docs/audits/v50-nax-coverage/03-sprint-sequence.md`):
 
-> Sprint 4: V34 backward causal NAX
+> Sprint 4: V6NAX backward causal NAX
 > **Effort**: M (~2h CC realistic)
-> **Files**: extend `createV34BackwardQuerySource()` + `createV34BackwardDKSource()`
-> + `createV34BackwardFusedDKDVSource()` in NAAttentionKernel.cpp to support
-> causal masking; update `_v34_backward_carveout` to include causal.
+> **Files**: extend `createV6NAXBackwardQuerySource()` + `createV6NAXBackwardDKSource()`
+> + `createV6NAXBackwardFusedDKDVSource()` in NAAttentionKernel.cpp to support
+> causal masking; update `_v6nax_backward_carveout` to include causal.
 
-The audit assumed V34 forward already supported causal and only the
-backward kernels needed extension.  But the V34 forward kernel itself
+The audit assumed V6NAX forward already supported causal and only the
+backward kernels needed extension.  But the V6NAX forward kernel itself
 does NOT support causal — that's the larger unaccounted scope.
 
 ## Real Sprint 4 scope (revised)
 
-To ship V34 backward causal NAX properly, the work is:
+To ship V6NAX backward causal NAX properly, the work is:
 
-### Phase 4a — V34 forward causal extension (~2-3h CC)
-1. Extend `createV34Source()` with causal block (mirror Apple SDPA NAX's
+### Phase 4a — V6NAX forward causal extension (~2-3h CC)
+1. Extend `createV6NAXSource()` with causal block (mirror Apple SDPA NAX's
    `kb_lim`/`kb_min_causal` pattern, per `apple-sdpa-nax-analysis.md` §
    "How Apple handles the K-loop")
 2. Lift the `!isCausal` gate at `NAAttentionKernel.cpp:171`
-3. Verify V34 forward causal produces correct output + natural-log lse
+3. Verify V6NAX forward causal produces correct output + natural-log lse
 4. Update `_make_mfa_custom` line 3744: `_v6_fwd(q, k, v, causal, True)`
 5. /metal-kernel-dev pre-flight for register budget impact
 6. Three-axis validation against STEEL causal forward
 
-### Phase 4b — V34 backward causal (~1-2h CC, prerequisite Phase 4a)
-1. Lift `_v34_eligible` causal gate at line 3576-3577
-2. Lift `_v34_backward_carveout` causal exclusion in dispatch_policy.py
+### Phase 4b — V6NAX backward causal (~1-2h CC, prerequisite Phase 4a)
+1. Lift `_v6nax_eligible` causal gate at line 3576-3577
+2. Lift `_v6nax_backward_carveout` causal exclusion in dispatch_policy.py
 3. Backward kernels likely need NO source changes because the FA-2
    backward pattern handles causal via lse-encoded masking automatically:
-   - V34 forward emits lse with causal masking (S[r,c]=-inf for r<c → P[r,c]=0)
+   - V6NAX forward emits lse with causal masking (S[r,c]=-inf for r<c → P[r,c]=0)
    - Backward recomputes P from lse → P[r,c]=0 at masked positions
    - dS = P * (dP - D) → dS=0 at masked positions
    - dV, dK, dQ accumulations naturally inherit the mask
-4. Three-axis validation: V34 backward causal matches `mx.vjp(SDPA_causal)`
+4. Three-axis validation: V6NAX backward causal matches `mx.vjp(SDPA_causal)`
    within FP16 ULP
 5. /mlx-debug-forensics corruption audit
 6. /mlx-mfa-bench-methodology + /mlx-mfa-perf-audit
 
 ### Phase 4c — Integration + tests (~0.5h CC)
-1. Tests in `tests/test_v50_v34_backward_causal.py`
+1. Tests in `tests/test_v50_v6nax_backward_causal.py`
 2. CHANGELOG entry
 3. Pre-merge audit checklist
 
@@ -108,7 +108,7 @@ Pushing through would either:
 1. Burn ~5h CC on what was scoped as ~2h (budget overrun)
 2. Force compromise scope (e.g., ship only Phase 4b without Phase 4a)
    — but that would break correctness because backward kernels would
-   read log2-lse from STEEL forward instead of natural-log lse from V34
+   read log2-lse from STEEL forward instead of natural-log lse from V6NAX
    forward, producing wrong gradients silently
 
 Either outcome violates v2.50's "production complete" mandate.  Honest
@@ -136,12 +136,12 @@ halt is the correct call.
 
 1. Read `apple-sdpa-nax-analysis.md` §"How Apple handles the K-loop"
    (the `kb_lim` / `kb_min_causal` pattern)
-2. Read `createV34Source()` body in `NAAttentionKernel.cpp` (Q-K-loop
+2. Read `createV6NAXSource()` body in `NAAttentionKernel.cpp` (Q-K-loop
    structure, masking infrastructure)
 3. `/metal-kernel-dev` pre-flight for causal block design + register
    budget impact at D=64/D=128
-4. Extend `createV34Source()` with causal block (Phase 4a)
-5. Verify V34 forward causal produces correct output + lse via
+4. Extend `createV6NAXSource()` with causal block (Phase 4a)
+5. Verify V6NAX forward causal produces correct output + lse via
    bit-identical comparison to STEEL causal forward
 6. Then proceed with Phase 4b backward gate lift + Phase 4c integration
 

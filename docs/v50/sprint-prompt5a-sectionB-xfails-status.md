@@ -31,7 +31,7 @@ Per the v2.50 Prompt 5a specification Phase B.2.x: for each xfail, re-run with
 - **Investigation**: Re-ran with `--runxfail`. max_err = 0.2963 vs atol 5e-2.
   Bug is pre-existing in the attn_bias kernel at (d=128, causal=True, mode 1/2 bias).
   d=64 non-causal + d=128 cross-attention work correctly.
-- **Verdict**: real bug, NOT resolved by Prompt 4 V34 multi-gate dispatch fix
+- **Verdict**: real bug, NOT resolved by Prompt 4 V6NAX multi-gate dispatch fix
   (different code path). Xfail rationale already accurate; preserved as-is.
 - **Escalate**: post-v2.50 dedicated attn_bias kernel investigation.
 
@@ -41,7 +41,7 @@ Per the v2.50 Prompt 5a specification Phase B.2.x: for each xfail, re-run with
   - **Suffix drift** (3 doc rows): `v2.39.1_*_auto` → `v2.39.1_*_engages_via_auto`
     (match v2.38.1 / v2.37.2 convention).
   - **Missing test entry**: `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto`
-    added to `PERF_CLAIMS` list (verified engages V34 via AUTO).
+    added to `PERF_CLAIMS` list (verified engages V6NAX via AUTO).
   - **v2.39.2-internal entries**: Created new "Internal claims" subsection in
     `docs/PERF_CLAIMS.md` for the 2 below-public-floor coverage rows.
   - **Stale `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa`**: moved to
@@ -79,7 +79,7 @@ Per the v2.50 Prompt 5a specification Phase B.2.x: for each xfail, re-run with
   parametrize so D=64 no longer carries the xfail decorator.
 - **D=128 cases (2048, 4096)**: max_err = 0.41 vs atol 5e-2, with zeroed
   output blocks for query rows beyond ~1024 → real kernel bug isolated to
-  D=128 force-native backward. D=128 V34 backward is documented as
+  D=128 force-native backward. D=128 V6NAX backward is documented as
   research-only (see `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa`).
 - **Fix**: `pytest.param(D, N, marks=pytest.mark.xfail(reason=...))` per
   parametrize tuple — D=64 cases drop xfail, D=128 cases preserve xfail

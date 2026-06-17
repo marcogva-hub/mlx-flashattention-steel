@@ -50,14 +50,14 @@ reduction via mlx primitives.
 
 ## DC3 — NAXFrag::mma inner-GEMM tile shape
 
-**Decision**: match V34 forward defaults per `head_dim`:
+**Decision**: match V6NAX forward defaults per `head_dim`:
 
 | D | BQ | BK | WM |
 |---|---:|---:|---:|
 | 64 | 32 | 32 | 2 |
 | 128 | 64 | 32 | 4 |
 
-**Rationale**: Sprint A V34 forward Sprint 4 optimized these on M5 Max.
+**Rationale**: Sprint A V6NAX forward Sprint 4 optimized these on M5 Max.
 Same hardware, same NAXFrag instruction set, same cooperative-tensor
 distribution model — same defaults are the safe starting point.
 
@@ -130,12 +130,12 @@ These are flagged in `lcsa-nax-coop-rewrite-results.md` template as
 
 ## DC8 — Section B-kernel-body is a multi-session boundary
 
-**Decision**: lifting `createV34Source()` (1364 LOC of cooperative-
+**Decision**: lifting `createV6NAXSource()` (1364 LOC of cooperative-
 tensor MSL) into a sparse variant is non-trivial focused work. Trying
 to fragment it across context windows risks subtle MSL errors. This
 session executes Section A + Section B-scaffolding (compiles, no
 regression, V2 source-gen STUB delegates to V1 fallback). A subsequent
-session executes the V34-pattern lift + correctness testing.
+session executes the V6NAX-pattern lift + correctness testing.
 
 **Reversibility**: scaffolding-only state is a clean intermediate. V2
 source-gen STUB returning a no-op or V1 fallback means tests + builds

@@ -6,13 +6,13 @@ Branch: `feat/v38-1-d-vec`.
 ## Mandate
 
 Wire `D_vec = rowsum(dO ⊙ O)` as a device buffer precomputed once
-per V34 backward call and shared between the kernels that need it.
-Eliminates redundant inline recomputation in V34 backward kernels.
+per V6NAX backward call and shared between the kernels that need it.
+Eliminates redundant inline recomputation in V6NAX backward kernels.
 
 ## DC1 — Precompute strategy: MLX dispatch (host-side)
 
 **Decision**: precompute D once via MLX (`mx.sum(dO * O, axis=-1).astype(mx.float32)`)
-and pass to the V34 backward kernels as a shared device buffer (FP32,
+and pass to the V6NAX backward kernels as a shared device buffer (FP32,
 shape `[B, Hq, qL]`).
 
 **Alternatives considered**:
@@ -23,7 +23,7 @@ shape `[B, Hq, qL]`).
 
 **Rationale**: (I) is the cleanest separation of concerns.  MLX kernel
 dispatch overhead is amortized over 2 saved in-kernel rowsums (one per
-default-path V34-bwd call — dQ + split-dK).  Layout matches `lse`
+default-path V6NAX-bwd call — dQ + split-dK).  Layout matches `lse`
 exactly ([B, Hq, qL] FP32), simplifying integration.
 
 ## DC2 — Buffer-index layout
@@ -46,7 +46,7 @@ Only **dQ + split-dK + legacy-fused-dKdV** compute D inline.  The
 in source range 4650-4922 returns 0 hits; the dV Primitive's `eval_gpu`
 at line 1336 does not even bind O as an input — see also DC3.1).
 
-The user's prompt named "3 kernels" including `createV34BackwardDVSource`,
+The user's prompt named "3 kernels" including `createV6NAXBackwardDVSource`,
 but that kernel does not currently recompute D.  dV gradient is
 `P^T @ dO` — it never needs D.  Per CLAUDE.md "loud failure" rule,
 I'm scoping to the kernels that actually have inline D computation.
@@ -58,7 +58,7 @@ I'm scoping to the kernels that actually have inline D computation.
 | dQ | Always | Yes | Wire D buffer (DC2) |
 | split-dV | Default for split mode | No | **No change** (also doesn't take O input) |
 | split-dK | Default for split mode | Yes | Wire D buffer (DC2) |
-| legacy fused-dKdV | Only via `MFA_V34BWD_USE_FUSED=1` | Yes | Wire D buffer (DC2) for consistency |
+| legacy fused-dKdV | Only via `MFA_V6BWD_USE_FUSED=1` | Yes | Wire D buffer (DC2) for consistency |
 
 **Net redundancy elimination**: 2 D-rowsum saves per default-path
 backward (dQ + split-dK).  Fused path saves 1 (no change vs default
@@ -66,8 +66,8 @@ since fused recomputes once for both dK & dV portions).
 
 ### DC3.2 — Expected perf delta
 
-Per Sprint 2 audit M2-HIGH-01 estimate: 5-8% V34 backward speedup on
-V34-eligible shapes (D=64 qL≥4096 carve-out).  May come in lower
+Per Sprint 2 audit M2-HIGH-01 estimate: 5-8% V6NAX backward speedup on
+V6NAX-eligible shapes (D=64 qL≥4096 carve-out).  May come in lower
 (3-6%) given net is 2 rowsums saved per call instead of the user's
 assumed 3.  Final number is empirical, measured Phase A.8 via
 `/mlx-mfa-bench-methodology`.
@@ -76,7 +76,7 @@ assumed 3.  Final number is empirical, measured Phase A.8 via
 
 **Decision**: each kernel's inline D-rowsum block is replaced by a
 per-lane device read mirroring the existing lse-load pattern at
-`createV34BackwardQuerySource` line 3914-3955.  This pattern is
+`createV6NAXBackwardQuerySource` line 3914-3955.  This pattern is
 proven (in production since v2.31.0 for lse), uses `NAXFrag::get_coord()`
 + `kElemRows`/`kElemRowsJump` constants to map lane → owned row, and
 relies on coalesced device reads (multiple lanes load same row).
@@ -91,7 +91,7 @@ metal::vec<float, kRowsPT> D_vec;
   constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
   constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
   STEEL_PRAGMA_UNROLL
-  for (short iq = 0; iq < V34BWD_TQ; iq++) {
+  for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kElemRows; i++) {
       const short local_row = iq * 16 + sc.y + i * kElemRowsJump;

@@ -17,7 +17,7 @@ echo "[A.3.1] Running 30s sustained matmul workload ..." | tee -a "$LOG"
 .venv/bin/python /tmp/a3_warmup.py 2>&1 | tee -a "$LOG"
 
 echo "[A.3.1] Bench SeedVR2-small immediately post-warmup ..." | tee -a "$LOG"
-.venv/bin/python bench/v34_bench.py \
+.venv/bin/python bench/v6nax_bench.py \
     --shape SeedVR2-small --mode legacy --runs 5 \
     --include-sdpa --output "$WARMUP_OUT" 2>&1 | tee -a "$LOG"
 

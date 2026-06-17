@@ -13,13 +13,13 @@
 **Impact**: New contributors cannot discover environment variables in one location.
 
 **Gaps**:
-- `MFA_ENABLE_V34_BACKWARD=1` documented only in PERF_CLAIMS.md and README (partial)
-- `MFA_V34_BWD_SPARSE_NATIVE=1` (research-gate) documented only in CHANGELOG and HARDWARE_SUPPORT
+- `MFA_ENABLE_V6_BACKWARD=1` documented only in PERF_CLAIMS.md and README (partial)
+- `MFA_V6_BWD_SPARSE_NATIVE=1` (research-gate) documented only in CHANGELOG and HARDWARE_SUPPORT
 - `MFA_DISABLE_AUTO_HOOKS`, `MFA_DISABLE_TOPK_BISECT`, `MFA_NO_PADDING`, `MFA_FORCE_GEN`, `MFA_DISABLE_ASYNC` mentioned in sprint docs but not catalogued centrally
 - No guidance on which env vars affect production paths vs research-only
 
 **Recommended fix**: Create `/Users/marcomarcelino/code/mlx-mfa-v2/docs/ENV_VARS.md` with:
-  - Production gates (auto-engaged via `MFA_ENABLE_V34_BACKWARD=1`)
+  - Production gates (auto-engaged via `MFA_ENABLE_V6_BACKWARD=1`)
   - Research/debug gates (opt-in, off by default)
   - Internal flags (pre-v2.50 research)
   - Format: table with name, value, effect, scope (production/research/debug)
@@ -160,7 +160,7 @@ backward-path coverage, and Tier 1+2 status for v2.50.
 
 1. **Create `/Users/marcomarcelino/code/mlx-mfa-v2/docs/ENV_VARS.md`** (30 min)
    - Table: name, value, effect, scope (production/research/debug), introduced version
-   - Include: `MFA_ENABLE_V34_BACKWARD`, `MFA_V34_BWD_SPARSE_NATIVE`, `MFA_DISABLE_AUTO_HOOKS`, `MFA_FORCE_GEN`, etc.
+   - Include: `MFA_ENABLE_V6_BACKWARD`, `MFA_V6_BWD_SPARSE_NATIVE`, `MFA_DISABLE_AUTO_HOOKS`, `MFA_FORCE_GEN`, etc.
 
 2. **Update README line 7** (5 min)
    - Change to mention v2.50 staging at master post-Prompt 5b

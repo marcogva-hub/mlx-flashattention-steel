@@ -59,7 +59,7 @@ the tag, committed/validated on master through `8c9cbff`.
 
 **Marco's decision: HOLD — no follow-up release yet.** master stays
 as-is; the III-4 fixes remain committed but unreleased, to be bundled
-into a later release (e.g. with int8 V34 integration as v2.52.0) rather
+into a later release (e.g. with int8 V6NAX integration as v2.52.0) rather
 than shipped as a standalone v2.51.1 patch now. The 2 CRITICALs are
 therefore knowingly unreleased on PyPI until that bundled release.
 When the release happens, the 9-gate `/mlx-mfa-release-audit` runs
@@ -70,13 +70,13 @@ again pre-tag and the CHANGELOG must credit the III-4 correctness fixes.
 | Item | Evidence | Effort |
 |---|---|---|
 | Bundled release (III-4 fixes + int8/follow-ups) capturing the 2 CRITICALs + ~71 fixes | per Marco's HOLD decision — defer to a later version, not a standalone v2.51.1 | S–M (release flow) |
-| int8 V34-generator integration (Sage-NAX revival) | 2.00× gate pass; II-2R projects 1.11–1.33× end-to-end | L/XL |
+| int8 V6NAX-generator integration (Sage-NAX revival) | 2.00× gate pass; II-2R projects 1.11–1.33× end-to-end | L/XL |
 | cider tier-3: paged/TQ decode transplant | TQ floor closed by III-2; cider expert API in-tree | M |
 | Non-causal windowed S-N anchoring + the small-N windowed Metal-abort | III-4 B1: forward keeps 0-anchor (documented); true position-based non-causal windows need the latent Apple-Metal small-N-windowed late-dispatch abort root-caused first | M (kernel + Metal investigation) |
 | Lazy packed-V pool when only the III-2 decode path is used | III-4 R9: tq_v=True keeps both packed + fp16 V pools | S |
 | make_topk_spatial_mask numpy/loop → GPU pooling (R13) | perf-debt; needs bench per Pattern #6 | S/M |
 | Tagged release of int8/follow-ups | carried | — |
-| V34 backward block-sparse NAX extension | **CLOSED — DECLINE** (premise validation 2026-06-17). Was NOT pending: greenlit (Prompt 5c Opt.1), built+shipped (Prompt 5d, 4 native sparse bwd kernels, 8 tests), win premise empirically FALSIFIED — Native/SDPA 0.09–0.77× at VSR shape (Pattern #6); only 1.13× at D=64/small-H/d=0.1 (too narrow for AUTO). Default = 5c hybrid; full native = opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`. See `docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md`. | none (no build) |
+| V6NAX backward block-sparse NAX extension | **CLOSED — DECLINE** (premise validation 2026-06-17). Was NOT pending: greenlit (Prompt 5c Opt.1), built+shipped (Prompt 5d, 4 native sparse bwd kernels, 8 tests), win premise empirically FALSIFIED — Native/SDPA 0.09–0.77× at VSR shape (Pattern #6); only 1.13× at D=64/small-H/d=0.1 (too narrow for AUTO). Default = 5c hybrid; full native = opt-in `MFA_V6_BWD_SPARSE_NATIVE=1`. See `docs/v50/campaign-2026-06/v6nax-blocksparse-nax-premise-report.md`. | none (no build) |
 | `MFA_FORCE_NATIVE_BWD` disposition (Archaeology A → Queue Closure, 2026-06-17) | **CLOSED — REMOVED v2.56.0.** Deprecation cycle complete (announced v2.50.0 "target removal v2.51+", removed at v2.55.0+1). Forced STEEL backward was dominated at every cell (sprint-C Track 2). Env-var knob removed in `dispatch_policy.py` (policy table kept); STEEL kernel retained (keep-all-paths) + tested via direct `_ext.mfa_steel_backward` binding; every reference multi-gated (2 test files, ENV_VARS, cache-audit); code orphan-free. See `queue-force-native-bwd-archaeology.md` + `queue-closure-sprint-report.md`. | done (v2.56.0) |
 | V3/V4/V5 kernels disposition (Archaeology B → Queue Closure, 2026-06-17) | **CLOSED.** **V4/V5 = CLEAN-KEEP** (opt-in, never auto, correct on M5). **V3 = VALIDATED on M5/26.6** — the auto-routing concern is RESOLVED. 3-session §4-strict re-bench (V3 vs V2 the fallback): V3 faster-or-parity at every auto-fire cell — windowed D=64 N4096 **0.68× (V3 ~32% faster)**, N8192 0.92×, D=128 N4096 0.97×, N8192 ~parity; backend="mfa" D=64 0.86×, D=128 ~parity. M1 "win" verdict holds, stronger at D=64. No routing change (validated as-is, keep-all-paths); framing corrected (V3 = conditionally-auto, M5-measured). See `queue-v3v4v5-archaeology.md` + `queue-closure-sprint-report.md`. | done (validated, no routing change) |
 

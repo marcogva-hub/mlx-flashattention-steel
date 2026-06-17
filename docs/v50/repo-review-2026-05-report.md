@@ -40,12 +40,12 @@ vector).
 |---|---|---|
 | S1 | KD-5 BK dispatch/generator mismatch (above) | CRITICAL (research path) |
 | P2 | Per-head 3-D/4-D sparse mask backward used cross-head UNION (4 sites); ndim-preserving bias now; 2-D-only kernels fail loudly | HIGH |
-| C1 | `scale` absent from all 9 V34 backward pipeline cache keys → wrong-kernel reuse across scales | HIGH (latent) |
+| C1 | `scale` absent from all 9 V6NAX backward pipeline cache keys → wrong-kernel reuse across scales | HIGH (latent) |
 | C5 | V6Key bit-packing collisions at production shapes (qbs = 2²⁴ at H=8 N=16384 D=128) | HIGH (latent) |
-| C2 | `force_v34` missing from is_equivalent → LSE-domain mixup via graph dedup | HIGH (latent) |
+| C2 | `force_v6nax` missing from is_equivalent → LSE-domain mixup via graph dedup | HIGH (latent) |
 | C4 | int32 overflow in batch strides (2 files) | MEDIUM (large shapes) |
 | P1 | dispatch cache ignored env mutations | MEDIUM |
-| C7 | V34 fusion dropped caller's custom scale (now gated) | MEDIUM (latent) |
+| C7 | V6NAX fusion dropped caller's custom scale (now gated) | MEDIUM (latent) |
 | S2/S4 | flash-decode RoPE guard; steel-bwd sparse-input guard | LOW (latent, defensive) |
 | P7/R2/R3/R4/R5 | bias-cache ABA, strided-mask ZeroDivision, cache reset metadata, mlx_lm swallow, svdquant idempotence | LOW-MED |
 

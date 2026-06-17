@@ -19,7 +19,7 @@ to SDPA) — Apple's baselines got faster. Ratios vary with qL and thermal
 state; see `docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
 the full table + methodology.
 
-- V34 NAX backward D=64 default-on, **faster than SDPA-vjp** but **strongly
+- V6NAX NAX backward D=64 default-on, **faster than SDPA-vjp** but **strongly
   qL-dependent on 26.6**: ~break-even at qL=2048, ~1.4–1.5× at qL=4096,
   **~2.1–2.5× faster at qL=8192** (e.g. causal qL=8192 `~25 ms vs ~49 ms`;
   causal and non-causal similar). D=128 backward is now **≈ break-even** on
@@ -69,16 +69,16 @@ Full campaign record: `CHANGELOG.md [2.52.0]` and
 
 - **Top-K bisection kernel** AUTO production default (Prompt 5c): 3.85×
   speedup over Phase 3a `mx.topk`-based path at audit shape.
-- **V34 backward broadened to D ∈ {64, 128}** (Prompt 5b Section D):
+- **V6NAX backward broadened to D ∈ {64, 128}** (Prompt 5b Section D):
   split kernels engage at parity with SDPA-vjp for D=128 + qL≥2048.
 - **D=128 + causal + attn_bias mode 1/2** correctness fix (Prompt 5b
   Section C): V1 STEEL silent bias-drop bug resolved via V2 routing.
 - **Sparse backward** via Prompt 5c hybrid orchestrator (NAX sparse
   forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse
   kernels SHIPPED (Prompt 5d) but routed via opt-in
-  `MFA_V34_BWD_SPARSE_NATIVE=1` per **Pattern #6** empirical finding
-  (Apple SDPA NAX outpaces V34 NAX backward on M5+ at most shapes).
-- **Sprint 4 V34 backward causal** production-active (D=64 + D=128)
+  `MFA_V6_BWD_SPARSE_NATIVE=1` per **Pattern #6** empirical finding
+  (Apple SDPA NAX outpaces V6NAX NAX backward on M5+ at most shapes).
+- **Sprint 4 V6NAX backward causal** production-active (D=64 + D=128)
   via Prompt 4 multi-gate dispatch fix.
 
 Detailed v2.50 chronology + decisions: `docs/v50/sprint-5d-decisions.md`.
@@ -91,7 +91,7 @@ Known debt: `docs/v50/known-debt-v2.50.md`.
 
 ### v2.39.1 era (historical)
 
-Historical record: since v2.51.0 the V34 backward D=64 path (causal +
+Historical record: since v2.51.0 the V6NAX backward D=64 path (causal +
 non-causal) is **default-on** — see the version header at the top of
 this README; the opt-in env vars described below reflect the v2.39.x
 state.
@@ -106,7 +106,7 @@ compiler's spill threshold.  Auto-default flipped back to fused for D=64.
 
 **Measured speedups vs SDPA-vjp** (M5 Max, 3-session × 4w+12i median,
 PUBLIC AUTO API `mx.grad(flash_attention(..., backend="auto"))` +
-`MFA_ENABLE_V34_BACKWARD=1`):
+`MFA_ENABLE_V6_BACKWARD=1`):
 
 | qL | v2.39.1 speedup | wall-time | Δ vs v2.38.1 |
 |---|---|---|---|
@@ -123,7 +123,7 @@ FALSIFIED; H2 cache absorption partial-supporting.  Full record at
 `docs/v6-nax/v39-1-investigation-synthesis.md`.
 
 Net effect on users: identical to v2.38.1 or modestly better.  No new
-env vars required.  `MFA_V34_BWD_KERNEL=split` available as opt-out.
+env vars required.  `MFA_V6_BWD_KERNEL=split` available as opt-out.
 
 Builds on **v2.39.0** (Option γ fused kernel architectural addition,
 outcome δ documented), **v2.38.1** (D_vec precompute), **v2.38.0**
@@ -135,11 +135,11 @@ institutional rules (`CLAUDE_V6_NAX.md` §Z public API path testing
 rule, §AA skill invocation checkpoints) remain in force.  v2.37.x
 claim corrections (carried over unchanged):
 
-- v2.37.1 "D=64 qL=2048: V34 wins 1.44×" → **retracted** (current
+- v2.37.1 "D=64 qL=2048: V6NAX wins 1.44×" → **retracted** (current
   canonical-methodology bench shows 1.15× kernel-level / ~1.06×
   end-to-end win, within measurement noise; v2.37.2 carve-out
   correctly does not engage at qL=2048)
-- v2.37.0 "D=128 V34 backward 2.2-2.4× slower than SDPA-vjp" →
+- v2.37.0 "D=128 V6NAX backward 2.2-2.4× slower than SDPA-vjp" →
   **reclassified** as research characterization requiring
   `backend="mfa"` override; the public AUTO API correctly falls
   back to SDPA-vjp at parity (no user-facing impact)
@@ -147,7 +147,7 @@ claim corrections (carried over unchanged):
 **Reachable via public AUTO API** (carve-out shipped v2.37.2,
 preserved in v2.37.3):
 - D=64, qL ≥ 4096, non-causal, f16/bf16, M5+ NAX, env
-  `MFA_ENABLE_V34_BACKWARD=1` → **1.81-1.82× faster end-to-end
+  `MFA_ENABLE_V6_BACKWARD=1` → **1.81-1.82× faster end-to-end
   backward vs SDPA-vjp**
 - All other shapes: AUTO path defaults to SDPA-vjp — correct,
   no user action needed
@@ -156,7 +156,7 @@ See `docs/TRAINING_QUICKSTART.md` for the updated user-facing perf
 recommendation and `docs/v6-nax/v2.37.x-perf-claim-audit.md` for
 the per-claim reachability audit that drove these corrections.
 
-D=128 V34 backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 
@@ -222,7 +222,7 @@ to its silicon.
 
 v2.32.0 introduces a **strategic shift in dispatch on M5+ NAX hardware**.
 Apple's MLX 0.31.2 ships an excellent NAX-based SDPA kernel
-(`steel_attention_nax.h`) that matches the V34 NAX-direct path mlx-mfa
+(`steel_attention_nax.h`) that matches the V6NAX NAX-direct path mlx-mfa
 shipped in v2.31.0 — and Apple's kernel benefits from continuous upstream
 tuning. Rather than compete on a surface where Apple has structural
 advantages, mlx-mfa now **routes forward attention to MLX SDPA on M5+
@@ -242,17 +242,17 @@ This preserves mlx-mfa as a unified attention toolkit across all Apple
 Silicon generations while stopping unnecessary competition with Apple's
 upstream optimizations on shapes Apple covers well.
 
-The v2.31.0 performance numbers (V34 +33-40% wins on D=128) were measured
+The v2.31.0 performance numbers (V6NAX +33-40% wins on D=128) were measured
 under specific environmental conditions that did not reproduce in the
 v2.32.0 cross-session diagnostic. v2.32.0 ships with reproducible-conditions
 methodology baked into the bench infrastructure (`bench/v32_multisession_capture.py`,
 `docs/v6-nax/v32-multisession-protocol.md`, `CLAUDE_V6_NAX.md` Artifact #5).
-The architectural improvements that motivated v2.31.0 (V34 NAX-direct
+The architectural improvements that motivated v2.31.0 (V6NAX NAX-direct
 forward kernel, multi-SG parallelism via per-SG row partitioning) remain
 in the codebase as a regression canary and as the dispatched path when
 `MFA_DISABLE_SDPA_ROUTE=1` is set.
 
-v2.31.0 shipped the **V34 NAX-direct rewrite**. V6 NAX's forward hot path
+v2.31.0 shipped the **V6NAX NAX-direct rewrite**. V6 NAX's forward hot path
 uses Apple's `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
 (the pattern from `steel_attention_nax.h`), bypassing MPP cooperative_tensor
 constraints that previously imposed `execution_simdgroups<1>`. Multi-SG
@@ -266,9 +266,9 @@ at 0.89× SDPA actually beats SDPA**, the first time V6 NAX has dipped
 below 1.0× on a production shape. Numerics also improve 4–30× over legacy
 because the manual `simd_shuffle_xor` row reductions on FP32 accumulators
 inside `NAXFrag::row_reduce` are bit-exact, vs MPP's `reduce_rows` which
-had tile-boundary FP rounding artifacts. Dispatch is shape-aware: V34 is
+had tile-boundary FP rounding artifacts. Dispatch is shape-aware: V6NAX is
 default for D=128 and D=64 N≥2048, legacy stays for D=64 small-N
-(FlashVSR-dense regresses under V34 — root cause TBD).
+(FlashVSR-dense regresses under V6NAX — root cause TBD).
 
 v2.30.0 extended v2.29.0's V6 NAX work along three axes: (1) **GQA
 single-Otile** — the BHND rewriter now handles `Hq % Hk == 0` so GQA
@@ -344,15 +344,15 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 ## Best M5 Max Benchmark Highlights (v2.31.0)
 
 V6 NAX path on production VSR/DiT shapes (cross-session multi-run, iStat performance fan profile).
-The shape-aware dispatch picks V34 (NAX-direct) where it wins, legacy V6 NAX otherwise.
+The shape-aware dispatch picks V6NAX (NAX-direct) where it wins, legacy V6 NAX otherwise.
 
 | Shape | D | Path | V6 NAX vs SDPA |
 |---|---|---|---|
 | FlashVSR-dense | 64 | legacy | 1.23× SDPA |
-| LTX2-cross | 64 | **V34** | **1.07× SDPA** |
-| SeedVR2-small | 128 | **V34** | **0.89× SDPA ⭐ (beats SDPA)** |
-| CogVideoX | 128 | **V34** | **1.03× SDPA** (parity) |
-| SeedVR2-large | 128 | **V34** | **1.01× SDPA** (parity) |
+| LTX2-cross | 64 | **V6NAX** | **1.07× SDPA** |
+| SeedVR2-small | 128 | **V6NAX** | **0.89× SDPA ⭐ (beats SDPA)** |
+| CogVideoX | 128 | **V6NAX** | **1.03× SDPA** (parity) |
+| SeedVR2-large | 128 | **V6NAX** | **1.01× SDPA** (parity) |
 
 GQA shapes (Sprint B single-Otile path, legacy V6 NAX):
 
@@ -363,7 +363,7 @@ GQA shapes (Sprint B single-Otile path, legacy V6 NAX):
 | GQA-Hq40-Hk8 D=128 | 1.16× |
 | GQA-Hq8-Hk2 D=64 | 1.18× |
 
-Numerical: V34 RMSE FP32 vs SDPA reference is 9e-7 to 4e-6 across all 5 shapes —
+Numerical: V6NAX RMSE FP32 vs SDPA reference is 9e-7 to 4e-6 across all 5 shapes —
 4–30× more stable than legacy V6 NAX (1.5e-5 to 6e-6). Manual simd_shuffle_xor row
 reductions on FP32 accumulators are bit-exact, vs MPP's reduce_rows which had
 tile-boundary FP rounding.

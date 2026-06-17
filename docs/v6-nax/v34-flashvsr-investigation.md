@@ -1,30 +1,30 @@
-# V34 FlashVSR-dense regression investigation — Sprint 4 results
+# V6NAX FlashVSR-dense regression investigation — Sprint 4 results
 
 **Date:** 2026-05-06
-**Sprint:** V34-FORWARD-MAX Sprint 4 (D=64 dispatch fix)
-**Branch:** `experiment/v34-forward-max`
+**Sprint:** V6NAX-FORWARD-MAX Sprint 4 (D=64 dispatch fix)
+**Branch:** `experiment/v6nax-forward-max`
 **Commit:** `e833f71`
 
 ## Executive summary
 
-The "FlashVSR-dense D=64 −39% V34 regression" reported in v2.31.0
-(`v34-results.md` open item #1) was **wrong tile config, not a kernel-
-design issue**. With BK=32 instead of BK=64, V34 wins **+20%** over legacy
+The "FlashVSR-dense D=64 −39% V6NAX regression" reported in v2.31.0
+(`v6nax-results.md` open item #1) was **wrong tile config, not a kernel-
+design issue**. With BK=32 instead of BK=64, V6NAX wins **+20%** over legacy
 on FlashVSR-dense and **+14%** on LTX2-cross — turning a "regression
-shape" into a "V34 default" shape. **V34 now ships as the universal
+shape" into a "V6NAX default" shape. **V6NAX now ships as the universal
 forward default for D=64**, matching its D=128 status.
 
-This is the most impactful Sprint of the V34-FORWARD-MAX cycle: a sign
-flip from "kernel regresses; legacy retained" to "V34 wins; new default."
+This is the most impactful Sprint of the V6NAX-FORWARD-MAX cycle: a sign
+flip from "kernel regresses; legacy retained" to "V6NAX wins; new default."
 
 ## Background
 
-v2.31.0's V34 used per-D defaults `D=64 → BQ=32 BK=64 WM=2`, mirroring
-the Apple reference. On FlashVSR-dense (1×10×4096² D=64), V34 measured
+v2.31.0's V6NAX used per-D defaults `D=64 → BQ=32 BK=64 WM=2`, mirroring
+the Apple reference. On FlashVSR-dense (1×10×4096² D=64), V6NAX measured
 1.55ms vs legacy 1.12ms (−39%). This kept legacy as the D=64 small-N
 default.
 
-The v2.31.0 hypothesis was V34 "per-kernel overhead unfavorable on short
+The v2.31.0 hypothesis was V6NAX "per-kernel overhead unfavorable on short
 matmul tiles" — i.e., a kernel-design issue. Sprint 4 tested this by
 sweeping the tile axes the v2.31.0 ship hadn't varied.
 
@@ -99,13 +99,13 @@ config a "regression."
 3 subprocess runs per round, median, 60s inter-round / 30s inter-shape
 cooldowns. iStat performance fan profile active.
 
-| Shape | Legacy ms | V34 BK=32 ms | speedup | V34/SDPA |
+| Shape | Legacy ms | V6NAX BK=32 ms | speedup | V6NAX/SDPA |
 |---|---:|---:|---:|---:|
 | FlashVSR-dense | 1.210 | 1.007 | **1.20×** | 0.96× (was 1.60×) |
 | LTX2-cross | 1.016 | 0.890 | **1.14×** | 0.99× (was 1.56×) |
 | LTX2-long | 2.332 | 2.275 | **1.03×** | 0.96× (was 1.00×) |
 
-V34/SDPA reaches **0.94–0.99× on all three**, where legacy was 0.79–0.90×.
+V6NAX/SDPA reaches **0.94–0.99× on all three**, where legacy was 0.79–0.90×.
 The signal is much larger than measurement noise (~1-2% session-to-session).
 
 ## Dispatch change
@@ -114,14 +114,14 @@ The signal is much larger than measurement noise (~1-2% session-to-session).
 
 ```cpp
 // Before (v2.31.0):
-if (D == 128)              { use_v34 = true; }
-else if (D == 64 && Nk > 8000) { use_v34 = true; }   // LTX2-asymmetric only
-else                            { use_v34 = false; } // FlashVSR-dense fallback
+if (D == 128)              { use_v6nax = true; }
+else if (D == 64 && Nk > 8000) { use_v6nax = true; }   // LTX2-asymmetric only
+else                            { use_v6nax = false; } // FlashVSR-dense fallback
 
 // After (Sprint 4):
-if (D == 128) { use_v34 = true; }
-else if (D == 64) { use_v34 = true; }                 // V34 universal for D=64
-else { use_v34 = false; }                             // D=256+ unported
+if (D == 128) { use_v6nax = true; }
+else if (D == 64) { use_v6nax = true; }                 // V6NAX universal for D=64
+else { use_v6nax = false; }                             // D=256+ unported
 ```
 
 Default tile for D=64 changed from `BQ=32 BK=64 WM=2` to `BQ=32 BK=32 WM=2`.
@@ -142,12 +142,12 @@ Default tile for D=64 changed from `BQ=32 BK=64 WM=2` to `BQ=32 BK=32 WM=2`.
 
 ## Files
 
-- `csrc/mfa_v6_nax_primitive.cpp` (V34 dispatch gate for D=64; default
+- `csrc/mfa_v6_nax_primitive.cpp` (V6NAX dispatch gate for D=64; default
   BK=32)
 
 ## Cross-link
 
-- v2.31.0 open item #1 (`docs/v6-nax/v34-results.md` lines 141-151) —
+- v2.31.0 open item #1 (`docs/v6-nax/v6nax-results.md` lines 141-151) —
   closed by this sprint.
 - v2.32.0 release validation —
   [`v32-sprint4-validation.md`](v32-sprint4-validation.md).

@@ -7,7 +7,7 @@
 The "buffer-pool stale-value residual" was **not a buffer-pool bug**. It is
 **intermittent single-lane cooperative-tensor fragment loss** caused by a
 data-dependent branch (`if (!tile_active) continue;`) inside the main loop
-of the V34 **sparse** backward kernels, executing around live cooperative
+of the V6NAX **sparse** backward kernels, executing around live cooperative
 accumulators (dK/dV/dQ `_accum` tiles that persist across all iterations).
 Fixed structurally in all 4 sparse generators by replacing the in-loop
 branch with a **compacted active-tile list + uniform counted loop** (zero

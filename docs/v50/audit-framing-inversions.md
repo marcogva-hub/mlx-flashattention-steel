@@ -100,26 +100,26 @@ Phase 3b (native streaming top-K kernel) DEFERRED with design sketch +
 
 **Effort**: ~2h CC (premise check + dispatch fix + tests + docs).
 
-### v2.50 Sprint 4 — V34 causal extension — SCOPE_CORRECTION + Phase 4b prediction FALSIFIED
+### v2.50 Sprint 4 — V6NAX causal extension — SCOPE_CORRECTION + Phase 4b prediction FALSIFIED
 
 **Audit prescription** (Sprint 4 mandate):
-> Sprint 4: V34 backward causal NAX — M effort (~1-2h CC).  Extend
+> Sprint 4: V6NAX backward causal NAX — M effort (~1-2h CC).  Extend
 > backward source generators to support causal masking.
 
 **Prompt 1 Sprint 4 scope-discovery finding** (`sprint4-status.md`, 2026-05-13):
-- V34 forward gates on `!isCausal` (`NAAttentionKernel.cpp:171`) → V34
+- V6NAX forward gates on `!isCausal` (`NAAttentionKernel.cpp:171`) → V6NAX
   forward causal extension is an unaccounted prerequisite (Phase 4a).
 - Halted with corrected scope L (~5h CC) and STATUS doc.
 
 **Prompt 2 Sprint 4 empirical finding** (`sprint4-decisions.md`, 2026-05-14):
-- Phase 4a (V34 forward causal) implemented at ~2h CC ✓.
+- Phase 4a (V6NAX forward causal) implemented at ~2h CC ✓.
 - Phase 4b prediction in Prompt 1 STATUS doc — "backward kernels
   likely need NO source changes because the FA-2 backward pattern
   handles causal via lse-encoded masking automatically" — **FALSIFIED**.
-- Direct test: V34 backward dQ via `mx.vjp(flash_attention(causal=True))`
-  with V34 forward emitting causal-masked lse → dQ max_diff = 2144
+- Direct test: V6NAX backward dQ via `mx.vjp(flash_attention(causal=True))`
+  with V6NAX forward emitting causal-masked lse → dQ max_diff = 2144
   vs SDPA-vjp reference (6+ orders of magnitude above tolerance).
-- Root cause: V34 backward recomputes S = Q@K^T from scratch; causal-
+- Root cause: V6NAX backward recomputes S = Q@K^T from scratch; causal-
   masked lse alone doesn't zero P[r,c] for c>r because lse only sums
   c<=r positions.
 - Resolution: dQ kernel needs its own causal mask (Phase 4b partial
@@ -138,10 +138,10 @@ infrastructure).
   Phase 4b-complete K-parallel kernels.
 - Underestimate factor: ~2-3×.
 
-### v2.50 Sprint 5 — V34 backward block-sparse — Premise check NOT YET DONE; DEFERRED
+### v2.50 Sprint 5 — V6NAX backward block-sparse — Premise check NOT YET DONE; DEFERRED
 
 **Audit prescription** (Sprint 5 mandate):
-> M effort (~2h CC) — extend V34 backward source generators to support
+> M effort (~2h CC) — extend V6NAX backward source generators to support
 > block-sparse mask (mask buffer + per-block early-exit).
 
 **Sprint 5 status (`sprint5-status.md`, 2026-05-14)**:
@@ -168,7 +168,7 @@ infrastructure).
 
 3. **Audit's effort estimates lack implementation-time investigation.**
    Sprint 4 was estimated M (~2h) but actually requires L (~5-6h)
-   because the audit didn't notice V34 forward causal as a prerequisite.
+   because the audit didn't notice V6NAX forward causal as a prerequisite.
    Sprint 3's L estimate for native kernel was CONFIRMED but the
    audit missed that a dispatch fix would deliver 1.25× independently.
 
@@ -193,8 +193,8 @@ infrastructure).
    at the culprit.
 
    **Empirical case** (v2.50 Prompt 4 Section B — dV residual):
-   V34 backward dV kernel consumes `lse` produced by the forward.  Two
-   eligibility gates routed forward to V34 (natural-log lse), but a
+   V6NAX backward dV kernel consumes `lse` produced by the forward.  Two
+   eligibility gates routed forward to V6NAX (natural-log lse), but a
    THIRD gate in `MFAV6Forward::eval_gpu()` routed *causal* forward
    to STEEL legacy (log2-domain lse).  The dV kernel decoded
    `exp(score - lse)` correctly for non-causal (gates 1+2 fixed) but
@@ -228,25 +228,25 @@ infrastructure).
    density), and Apple SDPA NAX is in the comparison path on M5+
    hardware, the projection must be **empirically validated** before
    committing to the custom kernel implementation.  M5+ Apple SDPA NAX
-   is sufficiently optimized that custom V34-style NAX kernels —
+   is sufficiently optimized that custom V6NAX-style NAX kernels —
    even with algorithmically-superior optimizations like sparse-skip
    or top-K filtering — cannot outpace it at audit-relevant shapes.
 
    **Empirical case** (v2.50 Prompt 5d Section A v3):
    Sprint 5 native sparse backward was projected to deliver 10×
-   speedup at density 0.1 (FlashVSR-typical) via 4 native V34 NAX
+   speedup at density 0.1 (FlashVSR-typical) via 4 native V6NAX NAX
    backward kernels.  Implementation completed (3 new kernels + dV
    PoC, all math-correct).  Bench at VSR shape (B=1 H=12 qL=4096
    D=128 fp16) shows:
 
-   | Density | SDPA-vjp | V34 hybrid | V34 full native |
+   | Density | SDPA-vjp | V6NAX hybrid | V6NAX full native |
    |---|---|---|---|
    | 0.1 | 17.41 ms | 34.84 ms | 22.58 ms (0.77× SDPA) |
    | 1.0 | 16.93 ms | 175.09 ms | 181.07 ms (0.09× SDPA) |
 
-   V34 native is 0.09×–0.77× SDPA-vjp dense at all tested densities.
+   V6NAX native is 0.09×–0.77× SDPA-vjp dense at all tested densities.
    The projected 10× speedup does not materialize because the
-   projection assumed V34 dense kernels were at parity with SDPA-vjp
+   projection assumed V6NAX dense kernels were at parity with SDPA-vjp
    on M5+ (Sprint B v2.40.0-internal validated parity-or-slight-
    regression for D=128 dense; sparse extension inherits that
    overhead).
@@ -487,7 +487,7 @@ exhibits, all enforced by `/mlx-mfa-release-audit` gate #9:
    generator hardcoded BK=16 for D>64 (above).
 2. **v2.39.1 fused-backward BK=16** — the fused dKdV default `BK=16`
    (TK=1) vs the paired-MMA `ik += 2` requirement (TK even).
-3. **MFA_V6_V34_BK forward override** (II-8) — an unguarded env-var
+3. **MFA_V6_NAX_BK forward override** (II-8) — an unguarded env-var
    forward override of BK, found during the Phase II-8 sweep.
 Gate #9 is now a programmatic test (`tests/test_phase2_ii8_gate9_parity.py`)
 asserting every paired-MMA emission site's BK is `% 32`-guarded.

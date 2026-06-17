@@ -25,10 +25,10 @@ opt-in paths.  Recorded as not-applicable rather than re-tuned.
 
 | Cell family | Routing | Evidence |
 |---|---|---|
-| D=64 causal (fp16) qL≥2048 | **V34 NAX-direct (default-on, II-0)** | 2.19×/2.71× at N=2048/8192 |
-| D=64 causal (bf16) qL≥2048 | **V34 (default-on)** | 1.33×/2.68× |
+| D=64 causal (fp16) qL≥2048 | **V6NAX NAX-direct (default-on, II-0)** | 2.19×/2.71× at N=2048/8192 |
+| D=64 causal (bf16) qL≥2048 | **V6NAX (default-on)** | 1.33×/2.68× |
 | D=64 non-causal | SDPA-vjp | 0.99-1.01× parity both dtypes |
-| D=128 all | SDPA-vjp | 0.99-1.01× (V34 loses 0.46-0.58× per Phase I) |
+| D=128 all | SDPA-vjp | 0.99-1.01× (V6NAX loses 0.46-0.58× per Phase I) |
 | D=256 all | SDPA-vjp | 0.98-1.00× |
 
 ## Decode (q_len=1): SDPA HOLD — 6/6
@@ -44,7 +44,7 @@ No custom-kernel gap worth building (parity at all three).
 ## Map summary
 
 **Zero INVERT cells remain.**  M5 dispatch truth: SDPA forward
-everywhere dense; V34 backward D=64-causal; SDPA-vjp backward
+everywhere dense; V6NAX backward D=64-causal; SDPA-vjp backward
 elsewhere; custom kernels own the structured paths (sparse/paged/
 TQ/GNA/sage/decode≤4) where Apple has no coverage (re-verified against
 MLX 0.31.2 in Sprint C Track 4).

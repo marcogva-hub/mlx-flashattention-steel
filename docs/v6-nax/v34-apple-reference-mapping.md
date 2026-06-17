@@ -1,13 +1,13 @@
-# V34 — Apple NAX reference mapping (Phase 0a)
+# V6NAX — Apple NAX reference mapping (Phase 0a)
 
 **Date:** 2026-05-06
-**Branch:** `experiment/v34-nax-direct`
+**Branch:** `experiment/v6nax-nax-direct`
 **Apple sources** (`~/code/mlx-source/mlx/backend/metal/kernels/steel/attn/`):
 - `kernels/steel_attention_nax.h` — 482 LOC — Apple reference forward kernel
 - `nax.h` — 887 LOC — `BaseNAXFrag` (with `mma`, `load`, `row_reduce`, `row_bin_op`) + `NAXTile<T, TQ, TD>` wrapper
 - `transforms.h` — 70 LOC — `BlockSwizzle`, `AccumHelper`, `Transform*`
 - `params.h` — 44 LOC — `AttnParams` struct
-- `loader.h` — 264 LOC — block loaders (not needed for V34: NAXFrag::load handles tile loads)
+- `loader.h` — 264 LOC — block loaders (not needed for V6NAX: NAXFrag::load handles tile loads)
 
 ## Critical architectural insight
 
@@ -21,10 +21,10 @@ out, discarded. There is NO `<N>` cooperative_tensor at any point.
 This is why V33's hybrid approach (cooperative_tensor `<1>` + bridge
 to `<N>` cO_0) was structurally unsound: it tried to use MPP's
 distributed cooperative_tensor across SGs, which has opaque cross-SG
-distribution semantics. V34 doesn't have this problem because it
+distribution semantics. V6NAX doesn't have this problem because it
 **never has cross-SG cooperative_tensor state**.
 
-The "multi-SG parallelism" in V34 comes from a different source: each
+The "multi-SG parallelism" in V6NAX comes from a different source: each
 SG processes its own slice of BQ rows independently. With BQ=64,
 WM=4: each SG handles 16 rows; together they cover all 64 rows. They
 share threadgroup memory only for K/V/P (in some kernels), not for
@@ -32,7 +32,7 @@ the matmul cooperative state.
 
 ## Sub-system mapping
 
-| V34 sub-system | Apple file:line | Notes |
+| V6NAX sub-system | Apple file:line | Notes |
 |---|---|---|
 | Per-batch+head+Q-block ptr offset | `steel_attention_nax.h:102-117` | `Q += tid.z * Q_strides[0] + tid.y * Q_strides[1] + tid.x * BQ * Q_strides[2]`. BHND-ready: strides[0]=H*qL*D, strides[1]=qL*D, strides[2]=D. GQA: `kv_head_idx = tid.y / gqa_factor` for K/V. |
 | Otile decl + clear | `steel_attention_nax.h:143-146` | `using otile_t = NAXTile<float, TQ, TD>;` then `Otile.clear()`. TQ=BQ/(WM*16), TD=BD/16. |
@@ -56,7 +56,7 @@ the matmul cooperative state.
 | Advance K, V pointers | `steel_attention_nax.h:455-456` | `K += BK * K_strides[2]; V += BK * V_strides[2];` |
 | Final normalize | `steel_attention_nax.h:461-469` | `threadgroup_barrier(mem_none);` then `rcp[i] = 1.f / sum_score[i];` then `Otile.template row_bin_op<MulOp>(rcp);` |
 | Output store | `steel_attention_nax.h:471-481` | `O += tm * O_strides[2];` then `Otile.store(O, O_strides[2])` aligned, or `Otile.store_rows(O, O_strides[2], lim_rows_q)` unaligned. |
-| Function constants | `steel_attention_nax.h:14-19` | `align_Q [[fc(200)]]`, `align_K [[fc(201)]]`, `has_mask [[fc(300)]]`, `do_causal [[fc(301)]]`, `has_sinks [[fc(302)]]`. We only need `align_Q` and `align_K` for V34 forward non-causal. |
+| Function constants | `steel_attention_nax.h:14-19` | `align_Q [[fc(200)]]`, `align_K [[fc(201)]]`, `has_mask [[fc(300)]]`, `do_causal [[fc(301)]]`, `has_sinks [[fc(302)]]`. We only need `align_Q` and `align_K` for V6NAX forward non-causal. |
 | Operator structs | `steel_attention_nax.h:31-71` | `MaxOp`, `SumOp`, `MulOp`, `SubOp`, `ExpSubOp`, `DivOp`. NOT in `transforms.h` despite the name suggesting otherwise. |
 
 ## NAXTile / NAXFrag size relationships
@@ -81,9 +81,9 @@ For Apple's example with BQ=64, WM=4, BD=128, BK=64:
 - otile_t = NAXTile<float, 1, 8> → 1*8 = 8 fragments, 64 elements per lane
 - kRowsPerThread = 1 * 2 = 2
 
-## V34 design choices vs Apple
+## V6NAX design choices vs Apple
 
-| Aspect | Apple kernel | V34 plan |
+| Aspect | Apple kernel | V6NAX plan |
 |---|---|---|
 | TQ | always 1 (`static_assert(TQ == 1)` line 142) | Match: BQ = WM * 16 |
 | BD | template parameter, can be any multiple of 16 | Match: head_dim ∈ {64, 128} |
@@ -92,40 +92,40 @@ For Apple's example with BQ=64, WM=4, BD=128, BK=64:
 | WN | always 1 in `attention_nax` (no col partition) | Match |
 | `align_Q`, `align_K` | function constants, JIT-set at compile time | Generate kernel with both = `false` (safe default — handles all shapes via load_rows/store_rows). Phase 5 optimization: emit two pipeline variants and dispatch based on `qL % BQ`, `kL % BK`. |
 | `has_mask`, `has_sinks` | function constants | Generate kernel with `false` (we don't currently support these in V6 NAX). |
-| `do_causal` | function constant | Generate `false` (V34 scope: non-causal forward only, per the mandate). |
+| `do_causal` | function constant | Generate `false` (V6NAX scope: non-causal forward only, per the mandate). |
 | Causal masking inner code | lines 278-303 | omit (compile out) |
 | Mask inner code | lines 306-378 | omit |
 | Sinks inner code | lines 168-174 | omit |
 | `qL_off` | params field | not used in non-causal — set to 0 in our params |
 
-## V34 will NOT use post-generation rewriting for BHND
+## V6NAX will NOT use post-generation rewriting for BHND
 
 The existing `mfa_v6_nax_primitive.cpp` BHND rewriter does
-`replace_all` on the legacy generator's emitted strings. V34 will
+`replace_all` on the legacy generator's emitted strings. V6NAX will
 **emit BHND-compatible code directly** — no post-gen rewriting
 needed. This removes a fragility class.
 
 Apple's stride encoding (Q_strides[0]=batch_stride, [1]=head_stride,
 [2]=seq_stride, [D]=1 implicit) maps directly to MLX BHND
-contiguous tensors. V34 computes those strides at runtime in the
+contiguous tensors. V6NAX computes those strides at runtime in the
 primitive's eval_gpu and passes them as constants.
 
 ## Function-constant strategy
 
-For Phase 1, V34 emits the kernel with hard-coded `align_Q = false`,
+For Phase 1, V6NAX emits the kernel with hard-coded `align_Q = false`,
 `align_K = false`. This is the safe variant: always uses
 `load_rows`/`store_rows` and per-element bounds checks. Slightly
 slower than the aligned path on perfectly-aligned shapes, but
 correct on every shape.
 
-If Phase 4 bench shows V34 has the right perf direction, Phase 5
+If Phase 4 bench shows V6NAX has the right perf direction, Phase 5
 adds aligned/unaligned dispatch via two compiled variants keyed on
 `qL % BQ == 0` and `kL % BK == 0` at dispatch time.
 
 ## Open questions resolved by this Phase 0 reading
 
 1. **Is `MaxOp` etc. in `nax.h` or somewhere else?** → They're in
-   `kernels/steel_attention_nax.h:31-71`, not `transforms.h`. V34's
+   `kernels/steel_attention_nax.h:31-71`, not `transforms.h`. V6NAX's
    generated kernel must define them (copy verbatim from Apple
    source, lines 31-71).
 
@@ -151,9 +151,9 @@ which is the legacy probe; actual production uses
 `mfa_v6_nax_primitive.cpp` which does NOT pass an explicit params
 struct — strides are encoded in the kernel function constants).
 
-V34 strategy: **add an `AttnParams`-shaped buffer** (matching
+V6NAX strategy: **add an `AttnParams`-shaped buffer** (matching
 Apple's struct, including the 12 strides) computed by the primitive
-in `eval_gpu()`. Pass via `[[buffer(4)]]`. This keeps the V34 kernel
+in `eval_gpu()`. Pass via `[[buffer(4)]]`. This keeps the V6NAX kernel
 identical to Apple's reference layout, simplifying review and
 debugging.
 

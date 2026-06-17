@@ -85,7 +85,7 @@ large N if pursued).
 0. **Prerequisite gate:** a QK^T-only NAX-cooperative-tensor fragment over a block-sparse tile vs the
    current STEEL sparse path on M5/26.6 — measure the REALIZED gain (not the 4× ceiling). If it
    doesn't beat current STEEL by a material margin after mask overhead → STOP. (Extend the existing
-   V34 cooperative-tensor MMA infra; don't greenfield.)
+   V6NAX cooperative-tensor MMA infra; don't greenfield.)
 1. block-sparse QK^T NAX vs fp32 (correctness) + vs STEEL-sparse (perf); 2. + P@V; 3. fuse + the
    tile-skip mask in the cooperative-tensor loop; 4. windowed/LCSA reuse.
    Each: independent fp32 oracle + three-axis + `/mlx-mfa-nax-matmul2d-correctness` pre-flight

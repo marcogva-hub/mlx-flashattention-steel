@@ -148,7 +148,7 @@ cache (already shipped) handles the repeated-build overhead correctly.
   `test_v50_sprint1_explicit_low_threshold_routes_sdpa`).
 - Cache behavior preserved (verified in
   `test_v50_sprint1_float_bias_cache_repeat_call`).
-- All 79 baseline V34/V39/v32-routing/perf-claim tests still pass.
+- All 79 baseline V6NAX/V39/v32-routing/perf-claim tests still pass.
 
 ## Skill invocations log (per §AA.2)
 

@@ -19,7 +19,7 @@ opt-in env var for research.
 3. **dK split sparse** — Prompt 5d Section A.2 (this prompt)
 4. **Fused dKdV sparse (D=64 + D=128)** — Prompt 5d Section A.3
    (this prompt)
-5. **Python `_v34_backward_vjp_sparse_full_native`** — orchestrates
+5. **Python `_v6nax_backward_vjp_sparse_full_native`** — orchestrates
    4 sparse kernels for full native sparse backward
 
 Each kernel plumbed end-to-end: source generator + Primitive class +
@@ -43,23 +43,23 @@ VSR audit shape (B=1 H=12 qL=4096 D=128 fp16 BT=32):
 | 0.5 | 16.71 ms | 102.01 ms (0.16×) | 98.18 ms (0.17×) |
 | 1.0 | 16.93 ms | 175.09 ms (0.10×) | 181.07 ms (0.09×) |
 
-V34 native sparse loses to SDPA-vjp at all 4 densities at VSR shape.
+V6NAX native sparse loses to SDPA-vjp at all 4 densities at VSR shape.
 
 ### Decision (per Marco's directive)
 
 Per `docs/v50/section-a-v3-empirical-verification.md` decision tree
-**OUTCOME: confirmed** (V34 native sparse < SDPA-vjp at all VSR
+**OUTCOME: confirmed** (V6NAX native sparse < SDPA-vjp at all VSR
 densities tested).
 
-**Routing change**: `flash_attention_sparse` dispatch when V34 backward
+**Routing change**: `flash_attention_sparse` dispatch when V6NAX backward
 eligible reverts to Prompt 5c hybrid (NAX sparse forward + native dV +
 SDPA-vjp dQ/dK).  Full native (Prompt 5d, 4 kernels) becomes opt-in
-via `MFA_V34_BWD_SPARSE_NATIVE=1`.
+via `MFA_V6_BWD_SPARSE_NATIVE=1`.
 
 ### Why ship kernels but not use them by default
 
 - **Reference implementation**: provides validated block-sparse
-  iteration pattern in V34 NAX kernel structure
+  iteration pattern in V6NAX NAX kernel structure
 - **Future hardware**: if Apple SDPA NAX evolves OR M5+ next-gen shifts
   the perf landscape, these can be retested without re-implementation
 - **Opt-in research**: D=64 small-H low-density users may benefit
@@ -74,9 +74,9 @@ via `MFA_V34_BWD_SPARSE_NATIVE=1`.
 Per `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`:
 
 The PASS-2 custom Metal attention kernel (replacing Apple SDPA NAX
-bias-mask in Architecture B) would be a NEW V34-style attention kernel
+bias-mask in Architecture B) would be a NEW V6NAX-style attention kernel
 operating on filtered K/V positions.  Per Section A v3 empirical
-pattern, custom V34 NAX backward kernels can't outpace Apple SDPA NAX.
+pattern, custom V6NAX NAX backward kernels can't outpace Apple SDPA NAX.
 PASS-2 custom kernel would be expected to perform similarly or worse,
 making Approach 5 a Scenario 3 architectural deadend.
 
@@ -96,12 +96,12 @@ when Apple SDPA NAX is in the comparison path on M5+.
 | Path | Env | Routing |
 |---|---|---|
 | Dense forward (D ∈ {64, 128}) | any | Apple SDPA NAX (auto) |
-| Dense backward (D ∈ {64, 128}, qL≥2048) | `MFA_ENABLE_V34_BACKWARD=1` | V34 NAX-direct (D=64 fused, D=128 split) |
+| Dense backward (D ∈ {64, 128}, qL≥2048) | `MFA_ENABLE_V6_BACKWARD=1` | V6NAX NAX-direct (D=64 fused, D=128 split) |
 | Dense backward | env unset | SDPA-vjp |
 | Sparse forward | any | LCSA NAX dispatcher (Sprint 1 density fix) |
-| Sparse backward (V34-eligible) | `MFA_ENABLE_V34_BACKWARD=1` | **Prompt 5c hybrid** (default, empirically optimal per Pattern #6) |
-| Sparse backward (V34-eligible) | `MFA_ENABLE_V34_BACKWARD=1` + `MFA_V34_BWD_SPARSE_NATIVE=1` | Full native (4 sparse kernels, research opt-in) |
-| Sparse backward (V34-ineligible) | any | Section C wrapper (SDPA-vjp throughout) |
+| Sparse backward (V6NAX-eligible) | `MFA_ENABLE_V6_BACKWARD=1` | **Prompt 5c hybrid** (default, empirically optimal per Pattern #6) |
+| Sparse backward (V6NAX-eligible) | `MFA_ENABLE_V6_BACKWARD=1` + `MFA_V6_BWD_SPARSE_NATIVE=1` | Full native (4 sparse kernels, research opt-in) |
+| Sparse backward (V6NAX-ineligible) | any | Section C wrapper (SDPA-vjp throughout) |
 | Top-K | (default) | Architecture B bisection + Apple SDPA NAX bias-mask |
 | Top-K | `MFA_DISABLE_TOPK_BISECT=1` | Phase 3a `mx.topk` (legacy) |
 | Top-K | `MFA_DISABLE_TOPK_NAX=1` | Python reference (opt out) |

@@ -118,5 +118,5 @@ captures the architectural shift (auto-on-import + philosophy doc).
 
 **Rationale**: minor version bump signals new capabilities (auto-hook)
 without breaking changes. The shift in posture is significant enough to
-deserve its own release rather than being bundled with V34 backward
+deserve its own release rather than being bundled with V6NAX backward
 Option β (the next architectural sprint).

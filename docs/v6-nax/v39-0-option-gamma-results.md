@@ -9,7 +9,7 @@ Hardware: M5 Max 128GB, M5 NAX (gpu_family_gen=17), macOS 26.4.
 **available but NOT auto-default**.  Correctness verified bit-identical
 to split (RMSE=0 across all D=64 shapes); perf characterization showed
 **25-33% regression vs split** at qL≥4096 on M5 Max.  Fused remains
-opt-in via `MFA_V34_BWD_KERNEL=fused`.  Split path stays auto-default
+opt-in via `MFA_V6_BWD_KERNEL=fused`.  Split path stays auto-default
 (v2.38.1 D_vec precompute behavior preserved).
 
 This is the honest scope outcome — `/metal-kernel-dev` audit predicted
@@ -47,9 +47,9 @@ reproducibility — this is not measurement noise).
 
 - **Public API entry**: `mx.grad(flash_attention(..., backend="auto"))`
 - **Routing arms**:
-  - `fused`: `MFA_ENABLE_V34_BACKWARD=1` + `MFA_V34_BWD_KERNEL=fused` (new kernel)
-  - `split`: `MFA_ENABLE_V34_BACKWARD=1` + `MFA_V34_BWD_KERNEL=split` (v2.38.1 path)
-  - `sdpa`:  `MFA_DISABLE_V34_BACKWARD=1` (SDPA-vjp baseline)
+  - `fused`: `MFA_ENABLE_V6_BACKWARD=1` + `MFA_V6_BWD_KERNEL=fused` (new kernel)
+  - `split`: `MFA_ENABLE_V6_BACKWARD=1` + `MFA_V6_BWD_KERNEL=split` (v2.38.1 path)
+  - `sdpa`:  `MFA_DISABLE_V6_BACKWARD=1` (SDPA-vjp baseline)
 - 4 warmup + 12 timed iters, median ms reported.  `mx.eval` + `mx.synchronize()` after each iter.
 - 3 sessions, separate Python processes, cooldown between runs.
 - All variance ratios <1.05 → finding is reproducible, not noise.
@@ -120,12 +120,12 @@ banked for v2.39.1+ work.
 
 ## Architectural value preserved
 
-- Fused source generator (`createV34BackwardFusedDKDVSource`, ~440 LOC)
+- Fused source generator (`createV6NAXBackwardFusedDKDVSource`, ~440 LOC)
   is a reusable infrastructure component.  Future fused-kernel work
   (different blocking, different WM, D=128 with register-budget
   controls, TGP streaming reduction) can fork from this rather than
   re-implementing from split.
-- `MFA_V34_BWD_KERNEL` env var contract introduced; documents the
+- `MFA_V6_BWD_KERNEL` env var contract introduced; documents the
   routing decision space.
 - Test file `tests/test_v39_fused_dkdv.py` (17 tests) becomes the
   parity-verification harness for future fused-kernel iterations.

@@ -101,7 +101,7 @@ kernel WITHOUT the V@P matmul:
 
 Estimated: ~300-400 LOC MSL (vs ~600-800 for full streaming attention),
 no non-contiguous gather (PASS-2 uses standard SDPA), reuses
-`naxHelpersBlock()` + `createV34Source()` structural template.
+`naxHelpersBlock()` + `createV6NAXSource()` structural template.
 
 ### Heap structure choice
 
@@ -153,7 +153,7 @@ to find min lane, conditional replace.  Reduces insert cost ~32×.
     // Compute S_tile = Q @ K_tile^T in registers (NAX MMA)
     // S_tile shape: [BQ, BK]
     NAXTile<float, TQ, TK> Stile;
-    compute_qk_mma(Q, K + kb*BK, Stile);  // standard V34 forward pattern
+    compute_qk_mma(Q, K + kb*BK, Stile);  // standard V6NAX forward pattern
     
     // For each (q_row, k_col), update heap
     for q_row in 0..BQ:
@@ -229,10 +229,10 @@ GO).  Synthesised review:
 
 | Question | Verdict | Notes |
 |---|---|---|
-| Register budget | GREEN | Pass-1 state smaller than V34 forward (no Otile/softmax); fits 128-reg budget |
+| Register budget | GREEN | Pass-1 state smaller than V6NAX forward (no Otile/softmax); fits 128-reg budget |
 | Heap insert efficiency | **YELLOW — DESIGN RISK** | See below |
 | TGM layout (16 KB) | GREEN | Half of 32 KB M5 budget |
-| Last-K-block edge | GREEN | Mirror V34's `is_last_k` + per-element check pattern |
+| Last-K-block edge | GREEN | Mirror V6NAX's `is_last_k` + per-element check pattern |
 | WM Q-row partition | GREEN | SG s owns rows [s*8, s*8+8); independent heaps per SG, no cross-SG sync |
 
 ### Heap-insert design risk (Question 2)
@@ -281,7 +281,7 @@ backward) where:
 - Scope is well-defined (extend existing kernel pattern with causal
   mask block × 3 kernels for Section B; add sparse iteration to same
   kernels for Section C)
-- Success probability high (V34 dQ kernel causal extension already
+- Success probability high (V6NAX dQ kernel causal extension already
   shipped in Prompt 2 as exact template for Section B's K-parallel
   kernels; Section C extends Section B's pattern)
 - User value clear (causal LLM training + VSR-style sparse training)
@@ -309,7 +309,7 @@ Phase 3b deferred with:
    of higher kernel LOC.
 
 3. **Once heap algorithm validated, full kernel integration** (~2h):
-   wrap heap algorithm in standard V34-forward-style outer loop +
+   wrap heap algorithm in standard V6NAX-forward-style outer loop +
    threadgroup-memory setup + topk_idx output write.
 
 4. **Python integration + tests + bench** (~1h):

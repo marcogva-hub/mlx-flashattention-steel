@@ -2,6 +2,33 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased] — V34→V6 nomenclature unification (env-var aliases deprecated)
+
+Internal/documentation rename: the `V34` token (the development working name
+for the V6 NAX kernel — forward + the 9 backward kernels) is unified to **V6**.
+`V34` was never a separate kernel generation; it is the same kernel as V6 NAX.
+The dual name caused a documented analysis error (see `NAMING.md` and the
+cartography report). **No kernel math, routing, or measurement-driven logic
+changed.** Public API is **non-breaking**.
+
+### Deprecated
+
+- **All 30 `MFA_*V34*` environment variables** are renamed to `MFA_V6*`
+  (collisions where the name already contained `V6` → `NAX`, e.g.
+  `MFA_V6_USE_V34`→`MFA_V6_USE_NAX`). The new `MFA_V6*` name is canonical; the
+  old `MFA_*V34*` name is a **deprecated alias** — still honored, but it emits a
+  one-shot `DeprecationWarning` per process. **Aliases will be removed in
+  v3.0.0.** Full old→new migration table in `NAMING.md`. Resolution centralized
+  in `csrc/mfa_env_aliases.hpp` (C++) + `mlx_mfa/_env_aliases.py` (Python).
+
+### Changed
+
+- Internal C++/MSL symbols + macros renamed `V34`→`V6NAX` / `v34`→`v6nax`
+  (`createV34Source`→`createV6NAXSource`, `compile_v34_backward_pipeline`→
+  `compile_v6nax_backward_pipeline`, the `V34*_TK`/`V34_TQ` MSL macros, etc.).
+- Documentation `V34` references renamed to `V6NAX`; `NAMING.md` (new) and the
+  cartography report retain `V34` as the provenance record.
+
 ## [2.56.0] — 2026-06-17 — Marco-gated queue closure: MFA_FORCE_NATIVE_BWD removed; V3 auto-routing validated on M5/26.6
 
 This release closes the post-campaign Marco-gated queue and lands the Phase IV
@@ -16,11 +43,11 @@ fix on the V6 NAX path (A3-1, below — changes addressing only, not results).
 - **`MFA_FORCE_NATIVE_BWD` env var** — removed after its deprecation cycle completed.
   It was deprecated in **v2.50.0** with a live `DeprecationWarning` and a documented
   "target removal v2.51+"; it is removed now (v2.50 → v2.56 = 6 minor versions of
-  warning). Forced STEEL backward was measured to be **dominated at every cell** (V34
+  warning). Forced STEEL backward was measured to be **dominated at every cell** (V6NAX
   NAX-direct wins at D=64 causal, SDPA-vjp wins at D=128 — `sprint-C` Track 2), so the
   knob selected a correct-but-never-optimal path. **Migration**: remove any
   `MFA_FORCE_NATIVE_BWD=1` from your environment — backward routing already uses the
-  optimal path (V34 at D=64 causal, SDPA-vjp elsewhere). **Keep-all-paths**: the STEEL
+  optimal path (V6NAX at D=64 causal, SDPA-vjp elsewhere). **Keep-all-paths**: the STEEL
   backward *kernel* is retained (reachable via the `_ext.mfa_steel_backward` binding);
   only the env-var knob was removed. The benchmark policy table (unset-path behavior)
   is unchanged — unset/auto routing is byte-identical to v2.55.0.
@@ -75,9 +102,9 @@ fix on the V6 NAX path (A3-1, below — changes addressing only, not results).
 - **V6 NAX device-offset int32 overflow (latent, A3-1)** — the legacy/MPP V6 NAX attention
   kernels computed device-side batch/head/seq/mask offsets (`tgid.z * batch_stride`,
   `q_start * K_Hq`, mask strides) as 32-bit `uint`. For very large shapes the product wraps 2³²
-  → silent wrong-memory addressing (wrong output, no crash). **Latent**: reachable only when V34
-  is off (D=64, or D=128 + `MFA_V6_USE_V34=0`) at multi-GB tensors (B≥128 with H·N·D ~33M, or
-  >4M packed-varlen tokens). All 14 offset-multiply sites widened `uint → ulong` (the V34 path
+  → silent wrong-memory addressing (wrong output, no crash). **Latent**: reachable only when V6NAX
+  is off (D=64, or D=128 + `MFA_V6_USE_NAX=0`) at multi-GB tensors (B≥128 with H·N·D ~33M, or
+  >4M packed-varlen tokens). All 14 offset-multiply sites widened `uint → ulong` (the V6NAX path
   already used 64-bit; conv-NAX already bounded <2³¹). Pure address-arithmetic widening — results
   unchanged for in-range shapes (1827 tests pass ×2). Found by the Phase IV multi-agent
   correctness review (no CRITICAL/default-reachable bug found; this was the highest-severity
@@ -142,7 +169,7 @@ on byte-identical kernels — not a regression. README/RESULTS now state every c
 with numerator, denominator, direction, and an absolute (no bare ratios — lesson #15):
 
 - **Forward attention ≈ SDPA** (0.98–1.05×; routes to SDPA, net-non-worse).
-- **V34 backward D=64** faster than SDPA-vjp but qL-dependent: ~break-even at qL=2048,
+- **V6NAX backward D=64** faster than SDPA-vjp but qL-dependent: ~break-even at qL=2048,
   ~1.4–1.5× at qL=4096, ~2.1–2.5× at qL=8192. D=128 backward now ≈ break-even.
 - **conv MPP** fp16 ~1.2–1.35× vs the legacy im2col path; bf16 ≈ parity vs
   `mx.conv_general`. Default-on for correctness, not speed.
@@ -300,13 +327,13 @@ adapters; concurrency). Beyond the two CRITICALs:
   gather byte offsets are now `long` end-to-end (overflowed int32 at
   long-context pools).
 - **Contract / loud-failure hardening** — `backend="mfa"` now runs the
-  actual MFA kernel forward (was silently SDPA on V34-eligible cells);
+  actual MFA kernel forward (was silently SDPA on V6NAX-eligible cells);
   the NAX RoPE fast path honors non-base-10000 user tables (custom
   base/NTK/scaled tables route to the table-using path instead of
   silently applying base=10000); mutually-exclusive feature combos
   (`attn_bias`×softcap/alibi, alibi×softcap, `return_lse`×features)
   raise instead of silently dropping a feature; heterogeneous paged
-  RoPE offsets raise; the V34 carve-out gates out V-dim-mismatch and
+  RoPE offsets raise; the V6NAX carve-out gates out V-dim-mismatch and
   cross-attention shapes; the native attn_bias-kernel fallback narrowed
   + telemetered; `attn_bias` fp32-bias / fp16-q promotion fixed.
 
@@ -320,9 +347,9 @@ adapters; concurrency). Beyond the two CRITICALs:
   (the legacy im2col path stays fp16-only — upstream MLX bf16 bug; loud
   guard). Envelope: B=1, k=3³, stride/dilation 1, pad 1, H/W % 8 == 0,
   C_in/C_out % 16 == 0 and ≥ 32, float cooperative dest.
-- **V34 NAX backward D=64 DEFAULT-ON**, causal **2.06–2.58×** and
+- **V6NAX NAX backward D=64 DEFAULT-ON**, causal **2.06–2.58×** and
   non-causal **1.72–2.01×** vs SDPA-vjp (qL ≥ 2048, fp16/bf16); forward
-  stays bit-identical to Apple SDPA. Opt-out `MFA_DISABLE_V34_BACKWARD=1`.
+  stays bit-identical to Apple SDPA. Opt-out `MFA_DISABLE_V6_BACKWARD=1`.
 - **TurboQuant paged decode** (III-2): single-token `step()` routes to
   per-step gather/dequant kernels + Apple SDPA — **6.0× (S=4K) to
   14.4× (S=16K)** faster steps (attend-only 13.8–22.1× vs the fused TQ
@@ -342,7 +369,7 @@ adapters; concurrency). Beyond the two CRITICALs:
   x = mx.random.normal((1, 16, 64, 64, 128)).astype(mx.bfloat16)
   w = mx.random.normal((128, 3, 3, 3, 128)).astype(mx.bfloat16)
   _ = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))
-  # V34 backward D=64 default-on (causal 2.06-2.58x / non-causal 1.72-2.01x):
+  # V6NAX backward D=64 default-on (causal 2.06-2.58x / non-causal 1.72-2.01x):
   q = k = v = mx.random.normal((1, 4, 8192, 64)).astype(mx.float16)
   g = mx.grad(lambda a, b, c: mlx_mfa.flash_attention(a, b, c).sum(),
               argnums=(0, 1, 2))(q, k, v)
@@ -372,7 +399,7 @@ adapters; concurrency). Beyond the two CRITICALs:
 ### Migration
 
 No breaking API changes. Behavior changes are toward correctness:
-`backend="mfa"` now runs the kernel (not SDPA) on V34-eligible cells;
+`backend="mfa"` now runs the kernel (not SDPA) on V6NAX-eligible cells;
 the specialized serving entries raise on mixed input dtypes instead of
 silently corrupting; the NAX RoPE fast path falls back to the
 table-honoring path for non-base-10000 tables. The withdrawn v2.39.1
@@ -404,7 +431,7 @@ Full campaign record: `docs/v50/campaign-2026-06/`.
   w = mx.random.normal((128, 3, 3, 3, 128)).astype(mx.bfloat16)
   out = mx.conv3d(x, w, stride=(1, 1, 1), padding=(1, 1, 1))  # MPP engages
   ```
-- **Non-causal D=64 V34 backward DEFAULT-ON** (II-12): 1.72–2.01× vs
+- **Non-causal D=64 V6NAX backward DEFAULT-ON** (II-12): 1.72–2.01× vs
   SDPA-vjp via the clean split kernel; forward stays bit-identical to
   Apple SDPA.  Same opt-out as causal.  Claim ids `ii12_*`.
 
@@ -413,7 +440,7 @@ Full campaign record: `docs/v50/campaign-2026-06/`.
   import mlx.core as mx, mlx_mfa
   q = k = v = mx.random.normal((1, 4, 8192, 64)).astype(mx.float16)
   g = mx.grad(lambda a, b, c: mlx_mfa.flash_attention(a, b, c).sum(),
-              argnums=(0, 1, 2))(q, k, v)   # V34 split engages
+              argnums=(0, 1, 2))(q, k, v)   # V6NAX split engages
   ```
 - **TurboQuant paged decode rebuilt (III-2)**: single-token `step()`
   routes to per-step gather/dequant kernels + Apple SDPA — steps
@@ -443,18 +470,18 @@ Full campaign record: `docs/v50/campaign-2026-06/`.
   the wrong layout (0.15 max-abs at unit scale, ~49 at std 8).
   Runtime bit-width branches added; ground-truth parity locks at all
   bit-widths.
-- **V34 fused-dKdV BK=16 paired-MMA out-of-bounds** (II-6, CRITICAL):
+- **V6NAX fused-dKdV BK=16 paired-MMA out-of-bounds** (II-6, CRITICAL):
   silent dK/dV corruption on the promoted path at unit+ scale; BK
   guard + auto→split + unit-scale/adversarial locks; promotion
   re-validated 2.15–2.67×.
 - **Sparse backward lane-fragment loss** (II-14): data-dependent
   `continue` around live cooperative-tensor accumulators in all 4
-  sparse V34 backward generators intermittently dropped single-lane
+  sparse V6NAX backward generators intermittently dropped single-lane
   fragments (~2/5 standalone; suppressed in-suite).  Class-fixed via
   compacted active-list + uniform loop; 30/30 + 30/30 stress canaries.
 - Sparse all-False-row contract: NaN → zeros (II-6).
 - Forward carve-out pure-forward inversion (II-8): forward is now
-  bit-SDPA-identical on carve-out cells; V34 pair recomputed in VJP.
+  bit-SDPA-identical on carve-out cells; V6NAX pair recomputed in VJP.
 
 ### Notes
 - M5-class hardware (NAX) is where the campaign's promoted paths
@@ -481,16 +508,16 @@ across 4 commit waves with per-wave test validation.
   the forward used the per-head mask — wrong gradients for head-varying
   masks.  New ndim-preserving bias expansion; steel_sparse/sdpa_sparse
   (2-D-only kernels) now raise loudly for ndim>2.
-- **scale in V34 backward pipeline cache keys** (9 structs): two
+- **scale in V6NAX backward pipeline cache keys** (9 structs): two
   backward passes with different scales reused the first's compiled
   kernel (scale is baked into the Metal source).
 - **V6Key bit-packing collisions**: tile params packed into stride high
   bits collided at production shapes (qbs = 2^24 at H=8 N=16384 D=128);
   dedicated key fields now.
-- **MFAV6Forward::is_equivalent missing force_v34** (LSE-domain mixup
+- **MFAV6Forward::is_equivalent missing force_v6nax** (LSE-domain mixup
   via graph dedup); **int32 stride overflow** (2 files); **pipeline
   cache CFBridgingRetain leak** on concurrent compile (10 sites);
-  **V34 fusion scale gate** (custom scale silently dropped — latent);
+  **V6NAX fusion scale gate** (custom scale silently dropped — latent);
   **flash-decode RoPE guard** (latent); **dispatch decision cache now
   keyed on steering env vars**; **_SPARSE_BIAS_CACHE id()-ABA** fix;
   make_strided_mask(0) ValueError; HybridKVCache.reset stale metadata;
@@ -508,7 +535,7 @@ across 4 commit waves with per-wave test validation.
   guard regressions, incl. V3/V4/V5 experimental kernels — all pass
   on M5 Max); env-var leakage guarded at 4 test/bench sites; 7
   benchmark scripts runnable from repo root; ENV_VARS.md +5 missing
-  vars + stale V34 text fixed; HARDWARE_SUPPORT/PERF_CLAIMS headers
+  vars + stale V6NAX text fixed; HARDWARE_SUPPORT/PERF_CLAIMS headers
   updated; Python 3.13/3.14 classifiers.
 
 ### From campaign Sprints B→A→C + Phase II core (2026-06)
@@ -517,9 +544,9 @@ Fable 5 exhaustive audit/optimization campaign (Sprints B→A→C,
 Phase II-0…II-5).  Full reports: `docs/v50/campaign-2026-06/`.
 
 ### Added
-- **V34 backward D=64 causal DEFAULT-ON** (Phase II-0, Marco-approved):
+- **V6NAX backward D=64 causal DEFAULT-ON** (Phase II-0, Marco-approved):
   2.2-2.7× vs SDPA-vjp at qL≥2048 incl. GQA/MQA; opt-out
-  `MFA_DISABLE_V34_BACKWARD=1`.
+  `MFA_DISABLE_V6_BACKWARD=1`.
 - CacheKey tie() enforcement layer (`csrc/mfa_key_tie.hpp`): the
   cache-key omission class is structurally impossible; static invariant
   test guards the tie declarations.
@@ -528,7 +555,7 @@ Phase II-0…II-5).  Full reports: `docs/v50/campaign-2026-06/`.
   is_equivalent HIGH, dispatch-table runtime contract, 2 defensive).
 
 ### Fixed
-- **GQA gradient shapes in V34 backward** (latent since v2.37.0): dK/dV
+- **GQA gradient shapes in V6NAX backward** (latent since v2.37.0): dK/dV
   now group-summed to [B, H_kv, S, D]; was returning H_q-shaped grads
   on the opt-in path.
 - D=256-causal M5 dispatch inversion (1.38×: SDPA wins all 9 grid
@@ -713,7 +740,7 @@ the audit verdict that no additional hooks need Pattern #8 fixes.
 ## [2.50.0] — 2026-05-14
 
 **v2.50.0 ships M5+ NAX coverage core production-complete.**
-Empirically-grounded routing across V34 NAX-direct kernels, Apple SDPA
+Empirically-grounded routing across V6NAX NAX-direct kernels, Apple SDPA
 NAX, and custom Metal kernels per shape/operation per Pattern #6
 (Apple NAX optimization level) finding.
 
@@ -723,12 +750,12 @@ known-debt items KD-1..KD-4 are resolved; KD-5 (legacy STEEL backward
 research-only path) is formally deprecated with a `DeprecationWarning`
 on the `MFA_FORCE_NATIVE_BWD=1` env var.
 
-### Fixed (Prompt 5f Phase A — KD-1 V34 backward sparse mask shape mismatch, HIGH correctness)
+### Fixed (Prompt 5f Phase A — KD-1 V6NAX backward sparse mask shape mismatch, HIGH correctness)
 
-- **V34 backward sparse mask shape mismatch (CORRECTNESS UPGRADE from
+- **V6NAX backward sparse mask shape mismatch (CORRECTNESS UPGRADE from
   undefined buffer-overread to well-defined coarsened semantics)**.
 
-  Pre-fix mechanism: the 4 V34 backward sparse kernels (dQ + dV + dK
+  Pre-fix mechanism: the 4 V6NAX backward sparse kernels (dQ + dV + dK
   split + fused dKdV) indexed `block_mask` using kernel-specific tile
   sizes (mostly BQ=64, BK=32; dQ at D=64 uses BQ=32, BK=64).  Production
   callers via `flash_attention_sparse` pass a symmetric BT-block mask
@@ -743,7 +770,7 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
   pathological sparse patterns (block-diagonal, random low density,
   alternating bands) silently produced wrong gradients.
 
-  Fix: `_convert_mask_for_v34_bwd_kernel` (in `mlx_mfa/attention.py`)
+  Fix: `_convert_mask_for_v6nax_bwd_kernel` (in `mlx_mfa/attention.py`)
   converts the BT-block mask to each kernel's target tile geometry
   before dispatch.  Conservative semantics:
   - **Downsample** (target tile larger than source): OR-reduce so the
@@ -756,8 +783,8 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
     all sharing the source value.
 
   C++ shape validation was re-added to the 4 sparse Primitives
-  (`MFAV34BwdDVSparse`, `MFAV34BwdQuerySparse`, `MFAV34BwdDKSparse`,
-  `MFAV34BwdFusedDKDVSparse`) to catch future mask-shape regressions
+  (`MFAV6NAXBwdDVSparse`, `MFAV6NAXBwdQuerySparse`, `MFAV6NAXBwdDKSparse`,
+  `MFAV6NAXBwdFusedDKDVSparse`) to catch future mask-shape regressions
   with a descriptive error message pointing to the conversion helper.
 
   Tests added:
@@ -773,7 +800,7 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 
   Production posture:
   - Hybrid orchestrator (default) and full-native opt-in
-    (`MFA_V34_BWD_SPARSE_NATIVE=1`) both consume the conversion helper.
+    (`MFA_V6_BWD_SPARSE_NATIVE=1`) both consume the conversion helper.
   - Source masks that ALIGN with the kernel target geometry are
     unchanged (no-op conversion).
   - Source masks FINER than the kernel target are conservatively
@@ -783,10 +810,10 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 
   This resolves KD-1 from the v2.50 known-debt registry.
 
-### Fixed (Prompt 5f Phase B — KD-2 forward recompute elimination in V34 sparse orchestrators)
+### Fixed (Prompt 5f Phase B — KD-2 forward recompute elimination in V6NAX sparse orchestrators)
 
-- **V34 sparse backward orchestrator forward recompute eliminated**:
-  `_v34_sparse_hybrid_vjp` and `_v34_backward_vjp_sparse_full_native`
+- **V6NAX sparse backward orchestrator forward recompute eliminated**:
+  `_v6nax_sparse_hybrid_vjp` and `_v6nax_backward_vjp_sparse_full_native`
   now return `(O, L)` from their `_impl` and consume both via the
   `outputs` parameter of `custom_function`, matching the pattern in
   `_make_mfa_sparse_custom._backward` (Section C wrapper).  The
@@ -807,10 +834,10 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 
 ### Fixed (Prompt 5f Phase C — KD-3 implicit D=128 fallthrough)
 
-- **`_v34_backward_vjp_sparse_full_native` head_dim dispatch hardened**:
+- **`_v6nax_backward_vjp_sparse_full_native` head_dim dispatch hardened**:
   the prior `if head_dim == 64: ...; else: # D=128` pattern would have
   silently accepted `D=256` (or any other value) if the outer guard
-  `_v34_hybrid_eligible` ever broadened.  Replaced with explicit
+  `_v6nax_hybrid_eligible` ever broadened.  Replaced with explicit
   `elif head_dim == 128: ...; else: raise ValueError`.  Defensive
   code change; no behavioral difference under current dispatch guards.
 
@@ -831,12 +858,12 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 - **`MFA_FORCE_NATIVE_BWD=1`** env var deprecated.  Routes through
   legacy STEEL backward kernels which have a known correctness bug at
   D=128 N≥2048 (zeroed output blocks for query rows ≥ 1024 — see KD-5
-  in `docs/v50/known-issues-v2.50.md`).  The V34 backward NAX-direct
+  in `docs/v50/known-issues-v2.50.md`).  The V6NAX backward NAX-direct
   path (production default per Section D Prompt 5b broadening) is
   unaffected.
 
   Setting `MFA_FORCE_NATIVE_BWD=1` now emits a `DeprecationWarning`.
-  The env var will be removed in v2.51+ once V34 backward is fully
+  The env var will be removed in v2.51+ once V6NAX backward is fully
   established as the sole non-SDPA backward path.
 
   3 new regression tests in `tests/test_v50_prompt_5f_kd5_deprecation.py`
@@ -846,23 +873,23 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 ### Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
 
 Per Marco's Prompt 5d directive, empirical bench verification at VSR
-audit shape (B=1 H=12 qL=4096 D=128 fp16 BT=32) of V34 native sparse
+audit shape (B=1 H=12 qL=4096 D=128 fp16 BT=32) of V6NAX native sparse
 backward (4 kernels, all math-correct) revealed:
 
-| Density | SDPA-vjp dense | V34 hybrid | V34 full native |
+| Density | SDPA-vjp dense | V6NAX hybrid | V6NAX full native |
 |---|---|---|---|
 | 0.1 | 17.41 ms | 34.84 ms (0.50×) | 22.58 ms (0.77×) |
 | 0.3 | 17.40 ms | 68.20 ms (0.26×) | 60.67 ms (0.29×) |
 | 0.5 | 16.71 ms | 102.01 ms (0.16×) | 98.18 ms (0.17×) |
 | 1.0 | 16.93 ms | 175.09 ms (0.10×) | 181.07 ms (0.09×) |
 
-**V34 native sparse loses to Apple SDPA NAX at all VSR densities**.
+**V6NAX native sparse loses to Apple SDPA NAX at all VSR densities**.
 The Sprint 5 "10× speedup at d=0.1" projection is empirically falsified.
 
 **Pattern #6 inversion** (added to
 `docs/v50/audit-framing-inversions.md`): Apple primitive M5+
 optimization level falsifies custom-kernel speedup projections.
-Apple SDPA NAX on M5+ is sufficiently optimized that custom V34-style
+Apple SDPA NAX on M5+ is sufficiently optimized that custom V6NAX-style
 NAX backward kernels (even with sparse-skip algorithmic
 optimization) cannot outpace it at audit-relevant shapes.  Sister
 pattern to Pattern #2 (Sprint 2 `mx.fast.rope` discovery).
@@ -871,15 +898,15 @@ Empirical mandate for future sprints: bench is MANDATORY before
 extending custom kernel coverage when Apple SDPA NAX is in the
 comparison path on M5+.
 
-### Changed (Section A v3 — V34 backward sparse routing REVERTED per Pattern #6)
+### Changed (Section A v3 — V6NAX backward sparse routing REVERTED per Pattern #6)
 
 `flash_attention_sparse` dispatch reverted to Prompt 5c hybrid
 orchestrator (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK)
-when V34 backward eligible.  This is the production-optimal routing
+when V6NAX backward eligible.  This is the production-optimal routing
 per Pattern #6 empirical finding.
 
 Full native (Prompt 5d, 4 sparse kernels) is now OPT-IN via
-`MFA_V34_BWD_SPARSE_NATIVE=1` env var (research/benchmark access;
+`MFA_V6_BWD_SPARSE_NATIVE=1` env var (research/benchmark access;
 typically slower than hybrid on M5+).
 
 ### Decided (Section B v3 — Approach 5 SKIPPED per Pattern #6 inference)
@@ -889,31 +916,31 @@ attention kernel) SKIPPED.  Per `docs/v50/section-b-v3-approach-5-empirical-skip
 
 The PASS-2 custom Metal kernel would replace Apple SDPA NAX (used by
 Architecture B's PASS-2).  Per Section A v3 empirical pattern (Apple
-SDPA NAX > V34 NAX backward on M5+), PASS-2 custom would be slower
+SDPA NAX > V6NAX NAX backward on M5+), PASS-2 custom would be slower
 than Architecture B — Scenario 3 architectural deadend.
 
 Architecture B (Prompt 5c AUTO production default) retained as M5+
 Top-K production path.
 
-### Added (Section A v3 — v2.50 Prompt 5d — V34 backward sparse FULL NATIVE)
+### Added (Section A v3 — v2.50 Prompt 5d — V6NAX backward sparse FULL NATIVE)
 
 Marco's explicit Prompt 5c Option 1 choice ("Complete A.2 dQ + dK split
 + fused dKdV + full integration") is now delivered.  3 new native sparse
 backward kernels join the dV PoC from Prompt 5b Section A:
 
-- **dQ sparse**: `createV34BackwardQuerySparseSource()` with per-K-tile
+- **dQ sparse**: `createV6NAXBackwardQuerySparseSource()` with per-K-tile
   block_mask scan + pre-advance pointer handling
-- **dK split sparse**: `createV34BackwardDKSparseSource()` with
+- **dK split sparse**: `createV6NAXBackwardDKSparseSource()` with
   per-Q-tile sparse-skip
-- **Fused dK+dV sparse**: `createV34BackwardFusedDKDVSparseSource()`
+- **Fused dK+dV sparse**: `createV6NAXBackwardFusedDKDVSparseSource()`
   with ORDER-CRITICAL preserved via atomic `continue`
 
 Each kernel plumbed end-to-end: source generator + Primitive class +
 cache key + dispatch function + raw helper + nanobind binding.
 
-**Python full-native orchestrator** `_v34_backward_vjp_sparse_full_native`
+**Python full-native orchestrator** `_v6nax_backward_vjp_sparse_full_native`
 replaces Prompt 5c hybrid for eligible shapes (D ∈ {64, 128}, qL>=2048,
-fp16/bf16, 2-D mask, M5+ NAX, `MFA_ENABLE_V34_BACKWARD=1`).  AUTO
+fp16/bf16, 2-D mask, M5+ NAX, `MFA_ENABLE_V6_BACKWARD=1`).  AUTO
 routing: D=64 → fused dKdV; D=128 → split (per Sprint B outcome γ +
 Section D Prompt 5b broadening).
 
@@ -935,7 +962,7 @@ NOT materialize at the audit shape (VSR B=1 H=12 qL=4096 D=128 fp16):
 | 1.0 | 198.10 ms | 17.50 ms | 0.09× (much slower) |
 
 Apple SDPA NAX (via `mx.fast.scaled_dot_product_attention` autograd)
-is highly optimized on M5+; V34 backward kernels (sparse or dense)
+is highly optimized on M5+; V6NAX backward kernels (sparse or dense)
 can't outpace it except in narrow cases (D=64 small-H low-density
 ~1.13× faster at d=0.1).
 
@@ -989,14 +1016,14 @@ characterization + routing decision matrix.
   `_ext.sparse_attention_forward_with_lse` (C++ binding): block-sparse
   attention forward that returns (O, L) where L is per-row natural-log
   LSE computed over ONLY active blocks (sparse-LSE).  All-False rows
-  write L = -INFINITY (sentinel).  Required by V34 backward sparse
+  write L = -INFINITY (sentinel).  Required by V6NAX backward sparse
   kernels for LSE consistency (Pattern #5 — dense LSE + sparse skip in
   backward gives wrong gradients).
 
-- **V34 sparse hybrid backward** via `flash_attention_sparse`: when V34
-  backward eligible (`MFA_ENABLE_V34_BACKWARD=1` + D ∈ {64, 128} + qL≥2048
+- **V6NAX sparse hybrid backward** via `flash_attention_sparse`: when V6NAX
+  backward eligible (`MFA_ENABLE_V6_BACKWARD=1` + D ∈ {64, 128} + qL≥2048
   + fp16/bf16 + 2-D mask + M5+ NAX), backward path routes through
-  `_v34_sparse_hybrid_vjp` orchestrator:
+  `_v6nax_sparse_hybrid_vjp` orchestrator:
   - Forward: sparse_attention_nax_with_lse (sparse-LSE)
   - Backward dV: native `v6_nax_backward_dv_sparse_raw` kernel (PoC
     from Prompt 5b Section A) consuming sparse-LSE → CORRECT sparse
@@ -1075,7 +1102,7 @@ characterization + routing decision matrix.
   state.  Forward + backward matrices show coverage outcomes:
   - D=128 + causal + attn_bias mode 1/2 → V2 STEEL bias-aware
     (Section C fix)
-  - D=128 V34 backward broadened to AUTO path (Section D)
+  - D=128 V6NAX backward broadened to AUTO path (Section D)
   - Sparse backward PoC dV kernel scaffolded; full 5-kernel extension
     is Section A v2 follow-up
   - Top-K native Metal kernel (Section B selected architecture)
@@ -1118,20 +1145,20 @@ characterization + routing decision matrix.
   preserve V1 fast path.  Correctness > perf for the bias+causal+D=128
   narrow combo.
 
-### Added (Section A v2.50 Prompt 5b — V34 backward block-sparse NAX PoC + scaffold)
+### Added (Section A v2.50 Prompt 5b — V6NAX backward block-sparse NAX PoC + scaffold)
 
 - **`v6_nax_backward_dv_sparse_raw` C++ binding** ships native block-sparse
-  V34 backward dV kernel (proof-of-concept; full 5-kernel extension is
+  V6NAX backward dV kernel (proof-of-concept; full 5-kernel extension is
   Section A v2 follow-up per Marco's Option 3 PoC + scaffold scope).
 
   **What this PoC delivers**:
-  - New source generator `createV34BackwardDVSparseSource()` in
+  - New source generator `createV6NAXBackwardDVSparseSource()` in
     `NAAttentionKernel.cpp` (~320 LOC).  Mirrors dense dV kernel with
     one structural addition: per-Q-tile `block_mask[qb, k_tile]` scan
     at Q-loop entry; skips entire Q-tile contribution when inactive
     (zero divergence — uniform across SG).
-  - New `v34_dispatch_bwd_dv_sparse` dispatcher (`v6_nax_compile.mm`),
-    `MFAV34BwdDVSparse` Primitive + `V34BwdVSparseKey` cache key
+  - New `v6nax_dispatch_bwd_dv_sparse` dispatcher (`v6_nax_compile.mm`),
+    `MFAV6NAXBwdDVSparse` Primitive + `V6NAXBwdVSparseKey` cache key
     (`mfa_v6_nax_primitive.cpp`), `v6_nax_backward_dv_sparse_raw` C++
     helper + nanobind binding (`bindings.cpp`).
 
@@ -1148,11 +1175,11 @@ characterization + routing decision matrix.
   **Math gap documented** (`docs/v50/sprint-5b-section-a-scaffold.md`):
   The PoC kernel's sparse-skip is structurally correct but mathematically
   only valid when paired with a sparse forward that returns L (lse
-  over only active blocks).  With dense V34 forward L, the
+  over only active blocks).  With dense V6NAX forward L, the
   sparse-skip semantics don't match (dense forward produces non-zero
   P for all qb tiles; skipping any in backward misses contributions).
   Section A v2 follow-up: extend `sparse_attention_nax` to return L
-  (small C++ change), then extend the other 4 V34 backward kernels
+  (small C++ change), then extend the other 4 V6NAX backward kernels
   (dQ, dK split, fused dKdV, legacy fused dKV) with the same
   sparse-skip pattern.  Estimated 4-6h focused session.
 
@@ -1166,27 +1193,27 @@ characterization + routing decision matrix.
   sparse backward (correct gradients across all densities; pays dense
   cost).
 
-### Added (Section D v2.50 Prompt 5b — D=128 V34 backward broadening)
+### Added (Section D v2.50 Prompt 5b — D=128 V6NAX backward broadening)
 
-- **D=128 V34 backward NOW engages via PUBLIC AUTO API** when
-  `MFA_ENABLE_V34_BACKWARD=1` + `qL >= 2048` + fp16/bf16 (Option A
+- **D=128 V6NAX backward NOW engages via PUBLIC AUTO API** when
+  `MFA_ENABLE_V6_BACKWARD=1` + `qL >= 2048` + fp16/bf16 (Option A
   Marco directive: coverage cohérence > perf marginal).
 
   **Foundation**: Sprint B v2.40.0-internal Phase C.1.b empirically
   validated D=128 split kernels at parity with SDPA-vjp (RMSE ~2e-5;
   fused regresses 3-7%, split preferred as auto-default per
-  `attention.py:3828`).  Sole code change: `_v34_backward_carveout`
+  `attention.py:3828`).  Sole code change: `_v6nax_backward_carveout`
   predicate broadened from `head_dim == 64` to `head_dim in (64, 128)`.
 
   **Multi-gate audit per Pattern #5**: 8 dispatch gates audited
   (`docs/v50/sprint-5b-section-d-dispatch-audit.md`); all downstream
-  infrastructure (`_v34_eligible`, `_v34_backward_vjp` routing,
-  `MFAV6Backward::eval_gpu`, `compile_v34_backward_pipeline`, C++
+  infrastructure (`_v6nax_eligible`, `_v6nax_backward_vjp` routing,
+  `MFAV6Backward::eval_gpu`, `compile_v6nax_backward_pipeline`, C++
   cache keys) was already permissive — only the carve-out gate
   required lifting.
 
   **Validation** (`tests/test_v50_sprint_5b_d128_backward.py`,
-  18 tests): D=128 V34 backward gradients match `mx.vjp(SDPA)`
+  18 tests): D=128 V6NAX backward gradients match `mx.vjp(SDPA)`
   baseline at RMSE < 5e-3 (FP16 ULP floor) across qL ∈ {2048, 4096,
   8192}, causal + non-causal, fp16 + bf16; below-floor (qL=1024)
   + fp32 + env-unset paths all bit-identical to SDPA fallback;
@@ -1194,12 +1221,12 @@ characterization + routing decision matrix.
 
   **Perf claim**: PARITY at D=128 (no speedup over SDPA-vjp,
   contract-honest engagement preserves cohérence narrative).  See
-  `v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity`
+  `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity`
   in `docs/PERF_CLAIMS.md`.
 
   **Test updates** (3 prior tests asserted the now-superseded
   "D=128 falls back" contract):
-  - `test_flash_attention_v34_backward.py::test_v34_bwd_v2372_carveout_does_not_engage_d128`
+  - `test_flash_attention_v6nax_backward.py::test_v6nax_bwd_v2372_carveout_does_not_engage_d128`
     → split into `_below_floor` (preserved fallback) and
     `_above_floor` (new engagement test).
   - `test_v39_fused_dkdv.py::test_d128_fused_unreachable_via_public_api`
@@ -1211,8 +1238,8 @@ characterization + routing decision matrix.
   **Clarified xfail** (`TestNativeBackwardRouting[128-2048, 128-4096]`):
   rationale updated to reflect that these test the STEEL backward
   kernel (`MFA_FORCE_NATIVE_BWD=1` → `MFASteelBwdDQ`/`MFASteelBwdDKV`),
-  NOT V34 backward.  STEEL backward has a separate D=128 tile-loop
-  bug (zeros beyond row 1024); V34 backward D=128 production path
+  NOT V6NAX backward.  STEEL backward has a separate D=128 tile-loop
+  bug (zeros beyond row 1024); V6NAX backward D=128 production path
   is correct and unaffected.
 
 ### Fixed (Section C v2.50 Prompt 5a — Sprint 1 backward regression RESOLVED)
@@ -1246,8 +1273,8 @@ characterization + routing decision matrix.
   Production impact: Training pipelines using `mx.grad` over sparse
   attention (FlashVSR, STCDiT, etc.) on M5+ now have correct backward
   gradients.  Sprint 1 forward perf win unchanged.  Unblocks Sprint 5
-  (V34 backward block-sparse, Section A of this prompt) which needs
-  a working SDPA-vjp baseline as the reference for V34 NAX-direct
+  (V6NAX backward block-sparse, Section A of this prompt) which needs
+  a working SDPA-vjp baseline as the reference for V6NAX NAX-direct
   backward.
 
   Per `docs/v50/sprint1-backward-regression-RESOLVED.md` for full
@@ -1255,36 +1282,36 @@ characterization + routing decision matrix.
 
 ### Fixed (Section B v2.50 Prompt 4 — Phase 4b-complete dV residual RESOLVED)
 
-- **V34 backward causal end-to-end NOW WORKS on M5+**.  The Prompt 3
+- **V6NAX backward causal end-to-end NOW WORKS on M5+**.  The Prompt 3
   "dV K-parallel residual" (ratio ~0.039, 10× under-counting) is fully
   resolved.  Prompt 3's hypothesis about fragment transpose semantics
   was wrong — actual root cause was **two missed dispatch gates** in
   `MFAV6Forward::eval_gpu()` and `generate_v6_source()` that silently
   routed `causal=True` forward to STEEL legacy (log2-domain lse)
-  instead of V34 (natural-log lse).  Prompt 2 Phase 4a lifted the
+  instead of V6NAX (natural-log lse).  Prompt 2 Phase 4a lifted the
   gate at `createSource()` line 171 but missed the dispatch-side
-  gates at lines 176 and 625.  V34 backward then consumed wrong-
+  gates at lines 176 and 625.  V6NAX backward then consumed wrong-
   domain lse → all gradients wrong.
 
   **Fix**: 2-line change in `csrc/mfa_v6_nax_primitive.cpp` (remove
   `params_.causal ||` from both dispatch gates), plus lift the
-  Python eligibility gates in `_v34_eligible` and
-  `_v34_backward_carveout`.  V34 forward causal now emits natural-log
-  lse correctly; V34 backward causal kernels consume it and produce
+  Python eligibility gates in `_v6nax_eligible` and
+  `_v6nax_backward_carveout`.  V6NAX forward causal now emits natural-log
+  lse correctly; V6NAX backward causal kernels consume it and produce
   correct gradients.
 
   **Validation**:
-  - Diagnostic with Q=K=V=dO=1 (qL=64 D=64 causal): V34 dV ratio 1.000
+  - Diagnostic with Q=K=V=dO=1 (qL=64 D=64 causal): V6NAX dV ratio 1.000
     vs SDPA-vjp reference (pre-fix: ratio 0.015 at c=0)
   - Production validation at qL=2048 D=64 fp16 causal (scaled inputs):
     dQ max_diff 2.4e-7, dK max_diff 1.0e-3, dV max_diff 9.2e-4 — all
     within fp16 ULP bounds vs SDPA-vjp
-  - `_v34_eligible(D=64, fp16, causal=True)` = True (was False)
-  - `flash_attention(q, k, v, causal=True)` with `MFA_ENABLE_V34_BACKWARD=1`
-    now engages V34 backward NAX-direct kernels (was falling back to
+  - `_v6nax_eligible(D=64, fp16, causal=True)` = True (was False)
+  - `flash_attention(q, k, v, causal=True)` with `MFA_ENABLE_V6_BACKWARD=1`
+    now engages V6NAX backward NAX-direct kernels (was falling back to
     SDPA-vjp silently)
 
-  Production impact: LLM training causal scenarios with V34 backward
+  Production impact: LLM training causal scenarios with V6NAX backward
   enabled now get NAX-accelerated backward gradients on M5+ for
   D=64 qL≥2048 fp16/bf16.  See
   `docs/v50/phase-4b-complete-dv-residual-decisions.md` for full
@@ -1292,7 +1319,7 @@ characterization + routing decision matrix.
   pattern: "incomplete-fix" — multi-gate dispatch chain partially
   lifted).
 
-  Sprint 5 (V34 backward block-sparse) was BLOCKED on Phase 4b-complete
+  Sprint 5 (V6NAX backward block-sparse) was BLOCKED on Phase 4b-complete
   being clean; with this fix shipped, Sprint 5 is unblocked.  Sprint 5
   implementation deferred to Prompt 5 release flow OR focused future
   session (~2-3h CC).
@@ -1304,7 +1331,7 @@ characterization + routing decision matrix.
   xfailed (documented real bugs) + 40 xpassed**, zero unexpected
   failures.  Categories:
   - **Cluster A (22 tests)**: TypeError signature mismatches in
-    test_v34_backward_dq/kv/multisg.py.  v2.38.1 `d_vec` API + v2.50
+    test_v6nax_backward_dq/kv/multisg.py.  v2.38.1 `d_vec` API + v2.50
     Prompt 3 `causal` parameter additions left tests with old
     signatures.  Updated tests to pass `D = mx.sum(dO*O, axis=-1)` and
     use current binding signatures.
@@ -1351,19 +1378,19 @@ characterization + routing decision matrix.
 ### Changed (transparent for users)
 
 - **Phase 4b-complete.A — CRITICAL bug fix (v2.50, Prompt 3 Section B)**:
-  Fixed `compile_v34_backward_pipeline` (v2.40.x Sprint C consolidation
+  Fixed `compile_v6nax_backward_pipeline` (v2.40.x Sprint C consolidation
   helper) which hardcoded `isCausal=false` when constructing the
   `NAAttentionKernelDescriptor`. This was a latent bug that made my
   Prompt 2 Phase 4b dQ causal mask block a silent no-op — the
-  `#define V34BWD_CAUSAL` macro always evaluated to 0 regardless of
+  `#define V6NAXBWD_CAUSAL` macro always evaluated to 0 regardless of
   the caller's causal flag. Detected via source-dump inspection
-  (`MFA_V34BWDF_DUMP_SOURCE=1`). Plumbed `isCausal` through:
-  - 5 V34Bwd*Key cache structs (added `bool causal` field + hash)
-  - 5 MFAV34Bwd* Primitive classes (added `causal_` member + ctor arg)
+  (`MFA_V6BWDF_DUMP_SOURCE=1`). Plumbed `isCausal` through:
+  - 5 V6NAXBwd*Key cache structs (added `bool causal` field + hash)
+  - 5 MFAV6NAXBwd* Primitive classes (added `causal_` member + ctor arg)
   - 5 raw helpers + 5 nanobind bindings (added `bool causal` param)
-  - Python `_v34_backward_vjp` (threaded `causal` to each binding call)
+  - Python `_v6nax_backward_vjp` (threaded `causal` to each binding call)
 
-  **Empirical**: dQ kernel causal mask now fires correctly. V34 backward
+  **Empirical**: dQ kernel causal mask now fires correctly. V6NAX backward
   dQ RMSE at D=64 qL=2048 fp16 causal = **8.7e-6** (well within bounds),
   was effectively non-causal pre-fix.
 
@@ -1371,22 +1398,22 @@ characterization + routing decision matrix.
   4 K-parallel kernels (dV split, dK split, dKV legacy fused, dKdV
   fused). Mask blocks compiled-in but produce dV with structural
   ~25× under-counting residual (RMSE 2.7e-3 vs 1e-3 bound). Production
-  eligibility gates (`_v34_eligible`, `_v34_backward_carveout`)
+  eligibility gates (`_v6nax_eligible`, `_v6nax_backward_carveout`)
   RETAIN `not causal` constraint — production callers using
   `flash_attention(causal=True)` continue to use SDPA-vjp fallback
   (bit-identical, safe). K-parallel residual deferred to a focused
-  future session (~2-3h CC); Sprint 5 (V34 backward block-sparse)
+  future session (~2-3h CC); Sprint 5 (V6NAX backward block-sparse)
   bundled with this resolution because it extends the same kernels.
   See `docs/v50/phase-4b-complete-decisions.md` for full investigation
   evidence and recommended next steps.
 
-- **Sprint 4 Phase 4a + dQ partial (v2.50, V34 causal extension infrastructure)**:
-  V34 forward kernel (`createV34Source()`) now supports causal masking
+- **Sprint 4 Phase 4a + dQ partial (v2.50, V6NAX causal extension infrastructure)**:
+  V6NAX forward kernel (`createV6NAXSource()`) now supports causal masking
   via Apple SDPA NAX pattern (`steel_attention_nax.h:176-187,279-301`)
   — per-block `kb_lim` shrink + per-element `r < c → -inf` mask, gated
-  by compile-time `V34_CAUSAL` macro so non-causal source remains
-  bit-identical pre/post Sprint 4.  V34 backward dQ kernel
-  (`createV34BackwardQuerySource()`) mirrors with `V34BWD_CAUSAL` mask
+  by compile-time `V6NAX_CAUSAL` macro so non-causal source remains
+  bit-identical pre/post Sprint 4.  V6NAX backward dQ kernel
+  (`createV6NAXBackwardQuerySource()`) mirrors with `V6NAXBWD_CAUSAL` mask
   block.  Audit-prescribed L (~3-6h CC) effort, this session ships
   Phase 4a (~2h) + Phase 4b dQ (~30min) as infrastructure.  Phase 4b-
   complete (4 remaining K-parallel backward kernels: dKV legacy fused,
@@ -1395,8 +1422,8 @@ characterization + routing decision matrix.
   changes" empirically FALSIFIED (dQ exceeded SDPA-vjp reference by
   2144× without backward causal mask).  See
   `docs/v50/sprint4-status-phase4b-complete.md`.  Production behavior
-  unchanged: `_v34_eligible(causal=True)` and
-  `_v34_backward_carveout(causal=True)` both retain their `not causal`
+  unchanged: `_v6nax_eligible(causal=True)` and
+  `_v6nax_backward_carveout(causal=True)` both retain their `not causal`
   clauses — `flash_attention(causal=True)` callers continue to use
   SDPA-vjp fallback (bit-identical verified in
   `test_sprint4_flash_attention_causal_uses_sdpa_vjp`).  See
@@ -1461,19 +1488,19 @@ characterization + routing decision matrix.
   V1 STEEL callers.  See `docs/v50/sprint1-decisions.md` for full sweep
   data + framing correction + skill invocations log.
 
-- **Sprint C (v2.40.x-internal, P3-HIGH-01)**: V34 backward Primitive
+- **Sprint C (v2.40.x-internal, P3-HIGH-01)**: V6NAX backward Primitive
   pipeline-compile boilerplate consolidation.  Extracted ~125 LOC of
   duplicated descriptor-setup + source-gen + compile pattern across
-  the 5 V34 backward Primitives (`MFAV34BwdQuery`, `MFAV34BwdKeyValue`,
-  `MFAV34BwdDV`, `MFAV34BwdDK`, `MFAV34BwdFusedDKDV`) into a single
-  `compile_v34_backward_pipeline` helper in
+  the 5 V6NAX backward Primitives (`MFAV6NAXBwdQuery`, `MFAV6NAXBwdKeyValue`,
+  `MFAV6NAXBwdDV`, `MFAV6NAXBwdDK`, `MFAV6NAXBwdFusedDKDV`) into a single
+  `compile_v6nax_backward_pipeline` helper in
   `csrc/mfa_v6_nax_primitive.cpp`.  Pure refactor: same
   `AttentionOperands` + `NAAttentionKernelDescriptor` construction,
-  same source-generator dispatch via lambda, same `v34_compile`
+  same source-generator dispatch via lambda, same `v6nax_compile`
   invocation.  Source-dump hooks unified (env-gated, optional file
   output) — previously inline only in 2 of 5 Primitives; now
   uniformly available to all 5 via helper args.  **Net -37 LOC raw
-  diff; ~85 LOC of duplicated logic eliminated**; future V34
+  diff; ~85 LOC of duplicated logic eliminated**; future V6NAX
   backward kernel additions (block-sparse, causal, additional D
   values) plug into the helper without re-deriving the pattern.
   79/79 tests pass; D=64 fused-BK16 perf preserved within session
@@ -1481,17 +1508,17 @@ characterization + routing decision matrix.
   `docs/v6-nax/primitive-consolidation-decisions.md`.
 
   *Minor stderr-format change* (env-gated, invisible by default):
-  `MFA_V34BWD_DUMP_SOURCE=1` on MFAV34BwdQuery now prints the full
+  `MFA_V6BWD_DUMP_SOURCE=1` on MFAV6NAXBwdQuery now prints the full
   source body in addition to the header (was: header only).  All 5
   Primitive dump hooks now share a uniform stderr format.
 
 - **Sprint A (v2.39.2-internal, M2-HIGH-01 follow-up)**: broadened
-  the v2.37.2 V34-backward carve-out floor from `qL ≥ 4096` to
+  the v2.37.2 V6NAX-backward carve-out floor from `qL ≥ 4096` to
   `qL ≥ 2048`.  After v2.39.1's BK=16 fix the fused kernel reaches
   parity with SDPA-vjp at qL=2048 (3-session variance 1.004; see
   `docs/v6-nax/v39-2-internal-decisions.md` §"Threshold calibration").
-  Users with `MFA_ENABLE_V34_BACKWARD=1` on D=64 non-causal fp16/bf16
-  shapes at qL∈[2048, 4096) now engage the V34 backward fused path
+  Users with `MFA_ENABLE_V6_BACKWARD=1` on D=64 non-causal fp16/bf16
+  shapes at qL∈[2048, 4096) now engage the V6NAX backward fused path
   (was: silent SDPA-vjp fallback).  **No speedup claim** — qL=2048 is
   parity, not a win.  qL=1024 and below still correctly fall back
   (regresses 15% / 50% empirically; kept out of the carve-out).
@@ -1511,11 +1538,11 @@ characterization + routing decision matrix.
   appeared to show D=128 fused vs split parity, but was actually
   measuring SDPA-vjp three times.  Both
   `dispatch_policy.should_use_mfa(D=128)` (threshold 999_999) AND
-  `_v34_backward_carveout(D=128)` (D=64 hard-gated) block before
-  `_make_mfa_custom`'s vjp closure registers.  `MFA_V34_BWD_KERNEL=fused`
+  `_v6nax_backward_carveout(D=128)` (D=64 hard-gated) block before
+  `_make_mfa_custom`'s vjp closure registers.  `MFA_V6_BWD_KERNEL=fused`
   is ignored at D=128 via PUBLIC API.
 
-  Honest re-measurement via DIRECT C++ binding (correct V34 forward
+  Honest re-measurement via DIRECT C++ binding (correct V6NAX forward
   outputs + natural-log lse + precomputed D_vec):
 
   | qL | fused-BK16 (ms) | split (ms) | fused/split | Δ |
@@ -1564,7 +1591,7 @@ v2.37.2 carve-out is D=64 hard-gated).
 ### Measured speedups vs SDPA-vjp
 
 PUBLIC AUTO API (`mx.grad(flash_attention(..., backend="auto", causal=False))`
-+ `MFA_ENABLE_V34_BACKWARD=1`), M5 Max, B=2 H=8 fp16, 4 warmup + 12 timed iters:
++ `MFA_ENABLE_V6_BACKWARD=1`), M5 Max, B=2 H=8 fp16, 4 warmup + 12 timed iters:
 
 | qL | v2.39.1 speedup | v2.39.1 wall-time | v2.38.1 wall-time | Δ wall |
 |---|---|---|---|---|
@@ -1586,16 +1613,16 @@ qL=16384 falls under 1.15 but disclosed honestly with thermal attribution.
 
 ### What changed (code)
 
-- **`csrc/mfa_v6_nax_primitive.cpp::MFAV34BwdFusedDKDV::eval_gpu`**:
+- **`csrc/mfa_v6_nax_primitive.cpp::MFAV6NAXBwdFusedDKDV::eval_gpu`**:
   default `BK = 16` (was 32).  Override still available via
-  `MFA_V34BWDF_BK` env var for benchmarking experiments.
-- **`mlx_mfa/attention.py::_v34_backward_vjp`**: `auto` routing
+  `MFA_V6BWDF_BK` env var for benchmarking experiments.
+- **`mlx_mfa/attention.py::_v6nax_backward_vjp`**: `auto` routing
   resolves to `fused` for D=64 (was `split` per v2.39.0 outcome δ
   workaround).  D=128 unchanged (still routes to split — v2.37.2
   carve-out is D=64 hard-gated).
 - **`csrc/mfa_v6_nax_primitive.cpp` fused-path pipeline cache miss**:
-  added `MFA_V34BWDF_DUMP_SOURCE` / `MFA_V34BWDF_DUMP_PATH` env hooks
-  mirroring the split-path's `MFA_V34BWD_DUMP_SOURCE` (useful for
+  added `MFA_V6BWDF_DUMP_SOURCE` / `MFA_V6BWDF_DUMP_PATH` env hooks
+  mirroring the split-path's `MFA_V6BWD_DUMP_SOURCE` (useful for
   future fusion-tuning sprints + reproducible compiled-shader inspection).
 
 ### Investigation evidence (full record)
@@ -1619,10 +1646,10 @@ See `docs/v6-nax/v39-1-investigation-synthesis.md`:
 
 ### Net effect on users
 
-Identical-or-better than v2.38.1.  Users with `MFA_ENABLE_V34_BACKWARD=1`
-on D=64 V34-eligible shapes (qL≥4096) automatically get the new
+Identical-or-better than v2.38.1.  Users with `MFA_ENABLE_V6_BACKWARD=1`
+on D=64 V6NAX-eligible shapes (qL≥4096) automatically get the new
 fused-BK16 path with a 1-3% wall-time improvement.  No new env vars
-required.  `MFA_V34_BWD_KERNEL=split` still available as opt-out.
+required.  `MFA_V6_BWD_KERNEL=split` still available as opt-out.
 
 ### Roadmap
 
@@ -1649,18 +1676,18 @@ required.  `MFA_V34_BWD_KERNEL=split` still available as opt-out.
 
 ### Added — fused kernel infrastructure (opt-in)
 
-- **`createV34BackwardFusedDKDVSource()`** — new MSL source generator
+- **`createV6NAXBackwardFusedDKDVSource()`** — new MSL source generator
   combining split-dV + split-dK into a single Q-loop per K-tile.  Order
   constraint: `dV_accum += P^T @ dO` precedes `dS = P * dP` overwriting
   Stile in place (audit-validated; see source `// === ORDER-CRITICAL ===`).
   Reuses `naxHelpersBlock()` (Sprint v2.38.x extracted).
-- **`MFAV34BwdFusedDKDV`** Primitive — single-dispatch `MLX::Primitive`
+- **`MFAV6NAXBwdFusedDKDV`** Primitive — single-dispatch `MLX::Primitive`
   emitting (dK_partials, dV_partials) both `[B, Hq, WM, kL, D]` FP32.
 - **`v6_nax_backward_fused_dkdv_raw`** nanobind binding — D=64 only this
   PR (Phase C.1.a per audit staging); raises at C++ for D=128.
-- **`MFA_V34_BWD_KERNEL` env var contract** — `auto | fused | split |
+- **`MFA_V6_BWD_KERNEL` env var contract** — `auto | fused | split |
   legacy_fused`.  Default `auto` routes to **split** per outcome δ.
-  Back-compat: `MFA_V34BWD_USE_FUSED=1` (v2.38.0 legacy) still recognized
+  Back-compat: `MFA_V6BWD_USE_FUSED=1` (v2.38.0 legacy) still recognized
   as `legacy_fused`.
 - **`tests/test_v39_fused_dkdv.py`** — 17 tests: fused vs split parity
   across qL ∈ {2048, 4096, 8192} (RMSE=0 bit-identical observed),
@@ -1701,7 +1728,7 @@ in `docs/v6-nax/v39-0-option-gamma-results.md`.
 - `/mlx-debug-forensics` 5-axis byte-equivalence audit: HIGH confidence
   SHIP.  Order constraint preserved; buffer indices, strides, allocations,
   scale application all cross-verified.
-- All 50 prior V34 + helper + v32-routing + perf-claim tests still pass.
+- All 50 prior V6NAX + helper + v32-routing + perf-claim tests still pass.
 - All v2.38.1 perf claims preserved unchanged (auto-default = split).
 
 ### Why ship as architectural addition despite δ outcome
@@ -1710,7 +1737,7 @@ in `docs/v6-nax/v39-0-option-gamma-results.md`.
    is a foundation for future fusion-tuning sprints (different blocking,
    different WM, TGP streaming reduction, D=128 with register-budget
    controls).
-2. **`MFA_V34_BWD_KERNEL` env var contract** documents the routing
+2. **`MFA_V6_BWD_KERNEL` env var contract** documents the routing
    decision space for users + reviewers.
 3. **`test_v39_fused_dkdv.py` parity harness** becomes the verification
    scaffold for future iterations.
@@ -1722,11 +1749,11 @@ in `docs/v6-nax/v39-0-option-gamma-results.md`.
 
 ```
 csrc/mfa/v6_nax/NAAttentionKernel.hpp           | +12  (declaration)
-csrc/mfa/v6_nax/NAAttentionKernel.cpp           | +442 (createV34BackwardFusedDKDVSource)
-csrc/v6_nax_compile.mm                          | +95  (V34BwdFusedParamsHost + dispatcher)
-csrc/mfa_v6_nax_primitive.cpp                   | +166 (MFAV34BwdFusedDKDV + public function)
+csrc/mfa/v6_nax/NAAttentionKernel.cpp           | +442 (createV6NAXBackwardFusedDKDVSource)
+csrc/v6_nax_compile.mm                          | +95  (V6NAXBwdFusedParamsHost + dispatcher)
+csrc/mfa_v6_nax_primitive.cpp                   | +166 (MFAV6NAXBwdFusedDKDV + public function)
 csrc/bindings.cpp                               | +28  (binding + forward decl)
-mlx_mfa/attention.py                            | +29/-11 (MFA_V34_BWD_KERNEL env routing)
+mlx_mfa/attention.py                            | +29/-11 (MFA_V6_BWD_KERNEL env routing)
 tests/test_v39_fused_dkdv.py                    | +257 (new — 17 tests)
 benchmarks/bench_v39_0_fused_dkdv.py            | +130 (new — 3-arm bench)
 benchmarks/results/v39_0/*.json                 | +4 files (3 sessions + summary)
@@ -1741,26 +1768,26 @@ docs/v6-nax/v39-0-option-gamma-results.md       | +130 (new — outcome δ analy
   fusion is structurally non-beneficial on M5 NAX and remove the
   opt-in surface.
 - **v2.40.0**: Primitive boilerplate consolidation (P3-HIGH-01, ~200 LOC
-  dedup across the 4 V34 backward Primitives) — unblocked once fused
+  dedup across the 4 V6NAX backward Primitives) — unblocked once fused
   kernel's fate is settled.
 
 ## [2.38.1] — 2026-05-13 — D_vec precompute (M2-HIGH-01)
 
 D = rowsum(dO ⊙ O) is now precomputed once on host via MLX
 (`mx.sum(dO * O, axis=-1).astype(mx.float32)`) and passed as a shared
-device buffer to the V34 backward kernels that previously recomputed
+device buffer to the V6NAX backward kernels that previously recomputed
 it inline.  Eliminates 2 redundant in-kernel rowsums per default-path
-V34 backward call.
+V6NAX backward call.
 
 ### Measured perf delta (PUBLIC AUTO API, M5 Max NAX)
 
 Reproduce via `mx.grad(flash_attention(..., backend="auto"))` with
-`MFA_ENABLE_V34_BACKWARD=1`.  All shapes: B=2, H=8, non-causal, f16,
+`MFA_ENABLE_V6_BACKWARD=1`.  All shapes: B=2, H=8, non-causal, f16,
 4 warmup + 12 timed iters, median ms.  v2.38.1 results are 3-session
 medians (variance ratios <1.15 per §AA.4); v2.37.3 reference is
 single-session under identical conditions.
 
-| qL | v2.37.3 V34 (ms) | v2.38.1 V34 (ms) | Δ wall | v2.37.3 spd vs SDPA | v2.38.1 spd vs SDPA |
+| qL | v2.37.3 V6NAX (ms) | v2.38.1 V6NAX (ms) | Δ wall | v2.37.3 spd vs SDPA | v2.38.1 spd vs SDPA |
 |---|---|---|---|---|---|
 | **4096** | 10.57 | **9.59** | **-9.3%** | 1.75× | **1.91×** |
 | **8192** | 39.90 | **38.27** | -4.1% | 1.79× | **1.87×** |
@@ -1773,9 +1800,9 @@ documented PUBLIC AUTO API path per §Z (see reproduction snippet in
 
 ### Honest scope
 
-- **D=64 only**.  The v2.37.2 carve-out (`dispatch_policy._v34_backward_carveout`)
+- **D=64 only**.  The v2.37.2 carve-out (`dispatch_policy._v6nax_backward_carveout`)
   is D=64 hard-gated (`head_dim == 64` predicate).  D=128 always routes
-  to SDPA-vjp via the AUTO API; D=128 V34 backward kernels exist (and
+  to SDPA-vjp via the AUTO API; D=128 V6NAX backward kernels exist (and
   now contain the D_vec read) but are not user-reachable via AUTO.
 - **D=128 unchanged**: same SDPA-vjp path as v2.37.3.  No regression,
   no new claim.  Sprint v2.39.0 (Option γ fused dK+dV) will revisit
@@ -1812,9 +1839,9 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
 
 ### Validation
 
-- 41/41 V34 + helper + v32-routing tests pass (M5 NAX engaged via
-  `MFA_ENABLE_V34_BACKWARD=1`).
-- 11/11 fused-path tests pass (`MFA_V34BWD_USE_FUSED=1`).
+- 41/41 V6NAX + helper + v32-routing tests pass (M5 NAX engaged via
+  `MFA_ENABLE_V6_BACKWARD=1`).
+- 11/11 fused-path tests pass (`MFA_V6BWD_USE_FUSED=1`).
 - Axis-2 PUBLIC API: `mx.grad(flash_attention(...))` on D=64 qL=4096
   non-causal f16 — dQ/dK/dV RMSE all ~2e-5 vs SDPA reference (within
   FP16 tolerance, consistent across all 3 gradient tensors → no
@@ -1825,7 +1852,7 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
 - `/mlx-mfa-bench-methodology`: blueprint adopted (5 shapes, 3 sessions,
   PUBLIC AUTO API entry).
 - `/mlx-mfa-perf-audit`: MEDIUM → after corrections (D=128 framing,
-  removed nonexistent `MFA_ENABLE_V34_D128` env reference) → SHIP.
+  removed nonexistent `MFA_ENABLE_V6_D128` env reference) → SHIP.
 - `/mlx-mfa-release-audit`: HIGH SHIP (6/6 gates pass).
 
 ### Roadmap
@@ -1835,7 +1862,7 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
 - **v2.39.0**: Option γ fused dK+dV evaluation under TGP-streaming
   pattern (unblocked by v2.38.0 P1/P2 investigation foundation;
   premise corrected — TGP overhead negligible, real D=128 floor is
-  dK matmul work) + V34 backward Primitive boilerplate consolidation
+  dK matmul work) + V6NAX backward Primitive boilerplate consolidation
   (P3-HIGH-01).
 
 ## [2.38.0] — 2026-05-13 — Refactor + cleanup release (Path Y)
@@ -1855,17 +1882,17 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
 - **`mlx_mfa/attention.py`** — extracted two module-level helpers from
   `_make_mfa_custom` (Sprint v2.38.0 P3 Phase B, addressing Sprint 2
   audit M4-MEDIUM-01 + DP2-HIGH-01 compound):
-  - `_v34_eligible(head_dim, dtype, causal) -> bool` — the V34 NAX-
+  - `_v6nax_eligible(head_dim, dtype, causal) -> bool` — the V6NAX NAX-
     direct backward eligibility predicate.  Previously duplicated at
     two call sites within `_make_mfa_custom` (forward-fusion check +
     backward dispatch check); the inline checks now delegate to this
     helper.  Truth table is byte-equivalent across all 5 predicate
     axes (`_get_has_nax_cached`, `head_dim ∈ {64, 128}`, `dtype ∈
-    {fp16, bf16}`, `not causal`, `MFA_ENABLE_V34_BACKWARD == "1"`).
-  - `_v34_backward_vjp(q, k, v, O, L, dO, scale) -> (dQ, dK, dV)` —
-    V34 backward VJP dispatch (dQ kernel + multi-SG WM=4 split-dV/dK
-    by default, fused single-kernel via `MFA_V34BWD_USE_FUSED=1`).
-    Caller verifies eligibility via `_v34_eligible()` before invoking.
+    {fp16, bf16}`, `not causal`, `MFA_ENABLE_V6_BACKWARD == "1"`).
+  - `_v6nax_backward_vjp(q, k, v, O, L, dO, scale) -> (dQ, dK, dV)` —
+    V6NAX backward VJP dispatch (dQ kernel + multi-SG WM=4 split-dV/dK
+    by default, fused single-kernel via `MFA_V6BWD_USE_FUSED=1`).
+    Caller verifies eligibility via `_v6nax_eligible()` before invoking.
 - **`mlx_mfa/dispatch_policy.py`** — deleted the dormant placeholder
   `_should_use_mfa_m5_nax_carveout()` (Sprint v2.38.0 P3 Phase C,
   addressing DP1-MEDIUM-01).  The function was introduced in v2.32.0
@@ -1882,15 +1909,15 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
   `csrc/mfa/v6_nax/NAAttentionKernel.cpp:~3810`, and the
   `dispatch_policy.py` module-level comment block.  The MSL emitter
   string edits are comment-only — they do not change the JIT-compiled
-  Metal shader.  Now point to `_v34_backward_carveout()` (the v2.37.2
+  Metal shader.  Now point to `_v6nax_backward_carveout()` (the v2.37.2
   narrow predicate, retained) as the active hook and document the
   Sprint v2.38.x `naxHelpersBlock()` extraction.
 
 ### Added — tests + docs
 
-- **`tests/test_v34_helpers.py`** — 13 tests covering the new helpers
-  (10 truth-table cases for `_v34_eligible`, 3 dispatch-correctness
-  cases for `_v34_backward_vjp`).  All pass.
+- **`tests/test_v6nax_helpers.py`** — 13 tests covering the new helpers
+  (10 truth-table cases for `_v6nax_eligible`, 3 dispatch-correctness
+  cases for `_v6nax_backward_vjp`).  All pass.
 - **`tests/test_v32_sdpa_routing.py`** — replaced
   `test_carveout_function_exists_and_returns_false_by_default`
   (called the deleted private function → would AttributeError) with
@@ -1921,7 +1948,7 @@ ship with this release as documentation only:
   0.976 µs/K-iter (= ~0.5 ms total at qL=8192).  This removes the
   TGP-streaming blocker from the Option γ design space.
 - **Architectural floor identified** — the dK kernel's extra
-  `dO @ V^T` matmul puts a structural floor on V34-backward
+  `dO @ V^T` matmul puts a structural floor on V6NAX-backward
   parity-at-D=128 against SDPA-vjp.  (α) UNIVERSAL_AUTO_DEFAULT is
   unreachable; (γ) CONFIRMED_OPT_IN_BROADENED is the realistic
   ceiling for v2.38.1+.
@@ -1940,18 +1967,18 @@ half-wired — see decisions doc DC1 for the full reasoning).
   evaluation under TGP-streaming pattern (unblocked by Phase A's
   empirical TGP measurement).
 - **v2.39.0**: legacy Draw-Things-port backward kernels (which DO
-  have `AttentionOperand::D`) consolidation with V34 NAX-direct
+  have `AttentionOperand::D`) consolidation with V6NAX NAX-direct
   pathway, contingent on D_vec landing.
 
 ### Validation
 
-- **41/41** V34 + helper + v32-routing tests pass on M1 dev hardware
+- **41/41** V6NAX + helper + v32-routing tests pass on M1 dev hardware
   (NAX-only tests skip as expected; full NAX suite re-verified
   separately on M5+ NAX hardware via the pre-tag
   `/mlx-mfa-release-audit` canonical gate).
 - **Phase D corruption audit** (`/mlx-debug-forensics`): LOW risk,
   safe to ship.  5-axis predicate truth table preserved byte-for-byte
-  across both refactored call sites; `_v34_backward_vjp` is a byte-
+  across both refactored call sites; `_v6nax_backward_vjp` is a byte-
   identical extraction; test replacement is a strict superset.
 - **Phase D perf-claim audit** (`/mlx-mfa-perf-audit`): HIGH confidence
   no perf claim is possible from this sprint scope.  Kernel diff is
@@ -1968,7 +1995,7 @@ docs/v6-nax/README.md                 |  14 ±
 mlx_mfa/attention.py                  | 175 ±   (Phase B helper extraction)
 mlx_mfa/dispatch_policy.py            | -45    (Phase C deletion, net)
 tests/test_v32_sdpa_routing.py        |  30 ±   (Phase C test fix per §Z)
-tests/test_v34_helpers.py             | +217   (Phase B new test file)
+tests/test_v6nax_helpers.py             | +217   (Phase B new test file)
 ```
 
 Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
@@ -2016,17 +2043,17 @@ Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
 
 ### Corrected — overstated / unreachable perf claims
 
-- **v2.37.1 D=64 qL=2048 "V34 wins 1.44×" — retracted.**  Current
+- **v2.37.1 D=64 qL=2048 "V6NAX wins 1.44×" — retracted.**  Current
   canonical-methodology bench (`§4.2`) shows 1.15× kernel-level win
   and ≈1.06× end-to-end win, within measurement noise.  The v2.37.2
-  carve-out correctly does not engage V34 backward at qL=2048; the
+  carve-out correctly does not engage V6NAX backward at qL=2048; the
   AUTO path defaults to SDPA-vjp.  `docs/TRAINING_QUICKSTART.md`
-  updated: the qL=2048 row no longer carries the "V34 WINS" badge.
-- **v2.37.0 D=128 "V34 backward 2.2-2.4× slower than SDPA-vjp" —
+  updated: the qL=2048 row no longer carries the "V6NAX WINS" badge.
+- **v2.37.0 D=128 "V6NAX backward 2.2-2.4× slower than SDPA-vjp" —
   reclassified.**  Numbers are valid kernel-isolation
   characterization but require `backend="mfa"` explicit override
-  to reach; the documented `MFA_ENABLE_V34_BACKWARD=1` env-var
-  setup with default `backend="auto"` does NOT engage V34 at D=128
+  to reach; the documented `MFA_ENABLE_V6_BACKWARD=1` env-var
+  setup with default `backend="auto"` does NOT engage V6NAX at D=128
   (carve-out is D=64 only).  Public AUTO API correctly falls back
   to SDPA-vjp at parity.  `docs/TRAINING_QUICKSTART.md` updated:
   D=128 table flagged as research-only kernel characterization.
@@ -2039,7 +2066,7 @@ their perf claims.
 
 - v2.37.2 carve-out in `flash_attention()` preserved exactly
   (D=64, qL ≥ 4096, non-causal, f16/bf16, NAX, env=1)
-- All V34 backward kernels (dQ + multi-SG dK/dV WM=4)
+- All V6NAX backward kernels (dQ + multi-SG dK/dV WM=4)
 - All public API signatures
 - v2.36.x infrastructure
 
@@ -2049,44 +2076,44 @@ No code changes required.  Doc-only corrections.  Users following
 the v2.37.2 + v2.37.3 user-facing guidance get the documented perf
 without surprise.
 
-## [2.37.2] — 2026-05-13 — V34 backward integration bugfix
+## [2.37.2] — 2026-05-13 — V6NAX backward integration bugfix
 
 ### Fixed
 
-- **CRITICAL: Silent SDPA-vjp fallback when `MFA_ENABLE_V34_BACKWARD=1`**
+- **CRITICAL: Silent SDPA-vjp fallback when `MFA_ENABLE_V6_BACKWARD=1`**
   on non-causal shapes.  v2.37.0 and v2.37.1 advertised "1.4-1.85× faster
   than SDPA-vjp" at D=64 large shapes, but the public `flash_attention()`
   autograd path was silently routing through SDPA-vjp.  Root cause:
-  `flash_attention()` calls `should_use_mfa()` BEFORE checking the V34
+  `flash_attention()` calls `should_use_mfa()` BEFORE checking the V6NAX
   backward env var; `should_use_mfa()` returns `False` for non-causal
   D∈{64,128} because STEEL forward isn't competitive at those shapes;
   the `if not use_mfa: return _fallback_sdpa(...)` block returns before
-  the V34 custom-vjp `_impl` is ever constructed.  Setting
-  `MFA_ENABLE_V34_BACKWARD=1` had no observable effect through
+  the V6NAX custom-vjp `_impl` is ever constructed.  Setting
+  `MFA_ENABLE_V6_BACKWARD=1` had no observable effect through
   `mx.grad(flash_attention(...))` — only direct calls to `_ext.v6_nax_*`
-  kernels reached V34 backward.
+  kernels reached V6NAX backward.
 
 - **Fix** (`mlx_mfa/attention.py`): narrow carve-out in `flash_attention`
-  before the SDPA fallback returns.  When `MFA_ENABLE_V34_BACKWARD=1`
-  AND the shape qualifies for end-to-end V34 backward win (D=64,
+  before the SDPA fallback returns.  When `MFA_ENABLE_V6_BACKWARD=1`
+  AND the shape qualifies for end-to-end V6NAX backward win (D=64,
   qL ≥ 4096, non-causal, f16/bf16 same-dtype K/V, NAX), force
   `use_mfa = True` so the MFA path runs.  The custom-vjp `_impl` then
-  forward-fuses via V34 (force_v34=True) and the backward dispatches
-  through the V34 multi-SG dK/dV + dQ kernels.
+  forward-fuses via V6NAX (force_v6nax=True) and the backward dispatches
+  through the V6NAX multi-SG dK/dV + dQ kernels.
 
 ### Engagement envelope (auto, when env=1)
 
 | Config | Backward path | End-to-end vs SDPA-vjp |
 |---|---|---|
-| D=64, qL=4096, non-causal, f16/bf16 | V34 backward | **1.82× faster** |
-| D=64, qL=8192, non-causal, f16/bf16 | V34 backward | **1.81× faster** |
-| D=64, qL < 4096 | SDPA-vjp | parity or V34 loss → SDPA preferred |
-| D=128, any qL | SDPA-vjp | V34 backward 2.0-2.4× slower (research only) |
-| Causal | SDPA-vjp / STEEL bwd | V34 backward doesn't support causal (DC3) |
+| D=64, qL=4096, non-causal, f16/bf16 | V6NAX backward | **1.82× faster** |
+| D=64, qL=8192, non-causal, f16/bf16 | V6NAX backward | **1.81× faster** |
+| D=64, qL < 4096 | SDPA-vjp | parity or V6NAX loss → SDPA preferred |
+| D=128, any qL | SDPA-vjp | V6NAX backward 2.0-2.4× slower (research only) |
+| Causal | SDPA-vjp / STEEL bwd | V6NAX backward doesn't support causal (DC3) |
 
 ### Measurement (M5 Max, B=1 H=4 f16, `mx.grad(flash_attention(...))`)
 
-| D | qL | V34 backward (carve-out engaged) | SDPA-vjp | Speedup |
+| D | qL | V6NAX backward (carve-out engaged) | SDPA-vjp | Speedup |
 |---|----|---|---|---|
 | 64 | 4096 | 2.65 ms | 4.83 ms | 1.82× |
 | 64 | 8192 | 9.78 ms | 17.67 ms | 1.81× |
@@ -2094,85 +2121,85 @@ without surprise.
 
 ### Correctness validation
 
-V34 backward gradients vs SDPA-vjp (D=64, qL ∈ {4096, 8192}, f16):
+V6NAX backward gradients vs SDPA-vjp (D=64, qL ∈ {4096, 8192}, f16):
 - `dq` max|abs| = 0.0000, mean|rel| = 0.20-0.21%
 - `dk` max|abs| = 0.0000, mean|rel| = 0.26-0.70%
 - `dv` max|abs| = 0.0010, mean|rel| = 0.04%
 
 All within FP16 floor.  No regressions in test suite (670 pass, 2
-pre-existing FP16 flakes unrelated to V34).
+pre-existing FP16 flakes unrelated to V6NAX).
 
 ### Migration
 
-No code changes required.  Users with `MFA_ENABLE_V34_BACKWARD=1` who
-were silently using SDPA-vjp will now transparently get the V34 backward
+No code changes required.  Users with `MFA_ENABLE_V6_BACKWARD=1` who
+were silently using SDPA-vjp will now transparently get the V6NAX backward
 win on D=64 large shapes.  Other shapes continue to route through
 SDPA-vjp as before.
 
-## [2.37.1] — 2026-05-13 — V34 backward post-release improvements
+## [2.37.1] — 2026-05-13 — V6NAX backward post-release improvements
 
 ### Added (post-v2.37.0 improvements)
 
-- **V34 backward eligibility expanded to D=64 small-Nk** (formerly DC12-
-  blocked).  Added `force_v34` parameter to `_ext.v6_nax_forward` so the
+- **V6NAX backward eligibility expanded to D=64 small-Nk** (formerly DC12-
+  blocked).  Added `force_v6nax` parameter to `_ext.v6_nax_forward` so the
   flash_attention VJP can ensure natural-log lse is produced even on
   shapes that default-route to legacy v6_nax forward.  Previously, D=64
   with Nk ≤ 8000 (FlashVSR-class shapes) fell through to SDPA-vjp; now
-  V34 backward kernels handle them.  Correctness validated within FP16
+  V6NAX backward kernels handle them.  Correctness validated within FP16
   floor (dQ RMSE 9.7e-8, dK RMSE 1.0e-7, dV RMSE 4.2e-4 vs SDPA-vjp).
 
-- **MAJOR PERF FINDING — V34 backward at D=64 large shapes WINS vs
+- **MAJOR PERF FINDING — V6NAX backward at D=64 large shapes WINS vs
   SDPA-vjp** (1.4-1.85× faster):
 
-  | D=64 shape (qL=kL) | V34 backward | SDPA-vjp | V34 / SDPA |
+  | D=64 shape (qL=kL) | V6NAX backward | SDPA-vjp | V6NAX / SDPA |
   |---|---:|---:|---:|
   | 256 | 0.62ms | 0.46ms | 1.37× (slower) |
   | 512 | 0.81ms | 0.48ms | 1.68× (slower) |
   | 1024 | 0.61ms | 0.46ms | 1.32× (slower) |
-  | **2048** | **0.91ms** | **1.31ms** | **0.70× ← V34 WINS** |
-  | **4096** | **2.61ms** | **4.81ms** | **0.54× ← V34 WINS** |
-  | **8192** | **9.77ms** | **17.69ms** | **0.55× ← V34 WINS** |
+  | **2048** | **0.91ms** | **1.31ms** | **0.70× ← V6NAX WINS** |
+  | **4096** | **2.61ms** | **4.81ms** | **0.54× ← V6NAX WINS** |
+  | **8192** | **9.77ms** | **17.69ms** | **0.55× ← V6NAX WINS** |
 
   The "architectural floor" of 2.4× SDPA-vjp identified at D=128 does
   NOT apply at D=64.  At D=64 large shapes (qL × kL ≥ 4M = 2048²),
-  V34 backward is 1.4-1.85× faster than SDPA-vjp.  This is a clear
+  V6NAX backward is 1.4-1.85× faster than SDPA-vjp.  This is a clear
   perf win for D=64 training workloads (e.g., FlashVSR class with
   larger qL, LTX2-style cross-attention).
 
-  V34 backward remains SHIP_OPT_IN (`MFA_ENABLE_V34_BACKWARD=1`) by
+  V6NAX backward remains SHIP_OPT_IN (`MFA_ENABLE_V6_BACKWARD=1`) by
   default to avoid changing forward-pass routing on users who don't
-  do backward (forcing V34 forward routing has small forward-only
-  perf cost on D=64 small-Nk).  When `MFA_ENABLE_V34_BACKWARD=1` is
+  do backward (forcing V6NAX forward routing has small forward-only
+  perf cost on D=64 small-Nk).  When `MFA_ENABLE_V6_BACKWARD=1` is
   set, training on D=64 large shapes is now faster than SDPA-vjp.
 
-## [2.37.0] — 2026-05-13 — V34 backward NAX-direct kernels (SHIP_OPT_IN)
+## [2.37.0] — 2026-05-13 — V6NAX backward NAX-direct kernels (SHIP_OPT_IN)
 
 ### Added
 
-- **V34 backward NAX-direct kernels** for M5+: `_ext.v6_nax_backward_query`
+- **V6NAX backward NAX-direct kernels** for M5+: `_ext.v6_nax_backward_query`
   (dQ), `_ext.v6_nax_backward_kv` (fused dK/dV WM=1), `_ext.v6_nax_backward_dv_raw`
   + `_ext.v6_nax_backward_dk_raw` (multi-SG WM=4 split via Q-row partition).
   Apple's NAX backward is NYI in MLX framework — these kernels are the only
   path for NAX-accelerated backward attention on M5+.
 
-- **`flash_attention()` autograd integration** for V34 backward: when
-  `MFA_ENABLE_V34_BACKWARD=1` is set, the VJP routes through V34 backward
+- **`flash_attention()` autograd integration** for V6NAX backward: when
+  `MFA_ENABLE_V6_BACKWARD=1` is set, the VJP routes through V6NAX backward
   kernels on M5+ eligible shapes (D ∈ {64, 128}, FP16/BF16, no causal /
-  window / softcap, V34-forward-routing-eligible).  Default (env unset):
+  window / softcap, V6NAX-forward-routing-eligible).  Default (env unset):
   STEEL backward / SDPA-vjp fallback (v2.36.1-exact behavior).
 
-- **V34 forward lse-write** (BLK1 infrastructure): V34 forward kernel
+- **V6NAX forward lse-write** (BLK1 infrastructure): V6NAX forward kernel
   now writes per-row natural-log lse to device memory (previously dead
-  storage).  Enables V34 backward dQ to recompute softmax P from forward
+  storage).  Enables V6NAX backward dQ to recompute softmax P from forward
   state without re-running forward.
 
-- **Forward-fusion**: when V34 backward is enabled, `_make_mfa_custom`
-  uses V34 forward (natural-log lse) directly instead of STEEL forward,
-  eliminating both STEEL fwd and V34 fwd-recompute at backward time.
+- **Forward-fusion**: when V6NAX backward is enabled, `_make_mfa_custom`
+  uses V6NAX forward (natural-log lse) directly instead of STEEL forward,
+  eliminating both STEEL fwd and V6NAX fwd-recompute at backward time.
 
 ### Methodology
 
-- V34 backward Option β sprint methodology: started from V34 forward
+- V6NAX backward Option β sprint methodology: started from V6NAX forward
   investigation's B+C+E bundle (cross-SG sync elim + simd_shuffle_xor +
   M5-tuned defaults) — all three mechanisms transferred cleanly to
   backward.  Phase 2.O1 (WM=2 K-row partition) FALSIFIED empirically
@@ -2186,23 +2213,23 @@ SDPA-vjp as before.
 
 ### Validated
 
-- 39 new tests covering V34 backward kernels (dQ + dK/dV correctness vs
+- 39 new tests covering V6NAX backward kernels (dQ + dK/dV correctness vs
   SDPA-vjp, multi-SG variants, integration through flash_attention VJP,
   routing-parity constraints).  RMSE 1.5e-8 (FP32 floor) for dQ + dK;
   RMSE 1.5e-6 (FP16 round-trip floor) for dV.
-- Full regression: 116/116 tests pass (77 v2.36.1 + 39 V34 backward).
+- Full regression: 116/116 tests pass (77 v2.36.1 + 39 V6NAX backward).
   Zero regressions.
 
 ### Ship status: SHIP_OPT_IN
 
-V34 backward is functionally correct but 2.2-2.4× slower than SDPA-vjp
+V6NAX backward is functionally correct but 2.2-2.4× slower than SDPA-vjp
 on M5 Max at qL=8192.  Per auto-default principle (Sprint U), default
-behavior unchanged for users.  Opt-in via `MFA_ENABLE_V34_BACKWARD=1`
+behavior unchanged for users.  Opt-in via `MFA_ENABLE_V6_BACKWARD=1`
 for research / benchmarking.
 
 ### Performance (M5 Max FP16 D=128 via `flash_attention()` autograd)
 
-| qL | V34 multi-SG | SDPA-vjp | Ratio |
+| qL | V6NAX multi-SG | SDPA-vjp | Ratio |
 |---|---:|---:|---:|
 | 1024 | 1.07ms | 0.50ms | 2.13× |
 | 2048 | 3.22ms | 1.54ms | 2.09× |
@@ -2213,13 +2240,13 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
 
 ### Internal env vars (advanced users)
 
-- `MFA_ENABLE_V34_BACKWARD=1` — opt into V34 backward path.
-- `MFA_V34BWD_USE_FUSED=1` — fall back to WM=1 fused dK/dV kernel
+- `MFA_ENABLE_V6_BACKWARD=1` — opt into V6NAX backward path.
+- `MFA_V6BWD_USE_FUSED=1` — fall back to WM=1 fused dK/dV kernel
   (instead of WM=4 split; for benchmarking).
-- `MFA_V34BWD_WM` (default 4) — WM for multi-SG dK/dV split kernels.
-- `MFA_V34BWDV_BQ`, `MFA_V34BWDV_BK`, `MFA_V34BWDV_WM` — per-kernel tile
+- `MFA_V6BWD_WM` (default 4) — WM for multi-SG dK/dV split kernels.
+- `MFA_V6BWDV_BQ`, `MFA_V6BWDV_BK`, `MFA_V6BWDV_WM` — per-kernel tile
   overrides for dV (researchers).
-- `MFA_V34BWDK_BQ`, `MFA_V34BWDK_BK`, `MFA_V34BWDK_WM` — per-kernel tile
+- `MFA_V6BWDK_BQ`, `MFA_V6BWDK_BK`, `MFA_V6BWDK_WM` — per-kernel tile
   overrides for dK.
 
 ### Unchanged
@@ -2229,13 +2256,13 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
 - All public API signatures preserved.
 - All patchers preserved as expert API.
 - v2.36.1 default behavior unchanged for users who don't set
-  `MFA_ENABLE_V34_BACKWARD=1`.
+  `MFA_ENABLE_V6_BACKWARD=1`.
 
 ### Notes for v2.36.1 users upgrading
 
-- No code changes required; V34 backward is opt-in.
+- No code changes required; V6NAX backward is opt-in.
 - For training workloads on M5+ FP16 D∈{64,128}: set
-  `MFA_ENABLE_V34_BACKWARD=1` to evaluate V34 backward kernels.
+  `MFA_ENABLE_V6_BACKWARD=1` to evaluate V6NAX backward kernels.
   Expect slower runtime than SDPA-vjp on current hardware (this is
   research infrastructure, not a perf optimization).
 
@@ -2243,7 +2270,7 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
 
 - Multi-SG dK kernel optimization (deferred — architectural floor at 2.4×
   SDPA-vjp confirmed).
-- Block-sparse backward (DC3 deferred from V34 backward sprint scope).
+- Block-sparse backward (DC3 deferred from V6NAX backward sprint scope).
 - Causal backward (DC3 deferred).
 - D ∉ {64, 128} backward (falls back to STEEL).
 - Softcap / ALiBi / TurboQuant backward (kept on STEEL).
@@ -2411,14 +2438,14 @@ principle, anti-patterns, and pre-tag audit checklist.
 
 - **V2 sparse attention kernel** (opt-in via `MFA_LCSA_KERNEL_VERSION=v2`) —
   single-kernel cooperative-tensor inner-GEMM via NAXFrag::mma + NAXTile,
-  V34 forward pattern adapted for sparse with:
+  V6NAX forward pattern adapted for sparse with:
   - Outer-loop block-mask skip (uniform branch across simdgroup → zero divergence)
   - K/V base + per-iteration jump pointers (random kb access via index)
   - Per-SG Q-row partition (kU=16, BQ=BK=32, WM=2 per design DC1+DC3)
   - All-False row → exact zero output preserved (v2.34.0 contract)
 - `MFA_LCSA_KERNEL_VERSION` env var:
   - `v1` (default): per-thread FA-2 (v2.34.0 kernel, unchanged)
-  - `v2`: cooperative-tensor inner-GEMM (broad-envelope V34-pattern kernel)
+  - `v2`: cooperative-tensor inner-GEMM (broad-envelope V6NAX-pattern kernel)
 - Section A design doc `docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture)
 - Section C: 19 V2 correctness tests covering V1↔V2 equivalence on 7 shapes
   + three-axis V2 validation + density sweep 0.01-0.50
@@ -2471,7 +2498,7 @@ caveats". V1 remains default; V2 is opt-in via `MFA_LCSA_KERNEL_VERSION=v2`.
 - V1 (per-thread-Q-row FA-2 with register math) preserved unchanged.
 - V2 source-gen in `csrc/mfa_sparse_attention.cpp` via Apple helpers
   (NAXFrag + NAXTile, 389 LOC verbatim from `csrc/mfa/v6_nax/NAAttentionKernel.cpp`)
-  + V34 kernel body adapted (194 LOC).
+  + V6NAX kernel body adapted (194 LOC).
 - Cache discrimination via kernel-name `_v1` / `_v2` suffix — both pipelines
   coexist; switch via env var.
 
@@ -2495,7 +2522,7 @@ caveats". V1 remains default; V2 is opt-in via `MFA_LCSA_KERNEL_VERSION=v2`.
 
 - ~~matmul2d cooperative-tensor inner-GEMM rewrite~~ — **DONE** in v2.35.0
 - `patch_sparkvsr_sliding_window` companion patcher — tracked
-- V34 forward focused investigation (memory #30 roadmap) — next sprint target
+- V6NAX forward focused investigation (memory #30 roadmap) — next sprint target
 
 ### §4-validated 2026-05-12 — Sprint B v2.34.0 ship-verdict (no tag)
 
@@ -2718,9 +2745,9 @@ generations while stopping unnecessary competition with Apple's upstream
 NAX kernel on the canonical shape regime.
 
 The MLX 0.31.2 audit and the v2.31.0 → v2.32.0 cross-session diagnostic
-(`docs/v6-nax/v32-drift-diagnostic-report.md`) concluded that V34 NAX-direct
+(`docs/v6-nax/v32-drift-diagnostic-report.md`) concluded that V6NAX NAX-direct
 matches Apple's NAX kernel cross-session but does not consistently beat it.
-v2.31.0's headline `+33-40% V34 wins on D=128` reflected within-session
+v2.31.0's headline `+33-40% V6NAX wins on D=128` reflected within-session
 conditions that did not reproduce in subsequent measurements.
 
 ### Routing predicate
@@ -2823,9 +2850,9 @@ canonical M5+ shapes to a slow SDPA path without these fixes.
 
 ### Performance recalibration (v2.31.0 follow-up)
 
-v2.31.0's release perf table claimed V34 wins of +33-40% on D=128 self-
+v2.31.0's release perf table claimed V6NAX wins of +33-40% on D=128 self-
 attention shapes. Cross-session re-bench in v2.32.0 Phase 0 measured
-those shapes again and found V34 at parity-or-slight-edge with legacy V6
+those shapes again and found V6NAX at parity-or-slight-edge with legacy V6
 NAX, depending on environmental conditions. The legacy V6 NAX path
 itself measured 36-41% faster in Phase 0 than at v2.31.0 release time —
 same hardware, same code, no source change.
@@ -2848,14 +2875,14 @@ benchmarks:
 - `CLAUDE_V6_NAX.md` Artifact #5 — methodology rule for marketing-grade
   benchmarks (multi-session repro required before perf claims published)
 
-### V34 / V6 NAX status — clarification
+### V6NAX / V6 NAX status — clarification
 
-The V34 NAX-direct kernel (shipped in v2.31.0) and the V6 NAX legacy path
+The V6NAX NAX-direct kernel (shipped in v2.31.0) and the V6 NAX legacy path
 are **accessible only via the direct binding `_ext.v6_nax_forward()`** —
-used by `bench/v34_bench.py`, `bench/v32_multisession_capture.py`, and
+used by `bench/v6nax_bench.py`, `bench/v32_multisession_capture.py`, and
 similar tools. The public `mlx_mfa.flash_attention()` API has never
-routed through V6 NAX/V34; it has always used the STEEL kernel family
-(V1/V2/V3/V4/V5) via `MFAttention`. v2.31.0 introduced V34 as a research
+routed through V6 NAX/V6NAX; it has always used the STEEL kernel family
+(V1/V2/V3/V4/V5) via `MFAttention`. v2.31.0 introduced V6NAX as a research
 path with bench data; it was not part of the production dispatch.
 
 v2.32.0 modifies the **production dispatch** (the path users actually
@@ -2863,10 +2890,10 @@ hit through `flash_attention()`) to route canonical M5+ NAX shapes to
 SDPA. STEEL kernels still handle non-canonical shapes, sliding window,
 sparse, attn_bias, decode patterns, etc.
 
-The V6 NAX/V34 source remains in the codebase as:
+The V6 NAX/V6NAX source remains in the codebase as:
 - An implementation reference for `steel_attention_nax.h` patterns
-  (`csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV34Source`)
-- The kernel exercised by `v34_bench.py` for cross-session perf studies
+  (`csrc/mfa/v6_nax/NAAttentionKernel.cpp::createV6NAXSource`)
+- The kernel exercised by `v6nax_bench.py` for cross-session perf studies
 - A regression canary against future MLX upstream changes
 
 ### Tests
@@ -2914,11 +2941,11 @@ introduced by v2.32.0).
   block masks; mlx-mfa keeps this niche
 - Conv2D/3D NAX — separate primitive class
 
-## [2.31.0] — 2026-05-06 — V34 NAX-direct rewrite (M5 Max SDPA parity achieved)
+## [2.31.0] — 2026-05-06 — V6NAX NAX-direct rewrite (M5 Max SDPA parity achieved)
 
 ### Architecture
 
-- New `loopForwardSingleTileV34` path in V6 NAX uses Apple's
+- New `loopForwardSingleTileV6NAX` path in V6 NAX uses Apple's
   `NAXFrag::mma` and `NAXTile<T, TQ, TD>` primitives directly
   (the pattern from `steel_attention_nax.h`), bypassing MPP
   cooperative_tensor constraints that imposed
@@ -2927,7 +2954,7 @@ introduced by v2.32.0).
   level (`tm = 16 * TQ * sgid`), not via cooperative_tensor
   distribution. This sidesteps the V33 cross-SG distribution
   opacity issue documented in `docs/v6-nax/v33-sg-gt-1-debug-report.md`.
-- V34 emits a self-contained MSL source (~17.7 KB of inlined Apple
+- V6NAX emits a self-contained MSL source (~17.7 KB of inlined Apple
   helpers): `BaseNAXFrag` (with `mma` / `load` / `store` / `row_reduce`
   / `row_bin_op`), `NAXTile<T, TQ, TD>`, `MaxOp` / `SumOp` / `MulOp`
   / `ExpSubOp`, `Limits`, `integral_constant`. No external include
@@ -2935,28 +2962,28 @@ introduced by v2.32.0).
 
 ### Performance (M5 Max, cross-session multi-run, iStat performance fan)
 
-| Shape | D | Legacy ms | V34 ms | Δ | V34/SDPA | Default |
+| Shape | D | Legacy ms | V6NAX ms | Δ | V6NAX/SDPA | Default |
 |---|---|---:|---:|---:|---:|:---:|
 | FlashVSR-dense | 64 | 1.12 | 1.55 | -39% | 1.633× | legacy |
-| LTX2-cross | 64 | 1.75 | 1.42 | **+19%** | **1.075×** | **V34** |
-| SeedVR2-small | 128 | 265.13 | 170.92 | **+36%** | **0.890× ⭐** | **V34** |
-| CogVideoX | 128 | 3610.79 | 2399.19 | **+34%** | **1.033×** | **V34** |
-| SeedVR2-large | 128 | 6776.12 | 4042.73 | **+40%** | **1.008×** | **V34** |
+| LTX2-cross | 64 | 1.75 | 1.42 | **+19%** | **1.075×** | **V6NAX** |
+| SeedVR2-small | 128 | 265.13 | 170.92 | **+36%** | **0.890× ⭐** | **V6NAX** |
+| CogVideoX | 128 | 3610.79 | 2399.19 | **+34%** | **1.033×** | **V6NAX** |
+| SeedVR2-large | 128 | 6776.12 | 4042.73 | **+40%** | **1.008×** | **V6NAX** |
 
-V34 wins +18 to +40% on 4/5 production shapes vs legacy V6 NAX. **3 of 5
+V6NAX wins +18 to +40% on 4/5 production shapes vs legacy V6 NAX. **3 of 5
 reach SDPA parity (1.01×–1.07×)** — the historic D=128 long-N gap (legacy
 was 1.5×–1.7× SDPA) is closed. **SeedVR2-small at 0.89× actually beats
 SDPA**, the first time V6 NAX has dipped below 1.0× on a production shape.
 
-Methodology: subprocess A/B/A (legacy → V34 → legacy), 3 runs/round, 60s
+Methodology: subprocess A/B/A (legacy → V6NAX → legacy), 3 runs/round, 60s
 inter-round + 30s inter-shape cooldowns. 4/5 shapes have R1↔R3 thermal
-drift < 8%. Raw bench data: `docs/v6-nax/v34-aba.json`.
+drift < 8%. Raw bench data: `docs/v6-nax/v6nax-aba.json`.
 
 ### Numerics
 
-V34 is 4–30× more numerically stable than legacy on the same shapes:
+V6NAX is 4–30× more numerically stable than legacy on the same shapes:
 
-| Shape | Legacy RMSE FP32 | V34 RMSE FP32 |
+| Shape | Legacy RMSE FP32 | V6NAX RMSE FP32 |
 |---|---:|---:|
 | FlashVSR-dense | 1.47e-05 | 3.60e-06 |
 | LTX2-cross | 8.10e-06 | 1.76e-06 |
@@ -2972,51 +2999,51 @@ tile-boundary FP rounding artifacts.
 
 Per-D shape-aware dispatch (in `mfa_v6_nax_primitive.cpp`):
 
-- `D = 128` → V34 default (3 production shapes)
-- `D = 64` and `N_kv > 8000` → V34 default (LTX2-cross style asymmetric)
-- `D = 64` small N (FlashVSR-dense style) → legacy retained (V34 regresses
-  −39% on small symmetric self-attention; root cause TBD, likely V34
+- `D = 128` → V6NAX default (3 production shapes)
+- `D = 64` and `N_kv > 8000` → V6NAX default (LTX2-cross style asymmetric)
+- `D = 64` small N (FlashVSR-dense style) → legacy retained (V6NAX regresses
+  −39% on small symmetric self-attention; root cause TBD, likely V6NAX
   per-kernel overhead unfavorable on short matmul tiles)
-- Causal forward → legacy fallback (V34 not yet ported)
+- Causal forward → legacy fallback (V6NAX not yet ported)
 - GQA `Hq != Hk && Hq % Hk != 0` → legacy double-buffer fallback
-- Override via env var: `MFA_V6_USE_V34={0,1}`
+- Override via env var: `MFA_V6_USE_NAX={0,1}`
 
-V34 tile defaults: D=64 → BQ=32, BK=64, WM=2; D=128 → BQ=64, BK=32, WM=4.
-Tunable via `MFA_V6_V34_BQ` / `MFA_V6_V34_BK` / `MFA_V6_V34_WM`.
+V6NAX tile defaults: D=64 → BQ=32, BK=64, WM=2; D=128 → BQ=64, BK=32, WM=4.
+Tunable via `MFA_V6_NAX_BQ` / `MFA_V6_NAX_BK` / `MFA_V6_NAX_WM`.
 
 ### Compatibility
 
 - Drop-in replacement: existing `flash_attention()` calls automatically
-  use V34 where the dispatch elects it; no Python API change.
-- V6Key cache key gains 4 dedicated fields (`use_v34`, `v34_BQ`,
-  `v34_BK`, `v34_WM`) — no bit-packing, no foot-gun.
+  use V6NAX where the dispatch elects it; no Python API change.
+- V6Key cache key gains 4 dedicated fields (`use_v6nax`, `v6nax_BQ`,
+  `v6nax_BK`, `v6nax_WM`) — no bit-packing, no foot-gun.
 - Legacy V6 NAX path remains intact for shapes where it wins or where
-  V34 isn't yet ported.
+  V6NAX isn't yet ported.
 
 ### Files
 
-- `csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}` — `createV34Source()` (~700 LOC)
-- `csrc/mfa/v6_nax/NAAttentionKernelDescriptor.hpp` — `useV34` field
-- `csrc/mfa_v6_nax_primitive.cpp` — V34 dispatch + V6Key fields
-- `csrc/v6_nax_compile.mm` — `v34_compile`, `v34_dispatch`, `V34Params` struct
-- `csrc/v34_probe.cpp` — Phase 1 compile probe (kept for future debugging)
-- `bench/v34_bench.py`, `bench/v34_aba_wrapper.sh` — bench infrastructure
-- `docs/v6-nax/v34-apple-reference-mapping.md` — file:line citations
-- `docs/v6-nax/v34-results.md` — sprint final report
-- `docs/v6-nax/v34-aba.json` — raw bench data
+- `csrc/mfa/v6_nax/NAAttentionKernel.{hpp,cpp}` — `createV6NAXSource()` (~700 LOC)
+- `csrc/mfa/v6_nax/NAAttentionKernelDescriptor.hpp` — `useV6NAX` field
+- `csrc/mfa_v6_nax_primitive.cpp` — V6NAX dispatch + V6Key fields
+- `csrc/v6_nax_compile.mm` — `v6nax_compile`, `v6nax_dispatch`, `V6NAXParams` struct
+- `csrc/v6nax_probe.cpp` — Phase 1 compile probe (kept for future debugging)
+- `bench/v6nax_bench.py`, `bench/v6nax_aba_wrapper.sh` — bench infrastructure
+- `docs/v6-nax/v6nax-apple-reference-mapping.md` — file:line citations
+- `docs/v6-nax/v6nax-results.md` — sprint final report
+- `docs/v6-nax/v6nax-aba.json` — raw bench data
 - `CLAUDE_V6_NAX.md` — V6 NAX guardrails accumulated through v2.27.0–v2.30.x
 
 ### Open follow-ups
 
-- FlashVSR-dense D=64 small-N V34 regression: investigate whether
-  V34 with `BQ=16, WM=1` configuration beats legacy on small
+- FlashVSR-dense D=64 small-N V6NAX regression: investigate whether
+  V6NAX with `BQ=16, WM=1` configuration beats legacy on small
   symmetric self-attention.
-- V34 causal forward (currently legacy fallback).
-- V34 with `align_Q` / `align_K` function constants for the
+- V6NAX causal forward (currently legacy fallback).
+- V6NAX with `align_Q` / `align_K` function constants for the
   fast-path on shapes that are seq-len aligned.
-- L (logsumexp) writeback in V34 — currently V34 doesn't write
+- L (logsumexp) writeback in V6NAX — currently V6NAX doesn't write
   the `lse` output; backward via `mx.vjp(SDPA)` doesn't need it,
-  but any user reading L from V34 output would get uninitialized data.
+  but any user reading L from V6NAX output would get uninitialized data.
 
 ## [2.30.0] — 2026-05-05 (final, post thermal-controlled re-bench)
 

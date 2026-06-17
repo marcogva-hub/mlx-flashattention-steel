@@ -13,11 +13,11 @@ Sprint C targets MLX 0.31.2's conv stack, which **does not use NAX on M5+**. Eve
 
 **Apple's NAX surface exposes `mpp::tensor_ops::convolution2d`** (verified in `/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsConvolution2d.h`). Conv2D has a first-class, NAX-aware descriptor with full configurability (strides, dilations, groups, relaxed_precision, multiply vs multiply_accumulate, NHWC activation + HWIO weights layout, cooperative_tensor destination). **There is NO `convolution3d` primitive.** Conv3D must be routed via either (a) per-temporal-slice Conv2D loops, (b) implicit GEMM (im2col-3D → matmul2d), or (c) hand-rolled `NAXFrag` MMA.
 
-**Recommendation: Option F — wrap `mpp::tensor_ops::convolution2d` for Conv2D shapes + implicit-GEMM via `mpp::tensor_ops::matmul2d` for Conv3D shapes.** The Conv2D wrapper is structurally analogous to V6 NAX wrapping `matmul2d` for attention. The Conv3D path leverages our existing NAX GEMM infrastructure (`csrc/v34_compile.mm`-style binding). This is a hybrid Option A/E variant that the prompt's A/B/C/D enumeration doesn't cleanly cover — see §10 for full rationale. Phase 1.0 design takes this as input.
+**Recommendation: Option F — wrap `mpp::tensor_ops::convolution2d` for Conv2D shapes + implicit-GEMM via `mpp::tensor_ops::matmul2d` for Conv3D shapes.** The Conv2D wrapper is structurally analogous to V6 NAX wrapping `matmul2d` for attention. The Conv3D path leverages our existing NAX GEMM infrastructure (`csrc/v6nax_compile.mm`-style binding). This is a hybrid Option A/E variant that the prompt's A/B/C/D enumeration doesn't cleanly cover — see §10 for full rationale. Phase 1.0 design takes this as input.
 
 The theoretical NAX bound on the 6 representative VAE Conv3D shapes ranges from 7.6 ms (mid_block 512→512) to 207.5 ms (up3 resnet 256→128 at 1×17×512×512). All shapes are heavily compute-bound (AI 1700–6600 FLOPs/byte vs M5 Max ridge ≈95) — no shape sits in the bandwidth-bound regime, so the bottleneck is NAX utilization, not memory traffic.
 
-**Baseline bench (3 sessions, §4-compliant 90/60/180s cooldowns, completed 13:04 of 2026-05-11)** quantifies the opportunity: MLX achieves a **strikingly consistent 38-40% of theoretical NAX peak** across every shape (ratio 2.52-2.67× over theoretical min). Cross-session variance is 0.1-4.5% — exceptional stability vs Sprint A's V34 backward (which had 30-87% range at the same protocol). Per decoder forward, the 6 conv kernels consume **2643 ms baseline** vs **1033 ms theoretical minimum** = headroom of **1610 ms (60.9% potential reduction)** at theoretical peak, **1127 ms (42.6% reduction)** at a realistic 70%-of-peak Sprint C target. Sprint C's ROI is **decisively positive**.
+**Baseline bench (3 sessions, §4-compliant 90/60/180s cooldowns, completed 13:04 of 2026-05-11)** quantifies the opportunity: MLX achieves a **strikingly consistent 38-40% of theoretical NAX peak** across every shape (ratio 2.52-2.67× over theoretical min). Cross-session variance is 0.1-4.5% — exceptional stability vs Sprint A's V6NAX backward (which had 30-87% range at the same protocol). Per decoder forward, the 6 conv kernels consume **2643 ms baseline** vs **1033 ms theoretical minimum** = headroom of **1610 ms (60.9% potential reduction)** at theoretical peak, **1127 ms (42.6% reduction)** at a realistic 70%-of-peak Sprint C target. Sprint C's ROI is **decisively positive**.
 
 ## 2. MLX 0.31.2 state on conv NAX
 
@@ -131,7 +131,7 @@ For Conv2D shapes that fit within MPP's static constraints (NHWC, HWIO, groups=1
 
 For Conv3D shapes (which dominate the VAE workload at 99% of FLOPs), there is no equivalent MPP primitive. Three sub-options:
 1. **Per-temporal-slice Conv2D**: outer T-axis loop, inner conv2d call per temporal slice. Simple. Loses temporal-axis NAX parallelism. Per-call NAX overhead × T.
-2. **Implicit GEMM via matmul2d**: build a 3D im2col tensor (expansion ~K_t × K_h × K_w = 27× for 3×3×3), then dispatch a single big `matmul2d`. Reuses existing V34 NAX-matmul expertise. Memory overhead from im2col, but the matmul itself sees maximum NAX utilization.
+2. **Implicit GEMM via matmul2d**: build a 3D im2col tensor (expansion ~K_t × K_h × K_w = 27× for 3×3×3), then dispatch a single big `matmul2d`. Reuses existing V6NAX NAX-matmul expertise. Memory overhead from im2col, but the matmul itself sees maximum NAX utilization.
 3. **Hand-rolled `NAXFrag`**: low-level conv3d kernel using NAX fragment primitives directly, bypassing both `convolution2d` (which doesn't exist for 3D) and `matmul2d`. Most flexible, highest implementation cost.
 
 §10 selects the recommended path.
@@ -149,7 +149,7 @@ From `~/code/SeedVR2_VAE_Flash-VAED/results/phase0/architecture_map.json`:
 | GroupNorm | 23,040 | 3.564e10 | 0.03% |
 | Linear_Attention | 1,050,624 | 4.295e10 | 0.04% |
 
-Conv3D dominates 99.17% of decoder FLOPs. Attention is negligible (0.76%) — Sprint A's V34 backward research had marginal pipeline impact even at theoretical max gain. **Sprint C is the larger ROI sprint by ≥130×.**
+Conv3D dominates 99.17% of decoder FLOPs. Attention is negligible (0.76%) — Sprint A's V6NAX backward research had marginal pipeline impact even at theoretical max gain. **Sprint C is the larger ROI sprint by ≥130×.**
 
 ### 5.2 Top wall-clock contributors
 

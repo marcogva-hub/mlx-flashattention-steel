@@ -8,15 +8,15 @@ implemented in commit `docs(track0)`).
 
 | Status | Count | Items |
 |---|---|---|
-| LIVE | 79 | dispatch gates, V2/V3/V5/V6/V34 tile overrides (all flow into cache keys — Sprint A verified), Python dispatch knobs, diagnostics |
+| LIVE | 79 | dispatch gates, V2/V3/V5/V6/V6NAX tile overrides (all flow into cache keys — Sprint A verified), Python dispatch knobs, diagnostics |
 | GHOST-DEAD (removed) | 1 | `MFA_V6_MATMUL_EXEC_SG` (Sprint A A-1b: no-op since v2.30 via key truncation; statically illegal on current MPP) |
 | GHOST-ALIASED | 1 | `MFA_TOPK_BISECT` — never read by any code path (comment-only); ENV_VARS row corrected |
-| STALE-DOCUMENTED | 2 | `MFA_REQUIRE_MSL4` (source sentinel, not an env var — docs corrected); `MFA_V6_V34_DISABLE_ALIGN` (documented, never wired — row removed; re-add only if implemented) |
-| UNDOCUMENTED-LIVE | 10 | `MFA_V34BWD_BQ/BK`, `MFA_V34BWDKV_*`, `MFA_V34BWDF_*`, `MFA_V6_SENTINEL_FILL`, `MFA_V34_DUMP_SOURCE`, `MFA_V34BWD_DUMP_SOURCE` — added to ENV_VARS.md |
+| STALE-DOCUMENTED | 2 | `MFA_REQUIRE_MSL4` (source sentinel, not an env var — docs corrected); `MFA_V6_NAX_DISABLE_ALIGN` (documented, never wired — row removed; re-add only if implemented) |
+| UNDOCUMENTED-LIVE | 10 | `MFA_V6BWD_BQ/BK`, `MFA_V6BWDKV_*`, `MFA_V6BWDF_*`, `MFA_V6_SENTINEL_FILL`, `MFA_V6_DUMP_SOURCE`, `MFA_V6BWD_DUMP_SOURCE` — added to ENV_VARS.md |
 
 ## Interaction notes surfaced (documented in ENV_VARS.md)
 
-- `MFA_V6_EXEC_SG` has no effect on the V34 path (`v34_WM` overrides).
+- `MFA_V6_EXEC_SG` has no effect on the V6NAX path (`v6nax_WM` overrides).
 - `MFA_V6_BYPASS_TGP=0` is a no-op when single-Otile auto-fires.
 - `MFA_V6_FORCE_DYNAMIC_K` is live but fragile (MPP static_asserts may
   reject dynamic_length with cooperative-left operands at some configs).

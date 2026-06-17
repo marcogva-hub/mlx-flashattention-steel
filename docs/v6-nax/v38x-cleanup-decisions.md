@@ -82,7 +82,7 @@ Byte-identical source diff is the only mechanical proof of
 behavior preservation.
 
 **Tradeoffs accepted:** extra validation step per generator; worth
-it to preserve V34 forward production confidence (forward path has
+it to preserve V6NAX forward production confidence (forward path has
 been in production since v2.31.0).
 
 **Reversibility:** Cheap (revert if any kernel source diff is
@@ -192,7 +192,7 @@ failures must be addressed before tagging.
 
 | Skill | Decision point | Findings | Action taken |
 |---|---|---|---|
-| /mlx-code-review | Phase A pre-commit (dispatch consolidation) | 1 HIGH (silent behavior change via shared placeholder) + 2 LOW | HIGH fixed via function split (`_v34_backward_carveout`); new regression test added |
+| /mlx-code-review | Phase A pre-commit (dispatch consolidation) | 1 HIGH (silent behavior change via shared placeholder) + 2 LOW | HIGH fixed via function split (`_v6nax_backward_carveout`); new regression test added |
 | /metal-kernel-dev | Phase B post-extract audit (Apple helpers) | CLEAN (no HIGH/MEDIUM) | Refactor preserved; -1541 LOC verified byte-identical |
 | /mlx-code-review | Phase C pre-commit (observability triad) | 1 MEDIUM (doc-vs-test drift) + 3 LOW | MEDIUM fixed via tests/test_perf_claims_doc_sync.py; LOWs all addressed |
 | /skill-creator (manual) | Phase D /mlx-mfa-kernel-design | N/A | Skill created; smoke-tested with backward_fused_dkdv (FAIL correctly) + forward D=128 (MARGINAL matches audit M1-NON-ACT-01) |
@@ -209,7 +209,7 @@ ready for merge to master.  No version bump.  No PyPI release.
 |---|---|---|
 | `mlx_mfa/dispatch_policy.py` | refactor | +47/-15 LOC (carve-out split) |
 | `mlx_mfa/attention.py` | refactor | +13/-21 LOC (delegation) |
-| `tests/test_flash_attention_v34_backward.py` | new test | +55 LOC (softcap regression) |
+| `tests/test_flash_attention_v6nax_backward.py` | new test | +55 LOC (softcap regression) |
 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | refactor | +459/-2000 LOC = **-1541 LOC net** |
 | `mlx_mfa/__init__.py` | feat | +75 LOC (diagnostics()) |
 | `docs/PERF_CLAIMS.md` | new doc | +112 LOC |
@@ -227,7 +227,7 @@ additions partially offset).
 - TurboQuant + svdquant test failures (separate investigation)
 - Option γ fused dK+dV kernel (uses new /mlx-mfa-kernel-design
   skill when implemented)
-- D=128 carve-out broadening (extends `_v34_backward_carveout()`
+- D=128 carve-out broadening (extends `_v6nax_backward_carveout()`
   when Option γ proves out)
 - D ∉ {64, 128} backward support (when customer demand surfaces)
 - patch_sparkvsr_sliding_window (memory roadmap)

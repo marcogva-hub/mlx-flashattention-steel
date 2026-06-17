@@ -1,32 +1,32 @@
-# v2.50 Sprint 4 — V34 causal extension (Phase 4a + dQ Phase 4b partial)
+# v2.50 Sprint 4 — V6NAX causal extension (Phase 4a + dQ Phase 4b partial)
 
 **Sprint date**: 2026-05-13
-**Branch**: `feat/v50-sprint4-v34-causal`
+**Branch**: `feat/v50-sprint4-v6nax-causal`
 **Master tip pre-Sprint**: `408e1b3` (post-Sprint 3 Phase 3a merge)
 **Prior Sprint 4 attempt**: Prompt 1 — HALTED with scope-discovery
 STATUS doc at `docs/v50/sprint4-status.md` (master `f478745`).
 
 ## TL;DR
 
-Sprint 4 in Prompt 1 halted on a scope-discovery finding: V34 forward
-gates on `!isCausal` (`NAAttentionKernel.cpp:171`), so V34 backward
-causal requires V34 forward causal extension as a prerequisite, and
+Sprint 4 in Prompt 1 halted on a scope-discovery finding: V6NAX forward
+gates on `!isCausal` (`NAAttentionKernel.cpp:171`), so V6NAX backward
+causal requires V6NAX forward causal extension as a prerequisite, and
 the Prompt 1 STATUS doc estimated this prerequisite at "Phase 4a
 ~3h CC".
 
 This Sprint 4 (Prompt 2) executes the work with refined empirical
 findings:
 
-1. **Phase 4a — V34 forward causal extension**: SHIPPED.  ~70 LOC
+1. **Phase 4a — V6NAX forward causal extension**: SHIPPED.  ~70 LOC
    (param plumbing + `kb_lim` shrink + per-element mask block).
    Mirrors Apple `steel_attention_nax.h:176-187,279-301`.  Validated
    bit-equivalent to `mx.fast.scaled_dot_product_attention(mask='causal')`
    within fp16/bf16 ULP across D=64/128 × dtype × qL ∈ {256, 1024}.
 
-2. **Phase 4b — V34 backward dQ causal extension**: SHIPPED partial.
+2. **Phase 4b — V6NAX backward dQ causal extension**: SHIPPED partial.
    ~50 LOC.  dQ kernel mirrors forward's per-element mask block
    (same coordinate setup since dQ is also Q-parallel).  Tested via
-   compile-only (gated behind `#if V34BWD_CAUSAL`); production
+   compile-only (gated behind `#if V6NAXBWD_CAUSAL`); production
    eligibility gate retained as `not causal` until Phase 4b-complete.
 
 3. **Phase 4b-complete — 4 remaining K-parallel backward kernels**:
@@ -39,35 +39,35 @@ findings:
 
 ## DC1 — Phase 4a implementation
 
-`NAAttentionKernel.cpp::createV34Source()` extensions:
+`NAAttentionKernel.cpp::createV6NAXSource()` extensions:
 
 1. Lift gate at line 171:
    ```cpp
    // Before:
-   if (useV34 && type == forward && !isCausal && !masked && !isVarlen)
+   if (useV6NAX && type == forward && !isCausal && !masked && !isVarlen)
    // After:
-   if (useV34 && type == forward && !masked && !isVarlen)
+   if (useV6NAX && type == forward && !masked && !isVarlen)
    ```
    Causal block masks (`masked`) and varlen still excluded → STEEL.
 
-2. New compile-time macro `V34_CAUSAL` injected by the source
+2. New compile-time macro `V6NAX_CAUSAL` injected by the source
    generator based on `descriptor.isCausal`.  Guards the new code
-   blocks via `#if V34_CAUSAL` so non-causal kernel source remains
+   blocks via `#if V6NAX_CAUSAL` so non-causal kernel source remains
    bit-identical pre/post Sprint 4.
 
-3. New `int qL_off;` field in device-side `V34Params` struct (after
-   `int qL_rem, kL_rem;`).  Host-side `V34ParamsHost` in
+3. New `int qL_off;` field in device-side `V6NAXParams` struct (after
+   `int qL_rem, kL_rem;`).  Host-side `V6NAXParamsHost` in
    `v6_nax_compile.mm` updated to mirror.  Set to 0 in the dispatcher
    for now (standalone forward); reserved for future decode/prefill-
    with-history support.
 
 4. `kb_lim` shrink (Apple lines 179-187):
    ```cpp
-   #if V34_CAUSAL
-   int q_max = (int(tid.x) + 1) * V34_BQ + params.qL_off;
-   int kb_lim = metal::min(params.NK, (q_max + V34_BK - 1) / V34_BK);
-   int q_min = int(tid.x) * V34_BQ + params.qL_off;
-   int kb_min_causal = metal::max(0, q_min) / V34_BK;
+   #if V6NAX_CAUSAL
+   int q_max = (int(tid.x) + 1) * V6NAX_BQ + params.qL_off;
+   int kb_lim = metal::min(params.NK, (q_max + V6NAX_BK - 1) / V6NAX_BK);
+   int q_min = int(tid.x) * V6NAX_BQ + params.qL_off;
+   int kb_min_causal = metal::max(0, q_min) / V6NAX_BK;
    #else
    const int kb_lim = params.NK;
    #endif
@@ -76,12 +76,12 @@ findings:
 5. Per-element causal mask block (Apple lines 279-301) inside the
    K-loop, after the existing last-K length mask:
    ```cpp
-   #if V34_CAUSAL
+   #if V6NAX_CAUSAL
    if (kb >= kb_min_causal) {
      constexpr auto neg_inf = Limits<float>::finite_min;
      const short2 sc_c = stile_t::NAXFrag_t::get_coord();
-     const int base_row = int(tid.x) * V34_BQ + params.qL_off + tm;
-     const int base_col = kb * V34_BK;
+     const int base_row = int(tid.x) * V6NAX_BQ + params.qL_off + tm;
+     const int base_col = kb * V6NAX_BK;
      for (iq, ik, ii, jj):
        r = base_row + iq*16 + ii*kFragRowsJump + sc_c.y;
        c = base_col + ik*16 + jj + sc_c.x;
@@ -92,9 +92,9 @@ findings:
 
 ## DC2 — Phase 4b dQ implementation
 
-`createV34BackwardQuerySource()` extension mirrors Phase 4a one-for-one:
-- `V34BWD_CAUSAL` macro
-- `int qL_off;` field in `V34BwdQParams`
+`createV6NAXBackwardQuerySource()` extension mirrors Phase 4a one-for-one:
+- `V6NAXBWD_CAUSAL` macro
+- `int qL_off;` field in `V6NAXBwdQParams`
 - Per-element causal mask block before `Stile.row_bin_op<ExpSubOp>(lse_log2)`
 
 The dQ kernel is **Q-parallel** (`tid.x` indexes Q-block, K is in
@@ -132,12 +132,12 @@ session ships the first two; the rest is dedicated future work.
 ## DC4 — Phase 4b production safety
 
 Without the 4 K-parallel kernel updates, production callers using
-`flash_attention(causal=True)` with `MFA_ENABLE_V34_BACKWARD=1` would
-silently produce wrong dK/dV if the eligibility gate allowed V34
+`flash_attention(causal=True)` with `MFA_ENABLE_V6_BACKWARD=1` would
+silently produce wrong dK/dV if the eligibility gate allowed V6NAX
 backward causal.  Verified empirically in Prompt 2 Sprint 4 dev:
 without the gate, dQ max_diff = 2144, dK = 163, dV = 136 (huge).
 
-**Resolution**: `_v34_eligible(...)` and `_v34_backward_carveout(...)`
+**Resolution**: `_v6nax_eligible(...)` and `_v6nax_backward_carveout(...)`
 both RETAIN their `not causal` clauses.  Production behavior is
 unchanged: causal callers continue using SDPA-vjp fallback.  The
 infrastructure (forward + dQ kernel causal blocks) is shipped as
@@ -163,32 +163,32 @@ Test `test_sprint4_flash_attention_causal_uses_sdpa_vjp` verifies the
 PUBLIC API still works for causal callers (falling back to SDPA-vjp
 cleanly), with bit-identical fwd+bwd output vs `mx.fast.sdpa(mask='causal')`.
 
-Direct C-binding path (`v6_nax_forward(q, k, v, causal=True, force_v34=True)`)
-is the test-only entry point that exercises the new V34 forward
+Direct C-binding path (`v6_nax_forward(q, k, v, causal=True, force_v6nax=True)`)
+is the test-only entry point that exercises the new V6NAX forward
 causal kernel.
 
 ### Axis 3 — Edges preserved
 
-- Non-causal V34 forward: bit-identical pre/post Sprint 4 (verified
-  in `test_sprint4_v34_fwd_noncausal_unchanged`, max_diff < 5e-3 vs SDPA).
-- M1-M4: V34 path not engaged (V34 requires M5+ NAX).
+- Non-causal V6NAX forward: bit-identical pre/post Sprint 4 (verified
+  in `test_sprint4_v6nax_fwd_noncausal_unchanged`, max_diff < 5e-3 vs SDPA).
+- M1-M4: V6NAX path not engaged (V6NAX requires M5+ NAX).
 - Block mask + varlen: still routed to legacy STEEL (gate `!masked &&
   !isVarlen` preserved).
-- `_v34_eligible` gate: returns False for causal (verified).
-- `_v34_backward_carveout` gate: returns False for causal (verified
+- `_v6nax_eligible` gate: returns False for causal (verified).
+- `_v6nax_backward_carveout` gate: returns False for causal (verified
   via the SDPA-vjp fallback test giving bit-identical results).
 
 ## Empirical kernel correctness (Sprint 4)
 
 | Path | Shape | max_diff vs Apple SDPA causal |
 |---|---|---|
-| V34 fwd causal D=64 f16 qL=256 | B=1 H=4 | 9.8e-4 |
-| V34 fwd causal D=128 f16 qL=256 | B=1 H=4 | 9.8e-4 |
-| V34 fwd causal D=64 bf16 qL=256 | B=1 H=4 | <2.5e-2 |
-| V34 fwd causal D=128 bf16 qL=256 | B=1 H=4 | 1.56e-2 |
-| V34 fwd causal D=64 f16 qL=1024 | B=1 H=4 | within tol |
-| V34 fwd causal D=128 f16 qL=1024 | B=1 H=4 | within tol |
-| V34 fwd non-causal D=128 f16 qL=1024 (regression check) | B=1 H=4 | 2.4e-4 (unchanged) |
+| V6NAX fwd causal D=64 f16 qL=256 | B=1 H=4 | 9.8e-4 |
+| V6NAX fwd causal D=128 f16 qL=256 | B=1 H=4 | 9.8e-4 |
+| V6NAX fwd causal D=64 bf16 qL=256 | B=1 H=4 | <2.5e-2 |
+| V6NAX fwd causal D=128 bf16 qL=256 | B=1 H=4 | 1.56e-2 |
+| V6NAX fwd causal D=64 f16 qL=1024 | B=1 H=4 | within tol |
+| V6NAX fwd causal D=128 f16 qL=1024 | B=1 H=4 | within tol |
+| V6NAX fwd non-causal D=128 f16 qL=1024 (regression check) | B=1 H=4 | 2.4e-4 (unchanged) |
 
 ## Skill invocations log (per §AA.2)
 
@@ -215,12 +215,12 @@ caller fires the new code paths.
 
 | File | Change | Net LOC |
 |---|---|---|
-| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | `createV34Source()`: lift causal gate at line 171, add V34_CAUSAL macro, qL_off param, kb_lim shrink, per-element causal mask block | +60 |
-| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | `createV34BackwardQuerySource()`: V34BWD_CAUSAL macro, qL_off param, per-element causal mask block (dQ kernel only) | +45 |
-| `csrc/v6_nax_compile.mm` | 6 V34*ParamsHost structs: `int qL_off` field; 6 dispatchers: `params.qL_off = 0` | +13 |
-| `mlx_mfa/attention.py` | `_v34_eligible`: doc updated to reflect Phase 4b partial state; `_make_mfa_custom` causal passthrough enabled (gated by eligibility) | +10 |
-| `mlx_mfa/dispatch_policy.py` | `_v34_backward_carveout`: doc updated to reflect Phase 4b partial state | +10 |
-| `tests/test_v50_v34_causal.py` | 11 new tests (Phase 4a correctness × 8 params, non-causal regression, eligibility gate, SDPA-vjp fallback) | +145 (new) |
+| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | `createV6NAXSource()`: lift causal gate at line 171, add V6NAX_CAUSAL macro, qL_off param, kb_lim shrink, per-element causal mask block | +60 |
+| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | `createV6NAXBackwardQuerySource()`: V6NAXBWD_CAUSAL macro, qL_off param, per-element causal mask block (dQ kernel only) | +45 |
+| `csrc/v6_nax_compile.mm` | 6 V6NAX*ParamsHost structs: `int qL_off` field; 6 dispatchers: `params.qL_off = 0` | +13 |
+| `mlx_mfa/attention.py` | `_v6nax_eligible`: doc updated to reflect Phase 4b partial state; `_make_mfa_custom` causal passthrough enabled (gated by eligibility) | +10 |
+| `mlx_mfa/dispatch_policy.py` | `_v6nax_backward_carveout`: doc updated to reflect Phase 4b partial state | +10 |
+| `tests/test_v50_v6nax_causal.py` | 11 new tests (Phase 4a correctness × 8 params, non-causal regression, eligibility gate, SDPA-vjp fallback) | +145 (new) |
 | `CHANGELOG.md` | `[Unreleased — for v2.50]` Sprint 4 entry | +~20 |
 | `docs/v50/sprint4-decisions.md` | this doc | +~250 (new) |
 | `docs/v50/sprint4-status-phase4b-complete.md` | Phase 4b-complete deferral status + per-kernel design sketch | +~150 (new) |
@@ -228,14 +228,14 @@ caller fires the new code paths.
 ## Net effect on users
 
 - **Public API behavior**: unchanged.  `flash_attention(causal=True)`
-  with `MFA_ENABLE_V34_BACKWARD=1` continues to use SDPA-vjp fallback
+  with `MFA_ENABLE_V6_BACKWARD=1` continues to use SDPA-vjp fallback
   (bit-identical to pre-Sprint-4).
-- **Infrastructure added**: V34 forward kernel now supports causal masking
-  when called via direct C binding (`v6_nax_forward(causal=True, force_v34=True)`).
-  V34 backward dQ kernel mirrors with `#if V34BWD_CAUSAL` block.
+- **Infrastructure added**: V6NAX forward kernel now supports causal masking
+  when called via direct C binding (`v6_nax_forward(causal=True, force_v6nax=True)`).
+  V6NAX backward dQ kernel mirrors with `#if V6NAXBWD_CAUSAL` block.
 - **Foundation for Phase 4b-complete**: once the 4 K-parallel kernels
   receive their causal mask blocks (next dedicated session), lifting the
-  `_v34_eligible` causal gate will activate V34 backward causal end-
+  `_v6nax_eligible` causal gate will activate V6NAX backward causal end-
   to-end.
 
 ## Audit framing inversion / correction
@@ -246,7 +246,7 @@ Per §AA.5 + Section D.3 (audit framing inversions doc):
   ("backward kernels likely need NO source changes because the FA-2
   backward pattern handles causal via lse-encoded masking automatically").
 - **Prompt 2 empirical reality**: Phase 4a ~2h CC ✓.  Phase 4b prediction
-  about "no source changes needed" was FALSIFIED — V34 backward
+  about "no source changes needed" was FALSIFIED — V6NAX backward
   recomputes S = Q@K^T from scratch and the causal-masked lse alone
   does NOT zero out P[r,c] for c>r.  Empirical test showed dQ exceeding
   reference by 2144× when only forward had causal (Phase 4b dQ kernel

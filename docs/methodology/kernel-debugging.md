@@ -67,10 +67,10 @@ The fastest way to confirm "is this code actually executing?"
 
 ### Empirical case (v2.50 Prompt 4)
 
-The V34 backward dV residual investigation initially suspected the dV
-kernel's softmax stabilisation.  A sentinel write in the V34 dV kernel
+The V6NAX backward dV residual investigation initially suspected the dV
+kernel's softmax stabilisation.  A sentinel write in the V6NAX dV kernel
 showed it was NOT active for causal forward — `causal=True` routed the
-forward to STEEL (different LSE convention), and the V34 backward
+forward to STEEL (different LSE convention), and the V6NAX backward
 consumed the wrong-domain LSE.  Time-to-diagnosis: ~20 minutes with
 sentinels vs the ~6 hours of gradient bisection that had preceded.
 
@@ -132,7 +132,7 @@ the backward decodes `exp(score - lse)` with the wrong base.
 
 | Kernel family | LSE convention |
 |---|---|
-| V34 forward / backward | Natural log: `lse = log(sum(exp(score)))` |
+| V6NAX forward / backward | Natural log: `lse = log(sum(exp(score)))` |
 | STEEL legacy forward | Log2: `lse = log2(sum(exp2(score)))` |
 | SDPA reference | Natural log (numpy convention) |
 
@@ -162,11 +162,11 @@ the backward decodes `exp(score - lse)` with the wrong base.
 
 ### Empirical case (v2.50 Prompt 4)
 
-`lse[0,0,0]` from V34 forward causal was natural-log; STEEL legacy
+`lse[0,0,0]` from V6NAX forward causal was natural-log; STEEL legacy
 forward returned log2 for the same inputs.  The dispatch in
-`MFAV6Forward::eval_gpu()` routed causal to STEEL legacy, but the V34
+`MFAV6Forward::eval_gpu()` routed causal to STEEL legacy, but the V6NAX
 backward expected natural-log.  Fix: lift the causal-routing gate so
-all V34-eligible inputs use V34 forward (consistent LSE convention).
+all V6NAX-eligible inputs use V6NAX forward (consistent LSE convention).
 
 ---
 

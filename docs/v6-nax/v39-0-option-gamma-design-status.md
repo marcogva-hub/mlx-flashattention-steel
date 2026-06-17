@@ -68,12 +68,12 @@ against this blueprint with D=64-first staging.
 
 | File | Action | LOC |
 |---|---|---|
-| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | add `createV34BackwardDKDVFusedSource()` after line 5260 | +~700 |
-| `csrc/mfa/v6_nax/NAAttentionKernel.hpp` | declare `createV34BackwardDKDVFusedSource()` | +1 |
-| `csrc/v6_nax_compile.mm` | add `V34BwdFusedDKDVParamsHost` + `v34_dispatch_bwd_dkdv_fused()` | +~120 |
-| `csrc/mfa_v6_nax_primitive.cpp` | new `MFAV34BwdDKDVFused` Primitive + `v6_nax_backward_dkdv_fused_raw` public function | +~180 |
+| `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | add `createV6NAXBackwardDKDVFusedSource()` after line 5260 | +~700 |
+| `csrc/mfa/v6_nax/NAAttentionKernel.hpp` | declare `createV6NAXBackwardDKDVFusedSource()` | +1 |
+| `csrc/v6_nax_compile.mm` | add `V6NAXBwdFusedDKDVParamsHost` + `v6nax_dispatch_bwd_dkdv_fused()` | +~120 |
+| `csrc/mfa_v6_nax_primitive.cpp` | new `MFAV6NAXBwdDKDVFused` Primitive + `v6_nax_backward_dkdv_fused_raw` public function | +~180 |
 | `csrc/bindings.cpp` | export `v6_nax_backward_dkdv_fused_raw` | +~20 |
-| `mlx_mfa/attention.py:3594` | env var routing in `_v34_backward_vjp` (replace `MFA_V34BWD_USE_FUSED` check with `MFA_V34_BWD_KERNEL=auto\|fused\|split\|legacy_fused`) | +~20 |
+| `mlx_mfa/attention.py:3594` | env var routing in `_v6nax_backward_vjp` (replace `MFA_V6BWD_USE_FUSED` check with `MFA_V6_BWD_KERNEL=auto\|fused\|split\|legacy_fused`) | +~20 |
 | `tests/test_v39_fused_dkdv.py` | new fused-vs-split parity tests + axis-2 PUBLIC API mx.grad coverage | +~250 (new) |
 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp:4984+` | drop dead `O` buffer from split-dK (while-I'm-here cleanup) | -~10 |
 | **Total** | | **~1,280 net** |
@@ -81,11 +81,11 @@ against this blueprint with D=64-first staging.
 ### Staging schedule
 
 1. **Phase C.1.a — D=64 only fused kernel** (~3-5h CC)
-   - Implement `createV34BackwardDKDVFusedSource` for D=64 only (gate to head_dim==64)
+   - Implement `createV6NAXBackwardDKDVFusedSource` for D=64 only (gate to head_dim==64)
    - Primitive + dispatcher + binding
    - Drop dead O buffer from split-dK
-   - Wire `MFA_V34_BWD_KERNEL` env var; D=64 default = "auto" → "fused"
-   - Three-axis validation: parity vs split (atol 1e-3 fp16, 5e-3 bf16); axis-2 PUBLIC API via `mx.grad(flash_attention(..., backend="auto"))` with `MFA_ENABLE_V34_BACKWARD=1`
+   - Wire `MFA_V6_BWD_KERNEL` env var; D=64 default = "auto" → "fused"
+   - Three-axis validation: parity vs split (atol 1e-3 fp16, 5e-3 bf16); axis-2 PUBLIC API via `mx.grad(flash_attention(..., backend="auto"))` with `MFA_ENABLE_V6_BACKWARD=1`
    - Bench: 3-session 4w+12i across qL ∈ {2048, 4096, 8192, 16384}; expect 1.05-1.15× over split-D_vec baseline
 
 2. **Phase C.1.b — D=128 broadening** (~2-3h CC, separate session/PR)
@@ -93,13 +93,13 @@ against this blueprint with D=64-first staging.
    - Measure register spill via Metal frame capture / MTL_DEBUG_LAYER=1
    - Bench D=128 fused vs split-D_vec
    - Decision tree:
-     - (a) D=128 fused wins ≥5%: broaden `MFA_V34_BWD_KERNEL=auto` to D=128
+     - (a) D=128 fused wins ≥5%: broaden `MFA_V6_BWD_KERNEL=auto` to D=128
      - (b) D=128 fused at parity: keep D=128 fused as opt-in only
      - (c) D=128 fused regresses: document negative finding, gate to opt-in or remove D=128 from fused
 
 3. **Phase C.2 — Primitive boilerplate consolidation** (P3-HIGH-01, ~1h CC)
    - After fused kernel lands, extract ~200 LOC of common boilerplate
-     across MFAV34BwdQuery + MFAV34BwdDV + MFAV34BwdDK + MFAV34BwdDKDVFused
+     across MFAV6NAXBwdQuery + MFAV6NAXBwdDV + MFAV6NAXBwdDK + MFAV6NAXBwdDKDVFused
      (Params struct setup, dispatch helper invocation, error handling).
    - May use a base class or shared free-function helpers.
 
@@ -112,14 +112,14 @@ against this blueprint with D=64-first staging.
 ### Env var contract (recommended by /metal-kernel-dev)
 
 ```python
-MFA_V34_BWD_KERNEL = "auto"          # default after v2.39.0; routes per shape
+MFA_V6_BWD_KERNEL = "auto"          # default after v2.39.0; routes per shape
                   | "fused"          # force fused kernel (Option γ)
                   | "split"          # force split kernels (v2.38.1 path)
                   | "legacy_fused"   # force legacy WM=1 fused (pre-v2.38.0)
 ```
 
-`MFA_V34BWD_USE_FUSED=1` retained for one release as deprecation alias
-for `MFA_V34_BWD_KERNEL=legacy_fused` (CHANGELOG marks for removal in v2.40).
+`MFA_V6BWD_USE_FUSED=1` retained for one release as deprecation alias
+for `MFA_V6_BWD_KERNEL=legacy_fused` (CHANGELOG marks for removal in v2.40).
 
 ### Order of operations (CRITICAL)
 
@@ -140,10 +140,10 @@ for `MFA_V34_BWD_KERNEL=legacy_fused` (CHANGELOG marks for removal in v2.40).
 
 | Kernel | NAAttentionKernel.cpp lines | Notes |
 |---|---|---|
-| Split-dV (`createV34BackwardDVSource`) | 4671-4938 | Inputs Q/K/V/L/dO; output dV_partials.  Does NOT compute D (no dS term). |
-| Split-dK (`createV34BackwardDKSource`) | 4940-5275 | Inputs Q/K/V/O/L/dO/D; output dK_partials.  Reads D from device buffer (v2.38.1). |
-| Legacy fused-dKdV (`createV34BackwardKeyValueSource`) | 4230-4670 | WM=1 single-SG; gated by `MFA_V34BWD_USE_FUSED=1`. |
-| Forward (`createV34Source`) | 2716-3782 | Reference for naxHelpersBlock + lse-load pattern. |
+| Split-dV (`createV6NAXBackwardDVSource`) | 4671-4938 | Inputs Q/K/V/L/dO; output dV_partials.  Does NOT compute D (no dS term). |
+| Split-dK (`createV6NAXBackwardDKSource`) | 4940-5275 | Inputs Q/K/V/O/L/dO/D; output dK_partials.  Reads D from device buffer (v2.38.1). |
+| Legacy fused-dKdV (`createV6NAXBackwardKeyValueSource`) | 4230-4670 | WM=1 single-SG; gated by `MFA_V6BWD_USE_FUSED=1`. |
+| Forward (`createV6NAXSource`) | 2716-3782 | Reference for naxHelpersBlock + lse-load pattern. |
 
 ## 4. Decision tree for empirical outcome (post-implementation)
 
@@ -151,7 +151,7 @@ Per the user's mandate:
 
 | Outcome | Description | Action |
 |---|---|---|
-| (γ-broadened) | D=64 fused wins ≥10% → AUTO carve-out broadens to all D=64 qL (not just ≥4096) | Update `_v34_backward_carveout` to remove qL≥4096 floor; CHANGELOG headline = "D=64 V34 backward auto-default for all shapes" |
+| (γ-broadened) | D=64 fused wins ≥10% → AUTO carve-out broadens to all D=64 qL (not just ≥4096) | Update `_v6nax_backward_carveout` to remove qL≥4096 floor; CHANGELOG headline = "D=64 V6NAX backward auto-default for all shapes" |
 | (γ-marginal) | D=64 fused wins 5-10%; D=128 fused at parity or marginal improvement | Keep existing carve-out (qL≥4096); ship fused as default for D=64; D=128 stays opt-in |
 | (δ) | Fused kernel correctness fails OR perf regression vs split | Halt; document negative finding in v2.39.0 STATUS doc; keep split kernels as default; legacy_fused remains as fallback |
 

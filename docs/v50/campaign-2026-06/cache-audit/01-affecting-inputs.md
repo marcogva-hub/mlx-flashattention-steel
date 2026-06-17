@@ -24,7 +24,7 @@ the session record; consolidated verdicts:
   16-bit field; EXEC_SG bits retired.  Max value 0x3FF < 2^16. PROVEN.
 - KernelKey: no packed fields; 18 scalar fields, FNV-1a hash over all.
   PROVEN by the Phase A.5 static invariant test.
-- 9 V34 keys: scalar fields only. PROVEN by the same test.
+- 9 V6NAX keys: scalar fields only. PROVEN by the same test.
 - Remaining `<<` constructs in csrc: hash combiners only (not key
   encodings) — verified non-aliasing by the == completeness guarantee
   (hash collisions are perf-only when == is complete).
@@ -33,8 +33,8 @@ the session record; consolidated verdicts:
 
 - All 7 Python lru factories: every closure-affecting input is a factory
   arg; all env steering reads are LIVE inside closures (verified line-level
-  for _make_mfa_custom: MFA_ENABLE_V34_BACKWARD, MFA_V34_BWD_KERNEL,
-  MFA_V34BWD_USE_FUSED, MFA_V34BWD_WM; MFA_FORCE_NATIVE_BWD was also a
+  for _make_mfa_custom: MFA_ENABLE_V6_BACKWARD, MFA_V6_BWD_KERNEL,
+  MFA_V6BWD_USE_FUSED, MFA_V6BWD_WM; MFA_FORCE_NATIVE_BWD was also a
   live read here until v2.56.0 removed the knob).
 - STEEL forward/backward scale: runtime params-struct field, NOT baked
   in source → correctly absent from KernelKey.

@@ -31,16 +31,16 @@ both symmetric-low-density and asymmetric paths.
 ### Sprint 2: Fused RoPE NAX in `flash_attention_rope_unified`
 
 **Effort**: S/M (~2h CC realistic)
-**Files**: `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (V34 forward source generator
+**Files**: `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (V6NAX forward source generator
 already has rope_q_base + rope_cos_stride params per ~line 2741), routing
 in `mlx_mfa/attention.py::flash_attention_rope_unified`.
 **Mandate**:
-1. Wire `flash_attention_rope_unified` to invoke V34 forward NAX kernel
+1. Wire `flash_attention_rope_unified` to invoke V6NAX forward NAX kernel
    (which already supports rope params) instead of host-side rope +
    separate flash_attention call.
 2. Verify rope_q_base + rope_cos_stride params are exercised correctly
-   (V34 forward currently emits rope code only when explicitly invoked
-   from `_v34_backward_vjp` for forward-fusion).
+   (V6NAX forward currently emits rope code only when explicitly invoked
+   from `_v6nax_backward_vjp` for forward-fusion).
 3. Eligibility: D=64, D=128, fp16/bf16, non-causal (rope is typically
    not used with causal LLM training — verify use cases).
 **§AA gates**: `/metal-kernel-dev` pre-flight for the new dispatch path;
@@ -55,7 +55,7 @@ the host-call elimination is the major win).
 **Effort**: L (~5h CC realistic — new kernel)
 **Files**:
 - New `csrc/mfa/v6_nax/NATopkKernel.cpp` (or inline into NAAttentionKernel.cpp)
-- New `MFAV34TopkForward` Primitive in `csrc/mfa_v6_nax_primitive.cpp`
+- New `MFAV6NAXTopkForward` Primitive in `csrc/mfa_v6_nax_primitive.cpp`
 - New `v6_nax_topk_forward_raw` binding in `csrc/bindings.cpp`
 - Routing in `mlx_mfa/attention.py::flash_attention_topk`
 - Tests in `tests/test_flash_attention_topk.py` (new file)
@@ -63,7 +63,7 @@ the host-call elimination is the major win).
 1. Design kernel: per-query Top-K block selection via per-block max-score,
    then dense attention over selected blocks (block-sparse with dynamic
    selection mask).
-2. M5+ NAX dispatch via V34 forward template; D=64/D=128 eligibility.
+2. M5+ NAX dispatch via V6NAX forward template; D=64/D=128 eligibility.
 3. `/metal-kernel-dev` pre-flight on register budget (TopK selection has
    transient state per query — careful with persistent registers).
 4. Three-axis validation: bit-identical to Python reference at high K
@@ -76,23 +76,23 @@ the host-call elimination is the major win).
 
 ## Tier 2 — Training-side high value
 
-### Sprint 4: V34 backward causal NAX
+### Sprint 4: V6NAX backward causal NAX
 
 **Effort**: M (~2h CC realistic)
-**Files**: extend `createV34BackwardQuerySource()` + `createV34BackwardDKSource()`
-+ `createV34BackwardFusedDKDVSource()` in NAAttentionKernel.cpp to support
-causal masking; update `_v34_backward_carveout` to include causal.
-**Mandate**: causal V34 backward for mlx-lm training workloads (currently
+**Files**: extend `createV6NAXBackwardQuerySource()` + `createV6NAXBackwardDKSource()`
++ `createV6NAXBackwardFusedDKDVSource()` in NAAttentionKernel.cpp to support
+causal masking; update `_v6nax_backward_carveout` to include causal.
+**Mandate**: causal V6NAX backward for mlx-lm training workloads (currently
 the carve-out is non-causal only; causal LLM training falls back to
 SDPA-vjp which is ~1.9× slower per v2.38.1 baseline at D=64 qL=4096).
 **Expected outcome**: extend v2.38.1 / v2.39.1 perf claim to causal —
 1.91× / 1.95× / 1.80× speedups at D=64 qL=4096/8192/16384 should hold
 for causal too (causal kernel work is ~5-10% more than non-causal).
 
-### Sprint 5: V34 backward block-sparse NAX
+### Sprint 5: V6NAX backward block-sparse NAX
 
 **Effort**: M (~2h CC realistic)
-**Files**: extend V34 backward source generators to support block-sparse
+**Files**: extend V6NAX backward source generators to support block-sparse
 mask (mask buffer + per-block early-exit).
 **Mandate**: VSR training (FlashVSR/STCDiT) typically uses block-sparse
 attention for memory savings; backward currently falls back to SDPA-vjp.

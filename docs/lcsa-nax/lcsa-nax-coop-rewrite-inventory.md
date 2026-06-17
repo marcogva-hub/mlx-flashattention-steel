@@ -29,8 +29,8 @@
 
 | File | Used for |
 |---|---|
-| `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2307-3671` | V34 forward source-gen reference (`createV34Source()`) |
-| `csrc/mfa_v6_nax_primitive.cpp` | V34 forward dispatch pattern reference |
+| `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2307-3671` | V6NAX forward source-gen reference (`createV6NAXSource()`) |
+| `csrc/mfa_v6_nax_primitive.cpp` | V6NAX forward dispatch pattern reference |
 | `csrc/mfa_sparse_attention.{hpp,cpp}` (V1 unchanged) | Fallback path |
 | `mlx_mfa/lcsa_nax.py` | Python API (no surface change) |
 | `mlx_mfa/integrations/flashvsr_lcsa.py` | Patcher (transparent to V1/V2 switch) |
@@ -68,7 +68,7 @@ Density sweep on `lcsa_mid_seq8k` (D=128, qL=kL=8192): density ∈ {0.01,
 |---|---|---|
 | A — Design + decisions + inventory | EXECUTING | This commit batch |
 | B-scaffold — Primitive dispatch + cache key + stub source-gen (compiles, no-op V2) | EXECUTING | Following commit batch |
-| B-kernel-body — Lift V34 cooperative-tensor pattern + sparse outer loop | DEFERRED | Multi-hour focused work; next session |
+| B-kernel-body — Lift V6NAX cooperative-tensor pattern + sparse outer loop | DEFERRED | Multi-hour focused work; next session |
 | C — V1↔V2 equivalence + three-axis V2 tests | DEFERRED | Depends on B-kernel-body |
 | D — §4 perf sweep + density sweep + ship/shelve verdict | DEFERRED | Depends on C |
 | E (cond.) — v2.35.0 release flow | DEFERRED | Depends on D verdict |

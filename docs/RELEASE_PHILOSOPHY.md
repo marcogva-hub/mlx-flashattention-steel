@@ -153,18 +153,18 @@ validation bench must:
 ### Reference incident (v2.37.0 / v2.37.1)
 
 v2.37.0 and v2.37.1 shipped to PyPI with the documented perf claim
-"D=64 qL ≥ 2048: V34 backward is 1.4-1.85× FASTER than SDPA-vjp."
+"D=64 qL ≥ 2048: V6NAX backward is 1.4-1.85× FASTER than SDPA-vjp."
 The claim held at kernel level (direct `_ext.v6_nax_*` calls did
 deliver the speedup) but was unreachable through the public
 `flash_attention()` autograd path because `should_use_mfa()` returns
 False for non-causal D ∈ {64, 128} and short-circuits to SDPA
-fallback before the V34 backward env-var check could engage.  All
+fallback before the V6NAX backward env-var check could engage.  All
 correctness tests passed because every test used `backend="mfa"`,
 bypassing `should_use_mfa()` and the dispatch gate that broke the
 user-facing path.
 
 Fix: v2.37.2 added a narrow carve-out in `flash_attention()` that
-forces `use_mfa=True` when env + shape qualify, so the V34 backward
+forces `use_mfa=True` when env + shape qualify, so the V6NAX backward
 custom-vjp actually engages.  Differential bench via the default
 `backend="auto"` path now confirms 1.81-1.82× speedup at D=64
 qL∈{4096, 8192}.
@@ -295,5 +295,5 @@ checkpoint:
   default should be sketched.
 - Methodology-pending items (sub-1ms protocol) should NOT be merged to
   master's default path until methodology is resolved.
-- Architectural items (V34 backward Option β) should ship as default
+- Architectural items (V6NAX backward Option β) should ship as default
   via `flash_attention()` VJP auto-routing when validated.

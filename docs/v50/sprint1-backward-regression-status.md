@@ -96,9 +96,9 @@ the symmetric-bt path.
   forward + vjp registered
 - Effort: significant — design the backward computation for sparse
   attention via NAX cooperative tensors
-- Could leverage Sprint 5 (V34 backward sparse) which extends V34
+- Could leverage Sprint 5 (V6NAX backward sparse) which extends V6NAX
   backward kernels with block-sparse support; if Sprint 5 ships, the
-  NAX forward could call into V34 backward
+  NAX forward could call into V6NAX backward
 
 ### Fix option 2 — auto-detect backward context in dispatch
 - Detect that the caller is inside `mx.grad` → route to SDPA path even

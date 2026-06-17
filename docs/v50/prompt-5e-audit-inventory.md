@@ -19,7 +19,7 @@
 | Sprint 1 (density threshold) | `lcsa_nax.py`, tests | `DEFAULT_DENSITY_THRESHOLD = 1.01` |
 | Sprint 2 (RoPE NAX) | `attention.py` | `flash_attention_rope_unified` routes to `mx.fast.rope` |
 | Sprint 3 (Top-K Phase 3a) | `attention.py` | Phase 3a Apple SDPA NAX dispatch (1.25× speedup) |
-| Sprint 4 (Phase 4a fwd causal) | `NAAttentionKernel.cpp` | `createV34Source()` causal extension |
+| Sprint 4 (Phase 4a fwd causal) | `NAAttentionKernel.cpp` | `createV6NAXSource()` causal extension |
 | Sprint 4 (Phase 4b dQ causal) | `NAAttentionKernel.cpp`, `mfa_v6_nax_primitive.cpp`, `v6_nax_compile.mm` | dQ kernel causal mask |
 | Sprint 4 (Phase 4b 4 K-parallel) | Same C++ files | Split + fused dKdV causal |
 | Sprint B v2.40-internal (D=128 split) | C++ files | D=128 split kernels |
@@ -42,12 +42,12 @@
 | Path | Env requirement | Code |
 |---|---|---|
 | Dense forward D ∈ {64, 128} | none | Apple SDPA NAX |
-| Dense backward D=64 qL≥2048 | `MFA_ENABLE_V34_BACKWARD=1` | V34 NAX-direct fused |
-| Dense backward D=128 qL≥2048 | `MFA_ENABLE_V34_BACKWARD=1` | V34 NAX-direct split |
-| Causal backward D ∈ {64, 128} qL≥2048 | `MFA_ENABLE_V34_BACKWARD=1` | V34 NAX-direct (Prompt 4 multi-gate fix) |
+| Dense backward D=64 qL≥2048 | `MFA_ENABLE_V6_BACKWARD=1` | V6NAX NAX-direct fused |
+| Dense backward D=128 qL≥2048 | `MFA_ENABLE_V6_BACKWARD=1` | V6NAX NAX-direct split |
+| Causal backward D ∈ {64, 128} qL≥2048 | `MFA_ENABLE_V6_BACKWARD=1` | V6NAX NAX-direct (Prompt 4 multi-gate fix) |
 | Sparse forward | none | LCSA NAX dispatcher (Sprint 1 density threshold fix) |
-| Sparse backward V34-eligible | `MFA_ENABLE_V34_BACKWARD=1` | `_v34_sparse_hybrid_vjp` (NAX sparse fwd + native dV + SDPA-vjp dQ/dK) |
-| Sparse backward V34-ineligible | none | Section C wrapper (SDPA-vjp throughout) |
+| Sparse backward V6NAX-eligible | `MFA_ENABLE_V6_BACKWARD=1` | `_v6nax_sparse_hybrid_vjp` (NAX sparse fwd + native dV + SDPA-vjp dQ/dK) |
+| Sparse backward V6NAX-ineligible | none | Section C wrapper (SDPA-vjp throughout) |
 | Top-K | none | Architecture B bisection (Apple SDPA NAX bias-mask PASS-2) |
 | Causal D=128 + attn_bias mode 1/2 | none | V2 STEEL bias-aware (Prompt 5b Section C fix) |
 
@@ -55,7 +55,7 @@
 
 | Path | Env | Code |
 |---|---|---|
-| V34 full native sparse backward | `MFA_V34_BWD_SPARSE_NATIVE=1` + above | `_v34_backward_vjp_sparse_full_native` (Prompt 5d, 4 native sparse kernels) |
+| V6NAX full native sparse backward | `MFA_V6_BWD_SPARSE_NATIVE=1` + above | `_v6nax_backward_vjp_sparse_full_native` (Prompt 5d, 4 native sparse kernels) |
 | Phase 3a `mx.topk` Top-K | `MFA_DISABLE_TOPK_BISECT=1` | Legacy mx.topk path |
 | Python reference Top-K | `MFA_DISABLE_TOPK_NAX=1` | Pure Python reference |
 
@@ -63,8 +63,8 @@
 
 | Path | Why preserved | Code |
 |---|---|---|
-| 4 V34 backward sparse kernels (dQ, dV PoC, dK split, fused dKdV) | Reference impl + future hardware re-test | C++ source generators + Primitives + bindings |
-| STEEL backward D=128 N≥2048 (2 xfails) | Legacy path; bug; V34 is production | csrc/mfa_steel_bwd.cpp |
+| 4 V6NAX backward sparse kernels (dQ, dV PoC, dK split, fused dKdV) | Reference impl + future hardware re-test | C++ source generators + Primitives + bindings |
+| STEEL backward D=128 N≥2048 (2 xfails) | Legacy path; bug; V6NAX is production | csrc/mfa_steel_bwd.cpp |
 | Various legacy v6_nax_backward_* helpers | Back-compat | csrc/bindings.cpp |
 
 ## CHANGELOG entries (Unreleased — for v2.50)
@@ -72,16 +72,16 @@
 Per `grep "^### " CHANGELOG.md` between `[Unreleased]` and next `[2.39.X]`:
 
 1. Decisions (v2.50 Prompt 5d — Pattern #6 empirical findings)
-2. Changed (Section A v3 — V34 backward sparse routing REVERTED per Pattern #6)
+2. Changed (Section A v3 — V6NAX backward sparse routing REVERTED per Pattern #6)
 3. Decided (Section B v3 — Approach 5 SKIPPED per Pattern #6 inference)
-4. Added (Section A v3 — Prompt 5d — V34 backward sparse FULL NATIVE)
+4. Added (Section A v3 — Prompt 5d — V6NAX backward sparse FULL NATIVE)
 5. Changed (Section B Prompt 5c — Top-K bisection PROMOTED to AUTO default)
 6. Docs (Section E Prompt 5b — HARDWARE_SUPPORT.md final narrative)
 7. Fixed (Section C Prompt 5b — D=128 attn_bias mode 1/2 causal bug)
 8. Added (Section A Prompt 5c — Sparse backward hybrid + sparse-LSE foundation)
 9. Added (Section B Prompt 5b — Top-K bisection kernel as opt-in)
-10. Added (Section A Prompt 5b — V34 backward block-sparse NAX PoC + scaffold)
-11. Added (Section D Prompt 5b — D=128 V34 backward broadening)
+10. Added (Section A Prompt 5b — V6NAX backward block-sparse NAX PoC + scaffold)
+11. Added (Section D Prompt 5b — D=128 V6NAX backward broadening)
 12. Fixed (Section C Prompt 5a — Sprint 1 backward regression RESOLVED)
 13. Various earlier sprints (Phase 4b dV residual, RoPE NAX, density threshold, ...)
 
@@ -92,7 +92,7 @@ Per `grep "^### " CHANGELOG.md` between `[Unreleased]` and next `[2.39.X]`:
 | `csrc/mfa/v6_nax/NAAttentionKernel.cpp` | 7507 | 4 forward kernel sources + 5 backward (dQ/dK/dV split + fused dKdV + legacy fused dKV) + 3 sparse variants + 1 dV sparse PoC |
 | `mlx_mfa/attention.py` | 6641 | flash_attention + 30+ variants + dispatch policies + Top-K bisection kernel |
 | `csrc/mfa_attention.cpp` | 3331 | MFAttention Primitive + Forward dispatch + V1/V2 STEEL routing |
-| `csrc/mfa_v6_nax_primitive.cpp` | 2555 | 5 V34 backward Primitives + 3 sparse Primitives |
+| `csrc/mfa_v6_nax_primitive.cpp` | 2555 | 5 V6NAX backward Primitives + 3 sparse Primitives |
 | `csrc/mfa_sparse_attention.cpp` | 1217 | sparse_attention_forward + V1/V2 kernels + sparse-LSE return |
 
 ## Pre-existing flake

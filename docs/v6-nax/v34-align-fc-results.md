@@ -1,18 +1,18 @@
-# V34 align_Q / align_K compile-time gates — Sprint 3 results
+# V6NAX align_Q / align_K compile-time gates — Sprint 3 results
 
 **Date:** 2026-05-06
-**Sprint:** V34-FORWARD-MAX Sprint 3 (alignment specialization)
-**Branch:** `experiment/v34-forward-max`
+**Sprint:** V6NAX-FORWARD-MAX Sprint 3 (alignment specialization)
+**Branch:** `experiment/v6nax-forward-max`
 **Commit:** `3bfd782`
 
 ## Summary
 
-V34 now exposes Apple-style `align_Q` / `align_K` specialization for the
+V6NAX now exposes Apple-style `align_Q` / `align_K` specialization for the
 fast-path on shapes where `qL % BQ == 0` and/or `kL % BK == 0` — the per-
 element bounds checks (`is_last_q`, `is_last_k`) become dead code in the
 aligned kernels. Apple's `steel_attention_nax.h` does this through
 function constants 200/201 (runtime branch); we use compile-time
-`#define V34_ALIGN_Q` / `#define V34_ALIGN_K` macros so the dead code is
+`#define V6NAX_ALIGN_Q` / `#define V6NAX_ALIGN_K` macros so the dead code is
 truly eliminated by MSL compilation.
 
 **Outcome: perf-neutral at our pipeline-cache scale** (~24 entries for
@@ -22,14 +22,14 @@ becomes load-bearing.
 
 ## What changed
 
-### Generator (`createV34Source` in `NAAttentionKernel.cpp`)
+### Generator (`createV6NAXSource` in `NAAttentionKernel.cpp`)
 
 `is_last_q` / `is_last_k` branches in the K-loop, `kL_rem` masking, and
-the final `Otile.store` are wrapped in `#if !V34_ALIGN_Q` /
-`#if !V34_ALIGN_K`:
+the final `Otile.store` are wrapped in `#if !V6NAX_ALIGN_Q` /
+`#if !V6NAX_ALIGN_K`:
 
 ```c
-#if !V34_ALIGN_K
+#if !V6NAX_ALIGN_K
 if (is_last_k) {
   // per-element kL_rem mask
   ...
@@ -37,26 +37,26 @@ if (is_last_k) {
 #endif
 ```
 
-The `V34_ALIGN_Q/K` macro values are injected at source-gen time based on
+The `V6NAX_ALIGN_Q/K` macro values are injected at source-gen time based on
 the runtime descriptor, not the input array, so the kernel is specialized
 per (D, BQ, BK, WM, align_Q, align_K) tuple.
 
 ### Cache key
 
-`V6Key` already had `v34_BQ`, `v34_BK`, `v34_WM` from v2.31.0. Sprint 3
+`V6Key` already had `v6nax_BQ`, `v6nax_BK`, `v6nax_WM` from v2.31.0. Sprint 3
 adds two `bool` fields:
 
 ```cpp
 struct V6Key {
   ...
-  bool v34_align_q = false;
-  bool v34_align_k = false;
+  bool v6nax_align_q = false;
+  bool v6nax_align_k = false;
   ...
 };
 ```
 
 Hashed into `V6KeyHash`. This produces up to 4× more pipeline cache
-entries on V34-eligible shapes (q-aligned × k-aligned), but the absolute
+entries on V6NAX-eligible shapes (q-aligned × k-aligned), but the absolute
 count stays tiny — production has ~5 distinct (D, BQ, BK, WM) combos and
 most production shapes are aligned, so the cache typically holds 6–10
 entries instead of 4–6. Well within MTLDevice limits.
@@ -73,7 +73,7 @@ bool align_q = (params.qL % params.BQ == 0);
 bool align_k = (params.kL % params.BK == 0);
 ```
 
-Forced off via `MFA_V6_V34_DISABLE_ALIGN=1` env var (always uses unaligned
+Forced off via `MFA_V6_NAX_DISABLE_ALIGN=1` env var (always uses unaligned
 kernels for A/B comparison or debugging).
 
 ## Why compile-time vs runtime function constants?
@@ -85,7 +85,7 @@ runtime branching. The trade-off:
 | Approach | Pipeline entries | Branch cost | Apple uses |
 |---|---|---|---|
 | Function constants (Apple) | 1 per (D, BQ, BK, WM) | Runtime branch on aligned bool | Yes |
-| Compile-time `#define` (V34) | up to 4× per (D, BQ, BK, WM) | None — dead code eliminated | No |
+| Compile-time `#define` (V6NAX) | up to 4× per (D, BQ, BK, WM) | None — dead code eliminated | No |
 
 For Apple's massive in-production kernel matrix (many models × many
 shape buckets), pipeline cache pressure matters more than branch cost.
@@ -122,7 +122,7 @@ only difference.
 
 ### Performance
 
-A/B against `MFA_V6_V34_DISABLE_ALIGN=1` (forces unaligned kernel even
+A/B against `MFA_V6_NAX_DISABLE_ALIGN=1` (forces unaligned kernel even
 on aligned shapes). 3-run subprocess medians:
 
 | Shape | Aligned kernel ms | Unaligned forced ms | Δ |
@@ -130,7 +130,7 @@ on aligned shapes). 3-run subprocess medians:
 | SeedVR2-small (D=128, aligned) | 211.8 | 213.4 | -0.8% |
 | FlashVSR-dense (D=64, aligned) | 1.007 | 1.014 | -0.7% |
 
-Both deltas are under measurement noise (~1-2% for V34 cross-session).
+Both deltas are under measurement noise (~1-2% for V6NAX cross-session).
 Conclusion: at our scale, the per-element bounds checks are essentially
 free — likely the ALU vs branch-prediction trade-off washes out, and
 the loops are too short for the eliminated branches to matter.
@@ -139,15 +139,15 @@ The infrastructure ships anyway because:
 1. It's idiomatic to Apple's reference kernel.
 2. Future workloads with much larger BQ/BK (e.g., next-gen NAX with
    wider tiles) might benefit.
-3. The `MFA_V6_V34_DISABLE_ALIGN=1` escape hatch makes A/B trivial.
+3. The `MFA_V6_NAX_DISABLE_ALIGN=1` escape hatch makes A/B trivial.
 
 ## Files
 
-- `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (`createV34Source`, ~6 sites
-  wrapped in `#if !V34_ALIGN_Q/K`)
-- `csrc/mfa_v6_nax_primitive.cpp` (`v34_align_q`, `v34_align_k` fields
+- `csrc/mfa/v6_nax/NAAttentionKernel.cpp` (`createV6NAXSource`, ~6 sites
+  wrapped in `#if !V6NAX_ALIGN_Q/K`)
+- `csrc/mfa_v6_nax_primitive.cpp` (`v6nax_align_q`, `v6nax_align_k` fields
   in `V6Key`, hashed in `V6KeyHash`)
-- `csrc/v6_nax_compile.mm` (`v34_compile`/`v34_dispatch` plumb the bools)
+- `csrc/v6_nax_compile.mm` (`v6nax_compile`/`v6nax_dispatch` plumb the bools)
 
 ## Apple reference
 

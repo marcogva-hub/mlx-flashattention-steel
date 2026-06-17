@@ -1,4 +1,4 @@
-# v2.40.x-internal Sprint C — V34 backward Primitive consolidation (P3-HIGH-01)
+# v2.40.x-internal Sprint C — V6NAX backward Primitive consolidation (P3-HIGH-01)
 
 Sprint C of the v2.50-bundled internal sprint sequence.  Date: 2026-05-13.
 Branch: `feat/v40-x-primitive-consolidation` (merging to master; no
@@ -7,17 +7,17 @@ version bump, no tag, no PyPI publication — accumulating for v2.50 ship).
 ## Mandate
 
 Sprint 2 audit P3-HIGH-01 identified ~200 LOC dedup opportunity across
-the 5 V34 backward Primitives' pipeline-cache-miss bodies.  Extract
+the 5 V6NAX backward Primitives' pipeline-cache-miss bodies.  Extract
 the duplicated AttentionOperands + NAAttentionKernelDescriptor +
-source-dump-hook + v34_compile boilerplate into a single helper.
+source-dump-hook + v6nax_compile boilerplate into a single helper.
 
 Pure refactor — byte-identical kernel output, no behavior change.
 
 ## DC0 — Approach 2 (free helper function) over Approach 1 (base class)
 
 **Decision**: extract the duplicated boilerplate into a single static
-free function `compile_v34_backward_pipeline` in the anonymous namespace
-of `csrc/mfa_v6_nax_primitive.cpp`.  Each of the 5 V34 backward
+free function `compile_v6nax_backward_pipeline` in the anonymous namespace
+of `csrc/mfa_v6_nax_primitive.cpp`.  Each of the 5 V6NAX backward
 Primitives still owns its own class definition + cache mutex/map +
 key struct + dispatch function — only the cache-miss compile path
 is consolidated.
@@ -28,14 +28,14 @@ is consolidated.
   the eval_gpu method into base+override
 - Cleaner type system: the helper takes a templated `SourceGenFn`
   lambda parameter, so each call site directly names its source-gen
-  method (e.g., `[](NAAttentionKernel& k) { return k.createV34BackwardQuerySource(); }`)
+  method (e.g., `[](NAAttentionKernel& k) { return k.createV6NAXBackwardQuerySource(); }`)
 - Idiomatic with the existing codebase style (free helpers in anonymous
-  namespaces, e.g., `v34_dispatch_bwd_query` etc.)
-- Easier to extend: future V34 backward Primitives (block-sparse,
+  namespaces, e.g., `v6nax_dispatch_bwd_query` etc.)
+- Easier to extend: future V6NAX backward Primitives (block-sparse,
   causal, additional D values) just plug into the helper
 
 **Approach 1 (base class) considered + rejected because**:
-- Would require introducing a virtual class `MFAV34BwdBase` with
+- Would require introducing a virtual class `MFAV6NAXBwdBase` with
   derived classes for each Primitive
 - The eval_gpu method has too many per-Primitive variations (input
   count, output count, buffer indices, env-var names) to cleanly
@@ -45,20 +45,20 @@ is consolidated.
 
 ## What got consolidated
 
-The helper `compile_v34_backward_pipeline` consolidates the
+The helper `compile_v6nax_backward_pipeline` consolidates the
 pipeline-cache-miss body that was duplicated 5 times:
 
 1. **AttentionOperands precision setup** (~7 LOC): mp[Q/K/V/O] =
    input_prec; mp[S/P/L] = FP32; based on dtype_code (FP16 vs BF16).
 2. **NAAttentionKernelDescriptor construction** (~10 LOC): blockDims +
-   12-arg constructor + `singleOtileMode = true` + `useV34 = true`.
+   12-arg constructor + `singleOtileMode = true` + `useV6NAX = true`.
 3. **Source string generation** (~2 LOC): NAAttentionKernel + caller's
    source-gen lambda.
-4. **Optional source-dump hook** (~15 LOC): env-gated MFA_V34BWD*_DUMP_SOURCE
-   + optional MFA_V34BWD*_DUMP_PATH for file output.  Previously
-   present in 2 of 5 Primitives (MFAV34BwdQuery + MFAV34BwdFusedDKDV);
+4. **Optional source-dump hook** (~15 LOC): env-gated MFA_V6BWD*_DUMP_SOURCE
+   + optional MFA_V6BWD*_DUMP_PATH for file output.  Previously
+   present in 2 of 5 Primitives (MFAV6NAXBwdQuery + MFAV6NAXBwdFusedDKDV);
    now uniformly available to all callers via helper args.
-5. **v34_compile invocation** (~1 LOC).
+5. **v6nax_compile invocation** (~1 LOC).
 
 Total consolidated per Primitive: ~30-50 LOC.  Helper itself: ~70 LOC
 (with docstring, comments, and parameter declarations).
@@ -84,21 +84,21 @@ csrc/mfa_v6_nax_primitive.cpp | 121 insertions(+), 158 deletions(-)
   have.
 
 **The real win is cognitive consolidation**: ~125 LOC of duplicated
-descriptor-setup logic is now in 1 place instead of 5.  Future V34
+descriptor-setup logic is now in 1 place instead of 5.  Future V6NAX
 backward kernel additions (block-sparse, causal, additional D values)
 plug into the helper without re-deriving the pattern.
 
 ## Files changed
 
 - `csrc/mfa_v6_nax_primitive.cpp`:
-  - Added `compile_v34_backward_pipeline` static helper (~70 LOC,
+  - Added `compile_v6nax_backward_pipeline` static helper (~70 LOC,
     lines ~795-880)
   - Refactored 5 Primitive cache-miss bodies (~30-40 LOC → ~6-8 LOC each):
-    - MFAV34BwdQuery (~30 LOC → 8 LOC)
-    - MFAV34BwdKeyValue (legacy fused dKdV) (~25 LOC → 7 LOC)
-    - MFAV34BwdDV (split dV) (~25 LOC → 7 LOC)
-    - MFAV34BwdDK (split dK) (~25 LOC → 7 LOC)
-    - MFAV34BwdFusedDKDV (modern fused) (~45 LOC → 9 LOC; includes
+    - MFAV6NAXBwdQuery (~30 LOC → 8 LOC)
+    - MFAV6NAXBwdKeyValue (legacy fused dKdV) (~25 LOC → 7 LOC)
+    - MFAV6NAXBwdDV (split dV) (~25 LOC → 7 LOC)
+    - MFAV6NAXBwdDK (split dK) (~25 LOC → 7 LOC)
+    - MFAV6NAXBwdFusedDKDV (modern fused) (~45 LOC → 9 LOC; includes
       dump-source hook consolidation)
 - `docs/v6-nax/primitive-consolidation-decisions.md` (this doc)
 - `CHANGELOG.md` `[Unreleased — for v2.50]` Sprint C entry
@@ -111,20 +111,20 @@ Per `/mlx-code-review` audit (Sprint C):
 - Refactored helper produces same `AttentionOperands` + `NAAttentionKernelDescriptor`
   fields as before (verified via inspection — helper code uses the
   identical 12-arg constructor with `forward` placeholder + `singleOtileMode`
-  + `useV34` flags).
+  + `useV6NAX` flags).
 - Source-generator lambda invocation is byte-equivalent to inline
-  call: `[](NAAttentionKernel& k) { return k.createV34BackwardXxxSource(); }`
-  vs `NAAttentionKernel ker(desc); ker.createV34BackwardXxxSource()`.
+  call: `[](NAAttentionKernel& k) { return k.createV6NAXBackwardXxxSource(); }`
+  vs `NAAttentionKernel ker(desc); ker.createV6NAXBackwardXxxSource()`.
   Same descriptor, same source-gen method, same MSL output.
 - Therefore generated kernel MSL source is byte-identical to pre-refactor.
 
 ### Axis 2 — Routing preserved via PUBLIC API
 
 - D=64 fused (auto): `mx.grad(flash_attention(..., backend="auto"))`
-  + `MFA_ENABLE_V34_BACKWARD=1` at qL ∈ {2048, 4096, 8192, 16384}
-  engages V34 backward fused-BK16 path → calls
-  `v6_nax_backward_fused_dkdv_raw` → `MFAV34BwdFusedDKDV::eval_gpu`
-  → `compile_v34_backward_pipeline(...)` helper → byte-identical
+  + `MFA_ENABLE_V6_BACKWARD=1` at qL ∈ {2048, 4096, 8192, 16384}
+  engages V6NAX backward fused-BK16 path → calls
+  `v6_nax_backward_fused_dkdv_raw` → `MFAV6NAXBwdFusedDKDV::eval_gpu`
+  → `compile_v6nax_backward_pipeline(...)` helper → byte-identical
   pipeline state as pre-refactor.
 - D=128 split path: same routing, same helper, same byte-identical
   output.
@@ -132,7 +132,7 @@ Per `/mlx-code-review` audit (Sprint C):
 
 ### Axis 3 — Tests + perf preserved
 
-- **79/79 tests pass** post-refactor (V39 fused + V34 + helpers +
+- **79/79 tests pass** post-refactor (V39 fused + V6NAX + helpers +
   v32-routing + perf-claims).
 - **D=64 fused perf preserved**: single-session post-refactor measurement
   9.32 ms vs v2.39.1 3-session baseline 9.31 ms (within session noise
@@ -149,7 +149,7 @@ Per `/mlx-code-review` audit (Sprint C):
 2. **No new functionality**: pure refactor.  Same kernel sources, same
    pipeline state, same dispatch behavior.
 3. **Dump-source hooks unified**: previously only 2 of 5 Primitives
-   had source-dump hooks (MFAV34BwdQuery + MFAV34BwdFusedDKDV).
+   had source-dump hooks (MFAV6NAXBwdQuery + MFAV6NAXBwdFusedDKDV).
    Helper makes dump available to all 5 callers via args — but only
    dQ + fused-dKdV have non-nullptr env-var args wired in (preserves
    v2.39.x behavior; other 3 Primitives can opt in trivially in
@@ -180,4 +180,4 @@ above) are the verification.
 **Zero user-visible change.**  Same kernel byte-output, same routing,
 same perf characteristics, same env-var contracts.  The consolidation
 is purely an internal maintainability improvement that makes future
-V34 backward kernel additions less verbose.
+V6NAX backward kernel additions less verbose.

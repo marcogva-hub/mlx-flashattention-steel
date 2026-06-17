@@ -1,8 +1,8 @@
 # Prompt 5e — v2.50 Pre-Release C++/Metal Code Review
 
 Scope: `git diff v2.39.1..HEAD -- csrc/` (8 files, +3523 / -378 LOC).
-Reviewer: code-review subagent, focus on V34 sparse backward kernels + sparse
-forward LSE return + Section C attn_bias fix + V34 forward causal extension.
+Reviewer: code-review subagent, focus on V6NAX sparse backward kernels + sparse
+forward LSE return + Section C attn_bias fix + V6NAX forward causal extension.
 
 ## Severity legend
 
@@ -14,7 +14,7 @@ forward LSE return + Section C attn_bias fix + V34 forward causal extension.
 
 ---
 
-## HIGH-1 — Block-mask shape mismatch between Python helper and V34 backward sparse kernels
+## HIGH-1 — Block-mask shape mismatch between Python helper and V6NAX backward sparse kernels
 
 **Files:** `mlx_mfa/attention.py:1547-1559` (helper) vs
 `csrc/mfa/v6_nax/NAAttentionKernel.cpp:6475, 6826, 7219` (sparse kernels).
@@ -22,19 +22,19 @@ forward LSE return + Section C attn_bias fix + V34 forward causal extension.
 `make_causal_block_mask(seq_len, head_dim)` builds a `[NQ, NK]` mask using
 forward STEEL block sizes from `_steel_block_config`:
 
-| head_dim | forward (BQ, BK) | V34 bwd (BQ, BK) |
+| head_dim | forward (BQ, BK) | V6NAX bwd (BQ, BK) |
 |---|---|---|
 | 64  | (32, 32) | (32, 64) |
 | 128 | (32, 16) | (64, 32) |
 
-The V34 backward sparse kernels index the mask with `qb * params.NK + kb`
-where `params.NK = kL / BK_v34bwd` — i.e., the *backward* block size.
+The V6NAX backward sparse kernels index the mask with `qb * params.NK + kb`
+where `params.NK = kL / BK_v6naxbwd` — i.e., the *backward* block size.
 But the buffer passed in was sized with the *forward* block size.
 
 `mfa_v6_nax_primitive.cpp:1505-1506, 2107-2108, 2275-2276, 2449-2450`
-validate only `ndim() == 2`; no shape check against `(qL/v34_BQ, kL/v34_BK)`.
+validate only `ndim() == 2`; no shape check against `(qL/v6nax_BQ, kL/v6nax_BK)`.
 
-Result: when the public `MFA_V34_BWD_SPARSE_NATIVE=1` path is taken (or any
+Result: when the public `MFA_V6_BWD_SPARSE_NATIVE=1` path is taken (or any
 caller passes a mask built from `make_causal_block_mask`), the kernel reads
 the wrong byte offsets in `block_mask`. For D=64 (mask 32-wide instead of
 16-wide) the kernel reads about half the valid mask plus garbage past the
@@ -43,15 +43,15 @@ end. For D=128 the row stride is 2× off (mask 16-wide vs kernel-expected
 caught by `np.isfinite` smoke tests because the active region still
 produces finite output).
 
-The currently-shipped default path (`MFA_V34_BWD_SPARSE_NATIVE=0`) uses
+The currently-shipped default path (`MFA_V6_BWD_SPARSE_NATIVE=0`) uses
 the hybrid SDPA-vjp backward and is unaffected, but the full-native path
-is wired up, advertised in `_v34_backward_vjp_sparse_full_native` and
+is wired up, advertised in `_v6nax_backward_vjp_sparse_full_native` and
 exercised by `tests/test_v50_sprint_5d_sparse_full_native.py` (which
 constructs masks with `_steel_block_config`'s forward sizes).
 
 **Fix (one of):**
 1. Make `make_causal_block_mask` accept a `bwd_kernel: bool` flag that
-   picks the V34 backward block sizes when constructing the mask intended
+   picks the V6NAX backward block sizes when constructing the mask intended
    for the sparse backward path. Validate ndim AND shape in C++.
 2. Add a `[[NQ_bwd, NK_bwd]]` shape assertion in all four sparse
    Primitives' `eval_gpu()` (lines 1505, 2107, 2275, 2449) before
@@ -60,7 +60,7 @@ constructs masks with `_steel_block_config`'s forward sizes).
    tile-coalescing before invoking the native sparse path.
 
 Recommended: option 2 (hard validation at the C++ boundary) + option 3
-in `_v34_backward_vjp_sparse_full_native` (`attention.py:2461-2470`).
+in `_v6nax_backward_vjp_sparse_full_native` (`attention.py:2461-2470`).
 
 ## HIGH-2 — `lim_rows_q` underflow when `tm > qL_rem` in dQ-sparse / dense
 
@@ -68,7 +68,7 @@ in `_v34_backward_vjp_sparse_full_native` (`attention.py:2461-2470`).
 also `3949` (dQ dense parallel pattern, pre-existing).
 
 ```cpp
-const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ) - tm;
+const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V6NAXBWD_BQ) - tm;
 ```
 
 For the partial Q-block (`tid.x == NQ_aligned`) with multiple SGs
@@ -90,7 +90,7 @@ more often through the sparse path. Apply the same `max(0, ...) + continue`
 guard at line 6391-6392 for symmetry and to prevent a future regression
 when fragment-load semantics change.
 
-**Severity:** HIGH because (a) it lives on the dense V34 bwd dQ path too
+**Severity:** HIGH because (a) it lives on the dense V6NAX bwd dQ path too
 (latent), and (b) the conservative `in_range` checks save it only because
 all bounded loads use `load_rows(...)`. Any new code path that uses
 `lim_rows_q` as an unguarded count (e.g., a future tile-pad) will read
@@ -122,10 +122,10 @@ All four sparse Primitives only check `block_mask.ndim() == 2`. A mask
 shaped `[NK, NQ]` (transposed) compiles, dispatches, and reads from
 incorrect strides. Combined with HIGH-1, the dimension-check gap means any
 mask shape mismatch silently miscomputes. Add `block_mask.shape(0) == NQ &&
-block_mask.shape(1) == NK` where `NQ = (qL + v34_BQ - 1) / v34_BQ` and
-`NK = (kL + v34_BK - 1) / v34_BK`.
+block_mask.shape(1) == NK` where `NQ = (qL + v6nax_BQ - 1) / v6nax_BQ` and
+`NK = (kL + v6nax_BK - 1) / v6nax_BK`.
 
-## MEDIUM-3 — `compile_v34_backward_pipeline` source-dump path leaks `FILE*` on `fclose` failure
+## MEDIUM-3 — `compile_v6nax_backward_pipeline` source-dump path leaks `FILE*` on `fclose` failure
 
 **File:** `mfa_v6_nax_primitive.cpp:885-892`.
 
@@ -139,10 +139,10 @@ if (f) {
 
 `fwrite` errors are silently ignored, and any partial write is committed.
 For a debug-only path this is acceptable but worth one `ferror(f)` check
-plus a stderr line. Low impact (gated by `MFA_V34BWD*_DUMP_SOURCE` env var,
+plus a stderr line. Low impact (gated by `MFA_V6BWD*_DUMP_SOURCE` env var,
 developer-only).
 
-## MEDIUM-4 — `v34_compile` always allocates a fresh `MTLCompileOptions`
+## MEDIUM-4 — `v6nax_compile` always allocates a fresh `MTLCompileOptions`
 
 **File:** `csrc/v6_nax_compile.mm:165-174`.
 
@@ -150,7 +150,7 @@ developer-only).
 per compile call. Under ARC this is fine (freed when scope ends), but
 `languageVersion` is hardcoded to `((4 << 16) + 0)` (MSL 4.0). This
 duplicates the version literal across `v6_nax_compile_with_constants`
-and `v34_compile`; centralize in a constant or helper to avoid drift
+and `v6nax_compile`; centralize in a constant or helper to avoid drift
 when MSL 4.1 ships.
 
 ## MEDIUM-5 — V2 sparse forward with LSE silently downgrades to V1
@@ -194,18 +194,18 @@ but the magic number obscures intent).
 - **No atomics** in fused dKdV — uses per-WM partials (`dKp/dVp_strides[2]
   = WM * kL * D`) reduced via host `mx.sum(axis=2)`.
 - **Pipeline cache mutex** present for every sparse variant
-  (`v34_bwdq_sparse_mtx`, `v34_bwdv_sparse_mtx`, `v34_bwdk_sparse_mtx`,
-  fused via `v34_bwd_fused_pipelines` mutex). No data-race risk.
+  (`v6nax_bwdq_sparse_mtx`, `v6nax_bwdv_sparse_mtx`, `v6nax_bwdk_sparse_mtx`,
+  fused via `v6nax_bwd_fused_pipelines` mutex). No data-race risk.
 - **Cache keys disjoint**: sparse pipelines live in separate
-  `unordered_map`s from dense (`v34_bwdq_sparse_pipelines` vs
-  `v34_bwdq_pipelines`). No collision.
+  `unordered_map`s from dense (`v6nax_bwdq_sparse_pipelines` vs
+  `v6nax_bwdq_pipelines`). No collision.
 - **Sparse fwd LSE name includes dtype** (`mfa_sparse_attention.cpp:1179`,
   `"sparse_attn_v1_lse_" + dtype_str + ...`) — no fp16/bf16 cache pollution.
-- **V34 forward causal extension** (`NAAttentionKernel.cpp:2952-2978`)
+- **V6NAX forward causal extension** (`NAAttentionKernel.cpp:2952-2978`)
   correctly applies per-element `(r < c) ? -inf : fg[loc]` after the QK
   matmul and before online softmax, gated by `kb >= kb_min_causal`.
-- **V34 bwd dQ multi-gate fix** (`mfa_v6_nax_primitive.cpp:627-634`)
-  properly intersects `use_v34 && !so_for_v34` and lifts the legacy
+- **V6NAX bwd dQ multi-gate fix** (`mfa_v6_nax_primitive.cpp:627-634`)
+  properly intersects `use_v6nax && !so_for_v6nax` and lifts the legacy
   causal-exclusion at the dispatch gate.
 - **Section C attn_bias V1 STEEL bypass** (`mfa_attention.cpp:891-905`)
   correctly routes `D<=128 && causal && has_attn_bias` to V2 with a clear

@@ -18,10 +18,10 @@ is per-row natural-log LSE computed over ONLY active blocks.
   Q-block last LSE ≈ 7.62 (matches dense over all K-blocks)
 - O matches dense flash_attention within FP16 noise (1.9e-6)
 
-### Section A.2-A.3: V34 sparse hybrid backward via flash_attention_sparse
+### Section A.2-A.3: V6NAX sparse hybrid backward via flash_attention_sparse
 
-`_v34_sparse_hybrid_vjp` Python orchestrator (in `mlx_mfa/attention.py`)
-wraps the M5+ symmetric-bt sparse path when V34 backward eligible:
+`_v6nax_sparse_hybrid_vjp` Python orchestrator (in `mlx_mfa/attention.py`)
+wraps the M5+ symmetric-bt sparse path when V6NAX backward eligible:
 - **Forward**: `sparse_attention_nax_with_lse` (sparse-LSE)
 - **Backward dV**: native `v6_nax_backward_dv_sparse_raw` kernel (PoC
   from Prompt 5b Section A) consuming sparse-LSE → CORRECT sparse
@@ -31,7 +31,7 @@ wraps the M5+ symmetric-bt sparse path when V34 backward eligible:
 
 Eligibility (in `flash_attention_sparse` body):
 - M5+ NAX hardware
-- `MFA_ENABLE_V34_BACKWARD=1`
+- `MFA_ENABLE_V6_BACKWARD=1`
 - D ∈ {64, 128}
 - qL ≥ 2048
 - fp16/bf16
@@ -101,7 +101,7 @@ kernels.
 | `csrc/bindings.cpp` | `sparse_attention_forward_with_lse` nanobind binding |
 | `csrc/mfa/v6_nax/NAAttentionKernel.hpp` | Reserved declarations for dQ/dK/fused-dKdV sparse (Section A v3) |
 | `mlx_mfa/lcsa_nax.py` | `sparse_attention_nax_with_lse` Python wrapper |
-| `mlx_mfa/attention.py` | `_v34_sparse_hybrid_vjp` orchestrator + `flash_attention_sparse` integration |
+| `mlx_mfa/attention.py` | `_v6nax_sparse_hybrid_vjp` orchestrator + `flash_attention_sparse` integration |
 | `tests/test_v50_sprint_5c_sparse_backward_hybrid.py` | 6 tests for hybrid + sparse-LSE foundation |
 
 ## Skill invocations (§AA.2)
@@ -114,7 +114,7 @@ kernels.
 
 ## Production safety
 
-The hybrid path is the **active production sparse backward** when V34
+The hybrid path is the **active production sparse backward** when V6NAX
 backward eligible.  Section C `_sparse_nax_with_sdpa_vjp` wrapper
 remains as fallback for ineligible shapes (paged kv, D=other, qL < 2048,
 fp32, 3-D/4-D masks).  Section C path is correct but pays full dense

@@ -20,7 +20,7 @@ standalone section) — baseline assumption CONFIRMED, proceeded.
 |---|---|---|---|
 | 1 | **Pattern #9** — generator/dispatch hardcoded-constant mismatch (silent partial-write): symptom signature (`NK·BK_source` threshold), mechanism, why-it-hid (cell-coincidence masking), prevention rule, generalization (grep generators for cfg-name reassignments), linkage to #1/#5/#7 | `docs/v50/audit-framing-inversions.md` (appended after #8, matching its format) | `docs(patterns)` |
 | 4 | **Pattern #6 reinforcement note** — 2026-05 external application: V3/V4/V5 perf promotion correctly declined on M1-era evidence despite 22/22 accuracy passes on M5 | same file, inside entry 7 | same commit |
-| 2 | **Check 9** in `/mlx-mfa-release-audit` — source/dispatch block-dimension consistency; per-(kernel, constant) manual checklist enumerating STEEL V1/V2/V3/V4/V5, backward dQ/dKV, sparse/GNA/sage/paged/flash-decode, V34 fwd + 9 bwd, conv3d NAX; mismatch = CRITICAL; automation harness flagged as Sprint A/C candidate. Also fixed a PRE-EXISTING stale count ("all six checks" → "all nine"; file had 8) | `~/.claude/skills/mlx-mfa-release-audit/SKILL.md` (system folder — not committable to repo; state recorded here) | n/a (outside repo) |
+| 2 | **Check 9** in `/mlx-mfa-release-audit` — source/dispatch block-dimension consistency; per-(kernel, constant) manual checklist enumerating STEEL V1/V2/V3/V4/V5, backward dQ/dKV, sparse/GNA/sage/paged/flash-decode, V6NAX fwd + 9 bwd, conv3d NAX; mismatch = CRITICAL; automation harness flagged as Sprint A/C candidate. Also fixed a PRE-EXISTING stale count ("all six checks" → "all nine"; file had 8) | `~/.claude/skills/mlx-mfa-release-audit/SKILL.md` (system folder — not committable to repo; state recorded here) | n/a (outside repo) |
 | 2b | **Perf-audit upstream-gate note** — perf numbers from a kernel failing Check 9 are invalid by construction (fast AND wrong) | `~/.claude/skills/mlx-mfa-perf-audit/SKILL.md` | n/a (outside repo) |
 | 3 | **§AA.7** — dispatch/source constant parity in audit scope; extends §AA.6 to stable kernels; KD-ledger mechanism-not-symptom corollary ("a KD entry without a mechanism is an open investigation, not a verdict") | `CLAUDE_V6_NAX.md` (after §AA.6) | `docs(governance)` |
 | 5 | **KD-5 ledger refinement** — Pattern #9 xref, ledger lesson, Marco-gated `MFA_FORCE_NATIVE_BWD` reconsideration candidate (flag only; dispatch-policy change requires Marco + M5 re-bench) | `docs/v50/known-debt-v2.50.md` | `docs(kd-ledger)` |
@@ -53,5 +53,5 @@ standalone section) — baseline assumption CONFIRMED, proceeded.
 2. **V3/V4/V5 M5 re-bench** — accuracy proven on M5; perf verdicts are
    M1-era (Sprint C).
 3. **`MFA_FORCE_NATIVE_BWD` deprecation reconsideration** — Marco-gated
-   (dispatch-policy change); needs STEEL-bwd vs V34-bwd vs SDPA-vjp M5
+   (dispatch-policy change); needs STEEL-bwd vs V6NAX-bwd vs SDPA-vjp M5
    bench first.

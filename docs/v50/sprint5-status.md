@@ -1,4 +1,4 @@
-# v2.50 Sprint 5 — V34 backward block-sparse NAX — HALTED (dependency on Phase 4b-complete)
+# v2.50 Sprint 5 — V6NAX backward block-sparse NAX — HALTED (dependency on Phase 4b-complete)
 
 **Sprint date**: 2026-05-13
 **Status**: **HALT — dependency on Sprint 4 Phase 4b-complete**
@@ -6,7 +6,7 @@
 ## TL;DR
 
 The v2.50-NAX-coverage audit prescribed Sprint 5 at M (~2h CC),
-"extend V34 backward source generators to support block-sparse mask
+"extend V6NAX backward source generators to support block-sparse mask
 (mask buffer + per-block early-exit)".  Per §AA.5 premise check + the
 empirical Phase 4b finding (Sprint 4 this session), Sprint 5 has a
 **hard dependency on Phase 4b-complete**:
@@ -41,20 +41,20 @@ overhead.
 
 ## Why audit estimated Sprint 5 at M (~2h)
 
-The audit assumed V34 backward kernels already had a clean mask-block
+The audit assumed V6NAX backward kernels already had a clean mask-block
 abstraction that could be extended.  Empirically (Sprint 4 Prompt 2):
-- V34 backward dQ kernel had to be EXTENDED for causal (~50 LOC new)
+- V6NAX backward dQ kernel had to be EXTENDED for causal (~50 LOC new)
 - 4 K-parallel kernels need similar extensions (Phase 4b-complete)
 - The block-sparse predicate would slot into the same mask-block
   location but is a separate code path
 
-The audit's M estimate was based on V34 backward source generators
+The audit's M estimate was based on V6NAX backward source generators
 being well-structured; this is true, but it didn't account for the
 fact that ANY mask extension (causal, block-sparse) requires touching
 all 4 K-parallel kernels.  Sprint 4 surfaced this in Phase 4b dev;
 Sprint 5 inherits the same constraint.
 
-## §AA.5 premise check — is V34 backward sparse a clear win?
+## §AA.5 premise check — is V6NAX backward sparse a clear win?
 
 The v50-nax-coverage audit benched G3 sparse FORWARD at 1.26× slower
 than dense SDPA (which Sprint 1 fixed via density threshold
@@ -63,7 +63,7 @@ NOT bench sparse BACKWARD.  Without empirical data on:
 
 - Current `mx.vjp(flash_attention_sparse(...))` performance via the
   existing `backward='sdpa'` or `backward='sdpa_sparse'` paths
-- Projected V34 sparse backward performance
+- Projected V6NAX sparse backward performance
 
 ...the audit's "training-side sparse-backward gap" is asserted, not
 measured.  A §AA.5 premise check before the implementation sprint
@@ -79,8 +79,8 @@ implementation.
 1. **§AA.5 premise validation FIRST** (15-30 min):
    - Bench `mx.vjp(flash_attention_sparse(D=128, block_mask=LCSA))` at
      B=1 H=12 qL=4096 (canonical audit shape)
-   - Compare to projected V34 backward sparse (back-of-envelope based
-     on V34 non-sparse backward perf × density savings)
+   - Compare to projected V6NAX backward sparse (back-of-envelope based
+     on V6NAX non-sparse backward perf × density savings)
    - If projected speedup < 1.5×, document as "sparse-bwd already
      near-optimal via SDPA-vjp" and defer Sprint 5 indefinitely
    - If projected speedup ≥ 1.5×, proceed with bundled Phase 4b-complete
@@ -92,7 +92,7 @@ implementation.
    - Three-axis validation for ALL combinations (causal-only,
      sparse-only, both, neither)
 
-3. **Lift eligibility gates** for both causal and sparse V34 backward
+3. **Lift eligibility gates** for both causal and sparse V6NAX backward
    only after all 4 kernels validated.
 
 ## What's still preserved
@@ -116,11 +116,11 @@ Only this STATUS doc.  No code changes for Sprint 5.
   - Sprint 1: density threshold recalibration (6× speedup at audit shape)
   - Sprint 2: M5+ NAX rope path (4× speedup)
   - Sprint 3 Phase 3a: top-K dispatch fix (1.25× speedup)
-  - Sprint 4 Phase 4a + dQ: V34 causal infrastructure
+  - Sprint 4 Phase 4a + dQ: V6NAX causal infrastructure
 - Sprints deferred for dedicated future sessions:
   - Sprint 3 Phase 3b: native streaming top-K kernel (~6h CC)
   - Sprint 4 Phase 4b-complete: 4 K-parallel kernels causal mask (~3h CC)
-  - Sprint 5: V34 backward block-sparse (~2h CC additional if bundled
+  - Sprint 5: V6NAX backward block-sparse (~2h CC additional if bundled
     with Phase 4b-complete; ~5h CC if independent)
 - CHANGELOG `[Unreleased — for v2.50]`: 4 entries (Sprints 1-4).
 - Tests: 1140 passing (zero regressions).

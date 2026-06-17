@@ -6,7 +6,7 @@
 
 **74 cells measured; zero new inversions.**  The dispatch table is now
 fully M5-validated: 44/44 dense-forward HOLD (SDPA), 24/24 backward
-validated (II-0 V34 D=64-causal WIN confirmed in-grid at 2.19-2.71×
+validated (II-0 V6NAX D=64-causal WIN confirmed in-grid at 2.19-2.71×
 fp16 / 1.33-2.68× bf16; all else SDPA-vjp parity), 6/6 decode HOLD,
 3/3 odd-D HOLD with diff=0.0.  See `M5-dispatch-map.md` (authoritative).
 
@@ -30,7 +30,7 @@ faster candidate exists.  No routing changes warranted.
 ## Promotions made
 
 None needed beyond the already-landed Phase-I D=256-causal fix and the
-II-0 V34-backward promotion — both confirmed live in this grid.
+II-0 V6NAX-backward promotion — both confirmed live in this grid.
 
 ## M1 cross-check
 

@@ -40,10 +40,10 @@ semantics) — recorded, not escalated.
 
 ## Marco-gated items (awaiting sign-off; defaults UNCHANGED)
 
-1. **V34 backward D=64 causal auto-promotion** — 2.2-2.6× training
+1. **V6NAX backward D=64 causal auto-promotion** — 2.2-2.6× training
    speedup measured (matrix in sprint-C-report).  RECOMMENDED.
 2. **MFA_FORCE_NATIVE_BWD disposition** — keep deprecated; rationale
-   now "superseded by V34/SDPA-vjp at every cell", not "broken"
+   now "superseded by V6NAX/SDPA-vjp at every cell", not "broken"
    (KD-5 fixed; correctness verified at the formerly-zeroed cells).
 3. **Kernel-sprint candidates** (per §AA.5 workflow): Sage-NAX int8
    (premise: MPP int8 verified in headers; needs MSL4-path microbench,
@@ -74,6 +74,6 @@ FlashDecoding++ / vAttention / NSA / online-softmax numerics /
 
 **Statement**: to the best of this analysis capability, mlx-mfa is
 fully audited and fully optimized *within its autonomous scope*.  What
-remains is exclusively Marco-gated: the V34-D64 backward promotion
+remains is exclusively Marco-gated: the V6NAX-D64 backward promotion
 decision, the MFA_FORCE_NATIVE_BWD disposition, and three
 premise-validated kernel-sprint candidates.

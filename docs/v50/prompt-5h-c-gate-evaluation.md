@@ -201,7 +201,7 @@ NAX engagement bug).
 P1 and P3 are Conv3D-heavy (VAE encode + decode).  Their 2.80× speedup
 is directly attributable to NAX hardware acceleration via the KD-6 fix.
 P2 (DiT, attention-heavy) at 5.00× reflects the broader v2.50 attention
-optimization stack (V34 backward, sparse routing, etc.).
+optimization stack (V6NAX backward, sparse routing, etc.).
 
 ## Cross-references
 

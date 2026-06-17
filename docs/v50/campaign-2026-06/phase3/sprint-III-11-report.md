@@ -33,7 +33,7 @@ subprocess isolation, strict 4s-cooldown for ≥1.5 ms shapes.
 → Forward ≈ SDPA (0.98–1.05×). Production auto-dispatch routes forward to SDPA correctly;
 net-non-worse. (Forward is documented as "bit-identical to SDPA", not a speedup claim.)
 
-### V34 backward vs SDPA-vjp (strict 4s cooldown)
+### V6NAX backward vs SDPA-vjp (strict 4s cooldown)
 | shape | measured 26.6 | README claim |
 |---|---|---|
 | D64 causal N2048 | 1.29× (CONFIDENT) | 2.06–2.58× |
@@ -73,7 +73,7 @@ impasse below.)
 
 ## What is solid regardless
 - Release is **perf-safe** (non-worse vs v2.52.1; correctness fixes are perf-neutral).
-- The documented v2.50-era headline speedups **do not hold on 26.6** (V34 backward + conv both
+- The documented v2.50-era headline speedups **do not hold on 26.6** (V6NAX backward + conv both
   confirmed materially lower; systematic Apple-baseline improvement).
 
 ## Recommendation (Marco-gated)
@@ -97,7 +97,7 @@ strict 4s-cooldown protocol, 3 sessions. Raw: `benchmarks/methodology/iii11_26.6
 All shapes 0.77–1.08× SDPA (the <0.9 and >1.05 outliers are HIGH_VARIANCE clock-state bimodality,
 not real deviations). **Production forward ≈ SDPA; net-non-worse vs v2.52.1. Confirmed.**
 
-### V34 backward vs SDPA-vjp (strict)
+### V6NAX backward vs SDPA-vjp (strict)
 | shape | 26.6 measured | verdict | README claim |
 |---|---|---|---|
 | D64 causal N2048 | 0.86× | BOUNDARY | 2.06–2.58× |
@@ -132,7 +132,7 @@ documented "vs legacy" baseline doesn't exist for bf16 — legacy im2col is fp16
 
 ## Synthesis
 On macOS 26.6, Apple's primitives (SDPA-vjp, conv) improved, **systematically shrinking mlx-mfa's
-documented v2.50-era compute-bound speedups** — V34 backward and conv both materially lower, qL-
+documented v2.50-era compute-bound speedups** — V6NAX backward and conv both materially lower, qL-
 dependent, and high-variance/run-unstable at these sizes. This is **not a regression** (kernels
 byte-identical to v2.52.1; production forward ≈ SDPA; release perf-safe), but the published precise
 ranges are stale and not reproducible on 26.6. **Doc action:** replace precise ranges with measured,

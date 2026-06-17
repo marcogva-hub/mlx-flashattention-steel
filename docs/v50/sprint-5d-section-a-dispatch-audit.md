@@ -1,27 +1,27 @@
 # Prompt 5d Section A — dispatch-chain audit refresh (Pattern #5)
 
-**Mandate**: extend 3 V34 backward kernels (dQ + dK split + fused dKdV)
+**Mandate**: extend 3 V6NAX backward kernels (dQ + dK split + fused dKdV)
 with native sparse iteration, replacing hybrid orchestrator from Prompt 5c.
 
 ## Multi-gate audit (Pattern #5 — full native extension scope)
 
 | # | Gate | Location | Pre-Prompt 5d state | Action |
 |---|---|---|---|---|
-| G1 | `_v34_backward_carveout` | `dispatch_policy.py:373-380` | D ∈ {64,128} + qL≥2048 + fp16/bf16 (post-Prompt 5b Section D) | Verify; no change |
-| G2 | `_v34_eligible` | `attention.py:3743` | PERMISSIVE D ∈ {64,128} | Verify; no change |
-| G3 | `_v34_backward_vjp` routing | `attention.py:3827-3859` | AUTO D=64→fused, D=128→split | Verify; sparse variant orchestrator parallel |
+| G1 | `_v6nax_backward_carveout` | `dispatch_policy.py:373-380` | D ∈ {64,128} + qL≥2048 + fp16/bf16 (post-Prompt 5b Section D) | Verify; no change |
+| G2 | `_v6nax_eligible` | `attention.py:3743` | PERMISSIVE D ∈ {64,128} | Verify; no change |
+| G3 | `_v6nax_backward_vjp` routing | `attention.py:3827-3859` | AUTO D=64→fused, D=128→split | Verify; sparse variant orchestrator parallel |
 | G4 | `MFAV6Forward::eval_gpu` causal-routing | `mfa_v6_nax_primitive.cpp:625` (post-Prompt 4) | PERMISSIVE | Verify; no change |
 | G5 | `MFAV6Backward::eval_gpu` D-handling | `mfa_v6_nax_primitive.cpp` (Sprint B) | PERMISSIVE D=128 | Verify; no change |
-| G6 | `compile_v34_backward_pipeline` cache keys | C++ Primitive cache | PERMISSIVE | Extend with sparse cache keys (3 new) |
-| G7 | V34Bwd*Key cache structs | various | dV sparse SHIPPED (Prompt 5b) | Add dQ, dK, fused dKdV sparse keys |
-| G8 | MFAV34Bwd* Primitive classes | various | dV sparse SHIPPED | Add 3 new sparse Primitives |
+| G6 | `compile_v6nax_backward_pipeline` cache keys | C++ Primitive cache | PERMISSIVE | Extend with sparse cache keys (3 new) |
+| G7 | V6NAXBwd*Key cache structs | various | dV sparse SHIPPED (Prompt 5b) | Add dQ, dK, fused dKdV sparse keys |
+| G8 | MFAV6NAXBwd* Primitive classes | various | dV sparse SHIPPED | Add 3 new sparse Primitives |
 | G9 | Raw helpers + nanobind bindings | `bindings.cpp` | dV sparse SHIPPED | Add 3 new |
-| G10 | Python `_v34_backward_vjp_sparse` | NEW | `_v34_sparse_hybrid_vjp` Prompt 5c | Replace orchestrator with full native |
-| G11 | `flash_attention_sparse` dispatch | `attention.py:2495+` | Hybrid eligible → `_v34_sparse_hybrid_vjp` | Replace dispatch target |
+| G10 | Python `_v6nax_backward_vjp_sparse` | NEW | `_v6nax_sparse_hybrid_vjp` Prompt 5c | Replace orchestrator with full native |
+| G11 | `flash_attention_sparse` dispatch | `attention.py:2495+` | Hybrid eligible → `_v6nax_sparse_hybrid_vjp` | Replace dispatch target |
 
 ## Sparse-LSE consistency check (Pattern #5 LSE convention)
 
-V34 forward sparse (Prompt 5c Section A.1) writes natural-log sparse-LSE
+V6NAX forward sparse (Prompt 5c Section A.1) writes natural-log sparse-LSE
 to L output.  All 4 sparse backward kernels (dV PoC + dQ/dK/fused new)
 must consume this L correctly:
 - dV: works (Prompt 5c hybrid validated bit-identical for all-True mask,

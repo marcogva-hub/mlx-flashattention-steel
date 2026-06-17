@@ -76,7 +76,7 @@ serving use cases.
   each iteration.
 - Compare paths via env var manipulation:
   - Default (auto routing): no env vars set
-  - SDPA-vjp baseline: `MFA_DISABLE_V34_BACKWARD=1` (for backward) OR
+  - SDPA-vjp baseline: `MFA_DISABLE_V6_BACKWARD=1` (for backward) OR
     `MFA_DISABLE_AUTO_HOOKS=1` (for forward routing)
   - MFA-forced: `backend="mfa"` (when function supports it)
 

@@ -6,31 +6,31 @@ item carries: severity, current production impact, resolution roadmap.
 
 ---
 
-## KD-1 — V34 backward sparse kernel mask shape mismatch (HIGH severity) — **RESOLVED v2.50.0 Prompt 5f Phase A**
+## KD-1 — V6NAX backward sparse kernel mask shape mismatch (HIGH severity) — **RESOLVED v2.50.0 Prompt 5f Phase A**
 
 **RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase A).  See CHANGELOG
-v2.50 Phase A entry + `mlx_mfa/attention.py::_convert_mask_for_v34_bwd_kernel`
+v2.50 Phase A entry + `mlx_mfa/attention.py::_convert_mask_for_v6nax_bwd_kernel`
 + 17 tests in `tests/test_v50_prompt_5f_kd1_mask_shape_fix.py` +
 C++ shape validation in 4 sparse Primitives (`csrc/mfa_v6_nax_primitive.cpp`).
 
 **Identified by**: Phase 1.2 C++ code review (`docs/v50/prompt-5e-code-review-cpp.md`
 HIGH-1 finding).
 
-**Mechanism**: The 4 V34 backward sparse kernels (dQ + dV PoC + dK split
-+ fused dKdV) index `block_mask` using V34 backward tile sizes
-(`V34BWD_BQ`, `V34BWD_BK`):
-- D=64 V34 bwd: BQ=32, BK=64 (NQ_v34 = qL/32, NK_v34 = kL/64)
-- D=128 V34 bwd: BQ=64, BK=32 (NQ_v34 = qL/64, NK_v34 = kL/32)
+**Mechanism**: The 4 V6NAX backward sparse kernels (dQ + dV PoC + dK split
++ fused dKdV) index `block_mask` using V6NAX backward tile sizes
+(`V6NAXBWD_BQ`, `V6NAXBWD_BK`):
+- D=64 V6NAX bwd: BQ=32, BK=64 (NQ_v6nax = qL/32, NK_v6nax = kL/64)
+- D=128 V6NAX bwd: BQ=64, BK=32 (NQ_v6nax = qL/64, NK_v6nax = kL/32)
 
 But production callers (via `flash_attention_sparse` hybrid orchestrator
 and `make_causal_block_mask`) pass a mask sized for FORWARD STEEL tile
 sizes per `_steel_block_config`:
-- D=64 forward STEEL: BQ=32, BK=64 (same as V34 bwd — no mismatch)
-- D=128 forward STEEL: BQ=32, BK=32 (NQ_fwd=qL/32, NK_fwd=kL/32 — MISMATCH with V34 bwd D=128 NQ_v34=qL/64)
+- D=64 forward STEEL: BQ=32, BK=64 (same as V6NAX bwd — no mismatch)
+- D=128 forward STEEL: BQ=32, BK=32 (NQ_fwd=qL/32, NK_fwd=kL/32 — MISMATCH with V6NAX bwd D=128 NQ_v6nax=qL/64)
 
 **Current production impact**:
-- For D=64: NO MISMATCH.  V34 bwd dV BK=32 differs from V34 bwd D=64
-  spec; let me verify... Actually `MFAV34BwdDVSparse::eval_gpu` hardcodes
+- For D=64: NO MISMATCH.  V6NAX bwd dV BK=32 differs from V6NAX bwd D=64
+  spec; let me verify... Actually `MFAV6NAXBwdDVSparse::eval_gpu` hardcodes
   `BQ=64; BK=32` for dV regardless of D.  So mask access at
   `block_mask[qb * NK + tid.x]` with qb iterating to qL/64, tid.x in
   [0, kL/32).
@@ -48,15 +48,15 @@ sizes per `_steel_block_config`:
   (mathematically correct regardless of mask shape).  Only dV native
   sparse is affected — and its contribution is bounded by the per-row
   L_sparse normalization.
-- Full native (opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`): all 4 gradients
+- Full native (opt-in `MFA_V6_BWD_SPARSE_NATIVE=1`): all 4 gradients
   affected.
-- Section C wrapper (env unset): uses SDPA-vjp throughout — no V34
+- Section C wrapper (env unset): uses SDPA-vjp throughout — no V6NAX
   sparse kernels invoked → NOT AFFECTED.
 
 **Resolution roadmap** (Section A v4 follow-up):
-1. Add Python-level mask conversion in `_v34_sparse_hybrid_vjp` and
-   `_v34_backward_vjp_sparse_full_native` orchestrators:
-   - Detect forward-shape mask vs V34-bwd-shape mask
+1. Add Python-level mask conversion in `_v6nax_sparse_hybrid_vjp` and
+   `_v6nax_backward_vjp_sparse_full_native` orchestrators:
+   - Detect forward-shape mask vs V6NAX-bwd-shape mask
    - Downsample/upsample as needed (logical OR across affected forward
      tiles for downsample; broadcast for upsample)
 2. Add C++ shape validation back (currently documented-only) to catch
@@ -68,14 +68,14 @@ sizes per `_steel_block_config`:
 correctness depends on this.  NOT BLOCKING v2.50 release because:
 - Current production default (Section C wrapper for env unset) is safe
 - Hybrid path is documented as "preview" feature (env-gated by
-  `MFA_ENABLE_V34_BACKWARD=1`)
-- Pattern #6 finding showed V34 sparse backward is slower than
+  `MFA_ENABLE_V6_BACKWARD=1`)
+- Pattern #6 finding showed V6NAX sparse backward is slower than
   SDPA-vjp anyway — most users won't enable it
 - v2.50.1 patch release can ship the fix without breaking API surface
 
 ---
 
-## KD-2 — `_v34_sparse_hybrid_vjp` and `_v34_backward_vjp_sparse_full_native` recompute forward (MEDIUM severity) — **RESOLVED v2.50.0 Prompt 5f Phase B**
+## KD-2 — `_v6nax_sparse_hybrid_vjp` and `_v6nax_backward_vjp_sparse_full_native` recompute forward (MEDIUM severity) — **RESOLVED v2.50.0 Prompt 5f Phase B**
 
 **RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase B).  Both orchestrators
 now consume `(O, L)` via the `outputs` parameter of `custom_function`,
@@ -107,7 +107,7 @@ is fast at low density).  Not a perf blocker; cosmetic.
 
 **RESOLUTION DATE**: 2026-05-14 (Prompt 5f Phase C).  `else: # D=128`
 replaced with `elif head_dim == 128: ...; else: raise ValueError` in
-`_v34_backward_vjp_sparse_full_native`.
+`_v6nax_backward_vjp_sparse_full_native`.
 
 **Identified by**: Phase 1.1 Python code review (H3 finding).
 
@@ -115,7 +115,7 @@ replaced with `elif head_dim == 128: ...; else: raise ValueError` in
 If outer guard ever broadens to allow D=256, the `else` would silently
 accept it.
 
-**Current production impact**: Outer guard at `_v34_eligible` does
+**Current production impact**: Outer guard at `_v6nax_eligible` does
 restrict D ∈ {64, 128}, so silently-accept-D=256 is currently
 unreachable.  But brittle.
 
@@ -158,8 +158,8 @@ TestNativeBackwardRouting target shapes now PASS against SDPA-VJP.
 The MFA_FORCE_NATIVE_BWD deprecation (Phase E) remains in place,
 **rationale reworded "superseded" (Phase II-0, Marco-approved)**: the
 flag is redundant — auto dispatch selects the optimal backward per cell
-(V34 D=64 causal default-on at 2.2-2.6x since Phase II-0; SDPA-vjp at
-D=128 where V34/STEEL lose) — not a workaround for broken kernels.
+(V6NAX D=64 causal default-on at 2.2-2.6x since Phase II-0; SDPA-vjp at
+D=128 where V6NAX/STEEL lose) — not a workaround for broken kernels.
 Removal remains Marco-gated.
 
 **Pattern cross-reference** (campaign 2026-06 Sprint B): this failure
@@ -180,14 +180,14 @@ with STEEL backward now correct, the `MFA_FORCE_NATIVE_BWD`
 DeprecationWarning and the v2.51 removal plan are reconsiderable.
 Changing default backward routing is a user-visible dispatch-policy
 decision — requires Marco's call, plus an M5 perf re-bench of STEEL
-backward vs V34 backward vs SDPA-vjp before any promotion.
+backward vs V6NAX backward vs SDPA-vjp before any promotion.
 
 (Previous entry below for history:)
 
 ## KD-5 (historical) — STEEL backward D=128 N≥2048 zeroed-blocks bug (DEPRECATED v2.50.0 Prompt 5f Phase E)
 
 **v2.50.0 Phase E disposition**: `MFA_FORCE_NATIVE_BWD=1` now emits a
-`DeprecationWarning` pointing to this entry.  V34 backward NAX-direct
+`DeprecationWarning` pointing to this entry.  V6NAX backward NAX-direct
 (production default) is unaffected.  STEEL backward kernel itself
 retained for research-only access via the env var; both production
 xfails preserved.  Target removal: v2.51+.
@@ -200,13 +200,13 @@ backward kernels (MFASteelBwdDQ/DKV).  At D=128 N≥2048, output zeroed
 for query rows ≥1024 (16×BQ tile boundary).  Bug in legacy STEEL
 backward path.
 
-**Production safety**: V34 backward is the production path
+**Production safety**: V6NAX backward is the production path
 (Section D Prompt 5b broadening).  STEEL backward is research-only.
 Both production xfails (`TestNativeBackwardRouting[128-2048,
 128-4096]`) preserved with accurate rationale.
 
 **Resolution roadmap**: post-v2.50 dedicated investigation into STEEL
-backward kernel.  Likely target for deprecation in v2.51+ since V34
+backward kernel.  Likely target for deprecation in v2.51+ since V6NAX
 is production.
 
 ---

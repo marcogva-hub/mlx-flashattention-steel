@@ -17,14 +17,14 @@ For per-commit history, see `git log`.  For per-release content, see
 | **U** (Unification) | 2026-05-12 | Architectural | **v2.36.0 SHIPPED** — auto-hook on import + Sprint U auto-routing through public `flash_attention*` / `sparse_attention*` / `conv3d_nax_forward` surfaces | `docs/RELEASE_PHILOSOPHY.md` (canonical statement) |
 | **Canonical methodology** | 2026-05-12 | Methodology | **v2.36.1 SHIPPED** — V2 sparse graduates to shape-aware default; canonical §4.2 protocol (10-warmup + 100-continuous) calibrated via 7/7 shapes CONFIDENT or BOUNDARY | `docs/methodology/canonical-protocol.md`, `docs/methodology/canonical-bench-results.md` |
 
-## v2.37.x — V34 backward + institutional amendment
+## v2.37.x — V6NAX backward + institutional amendment
 
 | Sprint | Date | Type | Outcome | Primary deliverable docs |
 |---|---|---|---|---|
-| **V34 forward lse-write (BLK1)** | pre-2026-05-13 | Infrastructure | Merged, **v2.37.0 base** — V34 forward writes natural-log lse to device memory, enabling V34 backward kernel consumption (DC0 resolution) | `docs/v6-nax/v34-backward-decisions.md` |
-| **V34 backward Option β** | pre-2026-05-13 | Architectural | **v2.37.0 SHIPPED** — V34 NAX-direct backward kernels (dQ + multi-SG dK/dV WM=4 Q-row partition + forward-fusion) ship as SHIP_OPT_IN via `MFA_ENABLE_V34_BACKWARD=1` | `docs/v6-nax/v34-backward-status.md`, `docs/v6-nax/v34-backward-option-gamma-design.md` (deferred follow-on) |
-| **DC12 routing relaxation** | 2026-05-13 | Patch | **v2.37.1 SHIPPED** — `force_v34` param relaxes DC12 constraint; V34 backward eligible for D=64 small-Nk shapes | `docs/releases/v2.37.1-release-notes.md` |
-| **v2.37.2 silent integration bug fix** | 2026-05-13 | Bugfix | **v2.37.2 SHIPPED** — narrow carve-out in `flash_attention()` body fixes silent SDPA fallback for V34 backward; D=64 qL≥4096 now 1.81-1.82× faster via documented public API | `docs/releases/v2.37.2-release-notes.md` |
+| **V6NAX forward lse-write (BLK1)** | pre-2026-05-13 | Infrastructure | Merged, **v2.37.0 base** — V6NAX forward writes natural-log lse to device memory, enabling V6NAX backward kernel consumption (DC0 resolution) | `docs/v6-nax/v6nax-backward-decisions.md` |
+| **V6NAX backward Option β** | pre-2026-05-13 | Architectural | **v2.37.0 SHIPPED** — V6NAX NAX-direct backward kernels (dQ + multi-SG dK/dV WM=4 Q-row partition + forward-fusion) ship as SHIP_OPT_IN via `MFA_ENABLE_V6_BACKWARD=1` | `docs/v6-nax/v6nax-backward-status.md`, `docs/v6-nax/v6nax-backward-option-gamma-design.md` (deferred follow-on) |
+| **DC12 routing relaxation** | 2026-05-13 | Patch | **v2.37.1 SHIPPED** — `force_v6nax` param relaxes DC12 constraint; V6NAX backward eligible for D=64 small-Nk shapes | `docs/releases/v2.37.1-release-notes.md` |
+| **v2.37.2 silent integration bug fix** | 2026-05-13 | Bugfix | **v2.37.2 SHIPPED** — narrow carve-out in `flash_attention()` body fixes silent SDPA fallback for V6NAX backward; D=64 qL≥4096 now 1.81-1.82× faster via documented public API | `docs/releases/v2.37.2-release-notes.md` |
 | **Institutional amendment (§Z + §AA)** | 2026-05-13 | Procedural | **v2.37.3 SHIPPED** — §Z public API path testing rule + §AA skill invocation checkpoints + perf claim audit retraction of v2.37.1 qL=2048 1.44× claim + D=128 reclassification | `docs/v6-nax/v2.37.x-perf-claim-audit.md`, `docs/releases/v2.37.3-release-notes.md` |
 
 ## Sprint 1-4 — institutional hardening (all post-v2.37.3)
@@ -41,13 +41,13 @@ For per-commit history, see `git log`.  For per-release content, see
 | Sprint | Date | Type | Outcome | Primary deliverable docs |
 |---|---|---|---|---|
 | **v2.38.x cleanup** | 2026-05-13 | Refactor + observability | (α) doc-only merge → folded into v2.38.0 release; Phase A/B/C/D infrastructure shipped. | `docs/v6-nax/v38x-cleanup-decisions.md` + this doc (`docs/SPRINT_HISTORY.md`) + `docs/PERF_CLAIMS.md` |
-| **v2.38.0** | 2026-05-13 | Refactor cleanup release | Helper extraction (`_v34_eligible`, `_v34_backward_vjp`) + dead placeholder deletion + investigation foundation docs. **No perf claim.** | `CHANGELOG.md` `[2.38.0]` + `docs/v6-nax/v38-implementation-decisions.md` |
-| **v2.38.1** | 2026-05-13 | Perf optimization release | D_vec precompute device buffer; **D=64 V34 backward 1.91× / 1.87× / 1.80× vs SDPA-vjp at qL∈{4096,8192,16384}** (was 1.75-1.79× v2.37.3); D=128 unchanged (carve-out D=64 hard-gated). | `CHANGELOG.md` `[2.38.1]` + `docs/v6-nax/v38-1-implementation-decisions.md` + `docs/v6-nax/v38-1-perf-claim-audit.md` |
-| **v2.39.0** | 2026-05-13 | Architectural addition (outcome δ) | Option γ fused dK+dV kernel (D=64) ships as **opt-in**, NOT auto-default. Empirical M5 Max bench: fused 25-33% SLOWER than split at qL≥4096 (opposite of `/metal-kernel-dev` 10% prediction). Correctness verified bit-identical (RMSE=0). Auto routes to split; fused via `MFA_V34_BWD_KERNEL=fused`. No perf claim. Infrastructure preserved as foundation for v2.39.1+ tuning work. | `CHANGELOG.md` `[2.39.0]` + `docs/v6-nax/v39-0-option-gamma-design-status.md` + `docs/v6-nax/v39-0-option-gamma-results.md` |
+| **v2.38.0** | 2026-05-13 | Refactor cleanup release | Helper extraction (`_v6nax_eligible`, `_v6nax_backward_vjp`) + dead placeholder deletion + investigation foundation docs. **No perf claim.** | `CHANGELOG.md` `[2.38.0]` + `docs/v6-nax/v38-implementation-decisions.md` |
+| **v2.38.1** | 2026-05-13 | Perf optimization release | D_vec precompute device buffer; **D=64 V6NAX backward 1.91× / 1.87× / 1.80× vs SDPA-vjp at qL∈{4096,8192,16384}** (was 1.75-1.79× v2.37.3); D=128 unchanged (carve-out D=64 hard-gated). | `CHANGELOG.md` `[2.38.1]` + `docs/v6-nax/v38-1-implementation-decisions.md` + `docs/v6-nax/v38-1-perf-claim-audit.md` |
+| **v2.39.0** | 2026-05-13 | Architectural addition (outcome δ) | Option γ fused dK+dV kernel (D=64) ships as **opt-in**, NOT auto-default. Empirical M5 Max bench: fused 25-33% SLOWER than split at qL≥4096 (opposite of `/metal-kernel-dev` 10% prediction). Correctness verified bit-identical (RMSE=0). Auto routes to split; fused via `MFA_V6_BWD_KERNEL=fused`. No perf claim. Infrastructure preserved as foundation for v2.39.1+ tuning work. | `CHANGELOG.md` `[2.39.0]` + `docs/v6-nax/v39-0-option-gamma-design-status.md` + `docs/v6-nax/v39-0-option-gamma-results.md` |
 | **v2.39.1** | 2026-05-13 | Root-cause investigation + outcome α fix | Investigated v2.39.0's outcome δ via 3 falsifiable hypotheses. **H1 CONFIRMED** (register pressure at BK=32): BK=16 fused beats split 1-12% across qL∈{2048,16384}. **H3 FALSIFIED** (reducing WM made fused WORSE). H2 partial-supporting. Fix: BK default 32→16 + auto routes fused for D=64. Measured: 2.00×/1.95× speedups vs SDPA-vjp at qL∈{4096,8192} (was 1.91×/1.87× v2.38.1). All v2.38.1 baselines preserved or improved. | `CHANGELOG.md` `[2.39.1]` + `docs/v6-nax/v39-1-investigation-synthesis.md` |
 
 Phases of original v2.38.x cleanup:
-- **A: Dispatch consolidation** (M5-HIGH-01) — v2.37.2 carve-out moved into dedicated `_v34_backward_carveout()` function; a placeholder `_should_use_mfa_m5_nax_carveout()` was retained for genuine Sprint A.6 hooks but was **subsequently deleted in v2.38.0 P3 Phase C** (dormant since v2.32.0, no Sprint A.6 carve-outs ever materialized; if a future Sprint A.6 surfaces empirically-validated MFA-winning shapes on M5+ NAX canonical D, re-introduce a named function from the `head_dim ∈ {64, 128}` branch in `should_use_mfa()`). ✓ Committed `f7a04ce`.
+- **A: Dispatch consolidation** (M5-HIGH-01) — v2.37.2 carve-out moved into dedicated `_v6nax_backward_carveout()` function; a placeholder `_should_use_mfa_m5_nax_carveout()` was retained for genuine Sprint A.6 hooks but was **subsequently deleted in v2.38.0 P3 Phase C** (dormant since v2.32.0, no Sprint A.6 carve-outs ever materialized; if a future Sprint A.6 surfaces empirically-validated MFA-winning shapes on M5+ NAX canonical D, re-introduce a named function from the `head_dim ∈ {64, 128}` branch in `should_use_mfa()`). ✓ Committed `f7a04ce`.
 - **B: Apple helpers refactor** (M1-HIGH-01 + M3-HIGH-01) — extracted 390-LOC helpers from 5 generators into `naxHelpersBlock()` static method; byte-identical forward kernel source verified; -1541 LOC net. ✓ Committed `c509b4b`.
 - **C: Observability triad** (quality) — `docs/PERF_CLAIMS.md` registry (now extended with v2.38.1 D_vec rows) + `mlx_mfa.diagnostics()` runtime introspection + `docs/SPRINT_HISTORY.md` (this file).  ✓ Done; extended in v2.38.1.
 - **D: /mlx-mfa-kernel-design skill** — unblocked by Phase B; encodes consolidated kernel-design patterns.  ✓ Created at `~/.claude/skills/mlx-mfa-kernel-design/`.
@@ -55,11 +55,11 @@ Phases of original v2.38.x cleanup:
 
 ## v2.38.1 — D_vec precompute (M2-HIGH-01)
 
-Single-phase optimization sprint.  D = rowsum(dO ⊙ O) precomputed once on host via MLX and passed as shared device buffer to V34 backward kernels (dQ + split-dK + legacy-fused-dKdV).  Eliminates 2 in-kernel rowsums per default-path V34 backward call.
+Single-phase optimization sprint.  D = rowsum(dO ⊙ O) precomputed once on host via MLX and passed as shared device buffer to V6NAX backward kernels (dQ + split-dK + legacy-fused-dKdV).  Eliminates 2 in-kernel rowsums per default-path V6NAX backward call.
 
 | Phase | Status | Commit / artefact |
 |---|---|---|
-| A.1-A.6: D_vec wire-up (3 kernels + 3 Primitives + 3 bindings + `_v34_backward_vjp`) | ✓ Committed | `bf62af0` |
+| A.1-A.6: D_vec wire-up (3 kernels + 3 Primitives + 3 bindings + `_v6nax_backward_vjp`) | ✓ Committed | `bf62af0` |
 | A.7: Three-axis validation + /mlx-debug-forensics | ✓ HIGH SHIP | 5-axis byte-equivalence audit |
 | A.8: /mlx-mfa-bench-methodology + /mlx-mfa-perf-audit + /mlx-mfa-release-audit | ✓ SHIP-green all gates | `3f4b786` (bench data + audit doc + CHANGELOG) |
 | Release: tag + PyPI + GH | ✓ LIVE | https://pypi.org/project/mlx-mfa/2.38.1/ |
@@ -79,7 +79,7 @@ Variance ratios all <1.15 per §AA.4.  Improvement decays with qL as eliminated 
 Three structural patterns emerge from the v2.36.x → v2.38.x arc:
 
 1. **Architectural sprint → procedural amendment** — each major
-   feature ship (v2.36.0 auto-hooks, v2.37.0 V34 backward) has
+   feature ship (v2.36.0 auto-hooks, v2.37.0 V6NAX backward) has
    surfaced an institutional gap that the next sprint patches.
    Sprint 4 codified this as §AA mandatory blocking (skills run
    at gate points; gaps surface immediately, not 3 sprints later).

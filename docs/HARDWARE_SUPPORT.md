@@ -4,18 +4,18 @@
 **Last audited**: 2026-05 repo review (post-v2.50.1; KD-5 STEEL backward D=128 fix, hook telemetry, conv NAX dtype fix)
 **Audit source**: empirical bench + multi-sprint deliverables
 (Sprints 1-2 dispatch fixes, Sprint 3 PoC + native top-K iteration,
-Sprint 4 V34 backward causal, Sprint B v2.40.0-internal D=128 split,
+Sprint 4 V6NAX backward causal, Sprint B v2.40.0-internal D=128 split,
 Prompt 5b Sections A/C/D)
 
 ## TL;DR
 
 v2.50 ships **production-complete coverage**: on **M5+ NAX hardware**,
 the dispatch_policy routes canonical dense attention to **Apple SDPA NAX**
-(`mx.fast.scaled_dot_product_attention`), with MFA-STEEL/V34 paths
+(`mx.fast.scaled_dot_product_attention`), with MFA-STEEL/V6NAX paths
 engaging at:
 - Non-NAX head_dims (D=256, D=512)
 - Env-var-gated training carve-outs:
-  - `MFA_ENABLE_V34_BACKWARD=1` — V34 backward dense for D ∈ {64, 128}
+  - `MFA_ENABLE_V6_BACKWARD=1` — V6NAX backward dense for D ∈ {64, 128}
     (Prompt 5b Section D broadened from D=64-only)
 - Paged/varlen patterns (Apple SDPA NAX has no paged path; STEEL is
   optimal for these)
@@ -60,16 +60,16 @@ the Prompt 4 multi-gate causal fix.
 
 | Function | M1+ path | M3+ path | M5+ path | M5+ status |
 |---|---|---|---|---|
-| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct** (env-gated, fused-BK16) | **(A)** 2.00×/1.95×/1.72× vs SDPA-vjp |
-| Backward dense **D=128** non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D) | **(A)** parity coverage extension; no speedup |
-| Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct** (env-gated, post-Prompt 4 multi-gate fix) | **(A)** production-active |
-| Backward causal **D=128** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V34 NAX-direct split kernels** (env-gated, post-Prompt 5b Section D + Prompt 4 multi-gate fix) | **(A)** parity coverage extension |
-| Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | **Prompt 5c hybrid orchestrator** (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse kernels SHIPPED (Prompt 5d) but routed via opt-in `MFA_V34_BWD_SPARSE_NATIVE=1` only — empirical bench at VSR shape shows Apple SDPA NAX wins over V34 NAX backward (Pattern #6). | **(A)** correctness; production-optimal routing |
+| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct** (env-gated, fused-BK16) | **(A)** 2.00×/1.95×/1.72× vs SDPA-vjp |
+| Backward dense **D=128** non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct split kernels** (env-gated, post-Prompt 5b Section D) | **(A)** parity coverage extension; no speedup |
+| Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct** (env-gated, post-Prompt 4 multi-gate fix) | **(A)** production-active |
+| Backward causal **D=128** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct split kernels** (env-gated, post-Prompt 5b Section D + Prompt 4 multi-gate fix) | **(A)** parity coverage extension |
+| Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | **Prompt 5c hybrid orchestrator** (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse kernels SHIPPED (Prompt 5d) but routed via opt-in `MFA_V6_BWD_SPARSE_NATIVE=1` only — empirical bench at VSR shape shows Apple SDPA NAX wins over V6NAX NAX backward (Pattern #6). | **(A)** correctness; production-optimal routing |
 | Backward block-sparse (asymmetric / 3-D/4-D mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `_sparse_nax_with_sdpa_vjp` wrapper (Section C) | **(A)** SDPA-vjp wins on M5+ per Pattern #6 |
 | Backward D=256/D=512 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **(B)** architectural floor; out of v2.50 scope |
 
 **Section A v2 follow-up** (deferred to focused session): native sparse
-backward for the 4 remaining V34 kernels (dQ, dK split, fused dKdV,
+backward for the 4 remaining V6NAX kernels (dQ, dK split, fused dKdV,
 legacy fused dKV) + `sparse_attention_nax` returning L.  Projected
 10× backward speedup at d=0.1.  PoC dV kernel + scaffold shipped in
 Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
@@ -104,10 +104,10 @@ Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
 | `flash_attention_sparse` (density threshold + bool-mask) | **SHIPPED** Sprint 1 |
 | `flash_attention_rope_unified` (`mx.fast.rope` dispatch) | **SHIPPED** Sprint 2 |
 | `flash_attention_topk` (native Metal kernel) | **SHIPPED** Sprint 3 + Prompt 5b Section B |
-| V34 backward causal (D=64) | **SHIPPED** Sprint 4 + Prompt 4 multi-gate fix |
-| V34 backward dense **D=128 broadening** | **SHIPPED** Prompt 5b Section D |
+| V6NAX backward causal (D=64) | **SHIPPED** Sprint 4 + Prompt 4 multi-gate fix |
+| V6NAX backward dense **D=128 broadening** | **SHIPPED** Prompt 5b Section D |
 | **D=128 + causal + attn_bias correctness** | **SHIPPED** Prompt 5b Section C |
-| V34 backward block-sparse (PoC dV + scaffold) | **POC SHIPPED** Prompt 5b Section A; v2 full extension is post-v2.50 |
+| V6NAX backward block-sparse (PoC dV + scaffold) | **POC SHIPPED** Prompt 5b Section A; v2 full extension is post-v2.50 |
 
 ### Tier 3 (deferred post-v2.50)
 
@@ -116,8 +116,8 @@ Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
 | Paged-NAX variants (varlen + paged + paged_varlen) | XL each | Apple SDPA NAX has no paged path; would anticipate Apple's roadmap for marginal gain |
 | Sage attention fused-quantize NAX | L | Narrow workload (long-context int8 KV training); production-active via STEEL fused |
 | D=256/D=512 backward | — | Architectural floor (memory roadmap dependency) |
-| V34 backward block-sparse FULL NATIVE routing default | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  4 native sparse kernels SHIPPED Prompt 5d, but routing default is Prompt 5c hybrid because Apple SDPA NAX backward outpaces V34 native sparse at VSR audit shape (0.09×-0.77× across densities).  Native available via opt-in `MFA_V34_BWD_SPARSE_NATIVE=1` for research.  See `docs/v50/section-a-v3-empirical-verification.md`. |
-| Top-K Approach 5 (state machine + custom PASS-2 attention) | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  Architecture B (Apple SDPA NAX bias-mask PASS-2) is empirically optimal; custom PASS-2 would be slower per Section A v3 evidence (Apple SDPA NAX > V34 NAX backward on M5+).  See `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`. |
+| V6NAX backward block-sparse FULL NATIVE routing default | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  4 native sparse kernels SHIPPED Prompt 5d, but routing default is Prompt 5c hybrid because Apple SDPA NAX backward outpaces V6NAX native sparse at VSR audit shape (0.09×-0.77× across densities).  Native available via opt-in `MFA_V6_BWD_SPARSE_NATIVE=1` for research.  See `docs/v50/section-a-v3-empirical-verification.md`. |
+| Top-K Approach 5 (state machine + custom PASS-2 attention) | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  Architecture B (Apple SDPA NAX bias-mask PASS-2) is empirically optimal; custom PASS-2 would be slower per Section A v3 evidence (Apple SDPA NAX > V6NAX NAX backward on M5+).  See `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`. |
 
 ### General M5+ routing narrative
 
@@ -127,7 +127,7 @@ Pattern #6 (Apple primitive M5+ optimization level), custom NAX
 kernels are shipped where they empirically win, and Apple SDPA NAX
 paths are used where they win.  This results in:
 
-- **V34 NAX-direct optimal for dense forward** (Sprint 1 density
+- **V6NAX NAX-direct optimal for dense forward** (Sprint 1 density
   threshold fix + Section D D=128 broadening)
 - **Apple SDPA NAX optimal for backward** (including sparse backward
   via Prompt 5c hybrid: NAX sparse forward + SDPA-vjp backward)
@@ -174,7 +174,7 @@ perf optimization on top of an already-correct production path
 - Kernel debugging methodology: `docs/methodology/kernel-debugging.md`
 - Perf claims registry: `docs/PERF_CLAIMS.md`
 - Dispatch policy: `mlx_mfa/dispatch_policy.py`
-  (`_v34_backward_carveout` post-Section-D broadening)
+  (`_v6nax_backward_carveout` post-Section-D broadening)
 - §AA mandatory blocking checkpoints: `CLAUDE_V6_NAX.md` §AA.1-5.x
 
 ## Skill invocations across Sprints 1-5 + Prompt 5b (per §AA.2)
@@ -184,7 +184,7 @@ perf optimization on top of an already-correct production path
 | Sprint 1 (density threshold) | `/mlx-mfa-apple-primitives-coverage` (FULL_INVERSION verdict), `/mlx-mfa-bench-methodology`, `/mlx-code-review` |
 | Sprint 2 (RoPE dispatch) | `/mlx-mfa-apple-primitives-coverage` (FULL_INVERSION), `/mlx-mfa-bench-methodology`, `/mlx-code-review` |
 | Sprint 3 (top-K Phase 3a) | `/mlx-mfa-apple-primitives-coverage` (PARTIAL_INVERSION), `/mlx-mfa-bench-methodology`, `/metal-kernel-dev` (pre-impl YELLOW for Phase 3b) |
-| Sprint 4 (V34 fwd/bwd causal) | `/metal-kernel-dev`, `/mlx-debug-forensics`, `/mlx-mfa-bench-methodology` |
+| Sprint 4 (V6NAX fwd/bwd causal) | `/metal-kernel-dev`, `/mlx-debug-forensics`, `/mlx-mfa-bench-methodology` |
 | Sprint B v2.40.0-internal (D=128 split + fused) | `/metal-kernel-dev`, `/mlx-mfa-bench-methodology`, `/mlx-debug-forensics` |
 | Prompt 4 Section B (dV residual multi-gate) | sentinel-write methodology, `/mlx-debug-forensics`; produced Pattern #5 catalogue entry + `/methodology/kernel-debugging.md` |
 | Prompt 5a Section C (Sprint 1 bwd regression) | `/mlx-debug-forensics`, `/mlx-code-review` |

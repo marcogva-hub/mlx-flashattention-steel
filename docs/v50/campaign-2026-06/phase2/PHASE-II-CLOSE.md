@@ -17,7 +17,7 @@ re-pass came back clean:
 
 | Sprint | Outcome |
 |---|---|
-| II-0 | V34-bwd D=64-causal promotion (2.14–2.71x) + GQA grad-shape fix; pushed |
+| II-0 | V6NAX-bwd D=64-causal promotion (2.14–2.71x) + GQA grad-shape fix; pushed |
 | II-1 | 74-cell M5 dispatch re-bench: authoritative map, zero inversions |
 | II-2 | Sage-NAX int8: DECLINED at kill gate (primitive "unimplemented") — **REVERSED by II-5** |
 | II-3 | Streaming top-K: built, exact, DECLINED 0.15x (scalar-grade vs matmul) |
@@ -25,7 +25,7 @@ re-pass came back clean:
 | II-5 | Literature autoresearch: 28 techniques, 21 declined w/ citation. int8 FALSIFICATION (cider-form, 2.00x gate pass, commit c480c51); MPP convolution2d discovered+probed; cider GQA decode CONFIRMED-NARROW (1.0–1.24x on-device) |
 | II-6 | Numerics audit: **CRITICAL fused-dKdV BK=16 paired-MMA out-of-bounds** (silent dK/dV corruption on the promoted path; fixed: BK guard + auto→split + unit-scale locks; promotion re-validated 2.15/2.61/2.67x). Sparse all-False-row NaN→zeros contract fix |
 | II-7 | Profiling hunt: LCSA mask build 15.4x (numpy→GPU); mx.conv3d hook coverage (mlx.nn users had NO NAX conv path); decode ladder quantified (TQ kernel = 14x dense floor) |
-| II-8 | Exhaustion sweep: caught + fixed the carve-out **pure-forward inversion** (1.19x → 1.00–1.03x; fwd now bit-SDPA-identical, V34 pair recomputed in VJP; grad cells 2.06/2.57/2.58x ≥ promotion floor) |
+| II-8 | Exhaustion sweep: caught + fixed the carve-out **pure-forward inversion** (1.19x → 1.00–1.03x; fwd now bit-SDPA-identical, V6NAX pair recomputed in VJP; grad cells 2.06/2.57/2.58x ≥ promotion floor) |
 | II-2R | int8 premise reconciliation: `char`≠`int8_t` template-dispatch root cause; attention-level XL build benched + **DECLINED at kill gate** (coop-API tax; Approach closed with measured evidence) |
 | II-9 | conv3d via **MPP convolution2d PROMOTED default-on** (2.31x/1.73x; per-TG tile descriptor + sliced dest semantics resolved via ccv production code); fused-im2col XL superseded |
 | II-10 | Refined Approach-5 top-K built + benched: **DECLINED 0.89x** — Approach 5 closed permanently (second independent negative) |
@@ -52,7 +52,7 @@ inversions, zero known numerics bugs, zero known nondeterminism.
 2. **Validation-envelope gaps hide exponential corruption**: 0.1-scale
    fixtures passed a kernel that was 4x-wrong at unit scale and inf at
    std 2.  Unit-scale + adversarial-magnitude locks are now in the
-   suite (test_phase2_ii6_v34_bwd_paired_mma.py).
+   suite (test_phase2_ii6_v6nax_bwd_paired_mma.py).
 3. **"Unimplemented" verdicts need a dims/forms sweep**: II-2's int8
    static_assert was a tile-dims constraint masquerading as a dtype
    gap.  The revival probe now encodes the working form.
@@ -88,7 +88,7 @@ declined), pool investigation (II-14 root-caused + fixed), top-K
 
 | Item | Evidence | Effort |
 |---|---|---|
-| int8 V34-generator integration (Sage-NAX revival) | gate passes 2.00x (264.9 TOPS); II-2R reconciliation projects 1.11–1.33x end-to-end; DT blueprint + cider MSL (MIT) | L/XL |
+| int8 V6NAX-generator integration (Sage-NAX revival) | gate passes 2.00x (264.9 TOPS); II-2R reconciliation projects 1.11–1.33x end-to-end; DT blueprint + cider MSL (MIT) | L/XL |
 | cider tier-3: paged/TQ decode transplant | TQ kernel floor at 14x dense makes the TQ transplant the stronger half; expert API already in-tree (II-11) | M |
 | KD-7 bf16 conv lift probe | MPP bf16 convolution2d variants exist; II-9 shipped fp16-only gate | S probe |
 | Deterministic/batch-invariant decode mode | run-to-run already bit-identical (II-8a); length-invariance is the gap | S/M |

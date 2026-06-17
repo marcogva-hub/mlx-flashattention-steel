@@ -60,19 +60,19 @@ echo | /usr/bin/tee -a "$LOG"
 echo "=== A.1 COLD BENCH (cleared cache) ===" | /usr/bin/tee -a "$LOG"
 
 echo "[A.1] cold SeedVR2-small ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape SeedVR2-small --mode legacy --runs 5 \
     --include-sdpa --output "$COLD_S" 2>&1 | /usr/bin/tee -a "$LOG"
 /bin/sleep 60
 
 echo "[A.1] cold CogVideoX ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape CogVideoX --mode legacy --runs 5 \
     --include-sdpa --output "$COLD_C" 2>&1 | /usr/bin/tee -a "$LOG"
 /bin/sleep 60
 
 echo "[A.1] cold SeedVR2-large ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape SeedVR2-large --mode legacy --runs 5 \
     --include-sdpa --output "$COLD_L" 2>&1 | /usr/bin/tee -a "$LOG"
 
@@ -90,19 +90,19 @@ echo | /usr/bin/tee -a "$LOG"
 echo "=== A.1 WARM BENCH (cache populated by cold pass) ===" | /usr/bin/tee -a "$LOG"
 
 echo "[A.1] warm SeedVR2-small ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape SeedVR2-small --mode legacy --runs 5 \
     --include-sdpa --output "$WARM_S" 2>&1 | /usr/bin/tee -a "$LOG"
 /bin/sleep 60
 
 echo "[A.1] warm CogVideoX ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape CogVideoX --mode legacy --runs 5 \
     --include-sdpa --output "$WARM_C" 2>&1 | /usr/bin/tee -a "$LOG"
 /bin/sleep 60
 
 echo "[A.1] warm SeedVR2-large ..." | /usr/bin/tee -a "$LOG"
-"$REPO_ROOT/.venv/bin/python" bench/v34_bench.py \
+"$REPO_ROOT/.venv/bin/python" bench/v6nax_bench.py \
     --shape SeedVR2-large --mode legacy --runs 5 \
     --include-sdpa --output "$WARM_L" 2>&1 | /usr/bin/tee -a "$LOG"
 

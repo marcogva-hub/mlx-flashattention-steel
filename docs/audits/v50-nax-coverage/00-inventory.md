@@ -12,7 +12,7 @@ M5+ dense forward to **Apple SDPA NAX** (`_M5_NAX_THRESHOLDS = 999_999` for
 all `(D, causal) ∈ {(64,T), (64,F), (128,T), (128,F), (256,T), (256,F)}`).
 MFA-STEEL paths only engage at:
 - D=256/512 non-NAX shapes (Apple SDPA NAX limited to D ∈ {64, 80, 128})
-- Env-var-gated training carve-outs (`MFA_ENABLE_V34_BACKWARD=1`)
+- Env-var-gated training carve-outs (`MFA_ENABLE_V6_BACKWARD=1`)
 - Symmetric block-sparse via `lcsa_nax` dispatcher
 
 **Implication for this audit**: the "NAX-optimal" path for canonical dense
@@ -37,7 +37,7 @@ Documented gaps in Apple SDPA NAX coverage (per `apple-sdpa-nax-analysis.md`):
 
 | # | Function | Line | M5+ explicit branch? | Likely path on M5+ |
 |---|---|---|---|---|
-| B.1 | `flash_attention` (dense fwd + bwd) | 163 | Yes (l.450, l.488) — V34 carve-out | Apple SDPA NAX for fwd; SDPA-vjp for bwd unless `MFA_ENABLE_V34_BACKWARD=1` (D=64 only, qL≥2048 post Sprint A) |
+| B.1 | `flash_attention` (dense fwd + bwd) | 163 | Yes (l.450, l.488) — V6NAX carve-out | Apple SDPA NAX for fwd; SDPA-vjp for bwd unless `MFA_ENABLE_V6_BACKWARD=1` (D=64 only, qL≥2048 post Sprint A) |
 | B.2 | `flash_attention_rope_unified` | 669 | No explicit branch | Likely Apple SDPA NAX after host-side RoPE apply (uses `_apply_rope_mlx` + `_apply_rope_and_attend`) |
 | B.3 | `flash_attention_rope` | 931 | No explicit branch | Same pattern as B.2 — host-side rotation then SDPA call |
 | B.14 | `flash_attention_splitfuse` | 2810 | Unknown — bench needed | TBD |
@@ -96,9 +96,9 @@ Documented gaps in Apple SDPA NAX coverage (per `apple-sdpa-nax-analysis.md`):
 - **22 flash_attention\* functions** (B.1-B.22, matches user prompt count)
 - **3 sage_attention\* functions** (B.4-B.6; the user prompt counted 4 but `smooth_k` is a quantize helper, not an attention function — only 3 attention entry points)
 - **5 functions with explicit `is_m5_plus`/`_get_has_nax_cached()` branches** in attention.py:
-  1. `flash_attention` (carve-out for V34 backward)
+  1. `flash_attention` (carve-out for V6NAX backward)
   2. `flash_attention_sparse` (lcsa_nax dispatch + sparse_fallback path)
-  3. `_v34_eligible` (predicate helper, not a public API)
+  3. `_v6nax_eligible` (predicate helper, not a public API)
 - **17 functions with no explicit M5+ branch**: rely on `should_use_mfa()` dispatch
   policy (which routes M5+ canonical dense to SDPA NAX via threshold=999_999)
   OR on internal re-dispatch to other public functions.

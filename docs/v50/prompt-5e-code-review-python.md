@@ -13,7 +13,7 @@ backward-incompatible API drift observed.
 
 ## High-priority findings
 
-### H1. `_v34_sparse_hybrid_vjp` recomputes the forward inside backward
+### H1. `_v6nax_sparse_hybrid_vjp` recomputes the forward inside backward
 `mlx_mfa/attention.py:2339-2341` calls `sparse_attention_nax_with_lse(q,k,v,...)`
 a *second* time inside `_backward`, discarding the `O,L` already computed in
 `_impl` (line 2324). The inline comment at 2335 acknowledges this ("cheap; could
@@ -36,7 +36,7 @@ it suggests the author copied a snippet without checking imports. Fix: drop
 line 2567-2568 and use the module-level `os` throughout. Confidence VERIFIED.
 
 ### H3. Top-K `else` branch can dispatch with unsupported D
-`attention.py:2448-2454` in `_v34_backward_vjp_sparse_full_native` uses
+`attention.py:2448-2454` in `_v6nax_backward_vjp_sparse_full_native` uses
 `if head_dim == 64: ... else: # D=128 ...`. The outer eligibility check at
 line 2604 enforces `D in (64, 128)`, so today the `else` only ever fires for
 D=128. But the inner function has no defensive guard, so any future change to
@@ -67,11 +67,11 @@ grepping. Fix: replace line 3093 comment with current env-var semantics.
 default (per comment 3083-3084 "Bisection IS the default"). Rename to
 `_use_bisect` for clarity. Same file, line 3109.
 
-### M3. `_v34_sparse_hybrid_vjp` docstring mislabels it DEPRECATED
+### M3. `_v6nax_sparse_hybrid_vjp` docstring mislabels it DEPRECATED
 `attention.py:2390`: the docstring says "DEPRECATED in v2.50 Prompt 5d Section
 A.4". But the production routing at `flash_attention_sparse:2637` *calls the
 hybrid by default* (full-native is the opt-in via
-`MFA_V34_BWD_SPARSE_NATIVE=1`, lines 2631-2639). Per the docstring + Prompt 5d
+`MFA_V6_BWD_SPARSE_NATIVE=1`, lines 2631-2639). Per the docstring + Prompt 5d
 comment block (2610-2627), hybrid is production-optimal at typical shapes.
 "DEPRECATED" is wrong — should read "Hybrid is the production default;
 full-native opt-in for benchmarking only".
@@ -79,8 +79,8 @@ full-native opt-in for benchmarking only".
 ### M4. Magic-number `_wm = 4` (`attention.py:2442, 2445, 2450, 2452`)
 The warp-multiplier `_wm = 4` is passed positionally to four kernels with no
 explanation. Promote to module-level constant or named kwarg with a one-line
-comment ("V34 sparse kernels: warp multiplier matches forward dispatch
-config"). Same number appears in `_make_v34_sparse_hybrid_vjp:2352` as bare
+comment ("V6NAX sparse kernels: warp multiplier matches forward dispatch
+config"). Same number appears in `_make_v6nax_sparse_hybrid_vjp:2352` as bare
 literal `4`.
 
 ### M5. `mask_bytes >= 4096` threshold is undocumented in lcsa_nax
@@ -108,13 +108,13 @@ Same pattern at lines 2444-2454.
 full-native makers. Public-API surface (`flash_attention_topk`,
 `flash_attention_sparse`) is well-annotated; internal closures could match.
 
-### L2. `_v34_backward_carveout` predicate has redundant kv-len check absent
+### L2. `_v6nax_backward_carveout` predicate has redundant kv-len check absent
 `dispatch_policy.py:384-390` checks `seq_len >= 2048` but ignores `kv_seq_len`.
 For cross-attention (qL != kL), the predicate routes based on qL only. Today
-all V34 sites are self-attention so this is harmless. If cross-attention V34
+all V6NAX sites are self-attention so this is harmless. If cross-attention V6NAX
 ever ships, the predicate needs revisiting. Flag as DEDUCED.
 
-### L3. `_make_v34_sparse_full_native_vjp` ignores the saved forward output
+### L3. `_make_v6nax_sparse_full_native_vjp` ignores the saved forward output
 `attention.py:2411-2416`: the forward computes `O, L` and returns only `O`.
 `L` is discarded (not passed to backward via `outputs`). Backward re-runs
 forward and gets a fresh `L_sparse` (line 2426). Same as H1 — fix in concert.
@@ -130,9 +130,9 @@ asymmetric-mask M5+ path at line 2683 ignores `MFA_DISABLE_AUTO_HOOKS`. If a
 user sets the env var, only some auto-routes disengage. Either honor the var
 at line 2683 too, or document the asymmetry in the env-var help.
 
-### L6. `_v34_sparse_hybrid_vjp` doesn't check `D in (64, 128)` defensively
+### L6. `_v6nax_sparse_hybrid_vjp` doesn't check `D in (64, 128)` defensively
 The outer guard at `flash_attention_sparse:2604` enforces this, but a direct
-caller into `_v34_sparse_hybrid_vjp(...)` (it's module-private but not
+caller into `_v6nax_sparse_hybrid_vjp(...)` (it's module-private but not
 underscored at the module surface — accessible via attribute access) would hit
 an unhelpful C++ exception. Low-priority because it's `_`-prefixed.
 
@@ -144,9 +144,9 @@ its key. Flag as test gap, not a bug.
 
 ## API surface consistency
 
-The four V34-related entry points
-(`_sparse_nax_with_sdpa_vjp`, `_v34_sparse_hybrid_vjp`,
-`_v34_backward_vjp_sparse_full_native`, `flash_attention_sparse`) all accept
+The four V6NAX-related entry points
+(`_sparse_nax_with_sdpa_vjp`, `_v6nax_sparse_hybrid_vjp`,
+`_v6nax_backward_vjp_sparse_full_native`, `flash_attention_sparse`) all accept
 `block_mask` as a *positional* arg in the same slot (4th). Good.
 `flash_attention_topk` takes `mask` as keyword-only via default-None — different
 name and different position. Acceptable because the function is semantically
@@ -160,10 +160,10 @@ Modified functions vs. tests-added:
 | Function | Tests file | Coverage |
 |---|---|---|
 | `_make_sparse_nax_with_sdpa_vjp` | `test_v50_sprint_5d_*.py:197` (Section C fallback test) | adequate |
-| `_v34_sparse_hybrid_vjp` | `test_v50_sprint_5c_*.py` | full |
-| `_v34_backward_vjp_sparse_full_native` | `test_v50_sprint_5d_*.py` (6 test cases) | full |
+| `_v6nax_sparse_hybrid_vjp` | `test_v50_sprint_5c_*.py` | full |
+| `_v6nax_backward_vjp_sparse_full_native` | `test_v50_sprint_5d_*.py` (6 test cases) | full |
 | `_topk_bisect_threshold_kernel` | `test_v50_sprint_5b_section_b_*.py` | direct + via topk |
-| `_v34_backward_carveout` D=128 | `__init__.py:diagnostics` smoke covers it | adequate |
+| `_v6nax_backward_carveout` D=128 | `__init__.py:diagnostics` smoke covers it | adequate |
 | `sparse_attention_nax_with_lse` | `test_v50_sprint_5c_*.py:44-77` | adequate |
 
 No test gaps blocking release.
@@ -179,5 +179,5 @@ cleanup. None are release blockers.
 Recommended follow-up sprint (post-tag):
 - H1+L3 in one commit: pass `O,L` through `outputs` for both hybrid +
   full-native, eliminate the duplicate sparse-forward dispatch.
-- H2+H3+H4 in one commit: defensive cleanups in the V34 sparse path.
+- H2+H3+H4 in one commit: defensive cleanups in the V6NAX sparse path.
 - M1-M6 as a coordinated docstring/comment audit.

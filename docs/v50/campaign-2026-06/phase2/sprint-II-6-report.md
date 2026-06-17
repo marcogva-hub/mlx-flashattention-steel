@@ -2,7 +2,7 @@
 
 **Status**: COMPLETE.
 **Headline**: TWO production bugs found and fixed. (1) **CRITICAL — the
-II-0-promoted default-on V34 backward path silently corrupted dK/dV**:
+II-0-promoted default-on V6NAX backward path silently corrupted dK/dV**:
 the fused dKdV kernel's BK=16 default (v2.39.1) violated the paired
 16x32x16 MMA's even-TK requirement, reading past the K-tile and writing
 a fragment out of bounds. (2) The M5 sparse SDPA+bias fallback returned
@@ -21,7 +21,7 @@ kernel: **2.15x / 2.61x / 2.67x** vs SDPA-vjp at N=2048/4096/8192.
    gradient finiteness.  The battery — not the inventory — found both
    bugs; static reading had passed the fused kernel's mask block.
 
-## Finding 1 (CRITICAL) — V34 fused dKdV paired-MMA out-of-bounds
+## Finding 1 (CRITICAL) — V6NAX fused dKdV paired-MMA out-of-bounds
 
 | Step | Evidence |
 |---|---|
@@ -34,7 +34,7 @@ kernel: **2.15x / 2.61x / 2.67x** vs SDPA-vjp at N=2048/4096/8192.
 | L-perturbation probe | LSE row mapping CORRECT — so the recomputed S is wrong |
 | S extraction (L=0) | S values shuffled by exactly **+16 = BK**; no causal mask leaks |
 | Source | `for (ik = 0; ik < TK; ik += 2)` paired MMA writes `frag_at(iq, ik+1)`; at BK=16 → TK=1: K-load reads 16 rows past the tile, second output fragment lands out of bounds |
-| Confirmation | `MFA_V34BWDF_BK=32` → clean at noise floor |
+| Confirmation | `MFA_V6BWDF_BK=32` → clean at noise floor |
 
 **Root cause class**: Pattern #9 (generator/dispatch constant mismatch
 — the KD-5 class).  v2.39.1 lowered BK in the *Primitive* to fix the
@@ -44,16 +44,16 @@ v2.39.1 "fused 1.01–1.12x vs split" claim was measured on corrupt math
 and is **WITHDRAWN**.
 
 **Fix** (commit `d76cb6e`):
-- `compile_v34_backward_pipeline()`: loud `BK % 32 == 0` guard — covers
-  all 8 backward Primitives including every `MFA_V34BWD*_BK` env
+- `compile_v6nax_backward_pipeline()`: loud `BK % 32 == 0` guard — covers
+  all 8 backward Primitives including every `MFA_V6BWD*_BK` env
   override (MPP has no 16x16x16 cooperative matmul; header
   static_assert requires one dim = 32).
 - Fused default BK 16 → 32 (minimum valid).
-- `_v34_backward_vjp` auto → **split** for all D (fused at BK=32 is the
+- `_v6nax_backward_vjp` auto → **split** for all D (fused at BK=32 is the
   v2.39.0 spill config; split is clean and carries the full promotion
-  win).  Fused stays reachable via `MFA_V34_BWD_KERNEL=fused`.
+  win).  Fused stays reachable via `MFA_V6_BWD_KERNEL=fused`.
 - Promotion fixtures raised to unit scale; new lock file
-  `test_phase2_ii6_v34_bwd_paired_mma.py` (per-element max-err at
+  `test_phase2_ii6_v6nax_bwd_paired_mma.py` (per-element max-err at
   std 1.0, finiteness at std 2/12, BK guard raises, auto==split
   bitwise).
 
@@ -100,15 +100,15 @@ and watch the three victims.  One victim already carries a
 
 | Site | Verdict |
 |---|---|
-| LSE convention crossing (sparse natural-log vs log2) | NO BUG — V34 forward emits natural-log (verified vs reference at N=64, max err 0.0000 incl. row 0); backward kernels convert via `* log2e_f` at load; L-row mapping probe-verified |
+| LSE convention crossing (sparse natural-log vs log2) | NO BUG — V6NAX forward emits natural-log (verified vs reference at N=64, max err 0.0000 incl. row 0); backward kernels convert via `* log2e_f` at load; L-row mapping probe-verified |
 | Softcap/ALiBi log2 constants | correctly-rounded doubles (1.4426950408889634, 0.6931471805599453); conversions paired [verified] |
-| Split-K determinism | run-to-run bit-identical on dense fwd 4k, decode N_q=1 S=8k, sparse 2k, V34 bwd 4k [verified].  TM-style *batch-invariance* (length-invariant reduction order) remains an unimplemented feature — ledger item (II-5 routed, Marco priority call) |
+| Split-K determinism | run-to-run bit-identical on dense fwd 4k, decode N_q=1 S=8k, sparse 2k, V6NAX bwd 4k [verified].  TM-style *batch-invariance* (length-invariant reduction order) remains an unimplemented feature — ledger item (II-5 routed, Marco priority call) |
 | All-masked-row exp2 NaN guards (kernels) | hold under battery; the NaN was the SDPA fallback (Finding 2) |
 | bf16 type-punning in conv_nax | entry-gated loudly (A-8); kernel unreachable with bf16 [verified inventory] |
 | TQ safe-scale 1e-10 | zero-block compress path exercised, no crash/NaN [verified] |
 | fp16 QK overflow pre-softmax | FP32 accumulators throughout (no fp16 long-K accumulation found); forward exact vs SDPA at std 50 [verified] |
 | ALiBi log2-domain cancellation | theoretical only; magnitudes bounded by slope*distance*log2e at fp32 [assessed, no action] |
-| -1e30 sentinel (sparse V34) | consumers handle via explicit compare; sparse backward suites green [deduced from tests] |
+| -1e30 sentinel (sparse V6NAX) | consumers handle via explicit compare; sparse backward suites green [deduced from tests] |
 | SVD rank truncation | quality-side, error tracked at quantize time [no action] |
 
 ## Skill invocations (§AA.2)
@@ -121,7 +121,7 @@ and watch the three victims.  One victim already carries a
 
 ## Commits
 
-- `d76cb6e` fix(v34-bwd): paired-MMA out-of-bounds + demote auto to split + BK guard
+- `d76cb6e` fix(v6nax-bwd): paired-MMA out-of-bounds + demote auto to split + BK guard
 - (this commit) fix(sparse): all-False-row contract + report
 
 Suite: **1391 passed x6 consecutive runs** (was 1380 at sprint start;

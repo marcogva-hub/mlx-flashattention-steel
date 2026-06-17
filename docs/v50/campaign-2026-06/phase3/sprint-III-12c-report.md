@@ -51,7 +51,7 @@ non-actionable (removed) baseline is a cousin of the direction-ambiguity III-12b
   order changed so the actionable comparison leads.
 
 **Other claims re-checked for non-actionable leads (already direction+absolute from
-III-12b):** forward attn (vs SDPA — actionable), V34 backward (vs SDPA-vjp — actionable),
+III-12b):** forward attn (vs SDPA — actionable), V6NAX backward (vs SDPA-vjp — actionable),
 conv MPP (vs `mx.conv_general` for bf16 — actionable; fp16 vs legacy im2col is framed as
 **correctness-default, not a speed headline**), LCSA (marked historical, not a current
 speedup), D=256 (correctness fix, not a speed claim). None leads with a non-actionable
@@ -114,7 +114,7 @@ lesson #11.
 | Fix 3 — STEEL V5 non-causal D=128 N=40 (opt-in, same OOB) | 2.70e-5 | ✔ |
 | Fix 4 — split-K decode ×8 under pool churn (scratch lifetime) | 1.02e-6 | ✔ (all 8) |
 | Sanity — forward auto causal D=128 N=512 ≈ SDPA | 7.24e-5 | ✔ |
-| Sanity — V34 backward grad | — | ✔ finite |
+| Sanity — V6NAX backward grad | — | ✔ finite |
 | Sanity — TQ decode `step()` | — | ✔ finite |
 
 **Verdict: SMOKE PASSED** — the published wheel IS the fixed binary; all four

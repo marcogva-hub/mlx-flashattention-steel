@@ -47,7 +47,7 @@ full-cooperative register-fragment form — the device-tensor path
 compiles but delivers fp16-speed (no int8 MMA mode engaged).  An int8
 attention kernel must compose its QK^T (and PV, if int8) from
 (16,32,16)-class paired fragments — exactly the `BaseNAXFrag::mma`
-shape the V34 kernels already use for fp16.
+shape the V6NAX kernels already use for fp16.
 
 ## Probe hygiene
 
@@ -58,7 +58,7 @@ finding), so the probe tracks BOTH forms across macOS updates.
 
 ## R.1 gate — attention-level accounting (next section of this sprint)
 
-The 2.00x is a raw-MMA number.  Gate evidence: V34-fp16 forward time
+The 2.00x is a raw-MMA number.  Gate evidence: V6NAX-fp16 forward time
 vs Apple SDPA NAX at target cells + QK/PV phase shares + quant-pass
 cost → net int8 ceiling.  Recorded below once measured.
 
@@ -73,10 +73,10 @@ dims × forms × **type-spelling** sweep.
 
 ## R.1 gate — MEASURED attention-level accounting (2026-06-12)
 
-V34-fp16 forward vs Apple SDPA NAX + separate-pass quant cost
+V6NAX-fp16 forward vs Apple SDPA NAX + separate-pass quant cost
 (B=1 H=16 fp16, medians of 30):
 
-| cell | V34-fp16 | SDPA | V34/SDPA | quant(q,k) | quant(q,k,v) |
+| cell | V6NAX-fp16 | SDPA | V6NAX/SDPA | quant(q,k) | quant(q,k,v) |
 |---|--:|--:|--:|--:|--:|
 | D=64 N=4096 | 1.567 | 1.294 | 1.21 | 0.634 | 0.538 |
 | D=128 N=4096 | 2.952 | 2.989 | **0.99** | 0.634 | 0.928 |
@@ -89,7 +89,7 @@ Ceiling model (QK ≈ PV ≈ 42% of kernel, softmax/overhead ≈ 16%):
 - **int8 QK + int8 PV**: net ≈ 1.13x (N=4096) – 1.37x (N=8192) at
   D=128, before in-kernel quant fusion upside (Draw Things fuses the
   quant online and reports 1.24–1.41x).  D=64 must first overcome the
-  1.16–1.21x V34-vs-SDPA handicap — D=128 is the target cell.
+  1.16–1.21x V6NAX-vs-SDPA handicap — D=128 is the target cell.
 
 Accuracy simulation of the full recipe (int8 per-token QK + int8
 row-affine PV) vs fp16 SDPA reference, N=1024 D=128 causal:
@@ -110,11 +110,11 @@ D=64 deferred until the variant proves out at D=128).
 
 ## R.2 build plan (committed scope)
 
-1. Kernel: new JIT generator emitting a V34-forward-class kernel
+1. Kernel: new JIT generator emitting a V6NAX-forward-class kernel
    (BaseNAXFrag (16,32,16) paired fragments — the ONLY form with the
    2.00x int8 advantage) with: int8 Q/K fragments → int32 S
    accumulation → per-(q-row, k-row) scale dequant to fp32 → online
-   softmax (fp32, V34 pattern) → P quantized per-row to int8 →
+   softmax (fp32, V6NAX pattern) → P quantized per-row to int8 →
    int8 PV with V row-affine (zero-point folded via row-sum identity)
    → fp16 O.  `KernelType` new entry; D=128 first.
 2. Quant pass: Python mx ops initially (cost measured above and
@@ -160,7 +160,7 @@ exists because their kernel absorbs these costs with hand-built TGM
 pipelines below the public cooperative-tensor API.
 
 **Remaining viable path (Marco-gated, NOT executed)**: integrating
-int8 QK (and PV) into the production V34 generator, which already
+int8 QK (and PV) into the production V6NAX generator, which already
 reaches SDPA parity (0.99x) with its mature staging.  Projection from
 measured components: QK-only ~1.11x at N=8192 only (thin); QK+PV
 ~1.33x at N=8192 / ~1.13x at N=4096, net of quant.  That is deep

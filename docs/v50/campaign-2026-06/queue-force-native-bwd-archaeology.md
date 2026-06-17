@@ -7,7 +7,7 @@ code change. Verdict is the deliverable. Archaeology **A of two** (run B before 
 
 ## TL;DR — **REMOVE-ELIGIBLE (ghost knob on the public path); deprecation cycle ALREADY COMPLETE.**
 
-Unlike the V34 block-sparse queue entry (which was stale), **this entry is accurate**: the flag
+Unlike the V6NAX block-sparse queue entry (which was stale), **this entry is accurate**: the flag
 IS deprecated/superseded, and the supersession is **measured, not asserted** (sprint-C Track 2
 matrix), and **robust to the 26.6 shift**. The flag forces a correct-but-strictly-dominated
 routing (never the fastest at any cell) and is **inert on the default public API** (forward
@@ -33,7 +33,7 @@ the only thing keeping it is a thin research/debug value + the standing "keep de
 | Location | Role |
 |---|---|
 | `mlx_mfa/dispatch_policy.py:706, 717-739` | the **only** reader. `=="1"` → emit `DeprecationWarning` + return `supported`; `=="0"` → return False; else → policy-table (`seq_len >= min_n`) |
-| `mlx_mfa/attention.py:5304-5306` | sole caller of `should_use_native_backward(...)` (in the non-V34 backward branch) |
+| `mlx_mfa/attention.py:5304-5306` | sole caller of `should_use_native_backward(...)` (in the non-V6NAX backward branch) |
 | `tests/test_v50_prompt_5f_kd5_deprecation.py` | 3 tests asserting the DeprecationWarning fires on `=1`, not on `=0`/unset |
 | `tests/test_attention.py:11051-11092, 11124-11159` | override-precedence + force-on/off routing tests |
 | `ENV_VARS.md:60` | public env-var doc — "DEPRECATED — superseded … Removal is Marco-gated" |
@@ -41,13 +41,13 @@ the only thing keeping it is a thin research/debug value + the standing "keep de
 | README | **not mentioned** (smaller public surface) |
 
 **Current behavior — does it still change dispatch?**
-- **On the default public API** (`backend="auto"`): on M5 the **forward** routes to Apple SDPA, so the V34/native-backward dispatch branch that consults `should_use_native_backward` **is never reached** → the flag is **inert on the default path** (`ENV_VARS.md:60`, `sprint-C-report.md` ¹).
-- **On the `backend="mfa"` forced path**: `=1` DOES change routing — for a supported cell (causal, D∈{64,128}, f16/bf16) it forces native STEEL backward (`mfa_steel_backward`) where auto would pick the policy-table path (V34 or SDPA-vjp). So it is **not a pure no-op**: it forces a distinct, *correct* result.
+- **On the default public API** (`backend="auto"`): on M5 the **forward** routes to Apple SDPA, so the V6NAX/native-backward dispatch branch that consults `should_use_native_backward` **is never reached** → the flag is **inert on the default path** (`ENV_VARS.md:60`, `sprint-C-report.md` ¹).
+- **On the `backend="mfa"` forced path**: `=1` DOES change routing — for a supported cell (causal, D∈{64,128}, f16/bf16) it forces native STEEL backward (`mfa_steel_backward`) where auto would pick the policy-table path (V6NAX or SDPA-vjp). So it is **not a pure no-op**: it forces a distinct, *correct* result.
 
 **Classification: ghost knob on the public path / weak escape hatch on the expert path.** It only
 fires under `backend="mfa"`, and the path it forces is correct-but-dominated (R.4) — never the
 fastest. Its sole residual value is research/A-B/determinism (forcing STEEL backward for
-comparison) + a reference for the STEEL backward kernel. Contrast the V34 block-sparse opt-in flag,
+comparison) + a reference for the STEEL backward kernel. Contrast the V6NAX block-sparse opt-in flag,
 which was KEPT because it *wins* in a narrow corner — this flag wins **nowhere**.
 
 ## R.3 — Removal-impact + public-contract check
@@ -69,19 +69,19 @@ contract-respecting action — the warn-then-remove window has run; this is NOT 
 
 Causal fp16 backward, ms (B=1 H=8), STEEL-bwd = what `=1` forces:
 
-| Cell | SDPA-vjp (default) | V34 (opt-in) | STEEL-bwd (forced) | Winner |
+| Cell | SDPA-vjp (default) | V6NAX (opt-in) | STEEL-bwd (forced) | Winner |
 |---|---|---|---|---|
-| D64 N2048 | 2.98 | **1.37 (2.2×)** | 2.68 | V34 |
-| D64 N4096 | 11.53 | **4.50 (2.6×)** | 8.36 | V34 |
-| D64 N8192 | 44.54 | **17.47 (2.5×)** | 31.30 | V34 |
+| D64 N2048 | 2.98 | **1.37 (2.2×)** | 2.68 | V6NAX |
+| D64 N4096 | 11.53 | **4.50 (2.6×)** | 8.36 | V6NAX |
+| D64 N8192 | 44.54 | **17.47 (2.5×)** | 31.30 | V6NAX |
 | D128 N2048 | **3.32** | 5.71 | 6.56 | SDPA-vjp |
 | D128 N4096 | **12.44** | 24.09 | 23.07 | SDPA-vjp |
 | D128 N8192 | **49.05** | 106.3 | 88.57 | SDPA-vjp |
 
 STEEL-bwd (forced path) is **correct everywhere post-KD-5 (rmse 4e-5)** and 1.12–1.42× faster than
-SDPA-bwd at D=64 — **but dominated at every cell**: by V34 at D=64, by SDPA-vjp at D=128. **It is
+SDPA-bwd at D=64 — **but dominated at every cell**: by V6NAX at D=64, by SDPA-vjp at D=128. **It is
 never the optimal choice.** sprint-C dated 2026-06-12; the III-11 26.6 re-bench found Apple SDPA
-got *faster* on 26.6 → **strengthens** "SDPA-vjp wins at D=128", and V34 D=64 default-on win was
+got *faster* on 26.6 → **strengthens** "SDPA-vjp wins at D=128", and V6NAX D=64 default-on win was
 re-confirmed in the v2.55.0 perf re-statement. So the supersession is measured **and robust to
 26.6** — not a STALE-VERDICT.
 

@@ -51,7 +51,7 @@ v2.37.0/v2.37.1 silent integration bug:
 Both rules trace to the v2.37.0/v2.37.1 silent integration bug:
 documented "D=64 1.4-1.85× faster" was unreachable via the public API
 because `should_use_mfa()` returns False for non-causal D ∈ {64, 128}
-and short-circuits to SDPA fallback before the V34 env-var check
+and short-circuits to SDPA fallback before the V6NAX env-var check
 runs.  100% of tests passed (every test used `backend="mfa"` forced
 path).  Reference audit: `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 

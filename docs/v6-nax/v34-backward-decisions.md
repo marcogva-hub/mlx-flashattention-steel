@@ -1,41 +1,41 @@
-# V34 backward NAX-direct — decisions (DC0-DC11)
+# V6NAX backward NAX-direct — decisions (DC0-DC11)
 
 ## DC0 — lse-from-forward access (BLK1)
 
 **Status**: BLOCKED, awaiting Marco decision.
 
-**Decision needed**: how does V34 backward access lse (per-row
+**Decision needed**: how does V6NAX backward access lse (per-row
 log-sum-exp from forward)?
 
-Per `v34-backward-inventory.md` §"Critical blocker: lse access for
-backward (BLK1)", V34 forward as currently shipped allocates an `lse`
+Per `v6nax-backward-inventory.md` §"Critical blocker: lse access for
+backward (BLK1)", V6NAX forward as currently shipped allocates an `lse`
 output array but the kernel signature has no `L` buffer and never writes
 to it. The design hints doc assumed `lse from forward, passed as input`
 to backward — this assumption does not hold against the production code.
 
 Four options enumerated in inventory doc. **Recommendation**: option (a)
-— extend V34 forward kernel to write lse. Patch surface ~50 LOC:
+— extend V6NAX forward kernel to write lse. Patch surface ~50 LOC:
 
 1. Add `device float* L [[buffer(5)]]` to kernel signature (line 2764).
-2. Add `L_strides[3]` to `V34Params` struct (line 2742).
+2. Add `L_strides[3]` to `V6NAXParams` struct (line 2742).
 3. After final normalization (line 2944-2951), compute
    `lse = max_score + log(sum_score)` per row, store via existing
-   tile primitives (TBD: store_rows on a `<float, 1, V34_TQ>` tile or
+   tile primitives (TBD: store_rows on a `<float, 1, V6NAX_TQ>` tile or
    per-lane device store).
 4. Update Primitive eval_gpu to set `setBuffer(L, 0, 5)`.
 5. Update Python wrapper output unpacking — already correctly declared
    as `(O, lse)` pair.
 
-Re-bench V34 forward under canonical methodology post-patch to confirm
+Re-bench V6NAX forward under canonical methodology post-patch to confirm
 no regression (~3 min wall-clock per Section F protocol).
 
 **Why not (b)/(c)/(d)**: (b) and (d) add wall-clock overhead to every
-backward call. (c) creates cross-kernel layout coupling — V34 backward
+backward call. (c) creates cross-kernel layout coupling — V6NAX backward
 would depend on STEEL forward state layout, brittle. (a) is the
 correct architectural posture.
 
 **This decision IS in scope** for this sprint despite original prompt
-§1 implication, because it is the foundation requirement for any V34
+§1 implication, because it is the foundation requirement for any V6NAX
 backward implementation. Marco's call on whether to authorize the
 forward-kernel patch.
 
@@ -46,11 +46,11 @@ right resolution.
 
 ## DC1 — Two-kernel split (dQ kernel + dK/dV kernel)
 
-**Decision**: implement V34 backward as two separate Metal kernels per
+**Decision**: implement V6NAX backward as two separate Metal kernels per
 FA-2 standard.
 
-- `createV34BackwardQuerySource()` — dQ kernel, per-Q-tile dispatch
-- `createV34BackwardKeyValueSource()` — dK/dV kernel, per-K-tile dispatch
+- `createV6NAXBackwardQuerySource()` — dQ kernel, per-Q-tile dispatch
+- `createV6NAXBackwardKeyValueSource()` — dK/dV kernel, per-K-tile dispatch
 
 **Rationale**: per design hints recommendation. Cleaner per-SG
 partitioning per gradient term. Each kernel has its own optimal
@@ -65,23 +65,23 @@ wraps both into `_ext.v6_nax_backward(...)` returning `(dQ, dK, dV)`.
 ## DC2 — NAXFrag accumulator types: FP32 with scope `<1>`
 
 **Decision**: dK/dV accumulators are FP32 cooperative tensors at scope
-`<1>`, matching V34 forward's Otile pattern (lines 2786-2788:
-`NAXTile<float, V34_TQ, V34_TD>`).
+`<1>`, matching V6NAX forward's Otile pattern (lines 2786-2788:
+`NAXTile<float, V6NAX_TQ, V6NAX_TD>`).
 
-**Rationale**: V34 forward confirms `<1>` works for FP32 Otile
+**Rationale**: V6NAX forward confirms `<1>` works for FP32 Otile
 accumulator. Same pattern transfers to backward dK_accum and dV_accum.
 
 **Verification stub**: small test kernel allocating
-`NAXTile<float, V34_TK, V34_TD>` as dK_accum + a parallel dV_accum, no-op
+`NAXTile<float, V6NAX_TK, V6NAX_TD>` as dK_accum + a parallel dV_accum, no-op
 dispatch, confirm compiles. **TODO Phase 1B**: spike compile after BLK1
 resolved.
 
-[DEDUCED from V34 forward Otile usage; needs compile-time
+[DEDUCED from V6NAX forward Otile usage; needs compile-time
 verification].
 
 ## DC3 — Block mask + causal: DEFERRED to follow-up sprints
 
-**Decision**: V34 backward Option β covers **dense, non-causal**
+**Decision**: V6NAX backward Option β covers **dense, non-causal**
 backward only. Block-sparse backward and causal backward route to
 existing STEEL backward via auto-routing fallback.
 
@@ -137,7 +137,7 @@ input). Both are device-memory inputs. Computing D inline at the start
 of the Q-tile inner loop costs ~1 row-reduction per Q-tile — cheap.
 
 Alternative considered: pre-compute D in a separate kernel (STEEL
-pattern uses `compute_d` at line 701). For V34 backward, inline
+pattern uses `compute_d` at line 701). For V6NAX backward, inline
 computation is preferred because it eliminates the inter-kernel
 synchronization point and keeps the D values in registers exactly where
 they are consumed (the `dS = P * (dP - D)` line).
@@ -156,7 +156,7 @@ they are consumed (the `dS = P * (dP - D)` line).
 | EXEC_SG | 4 (default) | 8 (per anti-pattern A finding) |
 
 **Rationale**: per design hints Hypothesis E. Bypass Apple MPP autotune
-defaults. Match V34 forward tuning for D=128 (WM=4). The EXEC_SG=8
+defaults. Match V6NAX forward tuning for D=128 (WM=4). The EXEC_SG=8
 choice for D=128 captures the anti-pattern A finding (+32% on mid_d128
 in forward).
 
@@ -194,7 +194,7 @@ three-axis tests:
 
 - **Axis 1 (output sanity)**: RMSE check vs STEEL backward. Threshold
   RMSE < 1e-3 FP16, < 1e-4 BF16.
-- **Axis 2 (path entered)**: mock + assert tests verify V34 backward
+- **Axis 2 (path entered)**: mock + assert tests verify V6NAX backward
   actually fires for eligible shapes.
 - **Axis 3 (edges preserved)**: ineligible shapes still route STEEL
   (D=192, causal, block mask), M1-M4 unchanged, env override works,
@@ -204,7 +204,7 @@ three-axis tests:
 
 ## DC10 — Auto-default integration via flash_attention() custom_vjp
 
-**Decision**: V34 backward auto-routes via existing `flash_attention()`
+**Decision**: V6NAX backward auto-routes via existing `flash_attention()`
 custom_vjp registration in `mlx_mfa/attention.py`. No new public API.
 
 Routing rule:
@@ -213,7 +213,7 @@ if (_get_has_nax_cached()
     and head_dim in (64, 128)
     and q.dtype in (mx.float16, mx.bfloat16)
     and not causal  # deferred per DC3
-    and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"):
+    and os.environ.get("MFA_DISABLE_V6_BACKWARD") != "1"):
     dQ, dK, dV = v6_nax_backward(q, k, v, O, lse, dO, scale)
 else:
     # STEEL fallback via mx.vjp(_fallback_sdpa)
@@ -224,47 +224,47 @@ required. Escape hatch via env var preserved.
 
 [HIGH].
 
-## DC11 — Escape hatch: `MFA_DISABLE_V34_BACKWARD=1`
+## DC11 — Escape hatch: `MFA_DISABLE_V6_BACKWARD=1`
 
-**Decision**: new env var `MFA_DISABLE_V34_BACKWARD=1` falls back to
+**Decision**: new env var `MFA_DISABLE_V6_BACKWARD=1` falls back to
 STEEL backward for benchmarking + debugging.
 
 Documented in `ENV_VARS.md` Dispatch Policy section.
 
 [HIGH].
 
-## DC12 — V34 backward routing-parity constraint (post-BLK1 finding)
+## DC12 — V6NAX backward routing-parity constraint (post-BLK1 finding)
 
-**Decision**: V34 backward auto-routing eligibility must MATCH V34
-forward routing eligibility.  V34 backward only consumes lse produced
-by V34 forward (natural-log convention per BLK1 patch).  Shapes that
+**Decision**: V6NAX backward auto-routing eligibility must MATCH V6NAX
+forward routing eligibility.  V6NAX backward only consumes lse produced
+by V6NAX forward (natural-log convention per BLK1 patch).  Shapes that
 route through legacy v6_nax forward must fall back to STEEL backward.
 
-**V34 forward routing (per `csrc/mfa_v6_nax_primitive.cpp` lines 593-600)**:
-- D=128: V34 always
-- D=64 with Nk > 8000: V34
-- D=64 with Nk ≤ 8000: legacy v6_nax (MPP) — V34 NOT engaged
+**V6NAX forward routing (per `csrc/mfa_v6_nax_primitive.cpp` lines 593-600)**:
+- D=128: V6NAX always
+- D=64 with Nk > 8000: V6NAX
+- D=64 with Nk ≤ 8000: legacy v6_nax (MPP) — V6NAX NOT engaged
 
-**V34 backward eligibility check** (in `flash_attention()` custom_vjp):
+**V6NAX backward eligibility check** (in `flash_attention()` custom_vjp):
 ```python
 if (_get_has_nax_cached()
     and head_dim in (64, 128)
     and q.dtype in (mx.float16, mx.bfloat16)
     and not causal  # deferred per DC3
-    # NEW DC12: forward must have routed through V34
+    # NEW DC12: forward must have routed through V6NAX
     and (head_dim == 128 or k.shape[-2] > 8000)
-    and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"):
+    and os.environ.get("MFA_DISABLE_V6_BACKWARD") != "1"):
     dQ, dK, dV = v6_nax_backward(q, k, v, O, lse, dO, scale)
 else:
     # STEEL fallback via mx.vjp(_fallback_sdpa)
 ```
 
-**Rationale**: discovered during V34 forward lse-write patch testing
-(2026-05-13).  V34 forward returns dead lse storage (allocated but
+**Rationale**: discovered during V6NAX forward lse-write patch testing
+(2026-05-13).  V6NAX forward returns dead lse storage (allocated but
 unwritten) on D=64 small-Nk shapes routed through legacy.  Until the
 legacy path also writes natural-log lse (deferred to future
-infrastructure sprint), V34 backward must defensively restrict to
-V34-forward-eligible shapes.
+infrastructure sprint), V6NAX backward must defensively restrict to
+V6NAX-forward-eligible shapes.
 
 [HIGH] — verified by direct read of Primitive routing logic
 2026-05-13.
@@ -272,8 +272,8 @@ V34-forward-eligible shapes.
 ## DC13 — Single-kernel-dispatch for dQ skeleton (Phase 1B scope)
 
 **Decision**: implement dQ kernel as a self-contained Metal source
-generator `createV34BackwardQuerySource()` paralleling
-`createV34Source()` structurally.  Standalone Primitive +
+generator `createV6NAXBackwardQuerySource()` paralleling
+`createV6NAXSource()` structurally.  Standalone Primitive +
 `_ext.v6_nax_backward_query(Q, K, V, O, lse, dO, scale) -> dQ`.
 
 dK/dV gets a SEPARATE Primitive + binding in Phase 2 (per DC1

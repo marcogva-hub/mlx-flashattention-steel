@@ -71,8 +71,8 @@ After installation, smoke-test each skill from a fresh shell:
 .venv/bin/python ~/.claude/skills/mlx-mfa-perf-audit/audit_runner.py \
   --claim-id smoke_test \
   --shape B=1,H=4,qL=4096,kL=4096,D=64,dtype=float16 \
-  --env MFA_ENABLE_V34_BACKWARD=1 \
-  --expected v34_backward \
+  --env MFA_ENABLE_V6_BACKWARD=1 \
+  --expected v6nax_backward \
   --documented-ratio 1.82 \
   --baseline sdpa_vjp
 # Expected: verdict REACHABLE, exit 0

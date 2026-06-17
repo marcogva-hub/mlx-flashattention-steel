@@ -58,7 +58,7 @@ closures.
 
 ### Why SDPA-vjp via expanded bias (not native sparse backward)
 
-Sprint 5 V34 backward block-sparse will provide a NAX-direct backward,
+Sprint 5 V6NAX backward block-sparse will provide a NAX-direct backward,
 but it's not yet implemented (Section A of this prompt).  Until then,
 SDPA-vjp through an expanded bias is the canonical correct path that
 Apple's SDPA NAX kernel handles efficiently.  Bias is 0 for active
@@ -108,7 +108,7 @@ fix was scoped to audit ALL parallel dispatch gates:
 | Layer | Gate | Verified |
 |---|---|---|
 | Python entry | `flash_attention_sparse` symmetric-bt branch | ✓ wrapped in custom_function |
-| Python routing | `dispatch_policy._v34_backward_carveout` | unrelated (only affects V34 backward) |
+| Python routing | `dispatch_policy._v6nax_backward_carveout` | unrelated (only affects V6NAX backward) |
 | C++ Primitive | `sparse_attention_nax` C++ binding | unchanged (still no vjp; wrapper now provides it) |
 | C++ source-gen | `mfa_attention_sparse_forward_with_lse` | unchanged |
 | Cache key | `_make_sparse_nax_with_sdpa_vjp` cache key | new — keyed by (scale, causal, bt) |
@@ -133,6 +133,6 @@ C++ changes needed.
   perf win (6× at audit shape) preserved.
 - Production training pipelines using sparse attention via mx.grad
   (FlashVSR, STCDiT, etc.) now have correct backward gradients on M5+.
-- Section A (Sprint 5 V34 backward block-sparse) is now UNBLOCKED —
-  the SDPA-vjp baseline can be benched as the reference for V34
+- Section A (Sprint 5 V6NAX backward block-sparse) is now UNBLOCKED —
+  the SDPA-vjp baseline can be benched as the reference for V6NAX
   backward sparse implementation.

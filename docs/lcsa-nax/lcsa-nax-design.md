@@ -494,7 +494,7 @@ proceed with Phase 1.0 → 1.5 arc.
 **Status**: design locked 2026-05-12 (Sprint B follow-on rewrite).
 **Branch**: `feat/lcsa-nax-coop-rewrite` (composed from `experiment/lcsa-nax-coop-*`).
 **Reference pattern**: `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2307-3671`
-(`createV34Source()` — V34 forward, 1364 LOC of cooperative-tensor MSL
+(`createV6NAXSource()` — V6NAX forward, 1364 LOC of cooperative-tensor MSL
 source-gen).
 
 ### §13.0 Foundation correction — what v2.34.0 V1 actually is
@@ -556,7 +556,7 @@ For each forward call:
    each simdgroup handles a slice of Q rows.
 3. **Inside kernel** (per SG `s`):
    - Per-SG Q-row range: `[s * kU, (s + 1) * kU)` where `kU = 16` per
-     V34 forward.
+     V6NAX forward.
    - Outer loop: iterate the non-empty-block index list (or a per-SG
      sub-range thereof, see §13.3).
    - For each non-empty `(qi, ki)` pair whose `qi` overlaps this SG's
@@ -572,7 +572,7 @@ For each forward call:
      - `NAXFrag::mma` P @ V → accumulate into `Otile`.
    - After all assigned blocks: `Otile /= l_final`, store to output.
 
-This is **structurally identical to V34 forward's "iterate K blocks,
+This is **structurally identical to V6NAX forward's "iterate K blocks,
 per-SG row partition" pattern**, except the K-block iteration is replaced
 by non-empty-block-index iteration (which inherently subsumes the
 block-mask skip).
@@ -597,7 +597,7 @@ list-iteration dominates (unlikely given N_nonempty is typically < 256
 for FlashVSR shapes).
 
 Different SGs operate on disjoint Q-row sets → no cross-SG cooperative-
-tensor state ever needed → matches V34 forward's clean per-SG isolation.
+tensor state ever needed → matches V6NAX forward's clean per-SG isolation.
 
 ### §13.4 Non-empty-block index list (DC2)
 
@@ -617,14 +617,14 @@ used for chunk-table layouts and matches NAX cache-line expectations.
 
 ### §13.5 NAXFrag::mma inner-GEMM tile shape (DC3)
 
-**Decision DC3**: match V34 forward defaults per `head_dim`:
+**Decision DC3**: match V6NAX forward defaults per `head_dim`:
 
 | D | BQ | BK | WM | TQ | TK | TD |
 |---|---:|---:|---:|---:|---:|---:|
 | 64  | 32 | 32 | 2 | 1 | 2 | 4 |
 | 128 | 64 | 32 | 4 | 1 | 2 | 8 |
 
-These were Sprint A V34 forward Sprint 4 optimized for M5 Max. Same
+These were Sprint A V6NAX forward Sprint 4 optimized for M5 Max. Same
 hardware applies to the sparse rewrite. Sprint B Phase 1.3 BT sweep
 chose BT=16 for V1's per-thread kernel due to register pressure; V2
 moves register pressure to cooperative-tensor distribution so BT=BQ can
@@ -677,7 +677,7 @@ Memory: 2 × max pipeline-state size (~ 100 KB worst case). Negligible.
 
 | Risk | Likelihood | Mitigation |
 |---|:---:|---|
-| Cooperative-tensor MSL compile errors are notoriously cryptic | High | Lift V34's exact pattern; modify only outer loop; iterate small. Phase B build-iterate loop budget: 1-2h. |
+| Cooperative-tensor MSL compile errors are notoriously cryptic | High | Lift V6NAX's exact pattern; modify only outer loop; iterate small. Phase B build-iterate loop budget: 1-2h. |
 | V2 produces wrong output (silent FP corruption) at non-empty-block boundaries | Medium | V1↔V2 equivalence test on all 7 shapes RMSE < 1e-3 before any perf claim. |
 | V2 perf at niche density 0.01 is LOWER than V1 (single-block, no list iteration benefit) | Medium | Auto dispatch keeps V1 for niche; V2 only ships if it wins at moderate density (0.03+) where V1 lost. |
 | Cache-warmup BOUNDARY persists in V2 (S1 drift unchanged) | Low | Even partial fix at the niche shape + density envelope extension justifies SHIP; document residual variance. |
@@ -695,18 +695,18 @@ Memory: 2 × max pipeline-state size (~ 100 KB worst case). Negligible.
 | E (cond.) | v2.35.0 release flow if SHIP | ~30min |
 | **Total** | | **~7-10h** across 2-3 sessions |
 
-### §13.10 Relation to Sprint A V34 forward
+### §13.10 Relation to Sprint A V6NAX forward
 
-V2 architecturally IS the sparse analogue of V34 forward. The single
+V2 architecturally IS the sparse analogue of V6NAX forward. The single
 substantive difference is the outer-loop iteration domain:
 
-- V34 forward: `for k_block in 0..nK_blocks` (every K-block visited)
+- V6NAX forward: `for k_block in 0..nK_blocks` (every K-block visited)
 - V2 sparse: `for nb in 0..N_nonempty: (qi, ki) = index_list[nb]; ...`
   (only non-empty blocks visited, retrieved from compact index)
 
 Everything else — Apple helpers, NAXFrag/NAXTile, operator structs,
 per-SG row partitioning, softmax accumulation, output normalization —
-is verbatim lift from V34. This minimizes implementation risk and
+is verbatim lift from V6NAX. This minimizes implementation risk and
 maximizes leverage on Sprint A's proven validation.
 
 ### §13.11 Shelve trigger (if V2 doesn't earn ship)

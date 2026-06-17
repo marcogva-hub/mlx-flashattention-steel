@@ -35,7 +35,7 @@ SDPA-vjp at qL=2048.
 | **Variance ratio** | 1.008 | 1.000 | 1.008 | **1.004** |
 
 Variance ratio 1.004 — extremely tight parity at qL=2048.  Safe to
-engage V34 backward path (no regression risk).
+engage V6NAX backward path (no regression risk).
 
 ### DC1 — X_CALIBRATED = 2048
 
@@ -48,11 +48,11 @@ to `seq_len >= 2048`.
 - qL=1024 regresses 15% vs SDPA-vjp; qL=512 regresses 50% — these
   shapes stay excluded from the carve-out.
 - The 4096 → 2048 broadening doubles the eligible-shape space for
-  users who set `MFA_ENABLE_V34_BACKWARD=1` (notable for STCDiT
+  users who set `MFA_ENABLE_V6_BACKWARD=1` (notable for STCDiT
   intermediate sequence lengths + general training workloads with
   qL=2048).
-- Conservative-by-design: at qL=2048 the V34 path is at parity, not a
-  win — users who opted in to V34 backward get the V34 path as
+- Conservative-by-design: at qL=2048 the V6NAX path is at parity, not a
+  win — users who opted in to V6NAX backward get the V6NAX path as
   promised by the env var contract, even if the speedup is zero.
 
 ### DC2 — Why not lower to qL=1536?
@@ -70,7 +70,7 @@ validation.  qL=2048 is the conservative-safe choice.
 
 The qL=512/1024 regression data is unambiguous (-50%/-15%).  Removing
 the floor would route small-qL workloads through a slower kernel,
-violating the user contract ("V34 backward should be faster than
+violating the user contract ("V6NAX backward should be faster than
 SDPA-vjp when engaged via AUTO API").  Floor preserved at qL=2048.
 
 ## Three-axis validation (per §3.5 amended)
@@ -85,8 +85,8 @@ SDPA-vjp when engaged via AUTO API").  Floor preserved at qL=2048.
 ### Axis 2 — PUBLIC API path entered
 
 - `mx.grad(flash_attention(q, k, v, scale, causal=False, backend="auto"))`
-  with `MFA_ENABLE_V34_BACKWARD=1` and shape (B=2, H=8, qL=2048, D=64)
-  fp16 engages V34 backward fused (via the broadened carve-out).
+  with `MFA_ENABLE_V6_BACKWARD=1` and shape (B=2, H=8, qL=2048, D=64)
+  fp16 engages V6NAX backward fused (via the broadened carve-out).
 - Existing `tests/test_release_notes_perf_claims.py` rows for v2.39.1
   D=64 qL=4096/8192 continue to pass unchanged.
 
@@ -116,9 +116,9 @@ audit checklist used instead (subset of release-audit covering checks
 
 ## Files changed (Sprint A net delta)
 
-- `mlx_mfa/dispatch_policy.py` — `_v34_backward_carveout` predicate
+- `mlx_mfa/dispatch_policy.py` — `_v6nax_backward_carveout` predicate
   `seq_len >= 4096` → `seq_len >= 2048` + updated docstring + comment.
-- `tests/test_v34_helpers.py` — 2-3 new tests around the qL=2048
+- `tests/test_v6nax_helpers.py` — 2-3 new tests around the qL=2048
   threshold.
 - `tests/test_v32_sdpa_routing.py` (if applicable) — verify no routing
   regression at qL∈[2048, 4096) shapes.
@@ -128,8 +128,8 @@ audit checklist used instead (subset of release-audit covering checks
 
 ## Net effect on users
 
-- Users with `MFA_ENABLE_V34_BACKWARD=1` on D=64 non-causal fp16/bf16
-  shapes at qL∈[2048, 4096) now get the V34 backward fused-BK16 path
+- Users with `MFA_ENABLE_V6_BACKWARD=1` on D=64 non-causal fp16/bf16
+  shapes at qL∈[2048, 4096) now get the V6NAX backward fused-BK16 path
   (was: silent SDPA-vjp fallback).  At parity with SDPA-vjp; no
   speedup claim but no regression.
 - All other shapes unchanged.
@@ -139,7 +139,7 @@ audit checklist used instead (subset of release-audit covering checks
 
 1. **qL=2048 is parity, not a win.**  Broadening the carve-out doesn't
    add user-visible wall-time improvement.  The benefit is contract
-   honesty: when the user sets `MFA_ENABLE_V34_BACKWARD=1`, the V34
+   honesty: when the user sets `MFA_ENABLE_V6_BACKWARD=1`, the V6NAX
    backward path engages on more shapes (as the env var name implies).
 2. **CHANGELOG must NOT claim "1.91× speedup at qL=2048"** — there is
    no speedup at qL=2048.  The v2.38.1 perf claims at qL=4096/8192/16384

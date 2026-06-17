@@ -2,24 +2,24 @@
 
 **Date**: 2026-06-12 · **Status**: COMPLETE · Starting tip `ec8d701` → pushed tip `a4f189d`
 
-## Change 1 — V34 backward D=64 causal DEFAULT-ON ✅
+## Change 1 — V6NAX backward D=64 causal DEFAULT-ON ✅
 
 Three-axis (M5 Max, 3-block median):
 
 | Axis | Result |
 |---|---|
-| 1 Output | rmse vs SDPA-vjp 0.0008–0.0011 (V34 fp16 floor; tolerance 5e-3) |
+| 1 Output | rmse vs SDPA-vjp 0.0008–0.0011 (V6NAX fp16 floor; tolerance 5e-3) |
 | 2 Path entered | 2.14×/2.57×/2.65× at N=2048/4096/8192 (1.32/4.35/16.26 ms vs 2.83/11.20/43.18 ms); opt-out restores SDPA-vjp timing exactly |
 | 3 Edges | D=64-nc, D=128-c, D=128-nc UNCHANGED (rmse 0.0, timing parity).  **GQA edge FAILED initially** → root-caused + fixed (below) → GQA re-validated: shapes correct, rmse ≤3.3e-3, **2.7× speedup benched** → kept in envelope.  MQA validated (rel-rmse ~1e-4). |
 
-**Axis-3 discovery — GQA gradient-shape bug (latent since v2.37.0)**: V34
+**Axis-3 discovery — GQA gradient-shape bug (latent since v2.37.0)**: V6NAX
 backward kernels emit H_q-shaped dK/dV; the orchestrator never group-summed
 to H_kv.  The opt-in path returned WRONG-SHAPED gradients for GQA/MQA all
-along.  Fixed (group-sum in `_v34_backward_vjp`); locked by 2 new tests.
+along.  Fixed (group-sum in `_v6nax_backward_vjp`); locked by 2 new tests.
 This is exactly what the three-axis edge gate exists to catch.
 
 Envelope shipped: D=64 · causal · qL≥2048 · fp16/bf16 · M5+ · MHA/GQA/MQA.
-Opt-out `MFA_DISABLE_V34_BACKWARD=1`.  Broader envelope stays opt-in.
+Opt-out `MFA_DISABLE_V6_BACKWARD=1`.  Broader envelope stays opt-in.
 +10 regression tests.  Suite: **1376 passed ×3**.
 
 ## Change 2 — Deprecation reword ✅

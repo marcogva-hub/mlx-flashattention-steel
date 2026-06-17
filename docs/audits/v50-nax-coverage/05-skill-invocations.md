@@ -8,7 +8,7 @@
 | # | Phase | Skill | Verdict / Purpose | Status |
 |---|---|---|---|---|
 | 1 | A.1 foundation reads | (no skill — direct file reads + grep) | Read FEATURE_COVERAGE.md, INVENTORY.md, apple-sdpa-nax-analysis.md (333 LOC), sparse-fallback-audit.md (140 LOC), dispatch_policy.py (1037 LOC), attention.py exports | done |
-| 2 | A.4 baseline test | (`pytest` standard) | 79/79 V39 + V34 + helpers + v32 + perf-claims tests pass on M5 Max | ✓ GREEN |
+| 2 | A.4 baseline test | (`pytest` standard) | 79/79 V39 + V6NAX + helpers + v32 + perf-claims tests pass on M5 Max | ✓ GREEN |
 | 3 | B consolidated bench | `/mlx-mfa-bench-methodology` (canonical 4w+12i protocol, single-session per group) | 6 dispatch groups bench'd at canonical shapes; G7 RoPE + G8 kvcache added via targeted re-runs | done |
 | 4 | B classification | `/mlx-code-review` (dispatch-path identification via grep + read) | 22 functions classified A/B/C; 3 marked TBD pending bench | done |
 | 5 | B effort estimation | `/metal-kernel-dev` (effort sizing based on audit's pattern library, applied implicitly via shared-code analysis) | S/M/L/XL classification for each (B) function; references existing kernel patterns | done |
@@ -43,7 +43,7 @@ per §AA.4 + `/mlx-mfa-bench-methodology` canonical protocol.
 
 This audit produces **no code changes** (pure investigation).  All bench
 calls go through PUBLIC API to canonical paths that have been forensics-
-audited previously (V34 backward in v2.39.1 sprint, fused kernel in
+audited previously (V6NAX backward in v2.39.1 sprint, fused kernel in
 v2.40.0-internal Sprint B).  Re-invoking forensics on unchanged code
 adds no signal.
 
@@ -54,7 +54,7 @@ pattern library:
 - S (~30-60min): one-file Python edit + small bench (e.g., density
   threshold)
 - M (~1-2h): kernel source-generator parameter addition + Primitive
-  + binding + tests (V34 forward rope wiring fits here)
+  + binding + tests (V6NAX forward rope wiring fits here)
 - L (~3-6h): new kernel + Primitive + binding + tests (Top-K, Sage
   fused-quantize)
 - XL (~6-12h): new kernel family + multi-Primitive coordination +

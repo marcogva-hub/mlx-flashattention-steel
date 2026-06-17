@@ -82,7 +82,7 @@ ran a self-contained public-API smoke. **4/4 green:**
 |---|---|
 | CRITICAL #2 — return_lse backward | grad finite + matches SDPA-vjp across fp16/bf16/fp32 |
 | CRITICAL #1 — topk full-row coverage | all 512 rows written (0 stale); first8/last8 balanced 0.95× |
-| HEADLINE — V34 backward (causal + non-causal) | matches SDPA-vjp |
+| HEADLINE — V6NAX backward (causal + non-causal) | matches SDPA-vjp |
 | HEADLINE — conv3d auto-hook (fp16 + bf16) | deterministic + matches fp32 (MAE/RMS 0.00014 / 0.00112) |
 
 **Forensics note (non-blocking):** an initial conv check used a degenerate

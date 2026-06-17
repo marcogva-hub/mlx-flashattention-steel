@@ -561,7 +561,7 @@ Comparison framework:
 - Per-shape headline = median of session-medians (Sprint A precedent).
 
 **Ship/shelve decision tree** (Sprint A R1 pattern):
-- Headline ratio ≥ 1.2× on the dominant cluster (top-4 ROI shapes): **ship as opt-in**. User-facing API: `mlx_mfa.conv3d_nax(x, w, ...)` direct binding. No autograd promotion (Sprint A V34 backward precedent: research-direct binding stays research-direct until autograd-promotion case is justified separately).
+- Headline ratio ≥ 1.2× on the dominant cluster (top-4 ROI shapes): **ship as opt-in**. User-facing API: `mlx_mfa.conv3d_nax(x, w, ...)` direct binding. No autograd promotion (Sprint A V6NAX backward precedent: research-direct binding stays research-direct until autograd-promotion case is justified separately).
 - Headline ratio 0.9-1.2×: **opt-in research-direct only**. Document the perf characterization but don't promote to default routing.
 - Headline ratio < 0.9× OR ≥ 3 of 6 shapes inconclusive at §4 protocol: **shelve** per Sprint A §4.3 escalation. Document the variance source; preserve the kernel chain as research-direct binding.
 

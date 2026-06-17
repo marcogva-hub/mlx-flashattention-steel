@@ -1,4 +1,4 @@
-# v2.50 Sprint 5 — V34 backward block-sparse NAX — DEFERRED (Prompt 5a)
+# v2.50 Sprint 5 — V6NAX backward block-sparse NAX — DEFERRED (Prompt 5a)
 
 **Sprint date**: 2026-05-14 (Prompt 5a Section A)
 **Status**: **HALTED per §AA.1** — Section C fix delivered critical
@@ -8,7 +8,7 @@ is incremental optimization deferred to focused future session.
 ## TL;DR
 
 Section A of Prompt 5a (Sprint 5 sparse extension) was planned to
-extend V34 backward kernels with native block-sparse iteration so that
+extend V6NAX backward kernels with native block-sparse iteration so that
 `mx.grad(flash_attention_sparse(...))` would use NAX-direct backward
 kernels (skipping inactive blocks) instead of falling back to SDPA-vjp
 with expanded bias.
@@ -47,8 +47,8 @@ speedup in backward.
 
 ## Sprint 5 value proposition
 
-A native V34 backward sparse kernel would skip inactive K-blocks per
-Q-row (mirroring V34 forward LCSA sparse pattern).  Projected:
+A native V6NAX backward sparse kernel would skip inactive K-blocks per
+Q-row (mirroring V6NAX forward LCSA sparse pattern).  Projected:
 
 | Density | Section C backward | Sprint 5 backward (projected) | Speedup |
 |---|---|---|---|
@@ -62,23 +62,23 @@ Real wins at low density (FlashVSR uses density 0.1-0.3 typically).
 ## Why deferred
 
 Sprint 5 implementation is L-effort (3-6h CC focused session):
-1. Add `#define V34BWD*_SPARSE` macro to 4 K-parallel kernels + dQ
-2. Add `block_mask` device buffer to 5 V34Bwd*Params structs
+1. Add `#define V6NAXBWD*_SPARSE` macro to 4 K-parallel kernels + dQ
+2. Add `block_mask` device buffer to 5 V6NAXBwd*Params structs
 3. Add per-tile early-exit logic reading block_mask in each K-loop
-4. Update `_v34_backward_vjp` to accept block_mask + route accordingly
+4. Update `_v6nax_backward_vjp` to accept block_mask + route accordingly
 5. Multi-gate dispatch audit per Pattern #5 (lesson from Prompt 4):
    - `flash_attention_sparse` Python entry — needs to thread block_mask
      to backward closure
-   - `_make_sparse_nax_with_sdpa_vjp` (current vjp) — would need V34
+   - `_make_sparse_nax_with_sdpa_vjp` (current vjp) — would need V6NAX
      sparse backward alternative
-   - `dispatch_policy._v34_backward_carveout` — extend with sparse path
-   - `MFAV34Bwd*` Primitives (5 of them) — accept block_mask input
+   - `dispatch_policy._v6nax_backward_carveout` — extend with sparse path
+   - `MFAV6NAXBwd*` Primitives (5 of them) — accept block_mask input
    - Cache keys — extend with `is_sparse` flag
-   - `compile_v34_backward_pipeline` — sparse variant compilation
+   - `compile_v6nax_backward_pipeline` — sparse variant compilation
 6. Three-axis validation across density × causal combinations
 7. Cross-session §AA.4 bench
 
-The implementation is well-understood (mirrors V34 forward LCSA sparse
+The implementation is well-understood (mirrors V6NAX forward LCSA sparse
 pattern + Phase 4b-complete causal mask block pattern from Prompt 3-4).
 But careful execution requires dedicated session focus.
 
@@ -106,14 +106,14 @@ than to attempt 4 with one half-done.  Sprint 5 deferred to:
 1. **§AA.5 premise check + Pattern #5 multi-gate audit** (~30min)
    - Document all dispatch gates that need extension for sparse routing
 2. **Source generator extension** (~1.5h)
-   - Add `#if V34BWD*_SPARSE` mask blocks to 4 K-parallel kernels + dQ
-   - Mirror V34 forward LCSA sparse iteration pattern
+   - Add `#if V6NAXBWD*_SPARSE` mask blocks to 4 K-parallel kernels + dQ
+   - Mirror V6NAX forward LCSA sparse iteration pattern
 3. **Primitive + binding plumbing** (~1h)
-   - Add `block_mask` input to MFAV34Bwd* Primitives
+   - Add `block_mask` input to MFAV6NAXBwd* Primitives
    - Extend cache keys with `is_sparse` flag
 4. **Python integration** (~30min)
-   - Update `_v34_backward_vjp` to route sparse path
-   - Extend `dispatch_policy._v34_backward_carveout` for sparse eligibility
+   - Update `_v6nax_backward_vjp` to route sparse path
+   - Extend `dispatch_policy._v6nax_backward_carveout` for sparse eligibility
 5. **Three-axis validation** (~1h)
    - dQ/dK/dV vs SDPA-vjp baseline within fp16 ULP
    - Sparse × causal combination

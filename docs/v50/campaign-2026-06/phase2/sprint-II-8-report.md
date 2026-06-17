@@ -3,9 +3,9 @@
 
 ## Item 1 — Gate #9 PROGRAMMATIC: DONE-CLEAN, third site found+fixed
 
-The repo-wide sweep found a **THIRD Pattern-#9 site**: the V34 FORWARD
-has the same paired 16x32x16 MMA loop (V34_TK) and an UNGUARDED
-`MFA_V6_V34_BK` env override at two dispatch sites — `MFA_V6_V34_BK=16`
+The repo-wide sweep found a **THIRD Pattern-#9 site**: the V6NAX FORWARD
+has the same paired 16x32x16 MMA loop (V6NAX_TK) and an UNGUARDED
+`MFA_V6_NAX_BK` env override at two dispatch sites — `MFA_V6_NAX_BK=16`
 would have reproduced the II-6 corruption in the production forward.
 Fixed with the loud BK guard at both sites (verified firing).
 `tests/test_phase2_ii8_gate9_parity.py` now enumerates every paired-MMA
@@ -32,7 +32,7 @@ auto.**  v2.39.1 chapter closed with measured evidence.
 
 The contract that should hold — run-to-run bit-identity for fixed
 inputs — HOLDS on every dispatch surface (II-6 battery: dense fwd,
-decode split-KV, sparse, V34 bwd).  Batch-/length-invariance (identical
+decode split-KV, sparse, V6NAX bwd).  Batch-/length-invariance (identical
 prefixes bit-identical across cache lengths, TM-style) is a STRONGER
 property no current contract promises (split counts vary with kL by
 design).  Classification: FEATURE — Marco-gated backlog; out of the

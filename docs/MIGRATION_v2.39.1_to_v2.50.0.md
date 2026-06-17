@@ -34,11 +34,11 @@ same correctness) or opt-in via env vars.
   shapes (3.85× over the dense baseline).  Opt-out via
   `MFA_DISABLE_TOPK_BISECT=1`.
 
-### Sprint 4 + Section D — V34 forward + backward broadening
+### Sprint 4 + Section D — V6NAX forward + backward broadening
 
-- **V34 forward causal D=64 + D=128**: NAX-direct kernels engaged
+- **V6NAX forward causal D=64 + D=128**: NAX-direct kernels engaged
   automatically when `flash_attention(..., causal=True)` shape qualifies.
-- **V34 backward causal D=64 + D=128**: production NAX-direct backward
+- **V6NAX backward causal D=64 + D=128**: production NAX-direct backward
   via `mx.grad(flash_attention(...))` on supported shapes.
   Replaces SDPA-vjp for the matching shape envelope.
 
@@ -47,7 +47,7 @@ same correctness) or opt-in via env vars.
 - **`flash_attention_sparse` backward**: production routing per
   Pattern #6 empirical finding.  Defaults to dense SDPA-vjp with bias
   mask (Apple NAX optimization, fastest at all VSR densities).
-  Opt-in V34 sparse hybrid via `MFA_ENABLE_V34_BACKWARD=1` for
+  Opt-in V6NAX sparse hybrid via `MFA_ENABLE_V6_BACKWARD=1` for
   research / specific shape envelopes.
 - **`flash_attention_sparse` forward (LSE-aware)**: returns
   `(O, L)` internally to support efficient sparse backward.  Public
@@ -64,8 +64,8 @@ same correctness) or opt-in via env vars.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `MFA_ENABLE_V34_BACKWARD` | unset (= 0) | Opt-in to V34 sparse backward hybrid orchestrator (research; production default is SDPA-vjp dense per Pattern #6 finding). |
-| `MFA_V34_BWD_SPARSE_NATIVE` | unset (= 0) | Opt-in to full-native V34 sparse backward (all 4 gradients via native sparse kernels).  Typically slower than hybrid on M5+ per Pattern #6; research/benchmark only. |
+| `MFA_ENABLE_V6_BACKWARD` | unset (= 0) | Opt-in to V6NAX sparse backward hybrid orchestrator (research; production default is SDPA-vjp dense per Pattern #6 finding). |
+| `MFA_V6_BWD_SPARSE_NATIVE` | unset (= 0) | Opt-in to full-native V6NAX sparse backward (all 4 gradients via native sparse kernels).  Typically slower than hybrid on M5+ per Pattern #6; research/benchmark only. |
 | `MFA_DISABLE_TOPK_BISECT` | unset (= AUTO on) | Disable Top-K Architecture B bisection AUTO default.  Falls back to materialized weights path. |
 | `MFA_DISABLE_TOPK_NATIVE` | unset | Disable the native Top-K Metal kernel path.  Falls back to Python composition. |
 | `MFA_DISABLE_ROPE_NAX` | unset | Disable `mx.fast.rope` auto-discovery in `flash_attention_rope_unified`.  Routes through legacy STEEL RoPE helper. |
@@ -75,7 +75,7 @@ same correctness) or opt-in via env vars.
 ## Deprecations
 
 > **Superseded (v2.56.0):** `MFA_FORCE_NATIVE_BWD` was REMOVED in v2.56.0 (the env var
-> is now inert), and `MFA_ENABLE_V34_BACKWARD` is default-on for D=64 causal. The notes
+> is now inert), and `MFA_ENABLE_V6_BACKWARD` is default-on for D=64 causal. The notes
 > below are accurate for the v2.39.1→v2.50.0 migration; see CHANGELOG [2.56.0] for the
 > current state.
 
@@ -83,13 +83,13 @@ same correctness) or opt-in via env vars.
 
 This env var forces routing through **legacy STEEL backward kernels**
 which have a known correctness bug at D=128 N≥2048 (KD-5: zeroed output
-blocks for query rows ≥ 1024).  V34 backward NAX-direct (production
+blocks for query rows ≥ 1024).  V6NAX backward NAX-direct (production
 default since Section D Prompt 5b) is unaffected and is the recommended
 path for all backward use cases.
 
 **Action required**: if you have any pipeline setting
 `MFA_FORCE_NATIVE_BWD=1`, remove that setting.  The default routing
-already gives you V34 backward where appropriate, and SDPA-vjp dense
+already gives you V6NAX backward where appropriate, and SDPA-vjp dense
 elsewhere.
 
 ---
@@ -98,7 +98,7 @@ elsewhere.
 
 | ID | Severity | v2.50.0 disposition |
 |---|---|---|
-| KD-1 | HIGH | **FIXED** Phase A — V34 backward sparse mask shape conversion + C++ shape validation |
+| KD-1 | HIGH | **FIXED** Phase A — V6NAX backward sparse mask shape conversion + C++ shape validation |
 | KD-2 | MEDIUM | **FIXED** Phase B — forward recompute eliminated via custom_function `outputs` parameter (~1.33ms saving at VSR shape d=0.1) |
 | KD-3 | LOW | **FIXED** Phase C — explicit `elif head_dim == 128` + defensive `else: raise` |
 | KD-4 | LOW | **FIXED** (Prompt 5e Phase 1 fix + Prompt 5f Phase D regression coverage) |
@@ -118,9 +118,9 @@ Cumulative gains relative to v2.39.1 baseline:
 | Sparse forward d≈0.02 | (Sprint 1 baseline) | 6× | 6× |
 | RoPE unified forward (D=128) | STEEL helper | mx.fast.rope dispatch | 4.07× |
 | Top-K @ k=64 / S=4096 (VSR) | dense baseline | Architecture B bisection AUTO | 3.85× |
-| V34 forward causal D=64 qL=4096 | SDPA fallback | V34 NAX-direct | 1.82× |
-| V34 backward causal D=64 qL=4096 | SDPA-vjp | V34 NAX-direct | 1.81× |
-| V34 sparse backward d=0.1 (Phase B) | Prompt 5d snapshot | KD-2 fix | -1.33ms |
+| V6NAX forward causal D=64 qL=4096 | SDPA fallback | V6NAX NAX-direct | 1.82× |
+| V6NAX backward causal D=64 qL=4096 | SDPA-vjp | V6NAX NAX-direct | 1.81× |
+| V6NAX sparse backward d=0.1 (Phase B) | Prompt 5d snapshot | KD-2 fix | -1.33ms |
 
 See `docs/PERF_CLAIMS.md` for the canonical perf-claim table with
 verification test references.
@@ -143,7 +143,7 @@ No code changes required.  Optionally:
 
 1. **Audit your pipeline for `MFA_FORCE_NATIVE_BWD=1`** and remove it
    (see Deprecations above).
-2. **Consider enabling `MFA_ENABLE_V34_BACKWARD=1`** if your sparse
+2. **Consider enabling `MFA_ENABLE_V6_BACKWARD=1`** if your sparse
    training workload matches the documented shape envelope (D ∈ {64,
    128}, qL ≥ 2048, fp16/bf16, M5+ hardware).  Currently opt-in
    pending broader perf validation.

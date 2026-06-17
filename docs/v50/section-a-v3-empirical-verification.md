@@ -1,6 +1,6 @@
 # v2.50 Prompt 5d Section A v3 — Empirical verification
 
-**Mandate**: per Marco's Prompt 5d directive, run bench comparing V34
+**Mandate**: per Marco's Prompt 5d directive, run bench comparing V6NAX
 native sparse backward vs Prompt 5c hybrid vs SDPA-vjp dense baseline
 at VSR audit shape.
 
@@ -35,15 +35,15 @@ at VSR audit shape.
 ## Empirical verdict
 
 **VSR shape (audit target)**: SDPA-vjp dense wins at all densities.
-V34 native sparse can't outpace Apple SDPA NAX backward on M5+.
+V6NAX native sparse can't outpace Apple SDPA NAX backward on M5+.
 
-**D=64 small-H shape**: V34 native sparse marginally wins (1.13x) at
+**D=64 small-H shape**: V6NAX native sparse marginally wins (1.13x) at
 d=0.1 only.  Win envelope too narrow for production AUTO routing.
 
 ## Decision tree outcome
 
 Per Marco's directive:
-> If confirmed (V34 native sparse < SDPA-vjp at all densities tested):
+> If confirmed (V6NAX native sparse < SDPA-vjp at all densities tested):
 > Prompt 5c hybrid orchestrator is empirically production-optimal.
 > Skip Section A v3 entirely.  Document as architectural reality.
 
@@ -56,7 +56,7 @@ Prompt 5c hybrid.
 `mlx_mfa/attention.py` flash_attention_sparse dispatch:
 - Default for env=1 eligible: Prompt 5c hybrid (NAX sparse forward +
   native dV + SDPA-vjp dQ/dK)
-- Research opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`: full native (Prompt 5d
+- Research opt-in `MFA_V6_BWD_SPARSE_NATIVE=1`: full native (Prompt 5d
   4 sparse kernels)
 
 The 3 new sparse kernels (dQ + dK split + fused dKdV) remain SHIPPED
@@ -67,18 +67,18 @@ direct bindings.  NOT the production routing default.
 
 This bench data is the empirical basis for Pattern #6 in
 `docs/v50/audit-framing-inversions.md`: Apple SDPA NAX optimization on
-M5+ is sufficiently high that custom V34 NAX backward kernels (even
+M5+ is sufficiently high that custom V6NAX NAX backward kernels (even
 with sparse-skip optimization) cannot outpace it at audit-relevant
 shapes.
 
 ## Scope of native sparse kernel retention
 
 Sparse kernels remain in codebase for:
-1. Reference implementation of block-sparse iteration in V34 NAX
+1. Reference implementation of block-sparse iteration in V6NAX NAX
 2. Future hardware (Apple SDPA NAX evolution; M5+ next-gen)
 3. Opt-in benchmarking for non-VSR shapes (D=64 small-H low-density)
 
-Production routing = hybrid; opt-in env = `MFA_V34_BWD_SPARSE_NATIVE=1`.
+Production routing = hybrid; opt-in env = `MFA_V6_BWD_SPARSE_NATIVE=1`.
 
 ## Skill invocations (§AA.2)
 

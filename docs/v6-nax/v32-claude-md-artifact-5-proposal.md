@@ -10,7 +10,7 @@
 ### Artifact #5 — Cross-session perf claims publishable only after multi-condition repro
 
 **Findings v2.31.0 → v2.32.0 cross-session diagnostic** (2026-05-06):
-36-43% drift on legacy D=128 path (and inverse-direction drift on V34
+36-43% drift on legacy D=128 path (and inverse-direction drift on V6NAX
 on SeedVR2-small) between v2.31.0 release-time bench (02:48 AM,
 post-overnight-idle) and Phase 0 re-bench at 13:24 PM same day. PSO
 cache hypothesis tested and **rejected** (cold-cache and warm-cache
