@@ -1257,3 +1257,16 @@ STATUS: COMPLETE
 
 ### Git
 - docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md (new) + PHASE-III-CLOSE.md queue row + this log. Commit below. branch master.
+
+---
+## [2026-06-17 01:10] [CLAUDE] Queue Archaeology A — MFA_FORCE_NATIVE_BWD state of truth → REMOVE-ELIGIBLE (no action)
+STATUS: COMPLETE
+
+- Type: archaeology only (read+grep+live-code). NO edit/removal/deprecation action. A of two.
+- R.1 origin: v2.36-era debug/eval override forcing legacy STEEL backward (CHANGELOG:3348/1129). Deprecated v2.50.0 Prompt 5f Phase E — originally "BROKEN" (KD-5 zeroed-blocks D=128 N≥2048, MIGRATION:77 "target removal v2.51+"); reason SHIFTED to "SUPERSEDED, not broken" after 2026-05 review FIXED KD-5 (sprint-II-0:26).
+- R.2 live: sole reader dispatch_policy.py:717-739 (=1 warns+forces STEEL native; =0 off; else policy table). Sole caller attention.py:5306. Inert on default API (M5 forward→SDPA short-circuits the bwd branch); changes routing only on backend="mfa". Ghost-knob-on-public-path / weak escape-hatch on expert path; forced path wins NOWHERE.
+- R.3 public-contract: documented env var (ENV_VARS.md:60, MIGRATION, CHANGELOG; NOT README). Deprecation cycle ALREADY COMPLETE (announced v2.50.0→ now v2.55.0). Removal touches: dispatch_policy.py force-branches (keep policy table), test_v50_prompt_5f_kd5_deprecation.py + test_attention.py:11051-11159, ENV_VARS.md:60, cache-audit/01:37, CHANGELOG (Removed entry). KEEP STEEL kernel (keep-all-paths).
+- R.4 measured (NOT asserted): sprint-C Track 2 matrix — STEEL-bwd correct(rmse 4e-5) but dominated every cell (V34 2.2-2.6x@D64; SDPA-vjp@D128). 26.6 strengthens it. NOT stale-verdict.
+- R.5 VERDICT: REMOVE-ELIGIBLE, deprecation cycle complete. Queue entry ACCURATE (unlike V34). Only KEEP argument = thin research/determinism escape-hatch + standing "keep deprecated" steer.
+- Ran: read-only archaeology + live-code grep. Validated: verdict traces to dispatch_policy.py:717-739 + sprint-C matrix + ENV_VARS:60 + MIGRATION:77. NO code changed.
+- Git: docs/v50/campaign-2026-06/queue-force-native-bwd-archaeology.md (new) + PHASE-III-CLOSE queue row + log. Commit below. branch master. Archaeology B next; Marco decides after both.

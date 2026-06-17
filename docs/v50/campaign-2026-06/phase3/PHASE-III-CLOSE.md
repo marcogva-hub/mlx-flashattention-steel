@@ -77,6 +77,7 @@ again pre-tag and the CHANGELOG must credit the III-4 correctness fixes.
 | make_topk_spatial_mask numpy/loop → GPU pooling (R13) | perf-debt; needs bench per Pattern #6 | S/M |
 | Tagged release of int8/follow-ups | carried | — |
 | V34 backward block-sparse NAX extension | **CLOSED — DECLINE** (premise validation 2026-06-17). Was NOT pending: greenlit (Prompt 5c Opt.1), built+shipped (Prompt 5d, 4 native sparse bwd kernels, 8 tests), win premise empirically FALSIFIED — Native/SDPA 0.09–0.77× at VSR shape (Pattern #6); only 1.13× at D=64/small-H/d=0.1 (too narrow for AUTO). Default = 5c hybrid; full native = opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`. See `docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md`. | none (no build) |
+| `MFA_FORCE_NATIVE_BWD` disposition (Archaeology A, 2026-06-17) | **REMOVE-ELIGIBLE — deprecation cycle COMPLETE** (queue entry ACCURATE, not stale). Forces correct-but-dominated STEEL backward (measured: V34 wins D=64, SDPA-vjp wins D=128 — sprint-C Track 2; robust to 26.6); inert on default API (forward→SDPA); deprecation announced v2.50.0 "target removal v2.51+", now overdue at v2.55.0. Thin escape-hatch value only (`backend="mfa"` research/A-B). Removal = env-var knob, keep STEEL kernel (keep-all-paths). See `docs/v50/campaign-2026-06/queue-force-native-bwd-archaeology.md`. **Marco-gated — pending Archaeology B; no action.** | removal: deprecation cycle done (no build) |
 
 ## Reports index
 
