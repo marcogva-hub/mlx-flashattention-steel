@@ -1586,3 +1586,27 @@ STATUS: COMPLETE
 - Ran: sparse_gap_probe.py + 2 inline verification probes. Validated: all eff<=45<=51.8 peak (no
   artifacts), Δt tracks total-N, cv<=0.04, fp32 0.0/3.8e-6. No code/routing change. 0 orphans.
 - Git: report + probe committed below. NOT tagged.
+
+---
+## [2026-06-17 15:30] [CLAUDE] Block-sparse compacted-iteration — gated prototype: GATE PASS, GO-scale
+STATUS: COMPLETE
+
+- Phase 0 GATE (ablations on REAL kernel, decouple qL/kL): the flat ~3.8ms density-independent cost
+  is the per-TG WALK over inactive K-blocks (~1.4us/block, mfa_sparse_attention.cpp:524). Control:
+  active=2 (3.74ms) == active=full (3.77ms) => not compute/memory. GATE = compaction-addressable
+  (loop-walk dominant). Fix = 1D compacted active-block iteration.
+- Phase 0-floor (decisive): compacted cost is propto active_count regardless of layout, so the
+  production kernel at kL=active*BK (NQ=128 fixed) IS a faithful compacted measurement. Result: t
+  TRACKS density — 14.8x@d=.008, 5.7x@.125, 3.6x@.25, 2.0x@.5, 1.0x@1.0. The skip translates to
+  wall-clock. All floor eff<=37<=51.8 peak.
+- Phase 1: memory differentiator = NxN mask (16GB@N32768) vs block mask (32MB), 512x; total peak
+  qkv-dominated (~1.2x, noisy). Memory = secondary long-N justification; COMPUTE is primary.
+- Phase 3 verdict: GO-scale. Build full compacted block-sparse kernel (host-precomputed
+  active-index/bounding-range buffers; loop only active) + memory-aware AUTO routing (N,density,mem).
+  Keep-all-paths (current sparse = baseline + memory fallback). Residual to measure first in build:
+  scattered-mask gather overhead (bounded by floor). Best-path: SDPA (fits+high-d), compacted-sparse
+  (low-d or constrained-long-N), current-sparse (fallback).
+- Ran: sparse_compaction_probe.py (Phase 0 ablations + floor + Phase 1). Validated: gate verdict +
+  t-tracks-density curve + plausibility (<=37<=51.8). NO kernel built, NO routing change, keep-all-
+  paths. 0 orphans. NOT tagged.
+- Git: report + probe committed below.
