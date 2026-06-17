@@ -292,7 +292,7 @@ std::string mpp_int8_microbench() {
     out << "fp16=" << tf_f16 << " TF";
     try {
       double tf_i8 = run_bench(
-          mtl_device, bench_kernel_src("int8_t", "int", "mm_i8", reps),
+          mtl_device, bench_kernel_src("int8_t", "int32_t", "mm_i8", reps),  // A3-2: int32_t (not "int") for is_same_v consistency with the coop variant
           "mm_i8", 1, 4, reps, tgs, iters);
       out << " int8/i32=" << tf_i8 << " TOPS ratio=" << (tf_i8 / tf_f16);
     } catch (const std::exception&) {

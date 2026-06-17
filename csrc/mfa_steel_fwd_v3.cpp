@@ -9,13 +9,13 @@
 ///   V3 (2/iter): preload K+V together; Q@K^T → P@V → A(reads done) →
 ///                load K[next]+V[next] → B(writes done)
 ///
-/// Eligible configs:
-///   D=64  BK=64  all gens:  TGP = 23,040 B ✅
-///   D=128 BK=32  M1/M2:    TGP = 27,648 B ✅
-///   D=128 BK=64  M3+:      TGP = 44,544 B ❌ (V3 not dispatched; V2 used)
+/// Eligible configs (per select_steel_v3_block_config; autoresearch M1 2026-03-20):
+///   D=64  BK=32  all gens:  TGP = 14,336 B → 2 TGs/CU
+///   D=128 BK=16  all gens:  TGP = 19,200 B → 1 TG/CU
 ///
-/// All V2 features supported: f16/bf16, causal, GQA, softcap, ALiBi,
-/// sliding window, sparse (block_mask), RoPE.
+/// Features: f16/bf16, causal, GQA, softcap, ALiBi, sliding window, RoPE.
+/// NOT sparse — block_mask is excluded in the dispatch gate (mfa_attention.cpp;
+/// the V3 KernelKey hardcodes sparse=false); sparse calls fall through to V2.
 
 #include "mfa_steel_fwd.hpp"
 #include "mfa_env.hpp"
@@ -42,16 +42,15 @@ std::string generate_steel_v3_source(const ShaderCache::KernelKey& key) {
 
   const char* dtype_str = (key.dtype == 1) ? "bfloat" : "half";
 
-  // V3 block config: same BQ/BK/WM as V2, separate smem layout.
-  // D=128 always uses BK=32 in V3 (M3+ BK=64 would exceed 32 KB TGP).
+  // V3 block config (separate K_smem + V_smem smem layout; smaller BK than V2).
   auto cfg = select_steel_v3_block_config(D, key.is_m3_plus);
   const int BQ = cfg.BQ;   // 32
-  const int BK = cfg.BK;   // 64 (D=64) | 32 (D=128)
+  const int BK = cfg.BK;   // 32 (D=64) | 16 (D=128)
   const int WM = cfg.WM;   // 4
   const int WN = 1;
   const int TGP_SIZE = WM * WN * 32;  // 128
   const int TD  = D / 8;       // 8 (D=64) or 16 (D=128)
-  const int TK  = BK / 8;      // 8 (D=64) or 4 (D=128 BK=32)
+  const int TK  = BK / 8;      // 4 (D=64) or 2 (D=128)
   const int TQ  = BQ / (WM * WN * 8);  // always 1
 
   const bool enable_unroll = (D <= 128);

@@ -74,6 +74,11 @@ same correctness) or opt-in via env vars.
 
 ## Deprecations
 
+> **Superseded (v2.56.0):** `MFA_FORCE_NATIVE_BWD` was REMOVED in v2.56.0 (the env var
+> is now inert), and `MFA_ENABLE_V34_BACKWARD` is default-on for D=64 causal. The notes
+> below are accurate for the v2.39.1→v2.50.0 migration; see CHANGELOG [2.56.0] for the
+> current state.
+
 ### `MFA_FORCE_NATIVE_BWD=1` → emits `DeprecationWarning` (target removal v2.51+)
 
 This env var forces routing through **legacy STEEL backward kernels**
