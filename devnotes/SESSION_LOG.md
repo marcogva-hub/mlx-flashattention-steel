@@ -1564,3 +1564,25 @@ STATUS: COMPLETE
   removed v3.0.0). New canonical MFA_V6* names in NAMING.md.
 - NO kernel/routing/measurement logic changed (rename only). v2.57.0 will carry the
   CHANGELOG [Unreleased] entry when you authorize a cut.
+
+---
+## [2026-06-17 14:30] [CLAUDE] Sparse NAX gap decomposition — DIAGNOSTIC (no kernel/routing change)
+STATUS: COMPLETE
+
+- Phase 0 (read-only): per-path NAX/STEEL × routed/declined/by-design map on fresh code. Verdict:
+  NOTHING missing, NOTHING orphaned. V6 family complete (sparse fwd routed-NAX; V6-dense-fwd +
+  full-native-sparse-bwd DECLINED-on-perf with reason; dense/windowed/GNA/decode STEEL-by-design).
+- Phase 1/2 (marked micro-probes, M5/26.6, effective-FLOP, plausibility-gated, fp32-sanity):
+  routed block-sparse NAX-matmul2d fwd runs in DENSITY-INDEPENDENT time (~3.8ms N4096, flat from
+  d=0.008→1.0; t∝N² at fixed active=2). Honors mask (3.8e-6 vs masked-SDPA). Decomp: intercept
+  (iterate-all-tiles/K-V-stream/launch) 99.3%, matmul2d-setup slope 0.7%; form penalty 1.25x only
+  at d=1.0 (36 vs SDPA 45 TF). The `continue`-skip (mfa_sparse_attention.cpp:524/724) is
+  wall-clock-INERT.
+- Phase 3 verdict: matmul2d->raw-simdgroup lever PREMISE FALSIFIED (targets the 0.7%). Real gap =
+  block-skip not translating to wall-clock (2.46x@d=0.5, 4.94x@d=0.25 vs ideal-sparse). Honest bar
+  = dense SDPA 3.05ms (sparse LOSES to SDPA-with-mask at all densities today). Real lever =
+  skip-to-wall-clock tiling/grid rewrite, gated on root-causing the flat-t (profiler, ~1 day), and
+  only pays at low density (d<=0.25) vs SDPA. If flat-t is inherent K/V memory traffic -> terminus.
+- Ran: sparse_gap_probe.py + 2 inline verification probes. Validated: all eff<=45<=51.8 peak (no
+  artifacts), Δt tracks total-N, cv<=0.04, fp32 0.0/3.8e-6. No code/routing change. 0 orphans.
+- Git: report + probe committed below. NOT tagged.
