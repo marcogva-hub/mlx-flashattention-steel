@@ -30,6 +30,8 @@ from typing import Optional, Union, Sequence
 import mlx.core as mx
 import numpy as np
 
+from ._env_aliases import getenv_aliased
+
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
@@ -4949,9 +4951,9 @@ def _v34_eligible(head_dim: int, dtype, causal: bool,
     _default_on = (
         head_dim == 64
         and seq_len is not None and seq_len >= 2048
-        and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
+        and getenv_aliased("MFA_DISABLE_V6_BACKWARD") != "1"
     )
-    if not _default_on and os.environ.get("MFA_ENABLE_V34_BACKWARD") != "1":
+    if not _default_on and getenv_aliased("MFA_ENABLE_V6_BACKWARD") != "1":
         return False
     # Repo review 2026-05: the V34 forward kernel (v6_nax_forward) does not
     # accept a scale parameter — it bakes 1/sqrt(D) into the Metal source.
@@ -5025,12 +5027,12 @@ def _v34_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
     # 16384}) preserved exactly.  See `docs/v6-nax/v39-1-investigation-
     # synthesis.md` for full investigation evidence (H1 confirmed, H3
     # falsified, H2 partial-supporting).
-    _kernel_mode = os.environ.get("MFA_V34_BWD_KERNEL", "auto").lower()
-    if os.environ.get("MFA_V34BWD_USE_FUSED") == "1":
+    _kernel_mode = getenv_aliased("MFA_V6_BWD_KERNEL", "auto").lower()
+    if getenv_aliased("MFA_V6BWD_USE_FUSED") == "1":
         _kernel_mode = "legacy_fused"
 
     head_dim = q.shape[3]
-    _wm = int(os.environ.get("MFA_V34BWD_WM", "4"))
+    _wm = int(getenv_aliased("MFA_V6BWD_WM", "4"))
 
     # Resolve "auto" → split for ALL head dims (Phase II-6, campaign
     # 2026-06).

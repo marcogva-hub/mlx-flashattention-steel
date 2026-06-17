@@ -49,7 +49,7 @@ class TestPairedMMAStrideParity:
         #     Primitive resolves BK then calls
         #     compile_v34_backward_pipeline(), which hard-rejects
         #     BK % 32 != 0 (II-6 guard).
-        #   - V34 (forward): guarded at both MFA_V6_V34_BK env sites
+        #   - V34 (forward): guarded at both MFA_V6_NAX_BK env sites
         #     (II-8 addendum guard).
         backward_prefixes = {p for p in prefixes if p.startswith("V34BWD")}
         forward_prefixes = {p for p in prefixes if p == "V34"}
@@ -77,7 +77,7 @@ class TestPairedMMAStrideParity:
         # 3. Every backward Primitive's pipeline compile goes through the
         #    guarded helper (no direct v34_compile bypasses for backward).
         n_helper_calls = len(re.findall(r"compile_v34_backward_pipeline\(", prim)) - 1
-        n_bwd_env_knobs = len(re.findall(r'getenv\("MFA_V34BWD\w*_BK"\)', prim))
+        n_bwd_env_knobs = len(re.findall(r'getenv_aliased\("MFA_V6BWD\w*_BK"\)', prim))
         assert n_helper_calls >= n_bwd_env_knobs, (
             f"{n_bwd_env_knobs} backward BK env knobs but only "
             f"{n_helper_calls} guarded-helper call sites — a backward "
@@ -85,12 +85,14 @@ class TestPairedMMAStrideParity:
         )
 
         # 4. The forward env knob is guarded at EVERY site where it is read.
-        n_fwd_knobs = len(re.findall(r'getenv\("MFA_V6_V34_BK"\)', prim))
+        #    v2.57.0: MFA_V6_V34_BK -> MFA_V6_NAX_BK (collision rename), read
+        #    via getenv_aliased (deprecated alias still honored). See NAMING.md.
+        n_fwd_knobs = len(re.findall(r'getenv_aliased\("MFA_V6_NAX_BK"\)', prim))
         n_fwd_guards = len(re.findall(
             r"BK must be a positive multiple of 32 \(paired", prim))
-        assert n_fwd_knobs > 0, "forward MFA_V6_V34_BK knob disappeared — update this test"
+        assert n_fwd_knobs > 0, "forward MFA_V6_NAX_BK knob disappeared — update this test"
         assert n_fwd_guards >= n_fwd_knobs, (
-            f"{n_fwd_knobs} forward MFA_V6_V34_BK read sites but only "
+            f"{n_fwd_knobs} forward MFA_V6_NAX_BK read sites but only "
             f"{n_fwd_guards} paired-MMA BK guards — an unguarded forward "
             f"override path exists (Pattern #9 third-site class)"
         )

@@ -40,6 +40,8 @@ from typing import Optional
 
 import mlx.core as mx
 
+from ._env_aliases import getenv_aliased
+
 
 def _invalidate_cached_env():
     """Notify C++ MFAEnvConfig that cached env vars changed.
@@ -415,14 +417,14 @@ def _v34_backward_carveout(
         head_dim == 64
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
-        and os.environ.get("MFA_DISABLE_V34_BACKWARD") != "1"
+        and getenv_aliased("MFA_DISABLE_V6_BACKWARD") != "1"
     ):
         return True
     if (
         head_dim in (64, 128)
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
-        and os.environ.get("MFA_ENABLE_V34_BACKWARD") == "1"
+        and getenv_aliased("MFA_ENABLE_V6_BACKWARD") == "1"
     ):
         return True
     return False

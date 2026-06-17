@@ -6,6 +6,7 @@
 
 #include "shader_cache.hpp"
 #include "mfa_key_tie.hpp"
+#include "mfa_env_aliases.hpp"
 #include "mfa/v6_nax/NAAttentionKernel.hpp"
 
 #include <mlx/mlx.h>
@@ -194,7 +195,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     use_v34 = use_v34_override;
   } else {
     use_v34 = (head_dim == 128);  // source-gen-only default (without Nk info)
-    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
+    if (const char* env_v34 = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
       use_v34 = (std::atoi(env_v34) != 0);
   }
   // v2.50 Prompt 4 Section B: lift `isCausal` constraint.  Prompt 2
@@ -211,9 +212,9 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   unsigned short v34_BK = (head_dim == 64) ? 64 : 32;
   uint16_t v34_WM = (head_dim == 64) ? 2 : 4;
   if (use_v34) {
-    if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
-    if (const char* env_bk = std::getenv("MFA_V6_V34_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
-    if (const char* env_wm = std::getenv("MFA_V6_V34_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
+    if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
+    if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
+    if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
     // Validate: BQ % (WM*16) == 0
     if (v34_BQ % (v34_WM * 16) != 0 || head_dim % 16 != 0) {
       use_v34 = false;  // fall back to legacy if invalid config
@@ -649,7 +650,7 @@ public:
     } else {
       use_v34 = false;
     }
-    if (const char* env_v34 = std::getenv("MFA_V6_USE_V34"))
+    if (const char* env_v34 = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
       use_v34 = (std::atoi(env_v34) != 0);
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
@@ -668,9 +669,9 @@ public:
       if (use_v34 && !so_for_v34) use_v34 = false;
     }
     if (use_v34) {
-      if (const char* env_bq = std::getenv("MFA_V6_V34_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
-      if (const char* env_bk = std::getenv("MFA_V6_V34_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
-      if (const char* env_wm = std::getenv("MFA_V6_V34_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
+      if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
+      if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
+      if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
       if (v34_BQ % (v34_WM * 16) != 0 || D % 16 != 0) {
         use_v34 = false;
       }
@@ -705,7 +706,7 @@ public:
           /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true);
       if (use_v34) {
         // V34 uses no FCs (params via struct buffer).
-        if (std::getenv("MFA_V34_DUMP_SOURCE")) {
+        if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
           fprintf(stderr, "=== V34 source for BQ=%d BK=%d BD=%d WM=%d ===\n",
                   (int)v34_BQ, (int)v34_BK, (int)D, (int)v34_WM);
           auto pos = src.find("// === lse write");
@@ -1045,11 +1046,11 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
     uint16_t v34_WM = (D == 64) ? 2 : 4;
-    if (const char* e = std::getenv("MFA_V34BWD_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BQ"))
       v34_BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWD_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BK"))
       v34_BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWD_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_WM"))
       v34_WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
@@ -1233,11 +1234,11 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     unsigned short BQ = 32;
     unsigned short BK = (D == 64) ? 64 : 32;
     uint16_t WM = 1;
-    if (const char* e = std::getenv("MFA_V34BWDKV_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDKV_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDKV_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDKV_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDKV_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDKV_WM"))
       WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
@@ -1399,11 +1400,11 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDV_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDV_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDV_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_WM"))
       WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
@@ -1539,11 +1540,11 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDV_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDV_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDV_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDV_WM"))
       WM = (uint16_t)std::atoi(e);
 
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
@@ -1761,11 +1762,11 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDK_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDK_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDK_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_WM"))
       WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
@@ -1959,11 +1960,11 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDF_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDF_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_WM"))
       WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
@@ -2144,11 +2145,11 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     unsigned short v34_BQ = (D == 64) ? 32 : 64;
     unsigned short v34_BK = (D == 64) ? 64 : 32;
     uint16_t v34_WM = (D == 64) ? 2 : 4;
-    if (const char* e = std::getenv("MFA_V34BWD_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BQ"))
       v34_BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWD_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BK"))
       v34_BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWD_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_WM"))
       v34_WM = (uint16_t)std::atoi(e);
 
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
@@ -2327,11 +2328,11 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDK_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDK_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDK_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDK_WM"))
       WM = (uint16_t)std::atoi(e);
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
     {
@@ -2515,11 +2516,11 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     unsigned short BQ = 64;
     unsigned short BK = 32;
     uint16_t WM = wm_;
-    if (const char* e = std::getenv("MFA_V34BWDF_BQ"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_BQ"))
       BQ = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDF_BK"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_BK"))
       BK = (unsigned short)std::atoi(e);
-    if (const char* e = std::getenv("MFA_V34BWDF_WM"))
+    if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWDF_WM"))
       WM = (uint16_t)std::atoi(e);
 
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
