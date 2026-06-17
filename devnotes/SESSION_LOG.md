@@ -1316,3 +1316,17 @@ STATUS: HANDOFF_READY
   post-publish smoke (flag inert on published wheel; V3 windowed routing correct vs fp32).
 
 ### Marco-gated queue: FULLY CLOSED (V34 declined, flag removed, V4/V5 kept, V3 validated).
+
+---
+## [2026-06-17 03:30] [CLAUDE] Sprint IV-0 — decode-overhead + tech-debt analysis; 0 executed (sync-floor-bound, by design)
+STATUS: COMPLETE
+
+- Type: profile-first diagnostic. Executed in-sprint: 0 (no item clears the strict bar). Phase IV backlog opened.
+- R.1 decode profile (M5/26.6): INCREMENTAL flash_attention N_q=1 — Python dispatch ~2% (5.7us), GPU/eval ~98%; wrapper vs raw SDPA <=7.5us (<=2.8%, ->0 at large S). TQ step() — call ~480us = 50-60% of ~860us, but 98% of that is append() (437us). append decomposed: pack_k Python graph-build 66.6us; pack_k+eval 543.7us; bare x+1+eval (M5 SYNC FLOOR) 240.9us. append's per-step mx.eval (inference.py:994, pools bound RAW set_input_array -> can't fold into eval(o)) = layer-3 GPU materialize+sync, NOT Python. Python-interpretation lever = ~2% (incr) to ~8% (TQ). Definitive: decode is kernel+sync-floor-bound; Python rewrite is not the lever.
+- R.2 tech-debt: env-knobs clean (FORCE_NATIVE_BWD already removed); no live dead code (_sever_lazy_graph gone v2.20.0); arch guards correct. Items: D1 TQ append eval (~240us sync floor, DIAGNOSTIC — add_temporary/raw-buffer lifetime risk); D2 MFA_TOPK_BISECT + D3 backward=sdpa_sparse (working soft-deprecated paths, keep-all-paths, no committed removal cycle); D4 V2-V5 dispatch boilerplate (refactor, dispatch-path risk); D5 cosmetic unused gqa_factor.
+- R.3 cross-ref: NO item is BOTH in-hot-path AND safe-to-fix. Hot-path lever (D1) = dispatch/lifetime change; safe items cold/cosmetic.
+- R.4 EXECUTED: NONE. Pattern #6 for optimization + strict bar -> zero is correct; manufacturing a noise-level tweak adds risk for no decode gain.
+- R.5 Phase IV backlog: IV-D1 (TQ append-eval collapse, ~240us/step, needs raw->graph-input binding change + three-axis + decode-soak — the single biggest decode lever, Marco-gated), IV-D4 (boilerplate consolidation, clarity), IV-D2/D3/D5 clarity.
+- Ran: 3 profilers (benchmarks/methodology/decode_profile/), read-only analysis. Validated: attribution traces to bare-eval sync floor (240.9us) + append eval (inference.py:994). NO code changed.
+- Git: docs/v50/campaign-2026-06/phase4/sprint-IV-0-report.md + 3 profiler artifacts + log. Commit below. branch master.
+- Release: nothing executed -> held v2.56.0 (flag removal + V3 validation) unchanged. 0 orphans.
