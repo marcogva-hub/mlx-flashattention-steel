@@ -1441,3 +1441,19 @@ STATUS: COMPLETE
 - Diagnostic ladder: D-OPT-1 (defensive param-mask memoization, low value, caller-dependent).
 - Ran: non-decode profiler. Validated: per-regime attribution + make_lcsa_mask content-dependence
   (read impl). NO code changed. Git: report + profiler artifact below. 0 orphans. Held v2.56.0 unchanged.
+
+---
+## [2026-06-17 09:00] [CLAUDE] v2.56.0 SHIPPED — both gates green, post-publish smoke green
+STATUS: COMPLETE
+
+- Both gates: repo-release-prep skill (7-phase doc audit; CHANGELOG Fixed/A3-1, README/CLAUDE version-current,
+  __all__ 101 importable, gitignore) -> doc commit dee8957; /mlx-mfa-release-audit 9-check GREEN 0 advisories.
+- Bump 9db5efd (2.55.0->2.56.0, minor for breaking flag removal). Tag v2.56.0 = 97fed31 on dee8957.
+- Build wheel+sdist, twine check PASSED, twine upload -> PyPI LIVE; gh release draft=false; master+tag pushed.
+- Post-publish smoke (clean env, pip install mlx-mfa==2.56.0): (1) flag inert (no routing change/warning),
+  (2) V3 windowed vs fp32 ~7.5e-5, (3) IV-D1/D2 deferred==eager bit-identical both tq_v (0.00e+00),
+  (4) v2.55.0 prior fixes hold (V2/V5/GNA/split-K, worst 1e-6). SMOKE PASSED. 0 orphans.
+- URLs: https://pypi.org/project/mlx-mfa/2.56.0/ | https://github.com/marcogva-hub/mlx-flashattention-steel/releases/tag/v2.56.0
+- Backlog: V6 NAX/dequant-in-GEMM = next chantier (green-lit on published baseline); m5max git-init +
+  3 re-measurements = separate (Marco's paper); D-OPT-1 param-mask memo = low/diagnostic.
+- Validated: post-publish smoke on the published wheel. Git: bump + doc + report (below). Phase IV CLOSED + SHIPPED.
