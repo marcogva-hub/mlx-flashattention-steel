@@ -107,6 +107,18 @@ bugs vs ~6h of gradient bisection).  Use sentinel writes BEFORE any
 deep kernel-disassembly work when a multi-gate dispatch chain is
 suspected.
 
+## Runtime dispatch ground-truth + lock (audit Phase A, 2026-06-17)
+
+The authoritative map of WHICH KERNEL ACTUALLY RUNS per public entry × input
+class on M5/26.6 is `docs/v50/campaign-2026-06/audit/dispatch-map.md`, locked by
+`tests/test_dispatch_map_lock.py` (CI fails on unintentional reroute).  **Establish
+dispatch by RUNTIME FINGERPRINT (byteΔ vs a known reference: 0.0 ⇒ IS that kernel
+e.g. the SDPA fallback; ~1e-6 ⇒ a different real kernel; conv via
+`get_hook_stats()`), NEVER by source-tracing** — a Python M5+ routing guard
+overrode the source-pointed kernel for four sprints (the which-binary lesson).
+Known gotchas locked as documented-current (D=128-sparse→SDPA, D=64-sparse-slow,
+sparse-bwd-dense); Phase F updates map + lock together when it reroutes.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the

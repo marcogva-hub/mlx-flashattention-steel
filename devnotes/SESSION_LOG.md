@@ -1661,3 +1661,25 @@ STATUS: COMPLETE
 - Ran: runtime_dispatch_fingerprint.py + matrix probes. Validated: byteΔ + timing + win/loss per cell;
   eff<=42.7<=51.8 peak; fp32 banded+scattered. No build/routing/fix. 0 orphans. NOT tagged.
 - Git: report + fingerprint harness committed below.
+
+---
+## [2026-06-17 18:30] [CLAUDE] AUDIT Phase A — runtime dispatch ground-truth + regression LOCK
+STATUS: COMPLETE
+
+- Method: every cell by RUNTIME fingerprint (byteΔ vs reference: 0.0=IS-that-kernel / ~1e-6=different
+  real kernel; density slope; conv hook telemetry), NOT source-tracing. Master-plan doc absent -> made
+  audit ledger spine (docs/.../audit/README.md).
+- Fingerprinted ALL paths beyond the cartography's sparse+dense forward: dense backend=mfa = real STEEL
+  (Δ1.9e-6, not SDPA); GNA = native (Δ7.3e-2≠0, not fallback); topk = own path; sage = int8 (Δ1.1e-3);
+  kvcache decode = SDPA (Δ0.0); dense bwd = SDPA-vjp (Δ0.0); sparse bwd DEFAULT = dense SDPA-vjp (Δ0.0,
+  gotcha 3); sparse bwd opt-in (bt>=64) = hybrid dV-native+dQ/dK-SDPA-vjp; conv eligible = NAX
+  (executed++), ineligible = fallback++ (MPP gate C%16&>=32, HW%8, B=1, pad1).
+- Gotchas: (1) D=128 sparse + EVERY built-in maker (incl lcsa) -> silent SDPA; (2) D=64 sparse slow,
+  loses to SDPA; (3) NEW: sparse backward is DENSE by default. No new catastrophic fallback in
+  bwd/GNA/paged/conv.
+- Deliverables: docs/.../audit/dispatch-map.md (authoritative, durable) + tests/test_dispatch_map_lock.py
+  (11 cells, in suite) + phase-A report + ledger + CLAUDE.md pointer. Drift-catching CONFIRMED (reroute
+  asym->real-sparse gives Δ7.6e-6≠0.0 -> trips the ==0.0 lock).
+- Ran: lock test (11 pass) + deliberate-drift check + full suite. Validated: 1843 passed, 2 skipped.
+  No kernel/routing/bug change (keep-all-paths). 0 orphans. NOT tagged.
+- Git: test + docs + CLAUDE.md committed below.
