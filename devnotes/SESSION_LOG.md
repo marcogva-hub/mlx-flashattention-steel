@@ -1402,3 +1402,17 @@ STATUS: HANDOFF_READY
 ### Git
 - inference.py + CHANGELOG [2.56.0] Performance + tests + iv_d2_soak.py + iv_d2_bench.py + sprint-IV-D2-report.md + log.
   Commit below. branch master. 0 orphans. Version SoT still 2.55.0 (bump is Marco's gated step).
+
+---
+## [2026-06-17 07:00] [CLAUDE] Phase IV code review (correctness) — both repos; NO CRITICAL in mlx-mfa, 1 HIGH fixed
+STATUS: COMPLETE
+
+- Method: 5-agent parallel review (A1-A5) + Part-B agent (m5max-deep-dive). Revertible waves; suite green after each.
+- HEADLINE: mlx-mfa NO CRITICAL (default-reachable) at HEAD. Highest = A3-1 HIGH latent. 4 directed MLX/Metal targets ALL NOT-EXPOSED (evidence in report). Investigation repo: 2 CRITICAL + 2 HIGH (all fixed).
+- mlx-mfa waves: M1 011e34a (A3-1 int32→ulong, 14 V6 NAX offset sites multi-gated, rebuild, 1821x2); M2 4c88f02 (A5-1 V3 auto-route fp32-oracle test, +6); M3 ec51628 (A4-1/A4-2/A3-2/A5-3 cosmetic). Suite 1827.
+- A1/A2/A4 CLEAN (IV-D1/D2 lifetime re-confirmed bit-identical; cache keys complete; III-9 fixes HOLD).
+- m5max-deep-dive (NOT git → working-tree edits): compute_speedup.py B-1/B-5/B-6 (dead size-loop→group-by-tile, validated stdlib: values preserved, 21→7 dedup); Matmul.swift B-2/B-3 (per-dtype C reader + full-coverage+uniformity oracle, swift build clean); bf16_routing.py B-4 (fp32→bf16 direct). 
+- Re-measure flags: matmul speedup table (regenerate/dedup + drop "size sweep" framing — it's a fixed 32^3 tile); NA INT8 TOPS (re-run with new gate); bf16 accuracy column (re-measure if published).
+- New skill: ~/.claude/skills/mlx-mfa-nax-matmul2d-correctness (the 4 directed footgun classes + int64-widening + Day-J/IV-review).
+- No diagnostic-only correctness item (all fixed in-wave). A3-1 additive to held v2.56.0.
+- Ran: 5+1 review agents, full suite x2 per wave, stdlib oracle, swift build. Validated: oracle evidence per finding. Git: M1/M2/M3 + report below; m5max edits uncommitted (no .git). 0 orphans.
