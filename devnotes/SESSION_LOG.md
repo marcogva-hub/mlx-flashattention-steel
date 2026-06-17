@@ -1457,3 +1457,18 @@ STATUS: COMPLETE
 - Backlog: V6 NAX/dequant-in-GEMM = next chantier (green-lit on published baseline); m5max git-init +
   3 re-measurements = separate (Marco's paper); D-OPT-1 param-mask memo = low/diagnostic.
 - Validated: post-publish smoke on the published wheel. Git: bump + doc + report (below). Phase IV CLOSED + SHIPPED.
+
+---
+## [2026-06-17 10:00] [CLAUDE] V6 NAX design sprint (Phase 0 measured) — HOSTILE for dense; INT8 lever scoped+gated. NO kernel.
+STATUS: COMPLETE
+
+- Type: measure-first design sprint. NO production kernel (throwaway MLX probes only). Doc gap: named synthesis doc absent — worked from docs/v6-nax/ + Day-J + prompt ranges.
+- P0.1 DENOMINATOR (HOSTILE): Apple SDPA effective attention = 47-88 TFLOPS apparent (~24-44 after causal-½) = 91-170% of Day-J NAX matmul2d peak 51.8 TFLOPS. SDPA already uses NAX via raw simdgroup-matrix (steel_attention_nax.h), fuses softmax, avoids MPP overhead. mlx-mfa flash(backend=mfa) 18-25 TFLOPS. No headroom for V6-MPP on dense. Corroborates recorded V6/SDPA ~1.3-1.5x SLOWER (sprint-3-3).
+- P0.2 tile tension (Day-J): BQ=32 = ~24% of M=128 sweet spot (310 vs ~1295 GFLOPS/core). Win needs BQ=128 restructure.
+- P0.3: MPP per-op overhead SDPA avoids; P0.1 shows SDPA wins at ALL N -> no crossover for dense.
+- P0.4: int8 matmul2d (int8->int32) AVAILABLE on 26.6 (shipping mpp_int8_bench.mm, toolchain 32023.864); fully-fused dequant-in-cooperative-tensor-load UNVERIFIED (likely 4.1/27) but NOT required (ALU dequant-scales works).
+- P0.5 INT8 accuracy (GREEN): INT8-QK^T attention vs fp32 = cosine 1.00000, max_rel_err 1e-4 (D64/128 N2048/4096).
+- VERDICT: dense fp16/bf16 = HOSTILE (predicted 1.3-1.5x GAIN is actually the LOSS gap to SDPA — INVERTED). INT8/quantized-KV = numerically viable + 26.6-buildable BUT competes with the IV-D1/D2-optimized TQ-decode-via-SDPA path in the sync-floor-bound regime -> SCOPED + gated on a measure-vs-TQ-SDPA check before any kernel. NOT a green light.
+- Design: dense stays SDPA (keep-all-paths, already default); V6 NAX primitive stays expert/research (int64-safe post-A3-1, not promoted). Phased ladder gated on §0 prerequisite measure-gate.
+- Money-saving: avoided an L/XL kernel build that would lose to SDPA, measured before writing it.
+- Ran: v6nax_p0.py (P0.1/P0.5), header+shipping-bench check (P0.4), Day-J data (P0.2/P0.3). NO code changed. 0 orphans. Git: design report + probe below.
