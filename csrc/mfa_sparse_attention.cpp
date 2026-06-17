@@ -10,8 +10,11 @@
 ///   - causal: false + true (per-tile skip future + within-tile triangular)
 ///   - asymmetric qL != kL (cross-attention) supported
 ///
-/// Phase 1.3 will swap inner GEMMs to mpp::tensor_ops::matmul2d for BT > 64
-/// and to lift register-pressure constraints.
+/// NOTE (audit B1, 2026-06-17): the matmul2d inner-GEMM swap is DONE — it lives
+/// in `sparse_kernel_source_v2` (this file, the `BaseNAXFrag::mma` cooperative-
+/// tensor kernel), selected by `decide_auto_version` when qL*kL*D >= 2.147e9
+/// (lcsa_nax.py). This V1 generator is the per-thread SCALAR fallback for
+/// smaller work products (~40x slower than V2 — see the B1 spec). NOT "future".
 
 #include "mfa_sparse_attention.hpp"
 
@@ -1098,7 +1101,8 @@ mlx::core::array sparse_attention_forward(
 // =============================================================================
 // v2.50 Prompt 5c Section A.1 — sparse_attention_forward returning (O, L)
 //
-// V1 kernel only at PoC stage.  Mirrors sparse_attention_forward dispatch
+// V1 generator only (LSE not emitted by the V2 matmul2d kernel; production,
+// not PoC).  Mirrors sparse_attention_forward dispatch
 // with emit_lse=true forcing the source generator to also write per-row
 // natural-log LSE into the L output buffer.  L shape is (B, Hq, qL) FP32.
 // All-False rows write L = -INFINITY (sentinel; consumer must handle).

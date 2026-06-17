@@ -1683,3 +1683,26 @@ STATUS: COMPLETE
 - Ran: lock test (11 pass) + deliberate-drift check + full suite. Validated: 1843 passed, 2 skipped.
   No kernel/routing/bug change (keep-all-paths). 0 orphans. NOT tagged.
 - Git: test + docs + CLAUDE.md committed below.
+
+---
+## [2026-06-17 19:30] [CLAUDE] AUDIT Phase B1 — sparse/LCSA family per-kernel audit
+STATUS: COMPLETE
+
+- Which-binary correction (env-toggle fingerprint): sparse forward = TWO kernels by work product.
+  decide_auto_version qL*kL*D>=2.147e9 -> V2 matmul2d (sparse_kernel_source_v2, BaseNAXFrag::mma);
+  else -> V1 scalar (sparse_kernel_source). default==v2=1.20ms; v1=49.3ms (~41x slower). Corrects
+  Phase A "D=64 slow" -> it's the work threshold (D=64@N4096 + D=128@N<4096 fall to V1 scalar).
+- Correctness vs INDEPENDENT manual fp32 oracle (not SDPA/not kernel, lesson #11): V2 + V1 both pass
+  ALL edges (banded/scattered/density-extremes/all-masked-qblock/causal/GQA/ndim-2/3/4), err<=7.9e-5,
+  finite. 13 LOCKED cells (tests/test_sparse_family_correctness_lock.py).
+- Mask-faithfulness (Phase-F premise) CONFIRMED: D=128 symmetric 32x32 == current 32x16 byte-identical
+  (Δ=0.0) for sliding-window/causal/strided; both differ from exact-element by the same 1.1e-1
+  (granularity-independent block-approx). => Phase F can route D=128->symmetric V2 by REGENERATING at
+  32x32, zero correctness cost (NOT OR-merge). Caveat: strided>BK + LCSA top-k not isolated.
+- Paper-fidelity: both kernels are faithful block-sparse FA-2 (no inspired-by deviation).
+- Comment sweep (comment-only): cpp:13 "Phase1.3 will swap matmul2d"->done; lcsa:21 "Phase1.5 will
+  introduce dispatch"->exists; "PoC stage"->production (lcsa:183, cpp:1101).
+- Deliverables: sparse-family-spec.md (durable) + lock test (13) + phase-B1 report + ledger update.
+- Ran: env-toggle + fp32-oracle edges + faithfulness + lock + full suite. Validated: 1856 passed,
+  2 skipped. No kernel/routing/mask/bug change (comment-only). 0 orphans. NOT tagged.
+- Git: test + docs + comment fixes committed below.

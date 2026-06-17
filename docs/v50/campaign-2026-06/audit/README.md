@@ -5,9 +5,13 @@ this ledger is the working spine, derived from the Phase-A prompt's phase refere
 the canonical master plan lands.
 
 ## Phases (as referenced)
-- **A — Runtime dispatch ground-truth + regression lock** (this phase). DONE.
-- **B — Per-kernel audit** (correctness/coverage per kernel; e.g. GNA exact-window reference, STEEL
-  variant fingerprint, sparse-backward dV-native). Pending.
+- **A — Runtime dispatch ground-truth + regression lock**. DONE (`0fb1020`).
+- **B1 — Sparse/LCSA family per-kernel audit**. DONE — `sparse-family-spec.md` (durable) +
+  `tests/test_sparse_family_correctness_lock.py` (13 cells) + `phase-B1-sparse-family-report.md`.
+  Headline: sparse forward = V2 matmul2d (work≥2.147e9) OR V1 scalar (below, ~41× slower);
+  both fp32-correct all edges; D=128 32×32 mask convention proven byte-faithful (Phase-F premise).
+- **B2–B4 — remaining per-kernel families** (dense STEEL variants, GNA exact-window, paged/TQ, conv,
+  backward). Pending.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +

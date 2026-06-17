@@ -18,8 +18,8 @@ Constraint (Phase 1.1 carry-over):
   - block_mask total bytes must be >= 4096 (MLX inlines smaller buffers in
     constant address space which the kernel does not yet handle).
 
-Phase 1.5 will introduce sparse_attention_dispatch() as a router that wraps
-this and falls back to v2.33.1 cached-SDPA fallback for shapes outside
+`sparse_attention_dispatch()` (below) is the router that wraps this and falls
+back to the cached-SDPA path for shapes outside
 Sprint B's envelope.
 """
 from __future__ import annotations
@@ -180,7 +180,8 @@ def sparse_attention_nax_with_lse(
     gradients; consistent sparse-LSE forward + sparse backward gives
     correct gradients).
 
-    Constraints (V1 kernel only at PoC stage):
+    Constraints (the with_lse path uses the V1 generator only — LSE not yet
+    emitted by the V2 matmul2d kernel; production, not PoC):
       - 2-D mask (NQ, NK) bool — 3-D / 4-D fall back to dense
         sparse_attention_nax (no LSE return)
       - D in {64, 128}, BT in {16, 32, 64}, fp16/bf16
