@@ -702,41 +702,22 @@ def should_use_native_backward(
 ) -> bool:
     """Return whether native STEEL backward should be used for this shape.
 
-    Priority:
-      1) ``MFA_FORCE_NATIVE_BWD=0|1`` hard override (for supported shapes).
-      2) benchmark-backed narrow policy table.
+    Decided by the benchmark-backed narrow policy table.
 
     Safety constraints (always enforced):
       - causal only
       - D in {64, 128}
       - dtype in {float16, bfloat16}
+
+    Note: the ``MFA_FORCE_NATIVE_BWD=0|1`` override knob was removed in
+    v2.56.0 — its deprecation cycle (announced v2.50.0, "target removal
+    v2.51+") was complete, and forced STEEL backward was measured to be
+    dominated at every cell (V34 at D=64, SDPA-vjp at D=128; sprint-C
+    Track 2).  The STEEL backward kernel itself remains reachable via
+    ``backend="mfa"`` (keep-all-paths); only the env-var knob was removed.
     """
     dtype_key = _native_bwd_dtype_key(dtype)
     supported = causal and (head_dim in (64, 128)) and (dtype_key is not None)
-
-    force = os.environ.get("MFA_FORCE_NATIVE_BWD")
-    if force == "1":
-        # v2.50 Prompt 5f Phase E — KD-5 disposition: STEEL backward at
-        # D=128 N≥2048 has a known zeroed-blocks bug (see KD-5 in
-        # docs/v50/known-debt-v2.50.md).  V34 backward NAX-direct is
-        # the production path.  This env var routes through legacy
-        # STEEL backward and is now deprecated.
-        import warnings
-        warnings.warn(
-            "MFA_FORCE_NATIVE_BWD is deprecated: SUPERSEDED, not broken.  "
-            "STEEL backward is correct at every cell (the KD-5 "
-            "dispatch/generator BK mismatch was fixed in the 2026-05 "
-            "review; rmse ~4e-5 at the formerly-affected cells), but the "
-            "auto dispatch now selects the optimal backward per cell — "
-            "V34 NAX-direct at D=64 causal (2.2-2.6x, default-on since "
-            "Phase II-0), SDPA-vjp elsewhere — making this flag redundant. "
-            "Removal remains a future Marco-gated step.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return supported
-    if force == "0":
-        return False
 
     if not supported:
         return False

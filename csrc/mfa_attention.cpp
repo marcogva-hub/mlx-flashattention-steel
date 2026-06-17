@@ -798,6 +798,14 @@ void MFAttention::eval_gpu(
   //
   // Guard sweep (Axis 1, 2026-03-21): V3 wins at all B*H≥4 (worst=0.665x V2).
   // At B=1 H=4 N=2048, grid=256 tiles >> 32 CUs — occupancy is not the limit.
+  //
+  // RE-VALIDATED on M5 Max / macOS 26.6 (Queue Closure Sprint, 2026-06-17,
+  // 3-session §4-strict, V3 vs V2 the fallback): the M1 verdict HOLDS — V3 is
+  // faster-or-parity at every measured auto-fire cell. Windowed (the
+  // production-reachable path on M5): D=64 N4096 0.68x (V3 ~32% faster),
+  // N8192 0.92x; D=128 N4096 0.97x, N8192 ~parity. backend="mfa": D=64 N4096
+  // 0.86x, D=128 N4096 ~parity (1.02x). No cell where V3 loses. (D=128 N2048
+  // was HIGH_VARIANCE r=0.43 — V3-faster-or-parity in all 3 sessions.)
   // Production routing: V3 dispatched when shape is in the winning regime.
   // Shape guard: causal only, N above threshold per D, B*H≥4.
   // Set MFA_DISABLE_V3=1 to force V2 for benchmarking/debugging.

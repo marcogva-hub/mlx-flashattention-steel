@@ -15,7 +15,16 @@ For complete benchmark tables and architectural notes, see
 - **Non-causal D=64/128** enabled on M1/M2 only (1.06-1.56×); M3+ stays SDPA.
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** remains a specialized decode backend (narrow policy).
-- **V3/V4/V5** remain experimental/hardware-dependent.
+- **V3** is **conditionally auto-routed** (not opt-in) for causal, N≥4096 (D=64) /
+  N≥2048 (D=128), B·H≥4, f16/bf16 — re-validated on **M5 Max / macOS 26.6** (Queue
+  Closure Sprint, 3-session §4-strict, V3 vs V2 the fallback): V3 is faster or at
+  parity at every measured cell — windowed D=64 N=4096 `~3.4 ms vs ~4.9 ms` (0.68×,
+  V3 ~32% faster), D=64 N=8192 0.92×, D=128 N=4096 0.97×, D=128 N=8192 ~parity
+  (0.998×); `backend="mfa"` dense D=64 N=4096 0.86×, D=128 N=4096 ~parity (1.02×).
+  Numbers are compute-bound / OS-sensitive (one cell, D=128 N=2048, was HIGH_VARIANCE
+  r=0.43 but V3-faster-or-parity in all 3 sessions). The M1-2026-03 "1.015× vs V2"
+  verdict holds on M5, stronger at D=64.
+- **V4/V5** remain experimental opt-in (`MFA_ENABLE_V4`/`MFA_ENABLE_V5`), never auto-routed.
 - **TurboQuant** KV cache compression (Phase 1–4) production-ready.
 - **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
 - **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).

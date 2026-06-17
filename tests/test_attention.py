@@ -11045,31 +11045,26 @@ class TestSageDecodePolicy:
 
 
 class TestNativeBackwardPolicy:
-    """Native backward policy + env override behavior."""
+    """Native backward policy-table behavior.
 
-    def test_force_native_bwd_override_precedence(self, monkeypatch):
-        """MFA_FORCE_NATIVE_BWD=0|1 has higher priority than auto policy."""
-        from mlx_mfa.dispatch_policy import should_use_native_backward
+    The MFA_FORCE_NATIVE_BWD override knob was removed in v2.56.0
+    (deprecation cycle complete; forced STEEL backward was dominated at
+    every cell — sprint-C Track 2).  Routing follows the benchmark-backed
+    policy table only; the now-removed env var is inert — see
+    tests/test_v50_prompt_5f_kd5_deprecation.py for the removal guard.
+    """
 
-        monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", "1")
-        assert should_use_native_backward(64, 256, True, dtype=mx.float16) is True
-
-        monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", "0")
-        assert should_use_native_backward(64, 16384, True, dtype=mx.float16) is False
-
-    def test_auto_policy_stays_disabled_without_winning_regime(self, monkeypatch):
+    def test_auto_policy_stays_disabled_without_winning_regime(self):
         """Auto policy keeps native backward off until benchmark-backed wins exist."""
         from mlx_mfa.dispatch_policy import should_use_native_backward
 
-        monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
         assert should_use_native_backward(64, 16384, True, dtype=mx.float16) is False
         assert should_use_native_backward(128, 16384, True, dtype=mx.bfloat16) is False
 
-    def test_unsupported_shapes_never_route_native(self, monkeypatch):
+    def test_unsupported_shapes_never_route_native(self):
         """Non-causal, D>128, and float32 must stay off native backward."""
         from mlx_mfa.dispatch_policy import should_use_native_backward
 
-        monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
         assert should_use_native_backward(256, 8192, True, dtype=mx.float16) is False
         assert should_use_native_backward(64, 8192, False, dtype=mx.float16) is False
         assert should_use_native_backward(64, 8192, True, dtype=mx.float32) is False
@@ -11077,20 +11072,18 @@ class TestNativeBackwardPolicy:
 
 @requires_ext
 class TestNativeBackwardRouting:
-    """Integration checks for native backward routing in custom VJP path."""
+    """Integration checks for backward routing in the custom VJP path."""
 
-    def _run_backward_and_count_native_calls(self, monkeypatch, force_env):
+    def test_default_routing_uses_sdpa_vjp(self, monkeypatch):
+        """The default flash_attention VJP uses SDPA-vjp, not native STEEL
+        backward: the policy table is conservative and the
+        MFA_FORCE_NATIVE_BWD knob that used to force native was removed in
+        v2.56.0."""
         import mlx_mfa.attention as attn
         import mlx_mfa._ext as ext
         from mlx_mfa import flash_attention
 
         attn._make_mfa_custom.cache_clear()
-
-        if force_env is None:
-            monkeypatch.delenv("MFA_FORCE_NATIVE_BWD", raising=False)
-        else:
-            monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", force_env)
-
         calls = {"n": 0}
         original = ext.mfa_steel_backward
 
@@ -11118,17 +11111,9 @@ class TestNativeBackwardRouting:
         )
         mx.eval(dq, dk, dv)
         attn._make_mfa_custom.cache_clear()
-        return calls["n"]
-
-    def test_force_native_bwd_on_calls_native_kernel(self, monkeypatch):
-        """MFA_FORCE_NATIVE_BWD=1 should route supported shapes to native kernel."""
-        n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="1")
-        assert n_calls > 0
-
-    def test_force_native_bwd_off_keeps_sdpa_vjp(self, monkeypatch):
-        """MFA_FORCE_NATIVE_BWD=0 should keep native kernel unused."""
-        n_calls = self._run_backward_and_count_native_calls(monkeypatch, force_env="0")
-        assert n_calls == 0
+        assert calls["n"] == 0, (
+            "Default VJP must use SDPA-vjp; native STEEL backward is no "
+            "longer auto-routed (policy table conservative; force knob removed)")
 
     # Repo review 2026-05: the D=128 N>=2048 xfails (KD-5 "zeroed blocks")
     # are REMOVED — root cause found and fixed: MFASteelBwdDKV dispatch
@@ -11136,16 +11121,22 @@ class TestNativeBackwardRouting:
     # generator overrides BK to 16 for D>64, leaving K-rows beyond NK*16
     # unwritten.  Dispatch BK now mirrors the generator override
     # (mfa_attention.cpp) and STEEL backward D=128 matches SDPA-VJP.
+    #
+    # v2.56.0: the MFA_FORCE_NATIVE_BWD knob that used to route here was
+    # removed.  Per keep-all-paths the STEEL backward kernel is RETAINED;
+    # this guard now exercises it via its DIRECT ext binding
+    # (mfa_forward_with_lse -> mfa_steel_backward), so the kernel stays
+    # tested even though it is no longer auto-routed.
     @pytest.mark.parametrize("D,N", [
         (64, 2048),
         (64, 4096),
         (128, 2048),
         (128, 4096),
     ])
-    def test_target_shapes_native_backward_matches_sdpa_gradients(self, monkeypatch, D, N):
-        """Target causal shapes: force-native gradients should match SDPA-VJP gradients."""
-        import mlx_mfa.attention as attn
-        from mlx_mfa import flash_attention
+    def test_steel_backward_matches_sdpa_gradients(self, D, N):
+        """STEEL backward (direct binding) gradients match SDPA-VJP at target shapes."""
+        import mlx_mfa._ext as ext
+        from mlx_mfa.attention import _fallback_sdpa
 
         B, H = 1, 2
         scale = 1.0 / math.sqrt(D)
@@ -11155,40 +11146,27 @@ class TestNativeBackwardRouting:
         v = mx.random.normal([B, H, N, D]).astype(mx.float16)
         dO = mx.random.normal([B, H, N, D]).astype(mx.float16)
 
-        def _run(force_value):
-            monkeypatch.setenv("MFA_FORCE_NATIVE_BWD", force_value)
-            attn._make_mfa_custom.cache_clear()
-            _, (dq, dk, dv) = mx.vjp(
-                lambda qi, ki, vi: flash_attention(
-                    qi, ki, vi, scale=scale, causal=True, backend="mfa"
-                ),
-                [q, k, v],
-                [dO],
+        O, L = ext.mfa_forward_with_lse(q, k, v, scale, True)
+        dq_native, dk_native, dv_native = ext.mfa_steel_backward(
+            q, k, v, O, L, dO, scale, True)
+        mx.eval(dq_native, dk_native, dv_native)
+
+        _, (dq_sdpa, dk_sdpa, dv_sdpa) = mx.vjp(
+            lambda qi, ki, vi: _fallback_sdpa(qi, ki, vi, scale, True),
+            [q, k, v],
+            [dO],
+        )
+        mx.eval(dq_sdpa, dk_sdpa, dv_sdpa)
+
+        for name, a, b in (("dQ", dq_native, dq_sdpa),
+                           ("dK", dk_native, dk_sdpa),
+                           ("dV", dv_native, dv_sdpa)):
+            np.testing.assert_allclose(
+                np.array(a.astype(mx.float32)),
+                np.array(b.astype(mx.float32)),
+                atol=5e-2,
+                err_msg=f"{name} mismatch for D={D} N={N}",
             )
-            mx.eval(dq, dk, dv)
-            return dq, dk, dv
-
-        dq_native, dk_native, dv_native = _run("1")
-        dq_sdpa, dk_sdpa, dv_sdpa = _run("0")
-
-        np.testing.assert_allclose(
-            np.array(dq_native.astype(mx.float32)),
-            np.array(dq_sdpa.astype(mx.float32)),
-            atol=5e-2,
-            err_msg=f"dQ mismatch for D={D} N={N}",
-        )
-        np.testing.assert_allclose(
-            np.array(dk_native.astype(mx.float32)),
-            np.array(dk_sdpa.astype(mx.float32)),
-            atol=5e-2,
-            err_msg=f"dK mismatch for D={D} N={N}",
-        )
-        np.testing.assert_allclose(
-            np.array(dv_native.astype(mx.float32)),
-            np.array(dv_sdpa.astype(mx.float32)),
-            atol=5e-2,
-            err_msg=f"dV mismatch for D={D} N={N}",
-        )
 
 
 class TestMainCLI:

@@ -34,7 +34,8 @@ the session record; consolidated verdicts:
 - All 7 Python lru factories: every closure-affecting input is a factory
   arg; all env steering reads are LIVE inside closures (verified line-level
   for _make_mfa_custom: MFA_ENABLE_V34_BACKWARD, MFA_V34_BWD_KERNEL,
-  MFA_V34BWD_USE_FUSED, MFA_V34BWD_WM, MFA_FORCE_NATIVE_BWD).
+  MFA_V34BWD_USE_FUSED, MFA_V34BWD_WM; MFA_FORCE_NATIVE_BWD was also a
+  live read here until v2.56.0 removed the knob).
 - STEEL forward/backward scale: runtime params-struct field, NOT baked
   in source → correctly absent from KernelKey.
 - MFAEnvConfig invalidate() interaction: V2/V3/V5 block overrides flow

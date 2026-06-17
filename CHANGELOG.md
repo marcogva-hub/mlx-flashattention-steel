@@ -2,6 +2,41 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.56.0] — 2026-06-17 — Marco-gated queue closure: MFA_FORCE_NATIVE_BWD removed; V3 auto-routing validated on M5/26.6
+
+This release closes the post-campaign Marco-gated queue. No attention/conv kernel
+math changed; the one behavioral change is the removal of a deprecation-complete
+public env var (hence a minor bump).
+
+### Removed
+
+- **`MFA_FORCE_NATIVE_BWD` env var** — removed after its deprecation cycle completed.
+  It was deprecated in **v2.50.0** with a live `DeprecationWarning` and a documented
+  "target removal v2.51+"; it is removed now (v2.50 → v2.56 = 6 minor versions of
+  warning). Forced STEEL backward was measured to be **dominated at every cell** (V34
+  NAX-direct wins at D=64 causal, SDPA-vjp wins at D=128 — `sprint-C` Track 2), so the
+  knob selected a correct-but-never-optimal path. **Migration**: remove any
+  `MFA_FORCE_NATIVE_BWD=1` from your environment — backward routing already uses the
+  optimal path (V34 at D=64 causal, SDPA-vjp elsewhere). **Keep-all-paths**: the STEEL
+  backward *kernel* is retained (reachable via the `_ext.mfa_steel_backward` binding);
+  only the env-var knob was removed. The benchmark policy table (unset-path behavior)
+  is unchanged — unset/auto routing is byte-identical to v2.55.0.
+
+### Validated (no behavior change)
+
+- **STEEL V3 forward auto-routing re-validated on M5 Max / macOS 26.6.** V3 is
+  *conditionally auto-routed* (not opt-in) for causal, N≥4096 (D=64) / N≥2048 (D=128),
+  B·H≥4, f16/bf16 — the windowed-causal path real M5 users reach (dense routes to SDPA).
+  A 3-session §4-strict re-bench (V3 vs V2, the fallback) confirms V3 is **faster or at
+  parity at every measured cell** — windowed D=64 N=4096 `~3.4 ms vs ~4.9 ms` (0.68×, V3
+  ~32% faster), D=64 N=8192 0.92×, D=128 N=4096 0.97×, D=128 N=8192 ~parity; `backend=
+  "mfa"` D=64 N=4096 0.86×, D=128 N=4096 ~parity. The M1-2026-03 verdict holds on M5
+  (stronger at D=64). No routing change; the prior "opt-in / regresses vs V2" framing was
+  corrected (it was stale — V3 was promoted to conditional-auto in 2026-03 and wins vs V2).
+  Numbers are compute-bound / OS-sensitive (one cell HIGH_VARIANCE, V3-faster-or-parity in
+  all 3 sessions). **Reproduce**: `benchmarks/methodology/v3_v2_rebench.py` (raw
+  `v3rebench_out/v3_v2_26.6.jsonl`). V4/V5 remain experimental opt-in (`MFA_ENABLE_V4`/`V5`).
+
 ## [2.55.0] — 2026-06-16 — correctness release: backend="mfa"/GNA OOB + lifetime fixes; honest 26.6 perf re-statement
 
 v2.55.0 is a **correctness release**. It fixes four silent-corruption bugs on the
