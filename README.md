@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.55.0** (PyPI).  The complete, corrected state of
+Current version: **2.56.0** (PyPI).  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
