@@ -1416,3 +1416,28 @@ STATUS: COMPLETE
 - New skill: ~/.claude/skills/mlx-mfa-nax-matmul2d-correctness (the 4 directed footgun classes + int64-widening + Day-J/IV-review).
 - No diagnostic-only correctness item (all fixed in-wave). A3-1 additive to held v2.56.0.
 - Ran: 5+1 review agents, full suite x2 per wave, stdlib oracle, swift build. Validated: oracle evidence per finding. Git: M1/M2/M3 + report below; m5max edits uncommitted (no .git). 0 orphans.
+
+---
+## [2026-06-17 08:00] [CLAUDE] Sprint IV-OPT — incremental optimization CLOSED (broadly at floor); V6 NAX green light
+STATUS: COMPLETE
+
+- Type: profile-driven incremental overhead recovery (not kernel dev). Executed: 0 (by design — at floor).
+- R.1 non-decode profile (M5/26.6, iv_opt_nondecode_profile.py): Python-dispatch % of wall-clock —
+  prefill 1.2/0.5/0.2% (N2048/4096/8192), windowed 0.4/0.2%, sparse-attend 0.7/0.4%, GNA-native 1.5%.
+  EVERY mlx-mfa attend path kernel-dominated (98%+) -> at floor (confirms IV-0 across all regimes).
+- The one non-trivial line: make_lcsa_mask build 533us@4096 / 1039us@8192 (~12-21% of sparse path IF
+  rebuilt per call). Investigated: NOT cacheable — uses q/k VALUES (content-dependent top-k mask;
+  caching = stale-mask footgun). flash_attention_sparse takes a PREBUILT mask -> mlx-mfa never
+  rebuilds internally -> caller-controlled, outside the hot path.
+- R.2 recompute sweep: make_lcsa_mask = legit per-call work; param-deterministic builders (gna/sliding/
+  causal) memoizable in principle but caller-usage-dependent, not measured-dominant -> diagnostic D-OPT-1.
+  KD-2 (fwd-recomputed-in-bwd) class: A2 review clean, not re-litigated.
+- R.3 post-fix gain check: A3-1 widening = once-per-tile address arith (not inner-loop), immeasurable,
+  suite green confirms no regress; V3 already optimal (queue-closure measured). No gain unlocked.
+- R.4 EXECUTED: NONE (strict bar — nothing measured-dominant; Pattern #6 for optimization).
+- R.5 FLOOR FINDING: all regimes (decode/prefill/windowed/sparse/GNA/conv) broadly at the irreducible
+  floor (kernel + MLX sync). INCREMENTAL OPTIMIZATION CLOSED. Green light for V6 NAX / dequant-in-GEMM
+  (the real frontier — exploit the Neural Accelerators per Day-J, not Python overhead).
+- Diagnostic ladder: D-OPT-1 (defensive param-mask memoization, low value, caller-dependent).
+- Ran: non-decode profiler. Validated: per-regime attribution + make_lcsa_mask content-dependence
+  (read impl). NO code changed. Git: report + profiler artifact below. 0 orphans. Held v2.56.0 unchanged.
