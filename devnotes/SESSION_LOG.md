@@ -1637,3 +1637,27 @@ STATUS: COMPLETE
 - Ran: which-binary + symmetric/asymmetric density sweeps + correctness. Validated: asymmetric==SDPA
   (0.0), symmetric tracks density + correct + plausibility-gated. 0 orphans. NOT tagged.
 - Git: increment-0 report + 3 correction banners committed below.
+
+---
+## [2026-06-17 17:30] [CLAUDE] Runtime dispatch cartography — which-binary fingerprinted on M5/26.6
+STATUS: COMPLETE
+
+- Method: every "which kernel runs" cell by RUNTIME FINGERPRINT (byteΔ vs mx.fast.sdpa+bias: 0.0=SDPA
+  fallback bit-identical, ~1e-6=real sparse different kernel; + flat/sloped timing), NOT source-trace.
+- MAP (M5/26.6): dense flash_attention = SDPA (byteΔ 0.0). flash_attention_sparse: D=128 + EVERY
+  built-in mask-maker (causal/sliding/strided/lcsa -> asymmetric [128,256]) = SILENT dense-SDPA
+  fallback (byteΔ 0.0, flat 3.7ms); D=128 + hand SYMMETRIC [128,128] = real NAX sparse, WINS (byteΔ
+  3.8e-6, 1.19ms@d=0.25 = 2.5x vs SDPA; GQA+ndim-3 too). D=64 default (symmetric) = real sparse but
+  PATHOLOGICALLY SLOW (V1 scalar): LOSES to SDPA 0.66x@d=0.06 -> 0.05x@d=1.0.
+- Root cause of D=128 fallback: _steel_block_config(128)=(32,16) -> asymmetric mask -> bypasses the
+  M5+ symmetric auto-route (attention.py:3128) -> STEEL path -> M5+ SDPA fallback (:3239), because the
+  asymmetric STEEL kernel is disabled by the (long)p->NK Metal-compiler miscompile (6 source
+  workarounds failed; docs/v6-nax/sparse-bug-investigation.md).
+- Prize: D=128 routing onto the symmetric NAX kernel unlocks 4.2x@d=0.06 -> 1.68x@0.5 vs SDPA (=vs
+  today's default which IS SDPA). NO prize at D=64 (sparse slower than SDPA).
+- Fix options (scope only): (a) fix (long)p->NK = HIGH-risk compiler dead-end (NOT recommended);
+  (b) route asym->symmetric NAX (exact re-block, bt=16 perf unverified, OR-downsample WRONG for fwd);
+  (c) RECOMMENDED: D-aware default-convention+routing — D=128 symmetric->NAX-sparse, D=64->SDPA.
+- Ran: runtime_dispatch_fingerprint.py + matrix probes. Validated: byteΔ + timing + win/loss per cell;
+  eff<=42.7<=51.8 peak; fp32 banded+scattered. No build/routing/fix. 0 orphans. NOT tagged.
+- Git: report + fingerprint harness committed below.
