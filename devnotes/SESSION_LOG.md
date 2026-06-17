@@ -1517,3 +1517,50 @@ STATUS: HANDOFF_READY
   option 2 break-next-minor. Mechanical rename executes after Marco's env-var call.
 - Ran: read-only code trace + the v6gate numbers (effective, plausibility-gated). NO code changed. 0 orphans.
 - Git: nax-cartography-and-rename-report.md + log below.
+
+---
+## [2026-06-17 13:30] [CLAUDE] V34→V6 nomenclature unification — Phase 2 rename COMPLETE (R1-R5)
+STATUS: COMPLETE
+
+### Plan
+- Objective: unify the V34 token (dev working-name for the V6 NAX kernel) to V6
+  across ALL code + docs, env-var aliases per Marco's disposition. No kernel/
+  routing/measurement logic change. No tag/publish.
+- Marco env-var call: centralized alias table (30 vars), one-shot deprecation
+  warning/process, hand-designed old→new (V34→V6, collision→NAX), migration
+  table, removal v3.0.0.
+
+### Changes (revertible waves, suite green after each)
+- R1 (660fa91): env-var alias layer. `csrc/mfa_env_aliases.hpp` + `mlx_mfa/_env_aliases.py`
+  (new->old 30-entry map, getenv_aliased new-takes-precedence + one-shot warn).
+  Routed 36 C++ + 7 Python reads to NEW names. Gate#9 env-regex updated. NON-breaking.
+- R2 (52d0799): code symbol + MSL-macro rename. R2a env-string migration (prefix-
+  ordered, collision-first) so the blind sweep couldn't corrupt a public env name +
+  dump-helper getenv->getenv_aliased; R2b blind V34->V6NAX/v34->v6nax (createV6NAXSource,
+  compile_v6nax_backward_pipeline, V6NAX*_TK macros, useV6NAX, ...). PERF_CLAIMS.md
+  synced (test-coupled). Rebuilt.
+- R4 (fcfc640): docs V34->V6NAX across 130 .md + NAMING.md glossary (kernel lineage +
+  casing scheme + 30-var migration table + provenance) + CHANGELOG [Unreleased] +
+  csrc/v6nax_probe.cpp rename (+CMake) + bench v6nax_* renames + test_v6_env_aliases.py
+  (contract + C++/Python map LOCKSTEP parity).
+- Cartography report (528f0ab, prior) RETAINS V34 — its subject IS the V34/V6 distinction.
+
+### Dependency & regression check
+- Callers verified: all 43 env reads routed; bindings.cpp already called v6nax_probe_*;
+  gate#9 + perf-claim public-API tests track renamed symbols.
+- Test coverage: test_v6_env_aliases.py locks the deprecation contract + map parity.
+
+### Validation
+- Ran: rebuild (Successfully built) + `pytest tests/ -q` ×2.
+- Validated: 1832 passed, 2 skipped, both runs; 0 orphan procs. grep [Vv]34 over repo
+  matches ONLY the allowlist: 2 alias maps, NAMING.md, cartography report, CHANGELOG
+  deprecation entry, immutable recorded-measurement .json/.txt artifacts.
+
+### Git
+- 660fa91 (R1), 52d0799 (R2), fcfc640 (R4), branch master. Pushed. NOT tagged/published.
+
+### Notes for Marco
+- Public API NON-breaking: old MFA_*V34* env names still work (deprecated, warn once,
+  removed v3.0.0). New canonical MFA_V6* names in NAMING.md.
+- NO kernel/routing/measurement logic changed (rename only). v2.57.0 will carry the
+  CHANGELOG [Unreleased] entry when you authorize a cut.
