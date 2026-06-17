@@ -1270,3 +1270,16 @@ STATUS: COMPLETE
 - R.5 VERDICT: REMOVE-ELIGIBLE, deprecation cycle complete. Queue entry ACCURATE (unlike V34). Only KEEP argument = thin research/determinism escape-hatch + standing "keep deprecated" steer.
 - Ran: read-only archaeology + live-code grep. Validated: verdict traces to dispatch_policy.py:717-739 + sprint-C matrix + ENV_VARS:60 + MIGRATION:77. NO code changed.
 - Git: docs/v50/campaign-2026-06/queue-force-native-bwd-archaeology.md (new) + PHASE-III-CLOSE queue row + log. Commit below. branch master. Archaeology B next; Marco decides after both.
+
+---
+## [2026-06-17 01:50] [CLAUDE] Queue Archaeology B — V3/V4/V5 state of truth → SPLIT (V4/V5 clean; V3 gap+stale) (no action)
+STATUS: COMPLETE
+
+- Type: archaeology only (read+grep+live-code). NO removal/build/re-gating (keep-all-paths). B of two.
+- R.1 intent+evidence: V3 separate K/V smem (−2 barriers/tile); V4 direct-K; V5 D-blocked. vs-V2 verdicts ALL M1-Max-2026-03 (measured, internal): V3 1.015× WIN in regime (autoresearch mfa_attention.cpp:793-799); V4 0.51-0.98×; V5 0.60-0.90×.
+- R.2 GATING (key finding): V4 opt-in (enable_v4, :588), V5 opt-in (enable_v5, :693) — never auto. **V3 AUTO-ROUTED** (:808-818 v3_shape_ok = causal && N≥4096/2048 && B·H≥4; enable_v3 only FORCES). Queue "opt-in only/regress vs V2" is DOUBLY STALE for V3 (auto-routed + won-vs-V2). V3 default-reachable on M5 via windowed path (dense→SDPA at :598; window→MFA→V3) + backend="mfa".
+- R.2 correctness: ALL correct on M5 (suite tests pass). V3 smem-staged V (load_safe) → NOT in III-9 direct-V-read class (sprint-III-9:90 lists only V2-single-pass/GNA/V5) → OOB-safe; window supported (gen :206-294). V5 III-9 clamp IN (mfa_steel_fwd_v5.cpp:389-392) + v2.55.0 smoke 2.7e-5. No correctness gap, no stale guard.
+- R.3 currency: V4/V5 opt-in → verdict moot. V3 auto-fires on M1-2026-03 verdict, never re-measured M5/26.6; V3/V2 internal (OS-stable) but M1→M5 HW shift uncovered + tradeoff already flipped once on M1 → flip-plausible (Pattern #6 risk: auto-selecting correct-but-maybe-slower kernel for windowed users).
+- R.4 VERDICT: V4/V5 CLEAN-KEEP. V3 GAP (stale framing) + STALE-VERDICT. Marco-gated next steps (flagged, NOT run): (1) correct V3 queue/doc framing; (2) Pattern #6 re-bench V3-vs-V2 on M5/26.6 at auto-fire regime (not trivial — §4 sweep).
+- Ran: read-only archaeology + live-code grep. Validated: traces to mfa_attention.cpp:588/693/808-818 + dispatch_policy.py:598 + mfa_steel_fwd_v5.cpp:389-392 + sprint-III-9:90 + TestSteelV3/4/5. NO code changed.
+- Git: docs/v50/campaign-2026-06/queue-v3v4v5-archaeology.md (new) + PHASE-III-CLOSE queue row + log. Commit below. branch master. Marco-gated queue (A+B) now fully dispositioned.
