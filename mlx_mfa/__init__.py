@@ -298,7 +298,7 @@ def diagnostics() -> dict:
     import os
     from mlx_mfa.attention import _get_is_m3_plus_cached, _get_has_nax_cached
     from mlx_mfa.dispatch_policy import (
-        _v34_backward_carveout,
+        _v6nax_backward_carveout,
         _dispatch_dtype_key,
     )
 
@@ -328,26 +328,26 @@ def diagnostics() -> dict:
     fp16 = _dispatch_dtype_key(mx.float16)
     bf16 = _dispatch_dtype_key(mx.bfloat16)
     _carveout = {
-        "d64_qL4096_fp16_noncausal": _v34_backward_carveout(
+        "d64_qL4096_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=64, seq_len=4096, causal=False, dtype_key=fp16),
-        "d64_qL8192_fp16_noncausal": _v34_backward_carveout(
+        "d64_qL8192_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=64, seq_len=8192, causal=False, dtype_key=fp16),
-        "d64_qL4096_bf16_noncausal": _v34_backward_carveout(
+        "d64_qL4096_bf16_noncausal": _v6nax_backward_carveout(
             head_dim=64, seq_len=4096, causal=False, dtype_key=bf16),
-        "d64_qL2048_fp16_noncausal": _v34_backward_carveout(
+        "d64_qL2048_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=64, seq_len=2048, causal=False, dtype_key=fp16),
-        "d64_qL4096_fp16_causal": _v34_backward_carveout(
+        "d64_qL4096_fp16_causal": _v6nax_backward_carveout(
             head_dim=64, seq_len=4096, causal=True, dtype_key=fp16),
         # v2.50 Prompt 5b Section D: D=128 entries (broadened carve-out)
-        "d128_qL2048_fp16_noncausal": _v34_backward_carveout(
+        "d128_qL2048_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=128, seq_len=2048, causal=False, dtype_key=fp16),
-        "d128_qL4096_fp16_noncausal": _v34_backward_carveout(
+        "d128_qL4096_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=128, seq_len=4096, causal=False, dtype_key=fp16),
-        "d128_qL8192_fp16_noncausal": _v34_backward_carveout(
+        "d128_qL8192_fp16_noncausal": _v6nax_backward_carveout(
             head_dim=128, seq_len=8192, causal=False, dtype_key=fp16),
-        "d128_qL4096_fp16_causal": _v34_backward_carveout(
+        "d128_qL4096_fp16_causal": _v6nax_backward_carveout(
             head_dim=128, seq_len=4096, causal=True, dtype_key=fp16),
-        "d128_qL4096_bf16_noncausal": _v34_backward_carveout(
+        "d128_qL4096_bf16_noncausal": _v6nax_backward_carveout(
             head_dim=128, seq_len=4096, causal=False, dtype_key=bf16),
     }
 

@@ -152,9 +152,9 @@ void v6_nax_dispatch(
   }
 }
 
-// V34 — pipeline compile (no function constants; V34 uses a struct buffer
+// V6NAX — pipeline compile (no function constants; V6NAX uses a struct buffer
 // instead of FCs for params).
-void* v34_compile(
+void* v6nax_compile(
     const std::string& source,
     const std::string& function_name,
     void* raw_device) {
@@ -170,7 +170,7 @@ void* v34_compile(
                                                   options:opts
                                                     error:&error];
     if (!library) {
-      std::string msg = "V34 library compile failed";
+      std::string msg = "V6NAX library compile failed";
       if (error) msg += std::string(": ") + [[error localizedDescription] UTF8String];
       throw std::runtime_error(msg);
     }
@@ -178,12 +178,12 @@ void* v34_compile(
     NSString* fnName = [NSString stringWithUTF8String:function_name.c_str()];
     id<MTLFunction> function = [library newFunctionWithName:fnName];
     if (!function) {
-      throw std::runtime_error("V34 function not found: " + function_name);
+      throw std::runtime_error("V6NAX function not found: " + function_name);
     }
     id<MTLComputePipelineState> pipeline =
         [device newComputePipelineStateWithFunction:function error:&error];
     if (!pipeline) {
-      std::string msg = "V34 pipeline creation failed";
+      std::string msg = "V6NAX pipeline creation failed";
       if (error) msg += std::string(": ") + [[error localizedDescription] UTF8String];
       throw std::runtime_error(msg);
     }
@@ -191,23 +191,23 @@ void* v34_compile(
   }
 }
 
-// V34 dispatcher — Apple-style grid (NQ, H, B) with TG size 32*WM.
+// V6NAX dispatcher — Apple-style grid (NQ, H, B) with TG size 32*WM.
 // Params struct is set via setBytes:length:atIndex: at buffer 4 (Apple convention).
-struct V34ParamsHost {
+struct V6NAXParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
   // v2.50 Sprint 4 — causal offset (0 for standalone forward; nonzero
   // for decode/prefill-with-history).  Field order MUST match device-
-  // side V34Params struct in NAAttentionKernel.cpp::createV34Source().
+  // side V6NAXParams struct in NAAttentionKernel.cpp::createV6NAXSource().
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
-  // v2.36.x lse-write patch (must mirror V34Params layout exactly).
+  // v2.36.x lse-write patch (must mirror V6NAXParams layout exactly).
   int64_t L_strides[3];
 };
 
-void v34_dispatch(
+void v6nax_dispatch(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -221,7 +221,7 @@ void v34_dispatch(
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
     // Build params struct (Apple AttnParams subset).
-    V34ParamsHost params{};
+    V6NAXParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -230,7 +230,7 @@ void v34_dispatch(
     params.qL_rem = qL % BQ;          // 0 if aligned
     params.kL_rem = kL % BK;          // 0 if aligned
     // v2.50 Sprint 4 — qL_off=0 for standalone forward.  Decode/prefill-
-    // with-history would pass nonzero offset, but v34_dispatch is currently
+    // with-history would pass nonzero offset, but v6nax_dispatch is currently
     // only called from MFAV6Forward which always assumes qL_off=0.
     params.qL_off = 0;
     // BHND strides: Q is [B, Hq, qL, D] contiguous → strides (Hq*qL*D, qL*D, D, 1).
@@ -263,24 +263,24 @@ void v34_dispatch(
 }
 
 // =============================================================================
-// V34 backward dQ dispatcher (Phase 1 Section B of V34 backward Option β).
-// Mirrors v34_dispatch but with backward-specific param struct.
+// V6NAX backward dQ dispatcher (Phase 1 Section B of V6NAX backward Option β).
+// Mirrors v6nax_dispatch but with backward-specific param struct.
 // Buffers: Q=0, K=1, V=2, O=3, L=4, dO=5, dQ=6, params=7.
 // =============================================================================
 
-struct V34BwdQParamsHost {
+struct V6NAXBwdQParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
-  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V6NAX*Params struct).
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dQ_strides[3];
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
-void v34_dispatch_bwd_query(
+void v6nax_dispatch_bwd_query(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -293,7 +293,7 @@ void v34_dispatch_bwd_query(
 
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdQParamsHost params{};
+    V6NAXBwdQParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -343,26 +343,26 @@ void v34_dispatch_bwd_query(
 }  // namespace mlx_mfa
 
 // =============================================================================
-// V34 backward dK/dV dispatcher (Phase 2 of V34 backward Option β sprint).
+// V6NAX backward dK/dV dispatcher (Phase 2 of V6NAX backward Option β sprint).
 // Buffers: Q=0, K=1, V=2, O=3, L=4, dO=5, dK=6, dV=7, params=8.
 // Grid (NK, H, B), TG size 32 (single SG per TG).
 // =============================================================================
 
 namespace mlx_mfa {
 
-struct V34BwdKVParamsHost {
+struct V6NAXBwdKVParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
-  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V6NAX*Params struct).
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3], dK_strides[3], dV_strides[3];
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
-void v34_dispatch_bwd_kv(
+void v6nax_dispatch_bwd_kv(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -374,7 +374,7 @@ void v34_dispatch_bwd_kv(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdKVParamsHost params{};
+    V6NAXBwdKVParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -427,26 +427,26 @@ void v34_dispatch_bwd_kv(
 }  // namespace mlx_mfa
 
 // =============================================================================
-// V34 backward dV-only dispatcher (Phase 2.O2 — WM=4 Q-row partition).
+// V6NAX backward dV-only dispatcher (Phase 2.O2 — WM=4 Q-row partition).
 // Buffers: Q=0, K=1, V=2, L=3, dO=4, dV_partials=5, params=6.
 // Grid (NK, Hq, B), TG size 32*WM.
 // =============================================================================
 
 namespace mlx_mfa {
 
-struct V34BwdVParamsHost {
+struct V6NAXBwdVParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
-  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V6NAX*Params struct).
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3];
   int64_t L_strides[3], dO_strides[3];
   int64_t dVp_strides[4];  // [B, Hq, WM, kL] strides; D stride=1 implicit
 };
 
-void v34_dispatch_bwd_dv(
+void v6nax_dispatch_bwd_dv(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -458,7 +458,7 @@ void v34_dispatch_bwd_dv(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdVParamsHost params{};
+    V6NAXBwdVParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -499,12 +499,12 @@ void v34_dispatch_bwd_dv(
 }
 
 // =============================================================================
-// V34 backward dV SPARSE dispatcher — Prompt 5b Section A PoC.
+// V6NAX backward dV SPARSE dispatcher — Prompt 5b Section A PoC.
 // Buffers: Q=0, K=1, V=2, L=3, dO=4, dV_partials=5, params=6, block_mask=7.
 // Identical layout to dense dV except adds block_mask at buffer(7).
 // =============================================================================
 
-void v34_dispatch_bwd_dv_sparse(
+void v6nax_dispatch_bwd_dv_sparse(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -516,7 +516,7 @@ void v34_dispatch_bwd_dv_sparse(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdVParamsHost params{};
+    V6NAXBwdVParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -559,18 +559,18 @@ void v34_dispatch_bwd_dv_sparse(
 }  // namespace mlx_mfa
 
 // =============================================================================
-// V34 backward dK-only dispatcher (Phase 2.O2 sister to dV dispatcher).
+// V6NAX backward dK-only dispatcher (Phase 2.O2 sister to dV dispatcher).
 // Buffers: Q=0, K=1, V=2, O=3, L=4, dO=5, dK_partials=6, params=7.
 // =============================================================================
 
 namespace mlx_mfa {
 
-struct V34BwdKParamsHost {
+struct V6NAXBwdKParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
-  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V6NAX*Params struct).
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
   int64_t L_strides[3], dO_strides[3];
@@ -578,7 +578,7 @@ struct V34BwdKParamsHost {
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O) strides (FP32, [B,Hq,qL])
 };
 
-void v34_dispatch_bwd_dk(
+void v6nax_dispatch_bwd_dk(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -590,7 +590,7 @@ void v34_dispatch_bwd_dk(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdKParamsHost params{};
+    V6NAXBwdKParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -639,19 +639,19 @@ void v34_dispatch_bwd_dk(
 
 
 // =============================================================================
-// V34 backward FUSED dK+dV dispatcher (Sprint v2.39.0 Phase C.1.a, Option γ).
+// V6NAX backward FUSED dK+dV dispatcher (Sprint v2.39.0 Phase C.1.a, Option γ).
 // Buffers: Q=0, K=1, V=2, L=3, dO=4, dK_partials=5, dV_partials=6, params=7, D=8.
 // Grid (NK, Hq, B), TG size 32*WM.  Per-SG-slot outputs reduced via mx.sum(axis=2).
 // =============================================================================
 
 namespace mlx_mfa {
 
-struct V34BwdFusedParamsHost {
+struct V6NAXBwdFusedParamsHost {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
   int qL_rem, kL_rem;
-  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V34*Params struct).
+  // v2.50 Sprint 4 Phase 4b — causal offset (mirrors device-side V6NAX*Params struct).
   int qL_off;
   int64_t Q_strides[3], K_strides[3], V_strides[3];
   int64_t L_strides[3], dO_strides[3];
@@ -660,7 +660,7 @@ struct V34BwdFusedParamsHost {
   int64_t D_strides[3];  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL]
 };
 
-void v34_dispatch_bwd_fused_dkdv(
+void v6nax_dispatch_bwd_fused_dkdv(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -672,7 +672,7 @@ void v34_dispatch_bwd_fused_dkdv(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdFusedParamsHost params{};
+    V6NAXBwdFusedParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -731,7 +731,7 @@ void v34_dispatch_bwd_fused_dkdv(
 
 namespace mlx_mfa {
 
-void v34_dispatch_bwd_query_sparse(
+void v6nax_dispatch_bwd_query_sparse(
     void* pipeline_raw,
     void* enc_raw,
     int qL, int kL,
@@ -743,7 +743,7 @@ void v34_dispatch_bwd_query_sparse(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdQParamsHost params{};
+    V6NAXBwdQParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -786,7 +786,7 @@ void v34_dispatch_bwd_query_sparse(
   }
 }
 
-void v34_dispatch_bwd_dk_sparse(
+void v6nax_dispatch_bwd_dk_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM) {
@@ -794,7 +794,7 @@ void v34_dispatch_bwd_dk_sparse(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdKParamsHost params{};
+    V6NAXBwdKParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;
@@ -838,7 +838,7 @@ void v34_dispatch_bwd_dk_sparse(
   }
 }
 
-void v34_dispatch_bwd_fused_dkdv_sparse(
+void v6nax_dispatch_bwd_fused_dkdv_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM) {
@@ -846,7 +846,7 @@ void v34_dispatch_bwd_fused_dkdv_sparse(
     auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
     enc.set_compute_pipeline_state(reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
 
-    V34BwdFusedParamsHost params{};
+    V6NAXBwdFusedParamsHost params{};
     params.qL = qL;
     params.kL = kL;
     params.gqa_factor = Hq / Hk;

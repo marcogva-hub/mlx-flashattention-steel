@@ -1,7 +1,7 @@
-"""V34 forward post-lse-patch perf re-bench.
+"""V6NAX forward post-lse-patch perf re-bench.
 
 Canonical-protocol (10 warmup + 100 continuous) per shape per session.
-Multi-session to characterize cross-session range.  Measures V34 forward
+Multi-session to characterize cross-session range.  Measures V6NAX forward
 wall-clock (single direction, no ratio analysis needed — the lse patch
 adds ~0.1% theoretical overhead, just need to verify no regression
 from register spill or other side effect).
@@ -53,30 +53,30 @@ def _bench(spec, n_warmup=10, n_timed=100):
 
 
 SHAPES = [
-    # (B, Hq, qL, D)  — V34-eligible shapes (D=128 always, D=64 with Nk>8000)
+    # (B, Hq, qL, D)  — V6NAX-eligible shapes (D=128 always, D=64 with Nk>8000)
     (1, 4, 1024,  128),  # small D=128
     (1, 4, 4096,  128),  # mid D=128
     (1, 4, 8192,  128),  # large D=128
-    # D=64 V34 path triggers at kL>8000 default; for bench use MFA_V6_USE_V34=1
-    (1, 4, 8192,  64),   # large D=64 (V34-default)
+    # D=64 V6NAX path triggers at kL>8000 default; for bench use MFA_V6_USE_NAX=1
+    (1, 4, 8192,  64),   # large D=64 (V6NAX-default)
 ]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--session-id", required=True)
-    ap.add_argument("--output", default="docs/v6-nax/v34-forward-lse-bench-data.json")
-    ap.add_argument("--force-v34", action="store_true",
-                    help="Force V34 path for D=64 small shapes (test parity)")
+    ap.add_argument("--output", default="docs/v6-nax/v6nax-forward-lse-bench-data.json")
+    ap.add_argument("--force-v6nax", action="store_true",
+                    help="Force V6NAX path for D=64 small shapes (test parity)")
     args = ap.parse_args()
 
-    if args.force_v34:
-        os.environ["MFA_V6_USE_V34"] = "1"
+    if args.force_v6nax:
+        os.environ["MFA_V6_USE_NAX"] = "1"
 
-    print(f"[v34-fwd-lse-bench] session={args.session_id}", flush=True)
+    print(f"[v6nax-fwd-lse-bench] session={args.session_id}", flush=True)
     record = {
         "session_id": args.session_id,
-        "phase": "V34 forward post-lse-patch perf re-bench (canonical-protocol)",
+        "phase": "V6NAX forward post-lse-patch perf re-bench (canonical-protocol)",
         "shapes": [],
     }
     for spec in SHAPES:
@@ -100,7 +100,7 @@ def main():
     existing = json.loads(p.read_text()) if p.exists() else []
     existing.append(record)
     p.write_text(json.dumps(existing, indent=2))
-    print(f"\n[v34-fwd-lse-bench] session '{args.session_id}' -> {p}", flush=True)
+    print(f"\n[v6nax-fwd-lse-bench] session '{args.session_id}' -> {p}", flush=True)
 
 
 if __name__ == "__main__":

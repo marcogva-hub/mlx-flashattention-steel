@@ -45,8 +45,8 @@ struct NAAttentionKernel {
   // cP cooperative tensor (no P_buf staging), mem_none barriers, K-loop step BK.
   bool singleOtileMode;
 
-  // V34 — see descriptor.
-  bool useV34;
+  // V6NAX — see descriptor.
+  bool useV6NAX;
 
   // mlx-mfa: takes a threadgroup-memory-length hint instead of a pipeline.
   // Returns the bytes to allocate at threadgroup(0) for the dispatch.
@@ -59,29 +59,29 @@ struct NAAttentionKernel {
   /// MTL::Device (mlx-mfa's shader cache compiles the source separately).
   NAAttentionKernel(NAAttentionKernelDescriptor descriptor);
 
-  /// V34 backward dQ source generator (public — called by
-  /// MFAV34BwdQuery::eval_gpu in csrc/mfa_v6_nax_primitive.cpp).
-  /// Implementation in NAAttentionKernel.cpp (Phase 1 Section B of V34
+  /// V6NAX backward dQ source generator (public — called by
+  /// MFAV6NAXBwdQuery::eval_gpu in csrc/mfa_v6_nax_primitive.cpp).
+  /// Implementation in NAAttentionKernel.cpp (Phase 1 Section B of V6NAX
   /// backward Option β sprint).
-  std::string createV34BackwardQuerySource() const noexcept;
-  /// V34 backward dK/dV source generator (Phase 2 of V34 backward Option β).
+  std::string createV6NAXBackwardQuerySource() const noexcept;
+  /// V6NAX backward dK/dV source generator (Phase 2 of V6NAX backward Option β).
   /// Single-SG (WM=1) kernel; one TG per K-tile iterates over all Q-tiles
   /// and accumulates partial dK + dV in per-SG FP32 NAX tiles.  Returns
   /// (dK, dV) written to device.  No cross-SG reduction needed.
-  std::string createV34BackwardKeyValueSource() const noexcept;
-  /// V34 backward dV-only kernel (Phase 2.O2 — multi-SG Q-row partition).
+  std::string createV6NAXBackwardKeyValueSource() const noexcept;
+  /// V6NAX backward dV-only kernel (Phase 2.O2 — multi-SG Q-row partition).
   /// WM=4 BQ=64 BK=32 D=128: each SG handles BQ/WM=16 Q-rows.  Softmax is
   /// intra-SG (no replication tax).  Each SG writes its dV partial
   /// (BK × D, contributions from its 16 Q-rows × NQ Q-tiles) to a unique
   /// slot in dV_partials [B, Hq, WM, kL, D] FP32.  Python wrapper reduces
   /// via mx.sum(axis=2) and casts to T.
-  std::string createV34BackwardDVSource() const noexcept;
-  /// V34 backward dK-only kernel (Phase 2.O2 sister kernel).  Same WM=4
+  std::string createV6NAXBackwardDVSource() const noexcept;
+  /// V6NAX backward dK-only kernel (Phase 2.O2 sister kernel).  Same WM=4
   /// Q-row partition architecture but adds D = rowsum(dO⊙O), dP = dO@V^T,
   /// dS = P*(dP-D), and dK_accum += dS^T @ Q.  Output: dK_partials [B, Hq,
   /// WM, kL, D] FP32; Python wrapper reduces via mx.sum(axis=2) and casts.
-  std::string createV34BackwardDKSource() const noexcept;
-  /// V34 backward FUSED dK+dV kernel (Option γ, Sprint v2.39.0 Phase C.1.a).
+  std::string createV6NAXBackwardDKSource() const noexcept;
+  /// V6NAX backward FUSED dK+dV kernel (Option γ, Sprint v2.39.0 Phase C.1.a).
   /// Single kernel computes both gradients in one K-tile load (the structural
   /// ~10% perf win is K-bandwidth amortization, not just softmax fusion per
   /// /metal-kernel-dev audit 2026-05-13).  WM=4 Q-row partition; per-SG-slot
@@ -89,10 +89,10 @@ struct NAAttentionKernel {
   /// back to split kernels (separate PR per blueprint staging).  Order
   /// constraint: dV_accum += P^T @ dO MUST precede dS = P * dP overwriting
   /// Stile (see blueprint §"Order of operations").  Consumes v2.38.1 D_vec.
-  std::string createV34BackwardFusedDKDVSource() const noexcept;
+  std::string createV6NAXBackwardFusedDKDVSource() const noexcept;
 
-  /// V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).
-  /// Mirrors createV34BackwardDVSource() but adds per-Q-tile block_mask
+  /// V6NAX backward dV SPARSE kernel (Prompt 5b Section A PoC).
+  /// Mirrors createV6NAXBackwardDVSource() but adds per-Q-tile block_mask
   /// scan in the Q-loop: when block_mask[qb, k_tile] == false, skip the
   /// entire Q-tile contribution (zero divergence — uniform across SG).
   /// Pattern reference: csrc/mfa_sparse_attention.cpp forward LCSA scan.
@@ -103,28 +103,28 @@ struct NAAttentionKernel {
   ///
   /// Output identical to dense dV kernel: dV_partials [B, Hq, WM, kL, D]
   /// FP32 — caller reduces via mx.sum(axis=2) and casts to T.
-  std::string createV34BackwardDVSparseSource() const noexcept;
+  std::string createV6NAXBackwardDVSparseSource() const noexcept;
 
-  /// v2.50 Prompt 5d Section A.1 — V34 backward dQ SPARSE kernel.
-  /// Mirrors createV34BackwardQuerySource() but adds per-K-tile
+  /// v2.50 Prompt 5d Section A.1 — V6NAX backward dQ SPARSE kernel.
+  /// Mirrors createV6NAXBackwardQuerySource() but adds per-K-tile
   /// block_mask scan in the K-loop with pre-advance of K and V pointers
   /// before continue.  Mask layout: 2-D [NQ, NK] bool.  Sparse-LSE
   /// consistency: kernel consumes L from sparse forward
   /// (sparse_attention_forward_with_lse, Prompt 5c).
-  std::string createV34BackwardQuerySparseSource() const noexcept;
+  std::string createV6NAXBackwardQuerySparseSource() const noexcept;
 
-  /// v2.50 Prompt 5d Section A.2 — V34 backward dK SPARSE kernel.
+  /// v2.50 Prompt 5d Section A.2 — V6NAX backward dK SPARSE kernel.
   /// Same Q-loop structure as dV sparse (PoC, Prompt 5b).  Sparse-skip
   /// per Q-tile: skip Q-tile contribution to dK when block_mask
   /// [qb, tid.x] == false.  Mask layout: 2-D.
-  std::string createV34BackwardDKSparseSource() const noexcept;
+  std::string createV6NAXBackwardDKSparseSource() const noexcept;
 
-  /// v2.50 Prompt 5d Section A.3 — V34 backward FUSED dK+dV SPARSE.
+  /// v2.50 Prompt 5d Section A.3 — V6NAX backward FUSED dK+dV SPARSE.
   /// ORDER-CRITICAL constraint preserved: sparse-skip `continue` skips
   /// both dV and dK updates atomically before any P/dS computation.
   /// D=64 + D=128 variants (post-Sprint B v2.40.0-internal + Section D
   /// Prompt 5b broadening).  Mask layout: 2-D.
-  std::string createV34BackwardFusedDKDVSparseSource() const noexcept;
+  std::string createV6NAXBackwardFusedDKDVSparseSource() const noexcept;
 
 private:
   // Helpers that build operand-name and stride strings for the source.
@@ -139,7 +139,7 @@ private:
   void loopForward(CodeWriter &source) const noexcept;
   void loopForwardSingleCausal(CodeWriter &source) const noexcept;
   void loopForwardSingleTile(CodeWriter &source) const noexcept;
-  std::string createV34Source() const noexcept;
+  std::string createV6NAXSource() const noexcept;
   void loopBackwardQuery(CodeWriter &source) const noexcept;
   void loopBackwardKeyValue(CodeWriter &source) const noexcept;
   std::string createComputeD() const noexcept;

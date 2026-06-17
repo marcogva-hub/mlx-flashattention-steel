@@ -124,14 +124,14 @@ _M3_THRESHOLDS: dict[tuple[int, bool], int] = {
 
 # M5+ NAX thresholds: Apple's `steel_attention_nax.h` is the optimal forward
 # path on canonical shapes (D∈{64,128}, qL>8, no exotic features). v2.32.0
-# routes forward to MLX SDPA on those shapes — V34 NAX-direct matches it but
+# routes forward to MLX SDPA on those shapes — V6NAX NAX-direct matches it but
 # does not beat it cross-session. Non-canonical D and decode (qL≤8) keep
 # mlx-mfa kernels because SDPA's NAX path doesn't cover them on M5+.
 #
 # 999_999 means "always route to SDPA at this (D, causal) regardless of N".
-# V34-backward training carve-out (env-var opt-in, D=64 qL≥2048 since
+# V6NAX-backward training carve-out (env-var opt-in, D=64 qL≥2048 since
 # v2.39.2) is in
-# `_v34_backward_carveout()` further down.  The earlier
+# `_v6nax_backward_carveout()` further down.  The earlier
 # `_should_use_mfa_m5_nax_carveout()` canonical-path hook was deleted in
 # v2.38.0 (dormant since v2.32.0; no Sprint A.6 carve-outs materialized).
 _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
@@ -139,7 +139,7 @@ _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
     # MFA-winning shapes (e.g., FlashVSR-dense) inline.
     (64,  True):  999_999,
     (64,  False): 999_999,
-    # D=128 canonical: SDPA NAX wins. v2.31.0 V34 results showed parity
+    # D=128 canonical: SDPA NAX wins. v2.31.0 V6NAX results showed parity
     # within session; cross-session diagnostic showed legacy/MFA path
     # depends on environmental conditions whereas SDPA NAX is stable.
     (128, True):  999_999,
@@ -335,13 +335,13 @@ def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
     return _custom_thresholds
 
 
-def _v34_backward_carveout(
+def _v6nax_backward_carveout(
     head_dim: int,
     seq_len: int,
     causal: bool,
     dtype_key: Optional[str],
 ) -> bool:
-    """**flash_attention()-level** V34-backward eligibility carve-out
+    """**flash_attention()-level** V6NAX-backward eligibility carve-out
     (v2.37.2 → v2.38.x consolidated).
 
     Called ONLY from `flash_attention()` body when `use_mfa` would
@@ -350,7 +350,7 @@ def _v34_backward_carveout(
     same-dtype, `backend == "auto"`) — this function tests only the
     shape + env predicate.
 
-    Returns True if the shape qualifies for the V34-backward NAX-direct
+    Returns True if the shape qualifies for the V6NAX-backward NAX-direct
     path (1.81-1.82× faster than SDPA-vjp at D=64 qL=4096-8192 per
     v2.37.2 perf finding).  Without the carve-out + outer guards, the
     public `flash_attention()` autograd path silently falls back to
@@ -359,7 +359,7 @@ def _v34_backward_carveout(
     **History:**
     - v2.37.2: narrow predicate inline in `flash_attention()` body
     - v2.38.x (consolidation): extracted here per Sprint 2 audit
-      M5-HIGH-01.  Single source of truth for V34-backward routing.
+      M5-HIGH-01.  Single source of truth for V6NAX-backward routing.
     - v2.39.2-internal (Sprint A): broadened threshold from
       `qL >= 4096` to `qL >= 2048` after v2.39.1 BK=16 fix made the
       fused kernel reach parity-with-SDPA-vjp at qL=2048 (3-session
@@ -368,11 +368,11 @@ def _v34_backward_carveout(
       (qL=1024: 0.85×, qL=512: 0.50×) — kept out of the carve-out.
 
     **Currently active predicate:**
-    D=64, qL ≥ 2048, fp16/bf16, `MFA_ENABLE_V34_BACKWARD=1`.  Both
+    D=64, qL ≥ 2048, fp16/bf16, `MFA_ENABLE_V6_BACKWARD=1`.  Both
     causal and non-causal are eligible — Prompt 4 Section B resolved
     the Prompt 3 dV residual (root cause: missed dispatch gate at
     `MFAV6Forward::eval_gpu()` line 625 was routing causal forward to
-    STEEL legacy with log2-domain lse instead of V34 with natural-log
+    STEEL legacy with log2-domain lse instead of V6NAX with natural-log
     lse).  See `docs/v50/phase-4b-complete-dv-residual-decisions.md`.
 
     Future broadening (e.g., D=128 if Option γ proves out at v2.40.0-
@@ -387,10 +387,10 @@ def _v34_backward_carveout(
     # v2.50 Phase 4b-complete (Prompt 4 Section B): causal NOW ELIGIBLE.
     # Root cause of the Prompt 3 "dV residual" was a missed dispatch gate
     # in MFAV6Forward::eval_gpu (csrc/mfa_v6_nax_primitive.cpp line 625):
-    # `if (use_v34 && params_.causal) use_v34 = false;` silently routed
-    # causal forward to STEEL legacy (log2-domain lse) → V34 backward
+    # `if (use_v6nax && params_.causal) use_v6nax = false;` silently routed
+    # causal forward to STEEL legacy (log2-domain lse) → V6NAX backward
     # consumed wrong-domain lse → wrong gradients.  Prompt 4 Section B
-    # lifted the dispatch gate, V34 forward causal emits natural-log lse,
+    # lifted the dispatch gate, V6NAX forward causal emits natural-log lse,
     # backward gradients now match SDPA-vjp at RMSE within FP floor.
     # See `docs/v50/phase-4b-complete-dv-residual-decisions.md`.
     #
@@ -399,7 +399,7 @@ def _v34_backward_carveout(
     # SDPA-vjp (RMSE ~2e-5; fused regresses 3-7% at D=128 — split preferred
     # as auto-default per attention.py:3828).  Provided as coverage extension
     # for D=128 training scenarios; perf gain not guaranteed at D=128 (per
-    # Sprint B architectural finding).  Cohérence narrative "V34 backward
+    # Sprint B architectural finding).  Cohérence narrative "V6NAX backward
     # couvre D=64 + D=128" prime sur perf gain marginal.  Multi-gate audit
     # per Pattern #5 confirmed all downstream gates (G2-G8) already
     # permissive — sole code change is this carve-out line.  See
@@ -407,9 +407,9 @@ def _v34_backward_carveout(
     # Phase II-0 (campaign 2026-06, Marco-approved): D=64 CAUSAL is
     # DEFAULT-ON.  Phase-I Track 2 measured 2.2-2.6x vs SDPA-vjp at
     # N in {2048, 4096, 8192} (1.37 vs 2.98 ms ... 17.47 vs 44.54 ms,
-    # B=1 H=8 fp16, 3-block median).  Opt-out: MFA_DISABLE_V34_BACKWARD=1.
+    # B=1 H=8 fp16, 3-block median).  Opt-out: MFA_DISABLE_V6_BACKWARD=1.
     # The broader envelope (D=64 non-causal, D=128) remains opt-in via
-    # MFA_ENABLE_V34_BACKWARD=1 (D=128 V34 backward measured SLOWER than
+    # MFA_ENABLE_V6_BACKWARD=1 (D=128 V6NAX backward measured SLOWER than
     # SDPA-vjp: 0.46-0.58x — coverage, not perf).
     # Phase II-12: causal AND non-causal D=64 default-on (non-causal
     # measured 1.88x via the clean split kernel, II-7; same opt-out).
@@ -714,7 +714,7 @@ def should_use_native_backward(
     Note: the ``MFA_FORCE_NATIVE_BWD=0|1`` override knob was removed in
     v2.56.0 — its deprecation cycle (announced v2.50.0, "target removal
     v2.51+") was complete, and forced STEEL backward was measured to be
-    dominated at every cell (V34 at D=64, SDPA-vjp at D=128; sprint-C
+    dominated at every cell (V6NAX at D=64, SDPA-vjp at D=128; sprint-C
     Track 2).  The STEEL backward kernel itself remains reachable via
     ``backend="mfa"`` (keep-all-paths); only the env-var knob was removed.
     """

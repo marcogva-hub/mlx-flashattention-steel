@@ -5,7 +5,7 @@ every declared data field participates in BOTH `operator==` AND the
 companion `<Name>Hash` functor.
 
 This permanently locks the omission class behind the 2026-05 C1 finding
-(scale absent from 9 V34 backward keys) and the C6 finding (kbs/vbs/obs
+(scale absent from 9 V6NAX backward keys) and the C6 finding (kbs/vbs/obs
 in == but not the hash): a future field added to a key struct without
 updating == or the hash fails this test at CI time instead of shipping
 a silent wrong-kernel-reuse bug.
@@ -26,15 +26,15 @@ CSRC = Path(__file__).parent.parent / "csrc"
 # Key structs and the file holding them.  Extend when adding a cache.
 KEY_STRUCT_FILES = {
     "V6Key": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdQKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdKVKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdVKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdVSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdKKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdFusedKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdQSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdKSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
-    "V34BwdFSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdQKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdKVKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdVKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdVSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdKKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdFusedKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdQSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdKSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
+    "V6NAXBwdFSparseKey": CSRC / "mfa_v6_nax_primitive.cpp",
     "KernelKey": CSRC / "shader_cache.hpp",
 }
 

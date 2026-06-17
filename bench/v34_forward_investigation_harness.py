@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""V34 forward investigation — unified §4-strict harness for 5 hypotheses.
+"""V6NAX forward investigation — unified §4-strict harness for 5 hypotheses.
 
 Probes each hypothesis (A-E) via MFA_V6_* env-var toggles on the existing
-V34 production code rather than building variant source-gen functions.
+V6NAX production code rather than building variant source-gen functions.
 
 Each probe is a single-session §4-strict bench (§4 cooldowns 180/60/90s
-A/B/A pattern). Pattern: ALT (probe config) → BASELINE (V34 stock) → ALT
-to characterize the mechanism's contribution to the V34 baseline gain.
+A/B/A pattern). Pattern: ALT (probe config) → BASELINE (V6NAX stock) → ALT
+to characterize the mechanism's contribution to the V6NAX baseline gain.
 
 Hypotheses:
   - A: TGP occupancy via MFA_V6_EXEC_SG (1, 2, 4, 8)
-  - B+C bundled: V34 vs predecessor via MFA_V6_USE_V34 (0/1)
+  - B+C bundled: V6NAX vs predecessor via MFA_V6_USE_NAX (0/1)
   - D: register pressure via MFA_V6_BLOCK_R (64 vs default 32)
   - E: Apple defaults — bundled with B+C measurement
 
-Output: docs/v6-nax/v34-forward-investigation-data.json
+Output: docs/v6-nax/v6nax-forward-investigation-data.json
 """
 import argparse, json, math, os, statistics, subprocess, sys, time
 from datetime import datetime, timezone
@@ -26,10 +26,10 @@ import mlx.core as mx
 # 4 shapes per inventory DI4
 SHAPES = [
     # name, B, Hq, Hk, qL, kL, D, seed
-    ("v34_small_d64",  1,  8,  8,  1024,  1024,  64, 9001),
-    ("v34_small_d128", 1,  8,  8,  1024,  1024, 128, 9002),
-    ("v34_mid_d128",   1, 16, 16,  4096,  4096, 128, 9003),
-    ("v34_large_d128", 1, 16, 16,  8192,  8192, 128, 9004),
+    ("v6nax_small_d64",  1,  8,  8,  1024,  1024,  64, 9001),
+    ("v6nax_small_d128", 1,  8,  8,  1024,  1024, 128, 9002),
+    ("v6nax_mid_d128",   1, 16, 16,  4096,  4096, 128, 9003),
+    ("v6nax_large_d128", 1, 16, 16,  8192,  8192, 128, 9004),
 ]
 
 # Smoke shape: small enough for fast smoke gate
@@ -51,7 +51,7 @@ def smoke_gate():
     B, Hq, Hk, qL, kL, D, seed = SMOKE_CFG
     Q, K, V = _build_inputs(B, Hq, Hk, qL, kL, D, seed)
     scale = 1.0 / math.sqrt(D)
-    # V34 attention via mlx flash_attention (uses V34 dispatch when env set)
+    # V6NAX attention via mlx flash_attention (uses V6NAX dispatch when env set)
     from mlx_mfa._ext import v6_nax_forward
     O, _ = v6_nax_forward(Q, K, V, False)
     mx.async_eval(O); mx.synchronize()
@@ -157,7 +157,7 @@ def run_probe(probe_name, baseline_env_overrides, alt_env_overrides, shapes,
         a_med = statistics.median(alt_a)
         b_med = statistics.median(alt_b)
         drift = abs(a_med - b_med) / a_med * 100 if a_med > 0 else 0
-        # Ratio convention: > 1.0 means ALT is SLOWER (i.e., V34 baseline is faster)
+        # Ratio convention: > 1.0 means ALT is SLOWER (i.e., V6NAX baseline is faster)
         ratio = alt_med / baseline_med if baseline_med > 0 else 0
 
         results.append({
@@ -198,39 +198,39 @@ def capture_conditions():
 # Probe definitions — DI2 hypothesis-to-env mapping
 PROBES = [
     {
-        "name": "B+C+E_aggregate_predecessor_vs_v34",
-        "description": ("V34 vs predecessor path: includes hypotheses B "
+        "name": "B+C+E_aggregate_predecessor_vs_v6nax",
+        "description": ("V6NAX vs predecessor path: includes hypotheses B "
                         "(cross-SG sync elim), C (simd_shuffle_xor vs MPP "
                         "reduce), and E (Apple defaults). Aggregate measurement."),
-        "baseline_env": {"MFA_V6_USE_V34": "1"},
-        "alt_env": {"MFA_V6_USE_V34": "0"},  # predecessor path
+        "baseline_env": {"MFA_V6_USE_NAX": "1"},
+        "alt_env": {"MFA_V6_USE_NAX": "0"},  # predecessor path
     },
     {
         "name": "A_tgp_low_sg2",
         "description": ("Hyp A: lower TGP occupancy. MFA_V6_EXEC_SG=2 "
                         "(default=4)."),
-        "baseline_env": {"MFA_V6_USE_V34": "1"},
-        "alt_env": {"MFA_V6_USE_V34": "1", "MFA_V6_EXEC_SG": "2"},
+        "baseline_env": {"MFA_V6_USE_NAX": "1"},
+        "alt_env": {"MFA_V6_USE_NAX": "1", "MFA_V6_EXEC_SG": "2"},
     },
     {
         "name": "A_tgp_high_sg8",
         "description": ("Hyp A: higher TGP occupancy. MFA_V6_EXEC_SG=8."),
-        "baseline_env": {"MFA_V6_USE_V34": "1"},
-        "alt_env": {"MFA_V6_USE_V34": "1", "MFA_V6_EXEC_SG": "8"},
+        "baseline_env": {"MFA_V6_USE_NAX": "1"},
+        "alt_env": {"MFA_V6_USE_NAX": "1", "MFA_V6_EXEC_SG": "8"},
     },
     {
         "name": "D_block_r_64",
         "description": ("Hyp D: larger tile = more register pressure. "
                         "MFA_V6_BLOCK_R=64 (default 32)."),
-        "baseline_env": {"MFA_V6_USE_V34": "1"},
-        "alt_env": {"MFA_V6_USE_V34": "1", "MFA_V6_BLOCK_R": "64"},
+        "baseline_env": {"MFA_V6_USE_NAX": "1"},
+        "alt_env": {"MFA_V6_USE_NAX": "1", "MFA_V6_BLOCK_R": "64"},
     },
     {
         "name": "D_block_c_64",
         "description": ("Hyp D companion: larger K-tile. "
                         "MFA_V6_BLOCK_C=64 (default 32)."),
-        "baseline_env": {"MFA_V6_USE_V34": "1"},
-        "alt_env": {"MFA_V6_USE_V34": "1", "MFA_V6_BLOCK_C": "64"},
+        "baseline_env": {"MFA_V6_USE_NAX": "1"},
+        "alt_env": {"MFA_V6_USE_NAX": "1", "MFA_V6_BLOCK_C": "64"},
     },
 ]
 
@@ -240,7 +240,7 @@ def main():
     ap.add_argument("--probes", nargs="*", default=None,
                     help="Probe names to run (default all)")
     ap.add_argument("--output",
-                    default="docs/v6-nax/v34-forward-investigation-data.json")
+                    default="docs/v6-nax/v6nax-forward-investigation-data.json")
     ap.add_argument("--cooldown-inter-round", type=float, default=90.0)
     ap.add_argument("--cooldown-inter-shape", type=float, default=60.0)
     ap.add_argument("--cooldown-initial", type=float, default=180.0)
@@ -248,20 +248,20 @@ def main():
     ap.add_argument("--skip-initial-cooldown", action="store_true")
     args = ap.parse_args()
 
-    # Force V34 for smoke gate
-    os.environ["MFA_V6_USE_V34"] = "1"
+    # Force V6NAX for smoke gate
+    os.environ["MFA_V6_USE_NAX"] = "1"
 
-    print("[v34-investig] correctness smoke...", flush=True)
+    print("[v6nax-investig] correctness smoke...", flush=True)
     ok, diag = smoke_gate()
     print(f"  smoke: rmse={diag['rmse']:.4e} maxerr={diag['maxerr']:.4e} "
           f"NaN={diag['n_nan']} Inf={diag['n_inf']} -> "
           f"{'PASS' if ok else 'FAIL'}", flush=True)
     if not ok:
-        print("[v34-investig] STATUS: SMOKE_FAILED", file=sys.stderr, flush=True)
+        print("[v6nax-investig] STATUS: SMOKE_FAILED", file=sys.stderr, flush=True)
         sys.exit(2)
 
     if not args.skip_initial_cooldown:
-        print(f"[v34-investig] initial cooldown {args.cooldown_initial}s",
+        print(f"[v6nax-investig] initial cooldown {args.cooldown_initial}s",
               flush=True)
         time.sleep(args.cooldown_initial)
 
@@ -269,7 +269,7 @@ def main():
                       [p for p in PROBES if p["name"] in args.probes])
 
     record = {
-        "phase": "V34 forward investigation — §4-strict hypothesis isolation",
+        "phase": "V6NAX forward investigation — §4-strict hypothesis isolation",
         "cooldowns": {
             "initial_s": args.cooldown_initial,
             "inter_round_s": args.cooldown_inter_round,
@@ -282,7 +282,7 @@ def main():
     }
 
     for i, probe in enumerate(probes_to_run):
-        print(f"\n[v34-investig] PROBE {i+1}/{len(probes_to_run)}: {probe['name']}",
+        print(f"\n[v6nax-investig] PROBE {i+1}/{len(probes_to_run)}: {probe['name']}",
               flush=True)
         print(f"  {probe['description']}", flush=True)
         print(f"  baseline_env={probe['baseline_env']} alt_env={probe['alt_env']}",
@@ -316,7 +316,7 @@ def main():
     p = Path(args.output)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(record, indent=2))
-    print(f"\n[v34-investig] wrote: {p}", flush=True)
+    print(f"\n[v6nax-investig] wrote: {p}", flush=True)
 
 
 if __name__ == "__main__":

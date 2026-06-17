@@ -11,7 +11,7 @@ import mlx.core as mx
 import mlx_mfa
 
 
-# `_force` mirrors v34_bench.py — `mx.eval` is the canonical way to submit
+# `_force` mirrors v6nax_bench.py — `mx.eval` is the canonical way to submit
 # the lazy graph and wait for completion. `mx.synchronize` only waits for
 # already-submitted work, so a deferred call() never runs. Yes, this
 # triggers a Write-hook false-positive on the literal name; that's a

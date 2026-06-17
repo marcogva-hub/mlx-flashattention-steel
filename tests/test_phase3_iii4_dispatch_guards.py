@@ -1,8 +1,8 @@
 """Phase III-4 — dispatch/contract guard locks (D8, D9, D13).
 
-D8: backend="mfa" must run the actual MFA Metal forward on V34-eligible
+D8: backend="mfa" must run the actual MFA Metal forward on V6NAX-eligible
     cells, not Apple SDPA (forced-backend measurement integrity).
-D9: V-dim-mismatch / cross-attention shapes must NOT enter the V34
+D9: V-dim-mismatch / cross-attention shapes must NOT enter the V6NAX
     backward carve-out.
 D13: the NAX rope fast path must honor non-base-10000 user tables (route
     to the table-using STEEL path instead of silently applying base=10000).
@@ -41,7 +41,7 @@ class TestD8ForcedBackend:
         # SDPA (the II-8 carve-out makes backend="auto" bit-SDPA, but a
         # FORCED kernel must actually run the kernel), yet within fp16.
         assert not bool(mx.all(o_mfa == o_sdpa).item()), \
-            "backend='mfa' silently ran SDPA on a V34-eligible cell (D8)"
+            "backend='mfa' silently ran SDPA on a V6NAX-eligible cell (D8)"
         err = float(mx.max(mx.abs(
             o_mfa.astype(mx.float32) - o_sdpa.astype(mx.float32))).item())
         assert err < 0.05, f"MFA forward off from SDPA by {err}"
@@ -198,8 +198,8 @@ class TestP5ReturnLseBackward:
         # Ground truth = SDPA-vjp.  The return_lse path routes through
         # _make_mfa_custom_lse (SDPA-vjp backward), so it must match GT to
         # the dtype floor.  NOTE: the no-return_lse path is NOT necessarily
-        # bit-identical — at the V34-eligible cells (D=64, qL>=2048) it uses
-        # the V34 backward (default-on, II-12), which differs from SDPA-vjp
+        # bit-identical — at the V6NAX-eligible cells (D=64, qL>=2048) it uses
+        # the V6NAX backward (default-on, II-12), which differs from SDPA-vjp
         # by the fp16 floor.  So the invariant is "return_lse grad == SDPA-
         # vjp GT within floor", and "within floor of no-return_lse" (both
         # are within floor of GT), NOT bit-exact to no-return_lse.

@@ -45,7 +45,7 @@ def _sdpa_ref(q, k, v, scale, causal):
 class TestCacheDiscriminatesOnScale:
     """C1/C7 class: same shape, two scales, both must be correct.
 
-    Pre-2026-05-review, the 9 V34 backward pipeline caches omitted
+    Pre-2026-05-review, the 9 V6NAX backward pipeline caches omitted
     `scale` (baked into the Metal source) — the second scale reused the
     first's kernel.  These tests run the SAME shape back-to-back with
     different scales and assert each output independently against SDPA.
@@ -62,12 +62,12 @@ class TestCacheDiscriminatesOnScale:
             diff = float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))))
             assert diff < 2e-2, f"scale={scale} causal={causal}: diff={diff}"
 
-    @pytest.mark.skipif(not _HAS_NAX, reason="V34 backward requires M5+ NAX")
-    def test_v34_backward_two_scales_same_shape(self, monkeypatch):
-        """V34 backward kernels bake scale into Metal source — the cache
-        key must discriminate.  Default scale engages V34 (per the C7
+    @pytest.mark.skipif(not _HAS_NAX, reason="V6NAX backward requires M5+ NAX")
+    def test_v6nax_backward_two_scales_same_shape(self, monkeypatch):
+        """V6NAX backward kernels bake scale into Metal source — the cache
+        key must discriminate.  Default scale engages V6NAX (per the C7
         gate, non-default falls back) so we assert BOTH paths correct."""
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
         B, H, N, D = 1, 4, 4096, 64
         q, k, v = _mk(B, H, N, D, seed=102)
         dO = mx.ones_like(q)
@@ -218,18 +218,18 @@ class TestEquivalencePredicateOutputs:
     guard."""
 
     @pytest.mark.skipif(not _HAS_NAX, reason="V6 paths on M5+")
-    def test_force_v34_lse_domain_distinct(self):
+    def test_force_v6nax_lse_domain_distinct(self):
         from mlx_mfa import _ext
         B, H, N, D = 1, 4, 1024, 64
         q, k, v = _mk(B, H, N, D, seed=105)
         O_legacy, L_legacy = _ext.v6_nax_forward(q, k, v, False, False)
-        O_v34, L_v34 = _ext.v6_nax_forward(q, k, v, False, True)  # force_v34
-        _eval_force(O_legacy, L_legacy, O_v34, L_v34)
+        O_v6nax, L_v6nax = _ext.v6_nax_forward(q, k, v, False, True)  # force_v6nax
+        _eval_force(O_legacy, L_legacy, O_v6nax, L_v6nax)
         # Outputs O agree (same math); LSE domains differ (log2 vs natural)
-        dO = float(mx.max(mx.abs(O_legacy.astype(mx.float32) - O_v34.astype(mx.float32))))
+        dO = float(mx.max(mx.abs(O_legacy.astype(mx.float32) - O_v6nax.astype(mx.float32))))
         assert dO < 2e-2, f"O must agree across paths: {dO}"
-        dL = float(mx.max(mx.abs(L_legacy.astype(mx.float32) - L_v34.astype(mx.float32))))
+        dL = float(mx.max(mx.abs(L_legacy.astype(mx.float32) - L_v6nax.astype(mx.float32))))
         assert dL > 1e-3, (
             "LSE domains must DIFFER (log2 vs natural) — if equal, the "
-            "force_v34 routing did not engage and the is_equivalent fix "
+            "force_v6nax routing did not engage and the is_equivalent fix "
             "cannot be exercised")

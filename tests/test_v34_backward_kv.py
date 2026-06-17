@@ -1,6 +1,6 @@
-"""V34 backward dK/dV correctness tests (Phase 2 Section C).
+"""V6NAX backward dK/dV correctness tests (Phase 2 Section C).
 
-Compares V34 dK/dV against MLX mx.vjp(scaled_dot_product_attention) reference
+Compares V6NAX dK/dV against MLX mx.vjp(scaled_dot_product_attention) reference
 within FP32 (dK) / FP16-rounding (dV) accumulation floor.
 """
 import math
@@ -25,8 +25,8 @@ def _clean_env(monkeypatch):
 
 
 @pytest.fixture
-def force_v34(monkeypatch):
-    monkeypatch.setenv("MFA_V6_USE_V34", "1")
+def force_v6nax(monkeypatch):
+    monkeypatch.setenv("MFA_V6_USE_NAX", "1")
     yield
 
 
@@ -79,38 +79,38 @@ def _check(q, k, v, dO, scale, *, dk_bound=5e-4, dv_bound=1e-3):
     assert rmse_v < dv_bound, f"dV RMSE {rmse_v:.4e} exceeds {dv_bound:.4e}"
 
 
-def test_v34_bwd_kv_d128_fp16_square():
+def test_v6nax_bwd_kv_d128_fp16_square():
     q, k, v, dO = _make(1, 4, 4, 512, 512, 128, 42, mx.float16)
     _check(q, k, v, dO, 1.0 / math.sqrt(128))
 
 
-def test_v34_bwd_kv_d128_fp16_seq1024():
+def test_v6nax_bwd_kv_d128_fp16_seq1024():
     q, k, v, dO = _make(1, 4, 4, 1024, 1024, 128, 43, mx.float16)
     _check(q, k, v, dO, 1.0 / math.sqrt(128))
 
 
-def test_v34_bwd_kv_d128_bf16():
+def test_v6nax_bwd_kv_d128_bf16():
     q, k, v, dO = _make(1, 4, 4, 512, 512, 128, 44, mx.bfloat16)
     # Looser bounds for bf16 (7-bit mantissa).
     _check(q, k, v, dO, 1.0 / math.sqrt(128), dk_bound=1e-3, dv_bound=2e-3)
 
 
-def test_v34_bwd_kv_d64_force_v34(force_v34):
+def test_v6nax_bwd_kv_d64_force_v6nax(force_v6nax):
     q, k, v, dO = _make(1, 4, 4, 512, 512, 64, 45, mx.float16)
     _check(q, k, v, dO, 1.0 / math.sqrt(64))
 
 
-def test_v34_bwd_kv_d128_asymmetric():
+def test_v6nax_bwd_kv_d128_asymmetric():
     q, k, v, dO = _make(1, 4, 4, 512, 2048, 128, 46, mx.float16)
     _check(q, k, v, dO, 1.0 / math.sqrt(128))
 
 
-def test_v34_bwd_kv_d128_batch2_h8():
+def test_v6nax_bwd_kv_d128_batch2_h8():
     q, k, v, dO = _make(2, 8, 8, 512, 512, 128, 47, mx.float16)
     _check(q, k, v, dO, 1.0 / math.sqrt(128))
 
 
-def test_v34_bwd_kv_output_shapes():
+def test_v6nax_bwd_kv_output_shapes():
     q, k, v, dO = _make(1, 4, 4, 512, 256, 128, 48, mx.float16)
     dK, dV = _bwd_kv(q, k, v, dO, 1.0 / math.sqrt(128))
     # dK/dV per Q-head: [B, Hq, kL, D] each.
@@ -120,7 +120,7 @@ def test_v34_bwd_kv_output_shapes():
     assert dV.dtype == mx.float16
 
 
-def test_v34_bwd_kv_finiteness():
+def test_v6nax_bwd_kv_finiteness():
     q, k, v, dO = _make(1, 4, 4, 1024, 1024, 128, 49, mx.float16)
     dK, dV = _bwd_kv(q, k, v, dO, 1.0 / math.sqrt(128))
     arrK = np.array(dK.astype(mx.float32))
@@ -131,9 +131,9 @@ def test_v34_bwd_kv_finiteness():
     assert not np.isinf(arrV).any(), "dV contains Inf"
 
 
-def test_v34_bwd_kv_adversarial_magnitude_finite():
+def test_v6nax_bwd_kv_adversarial_magnitude_finite():
     """III-4 F9: adversarial-magnitude (std 8) inputs must keep dK/dV
-    finite (fp16-overflow guard, V34 backward-KV kernel family)."""
+    finite (fp16-overflow guard, V6NAX backward-KV kernel family)."""
     q, k, v, dO = _make(1, 4, 4, 512, 512, 128, 52, mx.float16, mag=8.0)
     dK, dV = _bwd_kv(q, k, v, dO, 1.0 / math.sqrt(128))
     arrK = np.array(dK.astype(mx.float32))

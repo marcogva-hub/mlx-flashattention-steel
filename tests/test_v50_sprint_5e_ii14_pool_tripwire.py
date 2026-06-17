@@ -44,7 +44,7 @@ def test_ii14_self_consistency_diag():
     from mlx_mfa import _ext
     import sys
     sys.path.insert(0, os.path.dirname(__file__))
-    from test_v50_sprint_5d_sparse_backward_native import _convert_mask_for_v34_bwd_kernel
+    from test_v50_sprint_5d_sparse_backward_native import _convert_mask_for_v6nax_bwd_kernel
 
     B, H, qL, D = 1, 4, 2048, 64
     BT = 32
@@ -55,7 +55,7 @@ def test_ii14_self_consistency_diag():
     mx.eval(O, L); mx.synchronize()
     D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
     mx.eval(D_vec); mx.synchronize()
-    mask_all = _convert_mask_for_v34_bwd_kernel(
+    mask_all = _convert_mask_for_v6nax_bwd_kernel(
         mx.ones((NQ, NK), dtype=mx.bool_), BT, "DKDV", D)
     mx.eval(mask_all); mx.synchronize()
 

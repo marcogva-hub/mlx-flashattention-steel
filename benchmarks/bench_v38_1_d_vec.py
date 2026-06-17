@@ -4,13 +4,13 @@
 Methodology per /mlx-mfa-bench-methodology blueprint:
 - 4 warmup + 12 timed iters, median ms
 - PUBLIC API via mx.grad(flash_attention(...)) with backend="auto"
-- MFA_ENABLE_V34_BACKWARD=1 -> V34 backward path (D_vec engaged in v2.38.1)
-- MFA_DISABLE_V34_BACKWARD=1 -> SDPA-vjp baseline
+- MFA_ENABLE_V6_BACKWARD=1 -> V6NAX backward path (D_vec engaged in v2.38.1)
+- MFA_DISABLE_V6_BACKWARD=1 -> SDPA-vjp baseline
 - Single session (multi-session orchestration done at shell level)
 
 Reference baselines (v2.37.3, from docs/v6-nax/v2.37.x-perf-claim-audit.md):
-- D=64 qL=4096: V34 ~2.65-2.71 ms / SDPA-vjp ~4.83-4.94 ms (1.82x win)
-- D=64 qL=8192: V34 ~9.78 ms / SDPA-vjp ~17.67 ms (1.81x win)
+- D=64 qL=4096: V6NAX ~2.65-2.71 ms / SDPA-vjp ~4.83-4.94 ms (1.82x win)
+- D=64 qL=8192: V6NAX ~9.78 ms / SDPA-vjp ~17.67 ms (1.81x win)
 """
 from __future__ import annotations
 import argparse
@@ -100,32 +100,32 @@ def main():
 
     for sid, B, H, qL, D, dt, opt_in in SHAPES:
         dtype = _dtype(dt)
-        # ARM 1: V34 backward (D_vec engaged on v2.38.1)
-        os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
-        os.environ.pop("MFA_DISABLE_V34_BACKWARD", None)
-        # III-4 F15: MFA_ENABLE_V34_D128 was a GHOST env (read nowhere in
+        # ARM 1: V6NAX backward (D_vec engaged on v2.38.1)
+        os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
+        os.environ.pop("MFA_DISABLE_V6_BACKWARD", None)
+        # III-4 F15: MFA_ENABLE_V6_D128 was a GHOST env (read nowhere in
         # mlx_mfa or csrc) — the env-gated arm was deleted.  The real knob
-        # is MFA_ENABLE_V34_BACKWARD (set above); D=128 routing is decided
+        # is MFA_ENABLE_V6_BACKWARD (set above); D=128 routing is decided
         # by the dispatch itself.  `opt_in` is kept in the report row as a
         # shape annotation only.
-        v34 = _bench_shape(B, H, qL, D, dtype)
+        v6nax = _bench_shape(B, H, qL, D, dtype)
 
         # ARM 2: SDPA-vjp baseline
-        os.environ["MFA_DISABLE_V34_BACKWARD"] = "1"
-        os.environ.pop("MFA_ENABLE_V34_BACKWARD", None)
+        os.environ["MFA_DISABLE_V6_BACKWARD"] = "1"
+        os.environ.pop("MFA_ENABLE_V6_BACKWARD", None)
         sdpa = _bench_shape(B, H, qL, D, dtype)
 
-        speedup = sdpa["med_ms"] / v34["med_ms"]
+        speedup = sdpa["med_ms"] / v6nax["med_ms"]
         row = {
             "id": sid, "B": B, "H": H, "qL": qL, "D": D, "dtype": dt,
             "opt_in_d128": opt_in,
-            "v38_1_v34_ms": v34,
+            "v38_1_v6nax_ms": v6nax,
             "sdpa_baseline_ms": sdpa,
             "speedup_vs_sdpa": float(speedup),
         }
         results["shapes"].append(row)
         print(f"  {sid} D={D} qL={qL} dt={dt}: "
-              f"V34={v34['med_ms']:.2f}ms  SDPA={sdpa['med_ms']:.2f}ms  "
+              f"V6NAX={v6nax['med_ms']:.2f}ms  SDPA={sdpa['med_ms']:.2f}ms  "
               f"speedup={speedup:.2f}x")
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,7 @@
 """Analyze Phase A.1 PSO cache A/B results.
 
 Compares cold-cache vs warm-cache legacy bench timings against
-v2.31.0 baseline (from docs/v6-nax/v34-aba.json) and Phase 0
+v2.31.0 baseline (from docs/v6-nax/v6nax-aba.json) and Phase 0
 re-bench (docs/v6-nax/v32-aba.json). Prints a discriminant verdict.
 """
 import json
@@ -12,7 +12,7 @@ OUT = Path("outputs/diagnostic")
 
 # Reference values from prior measurements (legacy mode, median of 3-run subprocess).
 V231_LEGACY_MS = {
-    "SeedVR2-small": 275.6,   # avg of (265.13, 286.03) from v2.31.0 v34-aba.json
+    "SeedVR2-small": 275.6,   # avg of (265.13, 286.03) from v2.31.0 v6nax-aba.json
     "CogVideoX":     3669.0,  # avg of (3610.79, 3727.58)
     "SeedVR2-large": 6780.0,  # avg of (6776.12, 6784.13)
 }

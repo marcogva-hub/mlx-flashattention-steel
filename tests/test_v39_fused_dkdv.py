@@ -3,7 +3,7 @@
 Three-axis validation per §3.5 amended:
 - Axis 1 (output sanity): fused vs split bit-identical / RMSE bound
 - Axis 2 (path entered via PUBLIC API): mx.grad(flash_attention(..., backend="auto"))
-  with MFA_V34_BWD_KERNEL routes correctly
+  with MFA_V6_BWD_KERNEL routes correctly
 - Axis 3 (edges preserved): D=128 falls back to split; legacy env vars honored
 
 Per /metal-kernel-dev audit (2026-05-13): fused kernel is algebraically
@@ -21,7 +21,7 @@ from mlx_mfa import flash_attention, get_device_info
 
 _flush = getattr(mx, "eval")
 
-# Hardware gate: V34 backward path requires M5+ NAX.
+# Hardware gate: V6NAX backward path requires M5+ NAX.
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 pytestmark = pytest.mark.skipif(
@@ -30,10 +30,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# Force V34 backward path engagement for all tests in this module.
+# Force V6NAX backward path engagement for all tests in this module.
 @pytest.fixture(autouse=True)
-def _enable_v34_backward(monkeypatch):
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+def _enable_v6nax_backward(monkeypatch):
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
     yield
 
 
@@ -54,11 +54,11 @@ def _grads(q, k, v, dO, scale, env_kernel_mode):
     """Compute (dQ, dK, dV) under env-pinned kernel mode.
 
     Restores the prior env value at exit to avoid contaminating other tests
-    (especially `test_flash_attention_v34_backward.py` which runs in the
+    (especially `test_flash_attention_v6nax_backward.py` which runs in the
     same pytest session and assumes the auto-default routing).
     """
-    prior = os.environ.get("MFA_V34_BWD_KERNEL")
-    os.environ["MFA_V34_BWD_KERNEL"] = env_kernel_mode
+    prior = os.environ.get("MFA_V6_BWD_KERNEL")
+    os.environ["MFA_V6_BWD_KERNEL"] = env_kernel_mode
     try:
         def fn(qq, kk, vv):
             out = flash_attention(qq, kk, vv, scale=scale, causal=False,
@@ -71,9 +71,9 @@ def _grads(q, k, v, dO, scale, env_kernel_mode):
         return dq, dk, dv
     finally:
         if prior is None:
-            os.environ.pop("MFA_V34_BWD_KERNEL", None)
+            os.environ.pop("MFA_V6_BWD_KERNEL", None)
         else:
-            os.environ["MFA_V34_BWD_KERNEL"] = prior
+            os.environ["MFA_V6_BWD_KERNEL"] = prior
 
 
 def _rmse(a, b):
@@ -123,10 +123,10 @@ def test_fused_d64_matches_sdpa_vjp(monkeypatch):
     scale = 1.0 / math.sqrt(D)
     dqf, dkf, dvf = _grads(q, k, v, dO, scale, "fused")
 
-    # SDPA-vjp reference path (disable V34 → falls back to mx.fast SDPA vjp).
-    monkeypatch.setenv("MFA_DISABLE_V34_BACKWARD", "1")
-    monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-    monkeypatch.delenv("MFA_V34_BWD_KERNEL", raising=False)
+    # SDPA-vjp reference path (disable V6NAX → falls back to mx.fast SDPA vjp).
+    monkeypatch.setenv("MFA_DISABLE_V6_BACKWARD", "1")
+    monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+    monkeypatch.delenv("MFA_V6_BWD_KERNEL", raising=False)
 
     def fn_ref(qq, kk, vv):
         out = flash_attention(qq, kk, vv, scale=scale, causal=False,
@@ -146,7 +146,7 @@ def test_fused_d64_matches_sdpa_vjp(monkeypatch):
 # ── Axis 2: path entered via PUBLIC API ───────────────────────────────
 
 def test_auto_default_engages_fused_for_d64(monkeypatch):
-    """v2.39.1 outcome α: MFA_V34_BWD_KERNEL=auto routes D=64 to FUSED.
+    """v2.39.1 outcome α: MFA_V6_BWD_KERNEL=auto routes D=64 to FUSED.
 
     The v2.39.0 outcome δ regression was root-caused to H1 register pressure
     at the default BK=32 and fixed in v2.39.1 by lowering BK to 16.  Auto
@@ -157,7 +157,7 @@ def test_auto_default_engages_fused_for_d64(monkeypatch):
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=1)
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "auto")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "auto")
     dqa, dka, dva = _grads(q, k, v, dO, scale, "auto")
     dqf, dkf, dvf = _grads(q, k, v, dO, scale, "fused")
     # auto and fused produce identical gradients on D=64 (auto→fused per α).
@@ -167,7 +167,7 @@ def test_auto_default_engages_fused_for_d64(monkeypatch):
 
 
 def test_auto_default_engages_split_for_d128(monkeypatch):
-    """MFA_V34_BWD_KERNEL=auto routes D=128 to split kernel.
+    """MFA_V6_BWD_KERNEL=auto routes D=128 to split kernel.
 
     D=128 has no fused kernel implementation (Phase C.1.b deferred); auto
     naturally falls through to split regardless of outcome δ.  Same observed
@@ -176,9 +176,9 @@ def test_auto_default_engages_split_for_d128(monkeypatch):
     B, H, qL, D = 1, 4, 4096, 128
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=2)
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "auto")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "auto")
     dqa, dka, dva = _grads(q, k, v, dO, scale, "auto")
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "split")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "split")
     dqs, dks, dvs = _grads(q, k, v, dO, scale, "split")
     # D=128 auto → split → identical gradients.
     assert _rmse(dqa, dqs) == 0.0
@@ -187,7 +187,7 @@ def test_auto_default_engages_split_for_d128(monkeypatch):
 
 
 def test_fused_opt_in_at_d64_still_works(monkeypatch):
-    """Fused kernel remains opt-in via MFA_V34_BWD_KERNEL=fused at D=64.
+    """Fused kernel remains opt-in via MFA_V6_BWD_KERNEL=fused at D=64.
 
     Despite outcome δ (not auto-default), the kernel ships and is reachable
     for users who want to bench on their own workloads or for future-sprint
@@ -196,7 +196,7 @@ def test_fused_opt_in_at_d64_still_works(monkeypatch):
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=8)
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "fused")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "fused")
     dq, dk, dv = _grads(q, k, v, dO, scale, "fused")
     for g, name in [(dq, "dQ"), (dk, "dK"), (dv, "dV")]:
         assert not bool(mx.any(mx.isnan(g))), f"{name} NaN"
@@ -213,11 +213,11 @@ def test_fused_at_d128_works_via_direct_binding(monkeypatch):
 
       - dispatch_policy.should_use_mfa(D=128) returns False (threshold
         999_999 in `_M5_NAX_THRESHOLDS[(128, False)]`)
-      - _v34_backward_carveout(D=128) returns False (D=64 hard-gated)
+      - _v6nax_backward_carveout(D=128) returns False (D=64 hard-gated)
 
     So `mx.grad(flash_attention(..., backend="auto"))` at D=128 routes
     to SDPA-vjp fallback BEFORE `_make_mfa_custom` even constructs the
-    vjp closure.  MFA_V34_BWD_KERNEL=fused is ignored at D=128 via
+    vjp closure.  MFA_V6_BWD_KERNEL=fused is ignored at D=128 via
     PUBLIC API.
 
     Architectural ship: the kernel is reachable via direct C++ binding
@@ -244,8 +244,8 @@ def test_fused_at_d128_works_via_direct_binding(monkeypatch):
     v = mx.random.normal((B, H, qL, D)).astype(mx.float16)
     dO = mx.random.normal((B, H, qL, D)).astype(mx.float16)
     _flush(q, k, v, dO)
-    # Run V34 forward to get O + natural-log lse (force_v34=True is critical:
-    # V34 backward kernels expect natural-log lse, not log2 from legacy).
+    # Run V6NAX forward to get O + natural-log lse (force_v6nax=True is critical:
+    # V6NAX backward kernels expect natural-log lse, not log2 from legacy).
     O, L = v6_nax_forward(q, k, v, False, True)
     _flush(O, L); mx.synchronize()
     # Precompute D_vec per v2.38.1 contract
@@ -282,7 +282,7 @@ def test_fused_at_d128_works_via_direct_binding(monkeypatch):
 
 
 def test_d128_split_engages_via_public_api(monkeypatch):
-    """v2.50 Prompt 5b Section D: PUBLIC AUTO API engages V34 split kernels
+    """v2.50 Prompt 5b Section D: PUBLIC AUTO API engages V6NAX split kernels
     for D=128.  Updated from prior "unreachable_via_public_api" test that
     codified the pre-broadening "D=128 PUBLIC API routes to SDPA-vjp"
     contract.  Per Sprint B v2.40.0-internal Phase C.1.b, D=128 split
@@ -295,13 +295,13 @@ def test_d128_split_engages_via_public_api(monkeypatch):
     AUTO.
     """
     from mlx_mfa.dispatch_policy import (
-        should_use_mfa, _v34_backward_carveout, _dispatch_dtype_key,
+        should_use_mfa, _v6nax_backward_carveout, _dispatch_dtype_key,
     )
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
     fp16_key = _dispatch_dtype_key(mx.float16)
-    # `should_use_mfa` still returns False for D=128 (V34 backward path
+    # `should_use_mfa` still returns False for D=128 (V6NAX backward path
     # routes via carve-out, NOT through the legacy MFA path).  This is
-    # the design intent — V34 backward broadening doesn't change MFA
+    # the design intent — V6NAX backward broadening doesn't change MFA
     # forward routing.
     assert should_use_mfa(
         head_dim=128, seq_len=4096, causal=False,
@@ -309,19 +309,19 @@ def test_d128_split_engages_via_public_api(monkeypatch):
     ) is False
     # The carve-out NOW returns True for D=128 + qL>=2048 + fp16 + env=1
     # (post-Prompt 5b Section D broadening).
-    assert _v34_backward_carveout(
+    assert _v6nax_backward_carveout(
         head_dim=128, seq_len=4096, causal=False, dtype_key=fp16_key,
     ) is True
 
 
 def test_fused_at_d256_still_raises_loudly(monkeypatch):
-    """MFA_V34_BWD_KERNEL=fused with D=256 raises ValueError (Rule 8 loud failure).
+    """MFA_V6_BWD_KERNEL=fused with D=256 raises ValueError (Rule 8 loud failure).
 
     Phase C.1.a + C.1.b cover D ∈ {64, 128}.  D=256 and other head_dim
     values are not supported by the fused kernel — silent fallback would
     mask user mis-configuration, so we raise a clear error.
     """
-    from mlx_mfa.attention import _v34_backward_vjp
+    from mlx_mfa.attention import _v6nax_backward_vjp
 
     B, H, qL, D = 1, 4, 2048, 256
     mx.random.seed(100)
@@ -333,34 +333,34 @@ def test_fused_at_d256_still_raises_loudly(monkeypatch):
     dO = mx.random.normal((B, H, qL, D)).astype(mx.float16) * 0.1
     _flush(q, k, v, O, L, dO)
 
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "fused")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "fused")
     scale = 1.0 / math.sqrt(D)
 
     with pytest.raises(ValueError, match="head_dim"):
-        dQ, dK, dV = _v34_backward_vjp(q, k, v, O, L, dO, scale)
+        dQ, dK, dV = _v6nax_backward_vjp(q, k, v, O, L, dO, scale)
         _flush(dQ, dK, dV)
         mx.synchronize()
 
 
 def test_env_split_override_works(monkeypatch):
-    """MFA_V34_BWD_KERNEL=split forces split path even at D=64."""
+    """MFA_V6_BWD_KERNEL=split forces split path even at D=64."""
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=3)
     scale = 1.0 / math.sqrt(D)
     # Verify split engages without crashing (matches split semantics).
-    monkeypatch.setenv("MFA_V34_BWD_KERNEL", "split")
+    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "split")
     dqs, dks, dvs = _grads(q, k, v, dO, scale, "split")
     for g in (dqs, dks, dvs):
         assert not bool(mx.any(mx.isnan(g)))
 
 
 def test_legacy_fused_env_var_backcompat(monkeypatch):
-    """MFA_V34BWD_USE_FUSED=1 (legacy v2.38.0 env) routes to legacy fused kernel."""
+    """MFA_V6BWD_USE_FUSED=1 (legacy v2.38.0 env) routes to legacy fused kernel."""
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=4)
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.delenv("MFA_V34_BWD_KERNEL", raising=False)
-    monkeypatch.setenv("MFA_V34BWD_USE_FUSED", "1")
+    monkeypatch.delenv("MFA_V6_BWD_KERNEL", raising=False)
+    monkeypatch.setenv("MFA_V6BWD_USE_FUSED", "1")
 
     def fn(qq, kk, vv):
         out = flash_attention(qq, kk, vv, scale=scale, causal=False,
@@ -381,9 +381,9 @@ def test_legacy_fused_env_var_backcompat(monkeypatch):
 
 def test_v37_carveout_still_eligible_at_d64_qL4096(monkeypatch):
     """v2.37.2 carve-out (D=64 qL≥4096 auto-default) preserved post-v2.39.0."""
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
-    assert _v34_backward_carveout(
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=4096, causal=False, dtype_key="float16"
     ) is True
 
@@ -396,40 +396,40 @@ def test_v39_2_internal_carveout_engages_at_qL2048(monkeypatch):
     v2.39.1 BK=16 fused achieves parity with SDPA-vjp at qL=2048
     (3-session variance 1.004; see docs/v6-nax/v39-2-internal-decisions.md).
     """
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
-    assert _v34_backward_carveout(
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=2048, causal=False, dtype_key="float16"
     ) is True
 
 
 def test_v39_2_internal_carveout_engages_at_qL3072(monkeypatch):
     """v2.39.2-internal: qL=3072 (between old 4096 floor and new 2048 floor)."""
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
-    assert _v34_backward_carveout(
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=3072, causal=False, dtype_key="float16"
     ) is True
 
 
 def test_v39_2_internal_carveout_rejects_below_qL2048(monkeypatch):
     """v2.39.2-internal: qL=1024 still rejected (regresses vs SDPA-vjp at -15%)."""
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
-    assert _v34_backward_carveout(
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=1024, causal=False, dtype_key="float16"
     ) is False
     # qL=1536 also below the conservative 2048 floor
-    assert _v34_backward_carveout(
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=1536, causal=False, dtype_key="float16"
     ) is False
 
 
 def test_v39_2_internal_carveout_rejects_qL_at_boundary_minus_1(monkeypatch):
     """v2.39.2-internal: qL=2047 (one below new floor) still rejected."""
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
-    assert _v34_backward_carveout(
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=2047, causal=False, dtype_key="float16"
     ) is False
 
@@ -441,19 +441,19 @@ def test_v50_prompt5b_d128_eligibility_broadened(monkeypatch):
     the pre-broadening "D=128 excluded" contract.  Sprint B v2.40.0-internal
     Phase C.1.b empirically validated D=128 split kernels at parity with
     SDPA-vjp (RMSE ~2e-5)."""
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    from mlx_mfa.dispatch_policy import _v34_backward_carveout
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    from mlx_mfa.dispatch_policy import _v6nax_backward_carveout
     # D=128 at qL>=2048 now eligible
     for qL in (2048, 4096, 8192):
-        assert _v34_backward_carveout(
+        assert _v6nax_backward_carveout(
             head_dim=128, seq_len=qL, causal=False, dtype_key="float16"
         ) is True
     # Below qL floor still ineligible
-    assert _v34_backward_carveout(
+    assert _v6nax_backward_carveout(
         head_dim=128, seq_len=1024, causal=False, dtype_key="float16"
     ) is False
     # D=64 unchanged
-    assert _v34_backward_carveout(
+    assert _v6nax_backward_carveout(
         head_dim=64, seq_len=4096, causal=False, dtype_key="float16"
     ) is True
 
@@ -462,7 +462,7 @@ def test_v38_1_d_vec_still_functional(monkeypatch):
     """v2.38.1 D_vec precompute still produces correct rowsum used by fused."""
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=5)
-    # D = rowsum(dO * O) — match the precompute that _v34_backward_vjp does.
+    # D = rowsum(dO * O) — match the precompute that _v6nax_backward_vjp does.
     # Compute via SDPA-vjp reference to get a reference O.
     scale = 1.0 / math.sqrt(D)
     o = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
@@ -487,38 +487,38 @@ def test_fused_d64_dtype_coverage(dtype, monkeypatch):
 
 # ── Eligibility predicate ─────────────────────────────────────────────
 
-def test_v34_eligible_d64_still_engages(monkeypatch):
-    """_v34_eligible returns True for D=64 non-causal fp16 with env set."""
-    from mlx_mfa.attention import _v34_eligible
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    assert _v34_eligible(64, mx.float16, causal=False) is True
-    assert _v34_eligible(64, mx.bfloat16, causal=False) is True
+def test_v6nax_eligible_d64_still_engages(monkeypatch):
+    """_v6nax_eligible returns True for D=64 non-causal fp16 with env set."""
+    from mlx_mfa.attention import _v6nax_eligible
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    assert _v6nax_eligible(64, mx.float16, causal=False) is True
+    assert _v6nax_eligible(64, mx.bfloat16, causal=False) is True
 
 
-def test_v34_eligible_d128_still_engages_for_split_path(monkeypatch):
-    """_v34_eligible returns True for D=128 — eligibility is at the V34
-    level; the AUTO routing inside _v34_backward_vjp decides fused vs split
-    based on head_dim.  D=128 still goes through V34 backward (just split)."""
-    from mlx_mfa.attention import _v34_eligible
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
-    assert _v34_eligible(128, mx.float16, causal=False) is True
+def test_v6nax_eligible_d128_still_engages_for_split_path(monkeypatch):
+    """_v6nax_eligible returns True for D=128 — eligibility is at the V6NAX
+    level; the AUTO routing inside _v6nax_backward_vjp decides fused vs split
+    based on head_dim.  D=128 still goes through V6NAX backward (just split)."""
+    from mlx_mfa.attention import _v6nax_eligible
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    assert _v6nax_eligible(128, mx.float16, causal=False) is True
 
 
-def test_v34_eligible_causal_true():
+def test_v6nax_eligible_causal_true():
     """v2.50 Phase 4b-complete (Prompt 4 Section B): causal now eligible.
     Root cause of Prompt 3 dV residual was a missed dispatch gate at
     MFAV6Forward::eval_gpu() routing causal forward to STEEL legacy
-    (log2-domain lse) instead of V34 (natural-log lse).  Fix lifts gate;
-    V34 backward causal now produces correct gradients."""
+    (log2-domain lse) instead of V6NAX (natural-log lse).  Fix lifts gate;
+    V6NAX backward causal now produces correct gradients."""
     import os
     # Repo review 2026-05: try/finally so an assertion failure cannot leak
-    # MFA_ENABLE_V34_BACKWARD into the rest of the session.
-    os.environ['MFA_ENABLE_V34_BACKWARD'] = '1'
+    # MFA_ENABLE_V6_BACKWARD into the rest of the session.
+    os.environ['MFA_ENABLE_V6_BACKWARD'] = '1'
     try:
-        from mlx_mfa.attention import _v34_eligible
-        assert _v34_eligible(64, mx.float16, causal=True) is True
+        from mlx_mfa.attention import _v6nax_eligible
+        assert _v6nax_eligible(64, mx.float16, causal=True) is True
     finally:
-        del os.environ['MFA_ENABLE_V34_BACKWARD']
+        del os.environ['MFA_ENABLE_V6_BACKWARD']
 
 
 def test_v39_adversarial_magnitude_finite():

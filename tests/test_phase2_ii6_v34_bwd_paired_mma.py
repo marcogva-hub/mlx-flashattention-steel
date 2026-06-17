@@ -1,6 +1,6 @@
-"""Phase II-6 — V34 backward paired-MMA regression locks.
+"""Phase II-6 — V6NAX backward paired-MMA regression locks.
 
-Root cause locked here: every V34 backward generator emits the
+Root cause locked here: every V6NAX backward generator emits the
 S-recompute as a PAIRED 16x32x16 MMA (`for ik += 2` over TK writing
 frag_at(iq, ik) and frag_at(iq, ik+1)).  MPP cooperative matmul2d has
 no 16x16x16 form, so TK = BK/16 must be even.  The v2.39.1 fused-dKdV
@@ -17,8 +17,8 @@ Locks:
      inputs with a PER-ELEMENT max-err bound (rmse alone diluted the
      localized corruption below the old 5e-3 gate).
   2. Gradients stay finite under adversarial-magnitude inputs.
-  3. BK % 32 != 0 on any V34 backward Primitive raises loudly
-     (guards the MFA_V34BWD*_BK env footgun for all kernels).
+  3. BK % 32 != 0 on any V6NAX backward Primitive raises loudly
+     (guards the MFA_V6BWD*_BK env footgun for all kernels).
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from mlx_mfa import flash_attention, get_device_info
 
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
-_skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V34 requires M5+ NAX")
+_skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V6NAX requires M5+ NAX")
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +62,7 @@ def _mk(mag, seed, N=4096, Hq=8, Hkv=8, D=64, dtype=mx.float16):
 
 
 # III-4 F6: per-element max-err bounds vs SDPA-vjp inside the promoted
-# V34 envelope.  Measured floors (M5 Max, N=4096 D=64, seeds 7/42):
+# V6NAX envelope.  Measured floors (M5 Max, N=4096 D=64, seeds 7/42):
 # fp16 0.004-0.008, bf16 0.016-0.0625 (8 mantissa bits).  Bounds set
 # ~10x (fp16) / 4x (bf16) above the measured floor.
 _BWD_MAXERR = {mx.float16: 0.1, mx.bfloat16: 0.25}
@@ -111,10 +111,10 @@ class TestAdversarialMagnitudeFinite:
 
 @_skipif_no_nax
 class TestBKGuard:
-    """BK % 32 != 0 must raise loudly on every V34 backward Primitive."""
+    """BK % 32 != 0 must raise loudly on every V6NAX backward Primitive."""
 
     def test_split_dv_bk16_raises(self, monkeypatch):
-        monkeypatch.setenv("MFA_V34BWDV_BK", "16")
+        monkeypatch.setenv("MFA_V6BWDV_BK", "16")
         from mlx_mfa import _ext
         q, k, v = _mk(1.0, seed=3, N=256)
         L = mx.zeros((1, 8, 256))
@@ -139,12 +139,12 @@ class TestBKGuard:
         D0 = mx.zeros((1, 8, 256))
         mx.eval(L, dO, D0)
         # BK=16: legal post-II-8 (odd-TK tail)
-        monkeypatch.setenv("MFA_V34BWDF_BK", "16")
+        monkeypatch.setenv("MFA_V6BWDF_BK", "16")
         out = _ext.v6_nax_backward_fused_dkdv_raw(
             q, k, v, L, dO, D0, 1.0 / 8.0, 4, True)
         mx.eval(*out)
         # BK=24 (not a multiple of 16): still loud
-        monkeypatch.setenv("MFA_V34BWDF_BK", "24")
+        monkeypatch.setenv("MFA_V6BWDF_BK", "24")
         with pytest.raises(Exception, match="multiple of 32"):
             out = _ext.v6_nax_backward_fused_dkdv_raw(
                 q, k, v, L, dO, D0, 1.0 / 8.0, 4, True)
@@ -159,12 +159,12 @@ class TestAutoRoutesSplit:
         q, k, v = _mk(1.0, seed=9, N=2048)
         g_auto = _grads(lambda a, b, c: flash_attention(a, b, c, causal=True),
                         q, k, v)
-        os.environ["MFA_V34_BWD_KERNEL"] = "split"
+        os.environ["MFA_V6_BWD_KERNEL"] = "split"
         try:
             g_split = _grads(lambda a, b, c: flash_attention(a, b, c, causal=True),
                              q, k, v)
         finally:
-            del os.environ["MFA_V34_BWD_KERNEL"]
+            del os.environ["MFA_V6_BWD_KERNEL"]
         for name, x, y in zip(("dQ", "dK", "dV"), g_auto, g_split):
             same = bool(mx.all(x == y).item())
             assert same, f"{name}: auto != forced-split (routing regressed)"

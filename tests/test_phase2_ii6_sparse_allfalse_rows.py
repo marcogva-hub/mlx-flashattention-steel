@@ -1,6 +1,6 @@
 """Phase II-6 — sparse all-False-row contract on the SDPA+bias fallback.
 
-The native STEEL/V34 sparse kernels write ZEROS for a query row whose
+The native STEEL/V6NAX sparse kernels write ZEROS for a query row whose
 block-mask row has no active blocks (Track-B "all-false row" contract).
 The SDPA+float-bias fallback produced NaN for such rows (softmax over an
 all--inf bias row), and the v2.50 Sprint-1 dispatch migration silently
@@ -57,7 +57,7 @@ def _run(snippet: str):
         cwd=str(_REPO), timeout=300,
     )
     if "SKIP-NO-NAX" in proc.stdout:
-        pytest.skip("V34/M5 NAX not available")
+        pytest.skip("V6NAX/M5 NAX not available")
     assert proc.returncode == 0, (
         f"subprocess failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )

@@ -1,4 +1,4 @@
-"""v2.50 Prompt 5b Section A — V34 backward dV sparse kernel PoC tests.
+"""v2.50 Prompt 5b Section A — V6NAX backward dV sparse kernel PoC tests.
 
 Per Marco's Option 3 decision: ship single-kernel PoC + scaffold; full
 5-kernel sparse extension deferred to focused follow-up session.
@@ -12,14 +12,14 @@ import numpy as np
 import pytest
 
 from mlx_mfa import get_device_info
-from mlx_mfa.attention import _convert_mask_for_v34_bwd_kernel
+from mlx_mfa.attention import _convert_mask_for_v6nax_bwd_kernel
 
 _AE = getattr(mx, "async_" + "eval")
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 
 _skipif_no_nax = pytest.mark.skipif(
-    not _HAS_NAX, reason="V34 backward dV sparse requires M5+ NAX hardware"
+    not _HAS_NAX, reason="V6NAX backward dV sparse requires M5+ NAX hardware"
 )
 
 
@@ -65,7 +65,7 @@ class TestSectionAdVSparsePoC:
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
         # v2.50 Prompt 5f Phase A KD-1: convert BT-block mask to dV kernel
         # geometry (BQ=64, BK=32) before direct kernel call.
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -99,7 +99,7 @@ class TestSectionAdVSparsePoC:
         mx.eval(O, L); mx.synchronize()
 
         mask_none_bt = mx.zeros((NQ, NK), dtype=mx.bool_)
-        mask_none = _convert_mask_for_v34_bwd_kernel(mask_none_bt, BT, "dV", D)
+        mask_none = _convert_mask_for_v6nax_bwd_kernel(mask_none_bt, BT, "dV", D)
         _AE(mask_none); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -127,7 +127,7 @@ class TestSectionAdVSparsePoC:
 
         mask_np = np.eye(NQ, NK, dtype=bool)
         mask_bt = mx.array(mask_np)
-        mask = _convert_mask_for_v34_bwd_kernel(mask_bt, BT, "dV", D)
+        mask = _convert_mask_for_v6nax_bwd_kernel(mask_bt, BT, "dV", D)
         _AE(mask); mx.synchronize()
 
         dV_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -154,7 +154,7 @@ class TestSectionAdVSparsePoC:
         mx.eval(O, L); mx.synchronize()
 
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(
@@ -172,7 +172,7 @@ class TestSectionAdVSparsePoC:
 
     @_skipif_no_nax
     def test_d128_path_works(self):
-        """Section D broadened V34 backward to D=128; sparse PoC supports D=128."""
+        """Section D broadened V6NAX backward to D=128; sparse PoC supports D=128."""
         from mlx_mfa import _ext
 
         B, H, qL, D = 1, 4, 2048, 128
@@ -186,7 +186,7 @@ class TestSectionAdVSparsePoC:
         mx.eval(O, L); mx.synchronize()
 
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dV", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "dV", D)
         _AE(mask_all); mx.synchronize()
 
         dV_sparse_partials = _ext.v6_nax_backward_dv_sparse_raw(

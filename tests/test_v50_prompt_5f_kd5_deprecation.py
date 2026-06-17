@@ -4,7 +4,7 @@ The MFA_FORCE_NATIVE_BWD override knob (introduced v2.36-era, deprecated
 v2.50.0 Prompt 5f Phase E with "target removal v2.51+") was REMOVED in
 v2.56.0 after its deprecation cycle completed (5 minor versions of
 DeprecationWarning) and forced STEEL backward was measured to be
-dominated at every cell (V34 at D=64, SDPA-vjp at D=128; sprint-C Track 2).
+dominated at every cell (V6NAX at D=64, SDPA-vjp at D=128; sprint-C Track 2).
 
 The STEEL backward kernel itself remains reachable via backend="mfa"
 (keep-all-paths); only the env-var knob was removed.

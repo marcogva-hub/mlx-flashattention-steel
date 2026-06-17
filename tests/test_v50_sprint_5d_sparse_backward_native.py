@@ -1,4 +1,4 @@
-"""v2.50 Prompt 5d Section A - V34 backward sparse FULL NATIVE tests."""
+"""v2.50 Prompt 5d Section A - V6NAX backward sparse FULL NATIVE tests."""
 from __future__ import annotations
 
 import math
@@ -8,14 +8,14 @@ import numpy as np
 import pytest
 
 from mlx_mfa import flash_attention_sparse, get_device_info
-from mlx_mfa.attention import _convert_mask_for_v34_bwd_kernel
+from mlx_mfa.attention import _convert_mask_for_v6nax_bwd_kernel
 
 _AE = getattr(mx, "async_" + "eval")
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 
 _skipif_no_nax = pytest.mark.skipif(
-    not _HAS_NAX, reason="V34 native sparse requires M5+ NAX hardware"
+    not _HAS_NAX, reason="V6NAX native sparse requires M5+ NAX hardware"
 )
 
 
@@ -58,7 +58,7 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         mx.eval(D_vec); mx.synchronize()
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
         # v2.50 Prompt 5f Phase A KD-1: convert to dQ kernel geometry.
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dQ", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "dQ", D)
         _AE(mask_all); mx.synchronize()
 
         dQ_sparse = _ext.v6_nax_backward_query_sparse_raw(
@@ -82,7 +82,7 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
         mx.eval(D_vec); mx.synchronize()
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "dK", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "dK", D)
         _AE(mask_all); mx.synchronize()
 
         dKp_sparse = _ext.v6_nax_backward_dk_sparse_raw(
@@ -108,7 +108,7 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         D_vec = mx.sum(dO.astype(mx.float32) * O.astype(mx.float32), axis=-1)
         mx.eval(D_vec); mx.synchronize()
         mask_all_bt = mx.ones((NQ, NK), dtype=mx.bool_)
-        mask_all = _convert_mask_for_v34_bwd_kernel(mask_all_bt, BT, "DKDV", D)
+        mask_all = _convert_mask_for_v6nax_bwd_kernel(mask_all_bt, BT, "DKDV", D)
         _AE(mask_all); mx.synchronize()
 
         dKp_s, dVp_s = _ext.v6_nax_backward_fused_dkdv_sparse_raw(
@@ -126,10 +126,10 @@ class TestSparseKernelsAllTrueMaskBitIdentical:
         assert dv_diff < 1e-3, f"Fused dV all-True diff = {dv_diff:.4e}"
 
 
-class TestV34SparseFullNativeEndToEnd:
+class TestV6NAXSparseFullNativeEndToEnd:
     @_skipif_no_nax
     def test_native_d64_block_causal_matches_sdpa(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1"); monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -157,7 +157,7 @@ class TestV34SparseFullNativeEndToEnd:
 
     @_skipif_no_nax
     def test_native_d128_block_causal_matches_sdpa(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1"); monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 128
         BT = 32
         NQ = NK = qL // BT
@@ -185,7 +185,7 @@ class TestV34SparseFullNativeEndToEnd:
 
     @_skipif_no_nax
     def test_native_engages_via_public_api_d64(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1"); monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -203,7 +203,7 @@ class TestV34SparseFullNativeEndToEnd:
 
     @_skipif_no_nax
     def test_section_c_wrapper_fallback_env_unset(self, monkeypatch):
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -224,7 +224,7 @@ class TestDensitySweep:
     @_skipif_no_nax
     @pytest.mark.parametrize("density", [0.1, 0.3, 0.5, 1.0])
     def test_d64_random_mask_density_matches_sdpa(self, monkeypatch, density):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1"); monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1"); monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT

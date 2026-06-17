@@ -26,14 +26,14 @@ For each entry in `PERF_CLAIMS`:
    via `mx.grad` with the default `backend="auto"` — exactly what the
    user is told to do in release notes / README / training guides.
 3. Verifies the expected kernel engages by comparing output gradients
-   against a reference path that is GUARANTEED to use V34 backward
+   against a reference path that is GUARANTEED to use V6NAX backward
    (forced via `backend="mfa"` + env).  If the AUTO path produces
-   gradients bit-identical to SDPA-vjp instead of V34, the claim is
+   gradients bit-identical to SDPA-vjp instead of V6NAX, the claim is
    unreachable and the test fails.
 
 This is differential engagement-detection: we don't rely on
 instrumenting production code with counters; instead we exploit the
-fact that V34 backward and SDPA-vjp produce numerically distinct
+fact that V6NAX backward and SDPA-vjp produce numerically distinct
 gradients (within FP16 rounding noise).
 
 What this test catches
@@ -50,14 +50,14 @@ How to add a new claim
 When a release adds a perf claim to user-facing docs, append an
 entry to `PERF_CLAIMS` with:
 
-- `id`: unique identifier (e.g., "v2.37.2_d64_qL8192_v34_engages")
+- `id`: unique identifier (e.g., "v2.37.2_d64_qL8192_v6nax_engages")
 - `env`: dict of env vars the docs say to set
 - `shape`: (B, H, qL, kL, D)
 - `dtype`: MLX dtype the claim targets
-- `expected`: "v34_backward" if the claim says V34 backward should
+- `expected`: "v6nax_backward" if the claim says V6NAX backward should
   engage; "sdpa_fallback" if the claim states the AUTO path should
   fall back to SDPA-vjp (e.g., the D=128 reclassified entries that
-  must NOT engage V34 via AUTO).
+  must NOT engage V6NAX via AUTO).
 - `documented_in`: list of doc references (file paths)
 - `documented_perf_claim`: short description of the claim text
 """
@@ -78,17 +78,17 @@ PERF_CLAIMS = [
     # v2.39.1: D=64 qL=4096 — "2.00×" with fused-BK16 (PUBLIC API, post-H1 fix)
     {
         "id": "v2.39.1_d64_qL4096_fused_bk16_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 4096, 4096, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
             "README.md",
             "docs/v6-nax/v39-1-investigation-synthesis.md",
         ],
         "documented_perf_claim": (
-            "v2.39.1 D=64 qL=4096: fused-BK16 V34 backward 2.00× vs SDPA-vjp "
+            "v2.39.1 D=64 qL=4096: fused-BK16 V6NAX backward 2.00× vs SDPA-vjp "
             "(was 1.91× v2.38.1 split-D_vec; wall-time -2.9%; H1 register-"
             "pressure root cause fixed)"
         ),
@@ -96,30 +96,30 @@ PERF_CLAIMS = [
     # v2.39.1: D=64 qL=8192 — "1.95×" with fused-BK16
     {
         "id": "v2.39.1_d64_qL8192_fused_bk16_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
             "README.md",
             "docs/v6-nax/v39-1-investigation-synthesis.md",
         ],
         "documented_perf_claim": (
-            "v2.39.1 D=64 qL=8192: fused-BK16 V34 backward 1.95× vs SDPA-vjp "
+            "v2.39.1 D=64 qL=8192: fused-BK16 V6NAX backward 1.95× vs SDPA-vjp "
             "(was 1.87× v2.38.1 split-D_vec; wall-time -1.4%)"
         ),
     },
     # v2.38.1: D=64 qL=4096 — "1.91× faster" with D_vec precompute (PUBLIC API)
     # Preserved historical baseline; the v2.39.1 fused-BK16 path supersedes
     # this measurement but the v2.38.1 split-D_vec path is still reachable
-    # via MFA_V34_BWD_KERNEL=split for verification.
+    # via MFA_V6_BWD_KERNEL=split for verification.
     {
-        "id": "v2.38.1_d64_qL4096_v34_dvec_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.38.1_d64_qL4096_v6nax_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 4096, 4096, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             # III-4 DOC-11 FIX: README does not carry the 1.91× figure
             # (verified by grep) — CHANGELOG + audit doc only.
@@ -127,17 +127,17 @@ PERF_CLAIMS = [
             "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
-            "v2.38.1 D=64 qL=4096: V34 backward 1.91× vs SDPA-vjp "
+            "v2.38.1 D=64 qL=4096: V6NAX backward 1.91× vs SDPA-vjp "
             "(was 1.75× in v2.37.3 under identical conditions)"
         ),
     },
     # v2.38.1: D=64 qL=8192 — "1.87× faster"
     {
-        "id": "v2.38.1_d64_qL8192_v34_dvec_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.38.1_d64_qL8192_v6nax_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             # III-4 DOC-11 FIX: README does not carry the 1.87× figure
             # (verified by grep) — CHANGELOG + audit doc only.
@@ -145,116 +145,116 @@ PERF_CLAIMS = [
             "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
-            "v2.38.1 D=64 qL=8192: V34 backward 1.87× vs SDPA-vjp "
+            "v2.38.1 D=64 qL=8192: V6NAX backward 1.87× vs SDPA-vjp "
             "(was 1.79× in v2.37.3)"
         ),
     },
     # v2.39.1: D=64 qL=16384 — "1.72× faster" with fused-BK16 (PUBLIC API)
     # Same physical engagement as v2.38.1 entry below but under v2.39.1 routing
     # convention (default kernel = fused-BK16; v2.38.1 split-D_vec reachable
-    # via MFA_V34_BWD_KERNEL=split).  Both rows live for §Z audit-trail
+    # via MFA_V6_BWD_KERNEL=split).  Both rows live for §Z audit-trail
     # preservation per `docs/PERF_CLAIMS.md` Active claims.
     {
         "id": "v2.39.1_d64_qL16384_fused_bk16_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 16384, 16384, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
             "docs/v6-nax/v39-1-investigation-synthesis.md",
         ],
         "documented_perf_claim": (
-            "v2.39.1 D=64 qL=16384: fused-BK16 V34 backward 1.72× vs SDPA-vjp "
+            "v2.39.1 D=64 qL=16384: fused-BK16 V6NAX backward 1.72× vs SDPA-vjp "
             "(3-session median; fresh-machine 1.89×; thermal drift across "
             "back-to-back sessions)"
         ),
     },
     # v2.38.1: D=64 qL=16384 — "1.80× faster"
     {
-        "id": "v2.38.1_d64_qL16384_v34_dvec_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.38.1_d64_qL16384_v6nax_dvec_engages_via_auto",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 16384, 16384, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
             "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
-            "v2.38.1 D=64 qL=16384: V34 backward 1.80× vs SDPA-vjp "
+            "v2.38.1 D=64 qL=16384: V6NAX backward 1.80× vs SDPA-vjp "
             "(was 1.75× in v2.37.3)"
         ),
     },
     # v2.37.2 / v2.37.3: D=64 qL=4096 — "1.82× faster end-to-end" (preserved historical)
     {
-        "id": "v2.37.2_d64_qL4096_v34_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.37.2_d64_qL4096_v6nax_engages_via_auto",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 4096, 4096, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "docs/releases/v2.37.2-release-notes.md",
             "docs/TRAINING_QUICKSTART.md",
             "README.md",
         ],
-        "documented_perf_claim": "D=64 qL=4096: V34 backward 1.82× faster than SDPA-vjp",
+        "documented_perf_claim": "D=64 qL=4096: V6NAX backward 1.82× faster than SDPA-vjp",
     },
     # v2.37.2 / v2.37.3: D=64 qL=8192 — "1.81× faster end-to-end"
     {
-        "id": "v2.37.2_d64_qL8192_v34_engages_via_auto",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.37.2_d64_qL8192_v6nax_engages_via_auto",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "docs/releases/v2.37.2-release-notes.md",
             "docs/TRAINING_QUICKSTART.md",
             "README.md",
         ],
-        "documented_perf_claim": "D=64 qL=8192: V34 backward 1.81× faster than SDPA-vjp",
+        "documented_perf_claim": "D=64 qL=8192: V6NAX backward 1.81× faster than SDPA-vjp",
     },
-    # v2.50 Prompt 5b Section D: D=128 broadened.  V34 backward NOW
+    # v2.50 Prompt 5b Section D: D=128 broadened.  V6NAX backward NOW
     # ENGAGES via AUTO for D=128 + qL>=2048 + fp16/bf16 (split kernels
     # per Sprint B v2.40.0-internal outcome γ — at parity with SDPA-vjp,
     # ~RMSE 2e-5).  Provided as coverage extension for D=128 training;
     # perf gain not guaranteed at D=128 (parity is the empirical floor).
     # See `docs/v50/sprint-5b-section-d-dispatch-audit.md`.
     {
-        "id": "v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 128),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "docs/v50/sprint-5b-section-d-dispatch-audit.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
-            "v2.50 Prompt 5b Section D: D=128 qL=8192 V34 backward "
+            "v2.50 Prompt 5b Section D: D=128 qL=8192 V6NAX backward "
             "engages via AUTO at parity with SDPA-vjp (Sprint B v2.40.0-"
             "internal empirical RMSE ~2e-5; cohérence narrative "
-            "'V34 backward couvre D=64 + D=128' prime sur perf gain "
+            "'V6NAX backward couvre D=64 + D=128' prime sur perf gain "
             "marginal — no speedup claim, contract-honest engagement)"
         ),
     },
-    # v2.39.2-internal: D=64 qL=2048 now ENGAGES V34 backward (at parity).
+    # v2.39.2-internal: D=64 qL=2048 now ENGAGES V6NAX backward (at parity).
     # The v2.37.2/v2.37.3 floor was qL≥4096; v2.39.2-internal lowered it to
     # qL≥2048 after v2.39.1 BK=16 fused kernel achieved parity with SDPA-vjp
     # at qL=2048 (3-session variance 1.004; see docs/v6-nax/v39-2-internal-
-    # decisions.md).  V34 engages but at parity — no speedup claim.
+    # decisions.md).  V6NAX engages but at parity — no speedup claim.
     {
-        "id": "v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "id": "v2.39.2_internal_d64_qL2048_auto_engages_v6nax_at_parity",
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 2048, 2048, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": [
             "docs/v6-nax/v39-2-internal-decisions.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
-            "v2.39.2-internal D=64 qL=2048: V34 backward engages via AUTO "
+            "v2.39.2-internal D=64 qL=2048: V6NAX backward engages via AUTO "
             "at parity with SDPA-vjp (3-session variance 1.004; no speedup "
             "claim but contract-honest engagement per env-var opt-in)"
         ),
@@ -265,7 +265,7 @@ PERF_CLAIMS = [
     # v2.37.3 qL=2048 row used to provide.
     {
         "id": "v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa",
-        "env": {"MFA_ENABLE_V34_BACKWARD": "1"},
+        "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 1024, 1024, 64),
         "dtype": mx.float16,
         "expected": "sdpa_fallback",
@@ -283,21 +283,21 @@ PERF_CLAIMS = [
     # qL >= 2048 via the clean split kernel (II-0 + II-12 promotions);
     # the opt-out env restores SDPA-vjp exactly.
     {
-        "id": "ii12_d64_qL8192_default_on_v34",
-        "env": {},  # default: V34 split engages
+        "id": "ii12_d64_qL8192_default_on_v6nax",
+        "env": {},  # default: V6NAX split engages
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
-        "expected": "v34_backward",
+        "expected": "v6nax_backward",
         "documented_in": ["README.md", "CHANGELOG.md"],
         "documented_perf_claim": (
-            "Default behavior: D=64 backward routes to the V34 split "
+            "Default behavior: D=64 backward routes to the V6NAX split "
             "kernel (1.7-2.7x vs SDPA-vjp); opt-out via "
-            "MFA_DISABLE_V34_BACKWARD=1"
+            "MFA_DISABLE_V6_BACKWARD=1"
         ),
     },
     {
         "id": "ii12_d64_qL8192_optout_sdpa",
-        "env": {"MFA_DISABLE_V34_BACKWARD": "1"},
+        "env": {"MFA_DISABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
         "expected": "sdpa_fallback",
@@ -305,7 +305,7 @@ PERF_CLAIMS = [
         # (verified by grep) — the claim lives in CHANGELOG only.
         "documented_in": ["CHANGELOG.md"],
         "documented_perf_claim": (
-            "MFA_DISABLE_V34_BACKWARD=1 restores SDPA-vjp bit-exactly"
+            "MFA_DISABLE_V6_BACKWARD=1 restores SDPA-vjp bit-exactly"
         ),
     },
     # --- conv3d MPP claims (II-9 fp16 promotion + III-1 KD-7 bf16 lift).
@@ -411,14 +411,14 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
     """Per `CLAUDE_V6_NAX.md` §Z: the documented kernel must engage via
     `mx.grad(flash_attention(...))` with default `backend="auto"`.
 
-    Engagement detection is differential: V34 backward gradients differ
+    Engagement detection is differential: V6NAX backward gradients differ
     from SDPA-vjp gradients by FP16-rounding amount (non-zero).  SDPA
     fallback produces bit-identical gradients to the SDPA reference.
 
-    - `expected == "v34_backward"`: AUTO gradients MUST differ from SDPA
-      reference (V34 engaged).
+    - `expected == "v6nax_backward"`: AUTO gradients MUST differ from SDPA
+      reference (V6NAX engaged).
     - `expected == "sdpa_fallback"`: AUTO gradients MUST be bit-identical
-      to SDPA reference (V34 did NOT engage; correct fallback).
+      to SDPA reference (V6NAX did NOT engage; correct fallback).
     """
     # --- conv3d MPP claims (II-9 / III-1): engagement via the auto-hook
     # telemetry executed counter through the documented public path
@@ -502,10 +502,10 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
 
     # Set documented env vars; clear all routing-related env vars first
     # so external session state doesn't leak into the parameterized test.
-    monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-    monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
-    monkeypatch.delenv("MFA_V34_BWD_KERNEL", raising=False)  # v2.39.0 (outcome δ)
-    monkeypatch.delenv("MFA_V34BWD_USE_FUSED", raising=False)  # v2.38.0 legacy
+    monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+    monkeypatch.delenv("MFA_DISABLE_V6_BACKWARD", raising=False)
+    monkeypatch.delenv("MFA_V6_BWD_KERNEL", raising=False)  # v2.39.0 (outcome δ)
+    monkeypatch.delenv("MFA_V6BWD_USE_FUSED", raising=False)  # v2.38.0 legacy
     for k, val in claim["env"].items():
         monkeypatch.setenv(k, val)
 
@@ -524,24 +524,24 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
     diff_v = _rmse(dV_auto, dV_ref)
     total_diff = diff_q + diff_k + diff_v
 
-    if claim["expected"] == "v34_backward":
-        # V34 engaged → gradients differ from SDPA reference by FP16 rounding.
-        # If diff is exactly zero, V34 didn't engage (silent SDPA fallback).
+    if claim["expected"] == "v6nax_backward":
+        # V6NAX engaged → gradients differ from SDPA reference by FP16 rounding.
+        # If diff is exactly zero, V6NAX didn't engage (silent SDPA fallback).
         assert total_diff > 0.0, (
             f"Perf claim '{claim['id']}' is UNREACHABLE via public API path. "
             f"Documented in: {claim['documented_in']}. "
             f"Claim text: {claim['documented_perf_claim']}. "
-            f"Expected V34 backward to engage via `flash_attention(...)` "
+            f"Expected V6NAX backward to engage via `flash_attention(...)` "
             f"with env={claim['env']}, but AUTO gradients are bit-identical "
             f"to SDPA-vjp reference (RMSE q={diff_q}, k={diff_k}, v={diff_v}). "
             f"This means `should_use_mfa()` short-circuited to SDPA fallback "
-            f"before the V34 carve-out engaged — the v2.37.0/v2.37.1 silent "
+            f"before the V6NAX carve-out engaged — the v2.37.0/v2.37.1 silent "
             f"integration bug pattern has regressed. "
             f"Per CLAUDE_V6_NAX.md §Z, fix the routing or correct the claim."
         )
-        # Correctness sanity: V34 vs SDPA gradients within FP16 floor
+        # Correctness sanity: V6NAX vs SDPA gradients within FP16 floor
         assert diff_q < 1e-2 and diff_k < 1e-2 and diff_v < 1e-2, (
-            f"V34 backward engaged but produces gradients far from SDPA "
+            f"V6NAX backward engaged but produces gradients far from SDPA "
             f"reference (RMSE q={diff_q}, k={diff_k}, v={diff_v}). "
             f"Investigate kernel correctness regression."
         )
@@ -557,8 +557,8 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
         # But future MLX SDPA-vjp internal reordering (fused softmax-
         # then-matmul, or a Python cast inside one path and not the
         # other) could introduce tiny-non-zero RMSE without actually
-        # engaging V34 backward.  1e-7 is well below FP16-rounding
-        # noise (V34-engaged gradients show ~1e-4 RMSE) but absorbs
+        # engaging V6NAX backward.  1e-7 is well below FP16-rounding
+        # noise (V6NAX-engaged gradients show ~1e-4 RMSE) but absorbs
         # any future float-reordering drift on the SDPA fallback path.
         assert total_diff < 1e-7, (
             f"Perf claim '{claim['id']}' expected SDPA fallback via AUTO "
@@ -574,7 +574,7 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
     else:
         pytest.fail(
             f"Unknown 'expected' value in claim '{claim['id']}': "
-            f"{claim['expected']!r}.  Use 'v34_backward' or 'sdpa_fallback'."
+            f"{claim['expected']!r}.  Use 'v6nax_backward' or 'sdpa_fallback'."
         )
 
 

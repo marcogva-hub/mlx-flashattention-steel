@@ -442,7 +442,7 @@ struct ExpSubOp {
 )V2MSL_APPLE";
 
 // ---------------------------------------------------------------------------
-// V2 kernel body - adapted from V34 forward with sparse modifications:
+// V2 kernel body - adapted from V6NAX forward with sparse modifications:
 //   - block_mask skip in outer loop (sparse iteration)
 //   - K/V base + per-iteration jump pointers (NOT linear advance)
 //   - is_last_q/is_last_k remainder branches dropped (V1 enforces div)
@@ -453,7 +453,7 @@ struct ExpSubOp {
 // ---------------------------------------------------------------------------
 const std::string V2_KERNEL_BODY_MSL = R"V2MSL_BODY(
 
-// V2 sparse kernel body — adapted from V34 forward (NAAttentionKernel.cpp:2767-2960).
+// V2 sparse kernel body — adapted from V6NAX forward (NAAttentionKernel.cpp:2767-2960).
 // Key sparse modifications:
 //   - block_mask scan in outer loop: skip kb when mask[qi, kb] == false
 //   - K/V base pointers saved; per-iteration jump via kb offset (no linear advance)
@@ -461,8 +461,8 @@ const std::string V2_KERNEL_BODY_MSL = R"V2MSL_BODY(
 //   - All-False row zero-output preservation (v2.34.0 contract)
 
 // Per-shape-emitted constants (constexpr at JIT time):
-//   cB, cHq, cHk, cQL, cKL, cD, cNQ, cNK, cGQA, V34_BQ, V34_BK, V34_BD,
-//   V34_WM, V34_TQ, V34_TD, V34_TK, V34_DOT_SCALE
+//   cB, cHq, cHk, cQL, cKL, cD, cNQ, cNK, cGQA, V6NAX_BQ, V6NAX_BK, V6NAX_BD,
+//   V6NAX_WM, V6NAX_TQ, V6NAX_TD, V6NAX_TK, V6NAX_DOT_SCALE
 
 ulong3 tidl{threadgroup_position_in_grid.x,
             threadgroup_position_in_grid.y,
@@ -484,13 +484,13 @@ const long O_batch_stride = cHq * cQL * cD;
 
 Q += tidl.z * Q_batch_stride
    + tidl.y * Q_head_stride
-   + tidl.x * V34_BQ * Q_seq_stride;
+   + tidl.x * V6NAX_BQ * Q_seq_stride;
 ulong kv_head_idx = ulong(tidl.y) / ulong(cGQA);
 device const T* K_base = K + tidl.z * K_batch_stride + kv_head_idx * K_head_stride;
 device const T* V_base = V + tidl.z * V_batch_stride + kv_head_idx * V_head_stride;
 O += tidl.z * O_batch_stride
    + tidl.y * O_head_stride
-   + tidl.x * V34_BQ * O_seq_stride;
+   + tidl.x * V6NAX_BQ * O_seq_stride;
 
 const uint qi = uint(tidl.x);
 
@@ -501,13 +501,13 @@ const uint qi = uint(tidl.x);
 //                                  + tidl.y * cNQ * cNK + qi * cNK
 device const bool* mask_qrow_base = block_mask + MASK_OFFSET_EXPR;
 
-const float scale2 = V34_DOT_SCALE;
+const float scale2 = V6NAX_DOT_SCALE;
 
-using otile_t = NAXTile<float, V34_TQ, V34_TD>;
+using otile_t = NAXTile<float, V6NAX_TQ, V6NAX_TD>;
 otile_t Otile;
 Otile.clear();
 
-const short tm = 16 * V34_TQ * simdgroup_index_in_threadgroup;
+const short tm = 16 * V6NAX_TQ * simdgroup_index_in_threadgroup;
 Q += tm * int(Q_seq_stride);
 
 constexpr short kRowsPT = otile_t::kRowsPerThread;
@@ -525,20 +525,20 @@ for (int kb = 0; kb < kb_lim; kb++) {
   if (!mask_qrow_base[kb]) continue;
 
   // Per-iteration K and V pointers — JUMP via kb (no incremental advance).
-  device const T* K_kb = K_base + kb * V34_BK * int(K_seq_stride);
-  device const T* V_kb = V_base + kb * V34_BK * int(V_seq_stride);
+  device const T* K_kb = K_base + kb * V6NAX_BK * int(K_seq_stride);
+  device const T* V_kb = V_base + kb * V6NAX_BK * int(V_seq_stride);
 
-  using stile_t = NAXTile<float, V34_TQ, V34_TK>;
+  using stile_t = NAXTile<float, V6NAX_TQ, V6NAX_TK>;
   stile_t Stile;
   Stile.clear();
 
   // QK matmul (Apple lines 206-246; remainder branches dropped)
   STEEL_PRAGMA_UNROLL
-  for (short iq = 0; iq < V34_TQ; iq++) {
+  for (short iq = 0; iq < V6NAX_TQ; iq++) {
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34_TK; ik += 2) {
+    for (short ik = 0; ik < V6NAX_TK; ik += 2) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34_TD; id++) {
+      for (short id = 0; id < V6NAX_TD; id++) {
         NAXTile<T, 1, 1> Qtile;
         NAXTile<T, 2, 1> Ktile;
         const int Q_load_off = iq * 16 * int(Q_seq_stride) + id * 16;
@@ -588,16 +588,16 @@ for (int kb = 0; kb < kb_lim; kb++) {
 
   // PV matmul (Apple lines 417-452)
   STEEL_PRAGMA_UNROLL
-  for (short iq = 0; iq < V34_TQ; iq++) {
+  for (short iq = 0; iq < V6NAX_TQ; iq++) {
     STEEL_PRAGMA_UNROLL
-    for (short id = 0; id < V34_TD; id += 2) {
-      if (V34_BD == 128) {
+    for (short id = 0; id < V6NAX_TD; id += 2) {
+      if (V6NAX_BD == 128) {
         if (id == 4) {
           threadgroup_barrier(mem_flags::mem_none);
         }
       }
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34_TK; ik++) {
+      for (short ik = 0; ik < V6NAX_TK; ik++) {
         NAXTile<T, 1, 2> Vtile;
         const int V_load_off = ik * 16 * int(V_seq_stride) + id * 16;
         Vtile.load(V_kb + V_load_off, int(V_seq_stride));
@@ -784,7 +784,7 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
   if (emit_lse) {
     // v2.50 Prompt 5c Section A.1 — write per-row sparse-LSE (natural-log).
     // L[r] = m_run + log(l_run) for active rows; -INFINITY for all-False rows
-    // (sentinel; consumer must handle).  Required by V34 backward sparse to
+    // (sentinel; consumer must handle).  Required by V6NAX backward sparse to
     // consume same convention.
     os << "    // Write sparse-LSE (natural log).  All-False rows → -INFINITY.\n"
        << "    if (l_run <= 0.0f) {\n"
@@ -802,7 +802,7 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
 // Architecture per docs/lcsa-nax/lcsa-nax-design.md §13:
 //   - Single kernel iterates K-blocks 0..NK-1 and skips masked via
 //     `if (!block_mask[qi*NK+kb]) continue;` (uniform across SG → zero divergence)
-//   - NAXFrag::mma cooperative-tensor inner-GEMMs (V34 forward pattern adapted)
+//   - NAXFrag::mma cooperative-tensor inner-GEMMs (V6NAX forward pattern adapted)
 //   - Per-SG Q-row partition with kU=16, BQ=BK=32, WM=2
 //
 // Eligibility (enforced in sparse_attention_forward before this is called):
@@ -853,14 +853,14 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
-  ss << "#define V34_BQ " << V2_BQ << "\n";
-  ss << "#define V34_BK " << V2_BK << "\n";
-  ss << "#define V34_BD " << V2_BD << "\n";
-  ss << "#define V34_WM " << V2_WM << "\n";
-  ss << "#define V34_TQ " << V2_TQ << "\n";
-  ss << "#define V34_TD " << V2_TD << "\n";
-  ss << "#define V34_TK " << V2_TK << "\n";
-  ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
+  ss << "#define V6NAX_BQ " << V2_BQ << "\n";
+  ss << "#define V6NAX_BK " << V2_BK << "\n";
+  ss << "#define V6NAX_BD " << V2_BD << "\n";
+  ss << "#define V6NAX_WM " << V2_WM << "\n";
+  ss << "#define V6NAX_TQ " << V2_TQ << "\n";
+  ss << "#define V6NAX_TD " << V2_TD << "\n";
+  ss << "#define V6NAX_TK " << V2_TK << "\n";
+  ss << "#define V6NAX_DOT_SCALE " << dot_scale_log2e << "f\n";
   ss << "\n";
   ss << "constexpr int cB   = " << B << ";\n";
   ss << "constexpr int cHq  = " << Hq << ";\n";

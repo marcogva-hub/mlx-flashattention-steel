@@ -4,10 +4,10 @@
 Methodology: same as v2.38.1 — 4 warmup + 12 timed iters, median ms,
 PUBLIC API via mx.grad(flash_attention(..., backend="auto")).
 
-Routing arms (all with MFA_ENABLE_V34_BACKWARD=1):
-- "fused": MFA_V34_BWD_KERNEL=fused → new fused kernel
-- "split": MFA_V34_BWD_KERNEL=split → v2.38.1 split path
-- "sdpa":  MFA_DISABLE_V34_BACKWARD=1 → SDPA-vjp baseline
+Routing arms (all with MFA_ENABLE_V6_BACKWARD=1):
+- "fused": MFA_V6_BWD_KERNEL=fused → new fused kernel
+- "split": MFA_V6_BWD_KERNEL=split → v2.38.1 split path
+- "sdpa":  MFA_DISABLE_V6_BACKWARD=1 → SDPA-vjp baseline
 
 Per /metal-kernel-dev audit: structural perf win is K-bandwidth amortization
 (fused loads K/V once per K-tile vs twice in split).  Expected: smaller qL
@@ -76,17 +76,17 @@ def _bench_shape(B, H, qL, D, dtype, warmup=4, iters=12):
 
 
 def _set_env(arm):
-    for k in ("MFA_V34_BWD_KERNEL", "MFA_DISABLE_V34_BACKWARD",
-              "MFA_ENABLE_V34_BACKWARD"):
+    for k in ("MFA_V6_BWD_KERNEL", "MFA_DISABLE_V6_BACKWARD",
+              "MFA_ENABLE_V6_BACKWARD"):
         os.environ.pop(k, None)
     if arm == "fused":
-        os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
-        os.environ["MFA_V34_BWD_KERNEL"] = "fused"
+        os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
+        os.environ["MFA_V6_BWD_KERNEL"] = "fused"
     elif arm == "split":
-        os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
-        os.environ["MFA_V34_BWD_KERNEL"] = "split"
+        os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
+        os.environ["MFA_V6_BWD_KERNEL"] = "split"
     elif arm == "sdpa":
-        os.environ["MFA_DISABLE_V34_BACKWARD"] = "1"
+        os.environ["MFA_DISABLE_V6_BACKWARD"] = "1"
     else:
         raise ValueError(arm)
 

@@ -175,7 +175,7 @@ def sparse_attention_nax_with_lse(
     (sparse-LSE).  All-False rows return L = -INFINITY (sentinel; consumer
     must handle).
 
-    Required by V34 backward sparse kernels for LSE consistency
+    Required by V6NAX backward sparse kernels for LSE consistency
     (Pattern #5 — dense LSE + sparse skip in backward gives wrong
     gradients; consistent sparse-LSE forward + sparse backward gives
     correct gradients).

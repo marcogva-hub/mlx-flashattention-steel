@@ -1,6 +1,6 @@
 """Capture one multi-session bench record for the v2.31.0 drift investigation.
 
-Records system conditions + V34/legacy A/B/A bench results across all 5
+Records system conditions + V6NAX/legacy A/B/A bench results across all 5
 production shapes, appends to a shared JSON dataset that aggregates
 multiple sessions.
 
@@ -90,12 +90,12 @@ def capture_conditions(label, clear_cache):
 
 
 def run_one_subprocess_bench(shape, mode, n_runs, output_path):
-    """Invoke bench/v34_bench.py as a subprocess (isolation per CLAUDE_V6_NAX.md)."""
+    """Invoke bench/v6nax_bench.py as a subprocess (isolation per CLAUDE_V6_NAX.md)."""
     if output_path.exists():
         output_path.unlink()
     cmd = [
         str(REPO_ROOT / ".venv/bin/python"),
-        str(REPO_ROOT / "bench/v34_bench.py"),
+        str(REPO_ROOT / "bench/v6nax_bench.py"),
         "--shape", shape,
         "--mode", mode,
         "--runs", str(n_runs),
@@ -131,7 +131,7 @@ def run_aba_session(label, clear_cache_first, runs_per_round, cooldown_inter_rou
     for shape in shapes:
         print(f"[capture] === {shape} ===")
         rounds = []
-        for round_label, mode in [("R1", "legacy"), ("R2", "v34"), ("R3", "legacy")]:
+        for round_label, mode in [("R1", "legacy"), ("R2", "v6nax"), ("R3", "legacy")]:
             opath = out_dir / f"{shape}_{round_label}_{mode}.json"
             d = run_one_subprocess_bench(shape, mode, runs_per_round, opath)
             r = d["records"][-1]

@@ -1,4 +1,4 @@
-"""V34 backward multi-SG kernels (Phase 2.O2 — dV-only + dK-only).
+"""V6NAX backward multi-SG kernels (Phase 2.O2 — dV-only + dK-only).
 
 Verifies the new WM=4 Q-row-partition kernels produce correct gradients
 matching SDPA-vjp reference within FP16/FP32 noise floor.

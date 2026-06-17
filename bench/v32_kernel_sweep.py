@@ -11,7 +11,7 @@ Procedure:
 - Total: ~16 shapes × 3 backends = 48 subprocesses, ~30-90s each → 30-60 min wall clock.
 
 The MFA backend lets the internal mlx-mfa dispatch pick the best sub-kernel
-(V2/V3/V4/V5/V6/V34) for each shape. Sprint A's question is "does MFA-best
+(V2/V3/V4/V5/V6/V6NAX) for each shape. Sprint A's question is "does MFA-best
 beat SDPA on this shape?" — we don't need to force individual sub-kernels.
 """
 import argparse
@@ -39,8 +39,8 @@ NICHE_SHAPES = [
     "llama-prefill-2k",    # D=128 causal short
     "llama-prefill-4k",    # D=128 causal medium
     "llama-prefill-8k",    # D=128 causal long
-    "ltx2-cross",          # D=64 asymmetric (V34 winner)
-    "seedvr2-small",       # D=128 large self-attn (Phase 0 V34 regression)
+    "ltx2-cross",          # D=64 asymmetric (V6NAX winner)
+    "seedvr2-small",       # D=128 large self-attn (Phase 0 V6NAX regression)
     "cogvideox",           # D=128 very large self-attn
     # Control: canonical shapes where SDPA NAX should clearly win
     "canonical-d128-4k",
@@ -49,9 +49,9 @@ NICHE_SHAPES = [
 BACKENDS = ["sdpa", "mfa", "auto"]
 
 
-# Reset env vars for deterministic dispatch (mirrors v34_bench.py pattern)
+# Reset env vars for deterministic dispatch (mirrors v6nax_bench.py pattern)
 RESET_ENVS = (
-    "MFA_V6_USE_V34", "MFA_V6_V34_BQ", "MFA_V6_V34_BK", "MFA_V6_V34_WM",
+    "MFA_V6_USE_NAX", "MFA_V6_NAX_BQ", "MFA_V6_NAX_BK", "MFA_V6_NAX_WM",
     "MFA_V6_NAX_SINGLE_OTILE", "MFA_V6_BYPASS_TGP", "MFA_V6_USE_V33",
     "MFA_FORCE_GEN", "MFA_V6_BLOCK_R", "MFA_V6_BLOCK_C",
     "MFA_V6_EXEC_SG", "MFA_V6_BLOCK_D", "MFA_V6_BNHD_LEGACY",

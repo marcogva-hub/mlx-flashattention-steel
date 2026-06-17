@@ -1,4 +1,4 @@
-"""V34 vs legacy V6 NAX — single shape, single mode bench (subprocess-callable)."""
+"""V6NAX vs legacy V6 NAX — single shape, single mode bench (subprocess-callable)."""
 import argparse, json, math, os, statistics, time
 from pathlib import Path
 
@@ -6,8 +6,8 @@ from pathlib import Path
 for k in ("MFA_V6_BLOCK_R", "MFA_V6_BLOCK_C", "MFA_V6_EXEC_SG",
           "MFA_V6_NAX_SINGLE_OTILE", "MFA_V6_BYPASS_TGP", "MFA_V6_BLOCK_D",
           "MFA_V6_BNHD_LEGACY", "MFA_V6_MAX_THREADS", "MFA_V6_MATMUL_EXEC_SG",
-          "MFA_V6_USE_V33", "MFA_V6_USE_V34",
-          "MFA_V6_V34_BQ", "MFA_V6_V34_BK", "MFA_V6_V34_WM"):
+          "MFA_V6_USE_V33", "MFA_V6_USE_NAX",
+          "MFA_V6_NAX_BQ", "MFA_V6_NAX_BK", "MFA_V6_NAX_WM"):
     os.environ.pop(k, None)
 
 
@@ -74,15 +74,15 @@ def time_sdpa(s, iters):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--shape", required=True, choices=list(SHAPES.keys()))
-    p.add_argument("--mode", required=True, help="legacy | v34")
+    p.add_argument("--mode", required=True, help="legacy | v6nax")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--output", required=True)
     p.add_argument("--pre-cooldown", type=int, default=0)
     p.add_argument("--include-sdpa", action="store_true")
     args = p.parse_args()
 
-    if args.mode == "v34":
-        os.environ["MFA_V6_USE_V34"] = "1"
+    if args.mode == "v6nax":
+        os.environ["MFA_V6_USE_NAX"] = "1"
 
     if args.pre_cooldown > 0:
         time.sleep(args.pre_cooldown)

@@ -26,7 +26,7 @@ V231_LEG = {
     "CogVideoX":      3669.0,
     "SeedVR2-large":  6780.0,
 }
-V231_V34 = {
+V231_V6NAX = {
     "FlashVSR-dense": 1.55,   # was claimed regression
     "LTX2-cross":     1.42,
     "SeedVR2-small":  170.92,
@@ -57,7 +57,7 @@ def main():
     for shape in shapes:
         print(f"=== {shape} ===")
         legacy_medians = []
-        v34_medians = []
+        v6nax_medians = []
         for s in sessions:
             rounds = s.get("bench", {}).get(shape, [])
             for r in rounds:
@@ -68,8 +68,8 @@ def main():
                     continue
                 if r["mode"] == "legacy":
                     legacy_medians.append(m)
-                elif r["mode"] == "v34":
-                    v34_medians.append(m)
+                elif r["mode"] == "v6nax":
+                    v6nax_medians.append(m)
 
         if legacy_medians:
             leg_med = statistics.median(legacy_medians)
@@ -77,19 +77,19 @@ def main():
             leg_max = max(legacy_medians)
             leg_var = (leg_max - leg_min) / leg_med * 100
             print(f"  legacy:  n={len(legacy_medians):2d}  median={leg_med:8.2f}ms  range=[{leg_min:.2f}, {leg_max:.2f}]  var=±{leg_var/2:.1f}%  v2.31.0 ref={V231_LEG[shape]:.2f}ms")
-        if v34_medians:
-            v34_med = statistics.median(v34_medians)
-            v34_min = min(v34_medians)
-            v34_max = max(v34_medians)
-            v34_var = (v34_max - v34_min) / v34_med * 100
-            print(f"  v34:     n={len(v34_medians):2d}  median={v34_med:8.2f}ms  range=[{v34_min:.2f}, {v34_max:.2f}]  var=±{v34_var/2:.1f}%  v2.31.0 ref={V231_V34[shape]:.2f}ms")
+        if v6nax_medians:
+            v6nax_med = statistics.median(v6nax_medians)
+            v6nax_min = min(v6nax_medians)
+            v6nax_max = max(v6nax_medians)
+            v6nax_var = (v6nax_max - v6nax_min) / v6nax_med * 100
+            print(f"  v6nax:     n={len(v6nax_medians):2d}  median={v6nax_med:8.2f}ms  range=[{v6nax_min:.2f}, {v6nax_max:.2f}]  var=±{v6nax_var/2:.1f}%  v2.31.0 ref={V231_V6NAX[shape]:.2f}ms")
 
         # Cross-mode delta
-        if legacy_medians and v34_medians:
+        if legacy_medians and v6nax_medians:
             leg_med = statistics.median(legacy_medians)
-            v34_med = statistics.median(v34_medians)
-            delta = (v34_med - leg_med) / leg_med * 100
-            print(f"  V34 vs legacy median: {delta:+.1f}%")
+            v6nax_med = statistics.median(v6nax_medians)
+            delta = (v6nax_med - leg_med) / leg_med * 100
+            print(f"  V6NAX vs legacy median: {delta:+.1f}%")
         print()
 
     # Summary verdict

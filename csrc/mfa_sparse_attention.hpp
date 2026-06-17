@@ -56,7 +56,7 @@ mlx::core::array sparse_attention_forward(
 ///
 /// Identical semantics to `sparse_attention_forward` but ALSO returns the
 /// per-row log-sum-exp (natural-log domain) computed over only the active
-/// blocks.  Required by V34 backward sparse kernels to consume the same
+/// blocks.  Required by V6NAX backward sparse kernels to consume the same
 /// LSE convention as the forward (Pattern #5 LSE consistency).
 ///
 /// All-False rows produce L = -INFINITY (sentinel; consumer must handle).

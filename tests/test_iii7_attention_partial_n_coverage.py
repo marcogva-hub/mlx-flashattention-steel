@@ -2,7 +2,7 @@
 
 The conv3d bug hid because a low-precision kernel with an internal tile
 tail was tested only in a regime that could not expose the tail
-(lesson #10). Attention has the same structure: the STEEL/V34 forward
+(lesson #10). Attention has the same structure: the STEEL/V6NAX forward
 tiles the KV/query length by a block (BK/BQ) and masks the partial final
 tile (`load_safe` + `kL_rem` / `-inf` score mask). But the existing
 partial-N assertion (`test_attention.py::test_seq_len_not_multiple_of_block`)

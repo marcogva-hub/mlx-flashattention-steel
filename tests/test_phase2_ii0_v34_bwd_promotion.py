@@ -1,11 +1,11 @@
-"""Phase II-0 — V34 backward D=64 causal default-on promotion tests.
+"""Phase II-0 — V6NAX backward D=64 causal default-on promotion tests.
 
 Marco-approved promotion (Phase-I Track 2: 2.2-2.6x vs SDPA-vjp).
 Default-on envelope: D=64, causal, qL >= 2048, fp16/bf16, M5+ NAX.
-Opt-out: MFA_DISABLE_V34_BACKWARD=1.  Broader envelope (D=64 non-causal,
-D=128) remains opt-in via MFA_ENABLE_V34_BACKWARD=1.
+Opt-out: MFA_DISABLE_V6_BACKWARD=1.  Broader envelope (D=64 non-causal,
+D=128) remains opt-in via MFA_ENABLE_V6_BACKWARD=1.
 
-Also locks the GQA gradient-shape fix this promotion surfaced: V34
+Also locks the GQA gradient-shape fix this promotion surfaced: V6NAX
 backward kernels emit Hq-shaped dK/dV; the orchestrator now group-sums
 to [B, H_kv, S, D] (latent bug in the opt-in path since v2.37.0).
 """
@@ -18,12 +18,12 @@ import numpy as np
 import pytest
 
 from mlx_mfa import flash_attention, get_device_info
-from mlx_mfa.attention import _v34_eligible
+from mlx_mfa.attention import _v6nax_eligible
 
 _eval_force = mx.eval
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
-_skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V34 requires M5+ NAX")
+_skipif_no_nax = pytest.mark.skipif(not _HAS_NAX, reason="V6NAX requires M5+ NAX")
 
 
 def _mk(B, Hq, Hkv, N, D, seed):
@@ -62,37 +62,37 @@ def _rmse(a, b):
 
 class TestDefaultOnEligibility:
     def test_d64_causal_default_on_with_seq(self, monkeypatch):
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+        monkeypatch.delenv("MFA_DISABLE_V6_BACKWARD", raising=False)
         if not _HAS_NAX:
             pytest.skip("NAX required")
-        assert _v34_eligible(64, mx.float16, causal=True, seq_len=4096) is True
+        assert _v6nax_eligible(64, mx.float16, causal=True, seq_len=4096) is True
 
     def test_opt_out_respected(self, monkeypatch):
-        monkeypatch.setenv("MFA_DISABLE_V34_BACKWARD", "1")
-        assert _v34_eligible(64, mx.float16, causal=True, seq_len=4096) is False
+        monkeypatch.setenv("MFA_DISABLE_V6_BACKWARD", "1")
+        assert _v6nax_eligible(64, mx.float16, causal=True, seq_len=4096) is False
 
     def test_below_seq_floor_stays_off(self, monkeypatch):
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        assert _v34_eligible(64, mx.float16, causal=True, seq_len=1024) is False
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+        assert _v6nax_eligible(64, mx.float16, causal=True, seq_len=1024) is False
 
     def test_non_causal_default_on_ii12(self, monkeypatch):
         """Phase II-12: non-causal D=64 is NOW default-on (1.72-2.01x via
         the clean split kernel; same envelope + opt-out as causal)."""
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        monkeypatch.delenv("MFA_DISABLE_V34_BACKWARD", raising=False)
-        assert _v34_eligible(64, mx.float16, False, seq_len=4096) is True
-        monkeypatch.setenv("MFA_DISABLE_V34_BACKWARD", "1")
-        assert _v34_eligible(64, mx.float16, False, seq_len=4096) is False
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+        monkeypatch.delenv("MFA_DISABLE_V6_BACKWARD", raising=False)
+        assert _v6nax_eligible(64, mx.float16, False, seq_len=4096) is True
+        monkeypatch.setenv("MFA_DISABLE_V6_BACKWARD", "1")
+        assert _v6nax_eligible(64, mx.float16, False, seq_len=4096) is False
 
     def test_d128_not_widened(self, monkeypatch):
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        assert _v34_eligible(128, mx.float16, causal=True, seq_len=4096) is False
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+        assert _v6nax_eligible(128, mx.float16, causal=True, seq_len=4096) is False
 
     def test_legacy_no_seq_unchanged(self, monkeypatch):
         # Calls without seq_len keep the env-opt-in behavior (test truth table).
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
-        assert _v34_eligible(64, mx.float16, causal=True) is False
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
+        assert _v6nax_eligible(64, mx.float16, causal=True) is False
 
 
 class TestPromotedCellCorrectness:

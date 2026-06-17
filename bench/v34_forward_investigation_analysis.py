@@ -1,14 +1,14 @@
-"""V34 forward investigation analysis.
+"""V6NAX forward investigation analysis.
 
-Reads docs/v6-nax/v34-forward-investigation-data.json and produces:
+Reads docs/v6-nax/v6nax-forward-investigation-data.json and produces:
 - Per-probe per-shape ALT/BASELINE ratio
 - Variance flag per shape (using single-session A/B/A drift as proxy)
 - Hypothesis verdict per probe (CONFIRMED / FALSIFIED / PARTIAL)
 - Aggregate attribution table for Section H
 - Anti-pattern findings if any hypothesis is falsified
 
-Output: docs/v6-nax/v34-forward-mechanisms.md +
-docs/v6-nax/v34-forward-investigation-analysis.json
+Output: docs/v6-nax/v6nax-forward-mechanisms.md +
+docs/v6-nax/v6nax-forward-investigation-analysis.json
 """
 from __future__ import annotations
 import argparse, json, statistics
@@ -16,9 +16,9 @@ from pathlib import Path
 
 # Probe → hypothesis mapping
 PROBE_HYP = {
-    "B+C+E_aggregate_predecessor_vs_v34": {
+    "B+C+E_aggregate_predecessor_vs_v6nax": {
         "hyps": "B, C, E (bundled)",
-        "interpretation": "V34 baseline vs predecessor aggregate gain",
+        "interpretation": "V6NAX baseline vs predecessor aggregate gain",
     },
     "A_tgp_low_sg2": {
         "hyps": "A (TGP occupancy via EXEC_SG=2)",
@@ -104,7 +104,7 @@ def aggregate(record):
 
 def render_md(record, agg):
     L = []
-    L.append("# V34 forward — mechanistic findings")
+    L.append("# V6NAX forward — mechanistic findings")
     L.append("")
     L.append("**Investigation**: §4-strict single-session, A/B/A pattern, 5 runs/direction, 4 shapes × 5 probes.")
     L.append("**Hardware**: M5 Max 128GB, macOS 26.5.")
@@ -113,7 +113,7 @@ def render_md(record, agg):
     L.append("## §4.X applicability notice")
     L.append("")
     L.append("Per CLAUDE_V6_NAX.md §4.X: shapes with V2 wall-clock ≤ 1.4ms are flagged.")
-    L.append("In this investigation, `v34_small_d64` (baseline ~0.5-0.8ms) falls in this regime;")
+    L.append("In this investigation, `v6nax_small_d64` (baseline ~0.5-0.8ms) falls in this regime;")
     L.append("results on that shape are informational only and NOT used in verdict computation.")
     L.append("")
     L.append("## Mechanistic attribution summary")
@@ -125,7 +125,7 @@ def render_md(record, agg):
         L.append(f"| {s['name']} | {s['hypotheses']} | {r} | {s['verdict']} |")
     L.append("")
     L.append("**Verdict legend**:")
-    L.append("- CONFIRMED: ratio ≥ 1.10 (mechanism contributes ≥ 10% to V34 gain)")
+    L.append("- CONFIRMED: ratio ≥ 1.10 (mechanism contributes ≥ 10% to V6NAX gain)")
     L.append("- PARTIAL: 1.03 ≤ ratio < 1.10 (mechanism contributes 3-10%)")
     L.append("- NULL: 0.97 ≤ ratio < 1.03 (within measurement noise)")
     L.append("- REVERSE: ratio < 0.97 (alt path was FASTER — anti-mechanism)")
@@ -157,13 +157,13 @@ def render_md(record, agg):
     L.append("| Hypothesis | Status | Mechanism evidence |")
     L.append("|---|---|---|")
     # Synthesize per-hypothesis
-    b_c_e_probe = next((p for p in agg["probes"] if p["name"] == "B+C+E_aggregate_predecessor_vs_v34"), None)
+    b_c_e_probe = next((p for p in agg["probes"] if p["name"] == "B+C+E_aggregate_predecessor_vs_v6nax"), None)
     if b_c_e_probe:
         verdict = b_c_e_probe["verdict"]
         ratio = b_c_e_probe.get("median_ratio_usable") or 1.0
         L.append(f"| B (cross-SG sync elim) + C (simd_shuffle_xor) + E (Apple defaults) | "
                  f"AGGREGATE {verdict}, ALT/BASE ratio {ratio:.2f}× | "
-                 f"V34 vs predecessor aggregate gain ≈ {(ratio - 1) * 100:.1f}% on shapes ≥1.5ms |")
+                 f"V6NAX vs predecessor aggregate gain ≈ {(ratio - 1) * 100:.1f}% on shapes ≥1.5ms |")
     a_low = next((p for p in agg["probes"] if p["name"] == "A_tgp_low_sg2"), None)
     a_high = next((p for p in agg["probes"] if p["name"] == "A_tgp_high_sg8"), None)
     if a_low:
@@ -183,14 +183,14 @@ def render_md(record, agg):
     L.append("")
     L.append("**Source-level structural confirmations (from Section A.1)**:")
     L.append("")
-    L.append("- Hypothesis B: V34 uses `simdgroup_barrier(mem_none)` only (NAAttentionKernel.cpp:2906); ")
+    L.append("- Hypothesis B: V6NAX uses `simdgroup_barrier(mem_none)` only (NAAttentionKernel.cpp:2906); ")
     L.append("  predecessors use `threadgroup_barrier(mem_threadgroup)` (lines 1059, 1290). **CONFIRMED**.")
-    L.append("- Hypothesis C: V34 uses `Stile.template row_reduce<MaxOp>(...)` → simd_shuffle_xor at line 2546; ")
+    L.append("- Hypothesis C: V6NAX uses `Stile.template row_reduce<MaxOp>(...)` → simd_shuffle_xor at line 2546; ")
     L.append("  predecessors use `mpp::reduce_rows(cS_0, cM_0_new, ...)` (lines 931, 1011, etc). **CONFIRMED**.")
-    L.append("- Hypothesis E: V34 uses M5-tuned BQ/BK/WM defaults (32/32/2 D=64; 64/32/4 D=128); ")
+    L.append("- Hypothesis E: V6NAX uses M5-tuned BQ/BK/WM defaults (32/32/2 D=64; 64/32/4 D=128); ")
     L.append("  predecessor inherits Apple's MPP autotune. **CONFIRMED**.")
     L.append("")
-    L.append("All three mechanisms B+C+E are STRUCTURALLY confirmed and BUNDLED in the V34 vs predecessor")
+    L.append("All three mechanisms B+C+E are STRUCTURALLY confirmed and BUNDLED in the V6NAX vs predecessor")
     L.append("aggregate measurement. Per-mechanism attribution within the bundle requires source-gen variants")
     L.append("(out of scope for this sprint per DI1).")
     L.append("")
@@ -200,11 +200,11 @@ def render_md(record, agg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data",
-                    default="docs/v6-nax/v34-forward-investigation-data.json")
+                    default="docs/v6-nax/v6nax-forward-investigation-data.json")
     ap.add_argument("--out-md",
-                    default="docs/v6-nax/v34-forward-mechanisms.md")
+                    default="docs/v6-nax/v6nax-forward-mechanisms.md")
     ap.add_argument("--out-json",
-                    default="docs/v6-nax/v34-forward-investigation-analysis.json")
+                    default="docs/v6-nax/v6nax-forward-investigation-analysis.json")
     args = ap.parse_args()
 
     record = json.loads(Path(args.data).read_text())

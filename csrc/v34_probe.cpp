@@ -1,8 +1,8 @@
-/// V34 NAX-direct probe — minimal kernel using NAXTile/NAXFrag directly.
+/// V6NAX NAX-direct probe — minimal kernel using NAXTile/NAXFrag directly.
 ///
 /// Goal: validate that we can compile a JIT kernel that includes Apple's
 /// nax.h / steel_attention_nax.h primitives inlined. If this compiles,
-/// V34's full forward kernel can be generated using the same approach.
+/// V6NAX's full forward kernel can be generated using the same approach.
 ///
 /// We can't do `#include "mlx/backend/metal/kernels/steel/attn/nax.h"`
 /// from JIT-compiled MSL because newLibraryWithSource has no include
@@ -26,7 +26,7 @@ namespace mlx_mfa {
 //   - mlx/backend/metal/kernels/steel/attn/nax.h (BaseNAXFrag + NAXTile)
 //   - operator structs from steel_attention_nax.h (MaxOp, SumOp, MulOp, ExpSubOp)
 //
-// Verbatim from ~/code/mlx-source so V34 mirrors Apple's reference exactly.
+// Verbatim from ~/code/mlx-source so V6NAX mirrors Apple's reference exactly.
 static std::string apple_nax_helpers() {
   return R"MSL(
 // === Apple steel/defines.h ===
@@ -468,14 +468,14 @@ struct ExpSubOp {
 )MSL";
 }
 
-// Generate a minimal V34 probe kernel:
+// Generate a minimal V6NAX probe kernel:
 // - One Q-tile load
 // - One K-tile load
 // - QK MMA via NAXFrag::mma
 // - Store result S to output buffer
 //
 // Tiny shape (BQ=16, BK=32, BD=16, WM=1) just to validate compile.
-std::string v34_probe_source() {
+std::string v6nax_probe_source() {
   std::ostringstream ss;
   ss << "// MFA_REQUIRE_MSL4\n";
   ss << "#include <metal_stdlib>\n";
@@ -493,7 +493,7 @@ using namespace mlx::steel;
 // Minimal probe: Q[BQ x BD] @ K[BK x BD]^T -> S[BQ x BK]
 // BQ=16, BK=32, BD=16, WM=1 (so TQ=1, TK=2, TD=1).
 [[kernel, max_total_threads_per_threadgroup(32)]]
-void v34_probe(
+void v6nax_probe(
     const device half* Q [[buffer(0)]],
     const device half* K [[buffer(1)]],
     device float* S_out [[buffer(2)]],
@@ -535,11 +535,11 @@ void v34_probe(
   return ss.str();
 }
 
-std::string v34_probe_compile_test(void* mtl_device_raw) {
-  std::string source = v34_probe_source();
+std::string v6nax_probe_compile_test(void* mtl_device_raw) {
+  std::string source = v6nax_probe_source();
   try {
     void* pipeline = ShaderCache::get().compile_shader(
-        source, "v34_probe", mtl_device_raw);
+        source, "v6nax_probe", mtl_device_raw);
     (void)pipeline;
     return "OK";
   } catch (const std::exception& e) {

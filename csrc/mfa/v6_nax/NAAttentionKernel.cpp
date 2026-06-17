@@ -46,7 +46,7 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
   masked = descriptor.masked;
   isVarlen = descriptor.isVarlen;
   singleOtileMode = descriptor.singleOtileMode;
-  useV34 = descriptor.useV34;
+  useV6NAX = descriptor.useV6NAX;
 
   // mlx-mfa: produce MSL 4 source string only. mlx-mfa's shader cache
   // performs the actual MTL::Library / pipeline state creation.
@@ -165,15 +165,15 @@ unsigned short NAAttentionKernel::blockSequenceLength(AttentionOperand operand) 
 // MARK: - NAAttentionKernel+Source
 
 std::string NAAttentionKernel::createSource() const noexcept {
-  // V34 path: emit a self-contained Apple-style attention_nax kernel. Skips
-  // legacy createConstants/createBufferBindings/loopForward — the V34 source
+  // V6NAX path: emit a self-contained Apple-style attention_nax kernel. Skips
+  // legacy createConstants/createBufferBindings/loopForward — the V6NAX source
   // has its own kernel signature, params struct, and BHND-correct addressing.
-  // v2.50 Sprint 4 Phase 4a: V34 forward now supports causal masking
+  // v2.50 Sprint 4 Phase 4a: V6NAX forward now supports causal masking
   // (Apple steel_attention_nax.h:176-187,279-301 pattern, kb_lim shrink +
   // per-element causal mask).  Block mask + varlen still excluded — those
   // route to legacy STEEL.
-  if (useV34 && type.value == AttentionKernelType::forward && !masked && !isVarlen) {
-    return createV34Source();
+  if (useV6NAX && type.value == AttentionKernelType::forward && !masked && !isVarlen) {
+    return createV6NAXSource();
   }
 
   CodeWriter source;
@@ -698,7 +698,7 @@ static std::string naxHelpersBlock() {
   // utils/type_traits.h, utils/integral_constant.h} + the
   // steel_attention_nax.h Op structs and NAXFrag wrappers.
   //
-  // Shared across all V34 source generators (forward, bwd dQ, bwd
+  // Shared across all V6NAX source generators (forward, bwd dQ, bwd
   // dV, bwd dK, legacy fused dK/dV).  Sprint v2.38.x consolidation
   // per Sprint 2 audit M1-HIGH-01 + M3-HIGH-01.  Pre-consolidation:
   // 5x verbatim ~390-line duplication = ~1950 LOC of identical MSL
@@ -2697,7 +2697,7 @@ void NAAttentionKernel::loopForwardSingleTile(CodeWriter &source) const noexcept
 )";
 }
 
-// V34 — self-contained Apple-style attention_nax kernel using NAX-direct
+// V6NAX — self-contained Apple-style attention_nax kernel using NAX-direct
 // primitives (NAXTile / NAXFrag::mma). Replaces the legacy MPP cooperative_tensor
 // path that was capped at execution_simdgroups<1> by Apple's static_asserts.
 //
@@ -2717,7 +2717,7 @@ void NAAttentionKernel::loopForwardSingleTile(CodeWriter &source) const noexcept
 // per Apple's safe path; can be specialized later via FCs).
 //
 // Apple file:line citations are inline at each substitution site.
-std::string NAAttentionKernel::createV34Source() const noexcept {
+std::string NAAttentionKernel::createV6NAXSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -2747,25 +2747,25 @@ std::string NAAttentionKernel::createV34Source() const noexcept {
   // === Apple NAX helpers (shared via naxHelpersBlock(), extracted Sprint v2.38.x Phase B) ===
   ss << naxHelpersBlock();
 
-  // === V34 kernel ===
-  ss << "\n// V34 kernel — Apple steel_attention_nax.h:73-482 pattern\n";
+  // === V6NAX kernel ===
+  ss << "\n// V6NAX kernel — Apple steel_attention_nax.h:73-482 pattern\n";
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
-  ss << "#define V34_BQ " << BQ << "\n";
-  ss << "#define V34_BK " << BK << "\n";
-  ss << "#define V34_BD " << BD << "\n";
-  ss << "#define V34_WM " << WM << "\n";
-  ss << "#define V34_TQ " << TQ << "\n";
-  ss << "#define V34_TD " << TD << "\n";
-  ss << "#define V34_TK " << TK << "\n";
-  ss << "#define V34_DOT_SCALE " << dot_scale_log2e << "f\n";
+  ss << "#define V6NAX_BQ " << BQ << "\n";
+  ss << "#define V6NAX_BK " << BK << "\n";
+  ss << "#define V6NAX_BD " << BD << "\n";
+  ss << "#define V6NAX_WM " << WM << "\n";
+  ss << "#define V6NAX_TQ " << TQ << "\n";
+  ss << "#define V6NAX_TD " << TD << "\n";
+  ss << "#define V6NAX_TK " << TK << "\n";
+  ss << "#define V6NAX_DOT_SCALE " << dot_scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4a: causal masking baked in as a compile-time
   // constant so the non-causal source remains bit-identical to pre-Sprint-4.
-  ss << "#define V34_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAX_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"MSL(
-struct V34Params {
+struct V6NAXParams {
   int qL;        // query seq len
   int kL;        // key seq len
   int gqa_factor;
@@ -2778,8 +2778,8 @@ struct V34Params {
   // cache of length P passes qL_off=P so the causal diagonal is
   // (row + qL_off) < col → mask.  Apple convention
   // (steel_attention_nax.h:179-187).  Field exists unconditionally so
-  // host-side V34ParamsHost layout is stable across causal/non-causal
-  // pipelines; field is simply unused when V34_CAUSAL==0.
+  // host-side V6NAXParamsHost layout is stable across causal/non-causal
+  // pipelines; field is simply unused when V6NAX_CAUSAL==0.
   int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   // Apple convention (steel_attention_nax.h:104-117).
@@ -2788,19 +2788,19 @@ struct V34Params {
   long V_strides[3];
   long O_strides[3];
   // v2.36.x lse-write patch (BLK1 resolution per
-  // docs/v6-nax/v34-backward-decisions.md DC0).  lse is [B, Hq, qL] FP32
+  // docs/v6-nax/v6nax-backward-decisions.md DC0).  lse is [B, Hq, qL] FP32
   // contiguous; per-element stride is always 1 (no D dimension), so
   // L_strides[2] = 1 typically.
   long L_strides[3];
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAX_WM * 32)]]
 void attention(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
     const device T* V [[buffer(2)]],
     device T* O [[buffer(3)]],
-    constant V34Params& params [[buffer(4)]],
+    constant V6NAXParams& params [[buffer(4)]],
     device float* L [[buffer(5)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -2812,22 +2812,22 @@ void attention(
   ulong3 tidl{tid.x, tid.y, tid.z};
   Q += tidl.z * params.Q_strides[0]
      + tidl.y * params.Q_strides[1]
-     + tidl.x * V34_BQ * params.Q_strides[2];
+     + tidl.x * V6NAX_BQ * params.Q_strides[2];
   ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
   K += tidl.z * params.K_strides[0] + kv_head_idx * params.K_strides[1];
   V += tidl.z * params.V_strides[0] + kv_head_idx * params.V_strides[1];
   O += tidl.z * params.O_strides[0]
      + tidl.y * params.O_strides[1]
-     + tidl.x * V34_BQ * params.O_strides[2];
+     + tidl.x * V6NAX_BQ * params.O_strides[2];
 
-  const float scale2 = V34_DOT_SCALE;  // scale * log2e (precomputed)
+  const float scale2 = V6NAX_DOT_SCALE;  // scale * log2e (precomputed)
 
   // === MMA tiles + softmax state (Apple lines 127-166) ===
-  using otile_t = NAXTile<float, V34_TQ, V34_TD>;
+  using otile_t = NAXTile<float, V6NAX_TQ, V6NAX_TD>;
   otile_t Otile;
   Otile.clear();
 
-  const short tm = 16 * V34_TQ * simd_group_id;
+  const short tm = 16 * V6NAX_TQ * simd_group_id;
   Q += tm * int(params.Q_strides[2]);
 
   constexpr short kRowsPT = otile_t::kRowsPerThread;
@@ -2839,11 +2839,11 @@ void attention(
   }
 
   // Last-block flags (Apple lines 189-194)
-  const int NQ_aligned = params.qL / V34_BQ;
-  const int NK_aligned = params.kL / V34_BK;
+  const int NQ_aligned = params.qL / V6NAX_BQ;
+  const int NK_aligned = params.kL / V6NAX_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
-  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V34_BQ) - tm;
-  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34_BK);
+  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V6NAX_BQ) - tm;
+  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V6NAX_BK);
 
   // v2.50 Sprint 4 Phase 4a — causal K-loop bound + mask-start tile
   // (Apple steel_attention_nax.h:176-187).  For causal:
@@ -2853,38 +2853,38 @@ void attention(
   //                                       q_min = tid.x*BQ + qL_off
   // For non-causal: defaults preserved (kb_lim=NK, kb_min_causal=NK so the
   // per-element causal mask branch is never taken).
-#if V34_CAUSAL
+#if V6NAX_CAUSAL
   int kb_lim;
   int kb_min_causal;
   {
-    int q_max = (int(tid.x) + 1) * V34_BQ + params.qL_off;
-    kb_lim = (q_max + V34_BK - 1) / V34_BK;
+    int q_max = (int(tid.x) + 1) * V6NAX_BQ + params.qL_off;
+    kb_lim = (q_max + V6NAX_BK - 1) / V6NAX_BK;
     kb_lim = metal::min(params.NK, kb_lim);
-    int q_min = int(tid.x) * V34_BQ + params.qL_off;
+    int q_min = int(tid.x) * V6NAX_BQ + params.qL_off;
     q_min = metal::max(0, q_min);
-    kb_min_causal = q_min / V34_BK;
+    kb_min_causal = q_min / V6NAX_BK;
   }
 #else
   const int kb_lim = params.NK;
   // kb_min_causal not declared in non-causal path — the causal mask
-  // branch below is guarded by #if V34_CAUSAL so the symbol is absent.
+  // branch below is guarded by #if V6NAX_CAUSAL so the symbol is absent.
 #endif
 
   // === K-loop (Apple lines 197-457) ===
   for (int kb = 0; kb < kb_lim; kb++) {
     const bool is_last_k = (kb == NK_aligned);
 
-    using stile_t = NAXTile<float, V34_TQ, V34_TK>;
+    using stile_t = NAXTile<float, V6NAX_TQ, V6NAX_TK>;
     stile_t Stile;
     Stile.clear();
 
     // QK matmul (Apple lines 206-246)
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34_TQ; iq++) {
+    for (short iq = 0; iq < V6NAX_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAX_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34_TD; id++) {
+        for (short id = 0; id < V6NAX_TD; id++) {
           NAXTile<T, 1, 1> Qtile;
           NAXTile<T, 2, 1> Ktile;
 
@@ -2927,9 +2927,9 @@ void attention(
       const short2 sc = stile_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34_TQ; iq++) {
+      for (short iq = 0; iq < V6NAX_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34_TK; ik++) {
+        for (short ik = 0; ik < V6NAX_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -2949,18 +2949,18 @@ void attention(
     // (kb >= kb_min_causal); earlier tiles are entirely below the diagonal
     // and never need masking, later tiles past kb_lim are already skipped.
     // Per-element predicate: mask if absolute query row < absolute key col.
-#if V34_CAUSAL
+#if V6NAX_CAUSAL
     if (kb >= kb_min_causal) {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = stile_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;   // col base within fragment
       const short sm_c = sc_c.y;   // row base within fragment
-      const int base_row = int(tid.x) * V34_BQ + params.qL_off + tm;
-      const int base_col = kb * V34_BK;
+      const int base_row = int(tid.x) * V6NAX_BQ + params.qL_off + tm;
+      const int base_col = kb * V6NAX_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34_TQ; iq++) {
+      for (short iq = 0; iq < V6NAX_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34_TK; ik++) {
+        for (short ik = 0; ik < V6NAX_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < stile_t::kFragThrRows; ii++) {
@@ -3005,16 +3005,16 @@ void attention(
 
     // PV matmul (Apple lines 417-452)
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34_TQ; iq++) {
+    for (short iq = 0; iq < V6NAX_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34_TD; id += 2) {
-        if (V34_BD == 128) {
+      for (short id = 0; id < V6NAX_TD; id += 2) {
+        if (V6NAX_BD == 128) {
           if (id == 4) {
             threadgroup_barrier(mem_flags::mem_none);
           }
         }
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34_TK; ik++) {
+        for (short ik = 0; ik < V6NAX_TK; ik++) {
           NAXTile<T, 1, 2> Vtile;
           const int V_load_off = ik * 16 * int(params.V_strides[2]) + id * 16;
           if (is_last_k) {
@@ -3034,8 +3034,8 @@ void attention(
       }
     }
 
-    K += V34_BK * int(params.K_strides[2]);
-    V += V34_BK * int(params.V_strides[2]);
+    K += V6NAX_BK * int(params.K_strides[2]);
+    V += V6NAX_BK * int(params.V_strides[2]);
   }
 
   // Normalize output (Apple lines 461-469)
@@ -3049,9 +3049,9 @@ void attention(
   Otile.template row_bin_op<MulOp>(rcp);
 
   // === lse write (v2.36.x BLK1 resolution per
-  // docs/v6-nax/v34-backward-decisions.md DC0) ===
+  // docs/v6-nax/v6nax-backward-decisions.md DC0) ===
   //
-  // V34 forward keeps softmax state in LOG2 domain (S is scaled by
+  // V6NAX forward keeps softmax state in LOG2 domain (S is scaled by
   // log2(e), max_score holds max(S_log2), sum_score holds
   // sum(exp2(S_log2 - max_score)) = sum(exp(S_natural - max_natural))).
   //
@@ -3062,8 +3062,8 @@ void attention(
   // (equivalently multiplying by ln(2)) recovers natural-log max.
   // sum_score is already invariant under the domain change.
   //
-  // Layout: each lane in the simdgroup holds 2*V34_TQ row-state entries
-  // (kRowsPT = otile_t::kRowsPerThread = V34_TQ * kElemRows where
+  // Layout: each lane in the simdgroup holds 2*V6NAX_TQ row-state entries
+  // (kRowsPT = otile_t::kRowsPerThread = V6NAX_TQ * kElemRows where
   // kElemRows=2).  The 4 lanes covering the same row-group share the
   // same row_reduce result (sum/max), so only ONE lane per row must
   // write.  By convention we elect the lane with fn==0 (= get_coord().x).
@@ -3071,7 +3071,7 @@ void attention(
   // Row addressing: tile-row offset = iq*16 + fm + i*kElemRowsJump where
   //   fm = get_coord().y (lane's row-base within the 16-row fragment)
   //   kElemRowsJump = 8 (2-row stride within a frag)
-  //   iq ∈ [0, V34_TQ) — fragment row index
+  //   iq ∈ [0, V6NAX_TQ) — fragment row index
   //   i  ∈ [0, kElemRows) — intra-frag row index
   // The base q-row pointer was advanced by tm rows above (see Q load);
   // we now advance L the same way.
@@ -3081,12 +3081,12 @@ void attention(
       device float* L_row = L
           + tidl.z * params.L_strides[0]
           + tidl.y * params.L_strides[1]
-          + tidl.x * V34_BQ * params.L_strides[2]
+          + tidl.x * V6NAX_BQ * params.L_strides[2]
           + tm * params.L_strides[2];
       constexpr short kElemRows_lse = otile_t::NAXFrag_t::kElemRows;
       constexpr short kElemRowsJump_lse = otile_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34_TQ; iq++) {
+      for (short iq = 0; iq < V6NAX_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kElemRows_lse; i++) {
           const short local_row = iq * 16 + sc_lse.y + i * kElemRowsJump_lse;
@@ -3830,9 +3830,9 @@ void NAAttentionKernel::loopBackwardKeyValue(CodeWriter &source) const noexcept 
 
 
 // =============================================================================
-// V34 backward dQ kernel — self-contained Apple-style NAX-direct backward
-// query.  Generated per V34 backward Option β sprint (Phase 1 Section B,
-// post-BLK1 resolution).  Mirrors createV34Source() structure with backward
+// V6NAX backward dQ kernel — self-contained Apple-style NAX-direct backward
+// query.  Generated per V6NAX backward Option β sprint (Phase 1 Section B,
+// post-BLK1 resolution).  Mirrors createV6NAXSource() structure with backward
 // inner loop.
 //
 // Algorithm (FA-2 backward dQ pattern):
@@ -3853,11 +3853,11 @@ void NAAttentionKernel::loopBackwardKeyValue(CodeWriter &source) const noexcept 
 //   3. Post-loop: dQ *= scale, cast FP32 → T, store to device.
 //
 // Apple-internal NAX primitives (BaseNAXFrag, NAXTile, row_reduce, row_bin_op)
-// are inlined verbatim (same content as createV34Source()'s helpers block).
+// are inlined verbatim (same content as createV6NAXSource()'s helpers block).
 // Future cleanup: extract shared helpers into naxHelpersSource() (deferred to
 // post-Phase-1 refactor sprint).
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardQuerySource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardQuerySource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -3887,31 +3887,31 @@ std::string NAAttentionKernel::createV34BackwardQuerySource() const noexcept {
 
   ss << naxHelpersBlock();
 
-  ss << "\n// V34 backward dQ kernel — Apple-style NAX-direct\n";
+  ss << "\n// V6NAX backward dQ kernel — Apple-style NAX-direct\n";
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
   ss << "// SubOp functor (needed for row_bin_op<SubOp> in backward; not in\n";
-  ss << "// V34 forward helpers because forward doesn't use plain subtraction).\n";
+  ss << "// V6NAX forward helpers because forward doesn't use plain subtraction).\n";
   ss << "struct SubOp {\n";
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWD_BQ " << BQ << "\n";
-  ss << "#define V34BWD_BK " << BK << "\n";
-  ss << "#define V34BWD_BD " << BD << "\n";
-  ss << "#define V34BWD_WM " << WM << "\n";
-  ss << "#define V34BWD_TQ " << TQ << "\n";
-  ss << "#define V34BWD_TD " << TD << "\n";
-  ss << "#define V34BWD_TK " << TK << "\n";
-  ss << "#define V34BWD_SCALE " << scale << "f\n";
-  ss << "#define V34BWD_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWD_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWD_BK " << BK << "\n";
+  ss << "#define V6NAXBWD_BD " << BD << "\n";
+  ss << "#define V6NAXBWD_WM " << WM << "\n";
+  ss << "#define V6NAXBWD_TQ " << TQ << "\n";
+  ss << "#define V6NAXBWD_TD " << TD << "\n";
+  ss << "#define V6NAXBWD_TK " << TK << "\n";
+  ss << "#define V6NAXBWD_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWD_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b — causal masking baked in as compile-time
   // constant so non-causal source remains bit-identical to pre-Sprint-4.
-  ss << "#define V34BWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAXBWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"BWDMSL(
-struct V34BwdQParams {
+struct V6NAXBwdQParams {
   int qL;
   int kL;
   int gqa_factor;
@@ -3920,7 +3920,7 @@ struct V34BwdQParams {
   int qL_rem;
   int kL_rem;
   // v2.50 Sprint 4 Phase 4b — causal offset.  Field order MUST match
-  // V34BwdQParamsHost in v6_nax_compile.mm.
+  // V6NAXBwdQParamsHost in v6_nax_compile.mm.
   int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   long Q_strides[3];
@@ -3933,7 +3933,7 @@ struct V34BwdQParams {
   long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWD_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWD_WM * 32)]]
 void attention_bwd_q(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -3942,7 +3942,7 @@ void attention_bwd_q(
     const device float* L [[buffer(4)]],
     const device T* dO [[buffer(5)]],
     device T* dQ [[buffer(6)]],
-    constant V34BwdQParams& params [[buffer(7)]],
+    constant V6NAXBwdQParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -3954,29 +3954,29 @@ void attention_bwd_q(
   ulong3 tidl{tid.x, tid.y, tid.z};
   Q  += tidl.z * params.Q_strides[0]
       + tidl.y * params.Q_strides[1]
-      + tidl.x * V34BWD_BQ * params.Q_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.Q_strides[2];
   ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
   K  += tidl.z * params.K_strides[0] + kv_head_idx * params.K_strides[1];
   V  += tidl.z * params.V_strides[0] + kv_head_idx * params.V_strides[1];
   O  += tidl.z * params.O_strides[0]
       + tidl.y * params.O_strides[1]
-      + tidl.x * V34BWD_BQ * params.O_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.O_strides[2];
   L  += tidl.z * params.L_strides[0]
       + tidl.y * params.L_strides[1]
-      + tidl.x * V34BWD_BQ * params.L_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.L_strides[2];
   dO += tidl.z * params.dO_strides[0]
       + tidl.y * params.dO_strides[1]
-      + tidl.x * V34BWD_BQ * params.dO_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.dO_strides[2];
   dQ += tidl.z * params.dQ_strides[0]
       + tidl.y * params.dQ_strides[1]
-      + tidl.x * V34BWD_BQ * params.dQ_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.dQ_strides[2];
   // v2.38.1: D buffer per-batch/per-head/per-Q-block offset.
   D  += tidl.z * params.D_strides[0]
       + tidl.y * params.D_strides[1]
-      + tidl.x * V34BWD_BQ * params.D_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.D_strides[2];
 
   // Per-SG row offset within the Q-block.
-  const short tm = 16 * V34BWD_TQ * simd_group_id;
+  const short tm = 16 * V6NAXBWD_TQ * simd_group_id;
   Q  += tm * int(params.Q_strides[2]);
   O  += tm * int(params.O_strides[2]);
   L  += tm * int(params.L_strides[2]);
@@ -3985,21 +3985,21 @@ void attention_bwd_q(
   D  += tm * int(params.D_strides[2]);  // v2.38.1
 
   // Last-block flags.
-  const int NQ_aligned = params.qL / V34BWD_BQ;
-  const int NK_aligned = params.kL / V34BWD_BK;
+  const int NQ_aligned = params.qL / V6NAXBWD_BQ;
+  const int NK_aligned = params.kL / V6NAXBWD_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
   // v2.50 Prompt 5e HIGH-2 fix: guard against (qL_rem - tm) underflow
   // when tm > qL_rem (some SGs entirely beyond live rows in WM=4 partial
   // Q-block).  Pre-fix: cast-to-short wrap → out-of-range tile loads.
   const short lim_rows_q = (short)max(0,
-      (int)((params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ)) - (int)tm);
-  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34BWD_BK);
+      (int)((params.qL_rem > 0 ? params.qL_rem : V6NAXBWD_BQ)) - (int)tm);
+  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V6NAXBWD_BK);
   const int kb_lim = params.NK;
 
   // === MMA tile types ===
-  using dq_accum_t = NAXTile<float, V34BWD_TQ, V34BWD_TD>;  // dQ FP32 accumulator
-  using s_t       = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // S (= Q@K^T scaled)
-  using dp_t      = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // dP (= dO@V^T)
+  using dq_accum_t = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TD>;  // dQ FP32 accumulator
+  using s_t       = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TK>;  // S (= Q@K^T scaled)
+  using dp_t      = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TK>;  // dP (= dO@V^T)
 
   dq_accum_t dQ_accum;
   dQ_accum.clear();
@@ -4007,7 +4007,7 @@ void attention_bwd_q(
   constexpr short kRowsPT = dq_accum_t::kRowsPerThread;
 
   // === Step 1: load lse, convert to log2 domain ===
-  // lse from forward is natural-log; V34 inner-loop uses log2 domain via
+  // lse from forward is natural-log; V6NAX inner-loop uses log2 domain via
   // scale*log2(e) and exp2.  Multiply lse by log2(e) once so that
   // row_bin_op<ExpSubOp>(lse_log2) below computes exp2(S_log2 - lse_log2)
   // = exp(S_natural - lse_natural) = correct softmax P.
@@ -4026,7 +4026,7 @@ void attention_bwd_q(
     constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
     constexpr float log2e_f = 1.4426950408889634f;
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short i = 0; i < kElemRows; i++) {
         const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
@@ -4047,7 +4047,7 @@ void attention_bwd_q(
   // v2.38.1: D is precomputed once on host via MLX (`mx.sum(dO*O, axis=-1)`)
   // and shared between dQ + split-dK + legacy-fused-dKdV kernels.  Replaces
   // an inline tile load + FP32 multiply + row_reduce.  Saves 1 rowsum per
-  // V34 backward dQ call.
+  // V6NAX backward dQ call.
   //
   // Mirrors the lse-load pattern above (Step 1): each lane reads its owned
   // rows from the device buffer using `NAXFrag::get_coord()` + kElemRows /
@@ -4058,7 +4058,7 @@ void attention_bwd_q(
     constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
     constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short i = 0; i < kElemRows; i++) {
         const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
@@ -4082,11 +4082,11 @@ void attention_bwd_q(
 
     // QK matmul: S = Q @ K^T (NAXFrag::mma, transpose_b=true).
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWD_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWD_TD; id++) {
+        for (short id = 0; id < V6NAXBWD_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
 
@@ -4121,7 +4121,7 @@ void attention_bwd_q(
     // Scale S into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWD_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWD_SCALE_LOG2E;
     }
 
     // Mask out length sequence on last K block (mirrors forward, but here
@@ -4132,9 +4132,9 @@ void attention_bwd_q(
       const short2 sc = s_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -4154,18 +4154,18 @@ void attention_bwd_q(
     // at masked positions → dQ accumulation naturally skips them.  Without
     // this, backward computes P over the unmasked S using the causal-masked
     // lse from forward, producing huge (incorrect) gradients for c>r.
-#if V34BWD_CAUSAL
+#if V6NAXBWD_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;   // col base within fragment
       const short sm_c = sc_c.y;   // row base within fragment
-      const int base_row = int(tid.x) * V34BWD_BQ + params.qL_off + tm;
-      const int base_col = kb * V34BWD_BK;
+      const int base_row = int(tid.x) * V6NAXBWD_BQ + params.qL_off + tm;
+      const int base_col = kb * V6NAXBWD_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_t::kFragThrRows; ii++) {
@@ -4191,11 +4191,11 @@ void attention_bwd_q(
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWD_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWD_TD; id++) {
+        for (short id = 0; id < V6NAXBWD_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
 
@@ -4240,18 +4240,18 @@ void attention_bwd_q(
     simdgroup_barrier(mem_flags::mem_none);
 
     // dQ_accum += dS @ K  (NAXFrag::mma, transpose_b=false).  Mirrors the
-    // P @ V pattern from V34 forward.
+    // P @ V pattern from V6NAX forward.
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWD_TD; id += 2) {
-        if (V34BWD_BD == 128) {
+      for (short id = 0; id < V6NAXBWD_TD; id += 2) {
+        if (V6NAXBWD_BD == 128) {
           if (id == 4) {
             threadgroup_barrier(mem_flags::mem_none);
           }
         }
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           NAXTile<T, 1, 2> Kfrag2;
           const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
           if (is_last_k) {
@@ -4272,8 +4272,8 @@ void attention_bwd_q(
       }
     }
 
-    K += V34BWD_BK * int(params.K_strides[2]);
-    V += V34BWD_BK * int(params.V_strides[2]);
+    K += V6NAXBWD_BK * int(params.K_strides[2]);
+    V += V6NAXBWD_BK * int(params.V_strides[2]);
   }  // end K-loop
 
   threadgroup_barrier(mem_flags::mem_none);
@@ -4284,7 +4284,7 @@ void attention_bwd_q(
   {
     metal::vec<float, kRowsPT> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT; i++) scale_vec[i] = V34BWD_SCALE;
+    for (short i = 0; i < kRowsPT; i++) scale_vec[i] = V6NAXBWD_SCALE;
     dQ_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -4305,7 +4305,7 @@ void attention_bwd_q(
 
 
 // =============================================================================
-// V34 backward dK/dV kernel — single-SG (WM=1) NAX-direct implementation.
+// V6NAX backward dK/dV kernel — single-SG (WM=1) NAX-direct implementation.
 //
 // Grid: (NK, H, B).  One TG per K-tile.  WM=1 (single SG per TG).
 // Single SG iterates over ALL Q-tiles, accumulating partial dK + dV in
@@ -4334,7 +4334,7 @@ void attention_bwd_q(
 //   D=128, BK=32: 2 × 32 × 128 × 4 = 32 KB per SG (at register edge).
 //   D=64,  BK=64: 2 × 64 × 64  × 4 = 32 KB per SG (same).
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardKeyValueSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardKeyValueSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -4361,7 +4361,7 @@ std::string NAAttentionKernel::createV34BackwardKeyValueSource() const noexcept 
   ss << "\n";
   ss << naxHelpersBlock();
 
-  ss << "\n// V34 backward dK/dV kernel\n";
+  ss << "\n// V6NAX backward dK/dV kernel\n";
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
@@ -4369,21 +4369,21 @@ std::string NAAttentionKernel::createV34BackwardKeyValueSource() const noexcept 
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWDKV_BQ " << BQ << "\n";
-  ss << "#define V34BWDKV_BK " << BK << "\n";
-  ss << "#define V34BWDKV_BD " << BD << "\n";
-  ss << "#define V34BWDKV_WM " << WM << "\n";
-  ss << "#define V34BWDKV_TQ " << TQ << "\n";
-  ss << "#define V34BWDKV_TD " << TD << "\n";
-  ss << "#define V34BWDKV_TK " << TK << "\n";
-  ss << "#define V34BWDKV_SCALE " << scale << "f\n";
-  ss << "#define V34BWDKV_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDKV_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDKV_BK " << BK << "\n";
+  ss << "#define V6NAXBWDKV_BD " << BD << "\n";
+  ss << "#define V6NAXBWDKV_WM " << WM << "\n";
+  ss << "#define V6NAXBWDKV_TQ " << TQ << "\n";
+  ss << "#define V6NAXBWDKV_TD " << TD << "\n";
+  ss << "#define V6NAXBWDKV_TK " << TK << "\n";
+  ss << "#define V6NAXBWDKV_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWDKV_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking gated
   // by compile-time macro so non-causal source remains bit-identical.
-  ss << "#define V34BWDKV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAXBWDKV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
   ss << R"BWDKVMSL(
-struct V34BwdKVParams {
+struct V6NAXBwdKVParams {
   int qL;
   int kL;
   int gqa_factor;
@@ -4392,7 +4392,7 @@ struct V34BwdKVParams {
   int qL_rem;
   int kL_rem;
   // v2.50 Sprint 4 Phase 4b-complete — causal offset.  Field exists
-  // unconditionally so host-side V34BwdKVParamsHost layout matches.
+  // unconditionally so host-side V6NAXBwdKVParamsHost layout matches.
   int qL_off;
   long Q_strides[3];
   long K_strides[3];
@@ -4405,7 +4405,7 @@ struct V34BwdKVParams {
   long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDKV_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDKV_WM * 32)]]
 void attention_bwd_kv(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -4415,7 +4415,7 @@ void attention_bwd_kv(
     const device T* dO [[buffer(5)]],
     device T* dK [[buffer(6)]],
     device T* dV [[buffer(7)]],
-    constant V34BwdKVParams& params [[buffer(8)]],
+    constant V6NAXBwdKVParams& params [[buffer(8)]],
     device const float* D [[buffer(9)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -4439,28 +4439,28 @@ void attention_bwd_kv(
   // K/V/dK/dV indexed by KV head (Hk) — apply GQA factor.
   ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDKV_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDKV_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDKV_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDKV_BK * params.V_strides[2];
 
   // dK/dV outputs: with GQA, multiple Q-heads contribute to the same KV head.
   // For this Phase 1 implementation, write per Q-head (one dK/dV per (b, hq, k)
   // slice).  Caller is responsible for summing across heads if GQA reduction
-  // is wanted.  Per DC12: most production v34-backward shapes are Hq==Hk.
+  // is wanted.  Per DC12: most production v6nax-backward shapes are Hq==Hk.
   // We use Q-head indexing for dK/dV writes to match SDPA-vjp output layout.
   dK += tidl.z * params.dK_strides[0] + tidl.y * params.dK_strides[1]
-      + tidl.x * V34BWDKV_BK * params.dK_strides[2];
+      + tidl.x * V6NAXBWDKV_BK * params.dK_strides[2];
   dV += tidl.z * params.dV_strides[0] + tidl.y * params.dV_strides[1]
-      + tidl.x * V34BWDKV_BK * params.dV_strides[2];
+      + tidl.x * V6NAXBWDKV_BK * params.dV_strides[2];
 
   // Last-K-block flag.
-  const int NK_aligned = params.kL / V34BWDKV_BK;
-  const int NQ_aligned = params.qL / V34BWDKV_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDKV_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDKV_BQ;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDKV_BK;
-  const int nq_full = params.qL / V34BWDKV_BQ;
-  const int nq_rem = params.qL % V34BWDKV_BQ;
+      ? params.kL_rem : V6NAXBWDKV_BK;
+  const int nq_full = params.qL / V6NAXBWDKV_BQ;
+  const int nq_rem = params.qL % V6NAXBWDKV_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
   // === Accumulators ===
@@ -4470,7 +4470,7 @@ void attention_bwd_kv(
   // GEMM partition saves.  Reverted to WM=1 single-SG with full BK rows
   // per SG.  Q-row partition (with TGP streaming reduction) is the
   // recommended next-sprint approach — see status doc.
-  using dkv_t = NAXTile<float, V34BWDKV_TK, V34BWDKV_TD>;
+  using dkv_t = NAXTile<float, V6NAXBWDKV_TK, V6NAXBWDKV_TD>;
   dkv_t dK_accum, dV_accum;
   dK_accum.clear();
   dV_accum.clear();
@@ -4485,18 +4485,18 @@ void attention_bwd_kv(
   for (int qb = 0; qb < q_loop; qb++) {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDKV_BQ;
+        ? params.qL_rem : V6NAXBWDKV_BQ;
 
     // Per-q-tile pointers.
-    const device T* Q_q  = Q  + qb * V34BWDKV_BQ * int(params.Q_strides[2]);
-    const device T* O_q  = O  + qb * V34BWDKV_BQ * int(params.O_strides[2]);
-    const device float* L_q = L + qb * V34BWDKV_BQ * int(params.L_strides[2]);
-    const device T* dO_q = dO + qb * V34BWDKV_BQ * int(params.dO_strides[2]);
+    const device T* Q_q  = Q  + qb * V6NAXBWDKV_BQ * int(params.Q_strides[2]);
+    const device T* O_q  = O  + qb * V6NAXBWDKV_BQ * int(params.O_strides[2]);
+    const device float* L_q = L + qb * V6NAXBWDKV_BQ * int(params.L_strides[2]);
+    const device T* dO_q = dO + qb * V6NAXBWDKV_BQ * int(params.dO_strides[2]);
     // v2.38.1: D buffer Q-block offset (mirror L_q).
-    const device float* D_q = D + qb * V34BWDKV_BQ * int(params.D_strides[2]);
+    const device float* D_q = D + qb * V6NAXBWDKV_BQ * int(params.D_strides[2]);
 
     // --- Load lse, convert to log2 domain ---
-    using s_q_t = NAXTile<float, V34BWDKV_TQ, V34BWDKV_TK>;
+    using s_q_t = NAXTile<float, V6NAXBWDKV_TQ, V6NAXBWDKV_TK>;
     constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
     metal::vec<float, kRowsPT_q> lse_log2;
     {
@@ -4505,7 +4505,7 @@ void attention_bwd_kv(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -4529,7 +4529,7 @@ void attention_bwd_kv(
       constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -4546,11 +4546,11 @@ void attention_bwd_kv(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDKV_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDKV_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDKV_TD; id++) {
+        for (short id = 0; id < V6NAXBWDKV_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -4582,7 +4582,7 @@ void attention_bwd_kv(
     // Scale into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDKV_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDKV_SCALE_LOG2E;
     }
 
     // Mask out-of-range K columns to -inf so exp2 produces 0.
@@ -4591,9 +4591,9 @@ void attention_bwd_kv(
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDKV_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -4615,18 +4615,18 @@ void attention_bwd_kv(
     //   base_col = tid.x * BK         (K parallel, no SG partition for WM=1)
     // Setting S[r,c] = -inf for r<c → exp2(-inf - lse) = 0 → P = 0 → dS = 0
     // → dK_accum + dV_accum naturally skip masked positions.
-#if V34BWDKV_CAUSAL
+#if V6NAXBWDKV_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDKV_BQ + params.qL_off;
-      const int base_col = int(tid.x) * V34BWDKV_BK;
+      const int base_row = qb * V6NAXBWDKV_BQ + params.qL_off;
+      const int base_col = int(tid.x) * V6NAXBWDKV_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDKV_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -4650,11 +4650,11 @@ void attention_bwd_kv(
 
     // --- dV_accum += P^T @ dO  (compute BEFORE dS = P*(...) overwrites P) ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDKV_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDKV_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDKV_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
           NAXTile<T, 1, 2> dOfrag2;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
           if (is_last_q) {
@@ -4676,15 +4676,15 @@ void attention_bwd_kv(
     }
 
     // --- dP = dO @ V^T ---
-    using dp_t = NAXTile<float, V34BWDKV_TQ, V34BWDKV_TK>;
+    using dp_t = NAXTile<float, V6NAXBWDKV_TQ, V6NAXBWDKV_TK>;
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDKV_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDKV_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDKV_TD; id++) {
+        for (short id = 0; id < V6NAXBWDKV_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
@@ -4725,11 +4725,11 @@ void attention_bwd_kv(
 
     // --- dK_accum += dS^T @ Q ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDKV_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDKV_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDKV_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDKV_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDKV_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDKV_TQ; iq++) {
           NAXTile<T, 1, 2> Qfrag2;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
           if (is_last_q) {
@@ -4758,7 +4758,7 @@ void attention_bwd_kv(
     constexpr short kRowsPT_k = dkv_t::kRowsPerThread;
     metal::vec<float, kRowsPT_k> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDKV_SCALE;
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V6NAXBWDKV_SCALE;
     dK_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -4780,9 +4780,9 @@ void attention_bwd_kv(
 
 
 // =============================================================================
-// V34 backward dV-only kernel — WM=4 Q-row partition with per-SG slot output.
+// V6NAX backward dV-only kernel — WM=4 Q-row partition with per-SG slot output.
 //
-// Phase 2.O2 (V34 backward optimization sprint, 2026-05-13):
+// Phase 2.O2 (V6NAX backward optimization sprint, 2026-05-13):
 // Each SG handles BQ/WM = 16 Q-rows (1 NAXFrag).  Softmax is intra-SG (no
 // replication tax).  Each SG accumulates its dV partial (full BK × D) from
 // its 16 Q-rows × NQ Q-tiles' contributions.  After Q-loop, each SG writes
@@ -4799,7 +4799,7 @@ void attention_bwd_kv(
 //
 // No D / dP / dS computation needed (dV-only).
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardDVSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardDVSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -4830,20 +4830,20 @@ std::string NAAttentionKernel::createV34BackwardDVSource() const noexcept {
 
   ss << "\nusing T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n\n";
-  ss << "#define V34BWDV_BQ " << BQ << "\n";
-  ss << "#define V34BWDV_BK " << BK << "\n";
-  ss << "#define V34BWDV_BD " << BD << "\n";
-  ss << "#define V34BWDV_WM " << WM << "\n";
-  ss << "#define V34BWDV_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDV_TD " << TD << "\n";
-  ss << "#define V34BWDV_TK " << TK << "\n";
-  ss << "#define V34BWDV_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDV_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDV_BK " << BK << "\n";
+  ss << "#define V6NAXBWDV_BD " << BD << "\n";
+  ss << "#define V6NAXBWDV_WM " << WM << "\n";
+  ss << "#define V6NAXBWDV_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDV_TD " << TD << "\n";
+  ss << "#define V6NAXBWDV_TK " << TK << "\n";
+  ss << "#define V6NAXBWDV_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
-  ss << "#define V34BWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAXBWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
   ss << "\n";
 
   ss << R"BWDVMSL(
-struct V34BwdVParams {
+struct V6NAXBwdVParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -4861,7 +4861,7 @@ struct V34BwdVParams {
   long dVp_strides[4];
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDV_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDV_WM * 32)]]
 void attention_bwd_dv(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -4869,7 +4869,7 @@ void attention_bwd_dv(
     const device float* L [[buffer(3)]],
     const device T* dO [[buffer(4)]],
     device float* dV_partials [[buffer(5)]],
-    constant V34BwdVParams& params [[buffer(6)]],
+    constant V6NAXBwdVParams& params [[buffer(6)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
@@ -4885,54 +4885,54 @@ void attention_bwd_dv(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDV_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDV_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDV_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDV_BK * params.V_strides[2];
 
   // Per-SG dV_partials slot.
   // dV_partials[b, hq, sg, k_base, d] → offset = b*S0 + hq*S1 + sg*S2 + k_base*S3
   dV_partials += tidl.z * params.dVp_strides[0]
               +  tidl.y * params.dVp_strides[1]
               +  simd_group_id * params.dVp_strides[2]
-              +  tidl.x * V34BWDV_BK * params.dVp_strides[3];
+              +  tidl.x * V6NAXBWDV_BK * params.dVp_strides[3];
 
   // Per-SG Q-row offset within each Q-tile.
-  const short sg_q_offset = 16 * V34BWDV_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDV_TQ * simd_group_id;
 
   // Last-K / Q bookkeeping.
-  const int NQ_aligned = params.qL / V34BWDV_BQ;
-  const int NK_aligned = params.kL / V34BWDV_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDV_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDV_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDV_BK;
-  const int nq_full = params.qL / V34BWDV_BQ;
-  const int nq_rem = params.qL % V34BWDV_BQ;
+      ? params.kL_rem : V6NAXBWDV_BK;
+  const int nq_full = params.qL / V6NAXBWDV_BQ;
+  const int nq_rem = params.qL % V6NAXBWDV_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
   // Per-SG dV accumulator (FULL BK × D, contributions only from SG's Q-rows).
-  using dv_t = NAXTile<float, V34BWDV_TK, V34BWDV_TD>;
+  using dv_t = NAXTile<float, V6NAXBWDV_TK, V6NAXBWDV_TD>;
   dv_t dV_accum;
   dV_accum.clear();
 
   // Per-SG S tile (16 Q-rows × BK).
-  using s_q_t = NAXTile<float, V34BWDV_TQ, V34BWDV_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDV_TQ, V6NAXBWDV_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // Q-loop.
   for (int qb = 0; qb < q_loop; qb++) {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDV_BQ;
+        ? params.qL_rem : V6NAXBWDV_BQ;
     // SG's effective limit (within its 16-row slice).
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
     // Per-q-tile + SG offset pointers.
-    const device T* Q_qs  = Q  + qb * V34BWDV_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDV_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDV_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDV_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDV_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDV_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
 
     // --- Load lse for SG's 16 rows, scale to log2 domain ---
@@ -4943,7 +4943,7 @@ void attention_bwd_dv(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -4962,11 +4962,11 @@ void attention_bwd_dv(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDV_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDV_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDV_TD; id++) {
+        for (short id = 0; id < V6NAXBWDV_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -4998,7 +4998,7 @@ void attention_bwd_dv(
     // Scale into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDV_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDV_SCALE_LOG2E;
     }
 
     // Mask last-K columns to -inf.
@@ -5007,9 +5007,9 @@ void attention_bwd_dv(
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -5028,18 +5028,18 @@ void attention_bwd_dv(
     // K-parallel kernel with per-SG Q-row partition (sg_q_offset).
     //   base_row = qb * BQ + qL_off + sg_q_offset
     //   base_col = tid.x * BK
-#if V34BWDV_CAUSAL
+#if V6NAXBWDV_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDV_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDV_BK;
+      const int base_row = qb * V6NAXBWDV_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDV_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -5063,11 +5063,11 @@ void attention_bwd_dv(
 
     // --- dV_accum += P^T @ dO[SG-rows] ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDV_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDV_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDV_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
           NAXTile<T, 1, 2> dOfrag2;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
           if (is_last_q) {
@@ -5107,9 +5107,9 @@ void attention_bwd_dv(
 
 
 // =============================================================================
-// V34 backward dV SPARSE kernel — Prompt 5b Section A PoC.
+// V6NAX backward dV SPARSE kernel — Prompt 5b Section A PoC.
 //
-// Identical to createV34BackwardDVSource() with one structural addition: a
+// Identical to createV6NAXBackwardDVSource() with one structural addition: a
 // per-Q-tile block_mask scan in the Q-loop.  When block_mask[qb, tid.x] is
 // false, the entire Q-tile contribution to dV[k_base] is skipped (the
 // inactive blocks DON'T contribute P^T @ dO since their P values are
@@ -5126,7 +5126,7 @@ void attention_bwd_dv(
 //
 // Output identical to dense dV kernel: dV_partials [B, Hq, WM, kL, D] FP32.
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardDVSparseSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardDVSparseSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -5156,20 +5156,20 @@ std::string NAAttentionKernel::createV34BackwardDVSparseSource() const noexcept 
 
   ss << "\nusing T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n\n";
-  ss << "#define V34BWDV_BQ " << BQ << "\n";
-  ss << "#define V34BWDV_BK " << BK << "\n";
-  ss << "#define V34BWDV_BD " << BD << "\n";
-  ss << "#define V34BWDV_WM " << WM << "\n";
-  ss << "#define V34BWDV_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDV_TD " << TD << "\n";
-  ss << "#define V34BWDV_TK " << TK << "\n";
-  ss << "#define V34BWDV_SCALE_LOG2E " << scale_log2e << "f\n";
-  ss << "#define V34BWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
-  ss << "#define V34BWDV_SPARSE 1\n";
+  ss << "#define V6NAXBWDV_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDV_BK " << BK << "\n";
+  ss << "#define V6NAXBWDV_BD " << BD << "\n";
+  ss << "#define V6NAXBWDV_WM " << WM << "\n";
+  ss << "#define V6NAXBWDV_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDV_TD " << TD << "\n";
+  ss << "#define V6NAXBWDV_TK " << TK << "\n";
+  ss << "#define V6NAXBWDV_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDV_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAXBWDV_SPARSE 1\n";
   ss << "\n";
 
   ss << R"BWDVSPMSL(
-struct V34BwdVSparseParams {
+struct V6NAXBwdVSparseParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -5183,7 +5183,7 @@ struct V34BwdVSparseParams {
   long dVp_strides[4];
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDV_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDV_WM * 32)]]
 void attention_bwd_dv_sparse(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -5191,7 +5191,7 @@ void attention_bwd_dv_sparse(
     const device float* L [[buffer(3)]],
     const device T* dO [[buffer(4)]],
     device float* dV_partials [[buffer(5)]],
-    constant V34BwdVSparseParams& params [[buffer(6)]],
+    constant V6NAXBwdVSparseParams& params [[buffer(6)]],
     const device bool* block_mask [[buffer(7)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -5206,31 +5206,31 @@ void attention_bwd_dv_sparse(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDV_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDV_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDV_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDV_BK * params.V_strides[2];
 
   dV_partials += tidl.z * params.dVp_strides[0]
               +  tidl.y * params.dVp_strides[1]
               +  simd_group_id * params.dVp_strides[2]
-              +  tidl.x * V34BWDV_BK * params.dVp_strides[3];
+              +  tidl.x * V6NAXBWDV_BK * params.dVp_strides[3];
 
-  const short sg_q_offset = 16 * V34BWDV_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDV_TQ * simd_group_id;
 
-  const int NQ_aligned = params.qL / V34BWDV_BQ;
-  const int NK_aligned = params.kL / V34BWDV_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDV_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDV_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDV_BK;
-  const int nq_full = params.qL / V34BWDV_BQ;
-  const int nq_rem = params.qL % V34BWDV_BQ;
+      ? params.kL_rem : V6NAXBWDV_BK;
+  const int nq_full = params.qL / V6NAXBWDV_BQ;
+  const int nq_rem = params.qL % V6NAXBWDV_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
-  using dv_t = NAXTile<float, V34BWDV_TK, V34BWDV_TD>;
+  using dv_t = NAXTile<float, V6NAXBWDV_TK, V6NAXBWDV_TD>;
   dv_t dV_accum;
   dV_accum.clear();
 
-  using s_q_t = NAXTile<float, V34BWDV_TQ, V34BWDV_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDV_TQ, V6NAXBWDV_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // === PROMPT 5B SECTION A SPARSE BASE: 2-D mask [NQ, NK] ===
@@ -5270,15 +5270,15 @@ void attention_bwd_dv_sparse(
 
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDV_BQ;
+        ? params.qL_rem : V6NAXBWDV_BQ;
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
-    const device T* Q_qs  = Q  + qb * V34BWDV_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDV_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDV_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDV_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDV_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDV_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
 
     metal::vec<float, kRowsPT_q> lse_log2;
@@ -5288,7 +5288,7 @@ void attention_bwd_dv_sparse(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -5306,11 +5306,11 @@ void attention_bwd_dv_sparse(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDV_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDV_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDV_TD; id++) {
+        for (short id = 0; id < V6NAXBWDV_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -5341,7 +5341,7 @@ void attention_bwd_dv_sparse(
 
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDV_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDV_SCALE_LOG2E;
     }
 
     if (is_last_k) {
@@ -5349,9 +5349,9 @@ void attention_bwd_dv_sparse(
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -5366,18 +5366,18 @@ void attention_bwd_dv_sparse(
       }
     }
 
-#if V34BWDV_CAUSAL
+#if V6NAXBWDV_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDV_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDV_BK;
+      const int base_row = qb * V6NAXBWDV_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDV_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDV_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -5398,11 +5398,11 @@ void attention_bwd_dv_sparse(
     Stile.template row_bin_op<ExpSubOp>(lse_log2);
 
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDV_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDV_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDV_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDV_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDV_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDV_TQ; iq++) {
           NAXTile<T, 1, 2> dOfrag2;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
           if (is_last_q) {
@@ -5440,8 +5440,8 @@ void attention_bwd_dv_sparse(
 
 
 // =============================================================================
-// V34 backward dK-only kernel — WM=4 Q-row partition with per-SG slot output.
-// Phase 2.O2 sister kernel to createV34BackwardDVSource().  Adds D = rowsum(
+// V6NAX backward dK-only kernel — WM=4 Q-row partition with per-SG slot output.
+// Phase 2.O2 sister kernel to createV6NAXBackwardDVSource().  Adds D = rowsum(
 // dO⊙O), dP = dO@V^T, dS = P*(dP-D), and dK_accum += dS^T@Q.
 //
 // Per-SG handles BQ/WM = 16 Q-rows (1 NAXFrag).  No softmax replication tax
@@ -5452,7 +5452,7 @@ void attention_bwd_dv_sparse(
 //
 // dK_accum is post-scaled by 1/sqrt(D) before storage (∇_K of QK^T*s = s*dS^T@Q).
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardDKSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardDKSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -5485,20 +5485,20 @@ std::string NAAttentionKernel::createV34BackwardDKSource() const noexcept {
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWDK_BQ " << BQ << "\n";
-  ss << "#define V34BWDK_BK " << BK << "\n";
-  ss << "#define V34BWDK_BD " << BD << "\n";
-  ss << "#define V34BWDK_WM " << WM << "\n";
-  ss << "#define V34BWDK_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDK_TD " << TD << "\n";
-  ss << "#define V34BWDK_TK " << TK << "\n";
-  ss << "#define V34BWDK_SCALE " << scale << "f\n";
-  ss << "#define V34BWDK_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDK_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDK_BK " << BK << "\n";
+  ss << "#define V6NAXBWDK_BD " << BD << "\n";
+  ss << "#define V6NAXBWDK_WM " << WM << "\n";
+  ss << "#define V6NAXBWDK_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDK_TD " << TD << "\n";
+  ss << "#define V6NAXBWDK_TK " << TK << "\n";
+  ss << "#define V6NAXBWDK_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWDK_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
-  ss << "#define V34BWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+  ss << "#define V6NAXBWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDKMSL(
-struct V34BwdKParams {
+struct V6NAXBwdKParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -5515,7 +5515,7 @@ struct V34BwdKParams {
   long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDK_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDK_WM * 32)]]
 void attention_bwd_dk(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -5524,7 +5524,7 @@ void attention_bwd_dk(
     const device float* L [[buffer(4)]],
     const device T* dO [[buffer(5)]],
     device float* dK_partials [[buffer(6)]],
-    constant V34BwdKParams& params [[buffer(7)]],
+    constant V6NAXBwdKParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -5539,52 +5539,52 @@ void attention_bwd_dk(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDK_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDK_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDK_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDK_BK * params.V_strides[2];
   // v2.38.1: D buffer per-batch/per-Hq-head offset (D indexed by query head).
   D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
   dK_partials += tidl.z * params.dKp_strides[0]
               +  tidl.y * params.dKp_strides[1]
               +  simd_group_id * params.dKp_strides[2]
-              +  tidl.x * V34BWDK_BK * params.dKp_strides[3];
+              +  tidl.x * V6NAXBWDK_BK * params.dKp_strides[3];
 
-  const short sg_q_offset = 16 * V34BWDK_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDK_TQ * simd_group_id;
 
-  const int NQ_aligned = params.qL / V34BWDK_BQ;
-  const int NK_aligned = params.kL / V34BWDK_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDK_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDK_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDK_BK;
-  const int nq_full = params.qL / V34BWDK_BQ;
-  const int nq_rem = params.qL % V34BWDK_BQ;
+      ? params.kL_rem : V6NAXBWDK_BK;
+  const int nq_full = params.qL / V6NAXBWDK_BQ;
+  const int nq_rem = params.qL % V6NAXBWDK_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
-  using dk_t = NAXTile<float, V34BWDK_TK, V34BWDK_TD>;
+  using dk_t = NAXTile<float, V6NAXBWDK_TK, V6NAXBWDK_TD>;
   dk_t dK_accum;
   dK_accum.clear();
 
-  using s_q_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDK_TQ, V6NAXBWDK_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   for (int qb = 0; qb < q_loop; qb++) {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDK_BQ;
+        ? params.qL_rem : V6NAXBWDK_BQ;
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
-    const device T* Q_qs  = Q  + qb * V34BWDK_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDK_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* O_qs  = O  + qb * V34BWDK_BQ * int(params.O_strides[2])
+    const device T* O_qs  = O  + qb * V6NAXBWDK_BQ * int(params.O_strides[2])
                               + sg_q_offset * int(params.O_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDK_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDK_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDK_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDK_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
     // v2.38.1: D buffer Q-block + SG-row offset (mirror L_qs).
-    const device float* D_qs = D + qb * V34BWDK_BQ * int(params.D_strides[2])
+    const device float* D_qs = D + qb * V6NAXBWDK_BQ * int(params.D_strides[2])
                                 + sg_q_offset * int(params.D_strides[2]);
 
     // --- Load lse, scale to log2 domain ---
@@ -5595,7 +5595,7 @@ void attention_bwd_dk(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -5619,7 +5619,7 @@ void attention_bwd_dk(
       constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -5636,11 +5636,11 @@ void attention_bwd_dk(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDK_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDK_TD; id++) {
+        for (short id = 0; id < V6NAXBWDK_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -5671,16 +5671,16 @@ void attention_bwd_dk(
 
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDK_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDK_SCALE_LOG2E;
     }
     if (is_last_k) {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -5697,18 +5697,18 @@ void attention_bwd_dk(
 
     // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dK split.
     // K-parallel with per-SG Q-row partition (sg_q_offset).
-#if V34BWDK_CAUSAL
+#if V6NAXBWDK_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDK_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDK_BK;
+      const int base_row = qb * V6NAXBWDK_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDK_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -5730,15 +5730,15 @@ void attention_bwd_dk(
     // Stile holds P.
 
     // --- dP = dO @ V^T ---
-    using dp_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+    using dp_t = NAXTile<float, V6NAXBWDK_TQ, V6NAXBWDK_TK>;
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDK_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDK_TD; id++) {
+        for (short id = 0; id < V6NAXBWDK_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
@@ -5776,11 +5776,11 @@ void attention_bwd_dk(
 
     // --- dK_accum += dS^T @ Q[SG-rows] ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDK_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDK_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDK_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
           NAXTile<T, 1, 2> Qfrag2;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
           if (is_last_q) {
@@ -5809,7 +5809,7 @@ void attention_bwd_dk(
     constexpr short kRowsPT_k = dk_t::kRowsPerThread;
     metal::vec<float, kRowsPT_k> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDK_SCALE;
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V6NAXBWDK_SCALE;
     dK_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -5827,7 +5827,7 @@ void attention_bwd_dk(
 
 
 // =============================================================================
-// V34 backward FUSED dK+dV kernel — Sprint v2.39.0 Phase C.1.a (Option γ).
+// V6NAX backward FUSED dK+dV kernel — Sprint v2.39.0 Phase C.1.a (Option γ).
 //
 // Combines split-dV (dV_accum += P^T @ dO) and split-dK (dK_accum += dS^T @ Q)
 // into a single Q-loop that loads K/V tiles ONCE per K-tile across both
@@ -5855,7 +5855,7 @@ void attention_bwd_dk(
 // dK_partials + dV_partials [B, Hq, WM, kL, D] FP32 each.  Python wrapper
 // reduces via mx.sum(axis=2) and casts to T.
 // =============================================================================
-std::string NAAttentionKernel::createV34BackwardFusedDKDVSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardFusedDKDVSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -5888,20 +5888,20 @@ std::string NAAttentionKernel::createV34BackwardFusedDKDVSource() const noexcept
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWDF_BQ " << BQ << "\n";
-  ss << "#define V34BWDF_BK " << BK << "\n";
-  ss << "#define V34BWDF_BD " << BD << "\n";
-  ss << "#define V34BWDF_WM " << WM << "\n";
-  ss << "#define V34BWDF_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDF_TD " << TD << "\n";
-  ss << "#define V34BWDF_TK " << TK << "\n";
-  ss << "#define V34BWDF_SCALE " << scale << "f\n";
-  ss << "#define V34BWDF_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDF_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDF_BK " << BK << "\n";
+  ss << "#define V6NAXBWDF_BD " << BD << "\n";
+  ss << "#define V6NAXBWDF_WM " << WM << "\n";
+  ss << "#define V6NAXBWDF_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDF_TD " << TD << "\n";
+  ss << "#define V6NAXBWDF_TK " << TK << "\n";
+  ss << "#define V6NAXBWDF_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWDF_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
-  ss << "#define V34BWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+  ss << "#define V6NAXBWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDFMSL(
-struct V34BwdFusedParams {
+struct V6NAXBwdFusedParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -5918,7 +5918,7 @@ struct V34BwdFusedParams {
   long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL])
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDF_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDF_WM * 32)]]
 void attention_bwd_fused_dkdv(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -5927,7 +5927,7 @@ void attention_bwd_fused_dkdv(
     const device T* dO [[buffer(4)]],
     device float* dK_partials [[buffer(5)]],
     device float* dV_partials [[buffer(6)]],
-    constant V34BwdFusedParams& params [[buffer(7)]],
+    constant V6NAXBwdFusedParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
@@ -5943,9 +5943,9 @@ void attention_bwd_fused_dkdv(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDF_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDF_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDF_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDF_BK * params.V_strides[2];
   // D buffer indexed by query head (Hq), same as L.
   D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
@@ -5953,49 +5953,49 @@ void attention_bwd_fused_dkdv(
   dK_partials += tidl.z * params.dKp_strides[0]
               +  tidl.y * params.dKp_strides[1]
               +  simd_group_id * params.dKp_strides[2]
-              +  tidl.x * V34BWDF_BK * params.dKp_strides[3];
+              +  tidl.x * V6NAXBWDF_BK * params.dKp_strides[3];
   dV_partials += tidl.z * params.dVp_strides[0]
               +  tidl.y * params.dVp_strides[1]
               +  simd_group_id * params.dVp_strides[2]
-              +  tidl.x * V34BWDF_BK * params.dVp_strides[3];
+              +  tidl.x * V6NAXBWDF_BK * params.dVp_strides[3];
 
-  const short sg_q_offset = 16 * V34BWDF_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDF_TQ * simd_group_id;
 
-  const int NQ_aligned = params.qL / V34BWDF_BQ;
-  const int NK_aligned = params.kL / V34BWDF_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDF_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDF_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDF_BK;
-  const int nq_full = params.qL / V34BWDF_BQ;
-  const int nq_rem = params.qL % V34BWDF_BQ;
+      ? params.kL_rem : V6NAXBWDF_BK;
+  const int nq_full = params.qL / V6NAXBWDF_BQ;
+  const int nq_rem = params.qL % V6NAXBWDF_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
   // Per-SG accumulators (FP32, both persistent across Q-loop).
-  using dk_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
-  using dv_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
+  using dk_t = NAXTile<float, V6NAXBWDF_TK, V6NAXBWDF_TD>;
+  using dv_t = NAXTile<float, V6NAXBWDF_TK, V6NAXBWDF_TD>;
   dk_t dK_accum;
   dv_t dV_accum;
   dK_accum.clear();
   dV_accum.clear();
 
-  using s_q_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDF_TQ, V6NAXBWDF_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // === Q-loop: fused dK + dV accumulation per K-tile ===
   for (int qb = 0; qb < q_loop; qb++) {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDF_BQ;
+        ? params.qL_rem : V6NAXBWDF_BQ;
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
-    const device T* Q_qs  = Q  + qb * V34BWDF_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDF_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDF_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDF_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDF_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDF_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
-    const device float* D_qs = D + qb * V34BWDF_BQ * int(params.D_strides[2])
+    const device float* D_qs = D + qb * V6NAXBWDF_BQ * int(params.D_strides[2])
                                 + sg_q_offset * int(params.D_strides[2]);
 
     // --- Load lse for SG's 16 rows, scale to log2 domain ---
@@ -6006,7 +6006,7 @@ void attention_bwd_fused_dkdv(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -6028,7 +6028,7 @@ void attention_bwd_fused_dkdv(
       constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -6051,11 +6051,11 @@ void attention_bwd_fused_dkdv(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDF_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDF_TD; id++) {
+        for (short id = 0; id < V6NAXBWDF_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -6066,7 +6066,7 @@ void attention_bwd_fused_dkdv(
           } else {
             Qfrag.load(Q_qs + Q_off, int(params.Q_strides[2]));
           }
-          if ((V34BWDF_TK & 1) && (ik + 1 == V34BWDF_TK)) {
+          if ((V6NAXBWDF_TK & 1) && (ik + 1 == V6NAXBWDF_TK)) {
             const short tail_lim = is_last_k
                 ? (short)min((int)(lim_rows_k - ik * 16), 16)
                 : (short)16;
@@ -6103,7 +6103,7 @@ void attention_bwd_fused_dkdv(
     // Scale into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDF_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDF_SCALE_LOG2E;
     }
 
     // Mask last-K columns to -inf.
@@ -6112,9 +6112,9 @@ void attention_bwd_fused_dkdv(
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -6133,18 +6133,18 @@ void attention_bwd_fused_dkdv(
     // dKdV.  K-parallel with per-SG Q-row partition (sg_q_offset).
     // ORDER-CRITICAL preserved: mask is on Stile holding S, before
     // row_bin_op<ExpSubOp> converts to P, before P^T @ dO uses P.
-#if V34BWDF_CAUSAL
+#if V6NAXBWDF_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDF_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDF_BK;
+      const int base_row = qb * V6NAXBWDF_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDF_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -6167,11 +6167,11 @@ void attention_bwd_fused_dkdv(
 
     // === ORDER-CRITICAL: dV_accum += P^T @ dO BEFORE Stile is overwritten ===
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDF_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDF_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
           NAXTile<T, 1, 2> dOfrag2;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
           if (is_last_q) {
@@ -6194,15 +6194,15 @@ void attention_bwd_fused_dkdv(
 
     // --- dP = dO @ V^T ---
     // II-8 item 3: odd-TK tail (see the S-recompute loop above).
-    using dp_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+    using dp_t = NAXTile<float, V6NAXBWDF_TQ, V6NAXBWDF_TK>;
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDF_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDF_TD; id++) {
+        for (short id = 0; id < V6NAXBWDF_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
@@ -6213,7 +6213,7 @@ void attention_bwd_fused_dkdv(
           } else {
             dOfrag.load(dO_qs + dO_off, int(params.dO_strides[2]));
           }
-          if ((V34BWDF_TK & 1) && (ik + 1 == V34BWDF_TK)) {
+          if ((V6NAXBWDF_TK & 1) && (ik + 1 == V6NAXBWDF_TK)) {
             const short tail_lim = is_last_k
                 ? (short)min((int)(lim_rows_k - ik * 16), 16)
                 : (short)16;
@@ -6257,11 +6257,11 @@ void attention_bwd_fused_dkdv(
 
     // --- dK_accum += dS^T @ Q[SG-rows] ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDF_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDF_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
           NAXTile<T, 1, 2> Qfrag2;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
           if (is_last_q) {
@@ -6290,7 +6290,7 @@ void attention_bwd_fused_dkdv(
     constexpr short kRowsPT_k = dk_t::kRowsPerThread;
     metal::vec<float, kRowsPT_k> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDF_SCALE;
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V6NAXBWDF_SCALE;
     dK_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -6309,7 +6309,7 @@ void attention_bwd_fused_dkdv(
   return ss.str();
 }
 
-std::string NAAttentionKernel::createV34BackwardQuerySparseSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardQuerySparseSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -6339,32 +6339,32 @@ std::string NAAttentionKernel::createV34BackwardQuerySparseSource() const noexce
 
   ss << naxHelpersBlock();
 
-  ss << "\n// V34 backward dQ kernel — Apple-style NAX-direct\n";
+  ss << "\n// V6NAX backward dQ kernel — Apple-style NAX-direct\n";
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
   ss << "// SubOp functor (needed for row_bin_op<SubOp> in backward; not in\n";
-  ss << "// V34 forward helpers because forward doesn't use plain subtraction).\n";
+  ss << "// V6NAX forward helpers because forward doesn't use plain subtraction).\n";
   ss << "struct SubOp {\n";
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWD_BQ " << BQ << "\n";
-  ss << "#define V34BWD_BK " << BK << "\n";
-  ss << "#define V34BWD_BD " << BD << "\n";
-  ss << "#define V34BWD_WM " << WM << "\n";
-  ss << "#define V34BWD_TQ " << TQ << "\n";
-  ss << "#define V34BWD_TD " << TD << "\n";
-  ss << "#define V34BWD_TK " << TK << "\n";
-  ss << "#define V34BWD_SCALE " << scale << "f\n";
-  ss << "#define V34BWD_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWD_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWD_BK " << BK << "\n";
+  ss << "#define V6NAXBWD_BD " << BD << "\n";
+  ss << "#define V6NAXBWD_WM " << WM << "\n";
+  ss << "#define V6NAXBWD_TQ " << TQ << "\n";
+  ss << "#define V6NAXBWD_TD " << TD << "\n";
+  ss << "#define V6NAXBWD_TK " << TK << "\n";
+  ss << "#define V6NAXBWD_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWD_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b — causal masking baked in as compile-time
   // constant so non-causal source remains bit-identical to pre-Sprint-4.
-  ss << "#define V34BWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
-  ss << "#define V34BWDQ_SPARSE 1\n";
+  ss << "#define V6NAXBWD_CAUSAL " << (isCausal ? 1 : 0) << "\n";
+  ss << "#define V6NAXBWDQ_SPARSE 1\n";
   ss << "\n";
   ss << R"BWDQSPMSL(
-struct V34BwdQParams {
+struct V6NAXBwdQParams {
   int qL;
   int kL;
   int gqa_factor;
@@ -6373,7 +6373,7 @@ struct V34BwdQParams {
   int qL_rem;
   int kL_rem;
   // v2.50 Sprint 4 Phase 4b — causal offset.  Field order MUST match
-  // V34BwdQParamsHost in v6_nax_compile.mm.
+  // V6NAXBwdQParamsHost in v6_nax_compile.mm.
   int qL_off;
   // BHND strides (sequence stride = D, encoded in stride[2]).
   long Q_strides[3];
@@ -6386,7 +6386,7 @@ struct V34BwdQParams {
   long D_strides[3];   // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWD_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWD_WM * 32)]]
 void attention_bwd_q_sparse(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -6395,7 +6395,7 @@ void attention_bwd_q_sparse(
     const device float* L [[buffer(4)]],
     const device T* dO [[buffer(5)]],
     device T* dQ [[buffer(6)]],
-    constant V34BwdQParams& params [[buffer(7)]],
+    constant V6NAXBwdQParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D [NQ, NK] sparse mask
     uint simd_lane_id [[thread_index_in_simdgroup]],
@@ -6408,29 +6408,29 @@ void attention_bwd_q_sparse(
   ulong3 tidl{tid.x, tid.y, tid.z};
   Q  += tidl.z * params.Q_strides[0]
       + tidl.y * params.Q_strides[1]
-      + tidl.x * V34BWD_BQ * params.Q_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.Q_strides[2];
   ulong kv_head_idx = ulong(tid.y) / ulong(params.gqa_factor);
   K  += tidl.z * params.K_strides[0] + kv_head_idx * params.K_strides[1];
   V  += tidl.z * params.V_strides[0] + kv_head_idx * params.V_strides[1];
   O  += tidl.z * params.O_strides[0]
       + tidl.y * params.O_strides[1]
-      + tidl.x * V34BWD_BQ * params.O_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.O_strides[2];
   L  += tidl.z * params.L_strides[0]
       + tidl.y * params.L_strides[1]
-      + tidl.x * V34BWD_BQ * params.L_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.L_strides[2];
   dO += tidl.z * params.dO_strides[0]
       + tidl.y * params.dO_strides[1]
-      + tidl.x * V34BWD_BQ * params.dO_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.dO_strides[2];
   dQ += tidl.z * params.dQ_strides[0]
       + tidl.y * params.dQ_strides[1]
-      + tidl.x * V34BWD_BQ * params.dQ_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.dQ_strides[2];
   // v2.38.1: D buffer per-batch/per-head/per-Q-block offset.
   D  += tidl.z * params.D_strides[0]
       + tidl.y * params.D_strides[1]
-      + tidl.x * V34BWD_BQ * params.D_strides[2];
+      + tidl.x * V6NAXBWD_BQ * params.D_strides[2];
 
   // Per-SG row offset within the Q-block.
-  const short tm = 16 * V34BWD_TQ * simd_group_id;
+  const short tm = 16 * V6NAXBWD_TQ * simd_group_id;
   Q  += tm * int(params.Q_strides[2]);
   O  += tm * int(params.O_strides[2]);
   L  += tm * int(params.L_strides[2]);
@@ -6439,21 +6439,21 @@ void attention_bwd_q_sparse(
   D  += tm * int(params.D_strides[2]);  // v2.38.1
 
   // Last-block flags.
-  const int NQ_aligned = params.qL / V34BWD_BQ;
-  const int NK_aligned = params.kL / V34BWD_BK;
+  const int NQ_aligned = params.qL / V6NAXBWD_BQ;
+  const int NK_aligned = params.kL / V6NAXBWD_BK;
   const bool is_last_q = (int(tid.x) == NQ_aligned);
   // v2.50 Prompt 5e HIGH-2 fix: guard against (qL_rem - tm) underflow
   // when tm > qL_rem (some SGs entirely beyond live rows in WM=4 partial
   // Q-block).  Pre-fix: cast-to-short wrap → out-of-range tile loads.
   const short lim_rows_q = (short)max(0,
-      (int)((params.qL_rem > 0 ? params.qL_rem : V34BWD_BQ)) - (int)tm);
-  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V34BWD_BK);
+      (int)((params.qL_rem > 0 ? params.qL_rem : V6NAXBWD_BQ)) - (int)tm);
+  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V6NAXBWD_BK);
   const int kb_lim = params.NK;
 
   // === MMA tile types ===
-  using dq_accum_t = NAXTile<float, V34BWD_TQ, V34BWD_TD>;  // dQ FP32 accumulator
-  using s_t       = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // S (= Q@K^T scaled)
-  using dp_t      = NAXTile<float, V34BWD_TQ, V34BWD_TK>;  // dP (= dO@V^T)
+  using dq_accum_t = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TD>;  // dQ FP32 accumulator
+  using s_t       = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TK>;  // S (= Q@K^T scaled)
+  using dp_t      = NAXTile<float, V6NAXBWD_TQ, V6NAXBWD_TK>;  // dP (= dO@V^T)
 
   dq_accum_t dQ_accum;
   dQ_accum.clear();
@@ -6461,7 +6461,7 @@ void attention_bwd_q_sparse(
   constexpr short kRowsPT = dq_accum_t::kRowsPerThread;
 
   // === Step 1: load lse, convert to log2 domain ===
-  // lse from forward is natural-log; V34 inner-loop uses log2 domain via
+  // lse from forward is natural-log; V6NAX inner-loop uses log2 domain via
   // scale*log2(e) and exp2.  Multiply lse by log2(e) once so that
   // row_bin_op<ExpSubOp>(lse_log2) below computes exp2(S_log2 - lse_log2)
   // = exp(S_natural - lse_natural) = correct softmax P.
@@ -6480,7 +6480,7 @@ void attention_bwd_q_sparse(
     constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
     constexpr float log2e_f = 1.4426950408889634f;
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short i = 0; i < kElemRows; i++) {
         const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
@@ -6501,7 +6501,7 @@ void attention_bwd_q_sparse(
   // v2.38.1: D is precomputed once on host via MLX (`mx.sum(dO*O, axis=-1)`)
   // and shared between dQ + split-dK + legacy-fused-dKdV kernels.  Replaces
   // an inline tile load + FP32 multiply + row_reduce.  Saves 1 rowsum per
-  // V34 backward dQ call.
+  // V6NAX backward dQ call.
   //
   // Mirrors the lse-load pattern above (Step 1): each lane reads its owned
   // rows from the device buffer using `NAXFrag::get_coord()` + kElemRows /
@@ -6512,7 +6512,7 @@ void attention_bwd_q_sparse(
     constexpr short kElemRows = dq_accum_t::NAXFrag_t::kElemRows;
     constexpr short kElemRowsJump = dq_accum_t::NAXFrag_t::kElemRowsJump;
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short i = 0; i < kElemRows; i++) {
         const short local_row = iq * 16 + sc.y + i * kElemRowsJump;
@@ -6559,8 +6559,8 @@ void attention_bwd_q_sparse(
 
   for (int kb_ii = 0; kb_ii < n_active_kb; kb_ii++) {
     const int kb = (int)ii14_active_kbs[kb_ii];
-    K = K_base + kb * V34BWD_BK * int(params.K_strides[2]);
-    V = V_base + kb * V34BWD_BK * int(params.V_strides[2]);
+    K = K_base + kb * V6NAXBWD_BK * int(params.K_strides[2]);
+    V = V_base + kb * V6NAXBWD_BK * int(params.V_strides[2]);
     const bool is_last_k = (kb == NK_aligned);
 
     s_t Stile;
@@ -6568,11 +6568,11 @@ void attention_bwd_q_sparse(
 
     // QK matmul: S = Q @ K^T (NAXFrag::mma, transpose_b=true).
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWD_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWD_TD; id++) {
+        for (short id = 0; id < V6NAXBWD_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
 
@@ -6607,7 +6607,7 @@ void attention_bwd_q_sparse(
     // Scale S into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWD_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWD_SCALE_LOG2E;
     }
 
     // Mask out length sequence on last K block (mirrors forward, but here
@@ -6618,9 +6618,9 @@ void attention_bwd_q_sparse(
       const short2 sc = s_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -6640,18 +6640,18 @@ void attention_bwd_q_sparse(
     // at masked positions → dQ accumulation naturally skips them.  Without
     // this, backward computes P over the unmasked S using the causal-masked
     // lse from forward, producing huge (incorrect) gradients for c>r.
-#if V34BWD_CAUSAL
+#if V6NAXBWD_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;   // col base within fragment
       const short sm_c = sc_c.y;   // row base within fragment
-      const int base_row = int(tid.x) * V34BWD_BQ + params.qL_off + tm;
-      const int base_col = kb * V34BWD_BK;
+      const int base_row = int(tid.x) * V6NAXBWD_BQ + params.qL_off + tm;
+      const int base_col = kb * V6NAXBWD_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWD_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_t::kFragThrRows; ii++) {
@@ -6677,11 +6677,11 @@ void attention_bwd_q_sparse(
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWD_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWD_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWD_TD; id++) {
+        for (short id = 0; id < V6NAXBWD_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
 
@@ -6726,18 +6726,18 @@ void attention_bwd_q_sparse(
     simdgroup_barrier(mem_flags::mem_none);
 
     // dQ_accum += dS @ K  (NAXFrag::mma, transpose_b=false).  Mirrors the
-    // P @ V pattern from V34 forward.
+    // P @ V pattern from V6NAX forward.
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWD_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWD_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWD_TD; id += 2) {
-        if (V34BWD_BD == 128) {
+      for (short id = 0; id < V6NAXBWD_TD; id += 2) {
+        if (V6NAXBWD_BD == 128) {
           if (id == 4) {
             threadgroup_barrier(mem_flags::mem_none);
           }
         }
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWD_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWD_TK; ik++) {
           NAXTile<T, 1, 2> Kfrag2;
           const int K_off = ik * 16 * int(params.K_strides[2]) + id * 16;
           if (is_last_k) {
@@ -6771,7 +6771,7 @@ void attention_bwd_q_sparse(
   {
     metal::vec<float, kRowsPT> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT; i++) scale_vec[i] = V34BWD_SCALE;
+    for (short i = 0; i < kRowsPT; i++) scale_vec[i] = V6NAXBWD_SCALE;
     dQ_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -6788,7 +6788,7 @@ void attention_bwd_q_sparse(
 
   return ss.str();
 }
-std::string NAAttentionKernel::createV34BackwardDKSparseSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardDKSparseSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -6821,20 +6821,20 @@ std::string NAAttentionKernel::createV34BackwardDKSparseSource() const noexcept 
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWDK_BQ " << BQ << "\n";
-  ss << "#define V34BWDK_BK " << BK << "\n";
-  ss << "#define V34BWDK_BD " << BD << "\n";
-  ss << "#define V34BWDK_WM " << WM << "\n";
-  ss << "#define V34BWDK_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDK_TD " << TD << "\n";
-  ss << "#define V34BWDK_TK " << TK << "\n";
-  ss << "#define V34BWDK_SCALE " << scale << "f\n";
-  ss << "#define V34BWDK_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDK_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDK_BK " << BK << "\n";
+  ss << "#define V6NAXBWDK_BD " << BD << "\n";
+  ss << "#define V6NAXBWDK_WM " << WM << "\n";
+  ss << "#define V6NAXBWDK_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDK_TD " << TD << "\n";
+  ss << "#define V6NAXBWDK_TK " << TK << "\n";
+  ss << "#define V6NAXBWDK_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWDK_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
-  ss << "#define V34BWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+  ss << "#define V6NAXBWDK_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDKSPMSL(
-struct V34BwdKParams {
+struct V6NAXBwdKParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -6851,7 +6851,7 @@ struct V34BwdKParams {
   long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL], v2.38.1)
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDK_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDK_WM * 32)]]
 void attention_bwd_dk_sparse(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -6860,7 +6860,7 @@ void attention_bwd_dk_sparse(
     const device float* L [[buffer(4)]],
     const device T* dO [[buffer(5)]],
     device float* dK_partials [[buffer(6)]],
-    constant V34BwdKParams& params [[buffer(7)]],
+    constant V6NAXBwdKParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],
     const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D sparse mask  // v2.38.1: precomputed rowsum(dO⊙O), [B,Hq,qL] FP32
     uint simd_lane_id [[thread_index_in_simdgroup]],
@@ -6876,33 +6876,33 @@ void attention_bwd_dk_sparse(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDK_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDK_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDK_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDK_BK * params.V_strides[2];
   // v2.38.1: D buffer per-batch/per-Hq-head offset (D indexed by query head).
   D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
   dK_partials += tidl.z * params.dKp_strides[0]
               +  tidl.y * params.dKp_strides[1]
               +  simd_group_id * params.dKp_strides[2]
-              +  tidl.x * V34BWDK_BK * params.dKp_strides[3];
+              +  tidl.x * V6NAXBWDK_BK * params.dKp_strides[3];
 
-  const short sg_q_offset = 16 * V34BWDK_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDK_TQ * simd_group_id;
 
-  const int NQ_aligned = params.qL / V34BWDK_BQ;
-  const int NK_aligned = params.kL / V34BWDK_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDK_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDK_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDK_BK;
-  const int nq_full = params.qL / V34BWDK_BQ;
-  const int nq_rem = params.qL % V34BWDK_BQ;
+      ? params.kL_rem : V6NAXBWDK_BK;
+  const int nq_full = params.qL / V6NAXBWDK_BQ;
+  const int nq_rem = params.qL % V6NAXBWDK_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
-  using dk_t = NAXTile<float, V34BWDK_TK, V34BWDK_TD>;
+  using dk_t = NAXTile<float, V6NAXBWDK_TK, V6NAXBWDK_TD>;
   dk_t dK_accum;
   dK_accum.clear();
 
-  using s_q_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDK_TQ, V6NAXBWDK_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // === Phase II-14 sparse-skip restructure: COMPACTED ACTIVE LIST ===
@@ -6917,7 +6917,7 @@ void attention_bwd_dk_sparse(
     // sparse dispatch site rejects larger (loud, Rule 8).
     if (simd_group_id == 0 && simd_lane_id == 0) {
       int n = 0;
-      const int masked_qbs = params.qL / V34BWDK_BQ;
+      const int masked_qbs = params.qL / V6NAXBWDK_BQ;
       const int nk_total = params.NK;
       for (int qb = 0; qb < q_loop; ++qb) {
         const bool act = (qb >= masked_qbs)
@@ -6934,20 +6934,20 @@ void attention_bwd_dk_sparse(
     const int qb = (int)ii14_active_qbs[qb_ii];
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDK_BQ;
+        ? params.qL_rem : V6NAXBWDK_BQ;
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
-    const device T* Q_qs  = Q  + qb * V34BWDK_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDK_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* O_qs  = O  + qb * V34BWDK_BQ * int(params.O_strides[2])
+    const device T* O_qs  = O  + qb * V6NAXBWDK_BQ * int(params.O_strides[2])
                               + sg_q_offset * int(params.O_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDK_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDK_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDK_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDK_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
     // v2.38.1: D buffer Q-block + SG-row offset (mirror L_qs).
-    const device float* D_qs = D + qb * V34BWDK_BQ * int(params.D_strides[2])
+    const device float* D_qs = D + qb * V6NAXBWDK_BQ * int(params.D_strides[2])
                                 + sg_q_offset * int(params.D_strides[2]);
 
     // --- Load lse, scale to log2 domain ---
@@ -6958,7 +6958,7 @@ void attention_bwd_dk_sparse(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -6982,7 +6982,7 @@ void attention_bwd_dk_sparse(
       constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -6999,11 +6999,11 @@ void attention_bwd_dk_sparse(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDK_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDK_TD; id++) {
+        for (short id = 0; id < V6NAXBWDK_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -7034,16 +7034,16 @@ void attention_bwd_dk_sparse(
 
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDK_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDK_SCALE_LOG2E;
     }
     if (is_last_k) {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -7060,18 +7060,18 @@ void attention_bwd_dk_sparse(
 
     // v2.50 Sprint 4 Phase 4b-complete (Prompt 3) — causal mask for dK split.
     // K-parallel with per-SG Q-row partition (sg_q_offset).
-#if V34BWDK_CAUSAL
+#if V6NAXBWDK_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDK_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDK_BK;
+      const int base_row = qb * V6NAXBWDK_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDK_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDK_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -7093,15 +7093,15 @@ void attention_bwd_dk_sparse(
     // Stile holds P.
 
     // --- dP = dO @ V^T ---
-    using dp_t = NAXTile<float, V34BWDK_TQ, V34BWDK_TK>;
+    using dp_t = NAXTile<float, V6NAXBWDK_TQ, V6NAXBWDK_TK>;
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDK_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDK_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDK_TD; id++) {
+        for (short id = 0; id < V6NAXBWDK_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
@@ -7139,11 +7139,11 @@ void attention_bwd_dk_sparse(
 
     // --- dK_accum += dS^T @ Q[SG-rows] ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDK_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDK_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDK_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDK_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDK_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDK_TQ; iq++) {
           NAXTile<T, 1, 2> Qfrag2;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
           if (is_last_q) {
@@ -7172,7 +7172,7 @@ void attention_bwd_dk_sparse(
     constexpr short kRowsPT_k = dk_t::kRowsPerThread;
     metal::vec<float, kRowsPT_k> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDK_SCALE;
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V6NAXBWDK_SCALE;
     dK_accum.template row_bin_op<MulOp>(scale_vec);
   }
 
@@ -7187,7 +7187,7 @@ void attention_bwd_dk_sparse(
 
   return ss.str();
 }
-std::string NAAttentionKernel::createV34BackwardFusedDKDVSparseSource() const noexcept {
+std::string NAAttentionKernel::createV6NAXBackwardFusedDKDVSparseSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
   const int BD = headDimension;
@@ -7220,20 +7220,20 @@ std::string NAAttentionKernel::createV34BackwardFusedDKDVSparseSource() const no
   ss << "  template <typename U>\n";
   ss << "  METAL_FUNC static constexpr U apply(U x, U y) { return x - y; }\n";
   ss << "};\n\n";
-  ss << "#define V34BWDF_BQ " << BQ << "\n";
-  ss << "#define V34BWDF_BK " << BK << "\n";
-  ss << "#define V34BWDF_BD " << BD << "\n";
-  ss << "#define V34BWDF_WM " << WM << "\n";
-  ss << "#define V34BWDF_TQ " << TQ_per_SG << "\n";
-  ss << "#define V34BWDF_TD " << TD << "\n";
-  ss << "#define V34BWDF_TK " << TK << "\n";
-  ss << "#define V34BWDF_SCALE " << scale << "f\n";
-  ss << "#define V34BWDF_SCALE_LOG2E " << scale_log2e << "f\n";
+  ss << "#define V6NAXBWDF_BQ " << BQ << "\n";
+  ss << "#define V6NAXBWDF_BK " << BK << "\n";
+  ss << "#define V6NAXBWDF_BD " << BD << "\n";
+  ss << "#define V6NAXBWDF_WM " << WM << "\n";
+  ss << "#define V6NAXBWDF_TQ " << TQ_per_SG << "\n";
+  ss << "#define V6NAXBWDF_TD " << TD << "\n";
+  ss << "#define V6NAXBWDF_TK " << TK << "\n";
+  ss << "#define V6NAXBWDF_SCALE " << scale << "f\n";
+  ss << "#define V6NAXBWDF_SCALE_LOG2E " << scale_log2e << "f\n";
   // v2.50 Sprint 4 Phase 4b-complete (Prompt 3): causal masking macro
-  ss << "#define V34BWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
+  ss << "#define V6NAXBWDF_CAUSAL " << (isCausal ? 1 : 0) << "\n\n";
 
   ss << R"BWDFSPMSL(
-struct V34BwdFusedParams {
+struct V6NAXBwdFusedParams {
   int qL, kL;
   int gqa_factor;
   int NQ, NK;
@@ -7250,7 +7250,7 @@ struct V34BwdFusedParams {
   long D_strides[3];    // D=rowsum(dO⊙O) strides (FP32, [B, Hq, qL])
 };
 
-[[kernel, max_total_threads_per_threadgroup(V34BWDF_WM * 32)]]
+[[kernel, max_total_threads_per_threadgroup(V6NAXBWDF_WM * 32)]]
 void attention_bwd_fused_dkdv_sparse(
     const device T* Q [[buffer(0)]],
     const device T* K [[buffer(1)]],
@@ -7259,7 +7259,7 @@ void attention_bwd_fused_dkdv_sparse(
     const device T* dO [[buffer(4)]],
     device float* dK_partials [[buffer(5)]],
     device float* dV_partials [[buffer(6)]],
-    constant V34BwdFusedParams& params [[buffer(7)]],
+    constant V6NAXBwdFusedParams& params [[buffer(7)]],
     device const float* D [[buffer(8)]],
     const device bool* block_mask [[buffer(9)]],  // v2.50 Prompt 5d: 2-D sparse mask
     uint simd_lane_id [[thread_index_in_simdgroup]],
@@ -7276,9 +7276,9 @@ void attention_bwd_fused_dkdv_sparse(
   dO += tidl.z * params.dO_strides[0] + tidl.y * params.dO_strides[1];
   L  += tidl.z * params.L_strides[0]  + tidl.y * params.L_strides[1];
   K  += tidl.z * params.K_strides[0]  + kv_head_idx * params.K_strides[1]
-      + tidl.x * V34BWDF_BK * params.K_strides[2];
+      + tidl.x * V6NAXBWDF_BK * params.K_strides[2];
   V  += tidl.z * params.V_strides[0]  + kv_head_idx * params.V_strides[1]
-      + tidl.x * V34BWDF_BK * params.V_strides[2];
+      + tidl.x * V6NAXBWDF_BK * params.V_strides[2];
   // D buffer indexed by query head (Hq), same as L.
   D  += tidl.z * params.D_strides[0]  + tidl.y * params.D_strides[1];
 
@@ -7286,32 +7286,32 @@ void attention_bwd_fused_dkdv_sparse(
   dK_partials += tidl.z * params.dKp_strides[0]
               +  tidl.y * params.dKp_strides[1]
               +  simd_group_id * params.dKp_strides[2]
-              +  tidl.x * V34BWDF_BK * params.dKp_strides[3];
+              +  tidl.x * V6NAXBWDF_BK * params.dKp_strides[3];
   dV_partials += tidl.z * params.dVp_strides[0]
               +  tidl.y * params.dVp_strides[1]
               +  simd_group_id * params.dVp_strides[2]
-              +  tidl.x * V34BWDF_BK * params.dVp_strides[3];
+              +  tidl.x * V6NAXBWDF_BK * params.dVp_strides[3];
 
-  const short sg_q_offset = 16 * V34BWDF_TQ * simd_group_id;
+  const short sg_q_offset = 16 * V6NAXBWDF_TQ * simd_group_id;
 
-  const int NQ_aligned = params.qL / V34BWDF_BQ;
-  const int NK_aligned = params.kL / V34BWDF_BK;
+  const int NQ_aligned = params.qL / V6NAXBWDF_BQ;
+  const int NK_aligned = params.kL / V6NAXBWDF_BK;
   const bool is_last_k = (int(tid.x) == NK_aligned);
   const short lim_rows_k = (params.kL_rem > 0 && is_last_k)
-      ? params.kL_rem : V34BWDF_BK;
-  const int nq_full = params.qL / V34BWDF_BQ;
-  const int nq_rem = params.qL % V34BWDF_BQ;
+      ? params.kL_rem : V6NAXBWDF_BK;
+  const int nq_full = params.qL / V6NAXBWDF_BQ;
+  const int nq_rem = params.qL % V6NAXBWDF_BQ;
   const int q_loop = nq_rem > 0 ? nq_full + 1 : nq_full;
 
   // Per-SG accumulators (FP32, both persistent across Q-loop).
-  using dk_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
-  using dv_t = NAXTile<float, V34BWDF_TK, V34BWDF_TD>;
+  using dk_t = NAXTile<float, V6NAXBWDF_TK, V6NAXBWDF_TD>;
+  using dv_t = NAXTile<float, V6NAXBWDF_TK, V6NAXBWDF_TD>;
   dk_t dK_accum;
   dv_t dV_accum;
   dK_accum.clear();
   dV_accum.clear();
 
-  using s_q_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+  using s_q_t = NAXTile<float, V6NAXBWDF_TQ, V6NAXBWDF_TK>;
   constexpr short kRowsPT_q = s_q_t::kRowsPerThread;
 
   // === Q-loop: fused dK + dV accumulation per K-tile ===
@@ -7330,10 +7330,10 @@ void attention_bwd_fused_dkdv_sparse(
   threadgroup int ii14_n_active;
   {
     // qL/BQ <= 1024 covers qL <= 65536 at BQ=64; the host guard in
-    // compile_v34_backward_pipeline rejects larger (loud, Rule 8).
+    // compile_v6nax_backward_pipeline rejects larger (loud, Rule 8).
     if (simd_group_id == 0 && simd_lane_id == 0) {
       int n = 0;
-      const int masked_qbs = params.qL / V34BWDF_BQ;
+      const int masked_qbs = params.qL / V6NAXBWDF_BQ;
       const int nk_total = params.NK;
       for (int qb = 0; qb < q_loop; ++qb) {
         const bool act = (qb >= masked_qbs)
@@ -7351,17 +7351,17 @@ void attention_bwd_fused_dkdv_sparse(
     {
     const bool is_last_q = (qb == NQ_aligned);
     const short lim_rows_q_full = (params.qL_rem > 0 && is_last_q)
-        ? params.qL_rem : V34BWDF_BQ;
+        ? params.qL_rem : V6NAXBWDF_BQ;
     const short sg_lim_q = (short)max(0, (int)lim_rows_q_full - (int)sg_q_offset);
     if (is_last_q && sg_lim_q <= 0) continue;
 
-    const device T* Q_qs  = Q  + qb * V34BWDF_BQ * int(params.Q_strides[2])
+    const device T* Q_qs  = Q  + qb * V6NAXBWDF_BQ * int(params.Q_strides[2])
                               + sg_q_offset * int(params.Q_strides[2]);
-    const device T* dO_qs = dO + qb * V34BWDF_BQ * int(params.dO_strides[2])
+    const device T* dO_qs = dO + qb * V6NAXBWDF_BQ * int(params.dO_strides[2])
                               + sg_q_offset * int(params.dO_strides[2]);
-    const device float* L_qs = L + qb * V34BWDF_BQ * int(params.L_strides[2])
+    const device float* L_qs = L + qb * V6NAXBWDF_BQ * int(params.L_strides[2])
                                 + sg_q_offset * int(params.L_strides[2]);
-    const device float* D_qs = D + qb * V34BWDF_BQ * int(params.D_strides[2])
+    const device float* D_qs = D + qb * V6NAXBWDF_BQ * int(params.D_strides[2])
                                 + sg_q_offset * int(params.D_strides[2]);
 
     // --- Load lse for SG's 16 rows, scale to log2 domain ---
@@ -7372,7 +7372,7 @@ void attention_bwd_fused_dkdv_sparse(
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       constexpr float log2e_f = 1.4426950408889634f;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -7394,7 +7394,7 @@ void attention_bwd_fused_dkdv_sparse(
       constexpr short kEr = s_q_t::NAXFrag_t::kElemRows;
       constexpr short kErJ = s_q_t::NAXFrag_t::kElemRowsJump;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
         for (short i = 0; i < kEr; i++) {
           const short local_row = iq * 16 + sc.y + i * kErJ;
@@ -7411,11 +7411,11 @@ void attention_bwd_fused_dkdv_sparse(
     s_q_t Stile;
     Stile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDF_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDF_TD; id++) {
+        for (short id = 0; id < V6NAXBWDF_TD; id++) {
           NAXTile<T, 1, 1> Qfrag;
           NAXTile<T, 2, 1> Kfrag;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
@@ -7447,7 +7447,7 @@ void attention_bwd_fused_dkdv_sparse(
     // Scale into log2 domain.
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < s_q_t::kElemsPerTile; ii++) {
-      Stile.elems()[ii] *= V34BWDF_SCALE_LOG2E;
+      Stile.elems()[ii] *= V6NAXBWDF_SCALE_LOG2E;
     }
 
     // Mask last-K columns to -inf.
@@ -7456,9 +7456,9 @@ void attention_bwd_fused_dkdv_sparse(
       const short2 sc = s_q_t::NAXFrag_t::get_coord();
       const short sn = sc.x;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
           const short col_pos = ik * 16 + sn;
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
@@ -7477,18 +7477,18 @@ void attention_bwd_fused_dkdv_sparse(
     // dKdV.  K-parallel with per-SG Q-row partition (sg_q_offset).
     // ORDER-CRITICAL preserved: mask is on Stile holding S, before
     // row_bin_op<ExpSubOp> converts to P, before P^T @ dO uses P.
-#if V34BWDF_CAUSAL
+#if V6NAXBWDF_CAUSAL
     {
       constexpr auto neg_inf = Limits<float>::finite_min;
       const short2 sc_c = s_q_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;
       const short sm_c = sc_c.y;
-      const int base_row = qb * V34BWDF_BQ + params.qL_off + sg_q_offset;
-      const int base_col = int(tid.x) * V34BWDF_BK;
+      const int base_row = qb * V6NAXBWDF_BQ + params.qL_off + sg_q_offset;
+      const int base_col = int(tid.x) * V6NAXBWDF_BK;
       STEEL_PRAGMA_UNROLL
-      for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+      for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
         STEEL_PRAGMA_UNROLL
-        for (short ik = 0; ik < V34BWDF_TK; ik++) {
+        for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
           thread auto& fg = Stile.frag_at(iq, ik);
           STEEL_PRAGMA_UNROLL
           for (short ii = 0; ii < s_q_t::kFragThrRows; ii++) {
@@ -7511,11 +7511,11 @@ void attention_bwd_fused_dkdv_sparse(
 
     // === ORDER-CRITICAL: dV_accum += P^T @ dO BEFORE Stile is overwritten ===
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDF_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDF_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
           NAXTile<T, 1, 2> dOfrag2;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
           if (is_last_q) {
@@ -7537,15 +7537,15 @@ void attention_bwd_fused_dkdv_sparse(
     }
 
     // --- dP = dO @ V^T ---
-    using dp_t = NAXTile<float, V34BWDF_TQ, V34BWDF_TK>;
+    using dp_t = NAXTile<float, V6NAXBWDF_TQ, V6NAXBWDF_TK>;
     dp_t dPtile;
     dPtile.clear();
     STEEL_PRAGMA_UNROLL
-    for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+    for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V34BWDF_TK; ik += 2) {
+      for (short ik = 0; ik < V6NAXBWDF_TK; ik += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short id = 0; id < V34BWDF_TD; id++) {
+        for (short id = 0; id < V6NAXBWDF_TD; id++) {
           NAXTile<T, 1, 1> dOfrag;
           NAXTile<T, 2, 1> Vfrag;
           const int dO_off = iq * 16 * int(params.dO_strides[2]) + id * 16;
@@ -7584,11 +7584,11 @@ void attention_bwd_fused_dkdv_sparse(
 
     // --- dK_accum += dS^T @ Q[SG-rows] ---
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V34BWDF_TK; ik++) {
+    for (short ik = 0; ik < V6NAXBWDF_TK; ik++) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V34BWDF_TD; id += 2) {
+      for (short id = 0; id < V6NAXBWDF_TD; id += 2) {
         STEEL_PRAGMA_UNROLL
-        for (short iq = 0; iq < V34BWDF_TQ; iq++) {
+        for (short iq = 0; iq < V6NAXBWDF_TQ; iq++) {
           NAXTile<T, 1, 2> Qfrag2;
           const int Q_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
           if (is_last_q) {
@@ -7618,7 +7618,7 @@ void attention_bwd_fused_dkdv_sparse(
     constexpr short kRowsPT_k = dk_t::kRowsPerThread;
     metal::vec<float, kRowsPT_k> scale_vec;
     STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V34BWDF_SCALE;
+    for (short i = 0; i < kRowsPT_k; i++) scale_vec[i] = V6NAXBWDF_SCALE;
     dK_accum.template row_bin_op<MulOp>(scale_vec);
   }
 

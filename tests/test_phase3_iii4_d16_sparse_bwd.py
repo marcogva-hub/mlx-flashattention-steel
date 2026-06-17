@@ -1,14 +1,14 @@
 """Phase III-4 D16 — sparse-backward mask-downsample contamination lock.
 
-The V34 sparse backward kernels skip at TILE granularity only.  When the
+The V6NAX sparse backward kernels skip at TILE granularity only.  When the
 KD-1 mask conversion OR-DOWNSAMPLED a finer mask (bt < kernel tile dim),
 a coarse tile merging active+inactive source tiles computed
 P = exp(s - L) for positions the FORWARD masked out (absent from L) —
 measured dV RMSE 0.506 / dK max-abs 1.17 vs the token-level reference at
 bt=32 D=64 with a non-uniform random mask.
 
-Fix: `_v34_hybrid_eligible` requires bt >= 64 (the max tile dim in
-_V34_BWD_SPARSE_KERNEL_TILES) so conversions never downsample; finer
+Fix: `_v6nax_hybrid_eligible` requires bt >= 64 (the max tile dim in
+_V6NAX_BWD_SPARSE_KERNEL_TILES) so conversions never downsample; finer
 masks route to the (correct) SDPA-vjp default.
 
 Locks (env-gated research path, M5+):
@@ -35,11 +35,11 @@ D = 64
 
 
 def _grads_and_ref(BT, N, monkeypatch, native):
-    monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
     if native:
-        monkeypatch.setenv("MFA_V34_BWD_SPARSE_NATIVE", "1")
+        monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
     else:
-        monkeypatch.delenv("MFA_V34_BWD_SPARSE_NATIVE", raising=False)
+        monkeypatch.delenv("MFA_V6_BWD_SPARSE_NATIVE", raising=False)
     B, H = 1, 4
     mx.random.seed(11)
     q = mx.random.normal((B, H, N, D), dtype=mx.float16)

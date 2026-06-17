@@ -18,14 +18,14 @@ verifies all active claims are still REACHABLE.
 
 v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
 kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
-Auto-default routes D=64 V34 backward to fused-BK16 (modest improvement
+Auto-default routes D=64 V6NAX backward to fused-BK16 (modest improvement
 over v2.38.1 split path).  D=128 unchanged (carve-out hard-gated to D=64).
 
 | Claim ID | Version intro | Description | Reproduction |
 |---|---|---|---|
-| `v2.39.1_d64_qL4096_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=4096 V34 backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V34_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
-| `v2.39.1_d64_qL8192_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=8192 V34 backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
-| `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=16384 V34 backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
+| `v2.39.1_d64_qL4096_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=4096 V6NAX backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V6_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
+| `v2.39.1_d64_qL8192_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=8192 V6NAX backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
+| `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=16384 V6NAX backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
 
 Full investigation evidence + skill invocations log:
 `docs/v6-nax/v39-1-investigation-synthesis.md`.
@@ -34,21 +34,21 @@ Full investigation evidence + skill invocations log:
 
 | Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
 |---|---|---|---|---|---|
-| `v2.38.1_d64_qL4096_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=4096 V34 backward **1.91×** vs SDPA-vjp (was 1.75× v2.37.3 under identical conditions; D_vec precompute saves 2 in-kernel rowsums) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(B=2,H=8,qL=4096,D=64) fp16 non-causal` | REACHABLE (2026-05-13, /mlx-mfa-perf-audit verified, 3-session median 1.91× variance 1.03) |
-| `v2.38.1_d64_qL8192_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=8192 V34 backward **1.87×** vs SDPA-vjp (was 1.79× v2.37.3) | `MFA_ENABLE_V34_BACKWARD=1` | Same with `qL=8192` | REACHABLE (3-session median 1.87× variance 1.10) |
-| `v2.38.1_d64_qL16384_v34_dvec_engages_via_auto` | v2.38.1 | D=64 qL=16384 V34 backward **1.80×** vs SDPA-vjp (was 1.75× v2.37.3) | `MFA_ENABLE_V34_BACKWARD=1` | Same with `qL=16384` | REACHABLE (3-session median 1.80× variance 1.10) |
-| `v2.37.2_d64_qL4096_v34_engages_via_auto` | v2.37.2 | D=64 qL=4096 V34 backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
-| `v2.37.2_d64_qL8192_v34_engages_via_auto` | v2.37.2 | D=64 qL=8192 V34 backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V34_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
-| `v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity` | v2.50 Prompt 5b | D=128 qL=8192 V34 backward engages via AUTO (split kernels, Sprint B v2.40.0-internal outcome γ) at parity with SDPA-vjp (~RMSE 2e-5).  Coverage extension; no speedup claim | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,8192,128) fp16` | REACHABLE (parity engagement, v2.50 Prompt 5b Section D) |
-| `ii12_d64_qL8192_default_on_v34` | II-12 (2026-06) | D=64 backward (causal + non-causal) default-on via the clean V34 split kernel, 1.7-2.7x vs SDPA-vjp | env unset | B=1 H=4 qL=8192 D=64 fp16 | REACHABLE (default) |
-| `ii12_d64_qL8192_optout_sdpa` | II-12 (2026-06) | `MFA_DISABLE_V34_BACKWARD=1` restores SDPA-vjp bit-exactly | opt-out env | Same shape | REACHABLE (opt-out) |
+| `v2.38.1_d64_qL4096_v6nax_dvec_engages_via_auto` | v2.38.1 | D=64 qL=4096 V6NAX backward **1.91×** vs SDPA-vjp (was 1.75× v2.37.3 under identical conditions; D_vec precompute saves 2 in-kernel rowsums) | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(B=2,H=8,qL=4096,D=64) fp16 non-causal` | REACHABLE (2026-05-13, /mlx-mfa-perf-audit verified, 3-session median 1.91× variance 1.03) |
+| `v2.38.1_d64_qL8192_v6nax_dvec_engages_via_auto` | v2.38.1 | D=64 qL=8192 V6NAX backward **1.87×** vs SDPA-vjp (was 1.79× v2.37.3) | `MFA_ENABLE_V6_BACKWARD=1` | Same with `qL=8192` | REACHABLE (3-session median 1.87× variance 1.10) |
+| `v2.38.1_d64_qL16384_v6nax_dvec_engages_via_auto` | v2.38.1 | D=64 qL=16384 V6NAX backward **1.80×** vs SDPA-vjp (was 1.75× v2.37.3) | `MFA_ENABLE_V6_BACKWARD=1` | Same with `qL=16384` | REACHABLE (3-session median 1.80× variance 1.10) |
+| `v2.37.2_d64_qL4096_v6nax_engages_via_auto` | v2.37.2 | D=64 qL=4096 V6NAX backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
+| `v2.37.2_d64_qL8192_v6nax_engages_via_auto` | v2.37.2 | D=64 qL=8192 V6NAX backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V6_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
+| `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity` | v2.50 Prompt 5b | D=128 qL=8192 V6NAX backward engages via AUTO (split kernels, Sprint B v2.40.0-internal outcome γ) at parity with SDPA-vjp (~RMSE 2e-5).  Coverage extension; no speedup claim | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,8192,128) fp16` | REACHABLE (parity engagement, v2.50 Prompt 5b Section D) |
+| `ii12_d64_qL8192_default_on_v6nax` | II-12 (2026-06) | D=64 backward (causal + non-causal) default-on via the clean V6NAX split kernel, 1.7-2.7x vs SDPA-vjp | env unset | B=1 H=4 qL=8192 D=64 fp16 | REACHABLE (default) |
+| `ii12_d64_qL8192_optout_sdpa` | II-12 (2026-06) | `MFA_DISABLE_V6_BACKWARD=1` restores SDPA-vjp bit-exactly | opt-out env | Same shape | REACHABLE (opt-out) |
 | `ii9_conv3d_t16_64x64_c128_fp16_mpp_default` | II-9 (2026-06; row added III-1) | conv3d via the MPP convolution2d primitive, default-on: 2.3-2.5x vs the materialized-im2col path (T8/T16 64x64 C128) | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | `install_hooks(); mx.conv3d(x, w)` with x `(1,16,64,64,128)` w `(128,3,3,3,128)` fp16, pad (1,1,1) | REACHABLE (default; telemetry-verified) |
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | III-1 (2026-06, KD-7 lift) | bf16 conv3d via MPP: 1.4-2.7x vs the pre-lift public bf16 path (Apple mx.conv3d fallback) at the II-9 cells | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | Same shapes in bf16 | REACHABLE (default; telemetry-verified) |
 | `iii2_tq_paged_decode_step_default` | III-2 (2026-06; re-confirmed III-12b on 26.6; reframed III-12c) | **User-facing trade-off (the headline): TQ paged decode trades ~1.4-3x decode-step latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs fp16 dense decode** (`step()` `0.75 ms vs 0.33 ms` @S=16K; KV `32 MB → ~6.5 MB` @S=8K). Opt-in (`TurboQuantPagedInferenceContext`), not auto-routed — the user chooses the trade-off. _Secondary / internal-perf history (NOT the user choice — the fused kernel is gone, so it is not a selectable baseline): the gather/dequant+SDPA path is 6.5-23x faster than the fused TQ attend kernel it replaced (`0.75 ms vs 16.8 ms` @S=16K)._ Lesson #15 + III-12c: lead with the actionable denominator (fp16 dense), not the biggest-number one. | env unset (opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`) | `TurboQuantPagedInferenceContext.step(q, k, v)` N_q=1, B=1 Hq=32 Hkv=8 D=128 tq3b; reproduce: `benchmarks/methodology/iii12b_tq_claim_26.6_run{1,2}.log` (script `tq_claim.py`) | REACHABLE (default; kernel-cache-verified) |
 
 ### Internal claims (v2.39.2-internal — below-public-floor coverage)
 
-v2.39.2-internal lowered the V34 backward carve-out floor from `qL≥4096`
+v2.39.2-internal lowered the V6NAX backward carve-out floor from `qL≥4096`
 to `qL≥2048` after the v2.39.1 BK=16 fused kernel achieved parity with
 SDPA-vjp at qL=2048 (3-session variance 1.004; see
 `docs/v6-nax/v39-2-internal-decisions.md`).  These claims preserve §Z
@@ -58,14 +58,14 @@ engagement preserves contract honesty per env-var opt-in).
 
 | Claim ID | Version intro | Description | Env required | Public-API reproduction | Latest /mlx-mfa-perf-audit verdict |
 |---|---|---|---|---|---|
-| `v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity` | v2.39.2-internal | D=64 qL=2048 V34 backward engages via AUTO at parity with SDPA-vjp (3-session variance 1.004; no speedup but contract-honest engagement) | `MFA_ENABLE_V34_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,2048,64) fp16 non-causal` | REACHABLE (parity engagement, v2.39.2-internal) |
-| `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa` | v2.39.2-internal | D=64 qL=1024: below v2.39.2-internal carve-out floor (regresses ~15% vs SDPA-vjp empirically); carve-out correctly does not engage | `MFA_ENABLE_V34_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=1024` | REACHABLE (correct fallback below new floor) |
+| `v2.39.2_internal_d64_qL2048_auto_engages_v6nax_at_parity` | v2.39.2-internal | D=64 qL=2048 V6NAX backward engages via AUTO at parity with SDPA-vjp (3-session variance 1.004; no speedup but contract-honest engagement) | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,2048,64) fp16 non-causal` | REACHABLE (parity engagement, v2.39.2-internal) |
+| `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa` | v2.39.2-internal | D=64 qL=1024: below v2.39.2-internal carve-out floor (regresses ~15% vs SDPA-vjp empirically); carve-out correctly does not engage | `MFA_ENABLE_V6_BACKWARD=1` (still sdpa_fallback) | Same shape with `qL=1024` | REACHABLE (correct fallback below new floor) |
 
 ### Reproduce snippet template (per §Z)
 
 ```python
 import os
-os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
 import time, statistics
 import mlx.core as mx
 import mlx_mfa
@@ -88,7 +88,7 @@ for _ in range(12):
     t0 = time.perf_counter()
     g = grad_fn(q, k, v); mx.synchronize()
     ts.append((time.perf_counter() - t0) * 1000)
-print(f"V34 backward: {statistics.median(ts):.2f} ms")
+print(f"V6NAX backward: {statistics.median(ts):.2f} ms")
 # M5 Max, fp16: ~9.78-9.91 ms (vs SDPA-vjp ~17.67-18.10 ms = 1.81× faster)
 ```
 
@@ -98,7 +98,7 @@ print(f"V34 backward: {statistics.median(ts):.2f} ms")
 
 | Claim ID | Version intro | Version retracted | Reason |
 |---|---|---|---|
-| `v2.37.1_d64_qL2048_v34_wins_1.44x` | v2.37.1 | v2.37.3 | Overstated.  Current canonical-methodology bench shows 1.15× kernel-level / ~1.06× end-to-end win, within measurement noise.  v2.37.2 carve-out correctly does not engage at qL=2048.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`. |
+| `v2.37.1_d64_qL2048_v6nax_wins_1.44x` | v2.37.1 | v2.37.3 | Overstated.  Current canonical-methodology bench shows 1.15× kernel-level / ~1.06× end-to-end win, within measurement noise.  v2.37.2 carve-out correctly does not engage at qL=2048.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`. |
 
 ## Reclassified claims (kernel characterization, not user-facing)
 
@@ -108,10 +108,10 @@ AUTO path doesn't engage their measured kernel.
 
 | Claim ID | Version intro | Reclassified in | Reason |
 |---|---|---|---|
-| `v2.37.0_d128_v34_22_24x_slower` | v2.37.0 | v2.37.3 | D=128 V34 backward 2.2-2.4× slower than SDPA-vjp at kernel level.  AUTO path correctly never engages D=128 V34 (architectural-floor research only).  Numbers reproducible via `backend="mfa"` forced path; not user-facing perf. |
-| `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | v2.50 Prompt 5b | Superseded by `v2.50.0_prompt5b_d128_qL8192_auto_engages_v34_split_at_parity`.  Sprint B v2.40.0-internal Phase C.1.b validated D=128 split kernels at parity with SDPA-vjp (RMSE ~2e-5); Prompt 5b Section D lifted the `_v34_backward_carveout` D=128 gate.  D=128 now ENGAGES at parity (not fallback). |
-| `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | v2.39.2-internal | Superseded by `v2.39.2_internal_d64_qL2048_auto_engages_v34_at_parity` (Internal claims table).  The v2.39.2-internal carve-out floor was lowered from `qL≥4096` → `qL≥2048` after BK=16 fused kernel achieved parity at qL=2048.  qL=2048 now ENGAGES at parity (not fallback).  Below-floor fallback coverage preserved by `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa`. |
-| `v2.50.0_pattern6_v34_sparse_bwd_falsified_at_vsr` | v2.50 Prompt 5d | v2.50 Prompt 5d | EMPIRICAL FALSIFICATION record: V34 native sparse backward projected 10× at d=0.1; empirical bench at VSR shape (B=1 H=12 qL=4096 D=128 fp16) shows native is 0.09×-0.77× SDPA-vjp dense across all densities.  Apple SDPA NAX on M5+ is empirically optimal for sparse backward — Pattern #6 inversion catalogued in `docs/v50/audit-framing-inversions.md`.  Production routing reverted to Prompt 5c hybrid.  Documented per §Z institutional discipline. |
+| `v2.37.0_d128_v6nax_22_24x_slower` | v2.37.0 | v2.37.3 | D=128 V6NAX backward 2.2-2.4× slower than SDPA-vjp at kernel level.  AUTO path correctly never engages D=128 V6NAX (architectural-floor research only).  Numbers reproducible via `backend="mfa"` forced path; not user-facing perf. |
+| `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | v2.50 Prompt 5b | Superseded by `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity`.  Sprint B v2.40.0-internal Phase C.1.b validated D=128 split kernels at parity with SDPA-vjp (RMSE ~2e-5); Prompt 5b Section D lifted the `_v6nax_backward_carveout` D=128 gate.  D=128 now ENGAGES at parity (not fallback). |
+| `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | v2.39.2-internal | Superseded by `v2.39.2_internal_d64_qL2048_auto_engages_v6nax_at_parity` (Internal claims table).  The v2.39.2-internal carve-out floor was lowered from `qL≥4096` → `qL≥2048` after BK=16 fused kernel achieved parity at qL=2048.  qL=2048 now ENGAGES at parity (not fallback).  Below-floor fallback coverage preserved by `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa`. |
+| `v2.50.0_pattern6_v6nax_sparse_bwd_falsified_at_vsr` | v2.50 Prompt 5d | v2.50 Prompt 5d | EMPIRICAL FALSIFICATION record: V6NAX native sparse backward projected 10× at d=0.1; empirical bench at VSR shape (B=1 H=12 qL=4096 D=128 fp16) shows native is 0.09×-0.77× SDPA-vjp dense across all densities.  Apple SDPA NAX on M5+ is empirically optimal for sparse backward — Pattern #6 inversion catalogued in `docs/v50/audit-framing-inversions.md`.  Production routing reverted to Prompt 5c hybrid.  Documented per §Z institutional discipline. |
 | `v2.50.0_prompt5c_topk_bisection_auto_3_85x_phase3a` | v2.50 Prompt 5c | v2.50 Prompt 5e | Top-K bisection kernel (Architecture B) AUTO production default delivers 3.85× speedup over Phase 3a `mx.topk` at audit shape (42.91 ms → 11.15 ms).  Reclassified as documentation-grade: bench is documented but not executable via the §Z PERF_CLAIMS test harness (top-K is not `mx.grad`-routed; engagement detection via differential gradient comparison doesn't apply).  Reproduce via opt-out flag: `MFA_DISABLE_TOPK_BISECT=1` vs default.  See `docs/v50/phase-3b-approach-5-decision.md` for full bench data. |
 
 ---

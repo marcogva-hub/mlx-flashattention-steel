@@ -22,8 +22,8 @@ int estimate_gpu_cores(const std::string& device_name, int arch_gen);
 std::string v6_nax_probe_msl4();
 std::string v6_nax_probe_mpp();
 std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
-std::string v34_probe_source();
-std::string v34_probe_compile_test(void* mtl_device_raw);
+std::string v6nax_probe_source();
+std::string v6nax_probe_compile_test(void* mtl_device_raw);
 std::string mpp_int8_microbench();  // Phase II-2 kill-gate
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
@@ -31,22 +31,22 @@ bool device_has_nax_bf16();
 // Draw Things port: source generation + JIT compile
 std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
 std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
-// V6 NAX forward (returns O, L).  v2.37.0: optional force_v34 to route
-// V34 forward path even on D=64 small-Nk shapes (used by V34 backward
+// V6 NAX forward (returns O, L).  v2.37.0: optional force_v6nax to route
+// V6NAX forward path even on D=64 small-Nk shapes (used by V6NAX backward
 // integration to obtain natural-log lse).
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal, bool force_v34 = false);
-// V34 backward dQ (V34 backward Option β Phase 1).  Returns dQ; consumes
-// O + lse from V34 forward.  Routing constraint per DC12: caller must
-// ensure V34-forward-eligible shape (D=128 always; D=64 with Nk>8000).
+    const mlx::core::array& v, bool causal, bool force_v6nax = false);
+// V6NAX backward dQ (V6NAX backward Option β Phase 1).  Returns dQ; consumes
+// O + lse from V6NAX forward.  Routing constraint per DC12: caller must
+// ensure V6NAX-forward-eligible shape (D=128 always; D=64 with Nk>8000).
 mlx::core::array v6_nax_backward_query(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& o,
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal);
-// V34 backward dK/dV (V34 backward Option β Phase 2).  Single-SG WM=1
+// V6NAX backward dK/dV (V6NAX backward Option β Phase 2).  Single-SG WM=1
 // kernel; one TG per K-tile.  Returns (dK, dV) shaped [B, Hq, kL, D]
 // each (per-Q-head; GQA reduction is caller's responsibility).
 std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
@@ -55,7 +55,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal);
-// V34 backward dV-only Phase 2.O2 multi-SG (Q-row partition).  Returns
+// V6NAX backward dV-only Phase 2.O2 multi-SG (Q-row partition).  Returns
 // dV_partials [B, Hq, WM, kL, D] FP32.  Caller reduces via mx.sum(axis=2)
 // and casts to T to obtain final dV [B, Hq, kL, D].
 // NOTE: dV does NOT need D (= rowsum(dO⊙O)) — dV = P^T @ dO; no dS term.
@@ -63,7 +63,7 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal);
-// V34 backward dV SPARSE — Prompt 5b Section A PoC.
+// V6NAX backward dV SPARSE — Prompt 5b Section A PoC.
 mlx::core::array v6_nax_backward_dv_sparse_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
@@ -91,7 +91,7 @@ v6_nax_backward_fused_dkdv_sparse_raw(
     const mlx::core::array& d_o, const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, int wm, bool causal);
-// V34 backward dK-only Phase 2.O2 (sister kernel).  Same shape contract
+// V6NAX backward dK-only Phase 2.O2 (sister kernel).  Same shape contract
 // as dV; takes additional O input (for D = rowsum(dO⊙O)).
 mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& q, const mlx::core::array& k,
@@ -99,7 +99,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm, bool causal);
-// V34 backward FUSED dK+dV (Sprint v2.39.0 Phase C.1.a, Option γ).  Single
+// V6NAX backward FUSED dK+dV (Sprint v2.39.0 Phase C.1.a, Option γ).  Single
 // kernel computes both gradients in one K-tile load (K-bandwidth amortization
 // per /metal-kernel-dev audit).  D=64 only this PR; D=128 deferred to
 // Phase C.1.b.  Returns (dK_partials, dV_partials) both [B, Hq, WM, kL, D]
@@ -379,13 +379,13 @@ NB_MODULE(_ext, m) {
         },
         nb::arg("head_dim"), nb::arg("dtype_code"),
         "Compile the V6 NAX forward kernel (D, dtype). Returns 'OK' or 'FAIL: <err>'.");
-  m.def("v34_probe_source", []() -> std::string {
-    return mlx_mfa::v34_probe_source();
+  m.def("v6nax_probe_source", []() -> std::string {
+    return mlx_mfa::v6nax_probe_source();
   });
-  m.def("v34_probe_compile", []() -> std::string {
+  m.def("v6nax_probe_compile", []() -> std::string {
     auto s = mlx::core::default_stream(mlx::core::Device::gpu);
     auto& d = mlx::core::metal::device(s.device);
-    return mlx_mfa::v34_probe_compile_test(d.mtl_device());
+    return mlx_mfa::v6nax_probe_compile_test(d.mtl_device());
   });
   m.def("mpp_int8_microbench", []() -> std::string {
     return mlx_mfa::mpp_int8_microbench();
@@ -405,15 +405,15 @@ NB_MODULE(_ext, m) {
 
   m.def("v6_nax_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,
-           const mlx::core::array& v, bool causal, bool force_v34) {
-          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v34);
+           const mlx::core::array& v, bool causal, bool force_v6nax) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v6nax);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("causal") = false,
-        nb::arg("force_v34") = false,
+        nb::arg("force_v6nax") = false,
         "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16. "
-        "v2.37.0: force_v34=True overrides default routing to ensure V34 forward "
-        "path (used by V34 backward integration for natural-log lse).");
+        "v2.37.0: force_v6nax=True overrides default routing to ensure V6NAX forward "
+        "path (used by V6NAX backward integration for natural-log lse).");
 
   m.def("v6_nax_backward_query",
         [](const mlx::core::array& q, const mlx::core::array& k,
@@ -426,9 +426,9 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"), nb::arg("causal") = false,
-        "V34 backward dQ kernel (Option β Phase 1). Consumes O + lse from "
-        "V34 forward + D=rowsum(dO⊙O) precomputed (v2.38.1).  Returns dQ.  "
-        "Routing constraint per DC12: caller must ensure V34-forward-eligible "
+        "V6NAX backward dQ kernel (Option β Phase 1). Consumes O + lse from "
+        "V6NAX forward + D=rowsum(dO⊙O) precomputed (v2.38.1).  Returns dQ.  "
+        "Routing constraint per DC12: caller must ensure V6NAX-forward-eligible "
         "shape (D=128 always; D=64 with Nk>8000).  M5+ only; D in {64,128}; "
         "FP16/BF16; no causal/sparse.");
 
@@ -443,7 +443,7 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"), nb::arg("causal") = false,
-        "V34 backward dK/dV kernel (Option β Phase 2). Single-SG (WM=1) "
+        "V6NAX backward dK/dV kernel (Option β Phase 2). Single-SG (WM=1) "
         "design. Returns (dK, dV) shaped [B, Hq, kL, D] each (per-Q-head; "
         "GQA reduction is caller's responsibility).  Routing constraint "
         "per DC12 same as v6_nax_backward_query.  D=rowsum(dO⊙O) precomputed (v2.38.1).");
@@ -457,7 +457,7 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward dV-only multi-SG kernel (Phase 2.O2).  WM=4 default "
+        "V6NAX backward dV-only multi-SG kernel (Phase 2.O2).  WM=4 default "
         "with Q-row partition.  Returns dV_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.  "
         "Does NOT take D (= rowsum(dO⊙O)) — dV = P^T @ dO has no dS term.");
@@ -473,7 +473,7 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"), nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward dV SPARSE kernel (Prompt 5b Section A PoC).");
+        "V6NAX backward dV SPARSE kernel (Prompt 5b Section A PoC).");
 
   // v2.50 Prompt 5d Section A: 3 new sparse backward kernels.
   m.def("v6_nax_backward_query_sparse_raw",
@@ -490,7 +490,7 @@ NB_MODULE(_ext, m) {
         nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("causal") = false,
-        "V34 backward dQ sparse kernel (Prompt 5d Section A.1).");
+        "V6NAX backward dQ sparse kernel (Prompt 5d Section A.1).");
 
   m.def("v6_nax_backward_dk_sparse_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
@@ -506,7 +506,7 @@ NB_MODULE(_ext, m) {
         nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward dK split sparse kernel (Prompt 5d Section A.2).");
+        "V6NAX backward dK split sparse kernel (Prompt 5d Section A.2).");
 
   m.def("v6_nax_backward_fused_dkdv_sparse_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
@@ -522,7 +522,7 @@ NB_MODULE(_ext, m) {
         nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward fused dK+dV sparse kernel (Prompt 5d Section A.3).");
+        "V6NAX backward fused dK+dV sparse kernel (Prompt 5d Section A.3).");
 
   m.def("v6_nax_backward_dk_raw",
         [](const mlx::core::array& q, const mlx::core::array& k,
@@ -535,7 +535,7 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("o"), nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward dK-only multi-SG kernel (Phase 2.O2 sister to dV).  "
+        "V6NAX backward dK-only multi-SG kernel (Phase 2.O2 sister to dV).  "
         "WM=4 Q-row partition. Returns dK_partials [B, Hq, WM, kL, D] FP32; "
         "caller reduces via mx.sum(axis=2) and casts to T.");
 
@@ -551,7 +551,7 @@ NB_MODULE(_ext, m) {
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("lse"), nb::arg("d_o"), nb::arg("d_vec"),
         nb::arg("scale"), nb::arg("wm") = 4, nb::arg("causal") = false,
-        "V34 backward FUSED dK+dV kernel (Sprint v2.39.0 Phase C.1.a, "
+        "V6NAX backward FUSED dK+dV kernel (Sprint v2.39.0 Phase C.1.a, "
         "Option γ).  Single kernel computes both gradients in one K-tile "
         "load (K-bandwidth amortization per /metal-kernel-dev audit).  "
         "D=64 only this PR.  Returns (dK_partials, dV_partials) both "
@@ -1066,7 +1066,7 @@ NB_MODULE(_ext, m) {
       nb::arg("scale") = 0.0f,
       "Block-sparse attention forward returning (O, L).  L is per-row "
       "natural-log LSE over only the active blocks (sparse-LSE), required "
-      "by V34 backward sparse kernels for LSE consistency.  All-False rows "
+      "by V6NAX backward sparse kernels for LSE consistency.  All-False rows "
       "write L = -INFINITY (sentinel).  V1 kernel only at PoC stage "
       "(v2.50 Prompt 5c Section A.1).");
 

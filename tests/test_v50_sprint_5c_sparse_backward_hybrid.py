@@ -1,4 +1,4 @@
-"""v2.50 Prompt 5c Section A - V34 sparse backward hybrid tests."""
+"""v2.50 Prompt 5c Section A - V6NAX sparse backward hybrid tests."""
 from __future__ import annotations
 
 import math
@@ -18,7 +18,7 @@ _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 
 _skipif_no_nax = pytest.mark.skipif(
-    not _HAS_NAX, reason="V34 sparse hybrid requires M5+ NAX hardware"
+    not _HAS_NAX, reason="V6NAX sparse hybrid requires M5+ NAX hardware"
 )
 
 
@@ -85,11 +85,11 @@ class TestSparseForwardLSE:
         )
 
 
-class TestV34SparseHybrid:
+class TestV6NAXSparseHybrid:
 
     @_skipif_no_nax
     def test_hybrid_engages_via_public_api(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -111,7 +111,7 @@ class TestV34SparseHybrid:
 
     @_skipif_no_nax
     def test_hybrid_correctness_vs_sdpa_baseline(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT
@@ -149,7 +149,7 @@ class TestV34SparseHybrid:
 
     @_skipif_no_nax
     def test_hybrid_d128_works(self, monkeypatch):
-        monkeypatch.setenv("MFA_ENABLE_V34_BACKWARD", "1")
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
         B, H, qL, D = 1, 4, 2048, 128
         BT = 32
         NQ = NK = qL // BT
@@ -170,7 +170,7 @@ class TestV34SparseHybrid:
 
     @_skipif_no_nax
     def test_section_c_wrapper_fallback_env_unset(self, monkeypatch):
-        monkeypatch.delenv("MFA_ENABLE_V34_BACKWARD", raising=False)
+        monkeypatch.delenv("MFA_ENABLE_V6_BACKWARD", raising=False)
         B, H, qL, D = 1, 4, 2048, 64
         BT = 32
         NQ = NK = qL // BT

@@ -1,12 +1,12 @@
-"""v2.50 Prompt 5f Phase A — KD-1 V34 backward sparse mask shape fix tests.
+"""v2.50 Prompt 5f Phase A — KD-1 V6NAX backward sparse mask shape fix tests.
 
-Pre-Phase-A bug: V34 backward sparse kernels indexed block_mask using
+Pre-Phase-A bug: V6NAX backward sparse kernels indexed block_mask using
 kernel-specific tile sizes (mostly BQ=64, BK=32) while production callers
 passed symmetric BT-block masks at (qL/BT, kL/BT).  At D=128 + BT in
 {16, 32}, the Q-axis mismatch caused buffer overread → undefined output
 (often NaN or garbage values) on non-trivial sparse patterns.
 
-Phase A fix: `_convert_mask_for_v34_bwd_kernel` converts the BT-block
+Phase A fix: `_convert_mask_for_v6nax_bwd_kernel` converts the BT-block
 mask to each kernel's target tile geometry before dispatch.  Conservative
 semantics:
   - Downsample (target tile larger than source): OR-reduce.  Target
@@ -42,7 +42,7 @@ import pytest
 
 from mlx_mfa import flash_attention_sparse, get_device_info
 from mlx_mfa.attention import (
-    _convert_mask_for_v34_bwd_kernel,
+    _convert_mask_for_v6nax_bwd_kernel,
     _block_mask_to_float_bias,
 )
 
@@ -51,7 +51,7 @@ _AE = getattr(mx, "async_" + "eval")
 _DEV = get_device_info()
 _HAS_NAX = bool(_DEV.get("is_m5_plus", False))
 _skipif_no_nax = pytest.mark.skipif(
-    not _HAS_NAX, reason="V34 backward sparse requires M5+ NAX hardware"
+    not _HAS_NAX, reason="V6NAX backward sparse requires M5+ NAX hardware"
 )
 
 
@@ -92,7 +92,7 @@ def _random_low_density_mask(NQ, NK, density, seed):
 
 def _coarsen_mask_via_helper(mask_bt, bt, kernel_name, head_dim):
     """Apply the production conversion helper to get the COARSE mask."""
-    return _convert_mask_for_v34_bwd_kernel(mask_bt, bt, kernel_name, head_dim)
+    return _convert_mask_for_v6nax_bwd_kernel(mask_bt, bt, kernel_name, head_dim)
 
 
 # ---------------------------------------------------------------------------
@@ -104,22 +104,22 @@ class TestMaskConversionHelper:
 
     def test_dV_d64_bt32_q_downsample(self):
         mask = mx.ones((128, 128), dtype=mx.bool_)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=32, kernel_name="dV", head_dim=64)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=32, kernel_name="dV", head_dim=64)
         assert out.shape == (64, 128), out.shape
 
     def test_dQ_d64_bt32_k_downsample(self):
         mask = mx.ones((128, 128), dtype=mx.bool_)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=32, kernel_name="dQ", head_dim=64)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=32, kernel_name="dQ", head_dim=64)
         assert out.shape == (128, 64), out.shape
 
     def test_dV_d128_bt32_q_downsample(self):
         mask = mx.ones((128, 128), dtype=mx.bool_)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=32, kernel_name="dV", head_dim=128)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=32, kernel_name="dV", head_dim=128)
         assert out.shape == (64, 128), out.shape
 
     def test_dV_d128_bt64_k_upsample(self):
         mask = mx.ones((64, 64), dtype=mx.bool_)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=64, kernel_name="dV", head_dim=128)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=64, kernel_name="dV", head_dim=128)
         assert out.shape == (64, 128), out.shape
 
     def test_downsample_or_semantics(self):
@@ -127,7 +127,7 @@ class TestMaskConversionHelper:
         np_mask[0, :] = True
         np_mask[7, :] = True
         mask = mx.array(np_mask)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=16, kernel_name="dV", head_dim=128)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=16, kernel_name="dV", head_dim=128)
         out_np = np.asarray(out)
         assert out_np.shape == (64, 128)
         assert bool(out_np[0, 0]) is True
@@ -137,7 +137,7 @@ class TestMaskConversionHelper:
     def test_upsample_broadcast_semantics(self):
         np_mask = np.array([[True, False], [False, True]], dtype=bool)
         mask = mx.array(np_mask)
-        out = _convert_mask_for_v34_bwd_kernel(mask, bt=64, kernel_name="dV", head_dim=128)
+        out = _convert_mask_for_v6nax_bwd_kernel(mask, bt=64, kernel_name="dV", head_dim=128)
         out_np = np.asarray(out)
         assert out_np.shape == (2, 4)
         assert (out_np[0, :] == np.array([True, True, False, False])).all()
@@ -149,7 +149,7 @@ class TestMaskConversionHelper:
 # ---------------------------------------------------------------------------
 
 
-class TestV34BwdSparsePathologicalMasksProduceFiniteGradients:
+class TestV6NAXBwdSparsePathologicalMasksProduceFiniteGradients:
     """The pre-Phase-A bug produced undefined output (NaN/garbage) from
     buffer overread.  Post-Phase-A: gradients are finite and well-defined
     under the conservative coarsened-mask interpretation.
@@ -158,7 +158,7 @@ class TestV34BwdSparsePathologicalMasksProduceFiniteGradients:
     @_skipif_no_nax
     @pytest.mark.parametrize("D", [64, 128])
     def test_block_diagonal_mask_d64_d128_finite(self, D):
-        os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+        os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
         try:
             B, H, qL, BT = 1, 4, 2048, 32
             NQ = NK = qL // BT
@@ -179,13 +179,13 @@ class TestV34BwdSparsePathologicalMasksProduceFiniteGradients:
                     f"post-KD-1 fix (pre-fix produced NaN/garbage from "
                     f"buffer overread)")
         finally:
-            os.environ.pop("MFA_ENABLE_V34_BACKWARD", None)
+            os.environ.pop("MFA_ENABLE_V6_BACKWARD", None)
 
     @_skipif_no_nax
     @pytest.mark.parametrize("D", [64, 128])
     @pytest.mark.parametrize("density", [0.1, 0.3, 0.5])
     def test_random_density_mask_finite(self, D, density):
-        os.environ["MFA_ENABLE_V34_BACKWARD"] = "1"
+        os.environ["MFA_ENABLE_V6_BACKWARD"] = "1"
         try:
             B, H, qL, BT = 1, 4, 2048, 32
             NQ = NK = qL // BT
@@ -212,7 +212,7 @@ class TestV34BwdSparsePathologicalMasksProduceFiniteGradients:
                     f"D={D} density={density} {name}: only {fin_frac:.2%} "
                     f"of values finite — buffer overread suspected")
         finally:
-            os.environ.pop("MFA_ENABLE_V34_BACKWARD", None)
+            os.environ.pop("MFA_ENABLE_V6_BACKWARD", None)
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ class TestCppShapeValidation:
         _eval_force(O, L); mx.synchronize()
 
         mask_bt = mx.ones((NQ_bt, NK_bt), dtype=mx.bool_)
-        mask_converted = _convert_mask_for_v34_bwd_kernel(mask_bt, BT, "dV", D)
+        mask_converted = _convert_mask_for_v6nax_bwd_kernel(mask_bt, BT, "dV", D)
         _AE(mask_converted); mx.synchronize()
         # Should not raise
         result = _ext.v6_nax_backward_dv_sparse_raw(

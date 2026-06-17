@@ -6,8 +6,8 @@ times through the SAME mechanism:
   2. v2.39.1: fused-backward BK lowered to 16 on the Primitive side;
      the generator's paired 16x32x16 MMA (`ik += 2` over TK) reads past
      the tile at TK=1 — silent dK/dV corruption (II-6 CRITICAL).
-  3. II-8 sweep: the V34 FORWARD has the same paired loop and an
-     unguarded MFA_V6_V34_BK env override (fixed with the loud guard).
+  3. II-8 sweep: the V6NAX FORWARD has the same paired loop and an
+     unguarded MFA_V6_NAX_BK env override (fixed with the loud guard).
 
 This test makes the class structurally detected (CI-static loud-failure
 semantics, like the cache-key invariant tests): every `ik += 2`
@@ -45,14 +45,14 @@ class TestPairedMMAStrideParity:
         prefixes = sorted({s.rsplit("_TK", 1)[0] for s in sites})
 
         # Known prefixes -> the guard that covers their BK source.
-        #   - V34BWD*/V34BWDF/V34BWDK/V34BWDV/V34BWDKV: every backward
+        #   - V6NAXBWD*/V6NAXBWDF/V6NAXBWDK/V6NAXBWDV/V6NAXBWDKV: every backward
         #     Primitive resolves BK then calls
-        #     compile_v34_backward_pipeline(), which hard-rejects
+        #     compile_v6nax_backward_pipeline(), which hard-rejects
         #     BK % 32 != 0 (II-6 guard).
-        #   - V34 (forward): guarded at both MFA_V6_NAX_BK env sites
+        #   - V6NAX (forward): guarded at both MFA_V6_NAX_BK env sites
         #     (II-8 addendum guard).
-        backward_prefixes = {p for p in prefixes if p.startswith("V34BWD")}
-        forward_prefixes = {p for p in prefixes if p == "V34"}
+        backward_prefixes = {p for p in prefixes if p.startswith("V6NAXBWD")}
+        forward_prefixes = {p for p in prefixes if p == "V6NAX"}
         unknown = set(prefixes) - backward_prefixes - forward_prefixes
         assert not unknown, (
             f"NEW paired-MMA prefixes {sorted(unknown)} found in the "
@@ -64,19 +64,19 @@ class TestPairedMMAStrideParity:
         # 2. The backward chokepoint guard exists and is in the shared
         #    helper every backward Primitive flows through.
         m = re.search(
-            r"void\* compile_v34_backward_pipeline\((?:.|\n)*?\{((?:.|\n)*?)\n  // Build memoryPrecisions",
+            r"void\* compile_v6nax_backward_pipeline\((?:.|\n)*?\{((?:.|\n)*?)\n  // Build memoryPrecisions",
             prim,
         )
-        assert m, "compile_v34_backward_pipeline not found"
+        assert m, "compile_v6nax_backward_pipeline not found"
         assert "BK % 32 != 0" in m.group(1), (
             "the II-6 BK % 32 guard is missing from "
-            "compile_v34_backward_pipeline — backward paired-MMA sites "
+            "compile_v6nax_backward_pipeline — backward paired-MMA sites "
             "are unprotected"
         )
 
         # 3. Every backward Primitive's pipeline compile goes through the
-        #    guarded helper (no direct v34_compile bypasses for backward).
-        n_helper_calls = len(re.findall(r"compile_v34_backward_pipeline\(", prim)) - 1
+        #    guarded helper (no direct v6nax_compile bypasses for backward).
+        n_helper_calls = len(re.findall(r"compile_v6nax_backward_pipeline\(", prim)) - 1
         n_bwd_env_knobs = len(re.findall(r'getenv_aliased\("MFA_V6BWD\w*_BK"\)', prim))
         assert n_helper_calls >= n_bwd_env_knobs, (
             f"{n_bwd_env_knobs} backward BK env knobs but only "
@@ -85,8 +85,9 @@ class TestPairedMMAStrideParity:
         )
 
         # 4. The forward env knob is guarded at EVERY site where it is read.
-        #    v2.57.0: MFA_V6_V34_BK -> MFA_V6_NAX_BK (collision rename), read
-        #    via getenv_aliased (deprecated alias still honored). See NAMING.md.
+        #    v2.57.0: this knob was renamed to MFA_V6_NAX_BK (collision rename;
+        #    old name kept as a deprecated alias), read via getenv_aliased so the
+        #    old name still works. See NAMING.md for the old->new provenance.
         n_fwd_knobs = len(re.findall(r'getenv_aliased\("MFA_V6_NAX_BK"\)', prim))
         n_fwd_guards = len(re.findall(
             r"BK must be a positive multiple of 32 \(paired", prim))

@@ -47,8 +47,8 @@ void v6_nax_dispatch(
     unsigned short BQ, uint16_t executionSIMDGroups,
     unsigned short tgmem_bytes);
 
-void* v34_compile(const std::string& source, const std::string& function_name, void* raw_device);
-void v34_dispatch(
+void* v6nax_compile(const std::string& source, const std::string& function_name, void* raw_device);
+void v6nax_dispatch(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
@@ -84,16 +84,16 @@ struct V6Key {
   // encoding overflowed the same bits out of the 32-bit word.
   uint16_t cfg_axis_flags = 0;
   bool     cfg_bypass_tgp = false;
-  // V34 — dedicated cache-key fields (no bit-packing).
-  bool use_v34 = false;
-  uint16_t v34_BQ = 0;
-  uint16_t v34_BK = 0;
-  uint16_t v34_WM = 0;
+  // V6NAX — dedicated cache-key fields (no bit-packing).
+  bool use_v6nax = false;
+  uint16_t v6nax_BQ = 0;
+  uint16_t v6nax_BK = 0;
+  uint16_t v6nax_WM = 0;
   // Track 6: single declaration of the affecting-input set.
   auto tie() const {
     return std::tie(head_dim, Hq, Hk, dtype, isCausal, R, C, qbs, kbs, vbs,
                     obs, cfg_BQ, cfg_BK, cfg_SG, cfg_BD, cfg_axis_flags,
-                    cfg_bypass_tgp, use_v34, v34_BQ, v34_BK, v34_WM);
+                    cfg_bypass_tgp, use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM);
   }
   bool operator==(const V6Key& o) const { return tie() == o.tie(); }
 };
@@ -124,8 +124,8 @@ static void* cache_insert_or_release(Map& map, std::mutex& mtx,
 
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 bool isCausal, bool bhnd, int R = 0,
-                                bool use_v34_override = false,
-                                bool use_v34_explicit = false) {
+                                bool use_v6nax_override = false,
+                                bool use_v6nax_explicit = false) {
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -187,57 +187,57 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Sprint 3.3: single-Otile mode forces bypass on (the new path always uses cP).
   if (single_otile) bypass_tgp = true;
 
-  // V34 — NAX-direct rewrite. Caller (eval_gpu) decides via use_v34_explicit
+  // V6NAX — NAX-direct rewrite. Caller (eval_gpu) decides via use_v6nax_explicit
   // based on shape (D, Nk). Default fallback when not explicit: D=128 → ON.
   // Forward, non-causal, single-Otile-eligible only.
-  bool use_v34;
-  if (use_v34_explicit) {
-    use_v34 = use_v34_override;
+  bool use_v6nax;
+  if (use_v6nax_explicit) {
+    use_v6nax = use_v6nax_override;
   } else {
-    use_v34 = (head_dim == 128);  // source-gen-only default (without Nk info)
-    if (const char* env_v34 = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
-      use_v34 = (std::atoi(env_v34) != 0);
+    use_v6nax = (head_dim == 128);  // source-gen-only default (without Nk info)
+    if (const char* env_v6nax = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
+      use_v6nax = (std::atoi(env_v6nax) != 0);
   }
   // v2.50 Prompt 4 Section B: lift `isCausal` constraint.  Prompt 2
-  // Phase 4a added V34 forward causal kernel support but missed this
+  // Phase 4a added V6NAX forward causal kernel support but missed this
   // dispatch-side gate — causal was silently routing to STEEL legacy
-  // (log2-domain lse) instead of V34 (natural-log lse), making
-  // V34 backward consume wrong-domain lse and produce wrong gradients.
-  // Now V34 forward + V34 backward causal both engage when force_v34=True.
-  if (use_v34 && !single_otile) use_v34 = false;
-  // V34 needs BQ % (WM * 16) == 0 and BD % 16 == 0.
+  // (log2-domain lse) instead of V6NAX (natural-log lse), making
+  // V6NAX backward consume wrong-domain lse and produce wrong gradients.
+  // Now V6NAX forward + V6NAX backward causal both engage when force_v6nax=True.
+  if (use_v6nax && !single_otile) use_v6nax = false;
+  // V6NAX needs BQ % (WM * 16) == 0 and BD % 16 == 0.
   // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
   // Override via env vars below.
-  unsigned short v34_BQ = (head_dim == 64) ? 32 : 64;
-  unsigned short v34_BK = (head_dim == 64) ? 64 : 32;
-  uint16_t v34_WM = (head_dim == 64) ? 2 : 4;
-  if (use_v34) {
-    if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
-    if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
-    if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
+  unsigned short v6nax_BQ = (head_dim == 64) ? 32 : 64;
+  unsigned short v6nax_BK = (head_dim == 64) ? 64 : 32;
+  uint16_t v6nax_WM = (head_dim == 64) ? 2 : 4;
+  if (use_v6nax) {
+    if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
+    if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
+    if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
     // Validate: BQ % (WM*16) == 0
-    if (v34_BQ % (v34_WM * 16) != 0 || head_dim % 16 != 0) {
-      use_v34 = false;  // fall back to legacy if invalid config
+    if (v6nax_BQ % (v6nax_WM * 16) != 0 || head_dim % 16 != 0) {
+      use_v6nax = false;  // fall back to legacy if invalid config
     }
-    // Phase II-8 addendum (Pattern #9, THIRD site): the V34 forward
+    // Phase II-8 addendum (Pattern #9, THIRD site): the V6NAX forward
     // generator emits the QK matmul as a PAIRED 16x32x16 MMA
-    // (`for (ik = 0; ik < V34_TK; ik += 2)` — NAAttentionKernel.cpp
-    // ~line 2885), so V34_TK = BK/16 must be even.  MFA_V6_V34_BK=16
+    // (`for (ik = 0; ik < V6NAX_TK; ik += 2)` — NAAttentionKernel.cpp
+    // ~line 2885), so V6NAX_TK = BK/16 must be even.  MFA_V6_NAX_BK=16
     // (or any non-multiple of 32) would reproduce the II-6 backward
     // out-of-bounds corruption in the FORWARD.  Loud failure per
     // Rule 8 (env override only — defaults 64/32 are valid).
-    if (v34_BK == 0 || v34_BK % 32 != 0) {
+    if (v6nax_BK == 0 || v6nax_BK % 32 != 0) {
       throw std::runtime_error(
-          "V34 forward: BK must be a positive multiple of 32 (paired "
+          "V6NAX forward: BK must be a positive multiple of 32 (paired "
           "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
-          std::to_string((int)v34_BK) + " (MFA_V6_V34_BK).");
+          std::to_string((int)v6nax_BK) + " (MFA_V6_NAX_BK).");
     }
   }
 
-  simd::ushort3 blockDims = use_v34
-      ? simd::make_ushort3(v34_BQ, v34_BK, BD)
+  simd::ushort3 blockDims = use_v6nax
+      ? simd::make_ushort3(v6nax_BQ, v6nax_BK, BD)
       : simd::make_ushort3(BQ, BK, BD);
-  uint16_t exec_sg_for_desc = use_v34 ? v34_WM : exec_sg;
+  uint16_t exec_sg_for_desc = use_v6nax ? v6nax_WM : exec_sg;
 
   NAAttentionKernelDescriptor desc(
       blockDims, (unsigned short)head_dim, (unsigned short)Hq,
@@ -247,7 +247,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       /*bypassThreadgroupMemory=*/bypass_tgp,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = single_otile;
-  desc.useV34 = use_v34;
+  desc.useV6NAX = use_v6nax;
 
   NAAttentionKernel kern(desc);
   std::string source = kern.source;
@@ -490,10 +490,10 @@ public:
   struct Params {
     bool causal;
     bool bhnd;  // Sprint 2A: layout flag, decided by caller per-call.
-    // v2.37.0 V34 backward integration: force V34 forward routing even
+    // v2.37.0 V6NAX backward integration: force V6NAX forward routing even
     // on D=64 small-Nk shapes (which by default route to legacy v6_nax).
-    // Caller passes true when V34 backward will consume the lse.
-    bool force_v34 = false;
+    // Caller passes true when V6NAX backward will consume the lse.
+    bool force_v6nax = false;
   };
 
   MFAV6Forward(mlx::core::Stream stream, Params params)
@@ -631,58 +631,58 @@ public:
     // the substitution it keyed is gone (statically illegal on current MPP;
     // see the note in the source-substitution section above).
 
-    // V34 dispatch — mirror source-gen default logic.
+    // V6NAX dispatch — mirror source-gen default logic.
     // Default: ON for D=128 (cross-session bench shows +33-40% vs legacy,
     //   3 shapes reach SDPA parity).
     // Default: OFF for D=64 small-N (FlashVSR-style regresses -39%).
     // Default: ON for D=64 with N_kv > 8000 (LTX2-style asymmetric wins +18%).
-    // Override via env var MFA_V6_USE_V34={0,1}.
-    bool use_v34;
-    if (params_.force_v34) {
-      // v2.37.0: caller (V34 backward integration) requires V34 forward
+    // Override via env var MFA_V6_USE_NAX={0,1}.
+    bool use_v6nax;
+    if (params_.force_v6nax) {
+      // v2.37.0: caller (V6NAX backward integration) requires V6NAX forward
       // to produce natural-log lse.  Override default routing.
-      use_v34 = true;
+      use_v6nax = true;
     } else if (D == 128) {
-      use_v34 = true;
+      use_v6nax = true;
     } else if (D == 64 && Nk > 8000) {
-      // LTX2-cross style asymmetric: V34 wins ~+18%.
-      use_v34 = true;
+      // LTX2-cross style asymmetric: V6NAX wins ~+18%.
+      use_v6nax = true;
     } else {
-      use_v34 = false;
+      use_v6nax = false;
     }
-    if (const char* env_v34 = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
-      use_v34 = (std::atoi(env_v34) != 0);
-    unsigned short v34_BQ = (D == 64) ? 32 : 64;
-    unsigned short v34_BK = (D == 64) ? 64 : 32;
-    uint16_t v34_WM = (D == 64) ? 2 : 4;
+    if (const char* env_v6nax = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
+      use_v6nax = (std::atoi(env_v6nax) != 0);
+    unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
+    unsigned short v6nax_BK = (D == 64) ? 64 : 32;
+    uint16_t v6nax_WM = (D == 64) ? 2 : 4;
     {
-      bool so_for_v34 = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
+      bool so_for_v6nax = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
       if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
-        so_for_v34 = (std::atoi(env_so) != 0);
+        so_for_v6nax = (std::atoi(env_so) != 0);
       // v2.50 Prompt 4 Section B: lift causal constraint here too.
-      // Prompt 2 Phase 4a added V34 forward causal kernel support but
+      // Prompt 2 Phase 4a added V6NAX forward causal kernel support but
       // missed this dispatch gate — causal was silently routing to
-      // STEEL legacy (which emits log2-domain lse) instead of V34
-      // (which emits natural-log lse).  V34 backward consumed wrong-
+      // STEEL legacy (which emits log2-domain lse) instead of V6NAX
+      // (which emits natural-log lse).  V6NAX backward consumed wrong-
       // domain lse and produced wrong gradients.  See
       // docs/v50/phase-4b-complete-dv-residual-decisions.md.
-      if (use_v34 && !so_for_v34) use_v34 = false;
+      if (use_v6nax && !so_for_v6nax) use_v6nax = false;
     }
-    if (use_v34) {
-      if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v34_BQ = (unsigned short)std::atoi(env_bq);
-      if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v34_BK = (unsigned short)std::atoi(env_bk);
-      if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v34_WM = (uint16_t)std::atoi(env_wm);
-      if (v34_BQ % (v34_WM * 16) != 0 || D % 16 != 0) {
-        use_v34 = false;
+    if (use_v6nax) {
+      if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
+      if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
+      if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+      if (v6nax_BQ % (v6nax_WM * 16) != 0 || D % 16 != 0) {
+        use_v6nax = false;
       }
       // Phase II-8 addendum (Pattern #9, third site — see the guard in
       // the other dispatch path above): paired-MMA forward requires
       // BK % 32 == 0.
-      if (use_v34 && (v34_BK == 0 || v34_BK % 32 != 0)) {
+      if (use_v6nax && (v6nax_BK == 0 || v6nax_BK % 32 != 0)) {
         throw std::runtime_error(
-            "V34 forward: BK must be a positive multiple of 32 (paired "
+            "V6NAX forward: BK must be a positive multiple of 32 (paired "
             "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
-            std::to_string((int)v34_BK) + " (MFA_V6_V34_BK).");
+            std::to_string((int)v6nax_BK) + " (MFA_V6_NAX_BK).");
       }
     }
 
@@ -693,7 +693,7 @@ public:
               R, C, qbs, kbs, vbs, obs,
               BQ, BK, executionSIMDGroups, BD,
               (uint16_t)axis_flags, bypass_tgp,
-              use_v34, v34_BQ, v34_BK, v34_WM};
+              use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -703,12 +703,12 @@ public:
     if (!pipeline) {
       std::string src = generate_v6_source(
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
-          /*use_v34_override=*/use_v34, /*use_v34_explicit=*/true);
-      if (use_v34) {
-        // V34 uses no FCs (params via struct buffer).
+          /*use_v6nax_override=*/use_v6nax, /*use_v6nax_explicit=*/true);
+      if (use_v6nax) {
+        // V6NAX uses no FCs (params via struct buffer).
         if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
-          fprintf(stderr, "=== V34 source for BQ=%d BK=%d BD=%d WM=%d ===\n",
-                  (int)v34_BQ, (int)v34_BK, (int)D, (int)v34_WM);
+          fprintf(stderr, "=== V6NAX source for BQ=%d BK=%d BD=%d WM=%d ===\n",
+                  (int)v6nax_BQ, (int)v6nax_BK, (int)D, (int)v6nax_WM);
           auto pos = src.find("// === lse write");
           if (pos != std::string::npos) {
             fprintf(stderr, "%s\n=== ===\n",
@@ -717,7 +717,7 @@ public:
             fprintf(stderr, "(lse write marker not found!)\n");
           }
         }
-        pipeline = v34_compile(src, "attention", mtl_device);
+        pipeline = v6nax_compile(src, "attention", mtl_device);
       } else {
         pipeline = v6_nax_compile_with_constants(
             src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
@@ -730,21 +730,21 @@ public:
     enc.set_input_array(k, 1);
     enc.set_input_array(v, 2);
     enc.set_output_array(out, 3);
-    if (!use_v34) {
+    if (!use_v6nax) {
       enc.set_output_array(lse, 4);  // Legacy path: buffer 4 is lse.
     } else {
-      // v2.36.x BLK1 patch: V34 forward now writes lse to buffer 5
-      // (buffer 4 holds the V34Params struct via set_bytes).  Per
-      // docs/v6-nax/v34-backward-decisions.md DC0 — lse is required
-      // input infrastructure for V34 backward dQ/dK/dV kernels.
+      // v2.36.x BLK1 patch: V6NAX forward now writes lse to buffer 5
+      // (buffer 4 holds the V6NAXParams struct via set_bytes).  Per
+      // docs/v6-nax/v6nax-backward-decisions.md DC0 — lse is required
+      // input infrastructure for V6NAX backward dQ/dK/dV kernels.
       enc.set_output_array(lse, 5);
     }
 
-    if (use_v34) {
-      v34_dispatch(
+    if (use_v6nax) {
+      v6nax_dispatch(
           pipeline, &enc,
           (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
-          v34_BQ, v34_BK, v34_WM);
+          v6nax_BQ, v6nax_BK, v6nax_WM);
     } else {
       unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
       unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
@@ -758,14 +758,14 @@ public:
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV6Forward*>(&other);
-    // Repo review 2026-05: force_v34 MUST participate — a force_v34=true
-    // forward emits natural-log LSE (consumed by V34 backward) while the
+    // Repo review 2026-05: force_v6nax MUST participate — a force_v6nax=true
+    // forward emits natural-log LSE (consumed by V6NAX backward) while the
     // default path emits log2-domain LSE.  Without this term, MLX graph
     // dedup could conflate the two nodes, feeding log2 LSE into a backward
     // expecting natural log (silently wrong gradients).
     return p && p->params_.causal == params_.causal
              && p->params_.bhnd == params_.bhnd
-             && p->params_.force_v34 == params_.force_v34;
+             && p->params_.force_v6nax == params_.force_v6nax;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -786,7 +786,7 @@ private:
 // We transpose Q/K/V into kernel layout, dispatch, then transpose O back.
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal, bool force_v34) {
+    const mlx::core::array& v, bool causal, bool force_v6nax) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
   int D = q.shape(3);
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
@@ -804,7 +804,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
                         (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
   const bool bhnd = !legacy_opt_in && can_bhnd;
-  MFAV6Forward::Params params{causal, bhnd, force_v34};
+  MFAV6Forward::Params params{causal, bhnd, force_v6nax};
 
   if (bhnd) {
     // Pass Q/K/V directly in MLX-native [B, H, N, D] layout.
@@ -848,7 +848,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 }
 
 // =============================================================================
-// V34 backward dQ — minimum-viable Primitive (Phase 1 Section B).
+// V6NAX backward dQ — minimum-viable Primitive (Phase 1 Section B).
 //
 // Per DC13: standalone Primitive for dQ alone.  dK/dV gets a separate
 // Primitive in Phase 2.  Combined dispatcher (v6_nax_backward returning
@@ -860,26 +860,26 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// v2.40.x-internal Sprint C (P3-HIGH-01): V34 backward pipeline-compile helper.
+// v2.40.x-internal Sprint C (P3-HIGH-01): V6NAX backward pipeline-compile helper.
 // Consolidates the ~30-40 LOC of pipeline-cache-miss boilerplate duplicated
-// across all 5 V34 backward Primitives (MFAV34BwdQuery, MFAV34BwdKeyValue,
-// MFAV34BwdDV, MFAV34BwdDK, MFAV34BwdFusedDKDV) into a single helper.
+// across all 5 V6NAX backward Primitives (MFAV6NAXBwdQuery, MFAV6NAXBwdKeyValue,
+// MFAV6NAXBwdDV, MFAV6NAXBwdDK, MFAV6NAXBwdFusedDKDV) into a single helper.
 // Pure refactor: produces byte-identical generated source as before; only
 // the C++ boilerplate around source-gen + compile is consolidated.
 //
 // Each caller still owns its own pipeline-cache mutex + map (the cache keys
 // differ per Primitive).  The helper handles:
 //   1. AttentionOperands precision setup (FP16/BF16 inputs, FP32 S/P/L)
-//   2. NAAttentionKernelDescriptor construction (singleOtileMode + useV34)
-//   3. Optional source-dump hook (env-gated via MFA_V34BWD*_DUMP_SOURCE +
-//      optional MFA_V34BWD*_DUMP_PATH for file output)
+//   2. NAAttentionKernelDescriptor construction (singleOtileMode + useV6NAX)
+//   3. Optional source-dump hook (env-gated via MFA_V6BWD*_DUMP_SOURCE +
+//      optional MFA_V6BWD*_DUMP_PATH for file output)
 //   4. Source string generation via caller-provided lambda
-//   5. Final v34_compile() invocation
+//   5. Final v6nax_compile() invocation
 // -----------------------------------------------------------------------------
 namespace {
 
 template <typename SourceGenFn>
-void* compile_v34_backward_pipeline(
+void* compile_v6nax_backward_pipeline(
     int D, int Hq, int Hk, int dtype_code,
     unsigned short BQ, unsigned short BK, uint16_t WM,
     float scale,
@@ -891,7 +891,7 @@ void* compile_v34_backward_pipeline(
     const char* dump_label = nullptr,
     const char* dump_path_env_var = nullptr,
     bool generator_handles_odd_tk = false) {
-  // Phase II-6 (campaign 2026-06): paired-MMA TK guard.  Every V34
+  // Phase II-6 (campaign 2026-06): paired-MMA TK guard.  Every V6NAX
   // backward generator emits the S-recompute as a PAIRED 16x32x16 MMA
   // (`for (ik = 0; ik < TK; ik += 2)` writing frag_at(iq, ik) AND
   // frag_at(iq, ik+1)).  MPP cooperative matmul2d has no 16x16x16 form
@@ -901,12 +901,12 @@ void* compile_v34_backward_pipeline(
   // corruption that scales exponentially with score magnitude (II-6
   // finding: fused dKdV default BK=16 since v2.39.1 produced dV errors
   // 4x the gradient magnitude at unit-scale inputs and inf at std>=2).
-  // Loud failure per Rule 8 — this also guards the MFA_V34BWD*_BK env
+  // Loud failure per Rule 8 — this also guards the MFA_V6BWD*_BK env
   // overrides on every backward Primitive.
   if (BK == 0 || BK % 16 != 0 ||
       (BK % 32 != 0 && !generator_handles_odd_tk)) {
     throw std::runtime_error(
-        std::string("V34 backward '") + kernel_fn_name +
+        std::string("V6NAX backward '") + kernel_fn_name +
         "': BK must be a positive multiple of 32 (paired 16x32x16 MMA "
         "requires TK = BK/16 even; MPP has no 16x16x16 cooperative "
         "matmul). Got BK=" + std::to_string((int)BK) +
@@ -928,9 +928,9 @@ void* compile_v34_backward_pipeline(
   mp[AttentionOperand::L] = GEMMOperandPrecision::FP32;
 
   // Kernel descriptor (12-arg constructor; AttentionKernelType ignored by
-  // V34 backward source generators which switch on the source-gen method).
+  // V6NAX backward source generators which switch on the source-gen method).
   // v2.50 Phase 4b-complete (Prompt 3): isCausal now plumbed through so
-  // V34BWD*_CAUSAL macros get the correct compile-time value.  Pre-Prompt-3
+  // V6NAXBWD*_CAUSAL macros get the correct compile-time value.  Pre-Prompt-3
   // this was hardcoded to false — a latent bug that silently made my
   // Prompt 2 Phase 4b dQ causal mask a no-op in production.
   simd::ushort3 blockDims =
@@ -939,20 +939,20 @@ void* compile_v34_backward_pipeline(
       blockDims, (unsigned short)D, (unsigned short)Hq,
       (unsigned short)Hk, /*executionSIMDGroups=*/WM,
       /*checkCEdge1=*/false, mp,
-      AttentionKernelType::forward,  // placeholder; ignored by V34 backward
+      AttentionKernelType::forward,  // placeholder; ignored by V6NAX backward
       /*scale=*/scale,
       /*bypassThreadgroupMemory=*/false,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = true;
-  desc.useV34 = true;
+  desc.useV6NAX = true;
 
   // Source generation via caller's lambda.
   NAAttentionKernel ker(desc);
   std::string src = source_gen_fn(ker);
 
   // Optional source-dump hook.
-  if (dump_env_var && std::getenv(dump_env_var)) {
-    const char* path = dump_path_env_var ? std::getenv(dump_path_env_var) : nullptr;
+  if (dump_env_var && mlx_mfa::getenv_aliased(dump_env_var)) {
+    const char* path = dump_path_env_var ? mlx_mfa::getenv_aliased(dump_path_env_var) : nullptr;
     const char* label = dump_label ? dump_label : kernel_fn_name;
     if (path) {
       FILE* f = fopen(path, "w");
@@ -971,51 +971,51 @@ void* compile_v34_backward_pipeline(
     }
   }
 
-  return v34_compile(src, kernel_fn_name, mtl_device);
+  return v6nax_compile(src, kernel_fn_name, mtl_device);
 }
 
 }  // namespace
 
 
-void v34_dispatch_bwd_query(
+void v6nax_dispatch_bwd_query(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdQKey {
+struct V6NAXBwdQKey {
   int D;
   int Hq, Hk;
   int dtype_code;  // 0=fp16, 1=bf16
-  unsigned short v34_BQ, v34_BK;
-  uint16_t v34_WM;
+  unsigned short v6nax_BQ, v6nax_BK;
+  uint16_t v6nax_WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline cache per causal flag
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdQKey& o) const { return tie() == o.tie(); }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V6NAXBwdQKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdQKeyHash {
-  size_t operator()(const V34BwdQKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdQKeyHash {
+  size_t operator()(const V6NAXBwdQKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdq_mtx;
-std::unordered_map<V34BwdQKey, void*, V34BwdQKeyHash> v34_bwdq_pipelines;
+std::mutex v6nax_bwdq_mtx;
+std::unordered_map<V6NAXBwdQKey, void*, V6NAXBwdQKeyHash> v6nax_bwdq_pipelines;
 }
 
-class MFAV34BwdQuery : public mlx::core::Primitive {
+class MFAV6NAXBwdQuery : public mlx::core::Primitive {
  public:
   // v2.50 Phase 4b-complete (Prompt 3): causal added to constructor.
   // Default false preserves prior signature; new code should pass causal.
-  MFAV34BwdQuery(mlx::core::Stream s, float scale, bool causal = false)
+  MFAV6NAXBwdQuery(mlx::core::Stream s, float scale, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdQuery"; }
+  const char* name() const override { return "MFAV6NAXBwdQuery"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdQuery: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdQuery: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1031,7 +1031,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     auto& dq        = outputs[0];
 
     if (q.ndim() != 4)
-      throw std::runtime_error("V34 bwd dQ: Q must be 4D [B,H,N,D]");
+      throw std::runtime_error("V6NAX bwd dQ: Q must be 4D [B,H,N,D]");
     const int B  = q.shape(0);
     const int Hq = q.shape(1);
     const int N  = q.shape(2);
@@ -1040,45 +1040,45 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dQ: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dQ: D must be 64 or 128");
 
-    // M5-tuned defaults per DC7 (matches V34 forward defaults).
-    unsigned short v34_BQ = (D == 64) ? 32 : 64;
-    unsigned short v34_BK = (D == 64) ? 64 : 32;
-    uint16_t v34_WM = (D == 64) ? 2 : 4;
+    // M5-tuned defaults per DC7 (matches V6NAX forward defaults).
+    unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
+    unsigned short v6nax_BK = (D == 64) ? 64 : 32;
+    uint16_t v6nax_WM = (D == 64) ? 2 : 4;
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BQ"))
-      v34_BQ = (unsigned short)std::atoi(e);
+      v6nax_BQ = (unsigned short)std::atoi(e);
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BK"))
-      v34_BK = (unsigned short)std::atoi(e);
+      v6nax_BK = (unsigned short)std::atoi(e);
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_WM"))
-      v34_WM = (uint16_t)std::atoi(e);
+      v6nax_WM = (uint16_t)std::atoi(e);
 
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dQ: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dQ: only FP16/BF16");
 
     dq.set_data(mlx::core::allocator::malloc(dq.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdQKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_, scale_};
+    V6NAXBwdQKey key{D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdq_mtx);
-      auto it = v34_bwdq_pipelines.find(key);
-      if (it != v34_bwdq_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdq_mtx);
+      auto it = v6nax_bwdq_pipelines.find(key);
+      if (it != v6nax_bwdq_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
+      // v2.40.x-internal Sprint C: consolidated via compile_v6nax_backward_pipeline.
       // v2.50 Phase 4b-complete (Prompt 3): causal_ plumbed through.
-      pipeline = compile_v34_backward_pipeline(
-          D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardQuerySource(); },
+      pipeline = compile_v6nax_backward_pipeline(
+          D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardQuerySource(); },
           "attention_bwd_q", mtl_device, causal_,
-          "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ", nullptr);
-      pipeline = cache_insert_or_release(v34_bwdq_pipelines, v34_bwdq_mtx, key, pipeline);
+          "MFA_V6BWD_DUMP_SOURCE", "V6NAX bwd dQ", nullptr);
+      pipeline = cache_insert_or_release(v6nax_bwdq_pipelines, v6nax_bwdq_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1092,14 +1092,14 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
     // params at buffer 7 via enc.set_bytes in dispatcher.
     enc.set_input_array(d_vec, 8);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
 
-    v34_dispatch_bwd_query(
+    v6nax_dispatch_bwd_query(
         pipeline, &enc,
         (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
-        v34_BQ, v34_BK, v34_WM);
+        v6nax_BQ, v6nax_BK, v6nax_WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdQuery*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdQuery*>(&other);
     return p && p->scale_ == scale_ && p->causal_ == causal_;
   }
 
@@ -1113,7 +1113,7 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
   bool causal_;  // v2.50 Phase 4b-complete (Prompt 3)
 };
 
-// Public Python-callable: V34 backward dQ.
+// Public Python-callable: V6NAX backward dQ.
 //
 // Args: Q [B,Hq,N,D], K [B,Hk,Nk,D], V [B,Hk,Nk,D] (T),
 //       O [B,Hq,N,D] (T),
@@ -1123,8 +1123,8 @@ class MFAV34BwdQuery : public mlx::core::Primitive {
 //
 // Returns: dQ [B,Hq,N,D] (T).
 //
-// Routing constraint per DC12: callers must ensure V34-forward-eligible
-// shapes (D=128 always; D=64 with Nk>8000).  V34 backward will produce
+// Routing constraint per DC12: callers must ensure V6NAX-forward-eligible
+// shapes (D=128 always; D=64 with Nk>8000).  V6NAX backward will produce
 // garbage on shapes that routed through legacy v6_nax forward (lse
 // convention mismatch).  flash_attention() VJP layer enforces this in
 // Phase 2 Section E.
@@ -1134,9 +1134,9 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dQ: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dQ: Q must be 4D");
   if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
-    throw std::runtime_error("V34 bwd dQ: Hq must be multiple of Hk");
+    throw std::runtime_error("V6NAX bwd dQ: Hq must be multiple of Hk");
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -1152,21 +1152,21 @@ mlx::core::array v6_nax_backward_query(
   auto outs = mlx::core::array::make_arrays(
       {dq_shape},
       {q.dtype()},
-      std::make_shared<MFAV34BwdQuery>(s, scale, causal),
+      std::make_shared<MFAV6NAXBwdQuery>(s, scale, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
 
 // =============================================================================
-// V34 backward dK/dV — Phase 2 Primitive (single-SG WM=1 design).
+// V6NAX backward dK/dV — Phase 2 Primitive (single-SG WM=1 design).
 // =============================================================================
 
-void v34_dispatch_bwd_kv(
+void v6nax_dispatch_bwd_kv(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdKVKey {
+struct V6NAXBwdKVKey {
   int D;
   int Hq, Hk;
   int dtype_code;
@@ -1174,30 +1174,30 @@ struct V34BwdKVKey {
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdKVKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdKVKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdKVKeyHash {
-  size_t operator()(const V34BwdKVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdKVKeyHash {
+  size_t operator()(const V6NAXBwdKVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdkv_mtx;
-std::unordered_map<V34BwdKVKey, void*, V34BwdKVKeyHash> v34_bwdkv_pipelines;
+std::mutex v6nax_bwdkv_mtx;
+std::unordered_map<V6NAXBwdKVKey, void*, V6NAXBwdKVKeyHash> v6nax_bwdkv_pipelines;
 }
 
-class MFAV34BwdKeyValue : public mlx::core::Primitive {
+class MFAV6NAXBwdKeyValue : public mlx::core::Primitive {
  public:
-  MFAV34BwdKeyValue(mlx::core::Stream s, float scale, bool causal = false)
+  MFAV6NAXBwdKeyValue(mlx::core::Stream s, float scale, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdKeyValue"; }
+  const char* name() const override { return "MFAV6NAXBwdKeyValue"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdKeyValue: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdKeyValue: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1222,13 +1222,13 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dKdV: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dKdV: D must be 64 or 128");
 
     // Phase 2 defaults: WM=1 single-SG; BQ=32; BK=(D==64?64:32).
     // Phase 2.O1 (2026-05-13): WM=2 K-row partition was attempted and
     // FALSIFIED empirically (0.77-0.84× regression vs WM=1).  The
     // redundant softmax compute across SGs taxed more than the GEMM
-    // partition saved.  Reverted to WM=1.  See v34-backward-status.md
+    // partition saved.  Reverted to WM=1.  See v6nax-backward-status.md
     // §"Phase 2.O1 falsified" for next-attempt design (Q-row partition
     // + TGP streaming reduction).
     unsigned short BQ = 32;
@@ -1244,7 +1244,7 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dKdV: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dKdV: only FP16/BF16");
 
     dk.set_data(mlx::core::allocator::malloc(dk.nbytes()));
     dv.set_data(mlx::core::allocator::malloc(dv.nbytes()));
@@ -1252,21 +1252,21 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdKVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdkv_mtx);
-      auto it = v34_bwdkv_pipelines.find(key);
-      if (it != v34_bwdkv_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdkv_mtx);
+      auto it = v6nax_bwdkv_pipelines.find(key);
+      if (it != v6nax_bwdkv_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
-      pipeline = compile_v34_backward_pipeline(
+      // v2.40.x-internal Sprint C: consolidated via compile_v6nax_backward_pipeline.
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardKeyValueSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardKeyValueSource(); },
           "attention_bwd_kv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in legacy fused
-      pipeline = cache_insert_or_release(v34_bwdkv_pipelines, v34_bwdkv_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdkv_pipelines, v6nax_bwdkv_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1281,12 +1281,12 @@ class MFAV34BwdKeyValue : public mlx::core::Primitive {
     // params at buffer 8 via enc.set_bytes in dispatcher.
     enc.set_input_array(d_vec, 9);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
 
-    v34_dispatch_bwd_kv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+    v6nax_dispatch_bwd_kv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                         (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdKeyValue*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdKeyValue*>(&other);
     return p && p->scale_ == scale_ && p->causal_ == causal_;
   }
 
@@ -1310,7 +1310,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dKdV: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dKdV: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -1326,23 +1326,23 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
   auto outs = mlx::core::array::make_arrays(
       {dk_shape, dk_shape},
       {q.dtype(), q.dtype()},
-      std::make_shared<MFAV34BwdKeyValue>(s, scale, causal),
+      std::make_shared<MFAV6NAXBwdKeyValue>(s, scale, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return {outs[0], outs[1]};
 }
 
 // =============================================================================
-// V34 backward dV-only — Phase 2.O2 multi-SG Q-row partition Primitive.
+// V6NAX backward dV-only — Phase 2.O2 multi-SG Q-row partition Primitive.
 // Emits per-SG dV partial to a [B, Hq, WM, kL, D] FP32 intermediate buffer.
 // Python wrapper reduces via mx.sum(axis=2) and casts to T.
 // =============================================================================
 
-void v34_dispatch_bwd_dv(
+void v6nax_dispatch_bwd_dv(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdVKey {
+struct V6NAXBwdVKey {
   int D;
   int Hq, Hk;
   int dtype_code;
@@ -1350,30 +1350,30 @@ struct V34BwdVKey {
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdVKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdVKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdVKeyHash {
-  size_t operator()(const V34BwdVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdVKeyHash {
+  size_t operator()(const V6NAXBwdVKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdv_mtx;
-std::unordered_map<V34BwdVKey, void*, V34BwdVKeyHash> v34_bwdv_pipelines;
+std::mutex v6nax_bwdv_mtx;
+std::unordered_map<V6NAXBwdVKey, void*, V6NAXBwdVKeyHash> v6nax_bwdv_pipelines;
 }
 
-class MFAV34BwdDV : public mlx::core::Primitive {
+class MFAV6NAXBwdDV : public mlx::core::Primitive {
  public:
-  MFAV34BwdDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+  MFAV6NAXBwdDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdDV"; }
+  const char* name() const override { return "MFAV6NAXBwdDV"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdDV: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdDV: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1394,7 +1394,7 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dV: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dV: D must be 64 or 128");
 
     // Phase 2.O2 defaults: WM=4 Q-row partition. BQ = WM*16 = 64.
     unsigned short BQ = 64;
@@ -1410,28 +1410,28 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dV: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dV: only FP16/BF16");
 
     dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdVKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdv_mtx);
-      auto it = v34_bwdv_pipelines.find(key);
-      if (it != v34_bwdv_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdv_mtx);
+      auto it = v6nax_bwdv_pipelines.find(key);
+      if (it != v6nax_bwdv_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
-      pipeline = compile_v34_backward_pipeline(
+      // v2.40.x-internal Sprint C: consolidated via compile_v6nax_backward_pipeline.
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardDVSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardDVSource(); },
           "attention_bwd_dv", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dV
-      pipeline = cache_insert_or_release(v34_bwdv_pipelines, v34_bwdv_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdv_pipelines, v6nax_bwdv_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1442,12 +1442,12 @@ class MFAV34BwdDV : public mlx::core::Primitive {
     enc.set_input_array(d_o, 4);
     enc.set_output_array(dvp, 5);
 
-    v34_dispatch_bwd_dv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+    v6nax_dispatch_bwd_dv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                         (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdDV*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdDV*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -1467,17 +1467,17 @@ class MFAV34BwdDV : public mlx::core::Primitive {
 };
 
 // ============================================================================
-// V34 backward dV SPARSE Primitive — Prompt 5b Section A PoC.
-// Identical to MFAV34BwdDV but accepts block_mask input and routes to the
+// V6NAX backward dV SPARSE Primitive — Prompt 5b Section A PoC.
+// Identical to MFAV6NAXBwdDV but accepts block_mask input and routes to the
 // sparse source generator.  Cache key extended with is_sparse flag.
 // ============================================================================
 
-void v34_dispatch_bwd_dv_sparse(
+void v6nax_dispatch_bwd_dv_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdVSparseKey {
+struct V6NAXBwdVSparseKey {
   int D;
   int Hq, Hk;
   int dtype_code;
@@ -1485,33 +1485,33 @@ struct V34BwdVSparseKey {
   uint16_t WM;
   bool causal;
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   // is_sparse implicit (this struct only used for sparse kernels) but
   // included for future-proofing if a single cache holds both variants.
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdVSparseKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdVSparseKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdVSparseKeyHash {
-  size_t operator()(const V34BwdVSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdVSparseKeyHash {
+  size_t operator()(const V6NAXBwdVSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdv_sparse_mtx;
-std::unordered_map<V34BwdVSparseKey, void*, V34BwdVSparseKeyHash>
-    v34_bwdv_sparse_pipelines;
+std::mutex v6nax_bwdv_sparse_mtx;
+std::unordered_map<V6NAXBwdVSparseKey, void*, V6NAXBwdVSparseKeyHash>
+    v6nax_bwdv_sparse_pipelines;
 }
 
-class MFAV34BwdDVSparse : public mlx::core::Primitive {
+class MFAV6NAXBwdDVSparse : public mlx::core::Primitive {
  public:
-  MFAV34BwdDVSparse(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+  MFAV6NAXBwdDVSparse(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdDVSparse"; }
+  const char* name() const override { return "MFAV6NAXBwdDVSparse"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdDVSparse: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdDVSparse: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1533,9 +1533,9 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dV sparse: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dV sparse: D must be 64 or 128");
     if (block_mask.ndim() != 2)
-      throw std::runtime_error("V34 bwd dV sparse: block_mask must be 2-D [NQ, NK] (Section A PoC)");
+      throw std::runtime_error("V6NAX bwd dV sparse: block_mask must be 2-D [NQ, NK] (Section A PoC)");
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
@@ -1548,7 +1548,7 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
       WM = (uint16_t)std::atoi(e);
 
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
-    // Python orchestrator (`_convert_mask_for_v34_bwd_kernel` in attention.py)
+    // Python orchestrator (`_convert_mask_for_v6nax_bwd_kernel` in attention.py)
     // converts BT-block masks to this kernel's tile geometry before dispatch.
     // Runtime check guards against future regressions or direct callers.
     {
@@ -1558,11 +1558,11 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
       const int mask_NK = block_mask.shape(-1);
       if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
         std::ostringstream oss;
-        oss << "V34 bwd dV sparse: block_mask shape ["
+        oss << "V6NAX bwd dV sparse: block_mask shape ["
             << mask_NQ << ", " << mask_NK << "] does not match expected ["
             << expected_NQ << ", " << expected_NK << "] for tile geometry "
             << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
-            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << " kL=" << Nk << ".  See _convert_mask_for_v6nax_bwd_kernel "
             << "in mlx_mfa/attention.py (KD-1 resolution).";
         throw std::runtime_error(oss.str());
       }
@@ -1571,27 +1571,27 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dV sparse: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dV sparse: only FP16/BF16");
 
     dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdVSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdVSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdv_sparse_mtx);
-      auto it = v34_bwdv_sparse_pipelines.find(key);
-      if (it != v34_bwdv_sparse_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdv_sparse_mtx);
+      auto it = v6nax_bwdv_sparse_pipelines.find(key);
+      if (it != v6nax_bwdv_sparse_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      pipeline = compile_v34_backward_pipeline(
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardDVSparseSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardDVSparseSource(); },
           "attention_bwd_dv_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      pipeline = cache_insert_or_release(v34_bwdv_sparse_pipelines, v34_bwdv_sparse_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdv_sparse_pipelines, v6nax_bwdv_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1608,16 +1608,16 @@ class MFAV34BwdDVSparse : public mlx::core::Primitive {
     // 1024-entry threadgroup array; reject qL beyond it loudly.
     if ((N + BQ - 1) / BQ > 1024) {
       throw std::runtime_error(
-          "V34 sparse dV: qL/BQ exceeds the 1024-entry active-list "
+          "V6NAX sparse dV: qL/BQ exceeds the 1024-entry active-list "
           "capacity (qL=" + std::to_string((int)N) +
           ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
     }
-    v34_dispatch_bwd_dv_sparse(pipeline, &enc, (int)N, (int)Nk,
+    v6nax_dispatch_bwd_dv_sparse(pipeline, &enc, (int)N, (int)Nk,
                                (int)Hq, (int)Hk, (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdDVSparse*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdDVSparse*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -1643,9 +1643,9 @@ mlx::core::array v6_nax_backward_dv_sparse_raw(
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dV sparse: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
-    throw std::runtime_error("V34 bwd dV sparse: block_mask must be 2-D (Section A PoC)");
+    throw std::runtime_error("V6NAX bwd dV sparse: block_mask must be 2-D (Section A PoC)");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -1660,7 +1660,7 @@ mlx::core::array v6_nax_backward_dv_sparse_raw(
   auto outs = mlx::core::array::make_arrays(
       {dvp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDVSparse>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdDVSparse>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc, bmc});
   return outs[0];
 }
@@ -1672,7 +1672,7 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dV: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -1686,23 +1686,23 @@ mlx::core::array v6_nax_backward_dv_raw(
   auto outs = mlx::core::array::make_arrays(
       {dvp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDV>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdDV>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc});
   return outs[0];
 }
 
 // =============================================================================
-// V34 backward dK-only — Phase 2.O2 multi-SG Q-row partition Primitive.
-// Sister to MFAV34BwdDV.  Emits per-SG dK partial to dK_partials [B, Hq, WM,
+// V6NAX backward dK-only — Phase 2.O2 multi-SG Q-row partition Primitive.
+// Sister to MFAV6NAXBwdDV.  Emits per-SG dK partial to dK_partials [B, Hq, WM,
 // kL, D] FP32.  Python wrapper reduces via mx.sum(axis=2) and casts to T.
 // =============================================================================
 
-void v34_dispatch_bwd_dk(
+void v6nax_dispatch_bwd_dk(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdKKey {
+struct V6NAXBwdKKey {
   int D;
   int Hq, Hk;
   int dtype_code;
@@ -1710,30 +1710,30 @@ struct V34BwdKKey {
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdKKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdKKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdKKeyHash {
-  size_t operator()(const V34BwdKKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdKKeyHash {
+  size_t operator()(const V6NAXBwdKKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdk_mtx;
-std::unordered_map<V34BwdKKey, void*, V34BwdKKeyHash> v34_bwdk_pipelines;
+std::mutex v6nax_bwdk_mtx;
+std::unordered_map<V6NAXBwdKKey, void*, V6NAXBwdKKeyHash> v6nax_bwdk_pipelines;
 }
 
-class MFAV34BwdDK : public mlx::core::Primitive {
+class MFAV6NAXBwdDK : public mlx::core::Primitive {
  public:
-  MFAV34BwdDK(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+  MFAV6NAXBwdDK(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdDK"; }
+  const char* name() const override { return "MFAV6NAXBwdDK"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdDK: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdDK: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1757,7 +1757,7 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dK: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dK: D must be 64 or 128");
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
@@ -1772,28 +1772,28 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dK: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dK: only FP16/BF16");
 
     dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdKKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdk_mtx);
-      auto it = v34_bwdk_pipelines.find(key);
-      if (it != v34_bwdk_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdk_mtx);
+      auto it = v6nax_bwdk_pipelines.find(key);
+      if (it != v6nax_bwdk_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
-      pipeline = compile_v34_backward_pipeline(
+      // v2.40.x-internal Sprint C: consolidated via compile_v6nax_backward_pipeline.
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardDKSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardDKSource(); },
           "attention_bwd_dk", mtl_device, causal_,
           nullptr, nullptr, nullptr);  // no dump hook in split-dK
-      pipeline = cache_insert_or_release(v34_bwdk_pipelines, v34_bwdk_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdk_pipelines, v6nax_bwdk_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -1808,12 +1808,12 @@ class MFAV34BwdDK : public mlx::core::Primitive {
     enc.set_input_array(d_vec, 8);  // v2.38.1: D=rowsum(dO⊙O), [B,Hq,qL] FP32
 
 
-    v34_dispatch_bwd_dk(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+    v6nax_dispatch_bwd_dk(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                         (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdDK*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdDK*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -1837,7 +1837,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dK: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK: Q must be 4D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -1853,25 +1853,25 @@ mlx::core::array v6_nax_backward_dk_raw(
   auto outs = mlx::core::array::make_arrays(
       {dkp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDK>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdDK>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc});
   return outs[0];
 }
 
 
 // =============================================================================
-// V34 backward FUSED dK+dV Primitive (Sprint v2.39.0 Phase C.1.a, Option γ).
+// V6NAX backward FUSED dK+dV Primitive (Sprint v2.39.0 Phase C.1.a, Option γ).
 // Combines split-dV + split-dK into a single kernel dispatch.  Per-SG-slot
 // outputs to dK_partials + dV_partials [B, Hq, WM, kL, D] FP32 each;
 // caller reduces via mx.sum(axis=2) and casts to T.
 // =============================================================================
 
-void v34_dispatch_bwd_fused_dkdv(
+void v6nax_dispatch_bwd_fused_dkdv(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
-struct V34BwdFusedKey {
+struct V6NAXBwdFusedKey {
   int D;
   int Hq, Hk;
   int dtype_code;
@@ -1879,30 +1879,30 @@ struct V34BwdFusedKey {
   uint16_t WM;
   bool causal;  // v2.50 Phase 4b-complete: separate pipeline per causal
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdFusedKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdFusedKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdFusedKeyHash {
-  size_t operator()(const V34BwdFusedKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdFusedKeyHash {
+  size_t operator()(const V6NAXBwdFusedKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwd_fused_mtx;
-std::unordered_map<V34BwdFusedKey, void*, V34BwdFusedKeyHash> v34_bwd_fused_pipelines;
+std::mutex v6nax_bwd_fused_mtx;
+std::unordered_map<V6NAXBwdFusedKey, void*, V6NAXBwdFusedKeyHash> v6nax_bwd_fused_pipelines;
 }
 
-class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
+class MFAV6NAXBwdFusedDKDV : public mlx::core::Primitive {
  public:
-  MFAV34BwdFusedDKDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+  MFAV6NAXBwdFusedDKDV(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdFusedDKDV"; }
+  const char* name() const override { return "MFAV6NAXBwdFusedDKDV"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdFusedDKDV: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdFusedDKDV: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -1933,7 +1933,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     // See docs/v6-nax/v40-0-internal-decisions.md.
     if (D != 64 && D != 128)
       throw std::runtime_error(
-          "V34 bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
+          "V6NAX bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
 
     // Phase II-6 (campaign 2026-06): default BK restored to 32.
     //
@@ -1952,10 +1952,10 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     //
     // BK=32 is the minimum valid block (TK=2).  At D=64 this is the
     // v2.39.0 spill-regression config — which is why `auto` now routes
-    // to the split kernels (attention.py `_v34_backward_vjp`); fused
-    // remains reachable via MFA_V34_BWD_KERNEL=fused for benchmarking.
+    // to the split kernels (attention.py `_v6nax_backward_vjp`); fused
+    // remains reachable via MFA_V6_BWD_KERNEL=fused for benchmarking.
     // A true TK=1 generator variant (scratch second fragment) is a
-    // Marco-gated future item.  compile_v34_backward_pipeline() now
+    // Marco-gated future item.  compile_v6nax_backward_pipeline() now
     // rejects BK % 32 != 0 loudly for ALL backward Primitives.
     unsigned short BQ = 64;
     unsigned short BK = 32;
@@ -1970,7 +1970,7 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd fused dKdV: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd fused dKdV: only FP16/BF16");
 
     dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
     dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
@@ -1978,24 +1978,24 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdFusedKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwd_fused_mtx);
-      auto it = v34_bwd_fused_pipelines.find(key);
-      if (it != v34_bwd_fused_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwd_fused_mtx);
+      auto it = v6nax_bwd_fused_pipelines.find(key);
+      if (it != v6nax_bwd_fused_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      // v2.40.x-internal Sprint C: consolidated via compile_v34_backward_pipeline.
-      // Fused path keeps source-dump hook (set MFA_V34BWDF_DUMP_SOURCE=1;
-      // optional MFA_V34BWDF_DUMP_PATH=<file> for file output).
-      pipeline = compile_v34_backward_pipeline(
+      // v2.40.x-internal Sprint C: consolidated via compile_v6nax_backward_pipeline.
+      // Fused path keeps source-dump hook (set MFA_V6BWDF_DUMP_SOURCE=1;
+      // optional MFA_V6BWDF_DUMP_PATH=<file> for file output).
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardFusedDKDVSource(); },
           "attention_bwd_fused_dkdv", mtl_device, causal_,
-          "MFA_V34BWDF_DUMP_SOURCE", "V34 bwd fused dKdV", "MFA_V34BWDF_DUMP_PATH",
+          "MFA_V6BWDF_DUMP_SOURCE", "V6NAX bwd fused dKdV", "MFA_V6BWDF_DUMP_PATH",
           /*generator_handles_odd_tk=*/true);  // II-8 item 3 tail
-      pipeline = cache_insert_or_release(v34_bwd_fused_pipelines, v34_bwd_fused_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwd_fused_pipelines, v6nax_bwd_fused_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2009,12 +2009,12 @@ class MFAV34BwdFusedDKDV : public mlx::core::Primitive {
     // params at buffer 7 via enc.set_bytes in dispatcher.
     enc.set_input_array(d_vec, 8);
 
-    v34_dispatch_bwd_fused_dkdv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+    v6nax_dispatch_bwd_fused_dkdv(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                                  (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdFusedDKDV*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdFusedDKDV*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -2039,10 +2039,10 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
     const mlx::core::array& d_vec,
     float scale, int wm, bool causal) {
   if (q.ndim() != 4)
-    throw std::runtime_error("V34 bwd fused dKdV: Q must be 4D");
+    throw std::runtime_error("V6NAX bwd fused dKdV: Q must be 4D");
   if (q.shape(3) != 64 && q.shape(3) != 128)
     throw std::runtime_error(
-        "V34 bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
+        "V6NAX bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -2058,7 +2058,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
   auto outs = mlx::core::array::make_arrays(
       {partial_shape, partial_shape},
       {mlx::core::float32, mlx::core::float32},
-      std::make_shared<MFAV34BwdFusedDKDV>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdFusedDKDV>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc, dvc});
   return {outs[0], outs[1]};  // dK_partials, dV_partials
 }
@@ -2068,53 +2068,53 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
 // v2.50 Prompt 5d Section A — Sparse plumbing for dQ, dK split, fused dKdV.
 // =============================================================================
 
-void v34_dispatch_bwd_query_sparse(
+void v6nax_dispatch_bwd_query_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
-void v34_dispatch_bwd_dk_sparse(
+void v6nax_dispatch_bwd_dk_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
-void v34_dispatch_bwd_fused_dkdv_sparse(
+void v6nax_dispatch_bwd_fused_dkdv_sparse(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
 
 // ─────────────────────────────────────────────────────────────────────
-// MFAV34BwdQuerySparse
+// MFAV6NAXBwdQuerySparse
 // ─────────────────────────────────────────────────────────────────────
-struct V34BwdQSparseKey {
+struct V6NAXBwdQSparseKey {
   int D, Hq, Hk, dtype_code;
-  unsigned short v34_BQ, v34_BK;
-  uint16_t v34_WM;
+  unsigned short v6nax_BQ, v6nax_BK;
+  uint16_t v6nax_WM;
   bool causal;
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
-  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdQSparseKey& o) const { return tie() == o.tie(); }
+  auto tie() const { return std::tie(D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, causal, scale); }  // Track 6: single declaration
+  bool operator==(const V6NAXBwdQSparseKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdQSparseKeyHash {
-  size_t operator()(const V34BwdQSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdQSparseKeyHash {
+  size_t operator()(const V6NAXBwdQSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdq_sparse_mtx;
-std::unordered_map<V34BwdQSparseKey, void*, V34BwdQSparseKeyHash>
-    v34_bwdq_sparse_pipelines;
+std::mutex v6nax_bwdq_sparse_mtx;
+std::unordered_map<V6NAXBwdQSparseKey, void*, V6NAXBwdQSparseKeyHash>
+    v6nax_bwdq_sparse_pipelines;
 }
 
-class MFAV34BwdQuerySparse : public mlx::core::Primitive {
+class MFAV6NAXBwdQuerySparse : public mlx::core::Primitive {
  public:
-  MFAV34BwdQuerySparse(mlx::core::Stream s, float scale, bool causal = false)
+  MFAV6NAXBwdQuerySparse(mlx::core::Stream s, float scale, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdQuerySparse"; }
+  const char* name() const override { return "MFAV6NAXBwdQuerySparse"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdQuerySparse: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdQuerySparse: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -2130,7 +2130,7 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     auto& dq  = outputs[0];
 
     if (q.ndim() != 4)
-      throw std::runtime_error("V34 bwd dQ sparse: Q must be 4D");
+      throw std::runtime_error("V6NAX bwd dQ sparse: Q must be 4D");
     const int B  = q.shape(0);
     const int Hq = q.shape(1);
     const int N  = q.shape(2);
@@ -2138,33 +2138,33 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     const int Hk = k.shape(1);
     const int Nk = k.shape(2);
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dQ sparse: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dQ sparse: D must be 64 or 128");
     if (block_mask.ndim() != 2)
-      throw std::runtime_error("V34 bwd dQ sparse: block_mask must be 2-D [NQ, NK]");
+      throw std::runtime_error("V6NAX bwd dQ sparse: block_mask must be 2-D [NQ, NK]");
 
-    unsigned short v34_BQ = (D == 64) ? 32 : 64;
-    unsigned short v34_BK = (D == 64) ? 64 : 32;
-    uint16_t v34_WM = (D == 64) ? 2 : 4;
+    unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
+    unsigned short v6nax_BK = (D == 64) ? 64 : 32;
+    uint16_t v6nax_WM = (D == 64) ? 2 : 4;
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BQ"))
-      v34_BQ = (unsigned short)std::atoi(e);
+      v6nax_BQ = (unsigned short)std::atoi(e);
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BK"))
-      v34_BK = (unsigned short)std::atoi(e);
+      v6nax_BK = (unsigned short)std::atoi(e);
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_WM"))
-      v34_WM = (uint16_t)std::atoi(e);
+      v6nax_WM = (uint16_t)std::atoi(e);
 
     // v2.50 Prompt 5f Phase A — KD-1 fix: enforce mask shape match.
     {
-      const int expected_NQ = (N + v34_BQ - 1) / v34_BQ;
-      const int expected_NK = (Nk + v34_BK - 1) / v34_BK;
+      const int expected_NQ = (N + v6nax_BQ - 1) / v6nax_BQ;
+      const int expected_NK = (Nk + v6nax_BK - 1) / v6nax_BK;
       const int mask_NQ = block_mask.shape(-2);
       const int mask_NK = block_mask.shape(-1);
       if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
         std::ostringstream oss;
-        oss << "V34 bwd dQ sparse: block_mask shape ["
+        oss << "V6NAX bwd dQ sparse: block_mask shape ["
             << mask_NQ << ", " << mask_NK << "] does not match expected ["
             << expected_NQ << ", " << expected_NK << "] for tile geometry "
-            << "(BQ=" << v34_BQ << ", BK=" << v34_BK << ") at qL=" << N
-            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << "(BQ=" << v6nax_BQ << ", BK=" << v6nax_BK << ") at qL=" << N
+            << " kL=" << Nk << ".  See _convert_mask_for_v6nax_bwd_kernel "
             << "in mlx_mfa/attention.py (KD-1 resolution).";
         throw std::runtime_error(oss.str());
       }
@@ -2173,27 +2173,27 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dQ sparse: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dQ sparse: only FP16/BF16");
 
     dq.set_data(mlx::core::allocator::malloc(dq.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdQSparseKey key{D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, causal_, scale_};
+    V6NAXBwdQSparseKey key{D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdq_sparse_mtx);
-      auto it = v34_bwdq_sparse_pipelines.find(key);
-      if (it != v34_bwdq_sparse_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdq_sparse_mtx);
+      auto it = v6nax_bwdq_sparse_pipelines.find(key);
+      if (it != v6nax_bwdq_sparse_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      pipeline = compile_v34_backward_pipeline(
-          D, Hq, Hk, dtype_code, v34_BQ, v34_BK, v34_WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardQuerySparseSource(); },
+      pipeline = compile_v6nax_backward_pipeline(
+          D, Hq, Hk, dtype_code, v6nax_BQ, v6nax_BK, v6nax_WM, scale_,
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardQuerySparseSource(); },
           "attention_bwd_q_sparse", mtl_device, causal_,
-          "MFA_V34BWD_DUMP_SOURCE", "V34 bwd dQ sparse", nullptr);
-      pipeline = cache_insert_or_release(v34_bwdq_sparse_pipelines, v34_bwdq_sparse_mtx, key, pipeline);
+          "MFA_V6BWD_DUMP_SOURCE", "V6NAX bwd dQ sparse", nullptr);
+      pipeline = cache_insert_or_release(v6nax_bwdq_sparse_pipelines, v6nax_bwdq_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2209,19 +2209,19 @@ class MFAV34BwdQuerySparse : public mlx::core::Primitive {
 
     // Phase II-14: the sparse generator's active-kb list is a fixed
     // 1024-entry threadgroup array; reject kL beyond it loudly.
-    if ((Nk + v34_BK - 1) / v34_BK > 1024) {
+    if ((Nk + v6nax_BK - 1) / v6nax_BK > 1024) {
       throw std::runtime_error(
-          "V34 sparse dQ: kL/BK exceeds the 1024-entry active-list "
+          "V6NAX sparse dQ: kL/BK exceeds the 1024-entry active-list "
           "capacity (kL=" + std::to_string((int)Nk) +
-          ", BK=" + std::to_string((int)v34_BK) + ") — II-14 restructure.");
+          ", BK=" + std::to_string((int)v6nax_BK) + ") — II-14 restructure.");
     }
-    v34_dispatch_bwd_query_sparse(
+    v6nax_dispatch_bwd_query_sparse(
         pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
-        (int)B, (int)D, v34_BQ, v34_BK, v34_WM);
+        (int)B, (int)D, v6nax_BQ, v6nax_BK, v6nax_WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdQuerySparse*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdQuerySparse*>(&other);
     return p && p->scale_ == scale_ && p->causal_ == causal_;
   }
 
@@ -2242,9 +2242,9 @@ mlx::core::array v6_nax_backward_query_sparse_raw(
     const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dQ sparse: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dQ sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
-    throw std::runtime_error("V34 bwd dQ sparse: block_mask must be 2-D");
+    throw std::runtime_error("V6NAX bwd dQ sparse: block_mask must be 2-D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -2259,46 +2259,46 @@ mlx::core::array v6_nax_backward_query_sparse_raw(
   auto outs = mlx::core::array::make_arrays(
       {qc.shape()},
       {qc.dtype()},
-      std::make_shared<MFAV34BwdQuerySparse>(s, scale, causal),
+      std::make_shared<MFAV6NAXBwdQuerySparse>(s, scale, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc, bmc});
   return outs[0];
 }
 
 
 // ─────────────────────────────────────────────────────────────────────
-// MFAV34BwdDKSparse — dK split sparse
+// MFAV6NAXBwdDKSparse — dK split sparse
 // ─────────────────────────────────────────────────────────────────────
-struct V34BwdKSparseKey {
+struct V6NAXBwdKSparseKey {
   int D, Hq, Hk, dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdKSparseKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdKSparseKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdKSparseKeyHash {
-  size_t operator()(const V34BwdKSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdKSparseKeyHash {
+  size_t operator()(const V6NAXBwdKSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdk_sparse_mtx;
-std::unordered_map<V34BwdKSparseKey, void*, V34BwdKSparseKeyHash>
-    v34_bwdk_sparse_pipelines;
+std::mutex v6nax_bwdk_sparse_mtx;
+std::unordered_map<V6NAXBwdKSparseKey, void*, V6NAXBwdKSparseKeyHash>
+    v6nax_bwdk_sparse_pipelines;
 }
 
-class MFAV34BwdDKSparse : public mlx::core::Primitive {
+class MFAV6NAXBwdDKSparse : public mlx::core::Primitive {
  public:
-  MFAV34BwdDKSparse(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
+  MFAV6NAXBwdDKSparse(mlx::core::Stream s, float scale, uint16_t wm, bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdDKSparse"; }
+  const char* name() const override { return "MFAV6NAXBwdDKSparse"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdDKSparse: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdDKSparse: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -2321,9 +2321,9 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd dK sparse: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd dK sparse: D must be 64 or 128");
     if (block_mask.ndim() != 2)
-      throw std::runtime_error("V34 bwd dK sparse: block_mask must be 2-D");
+      throw std::runtime_error("V6NAX bwd dK sparse: block_mask must be 2-D");
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
@@ -2342,11 +2342,11 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
       const int mask_NK = block_mask.shape(-1);
       if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
         std::ostringstream oss;
-        oss << "V34 bwd dK sparse: block_mask shape ["
+        oss << "V6NAX bwd dK sparse: block_mask shape ["
             << mask_NQ << ", " << mask_NK << "] does not match expected ["
             << expected_NQ << ", " << expected_NK << "] for tile geometry "
             << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
-            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << " kL=" << Nk << ".  See _convert_mask_for_v6nax_bwd_kernel "
             << "in mlx_mfa/attention.py (KD-1 resolution).";
         throw std::runtime_error(oss.str());
       }
@@ -2355,27 +2355,27 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd dK sparse: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd dK sparse: only FP16/BF16");
 
     dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
 
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdKSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdKSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdk_sparse_mtx);
-      auto it = v34_bwdk_sparse_pipelines.find(key);
-      if (it != v34_bwdk_sparse_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdk_sparse_mtx);
+      auto it = v6nax_bwdk_sparse_pipelines.find(key);
+      if (it != v6nax_bwdk_sparse_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      pipeline = compile_v34_backward_pipeline(
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardDKSparseSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardDKSparseSource(); },
           "attention_bwd_dk_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      pipeline = cache_insert_or_release(v34_bwdk_sparse_pipelines, v34_bwdk_sparse_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdk_sparse_pipelines, v6nax_bwdk_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2393,16 +2393,16 @@ class MFAV34BwdDKSparse : public mlx::core::Primitive {
     // 1024-entry threadgroup array; reject qL beyond it loudly.
     if ((N + BQ - 1) / BQ > 1024) {
       throw std::runtime_error(
-          "V34 sparse dK: qL/BQ exceeds the 1024-entry active-list "
+          "V6NAX sparse dK: qL/BQ exceeds the 1024-entry active-list "
           "capacity (qL=" + std::to_string((int)N) +
           ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
     }
-    v34_dispatch_bwd_dk_sparse(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
+    v6nax_dispatch_bwd_dk_sparse(pipeline, &enc, (int)N, (int)Nk, (int)Hq, (int)Hk,
                                 (int)B, (int)D, BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdDKSparse*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdDKSparse*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -2427,9 +2427,9 @@ mlx::core::array v6_nax_backward_dk_sparse_raw(
     const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd dK sparse: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
-    throw std::runtime_error("V34 bwd dK sparse: block_mask must be 2-D");
+    throw std::runtime_error("V6NAX bwd dK sparse: block_mask must be 2-D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -2446,47 +2446,47 @@ mlx::core::array v6_nax_backward_dk_sparse_raw(
   auto outs = mlx::core::array::make_arrays(
       {dkp_shape},
       {mlx::core::float32},
-      std::make_shared<MFAV34BwdDKSparse>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdDKSparse>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, oc, lsec, dOc, dvc, bmc});
   return outs[0];
 }
 
 
 // ─────────────────────────────────────────────────────────────────────
-// MFAV34BwdFusedDKDVSparse — fused dKdV sparse
+// MFAV6NAXBwdFusedDKDVSparse — fused dKdV sparse
 // ─────────────────────────────────────────────────────────────────────
-struct V34BwdFSparseKey {
+struct V6NAXBwdFSparseKey {
   int D, Hq, Hk, dtype_code;
   unsigned short BQ, BK;
   uint16_t WM;
   bool causal;
   // Repo review 2026-05: scale is baked into the Metal source
-  // (DOT_SCALE / V34BWD_SCALE #defines) — it MUST be part of the
+  // (DOT_SCALE / V6NAXBWD_SCALE #defines) — it MUST be part of the
   // cache key or a second scale silently reuses the first's kernel.
   float scale;
   auto tie() const { return std::tie(D, Hq, Hk, dtype_code, BQ, BK, WM, causal, scale); }  // Track 6: single declaration
-  bool operator==(const V34BwdFSparseKey& o) const { return tie() == o.tie(); }
+  bool operator==(const V6NAXBwdFSparseKey& o) const { return tie() == o.tie(); }
 };
-struct V34BwdFSparseKeyHash {
-  size_t operator()(const V34BwdFSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
+struct V6NAXBwdFSparseKeyHash {
+  size_t operator()(const V6NAXBwdFSparseKey& k) const { return mlx_mfa_keys::hash_tie(k.tie()); }
 };
 namespace {
-std::mutex v34_bwdf_sparse_mtx;
-std::unordered_map<V34BwdFSparseKey, void*, V34BwdFSparseKeyHash>
-    v34_bwdf_sparse_pipelines;
+std::mutex v6nax_bwdf_sparse_mtx;
+std::unordered_map<V6NAXBwdFSparseKey, void*, V6NAXBwdFSparseKeyHash>
+    v6nax_bwdf_sparse_pipelines;
 }
 
-class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
+class MFAV6NAXBwdFusedDKDVSparse : public mlx::core::Primitive {
  public:
-  MFAV34BwdFusedDKDVSparse(mlx::core::Stream s, float scale, uint16_t wm,
+  MFAV6NAXBwdFusedDKDVSparse(mlx::core::Stream s, float scale, uint16_t wm,
                           bool causal = false)
       : mlx::core::Primitive(s), scale_(scale), wm_(wm), causal_(causal) {}
 
-  const char* name() const override { return "MFAV34BwdFusedDKDVSparse"; }
+  const char* name() const override { return "MFAV6NAXBwdFusedDKDVSparse"; }
 
   void eval_cpu(const std::vector<mlx::core::array>&,
                 std::vector<mlx::core::array>&) override {
-    throw std::runtime_error("MFAV34BwdFusedDKDVSparse: CPU eval not supported");
+    throw std::runtime_error("MFAV6NAXBwdFusedDKDVSparse: CPU eval not supported");
   }
 
   void eval_gpu(const std::vector<mlx::core::array>& inputs,
@@ -2509,9 +2509,9 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     const int Nk = k.shape(2);
 
     if (D != 64 && D != 128)
-      throw std::runtime_error("V34 bwd fused-dKdV sparse: D must be 64 or 128");
+      throw std::runtime_error("V6NAX bwd fused-dKdV sparse: D must be 64 or 128");
     if (block_mask.ndim() != 2)
-      throw std::runtime_error("V34 bwd fused-dKdV sparse: block_mask must be 2-D");
+      throw std::runtime_error("V6NAX bwd fused-dKdV sparse: block_mask must be 2-D");
 
     unsigned short BQ = 64;
     unsigned short BK = 32;
@@ -2531,11 +2531,11 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
       const int mask_NK = block_mask.shape(-1);
       if (mask_NQ != expected_NQ || mask_NK != expected_NK) {
         std::ostringstream oss;
-        oss << "V34 bwd fused-dKdV sparse: block_mask shape ["
+        oss << "V6NAX bwd fused-dKdV sparse: block_mask shape ["
             << mask_NQ << ", " << mask_NK << "] does not match expected ["
             << expected_NQ << ", " << expected_NK << "] for tile geometry "
             << "(BQ=" << BQ << ", BK=" << BK << ") at qL=" << N
-            << " kL=" << Nk << ".  See _convert_mask_for_v34_bwd_kernel "
+            << " kL=" << Nk << ".  See _convert_mask_for_v6nax_bwd_kernel "
             << "in mlx_mfa/attention.py (KD-1 resolution).";
         throw std::runtime_error(oss.str());
       }
@@ -2544,7 +2544,7 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     int dtype_code;
     if (q.dtype() == mlx::core::float16) dtype_code = 0;
     else if (q.dtype() == mlx::core::bfloat16) dtype_code = 1;
-    else throw std::runtime_error("V34 bwd fused-dKdV sparse: only FP16/BF16");
+    else throw std::runtime_error("V6NAX bwd fused-dKdV sparse: only FP16/BF16");
 
     dkp.set_data(mlx::core::allocator::malloc(dkp.nbytes()));
     dvp.set_data(mlx::core::allocator::malloc(dvp.nbytes()));
@@ -2552,20 +2552,20 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     auto& dev = mlx::core::metal::device(stream().device);
     void* mtl_device = dev.mtl_device();
 
-    V34BwdFSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
+    V6NAXBwdFSparseKey key{D, Hq, Hk, dtype_code, BQ, BK, WM, causal_, scale_};
     void* pipeline = nullptr;
     {
-      std::lock_guard<std::mutex> lock(v34_bwdf_sparse_mtx);
-      auto it = v34_bwdf_sparse_pipelines.find(key);
-      if (it != v34_bwdf_sparse_pipelines.end()) pipeline = it->second;
+      std::lock_guard<std::mutex> lock(v6nax_bwdf_sparse_mtx);
+      auto it = v6nax_bwdf_sparse_pipelines.find(key);
+      if (it != v6nax_bwdf_sparse_pipelines.end()) pipeline = it->second;
     }
     if (!pipeline) {
-      pipeline = compile_v34_backward_pipeline(
+      pipeline = compile_v6nax_backward_pipeline(
           D, Hq, Hk, dtype_code, BQ, BK, WM, scale_,
-          [](NAAttentionKernel& k) { return k.createV34BackwardFusedDKDVSparseSource(); },
+          [](NAAttentionKernel& k) { return k.createV6NAXBackwardFusedDKDVSparseSource(); },
           "attention_bwd_fused_dkdv_sparse", mtl_device, causal_,
           nullptr, nullptr, nullptr);
-      pipeline = cache_insert_or_release(v34_bwdf_sparse_pipelines, v34_bwdf_sparse_mtx, key, pipeline);
+      pipeline = cache_insert_or_release(v6nax_bwdf_sparse_pipelines, v6nax_bwdf_sparse_mtx, key, pipeline);
     }
 
     auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2583,17 +2583,17 @@ class MFAV34BwdFusedDKDVSparse : public mlx::core::Primitive {
     // 1024-entry threadgroup array; reject qL beyond it loudly.
     if ((N + BQ - 1) / BQ > 1024) {
       throw std::runtime_error(
-          "V34 sparse fused dKdV: qL/BQ exceeds the 1024-entry active-"
+          "V6NAX sparse fused dKdV: qL/BQ exceeds the 1024-entry active-"
           "list capacity (qL=" + std::to_string((int)N) +
           ", BQ=" + std::to_string((int)BQ) + ") — II-14 restructure.");
     }
-    v34_dispatch_bwd_fused_dkdv_sparse(pipeline, &enc, (int)N, (int)Nk,
+    v6nax_dispatch_bwd_fused_dkdv_sparse(pipeline, &enc, (int)N, (int)Nk,
                                         (int)Hq, (int)Hk, (int)B, (int)D,
                                         BQ, BK, WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {
-    auto p = dynamic_cast<const MFAV34BwdFusedDKDVSparse*>(&other);
+    auto p = dynamic_cast<const MFAV6NAXBwdFusedDKDVSparse*>(&other);
     return p && p->scale_ == scale_ && p->wm_ == wm_ && p->causal_ == causal_;
   }
 
@@ -2618,9 +2618,9 @@ v6_nax_backward_fused_dkdv_sparse_raw(
     const mlx::core::array& d_o, const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V34 bwd fused-dKdV sparse: Q must be 4D");
+  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd fused-dKdV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
-    throw std::runtime_error("V34 bwd fused-dKdV sparse: block_mask must be 2-D");
+    throw std::runtime_error("V6NAX bwd fused-dKdV sparse: block_mask must be 2-D");
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   auto qc = mlx::core::contiguous(q, false, s);
@@ -2636,7 +2636,7 @@ v6_nax_backward_fused_dkdv_sparse_raw(
   auto outs = mlx::core::array::make_arrays(
       {partials_shape, partials_shape},
       {mlx::core::float32, mlx::core::float32},
-      std::make_shared<MFAV34BwdFusedDKDVSparse>(s, scale, (uint16_t)wm, causal),
+      std::make_shared<MFAV6NAXBwdFusedDKDVSparse>(s, scale, (uint16_t)wm, causal),
       {qc, kc, vc, lsec, dOc, dvc, bmc});
   return {outs[0], outs[1]};
 }
