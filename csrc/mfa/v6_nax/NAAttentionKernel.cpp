@@ -228,7 +228,7 @@ kernel void generate_attention_block_mask(
 )";
     }
     source += R"(
-    const float value = (float)Mask_buf[tgid.z * Mask_batch_stride + row * C + column];
+    const float value = (float)Mask_buf[(ulong)tgid.z * Mask_batch_stride + row * C + column];
     if (value != 0.0f) {
       all_zero = 0;
     }
@@ -249,7 +249,7 @@ kernel void generate_attention_block_mask(
       tile_all_masked &= masked_scratch[i];
     }
     const uchar flag = tile_all_masked ? 0 : (tile_all_zero ? 1 : 2);
-    Block_mask_buf[tgid.z * Block_mask_batch_stride + tgid.x * K_block_tiles + tgid.y] = flag;
+    Block_mask_buf[(ulong)tgid.z * Block_mask_batch_stride + tgid.x * K_block_tiles + tgid.y] = flag;
   }
 }
 
@@ -563,9 +563,9 @@ std::string NAAttentionKernel::operandLocationWithHeadOffsetValue(AttentionOpera
   CodeWriter source;
   source.SetValue("OPERAND", operand.name());
   if (operand.value == AttentionOperand::L || operand.value == AttentionOperand::D) {
-    source += "{{OPERAND}}_buf + (tgid.z * Hq + tgid.y) * R\\";
+    source += "{{OPERAND}}_buf + ((ulong)tgid.z * Hq + tgid.y) * R\\";
   } else {
-    source += "{{OPERAND}}_buf + tgid.z * {{OPERAND}}_batch_stride\\";
+    source += "{{OPERAND}}_buf + (ulong)tgid.z * {{OPERAND}}_batch_stride\\";
   }
   return source.ToString();
 }
@@ -601,11 +601,11 @@ std::string NAAttentionKernel::createAdjustOffsets() const noexcept {
   const uint C_single_edge_seq = C_seq >= {{BLOCK_DIMENSIONS_TRAVERSAL}} ? C_seq + 1 - {{BLOCK_DIMENSIONS_TRAVERSAL}} : 0;
   const uint R_edge_seq = R_seq >= {{BLOCK_DIMENSIONS_PARALLELIZATION}} ? R_seq + 1 - {{BLOCK_DIMENSIONS_PARALLELIZATION}} : 0;
   const uint R_remainder_seq = R_seq % {{BLOCK_DIMENSIONS_PARALLELIZATION}};
-  Q_buf = Q_buf + q_start * K_Hq;
-  K_buf = K_buf + kv_start * K_Hk;
-  V_buf = V_buf + kv_start * K_Hk;
-  O_buf = O_buf + q_start * K_Hq;
-  L_buf = L_buf + (tgid.z * Hq + tgid.y) * R;
+  Q_buf = Q_buf + (ulong)q_start * K_Hq;
+  K_buf = K_buf + (ulong)kv_start * K_Hk;
+  V_buf = V_buf + (ulong)kv_start * K_Hk;
+  O_buf = O_buf + (ulong)q_start * K_Hq;
+  L_buf = L_buf + ((ulong)tgid.z * Hq + tgid.y) * R;
 )";
     return source.ToString();
   }
@@ -618,8 +618,8 @@ std::string NAAttentionKernel::createAdjustOffsets() const noexcept {
   }
   if (type.value == AttentionKernelType::forward && masked) {
     source += R"(
-  Mask_buf += tgid.z * Mask_batch_stride;
-  Block_mask_buf += tgid.z * Block_mask_batch_stride;
+  Mask_buf += (ulong)tgid.z * Mask_batch_stride;
+  Block_mask_buf += (ulong)tgid.z * Block_mask_batch_stride;
 )";
   }
   return source.ToString();
@@ -1120,9 +1120,9 @@ kernel void compute_d(
 {
   const uint row = tgid.x % R;
   const uint head = tgid.x / R;
-  O_buf += tgid.z * O_batch_stride;
-  dO_buf += tgid.z * dO_batch_stride;
-  D_buf += (tgid.z * Hq + head) * R;
+  O_buf += (ulong)tgid.z * O_batch_stride;
+  dO_buf += (ulong)tgid.z * dO_batch_stride;
+  D_buf += ((ulong)tgid.z * Hq + head) * R;
 
   const uint offset = row * K_Hq + head * {{HEAD_DIMENSION}};
   float D_accumulator = 0;
