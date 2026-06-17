@@ -911,12 +911,24 @@ class TurboQuantPagedInferenceContext:
         self._block_table_cache = None
         return self
 
-    def append(self, k: mx.array, v: mx.array, *, seq_id: int = 0) -> None:
+    def append(self, k: mx.array, v: mx.array, *, seq_id: int = 0,
+               defer_pool_materialize: bool = False) -> None:
         """Compress and append K/V tokens to the TQ pool for ``seq_id``.
 
         Args:
             k: [1, H_kv, N_new, D] fp16 key tokens.
             v: [1, H_kv, N_new, D] fp16 value tokens.
+            defer_pool_materialize: when True, SKIP the per-step eager
+                ``mx.eval`` of the pools.  Safe ONLY when the immediately-
+                following consumer reads EVERY pool this call writes as an
+                MLX graph-input (so the consumer's own ``eval(o)`` materializes
+                them in dependency order).  ``step()`` sets this True only on
+                the gather/dequant decode branch AND only when ``tq_v=False``
+                (the decode path reads k_pool / k_scales / v_pool_fp16 as
+                graph-inputs; with tq_v=True the packed-V pools are written-
+                but-unread, so deferral would leak an unbounded lazy scatter
+                chain — see IV-D1).  Default False = eager (the safe public
+                contract: standalone ``append`` callers may bind pools raw).
             seq_id: Sequence identifier.
         """
         from mlx_mfa.turboquant import pack_k_for_metal, pack_v_for_metal
@@ -990,11 +1002,19 @@ class TurboQuantPagedInferenceContext:
         # per token with no correctness role — mx.eval already blocks until
         # the writes are computed.  Removed; validated by 300-step decode
         # output equivalence.
-        if self.tq_v:
-            mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16,
-                    self._v_pool_tq, self._v_scales)
-        else:
-            mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16)
+        # IV-D1: skip this per-step eager eval when the caller guarantees the
+        # next consumer materializes these pools via the graph (decode branch,
+        # tq_v=False — the gather reads them as mx.fast.metal_kernel graph-
+        # inputs so eval(o) resolves them in dependency order).  ~240us/step
+        # recovered (the MLX per-eval round-trip floor).  Default path keeps
+        # the eager eval (raw-bound fused consumers + the written-but-unread
+        # packed-V pools at tq_v=True both require materialization here).
+        if not defer_pool_materialize:
+            if self.tq_v:
+                mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16,
+                        self._v_pool_tq, self._v_scales)
+            else:
+                mx.eval(self._k_pool, self._k_scales, self._v_pool_fp16)
 
     def get_block_table(self, seq_ids: Optional[list[int]] = None) -> mx.array:
         """Return block_table [B, max_blocks] for given seq_ids."""
@@ -1103,7 +1123,16 @@ class TurboQuantPagedInferenceContext:
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
 
-        self.append(k_new, v_new, seq_id=seq_id)
+        # IV-D1: the gather/dequant decode branch (N_q==1, not opted out)
+        # reads the pools as MLX graph-inputs, so its eval(o) materializes
+        # them — append's per-step eager eval is redundant there.  Defer it
+        # ONLY then AND only when tq_v=False (with tq_v=True the packed-V
+        # pools are written-but-unread by decode; deferring would leak a
+        # lazy scatter chain).  All other paths keep the eager materialize.
+        _decode_branch = (q.shape[2] == 1
+                          and os.environ.get("MFA_DISABLE_TQ_DECODE_SDPA") != "1")
+        _defer_mat = _decode_branch and not self.tq_v
+        self.append(k_new, v_new, seq_id=seq_id, defer_pool_materialize=_defer_mat)
 
         if self.wht_in_kernel:
             q_input = q

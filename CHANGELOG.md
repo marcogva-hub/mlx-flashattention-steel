@@ -47,6 +47,19 @@ public env var (hence a minor bump).
   all 3 sessions). **Reproduce**: `benchmarks/methodology/v3_v2_rebench.py` (raw
   `v3rebench_out/v3_v2_26.6.jsonl`). V4/V5 remain experimental opt-in (`MFA_ENABLE_V4`/`V5`).
 
+### Performance
+
+- **TurboQuant paged decode (`tq_v=False`) ~1.63× faster per step** (IV-D1). The decode branch
+  reads the K/V pools as MLX graph-inputs, so the step's final `eval(o)` already materializes the
+  pool writes — `append()`'s separate per-step eager `mx.eval` was redundant there and is now
+  deferred. Recovers **~250us/step** (the MLX per-eval round-trip floor) on M5/26.6: step
+  `640us → 389us` @ S=2048, `663us → 407us` @ S=4096 (3-session medians). **Bit-identical** to the
+  prior eager path (validated under concurrent-alloc churn across 5 processes; permanent guard
+  `tests/test_iv_d1_tq_append_defer.py`). Reproduce: `benchmarks/methodology/iv_d1_bench.py`.
+  Default `tq_v=True` is unchanged — the eval is structurally required there (the packed-V pools are
+  written-but-unread by decode; recovering the floor for the default needs the lazy-packed-V-pool
+  restructuring, tracked as Phase IV backlog).
+
 ## [2.55.0] — 2026-06-16 — correctness release: backend="mfa"/GNA OOB + lifetime fixes; honest 26.6 perf re-statement
 
 v2.55.0 is a **correctness release**. It fixes four silent-corruption bugs on the

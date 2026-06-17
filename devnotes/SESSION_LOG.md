@@ -1330,3 +1330,43 @@ STATUS: COMPLETE
 - Ran: 3 profilers (benchmarks/methodology/decode_profile/), read-only analysis. Validated: attribution traces to bare-eval sync floor (240.9us) + append eval (inference.py:994). NO code changed.
 - Git: docs/v50/campaign-2026-06/phase4/sprint-IV-0-report.md + 3 profiler artifacts + log. Commit below. branch master.
 - Release: nothing executed -> held v2.56.0 (flag removal + V3 validation) unchanged. 0 orphans.
+
+---
+## [2026-06-17 04:30] [CLAUDE] Sprint IV-D1 — TQ append per-step eval collapse SHIPPED (tq_v=False ~1.63x); tq_v=True structural
+STATUS: HANDOFF_READY
+
+### Changes
+- R.1 mechanism: decode path (tq_decode_attend) reads pools as mx.fast.metal_kernel GRAPH-INPUTS
+  (tq_decode.py:190-196) -> eval(o) already materializes them -> append's per-step eager mx.eval is
+  REDUNDANT there (NOT the raw-binding change IV-0 feared). Fused path binds raw (set_input_array) ->
+  eval required. tq_v DEFAULT=True writes packed-V pools UNREAD by decode -> defer would leak lazy ->
+  safe-defer ONLY tq_v=False.
+- R.3 impl: append() gains defer_pool_materialize (default False=eager, safe); step() sets True only
+  on _decode_branch and not self.tq_v. No binding/kernel change, no path rerouted (keep-all-paths).
+  inference.py.
+
+### Validation (the critical gate)
+- Soak (benchmarks/methodology/iv_d1_soak.py, 200 steps tq_v=False): post-change deferred vs
+  pre-change eager reference = BIT-IDENTICAL (max_abs_diff 0.00e+00) under concurrent-alloc churn
+  across 5 INDEPENDENT process launches. Inverse-add_temporary trigger found nothing.
+- Permanent guard tests/test_iv_d1_tq_append_defer.py (2 tests): deferred vs forced-eager via step(),
+  bit-identical 40 steps under churn; tq_v=True keeps eager. (First test draft had a flawed oracle —
+  manual eager skipped step()'s WHT q-rotation, 6.5e-5; fixed to force-eager-through-step A/B.)
+- Full suite 1820 pass x2 (was 1818 + 2 new). 311 TQ/decode tests pass (default tq_v=True unchanged).
+
+### Gain (Pattern #6, M5/26.6, 3-session detached, iv_d1_bench.py)
+- tq_v=False step: S=2048 eager 640us -> deferred 389us, saved 250.9us (39.2%), 1.64x;
+  S=4096 663us -> 407us, saved 256us (38.6%), 1.63x. Matches the ~240us MLX per-eval floor.
+  Net-non-worse: TQ-decode-local; default tq_v=True + non-TQ + large-N untouched.
+
+### Disposition
+- SHIPPED tq_v=False (~1.63x, ~250us/step, bit-identical). tq_v=True (default): eval STRUCTURALLY
+  REQUIRED (packed-V written-but-unread); recovering the floor for the default needs the lazy-packed-V
+  restructuring -> Phase IV backlog IV-D2 (top decode lever, same discipline+soak).
+- Release: additive, join-ready for held v2.56.0 (flag removal + V3 validation + this gain). Marco's
+  call on version. No tag/publish.
+
+### Git
+- inference.py + CHANGELOG [2.56.0] Performance + tests/test_iv_d1_tq_append_defer.py + 2 bench scripts
+  + sprint-IV-D1-report.md + log. Commit below. branch master. 0 orphans. Version SoT still 2.55.0
+  (bump is Marco's gated step).
