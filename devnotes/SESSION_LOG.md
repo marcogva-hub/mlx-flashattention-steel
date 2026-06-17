@@ -1370,3 +1370,35 @@ STATUS: HANDOFF_READY
 - inference.py + CHANGELOG [2.56.0] Performance + tests/test_iv_d1_tq_append_defer.py + 2 bench scripts
   + sprint-IV-D1-report.md + log. Commit below. branch master. 0 orphans. Version SoT still 2.55.0
   (bump is Marco's gated step).
+
+---
+## [2026-06-17 05:30] [CLAUDE] Sprint IV-D2 — eval collapse extended to default tq_v=True (~1.36-1.39x); v2.56.0 substantial
+STATUS: HANDOFF_READY
+
+### Changes
+- R.1 mechanism: tq_v=True append writes 5 pools; decode reads k_pool/k_scales/v_pool_fp16 (graph-inputs),
+  NOT _v_pool_tq/_v_scales (fused reads those raw). The 2nd floor = materializing the decode-unread packed-V.
+- R.2/R.3: combined eval (floor is per-eval not per-buffer). step() decode branch tq_v=True:
+  defer append eval + mx.eval(o, _v_pool_tq, _v_scales) at step end -> 2 floors->1, packed-V materialized
+  EVERY step (no chain), concrete for later fused read. Fused path code-UNCHANGED (eager append). inference.py.
+- Dependency PROVEN: read pools via o graph-dep; packed-V explicit in same eval; cross-step ordering via __setitem__ rebind.
+
+### Validation
+- iv_d2_soak.py (tq_v=True, 160 decode + 4 interleaved fused): post-change vs git-stash pre-change eager ref,
+  under churn × 5 processes -> decode AND fused-read BOTH max_abs_diff 0.00e+00 every run.
+- The NEW fused-read-after-decode edge (IV-D1 lacked): fused read sees combined-eval-materialized packed-V, bit-identical.
+- Regression guards added (test_iv_d1_tq_append_defer.py): tq_v=True combined-eval + fused-read bit-identity. Suite 1821 x2.
+
+### Gain (Pattern #6, M5/26.6, 3-session detached, iv_d2_bench.py)
+- DEFAULT tq_v=True step: S=2048 eager 776.6->combined 559.3us, saved 217.3us (28.0%), 1.39x;
+  S=4096 781.6->576.7us, saved 204.9us (26.2%), 1.36x. Net-non-worse: fused code-unchanged (latency
+  unchanged by construction); tq_v=False/non-TQ/large-N untouched.
+
+### Disposition
+- SHIPPED default tq_v=True (~1.36-1.39x). Eval collapse now covers BOTH configs (tq_v=False ~1.63x IV-D1,
+  tq_v=True ~1.36-1.39x IV-D2). IV-D3 lazy-packed-V no longer needed for this floor (combined eval recovers it).
+- v2.56.0 now substantial: flag removal + V3 validation + TQ-decode gain on the DEFAULT config. Marco-gated tag.
+
+### Git
+- inference.py + CHANGELOG [2.56.0] Performance + tests + iv_d2_soak.py + iv_d2_bench.py + sprint-IV-D2-report.md + log.
+  Commit below. branch master. 0 orphans. Version SoT still 2.55.0 (bump is Marco's gated step).

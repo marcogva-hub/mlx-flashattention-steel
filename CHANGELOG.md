@@ -49,16 +49,23 @@ public env var (hence a minor bump).
 
 ### Performance
 
-- **TurboQuant paged decode (`tq_v=False`) ~1.63× faster per step** (IV-D1). The decode branch
+- **TurboQuant paged decode faster per step — both configs** (IV-D1 + IV-D2). The decode branch
   reads the K/V pools as MLX graph-inputs, so the step's final `eval(o)` already materializes the
-  pool writes — `append()`'s separate per-step eager `mx.eval` was redundant there and is now
-  deferred. Recovers **~250us/step** (the MLX per-eval round-trip floor) on M5/26.6: step
-  `640us → 389us` @ S=2048, `663us → 407us` @ S=4096 (3-session medians). **Bit-identical** to the
-  prior eager path (validated under concurrent-alloc churn across 5 processes; permanent guard
-  `tests/test_iv_d1_tq_append_defer.py`). Reproduce: `benchmarks/methodology/iv_d1_bench.py`.
-  Default `tq_v=True` is unchanged — the eval is structurally required there (the packed-V pools are
-  written-but-unread by decode; recovering the floor for the default needs the lazy-packed-V-pool
-  restructuring, tracked as Phase IV backlog).
+  read pools — `append()`'s separate per-step eager `mx.eval` (the MLX per-eval round-trip floor,
+  ~205–250us) is now collapsed:
+  - **`tq_v=False`: ~1.63×/step** (IV-D1) — append eval fully deferred (caller's `eval(o)`
+    materializes every written pool). `640→389us` @S=2048, `663→407us` @S=4096.
+  - **default `tq_v=True`: ~1.36–1.39×/step** (IV-D2) — the decode-unread packed-V pools are folded
+    into ONE combined `eval(o, _v_pool_tq, _v_scales)` at step end (two floors → one), materialized
+    every step (no lazy-chain growth) and concrete for any later fused read. `777→559us` @S=2048,
+    `782→577us` @S=4096.
+
+  All on M5/26.6, 3-session medians. **Bit-identical** to the prior eager path — validated under
+  concurrent-alloc churn across 5 independent processes, including the fused-read-after-decode edge
+  (a later fused read sees the combined-eval-materialized packed-V; `max_abs_diff 0.00e+00`).
+  Permanent guards `tests/test_iv_d1_tq_append_defer.py`; reproduce
+  `benchmarks/methodology/iv_d{1,2}_bench.py`. The fused path, `backend="mfa"`, non-TQ, and large-N
+  are unchanged (keep-all-paths; no kernel or binding change).
 
 ## [2.55.0] — 2026-06-16 — correctness release: backend="mfa"/GNA OOB + lifetime fixes; honest 26.6 perf re-statement
 

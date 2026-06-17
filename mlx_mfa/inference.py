@@ -1123,15 +1123,22 @@ class TurboQuantPagedInferenceContext:
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
 
-        # IV-D1: the gather/dequant decode branch (N_q==1, not opted out)
-        # reads the pools as MLX graph-inputs, so its eval(o) materializes
-        # them — append's per-step eager eval is redundant there.  Defer it
-        # ONLY then AND only when tq_v=False (with tq_v=True the packed-V
-        # pools are written-but-unread by decode; deferring would leak a
-        # lazy scatter chain).  All other paths keep the eager materialize.
+        # IV-D1/IV-D2: the gather/dequant decode branch (N_q==1, not opted
+        # out) reads k_pool/k_scales/v_pool_fp16 as MLX graph-inputs, so its
+        # eval(o) materializes them — append's per-step eager eval is
+        # redundant there.  Defer it on the decode branch for BOTH tq_v:
+        #   - tq_v=False (IV-D1): the caller's eval(o) materializes every
+        #     written pool (no packed-V exists) — append eval fully dropped.
+        #   - tq_v=True (IV-D2): the packed-V pools (_v_pool_tq/_v_scales) are
+        #     written-but-UNREAD by the gather, so eval(o) won't pull them;
+        #     the decode branch instead folds them into ONE combined eval with
+        #     o at step end (below) — collapses the two per-step floors into
+        #     one, materializes packed-V EVERY step (no unbounded lazy chain),
+        #     and leaves them concrete for any later fused read.
+        # All non-decode paths (fused N_q>1 / opt-out) keep the eager eval.
         _decode_branch = (q.shape[2] == 1
                           and os.environ.get("MFA_DISABLE_TQ_DECODE_SDPA") != "1")
-        _defer_mat = _decode_branch and not self.tq_v
+        _defer_mat = _decode_branch
         self.append(k_new, v_new, seq_id=seq_id, defer_pool_materialize=_defer_mat)
 
         if self.wht_in_kernel:
@@ -1170,12 +1177,24 @@ class TurboQuantPagedInferenceContext:
                 q_rot = q_input  # already rotated above
             S = self.seq_length(seq_id)
             n_blocks = (S + self.block_size - 1) // self.block_size
-            return tq_decode_attend(
+            o = tq_decode_attend(
                 q_rot, self._k_pool, self._v_pool_fp16,
                 self._k_scales, self._k_centroids,
                 block_table[0][:n_blocks], S,
                 scale=scale, block_size=self.block_size,
                 tq_bits=self.tq_bits, stream=self.stream)
+            # IV-D2: with tq_v=True, append wrote _v_pool_tq/_v_scales which the
+            # gather does NOT read, so eval(o) alone won't materialize them.
+            # Fold them into a SINGLE combined eval with o: eval(o) materializes
+            # the read pools (k_pool/k_scales/v_pool_fp16) via their graph-input
+            # dependency, and the packed-V pools are materialized explicitly in
+            # the same round-trip — one per-step floor (not two), packed-V
+            # resolved every step (no lazy-chain growth), concrete for any later
+            # fused read.  (tq_v=False: no packed-V; the caller's eval(o)
+            # materializes the read pools — IV-D1, lazy return preserved.)
+            if self.tq_v:
+                mx.eval(o, self._v_pool_tq, self._v_scales)
+            return o
 
         return flash_attention_paged_varlen_turboquant(
             q_input, self._k_pool, self._v_pool_fp16,
