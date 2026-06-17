@@ -1494,3 +1494,26 @@ STATUS: COMPLETE
   a ceiling, not a result). If increment-0 below-material -> close, v2.56.0 terminus.
 - Ran: v6gate.py (Q1+Q2) + SDPA-vs-STEEL noncausal apples-to-apples. NO code/kernel. 0 orphans.
 - Git: measurement-gate-report.md + probes below. Cross-ref m5max sdpa-investigation re-scope.
+
+---
+## [2026-06-17 12:00] [CLAUDE] NAX cartography (Phase 1, read-only) — false premise corrected; V34→V6 rename planned (env-var flag)
+STATUS: HANDOFF_READY
+
+- Phase 1 (READ-ONLY): mapped NAX/STEEL × routed per path on the living code. KEY: the sparse forward
+  is ALREADY NAX (matmul2d coop-tensor, BaseNAXFrag::mma mfa_sparse_attention.cpp:283-312, routed via
+  flash_attention_sparse->sparse_attention_nax_with_lse). NOT STEEL. So "port sparse STEEL->NAX" =
+  FALSE PREMISE. dense backend=mfa = STEEL (11.1); sparse = NAX-matmul2d (11.4) — the measurement gate
+  CONFLATED them as "STEEL ~11" and mis-scoped the 3-4x as STEEL->NAX headroom.
+- PUZZLE (11.4 vs SDPA 44.9) RESOLVED = (c)+(d): NAX-routed but matmul2d/MPP form is ~1.3-1.5x slower
+  than SDPA's raw-simdgroup (V6-dense finding) + sparse kernel less-tuned/mask overhead (the rest).
+  NOT (a) artifact, NOT (b) orphaned.
+- REMAINING-OPP VERDICT: no port chantier (sparse already NAX). Real lever = switch sparse MMA
+  matmul2d->raw-simdgroup (SDPA's nax.h form) + tune occupancy — HARDER + uncertain, NOT a port.
+  Measurement gate's SCOPED-GO RETRACTED (premise wrong). Re-gate on a raw-simdgroup-sparse prototype
+  vs current matmul2d-sparse before committing (NEXT session).
+- Phase 2 rename: ~5000 V34 occ (1304 C++/801 py/2942 docs, 169 files) + 29 public env vars + MSL macros.
+  Scheme: V34->V6Nax/V6NAX. NAMING.md glossary preserves provenance. Stale comment mfa_sparse_attention.cpp:13.
+  ENV-VAR disposition FLAGGED to Marco (prompt mandate): option 1 alias-with-deprecation (preferred) vs
+  option 2 break-next-minor. Mechanical rename executes after Marco's env-var call.
+- Ran: read-only code trace + the v6gate numbers (effective, plausibility-gated). NO code changed. 0 orphans.
+- Git: nax-cartography-and-rename-report.md + log below.
