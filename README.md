@@ -48,9 +48,10 @@ the full table + methodology.
 *All ratios above state numerator vs denominator with direction (a bare
 "N×" is ambiguous — see `sprint-III-12b-report.md`). Numbers measured on
 macOS 26.6 / M5 Max, median of N sessions; large-size ratios carry ±30–40%
-run-to-run variance (clock-state bimodality). v2.55.0 is a **correctness
-release** — kernels are byte-identical to v2.52.1; the perf numbers moved
-because the OS/reference moved, not the kernels.*
+run-to-run variance (clock-state bimodality). v2.56.0 adds the TQ-decode
+eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
+(A3-1); the attention/conv compute kernels are otherwise unchanged from v2.52.1
+(the earlier 26.6 perf shifts were the OS/reference moving, not the kernels).*
 
 > **⚠ Upgrade to v2.52.1.** v2.51.0 contains two pre-existing CRITICAL
 > silent-corruption bugs (top-K Metal-grid undercount; NaN gradients

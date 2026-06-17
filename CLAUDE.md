@@ -280,7 +280,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.52.1 — 1563 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record).
+v2.56.0 — 1827 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record). Phase IV complete: TQ-decode eval-collapse gains (IV-D1/D2), whole-repo correctness review (no CRITICAL; A3-1 latent int64-overflow fix), incremental optimization closed-at-floor. `MFA_FORCE_NATIVE_BWD` removed (kernel retained); V3 conditionally-auto-routed (M5-validated).
 
 | Track | Description | Status |
 |-------|-------------|--------|

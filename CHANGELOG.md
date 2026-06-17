@@ -4,9 +4,12 @@ All notable changes to mlx-mfa are documented here.
 
 ## [2.56.0] — 2026-06-17 — Marco-gated queue closure: MFA_FORCE_NATIVE_BWD removed; V3 auto-routing validated on M5/26.6
 
-This release closes the post-campaign Marco-gated queue. No attention/conv kernel
-math changed; the one behavioral change is the removal of a deprecation-complete
-public env var (hence a minor bump).
+This release closes the post-campaign Marco-gated queue and lands the Phase IV
+decode-overhead optimizations + the whole-repo correctness-review fixes. No
+attention/conv kernel **math** changed (results are unchanged for all in-range
+shapes); the behavioral change driving the minor bump is the removal of a
+deprecation-complete public env var, plus one latent-overflow **address-arithmetic**
+fix on the V6 NAX path (A3-1, below — changes addressing only, not results).
 
 ### Removed
 
@@ -66,6 +69,22 @@ public env var (hence a minor bump).
   Permanent guards `tests/test_iv_d1_tq_append_defer.py`; reproduce
   `benchmarks/methodology/iv_d{1,2}_bench.py`. The fused path, `backend="mfa"`, non-TQ, and large-N
   are unchanged (keep-all-paths; no kernel or binding change).
+
+### Fixed
+
+- **V6 NAX device-offset int32 overflow (latent, A3-1)** — the legacy/MPP V6 NAX attention
+  kernels computed device-side batch/head/seq/mask offsets (`tgid.z * batch_stride`,
+  `q_start * K_Hq`, mask strides) as 32-bit `uint`. For very large shapes the product wraps 2³²
+  → silent wrong-memory addressing (wrong output, no crash). **Latent**: reachable only when V34
+  is off (D=64, or D=128 + `MFA_V6_USE_V34=0`) at multi-GB tensors (B≥128 with H·N·D ~33M, or
+  >4M packed-varlen tokens). All 14 offset-multiply sites widened `uint → ulong` (the V34 path
+  already used 64-bit; conv-NAX already bounded <2³¹). Pure address-arithmetic widening — results
+  unchanged for in-range shapes (1827 tests pass ×2). Found by the Phase IV multi-agent
+  correctness review (no CRITICAL/default-reachable bug found; this was the highest-severity
+  latent). See `docs/v50/campaign-2026-06/phase4/code-review-correctness-report.md`.
+- **V3 conditional-auto correctness coverage (A5-1)** — added an independent-fp32-oracle test for
+  the production-reachable windowed-causal V3 path at its auto-fire regime (the prior tests only
+  forced V3 at sub-threshold shapes vs V2). `tests/test_iv_review_v3_autoroute.py`.
 
 ## [2.55.0] — 2026-06-16 — correctness release: backend="mfa"/GNA OOB + lifetime fixes; honest 26.6 perf re-statement
 
