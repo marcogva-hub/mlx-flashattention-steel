@@ -10,8 +10,13 @@ the canonical master plan lands.
   `tests/test_sparse_family_correctness_lock.py` (13 cells) + `phase-B1-sparse-family-report.md`.
   Headline: sparse forward = V2 matmul2d (work≥2.147e9) OR V1 scalar (below, ~41× slower);
   both fp32-correct all edges; D=128 32×32 mask convention proven byte-faithful (Phase-F premise).
-- **B2–B4 — remaining per-kernel families** (dense STEEL variants, GNA exact-window, paged/TQ, conv,
-  backward). Pending.
+- **B2 — Dense STEEL family per-variant audit**. DONE — `dense-steel-family-spec.md` +
+  `tests/test_dense_steel_family_lock.py` (14 cells) + `phase-B2-dense-steel-report.md`. Resolves
+  Phase-A carry-forward #1: variant dispatch sentinel-mapped (V3 default causal-large-N, V1 causal-
+  small-N, V2 non-causal, dsplit D=256/512, flash_decode N≤4, V4/V5 env-gated). All fp32-correct;
+  variants byte-identical (timing/source-predicate lock, not byte). No arbitrary/overflow threshold
+  (v3_min_N benchmark-derived; sparse 2^31 re-examined = benign Python calibration value).
+- **B3–B4 — remaining families** (backward; GNA exact-window / conv / topk / sage / paged-TQ). Pending.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +

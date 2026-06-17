@@ -1706,3 +1706,27 @@ STATUS: COMPLETE
 - Ran: env-toggle + fp32-oracle edges + faithfulness + lock + full suite. Validated: 1856 passed,
   2 skipped. No kernel/routing/mask/bug change (comment-only). 0 orphans. NOT tagged.
 - Git: test + docs + comment fixes committed below.
+
+---
+## [2026-06-17 20:30] [CLAUDE] AUDIT Phase B2 — dense STEEL family per-variant audit
+STATUS: COMPLETE
+
+- 8 STEEL variants (V1/V2/V3/V4/V5/split-K/dsplit/flash_decode), all faithful FA-2, all fp32-correct
+  vs independent manual oracle (lesson #11): err<=7.7e-5. 14 locked cells.
+- Variant dispatch (carry-forward #1) by SENTINEL env-toggle timing (variants are byte-identical
+  Δ=0.0 — byte cannot distinguish; no C++ trace env). M5 backend=mfa map: causal-large-N->V3 (D64
+  default 2.73ms vs DISABLE_V3=V2 3.13ms, 1.14x CONFIRMED; D128 V3≈V2 parity); causal-small-N->V1
+  (0.42 vs FORCE_V2 0.34); non-causal->V2; D256/512->dsplit; decode(N<=4,S>=256)->flash_decode;
+  V4 env-gated (ENABLE_V4 changes dispatch); V5 ineligible at tested shapes.
+- Lock approach: forced-variant correctness + SOURCE-PREDICATE threshold lock (v3_min_N /
+  flash_decode-gate / m3_prefers_v1 forms) — byte/timing can't lock selection, source-grep does
+  (KD-5/Gate-9 pattern); drift trips CI -> deliberate map update (Phase F).
+- Threshold audit: NO arbitrary/overflow threshold. v3_min_N=(D==64)?4096:2048 documented+M5-
+  re-validated. Re-examined sparse 2^31 (B1 flag): = 4096*4096*128 computed in Python (unbounded) ->
+  NOT overflow, benign calibration value. Sparse flag downgraded.
+- Comment sweep: dense STEEL comments FRESH (V3 re-validated 2026-06-17; V4/V5 "pending benchmarks"
+  + scratch-lifetime "pending under lazy eval" accurate). No edits.
+- Flagged for Phase E: M5-optimal-vs-M1-M4-legacy (default dense=SDPA; does any STEEL beat SDPA on
+  M5?); V5 reachability (ineligible at all tested shapes).
+- Ran: sentinel env-toggle + fp32 oracle + threshold-source-lock + full suite. 1870 passed, 2
+  skipped. No kernel/routing/threshold/bug change. 0 orphans. NOT tagged.
