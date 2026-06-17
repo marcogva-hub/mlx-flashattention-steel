@@ -1,3 +1,11 @@
+> **⚠ CORRECTION (2026-06-17, `compacted-kernel-increment-0-report.md`):** the **"11.4 TFLOPS sparse,
+> 4× below SDPA" measurement and the puzzle-resolution** in this report are **RETRACTED** — that
+> benchmark used an ASYMMETRIC mask, which on M5/26.6 routes `flash_attention_sparse` to dense Apple
+> SDPA (not the matmul2d kernel the source trace described). The REAL sparse kernel (symmetric mask)
+> already tracks density and beats SDPA at low density. The V34→V6 rename plan + the per-path
+> source/routing map in this report are unaffected; only the sparse-throughput *number* was the
+> wrong binary. See the increment-0 report.
+
 # NAX State Cartography + V34→V6 Rename — Phase 1 (read-only) + Phase 2 plan
 
 **Date:** 2026-06-17 · **Executor:** Claude Opus 4.8 High

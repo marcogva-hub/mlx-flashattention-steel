@@ -1,3 +1,11 @@
+> **⚠ CORRECTION (2026-06-17, `compacted-kernel-increment-0-report.md`):** the measurements in this
+> report were taken with an ASYMMETRIC block mask (BQ=32/BK=16), which on M5/26.6 routes
+> `flash_attention_sparse` to **dense Apple SDPA** (`_sparse_fallback_sdpa_perhead`), NOT an mlx-mfa
+> sparse kernel. The "flat ~3.8ms density-independent / skip wall-clock-inert" finding is therefore
+> **RETRACTED** — it was SDPA's mask-independence, not the sparse kernel. The REAL sparse kernel
+> (symmetric mask) already tracks density (4.7× @ d=0.03 vs SDPA). Which-binary must be confirmed at
+> the runtime dispatch, not the C++ source. See the increment-0 report.
+
 # Sparse NAX Gap Decomposition — Diagnostic (read-mostly + marked micro-probes)
 
 **Date:** 2026-06-17 · **Executor:** Claude Opus 4.8 High

@@ -1,3 +1,11 @@
+> **⚠ CORRECTION (2026-06-17, `compacted-kernel-increment-0-report.md`):** this report's premise is
+> **RETRACTED**. Its measurements used an ASYMMETRIC mask (BQ=32/BK=16) which on M5/26.6 routes to
+> **dense Apple SDPA**, not a sparse kernel — so the "flat 3.8ms", the "compaction floor 5–15×", and
+> the "GO-scale" verdict were SDPA artifacts (the floor was just SDPA on a shorter sequence). The
+> REAL mlx-mfa sparse kernel (symmetric mask) **already tracks density and already wins** (4.7× @
+> d=0.03 vs SDPA) — there is NO compacted kernel to build (FULL INVERSION). The real lever is
+> ROUTING (get asymmetric masks onto the working symmetric kernel). See the increment-0 report.
+
 # Block-Sparse Compacted-Iteration — Gated Prototype (issue 2: make the skip translate to wall-clock)
 
 **Date:** 2026-06-17 · **Executor:** Claude Opus 4.8 High

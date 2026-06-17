@@ -1610,3 +1610,30 @@ STATUS: COMPLETE
   t-tracks-density curve + plausibility (<=37<=51.8). NO kernel built, NO routing change, keep-all-
   paths. 0 orphans. NOT tagged.
 - Git: report + probe committed below.
+
+---
+## [2026-06-17 16:30] [CLAUDE] Compacted-kernel increment-0: NO-GO (FULL INVERSION + which-binary correction)
+STATUS: COMPLETE
+
+- WHICH-BINARY CHECK (at runtime dispatch this time): flash_attention_sparse with an ASYMMETRIC mask
+  (BQ=32/BK=16) on M5/26.6 routes to _sparse_fallback_sdpa_perhead = DENSE Apple SDPA
+  (attention.py:3239; V1 STEEL sparse disabled on M5/26 per (long)p->NK bug). Proven byte-identical:
+  asymmetric output vs mx.fast.sdpa(bias) = 0.00e+00.
+- CONSEQUENCE (RULE 9): the prior THREE sprints (cartography 528f0ab, gap-decomp abaee24,
+  compacted-iter 276b746) all benchmarked the asymmetric path = dense SDPA, NOT a sparse kernel.
+  Their "flat 3.8ms density-independent / 11.4 TFLOPS / compaction-floor 5-15x / GO-scale" are
+  RETRACTED (SDPA artifacts; the floor was SDPA-on-shorter-kL). CORRECTION banners added to all 3
+  reports + the memory.
+- THE REAL KERNEL (symmetric mask, bt_q==bt_k -> NAX with_lse path) ALREADY tracks density and wins:
+  4.71x@d=0.03, 3.51x@0.125, 2.56x@0.25, 1.66x@0.5, 0.94x@1.0 vs dense SDPA (3.03ms); correct 1.96e-6
+  (banded+scattered); zero scatter tax; eff<=42.7<=51.8 peak. The compaction the build was to add
+  already exists.
+- VERDICT: NO-GO on the build (FULL INVERSION — kernel exists). Real lever = ROUTING: the default
+  asymmetric-mask API path bypasses the working symmetric kernel -> SDPA on M5+. Next gated increment
+  = a routing/mask-convention fix (asymmetric->symmetric kernel), with its own three-axis. Keep-all-
+  paths; no kernel built; no routing changed.
+- LESSON (extends #14): confirm which-binary at the RUNTIME dispatch on the actual hardware; a Python
+  M5+ routing guard overrode the C++ kernel that source-tracing pointed at.
+- Ran: which-binary + symmetric/asymmetric density sweeps + correctness. Validated: asymmetric==SDPA
+  (0.0), symmetric tracks density + correct + plausibility-gated. 0 orphans. NOT tagged.
+- Git: increment-0 report + 3 correction banners committed below.
