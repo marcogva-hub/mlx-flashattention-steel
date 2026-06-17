@@ -76,6 +76,7 @@ again pre-tag and the CHANGELOG must credit the III-4 correctness fixes.
 | Lazy packed-V pool when only the III-2 decode path is used | III-4 R9: tq_v=True keeps both packed + fp16 V pools | S |
 | make_topk_spatial_mask numpy/loop → GPU pooling (R13) | perf-debt; needs bench per Pattern #6 | S/M |
 | Tagged release of int8/follow-ups | carried | — |
+| V34 backward block-sparse NAX extension | **CLOSED — DECLINE** (premise validation 2026-06-17). Was NOT pending: greenlit (Prompt 5c Opt.1), built+shipped (Prompt 5d, 4 native sparse bwd kernels, 8 tests), win premise empirically FALSIFIED — Native/SDPA 0.09–0.77× at VSR shape (Pattern #6); only 1.13× at D=64/small-H/d=0.1 (too narrow for AUTO). Default = 5c hybrid; full native = opt-in `MFA_V34_BWD_SPARSE_NATIVE=1`. See `docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md`. | none (no build) |
 
 ## Reports index
 

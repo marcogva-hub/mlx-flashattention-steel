@@ -1231,3 +1231,29 @@ STATUS: COMPLETE
 ### Git
 - `5a9f21c` (III-12c docs) + `3c2c8b4` (bump, tagged v2.55.0) pushed to origin/master.
 - Report: docs/v50/campaign-2026-06/phase3/sprint-III-12c-report.md. Phase III CLOSED.
+
+---
+## [2026-06-17 00:30] [CLAUDE] V34 backward block-sparse NAX — premise validation → DECLINE (no build)
+STATUS: COMPLETE
+
+### Plan
+- Objective: go/no-go on the Marco-gated "V34 backward block-sparse NAX extension" item. PREMISE VALIDATION ONLY — no kernel.
+- Skill: /mlx-mfa-apple-primitives-coverage (§AA.5).
+
+### Findings (archaeology recovered the premise from the record)
+- Original premise (sprint-5-prompt5a-status.md:10-14): native block-sparse iteration in V34 backward so mx.grad(flash_attention_sparse) skips inactive K-blocks instead of SDPA-vjp+bias. Projected 1.5-10x @ low density (sprint-5-prompt5a-status.md:53-58) — an ESTIMATE, never measured.
+- CORRECTION (doc-coherence): my prior-turn queue entry "never greenlit / premise-validation-pending" was STALE. Record shows it was greenlit (Marco Prompt 5c Opt.1), BUILT+SHIPPED (Prompt 5d: dQ+dK-split+fused-dKdV + 5b dV = 4 native sparse bwd kernels), math-validated (8 tests), routing falsified.
+- R.2 buildable: PROVEN (kernels exist: NAAttentionKernel.cpp:5168/6364; 8 tests; opt-in routed attention.py:3187).
+- R.3 NAX-reachable: TRUE empirically (kernels run on M5 NAX, benched). But reachable != wins (Pattern #6: Apple SDPA-vjp also on NAX, better-optimized).
+- R.4 win-bound: MEASURED, FALSIFIED (section-a-v3-empirical-verification.md:19-33). Native/SDPA = 0.77x@d0.1 -> 0.09x@d1.0 at VSR shape (SLOWER all densities). Only 1.13x at D=64/small-H/d=0.1 (too narrow for AUTO). 5a's 10x projection inverted by measurement.
+
+### Verdict
+- R.5 DECLINE — first-class negative result. All-three-premises gate fails at R.4 (measured, not estimated). NOT unverified-blocked: maximally verified (shipped kernels + bench). Nothing to build — already routed optimally (5c hybrid default; full native opt-in MFA_V34_BWD_SPARSE_NATIVE=1).
+- New AUTO carve-out for the 1.13x corner also DECLINED (ghost-knob/Pattern #6 risk; opt-in covers it).
+
+### Validation
+- Ran: read-only archaeology + live-code corroboration (grep kernels/flag/tests/routing). No build, no bench re-run (the 5d bench is the primary source).
+- Validated: verdict traces to primary sources (5a premise, 5d ship, section-a-v3 measured falsification, attention.py routing). NO kernel built.
+
+### Git
+- docs/v50/campaign-2026-06/v34-blocksparse-nax-premise-report.md (new) + PHASE-III-CLOSE.md queue row + this log. Commit below. branch master.
