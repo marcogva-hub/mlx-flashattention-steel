@@ -1283,3 +1283,36 @@ STATUS: COMPLETE
 - R.4 VERDICT: V4/V5 CLEAN-KEEP. V3 GAP (stale framing) + STALE-VERDICT. Marco-gated next steps (flagged, NOT run): (1) correct V3 queue/doc framing; (2) Pattern #6 re-bench V3-vs-V2 on M5/26.6 at auto-fire regime (not trivial — §4 sweep).
 - Ran: read-only archaeology + live-code grep. Validated: traces to mfa_attention.cpp:588/693/808-818 + dispatch_policy.py:598 + mfa_steel_fwd_v5.cpp:389-392 + sprint-III-9:90 + TestSteelV3/4/5. NO code changed.
 - Git: docs/v50/campaign-2026-06/queue-v3v4v5-archaeology.md (new) + PHASE-III-CLOSE queue row + log. Commit below. branch master. Marco-gated queue (A+B) now fully dispositioned.
+
+---
+## [2026-06-17 02:40] [CLAUDE] Queue Closure Sprint — flag removed + V3 validated on M5/26.6; v2.56.0 PREPARED (Marco-gated tag)
+STATUS: HANDOFF_READY
+
+### Changes
+- R.1+R.2 V3-vs-V2 re-bench (M5/26.6, 3-session §4-strict, detached v3_v2_rebench.py; 42 recs 0 err):
+  V3 faster-or-parity at EVERY auto-fire cell — windowed D64 N4096 0.68x (V3 ~32% faster), N8192 0.92x,
+  D128 N4096 0.97x, N8192 ~parity; backend=mfa D64 0.86x, D128 ~parity. M1 verdict HOLDS on M5, stronger D64.
+- R.3 disposition: VALIDATED — keep auto-routing as-is (no routing change -> no three-axis; correctness
+  already confirmed: V3 vs fp32 + TestSteelV3 pass; OOB-safe smem-staged V).
+- R.4 framing corrected (RESULTS.md, mfa_attention.cpp:799 comment, PHASE-III-CLOSE queue row): V3 =
+  conditionally-auto + M5-measured (not opt-in/regress). Absolute+direction+V2-baseline (lesson #15).
+- R.5 MFA_FORCE_NATIVE_BWD REMOVED (dispatch_policy.py =1/=0 branches+warning; policy table kept ->
+  unset byte-identical). STEEL kernel RETAINED (keep-all-paths) + correctness guard rewired to direct
+  _ext.mfa_forward_with_lse->mfa_steel_backward. Multi-gate: 2 test files + ENV_VARS:60 + cache-audit;
+  code orphan-free; 10 affected tests pass.
+
+### Validation
+- Ran: full suite x2 (1818 pass, 2 skip — was 1820; net -2 from removed force tests); perf-claims 17 pass;
+  9-gate audit 2.56.0 = 7/7 technical GREEN, advisories 0, only multi_sot_version_bump blocking (intentional).
+- Validated: V3 routing keeps the faster kernel on M5 (Pattern #6 concern resolved); flag-removal
+  unset/auto byte-identical; MFA_FORCE_NATIVE_BWD deprecation warnings gone from suite.
+
+### Git
+- c304d5e (flag removal + V3 validation + docs + bench artifacts) + advisory-clearing commit below.
+  Version SoT still 2.55.0 (bump is the Marco-gated tag step). branch master.
+
+### HELD for Marco's go (recommend v2.56.0 — breaking public-env-var removal)
+- bump 3 SoT -> 2.56.0 -> audit fully GREEN -> tag -> build -> twine -> gh release -> push tag ->
+  post-publish smoke (flag inert on published wheel; V3 windowed routing correct vs fp32).
+
+### Marco-gated queue: FULLY CLOSED (V34 declined, flag removed, V4/V5 kept, V3 validated).

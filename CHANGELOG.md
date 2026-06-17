@@ -22,6 +22,16 @@ public env var (hence a minor bump).
   only the env-var knob was removed. The benchmark policy table (unset-path behavior)
   is unchanged — unset/auto routing is byte-identical to v2.55.0.
 
+### Changed
+
+- **`dispatch_policy.should_use_native_backward` simplified** to the benchmark policy
+  table only (the env-var override branches + their `DeprecationWarning` were removed
+  with the knob above). Unset/auto routing is byte-identical to v2.55.0.
+- **V3 documentation framing corrected** (`RESULTS.md`, `csrc/mfa_attention.cpp` dispatch
+  comment, `PHASE-III-CLOSE.md` queue row): V3 is *conditionally auto-routed* (not
+  "opt-in"), *measured-to-win-vs-V2* on M5/26.6 (not "regresses") — the prior framing was
+  stale (reflected an abandoned v2.7.0 state).
+
 ### Validated (no behavior change)
 
 - **STEEL V3 forward auto-routing re-validated on M5 Max / macOS 26.6.** V3 is

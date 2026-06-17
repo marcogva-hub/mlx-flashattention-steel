@@ -1,6 +1,16 @@
 """Parameterized regression test: every documented perf claim in user-
 facing docs MUST be reachable via the public user-facing API path.
 
+v2.56.0 note: the CHANGELOG [2.56.0] V3 perf claim is an INTERNAL
+V3-vs-V2 kernel comparison validated by the §4 cooldown bench
+(`benchmarks/methodology/v3_v2_rebench.py`), NOT a §Z public-API-vs-SDPA
+reachability claim — so it has no entry in the PERF_CLAIMS registry below
+(which is specifically for "X× faster than SDPA/SDPA-vjp reachable via the
+default API"). V3 IS reachable via the public API (windowed-causal auto
+routes to MFA -> V3 on M5); the perf MAGNITUDE vs V2 is a methodology-bench
+result, not an API-reachability assertion. Recorded here for version
+coherence.
+
 Per `CLAUDE_V6_NAX.md` §Z (Public API path testing rule).  Reference
 incident: v2.37.0/v2.37.1 silent integration bug — release notes
 documented "1.4-1.85× faster" but the public AUTO API silently fell
