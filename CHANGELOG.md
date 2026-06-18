@@ -19,12 +19,18 @@ Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward
   **no N is slower than before**. Both paths are correct attention (fp32-err 3.8e-6 across the boundary);
   this only changes *which correct path runs*. keep-all-paths: `MFA_V6_DENSE_MIN_N=0` forces NAX at all N.
   Lock: `tests/test_nax_routing_threshold_lock.py` (config fingerprint — small-N→SDPA, N≥2048→NAX, force-env).
+  **Known residual (not noise):** N=4096·B=4·causal SDPA wins ~4.6 % (above the ±3 % band) — a second-order
+  batch interaction (more batch → NAX relatively worse at large N) a pure-N threshold can't capture;
+  pre-existing (routed NAX before too — threshold neither introduces nor worsens it); a 2D (N,B) threshold
+  would address it, not pursued (marginal; conflicts with the simple regression-free N-threshold).
 - **Conv size-gate evaluated → NOT needed (no-op, evidenced).** Measured conv-NAX vs `mx.conv` HW crossover
   at VAE channels: NAX loses only at **HW=8** (C=512 1.93×), already wins 13–17 % at HW=16 and 2–3× from
   HW=32. Realistic VSR decodes never reach HW=8 — a VAE decoder's min-spatial is its latent resolution
   (32×32 for a 256² output at 8× downscale, the smallest realistic target; measured-real decodes sit at
   32×32). No realistic geometry hits the losing regime → no conv gate added. The hardening-pass
-  localized-regression note is closed by this measurement.
+  localized-regression note is closed by this measurement. **Caveat:** conditional on **full-frame decode**
+  (Marco's pipelines); the HW=8 regime is reachable only via aggressive small-tile decode (latent tile
+  <16×16) → re-evaluate if the pipeline moves to small spatial tiling.
 
 ### Profiling / decisions (no behavior change)
 

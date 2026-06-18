@@ -50,9 +50,13 @@ N·B·H=16384 gives opposite winners: (N=512,B=4)=SDPA 1.03× vs (N=2048,B=1)=NA
   **1.04× / 1.03×**, N=2048 **0.98× / 1.00×** (parity), N=4096 **1.00× / 0.97×**, N=8192 **0.96× / 1.00×**.
   This is the **unique** value that removes the robust small-N regression *and* makes no N slower than the
   prior all-N NAX routing: N≤1024 NAX→SDPA is faster (N=512 nc **0.36→0.24 ms**), N≥2048 stays NAX. A
-  higher threshold (4096) would make N=2048-B=1 (where NAX wins, 0.98×) slower than before. Batch scales
-  SDPA's edge slightly (N≥2048 high-batch ±1–5 %) — within §AA.4 noise, pre-existing, and out of scope
-  (chasing it conflicts with no-N-slower-than-before). Lock: `tests/test_nax_routing_threshold_lock.py`
+  higher threshold (4096) would make N=2048-B=1 (where NAX wins, 0.98×) slower than before. **Known
+  residual** (not noise): N=4096·B=4·causal SDPA wins ~**4.6 %** (cross-session, above the ±3 % band) — a
+  second-order batch interaction (more batch → NAX relatively worse at large N) that a pure-N threshold
+  structurally cannot capture. It is **pre-existing** (that shape routed NAX before the threshold too — the
+  threshold neither introduces nor worsens it; "no N slower than before" holds). A 2D (N,B) threshold would
+  address it; **not pursued** — marginal, pre-existing, and chasing it conflicts with the simple,
+  regression-free N-threshold. Lock: `tests/test_nax_routing_threshold_lock.py`
   (config fingerprint: byteΔ vs forced-SDPA = 0 ⇒ SDPA, ~1e-6 ⇒ NAX). Reproduce: `flash_attention(q,k,v)`
   at D=128, vary N around 2048.
 - **Conv size-gate: evaluated, NOT needed (no-op with evidence).** conv-NAX vs `mx.conv` HW crossover at
@@ -61,6 +65,9 @@ N·B·H=16384 gives opposite winners: (N=512,B=4)=SDPA 1.03× vs (N=2048,B=1)=NA
   reach HW=8: a VAE decoder's minimum spatial is its latent resolution (32×32 for a 256² output at 8×
   downscale — the smallest realistic VSR target; measured-real decodes — CogVideoX/SeedVR2 — sit at
   32×32). 32 ≫ 16 > 8 → no realistic geometry hits the losing regime → **no conv size-gate added**.
+  **Caveat:** this assumes **full-frame decode** (Marco's measured pipelines). The HW=8 losing regime is
+  reachable only via aggressive **small-tile decode** (a latent tile <16×16); the NO-GO is conditional on
+  full-frame decode and would warrant re-evaluation if the pipeline ever moves to small spatial tiling.
 
 ### NAX backward tile autotune (M5 Max, `research/nax-backward-autotune-m5`, 2026-06-18)
 
