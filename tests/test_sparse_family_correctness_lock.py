@@ -6,8 +6,11 @@ edges, and locks them so a future kernel change that breaks any edge fails CI.
 
 Which-binary (env-toggle fingerprinted, see phase-B1 report):
   - V2 matmul2d (`sparse_kernel_source_v2`, BaseNAXFrag::mma cooperative-tensor)
-    runs when `decide_auto_version` picks "v2" (qL*kL*D >= 2.147e9). The fast win.
-  - V1 scalar (`sparse_kernel_source`) runs below that work threshold (~40x slower).
+    is `decide_auto_version`'s default for the V2-capable head_dims D in {64,128}
+    (audit Phase F retired the old qL*kL*D >= 2.147e9 work-product gate — Phase E
+    measured V1 is never fastest). The fast win.
+  - V1 scalar (`sparse_kernel_source`) is now only the genuine fallback (a head_dim
+    V2 can't handle, e.g. D=256) — kept correct, never the default. ~40x slower.
 Forced here via MFA_LCSA_KERNEL_VERSION to test each generator deterministically.
 
 M5+-gated (the routes under test are M5-specific).

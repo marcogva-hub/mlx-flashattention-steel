@@ -90,9 +90,16 @@ def decide_auto_version(
     if env in ("v1", "v2"):
         return env
 
-    # Shape-aware default per canonical-methodology calibration.
-    work_product = qL * kL * D
-    if work_product >= _V2_DEFAULT_WORK_THRESHOLD:
+    # Audit Phase F (2026-06-18): route by V2-CAPABILITY (head_dim), NOT the old
+    # `qL*kL*D >= _V2_DEFAULT_WORK_THRESHOLD (2^31)` work-product gate.  Phase E
+    # measured the V1-scalar kernel is NEVER fastest (V2 matmul2d is 19-59x faster
+    # than V1 and 1.5-3.9x faster than SDPA at low density); the 2^31 threshold
+    # mis-routed D=64 (work always < 2^31) and D=128 N<4096 to the slow V1.  The
+    # C++ `sparse_attention_forward` falls v2->v1 internally when V2 is ineligible
+    # (causal / block_tile!=32 / bf16), so returning "v2" for the V2 head-dims
+    # selects V2 wherever it can run and keeps V1 only as the genuine fallback.
+    # (Old threshold const retained above for provenance; no longer gates routing.)
+    if D in (64, 128):
         return "v2"
     return "v1"
 

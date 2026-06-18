@@ -1,9 +1,16 @@
-"""Three-axis tests for v2.36.1 shape-aware decide_auto_version() routing.
+"""Three-axis tests for decide_auto_version() routing.
+
+Updated by audit Phase F (2026-06-18): the v2.36.1 `qL*kL*D >= 2^31`
+work-product threshold is RETIRED.  Phase E measured the V1-scalar kernel is
+never fastest (V2 matmul2d 19-59x faster than V1; 1.5-3.9x faster than SDPA at
+low density), so routing is now by V2-CAPABILITY (head_dim): D in {64,128} -> v2
+(the C++ falls v2->v1 internally when V2 is ineligible: causal / block_tile!=32
+/ bf16), any other D -> v1 (the genuine fallback).  Env override unchanged.
 
 Per CLAUDE_V6_NAX.md §3.5 three-axis rule:
   Axis 1 (output sanity)   - V2/V1 routed dispatch produces correct output
   Axis 2 (path entered)    - decide_auto_version returns expected version
-  Axis 3 (edges preserved) - env overrides preserved, threshold preserved
+  Axis 3 (edges preserved) - env overrides preserved, D-fallback preserved
 """
 from __future__ import annotations
 import math
@@ -57,32 +64,40 @@ def _make_inputs(B, Hq, Hk, qL, kL, D, density, BT, seed):
 # ---------------------------------------------------------------------------
 
 def test_decide_auto_version_large_seq16k_returns_v2():
-    """Axis 2: large shape (work_product >= 2.15e9) routes to V2."""
+    """Axis 2: large D=128 shape routes to V2 (V2-capable head_dim)."""
     assert decide_auto_version(0.10, 16384, 16384, 128) == "v2"
 
 
 def test_decide_auto_version_mid_seq8k_returns_v2():
-    """Axis 2: mid shape (work_product = 8.59e9) routes to V2."""
+    """Axis 2: mid D=128 shape routes to V2."""
     assert decide_auto_version(0.10, 8192, 8192, 128) == "v2"
 
 
 def test_decide_auto_version_smallest_tested_returns_v2():
-    """Axis 2: smallest tested shape (work_product = 2.15e9, exactly at
-    threshold) routes to V2."""
+    """Axis 2: D=128 N=4096 routes to V2."""
     assert decide_auto_version(0.10, 4096, 4096, 128) == "v2"
 
 
-def test_decide_auto_version_below_threshold_returns_v1():
-    """Axis 2: shape smaller than smallest tested (work_product = 5.37e8
-    for qL=kL=2048, D=128) keeps V1 conservatively (no canonical data)."""
-    assert decide_auto_version(0.10, 2048, 2048, 128) == "v1"
+def test_decide_auto_version_small_d128_now_routes_v2():
+    """Axis 2 (Phase F): D=128 N=2048 — formerly < the 2^31 threshold and
+    routed to the slow V1 (Phase E: 19.5x loss). Now routes to V2 (the win)."""
+    assert decide_auto_version(0.10, 2048, 2048, 128) == "v2"
 
 
-def test_decide_auto_version_d_64_threshold_respects_work_product():
-    """Axis 2: D=64 with qL=kL=4096 gives work_product=1.07e9 < 2.15e9,
-    routes to V1 (consistent with the threshold being on work product,
-    not on qL alone)."""
-    assert decide_auto_version(0.10, 4096, 4096, 64) == "v1"
+def test_decide_auto_version_d64_now_routes_v2():
+    """Axis 2 (Phase F): D=64 N=4096 — work_product=1.07e9 always sat below
+    the retired 2^31 threshold, routing every D=64 sparse call to the slow V1
+    (Phase E: 9x loss). Now routes to V2 (the biggest single Phase-F win)."""
+    assert decide_auto_version(0.10, 4096, 4096, 64) == "v2"
+    # Small D=64 too — V2 is capable at every D=64 shape.
+    assert decide_auto_version(0.10, 512, 512, 64) == "v2"
+
+
+def test_decide_auto_version_non_v2_head_dim_falls_to_v1():
+    """Axis 2 (Phase F): a head_dim V2 does not support (e.g. D=256) routes to
+    V1 — the genuine fallback. V1 is kept as a correct path, just never the
+    default for V2-capable shapes."""
+    assert decide_auto_version(0.10, 4096, 4096, 256) == "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +122,10 @@ def test_env_garbage_value_falls_through_to_shape_aware(monkeypatch):
     through to the shape-aware default."""
     monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", "garbage")
     assert decide_auto_version(0.10, 16384, 16384, 128) == "v2"
-    assert decide_auto_version(0.10, 1024, 1024, 128) == "v1"
+    # Phase F: small D=128 now also routes V2 (capability, not work-product).
+    assert decide_auto_version(0.10, 1024, 1024, 128) == "v2"
+    # A non-V2 head_dim still falls to V1 under the shape-aware default.
+    assert decide_auto_version(0.10, 1024, 1024, 256) == "v1"
 
 
 def test_env_empty_string_falls_through_to_shape_aware(monkeypatch):
