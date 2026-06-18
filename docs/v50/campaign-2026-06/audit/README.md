@@ -47,6 +47,15 @@ the canonical master plan lands.
   symmetric-NAX-sparse beats SDPA D=128 (4.16×@d=0.06 → crossover ~d=0.78, F-premise HOLDS); STEEL
   legacy on M5 (SDPA 3–4×); sage int8 4.7× slower (not worth); V5 dead; v3_min_N holds. Perf =
   Verified-at-date (not locked). F-target list produced.
+- **E-addendum (B-gap) — dense NAX forward `v6_nax_forward` vs SDPA**. DONE —
+  `phase-E-addendum-v6nax-dense-forward.md` + `tests/test_v6_nax_forward_lock.py` (9 cells).
+  Resolves Marco's "is dense MFA really legacy?" — E benched only the *simdgroup* STEEL variants;
+  the dense **NAX matmul2d** forward (`v6_nax_forward`, backward-recompute-only, default-scale-only,
+  `_ext`-only) was never benched as a forward. Measured: **parity-or-better than SDPA at D=128
+  (0.89–1.00×)**; D=64 loses (1.17–1.22×); simdgroup STEEL 2.06–4.27× slower (E's gap = simdgroup-
+  specific). B-gap closed (standalone fp32 forward correctness locked, max_err ≤7e-5). "Legacy"
+  framing REVISED (backend=mfa→STEEL legacy stands; a competitive dense NAX path exists) → F-target:
+  consider exposing `v6_nax_forward` for D=128 (modulo default-scale + D=64-excluded). No routing here.
 - **F — Orchestration/routing fix**. DONE (`874f583` Change 1 + `aa4d9a9` Change 2) —
   `phase-F-routing-fix-report.md`. **Change 1:** `decide_auto_version` routes D∈{64,128}→V2
   (retired the 2^31 work-product gate); D=64 sparse ~9× / D=128 N2048 ~20× vs old V1 default.

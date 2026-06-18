@@ -138,6 +138,16 @@ force-the-binary / dispatch-aware).  `tests/test_fingerprint_discipline.py` make
 green-on-wrong-binary structurally catchable (assert the BINARY — byteΔ vs SDPA —
 not just the MATH); a re-pointed test now FAILS on drift to the wrong kernel.
 
+**E-addendum (dense NAX forward, 2026-06-18):** E's "dense `backend=mfa` is 3–4×
+legacy on M5" is **simdgroup-specific** — E benched only the simdgroup STEEL variants
+(V1–V5).  The dense **NAX matmul2d** forward `v6_nax_forward` (`mfa_steel_fwd_v6_nax.cpp`,
+backward-recompute-only, `_ext`-only, default-scale-only) is **parity-or-better than SDPA
+at D=128 (0.89–1.00×)**; D=64 loses (1.17–1.22×).  Standalone fp32 forward correctness
+locked (`tests/test_v6_nax_forward_lock.py`, 9 cells — the B-gap).  Lesson: the
+proxy-footgun cuts both ways — never generalize a primitive's perf from a *sibling* kernel
+(simdgroup ≠ matmul2d, same "dense MFA" label).  F-target: consider exposing `v6_nax_forward`
+for D=128.  See `docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the

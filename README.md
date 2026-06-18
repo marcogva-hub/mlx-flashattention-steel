@@ -351,8 +351,12 @@ The audit's Phase F routing rebuild fixed the two largest sparse-dispatch gotcha
 - **`mx.grad(flash_attention_sparse)` runs a *dense* SDPA-vjp backward by default** —
   the sparse forward win does not carry to the backward unless `MFA_ENABLE_V6_BACKWARD=1`
   (+ `bt≥64`). [Verified]
-- **`backend="mfa"` (STEEL) is legacy on M5** — Apple SDPA is 3–4× faster; the default
-  `backend="auto"` correctly routes dense attention to SDPA. [Verified]
+- **`backend="mfa"` (simdgroup STEEL) is legacy on M5** — Apple SDPA is 2–4× faster; the
+  default `backend="auto"` correctly routes dense attention to SDPA. [Verified] Note: this
+  gap is specific to the *simdgroup* kernels. A separate dense **NAX matmul2d** forward
+  (`v6_nax_forward`) is **parity-or-better than SDPA at D=128 (0.89–1.00×)** but is currently
+  backward-recompute-only, reachable solely via `_ext`, and default-scale-only; exposing it
+  is an open routing question (see `docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`). [Verified]
 - **STEEL V5 is ineligible at all tested shapes** (env-gated, rarely fires). [Verified]
 - **`sage_attention` (int8) is ~4.7× slower than SDPA on M5** (cos ~0.997) — kept as
   an expert/opt-in backend, not auto-routed. [Verified]
