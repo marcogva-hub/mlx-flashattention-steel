@@ -100,6 +100,39 @@ Full investigation evidence + skill invocations log:
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | III-1 (2026-06, KD-7 lift) | bf16 conv3d via MPP: 1.4-2.7x vs the pre-lift public bf16 path (Apple mx.conv3d fallback) at the II-9 cells | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | Same shapes in bf16 | REACHABLE (default; telemetry-verified) |
 | `iii2_tq_paged_decode_step_default` | III-2 (2026-06; re-confirmed III-12b on 26.6; reframed III-12c) | **User-facing trade-off (the headline): TQ paged decode trades ~1.4-3x decode-step latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs fp16 dense decode** (`step()` `0.75 ms vs 0.33 ms` @S=16K; KV `32 MB → ~6.5 MB` @S=8K). Opt-in (`TurboQuantPagedInferenceContext`), not auto-routed — the user chooses the trade-off. _Secondary / internal-perf history (NOT the user choice — the fused kernel is gone, so it is not a selectable baseline): the gather/dequant+SDPA path is 6.5-23x faster than the fused TQ attend kernel it replaced (`0.75 ms vs 16.8 ms` @S=16K)._ Lesson #15 + III-12c: lead with the actionable denominator (fp16 dense), not the biggest-number one. | env unset (opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`) | `TurboQuantPagedInferenceContext.step(q, k, v)` N_q=1, B=1 Hq=32 Hkv=8 D=128 tq3b; reproduce: `benchmarks/methodology/iii12b_tq_claim_26.6_run{1,2}.log` (script `tq_claim.py`) | REACHABLE (default; kernel-cache-verified) |
 
+### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — **NO-GO (closure-on-record)**
+
+Re-opened the M1-era "custom conv3d not worth it" closure for M5 (which adds the MPP `matmul2d`
+NA path `mfa_conv_nax` targets). MEASURE-and-decide; **no code change**. Verdict: **NO-GO — the M1
+closure HOLDS on M5, but for a NEW, M5-specific reason.** The decision rests on three measured facts
+(real VAE shapes: SeedVR2 VAE `block_out_channels [128,256,512,512]`, EXTRACTED from
+`results/phase1/architecture_audit.json`; CogVideoX-class VAE per DOVE `vae_cogvideox.py`):
+
+- **(a) Eligibility = 0 % addressable (the decider).** Every production VAE conv3d is **causal**
+  (`InflatedCausalConv3d` / `CogVideoXCausalConv3d`): time-padding is applied manually (concat) and
+  the `mx.conv_general` call passes `padding=(0,1,1)` for 3×3×3 and `(0,0,0)` for 1×1×1. The MPP
+  auto-hook gates strictly on **symmetric `pad=(1,1,1)`** (`_conv3d_mpp_eligible`, line 240) — so BOTH
+  the bulk 3×3×3 causal convs AND the 1×1×1 pointwise convs **fall back to `mx.conv`** (hook telemetry
+  measured: `executed+0, fallback+1` for `pad=(0,1,1)` and `pad=0`; `executed+1` only for `(1,1,1)`).
+  Causal time-padding is fundamentally asymmetric → these convs can *never* present `(1,1,1)`.
+- **(b) NAX beats MLX where eligible — YES (but moot).** On *would-be-eligible* symmetric 3×3×3 convs
+  at VAE channels, NAX is **1.3–2.7× faster** than `mx.conv` on M5 (512×8×32×32: **3.07 ms vs 8.47 ms**;
+  256×8×64×64: **3.23 vs 8.29 ms**; 128×8×128×128: **2.83 vs 8.02 ms**) — the kernel is good. It is
+  simply unreachable for causal VAEs.
+- **(c) Those convs are compute-bound.** Measured M5 roofline: compute **55.6 TFLOPS** (4096³ fp16
+  matmul; ~the 51.8 effective gate), bandwidth **358 GB/s** (ridge ≈ 145 FLOP/byte). The VAE 3×3×3
+  convs have AI 892–3749 ≫ ridge → compute-bound → a faster compute kernel *could* help if reachable.
+
+**Decision metric** (projected end-to-end VAE-decode conv speedup = Σ ms-saved on
+NAX-eligible-AND-NAX-beats layers / total conv ms) = **0 %** (eligible set empty) — far below the ~5 %
+NO-GO bar. **The bottleneck is the causal-padding eligibility gate, not kernel quality or roofline.**
+A GO would require adding **causal (asymmetric-time) padding support to the NAX conv kernel** — a
+*kernel* project, larger than the wiring sprint a GO normally scopes; deferred, not scoped here.
+Verdict is shape-INDEPENDENT (causal → ineligible for any spatial dims), so it is NOT conditional on
+spatial-shape confirmation. Reproduce: hook telemetry via nested `get_hook_stats()` on a `pad=(0,1,1)`
+3×3×3 conv (falls back) vs `pad=(1,1,1)` (routes). Journal:
+`.doc-archive/docs/v50/conv3d-nax-vae-profile-m5.md`.
+
 ### Internal claims (v2.39.2-internal — below-public-floor coverage)
 
 v2.39.2-internal lowered the V6NAX backward carve-out floor from `qL≥4096`

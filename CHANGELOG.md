@@ -4,7 +4,24 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased] — Tier-1 work (stacks toward 2.60.0)
 
-Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune.
+Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune;
+#2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure).
+
+### Profiling / decisions (no behavior change)
+
+- **conv3d-NAX VAE-decode profile (M5): NO-GO — M1 closure holds, new M5 reason (Tier-1 #3).**
+  Re-opened the M1 "custom conv3d not worth it" closure for M5's MPP `matmul2d` conv path
+  (`mfa_conv_nax`). Verdict by measurement: **projected end-to-end VAE-decode conv speedup = 0 %**
+  (NO-GO bar ~5 %), because the addressable conv FLOP is **0 % — all production VAE conv3d are causal**
+  (`InflatedCausalConv3d` / `CogVideoXCausalConv3d`: manual time-pad → `mx.conv_general` `padding=(0,1,1)`
+  for 3×3×3, `0` for 1×1×1), and the MPP auto-hook gates strictly on symmetric `pad=(1,1,1)` → every
+  VAE conv falls back to `mx.conv` (hook telemetry verified). The reason is *eligibility*, NOT kernel
+  quality: on would-be-eligible symmetric 3×3×3 convs the NAX kernel beats `mx.conv` **1.3–2.7×** on M5
+  (e.g. 512×8×32×32 **3.07 vs 8.47 ms**) and those convs are compute-bound (measured roofline: 55.6
+  TFLOPS / 358 GB/s, ridge ≈145; conv AI 892–3749). A GO would need causal-padding support added to the
+  NAX conv kernel (a kernel project, not wiring) — deferred. Closure-on-record (PERF_CLAIMS conv
+  section + `.doc-archive/docs/v50/conv3d-nax-vae-profile-m5.md`); verdict is shape-independent
+  (eligibility fails for any spatial dims) so not conditional on shape confirmation. No code change.
 
 ### Performance
 
