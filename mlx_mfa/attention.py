@@ -468,7 +468,13 @@ def flash_attention(
             raise ValueError(
                 "return_attn_weights and return_lse are mutually exclusive."
             )
-        return _sdpa_with_weights(q, k, v, scale, causal, softcap, dropout_p)
+        # v2.58.1 P1: thread attn_bias / alibi_slopes / window_size so the
+        # weights path matches the production path (was a silent drop).
+        return _sdpa_with_weights(
+            q, k, v, scale, causal, softcap, dropout_p,
+            attn_bias=attn_bias, alibi_slopes=alibi_slopes,
+            window_size=window_size,
+        )
 
     # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
     if dropout_p > 0.0:
@@ -4704,11 +4710,20 @@ def _sdpa_with_weights(
     causal: bool,
     softcap: float = 0.0,
     dropout_p: float = 0.0,
+    attn_bias: Optional[mx.array] = None,
+    alibi_slopes: Optional[mx.array] = None,
+    window_size: Optional[tuple] = None,
 ):
     """SDPA returning (output, attn_weights [B,H,N,S]).
 
     Used by Track AH (return_attn_weights=True).  Computes the full
     attention score matrix so that the softmax probabilities are available.
+
+    v2.58.1 P1 (silent-drop bugfix): now applies ``attn_bias`` / ``alibi_slopes``
+    / ``window_size`` with the SAME semantics as the production (non-weights)
+    path — previously these were dropped, returning plausible-but-wrong output
+    AND weights.  Composition order mirrors the production single-feature refs:
+      scale·QKᵀ → softcap(tanh) → +attn_bias → +alibi → window −inf → causal −inf.
     """
     B, H, N, D = q.shape
     S = k.shape[2]
@@ -4717,6 +4732,32 @@ def _sdpa_with_weights(
 
     if softcap > 0.0:
         scores = mx.tanh(scores / softcap) * softcap
+
+    # attn_bias: additive on scores before softmax (production: SDPA mask=bias).
+    if attn_bias is not None:
+        scores = scores + attn_bias.astype(scores.dtype)
+
+    # ALiBi: per-head linear positional bias slope[h]·(k_pos − q_pos)
+    # (matches _alibi_sdpa_ref's pos_diff = k_pos − q_pos convention).
+    if alibi_slopes is not None:
+        q_pos = mx.arange(N, dtype=mx.float32)[:, None]
+        k_pos = mx.arange(S, dtype=mx.float32)[None, :]
+        pos_diff = k_pos - q_pos                       # [N, S]
+        sl = alibi_slopes.astype(mx.float32)           # [H]
+        alibi_bias = sl[:, None, None] * pos_diff[None, :, :]   # [H, N, S]
+        scores = scores + alibi_bias[None].astype(scores.dtype)
+
+    # Sliding-window additive −inf mask outside (left, right); composes with
+    # causal (matches the production window-fallback builder).
+    if window_size is not None:
+        wl = window_size[0]
+        wr = window_size[1] if len(window_size) > 1 else -1
+        wl_eff = max(wl, 0) if wl >= 0 else S
+        wr_eff = max(wr, 0) if wr >= 0 else S
+        q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
+        k_idx = mx.arange(S, dtype=mx.int32)[None, :]
+        in_win = (k_idx >= q_idx - wl_eff) & (k_idx <= q_idx + wr_eff)
+        scores = mx.where(in_win[None, None, :, :], scores, float("-inf"))
 
     if causal:
         idx_i = mx.arange(N, dtype=mx.int32)[:, None]
