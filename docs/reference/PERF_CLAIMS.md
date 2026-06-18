@@ -88,6 +88,23 @@ dtype-independent; this confirms **perf parity vs fp16** and **correctness vs an
 - Lock: `tests/test_bf16_routing_all_nax_lock.py` (route byteΔ + perf-parity ceiling 1.30× generous +
   fp32-correctness floor 5e-3). Reproduce: `flash_attention(q,k,v,causal=...)` at D=128 N≥2048, bf16 vs fp16.
 
+### Dense-NAX online-softmax accumulator — near-optimal, NO rewrite (Tier-3, 2026-06-19)
+
+Read-first characterization of the one structural (non-sweep) surface: the running `(O, m, l)` +
+rescale logic interleaved with the MPP `matmul2d` calls in the production dense-NAX forward
+(`NAAttentionKernel.cpp::createV6NAXSource`, the F-2 `v6_nax_forward` binary — confirmed live by
+`MFA_V6_DUMP_SOURCE`, config BQ=64 BK=32 BD=128 WM=4). **Verdict: near-optimal, NO-GO — no rewrite.**
+
+The leading hypothesis (current = per-block FA1 rescale → rewrite to deferred FA2) is **refuted by
+reading**: the accumulator is **already FA2** — per K-block it does only the mandatory max-stability
+correction `cO *= exp2(m_old−m_new)` (a *no-op* when the running max doesn't grow) + `cL` running-sum;
+the **1/l division is deferred to a single epilogue** `O = cO·(1/cL)`. Accumulators (`cM/cL/cO`) are
+**fp32 cooperative tensors** (NA-native, no spill — why bf16==fp16, Tier-2 #2); QK/PV are **full-tile
+`matmul2d`** (multiply_accumulate). The structure follows Apple's `steel_attention_nax` reference. No
+training-free structural opportunity with a real prize (the only micro-opt — guarding the no-op
+`cO *= 1` — is TRIVIAL/≈zero-prize and adds a divergent branch). A valid negative, like the dV/dK
+confirm. No code change. Full write-up: `.doc-archive/docs/v50/tier3-nax-accumulator-characterization.md`.
+
 ### NAX backward tile autotune (M5 Max, `research/nax-backward-autotune-m5`, 2026-06-18)
 
 Autoresearch over the default-on **D=64 native backward** (the split dQ kernel,

@@ -2,10 +2,25 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — Tier-1 + Tier-2 work (stacks toward 2.60.0)
+## [Unreleased] — Tier-1 + Tier-2 + Tier-3 work (stacks toward 2.60.0)
 
 Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune;
-#2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure); Tier-2 #1 routing thresholds.
+#2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure); Tier-2 #1 routing thresholds;
+Tier-2 #2 bf16 D=128 3-axis confirm; Tier-3 accumulator characterization (near-optimal NO-GO).
+
+### Profiling / decisions (no behavior change) — Tier-3
+
+- **Dense-NAX online-softmax accumulator: near-optimal, NO rewrite (Tier-3).** Read-first characterization
+  of the one structural (non-sweep) surface — the running `(O,m,l)` + rescale interleaved with the MPP
+  `matmul2d` calls in the production `v6_nax_forward` (confirmed live via `MFA_V6_DUMP_SOURCE`: BQ=64 BK=32
+  BD=128 WM=4). The hypothesis (current = per-block FA1 rescale → rewrite to deferred FA2) is **refuted by
+  reading**: the accumulator is **already FA2** — per K-block only the mandatory max-correction
+  `cO *= exp2(m_old−m_new)` (no-op when the running max is stable) + `cL` running-sum; the **1/l division is
+  deferred to a single epilogue** `O = cO·(1/cL)`. Accumulators are fp32 cooperative tensors (NA-native, no
+  spill — why bf16==fp16); QK/PV are full-tile `matmul2d`. Structure = Apple's `steel_attention_nax`
+  reference. No training-free structural opportunity with a real prize → a valid negative (like the dV/dK
+  confirm). No code change; Phase 1/2 (prototype/measure) correctly not entered. Write-up:
+  `.doc-archive/docs/v50/tier3-nax-accumulator-characterization.md`.
 
 ### Changed (routing — removes a small-N regression)
 
