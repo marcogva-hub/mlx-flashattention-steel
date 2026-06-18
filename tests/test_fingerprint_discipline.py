@@ -55,13 +55,22 @@ def _bias(m, N, S):
     return b.astype(mx.float16)
 
 
-# ── 1. wrong-binary instances: locked as "runs SDPA on M5" (flip = Phase-F drift) ──
+# ── 1. D=128 SDPA edge cases: the THREE residual routes that stay on SDPA ──────
 class TestKnownWrongBinaryLockedAsSDPA:
-    """These pre-existing-style sparse-forward calls run dense SDPA on M5 (the
-    asymmetric-mask → _sparse_fallback_sdpa_perhead route). Locked so the vacuous
-    state is explicit and a Phase-F reroute is forced to update it."""
+    """Audit Phase F (2026-06-18) FIXED the common D=128 sparse case: built-in
+    maker masks are now symmetric 32×32 and route to the real NAX-sparse kernel
+    (see TestFingerprintDisciplineDemo + test_large_sliding_window_maker_is_nax).
+    These cells lock the THREE residual routes that CORRECTLY stay on SDPA — not
+    the old silent-fallback bug, but deliberate routing:
+      (a) ASYMMETRIC / custom masks (bt_q != bt_k) — skip the symmetric auto-route;
+      (b) SMALL masks (mask_bytes < 4096) — NAX device-pointer lowering excludes them;
+      (c) DENSE symmetric masks (density >= the 0.78 ceiling) — NAX loses, gate → SDPA.
+    Byte-identity (Δ==0.0 vs SDPA) is the fingerprint. A flip means a routing
+    drift that must be re-examined."""
 
-    def test_all_true_d128_is_sdpa_not_sparse(self):
+    def test_all_true_asymmetric_d128_is_sdpa_not_sparse(self):
+        # (a) ASYMMETRIC mask (32x16, _steel_block_config) — not a symmetric maker;
+        # bt_q=32 != bt_k=16 skips the NAX auto-route → SDPA fallback (unchanged).
         B, H, N, D = 1, 4, 2048, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
         BQ, BK = _steel_block_config(D); NQ, NK = N // BQ, N // BK
@@ -69,18 +78,34 @@ class TestKnownWrongBinaryLockedAsSDPA:
         o = flash_attention_sparse(q, k, v, at, scale=sc)
         sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
         assert _delta(o, sdpa) == 0.0, (
-            "D=128 all-true sparse no longer byte-identical to SDPA — the asymmetric "
-            "path was rerouted to a real kernel (Phase F?). Update this lock + the "
-            "pre-existing test's claim."
+            "D=128 asymmetric all-true sparse no longer byte-identical to SDPA — "
+            "the asymmetric path drifted off SDPA. Update this lock."
         )
 
-    def test_sliding_window_d128_is_sdpa_not_sparse(self):
+    def test_small_sliding_window_d128_is_sdpa_not_sparse(self):
+        # (b) SMALL symmetric mask: N=256 → 8x8 bool = 64 bytes < 4096 → the NAX
+        # small-mask guard falls through to the SDPA fallback (Phase F unchanged).
         B, H, N, D = 1, 4, 256, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
-        m = make_sliding_window_mask(N, window_size=64, head_dim=D)
+        m = make_sliding_window_mask(N, window_size=64, head_dim=D)  # symmetric 8x8
         o = flash_attention_sparse(q, k, v, m, scale=sc)
         ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
-        assert _delta(o, ref) == 0.0, "D=128 sliding-window sparse rerouted off SDPA — update lock"
+        assert _delta(o, ref) == 0.0, (
+            "small (mask_bytes<4096) D=128 sparse rerouted off SDPA — update lock")
+
+    def test_dense_symmetric_d128_is_sdpa_via_density_gate(self):
+        # (c) DENSE symmetric mask (density >= 0.78 ceiling): the Phase-F density
+        # gate routes it to the SDPA fallback (NAX loses when near-dense).
+        B, H, N, D = 1, 4, 2048, 128
+        q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+        NB = N // 32
+        dm = np.random.default_rng(0).random((NB, NB)) < 0.90  # d~0.90 >= 0.78
+        m = mx.array(dm)
+        o = flash_attention_sparse(q, k, v, m, scale=sc)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
+        assert _delta(o, ref) == 0.0, (
+            "dense symmetric D=128 sparse did NOT hit the density gate → SDPA "
+            "(Phase F regression: gate threshold or routing changed)")
 
 
 # ── 2. positive fingerprint demo: symmetric D=128 sparse IS a real kernel ─────
@@ -99,6 +124,22 @@ class TestFingerprintDisciplineDemo:
         # correctness (vs SDPA math) AND binary (distinct kernel, not the fallback)
         assert d < 3e-2, f"symmetric sparse wrong vs SDPA math (Δ={d})"
         assert d > 0.0, "symmetric D=128 sparse is byte-identical to SDPA — it drifted to the fallback (WRONG BINARY)"
+
+    def test_large_sliding_window_maker_is_nax_not_sdpa(self):
+        """Audit Phase F: the built-in D=128 sliding-window MAKER mask (large,
+        symmetric 32x32, low density) now routes to the real NAX-sparse kernel
+        — NOT the old silent SDPA fallback. byteΔ>0 vs SDPA proves the fix; a
+        drift back to SDPA (byteΔ→0) re-opens the gotcha-1 loss and FAILS here."""
+        B, H, N, D = 1, 4, 2048, 128
+        q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+        m = make_sliding_window_mask(N, window_size=256, head_dim=D)  # symmetric 64x64, d~0.25
+        o = flash_attention_sparse(q, k, v, m, scale=sc)
+        sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
+        d = _delta(o, sdpa)
+        assert d < 3e-2, f"sliding-window NAX-sparse wrong vs SDPA math (Δ={d})"
+        assert d > 0.0, (
+            "large D=128 sliding-window MAKER mask is byte-identical to SDPA — "
+            "Phase-F maker→NAX routing drifted back to the SDPA fallback (WRONG BINARY)")
 
 
 # ── 3. expert-path fingerprints (audit C2: the expert subset runs its CLAIMED binary) ──

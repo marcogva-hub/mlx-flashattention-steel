@@ -325,29 +325,37 @@ on my work!
 - Future major hardware-specific optimization work is deferred pending newer
   Apple hardware (M5+).
 
-### Known issues — verified M5/26.6 runtime dispatch (audit A–C, 2026-06-18)
+### Fixed in the audit routing pass (Phase F, 2026-06-18)
 
-Established by RUNTIME fingerprint (not source-reading); each carries a planned-fix
-pointer. The current routing is **honest, not optimal** — these are the warts a
-later routing pass (the "Phase F" fix) will address.
+The audit's Phase F routing rebuild fixed the two largest sparse-dispatch gotchas
+(both verified by runtime fingerprint + three-axis):
 
-- **`flash_attention_sparse` at D=128 with a built-in mask (`make_causal_block_mask`,
-  `make_sliding_window_mask`, `make_strided_mask`, `make_lcsa_mask`) silently falls
-  back to dense Apple SDPA on M5.** Cause: `_steel_block_config(128)=(BQ=32,BK=16)`
-  emits an *asymmetric* block-mask, and the asymmetric STEEL sparse kernel is disabled
-  on macOS 26 by a Metal-compiler miscompile of `(long)p->NK` (reads the wrong struct
-  offset). The real, fast sparse kernel runs only for a **symmetric** mask (`BQ==BK`,
-  e.g. `block_tile=32`). [Verified] Workaround: pass a symmetric block-mask at D=128.
-- **Below `qL*kL*D = 2^31`, sparse forward uses the per-thread V1 *scalar* kernel
-  (~40× slower than the V2 matmul2d kernel).** D=64 (any N≤8k) and D=128 (N<4096) fall
-  below the threshold. [Verified] The threshold (`decide_auto_version`) is
-  benchmark-derived; its perf validity is being re-checked (Phase E).
+- **D=128 sparse with a built-in mask now routes to the real NAX-sparse kernel.**
+  The makers (`make_causal_block_mask`, `make_sliding_window_mask`,
+  `make_strided_mask`, `make_lcsa_mask`, …) emit a **symmetric 32×32** block-mask
+  (was asymmetric 32×16), so the M5+ symmetric-bt auto-route engages NAX instead of
+  silently falling back to dense SDPA — **1.7–4.2× faster** at density < 0.78. A
+  density gate routes near-dense masks (≥ 0.78, env `MFA_NAX_SPARSE_DENSITY_CEILING`)
+  to SDPA, where it is faster. [Verified — three-axis, M5/26.6]
+- **D=64 sparse now routes to V2 (matmul2d), ~9× faster** than the old V1-scalar
+  path. The `qL*kL*D = 2^31` work-product threshold in `decide_auto_version` is
+  retired; routing is by V2-capability (head_dim). V1-scalar was never fastest.
+  [Verified — three-axis, M5/26.6]
+
+### Known issues — verified M5/26.6 runtime dispatch (audit, 2026-06-18)
+
+- **`flash_attention_sparse` at D=128 falls back to dense SDPA** for *asymmetric /
+  custom* masks (`bt_q≠bt_k`), *small* masks (mask bytes < 4096; NAX device-pointer
+  lowering excludes them), or *near-dense* masks (density ≥ 0.78). These are
+  deliberate routes (SDPA is correct + faster there), not a silent bug. [Verified]
 - **`mx.grad(flash_attention_sparse)` runs a *dense* SDPA-vjp backward by default** —
   the sparse forward win does not carry to the backward unless `MFA_ENABLE_V6_BACKWARD=1`
   (+ `bt≥64`). [Verified]
+- **`backend="mfa"` (STEEL) is legacy on M5** — Apple SDPA is 3–4× faster; the default
+  `backend="auto"` correctly routes dense attention to SDPA. [Verified]
 - **STEEL V5 is ineligible at all tested shapes** (env-gated, rarely fires). [Verified]
-- Perf numbers in this README are pre-audit; a complete M5/26.6 re-measurement is
-  **pending (Phase E)** — treat ratios as indicative, not freshly-verified-current.
+- **`sage_attention` (int8) is ~4.7× slower than SDPA on M5** (cos ~0.997) — kept as
+  an expert/opt-in backend, not auto-routed. [Verified]
 
 **Path-dependent env semantics (verified):** `MFA_ENABLE_V6_BACKWARD=1` engages
 **full-native** dQ/dK/dV for the *dense* D=128 backward, but only **native-dV** (dQ/dK

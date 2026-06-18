@@ -12,11 +12,13 @@ Fingerprint semantics:
     different rounding) — e.g. STEEL, the NAX sparse kernel.
   - hook telemetry executed[X] > 0      => the hooked kernel X ran (conv).
 
-This test asserts the CURRENT verified reality, INCLUDING the documented gotchas
-(D=128-sparse→SDPA, D=64-sparse-slow, sparse-backward-dense), locked as
-"expected, documented" so UNINTENTIONAL drift fails CI. Phase F will deliberately
-update this map + test together when it fixes the routing. Do NOT weaken to make
-a reroute pass silently — update the map entry with a comment when intended.
+This test asserts the CURRENT verified reality. Audit Phase F (2026-06-18) FIXED
+two of the original gotchas — D=128 built-in-maker sparse now routes to NAX
+(symmetric 32×32), and D=64 sparse routes to V2 (not the slow V1). The residual
+SDPA routes (asymmetric/custom, small, dense-via-gate) + sparse-backward-dense
+are locked as "expected, documented" so UNINTENTIONAL drift fails CI. Do NOT
+weaken to make a reroute pass silently — update the map entry with a comment when
+intended.
 
 Gated to M5+ (the guards under test are M5-specific). On non-M5 the routes differ;
 the test skips rather than asserting M5 reality elsewhere.
@@ -87,16 +89,19 @@ def test_dense_mfa_is_real_steel_not_sdpa():
 
 # ── sparse forward (the cartography + increment-0 findings, locked) ──────────
 def test_sparse_D128_asymmetric_is_silent_sdpa_fallback():
-    """GOTCHA (documented): D=128 + asymmetric mask (every built-in maker) → dense SDPA.
-    Locked as current reality; Phase F will reroute + update this."""
+    """D=128 + ASYMMETRIC / custom mask (bt_q != bt_k) → dense SDPA fallback.
+    Phase F (2026-06-18) FIXED the built-in makers (now symmetric 32×32 → NAX,
+    see test_sparse_D128_symmetric_is_real_nax_sparse); only asymmetric/custom
+    masks remain on the SDPA fallback. This cell builds an asymmetric 32×16 mask
+    explicitly to lock that residual route."""
     B, H, N, D = 1, 4, 2048, 128
     q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
-    BQ, BK = _steel_block_config(D)  # (32, 16) → asymmetric
+    BQ, BK = _steel_block_config(D)  # (32, 16) → asymmetric (NOT a built-in maker)
     NQ, NK = N // BQ, N // BK
     m = np.zeros((NQ, NK), bool); m[:, :NK // 4] = True; m = mx.array(m)
     o = flash_attention_sparse(q, k, v, m, scale=sc, causal=False)
     ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_block_bias(m, N, N))
-    assert _delta(o, ref) == 0.0, "D=128 asymmetric sparse no longer the SDPA fallback (Phase F reroute? update map)"
+    assert _delta(o, ref) == 0.0, "D=128 asymmetric sparse no longer the SDPA fallback (drift? update map)"
 
 
 def test_sparse_D128_symmetric_is_real_nax_sparse():

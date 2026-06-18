@@ -47,8 +47,16 @@ the canonical master plan lands.
   symmetric-NAX-sparse beats SDPA D=128 (4.16×@d=0.06 → crossover ~d=0.78, F-premise HOLDS); STEEL
   legacy on M5 (SDPA 3–4×); sage int8 4.7× slower (not worth); V5 dead; v3_min_N holds. Perf =
   Verified-at-date (not locked). F-target list produced.
-- **F — Orchestration/routing fix** (sparse→V2-not-V1; D=128-sparse→symmetric-NAX, on E's thresholds);
-  **G — ship**. Pending — F NEXT.
+- **F — Orchestration/routing fix**. DONE (`874f583` Change 1 + `aa4d9a9` Change 2) —
+  `phase-F-routing-fix-report.md`. **Change 1:** `decide_auto_version` routes D∈{64,128}→V2
+  (retired the 2^31 work-product gate); D=64 sparse ~9× / D=128 N2048 ~20× vs old V1 default.
+  **Change 2:** built-in D=128 makers emit symmetric 32×32 (`_bq_bk(128)=(32,32)`) → M5+ NAX
+  auto-route; density gate (0.78 ceiling, env-overridable) sends near-dense → SDPA. §AA.5.x
+  multi-gate fix (validator accepts both geometries + exact tile-split normalize). Three-axis
+  green (fp32 ≤1.4e-5; which-binary NAX/SDPA; win 1.9–2.5× low-d). Locks UPDATED not bypassed
+  (decide_auto_version shape-aware, dispatch-map, fingerprint-discipline +2 cells, maker-shape
+  asserts → `_bq_bk`). Suite 1900 green. Gotchas 1+2 FIXED; gotcha 3 unchanged (declined-perf).
+- **G — ship** (ship-readiness gate + first release off the audited tree). Pending — G NEXT.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +
@@ -72,9 +80,9 @@ Authoritative map: [`dispatch-map.md`](dispatch-map.md). Lock: `tests/test_dispa
 | backward dense / sparse-default | SDPA-vjp (**gotcha 3: sparse bwd is dense**) | verified+locked |
 | conv3d eligible / ineligible | NAX / fallback | verified+locked |
 
-## Open gotchas (→ Phase F)
-1. D=128 sparse default-maker → silent SDPA (loses 1.7–4.2×).
-2. D=64 sparse → slow, loses to SDPA.
-3. Sparse backward dense-by-default (opt-in declined-on-perf).
-Recommended fix (Phase F): D-aware mask-convention + routing — D=128 symmetric→NAX-sparse, D=64→SDPA;
-do NOT fix the `(long)p->NK` compiler bug (high-risk dead-end per the cartography).
+## Gotchas — status after Phase F (2026-06-18)
+1. D=128 sparse default-maker → silent SDPA — **FIXED**: makers emit symmetric 32×32 → NAX (1.7–4.2× at d<0.78); density gate routes ≥0.78 → SDPA.
+2. D=64 sparse → slow V1 — **FIXED**: `decide_auto_version` routes D∈{64,128}→V2 (retired 2^31 gate); ~9×.
+3. Sparse backward dense-by-default — **UNCHANGED** (opt-in, declined-on-perf, Pattern #6).
+The `(long)p->NK` compiler bug was NOT touched (high-risk dead-end per the cartography); the fix is
+pure routing + mask-block-size, exactly as the cartography recommended.

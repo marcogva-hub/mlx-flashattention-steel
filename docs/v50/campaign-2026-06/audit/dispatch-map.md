@@ -16,9 +16,10 @@ conv via `get_hook_stats()` executed/fallback counters.
 |---|---|---|---|---|
 | `flash_attention` | `backend="auto"`, dense | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended |
 | `flash_attention` | `backend="mfa"`, dense | **STEEL** (V2 default / V3 cond-auto) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (expert) |
-| `flash_attention_sparse` | **D=128**, asymmetric mask (every built-in maker: causal/sliding/strided/lcsa → [N/32,N/16]) | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | **SILENT-FALLBACK (gotcha 1)** |
-| `flash_attention_sparse` | **D=128**, symmetric mask [N/32,N/32] (hand-passed) | **real NAX sparse** (wins 1.7–4.2×) | Δ=3.8e-6; sloped | routed-as-intended (unreachable via makers) |
-| `flash_attention_sparse` | **D=64**, default (symmetric) | **real sparse, but SLOW** | Δ=3.8e-6; sloped; loses to SDPA | **DECLINED-perf (gotcha 2)** |
+| `flash_attention_sparse` | **D=128**, built-in maker mask (causal/sliding/strided/lcsa → [N/32,N/32], symmetric since **Phase F**), density < 0.78 | **real NAX sparse** (wins 1.7–4.2×) | Δ=3.8e-6; sloped | **routed-as-intended (gotcha 1 FIXED — Phase F)** |
+| `flash_attention_sparse` | **D=128**, symmetric mask, density ≥ 0.78 (ceiling) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended (NAX loses near-dense) |
+| `flash_attention_sparse` | **D=128**, asymmetric/custom mask (bt_q≠bt_k) OR mask_bytes<4096 | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | routed-as-intended (residual SDPA edges) |
+| `flash_attention_sparse` | **D=64**, default (symmetric) | **real V2 NAX sparse** (since **Phase F**: V2 always, not V1) | Δ=3.8e-6; sloped; ~9× vs old V1 | **routed-as-intended (gotcha 2 FIXED — Phase F)** |
 | `flash_attention_gna` | D=128 3D f16 | **native GNA kernel** | Δ=7.3e-2 vs block-bias-SDPA (≠0 → not fallback) | routed-as-intended |
 | `flash_attention_topk` | — | own path (topk + SDPA) | Δ=1.9e-6 @ ratio=1.0 | routed-as-intended |
 | `sage_attention` | — | int8 sage kernel | Δ=1.1e-3 vs sdpa | routed-as-intended |
@@ -32,17 +33,18 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 ## Runtime guards (each runtime-confirmed)
 
-1. **Dense default → SDPA** — `dispatch_policy._M5_NAX_THRESHOLDS = 999999` (always SDPA); `backend="mfa"` overrides to STEEL.
-2. **Sparse asymmetric → SDPA fallback** — `attention.py:3239` `_sparse_fallback_sdpa_perhead` on M5+, because the asymmetric STEEL kernel is disabled by the `(long)p->NK` Metal-compiler miscompile (`docs/v6-nax/sparse-bug-investigation.md`).
-3. **Sparse symmetric auto-route** — `attention.py:3128` fires only when `bt_q == bt_k` → real NAX sparse.
-4. **Sparse backward hybrid gate** — `MFA_ENABLE_V6_BACKWARD=1` AND D∈{64,128} AND N≥2048 AND ndim==2 AND **bt≥64** (III-4 D16 fix); else dense SDPA-vjp.
-5. **Conv3D NAX MPP gate** — C%16==0 & ≥32, HW%8==0, B=1, pad=(1,1,1), f16/bf16.
+1. **Dense default → SDPA** — `dispatch_policy._M5_NAX_THRESHOLDS = 999999` (always SDPA); `backend="mfa"` overrides to STEEL (legacy-on-M5: SDPA 3–4× faster).
+2. **Sparse maker masks → symmetric → NAX (Phase F)** — built-in D=128 makers emit symmetric 32×32 (`masks.py::_bq_bk(128)=(32,32)`); the auto-route (`attention.py`, `bt_q==bt_k`) sends them to the real NAX kernel. Density gate: ≥ `_nax_sparse_density_ceiling()` (0.78, env `MFA_NAX_SPARSE_DENSITY_CEILING`) → SDPA fallback (NAX loses near-dense).
+3. **Sparse asymmetric/custom or small (<4096 bytes) → SDPA fallback** — `_sparse_fallback_sdpa_perhead` on M5+ (asymmetric STEEL kernel disabled by the `(long)p->NK` miscompile, `docs/v6-nax/sparse-bug-investigation.md`; small masks excluded by NAX device-pointer lowering). Validator accepts EITHER geometry then exact-tile-splits to kernel geometry.
+4. **Sparse V1/V2 selection (Phase F)** — `decide_auto_version` routes D∈{64,128} → V2 (matmul2d) always; the old `qL*kL*D≥2^31` work-product gate is RETIRED (V1-scalar was never fastest). V1 kept only as the genuine fallback (D∉{64,128}).
+5. **Sparse backward hybrid gate** — `MFA_ENABLE_V6_BACKWARD=1` AND D∈{64,128} AND N≥2048 AND ndim==2 AND **bt≥64** (III-4 D16 fix); else dense SDPA-vjp.
+6. **Conv3D NAX MPP gate** — C%16==0 & ≥32, HW%8==0, B=1, pad=(1,1,1), f16/bf16.
 
-## Gotchas (silent-fallback / loses-to-alternative) — feed Phase F
+## Gotchas — status after Phase F (2026-06-18)
 
-1. **D=128 sparse + any built-in mask-maker → silent dense SDPA** (loses the 1.7–4.2× sparse win). The win exists but is reachable only via a hand-passed symmetric mask. Root: `_steel_block_config(128)=(32,16)` → asymmetric.
-2. **D=64 sparse → slow kernel, loses to SDPA at every density** (0.66×→0.05×). Should route to SDPA.
-3. **Sparse backward is dense by default** — `mx.grad(flash_attention_sparse)` gets the sparse forward win but a *dense* SDPA-vjp backward unless the (declined-on-perf, Pattern #6) opt-in env + bt≥64 is set. Mild (correct, just not sparse-accelerated).
+1. **D=128 sparse + built-in maker → silent dense SDPA** — **FIXED (Phase F):** makers now emit symmetric 32×32 → NAX (1.7–4.2× at d<0.78). Residual SDPA only for asymmetric/custom, small (<4096 bytes), or dense (≥0.78) masks — all intentional now.
+2. **D=64 sparse → slow** — **FIXED (Phase F):** `decide_auto_version` routes D=64 → V2 (was V1 via the 2^31 gate); ~9× faster.
+3. **Sparse backward is dense by default** — UNCHANGED (declined-on-perf, Pattern #6): `mx.grad(flash_attention_sparse)` gets the sparse forward win but a dense SDPA-vjp backward unless the opt-in env + bt≥64 is set. Mild (correct, just not sparse-accelerated).
 
 No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyond these: backward=SDPA-vjp (intended), GNA=native (intended), decode=SDPA (intended, sync-floor regime), conv=NAX-when-eligible (intended).
 
