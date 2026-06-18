@@ -27,7 +27,7 @@ from tests.test_release_notes_perf_claims import PERF_CLAIMS
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOC_PATH = REPO_ROOT / "docs" / "PERF_CLAIMS.md"
+DOC_PATH = REPO_ROOT / "docs" / "reference" / "PERF_CLAIMS.md"  # relocated (D-addendum)
 
 # Pattern matches `claim_id` strings as they appear in markdown tables:
 # either backticked `v2.X.Y_name` or plain v2.X.Y_name in table cells.
