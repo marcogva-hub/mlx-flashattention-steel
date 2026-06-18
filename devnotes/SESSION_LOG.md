@@ -1807,3 +1807,25 @@ STATUS: COMPLETE
 - Added test_fingerprint_discipline.py::TestExpertPathsRunClaimedBinary (5 cells: backend=mfa/D64-bwd/
   D128-bwd-optin/sage/topk all assert byteΔ>0; drift to SDPA flips->0->fails). 8 discipline cells total.
 - PHASE C COMPLETE. Ran full suite: 1893 passed, 2 skipped. TEST-ONLY. 0 orphans. NOT tagged. Phase D next.
+
+---
+## [2026-06-18 01:00] [CLAUDE] AUDIT Phase D — doc rebuild from verified facts + publication cleanup
+STATUS: COMPLETE
+
+- Inventory: 336 tracked .md. PUBLISH (wheel) = README + CHANGELOG + LICENSE (MANIFEST whitelist only).
+  RETAIN (in-repo, wheel-excluded) = 326 docs/+devnotes .md incl. 76 campaign/audit + other root .md.
+  .doc-archive gitignored (already-retained, 2026-05-14 pattern). REWRITE = README. The publication
+  split was STRUCTURALLY PRE-EXISTING (MANIFEST include-whitelist + wheel.packages=[mlx_mfa]).
+- Stage 2: README KNOWN ISSUES (verified, honest-not-optimal, perf Phase-E-pending): D=128 built-in-mask
+  sparse->silent SDPA ((long)p->NK cause + symmetric workaround); work<2^31->V1-scalar 41x cliff;
+  sparse-bwd-dense-by-default; V5 ineligible. ENV_VARS augmented: path-dependent MFA_ENABLE_V6_BACKWARD
+  (dense D=128->full-native; sparse hybrid->native-dV-only; full-native sparse needs
+  MFA_V6_BWD_SPARSE_NATIVE + bt>=64). README coverage pointer to the 42 locks + fingerprint discipline.
+- Stage 3: rationale ABSORBED into README KNOWN ISSUES (the (long)p->NK conclusion etc.), so the
+  campaign analyses needn't be published; provenance pointer = audit/ + .doc-archive.
+- Stage 4: doc-claim->lock map (routing<->dispatch_lock; specs<->42 family cells; KNOWN-ISSUE<->
+  fingerprint_discipline; env<->bwd+discipline locks; publish-surface<->guard). Un-locked+labeled:
+  work-2^31 41x (perf, Phase E), V5 ineligibility (Assumed). Publish-surface GUARD added
+  (test_publish_surface_guard.py, 4 cells; planted-leak self-test trips on devnotes/docs/.doc-archive).
+- Ran: guard + full suite. 1897 passed, 2 skipped. DOC-ONLY (+guard+env-doc). 0 orphans. NOT tagged.
+- Phase E next.

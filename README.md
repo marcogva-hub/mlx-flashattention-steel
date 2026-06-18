@@ -325,6 +325,43 @@ on my work!
 - Future major hardware-specific optimization work is deferred pending newer
   Apple hardware (M5+).
 
+### Known issues — verified M5/26.6 runtime dispatch (audit A–C, 2026-06-18)
+
+Established by RUNTIME fingerprint (not source-reading); each carries a planned-fix
+pointer. The current routing is **honest, not optimal** — these are the warts a
+later routing pass (the "Phase F" fix) will address.
+
+- **`flash_attention_sparse` at D=128 with a built-in mask (`make_causal_block_mask`,
+  `make_sliding_window_mask`, `make_strided_mask`, `make_lcsa_mask`) silently falls
+  back to dense Apple SDPA on M5.** Cause: `_steel_block_config(128)=(BQ=32,BK=16)`
+  emits an *asymmetric* block-mask, and the asymmetric STEEL sparse kernel is disabled
+  on macOS 26 by a Metal-compiler miscompile of `(long)p->NK` (reads the wrong struct
+  offset). The real, fast sparse kernel runs only for a **symmetric** mask (`BQ==BK`,
+  e.g. `block_tile=32`). [Verified] Workaround: pass a symmetric block-mask at D=128.
+- **Below `qL*kL*D = 2^31`, sparse forward uses the per-thread V1 *scalar* kernel
+  (~40× slower than the V2 matmul2d kernel).** D=64 (any N≤8k) and D=128 (N<4096) fall
+  below the threshold. [Verified] The threshold (`decide_auto_version`) is
+  benchmark-derived; its perf validity is being re-checked (Phase E).
+- **`mx.grad(flash_attention_sparse)` runs a *dense* SDPA-vjp backward by default** —
+  the sparse forward win does not carry to the backward unless `MFA_ENABLE_V6_BACKWARD=1`
+  (+ `bt≥64`). [Verified]
+- **STEEL V5 is ineligible at all tested shapes** (env-gated, rarely fires). [Verified]
+- Perf numbers in this README are pre-audit; a complete M5/26.6 re-measurement is
+  **pending (Phase E)** — treat ratios as indicative, not freshly-verified-current.
+
+**Path-dependent env semantics (verified):** `MFA_ENABLE_V6_BACKWARD=1` engages
+**full-native** dQ/dK/dV for the *dense* D=128 backward, but only **native-dV** (dQ/dK
+stay SDPA-vjp) for the *sparse* hybrid backward; full-native *sparse* backward needs
+`MFA_V6_BWD_SPARSE_NATIVE=1` (declined-on-perf, opt-in). See `NAMING.md` for the env-var
+rename table.
+
+**Correctness coverage (verified):** every kernel has an fp32/independent-oracle
+correctness lock and the runtime dispatch is fingerprint-locked — see
+`tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py`,
+`tests/test_dispatch_map_lock.py`, and `tests/test_fingerprint_discipline.py` (the last
+makes "test passes while running the wrong kernel" structurally catchable). Maintainer
+reference: `docs/v50/campaign-2026-06/audit/` (dispatch map + 4 per-kernel family specs).
+
 [See the v2.31.0 V6 NAX foreword above and the "Best M5 Max Benchmark
 Highlights (v2.31.0)" table below for current numbers.]
 

@@ -37,7 +37,13 @@ the canonical master plan lands.
   + `tests/test_fingerprint_discipline.py::TestExpertPathsRunClaimedBinary` (5 cells; 8 total). Expert
   tests all CORRECT-BINARY (direct `_ext` / force-the-binary / dispatch-aware); NO new wrong-binary;
   no bug. **PHASE C COMPLETE** — green-on-wrong-binary total = 5 (all high-level sparse D=128, from C).
-- **D — KNOWN_ISSUES + publication cleanup**; **E — Performance**; **F — Orchestration/routing fix**. Pending — D NEXT.
+- **D — Documentation rebuild + publication cleanup**. DONE — `phase-D-doc-rebuild-report.md` +
+  README KNOWN_ISSUES (verified, honest-not-optimal, perf Phase-E-pending) + ENV_VARS path-dependent
+  `MFA_ENABLE_V6_BACKWARD` semantics + `tests/test_publish_surface_guard.py` (4, planted-leak demo) +
+  the doc-claim→lock map. Publication split was structurally pre-existing (MANIFEST whitelist +
+  gitignored `.doc-archive/`); now guarded + rationale absorbed into README.
+- **E — Performance** (2^31 V1/V2 crossover, STEEL-vs-SDPA M5-optimality, V5 reachability, sage int8
+  quality-worth); **F — Orchestration/routing fix** (D=128-sparse-API → symmetric routing). Pending — E NEXT.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +
