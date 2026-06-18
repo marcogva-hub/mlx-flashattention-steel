@@ -53,6 +53,23 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyond these: backward=SDPA-vjp (intended), GNA=native (intended), decode=SDPA (intended, sync-floor regime), conv=NAX-when-eligible (intended).
 
+## Hardware-tier map + V6 purification (Phase F-3, 2026-06-18)
+
+| Tier | Dense forward kernel family | Notes |
+|---|---|---|
+| **M1–M4** | **standalone simdgroup STEEL** (V1/V2/V3/V4/V5/split-K/dsplit/flash_decode) | the validated dense tier — `m3_prefers_v1`, `v3_min_N`, RESULTS.md. UNTOUCHED by F-3. |
+| **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for D=64 + the default | NAX/V6 = the M5+ tier (F-2). |
+| any (expert) | `backend="mfa"` → simdgroup STEEL | **legacy-reachable, loses on M5** (SDPA 2–4× faster). |
+
+**V6 is now PURE NAX (F-3).** The simdgroup-*within*-V6 fallback (the old `MFAV6Forward`
+`use_v6nax=false` path) was a **diverged, D=64-BROKEN duplicate** (D=64 N=4096 gave max-abs-err
+≈512 vs fp32) of the standalone family, **unreachable from production Python** (every V6 entry
+forces NAX; NAX-ineligible dense → the existing dispatch: D=64 → SDPA). It is **removed**:
+`MFAV6Forward` serves only NAX (D∈{64,128}, valid GQA); invalid GQA raises (Rule 8) rather than
+silently dispatching the removed broken path. The standalone simdgroup family (the M1–M4 tier) is
+untouched. **V5** = standalone experimental opt-in (`MFA_ENABLE_V5=1`), **never auto-selected on
+any tier** (compiled-but-unrouted, like V4) → KEPT (reachable + tested, not truly dead).
+
 ## Notes / deferred (Phase B)
 - The GNA Δ=7.3e-2 is my crude block-mask reference over-approximating GNA's exact per-element window
   — a **Phase-B correctness-reference** item, NOT a dispatch issue (GNA native provably runs, Δ≠0).

@@ -4,6 +4,19 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased]
 
+### Changed — V6 forward purified to pure NAX (audit F-3)
+
+- The simdgroup-*within*-V6 forward fallback (`MFAV6Forward` `use_v6nax=false`) is **removed**.
+  It was a **diverged, broken duplicate** of the standalone simdgroup family — it produced
+  garbage at D=64 (D=64 N=4096 gave max-abs-err ≈512 vs fp32) and was unreachable from
+  production (every V6 entry forces NAX; D=64 dense routes to SDPA per F-2). `MFAV6Forward`
+  (`v6_nax_forward`) now serves **only NAX** (D∈{64,128}, valid GQA); invalid GQA raises loudly
+  (Rule 8) instead of silently dispatching the broken path. The standalone simdgroup family (the
+  validated **M1–M4 dense tier**: V1/V2/V3/V4/V5/split-K/dsplit/flash_decode) is **untouched**.
+  `MFA_V6_USE_NAX=0` (the old escape to the broken simdgroup) is now a no-op (NAX is the only V6
+  forward). **V5** stays an experimental opt-in (`MFA_ENABLE_V5=1`, never auto-routed on any tier).
+  Lock: `tests/test_v6_nax_forward_lock.py::test_v6_forward_is_pure_nax` (drift-back fails CI).
+
 ### Added — dense NAX matmul2d forward routed at D=128 (audit F-2, Change 3)
 
 - `flash_attention(backend="auto")` dense **D=128** now routes to the **NAX matmul2d**

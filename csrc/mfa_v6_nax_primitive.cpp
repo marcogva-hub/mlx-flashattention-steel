@@ -648,43 +648,31 @@ public:
     // the substitution it keyed is gone (statically illegal on current MPP;
     // see the note in the source-substitution section above).
 
-    // V6NAX dispatch — mirror source-gen default logic.
-    // Default: ON for D=128 (cross-session bench shows +33-40% vs legacy,
-    //   3 shapes reach SDPA parity).
-    // Default: OFF for D=64 small-N (FlashVSR-style regresses -39%).
-    // Default: ON for D=64 with N_kv > 8000 (LTX2-style asymmetric wins +18%).
-    // Override via env var MFA_V6_USE_NAX={0,1}.
-    bool use_v6nax;
-    if (params_.force_v6nax) {
-      // v2.37.0: caller (V6NAX backward integration) requires V6NAX forward
-      // to produce natural-log lse.  Override default routing.
-      use_v6nax = true;
-    } else if (D == 128) {
-      use_v6nax = true;
-    } else if (D == 64 && Nk > 8000) {
-      // LTX2-cross style asymmetric: V6NAX wins ~+18%.
-      use_v6nax = true;
-    } else {
-      use_v6nax = false;
+    // Audit F-3 (2026-06-18): V6 is PURE NAX.  The simdgroup-within-V6 fallback
+    // (the old `use_v6nax=false` path) was a DIVERGED, BROKEN duplicate of the
+    // standalone simdgroup family — it produced garbage at D=64 (e.g. D=64 N=4096
+    // gave max-abs-err ≈ 512 vs fp32) and was UNREACHABLE from production Python
+    // (every MFAV6Forward entry forces NAX — the F-2 dense route and the backward
+    // recompute — and NAX-ineligible dense shapes route to the EXISTING dispatch:
+    // D=64 dense → SDPA, F-2).  It is removed.  MFAV6Forward now serves ONLY NAX
+    // (D ∈ {64,128}, valid GQA); the only legacy escape (MFA_V6_USE_NAX=0 → broken
+    // simdgroup) is gone too (the env name is retained as a deprecated no-op alias).
+    bool use_v6nax = true;  // D is constrained to {64,128} by v6_nax_forward()
+    const bool valid_gqa = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
+    if (!valid_gqa) {
+      // NAX requires Hq % Hk == 0.  The removed simdgroup fallback was the only
+      // (broken) path for invalid GQA — fail loudly (Rule 8) instead of silently
+      // dispatching garbage; such shapes belong on flash_attention (SDPA).
+      throw std::runtime_error(
+          "v6_nax_forward: invalid GQA (Hq=" + std::to_string(Hq) +
+          " not a multiple of Hk=" + std::to_string(Hk) +
+          "); NAX requires Hq % Hk == 0.  The simdgroup-within-V6 fallback was "
+          "removed in audit F-3 (broken diverged duplicate) — route such shapes "
+          "through flash_attention (SDPA) instead.");
     }
-    if (const char* env_v6nax = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
-      use_v6nax = (std::atoi(env_v6nax) != 0);
     unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
     unsigned short v6nax_BK = (D == 64) ? 64 : 32;
     uint16_t v6nax_WM = (D == 64) ? 2 : 4;
-    {
-      bool so_for_v6nax = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
-      if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
-        so_for_v6nax = (std::atoi(env_so) != 0);
-      // v2.50 Prompt 4 Section B: lift causal constraint here too.
-      // Prompt 2 Phase 4a added V6NAX forward causal kernel support but
-      // missed this dispatch gate — causal was silently routing to
-      // STEEL legacy (which emits log2-domain lse) instead of V6NAX
-      // (which emits natural-log lse).  V6NAX backward consumed wrong-
-      // domain lse and produced wrong gradients.  See
-      // docs/v50/phase-4b-complete-dv-residual-decisions.md.
-      if (use_v6nax && !so_for_v6nax) use_v6nax = false;
-    }
     if (use_v6nax) {
       if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
       if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
@@ -727,24 +715,21 @@ public:
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
           /*use_v6nax_override=*/use_v6nax, /*use_v6nax_explicit=*/true,
           /*scale_override=*/resolved_scale);
-      if (use_v6nax) {
-        // V6NAX uses no FCs (params via struct buffer).
-        if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
-          fprintf(stderr, "=== V6NAX source for BQ=%d BK=%d BD=%d WM=%d ===\n",
-                  (int)v6nax_BQ, (int)v6nax_BK, (int)D, (int)v6nax_WM);
-          auto pos = src.find("// === lse write");
-          if (pos != std::string::npos) {
-            fprintf(stderr, "%s\n=== ===\n",
-                    src.substr(pos, 800).c_str());
-          } else {
-            fprintf(stderr, "(lse write marker not found!)\n");
-          }
+      // F-3: V6 forward is PURE NAX — always the matmul2d kernel (no FCs;
+      // params via struct buffer).  The simdgroup `v6_nax_compile_with_constants`
+      // fallback is removed (broken diverged duplicate; that compile helper is
+      // retained only for the diagnostic probe in v6_nax_probe.cpp).
+      if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
+        fprintf(stderr, "=== V6NAX source for BQ=%d BK=%d BD=%d WM=%d ===\n",
+                (int)v6nax_BQ, (int)v6nax_BK, (int)D, (int)v6nax_WM);
+        auto pos = src.find("// === lse write");
+        if (pos != std::string::npos) {
+          fprintf(stderr, "%s\n=== ===\n", src.substr(pos, 800).c_str());
+        } else {
+          fprintf(stderr, "(lse write marker not found!)\n");
         }
-        pipeline = v6nax_compile(src, "attention", mtl_device);
-      } else {
-        pipeline = v6_nax_compile_with_constants(
-            src, "attention", mtl_device, R, C, qbs, kbs, vbs, obs);
       }
+      pipeline = v6nax_compile(src, "attention", mtl_device);
       pipeline = cache_insert_or_release(v6_pipelines, v6_mtx, key, pipeline);
     }
 
@@ -753,30 +738,15 @@ public:
     enc.set_input_array(k, 1);
     enc.set_input_array(v, 2);
     enc.set_output_array(out, 3);
-    if (!use_v6nax) {
-      enc.set_output_array(lse, 4);  // Legacy path: buffer 4 is lse.
-    } else {
-      // v2.36.x BLK1 patch: V6NAX forward now writes lse to buffer 5
-      // (buffer 4 holds the V6NAXParams struct via set_bytes).  Per
-      // docs/v6-nax/v6nax-backward-decisions.md DC0 — lse is required
-      // input infrastructure for V6NAX backward dQ/dK/dV kernels.
-      enc.set_output_array(lse, 5);
-    }
+    // F-3: pure NAX — lse always at buffer 5 (buffer 4 holds the V6NAXParams
+    // struct via set_bytes).  Per v6nax-backward-decisions.md DC0 — lse is
+    // required input infrastructure for the V6NAX backward dQ/dK/dV kernels.
+    enc.set_output_array(lse, 5);
 
-    if (use_v6nax) {
-      v6nax_dispatch(
-          pipeline, &enc,
-          (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
-          v6nax_BQ, v6nax_BK, v6nax_WM);
-    } else {
-      unsigned short elem_size = 2;  // FP16/BF16 = 2 bytes
-      unsigned short tgmem = BQ * BK * executionSIMDGroups * elem_size;
-      v6_nax_dispatch(
-          pipeline, &enc,
-          nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
-          R, (uint32_t)Hq, (uint32_t)B,
-          BQ, executionSIMDGroups, tgmem);
-    }
+    v6nax_dispatch(
+        pipeline, &enc,
+        (int)N, (int)Nk, (int)Hq, (int)Hk, (int)B, (int)D,
+        v6nax_BQ, v6nax_BK, v6nax_WM);
   }
 
   bool is_equivalent(const mlx::core::Primitive& other) const override {

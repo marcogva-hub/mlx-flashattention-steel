@@ -159,6 +159,17 @@ scale.  Forward-only kernel → wrapped in `_make_v6nax_dense_custom` (fwd=NAX, 
 Locks: dispatch-map (D128→NAX/D64→SDPA/opt-out) + v6_nax_forward custom-scale.  Suite 1918.
 See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-F-2-dense-nax-forward-route.md`.
 
+**F-3 V6 purification SHIPPED (pure NAX, 2026-06-18):** the simdgroup-*within*-V6 forward
+fallback (`MFAV6Forward` `use_v6nax=false`) is REMOVED — it was a DIVERGED, D=64-BROKEN duplicate
+(D=64 N4096 err≈512 vs fp32) of the standalone family, unreachable from production (every V6 entry
+forces NAX; D=64 dense→SDPA per F-2). `v6_nax_forward` now serves only NAX (D∈{64,128}, valid GQA);
+invalid GQA RAISES (Rule 8). `MFA_V6_USE_NAX=0` → no-op (NAX is the only V6 forward; alias kept).
+The **standalone simdgroup family (M1–M4 dense tier: V1–V5/split-K/dsplit/flash_decode) is
+UNTOUCHED**. **V5** = experimental opt-in (`MFA_ENABLE_V5=1`), never auto-routed on any tier → KEPT
+(compiled-but-unrouted ≠ dead). Lock: test_v6_nax_forward_lock::test_v6_forward_is_pure_nax
+(force False==True Δ=0; drift-back fails CI). Suite 1924.
+See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-F-3-v6-purification.md`.
+
 ## Publication cleanup — journal off the tracked tree (D-addendum, 2026-06-18)
 
 The public repo **tracked tree shows only current-state docs**: the 7 root docs

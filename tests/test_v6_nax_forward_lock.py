@@ -82,6 +82,33 @@ def test_v6_nax_forward_matches_fp32(D, N, Hq, Hk, causal):
         f"max_err={err:.3e} vs independent fp32 (default scale 1/sqrt(D))")
 
 
+@pytest.mark.parametrize("D,N", [(64, 2048), (64, 4096), (128, 2048)])
+@pytest.mark.parametrize("causal", [False, True])
+def test_v6_forward_is_pure_nax(D, N, causal):
+    """Audit F-3: V6 is PURE NAX — the simdgroup-within-V6 fallback (a diverged,
+    D=64-BROKEN duplicate: D=64 N=4096 gave max-abs-err ≈ 512 vs fp32) is removed.
+
+    `force_v6nax=False` (the value that USED to select the broken simdgroup at
+    D=64-small-N) now produces the SAME output as `force_v6nax=True` (both NAX) and
+    matches the fp32 oracle.  Drift-back: if a simdgroup fallback reappears, the
+    False path diverges from the True path (Δ>0) and/or from fp32 → this FAILS."""
+    mx.random.seed(4)
+    q = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
+    k = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
+    v = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
+    mx.eval(q, k, v)
+    O_false, _ = v6_nax_forward(q, k, v, causal, False)  # was simdgroup at D=64
+    O_true, _ = v6_nax_forward(q, k, v, causal, True)     # always NAX
+    mx.eval(O_false, O_true)
+    drift = float(mx.max(mx.abs(O_false.astype(mx.float32) - O_true.astype(mx.float32))).item())
+    assert drift == 0.0, (
+        f"V6 not pure NAX (D={D} N={N} c={causal}): force_v6nax=False diverged from "
+        f"True by Δ={drift:.3e} — the simdgroup-within-V6 fallback reappeared")
+    ref = _fp32_oracle(q, k, v, causal, D)
+    err = float(np.abs(np.array(O_false.astype(mx.float32)) - np.array(ref)).max())
+    assert err < 2e-2, f"V6 pure-NAX path wrong vs fp32 (D={D} N={N} c={causal}): err={err:.3e}"
+
+
 @pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize("scale", [0.05, 0.30])
 def test_v6_nax_forward_respects_custom_scale(causal, scale):

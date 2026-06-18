@@ -218,18 +218,22 @@ class TestEquivalencePredicateOutputs:
     guard."""
 
     @pytest.mark.skipif(not _HAS_NAX, reason="V6 paths on M5+")
-    def test_force_v6nax_lse_domain_distinct(self):
+    def test_force_v6nax_both_paths_are_pure_nax(self):
+        """Audit F-3: V6 is PURE NAX — the simdgroup-within-V6 fallback (which
+        emitted log2-domain LSE) is removed.  force_v6nax=False and =True now BOTH
+        run NAX (natural-log LSE), so O AND L are IDENTICAL.  (Pre-F-3 this test
+        asserted the LSE domains DIFFERED — the simdgroup/NAX distinction that no
+        longer exists.)  Drift-back: a reappearing simdgroup fallback would make
+        the two paths' LSE diverge → this FAILS."""
         from mlx_mfa import _ext
         B, H, N, D = 1, 4, 1024, 64
         q, k, v = _mk(B, H, N, D, seed=105)
-        O_legacy, L_legacy = _ext.v6_nax_forward(q, k, v, False, False)
-        O_v6nax, L_v6nax = _ext.v6_nax_forward(q, k, v, False, True)  # force_v6nax
-        _eval_force(O_legacy, L_legacy, O_v6nax, L_v6nax)
-        # Outputs O agree (same math); LSE domains differ (log2 vs natural)
-        dO = float(mx.max(mx.abs(O_legacy.astype(mx.float32) - O_v6nax.astype(mx.float32))))
-        assert dO < 2e-2, f"O must agree across paths: {dO}"
-        dL = float(mx.max(mx.abs(L_legacy.astype(mx.float32) - L_v6nax.astype(mx.float32))))
-        assert dL > 1e-3, (
-            "LSE domains must DIFFER (log2 vs natural) — if equal, the "
-            "force_v6nax routing did not engage and the is_equivalent fix "
-            "cannot be exercised")
+        O_a, L_a = _ext.v6_nax_forward(q, k, v, False, False)
+        O_b, L_b = _ext.v6_nax_forward(q, k, v, False, True)  # force_v6nax
+        _eval_force(O_a, L_a, O_b, L_b)
+        dO = float(mx.max(mx.abs(O_a.astype(mx.float32) - O_b.astype(mx.float32))))
+        dL = float(mx.max(mx.abs(L_a.astype(mx.float32) - L_b.astype(mx.float32))))
+        assert dO == 0.0, f"O must be identical (both pure NAX): Δ={dO}"
+        assert dL == 0.0, (
+            f"L must be identical (both pure NAX, natural-log LSE): Δ={dL} — a "
+            "simdgroup-within-V6 fallback (log2 LSE) reappeared")
