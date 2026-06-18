@@ -71,3 +71,6 @@ docs/audit_dit_dispatch_output.log
 # doc-release-prep skill artifacts (generated backups; restore from manifest if needed)
 .doc-archive/
 .archive/
+
+# Local agent scratch — never ship (v2.58.1 P3: leaked into the 2.58.0 sdist)
+.claude/

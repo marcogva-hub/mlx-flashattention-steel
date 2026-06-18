@@ -45,5 +45,16 @@ cmake.version = ">=3.24"
 cmake.build-type = "Release"
 wheel.packages = ["mlx_mfa"]
 
+# v2.58.1 P3 — EXPLICIT sdist surface (the old MANIFEST.in was inert under
+# scikit-build-core and was deleted). scikit-build-core's sdist base = git-tracked
+# files + untracked-non-gitignored files; these excludes drop the dev/CI cruft that
+# shipped in 2.58.0 (bench/, benchmarks/ incl .log) and any local scratch. The
+# intentional publication set is: the 3 LICENSE files + the root docs
+# (README/CHANGELOG/NAMING/RESULTS/ENV_VARS/CLAUDE*) + CMakeLists + pyproject +
+# csrc/** + mlx_mfa/** + examples/** + tests/** + docs/reference/**. The built-sdist
+# guard (tests/test_publish_surface_guard.py) enforces this allowlist on the real tarball.
+[tool.scikit-build.sdist]
+exclude = ["bench", "benchmarks", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
