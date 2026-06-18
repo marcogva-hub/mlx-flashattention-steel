@@ -33,6 +33,10 @@ the canonical master plan lands.
   enumerated (5 D=128/256 sparse-forward instances run SDPA while claiming sparse, validated vs SDPA =
   vacuous); locked + relabeled. No new bug (D=128 symmetric already correct per B1). Bulk classified
   by group-pattern; sparse zone fingerprinted per-test.
+- **C2 — Expert-binary subset per-test fingerprint**. DONE — `phase-C2-test-audit-complete-report.md`
+  + `tests/test_fingerprint_discipline.py::TestExpertPathsRunClaimedBinary` (5 cells; 8 total). Expert
+  tests all CORRECT-BINARY (direct `_ext` / force-the-binary / dispatch-aware); NO new wrong-binary;
+  no bug. **PHASE C COMPLETE** — green-on-wrong-binary total = 5 (all high-level sparse D=128, from C).
 - **D — KNOWN_ISSUES + publication cleanup**; **E — Performance**; **F — Orchestration/routing fix**. Pending — D NEXT.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.

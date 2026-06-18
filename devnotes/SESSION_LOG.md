@@ -1790,3 +1790,20 @@ STATUS: COMPLETE
   pass). No F-flag from C. Carry to E unchanged (2^31 perf, STEEL-vs-SDPA, V5, sage-int8-worth).
 - Ran: per-test sparse fingerprints + fingerprint-discipline lock + drift demo + full suite. 1888
   passed, 2 skipped. TEST-ONLY (no kernel/routing/threshold/bug change). 0 orphans. NOT tagged.
+
+---
+## [2026-06-18 00:15] [CLAUDE] AUDIT Phase C2 — expert-binary subset fingerprinted; PHASE C COMPLETE
+STATUS: COMPLETE
+
+- Closed Phase C on its own standard: expert-binary-claiming subset (~52-file union) per-test
+  fingerprinted (NOT group-pattern); auto/SDPA majority spot-checked 3/3 (byteΔ=0 vs SDPA, pattern holds).
+- Expert tests engage safely 3 ways: direct _ext.* (correct-by-construction, no dispatch),
+  force-the-binary (backend=mfa->STEEL 1.9e-6; MFA_ENABLE_V6_BACKWARD: D=128 dense bwd->ALL NATIVE
+  6e-8/6e-8/3.8e-6, completes a B3 row), or dispatch-aware (conv small-C->fallback by design;
+  V5->SDPA documented). Four hunts (variant-blind/backward-mix/conv-fallback/decode-fallback): NO new
+  deceptive instances. sage->int8 (2.9e-3), topk->own (2.1e-2) confirmed.
+- NO new green-on-wrong-binary; total stays 5 (all high-level sparse D=128, from C). NO real bug -> no
+  F-flag from C2.
+- Added test_fingerprint_discipline.py::TestExpertPathsRunClaimedBinary (5 cells: backend=mfa/D64-bwd/
+  D128-bwd-optin/sage/topk all assert byteΔ>0; drift to SDPA flips->0->fails). 8 discipline cells total.
+- PHASE C COMPLETE. Ran full suite: 1893 passed, 2 skipped. TEST-ONLY. 0 orphans. NOT tagged. Phase D next.

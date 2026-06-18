@@ -129,6 +129,15 @@ oracle (lesson #11): fp32 forward, fp32-gradient (mx.vjp of manual fwd), exact
 per-element-window (GNA), quant-aware int8 floor (sage).  GNA confirmed CORRECT
 (the prior 7.3e-2 was a block-mask reference mismatch, not a bug).
 
+**Audit Phase C COMPLETE (test-correctness, 2026-06-17):** every test classified
+by RUNTIME fingerprint (sparse zone + expert subset per-test; auto/SDPA majority
+spot-checked).  Green-on-wrong-binary instances = **5**, all in the high-level
+`flash_attention_sparse` D=128 path (asymmetric mask → SDPA fallback on M5, validated
+vs SDPA = vacuous); relabeled + locked.  Expert paths are sound (direct `_ext` /
+force-the-binary / dispatch-aware).  `tests/test_fingerprint_discipline.py` makes
+green-on-wrong-binary structurally catchable (assert the BINARY — byteΔ vs SDPA —
+not just the MATH); a re-pointed test now FAILS on drift to the wrong kernel.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the

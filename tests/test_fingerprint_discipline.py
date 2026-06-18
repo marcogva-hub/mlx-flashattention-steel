@@ -27,7 +27,8 @@ import numpy as np
 import mlx.core as mx
 import pytest
 
-from mlx_mfa import flash_attention_sparse, make_causal_block_mask, make_sliding_window_mask
+from mlx_mfa import (flash_attention_sparse, flash_attention, sage_attention,
+                     flash_attention_topk, make_causal_block_mask, make_sliding_window_mask)
 from mlx_mfa.attention import _get_is_m5_plus_cached, _steel_block_config
 
 pytestmark = pytest.mark.skipif(
@@ -98,3 +99,47 @@ class TestFingerprintDisciplineDemo:
         # correctness (vs SDPA math) AND binary (distinct kernel, not the fallback)
         assert d < 3e-2, f"symmetric sparse wrong vs SDPA math (Δ={d})"
         assert d > 0.0, "symmetric D=128 sparse is byte-identical to SDPA — it drifted to the fallback (WRONG BINARY)"
+
+
+# ── 3. expert-path fingerprints (audit C2: the expert subset runs its CLAIMED binary) ──
+class TestExpertPathsRunClaimedBinary:
+    """C2: every expert-binary-claiming path verified to run a real DISTINCT kernel
+    (byteΔ>0 vs the SDPA reference), not a silent fallback. A drift to SDPA flips
+    byteΔ→0 and FAILS — green-on-wrong-binary caught for the expert paths too."""
+
+    def _qkv(self, B, H, N, D):
+        f = lambda: (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(mx.float16)
+        q, k, v = f(), f(), f(); mx.eval(q, k, v); return q, k, v
+
+    def test_backend_mfa_is_steel_not_sdpa(self):
+        q, k, v = self._qkv(2, 8, 4096, 128); sc = 1 / math.sqrt(128)
+        o = flash_attention(q, k, v, scale=sc, causal=False, backend="mfa")
+        s = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+        assert _delta(o, s) > 0.0, "backend=mfa byte-identical to SDPA — STEEL path lost"
+
+    def test_d64_backward_default_on_is_native(self):
+        q, k, v = self._qkv(2, 8, 4096, 64); sc = 1 / math.sqrt(64)
+        dO = (mx.random.uniform(-1, 1, q.shape) * 0.1).astype(mx.float16); mx.eval(dO)
+        _, gk = mx.vjp(lambda a, b, c: flash_attention(a, b, c, scale=sc, causal=True), (q, k, v), (dO,))
+        _, gs = mx.vjp(lambda a, b, c: mx.fast.scaled_dot_product_attention(a, b, c, scale=sc, mask="causal"), (q, k, v), (dO,))
+        assert _delta(gk[0], gs[0]) > 0.0, "D=64 default-on backward reverted to SDPA-vjp (claim 'native' wrong)"
+
+    def test_d128_backward_optin_is_native(self, monkeypatch):
+        monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+        q, k, v = self._qkv(2, 8, 2048, 128); sc = 1 / math.sqrt(128)
+        dO = (mx.random.uniform(-1, 1, q.shape) * 0.1).astype(mx.float16); mx.eval(dO)
+        _, gk = mx.vjp(lambda a, b, c: flash_attention(a, b, c, scale=sc, causal=False), (q, k, v), (dO,))
+        _, gs = mx.vjp(lambda a, b, c: mx.fast.scaled_dot_product_attention(a, b, c, scale=sc), (q, k, v), (dO,))
+        assert _delta(gk[0], gs[0]) > 0.0, "D=128 opt-in backward stayed SDPA-vjp (claim 'native' wrong)"
+
+    def test_sage_is_int8_kernel_not_sdpa(self):
+        q, k, v = self._qkv(2, 8, 512, 128); sc = 1 / math.sqrt(128)
+        o = sage_attention(q, k, v, scale=sc, causal=False)
+        s = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+        assert _delta(o, s) > 0.0, "sage byte-identical to SDPA — int8 path lost"
+
+    def test_topk_is_own_path_not_dense_sdpa(self):
+        q, k, v = self._qkv(2, 8, 512, 128); sc = 1 / math.sqrt(128)
+        o = flash_attention_topk(q, k, v, topk_ratio=0.25, scale=sc)
+        s = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+        assert _delta(o, s) > 0.0, "topk byte-identical to dense SDPA — top-k selection lost"
