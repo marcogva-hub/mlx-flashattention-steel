@@ -121,5 +121,12 @@ into the pipeline cache keys (live; Sprint A verified key completeness).
 | `MFA_V6BWDF_DUMP_SOURCE` / `MFA_V6BWDF_DUMP_PATH` | bool / path | unset | Debug: dump the generated fused-dKdV MSL source (to stderr, or to the file given by `MFA_V6BWDF_DUMP_PATH`). |
 
 Interaction notes (campaign 2026-06 Track 0):
-- `MFA_V6_EXEC_SG` has NO effect when the V6NAX path is selected (`v6nax_WM` overrides it).
+- **`MFA_V6_BLOCK_R`, `MFA_V6_BLOCK_C`, `MFA_V6_EXEC_SG` are VESTIGIAL on the V6 NAX path**
+  (no effect). They fed the simdgroup descriptor path that audit **F-3 removed**; the
+  dispatched NAX kernel's tile is governed entirely by **`MFA_V6_NAX_BQ` / `MFA_V6_NAX_BK` /
+  `MFA_V6_NAX_WM`** — use those to tune it. Confirmed by runtime fingerprint
+  (`research/nax-autotune-m5` Phase 0); setting any of the three emits a one-shot stderr notice.
 - `MFA_V6_BYPASS_TGP=0` is a no-op when single-Otile mode auto-fires (forced true).
+- `MFA_V6_UNROLL_MODE`, `MFA_V6_RELAXED_PRECISION`, `MFA_V6_BLOCK_D`, `MFA_V6_FORCE_DYNAMIC_K`,
+  `MFA_V6_MAX_THREADS`: measured NO-OP for the NAX forward (Phase-0 knob-map); they affect only
+  the vestigial/legacy source paths.

@@ -161,19 +161,17 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   //   MFA_V6_FORCE_DYNAMIC_K — force dynamic_length_v<int> for K constants
   //   MFA_V6_RELAXED_PRECISION — 0 disables relaxed_precision in matmul2d
   //   MFA_V6_UNROLL_MODE — full | none | 2 | 4 — pragma loop unroll setting
-  // Sprint 3.3 + autoresearch — auto-tuned per-D defaults.
-  // Bench at the original BQ=32 default showed bimodal: D=64 wins, D=128 loses
-  // under single-Otile. Autoresearch sweep (BQ ∈ {16,32,64} × BK ∈ {32,64} ×
-  // SG ∈ {2,4,8}, single-Otile=on) revealed BQ=16 wins universally — the
-  // BQ=32 default was the dominant bottleneck, not the kernel structure:
-  //   D=64  best:  BQ=16 BK=64 SG=2  (FlashVSR-dense 1.11ms = 1.22×SDPA;
-  //                                    LTX2-cross 1.59ms = 1.20×SDPA)
-  //   D=128 best:  BQ=16 BK=32 SG=8  (SeedVR2-small 276ms = 1.49×SDPA;
-  //                                    vs 1129ms at the BQ=32 default)
-  // BQ=64 is uniformly catastrophic (4× slower) — coop_tensor row-count too
-  // large for register packing. Default to single-Otile + BQ=16 + per-D
-  // BK/SG, with env var overrides preserved.
-  unsigned short BQ = 16;
+  // ── VESTIGIAL (post-F-3): BQ/BK/exec_sg below + MFA_V6_BLOCK_R/BLOCK_C/EXEC_SG
+  // feed the OLD simdgroup descriptor path, which F-3 REMOVED from dispatch. The
+  // production-dispatched NAX kernel's tile is governed ENTIRELY by v6nax_BQ/BK/WM
+  // (MFA_V6_NAX_BQ/BK/WM), set below.  Confirmed by runtime fingerprint
+  // (research/nax-autotune-m5 Phase 0): toggling MFA_V6_BLOCK_R does NOT change the
+  // dumped NAX tile.  The old Sprint-3.3 note here ("BQ=16 wins universally / BQ=64
+  // catastrophic 4×") described THIS vestigial simdgroup path and is FALSE for the
+  // live NAX kernel — whose optimum is NAX_BQ=64/BK=32/WM=4 (D=128) and
+  // NAX_BQ=32/BK=32/WM=2 (D=64), per the autotune (RESULTS.md / PERF_CLAIMS.md).
+  // Kept (keep-all-paths) but no longer steers the dispatched kernel.
+  unsigned short BQ = 16;  // vestigial (BLOCK_R/simdgroup path)
   // Dispatch v5 (REVERTED from v2.30 dispatch v6 — thermal-controlled
   // re-bench showed v6 regresses SeedVR2-large +14.3% and SeedVR2-small
   // +5.9% vs v5; Sprint G's "wins" were within-session pipeline-cache
@@ -623,6 +621,21 @@ public:
     if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) executionSIMDGroups = (uint16_t)std::atoi(env_sg);
     if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
     if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
+    // Loud-on-use (research/nax-autotune-m5): BLOCK_R/BLOCK_C/EXEC_SG are VESTIGIAL on
+    // the NAX path (F-3 removed the simdgroup branch they steer) — a silently-no-op user
+    // knob is a footgun. One-shot stderr notice (behavior unchanged); use NAX_BQ/BK/WM.
+    {
+      static bool warned_vestigial = false;
+      if (!warned_vestigial &&
+          (std::getenv("MFA_V6_BLOCK_R") || std::getenv("MFA_V6_BLOCK_C") ||
+           std::getenv("MFA_V6_EXEC_SG"))) {
+        warned_vestigial = true;
+        fprintf(stderr,
+                "[mlx-mfa] note: MFA_V6_BLOCK_R/BLOCK_C/EXEC_SG are VESTIGIAL since F-3 "
+                "(no effect on the V6 NAX kernel). Use MFA_V6_NAX_BQ/BK/WM to tune the "
+                "dispatched tile.\n");
+      }
+    }
     // Axes 4-6 affect the kernel source — fold them into a flag for cache.
     if (const char* env_dk = std::getenv("MFA_V6_FORCE_DYNAMIC_K"))
       if (std::atoi(env_dk) != 0) axis_flags |= 0x01;
