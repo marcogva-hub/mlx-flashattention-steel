@@ -1117,6 +1117,13 @@ mlx::core::array sparse_attention_forward(
 // GEMM that requires more extensive lse-tracking restructure — Section A
 // v3 follow-up).  V2 path silently falls back to V1 here so the (O, L)
 // contract is honored.
+//
+// DTYPE-INDEPENDENT (verified bf16-sparse-v2, 2026-06-18): this V1-only LSE path
+// applies EQUALLY to fp16 and bf16 — it is NOT a bf16-specific deferral. The
+// non-LSE forward routes both dtypes to V2 (see v2_eligible above); only the LSE
+// variant is V1, and only because V2 lacks LSE for ALL dtypes. Reached solely via
+// sparse backward (already dense/V1 by design — declined-on-perf, dispatch-map
+// gotcha 3), so the V1-LSE cost sits inside that known envelope.
 // =============================================================================
 std::pair<mlx::core::array, mlx::core::array>
 sparse_attention_forward_with_lse(

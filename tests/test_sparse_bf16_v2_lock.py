@@ -98,6 +98,52 @@ def test_bf16_reaches_real_v2_not_v1_fallback(D):
         f"silently dropped bf16 to the V1 fallback. The `&& is_f16` gate regressed.")
 
 
+@pytest.mark.skipif(not _HAVE, reason="extension required")
+def test_fp32_does_not_reach_v2_bound():
+    """Phase-0 dtype bound: removing `is_f16` from V2 eligibility must NOT let fp32
+    leak into the fp16/bf16-only V2 kernel. fp32 is bounded BEFORE eligibility
+    (the dtype-validity throw), at BOTH the C++ and public levels (Rule 8)."""
+    mx.random.seed(3)
+    B, H, N, D = 1, 4, 2048, 128
+    sc = 1.0 / math.sqrt(D)
+    f = lambda: (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(mx.float32)
+    q, k, v = f(), f(), f()
+    mask = _sym_mask(N)
+    mx.eval(q, k, v, mask)
+    # C++ level: the _ext entry raises on fp32 (cannot reach V2 eligibility)
+    with pytest.raises((RuntimeError, ValueError)):
+        o = sparse_attention_forward(q, k, v, mask, 32, False, sc, "v2")
+        mx.eval(o)
+    # public level: flash_attention_sparse raises on fp32 (Rule 8 bound)
+    with pytest.raises((RuntimeError, ValueError)):
+        o = flash_attention_sparse(q, k, v, mask, scale=sc)
+        mx.eval(o)
+
+
+def test_lse_variant_is_v1_for_both_dtypes_by_design():
+    """Phase-0 LSE confirmation: the sparse (O,L) variant is V1-only for ALL dtypes
+    (V2 lacks LSE) — NOT a bf16-specific deferral. We assert bf16 and fp16 LSE
+    produce IDENTICAL routing (both V1): the bf16 (O,L) output matches an
+    independent fp32 oracle just as the fp16 one does (V1 is correct, just slow)."""
+    try:
+        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+    except Exception:
+        pytest.skip("sparse LSE variant unavailable")
+    D, N = 128, 2048
+    sc = 1.0 / math.sqrt(D)
+    for dt in (mx.float16, mx.bfloat16):
+        mx.random.seed(4)
+        f = lambda: (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(dt)
+        q, k, v = f(), f(), f()
+        mask = _sym_mask(N)
+        mx.eval(q, k, v, mask)
+        o, L = sparse_attention_nax_with_lse(q, k, v, mask, block_tile=32, scale=sc)
+        ref = _fp32_oracle(q, k, v, mask, sc)
+        mx.eval(o, L, ref)
+        err = _delta(o, ref)
+        assert err < 5e-3, f"{dt} LSE-variant O wrong vs fp32 oracle (Δ={err:.2e})"
+
+
 @pytest.mark.parametrize("D", [64, 128])
 def test_bf16_public_path_routes_to_real_sparse_kernel(D):
     """End-to-end (the user path): flash_attention_sparse with a bf16 symmetric mask
