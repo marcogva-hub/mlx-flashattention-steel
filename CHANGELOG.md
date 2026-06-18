@@ -2,6 +2,24 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased] — bf16 routing audit (Tier-1 #1)
+
+Stacks toward 2.60.0. Branch `audit/bf16-routing-all-nax` (off 2.59.0). Version Marco-gated.
+
+### Changed
+
+- **Audited bf16 dispatch routing across ALL NAX paths (no behavior change).** Motivated by the
+  2.59.0 sparse-forward footgun (a silent `&& is_f16` gate → bf16 fell to the ~45×-slower V1 scalar
+  kernel), this audit fingerprinted the dispatched binary for `{fp16, bf16}` on every NAX path
+  (dense fwd D=128/D=64, dense backward, sparse fwd/backward, conv3d, GNA, paged-varlen) — by runtime
+  fingerprint, not source-trust (Lesson #14). **Verdict: the sparse forward was the only silent bf16
+  downgrade; every other NAX path already routes bf16 identically to fp16.** The one remaining bf16
+  downgrade (conv3d's *legacy im2col* path) is by-design **loud** (raises, Rule 8 — the fast MPP path
+  handles both dtypes and is the only one auto-routed). The sparse `(O,L)` LSE variant stays V1 for
+  all dtypes by design (V2 lacks LSE; not bf16-specific). New regression lock
+  `tests/test_bf16_routing_all_nax_lock.py` (dense/conv3d/GNA) + the dispatch-map "bf16 routing audit"
+  table assert bf16 reaches the fast binary on each path — a future re-added dtype gate fails CI.
+
 ## [2.59.0] — 2026-06-18 — consolidation: audited tree + bf16-sparse fix + D=64 autotune
 
 Folds four audited, green, locally-held change sets onto the published 2.58.0 base into one

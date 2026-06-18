@@ -55,6 +55,29 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyond these: backward=SDPA-vjp (intended), GNA=native (intended), decode=SDPA (intended, sync-floor regime), conv=NAX-when-eligible (intended).
 
+## bf16 dtype-routing audit (Tier-1 #1, 2026-06-18)
+
+After the gotcha-4 sparse fix, a full **(path × dtype) routing audit** fingerprinted the dispatched
+binary for `{fp16, bf16}` on every NAX path (Lesson #14 — runtime fingerprint, not source-trust).
+**Verdict: the sparse forward was the ONLY silent bf16 downgrade; all other NAX paths route bf16 ==
+fp16.** Per-path fingerprint:
+
+| Path | bf16 fingerprint | classification |
+|---|---|---|
+| Dense fwd D=128 (auto) | NAX, Δ=1.5e-5 vs SDPA (≠0) | fast-path (= fp16) |
+| Dense fwd D=64 (force/recompute) | NAX, Δ=1.5e-5 (≠0) | fast-path |
+| Dense backward | SDPA-vjp (Δ=0) | by-design (no `Primitive::vjp`); symmetric |
+| Sparse fwd V2 | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 fix holds) |
+| Sparse backward hybrid (opt-in) | runs, finite grad | by-design SDPA-vjp; symmetric |
+| conv3d NAX (MPP-eligible) | `executed.conv3d_nax_forward++`, 0 fallback | fast-path (auto-hook) |
+| conv3d legacy im2col (raw C++ only) | **loud raise** (`mfa_conv_nax.cpp` bf16 guard) | by-design loud (Rule 8); not auto-routed |
+| GNA native | native, Δ=6.6e-2 vs sparse-fallback | fast-path |
+| paged-varlen fused | fused kernel, err 5.6e-3 vs fp32 oracle | fast-path (`dtype_code` 0/1 symmetric) |
+
+Locked by `tests/test_bf16_routing_all_nax_lock.py` (dense D=128 / D=64 / conv3d / GNA) +
+`tests/test_sparse_bf16_v2_lock.py` (sparse) — a future re-added `is_f16` gate (Python eligibility OR
+a downstream C++ gate) on any of these fails CI.
+
 ## Hardware-tier map + V6 purification (Phase F-3, 2026-06-18)
 
 | Tier | Dense forward kernel family | Notes |
