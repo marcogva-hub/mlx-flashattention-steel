@@ -41,9 +41,23 @@ def _qkv(B, H, N, D, dt, seed=0):
     return q, k, v
 
 
+def _fp32_attn_oracle(q, k, v, causal):
+    """Independent fp32 forward oracle (manual softmax, NOT SDPA/vjp) — Lesson #11.
+    softmax(QK^T*scale [+causal mask]) @ V, all fp32."""
+    qf, kf, vf = q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32)
+    scale = 1.0 / math.sqrt(qf.shape[-1])
+    s = (qf @ kf.swapaxes(-1, -2)) * scale
+    if causal:
+        N = qf.shape[2]
+        s = s + mx.triu(mx.full((N, N), -1e30, dtype=mx.float32), k=1)
+    o = mx.softmax(s, axis=-1) @ vf
+    mx.eval(o)
+    return o
+
+
 def test_dense_d128_bf16_routes_to_nax():
-    """Dense D=128 auto: bf16 must reach the real NAX matmul2d forward (byteΔ>0 vs SDPA),
-    exactly like fp16. byteΔ==0 ⇒ it silently dropped to the SDPA fallback."""
+    """Dense D=128 auto (N>=2048, above the Tier-2 #1 threshold): bf16 must reach the real NAX
+    matmul2d forward (byteΔ>0 vs SDPA), exactly like fp16. byteΔ==0 ⇒ it silently dropped to SDPA."""
     from mlx_mfa import flash_attention
     sc = 1.0 / math.sqrt(128)
     for dt in (mx.float16, mx.bfloat16):
@@ -54,6 +68,46 @@ def test_dense_d128_bf16_routes_to_nax():
         assert d > 1e-7, (
             f"dense D=128 {dt} is byte-identical to SDPA (Δ={d:.2e}) — it dropped to the "
             f"SDPA fallback instead of the NAX forward. A dtype gate regressed.")
+
+
+@pytest.mark.parametrize("causal", [False, True])
+def test_dense_d128_bf16_correct_vs_fp32(causal):
+    """Tier-2 #2 axis 3 (correctness): bf16 dense D=128 NAX output is within the bf16 floor of an
+    INDEPENDENT fp32 oracle.  Measured worst-case ~1.3e-3 (causal); floor 5e-3 is generous but well
+    inside the bf16 range (<1e-2) and catches a real bf16 correctness regression."""
+    from mlx_mfa import flash_attention
+    q, k, v = _qkv(1, 8, 2048, 128, mx.bfloat16, seed=3)
+    o = flash_attention(q, k, v, causal=causal)
+    err = _delta(o, _fp32_attn_oracle(q, k, v, causal))
+    assert err < 5e-3, f"bf16 dense D=128 (causal={causal}) wrong vs fp32 oracle (Δ={err:.2e})"
+
+
+def test_dense_d128_bf16_perf_parity_vs_fp16():
+    """Tier-2 #2 axis 2 (perf): bf16 dense D=128 NAX is at parity with fp16 (measured median ratio
+    0.95-1.02 across shapes).  Generous ceiling 1.30× (RESULTS.md: perf re-measure-not-lock — bound,
+    don't pin) — catches a future bf16-specific slowdown (e.g. a silent drop to a slow path) without
+    flaking on machine/thermal variance.  Both dtypes route NAX (N=2048 >= threshold)."""
+    import time
+    from mlx_mfa import flash_attention
+
+    def med_ms(q, k, v, causal, w=10, it=60):
+        for _ in range(w):
+            mx.eval(flash_attention(q, k, v, causal=causal))
+        mx.synchronize(); ts = []
+        for _ in range(it):
+            mx.synchronize(); t0 = time.perf_counter()
+            mx.eval(flash_attention(q, k, v, causal=causal)); mx.synchronize()
+            ts.append(time.perf_counter() - t0)
+        return sorted(ts)[len(ts) // 2]
+
+    for causal in (False, True):
+        q16, k16, v16 = _qkv(1, 8, 4096, 128, mx.float16, seed=3)
+        qb, kb, vb = _qkv(1, 8, 4096, 128, mx.bfloat16, seed=3)
+        f16 = med_ms(q16, k16, v16, causal)
+        bf = med_ms(qb, kb, vb, causal)
+        assert bf < 1.30 * f16, (
+            f"bf16 dense D=128 (causal={causal}) {bf*1e3:.3f} ms is >1.30× fp16 {f16*1e3:.3f} ms "
+            f"(ratio {bf/f16:.2f}) — a bf16-specific perf regression (parity expected, ~1.0×).")
 
 
 def test_dense_d64_force_bf16_runs_nax():

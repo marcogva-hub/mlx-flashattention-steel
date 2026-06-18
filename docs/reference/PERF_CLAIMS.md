@@ -69,6 +69,25 @@ N·B·H=16384 gives opposite winners: (N=512,B=4)=SDPA 1.03× vs (N=2048,B=1)=NA
   reachable only via aggressive **small-tile decode** (a latent tile <16×16); the NO-GO is conditional on
   full-frame decode and would warrant re-evaluation if the pipeline ever moves to small spatial tiling.
 
+### bf16 dense D=128 — 3-axis confirmation (M5 Max, `research/nax-routing-threshold-m5`, Tier-2 #2, 2026-06-19)
+
+Closes the bf16 dense-D=128 cell on all three axes (route + perf + correctness), not by assumption.
+The #1 bf16 audit confirmed *routing* (bf16→NAX) and the threshold pass measured the *crossover*
+dtype-independent; this confirms **perf parity vs fp16** and **correctness vs an independent fp32 oracle**.
+
+- **Route** (re-confirmed): bf16 D=128 dispatch matches fp16 exactly across production shapes — **N<2048 →
+  SDPA** (byteΔ=0), **N≥2048 → NAX** (byteΔ 3e-5–5e-4); below-threshold bf16 SDPA path runs + correct.
+- **Perf parity vs fp16** (3-session §AA.4, N≥2048, full forward incl. softmax): bf16/fp16 median ratio
+  **0.951–1.017, all CONFIDENT** (cross-session range <10%). Absolute (fp16→bf16 ms): N=2048 causal
+  **0.491→0.467**, N=4096 nc **1.665→1.667**, N=8192 nc **5.709→5.718**, N=8192 causal **3.330→3.338**;
+  worst single-shape Δ **+0.106 ms (+3.1%)** at N=4096·B=2·H=16·causal. Parity holds across the full forward
+  (softmax is fp32-accumulated regardless of input dtype). 8192-nc fp16 = 48.2 effective TFLOPS (≤51.8 ✓).
+- **Correctness vs independent fp32 oracle** (manual softmax, not SDPA — Lesson #11): bf16 NAX max err
+  **non-causal 1.8e-5–3.9e-5, causal 9.8e-4–1.3e-3** — **~4× coarser than fp16** (the bf16/fp16 mantissa
+  ratio: 8 vs 11 bits), well inside the **bf16 floor (<1e-2)**. Below-threshold bf16 SDPA: 8.2e-4 (causal).
+- Lock: `tests/test_bf16_routing_all_nax_lock.py` (route byteΔ + perf-parity ceiling 1.30× generous +
+  fp32-correctness floor 5e-3). Reproduce: `flash_attention(q,k,v,causal=...)` at D=128 N≥2048, bf16 vs fp16.
+
 ### NAX backward tile autotune (M5 Max, `research/nax-backward-autotune-m5`, 2026-06-18)
 
 Autoresearch over the default-on **D=64 native backward** (the split dQ kernel,
