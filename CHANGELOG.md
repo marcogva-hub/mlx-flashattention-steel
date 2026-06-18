@@ -39,10 +39,20 @@ Branch `feature/conv3d-nax-asym-pad-m5` (off the #3 tip `aa1c0bb`). Folds into 2
 - **Image/2D models: NO-GO, now evidenced at the prize level (measurement).** SD-VAE decode IS conv-bound
   (UltraVSR `MLXDecoder` ≈ all conv2d), so the prize *looked* real — **but the MPP `convolution2d` 2D
   primitive is SLOWER than `mx.conv2d` on every SD-VAE shape** (1.0–3.2×: 512×64×64 2.26 vs 0.72 ms). The
-  3D win was vs MLX's weak `mx.conv3d`; `mx.conv2d` is the optimized CNN workhorse, which MPP can't beat,
-  so a 2D route would **regress** SD-VAE/SDXL → do NOT build (FLUX DiT moot regardless). §AA.5 premise
-  validation killed a MODEST-cost route before building. (As-shipped, 2D convs correctly fall through the
-  5D-weight hook.)
+  3D win was vs MLX's weak `mx.conv3d`; so a 2D route would **regress** SD-VAE/SDXL → do NOT build (FLUX
+  DiT moot regardless). §AA.5 premise validation killed a MODEST-cost route before building. (As-shipped,
+  2D convs correctly fall through the 5D-weight hook.)
+- **Root cause of the 2D loss = Winograd (evidenced, not "maturity").** `mx.conv2d` dispatches 3×3 s1 convs
+  to `winograd_conv_2D_gpu` (gate: `C%32==0 && O%32==0 && N·H·W≥4096 && C+O≥256` — all SD-VAE 3×3 shapes hit
+  it); Winograd does ≈2.25× **fewer real multiplies** (F(2×2,3×3)) than the matmul/NA path's full multiply
+  count — an *algebraic* edge MPP `convolution2d` structurally cannot access. Signature (M5, direct-FLOP
+  convention `2·N·Hₒ·Wₒ·Cₒ·Cᵢ·kh·kw`): at C=O=512/64², `mx.conv2d` 3×3 = 0.739 ms (26.1 direct-TFLOP/s),
+  **faster than its own 1×1** (1.011 ms) despite 9× the FLOP, and 2× the per-FLOP efficiency of 5×5 (4.12 ms,
+  13.0). Compute-bound (AI≈1475 ≫ ridge 145) rules out bandwidth; the 3×3-vs-5×5 gap rules out plain
+  GEMM-maturity. **MLX has no 3D Winograd** — which is *why* conv-NAX wins in 3D (baseline pays full mults).
+  **Generalization principle:** conv-NAX wins where the baseline does full multiplies (conv3d; 2D 1×1/5×5/
+  non-%32), loses where it has Winograd (conv2d 3×3 s1) → the 2D-3×3 NO-GO is **fundamental** (a from-scratch
+  2D-MPP can't beat Winograd unless it implements Winograd itself).
 
 ## [2.60.0] — 2026-06-19 — Tier campaign: dense routing threshold + bf16 D=128 3-axis + autotune + NO-GO closures
 

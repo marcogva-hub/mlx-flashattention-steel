@@ -232,11 +232,26 @@ conv-bound (measured: UltraVSR `MLXDecoder` 64×64×4→512×512, 59 conv2d ≈ 
 the prize *looked* real. (2) **But the conv-speedup is NEGATIVE**: a standalone MPP `convolution2d`
 (the 2D primitive the 3D kernel uses per tap) is **SLOWER than `mx.conv2d` on every SD-VAE shape**
 (512×64×64 **2.26 vs 0.72 ms**; 256×256×256 **2.13 vs 1.32 ms**; 128×512×512 2.32 vs 2.20 ms — `mx.conv2d`
-1.0–3.2× faster). The 3D conv-NAX win was vs MLX's *weakly-optimized* `mx.conv3d`; **`mx.conv2d` is MLX's
-heavily-optimized CNN workhorse**, which the MPP primitive cannot beat. A 2D NAX route would therefore
-**regress** SD-VAE / SDXL, not help → do NOT build it. (FLUX DiT is moot regardless — conv ≈ patch-embed.)
-This is the §AA.5 premise-validation catch: a MODEST-cost route for a conv-bound prize, killed by measuring
-the per-shape speedup *before* building. Runtime routing as-shipped: a 2D conv (4D weight) → `fallback+1`
+1.0–3.2× faster).
+
+**Root cause = Winograd (evidenced, not "maturity"; 2026-06-18).** `mx.conv2d` dispatches **3×3 stride-1**
+convs to a **Winograd** kernel (`winograd_conv_2D_gpu`, `mlx/backend/metal/conv.cpp`) when
+`C%32==0 && O%32==0 && N·H·W≥4096 && C+O≥256` — **every SD-VAE 3×3 shape satisfies this**. Winograd computes
+F(2×2,3×3) with ≈2.25× **fewer real multiplies** than the direct count, an *algebraic* reduction the
+matmul/NA `convolution2d` (which does the full multiply count) **structurally cannot access**. Confirmed by
+the direct-FLOP-rate signature on M5 (FLOP convention = direct im2col `2·N·Hₒ·Wₒ·Cₒ·Cᵢ·kh·kw`): at C=O=512,
+64², `mx.conv2d` **3×3 runs 0.739 ms (26.1 direct-TFLOP/s) — *faster than its own 1×1* (1.011 ms) despite 9×
+the direct FLOP**, and 2× the per-direct-FLOP efficiency of **5×5** (4.12 ms, 13.0; no Winograd path). The
+convs are **compute-bound** (AI≈1475 ≫ M5 ridge 145), ruling out a bandwidth explanation; the 3×3-vs-5×5
+anomaly + the source dispatch rule out plain GEMM-maturity. **MLX has NO 3D Winograd** (3D conv only has
+`implicit_gemm_conv_3D`) — which is *why* conv-NAX wins in 3D: there the baseline `mx.conv3d` also pays the
+full multiply count, so the NA's raw throughput wins. **Generalization principle:** conv-NAX (matmul/NA, full
+multiply count) wins where the baseline also does full multiplies — **conv3d, and 2D kernels Winograd can't
+serve** (1×1, 5×5, non-%32, small) — and loses where the baseline has Winograd (**conv2d 3×3 s1**, the
+SD-VAE/SDXL bulk). This makes the 2D-3×3 NO-GO **fundamental**: a from-scratch 2D-MPP kernel can't beat
+Winograd's ≈2.25× fewer mults *unless it implements Winograd itself* (a different kernel, not the matmul2d
+primitive). (FLUX DiT moot regardless — conv ≈ patch-embed.) §AA.5 premise-validation killed a MODEST-cost
+route for a conv-bound prize before building. Runtime routing as-shipped: a 2D conv (4D weight) → `fallback+1`
 (the hook gates on 5D-weight conv3d), so 2D models are correctly untouched.
 
 ### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — NO-GO superseded by the resolution above
