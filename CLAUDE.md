@@ -180,6 +180,17 @@ CHANGELOG committed; **NOT tagged/published — the tag + `twine upload` + GH re
 explicit trigger** (pending version confirm). See
 `.doc-archive/docs/v50/campaign-2026-06/audit/phase-G-ship-readiness-gate.md`.
 
+**Phase G-pre portability gate — GO @ floor macOS 14.0, sdist-only (2026-06-18):** confirmed V6/NAX
+did NOT raise the build floor. A clean control build at `MACOSX_DEPLOYMENT_TARGET=14.0` against the
+macOS-26 SDK compiles with `-Werror=unguarded-availability-new` (binary `minos 14.0`); the only host
+macOS-26 API (`v6_nax_detect.mm`) is `@available(macOS 26.1, *)`-guarded, and the Metal-4 cooperative-
+tensor code is runtime-compiled shader source. Floor made explicit in `CMakeLists.txt` (override-able
+`CMAKE_OSX_DEPLOYMENT_TARGET=14.0`); `requires-python>=3.10`. **Release model = sdist-only**
+(compile-at-install against the user's MLX): the local `macosx_26_0` wheel is ABI-pinned to this MLX
+build and quarantined out of `dist/` → trigger is `twine upload dist/mlx_mfa-2.58.0.tar.gz` (NOT
+`dist/*`). Clean-env sdist install verified. Suite 1924. See
+`.doc-archive/docs/v50/campaign-2026-06/audit/phase-G-pre-portability-gate.md`.
+
 ## Publication cleanup — journal off the tracked tree (D-addendum, 2026-06-18)
 
 The public repo **tracked tree shows only current-state docs**: the 7 root docs

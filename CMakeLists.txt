@@ -15,6 +15,22 @@ set(CMAKE_OBJCXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --------------------------------------------------------------------------- #
+# macOS deployment floor (audit Phase G-pre, 2026-06-18)
+# --------------------------------------------------------------------------- #
+# The portability floor is macOS 14.0 — MLX's minimum.  The V6/NAX Metal 4 /
+# macOS-26 features are RUNTIME capabilities (gated by the M5/macOS check, e.g.
+# `@available(macOS 26.1, *)` in csrc/v6_nax_detect.mm) and by runtime-compiled
+# JIT shader source — NOT a build-time dependency.  Verified: a clean control
+# build at target 14.0 against the macOS-26 SDK compiles with
+# `-Werror=unguarded-availability-new` (no unguarded 26-only host API).  Set the
+# floor explicitly so the sdist's compile-at-install always targets 14.0
+# regardless of the build machine's macOS; override via -DCMAKE_OSX_DEPLOYMENT_TARGET
+# or the MACOSX_DEPLOYMENT_TARGET env var.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment target" FORCE)
+endif()
+
+# --------------------------------------------------------------------------- #
 # Platform check
 # --------------------------------------------------------------------------- #
 if(NOT APPLE)
