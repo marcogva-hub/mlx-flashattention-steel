@@ -89,11 +89,16 @@ struct V6Key {
   uint16_t v6nax_BQ = 0;
   uint16_t v6nax_BK = 0;
   uint16_t v6nax_WM = 0;
+  // F-2 (Change 3): scale is baked into the source (#define V6NAX_DOT_SCALE), so a
+  // distinct scale is a distinct pipeline.  Without this key field, a custom-scale
+  // call would reuse the default-scale pipeline → silently wrong scale.
+  float v6_scale = 0.0f;
   // Track 6: single declaration of the affecting-input set.
   auto tie() const {
     return std::tie(head_dim, Hq, Hk, dtype, isCausal, R, C, qbs, kbs, vbs,
                     obs, cfg_BQ, cfg_BK, cfg_SG, cfg_BD, cfg_axis_flags,
-                    cfg_bypass_tgp, use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM);
+                    cfg_bypass_tgp, use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM,
+                    v6_scale);
   }
   bool operator==(const V6Key& o) const { return tie() == o.tie(); }
 };
@@ -125,7 +130,15 @@ static void* cache_insert_or_release(Map& map, std::mutex& mtx,
 std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 bool isCausal, bool bhnd, int R = 0,
                                 bool use_v6nax_override = false,
-                                bool use_v6nax_explicit = false) {
+                                bool use_v6nax_explicit = false,
+                                float scale_override = -1.0f) {
+  // F-2 (Change 3): scale is BAKED into the source as `#define V6NAX_DOT_SCALE`
+  // (NAAttentionKernel.cpp createV6NAXSource, via descriptor.scale).  A custom
+  // scale therefore produces a DISTINCT kernel — the dispatch cache key (V6Key)
+  // MUST include the resolved scale or a different-scale call silently reuses the
+  // wrong baked pipeline.  scale_override <= 0 means "use the default 1/sqrt(D)".
+  const float resolved_scale =
+      (scale_override > 0.0f) ? scale_override : 1.0f / std::sqrt((float)head_dim);
   GEMMOperandPrecision input_prec = (dtype_code == 1)
       ? GEMMOperandPrecision::BF16
       : GEMMOperandPrecision::FP16;
@@ -243,7 +256,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       blockDims, (unsigned short)head_dim, (unsigned short)Hq,
       (unsigned short)Hk, /*executionSIMDGroups=*/exec_sg_for_desc,
       /*checkCEdge1=*/true, mp, AttentionKernelType::forward,
-      /*scale=*/1.0f / std::sqrt((float)head_dim),
+      /*scale=*/resolved_scale,
       /*bypassThreadgroupMemory=*/bypass_tgp,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = single_otile;
@@ -494,6 +507,10 @@ public:
     // on D=64 small-Nk shapes (which by default route to legacy v6_nax).
     // Caller passes true when V6NAX backward will consume the lse.
     bool force_v6nax = false;
+    // F-2 (Change 3): custom QK scale (baked into the kernel source). <=0 sentinel
+    // means "use the default 1/sqrt(D)". Plumbed from the binding so the dense NAX
+    // forward works at ALL scales (no custom-scale footgun).
+    float scale = -1.0f;
   };
 
   MFAV6Forward(mlx::core::Stream stream, Params params)
@@ -689,11 +706,16 @@ public:
     // Include all tile + flag params in cache key.
     // Repo review 2026-05: tile/config params moved from bit-packed high
     // bits of R/C/qbs/kbs to dedicated key fields (see V6Key comment).
+    // F-2 (Change 3): resolve the baked scale (default 1/sqrt(D) when caller
+    // passes the <=0 sentinel) and key the pipeline on it.
+    const float resolved_scale =
+        (params_.scale > 0.0f) ? params_.scale : 1.0f / std::sqrt((float)D);
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               R, C, qbs, kbs, vbs, obs,
               BQ, BK, executionSIMDGroups, BD,
               (uint16_t)axis_flags, bypass_tgp,
-              use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM};
+              use_v6nax, v6nax_BQ, v6nax_BK, v6nax_WM,
+              resolved_scale};
     void* pipeline = nullptr;
     {
       std::lock_guard<std::mutex> lock(v6_mtx);
@@ -703,7 +725,8 @@ public:
     if (!pipeline) {
       std::string src = generate_v6_source(
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
-          /*use_v6nax_override=*/use_v6nax, /*use_v6nax_explicit=*/true);
+          /*use_v6nax_override=*/use_v6nax, /*use_v6nax_explicit=*/true,
+          /*scale_override=*/resolved_scale);
       if (use_v6nax) {
         // V6NAX uses no FCs (params via struct buffer).
         if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
@@ -765,7 +788,9 @@ public:
     // expecting natural log (silently wrong gradients).
     return p && p->params_.causal == params_.causal
              && p->params_.bhnd == params_.bhnd
-             && p->params_.force_v6nax == params_.force_v6nax;
+             && p->params_.force_v6nax == params_.force_v6nax
+             // F-2: distinct scale → distinct kernel; must not graph-dedup.
+             && p->params_.scale == params_.scale;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -786,7 +811,8 @@ private:
 // We transpose Q/K/V into kernel layout, dispatch, then transpose O back.
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal, bool force_v6nax) {
+    const mlx::core::array& v, bool causal, bool force_v6nax,
+    float scale) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
   int D = q.shape(3);
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
@@ -804,7 +830,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
                         (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
   const bool bhnd = !legacy_opt_in && can_bhnd;
-  MFAV6Forward::Params params{causal, bhnd, force_v6nax};
+  MFAV6Forward::Params params{causal, bhnd, force_v6nax, scale};
 
   if (bhnd) {
     // Pass Q/K/V directly in MLX-native [B, H, N, D] layout.

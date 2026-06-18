@@ -82,21 +82,68 @@ def test_v6_nax_forward_matches_fp32(D, N, Hq, Hk, causal):
         f"max_err={err:.3e} vs independent fp32 (default scale 1/sqrt(D))")
 
 
-def test_v6_nax_forward_is_default_scale_only():
-    """The kernel bakes 1/sqrt(D): its output matches the 1/sqrt(D) oracle and
-    the binding exposes NO scale parameter (default-scale constraint — documented,
-    not a bug). A custom scale must route elsewhere (mfa_forward_with_lse/SDPA)."""
-    import inspect
-    # The C++ binding takes (q, k, v, causal, force_v6nax) — no scale arg.
-    # Confirm via the matched 1/sqrt(D) oracle (a non-default scale would diverge).
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("scale", [0.05, 0.30])
+def test_v6_nax_forward_respects_custom_scale(causal, scale):
+    """Audit F-2 (Change 3): the binding now accepts a custom scale and the kernel
+    FULLY respects it (scale plumbed through descriptor.scale + baked #define +
+    cache-keyed).  Output must match the fp32 oracle AT THE CUSTOM SCALE — and the
+    custom scale must be distinguishable from the default (larger inputs so QK is
+    O(1+); a stale default-scale pipeline would diverge from the custom oracle)."""
+    D, N = 128, 2048
+    mx.random.seed(11)
+    # larger inputs so the scale materially changes softmax (distinguishability)
+    q = mx.random.uniform(-1, 1, (1, 8, N, D)).astype(mx.float16)
+    k = mx.random.uniform(-1, 1, (1, 8, N, D)).astype(mx.float16)
+    v = mx.random.uniform(-1, 1, (1, 8, N, D)).astype(mx.float16)
+    mx.eval(q, k, v)
+    O, _ = v6_nax_forward(q, k, v, causal, True, scale)
+    mx.eval(O)
+    ref = _fp32_oracle_scaled(q, k, v, causal, scale)
+    err = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref)).max())
+    assert np.isfinite(err) and err < 2e-2, (
+        f"v6_nax_forward custom scale={scale} causal={causal}: err={err:.3e} vs fp32")
+    # distinguishability guard: the custom-scale output must NOT match the default
+    # oracle (else the cache returned a stale default-scale pipeline).
+    default = 1.0 / math.sqrt(D)
+    if abs(scale - default) > 0.05:
+        ref_def = _fp32_oracle_scaled(q, k, v, causal, default)
+        sep = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref_def)).max())
+        assert sep > 0.01, (
+            f"custom scale {scale} produced the DEFAULT-scale output (Δ={sep:.4f}) "
+            f"— cache-key collision: a distinct scale reused the wrong baked pipeline")
+
+
+def _fp32_oracle_scaled(q, k, v, causal, scale):
+    qf, kf, vf = q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32)
+    Hq, Hk = q.shape[1], k.shape[1]
+    if Hq != Hk:
+        kf = mx.repeat(kf, Hq // Hk, axis=1)
+        vf = mx.repeat(vf, Hq // Hk, axis=1)
+    s = (qf @ kf.transpose(0, 1, 3, 2)) * scale
+    if causal:
+        N, S = q.shape[2], k.shape[2]
+        cm = mx.arange(S)[None, :] > (mx.arange(N)[:, None] + (S - N))
+        s = mx.where(cm[None, None], mx.array(-1e30, mx.float32), s)
+    o = mx.softmax(s, axis=-1) @ vf
+    mx.eval(o)
+    return o
+
+
+def test_v6_nax_forward_default_scale_sentinel():
+    """F-2 (Change 3): the <=0 scale sentinel (or the no-scale call) resolves to the
+    default 1/sqrt(D).  (Pre-F-2 this kernel was default-scale-ONLY; F-2 plumbed a
+    real scale arg — see test_v6_nax_forward_respects_custom_scale — but the default
+    behavior is preserved for existing callers, e.g. the backward-recompute.)"""
     D, N = 128, 2048
     mx.random.seed(1)
     q = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
     k = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
     v = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
     mx.eval(q, k, v)
+    # no scale arg → default sentinel → 1/sqrt(D)
     O, _ = v6_nax_forward(q, k, v, False, True)
     mx.eval(O)
     ref_default = _fp32_oracle(q, k, v, False, D)  # scale = 1/sqrt(128)
     err = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref_default)).max())
-    assert err < 2e-2, f"v6_nax_forward not at default scale 1/sqrt(D): err={err:.3e}"
+    assert err < 2e-2, f"v6_nax_forward default sentinel not at 1/sqrt(D): err={err:.3e}"

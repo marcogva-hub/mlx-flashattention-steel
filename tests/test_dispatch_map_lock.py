@@ -67,13 +67,46 @@ def _block_bias(bm, qL, kL):
 
 
 # ── dense ──────────────────────────────────────────────────────────────────
-def test_dense_auto_is_sdpa():
-    """flash_attention(backend=auto) dense → Apple SDPA (byte-identical)."""
+def test_dense_auto_D128_is_nax_not_sdpa():
+    """Audit F-2 (Change 3): flash_attention(backend=auto) dense D=128 → the NAX
+    matmul2d forward (`v6_nax_forward`), NOT Apple SDPA.  Δ vs SDPA must be a small
+    real-kernel difference (~1e-6), NOT 0.0.  Drift-back to SDPA (Δ==0) fails CI —
+    the parity-to-modest-win D=128 dense route would have silently regressed."""
     B, H, N, D = 1, 4, 2048, 128
     q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
     o = flash_attention(q, k, v, scale=sc, causal=False)
     ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
-    assert _delta(o, ref) == 0.0, "dense auto drifted off the SDPA path"
+    d = _delta(o, ref)
+    assert 1e-7 < d < 3e-2, (
+        f"D=128 dense auto is not the NAX kernel (Δ={d}: 0.0 ⇒ drifted back to "
+        f"SDPA — the F-2 dense-NAX route regressed; large ⇒ wrong kernel)")
+
+
+def test_dense_auto_D64_is_sdpa():
+    """F-2: dense D=64 auto stays Apple SDPA (byte-identical) — NAX LOSES at D=64
+    (1.17-1.22×), so it must NOT route there.  Δ==0 ⇒ SDPA (correct)."""
+    B, H, N, D = 1, 4, 4096, 64
+    q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+    o = flash_attention(q, k, v, scale=sc, causal=False)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+    assert _delta(o, ref) == 0.0, "D=64 dense auto drifted OFF SDPA (NAX loses at D=64 — must stay SDPA)"
+
+
+def test_dense_D128_backend_sdpa_and_optout_stay_sdpa():
+    """F-2: backend='sdpa' and MFA_DISABLE_V6_DENSE=1 keep D=128 dense on SDPA
+    (keep-all-paths; the NAX route is auto-only + opt-outable)."""
+    import os
+    B, H, N, D = 1, 4, 2048, 128
+    q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+    assert _delta(flash_attention(q, k, v, scale=sc, backend="sdpa"), ref) == 0.0, \
+        "backend='sdpa' D=128 must stay SDPA"
+    os.environ["MFA_DISABLE_V6_DENSE"] = "1"
+    try:
+        assert _delta(flash_attention(q, k, v, scale=sc), ref) == 0.0, \
+            "MFA_DISABLE_V6_DENSE=1 must force D=128 dense back to SDPA"
+    finally:
+        os.environ.pop("MFA_DISABLE_V6_DENSE", None)
 
 
 def test_dense_mfa_is_real_steel_not_sdpa():

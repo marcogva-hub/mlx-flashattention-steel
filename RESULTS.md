@@ -9,10 +9,11 @@
 >   `2^31` work-threshold mis-routes D=64 (always) + D=128 N<4096 to the slow V1 (Phase-F target).
 > - **symmetric NAX-sparse beats SDPA at D=128**: 4.16×@d=0.06 → 1.61×@d=0.5 (crossover ~d=0.78) — the
 >   win is reachable only via a symmetric mask today (Phase-F D=128-sparse-routing fix justified).
-> - **`backend="mfa"` simdgroup-STEEL is legacy on M5**: SDPA is 2–4× faster (default `auto`→SDPA is
->   correct). BUT the dense **NAX matmul2d** forward `v6_nax_forward` is **parity-or-better than SDPA at
->   D=128 (0.89–1.00×)** — competitive, currently backward-recompute-only + default-scale-only (E-addendum
->   2026-06-18, `audit/phase-E-addendum-v6nax-dense-forward.md`); D=64 loses (1.17–1.22×).
+> - **Dense D=128 `backend="auto"` now routes the NAX matmul2d forward** (`v6_nax_forward`, F-2 Change 3):
+>   **parity-to-modest-win vs SDPA at D=128** (0.89–1.03× across N, never loses), all scales (scale plumbed),
+>   backward=SDPA-vjp. **D=64 stays SDPA** (NAX loses 1.17–1.22×). `backend="mfa"` simdgroup-STEEL remains
+>   legacy on M5 (SDPA 2–4× faster — a different kernel family). The ~5–7pp ALU gap to a larger D=128 win is
+>   a future single-O-accumulator source-gen rewrite.
 > - **sage int8 is 4.7× slower than SDPA on M5** (cos ~0.997) — not worth auto-routing here.
 > - The numbers BELOW are historical (M1 Max + pre-26.6 M5); treat as indicative, not current.
 

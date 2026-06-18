@@ -149,6 +149,16 @@ proxy-footgun cuts both ways — never generalize a primitive's perf from a *sib
 (simdgroup ≠ matmul2d, same "dense MFA" label).  F-target: consider exposing `v6_nax_forward`
 for D=128.  See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`.
 
+**F-2 (Change 3) SHIPPED (dense NAX forward routed, 2026-06-18):** `flash_attention(auto)`
+dense **D=128** now routes to `v6_nax_forward` (NAX matmul2d) — parity-to-modest-win vs SDPA
+(0.89–1.03×, never loses); D=64/cross-attn/windowed/biased/opt-out (`MFA_DISABLE_V6_DENSE=1`)
+stay SDPA.  **Scale plumbed through the binding** (`v6_nax_forward(...,scale)`; baked
+`#define V6NAX_DOT_SCALE` → cache-keyed on scale) so it works at ALL scales — the prompt's
+"kernel reads p.scale" premise was about the non-dispatched standalone; the real kernel BAKES
+scale.  Forward-only kernel → wrapped in `_make_v6nax_dense_custom` (fwd=NAX, vjp=SDPA-vjp).
+Locks: dispatch-map (D128→NAX/D64→SDPA/opt-out) + v6_nax_forward custom-scale.  Suite 1918.
+See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-F-2-dense-nax-forward-route.md`.
+
 ## Publication cleanup — journal off the tracked tree (D-addendum, 2026-06-18)
 
 The public repo **tracked tree shows only current-state docs**: the 7 root docs

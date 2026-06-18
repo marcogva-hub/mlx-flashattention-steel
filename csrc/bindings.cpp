@@ -36,7 +36,8 @@ std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
 // integration to obtain natural-log lse).
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
-    const mlx::core::array& v, bool causal, bool force_v6nax = false);
+    const mlx::core::array& v, bool causal, bool force_v6nax = false,
+    float scale = -1.0f);
 // V6NAX backward dQ (V6NAX backward Option β Phase 1).  Returns dQ; consumes
 // O + lse from V6NAX forward.  Routing constraint per DC12: caller must
 // ensure V6NAX-forward-eligible shape (D=128 always; D=64 with Nk>8000).
@@ -405,15 +406,19 @@ NB_MODULE(_ext, m) {
 
   m.def("v6_nax_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,
-           const mlx::core::array& v, bool causal, bool force_v6nax) {
-          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v6nax);
+           const mlx::core::array& v, bool causal, bool force_v6nax,
+           float scale) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v6nax, scale);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("causal") = false,
         nb::arg("force_v6nax") = false,
+        nb::arg("scale") = -1.0f,
         "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16. "
         "v2.37.0: force_v6nax=True overrides default routing to ensure V6NAX forward "
-        "path (used by V6NAX backward integration for natural-log lse).");
+        "path (used by V6NAX backward integration for natural-log lse). "
+        "F-2 (Change 3): scale is the QK scale baked into the kernel (default <=0 "
+        "sentinel => 1/sqrt(D)); a custom scale produces a distinct cached pipeline.");
 
   m.def("v6_nax_backward_query",
         [](const mlx::core::array& q, const mlx::core::array& k,

@@ -2,7 +2,26 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — V34→V6 nomenclature unification (env-var aliases deprecated)
+## [Unreleased]
+
+### Added — dense NAX matmul2d forward routed at D=128 (audit F-2, Change 3)
+
+- `flash_attention(backend="auto")` dense **D=128** now routes to the **NAX matmul2d**
+  forward (`v6_nax_forward`) instead of Apple SDPA — **parity-to-modest-win** vs SDPA
+  (0.89–1.03× across N=256…8192, causal + non-causal; never loses at D=128). Backward is
+  SDPA-vjp (bit-exact), so `mx.grad` is unaffected. **D=64 stays SDPA** (NAX loses
+  1.17–1.22×); cross-attention (N≠S), windowed, biased, and `backend!="auto"` shapes stay
+  SDPA too. Opt out with `MFA_DISABLE_V6_DENSE=1`. Keep-all-paths (SDPA + simdgroup STEEL
+  retained). `backend="mfa"` simdgroup STEEL remains legacy-on-M5 (a different kernel family).
+- **Scale plumbed through the `v6_nax_forward` binding** (`scale` arg; default `<=0`
+  sentinel → `1/sqrt(D)`). The kernel bakes the scale into its source (`#define
+  V6NAX_DOT_SCALE`), so the dispatch cache key now includes the resolved scale — the dense
+  NAX forward is correct at **all** scales (verified vs fp32 at a non-default scale).
+  Reproduce: `mlx_mfa.flash_attention(q, k, v)` with D=128 fp16 on M5 → `Δ≈1.9e-6` vs
+  `backend="sdpa"` (real NAX kernel). Locks: `tests/test_dispatch_map_lock.py`
+  (dense-D128→NAX, D64→SDPA, opt-out), `tests/test_v6_nax_forward_lock.py` (custom-scale).
+
+## [Unreleased pre-F-2] — V34→V6 nomenclature unification (env-var aliases deprecated)
 
 Internal/documentation rename: the `V34` token (the development working name
 for the V6 NAX kernel — forward + the 9 backward kernels) is unified to **V6**.

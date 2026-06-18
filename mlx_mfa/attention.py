@@ -692,6 +692,30 @@ def flash_attention(
         elif return_lse:
             return _fallback_sdpa_with_lse(q, k, v, scale, causal)
         else:
+            # Audit F-2 (Change 3): route the dense D=128 forward to the NAX
+            # matmul2d kernel (`v6_nax_forward`) — parity-to-modest-win vs Apple
+            # SDPA at D=128 across every N (E-addendum + F-2 boundary: 0.74-1.01×,
+            # never loses).  D=64 LOSES (1.17-1.22×) → stays SDPA.  All scales
+            # (F-2 scale plumbing).  Backward via SDPA-vjp (custom_function, since
+            # the NAX forward has no Primitive::vjp).  AUTO only; N==S, D_v==D_qk,
+            # no window/bias/dropout; opt-out via MFA_DISABLE_V6_DENSE=1.
+            import os as _os
+            if (
+                backend == "auto"
+                and head_dim == 128
+                and _get_has_nax_cached()
+                and q.dtype in (mx.float16, mx.bfloat16)
+                and k.dtype == q.dtype and v.dtype == q.dtype
+                and v.shape[3] == head_dim
+                and k.shape[2] == q.shape[2]
+                and window_size is None
+                and attn_bias is None
+                and dropout_p == 0.0
+                and not return_attn_weights
+                and _os.environ.get("MFA_DISABLE_V6_DENSE") != "1"
+            ):
+                _sc = scale if scale is not None else 1.0 / math.sqrt(head_dim)
+                return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
             return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
@@ -5185,6 +5209,45 @@ def _make_mfa_custom_lse(scale: float, causal: bool):
     def _backward(primals, cotangents, output):
         q, k, v = primals
         dO, _dL = cotangents  # ignore dL (no training signal on the LSE)
+
+        def _sdpa(q_, k_, v_):
+            return mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale,
+                mask=("causal" if causal else None))
+
+        _, (dQ, dK, dV) = mx.vjp(_sdpa, [q, k, v], [dO])
+        return dQ, dK, dV
+
+    return _impl
+
+
+@functools.lru_cache(maxsize=64)
+def _make_v6nax_dense_custom(scale: float, causal: bool):
+    """Audit F-2 (Change 3): custom_function for the routed dense NAX matmul2d
+    forward (`v6_nax_forward`).
+
+    Forward routes to the dense NAX matmul2d kernel — parity-to-modest-win vs Apple
+    SDPA at D=128 (E-addendum + Phase-F-2 boundary bench: 0.74-1.01× across N, never
+    loses at D=128).  `v6_nax_forward` is forward-only (no Primitive::vjp), so the
+    backward differentiates O via SDPA-vjp (bit-exact ground truth) — the same
+    forward=NAX / backward=SDPA-vjp pattern as `_make_mfa_custom_lse` and the sparse
+    `_sparse_nax_with_sdpa_vjp`.  `scale` is the resolved QK scale (the binding bakes
+    it into the kernel + cache-keys on it; F-2 scale plumbing) — works at ALL scales.
+    Cached by (scale, causal).
+    """
+    from mlx_mfa._ext import v6_nax_forward as _v6_fwd
+
+    @mx.custom_function
+    def _impl(q, k, v):
+        # force_v6nax=True selects the NAX-direct kernel; drop the LSE (L carries
+        # no training signal and is recomputed by the backward when needed).
+        O, _L = _v6_fwd(q, k, v, causal, True, scale)
+        return O
+
+    @_impl.vjp
+    def _backward(primals, cotangents, output):
+        q, k, v = primals
+        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
 
         def _sdpa(q_, k_, v_):
             return mx.fast.scaled_dot_product_attention(
