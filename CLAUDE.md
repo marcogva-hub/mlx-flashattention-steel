@@ -170,6 +170,16 @@ UNTOUCHED**. **V5** = experimental opt-in (`MFA_ENABLE_V5=1`), never auto-routed
 (force False==True Δ=0; drift-back fails CI). Suite 1924.
 See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-F-3-v6-purification.md`.
 
+**Phase G ship-readiness gate — READY-TO-SHIP @ v2.58.0, HELD for Marco (2026-06-18):** every audit
+invariant verified at ship time (104 lock/guard cells + 1924 suite green, 0 orphans), §AA
+release-audit GREEN_WITH_ADVISORY (0 blocking), repo-release-prep clean (3-SoT version consistent,
+`__all__` 101 importable, twine check PASSED), and the built WHEEL smoked in a clean venv (F-3
+boundary D=256 raises clean; dense D128→NAX Δ1.9e-6; D64→SDPA Δ0; sparse-sym→V2; grad vs SDPA-vjp 0;
+custom-scale correct). Ship manifest journal-free on BOTH wheel + sdist. Version bump (2.58.0) +
+CHANGELOG committed; **NOT tagged/published — the tag + `twine upload` + GH release are Marco's
+explicit trigger** (pending version confirm). See
+`.doc-archive/docs/v50/campaign-2026-06/audit/phase-G-ship-readiness-gate.md`.
+
 ## Publication cleanup — journal off the tracked tree (D-addendum, 2026-06-18)
 
 The public repo **tracked tree shows only current-state docs**: the 7 root docs

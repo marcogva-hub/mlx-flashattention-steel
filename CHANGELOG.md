@@ -2,64 +2,73 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased]
+## [2.58.0] — 2026-06-18 — audit campaign (A–F): routing fixes + dense-NAX + V6 purification + publication cleanup
 
-### Changed — V6 forward purified to pure NAX (audit F-3)
+First release off the fully-audited tree. The 2026-06 audit established runtime-verified
+dispatch ground-truth + per-kernel correctness locks, then applied the routing fixes the audit
+justified on measured M5/26.6 numbers. Forward stays bit-identical to Apple SDPA where SDPA is
+the kernel; all perf is Verified-at-2026-06-18 on M5 Max (re-measure is the anti-drift). Public
+API non-breaking.
 
-- The simdgroup-*within*-V6 forward fallback (`MFAV6Forward` `use_v6nax=false`) is **removed**.
-  It was a **diverged, broken duplicate** of the standalone simdgroup family — it produced
-  garbage at D=64 (D=64 N=4096 gave max-abs-err ≈512 vs fp32) and was unreachable from
-  production (every V6 entry forces NAX; D=64 dense routes to SDPA per F-2). `MFAV6Forward`
-  (`v6_nax_forward`) now serves **only NAX** (D∈{64,128}, valid GQA); invalid GQA raises loudly
-  (Rule 8) instead of silently dispatching the broken path. The standalone simdgroup family (the
-  validated **M1–M4 dense tier**: V1/V2/V3/V4/V5/split-K/dsplit/flash_decode) is **untouched**.
-  `MFA_V6_USE_NAX=0` (the old escape to the broken simdgroup) is now a no-op (NAX is the only V6
-  forward). **V5** stays an experimental opt-in (`MFA_ENABLE_V5=1`, never auto-routed on any tier).
-  Lock: `tests/test_v6_nax_forward_lock.py::test_v6_forward_is_pure_nax` (drift-back fails CI).
+### Fixed
 
-### Added — dense NAX matmul2d forward routed at D=128 (audit F-2, Change 3)
+- **V6 broken-fallback correctness bugfix (audit F-3).** A bare
+  `_ext.v6_nax_forward(..., force_v6nax=False)` at **D=64** returned **garbage** (D=64 N=4096:
+  max-abs-err ≈512 vs fp32) via a **diverged, broken simdgroup fallback inside V6**. That
+  fallback is **removed**: `v6_nax_forward` now serves **only NAX** (D∈{64,128}, valid GQA) →
+  correct (err ≤7e-5); invalid GQA raises loudly (Rule 8). The path was unreachable from the
+  high-level API (which forces NAX / routes D=64→SDPA), so no released high-level behavior was
+  wrong — but the expert `_ext` entry is now correct. `MFA_V6_USE_NAX=0` (the old escape to the
+  broken path) is now a no-op. Lock: `test_v6_nax_forward_lock::test_v6_forward_is_pure_nax`.
 
-- `flash_attention(backend="auto")` dense **D=128** now routes to the **NAX matmul2d**
-  forward (`v6_nax_forward`) instead of Apple SDPA — **parity-to-modest-win** vs SDPA
-  (0.89–1.03× across N=256…8192, causal + non-causal; never loses at D=128). Backward is
-  SDPA-vjp (bit-exact), so `mx.grad` is unaffected. **D=64 stays SDPA** (NAX loses
-  1.17–1.22×); cross-attention (N≠S), windowed, biased, and `backend!="auto"` shapes stay
-  SDPA too. Opt out with `MFA_DISABLE_V6_DENSE=1`. Keep-all-paths (SDPA + simdgroup STEEL
-  retained). `backend="mfa"` simdgroup STEEL remains legacy-on-M5 (a different kernel family).
-- **Scale plumbed through the `v6_nax_forward` binding** (`scale` arg; default `<=0`
-  sentinel → `1/sqrt(D)`). The kernel bakes the scale into its source (`#define
-  V6NAX_DOT_SCALE`), so the dispatch cache key now includes the resolved scale — the dense
-  NAX forward is correct at **all** scales (verified vs fp32 at a non-default scale).
-  Reproduce: `mlx_mfa.flash_attention(q, k, v)` with D=128 fp16 on M5 → `Δ≈1.9e-6` vs
-  `backend="sdpa"` (real NAX kernel). Locks: `tests/test_dispatch_map_lock.py`
-  (dense-D128→NAX, D64→SDPA, opt-out), `tests/test_v6_nax_forward_lock.py` (custom-scale).
+### Added
 
-## [Unreleased pre-F-2] — V34→V6 nomenclature unification (env-var aliases deprecated)
+- **Dense NAX matmul2d forward routed at D=128 (audit F-2).** `flash_attention(backend="auto")`
+  dense **D=128** routes to the NAX matmul2d forward (`v6_nax_forward`) — **parity-to-modest-win**
+  vs SDPA (0.89–1.03× across N=256…8192, causal + non-causal; never loses at D=128). Backward is
+  SDPA-vjp (bit-exact); `mx.grad` unaffected. **All scales** (the `scale` arg is plumbed through
+  the binding + baked into the kernel + cache-keyed). **D=64 / cross-attention (N≠S) / windowed /
+  biased / `backend!="auto"`** stay SDPA. Opt out: `MFA_DISABLE_V6_DENSE=1`.
+  Reproduce (M5/26.6, public API): `o = mlx_mfa.flash_attention(q, k, v)` with `q,k,v` fp16
+  `[1,8,4096,128]` → `o` differs from `mlx_mfa.flash_attention(q,k,v,backend="sdpa")` by
+  `Δ≈1.9e-6` (the real NAX kernel ran, not SDPA) and matches an fp32 reference within the fp16
+  floor; wall-clock parity-to-1.03× vs the `backend="sdpa"` path (median of 3×20).
 
-Internal/documentation rename: the `V34` token (the development working name
-for the V6 NAX kernel — forward + the 9 backward kernels) is unified to **V6**.
-`V34` was never a separate kernel generation; it is the same kernel as V6 NAX.
-The dual name caused a documented analysis error (see `NAMING.md` and the
-cartography report). **No kernel math, routing, or measurement-driven logic
-changed.** Public API is **non-breaking**.
+### Changed — routing (all on measured M5/26.6 thresholds)
+
+- **Sparse → V2 always (audit F-1).** `decide_auto_version` routes D∈{64,128} block-sparse to the
+  V2 matmul2d kernel; the old `qL*kL*D ≥ 2^31` work-product gate is **retired** (the V1-scalar
+  kernel was never fastest — V2 is 19–59× faster). Fixes the D=64 (~9×) and D=128 small-N (~19×)
+  mis-routing cliffs. V1 kept only as the genuine fallback (D∉{64,128}).
+- **D=128 built-in-mask sparse → symmetric-NAX (audit F-2).** The built-in mask makers emit
+  **symmetric 32×32** tiles at D=128 → the M5+ symmetric-bt NAX-sparse auto-route (was an
+  asymmetric mask silently falling to dense SDPA). 1.7–4.2× vs SDPA at density < 0.78; a density
+  gate (`MFA_NAX_SPARSE_DENSITY_CEILING`, default 0.78) routes near-dense masks to SDPA.
+- **`backend="mfa"` (simdgroup STEEL) documented legacy-on-M5** — Apple SDPA is 2–4× faster than
+  the simdgroup kernels; the default `auto` is correct. The standalone simdgroup family remains
+  the validated **M1–M4 dense tier** (untouched). **V5** stays an experimental opt-in
+  (`MFA_ENABLE_V5=1`, never auto-routed on any tier).
 
 ### Deprecated
 
-- **All 30 `MFA_*V34*` environment variables** are renamed to `MFA_V6*`
-  (collisions where the name already contained `V6` → `NAX`, e.g.
-  `MFA_V6_USE_V34`→`MFA_V6_USE_NAX`). The new `MFA_V6*` name is canonical; the
-  old `MFA_*V34*` name is a **deprecated alias** — still honored, but it emits a
-  one-shot `DeprecationWarning` per process. **Aliases will be removed in
-  v3.0.0.** Full old→new migration table in `NAMING.md`. Resolution centralized
-  in `csrc/mfa_env_aliases.hpp` (C++) + `mlx_mfa/_env_aliases.py` (Python).
+- **All 30 `MFA_*V34*` environment variables** renamed to `MFA_V6*` (collisions → `NAX`, e.g.
+  `MFA_V6_USE_V34`→`MFA_V6_USE_NAX`). Old names are honored **deprecated aliases** (one-shot
+  `DeprecationWarning` per process; **removed in v3.0.0**). Migration table in `NAMING.md`;
+  resolution in `csrc/mfa_env_aliases.hpp` + `mlx_mfa/_env_aliases.py`. The `V34`→`V6` rename was
+  internal/documentation only (no kernel math / routing / measurement logic changed).
 
-### Changed
+### Documentation & audit infrastructure
 
-- Internal C++/MSL symbols + macros renamed `V34`→`V6NAX` / `v34`→`v6nax`
-  (`createV34Source`→`createV6NAXSource`, `compile_v34_backward_pipeline`→
-  `compile_v6nax_backward_pipeline`, the `V34*_TK`/`V34_TQ` MSL macros, etc.).
-- Documentation `V34` references renamed to `V6NAX`; `NAMING.md` (new) and the
-  cartography report retain `V34` as the provenance record.
+- **Documentation rebuilt from runtime-verified facts** + reorganized: current-state reference
+  lives in `docs/reference/` (4 per-kernel family specs, the runtime dispatch map + hardware-tier
+  map, the doc-claim→lock map, the API/architecture/serving guides). The **campaign journal is off
+  BOTH published surfaces** (the wheel AND the public tracked tree) — retained in git history +
+  the gitignored `.doc-archive/` — enforced by `tests/test_publish_surface_guard.py` (wheel
+  MANIFEST + tracked-tree allowlist; a `git add` of a journal path fails CI).
+- **Audit lock infrastructure**: the runtime dispatch-map lock, fingerprint-discipline locks
+  (green-on-wrong-binary is structurally caught — assert the BINARY, not just the math), 42+
+  per-kernel fp32/oracle correctness locks (sparse / dense-STEEL / backward / GNA-conv-topk-sage-
+  paged) + the `v6_nax_forward` standalone-forward + custom-scale locks.
 
 ## [2.56.0] — 2026-06-17 — Marco-gated queue closure: MFA_FORCE_NATIVE_BWD removed; V3 auto-routing validated on M5/26.6
 
