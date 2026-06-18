@@ -1,5 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.9", "mlx>=0.31.0"]
+# mlx>=0.31.2: the _ext extension links nanobind v2.12.0 (NB_INTERNALS v19) — see the
+# NB_INTERNALS_VERSION→MLX mapping in CMakeLists.txt. MLX 0.31.0/0.31.1 ship an older
+# nanobind (v17/v18); the capsule key embeds NB_INTERNALS_VERSION, so a 0.31.0/.1 user
+# would compile an incompatible _ext and hit a silent NB_DOMAIN "mlx" type-sharing
+# mismatch at import. 0.31.2 is the real floor (was an inaccurate >=0.31.0).
+requires = ["scikit-build-core>=0.9", "mlx>=0.31.2"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -26,7 +31,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.31.0", "numpy"]
+dependencies = ["mlx>=0.31.2", "numpy"]  # 0.31.2 = nanobind 2.12.0 ABI floor (see [build-system])
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"

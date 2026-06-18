@@ -472,6 +472,13 @@ tile-boundary FP rounding.
 pip install -e .
 ```
 
+**Requirements:** macOS ≥ 14.0 · Python ≥ 3.10 · **MLX ≥ 0.31.2**. mlx-mfa is published
+**sdist-only** — `pip install` compiles `_ext` against *your* installed MLX. The MLX floor is
+**0.31.2** because `_ext` links nanobind 2.12.0 (NB_INTERNALS v19); MLX 0.31.0/0.31.1 ship an
+older nanobind and would produce an ABI-incompatible extension. The V6/NAX Neural-Accelerator
+paths activate at runtime on M5 / macOS 26.2+ (gated); on M1–M4 / older macOS the standard
+kernels + Apple SDPA are used.
+
 ## Minimal Usage
 
 ```python
