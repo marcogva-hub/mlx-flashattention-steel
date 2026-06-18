@@ -16,6 +16,27 @@ verifies all active claims are still REACHABLE.
 
 ## Active claims (as of v2.58.1)
 
+### NAX forward tile autotune (M5 Max, `research/nax-autotune-m5`, 2026-06-18)
+
+Autoresearch over the V6 NAX **forward** kernel (`v6_nax_forward`, the production-dispatched
+`NAAttentionKernel`). Phase 0 (runtime knob-map) found the ONLY live tuning axis is the tile
+triple `NAX_BQ/NAX_BK/NAX_WM` (jointly constrained `BQ%(WM*16)==0`, `BK%32==0`); `BLOCK_R/
+BLOCK_C/EXEC_SG` are vestigial (fed the F-3-removed simdgroup path), and `UNROLL_MODE/
+RELAXED_PRECISION/BLOCK_D/FORCE_DYNAMIC_K/MAX_THREADS` are NO-OP for the NAX path. All TFLOPS
+≤49 (gate 51.8 ✓); 3-replicate median; correctness err ≤9e-6 vs independent fp32.
+
+- **D=64 default `BK` 64→32 (tuned this branch).** Robustly faster across 6 shapes × {fp16,bf16}
+  (−2% to −15%; larger N gains most). Absolute ms, fp16, B=1 H=8: N=8192 **2.97→2.50 ms**
+  (now ~parity with SDPA 2.45 ms, was ~1.21× slower); N=16384 **10.81→9.44 ms** (SDPA 9.19);
+  bf16 N=8192 **2.93→2.49 ms**. Benefits the D=64 NAX paths that run (the V6 backward-recompute,
+  bare `_ext`); does NOT re-open the F-2 D=64-dense→SDPA auto-route (NAX BK=32 reaches ~parity,
+  not a robust win over SDPA). Reproduce: `bench/nax_autotune.py baseline`. Lock:
+  `tests/test_nax_tuned_defaults_lock.py` (config fingerprint BK=32).
+- **D=128 default BQ=64/BK=32/WM=4 confirmed optimal — NO change.** The nearest valid alternative
+  (32/32/2) regressed **+31.9%** at N=2048 (within noise elsewhere) → not a robust win. Baseline
+  (fp16, B=1 H=8): N=4096 NAX **1.65 ms** vs SDPA 1.65 ms (parity); N=8192 NAX **5.73 ms** vs SDPA
+  5.98 ms (NAX faster). This is the production `backend="auto"` dense-D=128 route (F-2).
+
 v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
 kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
 Auto-default routes D=64 V6NAX backward to fused-BK16 (modest improvement

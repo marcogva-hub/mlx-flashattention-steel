@@ -222,7 +222,12 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Per-D defaults: D=64 → WM=2, BQ=32, BK=64; D=128 → WM=4, BQ=64, BK=32.
   // Override via env vars below.
   unsigned short v6nax_BQ = (head_dim == 64) ? 32 : 64;
-  unsigned short v6nax_BK = (head_dim == 64) ? 64 : 32;
+  // NAX-autotune (research/nax-autotune-m5, M5 Max): BK=32 for ALL D. The old
+  // D=64 default BK=64 was inherited, not tuned for the post-F-3 NAX kernel; a
+  // hardware sweep over the (only) LIVE tile knobs found BK=32 is robustly faster
+  // for D=64 (−2..−15% across 6 shapes × {fp16,bf16}; larger N benefits most) and
+  // is the existing D=128 default. (Shader side — must match the eval_gpu dispatch.)
+  unsigned short v6nax_BK = 32;
   uint16_t v6nax_WM = (head_dim == 64) ? 2 : 4;
   if (use_v6nax) {
     if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
@@ -671,7 +676,10 @@ public:
           "through flash_attention (SDPA) instead.");
     }
     unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
-    unsigned short v6nax_BK = (D == 64) ? 64 : 32;
+    // NAX-autotune (M5 Max): BK=32 for all D — D=64 BK=64 was an untuned inherited
+    // default; the hardware sweep found BK=32 robustly faster for D=64 (−2..−15%).
+    // (Dispatch side — must match the generate_v6_source shader default above.)
+    unsigned short v6nax_BK = 32;
     uint16_t v6nax_WM = (D == 64) ? 2 : 4;
     if (use_v6nax) {
       if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
