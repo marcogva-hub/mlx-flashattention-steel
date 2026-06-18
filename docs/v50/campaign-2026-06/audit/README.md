@@ -22,7 +22,14 @@ the canonical master plan lands.
   default-on=all native; sparse default=all SDPA-vjp; sparse opt-in hybrid=native-dV-only; full-native
   opt-in=all native. All gradients fp32-correct (err≤1.2e-4). Thresholds measured/correctness (no
   overflow). Carry-forward to E: sparse V1↔V2 2^31 PERF validity.
-- **B4 — remaining family** (GNA exact-window / conv / topk / sage / paged-TQ). Pending, then Phase C.
+- **B4 — GNA / conv / topk / sage / paged-TQ**. DONE — `b4-family-spec.md` +
+  `tests/test_b4_family_lock.py` (9 cells) + `phase-B4-...-report.md`. **GNA correctness RESOLVED**
+  (matches exact per-element-window oracle 4.8e-5 → the Phase-A 7.3e-2 was reference-mismatch, not a
+  bug); sage int8 quant-aware (faithful round-trip + cos~0.997 int8 floor); conv/topk/paged fp32-verified.
+- **PHASE B COMPLETE** — every kernel spec-verified + correctness-locked (B1+B2+B3+B4 = 42 cells across
+  4 spec docs). No kernel/routing/threshold/bug change in B (comment-only fixes in B1).
+- **C — Test audit** (does each existing test exercise the path it claims?). Pending — NEXT.
+- **D — KNOWN_ISSUES + publication cleanup**; **E — Performance**; **F — Orchestration/routing fix**. Pending.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +

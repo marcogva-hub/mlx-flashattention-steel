@@ -1749,3 +1749,21 @@ STATUS: COMPLETE
 - Comments fresh (PoC labels accurate; no edits).
 - Ran: fp32-oracle vjp + FD cross-check + per-gradient byteΔ + full suite. 1876 passed, 2 skipped.
   No kernel/routing/threshold/bug change. 0 orphans. NOT tagged.
+
+---
+## [2026-06-17 22:30] [CLAUDE] AUDIT Phase B4 — GNA/conv/topk/sage/paged; PHASE B COMPLETE
+STATUS: COMPLETE
+
+- GNA RESOLVED: matches EXACT per-element-window fp32 oracle (documented make_gna_mask rule) to
+  4.8e-5 across sliding 3³/5³ + strided 2³ -> GNA CORRECT; Phase-A 7.3e-2 was block-mask reference
+  over-approximation, NOT a bug. Deferred item closed.
+- conv3d-nax: eligible vs fp32 conv 2.4e-4 cos1.0; ineligible fallback 1.1e-4. topk: ratio0.25 vs
+  fp32 top-k 1.6e-3 cos0.99981; ratio1.0 9.3e-6. sage int8: quant round-trip FAITHFUL (4.0e-4<=step
+  7.9e-4), int8 attention cos~0.997 stable across amp (principled int8 floor, locked>=0.995; not a
+  bug). paged decode vs fp32 gather 2.3e-6 cos1.0; IV-D1/D2 bit-identity re-confirmed (3 passed).
+- No arbitrary/overflow threshold in family. Comments clean (no edits). 9 locked cells.
+- PHASE B COMPLETE: every kernel spec-verified + correctness-locked. B1 sparse (13) + B2 dense (14)
+  + B3 backward (6) + B4 (9) = 42 cells, 4 spec docs. No kernel/routing/threshold/bug change across
+  all of B (comment-only fixes in B1). Each kernel vs its OWN oracle (lesson #11).
+- Ran: per-element GNA oracle + conv/topk/sage/paged oracles + sage quant round-trip + IV-D1/D2 +
+  full suite. 1885 passed, 2 skipped. 0 orphans. NOT tagged. Phase C (test audit) next.

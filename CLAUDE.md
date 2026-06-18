@@ -119,6 +119,16 @@ overrode the source-pointed kernel for four sprints (the which-binary lesson).
 Known gotchas locked as documented-current (D=128-sparse→SDPA, D=64-sparse-slow,
 sparse-bwd-dense); Phase F updates map + lock together when it reroutes.
 
+**Audit Phase B COMPLETE (per-kernel, 2026-06-17):** every kernel has a verified,
+fp32/oracle-correctness-locked spec in `docs/v50/campaign-2026-06/audit/` —
+`sparse-family-spec.md` (B1), `dense-steel-family-spec.md` (B2),
+`backward-family-spec.md` (B3), `b4-family-spec.md` (B4: GNA/conv/topk/sage/paged).
+42 correctness-lock cells across `tests/test_{sparse_family,dense_steel_family,
+backward_family,b4_family}_*_lock.py`.  Each kernel verified vs its OWN independent
+oracle (lesson #11): fp32 forward, fp32-gradient (mx.vjp of manual fwd), exact
+per-element-window (GNA), quant-aware int8 floor (sage).  GNA confirmed CORRECT
+(the prior 7.3e-2 was a block-mask reference mismatch, not a bug).
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the
