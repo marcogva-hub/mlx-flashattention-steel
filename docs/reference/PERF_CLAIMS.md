@@ -209,29 +209,35 @@ present + causal→NAX) to defeat the sys.path shadow.
 |---|---|---|---|---|
 | standard CogVideoX | DOVE | causal 3×3×3 groups=1 + 1×1×1 | 98.9 % | **2.02× / −50.6 %** (hardening) |
 | Turbo-VAED-Cog (distilled CogVideoX) | SparkVSR (≡ Vivid-VR) | causal 3×3×3 g=1 + 1×1×1 (default `is_dw_conv=False`; **no** depthwise) | 86.8 % | **1.63× / −38.6 %** (163.5→100.5 ms) |
-| SeedVR2 custom (`InflatedCausalConv3d`) | SeedVR2 | causal 3×3×3 g=1 | (structurally ≥ CogVideoX; uses GroupNorm not 1×1×1 SpatialNorm) | **NOT measured** — blocked |
+| SeedVR2 custom (`InflatedCausalConv3d`) | SeedVR2 | causal 3×3×3 g=1 | **96.8 %** | **1.83× / −45.3 %** (2136→1168 ms) ✅ measured |
 
 - **Generalization confirmed + bounded:** the win holds across the standard and distilled CogVideoX
   lineages (1.63–2.02×); the distilled SparkVSR is **materially smaller** because its reduced **C=16**
   output stages fail the MPP C≥32 gate (15 of 37 3×3×3 convs fall back → 86.8 % eligible vs 98.9 %).
-- **SeedVR2 blocked (flagged, not fabricated):** its decoder imports `diffusers` (absent in the mlx-mfa
-  `.venv`); the deps venv (`venv_mlx_vae_gemini`) has it but is **Python 3.14** while the feature `_ext`
-  is `cpython-311` → ABI gap → the feature build can't load under the venv. Live SeedVR2 needs a 3.14
-  feature build (or a deps-complete 3.11 env) — **a build/env action for Marco**, not measured here.
-  Structurally it's the same causal 3×3×3 → expected to benefit ≥ CogVideoX (GroupNorm, no 1×1×1).
+- **SeedVR2 NOW MEASURED (2026-06-18, gap closed):** the earlier "diffusers/ABI block" was a wrong-file
+  diagnosis — `decoder3d_flash_seedvr2.py` is the *torch reference*; the production MLX VAE is
+  `ComfyUI-SeedVR2…/src/mlx_native/mflux/.../seedvr2_vae/` and is **pure-MLX** (needed only `platformdirs`,
+  no diffusers/torch), so it runs under the mlx-mfa `.venv` (py3.11) where the feature `_ext` loads
+  natively — **no shared-venv mutation, no py3.14 rebuild**. Live A/B (decode `[1,16,5,32,32]`→`[1,3,17,256,256]`,
+  random weights): **2136→1168 ms = 1.83× / −45.3 %**, **96.8 % conv FLOP eligible** (124/152 conv3d → NAX;
+  no `conv_transpose`). Confirms the structural inference, between CogVideoX (2.02 %) and SparkVSR.
 - **FlashVSR reclassified to 2D:** its MLX VAE decoder (`mlx_tcdecoder_sequential.py`) is **14 Conv2d,
   0 Conv3d** → no 3D conv-NAX surface (a 2D pixelshuffle decoder).
 
 #### Image / 2D models (`Fooocus`, DLoRAL-SD2.1, UltraVSR-SD) — NO-GO (conv-NAX is 3D-only)
 
-Runtime-verified (Lesson #14): a 2D conv (4D weight) → `executed+0, fallback+1` — the conv-NAX hook gates
-on **5D weights (conv3d)**, so every 2D `mx.conv_general`/`nn.Conv2d` (SDXL UNet, SD VAE, FLUX) falls
-through to `mx.conv`. **No conv-NAX benefit for image/2D models as-shipped → NO-GO** (shape-class-level,
-model-independent — DLoRAL/UltraVSR are SD-2D VAEs: 0 Conv3d). A dedicated **2D path is one-gate-away**
-(the MPP `convolution2d` primitive already runs inside the 3D kernel's per-tap time-loop) — a *separate*
-future feature, justified only for **conv-heavy 2D backbones (SDXL UNet)**, not attention/linear-dominated
-ones (FLUX DiT, where conv ≈ patch-embed). Not built; effective-not-apparent gate (conv-time fraction)
-applies before any such GO.
+**NO-GO — now evidenced at the PRIZE level (2026-06-18), superseding the prior routing-level note.** The
+prize has two factors: conv-fraction AND conv-speedup. (1) **conv-fraction is high** — an SD-VAE decoder is
+conv-bound (measured: UltraVSR `MLXDecoder` 64×64×4→512×512, 59 conv2d ≈ the entire 95.7 ms decode). So
+the prize *looked* real. (2) **But the conv-speedup is NEGATIVE**: a standalone MPP `convolution2d`
+(the 2D primitive the 3D kernel uses per tap) is **SLOWER than `mx.conv2d` on every SD-VAE shape**
+(512×64×64 **2.26 vs 0.72 ms**; 256×256×256 **2.13 vs 1.32 ms**; 128×512×512 2.32 vs 2.20 ms — `mx.conv2d`
+1.0–3.2× faster). The 3D conv-NAX win was vs MLX's *weakly-optimized* `mx.conv3d`; **`mx.conv2d` is MLX's
+heavily-optimized CNN workhorse**, which the MPP primitive cannot beat. A 2D NAX route would therefore
+**regress** SD-VAE / SDXL, not help → do NOT build it. (FLUX DiT is moot regardless — conv ≈ patch-embed.)
+This is the §AA.5 premise-validation catch: a MODEST-cost route for a conv-bound prize, killed by measuring
+the per-shape speedup *before* building. Runtime routing as-shipped: a 2D conv (4D weight) → `fallback+1`
+(the hook gates on 5D-weight conv3d), so 2D models are correctly untouched.
 
 ### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — NO-GO superseded by the resolution above
 

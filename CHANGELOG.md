@@ -31,15 +31,18 @@ Branch `feature/conv3d-nax-asym-pad-m5` (off the #3 tip `aa1c0bb`). Folds into 2
   **DOVE/standard CogVideoX 2.02× / −50.6 %** (98.9 % conv FLOP eligible) and **SparkVSR/Turbo-VAED-Cog
   distilled 1.63× / −38.6 %** (86.8 % — smaller because the distilled C=16 output stages fail the MPP
   C≥32 gate). Vivid-VR ≡ SparkVSR's lineage (redundant). **SeedVR2** (own `InflatedCausalConv3d` lineage)
-  is structurally identical but **could not be measured live** — its decoder needs `diffusers` (absent in
-  `.venv`); the deps venv is Python 3.14 vs the `cpython-311` feature `_ext` (ABI gap) → needs a 3.14
-  feature build or a deps-complete 3.11 env (a build/env action for Marco, flagged not fabricated).
-  **FlashVSR** reclassified to 2D (its MLX VAE decoder is 14 Conv2d / 0 Conv3d).
-- **Image/2D models: NO-GO (measurement).** conv-NAX is structurally 3D-only — a 2D conv (4D weight)
-  falls through the 5D-weight hook (runtime-verified `executed+0, fallback+1`). SDXL/SD/FLUX (Fooocus),
-  DLoRAL-SD2.1, UltraVSR-SD get no conv-NAX benefit as-shipped. A dedicated 2D path is one-gate-away (the
-  MPP `convolution2d` primitive exists inside the 3D kernel) — a separate future feature, conv-heavy-2D
-  (SDXL UNet) only, not built.
+  is its own lineage and **now MEASURED live** (2026-06-18): the earlier "diffusers/ABI block" was a
+  wrong-file diagnosis (that was the torch *reference*); the production MLX VAE (`mlx_native/mflux/…
+  seedvr2_vae`) is pure-MLX (needed only `platformdirs`), runs under the `.venv` (py3.11) — **1.83× /
+  −45.3 %, 96.8 % conv FLOP eligible**, no shared-venv mutation. **FlashVSR** reclassified to 2D (its MLX
+  VAE decoder is 14 Conv2d / 0 Conv3d).
+- **Image/2D models: NO-GO, now evidenced at the prize level (measurement).** SD-VAE decode IS conv-bound
+  (UltraVSR `MLXDecoder` ≈ all conv2d), so the prize *looked* real — **but the MPP `convolution2d` 2D
+  primitive is SLOWER than `mx.conv2d` on every SD-VAE shape** (1.0–3.2×: 512×64×64 2.26 vs 0.72 ms). The
+  3D win was vs MLX's weak `mx.conv3d`; `mx.conv2d` is the optimized CNN workhorse, which MPP can't beat,
+  so a 2D route would **regress** SD-VAE/SDXL → do NOT build (FLUX DiT moot regardless). §AA.5 premise
+  validation killed a MODEST-cost route before building. (As-shipped, 2D convs correctly fall through the
+  5D-weight hook.)
 
 ## [2.60.0] — 2026-06-19 — Tier campaign: dense routing threshold + bf16 D=128 3-axis + autotune + NO-GO closures
 
