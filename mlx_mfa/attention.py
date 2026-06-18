@@ -65,6 +65,18 @@ _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
+# Audit Phase F (2026-06-18): symmetric-bt NAX-sparse beats Apple SDPA only up to
+# a density crossover (Phase E measured ~d=0.78 on M5/26.6, D=128 N4096: NAX
+# 4.16x@d=0.06 → 1.17x@d=0.75 → 0.93x SLOWER @d=1.0). Above the ceiling the
+# symmetric-bt auto-route falls through to the SDPA-bias fallback (correct + faster
+# when the mask is near-dense). Env-overridable per Rule 3 (default = E's crossover).
+def _nax_sparse_density_ceiling() -> float:
+    import os as _os
+    try:
+        return float(_os.environ.get("MFA_NAX_SPARSE_DENSITY_CEILING", "0.78"))
+    except ValueError:
+        return 0.78
+
 # CP1: dispatch decision cache — keyed by (head_dim, seq_len, causal, is_m3_plus,
 # dtype, window_size, sparse).  Eliminates should_use_mfa() call overhead on
 # repeated same-shape calls (e.g. decode loops that call flash_attention/token).
@@ -1820,7 +1832,13 @@ def make_causal_block_mask(seq_len: int, head_dim: int = 128) -> mx.array:
         mask = make_causal_block_mask(512)
         out = flash_attention_sparse(q, k, v, mask)
     """
-    BQ, BK = _steel_block_config(head_dim)
+    # Audit Phase F (2026-06-18): use _bq_bk (mask-generation geometry) so D=128
+    # emits SYMMETRIC 32x32 tiles AT GENERATION TIME (the causal formula below
+    # is tile-geometry-based, so this is exact, not an OR-merge) — routing the
+    # mask to the M5+ symmetric NAX-sparse path instead of the dense SDPA
+    # fallback. Was _steel_block_config (32x16 for D=128).
+    from mlx_mfa.masks import _bq_bk
+    BQ, BK = _bq_bk(head_dim)
     NQ = (seq_len + BQ - 1) // BQ
     NK = (seq_len + BK - 1) // BK
     rows = mx.arange(NQ, dtype=mx.int32)
@@ -1858,7 +1876,11 @@ def make_sliding_window_mask(
         mask = make_sliding_window_mask(4096, window_size=512)
         out  = flash_attention_sparse(q, k, v, mask)
     """
-    BQ, BK = _steel_block_config(head_dim)
+    # Audit Phase F (2026-06-18): _bq_bk → D=128 symmetric 32x32 at generation
+    # time (window formula is tile-geometry-based, exact, not OR-merge) → routes
+    # to M5+ NAX-sparse. Was _steel_block_config (32x16 for D=128).
+    from mlx_mfa.masks import _bq_bk
+    BQ, BK = _bq_bk(head_dim)
     NQ = (seq_len + BQ - 1) // BQ
     NK = (seq_len + BK - 1) // BK
     rows = mx.arange(NQ, dtype=mx.int32)
@@ -3195,20 +3217,58 @@ def flash_attention_sparse(
                             return _v6nax_sparse_hybrid_vjp(
                                 q, k, v, block_mask, bt_q, scale, causal
                             )
+                        # Audit Phase F (2026-06-18): density gate. Symmetric
+                        # NAX-sparse only beats Apple SDPA below the crossover
+                        # (Phase E: ~d=0.78). Route near-dense masks to the
+                        # SDPA-bias fallback — correct, and faster when the mask
+                        # is ≳ ceiling. Density = active-tile fraction (the work
+                        # proxy: the kernel iterates active tiles). The .item()
+                        # syncs a tiny [NQ,NK] reduction; block_mask is an input,
+                        # so this does not break q/k/v grad.
+                        _density = float(
+                            mx.mean(block_mask.astype(mx.float32)).item())
+                        if _density >= _nax_sparse_density_ceiling():
+                            return _sparse_fallback_sdpa_perhead(
+                                q, k, v, block_mask, scale, causal
+                            )
                         # Default symmetric-bt M5+ path: Section C wrapper.
                         return _sparse_nax_with_sdpa_vjp(
                             q, k, v, block_mask, bt_q, scale, causal
                         )
 
-    BQ, BK = _steel_block_config(D)
+    # Audit Phase F (2026-06-18): the built-in D=128 mask makers now emit
+    # SYMMETRIC 32x32 tiles (_bq_bk), while the STEEL kernel geometry
+    # (_steel_block_config) is 32x16 for D=128. Accept EITHER geometry — the new
+    # symmetric masks AND legacy/custom asymmetric masks — then normalize to the
+    # kernel geometry below so every downstream consumer is consistent.
+    # (Large symmetric masks took the M5+ NAX auto-route above; only SMALL
+    # symmetric masks — mask_bytes < 4096 — and asymmetric/non-M5 masks fall
+    # through here.)
+    BQ, BK = _steel_block_config(D)            # STEEL kernel geometry
     NQ_expected = (N + BQ - 1) // BQ
     NK_expected = (S + BK - 1) // BK
-    if block_mask.shape[-2] != NQ_expected or block_mask.shape[-1] != NK_expected:
+    from mlx_mfa.masks import _bq_bk            # local import (avoid circular)
+    BQ_m, BK_m = _bq_bk(D)                      # mask-generation geometry
+    NQ_mask = (N + BQ_m - 1) // BQ_m
+    NK_mask = (S + BK_m - 1) // BK_m
+    _got = (block_mask.shape[-2], block_mask.shape[-1])
+    _accepted = {(NQ_expected, NK_expected), (NQ_mask, NK_mask)}
+    if _got not in _accepted:
         raise ValueError(
             f"block_mask last two dims {list(block_mask.shape[-2:])} do not match "
-            f"expected [{NQ_expected}, {NK_expected}] "
-            f"for seq_len={N}/{S}, head_dim={D} (BQ={BQ}, BK={BK})"
+            f"any accepted geometry {sorted(_accepted)} for seq_len={N}/{S}, "
+            f"head_dim={D} (kernel BQ={BQ},BK={BK}; mask-maker BQ={BQ_m},BK={BK_m})"
         )
+    # Normalize to the STEEL kernel geometry via EXACT tile-splitting (each
+    # coarse tile -> identical finer subtiles; NOT an OR-merge, so the pattern
+    # is preserved bit-for-bit). No-op when the mask already matches.
+    if _got != (NQ_expected, NK_expected):
+        _rf = NQ_expected // block_mask.shape[-2]
+        _cf = NK_expected // block_mask.shape[-1]
+        if _rf > 1:
+            block_mask = mx.repeat(block_mask, _rf, axis=-2)
+        if _cf > 1:
+            block_mask = mx.repeat(block_mask, _cf, axis=-1)
     if block_mask.ndim == 3 and block_mask.shape[0] != H:
         raise ValueError(
             f"3-D block_mask shape[0]={block_mask.shape[0]} must equal H={H}"

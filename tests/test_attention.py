@@ -942,8 +942,9 @@ class TestSparseAttentionAPI:
     """Tests for make_causal_block_mask, make_sliding_window_mask shapes."""
 
     def test_causal_block_mask_shape(self):
+        from mlx_mfa.masks import _bq_bk
         for D in [64, 128, 256]:
-            BQ, BK = _steel_block_config(D)
+            BQ, BK = _bq_bk(D)  # Phase F: maker geometry (D=128 now 32x32)
             N = 256
             mask = make_causal_block_mask(N, head_dim=D)
             NQ = (N + BQ - 1) // BQ
@@ -952,9 +953,10 @@ class TestSparseAttentionAPI:
             assert mask.dtype == mx.bool_
 
     def test_sliding_window_mask_shape(self):
+        from mlx_mfa.masks import _bq_bk
         N, W = 512, 128
         for D in [64, 128, 256]:
-            BQ, BK = _steel_block_config(D)
+            BQ, BK = _bq_bk(D)  # Phase F: maker geometry (D=128 now 32x32)
             mask = make_sliding_window_mask(N, W, head_dim=D)
             NQ = (N + BQ - 1) // BQ
             NK = (N + BK - 1) // BK
@@ -1565,12 +1567,15 @@ class TestSparseM5PlusFastFallback:
     """
 
     def test_sparse_m5plus_fallback_correctness_equivalence(self):
-        """Post-patch output is bit-exact vs MLX SDPA + manually-built float bias.
+        """Sliding-window D=128 sparse output matches the SDPA+float-bias ref.
 
-        Equivalence bar: rmse = 0 (bit-exact). The fast-fallback computes
-        the SAME float bias as the pre-patch v2.33.0 code, just cached.
-        Bit-exactness is the natural target — any non-zero error means
-        the patch changed semantics (which it does not).
+        Audit Phase F (2026-06-18): this sliding-window D=128 mask is now
+        SYMMETRIC 32x32 (was 32x16) and routes to the M5+ NAX-sparse kernel
+        (low density ~0.13 < the 0.78 density ceiling), NOT the SDPA fast-
+        fallback. NAX is a distinct kernel from SDPA, so the bar relaxes from
+        bit-exact to NAX-grade (rmse < 1e-3 vs the SDPA+bias reference). The
+        cached-float-bias fast-fallback this test originally guarded is still
+        exercised by DENSE / asymmetric masks (see the perf-guard test).
         """
         # lcsa_small_seq4k from Sprint B Phase 0
         B, H, N, D = 1, 12, 4096, 128
@@ -1581,13 +1586,13 @@ class TestSparseM5PlusFastFallback:
         mask = make_sliding_window_mask(N, window_size=512, head_dim=D)
         mx.async_eval(q, k, v, mask); mx.synchronize()
 
-        BQ, BK = _steel_block_config(D)
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(D)  # Phase F: mask geometry (D=128 now 32x32)
         NQ = (N + BQ - 1) // BQ
         NK = (N + BK - 1) // BK
         scale = 1.0 / math.sqrt(D)
 
-        # Reference: SDPA with manually-built float bias (the v2.33.0
-        # baseline path's output, materialized here for comparison).
+        # Reference: SDPA with the float bias expanded from the SAME mask.
         full_mask = mx.broadcast_to(mask[None, None, :, :], (B, H, NQ, NK))
         expanded = full_mask[:, :, :, None, :, None]
         expanded = mx.broadcast_to(expanded, (B, H, NQ, BQ, NK, BK))
@@ -1604,10 +1609,10 @@ class TestSparseM5PlusFastFallback:
 
         err = mx.abs(y_ref.astype(mx.float32) - y_mfa.astype(mx.float32))
         rmse = float(mx.sqrt(mx.mean(err * err)))
-        # Bit-exact target: fast-fallback computes the same float bias.
-        assert rmse == 0.0, (
-            f"post-patch flash_attention_sparse not bit-exact vs "
-            f"SDPA+float-bias: rmse={rmse:.6e}"
+        # NAX-grade (Phase F): NAX-sparse vs SDPA+bias, not bit-exact.
+        assert rmse < 1e-3, (
+            f"sliding-window NAX-sparse not within 1e-3 of SDPA+float-bias: "
+            f"rmse={rmse:.6e}"
         )
 
     @pytest.mark.skipif(not _ext_available(), reason="C++ extension not available")
@@ -1638,7 +1643,8 @@ class TestSparseM5PlusFastFallback:
         mask = make_sliding_window_mask(N, window_size=512, head_dim=D)
         mx.async_eval(q, k, v, mask); mx.synchronize()
 
-        BQ, BK = _steel_block_config(D)
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(D)  # Phase F: mask geometry (D=128 now 32x32, → NAX)
         NQ = (N + BQ - 1) // BQ
         NK = (N + BK - 1) // BK
         scale = 1.0 / math.sqrt(D)
@@ -3276,7 +3282,8 @@ class TestDilatedTemporalMask:
         T = 8
         mask = make_dilated_temporal_mask(self.H, self.W, T, dilation_rate=2, head_dim=self.D)
         N = self.H * self.W * T
-        BQ, BK = 32, 16  # head_dim=128
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(self.D)  # Phase F: D=128 symmetric 32x32 (was 32,16)
         assert mask.shape == ((N + BQ - 1) // BQ, (N + BK - 1) // BK)
 
 
@@ -3411,7 +3418,8 @@ class TestCrossStreamMask:
         """n_tokens_q != n_tokens_kv → rectangular mask."""
         from mlx_mfa import make_cross_stream_mask
         mask = make_cross_stream_mask(256, 512, head_dim=self.D, pattern="full")
-        BQ, BK = 32, 16
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(self.D)  # Phase F: D=128 symmetric 32x32 (was 32,16)
         NQ = (256 + BQ - 1) // BQ
         NK = (512 + BK - 1) // BK
         assert list(mask.shape) == [NQ, NK]
@@ -3462,7 +3470,8 @@ class TestGNAMask:
         mask = make_gna_mask((16, 16), (5, 5), (1, 1), head_dim=self.D)
         mask_np = np.array(mask)
         N = 256
-        BQ, BK = 32, 16
+        from mlx_mfa.masks import _bq_bk
+        BQ, BK = _bq_bk(self.D)  # Phase F: D=128 symmetric 32x32 (was 32,16)
         NQ = (N + BQ - 1) // BQ
         NK = (N + BK - 1) // BK
         assert list(mask.shape) == [NQ, NK], f"Expected [{NQ}, {NK}], got {list(mask.shape)}"
@@ -3511,9 +3520,15 @@ class TestGNAMask:
         assert mask_np.any(axis=1).all()
 
     def test_gna_mask_intermediate_stride(self):
-        """Intermediate stride (1 < stride < window) produces valid mask."""
+        """Intermediate stride (1 < stride < window) produces valid mask.
+
+        Phase F: D=128 mask tiles are now 32x32 (was 32x16). A 64-token grid
+        (8x8) collapses to a 2x2 tile mask that a (4,4) window fully covers
+        (density 1.0 — still correct, just not sparse at coarse tiling). Use a
+        256-token (16x16) grid so intermediate density is observable at 32x32.
+        """
         from mlx_mfa.masks import make_gna_mask
-        mask = make_gna_mask((8, 8), (4, 4), (2, 2), head_dim=self.D)
+        mask = make_gna_mask((16, 16), (4, 4), (2, 2), head_dim=self.D)
         mask_np = np.array(mask)
         density = mask_np.mean()
         # Should be between fully sparse and fully dense

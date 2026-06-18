@@ -34,13 +34,26 @@ import mlx.core as mx
 # ---------------------------------------------------------------------------
 
 def _bq_bk(head_dim: int) -> tuple[int, int]:
-    """Return (BQ, BK) tile sizes — must match _steel_block_config in attention.py."""
+    """Return (BQ, BK) mask-generation tile sizes.
+
+    Audit Phase F (2026-06-18): D=128 now emits SYMMETRIC 32x32 tiles (was the
+    asymmetric 32x16 that mirrored STEEL's _steel_block_config). The asymmetric
+    convention forced every built-in D=128 mask to miss the M5+ symmetric-bt
+    NAX-sparse auto-route (bt_q==bt_k) and fall through to the dense SDPA bias
+    fallback — losing the measured 1.6-4.2x win (Phase E). Emitting 32x32 AT
+    GENERATION TIME (not an OR-merge of a 32x16 mask) routes these masks to the
+    real NAX sparse kernel. This is the MASK-GENERATION granularity only and is
+    intentionally DECOUPLED from STEEL's _steel_block_config (D=128 STEEL still
+    uses BK=16 for its legacy backend="mfa" path). The top-k reference expander
+    (attention.py) reads the same _bq_bk, so generation and expansion stay
+    consistent. D=256 keeps 32x16 (NAX sparse is D in {64,128} only).
+    """
     if head_dim <= 64:
         return 32, 32
     elif head_dim <= 128:
-        return 32, 16
+        return 32, 32  # Phase F: symmetric → M5+ NAX-sparse auto-route
     else:
-        return 32, 16  # D=256
+        return 32, 16  # D=256 (NAX sparse unsupported; STEEL/SDPA path)
 
 
 def _tile_bboxes_1d(tile_size: int, num_tiles: int, total_tokens: int) -> np.ndarray:
