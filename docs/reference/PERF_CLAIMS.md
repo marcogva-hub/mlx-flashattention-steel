@@ -14,7 +14,7 @@ verifies all active claims are still REACHABLE.
 
 ---
 
-## Active claims (as of v2.52.0)
+## Active claims (as of v2.58.1)
 
 v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
 kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.

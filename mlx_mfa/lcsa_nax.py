@@ -59,18 +59,20 @@ _V2_DEFAULT_WORK_THRESHOLD = 2_147_483_648  # = 4096 * 4096 * 128
 def decide_auto_version(
     density: float, qL: int, kL: int, D: int = 128
 ) -> str:
-    """Shape-aware V2 sparse attention default per canonical methodology.
+    """Capability-based V2 sparse attention default (audit Phase F).
 
-    v2.36.1: V2 sparse graduates to default for shapes where canonical
-    benchmark methodology (docs/methodology/canonical-protocol.md) yields
-    CONFIDENT or BOUNDARY cross-session ratio. Shapes smaller than the
-    smallest tested work product keep V1 conservatively (no canonical
-    data to validate them).
+    Routes the V2-capable head dims (D in {64, 128}) to the V2 matmul2d kernel.
+    The old v2.36.1 `qL*kL*D >= 2^31` work-product threshold is RETIRED — Phase E
+    measured the V1-scalar kernel is never fastest (V2 is 19-59x faster), so the
+    threshold only mis-routed D=64 (always < 2^31) and D=128 small-N to the slow
+    V1. The C++ sparse_attention_forward falls v2->v1 internally when V2 is
+    ineligible (causal / block_tile!=32 / bf16), so V1 remains the genuine
+    fallback — never the default for a V2-capable shape.
 
     Decision order:
       1. Env override: MFA_LCSA_KERNEL_VERSION=v1 or =v2 wins unconditionally
-      2. Shape-aware threshold: qL * kL * D >= 2.15e9 -> "v2"
-      3. Otherwise -> "v1"
+      2. D in {64, 128} -> "v2"   (the V2-capable head dims)
+      3. Otherwise (e.g. D=256) -> "v1"   (the genuine fallback)
 
     Args:
         density: block-mask density (currently unused in the threshold

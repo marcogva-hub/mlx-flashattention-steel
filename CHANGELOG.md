@@ -2823,8 +2823,8 @@ backends (`sdpa`, `mfa`, `auto`) on M5 Max under subprocess isolation,
 1.9-5.3×; MFA wins 1 shape (ltx2-cross D=64 asymmetric, +11%); 3
 shapes (D=80, 96, 192) have MFA unsupported and fall back to SDPA**.
 
-Per-shape data in [`.doc-archive/docs/v6-nax/v32-kernel-sweep.json`](.doc-archive/docs/v6-nax/v32-kernel-sweep.json),
-verdict table in [`.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md`](.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md).
+Per-shape data in `.doc-archive/docs/v6-nax/v32-kernel-sweep.json`,
+verdict table in `.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md` (internal archive — git history, not shipped).
 
 Notable wins (Sprint A, M5 Max):
 

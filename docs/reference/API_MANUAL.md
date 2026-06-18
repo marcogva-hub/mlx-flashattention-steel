@@ -1,7 +1,7 @@
 # mlx-mfa API Manual
 
-Version: **2.27.0**
-Public exports: **94 + `__version__`**
+Version: **2.58.1**
+Public exports: **101** (the `mlx_mfa.__all__` surface)
 
 This manual documents the retained public API surface for the freeze-prep
 state. It emphasizes current usage and serving/runtime integration behavior.
@@ -488,13 +488,14 @@ without QJL correction, which is sufficient for serving quality.
 Post-training weight quantization with optional SVD low-rank FP16 correction.
 Both symbols are in `mlx_mfa.svdquant` and re-exported from `mlx_mfa`.
 
-#### `SVDQuantLinear(weight_q, scales, biases, group_size, bits, U=None, V=None)`
+#### `SVDQuantLinear(in_features, out_features, bias=True, group_size=64, bits=4, rank=0)`
 
-W4A16 linear layer. `weight_q`, `scales`, and `biases` are the quantized weight
-tensor and its per-group scale/bias. `U` and `V` (optional) are FP16 low-rank
-factors `[out_features, rank]` and `[rank, in_features]`; when present the
-forward pass computes `y = dequant(W)*x + U*(V*x)` for improved accuracy on
-outlier-heavy layers.
+W4A16 `nn.Module` linear layer (module-style ctor — construct by dimensions, then
+load/quantize weights). `group_size`/`bits` set the W4A16 quantization; `rank>0`
+adds an FP16 low-rank SVD correction (`U [out_features, rank]`, `V [rank, in_features]`),
+so the forward computes `y = dequant(W)·x + U·(V·x)` for improved accuracy on
+outlier-heavy layers. Typically produced via `quantize_model(...)` rather than
+constructed directly. (Signature verified against `mlx_mfa/svdquant/linear.py`.)
 
 #### `quantize_model(model, group_size=64, bits=4, rank=0, calibration_data=None)`
 

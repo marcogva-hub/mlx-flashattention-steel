@@ -1,6 +1,6 @@
 # mlx-mfa Inventory
 
-Version: **2.51.0** (PyPI) — header updated 2026-06-12; module/LOC tables below are a 2026-05-13 snapshot (regeneration pending)
+Version: **2.58.1** (PyPI) — header updated 2026-06-12; module/LOC tables below are a 2026-05-13 snapshot (regeneration pending)
 
 > **For canonical NAX path coverage**, see `docs/reference/HARDWARE_SUPPORT.md`.
 

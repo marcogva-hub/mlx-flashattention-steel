@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.58.0** (PyPI).  The complete, corrected state of
+Current version: **2.58.1** (PyPI).  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
@@ -53,12 +53,11 @@ eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
 (A3-1); the attention/conv compute kernels are otherwise unchanged from v2.52.1
 (the earlier 26.6 perf shifts were the OS/reference moving, not the kernels).*
 
-> **⚠ Upgrade to v2.52.1.** v2.51.0 contains two pre-existing CRITICAL
-> silent-corruption bugs (top-K Metal-grid undercount; NaN gradients
-> through `return_lse=True`), fixed in v2.52.0. v2.52.0 in turn contains
-> a small-channel conv3d silent-corruption bug (`C_in` not a multiple of
-> 32 — real VSR VAE input-projection convs), fixed in v2.52.1. Upgrade to
-> **v2.52.1**. See `CHANGELOG.md [2.52.1]` / `[2.52.0]`.
+> **⚠ Use the latest release (current: v2.58.1).** Historical note: v2.51.0 had two
+> CRITICAL silent-corruption bugs (top-K Metal-grid undercount; NaN gradients through
+> `return_lse=True`), fixed in v2.52.0; v2.52.0 had a small-channel conv3d
+> silent-corruption bug (`C_in` not a multiple of 32), fixed in v2.52.1. Any release
+> **≥ v2.52.1** is clear of those; always prefer the latest. See `CHANGELOG.md`.
 
 New opt-in APIs: cider-style GQA-decode (`mlx_mfa.gqa_decode_cider`),
 hook telemetry (`mlx_mfa.get_hook_stats()`), the `mx.conv3d` auto-hook.
@@ -447,7 +446,7 @@ tile-boundary FP rounding.
 - Benchmark interpretation: [`docs/reference/BENCHMARKS.md`](docs/reference/BENCHMARKS.md)
 - Root benchmark summary: [`RESULTS.md`](RESULTS.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
-- Historical development archive: [`.doc-archive/devnotes/`](.doc-archive/devnotes/)
+- Historical development archive: `.doc-archive/devnotes/` (internal archive — git history, not shipped)
 - Examples: [`examples/`](examples/)
 
 ## Production vs Narrow vs Experimental
@@ -580,9 +579,9 @@ y = conv3d_nax_forward(x, w, stride=(1,1,1), padding=(1,1,1), dilation=(1,1,1))
 | up2_resnet_full               |  1,114,112 |  6912 | **1.65×** |
 | up2_resnet0_peakflops         |  1,114,112 | 13824 | **1.54×** |
 
-Median across the SeedVR2 VAE production set: **1.64×**. See
-[`.doc-archive/docs/conv-nax/ship-shelve-decision.md`](.doc-archive/docs/conv-nax/ship-shelve-decision.md)
-for the full 3-session §4-compliant methodology.
+Median across the SeedVR2 VAE production set: **1.64×**. The full 3-session §4-compliant
+methodology is in `.doc-archive/docs/conv-nax/ship-shelve-decision.md` (internal archive —
+git history, not shipped).
 
 ### Caveats
 
