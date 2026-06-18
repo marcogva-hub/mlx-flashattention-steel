@@ -1767,3 +1767,26 @@ STATUS: COMPLETE
   all of B (comment-only fixes in B1). Each kernel vs its OWN oracle (lesson #11).
 - Ran: per-element GNA oracle + conv/topk/sage/paged oracles + sage quant round-trip + IV-D1/D2 +
   full suite. 1885 passed, 2 skipped. 0 orphans. NOT tagged. Phase C (test audit) next.
+
+---
+## [2026-06-17 23:30] [CLAUDE] AUDIT Phase C — test-correctness audit (which-binary)
+STATUS: COMPLETE
+
+- The campaign's original sin, named + enumerated: tests assert the MATH (Δ vs SDPA-ref) without the
+  BINARY, so they pass green while running the wrong kernel. 5 confirmed green-on-wrong-binary
+  instances (test_attention.py TestSparseAttentionKernel): test_all_true_mask_matches_dense[128]&[256],
+  test_causal_block_mask_with_causal_matches_dense[128]&[256], test_sliding_window_matches_ref — all
+  D=128/256 run dense SDPA on M5 (byteΔ=0.0) and validate vs SDPA (SDPA-vs-SDPA, can't fail). D=64
+  cells = CORRECT-BINARY (symmetric -> real V1-scalar, byteΔ=3.8e-6).
+- Classification (honest depth): sparse-forward zone fingerprinted per-test; ~1700 bulk classified by
+  group-pattern (dense backend=auto=SDPA correct-binary; backend=mfa=STEEL; the 42 B1-B4 cells already
+  fingerprint-locked). WRONG/VACUOUS=5; SKIP-MASKED=lock modules on non-M5 (legit); COVERAGE-GAP=
+  D=128-asymmetric STEEL sparse on non-M5 (unreachable on M5, real D=128 covered by symmetric B1 lock).
+- FIX (test-only): test_fingerprint_discipline.py (3 cells) locks the wrong-binary instances as runs-
+  SDPA (flip on Phase-F reroute) + a positive symmetric-D128 demo asserting byteΔ>0 (drift-catch
+  DEMONSTRATED: 7.6e-6>0; drift to SDPA -> Δ=0 -> assert raises). Relabeled 3 misleading docstrings
+  (honest M5-SDPA-fallback note). Kept the tests (keep-all-paths); real coverage = B1-B4 locks.
+- NO real bug (D=128 symmetric already correct per B1; D=128-asym STEEL is known-disabled, not silent-
+  pass). No F-flag from C. Carry to E unchanged (2^31 perf, STEEL-vs-SDPA, V5, sage-int8-worth).
+- Ran: per-test sparse fingerprints + fingerprint-discipline lock + drift demo + full suite. 1888
+  passed, 2 skipped. TEST-ONLY (no kernel/routing/threshold/bug change). 0 orphans. NOT tagged.

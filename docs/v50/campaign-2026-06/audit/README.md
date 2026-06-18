@@ -28,8 +28,12 @@ the canonical master plan lands.
   bug); sage int8 quant-aware (faithful round-trip + cos~0.997 int8 floor); conv/topk/paged fp32-verified.
 - **PHASE B COMPLETE** — every kernel spec-verified + correctness-locked (B1+B2+B3+B4 = 42 cells across
   4 spec docs). No kernel/routing/threshold/bug change in B (comment-only fixes in B1).
-- **C — Test audit** (does each existing test exercise the path it claims?). Pending — NEXT.
-- **D — KNOWN_ISSUES + publication cleanup**; **E — Performance**; **F — Orchestration/routing fix**. Pending.
+- **C — Test-correctness audit**. DONE — `phase-C-test-audit-report.md` + `tests/test_fingerprint_discipline.py`
+  (3 cells, drift-catch demonstrated) + 3 relabeled docstrings. Green-on-wrong-binary class named +
+  enumerated (5 D=128/256 sparse-forward instances run SDPA while claiming sparse, validated vs SDPA =
+  vacuous); locked + relabeled. No new bug (D=128 symmetric already correct per B1). Bulk classified
+  by group-pattern; sparse zone fingerprinted per-test.
+- **D — KNOWN_ISSUES + publication cleanup**; **E — Performance**; **F — Orchestration/routing fix**. Pending — D NEXT.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +

@@ -1002,7 +1002,15 @@ class TestSparseAttentionKernel:
 
     @pytest.mark.parametrize("D", [64, 128, 256])
     def test_all_true_mask_matches_dense(self, D):
-        """All-True block mask must produce identical result to dense forward."""
+        """All-True block mask must produce identical result to dense forward.
+
+        AUDIT C NOTE (which-binary): on M5 only D=64 (symmetric mask) exercises a
+        real sparse kernel (byteΔ~3.8e-6 vs SDPA); D=128/256 use an ASYMMETRIC mask
+        that routes to the dense-SDPA fallback (byteΔ==0.0), so for those this
+        asserts SDPA==SDPA (vacuous).  Real-kernel coverage WITH a binary
+        fingerprint: test_sparse_family_correctness_lock.py (symmetric) +
+        test_fingerprint_discipline.py.  See dispatch-map.md.
+        """
         # v2.50 Prompt 4 Section A: bumped N=128→2048 to satisfy MLX sparse
         # mask_bytes >= 4096 constraint (mask buffer must not be inlined
         # in constant address space per JIT kernel device-pointer expectation).
@@ -1035,6 +1043,11 @@ class TestSparseAttentionKernel:
         Fix: small-mask guard in `flash_attention_sparse` routes small problems
         through STEEL sparse path.  Per-D atol reflects FP16 accumulation:
         D=256 accumulates over twice as many products → ULP doubles.
+
+        AUDIT C NOTE (which-binary): the docstring's "STEEL sparse path" is M1–M4
+        history — on M5 this N=128 small-mask call runs the dense-SDPA fallback
+        (byteΔ==0.0 vs SDPA-causal), so it asserts SDPA==SDPA. Real sparse-kernel +
+        fingerprint coverage: test_sparse_family_correctness_lock.py / test_fingerprint_discipline.py.
         """
         B, H, N = 1, 4, 128
         q, k, v = random_qkv(B, H, N, D, seed=20)
@@ -1055,7 +1068,12 @@ class TestSparseAttentionKernel:
         )
 
     def test_sliding_window_matches_ref(self):
-        """Sliding-window mask output must match reference dense SDPA + float bias."""
+        """Sliding-window mask output must match reference dense SDPA + float bias.
+
+        AUDIT C NOTE: D=128 asymmetric → on M5 this runs the dense-SDPA fallback, and
+        the reference IS dense SDPA + bias, so byteΔ==0.0 (reference-is-the-binary;
+        vacuous). Real sparse-kernel + fingerprint coverage: test_fingerprint_discipline.py.
+        """
         B, H, N, D = 1, 4, 256, 128
         q, k, v = random_qkv(B, H, N, D, seed=30)
         scale = 1.0 / math.sqrt(D)
