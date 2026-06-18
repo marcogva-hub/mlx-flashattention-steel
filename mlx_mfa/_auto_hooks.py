@@ -43,6 +43,10 @@ _ORIGINAL_CONV3D: Optional[Callable] = None
 _INSTALL_LOG: list[str] = []
 
 # Eligible Conv3D kernel shapes per seedvr2_vae patcher convention.
+# NOTE (v2.58.1 P5): (1, 1, 1) is RECOGNIZED here but is only MPP-accelerated under the
+# full MPP gate (C_in/C_out %16==0 & >=32, H/W %8==0, B=1, pad=(1,1,1)); a (1,1,1) conv
+# that misses the gate is NOT silently wrong — it is a TRACKED fallback to the original
+# mx.conv_general (see get_hook_stats() `fallback`/`fallback_reasons`), numerically correct.
 _ELIGIBLE_KERNEL_SIZES = {(3, 3, 3), (1, 1, 1)}
 
 # ---------------------------------------------------------------------------

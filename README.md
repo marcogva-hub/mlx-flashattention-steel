@@ -478,6 +478,11 @@ older nanobind and would produce an ABI-incompatible extension. The V6/NAX Neura
 paths activate at runtime on M5 / macOS 26.2+ (gated); on M1–M4 / older macOS the standard
 kernels + Apple SDPA are used.
 
+> **Network at build time:** the build pins nanobind 2.12.0 via CMake `FetchContent` (to match
+> MLX's ABI), so `pip install` fetches it from GitHub during compilation — an **offline/restricted
+> build environment will fail** at the nanobind fetch. Pre-warm a network-enabled build cache, or
+> vendor nanobind 2.12.0, for air-gapped installs.
+
 ## Minimal Usage
 
 ```python
