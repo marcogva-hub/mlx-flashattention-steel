@@ -178,15 +178,25 @@ symmetric bake-in was the temporal `tf=t+kt−1` offset (+ `T_out==T`); paramete
 (+ `T_out=T−2`, host-computed) and relaxing the gate routes causal 3×3×3 to NAX. The 2D `convolution2d`
 H/W spatial pad (`int2(1,1)`) is unchanged → symmetric `(1,1,1)` path **bit-identical** (keep-all-paths).
 - **Causal `(0,1,1)` 3×3×3 now routes NAX, correct + faster.** Output matches an independent fp32 conv
-  reference within the fp16 floor (≤2e-3; ≤3.9e-3 vs fp16 `mx.conv`). Perf carries from the symmetric
-  shapes: **1.3–2.7× vs `mx.conv`** on VAE-channel causal convs (512×5×32×32 **2.05 vs 3.57 ms**;
-  256×5×64×64 **2.19 vs 3.40 ms**; 128×5×128×128 **1.39 vs 3.27 ms**) → over the now-eligible convs
-  (≈all the heavy VAE conv FLOP — resnet 3×3×3), **~1.48× / ~32 % conv-time saved**, vs #3's 0 %. Above
-  the ~10–15 % bar → **GO/WIN**, on by default. Locked by `tests/test_conv3d_nax_asym_pad_lock.py`
-  (causal-routes-NAX + fp32-correctness + symmetric bit-identity + Rule-8 unsupported-pad fallback).
-- **Caveats:** per-shape win is robust; the precise end-to-end % uses representative (DERIVED) VAE spatial
-  dims — conditional on a real-decode trace. 1×1×1 pointwise deferred (bandwidth-bound, negligible FLOP —
-  routing it risks regression with no gain). Separate feature targeting the version **after** 2.60.0.
+  reference within the fp16 floor (≤2e-3; ≤3.9e-3 vs fp16 `mx.conv`). Per-shape: **1.3–2.7× vs `mx.conv`**
+  on VAE-channel causal convs (512×5×32×32 **2.05 vs 3.57 ms**; 256×5×64×64 **2.19 vs 3.40 ms**).
+- **MEASURED end-to-end (hardening A/B, supersedes the est. 32%).** Real-module CogVideoX decoder forward
+  at real geometry (latent `[1,5,32,32,16]`→`[1,17,256,256,3]`; **random weights — timing is
+  value-independent; not a weight-loaded decode**), feature-on (causal→NAX) vs feature-off (causal→`mx.conv`,
+  the #3 baseline) via a test-harness gate monkeypatch: **1618 ms → 808 ms = 2.02× / −50.6 % total
+  decode** (median of 10, stable across sessions). The decode-level output is equivalent on-vs-off
+  (max-abs 2.93e-3 ≤ fp16 floor) — 52 composed NAX convs, no corruption.
+- **Eligible fraction substantiated (settles "≈all").** Per-conv trace: 166 conv3d calls → **52 NAX
+  (all causal 3×3×3) = 98.9 % of conv FLOP**; 114 fallback (1×1×1 pointwise, SpatialNorm `conv_y/conv_b`
+  Cin=16<32) = 1.1 %. **No `conv_transpose3d`** — the decoder upsamples via nearest(`mx.repeat`)+conv3d,
+  so the heavy convs are all eligible 3×3×3. Locked by `tests/test_conv3d_nax_asym_pad_lock.py` (21 cells:
+  causal-routes-NAX + fp32-correctness + symmetric bit-identity + a 9-pad × 5-config **adversarial
+  anti-corruption matrix** — every NAX route is fp32-correct, every unsupported pad/config falls back/raises).
+- **Caveats:** measured on the standard CogVideoX decoder (random weights, one real tile geometry);
+  SeedVR2 is structurally identical (`InflatedCausalConv3d` 3×3×3 causal → same eligibility). **Localized
+  regression = 0 %** at this geometry (smallest decode spatial 32×32, above the HW≤16 losing regime; a
+  size-gated route is the Tier-2 routing-threshold follow-up — only matters for sub-32 conv stages).
+  1×1×1 pointwise deferred (1.1 % FLOP, bandwidth-bound). Separate feature for the version **after** 2.60.0.
 
 ### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — NO-GO superseded by the resolution above
 

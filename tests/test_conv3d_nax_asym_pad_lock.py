@@ -87,3 +87,60 @@ def test_unsupported_pad_falls_back(pad):
     x, w = _xw(C, T, H, W)
     route, _ = _route_and_out(x, w, pad)
     assert route == "fallback", f"unsupported pad {pad} routed to NAX — Rule 8 mis-gather risk"
+
+
+# ── Adversarial anti-corruption matrix (hardening pass) ──────────────────────
+# The invariant: a NAX-routed conv output MUST equal the fp32 reference within the
+# conv floor; anything NAX can't do correctly falls back / raises — NEVER silently
+# routes NAX with a wrong output (the corruption this sweep exists to catch). The
+# fp32 check runs REGARDLESS of routing, so a mis-gather is caught even if the gate
+# wrongly admitted the pad.
+
+def _conv_and_fp32(C, k, pad, stride=1, dilation=1, groups=1):
+    mx.random.seed(0)
+    T, H, W = 6, 32, 32
+    x = (mx.random.uniform(-1, 1, (1, T, H, W, C)) * 0.3).astype(mx.float16)
+    w = (mx.random.uniform(-1, 1, (C, *k, C // groups)) * 0.1).astype(mx.float16)
+    mx.eval(x, w)
+    be = _ec(get_hook_stats())
+    try:
+        o = mx.conv_general(x, w, stride=stride, padding=pad,
+                            kernel_dilation=dilation, groups=groups)
+        mx.eval(o)
+    except Exception:
+        return "raise", None  # MLX/Rule-8 raise — not a silent NAX mis-gather
+    route = "NAX" if _ec(get_hook_stats()) - be > 0 else "fallback"
+    ref = mx.conv_general(x.astype(mx.float32), w.astype(mx.float32), stride=stride,
+                          padding=pad, kernel_dilation=dilation, groups=groups)
+    return route, _delta(o, ref)
+
+
+@pytest.mark.parametrize("pad", [
+    (1, 1, 1), (0, 1, 1),                                   # supported (must route NAX)
+    (2, 1, 1), (0, 2, 1), (1, 0, 1), (0, 1, 0), (1, 1, 0), (0, 0, 1), (2, 2, 2),  # unsupported
+])
+def test_adversarial_pad_no_corruption(pad):
+    """Every pad: a NAX route must be fp32-correct; unsupported pads must fall back. No NAX-with-
+    wrong-output (corruption) under any pad."""
+    route, err = _conv_and_fp32(256, (3, 3, 3), pad)
+    if route == "NAX":
+        assert err is not None and err < 1e-2, f"CORRUPTION: pad {pad} routed NAX with err={err}"
+        assert pad in ((1, 1, 1), (0, 1, 1)), f"pad {pad} unexpectedly routed NAX"
+    else:
+        assert pad not in ((1, 1, 1), (0, 1, 1)), f"supported pad {pad} did NOT route NAX"
+
+
+@pytest.mark.parametrize("label,k,kw", [
+    ("dilation2", (3, 3, 3), {"dilation": 2}),
+    ("stride2", (3, 3, 3), {"stride": 2}),
+    ("k(1,3,3)", (1, 3, 3), {}),
+    ("k(3,1,1)", (3, 1, 1), {}),
+    ("k(5,3,3)", (5, 3, 3), {}),
+])
+def test_adversarial_config_no_silent_nax(label, k, kw):
+    """Adversarial configs (non-1 dilation/stride, non-3×3×3 kernels) must NOT silently take the
+    3×3×3 NAX path with a wrong result — fall back / raise, or NAX only if fp32-correct."""
+    pad = (1, 1, 1) if k == (3, 3, 3) else (0, (k[1] - 1) // 2, (k[2] - 1) // 2)
+    route, err = _conv_and_fp32(256, k, pad, **kw)
+    if route == "NAX":
+        assert err is not None and err < 1e-2, f"CORRUPTION: {label} routed NAX with err={err}"

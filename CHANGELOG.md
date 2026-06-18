@@ -17,12 +17,16 @@ Branch `feature/conv3d-nax-asym-pad-m5` (off the #3 tip `aa1c0bb`). Folds into 2
   computed: pad 1→T, pad 0→T−2); the 2D `convolution2d` H/W spatial pad (`int2(1,1)`) is unchanged, so
   the symmetric `(1,1,1)` path is **bit-identical** (keep-all-paths). Causal `(0,1,1)` 3×3×3 now routes
   NAX, **correct vs an independent fp32 conv reference** (≤2e-3; conv-output bar, Lesson #11) and
-  **1.3–2.7× faster than `mx.conv`** (512×5×32×32 **2.05 vs 3.57 ms**) → **~1.48× / ~32 % conv-time
-  saved** over the now-eligible convs (≈all heavy VAE conv FLOP), vs #3's 0 %. On by default; unsupported
-  pads (temporal pad 2, H/W≠1, asymmetric-within-axis) fall back / raise (Rule 8, no mis-gather).
-  1×1×1 pointwise deferred (bandwidth-bound, negligible FLOP). Locked by
-  `tests/test_conv3d_nax_asym_pad_lock.py`. Precise end-to-end % conditional on a real-decode spatial
-  trace (per-shape win is robust). Mirror gate in `_auto_hooks.py` + `mfa_conv_nax.cpp` (Pattern #9).
+  **1.3–2.7× faster than `mx.conv`**. **MEASURED end-to-end (hardening A/B):** a real-module CogVideoX
+  decoder forward at real geometry (`[1,5,32,32,16]`→`[1,17,256,256,3]`; random weights — value-independent
+  timing, not a weight-loaded decode), feature-on vs feature-off (causal→`mx.conv`, the #3 baseline) =
+  **1618 ms → 808 ms = 2.02× / −50.6 % total decode** (supersedes the estimated 32%). The decode output is
+  equivalent on-vs-off (2.93e-3 ≤ fp16 floor). Eligible fraction substantiated: **52 of 166 conv3d =
+  98.9 % of conv FLOP** (all causal 3×3×3 → NAX); the rest are 1×1×1 pointwise (1.1 %, deferred); **no
+  `conv_transpose3d`** (nearest+conv upsample). On by default; unsupported pads/configs fall back / raise
+  (Rule 8, no mis-gather — proven by a 9-pad × 5-config adversarial matrix). Localized regression = 0 % at
+  this geometry (a size-gate is the Tier-2 follow-up). Locked by `tests/test_conv3d_nax_asym_pad_lock.py`
+  (21 cells). Mirror gate in `_auto_hooks.py` + `mfa_conv_nax.cpp` (Pattern #9).
 
 ## [2.60.0] — 2026-06-19 — Tier campaign: dense routing threshold + bf16 D=128 3-axis + autotune + NO-GO closures
 
