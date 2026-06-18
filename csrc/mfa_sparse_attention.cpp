@@ -824,7 +824,16 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
                                      const std::string& dtype_str,
                                      int mask_ndim, bool causal) {
   (void)BT;  // V2 uses BQ=BK=32 internally; eligibility check ensures BT==32
-  // V2 tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128
+  // V2 tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
+  // STRUCTURALLY PINNED, not a tunable (sparse-NAX-autotune, M5 Max, 2026-06-18):
+  //   * BQ=BK=32 is fixed by mask-block faithfulness — one 32-wide Q/K block
+  //     maps to exactly one block_mask entry (eligibility forces BT==32).
+  //   * WM=2 is fixed by the cooperative-tensor inner GEMM + cross-SG reduction,
+  //     which assume exactly 2 simdgroups. The divisibility rule BQ%(WM*16)==0
+  //     also admits WM=1, but a measured WM=1 sweep was BOTH ~3-4x slower at high
+  //     density AND incorrect (err up to 3.0e-2 > the fp16 floor) — a silent
+  //     Category-A wrong-but-finite result. So WM is not exposed as a knob.
+  // See .doc-archive/docs/lcsa-nax/sparse-nax-autotune-results.md (journal).
   const int V2_BQ = 32;
   const int V2_BK = 32;
   const int V2_BD = D;
