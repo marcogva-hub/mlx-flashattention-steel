@@ -168,7 +168,27 @@ Full investigation evidence + skill invocations log:
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | III-1 (2026-06, KD-7 lift) | bf16 conv3d via MPP: 1.4-2.7x vs the pre-lift public bf16 path (Apple mx.conv3d fallback) at the II-9 cells | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | Same shapes in bf16 | REACHABLE (default; telemetry-verified) |
 | `iii2_tq_paged_decode_step_default` | III-2 (2026-06; re-confirmed III-12b on 26.6; reframed III-12c) | **User-facing trade-off (the headline): TQ paged decode trades ~1.4-3x decode-step latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs fp16 dense decode** (`step()` `0.75 ms vs 0.33 ms` @S=16K; KV `32 MB → ~6.5 MB` @S=8K). Opt-in (`TurboQuantPagedInferenceContext`), not auto-routed — the user chooses the trade-off. _Secondary / internal-perf history (NOT the user choice — the fused kernel is gone, so it is not a selectable baseline): the gather/dequant+SDPA path is 6.5-23x faster than the fused TQ attend kernel it replaced (`0.75 ms vs 16.8 ms` @S=16K)._ Lesson #15 + III-12c: lead with the actionable denominator (fp16 dense), not the biggest-number one. | env unset (opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`) | `TurboQuantPagedInferenceContext.step(q, k, v)` N_q=1, B=1 Hq=32 Hkv=8 D=128 tq3b; reproduce: `benchmarks/methodology/iii12b_tq_claim_26.6_run{1,2}.log` (script `tq_claim.py`) | REACHABLE (default; kernel-cache-verified) |
 
-### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — **NO-GO (closure-on-record)**
+### conv3d-NAX causal/per-axis-pad — **RE-OPENED + RESOLVED** (`feature/conv3d-nax-asym-pad-m5`, 2026-06-18)
+
+The #3 NO-GO below was *eligibility*, not kernel quality — and the eligibility gate turned out to be
+**software, not fundamental**. "Causal support" was a misnomer: causality is handled *upstream* (the VAE
+concats the time-pad before the conv), so the kernel only needed to accept **per-axis pad** (`(0,1,1)`)
+instead of requiring symmetric `(1,1,1)`. Cost (measured, not presumed): **MODEST** — the MPP path's only
+symmetric bake-in was the temporal `tf=t+kt−1` offset (+ `T_out==T`); parameterizing it to `−pT_left`
+(+ `T_out=T−2`, host-computed) and relaxing the gate routes causal 3×3×3 to NAX. The 2D `convolution2d`
+H/W spatial pad (`int2(1,1)`) is unchanged → symmetric `(1,1,1)` path **bit-identical** (keep-all-paths).
+- **Causal `(0,1,1)` 3×3×3 now routes NAX, correct + faster.** Output matches an independent fp32 conv
+  reference within the fp16 floor (≤2e-3; ≤3.9e-3 vs fp16 `mx.conv`). Perf carries from the symmetric
+  shapes: **1.3–2.7× vs `mx.conv`** on VAE-channel causal convs (512×5×32×32 **2.05 vs 3.57 ms**;
+  256×5×64×64 **2.19 vs 3.40 ms**; 128×5×128×128 **1.39 vs 3.27 ms**) → over the now-eligible convs
+  (≈all the heavy VAE conv FLOP — resnet 3×3×3), **~1.48× / ~32 % conv-time saved**, vs #3's 0 %. Above
+  the ~10–15 % bar → **GO/WIN**, on by default. Locked by `tests/test_conv3d_nax_asym_pad_lock.py`
+  (causal-routes-NAX + fp32-correctness + symmetric bit-identity + Rule-8 unsupported-pad fallback).
+- **Caveats:** per-shape win is robust; the precise end-to-end % uses representative (DERIVED) VAE spatial
+  dims — conditional on a real-decode trace. 1×1×1 pointwise deferred (bandwidth-bound, negligible FLOP —
+  routing it risks regression with no gain). Separate feature targeting the version **after** 2.60.0.
+
+### conv3d-NAX VAE decode profile (M5 Max, `profile/conv3d-nax-vae-m5`, 2026-06-18) — NO-GO superseded by the resolution above
 
 Re-opened the M1-era "custom conv3d not worth it" closure for M5 (which adds the MPP `matmul2d`
 NA path `mfa_conv_nax` targets). MEASURE-and-decide; **no code change**. Verdict: **NO-GO — the M1

@@ -2,14 +2,35 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased — post-2.60.0 feature] conv3d-NAX causal / per-axis pad
+
+Branch `feature/conv3d-nax-asym-pad-m5` (off the #3 tip `aa1c0bb`). Folds into 2.60.1. Version Marco-gated.
+
+### Added
+
+- **Causal (per-axis) padding support for conv3d-NAX → production VAE convs now route NAX (M5).**
+  Re-opens and resolves the Tier-1 #3 NO-GO: #3 found the NAX conv kernel beats `mx.conv` 1.3–2.7× on
+  VAE-channel 3×3×3 convs but 0 % reached it (every VAE conv is causal → calls `mx.conv_general` with
+  `pad=(0,1,1)`, while the MPP hook required symmetric `(1,1,1)`). The block was *software*: causality
+  is handled upstream (the VAE concats the time-pad), so the kernel only needed per-axis pad. MODEST
+  change — parameterized the MPP path's temporal offset (`tf=t+kt−1` → `−pT_left`) + `T_out` (host-
+  computed: pad 1→T, pad 0→T−2); the 2D `convolution2d` H/W spatial pad (`int2(1,1)`) is unchanged, so
+  the symmetric `(1,1,1)` path is **bit-identical** (keep-all-paths). Causal `(0,1,1)` 3×3×3 now routes
+  NAX, **correct vs an independent fp32 conv reference** (≤2e-3; conv-output bar, Lesson #11) and
+  **1.3–2.7× faster than `mx.conv`** (512×5×32×32 **2.05 vs 3.57 ms**) → **~1.48× / ~32 % conv-time
+  saved** over the now-eligible convs (≈all heavy VAE conv FLOP), vs #3's 0 %. On by default; unsupported
+  pads (temporal pad 2, H/W≠1, asymmetric-within-axis) fall back / raise (Rule 8, no mis-gather).
+  1×1×1 pointwise deferred (bandwidth-bound, negligible FLOP). Locked by
+  `tests/test_conv3d_nax_asym_pad_lock.py`. Precise end-to-end % conditional on a real-decode spatial
+  trace (per-shape win is robust). Mirror gate in `_auto_hooks.py` + `mfa_conv_nax.cpp` (Pattern #9).
+
 ## [2.60.0] — 2026-06-19 — Tier campaign: dense routing threshold + bf16 D=128 3-axis + autotune + NO-GO closures
 
 The Tier campaign off 2.59.0 (linear chain). **One behavior change** (dense D=128 routing threshold,
 Tier-2 #1 — removes a small-N regression); the rest is tuning that already shipped at the kernel level
 (D=64 forward+backward BK), confirmations (bf16 D=128 3-axis, dV/dK BK-optimal), and recorded NO-GOs
 (conv3d-NAX VAE profile, conv size-gate, Tier-3 accumulator near-optimal). Plus a test-determinism fix
-(chronic SAGE suite-order flake root-caused to unseeded RNG → per-test seed). The conv-asym-pad feature is
-**NOT** in 2.60.0 — it is a separate post-2.60.0 release on its own branch. Tier behaviors verified to
+(chronic SAGE suite-order flake root-caused to unseeded RNG → per-test seed). Tier behaviors verified to
 coexist in one built binary at runtime (Lesson #14). sdist-only; clean-env compile-at-install smoke green.
 
 Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune;

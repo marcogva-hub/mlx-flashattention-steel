@@ -237,7 +237,12 @@ def _conv3d_mpp_eligible(input, weight, pad_6tuple) -> bool:
     # other sizes for the legacy path).
     if (weight.shape[1], weight.shape[2], weight.shape[3]) != (3, 3, 3):
         return False
-    if B != 1 or pad_6tuple != (1, 1, 1, 1, 1, 1):
+    # Per-axis "same"-style pad, symmetric WITHIN each axis. Temporal pad 1
+    # ("same") OR 0 (causal — the VAE concats the causal frames upstream then
+    # calls the conv with pad_T=0; the MPP kt time-loop handles it, T_out=T-2).
+    # Spatial H/W: pad 1 only. Mirrors the C++ gate (mfa_conv_nax.cpp). Truly
+    # asymmetric (T_left!=T_right) or H/W!=1 stays ineligible → native fallback.
+    if B != 1 or pad_6tuple not in ((1, 1, 1, 1, 1, 1), (0, 0, 1, 1, 1, 1)):
         return False
     if H % 8 != 0 or W % 8 != 0:
         return False

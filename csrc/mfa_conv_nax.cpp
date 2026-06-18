@@ -353,7 +353,8 @@ mlx::core::array dispatch_pointwise_fast_path(
 // (single bf16 store rounding), 99.9-100% bit-identical to mx.conv3d
 // bf16 across the production forms.
 std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
-                              int TW, int TH, const std::string& mtype) {
+                              int TW, int TH, const std::string& mtype,
+                              int pT_left = 1) {
   std::ostringstream ss;
   ss << R"(
   uint3 tgid = threadgroup_position_in_grid;
@@ -395,7 +396,7 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
     if (cOut.is_valid_element(i)) cOut[i] = 0.0f;
 
   for (short kt = 0; kt < 3; ++kt) {
-    const int tf = (int)t + kt - 1;
+    const int tf = (int)t + kt - )" << pT_left << R"(;
     if (tf < 0 || tf >= )" << T << R"() continue;   // zero temporal pad
     auto tA = tensor(X + (ulong)tf * )" << ((int64_t)H * W * C) << R"(,
                      extents<int32_t, )"
@@ -434,28 +435,36 @@ using namespace mpp::tensor_ops;
 // the repo layout (C_out,3,3,3,C_in) via {1,2,3,4,0}).
 mlx::core::array conv3d_mpp_dispatch(
     const mlx::core::array& x, const mlx::core::array& w_packed,
-    int T, int H, int W, int C_in, int C_out, int TW, int TH) {
+    int T, int H, int W, int C_in, int C_out, int TW, int TH,
+    int pT_left = 1, int T_out = -1) {
+  // T = INPUT frames (the OOB bound for the kt time-loop); T_out = OUTPUT
+  // frames.  Symmetric "same" temporal pad (pT_left=1) → T_out==T (default,
+  // bit-identical to the pre-asym path).  Causal time-pad=0 (pT_left=0,
+  // upstream already concatenated the causal frames) → T_out = T-2.
+  if (T_out < 0) T_out = T;  // default = symmetric "same"
   // III-1: MSL scalar follows the input dtype; the dtype is part of the
-  // kernel name (cache-key discipline — Sprint A class).
+  // kernel name (cache-key discipline — Sprint A class). pT_left + T_out are
+  // baked into the source/grid → part of the cache key (asym-pad correctness).
   const std::string mtype =
       (x.dtype() == mlx::core::bfloat16) ? "bfloat" : "half";
   std::string name = "conv3d_mpp_" + mtype + "_" + std::to_string(T) + "_" +
       std::to_string(H) + "x" + std::to_string(W) + "_" +
       std::to_string(C_in) + "_" + std::to_string(C_out) + "_t" +
-      std::to_string(TW) + "x" + std::to_string(TH);
+      std::to_string(TW) + "x" + std::to_string(TH) +
+      "_pTl" + std::to_string(pT_left) + "_To" + std::to_string(T_out);
   auto kernel = mlx::core::fast::metal_kernel(
       name, {"X", "Wp"}, {"Out"},
-      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH, mtype),
+      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH, mtype, pT_left),
       CONV2D_MPP_HEADER,
       /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
   int tiles = (W / TW) * (H / TH);
   auto outs = kernel(
       {x, w_packed},
-      {mlx::core::Shape{1, T, H, W, C_out}},
+      {mlx::core::Shape{1, T_out, H, W, C_out}},
       {x.dtype()},
       // grid is expressed in THREADS (MLX metal_kernel convention):
-      // (tiles * 128, T, 1) with 128-thread threadgroups.
-      {tiles * 128, T, 1},
+      // (tiles * 128, T_out, 1) with 128-thread threadgroups.
+      {tiles * 128, T_out, 1},
       {128, 1, 1},
       {},
       std::nullopt,
@@ -547,7 +556,14 @@ mlx::core::array conv3d_nax_forward(
         K_T == 3 && K_H == 3 && K_W == 3 &&
         sT == 1 && sH == 1 && sW == 1 &&
         dT == 1 && dH == 1 && dW == 1 &&
-        pad.T_left == 1 && pad.T_right == 1 &&
+        // Per-axis "same"-style pad, symmetric WITHIN each axis. Temporal:
+        // pad 1 ("same", T_out==T) OR pad 0 (causal — VAE pre-concats the
+        // causal frames upstream, conv sees pad_T=0, T_out=T-2; the kt
+        // time-loop's -pT_left offset + OOB-continue handle it). Spatial H/W:
+        // pad 1 only (the convolution2d descriptor bakes int2(1,1)). Truly
+        // asymmetric-within-axis (T_left!=T_right) or H/W!=1 → NOT MPP-eligible
+        // (falls through; Rule 8 raise for bf16, legacy/SDPA for fp16).
+        pad.T_left == pad.T_right && (pad.T_left == 0 || pad.T_left == 1) &&
         pad.H_left == 1 && pad.H_right == 1 &&
         pad.W_left == 1 && pad.W_right == 1 &&
         // C=16 measured WRONG through the primitive (err 0.17-0.31 vs
@@ -567,8 +583,9 @@ mlx::core::array conv3d_nax_forward(
         // transpose is a lazy view; ensure_row_contiguous in the kernel
         // forces the contiguous copy.
         auto w_packed = mlx::core::transpose(w, {1, 2, 3, 4, 0});
+        // T_out = eff_T + 1 (host-computed for any pad): pad 1 → T; pad 0 → T-2.
         return conv3d_mpp_dispatch(x, w_packed, T, H, W, C_in, C_out,
-                                   TW, TH);
+                                   TW, TH, pad.T_left, eff_T + 1);
       }
     }
   }
