@@ -14,7 +14,8 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 | Entry | Input class (decision boundary) | **Kernel that runs** | Fingerprint | Class |
 |---|---|---|---|---|
-| `flash_attention` | `backend="auto"`, dense **D=128** (N==S, fp16/bf16, no window/bias) | **NAX matmul2d** (`v6_nax_forward`, F-2) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (parity-to-modest-win; all scales; bwd=SDPA-vjp) |
+| `flash_attention` | `backend="auto"`, dense **D=128**, **N≥2048** (N==S, fp16/bf16, no window/bias) | **NAX matmul2d** (`v6_nax_forward`, F-2) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (parity-to-modest-win; all scales; bwd=SDPA-vjp) |
+| `flash_attention` | `backend="auto"`, dense **D=128**, **N<2048** (Tier-2 #1 threshold) | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses small-N: N=512 16-36%, N=1024 3-17%; `MFA_V6_DENSE_MIN_N`) |
 | `flash_attention` | `backend="auto"`, dense **D=64** / cross-attn / windowed / `MFA_DISABLE_V6_DENSE=1` | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses at D=64) |
 | `flash_attention` | `backend="mfa"`, dense | **simdgroup STEEL** (V2 default / V3 cond-auto) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (expert; legacy-on-M5) |
 | `flash_attention_sparse` | **D=128**, built-in maker mask (causal/sliding/strided/lcsa → [N/32,N/32], symmetric since **Phase F**), density < 0.78 | **real NAX sparse** (wins 1.7–4.2×) | Δ=3.8e-6; sloped | **routed-as-intended (gotcha 1 FIXED — Phase F)** |
@@ -35,10 +36,12 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 ## Runtime guards (each runtime-confirmed)
 
-1. **Dense default → NAX (D=128) / SDPA (else)** — F-2 (Change 3): D=128 dense auto routes
+1. **Dense default → NAX (D=128, N≥2048) / SDPA (else)** — F-2 (Change 3): D=128 dense auto routes
    to the NAX matmul2d forward (`v6_nax_forward`, parity-to-modest-win, all scales via the
-   plumbed scale arg, backward via SDPA-vjp); D=64 + cross-attn + windowed + opt-out stay SDPA
-   (NAX loses 1.17–1.22× at D=64).  `backend="mfa"` overrides to simdgroup STEEL (legacy-on-M5:
+   plumbed scale arg, backward via SDPA-vjp) **for N≥2048**; below that the Apple SDPA kernel is
+   faster (Tier-2 #1: N=512 16-36%, N=1024 3-17% — crossover governed by N alone, not N·B·H;
+   threshold `MFA_V6_DENSE_MIN_N`=2048, =0 forces all-N NAX).  D=64 + cross-attn + windowed +
+   opt-out stay SDPA (NAX loses 1.17–1.22× at D=64).  `backend="mfa"` overrides to simdgroup STEEL (legacy-on-M5:
    SDPA 2–4× faster).
 2. **Sparse maker masks → symmetric → NAX (Phase F)** — built-in D=128 makers emit symmetric 32×32 (`masks.py::_bq_bk(128)=(32,32)`); the auto-route (`attention.py`, `bt_q==bt_k`) sends them to the real NAX kernel. Density gate: ≥ `_nax_sparse_density_ceiling()` (0.78, env `MFA_NAX_SPARSE_DENSITY_CEILING`) → SDPA fallback (NAX loses near-dense).
 3. **Sparse asymmetric/custom or small (<4096 bytes) → SDPA fallback** — `_sparse_fallback_sdpa_perhead` on M5+ (asymmetric STEEL kernel disabled by the `(long)p->NK` miscompile, `.doc-archive/docs/v6-nax/sparse-bug-investigation.md`; small masks excluded by NAX device-pointer lowering). Validator accepts EITHER geometry then exact-tile-splits to kernel geometry.

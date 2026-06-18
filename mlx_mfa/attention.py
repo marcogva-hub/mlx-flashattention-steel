@@ -35,6 +35,19 @@ from ._env_aliases import getenv_aliased
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
+# Tier-2 #1 (research/nax-routing-threshold-m5, M5 Max, 2026-06-18): the dense
+# D=128 forward auto-routes to the NAX matmul2d kernel (F-2), but at small N the
+# Apple SDPA kernel is faster — a localized regression.  Measured crossover
+# (NAX-vs-SDPA, absolute ms, 3-session §AA.4): N<2048 SDPA robustly wins
+# (N=512: 16-36%; N=1024: 3-17% across {fp16,bf16}×{causal,nc}×batch); N>=2048
+# parity-to-NAX-win at B=1.  The crossover is governed by N (sequence length)
+# alone, NOT total work N*B*H (equal N*B*H gives opposite winners).  Route NAX
+# only at N>=threshold; below -> SDPA.  Conservative: this is the unique value
+# that removes the robust small-N regression while making NO N slower than the
+# prior all-N NAX routing (N>=2048 stays NAX where it is parity-or-better at B=1).
+# keep-all-paths: MFA_V6_DENSE_MIN_N=0 forces NAX at all N (the pre-threshold path).
+_V6_DENSE_MIN_N_DEFAULT = 2048
+
 
 def _assert_kv_dtype_matches_q(q, named_arrays, fn_name):
     """III-4 pass-2 Class A: the C++ attention kernels derive their dtype
@@ -706,9 +719,12 @@ def flash_attention(
             # the NAX forward has no Primitive::vjp).  AUTO only; N==S, D_v==D_qk,
             # no window/bias/dropout; opt-out via MFA_DISABLE_V6_DENSE=1.
             import os as _os
+            # Tier-2 #1: NAX wins only at N>=threshold; below, SDPA is faster.
+            _v6_min_n = int(_os.environ.get("MFA_V6_DENSE_MIN_N", _V6_DENSE_MIN_N_DEFAULT))
             if (
                 backend == "auto"
                 and head_dim == 128
+                and q.shape[2] >= _v6_min_n
                 and _get_has_nax_cached()
                 and q.dtype in (mx.float16, mx.bfloat16)
                 and k.dtype == q.dtype and v.dtype == q.dtype

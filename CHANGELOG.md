@@ -2,10 +2,29 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — Tier-1 work (stacks toward 2.60.0)
+## [Unreleased] — Tier-1 + Tier-2 work (stacks toward 2.60.0)
 
 Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune;
-#2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure).
+#2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure); Tier-2 #1 routing thresholds.
+
+### Changed (routing — removes a small-N regression)
+
+- **Dense D=128 forward routes NAX only at N≥2048; below → Apple SDPA (Tier-2 #1).** The F-2 dense-D=128
+  auto-route sent *all* N to the NAX matmul2d kernel, but at small N Apple's SDPA is faster — a localized
+  regression. Measured crossover (NAX vs SDPA, absolute ms, 3-session §AA.4, M5 Max fp16/bf16): **N=512
+  loses 16–36 %** (fp16 nc 0.363 vs 0.267 ms), **N=1024 loses 3–17 %**; **N≥2048 parity-to-win** (N=8192 nc
+  5.72 vs 5.94 ms NAX faster). The crossover is governed by **N (sequence length) alone**, not total work
+  N·B·H (equal N·B·H gives opposite winners). New threshold `MFA_V6_DENSE_MIN_N` (default **2048**) gates
+  the route; small-N now runs the faster SDPA (e.g. N=512 nc **0.34→0.24 ms**), N≥2048 unchanged (NAX) →
+  **no N is slower than before**. Both paths are correct attention (fp32-err 3.8e-6 across the boundary);
+  this only changes *which correct path runs*. keep-all-paths: `MFA_V6_DENSE_MIN_N=0` forces NAX at all N.
+  Lock: `tests/test_nax_routing_threshold_lock.py` (config fingerprint — small-N→SDPA, N≥2048→NAX, force-env).
+- **Conv size-gate evaluated → NOT needed (no-op, evidenced).** Measured conv-NAX vs `mx.conv` HW crossover
+  at VAE channels: NAX loses only at **HW=8** (C=512 1.93×), already wins 13–17 % at HW=16 and 2–3× from
+  HW=32. Realistic VSR decodes never reach HW=8 — a VAE decoder's min-spatial is its latent resolution
+  (32×32 for a 256² output at 8× downscale, the smallest realistic target; measured-real decodes sit at
+  32×32). No realistic geometry hits the losing regime → no conv gate added. The hardening-pass
+  localized-regression note is closed by this measurement.
 
 ### Profiling / decisions (no behavior change)
 
