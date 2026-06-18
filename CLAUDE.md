@@ -120,7 +120,8 @@ Known gotchas locked as documented-current (D=128-sparse→SDPA, D=64-sparse-slo
 sparse-bwd-dense); Phase F updates map + lock together when it reroutes.
 
 **Audit Phase B COMPLETE (per-kernel, 2026-06-17):** every kernel has a verified,
-fp32/oracle-correctness-locked spec in `.doc-archive/docs/v50/campaign-2026-06/audit/` —
+fp32/oracle-correctness-locked spec in `docs/reference/` (relocated there off the
+campaign dir by the D-addendum publication cleanup) —
 `sparse-family-spec.md` (B1), `dense-steel-family-spec.md` (B2),
 `backward-family-spec.md` (B3), `b4-family-spec.md` (B4: GNA/conv/topk/sage/paged).
 42 correctness-lock cells across `tests/test_{sparse_family,dense_steel_family,
@@ -147,6 +148,21 @@ locked (`tests/test_v6_nax_forward_lock.py`, 9 cells — the B-gap).  Lesson: th
 proxy-footgun cuts both ways — never generalize a primitive's perf from a *sibling* kernel
 (simdgroup ≠ matmul2d, same "dense MFA" label).  F-target: consider exposing `v6_nax_forward`
 for D=128.  See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`.
+
+## Publication cleanup — journal off the tracked tree (D-addendum, 2026-06-18)
+
+The public repo **tracked tree shows only current-state docs**: the 7 root docs
+(README/CHANGELOG/RESULTS/ENV_VARS/NAMING/CLAUDE/CLAUDE_V6_NAX) + `docs/reference/`
+(the 4 family specs + `dispatch-map.md` + `doc-claim-lock-map.md` + the current-state
+guides API_MANUAL/ARCHITECTURE/SERVING_GUIDE/…).  The campaign **journal** (phase
+reports, sprint decisions, design docs, diagnostics, devnotes, **the audit ledger**)
+is RETAINED off the tracked tree — in **git history** + the gitignored **`.doc-archive/`**
+snapshot (the audit ledger now lives at
+`.doc-archive/docs/v50/campaign-2026-06/audit/README.md`).  Enforced on BOTH published
+surfaces by `tests/test_publish_surface_guard.py` (wheel MANIFEST + tracked-tree
+allowlist) — a `git add` of any journal path fails CI.  When writing new journal docs,
+put them under `docs/`/`devnotes/` (gitignored-archive-bound) — do NOT expect them on
+the tracked tree; current-state reference goes in `docs/reference/`.
 
 ## Canonical Python environment (2026-05-13)
 
