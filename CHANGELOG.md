@@ -22,6 +22,13 @@ Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward
   slower), an architectural floor confirmed by measurement. Locked by
   `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint + fp32-oracle grad + a
   generous catastrophic-ms ceiling).
+- **D=64 backward dV/dK split tiles confirmed-optimal at `BK=32` (Tier-1 #2b, no behavior change).**
+  Closing the last unswept backward surface: the dV/dK split kernels (their own `MFA_V6BWDV_*` /
+  `MFA_V6BWDK_*` knobs, re-proved live — not dQ's) are best at the shipped `BK=32`; the only other
+  legal value `BK=64` is slower in all 12 shape×dtype cells (dV +18–32 %, dK +25–69 %), and `BK=16`
+  is illegal (paired-MMA guard throws, Rule 8 — the split kernels have no odd-TK tail). dV gradient
+  error is flat across legal BK (perf-only, no accuracy tradeoff). All three split tiles
+  (dQ + dV + dK BK fingerprints + the BK=16-throws guard) are now regression-locked.
 
 ### Changed
 

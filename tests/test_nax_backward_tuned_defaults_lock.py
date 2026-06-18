@@ -16,9 +16,12 @@ re-measure-not-lock; this only trips on a gross >2× regression).
 """
 from __future__ import annotations
 import os, sys, subprocess, math, time, re
+from pathlib import Path
 import numpy as np
 import mlx.core as mx
 import pytest
+
+_SRC = Path(__file__).resolve().parent.parent / "csrc" / "mfa_v6_nax_primitive.cpp"
 
 try:
     from mlx_mfa import get_device_info, flash_attention
@@ -112,3 +115,56 @@ def test_d64_backward_not_catastrophically_slow():
     assert t_nat < 1.5 * t_sdpa, (
         f"D=64 native backward catastrophically slow: {t_nat:.2f}ms vs SDPA-vjp {t_sdpa:.2f}ms "
         f"(expected ~2× faster — a tile/routing regression?)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier-1 #2b: dV / dK split-kernel BK confirmed-optimal at 32 (not tuned — but locked).
+# Sweep verdict (M5 Max, 2026-06-18): legal BK = {32, 64} (BK=16 throws — paired-MMA
+# guard, the split dV/dK have NO odd-TK tail); BK=64 is slower in all 12 cells
+# (+18..+69%); dV grad-error is FLAT across legal BK (perf-only, no tradeoff). So
+# BK=32 is optimal for both — no code change, but lock so a future re-inherited BK=64
+# (the dQ mistake) is caught.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _default_bk_before(env_var: str) -> list[int]:
+    """Every `unsigned short BK = <n>;` default immediately preceding an `env_var` read
+    (the dV has 2 generator sites, dK has 1). Returns the <n> values."""
+    text = _SRC.read_text()
+    vals = []
+    for m in re.finditer(re.escape(env_var), text):
+        pre = text[:m.start()]
+        d = re.findall(r"unsigned short BK = (\d+);", pre)
+        assert d, f"no `unsigned short BK = N;` default precedes {env_var}"
+        vals.append(int(d[-1]))
+    return vals
+
+
+@pytest.mark.parametrize("env_var", ["MFA_V6BWDV_BK", "MFA_V6BWDK_BK"])
+def test_dvdk_split_default_bk_is_32(env_var):
+    """Config-fingerprint: the split dV/dK D=64 default BK is 32 (confirmed optimal —
+    BK=64 is +18..+69% slower). A revert to 64 (the dQ-style stale inheritance) fails CI."""
+    vals = _default_bk_before(env_var)
+    assert vals and all(v == 32 for v in vals), (
+        f"{env_var}'s default BK drifted to {vals} (expected all 32 — BK=64 is slower; "
+        f"re-run the dV/dK mini-sweep before changing)")
+
+
+@pytest.mark.skipif(not _IS_M5, reason="M5+ NAX required")
+@pytest.mark.parametrize("env_var", ["MFA_V6BWDV_BK", "MFA_V6BWDK_BK"])
+def test_dvdk_bk16_throws(env_var):
+    """Rule-8 valid-triple guard lock: BK=16 (TK=1, odd) is illegal for the split dV/dK
+    (no odd-TK tail; paired 16x32x16 MMA) and must THROW — not fall to a removed path."""
+    # NOTE: distinct k,v + argnums=(0,1,2) so dV/dK actually dispatch (an aliased
+    # q=k=v with grad over arg0 only computes dQ — the dV/dK kernels never run).
+    code = (
+        "import math, mlx.core as mx\n"
+        "from mlx_mfa import flash_attention\n"
+        "mx.random.seed(0); D, N = 64, 2048; sc = 1/math.sqrt(D)\n"
+        "f = lambda: (mx.random.uniform(-1,1,(1,8,N,D))*0.1).astype(mx.float16)\n"
+        "q,k,v = f(),f(),f(); mx.eval(q,k,v)\n"
+        "g = mx.grad(lambda a,b,c: flash_attention(a,b,c,scale=sc).sum(), argnums=(0,1,2))(q,k,v); mx.eval(g)\n"
+    )
+    env = dict(os.environ, **{env_var: "16"})
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, cwd="/tmp")
+    assert r.returncode != 0 and "BK must be a positive multiple of 32" in r.stderr, (
+        f"{env_var}=16 did not throw the paired-MMA guard (Rule 8):\n{r.stderr[-400:]}")

@@ -56,6 +56,15 @@ vjp oracle (Lesson #11). Both fp16 and bf16 (the VSR training dtype); routing co
   beats Apple SDPA-vjp **1.4–2.7×** (N=8192 fp16 causal 14.3 vs 43.3 ms). Reproduce:
   `mx.grad(flash_attention(q,k,v,causal=...))` at D=64, N≥2048 (default-on). Lock:
   `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint BK=32 + fp32-oracle grad).
+- **D=64 split dV/dK BK confirmed-optimal at 32 — NO change (Tier-1 #2b).** Closing the last
+  unswept backward surface: the split dV (`MFA_V6BWDV_*`) and dK (`MFA_V6BWDK_*`) kernels have
+  their OWN dedicated knobs (not dQ's `MFA_V6BWD_*`, re-proved live). Legal BK = {32, 64} — `BK=16`
+  throws (paired-MMA TK-even guard, Rule 8; the split kernels have no odd-TK tail). Across 6 shapes
+  × {fp16,bf16} × {causal,non-causal}, `BK=64` is slower in ALL 12 cells (dV +18..+32%, dK
+  +25..+69% — e.g. N=8192 fp16 dV 14.8→19.4 ms, dK 14.8→25.0 ms), and the dV gradient error is
+  IDENTICAL across legal BK (perf-only, no accuracy tradeoff). So `BK=32` is optimal for both — the
+  full D=64 backward split tile is now `dQ 32/32/2 + dV 64/32/4 + dK 64/32/4`, all locked
+  (`tests/test_nax_backward_tuned_defaults_lock.py`: dV/dK BK=32 fingerprint + BK=16-throws guard).
 - **D=128 backward NOT tuned — architectural floor confirmed.** The default D=128 backward is
   Apple SDPA-vjp (the native D=128 backward is opt-in via `MFA_ENABLE_V6_BACKWARD=1` and measured
   slower — 0.46–0.58× per the v2.50 carve-out record). Measured at the default: D=128 N=2048
