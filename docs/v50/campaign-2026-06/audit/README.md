@@ -42,8 +42,13 @@ the canonical master plan lands.
   `MFA_ENABLE_V6_BACKWARD` semantics + `tests/test_publish_surface_guard.py` (4, planted-leak demo) +
   the doc-claim→lock map. Publication split was structurally pre-existing (MANIFEST whitelist +
   gitignored `.doc-archive/`); now guarded + rationale absorbed into README.
-- **E — Performance** (2^31 V1/V2 crossover, STEEL-vs-SDPA M5-optimality, V5 reachability, sage int8
-  quality-worth); **F — Orchestration/routing fix** (D=128-sparse-API → symmetric routing). Pending — E NEXT.
+- **E — Complete M5 re-bench**. DONE — `phase-E-rebench-report.md` + RESULTS.md verified-M5 banner.
+  All 6 items resolved (measured, which-binary-annotated): V1-scalar NEVER fastest (V2 19–59×);
+  symmetric-NAX-sparse beats SDPA D=128 (4.16×@d=0.06 → crossover ~d=0.78, F-premise HOLDS); STEEL
+  legacy on M5 (SDPA 3–4×); sage int8 4.7× slower (not worth); V5 dead; v3_min_N holds. Perf =
+  Verified-at-date (not locked). F-target list produced.
+- **F — Orchestration/routing fix** (sparse→V2-not-V1; D=128-sparse→symmetric-NAX, on E's thresholds);
+  **G — ship**. Pending — F NEXT.
 - **D — KNOWN_ISSUES + publication cleanup** (consumes the gotchas below). Pending.
 - **E — Performance** (effective-FLOP benches per path). Pending.
 - **F — Orchestration / routing fix** (fixes the gotchas; deliberately updates the dispatch map +

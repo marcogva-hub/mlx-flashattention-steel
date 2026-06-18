@@ -1,5 +1,18 @@
 # mlx-mfa Results Summary
 
+> **⚠ VERIFIED M5/26.6 PERF (audit Phase E, 2026-06-18) — read this first.** Measured on the
+> now-known real dispatch (each number annotated with its fingerprinted binary; lesson #15 + Pattern #6
+> + effective-FLOP ≤51.8 TFLOPS). Perf is **Verified-at-date, NOT executable-locked** (timing is
+> CI-flaky — re-measure is the anti-drift). Full table + methodology:
+> `docs/v50/campaign-2026-06/audit/phase-E-rebench-report.md`. Headlines (B2 H8 N4096, M5/26.6):
+> - **sparse V2 (matmul2d) is the right sparse kernel** — 19–59× faster than the V1 scalar; the V1/V2
+>   `2^31` work-threshold mis-routes D=64 (always) + D=128 N<4096 to the slow V1 (Phase-F target).
+> - **symmetric NAX-sparse beats SDPA at D=128**: 4.16×@d=0.06 → 1.61×@d=0.5 (crossover ~d=0.78) — the
+>   win is reachable only via a symmetric mask today (Phase-F D=128-sparse-routing fix justified).
+> - **`backend="mfa"` STEEL is legacy on M5**: SDPA is 3–4× faster (default `auto`→SDPA is correct).
+> - **sage int8 is 4.7× slower than SDPA on M5** (cos ~0.997) — not worth auto-routing here.
+> - The numbers BELOW are historical (M1 Max + pre-26.6 M5); treat as indicative, not current.
+
 Version: **2.26.0**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 

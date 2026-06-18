@@ -1829,3 +1829,26 @@ STATUS: COMPLETE
   (test_publish_surface_guard.py, 4 cells; planted-leak self-test trips on devnotes/docs/.doc-archive).
 - Ran: guard + full suite. 1897 passed, 2 skipped. DOC-ONLY (+guard+env-doc). 0 orphans. NOT tagged.
 - Phase E next.
+
+---
+## [2026-06-18 02:00] [CLAUDE] AUDIT Phase E — complete M5 re-bench (6 perf items resolved)
+STATUS: COMPLETE
+
+- Measure+document only (no routing/kernel change). Discipline: lesson #15 (abs ms + ratio + dir),
+  Pattern #6 (which-binary annotated), effective-FLOP <=51.8 gate, 3-rep median. Perf=Verified-at-
+  2026-06-18, NOT locked (timing CI-flaky; re-measure is the anti-drift).
+- Item1 sparse V1/V2/SDPA: V1-scalar NEVER fastest (D=64 N4096 V1 7.03 vs V2 0.79 = 9x; D=128 N4096 V1
+  50.3 vs V2 1.23 = 41x; V2 also 1.5-3.9x faster than SDPA). 2^31 threshold mis-routes D=64(all)+
+  D=128 N<4096 -> slow V1.
+- Item2 sym-NAX-sparse vs SDPA D=128 (F justification): CONFIRMED 4.16x@d=0.06, 2.53x@0.25, 1.61x@0.5,
+  crossover ~d=0.78. F-premise HOLDS.
+- Item3 dense STEEL vs SDPA: STEEL loses 0.24-0.29x (SDPA 3-4x faster) all shapes -> backend=mfa is
+  M1-M4-legacy on M5 (default auto->SDPA correct).
+- Item4 sage int8: 14.5ms vs SDPA 3.06ms = 0.21x (4.7x SLOWER) at cos 0.997 -> not worth on M5.
+- Item5 V5: dead (ineligible all shapes) -> compiled-but-unrouted.
+- Item6 v3_min_N: D=64 causal N4096 V3 2.80 vs V2 3.12 = 1.12x -> holds (within legacy expert path).
+- F-targets: (1) route eligible sparse -> V2 ALWAYS, never V1; sub-eligible -> SDPA (D=64 9x win).
+  (2) D=128 sparse-API -> symmetric NAX (4.16x@d=0.06 -> 1.61x@0.5; route NAX for d<=0.75, SDPA d>0.78).
+  (3) doc backend=mfa legacy-on-M5. (4) sage not auto-routed. (5) V5 doc dead. No F-premise revision.
+- RESULTS.md verified-M5 banner added. Ran: 4 bench scripts (warm8/time20/3-rep). No code/test change
+  (suite unchanged 1897). 0 orphans. NOT tagged. Phase F next.
