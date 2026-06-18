@@ -13,6 +13,7 @@ fails CI. (The self-test demonstrates the check catches a planted leak.)
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 import pytest
 
@@ -82,3 +83,88 @@ def test_guard_catches_a_planted_leak():
     # and a legitimate include must NOT trip it
     assert _leaks(["include README.md", "recursive-include mlx_mfa *.py",
                    "recursive-include csrc *.cpp"]) == []
+
+
+# ── D-addendum: extend the guard from the WHEEL surface to the TRACKED REPO TREE ──
+# Marco's decision: the journal is OFF the public tracked tree too (not merely
+# wheel-excluded), retained for provenance via git history + the gitignored
+# `.doc-archive/`. The tracked tree must show ONLY current-state: code + tests +
+# the permitted docs (root current-state + docs/reference/). A `git add` that
+# re-tracks a journal path (devnotes/, docs/ outside docs/reference/, an
+# AUTORESEARCH task-plan, an autoresearch log) fails CI.
+
+# A tracked DOC path is permitted only if it is a root current-state doc or lives
+# under docs/reference/.  Journal doc trees (devnotes/, docs/<anything-but-reference>)
+# are forbidden on the tracked tree.
+_ALLOWED_ROOT_DOCS = {
+    "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
+    "CLAUDE.md", "CLAUDE_V6_NAX.md",
+    "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",
+}
+
+
+def _tracked_files():
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return [p for p in out.splitlines() if p]
+
+
+def _tree_journal_violations(paths):
+    """Return tracked paths that are RETAIN-class journal (must be off the tree)."""
+    bad = []
+    for p in paths:
+        # devnotes/ is journal in its entirety.
+        if p == "devnotes" or p.startswith("devnotes/"):
+            bad.append(p)
+            continue
+        # docs/ is journal EXCEPT the current-state reference home docs/reference/.
+        if p.startswith("docs/") and not p.startswith("docs/reference/"):
+            bad.append(p)
+            continue
+        # root research-task plans + their logs are journal.
+        if re.fullmatch(r"AUTORESEARCH.*\.md", p) or re.fullmatch(r"autoresearch.*\.log", p):
+            bad.append(p)
+    return bad
+
+
+def test_tracked_tree_contains_no_journal():
+    """The public tracked tree must carry current-state docs only — no journal.
+
+    docs/ is allowed ONLY under docs/reference/; devnotes/ and AUTORESEARCH task
+    plans must be archived (git history + .doc-archive/), not tracked.
+    """
+    bad = _tree_journal_violations(_tracked_files())
+    assert not bad, (
+        "journal paths re-appeared on the tracked tree (archive them to .doc-archive/ "
+        f"+ git rm): {bad[:20]}{' …' if len(bad) > 20 else ''}")
+
+
+def test_tracked_docs_reference_is_present():
+    """The relocated current-state reference must be tracked under docs/reference/."""
+    tracked = set(_tracked_files())
+    for required in (
+        "docs/reference/dispatch-map.md",
+        "docs/reference/sparse-family-spec.md",
+        "docs/reference/API_MANUAL.md",
+        "docs/reference/doc-claim-lock-map.md",
+    ):
+        assert required in tracked, f"current-state reference missing from tracked tree: {required}"
+
+
+def test_tree_guard_catches_a_planted_journal_file():
+    """Self-test: the tree detector trips on planted tracked journal paths, and a
+    legitimate tracked-tree listing does NOT trip it."""
+    planted = [
+        "devnotes/SESSION_LOG.md",
+        "docs/v6-nax/sparse-bug-investigation.md",
+        "AUTORESEARCH.md",
+        "autoresearch_kernel.log",
+    ]
+    assert len(_tree_journal_violations(planted)) == 4, "tree guard missed a planted journal path"
+    legit = [
+        "mlx_mfa/attention.py", "tests/test_attention.py", "csrc/bindings.cpp",
+        "README.md", "CLAUDE_V6_NAX.md", "docs/reference/API_MANUAL.md",
+        "docs/reference/dispatch-map.md", "examples/cross_attention.py",
+    ]
+    assert _tree_journal_violations(legit) == [], "tree guard false-positived a legitimate path"
