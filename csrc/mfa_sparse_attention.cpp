@@ -809,7 +809,7 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
 //   - Per-SG Q-row partition with kU=16, BQ=BK=32, WM=2
 //
 // Eligibility (enforced in sparse_attention_forward before this is called):
-//   D ∈ {64, 128}, BT == 32, dtype = float16 (bf16 deferred), causal = false
+//   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false
 //   (causal deferred to follow-up — V2 with within-tile triangular requires
 //    extra masking on diagonal block, tracked in §13.5).
 //
@@ -1035,12 +1035,18 @@ mlx::core::array sparse_attention_forward(
   }
 
   // V2 eligibility (per design §13 + DC3):
-  //   D ∈ {64, 128}, BT == 32, dtype = float16, causal = false, mask_ndim ∈ {2,3,4}
+  //   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false,
+  //   mask_ndim ∈ {2,3,4}
+  // bf16 enabled 2026-06-18: the V2 cooperative-tensor `mma` is templated on the
+  // input dtype with fp32 accumulation (CType=float), and the V2 generator already
+  // emits `using T = bfloat`, so bf16 is just T=bfloat — no kernel change needed.
+  // The prior `is_f16`-only gate was a Phase-1.2 deferral that silently routed bf16
+  // to the V1 scalar kernel (up to ~50x slower than plain SDPA-with-mask).
   // If V2 was requested but not eligible, transparently fall back to V1.
   bool v2_eligible = (version == "v2")
       && (D == 64 || D == 128)
       && (block_tile == 32)
-      && is_f16
+      && (is_f16 || is_bf16)
       && !causal;
   if (version == "v2" && !v2_eligible) {
     // Silent fallback to V1 — keeps user code working when V2 doesn't apply.
@@ -1120,6 +1126,13 @@ mlx::core::array sparse_attention_forward(
 // GEMM that requires more extensive lse-tracking restructure — Section A
 // v3 follow-up).  V2 path silently falls back to V1 here so the (O, L)
 // contract is honored.
+//
+// DTYPE-INDEPENDENT (verified bf16-sparse-v2, 2026-06-18): this V1-only LSE path
+// applies EQUALLY to fp16 and bf16 — it is NOT a bf16-specific deferral. The
+// non-LSE forward routes both dtypes to V2 (see v2_eligible above); only the LSE
+// variant is V1, and only because V2 lacks LSE for ALL dtypes. Reached solely via
+// sparse backward (already dense/V1 by design — declined-on-perf, dispatch-map
+// gotcha 3), so the V1-LSE cost sits inside that known envelope.
 // =============================================================================
 std::pair<mlx::core::array, mlx::core::array>
 sparse_attention_forward_with_lse(

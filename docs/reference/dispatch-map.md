@@ -21,6 +21,7 @@ conv via `get_hook_stats()` executed/fallback counters.
 | `flash_attention_sparse` | **D=128**, symmetric mask, density ≥ 0.78 (ceiling) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended (NAX loses near-dense) |
 | `flash_attention_sparse` | **D=128**, asymmetric/custom mask (bt_q≠bt_k) OR mask_bytes<4096 | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | routed-as-intended (residual SDPA edges) |
 | `flash_attention_sparse` | **D=64**, default (symmetric) | **real V2 NAX sparse** (since **Phase F**: V2 always, not V1) | Δ=3.8e-6; sloped; ~9× vs old V1 | **routed-as-intended (gotcha 2 FIXED — Phase F)** |
+| `flash_attention_sparse` | **D∈{64,128}**, **bf16**, symmetric, BT=32 | **real V2 NAX sparse** (since the bf16 fix; was the V1 scalar fallback) | bf16 Δ=3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA | **routed-as-intended (gotcha 4 FIXED)** |
 | `flash_attention_gna` | D=128 3D f16 | **native GNA kernel** | Δ=7.3e-2 vs block-bias-SDPA (≠0 → not fallback) | routed-as-intended |
 | `flash_attention_topk` | — | own path (topk + SDPA) | Δ=1.9e-6 @ ratio=1.0 | routed-as-intended |
 | `sage_attention` | — | int8 sage kernel | Δ=1.1e-3 vs sdpa | routed-as-intended |
@@ -50,6 +51,7 @@ conv via `get_hook_stats()` executed/fallback counters.
 1. **D=128 sparse + built-in maker → silent dense SDPA** — **FIXED (Phase F):** makers now emit symmetric 32×32 → NAX (1.7–4.2× at d<0.78). Residual SDPA only for asymmetric/custom, small (<4096 bytes), or dense (≥0.78) masks — all intentional now.
 2. **D=64 sparse → slow** — **FIXED (Phase F):** `decide_auto_version` routes D=64 → V2 (was V1 via the 2^31 gate); ~9× faster.
 3. **Sparse backward is dense by default** — UNCHANGED (declined-on-perf, Pattern #6): `mx.grad(flash_attention_sparse)` gets the sparse forward win but a dense SDPA-vjp backward unless the opt-in env + bt≥64 is set. Mild (correct, just not sparse-accelerated).
+4. **bf16 sparse → slow V1 scalar fallback** — **FIXED (bf16-sparse-v2, 2026-06-18):** V2 eligibility was `&& is_f16`, so bf16 silently fell to V1 (up to ~50× slower than plain SDPA-with-mask — strictly dominated). The V2 `mma` is dtype-templated with fp32 accumulation, so removing the gate routes bf16 → V2 (faithful 3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA, parity with fp16). Note: gotcha 2's "D=64 sparse FIXED (Phase F)" was only true for fp16; this closes the bf16 case. Locked by `tests/test_sparse_bf16_v2_lock.py`.
 
 No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyond these: backward=SDPA-vjp (intended), GNA=native (intended), decode=SDPA (intended, sync-floor regime), conv=NAX-when-eligible (intended).
 

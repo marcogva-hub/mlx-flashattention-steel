@@ -2,6 +2,29 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased] — bf16 block-sparse → V2/NAX (perf BUGFIX)
+
+Branch `fix/bf16-sparse-v2` (off master). Found during the sparse-NAX autoresearch
+(M5 Max). Version Marco-gated.
+
+### Fixed
+
+- **bf16 block-sparse attention silently fell to the V1 scalar kernel — up to ~50× slower
+  than plain SDPA-with-mask (perf BUGFIX).** The V2 (cooperative-tensor / matmul2d NAX)
+  sparse kernel's eligibility was gated `&& is_f16`, so bf16 inputs routed to the legacy
+  per-thread-Q-row V1 kernel: at B=2,H=8,L=4096,D=128,density=0.78,bf16, V1 ran **162ms vs
+  SDPA-mask 3.6ms (45×)** — a bf16 sparse user was strictly worse off than not using the
+  sparse path. Root cause was a Phase-1.2 *deferral*, not a kernel limit: the V2 `mma` is
+  templated on the input dtype with **fp32 accumulation** and the generator already emits
+  `using T = bfloat`. Removing the gate (`is_f16` → `is_f16 || is_bf16`) routes bf16 → V2:
+  **faithful (3.3e-5 vs an independent fp32 oracle)** and **1.2–6.5× faster than SDPA-mask,
+  parity with fp16** (the 162ms case is now 2.47ms = 1.35× *faster* than SDPA). Single
+  dispatch gate (`decide_auto_version` does not gate dtype; the (O,L) LSE variant stays V1
+  by design). Locked by `tests/test_sparse_bf16_v2_lock.py` (fp32-oracle correctness +
+  runtime binary fingerprint: bf16 reaches real V2, not V1 nor the SDPA fallback);
+  dispatch-map gotcha 4. Reproduce: `flash_attention_sparse(q,k,v,sym_mask)` with bf16 q
+  and a symmetric 32×32 mask at D∈{64,128}.
+
 ## [2.58.1] — 2026-06-18 — post-release patch: correctness + installability + publication hygiene + docs
 
 Staged from two independent cold reviews of the published 2.58.0 (one artifact-level on the live
