@@ -93,7 +93,7 @@ Three modes via `MLX_MFA_HOOK_TELEMETRY` env var:
 - `summary` (default): per-hook counters; ~1% microbench overhead, <0.1% production
 - `verbose`: summary + UserWarning per fallback (developer mode)
 
-See `docs/HOOK_TELEMETRY.md` for the full reference.
+See `docs/reference/HOOK_TELEMETRY.md` for the full reference.
 
 ### Workaround obsolescence note
 
@@ -164,7 +164,7 @@ v2.50.0 remains installable for users who need it for any reason.
 ## Cross-references
 
 - `CHANGELOG.md [2.50.1]` — full release notes
-- `docs/HOOK_TELEMETRY.md` — telemetry API + Pattern #8 detection
-- `docs/v50/known-debt-v2.50.md` — KD-6 (resolved) + KD-7 (open)
-- `docs/v50/audit-framing-inversions.md` — Pattern #8 codification
-- `docs/v50/bench-data/seedvr2-img0508-432p-3bfp16/` — flagship benchmark dataset
+- `docs/reference/HOOK_TELEMETRY.md` — telemetry API + Pattern #8 detection
+- `.doc-archive/docs/v50/known-debt-v2.50.md` — KD-6 (resolved) + KD-7 (open)
+- `.doc-archive/docs/v50/audit-framing-inversions.md` — Pattern #8 codification
+- `.doc-archive/docs/v50/bench-data/seedvr2-img0508-432p-3bfp16/` — flagship benchmark dataset

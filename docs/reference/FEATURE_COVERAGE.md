@@ -4,7 +4,7 @@ Version: **2.39.1** (PyPI) + master `82acc55` (post-Sprint A/B/C internal accumu
 Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 
 > **For canonical M5+ NAX path classification per function**, see
-> `docs/HARDWARE_SUPPORT.md` (the authoritative matrix derived from the
+> `docs/reference/HARDWARE_SUPPORT.md` (the authoritative matrix derived from the
 > v50-nax-coverage audit empirical bench).
 
 ## Updates since v2.27.0
@@ -23,7 +23,7 @@ Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 | v2.39.2-internal (Sprint A) | 2026-05-13 | Carve-out broadened qL≥4096 → qL≥2048 (parity at qL=2048, 3-session variance 1.004) |
 | v2.40.0-internal (Sprint B) | 2026-05-13 | D=128 fused architectural enablement (gate lift); auto-default UNCHANGED (regression on direct binding 3-7% vs split; outcome γ) |
 | v2.40.x-internal (Sprint C) | 2026-05-13 | V6NAX backward Primitive pipeline-compile boilerplate consolidation (P3-HIGH-01) |
-| **next: v2.50** | TBD | Tier 1+2 sprints per `docs/audits/v50-nax-coverage/03-sprint-sequence.md` |
+| **next: v2.50** | TBD | Tier 1+2 sprints per `.doc-archive/docs/audits/v50-nax-coverage/03-sprint-sequence.md` |
 
 
 

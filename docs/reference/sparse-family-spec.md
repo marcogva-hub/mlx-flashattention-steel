@@ -51,7 +51,7 @@ faithful); regenerate at 32×32.
 
 - `_sparse_fallback_sdpa_perhead` (`attention.py:3239`): M5+ **asymmetric** mask → dense Apple SDPA +
   per-head block-expanded bias. byte-identical to `mx.fast.sdpa` (Δ=0.0). Reason: the asymmetric STEEL
-  kernel is disabled by the `(long)p->NK` compiler miscompile (`docs/v6-nax/sparse-bug-investigation.md`).
+  kernel is disabled by the `(long)p->NK` compiler miscompile (`.doc-archive/docs/v6-nax/sparse-bug-investigation.md`).
   [V] **Gotcha 1** (loses the 1.7–4.2× sparse win at D=128).
 - `_sparse_fallback_sdpa`: ndim-3/4 cross-head-union fallback. [V]
 

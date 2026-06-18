@@ -193,7 +193,7 @@ selection path must validate three distinct axes before shipping:
    yet the documented perf claim was unreachable because every
    correctness test used `backend="mfa"` while users call with the
    default `backend="auto"`. Reference incident:
-   `docs/v6-nax/v2.37.x-perf-claim-audit.md` and §Z below.
+   `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` and §Z below.
 
    **Required test pattern** (apply to any new auto-routing feature):
 
@@ -253,7 +253,7 @@ because there was no correctness check on its output — just timing. The
 methodology bug was caught by adding a sentinel-fill + `mx.matmul(A.f32, B.f32)`
 oracle check on a tiny shape (M=128, K=64, N=64) as a pre-flight gate.
 After fix: RMSE=0 on the smoke shape, production timings physically plausible
-(43 TF on `mid_resnet`). Reference: `docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md`.
+(43 TF on `mid_resnet`). Reference: `.doc-archive/docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md`.
 
 **Sprint D Track C (Path entered).** `patch_seedvr2_vae(model)` initially used
 `object.__setattr__(mod, "__call__", patched_fn)`. Python's `__call__`
@@ -263,7 +263,7 @@ class-level `__call__`). The A/B perf bench in `bench/conv_nax_patcher_ab.py`
 measured speedup 1.00× and revealed the dead override. Fix: `mod.__class__ = ...`
 swap to a dynamically-created subclass with overridden `__call__`. After
 fix: 2.29× speedup (matches Phase 1.5 `mid_resnet` 2.26× ratio).
-Reference: `docs/conv-nax/conv-nax-prod-decisions.md` D34.
+Reference: `.doc-archive/docs/conv-nax/conv-nax-prod-decisions.md` D34.
 
 **v2.37.0/v2.37.1 (Path entered, public API sub-rule).** V6NAX backward
 kernels shipped as SHIP_OPT_IN with the documented claim "D=64 qL ≥ 2048:
@@ -280,8 +280,8 @@ public API. Caught only by manual investigation; not by the test suite.
 After fix (v2.37.2): narrow carve-out in `flash_attention()` engages
 V6NAX when env + shape qualify; differential benches via the default
 `backend="auto"` path now show 1.81-1.82× speedup. Reference:
-`docs/releases/v2.37.2-release-notes.md` and
-`docs/v6-nax/v2.37.x-perf-claim-audit.md`.
+`.doc-archive/docs/releases/v2.37.2-release-notes.md` and
+`.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
 **v2.33.1 patch (Edges preserved).** Initial fast-fallback design substituted
 bool mask for float bias to skip `mx.where` (~1.3 ms saved unconditionally).
@@ -292,7 +292,7 @@ downstream code depends on for "no information available" detection).
 Caught by the existing `test_all_false_mask_row_gives_nan_or_zero` test
 failing on the first revision. Revised patch caches the FLOAT BIAS (not
 bool mask), preserving the NaN-for-fully-masked-rows contract.
-Reference: `docs/sparse-fallback-audit.md` + commit `9e0ab6a`.
+Reference: `.doc-archive/docs/sparse-fallback-audit.md` + commit `9e0ab6a`.
 
 ### When to apply
 
@@ -345,7 +345,7 @@ two REGRESSION sprints (mx.matmul v2.36.0, matched-workload 2026-05-12)
 and per web research convergence (Apple Developer Forums thread 692062,
 Feng et al. arXiv 2501.14925, MLX docs, WWDC25 Session 315, Draw Things
 MFA v2.5 NA release post Nov 2025, MLX GitHub Discussion #1571). See
-`docs/methodology/canonical-protocol.md` for full methodology and
+`.doc-archive/docs/methodology/canonical-protocol.md` for full methodology and
 rationale.
 
 Specification:
@@ -407,7 +407,7 @@ Two warmup-during-cooldown protocols were tested and both produced a
 | Matched-workload family — sparse_attention_nax B=1 H=4 qL=kL=2048 D=64 BT=16, 50ms gap | 2026-05-12 | **0/3** | **3/4** | REGRESSION |
 
 Web research convergence (6 sources cited in
-`docs/methodology/canonical-protocol.md`) confirmed Apple's hardware
+`.doc-archive/docs/methodology/canonical-protocol.md`) confirmed Apple's hardware
 design intentionally excludes userspace P-state lock. No warmup-during-
 cooldown approach can fully resolve sub-1ms variance under §4-strict-
 style protocols. The canonical Apple Silicon methodology (warmup +
@@ -437,10 +437,10 @@ default activates for shapes where cross-session ratio range is
 CONFIDENT under canonical methodology.
 
 References:
-- `docs/methodology/canonical-protocol.md` (canonical §4.2 spec + 6 web research sources)
-- `docs/methodology/canonical-bench-results.md` (v2.36.1 calibration data)
-- `docs/methodology/matched-workload-results.md` (REGRESSION verdict 2026-05-12)
-- `docs/methodology/matched-workload-diagnostic.md` (option 1 falsification analysis)
+- `.doc-archive/docs/methodology/canonical-protocol.md` (canonical §4.2 spec + 6 web research sources)
+- `.doc-archive/docs/methodology/canonical-bench-results.md` (v2.36.1 calibration data)
+- `.doc-archive/docs/methodology/matched-workload-results.md` (REGRESSION verdict 2026-05-12)
+- `.doc-archive/docs/methodology/matched-workload-diagnostic.md` (option 1 falsification analysis)
 - `bench/methodology/canonical_warmup_continuous_harness.py` (§4.2 reference implementation)
 - `bench/methodology/matched_workload_harness.py` (historical option 1 implementation)
 - prior `experiment/methodology-sub1ms-protocol` branch (v2.36.0 matmul protocol artifacts, preserved for archaeology — not merged to master)
@@ -451,7 +451,7 @@ References:
 
 Les gains V6NAX forward documentés en v2.32.0 (+18-40% vs prédécesseurs)
 ont été décomposés empiriquement en investigation 2026-05-12
-(`docs/v6-nax/v6nax-forward-mechanisms.md`) :
+(`.doc-archive/docs/v6-nax/v6nax-forward-mechanisms.md`) :
 
 | Hypothèse | Statut | Mécanisme |
 |---|---|---|
@@ -481,7 +481,7 @@ ont été décomposés empiriquement en investigation 2026-05-12
 - **V6NAX's default `EXEC_SG=4` for D=128 mid shapes** : sous-tuné. Un
   follow-up patch pourrait introduire une heuristique shape-aware
   (`EXEC_SG=8` pour qL∈[2048, 4096], `EXEC_SG=4` pour qL≥8192 où le
-  baseline est déjà saturé). Voir `docs/v6-nax/v6nax-forward-mechanisms.md`
+  baseline est déjà saturé). Voir `.doc-archive/docs/v6-nax/v6nax-forward-mechanisms.md`
   §"Implications".
 
 - **Hériter des Apple MPP autotune defaults aveuglément** : H. E confirmée
@@ -523,7 +523,7 @@ audit per v2.33.x lesson):
 - [ ] Migration documented in CHANGELOG if optimization graduates from
       opt-in to default
 
-See `docs/RELEASE_PHILOSOPHY.md` for the full principle.
+See `docs/reference/RELEASE_PHILOSOPHY.md` for the full principle.
 
 ### §X.5 — Tool availability verification (added 2026-05-13)
 
@@ -584,7 +584,7 @@ the speedup was unreachable: `should_use_mfa()` returns False for
 non-causal D ∈ {64, 128}, `flash_attention()` returned via
 `_fallback_sdpa()` before the V6NAX backward env-var check could
 engage the custom-vjp.  Users following the docs got SDPA-vjp
-silently.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md` and
+silently.  See `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` and
 v2.37.2 release notes.
 
 ### Reproducibility template
@@ -648,8 +648,8 @@ this audit checklist before tagging:
 
 - If a perf finding is genuinely kernel-isolation-only (research
   characterization, autoresearch sweep, profiling-grade microbench),
-  it goes in research docs (`docs/v6-nax/*-investigation.md`,
-  `devnotes/*`), NOT in user-facing release notes / README /
+  it goes in research docs (`.doc-archive/docs/v6-nax/*-investigation.md`,
+  `.doc-archive/devnotes/*`), NOT in user-facing release notes / README /
   training guides.
 
 ### Crosswalk to existing rules
@@ -780,7 +780,7 @@ reasoning, but the audit (§AA.2) still records the decision.
 ### §AA.2 — Skill invocation evidence in sprint docs (added 2026-05-13)
 
 Every sprint deliverable doc (`decisions.md`, `results.md`, `status.md`,
-`docs/audits/*.md`, `docs/sprints/*.md`) MUST include a "Skill
+`.doc-archive/docs/audits/*.md`, `.doc-archive/docs/sprints/*.md`) MUST include a "Skill
 invocations" section in this format:
 
 ```markdown
@@ -807,7 +807,7 @@ Check 5 to flag missing categories; for now, the rule depends on
 sprint-author honesty for category coverage, while Check 5
 mechanizes the floor (no empty / missing tables).
 
-Templates for sprint deliverable docs live in `docs/templates/`:
+Templates for sprint deliverable docs live in `.doc-archive/docs/templates/`:
 - `sprint_decisions_template.md`
 - `sprint_status_template.md`
 
@@ -818,7 +818,7 @@ the template.
 ### §AA.3 — Reference to mlx-mfa-* skills (Sprint 3 deliverables)
 
 The mlx-mfa-specialized skills created in Sprint 3 (see
-`docs/skills/README.md`) automate specific §AA checkpoints:
+`.doc-archive/docs/skills/README.md`) automate specific §AA checkpoints:
 
 | Checkpoint | General skill | Automation skill (preferred) |
 |---|---|---|
@@ -960,7 +960,7 @@ If CONFIRMATION: proceed with kernel implementation as scoped.
 
 ### Related: audit framing inversions catalogue
 
-See `docs/v50/audit-framing-inversions.md` for the empirically-validated
+See `.doc-archive/docs/v50/audit-framing-inversions.md` for the empirically-validated
 list of audit framing inversions through v2.50.  Update this doc each
 time a sprint surfaces a new inversion or confirms an audit prediction.
 
@@ -980,7 +980,7 @@ log2 LSE as if it were natural-log, producing ~0.4 dV residual.  Each
 of the three dispatch sites read correct in isolation; only the
 unfixed third site's interaction with the V6NAX backward exposed the
 incompleteness.  See Pattern #5 in
-`docs/v50/audit-framing-inversions.md`.
+`.doc-archive/docs/v50/audit-framing-inversions.md`.
 
 **Audit checklist** before declaring any kernel-input fix complete:
 
@@ -994,7 +994,7 @@ incompleteness.  See Pattern #5 in
    - Could it dispatch through this code path for the failing test?
 
 3. **Verify each producer site individually**.  Use sentinel writes
-   per `docs/methodology/kernel-debugging.md` §2 to confirm which
+   per `.doc-archive/docs/methodology/kernel-debugging.md` §2 to confirm which
    producer is actually active for the failing test.
 
 4. **Cross-check with eligibility gates**.  Producer sites are often
@@ -1011,10 +1011,10 @@ of completeness.  The test may have stopped exercising the buggy
 producer path while leaving the bug latent in other dispatch routes.
 
 **Cross-references**:
-- `docs/methodology/kernel-debugging.md` (sentinel writes + LSE
+- `.doc-archive/docs/methodology/kernel-debugging.md` (sentinel writes + LSE
   consistency techniques)
-- `docs/v50/audit-framing-inversions.md` §6 (Pattern #5 catalogue entry)
-- `docs/v6-nax/v50-prompt4-sectionb-dv-residual-RESOLVED.md` (full
+- `.doc-archive/docs/v50/audit-framing-inversions.md` §6 (Pattern #5 catalogue entry)
+- `.doc-archive/docs/v6-nax/v50-prompt4-sectionb-dv-residual-RESOLVED.md` (full
   empirical case)
 
 ---
@@ -1109,21 +1109,21 @@ MFA_V6_SENTINEL_FILL=1 .venv/bin/python bench/v6_coverage_diagnostic_v2.py
 
 À chaque sprint, livre :
 
-1. **Inventaire** dans `docs/v6-nax/<sprint>-inventory.md` — citations file:line de tout ce qui est touché
-2. **Décisions techniques** dans `docs/v6-nax/<sprint>-decisions.md` — pour chaque choix non-trivial : contexte, options considérées, choix retenu, raisonnement
-3. **Résultats** dans `docs/v6-nax/<sprint>-results.md` — bench numbers cross-session, par shape, avec RMSE
-4. **Raw data** dans `docs/v6-nax/<sprint>-data.json`
-5. **SESSION_LOG entry** dans `devnotes/SESSION_LOG.md` — résumé exécutif lisible en 2 minutes
+1. **Inventaire** dans `.doc-archive/docs/v6-nax/<sprint>-inventory.md` — citations file:line de tout ce qui est touché
+2. **Décisions techniques** dans `.doc-archive/docs/v6-nax/<sprint>-decisions.md` — pour chaque choix non-trivial : contexte, options considérées, choix retenu, raisonnement
+3. **Résultats** dans `.doc-archive/docs/v6-nax/<sprint>-results.md` — bench numbers cross-session, par shape, avec RMSE
+4. **Raw data** dans `.doc-archive/docs/v6-nax/<sprint>-data.json`
+5. **SESSION_LOG entry** dans `.doc-archive/devnotes/SESSION_LOG.md` — résumé exécutif lisible en 2 minutes
 
 Marco doit pouvoir comprendre TOUS les choix techniques en lisant les rapports, sans avoir à interpréter le code.
 
 ### §10.1 — Templates (added 2026-05-13, Sprint 4)
 
-Use the templates in `docs/templates/` as starting points:
+Use the templates in `.doc-archive/docs/templates/` as starting points:
 
-- `docs/templates/sprint_decisions_template.md` — pre-includes the
+- `.doc-archive/docs/templates/sprint_decisions_template.md` — pre-includes the
   §AA.2 Skill invocations table so it cannot be forgotten
-- `docs/templates/sprint_status_template.md` — same pattern for
+- `.doc-archive/docs/templates/sprint_status_template.md` — same pattern for
   status docs
 
 Per §AA.2, EVERY sprint deliverable doc must include a populated
@@ -1200,8 +1200,8 @@ criticality.  Every VSR VAE encoder call hit `RuntimeError` for ~6
 weeks of production releases; user pipelines silently absorbed the
 exception, masquerading as "everything works" while the M5 Neural
 Engine NAX Conv3D acceleration NEVER engaged.  See Pattern #8 in
-`docs/v50/audit-framing-inversions.md` for the full case study and
-`docs/v50/known-debt-v2.50.md` KD-6/KD-7.
+`.doc-archive/docs/v50/audit-framing-inversions.md` for the full case study and
+`.doc-archive/docs/v50/known-debt-v2.50.md` KD-6/KD-7.
 
 **Concrete checklist** for stable-but-unverified production-critical
 code:
@@ -1237,7 +1237,7 @@ shows correct behavior.  Reference case: KD-5 — `MFASteelBwdDKV`
 dispatched with cfg.BK=32 (M3+, D=128) while the generator hardcodes
 BK=16 for D>64; carried for weeks as "deprecated STEEL backward debt",
 fixed by one expression in the 2026-05 whole-repo review.  See
-Pattern #9 in `docs/v50/audit-framing-inversions.md`.
+Pattern #9 in `.doc-archive/docs/v50/audit-framing-inversions.md`.
 
 **Enforcement**: `/mlx-mfa-release-audit` Check 9 (source/dispatch
 block-dimension consistency) runs the per-(kernel, constant) parity

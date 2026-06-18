@@ -305,12 +305,12 @@ f16/bf16:
 
 Active references:
 - `README.md`
-- `docs/API_MANUAL.md`
-- `docs/benchmarks/RESULTS.md`
+- `docs/reference/API_MANUAL.md`
+- `docs/reference/BENCHMARKS.md`
 - `RESULTS.md`
 
 Historical branch/track artifacts:
-- `devnotes/` (organized by pass/track)
+- `.doc-archive/devnotes/` (organized by pass/track)
 
 This separation is intentional for freeze-readability.
 
@@ -324,7 +324,7 @@ Deferred until future continuation (likely newer hardware generation):
 ## 11) LLM Serving Layer Status (v2.27.0)
 
 The serving layer is considered production-ready for local inference.
-See `docs/SERVING_GUIDE.md` for usage guide.
+See `docs/reference/SERVING_GUIDE.md` for usage guide.
 
 | Component | Status |
 |---|---|

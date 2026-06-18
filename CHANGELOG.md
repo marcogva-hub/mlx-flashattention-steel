@@ -108,7 +108,7 @@ fix on the V6 NAX path (A3-1, below — changes addressing only, not results).
   already used 64-bit; conv-NAX already bounded <2³¹). Pure address-arithmetic widening — results
   unchanged for in-range shapes (1827 tests pass ×2). Found by the Phase IV multi-agent
   correctness review (no CRITICAL/default-reachable bug found; this was the highest-severity
-  latent). See `docs/v50/campaign-2026-06/phase4/code-review-correctness-report.md`.
+  latent). See `.doc-archive/docs/v50/campaign-2026-06/phase4/code-review-correctness-report.md`.
 - **V3 conditional-auto correctness coverage (A5-1)** — added an independent-fp32-oracle test for
   the production-reachable windowed-causal V3 path at its auto-fire regime (the prior tests only
   forced V3 at sub-threshold shapes vs V2). `tests/test_iv_review_v3_autoroute.py`.
@@ -159,7 +159,7 @@ turns, corrected in the record: the async-metallib gate (`da737e7`, III-8) is
 is genuinely removed on macOS 26) but did not fix the divergence; and III-12's
 "TQ claim inverted" finding was retracted (it benched the wrong baseline). The real
 root causes were the scratch lifetime + the direct-V OOB reads above. See
-`docs/v50/campaign-2026-06/phase3/` (III-8 → III-12b reports) and
+`.doc-archive/docs/v50/campaign-2026-06/phase3/` (III-8 → III-12b reports) and
 `audit-framing-inversions.md` lessons #14, #15.
 
 ### Performance — honest re-statement (re-measured macOS 26.6 / M5 Max)
@@ -190,7 +190,7 @@ are distributional. Full tables: `sprint-III-11-report.md`, `sprint-III-12b-repo
 `benchmarks/methodology/robust_pool_runner.py` (detached, incremental;
 raw `iii11_26.6_results.jsonl`); TQ decode — `bench_turboquant_full.py`
 (raw `iii12b_tq_claim_26.6_run{1,2}.log`). Perf-claim reachability is
-gated by `tests/test_release_notes_perf_claims.py` + `docs/PERF_CLAIMS.md`.
+gated by `tests/test_release_notes_perf_claims.py` + `docs/reference/PERF_CLAIMS.md`.
 
 ## [2.52.1] — 2026-06-15 — conv3d small-channel correctness (kernel root-cause fix)
 
@@ -217,7 +217,7 @@ kernel against `mx.conv_general` which — under installed hooks — routed to
 the *same* broken kernel (two equally-wrong outputs comparing equal).
 Codified as institutional lesson #11: *a low-precision kernel is validated
 against an independent higher-precision reference (fp32), never another
-kernel path* (`docs/v50/audit-framing-inversions.md`).
+kernel path* (`.doc-archive/docs/v50/audit-framing-inversions.md`).
 
 ### Fixed
 
@@ -252,7 +252,7 @@ audit/optimization campaign: the Phase III-4 fresh-eyes whole-repo
 audit (9 passes, repeat-until-clean to a zero-finding fixed point;
 ~73 fixes) on top of everything in v2.51.0.  **This is the release
 all users should be on.**  Full campaign record:
-`docs/v50/campaign-2026-06/` (see `phase3/PHASE-III-CLOSE.md`).
+`.doc-archive/docs/v50/campaign-2026-06/` (see `phase3/PHASE-III-CLOSE.md`).
 
 ### ⚠ CRITICAL — upgrade from v2.51.0 (and earlier) to v2.52.0
 
@@ -359,7 +359,7 @@ adapters; concurrency). Beyond the two CRITICALs:
 - **LCSA mask build** GPU-vectorized: 11.19 ms → 0.73 ms (**15.4×**).
 
   Reproduce (each promotion is reachable via the documented public API
-  path; full per-claim snippets + the registry are in `docs/PERF_CLAIMS.md`
+  path; full per-claim snippets + the registry are in `docs/reference/PERF_CLAIMS.md`
   and enforced by `tests/test_release_notes_perf_claims.py`):
   ```python
   from mlx_mfa._auto_hooks import install_hooks; install_hooks()
@@ -410,7 +410,7 @@ fused-backward "1.01–1.12×" claim is not reinstated.
 The 2026-06 exhaustive audit/optimization campaign, tagged at its
 Phase-III close: Sprints B→A→C, Phase II (II-0…II-14, closed at its
 exhaustion fixed point), and Phase III gain-capture sprints III-1/III-2.
-Full campaign record: `docs/v50/campaign-2026-06/`.
+Full campaign record: `.doc-archive/docs/v50/campaign-2026-06/`.
 
 ### Added (Phase II late + Phase III)
 - **conv3d via the Apple MPP convolution2d primitive, DEFAULT-ON**
@@ -486,7 +486,7 @@ Full campaign record: `docs/v50/campaign-2026-06/`.
 ### Notes
 - M5-class hardware (NAX) is where the campaign's promoted paths
   engage; M1–M4 behavior is unchanged.
-- Declined with evidence (full reports in `docs/v50/campaign-2026-06/`):
+- Declined with evidence (full reports in `.doc-archive/docs/v50/campaign-2026-06/`):
   int8 attention end-to-end (~0.80×), streaming/filtered top-K
   Approach 5 (two builds), cider auto-dispatch (narrow window),
   TK=1 fused variant.
@@ -541,7 +541,7 @@ across 4 commit waves with per-wave test validation.
 ### From campaign Sprints B→A→C + Phase II core (2026-06)
 
 Fable 5 exhaustive audit/optimization campaign (Sprints B→A→C,
-Phase II-0…II-5).  Full reports: `docs/v50/campaign-2026-06/`.
+Phase II-0…II-5).  Full reports: `.doc-archive/docs/v50/campaign-2026-06/`.
 
 ### Added
 - **V6NAX backward D=64 causal DEFAULT-ON** (Phase II-0, Marco-approved):
@@ -588,7 +588,7 @@ With the fix, NAX Conv3D executes natively.
 
 **Flagship benchmark** (SeedVR2 3B fp16 VSR, 895 frames, 432p, M5 Max
 post-v2.50.1 fix; cross-hardware comparison vs M1 Max optimized
-baseline, see `docs/v50/bench-data/`):
+baseline, see `.doc-archive/docs/v50/bench-data/`):
 
 | Phase | M1 Max (Ph85/86) | M5 Max v2.50.1 (Ph96) | M5/M1 |
 |---|---|---|---|
@@ -626,7 +626,7 @@ changes required).
   acceleration path **never executed in production** between v2.36.0
   and v2.50.0 — users saw correct outputs (via baseline fallback in
   their pipelines) at baseline performance, masquerading as "everything
-  works."  See Pattern #8 in `docs/v50/audit-framing-inversions.md`.
+  works."  See Pattern #8 in `.doc-archive/docs/v50/audit-framing-inversions.md`.
 
   Fix: `_patched_conv_general` now casts `input` to `weight.dtype`
   before NAX dispatch and restores the baseline output dtype after the
@@ -646,7 +646,7 @@ changes required).
   `bfloat16_t` type mismatch).  Affects all bf16 conv3d_nax dispatches
   (matched or mismatched).  Eligibility tightened to fp16-weight-only
   as Phase A mitigation — bf16 weights now correctly fall back to MLX
-  baseline.  Tracked as KD-7 in `docs/v50/known-debt-v2.50.md` for
+  baseline.  Tracked as KD-7 in `.doc-archive/docs/v50/known-debt-v2.50.md` for
   v2.51 resolution (upstream MLX fix or mlx-mfa bf16-specialized
   kernel).
 
@@ -678,7 +678,7 @@ changes required).
   M5+, weight dtype unsupported, kernel constraint, padding form,
   NAX dispatch exception, etc.).
 
-- **Documentation**: `docs/HOOK_TELEMETRY.md` covers API, modes,
+- **Documentation**: `docs/reference/HOOK_TELEMETRY.md` covers API, modes,
   overhead measurements, and Pattern #8 diagnostic examples.
 
 - 10 new regression tests in
@@ -688,7 +688,7 @@ changes required).
 
 This infrastructure mirrors the per-call stats pattern already shipped
 in `mlx_mfa.integrations.mlx_lm` (verbose dispatch logging + per-call
-counters).  See `docs/v50/prompt-5g-section-b-hooks-inventory.md` for
+counters).  See `.doc-archive/docs/v50/prompt-5g-section-b-hooks-inventory.md` for
 the audit verdict that no additional hooks need Pattern #8 fixes.
 
 ### Verified (Prompt 5g Phase D — Multi-model NAX engagement smoke tests)
@@ -707,11 +707,11 @@ the audit verdict that no additional hooks need Pattern #8 fixes.
   evidence; Phase D adds the measurable, repeatable hook-level
   verification.
 
-  See `docs/v50/prompt-5g-section-d-smoke-test-findings.md`.
+  See `.doc-archive/docs/v50/prompt-5g-section-d-smoke-test-findings.md`.
 
 ### Codified (Prompt 5g Phase E — Pattern #8 institutional learning)
 
-- **Pattern #8 codified** in `docs/v50/audit-framing-inversions.md`:
+- **Pattern #8 codified** in `.doc-archive/docs/v50/audit-framing-inversions.md`:
   "Silent hook fallback masking unused optimization path".  Full case
   study covering the `_auto_hooks.py::conv3d_nax_forward` v2.36.0 →
   v2.50.0 silent break, detection requirements, prevention
@@ -858,7 +858,7 @@ on the `MFA_FORCE_NATIVE_BWD=1` env var.
 - **`MFA_FORCE_NATIVE_BWD=1`** env var deprecated.  Routes through
   legacy STEEL backward kernels which have a known correctness bug at
   D=128 N≥2048 (zeroed output blocks for query rows ≥ 1024 — see KD-5
-  in `docs/v50/known-issues-v2.50.md`).  The V6NAX backward NAX-direct
+  in `.doc-archive/docs/v50/known-issues-v2.50.md`).  The V6NAX backward NAX-direct
   path (production default per Section D Prompt 5b broadening) is
   unaffected.
 
@@ -887,7 +887,7 @@ backward (4 kernels, all math-correct) revealed:
 The Sprint 5 "10× speedup at d=0.1" projection is empirically falsified.
 
 **Pattern #6 inversion** (added to
-`docs/v50/audit-framing-inversions.md`): Apple primitive M5+
+`.doc-archive/docs/v50/audit-framing-inversions.md`): Apple primitive M5+
 optimization level falsifies custom-kernel speedup projections.
 Apple SDPA NAX on M5+ is sufficiently optimized that custom V6NAX-style
 NAX backward kernels (even with sparse-skip algorithmic
@@ -912,7 +912,7 @@ typically slower than hybrid on M5+).
 ### Decided (Section B v3 — Approach 5 SKIPPED per Pattern #6 inference)
 
 Approach 5 (Top-K state machine + custom Metal PASS-2 scatter-gather
-attention kernel) SKIPPED.  Per `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`:
+attention kernel) SKIPPED.  Per `.doc-archive/docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`:
 
 The PASS-2 custom Metal kernel would replace Apple SDPA NAX (used by
 Architecture B's PASS-2).  Per Section A v3 empirical pattern (Apple
@@ -975,7 +975,7 @@ production routing strategy:
   Section C wrapper for shapes where SDPA-vjp wins, native for
   narrow advantage cases
 
-See `docs/v50/sprint-5d-section-a-status.md` for the full empirical
+See `.doc-archive/docs/v50/sprint-5d-section-a-status.md` for the full empirical
 characterization + routing decision matrix.
 
 ### Changed (Section B v2.50 Prompt 5c — Top-K bisection PROMOTED to AUTO default)
@@ -993,7 +993,7 @@ characterization + routing decision matrix.
   - `MFA_TOPK_BISECT=1` → deprecated (redundant; AUTO default; back-compat)
 
   **Approach 5 (single-pass running top-K state machine) deferred to
-  Section B v3** focused follow-up.  Per `docs/v50/phase-3b-approach-5-decision.md`:
+  Section B v3** focused follow-up.  Per `.doc-archive/docs/v50/phase-3b-approach-5-decision.md`:
   full Approach 5 requires scatter-gather PASS-2 attention which is
   NOT natively supported by Apple SDPA NAX (mx.fast.scaled_dot_product_attention
   accepts contiguous K/V + mask, not indexed K/V).  Workarounds:
@@ -1038,7 +1038,7 @@ characterization + routing decision matrix.
   full dense cost via SDPA-vjp).  Section A v3 follow-up will deliver
   the additional 5-10× speedup via the 3 remaining native sparse
   backward kernels (dQ, dK split, fused dKdV).  Estimated 4-6h focused
-  session per `docs/v50/sprint-5c-section-a-status.md` §"Section A v3
+  session per `.doc-archive/docs/v50/sprint-5c-section-a-status.md` §"Section A v3
   follow-up".
 
   Section C `_sparse_nax_with_sdpa_vjp` wrapper remains as fallback for
@@ -1053,7 +1053,7 @@ characterization + routing decision matrix.
   → 11.15 ms.
 
   **Multi-architecture investigation** (5 approaches per
-  `docs/v50/phase-3b-architectures-comparison.md`):
+  `.doc-archive/docs/v50/phase-3b-architectures-comparison.md`):
   - Approach 1 (two-pass radix-select + sparse SDPA): L-effort C++
     Primitive extension, deferred Section B v2 follow-up
   - Approach 2 (Apple primitive composition `mx.argpartition` + SDPA):
@@ -1091,14 +1091,14 @@ characterization + routing decision matrix.
   - Default (env unset) preserves Phase 3a
 
   **Section B v2 follow-up** in
-  `docs/v50/phase-3b-architectures-comparison.md` §"Section B v2 roadmap":
+  `.doc-archive/docs/v50/phase-3b-architectures-comparison.md` §"Section B v2 roadmap":
   4-6h focused session to implement Approach 5 (single-pass running
   top-K, eliminates scores materialization, targets additional ~2×
   speedup over Approach 4 for ~7× over Phase 3a total).
 
 ### Docs (Section E v2.50 Prompt 5b — HARDWARE_SUPPORT.md final narrative)
 
-- **`docs/HARDWARE_SUPPORT.md`** updated to reflect post-Prompt-5b
+- **`docs/reference/HARDWARE_SUPPORT.md`** updated to reflect post-Prompt-5b
   state.  Forward + backward matrices show coverage outcomes:
   - D=128 + causal + attn_bias mode 1/2 → V2 STEEL bias-aware
     (Section C fix)
@@ -1172,7 +1172,7 @@ characterization + routing decision matrix.
   - D=128 path works (Section D broadening pairs naturally).
   - 2-D mask only at PoC stage; 3-D/4-D rejected (Section A v2 broadens).
 
-  **Math gap documented** (`docs/v50/sprint-5b-section-a-scaffold.md`):
+  **Math gap documented** (`.doc-archive/docs/v50/sprint-5b-section-a-scaffold.md`):
   The PoC kernel's sparse-skip is structurally correct but mathematically
   only valid when paired with a sparse forward that returns L (lse
   over only active blocks).  With dense V6NAX forward L, the
@@ -1184,7 +1184,7 @@ characterization + routing decision matrix.
   sparse-skip pattern.  Estimated 4-6h focused session.
 
   **Section A v2 roadmap** in
-  `docs/v50/sprint-5b-section-a-scaffold.md` §"Section A v2 follow-up
+  `.doc-archive/docs/v50/sprint-5b-section-a-scaffold.md` §"Section A v2 follow-up
   roadmap" — 7 numbered steps with effort estimates.
 
   **PoC currently exposed only as private `_ext.v6_nax_backward_dv_sparse_raw`
@@ -1206,7 +1206,7 @@ characterization + routing decision matrix.
   predicate broadened from `head_dim == 64` to `head_dim in (64, 128)`.
 
   **Multi-gate audit per Pattern #5**: 8 dispatch gates audited
-  (`docs/v50/sprint-5b-section-d-dispatch-audit.md`); all downstream
+  (`.doc-archive/docs/v50/sprint-5b-section-d-dispatch-audit.md`); all downstream
   infrastructure (`_v6nax_eligible`, `_v6nax_backward_vjp` routing,
   `MFAV6Backward::eval_gpu`, `compile_v6nax_backward_pipeline`, C++
   cache keys) was already permissive — only the carve-out gate
@@ -1222,7 +1222,7 @@ characterization + routing decision matrix.
   **Perf claim**: PARITY at D=128 (no speedup over SDPA-vjp,
   contract-honest engagement preserves cohérence narrative).  See
   `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity`
-  in `docs/PERF_CLAIMS.md`.
+  in `docs/reference/PERF_CLAIMS.md`.
 
   **Test updates** (3 prior tests asserted the now-superseded
   "D=128 falls back" contract):
@@ -1277,7 +1277,7 @@ characterization + routing decision matrix.
   a working SDPA-vjp baseline as the reference for V6NAX NAX-direct
   backward.
 
-  Per `docs/v50/sprint1-backward-regression-RESOLVED.md` for full
+  Per `.doc-archive/docs/v50/sprint1-backward-regression-RESOLVED.md` for full
   investigation evidence + Pattern #5 multi-gate audit application.
 
 ### Fixed (Section B v2.50 Prompt 4 — Phase 4b-complete dV residual RESOLVED)
@@ -1314,7 +1314,7 @@ characterization + routing decision matrix.
   Production impact: LLM training causal scenarios with V6NAX backward
   enabled now get NAX-accelerated backward gradients on M5+ for
   D=64 qL≥2048 fp16/bf16.  See
-  `docs/v50/phase-4b-complete-dv-residual-decisions.md` for full
+  `.doc-archive/docs/v50/phase-4b-complete-dv-residual-decisions.md` for full
   investigation + framing-inversion classification (5th inversion
   pattern: "incomplete-fix" — multi-gate dispatch chain partially
   lifted).
@@ -1355,7 +1355,7 @@ characterization + routing decision matrix.
     0.02 → 1.01 for forward perf; at densities < 1.01 (all real-world)
     `flash_attention_sparse` routes to NAX kernel which lacks vjp,
     breaking `mx.grad(...)` on M5+ for symmetric block masks.  Full
-    investigation in `docs/v50/sprint1-backward-regression-status.md`;
+    investigation in `.doc-archive/docs/v50/sprint1-backward-regression-status.md`;
     escalated to Marco for post-v2.50 dedicated fix.  **attn_bias
     native d128 causal** (2 tests: TestBiasMode1/2 test_d128_causal):
     max_err 0.30-0.32 vs 0.05 tolerance — real bug pre-dating v2.50
@@ -1372,7 +1372,7 @@ characterization + routing decision matrix.
     guaranteed every random sample).
 
   No production code changed in Section A — pure test signature/shape/
-  tolerance maintenance.  Per `docs/v50/test-cleanup-inventory.md` for
+  tolerance maintenance.  Per `.doc-archive/docs/v50/test-cleanup-inventory.md` for
   the categorization + per-test rationale.
 
 ### Changed (transparent for users)
@@ -1404,7 +1404,7 @@ characterization + routing decision matrix.
   (bit-identical, safe). K-parallel residual deferred to a focused
   future session (~2-3h CC); Sprint 5 (V6NAX backward block-sparse)
   bundled with this resolution because it extends the same kernels.
-  See `docs/v50/phase-4b-complete-decisions.md` for full investigation
+  See `.doc-archive/docs/v50/phase-4b-complete-decisions.md` for full investigation
   evidence and recommended next steps.
 
 - **Sprint 4 Phase 4a + dQ partial (v2.50, V6NAX causal extension infrastructure)**:
@@ -1421,15 +1421,15 @@ characterization + routing decision matrix.
   doc's prediction that "backward kernels likely need NO source
   changes" empirically FALSIFIED (dQ exceeded SDPA-vjp reference by
   2144× without backward causal mask).  See
-  `docs/v50/sprint4-status-phase4b-complete.md`.  Production behavior
+  `.doc-archive/docs/v50/sprint4-status-phase4b-complete.md`.  Production behavior
   unchanged: `_v6nax_eligible(causal=True)` and
   `_v6nax_backward_carveout(causal=True)` both retain their `not causal`
   clauses — `flash_attention(causal=True)` callers continue to use
   SDPA-vjp fallback (bit-identical verified in
   `test_sprint4_flash_attention_causal_uses_sdpa_vjp`).  See
-  `docs/v50/sprint4-decisions.md` for full empirical data + audit
+  `.doc-archive/docs/v50/sprint4-decisions.md` for full empirical data + audit
   framing correction.  Updates the Sprint 4 Prompt 1 STATUS doc
-  (`docs/v50/sprint4-status.md`) with corrected scope.
+  (`.doc-archive/docs/v50/sprint4-status.md`) with corrected scope.
 
 - **Sprint 3 Phase 3a (v2.50, flash_attention_topk M5+ NAX dispatch)**:
   added M5+ NAX-optimal early-return in `flash_attention_topk`.  When
@@ -1448,9 +1448,9 @@ characterization + routing decision matrix.
   finding ~33 ms — `mx.partition`, `mx.topk`, `mx.sort` all the same
   cost on MLX 0.31) and requires a native streaming top-K Metal kernel
   (Phase 3b, **deferred** per §AA.1 — see
-  `docs/v50/sprint3-status-phase3b.md`).  M1-M4, block-mask, fp32,
+  `.doc-archive/docs/v50/sprint3-status-phase3b.md`).  M1-M4, block-mask, fp32,
   topk_ratio≥1 paths preserved unchanged.  Opt-out via
-  `MFA_DISABLE_TOPK_NAX=1`.  See `docs/v50/sprint3-decisions.md` for
+  `MFA_DISABLE_TOPK_NAX=1`.  See `.doc-archive/docs/v50/sprint3-decisions.md` for
   full empirical data + framing analysis + skill invocations log.
 
 - **Sprint 2 (v2.50, flash_attention_rope_unified M5+ NAX path)**: added
@@ -1467,7 +1467,7 @@ characterization + routing decision matrix.
   128}, fp16/bf16, full rotation.  Partial rope, fp32, M1-M4, and
   cache-mode/paged-mode callers preserved unchanged.  Assumes
   `base=10000.0` (LLaMA standard).  Opt-out via `MFA_DISABLE_ROPE_NAX=1`
-  for custom-base callers.  See `docs/v50/sprint2-decisions.md` for
+  for custom-base callers.  See `.doc-archive/docs/v50/sprint2-decisions.md` for
   bench data + the audit's framing inversion.
 
 - **Sprint 1 (v2.50, sparse density threshold recalibration)**: raised
@@ -1481,11 +1481,11 @@ characterization + routing decision matrix.
   on M5+ at audit shape (density 0.023, B=1 H=12 qL=4096 D=128 fp16
   BT=32) was 2.97 ms via SDPA+bias path; now routes to NAX at 0.38 ms —
   **~6× speedup**.  Audit framing empirically inverted; bool-mask
-  substitution (Layer 1 from older `docs/sparse-fallback-audit.md`)
+  substitution (Layer 1 from older `.doc-archive/docs/sparse-fallback-audit.md`)
   FALSIFIED — bool mask 1.085× slower than float bias on current MLX
   0.31.  Float-bias cache (Layer 2) already shipped v2.33.1.  Backward-
   compat preserved via explicit `density_threshold=0.02` param for M1/M3
-  V1 STEEL callers.  See `docs/v50/sprint1-decisions.md` for full sweep
+  V1 STEEL callers.  See `.doc-archive/docs/v50/sprint1-decisions.md` for full sweep
   data + framing correction + skill invocations log.
 
 - **Sprint C (v2.40.x-internal, P3-HIGH-01)**: V6NAX backward Primitive
@@ -1505,7 +1505,7 @@ characterization + routing decision matrix.
   values) plug into the helper without re-deriving the pattern.
   79/79 tests pass; D=64 fused-BK16 perf preserved within session
   noise.  Zero user-visible change.  See
-  `docs/v6-nax/primitive-consolidation-decisions.md`.
+  `.doc-archive/docs/v6-nax/primitive-consolidation-decisions.md`.
 
   *Minor stderr-format change* (env-gated, invisible by default):
   `MFA_V6BWD_DUMP_SOURCE=1` on MFAV6NAXBwdQuery now prints the full
@@ -1516,7 +1516,7 @@ characterization + routing decision matrix.
   the v2.37.2 V6NAX-backward carve-out floor from `qL ≥ 4096` to
   `qL ≥ 2048`.  After v2.39.1's BK=16 fix the fused kernel reaches
   parity with SDPA-vjp at qL=2048 (3-session variance 1.004; see
-  `docs/v6-nax/v39-2-internal-decisions.md` §"Threshold calibration").
+  `.doc-archive/docs/v6-nax/v39-2-internal-decisions.md` §"Threshold calibration").
   Users with `MFA_ENABLE_V6_BACKWARD=1` on D=64 non-causal fp16/bf16
   shapes at qL∈[2048, 4096) now engage the V6NAX backward fused path
   (was: silent SDPA-vjp fallback).  **No speedup claim** — qL=2048 is
@@ -1565,7 +1565,7 @@ characterization + routing decision matrix.
   composition work (block-sparse, causal) at both head dims without
   re-implementation.
 
-  See `docs/v6-nax/v40-0-internal-decisions.md` for full DC1-DC4
+  See `.doc-archive/docs/v6-nax/v40-0-internal-decisions.md` for full DC1-DC4
   decision rationale + methodology correction details.
 
 ## [2.39.1] — 2026-05-13 — Option γ outcome α — register-pressure root-cause + fix
@@ -1627,7 +1627,7 @@ qL=16384 falls under 1.15 but disclosed honestly with thermal attribution.
 
 ### Investigation evidence (full record)
 
-See `docs/v6-nax/v39-1-investigation-synthesis.md`:
+See `.doc-archive/docs/v6-nax/v39-1-investigation-synthesis.md`:
 - BK sweep data (BK=32 baseline 13.58 ms → BK=16 8.87 ms at qL=4096)
 - WM sweep data (BQ=64 WM=4 13.68 ms → BQ=16 WM=1 15.43 ms, H3 falsified)
 - qL sweep data (parity qL≤2048, regression qL≥4096 with v39.0 BK=32)
@@ -1716,7 +1716,7 @@ Bench data (PUBLIC AUTO API, M5 Max, 3 sessions × 4w+12i, variance ratios < 1.0
 Fixed: B=2, H=8, D=64, fp16, non-causal.  Variance across 3 sessions
 all <1.05 → finding is reproducible, not noise.  Full hypotheses for the
 regression (register pressure, L1 cache, occupancy reduction) documented
-in `docs/v6-nax/v39-0-option-gamma-results.md`.
+in `.doc-archive/docs/v6-nax/v39-0-option-gamma-results.md`.
 
 ### Correctness verified (HIGH confidence)
 
@@ -1757,7 +1757,7 @@ mlx_mfa/attention.py                            | +29/-11 (MFA_V6_BWD_KERNEL env
 tests/test_v39_fused_dkdv.py                    | +257 (new — 17 tests)
 benchmarks/bench_v39_0_fused_dkdv.py            | +130 (new — 3-arm bench)
 benchmarks/results/v39_0/*.json                 | +4 files (3 sessions + summary)
-docs/v6-nax/v39-0-option-gamma-results.md       | +130 (new — outcome δ analysis)
+.doc-archive/docs/v6-nax/v39-0-option-gamma-results.md       | +130 (new — outcome δ analysis)
 ```
 
 ### Roadmap
@@ -1796,7 +1796,7 @@ single-session under identical conditions.
 Improvement DECAYS with qL: the eliminated rowsum work is a larger
 relative share at smaller qL.  All claimed numbers reachable via the
 documented PUBLIC AUTO API path per §Z (see reproduction snippet in
-`docs/v6-nax/v38-1-perf-claim-audit.md`).
+`.doc-archive/docs/v6-nax/v38-1-perf-claim-audit.md`).
 
 ### Honest scope
 
@@ -1812,7 +1812,7 @@ documented PUBLIC AUTO API path per §Z (see reproduction snippet in
 - **qL-dependent**: ship only at qL ≥ 4096 per the existing v2.37.2
   carve-out.  No new env vars, no new opt-ins.
 
-### Architecture (`docs/v6-nax/v38-1-implementation-decisions.md`)
+### Architecture (`.doc-archive/docs/v6-nax/v38-1-implementation-decisions.md`)
 
 - DC1: D precomputed via MLX dispatch (one extra kernel, amortized
   across 2 saved in-kernel rowsums).
@@ -1832,8 +1832,8 @@ csrc/mfa/v6_nax/NAAttentionKernel.cpp | ~80 +/- (D buffer + per-kernel reads)
 csrc/mfa_v6_nax_primitive.cpp         | ~30 +/- (eval_gpu + public funcs)
 csrc/v6_nax_compile.mm                | ~25 +/- (host params + dispatchers)
 mlx_mfa/attention.py                  | ~10 +/- (precompute + thread D)
-docs/v6-nax/v38-1-implementation-decisions.md | +135 (new)
-docs/v6-nax/v38-1-perf-claim-audit.md         | +150 (new)
+.doc-archive/docs/v6-nax/v38-1-implementation-decisions.md | +135 (new)
+.doc-archive/docs/v6-nax/v38-1-perf-claim-audit.md         | +150 (new)
 benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
 ```
 
@@ -1927,14 +1927,14 @@ benchmarks/bench_v38_1_d_vec.py               | +120 (new bench script)
   The replacement is a strict superset of the original coverage
   (stricter assertion: `is False` vs `isinstance(bool)`; public API
   per §Z; exercises the actual production routing path).
-- **`docs/v6-nax/v38-implementation-decisions.md`** — sprint
+- **`.doc-archive/docs/v6-nax/v38-implementation-decisions.md`** — sprint
   decisions record (DC1 Path Y pivot rationale; DC2 helper signature
   without D_vec; §AA skill-invocation log).
-- **`docs/v6-nax/README.md`**, **`docs/SPRINT_HISTORY.md`** — active-
+- **`.doc-archive/docs/v6-nax/README.md`**, **`.doc-archive/docs/SPRINT_HISTORY.md`** — active-
   doc references to the deleted placeholder updated to reflect the
   post-v2.38.0 state.  Historical references in `CHANGELOG.md`,
-  `devnotes/v2.32.0-release-notes.md`, `devnotes/SESSION_LOG.md`,
-  and `docs/audits/v37-systematic-audit.md` are preserved verbatim
+  `.doc-archive/devnotes/v2.32.0-release-notes.md`, `.doc-archive/devnotes/SESSION_LOG.md`,
+  and `.doc-archive/docs/audits/v37-systematic-audit.md` are preserved verbatim
   as historical record.
 
 ### Investigation foundation (carried from v2.38.0 P1/P2)
@@ -1954,7 +1954,7 @@ ship with this release as documentation only:
   ceiling for v2.38.1+.
 
 These findings are documented in
-`docs/v6-nax/v38-implementation-decisions.md`.  The implementation-side
+`.doc-archive/docs/v6-nax/v38-implementation-decisions.md`.  The implementation-side
 work (D_vec precompute, Option γ fused dK+dV) is **deferred to v2.38.1+**
 per the Path Y scope decision (Sprint 2 audit invalidated the
 original v2.38.0 P3 premise that D_vec infrastructure was already
@@ -1982,7 +1982,7 @@ half-wired — see decisions doc DC1 for the full reasoning).
   identical extraction; test replacement is a strict superset.
 - **Phase D perf-claim audit** (`/mlx-mfa-perf-audit`): HIGH confidence
   no perf claim is possible from this sprint scope.  Kernel diff is
-  comment-only; no new benchmark files; `docs/PERF_CLAIMS.md` registry
+  comment-only; no new benchmark files; `docs/reference/PERF_CLAIMS.md` registry
   untouched.  Only quantitative numbers in this CHANGELOG are LOC
   deltas and test counts.
 
@@ -1990,8 +1990,8 @@ half-wired — see decisions doc DC1 for the full reasoning).
 
 ```
 csrc/mfa/v6_nax/NAAttentionKernel.cpp |   7 ±   (comment-only in MSL strings)
-docs/SPRINT_HISTORY.md                |   2 ±
-docs/v6-nax/README.md                 |  14 ±
+.doc-archive/docs/SPRINT_HISTORY.md                |   2 ±
+.doc-archive/docs/v6-nax/README.md                 |  14 ±
 mlx_mfa/attention.py                  | 175 ±   (Phase B helper extraction)
 mlx_mfa/dispatch_policy.py            | -45    (Phase C deletion, net)
 tests/test_v32_sdpa_routing.py        |  30 ±   (Phase C test fix per §Z)
@@ -2022,15 +2022,15 @@ Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
   documented; v2.37.0/v2.37.1 added to the silent-bugs-caught
   worked-examples collection.
 - **`CLAUDE.md` top-level reminder** of §Z + §AA at session start.
-- **`docs/RELEASE_PHILOSOPHY.md`** new subsection "Public API path
+- **`docs/reference/RELEASE_PHILOSOPHY.md`** new subsection "Public API path
   validation" codifying the corollary that auto-default validation
   must use the public API path.
 
 ### Added — audit + regression test
 
-- **`docs/v6-nax/v2.37.x-perf-claim-audit.md`** — per-claim
+- **`.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`** — per-claim
   reachability audit of all quantified perf claims in v2.37.0,
-  v2.37.1, v2.37.2 release notes and `docs/TRAINING_QUICKSTART.md`.
+  v2.37.1, v2.37.2 release notes and `docs/reference/TRAINING_QUICKSTART.md`.
   Reproduces each claim under AUTO path, MFA-forced path, and SDPA
   baseline.  Verdicts: 4 / 11 reachable via AUTO; 5 / 11 reachable
   only via MFA-forced (D=128 research characterization);
@@ -2047,7 +2047,7 @@ Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
   canonical-methodology bench (`§4.2`) shows 1.15× kernel-level win
   and ≈1.06× end-to-end win, within measurement noise.  The v2.37.2
   carve-out correctly does not engage V6NAX backward at qL=2048; the
-  AUTO path defaults to SDPA-vjp.  `docs/TRAINING_QUICKSTART.md`
+  AUTO path defaults to SDPA-vjp.  `docs/reference/TRAINING_QUICKSTART.md`
   updated: the qL=2048 row no longer carries the "V6NAX WINS" badge.
 - **v2.37.0 D=128 "V6NAX backward 2.2-2.4× slower than SDPA-vjp" —
   reclassified.**  Numbers are valid kernel-isolation
@@ -2055,7 +2055,7 @@ Net: +13 tests; ~-35 LOC after dedup + dead-code removal.
   to reach; the documented `MFA_ENABLE_V6_BACKWARD=1` env-var
   setup with default `backend="auto"` does NOT engage V6NAX at D=128
   (carve-out is D=64 only).  Public AUTO API correctly falls back
-  to SDPA-vjp at parity.  `docs/TRAINING_QUICKSTART.md` updated:
+  to SDPA-vjp at parity.  `docs/reference/TRAINING_QUICKSTART.md` updated:
   D=128 table flagged as research-only kernel characterization.
 
 The original v2.37.0 and v2.37.1 release-notes files are preserved
@@ -2307,7 +2307,7 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
 ### Methodology
 
 - **Canonical Apple Silicon benchmark protocol adopted for sub-1.5ms
-  kernels** (`docs/methodology/canonical-protocol.md`). Replaces §4-strict
+  kernels** (`.doc-archive/docs/methodology/canonical-protocol.md`). Replaces §4-strict
   cooldown protocol where the latter fails due to GPU power-state cycling.
   §4-strict remains canonical for ≥1.5ms kernels. Selection rule
   documented in `CLAUDE_V6_NAX.md` §4.3.
@@ -2327,7 +2327,7 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
   (3 sessions, ratio analysis): 6 CONFIDENT + 1 BOUNDARY,
   0 HIGH_VARIANCE. All 3 v2.36.0 HIGH-variance shapes graduated to
   CONFIDENT under canonical. See
-  `docs/methodology/canonical-bench-results.md` for full data.
+  `.doc-archive/docs/methodology/canonical-bench-results.md` for full data.
 - 77/77 tests pass (65 pre-existing LCSA / Sprint U / FlashVSR tests +
   12 new three-axis tests for shape-aware decide_auto_version).
 
@@ -2381,7 +2381,7 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
   public API for explicit hook control (benchmarking / debugging).
 - `MFA_DISABLE_AUTO_HOOKS=1` env var prevents auto-hook install at import.
 - `mlx_mfa/_auto_hooks.py` (222 LOC) — auto-hook installation module.
-- `docs/RELEASE_PHILOSOPHY.md` (207 LOC) — canonical auto-default principle.
+- `docs/reference/RELEASE_PHILOSOPHY.md` (207 LOC) — canonical auto-default principle.
 - `CLAUDE_V6_NAX.md` §5.X — pre-tag auto-default audit checklist.
 - `CLAUDE.md` auto-default principle reminder near the top.
 - `tests/test_sprint_u_sparse_routing.py` (4 tests) — Section B validation.
@@ -2391,7 +2391,7 @@ Improvement vs initial Phase 2 WM=1 fused kernel: 1.7-2× speedup.
 
 - All existing public API signatures preserved.
 - `MFA_LCSA_KERNEL_VERSION=v2` remains opt-in (sub-1ms methodology
-  validation pending per `docs/methodology/sub1ms-protocol-diagnostic.md`).
+  validation pending per `.doc-archive/docs/methodology/sub1ms-protocol-diagnostic.md`).
   Once methodology resolved, V2 graduates to default via `decide_auto_version()`
   flip — zero user code change.
 - All named patchers (`patch_seedvr2_vae`, `patch_flashvsr_lcsa`,
@@ -2420,7 +2420,7 @@ Joint LCSA + integration + Sprint U test suite: **65/65 pass**:
 4. If you want to verify whether auto-hooks are active: call
    `mlx_mfa.hooks_status()`.
 
-### Philosophy (new canonical doc: `docs/RELEASE_PHILOSOPHY.md`)
+### Philosophy (new canonical doc: `docs/reference/RELEASE_PHILOSOPHY.md`)
 
 Every PyPI release of mlx-mfa must be fully functional transparently for
 users. Validated optimizations activate by default without requiring user
@@ -2446,14 +2446,14 @@ principle, anti-patterns, and pre-tag audit checklist.
 - `MFA_LCSA_KERNEL_VERSION` env var:
   - `v1` (default): per-thread FA-2 (v2.34.0 kernel, unchanged)
   - `v2`: cooperative-tensor inner-GEMM (broad-envelope V6NAX-pattern kernel)
-- Section A design doc `docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture)
+- Section A design doc `.doc-archive/docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture)
 - Section C: 19 V2 correctness tests covering V1↔V2 equivalence on 7 shapes
   + three-axis V2 validation + density sweep 0.01-0.50
 
 ### Verdict: SHIP_OPT_IN (§D.2 decision tree)
 
 §4-strict 3-session results (M5 Max 128GB, see
-`docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md`):
+`.doc-archive/docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md`):
 
 **Production shapes (cross-session medians)**:
 
@@ -2513,10 +2513,10 @@ caveats". V1 remains default; V2 is opt-in via `MFA_LCSA_KERNEL_VERSION=v2`.
 
 ### Documentation
 
-- `docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture, 282 LOC)
-- `docs/lcsa-nax/lcsa-nax-coop-rewrite-decisions.md` (DC0-DC8)
-- `docs/lcsa-nax/lcsa-nax-coop-rewrite-{inventory,results}.md`
-- `docs/lcsa-nax/lcsa-nax-coop-rewrite-{data,analysis}.json`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-design.md` §13 (V2 architecture, 282 LOC)
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-coop-rewrite-decisions.md` (DC0-DC8)
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-coop-rewrite-{inventory,results}.md`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-coop-rewrite-{data,analysis}.json`
 
 ### Future-work register (post v2.35.0)
 
@@ -2531,7 +2531,7 @@ Methodology-validation re-bench of the v2.34.0 shipped envelope under
 inter-shape / 90s inter-round CLI knob, A/B/A pattern with
 `sparse_attention_dispatch` cache-HIT pattern as A and
 `mx.fast.scaled_dot_product_attention(mask=bias)` as B). Single-session
-shipped numbers in `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` are
+shipped numbers in `.doc-archive/docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md` are
 structurally validated.
 
 **§4 outcome**:
@@ -2556,9 +2556,9 @@ end of cache-warmth luck; structural production-steady-state ratio is
 **New artifacts**:
 - `bench/lcsa_nax_phase1_5_harness.py` — §4-strict harness (Sprint C pattern)
 - `bench/lcsa_nax_rebench_analysis.py` — cross-session analysis tool
-- `docs/lcsa-nax/lcsa-nax-rebench-{data,results,analysis}.{json,md}`
-- `docs/lcsa-nax/lcsa-nax-rebench-decisions.md` (audit + decisions log)
-- `docs/lcsa-nax/lcsa-nax-rebench-inventory.md`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-rebench-{data,results,analysis}.{json,md}`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-rebench-decisions.md` (audit + decisions log)
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-rebench-inventory.md`
 
 **Future-work register update**:
 - ~~§4-compliant 3-session re-bench~~ — DONE
@@ -2625,11 +2625,11 @@ Single-session data. §4-compliant 3-session re-bench recommended for GA.
 
 ### Documentation
 
-- `docs/lcsa-nax/lcsa-nax-design.md` (Phase 1.0)
-- `docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json` (sub-phase 0)
-- `docs/lcsa-nax/lcsa-nax-phase1_3-bt-sweep.json` + `phase1_3-results.md`
-- `docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json` + `phase1_4-results.md`
-- `docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-design.md` (Phase 1.0)
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-phase1_1-pertile-microbench.json` (sub-phase 0)
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-phase1_3-bt-sweep.json` + `phase1_3-results.md`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-phase1_4-dispatcher-sweep.json` + `phase1_4-results.md`
+- `.doc-archive/docs/lcsa-nax/lcsa-nax-phase1_5-ship-verdict.md`
 
 ## [2.33.1] — 2026-05-12 — `flash_attention_sparse` M5+ fast-fallback
 
@@ -2642,7 +2642,7 @@ Single-session data. §4-compliant 3-session re-bench recommended for GA.
   with the SDPA call — producing a constant **2.07-2.10× wall-clock
   overhead** vs calling `mx.fast.scaled_dot_product_attention` directly
   with a prebuilt float bias. Surfaced by Sprint B Phase 0 baseline bench
-  (`docs/lcsa-nax/survey-report.md` §3 + §8 + `docs/sparse-fallback-audit.md`).
+  (`.doc-archive/docs/lcsa-nax/survey-report.md` §3 + §8 + `.doc-archive/docs/sparse-fallback-audit.md`).
 - **Fast-fallback (v2.33.1):** the M5+ path now caches the expanded float
   bias by `id(block_mask) + shape + dtype + (B, H, N, S, target_dtype)`.
   Cache HIT (mask reused across calls — common production pattern, e.g.
@@ -2663,7 +2663,7 @@ Single-session data. §4-compliant 3-session re-bench recommended for GA.
 - This is a **dispatch-routing fix**, not a NAX-native sparse implementation.
   The NAX-native sparse-aware path is in development as Sprint B Phase 1.x;
   expected speedups vs MLX SDPA dense+mask are 3-15× depending on density
-  (see `docs/lcsa-nax/survey-report.md` §10 — Recommended approach).
+  (see `.doc-archive/docs/lcsa-nax/survey-report.md` §10 — Recommended approach).
 - **Pre-M5 hardware (M1-M4) dispatch path is unchanged.** M1-M4 still
   routes through the C++ STEEL V1 sparse kernel via
   `_make_mfa_sparse_custom`. The patch modifies only the
@@ -2673,7 +2673,7 @@ Single-session data. §4-compliant 3-session re-bench recommended for GA.
 
 ### Internal
 
-- `docs/sparse-fallback-audit.md` — Sprint B Phase 0 follow-up: per-step
+- `.doc-archive/docs/sparse-fallback-audit.md` — Sprint B Phase 0 follow-up: per-step
   timing breakdown of the v2.33.0 overhead, fix strategy rationale, and
   cache-hit vs cache-miss expected behavior.
 
@@ -2707,10 +2707,10 @@ Single-session data. §4-compliant 3-session re-bench recommended for GA.
 
 ### Documentation
 
-- `docs/conv-nax/` — Sprint C v1.0-v1.5 deliverables (design doc,
+- `.doc-archive/docs/conv-nax/` — Sprint C v1.0-v1.5 deliverables (design doc,
   per-phase inventory/decisions/results/data) + `ship-shelve-decision.md`
   (the actionable Sprint C conclusion).
-- `docs/conv-nax/conv-nax-prod-*.md` — Sprint D production-integration
+- `.doc-archive/docs/conv-nax/conv-nax-prod-*.md` — Sprint D production-integration
   deliverables.
 - `README.md` — new `Conv3D NAX support` section with quickstart, supported
   shapes, expected speedups, caveats, integration.
@@ -2745,7 +2745,7 @@ generations while stopping unnecessary competition with Apple's upstream
 NAX kernel on the canonical shape regime.
 
 The MLX 0.31.2 audit and the v2.31.0 → v2.32.0 cross-session diagnostic
-(`docs/v6-nax/v32-drift-diagnostic-report.md`) concluded that V6NAX NAX-direct
+(`.doc-archive/docs/v6-nax/v32-drift-diagnostic-report.md`) concluded that V6NAX NAX-direct
 matches Apple's NAX kernel cross-session but does not consistently beat it.
 v2.31.0's headline `+33-40% V6NAX wins on D=128` reflected within-session
 conditions that did not reproduce in subsequent measurements.
@@ -2782,8 +2782,8 @@ backends (`sdpa`, `mfa`, `auto`) on M5 Max under subprocess isolation,
 1.9-5.3×; MFA wins 1 shape (ltx2-cross D=64 asymmetric, +11%); 3
 shapes (D=80, 96, 192) have MFA unsupported and fall back to SDPA**.
 
-Per-shape data in [`docs/v6-nax/v32-kernel-sweep.json`](docs/v6-nax/v32-kernel-sweep.json),
-verdict table in [`docs/v6-nax/v32-niche-shape-dispatch.md`](docs/v6-nax/v32-niche-shape-dispatch.md).
+Per-shape data in [`.doc-archive/docs/v6-nax/v32-kernel-sweep.json`](.doc-archive/docs/v6-nax/v32-kernel-sweep.json),
+verdict table in [`.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md`](.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md).
 
 Notable wins (Sprint A, M5 Max):
 
@@ -2857,7 +2857,7 @@ NAX, depending on environmental conditions. The legacy V6 NAX path
 itself measured 36-41% faster in Phase 0 than at v2.31.0 release time —
 same hardware, same code, no source change.
 
-Phase A diagnostic (`docs/v6-nax/v32-drift-diagnostic-report.md`) tested
+Phase A diagnostic (`.doc-archive/docs/v6-nax/v32-drift-diagnostic-report.md`) tested
 PSO compilation cache and GPU ramp-up hypotheses, both rejected. The
 drift is a steady-state offset between v2.31.0 measurement context and
 current sessions, beyond session-feasible discrimination. v2.31.0's
@@ -2871,7 +2871,7 @@ benchmarks:
   conditions metadata (sw_vers, uptime, Metal cache state, cooldowns)
 - `bench/v32_multisession_aggregate.py` — aggregates across sessions,
   flags any reproduction of a target regime
-- `docs/v6-nax/v32-multisession-protocol.md` — protocol matrix
+- `.doc-archive/docs/v6-nax/v32-multisession-protocol.md` — protocol matrix
 - `CLAUDE_V6_NAX.md` Artifact #5 — methodology rule for marketing-grade
   benchmarks (multi-session repro required before perf claims published)
 
@@ -2925,9 +2925,9 @@ introduced by v2.32.0).
   `has_nax` to dispatch
 - `tests/test_v32_sdpa_routing.py` — 16 tests
 - `bench/v32_kernel_sweep.py` + `_inner.py` + `_analyze.py` — Sprint A sweep harness
-- `docs/v6-nax/v32-kernel-inventory.md` — kernel architecture survey
-- `docs/v6-nax/v32-kernel-sweep.json` — Sprint A raw data
-- `docs/v6-nax/v32-niche-shape-dispatch.md` — Sprint A.6 dispatch table
+- `.doc-archive/docs/v6-nax/v32-kernel-inventory.md` — kernel architecture survey
+- `.doc-archive/docs/v6-nax/v32-kernel-sweep.json` — Sprint A raw data
+- `.doc-archive/docs/v6-nax/v32-niche-shape-dispatch.md` — Sprint A.6 dispatch table
 - `CLAUDE_V6_NAX.md` — Artifact #5 added (cross-session perf methodology)
 
 ### Open follow-ups
@@ -2953,7 +2953,7 @@ introduced by v2.32.0).
 - Multi-SG parallelism via per-SG row partitioning at the kernel
   level (`tm = 16 * TQ * sgid`), not via cooperative_tensor
   distribution. This sidesteps the V33 cross-SG distribution
-  opacity issue documented in `docs/v6-nax/v33-sg-gt-1-debug-report.md`.
+  opacity issue documented in `.doc-archive/docs/v6-nax/v33-sg-gt-1-debug-report.md`.
 - V6NAX emits a self-contained MSL source (~17.7 KB of inlined Apple
   helpers): `BaseNAXFrag` (with `mma` / `load` / `store` / `row_reduce`
   / `row_bin_op`), `NAXTile<T, TQ, TD>`, `MaxOp` / `SumOp` / `MulOp`
@@ -2977,7 +2977,7 @@ SDPA**, the first time V6 NAX has dipped below 1.0× on a production shape.
 
 Methodology: subprocess A/B/A (legacy → V6NAX → legacy), 3 runs/round, 60s
 inter-round + 30s inter-shape cooldowns. 4/5 shapes have R1↔R3 thermal
-drift < 8%. Raw bench data: `docs/v6-nax/v6nax-aba.json`.
+drift < 8%. Raw bench data: `.doc-archive/docs/v6-nax/v6nax-aba.json`.
 
 ### Numerics
 
@@ -3028,9 +3028,9 @@ Tunable via `MFA_V6_NAX_BQ` / `MFA_V6_NAX_BK` / `MFA_V6_NAX_WM`.
 - `csrc/v6_nax_compile.mm` — `v6nax_compile`, `v6nax_dispatch`, `V6NAXParams` struct
 - `csrc/v6nax_probe.cpp` — Phase 1 compile probe (kept for future debugging)
 - `bench/v6nax_bench.py`, `bench/v6nax_aba_wrapper.sh` — bench infrastructure
-- `docs/v6-nax/v6nax-apple-reference-mapping.md` — file:line citations
-- `docs/v6-nax/v6nax-results.md` — sprint final report
-- `docs/v6-nax/v6nax-aba.json` — raw bench data
+- `.doc-archive/docs/v6-nax/v6nax-apple-reference-mapping.md` — file:line citations
+- `.doc-archive/docs/v6-nax/v6nax-results.md` — sprint final report
+- `.doc-archive/docs/v6-nax/v6nax-aba.json` — raw bench data
 - `CLAUDE_V6_NAX.md` — V6 NAX guardrails accumulated through v2.27.0–v2.30.x
 
 ### Open follow-ups
@@ -3052,7 +3052,7 @@ Tunable via `MFA_V6_NAX_BQ` / `MFA_V6_NAX_BK` / `MFA_V6_NAX_WM`.
 > tile-default changes (Sprint G). The Sprint G claim of "−6.4 % on
 > FlashVSR-dense and −11.7 % on SeedVR2-large" turned out to be a
 > within-session pipeline-cache artifact that did not replicate
-> cross-session. See `docs/v6-nax/v2-30-thermal-rebench.md`.
+> cross-session. See `.doc-archive/docs/v6-nax/v2-30-thermal-rebench.md`.
 
 ### What's actually shipped in v2.30.0
 
@@ -3108,7 +3108,7 @@ on GQA shapes (new feature) without regression on production.
 | GQA-Hq40-Hk8 D=128 | 2.59 ms | 2.30 ms | -11.03 % | 1.16× |
 | GQA-Hq8-Hk2 D=64 | 1.00 ms | 0.93 ms | -7.11 % | 1.18× |
 
-### Investigated but not shipped (full rationale in docs/v6-nax/sprint-{D,E,F}-*.md)
+### Investigated but not shipped (full rationale in .doc-archive/docs/v6-nax/sprint-{D,E,F}-*.md)
 
 - **Sprint A.2 swizzle**: Apple's NAX attention doesn't use swizzle.
 - **Sprint A.3 ld_padding**: V6 uses device tensors; padding inapplicable.
@@ -3151,8 +3151,8 @@ on GQA shapes (new feature) without regression on production.
 - New env vars (all with auto-defaults): `MFA_V6_NAX_SINGLE_OTILE` (on/off),
   `MFA_V6_BLOCK_R` / `_C` / `EXEC_SG` / `BLOCK_D` for tile overrides,
   `MFA_V6_BYPASS_TGP` (forced on by single-Otile).
-- `docs/v6-nax/README.md` — V6 NAX architecture summary + sprint chronology.
-- `docs/v6-nax/env-vars.md` — full env var reference.
+- `.doc-archive/docs/v6-nax/README.md` — V6 NAX architecture summary + sprint chronology.
+- `.doc-archive/docs/v6-nax/env-vars.md` — full env var reference.
 - `bench/v6_single_otile_bench.py` — reproducible single-Otile bench.
 - `bench/v6_single_otile_autoresearch.py` — tile-config sweep script.
 
@@ -3178,11 +3178,11 @@ that the double-buffer accumulated.
 - **Sprint 3.1** — V6 NAX already implements all three Apple-style causal-skip
   optimizations from `steel_attention_nax.h` (loop bound, mask gate,
   per-element check). Plus an extra V6-only tail-block gate. No code change
-  recommended. See `docs/v6-nax/causal-masking-analysis.md`.
+  recommended. See `.doc-archive/docs/v6-nax/causal-masking-analysis.md`.
 - **Sprint 3.2** — `bypassThreadgroupMemory` at legacy tiles regresses on
   D=128 (Cas C). Kept off as a default. With single-Otile + new tiles,
   bypass is forced on automatically. See
-  `docs/v6-nax/sprint-3-2-bypass-tgmem-results.md`.
+  `.doc-archive/docs/v6-nax/sprint-3-2-bypass-tgmem-results.md`.
 
 ### Documentation
 
@@ -3207,7 +3207,7 @@ that the double-buffer accumulated.
   collapse `_sparse_fallback_sdpa()` lost).
 
 ### Investigation report
-- `docs/v6-nax/sparse-bug-investigation.md` documents 6 workarounds tried
+- `.doc-archive/docs/v6-nax/sparse-bug-investigation.md` documents 6 workarounds tried
   and the definitive root cause (Metal-compiler `int → long` cast bug on
   struct-field reads under MSL 4.x). Includes 4 options for kernel-level
   fix; current 2.28.1 implements Option A (SDPA fallback). Marco may
@@ -3226,7 +3226,7 @@ that the double-buffer accumulated.
   cross-implementation comparison).
 
 ### Benchmarks added
-- `bench/m5_max_sparse.py` + `docs/v6-nax/m5-max-sparse-baseline.json`:
+- `bench/m5_max_sparse.py` + `.doc-archive/docs/v6-nax/m5-max-sparse-baseline.json`:
   5-shape sparse benchmark on M5 Max via SDPA fallback. Includes FlashVSR
   LCSA-class shapes (window mask, density 3-7%) and generic random-mask
   shapes. Will be re-run once native sparse kernel is fixed.
@@ -3287,14 +3287,14 @@ that the double-buffer accumulated.
 ### DiT/UNet Dispatch Audit
 - Verified and optimized dispatch routing for 11 VSR model architectures
   (non-causal self-attention + asymmetric cross-attention shapes).
-- New report: `docs/audit_dit_dispatch_report.md`.
+- New report: `.doc-archive/docs/audit_dit_dispatch_report.md`.
 
 ### Varlen Validation for Token Merging
 - Benchmarked `flash_attention_varlen` vs padded dense across 5 scenarios.
 - Finding: padded dense is faster in most token merging cases (0.55–0.96×);
   varlen wins only with >2:1 length disparity.
 - Correctness verified: bit-accurate (max_err at f16 epsilon level).
-- New report: `docs/varlen_pruning_validation.md`.
+- New report: `.doc-archive/docs/varlen_pruning_validation.md`.
 - New benchmark: `benchmarks/bench_varlen_pruning.py`.
 
 ### Documentation
@@ -3576,8 +3576,8 @@ that the double-buffer accumulated.
   overwrite, evict). 5 new tests.
 - **test**: Mark experimental/env-dependent tests as xfail — 0 FAILED target.
   770 passed, 23 xfailed, 17 xpassed.
-- **docs**: Consolidated `docs/SERVING_GUIDE.md` covering all runtime capabilities.
-- **docs**: Updated `docs/ARCHITECTURE.md` with serving layer status table.
+- **docs**: Consolidated `docs/reference/SERVING_GUIDE.md` covering all runtime capabilities.
+- **docs**: Updated `docs/reference/ARCHITECTURE.md` with serving layer status table.
 
 ## [2.13.0] — 2026-03-18
 
@@ -3632,7 +3632,7 @@ Full benchmark validation on Apple M1 Max (24/24) and Apple M4 Max (24/24).
 on M3/M4 in favor of a unified L1 cache and dynamic register allocation. This
 makes V2's shared-KV approach (3-4 barriers/tile) slower than V1 double-buffer
 (2 barriers/tile) for D≤128 causal on M3+. On M1/M2, V2 wins due to high TGP
-bandwidth and 2× larger BK (64 vs 32). See `docs/benchmarks/RESULTS.md` for
+bandwidth and 2× larger BK (64 vs 32). See `docs/reference/BENCHMARKS.md` for
 full data and architectural notes.
 
 #### Performance
@@ -3665,14 +3665,14 @@ full data and architectural notes.
   with explicit freeze status, serving-capability maturity, and manual
   foreword placeholder.
 - **docs**: Refreshed active documentation set for freeze state:
-  - `docs/API_MANUAL.md`
-  - `docs/ARCHITECTURE.md`
-  - `docs/INVENTORY.md`
-  - `docs/benchmarks/RESULTS.md`
-- **docs/archive**: Moved legacy benchmark JSON out of active docs surface to:
-  `docs/benchmarks/archive/benchmarks_v2.0.0/`.
+  - `docs/reference/API_MANUAL.md`
+  - `docs/reference/ARCHITECTURE.md`
+  - `docs/reference/INVENTORY.md`
+  - `docs/reference/BENCHMARKS.md`
+- **.doc-archive/docs/archive**: Moved legacy benchmark JSON out of active docs surface to:
+  `.doc-archive/docs/benchmarks/archive/benchmarks_v2.0.0/`.
 - **chore**: Reorganized historical artifacts from `notes/` into
-  track-scoped `devnotes/` folders and added `devnotes/README.md` index.
+  track-scoped `.doc-archive/devnotes/` folders and added `.doc-archive/devnotes/README.md` index.
 - **examples**: Updated decode/paged examples to reflect current recommended
   runtime usage (`create_decode_runtime`, `DecodeRuntime` serving helpers).
 - **version**: Bumped project version metadata to `2.10.0` in
@@ -3683,9 +3683,9 @@ full data and architectural notes.
 ### Final Serving Completion Pass
 
 - **notes**: Added final serving-completion design/audit notes:
-  - `devnotes/minimal_kv_offloading_design.md`
-  - `devnotes/splitfuse_runtime_integration_design.md`
-  - `devnotes/paged_runtime_page_native_gaps.md`
+  - `.doc-archive/devnotes/minimal_kv_offloading_design.md`
+  - `.doc-archive/devnotes/splitfuse_runtime_integration_design.md`
+  - `.doc-archive/devnotes/paged_runtime_page_native_gaps.md`
 - **feat**: Added external-cache extension module `mlx_mfa.external_cache`:
   - `ExternalKVCacheAdapter`
   - `ExternalKVCacheCapabilities`
@@ -3709,24 +3709,24 @@ full data and architectural notes.
   (paged decode-only splitfuse no longer requires dense bridge materialization
   in the supported narrow path).
 - **bench**: Refreshed serving-oriented matrices after final capability pass:
-  - `devnotes/hybrid_kv_cache_bench_latest.json`
-  - `devnotes/splitfuse_runtime_matrix_latest.json`
-  - `devnotes/paged_page_native_runtime_latest.json`
-  - `devnotes/speculative_decode_runtime_matrix_latest.json`
-  - `devnotes/prefix_caching_runtime_matrix_latest.json`
-  - `devnotes/chunked_prefill_matrix_latest.json`
-  - `devnotes/paged_continuous_batching_latest.json`
-  - `devnotes/paged_varlen_matrix_latest.json`
+  - `.doc-archive/devnotes/hybrid_kv_cache_bench_latest.json`
+  - `.doc-archive/devnotes/splitfuse_runtime_matrix_latest.json`
+  - `.doc-archive/devnotes/paged_page_native_runtime_latest.json`
+  - `.doc-archive/devnotes/speculative_decode_runtime_matrix_latest.json`
+  - `.doc-archive/devnotes/prefix_caching_runtime_matrix_latest.json`
+  - `.doc-archive/devnotes/chunked_prefill_matrix_latest.json`
+  - `.doc-archive/devnotes/paged_continuous_batching_latest.json`
+  - `.doc-archive/devnotes/paged_varlen_matrix_latest.json`
 - **fix**: Made `DecodeRuntime.speculative_verify(...)` metadata deterministic
   (`last_speculative_verify` no longer gets overwritten by mixed fallback
   states).
 - **notes**: Added branch-level serving capability summary:
-  `devnotes/final_serving_capabilities_summary.md`.
+  `.doc-archive/devnotes/final_serving_capabilities_summary.md`.
 
 ### Hybrid KV Behavior Implementation Pass
 
 - **notes**: Added concrete hybrid behavior model note:
-  `devnotes/hybrid_kv_cache_behavior_design.md`.
+  `.doc-archive/devnotes/hybrid_kv_cache_behavior_design.md`.
 - **feat**: Upgraded `HybridKVCache` from scaffold to local tiered behavior:
   - hot/cold residency tracking with inspectable state
   - deterministic promotion/demotion/eviction on capacity pressure
@@ -3745,7 +3745,7 @@ full data and architectural notes.
   behavior, runtime dense/paged integration, and speculative compatibility.
 - **bench**: Added hybrid smoke matrix harness
   (`benchmarks/bench_hybrid_kv_cache.py`) with artifact
-  (`devnotes/hybrid_kv_cache_bench_latest.json`).
+  (`.doc-archive/devnotes/hybrid_kv_cache_bench_latest.json`).
 - **bench result**: Hybrid behavior is now a real cache/runtime capability
   milestone with mixed overhead impact; current value is architectural/control
   readiness rather than broad throughput promotion.
@@ -3776,14 +3776,14 @@ full data and architectural notes.
   query segments, invalid `cu_seqlens_q`, and runtime integration/validation.
 - **bench**: Added vLLM-oriented benchmark matrix
   (`benchmarks/bench_paged_varlen.py`,
-  `devnotes/paged_varlen_matrix_latest.json`) against padded paged baseline and
+  `.doc-archive/devnotes/paged_varlen_matrix_latest.json`) against padded paged baseline and
   sequence loop reference.
 - **docs**: Updated README/RESULTS/API manual/architecture docs to document the
   new capability and current limitations without overselling fusion status.
 
 ### Paged Continuous Batching Support (Scheduler-Friendly)
 
-- **notes**: Added gap audit note (`devnotes/paged_continuous_batching_gap.md`)
+- **notes**: Added gap audit note (`.doc-archive/devnotes/paged_continuous_batching_gap.md`)
   documenting API/runtime/cache limitations and the minimal safe plan.
 - **feat**: Added explicit paged request-slot remap support via
   `cache_batch_idx` in:
@@ -3801,7 +3801,7 @@ full data and architectural notes.
   paged-varlen remap parity, and invalid remap validation.
 - **bench**: Added scheduler-style matrix harness
   (`benchmarks/bench_paged_continuous_batching.py`) with artifact
-  `devnotes/paged_continuous_batching_latest.json`.
+  `.doc-archive/devnotes/paged_continuous_batching_latest.json`.
 - **bench result**: This pass is a capability/runtime milestone (explicit
   remap semantics, correctness parity) with mixed performance deltas; no broad
   auto-promotion claim.
@@ -3809,7 +3809,7 @@ full data and architectural notes.
 ### Chunked Prefill Support (Serving-Oriented)
 
 - **notes**: Added chunked prefill design note with explicit semantics and
-  scope (`devnotes/chunked_prefill_design.md`).
+  scope (`.doc-archive/devnotes/chunked_prefill_design.md`).
 - **feat**: Added explicit runtime API:
   - `DecodeRuntime.chunked_prefill(...)`
   with causal-only validation and clear error messages for unsupported
@@ -3824,7 +3824,7 @@ full data and architectural notes.
   cache-growth behavior (`reset=False`).
 - **bench**: Added benchmark matrix harness
   (`benchmarks/bench_chunked_prefill.py`) with artifact
-  (`devnotes/chunked_prefill_matrix_latest.json`) and chunk latency profile stats.
+  (`.doc-archive/devnotes/chunked_prefill_matrix_latest.json`) and chunk latency profile stats.
 - **bench result**: This pass is a serving/runtime capability milestone;
   monolithic prefill remains faster in current M1 Max measurements, while
   chunked prefill provides explicit interleavable scheduling units.
@@ -3832,7 +3832,7 @@ full data and architectural notes.
 ### Prefix Caching Automation (Runtime-Integrated)
 
 - **notes**: Added runtime semantics/design note:
-  `devnotes/prefix_caching_design.md`.
+  `.doc-archive/devnotes/prefix_caching_design.md`.
 - **feat**: Added runtime-managed prefix layer to `DecodeRuntime`:
   - `register_prefix(...)`
   - `list_registered_prefix_ids()`
@@ -3851,7 +3851,7 @@ full data and architectural notes.
   combinations, and metadata state.
 - **bench**: Added benchmark matrix harness
   (`benchmarks/bench_prefix_caching_runtime.py`) with artifact
-  (`devnotes/prefix_caching_runtime_matrix_latest.json`) comparing:
+  (`.doc-archive/devnotes/prefix_caching_runtime_matrix_latest.json`) comparing:
   no-reuse baseline vs explicit helper path vs runtime-managed path.
 - **bench result**: Runtime-managed prefix path matches explicit helper
   correctness and is near parity in cost; paged serving-style rows show clear
@@ -3861,7 +3861,7 @@ full data and architectural notes.
 ### Speculative Decode Runtime Pass (Draft/Verify Integration)
 
 - **notes**: Added speculative runtime design note:
-  `devnotes/speculative_decode_design.md`.
+  `.doc-archive/devnotes/speculative_decode_design.md`.
 - **feat**: Added runtime-level speculative API:
   - `DecodeRuntime.speculative_step(...)`
   which wraps verify and returns explicit accept/reject bookkeeping
@@ -3880,7 +3880,7 @@ full data and architectural notes.
   and output alignment bookkeeping.
 - **bench**: Added focused matrix harness
   (`benchmarks/bench_speculative_decode_runtime.py`) with artifact
-  (`devnotes/speculative_decode_runtime_matrix_latest.json`) comparing manual
+  (`.doc-archive/devnotes/speculative_decode_runtime_matrix_latest.json`) comparing manual
   helper orchestration vs runtime-integrated speculative flow.
 - **bench result**: Capability milestone confirmed (correctness + integration);
   measured deltas are mixed, so this pass does not claim broad throughput
@@ -3891,7 +3891,7 @@ full data and architectural notes.
 ### Hybrid KV Cache Abstraction Pass (Serving-Oriented)
 
 - **notes**: Added cache-abstraction design note:
-  `devnotes/hybrid_kv_cache_design.md`.
+  `.doc-archive/devnotes/hybrid_kv_cache_design.md`.
 - **refactor**: Added cache abstraction module `mlx_mfa/kv_cache.py` with:
   - capability model (`KVCacheCapabilities`)
   - explicit unsupported-operation signaling (`KVCacheOperationUnsupported`)
@@ -3908,7 +3908,7 @@ full data and architectural notes.
   - runtime flow regression checks (prefix/chunked/speculative/paged).
 - **bench**: Added smoke matrix harness
   (`benchmarks/bench_cache_abstraction_smoke.py`) with artifact
-  (`devnotes/cache_abstraction_smoke_latest.json`).
+  (`.doc-archive/devnotes/cache_abstraction_smoke_latest.json`).
 - **bench result**: Primary outcome is structural/runtime maintainability;
   smoke timing is mixed with no broad optimization claim.
 
@@ -3944,7 +3944,7 @@ full data and architectural notes.
   `D=256`, `causal=True`, `dtype=f16`, `N>=4096` routes to MFA V2 D-split on
   M1/M2; bf16, shorter causal, and all non-causal D=256 remain SDPA-default.
   Benchmark harness: `benchmarks/bench_d256_decision.py`, decision notes in
-  `devnotes/d256_decision.md` + JSON artifact.
+  `.doc-archive/devnotes/d256_decision.md` + JSON artifact.
 - **perf**: D=256/512 D-split tile selection is now explicitly isolated from
   D=128 BK calibration overrides. Added `select_steel_v2_dsplit_block_config()`
   plus `MFA_V2_FORCE_BK_D256=32|64` debug override so global
@@ -3954,7 +3954,7 @@ full data and architectural notes.
   bf16 conservative). M3+ D=256 remains conservative until measured.
 - **bench**: Post-backward D=256 matrix refresh
   (`benchmarks/bench_d256_design_matrix.py`, output
-  `devnotes/d256_design_matrix_post_bwd_latest.json`) confirmed the same shape:
+  `.doc-archive/devnotes/d256_design_matrix_post_bwd_latest.json`) confirmed the same shape:
   wins remain concentrated in causal f16; bf16/non-causal remain SDPA territory.
 - **refactor**: Further isolated D=256 family policy code paths in both
   C++ dispatch selection and Python auto-dispatch helpers for readability and
@@ -3963,15 +3963,15 @@ full data and architectural notes.
   D=256 auto-dispatch evaluation without changing global backend settings.
 - **feat**: Added `create_inference_context(...)` helper to unify dense/paged/
   sage decode context creation with clear routing and validation.
-- **docs**: Updated `README.md`, `RESULTS.md`, and `docs/benchmarks/RESULTS.md`
+- **docs**: Updated `README.md`, `RESULTS.md`, and `docs/reference/BENCHMARKS.md`
   to distinguish production V2 vs experimental V3/V4/V5, reflect split-K
   composability, and document the D=256 decision.
-- **chore**: Archived stale dump artifacts under `devnotes/archive/`.
+- **chore**: Archived stale dump artifacts under `.doc-archive/devnotes/archive/`.
 
 ### Native Backward Targeted Pass (Winning Shapes Only)
 
 - **bench**: Added `benchmarks/bench_backward_targeted.py` and
-  `devnotes/native_backward_targeted.md` for a narrow dense-backward sweep:
+  `.doc-archive/devnotes/native_backward_targeted.md` for a narrow dense-backward sweep:
   `D={64,128}`, causal, long-`N`, `f16/bf16`, comparing direct native STEEL
   backward vs SDPA VJP baseline.
 - **bench result**: No benchmark-backed dense winning regime on M1 Max
@@ -3989,7 +3989,7 @@ full data and architectural notes.
 
 - **bench**: Added focused decode matrix harness
   (`benchmarks/bench_sage_decode_matrix.py`) and artifact
-  (`devnotes/sage_decode_matrix_post_bwd_latest.json`) for Sage vs dense decode
+  (`.doc-archive/devnotes/sage_decode_matrix_post_bwd_latest.json`) for Sage vs dense decode
   across `N_q={1,2,4}`, `N_cache={512..8192}`, `D={64,128}`, windowed/non-windowed
   cases, and GQA profiles.
 - **perf**: Added `MFA_FORCE_SAGE_DECODE=0|1` override and benchmark-backed
@@ -4005,13 +4005,13 @@ full data and architectural notes.
 - **docs**: Documented Sage as a specialized decode backend (not a universal
   STEEL V2 replacement), including explicit auto-route boundaries and AOT defer
   rationale.
-- **docs**: Added Sage AOT decision note (`devnotes/sage_decode_productionization_task4_aot.md`);
+- **docs**: Added Sage AOT decision note (`.doc-archive/devnotes/sage_decode_productionization_task4_aot.md`);
   broad Sage metallib precompile coverage is deferred in this pass.
 
 ### Runtime Unification Pass (Dense / Paged / Sage / Helpers)
 
 - **notes**: Added runtime-fragmentation inventory and unification targets:
-  `devnotes/runtime_unification_inventory.md`.
+  `.doc-archive/devnotes/runtime_unification_inventory.md`.
 - **feat**: Added lightweight runtime module `mlx_mfa/runtime.py` with
   `DecodeRuntime` + `create_decode_runtime(...)` over existing context classes
   (no kernel-surface expansion).
@@ -4021,7 +4021,7 @@ full data and architectural notes.
   in shared inference helpers to reduce duplicated runtime-side routing logic.
 - **bench**: Added separate-process microbenchmark
   (`benchmarks/bench_runtime_decode_overhead.py`) with artifact
-  `devnotes/runtime_unification_overhead_latest.json`; decode-loop path shows
+  `.doc-archive/devnotes/runtime_unification_overhead_latest.json`; decode-loop path shows
   no regression (unified/legacy `0.991x` on measured shape).
 - **docs**: Updated runtime architecture notes in README/RESULTS/CHANGELOG.
 
@@ -4030,10 +4030,10 @@ full data and architectural notes.
 - **bench**: Added dedicated matrix harness
   (`benchmarks/bench_d512_decision_matrix.py`) with per-route subprocess
   isolation for `sdpa`, `mfa_v1`, `mfa_v2_dsplit`, `mfa_v5_optin`, and `auto`.
-  Artifact: `devnotes/d512_decision_matrix_latest.json`.
+  Artifact: `.doc-archive/devnotes/d512_decision_matrix_latest.json`.
 - **bench result**: No benchmark-backed dense D=512 win on M1 Max in this pass
   (`0 maybe-win / 0 no-win / 32 losing`; best MFA/SDPA `0.81x`).
-- **docs/decision**: Added decision note (`devnotes/d512_decision_pass1.md`) and
+- **.doc-archive/docs/decision**: Added decision note (`.doc-archive/devnotes/d512_decision_pass1.md`) and
   recorded narrow candidate check (D-split BK override) with no winning regime.
 - **refactor**: Isolated D=512 production-decision logic in dispatch policy and
   C++ dispatch comments to keep large-D family intent explicit.
@@ -4049,7 +4049,7 @@ full data and architectural notes.
 - **bench**: Added subprocess-isolated runtime matrix
   (`benchmarks/bench_paged_sharedprefix_matrix.py`) for paged decode setup and
   steady-state, shared-prefix reuse, and splitfuse scenarios.
-  Artifact: `devnotes/paged_sharedprefix_matrix_latest.json`.
+  Artifact: `.doc-archive/devnotes/paged_sharedprefix_matrix_latest.json`.
 - **bench result**: Paged decode did not show a stable benchmark-backed auto
   win in this matrix (`paged_step: 0 clear wins, 28 losing`;
   `paged_setup: 10 losing`), so paged remains explicit-only for now.
@@ -4063,8 +4063,8 @@ full data and architectural notes.
 - **test**: Added runtime tests for paged default-seq behavior, shared-prefix
   flow helpers, splitfuse validation/reuse path, and metadata correctness.
 - **docs**: Added decision notes:
-  - `devnotes/paged_sharedprefix_productionization_task1.md`
-  - `devnotes/paged_sharedprefix_productionization_task3_policy.md`
+  - `.doc-archive/devnotes/paged_sharedprefix_productionization_task1.md`
+  - `.doc-archive/devnotes/paged_sharedprefix_productionization_task3_policy.md`
   and refreshed README/RESULTS scope language.
 
 ### Experimental Path Triage + Selective AOT Evaluation
@@ -4072,19 +4072,19 @@ full data and architectural notes.
 - **bench**: Added subprocess-isolated triage harness
   (`benchmarks/bench_experimental_triage.py`) to evaluate V3/V4/V5 regimes and
   advanced-kernel cold-start candidates in one matrix artifact:
-  `devnotes/experimental_path_triage_latest.json`.
-- **devnotes/decision**: Added explicit keep/park matrix with production-status
+  `.doc-archive/devnotes/experimental_path_triage_latest.json`.
+- **.doc-archive/devnotes/decision**: Added explicit keep/park matrix with production-status
   recommendations:
-  `devnotes/experimental_path_status_matrix.md`.
+  `.doc-archive/devnotes/experimental_path_status_matrix.md`.
   - V2 remains production default.
   - V3/V5 remain experimental opt-in (narrow wins, mostly losing).
   - V4 remains hardware-specific/experimental and parked on current M1/M2 routing.
-- **bench**: Targeted selective-AOT evaluation (`devnotes/experimental_aot_evaluation.md`)
+- **bench**: Targeted selective-AOT evaluation (`.doc-archive/devnotes/experimental_aot_evaluation.md`)
   compared JIT-only vs precompiled first-call latency for advanced candidates.
-- **docs/decision**: Deferred selective advanced-kernel AOT expansion for this
+- **.doc-archive/docs/decision**: Deferred selective advanced-kernel AOT expansion for this
   pass after measured cold-start regressions on evaluated candidates; keep AOT
   focus on STEEL V2 / V2 D-split until loader/artifact behavior is favorable.
-- **chore**: Notes hygiene check found no stale `devnotes/` root artifacts older
+- **chore**: Notes hygiene check found no stale `.doc-archive/devnotes/` root artifacts older
   than 24h requiring archive moves in this pass.
 - **total**: 698 tests pass.
 
@@ -4596,10 +4596,10 @@ Python dispatch overhead: **~2μs per call** (negligible at production scales).
   MFA/SDPA crossover points and saves to `~/.mlx_mfa/dispatch_table.json`.
 
 - **`benchmarks/bench_dispatch_matrix.py`** — D×N×causal raw kernel matrix;
-  baseline committed to `docs/benchmarks/dispatch_matrix.json`.
+  baseline committed to `.doc-archive/docs/benchmarks/dispatch_matrix.json`.
 
 - **`benchmarks/bench_backward_matrix.py`** — backward performance matrix;
-  baseline committed to `docs/benchmarks/backward_matrix.json`.
+  baseline committed to `.doc-archive/docs/benchmarks/backward_matrix.json`.
 
 - **`benchmarks/bench_auto_dispatch_validation.py`** — validates that
   `backend='auto'` is ≥ SDPA in all dispatch cases.
@@ -4782,7 +4782,7 @@ Python dispatch overhead: **~2μs per call** (negligible at production scales).
 | Paged STEEL decode S=1024 | 1.54x | **1.60x** | +4% |
 | Per-token Python overhead (32L) | ~138us | ~22us | **-84%** |
 
-See `docs/benchmarks/COMPARISON_V1_2_2_ALL_PHASES.md`.
+See `.doc-archive/docs/benchmarks/COMPARISON_V1_2_2_ALL_PHASES.md`.
 
 ### Tests
 - 486 tests pass
@@ -5117,12 +5117,12 @@ Total collected: **292**
 - **Track EC: Varlen packed formats** — `flash_attention_varlen_qkv_packed` and
   `flash_attention_varlen_kv_packed` accept head-first or flat fused tensors and
   route to `flash_attention_varlen`. `TestVarlenPacked` (4 tests).
-- **Track ED: Documentation refresh** — `docs/ARCHITECTURE.md` rewritten to 476 lines:
+- **Track ED: Documentation refresh** — `docs/reference/ARCHITECTURE.md` rewritten to 476 lines:
   updated backward routing tree (STEEL bwd / SDPA vjp / compiled vjp), new §8 (STEEL
   native backward — FA-2 log2 domain, GQA `gqa_factor`, D=256 three-phase D-split),
   new §9 (varlen backward via `mx.custom_function`), new §10 (paged KV gather — Metal
   kernel pseudocode, forward/backward flow, per-seq slicing rationale), expanded Public
-  API table to all 31 exports. `docs/INVENTORY.md` regenerated from scratch: all line
+  API table to all 31 exports. `docs/reference/INVENTORY.md` regenerated from scratch: all line
   counts verified with `wc -l`, 31 `__all__` exports, 10 KernelType entries, 7 C++
   Primitive classes, 257 pytest runs / 212 test functions, 40 test classes, 10
   benchmarks. `README.md`: API Reference expanded from 7 to all 31 exports (param
@@ -5155,7 +5155,7 @@ Total collected: **257 pytest runs / 212 test functions** (EA adds 6, EB adds 6,
   hi (128..255) passes sharing one threadgroup buffer; dQ/dK/dV accumulators become
   lo/hi register-tile pairs. TGP budget ≈ 23 KB (well below 32 KB limit). The
   `use_steel_bwd` guard is widened from `D ≤ 128` to `D ≤ 256`.
-- **Track DD: Documentation refresh** — `docs/INVENTORY.md` updated to v0.9.2:
+- **Track DD: Documentation refresh** — `docs/reference/INVENTORY.md` updated to v0.9.2:
   test count 241, benchmark count 9, backward strategy table, DA–DE additions table.
   CE row in v0.9.1 table updated from "deferred" to "completed in v0.9.2".
 
@@ -5191,10 +5191,10 @@ Total collected: **257 pytest runs / 212 test functions** (EA adds 6, EB adds 6,
   Disabled for D=256 (budget), RoPE (extra TGP), and sparse.
 - **Track CG: `benchmarks/bench_all.py`** — Consolidated forward + backward benchmark
   suite (`--fwd-only`, `--bwd-only`, `--no-save` flags).  Appends markdown results
-  table to `docs/benchmarks/RESULTS.md`.
-- **Track CH: Documentation refresh** — `docs/INVENTORY.md` updated to v0.9.1
+  table to `docs/reference/BENCHMARKS.md`.
+- **Track CH: Documentation refresh** — `docs/reference/INVENTORY.md` updated to v0.9.1
   (test count 232, benchmark count 8, kernel table, CA–CI additions table).
-  `docs/ARCHITECTURE.md` adds notes on CF double-buffer and CC persistent kernel.
+  `docs/reference/ARCHITECTURE.md` adds notes on CF double-buffer and CC persistent kernel.
   `README.md` roadmap updated: N1 marked Done (v0.9.0); CA/CB/CC/CD/CF rows added.
 
 ### Deferred
@@ -5285,7 +5285,7 @@ Total collected: **257 pytest runs / 212 test functions** (EA adds 6, EB adds 6,
 ### Added
 - **Track K: Quantized KV cache** — Q4/Q8 dequantized before STEEL kernel
 - **Track L: RoPE 1D fusion** — `flash_attention_rope()` with in-kernel rotary embeddings
-- **Track M: Paged Attention design doc** — `docs/PAGED_ATTENTION_DESIGN.md`
+- **Track M: Paged Attention design doc** — `.doc-archive/docs/PAGED_ATTENTION_DESIGN.md`
 
 
 ## [0.5.0] — 2026-03-05

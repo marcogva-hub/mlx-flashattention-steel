@@ -171,7 +171,7 @@ qL∈{4096, 8192}.
 
 See `CLAUDE_V6_NAX.md` §Z for the full rule and the
 reproducibility-checklist template every perf claim must pass.
-See `docs/v6-nax/v2.37.x-perf-claim-audit.md` for the per-claim
+See `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for the per-claim
 audit that grew out of this incident.
 
 ## §AA mandatory enforcement (added 2026-05-13, Sprint 4)
@@ -214,7 +214,7 @@ Skill output is JSON-structured; CI can gate on exit codes:
 - `1` → GREEN_WITH_ADVISORY, proceed but address advisories next release
 - `2` → BLOCKED, fix findings and re-invoke
 
-See `docs/skills/README.md` for the full mlx-mfa-* skill set and
+See `.doc-archive/docs/skills/README.md` for the full mlx-mfa-* skill set and
 `CLAUDE_V6_NAX.md` §AA.4 for the canonical-gate rule and disagreement-
 resolution policy.
 

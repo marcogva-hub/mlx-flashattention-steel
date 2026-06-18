@@ -2,13 +2,13 @@
 
 Version: **2.51.0** (PyPI) — header updated 2026-06-12; module/LOC tables below are a 2026-05-13 snapshot (regeneration pending)
 
-> **For canonical NAX path coverage**, see `docs/HARDWARE_SUPPORT.md`.
+> **For canonical NAX path coverage**, see `docs/reference/HARDWARE_SUPPORT.md`.
 
 ## Public-API surface (v2.39.1)
 
 22 `flash_attention*` functions + 3 `sage_attention*` functions exposed
 via `mlx_mfa.__all__`.  Full per-function classification is in
-`docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`.
+`.doc-archive/docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`.
 
 ## Major modules + current LOC (2026-05-13 snapshot)
 
@@ -57,7 +57,7 @@ banner all remain at `2.39.1` until the v2.50 bundle release.
 CHANGELOG `[Unreleased — for v2.50]` section accumulates entries.  At v2.50
 ship time, this section is renamed to `[2.50.0] — <date>`.
 
-See `docs/audits/v50-nax-coverage/03-sprint-sequence.md` for the 5-sprint
+See `.doc-archive/docs/audits/v50-nax-coverage/03-sprint-sequence.md` for the 5-sprint
 plan to reach v2.50.
 
 ## Scope
@@ -69,7 +69,7 @@ This inventory reflects the retained codebase at freeze-prep time, including:
 - TurboQuant KV cache compression (Phase 1–4);
 - SVDQuant linear compression (W4A16 + low-rank correction);
 - GNA native Metal kernel (inline 3D window, D=128);
-- historical development artifacts moved under `devnotes/`.
+- historical development artifacts moved under `.doc-archive/devnotes/`.
 
 ## Top-Level Layout
 
@@ -77,11 +77,11 @@ This inventory reflects the retained codebase at freeze-prep time, including:
 |---|---|
 | `mlx_mfa/` | Public Python API, runtime layer, cache abstractions, dispatch policy |
 | `csrc/` | C++/Objective-C++ Metal extension and kernel generation |
-| `benchmarks/` | Benchmark/profiling scripts (now defaulting outputs to `devnotes/`) |
+| `benchmarks/` | Benchmark/profiling scripts (now defaulting outputs to `.doc-archive/devnotes/`) |
 | `tests/` | Unit/integration correctness coverage |
-| `docs/` | API manual, architecture guide, inventory, benchmark interpretation |
+| `.doc-archive/docs/` | API manual, architecture guide, inventory, benchmark interpretation |
 | `examples/` | Current usage examples (dense, paged, varlen, runtime flows) |
-| `devnotes/` | Historical R&D artifacts by branch/track |
+| `.doc-archive/devnotes/` | Historical R&D artifacts by branch/track |
 
 ## Python Modules (`mlx_mfa/`)
 
@@ -153,7 +153,7 @@ Major groups:
 - `benchmarks/bench_v3_autoresearch.py`, `bench_v5_autoresearch.py`,
   `bench_v3_promotion.py`, `bench_d512_autoresearch.py`,
   `bench_dispatch_d256_kernel.py`, `bench_dispatch_d512_vae.py`: autoresearch scripts.
-- Runtime/decision artifacts are archived under `devnotes/<track>/`.
+- Runtime/decision artifacts are archived under `.doc-archive/devnotes/<track>/`.
 
 ## Configuration Files (new in v2.20.0)
 
@@ -175,5 +175,5 @@ Primary suites used in recent passes:
 ## Historical Notes
 
 Development history is intentionally separated from active docs:
-- active docs: `README.md`, `docs/*`, `RESULTS.md`;
-- historical R&D traces: `devnotes/`.
+- active docs: `README.md`, `.doc-archive/docs/*`, `RESULTS.md`;
+- historical R&D traces: `.doc-archive/devnotes/`.

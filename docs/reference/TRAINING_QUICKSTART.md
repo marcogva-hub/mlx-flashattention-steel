@@ -93,7 +93,7 @@ re-running forward.
 > to SDPA-vjp at parity.  The tables in the D=128 and D=64-small
 > subsections below describe **kernel-isolation** behavior accessible
 > only via `backend="mfa"`; they are research characterization, not
-> user-facing perf.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`
+> user-facing perf.  See `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`
 > for the per-claim reachability audit.  (Superseded by v2.51.0:
 > D=64 causal + non-causal is now default-on — see Status above.)
 
@@ -115,7 +115,7 @@ above (M5 Max, B=1, H=4, fp16, canonical methodology §4.2)
 within a ~5% measurement-noise band — re-running the same bench
 yields values like 2.71 ms / 4.94 ms / 9.91 ms / 18.10 ms (same
 1.81-1.82× speedup ratio).  See
-`docs/v6-nax/v2.37.x-perf-claim-audit.md` for the raw audit table.
+`.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for the raw audit table.
 
 ### D=64 — small qL (research characterization, NOT user-facing)
 
@@ -134,7 +134,7 @@ numbers (via `backend="mfa"`) for reference:
 The original v2.37.1 release notes claimed "qL=2048: V6NAX wins 1.44×".
 The current canonical-methodology bench shows 1.15× kernel-level win,
 ≈1.06× end-to-end — within measurement noise.  This row was **retracted
-in v2.37.3** (see `docs/v6-nax/v2.37.x-perf-claim-audit.md`).
+in v2.37.3** (see `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`).
 
 ### D=128 — research-only kernel characterization
 
@@ -207,10 +207,10 @@ Deferred to follow-up sprints:
 ## References
 
 - `CHANGELOG.md` [2.37.0] entry — full v2.37.0 changes
-- `docs/v6-nax/v6nax-backward-status.md` — full sprint timeline + design
+- `.doc-archive/docs/v6-nax/v6nax-backward-status.md` — full sprint timeline + design
   decisions DC0-DC13
-- `docs/v6-nax/v6nax-backward-option-gamma-design.md` — next-sprint design
+- `.doc-archive/docs/v6-nax/v6nax-backward-option-gamma-design.md` — next-sprint design
   for fused dK+dV (Option γ)
-- `docs/v6-nax/v6nax-backward-decisions.md` — design rationale
+- `.doc-archive/docs/v6-nax/v6nax-backward-decisions.md` — design rationale
 - `ENV_VARS.md` — full env var reference
-- `docs/API_MANUAL.md` — `flash_attention()` API
+- `docs/reference/API_MANUAL.md` — `flash_attention()` API

@@ -4,7 +4,7 @@
 > now-known real dispatch (each number annotated with its fingerprinted binary; lesson #15 + Pattern #6
 > + effective-FLOP ≤51.8 TFLOPS). Perf is **Verified-at-date, NOT executable-locked** (timing is
 > CI-flaky — re-measure is the anti-drift). Full table + methodology:
-> `docs/v50/campaign-2026-06/audit/phase-E-rebench-report.md`. Headlines (B2 H8 N4096, M5/26.6):
+> `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-rebench-report.md`. Headlines (B2 H8 N4096, M5/26.6):
 > - **sparse V2 (matmul2d) is the right sparse kernel** — 19–59× faster than the V1 scalar; the V1/V2
 >   `2^31` work-threshold mis-routes D=64 (always) + D=128 N<4096 to the slow V1 (Phase-F target).
 > - **symmetric NAX-sparse beats SDPA at D=128**: 4.16×@d=0.06 → 1.61×@d=0.5 (crossover ~d=0.78) — the
@@ -20,7 +20,7 @@ Version: **2.26.0**
 Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
 
 For complete benchmark tables and architectural notes, see
-`docs/benchmarks/RESULTS.md`.
+`docs/reference/BENCHMARKS.md`.
 
 ## 1) Production Interpretation
 
@@ -73,9 +73,9 @@ query lengths + paged KV. Benchmark results (M1 Max, H_q=32 H_kv=8 D=128 f16):
 | B=4 prefill q+kv hetero | 0.03ms | 0.37ms | 10.9× |
 | B=8 mixed q hetero | 0.04ms | 0.90ms | 25.6× |
 
-Full data: `devnotes/paged_varlen_fused_bench.json`
+Full data: `.doc-archive/devnotes/paged_varlen_fused_bench.json`
 
-Previous artifact: `devnotes/paged-packed-varlen-unification/paged_varlen_matrix_latest.json`
+Previous artifact: `.doc-archive/devnotes/paged-packed-varlen-unification/paged_varlen_matrix_latest.json`
 
 - GQA hetero rows show strong wins (up to ~2.26x vs padded paged baseline).
 - MQA hetero rows are mixed/near parity.
@@ -83,28 +83,28 @@ Previous artifact: `devnotes/paged-packed-varlen-unification/paged_varlen_matrix
 
 ### Paged continuous batching remap
 
-Artifact: `devnotes/paged-continuous-batching/paged_continuous_batching_latest.json`
+Artifact: `.doc-archive/devnotes/paged-continuous-batching/paged_continuous_batching_latest.json`
 
 - Runtime remap path is operational and parity-to-win in sampled rows
   (`~1.01x` to `~1.24x` vs manual baseline).
 
 ### Chunked prefill
 
-Artifact: `devnotes/chunked-prefill/chunked_prefill_matrix_latest.json`
+Artifact: `.doc-archive/devnotes/chunked-prefill/chunked_prefill_matrix_latest.json`
 
 - Operational scheduling capability.
 - Monolithic prefill remains faster in current M1 Max rows.
 
 ### Prefix caching runtime integration
 
-Artifact: `devnotes/prefix-caching-automation/prefix_caching_runtime_matrix_latest.json`
+Artifact: `.doc-archive/devnotes/prefix-caching-automation/prefix_caching_runtime_matrix_latest.json`
 
 - Runtime-managed path tracks explicit helper orchestration closely.
 - Strongest practical benefit appears in paged shared-prefix scenarios.
 
 ### Speculative runtime integration
 
-Artifact: `devnotes/speculative-decode-runtime/speculative_decode_runtime_matrix_latest.json`
+Artifact: `.doc-archive/devnotes/speculative-decode-runtime/speculative_decode_runtime_matrix_latest.json`
 
 - Runtime `speculative_step` path is parity-level with manual helper wiring in
   aggregate.
@@ -113,10 +113,10 @@ Artifact: `devnotes/speculative-decode-runtime/speculative_decode_runtime_matrix
 ### Hybrid/offload + splitfuse/page-native final pass
 
 Artifacts:
-- `devnotes/hybrid-kv-cache-behavior/hybrid_kv_cache_bench_latest.json`
-- `devnotes/final-serving-completion/splitfuse_runtime_matrix_latest.json`
-- `devnotes/final-serving-completion/paged_page_native_runtime_latest.json`
-- `devnotes/final-serving-completion/final_serving_capabilities_summary.md`
+- `.doc-archive/devnotes/hybrid-kv-cache-behavior/hybrid_kv_cache_bench_latest.json`
+- `.doc-archive/devnotes/final-serving-completion/splitfuse_runtime_matrix_latest.json`
+- `.doc-archive/devnotes/final-serving-completion/paged_page_native_runtime_latest.json`
+- `.doc-archive/devnotes/final-serving-completion/final_serving_capabilities_summary.md`
 
 Interpretation:
 - `HybridKVCache` now has real local offload-capable behavior
@@ -153,7 +153,7 @@ Phase 3 (K+V fused in kernel), Phase 4 (optimal 3-bit packing + WHT fusion).
   The fused Metal kernel avoids decompression but packing still happens in Python.
 - Primary value is memory savings for long-context serving, not latency reduction.
 
-Full data: `devnotes/turboquant_full_bench.json`
+Full data: `.doc-archive/devnotes/turboquant_full_bench.json`
 
 ## 5) Practical Ceiling Statement (Current Hardware)
 
@@ -166,26 +166,26 @@ For this architecture on M1 Max and M4 Max:
 
 ## 6) Artifact Map
 
-- Dense/backward/large-D decisions: `devnotes/native-backward-pass/`,
-  `devnotes/d256-design-track/`, `devnotes/d512-decision-pass/`
-- Sage/runtime/paged passes: `devnotes/sage-decode-productionization/`,
-  `devnotes/runtime-unification/`,
-  `devnotes/paged-shared-prefix-productionization/`
+- Dense/backward/large-D decisions: `.doc-archive/devnotes/native-backward-pass/`,
+  `.doc-archive/devnotes/d256-design-track/`, `.doc-archive/devnotes/d512-decision-pass/`
+- Sage/runtime/paged passes: `.doc-archive/devnotes/sage-decode-productionization/`,
+  `.doc-archive/devnotes/runtime-unification/`,
+  `.doc-archive/devnotes/paged-shared-prefix-productionization/`
 - Serving completion tracks:
-  - `devnotes/paged-packed-varlen-unification/`
-  - `devnotes/paged-continuous-batching/`
-  - `devnotes/chunked-prefill/`
-  - `devnotes/prefix-caching-automation/`
-  - `devnotes/speculative-decode-runtime/`
-  - `devnotes/hybrid-kv-cache-abstraction/`
-  - `devnotes/hybrid-kv-cache-behavior/`
-  - `devnotes/final-serving-completion/`
-- Experimental triage: `devnotes/experimental-triage/`
-- TurboQuant: `devnotes/turboquant_full_bench.json`
+  - `.doc-archive/devnotes/paged-packed-varlen-unification/`
+  - `.doc-archive/devnotes/paged-continuous-batching/`
+  - `.doc-archive/devnotes/chunked-prefill/`
+  - `.doc-archive/devnotes/prefix-caching-automation/`
+  - `.doc-archive/devnotes/speculative-decode-runtime/`
+  - `.doc-archive/devnotes/hybrid-kv-cache-abstraction/`
+  - `.doc-archive/devnotes/hybrid-kv-cache-behavior/`
+  - `.doc-archive/devnotes/final-serving-completion/`
+- Experimental triage: `.doc-archive/devnotes/experimental-triage/`
+- TurboQuant: `.doc-archive/devnotes/turboquant_full_bench.json`
 
 ## 7) Related Documentation
 
-- Benchmark details: `docs/benchmarks/RESULTS.md`
-- API reference: `docs/API_MANUAL.md`
-- Architecture: `docs/ARCHITECTURE.md`
-- Historical archive index: `devnotes/README.md`
+- Benchmark details: `docs/reference/BENCHMARKS.md`
+- API reference: `docs/reference/API_MANUAL.md`
+- Architecture: `docs/reference/ARCHITECTURE.md`
+- Historical archive index: `.doc-archive/devnotes/README.md`

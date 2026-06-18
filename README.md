@@ -16,7 +16,7 @@ between the OS these were first measured on and 26.6, so the relative
 speedups are **smaller and strongly shape-dependent on current macOS**.
 mlx-mfa is **not slower** (kernels unchanged; forward stays bit-identical
 to SDPA) — Apple's baselines got faster. Ratios vary with qL and thermal
-state; see `docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
+state; see `.doc-archive/docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
 the full table + methodology.
 
 - V6NAX NAX backward D=64 default-on, **faster than SDPA-vjp** but **strongly
@@ -63,7 +63,7 @@ eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
 New opt-in APIs: cider-style GQA-decode (`mlx_mfa.gqa_decode_cider`),
 hook telemetry (`mlx_mfa.get_hook_stats()`), the `mx.conv3d` auto-hook.
 Full campaign record: `CHANGELOG.md [2.52.0]` and
-`docs/v50/campaign-2026-06/` (`phase3/PHASE-III-CLOSE.md`).
+`.doc-archive/docs/v50/campaign-2026-06/` (`phase3/PHASE-III-CLOSE.md`).
 
 ### v2.50 highlights (shipped 2026-05)
 
@@ -81,11 +81,11 @@ Full campaign record: `CHANGELOG.md [2.52.0]` and
 - **Sprint 4 V6NAX backward causal** production-active (D=64 + D=128)
   via Prompt 4 multi-gate dispatch fix.
 
-Detailed v2.50 chronology + decisions: `docs/v50/sprint-5d-decisions.md`.
-Hardware support matrix: `docs/HARDWARE_SUPPORT.md`.
+Detailed v2.50 chronology + decisions: `.doc-archive/docs/v50/sprint-5d-decisions.md`.
+Hardware support matrix: `docs/reference/HARDWARE_SUPPORT.md`.
 Environment variables: `ENV_VARS.md`.
-Perf claims registry: `docs/PERF_CLAIMS.md`.
-Known debt: `docs/v50/known-debt-v2.50.md`.
+Perf claims registry: `docs/reference/PERF_CLAIMS.md`.
+Known debt: `.doc-archive/docs/v50/known-debt-v2.50.md`.
 
 ---
 
@@ -120,7 +120,7 @@ PUBLIC AUTO API `mx.grad(flash_attention(..., backend="auto"))` +
 
 Investigation evidence: H1 register pressure CONFIRMED; H3 occupancy
 FALSIFIED; H2 cache absorption partial-supporting.  Full record at
-`docs/v6-nax/v39-1-investigation-synthesis.md`.
+`.doc-archive/docs/v6-nax/v39-1-investigation-synthesis.md`.
 
 Net effect on users: identical to v2.38.1 or modestly better.  No new
 env vars required.  `MFA_V6_BWD_KERNEL=split` available as opt-out.
@@ -130,7 +130,7 @@ outcome δ documented), **v2.38.1** (D_vec precompute), **v2.38.0**
 (refactor + cleanup, investigation foundation).
 
 Net effect on users: identical to v2.37.3.  The v2.37.x perf-claim
-audit (`docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new
+audit (`.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`) and the two new
 institutional rules (`CLAUDE_V6_NAX.md` §Z public API path testing
 rule, §AA skill invocation checkpoints) remain in force.  v2.37.x
 claim corrections (carried over unchanged):
@@ -152,11 +152,11 @@ preserved in v2.37.3):
 - All other shapes: AUTO path defaults to SDPA-vjp — correct,
   no user action needed
 
-See `docs/TRAINING_QUICKSTART.md` for the updated user-facing perf
-recommendation and `docs/v6-nax/v2.37.x-perf-claim-audit.md` for
+See `docs/reference/TRAINING_QUICKSTART.md` for the updated user-facing perf
+recommendation and `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for
 the per-claim reachability audit that drove these corrections.
 
-D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`.doc-archive/docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 
@@ -246,7 +246,7 @@ The v2.31.0 performance numbers (V6NAX +33-40% wins on D=128) were measured
 under specific environmental conditions that did not reproduce in the
 v2.32.0 cross-session diagnostic. v2.32.0 ships with reproducible-conditions
 methodology baked into the bench infrastructure (`bench/v32_multisession_capture.py`,
-`docs/v6-nax/v32-multisession-protocol.md`, `CLAUDE_V6_NAX.md` Artifact #5).
+`.doc-archive/docs/v6-nax/v32-multisession-protocol.md`, `CLAUDE_V6_NAX.md` Artifact #5).
 The architectural improvements that motivated v2.31.0 (V6NAX NAX-direct
 forward kernel, multi-SG parallelism via per-SG row partitioning) remain
 in the codebase as a regression canary and as the dispatched path when
@@ -356,7 +356,7 @@ The audit's Phase F routing rebuild fixed the two largest sparse-dispatch gotcha
   gap is specific to the *simdgroup* kernels. A separate dense **NAX matmul2d** forward
   (`v6_nax_forward`) is **parity-or-better than SDPA at D=128 (0.89–1.00×)** but is currently
   backward-recompute-only, reachable solely via `_ext`, and default-scale-only; exposing it
-  is an open routing question (see `docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`). [Verified]
+  is an open routing question (see `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`). [Verified]
 - **STEEL V5 is ineligible at all tested shapes** (env-gated, rarely fires). [Verified]
 - **`sage_attention` (int8) is ~4.7× slower than SDPA on M5** (cos ~0.997) — kept as
   an expert/opt-in backend, not auto-routed. [Verified]
@@ -372,7 +372,7 @@ correctness lock and the runtime dispatch is fingerprint-locked — see
 `tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py`,
 `tests/test_dispatch_map_lock.py`, and `tests/test_fingerprint_discipline.py` (the last
 makes "test passes while running the wrong kernel" structurally catchable). Maintainer
-reference: `docs/v50/campaign-2026-06/audit/` (dispatch map + 4 per-kernel family specs).
+reference: `.doc-archive/docs/v50/campaign-2026-06/audit/` (dispatch map + 4 per-kernel family specs).
 
 [See the v2.31.0 V6 NAX foreword above and the "Best M5 Max Benchmark
 Highlights (v2.31.0)" table below for current numbers.]
@@ -380,7 +380,7 @@ Highlights (v2.31.0)" table below for current numbers.]
 ## Best M1 Max Benchmark Highlights
 
 Representative benchmark-backed outcomes (see `RESULTS.md` and
-`docs/benchmarks/RESULTS.md` for details):
+`docs/reference/BENCHMARKS.md` for details):
 
 | Area | Representative result (M1 Max) | Interpretation |
 |---|---|---|
@@ -437,14 +437,14 @@ tile-boundary FP rounding.
 
 ## Repository Guide
 
-- Feature coverage: [`docs/FEATURE_COVERAGE.md`](docs/FEATURE_COVERAGE.md)
-- API manual: [`docs/API_MANUAL.md`](docs/API_MANUAL.md)
-- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Inventory map: [`docs/INVENTORY.md`](docs/INVENTORY.md)
-- Benchmark interpretation: [`docs/benchmarks/RESULTS.md`](docs/benchmarks/RESULTS.md)
+- Feature coverage: [`docs/reference/FEATURE_COVERAGE.md`](docs/reference/FEATURE_COVERAGE.md)
+- API manual: [`docs/reference/API_MANUAL.md`](docs/reference/API_MANUAL.md)
+- Architecture: [`docs/reference/ARCHITECTURE.md`](docs/reference/ARCHITECTURE.md)
+- Inventory map: [`docs/reference/INVENTORY.md`](docs/reference/INVENTORY.md)
+- Benchmark interpretation: [`docs/reference/BENCHMARKS.md`](docs/reference/BENCHMARKS.md)
 - Root benchmark summary: [`RESULTS.md`](RESULTS.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
-- Historical development archive: [`devnotes/`](devnotes/)
+- Historical development archive: [`.doc-archive/devnotes/`](.doc-archive/devnotes/)
 - Examples: [`examples/`](examples/)
 
 ## Production vs Narrow vs Experimental
@@ -571,7 +571,7 @@ y = conv3d_nax_forward(x, w, stride=(1,1,1), padding=(1,1,1), dilation=(1,1,1))
 | up2_resnet0_peakflops         |  1,114,112 | 13824 | **1.54×** |
 
 Median across the SeedVR2 VAE production set: **1.64×**. See
-[`docs/conv-nax/ship-shelve-decision.md`](docs/conv-nax/ship-shelve-decision.md)
+[`.doc-archive/docs/conv-nax/ship-shelve-decision.md`](.doc-archive/docs/conv-nax/ship-shelve-decision.md)
 for the full 3-session §4-compliant methodology.
 
 ### Caveats

@@ -2,7 +2,7 @@
 
 All `MFA_*` env vars controlling dispatch and kernel configuration.
 Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attention.cpp`.
-M5/V6NAX tuning knobs are documented in `docs/v6-nax/env-vars.md`.
+M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 
 ## Dispatch Gates
 
@@ -67,7 +67,7 @@ M5/V6NAX tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 | `MFA_V6BWDV_BQ`, `MFA_V6BWDV_BK`, `MFA_V6BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
 | `MFA_V6BWDK_BQ`, `MFA_V6BWDK_BK`, `MFA_V6BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
 | `MFA_V6_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal**: V6NAX backward kernel mode selection.  `auto` → D=64 fused, D=128 split (per Sprint B outcome γ).  `fused` → forced fused (D ∈ {64, 128}; D=128 may regress 3-7%).  `split` → forced split-dKdV (works for any D ∈ {64, 128}).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` is empirically optimal. |
-| `MFA_V6_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V6NAX backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V6NAX NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `docs/v50/section-a-v3-empirical-verification.md`. |
+| `MFA_V6_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V6NAX backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V6NAX NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `.doc-archive/docs/v50/section-a-v3-empirical-verification.md`. |
 | `MFA_TOPK_BISECT` | bool | unset | **GHOST (campaign 2026-06 Track 0)**: not read by ANY code path — setting it is a no-op.  Bisection is the AUTO default; the live opt-out is `MFA_DISABLE_TOPK_BISECT`.  Row retained for historical reference only. |
 | `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
 | `MFA_DISABLE_TOPK_NAX` | bool | unset | Disable Top-K NAX dispatch entirely; falls back to Python reference (very slow at scale, for correctness comparison). |
@@ -76,7 +76,7 @@ M5/V6NAX tuning knobs are documented in `docs/v6-nax/env-vars.md`.
 | `MFA_DISABLE_AUTO_HOOKS` | bool | unset | Disable auto-hook installation at `import mlx_mfa` (`_auto_hooks.py::install_hooks()`); no `mx.*` surfaces are patched. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
-| `MLX_MFA_HOOK_TELEMETRY` | str | `summary` | **v2.50.1 Prompt 5g Phase C**: hook execution/fallback telemetry mode (Pattern #8 prevention).  Values: `off` (zero overhead, no counters), `summary` (default; per-hook executed/fallback counters readable via `mlx_mfa.get_hook_stats()`), `verbose` (summary + `UserWarning` per fallback for active debugging).  See `docs/HOOK_TELEMETRY.md`. |
+| `MLX_MFA_HOOK_TELEMETRY` | str | `summary` | **v2.50.1 Prompt 5g Phase C**: hook execution/fallback telemetry mode (Pattern #8 prevention).  Values: `off` (zero overhead, no counters), `summary` (default; per-hook executed/fallback counters readable via `mlx_mfa.get_hook_stats()`), `verbose` (summary + `UserWarning` per fallback for active debugging).  See `docs/reference/HOOK_TELEMETRY.md`. |
 
 ## Shader Generation (cold path, not cached)
 

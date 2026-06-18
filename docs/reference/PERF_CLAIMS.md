@@ -28,7 +28,7 @@ over v2.38.1 split path).  D=128 unchanged (carve-out hard-gated to D=64).
 | `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=16384 V6NAX backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
 
 Full investigation evidence + skill invocations log:
-`docs/v6-nax/v39-1-investigation-synthesis.md`.
+`.doc-archive/docs/v6-nax/v39-1-investigation-synthesis.md`.
 
 
 
@@ -51,7 +51,7 @@ Full investigation evidence + skill invocations log:
 v2.39.2-internal lowered the V6NAX backward carve-out floor from `qL≥4096`
 to `qL≥2048` after the v2.39.1 BK=16 fused kernel achieved parity with
 SDPA-vjp at qL=2048 (3-session variance 1.004; see
-`docs/v6-nax/v39-2-internal-decisions.md`).  These claims preserve §Z
+`.doc-archive/docs/v6-nax/v39-2-internal-decisions.md`).  These claims preserve §Z
 coverage for the new floor boundary.  Internal-mode only — not promoted
 to user-facing release notes because no speedup at qL=2048 (parity-only
 engagement preserves contract honesty per env-var opt-in).
@@ -98,7 +98,7 @@ print(f"V6NAX backward: {statistics.median(ts):.2f} ms")
 
 | Claim ID | Version intro | Version retracted | Reason |
 |---|---|---|---|
-| `v2.37.1_d64_qL2048_v6nax_wins_1.44x` | v2.37.1 | v2.37.3 | Overstated.  Current canonical-methodology bench shows 1.15× kernel-level / ~1.06× end-to-end win, within measurement noise.  v2.37.2 carve-out correctly does not engage at qL=2048.  See `docs/v6-nax/v2.37.x-perf-claim-audit.md`. |
+| `v2.37.1_d64_qL2048_v6nax_wins_1.44x` | v2.37.1 | v2.37.3 | Overstated.  Current canonical-methodology bench shows 1.15× kernel-level / ~1.06× end-to-end win, within measurement noise.  v2.37.2 carve-out correctly does not engage at qL=2048.  See `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`. |
 
 ## Reclassified claims (kernel characterization, not user-facing)
 
@@ -111,8 +111,8 @@ AUTO path doesn't engage their measured kernel.
 | `v2.37.0_d128_v6nax_22_24x_slower` | v2.37.0 | v2.37.3 | D=128 V6NAX backward 2.2-2.4× slower than SDPA-vjp at kernel level.  AUTO path correctly never engages D=128 V6NAX (architectural-floor research only).  Numbers reproducible via `backend="mfa"` forced path; not user-facing perf. |
 | `v2.37.3_d128_qL8192_auto_falls_back_to_sdpa` | v2.37.3 | v2.50 Prompt 5b | Superseded by `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity`.  Sprint B v2.40.0-internal Phase C.1.b validated D=128 split kernels at parity with SDPA-vjp (RMSE ~2e-5); Prompt 5b Section D lifted the `_v6nax_backward_carveout` D=128 gate.  D=128 now ENGAGES at parity (not fallback). |
 | `v2.37.3_d64_qL2048_auto_falls_back_to_sdpa` | v2.37.3 | v2.39.2-internal | Superseded by `v2.39.2_internal_d64_qL2048_auto_engages_v6nax_at_parity` (Internal claims table).  The v2.39.2-internal carve-out floor was lowered from `qL≥4096` → `qL≥2048` after BK=16 fused kernel achieved parity at qL=2048.  qL=2048 now ENGAGES at parity (not fallback).  Below-floor fallback coverage preserved by `v2.39.2_internal_d64_qL1024_auto_falls_back_to_sdpa`. |
-| `v2.50.0_pattern6_v6nax_sparse_bwd_falsified_at_vsr` | v2.50 Prompt 5d | v2.50 Prompt 5d | EMPIRICAL FALSIFICATION record: V6NAX native sparse backward projected 10× at d=0.1; empirical bench at VSR shape (B=1 H=12 qL=4096 D=128 fp16) shows native is 0.09×-0.77× SDPA-vjp dense across all densities.  Apple SDPA NAX on M5+ is empirically optimal for sparse backward — Pattern #6 inversion catalogued in `docs/v50/audit-framing-inversions.md`.  Production routing reverted to Prompt 5c hybrid.  Documented per §Z institutional discipline. |
-| `v2.50.0_prompt5c_topk_bisection_auto_3_85x_phase3a` | v2.50 Prompt 5c | v2.50 Prompt 5e | Top-K bisection kernel (Architecture B) AUTO production default delivers 3.85× speedup over Phase 3a `mx.topk` at audit shape (42.91 ms → 11.15 ms).  Reclassified as documentation-grade: bench is documented but not executable via the §Z PERF_CLAIMS test harness (top-K is not `mx.grad`-routed; engagement detection via differential gradient comparison doesn't apply).  Reproduce via opt-out flag: `MFA_DISABLE_TOPK_BISECT=1` vs default.  See `docs/v50/phase-3b-approach-5-decision.md` for full bench data. |
+| `v2.50.0_pattern6_v6nax_sparse_bwd_falsified_at_vsr` | v2.50 Prompt 5d | v2.50 Prompt 5d | EMPIRICAL FALSIFICATION record: V6NAX native sparse backward projected 10× at d=0.1; empirical bench at VSR shape (B=1 H=12 qL=4096 D=128 fp16) shows native is 0.09×-0.77× SDPA-vjp dense across all densities.  Apple SDPA NAX on M5+ is empirically optimal for sparse backward — Pattern #6 inversion catalogued in `.doc-archive/docs/v50/audit-framing-inversions.md`.  Production routing reverted to Prompt 5c hybrid.  Documented per §Z institutional discipline. |
+| `v2.50.0_prompt5c_topk_bisection_auto_3_85x_phase3a` | v2.50 Prompt 5c | v2.50 Prompt 5e | Top-K bisection kernel (Architecture B) AUTO production default delivers 3.85× speedup over Phase 3a `mx.topk` at audit shape (42.91 ms → 11.15 ms).  Reclassified as documentation-grade: bench is documented but not executable via the §Z PERF_CLAIMS test harness (top-K is not `mx.grad`-routed; engagement detection via differential gradient comparison doesn't apply).  Reproduce via opt-out flag: `MFA_DISABLE_TOPK_BISECT=1` vs default.  See `.doc-archive/docs/v50/phase-3b-approach-5-decision.md` for full bench data. |
 
 ---
 
@@ -146,6 +146,6 @@ Audit trail preservation is the §Z institutional discipline.
 - `CLAUDE_V6_NAX.md` §AA.2 (skill invocation evidence)
 - `CLAUDE_V6_NAX.md` §AA.4 (pre-tag enforcement via /mlx-mfa-release-audit)
 - `tests/test_release_notes_perf_claims.py` (executable enforcement)
-- `docs/v6-nax/v2.37.x-perf-claim-audit.md` (the audit that drove §Z creation)
-- `docs/skills/README.md` (/mlx-mfa-perf-audit skill)
+- `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` (the audit that drove §Z creation)
+- `.doc-archive/docs/skills/README.md` (/mlx-mfa-perf-audit skill)
 - `~/.claude/skills/mlx-mfa-perf-audit/SKILL.md` (skill definition)

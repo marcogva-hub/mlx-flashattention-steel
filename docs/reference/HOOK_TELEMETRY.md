@@ -7,7 +7,7 @@ actually engage for your workload.
 
 This addresses **Pattern #8** — silent hook fallback masking unused
 optimization — documented in
-`docs/v50/audit-framing-inversions.md`.
+`.doc-archive/docs/v50/audit-framing-inversions.md`.
 
 ## When to use
 
@@ -110,7 +110,7 @@ some calls.  Common reasons:
 
 ## See also
 
-- `docs/v50/audit-framing-inversions.md` — Pattern #8 codification
-- `docs/v50/known-debt-v2.50.md` — KD-6 (resolved) and KD-7 (lifted in v2.51.0 — bf16 routes via MPP)
+- `.doc-archive/docs/v50/audit-framing-inversions.md` — Pattern #8 codification
+- `.doc-archive/docs/v50/known-debt-v2.50.md` — KD-6 (resolved) and KD-7 (lifted in v2.51.0 — bf16 routes via MPP)
 - `mlx_mfa/_auto_hooks.py` — implementation
 - `ENV_VARS.md` — full env var reference

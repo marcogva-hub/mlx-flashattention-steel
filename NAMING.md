@@ -68,5 +68,5 @@ collision), where `V34→NAX` keeps the new name unambiguous.
 The rename and the analysis that prompted it (the false "port STEEL→NAX"
 premise born of the V34/V6 confusion; the sparse forward is already NAX
 `matmul2d`) are recorded in
-[`docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md`](docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md),
+[`.doc-archive/docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md`](.doc-archive/docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md),
 which retains the `V34` token to preserve the meaning of that analysis.

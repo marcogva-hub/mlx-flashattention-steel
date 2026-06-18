@@ -104,7 +104,7 @@ elsewhere.
 | KD-4 | LOW | **FIXED** (Prompt 5e Phase 1 fix + Prompt 5f Phase D regression coverage) |
 | KD-5 | research-only | **DEPRECATED** (env var emits `DeprecationWarning`; target removal v2.51+) |
 
-See `docs/v50/known-debt-v2.50.md` for full disposition details and
+See `.doc-archive/docs/v50/known-debt-v2.50.md` for full disposition details and
 links to test coverage.
 
 ---
@@ -122,7 +122,7 @@ Cumulative gains relative to v2.39.1 baseline:
 | V6NAX backward causal D=64 qL=4096 | SDPA-vjp | V6NAX NAX-direct | 1.81× |
 | V6NAX sparse backward d=0.1 (Phase B) | Prompt 5d snapshot | KD-2 fix | -1.33ms |
 
-See `docs/PERF_CLAIMS.md` for the canonical perf-claim table with
+See `docs/reference/PERF_CLAIMS.md` for the canonical perf-claim table with
 verification test references.
 
 ---

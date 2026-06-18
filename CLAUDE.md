@@ -24,7 +24,7 @@ for users. When implementing a new optimization:
    don't make it primary.
 
 Pre-tag audit checklist in `CLAUDE_V6_NAX.md` §5.X enforces this. See
-`docs/RELEASE_PHILOSOPHY.md` for the canonical statement and three
+`docs/reference/RELEASE_PHILOSOPHY.md` for the canonical statement and three
 usage levels (default / explicit / expert).
 
 ## Public API path + skill checkpoints (2026-05-13)
@@ -53,7 +53,7 @@ documented "D=64 1.4-1.85× faster" was unreachable via the public API
 because `should_use_mfa()` returns False for non-causal D ∈ {64, 128}
 and short-circuits to SDPA fallback before the V6NAX env-var check
 runs.  100% of tests passed (every test used `backend="mfa"` forced
-path).  Reference audit: `docs/v6-nax/v2.37.x-perf-claim-audit.md`.
+path).  Reference audit: `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md`.
 
 ## §AA mandatory blocking (added 2026-05-13, Sprint 4)
 
@@ -71,11 +71,11 @@ automate the mandatory checkpoints:
 | Before audit-prescribed kernel sprint (§AA.5 premise validation) | `/mlx-mfa-apple-primitives-coverage` (added 2026-05-14 post-Sprint-3+4 retrospective) |
 
 Every sprint deliverable doc MUST include a "Skill invocations"
-table per §AA.2 (templates in `docs/templates/`).  Empty/missing
+table per §AA.2 (templates in `.doc-archive/docs/templates/`).  Empty/missing
 table = audit fails.  `/mlx-mfa-release-audit` Check 5 enforces this
 before any version bump.
 
-See `docs/skills/README.md` for the full mlx-mfa-* skill set +
+See `.doc-archive/docs/skills/README.md` for the full mlx-mfa-* skill set +
 invocation patterns.  See `CLAUDE_V6_NAX.md` §AA.1-§AA.5 for the
 hardened rule + halt protocol + premise validation discipline.
 
@@ -90,7 +90,7 @@ Before committing to any audit-prescribed kernel sprint, run a
 4. Issue verdict: **FULL_INVERSION** / **PARTIAL_INVERSION** / **CONFIRMATION**
 
 Three sprints in v2.50 found the audit's framing inverted (Sprints 1, 2)
-or partially inverted (Sprint 3).  See `docs/v50/audit-framing-inversions.md`
+or partially inverted (Sprint 3).  See `.doc-archive/docs/v50/audit-framing-inversions.md`
 for the empirically-validated catalogue.
 
 ## §AA.5.x multi-gate audit requirement (added 2026-05-14)
@@ -101,7 +101,7 @@ fix MUST enumerate ALL dispatch sites that produce that input — not
 just the one the failing test touches.  See `CLAUDE_V6_NAX.md` §AA.5.x
 for the full audit checklist.
 
-Companion methodology doc: `docs/methodology/kernel-debugging.md` —
+Companion methodology doc: `.doc-archive/docs/methodology/kernel-debugging.md` —
 codifies sentinel-write debugging (~20 min to isolate dispatch-routing
 bugs vs ~6h of gradient bisection).  Use sentinel writes BEFORE any
 deep kernel-disassembly work when a multi-gate dispatch chain is
@@ -110,7 +110,7 @@ suspected.
 ## Runtime dispatch ground-truth + lock (audit Phase A, 2026-06-17)
 
 The authoritative map of WHICH KERNEL ACTUALLY RUNS per public entry × input
-class on M5/26.6 is `docs/v50/campaign-2026-06/audit/dispatch-map.md`, locked by
+class on M5/26.6 is `docs/reference/dispatch-map.md`, locked by
 `tests/test_dispatch_map_lock.py` (CI fails on unintentional reroute).  **Establish
 dispatch by RUNTIME FINGERPRINT (byteΔ vs a known reference: 0.0 ⇒ IS that kernel
 e.g. the SDPA fallback; ~1e-6 ⇒ a different real kernel; conv via
@@ -120,7 +120,7 @@ Known gotchas locked as documented-current (D=128-sparse→SDPA, D=64-sparse-slo
 sparse-bwd-dense); Phase F updates map + lock together when it reroutes.
 
 **Audit Phase B COMPLETE (per-kernel, 2026-06-17):** every kernel has a verified,
-fp32/oracle-correctness-locked spec in `docs/v50/campaign-2026-06/audit/` —
+fp32/oracle-correctness-locked spec in `.doc-archive/docs/v50/campaign-2026-06/audit/` —
 `sparse-family-spec.md` (B1), `dense-steel-family-spec.md` (B2),
 `backward-family-spec.md` (B3), `b4-family-spec.md` (B4: GNA/conv/topk/sage/paged).
 42 correctness-lock cells across `tests/test_{sparse_family,dense_steel_family,
@@ -146,7 +146,7 @@ at D=128 (0.89–1.00×)**; D=64 loses (1.17–1.22×).  Standalone fp32 forward
 locked (`tests/test_v6_nax_forward_lock.py`, 9 cells — the B-gap).  Lesson: the
 proxy-footgun cuts both ways — never generalize a primitive's perf from a *sibling* kernel
 (simdgroup ≠ matmul2d, same "dense MFA" label).  F-target: consider exposing `v6_nax_forward`
-for D=128.  See `docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`.
+for D=128.  See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-addendum-v6nax-dense-forward.md`.
 
 ## Canonical Python environment (2026-05-13)
 

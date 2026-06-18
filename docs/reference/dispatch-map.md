@@ -3,7 +3,7 @@
 **Status:** DURABLE current-state artifact. Every cell is established by RUNTIME FINGERPRINT
 (byte-identity vs a known reference; density signature; conv hook telemetry) — NOT source-tracing
 (the lesson of four which-binary inversions). Locked by `tests/test_dispatch_map_lock.py` (CI fails on
-unintentional drift). Provenance: audit Phase A (`docs/v50/campaign-2026-06/audit/phase-A-dispatch-map-report.md`),
+unintentional drift). Provenance: audit Phase A (`.doc-archive/docs/v50/campaign-2026-06/audit/phase-A-dispatch-map-report.md`),
 extends the cartography (`runtime-dispatch-cartography-report.md`). Hardware: M5 Max, mlx 0.31.2.
 
 **Fingerprint key:** byteΔ vs SDPA reference **== 0.0** ⇒ the path *is* that kernel (the SDPA fallback
@@ -35,7 +35,7 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 1. **Dense default → SDPA** — `dispatch_policy._M5_NAX_THRESHOLDS = 999999` (always SDPA); `backend="mfa"` overrides to STEEL (legacy-on-M5: SDPA 3–4× faster).
 2. **Sparse maker masks → symmetric → NAX (Phase F)** — built-in D=128 makers emit symmetric 32×32 (`masks.py::_bq_bk(128)=(32,32)`); the auto-route (`attention.py`, `bt_q==bt_k`) sends them to the real NAX kernel. Density gate: ≥ `_nax_sparse_density_ceiling()` (0.78, env `MFA_NAX_SPARSE_DENSITY_CEILING`) → SDPA fallback (NAX loses near-dense).
-3. **Sparse asymmetric/custom or small (<4096 bytes) → SDPA fallback** — `_sparse_fallback_sdpa_perhead` on M5+ (asymmetric STEEL kernel disabled by the `(long)p->NK` miscompile, `docs/v6-nax/sparse-bug-investigation.md`; small masks excluded by NAX device-pointer lowering). Validator accepts EITHER geometry then exact-tile-splits to kernel geometry.
+3. **Sparse asymmetric/custom or small (<4096 bytes) → SDPA fallback** — `_sparse_fallback_sdpa_perhead` on M5+ (asymmetric STEEL kernel disabled by the `(long)p->NK` miscompile, `.doc-archive/docs/v6-nax/sparse-bug-investigation.md`; small masks excluded by NAX device-pointer lowering). Validator accepts EITHER geometry then exact-tile-splits to kernel geometry.
 4. **Sparse V1/V2 selection (Phase F)** — `decide_auto_version` routes D∈{64,128} → V2 (matmul2d) always; the old `qL*kL*D≥2^31` work-product gate is RETIRED (V1-scalar was never fastest). V1 kept only as the genuine fallback (D∉{64,128}).
 5. **Sparse backward hybrid gate** — `MFA_ENABLE_V6_BACKWARD=1` AND D∈{64,128} AND N≥2048 AND ndim==2 AND **bt≥64** (III-4 D16 fix); else dense SDPA-vjp.
 6. **Conv3D NAX MPP gate** — C%16==0 & ≥32, HW%8==0, B=1, pad=(1,1,1), f16/bf16.

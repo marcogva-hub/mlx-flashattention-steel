@@ -72,7 +72,7 @@ the Prompt 4 multi-gate causal fix.
 backward for the 4 remaining V6NAX kernels (dQ, dK split, fused dKdV,
 legacy fused dKV) + `sparse_attention_nax` returning L.  Projected
 10× backward speedup at d=0.1.  PoC dV kernel + scaffold shipped in
-Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
+Prompt 5b Section A (see `.doc-archive/docs/v50/sprint-5b-section-a-scaffold.md`).
 
 ## Sage attention coverage (int8 quantized, inference-only)
 
@@ -116,8 +116,8 @@ Prompt 5b Section A (see `docs/v50/sprint-5b-section-a-scaffold.md`).
 | Paged-NAX variants (varlen + paged + paged_varlen) | XL each | Apple SDPA NAX has no paged path; would anticipate Apple's roadmap for marginal gain |
 | Sage attention fused-quantize NAX | L | Narrow workload (long-context int8 KV training); production-active via STEEL fused |
 | D=256/D=512 backward | — | Architectural floor (memory roadmap dependency) |
-| V6NAX backward block-sparse FULL NATIVE routing default | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  4 native sparse kernels SHIPPED Prompt 5d, but routing default is Prompt 5c hybrid because Apple SDPA NAX backward outpaces V6NAX native sparse at VSR audit shape (0.09×-0.77× across densities).  Native available via opt-in `MFA_V6_BWD_SPARSE_NATIVE=1` for research.  See `docs/v50/section-a-v3-empirical-verification.md`. |
-| Top-K Approach 5 (state machine + custom PASS-2 attention) | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  Architecture B (Apple SDPA NAX bias-mask PASS-2) is empirically optimal; custom PASS-2 would be slower per Section A v3 evidence (Apple SDPA NAX > V6NAX NAX backward on M5+).  See `docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`. |
+| V6NAX backward block-sparse FULL NATIVE routing default | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  4 native sparse kernels SHIPPED Prompt 5d, but routing default is Prompt 5c hybrid because Apple SDPA NAX backward outpaces V6NAX native sparse at VSR audit shape (0.09×-0.77× across densities).  Native available via opt-in `MFA_V6_BWD_SPARSE_NATIVE=1` for research.  See `.doc-archive/docs/v50/section-a-v3-empirical-verification.md`. |
+| Top-K Approach 5 (state machine + custom PASS-2 attention) | — | **NOT DEFERRED — empirically falsified per Pattern #6**.  Architecture B (Apple SDPA NAX bias-mask PASS-2) is empirically optimal; custom PASS-2 would be slower per Section A v3 evidence (Apple SDPA NAX > V6NAX NAX backward on M5+).  See `.doc-archive/docs/v50/section-b-v3-approach-5-empirical-skip-decision.md`. |
 
 ### General M5+ routing narrative
 
@@ -167,12 +167,12 @@ perf optimization on top of an already-correct production path
 ## Cross-references
 
 - Per-section status docs:
-  - `docs/v50/sprint-5b-section-d-dispatch-audit.md` (D=128 backward broadening)
-  - `docs/v50/sprint-5b-section-a-scaffold.md` (Sparse backward PoC + v2 roadmap)
-  - `docs/v50/phase-3b-architectures-comparison.md` (Top-K architecture iteration)
-- Audit framing inversions catalogue: `docs/v50/audit-framing-inversions.md`
-- Kernel debugging methodology: `docs/methodology/kernel-debugging.md`
-- Perf claims registry: `docs/PERF_CLAIMS.md`
+  - `.doc-archive/docs/v50/sprint-5b-section-d-dispatch-audit.md` (D=128 backward broadening)
+  - `.doc-archive/docs/v50/sprint-5b-section-a-scaffold.md` (Sparse backward PoC + v2 roadmap)
+  - `.doc-archive/docs/v50/phase-3b-architectures-comparison.md` (Top-K architecture iteration)
+- Audit framing inversions catalogue: `.doc-archive/docs/v50/audit-framing-inversions.md`
+- Kernel debugging methodology: `.doc-archive/docs/methodology/kernel-debugging.md`
+- Perf claims registry: `docs/reference/PERF_CLAIMS.md`
 - Dispatch policy: `mlx_mfa/dispatch_policy.py`
   (`_v6nax_backward_carveout` post-Section-D broadening)
 - §AA mandatory blocking checkpoints: `CLAUDE_V6_NAX.md` §AA.1-5.x
@@ -188,7 +188,7 @@ perf optimization on top of an already-correct production path
 | Sprint B v2.40.0-internal (D=128 split + fused) | `/metal-kernel-dev`, `/mlx-mfa-bench-methodology`, `/mlx-debug-forensics` |
 | Prompt 4 Section B (dV residual multi-gate) | sentinel-write methodology, `/mlx-debug-forensics`; produced Pattern #5 catalogue entry + `/methodology/kernel-debugging.md` |
 | Prompt 5a Section C (Sprint 1 bwd regression) | `/mlx-debug-forensics`, `/mlx-code-review` |
-| Prompt 5b Section D (D=128 broadening) | multi-gate audit (Pattern #5 applied) — `docs/v50/sprint-5b-section-d-dispatch-audit.md` |
+| Prompt 5b Section D (D=128 broadening) | multi-gate audit (Pattern #5 applied) — `.doc-archive/docs/v50/sprint-5b-section-d-dispatch-audit.md` |
 | Prompt 5b Section A (sparse bwd PoC) | `/metal-kernel-dev` (register budget GREEN), `/mlx-code-review` (math gap documented) |
 | Prompt 5b Section C (bias-drop routing) | multi-gate audit (Pattern #5), `/mlx-debug-forensics` (V1 STEEL bias-add absence via grep) |
 | Prompt 5b Section B (top-K native impl) | `/metal-kernel-dev` per architecture iteration; `/mlx-mfa-apple-primitives-coverage` reused from Sprint 3 |
