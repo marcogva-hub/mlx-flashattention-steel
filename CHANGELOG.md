@@ -2,10 +2,13 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — bf16 block-sparse → V2/NAX (perf BUGFIX)
+## [2.59.0] — 2026-06-18 — consolidation: audited tree + bf16-sparse fix + D=64 autotune
 
-Branch `fix/bf16-sparse-v2` (off master). Found during the sparse-NAX autoresearch
-(M5 Max). Version Marco-gated.
+Folds four audited, green, locally-held change sets onto the published 2.58.0 base into one
+release: the bf16 block-sparse fix, the D=64 forward autotune + robustness guard, the sparse
+tile-pin lock, and the never-published 2.58.1 patch (correctness + installability + docs). Perf
+is Verified-2026-06-18 on M5 Max / macOS 26.6; forward stays bit-identical to Apple SDPA where
+SDPA is the kernel. Public API non-breaking.
 
 ### Fixed
 
@@ -24,16 +27,12 @@ Branch `fix/bf16-sparse-v2` (off master). Found during the sparse-NAX autoresear
   runtime binary fingerprint: bf16 reaches real V2, not V1 nor the SDPA fallback);
   dispatch-map gotcha 4. Reproduce: `flash_attention_sparse(q,k,v,sym_mask)` with bf16 q
   and a symmetric 32×32 mask at D∈{64,128}.
-
-## [2.58.1] — 2026-06-18 — post-release patch: correctness + installability + publication hygiene + docs
-
-Staged from two independent cold reviews of the published 2.58.0 (one artifact-level on the live
-PyPI sdist, one static on the GitHub tree). No yank required (nothing sensitive leaked; the one
-correctness bug has a narrow trigger). Meta-lesson: validate the **real artifact**, not the proxy
-(the publish guard checked git-tracked files; the doc check ran against the working tree).
-
-### Fixed
-
+- **Invalid env tile triple aborted the Metal pipeline instead of raising (robustness).** After
+  F-3 removed the simdgroup-within-V6 path, an invalid `MFA_V6_NAX_BQ/BK/WM` triple (e.g. BQ=32
+  with the default WM=4 → 32 % (4·16) ≠ 0) set `use_v6nax=false` and reached the removed source →
+  an UNCATCHABLE Metal pipeline abort (`function attention cannot be used to build a pipeline
+  state`). The tile guards now `throw std::runtime_error` before any pipeline build (Rule 8).
+  (`tests/test_nax_invalid_tile_guard.py`.)
 - **`return_attn_weights=True` silently dropped `attn_bias` / `alibi_slopes` / `window_size`
   (correctness BUGFIX).** The weights path (`_sdpa_with_weights`) was called with only
   `(q,k,v,scale,causal,softcap,dropout_p)` → it returned plausible-but-wrong output AND weights
@@ -56,6 +55,29 @@ correctness bug has a narrow trigger). Meta-lesson: validate the **real artifact
   and rewrote `tests/test_publish_surface_guard.py` to build the sdist and assert its members ⊆ an
   explicit allowlist (self-test catches a planted `.claude/`-class stray).
 
+### Performance
+
+- **D=64 forward NAX tile `BK 64→32` (autotune, M5 Max).** The dispatched V6 NAX forward default
+  block-K for D=64 dropped from 64 to 32 — changed at BOTH the generator and the `eval_gpu` launch
+  grid (Pattern #9). D=64 N=8192 fp16 forward: **2.97 ms → 2.50 ms** (now ≈ Apple SDPA's ~2.45 ms;
+  was ~1.21× slower); −2 % to −15 % across the tested D=64 shapes × {fp16, bf16}. fp32-correctness
+  ≤ 9e-6. D=128 default (BQ=64/BK=32/WM=4) re-confirmed optimal (unchanged). Locked by
+  `tests/test_nax_tuned_defaults_lock.py` (tile-config fingerprint).
+
+### Changed
+
+- **Sparse V2 tile pinned + locked (no behavior change).** A sparse-NAX autotune established the
+  V2 block-sparse tile has no tunable degree of freedom: BQ=BK=32 is pinned by mask-block
+  faithfulness, and WM=2 by the cooperative-tensor 2-simdgroup reduction (a measured WM=1 sweep was
+  both ~3–4× slower at high density and incorrect, err up to 3e-2). Documented in the kernel +
+  locked by `tests/test_sparse_nax_tile_lock.py`.
+- **Corrected the stale Sprint-3.3 V6 tile comment + marked vestigial knobs.** The runtime
+  dump-header fingerprint showed `BLOCK_R/BLOCK_C/EXEC_SG` (and `UNROLL_MODE/RELAXED_PRECISION/
+  BLOCK_D/FORCE_DYNAMIC_K/MAX_THREADS`) are vestigial/no-op for the NAX forward (they fed the
+  F-3-removed simdgroup path); the comment claiming "NAX_BQ=64 catastrophic 4×" was false and is
+  rewritten to runtime truth. `ENV_VARS.md` now marks them vestigial + emits a one-shot
+  loud-on-use stderr notice (behavior unchanged).
+
 ### Docs
 
 - Clickable `.doc-archive/` markdown links (gitignored → 404 on GitHub/PyPI) in README/CHANGELOG
@@ -72,8 +94,10 @@ correctness bug has a narrow trigger). Meta-lesson: validate the **real artifact
 ### Notes
 
 - macOS floor stays 14.0 (G-pre); requires-python `>=3.10`; sdist-only (compile-at-install).
-- If the upcoming autoresearch perf campaign adds features before publish, the published version
-  may be re-decided then (this patch is committed to master, **not** tagged/published).
+- 2.59.0 is the consolidation of the never-published 2.58.1 patch + the post-2.58.0 autoresearch
+  campaign (bf16-sparse fix, D=64 autotune, sparse tile-pin). origin/master is at 2.58.0
+  (`e163c98`); 2.59.0 is committed to local master and **held at the publish edge** — not tagged,
+  pushed, or uploaded (Marco's trigger).
 
 ## [2.58.0] — 2026-06-18 — audit campaign (A–F): routing fixes + dense-NAX + V6 purification + publication cleanup
 

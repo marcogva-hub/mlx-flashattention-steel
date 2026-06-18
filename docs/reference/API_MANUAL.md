@@ -1,6 +1,6 @@
 # mlx-mfa API Manual
 
-Version: **2.58.1**
+Version: **2.59.0**
 Public exports: **101** (the `mlx_mfa.__all__` surface)
 
 This manual documents the retained public API surface for the freeze-prep
