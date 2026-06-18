@@ -37,6 +37,30 @@ RELAXED_PRECISION/BLOCK_D/FORCE_DYNAMIC_K/MAX_THREADS` are NO-OP for the NAX pat
   (fp16, B=1 H=8): N=4096 NAX **1.65 ms** vs SDPA 1.65 ms (parity); N=8192 NAX **5.73 ms** vs SDPA
   5.98 ms (NAX faster). This is the production `backend="auto"` dense-D=128 route (F-2).
 
+### NAX backward tile autotune (M5 Max, `research/nax-backward-autotune-m5`, 2026-06-18)
+
+Autoresearch over the default-on **D=64 native backward** (the split dQ kernel,
+`MFAV6NAXBwdQuery`). The backward has its OWN dedicated per-kernel tile knobs
+(`MFA_V6BWD_*` dQ, `MFA_V6BWDV_*`/`MFA_V6BWDK_*` split dV/dK, `MFA_V6BWDKV_*`/`MFA_V6BWDF_*`
+fused) — re-proved live from scratch (Lesson #14), NOT the forward's `MFA_V6_NAX_*`. All
+TFLOPS ≤ 51.8 effective gate (measured 7.5–20.1). Gradients verified vs an independent fp32
+vjp oracle (Lesson #11). Both fp16 and bf16 (the VSR training dtype); routing confirmed clean
+(bf16 reaches the native backward, symmetric with fp16).
+
+- **D=64 dQ default `BK` 64→32 (tuned this branch).** The dQ kernel had inherited the stale
+  pre-tune `BK=64` (its comment said "matches forward defaults", but the forward had moved D=64
+  to `BK=32`). `BK 64→32` is robustly faster on the FULL backward (dQ+dV+dK) across 6 shapes ×
+  {fp16,bf16}: −4 % to −14 %, grad-IDENTICAL (BK is perf-only for dQ). fp16 N=8192 causal
+  **16.3→14.3 ms**; fp16 N=2048 non-causal **1.87→1.34 ms**; bf16 N=4096 causal **4.46→4.01 ms**.
+  dQ D=64 is now `32/32/2` (= the forward's tuned D=64 config). The D=64 native backward already
+  beats Apple SDPA-vjp **1.4–2.7×** (N=8192 fp16 causal 14.3 vs 43.3 ms). Reproduce:
+  `mx.grad(flash_attention(q,k,v,causal=...))` at D=64, N≥2048 (default-on). Lock:
+  `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint BK=32 + fp32-oracle grad).
+- **D=128 backward NOT tuned — architectural floor confirmed.** The default D=128 backward is
+  Apple SDPA-vjp (the native D=128 backward is opt-in via `MFA_ENABLE_V6_BACKWARD=1` and measured
+  slower — 0.46–0.58× per the v2.50 carve-out record). Measured at the default: D=128 N=2048
+  **2.71 ms**, N=4096 **9.94 ms** (= SDPA-vjp, the production choice). No headroom; not a tuning target.
+
 v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
 kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
 Auto-default routes D=64 V6NAX backward to fused-BK16 (modest improvement

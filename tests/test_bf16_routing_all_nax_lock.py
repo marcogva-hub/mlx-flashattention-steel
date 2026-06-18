@@ -91,6 +91,31 @@ def test_conv3d_bf16_routes_to_nax_hook():
         assert bool(np.isfinite(np.array(o.astype(mx.float32))).all())
 
 
+@pytest.mark.parametrize("causal", [False, True])
+def test_d64_native_backward_bf16_runs_native(causal):
+    """Dense D=64 NATIVE backward (default-on, N≥2048): bf16 must reach the native backward
+    kernel, like fp16 — NOT a silent SDPA-vjp downgrade. Fingerprint = byteΔ between the default
+    (native eligible) dQ grad and the MFA_DISABLE_V6_BACKWARD=1 (forced SDPA-vjp) grad; >0 ⇒ the
+    native kernel ran. Closes the backward-shaped hole in this cross-path bf16 guard."""
+    from mlx_mfa import flash_attention
+    D, N = 64, 2048
+    sc = 1.0 / math.sqrt(D)
+    for dt in (mx.float16, mx.bfloat16):
+        q, k, v = _qkv(1, 8, N, D, dt)
+        gf = lambda: mx.grad(lambda a: flash_attention(a, k, v, scale=sc, causal=causal).sum())(q)
+        os.environ.pop("MFA_DISABLE_V6_BACKWARD", None)
+        g_native = gf()
+        os.environ["MFA_DISABLE_V6_BACKWARD"] = "1"
+        try:
+            g_sdpa = gf()
+        finally:
+            os.environ.pop("MFA_DISABLE_V6_BACKWARD", None)
+        d = _delta(g_native, g_sdpa)
+        assert d > 1e-7, (
+            f"D=64 native backward {dt} c={causal}: default dQ grad byte-identical to the "
+            f"forced-SDPA-vjp grad (Δ={d:.2e}) — bf16 silently downgraded off the native backward.")
+
+
 def test_gna_native_bf16_runs_native():
     """GNA: bf16 must run the native GNA kernel, like fp16 — byteΔ>0 between native-enabled and
     native-disabled (sparse-fallback) proves the native kernel engaged."""

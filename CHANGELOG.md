@@ -2,9 +2,26 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — bf16 routing audit (Tier-1 #1)
+## [Unreleased] — Tier-1 work (stacks toward 2.60.0)
 
-Stacks toward 2.60.0. Branch `audit/bf16-routing-all-nax` (off 2.59.0). Version Marco-gated.
+Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune.
+
+### Performance
+
+- **D=64 native backward dQ tile `BK 64→32` (autotune, M5 Max; Tier-1 #2).** The default-on D=64
+  native backward (the split dQ kernel, `MFAV6NAXBwdQuery`) inherited the *pre-tune* `BK=64` — its
+  comment even said "matches V6NAX forward defaults", but the forward autotune had already moved
+  D=64 to `BK=32`. Re-proving the backward's live knob surface from scratch (Lesson #14 — the
+  backward has its own dedicated per-kernel tiles `MFA_V6BWD*_*`, not the forward's `MFA_V6_NAX_*`),
+  `BK 64→32` for dQ is a robust **−4 % to −14 %** on the full backward (dQ+dV+dK) across 6 shapes ×
+  {fp16, bf16}, grad-IDENTICAL (BK is perf-only for dQ; gradients verified vs an independent fp32
+  vjp oracle, Lesson #11). N=8192 fp16 causal: **~16.3 ms → ~14.3 ms**; N=2048 fp16 non-causal:
+  **1.87 → 1.34 ms**. dQ D=64 is now `32/32/2` = the forward's tuned config. The D=64 native backward
+  already beats Apple SDPA-vjp **1.4–2.7×** (e.g. N8192 fp16 causal 14.3 vs 43.3 ms). **D=128 backward
+  is NOT tuned** — the default D=128 backward is SDPA-vjp (the native D=128 bwd is opt-in + measured
+  slower), an architectural floor confirmed by measurement. Locked by
+  `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint + fp32-oracle grad + a
+  generous catastrophic-ms ceiling).
 
 ### Changed
 

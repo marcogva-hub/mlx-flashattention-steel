@@ -66,7 +66,8 @@ fp16.** Per-path fingerprint:
 |---|---|---|
 | Dense fwd D=128 (auto) | NAX, Δ=1.5e-5 vs SDPA (≠0) | fast-path (= fp16) |
 | Dense fwd D=64 (force/recompute) | NAX, Δ=1.5e-5 (≠0) | fast-path |
-| Dense backward | SDPA-vjp (Δ=0) | by-design (no `Primitive::vjp`); symmetric |
+| Dense backward **D=128** | SDPA-vjp (default; native D=128 bwd opt-in + slower) | by-design floor; symmetric |
+| Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, byteΔ>0 vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (1.4–2.7× SDPA-vjp; dQ tile tuned `BK 64→32`, Tier-1 #2) |
 | Sparse fwd V2 | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 fix holds) |
 | Sparse backward hybrid (opt-in) | runs, finite grad | by-design SDPA-vjp; symmetric |
 | conv3d NAX (MPP-eligible) | `executed.conv3d_nax_forward++`, 0 fallback | fast-path (auto-hook) |

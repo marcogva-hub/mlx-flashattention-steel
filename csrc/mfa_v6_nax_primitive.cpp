@@ -1076,9 +1076,14 @@ class MFAV6NAXBwdQuery : public mlx::core::Primitive {
     if (D != 64 && D != 128)
       throw std::runtime_error("V6NAX bwd dQ: D must be 64 or 128");
 
-    // M5-tuned defaults per DC7 (matches V6NAX forward defaults).
+    // M5-tuned defaults per DC7. D=64 dQ tile is now 32/32/2 — exactly the
+    // V6NAX forward's tuned D=64 config (the forward autotune moved D=64 BK 64→32;
+    // this dQ kernel inherited the stale pre-tune BK=64 — backward autotune, M5 Max
+    // 2026-06-18: BK 64→32 is a robust −4..−14% on the full backward across 6 shapes
+    // × {fp16,bf16}, grad-identical, BK is perf-only for dQ). D=128 dQ stays 64/32/4
+    // (the D=128 backward is at the SDPA-vjp architectural floor — not a tuning target).
     unsigned short v6nax_BQ = (D == 64) ? 32 : 64;
-    unsigned short v6nax_BK = (D == 64) ? 64 : 32;
+    unsigned short v6nax_BK = 32;  // D=64: 64→32 (autotune); D=128: 32 (already)
     uint16_t v6nax_WM = (D == 64) ? 2 : 4;
     if (const char* e = mlx_mfa::getenv_aliased("MFA_V6BWD_BQ"))
       v6nax_BQ = (unsigned short)std::atoi(e);
