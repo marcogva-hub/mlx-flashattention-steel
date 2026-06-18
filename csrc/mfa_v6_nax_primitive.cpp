@@ -233,9 +233,18 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
     if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
     if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
-    // Validate: BQ % (WM*16) == 0
+    // Validate: BQ % (WM*16) == 0 AND head_dim % 16 == 0.  Rule 8 (loud failure):
+    // F-3 removed the use_v6nax=false (simdgroup) branch, so falling back here would
+    // emit the non-NAX source into v6nax_compile("attention") → an UNCATCHABLE Metal
+    // pipeline abort.  Throw a clean, recoverable error for an invalid env tile triple.
     if (v6nax_BQ % (v6nax_WM * 16) != 0 || head_dim % 16 != 0) {
-      use_v6nax = false;  // fall back to legacy if invalid config
+      throw std::runtime_error(
+          "V6NAX forward: invalid tile triple — require BQ % (WM*16) == 0 and "
+          "head_dim % 16 == 0. Got BQ=" + std::to_string((int)v6nax_BQ) +
+          " WM=" + std::to_string((int)v6nax_WM) + " (BQ%(WM*16)=" +
+          std::to_string((int)(v6nax_BQ % (v6nax_WM * 16))) + "), head_dim=" +
+          std::to_string((int)head_dim) + ". Set MFA_V6_NAX_BQ to a multiple of "
+          "MFA_V6_NAX_WM*16 (e.g. BQ=64 WM=4, or BQ=32 WM=2).");
     }
     // Phase II-8 addendum (Pattern #9, THIRD site): the V6NAX forward
     // generator emits the QK matmul as a PAIRED 16x32x16 MMA
@@ -685,8 +694,16 @@ public:
       if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
       if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
       if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+      // Rule 8: throw (do NOT use_v6nax=false — F-3 removed that branch; a
+      // fallback here reaches v6nax_compile with the non-NAX source → uncatchable
+      // Metal abort). Clean, recoverable error for an invalid env tile triple.
       if (v6nax_BQ % (v6nax_WM * 16) != 0 || D % 16 != 0) {
-        use_v6nax = false;
+        throw std::runtime_error(
+            "V6NAX forward: invalid tile triple — require BQ % (WM*16) == 0 and "
+            "D % 16 == 0. Got BQ=" + std::to_string((int)v6nax_BQ) + " WM=" +
+            std::to_string((int)v6nax_WM) + ", D=" + std::to_string((int)D) +
+            ". Set MFA_V6_NAX_BQ to a multiple of MFA_V6_NAX_WM*16 "
+            "(e.g. BQ=64 WM=4, or BQ=32 WM=2).");
       }
       // Phase II-8 addendum (Pattern #9, third site — see the guard in
       // the other dispatch path above): paired-MMA forward requires
