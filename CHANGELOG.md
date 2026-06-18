@@ -2,6 +2,56 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.58.1] — 2026-06-18 — post-release patch: correctness + installability + publication hygiene + docs
+
+Staged from two independent cold reviews of the published 2.58.0 (one artifact-level on the live
+PyPI sdist, one static on the GitHub tree). No yank required (nothing sensitive leaked; the one
+correctness bug has a narrow trigger). Meta-lesson: validate the **real artifact**, not the proxy
+(the publish guard checked git-tracked files; the doc check ran against the working tree).
+
+### Fixed
+
+- **`return_attn_weights=True` silently dropped `attn_bias` / `alibi_slopes` / `window_size`
+  (correctness BUGFIX).** The weights path (`_sdpa_with_weights`) was called with only
+  `(q,k,v,scale,causal,softcap,dropout_p)` → it returned plausible-but-wrong output AND weights
+  for those features — in the exact path users hit when *validating* attention. Now applies all
+  three with the production single-feature semantics (verified vs an independent fp32 reference;
+  the returned weights match the fp32 softmax). Unsupported softcap+alibi / softcap+attn_bias
+  combos already raise (Rule 8) and the weights path inherits that. (`tests/test_return_attn_weights_features.py`.)
+
+### Fixed (packaging / installability)
+
+- **Declared MLX floor raised to `>=0.31.2`** (in `[build-system].requires` and
+  `[project].dependencies`) to match the pinned nanobind 2.12.0 (NB_INTERNALS v19) the `_ext`
+  extension links — a user on 0.31.0/0.31.1 (inside the old `>=0.31.0` range) would compile an
+  ABI-incompatible extension (silent `NB_DOMAIN "mlx"` mismatch). Corrects a declared-vs-real mismatch.
+- **sdist surface made explicit + the publish guard now asserts on the BUILT tarball.** The 2.58.0
+  sdist shipped `.claude/settings.local.json` (local scratch) + `bench/`/`benchmarks/` bloat; the
+  `MANIFEST.in` whitelist was inert under scikit-build-core and the guard checked `git ls-files`
+  (not the built artifact). Added `.claude/` to `.gitignore`, added `[tool.scikit-build.sdist]`
+  excludes (bench/benchmarks/.claude/.github/.gitignore/*.log), deleted the inert `MANIFEST.in`,
+  and rewrote `tests/test_publish_surface_guard.py` to build the sdist and assert its members ⊆ an
+  explicit allowlist (self-test catches a planted `.claude/`-class stray).
+
+### Docs
+
+- Clickable `.doc-archive/` markdown links (gitignored → 404 on GitHub/PyPI) in README/CHANGELOG
+  converted to non-clickable "internal archive" provenance refs. Corrected the `SVDQuantLinear`
+  signature in `docs/reference/API_MANUAL.md` (module-style ctor, verified vs source) + its stale
+  header. Refreshed stale version markers (the FEATURE_COVERAGE roadmap's stale v2.50 forward-pointer,
+  INVENTORY/PERF_CLAIMS headers, README upgrade banner). Fixed the `decide_auto_version` docstring
+  (Phase-F D-based rule).
+  Added `scripts/check_release_docs.py` + `tests/test_release_docs.py` (current version present, no
+  stale `next:` ≤ current, no clickable `.doc-archive` link in PyPI-facing docs, no broken README links).
+- Documented: conv3d `(1,1,1)` is recognized-but-MPP-gated (tracked fallback, not silent); the
+  build-time nanobind `FetchContent` network requirement (air-gapped builds).
+
+### Notes
+
+- macOS floor stays 14.0 (G-pre); requires-python `>=3.10`; sdist-only (compile-at-install).
+- If the upcoming autoresearch perf campaign adds features before publish, the published version
+  may be re-decided then (this patch is committed to master, **not** tagged/published).
+
 ## [2.58.0] — 2026-06-18 — audit campaign (A–F): routing fixes + dense-NAX + V6 purification + publication cleanup
 
 First release off the fully-audited tree. The 2026-06 audit established runtime-verified
