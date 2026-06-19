@@ -2,11 +2,24 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased — post-2.60.0 feature] conv3d-NAX causal / per-axis pad
+## [2.60.1] — 2026-06-19 — conv-hook regression fix: fold in conv3d-NAX causal/per-axis pad
 
-Branch `feature/conv3d-nax-asym-pad-m5` (off the #3 tip `aa1c0bb`). Folds into 2.60.1. Version Marco-gated.
+**Supersedes 2.60.0 — users on 2.60.0 should upgrade.** 2.60.0 shipped the global conv3d-NAX hook
+(symmetric `pad=(1,1,1)` gate) but the asym-pad feature that makes causal convs (`pad=(0,1,1)`) eligible
+was held on a separate branch — a release-sequencing error, not a kernel bug. Result: 2.60.0 *intercepts*
+SeedVR2-class causal VAE convs but cannot accelerate them → interception overhead with zero benefit
+(measured SeedVR2 432p/3× **632 s vs 533 s** Ph96, +18.5 %; hook stats `executed={}`,
+`fallback={conv3d_nax_forward: 13083}` — every VAE conv fell back). This release folds the asym-pad
+feature in, so those same causal convs route NAX instead of falling back.
 
-### Added
+### Fixed
+
+- **2.60.0 conv-hook regression on causal-conv (SeedVR2-class) workloads** — by folding in conv3d-NAX
+  asymmetric/causal padding support (below). Causal `pad=(0,1,1)` 3×3×3 convs now route NAX instead of
+  hitting the symmetric-only gate and falling back. Symmetric `(1,1,1)` path stays bit-identical
+  (keep-all-paths); `MFA_*` force-envs retained.
+
+### Added — conv3d-NAX causal / per-axis pad (folded from `feature/conv3d-nax-asym-pad-m5`)
 
 - **Causal (per-axis) padding support for conv3d-NAX → production VAE convs now route NAX (M5).**
   Re-opens and resolves the Tier-1 #3 NO-GO: #3 found the NAX conv kernel beats `mx.conv` 1.3–2.7× on
