@@ -2,7 +2,15 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — Tier-1 + Tier-2 + Tier-3 work (stacks toward 2.60.0)
+## [2.60.0] — 2026-06-19 — Tier campaign: dense routing threshold + bf16 D=128 3-axis + autotune + NO-GO closures
+
+The Tier campaign off 2.59.0 (linear chain). **One behavior change** (dense D=128 routing threshold,
+Tier-2 #1 — removes a small-N regression); the rest is tuning that already shipped at the kernel level
+(D=64 forward+backward BK), confirmations (bf16 D=128 3-axis, dV/dK BK-optimal), and recorded NO-GOs
+(conv3d-NAX VAE profile, conv size-gate, Tier-3 accumulator near-optimal). Plus a test-determinism fix
+(chronic SAGE suite-order flake root-caused to unseeded RNG → per-test seed). The conv-asym-pad feature is
+**NOT** in 2.60.0 — it is a separate post-2.60.0 release on its own branch. Tier behaviors verified to
+coexist in one built binary at runtime (Lesson #14). sdist-only; clean-env compile-at-install smoke green.
 
 Branches off 2.59.0, Version Marco-gated. #1 bf16 routing audit; #2 NAX backward D=64 tune;
 #2b dV/dK confirmed-optimal; #3 conv3d-NAX VAE profile (NO-GO closure); Tier-2 #1 routing thresholds;
@@ -100,6 +108,16 @@ Tier-2 #2 bf16 D=128 3-axis confirm; Tier-3 accumulator characterization (near-o
   all dtypes by design (V2 lacks LSE; not bf16-specific). New regression lock
   `tests/test_bf16_routing_all_nax_lock.py` (dense/conv3d/GNA) + the dispatch-map "bf16 routing audit"
   table assert bf16 reaches the fast binary on each path — a future re-added dtype gate fails CI.
+
+### Tests / CI
+
+- **Fixed the chronic SAGE int8 suite-order flake at root (test-only).** The 3 sage int8 tests
+  (`test_b4_family_lock` cos + roundtrip, `test_fingerprint_discipline` sage) drew `mx.random.uniform`
+  **unseeded** — the module-level seed fires only at import, so per-test inputs depended on the cumulative
+  global RNG left by prior tests; the tight int8 cos floor (0.995) made it the trip-wire ("passes
+  isolated, flakes in suite"). Fixed with a per-test `mx.random.seed` (deterministic, order-independent
+  input — the lock-test convention), NOT a skip/reorder. Verified deterministic: full suite 6/6 clean,
+  sage green after the heavy-RNG `test_attention` module, reverse module order green. No library code.
 
 ## [2.59.0] — 2026-06-18 — consolidation: audited tree + bf16-sparse fix + D=64 autotune
 
