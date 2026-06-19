@@ -69,8 +69,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",
     "MFA_ENABLE_V34_D128",
-    "MFA_ENABLE_V4",
-    "MFA_ENABLE_V5",
     "MFA_ENABLE_V6_BACKWARD",
     "MFA_ENABLE_V6_D128",
     "MFA_FORCE_D256_PATH",
@@ -144,11 +142,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V3_FORCE_BK_",
     "MFA_V3_FORCE_BK_D128",
     "MFA_V3_FORCE_BK_D64",
-    "MFA_V5_FORCE_",
-    "MFA_V5_FORCE_BD_TILE",
-    "MFA_V5_FORCE_BK",
-    "MFA_V5_FORCE_BQ",
-    "MFA_V5_FORCE_WM",
     "MFA_V6",
     "MFA_V6BWD",
     "MFA_V6BWDF_BK",
@@ -220,7 +213,6 @@ CPP_KNOBS: frozenset[str] = frozenset({
 PREFIX_KNOBS: tuple[str, ...] = (
     "MFA_SPLITK_MAX_N_D",   # templated by D / causal / alibi / window
     "MFA_V3_FORCE_BK_",     # templated per-config force
-    "MFA_V5_FORCE_",
 )
 
 

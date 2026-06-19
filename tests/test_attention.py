@@ -11609,6 +11609,7 @@ class TestSteelV3:
         assert mx.isfinite(out).all().item()
 
 
+@pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); opt-in kernels removed")
 @requires_ext
 class TestSteelV4:
     """STEEL V4 (direct device K reads, 2 barriers/iter, M3+ only).
@@ -11690,6 +11691,7 @@ class TestSteelV4:
         assert mx.isfinite(out).all().item()
 
 
+@pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); opt-in kernels removed")
 class TestSteelV5:
     """STEEL V5 (D-blocked, BK=128, BD_tile=32, 3 TG/CU, all gens).
 

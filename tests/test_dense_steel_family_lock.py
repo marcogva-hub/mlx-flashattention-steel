@@ -87,10 +87,12 @@ class TestSteelVariantCorrectness:
         monkeypatch.setenv("MFA_DISABLE_V3", "1")
         q, k, v = _qkv(2, 8, 4096, 128); _assert_correct(q, k, v, 1 / math.sqrt(128), True)
 
+    @pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); opt-in kernels removed")
     def test_v4_forced(self, monkeypatch):
         monkeypatch.setenv("MFA_ENABLE_V4", "1")
         q, k, v = _qkv(2, 8, 4096, 128); _assert_correct(q, k, v, 1 / math.sqrt(128), False)
 
+    @pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); opt-in kernels removed")
     def test_v5_forced(self, monkeypatch):
         monkeypatch.setenv("MFA_ENABLE_V5", "1")
         q, k, v = _qkv(2, 8, 4096, 128); _assert_correct(q, k, v, 1 / math.sqrt(128), False)

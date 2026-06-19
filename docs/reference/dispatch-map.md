@@ -86,7 +86,7 @@ a downstream C++ gate) on any of these fails CI.
 
 | Tier | Dense forward kernel family | Notes |
 |---|---|---|
-| **M1–M4** | **standalone simdgroup STEEL** (V1/V2/V3/V4/V5/split-K/dsplit/flash_decode) | the validated dense tier — `m3_prefers_v1`, `v3_min_N`, RESULTS.md. UNTOUCHED by F-3. |
+| **M1–M4** | **standalone simdgroup STEEL** (V1/V2/V3/split-K/dsplit/flash_decode) | the validated dense tier — `m3_prefers_v1`, `v3_min_N`, RESULTS.md. UNTOUCHED by F-3. (V4/V5 retired from build — Lot-2.) |
 | **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for D=64 + the default | NAX/V6 = the M5+ tier (F-2). |
 | any (expert) | `backend="mfa"` → simdgroup STEEL | **legacy-reachable, loses on M5** (SDPA 2–4× faster). |
 
@@ -96,13 +96,46 @@ a downstream C++ gate) on any of these fails CI.
 forces NAX; NAX-ineligible dense → the existing dispatch: D=64 → SDPA). It is **removed**:
 `MFAV6Forward` serves only NAX (D∈{64,128}, valid GQA); invalid GQA raises (Rule 8) rather than
 silently dispatching the removed broken path. The standalone simdgroup family (the M1–M4 tier) is
-untouched. **V5** = standalone experimental opt-in (`MFA_ENABLE_V5=1`), **never auto-selected on
-any tier** (compiled-but-unrouted, like V4) → KEPT (reachable + tested, not truly dead).
+untouched.
+
+**V4/V5 RETIRED FROM BUILD (Lot-2, off `3933c5f`).** Both were standalone experimental opt-ins
+(`MFA_ENABLE_V4` / `MFA_ENABLE_V5`), **never auto-selected on any tier** (compiled-but-unrouted) —
+verified-not-routed at source before removal (no auto-route in `dispatch_policy`; only the explicit
+env gates in `eval_gpu`). **V5 was M5-validated *pour la forme* and showed no advantage anywhere in
+its envelope (3.1–4.4× slower than the routed NAX/SDPA default across D=64/128 × fp16/bf16 ×
+causal/nc × N∈{4096,8192}), correct ≤5.6e-4** — so the retirement is measured, not assumed. The
+`.cpp`/`.hpp` sources are dropped from `CMakeLists.txt` and the dispatch + env gates removed;
+source recoverable via the `archive/v4-v5-prototypes` tag + git history (keep-all-paths). The
+standalone simdgroup family that *is* auto-reachable (V1/V2/V3/split-K/dsplit/flash_decode) is
+untouched.
+
+### V3 — partial-route status (RETAINED, intentional)
+
+V3 is the one conditionally-auto-routed standalone STEEL variant — **KEPT, not a removal
+candidate.** Exact gate predicate (`csrc/mfa_attention.cpp` ~607–611, source of truth):
+
+```
+route V3  ⟺  !MFA_ENV(MFA_DISABLE_V3)
+             AND causal
+             AND B*H >= 4                       # sufficient parallelism (sweep: V3 wins all B·H≥4)
+             AND N >= v3_min_N                   # v3_min_N = 4096 (D=64) / 2048 (D=128)
+```
+
+`MFA_DISABLE_V3=1` forces V2 (debug/bench escape hatch). On M5 the production dense default routes
+to NAX/SDPA *before* this path; V3 is reached on M1–M4 and via `backend="mfa"`.
+
+**Falsified-claims caveat (Lesson #15):** the V3 perf numbers embedded in the source comments and
+RESULTS.md (e.g. "geomean V3/SDPA 1.47×", "V3 ~32% faster") were measured on **older
+hardware/MLX/macOS** and have been *re-stated/falsified before* (see III-11/III-12b honest-perf
+re-statement). **Do NOT inherit them.** Any future V3 perf claim — for a release note, a routing
+change, or a removal decision — MUST be re-measured under current rules (absolute ms, 3-session
+§AA.4, current M5/26.x), not copied from these comments. The gate predicate above is current; the
+*magnitudes* in the comments are historical.
 
 ## Notes / deferred (Phase B)
 - The GNA Δ=7.3e-2 is my crude block-mask reference over-approximating GNA's exact per-element window
   — a **Phase-B correctness-reference** item, NOT a dispatch issue (GNA native provably runs, Δ≠0).
-- `backend="mfa"` STEEL *variant* selection (V2/V3/V4/V5/split-K/dsplit/flash_decode) — enumerated
+- `backend="mfa"` STEEL *variant* selection (V2/V3/split-K/dsplit/flash_decode) — enumerated
   from `eval_gpu`; the default is real STEEL (Δ=1.9e-6). Per-variant routing fingerprint (env-toggle
   + timing-match) deferred to Phase B/E; not user-facing default (dense default = SDPA).
 - Sparse-backward dV-native (hybrid/full-native opt-in) — dQ confirmed SDPA-vjp; dV-native fingerprint

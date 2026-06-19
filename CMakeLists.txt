@@ -118,8 +118,6 @@ set(MFA_SOURCES
   csrc/mfa_gna_fwd.cpp
   csrc/mfa_steel_fwd_v2.cpp
   csrc/mfa_steel_fwd_v3.cpp
-  csrc/mfa_steel_fwd_v4.cpp
-  csrc/mfa_steel_fwd_v5.cpp
   csrc/mfa_steel_paged_varlen_fwd.cpp
   csrc/mfa_steel_paged_varlen_tq_fwd.cpp
   csrc/v6_nax_probe.cpp

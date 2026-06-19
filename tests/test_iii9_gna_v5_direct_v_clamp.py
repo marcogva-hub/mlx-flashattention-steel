@@ -79,6 +79,7 @@ _V5 = [(128, 1, 64), (128, 2, 64), (128, 3, 64), (256, 33, 64),
 
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize("N,S,D", _V5)
+@pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); opt-in kernels removed")
 def test_v5_noncausal_partial_tile_no_oob(N, S, D, dtype, monkeypatch):
     """STEEL V5 (opt-in): partial-S non-causal must not leak OOB-V NaN."""
     monkeypatch.setenv("MFA_ENABLE_V5", "1")

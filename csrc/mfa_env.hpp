@@ -19,8 +19,6 @@ struct MFAEnvConfig {
   // NOT cached — tests use os.environ patching (setenv) which must
   // take effect immediately. These are cheap single-reads per eval_gpu().
   static bool enable_v3()    { return env_bool("MFA_ENABLE_V3"); }
-  static bool enable_v4()    { return env_bool("MFA_ENABLE_V4"); }
-  static bool enable_v5()    { return env_bool("MFA_ENABLE_V5"); }
   static bool disable_v2()   { return env_bool("MFA_DISABLE_V2"); }
   static bool disable_v3()   { return env_bool("MFA_DISABLE_V3"); }
   static bool force_v2()     { return env_bool("MFA_FORCE_V2"); }
@@ -51,11 +49,6 @@ struct MFAEnvConfig {
   int v3_force_bk_d64;  // MFA_V3_FORCE_BK_D64   (0 = auto)
   int v3_force_bk_d128; // MFA_V3_FORCE_BK_D128  (0 = auto)
 
-  // ── V5 config overrides ────────────────────────────────────────
-  int v5_force_bk;      // MFA_V5_FORCE_BK       (0 = auto)
-  int v5_force_bd_tile; // MFA_V5_FORCE_BD_TILE   (0 = auto)
-  int v5_force_bq;      // MFA_V5_FORCE_BQ       (0 = auto)
-  int v5_force_wm;      // MFA_V5_FORCE_WM       (0 = auto)
 
   /// Thread-safe singleton — initialized on first call (Meyers' singleton).
   static const MFAEnvConfig& get() {
@@ -106,11 +99,6 @@ private:
     // V3 config overrides
     c.v3_force_bk_d64  = env_int("MFA_V3_FORCE_BK_D64");
     c.v3_force_bk_d128 = env_int("MFA_V3_FORCE_BK_D128");
-    // V5 config overrides
-    c.v5_force_bk      = env_int("MFA_V5_FORCE_BK");
-    c.v5_force_bd_tile = env_int("MFA_V5_FORCE_BD_TILE");
-    c.v5_force_bq      = env_int("MFA_V5_FORCE_BQ");
-    c.v5_force_wm      = env_int("MFA_V5_FORCE_WM");
     return c;
   }
 };
