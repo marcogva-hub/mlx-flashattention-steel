@@ -35,7 +35,8 @@ Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 | Dense D=64 (auto) | Production STEEL V2 | SDPA (dense); D=64 *causal* large-N (B·H≥4, N≥4096) → MFA primitive via V3 cond-auto | per-(D,causal) `_M5_NAX_THRESHOLDS` dict in dispatch_policy.py (not a flat constant) |
 | D=256 causal | Narrow STEEL | STEEL (no NAX path) | f16 both chips, bf16 M3+ only |
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
-| **V6NAX NAX-direct backward (D=64, opt-in v2.37.2+)** | N/A | **Production (env-gated `MFA_ENABLE_V6_BACKWARD=1`)** | D=64 qL≥2048 causal+non-causal; **parity-to-slight-win vs SDPA-vjp** (M5, measured 2026-06-19: 1.07×@qL2048 / 1.02×@qL4096 / 0.99×@qL8192) |
+| **V6NAX backward — D=64 (DEFAULT-ON, `MFA_DISABLE_V6_BACKWARD=1` to opt out)** | N/A | **Production** | qL≥2048; **non-causal 2.55×/3.76× @qL4096/8192, causal 4.88×/5.75× vs SDPA-vjp** (M5, MLX 0.31.2, B=1 H=4 fp16, measured 2026-06-19, byteΔ-confirmed) |
+| **V6NAX backward — D=128 (opt-in `MFA_ENABLE_V6_BACKWARD=1`)** | N/A | Opt-in | qL≥2048; **slight win 1.14× nc / 1.23× causal @qL4096** (M5, MLX 0.31.2, measured 2026-06-19). Pre-M5 (v2.37–2.39) this was ~2.2–2.4× SLOWER (architectural floor — superseded on M5). |
 | Block-sparse / window | Production | Tile-skip, up to 21x speedup |
 | Softcap | Production | V2 tanh in log2 domain |
 | ALiBi | Production | V2 bias addition |

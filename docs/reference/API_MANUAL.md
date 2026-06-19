@@ -51,16 +51,27 @@ Notes:
 - Use cases: token merging (`log(merge_count)`), temporal distance bias,
   cross-attention conditioning, custom ALiBi variants.
 
-**V6NAX backward NAX-direct (opt-in)**:
-- Set `MFA_ENABLE_V6_BACKWARD=1` to route `flash_attention` backward
-  through V6NAX NAX-direct kernels on M5+.  Default off (SDPA-vjp).
-- Eligible shapes (source: `dispatch_policy._v6nax_backward_carveout`):
-  **D=64, qL ≥ 2048, FP16/BF16, causal AND non-causal**, no softcap/window.
-- Perf (M5 Max, D=64 causal fp16, **measured 2026-06-19**): **parity-to-slight-win
-  vs SDPA-vjp** — SDPA-vjp/V6 = 1.07× @qL2048 (0.78→0.73 ms), 1.02× @qL4096
-  (1.98→1.93 ms), 0.99× @qL8192 (6.71→6.76 ms). Correctness vs an independent
-  fp32 grad oracle: dQ/dK ≈ 2e-5, dV ≈ 4e-3 (fp16-backward floor). Apple's NAX
-  backward is NYI in MLX, so this is the only NAX-accelerated backward on M5+.
+**V6NAX backward NAX-direct** (gating from `dispatch_policy._v6nax_backward_carveout`):
+- **D=64, qL ≥ 2048, FP16/BF16, causal AND non-causal → DEFAULT-ON** (opt out with
+  `MFA_DISABLE_V6_BACKWARD=1`).
+- **D=128, qL ≥ 2048 → opt-in** via `MFA_ENABLE_V6_BACKWARD=1` (default SDPA-vjp).
+- Apple's NAX backward is NYI in MLX, so V6NAX is the only NAX-accelerated backward path.
+
+Three distinct regimes — **all measured 2026-06-19 on M5 Max, MLX 0.31.2, B=1 H=4 fp16,
+V6 vs SDPA-vjp (`mx.vjp` of `mx.fast.scaled_dot_product_attention`), abs-ms median,
+which-binary-confirmed (byteΔ>0 vs `MFA_DISABLE_V6_BACKWARD=1`), fp32-oracle-correct**
+(dQ/dK ≈ 2e-5, dV ≈ 4e-3):
+
+| Regime | SDPA-vjp/V6 (faster) | V6 ms / SDPA-vjp ms |
+|---|---|---|
+| D=64 **non-causal** qL4096 / 8192 | **2.55× / 3.76×** | 1.58/4.03, 4.00/15.01 |
+| D=64 **causal** qL4096 / 8192 | **4.88× / 5.75×** | 1.08/5.26, 3.51/20.20 |
+| D=128 (opt-in) **nc / causal** qL4096 | **1.14× / 1.23×** | 3.81/4.36, 4.58/5.64 |
+
+> **Historical (pre-M5, v2.37–2.39, MLX 0.31.2):** D=64 non-causal was 1.82–2.00× (the
+> win held and *grew* on M5); D=128 was characterized as **2.2–2.4× SLOWER** (architectural
+> dO@V^T dK-spill floor) — that no longer holds on M5 (now a slight win, above). The pre-M5
+> numbers were on earlier hardware + pre-BK16-autotune kernels; kept for provenance.
 - See `ENV_VARS.md` `MFA_V6BWD*` group for tile-tuning knobs.
 
 ### `flash_attention_kvcache(...)`

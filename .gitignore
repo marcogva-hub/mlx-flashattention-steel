@@ -77,3 +77,6 @@ docs/audit_dit_dispatch_output.log
 
 # Journal / probe-verdict scratch (archive-bound, never on the publish surface)
 devnotes/
+
+# stray journal-export zip (cruft — real archive is .doc-archive/); keep out of the sdist surface
+doc-archive.zip
