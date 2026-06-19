@@ -1,5 +1,8 @@
 """Approach-5 streaming top-K (campaign 2026-06 Sprint II-3) — **DECLINED**.
 
+INTERNAL module — not part of the public API (absent from ``mlx_mfa.__all__``);
+retained for the record only. Do not import directly from user code.
+
 SPRINT II-3 VERDICT (2026-06-12, measured): the pre-registered kill
 criterion fired.  PASS-1 (this kernel, naive scalar-TGM dots) measured
 ~70 ms at the audit shape (B=1 H=16 N=S=4096 D=128 K=64) vs the 8 ms

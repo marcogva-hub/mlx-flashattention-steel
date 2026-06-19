@@ -395,8 +395,18 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
         # Defensive fallback: if NAX dispatch fails for any reason
         # (unexpected runtime error, hardware feature missing, etc.),
         # revert to MLX baseline rather than propagating.
+        # Lot-1 B2: distinguish NotImplementedError (expected unsupported-shape
+        # fallback) from an unexpected error; under MFA_HOOK_VERBOSE=1 emit the
+        # full traceback for the unexpected kind (the 120-char reason truncates
+        # diagnostics). The fallback behaviour itself is unchanged — observability only.
+        _kind = "unsupported" if isinstance(e, NotImplementedError) else "unexpected"
         _record_hook_fallback("conv3d_nax_forward",
-                               f"NAX dispatch raised: {type(e).__name__}: {str(e)[:120]}")
+                               f"NAX dispatch raised [{_kind}]: {type(e).__name__}: {str(e)[:120]}")
+        import os as _os
+        if _os.environ.get("MFA_HOOK_VERBOSE") == "1" and _kind == "unexpected":
+            import traceback as _tb, sys as _sys
+            print("[mlx-mfa] conv3d_nax_forward unexpected fallback — full traceback:", file=_sys.stderr)
+            _tb.print_exc()
         # III-4 D14 FIX: re-run the baseline on the pristine original input
         # (input.astype(orig_input_dtype) was a lossy down-up round trip).
         return _ORIGINAL_CONV_GENERAL(
