@@ -8,13 +8,19 @@ identity CANNOT distinguish (all variants are **byte-identical, Δ=0.0**). Label
 
 ## Variants + distinguishing feature (all faithful FlashAttention, no inspired-by deviation [V])
 
+Compiled + routable STEEL forwards on 2.61.0 = **V1, V2, V3, V6_NAX** (plus split-K / dsplit / flash_decode,
+all V2-based). **V4 and V5 were RETIRED — removed from the build in Lot-2** (`mfa_steel_fwd_v{4,5}.cpp`
+dropped from CMake, dispatch blocks removed from `eval_gpu`); they are never routed on any tier. Their
+historical lineage is recorded below for provenance only. [V — confirmed at source: no `csrc/mfa_steel_fwd_v{4,5}.cpp`,
+no CMake/eval_gpu refs; `SteelForwardV4=21`/`SteelForwardV5=23` survive only as harmless unused enum constants.]
+
 | Variant | Distinguishing feature | KernelType |
 |---|---|---|
 | **V1** (`SteelForward`) | baseline simdgroup-matrix FA-2; the fallback | SteelForward |
 | **V2** (`SteelForwardV2`) | sequential K/V phases, 2× BK | SteelForwardV2 |
 | **V3** (`SteelForwardV3`) | separate K_smem+V_smem, 2 barriers/tile (vs V2's 4) | SteelForwardV3 |
-| **V4** | K loaded direct from device (no K_smem) | SteelForwardV4 |
-| **V5** | D-blocked (BD_tile=32, BK=128), register-Q | SteelForwardV5 |
+| ~~**V4**~~ (RETIRED, removed from build Lot-2) | K loaded direct from device (no K_smem) | (was SteelForwardV4) |
+| ~~**V5**~~ (RETIRED, removed from build Lot-2) | D-blocked (BD_tile=32, BK=128), register-Q | (was SteelForwardV5) |
 | **split-K** | K-dim reduction split for under-occupied grids | SteelV2SplitKPartial |
 | **dsplit** | D-split (D=256→2, D=512→4 sub-tiles) | SteelV2DSplit256/512 |
 | **flash_decode** | two-phase split-KV decode (N_q≤4) | flash_decode partial/reduce |
@@ -28,16 +34,17 @@ identity CANNOT distinguish (all variants are **byte-identical, Δ=0.0**). Label
 | D≤128 **causal**, below V3 shape | **V1** | env-toggle: D128 N512 default 0.42ms ≠ FORCE_V2 0.34ms [V] |
 | D≤128 **non-causal** | **V2** (split-K if under-occupied) | V3 needs causal; fp32-correct [V] |
 | D=256 / 512 | **dsplit** | only D=256/512 path; fp32-correct [V] |
-| (any) + `MFA_ENABLE_V4=1` eligible | **V4** | env-toggle changes dispatch (12.29→11.54ms) → eligible, NOT default [V] |
-| (any) + `MFA_ENABLE_V5=1` | **V5** | ineligible at tested shapes (no timing change) — env-gated, rarely fires [D] |
+| ~~(any) + `MFA_ENABLE_V4=1`~~ | ~~V4~~ | **RETIRED (Lot-2)** — V4 removed from build; `MFA_ENABLE_V4` no longer a registered knob, no dispatch path |
+| ~~(any) + `MFA_ENABLE_V5=1`~~ | ~~V5~~ | **RETIRED (Lot-2)** — V5 removed from build; `MFA_ENABLE_V5` no longer a registered knob, no dispatch path |
 
-**Constraints:** D∈{64,128} for V1-V5/split-K; D∈{256,512} for dsplit; fp16/bf16; split-K excludes
-block_mask/attn_bias; V3 excludes block_mask; V4/V5 env-gated (V4 `MFA_ENABLE_V4`, V5 `MFA_ENABLE_V5`),
-"disabled by default pending benchmarks". GQA supported. [V]
+**Constraints:** D∈{64,128} for V1/V2/V3/split-K; D∈{256,512} for dsplit; fp16/bf16; split-K excludes
+block_mask/attn_bias; V3 excludes block_mask. (V4/V5 were RETIRED in Lot-2 — see lineage note above;
+their old `MFA_ENABLE_V4`/`MFA_ENABLE_V5` knobs are gone from `_knobs.py`.) GQA supported. [V]
 
 ## Correctness (fp32 oracle, all forced cells) — LOCKED
-V1, V2, V3 (D64+D128), V4, V5, split-K, dsplit, flash_decode, GQA: max_abs_err ≤ 7.7e-5, all finite
-(14 cells incl. 3 threshold locks). [V]
+V1, V2, V3 (D64+D128), split-K, dsplit, flash_decode, GQA: max_abs_err ≤ 7.7e-5, all finite.
+(The historical V4/V5 correctness cells were skipped/retired in Lot-2 — `tests/test_dense_steel_family_lock.py`
+marks the V4/V5 forced cells `@pytest.mark.skip "retired Lot-2"`.) [V]
 
 ## Selection-threshold audit (the B1 `2^31` lesson, generalized)
 
@@ -59,5 +66,7 @@ V3 faster-or-parity vs V2 on M5, but **whether ANY STEEL variant beats SDPA on M
 question** — do not assume M5-optimal or M1–M4-legacy. [D — flagged, not concluded]
 
 ## Comment sweep
-Dense STEEL comments are **fresh** (V3 re-validated 2026-06-17; "pending benchmarks" for V4/V5 and the
-scratch-lifetime "Phase 1/2 pending under lazy eval" are accurate, not stale). No correction needed.
+Dense STEEL comments are **fresh** (V3 re-validated 2026-06-17; the scratch-lifetime "Phase 1/2 pending
+under lazy eval" note is accurate). Note: a stale `MFA_ENABLE_V4` comment survives at
+`csrc/shader_cache.hpp:61-65` describing the now-retired V4 enum constant — harmless (the kernel is gone),
+flagged for a later sweep.

@@ -10,9 +10,9 @@ Consolidated guide for mlx-mfa's LLM inference and serving layer.
 from mlx_mfa import create_decode_runtime
 import mlx.core as mx
 
-# Create a dense decode runtime
+# Create a dense decode runtime (B is required for the dense backend)
 rt = create_decode_runtime(
-    paged=False, H_kv=8, D=128,
+    paged=False, B=1, H_kv=8, D=128,
     max_seq_len=2048, dtype=mx.float16,
 )
 
@@ -48,14 +48,18 @@ fixed-size blocks on demand, enabling efficient multi-sequence serving.
 ## 3) Hybrid Cache (Hot/Cold/Offloaded)
 
 ```python
-from mlx_mfa import HybridKVCache, DenseKVCacheAdapter, LocalHostKVStoreAdapter
+from mlx_mfa import HybridKVCache
+from mlx_mfa.inference import InferenceContext
+
+# Build the underlying caches via inference contexts, then wrap them.
+hot_ctx = InferenceContext(B=1, H_kv=8, D=128, max_seq_len=2048)
+cold_ctx = InferenceContext(B=1, H_kv=8, D=128, max_seq_len=2048)
 
 hybrid = HybridKVCache(
-    primary=DenseKVCacheAdapter(B=1, H_kv=8, D=128, max_seq_len=2048),
-    secondary=DenseKVCacheAdapter(B=1, H_kv=8, D=128, max_seq_len=2048),
-    external=LocalHostKVStoreAdapter(),
-    hot_seq_capacity=4,      # max sequences in hot tier
+    hot_ctx._cache,                  # primary_cache (positional)
+    secondary_cache=cold_ctx._cache, # cold tier
     policy="lru",
+    hot_seq_capacity=4,              # max sequences in hot tier
 )
 
 # Sequences auto-promote to hot on access, demote on capacity pressure
@@ -64,12 +68,17 @@ hybrid.append(k, v, seq_id=1)  # hot
 # ... when capacity exceeded, LRU victim demoted to cold/offloaded
 ```
 
-**Tiers**:
-- **Hot** (primary): fast access, limited capacity
-- **Cold** (secondary): slower, larger capacity
-- **Offloaded** (external): unlimited, highest latency
+The `HybridKVCache` constructor is `HybridKVCache(primary_cache, secondary_cache=None,
+external_adapter=None, *, policy="lru", hot_seq_capacity=1)`. External offload is wired via
+`external_adapter=` (e.g. `LocalHostKVStoreAdapter()`).
 
-**Pinning**: `hybrid.pin(seq_id=0)` prevents eviction of critical sequences.
+**Tiers**:
+- **Hot** (primary_cache): fast access, limited capacity
+- **Cold** (secondary_cache): slower, larger capacity
+- **Offloaded** (external_adapter): unlimited, highest latency
+
+**Pinning**: keep critical sequences resident with
+`hybrid.prepare_hot_window([seq_id], pin=True)` (there is no `hybrid.pin()` method).
 
 ---
 
@@ -184,7 +193,7 @@ out = rt.step(q_step, k_step, v_step)
 ## 10) mlx-lm Integration
 
 ```python
-from mlx_mfa import patch_mlx_lm, unpatch_mlx_lm
+from mlx_mfa.integrations.mlx_lm import patch_mlx_lm, unpatch_mlx_lm
 
 # Monkey-patch mlx-lm to use MFA kernels
 patch_mlx_lm()
@@ -206,16 +215,18 @@ configurations (quantized cache, sinks, array masks, unsupported D/dtype).
 |----------|--------|
 | `MFA_DISABLE_V2=1` | Skip V2 kernel, use V1 |
 | `MFA_FORCE_V2=1` | Force V2 even on M3+ D≤128 causal |
-| `MFA_FORCE_SDPA=1` | Force SDPA fallback everywhere |
+| `MFA_FORCE_SDPA_ROUTE=1` | Force SDPA fallback everywhere |
 | `MFA_FORCE_GEN=15` | Simulate M3 architecture on M1 |
 | `MFA_ENABLE_V3=1` | Enable V3 experimental kernel |
-| `MFA_ENABLE_V4=1` | Enable V4 experimental kernel |
-| `MFA_ENABLE_V5=1` | Enable V5 experimental kernel |
 | `MLX_MFA_VERBOSE_DISPATCH=1` | Log kernel dispatch decisions |
+
+> **Note:** `MFA_ENABLE_V4` / `MFA_ENABLE_V5` were removed in Lot-2 (the V4/V5 STEEL forwards were
+> retired from the build); these env vars are no longer recognized. See `ENV_VARS.md` for the full,
+> current knob registry.
 
 ---
 
-## 12) Component Status (v2.27.0)
+## 12) Component Status (current as of v2.61.0; per-component "since" versions below are historical)
 
 | Component | Status |
 |-----------|--------|

@@ -9,6 +9,15 @@ This addresses **Pattern #8** — silent hook fallback masking unused
 optimization — documented in
 `.doc-archive/docs/v50/audit-framing-inversions.md`.
 
+> **Scope (2.61.0):** `get_hook_stats()` counts **conv hooks only**
+> (`conv3d_nax_forward`, via the `mx.conv_general` / `mx.conv3d` patch).
+> It does **not** observe `flash_attention*` dispatch. Attention dispatch
+> is observed by a separate **test-only** recorder, `mlx_mfa/_dispatch_trace.py`
+> (zero-cost no-op unless a `capture()` context is open; not in the public
+> `__all__`), used by the routing-equivalence snapshot tests — not by
+> `get_hook_stats()`. As of 2.61.0 the conv hook also accepts the causal
+> per-axis pad `(0,1,1)` 3×3×3 (not just symmetric `(1,1,1)`).
+
 ## When to use
 
 - **Diagnosing perf**: your model runs but seems slower than expected.
@@ -94,7 +103,7 @@ if stats['fallback']:
     print(f"Fallback reasons: {stats['fallback_reasons']}")
 ```
 
-Expected output for v2.50.1+:
+Expected output (v2.50.1 onward, current in 2.61.0):
 ```
 NAX Conv3D engaged 32 times
 Fallback events: 0

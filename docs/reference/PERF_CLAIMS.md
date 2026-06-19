@@ -14,7 +14,16 @@ verifies all active claims are still REACHABLE.
 
 ---
 
-## Active claims (as of v2.58.1)
+## Active claims (as of v2.61.0)
+
+> **M5 NA peak recalibration note (docs audit 2026-06-19):** several entries below
+> use "≤ 51.8 TFLOPS (effective gate)" as the plausibility check the measured rate
+> was validated against. The M5 Max fp16/bf16 **matmul** peak was recalibrated to
+> **~62 TFLOPS** (fp32 ~42, steel) on 2026-06-19. The recalibration only *widens* the
+> plausibility band — every rate quoted below (≤49 forward-tile, ≤48.2 effective at
+> 8192-nc, 7.5–20.1 backward, 55.6 conv roofline) sits below both the old 51.8 and
+> the new ~62 ceiling, so no claim's verdict changes. Read "≤51.8 gate" as
+> "comfortably below the M5 matmul ceiling".
 
 ### NAX forward tile autotune (M5 Max, `research/nax-autotune-m5`, 2026-06-18)
 
@@ -274,7 +283,9 @@ closure HOLDS on M5, but for a NEW, M5-specific reason.** The decision rests on 
   256×8×64×64: **3.23 vs 8.29 ms**; 128×8×128×128: **2.83 vs 8.02 ms**) — the kernel is good. It is
   simply unreachable for causal VAEs.
 - **(c) Those convs are compute-bound.** Measured M5 roofline: compute **55.6 TFLOPS** (4096³ fp16
-  matmul; ~the 51.8 effective gate), bandwidth **358 GB/s** (ridge ≈ 145 FLOP/byte). The VAE 3×3×3
+  matmul; consistent with the recalibrated ~62 TFLOPS M5 fp16/bf16 matmul peak — the older "~51.8
+  effective gate" wording was a lower estimate, 55.6 is below the true ~62 ceiling), bandwidth
+  **358 GB/s** (ridge ≈ 145 FLOP/byte). The VAE 3×3×3
   convs have AI 892–3749 ≫ ridge → compute-bound → a faster compute kernel *could* help if reachable.
 
 **Decision metric** (projected end-to-end VAE-decode conv speedup = Σ ms-saved on

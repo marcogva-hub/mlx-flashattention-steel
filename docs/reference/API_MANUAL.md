@@ -1,6 +1,6 @@
 # mlx-mfa API Manual
 
-Version: **2.60.1**
+Version: **2.61.0**
 Public exports: **101** (the `mlx_mfa.__all__` surface)
 
 This manual documents the retained public API surface for the freeze-prep
@@ -15,19 +15,22 @@ General dense attention entry point with backend routing.
 ```python
 flash_attention(
     q, k, v,
-    *,
     scale=None,
     causal=False,
     softcap=0.0,
     alibi_slopes=None,
+    dropout_p=0.0,
+    return_attn_weights=False,
     window_size=None,
     return_lse=False,
-    return_attn_weights=False,
+    stream=None,
     attn_bias=None,
     backend="auto",
-    stream=None,
 )
 ```
+
+(Signature verified against `mlx_mfa.flash_attention`; arguments are positional-or-keyword,
+not keyword-only.)
 
 Notes:
 - Primary production API.
@@ -69,16 +72,28 @@ flash_attention_kvcache(
     k_cache,
     v_cache,
     *,
-    cache_seqlens=0,
+    k_new=None,
+    v_new=None,
     block_table=None,
     seq_lens=None,
     block_size=16,
-    cache_batch_idx=None,
-    causal=True,
     scale=None,
+    causal=True,
+    softcap=0.0,
+    alibi_slopes=None,
+    window_size=None,
+    rotary_cos=None,
+    rotary_sin=None,
+    cache_seqlens=0,
+    interleaved=True,
+    rotary_dim=None,
+    cache_batch_idx=None,
     stream=None,
 )
 ```
+
+(Signature verified against `mlx_mfa.flash_attention_kvcache` — supports fused
+`k_new`/`v_new` append and inline RoPE; returns `mx.array` or a tuple.)
 
 ### `flash_attention_paged(...)`
 
@@ -92,10 +107,10 @@ flash_attention_paged(
     block_table,
     seq_lens,
     *,
+    scale=None,
+    causal=False,
     block_size=16,
     cache_batch_idx=None,
-    scale=None,
-    causal=True,
     return_lse=False,
     stream=None,
 )
@@ -114,11 +129,11 @@ flash_attention_paged_varlen(
     seq_lens_kv,
     cu_seqlens_q,
     *,
-    block_size=16,
-    cache_batch_idx=None,
     max_seqlen_q=None,
     scale=None,
-    causal=True,
+    causal=False,
+    block_size=16,
+    cache_batch_idx=None,
     stream=None,
 )
 ```
@@ -130,15 +145,18 @@ from packed uint8 pools with centroid lookup in the Metal kernel.
 
 ```python
 flash_attention_paged_varlen_turboquant(
-    q_packed, k_pool_tq, v_pool, block_table, seq_lens_kv,
+    q, k_pool_tq, v_pages, block_table, seq_lens_kv,
     cu_seqlens_q, centroids, k_scales,
     *,
-    block_size=64, max_seqlen_q=None, scale=None, causal=True,
-    tq_bits=3, tq_v_enabled=False,
+    scale=None, causal=False, block_size=16,
+    tq_bits=3, tq_v_enabled=False, tq_wht_enabled=False,
     v_pool_tq=None, v_centroids=None, v_scales=None,
     stream=None,
 )
 ```
+
+(Signature verified against `mlx_mfa.flash_attention_paged_varlen_turboquant`:
+`causal` defaults to `False`, `block_size` to `16`, and `tq_wht_enabled` is present.)
 
 Notes:
 - Phase 2 (K-only): `tq_v_enabled=False`, V is fp16 in `v_pool`.
@@ -174,25 +192,36 @@ create_decode_runtime(
     backend="auto",           # "auto"|"dense"|"paged"|"sage"|"turboquant"
     paged=False,
     quantized_kv=False,
-    query_layout="batched",   # "batched"|"packed"
-    B=None,
-    H_q=None,
-    H_kv=None,
-    D=None,
-    max_seq_len=None,
-    default_seq_id=0,
-    hybrid_cache=False,
-    hybrid_hot_seq_capacity=2,
-    hybrid_enable_offload=False,
-    hybrid_external_adapter=None,
-    hybrid_secondary_cache=None,
-    hybrid_policy="lru",
     turboquant=False,         # enable TurboQuant KV compression
     tq_bits=3,                # 2, 3, or 4
     tq_v=True,                # compress V as well as K
-    **kwargs,
+    hybrid_cache=False,
+    hybrid_policy="lru",
+    hybrid_hot_seq_capacity=1,
+    hybrid_with_secondary=True,
+    hybrid_enable_offload=False,
+    hybrid_external_adapter=None,
+    query_layout="batched",   # "batched"|"packed"
+    B=None,
+    H_q=None,
+    H_kv,                     # required
+    D,                        # required
+    max_seq_len=8192,
+    decode_nq=1,
+    expected_cache_len=0,
+    causal=True,
+    window_size=None,
+    num_blocks=None,
+    block_size=16,
+    dtype=mx.float16,
+    stream=None,
+    default_seq_id=0,
 ) -> DecodeRuntime
 ```
+
+(Signature verified against `mlx_mfa.create_decode_runtime`: `H_kv` and `D` are
+required; `hybrid_with_secondary` replaces the older `hybrid_secondary_cache`
+keyword; `max_seq_len` defaults to `8192`, `hybrid_hot_seq_capacity` to `1`.)
 
 ### `DecodeRuntime` key methods
 
@@ -335,9 +364,17 @@ Introspection/system:
 - `compile_metallib(...)`
 - `calibrate_dispatch(...)`
 
+Auto-hook control / telemetry:
+- `enable(...)` / `disable(...)` — install / remove the auto-routing `mx.*` hooks
+- `hooks_status()` — current hook installation state
+- `get_hook_stats()` / `reset_hook_stats()` — per-surface dispatch counters
+- `diagnostics()` — environment + hook + device summary dict
+- `sparse_attention_dispatch(...)` — sparse/LCSA NAX dispatcher
+
 Integrations:
-- `patch_mlx_lm(...)`
-- `unpatch_mlx_lm(...)`
+- mlx-lm integration hooks live in `mlx_mfa.integrations.mlx_lm`
+  (import directly from that submodule; they are not re-exported on the top-level
+  `mlx_mfa` namespace / `__all__`).
 
 ## 7) Behavioral Guidance (Current Freeze State)
 
@@ -349,48 +386,53 @@ Integrations:
 
 ## 8) Export Index
 
-Current exported symbols (`mlx_mfa.__all__`) — **94 symbols** (+ `__version__`) — are listed below:
+Current exported symbols (`mlx_mfa.__all__`) — **101 symbols** including
+`__version__` (100 callables/classes listed below + `__version__`):
 
-`DecodeRuntime`, `DenseKVCache`, `DenseKVCacheAdapter`, `DispatchPolicy`,
-`ExternalKVCacheAdapter`, `ExternalKVCacheCapabilities`, `HybridKVCache`,
+`DecodeRuntime`, `DenseKVCache`, `DenseKVCacheAdapter`,
+`DispatchPolicy`, `ExternalKVCacheAdapter`,
+`ExternalKVCacheCapabilities`, `HybridKVCache`,
 `HybridKVCacheAdapter`, `InferenceContext`, `KVCacheAdapter`,
-`KVCacheCapabilities`, `KVCacheOperationUnsupported`, `KVCacheProtocol`,
-`LocalHostKVStoreAdapter`, `PagedInferenceContext`, `PagedKVCache`,
-`PagedKVCacheAdapter`, `QuantizedKVCache`, `QuantizedKVCacheAdapter`,
-`SVDQuantLinear`, `SageInferenceContext`, `TurboQuantPagedInferenceContext`,
-`adapt_kv_cache`, `calibrate_dispatch`,
-`compile_metallib`, `create_decode_runtime`, `create_inference_context`,
-`dequantize`, `flash_attention`, `flash_attention_gna`,
-`flash_attention_kv_packed`,
-`flash_attention_kvcache`, `flash_attention_kvcache_rope_append`,
-`flash_attention_paged`, `flash_attention_paged_varlen`,
+`KVCacheCapabilities`, `KVCacheOperationUnsupported`,
+`KVCacheProtocol`, `LocalHostKVStoreAdapter`, `PagedInferenceContext`,
+`PagedKVCache`, `PagedKVCacheAdapter`, `QuantizedKVCache`,
+`QuantizedKVCacheAdapter`, `SVDQuantLinear`, `SageInferenceContext`,
+`TurboQuantKVCache`, `TurboQuantPagedInferenceContext`,
+`adapt_kv_cache`, `build_tq_paged_k_pool`, `build_tq_paged_v_pool`,
+`calibrate_dispatch`, `compile_metallib`, `create_decode_runtime`,
+`create_inference_context`, `dequantize`, `diagnostics`, `disable`,
+`enable`, `flash_attention`, `flash_attention_gna`,
+`flash_attention_kv_packed`, `flash_attention_kvcache`,
+`flash_attention_kvcache_rope_append`, `flash_attention_paged`,
+`flash_attention_paged_varlen`,
 `flash_attention_paged_varlen_turboquant`,
 `flash_attention_qkv_packed`, `flash_attention_rope`,
 `flash_attention_rope_unified`, `flash_attention_sparse`,
-`flash_attention_speculative_verify`, `flash_attention_speculative_verify_paged`,
+`flash_attention_speculative_verify`,
+`flash_attention_speculative_verify_paged`,
 `flash_attention_splitfuse`, `flash_attention_topk`,
-`flash_attention_varlen`,
-`flash_attention_varlen_kv_packed`, `flash_attention_varlen_qkv_packed`,
-`get_device_info`, `get_supported_configs`, `is_mfa_available`,
-`make_adaptive_window_mask`, `make_axial_spatial_mask`,
-`make_axial_temporal_mask`, `make_causal_block_mask`,
-`make_causal_segment_mask`, `make_cross_stream_mask`,
-`make_diagonal_mask`, `make_dilated_temporal_mask`,
-`make_gna_mask`, `make_lcsa_mask`, `make_reference_frame_mask`,
-`make_rope_3d_tables`, `make_segment_mask`, `make_shared_prefix_cache`,
-`make_sink_window_mask`, `make_sliding_window_mask`, `make_spatial_2d_mask`,
-`make_spatial_3d_mask`, `make_strided_mask`,
+`flash_attention_varlen`, `flash_attention_varlen_kv_packed`,
+`flash_attention_varlen_qkv_packed`, `get_device_info`,
+`get_hook_stats`, `get_supported_configs`, `hooks_status`,
+`is_mfa_available`, `make_adaptive_window_mask`,
+`make_axial_spatial_mask`, `make_axial_temporal_mask`,
+`make_causal_block_mask`, `make_causal_segment_mask`,
+`make_cross_stream_mask`, `make_diagonal_mask`,
+`make_dilated_temporal_mask`, `make_gna_mask`, `make_lcsa_mask`,
+`make_reference_frame_mask`, `make_rope_3d_tables`,
+`make_segment_mask`, `make_shared_prefix_cache`,
+`make_sink_window_mask`, `make_sliding_window_mask`,
+`make_spatial_2d_mask`, `make_spatial_3d_mask`, `make_strided_mask`,
 `make_temporal_distance_bias`, `make_temporal_group_mask`,
-`make_topk_spatial_mask`,
-`pack_3bit_optimal`, `pack_k_for_metal`, `pack_v_for_metal`,
-`build_tq_paged_k_pool`, `build_tq_paged_v_pool`,
-`quantize_model`, `quantize_per_block`,
-`resolve_context_cache`, `resolve_context_cache_adapter`, `sage_attention`,
-`sage_attention_kvcache`, `sage_attention_prequantized`, `sage_block_sizes`,
-`sage_output_correction`, `smooth_k`,
-`temporal_distance_bias_to_mask`,
-`turboquant_compress`, `turboquant_decompress`, `TurboQuantKVCache`,
-`unpack_3bit_optimal`, `warmup_kernels`.
+`make_topk_spatial_mask`, `pack_3bit_optimal`, `pack_k_for_metal`,
+`pack_v_for_metal`, `quantize_model`, `quantize_per_block`,
+`reset_hook_stats`, `resolve_context_cache`,
+`resolve_context_cache_adapter`, `sage_attention`,
+`sage_attention_kvcache`, `sage_attention_prequantized`,
+`sage_block_sizes`, `sage_output_correction`, `smooth_k`,
+`sparse_attention_dispatch`, `temporal_distance_bias_to_mask`,
+`turboquant_compress`, `turboquant_decompress`, `unpack_3bit_optimal`,
+`warmup_kernels`.
 
 ---
 

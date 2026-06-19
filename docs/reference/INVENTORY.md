@@ -1,13 +1,14 @@
 # mlx-mfa Inventory
 
-Version: **2.58.1** (PyPI) — header updated 2026-06-12; module/LOC tables below are a 2026-05-13 snapshot (regeneration pending)
+Version: **2.61.0** — module/LOC tables below are an older snapshot (regeneration pending); the public-API counts in this section are current as of 2.61.0.
 
 > **For canonical NAX path coverage**, see `docs/reference/HARDWARE_SUPPORT.md`.
 
-## Public-API surface (v2.39.1)
+## Public-API surface (2.61.0)
 
-22 `flash_attention*` functions + 3 `sage_attention*` functions exposed
-via `mlx_mfa.__all__`.  Full per-function classification is in
+19 `flash_attention*` functions + 3 `sage_attention*` functions exposed
+via `mlx_mfa.__all__` (101 names total, including `__version__`).  Full
+per-function classification is in
 `.doc-archive/docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`.
 
 ## Major modules + current LOC (2026-05-13 snapshot)
@@ -47,18 +48,14 @@ via `mlx_mfa.__all__`.  Full per-function classification is in
 | `tests/test_attention.py` | ~700 | Core attention suite (unchanged scope from v2.27.0) |
 | `tests/test_v6nax_bwd_multisg.py` | pre-existing failures unrelated to internal sprints (see Sprint B audit) | — |
 
-## Internal-mode accumulation contract
+## Internal-mode accumulation contract (historical — v2.39.1 → v2.50)
 
-Post-v2.39.1, master accumulates internal sprints (Sprint A v2.39.2-internal,
-Sprint B v2.40.0-internal, Sprint C v2.40.x-internal) **without bumping the
-PyPI version**.  pyproject.toml + `mlx_mfa/__init__.py:__version__` + README
-banner all remain at `2.39.1` until the v2.50 bundle release.
-
-CHANGELOG `[Unreleased — for v2.50]` section accumulates entries.  At v2.50
-ship time, this section is renamed to `[2.50.0] — <date>`.
-
-See `.doc-archive/docs/audits/v50-nax-coverage/03-sprint-sequence.md` for the 5-sprint
-plan to reach v2.50.
+> Historical note. During the v2.39.1 → v2.50 window, master accumulated internal
+> sprints (Sprint A/B/C) without bumping the PyPI version, then released as the
+> v2.50 bundle. That window is closed; the current shipped version is **2.61.0**
+> and pyproject.toml + `mlx_mfa/__init__.py:__version__` track it directly.
+> See `.doc-archive/docs/audits/v50-nax-coverage/03-sprint-sequence.md` for the
+> archived 5-sprint plan.
 
 ## Scope
 
@@ -115,8 +112,8 @@ Current line counts (major files, 2026-03-27 snapshot):
 | `csrc/mfa_steel_fwd.cpp` | 3349 | Shared forward template generation |
 | `csrc/mfa_steel_fwd_v2.cpp` | 2138 | V2 production kernel family |
 | `csrc/mfa_steel_paged_varlen_tq_fwd.cpp` | 511 | TurboQuant paged varlen kernel generator |
-| `csrc/mfa_steel_fwd_v3.cpp` | 642 | V3 separate K/V smem kernel |
-| `csrc/mfa_steel_fwd_v5.cpp` | 683 | V5 D-blocked kernel (experimental) |
+| `csrc/mfa_steel_fwd_v3.cpp` | 642 | V3 separate K/V smem kernel (opt-in) |
+| `csrc/mfa_steel_fwd_v6_nax.cpp` | — | V6_NAX matmul2d forward kernel (M5+) |
 | `csrc/mfa_steel_bwd.cpp` | 1295 | Native backward (kept non-default) |
 | `csrc/mfa_env.hpp` | 108 | MFAEnvConfig env var singleton |
 | `csrc/mfa_gna_fwd.hpp` | — | GNA forward kernel declarations |
@@ -128,7 +125,7 @@ Current line counts (major files, 2026-03-27 snapshot):
 
 ## Public API Snapshot
 
-`mlx_mfa.__all__` exports: **90** symbols (`+ __version__`).
+`mlx_mfa.__all__` exports: **101** symbols (the count includes `__version__`).
 
 Major groups:
 - Core attention: `flash_attention*` dense/paged/varlen/packed/splitfuse/speculative/turboquant.

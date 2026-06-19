@@ -1,11 +1,25 @@
 # mlx-mfa Hardware Support Matrix
 
-**Version**: 2.50.1 (shipped 2026-05-16)
-**Last audited**: 2026-05 repo review (post-v2.50.1; KD-5 STEEL backward D=128 fix, hook telemetry, conv NAX dtype fix)
+**Version**: 2.61.0
+**Last audited**: 2026-06-19 (docs accuracy audit, branch `docs/2.61.0-accuracy-audit`)
+**Authoritative dispatch source**: `docs/reference/dispatch-map.md` (runtime-fingerprint
+locked by `tests/test_dispatch_map_lock.py`) — that file, not this matrix, is the
+which-kernel-runs ground truth. This matrix is the human-readable companion.
 **Audit source**: empirical bench + multi-sprint deliverables
 (Sprints 1-2 dispatch fixes, Sprint 3 PoC + native top-K iteration,
 Sprint 4 V6NAX backward causal, Sprint B v2.40.0-internal D=128 split,
 Prompt 5b Sections A/C/D)
+
+> **2.61.0 staleness note (docs audit 2026-06-19):** much of the prose below is the
+> v2.50-era narrative and lags the current dispatch. The verified current-state facts
+> are: the dense **D=128** `backend="auto"` route is **NAX matmul2d (`v6_nax_forward`)**
+> for **N≥2048** and Apple SDPA for N<2048 (`MFA_V6_DENSE_MIN_N`, default 2048); dense
+> **D=64** stays SDPA **except** causal & B·H≥4 & N≥4096 → MFA primitive (V3 cond-auto,
+> V3 itself dormant on M5). **V4/V5 STEEL forwards were removed from the build (Lot-2);
+> routed STEEL forwards are V1/V2/V3/V6_NAX only.** Where rows below say "STEEL V2 (auto)"
+> for dense D=64/128 on M5+, read them as the legacy `backend="mfa"` expert path — the
+> default `auto` path is NAX/SDPA per `dispatch-map.md`. The M5 NA fp16/bf16 matmul peak
+> is ~62 TFLOPS (fp32 ~42); any "51.8" figure elsewhere is a superseded estimate.
 
 ## TL;DR
 

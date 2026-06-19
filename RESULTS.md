@@ -1,8 +1,11 @@
 # mlx-mfa Results Summary
 
 > **⚠ VERIFIED M5/26.6 PERF (audit Phase E, 2026-06-18) — read this first.** Measured on the
-> now-known real dispatch (each number annotated with its fingerprinted binary; lesson #15 + Pattern #6
-> + effective-FLOP ≤51.8 TFLOPS). Perf is **Verified-at-date, NOT executable-locked** (timing is
+> now-known real dispatch (each number annotated with its fingerprinted binary; lesson #15 + Pattern #6).
+> (Note: the M5 NA fp16/bf16 matmul peak was recalibrated to ~62 TFLOPS in 2026-06-19; the older
+> "effective-FLOP ≤51.8 TFLOPS" plausibility gate these numbers were checked against is a lower estimate
+> and is superseded — it does not invalidate the dated absolute-ms numbers below.)
+> Perf is **Verified-at-date, NOT executable-locked** (timing is
 > CI-flaky — re-measure is the anti-drift). Full table + methodology:
 > `.doc-archive/docs/v50/campaign-2026-06/audit/phase-E-rebench-report.md`. Headlines (B2 H8 N4096, M5/26.6):
 > - **sparse V2 (matmul2d) is the right sparse kernel** — 19–59× faster than the V1 scalar; the V1/V2
@@ -17,8 +20,14 @@
 > - **sage int8 is 4.7× slower than SDPA on M5** (cos ~0.997) — not worth auto-routing here.
 > - The numbers BELOW are historical (M1 Max + pre-26.6 M5); treat as indicative, not current.
 
-Version: **2.26.0**
-Benchmark hardware: **Apple M1 Max** · **Apple M4 Max**
+Current library version: **2.61.0**
+Benchmark hardware for the tables in §2–§7 below: **Apple M1 Max** · **Apple M4 Max**
+(historical, pre-M5; the verified M5/26.6 numbers are in the boxed note above and in
+`docs/reference/PERF_CLAIMS.md`).
+
+> The "Version: 2.26.0" stamp this doc previously carried referred to the benchmark
+> vintage of the §2–§7 M1/M4 tables, not the current release. The §2–§7 tables are
+> **dated historical** M1-Max/M4-Max data; treat them as indicative, not current-M5.
 
 For complete benchmark tables and architectural notes, see
 `docs/reference/BENCHMARKS.md`.
@@ -41,7 +50,10 @@ For complete benchmark tables and architectural notes, see
   Numbers are compute-bound / OS-sensitive (one cell, D=128 N=2048, was HIGH_VARIANCE
   r=0.43 but V3-faster-or-parity in all 3 sessions). The M1-2026-03 "1.015× vs V2"
   verdict holds on M5, stronger at D=64.
-- **V4/V5** remain experimental opt-in (`MFA_ENABLE_V4`/`MFA_ENABLE_V5`), never auto-routed.
+- **V4/V5** STEEL forward prototypes were **removed from the build (Lot-2, archived at
+  tag `archive/v4-v5-prototypes`)**; the routed STEEL forwards are V1/V2/V3/V6_NAX only.
+  (Historically these were experimental opt-in via `MFA_ENABLE_V4`/`MFA_ENABLE_V5`, never
+  auto-routed; those env vars are no longer recognized.)
 - **TurboQuant** KV cache compression (Phase 1–4) production-ready.
 - **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
 - **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).

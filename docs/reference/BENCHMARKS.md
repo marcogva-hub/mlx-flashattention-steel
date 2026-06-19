@@ -5,6 +5,18 @@
 **Software**: MLX 0.31.1 · macOS 26.3-26.4 · Python 3.11
 **Suite**: 24/24 pass on both chips
 
+> **DATED HISTORICAL (pre-M5).** This is a v2.11.0 / 2026-03-17 benchmark log on
+> M1 Max + M4 Max. All ratios below are that vintage and are **not current-M5**
+> figures — they predate the M5 NAX dispatch entirely. For current (2.61.0) M5
+> dispatch and perf, see `docs/reference/dispatch-map.md` and
+> `docs/reference/PERF_CLAIMS.md`. Two callouts on items that have since changed:
+> - **§8 "V5 Experimental"** below is a pre-M5 prototype evaluation. The V4/V5
+>   STEEL forwards were **removed from the build (Lot-2)**; they are no longer
+>   compiled or routable. §8 is retained only as the historical record of why
+>   V5 was not promoted.
+> - The §10 "Dispatch Policy Summary" / env-var overrides reflect the M1–M4 STEEL
+>   routing of this vintage, not the M5 NAX/SDPA `auto` routing of 2.61.0.
+
 ---
 
 ## 1) Dispatch Matrix (B=1 H=8, f16)

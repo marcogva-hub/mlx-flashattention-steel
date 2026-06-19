@@ -9,6 +9,7 @@ CI-flaky — re-measure is the anti-drift), labelled as such.
 | Published / reference claim | Lock |
 |---|---|
 | routing: dense auto→SDPA, mfa→STEEL, decode→SDPA, conv eligibility | `tests/test_dispatch_map_lock.py` |
+| routing: full Python which-path equivalence (golden snapshot — catches a backend reroute even when output stays correct) | `tests/test_routing_equivalence_snapshot.py` |
 | routing (Phase F): D=128 built-in masks → symmetric 32×32 → NAX-sparse (d≲ceiling) / SDPA (d≳ceiling); D∈{64,128} sparse → V2 (never V1-scalar default) | `tests/test_dispatch_map_lock.py` + `tests/test_decide_auto_version_shape_aware.py` |
 | per-kernel correctness (sparse / dense-steel / backward / GNA / conv / topk / sage / paged) | `tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py` (42 cells) |
 | dense NAX forward `v6_nax_forward` is a faithful FA-2 forward (default scale) | `tests/test_v6_nax_forward_lock.py` (9 cells) |

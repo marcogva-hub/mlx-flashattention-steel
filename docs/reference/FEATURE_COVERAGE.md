@@ -1,7 +1,7 @@
 # mlx-mfa Feature Coverage
 
-Version: **2.39.1** (PyPI) + master `82acc55` (post-Sprint A/B/C internal accumulation)
-Last reviewed: 2026-05-13 (v50-nax-coverage audit)
+Version: **2.61.0**
+Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 
 > **For canonical M5+ NAX path classification per function**, see
 > `docs/reference/HARDWARE_SUPPORT.md` (the authoritative matrix derived from the
@@ -31,8 +31,8 @@ Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 
 | Feature | M1/M2/M3 status | M5+ status | Notes |
 |---------|---|---|---|
-| Dense causal D=64/128 (V2) | Production STEEL | **Apple SDPA NAX (auto-routed)** | dispatch_policy `_M5_NAX_THRESHOLDS = 999_999` for D=64/128 |
-| Dense non-causal D=64/128 | Production STEEL (M1/M2); SDPA on M3+ | **Apple SDPA NAX (auto-routed)** | same dispatch logic |
+| Dense D=128 (auto) | Production STEEL V2 | **V6_NAX matmul2d forward** (N≥`MFA_V6_DENSE_MIN_N`, default 2048) | `_select_dense_backend()` in attention.py; opt-out `MFA_DISABLE_V6_DENSE=1` → SDPA |
+| Dense D=64 (auto) | Production STEEL V2 | SDPA (dense); D=64 *causal* large-N (B·H≥4, N≥4096) → MFA primitive via V3 cond-auto | per-(D,causal) `_M5_NAX_THRESHOLDS` dict in dispatch_policy.py (not a flat constant) |
 | D=256 causal | Narrow STEEL | STEEL (no NAX path) | f16 both chips, bf16 M3+ only |
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
 | **V6NAX NAX-direct backward (D=64, opt-in v2.37.2+)** | N/A | **Production (env-gated `MFA_ENABLE_V6_BACKWARD=1`)** | qL≥2048 post-Sprint A; 1.91-2.00× SDPA-vjp |
@@ -118,6 +118,6 @@ Last reviewed: 2026-05-13 (v50-nax-coverage audit)
 
 | Kernel | Gate | Status | Notes |
 |--------|------|--------|-------|
-| V3 (separate K/V smem) | `MFA_ENABLE_V3=1` | Experimental | Occupancy regression vs V2 |
-| V4 (direct device K reads) | `MFA_ENABLE_V4=1` | Experimental | Needs M3+ L2 cache |
-| V5 (D-blocked, Q in registers) | `MFA_ENABLE_V5=1` | Experimental | Barrier-dominated on M1 |
+| V3 (separate K/V smem) | `MFA_ENABLE_V3=1` | Experimental (opt-in) | Conditionally auto-routed on M1–M4 (causal, B·H≥4, large N); occupancy regression vs V2 elsewhere |
+| V4 (direct device K reads) | — | Retired (Lot-2) | Removed from build; gate `MFA_ENABLE_V4` no longer exists |
+| V5 (D-blocked, Q in registers) | — | Retired (Lot-2) | Removed from build; gate `MFA_ENABLE_V5` no longer exists |

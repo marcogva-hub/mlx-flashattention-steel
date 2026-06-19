@@ -2,6 +2,36 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.61.0] — 2026-06-19 — maintainability release: variant retire, routing-equivalence net, dispatch refactor, doc-accuracy audit
+
+Consolidates four held maintainability stacks. **No production routing or kernel-math change** — the
+dispatch decisions are byte-identical to 2.60.1 on M5 (verified by the new routing-equivalence snapshot).
+
+### Changed
+- **V4/V5 STEEL forward variants retired from the build** (experimental, opt-in-only, never auto-routed).
+  V5 was M5-validated before removal and showed no advantage (3.1–4.4× slower than the routed NAX/SDPA
+  default across its envelope). Compiled + routed STEEL forwards are now **V1 / V2 / V3 / V6_NAX**. The
+  `MFA_ENABLE_V4` / `MFA_ENABLE_V5` / `MFA_V5_FORCE_*` env knobs no longer exist. Source recoverable via
+  the `archive/v4-v5-prototypes` tag. (−1615 LOC.)
+- **Dispatch-tree refactor (zero routing change):** the dense backend choice was extracted to a pure
+  `_select_dense_backend()` and `flash_attention_varlen` setup to `_varlen_setup()` — structure only,
+  every gate moved verbatim with its exact short-circuit order.
+
+### Added
+- **`mlx_mfa/_knobs.py`** — central env-knob registry (169 knobs) + `validate_env()` typo/ghost-knob
+  check (off by default, `MFA_KNOB_STRICT=1` to enable). Zero behavior change.
+- **`mlx_mfa/_dispatch_trace.py`** — test-only attention-dispatch telemetry (zero prod overhead when
+  off) + `tests/test_routing_equivalence_snapshot.py` routing-equivalence golden (the safety net for
+  guarded routing refactors).
+- **Doc-accuracy guards** (`tests/test_doc_accuracy_guards.py`) — version / knob-registry / variant
+  consistency tests so stale docs fail CI.
+
+### Fixed
+- Documentation accuracy pass (paragraph-level, claim-by-claim vs source): version → 2.61.0 everywhere,
+  V4/V5 marked retired, M5 NA fp16/bf16 peak corrected (~62 TFLOPS, was 51.8), several API_MANUAL
+  signatures corrected against `inspect.signature`, two broken SERVING_GUIDE examples fixed, `D=64 →
+  SDPA` routing nuance qualified (causal large-N pre-empts to the MFA primitive).
+
 ## [2.60.1] — 2026-06-19 — conv-hook regression fix: fold in conv3d-NAX causal/per-axis pad
 
 **Supersedes 2.60.0 — users on 2.60.0 should upgrade.** 2.60.0 shipped the global conv3d-NAX hook

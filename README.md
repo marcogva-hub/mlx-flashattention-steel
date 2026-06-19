@@ -4,7 +4,7 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.60.1** (PyPI).  The complete, corrected state of
+Current version: **2.61.0** (PyPI).  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
@@ -53,7 +53,7 @@ eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
 (A3-1); the attention/conv compute kernels are otherwise unchanged from v2.52.1
 (the earlier 26.6 perf shifts were the OS/reference moving, not the kernels).*
 
-> **⚠ Use the latest release (current: v2.60.1).** Historical note: v2.51.0 had two
+> **⚠ Use the latest release (current: v2.61.0).** Historical note: v2.51.0 had two
 > CRITICAL silent-corruption bugs (top-K Metal-grid undercount; NaN gradients through
 > `return_lse=True`), fixed in v2.52.0; v2.52.0 had a small-channel conv3d
 > silent-corruption bug (`C_in` not a multiple of 32), fixed in v2.52.1. Any release
@@ -298,7 +298,8 @@ on my work!
 - **D=512** remains SDPA-default.
 - **Native dense backward** was benchmarked and not promoted.
 - **Sage** is a specialized decode backend (narrow, benchmark-gated use).
-- **V3/V4/V5** remain experimental/hardware-dependent.
+- **V3** remains experimental/hardware-dependent (conditionally auto-routed on M5).
+  **V4/V5** STEEL forward variants were retired in v2.61.0 (removed from the build).
 - **TurboQuant** KV cache compression (Phase 1–4) production-ready.
 - **SVDQuantLinear** W4A16 + optional SVD low-rank correction for DiT quantization.
 - **GNA native kernel** inline 3D window attention (D=128, f16/bf16, forward-only).
@@ -353,13 +354,16 @@ The audit's Phase F routing rebuild fixed the two largest sparse-dispatch gotcha
 - **Dense forward routing (M5):** `backend="auto"` dense **D=128** routes to the **NAX
   matmul2d** forward (`v6_nax_forward`), which is **parity-to-modest-win vs Apple SDPA at
   D=128** (0.89–1.03× across N, never loses; F-2 Change 3). Works at **all scales** (the
-  scale is plumbed through the binding); backward is SDPA-vjp (bit-exact). **D=64** stays
-  SDPA (NAX loses 1.17–1.22× there), as do cross-attention (N≠S), windowed, and biased
-  shapes; opt out with `MFA_DISABLE_V6_DENSE=1`. **`backend="mfa"` (simdgroup STEEL) remains
+  scale is plumbed through the binding); backward is SDPA-vjp (bit-exact). **D=64** routes
+  to SDPA (the dense-NAX decision: NAX matmul2d loses 1.17–1.22× there) **except causal
+  & B·H ≥ 4 & N ≥ 4096, where it pre-empts to the MFA primitive** (V3 conditional-auto);
+  cross-attention (N≠S), windowed, and biased shapes also stay SDPA. Opt out of the dense
+  NAX route with `MFA_DISABLE_V6_DENSE=1`. **`backend="mfa"` (simdgroup STEEL) remains
   legacy on M5** — Apple SDPA is 2–4× faster than the *simdgroup* kernels (a different
   family from the NAX matmul2d forward). The remaining ~5–7pp ALU gap to a larger D=128 dense
   win is a future single-`O`-accumulator source-generator rewrite. [Verified]
-- **STEEL V5 is ineligible at all tested shapes** (env-gated, rarely fires). [Verified]
+- **STEEL V4/V5 forward variants were removed from the build in v2.61.0** (never
+  auto-routed; previously env-gated opt-in, found to hold no advantage on M5). [Verified]
 - **`sage_attention` (int8) is ~4.7× slower than SDPA on M5** (cos ~0.997) — kept as
   an expert/opt-in backend, not auto-routed. [Verified]
 
@@ -455,7 +459,7 @@ tile-boundary FP rounding.
 |---|---|
 | Production | V2 dense causal small-D path; window/sparse tile-skip; SDPA fallback policy; TurboQuant KV compression; SVDQuantLinear; GNA native kernel; native `attn_bias` |
 | Narrow / conditional | D=256 causal long-N policy; Sage decode regimes; splitfuse/page-native runtime paths; hybrid local offload behavior |
-| Experimental | V3/V4/V5 families; external/LMCache-like backend extensions beyond local adapter |
+| Experimental | V3 family (V4/V5 retired in v2.61.0); external/LMCache-like backend extensions beyond local adapter |
 
 ## Recommended Usage
 

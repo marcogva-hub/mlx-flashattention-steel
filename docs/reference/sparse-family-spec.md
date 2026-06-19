@@ -8,13 +8,18 @@ kernel — lesson #11), locked by `tests/test_sparse_family_correctness_lock.py`
 
 `flash_attention_sparse` (symmetric mask) → `_sparse_nax_with_sdpa_vjp` → `sparse_attention_dispatch`
 → `sparse_attention_nax` → `_ext.sparse_attention_forward(kernel_version=decide_auto_version(...))`.
-**`decide_auto_version`: `qL*kL*D >= 2_147_483_648` (= 4096·4096·128) → "v2", else "v1"** (env
-`MFA_LCSA_KERNEL_VERSION` overrides). [V — read + env-toggle]
+**`decide_auto_version` (since Phase F, 2026-06-18): route by V2-CAPABILITY — `D in {64, 128}` → "v2",
+else (e.g. D=256) → "v1"** (env `MFA_LCSA_KERNEL_VERSION` overrides). The old `qL*kL*D >= 2_147_483_648`
+(= 4096·4096·128) work-product gate is **RETIRED** — Phase E measured V1-scalar is never fastest, and the
+threshold only mis-routed D=64 (always < 2³¹) and D=128 small-N to the slow V1. The C++
+`sparse_attention_forward` still falls v2→v1 internally when V2 is ineligible (causal / block_tile≠32),
+so V1 remains the genuine fallback, never the default for a V2-capable shape.
+[V — `mlx_mfa/lcsa_nax.py:59-106`]
 
 | | **V2 — `sparse_kernel_source_v2`** | **V1 — `sparse_kernel_source`** |
 |---|---|---|
 | MMA form | **NAX `matmul2d`** cooperative-tensor (`BaseNAXFrag::mma`, desc 16,32,16) | **per-thread SCALAR** (`float q_vec[cD]`, scalar `acc += p[kc]*V`) |
-| Selected when | work ≥ 2.147e9 (e.g. D=128 N≥4096) | work < 2.147e9 (D=64 any N≤8k; D=128 N<4096) |
+| Selected when (Phase F) | D∈{64,128} default (V2-capable head dims); fp16/bf16, block_tile==32, !causal | only the genuine fallback — D∉{64,128}, or V2 ineligible (causal / block_tile≠32) falls back here in C++ |
 | Speed (D=128 N=4096 d=0.25) | **1.20 ms** (env-toggle: default==v2) | **49.3 ms** (~41× slower) [V] |
 | Algorithm | block-sparse flash: matmul2d QK^T + online softmax + mask-gated block skip + matmul2d P@V | block-sparse flash: scalar QK^T + online softmax + block skip + scalar P@V |
 | Paper-fidelity | **faithful block-sparse FlashAttention-2** (no "inspired-by" deviation found) [V] | faithful; scalar (unvectorized) |
@@ -25,34 +30,41 @@ all finite** (V2) / ≤ 7.9e-5 (V1). [V — locked tests]
 
 **Constraints:** D∈{64,128}; fp16/bf16; block_tile∈{16,32,64}; symmetric mask (`bt_q==bt_k`) to
 engage on M5+ (asymmetric → SDPA fallback, §4); mask total bytes ≥ 4096 (MLX inlines smaller buffers);
-mask-ndim 2/3/4; GQA `Hq%Hk==0`. V2 additionally requires `block_tile==32` and `!causal` (causal →
-V1). [V]
+mask-ndim 2/3/4; GQA `Hq%Hk==0`. V2 eligibility (C++ `sparse_attention_forward`) =
+`D∈{64,128} && block_tile==32 && (fp16 || bf16) && !causal`; otherwise transparently falls back to V1.
+**bf16 now routes to V2** (the old `is_f16`-only gate was lifted — gotcha 4 fix; previously bf16 silently
+fell to the ~50× slower V1 scalar). [V — `csrc/mfa_sparse_attention.cpp:1046-1054`]
 
 ## 2. The mask machinery
 
-`_steel_block_config(D)`: D=64 → (BQ=32, BK=32) **symmetric**; D=128 → (BQ=32, BK=16) **asymmetric**.
-[V] Every mask-maker derives its block size from this, so **D=64 masks are symmetric, D=128 masks are
-asymmetric** — the root of the §4 fallback. `make_causal_block_mask` / `make_sliding_window_mask` /
-`make_strided_mask` / `make_lcsa_mask` all emit at this granularity. [V]
+The built-in mask-makers derive their block size from `masks.py::_bq_bk(D)`, which since **Phase F**
+(2026-06-18) is **DECOUPLED** from STEEL's `_steel_block_config`: `_bq_bk(64)=(32,32)`,
+`_bq_bk(128)=(32,32)` **symmetric** (was the asymmetric 32×16 that mirrored STEEL — the old root of the
+§4 fallback), `_bq_bk(256)=(32,16)` (NAX-sparse unsupported at D=256). So **both D=64 AND D=128 makers
+now emit symmetric masks → auto-route to the NAX V2 kernel.** `make_causal_block_mask` /
+`make_sliding_window_mask` / `make_strided_mask` / `make_lcsa_mask` all emit at this granularity.
+(STEEL's own dense `_steel_block_config` still uses 32×16 at D=128 — intentionally separate.)
+[V — `mlx_mfa/masks.py:36-56`]
 
-## 3. Mask-faithfulness (the Phase-F premise — established, not implemented)
+## 3. Mask-faithfulness (Phase F — SHIPPED 2026-06-18)
 
-Would a **D=128 symmetric 32×32** convention faithfully represent the patterns vs the current 32×16?
-**YES — byte-identical.** Comparing the 32×32 (D=64-conv) vs 32×16 (D=128-conv) block masks of the
+A **D=128 symmetric 32×32** convention faithfully represents the patterns vs the old 32×16:
+**byte-identical.** Comparing 32×32 (D=64-conv) vs 32×16 (D=128-conv) block masks of the
 SAME pattern, fp32 attention is **Δ=0.0e+00** for sliding-window, causal, AND strided; both differ
 from the exact element-level pattern by the same 1.1e-1 (the inherent, granularity-independent
-block-sparse approximation). [V] **⇒ Phase F can route D=128 onto the symmetric V2 kernel by
-regenerating masks at 32×32 with zero correctness cost** (for these patterns). Caveat: strided with
-stride>BK and LCSA's top-k component were not separately isolated here — [D] likely also faithful;
-verify in Phase F. **Do NOT OR-merge an existing 32×16 mask to 32×32** (superset → denser → not
-faithful); regenerate at 32×32.
+block-sparse approximation). [V] **Phase F SHIPPED this**: the built-in D=128 makers now emit
+symmetric 32×32 (`masks.py::_bq_bk(128)=(32,32)`), so the auto-route (`bt_q==bt_k`) sends them to the
+real NAX V2 kernel with zero correctness cost. The masks were **regenerated at 32×32**, NOT OR-merged
+from 32×16 (superset → denser → not faithful). See `dispatch-map.md` §Phase F.
 
 ## 4. SDPA-fallback paths (part of the sparse entry's runtime behavior)
 
-- `_sparse_fallback_sdpa_perhead` (`attention.py:3239`): M5+ **asymmetric** mask → dense Apple SDPA +
+- `_sparse_fallback_sdpa_perhead`: M5+ **asymmetric / custom** mask (`bt_q≠bt_k`) → dense Apple SDPA +
   per-head block-expanded bias. byte-identical to `mx.fast.sdpa` (Δ=0.0). Reason: the asymmetric STEEL
   kernel is disabled by the `(long)p->NK` compiler miscompile (`.doc-archive/docs/v6-nax/sparse-bug-investigation.md`).
-  [V] **Gotcha 1** (loses the 1.7–4.2× sparse win at D=128).
+  [V] **Gotcha 1 status:** since Phase F the built-in D=128 makers emit symmetric 32×32 → NAX (they no
+  longer hit this fallback); the residual SDPA path now only applies to genuinely asymmetric/custom masks
+  or masks <4096 bytes, or near-dense masks (density ≥ ceiling 0.78) — all intentional. See `dispatch-map.md`.
 - `_sparse_fallback_sdpa`: ndim-3/4 cross-head-union fallback. [V]
 
 ## 5. Sparse backward
@@ -63,11 +75,13 @@ faithful); regenerate at 32×32.
   + dQ/dK SDPA-vjp; dQ Δ=0.0 by design). Declined-on-perf (Pattern #6). [V]
 - **Opt-in** `MFA_V6_BWD_SPARSE_NATIVE=1`: full-native. Declined-on-perf (Pattern #6, native < SDPA-vjp). [D — source + cartography]
 
-## 6. Routing status (dispatch-map cells)
+## 6. Routing status (dispatch-map cells, after Phase F + bf16 fix)
 
-D=128 symmetric → V2 matmul2d (routed-as-intended, the win); D=128 asymmetric / built-in makers →
-SDPA fallback (silent, gotcha 1); D=64 / D=128-small-N → V1 scalar (real but ~40× slower, gotcha 2);
-backward → SDPA-vjp (gotcha 3). See `dispatch-map.md`.
+D=128 symmetric (incl. built-in makers) → V2 matmul2d (the 1.7–4.2× win, **gotcha 1 FIXED**); D=128
+asymmetric/custom or <4096-byte or density≥0.78 → SDPA fallback (intentional); D=64 → V2 always
+(**gotcha 2 FIXED** — `decide_auto_version` retired the 2³¹ gate, ~9× vs old V1); bf16 symmetric → V2
+(**gotcha 4 FIXED**, was the ~50× V1 scalar); backward → SDPA-vjp (gotcha 3, by design). V1 scalar is
+now only the genuine D∉{64,128} fallback. See `dispatch-map.md`.
 
 ## 7. Comment sweep (B1, comment-only fixes)
 - `mfa_sparse_attention.cpp:13` "Phase 1.3 *will* swap … matmul2d" → corrected (the swap is DONE in V2).

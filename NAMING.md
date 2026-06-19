@@ -9,7 +9,7 @@ record). A repo-wide `grep V34` should match only this file and that report.
 
 | Generation | MMA primitive | Notes |
 |---|---|---|
-| **V1–V5** | `simdgroup_matrix` (STEEL) | `mfa_steel_fwd*.cpp`; threadgroup-loaded MMA. |
+| **V1–V5** | `simdgroup_matrix` (STEEL) | `mfa_steel_fwd*.cpp`; threadgroup-loaded MMA. **V4/V5 forward variants were retired from the build in v2.61.0** (compiled+routed STEEL forwards are now V1/V2/V3 + V6_NAX); the V4/V5 names are kept here only for lineage. |
 | **V6** | `mpp::tensor_ops::matmul2d` cooperative-tensor (**NAX**) | Apple Neural-Accelerator path; `csrc/mfa/v6_nax/`, `csrc/mfa_v6_nax_primitive.cpp`, `csrc/mfa_sparse_attention.cpp`. |
 
 Apple's own SDPA uses a *different* NAX form — raw `metal_simdgroup_matrix`

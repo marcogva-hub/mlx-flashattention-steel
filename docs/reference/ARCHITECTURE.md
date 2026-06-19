@@ -1,6 +1,6 @@
 # mlx-mfa Architecture
 
-Version: **2.27.0**
+Version: **2.61.0**
 
 ## 1) System Overview
 
@@ -11,8 +11,11 @@ Python API/runtime (mlx_mfa.*)
   -> nanobind extension (csrc/bindings.cpp)
     -> MFA Primitive dispatch (csrc/mfa_attention.cpp)
       -> JIT shader generation + pipeline cache
-        -> Metal kernels (STEEL V2/V3/V4/V5, Sage, paged helpers, TurboQuant)
+        -> Metal kernels (STEEL V1/V2/V3, V6_NAX (M5+), Sage, paged helpers, TurboQuant)
 ```
+
+(STEEL V4/V5 forward variants were retired and removed from the build in Lot-2;
+the compiled+routed STEEL forward family is V1/V2/V3 plus the M5+ V6_NAX matmul2d kernel.)
 
 Key principle: keep dense production routing conservative and benchmark-backed,
 while exposing advanced serving functionality through explicit runtime APIs.
@@ -22,10 +25,16 @@ while exposing advanced serving functionality through explicit runtime APIs.
 - Production default: **V2 dense** where policy shows wins.
 - Conservative fallback: **MLX SDPA** where wins are not established.
 - Narrow promotion: D=256 causal long-N regimes only.
+- M5+ dense: D=128 dense `backend="auto"` routes to the **V6_NAX matmul2d
+  forward** (`v6_nax_forward`) at N ≥ `MFA_V6_DENSE_MIN_N` (default 2048);
+  D=64 dense and opt-out (`MFA_DISABLE_V6_DENSE=1`) stay SDPA. D=64 *causal*
+  large-N (`B*H≥4`, N≥4096) is pre-empted to the MFA primitive earlier via the
+  V3-conditional-auto gate in `should_use_mfa()`.
 - Non-promotion outcomes retained:
   - D=512 remains SDPA-default
   - native dense backward remains non-default
-- Experimental families remain opt-in: V3/V4/V5.
+- Experimental families remain opt-in: V3 (`MFA_ENABLE_V3=1`). V4/V5 were retired
+  and removed from the build (Lot-2); only harmless unused enum constants remain.
 
 ## 3) Core Runtime Surface
 
@@ -241,8 +250,8 @@ Core native files:
 - `csrc/mfa_attention.cpp`: primitive dispatch and routing
 - `csrc/mfa_env.hpp`: MFAEnvConfig singleton (env var caching)
 - `csrc/mfa_steel_fwd.cpp` + `csrc/mfa_steel_fwd_v2.cpp`: dense forward family
-- `csrc/mfa_steel_fwd_v3.hpp/cpp`: V3 separate K/V smem kernel
-- `csrc/mfa_steel_fwd_v5.hpp/cpp`: V5 D-blocked kernel (experimental)
+- `csrc/mfa_steel_fwd_v3.cpp`: V3 separate K/V smem kernel (opt-in `MFA_ENABLE_V3=1`)
+- `csrc/mfa_steel_fwd_v6_nax.cpp`: V6_NAX matmul2d forward kernel (M5+)
 - `csrc/mfa_steel_bwd.cpp`: native backward kernels (gated non-default)
 - `csrc/mfa_sage_fwd.cpp`: Sage path
 - `csrc/mfa_steel_paged_varlen_tq_fwd.hpp/cpp`: TurboQuant paged varlen kernel
@@ -265,25 +274,28 @@ Selected entries relevant to production dispatch:
 | 17 | SteelV2SplitKPartial | V2 split-K Phase 1 |
 | 18 | SteelV2DSplit256 | D=256 two-pass D-split |
 | 19 | SteelV2DSplit512 | D=512 four-pass D-split |
-| 20 | SteelForwardV3 | V3 separate K/V smem (opt-in) |
-| 21 | SteelForwardV4 | V4 direct device K reads (opt-in) |
-| 23 | SteelForwardV5 | V5 D-blocked BK=128 (opt-in) |
+| 20 | SteelForwardV3 | V3 separate K/V smem (opt-in `MFA_ENABLE_V3=1`) |
+| 21 | SteelForwardV4 | retired (Lot-2); unused enum constant, not built/routed |
+| 23 | SteelForwardV5 | retired (Lot-2); unused enum constant, not built/routed |
 | 24 | GNAForward | GNA inline 3D window (no block_mask) |
 | — | (V2 with has_attn_bias) | Additive bias modes 1/2 via SteelForwardV2 |
 | 27 | PagedVarlenForward | Fused packed varlen + paged KV |
 | 28 | PagedVarlenTQForward | TurboQuant packed uint8 K/V + centroids |
+| 22 | SteelForwardV6NAX | M5+ MPP matmul2d forward (`v6_nax_forward`); see `csrc/mfa_steel_fwd_v6_nax.cpp` |
 
 ### 8.1 MFAEnvConfig (v2.20.0)
 
 Static singleton (`csrc/mfa_env.hpp`) that caches all `MFA_*` env vars at
 first access. Eliminates per-dispatch `std::getenv()` syscall overhead.
 
-**Cached fields** (read once): `force_gen`, `v2_force_bk`, `v3_force_bk_d64`,
-`v3_force_bk_d128`, `v5_force_bk`, `v5_force_bd_tile`, etc.
+**Cached fields** (read once): `force_gen`, `v2_force_bk`, `v2_force_bk_d256`,
+`v2_force_bk_d512`, `v3_force_bk_d64`, `v3_force_bk_d128`, etc. (V5 force-tile
+fields were removed with the V5 retirement in Lot-2.)
 
-**Live-read static methods** (uncached): `enable_v3()`, `enable_v4()`,
-`enable_v5()`, `disable_v2()`, `force_v2()`, `force_splitk()`. These must
-remain live-read because Python tests use `os.environ` patching at runtime.
+**Live-read static methods** (uncached): `enable_v3()`. (The V4/V5 enable gates
+and the v2 force/split-K live-reads were removed with the V4/V5 retirement.)
+Live-read methods must not be cached because Python tests use `os.environ`
+patching at runtime.
 
 `invalidate()` forces re-read of cached fields (test/bench use only).
 
@@ -294,12 +306,16 @@ f32 → ccv legacy path
 f16/bf16:
   Flash Decode (N≤4, S≥256) → split-KV two-phase
   V2 split-K (under-occupied grid) → V2 with parallel reduction
-  V4 (M3+, MFA_ENABLE_V4=1) → direct device K reads
-  V5 (MFA_ENABLE_V5=1) → D-blocked, Q in registers
-  V3 (B*H≥4, causal, D=64 N≥4096 or D=128 N≥2048) → separate K/V smem
+  V3 (B*H≥4, causal, D=64 N≥4096 or D=128 N≥2048; MFA_ENABLE_V3=1) → separate K/V smem
   V2 single-pass → production default
   V1 (D>128) → original STEEL kernel
 ```
+
+Note: V4/V5 forward variants were retired/removed from the build (Lot-2) and are
+no longer in the cascade. On M5+ the Python-side `_select_dense_backend()` (in
+`mlx_mfa/attention.py`) makes the dense NAX-vs-SDPA decision *before* this C++
+cascade: D=128 dense `auto` at N ≥ `MFA_V6_DENSE_MIN_N` routes to the V6_NAX
+matmul2d forward; D=64 dense stays SDPA. The cascade above is the M1–M4 STEEL path.
 
 ## 9) Documentation and Historical Separation
 
@@ -321,7 +337,7 @@ Deferred until future continuation (likely newer hardware generation):
 - broader speculative scheduler integration
 - new hardware-family kernel redesign work
 
-## 11) LLM Serving Layer Status (v2.27.0)
+## 11) LLM Serving Layer Status
 
 The serving layer is considered production-ready for local inference.
 See `docs/reference/SERVING_GUIDE.md` for usage guide.

@@ -10,8 +10,6 @@ M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 |----------|------|---------|--------|:------:|-------------|
 | `MFA_ENABLE_V3` | bool | (set) | V3 | No | Bypass V3 shape guard (backward compat) |
 | `MFA_DISABLE_V3` | bool | unset | V3 | No | Force-disable V3 (fall through to V2) |
-| `MFA_ENABLE_V4` | bool | unset | V4 | No | Opt-in V4 (M3+ only, experimental) |
-| `MFA_ENABLE_V5` | bool | unset | V5 | No | Opt-in V5 (experimental, D-blocked) |
 | `MFA_DISABLE_V2` | bool | unset | V2 | No | Disable all V2 paths (split-K + single-pass + D-split) |
 | `MFA_FORCE_V2` | bool | unset | V2 | No | Bypass M3+ V1 preference (force V2 single-pass) |
 | `MFA_FORCE_SPLITK` | tri | unset | V2-SK | No | -1=heuristic(unset), 0=disable, 1=force |
@@ -40,14 +38,16 @@ M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 | `MFA_V3_FORCE_BK_D64` | int | 0 (auto) | Yes | Override V3 BK for D=64 (valid: 8,16,32,64) |
 | `MFA_V3_FORCE_BK_D128` | int | 0 (auto) | Yes | Override V3 BK for D=128 (valid: 8,16,32,64) |
 
-## V5 Config Overrides
+## V4 / V5 STEEL forward variants — REMOVED (v2.61.0)
 
-| Variable | Type | Default | Cached | Description |
-|----------|------|---------|:------:|-------------|
-| `MFA_V5_FORCE_BK` | int | 0 (auto) | Yes | Override V5 BK (D=64: 32, D=128: 32) |
-| `MFA_V5_FORCE_BD_TILE` | int | 0 (auto) | Yes | Override V5 BD_tile (D=64: 32, D=128: 64) |
-| `MFA_V5_FORCE_BQ` | int | 0 (auto) | Yes | Override V5 BQ (default: 32) |
-| `MFA_V5_FORCE_WM` | int | 0 (auto) | Yes | Override V5 WM (default: 4) |
+The V4 and V5 experimental STEEL forward kernels were **removed from the build**
+(Lot-2): the `mfa_steel_fwd_v{4,5}.cpp` sources are dropped from CMake and the
+dispatch + env gates are gone.  These knobs **no longer exist** and have no
+effect: `MFA_ENABLE_V4`, `MFA_ENABLE_V5`, `MFA_V5_FORCE_BK`,
+`MFA_V5_FORCE_BD_TILE`, `MFA_V5_FORCE_BQ`, `MFA_V5_FORCE_WM`.  The compiled +
+routed STEEL forwards are **V1 / V2 / V3 / V6_NAX** (source recoverable via the
+`archive/v4-v5-prototypes` tag).  V5 was M5-validated before removal and showed
+no advantage (3.1–4.4× slower than the routed NAX/SDPA default).
 
 ## Dispatch Policy (Python-side, live-read)
 
