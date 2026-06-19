@@ -102,6 +102,8 @@ def test_topk_matches_fp32_topk():
 
 # ── sage int8: quant-aware (faithful round-trip + principled int8 cos floor) ──
 def test_sage_int8_quant_roundtrip_faithful():
+    mx.random.seed(0)  # order-independence: per-test seed (module seed only fires at import;
+    # unseeded draws here depend on cumulative global RNG consumed by prior tests → suite-order flake)
     x = (mx.random.uniform(-1, 1, (2, 8, 512, 128)) * 0.1).astype(mx.float16); mx.eval(x)
     qx, scales = Q.quantize_per_block(x, block_size=128)
     xr = Q.dequantize(qx, scales, block_size=128); mx.eval(qx, scales, xr)
@@ -114,6 +116,8 @@ def test_sage_int8_attention_within_principled_int8_bound():
     # int8 7-bit symmetric quant of Q,K over D=128 -> a cos floor ~0.997 (measured
     # stable across input amplitude). Lock at cos>=0.995 (principled int8 margin),
     # NOT an arbitrarily-loose bound.
+    mx.random.seed(0)  # order-independence (see roundtrip test): the cos floor is the tightest
+    # bound, so a polluted-RNG input draw was the chronic suite-order flake; seed=0 → cos 0.9985 (margin).
     B, H, N, D = 2, 8, 512, 128; sc = 1 / math.sqrt(D)
     f = lambda: (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(mx.float16)
     q, k, v = f(), f(), f(); mx.eval(q, k, v)

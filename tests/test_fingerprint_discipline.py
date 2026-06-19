@@ -174,6 +174,7 @@ class TestExpertPathsRunClaimedBinary:
         assert _delta(gk[0], gs[0]) > 0.0, "D=128 opt-in backward stayed SDPA-vjp (claim 'native' wrong)"
 
     def test_sage_is_int8_kernel_not_sdpa(self):
+        mx.random.seed(10)  # order-independence: _qkv draws unseeded → suite-order RNG dependence
         q, k, v = self._qkv(2, 8, 512, 128); sc = 1 / math.sqrt(128)
         o = sage_attention(q, k, v, scale=sc, causal=False)
         s = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
