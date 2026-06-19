@@ -16,7 +16,8 @@ conv via `get_hook_stats()` executed/fallback counters.
 |---|---|---|---|---|
 | `flash_attention` | `backend="auto"`, dense **D=128**, **N≥2048** (N==S, fp16/bf16, no window/bias) | **NAX matmul2d** (`v6_nax_forward`, F-2) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (parity-to-modest-win; all scales; bwd=SDPA-vjp) |
 | `flash_attention` | `backend="auto"`, dense **D=128**, **N<2048** (Tier-2 #1 threshold) | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses small-N: N=512 16-36%, N=1024 3-17%; `MFA_V6_DENSE_MIN_N`) |
-| `flash_attention` | `backend="auto"`, dense **D=64** / cross-attn / windowed / `MFA_DISABLE_V6_DENSE=1` | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses at D=64) |
+| `flash_attention` | `backend="auto"`, dense **D=64** (non-causal, or causal with B·H<4 or N<`v3_min_N`) / cross-attn / windowed / `MFA_DISABLE_V6_DENSE=1` | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses at D=64) |
+| `flash_attention` | `backend="auto"`, dense **D=64**, **causal & B·H≥4 & N≥`v3_min_N`(=4096)** | **MFA primitive** (`should_use_mfa` V3 cond-auto pre-empts the dense-NAX decision) | byteΔ>0 vs sdpa (real kernel) | routed-as-intended — corrects the earlier "D64→SDPA on M5" one-liner: that's the *dense-NAX* decision; this causal-large-N case routes earlier to the MFA primitive (P-H1 snapshot d64 cells; the C++ variant pick — V2/V3, V3 dormant on M5 — is downstream) |
 | `flash_attention` | `backend="mfa"`, dense | **simdgroup STEEL** (V2 default / V3 cond-auto) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (expert; legacy-on-M5) |
 | `flash_attention_sparse` | **D=128**, built-in maker mask (causal/sliding/strided/lcsa → [N/32,N/32], symmetric since **Phase F**), density < 0.78 | **real NAX sparse** (wins 1.7–4.2×) | Δ=3.8e-6; sloped | **routed-as-intended (gotcha 1 FIXED — Phase F)** |
 | `flash_attention_sparse` | **D=128**, symmetric mask, density ≥ 0.78 (ceiling) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended (NAX loses near-dense) |
@@ -87,7 +88,7 @@ a downstream C++ gate) on any of these fails CI.
 | Tier | Dense forward kernel family | Notes |
 |---|---|---|
 | **M1–M4** | **standalone simdgroup STEEL** (V1/V2/V3/split-K/dsplit/flash_decode) | the validated dense tier — `m3_prefers_v1`, `v3_min_N`, RESULTS.md. UNTOUCHED by F-3. (V4/V5 retired from build — Lot-2.) |
-| **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for D=64 + the default | NAX/V6 = the M5+ tier (F-2). |
+| **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for D=64 + the default (except D=64 causal-large-N → MFA primitive via the V3 cond-auto — see the dense-D64 rows above) | NAX/V6 = the M5+ tier (F-2). |
 | any (expert) | `backend="mfa"` → simdgroup STEEL | **legacy-reachable, loses on M5** (SDPA 2–4× faster). |
 
 **V6 is now PURE NAX (F-3).** The simdgroup-*within*-V6 fallback (the old `MFAV6Forward`
