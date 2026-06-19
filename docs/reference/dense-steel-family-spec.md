@@ -67,6 +67,6 @@ question** — do not assume M5-optimal or M1–M4-legacy. [D — flagged, not c
 
 ## Comment sweep
 Dense STEEL comments are **fresh** (V3 re-validated 2026-06-17; the scratch-lifetime "Phase 1/2 pending
-under lazy eval" note is accurate). Note: a stale `MFA_ENABLE_V4` comment survives at
-`csrc/shader_cache.hpp:61-65` describing the now-retired V4 enum constant — harmless (the kernel is gone),
-flagged for a later sweep.
+under lazy eval" note is accurate). The `SteelForwardV4=21` / `SteelForwardV5=23` enum constants in
+`csrc/shader_cache.hpp` are marked **RETIRED (Lot-2)** — retained only to avoid renumbering; no dispatch
+path, generator, or env var remains for them.

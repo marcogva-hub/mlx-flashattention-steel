@@ -58,19 +58,18 @@ class ShaderCache {
       // D=64 all gens, D=128 M1/M2 only (BK=32; M3+ BK=64 exceeds 32KB TGP).
       // generate_steel_v3_source() in mfa_steel_fwd_v3.cpp.
       SteelForwardV3             = 20,  // STEEL V3: separate K/V smem, 2 barriers/iter
-      // --- V4: direct device K reads (M3+ only, opt-in via MFA_ENABLE_V4) ---
-      // Eliminates K_smem: K loaded from device per-simdgroup in GEMM.
-      // Barrier schedule: 2/tile (A+B) vs V2's 4/tile (A+B+X+C).
-      // TGP: Q+V only. No RoPE-K support (K not buffered in TGP).
-      // Set MFA_ENABLE_V4=1 to opt in (disabled by default pending benchmarks).
-      // generate_steel_v4_source() in mfa_steel_fwd_v4.cpp.
-      SteelForwardV4             = 21,  // STEEL V4: direct device K reads, 2 barriers/iter
-      // --- V5: D-blocked attention (BD_tile=32, BK=128) ---
-      // Q loaded from device into registers (no Q_smem).
-      // TGP = max(K^T_smem=8704, V_smem=10240) = 10,240 B → 3 TG/CU.
-      // BK=128: 4× fewer K-tile iterations vs V2 M1/M2 (BK=32).
-      // generate_steel_v5_source() in mfa_steel_fwd_v5.cpp.
-      SteelForwardV5             = 23,  // STEEL V5: D-blocked BK=128 BD_tile=32, 3 TG/CU
+      // --- V4 / V5: RETIRED — removed from the build (Lot-2 chore) ---
+      // Both were experimental, opt-in-only (MFA_ENABLE_V4 / MFA_ENABLE_V5),
+      // never auto-routed.  Retired: mfa_steel_fwd_v{4,5}.cpp dropped from
+      // CMakeLists.txt, the eval_gpu dispatch blocks removed from
+      // mfa_attention.cpp, and the env knobs removed from _knobs.py
+      // KNOWN_KNOBS.  V5 was M5-validated before removal and showed no
+      // advantage (3.1–4.4× slower than the routed NAX/SDPA default).  The two
+      // enum constants below are RETAINED ONLY to avoid renumbering the rest of
+      // the enum — there is no dispatch path, no generator, and no env var for
+      // them.  Source recoverable via the archive/v4-v5-prototypes tag.
+      SteelForwardV4             = 21,  // RETIRED (Lot-2) — unused; kept to avoid renumber
+      SteelForwardV5             = 23,  // RETIRED (Lot-2) — unused; kept to avoid renumber
       GNAForward                 = 24,  // GNA: inline 3D window check, no block_mask
       // 25-26: reserved
       PagedVarlenForward         = 27,  // Fused packed varlen Q + paged KV gather
