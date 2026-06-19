@@ -66,12 +66,15 @@ _DOC_REMOVED_KNOBS = {
 _PREFIX_OK = _knobs.PREFIX_KNOBS
 
 
+def _doc_knobs() -> set:
+    return set(re.findall(r"`(MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)`", _read("ENV_VARS.md")))
+
+
 def test_env_vars_doc_knobs_in_registry():
-    text = _read("ENV_VARS.md")
-    tokens = set(re.findall(r"`(MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)`", text))
+    """G2-forward: every documented knob exists in the registry (catch stale/typo)."""
     known = set(_knobs.KNOWN_KNOBS) | set(_knobs.CPP_KNOBS) | _DOC_REMOVED_KNOBS
     unknown = {
-        t for t in tokens
+        t for t in _doc_knobs()
         if t not in known and not any(t.startswith(p) for p in _PREFIX_OK)
     }
     assert not unknown, (
@@ -80,15 +83,26 @@ def test_env_vars_doc_knobs_in_registry():
         f"was removed from the registry while the doc still lists it as live.")
 
 
-# ── G3: V4/V5 are removed from the build → no doc may present them as live ─────
-def test_v4_v5_removed_from_build_source():
-    csrc = _ROOT / "csrc"
-    for v in ("v4", "v5"):
-        assert not (csrc / f"mfa_steel_fwd_{v}.cpp").exists(), (
-            f"mfa_steel_fwd_{v}.cpp exists — V{v[-1]} was supposed to be removed "
-            f"from the build (Lot-2); update this guard if it was re-added.")
-    assert "MFA_ENABLE_V4" not in _knobs.KNOWN_KNOBS
-    assert "MFA_ENABLE_V5" not in _knobs.KNOWN_KNOBS
+def test_registry_knobs_documented_or_baselined():
+    """G2-reverse (bidirectional): a registry knob must be documented OR in the
+    frozen 'known-undocumented' baseline — so a NEW knob added to the registry
+    without a doc entry fails CI (forces a doc decision). Shrinking the baseline
+    (documenting more) always passes."""
+    import json
+    baseline = set(json.loads(
+        (Path(__file__).parent / "doc_knobs_undocumented_baseline.json").read_text())["knobs"])
+    documented = _doc_knobs()
+    reg = set(_knobs.KNOWN_KNOBS) | set(_knobs.CPP_KNOBS)
+    undocumented_now = {
+        k for k in reg
+        if k not in documented and not any(k.startswith(p) for p in _PREFIX_OK)
+    }
+    new_gap = undocumented_now - baseline
+    assert not new_gap, (
+        f"registry knob(s) neither documented in ENV_VARS.md nor in the frozen "
+        f"undocumented-baseline: {sorted(new_gap)} — a new knob was added without "
+        f"a doc decision. Document it, or (if intentionally internal) regenerate "
+        f"tests/doc_knobs_undocumented_baseline.json.")
 
 
 _INSCOPE_DOCS = [
@@ -98,22 +112,58 @@ _INSCOPE_DOCS = [
 ]
 
 
+# ── G3: source-derived variant availability ──────────────────────────────────
+# The historical STEEL-forward variant universe; "retired" is derived as
+# (universe − compiled), so a FUTURE retirement (e.g. dropping v3.cpp) auto-joins
+# the retired set without editing this test. NOT hardcoded to V4/V5.
+_VARIANT_UNIVERSE = {"v1", "v2", "v3", "v4", "v5", "v6_nax"}
+
+
+def _compiled_variants() -> set:
+    """Derived from the build: which STEEL-forward .cpp actually exist."""
+    out = set()
+    for p in (_ROOT / "csrc").glob("mfa_steel_fwd*.cpp"):
+        suffix = p.stem.replace("mfa_steel_fwd", "").lstrip("_")
+        out.add(suffix or "v1")  # bare mfa_steel_fwd.cpp == V1
+    return out
+
+
+def _retired_variants() -> set:
+    return _VARIANT_UNIVERSE - _compiled_variants()
+
+
+def test_variant_set_source_derived():
+    """Compiled variants are exactly the expected current set; retired = the rest.
+    A future retirement shrinks `_compiled_variants()` and the retired set + the
+    no-doc-presents-retired guard below auto-cover it."""
+    compiled = _compiled_variants()
+    assert "v1" in compiled and "v2" in compiled and "v3" in compiled and "v6_nax" in compiled
+    retired = _retired_variants()
+    # V4/V5 are the current retired set; their enable knobs must be gone.
+    for v in retired:
+        assert f"MFA_ENABLE_{v.upper()}" not in _knobs.KNOWN_KNOBS, (
+            f"variant {v} is retired (no compiled .cpp) but MFA_ENABLE_{v.upper()} "
+            f"is still in the registry.")
+
+
 @pytest.mark.parametrize("rel", _INSCOPE_DOCS)
-def test_no_doc_presents_v4_v5_as_live(rel):
-    """Every MFA_ENABLE_V4/V5 mention must sit in a removal/retired CONTEXT (the
-    line itself or a nearby section header / note — the only honest way to
-    mention a removed knob)."""
+def test_no_doc_presents_retired_variant_as_live(rel):
+    """No in-scope doc may present a RETIRED variant's enable knob as live (the
+    retired set is source-derived, so this auto-covers a future retirement)."""
     _RM = re.compile(r"remov|retir|no longer|gone|absent|REMOVED|dropped|deprecat|stale",
                      re.IGNORECASE)
+    retired_knobs = [f"MFA_ENABLE_{v.upper()}" for v in _retired_variants()]
     lines = _read(rel).splitlines()
     bad = []
     for i, ln in enumerate(lines):
-        if "MFA_ENABLE_V4" in ln or "MFA_ENABLE_V5" in ln:
-            # removal keyword on the line, or within the preceding 6 lines
-            # (e.g. a "## ... REMOVED" section header above a knob list).
+        if any(rk in ln for rk in retired_knobs):
             window = "\n".join(lines[max(0, i - 6):i + 1])
             if not _RM.search(window):
                 bad.append(ln.strip()[:100])
     assert not bad, (
-        f"{rel}: MFA_ENABLE_V4/V5 mentioned outside a removal context (presented "
-        f"as live?) — V4/V5 were removed from the build (Lot-2):\n  " + "\n  ".join(bad))
+        f"{rel}: a RETIRED variant enable-knob {retired_knobs} mentioned outside a "
+        f"removal context (presented as live?):\n  " + "\n  ".join(bad))
+
+
+# (the former hardcoded-V4/V5 `test_no_doc_presents_v4_v5_as_live` is superseded by
+#  the source-derived `test_no_doc_presents_retired_variant_as_live` above.)
