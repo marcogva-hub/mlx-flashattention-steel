@@ -5937,6 +5937,24 @@ def _varlen_split_concat(
     return mx.concatenate(outputs, axis=2)
 
 
+def _varlen_setup(q, k, v, cu_seqlens_q, cu_seqlens_k, scale):
+    """Varlen forward setup (P-H1 extraction): dtype check, scale default, and
+    one-shot materialization of ``cu_seqlens`` → Python lists.
+
+    The lists are safe to close over in the ``custom_function`` (``mx.array``
+    must NOT be used for slicing inside its backward — Phase-1 paged-RoPE
+    lesson).  Returns ``(scale, cu_q, cu_k_list, num_seqs)``.  Verbatim move from
+    the inline setup — no behavior change.
+    """
+    _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_varlen")
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    # GPU sync: varlen per-seq slicing needs Python ints.
+    cu_q = [int(x) for x in cu_seqlens_q.tolist()]
+    cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
+    return scale, cu_q, cu_k_list, len(cu_q) - 1
+
+
 def flash_attention_varlen(
     q: mx.array,
     k: mx.array,
@@ -5979,16 +5997,9 @@ def flash_attention_varlen(
         cu_k = mx.array([0, 64, 192, 288])
         out = flash_attention_varlen(q, k, v, cu_q, cu_k, 128, 128)
     """
-    _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_varlen")
-
-    if scale is None:
-        scale = 1.0 / math.sqrt(q.shape[-1])
-
-    # Materialise cu_seqlens to Python lists ONCE here — safe to close over.
-    # mx.arrays must NOT be used for slicing inside a custom_function backward.
-    cu_q = [int(x) for x in cu_seqlens_q.tolist()]  # GPU sync: varlen per-seq slicing
-    cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]  # GPU sync: varlen per-seq slicing
-    num_seqs = len(cu_q) - 1
+    scale, cu_q, cu_k_list, num_seqs = _varlen_setup(
+        q, k, v, cu_seqlens_q, cu_seqlens_k, scale
+    )
 
     if num_seqs == 0:
         _dtrace.record("varlen_empty", "num_seqs==0 (empty input)")
