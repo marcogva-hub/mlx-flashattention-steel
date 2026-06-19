@@ -757,6 +757,7 @@ def flash_attention(
         if q.dtype == mx.float32:
             _dtrace.record("sdpa", "alibi (not mfa or f32)")
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
+        _dtrace.record("mfa_alibi", "f16/bf16 alibi MFA kernel")
         return _mfa_alibi_forward(q, k, v, alibi_slopes, scale, causal)
 
     # Convert window_size=(left, right) → window_left / window_right for the STEEL kernel.
@@ -5948,12 +5949,14 @@ def flash_attention_varlen(
     num_seqs = len(cu_q) - 1
 
     if num_seqs == 0:
+        _dtrace.record("varlen_empty", "num_seqs==0 (empty input)")
         return q  # empty — return as-is
 
     D = q.shape[-1]
 
     # ── block_mask: direct split-concat (no STEEL varlen for sparse) ─────────
     if block_mask is not None:
+        _dtrace.record("varlen_split_concat", "block_mask (no STEEL varlen for sparse)")
         return _varlen_split_concat(
             q, k, v, cu_q, cu_k_list, scale, causal, block_mask, stream
         )
@@ -5989,8 +5992,10 @@ def flash_attention_varlen(
             O, _L = _varlen_fwd(
                 q_, k_, v_, cu_seqlens_q, cu_seqlens_k, tile_arr, scale, causal
             )
+            _dtrace.record("varlen_native", "STEEL varlen _ext (D<=256 f16/bf16)")
             return O
         # f32 or unsupported D: per-sequence split-concat
+        _dtrace.record("varlen_split_concat", "f32/unsupported-D fallback")
         return _varlen_split_concat(
             q_, k_, v_, cu_q, cu_k_list, scale, causal, None, stream
         )
