@@ -240,6 +240,60 @@ def _classify_bias_shape(
 # ---------------------------------------------------------------------------
 
 
+def _select_dense_backend(
+    *,
+    backend: str,
+    head_dim: int,
+    q_shape,
+    k_shape,
+    v_shape,
+    q_dtype,
+    k_dtype,
+    v_dtype,
+    window_size,
+    attn_bias,
+    dropout_p: float,
+    return_attn_weights: bool,
+) -> tuple[str, str]:
+    """Pure dense-forward backend decision (the snapshot-covered core of the
+    routing cascade).  Given resolved shape/dtype/feature/device state, return
+    ``(backend, reason)`` ∈ {``("nax_dense", …)``, ``("sdpa", …)``} for the
+    ``not use_mfa`` dense path.  **No side effects** beyond reading env config
+    (``MFA_V6_DENSE_MIN_N`` / ``MFA_DISABLE_V6_DENSE`` = config inputs) and the
+    cached ``_get_has_nax_cached()`` device probe — both idempotent.
+
+    P-H1 EXTRACTION (zero routing change): the gate conditions + their EXACT
+    short-circuit order + the returned ``reason`` strings are moved verbatim
+    from the former inline cascade (Audit F-2 Change 3 / Tier-2 #1 threshold).
+    The feature pre-empts (softcap / alibi / return_lse / bias / sage / dropout
+    / return_attn_weights) are handled by the caller's guards UPSTREAM and are
+    deliberately NOT folded in here — several are execution-dependent (bias
+    native try/fallback) or not covered by the routing snapshot, so moving their
+    decision would be unverifiable by the gate (RULE 16 #3).  The reason strings
+    are asserted by ``tests/routing_equivalence_golden.json``.
+    """
+    import os as _os
+    # Tier-2 #1: NAX wins only at N>=threshold; below, SDPA is faster.
+    _v6_min_n = int(_os.environ.get("MFA_V6_DENSE_MIN_N", _V6_DENSE_MIN_N_DEFAULT))
+    if (
+        backend == "auto"
+        and head_dim == 128
+        and q_shape[2] >= _v6_min_n
+        and _get_has_nax_cached()
+        and q_dtype in (mx.float16, mx.bfloat16)
+        and k_dtype == q_dtype and v_dtype == q_dtype
+        and v_shape[3] == head_dim
+        and k_shape[2] == q_shape[2]
+        and window_size is None
+        and attn_bias is None
+        and dropout_p == 0.0
+        and not return_attn_weights
+        and _os.environ.get("MFA_DISABLE_V6_DENSE") != "1"
+    ):
+        return ("nax_dense", "auto D128 N>=v6_min_n")
+    return ("sdpa", "fallback (not use_mfa)")
+
+
 def flash_attention(
     q: mx.array,
     k: mx.array,
@@ -721,35 +775,23 @@ def flash_attention(
             _dtrace.record("sdpa", "return_lse not mfa-capable")
             return _fallback_sdpa_with_lse(q, k, v, scale, causal)
         else:
-            # Audit F-2 (Change 3): route the dense D=128 forward to the NAX
-            # matmul2d kernel (`v6_nax_forward`) — parity-to-modest-win vs Apple
-            # SDPA at D=128 across every N (E-addendum + F-2 boundary: 0.74-1.01×,
-            # never loses).  D=64 LOSES (1.17-1.22×) → stays SDPA.  All scales
-            # (F-2 scale plumbing).  Backward via SDPA-vjp (custom_function, since
-            # the NAX forward has no Primitive::vjp).  AUTO only; N==S, D_v==D_qk,
-            # no window/bias/dropout; opt-out via MFA_DISABLE_V6_DENSE=1.
-            import os as _os
-            # Tier-2 #1: NAX wins only at N>=threshold; below, SDPA is faster.
-            _v6_min_n = int(_os.environ.get("MFA_V6_DENSE_MIN_N", _V6_DENSE_MIN_N_DEFAULT))
-            if (
-                backend == "auto"
-                and head_dim == 128
-                and q.shape[2] >= _v6_min_n
-                and _get_has_nax_cached()
-                and q.dtype in (mx.float16, mx.bfloat16)
-                and k.dtype == q.dtype and v.dtype == q.dtype
-                and v.shape[3] == head_dim
-                and k.shape[2] == q.shape[2]
-                and window_size is None
-                and attn_bias is None
-                and dropout_p == 0.0
-                and not return_attn_weights
-                and _os.environ.get("MFA_DISABLE_V6_DENSE") != "1"
-            ):
+            # Audit F-2 (Change 3): the dense-forward backend choice (NAX
+            # matmul2d `v6_nax_forward` vs SDPA fallback) is the gnarliest gate
+            # (Tier-2 #1 threshold).  Extracted to the pure `_select_dense_backend`
+            # (P-H1) — decision there, dispatch + telemetry here.  Decision is
+            # verbatim; reasons asserted by the routing snapshot.
+            _be, _reason = _select_dense_backend(
+                backend=backend, head_dim=head_dim,
+                q_shape=q.shape, k_shape=k.shape, v_shape=v.shape,
+                q_dtype=q.dtype, k_dtype=k.dtype, v_dtype=v.dtype,
+                window_size=window_size, attn_bias=attn_bias,
+                dropout_p=dropout_p, return_attn_weights=return_attn_weights,
+            )
+            if _be == "nax_dense":
                 _sc = scale if scale is not None else 1.0 / math.sqrt(head_dim)
-                _dtrace.record("nax_dense", "auto D128 N>=v6_min_n")
+                _dtrace.record("nax_dense", _reason)
                 return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
-            _dtrace.record("sdpa", "fallback (not use_mfa)")
+            _dtrace.record(_be, _reason)
             return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
