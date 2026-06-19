@@ -35,8 +35,9 @@ engaging at:
   optimal for these)
 - Block-sparse symmetric patterns via `lcsa_nax` dispatcher (forward) +
   Section C `_sparse_nax_with_sdpa_vjp` wrapper for backward
-- Native Top-K kernel for shapes where audit demonstrated 17× SDPA
-  regression (Sprint 3 / Prompt 5b Section B)
+- Native Top-K kernel for shapes where the v2.50 Sprint-3 audit measured the
+  prior Python-`mx.topk` path regressing vs SDPA (historical, v2.50 Prompt 5b
+  Section B; see PERF_CLAIMS / `.doc-archive` for the dated figures)
 - D=128 + causal + attn_bias: routes to V2 STEEL (Prompt 5b Section C
   bias-drop fix — V1 silently dropped the bias)
 
@@ -46,15 +47,15 @@ engaging at:
 |---|---|---|---|---|
 | `flash_attention` (dense, D=64/128) | STEEL V2 | STEEL V2 | **Apple SDPA NAX** (auto) | **(A)** NAX-optimal |
 | `flash_attention` (D=128 + causal + bias) | STEEL V2 (no bias) | STEEL V1 (silent bias-drop bug pre-fix) | **STEEL V2 (bias-aware)** post-Prompt 5b Section C | **(A)** correctness restored |
-| `flash_attention_rope_unified` | STEEL V2 + RoPE host | STEEL V2 + RoPE host | **`mx.fast.rope` + Apple SDPA NAX** (Sprint 2 dispatch fix) | **(A)** 4× speedup |
+| `flash_attention_rope_unified` | STEEL V2 + RoPE host | STEEL V2 + RoPE host | **`mx.fast.rope` + Apple SDPA NAX** (v2.50 Sprint 2 dispatch fix) | **(A)** routes to the Apple rope+SDPA-NAX path (the v2.50 "4×" figure is historical, not re-measured this pass) |
 | `flash_attention_rope` (thin wrapper) | inherits | inherits | inherits | **(A)** inherits |
 | `flash_attention_kvcache` (dense cross) | STEEL V2 | STEEL V2 | Apple SDPA NAX | **(A)** NAX-optimal |
 | `flash_attention_kvcache` (paged sub-path) | STEEL paged | STEEL paged | STEEL paged | **(B)** no NAX paged path |
 | `flash_attention_kvcache_rope_append` | STEEL paged + rope | STEEL paged + rope | STEEL paged + rope | **(B)** no fused NAX path |
-| `flash_attention_sparse` (symmetric block_mask) | STEEL sparse V1 | STEEL sparse V1 | **LCSA NAX** dispatcher (Sprint 1 density fix) | **(A)** 6× at audit shape |
+| `flash_attention_sparse` (symmetric block_mask) | STEEL sparse V1 | STEEL sparse V1 | **LCSA NAX** dispatcher (v2.50 Sprint 1 density fix) | **(A)** routes symmetric block-sparse to NAX (current dated sparse perf in `RESULTS.md`; the v2.50 "6× at audit shape" figure is historical, not re-measured this pass) |
 | `flash_attention_sparse` (asymmetric mask) | STEEL sparse V1 | STEEL sparse V1 | `_sparse_fallback_sdpa_perhead` | **(B)** mask expansion overhead |
 | `flash_attention_gna` | STEEL GNA | STEEL GNA | STEEL GNA + sparse fallback | **(A)** sliding-window wins vs dense |
-| `flash_attention_topk` | Python ref (17× regression) | Python ref | **Bisection Metal kernel (AUTO default, Prompt 5c Section B promotion)** — 3.85× over Phase 3a; Phase 3a available via `MFA_DISABLE_TOPK_BISECT=1` | **(A)** regression eliminated; AUTO default delivers max speedup |
+| `flash_attention_topk` | Python ref (17× regression) | Python ref | **Bisection Metal kernel (AUTO default, Prompt 5c Section B promotion)** — 3.85× over Phase 3a `mx.topk` (42.91→11.15 ms at audit shape, v2.50 Prompt 5c; dated entry in `PERF_CLAIMS.md`); Phase 3a available via `MFA_DISABLE_TOPK_BISECT=1` | **(A)** regression eliminated; AUTO default is the dated win |
 | `flash_attention_speculative_verify` | composite of paged + dense | inherits | inherits | TBD (likely **A** for dense sub-path) |
 | `flash_attention_speculative_verify_paged` | composite + paged | inherits | inherits | inherits paged-NAX gap |
 | `flash_attention_splitfuse` | composite prefill + decode | inherits | inherits | TBD pending bench |

@@ -51,15 +51,16 @@ Notes:
 - Use cases: token merging (`log(merge_count)`), temporal distance bias,
   cross-attention conditioning, custom ALiBi variants.
 
-**V6NAX backward NAX-direct (v2.37.0, SHIP_OPT_IN)**:
+**V6NAX backward NAX-direct (opt-in)**:
 - Set `MFA_ENABLE_V6_BACKWARD=1` to route `flash_attention` backward
   through V6NAX NAX-direct kernels on M5+.  Default off (SDPA-vjp).
-- Eligible shapes: D ∈ {64, 128}, FP16/BF16, no causal/window/softcap,
-  V6NAX-forward-routing-eligible (D=128 always; D=64 with Nk > 8000).
-- Current perf: V6NAX backward 2.2-2.4× slower than SDPA-vjp on M5 Max
-  (architectural floor — dK kernel inherently 2× heavier than dV due to
-  required dO@V^T matmul).  Apple's NAX backward is NYI in MLX framework,
-  so V6NAX backward is the only path for NAX-accelerated backward on M5+.
+- Eligible shapes (source: `dispatch_policy._v6nax_backward_carveout`):
+  **D=64, qL ≥ 2048, FP16/BF16, causal AND non-causal**, no softcap/window.
+- Perf (M5 Max, D=64 causal fp16, **measured 2026-06-19**): **parity-to-slight-win
+  vs SDPA-vjp** — SDPA-vjp/V6 = 1.07× @qL2048 (0.78→0.73 ms), 1.02× @qL4096
+  (1.98→1.93 ms), 0.99× @qL8192 (6.71→6.76 ms). Correctness vs an independent
+  fp32 grad oracle: dQ/dK ≈ 2e-5, dV ≈ 4e-3 (fp16-backward floor). Apple's NAX
+  backward is NYI in MLX, so this is the only NAX-accelerated backward on M5+.
 - See `ENV_VARS.md` `MFA_V6BWD*` group for tile-tuning knobs.
 
 ### `flash_attention_kvcache(...)`
