@@ -1,0 +1,162 @@
+{
+  "_device": "gen17_m51",
+  "python_routing": {
+    "d128_N1024_caus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N1024_ncaus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N2047_caus_bf16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N2047_caus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N2047_ncaus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N2048_caus_bf16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N2048_caus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N2048_ncaus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N2049_caus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N2049_ncaus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N4096_caus_bf16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N4096_caus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N4096_caus_f16_BH3": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N4096_caus_f16_BH4": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N4096_caus_f16_win256": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d128_N4096_caus_f32": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d128_N4096_caus_f32_win256": [
+      "sdpa",
+      "window f32 masked-sdpa fallback"
+    ],
+    "d128_N4096_ncaus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N8192_caus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d128_N8192_ncaus_f16": [
+      "nax_dense",
+      "auto D128 N>=v6_min_n"
+    ],
+    "d256_N4096_caus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d256_N4096_ncaus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d64_N1024_caus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d64_N1024_ncaus_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "d64_N4095_caus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4095_ncaus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4096_caus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4096_caus_f16_BH3": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4096_caus_f16_BH4": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4096_ncaus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4097_caus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N4097_ncaus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N8192_caus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "d64_N8192_ncaus_f16": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "decode_qL8_d128_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "decode_qL9_d128_f16": [
+      "sdpa",
+      "fallback (not use_mfa)"
+    ],
+    "forced_mfa_d128_N1024": [
+      "mfa_primitive",
+      "steel/V2/V3/window"
+    ],
+    "forced_sdpa_d128_N4096": [
+      "sdpa",
+      "backend=sdpa forced (plain)"
+    ]
+  },
+  "v3_active": {
+    "v3probe_d128_N4096_caus_BH8": false,
+    "v3probe_d64_N4096_caus_BH8": false,
+    "v3probe_d64_N8192_caus_BH8": false
+  }
+}

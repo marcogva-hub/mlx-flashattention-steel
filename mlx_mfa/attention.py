@@ -28,6 +28,7 @@ import warnings
 from typing import Optional, Union, Sequence
 
 import mlx.core as mx
+from mlx_mfa import _dispatch_trace as _dtrace  # test-only dispatch telemetry (no prod cost)
 import numpy as np
 
 from ._env_aliases import getenv_aliased
@@ -390,6 +391,7 @@ def flash_attention(
             and softcap == 0.0 and alibi_slopes is None
             and window_size is None and dropout_p == 0.0
             and not return_lse and not return_attn_weights):
+        _dtrace.record("sdpa", "backend=sdpa forced (plain)")
         _scale = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
         if attn_bias is None:
             return mx.fast.scaled_dot_product_attention(
@@ -483,6 +485,7 @@ def flash_attention(
             )
         # v2.58.1 P1: thread attn_bias / alibi_slopes / window_size so the
         # weights path matches the production path (was a silent drop).
+        _dtrace.record("sdpa", "return_attn_weights")
         return _sdpa_with_weights(
             q, k, v, scale, causal, softcap, dropout_p,
             attn_bias=attn_bias, alibi_slopes=alibi_slopes,
@@ -491,6 +494,7 @@ def flash_attention(
 
     # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
     if dropout_p > 0.0:
+        _dtrace.record("sdpa", "dropout")
         return _dropout_sdpa(q, k, v, scale, causal, dropout_p)
 
     # Track A1: attn_bias — native Metal kernel for modes 1/2 (per-KV bias),
@@ -508,6 +512,7 @@ def flash_attention(
                 pass  # extension not built — SDPA fallback below
             else:
                 try:
+                    _dtrace.record("mfa_bias_native", "attn_bias mode 1/2")
                     return mfa_attention_bias_forward(
                         q, k, v, attn_bias, bias_mode, scale, causal,
                     )
@@ -534,6 +539,7 @@ def flash_attention(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
             )
             mask = causal_mask + mask
+        _dtrace.record("sdpa", "attn_bias mode 0/3 or mfa-unavailable")
         return mx.fast.scaled_dot_product_attention(
             q, k, v, scale=scale, mask=mask,
         )
@@ -542,6 +548,7 @@ def flash_attention(
     # Sage is inference-only: no autograd.  Falls back to MFA STEEL when the
     # Sage C++ extension is unavailable (sage_attention() handles the fallback).
     if backend == "sage":
+        _dtrace.record("sage", "backend=sage")
         return sage_attention(
             q, k, v,
             scale=scale,
@@ -700,8 +707,10 @@ def flash_attention(
 
     if not use_mfa:
         if softcap != 0.0:
+            _dtrace.record("sdpa", "softcap (not mfa)")
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
         if alibi_slopes is not None:
+            _dtrace.record("sdpa", "alibi (not mfa or f32)")
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
         # return_lse: when MFA-capable, always route to MFA regardless of shape
         # dispatch (the kernel returns LSE for free; Python fallback has broken
@@ -709,6 +718,7 @@ def flash_attention(
         if return_lse and _mfa_capable:
             use_mfa = True  # fall through to MFA path below
         elif return_lse:
+            _dtrace.record("sdpa", "return_lse not mfa-capable")
             return _fallback_sdpa_with_lse(q, k, v, scale, causal)
         else:
             # Audit F-2 (Change 3): route the dense D=128 forward to the NAX
@@ -737,12 +747,15 @@ def flash_attention(
                 and _os.environ.get("MFA_DISABLE_V6_DENSE") != "1"
             ):
                 _sc = scale if scale is not None else 1.0 / math.sqrt(head_dim)
+                _dtrace.record("nax_dense", "auto D128 N>=v6_min_n")
                 return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
+            _dtrace.record("sdpa", "fallback (not use_mfa)")
             return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # ALiBi requires f16/bf16 for the Metal kernel (f32 has no STEEL ALiBi).
     if alibi_slopes is not None:
         if q.dtype == mx.float32:
+            _dtrace.record("sdpa", "alibi (not mfa or f32)")
             return _alibi_sdpa_ref(q, k, v, alibi_slopes, scale, causal)
         return _mfa_alibi_forward(q, k, v, alibi_slopes, scale, causal)
 
@@ -773,6 +786,7 @@ def flash_attention(
             mask = mx.where(in_win,
                             mx.zeros((N, S), dtype=q.dtype),
                             mx.full((N, S), float("-inf"), dtype=q.dtype))
+            _dtrace.record("sdpa", "window f32 masked-sdpa fallback")
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=scale, mask=mask)
 
@@ -799,8 +813,10 @@ def flash_attention(
         # standard convention).
         impl = _make_mfa_custom_lse(scale, causal)
         O, L = impl(q, k, v)
+        _dtrace.record("mfa_primitive", "return_lse (mfa-capable)")
         return O, L
 
+    _dtrace.record("mfa_primitive", "steel/V2/V3/window")
     return _mfa_forward(q, k, v, scale, causal, softcap, window_left,
                         window_right, stream,
                         force_kernel=(backend == "mfa"))
