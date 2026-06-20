@@ -30,6 +30,52 @@ class IncorrectTestArm(RuntimeError):
     """Raised when the test arm is different from baseline but wrong vs the fp32 oracle."""
 
 
+class FeatureUnavailable(RuntimeError):
+    """Raised when the feature-under-test cannot engage in THIS interpreter.
+
+    The canonical case (and the actual root cause of the 3.14 V6-backward
+    false-"vacuous"): the compiled extension `mlx_mfa._ext` is built for one
+    CPython ABI (e.g. 3.11) and the bench runs under another (3.14) where the
+    import fails → `has_nax=False` → the NAX path silently never engages →
+    BOTH arms fall to SDPA → byteΔ=0. That is NOT a toggle-direction bug and
+    NOT a cache bug — the feature simply isn't present. Surfacing it as its
+    own error (vs a misleading "check the toggle") is the fix that prevents
+    re-debugging a benign environment mismatch as a code defect.
+    """
+
+
+def _default_reset_caches() -> None:
+    """Best-effort: clear mlx-mfa's dispatch decision cache + lru_cache factories
+    so each arm re-decides its dispatch path from a clean slate (defeats any
+    cross-arm cache bleed — present or future). Cheap: called once per arm setup,
+    NOT per timed iteration. No-op if mlx_mfa isn't importable.
+
+    NOTE (source-verified 2026-06-20): for the V6-backward knobs this is
+    belt-and-suspenders — `should_use_mfa` reads no env, the 6 forward-affecting
+    vars ARE in the decision-cache key, and `MFA_DISABLE/ENABLE_V6_BACKWARD` are
+    read LIVE by the (uncached) carve-out + the vjp's `_v6nax_eligible`. It is
+    kept so the helper is a trustworthy GENERAL toggle-bench: an arm that toggles
+    an env var NOT in the decision-cache key (or a future one) cannot silently
+    reuse the other arm's cached decision.
+    """
+    try:
+        from mlx_mfa import attention as _A
+    except Exception:
+        return
+    try:
+        _A._dispatch_decision_cache.clear()
+    except Exception:
+        pass
+    for _name in dir(_A):
+        _obj = getattr(_A, _name, None)
+        _cc = getattr(_obj, "cache_clear", None)
+        if callable(_cc):
+            try:
+                _cc()
+            except Exception:
+                pass
+
+
 @dataclass
 class SpeedupResult:
     ratio: float                       # baseline_ms / test_ms (>1 = test faster)
@@ -103,6 +149,9 @@ def measured_speedup(
     oracle: Optional[Callable[[], object]] = None,
     oracle_tol: Optional[float] = None,
     expect_trace: Optional[dict] = None,
+    require: Optional[Callable[[], bool]] = None,
+    require_label: str = "",
+    reset_caches: Optional[Callable[[], None]] = _default_reset_caches,
     warmup: int = 8,
     iters: int = 40,
     eps: float = 1e-9,
@@ -111,12 +160,45 @@ def measured_speedup(
     then return a stamped validated speedup. Raises (RULE 8) on any violation.
 
     Each arm is a zero-arg callable that sets up its EXACT path (env, backend, …) and
-    returns its output — no assumed toggle direction. `expect_trace={"test": "...",
-    "baseline": "..."}` uses `mlx_mfa._dispatch_trace` telemetry when the path is
-    instrumented; otherwise falls back to byteΔ (and notes the trace gap).
+    returns its output — no assumed toggle direction. **Each arm MUST own DISTINCT
+    input objects** (defeat MLX's input-identity graph cache) — the helper times each
+    arm's intended path at steady state, but cannot create the arms' inputs for them.
+
+    `expect_trace={"test": "...", "baseline": "..."}` uses `mlx_mfa._dispatch_trace`
+    telemetry when the path is instrumented; otherwise falls back to byteΔ.
+
+    `require` (optional): a zero-arg predicate asserting the feature-under-test can
+    engage in THIS interpreter (e.g. `lambda: mlx_mfa.attention._get_has_nax_cached()`).
+    If it returns False the helper raises `FeatureUnavailable` BEFORE timing — turning
+    the silent "both arms fell to the fallback → byteΔ=0 → looks vacuous" trap (the
+    3.14 missing-`_ext` case) into a precise, actionable error.
+
+    `reset_caches` (default: clear mlx-mfa dispatch/decision/lru caches): invoked once
+    before each arm so neither arm can reuse the other's cached dispatch decision. Pass
+    `lambda: None` to disable.
     """
-    # 1) time + capture outputs
+    # 0) precondition — is the feature even present in this interpreter? Surfaced as
+    # its own error so a benign environment mismatch (wrong-ABI extension → has_nax
+    # False → both arms hit the fallback) is never re-debugged as a code/cache defect.
+    if require is not None and not require():
+        raise FeatureUnavailable(
+            f"feature-under-test {require_label or test_label!r} cannot engage in this "
+            f"interpreter — its `require` predicate returned False. Most common cause: "
+            f"the compiled extension `mlx_mfa._ext` did not import (ABI mismatch — e.g. "
+            f"a 3.11-built `_ext` under Python "
+            f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}). "
+            f"Check `python -c 'import mlx_mfa._ext'` and run in the venv whose Python "
+            f"matches the built extension. (NOT a toggle-direction or cache bug.)")
+
+    def _reset():
+        if reset_caches is not None:
+            reset_caches()
+
+    # 1) time + capture outputs — reset caches before each arm so each re-decides its
+    # own dispatch path from a clean slate (no cross-arm cache bleed).
+    _reset()
     test_ms, test_out = _median_ms(test_arm, warmup, iters)
+    _reset()
     base_ms, base_out = _median_ms(baseline_arm, warmup, iters)
 
     # 2) engagement — preferred: dispatch-trace; fallback: byteΔ vs same-kernel noise.
@@ -153,6 +235,7 @@ def measured_speedup(
     # byteΔ fallback / corroboration — calibrate the same-kernel noise floor by
     # running the test arm twice (deterministic kernels → ~0; atomics → small).
     bd = _byte_delta(test_out, base_out)
+    _reset()
     _, test_out2 = _median_ms(test_arm, 0, 3)
     noise = _byte_delta(test_out, test_out2)
     if not trace_ok:
@@ -160,8 +243,13 @@ def measured_speedup(
             raise VacuousBenchmark(
                 f"vacuous bench: byteΔ(test,baseline)={bd:.2e} ≤ same-kernel noise "
                 f"floor {noise:.2e} — the two arms are the SAME code path "
-                f"({test_label} vs {baseline_label}). Check the toggle direction "
-                f"(ENABLE vs DISABLE, default-on vs opt-in).")
+                f"({test_label} vs {baseline_label}). TWO causes to check, in order: "
+                f"(1) the feature-under-test is UNAVAILABLE in this interpreter "
+                f"(both arms fell to the same fallback) — verify the compiled "
+                f"extension loaded (`import mlx_mfa._ext`; check has_nax) and pass "
+                f"`require=` to assert it up front; (2) wrong toggle DIRECTION "
+                f"(ENABLE vs DISABLE, default-on vs opt-in) — both arms set the same "
+                f"path. (1) is the silent one — the 3.14 missing-`_ext` trap.")
         evidence = (evidence or "byteΔ") + f" (byteΔ={bd:.2e} > noise {noise:.2e})"
 
     # 3) oracle correctness (Lesson #11) — different AND right.

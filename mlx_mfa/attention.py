@@ -693,6 +693,16 @@ def flash_attention(
                 # invalidate cached decisions when it changes.
                 os.environ.get("MLX_MFA_DISPATCH_TABLE"),
             )
+            # NOT in the key (verified 2026-06-20, by design — not a bug):
+            # MFA_DISABLE/ENABLE_V6_BACKWARD. `should_use_mfa` reads NO env
+            # (it is env-pure given its args), so those knobs cannot change
+            # the value cached here. They are read LIVE downstream — by the
+            # (uncached) `_v6nax_backward_carveout` in the `if not use_mfa`
+            # branch below, and by `_v6nax_eligible` inside the backward vjp —
+            # so toggling them mid-process flips the backward path with no
+            # staleness (proven by tests/test_backward_routing_snapshot.py,
+            # which toggles them on identical shapes within one process).
+            # Adding them here would be dead weight.
             _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False, _env_key)
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:

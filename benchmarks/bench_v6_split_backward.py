@@ -4,7 +4,14 @@ Sidesteps the standalone-oracle blocker by going through the PUBLIC path with el
 forced ON — the public path supplies the correct `force_v6nax` natural-log-lse O/L, so dV
 validates by construction. Caching-immune: each arm owns DISTINCT input objects (the
 shared-input MLX graph-cache is what produced the prior byteΔ=0). FULL backward (dq+dk+dv),
-not grad[0] (the b01e40d dq-only artifact). Run in the 3.14 venv.
+not grad[0] (the b01e40d dq-only artifact).
+
+RUN IN AN INTERPRETER WHOSE `mlx_mfa._ext` IS BUILT — i.e. the editable `.venv` (3.11).
+NOT a bare 3.14 venv: the only built extension is `_ext.cpython-311-darwin.so`, so under
+3.14 `import mlx_mfa._ext` fails → `has_nax=False` → V6 never engages → BOTH arms run SDPA
+→ byteΔ=0 and the helper (correctly) raises. The `require=` guard below turns that into a
+clear `FeatureUnavailable` instead of a misleading "vacuous". (To bench in 3.14, build an
+`_ext` for 3.14 first.)
 
 Toggle (the correct one): D=64 qL>=2048 is DEFAULT-ON (gated by MFA_DISABLE_V6_BACKWARD);
 D=128 is opt-in via MFA_ENABLE_V6_BACKWARD=1.
@@ -72,6 +79,10 @@ def bench(B, H, N, D, causal, d64_default):
             test_label=f"split-V6 D={D} causal={causal}", baseline_label="SDPA-vjp",
             oracle=lambda: _fp32_oracle(qt, kt, vt, sc, causal),
             oracle_tol=0.5,   # unit-scale fp16 backward floor (dV loosest)
+            # Fail loud if V6/NAX can't engage in this interpreter (the 3.14
+            # missing-`_ext` trap) instead of a misleading "vacuous" raise.
+            require=lambda: mlx_mfa.attention._get_has_nax_cached(),
+            require_label="V6 NAX backward (M5 + mlx_mfa._ext)",
         )
     finally:
         os.environ.pop("MFA_DISABLE_V6_BACKWARD", None)
