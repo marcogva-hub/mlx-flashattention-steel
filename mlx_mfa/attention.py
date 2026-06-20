@@ -5536,6 +5536,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 # O consistent with that lse.
                 from mlx_mfa._ext import v6_nax_forward as _v6_fwd
                 O_v6nax, L_v6nax = _v6_fwd(q, k, v, causal, True)  # force_v6nax
+                _dtrace.record("v6_split_backward", "V6NAX split dQ/dV/dK (eligible)")
                 dQ, dK, dV = _v6nax_backward_vjp(
                     q, k, v, O_v6nax, L_v6nax, dO, scale, causal)
             else:
@@ -5551,14 +5552,17 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                     dtype=q.dtype,
                 )
                 if use_native_bwd:
+                    _dtrace.record("steel_backward", "native STEEL backward")
                     dQ, dK, dV = mfa_steel_backward(q, k, v, O, L, dO, scale, causal)
                 else:
+                    _dtrace.record("sdpa_vjp", "SDPA-vjp fallback (not eligible)")
                     _, (dQ, dK, dV) = mx.vjp(
                         lambda q, k, v: _fallback_sdpa(q, k, v, scale, causal),
                         [q, k, v],
                         [dO],
                     )
         else:
+            _dtrace.record("sdpa_vjp", "softcap SDPA-vjp")
             _, (dQ, dK, dV) = mx.vjp(
                 lambda q, k, v: _softcap_sdpa_ref(q, k, v, scale, causal, softcap),
                 [q, k, v],

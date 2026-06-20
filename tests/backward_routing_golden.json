@@ -1,0 +1,14 @@
+{
+  "_device": "gen17_m51",
+  "backward_routing": {
+    "d128_caus_qL4096_default": "<none>",
+    "d128_caus_qL4096_enabled": "v6_split_backward",
+    "d128_nc_qL4096_enabled": "v6_split_backward",
+    "d64_caus_qL1024_default": "<none>",
+    "d64_caus_qL4096_default": "v6_split_backward",
+    "d64_caus_qL4096_disabled": "<none>",
+    "d64_caus_qL8192_default": "v6_split_backward",
+    "d64_nc_qL4096_default": "v6_split_backward",
+    "d64_nc_qL8192_default": "v6_split_backward"
+  }
+}

@@ -51,34 +51,33 @@ Notes:
 - Use cases: token merging (`log(merge_count)`), temporal distance bias,
   cross-attention conditioning, custom ALiBi variants.
 
-**Backward gradients: SDPA-vjp by default; native V6NAX backward is experimental (opt-in),
-speedup UNVERIFIED.** (Settled 2026-06-19 at the kernel level — M5 Max, MLX 0.31.2.)
+**Backward gradients: split-V6 NAX-direct is the public default for D=64 (≥2048) — VERIFIED
+2.16–3.05× faster than SDPA-vjp; D=128 + small/other shapes use SDPA-vjp.** (Verified
+2026-06-19, M5 Max, MLX 0.31.2, full-backward, fresh-input, gold which-binary + fp32 oracle.)
 
-- **Default user-facing path = SDPA-vjp** (`mx.vjp` of Apple SDPA). On M5 the public
-  `flash_attention` backward routes to SDPA-vjp: the native-V6 eligibility gate
-  (`_v6nax_eligible`) does not engage by default. Apple's own NAX backward is NYI in MLX.
-- **Native V6NAX backward kernels** (`v6_nax_backward_query` + split `v6_nax_backward_dv_raw`
-  / `v6_nax_backward_dk_raw`) exist and are opt-in (`MFA_ENABLE_V6_BACKWARD=1`). Direct-call
-  correctness vs an independent fp32 oracle: **dQ ≈ 5e-4, dK ≈ 1.7e-3 (correct)**; dV is
-  convention-sensitive (only correct with the matching `force_v6nax` natural-log-lse forward).
-  The **fused `v6_nax_backward_kv` kernel's BK=16 is numerically INVALID** (II-6: the paired
-  16×32×16 MMA `for(ik=0;ik<TK;ik+=2)` needs TK=BK/16 even — at BK=16, TK=1 reads 16 K-rows
-  past the tile and writes the 2nd fragment out of bounds; scale-dependent, invisible at
-  0.1-scale fixtures). This is **structural** — MPP has no 16×16×16 cooperative op (header
-  `static_assert`: one dim must be 32) — so a loud `BK%32==0` guard rejects it (forward +
-  all backward pipelines). BK=16 is **not fixed and not worth fixing**: its only claimed
-  benefit (register relief, "1.01–1.12× vs split") was corrupt-math (withdrawn), and at the
-  minimum-valid BK=32 the fused path is the v2.39.0 spill config — so **split (BK=32) is the
-  correct AND fast path** (II-6 dated provenance: 2.15–2.67× vs SDPA-vjp, D=64 causal). Locked
-  by `tests/test_v6_bwd_paired_mma_guard.py` (guard raises + unit-scale oracle, both proven).
-- **Speedup is NOT verified.** Every prior public-API ratio was an artifact and has been
-  withdrawn: v2.37.1 "1.4–1.85×" (retracted), v2.38.1/v2.39.1 "1.91–2.00×" (fused-BK16, on
-  withdrawn corrupt math per II-6), cc4fd10 "parity" (wrong toggle), b01e40d "2.55–5.75×"
-  (timed `grad[0]`=dQ-only for one arm — V6's *split* dQ kernel — vs SDPA's full fused
-  backward; apples-to-oranges). A clean kernel-level full-backward ratio could not be
-  certified (dV-correctness not reproducible standalone; fused path withdrawn). **Do not cite
-  a backward speedup until it is re-measured at the kernel level, full-backward, oracle-correct,
-  engagement-by-construction, MLX-version-stamped.**
+- **D=64, qL ≥ 2048, fp16/bf16, default scale → split-V6 backward (DEFAULT-ON)**, opt out via
+  `MFA_DISABLE_V6_BACKWARD=1`. Per-regime (B=1 H=4, unit-scale, median-30, full dQ+dK+dV;
+  SDPA-vjp/V6): **non-causal 2.16× @qL4096 / 2.21× @qL8192; causal 2.77× / 3.05×**. Engagement
+  proven by which-binary trace (`_dispatch_trace` → `v6_split_backward`) + byteΔ vs SDPA-vjp;
+  fp32-oracle-correct (non-causal ≈9.8e-4, causal ≈3.9e-3, fp16-bwd floor). Kernels:
+  `v6_nax_backward_query` (dQ) + split `v6_nax_backward_dv_raw` / `dk_raw` (the **split** path
+  at BK=32 — NOT the fused kernel below). Locked by the backward routing snapshot
+  (`tests/test_backward_routing_snapshot.py`).
+- **D=128 → opt-in only** (`MFA_ENABLE_V6_BACKWARD=1`) and **SLOWER** (0.54× nc / 0.57× causal
+  @qL4096) → correctly NOT default; SDPA-vjp is the D=128 default. **D=64 qL<2048** also stays
+  SDPA-vjp (V6 regresses below 2048).
+- **Fused `v6_nax_backward_kv` BK=16 is numerically INVALID and GATED** (II-6: paired 16×32×16
+  MMA needs TK=BK/16 even; at BK=16 the 2nd fragment is OOB — structural, MPP has no 16×16×16
+  op). Not fixed/not worth fixing (its "1.01–1.12× vs split" was corrupt-math, withdrawn). The
+  **split** path is the correct + fast one above. Locked by `tests/test_v6_bwd_paired_mma_guard.py`.
+- Prior withdrawn ratios (artifacts): "1.4–1.85×" (retracted), "1.91–2.00×" (fused-BK16 corrupt
+  math), cc4fd10 "parity"/3f92d96 "unverified" (shared-input graph-cache → byteΔ=0 masked
+  engagement), b01e40d "2.55–5.75×" (dQ-only timing). The number above supersedes all — it is
+  full-backward, engagement-proven (trace), oracle-correct, fresh-input, MLX-stamped.
+- **⚠ Sign-off / net:** D=64 split-V6 is already the shipped default (no routing change this
+  pass); the verified number + the backward routing snapshot are the evidence package. Any
+  future change to this default must keep the snapshot GREEN. M1/M4 tier number is unmeasured
+  (flag — needs Marco's golden, as with the forward net).
 - See `ENV_VARS.md` `MFA_V6BWD*` group for the experimental tile-tuning knobs.
 
 ### `flash_attention_kvcache(...)`

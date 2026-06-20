@@ -35,8 +35,8 @@ Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 | Dense D=64 (auto) | Production STEEL V2 | SDPA (dense); D=64 *causal* large-N (B·H≥4, N≥4096) → MFA primitive via V3 cond-auto | per-(D,causal) `_M5_NAX_THRESHOLDS` dict in dispatch_policy.py (not a flat constant) |
 | D=256 causal | Narrow STEEL | STEEL (no NAX path) | f16 both chips, bf16 M3+ only |
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
-| **Backward gradients (all D)** | `mx.vjp(SDPA)` | **SDPA-vjp (default)** | Default user-facing path on M5 is SDPA-vjp (`_v6nax_eligible` off by default). |
-| **Native V6NAX backward kernels (experimental, opt-in `MFA_ENABLE_V6_BACKWARD=1`)** | N/A | Experimental | dQ/dK kernel-correct (≈5e-4/1.7e-3 vs fp32); **speedup UNVERIFIED** — all prior ratios (1.91–2.00× / parity / 2.55–5.75×) withdrawn as measurement artifacts (dQ-only timing, wrong toggle, fused-BK corrupt-math II-6). Re-measure at kernel level before citing. (Settled 2026-06-19, M5, MLX 0.31.2.) |
+| **Backward D=64 (≥2048, fp16/bf16) — split-V6 NAX-direct, DEFAULT-ON** | `mx.vjp(SDPA)` | **split-V6 (default)** | **VERIFIED 2.16–3.05× vs SDPA-vjp** (nc 2.16×/2.21× @qL4096/8192; causal 2.77×/3.05×) — full-backward, gold which-binary trace + fp32 oracle, M5/MLX-0.31.2/2026-06-19. Opt out: `MFA_DISABLE_V6_BACKWARD=1`. Locked by `test_backward_routing_snapshot.py`. |
+| **Backward D=128 / D=64<2048 / other** | `mx.vjp(SDPA)` | **SDPA-vjp (default)** | D=128 split-V6 is opt-in only + SLOWER (0.54× nc / 0.57× causal) → correctly not default. Prior 1.91–2.00× / parity / 2.55–5.75× withdrawn as artifacts (superseded by the verified D=64 number above). |
 | Block-sparse / window | Production | Tile-skip, up to 21x speedup |
 | Softcap | Production | V2 tanh in log2 domain |
 | ALiBi | Production | V2 bias addition |
