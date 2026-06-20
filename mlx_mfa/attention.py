@@ -24,6 +24,7 @@ from __future__ import annotations
 import functools
 import math
 import os
+import platform
 import warnings
 from typing import Optional, Union, Sequence
 
@@ -182,6 +183,94 @@ def _get_has_nax_cached() -> bool:
         except (ImportError, AttributeError):
             _cached_has_nax = False
     return _cached_has_nax
+
+
+# ── Acceleration-availability: loud + diagnosable (RULE 8, anti-silent-fallback) ──
+#
+# When `mlx_mfa._ext` does not import, EVERY MFA/NAX kernel is unreachable and the
+# library silently routes to SDPA — correct results, zero acceleration, no warning.
+# For an acceleration library that is a silent VALUE failure (and it caused our
+# multi-session phantom benches: a 3.14 venv importing a 3.11-built `_ext`). These
+# helpers make the state queryable (`has_nax`), warn LOUDLY on the *unexpected*
+# fallback (Apple-Silicon but `_ext` failed), stay quiet on the *expected* one
+# (non-target platform / pre-M5 hardware where SDPA/STEEL is normal), and offer an
+# opt-in strict mode that RAISES. Default behaviour is unchanged (graceful SDPA).
+
+
+class NaxUnavailable(RuntimeError):
+    """Raised by the opt-in strict mode (`MFA_REQUIRE_NAX=1` or `has_nax(strict=True)`)
+    when NAX acceleration is required but unavailable. Default behaviour never raises —
+    it falls back to SDPA gracefully."""
+
+
+def _is_apple_silicon() -> bool:
+    """Apple-Silicon macOS — `_ext`-INDEPENDENT (platform module only). Lets us tell an
+    UNEXPECTED `_ext` load failure (here, real install/build problem) from an EXPECTED
+    fallback on a non-target platform (Linux / Intel Mac), where SDPA is simply normal."""
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def has_nax(*, reason: bool = False, strict: bool = False):
+    """Is M5+ Neural-Accelerator (NAX) acceleration active in THIS interpreter?
+
+    The single source of truth for "is the fast path live" — consumed by the bench
+    helper's `require=` and the strict-mode gate. Returns ``bool`` (or ``(bool, reason)``
+    when ``reason=True``). With ``strict=True`` raises :class:`NaxUnavailable` (naming the
+    reason) instead of returning ``False`` — for callers that must guarantee acceleration
+    (e.g. a benchmark that would otherwise silently measure SDPA twice).
+
+    Reason codes when unavailable:
+      - ``"ext-load-failed"``  — `mlx_mfa._ext` did not import on Apple Silicon (UNEXPECTED:
+        Python/MLX ABI mismatch or a failed build — ALL kernels are off, not just NAX).
+      - ``"unsupported-platform"`` — not Apple-Silicon macOS (EXPECTED: no Metal backend).
+      - ``"pre-m5-hardware"`` — `_ext` loaded but the GPU is M1–M4 (EXPECTED: NAX is M5+
+        only; STEEL kernels still accelerate via `_ext`).
+    """
+    if _get_has_nax_cached():
+        return (True, "available") if reason else True
+    if not _ext_available():
+        code = "ext-load-failed" if _is_apple_silicon() else "unsupported-platform"
+    else:
+        code = "pre-m5-hardware"
+    if strict:
+        raise NaxUnavailable(_nax_unavailable_message(code))
+    return (False, code) if reason else False
+
+
+def _nax_unavailable_message(code: str) -> str:
+    if code == "ext-load-failed":
+        v = platform.python_version()
+        return (
+            f"mlx-mfa: the native extension `mlx_mfa._ext` failed to import on Apple "
+            f"Silicon → ALL kernels fall back to SDPA (correct results, NO acceleration). "
+            f"Most likely a Python/MLX ABI mismatch or a failed build. Check: "
+            f"`python -c 'import mlx_mfa._ext'` (you are on Python {v}); ensure `_ext` was "
+            f"built for THIS Python and the installed MLX (the sdist compiles at install — "
+            f"`pip install --no-build-isolation -e .`). Silence with MFA_SILENCE_NAX_WARNING=1.")
+    if code == "pre-m5-hardware":
+        return ("mlx-mfa: NAX (M5+) is unavailable on this GPU (M1–M4) — STEEL kernels still "
+                "accelerate; only the NAX/V6 path is unavailable.")
+    return ("mlx-mfa: NAX is unavailable — not Apple-Silicon macOS (no Metal backend; SDPA "
+            "fallback is expected here).")
+
+
+_warned_unexpected_fallback = False
+
+
+def _warn_if_acceleration_unavailable() -> None:
+    """One-time LOUD warning iff acceleration is *unexpectedly* off: Apple Silicon but
+    `_ext` failed to import (the whole accelerator is down). Silent on the EXPECTED cases
+    (non-target platform, or pre-M5 where STEEL still works). Suppress with
+    MFA_SILENCE_NAX_WARNING=1. Strict opt-in (MFA_REQUIRE_NAX=1) RAISES instead."""
+    global _warned_unexpected_fallback
+    if os.environ.get("MFA_REQUIRE_NAX") == "1" and not has_nax():
+        # Opt-in hard guarantee — raise with the precise reason (never default).
+        has_nax(strict=True)
+    if _warned_unexpected_fallback or os.environ.get("MFA_SILENCE_NAX_WARNING") == "1":
+        return
+    if not _ext_available() and _is_apple_silicon():
+        _warned_unexpected_fallback = True
+        warnings.warn(_nax_unavailable_message("ext-load-failed"), RuntimeWarning, stacklevel=2)
 
 
 _cached_is_m5_plus: "bool | None" = None

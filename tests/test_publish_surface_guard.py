@@ -30,7 +30,7 @@ _PYPROJECT = _ROOT / "pyproject.toml"
 # ── The explicit published-sdist allowlist ────────────────────────────────────
 _ALLOWED_ROOT_DOCS = {
     "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
-    "CLAUDE.md", "CLAUDE_V6_NAX.md",
+    "CLAUDE.md", "CLAUDE_V6_NAX.md", "CONTRIBUTING.md",
     "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",
 }
 # Permitted top-level directories in the sdist (code + tests + scripts).
@@ -142,7 +142,7 @@ def test_wheel_ships_only_the_package():
 # are forbidden on the tracked tree.
 _ALLOWED_ROOT_DOCS = {
     "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
-    "CLAUDE.md", "CLAUDE_V6_NAX.md",
+    "CLAUDE.md", "CLAUDE_V6_NAX.md", "CONTRIBUTING.md",
     "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",
 }
 

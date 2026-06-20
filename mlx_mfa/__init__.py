@@ -58,6 +58,21 @@ def _check_abi() -> None:
 
 _check_abi()
 
+
+def _warn_silent_nax_fallback() -> None:
+    """Fire the one-time loud warning (RULE 8) when acceleration is UNEXPECTEDLY off —
+    Apple Silicon but `mlx_mfa._ext` failed to import (whole accelerator down → silent
+    SDPA). Quiet on expected fallbacks (non-target platform / pre-M5). Opt-in
+    `MFA_REQUIRE_NAX=1` raises instead. Deferred to here so `attention` is imported."""
+    try:
+        from mlx_mfa.attention import _warn_if_acceleration_unavailable
+        _warn_if_acceleration_unavailable()
+    except NaxUnavailable:
+        raise  # opt-in strict mode — propagate the hard guarantee
+    except Exception:
+        pass  # never let the warning path itself break import
+
+
 # ── Eager imports — core API (always needed) ────────────────────────────────
 
 from mlx_mfa.attention import (
@@ -84,6 +99,8 @@ from mlx_mfa.attention import (
     make_sliding_window_mask,
     make_rope_3d_tables,
     is_mfa_available,
+    has_nax,
+    NaxUnavailable,
     get_device_info,
     get_supported_configs,
     warmup_kernels,
@@ -423,6 +440,8 @@ __all__ = [
     "make_rope_3d_tables",
     # Utilities
     "is_mfa_available",
+    "has_nax",
+    "NaxUnavailable",
     "get_device_info",
     "get_supported_configs",
     "warmup_kernels",
@@ -485,3 +504,8 @@ __all__ = [
     "sparse_attention_dispatch",
     "__version__",
 ]
+
+
+# Fire the one-time silent-NAX-fallback check now that the full API is imported
+# (loud warning on unexpected fallback; raises if MFA_REQUIRE_NAX=1; default graceful).
+_warn_silent_nax_fallback()

@@ -487,6 +487,31 @@ kernels + Apple SDPA are used.
 > build environment will fail** at the nanobind fetch. Pre-warm a network-enabled build cache, or
 > vendor nanobind 2.12.0, for air-gapped installs.
 
+### Verify acceleration is active
+
+mlx-mfa is **correct but unaccelerated** if its native extension `mlx_mfa._ext` did not load
+(falls back to Apple SDPA). Check after install:
+
+```python
+import mlx_mfa
+mlx_mfa.has_nax()              # True → M5+ NAX fast path is live
+mlx_mfa.has_nax(reason=True)   # (False, "<code>") explains why when off
+mlx_mfa.is_mfa_available()     # True → the extension (any kernel tier) loaded
+```
+
+`has_nax(reason=True)` reason codes when `False`:
+
+| Code | Meaning | Fallback is… |
+|---|---|---|
+| `ext-load-failed` | On Apple Silicon, but `_ext` didn't import (Python/MLX ABI mismatch or failed build) | **Unexpected** — the library warns loudly; fix by matching Python/MLX and rebuilding |
+| `pre-m5-hardware` | `_ext` loaded, GPU is M1–M4 | Expected — STEEL kernels still accelerate; only NAX/V6 is M5+ |
+| `unsupported-platform` | Not Apple-Silicon macOS | Expected — no Metal backend |
+
+On an unexpected fallback (Apple Silicon, `_ext` failed) mlx-mfa emits a one-time `RuntimeWarning`
+naming the likely cause. Suppress it with `MFA_SILENCE_NAX_WARNING=1`. To **require** acceleration
+(raise instead of falling back) set `MFA_REQUIRE_NAX=1`, or call `mlx_mfa.has_nax(strict=True)`.
+"Fallback" always means *correct results, no speedup* — never wrong numbers.
+
 ## Minimal Usage
 
 ```python

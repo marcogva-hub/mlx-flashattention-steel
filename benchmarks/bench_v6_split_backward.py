@@ -81,7 +81,8 @@ def bench(B, H, N, D, causal, d64_default):
             oracle_tol=0.5,   # unit-scale fp16 backward floor (dV loosest)
             # Fail loud if V6/NAX can't engage in this interpreter (the 3.14
             # missing-`_ext` trap) instead of a misleading "vacuous" raise.
-            require=lambda: mlx_mfa.attention._get_has_nax_cached(),
+            # Consumes the canonical availability source (mlx_mfa.has_nax — DRY).
+            require=lambda: mlx_mfa.has_nax(),
             require_label="V6 NAX backward (M5 + mlx_mfa._ext)",
         )
     finally:

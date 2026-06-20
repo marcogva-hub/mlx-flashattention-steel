@@ -2,6 +2,22 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased]
+
+### Added
+- **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).
+  Returns whether the M5+ NAX fast path is live; `has_nax(reason=True)` returns `(bool, code)` with
+  `code ∈ {available, ext-load-failed, unsupported-platform, pre-m5-hardware}`; `has_nax(strict=True)`
+  raises `mlx_mfa.NaxUnavailable`. When `mlx_mfa._ext` fails to import the library still falls back to
+  SDPA gracefully (correct results, no speedup) — **default behaviour unchanged** — but now:
+  - a **one-time loud `RuntimeWarning`** fires on the *unexpected* fallback (Apple Silicon but `_ext`
+    didn't load — a real ABI/build problem); *expected* fallbacks (non-target platform, pre-M5) stay
+    silent. Suppress with `MFA_SILENCE_NAX_WARNING=1`.
+  - opt-in strict mode `MFA_REQUIRE_NAX=1` (or `has_nax(strict=True)`) **raises** instead of falling back.
+  This closes the silent value-failure that caused multi-session phantom benches (a 3.14 venv importing
+  a 3.11-built `_ext`). New `CONTRIBUTING.md` documents the `_ext`/Python ABI contract; README documents
+  user-facing verification. The dev-only bench helper's `require=` now consumes `has_nax()` (DRY).
+
 ## [2.61.0] — 2026-06-19 — maintainability release: variant retire, routing-equivalence net, dispatch refactor, doc-accuracy audit
 
 Consolidates four held maintainability stacks. **No production routing or kernel-math change** — the
