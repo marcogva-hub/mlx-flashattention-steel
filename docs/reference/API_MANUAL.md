@@ -61,8 +61,16 @@ speedup UNVERIFIED.** (Settled 2026-06-19 at the kernel level — M5 Max, MLX 0.
   / `v6_nax_backward_dk_raw`) exist and are opt-in (`MFA_ENABLE_V6_BACKWARD=1`). Direct-call
   correctness vs an independent fp32 oracle: **dQ ≈ 5e-4, dK ≈ 1.7e-3 (correct)**; dV is
   convention-sensitive (only correct with the matching `force_v6nax` natural-log-lse forward).
-  The **fused `v6_nax_backward_kv` kernel's default BK=16 is numerically INVALID** (II-6:
-  out-of-bounds fragment write corrupts dK/dV) and is not the default; split is the default.
+  The **fused `v6_nax_backward_kv` kernel's BK=16 is numerically INVALID** (II-6: the paired
+  16×32×16 MMA `for(ik=0;ik<TK;ik+=2)` needs TK=BK/16 even — at BK=16, TK=1 reads 16 K-rows
+  past the tile and writes the 2nd fragment out of bounds; scale-dependent, invisible at
+  0.1-scale fixtures). This is **structural** — MPP has no 16×16×16 cooperative op (header
+  `static_assert`: one dim must be 32) — so a loud `BK%32==0` guard rejects it (forward +
+  all backward pipelines). BK=16 is **not fixed and not worth fixing**: its only claimed
+  benefit (register relief, "1.01–1.12× vs split") was corrupt-math (withdrawn), and at the
+  minimum-valid BK=32 the fused path is the v2.39.0 spill config — so **split (BK=32) is the
+  correct AND fast path** (II-6 dated provenance: 2.15–2.67× vs SDPA-vjp, D=64 causal). Locked
+  by `tests/test_v6_bwd_paired_mma_guard.py` (guard raises + unit-scale oracle, both proven).
 - **Speedup is NOT verified.** Every prior public-API ratio was an artifact and has been
   withdrawn: v2.37.1 "1.4–1.85×" (retracted), v2.38.1/v2.39.1 "1.91–2.00×" (fused-BK16, on
   withdrawn corrupt math per II-6), cc4fd10 "parity" (wrong toggle), b01e40d "2.55–5.75×"
