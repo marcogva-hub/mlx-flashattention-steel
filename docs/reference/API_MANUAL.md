@@ -51,28 +51,27 @@ Notes:
 - Use cases: token merging (`log(merge_count)`), temporal distance bias,
   cross-attention conditioning, custom ALiBi variants.
 
-**V6NAX backward NAX-direct** (gating from `dispatch_policy._v6nax_backward_carveout`):
-- **D=64, qL ≥ 2048, FP16/BF16, causal AND non-causal → DEFAULT-ON** (opt out with
-  `MFA_DISABLE_V6_BACKWARD=1`).
-- **D=128, qL ≥ 2048 → opt-in** via `MFA_ENABLE_V6_BACKWARD=1` (default SDPA-vjp).
-- Apple's NAX backward is NYI in MLX, so V6NAX is the only NAX-accelerated backward path.
+**Backward gradients: SDPA-vjp by default; native V6NAX backward is experimental (opt-in),
+speedup UNVERIFIED.** (Settled 2026-06-19 at the kernel level — M5 Max, MLX 0.31.2.)
 
-Three distinct regimes — **all measured 2026-06-19 on M5 Max, MLX 0.31.2, B=1 H=4 fp16,
-V6 vs SDPA-vjp (`mx.vjp` of `mx.fast.scaled_dot_product_attention`), abs-ms median,
-which-binary-confirmed (byteΔ>0 vs `MFA_DISABLE_V6_BACKWARD=1`), fp32-oracle-correct**
-(dQ/dK ≈ 2e-5, dV ≈ 4e-3):
-
-| Regime | SDPA-vjp/V6 (faster) | V6 ms / SDPA-vjp ms |
-|---|---|---|
-| D=64 **non-causal** qL4096 / 8192 | **2.55× / 3.76×** | 1.58/4.03, 4.00/15.01 |
-| D=64 **causal** qL4096 / 8192 | **4.88× / 5.75×** | 1.08/5.26, 3.51/20.20 |
-| D=128 (opt-in) **nc / causal** qL4096 | **1.14× / 1.23×** | 3.81/4.36, 4.58/5.64 |
-
-> **Historical (pre-M5, v2.37–2.39, MLX 0.31.2):** D=64 non-causal was 1.82–2.00× (the
-> win held and *grew* on M5); D=128 was characterized as **2.2–2.4× SLOWER** (architectural
-> dO@V^T dK-spill floor) — that no longer holds on M5 (now a slight win, above). The pre-M5
-> numbers were on earlier hardware + pre-BK16-autotune kernels; kept for provenance.
-- See `ENV_VARS.md` `MFA_V6BWD*` group for tile-tuning knobs.
+- **Default user-facing path = SDPA-vjp** (`mx.vjp` of Apple SDPA). On M5 the public
+  `flash_attention` backward routes to SDPA-vjp: the native-V6 eligibility gate
+  (`_v6nax_eligible`) does not engage by default. Apple's own NAX backward is NYI in MLX.
+- **Native V6NAX backward kernels** (`v6_nax_backward_query` + split `v6_nax_backward_dv_raw`
+  / `v6_nax_backward_dk_raw`) exist and are opt-in (`MFA_ENABLE_V6_BACKWARD=1`). Direct-call
+  correctness vs an independent fp32 oracle: **dQ ≈ 5e-4, dK ≈ 1.7e-3 (correct)**; dV is
+  convention-sensitive (only correct with the matching `force_v6nax` natural-log-lse forward).
+  The **fused `v6_nax_backward_kv` kernel's default BK=16 is numerically INVALID** (II-6:
+  out-of-bounds fragment write corrupts dK/dV) and is not the default; split is the default.
+- **Speedup is NOT verified.** Every prior public-API ratio was an artifact and has been
+  withdrawn: v2.37.1 "1.4–1.85×" (retracted), v2.38.1/v2.39.1 "1.91–2.00×" (fused-BK16, on
+  withdrawn corrupt math per II-6), cc4fd10 "parity" (wrong toggle), b01e40d "2.55–5.75×"
+  (timed `grad[0]`=dQ-only for one arm — V6's *split* dQ kernel — vs SDPA's full fused
+  backward; apples-to-oranges). A clean kernel-level full-backward ratio could not be
+  certified (dV-correctness not reproducible standalone; fused path withdrawn). **Do not cite
+  a backward speedup until it is re-measured at the kernel level, full-backward, oracle-correct,
+  engagement-by-construction, MLX-version-stamped.**
+- See `ENV_VARS.md` `MFA_V6BWD*` group for the experimental tile-tuning knobs.
 
 ### `flash_attention_kvcache(...)`
 
