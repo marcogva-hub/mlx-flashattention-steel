@@ -66,10 +66,20 @@ Notes:
 - **D=128 → opt-in only** (`MFA_ENABLE_V6_BACKWARD=1`) and **SLOWER** (0.54× nc / 0.57× causal
   @qL4096) → correctly NOT default; SDPA-vjp is the D=128 default. **D=64 qL<2048** also stays
   SDPA-vjp (V6 regresses below 2048).
-- **Fused `v6_nax_backward_kv` BK=16 is numerically INVALID and GATED** (II-6: paired 16×32×16
-  MMA needs TK=BK/16 even; at BK=16 the 2nd fragment is OOB — structural, MPP has no 16×16×16
-  op). Not fixed/not worth fixing (its "1.01–1.12× vs split" was corrupt-math, withdrawn). The
-  **split** path is the correct + fast one above. Locked by `tests/test_v6_bwd_paired_mma_guard.py`.
+- **Fused dKdV BK=16 (TK=1) is numerically CORRECT** (corrected 2026-06-20). II-6 found it
+  corrupt (paired 16×32×16 MMA, TK=BK/16=1 → unpaired 2nd fragment OOB, dV err ≈ 35.9);
+  **Phase II-8 item 3 fixed it** with a TK=1 odd-tail scratch path (the unpaired fragment loads
+  `tail_lim ≤ 16` rows + writes a throwaway `scratch` fragment — no OOB), and the dense fused
+  dispatch passes `generator_handles_odd_tk=true` so the `BK%32` guard admits BK=16 ONLY through
+  that validated tail. Verified 2026-06-20 (M5/MLX-0.31.2): oracle-correct dq/dk/dv at unit scale,
+  causal + non-causal, which-binary `V6NAXBWDF_TK=1`. **But it is NOT faster than split**:
+  BK=16-fused vs split@BK=32 = **1.00–1.03×** (parity-to-noise, far below split's 2.18–3.06× vs
+  SDPA-vjp) — the old "1.01–1.12× edge" was corrupt-*math* but the magnitude was ~real register
+  relief, just within noise. **Split@BK=32 remains the default** (correct + the real win above);
+  BK=16-fused is correct-but-not-advantageous. The `BK%32` guard still blocks the *forward* and
+  the *sparse* fused generators (no odd-tail there → they raise, not corrupt). Locks:
+  `tests/test_v6_fused_bk16_tk1_lock.py` (BK=16 oracle-correct) +
+  `tests/test_v6_bwd_paired_mma_guard.py` (forward BK=16 still raises).
 - Prior withdrawn ratios (artifacts): "1.4–1.85×" (retracted), "1.91–2.00×" (fused-BK16 corrupt
   math), cc4fd10 "parity"/3f92d96 "unverified" (shared-input graph-cache → byteΔ=0 masked
   engagement), b01e40d "2.55–5.75×" (dQ-only timing). The number above supersedes all — it is

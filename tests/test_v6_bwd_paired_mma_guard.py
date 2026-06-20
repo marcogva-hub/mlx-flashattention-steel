@@ -9,13 +9,21 @@ fragment lands out of bounds → dK/dV corruption. It is SCALE-DEPENDENT (OOB ga
 shipped it; dV row errors reach ~35.9 (ref ~8) at std 1.0.
 
 STRUCTURAL: the MPP cooperative matmul has no 16x16x16 op (header static_assert requires
-one dim = 32) — so BK=16 cannot be expressed as the paired MMA. The II-6 disposition is a
-loud `BK % 32 == 0` guard (forward + all 8 backward pipelines); a true BK=16 (TK=1) variant
-is a deferred M-effort with a WITHDRAWN premise (its "1.01-1.12x vs split" was corrupt math).
+one dim = 32) — so a single 16x16 fragment cannot be expressed as a bare paired MMA.
 
-This lock (a) proves the guard bites on BK=16 — the mitigation — and (b) checks the
-production backward is finite + oracle-correct at UNIT scale (≈1.0), the realistic
-magnitude the 0.1-scale fixture failed to exercise.
+UPDATE 2026-06-20 (corrects an earlier "not worth fixing / deferred M-effort" note): the
+TK=1 variant DOES exist for the DENSE FUSED dKdV kernel — Phase II-8 item 3 added an odd-TK
+SCRATCH tail (load `tail_lim ≤ 16` K-rows, run the paired MMA into the real fragment + a
+throwaway `scratch` fragment), and that dispatch passes `generator_handles_odd_tk=true`, so
+the guard admits its BK=16. It is oracle-correct (locked by
+`tests/test_v6_fused_bk16_tk1_lock.py`) but only ~1.00-1.03x vs split@BK=32 (parity-to-noise)
+→ split stays the default. The guard below STILL bites for the generators WITHOUT the tail:
+the FORWARD kernel (`MFA_V6_NAX_BK=16`, tested here) and the sparse fused generator — they
+raise, not corrupt.
+
+This lock (a) proves the guard bites on BK=16 for the FORWARD path — the mitigation — and
+(b) checks the production (split) backward is finite + oracle-correct at UNIT scale (≈1.0),
+the realistic magnitude the 0.1-scale fixture failed to exercise.
 """
 from __future__ import annotations
 
