@@ -43,10 +43,42 @@ pytestmark = pytest.mark.skipif(
 
 mx.random.seed(0)
 
+# T2-1 (audit de-vacuity, 2026-06-21): this file is PRIMARILY a which-binary lock
+# — almost every cell asserts a byteΔ FINGERPRINT vs an SDPA reference (==0.0 ⇒
+# IS the SDPA fallback; >0 ⇒ a different REAL kernel). Those fingerprint
+# assertions are SCALE-INDEPENDENT (a path that emits identical bytes at 0.1 emits
+# identical bytes at std≈1.0 — same kernel, same input identity) and stay EXACT.
+# The audit runs every cell at BOTH the original 0.1 toy scale (kept) AND a
+# realistic unit scale (std≈1.0, normal) — the regime that hid the II-6 fused-dKdV
+# corruption — so the routing lock is proven robust at the production input
+# magnitude. The few cells that ALSO carry a loose `< 3e-2` upper sanity cap on a
+# real-kernel-vs-SDPA byteΔ keep that cap EXACT: it is a routing sanity bound
+# (wrong-kernel ⇒ huge Δ), not an oracle-math tolerance — verified to hold at unit
+# scale (matmul cells ≲3e-4). A flip at unit scale (a ==0.0 becoming >0, or a >0
+# becoming ==0.0) would be a SCALE-DEPENDENT ROUTE = a real audit finding, NOT a
+# tolerance to relax. (This file has no independent-oracle math cells to convert
+# to relative tolerance — its locks are byte-fingerprint by construction.)
+_MAG = {"mode": "toy"}
+
+
+def _gen(shape):
+    if _MAG["mode"] == "unit":
+        return mx.random.normal(shape).astype(mx.float16)          # std ≈ 1.0
+    return (mx.random.uniform(-1, 1, shape) * 0.1).astype(mx.float16)
+
+
+@pytest.fixture(autouse=True, params=["toy", "unit"])
+def _regime(request):
+    """Run EVERY cell at both input magnitudes (T2-1). byteΔ fingerprints are
+    scale-independent → the routing lock is strengthened, not duplicated-noise."""
+    _MAG["mode"] = request.param
+    yield
+    _MAG["mode"] = "toy"
+
 
 def _qkv(B, H, N, D, Hk=None):
     Hk = Hk or H
-    f = lambda h: (mx.random.uniform(-1, 1, (B, h, N, D)) * 0.1).astype(mx.float16)
+    f = lambda h: _gen((B, h, N, D))
     q, k, v = f(H), f(Hk), f(Hk)
     mx.eval(q, k, v)
     return q, k, v
@@ -175,9 +207,9 @@ def test_gna_runs_native_not_sdpa_fallback():
 def test_kvcache_decode_is_sdpa():
     """flash_attention_kvcache decode (N_q=1) → Apple SDPA (gather + SDPA)."""
     B, H, S, D = 1, 8, 1024, 128
-    qd = (mx.random.uniform(-1, 1, (B, H, 1, D)) * 0.1).astype(mx.float16)
-    kc = (mx.random.uniform(-1, 1, (B, H, S, D)) * 0.1).astype(mx.float16)
-    vc = (mx.random.uniform(-1, 1, (B, H, S, D)) * 0.1).astype(mx.float16); mx.eval(qd, kc, vc)
+    qd = _gen((B, H, 1, D))
+    kc = _gen((B, H, S, D))
+    vc = _gen((B, H, S, D)); mx.eval(qd, kc, vc)
     o = flash_attention_kvcache(qd, kc, vc, scale=1 / math.sqrt(D), causal=True, cache_seqlens=S)
     ref = mx.fast.scaled_dot_product_attention(qd, kc, vc, scale=1 / math.sqrt(D))
     assert _delta(o, ref) == 0.0, "kvcache decode no longer the SDPA path"

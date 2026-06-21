@@ -38,6 +38,22 @@ mx.random.seed(0)
 _TOL = 3e-2
 _ATTN_CPP = Path(__file__).resolve().parent.parent / "csrc" / "mfa_attention.cpp"
 
+# T2-1 (audit H-10, 2026-06-21): these locks ran ONLY at 0.1 input scale — the
+# regime that hid the II-6 fused-dKdV corruption.  Every correctness cell now
+# runs at BOTH 0.1 (kept) AND realistic unit scale (std≈1.0, normal), validated
+# vs the SAME independent fp32 oracle.  Toy keeps the original ABSOLUTE bound;
+# unit uses a scale-invariant RELATIVE bound (fp16 attention rel-err is ≲1e-2).
+# A unit-scale failure is a BUG-DISCOVERY signal — investigate which-binary;
+# do NOT loosen it without confirming the kernel is correct.
+_REL_TOL = 5e-2
+_MAG = {"mode": "toy"}
+
+
+def _gen(shape):
+    if _MAG["mode"] == "unit":
+        return mx.random.normal(shape).astype(mx.float16)         # std ≈ 1.0
+    return (mx.random.uniform(-1, 1, shape) * 0.1).astype(mx.float16)
+
 
 def _fp32_oracle(q, k, v, scale, causal):
     qf, kf, vf = q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32)
@@ -47,16 +63,25 @@ def _fp32_oracle(q, k, v, scale, causal):
     s = (qf @ kf.swapaxes(-1, -2)) * scale
     N, S = q.shape[2], k.shape[2]
     if causal:
-        cm = (mx.arange(N)[:, None] >= mx.arange(S)[None, :] + (S - N)).astype(mx.float32)
+        # T2-1 ORACLE FIX (audit, 2026-06-21): the prior formula
+        # `i >= j + (S-N)` had the (S-N) sign FLIPPED — for N<S (the flash-decode
+        # cell, N=1,S=2048) it masked EVERY key → a uniform-softmax reference.
+        # Toy scale hid it (tiny scores → the kernel also ≈ uniform, so they
+        # agreed); at unit scale the kernel's correctly-peaked softmax diverged
+        # (rel 1.6).  Query i sits at absolute position i+(S-N) and attends key j
+        # iff i+(S-N) >= j.  Kernel verified CORRECT vs this fixed oracle (4.3e-5)
+        # and vs non-causal-full (the N=1 query is the last position → attends
+        # all keys).  Dormant-same-formula in sibling locks only test N==S.
+        cm = (mx.arange(N)[:, None] + (S - N) >= mx.arange(S)[None, :]).astype(mx.float32)
         s = mx.where(cm > 0, s, mx.array(-1e30, mx.float32))
     return mx.softmax(s, axis=-1) @ vf
 
 
 def _qkv(B, H, N, D, Hk=None, Sk=None):
     Hk = Hk or H; Sk = Sk or N
-    fq = (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(mx.float16)
-    fk = (mx.random.uniform(-1, 1, (B, Hk, Sk, D)) * 0.1).astype(mx.float16)
-    fv = (mx.random.uniform(-1, 1, (B, Hk, Sk, D)) * 0.1).astype(mx.float16)
+    fq = _gen((B, H, N, D))
+    fk = _gen((B, Hk, Sk, D))
+    fv = _gen((B, Hk, Sk, D))
     mx.eval(fq, fk, fv); return fq, fk, fv
 
 
@@ -66,11 +91,23 @@ def _assert_correct(q, k, v, scale, causal):
     mx.eval(o, ref)
     assert bool(mx.all(mx.isfinite(o.astype(mx.float32))).item()), "non-finite"
     d = float(mx.max(mx.abs(o.astype(mx.float32) - ref)).item())
-    assert d < _TOL, f"max_abs_err {d} exceeds {_TOL}"
+    if _MAG["mode"] == "unit":
+        denom = float(mx.max(mx.abs(ref)).item()) + 1e-6
+        rel = d / denom
+        assert rel < _REL_TOL, f"unit-scale rel_err {rel:.3e} exceeds {_REL_TOL} (abs={d:.3e})"
+    else:
+        assert d < _TOL, f"toy-scale max_abs_err {d} exceeds {_TOL}"
 
 
 # ── forced-variant correctness (vs independent fp32 oracle) ──────────────────
 class TestSteelVariantCorrectness:
+    # Run each cell below at BOTH input regimes (T2-1).
+    @pytest.fixture(autouse=True, params=["toy", "unit"])
+    def _regime(self, request):
+        _MAG["mode"] = request.param
+        yield
+        _MAG["mode"] = "toy"
+
     def test_v3_d64_causal(self):  # default V3 (causal large-N)
         q, k, v = _qkv(2, 8, 4096, 64); _assert_correct(q, k, v, 1 / math.sqrt(64), True)
 

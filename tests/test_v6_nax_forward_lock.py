@@ -39,6 +39,52 @@ pytestmark = pytest.mark.skipif(
     reason="v6_nax_forward dense NAX kernel: M5+ NAX hardware + extension required",
 )
 
+# T2-1 de-vacuity (audit, 2026-06-21): these correctness cells ran ONLY at the
+# 0.1 input scale — a regime where fp16 softmax is near-uniform and small kernel
+# divergences are suppressed (the lock comment records a prior simdgroup fallback
+# giving D=64 N=4096 err≈512 vs fp32, a divergence only realistic-scale inputs
+# expose).  Every correctness cell now ALSO runs at realistic unit scale
+# (std≈1.0, normal), validated vs the SAME independent fp32 oracle.  Toy keeps
+# the original ABSOLUTE bound (< 2e-2); unit uses a scale-invariant RELATIVE
+# bound.  A unit-scale failure is a BUG-DISCOVERY signal — confirm which-binary
+# (byteΔ vs SDPA proves the NAX kernel ran, not a silent SDPA fallback) and do
+# NOT loosen without confirming the kernel is correct.
+#   Empirically (this hardware, MLX 0.31.2, M5 Max): all cells give unit-scale
+#   rel-err ≲ 7e-4, byteΔ-vs-SDPA ≳ 1e-4 (NAX path confirmed engaged).  The cells
+#   all have N==S, so the causal (S-N) term is dormant (S-N=0) — no flipped-sign
+#   latent bug is exercisable here.
+_REL_TOL = 5e-2
+_MAG = {"mode": "toy"}
+
+
+@pytest.fixture(autouse=True, params=["toy", "unit"])
+def _regime(request):
+    """Run every correctness cell at BOTH 0.1 (toy) and std≈1.0 (unit) input
+    scale (T2-1).  Scale-independent cells (the pure-NAX Δ==0 equivalence) pass
+    identically at both — their bite is preserved."""
+    _MAG["mode"] = request.param
+    yield
+    _MAG["mode"] = "toy"
+
+
+def _gen(shape):
+    """Inputs at the active magnitude.  unit → std≈1.0 normal (realistic, the
+    regime that materially peaks softmax); else → the original 0.1-uniform toy."""
+    if _MAG["mode"] == "unit":
+        return mx.random.normal(shape).astype(mx.float16)
+    return (mx.random.uniform(-1, 1, shape) * 0.1).astype(mx.float16)
+
+
+def _check(O, ref, label):
+    """Toy: original ABS bound (< 2e-2).  Unit: scale-invariant RELATIVE bound."""
+    err = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref)).max())
+    assert np.isfinite(err), f"{label}: non-finite err"
+    if _MAG["mode"] == "unit":
+        rel = err / (float(np.abs(np.array(ref)).max()) + 1e-6)
+        assert rel < _REL_TOL, f"{label}: unit-scale rel_err={rel:.3e} exceeds {_REL_TOL} (abs={err:.3e})"
+    else:
+        assert err < 2e-2, f"{label}: toy-scale max_err={err:.3e} exceeds 2e-2"
+
 
 def _fp32_oracle(q, k, v, causal, D):
     """Independent manual fp32 FA-2 forward (lesson #11), default scale 1/sqrt(D)."""
@@ -69,17 +115,14 @@ _CELLS = [
 @pytest.mark.parametrize("D,N,Hq,Hk,causal", _CELLS)
 def test_v6_nax_forward_matches_fp32(D, N, Hq, Hk, causal):
     mx.random.seed(13)
-    q = (mx.random.uniform(-1, 1, (1, Hq, N, D)) * 0.1).astype(mx.float16)
-    k = (mx.random.uniform(-1, 1, (1, Hk, N, D)) * 0.1).astype(mx.float16)
-    v = (mx.random.uniform(-1, 1, (1, Hk, N, D)) * 0.1).astype(mx.float16)
+    q = _gen((1, Hq, N, D))
+    k = _gen((1, Hk, N, D))
+    v = _gen((1, Hk, N, D))
     mx.eval(q, k, v)
     O, L = v6_nax_forward(q, k, v, causal, True)  # force_v6nax=True
     mx.eval(O)
     ref = _fp32_oracle(q, k, v, causal, D)
-    err = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref)).max())
-    assert np.isfinite(err) and err < 2e-2, (
-        f"v6_nax_forward D={D} N={N} Hq={Hq} Hk={Hk} causal={causal}: "
-        f"max_err={err:.3e} vs independent fp32 (default scale 1/sqrt(D))")
+    _check(O, ref, f"v6_nax_forward D={D} N={N} Hq={Hq} Hk={Hk} causal={causal} ({_MAG['mode']})")
 
 
 @pytest.mark.parametrize("D,N", [(64, 2048), (64, 4096), (128, 2048)])
@@ -93,20 +136,20 @@ def test_v6_forward_is_pure_nax(D, N, causal):
     matches the fp32 oracle.  Drift-back: if a simdgroup fallback reappears, the
     False path diverges from the True path (Δ>0) and/or from fp32 → this FAILS."""
     mx.random.seed(4)
-    q = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
-    k = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
-    v = (mx.random.uniform(-1, 1, (1, 8, N, D)) * 0.1).astype(mx.float16)
+    q = _gen((1, 8, N, D))
+    k = _gen((1, 8, N, D))
+    v = _gen((1, 8, N, D))
     mx.eval(q, k, v)
     O_false, _ = v6_nax_forward(q, k, v, causal, False)  # was simdgroup at D=64
     O_true, _ = v6_nax_forward(q, k, v, causal, True)     # always NAX
     mx.eval(O_false, O_true)
+    # Δ==0 equivalence is scale-INDEPENDENT — it must hold at both toy and unit.
     drift = float(mx.max(mx.abs(O_false.astype(mx.float32) - O_true.astype(mx.float32))).item())
     assert drift == 0.0, (
-        f"V6 not pure NAX (D={D} N={N} c={causal}): force_v6nax=False diverged from "
-        f"True by Δ={drift:.3e} — the simdgroup-within-V6 fallback reappeared")
+        f"V6 not pure NAX (D={D} N={N} c={causal} {_MAG['mode']}): force_v6nax=False "
+        f"diverged from True by Δ={drift:.3e} — the simdgroup-within-V6 fallback reappeared")
     ref = _fp32_oracle(q, k, v, causal, D)
-    err = float(np.abs(np.array(O_false.astype(mx.float32)) - np.array(ref)).max())
-    assert err < 2e-2, f"V6 pure-NAX path wrong vs fp32 (D={D} N={N} c={causal}): err={err:.3e}"
+    _check(O_false, ref, f"V6 pure-NAX path (D={D} N={N} c={causal} {_MAG['mode']})")
 
 
 @pytest.mark.parametrize("causal", [False, True])
@@ -164,13 +207,12 @@ def test_v6_nax_forward_default_scale_sentinel():
     behavior is preserved for existing callers, e.g. the backward-recompute.)"""
     D, N = 128, 2048
     mx.random.seed(1)
-    q = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
-    k = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
-    v = (mx.random.uniform(-1, 1, (1, 4, N, D)) * 0.1).astype(mx.float16)
+    q = _gen((1, 4, N, D))
+    k = _gen((1, 4, N, D))
+    v = _gen((1, 4, N, D))
     mx.eval(q, k, v)
     # no scale arg → default sentinel → 1/sqrt(D)
     O, _ = v6_nax_forward(q, k, v, False, True)
     mx.eval(O)
     ref_default = _fp32_oracle(q, k, v, False, D)  # scale = 1/sqrt(128)
-    err = float(np.abs(np.array(O.astype(mx.float32)) - np.array(ref_default)).max())
-    assert err < 2e-2, f"v6_nax_forward default sentinel not at 1/sqrt(D): err={err:.3e}"
+    _check(O, ref_default, f"v6_nax_forward default sentinel ({_MAG['mode']})")

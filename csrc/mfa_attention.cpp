@@ -1717,6 +1717,27 @@ mlx::core::array mfa_attention_forward(
     throw std::invalid_argument("MFA: expected 4D inputs [B, H, N, D]");
   }
 
+  // C-01 FIX (audit, 2026-06-21): defense-in-depth — the kernel derives B from
+  // Q and ALL K/V strides from K (V_batch_stride = Hk*S*D), so a K/V that
+  // disagrees with Q / each other on batch, kv-seq, or kv-heads reads
+  // out-of-bounds → silent-wrong finite output.  The Python public boundary
+  // rejects these first, but guard the direct binding too (Rule 8).
+  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0)) {
+    throw std::invalid_argument(
+        "MFA: q, k, v must share the batch dim (Bq=" + std::to_string(q.shape(0)) +
+        ", Bk=" + std::to_string(k.shape(0)) + ", Bv=" + std::to_string(v.shape(0)) + ")");
+  }
+  if (k.shape(2) != v.shape(2)) {
+    throw std::invalid_argument(
+        "MFA: k and v must share the kv sequence length (Sk=" +
+        std::to_string(k.shape(2)) + ", Sv=" + std::to_string(v.shape(2)) + ")");
+  }
+  if (k.shape(1) != v.shape(1)) {
+    throw std::invalid_argument(
+        "MFA: k and v must have the same number of heads (Hk=" +
+        std::to_string(k.shape(1)) + ", Hv=" + std::to_string(v.shape(1)) + ")");
+  }
+
   // D.5: Enforce row-major BHND layout inside the C++ binding entry point.
   // mlx::core::contiguous() is a no-op (zero allocation) when the array is
   // already contiguous — it returns the same buffer with no copy.  Moving

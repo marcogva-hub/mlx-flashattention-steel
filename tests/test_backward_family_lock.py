@@ -36,6 +36,25 @@ pytestmark = pytest.mark.skipif(
 mx.random.seed(0)
 _TOL = 5e-2
 
+# T2-1 (audit, 2026-06-21): these gradient-correctness locks ran ONLY at 0.1
+# input scale — the regime that hid the II-6 fused-dKdV corruption (scores ≈ 0 →
+# near-uniform softmax → gradients insensitive to the bug).  Every cell now runs
+# at BOTH 0.1 (kept) AND realistic unit scale (std≈1.0, normal) for q/k/v AND the
+# dO tangent, validated vs the SAME independent fp32-vjp oracle.  Toy keeps the
+# original ABSOLUTE bound; unit uses a scale-invariant RELATIVE bound (fp16
+# gradients are noisier than fp16 forward — rel-err is justified ≲1e-1).
+# A unit-scale failure is a BUG-DISCOVERY signal — investigate which-binary
+# (the byteΔ assertions still pin the dispatch); do NOT loosen without confirming
+# the kernel matches the independent oracle.
+_REL_TOL = 8e-2
+_MAG = {"mode": "toy"}
+
+
+def _gen(shape):
+    if _MAG["mode"] == "unit":
+        return mx.random.normal(shape).astype(mx.float16)          # std ≈ 1.0
+    return (mx.random.uniform(-1, 1, shape) * 0.1).astype(mx.float16)
+
 
 def _fp32_fwd(q, k, v, scale, causal, bias=None):
     qf, kf, vf = q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32)
@@ -45,7 +64,13 @@ def _fp32_fwd(q, k, v, scale, causal, bias=None):
     s = (qf @ kf.swapaxes(-1, -2)) * scale
     N, S = q.shape[2], k.shape[2]
     if causal:
-        s = mx.where(mx.arange(N)[:, None] >= mx.arange(S)[None, :] + (S - N), s, mx.array(-1e30))
+        # T2-1 ORACLE FIX (audit, 2026-06-21): the prior formula
+        # `i >= j + (S-N)` had the (S-N) sign FLIPPED.  Dormant here (every
+        # backward cell uses N==S so S-N=0), but a latent oracle bug that would
+        # bite on the first N≠S cell — fixed for correctness (same root cause
+        # already fixed in test_dense_steel_family_lock.py).  Query i sits at
+        # absolute position i+(S-N) and attends key j iff i+(S-N) >= j.
+        s = mx.where(mx.arange(N)[:, None] + (S - N) >= mx.arange(S)[None, :], s, mx.array(-1e30))
     if bias is not None:
         s = s + bias
     return mx.softmax(s, -1) @ vf
@@ -63,8 +88,7 @@ def _delta(a, b):
 
 def _qkv(B, H, N, D, Hk=None):
     Hk = Hk or H
-    f = lambda h: (mx.random.uniform(-1, 1, (B, h, N, D)) * 0.1).astype(mx.float16)
-    q, k, v = f(H), f(Hk), f(Hk); mx.eval(q, k, v)
+    q, k, v = _gen((B, H, N, D)), _gen((B, Hk, N, D)), _gen((B, Hk, N, D)); mx.eval(q, k, v)
     return q, k, v
 
 
@@ -76,7 +100,7 @@ def _block_bias(m, N):
 
 def _audit(q, k, v, scale, causal, expect, bias=None, smask=None):
     """expect: dict {'dQ','dK','dV'} -> 'native' | 'sdpa-vjp'. Asserts correctness + which-binary."""
-    dO = (mx.random.uniform(-1, 1, q.shape) * 0.1).astype(mx.float16); mx.eval(dO)
+    dO = _gen(q.shape); mx.eval(dO)
     kfn = ((lambda a, b, c: flash_attention_sparse(a, b, c, smask, scale=scale, causal=causal))
            if smask is not None else
            (lambda a, b, c: flash_attention(a, b, c, scale=scale, causal=causal)))
@@ -85,7 +109,13 @@ def _audit(q, k, v, scale, causal, expect, bias=None, smask=None):
     sdpa_mask = bias if bias is not None else ("causal" if causal else None)
     gs = _vjp(lambda a, b, c: mx.fast.scaled_dot_product_attention(a, b, c, scale=scale, mask=sdpa_mask), q, k, v, dO)
     for i, nm in enumerate(("dQ", "dK", "dV")):
-        assert _delta(gk[i], go[i]) < _TOL, f"{nm} wrong vs fp32 oracle"
+        d = _delta(gk[i], go[i])
+        if _MAG["mode"] == "unit":
+            denom = float(mx.max(mx.abs(go[i].astype(mx.float32))).item()) + 1e-6
+            rel = d / denom
+            assert rel < _REL_TOL, f"{nm} unit-scale rel_err {rel:.3e} exceeds {_REL_TOL} (abs={d:.3e}) vs fp32 oracle"
+        else:
+            assert d < _TOL, f"{nm} toy-scale abs_err {d} exceeds {_TOL} vs fp32 oracle"
         wb = _delta(gk[i], gs[i])
         if expect[nm] == "sdpa-vjp":
             assert wb == 0.0, f"{nm} expected SDPA-vjp but Δ={wb} (rerouted to native? update map)"
@@ -99,6 +129,15 @@ _HYBRID = {"dQ": "sdpa-vjp", "dK": "sdpa-vjp", "dV": "native"}
 
 
 class TestBackwardWhichBinaryAndCorrectness:
+    # Run each cell at BOTH input regimes (T2-1).  The which-binary byteΔ
+    # assertions are scale-independent and unchanged; only the correctness bound
+    # switches (absolute @ toy, relative @ unit).
+    @pytest.fixture(autouse=True, params=["toy", "unit"])
+    def _regime(self, request):
+        _MAG["mode"] = request.param
+        yield
+        _MAG["mode"] = "toy"
+
     def test_dense_d128_causal_all_sdpa_vjp(self):
         q, k, v = _qkv(2, 8, 4096, 128)
         _audit(q, k, v, 1 / math.sqrt(128), True, _ALL_SDPA)

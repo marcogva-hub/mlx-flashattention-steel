@@ -1400,8 +1400,18 @@ class TestSparseBackwardTiled:
 class TestSparseBackwardSteel:
     """Verify backward='steel_sparse' (native STEEL Metal sparse backward).
 
-    Compares steel_sparse gradients against sdpa (dense SDPA reference).
-    f16 only; D=64/128.
+    T2-3 FIX (audit H6, 2026-06-21): the two `*_matches_sdpa` correctness cells
+    were GREEN-ON-WRONG-BINARY.  On M5 a symmetric `make_causal_block_mask`
+    auto-routes `flash_attention_sparse` through `_make_sparse_nax_with_sdpa_vjp`
+    (SDPA-vjp) and the `backward="steel_sparse"` arg is IGNORED — verified at
+    runtime: the native `mfa_steel_backward_sparse` binding is called 0 times and
+    byteΔ(steel grads, sdpa grads)==0.0.  So both arms were SDPA-vjp and the test
+    validated nothing about the STEEL kernel.  The native kernel only engages on
+    M1–M4.  The cells now (a) DETECT engagement via which-binary (byteΔ) and SKIP
+    honestly where the kernel can't run, and (b) when engaged, validate against an
+    INDEPENDENT fp32 gradient oracle (block-masked manual forward), not SDPA-vjp.
+    The scale in `*_all_true` was also a typo (`1/sqrt(N)`≈0.022 → flat softmax);
+    fixed to `1/sqrt(D)` to match the sibling cell.  f16 only; D=64/128.
     """
 
     def _grads(self, q, k, v, mask, scale, causal=False, backward="sdpa"):
@@ -1418,9 +1428,44 @@ class TestSparseBackwardSteel:
             np.array(dv.astype(mx.float32)),
         )
 
+    def _fp32_oracle_grads(self, q, k, v, mask, scale, causal):
+        """Independent fp32 gradient oracle (lesson #11): grad of a MANUAL fp32
+        block-masked forward — NOT SDPA-vjp, NOT the kernel.  Applies the SAME
+        tile-level block mask the kernel does (no element-causal within a block)."""
+        N, S = q.shape[2], k.shape[2]
+        NQ, NK = mask.shape[-2], mask.shape[-1]
+
+        def fwd(q_, k_, v_):
+            qf, kf, vf = q_.astype(mx.float32), k_.astype(mx.float32), v_.astype(mx.float32)
+            Hq, Hk = q_.shape[1], k_.shape[1]
+            if Hq != Hk:
+                r = Hq // Hk; kf = mx.repeat(kf, r, 1); vf = mx.repeat(vf, r, 1)
+            s = (qf @ kf.swapaxes(-1, -2)) * scale
+            em = mx.repeat(mx.repeat(mask.astype(mx.float32), N // NQ, -2), S // NK, -1)
+            while em.ndim < 4:
+                em = em[None]
+            s = mx.where(em > 0, s, mx.array(-1e30, mx.float32))
+            if causal:
+                cm = (mx.arange(N)[:, None] + (S - N) >= mx.arange(S)[None, :]).astype(mx.float32)
+                s = mx.where(cm > 0, s, mx.array(-1e30, mx.float32))
+            return mx.sum(mx.softmax(s, -1) @ vf)
+
+        dq, dk, dv = mx.grad(fwd, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(dq, dk, dv)
+        return (np.array(dq.astype(mx.float32)), np.array(dk.astype(mx.float32)),
+                np.array(dv.astype(mx.float32)))
+
+    def _assert_steel_engaged_or_skip(self, steel, sdpa):
+        """which-binary: if the native STEEL backward did not engage (byteΔ vs
+        SDPA-vjp == 0 across all grads), this hardware routed sparse → SDPA-vjp
+        (M5).  Skip honestly — native coverage is M1–M4."""
+        if all(float(np.abs(s - r).max()) == 0.0 for s, r in zip(steel, sdpa)):
+            pytest.skip("steel_sparse backward not engaged on this hardware "
+                        "(M5 routes sparse-symmetric → SDPA-vjp); native coverage is M1–M4")
+
     @pytest.mark.parametrize("D", [64, 128])
     def test_steel_sparse_all_true_matches_sdpa(self, D):
-        """All-true mask: steel_sparse grads must match sdpa dense reference."""
+        """steel_sparse grads (when engaged) match an independent fp32 oracle."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
         B, H, N = 1, 2, 2048
         mx.random.seed(99)
@@ -1430,18 +1475,19 @@ class TestSparseBackwardSteel:
         mx.eval(q, k, v)
 
         mask = make_causal_block_mask(N, D)
-        scale = 1.0 / N**0.5
+        scale = 1.0 / D**0.5  # T2-4: was 1/sqrt(N) (≈0.022) — a typo that flattened softmax.
 
-        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, backward="sdpa")
-        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale, backward="steel_sparse")
+        sdpa  = self._grads(q, k, v, mask, scale, backward="sdpa")
+        steel = self._grads(q, k, v, mask, scale, backward="steel_sparse")
+        self._assert_steel_engaged_or_skip(steel, sdpa)
 
-        np.testing.assert_allclose(dq_sp, dq_ref, atol=2e-2, err_msg="dQ mismatch")
-        np.testing.assert_allclose(dk_sp, dk_ref, atol=2e-2, err_msg="dK mismatch")
-        np.testing.assert_allclose(dv_sp, dv_ref, atol=2e-2, err_msg="dV mismatch")
+        oq, ok_, ov = self._fp32_oracle_grads(q, k, v, mask, scale, causal=False)
+        for nm, sp, ref in zip(("dQ", "dK", "dV"), steel, (oq, ok_, ov)):
+            np.testing.assert_allclose(sp, ref, atol=2e-2, err_msg=f"{nm} vs fp32 oracle")
 
     @pytest.mark.parametrize("D", [64, 128])
     def test_steel_sparse_causal_block_mask(self, D):
-        """Causal block mask: steel_sparse must match sdpa with causal=True."""
+        """Causal block mask: steel_sparse (when engaged) matches an fp32 oracle."""
         # v2.50 Prompt 4 Section A: bumped N=64→2048 for sparse mask>=4096 bytes.
         B, H, N = 1, 2, 2048
         mx.random.seed(77)
@@ -1453,12 +1499,13 @@ class TestSparseBackwardSteel:
         mask = make_causal_block_mask(N, D)
         scale = 1.0 / D**0.5
 
-        dq_ref, dk_ref, dv_ref = self._grads(q, k, v, mask, scale, causal=True, backward="sdpa")
-        dq_sp,  dk_sp,  dv_sp  = self._grads(q, k, v, mask, scale, causal=True, backward="steel_sparse")
+        sdpa  = self._grads(q, k, v, mask, scale, causal=True, backward="sdpa")
+        steel = self._grads(q, k, v, mask, scale, causal=True, backward="steel_sparse")
+        self._assert_steel_engaged_or_skip(steel, sdpa)
 
-        np.testing.assert_allclose(dq_sp, dq_ref, atol=2e-2, err_msg="dQ causal mismatch")
-        np.testing.assert_allclose(dk_sp, dk_ref, atol=2e-2, err_msg="dK causal mismatch")
-        np.testing.assert_allclose(dv_sp, dv_ref, atol=2e-2, err_msg="dV causal mismatch")
+        oq, ok_, ov = self._fp32_oracle_grads(q, k, v, mask, scale, causal=True)
+        for nm, sp, ref in zip(("dQ", "dK", "dV"), steel, (oq, ok_, ov)):
+            np.testing.assert_allclose(sp, ref, atol=2e-2, err_msg=f"{nm} causal vs fp32 oracle")
 
     def test_steel_sparse_gradients_finite(self):
         """Gradients are finite (no NaN/Inf) for steel_sparse."""
@@ -6902,9 +6949,11 @@ class TestKVCacheRopeAppend:
              _apply_rope_for_test(k_new_unrot, cos, sin, offset=past_len)], axis=2
         )
         q_rot = _apply_rope_for_test(q, cos, sin, offset=past_len)
-        ref = flash_attention(q_rot, k_full_rot, v_past if past_len else v_new,
-                              causal=True)
-        # Actually build the proper full v
+        # C-01 cleanup (audit, 2026-06-21): a dead `ref = flash_attention(q_rot,
+        # k_full_rot, v_past, ...)` line was removed here — k_full_rot had seq
+        # past_len+new_len=9 but v_past had seq 8, a mismatched-K/V call that
+        # silently OOB-read before the new shape guard and whose result was
+        # immediately discarded (overwritten by ref2 below with the proper v_full).
         v_full = mx.concatenate([v_past, v_new], axis=2)
         ref2 = flash_attention(q_rot, k_full_rot, v_full, causal=True)
 
@@ -11617,8 +11666,9 @@ class TestSteelV4:
     V4 eliminates K_smem: each simdgroup loads K fragments directly from
     device memory in the GEMM loop. 2 barriers/tile vs V2's 4.
 
-    Enabled via MFA_ENABLE_V4=1. On non-M3+ hardware the gate is tested
-    using MFA_FORCE_GEN=15 to simulate M3+ routing.
+    RETIRED (Lot-2): V4 is removed from the build and MFA_ENABLE_V4 is a no-op
+    (class skipped above).  Historically: enabled via MFA_ENABLE_V4=1, M3+ gate
+    simulated with MFA_FORCE_GEN=15.
     """
 
     @pytest.mark.parametrize("D,N,causal", [
@@ -11699,7 +11749,8 @@ class TestSteelV5:
     KV_smem = max(K^T, V) = 10,240 B → 3 TG/CU (vs V2's 18,944 B → 1 TG/CU).
     BK=128 → 4× fewer K-tile iterations vs V2 M1/M2.
 
-    Enabled via MFA_ENABLE_V5=1.  Works on all Apple Silicon gens.
+    RETIRED (Lot-2): V5 is removed from the build and MFA_ENABLE_V5 is a no-op
+    (class skipped above).  Historically: enabled via MFA_ENABLE_V5=1.
     """
 
     @pytest.mark.parametrize("D,N,causal", [
@@ -11923,9 +11974,17 @@ class TestSteelV5:
 
 
 class TestSteelV5CP5:
-    """CP5: softcap, ALiBi, and sparse support in STEEL V5."""
+    """CP5: softcap, ALiBi, and sparse support in STEEL V5.
+
+    T2-2 (audit H5/IC-C1, 2026-06-21): V4/V5 are RETIRED from the build, so
+    `MFA_ENABLE_V5=1` is a NO-OP — `_run_v5` ran the DEFAULT backend and the
+    softcap/alibi cells compared the default path to itself (`ref` and `out` both
+    default) → vacuous green-on-removed-knob.  Skipped to match TestSteelV4/V5.
+    """
 
     pytestmark = [
+        pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); "
+                                "MFA_ENABLE_V5 is a no-op → these compared the default path to itself"),
         pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
     ]
 
@@ -12028,11 +12087,14 @@ class TestSteelV5CP5:
 class TestSteelV5DirectReads:
     """CP7: V5 M3+ direct device reads — 0 barriers/K-tile.
 
-    Exercises MFA_DIRECT_READS=1 (emitted when is_m3_plus=True).
-    Uses MFA_FORCE_GEN=15 to simulate M3+ on M1/M2 hardware.
+    T2-2 (audit H5/IC-C1, 2026-06-21): RETIRED.  `MFA_ENABLE_V5=1` is a no-op
+    (V5 removed from build), so these exercised the default path, not a V5
+    direct-reads kernel.  Skipped to match TestSteelV4/V5.
     """
 
     pytestmark = [
+        pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); "
+                                "MFA_ENABLE_V5 is a no-op → exercised the default path, not V5"),
         pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
     ]
 

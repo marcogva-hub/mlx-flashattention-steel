@@ -75,6 +75,16 @@ docs/audit_dit_dispatch_output.log
 # Local agent scratch — never ship (v2.58.1 P3: leaked into the 2.58.0 sdist)
 .claude/
 
+# AGENTS.md — Codex-side conventions, kept LOCAL (untracked).  Audit 2026-06-21
+# H1/L7: it was untracked-and-not-gitignored, so scikit-build-core swept it into
+# the sdist and reddened test_publish_surface_guard.  Gitignore stops the leak
+# AND a stray `git add .`.  ALTERNATIVE (flagged for sign-off): track it + add to
+# the publish allowlist so it ships like CLAUDE.md — pick one deliberately.
+AGENTS.md
+
+# Audit/report scratch deliverables — local only, never tracked or shipped.
+AUDIT_REPORT_*.md
+
 # Journal / probe-verdict scratch (archive-bound, never on the publish surface)
 devnotes/
 

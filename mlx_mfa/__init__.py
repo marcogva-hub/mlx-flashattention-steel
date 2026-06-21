@@ -32,9 +32,18 @@ __version__ = "2.61.0"
 
 def _check_abi() -> None:
     """Warn if the compiled extension was built against a different MLX major.minor."""
+    # T1-2 FIX (audit CC-L1, 2026-06-21): narrowed from a single blanket
+    # `except Exception: pass`.  ImportError (extension not built) is the ONE case
+    # we stay quiet about here — its loud signal is the has_nax() /
+    # _warn_silent_nax_fallback() path below, which owns it.  Any OTHER failure
+    # means the extension DID import but its ABI self-check broke (missing symbol,
+    # malformed version) — unexpected, must NOT be silently swallowed (Rule 8).
     try:
         import importlib
         _ext = importlib.import_module("mlx_mfa._ext")
+    except ImportError:
+        return  # not built — owned by the loud has_nax() fallback path
+    try:
         build_ver = _ext._mlx_build_version()
         if build_ver == "unknown":
             return
@@ -52,8 +61,16 @@ def _check_abi() -> None:
                 RuntimeWarning,
                 stacklevel=2,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        # Extension imported but the version self-check itself failed — surface it.
+        import warnings
+        warnings.warn(
+            f"mlx-mfa: ABI version self-check failed ({type(e).__name__}: {e}). "
+            "The extension imported but its build version could not be compared "
+            "to the runtime MLX; rebuild if you hit crashes.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 _check_abi()

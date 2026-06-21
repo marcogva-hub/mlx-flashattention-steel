@@ -16,6 +16,7 @@ Two surfaces, two checks:
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -26,6 +27,20 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = _ROOT / "pyproject.toml"
+
+# M-04 FIX (audit, 2026-06-21): in a RELEASE context the guard must NOT be able
+# to go green without inspecting a real artifact.  When `MFA_RELEASE_GATE=1`
+# (set by the pre-tag flow), missing build tooling or a failed sdist build is
+# FATAL instead of a skip.  Outside the gate (ordinary/offline CI) it still
+# skips so the suite stays green without network.  NOTE: this fixture builds the
+# sdist from the WORKING TREE (not a clean `git archive` export) — that is
+# deliberate: the leak this guard exists to catch (the 2.58.0
+# `.claude/settings.local.json`) was *untracked-and-not-gitignored*, which a
+# tracked-only export would silently drop.
+def _skip_or_fail(reason: str) -> None:
+    if os.environ.get("MFA_RELEASE_GATE") not in (None, "", "0"):
+        pytest.fail("MFA_RELEASE_GATE set — " + reason)
+    pytest.skip(reason)
 
 # ── The explicit published-sdist allowlist ────────────────────────────────────
 _ALLOWED_ROOT_DOCS = {
@@ -76,14 +91,14 @@ def _built_sdist_members():
     try:
         import build  # noqa: F401
     except Exception:
-        pytest.skip("`build` not installed — cannot assert against the built sdist")
+        _skip_or_fail("`build` not installed — cannot assert against the built sdist")
     with tempfile.TemporaryDirectory() as td:
         r = subprocess.run(
             [sys.executable, "-m", "build", "--sdist", "-o", td],
             cwd=_ROOT, capture_output=True, text=True,
         )
         if r.returncode != 0:
-            pytest.skip(f"sdist build failed (network/offline?):\n{r.stderr[-800:]}")
+            _skip_or_fail(f"sdist build failed (network/offline?):\n{r.stderr[-800:]}")
         tars = list(Path(td).glob("*.tar.gz"))
         assert tars, "no sdist tarball produced"
         with tarfile.open(tars[0]) as t:

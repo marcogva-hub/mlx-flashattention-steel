@@ -34,8 +34,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build twine
 
-      - name: Build sdist and wheel
-        run: python -m build --sdist --wheel --outdir dist
+      # T1-2 FIX (audit Codex-H-04, 2026-06-21): SDIST-ONLY publish.  A wheel is
+      # ABI-pinned to one machine/Python/MLX build and reintroduces the silent
+      # ABI-mismatch class the has_nax()/_check_abi hardening just closed; the
+      # decided release model compiles _ext at install from the sdist.  (Flagged
+      # for sign-off — release pipeline.)
+      - name: Build sdist
+        run: python -m build --sdist --outdir dist
 
       - name: Validate artifacts
         run: python -m twine check dist/*

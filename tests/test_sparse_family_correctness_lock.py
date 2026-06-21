@@ -33,6 +33,25 @@ pytestmark = pytest.mark.skipif(
 mx.random.seed(0)
 _TOL = 3e-2  # fp16 sparse vs fp32 oracle
 
+# T2-1 (audit de-vacuity, 2026-06-21): these locks ran ONLY at 0.1 input scale —
+# the toy regime that suppressed the II-6 fused-dKdV corruption class.  Every
+# correctness cell now runs at BOTH 0.1 (kept) AND realistic unit scale
+# (std≈1.0, normal), validated vs the SAME independent fp32 oracle.  Toy keeps
+# the original ABSOLUTE bound; unit uses a scale-invariant RELATIVE bound (fp16
+# sparse-attention rel-err is ≲1e-2).  A unit-scale failure is a BUG-DISCOVERY
+# signal — investigate which-binary; do NOT loosen it without confirming the
+# kernel matches an independent correct oracle.  All sparse cells here are N==S
+# (band masks built from N//32), so the (S-N) causal-mask sign-flip latent in
+# sibling locks is dormant — the `i >= j` formula below is correct for N==S.
+_REL_TOL = 5e-2
+_MAG = {"mode": "toy"}
+
+
+def _gen(shape):
+    if _MAG["mode"] == "unit":
+        return mx.random.normal(shape).astype(mx.float16)         # std ≈ 1.0
+    return (mx.random.uniform(-1, 1, shape) * 0.1).astype(mx.float16)
+
 
 def _fp32_oracle(q, k, v, bm, scale, causal=False):
     """Independent manual fp32 attention (not SDPA, not the kernel)."""
@@ -56,7 +75,7 @@ def _fp32_oracle(q, k, v, bm, scale, causal=False):
 
 def _qkv(B, H, N, D, Hk=None):
     Hk = Hk or H
-    f = lambda h: (mx.random.uniform(-1, 1, (B, h, N, D)) * 0.1).astype(mx.float16)
+    f = lambda h: _gen((B, h, N, D))
     q, k, v = f(H), f(Hk), f(Hk); mx.eval(q, k, v)
     return q, k, v
 
@@ -69,7 +88,12 @@ def _assert_correct(q, k, v, bm, scale, causal=False):
     o32 = o.astype(mx.float32)
     assert bool(mx.all(mx.isfinite(o32)).item()), "non-finite output"
     d = float(mx.max(mx.abs((o32 - ref) * active)).item())
-    assert d < _TOL, f"max_abs_err {d} exceeds {_TOL}"
+    if _MAG["mode"] == "unit":
+        denom = float(mx.max(mx.abs(ref * active)).item()) + 1e-6
+        rel = d / denom
+        assert rel < _REL_TOL, f"unit-scale rel_err {rel:.3e} exceeds {_REL_TOL} (abs={d:.3e})"
+    else:
+        assert d < _TOL, f"toy-scale max_abs_err {d} exceeds {_TOL}"
 
 
 def _band(NB, d):
@@ -87,6 +111,13 @@ def _force_v2(monkeypatch):
 class TestV2Matmul2dCorrectness:
     B, H, N, D = 2, 8, 4096, 128
     SC = 1 / math.sqrt(128)
+
+    # Run each cell below at BOTH input regimes (T2-1).
+    @pytest.fixture(autouse=True, params=["toy", "unit"])
+    def _regime(self, request):
+        _MAG["mode"] = request.param
+        yield
+        _MAG["mode"] = "toy"
 
     def _qkv(self):
         return _qkv(self.B, self.H, self.N, self.D)
@@ -138,6 +169,13 @@ def _force_v1(monkeypatch):
 class TestV1ScalarCorrectness:
     B, H, N, D = 2, 8, 2048, 128
     SC = 1 / math.sqrt(128)
+
+    # Run each cell below at BOTH input regimes (T2-1).
+    @pytest.fixture(autouse=True, params=["toy", "unit"])
+    def _regime(self, request):
+        _MAG["mode"] = request.param
+        yield
+        _MAG["mode"] = "toy"
 
     def _qkv(self):
         return _qkv(self.B, self.H, self.N, self.D)

@@ -619,6 +619,44 @@ def flash_attention(
                 f"by kv_heads ({kv_heads})."
             )
 
+    # C-01 FIX (audit, 2026-06-21): the public boundary validated Q/K head_dim
+    # and GQA head divisibility, but NEVER that K and V agree with each other /
+    # with Q on batch, kv-seq, and kv-heads.  The MFA primitive derives B from Q
+    # and all K/V strides from K (V_batch_stride = Hk*Sk*D), so Bq>Bk, Sk!=Sv, or
+    # Hk!=Hv → out-of-bounds reads of adjacent memory → SILENT-WRONG finite output
+    # (reproduced: backend="mfa", Bq=2,Bk=Bv=1 → out[1] off by ~1.3 vs the correct
+    # broadcast, while out[0] matched SDPA to fp16 noise).  Reject the malformed
+    # contract loudly before any dispatch (Rule 8).  NOTE: behaviour change —
+    # previously-accepted silently-wrong mismatched shapes now raise.  D_v may
+    # still differ from D_qk (Track AE → SDPA fallback); only batch/kv-seq/kv-head
+    # are constrained here.  Broadcasting K/V across batch is not a supported
+    # contract (the kernel does not broadcast — it reads forward).
+    if not (q.shape[0] == k.shape[0] == v.shape[0]):
+        raise ValueError(
+            f"flash_attention: q, k, v must share the batch dim. Got "
+            f"q_batch={q.shape[0]}, k_batch={k.shape[0]}, v_batch={v.shape[0]}."
+        )
+    if k.shape[2] != v.shape[2]:
+        raise ValueError(
+            f"flash_attention: k and v must share the kv sequence length. "
+            f"Got k_seq={k.shape[2]}, v_seq={v.shape[2]}."
+        )
+    if k.shape[1] != v.shape[1]:
+        raise ValueError(
+            f"flash_attention: k and v must have the same number of heads. "
+            f"Got k_heads={k.shape[1]}, v_heads={v.shape[1]}."
+        )
+
+    # T0-2 FIX (audit H-01): the docstring contract is dropout_p ∈ [0, 1) but
+    # nothing enforced it — p=1.0 → NaN, p>1 → garbage, p<0 → silently disabled
+    # (p<=0 skips the dropout branch).  Reject non-finite and out-of-range at the
+    # boundary (Rule 8).
+    if not math.isfinite(dropout_p) or dropout_p < 0.0 or dropout_p >= 1.0:
+        raise ValueError(
+            f"flash_attention: dropout_p must satisfy 0 <= dropout_p < 1 "
+            f"(got {dropout_p!r})."
+        )
+
     # Track AH: return_attn_weights forces Python SDPA (MFA kernel
     # does not expose intermediate softmax probabilities).
     if return_attn_weights:
@@ -4899,6 +4937,14 @@ def _sdpa_with_weights(
     AND weights.  Composition order mirrors the production single-feature refs:
       scale·QKᵀ → softcap(tanh) → +attn_bias → +alibi → window −inf → causal −inf.
     """
+    # T0-2 defense-in-depth (audit H-01): guard the weights path even if a
+    # future caller reaches it without going through the public boundary —
+    # dropout divides by (1 - dropout_p), so p>=1 → inf/NaN, p<0 → silent.
+    if not math.isfinite(dropout_p) or dropout_p < 0.0 or dropout_p >= 1.0:
+        raise ValueError(
+            f"_sdpa_with_weights: dropout_p must satisfy 0 <= dropout_p < 1 "
+            f"(got {dropout_p!r})."
+        )
     B, H, N, D = q.shape
     S = k.shape[2]
 
