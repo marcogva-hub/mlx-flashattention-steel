@@ -36,11 +36,15 @@ from __future__ import annotations
 import json
 import math
 import os
+import warnings
 from typing import Optional
 
 import mlx.core as mx
 
 from ._env_aliases import getenv_aliased
+
+# M-02: one-time guard for the old-calibration-schema invalidation warning.
+_WARNED_CALIB_SCHEMA: bool = False
 
 
 def _invalidate_cached_env():
@@ -288,19 +292,43 @@ def _forced_d512_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]
     return None
 
 
+# M-02 FIX (audit, 2026-06-21): the split-K calibration key serialized the
+# window as a single bit (`_W0`/`_W1`), so distinct windows (256 vs 512) collided
+# on one key and the second measurement was silently dropped by `setdefault`.
+# The key now carries the window SIZE (`_W{left}_{right}`), so each window is a
+# distinct slot.  Bump the on-disk schema so old size-less windowed entries are
+# pruned + re-calibrated rather than mis-applied (see _load_calibrated_kernel_config).
+_CALIBRATION_SCHEMA_VERSION = 2
+
+
+def _splitk_window_suffix(window_left: int, window_right: int) -> str:
+    """`_W0` when not windowed; `_W{left}_{right}` (size-specific) when windowed.
+    MUST stay byte-identical to the C++ builder in csrc/mfa_attention.cpp."""
+    if window_left >= 0 or window_right >= 0:
+        return f"W{max(window_left, 0)}_{max(window_right, 0)}"
+    return "W0"
+
+
 def _splitk_env_key(
     head_dim: int,
     causal: bool,
     *,
     has_alibi: bool,
-    has_window: bool,
+    window_left: int = -1,
+    window_right: int = -1,
 ) -> str:
-    """Return the split-K calibration env key for this shape family."""
+    """Return the split-K calibration env key for this shape family.
+
+    `window_left`/`window_right` are the sliding-window bounds (-1 = no window).
+    Non-windowed keys keep the legacy `_W0` suffix (so non-windowed on-disk
+    entries remain valid across the M-02 schema bump); windowed keys are now
+    size-specific (`_W{left}_{right}`) to fix the 256-vs-512 collision.
+    """
     return (
         f"MFA_SPLITK_MAX_N_D{int(head_dim)}"
         f"_C{1 if causal else 0}"
         f"_A{1 if has_alibi else 0}"
-        f"_W{1 if has_window else 0}"
+        f"_{_splitk_window_suffix(int(window_left), int(window_right))}"
     )
 
 
@@ -654,7 +682,8 @@ def should_use_splitk(
     causal: bool,
     *,
     has_alibi: bool = False,
-    has_window: bool = False,
+    window_left: int = -1,
+    window_right: int = -1,
 ) -> bool:
     """Return whether split-K should be enabled for this shape family.
 
@@ -662,6 +691,9 @@ def should_use_splitk(
       1) ``MFA_FORCE_SPLITK=0|1`` hard override.
       2) calibrated max-N env threshold (if present).
       3) fallback to C++ occupancy heuristic (return ``True`` here).
+
+    M-02: ``window_left``/``window_right`` (the sliding-window bounds; -1 = no
+    window) are now part of the calibration key so distinct windows don't collide.
     """
     force = os.environ.get("MFA_FORCE_SPLITK")
     if force == "0":
@@ -673,7 +705,8 @@ def should_use_splitk(
         head_dim,
         causal,
         has_alibi=has_alibi,
-        has_window=has_window,
+        window_left=window_left,
+        window_right=window_right,
     )
     raw = os.environ.get(key)
     if raw is None or raw == "":
@@ -1023,11 +1056,18 @@ def calibrate_dispatch(
                     if speedup >= 1.02:
                         max_n = N
 
+                # M-02: store the window SIZE (left/right), not just a bool, so
+                # window=256 and window=512 serialize to distinct keys.
+                wl = int(window_size[0]) if window_size is not None else -1
+                wr = (int(window_size[1]) if (window_size is not None and len(window_size) > 1)
+                      else (0 if window_size is not None else -1))
                 entry = {
                     "D": D,
                     "causal": causal,
                     "has_alibi": has_alibi,
-                    "has_window": has_window,
+                    "has_window": has_window,   # kept for human readability
+                    "window_left": wl,          # M-02: authoritative window-size fields
+                    "window_right": wr,
                     "max_N": max_n,
                 }
                 splitk_thresholds.append(entry)
@@ -1042,6 +1082,7 @@ def calibrate_dispatch(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     payload: dict = {
         "generated": "mlx_mfa.dispatch_policy.calibrate_dispatch",
+        "calibration_schema_version": _CALIBRATION_SCHEMA_VERSION,  # M-02
         "thresholds": thresholds_list,
     }
     if kernel_configs:
@@ -1085,16 +1126,46 @@ def _load_calibrated_kernel_config() -> None:
             if _verbose:
                 print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
 
+        # M-02 migration: old (schema < 2) windowed entries serialized the window
+        # as a single bit, so the 256/512 collision already DESTROYED one window's
+        # value on disk — the size cannot be recovered.  Such entries must be
+        # INVALIDATED (pruned → re-calibrated lazily), never mis-applied to a
+        # window.  Non-windowed entries are unaffected by the collision and are
+        # RETAINED (they map cleanly to the unchanged `_W0` key).
+        schema = int(data.get("calibration_schema_version", 1))
+        pruned_windowed = 0
         for entry in data.get("splitk_thresholds", []):
             d = int(entry.get("D"))
             c = bool(entry.get("causal"))
             a = bool(entry.get("has_alibi"))
-            w = bool(entry.get("has_window"))
             max_n = int(entry.get("max_N"))
-            env_key = _splitk_env_key(d, c, has_alibi=a, has_window=w)
+            wl = entry.get("window_left")
+            wr = entry.get("window_right")
+            if wl is None and wr is None:
+                # Legacy entry (no size fields). Windowed legacy → size lost → PRUNE.
+                if bool(entry.get("has_window", False)):
+                    pruned_windowed += 1
+                    continue
+                wl, wr = -1, -1  # non-windowed legacy → safe to retain
+            env_key = _splitk_env_key(d, c, has_alibi=a,
+                                      window_left=int(wl), window_right=int(wr))
             os.environ.setdefault(env_key, str(max_n))
             if _verbose:
                 print(f"[MFA dispatch] loaded {env_key}={max_n} from {table_path}")
+        if pruned_windowed:
+            # Loud but graceful (Rule 8), once per process.
+            global _WARNED_CALIB_SCHEMA
+            if not _WARNED_CALIB_SCHEMA:
+                _WARNED_CALIB_SCHEMA = True
+                warnings.warn(
+                    f"[mlx-mfa] dispatch table {table_path!r} uses an old calibration "
+                    f"schema (v{schema} < v{_CALIBRATION_SCHEMA_VERSION}); its "
+                    f"{pruned_windowed} sliding-window split-K entr"
+                    f"{'y was' if pruned_windowed == 1 else 'ies were'} INVALIDATED "
+                    f"(the old size-less key collided 256/512 — the size is "
+                    f"unrecoverable). They will be re-calibrated lazily. Re-run "
+                    f"calibrate_dispatch(calibrate_splitk=True) to persist them.",
+                    RuntimeWarning, stacklevel=2)
     except Exception as exc:  # noqa: BLE001
         # III-4 D18 FIX: calibration is advisory, but a malformed table must
         # not vanish silently (Rule 8) — warn like _load_custom_table does.

@@ -10993,7 +10993,7 @@ class TestSplitKPolicy:
         """MFA_FORCE_SPLITK must override calibrated split-K max_N entries."""
         from mlx_mfa.dispatch_policy import should_use_splitk, _splitk_env_key
 
-        key = _splitk_env_key(64, True, has_alibi=False, has_window=False)
+        key = _splitk_env_key(64, True, has_alibi=False)  # non-windowed → _W0
         monkeypatch.setenv(key, "256")
 
         monkeypatch.setenv("MFA_FORCE_SPLITK", "1")
@@ -11012,34 +11012,33 @@ class TestSplitKPolicy:
 
         missing = tmp_path / "no_such_dispatch.json"
         monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(missing))
-        env_key = _splitk_env_key(64, True, has_alibi=False, has_window=False)
+        env_key = _splitk_env_key(64, True, has_alibi=False)  # non-windowed → _W0
         monkeypatch.delenv(env_key, raising=False)
 
         _load_calibrated_kernel_config()
         assert os.environ.get(env_key) is None
 
     def test_load_calibration_sets_splitk_env(self, tmp_path, monkeypatch):
-        """splitk_thresholds entries are loaded into env vars for C++ dispatch."""
+        """v2 splitk_thresholds entries (with window sizes) load into env vars
+        for C++ dispatch, keyed by the window SIZE (M-02)."""
         import json
-        from mlx_mfa.dispatch_policy import _load_calibrated_kernel_config, _splitk_env_key
+        from mlx_mfa.dispatch_policy import (
+            _load_calibrated_kernel_config, _splitk_env_key, _CALIBRATION_SCHEMA_VERSION,
+        )
 
         table = tmp_path / "dispatch.json"
         payload = {
+            "calibration_schema_version": _CALIBRATION_SCHEMA_VERSION,
             "thresholds": [],
             "splitk_thresholds": [
-                {
-                    "D": 64,
-                    "causal": True,
-                    "has_alibi": False,
-                    "has_window": True,
-                    "max_N": 1024,
-                }
+                {"D": 64, "causal": True, "has_alibi": False,
+                 "window_left": 256, "window_right": 0, "max_N": 1024},
             ],
         }
         table.write_text(json.dumps(payload))
 
         monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(table))
-        env_key = _splitk_env_key(64, True, has_alibi=False, has_window=True)
+        env_key = _splitk_env_key(64, True, has_alibi=False, window_left=256, window_right=0)
         monkeypatch.delenv(env_key, raising=False)
         _load_calibrated_kernel_config()
         assert os.environ.get(env_key) == "1024"

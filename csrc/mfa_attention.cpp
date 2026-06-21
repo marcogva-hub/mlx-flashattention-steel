@@ -383,12 +383,24 @@ void MFAttention::eval_gpu(
     const bool has_window = (params_.window_left >= 0 || params_.window_right >= 0);
     const auto splitk_calibrated_max_n = [&]() -> int {
       // Key format (set by dispatch_policy._load_calibrated_kernel_config):
-      // MFA_SPLITK_MAX_N_D{D}_C{0|1}_A{0|1}_W{0|1}
+      // MFA_SPLITK_MAX_N_D{D}_C{0|1}_A{0|1}_{W0 | W{left}_{right}}
+      // M-02 FIX (audit, 2026-06-21): the window component now carries the SIZE
+      // (left/right), not a single bit — distinct windows (256 vs 512) had the
+      // same `_W1` key and shared one (wrong) calibration.  MUST stay byte-
+      // identical to dispatch_policy._splitk_window_suffix().
+      std::string wsuf;
+      if (params_.window_left >= 0 || params_.window_right >= 0) {
+        const int wl = params_.window_left >= 0 ? params_.window_left : 0;
+        const int wr = params_.window_right >= 0 ? params_.window_right : 0;
+        wsuf = "W" + std::to_string(wl) + "_" + std::to_string(wr);
+      } else {
+        wsuf = "W0";
+      }
       const std::string env_key =
           "MFA_SPLITK_MAX_N_D" + std::to_string(D) +
           "_C" + std::to_string(params_.causal ? 1 : 0) +
           "_A" + std::to_string(params_.has_alibi ? 1 : 0) +
-          "_W" + std::to_string(has_window ? 1 : 0);
+          "_" + wsuf;
       const char* v = std::getenv(env_key.c_str());
       if (!v || v[0] == '\0') return -1;
       return std::atoi(v);
