@@ -18,19 +18,26 @@
 namespace mlx_mfa {
 // estimate_gpu_cores defined in mfa_steel_fwd_v2.cpp
 int estimate_gpu_cores(const std::string& device_name, int arch_gen);
-// V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp).
+// V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp / v6nax_probe.cpp /
+// mpp_int8_bench.mm) — M6 audit (2026-06-21): dev-only, compiled + bound ONLY
+// under -DMFA_BUILD_PROBES=ON (default OFF) so they don't ship in every _ext.
+#ifdef MFA_BUILD_PROBES
 std::string v6_nax_probe_msl4();
 std::string v6_nax_probe_mpp();
 std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
 std::string v6nax_probe_source();
 std::string v6nax_probe_compile_test(void* mtl_device_raw);
 std::string mpp_int8_microbench();  // Phase II-2 kill-gate
+#endif
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
-// Draw Things port: source generation + JIT compile
+// Draw Things port: source generation + JIT compile — probe-only (in
+// csrc/v6_nax_probe.cpp), M6-gated like the rest.
+#ifdef MFA_BUILD_PROBES
 std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
 std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
+#endif
 // V6 NAX forward (returns O, L).  v2.37.0: optional force_v6nax to route
 // V6NAX forward path even on D=64 small-Nk shapes (used by V6NAX backward
 // integration to obtain natural-log lse).
@@ -361,19 +368,23 @@ NB_MODULE(_ext, m) {
   //                          unknown names (simulator, future hardware).
   // V6 NAX bring-up probes — JIT-compile minimal MSL 4 + MPP kernels via
   // mlx-mfa's shader cache. Used by Phase 0 Task 0.1 to gate the rest of
-  // the V6 NAX implementation.
+  // the V6 NAX implementation.  M6 (audit 2026-06-21): dev-only, registered
+  // only under -DMFA_BUILD_PROBES=ON.
+#ifdef MFA_BUILD_PROBES
   m.def("v6_nax_probe_msl4", []() -> std::string {
     return mlx_mfa::v6_nax_probe_msl4();
   }, "Probe: compile a minimal MSL 4.0 stub. Returns 'OK' or 'FAIL: <err>'.");
   m.def("v6_nax_probe_mpp", []() -> std::string {
     return mlx_mfa::v6_nax_probe_mpp();
   }, "Probe: compile MSL 4 + MPP matmul2d stub. Returns 'OK' or 'FAIL: <err>'.");
+#endif
   m.def("device_has_neural_accelerators", []() -> bool {
     return mlx_mfa::device_has_neural_accelerators();
   }, "True iff the GPU has NAX (Apple GPU family 10+, M5 family).");
   m.def("device_has_nax_bf16", []() -> bool {
     return mlx_mfa::device_has_nax_bf16();
   }, "True iff NAX is available AND macOS >= 26.1 (MPP bf16 support).");
+#ifdef MFA_BUILD_PROBES
   m.def("v6_nax_probe_forward_compile",
         [](int head_dim, int dtype_code) -> std::string {
           return mlx_mfa::v6_nax_probe_forward_compile(head_dim, dtype_code);
@@ -403,6 +414,7 @@ NB_MODULE(_ext, m) {
         },
         nb::arg("head_dim"), nb::arg("Hq"), nb::arg("Hk"), nb::arg("dtype_code"),
         "JIT-compile the Draw Things port. Returns 'OK' or 'FAIL: <err>'.");
+#endif  // MFA_BUILD_PROBES
 
   m.def("v6_nax_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,

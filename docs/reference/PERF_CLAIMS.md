@@ -130,7 +130,9 @@ vjp oracle (Lesson #11). Both fp16 and bf16 (the VSR training dtype); routing co
   {fp16,bf16}: −4 % to −14 %, grad-IDENTICAL (BK is perf-only for dQ). fp16 N=8192 causal
   **16.3→14.3 ms**; fp16 N=2048 non-causal **1.87→1.34 ms**; bf16 N=4096 causal **4.46→4.01 ms**.
   dQ D=64 is now `32/32/2` (= the forward's tuned D=64 config). The D=64 native backward already
-  beats Apple SDPA-vjp **1.4–2.7×** (N=8192 fp16 causal 14.3 vs 43.3 ms). Reproduce:
+  beats Apple SDPA-vjp (this branch's tuning-block sub-measurement showed 1.4–2.7×; the **canonical
+  live range is 2.16–3.05× — split-V6 vs SDPA-vjp, M5 / MLX 0.31.2**, which subsumes this) at
+  (N=8192 fp16 causal 14.3 vs 43.3 ms). Reproduce:
   `mx.grad(flash_attention(q,k,v,causal=...))` at D=64, N≥2048 (default-on). Lock:
   `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint BK=32 + fp32-oracle grad).
 - **D=64 split dV/dK BK confirmed-optimal at 32 — NO change (Tier-1 #2b).** Closing the last
@@ -149,14 +151,19 @@ vjp oracle (Lesson #11). Both fp16 and bf16 (the VSR training dtype); routing co
 
 v2.39.1 outcome α: H1 register pressure root-caused + fixed.  Fused
 kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
-Auto-default routes D=64 V6NAX backward to fused-BK16 (modest improvement
-over v2.38.1 split path).  D=128 unchanged (carve-out hard-gated to D=64).
+
+> **WITHDRAWN / HISTORICAL (H-03/M5 reconciliation).** The fused-BK16 ratios below (2.00× / 1.95× /
+> 1.72×, and the "1.01-1.12× fused vs split" edge) were measured on a SINCE-CORRECTED config and are
+> **no longer active perf claims**. `MFA_V6_BWD_KERNEL=auto` resolves to **split for every D** (fused
+> is opt-in via `=fused`), and on re-measurement fused is only **parity-with-split** at D=64 (no longer
+> faster). The canonical LIVE D=64-backward claim is **2.16–3.05× (split-V6 vs SDPA-vjp, M5 / MLX 0.31.2)**
+> — see the `ii12_*` rows and the dQ/dV/dK tuning block above. Rows retained for provenance only.
 
 | Claim ID | Version intro | Description | Reproduction |
 |---|---|---|---|
-| `v2.39.1_d64_qL4096_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=4096 V6NAX backward 2.00× vs SDPA-vjp (was 1.91× in v2.38.1, wall-time -2.9%) | `MFA_ENABLE_V6_BACKWARD=1` + `mx.grad(flash_attention(..., backend="auto"))` |
-| `v2.39.1_d64_qL8192_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=8192 V6NAX backward 1.95× vs SDPA-vjp (was 1.87×, wall-time -1.4%) | same |
-| `v2.39.1_d64_qL16384_fused_bk16_engages_via_auto` | v2.39.1 | D=64 qL=16384 V6NAX backward 1.72× (3-session median; fresh-machine 1.89×; thermal drift across back-to-back sessions) | same |
+| ~~`v2.39.1_d64_qL4096_fused_bk16_engages_via_auto`~~ | v2.39.1 (WITHDRAWN) | ~~D=64 qL=4096 V6NAX backward 2.00× vs SDPA-vjp~~ — withdrawn (fused-BK16 edge corrupt/superseded; D=64 default is now split-V6 2.16–3.05×) | historical only |
+| ~~`v2.39.1_d64_qL8192_fused_bk16_engages_via_auto`~~ | v2.39.1 (WITHDRAWN) | ~~D=64 qL=8192 V6NAX backward 1.95× vs SDPA-vjp~~ — withdrawn (see above) | historical only |
+| ~~`v2.39.1_d64_qL16384_fused_bk16_engages_via_auto`~~ | v2.39.1 (WITHDRAWN) | ~~D=64 qL=16384 V6NAX backward 1.72×~~ — withdrawn (see above) | historical only |
 
 Full investigation evidence + skill invocations log:
 `.doc-archive/docs/v6-nax/v39-1-investigation-synthesis.md`.
@@ -171,9 +178,9 @@ Full investigation evidence + skill invocations log:
 | `v2.37.2_d64_qL4096_v6nax_engages_via_auto` | v2.37.2 | D=64 qL=4096 V6NAX backward 1.82× faster than SDPA-vjp (preserved historical baseline; superseded by v2.38.1 1.91× under identical bench conditions) | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `q,k,v` of shape `(1,4,4096,64) fp16` | REACHABLE (2026-05-13, audit v2.37.x) |
 | `v2.37.2_d64_qL8192_v6nax_engages_via_auto` | v2.37.2 | D=64 qL=8192 V6NAX backward 1.81× faster than SDPA-vjp (preserved historical baseline) | `MFA_ENABLE_V6_BACKWARD=1` | Same as above with `qL=8192` | REACHABLE (2026-05-13) |
 | `v2.50.0_prompt5b_d128_qL8192_auto_engages_v6nax_split_at_parity` | v2.50 Prompt 5b | D=128 qL=8192 V6NAX backward engages via AUTO (split kernels, Sprint B v2.40.0-internal outcome γ) at parity with SDPA-vjp (~RMSE 2e-5).  Coverage extension; no speedup claim | `MFA_ENABLE_V6_BACKWARD=1` | `mx.grad(mlx_mfa.flash_attention(q,k,v))` with `(1,4,8192,128) fp16` | REACHABLE (parity engagement, v2.50 Prompt 5b Section D) |
-| `ii12_d64_qL8192_default_on_v6nax` | II-12 (2026-06) | D=64 backward (causal + non-causal) default-on via the clean V6NAX split kernel, 1.7-2.7x vs SDPA-vjp | env unset | B=1 H=4 qL=8192 D=64 fp16 | REACHABLE (default) |
+| `ii12_d64_qL8192_default_on_v6nax` | II-12 (2026-06) | D=64 backward (causal + non-causal) default-on via the clean V6NAX **split** kernel — **canonical live range 2.16–3.05× vs SDPA-vjp (M5 / MLX 0.31.2)** (the earlier "1.7-2.7x" was a narrower II-12 sub-range, now subsumed by the re-stamped 2.16–3.05× number). fused is opt-in (`MFA_V6_BWD_KERNEL=fused`) and only parity-with-split — no longer claimed faster. | env unset | B=1 H=4 qL=8192 D=64 fp16 | REACHABLE (default) |
 | `ii12_d64_qL8192_optout_sdpa` | II-12 (2026-06) | `MFA_DISABLE_V6_BACKWARD=1` restores SDPA-vjp bit-exactly | opt-out env | Same shape | REACHABLE (opt-out) |
-| `ii9_conv3d_t16_64x64_c128_fp16_mpp_default` | II-9 (2026-06; row added III-1) | conv3d via the MPP convolution2d primitive, default-on: 2.3-2.5x vs the materialized-im2col path (T8/T16 64x64 C128) | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | `install_hooks(); mx.conv3d(x, w)` with x `(1,16,64,64,128)` w `(128,3,3,3,128)` fp16, pad (1,1,1) | REACHABLE (default; telemetry-verified) |
+| `ii9_conv3d_t16_64x64_c128_fp16_mpp_default` | II-9 (2026-06; row added III-1) | conv3d via the MPP convolution2d primitive, default-on: 2.3-2.5x vs the materialized-im2col path (T8/T16 64x64 C128). **H-07 denominator note: the 2.3-2.5x is vs an INTERNAL direct-binding materialized-im2col baseline (a methodology denominator), NOT the public `MFA_DISABLE_CONV3D_MPP=1` fallback — that knob routes to `mx.conv_general` (MLX's own conv), a different denominator.** | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1` → `mx.conv_general`) | `install_hooks(); mx.conv3d(x, w)` with x `(1,16,64,64,128)` w `(128,3,3,3,128)` fp16, pad (1,1,1) | REACHABLE (default; telemetry-verified) |
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | III-1 (2026-06, KD-7 lift) | bf16 conv3d via MPP: 1.4-2.7x vs the pre-lift public bf16 path (Apple mx.conv3d fallback) at the II-9 cells | env unset (opt-out `MFA_DISABLE_CONV3D_MPP=1`) | Same shapes in bf16 | REACHABLE (default; telemetry-verified) |
 | `iii2_tq_paged_decode_step_default` | III-2 (2026-06; re-confirmed III-12b on 26.6; reframed III-12c) | **User-facing trade-off (the headline): TQ paged decode trades ~1.4-3x decode-step latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs fp16 dense decode** (`step()` `0.75 ms vs 0.33 ms` @S=16K; KV `32 MB → ~6.5 MB` @S=8K). Opt-in (`TurboQuantPagedInferenceContext`), not auto-routed — the user chooses the trade-off. _Secondary / internal-perf history (NOT the user choice — the fused kernel is gone, so it is not a selectable baseline): the gather/dequant+SDPA path is 6.5-23x faster than the fused TQ attend kernel it replaced (`0.75 ms vs 16.8 ms` @S=16K)._ Lesson #15 + III-12c: lead with the actionable denominator (fp16 dense), not the biggest-number one. | env unset (opt-out `MFA_DISABLE_TQ_DECODE_SDPA=1`) | `TurboQuantPagedInferenceContext.step(q, k, v)` N_q=1, B=1 Hq=32 Hkv=8 D=128 tq3b; reproduce: `benchmarks/methodology/iii12b_tq_claim_26.6_run{1,2}.log` (script `tq_claim.py`) | REACHABLE (default; kernel-cache-verified) |
 

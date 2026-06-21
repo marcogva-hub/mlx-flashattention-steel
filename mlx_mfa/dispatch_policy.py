@@ -48,10 +48,12 @@ def _invalidate_cached_env():
 
     Must be called after any os.environ mutation of cached MFA_* vars
     (MFA_V2_FORCE_BK, MFA_V2_BQ64, MFA_FORCE_GEN, MFA_V3_FORCE_BK_*,
-    MFA_V5_FORCE_*, MFA_V2_BD_HALF_D512, etc.).
+    MFA_V2_BD_HALF_D512, etc.).
 
-    Dispatch gate vars (MFA_ENABLE_V3, MFA_ENABLE_V5, etc.) are live-read
-    static methods and do NOT require this call.
+    Dispatch gate vars (MFA_ENABLE_V3, etc.) are live-read static methods and
+    do NOT require this call.  (M3 audit fix 2026-06-21: dropped the
+    MFA_V5_FORCE_* / MFA_ENABLE_V5 examples — V4/V5 are removed from the build,
+    those knobs are no-ops.)
     """
     try:
         from mlx_mfa._ext import _invalidate_env_config

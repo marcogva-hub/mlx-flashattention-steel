@@ -124,6 +124,22 @@ def test_dense_auto_D64_is_sdpa():
     assert _delta(o, ref) == 0.0, "D=64 dense auto drifted OFF SDPA (NAX loses at D=64 — must stay SDPA)"
 
 
+def test_dense_auto_D64_causal_largeN_is_sdpa():
+    """M2 (audit 2026-06-21): D=64 CAUSAL large-N (B·H>=4, N>=4096) is SDPA on the
+    M5/NAX tier (byteΔ==0), NOT a real MFA primitive.  should_use_mfa(D=64,causal,
+    has_nax=True)→False; the Python trace records 'mfa_primitive' (the V6 carveout
+    flips use_mfa) but the C++ M5 guard routes to SDPA.  The dispatch-map cell was
+    relabeled to match; this locks the runtime.  (The 'real primitive byteΔ>0'
+    only exists on the M3/M4 tier where has_nax=False — unreachable on this host.)"""
+    B, H, N, D = 2, 4, 4096, 64
+    q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+    o = flash_attention(q, k, v, scale=sc, causal=True)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask="causal")
+    assert _delta(o, ref) == 0.0, (
+        "D=64 causal large-N drifted OFF SDPA — if this is the M3/M4 tier that's "
+        "expected (real primitive); on M5/NAX it must stay SDPA. Update the map.")
+
+
 def test_dense_D128_backend_sdpa_and_optout_stay_sdpa():
     """F-2: backend='sdpa' and MFA_DISABLE_V6_DENSE=1 keep D=128 dense on SDPA
     (keep-all-paths; the NAX route is auto-only + opt-outable)."""

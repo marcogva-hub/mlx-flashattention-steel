@@ -36,6 +36,26 @@ endif()
 if(NOT APPLE)
   message(FATAL_ERROR "mlx-mfa requires macOS with Apple Silicon")
 endif()
+# M-09 FIX (audit, 2026-06-21): assert ARM64, not just APPLE — the Metal/NAX
+# kernels are arm64-only; an x86_64 macOS build would compile then fail at
+# runtime.  CMAKE_OSX_ARCHITECTURES (if set) takes precedence over the host
+# processor.  Allow universal2 (contains arm64).
+set(_MFA_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+if(NOT _MFA_ARCH)
+  set(_MFA_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+if(NOT _MFA_ARCH MATCHES "arm64|aarch64")
+  message(FATAL_ERROR
+    "mlx-mfa requires Apple Silicon (arm64); detected architecture "
+    "'${_MFA_ARCH}'. x86_64 is not supported.")
+endif()
+
+# M6 FIX (audit, 2026-06-21): the V6-NAX bring-up probes + the int8 microbench
+# are dev-only diagnostics with ZERO callers — gated OFF by default so they do
+# NOT ship in every _ext.  Enable for kernel bring-up with
+# -DMFA_BUILD_PROBES=ON; the matching bindings in bindings.cpp are #ifdef'd on
+# the MFA_BUILD_PROBES compile definition.
+option(MFA_BUILD_PROBES "Compile the dev-only V6-NAX probe / microbench sources + bindings" OFF)
 
 # --------------------------------------------------------------------------- #
 # Dependencies
@@ -62,7 +82,9 @@ set(MLX_INCLUDE_DIR "${MLX_PYTHON_DIR}/include")
 if(NOT EXISTS "${MLX_INCLUDE_DIR}/mlx/mlx.h")
   message(FATAL_ERROR
     "MLX headers not found at ${MLX_INCLUDE_DIR}. "
-    "Ensure mlx >= 0.18.0 is installed.")
+    # M-09 FIX (audit, 2026-06-21): the real floor is 0.31.2 (nanobind v2.12.0 /
+    # NB_INTERNALS v19 ABI — see pyproject [build-system]), not 0.18.0.
+    "Ensure mlx >= 0.31.2 is installed.")
 endif()
 message(STATUS "MLX include: ${MLX_INCLUDE_DIR}")
 
@@ -120,11 +142,8 @@ set(MFA_SOURCES
   csrc/mfa_steel_fwd_v3.cpp
   csrc/mfa_steel_paged_varlen_fwd.cpp
   csrc/mfa_steel_paged_varlen_tq_fwd.cpp
-  csrc/v6_nax_probe.cpp
-  csrc/v6nax_probe.cpp
   csrc/v6_nax_detect.mm
   csrc/v6_nax_compile.mm
-  csrc/mpp_int8_bench.mm
   csrc/mfa_steel_fwd_v6_nax.cpp
   csrc/mfa_v6_nax_primitive.cpp
   csrc/mfa_conv_nax.cpp
@@ -138,6 +157,17 @@ set(MFA_SOURCES
   csrc/mfa/GEMMHeaders.cpp
   csrc/mfa/CodeWriter.cpp
 )
+
+# M6 (audit 2026-06-21): dev-only probe/microbench sources — appended ONLY when
+# -DMFA_BUILD_PROBES=ON (default OFF), with the MFA_BUILD_PROBES macro defined so
+# the matching bindings in bindings.cpp compile in lockstep.
+if(MFA_BUILD_PROBES)
+  list(APPEND MFA_SOURCES
+    csrc/v6_nax_probe.cpp
+    csrc/v6nax_probe.cpp
+    csrc/mpp_int8_bench.mm
+  )
+endif()
 
 # NB_STATIC: statically links nanobind runtime into this extension.
 # NB_DOMAIN "mlx": MUST match MLX's domain (mlx.core uses NB_DOMAIN "mlx").
@@ -175,6 +205,11 @@ target_compile_definitions(_ext PRIVATE
   MLX_MFA_METAL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels"
   MLX_BUILD_VERSION="${MLX_RUNTIME_VERSION}"
 )
+# M6: define MFA_BUILD_PROBES so bindings.cpp registers the probe defs only when
+# their sources are actually compiled in.
+if(MFA_BUILD_PROBES)
+  target_compile_definitions(_ext PRIVATE MFA_BUILD_PROBES)
+endif()
 
 # Install into the Python package directory
 install(TARGETS _ext LIBRARY DESTINATION mlx_mfa)

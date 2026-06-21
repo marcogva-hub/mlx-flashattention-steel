@@ -80,7 +80,7 @@ class ShaderCache {
       // Strict support matrix: D ∈ {64,128}, FP16/BF16, dense forward only,
       // no causal/mask/bias/softcap/window/sparse/RoPE in v1.
       // See docs/v6-nax/ for the architecture and implementation notes.
-      SteelForwardV6NAX          = 22,  // V6 NAX: MPP-accelerated forward (M5+, MSL 4)
+      SteelForwardV6NAX          = 22,  // RETIRED, compiled-but-unrouted (L8 audit 2026-06-21): production V6 forward routes through NAAttentionKernel (F-3); generate_steel_v6_nax_source is reachable ONLY via the MFA_BUILD_PROBES probe.
     };
 
     KernelType type;

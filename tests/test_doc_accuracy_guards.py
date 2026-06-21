@@ -72,7 +72,10 @@ def _doc_knobs() -> set:
 
 def test_env_vars_doc_knobs_in_registry():
     """G2-forward: every documented knob exists in the registry (catch stale/typo)."""
-    known = set(_knobs.KNOWN_KNOBS) | set(_knobs.CPP_KNOBS) | _DOC_REMOVED_KNOBS
+    # REMOVED_KNOBS (audit 2026-06-21) are intentionally NAMED in ENV_VARS.md as
+    # removed/ghost so migrating readers find the note — allow them like the V4/V5 set.
+    known = (set(_knobs.KNOWN_KNOBS) | set(_knobs.CPP_KNOBS)
+             | set(_knobs.REMOVED_KNOBS) | _DOC_REMOVED_KNOBS)
     unknown = {
         t for t in _doc_knobs()
         if t not in known and not any(t.startswith(p) for p in _PREFIX_OK)
@@ -103,6 +106,69 @@ def test_registry_knobs_documented_or_baselined():
         f"undocumented-baseline: {sorted(new_gap)} — a new knob was added without "
         f"a doc decision. Document it, or (if intentionally internal) regenerate "
         f"tests/doc_knobs_undocumented_baseline.json.")
+
+
+# ── G2-source: every LIVE python-read knob is registered (audit H4 / M-01) ────
+# The direction that let MFA_REQUIRE_NAX slip through: a knob READ in mlx_mfa/*.py
+# but absent from KNOWN_KNOBS.  (registry ⊆ live-read is NOT enforceable — ~75
+# registry knobs are read C++-side / templated; that's by design.)
+_ENV_READ_PATTERNS = [
+    r'os\.environ\.get\(\s*["\'](MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)["\']',
+    r'os\.environ\[\s*["\'](MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)["\']',
+    r'os\.getenv\(\s*["\'](MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)["\']',
+    r'\bgetenv\(\s*["\'](MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)["\']',
+    r'getenv_aliased\(\s*["\'](MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)["\']',
+]
+
+
+def _python_read_knobs() -> set:
+    pkg = Path(mlx_mfa.__file__).parent
+    read = set()
+    for py in pkg.rglob("*.py"):
+        if py.name == "_knobs.py":
+            continue
+        t = py.read_text(encoding="utf-8")
+        for pat in _ENV_READ_PATTERNS:
+            read |= set(re.findall(pat, t))
+    return read
+
+
+def test_python_read_knobs_are_registered():
+    """G2-source: a knob explicitly read in mlx_mfa/*.py must be in KNOWN_KNOBS
+    (or a prefix family). Catches the 'live but unregistered' class — the exact
+    miss (MFA_REQUIRE_NAX/MFA_SILENCE_NAX_WARNING) that the validator then
+    false-flagged as a typo."""
+    known = set(_knobs.KNOWN_KNOBS)
+    missing = sorted(
+        k for k in _python_read_knobs()
+        if k not in known and not any(k.startswith(p) for p in _PREFIX_OK))
+    assert not missing, (
+        f"knob(s) read in mlx_mfa/*.py but absent from _knobs.KNOWN_KNOBS: "
+        f"{missing} — add them to the registry (and ENV_VARS.md).")
+
+
+def test_removed_knobs_are_separated_from_registry():
+    """The ghost registry must be DISJOINT from the live registry — a removed
+    knob re-appearing in KNOWN_KNOBS would defeat the 'removed — no effect'
+    signal (audit M7/L-01)."""
+    overlap = set(_knobs.REMOVED_KNOBS) & set(_knobs.KNOWN_KNOBS)
+    assert not overlap, f"REMOVED_KNOBS must not also be in KNOWN_KNOBS: {sorted(overlap)}"
+
+
+# ── G1b: documented export count == runtime len(__all__) (audit H3) ───────────
+def test_export_count_matches_doc():
+    """The 'Public exports: N' claim in API_MANUAL.md must equal the runtime
+    len(mlx_mfa.__all__). The recurring miss: new exports (has_nax/NaxUnavailable)
+    bumped __all__ to 103 while the docs still said 101, and G1 only checked the
+    version string."""
+    text = _read("docs/reference/API_MANUAL.md")
+    m = re.search(r"Public exports:\s*\*\*([0-9]+)\*\*", text)
+    assert m is not None, "API_MANUAL.md: no 'Public exports: **N**' stamp found"
+    documented = int(m.group(1))
+    actual = len(mlx_mfa.__all__)
+    assert documented == actual, (
+        f"API_MANUAL.md documents {documented} public exports but "
+        f"len(mlx_mfa.__all__)={actual} — update the doc count.")
 
 
 _INSCOPE_DOCS = [

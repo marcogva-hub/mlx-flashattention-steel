@@ -164,16 +164,17 @@ fallback (`MFAV6Forward` `use_v6nax=false`) is REMOVED — it was a DIVERGED, D=
 (D=64 N4096 err≈512 vs fp32) of the standalone family, unreachable from production (every V6 entry
 forces NAX; D=64 dense→SDPA per F-2). `v6_nax_forward` now serves only NAX (D∈{64,128}, valid GQA);
 invalid GQA RAISES (Rule 8). `MFA_V6_USE_NAX=0` → no-op (NAX is the only V6 forward; alias kept).
-The **standalone simdgroup family (M1–M4 dense tier: V1–V5/split-K/dsplit/flash_decode) is
-UNTOUCHED**. **V5** = experimental opt-in (`MFA_ENABLE_V5=1`), never auto-routed on any tier → KEPT
-(compiled-but-unrouted ≠ dead). Lock: test_v6_nax_forward_lock::test_v6_forward_is_pure_nax
+The **standalone simdgroup family (M1–M4 dense tier: split-K/dsplit/flash_decode) is
+UNTOUCHED**. **V4/V5 are REMOVED from the build** (the enum slot is retained only to avoid
+renumbering the remaining kernel types); `MFA_ENABLE_V5` is a no-op env var. Lock:
+test_v6_nax_forward_lock::test_v6_forward_is_pure_nax
 (force False==True Δ=0; drift-back fails CI). Suite 1924.
 See `.doc-archive/docs/v50/campaign-2026-06/audit/phase-F-3-v6-purification.md`.
 
 **Phase G ship-readiness gate — READY-TO-SHIP @ v2.58.0, HELD for Marco (2026-06-18):** every audit
 invariant verified at ship time (104 lock/guard cells + 1924 suite green, 0 orphans), §AA
 release-audit GREEN_WITH_ADVISORY (0 blocking), repo-release-prep clean (3-SoT version consistent,
-`__all__` 101 importable, twine check PASSED), and the built WHEEL smoked in a clean venv (F-3
+`__all__` 103 importable, twine check PASSED), and the built WHEEL smoked in a clean venv (F-3
 boundary D=256 raises clean; dense D128→NAX Δ1.9e-6; D64→SDPA Δ0; sparse-sym→V2; grad vs SDPA-vjp 0;
 custom-scale correct). Ship manifest journal-free on BOTH wheel + sdist. Version bump (2.58.0) +
 CHANGELOG committed; **NOT tagged/published — the tag + `twine upload` + GH release are Marco's
@@ -379,7 +380,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.56.0 — 1827 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record). Phase IV complete: TQ-decode eval-collapse gains (IV-D1/D2), whole-repo correctness review (no CRITICAL; A3-1 latent int64-overflow fix), incremental optimization closed-at-floor. `MFA_FORCE_NATIVE_BWD` removed (kernel retained); V3 conditionally-auto-routed (M5-validated).
+v2.61.0 (held/unpublished — PyPI latest is 2.60.1) — 2118 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record). Phase IV complete: TQ-decode eval-collapse gains (IV-D1/D2), whole-repo correctness review (no CRITICAL; A3-1 latent int64-overflow fix), incremental optimization closed-at-floor. `MFA_FORCE_NATIVE_BWD` removed (kernel retained); V3 conditionally-auto-routed (M5-validated).
 
 | Track | Description | Status |
 |-------|-------------|--------|

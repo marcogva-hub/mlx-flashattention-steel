@@ -4,7 +4,7 @@ The tracked tree carries **current-state documentation only**. The campaign jour
 (phase reports, sprint decisions, design docs, diagnostics, the audit ledger, devnotes)
 is retained off the tracked tree — see **Provenance** below.
 
-## Published (ships in the wheel + on PyPI)
+## Published (ships in the sdist — the published artifact on PyPI)
 - [`README.md`](../../README.md) — overview, install, quick start, current perf, known issues
 - [`CHANGELOG.md`](../../CHANGELOG.md) — version history
 - `LICENSE`, `LICENSE-DRAWTHINGS`, `THIRD_PARTY_LICENSES`
@@ -39,7 +39,7 @@ is retained off the tracked tree — see **Provenance** below.
 ## Provenance — the journal
 The full campaign journal is **retained but off the public tracked tree**: it lives in
 **git history** (every file at its prior path) and in the gitignored **`.doc-archive/`**
-snapshot. It is intentionally excluded from both the wheel and the public repo surface —
-enforced by `tests/test_publish_surface_guard.py` (wheel MANIFEST **and** tracked-tree
-allowlist). Links throughout the current-state docs that point into `.doc-archive/...`
+snapshot. It is intentionally excluded from both the published sdist and the public repo
+surface — enforced by `tests/test_publish_surface_guard.py` (the built sdist's
+publication surface **and** the tracked-tree allowlist). Links throughout the current-state docs that point into `.doc-archive/...`
 are provenance pointers into that archive.

@@ -76,38 +76,42 @@ _AE = getattr(mx, "async_" + "eval")
 # ---------------------------------------------------------------------------
 PERF_CLAIMS = [
     # v2.39.1: D=64 qL=4096 — "2.00×" with fused-BK16 (PUBLIC API, post-H1 fix)
+    # H-03 (audit 2026-06-21): ENGAGEMENT lock only — checks V6NAX backward
+    # engages via the public auto API.  The variant is SPLIT (auto → split for
+    # all D since the II-6 audit); the withdrawn v2.39.1 "fused-BK16 2.00×/1.95×"
+    # claims are NOT asserted here (perf gate ≠ engagement gate).  The exact
+    # split-vs-fused variant which-binary is locked in
+    # test_v39_fused_dkdv.py::test_auto_default_engages_split_for_d64.
+    # NOTE: the ids stay `..._fused_bk16_engages_via_auto` to match the (struck-
+    # through, withdrawn) PERF_CLAIMS.md active rows so the doc↔test sync holds;
+    # they are now ENGAGEMENT locks only (expected=v6nax_backward, which SPLIT
+    # satisfies).  The withdrawn fused perf number is NOT asserted; the exact
+    # split-vs-fused which-binary is locked in
+    # test_v39_fused_dkdv.py::test_auto_default_engages_split_for_d64.
     {
         "id": "v2.39.1_d64_qL4096_fused_bk16_engages_via_auto",
         "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 4096, 4096, 64),
         "dtype": mx.float16,
         "expected": "v6nax_backward",
-        "documented_in": [
-            "CHANGELOG.md",
-            "README.md",
-            "docs/v6-nax/v39-1-investigation-synthesis.md",
-        ],
+        "documented_in": ["docs/reference/PERF_CLAIMS.md", "docs/reference/backward-family-spec.md"],
         "documented_perf_claim": (
-            "v2.39.1 D=64 qL=4096: fused-BK16 V6NAX backward 2.00× vs SDPA-vjp "
-            "(was 1.91× v2.38.1 split-D_vec; wall-time -2.9%; H1 register-"
-            "pressure root cause fixed)"
+            "D=64 qL=4096: V6NAX SPLIT backward engages via auto; canonical "
+            "2.16–3.05× vs SDPA-vjp (M5/MLX 0.31.2). The v2.39.1 fused-BK16 2.00× "
+            "claim is WITHDRAWN (measured on II-6-corrupt math)."
         ),
     },
-    # v2.39.1: D=64 qL=8192 — "1.95×" with fused-BK16
     {
         "id": "v2.39.1_d64_qL8192_fused_bk16_engages_via_auto",
         "env": {"MFA_ENABLE_V6_BACKWARD": "1"},
         "shape": (1, 4, 8192, 8192, 64),
         "dtype": mx.float16,
         "expected": "v6nax_backward",
-        "documented_in": [
-            "CHANGELOG.md",
-            "README.md",
-            "docs/v6-nax/v39-1-investigation-synthesis.md",
-        ],
+        "documented_in": ["docs/reference/PERF_CLAIMS.md", "docs/reference/backward-family-spec.md"],
         "documented_perf_claim": (
-            "v2.39.1 D=64 qL=8192: fused-BK16 V6NAX backward 1.95× vs SDPA-vjp "
-            "(was 1.87× v2.38.1 split-D_vec; wall-time -1.4%)"
+            "D=64 qL=8192: V6NAX SPLIT backward engages via auto; canonical "
+            "2.16–3.05× vs SDPA-vjp (M5/MLX 0.31.2). The v2.39.1 fused-BK16 1.95× "
+            "claim is WITHDRAWN (measured on II-6-corrupt math)."
         ),
     },
     # v2.38.1: D=64 qL=4096 — "1.91× faster" with D_vec precompute (PUBLIC API)

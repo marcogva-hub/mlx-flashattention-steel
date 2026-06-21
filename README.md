@@ -4,7 +4,8 @@
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.61.0** (PyPI).  The complete, corrected state of
+Current version: **2.61.0** (release candidate — not yet on PyPI; current
+PyPI release: **2.60.1**).  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the
@@ -53,7 +54,8 @@ eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
 (A3-1); the attention/conv compute kernels are otherwise unchanged from v2.52.1
 (the earlier 26.6 perf shifts were the OS/reference moving, not the kernels).*
 
-> **⚠ Use the latest release (current: v2.61.0).** Historical note: v2.51.0 had two
+> **⚠ Use the latest published release (current PyPI: v2.60.1; v2.61.0 is a
+> release candidate, not yet on PyPI).** Historical note: v2.51.0 had two
 > CRITICAL silent-corruption bugs (top-K Metal-grid undercount; NaN gradients through
 > `return_lse=True`), fixed in v2.52.0; v2.52.0 had a small-channel conv3d
 > silent-corruption bug (`C_in` not a multiple of 32), fixed in v2.52.1. Any release

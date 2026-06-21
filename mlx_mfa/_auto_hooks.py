@@ -67,7 +67,14 @@ _ELIGIBLE_KERNEL_SIZES = {(3, 3, 3), (1, 1, 1)}
 
 _HOOK_TELEMETRY_MODE = os.environ.get("MLX_MFA_HOOK_TELEMETRY", "summary").lower()
 if _HOOK_TELEMETRY_MODE not in ("off", "summary", "verbose"):
-    # Unknown value → default to summary (safe).
+    # L-03 FIX (audit, 2026-06-21): an invalid value previously became "summary"
+    # SILENTLY — a typo'd mode (e.g. "verbos") gave no feedback.  Warn loudly
+    # (Rule 8), then fall back.  Not a hard raise: this runs at `import mlx_mfa`,
+    # so a bad observability knob must not break the import.
+    warnings.warn(
+        f"[mlx-mfa] invalid MLX_MFA_HOOK_TELEMETRY={_HOOK_TELEMETRY_MODE!r} — "
+        f"expected one of 'off'/'summary'/'verbose'; falling back to 'summary'.",
+        RuntimeWarning, stacklevel=2)
     _HOOK_TELEMETRY_MODE = "summary"
 
 _HOOK_EXECUTION_STATS: dict = {
@@ -77,6 +84,13 @@ _HOOK_EXECUTION_STATS: dict = {
     # high-frequency unique-reason fallbacks).
     "fallback_reasons": defaultdict(list),
 }
+
+# M4/H-06 FIX (audit, 2026-06-21): one-time loud-on-UNEXPECTED guard.  A hook
+# that falls back due to an UNEXPECTED kernel error (not a known unsupported
+# shape) must warn ONCE regardless of telemetry mode — the prior code only
+# surfaced it under `verbose`, so a kernel regression hid silently under the
+# default `summary`.  Keyed by hook name so each hook warns at most once.
+_HOOK_WARNED_UNEXPECTED: set = set()
 
 
 def _record_hook_execution(hook_name: str) -> None:
@@ -402,6 +416,17 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
         _kind = "unsupported" if isinstance(e, NotImplementedError) else "unexpected"
         _record_hook_fallback("conv3d_nax_forward",
                                f"NAX dispatch raised [{_kind}]: {type(e).__name__}: {str(e)[:120]}")
+        # M4/H-06 FIX (audit, 2026-06-21): warn ONCE on the UNEXPECTED kind in
+        # EVERY telemetry mode (was verbose-only → kernel regressions hid under
+        # the default `summary`).  Expected unsupported-shape fallbacks stay quiet.
+        if _kind == "unexpected" and "conv3d_nax_forward" not in _HOOK_WARNED_UNEXPECTED:
+            _HOOK_WARNED_UNEXPECTED.add("conv3d_nax_forward")
+            warnings.warn(
+                f"[mlx-mfa] conv3d_nax_forward fell back to baseline MLX conv on an "
+                f"UNEXPECTED error ({type(e).__name__}: {str(e)[:120]}). The NAX kernel "
+                f"may be regressed — set MLX_MFA_HOOK_TELEMETRY=verbose or "
+                f"MFA_HOOK_VERBOSE=1 for the full traceback. (warned once)",
+                RuntimeWarning, stacklevel=2)
         import os as _os
         if _os.environ.get("MFA_HOOK_VERBOSE") == "1" and _kind == "unexpected":
             import traceback as _tb, sys as _sys

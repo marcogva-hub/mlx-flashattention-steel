@@ -68,7 +68,7 @@ For complete benchmark tables and architectural notes, see
 | D=256 N=8192 causal bf16 | SDPA default | **1.68×** |
 | D=64/128 non-causal | up to 1.51× | SDPA default |
 | Sliding-window D=128 N=8192 win=256 | **18.4×** | **20.8×** |
-| D=64 backward | 0.60-0.72× | **1.29-1.45×** |
+| D=64 backward `[dated, pre-M5]` | 0.60-0.72× | **1.29-1.45×** |
 | Softcap D=128 | **1.37×** | **1.34×** |
 
 ## 3) Serving/Runtime Capability Outcomes

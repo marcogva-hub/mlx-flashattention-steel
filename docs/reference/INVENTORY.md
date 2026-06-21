@@ -7,7 +7,7 @@ Version: **2.61.0** — module/LOC tables below are an older snapshot (regenerat
 ## Public-API surface (2.61.0)
 
 19 `flash_attention*` functions + 3 `sage_attention*` functions exposed
-via `mlx_mfa.__all__` (101 names total, including `__version__`).  Full
+via `mlx_mfa.__all__` (103 names total, including `__version__`).  Full
 per-function classification is in
 `.doc-archive/docs/audits/v50-nax-coverage/02-consolidated-bench-results.md`.
 
@@ -125,7 +125,7 @@ Current line counts (major files, 2026-03-27 snapshot):
 
 ## Public API Snapshot
 
-`mlx_mfa.__all__` exports: **101** symbols (the count includes `__version__`).
+`mlx_mfa.__all__` exports: **103** symbols (the count includes `__version__`).
 
 Major groups:
 - Core attention: `flash_attention*` dense/paged/varlen/packed/splitfuse/speculative/turboquant.

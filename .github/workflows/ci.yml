@@ -47,13 +47,23 @@ jobs:
           pip install --upgrade pip
           pip install mlx numpy pytest
 
-      - name: Install mlx-mfa without building extension
-        # Use SKBUILD_CMAKE_ARGS to skip the C++ build entirely.
-        # The Python package installs; _ext import will fail gracefully.
+      - name: Make mlx-mfa importable WITHOUT building the extension (deterministic)
+        # H-05 FIX (audit 2026-06-21): the prior `pip install -e .` STILL built
+        # _ext (it only set the build type), so this job never actually exercised
+        # the no-extension fallback.  Put the source tree on PYTHONPATH instead —
+        # the Python package imports, `mlx_mfa._ext` is genuinely absent, and the
+        # has_nax()/SDPA fallback path is tested for real.
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
+      - name: Assert the extension is genuinely absent
         run: |
-          pip install -e . --no-build-isolation \
-            --config-settings cmake.build-type=Release \
-            || pip install mlx numpy  # fallback: just ensure mlx is available
+          python -c "
+          import importlib.util as u
+          assert u.find_spec('mlx_mfa') is not None, 'mlx_mfa not importable from source tree'
+          import mlx_mfa
+          assert not mlx_mfa.has_nax(), 'expected _ext ABSENT in the no-extension job but has_nax()==True'
+          print('confirmed: _ext absent, has_nax() == False (SDPA-fallback mode)')
+          "
 
       - name: Run fallback + public API tests
         run: |
@@ -64,10 +74,19 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Job 2: Full test suite — builds the C++ extension on Apple Silicon
+  #
+  # ⚠ M5/NAX COVERAGE GAP (audit H-05, 2026-06-21 — FLAGGED for a strategy
+  # decision, not yet implemented): GitHub-hosted `macos-14` is M1, so the
+  # M5+/NAX paths (V6 NAX dense forward, V6 split backward, NAX sparse, the
+  # which-binary byteΔ fingerprints) are SKIPPED here and NEVER exercised in CI.
+  # Options to close it (Marco's call): (a) a self-hosted M5 runner gating
+  # merges; (b) a mandatory pre-release run on an M5 host with the dispatch-map
+  # fingerprints archived as an artifact. Until then, M5 correctness is verified
+  # only on the maintainer's machine.
   # ─────────────────────────────────────────────────────────────────────────
   test-mfa:
     name: "Full MFA tests (Metal kernel)"
-    runs-on: macos-14  # arm64 required for Metal GPU
+    runs-on: macos-14  # arm64 required for Metal GPU (M1 — see M5/NAX gap above)
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -111,13 +130,19 @@ jobs:
         env:
           PYTEST_ADDOPTS: "--color=yes"
 
-      - name: Check test count
+      - name: Check test count (FAIL on collection collapse — L-02)
         run: |
-          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -o '[0-9]\+')
+          # H-05/L-02 FIX (audit 2026-06-21): the guard floor was 400 and only
+          # WARNED, while ~2120 collect — so a module silently failing to import
+          # (collection error → its tests vanish) would never fail CI.  Skips are
+          # still COLLECTED, so the floor is safe on the M1 runner.  Make it FATAL
+          # with a realistic floor.
+          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -o '[0-9]\+' | head -1)
           echo "Collected $COUNT tests"
-          # Warn (not fail) if count deviates from expected
-          if [ "$COUNT" -lt 400 ]; then
-            echo "WARNING: Expected >= 400 tests, got $COUNT"
+          MIN=1800
+          if [ -z "$COUNT" ] || [ "$COUNT" -lt "$MIN" ]; then
+            echo "::error::test collection collapsed: '$COUNT' < $MIN — a module likely failed to import (collection error). Investigate before merge."
+            exit 1
           fi
 
   # ─────────────────────────────────────────────────────────────────────────

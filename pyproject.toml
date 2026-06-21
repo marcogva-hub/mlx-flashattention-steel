@@ -31,7 +31,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.31.2", "numpy"]  # 0.31.2 = nanobind 2.12.0 ABI floor (see [build-system])
+dependencies = ["mlx>=0.31.2", "numpy>=1.23"]  # 0.31.2 = nanobind 2.12.0 ABI floor (see [build-system]); numpy floored (L6 audit 2026-06-21)
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"

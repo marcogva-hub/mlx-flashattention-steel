@@ -145,25 +145,58 @@ def test_fused_d64_matches_sdpa_vjp(monkeypatch):
 
 # ── Axis 2: path entered via PUBLIC API ───────────────────────────────
 
-def test_auto_default_engages_fused_for_d64(monkeypatch):
-    """v2.39.1 outcome α: MFA_V6_BWD_KERNEL=auto routes D=64 to FUSED.
+def _bwd_binding_counts(q, k, v, dO, scale, env_kernel_mode):
+    """H-03 which-binary sentinel: count which `_ext` backward bindings actually
+    run under MFA_V6_BWD_KERNEL=<mode>.  split → dv_raw + dk_raw; fused →
+    fused_dkdv_raw; legacy_fused → v6_nax_backward_kv.  auto/split/fused produce
+    BIT-IDENTICAL gradients, so a gradient-equality assert can't tell them apart
+    — this binding sentinel is the only real engagement signal."""
+    import mlx_mfa._ext as _ext
+    names = ("v6_nax_backward_dv_raw", "v6_nax_backward_dk_raw",
+             "v6_nax_backward_fused_dkdv_raw", "v6_nax_backward_kv")
+    counts = {n: 0 for n in names}
+    orig = {n: getattr(_ext, n) for n in names if hasattr(_ext, n)}
 
-    The v2.39.0 outcome δ regression was root-caused to H1 register pressure
-    at the default BK=32 and fixed in v2.39.1 by lowering BK to 16.  Auto
-    now defaults to fused for D=64.  Correctness preserved within FP16
-    tolerance (~2e-5 RMSE vs split, same as v2.38.1 D_vec drift vs SDPA).
-    See docs/v6-nax/v39-1-investigation-synthesis.md.
+    def _wrap(nn, f):
+        def w(*a, **k):
+            counts[nn] += 1
+            return f(*a, **k)
+        return w
+
+    for n, f in orig.items():
+        setattr(_ext, n, _wrap(n, f))
+    try:
+        _grads(q, k, v, dO, scale, env_kernel_mode)
+    finally:
+        for n, f in orig.items():
+            setattr(_ext, n, f)
+    return counts
+
+
+def test_auto_default_engages_split_for_d64(monkeypatch):
+    """MFA_V6_BWD_KERNEL=auto routes D=64 to the SPLIT kernel (II-6 → II-8).
+
+    Engagement (which-binary), SEPARATE from any perf claim.  Supersedes the old
+    'auto engages fused' test whose premise was withdrawn: auto → split for ALL
+    D since the II-6 numerics audit; fused BK=16 is correct via the II-8 tail but
+    only parity, so it is opt-in.  auto/split/fused are bit-identical, so a
+    gradient-equality assert proves nothing about WHICH variant ran — assert the
+    actual `_ext` bindings instead.
     """
     B, H, qL, D = 1, 4, 4096, 64
     q, k, v, dO = _make_inputs(B, H, qL, D, seed=1)
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.setenv("MFA_V6_BWD_KERNEL", "auto")
-    dqa, dka, dva = _grads(q, k, v, dO, scale, "auto")
-    dqf, dkf, dvf = _grads(q, k, v, dO, scale, "fused")
-    # auto and fused produce identical gradients on D=64 (auto→fused per α).
-    assert _rmse(dqa, dqf) == 0.0
-    assert _rmse(dka, dkf) == 0.0
-    assert _rmse(dva, dvf) == 0.0
+    auto = _bwd_binding_counts(q, k, v, dO, scale, "auto")
+    assert auto["v6_nax_backward_dv_raw"] > 0 and auto["v6_nax_backward_dk_raw"] > 0, (
+        f"auto did not engage the SPLIT dv/dk bindings: {auto}")
+    assert auto["v6_nax_backward_fused_dkdv_raw"] == 0, (
+        f"auto engaged the FUSED binding — auto must resolve to split: {auto}")
+    # Opt-in still works: forcing fused DOES engage the fused binding.
+    fused = _bwd_binding_counts(q, k, v, dO, scale, "fused")
+    assert fused["v6_nax_backward_fused_dkdv_raw"] > 0, (
+        f"MFA_V6_BWD_KERNEL=fused did not engage the fused binding: {fused}")
+    assert fused["v6_nax_backward_dv_raw"] == 0, (
+        f"fused unexpectedly engaged the split dv binding: {fused}")
 
 
 def test_auto_default_engages_split_for_d128(monkeypatch):

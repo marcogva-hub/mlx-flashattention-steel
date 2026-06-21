@@ -115,6 +115,15 @@ Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 |---------|--------|-------|
 | GNA native Metal kernel | Production (v2.26.0) | Inline 3D window, forward-only, D=128 |
 
+> **Forward/backward mask asymmetry (L2 — correct by design).** The native GNA forward attends the
+> **exact per-element** neighborhood window. GNA has no native backward kernel, so `mx.grad` falls back
+> to the sparse path, which attends a **tile-superset** (looser, block-granular) key set. Consequence:
+> GNA gradients are computed w.r.t. a **coarser mask** than the forward used (the backward "sees" keys
+> in partially-active boundary tiles that the exact forward window excluded). This is intentional —
+> forward precision is preserved and the gradient mask is a conservative over-approximation of the
+> forward window — but downstream code that assumes forward/backward attend the identical key set
+> should be aware of the discrepancy.
+
 ## Experimental Kernels
 
 | Kernel | Gate | Status | Notes |

@@ -5354,49 +5354,55 @@ def _v6nax_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
     dQ = _bwd_ext.v6_nax_backward_query(
         q, k, v, O_v6nax, L_v6nax, dO, D, scale, causal)
 
-    # MFA_V6_BWD_KERNEL env var routes between:
-    #   "auto" (default): fused for D=64 (post-v2.39.1 H1 fix), split for D=128
-    #   "fused": force fused kernel (Option γ) — D=64 only, raises for D=128
+    # MFA_V6_BWD_KERNEL env var routes between (value validated below):
+    #   "auto" (default): split for EVERY head dim (Phase II-6 → II-8; see below)
+    #   "fused": force fused dK+dV (Option γ) — D ∈ {64, 128}, raises otherwise
     #   "split": force split dV/dK kernels (v2.38.1 path)
     #   "legacy_fused": force legacy WM=1 fused kernel (pre-v2.38.0)
     # Back-compat: `MFA_V6BWD_USE_FUSED=1` still recognized → legacy_fused.
     #
-    # v2.39.1 outcome α: H1 register pressure CONFIRMED + fix shipped.
-    # The v2.39.0 outcome δ regression was caused by per-SG register
-    # spilling at the fused kernel's default BK=32 (TK=2).  Sprint v2.39.1
-    # investigation lowered the default to BK=16 (TK=1) in the Primitive,
-    # which halves the dK_accum + dV_accum FP32 footprint and brings the
-    # kernel below the M5 NAX compiler's spill threshold.  Empirical:
-    # fused-BK16 1.01-1.12× faster than split-D_vec at qL ∈ {2048, 16384};
-    # all v2.38.1 SDPA-vjp speedups (1.95×/1.89×/1.87× at qL ∈ {4096, 8192,
-    # 16384}) preserved exactly.  See `docs/v6-nax/v39-1-investigation-
-    # synthesis.md` for full investigation evidence (H1 confirmed, H3
-    # falsified, H2 partial-supporting).
+    # v2.39.1 history: H1 register pressure was confirmed and the fused default
+    # was lowered to BK=16 (TK=1) to fit the M5 NAX spill threshold.  The
+    # "fused-BK16 1.01-1.12× vs split" perf edge claimed then was measured on
+    # II-6-corrupt math and is WITHDRAWN (see the II-6/II-8 note below); BK=16
+    # was later proven CORRECT (II-8 tail) but is only parity with split.
     _kernel_mode = getenv_aliased("MFA_V6_BWD_KERNEL", "auto").lower()
+    # M-03 FIX (audit, 2026-06-21): validate the knob value.  An unknown/typo
+    # value previously fell through the else-branch and SILENTLY selected split,
+    # indistinguishable from a deliberate choice — raise loudly (Rule 8).
+    _valid_bwd_modes = ("auto", "split", "fused", "legacy_fused")
+    if _kernel_mode not in _valid_bwd_modes:
+        raise ValueError(
+            f"MFA_V6_BWD_KERNEL={_kernel_mode!r} is not recognized; expected "
+            f"one of {_valid_bwd_modes}.")
     if getenv_aliased("MFA_V6BWD_USE_FUSED") == "1":
         _kernel_mode = "legacy_fused"
 
     head_dim = q.shape[3]
     _wm = int(getenv_aliased("MFA_V6BWD_WM", "4"))
 
-    # Resolve "auto" → split for ALL head dims (Phase II-6, campaign
-    # 2026-06).
-    #
-    # CORRECTION of the v2.39.1/v2.40.0 routing: "auto" previously
-    # resolved to fused for D=64 on the strength of the v2.39.1
-    # "fused-BK16 1.01-1.12x vs split" finding.  II-6 numerics audit
-    # found fused's BK=16 default was numerically INVALID — the paired
-    # 16x32x16 MMA in the S-recompute requires TK = BK/16 even; at
-    # BK=16 it read 16 K-rows past the tile and wrote one fragment out
-    # of bounds, silently corrupting dK/dV (errors 4x gradient magnitude
-    # at unit-scale inputs, inf at input std >= 2; invisible at the
-    # 0.1-scale test fixtures).  The v2.39.1 perf edge was measured on
-    # corrupt math and is withdrawn.  At the minimum-valid BK=32, fused
-    # is the v2.39.0 spill-regression config — so split (BK=32, clean,
-    # 1.87-1.95x vs SDPA-vjp per v2.38.1) is the correct auto default.
-    # Fused stays reachable via MFA_V6_BWD_KERNEL=fused (now loudly
-    # BK-guarded in C++).  See docs/v50/campaign-2026-06/phase2/
-    # sprint-II-6-report.md.
+    # Resolve "auto" → split for ALL head dims (Phase II-6 → II-8, campaign
+    # 2026-06).  History + CURRENT status:
+    #   - v2.39.1/v2.40.0 routed "auto" → fused for D=64 on a "fused-BK16
+    #     1.01-1.12x vs split" finding.
+    #   - II-6 found the fused BK=16 DEFAULT corrupted dK/dV: the paired
+    #     16x32x16 MMA in the S-recompute needs TK=BK/16 even; a naive
+    #     single-MMA at BK=16 read 16 K-rows past the tile and wrote a 2nd
+    #     fragment out of bounds (errors ~4x gradient magnitude at unit scale,
+    #     inf at std>=2; invisible at 0.1-scale fixtures).  That perf edge was
+    #     measured on corrupt math and is WITHDRAWN.
+    #   - II-8 FIXED it: the DENSE fused dKdV generator now carries an odd-TK
+    #     scratch tail (loads tail_lim<=16 K-rows + a throwaway 2nd frag), and
+    #     dispatch passes generator_handles_odd_tk=true, so BK=16 is admitted
+    #     via the tail and is oracle-CORRECT at unit scale AND std=2.0 (locked
+    #     in tests/test_v6_fused_bk16_tk1_lock.py).  The non-tail generators
+    #     (the forward + sparse paths) still RAISE on BK=16 (Rule 8).
+    #   - BUT fused BK=16 is only PARITY with split (1.00-1.03x; the withdrawn
+    #     1.01-1.12x edge was corrupt-but-~real-magnitude register relief,
+    #     within noise).  So split (BK=32, clean, 2.16-3.05x vs SDPA-vjp on
+    #     M5/MLX-0.31.2) stays the correct auto default; fused is opt-in and no
+    #     longer claimed faster.
+    # See docs/v50/campaign-2026-06/phase2/ (II-6 + II-8 reports).
     if _kernel_mode == "auto":
         _kernel_mode = "split"
 

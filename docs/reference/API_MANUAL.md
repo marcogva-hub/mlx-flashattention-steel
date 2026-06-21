@@ -1,7 +1,7 @@
 # mlx-mfa API Manual
 
 Version: **2.61.0**
-Public exports: **101** (the `mlx_mfa.__all__` surface)
+Public exports: **103** (the `mlx_mfa.__all__` surface)
 
 This manual documents the retained public API surface for the freeze-prep
 state. It emphasizes current usage and serving/runtime integration behavior.
@@ -414,8 +414,8 @@ Integrations:
 
 ## 8) Export Index
 
-Current exported symbols (`mlx_mfa.__all__`) — **101 symbols** including
-`__version__` (100 callables/classes listed below + `__version__`):
+Current exported symbols (`mlx_mfa.__all__`) — **103 symbols** including
+`__version__` (102 callables/classes listed below + `__version__`):
 
 `DecodeRuntime`, `DenseKVCache`, `DenseKVCacheAdapter`,
 `DispatchPolicy`, `ExternalKVCacheAdapter`,
@@ -567,12 +567,24 @@ so the forward computes `y = dequant(W)·x + U·(V·x)` for improved accuracy on
 outlier-heavy layers. Typically produced via `quantize_model(...)` rather than
 constructed directly. (Signature verified against `mlx_mfa/svdquant/linear.py`.)
 
-#### `quantize_model(model, group_size=64, bits=4, rank=0, calibration_data=None)`
+#### `quantize_model(model, bits=4, group_size=64, rank=0, calibration_data=None, smooth_alpha=0.5, class_predicate=None) -> dict`
 
 Replace all `nn.Linear` layers in `model` with `SVDQuantLinear` in-place.
 If `rank > 0`, SVD decomposition of each layer's quantization residual is
 computed and stored as FP16 correction factors. Providing `calibration_data`
 (a list of input tensors) enables activation-aware rank allocation.
+
+Note the argument ORDER is `bits` THEN `group_size`. A positional call like
+`quantize_model(m, 64, 4)` binds `bits=64`, `group_size=4` — pass these by
+keyword to avoid the swap.
+
+Parameters:
+- `smooth_alpha` (default `0.5`) — SmoothQuant activation-migration strength,
+  controlling how much of the activation dynamic range is migrated into the
+  weights before quantization.
+- `class_predicate` (optional callable) — selects which `nn.Module` instances
+  to quantize; when provided, only modules for which it returns truthy are
+  replaced.
 
 ---
 

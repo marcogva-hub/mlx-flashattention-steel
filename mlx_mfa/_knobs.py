@@ -32,9 +32,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_BD",
     "MFA_BD_128",
     "MFA_BD_64",
-    "MFA_BD_FRAGS",
     "MFA_BD_HALF",
-    "MFA_BD_TILE",
     "MFA_BK",
     "MFA_BK_128",
     "MFA_BK_64",
@@ -64,7 +62,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V6_BACKWARD",
     "MFA_DISABLE_V6_DENSE",
     "MFA_DTYPE",
-    "MFA_D_CHUNKS",
     "MFA_D_SPLITS",
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",
@@ -74,7 +71,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_FORCE_D256_PATH",
     "MFA_FORCE_D512_PATH",
     "MFA_FORCE_GEN",
-    "MFA_FORCE_NATIVE_BWD",
     "MFA_FORCE_SAGE_DECODE",
     "MFA_FORCE_SDPA_ROUTE",
     "MFA_FORCE_SPLITK",
@@ -105,7 +101,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_TK",
     "MFA_TK_128",
     "MFA_TK_64",
-    "MFA_TOPK_BISECT",
     "MFA_TOPK_STREAM_V5",
     "MFA_TQ",
     "MFA_TQ_128",
@@ -193,6 +188,12 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_WM_128",
     "MFA_WM_64",
     "MFA_WN",
+    # H4 FIX (audit, 2026-06-21): these are LIVE (read in attention.py:266/269 +
+    # _knobs.py:229) but were absent — strict-validate false-flagged them, incl.
+    # the knob that enables validation.
+    "MFA_KNOB_STRICT",
+    "MFA_REQUIRE_NAX",
+    "MFA_SILENCE_NAX_WARNING",
     "MLX_MFA_DISPATCH_TABLE",
     "MLX_MFA_HOOK_TELEMETRY",
     "MLX_MFA_V6_NAX_NAATTENTIONKERNELDESCRIPTOR_HPP",
@@ -204,6 +205,20 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
 # by this module since they are read in the extension, not Python).
 CPP_KNOBS: frozenset[str] = frozenset({
     # (none)
+})
+
+# M7/L-01 FIX (audit, 2026-06-21): knobs once registered/documented but now with
+# ZERO read site anywhere in mlx_mfa/ or csrc/ (verified by grep).  Kept in a
+# SEPARATE registry so a user who still sets one gets a LOUD "removed — no
+# effect" signal under strict validation, instead of it being silently accepted
+# as valid (it advertised tuning DOF that no longer exists).  Distinct from a
+# typo (which lands in the "unrecognized" bucket).
+REMOVED_KNOBS: frozenset[str] = frozenset({
+    "MFA_BD_FRAGS",          # never read — advertised tile-frag DOF never existed
+    "MFA_BD_TILE",           # never read
+    "MFA_D_CHUNKS",          # never read
+    "MFA_FORCE_NATIVE_BWD",  # removed (kernel retained) — CLAUDE.md status
+    "MFA_TOPK_BISECT",       # never read
 })
 
 
@@ -230,14 +245,23 @@ def validate_env(strict: bool | None = None) -> list[str]:
     if not strict:
         return []
     known = KNOWN_KNOBS | CPP_KNOBS
-    unknown = sorted(
+    env_mfa = [
         k for k in os.environ
         if (k.startswith("MFA_") or k.startswith("MLX_MFA_"))
         and k not in known
         and not any(k.startswith(p) for p in PREFIX_KNOBS)
-    )
+    ]
+    # Removed/ghost knobs get a DISTINCT message ("removed — no effect") so a
+    # user setting one knows it was real once but no longer does anything,
+    # rather than reading it as a typo.
+    removed = sorted(k for k in env_mfa if k in REMOVED_KNOBS)
+    unknown = sorted(k for k in env_mfa if k not in REMOVED_KNOBS)
+    for k in removed:
+        warnings.warn(
+            f"[mlx-mfa] knob {k!r} was REMOVED — it has no effect "
+            f"(see _knobs.REMOVED_KNOBS).", RuntimeWarning, stacklevel=2)
     for k in unknown:
         warnings.warn(
             f"[mlx-mfa] unrecognized knob {k!r} (not in the registry) — "
             f"possible typo; it will have no effect.", RuntimeWarning, stacklevel=2)
-    return unknown
+    return removed + unknown
