@@ -165,6 +165,26 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& k,
          const mlx::core::array& v,
          float scale, bool causal) {
+        // CX-03 (audit): this raw debug binding bypasses mfa_attention_forward's
+        // validation, so it accepted incompatible buffers and read out of bounds
+        // → non-finite output.  Mirror the C-01 checks here (defense-in-depth,
+        // RULE 8) so direct/debug callers get a clear error.
+        if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+          throw std::invalid_argument("mfa_forward_with_lse: expected 4D inputs [B, H, N, D]");
+        if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0))
+          throw std::invalid_argument("mfa_forward_with_lse: q, k, v must share the batch dim");
+        if (k.shape(2) != v.shape(2))
+          throw std::invalid_argument("mfa_forward_with_lse: k and v must share the kv sequence length");
+        if (k.shape(1) != v.shape(1))
+          throw std::invalid_argument("mfa_forward_with_lse: k and v must have the same number of heads");
+        if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
+          throw std::invalid_argument("mfa_forward_with_lse: q, k, v must share the head_dim D");
+        if (k.shape(1) == 0 || q.shape(1) % k.shape(1) != 0)
+          throw std::invalid_argument("mfa_forward_with_lse: q_heads must be a multiple of kv_heads (GQA)");
+        if (q.shape(3) != 64 && q.shape(3) != 128 && q.shape(3) != 256)
+          throw std::invalid_argument("mfa_forward_with_lse: head_dim must be 64, 128, or 256");
+        if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+          throw std::invalid_argument("mfa_forward_with_lse: q, k, v must share dtype");
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         // D.5: enforce row-major layout; no-op when already contiguous.
         auto qc = mlx::core::contiguous(q, false, s);

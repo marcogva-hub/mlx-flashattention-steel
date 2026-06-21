@@ -356,13 +356,42 @@ _PACK_FNS = {2: _pack_2bit, 3: _pack_3bit, 4: _pack_4bit}
 _UNPACK_FNS = {2: _unpack_2bit, 3: _unpack_3bit, 4: _unpack_4bit}
 
 
+def _packed_nbytes(n_values: int, bits: int) -> int:
+    """Number of uint8 bytes ``pack_indices`` produces for ``n_values`` at ``bits``.
+
+    Mirrors the on-disk pack layouts: 2/4-bit are dense (``ceil(n*bits/8)``); 3-bit
+    is bit-planar in groups of 8 values → 3 bytes per 8-value group.
+    """
+    if bits == 3:
+        return ((n_values + 7) // 8) * 3
+    return (n_values * bits + 7) // 8
+
+
 def pack_indices(indices: mx.array, bits: int) -> mx.array:
     """Pack quantization indices into bit-packed uint8 bytes."""
+    if bits not in _PACK_FNS:
+        raise ValueError(f"pack_indices: unsupported bits={bits}; use 2, 3, or 4.")
     return _PACK_FNS[bits](indices)
 
 
 def unpack_indices(packed: mx.array, n_values: int, bits: int) -> mx.array:
-    """Unpack bit-packed uint8 bytes to quantization indices."""
+    """Unpack bit-packed uint8 bytes to quantization indices.
+
+    CC-05 (audit): the packed buffer carries no bit-width, so packing at one
+    width and unpacking at another silently produced garbage.  Assert the packed
+    length matches ``(n_values, bits)`` (like ``unpack_3bit_optimal``) so a
+    bit-width / length mismatch fails loudly (RULE 8) instead of corrupting.
+    """
+    if bits not in _UNPACK_FNS:
+        raise ValueError(f"unpack_indices: unsupported bits={bits}; use 2, 3, or 4.")
+    expected = _packed_nbytes(n_values, bits)
+    if packed.size != expected:
+        raise ValueError(
+            f"unpack_indices: packed length {packed.size} != expected {expected} "
+            f"for n_values={n_values}, bits={bits}. The packed buffer carries no "
+            f"bit-width — this usually means pack/unpack used mismatched bits or "
+            f"n_values (would silently corrupt indices)."
+        )
     return _UNPACK_FNS[bits](packed, n_values)
 
 
@@ -376,6 +405,17 @@ _DTYPE_STR_MAP = {
     mx.float32: "float32",
 }
 _STR_DTYPE_MAP = {v: k for k, v in _DTYPE_STR_MAP.items()}
+
+
+def _require_dtype_str(dtype) -> str:
+    """Map an MLX dtype to its stored string, or raise (CC-08 — no silent fp16)."""
+    s = _DTYPE_STR_MAP.get(dtype)
+    if s is None:
+        raise ValueError(
+            f"turboquant: unsupported dtype {dtype}; supported are "
+            f"{tuple(_DTYPE_STR_MAP.values())}. (Previously coerced silently to float16.)"
+        )
+    return s
 
 
 def turboquant_compress(
@@ -442,7 +482,10 @@ def turboquant_compress(
         "bits": bits,
         "rotation": rotation,
         "seed": seed,
-        "dtype": _DTYPE_STR_MAP.get(original_dtype, "float16"),
+        # CC-08 (audit): an unsupported input dtype was silently recorded as
+        # "float16", so decompress returned the wrong dtype with no signal.
+        # Raise instead (RULE 8); supported = fp16/bf16/fp32.
+        "dtype": _require_dtype_str(original_dtype),
         "shape": (B, H, S, D),
     }
 
@@ -535,8 +578,14 @@ def turboquant_decompress(compressed: dict) -> mx.array:
     # 4. Inverse rotation
     x_decompressed = apply_inverse_rotation(x_rot, rotation, seed)
 
-    # 5. Cast to original dtype
-    target_dtype = _STR_DTYPE_MAP.get(compressed["dtype"], mx.float16)
+    # 5. Cast to original dtype (CC-08: raise on a corrupted/unknown dtype tag
+    # instead of silently returning fp16).
+    target_dtype = _STR_DTYPE_MAP.get(compressed.get("dtype"))
+    if target_dtype is None:
+        raise ValueError(
+            f"turboquant_decompress: unknown dtype tag {compressed.get('dtype')!r}; "
+            f"expected one of {tuple(_STR_DTYPE_MAP)}."
+        )
     return x_decompressed.astype(target_dtype)
 
 
@@ -629,7 +678,7 @@ class TurboQuantKVCache:
 
         self._seq_len += S_new
         if self._dtype is None:
-            self._dtype = _DTYPE_STR_MAP.get(k_new.dtype, "float16")
+            self._dtype = _require_dtype_str(k_new.dtype)  # CC-08: no silent fp16
 
     def k_decompressed(self) -> mx.array:
         """Return full K in original dtype, decompressed from all chunks."""

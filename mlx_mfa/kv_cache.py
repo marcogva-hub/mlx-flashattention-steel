@@ -212,10 +212,21 @@ class HybridKVCache:
     ) -> None:
         if hot_seq_capacity <= 0:
             raise ValueError("hot_seq_capacity must be > 0")
+        # CC-04 (audit): only LRU demotion is implemented (_choose_demotion_victim
+        # picks the least-recently-used hot sequence).  A non-LRU `policy` was
+        # previously stored and silently ignored — the caller got LRU regardless.
+        # Reject unsupported values loudly (RULE 8) instead of misleading the caller.
+        _SUPPORTED_POLICIES = ("lru",)
+        if str(policy).lower() not in _SUPPORTED_POLICIES:
+            raise ValueError(
+                f"HybridKVCache: unsupported eviction policy {policy!r}; only "
+                f"{_SUPPORTED_POLICIES} is implemented (demotion is least-recently-used). "
+                f"Passing another value previously selected LRU silently."
+            )
         self.primary_cache = primary_cache
         self.secondary_cache = secondary_cache
         self.external_adapter = external_adapter
-        self.policy = str(policy)
+        self.policy = str(policy).lower()
         self.hot_seq_capacity = int(hot_seq_capacity)
         self._primary_adapter = adapt_kv_cache(primary_cache)
         self._secondary_adapter = (

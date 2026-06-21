@@ -517,6 +517,18 @@ def flash_attention(
             f" got {backend!r}."
         )
 
+    # fp32 forced-`mfa` refusal (audit follow-up to RC-A/RC-B): the MFA kernels
+    # are fp16/bf16 only; fp32 forced to `backend="mfa"` routes to the legacy ccv
+    # path and is silently wrong for causal N<S.  Refuse loudly (RULE 8).
+    # `backend="auto"` with fp32 is unaffected — it correctly routes to SDPA.
+    if backend == "mfa" and q.dtype == mx.float32:
+        raise ValueError(
+            "flash_attention: backend='mfa' does not support float32 (the MFA kernels "
+            "are float16/bfloat16 only; fp32 would route to the legacy path and be "
+            "silently wrong for causal N<S). Use backend='auto' (routes fp32 to SDPA) "
+            "or cast q/k/v to float16/bfloat16."
+        )
+
     # --- backend='sdpa': unconditional SDPA fallback -------------------------
     # v2.32.0 fix: when no attn_bias is provided, use mask="causal" (string)
     # to take SDPA's fast causal path. On M5+ this routes through Apple's

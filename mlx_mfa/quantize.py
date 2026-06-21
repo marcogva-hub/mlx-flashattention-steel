@@ -127,6 +127,20 @@ def dequantize(
     """
     B, H, N, D = x_int8.shape
     N_blocks = scale.shape[2]
+    # CC-07 (audit): the scale carries one entry per quantization block, so
+    # block_size must satisfy N_blocks == ceil(N / block_size).  A mismatched
+    # block_size previously misaligned scale↔rows → silently-wrong dequant
+    # (or a cryptic reshape error).  Validate it (RULE 8).
+    if block_size <= 0:
+        raise ValueError(f"dequantize: block_size must be > 0, got {block_size}.")
+    expected_blocks = (N + block_size - 1) // block_size
+    if N_blocks != expected_blocks:
+        raise ValueError(
+            f"dequantize: block_size={block_size} is inconsistent with the scale — "
+            f"scale has {N_blocks} blocks but N={N} implies "
+            f"ceil(N/block_size)={expected_blocks}. Pass the same block_size used "
+            f"in quantize_per_block."
+        )
     N_padded = N_blocks * block_size
 
     # Pad if needed

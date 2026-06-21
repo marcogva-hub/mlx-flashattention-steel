@@ -32,10 +32,41 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from typing import Optional
 
 import mlx.core as mx
 from mlx_mfa.kv_cache import adapt_kv_cache
+
+
+# CC-09 (audit): an inference context constructed with an off-spec head_dim or
+# dtype silently runs every attention call via the SDPA fallback (no MFA/NAX
+# acceleration) with no signal.  Warn once (or raise under MFA_REQUIRE_NAX=1),
+# consistent with the silent-NAX-fallback hardening philosophy (RULE 8).
+_MFA_SUPPORTED_DIMS = (64, 128, 256)
+_offspec_warned: set = set()
+
+
+def _warn_offspec(D: int, dtype, where: str) -> None:
+    dim_ok = D in _MFA_SUPPORTED_DIMS
+    dtype_ok = dtype in (mx.float16, mx.bfloat16)
+    if dim_ok and dtype_ok:
+        return
+    reasons = []
+    if not dim_ok:
+        reasons.append(f"head_dim D={D} (MFA supports {_MFA_SUPPORTED_DIMS})")
+    if not dtype_ok:
+        reasons.append(f"dtype={dtype} (MFA supports float16/bfloat16)")
+    msg = (
+        f"{where}: off-spec config — {'; '.join(reasons)}. Attention will run via the "
+        f"SDPA fallback (no MFA/NAX acceleration). Set MFA_REQUIRE_NAX=1 to raise instead."
+    )
+    if os.environ.get("MFA_REQUIRE_NAX", "").strip().lower() in ("1", "true", "yes"):
+        raise ValueError(msg)
+    key = (where, int(D), str(dtype))
+    if key not in _offspec_warned:
+        _offspec_warned.add(key)
+        warnings.warn(msg, RuntimeWarning, stacklevel=3)
 
 
 __all__ = [
@@ -114,6 +145,7 @@ class InferenceContext:
         self.max_seq_len = max_seq_len
         self.dtype = dtype
         self.stream = stream
+        _warn_offspec(D, dtype, "InferenceContext")  # CC-09: loud off-spec fallback
 
         # I.1: Single pre-allocated DenseKVCache; eliminates O(seqlen) concatenate
         # per decode step.  mx.eval() is called inside DenseKVCache.append() to
@@ -394,6 +426,7 @@ class PagedInferenceContext:
         self.D = D
         self.dtype = dtype
         self.stream = stream
+        _warn_offspec(D, dtype, "PagedInferenceContext")  # CC-09: loud off-spec fallback
         self._cache = PagedKVCache(num_blocks, block_size, H_kv, D, dtype=dtype)
 
     # -- Protocol delegation -------------------------------------------------
@@ -630,6 +663,7 @@ class SageInferenceContext:
         self.max_seq_len = max_seq_len
         self.dtype = dtype
         self.stream = stream
+        _warn_offspec(D, dtype, "SageInferenceContext")  # CC-09: loud off-spec fallback
         from mlx_mfa.attention import QuantizedKVCache
         self._cache = QuantizedKVCache(B, H_kv, D, max_seq_len=max_seq_len, dtype=dtype)
 
@@ -818,6 +852,7 @@ class TurboQuantPagedInferenceContext:
         self.wht_in_kernel = wht_in_kernel
         self.dtype = dtype
         self.stream = stream
+        _warn_offspec(D, dtype, "TurboQuantPagedInferenceContext")  # CC-09: loud off-spec fallback
         from mlx_mfa.turboquant import _compute_packed_d
         self.packed_D = _compute_packed_d(D, tq_bits)
 

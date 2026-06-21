@@ -41,6 +41,34 @@ class SVDQuantLinear(nn.Module):
         rank: int = 0,
     ):
         super().__init__()
+        # CC-06 (audit): validate at the boundary.  Previously invalid args were
+        # silently absorbed — non-divisible in_features DROPPED channels (wrong
+        # math, no error), bits/group_size==0 raised a bare ZeroDivisionError, and
+        # rank<0 was accepted.  Fail loudly and clearly instead (RULE 8).
+        if in_features <= 0 or out_features <= 0:
+            raise ValueError(
+                f"SVDQuantLinear: in_features and out_features must be > 0, got "
+                f"in_features={in_features}, out_features={out_features}."
+            )
+        if bits <= 0 or 32 % bits != 0:
+            raise ValueError(
+                f"SVDQuantLinear: bits must be a positive divisor of 32 (2/4/8), got {bits}."
+            )
+        if group_size <= 0:
+            raise ValueError(f"SVDQuantLinear: group_size must be > 0, got {group_size}.")
+        elems_per_32bits = 32 // bits
+        if in_features % elems_per_32bits != 0:
+            raise ValueError(
+                f"SVDQuantLinear: in_features ({in_features}) must be divisible by "
+                f"32//bits = {elems_per_32bits} (else quantized channels are dropped)."
+            )
+        if in_features % group_size != 0:
+            raise ValueError(
+                f"SVDQuantLinear: in_features ({in_features}) must be divisible by "
+                f"group_size ({group_size}) (else scale/bias channels are dropped)."
+            )
+        if rank < 0:
+            raise ValueError(f"SVDQuantLinear: rank must be >= 0, got {rank}.")
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = group_size
@@ -49,7 +77,6 @@ class SVDQuantLinear(nn.Module):
 
         # Quantized weight — placeholder shapes; overwritten by quantize_model
         # or load_weights. mx.quantize packs into uint32.
-        elems_per_32bits = 32 // bits
         self.weight = mx.zeros(
             (out_features, in_features // elems_per_32bits), dtype=mx.uint32
         )

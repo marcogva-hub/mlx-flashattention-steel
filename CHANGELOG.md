@@ -25,6 +25,21 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     `[-1, num_blocks)`) and out-of-range `seq_lens` (see CC-02/CC-03 under Fixed). `-1` (unallocated
     page padding) stays valid. Direct `_ext.*` paged calls now return zeroed contributions for
     out-of-range ids (in-kernel guard) instead of reading out of bounds.
+  - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
+    `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
+    `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
+    unsupported policy (only LRU is implemented — was stored and ignored, CC-04); `turboquant`
+    compress/decompress/cache reject an **unsupported dtype** (was silently coerced to fp16, CC-08);
+    `turboquant.unpack_indices` asserts the packed length matches `(n_values, bits)` (cross-bit-width
+    misuse was silent garbage, CC-05); `SVDQuantLinear` validates `in_features`/`out_features`/`bits`/
+    `group_size`/`rank` (non-divisible dims silently dropped channels; `bits`/`group_size`=0 raised a
+    bare `ZeroDivisionError`, CC-06); `dequantize` rejects a `block_size` inconsistent with the scale
+    (CC-07); and the raw `_ext.mfa_forward_with_lse` debug binding now validates Q/K/V
+    shape/rank/dtype/compatibility like the public path (CX-03).
+  - **Off-spec inference contexts now signal the SDPA fallback** (CC-09): constructing an
+    `InferenceContext` / `PagedInferenceContext` / `SageInferenceContext` /
+    `TurboQuantPagedInferenceContext` with a head_dim ∉ {64,128,256} or a non-fp16/bf16 dtype emits a
+    one-time `RuntimeWarning` (or raises under `MFA_REQUIRE_NAX=1`) instead of silently degrading.
   Callers passing malformed inputs that previously appeared to "work" (silently wrong) now get a clear,
   actionable error.
 
@@ -79,6 +94,12 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   `blk_idx<max_blocks`, `phys∈[0,num_blocks)`; 64-bit pool offsets) so out-of-range/`-1`-padding ids
   contribute **zero**, plus host validation that raises a clear `ValueError` on the public
   `flash_attention_paged*` APIs. Locked by `tests/test_paged_oob_guard.py`. **Also present in 2.60.1.**
+- **Tier-1 secondary-surface correctness (CC-05/CC-07).** `turboquant` pack/unpack at a consistent
+  bit-width round-trips exactly (the untyped buffer let cross-bit-width misuse corrupt indices silently);
+  `dequantize` with a `block_size` inconsistent with the scale is now rejected (previously misaligned
+  scale↔rows → silently-wrong dequant, validated vs an fp32 oracle). Plus the loud off-spec inference
+  fallback (CC-09) and the validation rejections listed under Breaking/Behavior. Locked by
+  `tests/test_tier1_validation_audit.py` (round-trip / fp32 oracles + raise/warn assertions).
 - **C-01 (CRITICAL) — forced `backend="mfa"` no longer reads out of bounds on mismatched Q/K/V shapes.**
   The kernel derived `B` from Q but all K/V strides from K, so `Bq>Bk` / `Sk≠Sv` / `Hk≠Hv` read past the
   K/V allocation → silent-wrong finite output (reproduced: `out[1]` off ~1.3 vs the correct broadcast).

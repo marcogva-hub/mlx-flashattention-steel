@@ -96,7 +96,7 @@ class TestKVCacheAdapters:
 
     def test_adapt_kv_cache_hybrid_skeleton(self):
         dense_ctx = InferenceContext(B=1, H_kv=4, D=64, max_seq_len=32)
-        hybrid = HybridKVCache(dense_ctx._cache, policy="manual")
+        hybrid = HybridKVCache(dense_ctx._cache, policy="lru")  # CC-04: only LRU is implemented
         ad = adapt_kv_cache(hybrid)
         assert ad.kind == "hybrid"
         assert ad.capabilities.attention_view is True
