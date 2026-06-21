@@ -114,6 +114,7 @@ struct MFAPagedVarlenTQParams {
   int tq_v_pool_block_stride;
   int tq_v_pool_tok_stride;
   int tq_wht_enabled;
+  int num_blocks;
 };
 
 )MFA";
@@ -367,6 +368,8 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int blk_idx    = global_tok / p->block_size;\n";
     ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
+    ss << "            // OOB guards (CC-02): blk_idx within block_table, phys within pool.\n";
+    ss << "            if (blk_idx < p->max_blocks && phys >= 0 && phys < p->num_blocks) {\n";
     ss << "\n";
     // Index extraction per bit-width.  Sprint III-2 FIX: this block was
     // the 3-bit bit-planar form UNCONDITIONALLY — tq_bits=2/4 read the
@@ -405,6 +408,7 @@ struct MFAPagedVarlenTQParams {
     ss << "                (long)phys * p->block_size * p->H_kv\n";
     ss << "                + tok_in_blk * p->H_kv + kv_head];\n";
     ss << "            val = T((float)centroid_val * kscale);\n";
+    ss << "            }\n";  // close OOB guard (CC-02)
     ss << "          }\n";
     ss << "          Ks[d * LDK + t] = val;\n";
     ss << "        }\n";
@@ -495,6 +499,8 @@ struct MFAPagedVarlenTQParams {
     ss << "            const int blk_idx    = global_tok / p->block_size;\n";
     ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
     ss << "            const int phys = block_table[seq_id * p->max_blocks + blk_idx];\n";
+    ss << "            // OOB guards (CC-02): blk_idx within block_table, phys within pool.\n";
+    ss << "            if (blk_idx < p->max_blocks && phys >= 0 && phys < p->num_blocks) {\n";
     // V-TQ branch: uniform branch (all threads take same path), zero divergence cost
     ss << "            if (p->tq_v_enabled) {\n";
     // Sprint III-2 FIX: same 3-bit-only-layout bug as the K path —
@@ -532,6 +538,7 @@ struct MFAPagedVarlenTQParams {
     ss << "                          + tok_in_blk * p->pool_tok_stride_v\n";
     ss << "                          + kv_head * p->D + d];\n";
     ss << "            }\n";
+    ss << "            }\n";  // close OOB guard (CC-02)
     ss << "          }\n";
     ss << "          Vs[t * LDV + d] = val;\n";
     ss << "        }\n";

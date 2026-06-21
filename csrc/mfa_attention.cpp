@@ -2376,6 +2376,7 @@ void MFAPagedSteelForward::eval_gpu(
   pp.pool_block_stride = block_size * H_kv * D;   // tokens/block * heads * D
   pp.pool_tok_stride   = H_kv * D;                // per-token stride (heads * D)
   pp.H_kv              = H_kv;
+  pp.num_blocks        = num_blocks;              // OOB guard upper bound (CC-02)
 
   // ── Dispatch ─────────────────────────────────────────────────────────────
   auto& enc = mlx::core::metal::get_command_encoder(stream());
@@ -2920,6 +2921,7 @@ void MFAPagedVarlenForward::eval_gpu(
   const int total_q = q.shape(2);
   const int D       = q.shape(3);
   const int H_kv    = k_pool.shape(2);  // [num_pages, block_size, H_kv, D]
+  const int num_blocks = (int)k_pool.shape(0);  // OOB guard upper bound (CC-02)
   const int num_seqs  = (int)cu_seqlens_q.shape(0) - 1;
   const int max_blocks = (int)block_table.shape(1);
 
@@ -2950,6 +2952,7 @@ void MFAPagedVarlenForward::eval_gpu(
   metal_params.H_kv            = H_kv;
   metal_params.window_left     = -1;
   metal_params.window_right    = -1;
+  metal_params.num_blocks      = num_blocks;   // OOB guard upper bound (CC-02)
 
   // Compile kernel
   auto& d = mlx::core::metal::device(stream().device);
@@ -3114,6 +3117,7 @@ void MFAPagedVarlenTQForward::eval_gpu(
 
   // WHT fusion (Phase 4)
   metal_params.tq_wht_enabled = params_.tq_wht_enabled ? 1 : 0;
+  metal_params.num_blocks     = (int)k_pool_tq.shape(0);  // OOB guard upper bound (CC-02)
 
   // Compile kernel
   auto& d = mlx::core::metal::device(stream().device);

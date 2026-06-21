@@ -38,6 +38,7 @@ struct MFAPagedVarlenTQParams {
     int tq_v_pool_tok_stride;   // V TQ pool: H_kv * packed_D
     // WHT fusion (Phase 4)
     int tq_wht_enabled;    // 0 = Q pre-rotated in Python, 1 = WHT applied in kernel
+    int num_blocks;        // pool.shape(0) — upper bound for phys (OOB guard, CC-02)
 };
 
 /// Generate the Metal shader source for the TurboQuant paged-varlen kernel.

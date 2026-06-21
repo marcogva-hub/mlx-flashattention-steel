@@ -29,6 +29,7 @@ struct PagedGatherParams {
     int out_head_stride;     // max_kv_len * D
     int pool_block_stride;   // block_size * H * D
     int pool_tok_stride;     // H * D
+    int num_blocks;          // pool.shape(0) — upper bound for phys_blk (OOB guard)
 };
 
 // Generate the Metal source for the paged KV gather kernel.
@@ -47,10 +48,12 @@ class MFAPagedKVGather : public mlx::core::Primitive {
 public:
     explicit MFAPagedKVGather(
         mlx::core::Stream stream,
-        int B, int H, int D, int block_size, int max_blocks, int max_kv_len)
+        int B, int H, int D, int block_size, int max_blocks, int max_kv_len,
+        int num_blocks)
         : mlx::core::Primitive(stream),
           B_(B), H_(H), D_(D), block_size_(block_size),
-          max_blocks_(max_blocks), max_kv_len_(max_kv_len) {}
+          max_blocks_(max_blocks), max_kv_len_(max_kv_len),
+          num_blocks_(num_blocks) {}
 
     void eval_cpu(
         const std::vector<mlx::core::array>& inputs,
@@ -66,11 +69,11 @@ public:
         const auto* o = dynamic_cast<const MFAPagedKVGather*>(&other);
         return o && o->B_ == B_ && o->H_ == H_ && o->D_ == D_
             && o->block_size_ == block_size_ && o->max_blocks_ == max_blocks_
-            && o->max_kv_len_ == max_kv_len_;
+            && o->max_kv_len_ == max_kv_len_ && o->num_blocks_ == num_blocks_;
     }
 
 private:
-    int B_, H_, D_, block_size_, max_blocks_, max_kv_len_;
+    int B_, H_, D_, block_size_, max_blocks_, max_kv_len_, num_blocks_;
 };
 
 // C++ API: gathers pool → contiguous [B, H, max_kv_len, D] tensor.

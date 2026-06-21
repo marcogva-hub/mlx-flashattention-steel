@@ -36,6 +36,7 @@ std::string mlx_mfa::generate_paged_kv_gather_source(bool is_f16) {
     int out_head_stride;
     int pool_block_stride;
     int pool_tok_stride;
+    int num_blocks;
 };
 
 // One thread per output element.
@@ -64,17 +65,26 @@ kernel void paged_kv_gather(
     }
 
     int log_blk  = kv_t / p.block_size;
+    // OOB guard: a logical block index past block_table's columns would read
+    // garbage from beyond the block_table allocation (CC-03 secondary).
+    if (log_blk >= p.max_blocks) {
+        out[gid] = T(0.0f);
+        return;
+    }
     int tok_off  = kv_t % p.block_size;
     int phys_blk = block_table[b * p.max_blocks + log_blk];
-    if (phys_blk < 0) {
+    // OOB guard: -1 padding (unallocated page) AND out-of-range physical block
+    // ids both contribute zero — never index the pool out of bounds (CC-03).
+    if (phys_blk < 0 || phys_blk >= p.num_blocks) {
         out[gid] = T(0.0f);
         return;
     }
 
-    // pool layout: [phys_blk][tok_off][h][d]
-    int src = phys_blk * p.pool_block_stride
-            + tok_off  * p.pool_tok_stride
-            + h        * p.D
+    // pool layout: [phys_blk][tok_off][h][d].  64-bit arithmetic: a large pool
+    // (num_blocks * pool_block_stride) can exceed INT32_MAX (CC-03 secondary).
+    long src = (long)phys_blk * p.pool_block_stride
+            + (long)tok_off  * p.pool_tok_stride
+            + (long)h        * p.D
             + d;
     out[gid] = pool[src];
 }
@@ -108,14 +118,15 @@ void MFAPagedKVGather::eval_cpu(
         int kv_len = lens_ptr[b];
         for (int kv_t = 0; kv_t < kv_len; kv_t++) {
             int log_blk  = kv_t / block_size_;
+            if (log_blk >= max_blocks_) continue;           // OOB guard (CC-03)
             int tok_off  = kv_t % block_size_;
             int phys_blk = table_ptr[b * max_blocks_ + log_blk];
-            if (phys_blk < 0) continue;
+            if (phys_blk < 0 || phys_blk >= num_blocks_) continue;  // -1 padding + OOB
             for (int h = 0; h < H_; h++) {
                 for (int d = 0; d < D_; d++) {
-                    int src = phys_blk * (block_size_ * H_ * D_)
-                            + tok_off  * (H_ * D_)
-                            + h        * D_
+                    long src = (long)phys_blk * (block_size_ * H_ * D_)
+                            + (long)tok_off  * (H_ * D_)
+                            + (long)h        * D_
                             + d;
                     int dst = b * (H_ * max_kv_len_ * D_)
                             + h * (max_kv_len_ * D_)
@@ -180,6 +191,7 @@ void MFAPagedKVGather::eval_gpu(
     params.block_size      = block_size_;
     params.max_blocks      = max_blocks_;
     params.max_kv_len      = max_kv_len_;
+    params.num_blocks      = num_blocks_;
     params.out_batch_stride  = H_ * max_kv_len_ * D_;
     params.out_head_stride   = max_kv_len_ * D_;
     params.pool_block_stride = block_size_ * H_ * D_;
@@ -225,6 +237,7 @@ array mlx_mfa::mfa_paged_kv_gather(
             "mfa_paged_kv_gather: seq_lens must be 1-D [B]");
     }
 
+    const int num_blocks = pool.shape(0);
     const int block_size = pool.shape(1);
     const int H          = pool.shape(2);
     const int D          = pool.shape(3);
@@ -238,7 +251,7 @@ array mlx_mfa::mfa_paged_kv_gather(
         {out_shape},
         {pool.dtype()},
         std::make_shared<MFAPagedKVGather>(
-            st, B, H, D, block_size, max_blocks, max_kv_len),
+            st, B, H, D, block_size, max_blocks, max_kv_len, num_blocks),
         {pool, block_table, seq_lens});
     return outputs[0];
 }

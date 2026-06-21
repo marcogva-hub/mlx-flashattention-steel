@@ -2707,6 +2707,7 @@ struct MFAPagedSteelParams {
   int pool_block_stride;
   int pool_tok_stride;
   int H_kv;
+  int num_blocks;
 };
 
 )MFA";
@@ -3120,10 +3121,15 @@ struct MFAMMATile {
   ss << "          if (global_tok < kL_batch) {\n";
   ss << "            const int blk_idx    = global_tok / p->block_size;\n";
   ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
-  ss << "            const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
-  ss << "            val = k_pool[(long)phys * p->pool_block_stride\n";
-  ss << "                        + tok_in_blk * p->pool_tok_stride\n";
-  ss << "                        + kv_head * p->D + d];\n";
+  ss << "            // OOB guards (CC-02): blk_idx within block_table, phys within pool.\n";
+  ss << "            if (blk_idx < p->max_blocks) {\n";
+  ss << "              const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
+  ss << "              if (phys >= 0 && phys < p->num_blocks) {\n";
+  ss << "                val = k_pool[(long)phys * p->pool_block_stride\n";
+  ss << "                          + tok_in_blk * p->pool_tok_stride\n";
+  ss << "                          + kv_head * p->D + d];\n";
+  ss << "              }\n";
+  ss << "            }\n";
   ss << "          }\n";
   ss << "          Ks[d * LDK + t] = val;\n";
   ss << "        }\n";
@@ -3255,10 +3261,15 @@ struct MFAMMATile {
   ss << "          if (global_tok < kL_batch) {\n";
   ss << "            const int blk_idx    = global_tok / p->block_size;\n";
   ss << "            const int tok_in_blk = global_tok % p->block_size;\n";
-  ss << "            const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
-  ss << "            val = v_pool[(long)phys * p->pool_block_stride\n";
-  ss << "                        + tok_in_blk * p->pool_tok_stride\n";
-  ss << "                        + kv_head * p->D + d];\n";
+  ss << "            // OOB guards (CC-02): blk_idx within block_table, phys within pool.\n";
+  ss << "            if (blk_idx < p->max_blocks) {\n";
+  ss << "              const int phys = block_table[b_idx * p->max_blocks + blk_idx];\n";
+  ss << "              if (phys >= 0 && phys < p->num_blocks) {\n";
+  ss << "                val = v_pool[(long)phys * p->pool_block_stride\n";
+  ss << "                          + tok_in_blk * p->pool_tok_stride\n";
+  ss << "                          + kv_head * p->D + d];\n";
+  ss << "              }\n";
+  ss << "            }\n";
   ss << "          }\n";
   ss << "          Vs[t * LDV + d] = val;\n";
   ss << "        }\n";

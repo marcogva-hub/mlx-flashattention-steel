@@ -232,6 +232,7 @@ struct MFAPagedSteelParams {
     int pool_block_stride;   // = block_size * H_kv * D  (strides in pool array)
     int pool_tok_stride;     // = H_kv * D
     int H_kv;                // kv head count = H / gqa_factor
+    int num_blocks;          // pool.shape(0) — upper bound for phys (OOB guard, CC-02)
 };
 
 /// Generate the Metal kernel source for the paged STEEL forward pass.

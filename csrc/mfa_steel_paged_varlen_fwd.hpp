@@ -27,6 +27,7 @@ struct MFAPagedVarlenParams {
     int H_kv;              // kv head count = H / gqa_factor
     int window_left;       // -1 = disabled; >=0 = sliding window left radius
     int window_right;      // -1 = disabled; >=0 = sliding window right radius
+    int num_blocks;        // pool.shape(0) — upper bound for phys (OOB guard, CC-02)
 };
 
 /// Generate the Metal shader source for the fused paged-varlen forward kernel.

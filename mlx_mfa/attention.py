@@ -7006,6 +7006,54 @@ class PagedKVCache(KVCacheProtocol):
         )
 
 
+def _validate_paged_block_table(
+    block_table: "mx.array",
+    seq_lens: "mx.array",
+    num_blocks: int,
+    block_size: int,
+    max_blocks: int,
+    *,
+    fn: str,
+) -> None:
+    """Layer-2 host validation for the public paged-KV APIs (memory-safety: CC-02
+    CRITICAL / CC-03 HIGH).
+
+    Raises ``ValueError`` *before* dispatch when a ``block_table`` entry or a
+    ``seq_lens`` value is out of range — a genuine caller bug that would otherwise
+    drive an out-of-bounds device read inside the paged kernels.  ``-1`` (an
+    unallocated/padding page) stays valid and contributes zero.
+
+    This guards only the *public* Python entry points.  Direct ``_ext.*`` callers
+    bypass this and are protected by the in-kernel bounds guard (which clamps to a
+    zero contribution rather than reading OOB).  See ``RELEASE_PHILOSOPHY`` /
+    CHANGELOG behaviour note.
+    """
+    import mlx.core as mx
+
+    if block_table.size:
+        bmin = int(mx.min(block_table).item())
+        bmax = int(mx.max(block_table).item())
+        if bmin < -1 or bmax >= num_blocks:
+            raise ValueError(
+                f"{fn}: block_table entries must be in [-1, {num_blocks}) "
+                f"(num_blocks = pool.shape[0] = {num_blocks}); got "
+                f"min={bmin}, max={bmax}. '-1' marks an unallocated/padding page; "
+                f"any other negative value or a value >= num_blocks would read "
+                f"out of bounds from the page pool."
+            )
+    if seq_lens.size:
+        smin = int(mx.min(seq_lens).item())
+        smax = int(mx.max(seq_lens).item())
+        if smin < 0:
+            raise ValueError(f"{fn}: seq_lens must be >= 0; got min={smin}.")
+        if max_blocks and smax > max_blocks * block_size:
+            raise ValueError(
+                f"{fn}: seq_lens max ({smax}) exceeds max_blocks*block_size "
+                f"= {max_blocks}*{block_size} = {max_blocks * block_size}; a logical "
+                f"block index would run past the block_table columns."
+            )
+
+
 def flash_attention_paged(
     q: "mx.array",
     k_pages: "mx.array",
@@ -7066,6 +7114,13 @@ def flash_attention_paged(
 
     B, H_q, N_q, D = q.shape
     H_kv = k_pages.shape[2]
+    # Layer-2 memory-safety validation (CC-02/CC-03): reject out-of-range
+    # block_table / seq_lens before dispatch.  -1 padding stays valid.
+    _validate_paged_block_table(
+        block_table, seq_lens, k_pages.shape[0], block_size,
+        block_table.shape[1] if block_table.ndim == 2 else 0,
+        fn="flash_attention_paged",
+    )
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
@@ -7450,6 +7505,13 @@ def flash_attention_paged_varlen(
             "flash_attention_paged_varlen: seq_lens_kv length must match "
             f"block_table batch size (got {seq_lens_kv.shape[0]} vs {base_B})"
         )
+
+    # Layer-2 memory-safety validation (CC-02): reject out-of-range
+    # block_table / seq_lens_kv before dispatch.  -1 padding stays valid.
+    _validate_paged_block_table(
+        block_table, seq_lens_kv, k_pages.shape[0], block_size,
+        block_table.shape[1], fn="flash_attention_paged_varlen",
+    )
 
     bt_eff = block_table
     sl_eff = seq_lens_kv
@@ -8004,6 +8066,14 @@ def flash_attention_paged_varlen_turboquant(
     D = q.shape[3]
     if scale is None:
         scale = 1.0 / math.sqrt(D)
+
+    # Layer-2 memory-safety validation (CC-02): reject out-of-range
+    # block_table / seq_lens_kv before dispatch.  -1 padding stays valid.
+    _validate_paged_block_table(
+        block_table, seq_lens_kv, k_pool_tq.shape[0], block_size,
+        block_table.shape[1] if block_table.ndim == 2 else 0,
+        fn="flash_attention_paged_varlen_turboquant",
+    )
 
     H_q = q.shape[1]
     total_q = q.shape[2]
