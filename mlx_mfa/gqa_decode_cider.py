@@ -15,7 +15,9 @@ per Q head — DRAM traffic / gqa_factor.  Contiguous-chunk split-KV
 reduces the per-chunk partials.
 
 Scope: dense fp16/bf16/fp32 decode, N_q == 1, contiguous [B, H, S, D]
-K/V.  Flag-gated (`MFA_GQA_DECODE_CIDER`); see sprint-II-11-report.md
+K/V.  NOTE (CC-22 audit): the `MFA_GQA_DECODE_CIDER` env flag is NOT wired up
+(no read site) — it is a no-op / dormant gate, listed in `_knobs.REMOVED_KNOBS`.
+This module is reachable only by direct import.  See sprint-II-11-report.md
 for the measured window and the promote/decline decision.
 
 N and the K/V strides are runtime inputs (a params buffer), NOT baked

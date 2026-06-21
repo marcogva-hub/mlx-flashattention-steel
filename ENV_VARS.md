@@ -13,6 +13,10 @@ M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 | `MFA_DISABLE_V2` | bool | unset | V2 | No | Disable all V2 paths (split-K + single-pass + D-split) |
 | `MFA_FORCE_V2` | bool | unset | V2 | No | Bypass M3+ V1 preference (force V2 single-pass) |
 | `MFA_FORCE_SPLITK` | tri | unset | V2-SK | No | -1=heuristic(unset), 0=disable, 1=force |
+| `MFA_DISABLE_V6_DENSE` | bool | unset | V6-NAX | No | Opt out of the M5 dense D=128 NAX matmul2d forward route (stay SDPA) |
+| `MFA_V6_DENSE_MIN_N` | int | 2048 | V6-NAX | No | Min N for the dense D=128 NAX forward route (0 = force all-N NAX) |
+| `MFA_NAX_SPARSE_DENSITY_CEILING` | float | 0.78 | Sparse | No | Mask-density at/above which sparse routes to SDPA instead of the V2 NAX-sparse kernel |
+| `MFA_HOOK_VERBOSE` | bool | unset | Auto-hooks | No | Verbose logging of the `mx.*` auto-hook install/dispatch (debug) |
 
 ## Architecture Override
 

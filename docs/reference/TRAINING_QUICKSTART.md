@@ -9,8 +9,9 @@ NAX-accelerated backward attention on M5+.
 
 V6NAX backward for **D=64 (causal + non-causal)** is **DEFAULT-ON since
 v2.51.0**: on M5-class hardware, fp16/bf16, qL ≥ 2048, it engages
-automatically at **1.7-2.7× FASTER** than SDPA-vjp — no env var
-needed.  Opt out with `MFA_DISABLE_V6_BACKWARD=1`.
+automatically — **2.16–3.05× faster than SDPA-vjp at qL≥4096** (~1.5–1.7×
+@qL2048; M5 Max / macOS 26.6 / MLX 0.31.2) — no env var needed.  Opt out
+with `MFA_DISABLE_V6_BACKWARD=1`.
 
 **D=128 remains opt-in** via `MFA_ENABLE_V6_BACKWARD=1` (parity with
 SDPA-vjp, not a speedup).  Kernels are correctness-validated (RMSE
@@ -167,7 +168,8 @@ keeps the default SDPA-vjp path, which is equally correct.
 
 - **D=64 training (qL ≥ 2048, causal or non-causal)**: no env var
   needed since v2.51.0 — V6NAX backward engages by default and delivers
-  **1.7-2.7× speedup** over SDPA-vjp.  Opt out with
+  **2.16–3.05× speedup over SDPA-vjp at qL≥4096** (~1.5–1.7× @qL2048;
+  M5 Max / macOS 26.6 / MLX 0.31.2).  Opt out with
   `MFA_DISABLE_V6_BACKWARD=1` if needed.
 - **D=64 training with qL < 2048**: the shape gate keeps you on
   SDPA-vjp; nothing to configure.

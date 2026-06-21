@@ -27,9 +27,11 @@ while exposing advanced serving functionality through explicit runtime APIs.
 - Narrow promotion: D=256 causal long-N regimes only.
 - M5+ dense: D=128 dense `backend="auto"` routes to the **V6_NAX matmul2d
   forward** (`v6_nax_forward`) at N ≥ `MFA_V6_DENSE_MIN_N` (default 2048);
-  D=64 dense and opt-out (`MFA_DISABLE_V6_DENSE=1`) stay SDPA. D=64 *causal*
-  large-N (`B*H≥4`, N≥4096) is pre-empted to the MFA primitive earlier via the
-  V3-conditional-auto gate in `should_use_mfa()`.
+  D=64 dense and opt-out (`MFA_DISABLE_V6_DENSE=1`) stay SDPA. On **M5/NAX, ALL
+  D=64 dense `auto` stays SDPA** (`should_use_mfa(D=64, has_nax=True)`=False →
+  byteΔ=0, verified); the D=64 *causal* large-N (`B*H≥4`, N≥4096) pre-emption to
+  the MFA primitive via the V3-conditional-auto gate fires on the **M3/M4 tier
+  only** (`has_nax=False`).
 - Non-promotion outcomes retained:
   - D=512 remains SDPA-default
   - native dense backward remains non-default

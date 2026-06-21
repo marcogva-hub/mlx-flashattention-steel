@@ -32,10 +32,10 @@ Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 | Feature | M1/M2/M3 status | M5+ status | Notes |
 |---------|---|---|---|
 | Dense D=128 (auto) | Production STEEL V2 | **V6_NAX matmul2d forward** (N≥`MFA_V6_DENSE_MIN_N`, default 2048) | `_select_dense_backend()` in attention.py; opt-out `MFA_DISABLE_V6_DENSE=1` → SDPA |
-| Dense D=64 (auto) | Production STEEL V2 | SDPA (dense); D=64 *causal* large-N (B·H≥4, N≥4096) → MFA primitive via V3 cond-auto | per-(D,causal) `_M5_NAX_THRESHOLDS` dict in dispatch_policy.py (not a flat constant) |
+| Dense D=64 (auto) | Production STEEL V2 (V3 cond-auto on M3/M4 for causal large-N) | **M5/NAX: SDPA** for all D=64 dense auto (`should_use_mfa(D=64, has_nax=True)` returns False → byteΔ=0 vs SDPA, verified). The V3-cond-auto MFA-primitive path for D=64 causal large-N (B·H≥4, N≥4096) is **M3/M4-tier only** (`has_nax=False`). | per-(D,causal) `_M5_NAX_THRESHOLDS` dict in dispatch_policy.py (not a flat constant) |
 | D=256 causal | Narrow STEEL | STEEL (no NAX path) | f16 both chips, bf16 M3+ only |
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
-| **Backward D=64 (≥2048, fp16/bf16) — split-V6 NAX-direct, DEFAULT-ON** | `mx.vjp(SDPA)` | **split-V6 (default)** | **VERIFIED 2.16–3.05× vs SDPA-vjp** (nc 2.16×/2.21× @qL4096/8192; causal 2.77×/3.05×) — full-backward, gold which-binary trace + fp32 oracle, M5/MLX-0.31.2/2026-06-19. Opt out: `MFA_DISABLE_V6_BACKWARD=1`. Locked by `test_backward_routing_snapshot.py`. |
+| **Backward D=64 (≥2048, fp16/bf16) — split-V6 NAX-direct, DEFAULT-ON** | `mx.vjp(SDPA)` | **split-V6 (default)** | **VERIFIED 2.16–3.05× vs SDPA-vjp** (nc 2.16×/2.21× @qL4096/8192; causal 2.77×/3.05×) — full-backward, gold which-binary trace + fp32 oracle, M5/macOS 26.6/MLX-0.31.2/2026-06-19. Opt out: `MFA_DISABLE_V6_BACKWARD=1`. Locked by `test_backward_routing_snapshot.py`. |
 | **Backward D=128 / D=64<2048 / other** | `mx.vjp(SDPA)` | **SDPA-vjp (default)** | D=128 split-V6 is opt-in only + SLOWER (0.54× nc / 0.57× causal) → correctly not default. Prior 1.91–2.00× / parity / 2.55–5.75× withdrawn as artifacts (superseded by the verified D=64 number above). |
 | Block-sparse / window | Production | Tile-skip, up to 21x speedup |
 | Softcap | Production | V2 tanh in log2 domain |

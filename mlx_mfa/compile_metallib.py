@@ -336,7 +336,20 @@ def _compile_source_to_metallib(source: str, output_path: str) -> bool:
                 check=True, capture_output=True, timeout=30,
             )
             return True
-        except Exception:
+        except subprocess.CalledProcessError as e:
+            # CC-26 (audit): a compile FAILURE was swallowed to a bare False with
+            # no diagnostic.  Surface the compiler stderr (loud) so it is not
+            # masked; the caller still tallies n_ok/total and the CLI exits
+            # non-zero (below) when any config fails.
+            import sys
+            err = (e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or ""))
+            print(f"[compile_metallib] COMPILE FAILED ({output_path}):\n{err.strip()}",
+                  file=sys.stderr)
+            return False
+        except Exception as e:
+            import sys
+            print(f"[compile_metallib] COMPILE ERROR ({output_path}): "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
             return False
 
 
@@ -361,4 +374,8 @@ if __name__ == "__main__":
         help="Recompile even if metallib already exists.",
     )
     args = parser.parse_args()
-    compile_metallib(output_dir=args.output_dir, force=args.force)
+    results = compile_metallib(output_dir=args.output_dir, force=args.force)
+    # CC-26 (audit): exit non-zero if any config failed to compile, so a build
+    # step invoking this can't silently treat a compile failure as success.
+    import sys
+    sys.exit(0 if all(results.values()) else 1)

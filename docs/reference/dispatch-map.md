@@ -72,7 +72,7 @@ fp16.** Per-path fingerprint:
 | Dense fwd D=128 (auto) | NAX, Δ=1.5e-5 vs SDPA (≠0) | fast-path (= fp16) |
 | Dense fwd D=64 (force/recompute) | NAX, Δ=1.5e-5 (≠0) | fast-path |
 | Dense backward **D=128** | SDPA-vjp (default; native D=128 bwd opt-in + slower) | by-design floor; symmetric |
-| Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, byteΔ>0 vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (1.4–2.7× SDPA-vjp; dQ tile tuned `BK 64→32`, Tier-1 #2) |
+| Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, byteΔ>0 vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (**2.16–3.05× vs SDPA-vjp at qL≥4096**, ~1.5–1.7× @qL2048; M5 Max / macOS 26.6 / MLX 0.31.2; dQ tile tuned `BK 64→32`, Tier-1 #2) |
 | Sparse fwd V2 | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 fix holds) |
 | Sparse backward hybrid (opt-in) | runs, finite grad | by-design SDPA-vjp; symmetric |
 | conv3d NAX (MPP-eligible) | `executed.conv3d_nax_forward++`, 0 fallback | fast-path (auto-hook) |
@@ -89,7 +89,7 @@ a downstream C++ gate) on any of these fails CI.
 | Tier | Dense forward kernel family | Notes |
 |---|---|---|
 | **M1–M4** | **standalone simdgroup STEEL** (V1/V2/V3/split-K/dsplit/flash_decode) | the validated dense tier — `m3_prefers_v1`, `v3_min_N`, RESULTS.md. UNTOUCHED by F-3. (V4/V5 retired from build — Lot-2.) |
-| **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for D=64 + the default (except D=64 causal-large-N → MFA primitive via the V3 cond-auto — see the dense-D64 rows above) | NAX/V6 = the M5+ tier (F-2). |
+| **M5+** | **NAX matmul2d** (`v6_nax_forward`) for D=128 `auto`; **Apple SDPA** for **all** D=64 dense `auto` (incl. causal-large-N: `should_use_mfa(D=64, has_nax=True)`=False → byteΔ=0; the V3 cond-auto MFA-primitive path is M3/M4-tier only — see the dense-D64 rows above) | NAX/V6 = the M5+ tier (F-2). |
 | any (expert) | `backend="mfa"` → simdgroup STEEL | **legacy-reachable, loses on M5** (SDPA 2–4× faster). |
 
 **V6 is now PURE NAX (F-3).** The simdgroup-*within*-V6 fallback (the old `MFAV6Forward`

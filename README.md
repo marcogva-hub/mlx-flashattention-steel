@@ -20,11 +20,12 @@ to SDPA) — Apple's baselines got faster. Ratios vary with qL and thermal
 state; see `.doc-archive/docs/v50/campaign-2026-06/phase3/sprint-III-11-report.md` for
 the full table + methodology.
 
-- V6NAX NAX backward D=64 default-on, **faster than SDPA-vjp** but **strongly
-  qL-dependent on 26.6**: ~break-even at qL=2048, ~1.4–1.5× at qL=4096,
-  **~2.1–2.5× faster at qL=8192** (e.g. causal qL=8192 `~25 ms vs ~49 ms`;
-  causal and non-causal similar). D=128 backward is now **≈ break-even** on
-  26.6. Forward stays bit-identical to Apple SDPA.
+- V6NAX NAX backward **D=64 default-on**, **faster than SDPA-vjp**, qL-dependent:
+  **~1.5–1.7× @qL2048, 2.2–2.8× @qL4096, 2.3–3.0× @qL8192** (causal ≳ non-causal).
+  Canonical headline: **2.16–3.05× vs SDPA-vjp at qL≥4096** (M5 Max / macOS 26.6 /
+  MLX 0.31.2; controlled B=1 H=4 median-30, fresh-input, engagement-proven
+  `v6_split_backward` trace + fp32 oracle; ±30–40% run-to-run under thermal load).
+  D=128 backward is **≈ break-even** on 26.6. Forward stays bit-identical to Apple SDPA.
 - conv3d via the Apple MPP convolution2d primitive, default-on — fp16
   **~1.2–1.35× vs the legacy path** on 26.6 (T8/T16 64×64 C128); bf16
   **≈ parity** vs `mx.conv_general` (the legacy im2col path is fp16-only,
@@ -61,8 +62,10 @@ eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
 > silent-corruption bug (`C_in` not a multiple of 32), fixed in v2.52.1. Any release
 > **≥ v2.52.1** is clear of those; always prefer the latest. See `CHANGELOG.md`.
 
-New opt-in APIs: cider-style GQA-decode (`mlx_mfa.gqa_decode_cider`),
-hook telemetry (`mlx_mfa.get_hook_stats()`), the `mx.conv3d` auto-hook.
+New opt-in surface: hook telemetry `mlx_mfa.get_hook_stats()` (public, in `__all__`)
+and the `mx.conv3d` auto-hook. The cider-style GQA-decode prototype is reachable
+only as a **direct dotted-path import** (`from mlx_mfa.gqa_decode_cider import …`) —
+it is **not** in the public `mlx_mfa.__all__` and not auto-routed (dormant; see CC-22).
 Full campaign record: `CHANGELOG.md [2.52.0]` and
 `.doc-archive/docs/v50/campaign-2026-06/` (`phase3/PHASE-III-CLOSE.md`).
 
@@ -358,9 +361,11 @@ The audit's Phase F routing rebuild fixed the two largest sparse-dispatch gotcha
   matmul2d** forward (`v6_nax_forward`), which is **parity-to-modest-win vs Apple SDPA at
   D=128** (0.89–1.03× across N, never loses; F-2 Change 3). Works at **all scales** (the
   scale is plumbed through the binding); backward is SDPA-vjp (bit-exact). **D=64** routes
-  to SDPA (the dense-NAX decision: NAX matmul2d loses 1.17–1.22× there) **except causal
-  & B·H ≥ 4 & N ≥ 4096, where it pre-empts to the MFA primitive** (V3 conditional-auto);
-  cross-attention (N≠S), windowed, and biased shapes also stay SDPA. Opt out of the dense
+  to SDPA (the dense-NAX decision: NAX matmul2d loses 1.17–1.22× there) **on M5/NAX
+  for ALL D=64 dense `auto`** (`should_use_mfa(D=64, has_nax=True)`=False → byteΔ=0 vs
+  SDPA, verified) — the "causal & B·H ≥ 4 & N ≥ 4096 → MFA primitive (V3 conditional-auto)"
+  pre-emption is **M3/M4-tier only** (`has_nax=False`); cross-attention (N≠S), windowed,
+  and biased shapes also stay SDPA. Opt out of the dense
   NAX route with `MFA_DISABLE_V6_DENSE=1`. **`backend="mfa"` (simdgroup STEEL) remains
   legacy on M5** — Apple SDPA is 2–4× faster than the *simdgroup* kernels (a different
   family from the NAX matmul2d forward). The remaining ~5–7pp ALU gap to a larger D=128 dense

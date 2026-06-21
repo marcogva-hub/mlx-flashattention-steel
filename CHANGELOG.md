@@ -64,6 +64,12 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   key desync fail CI.
 
 ### Fixed
+- **Degenerate-input / misuse guards (audit Tier-3, low-severity).** `flash_attention` with empty KV
+  (k/v seq-len 0) raised NaN silently → now returns an empty result for zero queries and a clear
+  `ValueError` for zero keys (CC-10); a malformed `window_size` (a bare int or wrong-length tuple) was
+  silently mis-parsed → now a clear `ValueError` (CC-11); `flash_attention_sparse(block_mask=None)`
+  raised a cryptic `AttributeError` → now a clear `ValueError` (CC-12). Locked by
+  `tests/test_tier3_hygiene_audit.py`.
 - **RC-A (CRITICAL, default-path) — causal attention silently wrong for `N<S` with `qL_off % 32 ≠ 0`.**
   The STEEL causal mask zone gated on `kb >= kb_lim − (BQ+BK−1)/BK`, which (integer division → 1)
   masked only the **final** K-tile. Correct when the causal diagonal sits at the sequence tail
@@ -125,6 +131,35 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   **sdist-only** (compile-at-install; no ABI-pinned wheel).
 
 ### Changed
+- **Docs / knobs / hygiene + operational (audit Tier-3/4 — no kernel-compute or valid-input
+  dispatch change).**
+  - *Perf-claim reconciliation (CC-19/CC-20):* the D=64 split-V6 backward speedup is now stated as a
+    single canonical number with full provenance at every site (README, TRAINING_QUICKSTART,
+    dispatch-map, HARDWARE_SUPPORT/API_MANUAL/FEATURE_COVERAGE/PERF_CLAIMS): **2.16–3.05× vs SDPA-vjp
+    at qL≥4096** (~1.5–1.7× @qL2048), **re-measured on this M5** (B=1 H=4 median-30, fresh-input,
+    engagement-proven `v6_split_backward` trace: 2.18×/2.26× nc, 2.80×/3.03× causal @qL4096/8192) and
+    stamped **M5 Max / macOS 26.6 / MLX 0.31.2**. The prior README "~1.4–1.5× @qL4096" / "1.7–2.7×"
+    inconsistencies are removed.
+  - *Dispatch-map self-consistency (CX-08):* three sections disagreed on M5 D=64 causal large-N; all
+    now state the runtime truth — **M5/NAX routes all D=64 dense `auto` to SDPA** (`should_use_mfa(D=64,
+    has_nax=True)`=False → byteΔ=0, verified); the V3-cond-auto MFA-primitive path is **M3/M4-tier only**.
+  - *Knob-registry integrity (CC-21/CX-09/CC-22/CC-23):* purged 41 generated-Metal `#define` tile
+    params + C++ header guards + C macros (e.g. `MFA_BD`/`MFA_BQ`/`MFA_DTYPE`/`*_HPP_`) from
+    `KNOWN_KNOBS` — they are not env vars, so a bogus `MFA_BD=999` now warns under `MFA_KNOB_STRICT=1`
+    (`MFA_NO_PADDING` correctly retained — it IS a C++ `env_bool` knob); moved 4 ghost knobs
+    (`MFA_V6`/`MFA_GQA_DECODE_CIDER`/`MFA_TOPK_STREAM_V5`/`MFA_V6BWD`, never read) to `REMOVED_KNOBS`
+    and corrected their misleading "flag-gated" docstrings; documented 4 live routing knobs
+    (`MFA_DISABLE_V6_DENSE`, `MFA_V6_DENSE_MIN_N`, `MFA_NAX_SPARSE_DENSITY_CEILING`, `MFA_HOOK_VERBOSE`)
+    in ENV_VARS.md.
+  - *Hygiene:* `compile_metallib` now surfaces the compiler stderr on a compile failure and the CLI
+    exits non-zero (CC-26, was a silent `False`); README labels the gqa-decode/topk-stream prototypes
+    as dotted-path-only, not public `__all__` APIs (CC-27); 11 previously-untested public `__all__`
+    exports gained an import/kind contract test (CC-18, kept in `__all__`).
+  - *Operational / security (Tier-4):* the stray unencrypted SSH key `mfa-steel`(`.pub`) was **moved
+    out of the working tree to `~/.ssh/`** (was gitignored/not shipped, but a standing local exposure;
+    nothing in the repo referenced its in-tree path) (CC-13); the stale local `dist/mlx_mfa-2.61.0.tar.gz`
+    was deleted (publish rebuilds fresh — removes the `twine upload dist/*` footgun) (CC-14); `AGENTS.md`
+    stays gitignored (Codex-side mirror; protocol drift tracked in the cross-tool contract) (CC-15).
 - **Test-engagement & CI hardening (audit Tier-2, anti-recidive — no user-facing API change).**
   The decode/cross-attn correctness bug (RC-A/RC-B) stayed hidden because its tests ran SDPA on M5
   (byteΔ=0), not the intended kernel.  This tier closes that vacuous-test class:

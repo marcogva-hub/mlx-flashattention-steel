@@ -26,7 +26,7 @@ SDPA-vjp). The full-native opt-in makes all three native.
   (**AUTO (`MFA_V6_BWD_KERNEL=auto`): split for every D** — D∈{64,128}; fused is opt-in via `=fused` only.
   Corrected H-03/M5: `auto` no longer picks fused at D=64 — the fused-BK16 D=64 edge was withdrawn (fused is
   now only parity-with-split, not faster); fused still regresses 3-7% at D=128. D=64 backward default = split-V6,
-  **2.16–3.05× vs SDPA-vjp** (M5 / MLX 0.31.2). [D — source]
+  **2.16–3.05× vs SDPA-vjp** (M5 Max / macOS 26.6 / MLX 0.31.2). [D — source]
 - **sparse**: `v6_nax_backward_query_sparse_raw` (dQ), `v6_nax_backward_dv_sparse_raw` (dV),
   `v6_nax_backward_fused_dkdv_sparse_raw` / `v6_nax_backward_dk_sparse_raw` (dK). [V — source]
 - All are NAX `matmul2d` cooperative-tensor; recompute O/L from the saved sparse-LSE (consistent

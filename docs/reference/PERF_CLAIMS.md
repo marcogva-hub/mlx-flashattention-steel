@@ -131,7 +131,7 @@ vjp oracle (Lesson #11). Both fp16 and bf16 (the VSR training dtype); routing co
   **16.3→14.3 ms**; fp16 N=2048 non-causal **1.87→1.34 ms**; bf16 N=4096 causal **4.46→4.01 ms**.
   dQ D=64 is now `32/32/2` (= the forward's tuned D=64 config). The D=64 native backward already
   beats Apple SDPA-vjp (this branch's tuning-block sub-measurement showed 1.4–2.7×; the **canonical
-  live range is 2.16–3.05× — split-V6 vs SDPA-vjp, M5 / MLX 0.31.2**, which subsumes this) at
+  live range is 2.16–3.05× — split-V6 vs SDPA-vjp, M5 Max / macOS 26.6 / MLX 0.31.2**, which subsumes this) at
   (N=8192 fp16 causal 14.3 vs 43.3 ms). Reproduce:
   `mx.grad(flash_attention(q,k,v,causal=...))` at D=64, N≥2048 (default-on). Lock:
   `tests/test_nax_backward_tuned_defaults_lock.py` (dQ tile fingerprint BK=32 + fp32-oracle grad).
@@ -156,7 +156,7 @@ kernel default `BK` lowered 32 → 16 in Sprint v2.39.1 investigation.
 > 1.72×, and the "1.01-1.12× fused vs split" edge) were measured on a SINCE-CORRECTED config and are
 > **no longer active perf claims**. `MFA_V6_BWD_KERNEL=auto` resolves to **split for every D** (fused
 > is opt-in via `=fused`), and on re-measurement fused is only **parity-with-split** at D=64 (no longer
-> faster). The canonical LIVE D=64-backward claim is **2.16–3.05× (split-V6 vs SDPA-vjp, M5 / MLX 0.31.2)**
+> faster). The canonical LIVE D=64-backward claim is **2.16–3.05× (split-V6 vs SDPA-vjp, M5 Max / macOS 26.6 / MLX 0.31.2)**
 > — see the `ii12_*` rows and the dQ/dV/dK tuning block above. Rows retained for provenance only.
 
 | Claim ID | Version intro | Description | Reproduction |

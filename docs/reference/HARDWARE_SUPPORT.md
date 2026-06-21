@@ -23,8 +23,10 @@ Prompt 5b Sections A/C/D)
 > v2.50-era narrative and lags the current dispatch. The verified current-state facts
 > are: the dense **D=128** `backend="auto"` route is **NAX matmul2d (`v6_nax_forward`)**
 > for **N≥2048** and Apple SDPA for N<2048 (`MFA_V6_DENSE_MIN_N`, default 2048); dense
-> **D=64** stays SDPA **except** causal & B·H≥4 & N≥4096 → MFA primitive (V3 cond-auto,
-> V3 itself dormant on M5). **V4/V5 STEEL forwards were removed from the build (Lot-2);
+> **D=64** stays **SDPA on M5/NAX** for all dense `auto` (`should_use_mfa(D=64,
+> has_nax=True)` returns False → byteΔ=0 vs SDPA, verified). The "causal & B·H≥4 &
+> N≥4096 → MFA primitive (V3 cond-auto)" path is **M3/M4-tier only** (`has_nax=False`);
+> V3 is dormant on M5. **V4/V5 STEEL forwards were removed from the build (Lot-2);
 > routed STEEL forwards are V1/V2/V3/V6_NAX only.** Where rows below say "STEEL V2 (auto)"
 > for dense D=64/128 on M5+, read them as the legacy `backend="mfa"` expert path — the
 > default `auto` path is NAX/SDPA per `dispatch-map.md`. The M5 NA fp16/bf16 matmul peak
@@ -84,9 +86,9 @@ the Prompt 4 multi-gate causal fix.
 
 | Function | M1+ path | M3+ path | M5+ path | M5+ status |
 |---|---|---|---|---|
-| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **split-V6 NAX-direct (DEFAULT-ON)** | **(A)** **VERIFIED 2.16× @qL4096 / 2.21× @qL8192 vs SDPA-vjp** (M5/MLX-0.31.2/2026-06-19, full-backward, gold which-binary + fp32 oracle; opt out `MFA_DISABLE_V6_BACKWARD=1`). Prior 2.00/1.95/1.72×, 2.55/3.76× were artifacts — superseded. |
+| Backward dense D=64 non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **split-V6 NAX-direct (DEFAULT-ON)** | **(A)** **VERIFIED 2.16× @qL4096 / 2.21× @qL8192 vs SDPA-vjp** (M5/macOS 26.6/MLX-0.31.2/2026-06-19, full-backward, gold which-binary + fp32 oracle; opt out `MFA_DISABLE_V6_BACKWARD=1`). Prior 2.00/1.95/1.72×, 2.55/3.76× were artifacts — superseded. |
 | Backward dense **D=128** non-causal qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct split kernels** (env-gated, post-Prompt 5b Section D) | **(A)** parity coverage extension; no speedup |
-| Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **split-V6 NAX-direct (DEFAULT-ON)** | **(A)** **VERIFIED 2.77× @qL4096 / 3.05× @qL8192 vs SDPA-vjp** (M5/MLX-0.31.2/2026-06-19, full-backward, gold which-binary + fp32 oracle). The prior 4.88×/5.75× was a dQ-only artifact — superseded by this full-backward number. |
+| Backward causal **D=64** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **split-V6 NAX-direct (DEFAULT-ON)** | **(A)** **VERIFIED 2.77× @qL4096 / 3.05× @qL8192 vs SDPA-vjp** (M5/macOS 26.6/MLX-0.31.2/2026-06-19, full-backward, gold which-binary + fp32 oracle). The prior 4.88×/5.75× was a dQ-only artifact — superseded by this full-backward number. |
 | Backward causal **D=128** qL≥2048 | `mx.vjp(SDPA)` | `mx.vjp(SDPA)` | **V6NAX NAX-direct split kernels** (env-gated, post-Prompt 5b Section D + Prompt 4 multi-gate fix) | **(A)** parity coverage extension |
 | Backward block-sparse D=64/D=128 (symmetric mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | **Prompt 5c hybrid orchestrator** (NAX sparse forward + native sparse dV + SDPA-vjp dQ/dK).  4 native sparse kernels SHIPPED (Prompt 5d) but routed via opt-in `MFA_V6_BWD_SPARSE_NATIVE=1` only — empirical bench at VSR shape shows Apple SDPA NAX wins over V6NAX NAX backward (Pattern #6). | **(A)** correctness; production-optimal routing |
 | Backward block-sparse (asymmetric / 3-D/4-D mask) | `mx.vjp(SDPA-sparse)` | `mx.vjp(SDPA-sparse)` | `_sparse_nax_with_sdpa_vjp` wrapper (Section C) | **(A)** SDPA-vjp wins on M5+ per Pattern #6 |

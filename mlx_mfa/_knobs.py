@@ -29,24 +29,15 @@ class KnobDef:
 # Complete enumeration (grep of mlx_mfa/ + csrc/, master 7831544). Names only —
 # reproducing today's reads exactly; this list is the typo/ghost-knob oracle.
 KNOWN_KNOBS: frozenset[str] = frozenset({
-    "MFA_BD",
-    "MFA_BD_128",
-    "MFA_BD_64",
-    "MFA_BD_HALF",
-    "MFA_BK",
-    "MFA_BK_128",
-    "MFA_BK_64",
-    "MFA_BQ",
-    "MFA_BQ_128",
-    "MFA_BQ_64",
-    "MFA_CHECK_ERROR",
-    "MFA_CODE_WRITER_HPP_",
+    # CX-09/CC-21 (audit): generated Metal `#define` tile params (MFA_BD/BK/BQ/
+    # TD/TK/TQ/TGP/WM/WN/DTYPE/GQA/PAD/ROWS_PT/D_SPLITS/DIRECT_READS/NO_PADDING),
+    # C++ header guards (*_HPP_/_HPP), and C macros (MFA_PRECONDITION/MFA_CHECK_ERROR)
+    # were PURGED — they are NOT env vars (zero getenv reads), so a bogus tile macro
+    # like MFA_BD=999 must NOT pass validate_env. Only real env knobs remain.
     "MFA_CONV3D_MPP",
     "MFA_CONV_NAX_NO_FAST_PATH",
     "MFA_CONV_NAX_USE_PYTHON_LEGACY",
     "MFA_DEBUG_SHADERS",
-    "MFA_DEVICE_PROPERTIES_HPP_",
-    "MFA_DIRECT_READS",
     "MFA_DISABLE_ASYNC",
     "MFA_DISABLE_AUTO_HOOKS",
     "MFA_DISABLE_CONV3D_MPP",
@@ -61,8 +52,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V34_BACKWARD",
     "MFA_DISABLE_V6_BACKWARD",
     "MFA_DISABLE_V6_DENSE",
-    "MFA_DTYPE",
-    "MFA_D_SPLITS",
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",
     "MFA_ENABLE_V34_D128",
@@ -75,36 +64,15 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_FORCE_SDPA_ROUTE",
     "MFA_FORCE_SPLITK",
     "MFA_FORCE_V2",
-    "MFA_GQA",
-    "MFA_GQA_DECODE_CIDER",
-    "MFA_GQA_FACTOR",
     "MFA_HOOK_VERBOSE",
     "MFA_IR_INVESTIGATE",
     "MFA_LCSA_KERNEL_VERSION",
     "MFA_NAX_SPARSE_DENSITY_CEILING",
-    "MFA_NO_PADDING",
-    "MFA_PAD",
-    "MFA_PRECONDITION",
+    "MFA_NO_PADDING",  # real C++ shader-generator knob (env_bool, csrc/mfa_env.hpp)
     "MFA_REQUIRE_MSL4",
-    "MFA_ROWS_PT",
     "MFA_SPLITK_MAX_N_D",
     "MFA_SUPPORTED_DTYPES",
     "MFA_SUPPORTED_HDIMS",
-    "MFA_TD",
-    "MFA_TD_128",
-    "MFA_TD_64",
-    "MFA_TD_HALF",
-    "MFA_TGP",
-    "MFA_TGP_128",
-    "MFA_TGP_64",
-    "MFA_TGP_SIZE",
-    "MFA_TK",
-    "MFA_TK_128",
-    "MFA_TK_64",
-    "MFA_TOPK_STREAM_V5",
-    "MFA_TQ",
-    "MFA_TQ_128",
-    "MFA_TQ_64",
     "MFA_V2_BD_HALF_D512",
     "MFA_V2_BQ64",
     "MFA_V2_FORCE_BK",
@@ -137,8 +105,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V3_FORCE_BK_",
     "MFA_V3_FORCE_BK_D128",
     "MFA_V3_FORCE_BK_D64",
-    "MFA_V6",
-    "MFA_V6BWD",
     "MFA_V6BWDF_BK",
     "MFA_V6BWDF_BQ",
     "MFA_V6BWDF_DUMP_PATH",
@@ -184,10 +150,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V6_V34_BK",
     "MFA_V6_V34_BQ",
     "MFA_V6_V34_WM",
-    "MFA_WM",
-    "MFA_WM_128",
-    "MFA_WM_64",
-    "MFA_WN",
     # H4 FIX (audit, 2026-06-21): these are LIVE (read in attention.py:266/269 +
     # _knobs.py:229) but were absent — strict-validate false-flagged them, incl.
     # the knob that enables validation.
@@ -196,8 +158,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_SILENCE_NAX_WARNING",
     "MLX_MFA_DISPATCH_TABLE",
     "MLX_MFA_HOOK_TELEMETRY",
-    "MLX_MFA_V6_NAX_NAATTENTIONKERNELDESCRIPTOR_HPP",
-    "MLX_MFA_V6_NAX_NAATTENTIONKERNEL_HPP",
     "MLX_MFA_VERBOSE_DISPATCH",
 })
 
@@ -219,6 +179,12 @@ REMOVED_KNOBS: frozenset[str] = frozenset({
     "MFA_D_CHUNKS",          # never read
     "MFA_FORCE_NATIVE_BWD",  # removed (kernel retained) — CLAUDE.md status
     "MFA_TOPK_BISECT",       # never read
+    # CC-22 (audit): ghost knobs — advertised (some with docstrings implying they
+    # work) but with ZERO read site anywhere. Moved here so they warn "removed".
+    "MFA_V6",  # ghost — registered/advertised but never read (CC-22)
+    "MFA_GQA_DECODE_CIDER",  # ghost — registered/advertised but never read (CC-22)
+    "MFA_TOPK_STREAM_V5",  # ghost — registered/advertised but never read (CC-22)
+    "MFA_V6BWD",  # ghost — registered/advertised but never read (CC-22)
 })
 
 

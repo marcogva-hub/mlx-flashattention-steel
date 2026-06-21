@@ -31,8 +31,10 @@ PASS-2 (the II-3 Phase-A refinement that revived this design): the
 indices build the additive -inf bias via mx.put_along_axis scatter,
 then Apple SDPA NAX runs unchanged — no filtered-SDPA kernel needed.
 
-Gated behind MFA_TOPK_STREAM_V5=1 (NOT default until it beats the
-Architecture-B bisection path on the bench, per Pattern #6).
+NOTE (CC-22 audit): the `MFA_TOPK_STREAM_V5` env flag is NOT wired up (no read
+site) — it is a no-op / dormant gate, listed in `_knobs.REMOVED_KNOBS`.  This
+module is reachable only by direct import (NOT auto-routed), pending a win over
+the Architecture-B bisection path on the bench (per Pattern #6).
 
 Kernel geometry (per metal-kernel-dev review, on session record):
   grid TG = (ceil(N/BQ), H, B), 128 threads = 4 SGs x 32 lanes

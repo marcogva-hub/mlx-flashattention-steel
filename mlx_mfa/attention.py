@@ -599,6 +599,25 @@ def flash_attention(
             f" Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D."
         )
 
+    # CC-11 (audit): validate window_size shape — a malformed value (int, or a
+    # tuple of the wrong length) was silently mis-parsed (only [0]/[1] consumed;
+    # extra elements dropped; a bare int raised a cryptic TypeError downstream).
+    if window_size is not None:
+        if not isinstance(window_size, (tuple, list)) or len(window_size) != 2:
+            raise ValueError(
+                "flash_attention: window_size must be a length-2 tuple/list "
+                f"(left, right), got {window_size!r}.")
+
+    # CC-10 (audit): degenerate sequence lengths produced 0/0 = NaN silently.
+    # Zero queries → a well-defined empty output; zero keys → undefined (cannot
+    # attend to nothing) → clear error instead of NaN.
+    if q.shape[2] == 0:
+        return q  # [B, H, 0, D] — no queries, empty result (same dtype/shape)
+    if k.shape[2] == 0:
+        raise ValueError(
+            "flash_attention: empty KV (k/v sequence length 0) is undefined — "
+            "attention cannot attend to zero keys. Got k_seq=0.")
+
     q_dim = q.shape[-1]
     k_dim = k.shape[-1]
     v_dim = v.shape[-1]
@@ -3349,6 +3368,13 @@ def flash_attention_sparse(
             f"flash_attention_sparse: head_dim must be in {_MFA_SUPPORTED_HDIMS}, "
             f"got {D}"
         )
+    # CC-12 (audit): block_mask=None raised a cryptic AttributeError
+    # ('NoneType' has no attribute 'ndim'); give a clear contract error.
+    if block_mask is None:
+        raise ValueError(
+            "flash_attention_sparse: block_mask is required (a [NQ,NK] / [H,NQ,NK] / "
+            "[B,H,NQ,NK] boolean tile mask); got None. For dense attention use "
+            "flash_attention().")
     if block_mask.ndim not in (2, 3, 4):
         raise ValueError(
             "block_mask must be 2-D [NQ, NK], 3-D [H, NQ, NK], or 4-D [B, H, NQ, NK]; "
