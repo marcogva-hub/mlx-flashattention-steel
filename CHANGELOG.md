@@ -2,7 +2,27 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased]
+## [2.61.0] — 2026-06-21 — maintainability + cross-audit remediation
+
+> **Version pending confirmation at tag time.** Proposed as the single combined cut over the last
+> published release **2.60.1**: semver-minor (new public API `has_nax()` family + bug fixes + one
+> behaviour change). `2.62.0` is a defensible alternative if a fresh minor is preferred to signal the
+> post-stamp remediation — Marco's call at tag.
+
+Consolidates the held maintainability stacks **and** the CC+Codex cross-audit remediation. Valid-input
+dispatch on M5 is byte-identical to 2.60.1 **except**: (a) the windowed split-K calibration fix (M-02 —
+now correct where it was silently wrong) and (b) the new input-validation rejections (Breaking/Behavior
+below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — note the sparse-backward fix
+(below) is M5-validated only (native path is M1–M4, skipped on M5).
+
+### Breaking / Behavior
+- **Input validation now raises `ValueError`** (previously silently-wrong / undefined):
+  - `flash_attention` (incl. `backend="mfa"`) rejects mismatched **Q/K/V shapes** — Q/K/V must share the
+    batch dim, and K/V must share kv-sequence-length and kv-heads (see C-01 under Fixed).
+  - `dropout_p` outside `[0, 1)` (or non-finite) is rejected at the public boundary.
+  - An unknown `MFA_V6_BWD_KERNEL` value now raises instead of silently selecting `split`.
+  Callers passing malformed inputs that previously appeared to "work" (silently wrong) now get a clear,
+  actionable error.
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).
@@ -16,37 +36,50 @@ All notable changes to mlx-mfa are documented here.
   - opt-in strict mode `MFA_REQUIRE_NAX=1` (or `has_nax(strict=True)`) **raises** instead of falling back.
   This closes the silent value-failure that caused multi-session phantom benches (a 3.14 venv importing
   a 3.11-built `_ext`). New `CONTRIBUTING.md` documents the `_ext`/Python ABI contract; README documents
-  user-facing verification. The dev-only bench helper's `require=` now consumes `has_nax()` (DRY).
+  user-facing verification.
+- **`mlx_mfa/_knobs.py`** — central env-knob registry + `validate_env()` typo/ghost-knob check (off by
+  default, `MFA_KNOB_STRICT=1` to enable; removed knobs warn "removed — no effect"). Zero behavior change.
+- **`mlx_mfa/_dispatch_trace.py`** — test-only attention-dispatch telemetry (zero prod overhead when
+  off) + routing-equivalence golden (the safety net for guarded routing refactors).
+- **Doc-accuracy / dispatch / fingerprint guards** so stale docs, knob-registry drift, and Python↔C++
+  key desync fail CI.
 
-## [2.61.0] — 2026-06-19 — maintainability release: variant retire, routing-equivalence net, dispatch refactor, doc-accuracy audit
-
-Consolidates four held maintainability stacks. **No production routing or kernel-math change** — the
-dispatch decisions are byte-identical to 2.60.1 on M5 (verified by the new routing-equivalence snapshot).
+### Fixed
+- **C-01 (CRITICAL) — forced `backend="mfa"` no longer reads out of bounds on mismatched Q/K/V shapes.**
+  The kernel derived `B` from Q but all K/V strides from K, so `Bq>Bk` / `Sk≠Sv` / `Hk≠Hv` read past the
+  K/V allocation → silent-wrong finite output (reproduced: `out[1]` off ~1.3 vs the correct broadcast).
+  Now rejected at the public boundary **and** the direct C++ binding (defense-in-depth).
+- **M-02 — split-K calibration key collision (sliding window 256 vs 512).** The calibration key serialized
+  the window as a single bit, so distinct windows collided on one key and `setdefault` silently dropped
+  one window's measurement — mis-applying the other window's split-K threshold. The key now carries the
+  window **size**; the on-disk dispatch table is **schema-versioned (v2)**.
+  **⚠ MIGRATION:** on first use after upgrade, existing windowed split-K calibration in
+  `~/.mlx_mfa/dispatch_table.json` is **invalidated and lazily re-calibrated** (the old size-less entries
+  cannot be recovered); a one-time warning names the remedy. **Run
+  `calibrate_dispatch(calibrate_splitk=True)`** to repopulate the now size-distinct entries. Non-windowed
+  calibration is unaffected. (Other machines, incl. an M1 when available, re-calibrate on first use.)
+- **Documentation accuracy pass** (paragraph-level vs source): version → 2.61.0 everywhere, V4/V5 marked
+  retired, M5 NA fp16/bf16 peak corrected (~62 TFLOPS), several API_MANUAL signatures corrected against
+  `inspect.signature` (incl. `quantize_model` arg order), broken SERVING_GUIDE examples fixed, the
+  `D=64 → SDPA` routing nuance qualified, perf-claim/dispatch-map drift reconciled.
+- **Cross-audit (CC + Codex) hardening** — dev-only/docs/test hygiene, no shipped runtime change beyond
+  the validation rejections above: de-vacuified family/dispatch locks (unit-scale + fp32 oracle), retired
+  vacuous V4/V5 + sparse-backward tests, conv-hook now warns on *unexpected* fallback in every telemetry
+  mode, CI made deterministic (true no-`_ext` job + fail-on-collection-collapse) with an M5/NAX pre-tag
+  gate, dev-only benchmark scripts gated against the phantom-bench class, and the publish workflow is
+  **sdist-only** (compile-at-install; no ABI-pinned wheel).
 
 ### Changed
 - **V4/V5 STEEL forward variants retired from the build** (experimental, opt-in-only, never auto-routed).
-  V5 was M5-validated before removal and showed no advantage (3.1–4.4× slower than the routed NAX/SDPA
-  default across its envelope). Compiled + routed STEEL forwards are now **V1 / V2 / V3 / V6_NAX**. The
-  `MFA_ENABLE_V4` / `MFA_ENABLE_V5` / `MFA_V5_FORCE_*` env knobs no longer exist. Source recoverable via
-  the `archive/v4-v5-prototypes` tag. (−1615 LOC.)
+  V5 was M5-validated before removal and showed no advantage. Compiled + routed STEEL forwards are now
+  **V1 / V2 / V3 / V6_NAX**. The `MFA_ENABLE_V4` / `MFA_ENABLE_V5` / `MFA_V5_FORCE_*` env knobs no longer
+  exist. Source recoverable via the `archive/v4-v5-prototypes` tag. (−1615 LOC.)
 - **Dispatch-tree refactor (zero routing change):** the dense backend choice was extracted to a pure
   `_select_dense_backend()` and `flash_attention_varlen` setup to `_varlen_setup()` — structure only,
   every gate moved verbatim with its exact short-circuit order.
-
-### Added
-- **`mlx_mfa/_knobs.py`** — central env-knob registry (169 knobs) + `validate_env()` typo/ghost-knob
-  check (off by default, `MFA_KNOB_STRICT=1` to enable). Zero behavior change.
-- **`mlx_mfa/_dispatch_trace.py`** — test-only attention-dispatch telemetry (zero prod overhead when
-  off) + `tests/test_routing_equivalence_snapshot.py` routing-equivalence golden (the safety net for
-  guarded routing refactors).
-- **Doc-accuracy guards** (`tests/test_doc_accuracy_guards.py`) — version / knob-registry / variant
-  consistency tests so stale docs fail CI.
-
-### Fixed
-- Documentation accuracy pass (paragraph-level, claim-by-claim vs source): version → 2.61.0 everywhere,
-  V4/V5 marked retired, M5 NA fp16/bf16 peak corrected (~62 TFLOPS, was 51.8), several API_MANUAL
-  signatures corrected against `inspect.signature`, two broken SERVING_GUIDE examples fixed, `D=64 →
-  SDPA` routing nuance qualified (causal large-N pre-empts to the MFA primitive).
+- **Dev hygiene:** the two confusingly-named V6-NAX probe sources were renamed to distinct descriptive
+  names (`v6_nax_toolchain_probe` / `v6_nax_primitives_probe`); both stay dev-only behind
+  `-DMFA_BUILD_PROBES=ON` (default OFF, not shipped).
 
 ## [2.60.1] — 2026-06-19 — conv-hook regression fix: fold in conv3d-NAX causal/per-axis pad
 

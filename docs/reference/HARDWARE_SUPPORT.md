@@ -10,6 +10,15 @@ which-kernel-runs ground truth. This matrix is the human-readable companion.
 Sprint 4 V6NAX backward causal, Sprint B v2.40.0-internal D=128 split,
 Prompt 5b Sections A/C/D)
 
+> **Hardware validation status (this release):** validated on **Apple M5 Max**
+> (the primary development target; NAX is live, `has_nax()` True). **M1-Max
+> validation is pending hardware availability** and will follow when the machine
+> is back. **Caveat — the sparse-backward fix (audit T2-3/T2-4) is M5-validated
+> ONLY:** its native STEEL path is M1–M4-only, so on M5 those correctness cells
+> **skip** (the kernel routes to SDPA-vjp); the native sparse-backward path will
+> be verified on M1 when available. All other paths in this release are exercised
+> on M5.
+
 > **2.61.0 staleness note (docs audit 2026-06-19):** much of the prose below is the
 > v2.50-era narrative and lags the current dispatch. The verified current-state facts
 > are: the dense **D=128** `backend="auto"` route is **NAX matmul2d (`v6_nax_forward`)**

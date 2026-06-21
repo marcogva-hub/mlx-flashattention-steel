@@ -163,8 +163,8 @@ set(MFA_SOURCES
 # the matching bindings in bindings.cpp compile in lockstep.
 if(MFA_BUILD_PROBES)
   list(APPEND MFA_SOURCES
-    csrc/v6_nax_probe.cpp
-    csrc/v6nax_probe.cpp
+    csrc/v6_nax_toolchain_probe.cpp    # was v6_nax_probe.cpp (L4 rename): MSL4+MPP toolchain bring-up + DT-port compile
+    csrc/v6_nax_primitives_probe.cpp   # was v6nax_probe.cpp  (L4 rename): NAX-direct (nax.h-inline) source-gen
     csrc/mpp_int8_bench.mm
   )
 endif()

@@ -756,7 +756,7 @@ public:
       // F-3: V6 forward is PURE NAX — always the matmul2d kernel (no FCs;
       // params via struct buffer).  The simdgroup `v6_nax_compile_with_constants`
       // fallback is removed (broken diverged duplicate; that compile helper is
-      // retained only for the diagnostic probe in v6_nax_probe.cpp).
+      // retained only for the diagnostic probe in v6_nax_toolchain_probe.cpp).
       if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
         fprintf(stderr, "=== V6NAX source for BQ=%d BK=%d BD=%d WM=%d ===\n",
                 (int)v6nax_BQ, (int)v6nax_BK, (int)D, (int)v6nax_WM);

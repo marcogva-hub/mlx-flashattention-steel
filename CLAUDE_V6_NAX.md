@@ -880,6 +880,35 @@ the actual attribute name in `_auto_hooks.py` turned out to be
 clause, the skill would have produced a false BLOCKED that humans
 would have manually overridden — instead, the skill got fixed.
 
+### §AA.8 — Mandatory pre-tag M5/NAX validation gate (added 2026-06-21, audit H-05)
+
+In ADDITION to §AA.4, before any release tag CC MUST run the M5/NAX gate on a
+real M5+ host and it MUST exit 0:
+
+```
+.venv/bin/python scripts/release_m5_nax_gate.py
+```
+
+The gate (a) asserts `mlx_mfa.has_nax()` is **True** — i.e. the NAX fast path is
+genuinely LIVE, not a silent SDPA fallback (a release whose NAX perf/correctness
+claims were measured under a dead `_ext` is invalid); (b) captures which-binary
+**byteΔ fingerprints** for the key NAX-tier cells (dense D128→NAX, dense
+D64→SDPA, sparse-sym→NAX, V6-split backward engagement) and verifies each is as
+expected; (c) **archives** the stamped fingerprints to
+`devnotes/release-fingerprints/m5-nax-fingerprints-<version>.json` (off the
+tracked tree, per the journal policy) as the release record.
+
+**Tag-blocking:** if the gate is ABSENT for a release, or exits non-zero (NAX not
+live, or a fingerprint mismatch), the tag MUST NOT be created — exactly as a
+`BLOCKED` §AA.4 verdict halts the flow.
+
+**Why a required pre-release run and not CI:** the repo is PUBLIC, so a
+self-hosted M5 GitHub runner would expose the maintainer's machine (security
+risk).  GitHub-hosted macOS runners are M1, so NAX never engages there.  A
+mandatory pre-tag M5 run with archived fingerprints gives NAX coverage without
+exposing the host — this is the accepted resolution of the CI M5/NAX gap (audit
+H-05 option b).
+
 ---
 
 ### §AA.5 — Premise validation discipline (added 2026-05-14, Sprint 3+4 retrospective)

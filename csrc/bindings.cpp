@@ -18,7 +18,7 @@
 namespace mlx_mfa {
 // estimate_gpu_cores defined in mfa_steel_fwd_v2.cpp
 int estimate_gpu_cores(const std::string& device_name, int arch_gen);
-// V6 NAX bring-up probes (in csrc/v6_nax_probe.cpp / v6nax_probe.cpp /
+// V6 NAX bring-up probes (in csrc/v6_nax_toolchain_probe.cpp / v6_nax_primitives_probe.cpp /
 // mpp_int8_bench.mm) — M6 audit (2026-06-21): dev-only, compiled + bound ONLY
 // under -DMFA_BUILD_PROBES=ON (default OFF) so they don't ship in every _ext.
 #ifdef MFA_BUILD_PROBES
@@ -38,7 +38,7 @@ bool device_has_nax_bf16();
 std::string build_splitk_env_key(int D, bool causal, bool has_alibi,
                                  int window_left, int window_right);
 // Draw Things port: source generation + JIT compile — probe-only (in
-// csrc/v6_nax_probe.cpp), M6-gated like the rest.
+// csrc/v6_nax_toolchain_probe.cpp), M6-gated like the rest.
 #ifdef MFA_BUILD_PROBES
 std::string v6_nax_dt_generate_source(int head_dim, int Hq, int Hk, int dtype_code);
 std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);

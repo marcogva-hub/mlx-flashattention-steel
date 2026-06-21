@@ -6,7 +6,7 @@ params + dispatched one threadgroup → measured non-physical per-TG
 throughput. See docs/conv-nax/conv-nax-phase1_1-microbench-blocker.md.
 
 v2 follows the canonical pattern from
-csrc/mfa/v6_nax/NAAttentionKernel.cpp:775 and csrc/v6_nax_probe.cpp:67:
+csrc/mfa/v6_nax/NAAttentionKernel.cpp:775 and csrc/v6_nax_toolchain_probe.cpp:
 
   - Descriptor takes PER-TILE dims (M_tile, N_tile, K_tile)
   - Grid dispatches one threadgroup per output tile
@@ -69,7 +69,7 @@ def kernel_source(M, K, N, *, m_tile=M_TILE, n_tile=N_TILE, k_tile=K_TILE,
                   exec_sg=EXEC_SIMDGROUPS):
     """Per-shape MPP matmul2d wrapper.
 
-    Layout (matches v6_nax_probe.cpp:71-74):
+    Layout (matches v6_nax_toolchain_probe.cpp):
       A wrapped as tensor(dextents(K, M))  → A[k, m]
       B wrapped as tensor(dextents(N, K))  → B[n, k]
       C row-major (M, N)                   → C[m, n]

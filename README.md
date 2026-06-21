@@ -216,10 +216,9 @@ up doing it.
 At this point, despite the lower than hoped for results, I'm still pretty
 satisfied with the results in my M1 Max MBP.
 
-I'll be doing only reduced work on this project until June 2026, when I'll
-upgrade from my M1 Max to a M5 Max MBP, with which I expect to be able to
-obtain much better results, thanks to the improvements Apple has been adding
-to its silicon.
+Since early May 2026, all development and testing has run on my M5 Max, where
+the focus has been the NAX (Neural Accelerator) implementation that this
+hardware makes possible. My M1 Max now serves as a secondary validation target.
 
 v2.32.0 introduces a **strategic shift in dispatch on M5+ NAX hardware**.
 Apple's MLX 0.31.2 ships an excellent NAX-based SDPA kernel
@@ -319,7 +318,9 @@ on my work!
 
 ## Limitations
 
-- Main validation hardware is **Apple M1 Max**.
+- Primary development and validation hardware is **Apple M5 Max** (NAX focus);
+  **Apple M1 Max** is a secondary validation target. M1-Max validation of the
+  latest changes is pending hardware availability (see TESTING / CHANGELOG).
 - Broad parity claims against CUDA FlashAttention ecosystems are not made.
 - Some advanced paths are intentionally narrow, bridge-based, or explicit-only.
 - Hybrid offload is currently a **local offload milestone**, not remote/
