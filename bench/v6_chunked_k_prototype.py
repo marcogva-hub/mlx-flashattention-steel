@@ -10,6 +10,9 @@ benefit, no need for C++ infrastructure. Document and skip.
 import math, time, statistics
 import mlx.core as mx
 from mlx_mfa._ext import v6_nax_forward
+# audit H7/H-09 phantom-bench gate (run-at-import bench)
+from _bench_guard import require_accel_or_die as _phantom_gate
+_phantom_gate(__file__)
 
 # SeedVR2-large: the candidate shape (N=111375 > 65536 threshold)
 B, H, N, D = 1, 20, 111375, 128

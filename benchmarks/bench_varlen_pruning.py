@@ -160,6 +160,8 @@ SCENARIOS = [
 # ─── Main ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from _bench_guard import require_accel_or_die as _phantom_gate  # audit H7/H-09
+    _phantom_gate(__file__)
     for D in (64, 128):
         H = 8
         print("=" * 70)

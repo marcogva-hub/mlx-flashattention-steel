@@ -15,6 +15,9 @@ CHILD = '''
 import os, time, gc, math
 import mlx.core as mx
 from mlx_mfa._ext import v6_nax_forward
+# audit H7/H-09 phantom-bench gate (run-at-import bench)
+from _bench_guard import require_accel_or_die as _phantom_gate
+_phantom_gate(__file__)
 
 B, H, Nq, Nkv, D = __B__, __H__, __NQ__, __NKV__, __D__
 WARMUP, ITERS = 3, 15

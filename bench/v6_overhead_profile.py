@@ -28,6 +28,9 @@ print()
 # Step 2: time isolated phases
 # 2a: just the Python entry + return (allocations only)
 import sys
+# audit H7/H-09 phantom-bench gate (run-at-import bench)
+from _bench_guard import require_accel_or_die as _phantom_gate
+_phantom_gate(__file__)
 
 # Time pure dispatch: Python -> C++ -> dispatch -> wait -> return
 N_calls = 100

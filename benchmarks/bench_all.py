@@ -344,6 +344,12 @@ def save_results(fwd_rows, bwd_rows, win_rows, sage_rows, path: str) -> None:
 
 
 def main() -> None:
+    # Phantom-bench gate (audit H7/H-09): this writes RESULTS.md, so a phantom
+    # SDPA-vs-SDPA "parity" would poison a published table. Fail loud if mlx-mfa
+    # acceleration isn't live in this interpreter.
+    from _bench_guard import require_accel_or_die
+    require_accel_or_die("bench_all.py (writes RESULTS.md)")
+
     ap = argparse.ArgumentParser(
         description="mlx-mfa v1.4.x comprehensive benchmark")
     ap.add_argument("--fwd-only",  action="store_true")

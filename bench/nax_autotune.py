@@ -130,6 +130,8 @@ def knob_map():
 
 
 if __name__ == "__main__":
+    from _bench_guard import require_accel_or_die as _phantom_gate  # audit H7/H-09
+    _phantom_gate(__file__)
     if len(sys.argv) > 1 and sys.argv[1] == "knobs":
         knob_map()
     elif len(sys.argv) > 1 and sys.argv[1] == "baseline":

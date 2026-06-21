@@ -87,6 +87,8 @@ def bench(B, H, N, D, causal, d64_default_on=True):
 
 
 if __name__ == "__main__":
+    from _bench_guard import require_accel_or_die as _phantom_gate  # audit H7/H-09
+    _phantom_gate(__file__)
     from benchmarks.bench_validity import VacuousBenchmark
     print(f"MLX {mx.__version__} | mlx_mfa {mlx_mfa.__version__}")
     print("NOTE: on M5 the `MFA_DISABLE_V6_BACKWARD` toggle yields byteΔ=0 end-to-end "

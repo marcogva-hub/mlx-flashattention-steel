@@ -6,6 +6,9 @@ import mlx.core as mx
 import sys as _sys, pathlib as _pathlib
 _sys.path.insert(0, str(_pathlib.Path(__file__).parent))  # repo review 2026-05: allow `python benchmarks/<f>.py` from repo root
 from bench_utils import med as _med
+# audit H7/H-09 phantom-bench gate (run-at-import bench)
+from _bench_guard import require_accel_or_die as _phantom_gate
+_phantom_gate(__file__)
 
 D, SEED = 512, 42
 DTYPE = mx.float16

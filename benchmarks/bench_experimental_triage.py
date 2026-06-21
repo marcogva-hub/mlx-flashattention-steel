@@ -559,4 +559,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from _bench_guard import require_accel_or_die as _phantom_gate  # audit H7/H-09
+    _phantom_gate(__file__)
     main()

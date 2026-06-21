@@ -23,6 +23,11 @@ TIMED  = 20
 BATCH  = 1
 HEADS  = 8
 
+# Methodology fix (audit H-09): a SINGLE explicit accept threshold — the old code
+# accepted >= 0.90 but labelled failures/summaries as "0.95", an ambiguous mismatch.
+# 0.90 = the documented noise floor (±10% at sub-2ms).
+ACCEPT_RATIO = 0.90
+
 MATRIX = {
     "D":      [64, 128, 256, 512],
     "N":      [512, 1024, 2048, 4096, 8192],
@@ -60,6 +65,11 @@ def bench_one(B, H, N, D, causal):
 
 
 def main():
+    # Phantom-bench gate (audit H7/H-09): refuse to run if mlx-mfa acceleration
+    # isn't live — else `auto` and `sdpa` would BOTH be SDPA and report fake 1.0x.
+    from _bench_guard import require_accel_or_die
+    require_accel_or_die("bench_auto_dispatch_validation.py")
+
     dev = get_device_info()
     print(f"mlx-mfa auto-dispatch validation  --  {date.today()}")
     print(f"Device: {dev.get('device_name','?')}  M3+={dev.get('is_m3_plus',False)}")
@@ -78,9 +88,8 @@ def main():
             for N in MATRIX["N"]:
                 r = bench_one(BATCH, HEADS, N, D, causal)
                 all_results.append(r)
-                # Noise floor: ±10% at sub-2ms, ±5% above. Use 0.90x for safety.
-                ok = r["ratio"] >= 0.90
-                status = "OK" if ok else f"FAIL ({r['ratio']:.2f}x < 0.95x)"
+                ok = r["ratio"] >= ACCEPT_RATIO
+                status = "OK" if ok else f"FAIL ({r['ratio']:.2f}x < {ACCEPT_RATIO:.2f}x)"
                 if not ok:
                     failures.append(r)
                 print(f"  D={D:<4} N={N:<5} "
@@ -90,17 +99,17 @@ def main():
 
     wins = [r for r in all_results if r["ratio"] >= 1.0]
     print(f"Summary: auto >= 1.0x SDPA: {len(wins)}/{len(all_results)}")
-    print(f"         auto >= 0.95x SDPA: {len(all_results)-len(failures)}/{len(all_results)}")
+    print(f"         auto >= {ACCEPT_RATIO:.2f}x SDPA: {len(all_results)-len(failures)}/{len(all_results)}")
 
     print()
     print("Note: sub-2ms benchmarks have ±10% Metal scheduling jitter (Python overhead: ~2μs/call).")
     if failures:
-        print("\nFAILED configs (auto < 0.95x SDPA):")
+        print(f"\nFAILED configs (auto < {ACCEPT_RATIO:.2f}x SDPA):")
         for r in failures:
             c = "causal" if r["causal"] else "non-causal"
             print(f"  D={r['D']} N={r['N']} {c}: {r['ratio']:.2f}x")
     else:
-        print("\nAll auto-dispatch cases >= 0.90x SDPA ✓")
+        print(f"\nAll auto-dispatch cases >= {ACCEPT_RATIO:.2f}x SDPA ✓")
 
 
 if __name__ == "__main__":

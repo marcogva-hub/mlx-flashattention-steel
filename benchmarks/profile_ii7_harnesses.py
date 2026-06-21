@@ -171,6 +171,8 @@ HARNESSES = {"dit": harness_dit, "vae": harness_vae,
              "decode": harness_decode, "sparse": harness_sparse}
 
 if __name__ == "__main__":
+    from _bench_guard import require_accel_or_die as _phantom_gate  # audit H7/H-09
+    _phantom_gate(__file__)
     ap = argparse.ArgumentParser()
     ap.add_argument("harness", choices=list(HARNESSES) + ["all"])
     ap.add_argument("--iters", type=int, default=50)
