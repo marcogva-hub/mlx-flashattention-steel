@@ -125,6 +125,27 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   **sdist-only** (compile-at-install; no ABI-pinned wheel).
 
 ### Changed
+- **Test-engagement & CI hardening (audit Tier-2, anti-recidive — no user-facing API change).**
+  The decode/cross-attn correctness bug (RC-A/RC-B) stayed hidden because its tests ran SDPA on M5
+  (byteΔ=0), not the intended kernel.  This tier closes that vacuous-test class:
+  - `TestFlashDecode` now forces `backend="mfa"` and **asserts the MFA primitive engaged** (was
+    `backend="auto"` → SDPA → SDPA-vs-SDPA-reference, vacuous) (CX-06).
+  - Fused **V-TQ causal/GQA** tests gained an independent **fp32 oracle** (were isfinite-only on a
+    shipped kernel path) (CC-16); the paged-varlen fused test gained a **byteΔ engagement assert**, and
+    the paged-decode / sparse-`density_full` cells are **annotated as routing-not-kernel** (they assert
+    the SDPA route that is correct/intended on M5, with which-binary pinned by the dispatch-map /
+    fingerprint locks) (CC-17).  A bounded engagement sweep over the kernel-correctness suites confirmed
+    no other "claims-a-kernel-but-runs-SDPA" cell (dedicated sage/TQ/GNA/attn-bias/sparse APIs are
+    engaged-by-construction; remaining auto cells are self-documented routing/public-correctness).
+  - **CI sdist content checks made fatal** — the `.metal`/`.cpp` "Must contain" greps exited 0 on
+    MISSING; every mandatory member now fails the job (CX-05).  The `_ext` skip marker now **calls**
+    the predicate (`not _ext_available()`; was the always-truthy function object → never skipped) (CX-07).
+  - **ABI check reconciled with the build policy** — `_check_abi()` compared major.minor only and
+    declared patches "compatible", contradicting the documented 0.31.1→0.31.2 nanobind-internals break;
+    now warns on **any** full-version mismatch (CX-04).  `check_env.py` reports the pip nanobind as
+    informational vs the FetchContent-pinned build version (CC-25).  The §AA.8 M5/NAX pre-tag gate is
+    confirmed **mandatory & tag-blocking** and now also archives the RC-A/RC-B correctness fingerprints
+    (CC-24/CX-10).
 - **V4/V5 STEEL forward variants retired from the build** (experimental, opt-in-only, never auto-routed).
   V5 was M5-validated before removal and showed no advantage. Compiled + routed STEEL forwards are now
   **V1 / V2 / V3 / V6_NAX**. The `MFA_ENABLE_V4` / `MFA_ENABLE_V5` / `MFA_V5_FORCE_*` env knobs no longer

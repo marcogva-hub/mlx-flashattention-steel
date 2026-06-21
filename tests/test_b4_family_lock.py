@@ -199,6 +199,13 @@ def test_sage_int8_attention_within_principled_int8_bound():
 
 
 # ── paged/kvcache decode: fp32 gather oracle ─────────────────────────────────
+# CC-17 (audit) — ROUTING-not-kernel cell: on M5, N=1 decode routes to SDPA
+# (byteΔ=0 vs SDPA) — the documented-current production decode path, pinned by
+# test_dispatch_map_lock::test_kvcache_decode_is_sdpa.  This cell asserts the
+# *routed* decode path is numerically correct vs an independent fp32 gather
+# oracle; it is NOT a distinct-paged-kernel engagement claim (so it deliberately
+# does not force a kernel).  Which-binary is locked by the dispatch lock; this
+# locks the math.
 def test_paged_decode_matches_fp32_gather():
     B, H, S, D = 1, 8, 1024, 128; sc = 1 / math.sqrt(D)
     qd = _gen((B, H, 1, D))

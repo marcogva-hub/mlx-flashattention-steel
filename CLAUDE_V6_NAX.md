@@ -893,8 +893,10 @@ The gate (a) asserts `mlx_mfa.has_nax()` is **True** — i.e. the NAX fast path 
 genuinely LIVE, not a silent SDPA fallback (a release whose NAX perf/correctness
 claims were measured under a dead `_ext` is invalid); (b) captures which-binary
 **byteΔ fingerprints** for the key NAX-tier cells (dense D128→NAX, dense
-D64→SDPA, sparse-sym→NAX, V6-split backward engagement) and verifies each is as
-expected; (c) **archives** the stamped fingerprints to
+D64→SDPA, sparse-sym→NAX, V6-split backward engagement) **plus correctness fingerprints for the audit
+RC-A/RC-B causal defect class** (D128 causal S=4096 N=4095 qL_off-unaligned vs an
+fp32 oracle; flash-decode odd-NK decode tail N=1 S=257 finite vs oracle) and
+verifies each is as expected; (c) **archives** the stamped fingerprints to
 `devnotes/release-fingerprints/m5-nax-fingerprints-<version>.json` (off the
 tracked tree, per the journal policy) as the release record.
 

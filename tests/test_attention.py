@@ -1799,6 +1799,27 @@ class TestFlashDecode:
         mx.eval(out)
         return out
 
+    def _run_engaged(self, q, k, v, scale, causal=False):
+        """CX-06 (audit): force the MFA decode kernel and ASSERT it engaged.
+
+        These cells previously called ``flash_attention`` on ``backend="auto"``,
+        which on M5 routes decode to SDPA (byteΔ=0) — so they compared SDPA to an
+        SDPA-derived ``_ref`` and were vacuous (could not catch a flash-decode
+        kernel bug; cf. the RC-A/RC-B defect that hid exactly this way). Forcing
+        ``backend="mfa"`` and asserting the MFA primitive ran makes them test the
+        kernel against the fp32 ``_ref`` oracle. (The primary engaged decode lock
+        is Tier-0 ``test_causal_maskzone_split_lock``; these add D=256 / GQA /
+        S=256-boundary / bf16 coverage.)
+        """
+        from mlx_mfa import _dispatch_trace as _dt
+        with _dt.capture() as tr:
+            out = flash_attention(q, k, v, scale=scale, causal=causal, backend="mfa")
+            mx.eval(out)
+        assert tr and tr[-1][0] == "mfa_primitive", (
+            f"flash-decode test did not engage the MFA kernel "
+            f"(backend={tr[-1][0] if tr else None}) — would be vacuous on SDPA")
+        return out
+
     @pytest.mark.parametrize("D", [64, 128, 256])
     def test_decode_noncausal(self, D):
         """N=1 decode, non-causal: Flash Decode should match SDPA within tol."""
@@ -1808,7 +1829,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -1826,7 +1847,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=True)
+        out = self._run_engaged(q, k, v, scale, causal=True)
         ref = self._ref(q, k, v, scale, causal=True)
         mx.eval(out, ref)
 
@@ -1844,7 +1865,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -1862,7 +1883,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -1880,7 +1901,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -1898,7 +1919,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H_kv, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H_kv, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         # Reference: expand kv to H_q heads
         k_exp = mx.repeat(k, H_q // H_kv, axis=1)
         v_exp = mx.repeat(v, H_q // H_kv, axis=1)
@@ -1919,7 +1940,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.bfloat16)
         v = mx.random.normal([B, H, S, D]).astype(mx.bfloat16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -1937,7 +1958,7 @@ class TestFlashDecode:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
 
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._run_engaged(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
 
@@ -9586,6 +9607,11 @@ class TestPagedVarlenQueries:
         diff = float(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)).max())
         assert out.shape == (1, H_q, sum(q_lens), D)
         assert diff < 5e-3, f"paged_varlen vs SDPA ref max diff {diff}"
+        # CC-17 (audit): engagement proof — a silent fall-through to the
+        # per-sequence SDPA bridge would be byteΔ=0 vs this same-precision SDPA
+        # ref; the fused fp16 kernel differs by its own reduction-order noise
+        # (~2e-4).  A zero diff means the fused kernel did NOT run (vacuous).
+        assert diff > 1e-6, "paged-varlen did not engage the fused kernel (byteΔ=0 vs SDPA bridge)"
 
         # III-10 3b: INDEPENDENT fp32 oracle lock (lesson #11).
         # The reference above runs SDPA at fp16 (kernel precision).  Lock the
@@ -11984,7 +12010,7 @@ class TestSteelV5CP5:
     pytestmark = [
         pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); "
                                 "MFA_ENABLE_V5 is a no-op → these compared the default path to itself"),
-        pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
+        pytest.mark.skipif(not _ext_available(), reason="C++ extension not available"),
     ]
 
     B, H, N, D = 2, 8, 1024, 128
@@ -12094,7 +12120,7 @@ class TestSteelV5DirectReads:
     pytestmark = [
         pytest.mark.skip(reason="STEEL V4/V5 retired from build (Lot-2 chore); "
                                 "MFA_ENABLE_V5 is a no-op → exercised the default path, not V5"),
-        pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
+        pytest.mark.skipif(not _ext_available(), reason="C++ extension not available"),
     ]
 
     def _run_v5_m3plus(self, q, k, v, scale, causal=False, **kwargs):
@@ -12174,7 +12200,7 @@ class TestSteelV2DirectReads:
     """
 
     pytestmark = [
-        pytest.mark.skipif(not _ext_available, reason="C++ extension not available"),
+        pytest.mark.skipif(not _ext_available(), reason="C++ extension not available"),
     ]
 
     def _run_with_gen(self, gen, q, k, v, scale, causal=False, **kwargs):

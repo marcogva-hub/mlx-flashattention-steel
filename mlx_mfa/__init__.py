@@ -31,7 +31,16 @@ __version__ = "2.61.0"
 
 
 def _check_abi() -> None:
-    """Warn if the compiled extension was built against a different MLX major.minor."""
+    """Warn if the compiled extension was built against a different MLX version.
+
+    CX-04 (audit): previously compared major.minor only and declared patch
+    releases "ABI-compatible" — contradicting the build policy, which documents
+    0.31.0/0.31.1 (nanobind v17/v18) vs 0.31.2 (v19) as a PATCH-LEVEL ABI break
+    (the nanobind capsule key embeds NB_INTERNALS_VERSION; see pyproject.toml
+    [build-system] + CMakeLists.txt).  Reconciled to a FULL-version comparison:
+    warn on ANY build-vs-runtime MLX mismatch.  Conservative — may nudge a rebuild
+    on an ABI-compatible patch bump rather than stay silent on an incompatible one.
+    """
     # T1-2 FIX (audit CC-L1, 2026-06-21): narrowed from a single blanket
     # `except Exception: pass`.  ImportError (extension not built) is the ONE case
     # we stay quiet about here — its loud signal is the has_nax() /
@@ -49,10 +58,10 @@ def _check_abi() -> None:
             return
         import mlx.core
         runtime_ver = mlx.core.__version__
-        # Compare major.minor only — patch releases are ABI-compatible.
-        bv = tuple(int(x) for x in build_ver.split(".")[:2])
-        rv = tuple(int(x) for x in runtime_ver.split(".")[:2])
-        if bv != rv:
+        # CX-04: compare the FULL version (incl. patch) — a patch bump can move the
+        # nanobind internals (NB_INTERNALS_VERSION) and break the capsule key, per
+        # the build policy.  Any mismatch warrants a rebuild nudge.
+        if build_ver != runtime_ver:
             import warnings
             warnings.warn(
                 f"mlx-mfa was compiled against MLX {build_ver} but the installed "

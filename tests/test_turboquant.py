@@ -1027,6 +1027,26 @@ class TestTurboQuantFusedKernel:
         assert out.shape == (1, H_q, 8, D)
         assert mx.isfinite(out).all().item(), "V-TQ causal output has non-finite values"
 
+        # CC-16 (audit): isfinite-only would pass a silently-wrong-but-finite
+        # causal kernel.  Lock against an independent fp32 oracle (decompress K;
+        # bottom-right causal mask = the N<S decode convention this kernel uses,
+        # empirically verified).  K+V both 3-bit lossy → 0.3 tol (as noncausal).
+        from mlx_mfa.turboquant import turboquant_compress, turboquant_decompress
+        k_dec = turboquant_decompress(
+            turboquant_compress(k, bits=bits, use_qjl=False, rotation="wht")
+        ).astype(mx.float32)
+        N, S = 8, 32
+        qpos = mx.arange(N)[:, None] + (S - N)
+        cmask = (qpos < mx.arange(S)[None, :]).astype(mx.float32) * -1e9
+        out_oracle = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k_dec, v.astype(mx.float32), scale=scale,
+            mask=cmask[None, None],
+        )
+        oracle_err = np.abs(
+            np.array(out.astype(mx.float32)) - np.array(out_oracle)
+        ).max()
+        assert oracle_err < 0.3, f"V-TQ causal vs fp32 oracle max_abs_err={oracle_err:.4f} > 0.3"
+
     def test_fused_v_tq_gqa(self):
         """V-TQ with GQA (H_q > H_kv) produces finite output."""
         _skip_if_no_ext()
@@ -1065,6 +1085,23 @@ class TestTurboQuantFusedKernel:
 
         assert out.shape == (1, H_q, 1, D)
         assert mx.isfinite(out).all().item(), "V-TQ GQA output has non-finite values"
+
+        # CC-16 (audit): fp32 oracle with KV expanded to H_q heads (GQA), so a
+        # silently-wrong-but-finite GQA broadcast/index fails.  K decompressed;
+        # original (un-rotated) Q + decompressed K is the consistent basis.
+        from mlx_mfa.turboquant import turboquant_compress, turboquant_decompress
+        k_dec = turboquant_decompress(
+            turboquant_compress(k, bits=bits, use_qjl=False, rotation="wht")
+        ).astype(mx.float32)
+        k_exp = mx.repeat(k_dec, H_q // H_kv, axis=1)
+        v_exp = mx.repeat(v.astype(mx.float32), H_q // H_kv, axis=1)
+        out_oracle = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k_exp, v_exp, scale=scale,
+        )
+        oracle_err = np.abs(
+            np.array(out.astype(mx.float32)) - np.array(out_oracle)
+        ).max()
+        assert oracle_err < 0.3, f"V-TQ GQA vs fp32 oracle max_abs_err={oracle_err:.4f} > 0.3"
 
 
 # ---------------------------------------------------------------------------

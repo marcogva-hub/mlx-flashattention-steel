@@ -53,8 +53,23 @@ def main():
         return libs[0]
     ok &= check("MLX library", check_mlx_lib)
 
-    # nanobind
-    ok &= check("nanobind", lambda: __import__("nanobind").__version__)
+    # nanobind — CC-25 (audit): the build does NOT use the pip nanobind; it
+    # FetchContent-pins nanobind v2.12.0 (NB_INTERNALS v19, matching MLX>=0.31.2)
+    # in CMakeLists.txt.  Report the pip version as informational and flag a floor
+    # mismatch so this line isn't read as "the ABI nanobind is OK".
+    _NB_BUILD_PIN = "2.12.0"
+
+    def check_nanobind():
+        ver = __import__("nanobind").__version__
+        note = f"{ver} (informational; build FetchContent-pins v{_NB_BUILD_PIN})"
+        try:
+            vt = tuple(int(x) for x in ver.split(".")[:2])
+            if vt < (2, 12):
+                note += "  [note: pip nanobind < build pin — irrelevant to _ext ABI, build uses its own]"
+        except Exception:
+            pass
+        return note
+    ok &= check("nanobind", check_nanobind)
 
     # nanobind cmake dir
     def check_nb_cmake():
