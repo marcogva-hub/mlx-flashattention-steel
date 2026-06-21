@@ -21,6 +21,10 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     batch dim, and K/V must share kv-sequence-length and kv-heads (see C-01 under Fixed).
   - `dropout_p` outside `[0, 1)` (or non-finite) is rejected at the public boundary.
   - An unknown `MFA_V6_BWD_KERNEL` value now raises instead of silently selecting `split`.
+  - The public `flash_attention_paged*` APIs reject **out-of-range `block_table` entries** (outside
+    `[-1, num_blocks)`) and out-of-range `seq_lens` (see CC-02/CC-03 under Fixed). `-1` (unallocated
+    page padding) stays valid. Direct `_ext.*` paged calls now return zeroed contributions for
+    out-of-range ids (in-kernel guard) instead of reading out of bounds.
   Callers passing malformed inputs that previously appeared to "work" (silently wrong) now get a clear,
   actionable error.
 
@@ -45,6 +49,36 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   key desync fail CI.
 
 ### Fixed
+- **RC-A (CRITICAL, default-path) — causal attention silently wrong for `N<S` with `qL_off % 32 ≠ 0`.**
+  The STEEL causal mask zone gated on `kb >= kb_lim − (BQ+BK−1)/BK`, which (integer division → 1)
+  masked only the **final** K-tile. Correct when the causal diagonal sits at the sequence tail
+  (`N==S` or `qL_off%BK==0`), but when `qL_off%BK≠0` the diagonal spans two K-tiles and the
+  second-to-last went **unmasked** → silently-wrong output. Reached on the **default** `backend="auto"`
+  path: D=128 causal fp16, S≈4096, N within ~31 of S (e.g. chunked prefill of ~4093 tokens vs a 4096-key
+  cache) erred **2–3** absolute. Shared root across **flash-decode, V2, V1** forward kernels (in
+  flash-decode the `kb_causal_lim` overshoot also made the mask never run, hitting small-Nq decode
+  N∈{2,3,4} and cross-attention N<S). Fixed via a single shared `mfa_causal_mask_zone_gate` =
+  `(tile*BQ + qL_off)/BK` (qL_off-aware, exact; bit-identical for aligned/square/non-causal).
+  **⚠ This bug is present in the published 2.60.1** (same code) — a live production correctness bug on
+  causal `N<S` prefill/decode, not just an unshipped one.
+- **RC-B (CRITICAL) — flash-decode produced all-NaN output for decode tails with odd `NK=ceil(S/32)`.**
+  `compute_num_splits`/`NK_per_split` could leave an empty trailing split; its `0/0` pO normalization
+  fed the reduce a `0×NaN`, poisoning the whole output (e.g. N≤4, S∈{257,288,513}). Fixed at the root
+  (split count now exactly covers `NK_total` — no empty splits) **and** defensively (partial skips the
+  `0/0`; reduce ignores non-finite LSE / zero-weight splits). **Also present in 2.60.1.**
+  Both RC-A/RC-B are locked by `tests/test_causal_maskzone_split_lock.py` (engaged: forces the MFA
+  binary, independent fp64 oracle, full `qL_off%32` + odd/even-NK sweeps) and added to the §AA M5/NAX
+  pre-tag gate as correctness fingerprints. *(Out of scope: fp32 forced-`backend="mfa"` causal `N<S`
+  uses the legacy ccv path and remains silently wrong — out-of-matrix; `backend="auto"` routes fp32 to
+  SDPA and is correct. Flagged for a follow-up loud-refusal.)*
+- **CC-02 (CRITICAL) / CC-03 (HIGH) — paged-KV kernels no longer read out of bounds on a bad block id.**
+  The paged gather, PagedSteelForward, PagedVarlenForward and PagedVarlenTQ kernels indexed the page pool
+  with a physical block id from the caller's `block_table` with no upper-bound check (only a partial
+  `<0` guard in the gather) → out-of-bounds device read (UB; Apple GPU absorbs to 0 but can leak
+  adjacent memory). Two-layer fix: in-kernel bounds guard on every pool index (`num_blocks` plumbed in;
+  `blk_idx<max_blocks`, `phys∈[0,num_blocks)`; 64-bit pool offsets) so out-of-range/`-1`-padding ids
+  contribute **zero**, plus host validation that raises a clear `ValueError` on the public
+  `flash_attention_paged*` APIs. Locked by `tests/test_paged_oob_guard.py`. **Also present in 2.60.1.**
 - **C-01 (CRITICAL) — forced `backend="mfa"` no longer reads out of bounds on mismatched Q/K/V shapes.**
   The kernel derived `B` from Q but all K/V strides from K, so `Bq>Bk` / `Sk≠Sv` / `Hk≠Hv` read past the
   K/V allocation → silent-wrong finite output (reproduced: `out[1]` off ~1.3 vs the correct broadcast).

@@ -1028,7 +1028,7 @@ struct MFAExpSubOp {
   // Causal mask
   if (causal) {
     ss << "    // Causal mask: mask k > q\n";
-    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << mfa_causal_mask_zone_gate("qb");  // RC-A: qL_off-aware diagonal zone (V1)
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
     ss << "        const int row = qb * MFA_BQ + p->qL_off\n";
@@ -2030,7 +2030,7 @@ struct MFAFlashDecodePartialParams {
 
   // Causal mask
   if (causal) {
-    ss << "    if (kb >= (kb_causal_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << mfa_causal_mask_zone_gate("(int)q_tile_id");  // RC-A: qL_off-aware diagonal zone (flash-decode)
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
     ss << "        const int row = (int)q_tile_id * MFA_BQ + p->qL_off\n";
@@ -2144,6 +2144,14 @@ struct MFAFlashDecodePartialParams {
   ss << "\n";
 
   // Normalize pO and store
+  // RC-B defense: a split that processed zero K-tiles has sum_score==0; dividing
+  // O (also 0) by it yields 0/0 = NaN, which the reduce's 0*NaN would propagate.
+  // The root fix (no empty splits) prevents this, but guard anyway: a zero row
+  // normalizes by 1 → pO=0 and pL=max+log2(1)=-inf → reduce weight 0 (clean).
+  ss << "  STEEL_PRAGMA_UNROLL\n";
+  ss << "  for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "    if (!(sum_score[i] > 0.0f)) sum_score[i] = 1.0f;\n";
+  ss << "  }\n";
   ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
   ss << "  threadgroup_barrier(mem_flags::mem_none);\n";
   ss << "\n";
@@ -2251,7 +2259,7 @@ std::string generate_flash_decode_reduce_source(const ShaderCache::KernelKey& ke
   ss << "  float lse_max = -INFINITY;\n";
   ss << "  for (int s = 0; s < p->num_splits; s++) {\n";
   ss << "    float lse = pL[s * p->pL_split_stride + pL_bh_base];\n";
-  ss << "    lse_max = metal::max(lse_max, lse);\n";
+  ss << "    if (metal::isfinite(lse)) lse_max = metal::max(lse_max, lse);\n";  // RC-B: ignore empty-split -inf/NaN LSE
   ss << "  }\n";
   ss << "\n";
   ss << "  // Pass 2: compute sum of weights\n";
@@ -2268,7 +2276,7 @@ std::string generate_flash_decode_reduce_source(const ShaderCache::KernelKey& ke
   ss << "      float lse = pL[s * p->pL_split_stride + pL_bh_base];\n";
   ss << "      float w   = metal::exp2(lse - lse_max) / sum_w;\n";
   ss << "      long  src = s * p->pO_split_stride + pO_bh_base + dd;\n";
-  ss << "      acc += w * (float)pO[src];\n";
+  ss << "      if (w > 0.0f) acc += w * (float)pO[src];\n";  // RC-B: skip zero-weight/empty split (no 0xNaN)
   ss << "    }\n";
   ss << "    long dst = b_idx * p->O_batch_stride\n";
   ss << "             + h_idx * p->O_head_stride\n";

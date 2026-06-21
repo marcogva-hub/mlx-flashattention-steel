@@ -106,6 +106,42 @@ def main() -> int:
         failures.append(("v6_split_backward_D64_vs_sdpavjp", d,
                          "expected V6-split backward to differ from SDPA-vjp (engaged)"))
 
+    # ── Correctness fingerprints for the audit RC-A / RC-B causal defect class ──
+    # (oracle-error, NOT byteΔ: a wrong-but-engaged kernel must still be caught).
+    # Bottom-right causal additive mask for the N<S decode/cross convention:
+    # query i (abs pos S-N+i) attends keys [0 .. S-N+i].
+    def _br_causal_mask(N, S):
+        qi = mx.arange(N).reshape(N, 1) + (S - N)
+        ki = mx.arange(S).reshape(1, S)
+        return mx.where(ki <= qi, mx.array(0.0), mx.array(-1e9, mx.float32))
+
+    def _oracle_err(q16, k16, v16, sc, mask):
+        out = flash_attention(q16, k16, v16, scale=sc, causal=True)
+        ref = mx.fast.scaled_dot_product_attention(
+            q16.astype(mx.float32), k16.astype(mx.float32), v16.astype(mx.float32),
+            scale=sc, mask=mask[None, None])
+        return _delta(out, ref)
+
+    # 2e) DEFAULT-PATH CRITICAL: D=128 causal fp16 S=4096, N=4095 (qL_off%32=1).
+    # Pre-fix err was ~3 (silent-wrong on backend="auto"); post-fix ~1e-3.
+    Nc, Sc, Dc = 4095, 4096, 128; scc = 1.0 / (Dc ** 0.5)
+    q, k, v = _gen(1, 4, Sc, Dc)  # gen S rows then slice q to N
+    qN = q[:, :, :Nc, :]
+    d = _oracle_err(qN, k, v, scc, _br_causal_mask(Nc, Sc))
+    fps["rca_critical_D128_S4096_N4095_oracle"] = d
+    if not (d < 1.5e-2):
+        failures.append(("rca_critical_D128_S4096_N4095_oracle", d,
+                         "RC-A default-path CRITICAL: expected oracle err < 1.5e-2 (was ~3 pre-fix)"))
+
+    # 2f) RC-B decode-tail (odd-NK) must not NaN: D=128 causal fp16 N=1 S=257.
+    Nt, St, Dt = 1, 257, 128; sct = 1.0 / (Dt ** 0.5)
+    q, k, v = _gen(1, 4, St, Dt); qN = q[:, :, :Nt, :]
+    d = _oracle_err(qN, k, v, sct, _br_causal_mask(Nt, St))
+    fps["rcb_decode_tail_D128_N1_S257_oracle"] = d
+    if not (d < 1.5e-2):  # NaN -> _delta returns nan -> comparison False -> fails (caught)
+        failures.append(("rcb_decode_tail_D128_N1_S257_oracle", d,
+                         "RC-B decode-tail: expected finite oracle err < 1.5e-2 (was NaN pre-fix)"))
+
     # 3) Archive the stamped fingerprints (audit record; off the tracked tree).
     dev = get_device_info()
     stamp = {

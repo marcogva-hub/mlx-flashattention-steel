@@ -16,6 +16,32 @@
 
 namespace mlx_mfa {
 
+/// RC-A causal mask-zone gate (audit fix).
+///
+/// Emits the Metal `if (...) {` that gates the per-element causal mask in the
+/// STEEL forward kernels.  The mask must run for EVERY K-tile the current
+/// Q-block's causal diagonal intersects; the FIRST such tile is
+/// `(tile_idx*BQ + qL_off) / BK` (the K-tile containing the block's first query
+/// row, in absolute KV coordinates).  This is `qL_off`-aware and exact.
+///
+/// It replaces the old `kb >= kb_lim - (BQ+BK-1)/BK` heuristic, which (with
+/// integer division collapsing `(BQ+BK-1)/BK` to 1 for BQ==BK) masked only the
+/// FINAL K-tile.  That is correct only when the diagonal sits at the sequence
+/// tail (`N==S`, or `qL_off % BK == 0`); when `qL_off % BK != 0` the diagonal
+/// spans two K-tiles and the second-to-last went unmasked → silently-wrong
+/// attention (audit RC-A).  This form is bit-identical to the old behaviour for
+/// the aligned/square/non-causal cases and only adds masking work in the
+/// boundary tiles the diagonal actually crosses.
+///
+/// Shared by: mfa_steel_fwd.cpp (V1 single-pass + flash-decode partial) and
+/// mfa_steel_fwd_v2.cpp (V2 single-pass + split-K + D-split).  `tile_idx_var`
+/// is the kernel's Q-tile loop variable ("qb" or "(int)q_tile_id"); the kernels
+/// expose `p->qL_off` and the `MFA_BQ`/`MFA_BK` tile constants.
+inline std::string mfa_causal_mask_zone_gate(const char* tile_idx_var) {
+    return std::string("    if (kb >= ((") + tile_idx_var
+         + " * MFA_BQ + p->qL_off) / MFA_BK)) {\n";
+}
+
 /// Parameters passed from C++ to the Metal kernel.
 /// Layout MUST exactly match MFASteelParams in the Metal source string.
 ///

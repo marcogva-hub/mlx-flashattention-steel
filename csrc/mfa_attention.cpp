@@ -247,6 +247,19 @@ void MFAttention::eval_gpu(
     int BQ_s = BQ_fd, BK_s = BK_fd, WM_s = WM_fd, WN_s = WN_fd;
     int TGP_s = WM_s * WN_s * 32;
 
+    // RC-B (audit): eliminate empty trailing splits.  compute_num_splits returns
+    // min(NK/2, 32); with NK_per_split = ceil(NK/num_splits) the product
+    // num_splits*NK_per_split can exceed NK_total, leaving trailing splits whose
+    // K-range is empty (kb_start >= NK_total).  An empty split's online softmax
+    // never runs → its pO is normalized 0/0 = NaN and the reduce's 0*NaN poisons
+    // the final output (decode-tail all-NaN).  Shrink num_splits to exactly cover
+    // NK_total so every split owns >=1 K-tile (and (num_splits-1)*per < NK_total).
+    {
+      const int NK_total_fd = (S + BK_s - 1) / BK_s;
+      const int per_fd = (NK_total_fd + num_splits - 1) / num_splits;
+      num_splits = (NK_total_fd + per_fd - 1) / per_fd;   // <= old num_splits
+    }
+
     // ── Allocate scratch buffers pO and pL ─────────────────────────────────
     // Scratch wrapped in arrays + registered as command-encoder temporaries
     // (freed only after the command buffer completes — see III-9 root cause:
