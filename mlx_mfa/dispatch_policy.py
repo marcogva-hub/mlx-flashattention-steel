@@ -1105,6 +1105,15 @@ def _load_calibrated_kernel_config() -> None:
     Uses os.environ.setdefault so an explicit MFA_V2_FORCE_BK set by the
     user before import still takes precedence.
     Called once at mlx_mfa import time.
+
+    M-02 migration contract (audit A): LOAD IS PURE — it NEVER rewrites the
+    on-disk table (no write side-effect at import) and never crashes on an
+    absent / read-only / permission-denied file (the whole body is guarded).
+    Old (schema < v2) sliding-window split-K entries are pruned IN-MEMORY only
+    (never mis-applied to a window), with a single per-process invalidation
+    warning naming the remedy.  SELF-HEAL: the pruned state + schema-v2 stamp
+    persist the next time the app legitimately SAVES calibration
+    (`calibrate_dispatch(calibrate_splitk=True)`), after which loads are silent.
     """
     table_path = os.environ.get(
         "MLX_MFA_DISPATCH_TABLE",

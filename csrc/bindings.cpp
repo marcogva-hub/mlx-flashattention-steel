@@ -32,6 +32,11 @@ std::string mpp_int8_microbench();  // Phase II-2 kill-gate
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
+// Split-K calibration env-key builder (in csrc/mfa_attention.cpp) — the SAME
+// function the dispatch lookup uses (audit B1); bound below for the Python↔C++
+// byte-identity contract test.  Always in the default build (NOT probe-gated).
+std::string build_splitk_env_key(int D, bool causal, bool has_alibi,
+                                 int window_left, int window_right);
 // Draw Things port: source generation + JIT compile — probe-only (in
 // csrc/v6_nax_probe.cpp), M6-gated like the rest.
 #ifdef MFA_BUILD_PROBES
@@ -384,6 +389,17 @@ NB_MODULE(_ext, m) {
   m.def("device_has_nax_bf16", []() -> bool {
     return mlx_mfa::device_has_nax_bf16();
   }, "True iff NAX is available AND macOS >= 26.1 (MPP bf16 support).");
+  // audit B2: expose the EXACT split-K env-key builder the dispatch lookup uses,
+  // so a test can lock the Python↔C++ key format byte-for-byte. Tiny string fn,
+  // always in the default build (not probe-gated).
+  m.def("_splitk_env_key_cpp",
+        [](int D, bool causal, bool has_alibi, int window_left, int window_right) -> std::string {
+          return mlx_mfa::build_splitk_env_key(D, causal, has_alibi, window_left, window_right);
+        },
+        nb::arg("D"), nb::arg("causal"), nb::arg("has_alibi"),
+        nb::arg("window_left"), nb::arg("window_right"),
+        "Test-only: the split-K calibration env key C++ builds for these params "
+        "(same builder as the dispatch lookup). Locks the Python↔C++ contract.");
 #ifdef MFA_BUILD_PROBES
   m.def("v6_nax_probe_forward_compile",
         [](int head_dim, int dtype_code) -> std::string {

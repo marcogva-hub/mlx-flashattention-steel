@@ -67,6 +67,30 @@ inline bool is_v2_dsplit_family(int head_dim) {
 }  // namespace
 
 // =========================================================================
+// Split-K calibration env-key builder — SINGLE SOURCE OF TRUTH (audit B1)
+// =========================================================================
+// Both the dispatch lookup (MFAttention::eval_gpu) and the test-only binding
+// `mlx_mfa._ext._splitk_env_key_cpp` call THIS function — never a parallel copy
+// (a copy would make the cross-language identity test vacuous).  MUST stay
+// byte-identical to dispatch_policy._splitk_env_key / _splitk_window_suffix.
+// Key format: MFA_SPLITK_MAX_N_D{D}_C{0|1}_A{0|1}_{W0 | W{left}_{right}}.
+std::string build_splitk_env_key(int D, bool causal, bool has_alibi,
+                                 int window_left, int window_right) {
+  std::string wsuf;
+  if (window_left >= 0 || window_right >= 0) {
+    const int wl = window_left >= 0 ? window_left : 0;
+    const int wr = window_right >= 0 ? window_right : 0;
+    wsuf = "W" + std::to_string(wl) + "_" + std::to_string(wr);
+  } else {
+    wsuf = "W0";
+  }
+  return "MFA_SPLITK_MAX_N_D" + std::to_string(D) +
+         "_C" + std::to_string(causal ? 1 : 0) +
+         "_A" + std::to_string(has_alibi ? 1 : 0) +
+         "_" + wsuf;
+}
+
+// =========================================================================
 // Constructor
 // =========================================================================
 
@@ -382,25 +406,12 @@ void MFAttention::eval_gpu(
     int force_splitk = MFAEnvConfig::force_splitk();  // -1=heuristic, 0=disable, 1=force
     const bool has_window = (params_.window_left >= 0 || params_.window_right >= 0);
     const auto splitk_calibrated_max_n = [&]() -> int {
-      // Key format (set by dispatch_policy._load_calibrated_kernel_config):
-      // MFA_SPLITK_MAX_N_D{D}_C{0|1}_A{0|1}_{W0 | W{left}_{right}}
-      // M-02 FIX (audit, 2026-06-21): the window component now carries the SIZE
-      // (left/right), not a single bit — distinct windows (256 vs 512) had the
-      // same `_W1` key and shared one (wrong) calibration.  MUST stay byte-
-      // identical to dispatch_policy._splitk_window_suffix().
-      std::string wsuf;
-      if (params_.window_left >= 0 || params_.window_right >= 0) {
-        const int wl = params_.window_left >= 0 ? params_.window_left : 0;
-        const int wr = params_.window_right >= 0 ? params_.window_right : 0;
-        wsuf = "W" + std::to_string(wl) + "_" + std::to_string(wr);
-      } else {
-        wsuf = "W0";
-      }
-      const std::string env_key =
-          "MFA_SPLITK_MAX_N_D" + std::to_string(D) +
-          "_C" + std::to_string(params_.causal ? 1 : 0) +
-          "_A" + std::to_string(params_.has_alibi ? 1 : 0) +
-          "_" + wsuf;
+      // B1: the REAL dispatch lookup routes through the single builder (also
+      // exposed to Python via `_splitk_env_key_cpp` and locked byte-identical to
+      // dispatch_policy._splitk_env_key by tests/test_audit_m02_*).
+      const std::string env_key = build_splitk_env_key(
+          D, params_.causal, params_.has_alibi,
+          params_.window_left, params_.window_right);
       const char* v = std::getenv(env_key.c_str());
       if (!v || v[0] == '\0') return -1;
       return std::atoi(v);
