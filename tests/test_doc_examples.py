@@ -64,8 +64,17 @@ def _blocks(rel: str):
     return _FENCE.findall(txt)
 
 
+# CC-22: a snippet may be excused for a NameError/IndentationError ONLY if it
+# explicitly tags itself as illustrative in its OWN source.  Inferring
+# "fragment" from the mere presence of a NameError (the prior behaviour) let a
+# genuinely-broken example — a typo, a renamed symbol a user would copy — slip
+# through as a silent skip.
+_FRAGMENT_TAG = "illustrative-fragment"
+
+
 def _classify_and_run(code: str):
     """Return ('pass'|'skip-fragment'|'skip-heavy', detail). Raises on structural fail."""
+    tagged_fragment = _FRAGMENT_TAG in code
     if "import mlx" not in code and "from mlx_mfa" not in code and "import mlx_mfa" not in code:
         return ("skip-fragment", "no import — illustrative fragment")
     if _HEAVY.search(code):
@@ -76,8 +85,11 @@ def _classify_and_run(code: str):
             exec(compile(code, "<doc-example>", "exec"), ns)
         return ("pass", "executed")
     except (NameError, IndentationError) as e:
-        # references prose-defined symbols → fragment, not a runnable example
-        return ("skip-fragment", f"{type(e).__name__}: {e}")
+        # CC-22: only an EXPLICITLY-tagged snippet may skip here; an untagged
+        # NameError is a broken example and must fail (Rule 8 — loud).
+        if tagged_fragment:
+            return ("skip-fragment", f"tagged '{_FRAGMENT_TAG}' ({type(e).__name__}: {e})")
+        raise
     except ModuleNotFoundError as e:
         if "mlx_mfa" in str(e) or "mlx" == str(e).split("'")[1].split(".")[0]:
             raise  # our own package must import
@@ -97,10 +109,15 @@ def test_doc_example_executes_or_is_fragment(rel, idx, code):
     try:
         verdict, detail = _classify_and_run(code)
     except (TypeError, AttributeError, ValueError, SyntaxError, ImportError,
-            ModuleNotFoundError) as e:
+            ModuleNotFoundError, NameError, IndentationError) as e:
+        # CC-22: NameError/IndentationError now reach here (untagged) — a broken
+        # example fails instead of silently skipping.  Tag the snippet
+        # `# illustrative-fragment` in the doc if it is intentionally partial.
         pytest.fail(
             f"{rel} example #{idx} raises a STRUCTURAL API error — a user copying "
-            f"it hits this: {type(e).__name__}: {e}\n--- block ---\n{code[:400]}")
+            f"it hits this: {type(e).__name__}: {e}\n"
+            f"(if intentionally partial, tag the snippet '# illustrative-fragment')"
+            f"\n--- block ---\n{code[:400]}")
     if verdict.startswith("skip"):
         pytest.skip(f"{rel}#{idx}: {verdict} ({detail})")
 

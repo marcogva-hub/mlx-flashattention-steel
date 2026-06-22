@@ -1027,7 +1027,24 @@ def flash_attention(
         _dtrace.record("mfa_primitive", "return_lse (mfa-capable)")
         return O, L
 
-    _dtrace.record("mfa_primitive", "steel/V2/V3/window")
+    # CX-08: name the binary that ACTUALLY runs the forward, not the routing
+    # intent.  On the V6NAX-backward carve-out (auto backend, D∈{64,128}
+    # eligible, default scale; D=64 qL≥2048 default-on or D=128
+    # MFA_ENABLE_V6_BACKWARD), `_make_mfa_custom._impl` runs Apple SDPA for the
+    # FORWARD (bit-SDPA-identical) and engages V6NAX only in the backward — so a
+    # forward-only which-binary assertion must read SDPA, not mfa_primitive.
+    # Forced backend="mfa" always runs the real kernel (force_kernel ⇒ the SDPA
+    # branch in `_impl` is skipped), so it stays mfa_primitive.  The eligibility
+    # re-eval is gated on recording() → zero production overhead (record() is a
+    # no-op without an open capture(), so the label is irrelevant there).
+    if (backend != "mfa"
+            and _dtrace.recording()
+            and _v6nax_eligible(head_dim, q.dtype, causal,
+                                scale=scale, seq_len=q.shape[2])):
+        _dtrace.record("apple_sdpa",
+                       "v6nax-carveout forward (Apple SDPA; V6NAX backward)")
+    else:
+        _dtrace.record("mfa_primitive", "steel/V2/V3/window")
     return _mfa_forward(q, k, v, scale, causal, softcap, window_left,
                         window_right, stream,
                         force_kernel=(backend == "mfa"))
@@ -1802,12 +1819,18 @@ def _auto_warmup_background(head_dim: int, dtype) -> None:
             warmup_dtypes.add(mx.bfloat16)
         elif dtype == mx.bfloat16:
             warmup_dtypes.add(mx.float16)
-        for D in warmup_dims:
-            for dt in warmup_dtypes:
-                for c in (True, False):
-                    q = mx.zeros([1, 1, N, D], dtype=dt)
-                    out = flash_attention(q, q, q, scale=1.0 / math.sqrt(D), causal=c)
-                    mx.eval(out)
+        # CC-15: these 8 (dims×dtypes×causal) forward passes re-enter the
+        # routing layer.  Mark them re-entrant so they cannot pollute an open
+        # capture() as if they were the caller's own dispatch — the recorder
+        # tags them ``[reentrant]`` and the caller's real terminal (recorded
+        # outside this scope) stays ``tr[-1]``.
+        with _dtrace.reentrant():
+            for D in warmup_dims:
+                for dt in warmup_dtypes:
+                    for c in (True, False):
+                        q = mx.zeros([1, 1, N, D], dtype=dt)
+                        out = flash_attention(q, q, q, scale=1.0 / math.sqrt(D), causal=c)
+                        mx.eval(out)
     except Exception:
         pass  # warmup failure must never break the caller
 

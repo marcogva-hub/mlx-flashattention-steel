@@ -85,11 +85,34 @@ def _qkv(B, H, N, D, Hk=None, Sk=None):
     mx.eval(fq, fk, fv); return fq, fk, fv
 
 
+def _assert_engaged(q, k, v, scale, causal, o):
+    """Prove the forced MFA Metal kernel ACTUALLY ran (which-binary), not a
+    silent SDPA fallback (volet-A / CC-07).  The STEEL/V2/V3 variants are
+    byte-identical to *each other* (so no runtime lock distinguishes which
+    variant ran — that is the source-predicate lock's job below), but the
+    family as a whole is byte-DISTINCT from Apple SDPA: a real MFA forward
+    differs from `scaled_dot_product_attention` by the kernel's own rounding.
+    byteΔ == 0.0 ⇒ the call silently produced the SDPA bytes ⇒ green-on-wrong-
+    binary; assert byteΔ > 0 so that can never pass unnoticed."""
+    sdpa = mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=scale, mask=("causal" if causal else None))
+    mx.eval(sdpa)
+    byte_delta = float(mx.max(mx.abs(
+        o.astype(mx.float32) - sdpa.astype(mx.float32))).item())
+    assert byte_delta > 0.0, (
+        f"ENGAGEMENT FAILURE: backend='mfa' byteΔ-vs-SDPA == 0.0 — the MFA "
+        f"kernel did not run; this is a silent SDPA fallback (the correctness "
+        f"assert below would pass vacuously against SDPA-as-oracle).")
+
+
 def _assert_correct(q, k, v, scale, causal):
     o = flash_attention(q, k, v, scale=scale, causal=causal, backend="mfa")
     ref = _fp32_oracle(q, k, v, scale, causal)
     mx.eval(o, ref)
     assert bool(mx.all(mx.isfinite(o.astype(mx.float32))).item()), "non-finite"
+    # which-binary first, then correctness (so a vacuous SDPA-vs-SDPA pass is
+    # impossible — engagement is proven before the oracle comparison).
+    _assert_engaged(q, k, v, scale, causal, o)
     d = float(mx.max(mx.abs(o.astype(mx.float32) - ref)).item())
     if _MAG["mode"] == "unit":
         denom = float(mx.max(mx.abs(ref)).item()) + 1e-6
@@ -152,7 +175,16 @@ class TestSteelVariantCorrectness:
 class TestSteelDispatchThresholdsLocked:
     """Lock the dispatch thresholds in source. A change forces a deliberate
     dispatch-map update (the variants are byte-identical so no runtime lock can
-    catch selection drift; this source lock does — see B2 report)."""
+    catch selection drift; this source lock does — see B2 report).
+
+    # RUNTIME-INDISTINGUISHABLE: byte-identical variants, source-predicate is
+    # the only available proof.  The STEEL V1/V2/V3/split-K/dsplit variants
+    # produce byteΔ == 0 against each other (same math, different tiling), so a
+    # reroute *among them* cannot be caught by a byteΔ fingerprint — only by
+    # asserting the selection predicate still matches csrc/mfa_attention.cpp
+    # below.  A reroute to an UNLISTED variant (or to SDPA) IS byte-distinct and
+    # is caught by `_assert_engaged` in the correctness cells above.  (volet-A /
+    # CC-07: this limitation is now explicit, not silently source-trusted.)"""
 
     def _src(self):
         return _ATTN_CPP.read_text(encoding="utf-8")

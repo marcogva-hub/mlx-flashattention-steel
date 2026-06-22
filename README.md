@@ -165,6 +165,7 @@ D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardwa
 ## Minimal Usage (auto-default)
 
 ```python
+# illustrative-fragment: x, weight, q, k, v are defined in surrounding prose
 import mlx.core as mx
 import mlx_mfa  # auto-installs optimization hooks at import
 

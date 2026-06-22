@@ -175,6 +175,32 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
   - **CI sdist content checks made fatal** — the `.metal`/`.cpp` "Must contain" greps exited 0 on
     MISSING; every mandatory member now fails the job (CX-05).  The `_ext` skip marker now **calls**
     the predicate (`not _ext_available()`; was the always-truthy function object → never skipped) (CX-07).
+- **Engagement-proof foundation hardened (audit volet A — telemetry/test only; forward+backward
+  binaries byteΔ-identical before/after, proven over a 48-cell dense+carve-out sweep).** The
+  which-binary proof the whole suite leans on is now trustworthy everywhere:
+  - The `_dispatch_trace` **terminal now names the binary that actually ran**, not the routing
+    intent: on the V6NAX-backward carve-out (auto, D∈{64,128} eligible) the forward runs **Apple
+    SDPA** (bit-identical), so the terminal records `apple_sdpa`, not `mfa_primitive` (CX-08
+    telemetry side). `routing_equivalence_golden.json` regenerated — the 10 D=64 N≥2048 cells flip
+    `mfa_primitive`→`apple_sdpa`, now agreeing with `dispatch-map.md`. Forced `backend="mfa"` stays
+    `mfa_primitive` (real kernel).
+  - **Spurious warmup records can no longer mislead** (CC-15): the process-once
+    `_auto_warmup_background` (8 forward passes on the first MFA call) re-enters routing; its records
+    are now tagged `[reentrant]` via `_dispatch_trace.reentrant()`, and a new
+    `tests/test_engagement_proof_guard.py` fails the suite if any test relies on `tr[0]`/`len(tr)==1`
+    instead of `tr[-1]`.
+  - **Dense-STEEL correctness cells now prove engagement** (CC-07): a byteΔ>0-vs-SDPA assert proves
+    the forced MFA kernel ran (not a silent SDPA fallback); the byte-identical inter-variant
+    selection carries an explicit `# RUNTIME-INDISTINGUISHABLE` source-predicate annotation.
+  - **Top-K bisection gets a real oracle** (CC-06): the isfinite-only / loose self-compare cells are
+    replaced by an independent numpy fp64 k-th-largest + count oracle (threshold) and a top-k
+    attention oracle (output); a +0.5 threshold perturbation is proven to bite.
+  - **Doc examples fail loudly** (CC-22): a `NameError`/`IndentationError` in a doc snippet is no
+    longer silently skipped — only snippets explicitly tagged `# illustrative-fragment` may skip; the
+    four genuine fragments are tagged in README/SERVING_GUIDE/API_MANUAL.
+  - The native sparse-backward M5 coverage gap (CC-23) is documented and tied to the volet-D gate.
+  See `devnotes/engagement_proof_audit.md` for the full terminal-site + engagement-test enumeration
+  and the bite proofs.
   - **ABI check reconciled with the build policy** — `_check_abi()` compared major.minor only and
     declared patches "compatible", contradicting the documented 0.31.1→0.31.2 nanobind-internals break;
     now warns on **any** full-version mismatch (CX-04).  `check_env.py` reports the pip nanobind as

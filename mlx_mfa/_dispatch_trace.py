@@ -29,6 +29,26 @@ from typing import Optional
 # OFF by default.  Library code never sets this True — only ``capture()`` (tests) does.
 _RECORDING: bool = False
 _TRACE: list[tuple[str, str]] = []
+# Re-entrancy depth.  > 0 while an internal, non-caller dispatch is running
+# (background JIT warmup, nested routing).  Records emitted at depth > 0 are
+# tagged ``[reentrant]`` so a terminal-record consumer cannot mistake them for
+# the caller's own route (volet-A / CC-15).
+_REENTRANT_DEPTH: int = 0
+
+# Prefix stamped onto the reason of any record emitted during re-entrant
+# internal routing.  Exposed so tests can filter without string-guessing.
+REENTRANT_PREFIX: str = "[reentrant] "
+
+
+def recording() -> bool:
+    """True iff a ``capture()`` block is active.
+
+    Lets a caller skip building an expensive trace label when no test is
+    listening — ``record()`` is already a no-op when not recording, so the
+    label is irrelevant in production.  Keeps which-binary labelling
+    zero-overhead off the test path (volet-A / CX-08).
+    """
+    return _RECORDING
 
 
 def record(backend: str, reason: str) -> None:
@@ -36,10 +56,36 @@ def record(backend: str, reason: str) -> None:
 
     Called at each routing terminal in ``flash_attention``.  The hot-path cost when
     not recording is a single global read + early return.
+
+    Records emitted while ``reentrant()`` is active (background warmup / nested
+    dispatch) get a ``[reentrant]`` reason prefix — they remain observable but
+    are unmistakable for the caller's real terminal (which is recorded OUTSIDE
+    the re-entrant scope, so ``tr[-1]`` is unaffected).
     """
     if not _RECORDING:
         return
+    if _REENTRANT_DEPTH > 0:
+        reason = REENTRANT_PREFIX + reason
     _TRACE.append((backend, reason))
+
+
+@contextmanager
+def reentrant():
+    """Mark records emitted within as internal re-entrant routing.
+
+    Wrap any internal call path that re-enters the routing layer but is NOT
+    the caller's own dispatch decision (e.g. ``_auto_warmup_background``'s
+    process-once JIT warmup, which fires 8 small forward passes on the first
+    MFA-capable call).  Without this, those records pollute an open
+    ``capture()`` and a test asserting ``tr[0]`` / ``len(tr) == 1`` would be
+    misled (CC-15).  Nestable; ``tr[-1]`` stays the caller's real terminal.
+    """
+    global _REENTRANT_DEPTH
+    _REENTRANT_DEPTH += 1
+    try:
+        yield
+    finally:
+        _REENTRANT_DEPTH -= 1
 
 
 @contextmanager

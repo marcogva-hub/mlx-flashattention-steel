@@ -48,6 +48,7 @@ fixed-size blocks on demand, enabling efficient multi-sequence serving.
 ## 3) Hybrid Cache (Hot/Cold/Offloaded)
 
 ```python
+# illustrative-fragment: secondary_cache / k defined in surrounding prose
 from mlx_mfa import HybridKVCache
 from mlx_mfa.inference import InferenceContext
 
@@ -164,6 +165,7 @@ For memory-constrained long-context serving, TurboQuant compresses KV caches
 to 2-4 bits with ~3.8× memory savings (K+V at 3-bit).
 
 ```python
+# illustrative-fragment: q, k, v / step tensors defined in surrounding prose
 from mlx_mfa import create_decode_runtime
 import mlx.core as mx
 

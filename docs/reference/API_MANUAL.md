@@ -527,6 +527,7 @@ Stateful paged KV cache with automatic TQ compression on append.
 Auto-rotates Q with WHT, calls fused TQ kernel, un-rotates output.
 
 ```python
+# illustrative-fragment: mx, q, k, v / step tensors defined in surrounding prose
 from mlx_mfa import create_decode_runtime
 
 rt = create_decode_runtime(

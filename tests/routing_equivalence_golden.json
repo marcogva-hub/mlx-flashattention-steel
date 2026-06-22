@@ -98,44 +98,44 @@
       "fallback (not use_mfa)"
     ],
     "d64_N4095_caus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4095_ncaus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4096_caus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4096_caus_f16_BH3": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4096_caus_f16_BH4": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4096_ncaus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4097_caus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N4097_ncaus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N8192_caus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "d64_N8192_ncaus_f16": [
-      "mfa_primitive",
-      "steel/V2/V3/window"
+      "apple_sdpa",
+      "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
     ],
     "decode_qL8_d128_f16": [
       "sdpa",
