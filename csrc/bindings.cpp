@@ -193,9 +193,16 @@ NB_MODULE(_ext, m) {
   m.doc() = "mlx-mfa C++ extension: Metal Flash Attention for MLX";
 
 
+  // CX-06: no `stream` param — the op runs on the default GPU stream; the old
+  // `stream` arg only ever raised TypeError on a real mx.Stream (no caster).
   m.def(
       "mfa_attention_forward",
-      &mlx_mfa::mfa_attention_forward,
+      [](const mlx::core::array& q, const mlx::core::array& k,
+         const mlx::core::array& v, float scale, bool causal, float softcap,
+         int window_left, int window_right) {
+        return mlx_mfa::mfa_attention_forward(
+            q, k, v, scale, causal, softcap, window_left, window_right);
+      },
       nb::arg("q"),
       nb::arg("k"),
       nb::arg("v"),
@@ -204,16 +211,11 @@ NB_MODULE(_ext, m) {
       nb::arg("softcap") = 0.0f,
       nb::arg("window_left") = -1,
       nb::arg("window_right") = -1,
-      nb::arg("stream") = nb::none(),
       "Flash Attention forward (Metal). "
       "q/k/v: [B, H, N, D], float16/bfloat16/float32. "
       "softcap: tanh softcapping factor (0.0 = disabled). "
       "window_left: sliding window left radius (-1 = disabled). "
-      "window_right: sliding window right radius (-1 = disabled). "
-      "stream: ONLY None/omitted is accepted — this extension does not register "
-      "an mlx Stream/Device type caster, so passing a real mx.Stream/mx.Device "
-      "raises TypeError (CX-06, known limitation); the op always runs on the "
-      "default GPU stream.");
+      "window_right: sliding window right radius (-1 = disabled).");
 
   // Debug: returns (O, L) so L (logsumexp) can be inspected from Python.
   m.def("mfa_forward_with_lse",
@@ -692,26 +694,35 @@ NB_MODULE(_ext, m) {
     return info;
   }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name, gpu_cores.");
 
-  // --- ALiBi-biased forward ---
+  // --- ALiBi-biased forward ---  (CX-06: no stream param — default GPU stream)
   m.def(
       "mfa_attention_alibi_forward",
-      &mlx_mfa::mfa_attention_alibi_forward,
+      [](const mlx::core::array& q, const mlx::core::array& k,
+         const mlx::core::array& v, const mlx::core::array& alibi_slopes,
+         float scale, bool causal) {
+        return mlx_mfa::mfa_attention_alibi_forward(
+            q, k, v, alibi_slopes, scale, causal);
+      },
       nb::arg("q"),
       nb::arg("k"),
       nb::arg("v"),
       nb::arg("alibi_slopes"),
       nb::arg("scale"),
       nb::arg("causal"),
-      nb::arg("stream") = nb::none(),
       "Flash Attention with ALiBi per-head linear position biases.\n"
       "alibi_slopes: float32 [H], one slope per query head.\n"
       "Bias = slope_h * (k_pos - q_pos) added before softmax.\n"
       "Only f16/bf16 supported.");
 
-  // --- Attention bias forward ---
+  // --- Attention bias forward ---  (CX-06: no stream param)
   m.def(
       "mfa_attention_bias_forward",
-      &mlx_mfa::mfa_attention_bias_forward,
+      [](const mlx::core::array& q, const mlx::core::array& k,
+         const mlx::core::array& v, const mlx::core::array& attn_bias,
+         uint8_t attn_bias_mode, float scale, bool causal) {
+        return mlx_mfa::mfa_attention_bias_forward(
+            q, k, v, attn_bias, attn_bias_mode, scale, causal);
+      },
       nb::arg("q"),
       nb::arg("k"),
       nb::arg("v"),
@@ -719,16 +730,22 @@ NB_MODULE(_ext, m) {
       nb::arg("attn_bias_mode"),
       nb::arg("scale"),
       nb::arg("causal"),
-      nb::arg("stream") = nb::none(),
       "Flash Attention with additive attention bias.\n"
       "attn_bias: float32. Mode 1: [1,1,1,Nkv]. Mode 2: [1,H,1,Nkv].\n"
       "Bias added to Q@K^T scores before softmax.\n"
       "Only f16/bf16, D=64/128/256. Modes 1-2 only.");
 
-  // --- RoPE-fused forward ---
+  // --- RoPE-fused forward ---  (CX-06: no stream param)
   m.def(
       "mfa_attention_rope_forward",
-      &mlx_mfa::mfa_attention_rope_forward,
+      [](const mlx::core::array& q, const mlx::core::array& k,
+         const mlx::core::array& v, const mlx::core::array& rotary_cos,
+         const mlx::core::array& rotary_sin, float scale, bool causal,
+         int cache_seqlens, bool interleaved) {
+        return mlx_mfa::mfa_attention_rope_forward(
+            q, k, v, rotary_cos, rotary_sin, scale, causal, cache_seqlens,
+            interleaved);
+      },
       nb::arg("q"),
       nb::arg("k"),
       nb::arg("v"),
@@ -738,7 +755,6 @@ NB_MODULE(_ext, m) {
       nb::arg("causal"),
       nb::arg("cache_seqlens"),
       nb::arg("interleaved") = true,
-      nb::arg("stream") = nb::none(),
       "Flash Attention with in-kernel RoPE fusion.\n"
       "rotary_cos/sin: float32 [max_seq_len, D/2].\n"
       "cache_seqlens: KV cache length (absolute position of Q token 0).\n"
@@ -749,15 +765,13 @@ NB_MODULE(_ext, m) {
   m.def("mfa_attention_sparse_forward",
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
            mlx::core::array block_mask,
-           float scale, bool causal,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           float scale, bool causal)
             -> mlx::core::array {
           return mlx_mfa::mfa_attention_sparse_forward(
-              q, k, v, block_mask, scale, causal, stream);
+              q, k, v, block_mask, scale, causal, std::nullopt);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("causal"),
-        nb::arg("stream") = nb::none(),
         "Block-sparse forward attention.\n"
         "block_mask: uint8 [NQ_tiles, NK_tiles]. 1=compute, 0=skip.\n"
         "Returns O [B, H, N, D]. Only f16/bf16 supported.");
@@ -766,16 +780,14 @@ NB_MODULE(_ext, m) {
   m.def("mfa_attention_sparse_forward_with_lse",
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
            mlx::core::array block_mask,
-           float scale, bool causal,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           float scale, bool causal)
             -> std::pair<mlx::core::array, mlx::core::array> {
           auto outs = mlx_mfa::mfa_attention_sparse_forward_with_lse(
-              q, k, v, block_mask, scale, causal, stream);
+              q, k, v, block_mask, scale, causal, std::nullopt);
           return {outs[0], outs[1]};
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("block_mask"),
         nb::arg("scale"), nb::arg("causal"),
-        nb::arg("stream") = nb::none(),
         "Block-sparse forward returning (O, L) where L is logsumexp [B,H,N].\n"
         "Used by the native sparse backward pass to avoid recomputation.\n"
         "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
@@ -786,22 +798,20 @@ NB_MODULE(_ext, m) {
            float scale,
            int dim0, int dim1, int dim2,
            int win0, int win1, int win2,
-           int str0, int str1, int str2,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int str0, int str1, int str2)
             -> mlx::core::array {
           return mlx_mfa::mfa_gna_forward(
               q, k, v, scale,
               dim0, dim1, dim2,
               win0, win1, win2,
               str0, str1, str2,
-              stream);
+              std::nullopt);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("scale"),
         nb::arg("dim0"), nb::arg("dim1"), nb::arg("dim2"),
         nb::arg("win0"), nb::arg("win1"), nb::arg("win2"),
         nb::arg("str0"), nb::arg("str1"), nb::arg("str2"),
-        nb::arg("stream") = nb::none(),
         "GNA (Generalized Neighborhood Attention) forward.\n"
         "Inline 3D window check — no block_mask allocation.\n"
         "D=128 only, f16/bf16. Returns O [B, H, N, D].");
@@ -811,10 +821,9 @@ NB_MODULE(_ext, m) {
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
            mlx::core::array cu_seqlens_q, mlx::core::array cu_seqlens_k,
            mlx::core::array tile_offsets,
-           float scale, bool causal,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           float scale, bool causal)
             -> std::pair<mlx::core::array, mlx::core::array> {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_attention_varlen_forward(
               q, k, v, cu_seqlens_q, cu_seqlens_k, tile_offsets,
               scale, causal, s);
@@ -823,7 +832,6 @@ NB_MODULE(_ext, m) {
         nb::arg("cu_seqlens_q"), nb::arg("cu_seqlens_k"),
         nb::arg("tile_offsets"),
         nb::arg("scale"), nb::arg("causal"),
-        nb::arg("stream") = nb::none(),
         "STEEL varlen attention forward.\n"
         "\n"
         "Inputs are packed: Q/O = [1, H, total_q, D], K/V = [1, H_kv, total_kv, D].\n"
@@ -837,10 +845,9 @@ NB_MODULE(_ext, m) {
         [](mlx::core::array pool,
            mlx::core::array block_table,
            mlx::core::array seq_lens,
-           int max_kv_len,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int max_kv_len)
             -> mlx::core::array {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_paged_kv_gather(
               pool, block_table, seq_lens, max_kv_len, s);
         },
@@ -848,7 +855,6 @@ NB_MODULE(_ext, m) {
         nb::arg("block_table"),
         nb::arg("seq_lens"),
         nb::arg("max_kv_len"),
-        nb::arg("stream") = nb::none(),
         "Metal paged KV gather: pool [N_blk, BS, H, D] -> out [B, H, max_kv, D].\n"
         "pool: f16 or bf16. block_table: int32 [B, max_blocks]. seq_lens: int32 [B].\n"
         "Transposes [BS,H,D] -> [H,BS,D] (token-major -> head-major) during gather.");
@@ -864,10 +870,9 @@ NB_MODULE(_ext, m) {
            bool  causal,
            int   window_left,
            int   window_right,
-           int   block_size,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int   block_size)
             -> std::pair<mlx::core::array, mlx::core::array> {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_paged_steel_forward(
               q, k_pool, v_pool, block_table, seq_lens,
               scale, causal, window_left, window_right, block_size, s);
@@ -882,7 +887,6 @@ NB_MODULE(_ext, m) {
         nb::arg("window_left")  = -1,
         nb::arg("window_right") = -1,
         nb::arg("block_size")   = 16,
-        nb::arg("stream")       = nb::none(),
         "Paged STEEL forward attention (kernel-level paged KV, Track FD).\n"
         "\n"
         "Avoids a gather+attend round-trip by reading K/V directly from the paged\n"
@@ -908,10 +912,9 @@ NB_MODULE(_ext, m) {
            float scale,
            bool  causal,
            int   window_left,
-           int   window_right,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int   window_right)
             -> std::pair<mlx::core::array, mlx::core::array> {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_sage_forward(
               q, k_int8, v, k_scale, scale, causal,
               window_left, window_right, s);
@@ -924,7 +927,6 @@ NB_MODULE(_ext, m) {
         nb::arg("causal")       = false,
         nb::arg("window_left")  = -1,
         nb::arg("window_right") = -1,
-        nb::arg("stream")       = nb::none(),
         "SageAttention forward pass: fp16 Q + int8 K + fp16 V → fp16 O.\n"
         "\n"
         "CP2: Q is passed as fp16/bf16 directly — no external Q quantize dispatch.\n"
@@ -944,15 +946,13 @@ NB_MODULE(_ext, m) {
   // --- Fused per-block INT8 quantization (Phase 4-A.1) ---
   m.def("mfa_quantize_per_block",
         [](mlx::core::array x,
-           int block_size,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int block_size)
             -> std::pair<mlx::core::array, mlx::core::array> {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_quantize_per_block(x, block_size, s);
         },
         nb::arg("x"),
         nb::arg("block_size"),
-        nb::arg("stream") = nb::none(),
         "Fused per-block INT8 quantization (Phase 4-A.1).\n"
         "\n"
         "Replaces the Python-side quantize_per_block() with a single Metal dispatch.\n"
@@ -966,15 +966,13 @@ NB_MODULE(_ext, m) {
   // --- Fused smooth_k + quantize_per_block (Phase 1.1) ---
   m.def("mfa_smooth_quantize_k",
         [](mlx::core::array k,
-           int block_size,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           int block_size)
             -> std::tuple<mlx::core::array, mlx::core::array, mlx::core::array> {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_smooth_quantize_k(k, block_size, s);
         },
         nb::arg("k"),
         nb::arg("block_size"),
-        nb::arg("stream") = nb::none(),
         "Fused smooth_k + quantize_per_block for SageAttention K preprocessing (Phase 1.1).\n"
         "\n"
         "Replaces smooth_k() + quantize_per_block(k_smooth) with one C++ primitive.\n"
@@ -990,17 +988,15 @@ NB_MODULE(_ext, m) {
         [](mlx::core::array pool,
            mlx::core::array tokens,
            mlx::core::array blk_ids,
-           mlx::core::array blk_offs,
-           std::optional<mlx::core::StreamOrDevice> stream)
+           mlx::core::array blk_offs)
             -> mlx::core::array {
-          auto s = mlx::core::to_stream(stream.value_or(mlx::core::default_device()));
+          auto s = mlx::core::default_stream(mlx::core::Device::gpu);
           return mlx_mfa::mfa_scatter_kv(pool, tokens, blk_ids, blk_offs, s);
         },
         nb::arg("pool"),
         nb::arg("tokens"),
         nb::arg("blk_ids"),
         nb::arg("blk_offs"),
-        nb::arg("stream") = nb::none(),
         "Scatter-write tokens into paged KV pool (Phase 4-C.1+E.2).\n"
         "\n"
         "Replaces the Python pool rebuild loop with a single Metal copy+scatter pass.\n"
@@ -1027,8 +1023,7 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& seq_lens_kv,
          float scale,
          bool causal,
-         int block_size,
-         nb::object stream) {
+         int block_size) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         return mlx_mfa::mfa_paged_varlen_forward(
             q, k_pool, v_pool, cu_seqlens_q, tile_offsets,
@@ -1044,7 +1039,6 @@ NB_MODULE(_ext, m) {
       nb::arg("scale"),
       nb::arg("causal"),
       nb::arg("block_size"),
-      nb::arg("stream") = nb::none(),
       "Fused paged varlen forward: packed Q + paged KV in a single dispatch.");
 
   // ── PagedVarlenTQForward (TurboQuant fused K dequant) ──────────────────
@@ -1066,8 +1060,7 @@ NB_MODULE(_ext, m) {
          bool tq_wht_enabled,
          std::optional<mlx::core::array> v_pool_tq,
          std::optional<mlx::core::array> v_centroids,
-         std::optional<mlx::core::array> v_scales,
-         nb::object stream) {
+         std::optional<mlx::core::array> v_scales) {
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         return mlx_mfa::mfa_paged_varlen_tq_forward(
             q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets,
@@ -1093,7 +1086,6 @@ NB_MODULE(_ext, m) {
       nb::arg("v_pool_tq") = nb::none(),
       nb::arg("v_centroids") = nb::none(),
       nb::arg("v_scales") = nb::none(),
-      nb::arg("stream") = nb::none(),
       "TurboQuant fused paged varlen forward: packed uint8 K + centroid dequant, optional V-TQ + WHT fusion.");
 
   m.def("_invalidate_env_config", []() {

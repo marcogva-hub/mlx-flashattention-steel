@@ -120,6 +120,18 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     referenced under `MFA_BUILD_PROBES`); the unused `MLX_MFA_METAL_PATH` CMake define removed; the
     `async_v2.metallib` CI presence check downgraded FATAL→advisory (target-dead on M5/≥26, kept for
     macOS 14/15); `check_env.py` gained an advisory MLX-floor warning (pip remains the real gate).
+- **Raw `_ext` signature cleanup — non-functional `stream`/`device` params removed (CX-06).** The 16
+  exported forward/gather/quantize/scatter bindings (`mfa_attention_forward`, `mfa_attention_{alibi,bias,
+  rope}_forward`, `mfa_attention_sparse_forward[_with_lse]`, `mfa_gna_forward`, `mfa_attention_varlen_forward`,
+  `mfa_paged_kv_gather`, `mfa_paged_steel_forward`, `mfa_sage_forward`, `mfa_quantize_per_block`,
+  `mfa_smooth_quantize_k`, `mfa_scatter_kv`, `mfa_paged_varlen_forward`, `mfa_paged_varlen_tq_forward`)
+  exposed a `stream` / `StreamOrDevice` parameter that **raised `TypeError` on any real `mx.Stream`**
+  (no caster registered) — or, for the two paged-varlen bindings, **silently accepted and ignored** an
+  `nb::object`. The op always ran on the default GPU stream. The dead parameter is removed so the API is
+  honest. Behaviour unchanged (byteΔ-identical on the dense+grad envelope). **Micro-break (raw `_ext`
+  only):** a caller passing `stream=…`/`stream=None` to one of these raw bindings now gets `TypeError`
+  ("unexpected keyword"/"incompatible arguments"); the public `mlx_mfa.*` APIs keep their `stream` param
+  and are unaffected. See `devnotes/stream_param_surgery.md`.
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).

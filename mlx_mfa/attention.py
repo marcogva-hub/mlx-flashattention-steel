@@ -2017,7 +2017,7 @@ def sage_attention(
 
     # Dispatch SageAttention Metal kernel (fp16 Q + int8 K)
     O, _ = _sage_fwd(q, k_int8, v, k_scale, scale, causal,
-                     window_left, window_right, stream)
+                     window_left, window_right)  # CX-06: no stream param
     return O
 
 
@@ -2090,7 +2090,7 @@ def sage_attention_prequantized(
             window_right = int(wr)
 
     O, _ = _sage_fwd(q, k_int8, v, k_scale, scale, causal,
-                     window_left, window_right, stream)
+                     window_left, window_right)  # CX-06: no stream param
     return O
 
 
@@ -3881,8 +3881,7 @@ def flash_attention_gna(
                 seq_shape[0], seq_shape[1], seq_shape[2],
                 window_size[0], window_size[1], window_size[2],
                 stride[0], stride[1], stride[2],
-                stream=stream,
-            )
+            )  # CX-06: no stream param (ran on default stream regardless)
         except ImportError:
             pass  # Extension not built — sparse mask path below
         except RuntimeError as e:
