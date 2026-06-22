@@ -491,8 +491,11 @@ def flash_attention(
         ``attn_weights`` is ``float32 [B, H, N, S]``.
 
         When ``return_lse=True``: a 2-tuple ``(output, L)`` where ``L`` is
-        ``float32 [B, H, N]`` in log2 domain
-        (i.e. ``L = log2(sum_j 2^{score_j})``).  Mutually exclusive with
+        ``float32 [B, H, N]`` in log2 domain, using the MFA-kernel convention
+        ``L = log2(sum_j exp(score_j)) = ln(sum_j exp(score_j)) / ln 2`` with
+        ``score_j = scale * q·k_j`` (CC-04: this is now consistent across the
+        MFA and SDPA-fallback paths — previously the fallback returned
+        ``log2(sum_j 2^{score_j})``).  Mutually exclusive with
         ``return_attn_weights``.
 
     Raises:
@@ -607,11 +610,31 @@ def flash_attention(
             raise ValueError(
                 "flash_attention: window_size must be a length-2 tuple/list "
                 f"(left, right), got {window_size!r}.")
+        # CC-17 (volet C): only -1 disables a side; any other negative was
+        # silently coerced to "disabled" (the `wl >= 0` gate downstream),
+        # masking a caller bug.  Reject < -1 loudly (Rule 8).
+        for _side, _w in (("left", window_size[0]), ("right", window_size[1])):
+            if _w < -1:
+                raise ValueError(
+                    f"flash_attention: window_size {_side} must be >= -1 "
+                    f"(-1 disables that side); got {_w}.")
 
     # CC-10 (audit): degenerate sequence lengths produced 0/0 = NaN silently.
     # Zero queries → a well-defined empty output; zero keys → undefined (cannot
     # attend to nothing) → clear error instead of NaN.
     if q.shape[2] == 0:
+        # CX-04 (volet C): honor the documented return arity — the bare-array
+        # return broke the (O, L) / (O, weights) tuple contract for
+        # return_lse / return_attn_weights callers.
+        if return_attn_weights and return_lse:
+            raise ValueError(
+                "return_attn_weights and return_lse are mutually exclusive.")
+        if return_attn_weights:
+            w = mx.zeros((q.shape[0], q.shape[1], 0, k.shape[2]), dtype=q.dtype)
+            return q, w
+        if return_lse:
+            lse = mx.zeros((q.shape[0], q.shape[1], 0), dtype=mx.float32)
+            return q, lse
         return q  # [B, H, 0, D] — no queries, empty result (same dtype/shape)
     if k.shape[2] == 0:
         raise ValueError(
@@ -706,6 +729,24 @@ def flash_attention(
 
     # Track AG: dropout falls back to Python SDPA (MFA kernel has no dropout).
     if dropout_p > 0.0:
+        # CX-01 (volet C): the plain dropout path (`_dropout_sdpa`) accepts
+        # NONE of attn_bias / softcap / window / alibi — combining them silently
+        # DROPPED the requested feature (paper-fidelity violation, Rule 8).
+        # Safe default = raise loud.  FLAG-FOR-SIGNOFF: full dropout∘feature
+        # composition is a capability decision deferred to Marco (see
+        # devnotes/validation_matrix.md).
+        _bad = [nm for nm, on in (
+            ("attn_bias", attn_bias is not None),
+            ("softcap", softcap != 0.0),
+            ("window_size", window_size is not None),
+            ("alibi_slopes", alibi_slopes is not None),
+        ) if on]
+        if _bad:
+            raise ValueError(
+                f"flash_attention: dropout_p>0 is not supported together with "
+                f"{', '.join(_bad)} (got dropout_p={dropout_p}); the dropout "
+                f"path would silently drop {'these features' if len(_bad) > 1 else 'it'}. "
+                f"Set dropout_p=0 or remove the feature(s).")
         _dtrace.record("sdpa", "dropout")
         return _dropout_sdpa(q, k, v, scale, causal, dropout_p)
 
@@ -5838,15 +5879,26 @@ def _fallback_sdpa_with_lse(
     scale: float,
     causal: bool,
 ) -> tuple:
-    """Compute SDPA + logsumexp (log2 domain) via pure-MLX ops.
+    """Compute SDPA + logsumexp via pure-MLX ops.
 
-    Used when ``return_lse=True`` and the MFA extension is unavailable.
-    Materialises the full ``[B, H, N, S]`` logit matrix — O(N·S) memory.
+    Used when ``return_lse=True`` and the MFA extension is unavailable / the
+    shape is not MFA-capable (e.g. fp32, or D ∉ {64,128,256}).  Materialises
+    the full ``[B, H, N, S]`` logit matrix — O(N·S) memory.
 
     Returns:
-        (O [B,H,N,D], L [B,H,N]) — L is in log2 domain:
-        ``L[b,h,i] = log2(sum_j 2^{score[b,h,i,j]})`` where
-        ``score = scale * q @ k^T`` (with causal masking applied).
+        (O [B,H,N,D], L [B,H,N]) — L uses the **MFA-path convention**
+        ``L[b,h,i] = log2(sum_j exp(score[b,h,i,j])) = ln(sum_j exp(score))/ln2``
+        where ``score = scale * q @ k^T`` (with causal masking applied).
+
+    CC-04 (volet C): this previously returned ``log2(sum_j 2^{score})`` —
+    treating the natural-domain logits as base-2 exponents — which DIFFERED
+    from the MFA kernel's ``log2(sum exp(score))`` for the SAME public call,
+    so the returned LSE convention silently flipped with head_dim.  Now unified
+    on the MFA convention (zero change for f16/bf16 D∈{64,128,256} users, who
+    take the MFA path).  Behaviour change for fallback-path (fp32 / unsupported-D)
+    return_lse users.  FLAG-FOR-SIGNOFF: standardizing on natural-log LSE
+    (``ln(sum exp)``) is the more interop-standard option but would change the
+    MFA-path value too — see devnotes/validation_matrix.md.
     """
     # Compute raw attention scores [B, H, N, S]
     scores = mx.matmul(q.astype(mx.float32),
@@ -5863,13 +5915,13 @@ def _fallback_sdpa_with_lse(
         scores = scores + cmask_f32
         sdpa_mask = cmask_f32.astype(q.dtype)
 
-    # LSE in log2 domain: L = max + log2(sum(2^(scores - max)))
-    # Use log2 = log / ln(2) to avoid mx.exp2/mx.log2 which may be absent in
-    # older MLX builds.  The constant converts natural-log to log-base-2.
+    # MFA convention: L = log2(sum_j exp(score)) = (max + ln(sum exp(score-max)))/ln2.
+    # The natural-log LSE is numerically stable (max-subtraction) then converted
+    # to log2 by dividing by ln(2), matching mfa_forward_with_lse.
     _LN2 = 0.6931471805599453  # ln(2)
     max_s = scores.max(axis=-1, keepdims=True)                    # [B,H,N,1]
-    exp_s = mx.exp((scores - max_s) * _LN2)                       # [B,H,N,S]
-    lse   = max_s.squeeze(-1) + mx.log(exp_s.sum(axis=-1)) / _LN2  # [B,H,N]
+    exp_s = mx.exp(scores - max_s)                                # e^(score-max)
+    lse   = (max_s.squeeze(-1) + mx.log(exp_s.sum(axis=-1))) / _LN2  # [B,H,N]
 
     # Standard softmax attention output (use built-in for efficiency)
     O = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=sdpa_mask)
@@ -6153,14 +6205,62 @@ def _varlen_split_concat(
     return mx.concatenate(outputs, axis=2)
 
 
+def _validate_cu_seqlens(cu_q, cu_k, total_q, total_k, name):
+    """Volet C / CC-01: validate a packed-varlen ``cu_seqlens`` pair.
+
+    Shared gate for the non-paged varlen family (the paged-varlen path has its
+    own inline equivalent at ``flash_attention_paged_varlen``).  ``cu_q`` /
+    ``cu_k`` are already-materialized ``list[int]``.  Raises ``ValueError`` on
+    any malformed packing BEFORE dispatch — an unvalidated zero-length KV
+    segment previously produced an all-``-inf`` softmax row → silent NaN
+    (Rule 8).  ``num_seqs == 0`` (``cu == [0]`` or empty) is the documented
+    empty-input contract and is allowed (caller short-circuits to an empty
+    return).
+    """
+    if len(cu_q) != len(cu_k):
+        raise ValueError(
+            f"{name}: cu_seqlens_q and cu_seqlens_k must have the same length "
+            f"(num_seqs+1); got {len(cu_q)} vs {len(cu_k)}.")
+    if len(cu_q) <= 1:
+        return  # num_seqs == 0 — empty input, handled by the caller
+    for nm, cu, total in (("q", cu_q, total_q), ("k", cu_k, total_k)):
+        if cu[0] != 0:
+            raise ValueError(
+                f"{name}: cu_seqlens_{nm}[0] must be 0 (got {cu[0]}).")
+        if cu[-1] != total:
+            raise ValueError(
+                f"{name}: cu_seqlens_{nm}[-1] must equal total_{nm} tokens "
+                f"(got {cu[-1]} vs {total}).")
+    num_seqs = len(cu_q) - 1
+    for i in range(num_seqs):
+        ql, kl = cu_q[i + 1] - cu_q[i], cu_k[i + 1] - cu_k[i]
+        if ql < 0 or kl < 0:
+            raise ValueError(
+                f"{name}: cu_seqlens must be non-decreasing; segment {i} has "
+                f"q_len={ql}, k_len={kl}.")
+        # Empty KV segment → softmax over zero keys → -inf → NaN.  Raise (mirrors
+        # the non-varlen empty-KV guard in flash_attention).
+        if kl == 0:
+            raise ValueError(
+                f"{name}: segment {i} has zero KV length (cu_seqlens_k "
+                f"[{i}:{i+2}]={cu_k[i:i+2]}) — attention cannot attend to zero "
+                f"keys (would return NaN). Drop the empty segment or pad it.")
+        if ql == 0:
+            raise ValueError(
+                f"{name}: segment {i} has zero query length — empty query "
+                f"segments are malformed packing (drop the segment).")
+
+
 def _varlen_setup(q, k, v, cu_seqlens_q, cu_seqlens_k, scale):
     """Varlen forward setup (P-H1 extraction): dtype check, scale default, and
     one-shot materialization of ``cu_seqlens`` → Python lists.
 
     The lists are safe to close over in the ``custom_function`` (``mx.array``
     must NOT be used for slicing inside its backward — Phase-1 paged-RoPE
-    lesson).  Returns ``(scale, cu_q, cu_k_list, num_seqs)``.  Verbatim move from
-    the inline setup — no behavior change.
+    lesson).  Returns ``(scale, cu_q, cu_k_list, num_seqs)``.
+
+    Volet C: now validates ``cu_seqlens`` (CC-01) before returning — an empty
+    KV segment used to surface as a silent NaN downstream.
     """
     _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_varlen")
     if scale is None:
@@ -6168,6 +6268,8 @@ def _varlen_setup(q, k, v, cu_seqlens_q, cu_seqlens_k, scale):
     # GPU sync: varlen per-seq slicing needs Python ints.
     cu_q = [int(x) for x in cu_seqlens_q.tolist()]
     cu_k_list = [int(x) for x in cu_seqlens_k.tolist()]
+    _validate_cu_seqlens(cu_q, cu_k_list, q.shape[2], k.shape[2],
+                         "flash_attention_varlen")
     return scale, cu_q, cu_k_list, len(cu_q) - 1
 
 

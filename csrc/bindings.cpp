@@ -134,8 +134,60 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
 #include "mfa_sparse_attention.hpp"
 
 #include <array>
+#include <stdexcept>
 
 namespace nb = nanobind;
+
+namespace {
+// Volet C (CX-03 / CC-05 / CC-03 host half): shared host-side validation for the
+// raw backward bindings.  They bypass the autograd tape and previously accepted
+// malformed buffers → OOB reads / silent finite-wrong gradients.  Mirrors the
+// forward contract AND checks the aux arrays (O / L / dO) shapes against q.
+inline void mfa_check_backward_inputs(
+    const char* name,
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& O,
+    const mlx::core::array& L, const mlx::core::array& dO) {
+  auto err = [&](const std::string& msg) {
+    throw std::invalid_argument(std::string(name) + ": " + msg);
+  };
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    err("q, k, v must be 4-D [B, H, N, D]");
+  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0))
+    err("q, k, v must share the batch dim");
+  if (k.shape(2) != v.shape(2))
+    err("k and v must share the kv sequence length");
+  if (k.shape(1) != v.shape(1))
+    err("k and v must have the same number of heads");
+  if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
+    err("q, k, v must share the head_dim D");
+  if (k.shape(1) == 0 || q.shape(1) % k.shape(1) != 0)
+    err("q_heads must be a positive multiple of kv_heads (GQA)");
+  if (q.shape(3) != 64 && q.shape(3) != 128 && q.shape(3) != 256)
+    err("head_dim must be 64, 128, or 256");
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+    err("q, k, v must share dtype");
+  // aux arrays: O and dO are [B, Hq, Nq, D] like q; L is [B, Hq, Nq].
+  auto same4 = [&](const mlx::core::array& a) {
+    return a.ndim() == 4 && a.shape(0) == q.shape(0) && a.shape(1) == q.shape(1)
+        && a.shape(2) == q.shape(2) && a.shape(3) == q.shape(3);
+  };
+  if (!same4(O))  err("O must have q's shape [B, Hq, Nq, D]");
+  if (!same4(dO)) err("dO must have q's shape [B, Hq, Nq, D]");
+  if (L.ndim() != 3 || L.shape(0) != q.shape(0) || L.shape(1) != q.shape(1)
+      || L.shape(2) != q.shape(2))
+    err("L (logsumexp) must be [B, Hq, Nq]");
+}
+
+// Optional [B, Hq, Nq] aux array (e.g. the precomputed delta D) check.
+inline void mfa_check_bnq(const char* name, const char* what,
+    const mlx::core::array& q, const mlx::core::array& a) {
+  if (a.ndim() != 3 || a.shape(0) != q.shape(0) || a.shape(1) != q.shape(1)
+      || a.shape(2) != q.shape(2))
+    throw std::invalid_argument(
+        std::string(name) + ": " + what + " must be [B, Hq, Nq]");
+}
+}  // namespace
 
 NB_MODULE(_ext, m) {
   m.doc() = "mlx-mfa C++ extension: Metal Flash Attention for MLX";
@@ -157,7 +209,11 @@ NB_MODULE(_ext, m) {
       "q/k/v: [B, H, N, D], float16/bfloat16/float32. "
       "softcap: tanh softcapping factor (0.0 = disabled). "
       "window_left: sliding window left radius (-1 = disabled). "
-      "window_right: sliding window right radius (-1 = disabled).");
+      "window_right: sliding window right radius (-1 = disabled). "
+      "stream: ONLY None/omitted is accepted — this extension does not register "
+      "an mlx Stream/Device type caster, so passing a real mx.Stream/mx.Device "
+      "raises TypeError (CX-06, known limitation); the op always runs on the "
+      "default GPU stream.");
 
   // Debug: returns (O, L) so L (logsumexp) can be inspected from Python.
   m.def("mfa_forward_with_lse",
@@ -218,6 +274,7 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& L,
          const mlx::core::array& dO,
          float scale, bool causal) {
+        mfa_check_backward_inputs("mfa_backward_query_debug", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
@@ -249,6 +306,8 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& D,
          const mlx::core::array& dO,
          float scale, bool causal) {
+        mfa_check_backward_inputs("mfa_backward_kv_debug", q, k, v, O, L, dO);
+        mfa_check_bnq("mfa_backward_kv_debug", "D (delta)", q, D);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
@@ -280,6 +339,7 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& L,
          const mlx::core::array& dO,
          float scale, bool causal) {
+        mfa_check_backward_inputs("mfa_steel_backward", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         // G.1: Materialise all 6 inputs before Metal kernel dispatch.
         // MLX autograd may recycle GPU buffers; mlx::core::eval() fences against aliasing.

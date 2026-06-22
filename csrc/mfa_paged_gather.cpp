@@ -244,6 +244,29 @@ array mlx_mfa::mfa_paged_kv_gather(
     const int B          = block_table.shape(0);
     const int max_blocks = block_table.shape(1);
 
+    // CX-02 (volet C, host half): the kernel reads seq_lens[b] for b in [0,B)
+    // where B = block_table.shape(0).  If seq_lens is shorter than B it reads
+    // out of bounds (silent finite-wrong / fault).  Enforce the host invariant.
+    if (seq_lens.shape(0) != B) {
+        throw std::invalid_argument(
+            "mfa_paged_kv_gather: seq_lens length must equal block_table batch "
+            "size B (seq_lens.shape[0]=" + std::to_string(seq_lens.shape(0)) +
+            " vs B=" + std::to_string(B) + ").");
+    }
+    // CX-05 (volet C): the kernel reinterprets block_table / seq_lens buffers as
+    // int32 (data<int32_t>()).  A float/int64 array's bits read as int32 →
+    // silent finite-wrong indices.  Require int32 metadata.
+    if (block_table.dtype() != int32) {
+        throw std::invalid_argument(
+            "mfa_paged_kv_gather: block_table must be int32 (the kernel reads it "
+            "as int32; a different dtype reads garbage indices).");
+    }
+    if (seq_lens.dtype() != int32) {
+        throw std::invalid_argument(
+            "mfa_paged_kv_gather: seq_lens must be int32 (the kernel reads it as "
+            "int32; a different dtype reads garbage lengths).");
+    }
+
     mlx::core::Shape out_shape = {B, H, max_kv_len, D};
     auto st = to_stream(s);
 

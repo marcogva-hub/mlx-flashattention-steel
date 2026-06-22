@@ -42,6 +42,29 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     one-time `RuntimeWarning` (or raises under `MFA_REQUIRE_NAX=1`) instead of silently degrading.
   Callers passing malformed inputs that previously appeared to "work" (silently wrong) now get a clear,
   actionable error.
+- **Uniform host-side validation layer (audit volet C — closes the validation-gap *class*, not just the
+  cited instances; ~50 cells across 15 entry points × 15 edge-input classes moved silent-wrong/NaN/OOB →
+  raises-cleanly).** Valid-path output byteΔ-identical (boundary gate only).
+  - `flash_attention_varlen` now validates `cu_seqlens` via the shared `_validate_cu_seqlens` (mirrors
+    the paged-varlen sibling): an **empty/zero-length KV segment used to return silent NaN** (CC-01,
+    CRITICAL); non-monotone / `[0]≠0` / `[-1]≠total` / q-k segment-count mismatch likewise raise.
+  - **`dropout_p>0` combined with `attn_bias`/`softcap`/`window_size`/`alibi_slopes` now raises** instead
+    of silently dropping the feature (CX-01, CRITICAL — paper-fidelity, Rule 8). **Behaviour change**;
+    full dropout∘feature composition is deferred (FLAG-FOR-SIGNOFF in devnotes/validation_matrix.md).
+  - Zero-query (`Nq=0`) now honors the `(O,L)`/`(O,weights)` **return arity** instead of a bare array
+    (CX-04); negative non-sentinel `window_size` (< -1) raises (CC-17).
+  - **`return_lse` LSE convention unified** on the MFA-path `L = log2(Σ exp(score))` across both the
+    MFA and SDPA-fallback paths — the fallback previously returned `log2(Σ 2^{score})`, so the convention
+    silently flipped with head_dim (CC-04). **Behaviour change** for fp32 / unsupported-D `return_lse`
+    users only (f16/bf16 D∈{64,128,256} unchanged); docstring corrected. Natural-log LSE alternative is
+    a FLAG-FOR-SIGNOFF.
+  - **Raw `_ext` surfaces hardened** (bypass the public guards): `mfa_paged_kv_gather` validates
+    `seq_lens.shape[0]==B` (CX-02, CRITICAL host-half — was an OOB read) and int32 block_table/seq_lens
+    metadata (CX-05); the 8 raw V6-NAX backward wrappers (dense + sparse) reject invalid GQA
+    (`Hq%Hk≠0`, `Hk=0` → OOB KV-head read, CC-03), q-inconsistent aux arrays (lse/o/dO/d_vec), and
+    non-positive `wm`; the debug backward bindings + `mfa_steel_backward` now mirror the forward contract
+    (CX-03/CC-05). `mfa_attention_forward`'s `stream` arg documented as None-only (CX-06 — the extension
+    registers no Stream/Device caster; ops run on the default GPU stream).
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).
