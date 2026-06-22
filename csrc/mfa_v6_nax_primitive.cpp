@@ -35,12 +35,33 @@ namespace mlx_mfa {
 // the dK/dV/fused (dense + sparse) wrappers did not.  Aux arrays (lse/o/d_o/
 // d_vec) sized off q strides → under-sized aux over-reads; check them too.
 static inline void v6_check_bwd_gqa(const char* name,
-    const mlx::core::array& q, const mlx::core::array& k) {
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v) {
+  // CX-04 (volet H2): GQA (q↔k heads) AND K↔V mutual shape. The V6-NAX backward
+  // kernels derive kv extents/strides from K and read V at K's offsets without
+  // re-checking V — a V disagreeing with K on kv-seq / heads / head_dim drives an
+  // out-of-bounds device read → finite wrong-gradient.  Reject before dispatch.
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    throw std::runtime_error(std::string(name) + ": q, k, v must be 4-D [B,H,N,D]");
   if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
     throw std::runtime_error(std::string(name) +
         ": invalid GQA — Hq (" + std::to_string(q.shape(1)) +
         ") must be a positive multiple of Hk (" + std::to_string(k.shape(1)) +
         "); the V6-NAX backward reads OOB KV heads otherwise.");
+  if (k.shape(2) != v.shape(2))
+    throw std::runtime_error(std::string(name) +
+        ": k and v must share the kv sequence length (k=" +
+        std::to_string(k.shape(2)) + " v=" + std::to_string(v.shape(2)) + ").");
+  if (k.shape(1) != v.shape(1))
+    throw std::runtime_error(std::string(name) +
+        ": k and v must have the same number of heads (k=" +
+        std::to_string(k.shape(1)) + " v=" + std::to_string(v.shape(1)) + ").");
+  if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
+    throw std::runtime_error(std::string(name) +
+        ": q, k, v must share head_dim D (q=" + std::to_string(q.shape(3)) +
+        " k=" + std::to_string(k.shape(3)) + " v=" + std::to_string(v.shape(3)) + ").");
+  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0))
+    throw std::runtime_error(std::string(name) + ": q, k, v must share the batch dim.");
 }
 static inline void v6_aux_bnq(const char* name, const char* what,
     const mlx::core::array& q, const mlx::core::array& a) {
@@ -1202,9 +1223,13 @@ mlx::core::array v6_nax_backward_query(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal) {
-  if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dQ: Q must be 4D");
-  if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
-    throw std::runtime_error("V6NAX bwd dQ: Hq must be multiple of Hk");
+  // CX-04 (volet H2): was Q-rank + GQA only — add K↔V mutual shape + aux shape
+  // checks (o/lse/d_o/d_vec consistent with Q) like the other v6 backward bindings.
+  v6_check_bwd_gqa("V6NAX bwd dQ", q, k, v);
+  v6_aux_bnqd("V6NAX bwd dQ", "o", q, o);
+  v6_aux_bnq ("V6NAX bwd dQ", "lse", q, lse);
+  v6_aux_bnqd("V6NAX bwd dQ", "d_o", q, d_o);
+  v6_aux_bnq ("V6NAX bwd dQ", "d_vec", q, d_vec);
 
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
@@ -1379,7 +1404,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dKdV: Q must be 4D");
-  v6_check_bwd_gqa("V6NAX bwd dKdV", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dKdV", q, k, v);
   v6_aux_bnqd("V6NAX bwd dKdV", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dKdV", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dKdV", "d_o", q, d_o);
@@ -1719,7 +1744,7 @@ mlx::core::array v6_nax_backward_dv_sparse_raw(
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dV sparse: block_mask must be 2-D (Section A PoC)");
-  v6_check_bwd_gqa("V6NAX bwd dV sparse", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dV sparse", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dV sparse: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnq ("V6NAX bwd dV sparse", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dV sparse", "d_o", q, d_o);
@@ -1750,7 +1775,7 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV: Q must be 4D");
-  v6_check_bwd_gqa("V6NAX bwd dV", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dV", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dV: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnq ("V6NAX bwd dV", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dV", "d_o", q, d_o);
@@ -1919,7 +1944,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK: Q must be 4D");
-  v6_check_bwd_gqa("V6NAX bwd dK", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dK", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dK: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnqd("V6NAX bwd dK", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dK", "lse", q, lse);
@@ -2130,7 +2155,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
   if (q.shape(3) != 64 && q.shape(3) != 128)
     throw std::runtime_error(
         "V6NAX bwd fused dKdV: D must be 64 or 128 (Phase C.1.a + C.1.b)");
-  v6_check_bwd_gqa("V6NAX bwd fused dKdV", q, k);
+  v6_check_bwd_gqa("V6NAX bwd fused dKdV", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd fused dKdV: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnq ("V6NAX bwd fused dKdV", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd fused dKdV", "d_o", q, d_o);
@@ -2337,7 +2362,7 @@ mlx::core::array v6_nax_backward_query_sparse_raw(
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dQ sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dQ sparse: block_mask must be 2-D");
-  v6_check_bwd_gqa("V6NAX bwd dQ sparse", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dQ sparse", q, k, v);
   v6_aux_bnqd("V6NAX bwd dQ sparse", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dQ sparse", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dQ sparse", "d_o", q, d_o);
@@ -2527,7 +2552,7 @@ mlx::core::array v6_nax_backward_dk_sparse_raw(
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dK sparse: block_mask must be 2-D");
-  v6_check_bwd_gqa("V6NAX bwd dK sparse", q, k);
+  v6_check_bwd_gqa("V6NAX bwd dK sparse", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dK sparse: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnqd("V6NAX bwd dK sparse", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dK sparse", "lse", q, lse);
@@ -2724,7 +2749,7 @@ v6_nax_backward_fused_dkdv_sparse_raw(
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd fused-dKdV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd fused-dKdV sparse: block_mask must be 2-D");
-  v6_check_bwd_gqa("V6NAX bwd fused-dKdV sparse", q, k);
+  v6_check_bwd_gqa("V6NAX bwd fused-dKdV sparse", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd fused-dKdV sparse: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
   v6_aux_bnq ("V6NAX bwd fused-dKdV sparse", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd fused-dKdV sparse", "d_o", q, d_o);

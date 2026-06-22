@@ -391,6 +391,10 @@ NB_MODULE(_ext, m) {
          const mlx::core::array& dO,
          const mlx::core::array& block_mask,
          float scale, bool causal) {
+        // CX-04 (volet H2): this binding had NO common backward-input validation
+        // (undersized L / mismatched K-V → finite wrong-gradient). Apply the same
+        // check as the other backward bindings.
+        mfa_check_backward_inputs("mfa_steel_backward_sparse", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         mlx_mfa::MFAttention::Params params{};
         params.head_dim       = q.shape(3);

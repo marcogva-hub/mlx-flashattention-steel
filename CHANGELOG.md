@@ -150,6 +150,15 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       (num_blocks, block_size, H_kv, D) — the kernels bind V at K's strides, so a mismatched V pool drove
       an out-of-bounds device read (finite-wrong). Exhaustive paged correctness + validation locks added
       at `tests/test_paged_envelope.py` (35 cells; table at `audit/round3_remediation/paged_envelope.md`).
+  - **Raw backward-binding validation completion (volet H2 — round-5 CX-04).** Every exported raw
+    `_ext` backward binding now validates aux-array shapes (`L`/`lse`/`o`/`dO`/`D` consistent with Q),
+    **K↔V mutual shape** (kv-seq, heads, head_dim), and GQA — raising before dispatch instead of
+    returning a finite, materially-wrong gradient. Volet C added the common validator to some bindings
+    but `mfa_steel_backward_sparse` had none, `v6_nax_backward_query` checked only Q-rank+GQA (no aux),
+    and the whole V6-NAX backward family (`v6_nax_backward_{query,kv,dk,dv,fused_dkdv}[_sparse]_raw`)
+    never checked K↔V mutual shape — a mismatched V drove an out-of-bounds read (e.g. dQ delta 174).
+    Lock: `tests/test_raw_backward_validation_h2.py`; enumeration at
+    `audit/round3_remediation/raw_backward_validation.md`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
