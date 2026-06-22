@@ -7280,6 +7280,35 @@ class PagedKVCache(KVCacheProtocol):
         )
 
 
+def _assert_paged_pool_compat(k_pages, v_pages, fn, *, cu_seqlens=()):
+    """Volet H (CX-03/CX-02): paged-pool mutual-shape + metadata-dtype guard.
+
+    The paged kernels derive num_blocks / block_size / H_kv / D and all strides
+    from the K pool and bind V at those SAME offsets without re-deriving from V —
+    so a V pool that disagrees with K on any of the four dims drives an
+    out-of-bounds device read (silent finite-wrong) (CX-03).  The Metal path also
+    reinterprets cu_seqlens buffers as int32, so a non-int32 cu_seqlens reads
+    garbage offsets (CX-02).  Reject both before dispatch (Rule 8).
+    """
+    if k_pages.ndim != 4 or v_pages.ndim != 4:
+        raise ValueError(
+            f"{fn}: k_pages and v_pages must be 4-D [num_blocks, block_size, "
+            f"H_kv, D]; got k_pages={k_pages.ndim}D, v_pages={v_pages.ndim}D.")
+    if tuple(v_pages.shape) != tuple(k_pages.shape):
+        raise ValueError(
+            f"{fn}: v_pages shape {tuple(v_pages.shape)} must equal k_pages shape "
+            f"{tuple(k_pages.shape)} (num_blocks, block_size, H_kv, D) — the kernel "
+            f"binds V at K's strides and would read out of bounds otherwise.")
+    import mlx.core as mx
+    for name, cu in cu_seqlens:
+        if cu is None:
+            continue
+        if cu.dtype != mx.int32:
+            raise ValueError(
+                f"{fn}: {name} must be int32 (the kernel reads it as int32; a "
+                f"different dtype reads garbage offsets). Got {cu.dtype}.")
+
+
 def _validate_paged_block_table(
     block_table: "mx.array",
     seq_lens: "mx.array",
@@ -7424,6 +7453,7 @@ def flash_attention_paged(
         out    = flash_attention_paged(q, pool_k, pool_v, table, lens)
     """
     _assert_kv_dtype_matches_q(q, [("k_pages", k_pages), ("v_pages", v_pages)], "flash_attention_paged")
+    _assert_paged_pool_compat(k_pages, v_pages, "flash_attention_paged")  # CX-03
 
     import mlx.core as mx
 
@@ -7800,6 +7830,9 @@ def flash_attention_paged_varlen(
         Packed output ``[1, H_q, total_q, D]``.
     """
     _assert_kv_dtype_matches_q(q, [("k_pages", k_pages), ("v_pages", v_pages)], "flash_attention_paged_varlen")
+    _assert_paged_pool_compat(  # CX-03 (pool shape) + CX-02 (cu_seqlens dtype)
+        k_pages, v_pages, "flash_attention_paged_varlen",
+        cu_seqlens=[("cu_seqlens_q", cu_seqlens_q)])
 
     import mlx.core as mx
 
@@ -8374,6 +8407,11 @@ def flash_attention_paged_varlen_turboquant(
         Packed output ``[1, H_q, total_q, D]``.
     """
     _assert_kv_dtype_matches_q(q, [("v_pages", v_pages), ("v_pool_tq", v_pool_tq)], "flash_attention_paged_varlen_turboquant")
+    import mlx.core as _mxc  # local: this fn rebinds `mx` further down (UnboundLocal)
+    if cu_seqlens_q.dtype != _mxc.int32:  # CX-02 (volet H): kernel reads cu as int32
+        raise ValueError(
+            "flash_attention_paged_varlen_turboquant: cu_seqlens_q must be int32 "
+            f"(the kernel reads it as int32; got {cu_seqlens_q.dtype}).")
 
     import math
     import mlx.core as mx

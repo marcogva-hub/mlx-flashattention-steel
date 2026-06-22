@@ -2438,6 +2438,17 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     throw std::invalid_argument("mfa_paged_steel_forward: k_pool must be 4-D [num_blocks,BS,H_kv,D]");
   if (v_pool.ndim() != 4)
     throw std::invalid_argument("mfa_paged_steel_forward: v_pool must be 4-D [num_blocks,BS,H_kv,D]");
+  // CX-03 (volet H): the kernel derives num_blocks/block_size/H_kv/D and all
+  // strides from k_pool and binds V at those SAME offsets — a V pool disagreeing
+  // on any of the four dims drives an out-of-bounds device read (silent finite-
+  // wrong). Require v_pool to match k_pool exactly.
+  for (int d = 0; d < 4; ++d)
+    if (v_pool.shape(d) != k_pool.shape(d))
+      throw std::invalid_argument(
+          "mfa_paged_steel_forward: v_pool shape must equal k_pool shape "
+          "[num_blocks,block_size,H_kv,D] (mismatch at dim " + std::to_string(d) +
+          ": k=" + std::to_string(k_pool.shape(d)) + " v=" +
+          std::to_string(v_pool.shape(d)) + ").");
   if (block_table.ndim() != 2)
     throw std::invalid_argument("mfa_paged_steel_forward: block_table must be 2-D [B,max_blocks]");
   if (seq_lens.ndim() != 1)
@@ -3070,6 +3081,20 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   if (q.ndim() != 4 || q.shape(0) != 1)
     throw std::runtime_error("mfa_paged_varlen_forward: Q must be [1, H_q, total_q, D]");
 
+  // CX-03 (volet H): V pool bound at K's strides — require exact shape match.
+  if (k_pool.ndim() != 4 || v_pool.ndim() != 4)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: k_pool/v_pool must be 4-D [num_blocks,block_size,H_kv,D].");
+  for (int d = 0; d < 4; ++d)
+    if (v_pool.shape(d) != k_pool.shape(d))
+      throw std::invalid_argument(
+          "mfa_paged_varlen_forward: v_pool shape must equal k_pool shape "
+          "(mismatch at dim " + std::to_string(d) + ").");
+  // CX-02 (volet H): the kernel reads cu_seqlens_q as int32.
+  if (cu_seqlens_q.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: cu_seqlens_q must be int32 (read as int32).");
+
   // CX-04 (volet C2, raw host guard): the kernel reads block_table[seq] /
   // seq_lens_kv[seq] for seq in [0, num_seqs) where num_seqs =
   // cu_seqlens_q.shape[0]-1.  Validate metadata rank + batch cardinality before
@@ -3293,6 +3318,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   if (cu_seqlens_q.ndim() != 1 || cu_seqlens_q.shape(0) < 1)
     throw std::invalid_argument(
         "mfa_paged_varlen_tq_forward: cu_seqlens_q must be 1-D [num_seqs+1]");
+  // CX-02 (volet H): the kernel reads cu_seqlens_q as int32.
+  if (cu_seqlens_q.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_tq_forward: cu_seqlens_q must be int32 (read as int32).");
   if (block_table.ndim() != 2)
     throw std::invalid_argument(
         "mfa_paged_varlen_tq_forward: block_table must be 2-D [num_seqs, max_blocks]");

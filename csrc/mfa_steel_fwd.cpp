@@ -3002,6 +3002,17 @@ struct MFAMMATile {
   // Per-batch KV length
   ss << "  const int kL_batch = seq_lens[b_idx];\n";
   ss << "  const int NK_batch = (kL_batch + MFA_BK - 1) / MFA_BK;\n";
+  // CX-01 (volet H): PER-SEQUENCE causal offset. The host's p->qL_off uses the
+  // batch-global kL = max(seq_lens), which is wrong for heterogeneous seq_lens —
+  // each sequence's queries sit at the end of ITS OWN kv history (kL_batch), not
+  // the batch max. Mirror volet G's per-unit convention (qL_off = max(0, kL-qL))
+  // using this sequence's kL_batch. For homogeneous seq_lens kL_batch == p->kL so
+  // qL_off_b == p->qL_off (byteΔ-identical). Used for the causal diagonal, kb_lim
+  // and window alignment below in place of the batch-global p->qL_off.
+  if (causal)
+    ss << "  const int qL_off_b = (p->qL < kL_batch) ? (kL_batch - p->qL) : 0;\n";
+  else
+    ss << "  const int qL_off_b = 0;\n";
   ss << "\n";
   // Q/O base pointers
   ss << "  const ulong boff = (ulong)b_idx * p->Q_strides[0]\n";
@@ -3081,14 +3092,14 @@ struct MFAMMATile {
   ss << "\n";
   // K-loop limit
   if (causal) {
-    ss << "  int q_max = (qb + 1) * MFA_BQ + p->qL_off;\n";
+    ss << "  int q_max = (qb + 1) * MFA_BQ + qL_off_b;\n";
     ss << "  int kb_lim = min((q_max + MFA_BK - 1) / MFA_BK, NK_batch);\n";
   } else {
     ss << "  int kb_lim = NK_batch;\n";
   }
   // Sliding window: per-Q-block kb_start (left) and kb_lim clamp (right).
   if (has_window) {
-    ss << "  int q_min = qb * MFA_BQ + p->qL_off;\n";
+    ss << "  int q_min = qb * MFA_BQ + qL_off_b;\n";
     // Left bound
     ss << "  int kb_start, kb_last_win;\n";
     ss << "  if (p->window_left >= 0) {\n";
@@ -3201,11 +3212,11 @@ struct MFAMMATile {
   // For the paged kernel, qL_off accounts for N_q < S_kv positioning.
   if (causal) {
     ss << "    {\n";
-    ss << "      const int first_causal_kb = (qb * MFA_BQ + p->qL_off) / MFA_BK;\n";
+    ss << "      const int first_causal_kb = (qb * MFA_BQ + qL_off_b) / MFA_BK;\n";
     ss << "      if (kb >= first_causal_kb) {\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "          const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "          const int row = qb * MFA_BQ + qL_off_b + tm + sm + i * 8;\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "            const int col = kb * MFA_BK + sn + j * 8;\n";
@@ -3225,7 +3236,7 @@ struct MFAMMATile {
     ss << "    if (kb <= kb_last_win) {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        const int row = qb * MFA_BQ + qL_off_b + tm + sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";
@@ -3242,7 +3253,7 @@ struct MFAMMATile {
     ss << "    if (kb >= kb_first_right) {\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";
+    ss << "        const int row = qb * MFA_BQ + qL_off_b + tm + sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "          const int col = kb * MFA_BK + sn + j * 8;\n";

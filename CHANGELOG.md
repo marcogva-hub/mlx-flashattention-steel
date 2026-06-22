@@ -41,6 +41,17 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
    causal and the dense/paged kernels; equal-length (`N_q == N_k`) and `N_q > N_k` segments are
    **byte-identical** (`qL_off` is 0 there). Forward/backward are now consistent (the backward already
    used per-segment dense `flash_attention`, i.e. lower-right). (round-4 CX-01, volet G.)
+4. **Paged attention causal with heterogeneous `seq_lens` is now per-sequence correct** (was
+   batch-global wrong). `flash_attention_paged(causal=True)` and the raw `mfa_paged_steel_forward`
+   (also reached by `flash_attention_paged_varlen`'s equal-length fast path) computed a single
+   batch-global causal offset `qL_off = max(0, max(seq_lens) − N_q)` applied to **every** sequence —
+   so for a batch whose sequences have **different** KV lengths, the shorter sequences attended the
+   wrong key range (silent-wrong). Fixed: the kernel now derives a **per-sequence**
+   `qL_off = max(0, seq_lens[b] − N_q)` from the per-sequence kv length it already holds (mirroring the
+   volet-G per-unit convention). **Who is affected:** paged causal callers with a batch of *unequal*
+   `seq_lens` see **changed (now-correct)** values for the shorter sequences; **homogeneous `seq_lens`
+   batches are byte-identical** (the per-seq offset equals the old batch-global offset — proven by a
+   before/after rebuild: homo byteΔ=0, hetero byteΔ=2.35). (round-5 CX-01, volet H.)
 
 ### Breaking / Behavior
 - **Input validation now raises `ValueError`** (previously silently-wrong / undefined):
@@ -129,6 +140,16 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     skip-when-unset is correct offline). Enumerated all `publish.yml`/`ci.yml` gates — no other
     skip-escape (GATE 2/5 are shell/script exit-codes, GATE 4 has 0 skip sites). See
     `audit/round3_remediation/gate_enumeration_d2.md`.
+  - **Paged validation widening (volet H — round-5 CX-02/CX-03).** Two more paged silent-wrong/OOB
+    surfaces now raise `ValueError` before dispatch:
+    - **`cu_seqlens` dtype (CX-02):** `flash_attention_paged_varlen` and the TurboQuant sibling (+ raw
+      `mfa_paged_varlen_forward` / `mfa_paged_varlen_tq_forward`) now require `cu_seqlens_q` to be
+      `int32` — the Metal path reads it as int32, so an int64/float array silently read garbage offsets.
+    - **K/V pool shape (CX-03):** `flash_attention_paged` (+ raw `mfa_paged_steel_forward` /
+      `mfa_paged_varlen_forward`) now require the V pool to match the K pool on all four dims
+      (num_blocks, block_size, H_kv, D) — the kernels bind V at K's strides, so a mismatched V pool drove
+      an out-of-bounds device read (finite-wrong). Exhaustive paged correctness + validation locks added
+      at `tests/test_paged_envelope.py` (35 cells; table at `audit/round3_remediation/paged_envelope.md`).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
