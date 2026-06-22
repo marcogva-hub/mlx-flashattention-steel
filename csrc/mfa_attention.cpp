@@ -2448,6 +2448,21 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   const int N = q.shape(2);
   const int D = q.shape(3);
 
+  // CX-02 (volet C2, raw host guard mirroring mfa_paged_kv_gather): the kernel
+  // reads block_table[b]/seq_lens[b] for b in [0,B) where B is the query batch.
+  // A shorter table/seq_lens drives an out-of-bounds device read (silent NaN /
+  // finite-wrong).  Reject before dispatch (Rule 8).
+  if (block_table.shape(0) != B)
+    throw std::invalid_argument(
+        "mfa_paged_steel_forward: block_table batch size (" +
+        std::to_string(block_table.shape(0)) + ") must equal q batch B (" +
+        std::to_string(B) + ").");
+  if (seq_lens.shape(0) != B)
+    throw std::invalid_argument(
+        "mfa_paged_steel_forward: seq_lens length (" +
+        std::to_string(seq_lens.shape(0)) + ") must equal q batch B (" +
+        std::to_string(B) + ").");
+
   // seq_lens must be evaluated before eval_gpu() so we can compute kL for grid.
   // The free function forces evaluation here.
   mlx::core::eval(seq_lens);
@@ -3030,6 +3045,37 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   if (q.ndim() != 4 || q.shape(0) != 1)
     throw std::runtime_error("mfa_paged_varlen_forward: Q must be [1, H_q, total_q, D]");
 
+  // CX-04 (volet C2, raw host guard): the kernel reads block_table[seq] /
+  // seq_lens_kv[seq] for seq in [0, num_seqs) where num_seqs =
+  // cu_seqlens_q.shape[0]-1.  Validate metadata rank + batch cardinality before
+  // dispatch — a short array drives an out-of-bounds device read (silent NaN /
+  // finite-wrong) (Rule 8).
+  if (cu_seqlens_q.ndim() != 1 || cu_seqlens_q.shape(0) < 1)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: cu_seqlens_q must be 1-D [num_seqs+1]");
+  if (block_table.ndim() != 2)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: block_table must be 2-D [num_seqs, max_blocks]");
+  if (seq_lens_kv.ndim() != 1)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: seq_lens_kv must be 1-D [num_seqs]");
+  if (tile_offsets.ndim() != 1)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: tile_offsets must be 1-D [num_seqs+1]");
+  {
+    const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
+    if (block_table.shape(0) != num_seqs)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_forward: block_table batch size (" +
+          std::to_string(block_table.shape(0)) + ") must equal num_seqs (" +
+          std::to_string(num_seqs) + " = cu_seqlens_q.shape[0]-1).");
+    if (seq_lens_kv.shape(0) != num_seqs)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_forward: seq_lens_kv length (" +
+          std::to_string(seq_lens_kv.shape(0)) + ") must equal num_seqs (" +
+          std::to_string(num_seqs) + ").");
+  }
+
   int H_q     = q.shape(1);
   int total_q = q.shape(2);
   int D       = q.shape(3);
@@ -3213,6 +3259,34 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     throw std::runtime_error("mfa_paged_varlen_tq_forward: Q must be [1, H_q, total_q, D]");
   if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
     throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
+
+  // CX-04 (volet C2, raw host guard): the kernel reads block_table[seq] /
+  // seq_lens_kv[seq] for seq in [0, num_seqs) where num_seqs =
+  // cu_seqlens_q.shape[0]-1.  Validate metadata rank + batch cardinality before
+  // dispatch — a short array drives an out-of-bounds device read (silent NaN)
+  // (Rule 8).
+  if (cu_seqlens_q.ndim() != 1 || cu_seqlens_q.shape(0) < 1)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_tq_forward: cu_seqlens_q must be 1-D [num_seqs+1]");
+  if (block_table.ndim() != 2)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_tq_forward: block_table must be 2-D [num_seqs, max_blocks]");
+  if (seq_lens_kv.ndim() != 1)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_tq_forward: seq_lens_kv must be 1-D [num_seqs]");
+  {
+    const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
+    if (block_table.shape(0) != num_seqs)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: block_table batch size (" +
+          std::to_string(block_table.shape(0)) + ") must equal num_seqs (" +
+          std::to_string(num_seqs) + " = cu_seqlens_q.shape[0]-1).");
+    if (seq_lens_kv.shape(0) != num_seqs)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: seq_lens_kv length (" +
+          std::to_string(seq_lens_kv.shape(0)) + ") must equal num_seqs (" +
+          std::to_string(num_seqs) + ").");
+  }
 
   int H_q     = q.shape(1);
   int total_q = q.shape(2);

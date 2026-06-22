@@ -671,6 +671,13 @@ def flash_attention(
     # No mx.repeat needed — K/V are passed with their original H_kv heads.
     q_heads = q.shape[1]
     kv_heads = k.shape[1]
+    # CC (volet C2): kv_heads==0 (empty-head K/V) crashed with a raw
+    # ZeroDivisionError at the modulo below; reject it cleanly first (Rule 8).
+    if kv_heads <= 0 or q_heads <= 0:
+        raise ValueError(
+            f"flash_attention: q and k must have >= 1 head; got q_heads="
+            f"{q_heads}, kv_heads={kv_heads}."
+        )
     if kv_heads != q_heads:
         if q_heads % kv_heads != 0:
             raise ValueError(
@@ -3863,6 +3870,30 @@ def flash_attention_gna(
             f"seq_shape, window_size, stride must have same length. "
             f"Got {len(seq_shape)}, {len(window_size)}, {len(stride)}."
         )
+    # CX-03 (volet C2): the native GNA kernel derives B/N/H/D from Q and reads K/V
+    # forward from their own base pointers; it never broadcasts.  Bq>Bk, k_seq!=N,
+    # Hk!=Hq/Hv, or D_k!=D → out-of-bounds device reads → SILENT finite-wrong
+    # (reproduced: q=[2,2,64,128]/kv=[1,2,64,128] → finite, wrong out[1]).  GNA is
+    # neighborhood self-attention, so K/V must match Q on batch, sequence, heads
+    # and head-dim.  Reject the malformed contract before dispatch (Rule 8).
+    if not (q.shape[0] == k.shape[0] == v.shape[0]):
+        raise ValueError(
+            f"flash_attention_gna: q, k, v must share the batch dim. Got "
+            f"q_batch={q.shape[0]}, k_batch={k.shape[0]}, v_batch={v.shape[0]}.")
+    if not (k.shape[2] == v.shape[2] == N):
+        raise ValueError(
+            f"flash_attention_gna: k, v sequence length must equal q's N={N} "
+            f"(neighborhood self-attention). Got k_seq={k.shape[2]}, "
+            f"v_seq={v.shape[2]}.")
+    if not (q.shape[1] == k.shape[1] == v.shape[1]):
+        raise ValueError(
+            f"flash_attention_gna: q, k, v must have the same number of heads. "
+            f"Got q_heads={q.shape[1]}, k_heads={k.shape[1]}, "
+            f"v_heads={v.shape[1]}.")
+    if not (k.shape[3] == v.shape[3] == D):
+        raise ValueError(
+            f"flash_attention_gna: k, v head_dim must equal q's D={D}. Got "
+            f"k_dim={k.shape[3]}, v_dim={v.shape[3]}.")
 
     if scale is None:
         scale = 1.0 / math.sqrt(D)
@@ -7181,6 +7212,7 @@ def _validate_paged_block_table(
     max_blocks: int,
     *,
     fn: str,
+    expected_batch: "Optional[int]" = None,
 ) -> None:
     """Layer-2 host validation for the public paged-KV APIs (memory-safety: CC-02
     CRITICAL / CC-03 HIGH).
@@ -7190,12 +7222,52 @@ def _validate_paged_block_table(
     drive an out-of-bounds device read inside the paged kernels.  ``-1`` (an
     unallocated/padding page) stays valid and contributes zero.
 
+    Volet C2 (round-4 CX-02/CC-01 + CX-05) — *batch-cardinality and dtype* were
+    the round-3 enumeration gaps: this shared validator checked block_table/seq_lens
+    *values* only, never that they have one row per batch element, nor that they are
+    int32.  The paged kernels read ``block_table[b]`` / ``seq_lens[b]`` for
+    ``b in [0, B)`` (B = block_table.shape[0], and = the query batch for the
+    non-varlen path) and reinterpret both buffers as int32.  A short metadata array
+    → OOB device read (silent NaN / finite-wrong); a float/int64 array → garbage
+    indices.  Both are now rejected here.
+
     This guards only the *public* Python entry points.  Direct ``_ext.*`` callers
-    bypass this and are protected by the in-kernel bounds guard (which clamps to a
-    zero contribution rather than reading OOB).  See ``RELEASE_PHILOSOPHY`` /
-    CHANGELOG behaviour note.
+    are protected by the host guards mirrored into ``csrc/`` (volet C2) plus the
+    in-kernel bounds guard.  See ``RELEASE_PHILOSOPHY`` / CHANGELOG behaviour note.
     """
     import mlx.core as mx
+
+    # --- rank (CX-02/CX-05): the kernels index block_table as [B, max_blocks]
+    #     and seq_lens as [B]; a wrong rank mis-strides every lookup. ----------
+    if block_table.ndim != 2:
+        raise ValueError(
+            f"{fn}: block_table must be 2-D [B, max_blocks]; got ndim="
+            f"{block_table.ndim}.")
+    if seq_lens.ndim != 1:
+        raise ValueError(
+            f"{fn}: seq_lens must be 1-D [B]; got ndim={seq_lens.ndim}.")
+    # --- dtype (CX-05): the kernels reinterpret these buffers as int32. -------
+    if block_table.dtype != mx.int32:
+        raise ValueError(
+            f"{fn}: block_table must be int32 (the kernel reads it as int32; a "
+            f"different dtype reads garbage indices). Got {block_table.dtype}.")
+    if seq_lens.dtype != mx.int32:
+        raise ValueError(
+            f"{fn}: seq_lens must be int32 (the kernel reads it as int32; a "
+            f"different dtype reads garbage lengths). Got {seq_lens.dtype}.")
+    # --- batch cardinality (CX-02/CC-01): seq_lens must have one entry per
+    #     block_table row, and (non-varlen) block_table one row per query batch.
+    B = block_table.shape[0]
+    if seq_lens.shape[0] != B:
+        raise ValueError(
+            f"{fn}: seq_lens length ({seq_lens.shape[0]}) must equal block_table "
+            f"batch size B ({B}); the kernel reads seq_lens[b] for b in [0, B) — "
+            f"a shorter array drives an out-of-bounds read.")
+    if expected_batch is not None and B != expected_batch:
+        raise ValueError(
+            f"{fn}: block_table batch size ({B}) must equal the query batch "
+            f"({expected_batch}); the kernel reads block_table[b]/seq_lens[b] for "
+            f"b in [0, query_batch) — a shorter table drives an out-of-bounds read.")
 
     if block_table.size:
         bmin = int(mx.min(block_table).item())
@@ -7287,6 +7359,12 @@ def flash_attention_paged(
         block_table, seq_lens, k_pages.shape[0], block_size,
         block_table.shape[1] if block_table.ndim == 2 else 0,
         fn="flash_attention_paged",
+        # With cache_batch_idx (continuous batching) the full block_table/seq_lens
+        # legitimately have MORE rows than the active q batch — the remap
+        # (bt_eff = block_table[idx]) selects q.shape[0] rows below, and
+        # cache_batch_idx ranges are validated against block_table.shape[0]
+        # separately.  Only tie block_table rows to q batch in the non-remap case.
+        expected_batch=(q.shape[0] if cache_batch_idx is None else None),
     )
     if scale is None:
         scale = 1.0 / math.sqrt(D)

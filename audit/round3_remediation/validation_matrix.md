@@ -85,3 +85,79 @@ Edge classes: **eKV**=empty-KV(S=0) · **eQ**=empty-query(Nq=0) · **nm**=non-mo
 ---
 *Telemetry/validation-only host gate; no kernel math, dispatch, or valid-path
 output changed (byteΔ-identity #2).  Commit on `fix/audit-remediation` only.*
+
+---
+
+## Volet C2 — widening (round-4 CX-02/CC-01 · CX-03 · CX-04 · CX-05 · CC)
+
+> Branch `fix/audit-remediation`, host **M5 Max / macOS 26.6 / MLX 0.31.2**,
+> base HEAD `<after volet G>`. The round-4 re-audit showed the volet-C
+> enumeration above had **completeness gaps**: it locked `mfa_paged_kv_gather`
+> but **missed the shared `_validate_paged_block_table` validator** (used by
+> `flash_attention_paged` + paged-varlen + TQ) and **lacked a Q/K/V
+> mutual-shape-compat column** entirely. Closed here. Line numbers verified at
+> source (RULE 16).
+
+### The round-3 gaps, explicitly
+
+1. **Missing rows (psB/pdt columns existed, but these entries were never rowed):**
+   `flash_attention_paged` (+ the shared `_validate_paged_block_table`),
+   `_ext.mfa_paged_steel_forward`, `_ext.mfa_paged_varlen_forward`,
+   `_ext.mfa_paged_varlen_tq_forward`, `flash_attention_gna` (public + native).
+   The matrix had `mfa_paged_kv_gather` only — so the *public* paged path and the
+   *raw kernel-level* paged paths were unguarded for `psB`/`pdt`.
+2. **Missing column `qkv`** = Q/K/V mutual-shape-compat (batch equal; `k_seq==v_seq`
+   [`==N` for GNA]; head counts consistent; `head_dim` equal). The dense
+   `flash_attention` got this in volet C (C-01) but it was never a *column*, so no
+   other entry was swept for it — GNA (CX-03) fell through.
+
+### New column + rows (`qkv` = Q/K/V mutual-shape-compat)
+
+| entry point | qkv | psB | pdt | round-3 status |
+|---|---|---|---|---|
+| `flash_attention` | OK (C-01) | N/A | N/A | had qkv-check, not columned |
+| `_validate_paged_block_table` (shared) | N/A | **RC** | **RC** | **row missing** |
+| `flash_attention_paged` (public) | N/A | **RC** | **RC** | **row missing** (psB→NaN, pdt→trunc) |
+| `_ext.mfa_paged_steel_forward` | N/A | **RC** | OK* | **row missing** (psB→NaN/OOB) |
+| `_ext.mfa_paged_varlen_forward` | N/A | **RC** | N/A‡ | **row missing** (psB→NaN) |
+| `_ext.mfa_paged_varlen_tq_forward` | N/A | **RC** | N/A‡ | **row missing** (psB→NaN) |
+| `flash_attention_paged_varlen_turboquant` | N/A | **RC** | **RC** | psB via shared validator |
+| `flash_attention_gna` (public + native) | **RC** | N/A | N/A | **column missing** (batch/seq/head/D → finite-wrong) |
+
+`*` raw STEEL auto-casts metadata to int32 (pre-existing convenience) → `pdt` not
+gated there; batch-cardinality (`psB`) is the OOB fix. `‡` raw varlen `pdt` left
+to the kernel's existing handling; `psB` (the OOB) is gated via num_seqs =
+`cu_seqlens_q.shape[0]-1`.
+
+### Findings closed (round-4)
+
+| finding | sev | entry × class | was | now |
+|---|---|---|---|---|
+| **CX-02 / CC-01** | CRIT | `_validate_paged_block_table` + raw `mfa_paged_steel_forward` × psB | rows < batch → **OOB read** → silent NaN/finite-wrong | shared validator: `block_table.shape[0]==expected_batch` (non-remap) + `seq_lens.shape[0]==block_table.shape[0]`; raw STEEL host guard mirrors it |
+| **CX-05** | HIGH | `_validate_paged_block_table` × pdt | float/int64 metadata read as int32 → silent-wrong indices | validator rejects non-int32 metadata |
+| **CX-04** | HIGH | raw `mfa_paged_varlen_forward` + TQ × psB | only Q rank checked → short `seq_lens_kv` → **OOB** → NaN | host guards: metadata rank + `block_table.shape[0]==seq_lens_kv.shape[0]==num_seqs` |
+| **CX-03** | CRIT | `flash_attention_gna` (native) × qkv | no Q/K/V batch/seq/head/D check → **OOB** → finite-wrong | rejects batch/seq(`==N`)/head/`head_dim` mismatch pre-dispatch |
+| **CC** | LOW | `flash_attention` × h0 | `Hk=0` → raw `ZeroDivisionError` | clean `ValueError` (q/k must have ≥1 head) |
+
+### Validation (bite-proven)
+1. **Full suite:** `2513 passed, 91 skipped, 0 failed, 0 XPASS` (~69s); collection
+   ≥1800. `tests/test_validation_matrix_c2.py` (14 cells) green. Oracle envelope
+   (`test_oracle_envelope.py`, 61 cells) unchanged → **byteΔ-identity** on the
+   valid envelope (the diff is `throw`/`raise` *before* any compute).
+2. **Each round-4 repro now raises** (was silent): `flash_attention_paged` B=2 /
+   `seq_lens=[48]` (NaN); `block_table` B=1 / q B=2 (wrong-finite); float metadata
+   (int32 trunc); raw `mfa_paged_steel_forward` short seq/bt (NaN/wrong); raw
+   `mfa_paged_varlen_forward` short `seq_lens_kv` (NaN); GNA `q=[2,2,64,128]`/
+   `kv=[1,2,64,128]` and `k_seq!=v_seq` (finite-wrong); `Hk=0` (ZeroDivisionError).
+3. **Bite proofs** (non-destructive Edit-restore; sole-guard cells):
+   - **CX-03 (Python):** neutralize GNA batch check → `gna_batch_mismatch` **FAILS**;
+     restore → passes.
+   - **CX-02 (C++, rebuild):** neutralize `if (seq_lens.shape(0) != B)` in
+     `mfa_paged_steel_forward` + rebuild → `paged_raw_steel_seq_short` **FAILS**;
+     restore + rebuild → passes.
+   - The *public* paged cells are **doubly-guarded** (shared validator + C++ gather
+     guard) — neutralizing one layer is masked by the other (defense-in-depth), so
+     bite proofs target sole-guard cells.
+
+*Volet C2 is a validation-only host-gate widening; no kernel math, dispatch, or
+valid-path output changed.  Commit on `fix/audit-remediation` only.*

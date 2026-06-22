@@ -52,6 +52,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     `[-1, num_blocks)`) and out-of-range `seq_lens` (see CC-02/CC-03 under Fixed). `-1` (unallocated
     page padding) stays valid. Direct `_ext.*` paged calls now return zeroed contributions for
     out-of-range ids (in-kernel guard) instead of reading out of bounds.
+  - **Validation-matrix widening (volet C2 — round-4 CX-02/CC-01, CX-03, CX-04, CX-05, CC).** The
+    round-3 validation pass missed the shared paged validator and a Q/K/V-shape column; both are now
+    closed (all previously silent-wrong / OOB → loud `ValueError` before dispatch):
+    - **Paged batch-cardinality** (CX-02/CC-01): the shared `_validate_paged_block_table` now requires
+      `block_table` to have one row per batch element and `seq_lens` one entry per `block_table` row
+      (`flash_attention_paged`, paged-varlen, TQ). Mismatched metadata previously read out of bounds →
+      silent **NaN** / wrong-finite. Host guards mirroring `mfa_paged_kv_gather` added to the raw
+      `_ext.mfa_paged_steel_forward` / `mfa_paged_varlen_forward` / `mfa_paged_varlen_tq_forward`.
+    - **Paged metadata dtype** (CX-05): `block_table` / `seq_lens` must be `int32` (the kernel
+      reinterprets the buffer as int32; float/int64 previously read garbage indices silently).
+    - **GNA Q/K/V mutual-shape-compat** (CX-03): `flash_attention_gna` now rejects mismatched batch /
+      kv-sequence (must equal `N`) / heads / head_dim. The native GNA kernel reads K/V forward without
+      broadcasting, so a mismatch previously produced **finite-wrong** output.
+    - **`Hk=0`** (CC): empty-head K/V now raises a clean `ValueError` instead of a raw
+      `ZeroDivisionError` at the GQA modulo.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
