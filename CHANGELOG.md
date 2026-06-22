@@ -84,6 +84,18 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       rejected valid **GQA** (`gqa_factor = H_q/H_kv`; e.g. H_q=8/H_kv=2) — undetected because the GQA
       test exercises the raw `_ext` path. Corrected to allow GQA (k/v heads equal + `q_heads %
       kv_heads == 0`), now pinned by a valid-GQA regression test.
+  - **Valid-acceptance sweep (volet C2c — symmetric completion of the validation work).** Verified that
+    every check added in C/C2/C2b *accepts* the valid inputs each kernel supports, and pinned them so a
+    too-strict check can never silently hide again (the GNA-GQA regression proved this direction had
+    holes). Verdict: the shared `_assert_qkv_mutual_compat` helper is GQA-aware and v-dim-agnostic — it
+    does **not** reject valid GQA on sage/sparse/varlen (no further too-strict regression). New pins:
+    valid **GQA** (`H_q=8/H_kv=2`) accepted + oracle-correct on `flash_attention` / `flash_attention_sparse`
+    / `flash_attention_varlen` / `sage_attention` / `flash_attention_gna`; **asymmetric `D_v != D_qk`**
+    accepted + correct on dense/sparse. The sweep also found the *opposite* defect: `sage_attention` and
+    `flash_attention_varlen` **silently produced wrong output** for `D_v != D_qk` (sage returned a
+    `D_qk`-wide result; varlen returned **NaN**) — those kernels assume `D_v == D_qk`, so this now raises
+    a clear `ValueError` (Rule 8). dense/sparse, which route `D_v != D_qk` to an SDPA-class path, are
+    unaffected.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

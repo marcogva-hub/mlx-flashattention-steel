@@ -221,3 +221,52 @@ The C2 `expected_batch` carve-out (suppressed under remap) is unchanged — the
 
 *Validation-only host-gate completeness; no kernel math, dispatch, or valid-path
 output changed.  Commit on `fix/audit-remediation` only.*
+
+---
+
+## Volet C2c — valid-acceptance sweep (base HEAD `0d1dab2`)
+
+The symmetric completion: C/C2/C2b were all *reject-malformed*; the GNA-GQA
+regression proved the *accept-valid* direction had unpinned holes.  Verified-first
+(RULE 16) that every check **accepts** what the kernel supports, and pinned it.
+
+### Valid-acceptance matrix (✓ = supported · accepted · oracle-correct)
+
+| entry | GQA (Hq=8,Hk=2) | asym D_v≠D_qk | f16 | bf16 | verdict |
+|---|---|---|---|---|---|
+| `flash_attention` | ✓ (3.2e-4) | ✓ (8.1e-4) | ✓ | ✓ | GQA + asym-D_v supported (SDPA-class) |
+| `flash_attention_sparse` | ✓ (3.6e-4) | ✓ (3.1e-4) | ✓ | ✓ | GQA + asym-D_v supported |
+| `flash_attention_varlen` | ✓ (2.5e-4) | **RAISES** | ✓ | ✓ | GQA supported; D_v≠D_qk **unsupported → now raises** (was NaN) |
+| `sage_attention` | ✓ (≤int8 floor) | **RAISES** | ✓ | ✓ | GQA supported; D_v≠D_qk **unsupported → now raises** (was D_qk-wide silent-wrong) |
+| `flash_attention_gna` | ✓ (==raw kernel) | N/A (D=128 only) | ✓ | ✓ | GQA supported (C2b fix); native validated by `test_gna_native_gqa` |
+| `flash_attention_paged*` | (pooled K/V) | (pooled) | ✓ | ✓ | head/D contract is the pool layout; N/A for q-shaped compat |
+
+### Verdicts
+
+1. **GQA on sage/sparse/varlen — NO regression.**  The C2b shared helper was written
+   GQA-aware (`q_heads % kv_heads == 0`, never `q==k==v`), so it already *accepts*
+   valid GQA; the kernels support it and are oracle-correct.  The C2b worry (helper
+   carrying the GNA `q==k==v` logic) did **not** materialize — now pinned per entry
+   (`test_gqa_accepted_*`).
+2. **Asymmetric `D_v` — new opposite-direction defect found + fixed.**  dense/sparse
+   support `D_v != D_qk` (SDPA-class) and are accepted+correct → pinned.  **sage** and
+   **varlen** assume `D_v == D_qk` and previously produced **silent-wrong** output
+   (sage: `D_qk`-wide result; varlen: **NaN**) — not a raise.  Added
+   `_assert_qkv_mutual_compat(..., require_v_dim_eq=True)` for those two so the
+   unsupported case raises cleanly (Rule 8).  The helper stays v-dim-agnostic for
+   dense/sparse (default `require_v_dim_eq=False`).
+
+### Validation (bite-proven)
+1. Full suite `2539 passed, 91 skipped, 0 failed, 0 XPASS`; `test_valid_acceptance_c2c.py`
+   (13 cells) green.  Oracle envelope (61) + C2 malformed matrix (27) unchanged →
+   **byteΔ-identity** on the valid envelope, and the malformed-rejection cells still bite.
+2. **Bite proof:** re-tighten the helper GQA check to `q_heads != k_heads` (the C2
+   mistake) → the 6 GQA acceptance pins (sparse/varlen/sage × f16/bf16) **FAIL**;
+   restore → pass.  The accept-valid pins are load-bearing.
+3. Malformed still raises: re-ran C2/C2b cells — `require_v_dim_eq` did not relax any
+   reject-malformed cell (dense/sparse asym-D_v stay accepted; sage/varlen asym-D_v
+   now raise; all prior cells unchanged).
+
+*Validation-only; dense/sparse valid-path output unchanged (byteΔ-identity).  The
+sage/varlen `D_v != D_qk` change turns silent-wrong into a raise (no valid output
+altered — those inputs were never correct).  Commit on `fix/audit-remediation` only.*

@@ -76,17 +76,19 @@ def _assert_kv_dtype_matches_q(q, named_arrays, fn_name):
                 f"before calling.")
 
 
-def _assert_qkv_mutual_compat(q, k, v, fn_name):
+def _assert_qkv_mutual_compat(q, k, v, fn_name, *, require_v_dim_eq=False):
     """Volet C2b (round-4 CX-03 completeness sweep): Q/K/V mutual-shape-compat
     for the standard ``[*, H, *, D]`` attention entries.  The kernels derive the
     batch/head/seq extents from Q and read K/V forward from their own base
     pointers (no broadcast); a mismatch → out-of-bounds device read → silent
     finite-wrong/NaN.  The dense ``flash_attention`` inlines this (C-01); this is
     the factored sweep applied to the entries C2 left unguarded
-    (sparse / sage / varlen).  ``v`` head_dim is intentionally NOT constrained —
-    some paths allow ``D_v != D_qk`` (Track AE → SDPA fallback).  For packed
-    varlen ``[1, H, total, D]`` this checks the K/V *total* token count agree;
-    the per-segment split is the ``cu_seqlens`` contract.
+    (sparse / sage / varlen).  ``v`` head_dim (``D_v``) is constrained only when
+    ``require_v_dim_eq`` is set: dense/sparse route ``D_v != D_qk`` to an SDPA-class
+    path that supports it, but sage/varlen kernels assume ``D_v == D_qk`` and
+    otherwise produce silent-wrong output (C2c: sage returned a D_qk-wide result,
+    varlen returned NaN).  For packed varlen ``[1, H, total, D]`` the K/V *total*
+    token count must agree; the per-segment split is the ``cu_seqlens`` contract.
     """
     if not (q.shape[0] == k.shape[0] == v.shape[0]):
         raise ValueError(
@@ -112,6 +114,10 @@ def _assert_qkv_mutual_compat(q, k, v, fn_name):
         raise ValueError(
             f"{fn_name}: q and k must share head_dim (Q·Kᵀ). Got "
             f"q_dim={q.shape[3]}, k_dim={k.shape[3]}.")
+    if require_v_dim_eq and v.shape[3] != q.shape[3]:
+        raise ValueError(
+            f"{fn_name}: v head_dim must equal q/k head_dim ({q.shape[3]}); this "
+            f"kernel does not support D_v != D_qk. Got v_dim={v.shape[3]}.")
 
 # Module-level caches (avoid repeated import probes / set allocations per call)
 _ext_avail_cached: Optional[bool] = None
@@ -1989,7 +1995,8 @@ def sage_attention(
         raise ValueError(
             "sage_attention expects 4-D tensors [B, H, N, D]. "
             f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D.")
-    _assert_qkv_mutual_compat(q, k, v, "sage_attention")  # CX-03 sweep (C2b)
+    # C2c: sage kernel assumes D_v == D_qk (asymmetric D_v → silent-wrong shape).
+    _assert_qkv_mutual_compat(q, k, v, "sage_attention", require_v_dim_eq=True)
 
     from mlx_mfa.quantize import (
         quantize_per_block,
@@ -6355,7 +6362,8 @@ def _varlen_setup(q, k, v, cu_seqlens_q, cu_seqlens_k, scale):
             f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D.")
     # CX-03 sweep (C2b): K/V must agree on packed-total/heads/head_dim with Q
     # (per-segment q!=k lengths stay valid — that's the cu_seqlens contract).
-    _assert_qkv_mutual_compat(q, k, v, "flash_attention_varlen")
+    # C2c: the varlen STEEL kernel assumes D_v == D_qk (asymmetric D_v → NaN).
+    _assert_qkv_mutual_compat(q, k, v, "flash_attention_varlen", require_v_dim_eq=True)
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     # GPU sync: varlen per-seq slicing needs Python ints.
