@@ -348,7 +348,10 @@ for _ in range(12):
     g = grad_fn(q, k, v); mx.synchronize()
     ts.append((time.perf_counter() - t0) * 1000)
 print(f"V6NAX backward: {statistics.median(ts):.2f} ms")
-# M5 Max, fp16: ~9.78-9.91 ms (vs SDPA-vjp ~17.67-18.10 ms = 1.81× faster)
+# M5 Max, fp16: illustrative single-run timing only (varies run-to-run). The
+# canonical, stamped D=64 backward claim is 2.16–3.05× vs SDPA-vjp (split-V6,
+# M5 Max / macOS 26.6 / MLX 0.31.2) — see the headline above. The older inline
+# "1.81×" was a pre-re-stamp single measurement; do not cite it as the headline.
 ```
 
 ---

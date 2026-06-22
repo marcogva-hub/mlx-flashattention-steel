@@ -11,7 +11,7 @@ The `varlen × causal × N_q<N_k` cell is the CX-01 completeness oracle — it M
 appear here and be lower-right-correct.
 
 Run `MFA_ENVELOPE_DUMP=1 .venv/bin/python -m pytest tests/test_oracle_envelope.py -q`
-to (also) regenerate the markdown table at devnotes/oracle_envelope.md.
+to (also) regenerate the markdown table at audit/round3_remediation/oracle_envelope.md.
 
 Engagement semantics:
   byteΔ-vs-SDPA > 0  → a real (non-SDPA) kernel ran ("real")
@@ -402,8 +402,8 @@ def _dump_table(request):
         lines.append(f"| {r['path']} | {r['dt']} | "
                      f"{'C' if r['causal'] else 'NC'} | {r['regime']} | "
                      f"{r['relerr']:.2e} | {b} | {wb} |")
-    path = os.path.join(os.path.dirname(__file__), "..", "devnotes",
-                        "oracle_envelope.md")
+    path = os.path.join(os.path.dirname(__file__), "..", "audit",
+                        "round3_remediation", "oracle_envelope.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")

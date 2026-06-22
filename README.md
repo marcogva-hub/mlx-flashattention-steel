@@ -52,7 +52,7 @@ the full table + methodology.
   correct path), not a speed claim.
 
 *All ratios above state numerator vs denominator with direction (a bare
-"N×" is ambiguous — see `sprint-III-12b-report.md`). Numbers measured on
+"N×" is ambiguous). Numbers measured on
 macOS 26.6 / M5 Max, median of N sessions; large-size ratios carry ±30–40%
 run-to-run variance (clock-state bimodality). v2.56.0 adds the TQ-decode
 eval-collapse speedups (IV-D1/D2) + a latent-overflow address-arithmetic fix
@@ -168,7 +168,7 @@ See `docs/reference/TRAINING_QUICKSTART.md` for the updated user-facing perf
 recommendation and `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for
 the per-claim reachability audit that drove these corrections.
 
-D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses different algorithm). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`.doc-archive/docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+D=128 V6NAX backward is 2.2-2.4× slower **only on the forced `backend="mfa"` path** (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses a different algorithm) — the **public AUTO API does not engage it**: D=128 backward falls back to SDPA-vjp (≈ break-even), so AUTO users are unaffected (consistent with lines :150/:167 and `docs/reference/PERF_CLAIMS.md`). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`.doc-archive/docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 
@@ -393,7 +393,10 @@ stay SDPA-vjp) for the *sparse* hybrid backward; full-native *sparse* backward n
 rename table.
 
 **Correctness coverage (verified):** every kernel has an fp32/independent-oracle
-correctness lock and the runtime dispatch is fingerprint-locked — see
+correctness lock and the runtime dispatch is fingerprint-locked — see the
+exhaustive kernel-math oracle envelope `tests/test_oracle_envelope.py` (61 cells:
+every forward+backward path × dtype × causal × shape-regime, each with an
+independent fp32/fp64 oracle + byteΔ-vs-SDPA engagement proof),
 `tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py`,
 `tests/test_dispatch_map_lock.py`, and `tests/test_fingerprint_discipline.py` (the last
 makes "test passes while running the wrong kernel" structurally catchable). Maintainer

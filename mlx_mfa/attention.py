@@ -1650,7 +1650,14 @@ def flash_attention_rope(
         rotary_cos: ``float32 [max_seq_len, D/2]`` — cosine table (1D RoPE).
         rotary_sin: ``float32 [max_seq_len, D/2]`` — sine table (1D RoPE).
         scale: Attention scale. Defaults to ``1 / sqrt(D)``.
-        causal: Apply causal masking.
+        causal: Apply causal masking.  Convention for ``N_q != N_k``:
+            ``qL_off = max(0, N_k - N_q)`` — when ``N_q < N_k`` (decode/cross-attn)
+            this is the **lower-right** alignment (query row ``r`` attends keys
+            ``0..r + (N_k - N_q)``), matching ``mx.fast.scaled_dot_product_attention``.
+            When ``N_q > N_k`` the offset clamps to 0, i.e. **top-left** (query ``r``
+            attends ``0..min(r, N_k-1)``) — a deliberate mlx-mfa convention that
+            **diverges from SDPA's bottom-right** for that (unusual) case; the dense,
+            varlen and paged kernels all share this ``max(0, N_k-N_q)`` rule.
         cache_seqlens: KV cache length — absolute position of Q token 0.
             Use 0 for prefill, len(kv_cache) for autoregressive decode.
             Can also be a 1D array/list of length ``B`` for per-batch offsets
@@ -4324,7 +4331,10 @@ def flash_attention_speculative_verify(
         3-tuple ``(output, lse, target_logprobs)``:
 
         * ``output``       — ``[B, H, N_draft, D]``, raw attention output.
-        * ``lse``          — ``[B, H, N_draft]``, log-sum-exp (log-partition).
+        * ``lse``          — ``[B, H, N_draft]``, log-sum-exp (log-partition) in
+          **log2 domain** (passed through from ``flash_attention(return_lse=True)``;
+          ``L = log2(Σ_j exp(score_j))``, the MFA-kernel convention — divide by
+          ``log2(e)`` for natural-log).
         * ``target_logprobs`` — ``[B, N_draft]``, log p_target for each draft
           token (logits projected through the V dimension; see note below).
 

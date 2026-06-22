@@ -96,6 +96,29 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     `D_qk`-wide result; varlen returned **NaN**) — those kernels assume `D_v == D_qk`, so this now raises
     a clear `ValueError` (Rule 8). dense/sparse, which route `D_v != D_qk` to an SDPA-class path, are
     unaffected.
+  - **Round-4 polish (volet E2 — docs / knob-registry / test-integrity, no runtime behavior change).**
+    - **Knob ghosts:** `MFA_ENABLE_V6_D128` (+ alias `MFA_ENABLE_V34_D128`) and `MFA_V34BWD` — registered
+      in `KNOWN_KNOBS` but never read — moved to `REMOVED_KNOBS` (verified 0 read sites); they now emit
+      the "removed — no effect" diagnostic under `validate_env(strict=True)` instead of being accepted.
+      D=128 V6 routing is governed by `MFA_DISABLE_V6_DENSE` / `MFA_V6_DENSE_MIN_N`. `ENV_VARS.md`:
+      `MLX_MFA_VERBOSE_DISPATCH` now documents its "read once at import" timing.
+    - **Backward engagement discipline (test-only):** `tests/test_backward_routing_snapshot.py` now also
+      asserts a **byteΔ** engagement check (grads vs a forced SDPA-vjp arm) for V6-backward cells, not
+      just the `_dispatch_trace` label — giving the backward the same which-binary guard the forward has
+      (`test_fingerprint_discipline`). Bite-proven.
+    - **Docs/perf reconciliation:** `README` now states the "D=128 V6NAX backward 2.2-2.4× slower" figure
+      as **forced-`backend="mfa"`-only** (the AUTO API falls back to SDPA-vjp at break-even); the
+      `PERF_CLAIMS.md` reproduce-snippet's stale inline `1.81×` is reconciled to the canonical stamped
+      `2.16–3.05×` (D=64 backward, M5/MLX 0.31.2); the speculative-verify `lse` docstring now states its
+      log2 domain; the README correctness-coverage sentence references the volet-G oracle envelope
+      (`tests/test_oracle_envelope.py`); a dead cross-link to a gitignored journal file was removed; and
+      the `flash_attention` causal docstring documents the `qL_off = max(0, N_k-N_q)` convention (top-left
+      clamped for `N_q > N_k`, which diverges from SDPA's bottom-right).
+    - **Hygiene:** three orphaned tracked sources (`csrc/async_v2_noasm.metal`,
+      `csrc/kernels/attention_forward.metal`, `csrc/mfa/DeviceProperties.hpp`) removed (verified 0
+      build/source/test/CMake refs). The volet-G oracle-envelope table now lives at
+      `audit/round3_remediation/oracle_envelope.md` (tracked + sdist-excluded), alongside the validation
+      matrix, instead of the gitignored `devnotes/`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

@@ -61,9 +61,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V6_DENSE",
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",
-    "MFA_ENABLE_V34_D128",
     "MFA_ENABLE_V6_BACKWARD",
-    "MFA_ENABLE_V6_D128",
     "MFA_FORCE_D256_PATH",
     "MFA_FORCE_D512_PATH",
     "MFA_FORCE_GEN",
@@ -83,7 +81,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V2_FORCE_BK_D256",
     "MFA_V2_FORCE_BK_D512",
     "MFA_V2_FORCE_BQ_D512",
-    "MFA_V34BWD",
     "MFA_V34BWDF_BK",
     "MFA_V34BWDF_BQ",
     "MFA_V34BWDF_DUMP_PATH",
@@ -197,6 +194,13 @@ REMOVED_KNOBS: frozenset[str] = frozenset({
     "MFA_V5_FORCE_BD_TILE",
     "MFA_V5_FORCE_BQ",
     "MFA_V5_FORCE_WM",
+    # CC-03/CC-04 (volet E2): ghost knobs — registered + aliased but never read.
+    # Verified 0 read sites (py + cpp getenv). D=128 V6 routing is governed by
+    # MFA_DISABLE_V6_DENSE / MFA_V6_DENSE_MIN_N, not these. MFA_V34BWD is the
+    # deprecated alias of MFA_V6BWD (already removed above) — moved for parity.
+    "MFA_ENABLE_V6_D128",
+    "MFA_ENABLE_V34_D128",
+    "MFA_V34BWD",
 })
 
 

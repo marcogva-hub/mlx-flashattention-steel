@@ -54,12 +54,12 @@ wheel.packages = ["mlx_mfa"]
 # csrc/** + mlx_mfa/** + examples/** + tests/** + docs/reference/**. The built-sdist
 # guard (tests/test_publish_surface_guard.py) enforces this allowlist on the real tarball.
 [tool.scikit-build.sdist]
-# CC-18 (volet E): drop two orphaned sources (verified 0 build/test/CMake refs) —
-# csrc/async_v2_noasm.metal (the async metallib builds from async_v2_kernel.metal,
-# not this) and csrc/kernels/attention_forward.metal (a JIT-era placeholder).
+# CX-07 (volet E2): the three orphaned sources async_v2_noasm.metal,
+# kernels/attention_forward.metal (JIT-era placeholder), and mfa/DeviceProperties.hpp
+# (unused struct) are now REMOVED from the tracked tree (verified 0 build/source/
+# test/CMake/script refs) — no longer excluded here because they no longer exist.
 # csrc/mpp_int8_bench.mm is KEPT (referenced by CMakeLists under MFA_BUILD_PROBES).
-exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__",
-           "csrc/async_v2_noasm.metal", "csrc/kernels/attention_forward.metal"]
+exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
