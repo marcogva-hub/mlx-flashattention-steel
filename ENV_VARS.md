@@ -80,7 +80,7 @@ no advantage (3.1–4.4× slower than the routed NAX/SDPA default).
 | `MFA_DISABLE_AUTO_HOOKS` | bool | unset | Disable auto-hook installation at `import mlx_mfa` (`_auto_hooks.py::install_hooks()`); no `mx.*` surfaces are patched. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool | false | Print dispatch decisions to stderr |
 | `MLX_MFA_DISPATCH_TABLE` | path | unset | JSON file with custom per-config dispatch thresholds |
-| `MLX_MFA_HOOK_TELEMETRY` | str | `summary` | **v2.50.1 Prompt 5g Phase C**: hook execution/fallback telemetry mode (Pattern #8 prevention).  Values: `off` (zero overhead, no counters), `summary` (default; per-hook executed/fallback counters readable via `mlx_mfa.get_hook_stats()`), `verbose` (summary + `UserWarning` per fallback for active debugging).  Invalid values now emit a `RuntimeWarning` and fall back to `summary` (audit L-03) rather than silently defaulting.  See `docs/reference/HOOK_TELEMETRY.md`. |
+| `MLX_MFA_HOOK_TELEMETRY` | str | `summary` | **v2.50.1 Prompt 5g Phase C**: hook execution/fallback telemetry mode (Pattern #8 prevention).  Values: `off` (zero overhead, no counters), `summary` (default; per-hook executed/fallback counters readable via `mlx_mfa.get_hook_stats()`), `verbose` (summary + `UserWarning` per fallback for active debugging).  Invalid values now emit a `RuntimeWarning` and fall back to `summary` (audit L-03) rather than silently defaulting.  **Read once at import (CC-16):** captured into a module global when `mlx_mfa` is first imported — set it **before `import mlx_mfa`**; changing it later in the same process has no effect.  See `docs/reference/HOOK_TELEMETRY.md`. |
 
 ## Availability & validation (Python-side, live-read)
 

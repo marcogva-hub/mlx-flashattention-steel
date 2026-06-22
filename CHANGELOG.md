@@ -98,6 +98,28 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     silently drops out even though it merely skips on the M1 runner.
   - **FLAG-FOR-SIGNOFF:** a self-hosted M5 runner (durable structural fix for CC-14/CC-23) is NOT added —
     it would expose the maintainer's machine on a public repo (security). See `devnotes/release_gate_enforcement.md`.
+- **Documentation + knob-registry + packaging reconciliation (audit volet E — single-sourced against
+  runtime/source ground truth; no behaviour change).** See `devnotes/claims_reconciliation.md`.
+  - **Perf claims single-sourced (CC-08/09/10/11):** conv3d — the **2.3–2.5× fp16 / 1.4–2.7× bf16**
+    figure is now consistently tagged as vs the *internal materialized-im2col methodology baseline*
+    (PERF_CLAIMS H-07), **not** `mx.conv_general`; the public-path win vs `mx.conv_general` is the
+    provenanced **median 1.64×** (SeedVR2 VAE production). README's stale "1.81–1.82× via
+    `MFA_ENABLE_V6_BACKWARD` for D=64" block → the current **default-on 2.16–3.05×** (the env var is the
+    D=128 opt-in). The bare "~21×" sliding-window claim → the measured **20.8× (M4 Max) / 18.4× (M1 Max)
+    at D=128 N=8192 win=256** (RESULTS.md §2). No number invented.
+  - **Routing docstring fixed (CX-09):** `flash_attention`'s docstring no longer claims dense D=64/128
+    "routes to MFA" — it now matches `dispatch-map.md` (D=128 N≥2048→NAX, D=128 N<2048→SDPA, all dense
+    D=64→SDPA on the forward; the D=64 win is in the backward).
+  - **Knob registry cleaned (CC-12/13/16):** six non-env ghosts (`MFA_CONV3D_MPP`, `MFA_V6_BHND`,
+    `MFA_V6_MATMUL_EXEC_SG`, `MFA_REQUIRE_MSL4`, `MFA_SUPPORTED_DTYPES`, `MFA_SUPPORTED_HDIMS`, all 0
+    read sites) removed from `KNOWN_KNOBS`; the V4/V5 removed knobs added to `REMOVED_KNOBS` (they now
+    warn "removed", not "typo"); `MLX_MFA_HOOK_TELEMETRY` documented as read-once-at-import. A new lock
+    fails CI if any `KNOWN_KNOBS` entry has no real (non-comment) appearance.
+  - **Packaging hygiene (CC-18/19/20/21):** two orphan sources (`async_v2_noasm.metal`,
+    `kernels/attention_forward.metal`, 0 refs) dropped from the sdist (`mpp_int8_bench.mm` kept —
+    referenced under `MFA_BUILD_PROBES`); the unused `MLX_MFA_METAL_PATH` CMake define removed; the
+    `async_v2.metallib` CI presence check downgraded FATAL→advisory (target-dead on M5/≥26, kept for
+    macOS 14/15); `check_env.py` gained an advisory MLX-floor warning (pip remains the real gate).
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).

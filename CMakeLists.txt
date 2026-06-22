@@ -202,7 +202,9 @@ endif()
 message(STATUS "MLX build version: ${MLX_RUNTIME_VERSION}")
 
 target_compile_definitions(_ext PRIVATE
-  MLX_MFA_METAL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels"
+  # CC-20 (volet E): MLX_MFA_METAL_PATH removed — it baked the build machine's
+  # absolute csrc/kernels path into _ext with ZERO consumers (real kernels are
+  # JIT-generated). MLX_BUILD_VERSION is live (the _check_abi version compare).
   MLX_BUILD_VERSION="${MLX_RUNTIME_VERSION}"
 )
 # M6: define MFA_BUILD_PROBES so bindings.cpp registers the probe defs only when

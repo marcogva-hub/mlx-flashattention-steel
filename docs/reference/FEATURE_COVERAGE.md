@@ -37,7 +37,7 @@ Last reviewed: 2026-06-19 (2.61.0 doc accuracy audit)
 | D=512 | SDPA-default | SDPA-default | No broad wins found |
 | **Backward D=64 (≥2048, fp16/bf16) — split-V6 NAX-direct, DEFAULT-ON** | `mx.vjp(SDPA)` | **split-V6 (default)** | **VERIFIED 2.16–3.05× vs SDPA-vjp** (nc 2.16×/2.21× @qL4096/8192; causal 2.77×/3.05×) — full-backward, gold which-binary trace + fp32 oracle, M5/macOS 26.6/MLX-0.31.2/2026-06-19. Opt out: `MFA_DISABLE_V6_BACKWARD=1`. Locked by `test_backward_routing_snapshot.py`. |
 | **Backward D=128 / D=64<2048 / other** | `mx.vjp(SDPA)` | **SDPA-vjp (default)** | D=128 split-V6 is opt-in only + SLOWER (0.54× nc / 0.57× causal) → correctly not default. Prior 1.91–2.00× / parity / 2.55–5.75× withdrawn as artifacts (superseded by the verified D=64 number above). |
-| Block-sparse / window | Production | Tile-skip, up to 21x speedup |
+| Block-sparse / window | Production | Tile-skip; sliding-window up to **20.8× (M4 Max) / 18.4× (M1 Max)** at D=128 N=8192 win=256 (RESULTS.md §2); scales with mask sparsity |
 | Softcap | Production | V2 tanh in log2 domain |
 | ALiBi | Production | V2 bias addition |
 | Sliding window | Production | V2 O(1) kb_start + kb_lim clip |

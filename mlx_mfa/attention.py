@@ -469,9 +469,14 @@ def flash_attention(
         backend: Backend selection.  One of:
 
             * ``"auto"`` *(default)*: use benchmark-backed dispatch policy.
-              Dense causal D=64/128 routes to MFA on supported shapes; D=256
-              is a narrow promoted family; dense D=512 and other conservative
-              regimes stay on ``mx.fast.scaled_dot_product_attention``.
+              On M5/NAX the FORWARD routing is (see
+              ``docs/reference/dispatch-map.md``, the authority): dense **D=128
+              N≥2048** → NAX matmul2d (``v6_nax_forward``); dense **D=128
+              N<2048** and **all dense D=64** → Apple SDPA (NAX loses there, so
+              the forward is bit-identical to SDPA — the D=64 win is in the
+              *backward*); D=256 / D=512 / cross-attn / windowed stay on
+              ``mx.fast.scaled_dot_product_attention``. (``backend="mfa"`` forces
+              the simdgroup STEEL kernel regardless.)
             * ``"mfa"``: force the MFA Metal kernel.  Raises ``RuntimeError``
               if the C++ extension is not compiled or the configuration is
               unsupported.

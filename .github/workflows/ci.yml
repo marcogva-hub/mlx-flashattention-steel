@@ -215,12 +215,18 @@ jobs:
 
           # CX-05 (audit): the "Must contain" greps above are advisory — their
           # `|| echo MISSING` branch exits 0, so a missing .metal/.cpp source did
-          # NOT fail the job.  Gate every mandatory member here so any missing
-          # source FAILS the build (matches the metallib check).
-          for member in async_v2.metallib async_v2_kernel.metal mfa_steel_fwd_v2.cpp; do
+          # NOT fail the job.  Gate every mandatory source member FATALLY.
+          # CC-19 (volet E): async_v2.metallib is TARGET-DEAD on macOS ≥26 / M5
+          # (shader_cache.mm returns nullptr there → JIT path) but still used on
+          # macOS 14/15, so it remains shipped — its presence is ADVISORY (a
+          # warning), NOT fatal, so an M5 release is never blocked by a
+          # target-dead artifact. The compile-critical sources stay FATAL.
+          for member in async_v2_kernel.metal mfa_steel_fwd_v2.cpp; do
             tar tzf "$SDIST" | grep -q "$member" \
               || { echo "FATAL: $member not in sdist"; exit 1; }
           done
+          tar tzf "$SDIST" | grep -q "async_v2.metallib" \
+            || echo "::warning::async_v2.metallib absent from sdist — macOS 14/15 lose the precompiled async path (target-dead on M5/≥26, so not fatal)."
 
       # CX-10 (volet D): the release model is SOURCE-BUILD-ONLY, so "the sdist
       # compiles _ext and imports" is the per-interpreter release contract — test

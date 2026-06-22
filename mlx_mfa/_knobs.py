@@ -34,7 +34,14 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     # C++ header guards (*_HPP_/_HPP), and C macros (MFA_PRECONDITION/MFA_CHECK_ERROR)
     # were PURGED — they are NOT env vars (zero getenv reads), so a bogus tile macro
     # like MFA_BD=999 must NOT pass validate_env. Only real env knobs remain.
-    "MFA_CONV3D_MPP",
+    # CC-12 (volet E): six MORE non-env entries removed (verified 0 getenv reads —
+    # they were comments / a shader-source marker / module constants, never env
+    # vars): MFA_CONV3D_MPP (comment-only force-enable; the real knob is the
+    # inverse MFA_DISABLE_CONV3D_MPP), MFA_V6_BHND + MFA_V6_MATMUL_EXEC_SG
+    # (comment-only), MFA_REQUIRE_MSL4 (a `// MFA_REQUIRE_MSL4` MSL source marker,
+    # not an env var), MFA_SUPPORTED_DTYPES + MFA_SUPPORTED_HDIMS (module
+    # constants _MFA_SUPPORTED_*, never env-overridable). They no longer advertise
+    # non-existent tuning DOF via validate_env(strict=True).
     "MFA_CONV_NAX_NO_FAST_PATH",
     "MFA_CONV_NAX_USE_PYTHON_LEGACY",
     "MFA_DEBUG_SHADERS",
@@ -69,10 +76,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_LCSA_KERNEL_VERSION",
     "MFA_NAX_SPARSE_DENSITY_CEILING",
     "MFA_NO_PADDING",  # real C++ shader-generator knob (env_bool, csrc/mfa_env.hpp)
-    "MFA_REQUIRE_MSL4",
     "MFA_SPLITK_MAX_N_D",
-    "MFA_SUPPORTED_DTYPES",
-    "MFA_SUPPORTED_HDIMS",
     "MFA_V2_BD_HALF_D512",
     "MFA_V2_BQ64",
     "MFA_V2_FORCE_BK",
@@ -124,7 +128,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V6BWD_DUMP_SOURCE",
     "MFA_V6BWD_USE_FUSED",
     "MFA_V6BWD_WM",
-    "MFA_V6_BHND",
     "MFA_V6_BLOCK_C",
     "MFA_V6_BLOCK_D",
     "MFA_V6_BLOCK_R",
@@ -136,7 +139,6 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V6_DUMP_SOURCE",
     "MFA_V6_EXEC_SG",
     "MFA_V6_FORCE_DYNAMIC_K",
-    "MFA_V6_MATMUL_EXEC_SG",
     "MFA_V6_MAX_THREADS",
     "MFA_V6_NAX_BK",
     "MFA_V6_NAX_BQ",
@@ -185,6 +187,16 @@ REMOVED_KNOBS: frozenset[str] = frozenset({
     "MFA_GQA_DECODE_CIDER",  # ghost — registered/advertised but never read (CC-22)
     "MFA_TOPK_STREAM_V5",  # ghost — registered/advertised but never read (CC-22)
     "MFA_V6BWD",  # ghost — registered/advertised but never read (CC-22)
+    # CC-13 (volet E): the V4/V5 STEEL forward knobs are documented as removed in
+    # ENV_VARS.md (V4/V5 dropped from the build, Lot-2) but were absent here, so
+    # strict-validate miswarned them as a "typo". They WERE real env vars → here,
+    # for the distinct "removed — no effect" diagnostic. Verified 0 read sites.
+    "MFA_ENABLE_V4",
+    "MFA_ENABLE_V5",
+    "MFA_V5_FORCE_BK",
+    "MFA_V5_FORCE_BD_TILE",
+    "MFA_V5_FORCE_BQ",
+    "MFA_V5_FORCE_WM",
 })
 
 

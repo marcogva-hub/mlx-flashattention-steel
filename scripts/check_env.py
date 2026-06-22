@@ -30,9 +30,23 @@ def main():
         print("  [WARN] mlx-mfa requires macOS on Apple Silicon (arm64)")
 
     # MLX (version lives on mlx.core since ≥0.19)
+    # CC-21 (volet E): advisory floor parity with the real floor (pip enforces it
+    # via pyproject `mlx>=0.31.2` — the nanobind v2.12.0 / NB_INTERNALS v19 ABI).
+    # This is informational only; pip remains the authoritative gate.
+    _MLX_FLOOR = "0.31.2"
     def check_mlx():
         import mlx.core
-        return mlx.core.__version__
+        v = mlx.core.__version__
+        try:
+            from packaging.version import Version
+            below = Version(v.split("+")[0]) < Version(_MLX_FLOOR)
+        except Exception:
+            below = tuple(int(p) for p in v.split("+")[0].split(".")[:3]) \
+                < tuple(int(p) for p in _MLX_FLOOR.split("."))
+        if below:
+            print(f"  [WARN] MLX {v} < floor {_MLX_FLOOR} — pip enforces this at install "
+                  f"(nanobind ABI); building _ext against an older MLX is unsupported.")
+        return v
     ok &= check("MLX", check_mlx)
 
     # MLX include path (mlx is a namespace pkg; use mlx.__path__)

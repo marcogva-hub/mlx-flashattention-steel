@@ -67,7 +67,15 @@ _PREFIX_OK = _knobs.PREFIX_KNOBS
 
 
 def _doc_knobs() -> set:
-    return set(re.findall(r"`(MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)`", _read("ENV_VARS.md")))
+    # CC-12 (volet E): skip rows explicitly marked "(not an env var)" — those are
+    # anti-knob clarifications (e.g. MFA_REQUIRE_MSL4, a Metal-source sentinel), NOT
+    # knob declarations, so they must not be required in the registry.
+    out: set = set()
+    for line in _read("ENV_VARS.md").splitlines():
+        if "not an env var" in line.lower():
+            continue
+        out.update(re.findall(r"`(MFA_[A-Z0-9_]+|MLX_MFA_[A-Z0-9_]+)`", line))
+    return out
 
 
 def test_env_vars_doc_knobs_in_registry():

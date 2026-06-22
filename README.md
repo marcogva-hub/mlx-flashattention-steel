@@ -27,10 +27,14 @@ the full table + methodology.
   `v6_split_backward` trace + fp32 oracle; ±30–40% run-to-run under thermal load).
   D=128 backward is **≈ break-even** on 26.6. Forward stays bit-identical to Apple SDPA.
 - conv3d via the Apple MPP convolution2d primitive, default-on — fp16
-  **~1.2–1.35× vs the legacy path** on 26.6 (T8/T16 64×64 C128); bf16
-  **≈ parity** vs `mx.conv_general` (the legacy im2col path is fp16-only,
-  KD-7, so bf16 has no legacy baseline). Correctness, not speed, is the
-  reason it is default-on (legacy im2col silent-corruption history).
+  **median 1.64× vs `mx.conv_general`** (the public fallback the
+  `MFA_DISABLE_CONV3D_MPP=1` knob selects), measured across the 6-shape
+  SeedVR2 VAE production set (3-session §4-compliant, M5/26.6/MLX-0.31.2);
+  bf16 **≈ parity** vs `mx.conv_general`. The separate **2.3–2.5× fp16 /
+  1.4–2.7× bf16** figures are vs the *internal materialized-im2col*
+  methodology baseline (NOT the public fallback — PERF_CLAIMS H-07), not a
+  user-selectable denominator. Correctness, not speed, is the reason it is
+  default-on (legacy im2col silent-corruption history).
 - TurboQuant paged decode (opt-in KV compression via
   `TurboQuantPagedInferenceContext` — *not* auto-routed; you choose the
   trade-off) — **trades ~1.4–3× decode-step latency for a ~4–5× KV-cache
@@ -148,11 +152,15 @@ claim corrections (carried over unchanged):
   `backend="mfa"` override; the public AUTO API correctly falls
   back to SDPA-vjp at parity (no user-facing impact)
 
-**Reachable via public AUTO API** (carve-out shipped v2.37.2,
-preserved in v2.37.3):
-- D=64, qL ≥ 4096, non-causal, f16/bf16, M5+ NAX, env
-  `MFA_ENABLE_V6_BACKWARD=1` → **1.81-1.82× faster end-to-end
-  backward vs SDPA-vjp**
+**Reachable via public AUTO API** (current, since v2.51.0 — supersedes the
+v2.37.2 carve-out below):
+- D=64, qL ≥ 2048, causal + non-causal, f16/bf16, M5+ NAX — **default-on,
+  no env var** → **2.16–3.05× faster end-to-end backward vs SDPA-vjp**
+  (canonical, M5/26.6/MLX-0.31.2; opt-out `MFA_DISABLE_V6_BACKWARD=1`). The
+  old "1.81-1.82× via `MFA_ENABLE_V6_BACKWARD=1`" figure is **withdrawn**
+  (PERF_CLAIMS, superseded by the default-on split-V6 number).
+- `MFA_ENABLE_V6_BACKWARD=1` is now the **D=128** opt-in only (D=128
+  backward is ≈ break-even / research; D=64 needs no env).
 - All other shapes: AUTO path defaults to SDPA-vjp — correct,
   no user action needed
 
@@ -169,8 +177,10 @@ D=128 V6NAX backward is 2.2-2.4× slower (architectural floor at FP16 NAX hardwa
 import mlx.core as mx
 import mlx_mfa  # auto-installs optimization hooks at import
 
-# Eligible Conv3D shapes on M5+ auto-route to NAX (2.3–2.5× fp16 /
-# 1.4–2.7× bf16 via the MPP convolution2d primitive):
+# Eligible Conv3D shapes on M5+ auto-route to the Apple MPP convolution2d
+# primitive — median ~1.64× vs un-hooked mx.conv_general (SeedVR2 VAE
+# production set). (The 2.3–2.5× fp16 figure quoted elsewhere is vs an
+# internal im2col baseline, not vs this mx.conv_general path — H-07.)
 y = mx.conv_general(x, weight, padding=(1, 1, 1))
 
 # Sparse attention on M5+ auto-routes to NAX-aware dispatcher:
@@ -401,7 +411,7 @@ Representative benchmark-backed outcomes (see `RESULTS.md` and
 |---|---|---|
 | Dense causal V2 | up to ~**1.82x** vs SDPA (D=64, N=8192) | Primary production win regime |
 | Dense causal V2 | up to ~**1.75x** vs SDPA (D=128, N=16384) | Strong long-sequence causal performance |
-| Sliding window | up to ~**21x** vs full SDPA | Tile-skip regime remains strongest |
+| Sliding window | **20.8× (M4 Max) / 18.4× (M1 Max)** vs full SDPA at D=128 N=8192 win=256 (RESULTS.md §2) — scales with mask sparsity | Tile-skip regime remains strongest |
 | D=256 | narrow causal long-N wins (for example ~**1.16x** at N=16384 f16) | Keep narrow policy only |
 | D=512 | decision pass found **no broad wins** | SDPA-default remains correct |
 
@@ -576,10 +586,13 @@ out_step = rt.step(
 ## Conv3D NAX support (M5+ Apple Silicon)
 
 Since v2.50.2/v2.51.0 the default Conv3D path is the Apple MPP
-`convolution2d` primitive (fp16 2.3–2.5×, bf16 1.4–2.7× vs
-`mx.conv_general`); the figures below describe the legacy
-materialized-im2col path, which is non-default and reachable via
-`MFA_DISABLE_CONV3D_MPP=1`.
+`convolution2d` primitive. **Denominators (PERF_CLAIMS H-07):** the
+**2.3–2.5× fp16 / 1.4–2.7× bf16** figures are vs the *internal
+materialized-im2col* baseline (a methodology denominator), **not** vs
+`mx.conv_general`. Vs the **public** fallback that `MFA_DISABLE_CONV3D_MPP=1`
+selects — `mx.conv_general` — the win is **median 1.64×** on the SeedVR2 VAE
+production set (below). The legacy materialized-im2col path is non-default
+and reachable via `MFA_DISABLE_CONV3D_MPP=1` only as a research baseline.
 
 mlx-mfa includes a NAX-accelerated 3D convolution path for shapes matching
 the SeedVR2 VAE production profile. Sprint C v1.x landed a SHIP-DEFAULT
