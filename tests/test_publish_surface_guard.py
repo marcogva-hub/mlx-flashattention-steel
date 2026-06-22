@@ -120,6 +120,16 @@ def test_built_sdist_only_publication_surface(_built_sdist_members):
         assert required in rels, f"intended publication file missing from sdist: {required}"
 
 
+def test_tracked_but_excluded_dirs_absent_from_sdist(_built_sdist_members):
+    """Volet F: the tracked-but-sdist-excluded dirs (audit/ enumeration artifacts,
+    release-gate/ M5 receipts) must NOT ship to PyPI users — 0 members each."""
+    rels = {_strip_prefix(m) for m in _built_sdist_members}
+    for excluded in ("audit/", "release-gate/"):
+        leaked = sorted(r for r in rels if r.startswith(excluded))
+        assert not leaked, (
+            f"{excluded} leaked into the published sdist (must be sdist-excluded): {leaked}")
+
+
 def test_sdist_guard_catches_a_synthetic_stray():
     """Self-test: the allowlist checker trips on planted strays (the .claude/-class leak,
     bench/, a log, a stray root file, a journal doc) and passes a clean member set."""

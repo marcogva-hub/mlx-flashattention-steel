@@ -58,7 +58,7 @@ wheel.packages = ["mlx_mfa"]
 # csrc/async_v2_noasm.metal (the async metallib builds from async_v2_kernel.metal,
 # not this) and csrc/kernels/attention_forward.metal (a JIT-era placeholder).
 # csrc/mpp_int8_bench.mm is KEPT (referenced by CMakeLists under MFA_BUILD_PROBES).
-exclude = ["bench", "benchmarks", "devnotes", "release-gate", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__",
+exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__",
            "csrc/async_v2_noasm.metal", "csrc/kernels/attention_forward.metal"]
 
 [tool.pytest.ini_options]

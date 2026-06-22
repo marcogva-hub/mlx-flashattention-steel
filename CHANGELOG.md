@@ -15,6 +15,22 @@ now correct where it was silently wrong) and (b) the new input-validation reject
 below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — note the sparse-backward fix
 (below) is M5-validated only (native path is M1–M4, skipped on M5).
 
+### ⚠️ Breaking changes (bug-fixes that change output)
+
+Two accepted behavior changes (both bug-fixes — a wrong/inconsistent result becomes
+correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a major-version event):
+
+1. **`return_lse=True` now returns one consistent LSE convention** — `L = log2(Σ_j exp(score_j))`
+   (= `ln(Σ exp(score)) / ln 2`) on **every** path. Previously the SDPA-fallback path (fp32, or
+   head_dim ∉ {64,128,256}) returned `log2(Σ_j 2^{score_j})` — a different, undocumented convention,
+   so the returned LSE silently flipped meaning with head_dim/dtype. **Who is affected:** consumers of
+   `return_lse` on the fallback paths (fp32 / unsupported-D) see **changed values**; the MFA-path value
+   (f16/bf16, D∈{64,128,256}) is **unchanged** (CC-04, volet C).
+2. **`flash_attention(dropout_p>0, …)` combined with `attn_bias` / `softcap` / `window_size` /
+   `alibi_slopes` now raises `ValueError`.** Previously the dropout path silently **dropped** the
+   requested feature, returning results for a *different function* than asked. Set `dropout_p=0` or drop
+   the feature (CX-01, volet C). Full dropout∘feature composition is a deferred capability decision.
+
 ### Breaking / Behavior
 - **Input validation now raises `ValueError`** (previously silently-wrong / undefined):
   - `flash_attention` (incl. `backend="mfa"`) rejects mismatched **Q/K/V shapes** — Q/K/V must share the
