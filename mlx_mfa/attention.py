@@ -75,6 +75,44 @@ def _assert_kv_dtype_matches_q(q, named_arrays, fn_name):
                 f"silent garbage. Cast all value buffers to a common dtype "
                 f"before calling.")
 
+
+def _assert_qkv_mutual_compat(q, k, v, fn_name):
+    """Volet C2b (round-4 CX-03 completeness sweep): Q/K/V mutual-shape-compat
+    for the standard ``[*, H, *, D]`` attention entries.  The kernels derive the
+    batch/head/seq extents from Q and read K/V forward from their own base
+    pointers (no broadcast); a mismatch → out-of-bounds device read → silent
+    finite-wrong/NaN.  The dense ``flash_attention`` inlines this (C-01); this is
+    the factored sweep applied to the entries C2 left unguarded
+    (sparse / sage / varlen).  ``v`` head_dim is intentionally NOT constrained —
+    some paths allow ``D_v != D_qk`` (Track AE → SDPA fallback).  For packed
+    varlen ``[1, H, total, D]`` this checks the K/V *total* token count agree;
+    the per-segment split is the ``cu_seqlens`` contract.
+    """
+    if not (q.shape[0] == k.shape[0] == v.shape[0]):
+        raise ValueError(
+            f"{fn_name}: q, k, v must share the batch dim. Got "
+            f"q_batch={q.shape[0]}, k_batch={k.shape[0]}, v_batch={v.shape[0]}.")
+    if k.shape[2] != v.shape[2]:
+        raise ValueError(
+            f"{fn_name}: k and v must share the kv sequence length. Got "
+            f"k_seq={k.shape[2]}, v_seq={v.shape[2]}.")
+    if k.shape[1] != v.shape[1]:
+        raise ValueError(
+            f"{fn_name}: k and v must have the same number of heads. Got "
+            f"k_heads={k.shape[1]}, v_heads={v.shape[1]}.")
+    if q.shape[1] <= 0 or k.shape[1] <= 0:
+        raise ValueError(
+            f"{fn_name}: q and k must have >= 1 head; got q_heads={q.shape[1]}, "
+            f"kv_heads={k.shape[1]}.")
+    if q.shape[1] % k.shape[1] != 0:
+        raise ValueError(
+            f"{fn_name}: q_heads ({q.shape[1]}) must be divisible by kv_heads "
+            f"({k.shape[1]}) (GQA).")
+    if q.shape[3] != k.shape[3]:
+        raise ValueError(
+            f"{fn_name}: q and k must share head_dim (Q·Kᵀ). Got "
+            f"q_dim={q.shape[3]}, k_dim={k.shape[3]}.")
+
 # Module-level caches (avoid repeated import probes / set allocations per call)
 _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
@@ -1947,6 +1985,11 @@ def sage_attention(
         out = sage_attention(q, k, v, causal=True)  # [1, 8, 2048, 128]
     """
     _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "sage_attention")
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            "sage_attention expects 4-D tensors [B, H, N, D]. "
+            f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D.")
+    _assert_qkv_mutual_compat(q, k, v, "sage_attention")  # CX-03 sweep (C2b)
 
     from mlx_mfa.quantize import (
         quantize_per_block,
@@ -3431,6 +3474,7 @@ def flash_attention_sparse(
         )
     B, H, N, D = q.shape
     S = k.shape[2]
+    _assert_qkv_mutual_compat(q, k, v, "flash_attention_sparse")  # CX-03 sweep (C2b)
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
@@ -3885,11 +3929,18 @@ def flash_attention_gna(
             f"flash_attention_gna: k, v sequence length must equal q's N={N} "
             f"(neighborhood self-attention). Got k_seq={k.shape[2]}, "
             f"v_seq={v.shape[2]}.")
-    if not (q.shape[1] == k.shape[1] == v.shape[1]):
+    # C2b fix: GNA supports GQA (gqa_factor = H_q / H_kv; see test_gna_native_gqa
+    # with H_q=8/H_kv=2).  The C2 check wrongly required q==k==v heads, which would
+    # reject valid GQA on the public path (undetected — the GQA test calls the raw
+    # _ext binding).  Require k/v heads equal + q divisible by kv heads.
+    if k.shape[1] != v.shape[1]:
         raise ValueError(
-            f"flash_attention_gna: q, k, v must have the same number of heads. "
-            f"Got q_heads={q.shape[1]}, k_heads={k.shape[1]}, "
-            f"v_heads={v.shape[1]}.")
+            f"flash_attention_gna: k and v must have the same number of heads. "
+            f"Got k_heads={k.shape[1]}, v_heads={v.shape[1]}.")
+    if k.shape[1] <= 0 or q.shape[1] % k.shape[1] != 0:
+        raise ValueError(
+            f"flash_attention_gna: q_heads ({q.shape[1]}) must be divisible by "
+            f"kv_heads ({k.shape[1]}) (GQA).")
     if not (k.shape[3] == v.shape[3] == D):
         raise ValueError(
             f"flash_attention_gna: k, v head_dim must equal q's D={D}. Got "
@@ -6298,6 +6349,13 @@ def _varlen_setup(q, k, v, cu_seqlens_q, cu_seqlens_k, scale):
     KV segment used to surface as a silent NaN downstream.
     """
     _assert_kv_dtype_matches_q(q, [("k", k), ("v", v)], "flash_attention_varlen")
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            "flash_attention_varlen expects 4-D packed tensors [1, H, total, D]. "
+            f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D.")
+    # CX-03 sweep (C2b): K/V must agree on packed-total/heads/head_dim with Q
+    # (per-segment q!=k lengths stay valid — that's the cu_seqlens contract).
+    _assert_qkv_mutual_compat(q, k, v, "flash_attention_varlen")
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     # GPU sync: varlen per-seq slicing needs Python ints.

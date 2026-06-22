@@ -2899,8 +2899,33 @@ mlx::core::array mfa_gna_forward(
 
   int H    = q.shape(1);
   int H_kv = k.shape(1);
-  if (H % H_kv != 0)
+  if (H_kv <= 0 || H % H_kv != 0)
     throw std::invalid_argument("MFA GNA: H must be divisible by H_kv (GQA)");
+
+  // CX-03 (volet C2b, raw host guard mirroring the public flash_attention_gna
+  // boundary): the GNA kernel derives B/N/H/D from Q and reads K/V forward from
+  // their own base pointers (no broadcast).  Bq>Bk, k_seq/v_seq != N, Hv != Hk,
+  // or D_k/D_v != D → out-of-bounds device reads → silent finite-wrong.  Reject
+  // the malformed contract before dispatch (Rule 8).
+  if (!(q.shape(0) == k.shape(0) && k.shape(0) == v.shape(0)))
+    throw std::invalid_argument(
+        "mfa_gna_forward: q, k, v must share the batch dim. Got q_batch=" +
+        std::to_string(q.shape(0)) + ", k_batch=" + std::to_string(k.shape(0)) +
+        ", v_batch=" + std::to_string(v.shape(0)) + ".");
+  if (!(k.shape(2) == N && v.shape(2) == N))
+    throw std::invalid_argument(
+        "mfa_gna_forward: k, v sequence length must equal q's N=" +
+        std::to_string(N) + " (neighborhood self-attention). Got k_seq=" +
+        std::to_string(k.shape(2)) + ", v_seq=" + std::to_string(v.shape(2)) + ".");
+  if (k.shape(1) != v.shape(1))
+    throw std::invalid_argument(
+        "mfa_gna_forward: k, v must have the same number of heads. Got k_heads=" +
+        std::to_string(k.shape(1)) + ", v_heads=" + std::to_string(v.shape(1)) + ".");
+  if (!(k.shape(3) == D && v.shape(3) == D))
+    throw std::invalid_argument(
+        "mfa_gna_forward: k, v head_dim must equal q's D=" + std::to_string(D) +
+        ". Got k_dim=" + std::to_string(k.shape(3)) + ", v_dim=" +
+        std::to_string(v.shape(3)) + ".");
 
   int gqa_factor = H / H_kv;
 

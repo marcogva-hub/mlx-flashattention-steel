@@ -161,3 +161,63 @@ to the kernel's existing handling; `psB` (the OOB) is gated via num_seqs =
 
 *Volet C2 is a validation-only host-gate widening; no kernel math, dispatch, or
 valid-path output changed.  Commit on `fix/audit-remediation` only.*
+
+---
+
+## Volet C2b — closing the siblings C2 exposed (base HEAD `1056f0b`)
+
+Three completeness items a round-5 audit would re-find, **verified-first** (RULE 16).
+
+### `qkv` column — completed for EVERY public q/k/v entry
+
+| entry point | qkv | how |
+|---|---|---|
+| `flash_attention` | **RC** | inline (C-01) |
+| `flash_attention_gna` (public) | **RC** | inline; **GQA-aware** (C2b fix — was wrongly `q==k==v`) |
+| `_ext.mfa_gna_forward` (raw) | **RC** | C++ host guard (C2b item 2 — was unguarded) |
+| `flash_attention_sparse` | **RC** | `_assert_qkv_mutual_compat` (C2b item 3 — was unguarded for `k_seq!=v_seq`) |
+| `sage_attention` | **RC** | `_assert_qkv_mutual_compat` (C2b item 3 — was fully unguarded) |
+| `flash_attention_varlen` | **RC** | `_assert_qkv_mutual_compat` in `_varlen_setup` — K/V packed-total/heads/head_dim (per-segment `q!=k` len stays the cu_seqlens contract) |
+| `flash_attention_paged` | N/A | K/V are **pools** indexed by `block_table`, not q-shaped — invariant is the paged validator (C2) + `cache_batch_idx` bounds (below) |
+| `flash_attention_paged_varlen` | N/A | pools — as above |
+| `flash_attention_paged_varlen_turboquant` | N/A | pools — as above |
+
+Shared helper `_assert_qkv_mutual_compat(q,k,v,fn)`: batch equal · `k_seq==v_seq` ·
+`k_heads==v_heads` · `q_heads % kv_heads == 0` (GQA) · `q_dim==k_dim`. `v` head_dim
+intentionally unconstrained (`D_v != D_qk` → SDPA fallback on some paths).
+
+### `cache_batch_idx` edge-input row (Item 1 — verified already guarded → pinned)
+
+| entry | cbi-OOB (`≥ rows`) | cbi-neg | ground truth |
+|---|---|---|---|
+| `flash_attention_paged` | **RC** | **RC** | already validated `[0, block_table.shape[0])` (pre-C2b); now lock-pinned |
+| `flash_attention_paged_varlen` | **RC** | **RC** | already validated; now lock-pinned |
+| `flash_attention_paged_varlen_turboquant` | N/A | N/A | does not take `cache_batch_idx` |
+
+**No new raise added** for Item 1 (would be redundant); the existing guards are
+pinned by `cbi_oob_paged` / `cbi_neg_paged` and the valid remap by `cbi_remap`.
+The C2 `expected_batch` carve-out (suppressed under remap) is unchanged — the
+*index value* is bounded, not the row count.
+
+### Findings closed (C2b)
+
+| item | sev | entry × class | was | now |
+|---|---|---|---|---|
+| Item 2 | HIGH | `_ext.mfa_gna_forward` × qkv | no Q/K/V check → OOB → finite-wrong | C++ host guard raises |
+| Item 3 | HIGH | `flash_attention_sparse` / `sage_attention` / `flash_attention_varlen` × qkv | unguarded (k_seq!=v_seq / batch / heads) → OOB/finite-wrong | `_assert_qkv_mutual_compat` raises |
+| Item 1 | — | paged × cbi | (already guarded) | pinned by lock (no redundant raise) |
+| GNA-GQA | regression | `flash_attention_gna` (public) × valid GQA | C2 check wrongly rejected GQA `q!=k` heads (undetected — GQA test uses raw `_ext`) | GQA-aware check; valid-GQA pinned |
+
+### Validation (bite-proven)
+1. Full suite: `2526 passed, 91 skipped, 0 failed, 0 XPASS`; `test_validation_matrix_c2.py`
+   27 malformed + 5 valid cells green. Oracle envelope (61 cells) unchanged →
+   **byteΔ-identity** on the valid envelope.
+2. Bite proofs (sole-guard, non-destructive Edit-restore):
+   - **Item 3 (Python):** neutralize `_assert_qkv_mutual_compat` in `sage_attention`
+     → `sage_batch` + `sage_kseq_ne_vseq` **FAIL**; restore → pass.
+   - **Item 2 (C++, rebuild):** neutralize the raw-GNA batch guard + rebuild →
+     `raw_gna_batch` **FAILS**; restore + rebuild → passes.
+3. GNA-GQA regression: `_ok_gna_gqa` (H_q=8/H_kv=2) must NOT raise — pins the fix.
+
+*Validation-only host-gate completeness; no kernel math, dispatch, or valid-path
+output changed.  Commit on `fix/audit-remediation` only.*

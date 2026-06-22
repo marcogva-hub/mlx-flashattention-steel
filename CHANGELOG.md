@@ -67,6 +67,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       broadcasting, so a mismatch previously produced **finite-wrong** output.
     - **`Hk=0`** (CC): empty-head K/V now raises a clean `ValueError` instead of a raw
       `ZeroDivisionError` at the GQA modulo.
+  - **Validation completeness — closing the siblings C2 exposed (volet C2b — round-4 follow-up).**
+    - **Raw GNA `_ext` guard:** `_ext.mfa_gna_forward` now applies the same Q/K/V mutual-shape-compat
+      host guard (batch / `k_seq==v_seq==N` / `k_heads==v_heads` / head_dim) as the public
+      `flash_attention_gna`, matching the raw-paged guards (was unguarded → finite-wrong on a mismatch).
+    - **Q/K/V-compat completeness sweep:** the mutual-shape check is now applied across **every** public
+      attention entry — `flash_attention_sparse`, `sage_attention`, and `flash_attention_varlen` (packed
+      K/V-total / heads / head_dim) were unguarded and could read out of bounds on a mismatch; they now
+      raise. Paged entries take pooled K/V (indexed via `block_table`) → N/A for shape-equality (their
+      invariant is the paged-validator from C2).
+    - **`cache_batch_idx` bounds:** verified already guarded — `flash_attention_paged` /
+      `flash_attention_paged_varlen` reject a remap index outside `[0, block_table.shape[0])`; now pinned
+      by a lock test so it can't silently regress (the C2 `expected_batch` carve-out is unchanged — the
+      *index value*, not the row count, is what's bounded under continuous batching).
+    - **GNA GQA fix:** the C2 public-GNA head check wrongly required `q==k==v` heads, which would have
+      rejected valid **GQA** (`gqa_factor = H_q/H_kv`; e.g. H_q=8/H_kv=2) — undetected because the GQA
+      test exercises the raw `_ext` path. Corrected to allow GQA (k/v heads equal + `q_heads %
+      kv_heads == 0`), now pinned by a valid-GQA regression test.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

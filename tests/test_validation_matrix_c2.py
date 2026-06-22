@@ -94,14 +94,73 @@ _MALFORMED = {
         mx.random.normal((1, 2, 64, 128)).astype(F16),
         mx.random.normal((1, 2, 72, 128)).astype(F16),
         seq_shape=(4, 4, 4), window_size=(2, 2, 2), stride=(1, 1, 1))),
+    # k_heads != v_heads (a real mismatch; q4/k2/v2 would be VALID GQA — C2b).
     "gna_head_mismatch": _c(lambda: mlx_mfa.flash_attention_gna(
         mx.random.normal((1, 4, 64, 128)).astype(F16),
         mx.random.normal((1, 2, 64, 128)).astype(F16),
-        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 4, 64, 128)).astype(F16),
         seq_shape=(4, 4, 4), window_size=(2, 2, 2), stride=(1, 1, 1))),
     # CC — Hk=0 clean ValueError (was ZeroDivisionError)
     "dense_hk_zero": _c(lambda: mlx_mfa.flash_attention(
         _q(1, 16), mx.zeros((1, 0, 16, 64), F16), mx.zeros((1, 0, 16, 64), F16))),
+
+    # ── Volet C2b ────────────────────────────────────────────────────────────
+    # Item 1 — cache_batch_idx remap-index bounds (pin existing guards).
+    "cbi_oob_paged": _c(lambda: mlx_mfa.flash_attention_paged(
+        _q(2), _pool(), _pool(),
+        mx.array([[2, 5, 1, 0], [3, 4, 0, 1], [1, 2, 3, 4], [0, 1, 2, 3]], dtype=mx.int32),
+        mx.array([48, 48, 48, 48], dtype=mx.int32), scale=_SCALE, block_size=_BS,
+        cache_batch_idx=mx.array([0, 99], dtype=mx.int32))),
+    "cbi_neg_paged": _c(lambda: mlx_mfa.flash_attention_paged(
+        _q(2), _pool(), _pool(),
+        mx.array([[2, 5, 1, 0], [3, 4, 0, 1], [1, 2, 3, 4], [0, 1, 2, 3]], dtype=mx.int32),
+        mx.array([48, 48, 48, 48], dtype=mx.int32), scale=_SCALE, block_size=_BS,
+        cache_batch_idx=mx.array([0, -3], dtype=mx.int32))),
+    # Item 2 — raw GNA _ext Q/K/V compat (new C++ guard).
+    "raw_gna_batch": _c(lambda: _ext.mfa_gna_forward(
+        mx.random.normal((2, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        _SCALE, 4, 4, 4, 2, 2, 2, 1, 1, 1)),
+    "raw_gna_kseq_ne_vseq": _c(lambda: _ext.mfa_gna_forward(
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 72, 128)).astype(F16),
+        _SCALE, 4, 4, 4, 2, 2, 2, 1, 1, 1)),
+    "raw_gna_kv_head_ne": _c(lambda: _ext.mfa_gna_forward(
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 4, 64, 128)).astype(F16),
+        _SCALE, 4, 4, 4, 2, 2, 2, 1, 1, 1)),
+    # Item 3 — Q/K/V-compat completeness sweep (sparse / sage / varlen).
+    "sparse_batch": _c(lambda: mlx_mfa.flash_attention_sparse(
+        mx.random.normal((2, _H, 256, 128)).astype(F16),
+        mx.random.normal((1, _H, 256, 128)).astype(F16),
+        mx.random.normal((1, _H, 256, 128)).astype(F16),
+        mlx_mfa.make_causal_block_mask(256, head_dim=128), causal=True)),
+    "sparse_kseq_ne_vseq": _c(lambda: mlx_mfa.flash_attention_sparse(
+        mx.random.normal((1, _H, 256, 128)).astype(F16),
+        mx.random.normal((1, _H, 256, 128)).astype(F16),
+        mx.random.normal((1, _H, 264, 128)).astype(F16),
+        mlx_mfa.make_causal_block_mask(256, head_dim=128), causal=True)),
+    "sage_batch": _c(lambda: mlx_mfa.sage_attention(
+        mx.random.normal((2, _H, 256, _D)).astype(F16),
+        mx.random.normal((1, _H, 256, _D)).astype(F16),
+        mx.random.normal((1, _H, 256, _D)).astype(F16))),
+    "sage_kseq_ne_vseq": _c(lambda: mlx_mfa.sage_attention(
+        mx.random.normal((1, _H, 256, _D)).astype(F16),
+        mx.random.normal((1, _H, 256, _D)).astype(F16),
+        mx.random.normal((1, _H, 264, _D)).astype(F16))),
+    "varlen_kv_head_ne": _c(lambda: mlx_mfa.flash_attention_varlen(
+        mx.random.normal((1, 4, 32, 64)).astype(F16),
+        mx.random.normal((1, 4, 32, 64)).astype(F16),
+        mx.random.normal((1, 2, 32, 64)).astype(F16),
+        mx.array([0, 32], dtype=mx.int32), mx.array([0, 32], dtype=mx.int32), 32, 32)),
+    "varlen_ktot_ne_vtot": _c(lambda: mlx_mfa.flash_attention_varlen(
+        mx.random.normal((1, 4, 32, 64)).astype(F16),
+        mx.random.normal((1, 4, 32, 64)).astype(F16),
+        mx.random.normal((1, 4, 40, 64)).astype(F16),
+        mx.array([0, 32], dtype=mx.int32), mx.array([0, 32], dtype=mx.int32), 32, 32)),
 }
 
 
@@ -143,7 +202,33 @@ def _ok_raw_steel():
     return o
 
 
+def _ok_gna_gqa():
+    # C2b regression pin: GNA supports GQA (gqa_factor = H_q/H_kv) — the public
+    # boundary must NOT reject q_heads != kv_heads when divisible. The C2 check
+    # wrongly required q==k==v heads; this would have caught that.
+    o = mlx_mfa.flash_attention_gna(
+        mx.random.normal((1, 8, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        mx.random.normal((1, 2, 64, 128)).astype(F16),
+        seq_shape=(4, 4, 4), window_size=(2, 2, 2), stride=(1, 1, 1))
+    mx.eval(o)
+    return o
+
+
+def _ok_cbi_remap():
+    # Valid continuous-batching remap: block_table has more rows than active q.
+    o = mlx_mfa.flash_attention_paged(
+        _q(2), _pool(), _pool(),
+        mx.array([[2, 5, 1, 0], [3, 4, 0, 1], [1, 2, 3, 4], [0, 1, 2, 3]], dtype=mx.int32),
+        mx.array([48, 48, 48, 48], dtype=mx.int32), scale=_SCALE, block_size=_BS,
+        cache_batch_idx=mx.array([0, 2], dtype=mx.int32))
+    mx.eval(o)
+    return o
+
+
 @pytest.mark.parametrize("cid,fn", [("paged", _ok_paged), ("gna", _ok_gna),
-                                     ("raw_steel", _ok_raw_steel)])
+                                     ("raw_steel", _ok_raw_steel),
+                                     ("gna_gqa", _ok_gna_gqa),
+                                     ("cbi_remap", _ok_cbi_remap)])
 def test_valid_envelope_still_runs(cid, fn):
     fn()  # must not raise — validation is a boundary gate, valid paths unchanged
