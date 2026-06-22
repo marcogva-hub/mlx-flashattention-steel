@@ -119,6 +119,16 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       build/source/test/CMake refs). The volet-G oracle-envelope table now lives at
       `audit/round3_remediation/oracle_envelope.md` (tracked + sdist-excluded), alongside the validation
       matrix, instead of the gitignored `devnotes/`.
+  - **Release-gate hardening (volet D2 — CC-02, CI-only).** The publish-surface guard (GATE 3) and the
+    full-suite gate (GATE 1) route their build precondition through `_skip_or_fail`, which hard-fails
+    only when `MFA_RELEASE_GATE` is set — otherwise it `pytest.skip`s, so a transient missing-`build` /
+    non-zero `python -m build --sdist` made the gate "pass" green while inspecting no artifact (the
+    2.58.0 journal-leak class). `.github/workflows/publish.yml` now sets `env: MFA_RELEASE_GATE=1` on the
+    `gates` job, so those skips become **fails** in the release context. Read only by
+    `tests/test_publish_surface_guard.py` → no other behavior changes; **local dev is unaffected** (the
+    skip-when-unset is correct offline). Enumerated all `publish.yml`/`ci.yml` gates — no other
+    skip-escape (GATE 2/5 are shell/script exit-codes, GATE 4 has 0 skip sites). See
+    `audit/round3_remediation/gate_enumeration_d2.md`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

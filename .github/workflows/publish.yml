@@ -30,6 +30,17 @@ jobs:
   gates:
     name: Mandatory release gates
     runs-on: macos-14
+    # CC-02 (volet D2): the publish-surface guard (GATE 3) and the full suite
+    # (GATE 1) route their build-precondition through `_skip_or_fail`, which only
+    # HARD-FAILS when MFA_RELEASE_GATE is set — otherwise it pytest.skips, and an
+    # all-skip run exits 0 → the gate "passes" green while inspecting no artifact
+    # (the 2.58.0 journal-leak class). Set it job-wide so a missing `build` /
+    # non-zero `python -m build --sdist` is FATAL here. Read ONLY by
+    # tests/test_publish_surface_guard.py, so this flips that guard's skips→fails
+    # and changes nothing else (device-conditional M5-lock skips are unaffected —
+    # they don't route through _skip_or_fail).
+    env:
+      MFA_RELEASE_GATE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
