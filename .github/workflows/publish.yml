@@ -1,5 +1,10 @@
 name: Publish
 
+# Volet D (CX-07): publishing is GATED. The previous workflow built an sdist,
+# ran only `twine check`, and uploaded — it never ran the suite, the
+# publish-surface guard, the release audit, or the mandatory M5/NAX pre-tag gate.
+# Now every upload `needs:` the `gates` job, which is FATAL on any failure.
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,10 +21,72 @@ defaults:
     shell: bash
 
 jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # MANDATORY GATES — every step FATAL; build + publish depend on this job.
+  # Runs on macos-14 (M1): the M5/NAX correctness LOCKS skip here (expected —
+  # GitHub has no M5), but the M5 surface is enforced via the gate-fingerprint
+  # precondition (a maintainer-run M5 receipt; see release-gate/README.md).
+  # ───────────────────────────────────────────────────────────────────────────
+  gates:
+    name: Mandatory release gates
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history — the M5 fingerprint freshness check
+                          # diffs the gate's git_sha against HEAD.
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install mlx scikit-build-core cmake numpy pytest build twine
+
+      - name: Build and install the C++ extension
+        run: pip install -e . --no-build-isolation -v
+        timeout-minutes: 12
+
+      - name: GATE 1 — full test suite (FATAL)
+        run: pytest tests/ -q --tb=short --no-header
+
+      - name: GATE 2 — collection floor (FATAL on collapse)
+        run: |
+          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -o '[0-9]\+' | head -1)
+          echo "Collected $COUNT tests"
+          MIN=1800
+          if [ -z "$COUNT" ] || [ "$COUNT" -lt "$MIN" ]; then
+            echo "::error::test collection collapsed ($COUNT < $MIN) — refusing to publish."
+            exit 1
+          fi
+
+      - name: GATE 3 — publish-surface guard (FATAL)
+        run: pytest tests/test_publish_surface_guard.py -q
+
+      - name: GATE 4 — release audit equivalents (non-M5 mechanical §AA checks, FATAL)
+        run: |
+          pytest -q \
+            tests/test_release_docs.py \
+            tests/test_doc_accuracy_guards.py \
+            tests/test_perf_claims_doc_sync.py \
+            tests/test_public_export_contract.py \
+            tests/test_release_notes_perf_claims.py
+
+      - name: GATE 5 — M5/NAX gate fingerprint precondition (FATAL — CX-07/CC-14)
+        # Blocks the publish unless a fresh, authentic M5 gate receipt exists for
+        # the pyproject version (PASS + NAX-live + M5, git_sha an ancestor of HEAD
+        # with NO csrc//mlx_mfa/ change since). Run scripts/release_m5_nax_gate.py
+        # on an M5 host and commit release-gate/m5-gate-<version>.json first.
+        run: python scripts/check_m5_gate_fingerprint.py
+
   build:
     name: Build release artifacts
+    needs: gates
     runs-on: macos-14
-
     steps:
       - uses: actions/checkout@v4
 

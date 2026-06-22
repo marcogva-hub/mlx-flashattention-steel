@@ -23,14 +23,29 @@ Usage:
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
+import subprocess
 import sys
 
 import mlx.core as mx
 
 import mlx_mfa
 from mlx_mfa import flash_attention, flash_attention_sparse, get_device_info, make_causal_block_mask
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _git_sha() -> str:
+    """HEAD commit the gate is validating (volet D — the fingerprint's authenticity
+    anchor; the publish precondition checks no csrc//mlx_mfa/ source changed since)."""
+    try:
+        return subprocess.run(
+            ["git", "-C", _REPO, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return "UNKNOWN"
 
 
 def _delta(a, b) -> float:
@@ -144,8 +159,13 @@ def main() -> int:
 
     # 3) Archive the stamped fingerprints (audit record; off the tracked tree).
     dev = get_device_info()
+    gate_result = "PASS" if not failures else "FAIL"
+    # Content hash binds the receipt to the exact fingerprint values.
+    fp_hash = hashlib.sha256(
+        json.dumps(fps, sort_keys=True).encode()).hexdigest()
     stamp = {
         "release_version": mlx_mfa.__version__,
+        "git_sha": _git_sha(),
         "mlx_version": mx.__version__,
         "device": dev.get("device_name", "?"),
         "chip": dev.get("chip_name", "?"),
@@ -154,15 +174,28 @@ def main() -> int:
         "has_nax": ok,
         "nax_reason": code,
         "fingerprints": fps,
-        "gate": "PASS" if not failures else "FAIL",
+        "fingerprints_sha256": fp_hash,
+        "gate": gate_result,
     }
-    archive_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "devnotes", "release-fingerprints")
+    # (a) full record → gitignored archive (off the tracked tree, journal policy).
+    archive_dir = os.path.join(_REPO, "devnotes", "release-fingerprints")
     os.makedirs(archive_dir, exist_ok=True)
     path = os.path.join(archive_dir, f"m5-nax-fingerprints-{mlx_mfa.__version__}.json")
     with open(path, "w") as fh:
         json.dump(stamp, fh, indent=2)
     print(f"✓ archived fingerprints → {os.path.relpath(path)}")
+    # (b) TRACKED receipt → release-gate/ (volet D): the publish.yml precondition
+    # reads THIS (a fresh GitHub checkout cannot see the gitignored archive).
+    # Commit it as a release-prep step; check_m5_gate_fingerprint.py verifies it
+    # at publish time (git_sha freshness + PASS + NAX live).  Tracked but
+    # sdist-excluded (does not ship to users).
+    receipt_dir = os.path.join(_REPO, "release-gate")
+    os.makedirs(receipt_dir, exist_ok=True)
+    receipt = os.path.join(receipt_dir, f"m5-gate-{mlx_mfa.__version__}.json")
+    with open(receipt, "w") as fh:
+        json.dump(stamp, fh, indent=2)
+    print(f"✓ wrote tracked release receipt → {os.path.relpath(receipt)} "
+          f"(git add + commit this before dispatching publish.yml)")
     for nm, val in fps.items():
         print(f"    {nm}: byteΔ={val:.3e}")
 

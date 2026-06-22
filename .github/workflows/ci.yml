@@ -30,8 +30,10 @@ jobs:
     name: "Fallback tests (Python only)"
     runs-on: macos-14  # arm64 (M1)
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        # CX-10 (volet D): cover the full declared interpreter range 3.10-3.14.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -75,14 +77,17 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Job 2: Full test suite — builds the C++ extension on Apple Silicon
   #
-  # ⚠ M5/NAX COVERAGE GAP (audit H-05, 2026-06-21 — FLAGGED for a strategy
-  # decision, not yet implemented): GitHub-hosted `macos-14` is M1, so the
-  # M5+/NAX paths (V6 NAX dense forward, V6 split backward, NAX sparse, the
-  # which-binary byteΔ fingerprints) are SKIPPED here and NEVER exercised in CI.
-  # Options to close it (Marco's call): (a) a self-hosted M5 runner gating
-  # merges; (b) a mandatory pre-release run on an M5 host with the dispatch-map
-  # fingerprints archived as an artifact. Until then, M5 correctness is verified
-  # only on the maintainer's machine.
+  # ⚠ M5/NAX COVERAGE GAP (audit H-05 / CC-14). GitHub-hosted `macos-14` is M1,
+  # so the M5+/NAX paths (V6 NAX dense forward, V6 split backward, NAX sparse, the
+  # which-binary byteΔ fingerprints) SKIP here and are NEVER exercised in CI.
+  # ENFORCEMENT (volet D, CX-07): a green hosted-runner CI does NOT certify the M5
+  # surface — only the maintainer-run M5 gate does, and `publish.yml` makes a
+  # fresh, SHA-matched M5 gate-fingerprint receipt a FATAL precondition for any
+  # upload (see release-gate/README.md). The skip-count step below makes the M1
+  # skips countable so a lock silently dropping out is caught even though it skips.
+  # FLAG-FOR-SIGNOFF (durable): a self-hosted M5 runner that runs the M5 locks +
+  # gate directly in CI would close this structurally (also CC-23). Not added —
+  # a self-hosted runner on a PUBLIC repo is a security risk (Marco's call).
   # ─────────────────────────────────────────────────────────────────────────
   test-mfa:
     name: "Full MFA tests (Metal kernel)"
@@ -145,6 +150,17 @@ jobs:
             exit 1
           fi
 
+      - name: M5/NAX lock skip-count visibility (CC-14 / volet D — FATAL)
+        run: |
+          # The M5-gated correctness locks SKIP on this M1 runner. The frozen
+          # marker count (test_release_gate_enforcement::test_m5_skip_marker_count)
+          # makes a lock silently dropping out of the suite a CI FAILURE even
+          # though it skips. Run it explicitly here for visibility + enforcement.
+          pytest tests/test_release_gate_enforcement.py -q
+          # Visibility: how many M5 locks actually skipped on this M1 host.
+          SKIPPED=$(pytest tests/ -rs -q 2>/dev/null | grep -icE "SKIPPED.*(M5|NAX)" || true)
+          echo "::notice::M5/NAX locks skipped on this hosted (M1) runner: $SKIPPED — NOT M5-certified; the publish.yml M5 fingerprint precondition is what certifies the M5 surface."
+
   # ─────────────────────────────────────────────────────────────────────────
   # Job 3: Packaging validation — verify sdist contains expected files
   # ─────────────────────────────────────────────────────────────────────────
@@ -152,8 +168,11 @@ jobs:
     name: "Packaging validation"
     runs-on: macos-14
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        # CX-10 (volet D): the source-build-only sdist must build + import on
+        # every declared interpreter — that is part of the release contract.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -202,3 +221,23 @@ jobs:
             tar tzf "$SDIST" | grep -q "$member" \
               || { echo "FATAL: $member not in sdist"; exit 1; }
           done
+
+      # CX-10 (volet D): the release model is SOURCE-BUILD-ONLY, so "the sdist
+      # compiles _ext and imports" is the per-interpreter release contract — test
+      # it on every declared Python. Install build deps + the freshly-built sdist
+      # in this job's interpreter, then import and verify the has_nax() contract.
+      - name: Install the built sdist (compile-at-install) and import
+        run: |
+          pip install mlx numpy scikit-build-core cmake
+          SDIST=$(ls dist/*.tar.gz)
+          pip install "$SDIST" -v
+          python -c "
+          import mlx_mfa
+          print('import OK — mlx_mfa', mlx_mfa.__version__, 'on py${{ matrix.python-version }}')
+          ok, reason = mlx_mfa.has_nax(reason=True)
+          # macos-14 is M1 → NAX never engages; the contract is a CLEAN reason
+          # (pre-m5-hardware), NOT an ext-load failure (which would mean the
+          # source build/ABI broke on this interpreter).
+          assert reason != 'ext-load-failed', f'_ext failed to load on py${{ matrix.python-version }}: {reason}'
+          print('has_nax()', ok, '/ reason', reason, '(clean source build + import)')
+          "

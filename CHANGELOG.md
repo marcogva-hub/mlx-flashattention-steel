@@ -81,6 +81,23 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     runtime test cannot — hence a source-predicate lock). The CX-02 (`seq_lens.shape==B`) and CC-03
     (`Hq%Hk==0`) **kernel-half** reads are confirmed bounded by the volet-C host invariants (cited in the
     audit); the raw-`_ext` TQ path is now OOB-safe via the kernel reorder.
+- **Release-gate enforcement + CI coverage (audit volet D — the mandatory gates now BLOCK).**
+  - **`publish.yml` no longer bypasses the gates (CX-07):** a new FATAL `gates` job runs the full
+    suite + collection floor + `test_publish_surface_guard` + the release-audit-equivalent doc/version
+    locks + the **M5/NAX gate-fingerprint precondition**; `build` `needs: gates` and both publish jobs
+    `needs: build`, so a failure anywhere blocks the upload (was: sdist + `twine check` → upload).
+  - **M5/NAX gate is now an enforced publish precondition (CC-14):** `release_m5_nax_gate.py` records a
+    `git_sha` + `fingerprints_sha256` and writes a **tracked, sdist-excluded** receipt to
+    `release-gate/m5-gate-<version>.json`; new `scripts/check_m5_gate_fingerprint.py` BLOCKS the publish
+    unless the receipt is PASS + NAX-live + M5 and **fresh** (its `git_sha` is an ancestor of HEAD with no
+    `csrc/`/`mlx_mfa/` change since — the published source must equal the gated source). A green
+    hosted-runner CI does **not** certify the M5 surface; only the receipt does.
+  - **CI Python matrix 3.10–3.14 (CX-10):** the fallback + packaging jobs run the full declared range;
+    packaging adds a per-version compile-at-install sdist build + import + `has_nax()` contract check (the
+    source-build-only release model). A frozen **M5-lock skip count** (69 marker sites) fails CI if a lock
+    silently drops out even though it merely skips on the M1 runner.
+  - **FLAG-FOR-SIGNOFF:** a self-hosted M5 runner (durable structural fix for CC-14/CC-23) is NOT added —
+    it would expose the maintainer's machine on a public repo (security). See `devnotes/release_gate_enforcement.md`.
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).

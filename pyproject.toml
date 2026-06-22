@@ -54,7 +54,7 @@ wheel.packages = ["mlx_mfa"]
 # csrc/** + mlx_mfa/** + examples/** + tests/** + docs/reference/**. The built-sdist
 # guard (tests/test_publish_surface_guard.py) enforces this allowlist on the real tarball.
 [tool.scikit-build.sdist]
-exclude = ["bench", "benchmarks", "devnotes", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__"]
+exclude = ["bench", "benchmarks", "devnotes", "release-gate", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
