@@ -65,6 +65,22 @@ below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — no
     non-positive `wm`; the debug backward bindings + `mfa_steel_backward` now mirror the forward contract
     (CX-03/CC-05). `mfa_attention_forward`'s `stream` arg documented as None-only (CX-06 — the extension
     registers no Stream/Device caster; ops run on the default GPU stream).
+- **Kernel buffer-bounds: check-before-read everywhere (audit volet B — defense-in-depth behind volet C;
+  no valid-input behaviour change, byteΔ-identical).** Enumerated every device-buffer read in every Metal
+  kernel under `csrc/` (audit in `devnotes/buffer_read_audit.md`); fixed 4 reads:
+  - **TurboQuant paged-varlen kernel (CC-02):** the K-gather and V-gather read `block_table[…]` **before**
+    the `blk_idx < max_blocks` bounds check (a read-before-check OOB, masked on a skim by a `// OOB guards`
+    comment). Restructured to the nested-if of the correct non-TQ sibling (`mfa_steel_paged_varlen_fwd.cpp`)
+    — `if (blk_idx < max_blocks) { phys = block_table[…]; if (phys in pool) {…} }` — and corrected the comment.
+  - **STEEL V2 single-pass + GNA K direct-read (III-9 sibling):** on M5 (`MFA_DIRECT_READS`, the default
+    path) the K key-row was unclamped on the partial final K-tile → OOB device read (the III-9 fix had
+    hardened the V direct-read but not K). Added the same `k_row = min(sn, kL_rem-1)` clamp; the over-read
+    score is masked to `-INF` so the in-bounds result is unchanged.
+  - A **source-order lock** (`tests/test_volet_b_buffer_bounds.py`) asserts check-precedes-read at both
+    gather sites + the K-clamp, and bites on a reverted order (Apple GPUs silently absorb OOB reads, so a
+    runtime test cannot — hence a source-predicate lock). The CX-02 (`seq_lens.shape==B`) and CC-03
+    (`Hq%Hk==0`) **kernel-half** reads are confirmed bounded by the volet-C host invariants (cited in the
+    audit); the raw-`_ext` TQ path is now OOB-safe via the kernel reorder.
 
 ### Added
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).

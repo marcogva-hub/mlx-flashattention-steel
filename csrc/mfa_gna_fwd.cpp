@@ -359,8 +359,15 @@ inline bool gna_tile_active(
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short dd = 0; dd < MFA_TD; dd++) {\n";
   ss << "#if MFA_DIRECT_READS\n";
+  // III-9 K sibling (volet B): clamp the key-row (sn) on the partial final
+  // K-tile so the direct device read stays in bounds (mirrors the V clamp
+  // below / the V2 single-pass fix).  The K over-read is masked to -INF, so
+  // the in-bounds result is byteΔ-identical; this removes the UB OOB read.
+  ss << "      short k_row = sn;\n";
+  ss << "      if (kb == p->NK_aligned && k_row >= p->kL_rem)\n";
+  ss << "        k_row = p->kL_rem - 1;\n";
   ss << "      Ktile.template load<T, 1, 1>(\n";
-  ss << "          K_cur + (long)(sm + (short)(dd * 8)) + (long)sn * K_stride,\n";
+  ss << "          K_cur + (long)(sm + (short)(dd * 8)) + (long)k_row * K_stride,\n";
   ss << "          1, K_stride);\n";
   ss << "#else\n";
   ss << "      Ktile.template load_contiguous<T, 1, 1>(\n";
