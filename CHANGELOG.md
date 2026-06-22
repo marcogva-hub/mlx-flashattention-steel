@@ -30,6 +30,17 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
    `alibi_slopes` now raises `ValueError`.** Previously the dropout path silently **dropped** the
    requested feature, returning results for a *different function* than asked. Set `dropout_p=0` or drop
    the feature (CX-01, volet C). Full dropout∘feature composition is a deferred capability decision.
+3. **`flash_attention_varlen(..., causal=True)` with `N_q < N_k` per segment now follows the documented
+   lower-right convention** (was silently **upper-left**). The non-paged STEEL varlen kernel masked
+   `col <= row` using the local query position, omitting the `qL_off = max(0, kL_local − qL_local)` shift
+   that the dense (`qL_off=(N<S)?(S-N):0`) and paged-varlen (`(qL<kL)?(kL-qL):0`) siblings already apply.
+   So a packed segment whose query span was shorter than its key span (causal cross-attention /
+   decode-style varlen) attended the wrong key range — silently wrong on a public path. The fix mirrors
+   the paged-varlen sibling exactly. **Who is affected:** `flash_attention_varlen(causal=True)` callers
+   with any segment where `N_q < N_k` see **changed (now-correct) values**, matching SDPA's lower-right
+   causal and the dense/paged kernels; equal-length (`N_q == N_k`) and `N_q > N_k` segments are
+   **byte-identical** (`qL_off` is 0 there). Forward/backward are now consistent (the backward already
+   used per-segment dense `flash_attention`, i.e. lower-right). (round-4 CX-01, volet G.)
 
 ### Breaking / Behavior
 - **Input validation now raises `ValueError`** (previously silently-wrong / undefined):
@@ -150,6 +161,13 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
   and are unaffected. See `devnotes/stream_param_surgery.md`.
 
 ### Added
+- **Exhaustive kernel-math oracle envelope** (`tests/test_oracle_envelope.py`, volet G). Every forward
+  **and** backward kernel path (dense, sparse, decode/split-KV, non-paged varlen, paged, backward-vjp) ×
+  dtype{f16,bf16} × causal{T,F} × shape-regime{square, tail, `N_q<N_k`, `N_q>N_k`, decode, varlen
+  equal/unequal-seg} is locked against an **independent fp32/fp64 oracle** with a **byteΔ-vs-SDPA
+  engagement fingerprint** (which binary actually ran). 61 biting cells; the `varlen × causal × N_q<N_k`
+  cell is the completeness oracle that would have caught round-4 CX-01. Regenerate the table to
+  `devnotes/oracle_envelope.md` with `MFA_ENVELOPE_DUMP=1`.
 - **`mlx_mfa.has_nax()` — canonical acceleration-availability query** (RULE-8 anti-silent-fallback).
   Returns whether the M5+ NAX fast path is live; `has_nax(reason=True)` returns `(bool, code)` with
   `code ∈ {available, ext-load-failed, unsupported-platform, pre-m5-hardware}`; `has_nax(strict=True)`

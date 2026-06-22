@@ -2541,11 +2541,16 @@ struct MFASteelVarlenParams {
 
   // Causal mask
   if (causal) {
-    ss << "    // Causal mask (local positions within sequence)\n";
+    ss << "    // Causal mask (local positions within sequence) — lower-right.\n";
+    ss << "    // CX-01: mirror the paged-varlen/dense qL_off so a segment with\n";
+    ss << "    // qL_local < kL_local uses lower-right alignment (query row r attends\n";
+    ss << "    // keys 0..r+(kL_local-qL_local)), matching SDPA and the dense/paged\n";
+    ss << "    // siblings.  Previously this was upper-left (silent-wrong for N_q<N_k).\n";
     ss << "    {\n";
+    ss << "      const int qL_off = (qL_local < kL_local) ? (kL_local - qL_local) : 0;\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = local_tile_id * MFA_BQ + (int)tm + (int)sm + i * 8;\n";
+    ss << "        const int row = qL_off + local_tile_id * MFA_BQ + (int)tm + (int)sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "          const int col = kb * MFA_BK + (int)sn + j * 8;\n";
