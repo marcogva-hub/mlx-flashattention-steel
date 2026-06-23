@@ -259,6 +259,11 @@ COMPUTATIONAL_CLASS_METHODS = {
     "KVCacheAdapter.append": "base adapter — delegates to self.cache.append",
     "HybridKVCache.append": "delegates to self._primary_adapter.append",
     "TurboQuantKVCache.append": "TQ-compresses K/V into cache state",
+    # P4 Part C: the name-independent state-write detector surfaced this
+    # previously-missed K/V state-producer (writes self._records from k/v under a
+    # differently-named buffer — the false-negative the old _k/_v/pool/scale name
+    # rule had). It persists K/V offload state for reload→attention.
+    "LocalHostKVStoreAdapter.put": "persists K/V offload state (self._records) for reload",
 }
 
 # Reviewed non-computational class methods that warrant an explicit reason (they
@@ -317,8 +322,14 @@ def _project_methods(cls):
 # attention-consumed state buffer from a K/V input). "Can't prove clean" → flag —
 # the inversion that closes the delegation vector that hid CX-TQ-DECODE-01.
 _RAW_CALL_RE_CACHE = None
-# assignment / slice-assign to an attention-consumed KV-state buffer
-_STATE_WRITE_RE = re.compile(r"self\.(_k\w*|_v\w*|\w*pool\w*|\w*scale\w*)\s*[\[.]?\s*[\[=]")
+# P4 Part C — NAME-INDEPENDENT state-write: any write to a persistent `self.<attr>`
+# (assign, slice-assign, or `self.<attr>.append(...)`). The old version keyed on
+# `_k/_v/pool/scale` names, so a state-producer writing a differently-named buffer
+# (e.g. `self._packed_keys = ...`) was a false-negative. Combined with a K/V-typed
+# param (below), this conservatively flags any method that stores K/V-derived
+# state under ANY attribute name → must be classified (provably-clean-or-flag).
+_STATE_WRITE_RE = re.compile(
+    r"self\.\w+\s*(?:\[[^\]]*\])?\s*=(?!=)|self\.\w+\.append\s*\(")
 _KV_PARAM = {"q", "k", "v", "k_new", "v_new", "query", "key", "value",
              "keys", "values", "queries"}
 

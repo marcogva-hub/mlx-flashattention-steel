@@ -414,6 +414,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     `DecodeRuntime.delegated_public` calling `self.context.step`) now bites, along with
     state-production / raw-call / intra-class-delegation synthetics; getters/`reset`
     stay clean (no over-promotion). `tests/test_third_surface_guard.py` (12 cells).
+  - **Cache-appender defect class closed + guard state-detection name-independent (volet P4).** The
+    re-convergence found `TurboQuantKVCache.append` validated only `k_new.ndim` then stored/compressed
+    V with **no V rank/heads/batch/token/D check** — silently accepting inconsistent K/V state (a later
+    `flash_attention` consumer raised, so not silent-wrong-output, but the append surface violated the
+    loud-failure-at-entry contract the other 3 appenders honor, **HIGH**). Rather than fix the instance,
+    the **class** was closed: the K↔V mutual-shape contract is now on `TurboQuantKVCache.append` (direct
+    + adapter, raw-V and compressed-V modes), and **every** direct K/V state-producer the property guard
+    derives was swept first-hand to confirm it rejects malformed V — `DenseKVCache.append`,
+    `QuantizedKVCache.append`, `TurboQuantPagedInferenceContext.append` (P1), `TurboQuantKVCache.append`
+    (this volet), and `LocalHostKVStoreAdapter.put`. The last was **surfaced by Part C**: the guard's
+    state-write detection was made **name-independent** (it had keyed on `_k`/`_v`/`pool`/`scale` attr
+    names, a realistic false-negative for a differently-named buffer) — it now flags a write to **any**
+    persistent `self.<attr>` from a K/V param, which immediately surfaced `LocalHostKVStoreAdapter.put`
+    (writes `self._records` from k/v) as a previously-missed state-producer; it was hardened too. The
+    live computational class-method set is **37** (was 36) — derived by property, no spurious bookkeeping
+    promotion. New bite: a state-producer writing a differently-named buffer placed in reviewed → offender.
+    Locks: `tests/test_tq_kvcache_append_vshape.py`, `tests/test_third_surface_guard.py` (13 cells).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

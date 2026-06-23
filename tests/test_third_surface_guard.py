@@ -25,8 +25,9 @@ def test_clean_state_no_offenders_and_counts():
     m = _enum()
     cm_off, n_cm = m.class_method_offenders()
     assert cm_off == [], f"class-method offenders: {cm_off}"
-    # 36 = 29 P0 hand-audited + 7 property-derived cache-append delegators.
-    assert n_cm == 36, f"expected 36 computational class-methods, got {n_cm}"
+    # 37 = 29 P0 + 7 property-derived append delegators (P3) + LocalHostKVStore
+    # Adapter.put surfaced by the P4 name-independent state-write detector.
+    assert n_cm == 37, f"expected 37 computational class-methods, got {n_cm}"
     assert m.metal_kernel_offenders() == []
     assert len(m.metal_kernel_sites()) == 9
 
@@ -182,6 +183,25 @@ def test_bite_intra_class_delegation_in_reviewed():
         off, _ = m.class_method_offenders()
         assert any("DenseKVCache.intra_caller" in o for o in off), \
             f"intra-class delegation in reviewed not flagged: {off}"
+    finally:
+        cleanup()
+
+
+def test_bite_differently_named_state_buffer_in_reviewed():
+    # P4 Part C: a state-producer writing a DIFFERENTLY-NAMED buffer (not
+    # _k/_v/pool/scale) from a K param, placed in reviewed → flagged (the
+    # name-independent detector closes the old false-negative).
+    m = _enum()
+
+    def packed_writer(self, k, v):                   # noqa: ANN001
+        self._packed_keys = k                        # differently-named buffer
+        return None
+    cleanup = _inject("DenseKVCache", "packed_writer", packed_writer)
+    m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS["DenseKVCache.packed_writer"] = "BITE"
+    try:
+        off, _ = m.class_method_offenders()
+        assert any("DenseKVCache.packed_writer" in o for o in off), \
+            f"name-independent state-write not flagged: {off}"
     finally:
         cleanup()
 

@@ -276,7 +276,7 @@ malformed V head count. Locks: `tests/test_tq_decode_guard.py`,
 extending the function/raw guard). Now property-based (NOT name heuristics — the
 rounds-8-11 lesson):
 
-- **Class methods (P3 — property-complete):** **36** computational methods
+- **Class methods (P3 — property-complete):** **37** computational methods
   (`COMPUTATIONAL_CLASS_METHODS` = 29 P0 hand-audited + 7 property-derived
   cache-append delegators). The promotion rule is now **property-complete**: a
   method may sit in the reviewed set ONLY if PROVABLY CLEAN; if the rule cannot
@@ -292,7 +292,7 @@ rounds-8-11 lesson):
   excludes `reset` — counter-only, no KV param); (4) **complete raw `_ext` set**
   — all 51 raw m.def names + `_mfa_*_cpp` wrappers + `_ext.`/`metal_kernel`
   (catches `PagedKVCache.append → _mfa_scatter_kv_cpp`). Over the live tree it
-  reproduces ALL 36 by property (the round-12 NO-GO four —
+  reproduces ALL 37 by property (the round-12 NO-GO four —
   `DecodeRuntime.prefill/step`, `DenseKVCache.append`, `PagedKVCache.append` —
   are now derived, not explicit-only). `SVDQuantLinear.__call__` is the one
   reviewed non-attention method (quantized linear; provably clean — no kernel
@@ -311,7 +311,7 @@ page kernel downgraded to `unguarded` → fail; a stale entry → fail; **(P3) e
 the four reach patterns in reviewed → fail — cross-object delegation
 (`self.context.step`, Codex's synthetic), state production (writes `self._v`),
 raw `_ext` call, intra-class `self.<computational>()`**; clean state → 0
-offenders, **36 methods + 9 kernels**, no over-promotion (getters/`reset` clean).
+offenders, **37 methods + 9 kernels**, no over-promotion (getters/`reset` clean).
 **The class-method + JIT-kernel path that hid CX-TQ-DECODE-01 for 11 rounds is now
 loud-on-regression, and computational methods are reproduced by PROPERTY (not an
 explicit crutch).**

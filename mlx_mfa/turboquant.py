@@ -651,6 +651,34 @@ class TurboQuantKVCache:
         if k_new.ndim != 4:
             raise ValueError(f"Expected [B,H,S,D], got ndim={k_new.ndim}")
 
+        # P4: K↔V mutual-shape contract. V was compressed/stored with NO shape
+        # check → the append silently accepted inconsistent K/V state (e.g. K
+        # heads=2 + V heads=1); a later attention consumer raised, violating the
+        # loud-failure-at-entry contract the other appenders honor. Validate V
+        # against K before any store/compress, in BOTH raw-V and compressed-V
+        # modes (this is upstream of the compress_v branch). Rule 8.
+        if v_new.ndim != 4:
+            raise ValueError(
+                f"TurboQuantKVCache.append: v_new must be 4-D [B,H,S,D]; got "
+                f"ndim={v_new.ndim}.")
+        if v_new.shape[0] != k_new.shape[0]:
+            raise ValueError(
+                f"TurboQuantKVCache.append: k_new/v_new batch mismatch "
+                f"(k={k_new.shape[0]}, v={v_new.shape[0]}).")
+        if v_new.shape[1] != k_new.shape[1]:
+            raise ValueError(
+                f"TurboQuantKVCache.append: k_new heads ({k_new.shape[1]}) != "
+                f"v_new heads ({v_new.shape[1]}); a mismatched V head count would "
+                "store inconsistent K/V state.")
+        if v_new.shape[2] != k_new.shape[2]:
+            raise ValueError(
+                f"TurboQuantKVCache.append: k_new/v_new token length mismatch "
+                f"(k={k_new.shape[2]}, v={v_new.shape[2]}).")
+        if v_new.shape[3] != k_new.shape[3]:
+            raise ValueError(
+                f"TurboQuantKVCache.append: k_new/v_new head_dim mismatch "
+                f"(k={k_new.shape[3]}, v={v_new.shape[3]}).")
+
         S_new = k_new.shape[2]
 
         # Compress K

@@ -84,6 +84,25 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
         # LocalHostKVStoreAdapter is explicitly local so we skip the copy.
         if k.ndim != 4 or v.ndim != 4:
             raise ValueError("LocalHostKVStoreAdapter.put expects 4-D K/V arrays")
+        # P4 Part B (class closure): K↔V mutual-shape contract — this persists K/V
+        # offload state for later reload→attention; a mismatched-heads/batch/seq/D
+        # pair is inconsistent state. Reject at the put surface (Rule 8).
+        if k.shape[0] != v.shape[0]:
+            raise ValueError(
+                f"LocalHostKVStoreAdapter.put: K/V batch mismatch "
+                f"(k={k.shape[0]}, v={v.shape[0]}).")
+        if k.shape[1] != v.shape[1]:
+            raise ValueError(
+                f"LocalHostKVStoreAdapter.put: K/V head count mismatch "
+                f"(k={k.shape[1]}, v={v.shape[1]}).")
+        if k.shape[2] != v.shape[2]:
+            raise ValueError(
+                f"LocalHostKVStoreAdapter.put: K/V sequence length mismatch "
+                f"(k={k.shape[2]}, v={v.shape[2]}).")
+        if k.shape[3] != v.shape[3]:
+            raise ValueError(
+                f"LocalHostKVStoreAdapter.put: K/V head_dim mismatch "
+                f"(k={k.shape[3]}, v={v.shape[3]}).")
         self._records[sid] = {
             "k": k,
             "v": v,
