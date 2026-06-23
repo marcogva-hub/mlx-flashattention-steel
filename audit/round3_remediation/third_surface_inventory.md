@@ -276,16 +276,27 @@ malformed V head count. Locks: `tests/test_tq_decode_guard.py`,
 extending the function/raw guard). Now property-based (NOT name heuristics — the
 rounds-8-11 lesson):
 
-- **Class methods:** the **29** computational methods are an explicit allowlist
-  (`COMPUTATIONAL_CLASS_METHODS`). A **promotion rule** inspects every public
-  project method of every exported class — a method that REACHES a computational
-  public entry / raw `_ext` binding / `mx.fast.metal_kernel` / `tq_decode_attend`
-  / pack-quantize raw, or transitively a computational `self.<m>`, or is
-  uninspectable, MUST be in the allowlist (or the explicit reviewed set) else the
-  enumeration raises `SystemExit`. Over the live tree the rule flags exactly the
-  P0 set (25 directly-reaching ⊆ 29; the other 4 are delegate-to-context /
-  slice-update / wrapper-named and explicitly listed); `SVDQuantLinear.__call__`
-  is the one reviewed non-attention method (quantized linear, no kernel dispatch).
+- **Class methods (P3 — property-complete):** **36** computational methods
+  (`COMPUTATIONAL_CLASS_METHODS` = 29 P0 hand-audited + 7 property-derived
+  cache-append delegators). The promotion rule is now **property-complete**: a
+  method may sit in the reviewed set ONLY if PROVABLY CLEAN; if the rule cannot
+  prove it clean it FLAGS it (the conservative inversion that closes the
+  delegation vector that hid `CX-TQ-DECODE-01`). It detects, by property:
+  (1) **cross-object delegation** — `self.<attr>.<meth>(…)`, resolving `<attr>`'s
+  class from `__init__` (`self.x = SomeClass(…)`); unresolvable → conservative
+  name-fallback on the computational-method-name set (catches `DecodeRuntime.step
+  → self.context.step`); (2) **intra-class delegation** — `self.<m>(…)` to a
+  computational method, full fixpoint; (3) **state production** — a write
+  (assign/slice-assign) to an attention-consumed KV buffer (`self._k*`/`_v*`/
+  `*pool*`/`*scale*`) from a K/V input param (catches `DenseKVCache.append`;
+  excludes `reset` — counter-only, no KV param); (4) **complete raw `_ext` set**
+  — all 51 raw m.def names + `_mfa_*_cpp` wrappers + `_ext.`/`metal_kernel`
+  (catches `PagedKVCache.append → _mfa_scatter_kv_cpp`). Over the live tree it
+  reproduces ALL 36 by property (the round-12 NO-GO four —
+  `DecodeRuntime.prefill/step`, `DenseKVCache.append`, `PagedKVCache.append` —
+  are now derived, not explicit-only). `SVDQuantLinear.__call__` is the one
+  reviewed non-attention method (quantized linear; provably clean — no kernel
+  dispatch). No over-promotion: getters / `reset` / `seq_length` stay clean.
 - **Metal kernels:** all **9** `mx.fast.metal_kernel` sites are AST-inventoried
   (`METAL_KERNELS`); a site that is page-indexed (its builder references
   `block_table`) MUST carry a `page_bounds in {guarded, reviewed}` record, and a
@@ -293,12 +304,17 @@ rounds-8-11 lesson):
   page-indexed (now `guarded`).
 
 Counts are DERIVED from the live classification (no hardcoded drift). Mutation
-bites (`tests/test_third_surface_guard.py`, 7 cells, all firing): a computational
+bites (`tests/test_third_surface_guard.py`, 12 cells, all firing): a computational
 method moved to reviewed → fail; a synthetic reaching method → fail until
 classified; a synthetic page-indexed kernel with no record → fail; a recorded
-page kernel downgraded to `unguarded` → fail; a stale entry → fail; clean state →
-0 offenders, 29 methods + 9 kernels. **The class-method + JIT-kernel path that hid
-CX-TQ-DECODE-01 for 11 rounds is now loud-on-regression.**
+page kernel downgraded to `unguarded` → fail; a stale entry → fail; **(P3) each of
+the four reach patterns in reviewed → fail — cross-object delegation
+(`self.context.step`, Codex's synthetic), state production (writes `self._v`),
+raw `_ext` call, intra-class `self.<computational>()`**; clean state → 0
+offenders, **36 methods + 9 kernels**, no over-promotion (getters/`reset` clean).
+**The class-method + JIT-kernel path that hid CX-TQ-DECODE-01 for 11 rounds is now
+loud-on-regression, and computational methods are reproduced by PROPERTY (not an
+explicit crutch).**
 
 ## CX-TQ-DECODE-01 sibling set
 

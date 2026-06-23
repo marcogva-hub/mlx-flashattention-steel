@@ -248,6 +248,17 @@ COMPUTATIONAL_CLASS_METHODS = {
     "PagedKVCache.append": "raw mfa_scatter_kv (paged pool write)",
     "QuantizedKVCache.append": "quantize_per_block → raw mfa_quantize_per_block",
     "TurboQuantPagedInferenceContext.append": "TQ pack/scale + paged-pool writes",
+    # P3: the property-complete promotion rule additionally derives these
+    # cache-append DELEGATORS / state-producers (same delegation shape as
+    # DecodeRuntime.step → context.step, which P0 counted). They reach a
+    # computational append or produce attention state, so they are computational.
+    "DenseKVCacheAdapter.append": "delegates to self.cache.append (DenseKVCache)",
+    "PagedKVCacheAdapter.append": "delegates to self.cache.append (PagedKVCache)",
+    "QuantizedKVCacheAdapter.append": "delegates to self.cache.append (QuantizedKVCache)",
+    "HybridKVCacheAdapter.append": "delegates to self.cache.append",
+    "KVCacheAdapter.append": "base adapter — delegates to self.cache.append",
+    "HybridKVCache.append": "delegates to self._primary_adapter.append",
+    "TurboQuantKVCache.append": "TQ-compresses K/V into cache state",
 }
 
 # Reviewed non-computational class methods that warrant an explicit reason (they
@@ -299,24 +310,119 @@ def _project_methods(cls):
     return out
 
 
-def _method_reaches(cls, nm):
-    """Promotion rule (property-based): does this method reach a computational /
-    kernel / raw call? Uninspectable → True (conservative → must be classified)."""
+# Volet P3 — PROPERTY-COMPLETE promotion. A method is computational if it reaches
+# compute by ANY path; it may sit in the reviewed set ONLY if PROVABLY CLEAN
+# (inspectable + no compute-regex + no raw _ext/wrapper + no metal_kernel + no
+# cross-object/intra-class delegation to a computational method + no write to an
+# attention-consumed state buffer from a K/V input). "Can't prove clean" → flag —
+# the inversion that closes the delegation vector that hid CX-TQ-DECODE-01.
+_RAW_CALL_RE_CACHE = None
+# assignment / slice-assign to an attention-consumed KV-state buffer
+_STATE_WRITE_RE = re.compile(r"self\.(_k\w*|_v\w*|\w*pool\w*|\w*scale\w*)\s*[\[.]?\s*[\[=]")
+_KV_PARAM = {"q", "k", "v", "k_new", "v_new", "query", "key", "value",
+             "keys", "values", "queries"}
+
+
+def _raw_call_re():
+    """Complete raw-binding + wrapper detector (the full _ext set, not a subset)."""
+    global _RAW_CALL_RE_CACHE
+    if _RAW_CALL_RE_CACHE is None:
+        raws = sorted(set(raw_bindings()), key=len, reverse=True)
+        _RAW_CALL_RE_CACHE = re.compile(
+            r"\b(" + "|".join(raws) + r")\s*\(|"     # any of the 51 raw m.def names
+            r"_mfa_\w+_cpp\s*\(|"                     # _ext wrapper helpers (_mfa_*_cpp)
+            r"\b_ext\b|\b_bwd_ext\b|\b_ext_inner\b|from\s+mlx_mfa\._ext")
+    return _RAW_CALL_RE_CACHE
+
+
+def _comp_method_names():
+    return {k.split(".", 1)[1] for k in COMPUTATIONAL_CLASS_METHODS}
+
+
+def _class_attr_classes(cls):
+    """Resolve self.<attr> → exported class from __init__ assignments
+    (`self.x = SomeClass(...)`); used for cross-object delegation resolution."""
+    import inspect
+    import textwrap
+    import mlx_mfa
+    out = {}
+    init = getattr(cls, "__init__", None)
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(init)))
+    except (OSError, TypeError, SyntaxError):
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Name):
+            tgt_cls = getattr(mlx_mfa, node.value.func.id, None)
+            if isinstance(tgt_cls, type):
+                for t in node.targets:
+                    if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                            and t.value.id == "self"):
+                        out[t.attr] = tgt_cls
+    return out
+
+
+def _method_direct_reaches(cls, nm, attr_classes):
+    """All non-transitive reach signals for one method."""
     import inspect
     obj = getattr(cls, nm, None)
     if obj is None:
         return True
     try:
         src = inspect.getsource(obj)
-    except (OSError, TypeError):
+        params = set(inspect.signature(obj).parameters)
+    except (OSError, TypeError, ValueError):
+        return True                                   # uninspectable → flag
+    if _method_reach_re().search(src):                # compute publics / metal_kernel / _ext.
         return True
-    if _method_reach_re().search(src):
+    if _raw_call_re().search(src):                    # complete raw _ext + wrappers
         return True
-    # transitive: self.<m>(...) where <m> is a computational method of this class
-    for cm in re.findall(r"self\.([a-z_][a-z0-9_]*)\s*\(", src):
-        if f"{cls.__name__}.{cm}" in COMPUTATIONAL_CLASS_METHODS:
+    # cross-object delegation: self.<attr>.<meth>(...)
+    for attr, meth in re.findall(r"self\.([a-z_]\w*)\.([a-z_]\w*)\s*\(", src):
+        c = attr_classes.get(attr)
+        if c is not None and f"{c.__name__}.{meth}" in COMPUTATIONAL_CLASS_METHODS:
             return True
+        if c is None and meth in _comp_method_names():   # unresolvable → name fallback
+            return True
+    # state production: writes an attention-consumed KV buffer from a K/V input
+    if _STATE_WRITE_RE.search(src) and (params & _KV_PARAM):
+        return True
     return False
+
+
+def _class_reaches(cls):
+    """Per-class {method: reaches} with intra-class transitive fixpoint."""
+    import inspect
+    methods = _project_methods(cls)
+    attr_classes = _class_attr_classes(cls)
+    reach = {m: _method_direct_reaches(cls, m, attr_classes) for m in methods}
+    srcs = {}
+    for m in methods:
+        try:
+            srcs[m] = inspect.getsource(getattr(cls, m))
+        except (OSError, TypeError):
+            srcs[m] = ""
+    changed = True
+    while changed:
+        changed = False
+        for m in methods:
+            if reach[m]:
+                continue
+            for cm in re.findall(r"self\.([a-z_]\w*)\s*\(", srcs[m]):
+                if reach.get(cm):
+                    reach[m] = True
+                    changed = True
+                    break
+    return reach
+
+
+def _method_reaches(cls, nm):
+    """Property-complete promotion: reaches compute by direct call, raw _ext/
+    wrapper, metal_kernel, cross-object delegation (resolved or name-fallback),
+    intra-class transitive delegation, or KV-state production. Uninspectable →
+    True (conservative)."""
+    return _class_reaches(cls).get(nm, True)
 
 
 def class_method_offenders():

@@ -395,6 +395,25 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     page-indexed kernel with no record, a recorded kernel downgraded to `unguarded`,
     and a stale entry all fail loudly; clean state = 0 offenders (29 methods + 9
     kernel sites). The class-method/JIT-kernel path is now loud-on-regression.
+  - **Class-method promotion rule made property-complete (volet P3).** The P2 rule
+    reached the 29 computational class-methods only with help from the explicit list —
+    4 (`DecodeRuntime.prefill/step`, `DenseKVCache.append`, `PagedKVCache.append`) were
+    *not* detected by property, so a **new** same-shape method could have hidden in the
+    reviewed set (the very delegation vector — `DecodeRuntime.step → context.step →
+    tq_decode` — that hid `CX-TQ-DECODE-01`). The promotion rule now detects, by
+    property: cross-object delegation (`self.<attr>.<meth>`, resolving `<attr>`'s class
+    from `__init__`, with a conservative method-name fallback when unresolvable),
+    full intra-class transitive delegation, KV-state production (a write to
+    `self._k*`/`_v*`/`*pool*`/`*scale*` from a K/V input — excludes counter-only
+    `reset`), and the **complete** raw-`_ext` binding set + `_mfa_*_cpp` wrappers. The
+    design is inverted to a conservative default: a method may be reviewed-clean only
+    if *provably* clean, else it is flagged. The rule now reproduces all computational
+    methods **by property** and additionally derived 7 genuine cache-append delegators
+    the P0 hand-audit missed (adapter/`Hybrid`/`TurboQuant` appends) → **36**
+    computational class-methods. Codex's NO-GO synthetic (a reviewed
+    `DecodeRuntime.delegated_public` calling `self.context.step`) now bites, along with
+    state-production / raw-call / intra-class-delegation synthetics; getters/`reset`
+    stay clean (no over-promotion). `tests/test_third_surface_guard.py` (12 cells).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

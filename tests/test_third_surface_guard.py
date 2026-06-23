@@ -25,22 +25,31 @@ def test_clean_state_no_offenders_and_counts():
     m = _enum()
     cm_off, n_cm = m.class_method_offenders()
     assert cm_off == [], f"class-method offenders: {cm_off}"
-    assert n_cm == 29, f"expected 29 computational class-methods, got {n_cm}"
+    # 36 = 29 P0 hand-audited + 7 property-derived cache-append delegators.
+    assert n_cm == 36, f"expected 36 computational class-methods, got {n_cm}"
     assert m.metal_kernel_offenders() == []
     assert len(m.metal_kernel_sites()) == 9
 
 
-def test_promotion_rule_reproduces_p0_set():
-    # every method the property flags as reaching must be in COMPUTATIONAL_CLASS_
-    # METHODS (no reaching method hides; no bookkeeping method falsely promoted).
+def test_promotion_rule_property_complete():
+    # P3: the property rule must reproduce ALL classified computational methods
+    # (incl. the 4 previously explicit-only — by property, not the list), and
+    # flag nothing that isn't classified.
     m = _enum()
     flagged = set()
     for cn, cls in m._exported_classes():
         for nm in m._project_methods(cls):
             if m._method_reaches(cls, nm):
                 flagged.add(f"{cn}.{nm}")
-    assert flagged <= set(m.COMPUTATIONAL_CLASS_METHODS), \
-        f"reaching methods not classified: {flagged - set(m.COMPUTATIONAL_CLASS_METHODS)}"
+    comp = set(m.COMPUTATIONAL_CLASS_METHODS)
+    # every classified computational method is independently DERIVED by property
+    assert comp <= flagged, f"NOT derived by property (explicit-only crutch): {comp - flagged}"
+    # nothing reaching is unclassified
+    assert flagged <= comp, f"reaching but unclassified: {flagged - comp}"
+    # the 4 round-12 NO-GO methods specifically
+    for k in ("DecodeRuntime.prefill", "DecodeRuntime.step",
+              "DenseKVCache.append", "PagedKVCache.append"):
+        assert k in flagged, f"{k} still not derived by property"
 
 
 # ── bite 1: move a computational method into the reviewed set → fail ─────────────
@@ -98,3 +107,92 @@ def test_bite_stale_computational_entry():
     off, _ = m.class_method_offenders()
     assert any("method_that_does_not_exist" in o and "stale" in o for o in off), \
         f"guard did not flag the stale entry: {off}"
+
+
+# ── P3 property-completeness bites: the 4 patterns must each bite ────────────────
+def _inject(cls_name, meth_name, fn):
+    """Attach fn as a project method on an exported class; returns a cleanup."""
+    import mlx_mfa
+    fn.__module__ = "mlx_mfa.attention"
+    cls = getattr(mlx_mfa, cls_name)
+    setattr(cls, meth_name, fn)
+    return lambda: delattr(cls, meth_name)
+
+
+def test_bite_cross_object_delegation_in_reviewed():
+    # Codex's synthetic: a DecodeRuntime method delegating to self.context.step
+    # (cross-object delegation) placed in reviewed MUST be flagged.
+    m = _enum()
+
+    def delegated_public(self, *a, **k):            # noqa: ANN001
+        return self.context.step(*a, **k)
+    cleanup = _inject("DecodeRuntime", "delegated_public", delegated_public)
+    m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS["DecodeRuntime.delegated_public"] = "BITE"
+    try:
+        off, _ = m.class_method_offenders()
+        assert any("DecodeRuntime.delegated_public" in o for o in off), \
+            f"cross-object delegation in reviewed not flagged: {off}"
+    finally:
+        cleanup()
+
+
+def test_bite_state_production_in_reviewed():
+    # a method writing self._v from a v_new input, placed in reviewed → flagged.
+    m = _enum()
+
+    def state_writer(self, k_new, v_new):           # noqa: ANN001
+        self._v[:, :, 0:1, :] = v_new
+        return None
+    cleanup = _inject("DenseKVCache", "state_writer", state_writer)
+    m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS["DenseKVCache.state_writer"] = "BITE"
+    try:
+        off, _ = m.class_method_offenders()
+        assert any("DenseKVCache.state_writer" in o for o in off), \
+            f"state-production in reviewed not flagged: {off}"
+    finally:
+        cleanup()
+
+
+def test_bite_raw_ext_call_in_reviewed():
+    # a method calling a raw _ext binding, placed in reviewed → flagged.
+    m = _enum()
+
+    def raw_caller(self, q, k, v):                   # noqa: ANN001
+        from mlx_mfa import _ext
+        return _ext.mfa_scatter_kv(q, k, v, v)
+    cleanup = _inject("DenseKVCache", "raw_caller", raw_caller)
+    m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS["DenseKVCache.raw_caller"] = "BITE"
+    try:
+        off, _ = m.class_method_offenders()
+        assert any("DenseKVCache.raw_caller" in o for o in off), \
+            f"raw _ext call in reviewed not flagged: {off}"
+    finally:
+        cleanup()
+
+
+def test_bite_intra_class_delegation_in_reviewed():
+    # a method calling self.<computational_method>(), placed in reviewed → flagged.
+    m = _enum()
+
+    def intra_caller(self, *a, **k):                 # noqa: ANN001
+        return self.append(*a, **k)                  # DenseKVCache.append is computational
+    cleanup = _inject("DenseKVCache", "intra_caller", intra_caller)
+    m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS["DenseKVCache.intra_caller"] = "BITE"
+    try:
+        off, _ = m.class_method_offenders()
+        assert any("DenseKVCache.intra_caller" in o for o in off), \
+            f"intra-class delegation in reviewed not flagged: {off}"
+    finally:
+        cleanup()
+
+
+def test_no_over_promotion_getters_clean():
+    # pure getters/bookkeeping stay clean; SVDQuantLinear.__call__ stays reviewed.
+    m = _enum()
+    import mlx_mfa
+    for cn, nm in [("DenseKVCache", "reset"), ("DenseKVCache", "seq_length"),
+                   ("PagedKVCache", "seq_length")]:
+        cls = getattr(mlx_mfa, cn)
+        if nm in m._project_methods(cls):
+            assert not m._method_reaches(cls, nm), f"{cn}.{nm} falsely promoted"
+    assert "SVDQuantLinear.__call__" in m.REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS
