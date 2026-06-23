@@ -28,6 +28,14 @@ AUDITED_PUBLIC = {
     "sage_attention", "sage_attention_prequantized",  # prequant: volet J
     "flash_attention_varlen", "flash_attention_paged",
     "flash_attention_paged_varlen", "flash_attention_paged_varlen_turboquant",
+    # volet K3 — the final 13 public adapter entries (4-axis + fixes):
+    "flash_attention_qkv_packed", "flash_attention_kv_packed",
+    "flash_attention_speculative_verify", "flash_attention_splitfuse",
+    "flash_attention_rope_unified", "flash_attention_rope",
+    "flash_attention_kvcache_rope_append", "flash_attention_kvcache",
+    "flash_attention_speculative_verify_paged",
+    "flash_attention_varlen_qkv_packed", "flash_attention_varlen_kv_packed",
+    "sage_attention_kvcache", "flash_attention_topk",
 }
 # Raw bindings with a first-hand row (volet H2/I/S/I2/J).
 AUDITED_RAW = {

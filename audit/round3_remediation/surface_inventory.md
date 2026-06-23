@@ -191,6 +191,45 @@ float32 output) BEFORE adding the check (HARD GUARD).
 **K2 closes the raw surface → only the 13 PUBLIC entries (P1–P7 residuals) remain
 for K3** (packed/speculative/splitfuse/rope-family/kvcache/topk).
 
+## Volet K3 — final 13 public adapters hardened — INVENTORY COMPLETE (2026-06-23)
+
+4-axis sweep of the last 13 public entries (adapters over the now-hardened cores).
+Defect density continued to fall (K1 10/10 → K2 2/8 → K3 4/13). Dispatch
+inheritance traced per entry: packed/speculative/splitfuse/sage_kvcache/rope all
+route through hardened cores (Q/K/V/dtype inherited), so only **adapter residuals**
+needed fixing.
+
+| entry | inherits core | correctness | accept-valid | reject-malformed (was→now) | determ. |
+|---|---|---|---|---|---|
+| `flash_attention_qkv_packed` (P1) | flash_attention | ✓ | 3D/5D, kv≤Hq ✓ | bad-fused/no-heads raise; **5D num_kv_heads>buf silent-truncate → RAISE** | N-A |
+| `flash_attention_kv_packed` (P1) | flash_attention | ✓ | ✓ | flat-reshape/5D-shape-derived already raise (verify) | N-A |
+| `flash_attention_speculative_verify` (P1) | flash_attention | ✓ | int32/int64 ids, temp>0 ✓ | **float ids + temp≤0/inf no-raise → RAISE**; +ids shape | N-A |
+| `flash_attention_splitfuse` (P1) | flash_attention | ✓ | prefill/decode/both ✓ | **partial-triple AttributeError → clean ValueError** | N-A |
+| `flash_attention_rope_unified` (P2) | MFA rope (R5) | ✓ | **f16 cos/sin** ✓ | k_seq/etc inherited RAISE | gather (R5 barrier) |
+| `flash_attention_rope` (P2) | rope_unified | ✓ | ✓ | inherited RAISE | gather |
+| `flash_attention_kvcache_rope_append` (P2) | rope/append | ✓ | append@valid ✓ | OOB-append RAISES (memory-safe) | gather |
+| `flash_attention_kvcache` (P3) | flash_attention/paged | ✓ | dense+paged ✓ | dense-append **concatenates (no OOB)**; paged-append OOB RAISES | gather (paged) |
+| `flash_attention_speculative_verify_paged` (P4) | flash_attention_paged | ✓ | ✓ | **float ids + temp≤0 → RAISE**; pool inherited | gather (paged) |
+| `flash_attention_varlen_qkv_packed` (P5) | flash_attention_varlen | ✓ | ✓ | **5D capacity → RAISE**; layout already raised | gather |
+| `flash_attention_varlen_kv_packed` (P5) | flash_attention_varlen | ✓ | ✓ | flat/5D already raise (verify) | gather |
+| `sage_attention_kvcache` (P6) | sage_attention | ✓ | ✓ | k_seq/batch inherited RAISE | gather (sage barrier) |
+| `flash_attention_topk` (P7) | SDPA/MLX ref | ✓ | MHA ratio∈(0,1] ✓ | ratio bounds RAISE; GQA loud-raises | N-A |
+
+**Defects fixed (4):** packed-5D capacity (qkv + varlen_qkv); speculative draft_ids
+dtype + temperature (dense + paged); splitfuse partial-triple. **Cache-append family
+probed for OOB first-hand and is MEMORY-SAFE** (dense concatenates; paged + rope-append
+raise on out-of-range slots) — the highest-risk family is clean. Bite-proven
+(temperature check neutralized → temp=0 no-raise; restore → raise). Validation-only →
+valid output byteΔ-identical. HARD GUARD applied to EVERY new check with an accept-valid
+cell (int64 ids, kv=Hq boundary, f16 cos, MHA-topk) — no over-strictness. Lock:
+`tests/test_hardening_k3.py` (24 cells).
+
+## ✅ INVENTORY COMPLETE — OMITTED computational = 0
+`scripts/enumerate_api_surface.py` reports **0 omitted** computational entries (22
+public + 34 raw, all AUDITED). The full computational attention surface — public +
+raw — now has a first-hand 4-axis matrix row. The round-by-round sibling cycle is
+closed: round-8 (Codex) is the convergence check.
+
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8
   runs" used a config (N=256) below the multi-tile threshold — the race only fires at

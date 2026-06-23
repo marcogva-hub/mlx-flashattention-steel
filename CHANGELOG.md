@@ -281,6 +281,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     *(HARD-GUARD note: an initial "`mfa_forward_with_lse` f16/bf16-only" check was reverted — the dense
     MFAttention primitive supports float32 via the return_lse upcast path; the over-strict check broke
     7 tests and the entry is verify-only.)*
+  - **Public adapter validation, final 13 entries — input-validation surface COMPLETE (volet K3).**
+    4-axis sweep of the last public entries (adapters over the now-hardened cores). **4 defects fixed:**
+    `flash_attention_qkv_packed` / `flash_attention_varlen_qkv_packed` silently truncated when
+    `num_kv_heads` exceeded the packed buffer's head count (5-D layout) → capacity check;
+    `flash_attention_speculative_verify` / `…_paged` accepted float `draft_ids` and non-positive /
+    non-finite `temperature` → integer-dtype + finite-positive checks; `flash_attention_splitfuse` with
+    a partial branch (q without k/v) crashed with an `AttributeError` → clean `ValueError`. The
+    **cache-append family** (`flash_attention_kvcache`, `…_kvcache_rope_append`, `sage_attention_kvcache`)
+    was probed for out-of-bounds append first-hand and is **memory-safe** (dense append concatenates;
+    paged + rope-append raise on out-of-range slots). Bite-proven; valid output byteΔ-identical;
+    every new check has an accept-valid test cell (int64 ids, `num_kv_heads==Hq` boundary, f16 cos/sin,
+    MHA top-k) per the HARD GUARD. Lock: `tests/test_hardening_k3.py` (24 cells). **`OMITTED
+    computational = 0`** — the full public + raw computational attention surface now carries a
+    first-hand 4-axis matrix row (correctness / accept-valid / reject-malformed / determinism). The
+    round-by-round sibling cycle that produced CRITICALs in rounds 5–7 is closed.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

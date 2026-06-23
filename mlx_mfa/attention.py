@@ -4349,6 +4349,21 @@ def flash_attention_speculative_verify(
         function only provides the attention component.
     """
     B, H, N_draft, D = q_target.shape
+    # volet K3 (P1): adapter-residual — draft_ids dtype/shape + temperature.
+    # (The dense Q/K/V contract is inherited from flash_attention below.)
+    if draft_ids.ndim != 2 or int(draft_ids.shape[0]) != int(B) \
+            or int(draft_ids.shape[1]) != int(N_draft):
+        raise ValueError(
+            "flash_attention_speculative_verify: draft_ids must be "
+            f"[B, N_draft] = [{B}, {N_draft}]; got {tuple(draft_ids.shape)}.")
+    if draft_ids.dtype not in (mx.int32, mx.int64, mx.uint32, mx.uint16):
+        raise ValueError(
+            "flash_attention_speculative_verify: draft_ids must be an integer "
+            f"dtype (token indices); got {draft_ids.dtype}.")
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError(
+            "flash_attention_speculative_verify: temperature must be finite and "
+            f"> 0; got {temperature}.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
@@ -4404,6 +4419,15 @@ def flash_attention_speculative_verify_paged(
             "flash_attention_speculative_verify_paged: batch mismatch between "
             f"q_target ({B}) and draft_ids ({draft_ids.shape[0]})"
         )
+    # volet K3 (P4): draft_ids dtype + temperature (paged pool inherited below).
+    if draft_ids.dtype not in (mx.int32, mx.int64, mx.uint32, mx.uint16):
+        raise ValueError(
+            "flash_attention_speculative_verify_paged: draft_ids must be an "
+            f"integer dtype (token indices); got {draft_ids.dtype}.")
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError(
+            "flash_attention_speculative_verify_paged: temperature must be "
+            f"finite and > 0; got {temperature}.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
@@ -4533,6 +4557,16 @@ def flash_attention_splitfuse(
     )
     if D is None:
         raise ValueError("flash_attention_splitfuse: both q_prefill and q_decode are None.")
+    # volet K3 (P1): each enabled branch needs its complete Q/K/V triple — a
+    # partial branch (e.g. q_prefill without k/v) previously crashed with an
+    # AttributeError inside flash_attention. Raise a clear ValueError (Rule 8).
+    if q_prefill is not None and (k_prefill is None or v_prefill is None):
+        raise ValueError(
+            "flash_attention_splitfuse: q_prefill requires k_prefill and v_prefill.")
+    if q_decode is not None and (k_cache_decode is None or v_cache_decode is None):
+        raise ValueError(
+            "flash_attention_splitfuse: q_decode requires k_cache_decode and "
+            "v_cache_decode.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
@@ -8185,6 +8219,13 @@ def flash_attention_qkv_packed(
                 f"flash_attention_qkv_packed: expected dim 3 == 3, got {three}"
             )
         H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        # volet K3 (P1): num_kv_heads must fit the packed buffer's head count —
+        # otherwise the `:H_kv` slice silently truncates (reads fewer heads than
+        # requested) instead of erroring.
+        if H_kv <= 0 or H_kv > H_q:
+            raise ValueError(
+                f"flash_attention_qkv_packed: num_kv_heads ({H_kv}) must be in "
+                f"[1, {H_q}] (the packed buffer's head count).")
         q = qkv[:, :H_q, :, 0, :]    # [B, H_q, N, D]
         k = qkv[:, :H_kv, :, 1, :]   # [B, H_kv, N, D]
         v = qkv[:, :H_kv, :, 2, :]   # [B, H_kv, N, D]
@@ -8329,6 +8370,10 @@ def flash_attention_varlen_qkv_packed(
                 f"flash_attention_varlen_qkv_packed: expected dim 3 == 3, got {three}"
             )
         H_kv = num_kv_heads if num_kv_heads is not None else H_q
+        if H_kv <= 0 or H_kv > H_q:  # volet K3 (P5): num_kv_heads must fit buffer
+            raise ValueError(
+                f"flash_attention_varlen_qkv_packed: num_kv_heads ({H_kv}) must be "
+                f"in [1, {H_q}] (the packed buffer's head count).")
         q = qkv[:, :H_q, :, 0, :]    # [1, H_q, total, D]
         k = qkv[:, :H_kv, :, 1, :]   # [1, H_kv, total, D]
         v = qkv[:, :H_kv, :, 2, :]   # [1, H_kv, total, D]

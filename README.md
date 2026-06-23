@@ -413,6 +413,15 @@ heterogeneous `seq_lens`, per-sequence causal, GQA, validation),
 makes "test passes while running the wrong kernel" structurally catchable). Maintainer
 reference: `.doc-archive/docs/v50/campaign-2026-06/audit/` (dispatch map + 4 per-kernel family specs).
 
+**Input-validation coverage (verified):** every computational entry on the public
+*and* raw `_ext` surface is hardened on a 4-axis contract — correctness vs an
+independent oracle, accept-valid, reject-malformed (per buffer/dtype/shape), and
+determinism for shared-buffer gather kernels — with a first-hand matrix row for each.
+Malformed inputs (batch/K↔V/q↔K head-dim/GQA/dtype mismatch, out-of-range cache
+appends, bad feature params) raise before dispatch rather than returning silent-wrong
+or NaN output. Locks: `tests/test_hardening_k1.py`, `tests/test_hardening_k2.py`,
+`tests/test_hardening_k3.py` (+ `test_sage_*`, `test_multitile_determinism_i2.py`).
+
 [See the v2.31.0 V6 NAX foreword above and the "Best M5 Max Benchmark
 Highlights (v2.31.0)" table below for current numbers.]
 
