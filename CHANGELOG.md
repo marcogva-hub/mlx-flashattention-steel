@@ -448,6 +448,22 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     cache buffers are single-`D` (a storage constraint, not stricter than the function surface). Locks:
     `tests/test_kv_persist_batch.py` (batch-axis table for all 6 surfaces + single-source grep + the
     D-contract). Suite 3033 / 0 failed ×3.
+  - **dtype axis closed — the last persistence-contract axis (volet P6).** With the shape axes complete
+    (P5), the only remaining function-surface K/V axis missing on the persistence surfaces was **dtype**:
+    `assert_kv_persist_compat` omitted it, so a fixed-dtype cache **silently cast** a mismatched append
+    (fp16 cache + bf16 append → silent precision change) and a K-fp16/V-bf16 pair was accepted (silent
+    acceptance of malformed input). Added the dtype axis to the one shared helper: **K↔V dtype
+    consistency** (always — the function-surface k/v rule) + an **accepted-input-dtype set per call-site**
+    (no silent cast). Storage-dtype caches (`DenseKVCache`, `QuantizedKVCache`, `PagedKVCache`,
+    `TurboQuantPagedInferenceContext`) pass their single `(self.dtype,)` → a mismatched append now raises;
+    the quantizing/host surfaces (`TurboQuantKVCache`, `LocalHostKVStoreAdapter.put`) — which have no
+    fixed storage dtype — pass `(float16, bfloat16)` so their legal fp16/bf16 input is preserved.
+    Aligned to the function surface (K==V consistency), stricter only where the single-storage-dtype
+    constraint requires it (documented, same shape as the `D_v==D_k` buffer constraint). All 6 surfaces
+    raise on a dtype mismatch; valid same-dtype appends byteΔ-identical; quantizing caches still accept
+    fp16 and bf16; shape axes intact; `register_prefix` asym-`D_v` unchanged. Lock:
+    `tests/test_kv_persist_dtype.py`. The persistence contract is now **axis-complete** (rank, batch,
+    heads, token, D, dtype — every enumerated function-surface axis enforced via one shared helper).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

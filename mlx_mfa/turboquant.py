@@ -655,7 +655,10 @@ class TurboQuantKVCache:
         # (chunk-based cache → no fixed batch/heads/D geometry, so K↔V mutual
         # only). Upstream of the compress_v branch → covers raw-V and compressed-V.
         from mlx_mfa._persist_validate import assert_kv_persist_compat
-        assert_kv_persist_compat(k_new, v_new, "TurboQuantKVCache.append")
+        # quantizing cache, no fixed storage dtype (records from first append) →
+        # accepts either supported input precision; K↔V consistency still enforced.
+        assert_kv_persist_compat(k_new, v_new, "TurboQuantKVCache.append",
+                                 accepted_dtypes=(mx.float16, mx.bfloat16))
 
         S_new = k_new.shape[2]
 

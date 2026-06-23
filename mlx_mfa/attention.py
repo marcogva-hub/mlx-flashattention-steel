@@ -6715,7 +6715,7 @@ class DenseKVCache(KVCacheProtocol):
         assert_kv_persist_compat(
             k_new, v_new, "DenseKVCache.append",
             expected_batch=self._k.shape[0], expected_heads=self._k.shape[1],
-            expected_dim=self._k.shape[3])
+            expected_dim=self._k.shape[3], accepted_dtypes=(self.dtype,))
         n_new = k_new.shape[2]
         end   = self._seqlen + n_new
         if end > self.max_seq_len:
@@ -6915,7 +6915,7 @@ class QuantizedKVCache:
         assert_kv_persist_compat(
             k_new, v_new, "QuantizedKVCache.append",
             expected_batch=self._v.shape[0], expected_heads=self.H,
-            expected_dim=self._v.shape[3])
+            expected_dim=self._v.shape[3], accepted_dtypes=(self.dtype,))
 
         n_new = k_new.shape[2]
         end = self._seqlen + n_new
@@ -7120,7 +7120,7 @@ class PagedKVCache(KVCacheProtocol):
         assert_kv_persist_compat(
             k, v, "PagedKVCache.append",
             expected_batch=1, expected_heads=self._k_pool.shape[2],
-            expected_dim=self._k_pool.shape[3])
+            expected_dim=self._k_pool.shape[3], accepted_dtypes=(self.dtype,))
 
         # [1, H, T, D] → [T, H, D], cast to pool dtype.
         k_tokens = k[0].transpose([1, 0, 2]).astype(self.dtype)

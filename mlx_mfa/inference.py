@@ -976,7 +976,8 @@ class TurboQuantPagedInferenceContext:
         from mlx_mfa._persist_validate import assert_kv_persist_compat
         assert_kv_persist_compat(
             k, v, "TurboQuantPagedInferenceContext.append",
-            expected_batch=1, expected_heads=self.H_kv, expected_dim=self.D)
+            expected_batch=1, expected_heads=self.H_kv, expected_dim=self.D,
+            accepted_dtypes=(self.dtype,))
         N_new = k.shape[2]
 
         # Pack K

@@ -24,7 +24,7 @@ from __future__ import annotations
 def assert_kv_persist_compat(
     k, v, fn: str, *,
     expected_batch=None, expected_heads=None, expected_dim=None,
-    require_v_dim_eq: bool = True,
+    require_v_dim_eq: bool = True, accepted_dtypes=None,
 ) -> None:
     """Validate a K/V pair about to be persisted into cache/store state.
 
@@ -37,6 +37,13 @@ def assert_kv_persist_compat(
             cross-check (chunk-based caches with no fixed geometry).
         require_v_dim_eq: require ``D_v == D_k`` (default — cache buffers are
             single-`D`). Persistence surfaces always set this True.
+        accepted_dtypes: the surface's accepted INPUT dtype set. A storage-dtype
+            cache passes its single ``(self.dtype,)`` — a mismatched append must
+            RAISE, not silently cast (the dtype-axis defect). A quantizing cache
+            with no fixed storage dtype passes its legal input set
+            ``(float16, bfloat16)``. ``None`` skips the input-set check (only the
+            K↔V consistency rule applies). K↔V dtype consistency is ALWAYS
+            enforced (matches the function surface's k/v-dtype rule).
     """
     if getattr(k, "ndim", None) != 4 or getattr(v, "ndim", None) != 4:
         raise ValueError(
@@ -73,3 +80,14 @@ def assert_kv_persist_compat(
         raise ValueError(
             f"{fn}: k and v must share head_dim for single-D cache storage "
             f"(k={k.shape[3]}, v={v.shape[3]}).")
+    # dtype — K↔V consistency (always; the function-surface rule) + the surface's
+    # accepted INPUT dtype set (no silent cast into a fixed-dtype buffer).
+    if k.dtype != v.dtype:
+        raise ValueError(
+            f"{fn}: k and v must share dtype (k={k.dtype}, v={v.dtype}); a "
+            "mismatched K/V dtype would be silently cast / reinterpreted.")
+    if accepted_dtypes is not None and k.dtype not in tuple(accepted_dtypes):
+        raise ValueError(
+            f"{fn}: input dtype {k.dtype} is not accepted (expected one of "
+            f"{tuple(accepted_dtypes)}); this surface does not silently cast a "
+            "mismatched-dtype append into its storage buffer.")
