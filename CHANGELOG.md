@@ -477,6 +477,25 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     reload → decode, no late raise). The fixed-dtype **storage** caches keep their configured-dtype
     restriction (they have a real single-dtype buffer; the byte store does not). K↔V consistency on the
     host store is unchanged (K-fp16/V-bf16 still raises). Lock: `tests/test_localhost_fp32_offload.py`.
+  - **dtype × backend gated at construction — fp32 late-failure class closed (volet P8).** P7's LocalHost
+    finding was one instance of a class: the runtime accepted `dtype=fp32` (off-spec SDPA-fallback)
+    *globally*, without checking whether the chosen backend's persistence/compute path can carry fp32.
+    Some can (dense SDPA-fallback, hybrid byte-store offload post-P7, turboquant fp32→fallback); some
+    **cannot** — `mfa_scatter_kv` (paged) and `mfa_quantize_per_block` (sage) are float16/bfloat16-only,
+    so `PagedInferenceContext(dtype=float32)` / `create_decode_runtime(backend="paged"|"sage",
+    dtype=float32)` *constructed* then failed **late** deep in prefill/step. Built the verified dtype ×
+    backend matrix first-hand and gated the pair **at construction** (`_assert_construct_dtype_supported`
+    in the paged + sage context constructors, covering both the runtime factory and direct
+    instantiation): fp32 on a fp16/bf16-only backend now raises a clear capability `ValueError` naming
+    the backend + supported dtypes ("backend='paged' does not support dtype=float32 … use float16/bf16,
+    or backend='dense' for fp32"). Combos that genuinely run (dense+fp32, hybrid+fp32 offload,
+    turboquant+fp32, **all** fp16/bf16) are unchanged. Principle: every (backend, dtype) either runs
+    end-to-end or is rejected up-front — no construct-run-then-fail-deep. Lock:
+    `tests/test_dtype_backend_gating.py`. **FLAGGED for Marco (separate, not gated):** `turboquant`+`bf16`
+    Nq=1 *decode* fails late — the `tq_decode` V-gather kernel hardcodes `half vout_v`, so a bf16 V-pool
+    fails to compile; bf16 is a spec dtype and TQ prefill/Nq>1 works, so this is a path-specific kernel
+    bug (fix = template the V accumulator on pool dtype, or force the TQ V-pool to fp16), **not**
+    construction-gateable without over-rejecting the working TQ+bf16 prefill path.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

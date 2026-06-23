@@ -69,6 +69,31 @@ def _warn_offspec(D: int, dtype, where: str) -> None:
         warnings.warn(msg, RuntimeWarning, stacklevel=3)
 
 
+# P8: backends whose KV persistence/compute kernels are float16/bfloat16-ONLY —
+# the raw `mfa_scatter_kv` (paged) and `mfa_quantize_per_block` (sage) kernels
+# cannot carry fp32, so a fp32 cache would CONSTRUCT (off-spec) then fail LATE
+# deep in prefill/step.  Gate (backend, dtype) at construction so every combo
+# either runs end-to-end or is rejected up-front with a clear capability error —
+# no construct-run-then-fail-deep.  dense (SDPA fallback), hybrid (+offload, the
+# byte store is dtype-agnostic post-P7) and turboquant (fp32 routes to fallback)
+# DO run fp32 end-to-end → they are NOT gated.  This closes the fp32 late-failure
+# class (P7 LocalHost + P8 paged were two instances of it).
+_FP16_BF16_ONLY_BACKENDS = ("paged", "sage")
+
+
+def _assert_construct_dtype_supported(backend: str, dtype, where: str) -> None:
+    """Reject, at construction, a dtype a fp16/bf16-only backend cannot carry."""
+    if dtype in (mx.float16, mx.bfloat16):
+        return
+    if backend in _FP16_BF16_ONLY_BACKENDS:
+        raise ValueError(
+            f"{where}: backend={backend!r} does not support dtype={dtype} — its KV "
+            f"scatter/quantize kernels are float16/bfloat16-only (a fp32 cache would "
+            f"fail deep in prefill/step). Use dtype=float16 or bfloat16; for fp32 use "
+            f"backend='dense' (SDPA fallback) or a hybrid cache with offload."
+        )
+
+
 __all__ = [
     "InferenceContext",
     "PagedInferenceContext",
@@ -426,6 +451,10 @@ class PagedInferenceContext:
         self.D = D
         self.dtype = dtype
         self.stream = stream
+        # P8: paged scatter (mfa_scatter_kv) is fp16/bf16-only → reject fp32 here,
+        # not late in prefill. (Gate before _warn_offspec so the misleading
+        # "SDPA fallback" warning never fires for a combo that cannot fall back.)
+        _assert_construct_dtype_supported("paged", dtype, "PagedInferenceContext")
         _warn_offspec(D, dtype, "PagedInferenceContext")  # CC-09: loud off-spec fallback
         self._cache = PagedKVCache(num_blocks, block_size, H_kv, D, dtype=dtype)
 
@@ -663,6 +692,9 @@ class SageInferenceContext:
         self.max_seq_len = max_seq_len
         self.dtype = dtype
         self.stream = stream
+        # P8: sage quantizer (mfa_quantize_per_block) is fp16/bf16-only → reject
+        # fp32 here, not late in prefill/step.
+        _assert_construct_dtype_supported("sage", dtype, "SageInferenceContext")
         _warn_offspec(D, dtype, "SageInferenceContext")  # CC-09: loud off-spec fallback
         from mlx_mfa.attention import QuantizedKVCache
         self._cache = QuantizedKVCache(B, H_kv, D, max_seq_len=max_seq_len, dtype=dtype)
