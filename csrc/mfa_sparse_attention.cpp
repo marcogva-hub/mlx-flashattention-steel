@@ -1172,6 +1172,14 @@ sparse_attention_forward_with_lse(
   int D  = static_cast<int>(Q.shape(3));
   int Hk = static_cast<int>(K.shape(1));
   int kL = static_cast<int>(K.shape(2));
+  // volet K1 (R10): batch/K↔V/head_dim mutual checks — the with_lse variant
+  // omitted these (R9 sparse_attention_forward has them). Rule 8.
+  if (static_cast<int>(K.shape(0)) != B || static_cast<int>(V.shape(0)) != B)
+    throw std::runtime_error("sparse_attention: batch dim mismatch");
+  if (static_cast<int>(K.shape(3)) != D || static_cast<int>(V.shape(3)) != D)
+    throw std::runtime_error("sparse_attention: head_dim mismatch");
+  if (static_cast<int>(V.shape(1)) != Hk || static_cast<int>(V.shape(2)) != kL)
+    throw std::runtime_error("sparse_attention: K, V shape mismatch");
   if (Hq % Hk != 0) {
     throw std::runtime_error("sparse_attention: Hq must be multiple of Hk (GQA)");
   }

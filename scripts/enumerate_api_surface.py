@@ -42,6 +42,17 @@ AUDITED_RAW = {
     "v6_nax_backward_query_sparse_raw", "v6_nax_backward_kv_sparse_raw",
     "v6_nax_backward_dk_sparse_raw", "v6_nax_backward_dv_sparse_raw",
     "v6_nax_backward_fused_dkdv_sparse_raw",
+    # volet K1 — priority groups 1–6 (4-axis + validation fixes):
+    "v6_nax_forward",                       # R15
+    "mfa_attention_varlen_forward",         # R7
+    "mfa_attention_rope_forward",           # R5
+    "mfa_attention_alibi_forward",          # R3
+    "mfa_attention_bias_forward",           # R4
+    "mfa_attention_sparse_forward",         # R6
+    "mfa_attention_sparse_forward_with_lse",# R6
+    "sparse_attention_forward_with_lse",    # R10
+    "mfa_scatter_kv",                       # R13
+    "mfa_attention_forward",                # R1 (retrofit via shared validator)
 }
 
 # Public names that are classes/helpers/constants, not kernel-bearing entries.

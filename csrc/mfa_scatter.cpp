@@ -207,6 +207,9 @@ mlx::core::array mlx_mfa::mfa_scatter_kv(
     if (blk_ids.dtype() != int32 || blk_offs.dtype() != int32)
         throw std::invalid_argument(
             "mfa_scatter_kv: blk_ids and blk_offs must be int32");
+    if (tokens.dtype() != pool.dtype())  // volet K1 (R13): tokens are copied into
+        throw std::invalid_argument(     // the pool verbatim — a dtype mismatch
+            "mfa_scatter_kv: tokens dtype must match pool dtype");  // reinterprets bytes
 
     const int num_blocks  = pool.shape(0);
     const int block_size  = pool.shape(1);

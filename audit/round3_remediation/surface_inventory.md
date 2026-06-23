@@ -126,6 +126,39 @@ D=256 cells.
 - **CX-R7-03 matrix honesty:** D=256 paged cells added & executable; paged-varlen +
   paged-TQ determinism cells added; window attribution corrected (raw not public).
 
+## Volet K1 — priority groups 1–6 hardened (2026-06-23)
+
+4-axis sweep + fix of the 6 highest-priority K0 groups (10 raw entries incl. R1
+retrofit). **Every entry that read multiple buffers was missing mutual checks**
+(the systemic class round-7 predicted) — confirmed first-hand, all fixed via a
+shared `validate_dense_qkv` C++ helper + per-entry residual.
+
+| entry (K0) | correctness | accept-valid | reject-malformed (was→now) | determinism |
+|---|---|---|---|---|
+| `v6_nax_forward` (R15) | fp64 oracle relerr <3e-3 ✓ | GQA runs ✓ | batch→NaN, k_seq/k_heads/q_D/dtype **all no-raise → all RAISE** | N-A (cooperative tensor, only P staged) |
+| `mfa_attention_varlen_forward` (R7) | — | valid runs ✓ | **NO validation + silent int32 cast → full Q/K/V + int32-reject (no cast)** | byteΔ=0 N≥512 (packed staging barrier, src-verified) |
+| `mfa_attention_rope_forward` (R5) | — | valid runs ✓ | all dense no-raise + no cos/sin checks **→ all RAISE + cos/sin f32/shape/width** | byteΔ=0 N≥512 (barrier X, src-verified) |
+| `mfa_attention_alibi_forward` (R3) | — | valid runs ✓ | all no-raise incl. invalid-GQA **→ all RAISE + slopes len Hq** | N-A (M5 direct reads) |
+| `mfa_attention_bias_forward` (R4) | — | valid runs ✓ | Q/K/V mutual unchecked **→ RAISE** (bias mode/shape kept) | N-A |
+| `mfa_attention_sparse_forward[_with_lse]` (R6) | — | valid runs ✓ | all no-raise **→ all RAISE** (mask checks kept) | N-A (contiguous tile jumps) |
+| `sparse_attention_forward_with_lse` (R10) | — | valid runs (mask ≥4096B) ✓ | batch/k_seq/q_D no-raise **→ RAISE** (matched R9) | N-A (device row reads) |
+| `mfa_scatter_kv` (R13) | — | valid runs ✓ | tokens-dtype≠pool unchecked **→ RAISE** | N-A (copy/scatter) |
+| `mfa_attention_forward` (R1) | — | asym-D_v runs ✓ | was missing GQA/q↔k-D/dtype **→ added (shared validator)** | N-A |
+
+Validation: bite-proven (neutralize shared `q.D==k.D` → alibi q_D≠k_D no-raise;
+restore → raises). Validation-only → valid output byteΔ-identical by construction
+(no math touched; v6 oracle relerr unchanged). Lock:
+`tests/test_hardening_k1.py` (59 cells). RULE 16 catch: the plan called R9
+"comprehensive" and R10 a subset — verified at source (R9 HAS the batch/K↔V/D
+checks, R10 lacked them; plan correct) and the R6 `with_lse` variant was unbraced
+so the first shared-helper edit missed it (caught by the lock failing).
+
+**K1 closes 10 of 31 omitted entries → 21 remain (13 public + 8 raw)** for K2+:
+public P1–P7 residuals (packed/speculative/splitfuse/rope-family/kvcache/topk),
+raw R2 (`mfa_forward_with_lse`), R8 (`mfa_gna_forward`), R9 (`sparse_attention_forward`,
+already comprehensive — verify-only), R11/R12 (quantizers), R14 (`conv3d_nax_forward`),
+R16 (`v6_nax_backward_{query,kv}`).
+
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8
   runs" used a config (N=256) below the multi-tile threshold — the race only fires at

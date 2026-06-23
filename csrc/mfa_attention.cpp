@@ -1732,6 +1732,47 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
 }
 
 // =========================================================================
+// Shared raw dense-QKV validator (volet K1).
+// The dense raw bindings (mfa_attention_forward + the feature variants alibi/
+// bias/rope/sparse) derive B from Q and ALL K/V strides from K, then read V at
+// K's offsets — so a Q/K/V that disagrees on batch, kv-seq, kv-heads, the Q@K^T
+// head_dim, GQA divisibility, or dtype reads OOB / silent-wrong (observed:
+// batch→NaN, k_seq/k_heads/q_D/dtype all no-raise on alibi/rope/sparse). One
+// validator so the feature entries cannot drift. Does NOT constrain v.shape(3)
+// (asymmetric D_v is legal where the kernel supports it; only Q@K^T needs
+// q.D==k.D). Rule 8: raise before dispatch.
+// =========================================================================
+static void validate_dense_qkv(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const char* fn) {
+  auto bad = [&](const std::string& m) {
+    throw std::invalid_argument(std::string(fn) + ": " + m);
+  };
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
+    bad("expected 4D inputs [B, H, N, D]");
+  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0))
+    bad("q, k, v must share the batch dim (Bq=" + std::to_string(q.shape(0)) +
+        ", Bk=" + std::to_string(k.shape(0)) + ", Bv=" + std::to_string(v.shape(0)) + ")");
+  if (k.shape(2) != v.shape(2))
+    bad("k and v must share the kv sequence length (Sk=" +
+        std::to_string(k.shape(2)) + ", Sv=" + std::to_string(v.shape(2)) + ")");
+  if (k.shape(1) != v.shape(1))
+    bad("k and v must have the same number of heads (Hk=" +
+        std::to_string(k.shape(1)) + ", Hv=" + std::to_string(v.shape(1)) + ")");
+  if (q.shape(3) != k.shape(3))
+    bad("q and k must share head_dim for Q@K^T (Dq=" +
+        std::to_string(q.shape(3)) + ", Dk=" + std::to_string(k.shape(3)) + ")");
+  const int Hq = q.shape(1), Hk = k.shape(1);
+  if (Hk <= 0 || Hq % Hk != 0)
+    bad("q_heads (" + std::to_string(Hq) + ") must be a positive multiple of "
+        "kv_heads (" + std::to_string(Hk) + ") for GQA");
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+    bad("q, k, v must share dtype");
+  if (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16)
+    bad("only float16/bfloat16 are supported");
+}
+
+// =========================================================================
 // Free function: mfa_attention_forward
 // =========================================================================
 
@@ -1749,30 +1790,10 @@ mlx::core::array mfa_attention_forward(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
-    throw std::invalid_argument("MFA: expected 4D inputs [B, H, N, D]");
-  }
-
-  // C-01 FIX (audit, 2026-06-21): defense-in-depth — the kernel derives B from
-  // Q and ALL K/V strides from K (V_batch_stride = Hk*S*D), so a K/V that
-  // disagrees with Q / each other on batch, kv-seq, or kv-heads reads
-  // out-of-bounds → silent-wrong finite output.  The Python public boundary
-  // rejects these first, but guard the direct binding too (Rule 8).
-  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0)) {
-    throw std::invalid_argument(
-        "MFA: q, k, v must share the batch dim (Bq=" + std::to_string(q.shape(0)) +
-        ", Bk=" + std::to_string(k.shape(0)) + ", Bv=" + std::to_string(v.shape(0)) + ")");
-  }
-  if (k.shape(2) != v.shape(2)) {
-    throw std::invalid_argument(
-        "MFA: k and v must share the kv sequence length (Sk=" +
-        std::to_string(k.shape(2)) + ", Sv=" + std::to_string(v.shape(2)) + ")");
-  }
-  if (k.shape(1) != v.shape(1)) {
-    throw std::invalid_argument(
-        "MFA: k and v must have the same number of heads (Hk=" +
-        std::to_string(k.shape(1)) + ", Hv=" + std::to_string(v.shape(1)) + ")");
-  }
+  // volet K1: complete dense-QKV contract (was missing GQA / q↔k head_dim /
+  // dtype; C-01 added batch + K↔V only). Note R1 supports asymmetric D_v, which
+  // the shared validator preserves (it checks q.D==k.D, not v.D).
+  validate_dense_qkv(q, k, v, "MFA");
 
   // D.5: Enforce row-major BHND layout inside the C++ binding entry point.
   // mlx::core::contiguous() is a no-op (zero allocation) when the array is
@@ -1825,9 +1846,7 @@ mlx::core::array mfa_attention_sparse_forward(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
-    throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
-  }
+  validate_dense_qkv(q, k, v, "MFA sparse");  // volet K1: full Q/K/V contract
   if (block_mask.ndim() < 2 || block_mask.ndim() > 4) {
     throw std::invalid_argument(
         "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
@@ -1876,8 +1895,7 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
-    throw std::invalid_argument("MFA sparse: expected 4D inputs [B, H, N, D]");
+  validate_dense_qkv(q, k, v, "MFA sparse");  // volet K1: full Q/K/V contract
   if (block_mask.ndim() < 2 || block_mask.ndim() > 4)
     throw std::invalid_argument(
         "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
@@ -1939,10 +1957,7 @@ mlx::core::array mfa_attention_rope_forward(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
-    throw std::invalid_argument(
-        "MFA rope: expected 4D inputs [B, H, N, D]");
-  }
+  validate_dense_qkv(q, k, v, "MFA rope");  // volet K1: full Q/K/V contract
 
   int D = q.shape(3);
   if (D != 64 && D != 128 && D != 256) {
@@ -1950,12 +1965,18 @@ mlx::core::array mfa_attention_rope_forward(
         "MFA rope: head_dim must be 64, 128, or 256, got " +
         std::to_string(D));
   }
-
-  // RoPE fusion only on the STEEL path (f16/bf16).
-  if (q.dtype() == mlx::core::float32) {
+  // RoPE residual: cos/sin mutual shape + rotary width D/2 (volet K1).
+  // NOTE: cos/sin dtype is NOT constrained to float32 — production callers pass
+  // float16 tables (verified: tests + make_rope_3d_tables) and the kernel
+  // accepts both. (The plan's "cos/sin float32" was an unverified assumption.)
+  if (rotary_cos.ndim() != rotary_sin.ndim())
+    throw std::invalid_argument("MFA rope: cos/sin rank mismatch");
+  for (int d = 0; d < rotary_cos.ndim(); ++d)
+    if (rotary_cos.shape(d) != rotary_sin.shape(d))
+      throw std::invalid_argument("MFA rope: cos/sin shape mismatch");
+  if (rotary_cos.shape(rotary_cos.ndim() - 1) != D / 2)
     throw std::invalid_argument(
-        "MFA rope: float32 is not supported; use float16 or bfloat16");
-  }
+        "MFA rope: rotary width must be D/2 (" + std::to_string(D / 2) + ")");
 
   MFAttention::Params params{
     D, scale, causal,
@@ -2000,12 +2021,12 @@ mlx::core::array mfa_attention_alibi_forward(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
-    throw std::invalid_argument("MFA alibi: expected 4D inputs [B, H, N, D]");
+  validate_dense_qkv(q, k, v, "MFA alibi");  // volet K1: full Q/K/V contract
 
-  if (alibi_slopes.ndim() != 1)
+  if (alibi_slopes.ndim() != 1 || alibi_slopes.shape(0) != q.shape(1))
     throw std::invalid_argument(
-        "MFA alibi: alibi_slopes must be 1D [H]");
+        "MFA alibi: alibi_slopes must be 1D [Hq=" +
+        std::to_string(q.shape(1)) + "]");  // volet K1: length Hq (was rank-only)
 
   // D.5: enforce row-major layout at the C++ binding entry point.
   auto qc = mlx::core::contiguous(q, false, s);
@@ -2062,8 +2083,7 @@ mlx::core::array mfa_attention_bias_forward(
       ? mlx::core::to_stream(stream.value())
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
-  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4)
-    throw std::invalid_argument("MFA bias: expected 4D inputs [B, H, N, D]");
+  validate_dense_qkv(q, k, v, "MFA bias");  // volet K1: full Q/K/V contract
 
   if (attn_bias_mode < 1 || attn_bias_mode > 2)
     throw std::invalid_argument(
@@ -2235,6 +2255,24 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
     bool  causal,
     mlx::core::Stream s) {
 
+  // volet K1 (R7): the varlen raw binding had NO host shape validation and
+  // SILENTLY cast metadata to int32 (the CX-R6-03 class — a float→int32 cast is
+  // wrong, an int64 silently truncates). Validate Q/K/V + reject non-int32
+  // metadata (no silent cast). Packed varlen layout is [1, H, total, D].
+  validate_dense_qkv(q, k, v, "MFA varlen");
+  if (q.shape(0) != 1)
+    throw std::invalid_argument(
+        "MFA varlen: packed layout requires batch dim 1 [1, H, total, D], got " +
+        std::to_string(q.shape(0)));
+  auto need_i32 = [&](const mlx::core::array& a, const char* nm) {
+    if (a.dtype() != mlx::core::int32)
+      throw std::invalid_argument(
+          std::string("MFA varlen: ") + nm + " must be int32 (no silent cast)");
+  };
+  need_i32(cu_q, "cu_seqlens_q");
+  need_i32(cu_k, "cu_seqlens_k");
+  need_i32(tile_offsets, "tile_offsets");
+
   const int H  = q.shape(1);
 
   mlx::core::Shape out_shape = q.shape();
@@ -2242,7 +2280,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
 
   MFAVarlenAttention::Params params{scale, causal, q.shape(3)};
 
-  // cu_seqlens cast to int32 if not already (Metal requires int32)
+  // Metadata is now guaranteed int32 (validated above); astype is a no-op.
   auto cu_q_i32 = mlx::core::astype(cu_q, mlx::core::int32, s);
   auto cu_k_i32 = mlx::core::astype(cu_k, mlx::core::int32, s);
   auto tile_i32 = mlx::core::astype(tile_offsets, mlx::core::int32, s);

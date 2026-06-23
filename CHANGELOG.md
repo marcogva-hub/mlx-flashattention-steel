@@ -254,6 +254,20 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     entries remain to be audited). The inventory's D=256 paged claim is now executable (cells added),
     paged-varlen/TQ determinism cells added, and the sliding-window perf claim was re-attributed from
     public `flash_attention_paged` (no window param) to the raw `mfa_paged_steel_forward` that has it.
+  - **Raw computational-surface validation, priority groups 1–6 (volet K1).** A 4-axis sweep of 10
+    previously-unaudited raw entries found that **every one that reads multiple buffers was missing
+    mutual shape/dtype/count checks** — malformed inputs gave silent-wrong/NaN output instead of
+    raising. Fixed via a shared `validate_dense_qkv` C++ helper (+ per-entry residual), applied to:
+    `v6_nax_forward` (checked Q-rank+D only → batch/k_seq/k_heads/q↔K-D/dtype now raise);
+    `mfa_attention_varlen_forward` (had NO host validation and silently cast metadata to int32 →
+    full Q/K/V + int32-reject, no silent cast); `mfa_attention_rope_forward`,
+    `mfa_attention_alibi_forward` (accepted even invalid GQA), `mfa_attention_bias_forward`,
+    `mfa_attention_sparse_forward[_with_lse]` (full Q/K/V contract; rope also gets cos/sin
+    shape/width checks, alibi gets slopes-length-Hq); `sparse_attention_forward_with_lse` (batch/K↔V/D
+    checks it lacked vs its non-LSE sibling); `mfa_scatter_kv` (tokens-dtype must match pool);
+    `mfa_attention_forward` (retrofit — was missing GQA/q↔K-D/dtype). Bite-proven; valid output
+    byteΔ-identical (validation-only); rope/varlen gather determinism locked at N≥512. Lock:
+    `tests/test_hardening_k1.py` (59 cells). 21 of the 31 omitted computational entries remain for K2+.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

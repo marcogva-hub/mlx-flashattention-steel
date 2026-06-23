@@ -875,6 +875,30 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   int D = q.shape(3);
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
 
+  // volet K1 (R15): the forward read K.shape(1) without validating K/V — a
+  // batch/k_seq/k_heads/q_D/dtype mismatch read OOB / silent-wrong (observed:
+  // batch→NaN, the rest no-raise). NAX matmul2d needs symmetric D. Rule 8.
+  if (k.ndim() != 4 || v.ndim() != 4)
+    throw std::invalid_argument("V6: K and V must be 4D [B,H,N,D]");
+  if (q.shape(0) != k.shape(0) || q.shape(0) != v.shape(0))
+    throw std::invalid_argument("V6: q, k, v must share the batch dim");
+  if (k.shape(2) != v.shape(2))
+    throw std::invalid_argument("V6: k and v must share the kv sequence length");
+  if (k.shape(1) != v.shape(1))
+    throw std::invalid_argument("V6: k and v must have the same number of heads");
+  if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
+    throw std::invalid_argument("V6: q, k, v must share head_dim");
+  {
+    const int Hq = q.shape(1), Hk = k.shape(1);
+    if (Hk <= 0 || Hq % Hk != 0)
+      throw std::invalid_argument(
+          "V6: invalid GQA (Hq must be a positive multiple of Hk)");
+  }
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+    throw std::invalid_argument("V6: q, k, v must share dtype");
+  if (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16)
+    throw std::invalid_argument("V6: only float16/bfloat16 are supported");
+
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
 
   // Sprint 2A — Layout selection (BHND default since 2026-05-04):
