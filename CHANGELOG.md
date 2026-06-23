@@ -327,6 +327,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     density (was density-dependent: SDPA ran, native raised). Bite-proven (both the f32 routing and the
     cross-check assertion); lock `tests/test_hardening_m.py`. **`OMITTED computational = 0` is now
     genuinely true at 24 public + 34 raw**, with the row-set definition itself assertion-guarded.
+  - **Property-based classifier guard + stale f32 doc (volet N — CX-R10-01/CX-R10-02).** Round-10
+    confirmed the computational surface has converged (24 public + 34 raw, no 25th) but flagged the
+    *dev-time guard*: Assertion 2 was a hardcoded callee-name regex, so moving `flash_attention_topk`
+    (which computes attention **inline** — no `flash_attention(` call to detect) into HELPER passed
+    enumeration silently. The guard is now **property-based**: any HELPER export that is
+    attention-input-shaped (takes a Q-like **and** a K-like parameter) **or** is uninspectable (a class,
+    or `signature`/`getsource` fails) **must** be listed in `REVIEWED_NONCOMPUTATIONAL` (31 entries, each
+    with a verified reason) — otherwise the enumeration fails loudly. This keys on *what the entry is*,
+    not on a callee name, so it catches inline-compute ops and the previously-silently-skipped classes /
+    getsource-failures; the callee-name check is kept only as a secondary belt-and-suspenders flag.
+    Executable mutation tests (`tests/test_hardening_n.py`) lock the bites: `flash_attention_topk` →
+    HELPER fails, a synthetic class → HELPER fails, a `functools.partial` (getsource-failing) → HELPER
+    fails. **CX-R10-02:** corrected two stale "f32 runs on both routes" statements (the
+    `sparse_attention_dispatch` entry comment + the volet-L inventory text) to the accurate contract —
+    f16/bf16 on both native + SDPA routes; **f32 routes to SDPA only** (the native kernel is f16/bf16-only).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

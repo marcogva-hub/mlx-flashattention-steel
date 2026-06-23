@@ -237,8 +237,10 @@ name-prefix heuristic dropped to `helper: other`, so it never got an inventory r
 
 **CX-R8-01 fix:** validate Q/K/V (batch, K↔V seq/heads, q↔K head-dim, GQA, dtype-
 equality) at the dispatcher entry BEFORE the native-vs-SDPA split → both routes
-guarded. NOT restricted to f16/bf16 (f32 runs on both routes) and V head-dim left
-free (asym D_v valid on SDPA) — HARD GUARD enumerated first. Bite-proven; valid
+guarded. Dtype is NOT restricted to f16/bf16 at the entry — f32 is valid but
+routes to **SDPA only** (the native kernel is f16/bf16-only; see volet M /
+CX-R9-02 — NOT "both routes"); V head-dim left free (asym D_v valid on SDPA) —
+HARD GUARD enumerated first. Bite-proven; valid
 output byteΔ-identical. **CX-R8-02 fix:** `enumerate_api_surface.py` classifier
 replaced the name-prefix heuristic with an explicit COMPUTATIONAL allowlist +
 HELPER allowlist + a **completeness assertion** — any export matching neither →

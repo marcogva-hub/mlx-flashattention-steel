@@ -124,39 +124,85 @@ AUDITED_RAW = {
     "v6_nax_backward_kv",                   # R16
 }
 
+# CX-R10-01 (volet N): explicit review-set for HELPER exports that the property
+# guard flags (attention-input-shaped OR uninspectable). Each is verified
+# first-hand to be genuinely NON-computational (returns a mask/correction/state,
+# never attention output via a dispatch). A flagged HELPER NOT in this set fails
+# the enumeration — so a misclassified computational entry (even one that
+# computes attention INLINE, like flash_attention_topk) cannot hide.
+REVIEWED_NONCOMPUTATIONAL = {
+    # classes / contexts / adapters / protocols / exceptions — stateful helpers,
+    # not stateless attention ops (uninspectable as a q/k/v function):
+    "DecodeRuntime": "runtime class", "DenseKVCache": "cache class",
+    "DenseKVCacheAdapter": "cache adapter class", "DispatchPolicy": "config class",
+    "ExternalKVCacheAdapter": "cache adapter class",
+    "ExternalKVCacheCapabilities": "capabilities dataclass",
+    "HybridKVCache": "cache class", "HybridKVCacheAdapter": "cache adapter class",
+    "InferenceContext": "context class", "KVCacheAdapter": "adapter base class",
+    "KVCacheCapabilities": "capabilities dataclass",
+    "KVCacheOperationUnsupported": "exception class",
+    "KVCacheProtocol": "typing protocol",
+    "LocalHostKVStoreAdapter": "cache adapter class",
+    "NaxUnavailable": "exception class",
+    "PagedInferenceContext": "context class", "PagedKVCache": "cache class",
+    "PagedKVCacheAdapter": "cache adapter class", "QuantizedKVCache": "cache class",
+    "QuantizedKVCacheAdapter": "cache adapter class",
+    "SVDQuantLinear": "nn.Module (linear layer, not attention)",
+    "SageInferenceContext": "context class", "TurboQuantKVCache": "cache class",
+    "TurboQuantPagedInferenceContext": "context class",
+    "__version__": "version string constant (not callable)",
+    # q/k-taking FUNCTIONS that return a mask or a correction, NOT attention:
+    "make_topk_spatial_mask": "returns a top-k spatial mask (mx.array), not attention",
+    "make_lcsa_mask": "returns an LCSA block mask, not attention",
+    "sage_output_correction": "post-hoc correction of a precomputed O; no dispatch",
+    # FUNCTIONS that CALL attention internally (warmup/calibration/diagnostics) or
+    # only mention it in a docstring — non-q/k/v params, return non-attention:
+    "calibrate_dispatch": "calibration harness — times flash_attention; returns a results dict",
+    "diagnostics": "diagnostics probe — returns a status dict, not attention",
+    "warmup_kernels": "JIT warmup — runs attention for side effects; returns None",
+    "make_temporal_distance_bias": "returns a temporal-distance bias array; flash_attention is a docstring example",
+}
+
+
 def computational_in_helper(helper_names):
-    """CX-R9 Assertion 2 (semantic cross-check): a HELPER export that takes a
-    q/k/v triple AND calls a compute entry in its body is a MISCLASSIFIED
-    computational entry — return the offenders so main() can fail loudly. This
-    makes the computational-in-helper error impossible-by-silence (the bug that
-    hid the 23rd and 24th entries). Imports mlx_mfa to inspect sources."""
+    """CX-R10-01 property-based Assertion 2. A HELPER export is an offender if it
+    is (a) ATTENTION-INPUT-SHAPED — takes a Q-like AND a K-like parameter (q/
+    query/queries, k/key/keys, incl. q_*/k_* / *_q/*_k) — OR (b) UNINSPECTABLE
+    (a class, None, or signature/getsource fails), UNLESS it is explicitly listed
+    in REVIEWED_NONCOMPUTATIONAL. This keys on WHAT THE ENTRY IS (its shape),
+    not on detecting a compute-call by name — so it catches inline-compute
+    attention ops (flash_attention_topk computes attention inline, takes q/k/v →
+    flagged) and the previously-silently-skipped classes / getsource-failures.
+    A secondary callee-name check stays as belt-and-suspenders. Returns offenders
+    so main() fails loudly."""
     import inspect
     import mlx_mfa
-    compute = re.compile(
+    compute = re.compile(  # secondary (belt-and-suspenders)
         r"\b(flash_attention|sage_attention|sparse_attention_nax|"
         r"sparse_attention_dispatch)\s*\(|_ext\.\w*forward")
 
-    def qkv_triple(fn):
-        try:
-            params = [p.lower() for p in inspect.signature(fn).parameters]
-        except (TypeError, ValueError):
-            return False
-
-        def has(*opts):
-            return any(any(p == o or p.endswith("_" + o) for o in opts)
-                       for p in params)
-        return has("q", "query") and has("k", "key") and has("v", "value")
+    def _grp(params, exact, pre, suf):
+        return any(p in exact or p.startswith(pre) or p.endswith(suf) for p in params)
 
     bad = []
     for h in helper_names:
+        if h in REVIEWED_NONCOMPUTATIONAL:
+            continue  # explicitly reviewed non-computational
         obj = getattr(mlx_mfa, h, None)
+        # (b) uninspectable → must have been reviewed (we're here, so it wasn't)
         if obj is None or inspect.isclass(obj):
+            bad.append(h)
             continue
         try:
+            params = [p.lower() for p in inspect.signature(obj).parameters]
             src = inspect.getsource(obj)
-        except (OSError, TypeError):
+        except (OSError, TypeError, ValueError):
+            bad.append(h)  # uninspectable, unreviewed
             continue
-        if qkv_triple(obj) and compute.search(src):
+        # (a) attention-input-shaped: has Q-like AND K-like param
+        qk = (_grp(params, {"q", "query", "queries"}, "q_", "_q")
+              and _grp(params, {"k", "key", "keys"}, "k_", "_k"))
+        if qk or compute.search(src):
             bad.append(h)
     return bad
 

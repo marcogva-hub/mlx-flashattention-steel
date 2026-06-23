@@ -326,7 +326,9 @@ def sparse_attention_dispatch(
     # native-vs-SDPA route split, so BOTH routes are guarded. The SDPA route
     # previously accepted a V whose kv-seq disagreed with K → finite-wrong / NaN
     # (and a dtype-mismatched V).  Dtype is required EQUAL (matching the native
-    # route's contract) but NOT restricted to f16/bf16 — f32 runs on both routes.
+    # route's contract) but NOT restricted to f16/bf16 at the ENTRY — f32 is
+    # valid and is routed to SDPA below (CX-R9-02; the native kernel is
+    # f16/bf16-only, so f32 never reaches it).
     # V head_dim is left unconstrained: asymmetric D_v is valid on the SDPA route.
     if Q.ndim != 4 or K.ndim != 4 or V.ndim != 4:
         raise ValueError(
