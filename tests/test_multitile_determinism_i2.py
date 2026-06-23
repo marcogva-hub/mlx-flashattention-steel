@@ -82,9 +82,13 @@ def test_gna_deterministic(seq, N, Hq, Hk, dt):
 
 
 @pytest.mark.parametrize("S", [512, 1024])
-@pytest.mark.parametrize("D", [64, 128])
+@pytest.mark.parametrize("D", [64, 128, 256])   # volet J: D=256 added (CX-J-02 was D-agnostic)
 @pytest.mark.parametrize("dt", _DT)
 def test_paged_steel_deterministic(S, D, dt):
+    # CX-J-02: the paged STEEL K-gather reused KV_smem with NO inter-iteration
+    # barrier → nondeterministic at multi-tile S. The volet-I2 runtime probe got
+    # lucky (race is intermittent, pytest-context-triggered); the fix added the
+    # start-of-loop barrier. These cells reliably flake without it.
     def mk():
         mx.random.seed(0)
         bs = 16
@@ -97,4 +101,48 @@ def test_paged_steel_deterministic(S, D, dt):
         mx.eval(kp, vp, q, bt, sl)
         return mlx_mfa.flash_attention_paged(q, kp, vp, bt, sl, scale=1 / math.sqrt(D),
                                              causal=True, block_size=bs)
+    assert _det(mk) == 0.0
+
+
+@pytest.mark.parametrize("S", [512, 1024])
+@pytest.mark.parametrize("D", [64, 128])
+@pytest.mark.parametrize("dt", _DT)
+def test_paged_varlen_deterministic(S, D, dt):
+    # volet J (CX-R7-03): the inventory claimed paged-varlen determinism was locked
+    # but no cell ran it. Source-confirmed the inter-iteration barrier IS present;
+    # this makes the claim executable.
+    def mk():
+        mx.random.seed(0)
+        bs = 16
+        nbk = (S + bs - 1) // bs
+        kp = mx.random.normal((nbk + 2, bs, 4, D)).astype(dt)
+        vp = mx.random.normal((nbk + 2, bs, 4, D)).astype(dt)
+        q = mx.random.normal((1, 4, 8, D)).astype(dt)
+        bt = mx.array([list(range(nbk))], dtype=mx.int32)
+        sl = mx.array([S], dtype=mx.int32)
+        cu = mx.array([0, 8], dtype=mx.int32)
+        mx.eval(kp, vp, q, bt, sl, cu)
+        return mlx_mfa.flash_attention_paged_varlen(
+            q, kp, vp, bt, sl, cu, scale=1 / math.sqrt(D), causal=True, block_size=bs)
+    assert _det(mk) == 0.0
+
+
+def test_paged_tq_deterministic():
+    # volet J (CX-R7-03): paged-TQ determinism claim made executable.
+    # Source-confirmed the start-of-loop barrier is present (paged-TQ K-gather).
+    import sys
+    sys.path.insert(0, "tests")
+    import test_phase3_iii2_tq_decode as T
+    from mlx_mfa.turboquant import apply_rotation
+
+    def mk():
+        ctx, q = T._mkctx(3)
+        qr = apply_rotation(q.astype(mx.float32), "wht").astype(mx.float16)
+        cu = mx.array([0, 1], dtype=mx.int32)
+        mx.eval(qr)
+        return mlx_mfa.flash_attention_paged_varlen_turboquant(
+            qr, ctx._k_pool, ctx._v_pool_fp16, ctx.get_block_table([0]),
+            ctx.get_seq_lens([0]), cu, ctx._k_centroids, ctx._k_scales,
+            scale=T.SCALE, causal=True, block_size=T.BS, tq_bits=3,
+            tq_v_enabled=False, tq_wht_enabled=False)
     assert _det(mk) == 0.0

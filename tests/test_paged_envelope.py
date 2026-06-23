@@ -82,7 +82,9 @@ def _relerr(o, r):
 # (label, H, Hk, D, seqs, Nq, causal)
 _CORR = []
 for dt in (F16, BF16):
-    for D in (64, 128):
+    for D in (64, 128, 256):  # volet J (CX-R7-03): D=256 added so the inventory's
+        # "72-cell paged cross-product including D=256" claim is EXECUTABLE
+        # (was claimed but only D∈{64,128} ran). Codex-verified correct.
         # homogeneous, Nq>1 causal
         _CORR.append((f"homo_D{D}_{DTN[dt]}", 4, 4, D, [48, 48], 17, True, dt))
         # heterogeneous causal, per-seq Nq<Nk (CX-01 completeness oracle)

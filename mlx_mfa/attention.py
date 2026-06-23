@@ -2123,6 +2123,9 @@ def sage_attention_prequantized(
     if scale is None:
         scale = 1.0 / _math.sqrt(D)
 
+    _assert_sage_prequant_buffers(q, k_int8, k_scale, v,
+                                  "sage_attention_prequantized")  # CX-R7-01
+
     if not _ext_available():
         raise RuntimeError(
             "sage_attention_prequantized: MFA extension not available. "
@@ -7333,6 +7336,57 @@ def _assert_tq_paged_buffers(k_pool_tq, v_pages, k_scales, tq_bits, fn, *,
             raise ValueError(
                 f"{fn}: v_scales {tuple(int(x) for x in v_scales.shape)} must be "
                 f"[num_blocks, block_size, H_kv] = {(nb, bsz, hkv)}.")
+
+
+def _assert_sage_prequant_buffers(q, k_int8, k_scale, v, fn):
+    """Volet J (CX-R7-01): pre-quantized Sage buffer-shape/dtype lock.
+
+    `sage_attention_prequantized` / raw `mfa_sage_forward` take caller-supplied
+    int8 K + fp32 per-block scales + fp16 V; the kernel derives extents from Q/K
+    and reads V / k_scale at K's offsets without re-checking — a half-length V →
+    OOB, batch mismatch → NaN, wrong k_int8/k_scale dtype → garbage (all observed).
+    Validate before dispatch (Rule 8). Sage requires D_v == D_qk (no asym D_v).
+    """
+    import mlx.core as mx
+    from mlx_mfa.quantize import sage_block_sizes
+    if q.ndim != 4 or k_int8.ndim != 4 or v.ndim != 4:
+        raise ValueError(f"{fn}: q, k_int8, v must be 4-D [B, H, S, D]; got "
+                         f"q={q.ndim}D, k_int8={k_int8.ndim}D, v={v.ndim}D.")
+    B, Hq, Nq, D = (int(x) for x in q.shape)
+    if not (int(k_int8.shape[0]) == int(v.shape[0]) == B):
+        raise ValueError(f"{fn}: q, k_int8, v must share the batch dim. Got "
+                         f"q={B}, k_int8={int(k_int8.shape[0])}, v={int(v.shape[0])}.")
+    if int(k_int8.shape[2]) != int(v.shape[2]):
+        raise ValueError(f"{fn}: k_int8 and v must share kv sequence length. Got "
+                         f"k_seq={int(k_int8.shape[2])}, v_seq={int(v.shape[2])}.")
+    if int(k_int8.shape[1]) != int(v.shape[1]):
+        raise ValueError(f"{fn}: k_int8 and v must have the same number of heads. "
+                         f"Got k_heads={int(k_int8.shape[1])}, v_heads={int(v.shape[1])}.")
+    Hk = int(k_int8.shape[1])
+    if Hk <= 0 or Hq % Hk != 0:
+        raise ValueError(f"{fn}: q_heads ({Hq}) must be a positive multiple of "
+                         f"kv_heads ({Hk}) (GQA).")
+    if int(k_int8.shape[3]) != D:
+        raise ValueError(f"{fn}: q and k_int8 must share head_dim. Got q_dim={D}, "
+                         f"k_dim={int(k_int8.shape[3])}.")
+    if int(v.shape[3]) != D:
+        raise ValueError(f"{fn}: v head_dim must equal q/k head_dim ({D}); this "
+                         f"kernel does not support D_v != D_qk. Got v_dim={int(v.shape[3])}.")
+    if k_int8.dtype != mx.int8:
+        raise ValueError(f"{fn}: k_int8 must be int8 (the kernel reads it as int8); "
+                         f"got {k_int8.dtype}.")
+    if k_scale.dtype != mx.float32:
+        raise ValueError(f"{fn}: k_scale must be float32 (the kernel reads it as "
+                         f"float32); got {k_scale.dtype}.")
+    if q.dtype != v.dtype or q.dtype not in (mx.float16, mx.bfloat16):
+        raise ValueError(f"{fn}: q and v must share an fp16/bf16 dtype; got "
+                         f"q={q.dtype}, v={v.dtype}.")
+    _, BK = sage_block_sizes(D)
+    nblk = (int(k_int8.shape[2]) + BK - 1) // BK
+    if tuple(int(x) for x in k_scale.shape) != (B, Hk, nblk):
+        raise ValueError(f"{fn}: k_scale shape {tuple(int(x) for x in k_scale.shape)} "
+                         f"must be [B, H_kv, ceil(S/BK)] = {(B, Hk, nblk)} "
+                         f"(BK={BK} for D={D}); a short scale array reads out of bounds.")
 
 
 def _assert_paged_pool_compat(k_pages, v_pages, fn, *, cu_seqlens=()):

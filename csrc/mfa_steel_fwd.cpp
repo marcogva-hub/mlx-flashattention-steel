@@ -3131,6 +3131,14 @@ struct MFAMMATile {
 
   // ── Main K-tile loop ──────────────────────────────────────────────────
   ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
+  // CX-J-02 (volet J): barrier at the START of each iteration so the PREVIOUS
+  // iteration's P@V reads of KV_smem (V) finish before this iteration's K gather
+  // OVERWRITES the shared KV_smem (Ks==Vs). Without it a fast simdgroup races a
+  // slow one's V-read → nondeterministic output for identical inputs (same class
+  // as the sage CX-R6-02 race; the dense/varlen forwards have this barrier, the
+  // paged gather variant dropped it). Multi-tile only (kb_lim>1); harmless on the
+  // first iteration (Q-load already barriered above).
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
 
   // ── Paged K gather (transposed: K_smem[d*LDK+t]) ──────────────────────
   ss << "    {\n";

@@ -228,6 +228,32 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     K/V smem (no reuse). The earlier inventory's determinism axis was sampled at N=256 (single-tile,
     below the multi-tile reuse threshold) — now re-specified at N≥512. Lock:
     `tests/test_multitile_determinism_i2.py` (56 cells).
+  - **Paged attention determinism fix (volet J — CX-J-02, CRITICAL).** `flash_attention_paged` (and
+    the raw paged STEEL forward) returned **nondeterministic output for identical inputs** at multi-tile
+    sequence lengths — the same KV_smem-reuse race as the sage CX-R6-02 bug. The paged K-**gather**
+    (scattered pages can't use a pointer-advance, so K is gathered into shared `Ks` every iteration)
+    reused `KV_smem` with **no barrier between iteration kb's P@V-read and kb+1's K-gather-write**. The
+    race is intermittent (GPU-scheduling/pytest-context-triggered), which is why the volet-I2 single-probe
+    runtime check passed by luck — the barrier must be verified at SOURCE, not inferred from a green run.
+    Fixed by adding the start-of-loop `threadgroup_barrier` (the dense forwards on M5 avoid the race
+    structurally via `MFA_DIRECT_READS` device-pointer K, or emit it in their gather path). Post-fix:
+    byteΔ=0 across D{64,128,256}×S{256,512,1024}; flaky paged cells now 8/8 + 12/12 stable ×5. The other
+    shared-buffer gather kernels (varlen, paged-varlen, paged-TQ, GNA) were re-verified at source — each
+    already emits the barrier. Locks extended: paged D=256 + paged-varlen + paged-TQ determinism cells.
+  - **Pre-quantized Sage buffer validation (volet J — CX-R7-01, CRITICAL).** `sage_attention_prequantized`
+    and raw `mfa_sage_forward` accepted malformed caller buffers with finite-wrong/NaN output instead of
+    raising: half-length V → OOB, batch mismatch → NaN, wrong `k_int8`/`k_scale` dtype → garbage, short
+    `k_scale` → OOB. Now validated on both surfaces (`_assert_sage_prequant_buffers` Python +
+    `mfa_sage_forward` C++ guards): batch/K↔V/q↔K shape agreement, `int8`/`float32` dtypes, fp16/bf16
+    q==v, and k_scale length ≥ ceil(S/BK). All raise; valid output byteΔ-identical; bite-proven. Lock:
+    `tests/test_sage_prequant_validation_j.py` (12 cells).
+  - **API surface enumeration mechanized + matrix honesty (volet J — CX-R7-02/03).**
+    `scripts/enumerate_api_surface.py` derives the audit inventory's row-set mechanically (AST of
+    `__all__` + regex of `bindings.cpp::m.def`) instead of by hand — the prior "complete" inventory was
+    the familiar subset (8 of 22 computational public, 16 of 34 computational raw; 31 computational
+    entries remain to be audited). The inventory's D=256 paged claim is now executable (cells added),
+    paged-varlen/TQ determinism cells added, and the sliding-window perf claim was re-attributed from
+    public `flash_attention_paged` (no window param) to the raw `mfa_paged_steel_forward` that has it.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

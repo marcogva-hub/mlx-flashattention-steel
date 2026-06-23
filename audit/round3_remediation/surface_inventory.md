@@ -45,10 +45,10 @@ causal offset verified (matches per-row oracle, diverges from batch-global).
 
 | entry | C | AV | RM (per buffer/dtype) | D |
 |---|---|---|---|---|
-| `flash_attention_paged` | 72/72 (above) + sliding-window 3.0e-4 | B>1 matched pools run ✓ | seq_lens-card, block_table int64, seq_lens float, OOB page, V fewer heads/blocks all raise ✓ | 0.00 |
+| `flash_attention_paged` | **108/108** (D∈{64,128,256} since volet J — was claimed, now executable) | B>1 matched pools run ✓ | seq_lens-card, block_table int64, seq_lens float, OOB page, V fewer heads/blocks all raise ✓ | **0 post-volet-J** (CX-J-02 fixed a real race; see axis below) |
 | `flash_attention_paged_varlen` | valid hetero correct | valid runs ✓ | cu int64, seq_lens short, V fewer heads raise ✓ | 0.00 |
 | `flash_attention_paged_varlen_turboquant` | valid (lossy, ground-truth-locked) | valid runs ✓ | **v_pages fewer blocks/heads/head_dim, k_scales short, incompatible packed_D, cu int64 all raise ✓ (CX-R6-01 FIXED this volet)** | 0.00 |
-| raw `mfa_paged_steel_forward` | valid B>1 correct | valid runs ✓ | seq-card, V mismatch, **block_table/seq_lens int64/float raise ✓ (CX-R6-03 FIXED; float was a HANG)** | n/a |
+| raw `mfa_paged_steel_forward` | valid B>1 correct; **sliding-window 3.0e-4 (window_left/right ARE on THIS raw entry, NOT public paged)** | valid runs ✓ | seq-card, V mismatch, **block_table/seq_lens int64/float raise ✓ (CX-R6-03 FIXED; float was a HANG)** | n/a |
 | raw `mfa_paged_varlen_forward` | valid | valid runs ✓ | card, V mismatch, cu/**block_table/seq_lens_kv int64/float raise ✓ (CX-R6-03 FIXED; float seq_lens was a HANG)** | n/a |
 | raw `mfa_paged_varlen_tq_forward` | valid | valid runs ✓ | **TQ buffer shapes + metadata int32 raise ✓ (CX-R6-01/03 FIXED)** | n/a |
 | raw `mfa_paged_kv_gather` | — | — | batch-card + int32 (volet C2) ✓ | n/a |
@@ -83,18 +83,48 @@ at N∈{512,1024}** × D{64,128} × {f16,bf16} × {MHA,GQA}.
 | dense STEEL V1 (`mfa_steel_fwd`) | yes | present (double-buf end-of-iter barrier) | 0 |
 | dense STEEL V2 (`mfa_steel_fwd_v2`) | yes | present ("barrier X: P@V reads done → overwrite K") | 0 |
 | varlen STEEL (`mfa_steel_fwd`) | yes | present (start-of-iter, explicit) | 0 |
-| paged STEEL (`mfa_steel_fwd`) | yes | present | 0 (incl. S=1024 = 64 tiles) |
+| paged STEEL (`mfa_steel_fwd`) | yes | **MISSING → ADDED volet J (CX-J-02)** | **0 post-fix** (pre-fix: intermittent race, I2 runtime got LUCKY) |
 | paged-varlen STEEL (`mfa_steel_paged_varlen_fwd`) | yes | present (explicit) | 0 |
 | paged TQ (`mfa_steel_paged_varlen_tq_fwd`) | yes | present (start-of-loop) | 0 |
 | GNA (`mfa_gna_fwd`) | yes | present (pre-load-next-K, barriered both sides) | 0 |
 | **sage (`mfa_sage_fwd`)** | yes | **ADDED in volet S** (was the sole missing one) | 0 (post-S) |
 | v3 (`mfa_steel_fwd_v3`), v6-NAX (`mfa_steel_fwd_v6_nax`) | **no** (separate K/V smem) | n/a | 0 |
 
-**Verdict: no new sibling race. Sage was the only kernel that had dropped the
-inter-iteration barrier; every other shared-buffer kernel already had it** (confirmed
-static + runtime). Multi-tile outputs are deterministic AND oracle-correct (dense-mfa
-& sparse GQA D128 N1024 relerr ~3.5e-4). Lock: `tests/test_multitile_determinism_i2.py`
-(56 cells) + `tests/test_sage_determinism_s.py` (51 cells).
+**Verdict (CORRECTED in volet J): the paged STEEL forward was ALSO a sibling race.**
+I2's original verdict ("no new sibling; paged STEEL barrier present") was WRONG — it
+trusted the I2 *runtime* probe (byteΔ=0) over the *source*. The paged K-gather reuses
+KV_smem with NO inter-iteration barrier; the race is **intermittent** (pytest-context-
+triggered: 1–6 of 8 cells flake across 5 runs) so a single 20-run probe got lucky.
+RULE 16 #2 lesson: source-verify the barrier, never infer "present" from a green
+runtime. **Fixed in volet J (CX-J-02)** — start-of-loop barrier added; paged now
+byteΔ=0 across D{64,128,256}×S{256,512,1024}, 8/8 + 12/12 stable ×5. Structural reason
+the dense forwards were genuinely fine: on M5 they use `MFA_DIRECT_READS` (K via device
+pointer, no Ks reuse) or emit barrier X in the gather path; paged/sage MUST gather
+scattered K into Ks every iteration, so they always reuse and always need the barrier.
+The remaining shared-buffer kernels (dense V1/V2, varlen, flash-decode, paged-varlen,
+paged-TQ, GNA) were RE-VERIFIED AT SOURCE this volet — each emits the P@V→next-K
+barrier (start-of-loop or end-of-body preload). Multi-tile outputs deterministic AND
+oracle-correct. Locks: `tests/test_multitile_determinism_i2.py` (now incl. paged D256 +
+paged-varlen + paged-TQ) + `tests/test_sage_determinism_s.py` + the paged_envelope
+D=256 cells.
+
+## Volet J — mechanical enumeration + CX-R7-01 (2026-06-23)
+- **This inventory's row-set was the FAMILIAR SUBSET labeled complete** (round-7
+  CX-R7-02): 8 of ~22 computational public entries, 16 of 34 computational raw. The
+  authoritative row-set now comes from `scripts/enumerate_api_surface.py` (AST of
+  `__all__` + regex of `m.def`) → `api_surface_enumeration.md`. **True scope: 103
+  public exports (22 computational), 51 raw (34 computational); OMITTED computational
+  = 13 public + 18 raw = 31** entries still needing the 4-axis treatment (input to the
+  scope decision; this is a SEPARATE phase).
+- **CX-R7-01 (CRITICAL) FIXED:** `sage_attention_prequantized` + raw `mfa_sage_forward`
+  accepted malformed buffers (half-length V → OOB, batch mismatch → NaN, wrong
+  k_int8/k_scale dtype → garbage, short k_scale → OOB). Now validated both surfaces
+  (`_assert_sage_prequant_buffers` Python + C++ guards); all raise, valid byteΔ-identical,
+  bite-proven. Lock: `tests/test_sage_prequant_validation_j.py` (12 cells).
+- **CX-J-02 (CRITICAL, found via the CX-R7-03 D=256 matrix-honesty work):** paged STEEL
+  nondeterminism (see corrected determinism axis above) — fixed.
+- **CX-R7-03 matrix honesty:** D=256 paged cells added & executable; paged-varlen +
+  paged-TQ determinism cells added; window attribution corrected (raw not public).
 
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8

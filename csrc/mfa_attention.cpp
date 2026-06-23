@@ -2705,10 +2705,53 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
   const int N    = q.shape(2);
   const int D    = q.shape(3);
   const int H_kv = k_int8.shape(1);
+  const int S    = k_int8.shape(2);
 
   if (H % H_kv != 0)
     throw std::invalid_argument(
         "mfa_sage_forward: H must be divisible by H_kv (GQA).");
+
+  // CX-R7-01 (volet J): buffer-shape/dtype lock. The kernel derives extents from
+  // q/k_int8 and reads v / k_scale at K's offsets without re-checking — a
+  // half-length V → OOB, batch mismatch → NaN, wrong k_int8/k_scale dtype →
+  // garbage (all observed). Validate before dispatch (Rule 8).
+  if (k_int8.shape(0) != B || v.shape(0) != B)
+    throw std::invalid_argument(
+        "mfa_sage_forward: q, k_int8, v must share the batch dim.");
+  if (v.shape(2) != S)
+    throw std::invalid_argument(
+        "mfa_sage_forward: k_int8 and v must share kv sequence length.");
+  if (v.shape(1) != H_kv)
+    throw std::invalid_argument(
+        "mfa_sage_forward: k_int8 and v must have the same number of heads.");
+  if (k_int8.shape(3) != D)
+    throw std::invalid_argument(
+        "mfa_sage_forward: q and k_int8 must share head_dim.");
+  if (v.shape(3) != D)
+    throw std::invalid_argument(
+        "mfa_sage_forward: v head_dim must equal q/k head_dim "
+        "(no D_v != D_qk).");
+  if (k_int8.dtype() != mlx::core::int8)
+    throw std::invalid_argument(
+        "mfa_sage_forward: k_int8 must be int8.");
+  if (k_scale.dtype() != mlx::core::float32)
+    throw std::invalid_argument(
+        "mfa_sage_forward: k_scale must be float32.");
+  if (q.dtype() != v.dtype() ||
+      (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16))
+    throw std::invalid_argument(
+        "mfa_sage_forward: q and v must share an fp16/bf16 dtype.");
+  // k_scale must cover ceil(S / BK) blocks; the kernel uses BK = (D<=64?64:32)
+  // (cfgv2_64 / cfgv2_128), the same value sage_block_sizes() reports.
+  {
+    const int sage_BK = (D <= 64) ? 64 : 32;
+    const int nblk = (S + sage_BK - 1) / sage_BK;
+    if (k_scale.ndim() != 3 || k_scale.shape(0) != B ||
+        k_scale.shape(1) != H_kv || k_scale.shape(2) < nblk)
+      throw std::invalid_argument(
+          "mfa_sage_forward: k_scale must be [B, H_kv, >=ceil(S/BK)] "
+          "(BK=64 for D<=64 else 32); a short scale array reads out of bounds.");
+  }
 
   const int gqa_factor = H / H_kv;
 
