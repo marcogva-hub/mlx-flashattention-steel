@@ -431,6 +431,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     live computational class-method set is **37** (was 36) — derived by property, no spurious bookkeeping
     promotion. New bite: a state-producer writing a differently-named buffer placed in reviewed → offender.
     Locks: `tests/test_tq_kvcache_append_vshape.py`, `tests/test_third_surface_guard.py` (13 cells).
+  - **Shared K/V persistence-validation helper — batch axis closed + D-contract aligned (volet P5).**
+    The paged appenders enforced only a *subset* of the contract (missed batch): `PagedKVCache.append`
+    indexed `k[0]`/`v[0]` with no batch check (batch>1 silently sliced to index 0, dropping the rest;
+    a batch-mismatched V silently ignored), and `TurboQuantPagedInferenceContext.append` validated
+    rank/heads/D/token but not batch (both **HIGH**). Root cause: per-site partial contracts. Fixed
+    structurally — a single `mlx_mfa/_persist_validate.assert_kv_persist_compat` (rank, batch, heads,
+    token length, head_dim) is now the **one** definition, and **every** persistence surface routes
+    through it: `DenseKVCache.append`, `QuantizedKVCache.append`, `TurboQuantKVCache.append`,
+    `LocalHostKVStoreAdapter.put`, `PagedKVCache.append` (+adapter), `TurboQuantPagedInferenceContext.append`.
+    No surface can enforce a partial subset; a single-sequence paged append given batch>1 now raises
+    instead of slicing `[0]`. **D-contract resolved** (Part B): the function surface
+    (`_assert_qkv_mutual_compat`) *allows* `D_v != D_qk` on dense/sparse SDPA-class paths, so
+    `DecodeRuntime.register_prefix` / `make_shared_prefix_cache` (an attention *call*) correctly keep
+    accepting asymmetric `D_v` — **not a defect**; persistence surfaces require `D_v == D_k` because the
+    cache buffers are single-`D` (a storage constraint, not stricter than the function surface). Locks:
+    `tests/test_kv_persist_batch.py` (batch-axis table for all 6 surfaces + single-source grep + the
+    D-contract). Suite 3033 / 0 failed ×3.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

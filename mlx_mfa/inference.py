@@ -970,30 +970,13 @@ class TurboQuantPagedInferenceContext:
         import numpy as np
 
         self._ensure_seq(seq_id)
-        # P1 Part B: K↔V mutual-shape contract. A malformed V head count would be
-        # packed/written at the wrong head count (silent broadcast / mis-write
-        # into the pool blocks). Reject loudly (Rule 8).
-        if k.ndim != 4 or v.ndim != 4:
-            raise ValueError(
-                "TurboQuantPagedInferenceContext.append: k, v must be 4-D "
-                "[1, H_kv, N, D].")
-        if k.shape[1] != v.shape[1]:
-            raise ValueError(
-                f"TurboQuantPagedInferenceContext.append: k heads ({k.shape[1]}) "
-                f"!= v heads ({v.shape[1]}); a mismatched V head count would "
-                "silently broadcast/mis-write into the pool.")
-        if k.shape[1] != self.H_kv:
-            raise ValueError(
-                f"TurboQuantPagedInferenceContext.append: head count ({k.shape[1]}) "
-                f"!= configured kv-heads ({self.H_kv}).")
-        if k.shape[3] != self.D or v.shape[3] != self.D:
-            raise ValueError(
-                f"TurboQuantPagedInferenceContext.append: head_dim mismatch "
-                f"(D={self.D}); got k={k.shape[3]}, v={v.shape[3]}.")
-        if k.shape[2] != v.shape[2]:
-            raise ValueError(
-                "TurboQuantPagedInferenceContext.append: k and v must share the "
-                f"new-token length; got k={k.shape[2]}, v={v.shape[2]}.")
+        # P5 (HIGH #2): complete K/V persistence contract via the single shared
+        # helper — adds the batch axis the per-site P1 check missed (this paged
+        # append is single-sequence). expected_batch=1; configured kv-heads + D.
+        from mlx_mfa._persist_validate import assert_kv_persist_compat
+        assert_kv_persist_compat(
+            k, v, "TurboQuantPagedInferenceContext.append",
+            expected_batch=1, expected_heads=self.H_kv, expected_dim=self.D)
         N_new = k.shape[2]
 
         # Pack K
