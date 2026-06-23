@@ -464,6 +464,19 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     fp16 and bf16; shape axes intact; `register_prefix` asym-`D_v` unchanged. Lock:
     `tests/test_kv_persist_dtype.py`. The persistence contract is now **axis-complete** (rank, batch,
     heads, token, D, dtype — every enumerated function-surface axis enforced via one shared helper).
+  - **Host-store dtype over-restriction fixed — fp32 hybrid/offload no longer fails late (volet P7).**
+    The one finding after the axis table was complete was an *over*-restriction (opposite of the prior
+    silent-accepts): P6 gave `LocalHostKVStoreAdapter.put` an `(fp16, bf16)` accepted-set, but the host
+    store is a **byte** store — its reload path is `fetch()` → `primary.append()` with no cast and no
+    fp16/bf16 assumption. So `create_decode_runtime(dtype=float32, hybrid_cache=True,
+    hybrid_enable_offload=True)` — a legal-if-off-spec config that constructs and runs (SDPA fallback
+    with an off-spec warning) — failed **late** at `hybrid_offload` (a `ValueError` far from the cause),
+    rather than round-tripping. Fix: the host store is now **dtype-agnostic** — it enforces only **K↔V
+    dtype consistency** (the universal rule), not an accepted-input-dtype set, so it round-trips any
+    consistent dtype (fp16/bf16/fp32/…). fp32 hybrid+offload now runs end-to-end (prefill → offload →
+    reload → decode, no late raise). The fixed-dtype **storage** caches keep their configured-dtype
+    restriction (they have a real single-dtype buffer; the byte store does not). K↔V consistency on the
+    host store is unchanged (K-fp16/V-bf16 still raises). Lock: `tests/test_localhost_fp32_offload.py`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

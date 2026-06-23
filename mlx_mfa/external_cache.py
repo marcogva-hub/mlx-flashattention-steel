@@ -86,10 +86,15 @@ class LocalHostKVStoreAdapter(ExternalKVCacheAdapter):
         # this persists K/V offload state for reload→attention; an inconsistent
         # K/V pair is rejected at the put surface. No fixed geometry → K↔V mutual.
         from mlx_mfa._persist_validate import assert_kv_persist_compat
-        # host KV-store, dtype-agnostic storage → accepts the supported input
-        # precisions; K↔V dtype consistency still enforced (a seq's K/V share dtype).
-        assert_kv_persist_compat(k, v, "LocalHostKVStoreAdapter.put",
-                                 accepted_dtypes=(mx.float16, mx.bfloat16))
+        # P7: this is a host BYTE store — it round-trips K/V with no downstream
+        # dtype assumption (the reload path is fetch()→primary.append(), no cast),
+        # so it must be dtype-AGNOSTIC: enforce ONLY K↔V consistency, NOT an
+        # accepted-input-dtype set. A fp32 hybrid/offload config (legal-if-off-spec,
+        # SDPA-fallback) must round-trip here, not fail late. (P6's (fp16,bf16)
+        # restriction over-constrained this byte store — contradicting its own
+        # "host store is dtype-agnostic" Part-A finding; storage caches keep their
+        # configured-dtype restriction because they have a fixed-dtype buffer.)
+        assert_kv_persist_compat(k, v, "LocalHostKVStoreAdapter.put")
         self._records[sid] = {
             "k": k,
             "v": v,
