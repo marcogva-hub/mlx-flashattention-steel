@@ -3164,6 +3164,33 @@ void MFAPagedVarlenForward::eval_gpu(
 }
 
 // =========================================================================
+// CC Batch-1 Class A — shared raw-entry dtype gate
+// =========================================================================
+// Several raw forwards dispatch a float16/bfloat16 kernel by a 2-way
+// `dtype_code = 0; if (bf16) dtype_code = 1;` map with NO fp32 branch — so a
+// float32 q falls through to the half kernel, which reinterprets fp32 bytes as
+// half: FINITE GARBAGE (silent-wrong, cos≈0, max_abs≈1e37), masked because the
+// output is allocated in the requested (fp32) dtype.  This is the raw/function-
+// surface analogue of the runtime matrix's `_FP16_BF16_ONLY_BACKENDS` gate:
+// reject the unsupported (entry, dtype) LOUDLY at the wrapper boundary, before
+// the C++ dispatch can route it to a mismatched kernel.  The PUBLIC wrappers
+// already provide an fp32 fallback bridge (per-sequence SDPA), so this gate only
+// closes the raw `_ext` direct-call hole, never the public fp32 path.
+static inline void assert_raw_fp16_bf16_only(
+    const mlx::core::array& q, const char* entry) {
+  const auto dt = q.dtype();
+  if (dt == mlx::core::float16 || dt == mlx::core::bfloat16) return;
+  throw std::invalid_argument(
+      std::string(entry) +
+      ": only float16/bfloat16 are supported "
+      "— this raw forward dispatches a float16/bfloat16 kernel "
+      "and a float32 input would route to a mismatched (half) kernel = silent-wrong "
+      "output. Use float16/bfloat16; for float32 use the public wrapper "
+      "(flash_attention_paged_varlen / *_turboquant), which provides an fp32 "
+      "fallback bridge.");
+}
+
+// =========================================================================
 // mfa_paged_varlen_forward — Free function
 // =========================================================================
 
@@ -3182,6 +3209,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
 
   if (q.ndim() != 4 || q.shape(0) != 1)
     throw std::runtime_error("mfa_paged_varlen_forward: Q must be [1, H_q, total_q, D]");
+
+  // CC Batch-1 Class A: reject fp32 (silent-wrong — fp32 falls to the half
+  // kernel: cos≈0, max_abs≈4.3e37). Public wrapper has an fp32 fallback bridge.
+  assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_forward");
 
   // CX-03 (volet H): V pool bound at K's strides — require exact shape match.
   if (k_pool.ndim() != 4 || v_pool.ndim() != 4)
@@ -3418,6 +3449,9 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
 
   if (q.ndim() != 4 || q.shape(0) != 1)
     throw std::runtime_error("mfa_paged_varlen_tq_forward: Q must be [1, H_q, total_q, D]");
+  // CC Batch-1 Class A: reject fp32 (silent-wrong — fp32 q falls to the half
+  // kernel via the same 2-way dtype_code map; prior probe cos≈0.27).
+  assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_tq_forward");
   if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
     throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
 

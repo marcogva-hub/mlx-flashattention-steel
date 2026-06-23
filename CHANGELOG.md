@@ -529,6 +529,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     rejected-at-construction. No over-rejection (every genuinely-running cell still runs, byteΔ
     unchanged on valid). This closes the fp32 off-spec class properly (P7 LocalHost → P8 paged/sage →
     P10 turboquant, all three instances + the matrix itself now locked).
+  - **Raw/function-surface dtype classes closed + CI-locked (CC Batch-1).** The P-series locked the
+    *runtime/context* surface; two defect classes still lived on the **raw `_ext` / function** surface.
+    **Class A (silent-wrong fp32):** raw `mfa_paged_varlen_forward` and `mfa_paged_varlen_tq_forward`
+    dispatch a float16/bfloat16 kernel via a 2-way `dtype_code=0; if(bf16)=1` map with no fp32 branch, so a
+    direct fp32 call fell through to the half kernel — **finite garbage** (cos 0.0, max_abs 4.3e37), masked
+    because output was allocated in the requested dtype. Fixed with a **shared raw-entry dtype gate**
+    (`assert_raw_fp16_bf16_only`, mirroring the runtime matrix's `_FP16_BF16_ONLY_BACKENDS`): fp32 now
+    raises a clear capability `ValueError` at the wrapper boundary, before dispatch. The **public**
+    `flash_attention_paged_varlen` / `*_turboquant` wrappers are unaffected — they already serve fp32 via a
+    per-sequence SDPA fallback bridge. **Class B (late compile-fail):** `mfa_paged_kv_gather` emitted MLX's
+    `bfloat16_t` (valid only on the `mx.fast.metal_kernel` surface) instead of native `bfloat` on the
+    C++-extension surface, so a **reachable** bf16 paged-gather decode config (`flash_attention_paged`,
+    `Nq≤4 & max_kv≥256`, incl. `return_lse`) late-compile-failed; fixed to `bfloat` → bf16 gather now
+    compiles and is oracle-correct (cos 1.0). Every fix verified finite + dtype-matches-request + cosine vs
+    an independent fp32 reference; fp16/bf16 raw paths byteΔ=0 vs pre-fix (gate is a no-op for them). Locked
+    by `tests/test_raw_dtype_matrix.py` (table-driven, finite+dtype+cosine-or-reject per cell, with bites).
+    A C++ rebuild was required. (Hunt finding, flagged not folded: the raw forwards also silently accept
+    K/V dtype ≠ q — a new K/V-consistency sub-class for a follow-up sweep.)
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

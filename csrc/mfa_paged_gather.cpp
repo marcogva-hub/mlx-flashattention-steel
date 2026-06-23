@@ -18,7 +18,13 @@ using namespace mlx_mfa;
 // ---------------------------------------------------------------------------
 
 std::string mlx_mfa::generate_paged_kv_gather_source(bool is_f16) {
-    const char* dtype_str = is_f16 ? "half" : "bfloat16_t";
+    // CC Batch-1 Class B: this C++-extension kernel compiles with `#include
+    // <metal_stdlib>` only — MLX's `bfloat16_t` typedef is NOT in scope here
+    // (that's the mx.fast.metal_kernel surface). The native Metal-4 bf16 type is
+    // `bfloat` (as used by every other C++-ext kernel: conv_nax/sage/sparse/gna).
+    // The old `bfloat16_t` late-compile-failed ("unknown type name 'bfloat16_t'")
+    // for the reachable bf16 paged-gather decode config.
+    const char* dtype_str = is_f16 ? "half" : "bfloat";
     std::ostringstream ss;
 
     ss << "#include <metal_stdlib>\n"
