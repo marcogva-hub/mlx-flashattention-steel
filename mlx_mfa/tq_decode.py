@@ -89,6 +89,8 @@ def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
         src = f"""
   const uint gid = thread_position_in_grid.x;
   const int S = params[0];
+  const int num_blocks = params[1];
+  const int n_blk = params[2];
   const uint total = (uint)S * {Hkv} * {D};
   if (gid >= total) return;
   const int d = (int)(gid % {D});
@@ -96,16 +98,26 @@ def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
   const int s = (int)(gid / ({D} * {Hkv}));
   const int blk = s / {block_size};
   const int tok = s % {block_size};
-  const int phys = block_table[blk];
-  const ulong pk_base = (ulong)phys * {block_size * Hkv * pd}
-                      + (ulong)tok * {Hkv * pd}
-                      + (ulong)h * {pd};
+  half kout_v = (half)0;
+  // CX-TQ-DECODE-01: bounds-guard the logical table index (blk < n_blk) AND the
+  // physical block id (0 <= phys < num_blocks) before ANY pool/scale/centroid
+  // load. blk past the active table, or phys out of range (incl. -1 padding) →
+  // skip (zero), never an out-of-bounds load. Matches the guarded C++ paged
+  // gather (phys >= 0 && phys < num_blocks).
+  if (blk < n_blk) {{
+    const int phys = block_table[blk];
+    if (phys >= 0 && phys < num_blocks) {{
+      const ulong pk_base = (ulong)phys * {block_size * Hkv * pd}
+                          + (ulong)tok * {Hkv * pd}
+                          + (ulong)h * {pd};
 {_unpack_snippet(bits)}
-  const float scl = k_scales[(ulong)phys * {block_size * Hkv}
-                           + (ulong)tok * {Hkv} + h];
+      const float scl = k_scales[(ulong)phys * {block_size * Hkv}
+                               + (ulong)tok * {Hkv} + h];
+      kout_v = (half)((float)centroids[idx] * scl);
+    }}
+  }}
   // out layout: [1, Hkv, S, D]
-  Kout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] =
-      (half)((float)centroids[idx] * scl);
+  Kout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] = kout_v;
 """
         kern = mx.fast.metal_kernel(
             name=f"tq_decode_kdequant_b{bits}_d{D}_h{Hkv}_bs{block_size}",
@@ -124,6 +136,8 @@ def _get_v_gather_kernel(D: int, Hkv: int, block_size: int):
         src = f"""
   const uint gid = thread_position_in_grid.x;
   const int S = params[0];
+  const int num_blocks = params[1];
+  const int n_blk = params[2];
   const uint total = (uint)S * {Hkv} * {D};
   if (gid >= total) return;
   const int d = (int)(gid % {D});
@@ -131,10 +145,17 @@ def _get_v_gather_kernel(D: int, Hkv: int, block_size: int):
   const int s = (int)(gid / ({D} * {Hkv}));
   const int blk = s / {block_size};
   const int tok = s % {block_size};
-  const int phys = block_table[blk];
-  Vout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] =
-      v_pool[(ulong)phys * {block_size * Hkv * D}
-           + (ulong)tok * {Hkv * D} + (ulong)h * {D} + d];
+  half vout_v = (half)0;
+  // CX-TQ-DECODE-01: same bounds guard as the K kernel — phys out of
+  // [0,num_blocks) (incl. -1 padding) or blk past the active table → zero.
+  if (blk < n_blk) {{
+    const int phys = block_table[blk];
+    if (phys >= 0 && phys < num_blocks) {{
+      vout_v = v_pool[(ulong)phys * {block_size * Hkv * D}
+                    + (ulong)tok * {Hkv * D} + (ulong)h * {D} + d];
+    }}
+  }}
+  Vout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] = vout_v;
 """
         kern = mx.fast.metal_kernel(
             name=f"tq_decode_vgather_d{D}_h{Hkv}_bs{block_size}",
@@ -180,7 +201,10 @@ def tq_decode_attend(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
     S = int(seq_len)
-    params = mx.array([S], dtype=mx.int32)
+    # CX-TQ-DECODE-01: pass num_blocks (physical pool size) + n_active_blocks
+    # (logical table-row length) so both kernels can bounds-guard phys / blk.
+    n_active_blocks = int(block_table_row.shape[0])
+    params = mx.array([S, int(_num_blocks), n_active_blocks], dtype=mx.int32)
 
     kkern = _get_k_dequant_kernel(D, Hkv, bs, tq_bits)
     vkern = _get_v_gather_kernel(D, Hkv, bs)

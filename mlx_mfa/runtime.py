@@ -508,8 +508,35 @@ class DecodeRuntime:
             q,
             k_new,
             v_new,
-            **self._with_default_seq_id(dict(kwargs)),
+            **self._sanitize_ctx_step_kwargs(dict(kwargs)),
         )
+
+    def _sanitize_ctx_step_kwargs(self, kwargs: dict) -> dict:
+        """P1 Part C (CX softcap gap): the underlying context.step may not support
+        every decode feature — the TurboQuant context.step has no ``softcap`` /
+        ``window_size`` (TQ decode runs SDPA / paged-tq, which thread neither). The
+        previous code forwarded these unconditionally, so even a default-valued
+        ``softcap=0.0`` from ``chunked_prefill`` raised ``TypeError`` before any
+        compute. Drop a DEFAULT-valued unsupported feature (no-op); RAISE a clear
+        capability error if a NON-default one is explicitly requested (documented
+        boundary, not a silent drop). Contexts whose step takes ``**kwargs`` or
+        explicitly accepts the feature are unaffected.
+        """
+        import inspect
+        params = inspect.signature(self.context.step).parameters
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return self._with_default_seq_id(kwargs)
+        accepted = set(params)
+        for feat, default in (("softcap", 0.0), ("window_size", None)):
+            if feat in kwargs and feat not in accepted:
+                val = kwargs.pop(feat)
+                if val != default:
+                    raise ValueError(
+                        f"{type(self.context).__name__}.step does not support "
+                        f"'{feat}' (this backend — e.g. TurboQuant decode — has no "
+                        f"{feat} capability); got {feat}={val!r}. Remove it or use a "
+                        "backend that supports it.")
+        return self._with_default_seq_id(kwargs)
 
     def prefill_with_prefix(
         self,

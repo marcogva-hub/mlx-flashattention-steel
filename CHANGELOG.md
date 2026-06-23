@@ -353,6 +353,30 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     "f32 … both routes" claim in current-contract files, and the inventory's "**N public** + M raw"
     completeness count must equal the live enumeration — both bite-proven on synthetic stale input.
     Docs/tests-only change (no runtime/kernel code).
+  - **Third-surface (class-method) product fixes (volet P1).** A separate inventory of the class-method
+    + separate-kernel surface (`TurboQuantPagedInferenceContext`, `DecodeRuntime`, the KV-cache classes)
+    found three defects the function/raw-surface audits didn't reach:
+    - **CX-TQ-DECODE-01 (CRITICAL, memory-safety).** The two `tq_decode` kernels (K-dequant, V-gather)
+      read `k_pool`/`k_scales`/`v_pool` at `phys = block_table[blk]` with **no bounds guard** — an
+      OOB/negative physical index drove an out-of-bounds device load (allocation-sensitive finite-wrong;
+      reachable by default via `TurboQuantPagedInferenceContext.step` Nq=1). Fixed with both layers the
+      validated paged path uses: (1) an **in-kernel bounds guard** (`blk < n_active && 0 <= phys <
+      num_blocks` before every load → OOB/`-1`-padding reads zero, never out-of-bounds), and (2) **loud
+      default validation** on the public TQ step (raise on malformed indices/dtype) honoring the same
+      `MFA_PAGED_TRUST_INDICES=1` opt-out. Proven: OOB `99`/`-5`/`-1` are byteΔ-0 vs the zeroed sentinel
+      under opt-out, raise by default; valid output byteΔ-identical (TQ oracle locks still pass).
+    - **Silent V-broadcast (HIGH).** `DenseKVCache.append` / `QuantizedKVCache.append` /
+      `TurboQuantPagedInferenceContext.append` silently **broadcast** a malformed V head count (1-head V
+      into a 2-head cache) via the slice-assign / pool-pack. Added the K↔V mutual-shape contract
+      (heads/batch/head_dim/seq) to all three → mismatch raises; valid GQA shapes still accept.
+    - **`DecodeRuntime.chunked_prefill` softcap gap (MEDIUM).** `chunked_prefill` forwarded `softcap`
+      (and `window_size`) to the TurboQuant `context.step`, which accepts neither → valid TQ chunked
+      prefill raised `TypeError` before compute, even at the default `softcap=0.0`. Root cause: TQ decode
+      has no softcap capability (SDPA / paged-tq). Fixed in `DecodeRuntime.step` — a default-valued
+      unsupported feature is dropped (no-op); a **non-default** one raises a clear capability error
+      (documented boundary, not a silent drop). New env knob `MFA_PAGED_TRUST_INDICES` already documented.
+      Locks: `tests/test_tq_decode_guard.py`, `tests/test_cache_append_vshape.py`,
+      `tests/test_tq_chunked_prefill_softcap.py`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

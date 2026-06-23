@@ -970,6 +970,30 @@ class TurboQuantPagedInferenceContext:
         import numpy as np
 
         self._ensure_seq(seq_id)
+        # P1 Part B: K↔V mutual-shape contract. A malformed V head count would be
+        # packed/written at the wrong head count (silent broadcast / mis-write
+        # into the pool blocks). Reject loudly (Rule 8).
+        if k.ndim != 4 or v.ndim != 4:
+            raise ValueError(
+                "TurboQuantPagedInferenceContext.append: k, v must be 4-D "
+                "[1, H_kv, N, D].")
+        if k.shape[1] != v.shape[1]:
+            raise ValueError(
+                f"TurboQuantPagedInferenceContext.append: k heads ({k.shape[1]}) "
+                f"!= v heads ({v.shape[1]}); a mismatched V head count would "
+                "silently broadcast/mis-write into the pool.")
+        if k.shape[1] != self.H_kv:
+            raise ValueError(
+                f"TurboQuantPagedInferenceContext.append: head count ({k.shape[1]}) "
+                f"!= configured kv-heads ({self.H_kv}).")
+        if k.shape[3] != self.D or v.shape[3] != self.D:
+            raise ValueError(
+                f"TurboQuantPagedInferenceContext.append: head_dim mismatch "
+                f"(D={self.D}); got k={k.shape[3]}, v={v.shape[3]}.")
+        if k.shape[2] != v.shape[2]:
+            raise ValueError(
+                "TurboQuantPagedInferenceContext.append: k and v must share the "
+                f"new-token length; got k={k.shape[2]}, v={v.shape[2]}.")
         N_new = k.shape[2]
 
         # Pack K
@@ -1212,10 +1236,30 @@ class TurboQuantPagedInferenceContext:
                 q_rot = q_input  # already rotated above
             S = self.seq_length(seq_id)
             n_blocks = (S + self.block_size - 1) // self.block_size
+            _bt_row = block_table[0][:n_blocks]
+            # CX-TQ-DECODE-01: loud default validation of the page indices on the
+            # public TQ decode path. The in-kernel guard (tq_decode.py) keeps OOB
+            # memory-safe; this raises EARLY on malformed metadata (loud-failure
+            # default). Opt-out MFA_PAGED_TRUST_INDICES=1 skips the value-sync
+            # (same contract as the dense paged path); metadata (dtype) stays on.
+            if _bt_row.dtype != mx.int32:
+                raise ValueError(
+                    "TurboQuantPagedInferenceContext.step: block_table must be "
+                    f"int32 (the kernel reads it as int32); got {_bt_row.dtype}.")
+            if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and _bt_row.size:
+                _nb_phys = int(self._k_pool.shape[0])
+                _probe = mx.stack([mx.min(_bt_row), mx.max(_bt_row)])
+                mx.eval(_probe)                       # single sync
+                _bmin, _bmax = (int(x) for x in _probe.tolist())
+                if _bmin < -1 or _bmax >= _nb_phys:
+                    raise ValueError(
+                        "TurboQuantPagedInferenceContext.step: block_table entries "
+                        f"must be in [-1, {_nb_phys}) (num_blocks = k_pool.shape[0]); "
+                        f"got min={_bmin}, max={_bmax}. '-1' marks padding.")
             o = tq_decode_attend(
                 q_rot, self._k_pool, self._v_pool_fp16,
                 self._k_scales, self._k_centroids,
-                block_table[0][:n_blocks], S,
+                _bt_row, S,
                 scale=scale, block_size=self.block_size,
                 tq_bits=self.tq_bits, stream=self.stream)
             # IV-D2: with tq_v=True, append wrote _v_pool_tq/_v_scales which the

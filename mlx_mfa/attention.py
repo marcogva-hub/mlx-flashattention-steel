@@ -6709,6 +6709,33 @@ class DenseKVCache(KVCacheProtocol):
         Raises:
             ValueError: if ``seqlen + N_new > max_seq_len``.
         """
+        # P1 Part B: K↔V mutual-shape contract. The scatter
+        # `self._v[:, :, ...] = v_new` SILENTLY BROADCASTS a malformed V head
+        # count (e.g. 1-head V into a 2-head cache) — a caller bug that bypasses
+        # the function-surface Q/K/V contract. Reject loudly (Rule 8).
+        _Hc, _Dc, _Bc = self._k.shape[1], self._k.shape[3], self._k.shape[0]
+        if k_new.ndim != 4 or v_new.ndim != 4:
+            raise ValueError(
+                "DenseKVCache.append: k_new, v_new must be 4-D [B, H, N, D].")
+        if k_new.shape[1] != v_new.shape[1]:
+            raise ValueError(
+                f"DenseKVCache.append: k_new heads ({k_new.shape[1]}) != v_new "
+                f"heads ({v_new.shape[1]}); a mismatched V head count would "
+                "silently broadcast into the cache buffer.")
+        if k_new.shape[1] != _Hc:
+            raise ValueError(
+                f"DenseKVCache.append: head count ({k_new.shape[1]}) != cache "
+                f"heads ({_Hc}).")
+        if k_new.shape[0] != _Bc or v_new.shape[0] != _Bc:
+            raise ValueError(
+                f"DenseKVCache.append: batch mismatch with cache (B={_Bc}).")
+        if k_new.shape[3] != _Dc or v_new.shape[3] != _Dc:
+            raise ValueError(
+                f"DenseKVCache.append: head_dim mismatch with cache (D={_Dc}).")
+        if k_new.shape[2] != v_new.shape[2]:
+            raise ValueError(
+                "DenseKVCache.append: k_new and v_new must share the new-token "
+                f"length; got k={k_new.shape[2]}, v={v_new.shape[2]}.")
         n_new = k_new.shape[2]
         end   = self._seqlen + n_new
         if end > self.max_seq_len:
@@ -6902,6 +6929,33 @@ class QuantizedKVCache:
             ValueError: if ``seqlen + N_new > max_seq_len``.
         """
         from mlx_mfa.quantize import quantize_per_block
+
+        # P1 Part B: K↔V mutual-shape contract (the V/K writes silently broadcast
+        # a malformed head count). Reject loudly (Rule 8).
+        if k_new.ndim != 4 or v_new.ndim != 4:
+            raise ValueError(
+                "QuantizedKVCache.append: k_new, v_new must be 4-D [B, H, N, D].")
+        if k_new.shape[1] != v_new.shape[1]:
+            raise ValueError(
+                f"QuantizedKVCache.append: k_new heads ({k_new.shape[1]}) != v_new "
+                f"heads ({v_new.shape[1]}); a mismatched V head count would "
+                "silently broadcast into the cache buffer.")
+        if k_new.shape[1] != self.H:
+            raise ValueError(
+                f"QuantizedKVCache.append: head count ({k_new.shape[1]}) != cache "
+                f"heads ({self.H}).")
+        if k_new.shape[0] != self._v.shape[0] or v_new.shape[0] != self._v.shape[0]:
+            raise ValueError(
+                f"QuantizedKVCache.append: batch mismatch with cache "
+                f"(B={self._v.shape[0]}).")
+        if k_new.shape[3] != self._v.shape[3] or v_new.shape[3] != self._v.shape[3]:
+            raise ValueError(
+                f"QuantizedKVCache.append: head_dim mismatch with cache "
+                f"(D={self._v.shape[3]}).")
+        if k_new.shape[2] != v_new.shape[2]:
+            raise ValueError(
+                "QuantizedKVCache.append: k_new and v_new must share the new-token "
+                f"length; got k={k_new.shape[2]}, v={v_new.shape[2]}.")
 
         n_new = k_new.shape[2]
         end = self._seqlen + n_new
