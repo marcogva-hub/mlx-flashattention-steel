@@ -69,6 +69,33 @@ causal offset verified (matches per-row oracle, diverges from batch-global).
 - Determinism: every deterministic kernel byteΔ=0 over 8 identical-input runs.
 - Lock: `tests/test_surface_inventory_i.py` (8 cells).
 
+## Determinism axis — RE-SPECIFIED at N≥512 (volet I2)
+
+Volet I sampled determinism at **N=256 (single K-tile)** — below the shared-buffer
+reuse threshold — so it certified "byteΔ=0" without ever exercising multi-tile
+`KV_smem` reuse (the sage race needed N≥512). Re-specified here: every forward
+kernel that aliases `Ks==Vs==KV_smem` audited (a) statically for the
+inter-iteration barrier and (b) at runtime over **20 fresh-but-identical-input runs
+at N∈{512,1024}** × D{64,128} × {f16,bf16} × {MHA,GQA}.
+
+| kernel (generator) | KV_smem alias | inter-iteration barrier (static) | runtime byteΔ N≥512 |
+|---|---|---|---|
+| dense STEEL V1 (`mfa_steel_fwd`) | yes | present (double-buf end-of-iter barrier) | 0 |
+| dense STEEL V2 (`mfa_steel_fwd_v2`) | yes | present ("barrier X: P@V reads done → overwrite K") | 0 |
+| varlen STEEL (`mfa_steel_fwd`) | yes | present (start-of-iter, explicit) | 0 |
+| paged STEEL (`mfa_steel_fwd`) | yes | present | 0 (incl. S=1024 = 64 tiles) |
+| paged-varlen STEEL (`mfa_steel_paged_varlen_fwd`) | yes | present (explicit) | 0 |
+| paged TQ (`mfa_steel_paged_varlen_tq_fwd`) | yes | present (start-of-loop) | 0 |
+| GNA (`mfa_gna_fwd`) | yes | present (pre-load-next-K, barriered both sides) | 0 |
+| **sage (`mfa_sage_fwd`)** | yes | **ADDED in volet S** (was the sole missing one) | 0 (post-S) |
+| v3 (`mfa_steel_fwd_v3`), v6-NAX (`mfa_steel_fwd_v6_nax`) | **no** (separate K/V smem) | n/a | 0 |
+
+**Verdict: no new sibling race. Sage was the only kernel that had dropped the
+inter-iteration barrier; every other shared-buffer kernel already had it** (confirmed
+static + runtime). Multi-tile outputs are deterministic AND oracle-correct (dense-mfa
+& sparse GQA D128 N1024 relerr ~3.5e-4). Lock: `tests/test_multitile_determinism_i2.py`
+(56 cells) + `tests/test_sage_determinism_s.py` (51 cells).
+
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8
   runs" used a config (N=256) below the multi-tile threshold — the race only fires at

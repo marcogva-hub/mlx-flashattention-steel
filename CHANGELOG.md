@@ -219,6 +219,15 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     `threadgroup_barrier` the STEEL forward (this kernel's parent) already had. Post-fix: byte-identical
     over 20+ identical-input runs, oracle relerr a tight 0.012. Bite-proven; lock
     `tests/test_sage_determinism_s.py` (51 cells). Suite stable over 3× runs.
+  - **Multi-tile determinism axis completed (volet I2 — test/doc only).** After the sage race, audited
+    **every** forward kernel that aliases one threadgroup buffer for K then V (`KV_smem`) for the same
+    inter-iteration-barrier defect — static barrier check + runtime (20 fresh-but-identical-input runs
+    at N∈{512,1024} × D{64,128} × f16/bf16 × MHA/GQA). **No new sibling race found:** dense STEEL V1/V2,
+    sparse, varlen, paged STEEL, paged-varlen, paged-TQ and GNA all already have the inter-iteration
+    barrier; sage was the sole kernel that had dropped it (fixed in volet S). v3 / v6-NAX use separate
+    K/V smem (no reuse). The earlier inventory's determinism axis was sampled at N=256 (single-tile,
+    below the multi-tile reuse threshold) — now re-specified at N≥512. Lock:
+    `tests/test_multitile_determinism_i2.py` (56 cells).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
