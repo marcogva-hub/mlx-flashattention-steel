@@ -63,6 +63,27 @@ def test_perf_claims_doc_exists():
     )
 
 
+def test_documented_in_paths_exist():
+    """CX-06 (volet E3): every `documented_in` path on every PERF_CLAIMS entry must
+    point to a file that exists on the tracked tree. A dead reference (relocated or
+    archived doc) is a provenance rot — this closes the class, not just the round-5
+    instances (the sync test previously compared IDs but never path existence).
+    """
+    dead = []
+    for c in PERF_CLAIMS:
+        di = c["documented_in"]
+        paths = di if isinstance(di, (list, tuple)) else [di]
+        assert paths, f"{c['id']}: documented_in is empty (must cite >=1 live doc)"
+        for p in paths:
+            fp = str(p).split("#")[0].strip()
+            if not (REPO_ROOT / fp).exists():
+                dead.append(f"{c['id']} -> {fp}")
+    assert not dead, (
+        "PERF_CLAIMS documented_in references point to non-existent files "
+        "(relocate to the current path or drop the dead ref):\n  " +
+        "\n  ".join(dead))
+
+
 def test_doc_active_claims_have_test_entries():
     """Every claim ID in PERF_CLAIMS.md's Active section MUST have a
     corresponding PERF_CLAIMS list entry in the test file.

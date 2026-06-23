@@ -36,6 +36,13 @@ Notes:
 - Primary production API.
 - Supports GQA (`H_q % H_kv == 0`).
 - `backend="auto"` is policy-driven and benchmark-conservative.
+- **Causal convention for `N_q != N_k` (CC-03):** the causal offset is
+  `qL_off = max(0, N_k - N_q)`. When `N_q < N_k` (decode / cross-attention) this is the
+  **lower-right** alignment (query row `r` attends keys `0 .. r + (N_k - N_q)`), matching
+  `mx.fast.scaled_dot_product_attention`. When `N_q > N_k` the offset clamps to 0, i.e.
+  **top-left** (query `r` attends `0 .. min(r, N_k-1)`) — a deliberate mlx-mfa convention
+  that **diverges from SDPA's bottom-right** for that (unusual) case. The dense, varlen, and
+  paged kernels all share this `max(0, N_k - N_q)` rule (paged applies it per-sequence).
 
 **`attn_bias` parameter** (v2.27.0):
 - Additive bias added to attention logits before softmax.

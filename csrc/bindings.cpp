@@ -1094,7 +1094,17 @@ NB_MODULE(_ext, m) {
 
   m.def("_invalidate_env_config", []() {
       mlx_mfa::MFAEnvConfig::invalidate();
-  }, "Re-read all cached MFA_* env vars. Call after os.environ changes.");
+  }, "Re-read all cached MFA_* env vars. Call after os.environ changes. "
+     "NOTE: does NOT reset MFA_NO_PADDING — that var is frozen at first read "
+     "(load-time-only) because it is absent from the shader-cache key; a "
+     "mid-process toggle would otherwise return a stale-padding kernel.");
+
+  // CX-07 (volet E3): read-only accessor for the FROZEN MFA_NO_PADDING value.
+  // Lets tests observe that the value is load-time-only (not reset by
+  // _invalidate_env_config), matching the documented (irreversible) semantics.
+  m.def("_mfa_no_padding_frozen", []() {
+      return mlx_mfa::MFAEnvConfig::no_padding();
+  }, "Return the frozen MFA_NO_PADDING value (load-time-only; see ENV_VARS.md).");
 
   // ====================================================================
   // Sprint D — Conv3D NAX C++ Primitive entry point.

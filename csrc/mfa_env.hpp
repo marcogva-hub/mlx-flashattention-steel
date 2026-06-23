@@ -5,8 +5,11 @@
 /// calls in the hot path (eval_gpu and block config selection).
 ///
 /// Shader-generator env vars (MFA_NO_PADDING, MFA_IR_INVESTIGATE,
-/// MFA_DISABLE_ASYNC) are NOT cached here — they run only during
-/// shader compilation (cold path) and are acceptable as-is.
+/// MFA_DISABLE_ASYNC) are not in the dispatch-cache struct.  MFA_NO_PADDING in
+/// particular is FROZEN at first read (function-local static, see no_padding()):
+/// it is load-time-only and is NOT reset by invalidate()/_invalidate_env_config()
+/// — deliberately, because it is absent from the shader-cache KernelKey and a
+/// mid-process toggle would otherwise return a stale-padding kernel (CX-07).
 
 #pragma once
 #include <cstdlib>

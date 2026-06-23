@@ -169,6 +169,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     not literally true — reworded to "every kernel **path** is independently oracle-locked across its
     supported dtype / causal / feature regimes" and now references both `test_oracle_envelope.py` and
     `test_paged_envelope.py` to match the actual enumeration. No kernel/output change (byteΔ-identical).
+  - **Knob semantics + perf-provenance + doc reconciliation (volet E3 — round-5 CX-07/CX-06/CC-01/03/04).**
+    - **`MFA_NO_PADDING` is load-time-only (CX-07):** documented the irreversible first-read freeze. The
+      value is frozen at first read (it is absent from the shader-cache key, so a mid-process toggle
+      would return a stale-padding kernel) — `_invalidate_env_config()` does **not** reset it; set it
+      before the first attention call. Header / `ENV_VARS.md` / `_invalidate_env_config` docstring
+      corrected (the header previously implied "not cached"). Read-only accessor `_mfa_no_padding_frozen`
+      added so the semantics are test-locked (`tests/test_no_padding_semantics_e3.py`). No runtime
+      behavior change — freezing was already intentional and correct.
+    - **Perf-claim provenance paths (CX-06):** repointed dead `documented_in` references (relocated
+      `docs/PERF_CLAIMS.md` / `TRAINING_QUICKSTART.md` → `docs/reference/`; dropped archived-journal
+      refs, each claim keeps its live CHANGELOG/README ref) and added a path-existence assertion to
+      `tests/test_perf_claims_doc_sync.py` so a dead reference now fails CI.
+    - **Doc reconciliation:** D=128 opt-in backward is now consistently stated as **0.54× nc / 0.57×
+      causal (slower)** — `HARDWARE_SUPPORT.md` "parity / no speedup" was stale (CC-01); README
+      disentangles the three mechanisms (forced `backend="mfa"` 2.2-2.4× vs opt-in
+      `MFA_ENABLE_V6_BACKWARD=1` 0.54×/0.57× vs AUTO-default SDPA-vjp) (CC-04); the `N_q>N_k` causal
+      `qL_off=max(0,N_k-N_q)` convention is now in `API_MANUAL.md` (CC-03); touched claims carry the
+      MLX-version stamp (CC-05/06).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

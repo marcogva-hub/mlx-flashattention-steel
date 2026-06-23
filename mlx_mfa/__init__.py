@@ -187,6 +187,11 @@ def _invalidate_env_config():
 
     Call after os.environ mutations of cached vars (MFA_V2_FORCE_BK, etc.).
     Dispatch gates (MFA_ENABLE_V3, etc.) are live-read and don't need this.
+
+    Does NOT reset ``MFA_NO_PADDING`` (CX-07): that var is **frozen at first read**
+    (load-time-only) because it is absent from the shader-cache key — a mid-process
+    toggle would otherwise return a stale-padding kernel.  Set it **before the first
+    attention call** (ideally before ``import mlx_mfa``); changing it later is inert.
     """
     try:
         from mlx_mfa._ext import _invalidate_env_config as _inv

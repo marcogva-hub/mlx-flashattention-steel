@@ -128,7 +128,6 @@ PERF_CLAIMS = [
             # III-4 DOC-11 FIX: README does not carry the 1.91× figure
             # (verified by grep) — CHANGELOG + audit doc only.
             "CHANGELOG.md",
-            "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
             "v2.38.1 D=64 qL=4096: V6NAX backward 1.91× vs SDPA-vjp "
@@ -146,7 +145,6 @@ PERF_CLAIMS = [
             # III-4 DOC-11 FIX: README does not carry the 1.87× figure
             # (verified by grep) — CHANGELOG + audit doc only.
             "CHANGELOG.md",
-            "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
             "v2.38.1 D=64 qL=8192: V6NAX backward 1.87× vs SDPA-vjp "
@@ -166,7 +164,6 @@ PERF_CLAIMS = [
         "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
-            "docs/v6-nax/v39-1-investigation-synthesis.md",
         ],
         "documented_perf_claim": (
             "v2.39.1 D=64 qL=16384: fused-BK16 V6NAX backward 1.72× vs SDPA-vjp "
@@ -183,7 +180,6 @@ PERF_CLAIMS = [
         "expected": "v6nax_backward",
         "documented_in": [
             "CHANGELOG.md",
-            "docs/v6-nax/v38-1-perf-claim-audit.md",
         ],
         "documented_perf_claim": (
             "v2.38.1 D=64 qL=16384: V6NAX backward 1.80× vs SDPA-vjp "
@@ -198,8 +194,7 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v6nax_backward",
         "documented_in": [
-            "docs/releases/v2.37.2-release-notes.md",
-            "docs/TRAINING_QUICKSTART.md",
+            "docs/reference/TRAINING_QUICKSTART.md",
             "README.md",
         ],
         "documented_perf_claim": "D=64 qL=4096: V6NAX backward 1.82× faster than SDPA-vjp",
@@ -212,8 +207,7 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v6nax_backward",
         "documented_in": [
-            "docs/releases/v2.37.2-release-notes.md",
-            "docs/TRAINING_QUICKSTART.md",
+            "docs/reference/TRAINING_QUICKSTART.md",
             "README.md",
         ],
         "documented_perf_claim": "D=64 qL=8192: V6NAX backward 1.81× faster than SDPA-vjp",
@@ -231,7 +225,6 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v6nax_backward",
         "documented_in": [
-            "docs/v50/sprint-5b-section-d-dispatch-audit.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
@@ -254,7 +247,6 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "v6nax_backward",
         "documented_in": [
-            "docs/v6-nax/v39-2-internal-decisions.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
@@ -274,7 +266,6 @@ PERF_CLAIMS = [
         "dtype": mx.float16,
         "expected": "sdpa_fallback",
         "documented_in": [
-            "docs/v6-nax/v39-2-internal-decisions.md",
             "CHANGELOG.md",
         ],
         "documented_perf_claim": (
@@ -354,7 +345,7 @@ PERF_CLAIMS = [
         "shape": (1, 8, 512, 512, 128),  # (B, Hq, S0, S0, D); Hkv=2
         "dtype": mx.float16,
         "expected": "tq_decode_sdpa",
-        "documented_in": ["CHANGELOG.md", "README.md", "docs/PERF_CLAIMS.md"],
+        "documented_in": ["CHANGELOG.md", "README.md", "docs/reference/PERF_CLAIMS.md"],
         "documented_perf_claim": (
             "v2.55.0: TurboQuant paged decode trades ~1.4-3x decode-step "
             "latency for a ~4-5x KV-cache memory reduction at cos ~0.96, vs "

@@ -168,7 +168,14 @@ See `docs/reference/TRAINING_QUICKSTART.md` for the updated user-facing perf
 recommendation and `.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for
 the per-claim reachability audit that drove these corrections.
 
-D=128 V6NAX backward is 2.2-2.4× slower **only on the forced `backend="mfa"` path** (architectural floor at FP16 NAX hardware peak; Apple's SDPA-vjp uses a different algorithm) — the **public AUTO API does not engage it**: D=128 backward falls back to SDPA-vjp (≈ break-even), so AUTO users are unaffected (consistent with lines :150/:167 and `docs/reference/PERF_CLAIMS.md`). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`.doc-archive/docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
+D=128 V6NAX backward — three distinct mechanisms, don't conflate them (CC-04): (1) the
+forced `backend="mfa"` path is 2.2-2.4× slower (architectural floor at FP16 NAX hardware
+peak; Apple's SDPA-vjp uses a different algorithm); (2) the opt-in AUTO-path env var
+`MFA_ENABLE_V6_BACKWARD=1` engages the split-V6 D=128 backward at **0.54× nc / 0.57× causal —
+i.e. slower** (M5/MLX-0.31.2, measured 2026-06-22), so it is correctly **not** default; (3) the
+**default public AUTO API** does not engage either — D=128 backward falls back to SDPA-vjp
+(≈ break-even), so AUTO users are unaffected (consistent with `docs/reference/PERF_CLAIMS.md`,
+`API_MANUAL.md`, `FEATURE_COVERAGE.md`, `HARDWARE_SUPPORT.md`). At the time, the default (env unset) preserved v2.36.1-exact behavior; since v2.51.0 the D=64 backward is default-on. All prior ship-defaults preserved: shape-aware V2 sparse default (v2.36.1), canonical Apple Silicon benchmark methodology (`.doc-archive/docs/methodology/canonical-protocol.md`), Sprint U auto-on-import hooks, Conv3D NAX.
 
 ## Minimal Usage (auto-default)
 

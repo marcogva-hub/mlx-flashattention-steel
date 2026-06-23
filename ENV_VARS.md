@@ -98,7 +98,7 @@ These knobs were live-read in `mlx_mfa` but missing from the registry/doc until 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `MFA_DEBUG_SHADERS` | bool | false | Dump generated Metal shader source to stderr during compilation |
-| `MFA_NO_PADDING` | bool | false | Disable threadgroup memory padding (causes NaN in 45/594 tests) |
+| `MFA_NO_PADDING` | bool | false | Disable threadgroup memory padding (causes NaN in 45/594 tests). **Load-time-only (CX-07):** frozen at first read (it is absent from the shader-cache key, so a mid-process toggle would return a stale-padding kernel) — set it **before the first attention call**; `_invalidate_env_config()` does **not** reset it. |
 | `MFA_IR_INVESTIGATE` | bool | false | Dump Metal IR during shader compilation |
 | `MFA_DISABLE_ASYNC` | bool | false | Disable precompiled async metallib lookup |
 | `MFA_DISABLE_GNA_NATIVE` | bool | false | Disable native GNA kernel; fall back to sparse path |
