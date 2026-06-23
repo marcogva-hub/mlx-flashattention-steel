@@ -70,8 +70,10 @@ causal offset verified (matches per-row oracle, diverges from batch-global).
 - Lock: `tests/test_surface_inventory_i.py` (8 cells).
 
 ## Notes (RULE 16)
-- CX-R6-02 (sage GQA nondeterminism, Codex): did NOT reproduce as in-process
-  run-to-run variance — sage GQA byteΔ=0 over 8 identical-input runs here. Deferred
-  to volet S (cross-process / input-distribution variance unconfirmed this pass).
+- CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8
+  runs" used a config (N=256) below the multi-tile threshold — the race only fires at
+  **N≥512** (KV_smem reuse across K-tiles). Root cause: missing start-of-loop barrier
+  in `mfa_sage_forward`; NOT GQA-specific (MHA Hq2Hk2 N≥512 also raced). Fixed +
+  locked (`tests/test_sage_determinism_s.py`).
 - All findings reproduced first-hand before fixing; the Codex report was not taken
   as gospel — both CX-R6-01 and CX-R6-03 reproduced exactly as described.

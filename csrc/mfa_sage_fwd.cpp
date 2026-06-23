@@ -287,6 +287,16 @@ struct MFASageParams {
   // ── Main K/V loop ─────────────────────────────────────────────────────────
   ss << "  for (int kb = kb_start; kb < kb_lim; kb++) {\n";
   ss << "\n";
+  // CX-R6-02 (volet S): barrier at the START of each iteration so the PREVIOUS
+  // iteration's P@V reads of KV_smem (V) are complete before this iteration's
+  // K cooperative load OVERWRITES the shared KV_smem (Ks==Vs==KV_smem). Without
+  // it a fast simdgroup races a slow one's V-read → nondeterministic output for
+  // identical inputs (manifests at N≥512 = multi-tile; single-tile had no reuse).
+  // Mirrors the STEEL forward's start-of-loop barrier (this kernel was derived
+  // from it but dropped this one). Harmless on the first iteration (Q-load
+  // already barriered above).
+  ss << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+  ss << "\n";
 
   // K int8 dequantize + transpose cooperative load into Ks
   // K is stored row-major [S, D] in device memory (int8).

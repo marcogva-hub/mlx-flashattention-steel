@@ -207,6 +207,18 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       (the public wrappers already did). Previously they silently cast int64 → int32 and a **float
       `seq_lens` HUNG** the kernel (garbage length). Now raises.
     Validation-only (byteΔ-identical valid paths); bite-proven; lock `tests/test_surface_inventory_i.py`.
+  - **Sage forward determinism fix (volet S — round-6 CX-R6-02, CRITICAL).** `sage_attention` /
+    `mfa_sage_forward` returned **nondeterministic output for identical inputs** at sequence length
+    **N≥512** (silent-wrong on a public path — the caller can't tell which calls are correct; observed
+    output spread up to ~1.2, oracle relerr swinging 0.011–0.278 instead of the steady ~0.012 int8
+    floor). Root cause: the int8 Sage kernel reuses one threadgroup buffer (`KV_smem`) for K then V
+    each K-tile but lacked a barrier between iteration *kb*'s `P@V` (reading the buffer as V) and
+    iteration *kb+1*'s K cooperative load (overwriting it as K) — a cross-simdgroup read-after-write
+    race that only fires with multiple K-tiles (N≥512). NOT GQA-specific (MHA also raced at N≥512); NOT
+    stochastic-by-design (verified — no RNG in the path). Fixed by adding the start-of-loop
+    `threadgroup_barrier` the STEEL forward (this kernel's parent) already had. Post-fix: byte-identical
+    over 20+ identical-input runs, oracle relerr a tight 0.012. Bite-proven; lock
+    `tests/test_sage_determinism_s.py` (51 cells). Suite stable over 3× runs.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
