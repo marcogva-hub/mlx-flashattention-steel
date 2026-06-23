@@ -207,6 +207,235 @@ def computational_in_helper(helper_names):
     return bad
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Volet P2 — THIRD SURFACE: class methods + mx.fast.metal_kernel JIT kernels.
+# The function/raw guard above structurally cannot see class methods or JIT
+# kernels — which is how CX-TQ-DECODE-01 (unguarded tq_decode page load reached
+# only via TurboQuantPagedInferenceContext.step) survived 11 rounds. These
+# guards make the third surface CI-enumerated, property-based (not name
+# heuristics — the rounds-8-11 lesson applies identically).
+# ════════════════════════════════════════════════════════════════════════════
+
+# The 29 computational class-methods (P0 Task 1): 25 attention-output + 4
+# cache/state-producing. Keyed "Class.method" → why it reaches compute.
+COMPUTATIONAL_CLASS_METHODS = {
+    "InferenceContext.prefill": "flash_attention",
+    "InferenceContext.step": "flash_attention_kvcache",
+    "InferenceContext.chunked_prefill": "repeated InferenceContext.step",
+    "PagedInferenceContext.prefill": "flash_attention",
+    "PagedInferenceContext.step": "cache gather → flash_attention_kvcache",
+    "PagedInferenceContext.chunked_prefill": "repeated PagedInferenceContext.step",
+    "SageInferenceContext.prefill": "flash_attention",
+    "SageInferenceContext.step": "sage_attention_prequantized",
+    "TurboQuantPagedInferenceContext.prefill": "flash_attention_paged_varlen_turboquant",
+    "TurboQuantPagedInferenceContext.step": "Nq=1 → tq_decode_attend; else fused TQ",
+    "DecodeRuntime.prefill": "delegated context.prefill",
+    "DecodeRuntime.step": "delegated context.step (incl. TQ Nq=1)",
+    "DecodeRuntime.prefill_with_prefix": "seed_prefix → chunked_prefill",
+    "DecodeRuntime.chunked_prefill": "paged-varlen/batch or repeated step",
+    "DecodeRuntime.paged_varlen": "flash_attention_paged_varlen",
+    "DecodeRuntime.paged_prefill_batch": "flash_attention_paged",
+    "DecodeRuntime.paged_step_batch": "flash_attention_paged",
+    "DecodeRuntime.register_prefix": "shared_prefix_cache → make_shared_prefix_cache",
+    "DecodeRuntime.prefill_shared_prefix": "register_prefix → make_shared_prefix_cache",
+    "DecodeRuntime.shared_prefix_cache": "make_shared_prefix_cache",
+    "DecodeRuntime.decode_from_shared_prefix": "flash_attention",
+    "DecodeRuntime.splitfuse": "flash_attention_splitfuse",
+    "DecodeRuntime.splitfuse_step": "flash_attention_paged / flash_attention_splitfuse",
+    "DecodeRuntime.speculative_verify": "dense/paged speculative attention",
+    "DecodeRuntime.speculative_step": "speculative_verify + bookkeeping",
+    "DenseKVCache.append": "normalizes user K/V into dense state (slice-update)",
+    "PagedKVCache.append": "raw mfa_scatter_kv (paged pool write)",
+    "QuantizedKVCache.append": "quantize_per_block → raw mfa_quantize_per_block",
+    "TurboQuantPagedInferenceContext.append": "TQ pack/scale + paged-pool writes",
+}
+
+# Reviewed non-computational class methods that warrant an explicit reason (they
+# could be mistaken for computational but are verified non-attention). Each MUST
+# NOT reach a computational/kernel/raw call (the promotion cross-check enforces).
+REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS = {
+    "SVDQuantLinear.__call__": "W4A16 quantized linear layer (mx quantized matmul); "
+                               "not an attention op / no mlx_mfa kernel dispatch",
+}
+
+# Promotion signals (property, NOT name): a method reaches compute if its source
+# calls a computational public entry, a raw accelerator, tq_decode_attend, a
+# pack/quantize raw helper, or constructs mx.fast.metal_kernel.
+_METHOD_REACH_RE = None
+
+
+def _method_reach_re():
+    global _METHOD_REACH_RE
+    if _METHOD_REACH_RE is None:
+        names = sorted(COMPUTATIONAL_PUBLIC, key=len, reverse=True)
+        _METHOD_REACH_RE = re.compile(
+            r"\b(" + "|".join(names) + r"|tq_decode_attend|quantize_per_block|"
+            r"mfa_scatter_kv|pack_k_for_metal|pack_v_for_metal)\s*\(|"
+            r"mx\.fast\.metal_kernel|\b_ext\b|\b_bwd_ext\b|\b_ext_inner\b")
+    return _METHOD_REACH_RE
+
+
+def _exported_classes():
+    import mlx_mfa
+    pub = public_exports()
+    return [(n, getattr(mlx_mfa, n)) for n in pub
+            if isinstance(getattr(mlx_mfa, n, None), type)]
+
+
+def _project_methods(cls):
+    """Public, project-defined methods of cls (+ __call__); inherited stdlib /
+    builtin / BaseException methods are NOT project methods."""
+    import inspect
+    out = []
+    for nm, obj in inspect.getmembers(cls):
+        if nm.startswith("_") and nm != "__call__":
+            continue
+        if not callable(obj):
+            continue
+        mod = getattr(obj, "__module__", None) or ""
+        if not mod.startswith("mlx_mfa"):
+            continue
+        out.append(nm)
+    return out
+
+
+def _method_reaches(cls, nm):
+    """Promotion rule (property-based): does this method reach a computational /
+    kernel / raw call? Uninspectable → True (conservative → must be classified)."""
+    import inspect
+    obj = getattr(cls, nm, None)
+    if obj is None:
+        return True
+    try:
+        src = inspect.getsource(obj)
+    except (OSError, TypeError):
+        return True
+    if _method_reach_re().search(src):
+        return True
+    # transitive: self.<m>(...) where <m> is a computational method of this class
+    for cm in re.findall(r"self\.([a-z_][a-z0-9_]*)\s*\(", src):
+        if f"{cls.__name__}.{cm}" in COMPUTATIONAL_CLASS_METHODS:
+            return True
+    return False
+
+
+def class_method_offenders():
+    """Returns (offenders, n_computational). An offender is:
+      - a method that REACHES compute but is NOT in COMPUTATIONAL_CLASS_METHODS
+        (incl. one wrongly placed in the reviewed set — Item 1.4);
+      - a stale COMPUTATIONAL/REVIEWED entry whose method no longer exists.
+    Non-reaching methods need no listing (the property verifies them)."""
+    import mlx_mfa
+    live = set()
+    offenders = []
+    for cn, cls in _exported_classes():
+        for nm in _project_methods(cls):
+            key = f"{cn}.{nm}"
+            live.add(key)
+            reaches = _method_reaches(cls, nm)
+            if reaches and key not in COMPUTATIONAL_CLASS_METHODS:
+                why = ("reviewed-but-reaches" if key in REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS
+                       else "unclassified reaching method")
+                offenders.append(f"{key}: {why} (reaches a computational/kernel/raw call)")
+    for key in COMPUTATIONAL_CLASS_METHODS:
+        if key not in live:
+            offenders.append(f"{key}: stale COMPUTATIONAL entry (method no longer exists)")
+    for key in REVIEWED_NONCOMPUTATIONAL_CLASS_METHODS:
+        if key not in live:
+            offenders.append(f"{key}: stale REVIEWED entry (method no longer exists)")
+    return offenders, len([k for k in COMPUTATIONAL_CLASS_METHODS if k in live])
+
+
+# ── Metal-kernel inventory (Item 2) ─────────────────────────────────────────────
+# Every mx.fast.metal_kernel construction, keyed "module:enclosing_func". A kernel
+# whose builder references `block_table` (a page-indexed load) MUST have
+# page_bounds == "guarded" (or "reviewed"); a NEW page-indexed kernel with no
+# record → fail. Seeded with the P0 six (+ conv excluded with reason).
+METAL_KERNELS = {
+    "mlx_mfa/tq_decode.py:_get_k_dequant_kernel": dict(
+        category="decode", page_indexed=True, page_bounds="guarded",
+        reason="TQ K-dequant; P1 in-kernel blk<n_active && 0<=phys<num_blocks guard"),
+    "mlx_mfa/tq_decode.py:_get_v_gather_kernel": dict(
+        category="decode", page_indexed=True, page_bounds="guarded",
+        reason="TQ V-gather; P1 in-kernel bounds guard"),
+    "mlx_mfa/attention.py:<module>": dict(
+        category="attention-support", page_indexed=False, page_bounds="n/a",
+        reason="topk threshold bisect; score loads bounded by k_idx<S"),
+    "mlx_mfa/gqa_decode_cider.py:_p1": dict(
+        category="attention", page_indexed=False, page_bounds="n/a",
+        reason="cider pass-1; contiguous K/V bounded by kv_end=min(.,N)"),
+    "mlx_mfa/gqa_decode_cider.py:_p2": dict(
+        category="attention", page_indexed=False, page_bounds="n/a",
+        reason="cider pass-2; reads fixed-size pass-1 partials"),
+    "mlx_mfa/topk_stream.py:_build": dict(
+        category="attention", page_indexed=False, page_bounds="n/a",
+        reason="topk-stream v5; row<N/key<S/idx<S guards; internal-only"),
+    "mlx_mfa/conv_nax.py:conv": dict(
+        category="non-attention", page_indexed=False, page_bounds="n/a",
+        reason="Conv3D im2col/matmul; not attention, no page table — excluded"),
+}
+
+
+def metal_kernel_sites():
+    """AST-scan the package for every mx.fast.metal_kernel construction → list of
+    (module, enclosing_func_or_<module>, builder_references_block_table)."""
+    import mlx_mfa
+    pkg = Path(mlx_mfa.__file__).parent
+    sites = []
+    for path in sorted(pkg.glob("*.py")):
+        text = path.read_text()
+        tree = ast.parse(text)
+        func_ranges = [(fn.lineno, fn.end_lineno, fn.name, fn)
+                       for fn in ast.walk(tree)
+                       if isinstance(fn, ast.FunctionDef)]
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "metal_kernel"):
+                enc, enc_node, best = "<module>", None, -1
+                for lo, hi, name, fn in func_ranges:
+                    if lo <= node.lineno <= (hi or lo) and lo > best:
+                        enc, enc_node, best = name, fn, lo
+                # page-indexed detection: scan the ENCLOSING FUNCTION when the
+                # kernel is built inside one (its `source` f-string + input_names
+                # live there); for a module-level construction scan ONLY the call
+                # node's own segment (its source=/input_names args) — NOT the whole
+                # file (which would false-positive on unrelated block_table code).
+                seg = (ast.get_source_segment(text, enc_node) if enc_node
+                       else ast.get_source_segment(text, node)) or ""
+                sites.append((f"mlx_mfa/{path.name}", enc, "block_table" in seg))
+    return sites
+
+
+def metal_kernel_offenders():
+    """A metal_kernel site that is page-indexed (builder references block_table)
+    MUST map to a record with page_bounds in {guarded, reviewed}; a site whose
+    (module, func) has no record → fail (new unrecorded kernel)."""
+    offenders = []
+    for rel, enc, page in metal_kernel_sites():
+        # match by a record key that is a prefix of "module:func" (functions are
+        # cached by _get_*/_build/_p1.. helpers; conv shares one record).
+        key = None
+        for k in METAL_KERNELS:
+            kmod, kfn = k.split(":", 1)
+            if kmod == rel and (kfn == enc or kfn in enc or
+                                (kfn == "<module>" and enc == "<module>") or
+                                (kfn == "conv" and rel.endswith("conv_nax.py")) or
+                                (kfn == "_build" and rel.endswith("topk_stream.py")) or
+                                (kfn in ("_p1", "_p2") and rel.endswith("gqa_decode_cider.py"))):
+                key = k
+                break
+        if key is None:
+            offenders.append(f"{rel}:{enc}: UNRECORDED mx.fast.metal_kernel "
+                             f"(page_indexed={page}); add a METAL_KERNELS record")
+            continue
+        if page and METAL_KERNELS[key].get("page_bounds") not in ("guarded", "reviewed"):
+            offenders.append(f"{rel}:{enc}: page-indexed kernel without a "
+                             f"bounds-review (page_bounds="
+                             f"{METAL_KERNELS[key].get('page_bounds')!r})")
+    return offenders
+
+
 def public_exports():
     """Every name reachable as a public export, via AST (no import side effects)."""
     tree = ast.parse(INIT.read_text())
@@ -313,6 +542,23 @@ def main():
             "compute entry — these are MISCLASSIFIED computational entries; move "
             "them to COMPUTATIONAL_PUBLIC:\n  " + "\n  ".join(misclassified))
 
+    # Volet P2 — third-surface guards (class methods + JIT kernels). These make
+    # the surface that hid CX-TQ-DECODE-01 (a class-method-only / metal_kernel
+    # path) CI-enumerated, property-based.
+    cm_offenders, n_cm = class_method_offenders()
+    if cm_offenders:
+        raise SystemExit(
+            "enumerate_api_surface: class-method offender(s) — a public method "
+            "reaches a computational/kernel/raw call but is not in "
+            "COMPUTATIONAL_CLASS_METHODS (or is stale):\n  "
+            + "\n  ".join(cm_offenders))
+    mk_offenders = metal_kernel_offenders()
+    if mk_offenders:
+        raise SystemExit(
+            "enumerate_api_surface: mx.fast.metal_kernel offender(s) — an "
+            "unrecorded or page-indexed-without-bounds-review kernel:\n  "
+            + "\n  ".join(mk_offenders))
+
     pub_comp = [r for r in pub_rows if r[2] == "computational"]   # (name,mod,cls,why,aud)
     raw_comp = [r for r in raw_rows if r[1] == "computational"]   # (name,cls,why,aud)
     pub_omit = [r for r in pub_comp if not r[4]]
@@ -360,6 +606,8 @@ def main():
           f"raw: {len(raw_rows)} ({len(raw_comp)} computational)")
     print(f"OMITTED computational: {len(pub_omit)} public + {len(raw_omit)} raw "
           f"= {len(pub_omit)+len(raw_omit)}")
+    print(f"third surface: {n_cm} computational class-methods "
+          f"({len(metal_kernel_sites())} metal_kernel sites), 0 offenders")
     return 0
 
 

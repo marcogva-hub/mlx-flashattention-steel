@@ -262,6 +262,44 @@ Validation runs:
 - Existing 24+34 enumeration remains green, demonstrating why it cannot detect
   this third surface.
 
+## P1 + P2 closure (2026-06-23)
+
+**P1 fixed the product gaps** (the **G** markers above are now PASS): the two
+`tq_decode` kernels carry an in-kernel `blk < n_active && 0 <= phys < num_blocks`
+bounds guard (memory-safe) + loud host index validation on the public TQ step
+(`MFA_PAGED_TRUST_INDICES=1` opt-out); `DenseKVCache.append` /
+`QuantizedKVCache.append` / `TurboQuantPagedInferenceContext.append` reject a
+malformed V head count. Locks: `tests/test_tq_decode_guard.py`,
+`tests/test_cache_append_vshape.py`, `tests/test_tq_chunked_prefill_softcap.py`.
+
+**P2 makes this surface CI-enumerated** (`scripts/enumerate_api_surface.py`,
+extending the function/raw guard). Now property-based (NOT name heuristics — the
+rounds-8-11 lesson):
+
+- **Class methods:** the **29** computational methods are an explicit allowlist
+  (`COMPUTATIONAL_CLASS_METHODS`). A **promotion rule** inspects every public
+  project method of every exported class — a method that REACHES a computational
+  public entry / raw `_ext` binding / `mx.fast.metal_kernel` / `tq_decode_attend`
+  / pack-quantize raw, or transitively a computational `self.<m>`, or is
+  uninspectable, MUST be in the allowlist (or the explicit reviewed set) else the
+  enumeration raises `SystemExit`. Over the live tree the rule flags exactly the
+  P0 set (25 directly-reaching ⊆ 29; the other 4 are delegate-to-context /
+  slice-update / wrapper-named and explicitly listed); `SVDQuantLinear.__call__`
+  is the one reviewed non-attention method (quantized linear, no kernel dispatch).
+- **Metal kernels:** all **9** `mx.fast.metal_kernel` sites are AST-inventoried
+  (`METAL_KERNELS`); a site that is page-indexed (its builder references
+  `block_table`) MUST carry a `page_bounds in {guarded, reviewed}` record, and a
+  NEW/unrecorded `metal_kernel` → `SystemExit`. Only the 2 TQ-decode kernels are
+  page-indexed (now `guarded`).
+
+Counts are DERIVED from the live classification (no hardcoded drift). Mutation
+bites (`tests/test_third_surface_guard.py`, 7 cells, all firing): a computational
+method moved to reviewed → fail; a synthetic reaching method → fail until
+classified; a synthetic page-indexed kernel with no record → fail; a recorded
+page kernel downgraded to `unguarded` → fail; a stale entry → fail; clean state →
+0 offenders, 29 methods + 9 kernels. **The class-method + JIT-kernel path that hid
+CX-TQ-DECODE-01 for 11 rounds is now loud-on-regression.**
+
 ## CX-TQ-DECODE-01 sibling set
 
 ### CRITICAL — same root defect

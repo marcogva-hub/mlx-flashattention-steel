@@ -377,6 +377,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       (documented boundary, not a silent drop). New env knob `MFA_PAGED_TRUST_INDICES` already documented.
       Locks: `tests/test_tq_decode_guard.py`, `tests/test_cache_append_vshape.py`,
       `tests/test_tq_chunked_prefill_softcap.py`.
+  - **Third surface (class methods + JIT kernels) now CI-enumerated (volet P2).** The
+    function/raw enumeration guard structurally cannot see class methods or
+    `mx.fast.metal_kernel` JIT kernels — which is how `CX-TQ-DECODE-01` (an unguarded
+    `tq_decode` page load reached only via `TurboQuantPagedInferenceContext.step` + a
+    JIT kernel) survived 11 audit rounds. `scripts/enumerate_api_surface.py` now also
+    enumerates **every public method of every exported class** and **every
+    `mx.fast.metal_kernel` site**, property-based (not name heuristics): a public
+    method that reaches a computational public entry / raw `_ext` binding / JIT kernel
+    (directly, transitively via a computational `self.<m>`, or by being uninspectable)
+    must be in the explicit `COMPUTATIONAL_CLASS_METHODS` allowlist (29 methods) or the
+    reviewed set, else enumeration raises `SystemExit`; a page-indexed `metal_kernel`
+    (its builder references `block_table`) must carry a `page_bounds` review record, and
+    a new/unrecorded kernel fails. Counts derive from the live classification (no
+    hardcoded drift). Mutation bites (`tests/test_third_surface_guard.py`): a
+    computational method moved to reviewed, a synthetic reaching method, a synthetic
+    page-indexed kernel with no record, a recorded kernel downgraded to `unguarded`,
+    and a stale entry all fail loudly; clean state = 0 offenders (29 methods + 9
+    kernel sites). The class-method/JIT-kernel path is now loud-on-regression.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
