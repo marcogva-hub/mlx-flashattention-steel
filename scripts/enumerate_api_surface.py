@@ -36,6 +36,33 @@ AUDITED_PUBLIC = {
     "flash_attention_speculative_verify_paged",
     "flash_attention_varlen_qkv_packed", "flash_attention_varlen_kv_packed",
     "sage_attention_kvcache", "flash_attention_topk",
+    "sparse_attention_dispatch",  # volet L (CX-R8-02): the 23rd, was misclassified
+}
+
+# CX-R8-02 (volet L): explicit COMPUTATIONAL allowlist replaces the name-prefix
+# heuristic that misclassified `sparse_attention_dispatch` (lcsa_nax.py — no
+# flash_/sage_/conv3d/topk_ prefix) as "helper: other". A computational entry
+# takes Q/K/V and dispatches an attention kernel. This list is the source of
+# truth for classification; `classify_public` raises (via "UNCLASSIFIED") on any
+# export matching neither this list nor a specific helper rule, so a future
+# computational export cannot silently fall through. Must equal AUDITED_PUBLIC
+# (every computational entry is audited → OMITTED computational public = 0).
+COMPUTATIONAL_PUBLIC = set(AUDITED_PUBLIC)
+
+# Explicit non-computational exports the pattern/class/module rules don't catch
+# (config, diagnostics, build/warmup, cache management, quantize/mask preproc).
+# Each verified first-hand to NOT take Q/K/V + dispatch an attention kernel.
+# Anything matching neither this list, COMPUTATIONAL_PUBLIC, nor a pattern rule →
+# UNCLASSIFIED → loud failure (a NEW export forces a human classification rather
+# than silently becoming a helper — the CX-R8-02 durable fix).
+HELPER_PUBLIC = {
+    "__version__",
+    "enable", "disable", "diagnostics", "hooks_status", "reset_hook_stats",
+    "calibrate_dispatch", "compile_metallib", "warmup_kernels",
+    "create_decode_runtime",
+    "adapt_kv_cache", "resolve_context_cache", "resolve_context_cache_adapter",
+    "dequantize", "sage_block_sizes", "sage_output_correction", "smooth_k",
+    "temporal_distance_bias_to_mask",
 }
 # Raw bindings with a first-hand row (volet H2/I/S/I2/J).
 AUDITED_RAW = {
@@ -101,7 +128,19 @@ def public_exports():
 
 
 def classify_public(name, module):
-    """computational (kernel-bearing public attention entry) vs helper."""
+    """computational (kernel-bearing public attention entry) vs helper.
+
+    CX-R8-02: classification is by an explicit COMPUTATIONAL allowlist (not a
+    name prefix), and there is NO silent catch-all — an export matching neither
+    the allowlist nor a SPECIFIC helper rule returns "UNCLASSIFIED", which main()
+    turns into a hard failure. This is the durable fix: a new computational
+    export can't be hidden as "helper: other" the way sparse_attention_dispatch
+    was.
+    """
+    if name in COMPUTATIONAL_PUBLIC:
+        return "computational", "attention entry (allowlist)"
+    if name in HELPER_PUBLIC:
+        return "helper", "utility/config/preproc (allowlist)"
     if name[0].isupper():
         return "helper", "class/context"
     if any(m in module for m in HELPER_MODULES):
@@ -109,9 +148,10 @@ def classify_public(name, module):
     if name.startswith(("make_", "apply_", "quantize", "patch_", "get_", "set_",
                         "is_", "has_", "install_", "compress", "decompress")):
         return "helper", "utility/builder"
-    if name.startswith(("flash_attention", "sage_attention", "conv3d", "topk_")):
-        return "computational", "attention entry"
-    return "helper", "other"
+    # No silent 'other' bucket — fail loudly so the row-set stays complete.
+    return "UNCLASSIFIED", ("matches neither COMPUTATIONAL_PUBLIC nor a helper "
+                            "rule; add it to the allowlist if computational, or "
+                            "extend a helper rule")
 
 
 def raw_bindings():
@@ -153,6 +193,17 @@ def main():
         cls, why = classify_raw(name)
         audited = name in AUDITED_RAW
         raw_rows.append((name, cls, why, audited))
+
+    # CX-R8-02 completeness assertion: every __all__ export must be classified as
+    # computational or helper-with-a-stated-reason. An UNCLASSIFIED export (new or
+    # misclassified) fails the enumeration LOUDLY rather than silently dropping a
+    # computational entry's inventory row (the sparse_attention_dispatch bug).
+    unclassified = [r for r in pub_rows if r[2] == "UNCLASSIFIED"]
+    if unclassified:
+        raise SystemExit(
+            "enumerate_api_surface: UNCLASSIFIED public export(s) — the row-set is "
+            "incomplete. Add to COMPUTATIONAL_PUBLIC if computational, else a helper "
+            "rule:\n  " + "\n  ".join(f"{r[0]} ({r[1]}): {r[3]}" for r in unclassified))
 
     pub_comp = [r for r in pub_rows if r[2] == "computational"]   # (name,mod,cls,why,aud)
     raw_comp = [r for r in raw_rows if r[1] == "computational"]   # (name,cls,why,aud)

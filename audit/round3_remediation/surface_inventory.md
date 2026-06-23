@@ -224,11 +224,34 @@ valid output byteΔ-identical. HARD GUARD applied to EVERY new check with an acc
 cell (int64 ids, kv=Hq boundary, f16 cos, MHA-topk) — no over-strictness. Lock:
 `tests/test_hardening_k3.py` (24 cells).
 
-## ✅ INVENTORY COMPLETE — OMITTED computational = 0
-`scripts/enumerate_api_surface.py` reports **0 omitted** computational entries (22
-public + 34 raw, all AUDITED). The full computational attention surface — public +
-raw — now has a first-hand 4-axis matrix row. The round-by-round sibling cycle is
-closed: round-8 (Codex) is the convergence check.
+## Volet L — sparse_attention_dispatch (the 23rd) + classifier completeness (2026-06-23)
+
+Round-8 (Codex) confirmed the K-series clean **except one entry the classifier
+missed**: `sparse_attention_dispatch` (`mlx_mfa/lcsa_nax.py`) — a public
+computational entry (Q/K/V → native-sparse OR MLX-SDPA → attention) that the
+name-prefix heuristic dropped to `helper: other`, so it never got an inventory row.
+
+| entry | correctness | accept-valid | reject-malformed (was→now) | determinism |
+|---|---|---|---|---|
+| `sparse_attention_dispatch` (P8) | fp64 oracle <5e-3 (native + SDPA routes) | f16/bf16/**f32**, asym-D_v (SDPA), GQA — both routes ✓ | **SDPA route: V kv-seq {1,2,8,16,31,32,33,63}≠K + dtype-mismatch no-raise/NaN → all RAISE** (entry-level guard, BOTH routes) | SDPA route byteΔ=0 ×20 (V=1 nondet now unreachable — raises) |
+
+**CX-R8-01 fix:** validate Q/K/V (batch, K↔V seq/heads, q↔K head-dim, GQA, dtype-
+equality) at the dispatcher entry BEFORE the native-vs-SDPA split → both routes
+guarded. NOT restricted to f16/bf16 (f32 runs on both routes) and V head-dim left
+free (asym D_v valid on SDPA) — HARD GUARD enumerated first. Bite-proven; valid
+output byteΔ-identical. **CX-R8-02 fix:** `enumerate_api_surface.py` classifier
+replaced the name-prefix heuristic with an explicit COMPUTATIONAL allowlist +
+HELPER allowlist + a **completeness assertion** — any export matching neither →
+`UNCLASSIFIED` → loud `SystemExit` (a new/misclassified export can no longer
+silently fall through). All 80 helper exports spot-verified non-computational.
+Lock: `tests/test_hardening_l.py` (30 cells).
+
+## ✅ INVENTORY COMPLETE — OMITTED computational = 0 (TRUE as of volet L)
+`scripts/enumerate_api_surface.py` reports **0 omitted** computational entries
+(**23 public** + 34 raw, all AUDITED) and is **assertion-guarded** for completeness.
+The full computational attention surface — public + raw — now has a first-hand
+4-axis matrix row. The round-by-round sibling cycle is closed: round-9 (Codex) is
+the convergence check.
 
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8

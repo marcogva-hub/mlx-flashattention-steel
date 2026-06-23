@@ -296,6 +296,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     computational = 0`** — the full public + raw computational attention surface now carries a
     first-hand 4-axis matrix row (correctness / accept-valid / reject-malformed / determinism). The
     round-by-round sibling cycle that produced CRITICALs in rounds 5–7 is closed.
+  - **`sparse_attention_dispatch` validation + enumeration-classifier completeness (volet L —
+    CX-R8-01/CX-R8-02).** Round-8 found the 23rd public computational entry, `sparse_attention_dispatch`
+    (`mlx_mfa/lcsa_nax.py`), which the enumeration classifier had **misclassified as a helper** (its
+    name lacks the `flash_/sage_/conv3d/topk_` prefix the heuristic keyed on) — so it never received a
+    4-axis inventory row, and its **forced-SDPA route accepted malformed V** (kv-seq {1,2,8,16,31,32,33,63}
+    ≠ K, or dtype-mismatched → finite-wrong / NaN; V=1 nondeterministic). **CX-R8-01:** Q/K/V are now
+    validated at the dispatcher entry *before* the native-vs-SDPA route split, so **both** routes raise
+    on batch / K↔V / q↔K-head-dim / GQA / dtype-equality violations; float32 and asymmetric `D_v` (both
+    valid on the SDPA route) are intentionally **not** restricted. **CX-R8-02:** the name-prefix
+    classifier in `scripts/enumerate_api_surface.py` is replaced by an explicit computational allowlist +
+    helper allowlist + a **completeness assertion** — any `__all__` export matching neither raises a loud
+    `SystemExit` (a new/misclassified export can no longer silently fall through to `helper: other`).
+    Bite-proven; valid output byteΔ-identical; lock `tests/test_hardening_l.py` (30 cells). With this,
+    **`OMITTED computational = 0` is actually true** (23 public + 34 raw, all with a first-hand 4-axis
+    row) and the enumeration is assertion-guarded against regression.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

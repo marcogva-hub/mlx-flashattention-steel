@@ -322,6 +322,38 @@ def sparse_attention_dispatch(
     Returns:
         O: same shape/dtype as Q.
     """
+    # CX-R8-01 (volet L): validate Q/K/V at the dispatcher entry, BEFORE the
+    # native-vs-SDPA route split, so BOTH routes are guarded. The SDPA route
+    # previously accepted a V whose kv-seq disagreed with K → finite-wrong / NaN
+    # (and a dtype-mismatched V).  Dtype is required EQUAL (matching the native
+    # route's contract) but NOT restricted to f16/bf16 — f32 runs on both routes.
+    # V head_dim is left unconstrained: asymmetric D_v is valid on the SDPA route.
+    if Q.ndim != 4 or K.ndim != 4 or V.ndim != 4:
+        raise ValueError(
+            "sparse_attention_dispatch: Q, K, V must be 4-D [B, H, N, D]")
+    if Q.shape[0] != K.shape[0] or Q.shape[0] != V.shape[0]:
+        raise ValueError(
+            "sparse_attention_dispatch: Q, K, V must share the batch dim")
+    if K.shape[2] != V.shape[2]:
+        raise ValueError(
+            "sparse_attention_dispatch: K and V must share the kv sequence length "
+            f"(Sk={K.shape[2]}, Sv={V.shape[2]})")
+    if K.shape[1] != V.shape[1]:
+        raise ValueError(
+            "sparse_attention_dispatch: K and V must have the same number of heads "
+            f"(Hk={K.shape[1]}, Hv={V.shape[1]})")
+    if Q.shape[3] != K.shape[3]:
+        raise ValueError(
+            "sparse_attention_dispatch: Q and K must share head_dim for Q@K^T "
+            f"(Dq={Q.shape[3]}, Dk={K.shape[3]})")
+    if K.shape[1] <= 0 or Q.shape[1] % K.shape[1] != 0:
+        raise ValueError(
+            "sparse_attention_dispatch: Q heads must be a positive multiple of "
+            f"KV heads (Hq={Q.shape[1]}, Hk={K.shape[1]}) for GQA")
+    if Q.dtype != K.dtype or Q.dtype != V.dtype:
+        raise ValueError(
+            "sparse_attention_dispatch: Q, K, V must share dtype")
+
     if density is None:
         d_arr = mx.mean(block_mask.astype(mx.float32))
         mx.async_eval(d_arr); mx.synchronize()
