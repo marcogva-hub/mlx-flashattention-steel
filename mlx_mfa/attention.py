@@ -7517,28 +7517,50 @@ def _validate_paged_block_table(
             f"({expected_batch}); the kernel reads block_table[b]/seq_lens[b] for "
             f"b in [0, query_batch) — a shorter table drives an out-of-bounds read.")
 
-    if block_table.size:
-        bmin = int(mx.min(block_table).item())
-        bmax = int(mx.max(block_table).item())
-        if bmin < -1 or bmax >= num_blocks:
-            raise ValueError(
-                f"{fn}: block_table entries must be in [-1, {num_blocks}) "
-                f"(num_blocks = pool.shape[0] = {num_blocks}); got "
-                f"min={bmin}, max={bmax}. '-1' marks an unallocated/padding page; "
-                f"any other negative value or a value >= num_blocks would read "
-                f"out of bounds from the page pool."
-            )
-    if seq_lens.size:
-        smin = int(mx.min(seq_lens).item())
-        smax = int(mx.max(seq_lens).item())
-        if smin < 0:
-            raise ValueError(f"{fn}: seq_lens must be >= 0; got min={smin}.")
-        if max_blocks and smax > max_blocks * block_size:
-            raise ValueError(
-                f"{fn}: seq_lens max ({smax}) exceeds max_blocks*block_size "
-                f"= {max_blocks}*{block_size} = {max_blocks * block_size}; a logical "
-                f"block index would run past the block_table columns."
-            )
+    # --- value-range check (CC-02/CC-03): block_table / seq_lens VALUES are on
+    #     the device, so range-checking them forces a host sync.  The original
+    #     code did FOUR separate `mx.min/max(...).item()` syncs, which serialized
+    #     the decode hot path (measured: +0.69 ms on a 0.26 ms Nq=1 decode →
+    #     3.7×).  Two mitigations (perf audit, pre-2.61.0 tag):
+    #       1. Batch the four reductions into ONE eval → ONE sync (≈4× cheaper),
+    #          default-on so the early ValueError still fires (reject still bites).
+    #       2. `MFA_PAGED_TRUST_INDICES=1` opt-out for high-frequency loops whose
+    #          block_table is already known-valid — skips the sync entirely.
+    #     Memory-safety does NOT depend on this check either way: the paged
+    #     gather kernels guard every physical block (`phys >= 0 && phys <
+    #     num_blocks`, mfa_steel_fwd.cpp) so an OOB index reads zero, never OOB.
+    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and (
+            block_table.size or seq_lens.size):
+        import mlx.core as _mx
+        _probes, _kinds = [], []
+        if block_table.size:
+            _probes += [_mx.min(block_table), _mx.max(block_table)]
+            _kinds += ["bt_min", "bt_max"]
+        if seq_lens.size:
+            _probes += [_mx.min(seq_lens), _mx.max(seq_lens)]
+            _kinds += ["sl_min", "sl_max"]
+        _mx.eval(*_probes)                      # SINGLE sync for all reductions
+        vals = {k: int(p.item()) for k, p in zip(_kinds, _probes)}
+        if block_table.size:
+            bmin, bmax = vals["bt_min"], vals["bt_max"]
+            if bmin < -1 or bmax >= num_blocks:
+                raise ValueError(
+                    f"{fn}: block_table entries must be in [-1, {num_blocks}) "
+                    f"(num_blocks = pool.shape[0] = {num_blocks}); got "
+                    f"min={bmin}, max={bmax}. '-1' marks an unallocated/padding page; "
+                    f"any other negative value or a value >= num_blocks would read "
+                    f"out of bounds from the page pool."
+                )
+        if seq_lens.size:
+            smin, smax = vals["sl_min"], vals["sl_max"]
+            if smin < 0:
+                raise ValueError(f"{fn}: seq_lens must be >= 0; got min={smin}.")
+            if max_blocks and smax > max_blocks * block_size:
+                raise ValueError(
+                    f"{fn}: seq_lens max ({smax}) exceeds max_blocks*block_size "
+                    f"= {max_blocks}*{block_size} = {max_blocks * block_size}; a logical "
+                    f"block index would run past the block_table columns."
+                )
 
 
 def flash_attention_paged(

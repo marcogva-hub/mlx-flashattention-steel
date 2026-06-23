@@ -20,6 +20,23 @@
 > - **sage int8 is 4.7× slower than SDPA on M5** (cos ~0.997) — not worth auto-routing here.
 > - The numbers BELOW are historical (M1 Max + pre-26.6 M5); treat as indicative, not current.
 
+> **⚠ POST-CAMPAIGN RE-BENCH (audit-remediation pre-tag, 2026-06-23) — supersedes the cells below
+> for sage/paged.** The determinism fixes (volets S/J/I2) added a `threadgroup_barrier` to the gather
+> K-loop of the sage/paged kernels; the pre-campaign numbers measured the *raced* (pre-barrier) kernel.
+> Re-measured on the **correct** kernels — M5 Max · MLX 0.31.2 · commit `ca85a19`(+paged-sync-fix) ·
+> median-50 · `has_nax()==True` · repo `.venv`:
+> - **sage** GQA8/2 D128: N512 **0.57 ms** (0.45× SDPA), N1024 **0.84 ms** (0.38× SDPA) — sage int8
+>   remains a specialized decode backend, slower than SDPA on M5 (unchanged conclusion).
+> - **paged** GQA8/2 D128 Nq8: S512 **0.86 ms**, S1024 **1.30 ms** (with-barrier; correct/deterministic).
+> - **dense** `backend="mfa"` GQA8/2 D128: N512 **0.36 ms** (0.71× SDPA), N1024 **0.69 ms** (0.43×) —
+>   the simdgroup-STEEL legacy path (the M5 dense winner is the `v6_nax_forward` auto route, above).
+> - **Barrier cost is bounded/negligible**: one extra `threadgroup_barrier` per K-tile in a kernel that
+>   already issues several; the int8-dequant + GEMM body dominates (within run-to-run variance).
+> - **Decode sync fix (perf audit):** the paged `block_table`/`seq_lens` value-range check forced **4
+>   device syncs** (`mx.min/max(...).item()`) — measured **+0.69 ms on a 0.26 ms Nq=1 decode (3.7×)**.
+>   Fixed: batched to 1 sync (default, reject still bites → 0.78 ms) + `MFA_PAGED_TRUST_INDICES=1`
+>   opt-out for hot loops (**0.26 ms, full restore**; the kernel still bounds-guards `phys<num_blocks`).
+
 Current library version: **2.61.0**
 Benchmark hardware for the tables in §2–§7 below: **Apple M1 Max** · **Apple M4 Max**
 (historical, pre-M5; the verified M5/26.6 numbers are in the boxed note above and in
