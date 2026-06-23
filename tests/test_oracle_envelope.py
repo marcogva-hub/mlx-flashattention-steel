@@ -340,6 +340,42 @@ _CELLS += [("backward_D%d" % D, DT_NAME[dt], c, "vjp_N4096", dt, "real",
            for c in (False, True)]
 
 
+# ── Volet G2: dense envelope completion (round-5 CX-05/CC-02 dense half) ───────
+def _oracle_gqa(q, k, v, scale, causal):
+    g = q.shape[1] // k.shape[1]
+    kk = mx.repeat(k, g, axis=1); vv = mx.repeat(v, g, axis=1)
+    mx.eval(kk, vv)
+    return _oracle_dense(q, kk, vv, scale, causal)
+
+
+def _gqa_runner(D, N, Hq, Hk):
+    def run(dt, causal):
+        scale = 1.0 / math.sqrt(D)
+        q = _rand((1, Hq, N, D), dt, 31)
+        k = _rand((1, Hk, N, D), dt, 32)
+        v = _rand((1, Hk, N, D), dt, 33)
+        with _dt.capture() as tr:
+            o = mlx_mfa.flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(o)
+        return dict(relerr=_relerr(o, _oracle_gqa(q, k, v, scale, causal)),
+                    byted=_byted_vs_sdpa(o, q, k, v, scale, causal),
+                    trace=[t[0] for t in tr], dt=dt)
+    return run
+
+
+# D=256 forward (SDPA fallback on M5 → byteΔ=0)
+_CELLS += [("dense_D256", DT_NAME[dt], c, "square_N2048", dt, "sdpa",
+            _dense_runner(256, 2048, 2048, True))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+# GQA forward (Hq=8, Hk=2): D=64 → SDPA; D=128 N>=2048 → NAX (real)
+_CELLS += [("gqa_dense_D64", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "sdpa",
+            _gqa_runner(64, 2048, 8, 2))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+_CELLS += [("gqa_dense_D128", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "real",
+            _gqa_runner(128, 2048, 8, 2))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+
+
 # ───────────────────────────── the test ──────────────────────────────────────
 _RESULTS = []
 
@@ -407,3 +443,194 @@ def _dump_table(request):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Volet G2 — dense envelope completion: feature-family locks (round-5 CX-05/CC-02)
+# Each asserts relerr vs an INDEPENDENT oracle; engagement recorded where a
+# byteΔ-vs-SDPA signal is meaningful (feature paths that change the math vs plain
+# SDPA record byted=None and assert correctness only).
+# ══════════════════════════════════════════════════════════════════════════════
+def _rec(path, dt, causal, regime, relerr, byted=None, trace=()):
+    _RESULTS.append(dict(path=path, dt=DT_NAME[dt], causal=causal, regime=regime,
+                         relerr=relerr, byted=byted, trace=list(trace)))
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("causal", [False, True])
+def test_g2_d256_backward(dt, causal):
+    D, N = 256, 1024
+    sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 4, N, D), dt, 41), _rand((1, 4, N, D), dt, 42), _rand((1, 4, N, D), dt, 43)
+    g = lambda fn, a, b, c: mx.grad(
+        lambda a, b, c: (fn(a, b, c, scale=sc, causal=causal).astype(mx.float32) ** 2).sum(),
+        argnums=(0, 1, 2))(a, b, c)
+    dq, dk, dv = g(mlx_mfa.flash_attention, q, k, v)
+    qf, kf, vf = (a.astype(mx.float32) for a in (q, k, v))
+
+    def man(a, b, cc, scale, ca):
+        s = (a @ mx.swapaxes(b, -1, -2)) * scale
+        if ca:
+            Nn, Mm = s.shape[-2], s.shape[-1]
+            i = mx.arange(Nn).reshape(Nn, 1); j = mx.arange(Mm).reshape(1, Mm)
+            s = mx.where(j <= i + max(0, Mm - Nn), s, mx.array(-1e30, s.dtype))
+        return mx.softmax(s, -1) @ cc
+    dqo, dko, dvo = mx.grad(lambda a, b, c: (man(a, b, c, sc, causal) ** 2).sum(),
+                            argnums=(0, 1, 2))(qf, kf, vf)
+    mx.eval(dq, dk, dv, dqo, dko, dvo)
+    e = max(_relerr(dq, _n(dqo)), _relerr(dk, _n(dko)), _relerr(dv, _n(dvo)))
+    _rec("backward_D256", dt, causal, "vjp_N1024", e)
+    assert e <= (8e-3 if dt is mx.float16 else 4e-2)
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("D", [64, 128])
+@pytest.mark.parametrize("causal", [False, True])
+def test_g2_gqa_backward(dt, D, causal):
+    Hq, Hk, N = 8, 2, 2048
+    sc = 1.0 / math.sqrt(D); gg = Hq // Hk
+    q, k, v = _rand((1, Hq, N, D), dt, 44), _rand((1, Hk, N, D), dt, 45), _rand((1, Hk, N, D), dt, 46)
+    g = lambda fn, a, b, c: mx.grad(
+        lambda a, b, c: (fn(a, b, c, scale=sc, causal=causal).astype(mx.float32) ** 2).sum(),
+        argnums=(0, 1, 2))(a, b, c)
+    dq, dk, dv = g(mlx_mfa.flash_attention, q, k, v)
+    qf, kf, vf = (a.astype(mx.float32) for a in (q, k, v))
+
+    def man(a, b, cc, scale, ca):
+        b2 = mx.repeat(b, gg, axis=1); c2 = mx.repeat(cc, gg, axis=1)
+        s = (a @ mx.swapaxes(b2, -1, -2)) * scale
+        if ca:
+            Nn = s.shape[-2]; i = mx.arange(Nn).reshape(Nn, 1); j = mx.arange(Nn).reshape(1, Nn)
+            s = mx.where(j <= i, s, mx.array(-1e30, s.dtype))
+        return mx.softmax(s, -1) @ c2
+    dqo, dko, dvo = mx.grad(lambda a, b, c: (man(a, b, c, sc, causal) ** 2).sum(),
+                            argnums=(0, 1, 2))(qf, kf, vf)
+    mx.eval(dq, dk, dv, dqo, dko, dvo)
+    e = max(_relerr(dq, _n(dqo)), _relerr(dk, _n(dko)), _relerr(dv, _n(dvo)))
+    _rec("gqa_backward_D%d" % D, dt, causal, "Hq8Hk2_N2048", e)
+    assert e <= (8e-3 if dt is mx.float16 else 4e-2)
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("causal", [False, True])
+def test_g2_softcap(dt, causal):
+    D, N, cap = 128, 2048, 30.0
+    sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 4, N, D), dt, 47), _rand((1, 4, N, D), dt, 48), _rand((1, 4, N, D), dt, 49)
+    o = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=causal, softcap=cap); mx.eval(o)
+    qf, kf, vf = _f64(q), _f64(k), _f64(v)
+    s = np.einsum("bhnd,bhmd->bhnm", qf, kf) * sc
+    s = cap * np.tanh(s / cap)
+    if causal:
+        N2 = s.shape[2]; i = np.arange(N2)[:, None]; j = np.arange(N2)[None, :]
+        s = np.where(j <= i, s, -1e30)
+    s -= s.max(-1, keepdims=True); ex = np.exp(s); p = ex / ex.sum(-1, keepdims=True)
+    ref = np.einsum("bhnm,bhmd->bhnd", p, vf)
+    e = _relerr(o, ref); _rec("softcap_D128", dt, causal, "cap30_N2048", e)
+    assert e <= BOUND[dt]
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+def test_g2_sliding_window(dt):
+    D, N, left = 128, 2048, 256
+    sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 4, N, D), dt, 50), _rand((1, 4, N, D), dt, 51), _rand((1, 4, N, D), dt, 52)
+    o = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=True, window_size=(left, 0)); mx.eval(o)
+    qf, kf, vf = _f64(q), _f64(k), _f64(v)
+    s = np.einsum("bhnd,bhmd->bhnm", qf, kf) * sc
+    i = np.arange(N)[:, None]; j = np.arange(N)[None, :]
+    s = np.where((j <= i) & (j >= i - left), s, -1e30)
+    s -= s.max(-1, keepdims=True); ex = np.exp(s); p = ex / ex.sum(-1, keepdims=True)
+    ref = np.einsum("bhnm,bhmd->bhnd", p, vf)
+    e = _relerr(o, ref); _rec("sliding_window_D128", dt, True, "win256_N2048", e)
+    assert e <= BOUND[dt]
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+def test_g2_asymmetric_dv(dt):
+    # D_v != D_qk on dense + sparse (SDPA-class paths support it; oracle handles it).
+    N, Dqk, Dv = 512, 128, 64
+    sc = 1.0 / math.sqrt(Dqk)
+    q, k = _rand((1, 4, N, Dqk), dt, 53), _rand((1, 4, N, Dqk), dt, 54)
+    v = _rand((1, 4, N, Dv), dt, 55)
+    o = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=False); mx.eval(o)
+    e = _relerr(o, _oracle_dense(q, k, v, sc, False))
+    _rec("asym_dv_dense", dt, False, "Dqk128_Dv64", e); assert e <= BOUND[dt]
+    bm = mlx_mfa.make_causal_block_mask(N, head_dim=Dqk)
+    o2 = mlx_mfa.flash_attention_sparse(q, k, v, bm, scale=sc, causal=True); mx.eval(o2)
+    e2 = _relerr(o2, _oracle_dense(q, k, v, sc, True))
+    _rec("asym_dv_sparse", dt, True, "Dqk128_Dv64", e2); assert e2 <= BOUND[dt]
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+def test_g2_sparse_noncausal(dt):
+    # sparse non-causal vs the EXACT expanded-block-mask oracle (round-5 verified
+    # the oracle: a naive band gave 0.52; expanding the real block_mask gives ~3e-4).
+    N, D = 512, 128
+    sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 4, N, D), dt, 56), _rand((1, 4, N, D), dt, 57), _rand((1, 4, N, D), dt, 58)
+    bm = mlx_mfa.make_sliding_window_mask(N, window_size=128, head_dim=D, causal=False)
+    o = mlx_mfa.flash_attention_sparse(q, k, v, bm, scale=sc, causal=False); mx.eval(o)
+    bmn = np.array(bm); nqt, nkt = bmn.shape[-2], bmn.shape[-1]
+    bsz = N // nqt
+    em = np.kron(bmn.reshape(nqt, nkt).astype(bool), np.ones((bsz, bsz), bool))[:N, :N]
+    qf, kf, vf = _f64(q), _f64(k), _f64(v)
+    s = np.einsum("bhnd,bhmd->bhnm", qf, kf) * sc
+    s = np.where(em[None, None], s, -1e30)
+    s -= s.max(-1, keepdims=True); ex = np.exp(s); p = ex / ex.sum(-1, keepdims=True)
+    ref = np.einsum("bhnm,bhmd->bhnd", p, vf)
+    e = _relerr(o, ref); byted = _byted_vs_sdpa(o, q, k, v, sc, False)
+    _rec("sparse_noncausal_D128", dt, False, "win128_N512", e, byted)
+    assert e <= BOUND[dt]
+    assert byted > 0.0  # real sparse kernel engaged
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+def test_g2_gna_windowed(dt):
+    # GNA native vs EXACT per-position 3D-window oracle.
+    seq, win, N, D = (4, 4, 4), (3, 3, 3), 64, 128
+    sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 2, N, D), dt, 59), _rand((1, 2, N, D), dt, 60), _rand((1, 2, N, D), dt, 61)
+    o = mlx_mfa.flash_attention_gna(q, k, v, seq_shape=seq, window_size=win, stride=(1, 1, 1)); mx.eval(o)
+    qf, kf, vf = _f64(q), _f64(k), _f64(v)
+    coords = np.array(np.unravel_index(np.arange(N), seq)).T
+    out = np.zeros((1, 2, N, D))
+    for h in range(2):
+        s = (qf[0, h] @ kf[0, h].T) * sc
+        mask = np.ones((N, N), bool)
+        for a in range(N):
+            for b in range(N):
+                for d in range(len(seq)):
+                    if abs(coords[a, d] - coords[b, d]) > win[d] // 2:
+                        mask[a, b] = False; break
+        s = np.where(mask, s, -1e30); s -= s.max(1, keepdims=True)
+        ex = np.exp(s); p = ex / ex.sum(1, keepdims=True); out[0, h] = p @ vf[0, h]
+    e = _relerr(o, out); _rec("gna_windowed_D128", dt, False, "seq444_win333", e)
+    assert e <= BOUND[dt]
+
+
+@pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("D", [64, 128])
+def test_g2_return_lse_value(dt, D):
+    # return_lse value is in log2 domain: L = log2(sum exp(score)) = ln(.)/ln2.
+    N = 512; sc = 1.0 / math.sqrt(D)
+    q, k, v = _rand((1, 2, N, D), dt, 62), _rand((1, 2, N, D), dt, 63), _rand((1, 2, N, D), dt, 64)
+    o, lse = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=False, return_lse=True)
+    mx.eval(o, lse)
+    qf, kf = _f64(q), _f64(k)
+    s = np.einsum("bhnd,bhmd->bhnm", qf, kf) * sc; m = s.max(-1, keepdims=True)
+    lse_nat = m[..., 0] + np.log(np.exp(s - m).sum(-1))
+    err = float(np.max(np.abs(np.array(lse.astype(mx.float32)).astype(np.float64) - lse_nat / np.log(2))))
+    _rec("return_lse_D%d" % D, dt, False, "log2_N512", err)
+    assert err <= 1e-2  # log2-domain convention
+
+
+@pytest.mark.parametrize("bits", [3, 4])
+def test_g2_turboquant_roundtrip(bits):
+    # TurboQuant pack/unpack math: lossy by design — bound the roundtrip error.
+    x = _rand((2, 8, 256, 128), mx.float16, 65)
+    comp = mlx_mfa.turboquant_compress(x, bits=bits)
+    dec = mlx_mfa.turboquant_decompress(comp); mx.eval(dec)
+    e = _relerr(dec, _f64(x))
+    _rec("turboquant_b%d" % bits, mx.float16, False, "roundtrip_2x8x256x128", e)
+    assert e <= 0.35  # 3-4 bit lossy floor (random Gaussian worst case)

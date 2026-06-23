@@ -159,6 +159,16 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     never checked K↔V mutual shape — a mismatched V drove an out-of-bounds read (e.g. dQ delta 174).
     Lock: `tests/test_raw_backward_validation_h2.py`; enumeration at
     `audit/round3_remediation/raw_backward_validation.md`.
+  - **Dense oracle-envelope completion + claim correction (volet G2 — round-5 CX-05/CC-02 dense half,
+    test/doc only).** The kernel-math oracle envelope (`tests/test_oracle_envelope.py`) previously
+    omitted D=256 (fwd+bwd), GQA (Hq≠Hk, fwd+bwd), softcap, sliding-window, asymmetric `D_v`, sparse
+    non-causal, GNA-windowed, `return_lse` value, and TurboQuant pack/unpack — all verified correct
+    ad-hoc but **unlocked**, so a future regression there would pass green. Those cell-families are now
+    biting locks (independent fp32/fp64 oracle + byteΔ engagement where a distinct binary runs); 61 →
+    103 cells. README's "every kernel has an fp32/independent-oracle correctness lock" was therefore
+    not literally true — reworded to "every kernel **path** is independently oracle-locked across its
+    supported dtype / causal / feature regimes" and now references both `test_oracle_envelope.py` and
+    `test_paged_envelope.py` to match the actual enumeration. No kernel/output change (byteΔ-identical).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

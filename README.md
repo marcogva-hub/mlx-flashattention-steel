@@ -392,11 +392,15 @@ stay SDPA-vjp) for the *sparse* hybrid backward; full-native *sparse* backward n
 `MFA_V6_BWD_SPARSE_NATIVE=1` (declined-on-perf, opt-in). See `NAMING.md` for the env-var
 rename table.
 
-**Correctness coverage (verified):** every kernel has an fp32/independent-oracle
-correctness lock and the runtime dispatch is fingerprint-locked — see the
-exhaustive kernel-math oracle envelope `tests/test_oracle_envelope.py` (61 cells:
-every forward+backward path × dtype × causal × shape-regime, each with an
-independent fp32/fp64 oracle + byteΔ-vs-SDPA engagement proof),
+**Correctness coverage (verified):** every kernel **path** is independently
+oracle-locked across its supported dtype / causal / feature regimes, and the
+runtime dispatch is fingerprint-locked — see the kernel-math oracle envelope
+`tests/test_oracle_envelope.py` (dense/sparse/decode/varlen/backward × {f16,bf16}
+× causal × shape-regime, plus D=256, GQA fwd+bwd, softcap, sliding-window,
+asymmetric `D_v`, sparse non-causal, GNA-windowed, `return_lse` value, TurboQuant
+pack/unpack — each with an independent fp32/fp64 oracle + byteΔ-vs-SDPA engagement
+proof) and the paged envelope `tests/test_paged_envelope.py` (homogeneous +
+heterogeneous `seq_lens`, per-sequence causal, GQA, validation),
 `tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py`,
 `tests/test_dispatch_map_lock.py`, and `tests/test_fingerprint_discipline.py` (the last
 makes "test passes while running the wrong kernel" structurally catchable). Maintainer
