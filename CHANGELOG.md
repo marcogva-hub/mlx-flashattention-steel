@@ -333,8 +333,8 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     (which computes attention **inline** — no `flash_attention(` call to detect) into HELPER passed
     enumeration silently. The guard is now **property-based**: any HELPER export that is
     attention-input-shaped (takes a Q-like **and** a K-like parameter) **or** is uninspectable (a class,
-    or `signature`/`getsource` fails) **must** be listed in `REVIEWED_NONCOMPUTATIONAL` (31 entries, each
-    with a verified reason) — otherwise the enumeration fails loudly. This keys on *what the entry is*,
+    or `signature`/`getsource` fails) **must** be listed in `REVIEWED_NONCOMPUTATIONAL` (32 entries as of
+    this entry, each with a verified reason) — otherwise the enumeration fails loudly. This keys on *what the entry is*,
     not on a callee name, so it catches inline-compute ops and the previously-silently-skipped classes /
     getsource-failures; the callee-name check is kept only as a secondary belt-and-suspenders flag.
     Executable mutation tests (`tests/test_hardening_n.py`) lock the bites: `flash_attention_topk` →
@@ -342,6 +342,17 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     fails. **CX-R10-02:** corrected two stale "f32 runs on both routes" statements (the
     `sparse_attention_dispatch` entry comment + the volet-L inventory text) to the accurate contract —
     f16/bf16 on both native + SDPA routes; **f32 routes to SDPA only** (the native kernel is f16/bf16-only).
+  - **Final doc-accuracy sweep + doc-staleness guard (volet O — CX-R11-01/CX-R11-02).** Round-11
+    confirmed the product and the realistic guard risk have converged (24 public + 34 raw, no regression,
+    determinism fwd+bwd byteΔ=0); the only opens were two stale doc strings. Fixed: the last "f32 …
+    both routes" comment (`tests/test_hardening_l.py`, corrected to "f16/bf16 native-or-SDPA; f32 SDPA
+    only; this N=64 config runs SDPA regardless"), and the reviewed-ledger count (31 → **32 as of this
+    entry**). A tree-wide grep for stale "f32 both routes" phrasing, wrong current counts, and overclaimed
+    coverage is clean (remaining "both routes" hits are accurate: f16/bf16 use both routes; the entry
+    guard rejects on both routes). Added durable guards to `tests/test_doc_accuracy_guards.py`: no
+    "f32 … both routes" claim in current-contract files, and the inventory's "**N public** + M raw"
+    completeness count must equal the live enumeration — both bite-proven on synthetic stale input.
+    Docs/tests-only change (no runtime/kernel code).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

@@ -241,3 +241,87 @@ def test_no_doc_presents_retired_variant_as_live(rel):
 
 # (the former hardcoded-V4/V5 `test_no_doc_presents_v4_v5_as_live` is superseded by
 #  the source-derived `test_no_doc_presents_retired_variant_as_live` above.)
+
+
+# ── Volet O: doc-staleness guards (CX-R11-01/02) ────────────────────────────────
+# The sparse_attention_dispatch f32 contract: f16/bf16 may use the native OR SDPA
+# route; f32 is accepted but routes to SDPA ONLY (the native kernel is f16/bf16-
+# only). A positive "f32 … both routes" claim is therefore stale/wrong.
+_F32_BOTH_ROUTES = re.compile(
+    r"(?:f32|float32)[^.\n]*both\s+routes", re.IGNORECASE)
+
+# current-contract surfaces (NOT historical CHANGELOG/inventory narrative).
+_CURRENT_CONTRACT_FILES = (
+    "mlx_mfa/lcsa_nax.py",
+    "tests/test_hardening_l.py",
+    "tests/test_hardening_m.py",
+    "tests/test_hardening_n.py",
+)
+
+
+def _is_stale_f32_line(line):
+    """A line is a stale f32-both-routes claim if it puts f32 before 'both routes'
+    AND does not attribute f32 to SDPA / explicitly negate ('NOT both routes')."""
+    if not _F32_BOTH_ROUTES.search(line):
+        return False
+    low = line.lower()
+    if "sdpa" in low:                       # f32 attributed to the SDPA path
+        return False
+    if re.search(r'not\s+"?both\s+routes', low):  # explicit negation
+        return False
+    return True
+
+
+@pytest.mark.parametrize("rel", _CURRENT_CONTRACT_FILES)
+def test_no_stale_f32_both_routes_in_current_contract(rel):
+    bad = [ln.strip()[:120] for ln in _read(rel).splitlines() if _is_stale_f32_line(ln)]
+    assert not bad, (
+        f"{rel}: stale 'f32 … both routes' claim — f32 routes to SDPA only:\n  "
+        + "\n  ".join(bad))
+
+
+def test_stale_f32_guard_bites():
+    # the guard must catch a positive f32-both-routes claim …
+    assert _is_stale_f32_line("Dtype not restricted — f32 runs on both routes.")
+    assert _is_stale_f32_line("# f32 is valid on both routes")
+    # … and must NOT false-positive on the accurate contract phrasings:
+    assert not _is_stale_f32_line("f16/bf16 (both routes), f32 (SDPA path)")
+    assert not _is_stale_f32_line("f32 routes to SDPA only, NOT both routes")
+    assert not _is_stale_f32_line("# reject-malformed: both routes")  # no f32
+
+
+def _enumeration_counts():
+    """Live (public_computational, raw_computational) from the enumeration."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_enum_doc", str(_ROOT / "scripts" / "enumerate_api_surface.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    pub = m.public_exports()
+    npub = sum(1 for n in pub if m.classify_public(n, pub[n])[0] == "computational")
+    nraw = sum(1 for n in m.raw_bindings() if m.classify_raw(n)[0] == "computational")
+    return npub, nraw
+
+
+def test_inventory_current_counts_match_enumeration():
+    """The inventory's 'INVENTORY COMPLETE' current count must equal the live
+    enumeration (so a future entry that bumps the count fails this until the doc
+    is updated). Historical volet sections are unaffected — this matches only the
+    '**N public** + M raw' completeness line."""
+    npub, nraw = _enumeration_counts()
+    text = _read("audit/round3_remediation/surface_inventory.md")
+    matches = re.findall(r"\*\*(\d+) public\*\*\s*\+\s*(\d+) raw", text)
+    assert matches, "inventory: no '**N public** + M raw' completeness line found"
+    # the LAST such line is the current 'INVENTORY COMPLETE' statement.
+    cur_pub, cur_raw = int(matches[-1][0]), int(matches[-1][1])
+    assert (cur_pub, cur_raw) == (npub, nraw), (
+        f"inventory current count **{cur_pub} public + {cur_raw} raw** != live "
+        f"enumeration ({npub} public + {nraw} raw) — update the inventory.")
+
+
+def test_inventory_count_guard_bites():
+    # the count parser/comparison must catch a wrong current count.
+    npub, nraw = _enumeration_counts()
+    fake = f"## INVENTORY COMPLETE\n(**{npub + 99} public** + {nraw} raw, all AUDITED)"
+    m = re.findall(r"\*\*(\d+) public\*\*\s*\+\s*(\d+) raw", fake)
+    assert m and (int(m[-1][0]), int(m[-1][1])) != (npub, nraw)

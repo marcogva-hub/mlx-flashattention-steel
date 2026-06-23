@@ -57,7 +57,10 @@ def test_correctness_sdpa_route():
     assert rel < 5e-3, f"sdpa relerr {rel:.3e}"
 
 
-# ── accept-valid: f16/bf16/f32 + asym D_v + GQA, both routes ────────────────────
+# ── accept-valid dtypes: f16/bf16 (native or SDPA per density) and f32 (SDPA
+# only — the native kernel is f16/bf16-only). At this N=64 config the all-true
+# mask is below the native 4096-byte floor, so every cell here runs SDPA
+# regardless of threshold; the native route is exercised in test_hardening_m.py.
 @pytest.mark.parametrize("thr", [0.0, 1.0])
 @pytest.mark.parametrize("dt", [mx.float16, mx.bfloat16, mx.float32])
 def test_accept_valid_dtypes(thr, dt):
