@@ -160,6 +160,10 @@ def test_raw_matrix_cell(entry, dn, spec):
     arr = np.array(o.astype(mx.float32))
     assert np.isfinite(arr).all(), f"{entry}+{dn}: non-finite"
     assert o.dtype == dt, f"{entry}+{dn}: dtype {o.dtype} != {dt} (forced-dtype masking)"
+    # CC Batch Class C: shape must match the SDPA reference shape (a wrong-shape
+    # silent-wrong, e.g. q-D output under asymmetric D_v, fails here).
+    assert tuple(o.shape) == tuple(np.asarray(ref).shape), \
+        f"{entry}+{dn}: shape {tuple(o.shape)} != SDPA {tuple(np.asarray(ref).shape)}"
     cos = _cos(o, ref)
     assert cos >= floor, f"{entry}+{dn}: cos {cos:.4f} < {floor}"
 

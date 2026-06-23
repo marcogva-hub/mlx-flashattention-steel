@@ -600,6 +600,14 @@ def flash_attention(
             and not return_lse and not return_attn_weights):
         _dtrace.record("sdpa", "backend=sdpa forced (plain)")
         _scale = scale if scale is not None else 1.0 / math.sqrt(q.shape[-1])
+        # CC Batch Class E: this early-return precedes the full path's mixed-dtype
+        # normalization (k/v → q.dtype, ~L908), so a mixed-dtype q/k/v here would
+        # let SDPA promote to fp32 → output dtype != requested (q.dtype). Apply the
+        # same normalization in-branch so the requested-output-dtype contract holds.
+        if k.dtype != q.dtype:
+            k = k.astype(q.dtype)
+        if v.dtype != q.dtype:
+            v = v.astype(q.dtype)
         if attn_bias is None:
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=_scale,
@@ -4133,6 +4141,18 @@ def flash_attention_topk(
     """
     if q.ndim != 4:
         raise ValueError(f"q must be 4D [B,H,N,D], got {q.ndim}D")
+    # CC Batch Class D: this path computes inline q@k.T / weights@v (or routes to
+    # SDPA) with NO mutual-compat check — a malformed batch/heads/seq/D_qk or a
+    # mixed q/k/v dtype would silently broadcast / promote to fp32 instead of
+    # raising. Enforce the same Q/K/V contract as the kernel entries at the door.
+    _assert_qkv_mutual_compat(q, k, v, "flash_attention_topk")
+    # CC Batch Class D: _assert_qkv_mutual_compat is shape-only; a mixed q/k/v
+    # dtype here silently promotes to fp32 (output dtype != requested). Require
+    # dtype equality loudly (Rule 8) — the raw-kernel contract.
+    if k.dtype != q.dtype or v.dtype != q.dtype:
+        raise ValueError(
+            f"flash_attention_topk: q, k, v must share dtype; got "
+            f"q={q.dtype}, k={k.dtype}, v={v.dtype}.")
     B, H, N, D = q.shape
     S = k.shape[2]
     if scale is None:

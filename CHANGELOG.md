@@ -545,8 +545,29 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     compiles and is oracle-correct (cos 1.0). Every fix verified finite + dtype-matches-request + cosine vs
     an independent fp32 reference; fp16/bf16 raw paths byteΔ=0 vs pre-fix (gate is a no-op for them). Locked
     by `tests/test_raw_dtype_matrix.py` (table-driven, finite+dtype+cosine-or-reject per cell, with bites).
-    A C++ rebuild was required. (Hunt finding, flagged not folded: the raw forwards also silently accept
-    K/V dtype ≠ q — a new K/V-consistency sub-class for a follow-up sweep.)
+    A C++ rebuild was required.
+  - **Raw/function-surface — three more defect classes closed (CC Batch, supersedes Batch-1).** Codex's
+    expanded audit found five classes on the function/raw surface; Batch-1 closed A+B, this batch adds
+    **C, D, E** via shared validators (no per-site drift). **Class C (wrong-shape silent-wrong):** the
+    shared `validate_dense_qkv` deliberately permitted asymmetric V head_dim, but the raw kernels allocate
+    output from `q.shape` — so `D_v != D_qk` returned a q-D-shaped output (or non-finite on sparse) instead
+    of SDPA's V-D shape. Added a `D_v == D_qk` reject to that one validator → fixes the whole dense feature
+    family (dense / sparse / sparse-lse / rope / alibi / bias / varlen) in one edit; the public wrappers
+    keep asymmetric `D_v` via their SDPA fallback (verified no over-reject). **Class D (missing entry
+    validation):** the paged forwards derived dtype from q only and read the K/V pools at that dtype, so a
+    mismatched pool dtype was read byte-wise (silent-wrong, cos ↓0.33) — added `assert_raw_pool_dtype_eq`
+    (k_pool/v_pool == q) on `mfa_paged_steel_forward` / `mfa_paged_varlen_forward`, and
+    `assert_raw_tq_buffer_dtypes` (packed-K uint8, V == q, centroids fp16, scales fp32) on the fused TQ
+    entry; `flash_attention_topk` now routes through `_assert_qkv_mutual_compat` + a q/k/v dtype-equality
+    check (was silently broadcasting / promoting mixed dtypes to fp32). **Class E (early-return bypass):**
+    `flash_attention(backend="sdpa")` returned **fp32** for a mixed-dtype q/k/v because its early-return
+    preceded the full path's mixed-dtype normalization — it now casts k/v → q.dtype in-branch so the output
+    follows the requested dtype (same-dtype path byteΔ=0). Every fix verified finite + dtype==requested +
+    **shape==SDPA** + cosine vs an independent fp32 reference. Locked by `tests/test_raw_surface_classes.py`
+    (C/D/E, table-driven, with bites) + a shape assertion added to `test_raw_dtype_matrix.py`. C++ rebuild
+    required. (Hunt: the Batch-1 K/V-dtype-mismatch finding is now **closed** by these gates; new flagged
+    item — `mfa_gna_forward` / `mfa_sage_forward` don't route through `validate_dense_qkv` — GNA covers
+    dtype+fp32 already but `D_v` is unconfirmed; Sage `V==q`/`D_v` unconfirmed — a focused follow-up sweep.)
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

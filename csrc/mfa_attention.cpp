@@ -1738,9 +1738,10 @@ bool MFAttention::is_equivalent(const mlx::core::Primitive& other) const {
 // K's offsets — so a Q/K/V that disagrees on batch, kv-seq, kv-heads, the Q@K^T
 // head_dim, GQA divisibility, or dtype reads OOB / silent-wrong (observed:
 // batch→NaN, k_seq/k_heads/q_D/dtype all no-raise on alibi/rope/sparse). One
-// validator so the feature entries cannot drift. Does NOT constrain v.shape(3)
-// (asymmetric D_v is legal where the kernel supports it; only Q@K^T needs
-// q.D==k.D). Rule 8: raise before dispatch.
+// validator so the feature entries cannot drift. CC Batch Class C: it now ALSO
+// constrains v.shape(3)==q.shape(3) — these raw kernels allocate output from
+// q.shape, so asymmetric D_v is a wrong-shape silent-wrong here (public wrappers
+// keep asym D_v via SDPA fallback). Rule 8: raise before dispatch.
 // =========================================================================
 static void validate_dense_qkv(
     const mlx::core::array& q, const mlx::core::array& k,
@@ -1762,6 +1763,17 @@ static void validate_dense_qkv(
   if (q.shape(3) != k.shape(3))
     bad("q and k must share head_dim for Q@K^T (Dq=" +
         std::to_string(q.shape(3)) + ", Dk=" + std::to_string(k.shape(3)) + ")");
+  // CC Batch Class C: these raw kernels allocate the output from q.shape, so an
+  // asymmetric value head_dim (D_v != D_qk) silently returns a q-D-shaped output
+  // (or non-finite on sparse) instead of SDPA's V-D shape — a WRONG-SHAPE
+  // silent-wrong. Reject D_v != D_qk at the raw boundary (the kernel's real
+  // contract). The PUBLIC functions keep asymmetric D_v via their SDPA fallback,
+  // so the capability is retained at the public layer; raw enforces the kernel.
+  if (v.shape(3) != q.shape(3))
+    bad("v head_dim (D_v=" + std::to_string(v.shape(3)) + ") must equal q/k "
+        "head_dim (D_qk=" + std::to_string(q.shape(3)) + ") — this raw kernel "
+        "allocates output from q.shape and cannot produce a D_v-shaped output. "
+        "Use the public wrapper for asymmetric D_v (SDPA fallback).");
   const int Hq = q.shape(1), Hk = k.shape(1);
   if (Hk <= 0 || Hq % Hk != 0)
     bad("q_heads (" + std::to_string(Hq) + ") must be a positive multiple of "
@@ -1770,6 +1782,68 @@ static void validate_dense_qkv(
     bad("q, k, v must share dtype");
   if (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16)
     bad("only float16/bfloat16 are supported");
+}
+
+// =========================================================================
+// CC Batch — shared raw-entry validators (paged family + TQ buffers)
+// =========================================================================
+// The dense feature family routes through validate_dense_qkv (above). The PAGED
+// family has its own input structure (q + pooled K/V, TQ adds packed uint8 K +
+// fp16 centroids + fp32 scales), so it gets these companion validators — one
+// enforcement point per contract, reused across the paged siblings (no per-site
+// ad-hoc drift), mirroring the runtime-matrix gate + the Python _persist_validate.
+
+// Class A — paged forwards that dispatch a float16/bfloat16 kernel via a 2-way
+// `dtype_code=0; if(bf16)=1` map (no fp32 branch): fp32 q falls to the half
+// kernel = FINITE GARBAGE (cos≈0, max_abs≈1e37), masked by the requested-dtype
+// output alloc. Reject fp32 at the boundary. Public wrappers keep fp32 via their
+// per-sequence SDPA fallback bridge, so this only closes the raw `_ext` hole.
+static inline void assert_raw_fp16_bf16_only(
+    const mlx::core::array& q, const char* entry) {
+  const auto dt = q.dtype();
+  if (dt == mlx::core::float16 || dt == mlx::core::bfloat16) return;
+  throw std::invalid_argument(
+      std::string(entry) +
+      ": only float16/bfloat16 are supported "
+      "— this raw forward dispatches a float16/bfloat16 kernel "
+      "and a float32 input would route to a mismatched (half) kernel = silent-wrong "
+      "output. Use float16/bfloat16; for float32 use the public wrapper "
+      "(flash_attention_paged_varlen / *_turboquant), which provides an fp32 "
+      "fallback bridge.");
+}
+
+// Class D — paged pools are read at q's dtype (dtype_code derived from q only),
+// so a k_pool/v_pool whose dtype != q is reinterpreted byte-wise = finite
+// silent-wrong (probe cos as low as 0.325). Require the value pools to match q.
+static inline void assert_raw_pool_dtype_eq(
+    const mlx::core::array& q, const mlx::core::array& k_pool,
+    const mlx::core::array& v_pool, const char* entry) {
+  if (k_pool.dtype() != q.dtype() || v_pool.dtype() != q.dtype())
+    throw std::invalid_argument(
+        std::string(entry) + ": k_pool/v_pool dtype must equal q dtype "
+        "(the kernel derives its dtype from q and reads the pools at that dtype; "
+        "a mismatched pool dtype is read byte-wise = silent-wrong output).");
+}
+
+// Class D — TurboQuant backing-buffer required dtypes. The fused TQ kernel reads
+// packed K as uint8, the centroid codebook as fp16, and the scales as fp32; a
+// mismatched buffer dtype is reinterpreted = finite silent-wrong.
+static inline void assert_raw_tq_buffer_dtypes(
+    const mlx::core::array& q, const mlx::core::array& k_pool_tq,
+    const mlx::core::array& v_pool, const mlx::core::array& centroids,
+    const mlx::core::array& k_scales, const char* entry) {
+  if (k_pool_tq.dtype() != mlx::core::uint8)
+    throw std::invalid_argument(std::string(entry) +
+        ": k_pool_tq must be uint8 (packed TurboQuant K).");
+  if (v_pool.dtype() != q.dtype())
+    throw std::invalid_argument(std::string(entry) +
+        ": v_pool dtype must equal q dtype (read at q's dtype).");
+  if (centroids.dtype() != mlx::core::float16)
+    throw std::invalid_argument(std::string(entry) +
+        ": centroids must be float16 (the codebook is read as fp16).");
+  if (k_scales.dtype() != mlx::core::float32)
+    throw std::invalid_argument(std::string(entry) +
+        ": k_scales must be float32 (read as fp32).");
 }
 
 // =========================================================================
@@ -2476,6 +2550,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     throw std::invalid_argument("mfa_paged_steel_forward: k_pool must be 4-D [num_blocks,BS,H_kv,D]");
   if (v_pool.ndim() != 4)
     throw std::invalid_argument("mfa_paged_steel_forward: v_pool must be 4-D [num_blocks,BS,H_kv,D]");
+  // CC Batch Class D: pools read at q's dtype → reject mixed q/pool dtype.
+  assert_raw_pool_dtype_eq(q, k_pool, v_pool, "mfa_paged_steel_forward");
   // CX-03 (volet H): the kernel derives num_blocks/block_size/H_kv/D and all
   // strides from k_pool and binds V at those SAME offsets — a V pool disagreeing
   // on any of the four dims drives an out-of-bounds device read (silent finite-
@@ -3164,33 +3240,6 @@ void MFAPagedVarlenForward::eval_gpu(
 }
 
 // =========================================================================
-// CC Batch-1 Class A — shared raw-entry dtype gate
-// =========================================================================
-// Several raw forwards dispatch a float16/bfloat16 kernel by a 2-way
-// `dtype_code = 0; if (bf16) dtype_code = 1;` map with NO fp32 branch — so a
-// float32 q falls through to the half kernel, which reinterprets fp32 bytes as
-// half: FINITE GARBAGE (silent-wrong, cos≈0, max_abs≈1e37), masked because the
-// output is allocated in the requested (fp32) dtype.  This is the raw/function-
-// surface analogue of the runtime matrix's `_FP16_BF16_ONLY_BACKENDS` gate:
-// reject the unsupported (entry, dtype) LOUDLY at the wrapper boundary, before
-// the C++ dispatch can route it to a mismatched kernel.  The PUBLIC wrappers
-// already provide an fp32 fallback bridge (per-sequence SDPA), so this gate only
-// closes the raw `_ext` direct-call hole, never the public fp32 path.
-static inline void assert_raw_fp16_bf16_only(
-    const mlx::core::array& q, const char* entry) {
-  const auto dt = q.dtype();
-  if (dt == mlx::core::float16 || dt == mlx::core::bfloat16) return;
-  throw std::invalid_argument(
-      std::string(entry) +
-      ": only float16/bfloat16 are supported "
-      "— this raw forward dispatches a float16/bfloat16 kernel "
-      "and a float32 input would route to a mismatched (half) kernel = silent-wrong "
-      "output. Use float16/bfloat16; for float32 use the public wrapper "
-      "(flash_attention_paged_varlen / *_turboquant), which provides an fp32 "
-      "fallback bridge.");
-}
-
-// =========================================================================
 // mfa_paged_varlen_forward — Free function
 // =========================================================================
 
@@ -3213,6 +3262,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   // CC Batch-1 Class A: reject fp32 (silent-wrong — fp32 falls to the half
   // kernel: cos≈0, max_abs≈4.3e37). Public wrapper has an fp32 fallback bridge.
   assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_forward");
+  // CC Batch Class D: pools read at q's dtype → reject mixed q/pool dtype.
+  assert_raw_pool_dtype_eq(q, k_pool, v_pool, "mfa_paged_varlen_forward");
 
   // CX-03 (volet H): V pool bound at K's strides — require exact shape match.
   if (k_pool.ndim() != 4 || v_pool.ndim() != 4)
@@ -3452,6 +3503,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   // CC Batch-1 Class A: reject fp32 (silent-wrong — fp32 q falls to the half
   // kernel via the same 2-way dtype_code map; prior probe cos≈0.27).
   assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_tq_forward");
+  // CC Batch Class D: enforce the TQ backing-buffer dtypes (packed K uint8,
+  // V pool == q, centroids fp16, scales fp32) — a mismatch is read byte-wise.
+  assert_raw_tq_buffer_dtypes(q, k_pool_tq, v_pool, centroids, k_scales,
+                              "mfa_paged_varlen_tq_forward");
   if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
     throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
 
