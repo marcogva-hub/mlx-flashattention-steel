@@ -192,6 +192,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       sdist (removed from the publish-surface allowlist + added to `[tool.scikit-build.sdist].exclude`)
       — the published package contains user-facing docs only. Verified 0 `CLAUDE*.md` members in the
       built sdist; the guard now flags any re-introduction.
+  - **Complete API-surface inventory + TQ/raw-paged validation (volet I — round-6 CX-R6-01/CX-R6-03).**
+    Built the full entry × feature × {correctness, accept-valid, reject-malformed, determinism} matrix
+    (`audit/round3_remediation/surface_inventory.md`) and closed the two siblings the surface-by-surface
+    audits had missed:
+    - **TQ paged backing-buffer shape lock (CX-R6-01, CRITICAL):** `flash_attention_paged_varlen_turboquant`
+      and raw `mfa_paged_varlen_tq_forward` now validate `v_pages` / `k_scales` / packed-K width
+      (`_compute_packed_d(D, tq_bits)`) and optional `v_pool_tq` / `v_scales` against the packed K pool
+      (num_blocks, block_size, H_kv). Previously an undersized/mis-shaped backing buffer drove an
+      out-of-bounds device read (undersized `v_pages` → finite-wrong; smaller head_dim → **NaN**;
+      undersized `k_scales` → OOB; incompatible `packed_D` → garbage). Now raises.
+    - **Raw paged metadata dtype (CX-R6-03, HIGH):** raw `mfa_paged_steel_forward` /
+      `mfa_paged_varlen_forward` (+ TQ raw) now require int32 `block_table` / `seq_lens` / `cu_seqlens`
+      (the public wrappers already did). Previously they silently cast int64 → int32 and a **float
+      `seq_lens` HUNG** the kernel (garbage length). Now raises.
+    Validation-only (byteΔ-identical valid paths); bite-proven; lock `tests/test_surface_inventory_i.py`.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

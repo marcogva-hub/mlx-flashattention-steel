@@ -7280,6 +7280,61 @@ class PagedKVCache(KVCacheProtocol):
         )
 
 
+def _assert_tq_paged_buffers(k_pool_tq, v_pages, k_scales, tq_bits, fn, *,
+                             v_pool_tq=None, v_scales=None):
+    """Volet I (CX-R6-01): TQ paged backing-buffer shape lock.
+
+    The TQ-paged kernel derives num_blocks / block_size / H_kv from the packed K
+    pool (`k_pool_tq` [num_blocks, block_size, H_kv, packed_D]) and reads `v_pages`,
+    `k_scales` (and optional `v_pool_tq` / `v_scales`) at those SAME block/head
+    offsets without re-checking them — an undersized/mis-shaped backing buffer drives
+    an out-of-bounds device read (CX-R6-01: undersized v_pages → OOB finite-wrong,
+    smaller head_dim → NaN, undersized k_scales → OOB). The packed-K width must also
+    match `_compute_packed_d(D, tq_bits)` or the unpack reads garbage. This is the
+    TQ-layout analogue of volet-H's K==V check (which doesn't fit TQ's packed K).
+    """
+    from mlx_mfa.turboquant import _compute_packed_d
+    if k_pool_tq.ndim != 4:
+        raise ValueError(
+            f"{fn}: k_pool_tq must be 4-D [num_blocks, block_size, H_kv, packed_D]; "
+            f"got ndim={k_pool_tq.ndim}.")
+    nb, bsz, hkv, packed_d = (int(x) for x in k_pool_tq.shape)
+    if v_pages.ndim != 4:
+        raise ValueError(
+            f"{fn}: v_pages must be 4-D [num_blocks, block_size, H_kv, D]; got "
+            f"ndim={v_pages.ndim}.")
+    Dv = int(v_pages.shape[3])
+    if (int(v_pages.shape[0]), int(v_pages.shape[1]), int(v_pages.shape[2])) != (nb, bsz, hkv):
+        raise ValueError(
+            f"{fn}: v_pages [num_blocks, block_size, H_kv] {tuple(int(x) for x in v_pages.shape[:3])} "
+            f"must match k_pool_tq {(nb, bsz, hkv)} (the kernel reads V at K's block/head "
+            f"offsets and would read out of bounds otherwise).")
+    exp_packed = _compute_packed_d(Dv, tq_bits)
+    if packed_d != exp_packed:
+        raise ValueError(
+            f"{fn}: k_pool_tq packed_D ({packed_d}) is incompatible with D={Dv} at "
+            f"tq_bits={tq_bits} (expected {exp_packed}); the unpack would read garbage.")
+    if tuple(int(x) for x in k_scales.shape) != (nb, bsz, hkv):
+        raise ValueError(
+            f"{fn}: k_scales {tuple(int(x) for x in k_scales.shape)} must be "
+            f"[num_blocks, block_size, H_kv] = {(nb, bsz, hkv)} (per-block-token-head "
+            f"dequant scale; a shorter array drives an out-of-bounds read).")
+    if v_pool_tq is not None:
+        if v_pool_tq.ndim != 4 or (int(v_pool_tq.shape[0]), int(v_pool_tq.shape[1]),
+                                   int(v_pool_tq.shape[2])) != (nb, bsz, hkv):
+            raise ValueError(
+                f"{fn}: v_pool_tq must be 4-D [num_blocks, block_size, H_kv, packed_D] "
+                f"matching k_pool_tq's block/head dims {(nb, bsz, hkv)}.")
+        if int(v_pool_tq.shape[3]) != exp_packed:
+            raise ValueError(
+                f"{fn}: v_pool_tq packed_D ({int(v_pool_tq.shape[3])}) != expected "
+                f"{exp_packed} for D={Dv} tq_bits={tq_bits}.")
+        if v_scales is not None and tuple(int(x) for x in v_scales.shape) != (nb, bsz, hkv):
+            raise ValueError(
+                f"{fn}: v_scales {tuple(int(x) for x in v_scales.shape)} must be "
+                f"[num_blocks, block_size, H_kv] = {(nb, bsz, hkv)}.")
+
+
 def _assert_paged_pool_compat(k_pages, v_pages, fn, *, cu_seqlens=()):
     """Volet H (CX-03/CX-02): paged-pool mutual-shape + metadata-dtype guard.
 
@@ -8412,6 +8467,11 @@ def flash_attention_paged_varlen_turboquant(
         raise ValueError(
             "flash_attention_paged_varlen_turboquant: cu_seqlens_q must be int32 "
             f"(the kernel reads it as int32; got {cu_seqlens_q.dtype}).")
+    _assert_tq_paged_buffers(  # CX-R6-01: TQ backing-buffer shape lock
+        k_pool_tq, v_pages, k_scales, tq_bits,
+        "flash_attention_paged_varlen_turboquant",
+        v_pool_tq=v_pool_tq if tq_v_enabled else None,
+        v_scales=v_scales if tq_v_enabled else None)
 
     import math
     import mlx.core as mx

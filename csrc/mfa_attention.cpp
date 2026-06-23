@@ -2478,9 +2478,19 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   // The free function forces evaluation here.
   mlx::core::eval(seq_lens);
 
-  // Cast block_table and seq_lens to int32 if not already.
-  auto bt_i32 = mlx::core::astype(block_table, mlx::core::int32, s);
-  auto sl_i32 = mlx::core::astype(seq_lens,    mlx::core::int32, s);
+  // CX-R6-03 (volet I): require int32 metadata — the prior silent astype masked
+  // int64/float bugs (float seq_lens HANGS; int64 reads wrong indices). The public
+  // wrappers already reject non-int32; the raw entry must too (Rule 8).
+  if (block_table.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_steel_forward: block_table must be int32 (got a different dtype; "
+        "the kernel reads it as int32).");
+  if (seq_lens.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_steel_forward: seq_lens must be int32 (got a different dtype; "
+        "a float/int64 seq_lens drives a wrong/garbage kv length).");
+  auto bt_i32 = block_table;
+  auto sl_i32 = seq_lens;
   mlx::core::eval(sl_i32);
 
   mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]
@@ -3090,10 +3100,19 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
       throw std::invalid_argument(
           "mfa_paged_varlen_forward: v_pool shape must equal k_pool shape "
           "(mismatch at dim " + std::to_string(d) + ").");
-  // CX-02 (volet H): the kernel reads cu_seqlens_q as int32.
+  // CX-02 (volet H) + CX-R6-03 (volet I): the kernel reads cu_seqlens_q,
+  // block_table AND seq_lens_kv as int32 — a float seq_lens_kv HANGS (garbage
+  // length), int64 reads wrong values. Require int32 on all three.
   if (cu_seqlens_q.dtype() != mlx::core::int32)
     throw std::invalid_argument(
         "mfa_paged_varlen_forward: cu_seqlens_q must be int32 (read as int32).");
+  if (block_table.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: block_table must be int32 (read as int32).");
+  if (seq_lens_kv.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: seq_lens_kv must be int32 (a float/int64 array "
+        "drives a garbage kv length — float HANGS).");
 
   // CX-04 (volet C2, raw host guard): the kernel reads block_table[seq] /
   // seq_lens_kv[seq] for seq in [0, num_seqs) where num_seqs =
@@ -3309,6 +3328,52 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     throw std::runtime_error("mfa_paged_varlen_tq_forward: Q must be [1, H_q, total_q, D]");
   if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
     throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
+
+  // CX-R6-01 (volet I): TQ backing-buffer shape lock. The kernel derives
+  // num_blocks/block_size/H_kv from the packed K pool and reads v_pool / k_scales
+  // (+ optional v_pool_tq / v_scales) at K's block/head offsets without re-checking
+  // them — an undersized/mis-shaped buffer drives an OOB device read (v_pool OOB,
+  // k_scales OOB, wrong packed_D → garbage unpack). Validate before dispatch (Rule 8).
+  {
+    auto packed_for = [](int D, int bits) -> int {
+      if (bits == 3) return (D / 32) * 12;
+      if (bits == 2) return D / 4;
+      if (bits == 4) return D / 2;
+      throw std::invalid_argument("mfa_paged_varlen_tq_forward: tq_bits must be 2, 3, or 4");
+    };
+    if (k_pool_tq.ndim() != 4)
+      throw std::invalid_argument("mfa_paged_varlen_tq_forward: k_pool_tq must be 4-D [num_blocks,block_size,H_kv,packed_D]");
+    if (v_pool.ndim() != 4)
+      throw std::invalid_argument("mfa_paged_varlen_tq_forward: v_pool must be 4-D [num_blocks,block_size,H_kv,D]");
+    const int nb = k_pool_tq.shape(0), bsz = k_pool_tq.shape(1), hkv = k_pool_tq.shape(2);
+    const int packed_d = k_pool_tq.shape(3), Dv = v_pool.shape(3);
+    if (v_pool.shape(0) != nb || v_pool.shape(1) != bsz || v_pool.shape(2) != hkv)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: v_pool [num_blocks,block_size,H_kv] must match k_pool_tq.");
+    const int exp_packed = packed_for(Dv, tq_bits);
+    if (packed_d != exp_packed)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: k_pool_tq packed_D (" + std::to_string(packed_d) +
+          ") incompatible with D=" + std::to_string(Dv) + " tq_bits=" + std::to_string(tq_bits) +
+          " (expected " + std::to_string(exp_packed) + ").");
+    if (k_scales.ndim() != 3 || k_scales.shape(0) != nb || k_scales.shape(1) != bsz || k_scales.shape(2) != hkv)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: k_scales must be [num_blocks,block_size,H_kv] matching k_pool_tq.");
+    if (tq_v_enabled && v_pool_tq) {
+      const auto& vt = *v_pool_tq;
+      if (vt.ndim() != 4 || vt.shape(0) != nb || vt.shape(1) != bsz || vt.shape(2) != hkv || vt.shape(3) != exp_packed)
+        throw std::invalid_argument(
+            "mfa_paged_varlen_tq_forward: v_pool_tq must be [num_blocks,block_size,H_kv,packed_D] matching k_pool_tq.");
+      if (v_scales && ((*v_scales).ndim() != 3 || (*v_scales).shape(0) != nb || (*v_scales).shape(1) != bsz || (*v_scales).shape(2) != hkv))
+        throw std::invalid_argument(
+            "mfa_paged_varlen_tq_forward: v_scales must be [num_blocks,block_size,H_kv] matching k_pool_tq.");
+    }
+  }
+  // CX-R6-03 (volet I): int32 metadata (float seq_lens HANGS, int64 wrong values).
+  if (cu_seqlens_q.dtype() != mlx::core::int32 || block_table.dtype() != mlx::core::int32 ||
+      seq_lens_kv.dtype() != mlx::core::int32)
+    throw std::invalid_argument(
+        "mfa_paged_varlen_tq_forward: cu_seqlens_q / block_table / seq_lens_kv must be int32.");
 
   // CX-04 (volet C2, raw host guard): the kernel reads block_table[seq] /
   // seq_lens_kv[seq] for seq in [0, num_seqs) where num_seqs =
