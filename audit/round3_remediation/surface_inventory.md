@@ -233,7 +233,7 @@ name-prefix heuristic dropped to `helper: other`, so it never got an inventory r
 
 | entry | correctness | accept-valid | reject-malformed (was→now) | determinism |
 |---|---|---|---|---|
-| `sparse_attention_dispatch` (P8) | fp64 oracle <5e-3 (native + SDPA routes) | f16/bf16/**f32**, asym-D_v (SDPA), GQA — both routes ✓ | **SDPA route: V kv-seq {1,2,8,16,31,32,33,63}≠K + dtype-mismatch no-raise/NaN → all RAISE** (entry-level guard, BOTH routes) | SDPA route byteΔ=0 ×20 (V=1 nondet now unreachable — raises) |
+| `sparse_attention_dispatch` (P8) | fp64 oracle <5e-3 (SDPA route; native route corrected + engagement-proven in volet M) | f16/bf16 (both routes), f32 (SDPA path — see volet M), asym-D_v (SDPA), GQA ✓ | **SDPA route: V kv-seq {1,2,8,16,31,32,33,63}≠K + dtype-mismatch no-raise/NaN → all RAISE** (entry-level guard, BOTH routes) | SDPA route byteΔ=0 ×20 (V=1 nondet now unreachable — raises) |
 
 **CX-R8-01 fix:** validate Q/K/V (batch, K↔V seq/heads, q↔K head-dim, GQA, dtype-
 equality) at the dispatcher entry BEFORE the native-vs-SDPA split → both routes
@@ -246,12 +246,52 @@ HELPER allowlist + a **completeness assertion** — any export matching neither 
 silently fall through). All 80 helper exports spot-verified non-computational.
 Lock: `tests/test_hardening_l.py` (30 cells).
 
-## ✅ INVENTORY COMPLETE — OMITTED computational = 0 (TRUE as of volet L)
+## Volet M — 24th entry + durable classifier + native-route/f32 contract (2026-06-23)
+
+Round-9 (Codex) = 0 CRITICAL / 2 HIGH (memory-safety class closed; two
+completeness/contract items):
+
+- **CX-R9-01 — `make_shared_prefix_cache` (the 24th).** A public computational
+  entry (takes Q/K/V, calls `flash_attention(causal=True)`, returns its output +
+  passes K/V through) hidden by the classifier's surviving `make_* → helper` name
+  rule. Inherits the hardened `flash_attention` core (no code fix).
+
+  | entry | correctness | accept-valid | reject-malformed | determinism |
+  |---|---|---|---|---|
+  | `make_shared_prefix_cache` (P9) | **byteΔ=0 vs direct `flash_attention`**; k/v passthrough byteΔ=0 | f16/bf16 GQA ✓ | batch/k_seq/GQA RAISE (inherited from core) | byteΔ=0 ×20 (inherited) |
+
+- **CX-R9-02 — native-route test + f32 contract.** L's "native" cells used
+  `density_threshold=1.0` on an all-true mask (density 1.0); the route is strict
+  `density < threshold`, so they ran **SDPA, not native**. Fixed: native is forced
+  with `threshold` strictly above density (1.01) at N=1024 (≥4096-byte mask), and
+  **byteΔ-vs-SDPA = 1.2e-4 proves native engaged**. The native sparse kernel is
+  f16/bf16-only, so f32 was density-dependent (SDPA ran, native raised) — now
+  **f32 (any non-f16/bf16) routes to SDPA regardless of density** (consistent;
+  f32 byteΔ-identical across both density regimes). `FLAG-FOR-SIGNOFF`: the
+  alternative was to RAISE on f32 at the entry; the routing-to-SDPA default was
+  implemented (f32 produces correct dense attention) — Marco's call to keep or
+  switch to raise. (Codex premise correction confirmed at source: the V2 sparse
+  kernel uses direct device pointers, **not** `KV_smem` gather → no barrier
+  needed; determinism inherently stable, locked anyway.)
+
+**Durable classifier (the recurring failure, fixed for good):** a name rule
+misclassified a computational entry in round-8 (`sparse_attention_dispatch`,
+name-prefix) AND round-9 (`make_shared_prefix_cache`, `make_*`). `enumerate_api_
+surface.py` now has **NO name-pattern rules** — classification is two FULLY
+EXPLICIT allowlists (COMPUTATIONAL 24 + HELPER 79) plus **Assertion 2**: a
+semantic cross-check that fails loudly if any HELPER export takes a q/k/v triple
+AND calls a compute entry (the computational-in-helper signature). Bite-proven
+(move a computational entry to HELPER → `SystemExit`). All 79 helpers
+spot-verified non-computational. Lock: `tests/test_hardening_m.py` (lock count;
++ corrected `tests/test_hardening_l.py`).
+
+## ✅ INVENTORY COMPLETE — OMITTED computational = 0 (TRUE as of volet M)
 `scripts/enumerate_api_surface.py` reports **0 omitted** computational entries
-(**23 public** + 34 raw, all AUDITED) and is **assertion-guarded** for completeness.
-The full computational attention surface — public + raw — now has a first-hand
-4-axis matrix row. The round-by-round sibling cycle is closed: round-9 (Codex) is
-the convergence check.
+(**24 public** + 34 raw, all AUDITED) and is **assertion-guarded** by TWO
+assertions (every export classified + no computational-in-helper). The full
+computational attention surface — public + raw — has a first-hand 4-axis matrix
+row, and the row-set definition is itself defended against the misclassification
+that hid the 23rd and 24th entries. Round-10 (Codex) is the convergence check.
 
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8

@@ -360,7 +360,12 @@ def sparse_attention_dispatch(
         density = float(d_arr)
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])
-    if density < density_threshold:
+    # CX-R9-02 (volet M): the native sparse kernel is f16/bf16-only — route any
+    # non-f16/bf16 dtype (e.g. float32) to the SDPA path REGARDLESS of density so
+    # f32 produces correct attention consistently. Previously f32 was
+    # density-dependent (ran on SDPA, raised on the native route).
+    _force_sdpa = Q.dtype not in (mx.float16, mx.bfloat16)
+    if (not _force_sdpa) and density < density_threshold:
         return sparse_attention_nax(
             Q, K, V, block_mask,
             block_tile=block_tile,

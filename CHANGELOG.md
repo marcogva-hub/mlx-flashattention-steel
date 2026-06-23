@@ -309,8 +309,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     helper allowlist + a **completeness assertion** — any `__all__` export matching neither raises a loud
     `SystemExit` (a new/misclassified export can no longer silently fall through to `helper: other`).
     Bite-proven; valid output byteΔ-identical; lock `tests/test_hardening_l.py` (30 cells). With this,
-    **`OMITTED computational = 0` is actually true** (23 public + 34 raw, all with a first-hand 4-axis
-    row) and the enumeration is assertion-guarded against regression.
+    **`OMITTED computational = 0`** (23 public + 34 raw) — but a surviving `make_*` name rule still
+    hid one more entry, found in round-9 and closed in volet M below.
+  - **24th entry `make_shared_prefix_cache` + durable name-pattern-free classifier + sparse dispatcher
+    f32 contract (volet M — CX-R9-01/CX-R9-02).** Round-9 found a 24th public computational entry,
+    `make_shared_prefix_cache` (takes Q/K/V, calls `flash_attention(causal=True)`, returns its output
+    + K/V passthrough), hidden by the classifier's surviving `make_* → helper` name rule — the same
+    name-heuristic class that hid the 23rd. It inherits the hardened `flash_attention` core (no code
+    fix; byteΔ=0 vs direct `flash_attention`). **Durable fix:** the enumeration classifier now has
+    **NO name-pattern rules at all** — two fully explicit allowlists (24 computational + 79 helper) plus
+    a **semantic cross-check assertion** that fails loudly if any HELPER export takes a q/k/v triple and
+    calls a compute entry (so a misclassified computational entry can no longer hide). **CX-R9-02:**
+    `sparse_attention_dispatch`'s native route is f16/bf16-only, and L's "native" test cells actually
+    ran SDPA (`density_threshold=1.0` on a density-1.0 mask never satisfies strict `density < threshold`);
+    fixed the tests to force native (threshold > density, N=1024) with a byteΔ-vs-SDPA engagement proof,
+    and made the **f32 contract consistent** — f32 (any non-f16/bf16) now routes to SDPA regardless of
+    density (was density-dependent: SDPA ran, native raised). Bite-proven (both the f32 routing and the
+    cross-check assertion); lock `tests/test_hardening_m.py`. **`OMITTED computational = 0` is now
+    genuinely true at 24 public + 34 raw**, with the row-set definition itself assertion-guarded.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

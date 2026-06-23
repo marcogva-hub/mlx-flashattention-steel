@@ -37,6 +37,7 @@ AUDITED_PUBLIC = {
     "flash_attention_varlen_qkv_packed", "flash_attention_varlen_kv_packed",
     "sage_attention_kvcache", "flash_attention_topk",
     "sparse_attention_dispatch",  # volet L (CX-R8-02): the 23rd, was misclassified
+    "make_shared_prefix_cache",   # volet M (CX-R9-01): the 24th, hidden by make_* rule
 }
 
 # CX-R8-02 (volet L): explicit COMPUTATIONAL allowlist replaces the name-prefix
@@ -56,13 +57,37 @@ COMPUTATIONAL_PUBLIC = set(AUDITED_PUBLIC)
 # UNCLASSIFIED → loud failure (a NEW export forces a human classification rather
 # than silently becoming a helper — the CX-R8-02 durable fix).
 HELPER_PUBLIC = {
-    "__version__",
-    "enable", "disable", "diagnostics", "hooks_status", "reset_hook_stats",
-    "calibrate_dispatch", "compile_metallib", "warmup_kernels",
-    "create_decode_runtime",
-    "adapt_kv_cache", "resolve_context_cache", "resolve_context_cache_adapter",
-    "dequantize", "sage_block_sizes", "sage_output_correction", "smooth_k",
+    # classes / contexts / protocols
+    "DecodeRuntime", "DenseKVCache", "DenseKVCacheAdapter", "DispatchPolicy",
+    "ExternalKVCacheAdapter", "ExternalKVCacheCapabilities", "HybridKVCache",
+    "HybridKVCacheAdapter", "InferenceContext", "KVCacheAdapter",
+    "KVCacheCapabilities", "KVCacheOperationUnsupported", "KVCacheProtocol",
+    "LocalHostKVStoreAdapter", "NaxUnavailable", "PagedInferenceContext",
+    "PagedKVCache", "PagedKVCacheAdapter", "QuantizedKVCache",
+    "QuantizedKVCacheAdapter", "SVDQuantLinear", "SageInferenceContext",
+    "TurboQuantKVCache", "TurboQuantPagedInferenceContext",
+    # config / diagnostics / introspection
+    "__version__", "calibrate_dispatch", "compile_metallib", "diagnostics",
+    "disable", "enable", "get_device_info", "get_hook_stats",
+    "get_supported_configs", "has_nax", "hooks_status", "is_mfa_available",
+    "reset_hook_stats", "warmup_kernels",
+    # cache management / runtime factories
+    "adapt_kv_cache", "create_decode_runtime", "create_inference_context",
+    "resolve_context_cache", "resolve_context_cache_adapter",
+    # mask builders (no q/k/v dispatch)
+    "make_adaptive_window_mask", "make_axial_spatial_mask", "make_axial_temporal_mask",
+    "make_causal_block_mask", "make_causal_segment_mask", "make_cross_stream_mask",
+    "make_diagonal_mask", "make_dilated_temporal_mask", "make_gna_mask",
+    "make_lcsa_mask", "make_reference_frame_mask", "make_rope_3d_tables",
+    "make_segment_mask", "make_sink_window_mask", "make_sliding_window_mask",
+    "make_spatial_2d_mask", "make_spatial_3d_mask", "make_strided_mask",
+    "make_temporal_distance_bias", "make_temporal_group_mask", "make_topk_spatial_mask",
     "temporal_distance_bias_to_mask",
+    # quantize / pack / preprocessing
+    "build_tq_paged_k_pool", "build_tq_paged_v_pool", "dequantize",
+    "pack_3bit_optimal", "pack_k_for_metal", "pack_v_for_metal", "quantize_model",
+    "quantize_per_block", "sage_block_sizes", "sage_output_correction", "smooth_k",
+    "turboquant_compress", "turboquant_decompress", "unpack_3bit_optimal",
 }
 # Raw bindings with a first-hand row (volet H2/I/S/I2/J).
 AUDITED_RAW = {
@@ -99,9 +124,41 @@ AUDITED_RAW = {
     "v6_nax_backward_kv",                   # R16
 }
 
-# Public names that are classes/helpers/constants, not kernel-bearing entries.
-# (Classification is by module + name pattern; see classify_public.)
-HELPER_MODULES = ("inference", "turboquant", "svdquant", "masks", "serving")
+def computational_in_helper(helper_names):
+    """CX-R9 Assertion 2 (semantic cross-check): a HELPER export that takes a
+    q/k/v triple AND calls a compute entry in its body is a MISCLASSIFIED
+    computational entry — return the offenders so main() can fail loudly. This
+    makes the computational-in-helper error impossible-by-silence (the bug that
+    hid the 23rd and 24th entries). Imports mlx_mfa to inspect sources."""
+    import inspect
+    import mlx_mfa
+    compute = re.compile(
+        r"\b(flash_attention|sage_attention|sparse_attention_nax|"
+        r"sparse_attention_dispatch)\s*\(|_ext\.\w*forward")
+
+    def qkv_triple(fn):
+        try:
+            params = [p.lower() for p in inspect.signature(fn).parameters]
+        except (TypeError, ValueError):
+            return False
+
+        def has(*opts):
+            return any(any(p == o or p.endswith("_" + o) for o in opts)
+                       for p in params)
+        return has("q", "query") and has("k", "key") and has("v", "value")
+
+    bad = []
+    for h in helper_names:
+        obj = getattr(mlx_mfa, h, None)
+        if obj is None or inspect.isclass(obj):
+            continue
+        try:
+            src = inspect.getsource(obj)
+        except (OSError, TypeError):
+            continue
+        if qkv_triple(obj) and compute.search(src):
+            bad.append(h)
+    return bad
 
 
 def public_exports():
@@ -137,21 +194,16 @@ def classify_public(name, module):
     export can't be hidden as "helper: other" the way sparse_attention_dispatch
     was.
     """
+    # CX-R9-02 (volet M): NO name-pattern rules — a `make_*` rule hid the 24th
+    # computational entry (make_shared_prefix_cache) in round-9, after a name-
+    # prefix rule hid the 23rd in round-8. Classification is now purely by two
+    # explicit allowlists; anything in neither → UNCLASSIFIED → loud failure.
     if name in COMPUTATIONAL_PUBLIC:
         return "computational", "attention entry (allowlist)"
     if name in HELPER_PUBLIC:
-        return "helper", "utility/config/preproc (allowlist)"
-    if name[0].isupper():
-        return "helper", "class/context"
-    if any(m in module for m in HELPER_MODULES):
-        return "helper", f"{module.split('.')[-1]} helper"
-    if name.startswith(("make_", "apply_", "quantize", "patch_", "get_", "set_",
-                        "is_", "has_", "install_", "compress", "decompress")):
-        return "helper", "utility/builder"
-    # No silent 'other' bucket — fail loudly so the row-set stays complete.
-    return "UNCLASSIFIED", ("matches neither COMPUTATIONAL_PUBLIC nor a helper "
-                            "rule; add it to the allowlist if computational, or "
-                            "extend a helper rule")
+        return "helper", "non-computational (allowlist)"
+    return "UNCLASSIFIED", ("matches neither COMPUTATIONAL_PUBLIC nor HELPER_PUBLIC "
+                            "— add it to the correct explicit allowlist")
 
 
 def raw_bindings():
@@ -202,8 +254,18 @@ def main():
     if unclassified:
         raise SystemExit(
             "enumerate_api_surface: UNCLASSIFIED public export(s) — the row-set is "
-            "incomplete. Add to COMPUTATIONAL_PUBLIC if computational, else a helper "
-            "rule:\n  " + "\n  ".join(f"{r[0]} ({r[1]}): {r[3]}" for r in unclassified))
+            "incomplete. Add to COMPUTATIONAL_PUBLIC or HELPER_PUBLIC:\n  "
+            + "\n  ".join(f"{r[0]} ({r[1]}): {r[3]}" for r in unclassified))
+
+    # CX-R9 Assertion 2 (semantic cross-check): no HELPER export may take a q/k/v
+    # triple AND call a compute entry — that is a misclassified computational
+    # entry (how the 23rd + 24th were hidden). Fail loudly.
+    misclassified = computational_in_helper([r[0] for r in pub_rows if r[2] == "helper"])
+    if misclassified:
+        raise SystemExit(
+            "enumerate_api_surface: HELPER export(s) that take q/k/v AND call a "
+            "compute entry — these are MISCLASSIFIED computational entries; move "
+            "them to COMPUTATIONAL_PUBLIC:\n  " + "\n  ".join(misclassified))
 
     pub_comp = [r for r in pub_rows if r[2] == "computational"]   # (name,mod,cls,why,aud)
     raw_comp = [r for r in raw_rows if r[1] == "computational"]   # (name,cls,why,aud)

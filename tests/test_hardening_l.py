@@ -38,11 +38,14 @@ def _f64(a):
     return np.array(a.astype(mx.float32)).astype(np.float64)
 
 
-# ── correctness: both routes vs fp64 dense oracle (all-True mask = full attn) ────
-@pytest.mark.parametrize("thr,route", [(0.0, "sdpa"), (1.0, "native")])
-def test_correctness_both_routes(thr, route):
+# ── correctness: the SDPA route vs fp64 dense oracle (all-True mask = full attn).
+# NOTE: at N=64 the small all-true mask is < the native kernel's 4096-byte floor,
+# so this config exercises the SDPA route regardless of threshold. Genuine
+# native-route engagement (+ byteΔ-vs-SDPA proof) is locked in test_hardening_m.py
+# (N=1024) — the L "native" cells at threshold=1.0 actually ran SDPA (CX-R9-02).
+def test_correctness_sdpa_route():
     q, k, v = _mk()
-    o = sad(q, k, v, _mask(), block_tile=BT, scale=SC, causal=False, density_threshold=thr)
+    o = sad(q, k, v, _mask(), block_tile=BT, scale=SC, causal=False, density_threshold=0.0)
     mx.eval(o)
     qf, kf, vf = _f64(q), _f64(k), _f64(v)
     kk, vv = np.repeat(kf, Hq // Hk, 1), np.repeat(vf, Hq // Hk, 1)
@@ -51,7 +54,7 @@ def test_correctness_both_routes(thr, route):
     p = np.exp(s); p /= p.sum(-1, keepdims=True)
     ref = np.einsum("bhnm,bhmd->bhnd", p, vv)
     rel = float(np.max(np.abs(_f64(o) - ref)) / (np.max(np.abs(ref)) + 1e-9))
-    assert rel < 5e-3, f"{route} relerr {rel:.3e}"
+    assert rel < 5e-3, f"sdpa relerr {rel:.3e}"
 
 
 # ── accept-valid: f16/bf16/f32 + asym D_v + GQA, both routes ────────────────────
@@ -125,11 +128,11 @@ def test_classifier_unknown_export_is_unclassified():
     assert cls == "UNCLASSIFIED"
 
 
-def test_enumeration_complete_23_public_0_omitted():
+def test_enumeration_complete_public_0_omitted():
+    # count is asserted exactly in test_hardening_m (24 after volet M); here just
+    # lock that sparse_attention_dispatch is computational and nothing is unclassified.
     m = _load_enum()
     pub = m.public_exports()
-    comp = [n for n in pub if m.classify_public(n, pub[n])[0] == "computational"]
     unclass = [n for n in pub if m.classify_public(n, pub[n])[0] == "UNCLASSIFIED"]
-    assert len(comp) == 23, f"expected 23 public computational, got {len(comp)}"
     assert not unclass, f"unclassified exports: {unclass}"
-    assert "sparse_attention_dispatch" in comp
+    assert m.classify_public("sparse_attention_dispatch", "mlx_mfa.lcsa_nax")[0] == "computational"
