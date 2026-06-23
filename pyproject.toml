@@ -59,7 +59,10 @@ wheel.packages = ["mlx_mfa"]
 # (unused struct) are now REMOVED from the tracked tree (verified 0 build/source/
 # test/CMake/script refs) — no longer excluded here because they no longer exist.
 # csrc/mpp_int8_bench.mm is KEPT (referenced by CMakeLists under MFA_BUILD_PROBES).
-exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__"]
+# CC-07 (volet E3, maintainer signoff 2026-06-23): CLAUDE.md / CLAUDE_V6_NAX.md are
+# internal engineering docs — excluded from the published sdist (user-facing only).
+exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__",
+           "CLAUDE.md", "CLAUDE_V6_NAX.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

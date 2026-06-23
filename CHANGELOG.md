@@ -187,6 +187,11 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       `MFA_ENABLE_V6_BACKWARD=1` 0.54×/0.57× vs AUTO-default SDPA-vjp) (CC-04); the `N_q>N_k` causal
       `qL_off=max(0,N_k-N_q)` convention is now in `API_MANUAL.md` (CC-03); touched claims carry the
       MLX-version stamp (CC-05/06).
+    - **Internal docs off the PyPI surface (CC-07, maintainer signoff):** `CLAUDE.md` and
+      `CLAUDE_V6_NAX.md` (agent-process / sprint engineering docs) are now excluded from the published
+      sdist (removed from the publish-surface allowlist + added to `[tool.scikit-build.sdist].exclude`)
+      — the published package contains user-facing docs only. Verified 0 `CLAUDE*.md` members in the
+      built sdist; the guard now flags any re-introduction.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

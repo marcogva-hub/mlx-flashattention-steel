@@ -43,9 +43,13 @@ def _skip_or_fail(reason: str) -> None:
     pytest.skip(reason)
 
 # ── The explicit published-sdist allowlist ────────────────────────────────────
+# CC-07 (volet E3, maintainer signoff 2026-06-23): CLAUDE.md / CLAUDE_V6_NAX.md are
+# internal agent-process / sprint engineering docs, NOT user-facing — excluded from
+# the sdist (see pyproject [tool.scikit-build.sdist].exclude). Removed from this
+# allowlist so a future re-introduction would be flagged as a leak.
 _ALLOWED_ROOT_DOCS = {
     "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
-    "CLAUDE.md", "CLAUDE_V6_NAX.md", "CONTRIBUTING.md",
+    "CONTRIBUTING.md",
     "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",
 }
 # Permitted top-level directories in the sdist (code + tests + scripts).
