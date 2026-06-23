@@ -496,6 +496,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     fails to compile; bf16 is a spec dtype and TQ prefill/Nq>1 works, so this is a path-specific kernel
     bug (fix = template the V accumulator on pool dtype, or force the TQ V-pool to fp16), **not**
     construction-gateable without over-rejecting the working TQ+bf16 prefill path.
+  - **TQ+bf16 decode fixed — native bf16 in the `tq_decode` kernels (volet P9; resolves the P8 flag).**
+    P8 flagged `turboquant`+`bf16` Nq=1 decode as failing late: both `tq_decode` kernels hardcoded
+    `half` (`half vout_v` in the V-gather, `half kout_v` in the K-dequant) plus a hardcoded fp16 output,
+    so a bf16 V-pool / bf16 output wouldn't compile (`assigning to 'half' from 'bfloat16_t'`). bf16 is
+    an in-spec dtype, so the fix is the kernel (not narrowing the capability): both kernels are now
+    **templated on the cache dtype** — `bfloat16_t` for a bf16 cache, byte-identical `half` for fp16 —
+    and `tq_decode_attend` emits K/V in the cache dtype (so K/V/q share dtype for SDPA). **Native bf16,
+    not a lossy bf16→fp16→bf16 round-trip** (`bfloat16_t` confirmed compiling on M5 / Metal 4 / MLX
+    0.31.2). Correctness: the bf16 V-gather is an **exact** copy of the pool value, and the bf16
+    K-dequant matches the fp32 dequant oracle (cast to bf16) **exactly** (0.0); fp16 is **byteΔ=0** vs
+    the pre-P9 kernel; bf16 decode is deterministic. The P1 OOB bounds guard
+    (`blk < n_active && 0 ≤ phys < num_blocks`) is **preserved in both dtypes** — worst-case phys
+    (99 / −5 / −1) → all-zero output, byteΔ=0 vs the `-1` sentinel, finite, in both fp16 and bf16
+    (default mode still raises early). Lock: `tests/test_tq_decode_bf16.py`. The dtype × backend matrix
+    now has **no late-failure cell** (every combo runs end-to-end or is rejected at construction).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

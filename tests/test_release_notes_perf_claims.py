@@ -480,7 +480,9 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
         vn = mx.zeros((1, Hkv, 1, D), dtype=claim["dtype"])
         mx.eval(q, kn, vn)
         before = len(tq_decode._K_DEQUANT_KERNELS)
-        cache_key = (D, Hkv, 64, 3)
+        # P9: the K-dequant kernel cache key carries the MSL out-dtype suffix
+        # (the kernels are now bf16-native; fp16 stays byte-identical).
+        cache_key = (D, Hkv, 64, 3, tq_decode._msl_type(claim["dtype"]))
         tq_decode._K_DEQUANT_KERNELS.pop(cache_key, None)
         out = ctx.step(q, kn, vn)
         mx.eval(out)

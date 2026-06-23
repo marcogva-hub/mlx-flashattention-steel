@@ -32,6 +32,20 @@ import mlx.core as mx
 _K_DEQUANT_KERNELS: dict = {}
 _V_GATHER_KERNELS: dict = {}
 
+# P9: the tq_decode kernels output the cache dtype natively (the V pool and the
+# rotated q are at the context dtype).  Map the MLX dtype to its MSL scalar type
+# so the K-dequant accumulator + V-gather load/output are bf16-native for a bf16
+# cache (no lossy bf16→fp16→bf16 round-trip) and byte-identical `half` for fp16.
+_MSL_TYPE = {mx.float16: "half", mx.bfloat16: "bfloat16_t"}
+
+
+def _msl_type(dtype) -> str:
+    t = _MSL_TYPE.get(dtype)
+    if t is None:
+        raise ValueError(
+            f"tq_decode kernels support float16/bfloat16 cache dtype; got {dtype}.")
+    return t
+
 _HEADER = """
 #include <metal_stdlib>
 using namespace metal;
@@ -81,8 +95,9 @@ def _packed_d(D: int, bits: int) -> int:
     return D // 2  # bits == 4
 
 
-def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
-    key = (D, Hkv, block_size, bits)
+def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int, out_dtype):
+    t = _msl_type(out_dtype)
+    key = (D, Hkv, block_size, bits, t)
     kern = _K_DEQUANT_KERNELS.get(key)
     if kern is None:
         pd = _packed_d(D, bits)
@@ -98,7 +113,7 @@ def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
   const int s = (int)(gid / ({D} * {Hkv}));
   const int blk = s / {block_size};
   const int tok = s % {block_size};
-  half kout_v = (half)0;
+  {t} kout_v = ({t})0;
   // CX-TQ-DECODE-01: bounds-guard the logical table index (blk < n_blk) AND the
   // physical block id (0 <= phys < num_blocks) before ANY pool/scale/centroid
   // load. blk past the active table, or phys out of range (incl. -1 padding) →
@@ -113,14 +128,14 @@ def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
 {_unpack_snippet(bits)}
       const float scl = k_scales[(ulong)phys * {block_size * Hkv}
                                + (ulong)tok * {Hkv} + h];
-      kout_v = (half)((float)centroids[idx] * scl);
+      kout_v = ({t})((float)centroids[idx] * scl);
     }}
   }}
   // out layout: [1, Hkv, S, D]
   Kout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] = kout_v;
 """
         kern = mx.fast.metal_kernel(
-            name=f"tq_decode_kdequant_b{bits}_d{D}_h{Hkv}_bs{block_size}",
+            name=f"tq_decode_kdequant_b{bits}_d{D}_h{Hkv}_bs{block_size}_{t}",
             input_names=["k_pool", "k_scales", "centroids",
                          "block_table", "params"],
             output_names=["Kout"],
@@ -129,8 +144,9 @@ def _get_k_dequant_kernel(D: int, Hkv: int, block_size: int, bits: int):
     return kern
 
 
-def _get_v_gather_kernel(D: int, Hkv: int, block_size: int):
-    key = (D, Hkv, block_size)
+def _get_v_gather_kernel(D: int, Hkv: int, block_size: int, out_dtype):
+    t = _msl_type(out_dtype)
+    key = (D, Hkv, block_size, t)
     kern = _V_GATHER_KERNELS.get(key)
     if kern is None:
         src = f"""
@@ -145,7 +161,7 @@ def _get_v_gather_kernel(D: int, Hkv: int, block_size: int):
   const int s = (int)(gid / ({D} * {Hkv}));
   const int blk = s / {block_size};
   const int tok = s % {block_size};
-  half vout_v = (half)0;
+  {t} vout_v = ({t})0;
   // CX-TQ-DECODE-01: same bounds guard as the K kernel — phys out of
   // [0,num_blocks) (incl. -1 padding) or blk past the active table → zero.
   if (blk < n_blk) {{
@@ -158,7 +174,7 @@ def _get_v_gather_kernel(D: int, Hkv: int, block_size: int):
   Vout[((ulong)h * (ulong)S + (ulong)s) * {D} + d] = vout_v;
 """
         kern = mx.fast.metal_kernel(
-            name=f"tq_decode_vgather_d{D}_h{Hkv}_bs{block_size}",
+            name=f"tq_decode_vgather_d{D}_h{Hkv}_bs{block_size}_{t}",
             input_names=["v_pool", "block_table", "params"],
             output_names=["Vout"],
             source=src, header=_HEADER, ensure_row_contiguous=True)
@@ -206,17 +222,21 @@ def tq_decode_attend(
     n_active_blocks = int(block_table_row.shape[0])
     params = mx.array([S, int(_num_blocks), n_active_blocks], dtype=mx.int32)
 
-    kkern = _get_k_dequant_kernel(D, Hkv, bs, tq_bits)
-    vkern = _get_v_gather_kernel(D, Hkv, bs)
+    # P9: emit K/V in the CACHE dtype natively (the V pool + rotated q are at the
+    # context dtype) — bf16-native for a bf16 cache (no lossy fp16 round-trip),
+    # byte-identical `half` for fp16.  K/V/q then share dtype for SDPA.
+    out_dtype = v_pool_fp16.dtype
+    kkern = _get_k_dequant_kernel(D, Hkv, bs, tq_bits, out_dtype)
+    vkern = _get_v_gather_kernel(D, Hkv, bs, out_dtype)
     total = S * Hkv * D
     grid = ((total + 255) // 256 * 256, 1, 1)
     tg = (256, 1, 1)
     K = kkern(inputs=[k_pool_tq, k_scales, k_centroids,
                       block_table_row, params],
-              output_shapes=[(1, Hkv, S, D)], output_dtypes=[mx.float16],
+              output_shapes=[(1, Hkv, S, D)], output_dtypes=[out_dtype],
               grid=grid, threadgroup=tg)[0]
     V = vkern(inputs=[v_pool_fp16, block_table_row, params],
-              output_shapes=[(1, Hkv, S, D)], output_dtypes=[mx.float16],
+              output_shapes=[(1, Hkv, S, D)], output_dtypes=[out_dtype],
               grid=grid, threadgroup=tg)[0]
     return mx.fast.scaled_dot_product_attention(
         q_rot, K, V, scale=scale, stream=stream) if stream is not None \
