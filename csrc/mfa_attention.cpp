@@ -2991,6 +2991,17 @@ mlx::core::array mfa_gna_forward(
   if (q.dtype() == mlx::core::float32)
     throw std::invalid_argument(
         "MFA GNA: float32 not supported; use float16 or bfloat16");
+  // volet K2 (R8): mutual dtype (k/v could differ from q → silent-wrong) +
+  // positive lattice/window/stride (a 0/neg window or stride → NaN / invalid
+  // grid). Production passes equal f16/bf16 and all params >= 1.
+  if (k.dtype() != q.dtype() || v.dtype() != q.dtype())
+    throw std::invalid_argument("MFA GNA: q, k, v must share dtype");
+  if (dim0 <= 0 || dim1 <= 0 || dim2 <= 0)
+    throw std::invalid_argument("MFA GNA: lattice dims (dim0,dim1,dim2) must be positive");
+  if (win0 <= 0 || win1 <= 0 || win2 <= 0)
+    throw std::invalid_argument("MFA GNA: window sizes (win0,win1,win2) must be positive");
+  if (str0 <= 0 || str1 <= 0 || str2 <= 0)
+    throw std::invalid_argument("MFA GNA: strides (str0,str1,str2) must be positive");
 
   int N = q.shape(2);
   int expected_N = dim0 * dim1 * dim2;

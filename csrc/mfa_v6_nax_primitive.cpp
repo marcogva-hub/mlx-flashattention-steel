@@ -77,6 +77,23 @@ static inline void v6_aux_bnqd(const char* name, const char* what,
     throw std::runtime_error(std::string(name) + ": " + what +
         " must be [B, Hq, Nq, D] (q-consistent).");
 }
+// volet K2 (R16): aux SHAPE was checked but not dtype. q/k/v mismatch and a
+// non-float32 lse/d_vec read silently-wrong (observed: dtype mismatch + d_vec
+// f16 no-raise). Production passes q/k/v equal f16/bf16 and lse/d_vec float32
+// (lse = forward output float32; d_vec = rowsum(dO⊙O) computed in float32).
+static inline void v6_check_bwd_dtypes(const char* name,
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse,
+    const mlx::core::array& d_vec) {
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+    throw std::runtime_error(std::string(name) + ": q, k, v must share dtype.");
+  if (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16)
+    throw std::runtime_error(std::string(name) + ": q, k, v must be float16/bfloat16.");
+  if (lse.dtype() != mlx::core::float32)
+    throw std::runtime_error(std::string(name) + ": lse must be float32.");
+  if (d_vec.dtype() != mlx::core::float32)
+    throw std::runtime_error(std::string(name) + ": d_vec must be float32.");
+}
 
 // Forward decls (defined in v6_nax_compile.mm).
 void* v6_nax_compile_with_constants(
@@ -1250,6 +1267,7 @@ mlx::core::array v6_nax_backward_query(
   // CX-04 (volet H2): was Q-rank + GQA only — add K↔V mutual shape + aux shape
   // checks (o/lse/d_o/d_vec consistent with Q) like the other v6 backward bindings.
   v6_check_bwd_gqa("V6NAX bwd dQ", q, k, v);
+  v6_check_bwd_dtypes("V6NAX bwd dQ", q, k, v, lse, d_vec);  // volet K2 (R16)
   v6_aux_bnqd("V6NAX bwd dQ", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dQ", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dQ", "d_o", q, d_o);
@@ -1429,6 +1447,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_kv(
     float scale, bool causal) {
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dKdV: Q must be 4D");
   v6_check_bwd_gqa("V6NAX bwd dKdV", q, k, v);
+  v6_check_bwd_dtypes("V6NAX bwd dKdV", q, k, v, lse, d_vec);  // volet K2 (R16)
   v6_aux_bnqd("V6NAX bwd dKdV", "o", q, o);
   v6_aux_bnq ("V6NAX bwd dKdV", "lse", q, lse);
   v6_aux_bnqd("V6NAX bwd dKdV", "d_o", q, d_o);

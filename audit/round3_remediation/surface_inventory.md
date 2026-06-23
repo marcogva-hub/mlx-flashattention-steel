@@ -159,6 +159,38 @@ raw R2 (`mfa_forward_with_lse`), R8 (`mfa_gna_forward`), R9 (`sparse_attention_f
 already comprehensive — verify-only), R11/R12 (quantizers), R14 (`conv3d_nax_forward`),
 R16 (`v6_nax_backward_{query,kv}`).
 
+## Volet K2 — remaining raw entries hardened (2026-06-23)
+
+4-axis sweep of the last 8 raw entries. **2 had defects (R8, R16 — fixed); 5
+verify-only** (R2/R9/R11/R12/R14 already comprehensive). HARD GUARD honored — and
+it BIT: my first pass added "R2 f16/bf16-only", but R2's dense primitive SUPPORTS
+float32 (the return_lse path upcasts to f32) — 7 suite tests failed, the check was
+reverted. The lesson recurred exactly as warned; the suite caught it, then the
+valid-space enumeration confirmed f32 is valid for R2 (verify-only).
+
+| entry (K0) | correctness | accept-valid | reject-malformed (was→now) | determinism |
+|---|---|---|---|---|
+| `mfa_forward_with_lse` (R2) | fp64 oracle <3e-3 ✓ | f16/bf16/**f32** GQA ✓ | batch/k_seq/q_D/dtype/GQA **already RAISE** (verify-only) | N-A (dense direct/barriered) |
+| `mfa_gna_forward` (R8) | (GNA, covered by public) | valid runs ✓ | **dtype-mismatch + window/stride≤0 no-raise (win-neg=NaN) → RAISE** | N-A (M5 direct reads; barriered legacy) |
+| `sparse_attention_forward` (R9) | — | valid runs ✓ | batch/k_seq/q_D **already RAISE** (verify-only, comprehensive) | N-A (device row reads) |
+| `mfa_quantize_per_block` (R11) | — | valid runs ✓ | block=0/non-pow2/f32 **already RAISE** | N-A (reduction) |
+| `mfa_smooth_quantize_k` (R12) | — | valid runs ✓ | block=0/f32 **already RAISE** | N-A (reduction) |
+| `conv3d_nax_forward` (R14) | — | valid runs ✓ | Cin/dtype/stride0/neg-pad **already RAISE** | N-A (conv/im2col) |
+| `v6_nax_backward_query` (R16) | fp32 vjp oracle dQ <5e-2 ✓ | D=64 GQA ✓ | **dtype-mismatch + f16 lse/d_vec no-raise → RAISE** (shapes already raised) | N-A (coop tile) |
+| `v6_nax_backward_kv` (R16) | fp32 vjp oracle dK/dV <5e-2 ✓ | D=64 GQA ✓ | same as query → RAISE | N-A |
+
+Fixes: R2 +f16/bf16-supported; R8 +mutual dtype +positive lattice/window/stride;
+R16 +`v6_check_bwd_dtypes` (q/k/v mutual f16/bf16 + lse/d_vec float32, called from
+both query+kv). Bite-proven (3 checks neutralized → repros stop raising; restore →
+raise). Validation-only → valid output/grads byteΔ-identical by construction (R2
+oracle <3e-3, R16 vjp-oracle <5e-2 unchanged). Lock: `tests/test_hardening_k2.py`
+(40 cells). Accept-valid proof: R16 lse/d_vec float32 confirmed at the production
+call site (`_v6nax_backward`: `D = sum(dO*O).astype(float32)`, lse = forward
+float32 output) BEFORE adding the check (HARD GUARD).
+
+**K2 closes the raw surface → only the 13 PUBLIC entries (P1–P7 residuals) remain
+for K3** (packed/speculative/splitfuse/rope-family/kvcache/topk).
+
 ## Notes (RULE 16)
 - CX-R6-02 (sage nondeterminism): RESOLVED in volet S. My volet-I "byteΔ=0 over 8
   runs" used a config (N=256) below the multi-tile threshold — the race only fires at

@@ -53,6 +53,15 @@ AUDITED_RAW = {
     "sparse_attention_forward_with_lse",    # R10
     "mfa_scatter_kv",                       # R13
     "mfa_attention_forward",                # R1 (retrofit via shared validator)
+    # volet K2 — remaining raw entries (4-axis + validation fixes):
+    "mfa_forward_with_lse",                 # R2 (added f16/bf16-supported)
+    "mfa_gna_forward",                      # R8 (added dtype + window/stride>0)
+    "sparse_attention_forward",             # R9 (verify-only — comprehensive)
+    "mfa_quantize_per_block",               # R11 (verify-only)
+    "mfa_smooth_quantize_k",                # R12 (verify-only)
+    "conv3d_nax_forward",                   # R14 (verify-only)
+    "v6_nax_backward_query",                # R16 (added dtype + lse/d_vec f32)
+    "v6_nax_backward_kv",                   # R16
 }
 
 # Public names that are classes/helpers/constants, not kernel-bearing entries.

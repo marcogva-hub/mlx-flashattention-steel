@@ -268,6 +268,19 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     `mfa_attention_forward` (retrofit — was missing GQA/q↔K-D/dtype). Bite-proven; valid output
     byteΔ-identical (validation-only); rope/varlen gather determinism locked at N≥512. Lock:
     `tests/test_hardening_k1.py` (59 cells). 21 of the 31 omitted computational entries remain for K2+.
+  - **Raw computational-surface validation, remaining 8 entries (volet K2).** 4-axis sweep of the last
+    raw entries. **2 had defects, fixed:** `mfa_gna_forward` accepted dtype-mismatched K/V and
+    non-positive window/stride (a zero/negative window → NaN) → mutual-dtype + positive
+    lattice/window/stride checks; `v6_nax_backward_{query,kv}` accepted dtype-mismatched K and
+    **float16 `lse`/`d_vec`** (silent-wrong gradients — they must be float32) → `v6_check_bwd_dtypes`
+    (q/k/v mutual f16/bf16 + lse/d_vec float32). The other 6 (`mfa_forward_with_lse`,
+    `sparse_attention_forward`, `mfa_quantize_per_block`, `mfa_smooth_quantize_k`, `conv3d_nax_forward`)
+    were confirmed already-comprehensive (verify-only). Bite-proven; valid output/grads byteΔ-identical
+    (R16 fp32-vjp-oracle relerr <5e-2 unchanged). Lock: `tests/test_hardening_k2.py` (40 cells). This
+    completes the **raw** surface — only the 13 public P1–P7 residual entries remain (K3).
+    *(HARD-GUARD note: an initial "`mfa_forward_with_lse` f16/bf16-only" check was reverted — the dense
+    MFAttention primitive supports float32 via the return_lse upcast path; the over-strict check broke
+    7 tests and the entry is verify-only.)*
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
