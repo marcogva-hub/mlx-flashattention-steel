@@ -78,7 +78,14 @@ def _warn_offspec(D: int, dtype, where: str) -> None:
 # byte store is dtype-agnostic post-P7) and turboquant (fp32 routes to fallback)
 # DO run fp32 end-to-end → they are NOT gated.  This closes the fp32 late-failure
 # class (P7 LocalHost + P8 paged were two instances of it).
-_FP16_BF16_ONLY_BACKENDS = ("paged", "sage")
+#
+# P10 adds "turboquant": its decode kernels are fp16/bf16 too — the tq_decode
+# gather/dequant kernels reject fp32 (`_msl_type`) and the fused fallback
+# (MFA_DISABLE_TQ_DECODE_SDPA=1) emits NON-FINITE fp32.  P8 mis-marked this cell
+# "OK (fallback)" because pre-P9 tq_decode FORCED fp16 output, so it *ran* while
+# silently emitting fp16 — a forced-dtype masking that "does it run?" could not
+# see.  Gate it at construction like the other fp16/bf16-only backends.
+_FP16_BF16_ONLY_BACKENDS = ("paged", "sage", "turboquant")
 
 
 def _assert_construct_dtype_supported(backend: str, dtype, where: str) -> None:
@@ -884,6 +891,9 @@ class TurboQuantPagedInferenceContext:
         self.wht_in_kernel = wht_in_kernel
         self.dtype = dtype
         self.stream = stream
+        # P10: TQ decode kernels are fp16/bf16-only (tq_decode rejects fp32; the
+        # fused fallback emits non-finite fp32) → reject fp32 at construction.
+        _assert_construct_dtype_supported("turboquant", dtype, "TurboQuantPagedInferenceContext")
         _warn_offspec(D, dtype, "TurboQuantPagedInferenceContext")  # CC-09: loud off-spec fallback
         from mlx_mfa.turboquant import _compute_packed_d
         self.packed_D = _compute_packed_d(D, tq_bits)

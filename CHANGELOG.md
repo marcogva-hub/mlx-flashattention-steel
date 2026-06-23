@@ -511,6 +511,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     (99 / −5 / −1) → all-zero output, byteΔ=0 vs the `-1` sentinel, finite, in both fp16 and bf16
     (default mode still raises early). Lock: `tests/test_tq_decode_bf16.py`. The dtype × backend matrix
     now has **no late-failure cell** (every combo runs end-to-end or is rejected at construction).
+  - **dtype × backend matrix re-verified (finite + correct, not "runs") and CI-locked (volet P10).**
+    The P8 matrix probe tested *"does it construct/run?"* — which mis-marked `turboquant + fp32` as
+    "OK (fallback)" because pre-P9 `tq_decode` **forced fp16 output**, so the cell *ran* while silently
+    emitting fp16 (a forced-dtype masking). P9's explicit `_msl_type` exposed it as a loud-late failure
+    (and the fused fallback `MFA_DISABLE_TQ_DECODE_SDPA=1` emits **non-finite** fp32). P10 fixes the
+    *methodology*: every cell is re-verified against the real criteria — runs **and** finite **and**
+    output-dtype-matches-request **and** correct vs an independent fp32 SDPA reference (cosine) — not
+    merely "runs". `turboquant` is added to the construction gate (`_FP16_BF16_ONLY_BACKENDS`), so
+    `turboquant + fp32` now raises at construction like paged/sage (its tq_decode kernels are
+    fp16/bf16-only; fp32 has no real path). The whole matrix is **CI-locked** by
+    `tests/test_dtype_backend_matrix.py`, which drives every (backend, dtype) cell through the public
+    decode path and asserts the locked outcome — end-to-end cells finite + dtype-correct + cos ≥ floor
+    (1.0 dense/paged/sage/hybrid, ~0.98 turboquant quantized), gated cells raise at construction; **no
+    cell may "run" without a correctness assertion** (the masking that hid the bug now fails the test).
+    Corrected matrix: dense/hybrid fp16+bf16+fp32 OK; paged/sage/turboquant fp16+bf16 OK, fp32
+    rejected-at-construction. No over-rejection (every genuinely-running cell still runs, byteΔ
+    unchanged on valid). This closes the fp32 off-spec class properly (P7 LocalHost → P8 paged/sage →
+    P10 turboquant, all three instances + the matrix itself now locked).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
