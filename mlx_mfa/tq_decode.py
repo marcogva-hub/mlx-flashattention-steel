@@ -231,6 +231,17 @@ def tq_decode_attend(
         raise ValueError(
             f"tq_decode_attend: v_pool_fp16 [num_blocks,block_size,H_kv] "
             f"{tuple(v_pool_fp16.shape[:3])} must match k_pool_tq {(_num_blocks, bs, Hkv)}.")
+    # sweep iter-3 (subset-derive OOB): k_scales is the last sibling pool array left
+    # unchecked. The K-dequant kernel indexes k_scales at k_pool's block stride
+    # (phys guarded only against num_blocks), so an undersized k_scales (e.g. 2
+    # blocks vs num_blocks=8) reads OOB → finite NON-deterministic (verified). Mirror
+    # the v_pool / packed_D guards above (production step allocates them together; the
+    # exposure is this raw helper).
+    if tuple(k_scales.shape) != (_num_blocks, bs, Hkv):
+        raise ValueError(
+            f"tq_decode_attend: k_scales {tuple(k_scales.shape)} must equal "
+            f"(num_blocks, block_size, H_kv) {(_num_blocks, bs, Hkv)}; the K-dequant "
+            "kernel indexes k_scales at k_pool's block stride and would read OOB.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
     S = int(seq_len)

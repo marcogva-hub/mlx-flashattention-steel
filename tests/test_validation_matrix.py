@@ -488,3 +488,36 @@ def test_sweep_tq_append_atomic():
     c = fresh(); n0 = c.seq_length(0)
     c.append(_q(4, 2, 64), _q(4, 2, 64), seq_id=0)
     assert c.seq_length(0) > n0, "valid TQ.append did not mutate"
+
+
+# ── Sweep iter-3 regression locks: tq k_scales OOB + softcap value-semantics ──────
+def test_sweep_tq_decode_kscales_extent():
+    from mlx_mfa.tq_decode import tq_decode_attend as _tqa, _packed_d as _pd
+    D, Hq, Hkv, bs, bits, nb, S = 128, 8, 2, 16, 3, 8, 64; pdk = _pd(D, bits)
+    q = mx.random.normal((1, Hq, 1, D)).astype(F16); ktq = mx.zeros((nb, bs, Hkv, pdk), U8)
+    vp = mx.zeros((nb, bs, Hkv, D), F16); cent = mx.zeros((2 ** bits,), F16)
+    bt = mx.array([0, 1, 2, 3], mx.int32); mx.eval(q, ktq, vp, cent, bt)
+    with pytest.raises(ValueError):                                   # k_scales 2 blocks vs nb=8
+        o = _tqa(q, ktq, vp, mx.zeros((2, bs, Hkv), F32), cent, bt, S, block_size=bs, tq_bits=bits)
+        mx.eval(o)
+    o = _tqa(q, ktq, vp, mx.zeros((nb, bs, Hkv), F32), cent, bt, S, block_size=bs, tq_bits=bits)
+    mx.eval(o)                                                        # valid k_scales runs
+
+
+@pytest.mark.parametrize("backend", ["mfa", "auto"])
+@pytest.mark.parametrize("bad", [-30.0, float("nan"), float("inf")])
+def test_sweep_softcap_value_semantics(backend, bad):
+    import math as _m
+    B, H, N, D = 1, 4, 64, 128; sc = 1 / _m.sqrt(D)
+    q = _qB(B, H, N, D); k = _qB(B, H, N, D); v = _qB(B, H, N, D)
+    with pytest.raises(ValueError):                                   # negative/nan/inf softcap
+        o = mlx_mfa.flash_attention(q, k, v, scale=sc, softcap=bad, backend=backend); mx.eval(o)
+
+
+def test_sweep_softcap_valid_unaffected():
+    import math as _m
+    B, H, N, D = 1, 4, 64, 128; sc = 1 / _m.sqrt(D)
+    q = _qB(B, H, N, D); k = _qB(B, H, N, D); v = _qB(B, H, N, D)
+    for be in ("mfa", "auto"):
+        for s in (0.0, 30.0):                                        # no over-rejection
+            mx.eval(mlx_mfa.flash_attention(q, k, v, scale=sc, softcap=s, backend=be))

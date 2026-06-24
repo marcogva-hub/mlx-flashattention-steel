@@ -582,6 +582,23 @@ def flash_attention(
             "alibi_slopes or attn_bias — the ALiBi/bias kernel path does not apply "
             "windowing (it would be silently dropped). Use one or the other.")
 
+    # SOFTCAP value-semantics (sweep iter-3): the MFA kernels compile the softcap
+    # variant only when `softcap > 0.0f`, so backend="mfa" SILENTLY DROPPED a
+    # negative softcap (output byte-identical to softcap=0; tanh-softcap is sign-even
+    # so it should equal +|softcap|) AND a nan/inf softcap (finite-wrong), while
+    # backend="auto"/"sdpa" apply negative and RAISE on nan. Make the contract
+    # explicit + uniform across backends: softcap must be a finite value >= 0
+    # (it is a positive capping factor; a negative value is almost certainly an error
+    # — no path documents or relies on it). Closes the mfa silent-drop (Rule 8).
+    if not math.isfinite(softcap):
+        raise ValueError(
+            f"flash_attention: softcap must be finite, got {softcap!r}.")
+    if softcap < 0:
+        raise ValueError(
+            f"flash_attention: softcap must be >= 0 (positive capping factor; "
+            f"tanh-softcap is sign-even so a negative value is almost certainly an "
+            f"error), got {softcap}.")
+
     # fp32 forced-`mfa` refusal (audit follow-up to RC-A/RC-B): the MFA kernels
     # are fp16/bf16 only; fp32 forced to `backend="mfa"` routes to the legacy ccv
     # path and is silently wrong for causal N<S.  Refuse loudly (RULE 8).
