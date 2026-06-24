@@ -638,6 +638,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     tiny). Malformed → raises; valid → byteΔ=0; opt-out → skips. Locked in `tests/test_raw_surface_classes.py`
     (sparse-LSE + sibling-coverage assertion + varlen value cells + opt-out). **dtype + shape + value axes
     now all closed for every metadata/feature input.** C++ rebuild required.
+  - **Derived metadata validated against its DERIVATION, not sampled invariants (CC batch).** The prior
+    batch validated `tile_offsets` for generic invariants (monotone, `[0]==0`) — but `tile_offsets` is
+    *derived* (fully determined by `cu_seqlens_q` + the tile width `BQ`), so monotone-but-wrong values
+    passed and produced finite-wrong output (cos 0.64–0.88). The fix is structural, not another sampled
+    invariant: a shared `validate_tile_offsets_derivation` **recomputes the canonical value**
+    (`t[j+1]=t[j]+ceil(q_len[j]/BQ)`, with `BQ` derived the same way the kernel does —
+    `select_steel_block_config(D, low_prec, is_m3_plus).BQ`, device-aware, never hardcoded) and asserts the
+    provided `tile_offsets` equals it. This is a **total** contract: only the canonical value passes; every
+    deviation (wrong-final, wrong-segment, non-monotone, off-by-one) raises *because* it ≠ recompute, not
+    via a blacklist. Applied to all three varlen entries (non-paged / paged / TQ), replacing the generic
+    prefix-sum check for `tile_offsets` (the primary `cu_seqlens_*` keep their value check). The formula was
+    pinned byteΔ=0 against existing valid cases before the assert; canonical values + all existing varlen
+    tests run unchanged (no over-rejection); gated by the existing `MFA_VARLEN_TRUST_METADATA` (no new
+    knob; re-measured sync delta ≈0). `tile_offsets` is the only derived metadata on the raw surface
+    (`cu_seqlens_*` are primary). Locked in `tests/test_raw_surface_classes.py` (wrong-final/-segment/
+    non-monotone/off-by-one + canonical-byteΔ0 formula-perturbation bite + opt-out, across non-paged +
+    paged). C++ rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

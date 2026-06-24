@@ -531,3 +531,100 @@ def test_varlen_metadata_value_optout_skips():
             os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)
         else:
             os.environ["MFA_VARLEN_TRUST_METADATA"] = prev
+
+
+# ── Derived-metadata: tile_offsets validated against its DERIVATION (CC batch) ────
+# tile_offsets = cumulative ceil(q_len/BQ) from cu_seqlens_q (BQ=32 STEEL). The
+# generic prefix-sum check accepted monotone-but-wrong values (finite-wrong cos
+# 0.64-0.88); now validated against the canonical recomputation (TOTAL contract:
+# only the one correct value passes). Across non-paged / paged / TQ.
+def _varlen_tile(tile):
+    mx.random.seed(0)   # fixed inputs so default-vs-opt-out byteΔ is meaningful
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    cu = mx.array([0, 64, 128], mx.int32)
+    return _ext.mfa_attention_varlen_forward(q, k, v, cu, cu, tile, _SCv, False)
+
+
+_CANON_NP = mx.array([0, 2, 4], mx.int32)   # ceil(64/32)=2 each
+_TILE_BAD = [
+    ("wrong_final", lambda: _varlen_tile(mx.array([0, 2, 3], mx.int32))),
+    ("wrong_segment", lambda: _varlen_tile(mx.array([0, 1, 4], mx.int32))),
+    ("non_monotone", lambda: _varlen_tile(mx.array([0, 4, 2], mx.int32))),
+    ("off_by_one", lambda: _varlen_tile(mx.array([0, 2, 5], mx.int32))),
+]
+
+
+@pytest.mark.parametrize("name,fn", _TILE_BAD, ids=[c[0] for c in _TILE_BAD])
+def test_tile_offsets_derivation_rejects(name, fn):
+    with pytest.raises(ValueError):
+        fn()
+
+
+def test_tile_offsets_canonical_runs_and_bytedelta0():
+    # formula-perturbation bite: the canonical value (recompute) MUST pass; if the
+    # C++ formula were perturbed/over-strict, this valid case would start raising.
+    o = _varlen_tile(_CANON_NP)
+    mx.eval(o[0] if isinstance(o, (tuple, list)) else o)
+    # byteΔ=0 vs opt-out (validation is pre-dispatch, valid path unperturbed)
+    prev = os.environ.get("MFA_VARLEN_TRUST_METADATA")
+    os.environ["MFA_VARLEN_TRUST_METADATA"] = "1"
+    try:
+        o2 = _varlen_tile(_CANON_NP)
+        mx.eval(o2[0])
+    finally:
+        if prev is None:
+            os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)
+        else:
+            os.environ["MFA_VARLEN_TRUST_METADATA"] = prev
+    assert (np.array(o[0].astype(F32)).tobytes()
+            == np.array(o2[0].astype(F32)).tobytes())
+
+
+def test_tile_offsets_derivation_optout_skips():
+    prev = os.environ.get("MFA_VARLEN_TRUST_METADATA")
+    os.environ["MFA_VARLEN_TRUST_METADATA"] = "1"
+    try:
+        o = _varlen_tile(mx.array([0, 2, 3], mx.int32))   # wrong but trusted
+        mx.eval(o[0])
+    finally:
+        if prev is None:
+            os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)
+        else:
+            os.environ["MFA_VARLEN_TRUST_METADATA"] = prev
+
+
+def _paged_varlen_tile(tile):
+    Hq, Hkv, D, bs = 8, 4, 64, 16
+    ql, kl = [3, 4], [27, 33]
+    qs = [mx.random.normal((1, Hq, x, D)).astype(F16) for x in ql]
+    ks = [mx.random.normal((1, Hkv, x, D)).astype(F16) for x in kl]
+    vs = [mx.random.normal((1, Hkv, x, D)).astype(F16) for x in kl]
+    mx.eval(*qs, *ks, *vs)
+    qp = mx.concatenate(qs, axis=2)
+    cu = mx.array([0, 3, 7], mx.int32)
+    bps = [(x + bs - 1) // bs for x in kl]
+    tot, mb = sum(bps), max(bps)
+    pk = np.zeros((tot, bs, Hkv, D), np.float32); pv = np.zeros((tot, bs, Hkv, D), np.float32)
+    tab = np.full((2, mb), -1, np.int32); lens = np.zeros((2,), np.int32); base = 0
+    for b in range(2):
+        kn = np.array(ks[b].astype(F32))[0].transpose(1, 0, 2)
+        vn = np.array(vs[b].astype(F32))[0].transpose(1, 0, 2)
+        S = kn.shape[0]; lens[b] = S
+        for lb in range(bps[b]):
+            tab[b, lb] = base + lb; s0, s1 = lb * bs, min(S, lb * bs + bs)
+            pk[base + lb, :s1 - s0] = kn[s0:s1]; pv[base + lb, :s1 - s0] = vn[s0:s1]
+        base += bps[b]
+    return _ext.mfa_paged_varlen_forward(
+        qp, mx.array(pk).astype(F16), mx.array(pv).astype(F16), cu, tile,
+        mx.array(tab, mx.int32), mx.array(lens, mx.int32), _SCv, False, bs)
+
+
+def test_paged_varlen_tile_derivation():
+    _paged_varlen_tile(mx.array([0, 1, 2], mx.int32))     # canonical → runs
+    for bad in ([0, 1, 3], [0, 2, 2]):                    # wrong-final / wrong-segment
+        with pytest.raises(ValueError):
+            _paged_varlen_tile(mx.array(bad, mx.int32))

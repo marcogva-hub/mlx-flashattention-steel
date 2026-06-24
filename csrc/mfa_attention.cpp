@@ -1968,6 +1968,47 @@ static void check_prefix_sum_values(
         "packed K-token count (" + std::to_string(upper_bound) + ").");
 }
 
+// CC derived-metadata class — `tile_offsets` is NOT primary: it is fully DERIVED
+// from cu_seqlens_q + the tile width BQ (tile_offsets[j+1] = tile_offsets[j] +
+// ceil(q_len[j]/BQ)). The generic prefix-sum check (monotone, [0]==0) accepted
+// monotone-but-wrong values → finite-wrong (cos 0.64–0.88). Validate against the
+// canonical RECOMPUTATION instead — a TOTAL contract: only the one correct value
+// passes, every deviation (wrong-final, wrong-segment, off-by-one) raises by
+// construction. BQ is derived the SAME way the kernel does
+// (select_steel_block_config(D, low_prec, is_m3_plus).BQ — device-aware, not
+// hardcoded), so the validator can never disagree with the dispatch.
+static void validate_tile_offsets_derivation(
+    const mlx::core::array& cu_q, const mlx::core::array& tile_offsets,
+    const mlx::core::array& q, mlx::core::Stream s, const char* entry) {
+  const int D = q.shape(3);
+  auto& dev = mlx::core::metal::device(s.device);
+  int arch = static_cast<int>(dev.get_architecture_gen());
+  if (MFAEnvConfig::get().force_gen > 0) arch = MFAEnvConfig::get().force_gen;
+  const bool is_m3p = (arch >= 15);
+  const int BQ = select_steel_block_config(
+      D, /*is_low_prec=*/q.dtype() != mlx::core::float32, is_m3p).BQ;
+  mlx::core::eval(cu_q);
+  mlx::core::eval(tile_offsets);
+  const int32_t* cq = cu_q.data<int32_t>();
+  const int32_t* to = tile_offsets.data<int32_t>();
+  const int nseq1 = static_cast<int>(cu_q.shape(0));  // num_seqs + 1
+  if (to[0] != 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": tile_offsets[0] must be 0 (got " + std::to_string(to[0]) + ").");
+  int acc = 0;
+  for (int j = 0; j < nseq1 - 1; ++j) {
+    const int qlen = cq[j + 1] - cq[j];
+    acc += (qlen + BQ - 1) / BQ;
+    if (to[j + 1] != acc)
+      throw std::invalid_argument(std::string(entry) +
+          ": tile_offsets[" + std::to_string(j + 1) + "] (" +
+          std::to_string(to[j + 1]) + ") != the canonical cumulative "
+          "ceil(q_len/BQ) (" + std::to_string(acc) + "); tile_offsets is fully "
+          "derived from cu_seqlens_q and BQ=" + std::to_string(BQ) +
+          " — pass the canonical value (or set MFA_VARLEN_TRUST_METADATA=1).");
+  }
+}
+
 // =========================================================================
 // Free function: mfa_attention_forward
 // =========================================================================
@@ -2532,7 +2573,9 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
     // cu_k: empty trailing KV segment / over-allocated K is legal (cu_k[-1] <=
     // total_k); only OOB (cu_k[-1] > total_k) and non-monotone are rejected.
     check_prefix_sum_values(cu_k, -1, "cu_seqlens_k", "MFA varlen", (int)k.shape(2));
-    check_prefix_sum_values(tile_offsets, -1, "tile_offsets", "MFA varlen");
+    // tile_offsets is DERIVED from cu_q + BQ → validate against the recomputation
+    // (total contract), not the generic monotone check (which passed wrong values).
+    validate_tile_offsets_derivation(cu_q, tile_offsets, q, s, "MFA varlen");
   }
 
   const int H  = q.shape(1);
@@ -3518,8 +3561,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_forward");
-    check_prefix_sum_values(tile_offsets, -1, "tile_offsets",
-                            "mfa_paged_varlen_forward");
+    validate_tile_offsets_derivation(cu_seqlens_q, tile_offsets, q, stream,
+                                     "mfa_paged_varlen_forward");
   }
 
   int H_q     = q.shape(1);
@@ -3802,8 +3845,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_tq_forward");
-    check_prefix_sum_values(tile_offsets, -1, "tile_offsets",
-                            "mfa_paged_varlen_tq_forward");
+    validate_tile_offsets_derivation(cu_seqlens_q, tile_offsets, q, stream,
+                                     "mfa_paged_varlen_tq_forward");
   }
 
   int H_q     = q.shape(1);
