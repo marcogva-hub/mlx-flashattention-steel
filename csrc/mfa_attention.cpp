@@ -1930,6 +1930,44 @@ static void validate_sparse_block_mask_shape(
         ") must equal q batch (" + std::to_string(B) + ").");
 }
 
+// CC metadata-VALUE class — varlen cu_seqlens/tile_offsets drive per-sequence
+// memory access; dtype/rank/cardinality are checked, but bad VALUES (non-monotone,
+// negative, [0]!=0, [-1]!=total) silently produce finite-wrong output (byteΔ up to
+// ~2.4 vs valid). Reading values forces a host sync, so — mirroring the paged
+// MFA_PAGED_TRUST_INDICES precedent — validate by DEFAULT (protect naive callers)
+// with an opt-out `MFA_VARLEN_TRUST_METADATA=1` for callers who guarantee valid
+// metadata and want the sync gone.
+static bool varlen_trust_metadata() {
+  const char* v = std::getenv("MFA_VARLEN_TRUST_METADATA");
+  return v != nullptr && std::string(v) == "1";
+}
+static void check_prefix_sum_values(
+    const mlx::core::array& a, int expected_last, const char* nm,
+    const char* entry, int upper_bound = -1) {
+  // `a` is already validated int32 + 1-D. Reads values (host sync).
+  // expected_last>=0 → final value must EQUAL it (cu_q: the packed-q count must
+  // be fully covered, else OOB). upper_bound>=0 → final value must be <= it
+  // (cu_k: an over-allocated K tensor / empty trailing KV segment is legal —
+  // cu_k[-1] < total_k is fine — but cu_k[-1] > total_k would OOB-read).
+  mlx::core::eval(a);
+  const int32_t* p = a.data<int32_t>();
+  const int n = static_cast<int>(a.shape(0));
+  auto bad = [&](const std::string& m) {
+    throw std::invalid_argument(std::string(entry) + ": " + nm + " " + m);
+  };
+  if (p[0] != 0) bad("must start at 0 (got " + std::to_string(p[0]) + ").");
+  for (int i = 1; i < n; ++i)
+    if (p[i] < p[i - 1])
+      bad("must be non-decreasing (offset " + std::to_string(i) + ": " +
+          std::to_string(p[i]) + " < " + std::to_string(p[i - 1]) + ").");
+  if (expected_last >= 0 && p[n - 1] != expected_last)
+    bad("final value (" + std::to_string(p[n - 1]) + ") must equal the total "
+        "packed token count (" + std::to_string(expected_last) + ").");
+  if (upper_bound >= 0 && p[n - 1] > upper_bound)
+    bad("final value (" + std::to_string(p[n - 1]) + ") must not exceed the "
+        "packed K-token count (" + std::to_string(upper_bound) + ").");
+}
+
 // =========================================================================
 // Free function: mfa_attention_forward
 // =========================================================================
@@ -2072,6 +2110,11 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
   if (q.dtype() == mlx::core::float32)
     throw std::invalid_argument(
         "MFA sparse: float32 is not supported; use float16 or bfloat16");
+
+  // CC sibling-bypass fix: the LSE variant must run the SAME block_mask shape
+  // validator as its non-LSE sibling (it had qkv + mask-dtype but skipped the
+  // shape check → (1,1) non-finite, (H+1,..) finite-wrong).
+  validate_sparse_block_mask_shape(block_mask, q, k, s, "MFA sparse");
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
@@ -2481,6 +2524,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
     throw std::invalid_argument(
         "MFA varlen: tile_offsets length (" + std::to_string(tile_offsets.shape(0)) +
         ") must equal num_seqs+1 (" + std::to_string(nseq1) + ").");
+
+  // CC metadata-VALUE class: validate cu_seqlens/tile_offsets VALUES (monotone,
+  // [0]==0, [-1]==total) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  if (!varlen_trust_metadata()) {
+    check_prefix_sum_values(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
+    // cu_k: empty trailing KV segment / over-allocated K is legal (cu_k[-1] <=
+    // total_k); only OOB (cu_k[-1] > total_k) and non-monotone are rejected.
+    check_prefix_sum_values(cu_k, -1, "cu_seqlens_k", "MFA varlen", (int)k.shape(2));
+    check_prefix_sum_values(tile_offsets, -1, "tile_offsets", "MFA varlen");
+  }
 
   const int H  = q.shape(1);
 
@@ -3460,6 +3513,15 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
           std::to_string(num_seqs + 1) + ").");
   }
 
+  // CC metadata-VALUE class: cu_seqlens_q/tile_offsets VALUE contract (monotone,
+  // [0]==0, cu[-1]==total_q) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  if (!varlen_trust_metadata()) {
+    check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
+                            "mfa_paged_varlen_forward");
+    check_prefix_sum_values(tile_offsets, -1, "tile_offsets",
+                            "mfa_paged_varlen_forward");
+  }
+
   int H_q     = q.shape(1);
   int total_q = q.shape(2);
   int D       = q.shape(3);
@@ -3729,6 +3791,19 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
           "mfa_paged_varlen_tq_forward: seq_lens_kv length (" +
           std::to_string(seq_lens_kv.shape(0)) + ") must equal num_seqs (" +
           std::to_string(num_seqs) + ").");
+    if (tile_offsets.ndim() != 1 || (int)tile_offsets.shape(0) != num_seqs + 1)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: tile_offsets must be 1-D [num_seqs+1] (" +
+          std::to_string(num_seqs + 1) + ").");
+  }
+
+  // CC metadata-VALUE class: cu_seqlens_q/tile_offsets VALUE contract (monotone,
+  // [0]==0, cu[-1]==total_q) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  if (!varlen_trust_metadata()) {
+    check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
+                            "mfa_paged_varlen_tq_forward");
+    check_prefix_sum_values(tile_offsets, -1, "tile_offsets",
+                            "mfa_paged_varlen_tq_forward");
   }
 
   int H_q     = q.shape(1);

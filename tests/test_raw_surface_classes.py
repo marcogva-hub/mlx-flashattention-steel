@@ -437,3 +437,97 @@ def test_shape_bite_sparse_undersized_must_raise():
     # bite: if the sparse shape validator is reverted, (1,1) stops raising.
     with pytest.raises(ValueError):
         _sparse(mx.ones((1, 1), U8))
+
+
+# ── Sibling-bypass generator + metadata-VALUE class (CC optional-input batch) ────
+# A variant (LSE) bypassed the shape validator its base sibling has; and varlen
+# metadata VALUES (cu_seqlens/tile_offsets) drove finite-wrong without value checks.
+import os
+import pathlib
+
+_SCv = 1.0 / math.sqrt(64)
+_NTv = (128 + 31) // 32
+
+
+def _sparse_lse(mask):
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    return _ext.mfa_attention_sparse_forward_with_lse(q, k, v, mask, _SCv, False)
+
+
+@pytest.mark.parametrize("mk", [
+    lambda: mx.ones((1, 1), U8),
+    lambda: mx.ones((5, _NTv, _NTv), U8),       # H+1 heads
+    lambda: mx.ones((4, 1, 1), U8),
+], ids=["lse_1x1", "lse_Hplus1", "lse_H_1_1"])
+def test_sparse_lse_shape_rejects(mk):
+    with pytest.raises(ValueError):
+        _sparse_lse(mk())
+
+
+@pytest.mark.parametrize("mk", [
+    lambda: mx.ones((_NTv, _NTv), U8),
+    lambda: mx.ones((4, _NTv, _NTv), U8),
+    lambda: mx.ones((1, 4, _NTv, _NTv), U8),
+], ids=["lse_2d", "lse_3d", "lse_4d"])
+def test_sparse_lse_shape_accepts(mk):
+    o = _sparse_lse(mk())
+    mx.eval(o[0] if isinstance(o, (tuple, list)) else o)
+
+
+def test_sibling_coverage_sparse_shape_validator():
+    # sibling-bypass bite: BOTH sparse entries (base + LSE) must route through the
+    # shape validator. If a future variant skips it, this count drops and fails.
+    src = (pathlib.Path(__file__).parent.parent / "csrc" / "mfa_attention.cpp").read_text()
+    n = src.count("validate_sparse_block_mask_shape(block_mask")
+    assert n >= 2, f"both sparse hosts (base+LSE) must call the shape validator; found {n}"
+
+
+# ── varlen metadata-VALUE cells ─────────────────────────────────────────────────
+_I32 = mx.int32
+
+
+def _varlen_v(cu_q, cu_k, tile):
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    return _ext.mfa_attention_varlen_forward(q, k, v, cu_q, cu_k, tile, _SCv, False)
+
+
+_GOOD = (mx.array([0, 64, 128], _I32), mx.array([0, 64, 128], _I32), mx.array([0, 2, 4], _I32))
+_VALUE_BAD = [
+    ("cu_q_nonmonotonic", lambda: _varlen_v(mx.array([0, 128, 64], _I32), _GOOD[1], _GOOD[2])),
+    ("cu_q_negative", lambda: _varlen_v(mx.array([0, -64, 128], _I32), _GOOD[1], _GOOD[2])),
+    ("cu_q_sum_mismatch", lambda: _varlen_v(mx.array([0, 64, 200], _I32), _GOOD[1], _GOOD[2])),
+    ("tile_inconsistent", lambda: _varlen_v(_GOOD[0], _GOOD[1], mx.array([0, 9, 4], _I32))),
+]
+
+
+@pytest.mark.parametrize("name,fn", _VALUE_BAD, ids=[c[0] for c in _VALUE_BAD])
+def test_varlen_metadata_value_rejects(name, fn):
+    with pytest.raises(ValueError):
+        fn()
+
+
+def test_varlen_metadata_value_valid_runs():
+    o = _varlen_v(*_GOOD)
+    mx.eval(o[0] if isinstance(o, (tuple, list)) else o)
+
+
+def test_varlen_metadata_value_optout_skips():
+    # opt-out MFA_VARLEN_TRUST_METADATA=1 skips the value sync (bad values run)
+    prev = os.environ.get("MFA_VARLEN_TRUST_METADATA")
+    os.environ["MFA_VARLEN_TRUST_METADATA"] = "1"
+    try:
+        o = _varlen_v(mx.array([0, 128, 64], _I32), _GOOD[1], _GOOD[2])
+        mx.eval(o[0] if isinstance(o, (tuple, list)) else o)   # no raise under opt-out
+    finally:
+        if prev is None:
+            os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)
+        else:
+            os.environ["MFA_VARLEN_TRUST_METADATA"] = prev

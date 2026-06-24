@@ -619,6 +619,25 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     runs, byteΔ=0 (validators are pre-dispatch). Locked by `tests/test_raw_surface_classes.py` (sparse/
     rope/varlen shape cells + a bite). **Both axes (dtype + shape) are now closed for every feature input.**
     C++ rebuild required.
+  - **Sibling-validator-bypass generator + metadata-value class closed (CC batch).** Two generators behind
+    the per-site findings. **(1) Sibling-bypass:** a variant skips a validator its base sibling has.
+    `mfa_attention_sparse_forward_with_lse` had `validate_dense_qkv` + the mask-dtype cast but **skipped
+    `validate_sparse_block_mask_shape`** (a `(1,1)` mask → non-finite, `(H+1,…)` → finite-wrong, while the
+    non-LSE sibling raises) — wired it in. Built the **validator × variant matrix** (dense/sparse/LSE/rope/
+    alibi/bias/varlen/paged/TQ/sage/gna): sparse-LSE was the only bypass cell; `mfa_forward_with_lse` has
+    full inline qkv validation (equivalent, flagged as drift risk). A **sibling-coverage lock** asserts
+    both sparse hosts call the shape validator so a future variant can't silently skip it. **(2)
+    Metadata-value:** the varlen forwards validated `cu_seqlens`/`tile_offsets` dtype/rank/cardinality but
+    not **values** — non-monotonic / negative / sum-mismatched `cu_seqlens` and inconsistent `tile_offsets`
+    gave finite-wrong output (byteΔ up to ~2.4). Added a shared C++ value validator (monotonic, `[0]==0`,
+    `cu_q[-1]==total_q`, `cu_k[-1] <= total_k` so an empty trailing KV segment / over-allocated K stays
+    legal) across all three varlen entries (non-paged, paged, TQ-paged; also closed TQ-paged's missing
+    `tile_offsets` cardinality). It reads metadata values → a host sync, so — mirroring
+    `MFA_PAGED_TRUST_INDICES` — it **validates by default** with an opt-out **`MFA_VARLEN_TRUST_METADATA=1`**
+    (registered + documented). Measured added-sync = **+0.013 ms** (M5, MLX 0.31.2; metadata arrays are
+    tiny). Malformed → raises; valid → byteΔ=0; opt-out → skips. Locked in `tests/test_raw_surface_classes.py`
+    (sparse-LSE + sibling-coverage assertion + varlen value cells + opt-out). **dtype + shape + value axes
+    now all closed for every metadata/feature input.** C++ rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

@@ -76,6 +76,8 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_NO_PADDING",  # real C++ shader-generator knob (env_bool, csrc/mfa_env.hpp)
     "MFA_PAGED_TRUST_INDICES",  # perf opt-out: skip the host block_table/seq_lens
     #   value-range sync on the paged decode hot path (kernel still bounds-guards)
+    "MFA_VARLEN_TRUST_METADATA",  # perf opt-out: skip the host cu_seqlens/tile_offsets
+    #   VALUE-validation sync on varlen forwards (mirrors MFA_PAGED_TRUST_INDICES)
     "MFA_SPLITK_MAX_N_D",
     "MFA_V2_BD_HALF_D512",
     "MFA_V2_BQ64",

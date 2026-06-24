@@ -17,6 +17,7 @@ M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 | `MFA_V6_DENSE_MIN_N` | int | 2048 | V6-NAX | No | Min N for the dense D=128 NAX forward route (0 = force all-N NAX) |
 | `MFA_NAX_SPARSE_DENSITY_CEILING` | float | 0.78 | Sparse | No | Mask-density at/above which sparse routes to SDPA instead of the V2 NAX-sparse kernel |
 | `MFA_PAGED_TRUST_INDICES` | bool | unset | Paged | No | Skip the host-side `block_table`/`seq_lens` value-range check on the paged decode hot path (eliminates a per-call device sync; the kernel still bounds-guards every physical block, so OOB stays memory-safe but no longer raises early). For high-frequency loops whose metadata is already valid. |
+| `MFA_VARLEN_TRUST_METADATA` | bool | unset | Varlen | No | Skip the host-side `cu_seqlens`/`tile_offsets` **value** validation (monotonic, `[0]==0`, final-sum) on the varlen forwards (eliminates a per-call device sync that reads the small metadata arrays). Mirrors `MFA_PAGED_TRUST_INDICES`; for callers whose varlen metadata is already valid. Default (unset) validates and raises on malformed metadata to prevent silent finite-wrong output. |
 | `MFA_HOOK_VERBOSE` | bool | unset | Auto-hooks | No | Verbose logging of the `mx.*` auto-hook install/dispatch (debug) |
 
 ## Architecture Override
