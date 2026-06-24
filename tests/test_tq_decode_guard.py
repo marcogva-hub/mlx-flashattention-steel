@@ -95,13 +95,42 @@ def test_public_step_oob_raises_by_default(phys):
 
 @pytest.mark.parametrize("phys", [99, -5, -1])
 def test_public_step_oob_memory_safe_under_optout(phys):
+    # Isolates the INDEX-OOB axis (the flag's actual scope) from the CAPACITY axis:
+    # provide an adequately-sized block table (enough blocks for the ctx seq_len) with
+    # ONE bad phys index. Under MFA_PAGED_TRUST_INDICES the host index value-sync is
+    # skipped; the kernel's blk<num_blocks guard must keep the bad phys memory-safe
+    # (finite, no OOB/crash). NOTE: the seq_len-capacity guard is deliberately NOT
+    # gated on the opt-out (cheap structural check, distinct axis) — see the separate
+    # over-capacity-raises test below; so the table here must be capacity-adequate.
     ctx, q, kn, vn = _ctx()
     orig = ctx.get_block_table
-    ctx.get_block_table = lambda ids=None: mx.array([[phys]], dtype=mx.int32)
+    need = (ctx.seq_length(0) + 1 + ctx.block_size - 1) // ctx.block_size
+    row = [phys] + list(range(1, need))      # slot 0 = bad phys, rest valid; capacity OK
+    ctx.get_block_table = lambda ids=None, _r=row: mx.array([_r], dtype=mx.int32)
     os.environ["MFA_PAGED_TRUST_INDICES"] = "1"
     try:
         o = ctx.step(q, kn, vn); mx.eval(o)
         assert bool(np.isfinite(_n(o)).all())   # kernel guard → no OOB/crash
+    finally:
+        os.environ.pop("MFA_PAGED_TRUST_INDICES", None)
+        ctx.get_block_table = orig
+
+
+@pytest.mark.parametrize("trust", ["0", "1"])
+def test_public_step_over_capacity_raises_even_under_optout(trust):
+    # Scope decision (iter-6): the seq_len-capacity contract is NOT covered by the
+    # MFA_PAGED_TRUST_INDICES opt-out (that flag scopes only the expensive index/
+    # seqlen value-range scan). Over-capacity is a finite-WRONG dilution (verified
+    # err 0.31 vs honest ref), so it RAISES regardless of the opt-out — the
+    # silent-wrong is CLOSED, not merely moved under the flag.
+    ctx, q, kn, vn = _ctx()
+    orig = ctx.get_block_table
+    ctx.get_block_table = lambda ids=None: mx.array([[0]], dtype=mx.int32)  # 1 block << seq_len
+    if trust == "1":
+        os.environ["MFA_PAGED_TRUST_INDICES"] = "1"
+    try:
+        with pytest.raises(Exception):
+            o = ctx.step(q, kn, vn); mx.eval(o)
     finally:
         os.environ.pop("MFA_PAGED_TRUST_INDICES", None)
         ctx.get_block_table = orig

@@ -243,21 +243,37 @@ def tq_decode_attend(
             f"tq_decode_attend: k_scales {tuple(k_scales.shape)} must equal "
             f"(num_blocks, block_size, H_kv) {(_num_blocks, bs, Hkv)}; the K-dequant "
             "kernel indexes k_scales at k_pool's block stride and would read OOB.")
+    # codebook extent (latent-UB defense; sweep iter-6 audit): the K-dequant kernel
+    # indexes k_centroids[code] with code in [0, 2**tq_bits) but never bounds-checks
+    # the table length. On M5 an undersized codebook clamps/over-allocates (not a
+    # demonstrable within-process silent-wrong), but `centroids[idx]` with idx past
+    # the buffer is genuine UB — guard it for class-completeness with the sibling pool
+    # checks (mirrors flash_attention_paged_varlen_turboquant's centroid-extent guard).
+    if k_centroids.shape[0] < (1 << int(tq_bits)):
+        raise ValueError(
+            f"tq_decode_attend: k_centroids has {k_centroids.shape[0]} entries but "
+            f"tq_bits={tq_bits} indexes {1 << int(tq_bits)} codes — the K-dequant "
+            "would index past the codebook.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
     S = int(seq_len)
     # CX-TQ-DECODE-01: pass num_blocks (physical pool size) + n_active_blocks
     # (logical table-row length) so both kernels can bounds-guard phys / blk.
     n_active_blocks = int(block_table_row.shape[0])
-    # seq_len capacity contract (sweep iter-5): the K/V gather kernels zero-FILL
-    # positions whose block index >= n_active_blocks, then SDPA softmaxes over all S
-    # positions — so seq_len > n_active_blocks*block_size silently dilutes the result
-    # with zero-key positions (finite-WRONG, no raise). Mirror the sibling Rule-8
-    # guards (v_pool / packed_D / k_scales) which all raise on cross-arg mismatch.
-    # This is a seq_lens VALUE check, so it respects the MFA_PAGED_TRUST_INDICES
-    # perf opt-out (caller trusted; the kernel's blk<n_active zero-fill stays
-    # memory-safe) — same gate as the inference.py / attention.py value-syncs.
-    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and S > n_active_blocks * bs:
+    # seq_len capacity contract (sweep iter-5; scope-decided iter-6): the K/V gather
+    # kernels zero-FILL positions whose block index >= n_active_blocks, then SDPA
+    # softmaxes over all S positions — so seq_len > n_active_blocks*block_size
+    # silently dilutes the result with zero-key positions (finite-WRONG, no raise).
+    # NOT gated on MFA_PAGED_TRUST_INDICES (deliberate scope decision): that flag is
+    # a PERF opt-out for the EXPENSIVE per-element block_table/seq_lens value-range
+    # scan (a .tolist() GPU sync). This capacity check is a CHEAP scalar comparison
+    # (Python ints, no GPU sync) on a STRUCTURAL contract (seq_len vs table length),
+    # a different axis — gating it would save no perf and would MOVE the silent-wrong
+    # under the flag (verified: under the opt-out, over-capacity stayed memory-safe
+    # but finite-WRONG, dilution err 0.31 vs the honest capacity reference). So it
+    # always applies (Rule 8), even under the opt-out; the flag's scope stays exactly
+    # the index/seqlen value-range sync, not capacity.
+    if S > n_active_blocks * bs:
         raise ValueError(
             f"tq_decode_attend: seq_len ({S}) exceeds block-table capacity "
             f"(n_active_blocks={n_active_blocks} * block_size={bs} = "
