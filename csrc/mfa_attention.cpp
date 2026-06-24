@@ -1982,6 +1982,33 @@ static void check_prefix_sum_values(
         "packed K-token count (" + std::to_string(upper_bound) + ").");
 }
 
+// TRUST-FLAG COST-CLASS split (Phase 2 grid): MFA_VARLEN_TRUST_METADATA gated the
+// ENTIRE check_prefix_sum_values — including the CHEAP structural scalar contracts
+// (cu[0]==0 + the final-value bound). For non-paged varlen, cu_k[-1] <= total_k is the
+// SOLE K-OOB guard (no in-kernel backstop), so gating it = a trust-mode OOB (non-det,
+// verified). Same mis-scope as the paged capacity seam. This helper does ONLY the cheap
+// scalar bounds (eval + [0]==0 + final-value), to run UNGATED; the per-element monotone
+// scan + the derived tile_offsets recompute stay in the flag-scoped check_prefix_sum_values
+// / validate_tile_offsets_derivation (the "trust the index structure" opt-out).
+static void check_prefix_sum_bounds(
+    const mlx::core::array& a, int expected_last, const char* nm,
+    const char* entry, int upper_bound = -1) {
+  if (a.size() == 0) return;
+  mlx::core::array av = a; mlx::core::eval(av);
+  const int32_t* p = av.data<int32_t>();
+  const int n = static_cast<int>(av.shape(0));
+  auto bad = [&](const std::string& m) {
+    throw std::invalid_argument(std::string(entry) + ": " + nm + " " + m);
+  };
+  if (p[0] != 0) bad("must start at 0 (got " + std::to_string(p[0]) + ").");
+  if (expected_last >= 0 && p[n - 1] != expected_last)
+    bad("final value (" + std::to_string(p[n - 1]) + ") must equal the total packed "
+        "token count (" + std::to_string(expected_last) + ").");
+  if (upper_bound >= 0 && p[n - 1] > upper_bound)
+    bad("final value (" + std::to_string(p[n - 1]) + ") must not exceed the packed "
+        "K-token count (" + std::to_string(upper_bound) + ") — out-of-bounds K read.");
+}
+
 // CAPACITY-SEAM class-closure (Codex NO-GO): the logical capacity contract
 // (seq_lens <= max_blocks*block_size, seq_lens >= 0) was present only on the public
 // wrappers (and there gated under MFA_PAGED_TRUST_INDICES) and ABSENT on every raw
@@ -2669,6 +2696,11 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
 
   // CC metadata-VALUE class: validate cu_seqlens/tile_offsets VALUES (monotone,
   // [0]==0, [-1]==total) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  // TRUST-FLAG COST-CLASS (Phase 2 grid): the CHEAP scalar contracts run ALWAYS
+  // (ungated) — cu_k[-1] <= total_k is the SOLE K-OOB guard for non-paged varlen, so
+  // gating it under the trust flag was a silent OOB; cu_q coverage likewise.
+  check_prefix_sum_bounds(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
+  check_prefix_sum_bounds(cu_k, -1, "cu_seqlens_k", "MFA varlen", (int)k.shape(2));
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
     // cu_k: empty trailing KV segment / over-allocated K is legal (cu_k[-1] <=
@@ -3719,6 +3751,9 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
 
   // CC metadata-VALUE class: cu_seqlens_q/tile_offsets VALUE contract (monotone,
   // [0]==0, cu[-1]==total_q) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  // TRUST-FLAG COST-CLASS (Phase 2 grid): cheap Q-coverage scalar contract ALWAYS.
+  check_prefix_sum_bounds(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
+                          "mfa_paged_varlen_forward");
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_forward");
@@ -4003,6 +4038,24 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   // capacity check. Shared structural contract (block_table columns = max_blocks).
   assert_paged_capacity(seq_lens_kv, (int)block_table.shape(1), block_size,
                         "mfa_paged_varlen_tq_forward");
+  // CODEBOOK-EXTENT (Phase 2 grid, wrapper-vs-raw parity): the public TQ wrapper
+  // checks centroids.shape[0] >= 2**tq_bits, the raw entry did not — codes in
+  // [0,2**tq_bits) indexed a too-small codebook (finite-wrong, no raise).
+  {
+    const long long need = 1LL << tq_bits;
+    if ((long long)centroids.shape(0) < need)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: centroids has " +
+          std::to_string(centroids.shape(0)) + " entries but tq_bits=" +
+          std::to_string(tq_bits) + " indexes " + std::to_string(need) +
+          " codes — the K-dequant would read past the codebook.");
+    if (tq_v_enabled && v_centroids &&
+        (long long)v_centroids->shape(0) < need)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: v_centroids has " +
+          std::to_string(v_centroids->shape(0)) + " entries but tq_bits=" +
+          std::to_string(tq_bits) + " indexes " + std::to_string(need) + " codes.");
+  }
   {
     const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
     if (block_table.shape(0) != num_seqs)
@@ -4023,6 +4076,9 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
 
   // CC metadata-VALUE class: cu_seqlens_q/tile_offsets VALUE contract (monotone,
   // [0]==0, cu[-1]==total_q) — default-on, opt-out MFA_VARLEN_TRUST_METADATA=1.
+  // TRUST-FLAG COST-CLASS (Phase 2 grid): cheap Q-coverage scalar contract ALWAYS.
+  check_prefix_sum_bounds(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
+                          "mfa_paged_varlen_tq_forward");
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_tq_forward");

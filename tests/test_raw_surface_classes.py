@@ -522,12 +522,20 @@ def test_varlen_metadata_value_valid_runs():
 
 
 def test_varlen_metadata_value_optout_skips():
-    # opt-out MFA_VARLEN_TRUST_METADATA=1 skips the value sync (bad values run)
+    # Phase 2 COST-CLASS split: the opt-out MFA_VARLEN_TRUST_METADATA=1 skips ONLY the
+    # EXPENSIVE tier (per-element monotone scan + derived tile_offsets recompute). The
+    # CHEAP structural scalar contracts (cu_q/cu_k bounds = coverage + the SOLE K-OOB
+    # guard) now fire ALWAYS, even under the flag (mirrors the paged capacity ungate).
     prev = os.environ.get("MFA_VARLEN_TRUST_METADATA")
     os.environ["MFA_VARLEN_TRUST_METADATA"] = "1"
     try:
-        o = _varlen_v(mx.array([0, 128, 64], _I32), _GOOD[1], _GOOD[2])
+        # gated tier (tile_offsets-derivation) is skipped: valid cu + wrong tile runs.
+        o = _varlen_v(_GOOD[0], _GOOD[1], mx.array([0, 9, 4], _I32))
         mx.eval(o[0] if isinstance(o, (tuple, list)) else o)   # no raise under opt-out
+        # but the cheap K-OOB bound fires EVEN under the flag (cu_k[-1]=999 > total_k=128):
+        with pytest.raises(Exception):
+            r = _varlen_v(_GOOD[0], mx.array([0, 64, 999], _I32), _GOOD[2])
+            mx.eval(r[0] if isinstance(r, (tuple, list)) else r)
     finally:
         if prev is None:
             os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)

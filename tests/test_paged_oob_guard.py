@@ -88,17 +88,27 @@ def test_gather_oob_phys_is_safe_zero():
 
 
 def test_gather_logblk_overrun_is_safe():
-    """Axis 2b (CC-03 secondary): seq_len overruns block_table columns -> safe zero."""
+    """Axis 2b (CC-03 secondary): the kernel's in-kernel -1/log_blk>=max_blocks guard
+    zero-fills (memory-safe). Phase 2 capacity-seam: an over-capacity seq_lens is now
+    caught LOUDLY by the host capacity guard (was a silent zero-fill dilution)."""
     rng = np.random.default_rng(2)
     NB, BS, H, D = 8, 4, 2, 16
     pool = rng.standard_normal((NB, BS, H, D)).astype(np.float16)
-    bt = np.array([[0]], np.int32)               # max_blocks = 1
+    # Within-capacity (max_blocks=2 -> cap=8, seq_len=8) but logical block 1 is a -1
+    # (unallocated) page -> the KERNEL guard zero-fills those tokens. Tests the in-
+    # kernel guard without tripping the (now-unconditional) host capacity check.
+    bt = np.array([[0, -1]], np.int32)           # cap = 2*4 = 8; block 1 = -1 padding
     out = np.asarray(
         _EXT.mfa_paged_kv_gather(mx.array(pool), mx.array(bt), mx.array(np.array([8], np.int32)), 8)
         .astype(mx.float32)
     )
     assert np.all(np.isfinite(out))
-    assert np.all(out[0, :, 4:8, :] == 0)        # kv 4..7 -> logical block 1 >= max_blocks
+    assert np.all(out[0, :, 4:8, :] == 0)        # kv 4..7 -> logical block 1 = -1 -> zero
+    # Over-capacity seq_lens (> max_blocks*block_size) now RAISES at the host (the
+    # capacity-seam class-closure) instead of silently zero-filling the tail.
+    with pytest.raises(Exception):
+        _EXT.mfa_paged_kv_gather(mx.array(pool), mx.array([[0]], np.int32),
+                                 mx.array(np.array([8], np.int32)), 8)
 
 
 @pytest.mark.parametrize("bad", [

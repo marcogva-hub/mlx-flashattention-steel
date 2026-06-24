@@ -668,3 +668,74 @@ def test_sweep_paged_capacity_grid():
     o = _ext.mfa_paged_steel_forward(q, pk, pv, bt, ok, 0.125, False, -1, -1, bs); mx.eval(o[0])  # in-cap runs
     with pytest.raises(Exception):
         o = _ext.mfa_paged_varlen_forward(q, pk, pv, cu, cu, bt, over, 0.125, False, bs); mx.eval(o[0])
+
+
+# ── Phase 2 disposition-grid seams (the meta-class: per-instance closes left siblings) ──
+def test_phase2_v6_backward_dtype_parity():
+    import math as _m
+    B, H, L, D = 1, 2, 256, 64; SC = 1 / _m.sqrt(D); mx.random.seed(0)
+    q = _qB(B, H, L, D); k = _qB(B, H, L, D); v = _qB(B, H, L, D); o = _qB(B, H, L, D)
+    do = _qB(B, H, L, D); lse = mx.random.normal((B, H, L)).astype(F32)
+    dvec = mx.random.normal((B, H, L)).astype(F32); mx.eval(lse, dvec)
+    with pytest.raises(Exception):                 # dv: lse must be f32
+        mx.eval(_ext.v6_nax_backward_dv_raw(q, k, v, lse.astype(F16), do, SC, 4, False))
+    _ext.v6_nax_backward_dv_raw(q, k, v, lse, do, SC, 4, False)        # valid runs
+    with pytest.raises(Exception):                 # dk: d_vec must be f32
+        mx.eval(_ext.v6_nax_backward_dk_raw(q, k, v, o, lse, do, dvec.astype(F16), SC, 4, False))
+    with pytest.raises(Exception):                 # fused: q!=k dtype
+        mx.eval(_ext.v6_nax_backward_fused_dkdv_raw(q, k.astype(BF16), v, lse, do, dvec, SC, 4, False))
+
+
+def test_phase2_steel_backward_contiguity():
+    import math as _m
+    B, H, N, Dd = 1, 2, 128, 64; SC = 1 / _m.sqrt(Dd); mx.random.seed(0)
+    big = mx.random.normal((B, H, N * 2, Dd)).astype(F16); qv = big[:, :, 0:N, :]
+    k = _qB(B, H, N, Dd); v = _qB(B, H, N, Dd); o = _qB(B, H, N, Dd); do = _qB(B, H, N, Dd)
+    lse = mx.random.normal((B, H, N)).astype(F32); mx.eval(big, lse)
+    a = _ext.mfa_steel_backward(qv, k, v, o, lse, do, SC, False)
+    b = _ext.mfa_steel_backward(mx.contiguous(qv), k, v, o, lse, do, SC, False)
+    mx.eval(a[0], b[0])
+    assert float(np.abs(np.array(a[0].astype(F32)) - np.array(b[0].astype(F32))).max()) < 1e-2
+
+
+def test_phase2_varlen_kv_oob_ungated():
+    import os, math as _m
+    H, D = 2, 64; SC = 1 / _m.sqrt(D); tot = 8
+    q = _qB(1, H, tot, D); k = _qB(1, H, tot, D); v = _qB(1, H, tot, D)
+    cu = mx.array([0, 4, 8], mx.int32); cubad = mx.array([0, 4, 99], mx.int32); to = mx.array([0, 1, 2], mx.int32)
+    os.environ["MFA_VARLEN_TRUST_METADATA"] = "1"
+    try:
+        with pytest.raises(Exception):             # cu_k[-1]=99 > total_k=8 (sole K-OOB guard, ungated)
+            mx.eval(_ext.mfa_attention_varlen_forward(q, k, v, cu, cubad, to, SC, False)[0])
+        mx.eval(_ext.mfa_attention_varlen_forward(q, k, v, cu, cu, to, SC, False)[0])  # valid runs
+    finally:
+        os.environ.pop("MFA_VARLEN_TRUST_METADATA", None)
+
+
+def test_phase2_gather_capacity():
+    pool = _kvp(8, 16, 2, 128); bt = mx.array([[0, 1, 2, 3]], mx.int32)
+    with pytest.raises(Exception):                 # sl=100 > cap 4*16=64
+        mx.eval(_ext.mfa_paged_kv_gather(pool, bt, mx.array([100], mx.int32), 100))
+    mx.eval(_ext.mfa_paged_kv_gather(pool, bt, mx.array([60], mx.int32), 60))  # in-cap runs
+
+
+def test_phase2_hybrid_append_atomic():
+    from mlx_mfa.attention import PagedKVCache
+    from mlx_mfa.kv_cache import HybridKVCache
+    prim = PagedKVCache(num_blocks=64, block_size=16, H=8, D=128, dtype=F16)
+    try: h = HybridKVCache(prim, hot_seq_capacity=1)
+    except TypeError: h = HybridKVCache(prim)
+    h.append(mx.zeros((1, 8, 4, 128), F16), mx.zeros((1, 8, 4, 128), F16), seq_id=0)
+    with pytest.raises(Exception):                 # bad heads on NEW sid
+        h.append(mx.zeros((1, 4, 4, 128), F16), mx.zeros((1, 4, 4, 128), F16), seq_id=7)
+    assert 7 not in h._hot_seq_ids                 # no phantom (atomic)
+
+
+def test_phase2_rope_scale_and_sage_zerokv():
+    q = _qB(1, 2, 128, 128); cos = mx.ones((128, 64)); sin = mx.zeros((128, 64)); mx.eval(cos, sin)
+    for s in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            mx.eval(mlx_mfa.flash_attention_rope(q, q, q, rotary_cos=cos, rotary_sin=sin, scale=s))
+    qs = _qB(1, 4, 8, 128); k0 = mx.zeros((1, 4, 0, 128), F16); v0 = mx.zeros((1, 4, 0, 128), F16); mx.eval(qs)
+    with pytest.raises(ValueError):
+        mx.eval(mlx_mfa.sage_attention(qs, k0, v0))

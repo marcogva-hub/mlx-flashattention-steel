@@ -1453,6 +1453,13 @@ def flash_attention_rope_unified(
         )
 
     head_dim = q.shape[-1]
+    # SCALE value-semantics (Phase 2 grid — the flash_attention scale-finite class
+    # swept to the rope entry): a nan/inf scale was silently clamped to a finite
+    # default-scale output on the NAX dense route (finite-wrong). Mirror the
+    # flash_attention boundary guard.
+    if scale is not None and not math.isfinite(scale):
+        raise ValueError(
+            f"flash_attention_rope: scale must be finite, got {scale!r}.")
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
 
@@ -2060,6 +2067,13 @@ def sage_attention(
             f"Got q={q.ndim}D, k={k.ndim}D, v={v.ndim}D.")
     # C2c: sage kernel assumes D_v == D_qk (asymmetric D_v → silent-wrong shape).
     _assert_qkv_mutual_compat(q, k, v, "sage_attention", require_v_dim_eq=True)
+    # ZERO-KV reject (Phase 2 grid — the campaign disposition applied to
+    # flash_attention/varlen/paged, swept to sage): attention over zero keys is
+    # undefined (softmax over -inf → NaN/garbage). Raise loudly, like flash_attention.
+    if k.shape[2] == 0:
+        raise ValueError(
+            "sage_attention: empty KV (k/v sequence length 0) is undefined — "
+            "attention cannot attend to zero keys. Drop the empty call.")
 
     from mlx_mfa.quantize import (
         quantize_per_block,
@@ -2188,6 +2202,13 @@ def sage_attention_prequantized(
             "Install with: pip install mlx-mfa"
         )
     from mlx_mfa._ext import mfa_sage_forward as _sage_fwd
+
+    # ZERO-KV reject (Phase 2 grid — sibling of sage_attention): attention over zero
+    # keys is undefined; raise loudly like flash_attention / sage_attention.
+    if k_int8.shape[2] == 0:
+        raise ValueError(
+            "sage_attention_prequantized: empty KV (k sequence length 0) is "
+            "undefined — attention cannot attend to zero keys.")
 
     # CP2: Q is fp16 — no Q quantize dispatch. Pass Q directly to kernel.
 

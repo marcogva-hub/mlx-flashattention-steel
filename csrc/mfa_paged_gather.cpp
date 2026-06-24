@@ -272,6 +272,28 @@ array mlx_mfa::mfa_paged_kv_gather(
             "mfa_paged_kv_gather: seq_lens must be int32 (the kernel reads it as "
             "int32; a different dtype reads garbage lengths).");
     }
+    // CAPACITY-SEAM (Phase 2 grid, wrapper-vs-raw parity): the public wrapper applies
+    // the logical capacity guard (seq_lens <= max_blocks*block_size) before its gather
+    // call; the raw gather did not — an over-capacity seq_lens silently zero-filled
+    // the tail (finite-wrong dilution). Same cheap structural contract as the shared
+    // assert_paged_capacity helper (inlined here: separate translation unit).
+    if (seq_lens.size() > 0 && max_blocks > 0 && block_size > 0) {
+        array sl = seq_lens; mlx::core::eval(sl);
+        const int32_t* p = sl.data<int32_t>();
+        const int n = static_cast<int>(sl.shape(0));
+        int32_t smin = p[0], smax = p[0];
+        for (int i = 1; i < n; ++i) { if (p[i] < smin) smin = p[i]; if (p[i] > smax) smax = p[i]; }
+        if (smin < 0)
+            throw std::invalid_argument("mfa_paged_kv_gather: seq_lens must be >= 0; got min="
+                                        + std::to_string(smin) + ".");
+        const long long cap = static_cast<long long>(max_blocks) * static_cast<long long>(block_size);
+        if (static_cast<long long>(smax) > cap)
+            throw std::invalid_argument(
+                "mfa_paged_kv_gather: seq_lens max (" + std::to_string(smax) +
+                ") exceeds max_blocks*block_size = " + std::to_string(max_blocks) + "*" +
+                std::to_string(block_size) + " = " + std::to_string(cap) +
+                " (a logical block index would run past the block_table columns).");
+    }
 
     mlx::core::Shape out_shape = {B, H, max_kv_len, D};
     auto st = to_stream(s);

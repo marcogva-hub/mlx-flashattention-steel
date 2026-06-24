@@ -563,6 +563,21 @@ class HybridKVCache:
 
     def append(self, k_new, v_new, seq_id: int = 0) -> None:
         sid = int(seq_id)
+        # ATOMICITY (Phase 2 disposition-grid, CRITICAL — the validate-before-mutate
+        # class the loop closed for TQ.append, swept here): _ensure_hot mutates the
+        # residency / hot-window bookkeeping for a NEW sid, and the primary adapter
+        # validates k/v only AFTER — so a malformed k/v on a new sid leaked a phantom
+        # hot-seq entry, then raised. Hoist the shared persistence validator BEFORE
+        # _ensure_hot, using the primary cache's configured kv-heads/dim/dtype when
+        # discoverable (PagedKVCache exposes .H/.D/.dtype; otherwise k<->v mutual).
+        from mlx_mfa._persist_validate import assert_kv_persist_compat
+        _pc = getattr(self._primary_adapter, "cache", None)
+        _dt = getattr(_pc, "dtype", None)
+        assert_kv_persist_compat(
+            k_new, v_new, "HybridKVCache.append",
+            expected_heads=getattr(_pc, "H", None),
+            expected_dim=getattr(_pc, "D", None),
+            accepted_dtypes=((_dt,) if _dt is not None else None))
         self._ensure_hot(sid, reason="append")
         self._primary_adapter.append(k_new, v_new, seq_id=sid)
         self._set_residency(sid, "hot", reason="append")

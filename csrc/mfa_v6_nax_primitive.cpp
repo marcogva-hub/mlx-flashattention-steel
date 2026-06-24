@@ -95,6 +95,21 @@ static inline void v6_check_bwd_dtypes(const char* name,
     throw std::runtime_error(std::string(name) + ": d_vec must be float32.");
 }
 
+// Phase 2 disposition-grid (wrapper-vs-raw parity): the dV backward entries have no
+// d_vec param — 4-arg overload so the dtype contract (q/k/v share + fp16/bf16, lse
+// float32) is enforced on the dV raw entries too (they silently finite-wrong'd a
+// fp16 lse / a q!=k dtype before).
+static inline void v6_check_bwd_dtypes(const char* name,
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& lse) {
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
+    throw std::runtime_error(std::string(name) + ": q, k, v must share dtype.");
+  if (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16)
+    throw std::runtime_error(std::string(name) + ": q, k, v must be float16/bfloat16.");
+  if (lse.dtype() != mlx::core::float32)
+    throw std::runtime_error(std::string(name) + ": lse must be float32.");
+}
+
 // Forward decls (defined in v6_nax_compile.mm).
 void* v6_nax_compile_with_constants(
     const std::string& source, const std::string& function_name,
@@ -1796,6 +1811,7 @@ mlx::core::array v6_nax_backward_dv_sparse_raw(
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd dV sparse", q, k, v, lse);  // Phase2 grid: wrapper-vs-raw dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dV sparse: block_mask must be 2-D (Section A PoC)");
@@ -1829,6 +1845,7 @@ mlx::core::array v6_nax_backward_dv_raw(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& lse,
     const mlx::core::array& d_o, float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd dV", q, k, v, lse);  // Phase2 grid: wrapper-vs-raw dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dV: Q must be 4D");
   v6_check_bwd_gqa("V6NAX bwd dV", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dV: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
@@ -1998,6 +2015,7 @@ mlx::core::array v6_nax_backward_dk_raw(
     const mlx::core::array& lse, const mlx::core::array& d_o,
     const mlx::core::array& d_vec,  // v2.38.1: precomputed rowsum(dO⊙O)
     float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd dK", q, k, v, lse, d_vec);  // Phase2 grid: wrapper-vs-raw dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK: Q must be 4D");
   v6_check_bwd_gqa("V6NAX bwd dK", q, k, v);
   if (wm <= 0) throw std::runtime_error("V6NAX bwd dK: wm (WM warp count) must be positive (got " + std::to_string(wm) + ").");
@@ -2205,6 +2223,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
     const mlx::core::array& d_o,
     const mlx::core::array& d_vec,
     float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd fused dKdV", q, k, v, lse, d_vec);  // Phase2 grid: dtype parity
   if (q.ndim() != 4)
     throw std::runtime_error("V6NAX bwd fused dKdV: Q must be 4D");
   if (q.shape(3) != 64 && q.shape(3) != 128)
@@ -2414,6 +2433,7 @@ mlx::core::array v6_nax_backward_query_sparse_raw(
     const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd dQ sparse", q, k, v, lse, d_vec);  // Phase2 grid: dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dQ sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dQ sparse: block_mask must be 2-D");
@@ -2604,6 +2624,7 @@ mlx::core::array v6_nax_backward_dk_sparse_raw(
     const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd dK sparse", q, k, v, lse, d_vec);  // Phase2 grid: dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd dK sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd dK sparse: block_mask must be 2-D");
@@ -2801,6 +2822,7 @@ v6_nax_backward_fused_dkdv_sparse_raw(
     const mlx::core::array& d_o, const mlx::core::array& d_vec,
     const mlx::core::array& block_mask,
     float scale, int wm, bool causal) {
+  v6_check_bwd_dtypes("V6NAX bwd fused-dKdV sparse", q, k, v, lse, d_vec);  // Phase2 grid: dtype parity
   if (q.ndim() != 4) throw std::runtime_error("V6NAX bwd fused-dKdV sparse: Q must be 4D");
   if (block_mask.ndim() != 2)
     throw std::runtime_error("V6NAX bwd fused-dKdV sparse: block_mask must be 2-D");

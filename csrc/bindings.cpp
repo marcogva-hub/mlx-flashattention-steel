@@ -347,9 +347,19 @@ NB_MODULE(_ext, m) {
          float scale, bool causal) {
         mfa_check_backward_inputs("mfa_steel_backward", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // CONTIG (Phase 2 grid — the iter-2 forward contiguity class swept to the
+        // BACKWARD bindings): the dQ/dKV kernels read q/k/v/O/L/dO with contiguous-
+        // assumed BHND strides; a strided q view gave finite-WRONG dQ (diff 928).
+        // Enforce contiguity (D.5 pattern; no-op when already contiguous).
+        auto qc  = mlx::core::contiguous(q,  false, s);
+        auto kc  = mlx::core::contiguous(k,  false, s);
+        auto vc  = mlx::core::contiguous(v,  false, s);
+        auto Oc  = mlx::core::contiguous(O,  false, s);
+        auto Lc  = mlx::core::contiguous(L,  false, s);
+        auto dOc = mlx::core::contiguous(dO, false, s);
         // G.1: Materialise all 6 inputs before Metal kernel dispatch.
         // MLX autograd may recycle GPU buffers; mlx::core::eval() fences against aliasing.
-        mlx::core::eval(std::vector<mlx::core::array>{q, k, v, O, L, dO});
+        mlx::core::eval(std::vector<mlx::core::array>{qc, kc, vc, Oc, Lc, dOc});
         mlx_mfa::MFAttention::Params params{};
         params.head_dim    = q.shape(3);
         params.scale       = scale;
@@ -359,8 +369,8 @@ NB_MODULE(_ext, m) {
         // delta = rowsum(dO * O)  [B, H, N], float32.
         // Note: the Metal kernel multiplies by p->scale internally when computing
         // dS = scale * P * (dP - delta).  Do NOT pre-multiply by scale here.
-        auto dO_f32 = mlx::core::astype(dO, mlx::core::float32, s);
-        auto O_f32  = mlx::core::astype(O,  mlx::core::float32, s);
+        auto dO_f32 = mlx::core::astype(dOc, mlx::core::float32, s);
+        auto O_f32  = mlx::core::astype(Oc,  mlx::core::float32, s);
         auto delta  = mlx::core::sum(
                           mlx::core::multiply(dO_f32, O_f32, s),
                           std::vector<int>{3}, false, s);
@@ -370,14 +380,14 @@ NB_MODULE(_ext, m) {
             {q.shape()},
             {q.dtype()},
             std::make_shared<mlx_mfa::MFASteelBwdDQ>(s, params),
-            {q, k, v, O, L, dO, delta});
+            {qc, kc, vc, Oc, Lc, dOc, delta});
 
         // dK, dV
         auto bwd_kv = mlx::core::array::make_arrays(
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
             std::make_shared<mlx_mfa::MFASteelBwdDKV>(s, params),
-            {q, k, v, O, L, delta, dO});
+            {qc, kc, vc, Oc, Lc, delta, dOc});
 
         return nb::make_tuple(bwd_q[0], bwd_kv[0], bwd_kv[1]);
       },
@@ -400,6 +410,15 @@ NB_MODULE(_ext, m) {
         // check as the other backward bindings.
         mfa_check_backward_inputs("mfa_steel_backward_sparse", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // CONTIG (Phase 2 grid — mirror the non-sparse backward): enforce contiguity
+        // (D.5 pattern; no-op when already contiguous) so strided inputs aren't misread.
+        auto qc  = mlx::core::contiguous(q,  false, s);
+        auto kc  = mlx::core::contiguous(k,  false, s);
+        auto vc  = mlx::core::contiguous(v,  false, s);
+        auto Oc  = mlx::core::contiguous(O,  false, s);
+        auto Lc  = mlx::core::contiguous(L,  false, s);
+        auto dOc = mlx::core::contiguous(dO, false, s);
+        auto bmc = mlx::core::contiguous(block_mask, false, s);
         mlx_mfa::MFAttention::Params params{};
         params.head_dim       = q.shape(3);
         params.scale          = scale;
@@ -408,8 +427,8 @@ NB_MODULE(_ext, m) {
         params.window_left    = -1;
 
         // delta = rowsum(dO * O)  [B, H, N], float32.
-        auto dO_f32 = mlx::core::astype(dO, mlx::core::float32, s);
-        auto O_f32  = mlx::core::astype(O,  mlx::core::float32, s);
+        auto dO_f32 = mlx::core::astype(dOc, mlx::core::float32, s);
+        auto O_f32  = mlx::core::astype(Oc,  mlx::core::float32, s);
         auto delta  = mlx::core::sum(
                           mlx::core::multiply(dO_f32, O_f32, s),
                           std::vector<int>{3}, false, s);
@@ -419,14 +438,14 @@ NB_MODULE(_ext, m) {
             {q.shape()},
             {q.dtype()},
             std::make_shared<mlx_mfa::MFASteelBwdDQ>(s, params),
-            {q, k, v, O, L, dO, delta, block_mask});
+            {qc, kc, vc, Oc, Lc, dOc, delta, bmc});
 
         // dK, dV — inputs[7] = block_mask
         auto bwd_kv = mlx::core::array::make_arrays(
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
             std::make_shared<mlx_mfa::MFASteelBwdDKV>(s, params),
-            {q, k, v, O, L, delta, dO, block_mask});
+            {qc, kc, vc, Oc, Lc, delta, dOc, bmc});
 
         return nb::make_tuple(bwd_q[0], bwd_kv[0], bwd_kv[1]);
       },
