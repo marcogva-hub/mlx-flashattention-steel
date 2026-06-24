@@ -327,3 +327,113 @@ def test_feature_tensor_bite_documents_contract():
     assert _cos1(_alibi(F16), _alibi(F32)) >= 0.999
     assert _cos1(_rope(F16), _rope(F32)) >= 0.999
     assert _cos1(_sparse_mask(mx.int32), _sparse_mask(U8)) >= 0.999
+
+
+# ── Feature-metadata SHAPE/rank/extent/cardinality class (CC shape batch) ────────
+# Companion to the dtype axis: entries validated dtype but not shape — malformed
+# shape metadata → finite-wrong / non-finite. Validate-and-raise (a malformed
+# shape can't be cast valid). Dual oracle: malformed → raises; valid → runs.
+_SC = 1.0 / math.sqrt(64)
+
+
+def _sparse(mask):
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    return _ext.mfa_attention_sparse_forward(q, k, v, mask, _SC, False)
+
+
+_NT = (128 + 31) // 32  # NQ=NK for N=S=128, BQ=BK=32 (D=64, M5)
+_SPARSE_BAD = [
+    ("mask_1x1", lambda: mx.ones((1, 1), U8)),
+    ("mask_H_1_1", lambda: mx.ones((4, 1, 1), U8)),
+    ("mask_Hplus1", lambda: mx.ones((5, _NT, _NT), U8)),
+    ("mask_wrong_NK", lambda: mx.ones((4, _NT, _NT - 1), U8)),
+]
+_SPARSE_OK = [
+    ("mask_2d", lambda: mx.ones((_NT, _NT), U8)),
+    ("mask_3d_H", lambda: mx.ones((4, _NT, _NT), U8)),
+    ("mask_4d_BH", lambda: mx.ones((1, 4, _NT, _NT), U8)),
+]
+
+
+@pytest.mark.parametrize("name,mk", _SPARSE_BAD, ids=[c[0] for c in _SPARSE_BAD])
+def test_sparse_mask_shape_rejects(name, mk):
+    with pytest.raises(ValueError):
+        _sparse(mk())
+
+
+@pytest.mark.parametrize("name,mk", _SPARSE_OK, ids=[c[0] for c in _SPARSE_OK])
+def test_sparse_mask_shape_accepts(name, mk):
+    o = _sparse(mk()); mx.eval(o)
+    assert np.isfinite(np.array(o.astype(F32))).all()
+
+
+def _rope_shape(cos, sin, cache=0):
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    return _ext.mfa_attention_rope_forward(q, k, v, cos, sin, _SC, False, cache)
+
+
+def _full_table():
+    c = mx.cos(mx.arange(128 * 32).reshape(128, 32).astype(F32) * 0.01)
+    s = mx.sin(mx.arange(128 * 32).reshape(128, 32).astype(F32) * 0.01)
+    mx.eval(c, s)
+    return c, s
+
+
+def test_rope_rank1_rejects():
+    with pytest.raises(ValueError):
+        _rope_shape(mx.ones((32,), F32), mx.ones((32,), F32))
+
+
+def test_rope_short_table_rejects():
+    c, s = _full_table()
+    with pytest.raises(ValueError):
+        _rope_shape(c[:127], s[:127])          # one row short of N=128
+
+
+def test_rope_full_table_accepts():
+    c, s = _full_table()
+    o = _rope_shape(c, s); mx.eval(o)
+    assert np.isfinite(np.array(o.astype(F32))).all()
+
+
+def _varlen(cu_q, cu_k, tile):
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    return _ext.mfa_attention_varlen_forward(q, k, v, cu_q, cu_k, tile, _SC, False)
+
+
+_I = mx.int32
+_VALID_CU = (mx.array([0, 64, 128], _I), mx.array([0, 64, 128], _I), mx.array([0, 2, 4], _I))
+_VARLEN_BAD = [
+    ("cu_q_rank2", lambda: _varlen(mx.array([[0], [64], [128]], _I), _VALID_CU[1], _VALID_CU[2])),
+    ("cu_k_cardinality", lambda: _varlen(_VALID_CU[0], mx.array([0, 128], _I), _VALID_CU[2])),
+    ("tile_cardinality", lambda: _varlen(_VALID_CU[0], _VALID_CU[1], mx.array([0, 4], _I))),
+]
+
+
+@pytest.mark.parametrize("name,fn", _VARLEN_BAD, ids=[c[0] for c in _VARLEN_BAD])
+def test_varlen_metadata_shape_rejects(name, fn):
+    with pytest.raises(ValueError):
+        fn()
+
+
+def test_varlen_metadata_valid_runs():
+    o = _varlen(*_VALID_CU)
+    mx.eval(o[0] if isinstance(o, (tuple, list)) else o)
+
+
+def test_shape_bite_sparse_undersized_must_raise():
+    # bite: if the sparse shape validator is reverted, (1,1) stops raising.
+    with pytest.raises(ValueError):
+        _sparse(mx.ones((1, 1), U8))

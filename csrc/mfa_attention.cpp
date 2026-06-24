@@ -1893,6 +1893,43 @@ static inline mlx::core::array cast_mask_to_u8(
              : mlx::core::astype(a, mlx::core::uint8, s);
 }
 
+// CC feature-metadata SHAPE class — the sparse kernel reads block_mask at tile
+// granularity [.., NQ, NK] with NQ=ceil(N/BQ), NK=ceil(S/BK) for the V1 sparse
+// block config; an undersized mask drives an OOB tile read (non-finite) and a
+// wrong head/batch dim is a finite-wrong read. The raw entry validated only the
+// rank (2..4); the PUBLIC flash_attention_sparse rejects these correctly, so the
+// raw entry adopts the kernel's real extent contract. (Validate-and-raise: a
+// malformed shape can't be cast into a valid one.)
+static void validate_sparse_block_mask_shape(
+    const mlx::core::array& block_mask, const mlx::core::array& q,
+    const mlx::core::array& k, mlx::core::Stream s, const char* fn) {
+  const int B = q.shape(0), H = q.shape(1), N = q.shape(2), D = q.shape(3);
+  const int S = k.shape(2);
+  auto& dev = mlx::core::metal::device(s.device);
+  int arch = static_cast<int>(dev.get_architecture_gen());
+  if (MFAEnvConfig::get().force_gen > 0) arch = MFAEnvConfig::get().force_gen;
+  const bool is_m3p = (arch >= 15);
+  const auto cfg = select_steel_block_config(D, /*is_low_prec=*/true, is_m3p);
+  const int BQ = cfg.BQ, BK = cfg.BK;
+  const int NQ = (N + BQ - 1) / BQ, NK = (S + BK - 1) / BK;
+  const int nd = block_mask.ndim();
+  auto bad = [&](const std::string& m) {
+    throw std::invalid_argument(std::string(fn) + ": " + m);
+  };
+  if (block_mask.shape(nd - 2) != NQ || block_mask.shape(nd - 1) != NK)
+    bad("block_mask tile dims (" + std::to_string(block_mask.shape(nd - 2)) + "," +
+        std::to_string(block_mask.shape(nd - 1)) + ") must be (NQ,NK)=(" +
+        std::to_string(NQ) + "," + std::to_string(NK) + ") = (ceil(N/" +
+        std::to_string(BQ) + "), ceil(S/" + std::to_string(BK) +
+        ")); an undersized mask drives an out-of-bounds tile read.");
+  if (nd >= 3 && block_mask.shape(nd - 3) != H)
+    bad("block_mask head dim (" + std::to_string(block_mask.shape(nd - 3)) +
+        ") must equal q heads (" + std::to_string(H) + ").");
+  if (nd == 4 && block_mask.shape(0) != B)
+    bad("block_mask batch dim (" + std::to_string(block_mask.shape(0)) +
+        ") must equal q batch (" + std::to_string(B) + ").");
+}
+
 // =========================================================================
 // Free function: mfa_attention_forward
 // =========================================================================
@@ -1986,6 +2023,10 @@ mlx::core::array mfa_attention_sparse_forward(
     throw std::invalid_argument(
         "MFA sparse: float32 is not supported; use float16 or bfloat16");
   }
+
+  // CC shape class: block_mask tile-extent/head/batch contract (raw lacked it;
+  // public flash_attention_sparse already rejects these).
+  validate_sparse_block_mask_shape(block_mask, q, k, s, "MFA sparse");
 
   MFAttention::Params params{D, scale, causal, /*has_block_mask=*/true,
       /*has_rope=*/false, /*rope_interleaved=*/false, /*cache_seqlens=*/0,
@@ -2101,6 +2142,24 @@ mlx::core::array mfa_attention_rope_forward(
   if (rotary_cos.shape(rotary_cos.ndim() - 1) != D / 2)
     throw std::invalid_argument(
         "MFA rope: rotary width must be D/2 (" + std::to_string(D / 2) + ")");
+  // CC feature-metadata SHAPE class: the kernel indexes cos/sin by position
+  // (row = cache_seqlens + query_index for Q, 0..S-1 for K), so it needs a rank-2
+  // [rows, D/2] table with enough rows. rank-1 was read as a single row
+  // (silent-wrong, cos 0.68); a too-short table indexes OOB rows (cos 0.87).
+  if (rotary_cos.ndim() < 2)
+    throw std::invalid_argument(
+        "MFA rope: cos/sin must be rank-2 [rows, D/2] (a rank-1 table is read as "
+        "a single position = silent-wrong).");
+  {
+    const int rope_rows = rotary_cos.shape(rotary_cos.ndim() - 2);
+    const int required = std::max(k.shape(2), cache_seqlens + q.shape(2));
+    if (rope_rows < required)
+      throw std::invalid_argument(
+          "MFA rope: cos/sin rows (" + std::to_string(rope_rows) + ") must be >= "
+          "max(S, cache_seqlens + N) = " + std::to_string(required) +
+          " (the kernel indexes row = cache_seqlens + query_index); a shorter "
+          "table drives an out-of-bounds row read = silent-wrong.");
+  }
 
   MFAttention::Params params{
     D, scale, causal,
@@ -2397,6 +2456,31 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   need_i32(cu_q, "cu_seqlens_q");
   need_i32(cu_k, "cu_seqlens_k");
   need_i32(tile_offsets, "tile_offsets");
+
+  // CC feature-metadata SHAPE class: the kernel reads cu_seqlens_q/k and
+  // tile_offsets per sequence (num_seqs = cu_seqlens_q.shape[0]-1); a wrong rank
+  // or mismatched cardinality drives an out-of-bounds device read (non-finite).
+  // Validate rank-1 + mutual cardinality before dispatch (Rule 8).
+  auto need_1d = [&](const mlx::core::array& a, const char* nm) {
+    if (a.ndim() != 1)
+      throw std::invalid_argument(
+          std::string("MFA varlen: ") + nm + " must be 1-D [num_seqs+1]");
+  };
+  need_1d(cu_q, "cu_seqlens_q");
+  need_1d(cu_k, "cu_seqlens_k");
+  need_1d(tile_offsets, "tile_offsets");
+  if (cu_q.shape(0) < 2)
+    throw std::invalid_argument(
+        "MFA varlen: cu_seqlens_q must be [num_seqs+1] with num_seqs >= 1");
+  const int nseq1 = (int)cu_q.shape(0);  // num_seqs + 1
+  if ((int)cu_k.shape(0) != nseq1)
+    throw std::invalid_argument(
+        "MFA varlen: cu_seqlens_k length (" + std::to_string(cu_k.shape(0)) +
+        ") must equal cu_seqlens_q length (" + std::to_string(nseq1) + ").");
+  if ((int)tile_offsets.shape(0) != nseq1)
+    throw std::invalid_argument(
+        "MFA varlen: tile_offsets length (" + std::to_string(tile_offsets.shape(0)) +
+        ") must equal num_seqs+1 (" + std::to_string(nseq1) + ").");
 
   const int H  = q.shape(1);
 
@@ -3368,6 +3452,12 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
           "mfa_paged_varlen_forward: seq_lens_kv length (" +
           std::to_string(seq_lens_kv.shape(0)) + ") must equal num_seqs (" +
           std::to_string(num_seqs) + ").");
+    // CC shape class: tile_offsets is the per-sequence tile prefix [num_seqs+1].
+    if (tile_offsets.shape(0) != num_seqs + 1)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_forward: tile_offsets length (" +
+          std::to_string(tile_offsets.shape(0)) + ") must equal num_seqs+1 (" +
+          std::to_string(num_seqs + 1) + ").");
   }
 
   int H_q     = q.shape(1);

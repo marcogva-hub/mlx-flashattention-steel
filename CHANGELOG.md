@@ -601,6 +601,24 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     (same-value-different-dtype, not "runs"): `attn_bias` (cos 1.0), sage (CX-R7-01), int index dtypes
     (raise not misread). Locked by `tests/test_raw_surface_classes.py` (`_FEATURE_CASES` + a bite). C++
     rebuild required.
+  - **Feature-metadata shape/rank/extent validation class closed (CC shape batch).** The **shape axis** of
+    the same feature-input dimension (dtype axis closed above): three entries validated a metadata input's
+    dtype but not its shape, so malformed-shape metadata gave finite-wrong / non-finite output.
+    `mfa_attention_sparse_forward` (+`_with_lse`) accepted undersized/wrong-head `block_mask`
+    (`(1,1)`/`(H,1,1)` → non-finite, `(H+1,…)` → finite-wrong) — the **public** `flash_attention_sparse`
+    already rejected these, so the raw entry now adopts the kernel's real tile-extent contract via a shared
+    `validate_sparse_block_mask_shape` (last-2 dims == `(ceil(N/BQ), ceil(S/BK))`, head==H, batch==B).
+    `mfa_attention_rope_forward` accepted **rank-1** and too-short `rotary_cos/sin` on **both raw and
+    public** (the public path calls the raw entry, so one fix closes both) — now requires rank-2 `[rows,
+    D/2]` with `rows >= max(S, cache_seqlens+N)` (a public-API behavior change: malformed tables move from
+    silent-wrong → loud raise; there is no cast for a wrong-rank/short table). `mfa_attention_varlen_forward`
+    validated only int32 dtype on `cu_seqlens_q/k`/`tile_offsets` — now also rank-1 + mutual cardinality
+    (`num_seqs+1`); the `tile_offsets` cardinality gap in `mfa_paged_varlen_forward` (CX-04) is closed too.
+    `alibi_slopes` length was already validated (confirmed, not a hole). Validate-and-raise on malformed;
+    every valid shape (all 2D/3D/4D sparse mask forms, exact-row rope tables, valid varlen metadata) still
+    runs, byteΔ=0 (validators are pre-dispatch). Locked by `tests/test_raw_surface_classes.py` (sparse/
+    rope/varlen shape cells + a bite). **Both axes (dtype + shape) are now closed for every feature input.**
+    C++ rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
