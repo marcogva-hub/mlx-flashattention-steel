@@ -1828,10 +1828,21 @@ static inline void assert_raw_pool_dtype_eq(
 // Class D — TurboQuant backing-buffer required dtypes. The fused TQ kernel reads
 // packed K as uint8, the centroid codebook as fp16, and the scales as fp32; a
 // mismatched buffer dtype is reinterpreted = finite silent-wrong.
+//
+// Optional-input contract dimension (CC optional-input batch): the K-side buffers
+// are mandatory; the V-side buffers (v_pool_tq / v_centroids / v_scales) are
+// CONDITIONAL on tq_v_enabled. The earlier validator enforced only the mandatory
+// (K) side — so a malformed V buffer dtype was silently accepted (finite-wrong).
+// Enforce the V-side with the SAME contract, but ONLY when tq_v_enabled AND the
+// optional buffer is present (no-op on absence — the conditional-presence crux).
 static inline void assert_raw_tq_buffer_dtypes(
     const mlx::core::array& q, const mlx::core::array& k_pool_tq,
     const mlx::core::array& v_pool, const mlx::core::array& centroids,
-    const mlx::core::array& k_scales, const char* entry) {
+    const mlx::core::array& k_scales, const char* entry,
+    bool tq_v_enabled = false,
+    const std::optional<mlx::core::array>& v_pool_tq = std::nullopt,
+    const std::optional<mlx::core::array>& v_centroids = std::nullopt,
+    const std::optional<mlx::core::array>& v_scales = std::nullopt) {
   if (k_pool_tq.dtype() != mlx::core::uint8)
     throw std::invalid_argument(std::string(entry) +
         ": k_pool_tq must be uint8 (packed TurboQuant K).");
@@ -1844,6 +1855,18 @@ static inline void assert_raw_tq_buffer_dtypes(
   if (k_scales.dtype() != mlx::core::float32)
     throw std::invalid_argument(std::string(entry) +
         ": k_scales must be float32 (read as fp32).");
+  // V-side: same contract, only-when-present (tq_v_enabled + supplied buffer).
+  if (tq_v_enabled) {
+    if (v_pool_tq.has_value() && v_pool_tq->dtype() != mlx::core::uint8)
+      throw std::invalid_argument(std::string(entry) +
+          ": v_pool_tq must be uint8 (packed TurboQuant V) when tq_v_enabled.");
+    if (v_centroids.has_value() && v_centroids->dtype() != mlx::core::float16)
+      throw std::invalid_argument(std::string(entry) +
+          ": v_centroids must be float16 (the V codebook is read as fp16) when tq_v_enabled.");
+    if (v_scales.has_value() && v_scales->dtype() != mlx::core::float32)
+      throw std::invalid_argument(std::string(entry) +
+          ": v_scales must be float32 (read as fp32) when tq_v_enabled.");
+  }
 }
 
 // =========================================================================
@@ -3505,8 +3528,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_tq_forward");
   // CC Batch Class D: enforce the TQ backing-buffer dtypes (packed K uint8,
   // V pool == q, centroids fp16, scales fp32) — a mismatch is read byte-wise.
+  // Optional-input batch: also enforce the V-side buffers when tq_v_enabled.
   assert_raw_tq_buffer_dtypes(q, k_pool_tq, v_pool, centroids, k_scales,
-                              "mfa_paged_varlen_tq_forward");
+                              "mfa_paged_varlen_tq_forward",
+                              tq_v_enabled, v_pool_tq, v_centroids, v_scales);
   if (tq_v_enabled && (!v_pool_tq || !v_centroids || !v_scales))
     throw std::runtime_error("mfa_paged_varlen_tq_forward: tq_v_enabled requires v_pool_tq, v_centroids, v_scales");
 

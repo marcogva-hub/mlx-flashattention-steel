@@ -112,6 +112,58 @@ def test_class_d_tq_buffer_dtype_rejects(name, kw):
         _raw_tq(**kw)
 
 
+# ── Optional-input dimension: V-TQ buffers validated ONLY-when-present ────────────
+def _raw_tq_v(vtq_dt=U8, vc_dt=F16, vs_dt=F32, bits=3):
+    nb, bs, Hkv, D = 1, 16, 4, 64
+    pdk = (D // 32) * 12
+    q = mx.zeros((1, 8, 8, D), F16); pk = mx.zeros((nb, bs, Hkv, pdk), U8)
+    pv = mx.zeros((nb, bs, Hkv, D), F16)
+    cu = mx.array([0, 8], mx.int32); tile = mx.array([0, 1], mx.int32)
+    tab = mx.array([[0]], mx.int32); lens = mx.array([8], mx.int32)
+    cent = mx.zeros((2 ** bits,), F16); ks = mx.zeros((nb, bs, Hkv), F32)
+    vtq = mx.zeros((nb, bs, Hkv, pdk), vtq_dt)
+    vc = mx.zeros((2 ** bits,), vc_dt); vs = mx.zeros((nb, bs, Hkv), vs_dt)
+    return _ext.mfa_paged_varlen_tq_forward(
+        q, pk, pv, cu, tile, tab, lens, cent, ks, 0.1, False, bs, bits,
+        True, False, vtq, vc, vs)
+
+
+_VTQ_BAD = [
+    ("v_pool_tq_fp16", dict(vtq_dt=F16)),
+    ("v_centroids_fp32", dict(vc_dt=F32)),
+    ("v_scales_bf16", dict(vs_dt=BF16)),
+]
+
+
+@pytest.mark.parametrize("name,kw", _VTQ_BAD, ids=[c[0] for c in _VTQ_BAD])
+def test_class_d_vtq_optional_buffer_dtype_rejects(name, kw):
+    # the optional/conditional-input hole: V-TQ buffers carry the same dtype
+    # contract as the K-side but were unvalidated when tq_v_enabled=True.
+    with pytest.raises(ValueError):
+        _raw_tq_v(**kw)
+
+
+def test_class_d_vtq_all_correct_runs():
+    # no over-rejection: all-correct V-TQ (tq_v_enabled) still runs
+    r = _raw_tq_v()
+    mx.eval(r[0] if isinstance(r, (tuple, list)) else r)
+
+
+def test_class_d_vtq_absent_runs():
+    # conditional-presence: tq_v_enabled=False with absent V buffers must NOT choke
+    nb, bs, Hkv, D, bits = 1, 16, 4, 64, 3
+    pdk = (D // 32) * 12
+    q = mx.zeros((1, 8, 8, D), F16); pk = mx.zeros((nb, bs, Hkv, pdk), U8)
+    pv = mx.zeros((nb, bs, Hkv, D), F16)
+    cu = mx.array([0, 8], mx.int32); tile = mx.array([0, 1], mx.int32)
+    tab = mx.array([[0]], mx.int32); lens = mx.array([8], mx.int32)
+    cent = mx.zeros((2 ** bits,), F16); ks = mx.zeros((nb, bs, Hkv), F32)
+    r = _ext.mfa_paged_varlen_tq_forward(
+        q, pk, pv, cu, tile, tab, lens, cent, ks, 0.1, False, bs, bits,
+        False, False, None, None, None)
+    mx.eval(r[0] if isinstance(r, (tuple, list)) else r)
+
+
 # ── Class D: flash_attention_topk mutual-compat + dtype equality ─────────────────
 def _topk(q, k, v):
     return mlx_mfa.flash_attention_topk(q, k, v, 0.5)

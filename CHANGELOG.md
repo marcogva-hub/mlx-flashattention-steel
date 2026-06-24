@@ -568,6 +568,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     required. (Hunt: the Batch-1 K/V-dtype-mismatch finding is now **closed** by these gates; new flagged
     item — `mfa_gna_forward` / `mfa_sage_forward` don't route through `validate_dense_qkv` — GNA covers
     dtype+fp32 already but `D_v` is unconfirmed; Sage `V==q`/`D_v` unconfirmed — a focused follow-up sweep.)
+  - **Optional/conditional-input contract dimension — V-TQ buffers (CC optional-input batch).** The shared
+    validators enforced dtype contracts only for the **mandatory** inputs; **conditional** (flag-gated)
+    inputs were unchecked when present. Named HIGH: `mfa_paged_varlen_tq_forward` (raw + public
+    `flash_attention_paged_varlen_turboquant`) validated the K-side TQ buffers but **not** the V-side ones
+    under `tq_v_enabled=True` — a malformed `v_pool_tq` (fp16), `v_centroids` (fp32) or `v_scales` (bf16)
+    was silently accepted (finite-wrong, read byte-wise). Extended `assert_raw_tq_buffer_dtypes` (C++) and
+    `_assert_tq_paged_buffers` (Python) to enforce `v_pool_tq==uint8 / v_centroids==fp16 / v_scales==fp32`
+    **only when `tq_v_enabled` and the optional buffer is present** (no-op on absence — the
+    conditional-presence crux). Malformed V buffer → raises; all-correct V-TQ → runs (no over-rejection);
+    `tq_v_enabled=False` with absent buffers → runs. Locked by `tests/test_raw_surface_classes.py`
+    (`_VTQ_BAD` rows + all-correct-runs + absent-runs). C++ rebuild required. **Hunt (flagged, not folded):
+    the same dimension found two feature-tensor dtype misreads — `mfa_attention_alibi_forward.alibi_slopes`
+    (f16/bf16 → cos 0.87/0.85 vs f32) and `mfa_attention_rope_forward.rotary_cos/sin` (cos 0.72/0.59) are
+    read at fp32 and silently misread for non-fp32. rope contradicts a logged K1 "cos/sin dtype is
+    flexible" comment (empirically false) and both risk over-rejecting production f16 callers, so the
+    remedy (cast-to-f32-in-host, recommended/non-breaking, vs reject) is left for Marco's decision rather
+    than forced here.**
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

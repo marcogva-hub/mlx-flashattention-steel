@@ -7380,6 +7380,16 @@ def _assert_tq_paged_buffers(k_pool_tq, v_pages, k_scales, tq_bits, fn, *,
         raise ValueError(
             f"{fn}: k_pool_tq must be 4-D [num_blocks, block_size, H_kv, packed_D]; "
             f"got ndim={k_pool_tq.ndim}.")
+    # CC optional-input batch: backing-buffer DTYPE contract (was shape-only). The
+    # kernel reads packed K as uint8 and scales as fp32; a wrong dtype is read
+    # byte-wise = finite silent-wrong. (V-side dtypes enforced below, only-when-
+    # present — the conditional-presence crux that let the V buffers through.)
+    if k_pool_tq.dtype != mx.uint8:
+        raise ValueError(f"{fn}: k_pool_tq must be uint8 (packed TurboQuant K); "
+                         f"got {k_pool_tq.dtype}.")
+    if k_scales.dtype != mx.float32:
+        raise ValueError(f"{fn}: k_scales must be float32 (read as fp32); "
+                         f"got {k_scales.dtype}.")
     nb, bsz, hkv, packed_d = (int(x) for x in k_pool_tq.shape)
     if v_pages.ndim != 4:
         raise ValueError(
@@ -7411,10 +7421,18 @@ def _assert_tq_paged_buffers(k_pool_tq, v_pages, k_scales, tq_bits, fn, *,
             raise ValueError(
                 f"{fn}: v_pool_tq packed_D ({int(v_pool_tq.shape[3])}) != expected "
                 f"{exp_packed} for D={Dv} tq_bits={tq_bits}.")
-        if v_scales is not None and tuple(int(x) for x in v_scales.shape) != (nb, bsz, hkv):
-            raise ValueError(
-                f"{fn}: v_scales {tuple(int(x) for x in v_scales.shape)} must be "
-                f"[num_blocks, block_size, H_kv] = {(nb, bsz, hkv)}.")
+        # CC optional-input batch: V-side dtype contract, only-when-present.
+        if v_pool_tq.dtype != mx.uint8:
+            raise ValueError(f"{fn}: v_pool_tq must be uint8 (packed TurboQuant V) "
+                             f"when tq_v_enabled; got {v_pool_tq.dtype}.")
+        if v_scales is not None:
+            if tuple(int(x) for x in v_scales.shape) != (nb, bsz, hkv):
+                raise ValueError(
+                    f"{fn}: v_scales {tuple(int(x) for x in v_scales.shape)} must be "
+                    f"[num_blocks, block_size, H_kv] = {(nb, bsz, hkv)}.")
+            if v_scales.dtype != mx.float32:
+                raise ValueError(f"{fn}: v_scales must be float32 (read as fp32) "
+                                 f"when tq_v_enabled; got {v_scales.dtype}.")
 
 
 def _assert_sage_prequant_buffers(q, k_int8, k_scale, v, fn):
