@@ -342,6 +342,10 @@ def _kvp(nb, bs, hkv, d):
     a = mx.random.normal((nb, bs, hkv, d)).astype(F16); mx.eval(a); return a
 
 
+def _kvpB(b, h, n, d):
+    a = mx.random.normal((b, h, n, d)).astype(F16); mx.eval(a); return a
+
+
 # A — paged kernels: pool head_dim must equal q head_dim (subset-derive OOB).
 def _qB(B, h, n, d):
     a = mx.random.normal((B, h, n, d)).astype(F16); mx.eval(a); return a
@@ -400,3 +404,50 @@ def test_sweep_tq_codebook_extent():
     with pytest.raises(ValueError, match="centroids"):              # size 8 < 2**4
         o = _FTQ(q, ktq, vpg, bt, sl, cu, mx.zeros((8,), F16), ks,
                  scale=1 / 8, causal=False, block_size=bs, tq_bits=bits); mx.eval(o)
+
+
+# ── Sweep iter-2 regression lock: non-contiguous input contiguity (class) ─────────
+# Every kernel-dispatch host must enforce the documented contiguous-BHND contract
+# (D.5 pattern). A sliced query VIEW must give byteΔ=0 vs its mx.contiguous() copy;
+# pre-fix these were finite-WRONG (paged 1.6 / sparse 0.95 / gna 4.4 / sage 0.72 /
+# varlen 1.63) — read with contiguous-assumed strides, no raise.
+def _noncontig_eq(view_out, contig_out):
+    a = np.array((view_out[0] if isinstance(view_out, tuple) else view_out).astype(F32))
+    b = np.array((contig_out[0] if isinstance(contig_out, tuple) else contig_out).astype(F32))
+    return float(np.abs(a - b).max())
+
+
+def test_sweep_noncontig_paged():
+    H, bs, D, nb = 4, 16, 128, 8
+    pk = _kvp(nb, bs, H, D); pv = _kvp(nb, bs, H, D); q = _qB(1, H, 4, D)
+    t = mx.array([[0, 1, -1, -1]], mx.int32); l = mx.array([30], mx.int32); qv = q[:, :, 0:2, :]
+    d = _noncontig_eq(_FPG(qv, pk, pv, t, l, causal=False),
+                      _FPG(mx.contiguous(qv), pk, pv, t, l, causal=False))
+    assert d < 1e-3, f"paged non-contig finite-wrong: {d}"
+
+
+def test_sweep_noncontig_raw_kernels():
+    import math as _m
+    B, H, N = 1, 8, 256
+    # sparse D=64
+    q = mx.random.normal((B, H, N * 2, 64)).astype(F16); k = _kvpB(B, H, N, 64); v = _kvpB(B, H, N, 64)
+    m = mx.ones((H, (N + 31) // 32, (N + 31) // 32), U8); mx.eval(q); qv = q[:, :, 0:N, :]
+    assert _noncontig_eq(_ext.mfa_attention_sparse_forward(qv, k, v, m, 1 / 8, False),
+                         _ext.mfa_attention_sparse_forward(mx.contiguous(qv), k, v, m, 1 / 8, False)) < 1e-3
+    # gna
+    d0, d1, d2 = 64, 2, 2; Ng = d0 * d1 * d2; D = 128
+    qg = mx.random.normal((1, H, Ng * 2, D)).astype(F16); kg = _kvpB(1, H, Ng, D); vg = _kvpB(1, H, Ng, D); mx.eval(qg)
+    qgv = qg[:, :, 0:Ng, :]; ga = (d0, d1, d2, 4, 1, 1, 1, 1, 1)
+    assert _noncontig_eq(_ext.mfa_gna_forward(qgv, kg, vg, 1 / _m.sqrt(D), *ga),
+                         _ext.mfa_gna_forward(mx.contiguous(qgv), kg, vg, 1 / _m.sqrt(D), *ga)) < 1e-3
+    # sage
+    qs = mx.random.normal((1, H, N * 2, D)).astype(F16); k8 = (mx.random.normal((1, H, N, D)) * 10).astype(mx.int8)
+    vs = _kvpB(1, H, N, D); ks = (mx.zeros((1, H, N)) + 0.1).astype(F32); mx.eval(qs, k8, ks); qsv = qs[:, :, 0:N, :]
+    assert _noncontig_eq(_ext.mfa_sage_forward(qsv, k8, vs, ks, 1 / _m.sqrt(D), False),
+                         _ext.mfa_sage_forward(mx.contiguous(qsv), k8, vs, ks, 1 / _m.sqrt(D), False)) < 1e-3
+    # varlen
+    Nv = 64; BQ = 32
+    qv2 = mx.random.normal((1, H, Nv * 2, D)).astype(F16); kv = _kvpB(1, H, Nv, D); vv = _kvpB(1, H, Nv, D); mx.eval(qv2)
+    cu = mx.array([0, Nv], mx.int32); to = mx.array([0, (Nv + BQ - 1) // BQ], mx.int32); qv2v = qv2[:, :, 0:Nv, :]
+    assert _noncontig_eq(_ext.mfa_attention_varlen_forward(qv2v, kv, vv, cu, cu, to, 1 / _m.sqrt(D), False),
+                         _ext.mfa_attention_varlen_forward(mx.contiguous(qv2v), kv, vv, cu, cu, to, 1 / _m.sqrt(D), False)) < 1e-3

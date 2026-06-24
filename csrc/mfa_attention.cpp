@@ -2147,11 +2147,18 @@ mlx::core::array mfa_attention_sparse_forward(
   auto out_shape  = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
 
+  // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern; no-op/zero-copy when
+  // already contiguous) so a strided q/k/v VIEW isn't read with contiguous-assumed
+  // strides → finite-WRONG. Covers the raw _ext entry (the public path also
+  // contiguous-ifies in Python). VERIFIED finite-wrong pre-fix at D=64 (maxabs 0.95).
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
+      {qc, kc, vc, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
 
   return outputs[0];
 }
@@ -2206,11 +2213,16 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
   auto out_shape = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
 
+  // CONTIG (sweep iter-2): mirror the non-LSE sibling — enforce contiguity (D.5
+  // pattern, no-op when contiguous) before dispatch so strided q/k/v isn't misread.
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
+      {qc, kc, vc, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
 
   return {outputs[0], outputs[1]};  // O, L
 }
@@ -2632,11 +2644,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   auto cu_k_i32 = mlx::core::astype(cu_k, mlx::core::int32, s);
   auto tile_i32 = mlx::core::astype(tile_offsets, mlx::core::int32, s);
 
+  // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
+  // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 1.63).
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAVarlenAttention>(s, params),
-      {q, k, v, cu_q_i32, cu_k_i32, tile_i32});
+      {qc, kc, vc, cu_q_i32, cu_k_i32, tile_i32});
 
   return {outputs[0], outputs[1]};
 }
@@ -2898,11 +2915,22 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
 
   MFAPagedSteelForward::Params params{D, scale, causal, window_left, window_right, block_size};
 
+  // CONTIG (sweep iter-2): the kernel reads q/pools with contiguous-assumed BHND
+  // strides. A NON-contiguous q (e.g. an ordinary sliced query VIEW q[:,:,0:2,:],
+  // the common LLM-serving pattern) was read with wrong strides → DETERMINISTIC
+  // finite-WRONG output (maxabs ~1.6), NO raise. Enforce contiguity here (the D.5
+  // pattern used by the dense/sparse/bias hosts; mlx::core::contiguous is a no-op /
+  // zero-copy when already contiguous) so BOTH the public wrapper and this raw _ext
+  // entry are correct on strided inputs.
+  auto qc  = mlx::core::contiguous(q, false, s);
+  auto kpc = mlx::core::contiguous(k_pool, false, s);
+  auto vpc = mlx::core::contiguous(v_pool, false, s);
+
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedSteelForward>(s, params),
-      {q, k_pool, v_pool, bt_i32, sl_i32});
+      {qc, kpc, vpc, bt_i32, sl_i32});
 
   return {outputs[0], outputs[1]};
 }
@@ -3160,11 +3188,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
 
   MFASageForward::Params params{D, scale, causal, gqa_factor, window_left, window_right};
 
+  // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
+  // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 0.72).
+  auto qc  = mlx::core::contiguous(q, false, s);
+  auto kc8 = mlx::core::contiguous(k_int8, false, s);
+  auto vc  = mlx::core::contiguous(v, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {v.dtype(), mlx::core::float32},
       std::make_shared<MFASageForward>(s, params),
-      {q, k_int8, v, k_scale});
+      {qc, kc8, vc, k_scale});
 
   return {outputs[0], outputs[1]};
 }
@@ -3414,11 +3447,16 @@ mlx::core::array mfa_gna_forward(
   auto out_shape  = q.shape();
   mlx::core::Shape lse_shape = {q.shape(0), q.shape(1), q.shape(2)};
 
+  // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
+  // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 4.44).
+  auto qc = mlx::core::contiguous(q, false, s);
+  auto kc = mlx::core::contiguous(k, false, s);
+  auto vc = mlx::core::contiguous(v, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAGNAForward>(s, params),
-      {q, k, v});
+      {qc, kc, vc});
 
   return outputs[0];
 }
@@ -3644,11 +3682,18 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   mlx::core::Shape out_shape = q.shape();       // [1, H_q, total_q, D]
   mlx::core::Shape lse_shape = {H_q, total_q};  // [H_q, total_q]
 
+  // CONTIG (sweep iter-2): non-contiguous q (sliced query view) → contiguous-assumed
+  // strides → finite-WRONG. Enforce contiguity (D.5 pattern; no-op when already
+  // contiguous) before dispatch — covers the public wrapper + the raw _ext entry.
+  auto qc  = mlx::core::contiguous(q, false, stream);
+  auto kpc = mlx::core::contiguous(k_pool, false, stream);
+  auto vpc = mlx::core::contiguous(v_pool, false, stream);
+
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedVarlenForward>(stream, params),
-      {q, k_pool, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv});
+      {qc, kpc, vpc, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv});
 
   return {outputs[0], outputs[1]};
 }
@@ -3942,9 +3987,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   mlx::core::Shape out_shape = q.shape();       // [1, H_q, total_q, D]
   mlx::core::Shape lse_shape = {H_q, total_q};  // [H_q, total_q]
 
+  // CONTIG (sweep iter-2): enforce contiguity on q (sliced query views) + the
+  // backing pools (D.5 pattern; no-op when already contiguous) so the fused TQ
+  // kernel never misreads a strided input as contiguous (finite-wrong).
+  auto qc  = mlx::core::contiguous(q, false, stream);
+  auto kpc = mlx::core::contiguous(k_pool_tq, false, stream);
+  auto vpc = mlx::core::contiguous(v_pool, false, stream);
+
   // Build inputs vector — conditionally include V-TQ arrays
   std::vector<mlx::core::array> prim_inputs = {
-    q, k_pool_tq, v_pool, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
+    qc, kpc, vpc, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
     centroids, k_scales
   };
   if (tq_v_enabled) {
