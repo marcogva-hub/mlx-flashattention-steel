@@ -521,3 +521,40 @@ def test_sweep_softcap_valid_unaffected():
     for be in ("mfa", "auto"):
         for s in (0.0, 30.0):                                        # no over-rejection
             mx.eval(mlx_mfa.flash_attention(q, k, v, scale=sc, softcap=s, backend=be))
+
+
+# ── Sweep iter-4 regression locks: scale value-semantics + block_size-vs-pool ─────
+def test_sweep_scale_value_semantics():
+    import math as _m
+    mx.random.seed(0)
+    q = mx.random.normal((1, 4, 2048, 128)).astype(F16)
+    k = mx.random.normal((1, 4, 2048, 128)).astype(F16)
+    v = mx.random.normal((1, 4, 2048, 128)).astype(F16); mx.eval(q, k, v)
+    # scale<=0 must be HONORED (match SDPA), not silently replaced by default
+    for s in (0.0, -1.0):
+        o = mlx_mfa.flash_attention(q, k, v, scale=s)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=s); mx.eval(o, ref)
+        err = float(np.abs(np.array(o.astype(F32)) - np.array(ref.astype(F32))).max())
+        assert err < 1e-2, f"scale={s} not honored (err {err} vs SDPA)"
+    # nan/inf scale must RAISE (not silently clamp to default)
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="scale"):
+            mx.eval(mlx_mfa.flash_attention(q, k, v, scale=bad))
+    # no over-rejection: positive + None scale run
+    mx.eval(mlx_mfa.flash_attention(q, k, v, scale=1.0 / _m.sqrt(128)))
+    mx.eval(mlx_mfa.flash_attention(q, k, v, scale=None))
+
+
+def test_sweep_paged_block_size_vs_pool():
+    from mlx_mfa import (flash_attention_paged as _FPG,
+                         flash_attention_paged_varlen as _FPV)
+    nb, bs, Hkv, D, Hq = 16, 16, 2, 128, 2
+    pk = _kvp(nb, bs, Hkv, D); pv = _kvp(nb, bs, Hkv, D); qd = _qB(1, Hq, 1, D)
+    t = mx.array([[0, 1, 2, 3]], mx.int32); l = mx.array([60], mx.int32)
+    with pytest.raises(ValueError, match="block_size"):              # 64 > pool 16 (defeats guard)
+        mx.eval(_FPG(qd, pk, pv, t, l, block_size=64))
+    o = _FPG(qd, pk, pv, t, l, block_size=16); mx.eval(o)            # matches pool -> runs
+    # varlen sibling
+    qv = _qB(1, Hq, 8, D); cu = mx.array([0, 8], mx.int32)
+    with pytest.raises(ValueError, match="block_size"):
+        mx.eval(_FPV(qv, pk, pv, t, l, cu, block_size=64))

@@ -599,6 +599,15 @@ def flash_attention(
             f"tanh-softcap is sign-even so a negative value is almost certainly an "
             f"error), got {softcap}.")
 
+    # SCALE value-semantics (sweep iter-4, sibling of the softcap class): reject a
+    # non-finite scale (nan/inf) — the NAX dense route silently clamped it to a
+    # finite default-scale output (finite-wrong) while SDPA produces honest NaN.
+    # (scale <= 0 is a *valid* SDPA op — uniform / inverted attention — and is
+    # honored below by routing to SDPA, NOT rejected: see the nax_dense gate.)
+    if scale is not None and not math.isfinite(scale):
+        raise ValueError(
+            f"flash_attention: scale must be finite, got {scale!r}.")
+
     # fp32 forced-`mfa` refusal (audit follow-up to RC-A/RC-B): the MFA kernels
     # are fp16/bf16 only; fp32 forced to `backend="mfa"` routes to the legacy ccv
     # path and is silently wrong for causal N<S.  Refuse loudly (RULE 8).
@@ -1092,8 +1101,17 @@ def flash_attention(
             )
             if _be == "nax_dense":
                 _sc = scale if scale is not None else 1.0 / math.sqrt(head_dim)
-                _dtrace.record("nax_dense", _reason)
-                return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
+                # SCALE value-semantics (sweep iter-4): v6_nax_forward uses a
+                # `scale > 0` sentinel to mean "default", which SILENTLY swallows a
+                # legitimate scale <= 0 (uniform / inverted attention) → finite-WRONG
+                # (verified: scale=0 err 0.29, scale=-1 err 4.98 vs SDPA; D=64 path
+                # honors them). Route the (uncommon) scale <= 0 case to SDPA, which
+                # honors it exactly — matches the drop-in SDPA contract + D=64 path.
+                if _sc > 0:
+                    _dtrace.record("nax_dense", _reason)
+                    return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
+                _dtrace.record("sdpa", "scale<=0 (v6 >0 sentinel would drop) -> SDPA")
+                return _fallback_sdpa(q, k, v, scale, causal, stream)
             _dtrace.record(_be, _reason)
             return _fallback_sdpa(q, k, v, scale, causal, stream)
 
@@ -7724,6 +7742,16 @@ def flash_attention_paged(
 
     B, H_q, N_q, D = q.shape
     H_kv = k_pages.shape[2]
+    # BLOCK-SIZE contract (sweep iter-4): the gather/scatter kernels derive
+    # block_size from the pool (k_pages.shape[1]) and IGNORE this param, but the
+    # capacity guard below uses the PARAM — so a wrong-larger block_size inflates
+    # max_blocks*block_size and silently defeats the over-capacity Rule-8 guard
+    # (and mis-tiles the backward scatter). Require the param to match the pool.
+    if block_size != k_pages.shape[1]:
+        raise ValueError(
+            f"flash_attention_paged: block_size ({block_size}) must equal the pool "
+            f"block dim k_pages.shape[1] ({k_pages.shape[1]}); the kernels derive "
+            "block_size from the pool and a mismatched param defeats the capacity guard.")
     # Layer-2 memory-safety validation (CC-02/CC-03): reject out-of-range
     # block_table / seq_lens before dispatch.  -1 padding stays valid.
     _validate_paged_block_table(
@@ -8108,6 +8136,13 @@ def flash_attention_paged_varlen(
     _assert_paged_pool_compat(  # CX-03 (pool shape) + CX-02 (cu_seqlens dtype)
         k_pages, v_pages, "flash_attention_paged_varlen",
         cu_seqlens=[("cu_seqlens_q", cu_seqlens_q)])
+    # BLOCK-SIZE contract (sweep iter-4): the kernel derives block_size from the pool
+    # and ignores this param; a mismatched param defeats the capacity guard. Require
+    # block_size == k_pages.shape[1].
+    if k_pages.ndim == 4 and block_size != k_pages.shape[1]:
+        raise ValueError(
+            f"flash_attention_paged_varlen: block_size ({block_size}) must equal the "
+            f"pool block dim k_pages.shape[1] ({k_pages.shape[1]}).")
 
     import mlx.core as mx
 
@@ -8720,6 +8755,14 @@ def flash_attention_paged_varlen_turboquant(
         "flash_attention_paged_varlen_turboquant",
         v_pool_tq=v_pool_tq if tq_v_enabled else None,
         v_scales=v_scales if tq_v_enabled else None)
+
+    # BLOCK-SIZE contract (sweep iter-4): the kernel derives block_size from the pool
+    # and ignores this param; a mismatched param defeats the capacity guard. Require
+    # block_size == k_pool_tq.shape[1].
+    if k_pool_tq.ndim == 4 and block_size != k_pool_tq.shape[1]:
+        raise ValueError(
+            f"flash_attention_paged_varlen_turboquant: block_size ({block_size}) must "
+            f"equal the pool block dim k_pool_tq.shape[1] ({k_pool_tq.shape[1]}).")
 
     # CODEBOOK-EXTENT (sweep iter-1): the dequant kernel indexes the centroid table
     # by a tq_bits-wide code ∈ [0, 2**tq_bits). A codebook with fewer than 2**tq_bits
