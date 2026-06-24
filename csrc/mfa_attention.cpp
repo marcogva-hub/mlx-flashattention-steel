@@ -1869,6 +1869,30 @@ static inline void assert_raw_tq_buffer_dtypes(
   }
 }
 
+// CC feature-tensor dtype-misread class — several kernels read a host-passed
+// SECONDARY/feature tensor (alibi_slopes, rope rotary_cos/rotary_sin) at a
+// hardcoded fp32 in the shader. A non-fp32 input was byte-reinterpreted = finite
+// silent-wrong (alibi f16 cos 0.87, rope f16 cos 0.72 vs the f32 reference).
+// Remedy = upcast to the kernel's contract dtype (fp32) in the host: f16/bf16
+// callers become CORRECT, f32 callers are a no-op (byteΔ=0), nothing is rejected.
+static inline mlx::core::array upcast_to_f32(
+    const mlx::core::array& a, mlx::core::Stream s) {
+  return (a.dtype() == mlx::core::float32)
+             ? a
+             : mlx::core::astype(a, mlx::core::float32, s);
+}
+
+// Same class, contract dtype = uint8: the sparse block_mask is read byte-wise as
+// uint8 tile-activity flags. A wider dtype (int32/float32) was misread = NaN/
+// garbage tiles (cos=nan); bool happens to work (1-byte). Cast 0/1 masks to the
+// uint8 contract in the host (lossless for 0/1; uint8 is a no-op → byteΔ=0).
+static inline mlx::core::array cast_mask_to_u8(
+    const mlx::core::array& a, mlx::core::Stream s) {
+  return (a.dtype() == mlx::core::uint8)
+             ? a
+             : mlx::core::astype(a, mlx::core::uint8, s);
+}
+
 // =========================================================================
 // Free function: mfa_attention_forward
 // =========================================================================
@@ -1975,7 +1999,7 @@ mlx::core::array mfa_attention_sparse_forward(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, block_mask});
+      {q, k, v, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
 
   return outputs[0];
 }
@@ -2019,7 +2043,7 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, block_mask});
+      {q, k, v, cast_mask_to_u8(block_mask, s)});  // CC: kernel reads mask as uint8
 
   return {outputs[0], outputs[1]};  // O, L
 }
@@ -2063,9 +2087,12 @@ mlx::core::array mfa_attention_rope_forward(
         std::to_string(D));
   }
   // RoPE residual: cos/sin mutual shape + rotary width D/2 (volet K1).
-  // NOTE: cos/sin dtype is NOT constrained to float32 — production callers pass
-  // float16 tables (verified: tests + make_rope_3d_tables) and the kernel
-  // accepts both. (The plan's "cos/sin float32" was an unverified assumption.)
+  // CC CORRECTION: the K1 note "cos/sin dtype is flexible, kernel accepts both"
+  // was empirically FALSE — the shader reads cos/sin at a hardcoded fp32, so a
+  // float16/bfloat16 table was byte-misread = silent-wrong (f16 cos 0.72 vs f32).
+  // CONTRACT: any dtype is accepted, but it is UPCAST to fp32 in the host (below,
+  // via upcast_to_f32) — f16/bf16 tables now produce correct output, f32 is a
+  // no-op (byteΔ=0). cos/sin dtype is therefore unconstrained AND correct.
   if (rotary_cos.ndim() != rotary_sin.ndim())
     throw std::invalid_argument("MFA rope: cos/sin rank mismatch");
   for (int d = 0; d < rotary_cos.ndim(); ++d)
@@ -2097,7 +2124,8 @@ mlx::core::array mfa_attention_rope_forward(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {q, k, v, rotary_cos, rotary_sin});
+      // CC: kernel reads cos/sin as fp32 — upcast so f16/bf16 tables are correct.
+      {q, k, v, upcast_to_f32(rotary_cos, s), upcast_to_f32(rotary_sin, s)});
 
   return outputs[0];
 }
@@ -2158,7 +2186,7 @@ mlx::core::array mfa_attention_alibi_forward(
       {out_shape, lse_shape},
       {qc.dtype(), mlx::core::float32},
       std::make_shared<MFAttention>(s, params),
-      {qc, kc, vc, alibi_slopes});
+      {qc, kc, vc, upcast_to_f32(alibi_slopes, s)});  // CC: kernel reads slopes as fp32
 
   return outputs[0];
 }

@@ -242,3 +242,88 @@ def test_class_b_bf16_gather_compiles_and_matches(return_lse):
     a = np.array(o.astype(F32)).reshape(-1); b = o2.reshape(-1)
     assert o.dtype == BF16
     assert float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b))) >= 0.99
+
+
+# ── Feature-tensor dtype-misread class (CC feature-tensor batch) ─────────────────
+# Several kernels read a host-passed SECONDARY tensor at a hardcoded dtype; a
+# non-contract dtype was byte-misread = silent-wrong (alibi slopes f16 cos 0.87,
+# rope cos/sin f16 cos 0.72, sparse mask int32/f32 cos=nan). Remedy = upcast to
+# the kernel's contract dtype in the host. Lock: contract dtype → byteΔ=0; other
+# dtypes → cos ≥ floor vs the contract reference (was a misread).
+def _cos1(o, ref):
+    a = np.array(o.astype(F32)).reshape(-1); b = np.array(ref.astype(F32)).reshape(-1)
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
+
+
+def _alibi(slopes_dt):
+    mx.random.seed(0)
+    q = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    k = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    v = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    mx.eval(q, k, v)
+    sv = mx.array([0.1, 0.2, 0.4, 0.8], dtype=F32)
+    o = _ext.mfa_attention_alibi_forward(q, k, v, sv.astype(slopes_dt), 0.125, True)
+    mx.eval(o)
+    return o
+
+
+def _rope(table_dt):
+    mx.random.seed(0)
+    q = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    k = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    v = mx.random.normal((1, 4, 16, 64)).astype(F16)
+    cos = mx.cos(mx.arange(16 * 32).reshape(16, 32).astype(F32) * 0.05)
+    sin = mx.sin(mx.arange(16 * 32).reshape(16, 32).astype(F32) * 0.05)
+    mx.eval(q, k, v, cos, sin)
+    o = _ext.mfa_attention_rope_forward(q, k, v, cos.astype(table_dt),
+                                        sin.astype(table_dt), 0.125, False, 0)
+    mx.eval(o)
+    return o
+
+
+def _sparse_mask(mask_dt):
+    mx.random.seed(0)
+    N, Hq, D = 128, 4, 64
+    q = mx.random.normal((1, Hq, N, D)).astype(F16)
+    k = mx.random.normal((1, Hq, N, D)).astype(F16)
+    v = mx.random.normal((1, Hq, N, D)).astype(F16)
+    mx.eval(q, k, v)
+    nt = (N + 31) // 32
+    mnp = np.ones((Hq, nt, nt), np.uint8); mnp[:, :, nt - 1] = 0
+    o = _ext.mfa_attention_sparse_forward(q, k, v, mx.array(mnp).astype(mask_dt),
+                                          1.0 / math.sqrt(D), False)
+    mx.eval(o)
+    return o
+
+
+# (runner, contract_dtype, [other dtypes that were misread pre-fix])
+_FEATURE_CASES = [
+    ("alibi_slopes", _alibi, F32, [F16, BF16]),
+    ("rope_cos_sin", _rope, F32, [F16, BF16]),
+    ("sparse_block_mask", _sparse_mask, U8, [mx.int32, F32, mx.bool_]),
+]
+
+
+@pytest.mark.parametrize("name,run,contract,others",
+                         _FEATURE_CASES, ids=[c[0] for c in _FEATURE_CASES])
+def test_feature_tensor_dtype_corrected(name, run, contract, others):
+    ref = run(contract)
+    assert np.isfinite(np.array(ref.astype(F32))).all()
+    # contract dtype is identity (byteΔ=0)
+    again = run(contract)
+    assert np.array(again.astype(F32)).tobytes() == np.array(ref.astype(F32)).tobytes()
+    # non-contract dtypes now CORRECT (host upcast) — was a misread (cos<<1)
+    for dt in others:
+        o = run(dt)
+        c = _cos1(o, ref)
+        assert c >= 0.999, f"{name} {dt}: cos {c:.4f} < 0.999 (misread not fixed)"
+
+
+def test_feature_tensor_bite_documents_contract():
+    # bite: the pre-fix MISREAD magnitude — if a host upcast is reverted, the
+    # non-contract dtype cosine collapses well below this. (Documents that f16
+    # slopes/cos-sin and wide masks were genuinely silent-wrong, cos ~0.7–0.87,
+    # and are now ~1.0; a regression would reproduce the collapse.)
+    assert _cos1(_alibi(F16), _alibi(F32)) >= 0.999
+    assert _cos1(_rope(F16), _rope(F32)) >= 0.999
+    assert _cos1(_sparse_mask(mx.int32), _sparse_mask(U8)) >= 0.999

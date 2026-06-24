@@ -585,6 +585,22 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     flexible" comment (empirically false) and both risk over-rejecting production f16 callers, so the
     remedy (cast-to-f32-in-host, recommended/non-breaking, vs reject) is left for Marco's decision rather
     than forced here.**
+  - **Feature-tensor dtype-misread class closed (CC feature-tensor batch).** Resolves the previous batch's
+    flagged alibi/rope finding (Marco-directed remedy: cast-to-f32-in-host) and sweeps the class. Several
+    kernels read a host-passed **secondary/feature** tensor (not q/k/v) at a hardcoded MSL dtype, so a
+    caller supplying any other dtype was byte-reinterpreted = **finite silent-wrong** (public-API-reachable
+    via `flash_attention(alibi_slopes=…)` / the rope public path, which passed the tensor uncast).
+    Pre-fix (same-value-different-dtype cosine): `mfa_attention_alibi_forward.alibi_slopes` f16/bf16 →
+    cos 0.87/0.85; `mfa_attention_rope_forward.rotary_cos/sin` → 0.72/0.59; `mfa_attention_sparse_forward`
+    (+`_with_lse`) `block_mask` int32/f32 → **cos=nan**. Fix: two shared host helpers — `upcast_to_f32`
+    (alibi slopes + rope cos/sin → the fp32 the shader reads) and `cast_mask_to_u8` (sparse block_mask →
+    the uint8 the shader reads) — cast the input to the kernel's contract dtype **only when it isn't
+    already** (contract dtype = no-op → byteΔ=0). f16/bf16/int32 callers now produce **cos 1.0** (correct);
+    the only output change anywhere is non-contract-dtype feature callers going wrong→correct. The stale
+    rope "cos/sin dtype is flexible" comment is corrected to the real contract. Re-confirmed clean
+    (same-value-different-dtype, not "runs"): `attn_bias` (cos 1.0), sage (CX-R7-01), int index dtypes
+    (raise not misread). Locked by `tests/test_raw_surface_classes.py` (`_FEATURE_CASES` + a bite). C++
+    rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any
