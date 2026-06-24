@@ -282,6 +282,12 @@ NB_MODULE(_ext, m) {
          float scale, bool causal) {
         mfa_check_backward_inputs("mfa_backward_query_debug", q, k, v, O, L, dO);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // CONTIG (Phase 2 pass-2 — the steel-backward contiguity class's ccv-debug
+        // sibling, missed in pass-1): the 7-GEMM kernel reads contiguous-assumed BHND;
+        // a strided q/O/L gave finite-WRONG dQ. D.5 pattern (no-op when contiguous).
+        auto qc = mlx::core::contiguous(q, false, s), kc = mlx::core::contiguous(k, false, s),
+             vc = mlx::core::contiguous(v, false, s), Oc = mlx::core::contiguous(O, false, s),
+             Lc = mlx::core::contiguous(L, false, s), dOc = mlx::core::contiguous(dO, false, s);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
             false, false, false, 0, 0.0f, false,
@@ -292,7 +298,7 @@ NB_MODULE(_ext, m) {
             {q.shape(), d_shape},
             {q.dtype(), mlx::core::float32},
             std::make_shared<mlx_mfa::MFABackwardQuery>(s, params),
-            {q, k, v, O, L, dO});
+            {qc, kc, vc, Oc, Lc, dOc});
         return std::make_pair(outs[0], outs[1]);
       },
       nb::arg("q"), nb::arg("k"), nb::arg("v"),
@@ -315,6 +321,11 @@ NB_MODULE(_ext, m) {
         mfa_check_backward_inputs("mfa_backward_kv_debug", q, k, v, O, L, dO);
         mfa_check_bnq("mfa_backward_kv_debug", "D (delta)", q, D);
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+        // CONTIG (Phase 2 pass-2 — sibling of query_debug): D.5 pattern, no-op when contiguous.
+        auto qc = mlx::core::contiguous(q, false, s), kc = mlx::core::contiguous(k, false, s),
+             vc = mlx::core::contiguous(v, false, s), Oc = mlx::core::contiguous(O, false, s),
+             Lc = mlx::core::contiguous(L, false, s), Dc = mlx::core::contiguous(D, false, s),
+             dOc = mlx::core::contiguous(dO, false, s);
         mlx_mfa::MFAttention::Params params{
             (int)q.shape(3), scale, causal,
             false, false, false, 0, 0.0f, false,
@@ -324,7 +335,7 @@ NB_MODULE(_ext, m) {
             {k.shape(), v.shape()},
             {k.dtype(), v.dtype()},
             std::make_shared<mlx_mfa::MFABackwardKeyValue>(s, params),
-            {q, k, v, O, L, D, dO});
+            {qc, kc, vc, Oc, Lc, Dc, dOc});
         return std::make_pair(outs[0], outs[1]);
       },
       nb::arg("q"), nb::arg("k"), nb::arg("v"),

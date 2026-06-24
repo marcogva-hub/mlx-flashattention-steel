@@ -739,3 +739,53 @@ def test_phase2_rope_scale_and_sage_zerokv():
     qs = _qB(1, 4, 8, 128); k0 = mx.zeros((1, 4, 0, 128), F16); v0 = mx.zeros((1, 4, 0, 128), F16); mx.eval(qs)
     with pytest.raises(ValueError):
         mx.eval(mlx_mfa.sage_attention(qs, k0, v0))
+
+
+# ── Phase 2 PASS-2 seams (the second pass: column-completeness + fix-introduced) ──
+def test_pass2_debug_backward_contiguity():
+    import math as _m
+    B, H, L, Dd = 1, 2, 256, 64; SC = 1 / _m.sqrt(Dd); mx.random.seed(0)
+    big = mx.random.normal((B, H, L * 2, Dd)).astype(F16); qv = big[:, :, 0:L, :]
+    k = _qB(B, H, L, Dd); v = _qB(B, H, L, Dd); o = _qB(B, H, L, Dd); do = _qB(B, H, L, Dd)
+    lse = mx.random.normal((B, H, L)).astype(F32); dvec = mx.random.normal((B, H, L)).astype(F32)
+    mx.eval(big, lse, dvec)
+    def eq(fn):
+        a = fn(qv); b = fn(mx.contiguous(qv)); mx.eval(a, b)
+        return float(np.abs(np.array((a[0] if isinstance(a, tuple) else a).astype(F32)) -
+                            np.array((b[0] if isinstance(b, tuple) else b).astype(F32))).max())
+    assert eq(lambda x: _ext.mfa_backward_query_debug(x, k, v, o, lse, do, SC, False)) < 1e-2
+    assert eq(lambda x: _ext.mfa_backward_kv_debug(x, k, v, o, lse, dvec, do, SC, False)) < 1e-2
+
+
+def test_pass2_steel_capacity_uses_pool_not_param():
+    # the steel kernel ignores the block_size param (uses pool.shape[1]); the capacity
+    # guard must too — no over-rejection (param<pool valid) and no under-protect (param>pool).
+    pk = _kvp(4, 16, 4, 64); pv = _kvp(4, 16, 4, 64); q = _qB(1, 4, 1, 64)
+    bt = mx.array([[0, 1]], mx.int32)            # real cap = 2*16 = 32
+    o = _ext.mfa_paged_steel_forward(q, pk, pv, bt, mx.array([32], mx.int32), 0.125, False, -1, -1, 8)
+    mx.eval(o[0])                                 # param=8 < pool=16, sl=32 valid -> runs
+    with pytest.raises(Exception):               # param=32 > pool=16, sl=40 > real cap 32 -> raises
+        mx.eval(_ext.mfa_paged_steel_forward(q, pk, pv, bt, mx.array([40], mx.int32), 0.125, False, -1, -1, 32)[0])
+
+
+def test_pass2_paged_append_capacity_atomic():
+    from mlx_mfa.attention import PagedKVCache
+    p = PagedKVCache(num_blocks=2, block_size=16, H=4, D=64, dtype=F16)
+    big48 = mx.ones((1, 4, 48, 64), F16); mx.eval(big48)   # needs 3 blocks, only 2
+    with pytest.raises(Exception):
+        p.append(big48, big48, seq_id=0)
+    assert p.seq_length(0) == 0                   # atomic: no torn partial write
+    p.append(mx.ones((1, 4, 16, 64), F16), mx.ones((1, 4, 16, 64), F16), seq_id=0)  # in-cap runs
+    assert p.seq_length(0) == 16
+
+
+def test_pass2_hybrid_append_no_phantom_on_capacity_fail():
+    from mlx_mfa.attention import PagedKVCache
+    from mlx_mfa.kv_cache import HybridKVCache
+    p = PagedKVCache(num_blocks=2, block_size=16, H=4, D=64, dtype=F16)
+    try: h = HybridKVCache(p, hot_seq_capacity=2)
+    except TypeError: h = HybridKVCache(p)
+    big48 = mx.ones((1, 4, 48, 64), F16); mx.eval(big48)
+    with pytest.raises(Exception):
+        h.append(big48, big48, seq_id=5)         # can't fit -> raises
+    assert 5 not in h._hot_seq_ids               # no phantom hot-seq (rollback)

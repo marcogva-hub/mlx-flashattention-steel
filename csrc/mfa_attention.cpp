@@ -2992,7 +2992,12 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   // CAPACITY-SEAM (raw, Codex NO-GO): the raw paged forward had NO logical capacity
   // check — an over-capacity seq_lens silently diluted over -1/zero blocks (finite-
   // wrong). Add the shared structural contract (block_table columns = max_blocks).
-  assert_paged_capacity(sl_i32, (int)block_table.shape(1), block_size,
+  // Pass-2 over-rejection fix: the steel kernel derives block_size from k_pool.shape(1)
+  // and IGNORES the param (byteΔ=0 proven), so the capacity guard MUST use the pool's
+  // real block dim — using the unvalidated param over-rejected a valid call (param<pool)
+  // and under-protected (param>pool). varlen/tq kernels DO use params_.block_size, so
+  // their guard sites (which pass the param) stay correct — do not change them.
+  assert_paged_capacity(sl_i32, (int)block_table.shape(1), (int)k_pool.shape(1),
                         "mfa_paged_steel_forward");
 
   mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]

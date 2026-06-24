@@ -578,8 +578,22 @@ class HybridKVCache:
             expected_heads=getattr(_pc, "H", None),
             expected_dim=getattr(_pc, "D", None),
             accepted_dtypes=((_dt,) if _dt is not None else None))
+        # CAPACITY-ATOMICITY (Phase 2 pass-2): _ensure_hot may demote a victim + register
+        # the NEW sid BEFORE the primary append; if the primary append then raises (e.g.
+        # genuinely out of blocks even post-demotion — now a clean atomic raise after the
+        # PagedKVCache precheck), roll back the new-sid bookkeeping so a FAILED append
+        # leaves no phantom hot-seq. (A demoted victim's data is safe in the external/
+        # secondary tier and reloads on next access — recoverable, not lost.)
+        _new_sid = sid not in self._residency
         self._ensure_hot(sid, reason="append")
-        self._primary_adapter.append(k_new, v_new, seq_id=sid)
+        try:
+            self._primary_adapter.append(k_new, v_new, seq_id=sid)
+        except Exception:
+            if _new_sid:
+                self._residency.pop(sid, None)
+                self._hot_seq_ids.discard(sid)
+                self._cold_seq_ids.discard(sid)
+            raise
         self._set_residency(sid, "hot", reason="append")
 
     def reset(self, seq_id: Optional[int] = None):

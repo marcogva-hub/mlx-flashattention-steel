@@ -7233,6 +7233,21 @@ class PagedKVCache(KVCacheProtocol):
         v_tokens = v[0].transpose([1, 0, 2]).astype(self.dtype)
         T = k_tokens.shape[0]
 
+        # CAPACITY-ATOMICITY (Phase 2 pass-2): the scatter/concat loop allocates blocks
+        # per-iteration and mutates _block_table/_write_ptr/seq_len BEFORE the scatter —
+        # a mid-loop out-of-blocks left TORN state (partial blocks + advanced write_ptr).
+        # Pre-check the FULL block budget BEFORE any mutation (incl _ensure_seq) so the
+        # append is all-or-nothing (mirrors DenseKVCache's max_seq_len guard).
+        if seq_id in self._block_table:
+            room = self.block_size - int(self._write_ptr.get(seq_id, 0))
+            need_blocks = 0 if T <= room else math.ceil((T - room) / self.block_size)
+        else:
+            need_blocks = max(1, math.ceil(T / self.block_size))  # _ensure_seq gives the first
+        if need_blocks > len(self._free):
+            raise RuntimeError(
+                f"PagedKVCache.append: out of blocks (need {need_blocks} more, "
+                f"{len(self._free)} free) — rejected atomically (no partial write).")
+
         self._ensure_seq(seq_id)
 
         if _USE_SCATTER_KV:
