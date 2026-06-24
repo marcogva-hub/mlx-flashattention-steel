@@ -2120,13 +2120,24 @@ mlx::core::array mfa_attention_sparse_forward(
   // ZERO risk to the M1–M4 public path (which DOES call this kernel and which the
   // III-4 D4 fix targeted — its D=128 correctness is FLAGGED for M1–M4 hardware,
   // not assumed). Refuse loudly (RULE 8) rather than silently corrupt.
-  if (D == 128 &&
-      mlx::core::metal::device(s.device).get_architecture_gen() >= 17) {
-    throw std::invalid_argument(
-        "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
-        "at head_dim=128 on M5+ (out-of-bounds on the last head). Use "
-        "flash_attention_sparse, which routes D=128 sparse to SDPA on M5+. "
-        "D=64 sparse is supported by this kernel.");
+  {
+    int gen_g = mlx::core::metal::device(s.device).get_architecture_gen();
+    // Respect MFA_FORCE_GEN (mirrors arch_gen_ccv/steel at L144/199): so the
+    // force-arch cross-test can swap the arch config and run it on M5.
+    const auto& eg = MFAEnvConfig::get();
+    if (eg.force_gen > 0) gen_g = eg.force_gen;
+    // SPARSE-D128-OOB: the STEEL V1 block-sparse forward is OOB at head_dim=128 on
+    // the is_m3_plus path (gen>=15: M3/M4/M5 — last head, upper-half query tiles).
+    // FORCE-ARCH VERIFIED on M5: gen=15/16/17 all non-deterministic nan_frac~0.0625;
+    // gen<15 (M1/M2, BK=16 base config) is CLEAN. The M5-only gate was too narrow.
+    // Public flash_attention_sparse routes D=128 to SDPA on gen>=15; raw refuses.
+    if (D == 128 && gen_g >= 15) {
+      throw std::invalid_argument(
+          "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
+          "at head_dim=128 on M3+ (gen>=15: out-of-bounds on the last head). Use "
+          "flash_attention_sparse, which routes D=128 sparse to SDPA on M3+. "
+          "D=64 sparse is supported; D=128 sparse is correct only on M1/M2.");
+    }
   }
 
   // Require f16/bf16 (sparse path is STEEL-only; f32 would need ccv update)
@@ -2189,13 +2200,19 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
   // SPARSE-D128-OOB (sweep iter-1): mirror the non-LSE sibling — the STEEL V1
   // block-sparse forward is OOB at head_dim=128 on M5+; refuse loudly (M5+ public
   // path uses SDPA at D=128). Sibling-bypass discipline: both variants enforce it.
-  if (D == 128 &&
-      mlx::core::metal::device(s.device).get_architecture_gen() >= 17)
-    throw std::invalid_argument(
-        "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
-        "at head_dim=128 on M5+ (out-of-bounds on the last head). Use "
-        "flash_attention_sparse, which routes D=128 sparse to SDPA on M5+. "
-        "D=64 sparse is supported by this kernel.");
+  {
+    int gen_g = mlx::core::metal::device(s.device).get_architecture_gen();
+    const auto& eg = MFAEnvConfig::get();
+    if (eg.force_gen > 0) gen_g = eg.force_gen;  // force-arch cross-test hook (L144/199 pattern)
+    // SPARSE-D128-OOB (gen>=15, force-arch verified M3/M4/M5 broken; sibling of the
+    // non-LSE site). Mirror it: refuse on M3+; M1/M2 (BK=16 base config) is clean.
+    if (D == 128 && gen_g >= 15)
+      throw std::invalid_argument(
+          "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
+          "at head_dim=128 on M3+ (gen>=15: out-of-bounds on the last head). Use "
+          "flash_attention_sparse, which routes D=128 sparse to SDPA on M3+. "
+          "D=64 sparse is supported; D=128 sparse is correct only on M1/M2.");
+  }
 
   if (q.dtype() == mlx::core::float32)
     throw std::invalid_argument(

@@ -3772,6 +3772,16 @@ def flash_attention_sparse(
     if _get_is_m5_plus_cached():
         return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
 
+    # SPARSE-D128-OOB (force-arch, iter-6 follow-up): the STEEL V1 block-sparse
+    # forward kernel is out-of-bounds at head_dim=128 on the is_m3_plus path
+    # (gen>=15: M3/M4/M5 — last head, upper-half query tiles). FORCE-ARCH VERIFIED on
+    # M5 (MFA_FORCE_GEN=15/16/17 all non-deterministic nan_frac~0.0625; gen<15 BK=16
+    # base config is clean). M5 already routes to SDPA above; extend the same
+    # per-head SDPA fallback to M3/M4 for D=128 specifically. D=64 sparse and M1/M2
+    # D=128 (gen<15) keep the correct raw STEEL kernel.
+    if D == 128 and _get_is_m3_plus_cached():
+        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
+
     impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)
     q = mx.contiguous(q)
     k = mx.contiguous(k)

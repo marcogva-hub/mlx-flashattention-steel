@@ -594,3 +594,40 @@ def test_sweep_tq_decode_seqlen_capacity():
     with pytest.raises(ValueError, match="capacity"):                # 200 > 64
         o = _tqa(q, ktq, vp, ks, cent, bt, 200, block_size=bs, tq_bits=bits); mx.eval(o)
     o = _tqa(q, ktq, vp, ks, cent, bt, 64, block_size=bs, tq_bits=bits); mx.eval(o)  # ==cap runs
+
+
+# ── Force-arch lock: sparse-D128 OOB is gen>=15 (M3+), not M5-only ─────────────────
+# FORCE-ARCH cross-test (MFA_FORCE_GEN runs the other-arch config on M5 silicon):
+# gen=13 (M1/M2, BK=16 base config) raw sparse D=128 is CLEAN; gen=15/16/17 (M3/M4/M5)
+# are OOB. The raw raise is gen>=15; public flash_attention_sparse routes D=128 to
+# SDPA on M3+. Locked via subprocess (MFA_FORCE_GEN must be set before _ext loads).
+def test_forcearch_sparse_d128_m1_config_clean():
+    import subprocess, sys, textwrap
+    code = textwrap.dedent('''
+        import math, mlx.core as mx, numpy as np, mlx_mfa._ext as e
+        f16=mx.float16; B,H,N=2,8,4096; SC=1/math.sqrt(128); mx.random.seed(0)
+        q=mx.random.normal((B,H,N,128)).astype(f16);k=mx.random.normal((B,H,N,128)).astype(f16)
+        v=mx.random.normal((B,H,N,128)).astype(f16); m=mx.ones((H,128,256),mx.uint8); mx.eval(q,k,v,m)
+        o=np.array(e.mfa_attention_sparse_forward(q,k,v,m,SC,False).astype(mx.float32))
+        ref=np.array(mx.fast.scaled_dot_product_attention(q,k,v,scale=SC).astype(mx.float32))
+        assert np.isfinite(o).all(), "gen13 raw sparse D=128 not finite"
+        assert float(np.abs(o-ref).max()) < 1e-2, "gen13 raw sparse D=128 wrong vs SDPA"
+        print("OK")
+    ''')
+    env = dict(__import__("os").environ); env["MFA_FORCE_GEN"] = "13"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert "OK" in r.stdout, f"gen=13 M1-config sparse D=128 not clean: {r.stdout}\n{r.stderr[-400:]}"
+
+
+def test_forcearch_sparse_d128_raises_default_m5():
+    # On real M5 (gen>=15) the raw entry refuses D=128 sparse; public routes to SDPA.
+    if not _IS_M5:
+        pytest.skip("default-arch raise asserted on M5 host")
+    B, H, N = 2, 8, 4096
+    q = mx.random.normal((B, H, N, 128)).astype(F16); k = mx.random.normal((B, H, N, 128)).astype(F16)
+    v = mx.random.normal((B, H, N, 128)).astype(F16); m = mx.ones((H, 128, 128), U8); mx.eval(q, k, v, m)
+    import math as _m
+    with pytest.raises(Exception):
+        o = _ext.mfa_attention_sparse_forward(q, k, v, m, 1 / _m.sqrt(128), False); mx.eval(o)
+    op = mlx_mfa.flash_attention_sparse(q, k, v, m, scale=1 / _m.sqrt(128), causal=False); mx.eval(op)
+    assert bool(np.isfinite(np.array(op.astype(F32))).all())
