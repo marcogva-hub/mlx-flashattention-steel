@@ -18,6 +18,10 @@ import mlx_mfa._ext as e
 
 B, Hq, Hk, N, D = 1, 8, 2, 256, 128
 SC = 1.0 / math.sqrt(D)
+try:
+    _IS_M5 = bool(e.get_device_info().get("is_m5_plus", False))
+except Exception:
+    _IS_M5 = False
 
 
 def _qkv(dt=mx.float16, bq=B, hk=Hk, nk=N, dq=D, dtk=None):
@@ -63,6 +67,16 @@ _DENSE = {
 
 @pytest.mark.parametrize("name", list(_DENSE))
 def test_dense_valid_runs(name):
+    # SPARSE-D128-OOB (sweep iter-1): the raw STEEL V1 block-sparse forward is OOB
+    # at D=128 on M5+ and is now correctly REJECTED (public path uses SDPA). These
+    # cells (D=128) previously asserted the broken kernel "runs" = green-on-wrong-
+    # binary. Assert the TRUE behavior: it raises on M5+. (D=64 raw sparse + the
+    # public SDPA path are exercised in test_validation_matrix's sparse-D128 lock.)
+    if name in ("sparse", "sparse_lse") and D == 128 and _IS_M5:
+        with pytest.raises(Exception):
+            o = _DENSE[name](*_qkv())
+            mx.eval(o[0] if isinstance(o, tuple) else o)
+        return
     o = _DENSE[name](*_qkv())
     mx.eval(o[0] if isinstance(o, tuple) else o)  # accept-valid
 

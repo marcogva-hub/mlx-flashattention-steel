@@ -7752,6 +7752,16 @@ def flash_attention_paged(
     block_table_list = bt_eff.tolist()  # GPU sync: paged backward block scatter
     max_kv_len = max(seq_lens_list) if seq_lens_list else 0
 
+    # ZERO-KV consistency (sweep iter-1): a sequence with N_q>0 queries but zero KV
+    # length attends to nothing. The f16 kernel NaN-poisoned a MIXED batch while the
+    # all-empty case fabricated finite ZEROS (path-dependent silent-wrong). Align
+    # with flash_attention / flash_attention_varlen, which RAISE on zero-KV (RULE 8).
+    # Only the trivial no-query case (N_q==0) returns the empty zeros tensor.
+    if N_q > 0 and seq_lens_list and min(seq_lens_list) == 0:
+        raise ValueError(
+            f"flash_attention_paged: a sequence has zero KV length (seq_lens "
+            f"min=0) but N_q={N_q} queries attend to nothing (would NaN / fabricate "
+            f"zeros). Drop empty sequences from the batch or pad them.")
     if max_kv_len == 0:
         return mx.zeros((B, H_q, N_q, D), dtype=q.dtype)
 
@@ -8169,6 +8179,19 @@ def flash_attention_paged_varlen(
     seq_lens_list = [int(x) for x in sl_eff.tolist()]
     if any(kv_len < 0 for kv_len in seq_lens_list):
         raise ValueError("flash_attention_paged_varlen: seq_lens_kv must be non-negative")
+    # ZERO-KV consistency (sweep iter-1): a segment with QUERIES but zero KV length
+    # attends to nothing → undefined. The default f16 fused kernel NaN-poisons the
+    # whole packed batch while the f32 fallback fabricated finite ZEROS (path-
+    # dependent silent-wrong). Align with flash_attention / flash_attention_varlen,
+    # which RAISE on zero-KV (RULE 8). A segment with q_len==0 is validly skipped
+    # below (no attention computed), so only reject zero-KV when the segment has
+    # queries — no over-rejection of empty-query padding.
+    for _i, (_ql, _kvl) in enumerate(zip(q_lens, seq_lens_list)):
+        if _kvl == 0 and _ql > 0:
+            raise ValueError(
+                f"flash_attention_paged_varlen: segment {_i} has zero KV length but "
+                f"q_len={_ql} — attention cannot attend to zero keys (would NaN / "
+                f"fabricate zeros). Drop or pad the empty segment.")
 
     if max_seqlen_q is not None and q_lens:
         if max(q_lens) > max_seqlen_q:
@@ -8226,8 +8249,12 @@ def flash_attention_paged_varlen(
         if qe == qs:
             continue
         if seq_lens_list[i] == 0:
-            out_parts.append(mx.zeros((1, H_q, qe - qs, D), dtype=q.dtype))
-            continue
+            # Unreachable after the zero-KV gate above (q_len>0 & kv==0 raises early);
+            # kept as a loud defense — never fabricate finite zeros for a queried
+            # zero-KV segment (the prior silent-wrong).
+            raise ValueError(
+                f"flash_attention_paged_varlen: segment {i} has zero KV length with "
+                f"queries — attention cannot attend to zero keys.")
         out_i = flash_attention_paged(
             q[:, :, qs:qe, :],
             k_pages,
@@ -8676,6 +8703,24 @@ def flash_attention_paged_varlen_turboquant(
         "flash_attention_paged_varlen_turboquant",
         v_pool_tq=v_pool_tq if tq_v_enabled else None,
         v_scales=v_scales if tq_v_enabled else None)
+
+    # CODEBOOK-EXTENT (sweep iter-1): the dequant kernel indexes the centroid table
+    # by a tq_bits-wide code ∈ [0, 2**tq_bits). A codebook with fewer than 2**tq_bits
+    # entries (e.g. size-8 with tq_bits=4 → needs 16) was SILENTLY accepted: codes
+    # >= len(centroids) read past the table → finite-WRONG output (no raise). Require
+    # the codebook to cover the full code range (RULE 8).
+    _need_centroids = 1 << int(tq_bits)
+    if centroids.shape[0] < _need_centroids:
+        raise ValueError(
+            f"flash_attention_paged_varlen_turboquant: K centroids has "
+            f"{centroids.shape[0]} entries but tq_bits={tq_bits} indexes "
+            f"{_need_centroids} codes — the dequant would read past the codebook.")
+    if tq_v_enabled and v_centroids is not None and \
+            v_centroids.shape[0] < _need_centroids:
+        raise ValueError(
+            f"flash_attention_paged_varlen_turboquant: V centroids has "
+            f"{v_centroids.shape[0]} entries but tq_bits={tq_bits} indexes "
+            f"{_need_centroids} codes — the dequant would read past the codebook.")
 
     import math
     import mlx.core as mx

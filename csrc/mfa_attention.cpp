@@ -2110,6 +2110,24 @@ mlx::core::array mfa_attention_sparse_forward(
         "MFA sparse: head_dim must be 64, 128, or 256, got " +
         std::to_string(D));
   }
+  // SPARSE-D128-OOB (sweep iter-1): the STEEL V1 block-sparse forward kernel is
+  // NOT correct at head_dim=128 on M5+ — it leaves the last head's upper-half query
+  // tiles unwritten, returning OOB/NaN (non-deterministic, scales with grid
+  // occupancy; VERIFIED on M5). On M5+ the public flash_attention_sparse routes
+  // D=128 sparse to SDPA (`_sparse_fallback_sdpa_perhead`, the documented dispatch-
+  // map gotcha), so this raw kernel is never reached publicly there — gating the
+  // refusal to gen>=17 closes the verified silent-wrong on the expert surface with
+  // ZERO risk to the M1–M4 public path (which DOES call this kernel and which the
+  // III-4 D4 fix targeted — its D=128 correctness is FLAGGED for M1–M4 hardware,
+  // not assumed). Refuse loudly (RULE 8) rather than silently corrupt.
+  if (D == 128 &&
+      mlx::core::metal::device(s.device).get_architecture_gen() >= 17) {
+    throw std::invalid_argument(
+        "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
+        "at head_dim=128 on M5+ (out-of-bounds on the last head). Use "
+        "flash_attention_sparse, which routes D=128 sparse to SDPA on M5+. "
+        "D=64 sparse is supported by this kernel.");
+  }
 
   // Require f16/bf16 (sparse path is STEEL-only; f32 would need ccv update)
   if (q.dtype() == mlx::core::float32) {
@@ -2161,6 +2179,16 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
     throw std::invalid_argument(
         "MFA sparse: head_dim must be 64, 128, or 256, got " +
         std::to_string(D));
+  // SPARSE-D128-OOB (sweep iter-1): mirror the non-LSE sibling — the STEEL V1
+  // block-sparse forward is OOB at head_dim=128 on M5+; refuse loudly (M5+ public
+  // path uses SDPA at D=128). Sibling-bypass discipline: both variants enforce it.
+  if (D == 128 &&
+      mlx::core::metal::device(s.device).get_architecture_gen() >= 17)
+    throw std::invalid_argument(
+        "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
+        "at head_dim=128 on M5+ (out-of-bounds on the last head). Use "
+        "flash_attention_sparse, which routes D=128 sparse to SDPA on M5+. "
+        "D=64 sparse is supported by this kernel.");
 
   if (q.dtype() == mlx::core::float32)
     throw std::invalid_argument(
@@ -2809,6 +2837,18 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
           "[num_blocks,block_size,H_kv,D] (mismatch at dim " + std::to_string(d) +
           ": k=" + std::to_string(k_pool.shape(d)) + " v=" +
           std::to_string(v_pool.shape(d)) + ").");
+  // CX-03b (sweep iter-1, subset-derive OOB): the kernel bakes D = q.shape(3) and
+  // strides the K/V pool at q's D. CX-03 above only proves v_pool==k_pool — it
+  // never checks the pool head_dim against q. A pool with D != q.D (e.g. q.D=128,
+  // pool.D=64) strides the pool at the wrong (2x) width → OOB / finite-WRONG with
+  // NO raise. Cross-check pool head_dim vs q head_dim (mirrors the sage/gna/dense
+  // raw kernels, which all enforce k.shape(3)==q.shape(3)).
+  if (k_pool.shape(3) != q.shape(3))
+    throw std::invalid_argument(
+        "mfa_paged_steel_forward: k/v pool head_dim (" +
+        std::to_string(k_pool.shape(3)) + ") must equal q head_dim (" +
+        std::to_string(q.shape(3)) +
+        "); the kernel strides the pool at q's D and would read out of bounds.");
   if (block_table.ndim() != 2)
     throw std::invalid_argument("mfa_paged_steel_forward: block_table must be 2-D [B,max_blocks]");
   if (seq_lens.ndim() != 1)
@@ -3521,6 +3561,16 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
       throw std::invalid_argument(
           "mfa_paged_varlen_forward: v_pool shape must equal k_pool shape "
           "(mismatch at dim " + std::to_string(d) + ").");
+  // CX-03b (sweep iter-1, subset-derive OOB): the kernel bakes D = q.shape(3) and
+  // strides the K/V pool at q's D; the v_pool==k_pool loop above never checks the
+  // pool head_dim against q. A pool with D != q.D strides at the wrong width → OOB
+  // finite-WRONG with NO raise. Cross-check pool head_dim vs q head_dim.
+  if (k_pool.shape(3) != q.shape(3))
+    throw std::invalid_argument(
+        "mfa_paged_varlen_forward: k/v pool head_dim (" +
+        std::to_string(k_pool.shape(3)) + ") must equal q head_dim (" +
+        std::to_string(q.shape(3)) +
+        "); the kernel strides the pool at q's D and would read out of bounds.");
   // CX-02 (volet H) + CX-R6-03 (volet I): the kernel reads cu_seqlens_q,
   // block_table AND seq_lens_kv as int32 — a float seq_lens_kv HANGS (garbage
   // length), int64 reads wrong values. Require int32 on all three.

@@ -323,3 +323,80 @@ def test_coverage_jit_kernels_malformation_probed():
     src = (_ROOT / "tests" / "test_validation_matrix.py").read_text()
     for name in probed:
         assert name in src and "raises" in src, f"{name} not malformation-probed in matrix"
+
+
+# ── Sweep iter-1 regression locks (A: paged pool-D, C: zero-KV, G: sparse-D128, D: codebook) ──
+import math as _math
+from mlx_mfa.attention import (flash_attention_paged as _FPG,
+                               flash_attention_paged_varlen as _FPV,
+                               flash_attention_paged_varlen_turboquant as _FTQ)
+from mlx_mfa.turboquant import _compute_packed_d as _cpd
+try:
+    from mlx_mfa._ext import get_device_info as _gdi
+    _IS_M5 = bool(_gdi().get("is_m5_plus", False))
+except Exception:
+    _IS_M5 = False
+
+
+def _kvp(nb, bs, hkv, d):
+    a = mx.random.normal((nb, bs, hkv, d)).astype(F16); mx.eval(a); return a
+
+
+# A — paged kernels: pool head_dim must equal q head_dim (subset-derive OOB).
+def _qB(B, h, n, d):
+    a = mx.random.normal((B, h, n, d)).astype(F16); mx.eval(a); return a
+
+
+def test_sweep_paged_pool_head_dim_cross_check():
+    kp = _kvp(8, 16, 4, 64); vp = _kvp(8, 16, 4, 64)
+    bt = mx.array([[0, 1, 2, 3], [4, 5, 6, 7]], mx.int32); sl = mx.array([20, 20], mx.int32)
+    with pytest.raises(Exception):                                   # q.D=128 vs pool.D=64
+        o = _FPG(_qB(2, 4, 4, 128), kp, vp, bt, sl, block_size=16); mx.eval(o)
+    o = _FPG(_qB(2, 4, 4, 64), kp, vp, bt, sl, block_size=16); mx.eval(o)  # valid D=64 runs
+    assert bool(np.isfinite(np.array(o.astype(F32))).all())
+
+
+# C — paged family: zero-KV with queries raises (consistent with flash_attention/varlen).
+def test_sweep_paged_zero_kv_raises():
+    kp = _kvp(8, 16, 4, 64); vp = _kvp(8, 16, 4, 64)
+    bt = mx.array([[0, 1, -1, -1], [2, 3, -1, -1]], mx.int32)
+    with pytest.raises(ValueError):                                  # mixed zero-KV
+        o = _FPG(_qB(2, 4, 4, 64), kp, vp, bt, mx.array([16, 0], mx.int32), block_size=16); mx.eval(o)
+    # valid (both non-zero) still runs
+    bt2 = mx.array([[0, 1, 2, 3], [4, 5, 6, 7]], mx.int32)
+    o = _FPG(_qB(2, 4, 4, 64), kp, vp, bt2, mx.array([16, 16], mx.int32), block_size=16); mx.eval(o)
+    assert bool(np.isfinite(np.array(o.astype(F32))).all())
+
+
+# G — raw STEEL V1 block-sparse forward is OOB at D=128 on M5+ → raises (public uses SDPA).
+def test_sweep_raw_sparse_d128_raises_on_m5():
+    B, H, N = 2, 8, 4096; mx.random.seed(0)
+    mk = lambda d: mx.random.normal((B, H, N, d)).astype(F16)
+    q3, k3, v3 = mk(128), mk(128), mk(128); m = mx.ones((H, 128, 128), U8); mx.eval(q3, k3, v3, m)
+    if _IS_M5:
+        with pytest.raises(Exception):
+            o = _ext.mfa_attention_sparse_forward(q3, k3, v3, m, 1 / _math.sqrt(128), False); mx.eval(o)
+        with pytest.raises(Exception):
+            o = _ext.mfa_attention_sparse_forward_with_lse(q3, k3, v3, m, 1 / _math.sqrt(128), False)
+            mx.eval(o[0])
+    # public path stays finite (SDPA) at D=128 on every HW — no over-rejection
+    op = mlx_mfa.flash_attention_sparse(q3, k3, v3, m, scale=1 / _math.sqrt(128), causal=False)
+    mx.eval(op)
+    assert bool(np.isfinite(np.array(op.astype(F32))).all())
+    # raw D=64 sparse still works (the fix is D=128-specific)
+    q4, k4, v4 = mk(64), mk(64), mk(64); mx.eval(q4, k4, v4)
+    o = _ext.mfa_attention_sparse_forward(q4, k4, v4, m, 1 / 8, False); mx.eval(o)
+    assert bool(np.isfinite(np.array(o.astype(F32))).all())
+
+
+# D — TQ varlen: centroid codebook must cover 2**tq_bits codes (else dequant OOB).
+def test_sweep_tq_codebook_extent():
+    nb, bs, Hkv, D, bits = 4, 16, 2, 64, 4; pdk = _cpd(D, bits)
+    q = mx.random.normal((1, 4, 4, D)).astype(F16)
+    ktq = mx.zeros((nb, bs, Hkv, pdk), U8); vpg = mx.zeros((nb, bs, Hkv, D), F16)
+    ks = mx.zeros((nb, bs, Hkv), F32); bt = mx.array([[0, 1, 2, 3]], mx.int32)
+    sl = mx.array([20], mx.int32); cu = mx.array([0, 4], mx.int32)
+    mx.eval(q, ktq, vpg, ks)
+    with pytest.raises(ValueError, match="centroids"):              # size 8 < 2**4
+        o = _FTQ(q, ktq, vpg, bt, sl, cu, mx.zeros((8,), F16), ks,
+                 scale=1 / 8, causal=False, block_size=bs, tq_bits=bits); mx.eval(o)
