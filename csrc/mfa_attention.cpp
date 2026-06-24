@@ -1982,6 +1982,36 @@ static void check_prefix_sum_values(
         "packed K-token count (" + std::to_string(upper_bound) + ").");
 }
 
+// CAPACITY-SEAM class-closure (Codex NO-GO): the logical capacity contract
+// (seq_lens <= max_blocks*block_size, seq_lens >= 0) was present only on the public
+// wrappers (and there gated under MFA_PAGED_TRUST_INDICES) and ABSENT on every raw
+// paged forward — so the raw entries silently DILUTED an over-capacity seq_lens over
+// -1-padding/zero blocks (finite-deterministic-WRONG; the physical-block guard keeps
+// it memory-safe, not correct). This is the CHEAP structural half of the cost-class
+// split (a B-element host reduction, NOT the expensive per-element block_table index
+// scan the trust flag legitimately skips). Shared helper so the raw + public capacity
+// contract can't diverge again. seq_lens must already be int32 (callers enforce).
+static void assert_paged_capacity(const mlx::core::array& seq_lens, int max_blocks,
+                                  int block_size, const char* entry) {
+  if (seq_lens.size() == 0 || max_blocks <= 0 || block_size <= 0) return;
+  mlx::core::array sl = seq_lens;
+  mlx::core::eval(sl);
+  const int32_t* p = sl.data<int32_t>();
+  const int n = static_cast<int>(sl.shape(0));
+  int32_t smin = p[0], smax = p[0];
+  for (int i = 1; i < n; ++i) { if (p[i] < smin) smin = p[i]; if (p[i] > smax) smax = p[i]; }
+  if (smin < 0)
+    throw std::invalid_argument(std::string(entry) + ": seq_lens must be >= 0; got min="
+                                + std::to_string(smin) + ".");
+  const long long cap = static_cast<long long>(max_blocks) * static_cast<long long>(block_size);
+  if (static_cast<long long>(smax) > cap)
+    throw std::invalid_argument(
+        std::string(entry) + ": seq_lens max (" + std::to_string(smax) +
+        ") exceeds max_blocks*block_size = " + std::to_string(max_blocks) + "*" +
+        std::to_string(block_size) + " = " + std::to_string(cap) +
+        " (a logical block index would run past the block_table columns).");
+}
+
 // CC derived-metadata class — `tile_offsets` is NOT primary: it is fully DERIVED
 // from cu_seqlens_q + the tile width BQ (tile_offsets[j+1] = tile_offsets[j] +
 // ceil(q_len[j]/BQ)). The generic prefix-sum check (monotone, [0]==0) accepted
@@ -2927,6 +2957,12 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   auto sl_i32 = seq_lens;
   mlx::core::eval(sl_i32);
 
+  // CAPACITY-SEAM (raw, Codex NO-GO): the raw paged forward had NO logical capacity
+  // check — an over-capacity seq_lens silently diluted over -1/zero blocks (finite-
+  // wrong). Add the shared structural contract (block_table columns = max_blocks).
+  assert_paged_capacity(sl_i32, (int)block_table.shape(1), block_size,
+                        "mfa_paged_steel_forward");
+
   mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]
   mlx::core::Shape lse_shape = {B, H, N};          // logsumexp
 
@@ -3657,6 +3693,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   if (tile_offsets.ndim() != 1)
     throw std::invalid_argument(
         "mfa_paged_varlen_forward: tile_offsets must be 1-D [num_seqs+1]");
+  // CAPACITY-SEAM (raw, Codex NO-GO): mirror the steel host — the raw paged-varlen
+  // forward also lacked the logical capacity check. Shared structural contract.
+  assert_paged_capacity(seq_lens_kv, (int)block_table.shape(1), block_size,
+                        "mfa_paged_varlen_forward");
   {
     const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
     if (block_table.shape(0) != num_seqs)
@@ -3959,6 +3999,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   if (seq_lens_kv.ndim() != 1)
     throw std::invalid_argument(
         "mfa_paged_varlen_tq_forward: seq_lens_kv must be 1-D [num_seqs]");
+  // CAPACITY-SEAM (raw, Codex NO-GO): TQ paged forward also lacked the logical
+  // capacity check. Shared structural contract (block_table columns = max_blocks).
+  assert_paged_capacity(seq_lens_kv, (int)block_table.shape(1), block_size,
+                        "mfa_paged_varlen_tq_forward");
   {
     const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
     if (block_table.shape(0) != num_seqs)

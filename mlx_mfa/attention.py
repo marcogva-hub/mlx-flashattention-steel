@@ -7657,38 +7657,45 @@ def _validate_paged_block_table(
     #     Memory-safety does NOT depend on this check either way: the paged
     #     gather kernels guard every physical block (`phys >= 0 && phys <
     #     num_blocks`, mfa_steel_fwd.cpp) so an OOB index reads zero, never OOB.
-    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and (
-            block_table.size or seq_lens.size):
-        import mlx.core as _mx
-        _probes, _kinds = [], []
-        if block_table.size:
-            _probes += [_mx.min(block_table), _mx.max(block_table)]
-            _kinds += ["bt_min", "bt_max"]
-        if seq_lens.size:
-            _probes += [_mx.min(seq_lens), _mx.max(seq_lens)]
-            _kinds += ["sl_min", "sl_max"]
-        _mx.eval(*_probes)                      # SINGLE sync for all reductions
-        vals = {k: int(p.item()) for k, p in zip(_kinds, _probes)}
-        if block_table.size:
-            bmin, bmax = vals["bt_min"], vals["bt_max"]
-            if bmin < -1 or bmax >= num_blocks:
-                raise ValueError(
-                    f"{fn}: block_table entries must be in [-1, {num_blocks}) "
-                    f"(num_blocks = pool.shape[0] = {num_blocks}); got "
-                    f"min={bmin}, max={bmax}. '-1' marks an unallocated/padding page; "
-                    f"any other negative value or a value >= num_blocks would read "
-                    f"out of bounds from the page pool."
-                )
-        if seq_lens.size:
-            smin, smax = vals["sl_min"], vals["sl_max"]
-            if smin < 0:
-                raise ValueError(f"{fn}: seq_lens must be >= 0; got min={smin}.")
-            if max_blocks and smax > max_blocks * block_size:
-                raise ValueError(
-                    f"{fn}: seq_lens max ({smax}) exceeds max_blocks*block_size "
-                    f"= {max_blocks}*{block_size} = {max_blocks * block_size}; a logical "
-                    f"block index would run past the block_table columns."
-                )
+    # COST-CLASS SPLIT (capacity-seam class-closure, Codex NO-GO): the trust flag
+    # used to gate the WHOLE value-range block — but the checks fall into two
+    # cost classes that the flag conflated (the same mis-scope the loop fixed for
+    # tq_decode, disposition b):
+    #   * seq_lens checks (>=0, <= max_blocks*block_size) — a CHEAP B-element
+    #     reduction + a STRUCTURAL capacity contract.  Gating it saved ~nothing
+    #     and turned trust-mode into a SILENT-WRONG (over-capacity dilutes over
+    #     -1-padding/zero blocks → finite-deterministic-WRONG).  ALWAYS run (ungated).
+    #   * block_table value-range (in [-1, num_blocks)) — the EXPENSIVE per-element
+    #     INDEX scan the flag is NAMED for (MFA_PAGED_TRUST_INDICES = trust the
+    #     indices).  Legitimately flag-scoped: memory-safety holds either way (the
+    #     gather kernels guard every physical block → OOB index reads zero).
+    import mlx.core as _mx
+    # --- cheap structural seq_lens contract: ALWAYS (the ungated capacity check) ---
+    if seq_lens.size:
+        _sl = [_mx.min(seq_lens), _mx.max(seq_lens)]
+        _mx.eval(*_sl)
+        smin, smax = int(_sl[0].item()), int(_sl[1].item())
+        if smin < 0:
+            raise ValueError(f"{fn}: seq_lens must be >= 0; got min={smin}.")
+        if max_blocks and smax > max_blocks * block_size:
+            raise ValueError(
+                f"{fn}: seq_lens max ({smax}) exceeds max_blocks*block_size "
+                f"= {max_blocks}*{block_size} = {max_blocks * block_size}; a logical "
+                f"block index would run past the block_table columns."
+            )
+    # --- expensive per-element block_table index scan: flag-scoped (the opt-out) ---
+    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and block_table.size:
+        _bt = [_mx.min(block_table), _mx.max(block_table)]
+        _mx.eval(*_bt)
+        bmin, bmax = int(_bt[0].item()), int(_bt[1].item())
+        if bmin < -1 or bmax >= num_blocks:
+            raise ValueError(
+                f"{fn}: block_table entries must be in [-1, {num_blocks}) "
+                f"(num_blocks = pool.shape[0] = {num_blocks}); got "
+                f"min={bmin}, max={bmax}. '-1' marks an unallocated/padding page; "
+                f"any other negative value or a value >= num_blocks would read "
+                f"out of bounds from the page pool."
+            )
 
 
 def flash_attention_paged(

@@ -631,3 +631,40 @@ def test_forcearch_sparse_d128_raises_default_m5():
         o = _ext.mfa_attention_sparse_forward(q, k, v, m, 1 / _m.sqrt(128), False); mx.eval(o)
     op = mlx_mfa.flash_attention_sparse(q, k, v, m, scale=1 / _m.sqrt(128), causal=False); mx.eval(op)
     assert bool(np.isfinite(np.array(op.astype(F32))).all())
+
+
+# ── Capacity-seam class-closure (Codex NO-GO): over-capacity seq_lens RAISES across
+# the full grid — public {trust ON, default} + raw {steel, varlen}. The capacity check
+# is the CHEAP structural contract, UNGATED from MFA_PAGED_TRUST_INDICES (re-gating it
+# would reintroduce a trust-mode silent-wrong → this lock fails CI if re-gated). ──────
+def test_sweep_paged_capacity_grid():
+    import os
+    from mlx_mfa import (flash_attention_paged as _FPG,
+                         flash_attention_paged_varlen as _FPV)
+    nb, bs, Hkv, D = 8, 4, 2, 64
+    pk = _kvp(nb, bs, Hkv, D); pv = _kvp(nb, bs, Hkv, D); q = _qB(1, 4, 1, D)
+    bt = mx.array([[0]], mx.int32)                  # 1 block -> capacity = 1*bs = 4
+    over = mx.array([9], mx.int32); ok = mx.array([4], mx.int32)  # 9 > cap; 4 == cap
+    cu = mx.array([0, 1], mx.int32); mx.eval(pk, pv, q)
+
+    def with_trust(on, fn):
+        if on: os.environ["MFA_PAGED_TRUST_INDICES"] = "1"
+        else: os.environ.pop("MFA_PAGED_TRUST_INDICES", None)
+        try: return fn()
+        finally: os.environ.pop("MFA_PAGED_TRUST_INDICES", None)
+
+    # public paged: over-capacity RAISES in BOTH default AND trust mode (the ungate)
+    for trust in (False, True):
+        with pytest.raises(ValueError, match="exceeds"):
+            with_trust(trust, lambda: mx.eval(_FPG(q, pk, pv, bt, over, block_size=bs)))
+        with pytest.raises(ValueError, match="exceeds"):
+            with_trust(trust, lambda: mx.eval(_FPV(q, pk, pv, bt, over, cu, block_size=bs)))
+    # no over-rejection: in-capacity runs in both modes
+    for trust in (False, True):
+        with_trust(trust, lambda: mx.eval(_FPG(q, pk, pv, bt, ok, block_size=bs)))
+    # raw _ext: capacity enforced with NO flag (signature: ...,scale,causal,wl,wr,block_size)
+    with pytest.raises(Exception):
+        o = _ext.mfa_paged_steel_forward(q, pk, pv, bt, over, 0.125, False, -1, -1, bs); mx.eval(o[0])
+    o = _ext.mfa_paged_steel_forward(q, pk, pv, bt, ok, 0.125, False, -1, -1, bs); mx.eval(o[0])  # in-cap runs
+    with pytest.raises(Exception):
+        o = _ext.mfa_paged_varlen_forward(q, pk, pv, cu, cu, bt, over, 0.125, False, bs); mx.eval(o[0])
