@@ -23,6 +23,7 @@ Public entry: :func:`tq_decode_attend` (used by
 from __future__ import annotations
 
 import math
+import os
 from typing import Optional
 
 import mlx.core as mx
@@ -248,6 +249,20 @@ def tq_decode_attend(
     # CX-TQ-DECODE-01: pass num_blocks (physical pool size) + n_active_blocks
     # (logical table-row length) so both kernels can bounds-guard phys / blk.
     n_active_blocks = int(block_table_row.shape[0])
+    # seq_len capacity contract (sweep iter-5): the K/V gather kernels zero-FILL
+    # positions whose block index >= n_active_blocks, then SDPA softmaxes over all S
+    # positions — so seq_len > n_active_blocks*block_size silently dilutes the result
+    # with zero-key positions (finite-WRONG, no raise). Mirror the sibling Rule-8
+    # guards (v_pool / packed_D / k_scales) which all raise on cross-arg mismatch.
+    # This is a seq_lens VALUE check, so it respects the MFA_PAGED_TRUST_INDICES
+    # perf opt-out (caller trusted; the kernel's blk<n_active zero-fill stays
+    # memory-safe) — same gate as the inference.py / attention.py value-syncs.
+    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and S > n_active_blocks * bs:
+        raise ValueError(
+            f"tq_decode_attend: seq_len ({S}) exceeds block-table capacity "
+            f"(n_active_blocks={n_active_blocks} * block_size={bs} = "
+            f"{n_active_blocks * bs}); excess positions would silently attend to "
+            "zero-filled K/V and dilute the output.")
     params = mx.array([S, int(_num_blocks), n_active_blocks], dtype=mx.int32)
 
     # P9: emit K/V in the CACHE dtype natively (the V pool + rotated q are at the

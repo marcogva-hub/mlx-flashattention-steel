@@ -232,7 +232,9 @@ def test_jit_tq_decode_attend_cross_check():
     q = _qd(4, 1, D); ktq = mx.zeros((nb, bs, Hkv, _pd(D, bits)), U8)
     vp = mx.zeros((nb, bs, Hkv, D), F16); vbad = mx.zeros((nb, bs, Hkv, 32), F16)
     ks = mx.zeros((nb, bs, Hkv), F32); cent = mx.zeros((2 ** bits,), F16)
-    bt = mx.array([0, 1], mx.int32); mx.eval(q, ktq, vp, vbad, ks, cent, bt)
+    # 3 active blocks -> capacity 3*16=48 >= seq_len 40 (the iter-5 seq_len guard
+    # requires seq_len <= n_active_blocks*block_size).
+    bt = mx.array([0, 1, 2], mx.int32); mx.eval(q, ktq, vp, vbad, ks, cent, bt)
     _tqa(q, ktq, vp, ks, cent, bt, 40, block_size=bs, tq_bits=bits)  # valid runs
     with pytest.raises(ValueError):
         _tqa(q, ktq, vbad, ks, cent, bt, 40, block_size=bs, tq_bits=bits)  # v_pool.D != q.D
@@ -558,3 +560,37 @@ def test_sweep_paged_block_size_vs_pool():
     qv = _qB(1, Hq, 8, D); cu = mx.array([0, 8], mx.int32)
     with pytest.raises(ValueError, match="block_size"):
         mx.eval(_FPV(qv, pk, pv, t, l, cu, block_size=64))
+
+
+# ── Sweep iter-5 + scalar-class-closure locks: v6 scale-sentinel + tq seq_len cap ──
+@pytest.mark.parametrize("bad", [0.0, -2.0, float("nan"), float("inf"), float("-inf")])
+def test_sweep_v6_raw_scale_sentinel(bad):
+    # raw v6_nax_forward silently DEFAULTED a non-positive/non-finite scale (the
+    # scale-sentinel class, sibling of the iter-4 flash_attention fix). Now loud.
+    q = _qB(1, 4, 256, 128); k = _qB(1, 4, 256, 128); v = _qB(1, 4, 256, 128)
+    with pytest.raises(Exception):
+        o = _ext.v6_nax_forward(q, k, v, False, True, bad); mx.eval(o[0])
+
+
+def test_sweep_v6_raw_scale_valid():
+    # no over-rejection: -1.0 sentinel == omit == default; positive scale runs.
+    import math as _m
+    q = _qB(1, 4, 256, 128); k = _qB(1, 4, 256, 128); v = _qB(1, 4, 256, 128)
+    o_sent = _ext.v6_nax_forward(q, k, v, False, True, -1.0)
+    o_omit = _ext.v6_nax_forward(q, k, v, False, True)
+    o_pos = _ext.v6_nax_forward(q, k, v, False, True, 1.0 / _m.sqrt(128))
+    mx.eval(o_sent[0], o_omit[0], o_pos[0])
+    a = np.array(o_sent[0].astype(F32)); b = np.array(o_omit[0].astype(F32))
+    assert np.array_equal(a, b), "v6 scale=-1 sentinel must equal omitted (default)"
+
+
+def test_sweep_tq_decode_seqlen_capacity():
+    from mlx_mfa.tq_decode import tq_decode_attend as _tqa, _packed_d as _pd
+    D, Hq, Hkv, bs, bits, nb = 128, 8, 2, 16, 4, 8; pdk = _pd(D, bits)
+    q = mx.random.normal((1, Hq, 1, D)).astype(F16); ktq = mx.zeros((nb, bs, Hkv, pdk), U8)
+    vp = mx.zeros((nb, bs, Hkv, D), F16); ks = mx.zeros((nb, bs, Hkv), F32)
+    cent = mx.zeros((2 ** bits,), F16); bt = mx.array([0, 1, 2, 3], mx.int32)  # cap = 4*16 = 64
+    mx.eval(q, ktq, vp, ks, cent, bt)
+    with pytest.raises(ValueError, match="capacity"):                # 200 > 64
+        o = _tqa(q, ktq, vp, ks, cent, bt, 200, block_size=bs, tq_bits=bits); mx.eval(o)
+    o = _tqa(q, ktq, vp, ks, cent, bt, 64, block_size=bs, tq_bits=bits); mx.eval(o)  # ==cap runs

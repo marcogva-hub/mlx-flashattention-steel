@@ -892,6 +892,18 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   int D = q.shape(3);
   if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
 
+  // SCALE value-semantics (sweep iter-4/5 class-closure): the eval_gpu sentinel
+  // `(scale > 0) ? scale : default` silently SWALLOWED a non-positive / non-finite
+  // scale -> finite-WRONG (scale=0 == default output, err 0.29 vs SDPA). `-1.0` is
+  // the DOCUMENTED "use default 1/sqrt(D)" sentinel and stays. Any OTHER non-finite
+  // or <=0 scale is now a loud error (Rule 8) instead of a silent default — mirrors
+  // sparse_attention's `scale must be > 0`. (The public flash_attention honors
+  // scale<=0 by routing to SDPA; this raw expert entry is loud, never silent.)
+  if (scale != -1.0f && (!std::isfinite(scale) || scale <= 0.0f))
+    throw std::invalid_argument(
+        "V6: scale must be a finite value > 0 (pass -1.0 or omit for the default "
+        "1/sqrt(D)); a non-positive/non-finite scale was silently defaulting.");
+
   // volet K1 (R15): the forward read K.shape(1) without validating K/V — a
   // batch/k_seq/k_heads/q_D/dtype mismatch read OOB / silent-wrong (observed:
   // batch→NaN, the rest no-raise). NAX matmul2d needs symmetric D. Rule 8.
