@@ -2332,6 +2332,12 @@ mlx::core::array mfa_attention_rope_forward(
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
   validate_dense_qkv(q, k, v, "MFA rope");  // volet K1: full Q/K/V contract
+  // SCALE value-semantics (Phase 2 pass-3 — wrapper-vs-raw: the Python
+  // flash_attention_rope wrapper got the finite-guard in pass-1, the raw _ext host
+  // did not). A nan/inf scale was silently clamped to NaN output. Push to source
+  // (mirrors mfa_v6_nax_primitive's std::isfinite(scale) host guard).
+  if (!std::isfinite(scale))
+    throw std::invalid_argument("mfa_attention_rope_forward: scale must be finite.");
 
   int D = q.shape(3);
   if (D != 64 && D != 128 && D != 256) {
@@ -3224,6 +3230,15 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
   const int D    = q.shape(3);
   const int H_kv = k_int8.shape(1);
   const int S    = k_int8.shape(2);
+
+  // ZERO-KV reject (Phase 2 pass-3 — the wrapper-vs-raw meta-class: the Python
+  // sage_attention/_prequantized wrappers got this guard in pass-1, the raw _ext
+  // host did not). Attention over zero keys is undefined (softmax over -inf → NaN).
+  // Push the guard to the SOURCE so the wrapper AND the raw entry are both covered.
+  if (S == 0)
+    throw std::invalid_argument(
+        "mfa_sage_forward: empty KV (k sequence length 0) is undefined — attention "
+        "cannot attend to zero keys.");
 
   if (H % H_kv != 0)
     throw std::invalid_argument(

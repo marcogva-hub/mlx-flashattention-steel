@@ -789,3 +789,34 @@ def test_pass2_hybrid_append_no_phantom_on_capacity_fail():
     with pytest.raises(Exception):
         h.append(big48, big48, seq_id=5)         # can't fit -> raises
     assert 5 not in h._hot_seq_ids               # no phantom hot-seq (rollback)
+
+
+# ── Phase 2 PASS-3: wrapper-vs-raw meta-class — push guards to the C++ SOURCE ──────
+def test_pass3_raw_sage_zerokv():
+    q = _qB(1, 4, 8, 128); k8 = mx.zeros((1, 4, 0, 128), mx.int8)
+    v = mx.zeros((1, 4, 0, 128), F16); ks = mx.zeros((1, 4, 0), F32); mx.eval(q, k8, v, ks)
+    with pytest.raises(Exception):                       # raw _ext, not just the wrapper
+        mx.eval(_ext.mfa_sage_forward(q, k8, v, ks, 0.1, False, -1, -1))
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_pass3_raw_rope_scale_finite(bad):
+    import math as _m
+    q = _qB(1, 4, 8, 128); cos = mx.ones((8, 64)); sin = mx.zeros((8, 64)); mx.eval(cos, sin)
+    with pytest.raises(Exception):                       # raw _ext host now guards it
+        mx.eval(_ext.mfa_attention_rope_forward(q, q, q, cos, sin, bad, False, 0, True))
+    # valid scale runs (no over-rejection)
+    o = _ext.mfa_attention_rope_forward(q, q, q, cos, sin, 1.0 / _m.sqrt(128), False, 0, True)
+    mx.eval(o)
+
+
+def test_pass3_backward_dO_dtype():
+    import math as _m
+    B, H, L, D = 1, 2, 128, 64; SC = 1 / _m.sqrt(D)
+    q = _qB(B, H, L, D); o = _qB(B, H, L, D); lse = mx.random.normal((B, H, L)).astype(F32)
+    do32 = mx.random.normal((B, H, L, D)).astype(F32); mx.eval(lse, do32)   # mismatched fp32 dO
+    with pytest.raises(Exception):
+        mx.eval(_ext.mfa_steel_backward(q, q, q, o, lse, do32, SC, False)[0])
+    # valid f16 dO runs
+    do16 = mx.random.normal((B, H, L, D)).astype(F16); mx.eval(do16)
+    mx.eval(_ext.mfa_steel_backward(q, q, q, o, lse, do16, SC, False)[0])

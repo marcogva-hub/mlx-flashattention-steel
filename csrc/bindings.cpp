@@ -174,6 +174,11 @@ inline void mfa_check_backward_inputs(
   };
   if (!same4(O))  err("O must have q's shape [B, Hq, Nq, D]");
   if (!same4(dO)) err("dO must have q's shape [B, Hq, Nq, D]");
+  // dtype-validation (Phase 2 pass-3 — the empty cotangent cell): the q/k/v dtype
+  // contract is checked above but dO's was not; a fp32 dO read as fp16 was finite-
+  // wrong. dO must share q's dtype (covers steel + the debug backward entries).
+  if (dO.dtype() != q.dtype())
+    err("dO must share q's dtype (cotangent read at q's dtype)");
   if (L.ndim() != 3 || L.shape(0) != q.shape(0) || L.shape(1) != q.shape(1)
       || L.shape(2) != q.shape(2))
     err("L (logsumexp) must be [B, Hq, Nq]");
