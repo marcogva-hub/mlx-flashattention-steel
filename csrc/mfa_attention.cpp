@@ -1757,6 +1757,14 @@ static void validate_dense_qkv(
   if (k.shape(2) != v.shape(2))
     bad("k and v must share the kv sequence length (Sk=" +
         std::to_string(k.shape(2)) + ", Sv=" + std::to_string(v.shape(2)) + ")");
+  // ZERO-KV reject (raw-host parity sweep — the zero-KV class, swept to the SOURCE):
+  // the public flash_attention raises on empty KV; attention over zero keys is a
+  // 0/0 online-softmax -> silent NaN. One edit here covers every dense+sparse raw
+  // entry that calls validate_dense_qkv (forward, forward_with_lse, alibi, bias,
+  // rope, sparse[_with_lse]).
+  if (k.shape(2) == 0)
+    bad("empty KV (k/v sequence length 0) is undefined — attention over zero keys "
+        "yields 0/0 -> NaN; provide at least one key.");
   if (k.shape(1) != v.shape(1))
     bad("k and v must have the same number of heads (Hk=" +
         std::to_string(k.shape(1)) + ", Hv=" + std::to_string(v.shape(1)) + ")");
@@ -1792,6 +1800,61 @@ static void validate_dense_qkv(
 // fp16 centroids + fp32 scales), so it gets these companion validators — one
 // enforcement point per contract, reused across the paged siblings (no per-site
 // ad-hoc drift), mirroring the runtime-matrix gate + the Python _persist_validate.
+
+// Scalar value-semantics (raw-host parity sweep — the scale-finite class swept to
+// the SOURCE): the public flash_attention rejects a non-finite scale; every raw
+// forward host bakes `scale` into the kernel, so nan/inf -> silent all-NaN output.
+// One shared helper, called from every raw forward host that takes a float scale.
+static inline void assert_scale_finite(float scale, const char* entry) {
+  if (!std::isfinite(scale))
+    throw std::invalid_argument(std::string(entry) + ": scale must be finite.");
+}
+
+// Per-segment zero-KV (raw-host parity sweep — the varlen analogue of the dense
+// zero-KV class): a QUERIED segment (q_len>0) with k_len==0 is a 0/0 online-softmax
+// -> silent NaN for that segment's rows. The public varlen/paged wrappers raise on
+// this (_validate_cu_seqlens); the raw hosts did not. Cheap B-element scalar loop
+// (same cost class as the cu-bounds check) -> UNGATED. Empty segments with q_len==0
+// stay legal (padding). Variant for non-paged varlen (both prefix sums):
+static inline void assert_varlen_segment_kv(const mlx::core::array& cu_q,
+                                            const mlx::core::array& cu_k,
+                                            const char* entry) {
+  if (cu_q.size() < 2 || cu_k.size() < 2) return;
+  mlx::core::array cq = mlx::core::contiguous(cu_q);
+  mlx::core::array ck = mlx::core::contiguous(cu_k);
+  mlx::core::eval(cq); mlx::core::eval(ck);
+  const int32_t* pq = cq.data<int32_t>();
+  const int32_t* pk = ck.data<int32_t>();
+  const int nseg = static_cast<int>(cq.shape(0)) - 1;
+  for (int j = 0; j < nseg; ++j) {
+    if (pq[j + 1] - pq[j] > 0 && pk[j + 1] - pk[j] == 0)
+      throw std::invalid_argument(
+          std::string(entry) + ": segment " + std::to_string(j) +
+          " is queried (q_len>0) but has k_len==0 (empty KV) -> 0/0 softmax = NaN; "
+          "drop the empty segment or give it at least one key.");
+  }
+}
+
+// Variant for paged varlen/tq (cu_q prefix sum + seq_lens_kv per-segment counts):
+static inline void assert_paged_varlen_segment_kv(const mlx::core::array& cu_q,
+                                                  const mlx::core::array& seq_lens_kv,
+                                                  const char* entry) {
+  if (cu_q.size() < 2 || seq_lens_kv.size() == 0) return;
+  mlx::core::array cq = mlx::core::contiguous(cu_q);
+  mlx::core::array sk = mlx::core::contiguous(seq_lens_kv);
+  mlx::core::eval(cq); mlx::core::eval(sk);
+  const int32_t* pq = cq.data<int32_t>();
+  const int32_t* pk = sk.data<int32_t>();
+  const int nseg = static_cast<int>(cq.shape(0)) - 1;
+  const int nkv  = static_cast<int>(sk.shape(0));
+  for (int j = 0; j < nseg && j < nkv; ++j) {
+    if (pq[j + 1] - pq[j] > 0 && pk[j] == 0)
+      throw std::invalid_argument(
+          std::string(entry) + ": segment " + std::to_string(j) +
+          " is queried (q_len>0) but seq_lens_kv==0 (empty KV) -> 0/0 softmax = NaN; "
+          "drop the empty segment or give it at least one key.");
+  }
+}
 
 // Class A — paged forwards that dispatch a float16/bfloat16 kernel via a 2-way
 // `dtype_code=0; if(bf16)=1` map (no fp32 branch): fp32 q falls to the half
@@ -2019,9 +2082,13 @@ static void check_prefix_sum_bounds(
 // scan the trust flag legitimately skips). Shared helper so the raw + public capacity
 // contract can't diverge again. seq_lens must already be int32 (callers enforce).
 static void assert_paged_capacity(const mlx::core::array& seq_lens, int max_blocks,
-                                  int block_size, const char* entry) {
+                                  int block_size, const char* entry,
+                                  bool reject_zero = false) {
   if (seq_lens.size() == 0 || max_blocks <= 0 || block_size <= 0) return;
-  mlx::core::array sl = seq_lens;
+  // stride-safe (raw-host parity sweep): a non-contiguous seq_lens read via
+  // data<int32_t>() would scan the wrong elements -> contiguize first (no-op when
+  // already contiguous).
+  mlx::core::array sl = mlx::core::contiguous(seq_lens);
   mlx::core::eval(sl);
   const int32_t* p = sl.data<int32_t>();
   const int n = static_cast<int>(sl.shape(0));
@@ -2030,6 +2097,13 @@ static void assert_paged_capacity(const mlx::core::array& seq_lens, int max_bloc
   if (smin < 0)
     throw std::invalid_argument(std::string(entry) + ": seq_lens must be >= 0; got min="
                                 + std::to_string(smin) + ".");
+  // zero-KV reject (forwards only — every batch row is queried in the dense-paged
+  // steel path, so a 0-length row is a queried zero-KV -> non-deterministic NaN).
+  // The gather passes reject_zero=false (gathering 0 tokens for a row is legal).
+  if (reject_zero && smin == 0)
+    throw std::invalid_argument(
+        std::string(entry) + ": seq_lens has a zero-length (kv_len==0) queried entry "
+        "-> the empty-softmax path produces non-deterministic NaN; pass kv_len>=1.");
   const long long cap = static_cast<long long>(max_blocks) * static_cast<long long>(block_size);
   if (static_cast<long long>(smax) > cap)
     throw std::invalid_argument(
@@ -2102,6 +2176,7 @@ mlx::core::array mfa_attention_forward(
   // dtype; C-01 added batch + K↔V only). Note R1 supports asymmetric D_v, which
   // the shared validator preserves (it checks q.D==k.D, not v.D).
   validate_dense_qkv(q, k, v, "MFA");
+  assert_scale_finite(scale, "MFA");
 
   // D.5: Enforce row-major BHND layout inside the C++ binding entry point.
   // mlx::core::contiguous() is a no-op (zero allocation) when the array is
@@ -2155,6 +2230,7 @@ mlx::core::array mfa_attention_sparse_forward(
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
   validate_dense_qkv(q, k, v, "MFA sparse");  // volet K1: full Q/K/V contract
+  assert_scale_finite(scale, "MFA sparse");
   if (block_mask.ndim() < 2 || block_mask.ndim() > 4) {
     throw std::invalid_argument(
         "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
@@ -2244,6 +2320,7 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
   validate_dense_qkv(q, k, v, "MFA sparse");  // volet K1: full Q/K/V contract
+  assert_scale_finite(scale, "MFA sparse");
   if (block_mask.ndim() < 2 || block_mask.ndim() > 4)
     throw std::invalid_argument(
         "MFA sparse: block_mask must be 2D [NQ,NK], 3D [H,NQ,NK], "
@@ -2424,6 +2501,7 @@ mlx::core::array mfa_attention_alibi_forward(
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
   validate_dense_qkv(q, k, v, "MFA alibi");  // volet K1: full Q/K/V contract
+  assert_scale_finite(scale, "MFA alibi");
 
   if (alibi_slopes.ndim() != 1 || alibi_slopes.shape(0) != q.shape(1))
     throw std::invalid_argument(
@@ -2486,6 +2564,7 @@ mlx::core::array mfa_attention_bias_forward(
       : mlx::core::default_stream(mlx::core::Device::gpu);
 
   validate_dense_qkv(q, k, v, "MFA bias");  // volet K1: full Q/K/V contract
+  assert_scale_finite(scale, "MFA bias");
 
   if (attn_bias_mode < 1 || attn_bias_mode > 2)
     throw std::invalid_argument(
@@ -2662,6 +2741,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   // wrong, an int64 silently truncates). Validate Q/K/V + reject non-int32
   // metadata (no silent cast). Packed varlen layout is [1, H, total, D].
   validate_dense_qkv(q, k, v, "MFA varlen");
+  assert_scale_finite(scale, "MFA varlen");
   if (q.shape(0) != 1)
     throw std::invalid_argument(
         "MFA varlen: packed layout requires batch dim 1 [1, H, total, D], got " +
@@ -2707,6 +2787,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   // gating it under the trust flag was a silent OOB; cu_q coverage likewise.
   check_prefix_sum_bounds(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
   check_prefix_sum_bounds(cu_k, -1, "cu_seqlens_k", "MFA varlen", (int)k.shape(2));
+  assert_varlen_segment_kv(cu_q, cu_k, "MFA varlen");  // per-segment zero-KV (ungated)
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
     // cu_k: empty trailing KV segment / over-allocated K is legal (cu_k[-1] <=
@@ -3003,8 +3084,11 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   // real block dim — using the unvalidated param over-rejected a valid call (param<pool)
   // and under-protected (param>pool). varlen/tq kernels DO use params_.block_size, so
   // their guard sites (which pass the param) stay correct — do not change them.
+  // reject_zero=true: every batch row is queried in the dense-paged steel path, so a
+  // 0-length seq_lens row is a queried zero-KV -> non-deterministic NaN (raw-parity sweep).
   assert_paged_capacity(sl_i32, (int)block_table.shape(1), (int)k_pool.shape(1),
-                        "mfa_paged_steel_forward");
+                        "mfa_paged_steel_forward", /*reject_zero=*/true);
+  assert_scale_finite(scale, "mfa_paged_steel_forward");
 
   mlx::core::Shape out_shape = q.shape();          // [B, H, N, D]
   mlx::core::Shape lse_shape = {B, H, N};          // logsumexp
@@ -3021,12 +3105,17 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   auto qc  = mlx::core::contiguous(q, false, s);
   auto kpc = mlx::core::contiguous(k_pool, false, s);
   auto vpc = mlx::core::contiguous(v_pool, false, s);
+  // INDEX-METADATA contiguity (raw-parity sweep): the kernel reads block_table /
+  // seq_lens with contiguous-assumed strides; a strided index array (e.g. a sliced
+  // block_table) read wrong physical-block ids -> finite-WRONG. Contiguize them too.
+  auto btc = mlx::core::contiguous(bt_i32, false, s);
+  auto slc = mlx::core::contiguous(sl_i32, false, s);
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedSteelForward>(s, params),
-      {qc, kpc, vpc, bt_i32, sl_i32});
+      {qc, kpc, vpc, btc, slc});
 
   return {outputs[0], outputs[1]};
 }
@@ -3244,6 +3333,18 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
     throw std::invalid_argument(
         "mfa_sage_forward: H must be divisible by H_kv (GQA).");
 
+  // SCALE value-semantics (Phase 2 raw-host parity sweep — mirror the established
+  // scale-finite class: flash_attention attention.py:607, NAX route 1460, and
+  // mfa_v6_nax_primitive's std::isfinite(scale) host guard at line ~2339). A
+  // nan/inf scale silently produces a NON-FINITE output (verified: scale=nan/inf
+  // → output all-NaN, no raise) on BOTH the public sage wrappers AND this raw
+  // host (neither validated it, unlike flash_attention). scale is baked into the
+  // kernel as a #define; garbage scale → silent NaN. Push the guard to the SOURCE
+  // so the wrapper AND the raw entry are both covered (Rule 8).
+  if (!std::isfinite(scale))
+    throw std::invalid_argument(
+        "mfa_sage_forward: scale must be finite.");
+
   // CX-R7-01 (volet J): buffer-shape/dtype lock. The kernel derives extents from
   // q/k_int8 and reads v / k_scale at K's offsets without re-checking — a
   // half-length V → OOB, batch mismatch → NaN, wrong k_int8/k_scale dtype →
@@ -3295,14 +3396,22 @@ std::pair<mlx::core::array, mlx::core::array> mfa_sage_forward(
 
   // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
   // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 0.72).
+  // k_scale ALSO contiguized (Phase 2 raw-host parity sweep — the recurring
+  // wrapper-vs-raw class): the public sage_attention_prequantized wrapper
+  // flatten+reshapes k_scale (attention.py:2222) precisely because KVCache-slice
+  // head strides "confuse C++ kernel offset arithmetic", but the raw _ext host
+  // passed k_scale through un-contiguized — a transposed/strided k_scale read
+  // finite-WRONG (byteΔ 0.204 vs contiguous, deterministic). Push the guard to
+  // the SOURCE so the wrapper AND the raw entry are both covered (Rule 8).
   auto qc  = mlx::core::contiguous(q, false, s);
   auto kc8 = mlx::core::contiguous(k_int8, false, s);
   auto vc  = mlx::core::contiguous(v, false, s);
+  auto ksc = mlx::core::contiguous(k_scale, false, s);
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {v.dtype(), mlx::core::float32},
       std::make_shared<MFASageForward>(s, params),
-      {qc, kc8, vc, k_scale});
+      {qc, kc8, vc, ksc});
 
   return {outputs[0], outputs[1]};
 }
@@ -3496,6 +3605,7 @@ mlx::core::array mfa_gna_forward(
   // grid). Production passes equal f16/bf16 and all params >= 1.
   if (k.dtype() != q.dtype() || v.dtype() != q.dtype())
     throw std::invalid_argument("MFA GNA: q, k, v must share dtype");
+  assert_scale_finite(scale, "MFA GNA");
   if (dim0 <= 0 || dim1 <= 0 || dim2 <= 0)
     throw std::invalid_argument("MFA GNA: lattice dims (dim0,dim1,dim2) must be positive");
   if (win0 <= 0 || win1 <= 0 || win2 <= 0)
@@ -3749,6 +3859,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   // forward also lacked the logical capacity check. Shared structural contract.
   assert_paged_capacity(seq_lens_kv, (int)block_table.shape(1), block_size,
                         "mfa_paged_varlen_forward");
+  assert_scale_finite(scale, "mfa_paged_varlen_forward");
   {
     const int num_seqs = (int)cu_seqlens_q.shape(0) - 1;
     if (block_table.shape(0) != num_seqs)
@@ -3774,6 +3885,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   // TRUST-FLAG COST-CLASS (Phase 2 grid): cheap Q-coverage scalar contract ALWAYS.
   check_prefix_sum_bounds(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                           "mfa_paged_varlen_forward");
+  assert_paged_varlen_segment_kv(cu_seqlens_q, seq_lens_kv, "mfa_paged_varlen_forward");
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_forward");
@@ -3800,12 +3912,18 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   auto qc  = mlx::core::contiguous(q, false, stream);
   auto kpc = mlx::core::contiguous(k_pool, false, stream);
   auto vpc = mlx::core::contiguous(v_pool, false, stream);
+  // INDEX-METADATA contiguity (raw-parity sweep): strided cu_seqlens_q/tile_offsets/
+  // block_table/seq_lens_kv read with assumed strides -> finite-WRONG. Contiguize.
+  auto cuc = mlx::core::contiguous(cu_seqlens_q, false, stream);
+  auto toc = mlx::core::contiguous(tile_offsets, false, stream);
+  auto btc = mlx::core::contiguous(block_table, false, stream);
+  auto skc = mlx::core::contiguous(seq_lens_kv, false, stream);
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAPagedVarlenForward>(stream, params),
-      {qc, kpc, vpc, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv});
+      {qc, kpc, vpc, cuc, toc, btc, skc});
 
   return {outputs[0], outputs[1]};
 }
@@ -4058,6 +4176,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   // capacity check. Shared structural contract (block_table columns = max_blocks).
   assert_paged_capacity(seq_lens_kv, (int)block_table.shape(1), block_size,
                         "mfa_paged_varlen_tq_forward");
+  assert_scale_finite(scale, "mfa_paged_varlen_tq_forward");
   // CODEBOOK-EXTENT (Phase 2 grid, wrapper-vs-raw parity): the public TQ wrapper
   // checks centroids.shape[0] >= 2**tq_bits, the raw entry did not — codes in
   // [0,2**tq_bits) indexed a too-small codebook (finite-wrong, no raise).
@@ -4099,6 +4218,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   // TRUST-FLAG COST-CLASS (Phase 2 grid): cheap Q-coverage scalar contract ALWAYS.
   check_prefix_sum_bounds(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                           "mfa_paged_varlen_tq_forward");
+  assert_paged_varlen_segment_kv(cu_seqlens_q, seq_lens_kv, "mfa_paged_varlen_tq_forward");
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_seqlens_q, (int)q.shape(2), "cu_seqlens_q",
                             "mfa_paged_varlen_tq_forward");
@@ -4130,16 +4250,25 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   auto qc  = mlx::core::contiguous(q, false, stream);
   auto kpc = mlx::core::contiguous(k_pool_tq, false, stream);
   auto vpc = mlx::core::contiguous(v_pool, false, stream);
+  // INDEX-METADATA + codebook contiguity (raw-parity sweep): strided cu_seqlens_q/
+  // tile_offsets/block_table/seq_lens_kv/centroids/k_scales read with assumed strides
+  // -> finite-WRONG. Contiguize (no-op when already contiguous).
+  auto cuc = mlx::core::contiguous(cu_seqlens_q, false, stream);
+  auto toc = mlx::core::contiguous(tile_offsets, false, stream);
+  auto btc = mlx::core::contiguous(block_table, false, stream);
+  auto skc = mlx::core::contiguous(seq_lens_kv, false, stream);
+  auto cec = mlx::core::contiguous(centroids, false, stream);
+  auto ksc = mlx::core::contiguous(k_scales, false, stream);
 
   // Build inputs vector — conditionally include V-TQ arrays
   std::vector<mlx::core::array> prim_inputs = {
-    qc, kpc, vpc, cu_seqlens_q, tile_offsets, block_table, seq_lens_kv,
-    centroids, k_scales
+    qc, kpc, vpc, cuc, toc, btc, skc,
+    cec, ksc
   };
   if (tq_v_enabled) {
-    prim_inputs.push_back(*v_pool_tq);
-    prim_inputs.push_back(*v_centroids);
-    prim_inputs.push_back(*v_scales);
+    prim_inputs.push_back(mlx::core::contiguous(*v_pool_tq, false, stream));
+    prim_inputs.push_back(mlx::core::contiguous(*v_centroids, false, stream));
+    prim_inputs.push_back(mlx::core::contiguous(*v_scales, false, stream));
   }
 
   auto outputs = mlx::core::array::make_arrays(

@@ -236,16 +236,19 @@ class TestBiteProofs:
     direct-call, never mutate-then-git-checkout a tracked file)."""
 
     def test_bite_cc01_empty_kv_would_nan_without_validation(self, monkeypatch):
-        # Disable the cu_seqlens validation → the old silent-NaN reappears.
+        # Disable the Python cu_seqlens validation. Pre raw-host-parity sweep this
+        # reproduced the silent NaN; now the C++ SOURCE guard (assert_varlen_segment_kv
+        # in mfa_attention_varlen_forward) BACKSTOPS the disabled wrapper guard — the
+        # per-segment zero-KV is caught at the kernel boundary instead of NaN-ing.
+        # This is the wrapper-vs-raw defense-in-depth the sweep added: disabling the
+        # Python guard no longer reaches a silent NaN; it raises at the C++ layer.
         monkeypatch.setattr(A, "_validate_cu_seqlens",
                             lambda *a, **k: None)
         q = _qf16(N=32)
-        o = flash_attention_varlen(q, q, q, mx.array([0, 16, 32]),
-                                   mx.array([0, 16, 16]), 16, 16)
-        mx.eval(o)
-        n_nan = int(np.sum(~np.isfinite(np.array(o.astype(mx.float32)))))
-        assert n_nan > 0, ("without _validate_cu_seqlens the empty-KV segment "
-                           "must reproduce the silent NaN the guard prevents")
+        with pytest.raises(Exception, match="(?i)k_len==0|empty KV|zero"):
+            o = flash_attention_varlen(q, q, q, mx.array([0, 16, 32]),
+                                       mx.array([0, 16, 16]), 16, 16)
+            mx.eval(o)
 
     def test_bite_cx01_dropout_path_drops_softcap(self):
         # Prove the hazard the CX-01 raise prevents: the plain dropout path

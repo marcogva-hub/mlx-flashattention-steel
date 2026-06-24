@@ -9,6 +9,7 @@
 #include <nanobind/stl/vector.h>
 
 #include <mlx/mlx.h>
+#include <cmath>  // std::isfinite (raw-host scale-finite parity)
 #include <mlx/backend/metal/device.h>
 
 #include "mfa_attention.hpp"
@@ -238,6 +239,10 @@ NB_MODULE(_ext, m) {
           throw std::invalid_argument("mfa_forward_with_lse: q, k, v must share the batch dim");
         if (k.shape(2) != v.shape(2))
           throw std::invalid_argument("mfa_forward_with_lse: k and v must share the kv sequence length");
+        if (k.shape(2) == 0)
+          throw std::invalid_argument("mfa_forward_with_lse: empty KV (k/v sequence length 0) is undefined — attention over zero keys yields 0/0 -> NaN.");
+        if (!std::isfinite(scale))
+          throw std::invalid_argument("mfa_forward_with_lse: scale must be finite.");
         if (k.shape(1) != v.shape(1))
           throw std::invalid_argument("mfa_forward_with_lse: k and v must have the same number of heads");
         if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))

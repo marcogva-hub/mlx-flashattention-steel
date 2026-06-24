@@ -820,3 +820,79 @@ def test_pass3_backward_dO_dtype():
     # valid f16 dO runs
     do16 = mx.random.normal((B, H, L, D)).astype(F16); mx.eval(do16)
     mx.eval(_ext.mfa_steel_backward(q, q, q, o, lse, do16, SC, False)[0])
+
+
+# ── Exhaustive raw-host parity sweep (Marco-authorized): guards pushed to C++ SOURCE ──
+import mlx_mfa.attention as _A_mod
+
+_NAN = float("nan"); _INF = float("inf")
+
+@pytest.mark.parametrize("bad", [_NAN, _INF, -_INF])
+def test_rawsweep_scale_finite_dense(bad):
+    q = _qB(1, 2, 16, 64)
+    with pytest.raises(Exception): mx.eval(_ext.mfa_attention_forward(q, q, q, bad, False))
+    with pytest.raises(Exception): mx.eval(_ext.mfa_forward_with_lse(q, q, q, bad, False))
+
+
+def test_rawsweep_scale_finite_sparse_gna():
+    q = _qB(1, 2, 16, 64); bm = mx.ones((1, 1), mx.uint8); mx.eval(bm)
+    with pytest.raises(Exception): mx.eval(_ext.mfa_attention_sparse_forward(q, q, q, bm, _NAN, False))
+    with pytest.raises(Exception):
+        r = _ext.mfa_attention_sparse_forward_with_lse(q, q, q, bm, _NAN, False); mx.eval(r[0])
+    g = _qB(1, 2, 16, 128)
+    with pytest.raises(Exception): mx.eval(_ext.mfa_gna_forward(g, g, g, _NAN, 3, 3, 3, 1, 1, 1, 1, 1, 1, False))
+
+
+def test_rawsweep_scale_finite_alibi_bias():
+    q = _qB(1, 2, 16, 64); sl = mx.ones((2,)).astype(F32); bias = mx.zeros((1, 2, 16, 16)).astype(F32); mx.eval(sl, bias)
+    with pytest.raises(Exception): mx.eval(_ext.mfa_attention_alibi_forward(q, q, q, sl, _NAN, False, -1, -1))
+    with pytest.raises(Exception): mx.eval(_ext.mfa_attention_bias_forward(q, q, q, bias, 1, _NAN, False, -1, -1))
+
+
+def test_rawsweep_dense_zero_kv():
+    q = _qB(1, 2, 16, 64); zk = mx.zeros((1, 2, 0, 64), F16); mx.eval(zk)
+    with pytest.raises(Exception): mx.eval(_ext.mfa_attention_forward(q, zk, zk, 0.1, False))
+    with pytest.raises(Exception): mx.eval(_ext.mfa_forward_with_lse(q, zk, zk, 0.1, False))
+
+
+def test_rawsweep_paged_steel_zero_kv_and_scale():
+    pk = _kvp(4, 16, 4, 64); pv = _kvp(4, 16, 4, 64); q = _qB(1, 4, 1, 64); bt = mx.array([[0, 1]], mx.int32); mx.eval(bt)
+    with pytest.raises(Exception):  # zero-length queried row -> reject_zero
+        mx.eval(_ext.mfa_paged_steel_forward(q, pk, pv, bt, mx.array([0], mx.int32), 0.125, False, -1, -1, 16)[0])
+    with pytest.raises(Exception):  # nan scale
+        mx.eval(_ext.mfa_paged_steel_forward(q, pk, pv, bt, mx.array([16], mx.int32), _NAN, False, -1, -1, 16)[0])
+    o = _ext.mfa_paged_steel_forward(q, pk, pv, bt, mx.array([16], mx.int32), 0.125, False, -1, -1, 16)
+    mx.eval(o[0])  # valid runs
+
+
+def test_rawsweep_paged_steel_strided_metadata():
+    pk = _kvp(4, 16, 4, 64); pv = _kvp(4, 16, 4, 64); q = _qB(1, 4, 1, 64)
+    strided = mx.broadcast_to(mx.array([[0, 1, 2, 3]], mx.int32), (1, 4))[:, ::2]  # [[0,2]]
+    cont = mx.array([[0, 2]], mx.int32); mx.eval(strided, cont)
+    def run(b): return np.array(_ext.mfa_paged_steel_forward(q, pk, pv, b, mx.array([8], mx.int32), 0.125, False, -1, -1, 16)[0].astype(F32))
+    assert np.abs(run(strided) - run(cont)).max() < 1e-3   # contiguity guard: strided == contiguous
+
+
+def test_rawsweep_gather_pool_dtype():
+    poolf32 = mx.random.normal((8, 4, 2, 16)).astype(F32); mx.eval(poolf32)
+    with pytest.raises(Exception):
+        mx.eval(_ext.mfa_paged_kv_gather(poolf32, mx.array([[0, 1]], mx.int32), mx.array([8], mx.int32), 8))
+
+
+def test_rawsweep_v6_backward_dO_dtype():
+    import math as _m
+    B, H, L, D = 1, 2, 128, 64; SC = 1 / _m.sqrt(D)
+    o = _qB(B, H, L, D); lse = mx.random.normal((B, H, L)).astype(F32)
+    do32 = mx.random.normal((B, H, L, D)).astype(F32); mx.eval(lse, do32)
+    with pytest.raises(Exception):
+        mx.eval(_ext.v6_nax_backward_query(_qB(B, H, L, D), _qB(B, H, L, D), _qB(B, H, L, D), o, lse, do32, SC, False))
+
+
+def test_rawsweep_varlen_per_segment_zero_kv():
+    q = _qB(1, 4, 64, 64)
+    cuq = mx.array([0, 32, 64], mx.int32); tile = mx.array([0, 1, 2], mx.int32)  # canonical for BQ=32
+    cuk_zero = mx.array([0, 32, 32], mx.int32); mx.eval(cuq, tile, cuk_zero)
+    with pytest.raises(Exception, match="(?i)k_len==0|empty"):     # seg1 queried, k_len==0
+        mx.eval(_ext.mfa_attention_varlen_forward(q, q, q, cuq, cuk_zero, tile, 0.125, False))
+    cuk_ok = mx.array([0, 32, 64], mx.int32); mx.eval(cuk_ok)
+    mx.eval(_ext.mfa_attention_varlen_forward(q, q, q, cuq, cuk_ok, tile, 0.125, False))  # valid runs

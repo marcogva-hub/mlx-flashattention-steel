@@ -250,6 +250,15 @@ array mlx_mfa::mfa_paged_kv_gather(
     const int B          = block_table.shape(0);
     const int max_blocks = block_table.shape(1);
 
+    // DTYPE guard (raw-parity sweep): the kernel reinterprets the pool as uint16
+    // (16-bit copy, is_f16 toggle) — an fp32 pool's bytes get copied at uint16 stride
+    // into a half-width output -> finite-WRONG (no raise). Require a 16-bit float pool.
+    if (pool.dtype() != float16 && pool.dtype() != bfloat16) {
+        throw std::invalid_argument(
+            "mfa_paged_kv_gather: pool must be float16 or bfloat16 (the kernel copies "
+            "16-bit elements; an fp32/other pool reads garbage half-width values).");
+    }
+
     // CX-02 (volet C, host half): the kernel reads seq_lens[b] for b in [0,B)
     // where B = block_table.shape(0).  If seq_lens is shorter than B it reads
     // out of bounds (silent finite-wrong / fault).  Enforce the host invariant.
@@ -278,7 +287,7 @@ array mlx_mfa::mfa_paged_kv_gather(
     // the tail (finite-wrong dilution). Same cheap structural contract as the shared
     // assert_paged_capacity helper (inlined here: separate translation unit).
     if (seq_lens.size() > 0 && max_blocks > 0 && block_size > 0) {
-        array sl = seq_lens; mlx::core::eval(sl);
+        array sl = mlx::core::contiguous(seq_lens); mlx::core::eval(sl);  // stride-safe
         const int32_t* p = sl.data<int32_t>();
         const int n = static_cast<int>(sl.shape(0));
         int32_t smin = p[0], smax = p[0];

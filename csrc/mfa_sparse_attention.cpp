@@ -27,6 +27,7 @@
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
+#include <cmath>  // std::isfinite (raw-host scale-finite parity)
 #include <string>
 #include <vector>
 
@@ -1006,8 +1007,10 @@ mlx::core::array sparse_attention_forward(
   if (causal && qL != kL) {
     throw std::runtime_error("sparse_attention: causal=true requires qL == kL");
   }
-  if (scale <= 0.0f) {
-    throw std::runtime_error("sparse_attention: scale must be > 0");
+  if (!std::isfinite(scale) || scale <= 0.0f) {
+    // raw-parity sweep: nan/inf scale was baked into the Metal source as "nan"/"inf"
+    // text -> cryptic 'undeclared identifier nanf' compile error, not a clear raise.
+    throw std::runtime_error("sparse_attention: scale must be finite and > 0");
   }
   // Address-space precondition (Phase 1.1 carry-over)
   long long mask_bytes = 1LL;
@@ -1188,6 +1191,12 @@ sparse_attention_forward_with_lse(
   }
   if (D != 64 && D != 128) {
     throw std::runtime_error("sparse_attention: head_dim must be 64 or 128");
+  }
+  // SCALE value-guard (raw-parity sweep — the with_lse sibling had NONE; nan/inf/0/neg
+  // scale baked into Metal source -> compile error, not a clear raise). Mirror the
+  // non-LSE sibling, extended for finiteness.
+  if (!std::isfinite(scale) || scale <= 0.0f) {
+    throw std::runtime_error("sparse_attention: scale must be finite and > 0");
   }
   int NQ = qL / block_tile;
   int NK = kL / block_tile;
