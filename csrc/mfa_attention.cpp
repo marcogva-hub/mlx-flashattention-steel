@@ -1825,6 +1825,20 @@ static inline void assert_raw_pool_dtype_eq(
         "a mismatched pool dtype is read byte-wise = silent-wrong output).");
 }
 
+// CC matrix batch — paged Q-vs-pool GQA. q_heads must be a positive multiple of
+// the pool kv-heads; a bad ratio reads the pool at wrong head offsets =
+// finite-wrong. Shared by every paged raw entry (steel / varlen / TQ) so they
+// can't diverge. (Pool kv-heads = k_pool.shape(2) for [num_blocks,bs,H_kv,*].)
+static inline void assert_raw_paged_gqa(
+    const mlx::core::array& q, int pool_hkv, const char* entry) {
+  const int Hq = q.shape(1);
+  if (pool_hkv <= 0 || Hq % pool_hkv != 0)
+    throw std::invalid_argument(
+        std::string(entry) + ": q_heads (" + std::to_string(Hq) + ") must be a "
+        "positive multiple of the pool kv-heads (" + std::to_string(pool_hkv) +
+        ") for GQA.");
+}
+
 // Class D — TurboQuant backing-buffer required dtypes. The fused TQ kernel reads
 // packed K as uint8, the centroid codebook as fp16, and the scales as fp32; a
 // mismatched buffer dtype is reinterpreted = finite silent-wrong.
@@ -2783,6 +2797,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
     throw std::invalid_argument("mfa_paged_steel_forward: v_pool must be 4-D [num_blocks,BS,H_kv,D]");
   // CC Batch Class D: pools read at q's dtype → reject mixed q/pool dtype.
   assert_raw_pool_dtype_eq(q, k_pool, v_pool, "mfa_paged_steel_forward");
+  assert_raw_paged_gqa(q, (int)k_pool.shape(2), "mfa_paged_steel_forward");
   // CX-03 (volet H): the kernel derives num_blocks/block_size/H_kv/D and all
   // strides from k_pool and binds V at those SAME offsets — a V pool disagreeing
   // on any of the four dims drives an out-of-bounds device read (silent finite-
@@ -3495,6 +3510,7 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   assert_raw_fp16_bf16_only(q, "mfa_paged_varlen_forward");
   // CC Batch Class D: pools read at q's dtype → reject mixed q/pool dtype.
   assert_raw_pool_dtype_eq(q, k_pool, v_pool, "mfa_paged_varlen_forward");
+  assert_raw_paged_gqa(q, (int)k_pool.shape(2), "mfa_paged_varlen_forward");
 
   // CX-03 (volet H): V pool bound at K's strides — require exact shape match.
   if (k_pool.ndim() != 4 || v_pool.ndim() != 4)
@@ -3800,12 +3816,8 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
     // CC class-method batch (Class C, raw backstop): Q-vs-pool geometry. q_heads
     // must be a valid GQA multiple of the pool kv-heads, and q head_dim must equal
     // the pool D — else a bad GQA ratio / D-mismatch is finite-wrong, not raised.
-    const int Hq = q.shape(1), Dq = q.shape(3);
-    if (hkv <= 0 || Hq % hkv != 0)
-      throw std::invalid_argument(
-          "mfa_paged_varlen_tq_forward: q_heads (" + std::to_string(Hq) +
-          ") must be a positive multiple of the pool kv-heads (" +
-          std::to_string(hkv) + ") for GQA.");
+    const int Dq = q.shape(3);
+    assert_raw_paged_gqa(q, hkv, "mfa_paged_varlen_tq_forward");  // shared GQA
     if (Dq != Dv)
       throw std::invalid_argument(
           "mfa_paged_varlen_tq_forward: q head_dim (" + std::to_string(Dq) +

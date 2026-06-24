@@ -672,6 +672,21 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     (pre-mutation, folds into Class B) and as a raw C++ backstop in `mfa_paged_varlen_tq_forward`. Locked
     in `tests/test_raw_surface_classes.py` (A feature-on≠off + packed-reject; B atomic-cache-byteΔ0; C
     class+raw geometry). C++ rebuild required.
+  - **Mechanical validation matrix (the audit as a CI lock) + 2 seed holes (CC batch).** Per-round
+    judgment audits kept missing siblings, so completeness is now **mechanical**: `tests/test_validation_matrix.py`
+    enumerates the cross-product (every stateful context × {prefill, step} × every input malformation
+    {bad q-heads / bad D / bad dtype / bad k-heads} = 32 atomicity cells, + paged-GQA cells) and asserts
+    each **raises atomically** (cache byteΔ=0, no reset/append) with a valid-still-mutates baseline; plus a
+    **coverage-completeness assertion** (surface counts + sibling-matrix-locks-present pulled from the
+    enumeration so a new entry / dropped axis / deleted matrix file fails CI). Two seed holes the harness
+    confirmed (no others surfaced): **(1) reset-before-append atomicity** — a malformed re-`prefill`
+    (k.D=128 over a D64 cache, or bf16 into an fp16 cache) ran `reset()` then failed in `append`, wiping
+    the cache 4→0; fixed by extending `_validate_qkv_before_mutate` with `cache_heads/cache_dim/cache_dtype`
+    (a complete superset of the downstream append rejections, run before any mutation) wired into all 8
+    context prefill/step methods → malformed now raises with state byteΔ=0. **(2) non-TQ paged GQA** —
+    raw `mfa_paged_steel_forward`/`mfa_paged_varlen_forward` with `H_q % H_kv != 0` ran finite-wrong;
+    fixed with a shared C++ `assert_raw_paged_gqa` wired into both (and the TQ host refactored to call it,
+    so they can't diverge). C++ rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

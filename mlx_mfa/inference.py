@@ -101,26 +101,38 @@ def _assert_construct_dtype_supported(backend: str, dtype, where: str) -> None:
         )
 
 
-def _validate_qkv_before_mutate(q, k, v, fn, *, pool_heads=None, pool_dim=None):
-    """CC class-method batch — Class B (validate-before-mutate) + Class C (TQ
-    geometry). Hoist the full Q/K/V mutual-compat check to BEFORE any cache
-    mutation so a malformed call raises atomically (cache byteΔ=0), instead of
-    appending K/V and then raising deep in the attention call (which left the
-    cache mutated on failure). For TQ contexts, also pin q/k to the fixed backing-
-    pool geometry (q_heads a multiple of pool kv-heads, head_dim == pool D) —
-    `_assert_qkv_mutual_compat` only checks q-vs-k, not q-vs-pool, so a k that
-    matches q but not the pool (e.g. D=128 over a D64 pool) would be finite-wrong.
+def _validate_qkv_before_mutate(q, k, v, fn, *, cache_heads=None, cache_dim=None,
+                                cache_dtype=None):
+    """CC class-method / matrix batch — validate-before-mutate (atomic failure) +
+    geometry + dtype, as a COMPLETE superset of every downstream rejection, run
+    BEFORE any cache mutation (reset/append/pool-write). A malformed call raises
+    with the cache byteΔ=0 / no reset, instead of mutating (or wiping via reset)
+    and then raising deep in the append/attention call.
+
+    Checks, all pre-mutation:
+      • q/k/v mutual-compat (`_assert_qkv_mutual_compat`: batch, kv-seq, kv-heads,
+        q_heads % kv_heads (GQA), q.D == k.D);
+      • k/v heads == the cache/pool's fixed kv-heads (`cache_heads`);
+      • q/k head_dim == the cache/pool's fixed D (`cache_dim`) — catches a k that
+        matches q but not the cache (e.g. D=128 into a D64 cache/pool);
+      • q/k/v dtype == the cache's fixed dtype (`cache_dtype`) — catches a bf16
+        input into an fp16 cache before the reset wipes prior state.
     """
     from mlx_mfa.attention import _assert_qkv_mutual_compat
     _assert_qkv_mutual_compat(q, k, v, fn)
-    if pool_heads is not None and k.shape[1] != pool_heads:
+    if cache_heads is not None and k.shape[1] != cache_heads:
         raise ValueError(
-            f"{fn}: k/v heads ({k.shape[1]}) must equal the backing-pool "
-            f"kv-heads ({pool_heads}).")
-    if pool_dim is not None and q.shape[3] != pool_dim:
+            f"{fn}: k/v heads ({k.shape[1]}) must equal the cache kv-heads "
+            f"({cache_heads}).")
+    if cache_dim is not None and q.shape[3] != cache_dim:
         raise ValueError(
-            f"{fn}: head_dim ({q.shape[3]}) must equal the backing-pool D "
-            f"({pool_dim}).")
+            f"{fn}: head_dim ({q.shape[3]}) must equal the cache D "
+            f"({cache_dim}).")
+    if cache_dtype is not None and q.dtype != cache_dtype:
+        raise ValueError(
+            f"{fn}: dtype ({q.dtype}) must equal the cache dtype ({cache_dtype}); "
+            "validated before any reset/append so a failed call leaves the cache "
+            "unchanged.")
 
 
 __all__ = [
@@ -280,7 +292,7 @@ class InferenceContext:
         """
         from mlx_mfa.attention import flash_attention
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k, v, "InferenceContext.prefill")
+        _validate_qkv_before_mutate(q, k, v, "InferenceContext.prefill", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         N = k.shape[2]
         if N > self.max_seq_len:
@@ -338,7 +350,7 @@ class InferenceContext:
         """
         from mlx_mfa.attention import flash_attention_kvcache
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k_new, v_new, "InferenceContext.step")
+        _validate_qkv_before_mutate(q, k_new, v_new, "InferenceContext.step", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         n_new = k_new.shape[2]
         new_seqlen = self._cache.seqlen + n_new
@@ -551,7 +563,7 @@ class PagedInferenceContext:
         """
         from mlx_mfa.attention import flash_attention
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k, v, "PagedInferenceContext.prefill")
+        _validate_qkv_before_mutate(q, k, v, "PagedInferenceContext.prefill", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
@@ -598,7 +610,7 @@ class PagedInferenceContext:
         """
         from mlx_mfa.attention import flash_attention_kvcache
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k_new, v_new, "PagedInferenceContext.step")
+        _validate_qkv_before_mutate(q, k_new, v_new, "PagedInferenceContext.step", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
@@ -784,7 +796,7 @@ class SageInferenceContext:
         """
         from mlx_mfa.attention import flash_attention
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k, v, "SageInferenceContext.prefill")
+        _validate_qkv_before_mutate(q, k, v, "SageInferenceContext.prefill", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         N = k.shape[2]
         if N > self.max_seq_len:
@@ -836,7 +848,7 @@ class SageInferenceContext:
         """
         from mlx_mfa.attention import sage_attention_prequantized
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k_new, v_new, "SageInferenceContext.step")
+        _validate_qkv_before_mutate(q, k_new, v_new, "SageInferenceContext.step", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         n_new = k_new.shape[2]
         new_seqlen = self._cache.seqlen + n_new
@@ -1192,7 +1204,7 @@ class TurboQuantPagedInferenceContext:
         """
         from mlx_mfa.attention import flash_attention_paged_varlen_turboquant
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k, v, "TurboQuantPagedInferenceContext.prefill", pool_heads=self.H_kv, pool_dim=self.D)
+        _validate_qkv_before_mutate(q, k, v, "TurboQuantPagedInferenceContext.prefill", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
@@ -1241,7 +1253,7 @@ class TurboQuantPagedInferenceContext:
         """Append new K/V tokens (compressed) and decode with fused TQ kernel."""
         from mlx_mfa.attention import flash_attention_paged_varlen_turboquant
         # CC class-method batch: validate Q/K/V (and TQ pool geometry) BEFORE any mutation.
-        _validate_qkv_before_mutate(q, k_new, v_new, "TurboQuantPagedInferenceContext.step", pool_heads=self.H_kv, pool_dim=self.D)
+        _validate_qkv_before_mutate(q, k_new, v_new, "TurboQuantPagedInferenceContext.step", cache_heads=self.H_kv, cache_dim=self.D, cache_dtype=self.dtype)
 
         if scale is None:
             scale = 1.0 / math.sqrt(self.D)
