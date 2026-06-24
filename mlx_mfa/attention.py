@@ -569,6 +569,19 @@ def flash_attention(
             f" got {backend!r}."
         )
 
+    # M2 (CC final-cert): feature-combination silent-drop. The ALiBi and additive-
+    # bias routes (_mfa_alibi_forward / mfa_attention_bias_forward) dispatch a kernel
+    # that hardcodes window_left/right = -1 and return BEFORE any windowing — so a
+    # caller passing window_size together with alibi_slopes / attn_bias had window
+    # SILENTLY DROPPED (output == no-window). These kernels do not plumb windowing,
+    # so reject the combo loudly (Rule 8) rather than ignore it. (softcap+window and
+    # window-alone are unaffected — they route to paths that apply the window.)
+    if window_size is not None and (alibi_slopes is not None or attn_bias is not None):
+        raise ValueError(
+            "flash_attention: window_size is not supported together with "
+            "alibi_slopes or attn_bias — the ALiBi/bias kernel path does not apply "
+            "windowing (it would be silently dropped). Use one or the other.")
+
     # fp32 forced-`mfa` refusal (audit follow-up to RC-A/RC-B): the MFA kernels
     # are fp16/bf16 only; fp32 forced to `backend="mfa"` routes to the legacy ccv
     # path and is silently wrong for causal N<S.  Refuse loudly (RULE 8).

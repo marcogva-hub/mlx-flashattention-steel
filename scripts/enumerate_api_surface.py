@@ -487,9 +487,18 @@ METAL_KERNELS = {
     "mlx_mfa/topk_stream.py:_build": dict(
         category="attention", page_indexed=False, page_bounds="n/a",
         reason="topk-stream v5; row<N/key<S/idx<S guards; internal-only"),
+    # CC final-cert reconciliation: METAL_KERNELS is the per-LOGICAL-kernel registry
+    # (7 records); conv has THREE mx.fast.metal_kernel CALL-SITES (im2col + general
+    # matmul2d in _make_kernels, 1x1x1 pointwise in _make_pointwise_matmul_kernel),
+    # all mapped onto this one record by metal_kernel_offenders' conv special-case.
+    # So the curated count (7 logical) and the AST call-site count (9) are different
+    # BY DESIGN, both truthful; the offender check proves all 9 sites map to a record
+    # (0 offenders). conv-domain (non-attention), guarded by conv3d_nax_forward
+    # (cross-checks C_in + dtype + 5-D rank, raises before dispatch — verified clean).
     "mlx_mfa/conv_nax.py:conv": dict(
         category="non-attention", page_indexed=False, page_bounds="n/a",
-        reason="Conv3D im2col/matmul; not attention, no page table — excluded"),
+        reason="Conv3D im2col + matmul2d + 1x1x1 (3 call-sites); not attention, no "
+               "page table — excluded; conv3d_nax_forward guards C_in/dtype/rank"),
 }
 
 

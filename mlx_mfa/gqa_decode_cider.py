@@ -246,6 +246,18 @@ def gqa_decode_cider(q: mx.array, k: mx.array, v: mx.array,
         raise ValueError("gqa_decode_cider: decode only (N_q == 1)")
     if Hq % Hkv != 0:
         raise ValueError("gqa_decode_cider: Hq must be a multiple of Hkv")
+    # M1 (CC final-cert): the P1 kernel bakes D from q and S/Hkv from k and strides
+    # the V pool by them — v.shape was NEVER read, so q.D!=v.D / k.S!=v.S / k.Hkv!=v.Hkv
+    # drove an OOB read of the V buffer (finite but NON-deterministic across calls =
+    # uninitialized memory). Cross-check k.D==q.D and v fully matches k before dispatch.
+    if k.shape[3] != D:
+        raise ValueError(
+            f"gqa_decode_cider: k head_dim ({k.shape[3]}) must equal q head_dim ({D}).")
+    if tuple(v.shape) != (B, Hkv, S, D):
+        raise ValueError(
+            f"gqa_decode_cider: v shape {tuple(v.shape)} must equal k shape "
+            f"{(B, Hkv, S, D)} (batch, kv-heads, kv-seq, head_dim) — the kernel reads "
+            "V at K's strides and would read out of bounds otherwise.")
     # III-4 R12 FIX: the kernel splits D over BD=32 lanes (qk_per_thread =
     # D / BD, integer division) — a non-multiple of 32 (e.g. D=80) silently
     # truncates the head dimension and produces wrong output.

@@ -687,6 +687,22 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     raw `mfa_paged_steel_forward`/`mfa_paged_varlen_forward` with `H_q % H_kv != 0` ran finite-wrong;
     fixed with a shared C++ `assert_raw_paged_gqa` wired into both (and the TQ host refactored to call it,
     so they can't diverge). C++ rebuild required.
+  - **JIT-kernel OOB + feature-combo silent-drop closed; matrix blind-spot closed (CC final-cert fix).**
+    The final certification's effort-Max adversarial sweep found 2 product silent-wrongs the green matrix
+    did not cover (it *counted* the JIT kernels but never malformation-probed them). **M1 (CRITICAL):** the
+    "derive dims/strides from a subset of {q,k,v,pool}, never cross-check the rest" anti-pattern — `gqa_decode_cider`
+    never read `v.shape`, so `q.D != v.D` returned a finite but **non-deterministic** output (OOB read of
+    uninitialized memory) and `k.seq != v.seq` OOB-read V; swept the anti-pattern across the kernel surface
+    and added cross-checks to `gqa_decode_cider` (v must match k on B/Hkv/S/D), the raw `tq_decode_attend`
+    helper (v_pool.D==q.D, packed_D, pool dims — the TQ *class* path was already guarded), and
+    `topk_stream_indices` (k.B/D/heads vs q); conv/sparse/sage/gather were already guarded. **M2 (HIGH):**
+    `flash_attention(alibi_slopes|attn_bias, window_size=…)` silently dropped `window` (the ALiBi/bias
+    kernels hardcode window=-1) — now rejected loudly (window-alone / softcap+window unaffected). The
+    **matrix itself** was extended (JIT-kernel malformation cells, feature-combo cells, empty/zero-size
+    cell, DecodeRuntime-batch atomicity, and a coverage assertion that the subset-derive kernels are
+    *probed* not merely counted), `DecodeRuntime.{paged_prefill_batch,paged_step_batch}` made
+    validate-before-mutate (atomic), the 7-vs-9 kernel count reconciled (logical registry vs per-call-site,
+    both pinned), and 2 weak lock oracles tightened. All Python (no C++ rebuild).
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

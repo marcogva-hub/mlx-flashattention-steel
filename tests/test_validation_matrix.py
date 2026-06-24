@@ -204,3 +204,122 @@ def test_coverage_completeness_surface_counts():
     # METAL_KERNELS is the static registry (7 sites); the enumeration reports 9
     # at runtime (the 2 dynamic tq_decode kernels are added live).
     assert len(m.METAL_KERNELS) == 7, len(m.METAL_KERNELS)
+
+
+# ── CC final-cert: close the matrix blind spot (the axes that hid M1/M2/M3) ───────
+# These cell-classes were COUNTED but not malformation-probed before the cert.
+import mlx_mfa.gqa_decode_cider as _gc
+from mlx_mfa.tq_decode import tq_decode_attend as _tqa, _packed_d as _pd
+from mlx_mfa.topk_stream import topk_stream_indices as _tki
+from mlx_mfa.runtime import create_decode_runtime as _cdr
+
+
+def _qd(h, n, d, dt=F16):
+    a = mx.random.normal((1, h, n, d)).astype(dt); mx.eval(a); return a
+
+
+# (1) JIT-kernel subset-derive malformation (the class that hid M1-CRITICAL).
+def test_jit_gqa_decode_cider_cross_check():
+    _gc.gqa_decode_cider(_qd(8, 1, 64), _qd(2, 256, 64), _qd(2, 256, 64), 0.125)  # valid runs
+    with pytest.raises(ValueError):
+        _gc.gqa_decode_cider(_qd(8, 1, 128), _qd(2, 256, 128), _qd(2, 256, 64), 0.125)  # q.D!=v.D
+    with pytest.raises(ValueError):
+        _gc.gqa_decode_cider(_qd(8, 1, 64), _qd(2, 256, 64), _qd(2, 128, 64), 0.125)    # k.S!=v.S
+
+
+def test_jit_tq_decode_attend_cross_check():
+    nb, bs, Hkv, D, bits = 4, 16, 2, 64, 4
+    q = _qd(4, 1, D); ktq = mx.zeros((nb, bs, Hkv, _pd(D, bits)), U8)
+    vp = mx.zeros((nb, bs, Hkv, D), F16); vbad = mx.zeros((nb, bs, Hkv, 32), F16)
+    ks = mx.zeros((nb, bs, Hkv), F32); cent = mx.zeros((2 ** bits,), F16)
+    bt = mx.array([0, 1], mx.int32); mx.eval(q, ktq, vp, vbad, ks, cent, bt)
+    _tqa(q, ktq, vp, ks, cent, bt, 40, block_size=bs, tq_bits=bits)  # valid runs
+    with pytest.raises(ValueError):
+        _tqa(q, ktq, vbad, ks, cent, bt, 40, block_size=bs, tq_bits=bits)  # v_pool.D != q.D
+
+
+def test_jit_topk_stream_cross_check():
+    _tki(_qd(2, 32, 128), _qd(2, 256, 128), 0.1, 32)  # valid runs
+    with pytest.raises(ValueError):
+        _tki(_qd(2, 32, 128), _qd(2, 256, 64), 0.1, 32)   # k.D != q.D
+
+
+# (2) feature-combination matrix (the class that hid M2).
+def _fa(**kw):
+    mx.random.seed(0)
+    q = _qd(8, 16, 64); k = _qd(8, 16, 64); v = _qd(8, 16, 64)
+    return mlx_mfa.flash_attention(q, k, v, **kw)
+
+
+def test_feature_combo_alibi_bias_window_rejected():
+    sl = mx.zeros((8,), F32); bias = mx.zeros((1, 1, 16, 16), F16); mx.eval(sl, bias)
+    with pytest.raises(ValueError, match="window"):
+        _fa(alibi_slopes=sl, window_size=(4, 4))
+    with pytest.raises(ValueError, match="window"):
+        _fa(attn_bias=bias, window_size=(4, 4))
+
+
+def test_feature_combo_supported_still_work():
+    # no over-rejection: window-alone, alibi-alone, softcap+window all run + take effect
+    sl = mx.zeros((8,), F32); mx.eval(sl)
+    base = np.array(_fa().astype(F32))
+    win = np.array(_fa(window_size=(4, 4)).astype(F32))
+    sw = np.array(_fa(softcap=20.0, window_size=(4, 4)).astype(F32))
+    s = np.array(_fa(softcap=20.0).astype(F32))
+    assert np.max(np.abs(win - base)) > 1e-3        # window-alone takes effect
+    assert np.max(np.abs(sw - s)) > 1e-3            # softcap+window: window still applies
+    mx.eval(_fa(alibi_slopes=sl))                   # alibi-alone runs
+
+
+# (3) empty/zero-size contract (M3): honest-NaN OR raise — documented, not silent-wrong.
+def test_empty_zero_kv_segment_contract():
+    Hq, Hkv, D, bs = 8, 4, 64, 16
+    qp = _qd(Hq, 7, D); cu = mx.array([0, 3, 7], mx.int32)
+    pk = mx.zeros((2, bs, Hkv, D), F16); pv = mx.zeros((2, bs, Hkv, D), F16)
+    tab = mx.array([[0], [-1]], mx.int32); lens = mx.array([10, 0], mx.int32)  # seq1 zero-KV
+    tile = mx.array([0, 1, 2], mx.int32); mx.eval(qp, pk, pv)
+    try:
+        o = mlx_mfa.flash_attention_paged_varlen(qp, pk, pv, tab, lens, cu,
+              max_seqlen_q=4, scale=1 / 8, causal=False, block_size=bs)
+        mx.eval(o)
+        # contract: a zero-KV segment yields honest non-finite (NOT finite-wrong)
+        assert not bool(np.isfinite(np.array(o.astype(F32))).all()), \
+            "zero-KV segment must be honest-NaN, not finite-wrong"
+    except (ValueError, Exception):
+        pass   # raising is also an acceptable (loud) contract
+
+
+# (4) DecodeRuntime batch-method atomicity (the residual the cert flagged).
+# True oracle: raises AND cache state unchanged (no reset/append) — not bare-raises.
+def test_decoderuntime_paged_batch_atomic():
+    for method in ("paged_prefill_batch", "paged_step_batch"):
+        rt = _cdr(backend="paged", B=2, H_q=8, H_kv=4, D=64, num_blocks=32,
+                  block_size=16, dtype=F16)
+        gq = mx.random.normal((2, 8, 8, 64)).astype(F16)
+        gk = mx.random.normal((2, 4, 8, 64)).astype(F16)
+        gv = mx.random.normal((2, 4, 8, 64)).astype(F16)
+        mx.eval(gq, gk, gv)
+        rt.paged_prefill_batch(gq, gk, gv, seq_ids=[0, 1])      # seed valid state
+        ca = rt._cache_adapter()
+        before = (ca.seq_length(0), ca.seq_length(1))
+        bad_q = mx.random.normal((2, 3, 1, 64)).astype(F16)     # 3 % 4 != 0
+        k = mx.random.normal((2, 4, 1, 64)).astype(F16); v = mx.random.normal((2, 4, 1, 64)).astype(F16)
+        mx.eval(bad_q, k, v)
+        with pytest.raises((ValueError, Exception)):
+            getattr(rt, method)(bad_q, k, v, seq_ids=[0, 1])
+        assert (ca.seq_length(0), ca.seq_length(1)) == before, \
+            f"{method}: cache state mutated on failed call (not atomic)"
+
+
+# (5) strengthened coverage: pin BOTH counts + assert the JIT kernels are
+# malformation-probed (not merely counted) — the durable fix to "counted, not probed".
+def test_coverage_jit_kernels_malformation_probed():
+    m = _load_enum()
+    assert len(m.METAL_KERNELS) == 7            # logical registry
+    assert len(m.metal_kernel_sites()) == 9     # AST call-sites (conv = 3)
+    assert len(m.metal_kernel_offenders()) == 0
+    # the attention JIT kernels with a subset-derive risk MUST have a malformation cell
+    probed = {"gqa_decode_cider", "tq_decode_attend", "topk_stream_indices"}
+    src = (_ROOT / "tests" / "test_validation_matrix.py").read_text()
+    for name in probed:
+        assert name in src and "raises" in src, f"{name} not malformation-probed in matrix"

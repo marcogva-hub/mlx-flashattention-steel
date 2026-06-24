@@ -214,6 +214,23 @@ def tq_decode_attend(
     """
     _num_blocks, bs, Hkv, _pd = k_pool_tq.shape
     D = q_rot.shape[3]
+    # M1 (CC final-cert): the K-dequant + V-gather kernels bake D from q_rot and
+    # index the V pool / packed-K row by it; v_pool_fp16's real D and k_pool_tq's
+    # packed_D were read (_pd) but NOT cross-checked → q_rot.D != v_pool.D drove an
+    # OOB read = NaN (silent-wrong). The TQ *class* path is guarded (cache_dim),
+    # but this RAW helper was not. Cross-check the pool geometry before dispatch.
+    if v_pool_fp16.shape[3] != D:
+        raise ValueError(
+            f"tq_decode_attend: v_pool head_dim ({v_pool_fp16.shape[3]}) must equal "
+            f"q head_dim ({D}); the V-gather reads V at q's D and would read OOB.")
+    if _pd != _packed_d(D, tq_bits):
+        raise ValueError(
+            f"tq_decode_attend: k_pool_tq packed_D ({_pd}) != expected "
+            f"{_packed_d(D, tq_bits)} for D={D}, tq_bits={tq_bits}.")
+    if tuple(v_pool_fp16.shape[:3]) != (_num_blocks, bs, Hkv):
+        raise ValueError(
+            f"tq_decode_attend: v_pool_fp16 [num_blocks,block_size,H_kv] "
+            f"{tuple(v_pool_fp16.shape[:3])} must match k_pool_tq {(_num_blocks, bs, Hkv)}.")
     if scale is None:
         scale = 1.0 / math.sqrt(D)
     S = int(seq_len)

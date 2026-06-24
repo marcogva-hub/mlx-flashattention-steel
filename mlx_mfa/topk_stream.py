@@ -192,6 +192,18 @@ def topk_stream_indices(q: mx.array, k: mx.array, scale: float,
     """PASS-1: per-row top-k_count key indices, [B, H, N, k_count] int32."""
     B, H, N, D = q.shape
     S = k.shape[2]
+    # M1 (CC final-cert): the kernel strides K by q's B/H and reads a q.D-wide row;
+    # k.shape[0]/[1]/[3] were never cross-checked → a mismatched k OOB-reads the K
+    # buffer (the int index output happened to stay in-range, but the cross-check was
+    # genuinely missing). Align with _assert_qkv_mutual_compat's K contract.
+    if k.shape[0] != B:
+        raise ValueError(f"topk_stream: k batch ({k.shape[0]}) must equal q batch ({B}).")
+    if k.shape[3] != D:
+        raise ValueError(f"topk_stream: k head_dim ({k.shape[3]}) must equal q head_dim ({D}).")
+    if k.shape[1] <= 0 or H % k.shape[1] != 0:
+        raise ValueError(
+            f"topk_stream: q heads ({H}) must be a positive multiple of k heads "
+            f"({k.shape[1]}) for GQA.")
     if D not in (64, 128):
         raise ValueError(f"topk_stream: D must be 64 or 128, got {D}")
     if k_count % 32 != 0 or k_count > 128:

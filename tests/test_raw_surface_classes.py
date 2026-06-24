@@ -83,7 +83,9 @@ def test_class_d_paged_mixed_dtype_rejects():
 
 def test_class_d_paged_matched_dtype_runs():
     o = _raw_paged_steel(F16, F16)
-    mx.eval(o[0] if isinstance(o, (tuple, list)) else o)
+    O = o[0] if isinstance(o, (tuple, list)) else o
+    mx.eval(O)
+    assert bool(np.isfinite(np.array(O.astype(F32))).all())   # M4: full oracle, not just "runs"
 
 
 # ── Class D: TQ backing-buffer required dtypes ──────────────────────────────────
@@ -662,7 +664,13 @@ def test_classA_register_prefix_threads_softcap():
                  max_seq_len=128, dtype=F16).register_prefix(0, q, k, v)[0].astype(F32))
     p2 = np.array(create_decode_runtime(backend="dense", B=1, H_q=8, H_kv=8, D=64,
                  max_seq_len=128, dtype=F16).register_prefix(0, q, k, v, softcap=20.0)[0].astype(F32))
-    assert np.max(np.abs(p2 - p1)) > 1e-3
+    assert np.max(np.abs(p2 - p1)) > 1e-3       # softcap takes effect (not dropped)
+    # M4: ref-match — the softcap output must MATCH the direct softcap compute
+    # (correct, not merely different); cosine vs make_shared_prefix_cache(softcap).
+    ref = np.array(mlx_mfa.make_shared_prefix_cache(q, k, v, softcap=20.0)[0].astype(F32))
+    assert np.isfinite(p2).all()
+    a, b = p2.reshape(-1), ref.reshape(-1)
+    assert float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b))) >= 0.999
 
 
 # Class B: failed (malformed-Q) call is atomic — cache byteΔ=0 ────────────────────

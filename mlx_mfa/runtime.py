@@ -1040,6 +1040,12 @@ class DecodeRuntime:
             cache_batch_idx=cache_batch_idx,
             expected_batch=q.shape[0],
         )
+        # CC final-cert (atomicity): validate q/k/v mutual-compat (GQA, q.D==k.D,
+        # kv-heads/seq) BEFORE the per-seq reset/append loop — a malformed Q with
+        # valid K/V otherwise reset+appended (mutating cache state) then raised deep
+        # in flash_attention_paged. Validate-before-mutate so a failed call is atomic.
+        from mlx_mfa.attention import _assert_qkv_mutual_compat
+        _assert_qkv_mutual_compat(q, k, v, "paged_prefill_batch")
         h = self._hybrid_cache()
         if h is not None:
             h.prepare_hot_window(list(active_seq_ids), reason="paged_prefill_batch")
@@ -1104,6 +1110,10 @@ class DecodeRuntime:
             cache_batch_idx=cache_batch_idx,
             expected_batch=q.shape[0],
         )
+        # CC final-cert (atomicity): validate before the per-seq append loop so a
+        # malformed Q with valid K/V is rejected atomically (no append on failure).
+        from mlx_mfa.attention import _assert_qkv_mutual_compat
+        _assert_qkv_mutual_compat(q, k_new, v_new, "paged_step_batch")
         h = self._hybrid_cache()
         if h is not None:
             h.prepare_hot_window(list(active_seq_ids), reason="paged_step_batch")
