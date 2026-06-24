@@ -1057,7 +1057,14 @@ class TurboQuantPagedInferenceContext:
         from mlx_mfa.turboquant import pack_k_for_metal, pack_v_for_metal
         import numpy as np
 
-        self._ensure_seq(seq_id)
+        # ATOMICITY (sweep iter-3): validate BEFORE _ensure_seq. _ensure_seq
+        # allocates a block (decrementing self._free) and creates a phantom
+        # _block_table/_write_ptr entry for a new seq_id — so a malformed k/v on a
+        # NEW seq_id leaked a block + a phantom sequence permanently, THEN raised
+        # (verified: _free 15->14, phantom_seq=True on bad heads/D/dtype/batch).
+        # The rest of this file is validate-before-mutate (prefill/step call
+        # _validate_qkv_before_mutate first); align append. Validation has no
+        # dependency on _ensure_seq.
         # P5 (HIGH #2): complete K/V persistence contract via the single shared
         # helper — adds the batch axis the per-site P1 check missed (this paged
         # append is single-sequence). expected_batch=1; configured kv-heads + D.
@@ -1066,6 +1073,8 @@ class TurboQuantPagedInferenceContext:
             k, v, "TurboQuantPagedInferenceContext.append",
             expected_batch=1, expected_heads=self.H_kv, expected_dim=self.D,
             accepted_dtypes=(self.dtype,))
+
+        self._ensure_seq(seq_id)
         N_new = k.shape[2]
 
         # Pack K

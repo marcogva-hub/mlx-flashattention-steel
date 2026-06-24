@@ -451,3 +451,40 @@ def test_sweep_noncontig_raw_kernels():
     cu = mx.array([0, Nv], mx.int32); to = mx.array([0, (Nv + BQ - 1) // BQ], mx.int32); qv2v = qv2[:, :, 0:Nv, :]
     assert _noncontig_eq(_ext.mfa_attention_varlen_forward(qv2v, kv, vv, cu, cu, to, 1 / _m.sqrt(D), False),
                          _ext.mfa_attention_varlen_forward(mx.contiguous(qv2v), kv, vv, cu, cu, to, 1 / _m.sqrt(D), False)) < 1e-3
+
+
+# ── Sweep iter-3 regression lock: TQ.append validate-before-mutate (atomicity) ────
+# TurboQuantPagedInferenceContext.append called _ensure_seq (allocates a block,
+# decrements _free, creates a phantom _block_table/_write_ptr entry) BEFORE the
+# assert_kv_persist_compat validation → a malformed k/v on a NEW seq_id leaked a
+# block + phantom sequence permanently, then raised. Now validate-before-mutate.
+def test_sweep_tq_append_atomic():
+    from mlx_mfa.inference import TurboQuantPagedInferenceContext as _TQC
+
+    def fresh():
+        c = _TQC(num_blocks=16, block_size=16, H_kv=4, D=64, dtype=F16, tq_bits=3)
+        c.prefill(_q(8, 4, 64), _q(4, 4, 64), _q(4, 4, 64), seq_id=0)
+        return c
+
+    def fp(c):
+        return (len(c._free), dict(c._block_table), dict(c._write_ptr))
+
+    cases = {
+        "bad_heads": ((1, 2, 2, 64), F16),
+        "bad_D":     ((1, 4, 2, 128), F16),
+        "bad_dtype": ((1, 4, 2, 64), BF16),
+        "bad_batch": ((2, 4, 2, 64), F16),
+    }
+    NEW = 7
+    for name, (shape, dt) in cases.items():
+        c = fresh(); before = fp(c)
+        k = mx.random.normal(shape).astype(dt); v = mx.random.normal(shape).astype(dt)
+        mx.eval(k, v)
+        with pytest.raises(Exception):
+            c.append(k, v, seq_id=NEW)
+        assert fp(c) == before, f"TQ.append {name} on new seq_id mutated state (leak): {before} -> {fp(c)}"
+        assert NEW not in c._block_table, f"TQ.append {name} created a phantom seq entry"
+    # no over-rejection: a valid append still mutates
+    c = fresh(); n0 = c.seq_length(0)
+    c.append(_q(4, 2, 64), _q(4, 2, 64), seq_id=0)
+    assert c.seq_length(0) > n0, "valid TQ.append did not mutate"
