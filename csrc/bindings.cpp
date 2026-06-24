@@ -180,9 +180,18 @@ inline void mfa_check_backward_inputs(
   // wrong. dO must share q's dtype (covers steel + the debug backward entries).
   if (dO.dtype() != q.dtype())
     err("dO must share q's dtype (cotangent read at q's dtype)");
+  // INTER-GRID JOINT (unified-grid consolidation): the cotangent dO cell was closed,
+  // but its SIBLING aux cells O and L were not — O.dtype and L.dtype went unchecked.
+  // The kernel reads O at q's dtype (then casts to f32) and L as float32; a mismatched
+  // O (e.g. bf16 with f16 q) -> finite/NaN-WRONG grad, a non-f32 L -> wrong reduction.
+  // Reproduced: steel_backward O:bf16 -> NaN dQ (no raise); L:f16 -> silent-wrong.
+  if (O.dtype() != q.dtype())
+    err("O must share q's dtype (forward output read at q's dtype)");
   if (L.ndim() != 3 || L.shape(0) != q.shape(0) || L.shape(1) != q.shape(1)
       || L.shape(2) != q.shape(2))
     err("L (logsumexp) must be [B, Hq, Nq]");
+  if (L.dtype() != mlx::core::float32)
+    err("L (logsumexp) must be float32 (kernel reads it as f32)");
 }
 
 // Optional [B, Hq, Nq] aux array (e.g. the precomputed delta D) check.

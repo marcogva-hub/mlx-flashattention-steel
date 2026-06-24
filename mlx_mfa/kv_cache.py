@@ -599,11 +599,20 @@ class HybridKVCache:
     def reset(self, seq_id: Optional[int] = None):
         self._primary_adapter.reset(seq_id=seq_id)
         if self._secondary_adapter is not None:
-            try:
-                self._secondary_adapter.reset(seq_id=seq_id)
-            except KVCacheOperationUnsupported:
-                # Secondary tier may not support seq-id scoped reset yet.
-                self._secondary_adapter.reset(seq_id=None)
+            # INTER-GRID JOINT (unified-grid consolidation, HIGH): a seq-SCOPED reset
+            # must only touch the secondary if seq_id ACTUALLY resides there (cold). A
+            # single-seq secondary (DenseKVCache) IGNORES seq_id and resets its whole
+            # buffer without raising KVCacheOperationUnsupported — so forwarding
+            # reset(seq_id=X) while the secondary holds a DIFFERENT cold seq silently
+            # WIPED that seq's data (reproduced: reset(seq_id=1) cleared cold seq 0).
+            # Only delegate for a full reset (seq_id is None) or when seq_id is the
+            # resident cold seq (then a single-seq reset clears exactly that seq).
+            if seq_id is None or int(seq_id) in self._cold_seq_ids:
+                try:
+                    self._secondary_adapter.reset(seq_id=seq_id)
+                except KVCacheOperationUnsupported:
+                    # Secondary tier may not support seq-id scoped reset yet.
+                    self._secondary_adapter.reset(seq_id=None)
         if self.external_adapter is not None:
             if seq_id is None:
                 for sid in list(self.external_adapter.offloaded_seq_ids):

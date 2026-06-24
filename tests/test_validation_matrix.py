@@ -896,3 +896,50 @@ def test_rawsweep_varlen_per_segment_zero_kv():
         mx.eval(_ext.mfa_attention_varlen_forward(q, q, q, cuq, cuk_zero, tile, 0.125, False))
     cuk_ok = mx.array([0, 32, 64], mx.int32); mx.eval(cuk_ok)
     mx.eval(_ext.mfa_attention_varlen_forward(q, q, q, cuq, cuk_ok, tile, 0.125, False))  # valid runs
+
+
+# ── Unified-grid consolidation: INTER-GRID JOINT seams (where perimeters meet) ──────
+def test_intergrid_backward_aux_dtype_O_L():
+    # The cotangent dO cell was closed by the raw-parity sweep; its SIBLING aux cells
+    # O and L were the joint between the dtype class and the backward surface.
+    import math as _m
+    B, H, L, D = 1, 4, 8, 64; SC = 1 / _m.sqrt(D)
+    q = _qB(B, H, L, D); Of = _qB(B, H, L, D); Obf = Of.astype(mx.bfloat16)
+    lse = mx.random.normal((B, H, L)).astype(F32); lse16 = lse.astype(F16)
+    do = _qB(B, H, L, D); mx.eval(Obf, lse, lse16)
+    with pytest.raises(Exception):                       # O.dtype != q.dtype
+        mx.eval(_ext.mfa_steel_backward(q, q, q, Obf, lse, do, SC, False)[0])
+    with pytest.raises(Exception):                       # L.dtype != f32
+        mx.eval(_ext.mfa_steel_backward(q, q, q, Of, lse16, do, SC, False)[0])
+    mx.eval(_ext.mfa_steel_backward(q, q, q, Of, lse, do, SC, False)[0])  # valid runs
+
+
+def test_intergrid_v6_backward_O_dtype():
+    import math as _m
+    B, H, L, D = 1, 4, 8, 64; SC = 1 / _m.sqrt(D)
+    q = _qB(B, H, L, D); Of = _qB(B, H, L, D); Obf = Of.astype(mx.bfloat16)
+    lse = mx.random.normal((B, H, L)).astype(F32); do = _qB(B, H, L, D)
+    dvec = mx.random.normal((B, H, L)).astype(F32); mx.eval(Obf, lse, dvec)
+    with pytest.raises(Exception):                       # forward output o.dtype != q.dtype
+        mx.eval(_ext.v6_nax_backward_query(q, q, q, Obf, lse, do, dvec, SC, False))
+    mx.eval(_ext.v6_nax_backward_query(q, q, q, Of, lse, do, dvec, SC, False))  # valid runs
+
+
+def test_intergrid_hybrid_reset_seq_scoped_no_cross_seq_loss():
+    # HIGH: HybridKVCache.reset(seq_id=X) must not wipe a DIFFERENT cold seq held by a
+    # single-seq secondary (DenseKVCache.reset ignores seq_id). The hybrid->adapter joint.
+    from mlx_mfa import HybridKVCache
+    from mlx_mfa.attention import PagedKVCache, DenseKVCache
+    prim = PagedKVCache(num_blocks=4, block_size=2, H=4, D=64, dtype=F16)
+    sec = DenseKVCache(B=1, H=4, D=64, max_seq_len=64, dtype=F16)
+    try: h = HybridKVCache(prim, secondary_cache=sec, hot_seq_capacity=1)
+    except TypeError: pytest.skip("HybridKVCache ctor signature differs")
+    def kv(): return (mx.random.normal((1, 4, 2, 64)).astype(F16),
+                      mx.random.normal((1, 4, 2, 64)).astype(F16))
+    k0, v0 = kv(); h.append(k0, v0, seq_id=0)
+    k1, v1 = kv(); h.append(k1, v1, seq_id=1)            # demotes seq0 to cold (secondary)
+    assert h._secondary_adapter.seq_length(0) == 2       # seq0 is cold in the secondary
+    h.reset(seq_id=1)                                    # reset the HOT seq only
+    assert h._secondary_adapter.seq_length(0) == 2       # cold seq0 PRESERVED (was wiped pre-fix)
+    h.reset()                                            # full reset still clears all tiers
+    assert h._secondary_adapter.seq_length(0) == 0
