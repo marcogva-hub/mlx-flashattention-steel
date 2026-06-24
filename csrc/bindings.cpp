@@ -535,8 +535,11 @@ NB_MODULE(_ext, m) {
         "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16. "
         "v2.37.0: force_v6nax=True overrides default routing to ensure V6NAX forward "
         "path (used by V6NAX backward integration for natural-log lse). "
-        "F-2 (Change 3): scale is the QK scale baked into the kernel (default <=0 "
-        "sentinel => 1/sqrt(D)); a custom scale produces a distinct cached pipeline.");
+        "F-2 (Change 3): scale is the QK scale baked into the kernel; a custom scale "
+        "produces a distinct cached pipeline. scale=-1.0 (the default) is the 'use "
+        "1/sqrt(D)' sentinel; any OTHER non-positive or non-finite scale RAISES "
+        "(value-semantics fix — a non-positive scale was silently defaulting). Pass a "
+        "finite positive scale, or -1.0 / omit for the default.");
 
   m.def("v6_nax_backward_query",
         [](const mlx::core::array& q, const mlx::core::array& k,
