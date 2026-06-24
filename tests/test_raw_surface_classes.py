@@ -628,3 +628,95 @@ def test_paged_varlen_tile_derivation():
     for bad in ([0, 1, 3], [0, 2, 2]):                    # wrong-final / wrong-segment
         with pytest.raises(ValueError):
             _paged_varlen_tile(mx.array(bad, mx.int32))
+
+
+# ── Class-method surface: A (feature-thread), B (validate-before-mutate), C (TQ geom)
+import mlx_mfa as _mm
+from mlx_mfa.inference import (InferenceContext, PagedInferenceContext,
+                               SageInferenceContext,
+                               TurboQuantPagedInferenceContext)
+from mlx_mfa.runtime import create_decode_runtime
+
+
+def _qf(h, n, d):
+    a = mx.random.normal((1, h, n, d)).astype(F16)
+    mx.eval(a)
+    return a
+
+
+# Class A: prefix feature params now change the output (threaded) or reject ───────
+def test_classA_prefix_threads_softcap_and_causal():
+    mx.random.seed(0)
+    q, k, v = _qf(8, 16, 64), _qf(8, 16, 64), _qf(8, 16, 64)
+    d = np.array(_mm.make_shared_prefix_cache(q, k, v)[0].astype(F32))
+    sc = np.array(_mm.make_shared_prefix_cache(q, k, v, softcap=20.0)[0].astype(F32))
+    nc = np.array(_mm.make_shared_prefix_cache(q, k, v, causal=False)[0].astype(F32))
+    assert np.max(np.abs(sc - d)) > 1e-3      # softcap takes effect (was dropped)
+    assert np.max(np.abs(nc - d)) > 1e-3      # causal takes effect
+
+
+def test_classA_register_prefix_threads_softcap():
+    mx.random.seed(0)
+    q, k, v = _qf(8, 16, 64), _qf(8, 16, 64), _qf(8, 16, 64)
+    p1 = np.array(create_decode_runtime(backend="dense", B=1, H_q=8, H_kv=8, D=64,
+                 max_seq_len=128, dtype=F16).register_prefix(0, q, k, v)[0].astype(F32))
+    p2 = np.array(create_decode_runtime(backend="dense", B=1, H_q=8, H_kv=8, D=64,
+                 max_seq_len=128, dtype=F16).register_prefix(0, q, k, v, softcap=20.0)[0].astype(F32))
+    assert np.max(np.abs(p2 - p1)) > 1e-3
+
+
+# Class B: failed (malformed-Q) call is atomic — cache byteΔ=0 ────────────────────
+def test_classB_step_malformed_q_atomic():
+    c = InferenceContext(B=1, H_kv=4, D=64, max_seq_len=128, dtype=F16)
+    c.prefill(_qf(8, 4, 64), _qf(4, 4, 64), _qf(4, 4, 64))
+    n0 = c.seqlen
+    kb = np.array(c.k_cache.astype(F32)).tobytes()
+    with pytest.raises(ValueError):
+        c.step(_qf(3, 1, 64), _qf(4, 1, 64), _qf(4, 1, 64))   # bad GQA Q
+    assert c.seqlen == n0                                      # not mutated
+    assert np.array(c.k_cache.astype(F32)).tobytes() == kb     # byteΔ=0
+    o = c.step(_qf(8, 1, 64), _qf(4, 1, 64), _qf(4, 1, 64))    # valid still mutates
+    mx.eval(o)
+    assert c.seqlen == n0 + 1
+
+
+def test_classB_prefill_malformed_q_atomic():
+    c = InferenceContext(B=1, H_kv=4, D=64, max_seq_len=128, dtype=F16)
+    c.prefill(_qf(8, 4, 64), _qf(4, 4, 64), _qf(4, 4, 64))    # seqlen 4
+    n0 = c.seqlen
+    with pytest.raises(ValueError):
+        c.prefill(_qf(3, 4, 64), _qf(4, 4, 64), _qf(4, 4, 64))  # bad GQA → must not wipe to a bad state
+    assert c.seqlen == n0                                       # reset+append not reached
+
+
+# Class C: TQ Q-vs-pool geometry raises at class + raw ────────────────────────────
+def _tq_class(Hq, Dq):
+    c = TurboQuantPagedInferenceContext(num_blocks=16, block_size=16, H_kv=4, D=64,
+                                        dtype=F16, tq_bits=3)
+    c.prefill(_qf(Hq, 8, Dq), _qf(4, 8, Dq), _qf(4, 8, Dq), seq_id=0)
+
+
+def test_classC_tq_class_geometry():
+    _tq_class(8, 64)                                  # valid → runs
+    with pytest.raises(ValueError):
+        _tq_class(3, 64)                              # bad GQA
+    with pytest.raises(ValueError):
+        _tq_class(8, 128)                            # q.D != pool D
+
+
+def _tq_raw(Hq, Dq):
+    nb, bs, hkv, D, bits = 1, 16, 4, 64, 3
+    pdk = (D // 32) * 12
+    q = mx.zeros((1, Hq, 8, Dq), F16); pk = mx.zeros((nb, bs, hkv, pdk), U8)
+    pv = mx.zeros((nb, bs, hkv, D), F16)
+    cu = mx.array([0, 8], mx.int32); tile = mx.array([0, 1], mx.int32)
+    tab = mx.array([[0]], mx.int32); lens = mx.array([8], mx.int32)
+    cent = mx.zeros((2 ** bits,), F16); ks = mx.zeros((nb, bs, hkv), F32)
+    return _ext.mfa_paged_varlen_tq_forward(q, pk, pv, cu, tile, tab, lens, cent, ks,
+                                            0.1, False, bs, bits, False, False, None, None, None)
+
+
+def test_classC_tq_raw_geometry():
+    for bad in [(3, 64), (8, 128)]:
+        with pytest.raises(ValueError):
+            _tq_raw(*bad)

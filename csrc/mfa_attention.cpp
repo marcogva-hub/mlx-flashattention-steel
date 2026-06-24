@@ -3797,6 +3797,19 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
         throw std::invalid_argument(
             "mfa_paged_varlen_tq_forward: v_scales must be [num_blocks,block_size,H_kv] matching k_pool_tq.");
     }
+    // CC class-method batch (Class C, raw backstop): Q-vs-pool geometry. q_heads
+    // must be a valid GQA multiple of the pool kv-heads, and q head_dim must equal
+    // the pool D — else a bad GQA ratio / D-mismatch is finite-wrong, not raised.
+    const int Hq = q.shape(1), Dq = q.shape(3);
+    if (hkv <= 0 || Hq % hkv != 0)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: q_heads (" + std::to_string(Hq) +
+          ") must be a positive multiple of the pool kv-heads (" +
+          std::to_string(hkv) + ") for GQA.");
+    if (Dq != Dv)
+      throw std::invalid_argument(
+          "mfa_paged_varlen_tq_forward: q head_dim (" + std::to_string(Dq) +
+          ") must equal the pool D (" + std::to_string(Dv) + ").");
   }
   // CX-R6-03 (volet I): int32 metadata (float seq_lens HANGS, int64 wrong values).
   if (cu_seqlens_q.dtype() != mlx::core::int32 || block_table.dtype() != mlx::core::int32 ||

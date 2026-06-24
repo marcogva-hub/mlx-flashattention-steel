@@ -655,6 +655,23 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
     (`cu_seqlens_*` are primary). Locked in `tests/test_raw_surface_classes.py` (wrong-final/-segment/
     non-monotone/off-by-one + canonical-byteΔ0 formula-perturbation bite + opt-out, across non-paged +
     paged). C++ rebuild required.
+  - **Class-method (runtime/context) surface — three classes closed (CC batch).** The stateful
+    runtime/context surface, never touched by the function/raw hardening. **Class A (feature silently
+    dropped):** `DecodeRuntime.register_prefix` / `prefill_shared_prefix` accepted `causal`/`softcap`/
+    `window_size` but called the prefix compute with `scale` only → the feature was silently dropped
+    (output byte-identical to default). Fixed by threading them through `make_shared_prefix_cache` →
+    `flash_attention` (now takes effect: softcap maxΔ 0.022, causal maxΔ 3.50 vs default). The
+    `chunked_prefill` **packed** path dispatches `flash_attention_paged_varlen`, which has no softcap/
+    window — so it now **rejects** them loudly instead of dropping (the batched path threads them).
+    **Class B (state mutated before Q validation):** all four contexts × `prefill`/`step` appended K/V (or
+    wrote pools) *before* Q was validated — a malformed Q with valid K/V raised deep in the attention call,
+    leaving the cache mutated (step seqlen 4→5). Hoisted the full Q/K/V mutual-compat to before any
+    mutation via one shared `_validate_qkv_before_mutate`, so a failed call is **atomic** (raises AND cache
+    byteΔ=0); valid calls mutate normally. **Class C (TQ Q-vs-pool geometry):** `H_q` not a GQA-multiple of
+    the pool kv-heads, or `q.D != pool D`, ran finite-wrong — added the geometry check at the class layer
+    (pre-mutation, folds into Class B) and as a raw C++ backstop in `mfa_paged_varlen_tq_forward`. Locked
+    in `tests/test_raw_surface_classes.py` (A feature-on≠off + packed-reject; B atomic-cache-byteΔ0; C
+    class+raw geometry). C++ rebuild required.
   - **Tier-1 secondary-surface validation** (each was previously silently-wrong / silently-coerced):
     `flash_attention(backend="mfa")` with **float32** input raises (MFA kernels are fp16/bf16;
     `backend="auto"` + fp32 is unaffected — it routes to SDPA); `HybridKVCache(policy=…)` rejects any

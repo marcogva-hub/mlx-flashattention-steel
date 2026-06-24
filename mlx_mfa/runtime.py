@@ -367,11 +367,17 @@ class DecodeRuntime:
             raise ValueError(
                 f"prefix_id={pid!r} already exists. Pass overwrite=True to replace it."
             )
+        # CC class-method batch (Class A): forward causal/softcap/window to the
+        # prefix compute (was scale-only → the requested features were silently
+        # dropped; make_shared_prefix_cache now threads them to flash_attention).
         prefix_out, kp, vp = self.shared_prefix_cache(
             prefix_q,
             prefix_k,
             prefix_v,
             scale=scale,
+            causal=causal,
+            softcap=softcap,
+            window_size=window_size,
         )
         entry = {
             "id": pid,
@@ -646,6 +652,20 @@ class DecodeRuntime:
                     "chunked_prefill with query_layout='packed' requires "
                     "backend='paged'"
                 )
+            # CC class-method batch (Class A): the packed path dispatches
+            # flash_attention_paged_varlen, which has NO softcap/window support —
+            # reject loudly rather than silently drop the requested feature.
+            # (The batched path threads them via context.chunked_prefill → step.)
+            if softcap != 0.0:
+                raise ValueError(
+                    "chunked_prefill packed path does not support softcap "
+                    "(the paged-varlen kernel has no softcap); use the batched "
+                    "path (query_layout!='packed') or omit softcap.")
+            if window_size is not None:
+                raise ValueError(
+                    "chunked_prefill packed path does not support window_size "
+                    "(the paged-varlen kernel has no sliding-window); use the "
+                    "batched path or omit window_size.")
             # cache_batch_idx is passed through to paged_varlen for block_table remapping
             if cu_seqlens_q is None:
                 raise ValueError(

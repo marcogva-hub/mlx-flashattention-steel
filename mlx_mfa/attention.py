@@ -4483,6 +4483,9 @@ def make_shared_prefix_cache(
     prefix_v: mx.array,
     *,
     scale: Optional[float] = None,
+    causal: bool = True,
+    softcap: float = 0.0,
+    window_size: Optional[tuple] = None,
     stream: Optional[mx.Stream] = None,
 ) -> tuple:
     """Pre-compute KV cache for a shared prompt prefix.
@@ -4521,9 +4524,13 @@ def make_shared_prefix_cache(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
+    # CC class-method batch (Class A): thread causal/softcap/window through to the
+    # underlying flash_attention so a caller-requested feature is NOT silently
+    # dropped (previously hardcoded causal=True, softcap/window ignored).
     prefix_out = flash_attention(
         prefix_q, prefix_k, prefix_v,
-        scale=scale, causal=True, stream=stream,
+        scale=scale, causal=causal, softcap=softcap,
+        window_size=window_size, stream=stream,
     )
     return prefix_out, prefix_k, prefix_v
 
