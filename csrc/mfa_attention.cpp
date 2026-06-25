@@ -2032,6 +2032,21 @@ static inline mlx::core::array contig_meta(const mlx::core::array& a) {
   return mlx::core::contiguous(a);
 }
 
+// STRUCTURAL single-source-of-truth (Codex re-confirm, the 4th re-open = the MLX-lazy
+// trap): mlx::core::contiguous() returns a LAZY array — a NEW graph node whose GPU compute
+// is scheduled with the output, so a HOST-side .data<>() read inside eval_gpu (grid sizing)
+// can race it and read un-materialized/strided bytes -> wrong launch geometry -> GPU fault.
+// Adding a per-read-site contiguous() is NOT enough (validator eval's its own copy; the
+// kernel input is a different, un-eval'd copy). Cure: produce ONE contiguized-AND-EVALUATED
+// array per metadata at host ENTRY and feed it to EVERY reader (validator, host grid-sizing,
+// kernel input) — so no read can pick up a strided or un-eval'd view. (Distinct from the
+// astype-no-op: there the barrier didn't transform; here it didn't materialize before read.)
+static inline mlx::core::array contig_meta_eval(const mlx::core::array& a, mlx::core::Stream s) {
+  auto c = mlx::core::contiguous(a, false, s);
+  mlx::core::eval(c);  // materialize NOW — before any host-side .data<>() read downstream
+  return c;
+}
+
 static void check_prefix_sum_values(
     const mlx::core::array& a, int expected_last, const char* nm,
     const char* entry, int upper_bound = -1) {
@@ -2826,9 +2841,11 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   // strided int32 cu_q/cu_k/tile_offsets would reach the kernel STILL strided -> the kernel
   // reads the underlying buffer (finite-WRONG + run-to-run unstable = OOB). Contiguize the
   // metadata before dispatch (no-op when contiguous), matching the paged varlen/tq hosts.
-  auto cu_q_i32 = mlx::core::contiguous(mlx::core::astype(cu_q, mlx::core::int32, s), false, s);
-  auto cu_k_i32 = mlx::core::contiguous(mlx::core::astype(cu_k, mlx::core::int32, s), false, s);
-  auto tile_i32 = mlx::core::contiguous(mlx::core::astype(tile_offsets, mlx::core::int32, s), false, s);
+  // STRUCTURAL (contig_meta_eval): materialize AT ENTRY so the eval_gpu host grid-sizing
+  // read (tile_offsets.data<int>()[num_seqs]) sees committed bytes, not a lazy/strided view.
+  auto cu_q_i32 = contig_meta_eval(mlx::core::astype(cu_q, mlx::core::int32, s), s);
+  auto cu_k_i32 = contig_meta_eval(mlx::core::astype(cu_k, mlx::core::int32, s), s);
+  auto tile_i32 = contig_meta_eval(mlx::core::astype(tile_offsets, mlx::core::int32, s), s);
 
   // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
   // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 1.63).
@@ -3128,8 +3145,10 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_steel_forward(
   // INDEX-METADATA contiguity (raw-parity sweep): the kernel reads block_table /
   // seq_lens with contiguous-assumed strides; a strided index array (e.g. a sliced
   // block_table) read wrong physical-block ids -> finite-WRONG. Contiguize them too.
-  auto btc = mlx::core::contiguous(bt_i32, false, s);
-  auto slc = mlx::core::contiguous(sl_i32, false, s);
+  // STRUCTURAL (contig_meta_eval): the steel eval_gpu host-reads seq_lens.data<int>() for
+  // the max-KV computation — materialize block_table + seq_lens AT ENTRY (not a lazy view).
+  auto btc = contig_meta_eval(bt_i32, s);
+  auto slc = contig_meta_eval(sl_i32, s);
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
@@ -3932,12 +3951,13 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_forward(
   auto qc  = mlx::core::contiguous(q, false, stream);
   auto kpc = mlx::core::contiguous(k_pool, false, stream);
   auto vpc = mlx::core::contiguous(v_pool, false, stream);
-  // INDEX-METADATA contiguity (raw-parity sweep): strided cu_seqlens_q/tile_offsets/
-  // block_table/seq_lens_kv read with assumed strides -> finite-WRONG. Contiguize.
-  auto cuc = mlx::core::contiguous(cu_seqlens_q, false, stream);
-  auto toc = mlx::core::contiguous(tile_offsets, false, stream);
-  auto btc = mlx::core::contiguous(block_table, false, stream);
-  auto skc = mlx::core::contiguous(seq_lens_kv, false, stream);
+  // INDEX-METADATA contiguity, STRUCTURAL (contig_meta_eval): materialize AT ENTRY so the
+  // eval_gpu host grid-sizing read (tile_offsets.data<int32_t>()[num_seqs]) + every other
+  // host .data<>() read sees committed bytes, not a lazy contiguous view (the 4th re-open).
+  auto cuc = contig_meta_eval(cu_seqlens_q, stream);
+  auto toc = contig_meta_eval(tile_offsets, stream);
+  auto btc = contig_meta_eval(block_table, stream);
+  auto skc = contig_meta_eval(seq_lens_kv, stream);
 
   auto outputs = mlx::core::array::make_arrays(
       {out_shape, lse_shape},
@@ -4273,10 +4293,12 @@ std::pair<mlx::core::array, mlx::core::array> mfa_paged_varlen_tq_forward(
   // INDEX-METADATA + codebook contiguity (raw-parity sweep): strided cu_seqlens_q/
   // tile_offsets/block_table/seq_lens_kv/centroids/k_scales read with assumed strides
   // -> finite-WRONG. Contiguize (no-op when already contiguous).
-  auto cuc = mlx::core::contiguous(cu_seqlens_q, false, stream);
-  auto toc = mlx::core::contiguous(tile_offsets, false, stream);
-  auto btc = mlx::core::contiguous(block_table, false, stream);
-  auto skc = mlx::core::contiguous(seq_lens_kv, false, stream);
+  // INDEX metadata: contiguize-AND-eval at entry (host grid-sizing read of tile_offsets in
+  // eval_gpu). centroids/k_scales are KERNEL-read (device) only -> lazy-contiguous is fine.
+  auto cuc = contig_meta_eval(cu_seqlens_q, stream);
+  auto toc = contig_meta_eval(tile_offsets, stream);
+  auto btc = contig_meta_eval(block_table, stream);
+  auto skc = contig_meta_eval(seq_lens_kv, stream);
   auto cec = mlx::core::contiguous(centroids, false, stream);
   auto ksc = mlx::core::contiguous(k_scales, false, stream);
 

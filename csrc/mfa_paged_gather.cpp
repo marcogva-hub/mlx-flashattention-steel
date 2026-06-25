@@ -312,8 +312,11 @@ array mlx_mfa::mfa_paged_kv_gather(
     // a non-contiguous index array would read the underlying buffer (wrong phys
     // blocks -> zero-fill / OOB). Contiguize before dispatch (no-op when contiguous),
     // matching the paged-steel sibling which already handles strided block_table.
-    auto btc = mlx::core::contiguous(block_table, false, st);
-    auto slc = mlx::core::contiguous(seq_lens, false, st);
+    // STRUCTURAL (contig_meta_eval analogue; separate TU): the gather eval_gpu host-reads
+    // block_table/seq_lens.data<int>() — materialize AT ENTRY so the read sees committed
+    // bytes, not a lazy contiguous view (the MLX-lazy trap, 4th re-open of the class).
+    auto btc = mlx::core::contiguous(block_table, false, st); mlx::core::eval(btc);
+    auto slc = mlx::core::contiguous(seq_lens,    false, st); mlx::core::eval(slc);
 
     auto outputs = array::make_arrays(
         {out_shape},

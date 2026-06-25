@@ -991,3 +991,37 @@ def test_metacontig_gather_block_table_strided_byteeq():
     oc = np.array(_ext.mfa_paged_kv_gather(pool, cont, sl, 4).astype(F32))
     os_ = np.array(_ext.mfa_paged_kv_gather(pool, strided, sl, 4).astype(F32))
     assert np.abs(oc - os_).max() < 1e-4   # block_table contiguized (geographic axis)
+
+
+# ── METADATA-CONTIGUITY 4th re-open: tile_offsets host-grid-read MUST source eval'd array ──
+# The structural fix is contig_meta_eval (materialize at host entry); behaviorally, a strided
+# tile_offsets must give byteD=0 + repeat-stable (Codex's config faulted; CC's materializes).
+def test_metacontig_tile_offsets_varlen_strided():
+    q = _qB(1, 4, 64, 64); cu = mx.array([0, 32, 64], mx.int32)
+    tile_c = mx.array([0, 1, 2], mx.int32); tile_s = _strided_like([0, 1, 2]); mx.eval(q, cu, tile_c, tile_s)
+    def run(t): return np.array(_ext.mfa_attention_varlen_forward(q, q, q, cu, cu, t, 0.125, False)[0].astype(F32))
+    oc, o1, o2 = run(tile_c), run(tile_s), run(tile_s)
+    assert np.abs(oc - o1).max() < 1e-4   # strided tile == contiguous (eval'd grid-read)
+    assert np.abs(o1 - o2).max() == 0.0   # repeat-stable (not OOB/un-materialized)
+
+
+def test_metacontig_tile_offsets_paged_varlen_strided():
+    H, D, bs, nb = 4, 64, 16, 4
+    q = _qB(1, H, 32, D); kp = _kvp(nb, bs, H, D); vp = _kvp(nb, bs, H, D)
+    cu = mx.array([0, 32], mx.int32); bt = mx.array([[0, 1]], mx.int32); sk = mx.array([32], mx.int32)
+    tile_c = mx.array([0, 1], mx.int32); tile_s = _strided_like([0, 1]); mx.eval(cu, bt, sk, tile_c, tile_s)
+    def run(t): return np.array(_ext.mfa_paged_varlen_forward(q, kp, vp, cu, t, bt, sk, 0.125, False, bs)[0].astype(F32))
+    oc, o1, o2 = run(tile_c), run(tile_s), run(tile_s)
+    assert np.abs(oc - o1).max() < 1e-4 and np.abs(o1 - o2).max() == 0.0
+
+
+def test_metacontig_structural_helper_present():
+    # Structural lock: the contig_meta_eval (contiguize-AND-eval at entry) helper exists and
+    # every host index-metadata make_arrays input sources it -> a future per-site lazy
+    # contiguous (the 5th re-open) regresses this grep.
+    import pathlib
+    src = pathlib.Path("csrc/mfa_attention.cpp").read_text()
+    assert "static inline mlx::core::array contig_meta_eval(" in src
+    assert "mlx::core::eval(c);" in src                       # the helper materializes
+    # all 4 varlen/tq/steel index arrays routed through it (cuc/toc/btc/skc + cu_q_i32/tile_i32)
+    assert src.count("contig_meta_eval(") >= 10
