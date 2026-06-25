@@ -1,11 +1,21 @@
 # mlx-mfa
 
+## ⚠️ 2.61.0 — essential correctness update
+
+Small version bump, **strongly recommended upgrade.** 2.61.0 ships the largest debug campaign in mlx-mfa's history: a CC + Codex cross-audit that found and closed 30+ classes of silent-wrongs — wrong output with no error — across the public and raw/expert surfaces. The public API hid most of them; the `_ext` surface exposed them directly.
+
+What matters most:
+- **M3 / M4 / M5 + sparse attention at D=128:** prior versions could silently corrupt output (non-deterministic OOB). Fixed.
+- **Raw `_ext` users:** the raw entries now carry the same guards as the Python wrappers (metadata contiguity, paged capacity, scalar value-semantics, zero-KV, backward dtype, GQA geometry).
+- **Cache / runtime users:** `HybridKVCache.reset(seq_id)` no longer wipes other sequences; paged-append atomicity hardened.
+
+**No API removed or signatures changed** — same functions, same signatures; the bump stays minor because this is bug-fixing, not an API change. But a few **outputs on valid inputs changed** (toward correct): the `return_lse` convention on fallback paths, `flash_attention_varlen(causal=True)` with `N_q < N_k`, and paged causal with heterogeneous `seq_lens`. If you consume those paths, read the [CHANGELOG](CHANGELOG.md) before upgrading.
+
 `mlx-mfa` is a Metal Flash Attention + serving-oriented runtime layer for MLX on
 Apple Silicon. It provides high-performance attention kernels, runtime helpers,
 and cache abstractions for dense training/inference plus modern serving flows.
 
-Current version: **2.61.0** (release candidate — not yet on PyPI; current
-PyPI release: **2.60.1**).  The complete, corrected state of
+Current version: **2.61.0**.  The complete, corrected state of
 the 2026-06 optimization campaign (Phases I–III): the headline
 promotions plus the Phase III-4 fresh-eyes whole-repo audit (9 passes,
 run repeat-until-clean to a zero-finding fixed point; ~73 fixes), and the

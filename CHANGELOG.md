@@ -48,6 +48,12 @@ expert/raw surfaces exposed. Grouped by who is affected:
 Valid-input output on the public API is unchanged from 2.60.1 except the Breaking/Behavior items
 below; the rest of this release turns previously-silent-wrong inputs into loud errors.
 
+### Performance notes
+
+**Performance note (M3/M4, sparse D=128):** the native sparse-D128 kernel on M3/M4 was broken (the OOB above), so the public `flash_attention_sparse` now routes D=128 to SDPA on M3+. M3/M4 users get correct SDPA performance on this path — which may differ from the (previously incorrect) native kernel. This is a correctness fix, not a regression: there was no correct native baseline to regress from.
+
+**Known limitation — per-call validation host-sync (decode hot path).** The metadata/capacity correctness guards added in 2.61.0 validate on the host before dispatch, which materializes min/max of `seq_lens`/`block_table` — one GPU→CPU sync (~0.11 ms). Negligible on large kernels (≥1.7 ms, <1%), but **+50–100% on the sub-millisecond paged-decode path** (e.g. 0.21 ms → 0.33–0.45 ms). The guards turn previously-silent OOB/over-capacity into loud errors; the sync is the cost of host-side raising on a tiny kernel. A future release will **amortize this validation per-sequence** (validate at cache extension, not per decode step) to remove the per-call sync from the decode hot path. Decode-heavy serving can set `MFA_PAGED_TRUST_INDICES=1` to skip the flag-gated `block_table` index scan, recovering part of the overhead; the ungated capacity check remains.
+
 ### ⚠️ Breaking changes (bug-fixes that change output)
 
 Two accepted behavior changes (both bug-fixes — a wrong/inconsistent result becomes
