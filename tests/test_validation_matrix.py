@@ -943,3 +943,51 @@ def test_intergrid_hybrid_reset_seq_scoped_no_cross_seq_loss():
     assert h._secondary_adapter.seq_length(0) == 2       # cold seq0 PRESERVED (was wiped pre-fix)
     h.reset()                                            # full reset still clears all tiers
     assert h._secondary_adapter.seq_length(0) == 0
+
+
+# ── METADATA-CONTIGUITY class (Codex NO-GO): every metadata array × every raw entry ──
+# A strided index/metadata view's .data<int32_t>() returns the underlying buffer; the
+# host validators (read-path) + the kernel dispatch must read TRUE logical values.
+def _strided_like(vals):
+    # build a logically-`vals` int32 view that is NON-contiguous (interleave + slice).
+    import itertools
+    interleaved = list(itertools.chain.from_iterable((v, 999) for v in vals))
+    return mx.array(interleaved, mx.int32)[::2]
+
+
+def test_metacontig_varlen_cu_q_strided_byteeq():
+    q = _qB(1, 4, 64, 64)
+    cu_c = mx.array([0, 32, 64], mx.int32); cu_s = _strided_like([0, 32, 64])
+    cu_k = mx.array([0, 32, 64], mx.int32); tile = mx.array([0, 1, 2], mx.int32); mx.eval(cu_c, cu_s, cu_k, tile)
+    def run(cq): return np.array(_ext.mfa_attention_varlen_forward(q, q, q, cq, cu_k, tile, 0.125, False)[0].astype(F32))
+    oc, os1, os2 = run(cu_c), run(cu_s), run(cu_s)
+    assert np.abs(oc - os1).max() < 1e-4   # strided == contiguous (over-reject + kernel-stride gone)
+    assert np.abs(os1 - os2).max() == 0.0  # repeat-stable (not OOB)
+
+
+def test_metacontig_varlen_invalid_strided_raises():
+    q = _qB(1, 4, 64, 64)
+    cu_q = mx.array([0, 32, 64], mx.int32); tile = mx.array([0, 1, 2], mx.int32)
+    bad_cu_k = _strided_like([0, 32, 999]); mx.eval(cu_q, tile, bad_cu_k)   # final 999 != total 64
+    with pytest.raises(Exception):                                          # accept-invalid GONE
+        mx.eval(_ext.mfa_attention_varlen_forward(q, q, q, cu_q, bad_cu_k, tile, 0.125, False)[0])
+
+
+def test_metacontig_paged_varlen_cu_q_strided_byteeq():
+    H, D, bs, nb = 4, 64, 16, 4
+    q = _qB(1, H, 32, D); kp = _kvp(nb, bs, H, D); vp = _kvp(nb, bs, H, D)
+    cu_c = mx.array([0, 32], mx.int32); cu_s = _strided_like([0, 32])
+    tile = mx.array([0, 1], mx.int32); bt = mx.array([[0, 1]], mx.int32); sk = mx.array([32], mx.int32)
+    mx.eval(cu_c, cu_s, tile, bt, sk)
+    def run(cq): return np.array(_ext.mfa_paged_varlen_forward(q, kp, vp, cq, tile, bt, sk, 0.125, False, bs)[0].astype(F32))
+    oc, os1, os2 = run(cu_c), run(cu_s), run(cu_s)
+    assert np.abs(oc - os1).max() < 1e-4 and np.abs(os1 - os2).max() == 0.0
+
+
+def test_metacontig_gather_block_table_strided_byteeq():
+    pool = _kvp(8, 4, 2, 16); sl = mx.array([4], mx.int32); mx.eval(pool, sl)
+    cont = mx.array([[0, 1]], mx.int32)
+    strided = mx.array([[0, 9, 1, 9]], mx.int32)[:, ::2]; mx.eval(cont, strided)
+    oc = np.array(_ext.mfa_paged_kv_gather(pool, cont, sl, 4).astype(F32))
+    os_ = np.array(_ext.mfa_paged_kv_gather(pool, strided, sl, 4).astype(F32))
+    assert np.abs(oc - os_).max() < 1e-4   # block_table contiguized (geographic axis)

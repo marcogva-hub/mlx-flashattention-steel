@@ -1965,9 +1965,12 @@ static inline mlx::core::array upcast_to_f32(
 // uint8 contract in the host (lossless for 0/1; uint8 is a no-op → byteΔ=0).
 static inline mlx::core::array cast_mask_to_u8(
     const mlx::core::array& a, mlx::core::Stream s) {
-  return (a.dtype() == mlx::core::uint8)
-             ? a
-             : mlx::core::astype(a, mlx::core::uint8, s);
+  // METADATA-CONTIGUITY: the kernel reads the mask with contiguous-assumed strides; a
+  // strided uint8 mask was returned AS-IS (the ?a: branch) -> wrong reads. Contiguize
+  // both branches (astype is contiguous, but a pre-uint8 strided mask was not).
+  return mlx::core::contiguous(
+      (a.dtype() == mlx::core::uint8) ? a : mlx::core::astype(a, mlx::core::uint8, s),
+      false, s);
 }
 
 // CC feature-metadata SHAPE class — the sparse kernel reads block_mask at tile
@@ -2018,6 +2021,17 @@ static bool varlen_trust_metadata() {
   const char* v = std::getenv("MFA_VARLEN_TRUST_METADATA");
   return v != nullptr && std::string(v) == "1";
 }
+// METADATA-CONTIGUITY class (Codex NO-GO): a host-side value-validator that reads an
+// index/metadata array via .data<int32_t>() must read its TRUE LOGICAL values. A strided
+// view's .data() returns the UNDERLYING buffer, so a validator reading it contiguously
+// sees the WRONG elements -> over-rejects a valid strided view AND accepts an invalid one
+// (and a kernel would OOB-read). Contiguize FIRST (no-op when already contiguous; metadata
+// is small int32 -> cheap, UNCONDITIONAL, never gated on a trust flag). One shared helper,
+// called by every metadata validator (read-path) and every host before dispatch.
+static inline mlx::core::array contig_meta(const mlx::core::array& a) {
+  return mlx::core::contiguous(a);
+}
+
 static void check_prefix_sum_values(
     const mlx::core::array& a, int expected_last, const char* nm,
     const char* entry, int upper_bound = -1) {
@@ -2026,9 +2040,9 @@ static void check_prefix_sum_values(
   // be fully covered, else OOB). upper_bound>=0 → final value must be <= it
   // (cu_k: an over-allocated K tensor / empty trailing KV segment is legal —
   // cu_k[-1] < total_k is fine — but cu_k[-1] > total_k would OOB-read).
-  mlx::core::eval(a);
-  const int32_t* p = a.data<int32_t>();
-  const int n = static_cast<int>(a.shape(0));
+  mlx::core::array av = contig_meta(a); mlx::core::eval(av);  // read true logical values
+  const int32_t* p = av.data<int32_t>();
+  const int n = static_cast<int>(av.shape(0));
   auto bad = [&](const std::string& m) {
     throw std::invalid_argument(std::string(entry) + ": " + nm + " " + m);
   };
@@ -2057,7 +2071,7 @@ static void check_prefix_sum_bounds(
     const mlx::core::array& a, int expected_last, const char* nm,
     const char* entry, int upper_bound = -1) {
   if (a.size() == 0) return;
-  mlx::core::array av = a; mlx::core::eval(av);
+  mlx::core::array av = contig_meta(a); mlx::core::eval(av);  // read true logical values
   const int32_t* p = av.data<int32_t>();
   const int n = static_cast<int>(av.shape(0));
   auto bad = [&](const std::string& m) {
@@ -2132,11 +2146,13 @@ static void validate_tile_offsets_derivation(
   const bool is_m3p = (arch >= 15);
   const int BQ = select_steel_block_config(
       D, /*is_low_prec=*/q.dtype() != mlx::core::float32, is_m3p).BQ;
-  mlx::core::eval(cu_q);
-  mlx::core::eval(tile_offsets);
-  const int32_t* cq = cu_q.data<int32_t>();
-  const int32_t* to = tile_offsets.data<int32_t>();
-  const int nseq1 = static_cast<int>(cu_q.shape(0));  // num_seqs + 1
+  // METADATA-CONTIGUITY: read the TRUE logical values (a strided cu_q/tile_offsets
+  // view's .data() returns the underlying buffer -> wrong derivation comparison).
+  mlx::core::array cu_qc = contig_meta(cu_q);   mlx::core::eval(cu_qc);
+  mlx::core::array to_c  = contig_meta(tile_offsets); mlx::core::eval(to_c);
+  const int32_t* cq = cu_qc.data<int32_t>();
+  const int32_t* to = to_c.data<int32_t>();
+  const int nseq1 = static_cast<int>(cu_qc.shape(0));  // num_seqs + 1
   if (to[0] != 0)
     throw std::invalid_argument(std::string(entry) +
         ": tile_offsets[0] must be 0 (got " + std::to_string(to[0]) + ").");
@@ -2806,9 +2822,13 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   MFAVarlenAttention::Params params{scale, causal, q.shape(3)};
 
   // Metadata is now guaranteed int32 (validated above); astype is a no-op.
-  auto cu_q_i32 = mlx::core::astype(cu_q, mlx::core::int32, s);
-  auto cu_k_i32 = mlx::core::astype(cu_k, mlx::core::int32, s);
-  auto tile_i32 = mlx::core::astype(tile_offsets, mlx::core::int32, s);
+  // METADATA-CONTIGUITY (Codex NO-GO): astype is a NO-OP for already-int32 input, so a
+  // strided int32 cu_q/cu_k/tile_offsets would reach the kernel STILL strided -> the kernel
+  // reads the underlying buffer (finite-WRONG + run-to-run unstable = OOB). Contiguize the
+  // metadata before dispatch (no-op when contiguous), matching the paged varlen/tq hosts.
+  auto cu_q_i32 = mlx::core::contiguous(mlx::core::astype(cu_q, mlx::core::int32, s), false, s);
+  auto cu_k_i32 = mlx::core::contiguous(mlx::core::astype(cu_k, mlx::core::int32, s), false, s);
+  auto tile_i32 = mlx::core::contiguous(mlx::core::astype(tile_offsets, mlx::core::int32, s), false, s);
 
   // CONTIG (sweep iter-2): enforce contiguity (D.5 pattern, no-op when contiguous);
   // VERIFIED finite-wrong pre-fix on a strided q view (maxabs 1.63).

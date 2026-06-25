@@ -307,11 +307,19 @@ array mlx_mfa::mfa_paged_kv_gather(
     mlx::core::Shape out_shape = {B, H, max_kv_len, D};
     auto st = to_stream(s);
 
+    // METADATA-CONTIGUITY (Codex NO-GO, geographic axis): the kernel reads
+    // block_table / seq_lens via data<int32_t>() with contiguous-assumed strides —
+    // a non-contiguous index array would read the underlying buffer (wrong phys
+    // blocks -> zero-fill / OOB). Contiguize before dispatch (no-op when contiguous),
+    // matching the paged-steel sibling which already handles strided block_table.
+    auto btc = mlx::core::contiguous(block_table, false, st);
+    auto slc = mlx::core::contiguous(seq_lens, false, st);
+
     auto outputs = array::make_arrays(
         {out_shape},
         {pool.dtype()},
         std::make_shared<MFAPagedKVGather>(
             st, B, H, D, block_size, max_blocks, max_kv_len, num_blocks),
-        {pool, block_table, seq_lens});
+        {pool, btc, slc});
     return outputs[0];
 }
