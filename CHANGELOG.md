@@ -15,6 +15,39 @@ now correct where it was silently wrong) and (b) the new input-validation reject
 below). **Validated on Apple M5 Max; M1-Max validation pending hardware** — note the sparse-backward fix
 (below) is M5-validated only (native path is M1–M4, skipped on M5).
 
+### Why upgrade — silent-wrong classes closed (by user-visible impact)
+
+This is a **correctness release**. A cross-audit (CC + Codex) found and closed a series of
+silent-wrong classes — wrong output with no error — that the public API mostly hid but the
+expert/raw surfaces exposed. Grouped by who is affected:
+
+- **M3 / M4 / M5 users — sparse attention at D=128.** The raw sparse-D128 kernel produced
+  **non-deterministic out-of-bounds output on M3 / M4 / M5** (it was hidden because the public
+  path routed around it on M5). It now **raises on the raw path for M3+** and the public
+  `flash_attention_sparse` **routes to SDPA at D=128 on M3+**. **If you ran sparse attention at
+  D=128 on M3/M4 with a prior version, output could be silently corrupted — upgrade.**
+- **Raw `_ext` users — the raw surface systematically lacked guards the Python wrappers carried,**
+  now closed at the **shared C++ source** so the raw entry is as safe as the wrapper:
+  - **Index/metadata contiguity (structural):** a strided `cu_seqlens` / `tile_offsets` /
+    `block_table` / `seq_lens` view was read from its underlying buffer (wrong values) — fixed at
+    **every read site** (validator, host grid-sizing, kernel) via one contiguize-AND-eval per
+    array at host entry. A strided `tile_offsets` previously could cause a **Metal GPU address fault**.
+  - **Paged logical capacity** (`seq_lens ≤ max_blocks·block_size`), **scalar value-semantics**
+    (non-finite `scale` / degenerate `softcap` / `window`), **zero-KV** (empty KV, dense *and*
+    per-segment varlen), **backward aux-array dtype** (the cotangent `dO`, forward output `O`, and
+    `L` must match — a mismatched dtype gave garbage gradients), and **GQA geometry** are now all
+    rejected loudly on the raw entries (previously silent NaN / finite-wrong).
+- **Cache / runtime users — `HybridKVCache.reset(seq_id)` no longer wipes other sequences'**
+  offloaded data (a seq-scoped reset was delegated to a single-sequence secondary tier that
+  ignored `seq_id` and cleared its whole buffer). Paged-append atomicity hardened (a malformed
+  or capacity-overflowing append no longer leaves torn cache state).
+- **Robustness — trust-flag scope corrected:** cheap structural checks (capacity, prefix-sum
+  bounds, zero-KV) are now **always** enforced; the `MFA_PAGED_TRUST_INDICES` /
+  `MFA_VARLEN_TRUST_METADATA` perf opt-outs scope **only** the expensive per-element index scan.
+
+Valid-input output on the public API is unchanged from 2.60.1 except the Breaking/Behavior items
+below; the rest of this release turns previously-silent-wrong inputs into loud errors.
+
 ### ⚠️ Breaking changes (bug-fixes that change output)
 
 Two accepted behavior changes (both bug-fixes — a wrong/inconsistent result becomes

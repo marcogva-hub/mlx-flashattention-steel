@@ -88,6 +88,25 @@ For complete benchmark tables and architectural notes, see
 | D=64 backward `[dated, pre-M5]` | 0.60-0.72× | **1.29-1.45×** |
 | Softcap D=128 | **1.37×** | **1.34×** |
 
+### 2.61.0 audit-remediation re-bench — `contig_meta_eval` entry overhead (M5 Max, MLX 0.31.2, SHA `cff125f`)
+
+The audit remediation added input-validation guards + a structural `contig_meta_eval`
+(contiguize-AND-eval each index/metadata array at host entry) on the varlen/paged/gather
+hosts. Measured forward abs-ms (median/30, `has_nax()` asserted before each):
+
+| Path | abs-ms | overhead note |
+|---|---:|---|
+| varlen fwd (metadata **contiguous** — production) | 1.124 | `contig_meta_eval` is a **no-op** on already-contiguous metadata → **negligible** |
+| varlen fwd (metadata **strided** — rare user path) | 2.323 | +1.20 ms contiguize+eval host-sync, paid only on non-contiguous metadata (previously **GPU-faulted**) |
+| paged_varlen fwd | 2.510 | |
+| paged_steel fwd (decode) | 1.048 | |
+| paged_kv_gather | 0.261 | |
+| sage_forward D=128 fp16 / bf16 | 2.062 / 2.112 | |
+
+**Accounting:** the entry-eval cost is zero on the production (contiguous-metadata) path; the
++1.2 ms only occurs when a caller passes a non-contiguous index array (formerly a Metal GPU
+address fault — now correct). No production regression.
+
 ## 3) Serving/Runtime Capability Outcomes
 
 ### Paged + packed varlen queries
