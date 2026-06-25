@@ -1,0 +1,21 @@
+{
+  "release_version": "2.61.0",
+  "git_sha": "1823c94f233730299ba1e036e2d4e5ed6e775668",
+  "mlx_version": "0.31.2",
+  "device": "Apple M5 Max",
+  "chip": "M5",
+  "is_m5_plus": true,
+  "date_utc": "2026-06-25",
+  "has_nax": true,
+  "nax_reason": "available",
+  "fingerprints": {
+    "dense_D128_auto_nax": 1.9073486328125e-06,
+    "dense_D64_auto_sdpa": 0.0,
+    "sparse_D128_sym_nax": 7.62939453125e-06,
+    "v6_split_backward_D64_vs_sdpavjp": 0.0078125,
+    "rca_critical_D128_S4096_N4095_oracle": 4.820525646209717e-05,
+    "rcb_decode_tail_D128_N1_S257_oracle": 3.6694109439849854e-06
+  },
+  "fingerprints_sha256": "c0080c7a68a72bd5c48c0d39fcb8763e1be4dcc016b57f8a7e37d1a0874ce892",
+  "gate": "PASS"
+}
