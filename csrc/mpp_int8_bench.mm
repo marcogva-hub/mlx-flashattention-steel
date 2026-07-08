@@ -51,6 +51,8 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <cmath>
+#include <cstring>
 
 namespace mlx_mfa {
 
@@ -176,7 +178,9 @@ kernel void )MSL";
 static std::string bench_kernel_src(const char* in_ty, const char* acc_ty,
                                     const char* fn_name, int reps) {
   std::ostringstream ss;
-  ss << R"MSL(// MFA_REQUIRE_MSL4
+  // MSL41: fp8/fp4 format types need metal4.1; a superset of 4.0, so the
+  // fp16/int8 device-tensor variants still compile (apples-to-apples version).
+  ss << R"MSL(// MFA_REQUIRE_MSL41
 #include <metal_stdlib>
 #include <metal_tensor>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -184,6 +188,13 @@ using namespace metal;
 using namespace mpp::tensor_ops;
 
 kernel void )MSL";
+  // Tensor-ARGUMENT form (bound as buffers in decl order). NOTE: this measures
+  // the matmul2d INSTRUCTION throughput of the datapath — the arg binding does
+  // not convey extents, so operands are not guaranteed live (instruction-level,
+  // engagement-UNPROVEN; see the header note + deliverable caveat). The 4.1
+  // in-kernel `tensor_inline` construction changed API vs 4.0 (non-const ptr +
+  // strides) and fp8/fp4 are packed block-scaled → a correct-operand bench needs
+  // an MX scale plane (scoped follow-up).
   ss << fn_name << R"MSL((
     tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> A,
     tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>> B,
@@ -226,8 +237,12 @@ static double run_bench(void* mtl_device_raw, const std::string& src,
                                            options:MTLResourceStorageModeShared];
   id<MTLBuffer> bufC = [device newBufferWithLength:M * N * elem_acc
                                            options:MTLResourceStorageModeShared];
-  memset([bufA contents], 1, M * K * elem_in);
-  memset([bufB contents], 1, K * N * elem_in);
+  // 0x3C = a normal (non-zero, non-denormal) value across the tested formats
+  // (fp8 E4M3 ≈1.5, fp16 ≈1.26, int8 =60) so the matmul can't be zero/denormal
+  // fast-pathed — the throughput reflects real low-precision MACs.
+  memset([bufA contents], 0x3C, M * K * elem_in);
+  memset([bufB contents], 0x3C, K * N * elem_in);
+  uint32_t Mu = (uint32_t)M, Nu = (uint32_t)N, Ku = (uint32_t)K;
 
   id<MTLCommandQueue> queue = [device newCommandQueue];
   std::vector<double> times;
@@ -235,10 +250,12 @@ static double run_bench(void* mtl_device_raw, const std::string& src,
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:pso];
-    // MSL4 tensor arguments bind as buffers in declaration order.
     [enc setBuffer:bufA offset:0 atIndex:0];
     [enc setBuffer:bufB offset:0 atIndex:1];
     [enc setBuffer:bufC offset:0 atIndex:2];
+    [enc setBytes:&Mu length:sizeof(uint32_t) atIndex:3];
+    [enc setBytes:&Nu length:sizeof(uint32_t) atIndex:4];
+    [enc setBytes:&Ku length:sizeof(uint32_t) atIndex:5];
     [enc dispatchThreadgroups:MTLSizeMake(1, tgs, 1)
         threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
     [enc endEncoding];
@@ -337,6 +354,50 @@ std::string mpp_int8_microbench() {
   } catch (const std::exception& e) {
     return std::string("FAIL fp16 baseline: ") + e.what();
   }
+  return out.str();
+}
+
+// ─── fp8/fp4 matmul2d characterization (Rigel-on-M5, metal4.1) ────────────────
+// Throughput (Signal 1) instruction-level, device-tensor 64x64x128.
+std::string mpp_fp8_microbench() {
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto& d = mlx::core::metal::device(s.device);
+  void* dev = d.mtl_device();
+  const int reps = 512, tgs = 160, iters = 30;
+  const double F = 2.0 * 64 * 64 * 128;
+  std::ostringstream out;
+
+  auto th = [&](const char* in_ty, const char* acc, const char* fn,
+                size_t ei, size_t ea) -> double {
+    return run_bench(dev, bench_kernel_src(in_ty, acc, fn, reps), fn, ei, ea, reps, tgs, iters, F);
+  };
+  double f16 = 0.0;
+  try { f16 = th("half", "float", "t_f16", 2, 4);
+        out << "SIGNAL1 device-tensor 64x64x128 [metal4.1]:\n  fp16/f32 = " << f16 << " TFLOPS (baseline)\n";
+  } catch (const std::exception& e) { return std::string("FAIL fp16 baseline: ") + e.what(); }
+
+  struct V { const char* in; const char* acc; const char* fn; size_t ei; size_t ea; const char* lbl; };
+  for (auto v : std::vector<V>{
+        {"metal_fp8_e4m3_format", "half",  "t_f8e4h", 1, 2, "fp8e4m3/f16"},
+        {"metal_fp8_e4m3_format", "float", "t_f8e4f", 1, 4, "fp8e4m3/f32"},
+        {"metal_fp8_e5m2_format", "half",  "t_f8e5h", 1, 2, "fp8e5m2/f16"},
+        {"metal_fp4_e2m1_format", "half",  "t_f4h",   1, 2, "fp4e2m1/f16"},
+        {"int8_t",                "int32_t","t_i8",   1, 4, "int8/i32"}}) {
+    try {
+      double t = th(v.in, v.acc, v.fn, v.ei, v.ea);
+      out << "  " << v.lbl << " = " << t << (std::string(v.in).find("int") != std::string::npos ? " TOPS" : " TFLOPS")
+          << "  ratio_vs_fp16 = " << (t / f16) << "\n";
+    } catch (const std::exception& e) {
+      out << "  " << v.lbl << " = FAIL(" << std::string(e.what()).substr(0, 120) << ")\n";
+    }
+  }
+  out << "ENGAGEMENT/CORRECTNESS: instruction-level only (tensor-ARG binding "
+      << "conveys no extents ⇒ operands not proven live). Above ratios are "
+      << "matmul2d datapath INSTRUCTION throughput, NOT engagement-proven. "
+      << "fp8/fp4 are PACKED BLOCK-SCALED (MX) types: a correct-operand bench "
+      << "needs an in-kernel tensor built with an MX scale plane (metal4.1 API), "
+      << "scoped as follow-up. Trustworthy real-operand anchor = int8 cider-form "
+      << "in mpp_int8_microbench (register-fill).\n";
   return out.str();
 }
 

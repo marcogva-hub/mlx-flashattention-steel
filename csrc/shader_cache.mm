@@ -410,7 +410,14 @@ void* ShaderCache::compile_shader(
     // V6 NAX kernels need MSL 4.0 for `<metal_tensor>` + MPP cooperative
     // tensor APIs. Detect via the marker `// MFA_REQUIRE_MSL4` injected at
     // the top of the source by the V6 generator.
-    if (source.find("// MFA_REQUIRE_MSL4") != std::string::npos) {
+    if (source.find("// MFA_REQUIRE_MSL41") != std::string::npos) {
+      // MTLLanguageVersion4_1 (macOS 27 / metal4.1): fp8/fp4 packed format
+      // types (metal_fp8_e4m3_format / metal_fp4_e2m1_format) + their
+      // matmul2d low-precision support. Probe/characterization only today —
+      // no shipping shader uses this marker (checked FIRST since "…MSL41"
+      // contains the "…MSL4" substring).
+      opts.languageVersion = (MTLLanguageVersion)((4 << 16) + 1);
+    } else if (source.find("// MFA_REQUIRE_MSL4") != std::string::npos) {
       // MTLLanguageVersion4_0 (M5+, macOS 26 / iOS 19+).
       // Use the integer encoding to stay compatible with older SDKs that
       // may not have MTLLanguageVersion4_0 in their headers.
