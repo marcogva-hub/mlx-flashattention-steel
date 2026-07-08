@@ -36,6 +36,7 @@ bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
 int device_macos_major();  // host macOS major (26, 27, …); 0 if unavailable
 int device_macos_minor();
+bool probe_metal41_functional();  // functional Metal-4.1 capability (compile+verify; fail-safe)
 // Split-K calibration env-key builder (in csrc/mfa_attention.cpp) — the SAME
 // function the dispatch lookup uses (audit B1); bound below for the Python↔C++
 // byte-identity contract test.  Always in the default build (NOT probe-gated).
@@ -531,6 +532,11 @@ NB_MODULE(_ext, m) {
   m.def("device_has_nax_bf16", []() -> bool {
     return mlx_mfa::device_has_nax_bf16();
   }, "True iff NAX is available AND macOS >= 26.1 (MPP bf16 support).");
+  m.def("probe_metal41_functional", []() -> bool {
+    return mlx_mfa::probe_metal41_functional();
+  }, "FUNCTIONAL Metal-4.1 capability: compile (MSL41 + #error<410 guard) AND verify a "
+     "deterministic kernel's output on THIS toolchain. Fail-safe (false on any error). "
+     "Catches a compiles-but-miscompiles beta; proves 4.1 capability, NOT per-kernel correctness.");
   // audit B2: expose the EXACT split-K env-key builder the dispatch lookup uses,
   // so a test can lock the Python↔C++ key format byte-for-byte. Tiny string fn,
   // always in the default build (not probe-gated).

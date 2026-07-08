@@ -49,29 +49,68 @@ def test_accessor_robust_when_signal_absent(monkeypatch):
     monkeypatch.setattr(A, "_cached_macos_major", None)
     monkeypatch.setattr(A, "get_device_info", lambda: {})  # no macos_major key
     assert A._get_macos_major_cached() == 0
-    # and with the opt-in set, an unknown OS must NOT activate the macOS-27 branch
-    os.environ[_ENV] = "1"
+    # DEFAULT (no env): an unknown OS must NOT activate the macOS-27 branch — the
+    # version pre-filter gates OFF and never even reaches the functional probe.
+    os.environ.pop(_ENV, None)
+    calls = {"n": 0}
+    monkeypatch.setattr(A, "_get_macos27_capable_cached", lambda: (calls.__setitem__("n", calls["n"] + 1), True)[1])
     assert A._macos27_routing_active() is False
+    assert calls["n"] == 0  # probe never attempted on unknown/≤26 OS
     monkeypatch.setattr(A, "_cached_macos_major", None)  # reset for other tests
 
 
-# ── opt-in gate: default off, reachable under opt-in ──────────────────────────
-def test_routing_gate_default_off():
-    assert A._macos27_routing_active() is False  # env unset
+# ── FUNCTIONAL-FIRST activation gate ──────────────────────────────────────────
+def test_capability_accessor_returns_bool():
+    """The functional Metal-4.1 probe accessor returns a bool (fail-safe)."""
+    A._cached_macos27_capable = None
+    assert isinstance(A._get_macos27_capable_cached(), bool)
 
 
-def test_routing_gate_reachable_under_optin():
-    os.environ[_ENV] = "1"
-    expected = A._get_macos_major_cached() >= 27
-    assert A._macos27_routing_active() is expected
+def test_gate_default_follows_functional_probe():
+    """No env ⇒ the FUNCTIONAL probe decides (not a version string). On this
+    macOS-≥27 machine, gate == probe capability."""
+    os.environ.pop(_ENV, None)
+    A._cached_macos27_capable = None
     if A._get_macos_major_cached() >= 27:
-        assert A._macos27_routing_active() is True  # path-entered on macOS ≥27
+        assert A._macos27_routing_active() is A._get_macos27_capable_cached()
+    else:
+        assert A._macos27_routing_active() is False  # version pre-filter
 
 
-def test_sparse_native_stays_disabled_persists():
-    """Axis A = PERSISTS ⇒ the opt-in must NOT skip the sparse fallback."""
+def test_env_overrides_force_on_and_off():
+    """MFA_ENABLE_MACOS27_ROUTING=1 force-ON (override probe); =0 force-OFF (pin 26)."""
+    os.environ[_ENV] = "1"; assert A._macos27_routing_active() is True
+    os.environ[_ENV] = "0"; assert A._macos27_routing_active() is False
+
+
+def test_probe_false_falls_back(monkeypatch):
+    """A miscompiling / incapable toolchain (probe False) → gate OFF (fail-safe)."""
+    os.environ.pop(_ENV, None)
+    monkeypatch.setattr(A, "_cached_macos27_capable", False)
+    assert A._macos27_routing_active() is False
+
+
+def test_version_prefilter_skips_probe(monkeypatch):
+    """macos_major<27 ⇒ probe never attempted (version gates OFF, never ON)."""
+    os.environ.pop(_ENV, None)
+    calls = {"n": 0}
+    orig = A._get_macos27_capable_cached
+    monkeypatch.setattr(A, "_get_macos27_capable_cached", lambda: (calls.__setitem__("n", calls["n"] + 1), orig())[1])
+    monkeypatch.setattr(A, "_get_macos_major_cached", lambda: 26)
+    assert A._macos27_routing_active() is False
+    assert calls["n"] == 0  # probe not called on macOS 26
+
+
+def test_sparse_native_stays_disabled_both_probe_states(monkeypatch):
+    """Sparse-fallback invariant: capability ≠ sparse-bug-fixed (Axis A PERSISTS).
+    sparse_native_ok must be False whether the probe returns True OR False."""
     assert A._MACOS27_SPARSE_D128_FIXED is False
-    os.environ[_ENV] = "1"
+    os.environ.pop(_ENV, None)
+    monkeypatch.setattr(A, "_cached_macos27_capable", True)
+    assert A._macos27_sparse_native_ok() is False   # capable-27 still fallback'd
+    monkeypatch.setattr(A, "_cached_macos27_capable", False)
+    assert A._macos27_sparse_native_ok() is False
+    os.environ[_ENV] = "1"  # even force-on must not reactivate native sparse
     assert A._macos27_sparse_native_ok() is False
 
 

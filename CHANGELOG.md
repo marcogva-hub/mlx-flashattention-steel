@@ -2,6 +2,33 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased] — macOS 27 / Metal 4.1 functional capability gate
+
+> **Version pending Marco.** Suggested **2.62.0** (semver-minor: a feature-add — the functional
+> activation seam — that is **behaviorally byte-identical today** on macOS 26 AND on capable/incapable
+> macOS 27; not a bugfix, not breaking). Not finalized; not published.
+
+- **macOS-27 / Metal-4.1 path auto-detects via a FUNCTIONAL capability probe** (no configuration
+  required). On macOS 27+ the library compiles **and verifies** a Metal-4.1 kernel on the installed
+  toolchain (via mlx-mfa's ShaderCache MSL41 path, `__METAL_VERSION__ = 410`, with a
+  `#if __METAL_VERSION__ < 410 → #error` guard **and** an output-correctness check) and self-enables
+  the macOS-27 routing path only if it passes. A version string alone can gate the path **OFF** but
+  never **ON** — "macOS 27" does not guarantee a working 4.1 compiler (proven: the sparse `(long)p->NK`
+  miscompile persists under 4.1; a CLT reinstall moved the compiler under the same OS). Fail-safe:
+  any compile error / wrong result / exception → transparently uses the validated macOS-26 path. The
+  probe is lazy (first-use, cached; ~50 ms one-time), never at import, never on macOS ≤26.
+- **`MFA_ENABLE_MACOS27_ROUTING` repurposed** from opt-in to an **optional override** (`=1` force-on
+  for testing, `=0` force-off to pin macOS-26); default activation is now the functional probe.
+- **Behaviorally byte-identical today** — the macOS-27 path carries no divergence yet (Axis A/B/C
+  characterization: sparse bug persists, dense NAX parity + thresholds hold). This ships the
+  **activation mechanism + seam**, ready for validated 4.1 features later; it is **not** faster now.
+- **Sparse fallback unchanged**: capability ≠ sparse-bug-fixed. `_sparse_fallback_sdpa_perhead` stays
+  engaged on capable macOS-27 (`_MACOS27_SPARSE_D128_FIXED = False`, proven under 4.1).
+- Diagnostic/characterization tooling (default-OFF / `-DMFA_BUILD_PROBES=ON`, shipping byte-identical):
+  `MFA_STEEL_MSL` (re-test the sparse miscompile at MSL 3.1/4.0/4.1), `MFA_UNSAFE_D128_SPARSE`
+  (diagnostic guard), fp8/int4/MXFP4 matmul2d microbenches. See `devnotes/macos27_functional_gate.md`,
+  `devnotes/sparse_nax_victory_map_m5.md`.
+
 ## [2.61.0] — 2026-06-21 — maintainability + cross-audit remediation
 
 > **Version pending confirmation at tag time.** Proposed as the single combined cut over the last

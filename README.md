@@ -534,6 +534,17 @@ older nanobind and would produce an ABI-incompatible extension. The V6/NAX Neura
 paths activate at runtime on M5 / macOS 26.2+ (gated); on M1–M4 / older macOS the standard
 kernels + Apple SDPA are used.
 
+**macOS 27 / Metal 4.1 (beta):** the macOS-27 path **auto-detects and self-enables via a functional
+capability probe** — mlx-mfa compiles *and verifies* a Metal-4.1 kernel on your toolchain (a version
+string is not enough; a beta compiler may not yet support 4.1, or may miscompile). **No configuration
+required.** If 4.1 is not functionally available, the library transparently uses the validated
+macOS-26 path. Today the macOS-27 path is **behaviorally identical** (a forward-looking seam, not a
+speedup); the sparse fallback stays engaged (the STEEL `(long)p->NK` bug is not fixed by 4.1). Perf on
+beta is indicative. Override with `MFA_ENABLE_MACOS27_ROUTING=1` (force-on) / `=0` (force-off). To
+run your own capability tests: `MFA_STEEL_MSL` (re-test the sparse bug at MSL 3.1/4.0/4.1) and, with
+`-DMFA_BUILD_PROBES=ON`, the `mpp_fp8_microbench` / `mpp_int8_microbench` low-precision matmul2d
+probes.
+
 > **Network at build time:** the build pins nanobind 2.12.0 via CMake `FetchContent` (to match
 > MLX's ABI), so `pip install` fetches it from GitHub during compilation — an **offline/restricted
 > build environment will fail** at the nanobind fetch. Pre-warm a network-enabled build cache, or

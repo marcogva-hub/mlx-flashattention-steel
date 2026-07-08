@@ -333,20 +333,27 @@ def _get_is_m5_plus_cached() -> bool:
     return _cached_is_m5_plus
 
 
-# ── OS-aware M5+ routing seam (macOS 26 vs 27) ────────────────────────────────
+# ── OS-aware M5+ routing seam (macOS 26 vs 27), FUNCTIONAL-first activation ────
 # The Metal compiler ships with the OS, so the installed macOS version is part of
 # the measurement quadruple (MLX, mlx-mfa, hardware, macOS/Metal-compiler). macOS
-# 27 (Golden Gate) ships a new Metal compiler → a separate routing path. The
-# macOS ≤26 path stays EXACTLY as shipped/validated; the macOS ≥27 path is new,
-# experimental, and **opt-in** (MFA_ENABLE_MACOS27_ROUTING=1) — DEFAULT OFF. With
-# the opt-in unset, dispatch is byte-identical to macOS 26 (the shipping reality).
+# 27 (Golden Gate) ships a new Metal compiler → a separate routing path.
+#
+# Activation is a REAL FUNCTIONAL capability check, NOT a version string: we
+# proved "macOS 27" guarantees nothing about the compiler (the sparse (long)p->NK
+# bug PERSISTS under 4.1; the runtime JIT was at 4.0; a CLT reinstall moved the
+# compiler under the same OS). So `_macos27_routing_active()` gates on a
+# compile-AND-verify Metal-4.1 probe (`_get_macos27_capable_cached`); the version
+# is only a cheap pre-filter that can gate the path OFF, never ON. No config
+# required — it self-enables on a functionally-4.1 toolchain and transparently
+# falls back otherwise. Activating the path is byte-identical today (no 26↔27
+# behavioral divergence); the sparse fallback stays engaged regardless.
 #
 # `_MACOS27_*_FIXED` constants record the macOS-27 characterization verdicts
-# (devnotes/macos27_characterization.md, measured 2026-07-08 on Dev Beta 3). They
-# gate whether the opt-in branch may DIVERGE from macOS-26 behavior. They are
-# False today (no beta finding warranted a divergence) — flip one only when a
-# STABLE macOS 27 re-characterization confirms it.
+# (devnotes/macos27_characterization.md + macos27_toolchain_proven_recheck.md).
+# They gate whether the path may DIVERGE from macOS-26 behavior. They are False
+# today (Axis A = PERSISTS, proven under 4.1) — flip only on a stable-OS re-verify.
 _cached_macos_major: "int | None" = None
+_cached_macos27_capable: "bool | None" = None
 
 # Axis A verdict [measured macOS27-beta3 2026-07-08]: the D=128 STEEL sparse
 # kernel is STILL incorrect + non-deterministic on M5 gen>=15 under the new Metal
@@ -372,15 +379,52 @@ def _get_macos_major_cached() -> int:
     return _cached_macos_major
 
 
-def _macos27_routing_active() -> bool:
-    """The SINGLE gate for macOS-27-specific M5+ routing.
+def _get_macos27_capable_cached() -> bool:
+    """Cached FUNCTIONAL Metal-4.1 capability (compile+verify on THIS toolchain).
 
-    True iff the host is macOS ≥27 AND the experimental opt-in is set
-    (MFA_ENABLE_MACOS27_ROUTING=1). DEFAULT OFF ⇒ on macOS 27 the dispatch is
-    byte-identical to macOS 26 unless Marco opts in. This is the only place the
-    OS-version branch forks; every macOS-27 variant hangs off this."""
-    return (_get_macos_major_cached() >= 27
-            and os.environ.get("MFA_ENABLE_MACOS27_ROUTING") == "1")
+    Mirrors _get_has_nax_cached(): lazy (computed once on first use, NEVER at
+    import), fail-safe (False on any error). The C++ probe compiles a kernel via
+    mlx-mfa's ShaderCache MSL41 path (reaches __METAL_VERSION__=410 — NOT
+    mx.fast.metal_kernel, which is stuck at 400) with a `#if __METAL_VERSION__ <
+    410 → #error` guard, runs it, and checks the output against a reference.
+    Compile-success proves the 4.1 language; correct output proves the toolchain
+    executes it — catching a compiles-but-miscompiles beta. Proves 4.1
+    *capability*, NOT per-kernel correctness (known-broken kernels keep their own
+    fallbacks). Callers must never reach here on macOS <27 (version pre-filter)."""
+    global _cached_macos27_capable
+    if _cached_macos27_capable is None:
+        try:
+            from mlx_mfa._ext import probe_metal41_functional as _probe
+            _cached_macos27_capable = bool(_probe())
+        except Exception:
+            _cached_macos27_capable = False  # fail-safe: any error → not capable
+    return _cached_macos27_capable
+
+
+def _macos27_routing_active() -> bool:
+    """Activation gate for the macOS-27 / Metal-4.1 routing path — FUNCTIONAL-FIRST.
+
+    Contract (functional-first, version-as-belt; no config required):
+      - MFA_ENABLE_MACOS27_ROUTING=1 → force ON (override: test on a toolchain the
+        probe would reject).
+      - MFA_ENABLE_MACOS27_ROUTING=0 → force OFF (pin the validated macOS-26 path).
+      - unset (default) → the FUNCTIONAL probe decides, no config:
+          macos_major < 27  → OFF (cheap version PRE-FILTER; never gates ON, skips
+                              the probe so macOS-26 pays zero cost).
+          macos_major >= 27 → _get_macos27_capable_cached() (AUTHORITATIVE:
+                              compile+verify Metal 4.1; fail-safe → OFF on doubt).
+    A version string gates OFF but never ON alone — "macOS 27" does not guarantee
+    a working 4.1 compiler (proven). Activating the path is byte-identical today
+    (no 26↔27 behavioral divergence); the sparse fallback stays engaged regardless
+    (see _macos27_sparse_native_ok)."""
+    ov = os.environ.get("MFA_ENABLE_MACOS27_ROUTING")
+    if ov == "1":
+        return True   # force-on override (testing on a probe-rejected toolchain)
+    if ov == "0":
+        return False  # force-off override (pin the validated macOS-26 path)
+    if _get_macos_major_cached() < 27:
+        return False  # version pre-filter: gates OFF only; probe never runs on ≤26
+    return _get_macos27_capable_cached()  # functional probe is authoritative
 
 
 def _macos27_sparse_native_ok() -> bool:

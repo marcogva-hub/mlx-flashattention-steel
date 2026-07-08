@@ -144,6 +144,7 @@ set(MFA_SOURCES
   csrc/mfa_steel_paged_varlen_tq_fwd.cpp
   csrc/v6_nax_detect.mm
   csrc/v6_nax_compile.mm
+  csrc/metal41_probe.mm             # functional Metal-4.1 capability probe (default build)
   csrc/mfa_steel_fwd_v6_nax.cpp
   csrc/mfa_v6_nax_primitive.cpp
   csrc/mfa_conv_nax.cpp
