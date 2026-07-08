@@ -333,6 +333,67 @@ def _get_is_m5_plus_cached() -> bool:
     return _cached_is_m5_plus
 
 
+# ── OS-aware M5+ routing seam (macOS 26 vs 27) ────────────────────────────────
+# The Metal compiler ships with the OS, so the installed macOS version is part of
+# the measurement quadruple (MLX, mlx-mfa, hardware, macOS/Metal-compiler). macOS
+# 27 (Golden Gate) ships a new Metal compiler → a separate routing path. The
+# macOS ≤26 path stays EXACTLY as shipped/validated; the macOS ≥27 path is new,
+# experimental, and **opt-in** (MFA_ENABLE_MACOS27_ROUTING=1) — DEFAULT OFF. With
+# the opt-in unset, dispatch is byte-identical to macOS 26 (the shipping reality).
+#
+# `_MACOS27_*_FIXED` constants record the macOS-27 characterization verdicts
+# (devnotes/macos27_characterization.md, measured 2026-07-08 on Dev Beta 3). They
+# gate whether the opt-in branch may DIVERGE from macOS-26 behavior. They are
+# False today (no beta finding warranted a divergence) — flip one only when a
+# STABLE macOS 27 re-characterization confirms it.
+_cached_macos_major: "int | None" = None
+
+# Axis A verdict [measured macOS27-beta3 2026-07-08]: the D=128 STEEL sparse
+# kernel is STILL incorrect + non-deterministic on M5 gen>=15 under the new Metal
+# compiler → the SDPA fallback MUST stay engaged. If a stable macOS 27 ever
+# reports Axis A = FIXED, set this True (and re-verify with tests/axisA harness).
+_MACOS27_SPARSE_D128_FIXED = False
+
+
+def _get_macos_major_cached() -> int:
+    """Cached host macOS major version (26, 27, …) via get_device_info().
+
+    Mirrors _get_is_m5_plus_cached(). Returns 0 if the signal is unavailable
+    (older _ext without the key, or query failure) — callers MUST treat 0 as
+    "unknown → macOS ≤26 / safe path" so a missing signal never enables the
+    experimental macOS-27 branch."""
+    global _cached_macos_major
+    if _cached_macos_major is None:
+        try:
+            info = get_device_info()
+            _cached_macos_major = int(info.get("macos_major", 0) or 0)
+        except Exception:
+            _cached_macos_major = 0  # unknown → treat as ≤26 (conservative)
+    return _cached_macos_major
+
+
+def _macos27_routing_active() -> bool:
+    """The SINGLE gate for macOS-27-specific M5+ routing.
+
+    True iff the host is macOS ≥27 AND the experimental opt-in is set
+    (MFA_ENABLE_MACOS27_ROUTING=1). DEFAULT OFF ⇒ on macOS 27 the dispatch is
+    byte-identical to macOS 26 unless Marco opts in. This is the only place the
+    OS-version branch forks; every macOS-27 variant hangs off this."""
+    return (_get_macos_major_cached() >= 27
+            and os.environ.get("MFA_ENABLE_MACOS27_ROUTING") == "1")
+
+
+def _macos27_sparse_native_ok() -> bool:
+    """May the macOS-27 opt-in branch skip the D=128 sparse SDPA fallback and use
+    the native STEEL kernel? Only if the opt-in is active AND Axis A found the bug
+    FIXED AND the GPU is M5+ (the characterized hardware). Currently always False
+    (Axis A = PERSISTS on Dev Beta 3), so the sparse fallback stays engaged even
+    under the opt-in — the honest, safe outcome. M5-scoped so gating the M3/M4
+    guard never changes M3/M4 behavior."""
+    return (_macos27_routing_active() and _MACOS27_SPARSE_D128_FIXED
+            and _get_is_m5_plus_cached())
+
+
 # ---------------------------------------------------------------------------
 # Internal: bias shape classification
 # ---------------------------------------------------------------------------
@@ -1799,6 +1860,8 @@ def get_device_info() -> dict:
             "is_m5_plus": None,
             "chip_name": None,
             "gpu_cores": None,
+            "macos_major": 0,   # unknown without _ext → callers treat as ≤26 (safe)
+            "macos_minor": 0,
             "extension_available": False,
         }
 
@@ -1839,6 +1902,10 @@ def get_device_info() -> dict:
         "is_m5_plus":          is_m5_plus,
         "chip_name":           chip,
         "gpu_cores":           raw.get("gpu_cores"),
+        # OS-aware routing signal (the Metal compiler ships with the OS). 0 ⇒
+        # unavailable → callers treat as ≤26 / safe path.
+        "macos_major":         raw.get("macos_major", 0),
+        "macos_minor":         raw.get("macos_minor", 0),
         "extension_available": True,
     }
 
@@ -3790,7 +3857,17 @@ def flash_attention_sparse(
     # Sprint U (v2.36.0): symmetric-BT masks auto-route earlier (above).
     # Asymmetric STEEL-style masks (BQ=32, BK=16) and MFA_DISABLE_AUTO_HOOKS=1
     # paths fall through to this SDPA fallback (the v2.35.0 behavior).
-    if _get_is_m5_plus_cached():
+    #
+    # ── OS-aware M5+ sparse fork (macOS 26 vs 27 seam) ────────────────────────
+    # This is THE macOS-version fork point for M5+ sparse. Axis A
+    # [macOS27-beta3 2026-07-08]: the D=128 STEEL sparse kernel is STILL incorrect
+    # + non-deterministic on gen>=15 under the new Metal compiler (PERSISTS), so
+    # the SDPA fallback MUST stay engaged on macOS 27 too. `_macos27_sparse_native_ok()`
+    # is False unless a STABLE macOS 27 flips `_MACOS27_SPARSE_D128_FIXED` (and the
+    # opt-in MFA_ENABLE_MACOS27_ROUTING=1 is set) → today this is byte-identical to
+    # the macOS-26 path. When FIXED, the opt-in branch falls through to the native
+    # kernel below.
+    if _get_is_m5_plus_cached() and not _macos27_sparse_native_ok():
         return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
 
     # SPARSE-D128-OOB (force-arch, iter-6 follow-up): the STEEL V1 block-sparse
@@ -3800,7 +3877,10 @@ def flash_attention_sparse(
     # base config is clean). M5 already routes to SDPA above; extend the same
     # per-head SDPA fallback to M3/M4 for D=128 specifically. D=64 sparse and M1/M2
     # D=128 (gen<15) keep the correct raw STEEL kernel.
-    if D == 128 and _get_is_m3_plus_cached():
+    # OS-aware seam: `_macos27_sparse_native_ok()` is M5-scoped, so this gate is
+    # unchanged for M3/M4 (always False there); it only matters for the future
+    # macOS-27-FIXED M5 opt-in path, which must skip this second guard too.
+    if D == 128 and _get_is_m3_plus_cached() and not _macos27_sparse_native_ok():
         return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
 
     impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)

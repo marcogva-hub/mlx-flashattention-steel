@@ -26,6 +26,19 @@ M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 |----------|------|---------|:------:|-------------|
 | `MFA_FORCE_GEN` | int | 0 (auto) | Yes | Override GPU architecture gen (13=M1, 14=M2, 15=M3, 16=M4, 17=M5) |
 
+## OS-Aware Routing (macOS 26 vs 27)
+
+The Metal compiler ships with the OS, so the installed macOS version is part of the
+measurement quadruple `(MLX, mlx-mfa, hardware, macOS/Metal-compiler)`. `get_device_info()`
+now returns `macos_major` / `macos_minor`. macOS ≤26 uses the shipped/validated routing;
+macOS ≥27 is an experimental branch that **defaults to the macOS-26 behavior** unless the
+opt-in below is set. See `devnotes/macos27_characterization.md`.
+
+| Variable | Type | Default | Cached | Description |
+|----------|------|---------|:------:|-------------|
+| `MFA_ENABLE_MACOS27_ROUTING` | bool | unset | Yes | **Experimental, opt-in.** Enable the macOS-27 M5+ routing branch. Default off ⇒ on macOS 27 dispatch is byte-identical to macOS 26. Today no macOS-27 finding diverges from macOS 26 (the D=128 sparse bug persists; dense NAX parity + thresholds hold), so enabling it is currently a no-op — the seam exists for future stable-macOS-27 re-characterization. |
+| `MFA_UNSAFE_D128_SPARSE` | bool | unset | No | **DIAGNOSTIC-ONLY — DANGER.** Opens the C++ D=128 sparse OOB guard so the known-incorrect raw STEEL sparse kernel can be run for OS re-characterization (e.g. re-verifying the `(long)p->NK` mis-read under a new Metal compiler). Default off ⇒ the guard raises (shipping behavior byte-identical). **NEVER enable in production** — the D=128 sparse kernel is out-of-bounds + non-deterministic on M3+. |
+
 ## V2 Config Overrides
 
 | Variable | Type | Default | Cached | Description |

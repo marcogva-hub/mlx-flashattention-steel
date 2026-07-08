@@ -2295,7 +2295,9 @@ mlx::core::array mfa_attention_sparse_forward(
     // FORCE-ARCH VERIFIED on M5: gen=15/16/17 all non-deterministic nan_frac~0.0625;
     // gen<15 (M1/M2, BK=16 base config) is CLEAN. The M5-only gate was too narrow.
     // Public flash_attention_sparse routes D=128 to SDPA on gen>=15; raw refuses.
-    if (D == 128 && gen_g >= 15) {
+    // MFA_UNSAFE_D128_SPARSE opens this for OS re-characterization only (default
+    // off ⇒ still raises ⇒ byte-identical shipping behavior).
+    if (D == 128 && gen_g >= 15 && !eg.unsafe_d128_sparse) {
       throw std::invalid_argument(
           "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
           "at head_dim=128 on M3+ (gen>=15: out-of-bounds on the last head). Use "
@@ -2371,7 +2373,8 @@ std::vector<mlx::core::array> mfa_attention_sparse_forward_with_lse(
     if (eg.force_gen > 0) gen_g = eg.force_gen;  // force-arch cross-test hook (L144/199 pattern)
     // SPARSE-D128-OOB (gen>=15, force-arch verified M3/M4/M5 broken; sibling of the
     // non-LSE site). Mirror it: refuse on M3+; M1/M2 (BK=16 base config) is clean.
-    if (D == 128 && gen_g >= 15)
+    // MFA_UNSAFE_D128_SPARSE opens it for OS re-characterization (default off).
+    if (D == 128 && gen_g >= 15 && !eg.unsafe_d128_sparse)
       throw std::invalid_argument(
           "MFA sparse: the raw STEEL V1 block-sparse forward kernel is not correct "
           "at head_dim=128 on M3+ (gen>=15: out-of-bounds on the last head). Use "

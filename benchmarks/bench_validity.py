@@ -88,12 +88,19 @@ class SpeedupResult:
     mlx_version: str
     hardware: str
     date: str
+    macos: str = ""                    # macOS+Metal-compiler element of the quadruple
     extra: dict = field(default_factory=dict)
 
     def __str__(self) -> str:
+        # RULE 16 #7: the measurement quadruple = (MLX, mlx-mfa, hardware,
+        # macOS/Metal-compiler). The Metal compiler ships with the OS, so the
+        # macOS version identifies the compiler generation — a perf claim is
+        # incomplete without it (a compiler bump moves the baseline with no code
+        # change; see macOS 26→27).
+        macos = f" | {self.macos}" if self.macos else ""
         return (f"{self.ratio:.2f}× (test {self.test_ms:.3f} ms / baseline "
                 f"{self.baseline_ms:.3f} ms) | engagement: {self.engagement_evidence} "
-                f"| MLX {self.mlx_version} | {self.hardware} | {self.date}")
+                f"| MLX {self.mlx_version} | {self.hardware}{macos} | {self.date}")
 
 
 def _as_list(out) -> list:
@@ -138,6 +145,21 @@ def _hardware() -> str:
         return str(info.get("chip_name") or info.get("device_name") or "unknown")
     except Exception:
         return "unknown"
+
+
+def _macos_stamp() -> str:
+    """macOS+Metal-compiler element of the measurement quadruple. The Metal
+    compiler ships with the OS, so the macOS version identifies the compiler
+    generation (macOS 26 vs 27 = different Metal compilers). Returns e.g.
+    'macOS 27.0'; 'macOS unknown' if the signal is unavailable (older _ext)."""
+    try:
+        import mlx_mfa
+        info = mlx_mfa.get_device_info()
+        maj = int(info.get("macos_major", 0) or 0)
+        mn = int(info.get("macos_minor", 0) or 0)
+        return f"macOS {maj}.{mn}" if maj else "macOS unknown"
+    except Exception:
+        return "macOS unknown"
 
 
 def measured_speedup(
@@ -275,5 +297,6 @@ def measured_speedup(
         mlx_version=mx.__version__,
         hardware=_hardware(),
         date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        macos=_macos_stamp(),
         extra={"test_label": test_label, "baseline_label": baseline_label},
     )

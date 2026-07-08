@@ -59,6 +59,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V34_BACKWARD",
     "MFA_DISABLE_V6_BACKWARD",
     "MFA_DISABLE_V6_DENSE",
+    "MFA_ENABLE_MACOS27_ROUTING",  # opt-in experimental macOS-27 M5+ routing (default off)
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",
     "MFA_ENABLE_V6_BACKWARD",
@@ -159,6 +160,9 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_KNOB_STRICT",
     "MFA_REQUIRE_NAX",
     "MFA_SILENCE_NAX_WARNING",
+    "MFA_UNSAFE_D128_SPARSE",  # DIAGNOSTIC-ONLY C++ knob (csrc/mfa_env.hpp): opens the
+                              # D=128 sparse OOB guard for OS re-characterization. Default
+                              # off; NEVER enable in production (known-incorrect kernel).
     "MLX_MFA_DISPATCH_TABLE",
     "MLX_MFA_HOOK_TELEMETRY",
     "MLX_MFA_VERBOSE_DISPATCH",

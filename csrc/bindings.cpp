@@ -33,6 +33,8 @@ std::string mpp_int8_microbench();  // Phase II-2 kill-gate
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
+int device_macos_major();  // host macOS major (26, 27, …); 0 if unavailable
+int device_macos_minor();
 // Split-K calibration env-key builder (in csrc/mfa_attention.cpp) — the SAME
 // function the dispatch lookup uses (audit B1); bound below for the Python↔C++
 // byte-identity contract test.  Always in the default build (NOT probe-gated).
@@ -751,8 +753,13 @@ NB_MODULE(_ext, m) {
     info["has_nax"]        = (gen >= 17);
     info["device_name"]    = dev_name;
     info["gpu_cores"]      = cores;
+    // OS-version signal for OS-aware M5+ routing (the Metal compiler ships with
+    // the OS).  0 ⇒ unavailable → callers treat as "≤26 / safe path".
+    info["macos_major"]    = mlx_mfa::device_macos_major();
+    info["macos_minor"]    = mlx_mfa::device_macos_minor();
     return info;
-  }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name, gpu_cores.");
+  }, "Return Metal GPU hardware info: silicon generation, M3+ flag, device name, "
+     "gpu_cores, and host macos_major/macos_minor (OS-aware routing signal).");
 
   // --- ALiBi-biased forward ---  (CX-06: no stream param — default GPU stream)
   m.def(

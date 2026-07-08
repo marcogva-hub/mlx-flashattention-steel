@@ -2,6 +2,7 @@
 /// Uses Objective-C++ for `__builtin_available` and `supportsFamily`.
 
 #include "v6_nax_detect.hpp"
+#include <Foundation/Foundation.h>  // NSProcessInfo (macOS version)
 #include <Metal/Metal.h>
 #include <mlx/backend/metal/device.h>
 
@@ -33,6 +34,20 @@ bool device_has_nax_bf16() {
     return true;
   }
   return false;
+}
+
+// Host macOS major/minor from NSProcessInfo (mirrors shader_cache.mm:97).  The
+// OS carries the Metal compiler version, so this is the routing signal for the
+// OS-aware M5+ seam.  Returns 0 on failure so callers default to the safe path.
+int device_macos_major() {
+  @autoreleasepool {
+    return (int)[[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
+  }
+}
+int device_macos_minor() {
+  @autoreleasepool {
+    return (int)[[NSProcessInfo processInfo] operatingSystemVersion].minorVersion;
+  }
 }
 
 }  // namespace mlx_mfa

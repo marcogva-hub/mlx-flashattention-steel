@@ -52,6 +52,14 @@ struct MFAEnvConfig {
   int v3_force_bk_d64;  // MFA_V3_FORCE_BK_D64   (0 = auto)
   int v3_force_bk_d128; // MFA_V3_FORCE_BK_D128  (0 = auto)
 
+  // ── DIAGNOSTIC-ONLY: reach the raw STEEL D=128 sparse kernel on gen>=15 ──
+  // MFA_UNSAFE_D128_SPARSE=1 opens the SPARSE-D128-OOB guard so the known-broken
+  // kernel can be run for OS re-characterization (e.g. verifying whether a new
+  // Metal compiler fixes the (long)p->NK mis-read).  DEFAULT OFF ⇒ the guard
+  // still raises ⇒ shipping behavior byte-identical.  NEVER enable in production:
+  // the D=128 sparse kernel is out-of-bounds on M3+ and returns incorrect output.
+  bool unsafe_d128_sparse;  // MFA_UNSAFE_D128_SPARSE (false = guard raises)
+
 
   /// Thread-safe singleton — initialized on first call (Meyers' singleton).
   static const MFAEnvConfig& get() {
@@ -102,6 +110,8 @@ private:
     // V3 config overrides
     c.v3_force_bk_d64  = env_int("MFA_V3_FORCE_BK_D64");
     c.v3_force_bk_d128 = env_int("MFA_V3_FORCE_BK_D128");
+    // Diagnostic-only: open the D=128 sparse OOB guard (default off).
+    c.unsafe_d128_sparse = env_bool("MFA_UNSAFE_D128_SPARSE");
     return c;
   }
 };

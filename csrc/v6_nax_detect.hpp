@@ -15,4 +15,12 @@ namespace mlx_mfa {
 bool device_has_neural_accelerators();
 bool device_has_nax_bf16();
 
+/// Host macOS version (from `NSProcessInfo.operatingSystemVersion`).  This is
+/// the OS-version signal for OS-aware M5+ routing: the Metal compiler shipped
+/// with the OS is part of the measurement quadruple (MLX, mlx-mfa, hardware,
+/// macOS/Metal-compiler).  `device_macos_major()` returns 26, 27, …; returns 0
+/// if the query is unavailable (callers must treat 0 as "unknown → safe path").
+int device_macos_major();
+int device_macos_minor();
+
 }  // namespace mlx_mfa
