@@ -357,6 +357,35 @@ std::string mpp_int8_microbench() {
   return out.str();
 }
 
+// Mixed-precision device-tensor variant (A and B differ) — for int4 matmul2d,
+// which is W4A16-shaped (Table 7.3: half × int4b_format → half), NOT int4×int4.
+static std::string bench_kernel_src_mixed(const char* in_a, const char* in_b,
+                                          const char* acc_ty, const char* fn_name, int reps) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL41
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+kernel void )MSL" << fn_name << R"MSL((
+    tensor<device )MSL" << in_a << R"MSL(, dextents<int32_t, 2>> A,
+    tensor<device )MSL" << in_b << R"MSL(, dextents<int32_t, 2>> B,
+    tensor<device )MSL" << acc_ty << R"MSL(, dextents<int32_t, 2>> C,
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = matmul2d_descriptor(64, 64, 128, false, false, true);
+    matmul2d<desc, execution_simdgroups<1>> op;
+    auto mA = A.slice(0, (int)tgid.y * 64);
+    auto mB = B.slice((int)tgid.x * 64, 0);
+    auto mC = C.slice((int)tgid.x * 64, (int)tgid.y * 64);
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) { op.run(mA, mB, mC); }
+}
+)MSL";
+  return ss.str();
+}
+
 // ─── fp8/fp4 matmul2d characterization (Rigel-on-M5, metal4.1) ────────────────
 // Throughput (Signal 1) instruction-level, device-tensor 64x64x128.
 std::string mpp_fp8_microbench() {
@@ -389,6 +418,24 @@ std::string mpp_fp8_microbench() {
           << "  ratio_vs_fp16 = " << (t / f16) << "\n";
     } catch (const std::exception& e) {
       out << "  " << v.lbl << " = FAIL(" << std::string(e.what()).substr(0, 120) << ")\n";
+    }
+  }
+  // INT4 is W4A16-shaped (Table 7.3: half/char × int4b → half/int), NOT int4×int4
+  // — matches SVDQuant. Measure the mixed activation×int4-weight matmul2d.
+  auto thm = [&](const char* ia, const char* ib, const char* acc, const char* fn,
+                 size_t ea) -> double {
+    return run_bench(dev, bench_kernel_src_mixed(ia, ib, acc, fn, reps), fn, 2, ea, reps, tgs, iters, F);
+  };
+  struct M { const char* ia; const char* ib; const char* acc; const char* fn; size_t ea; const char* lbl; };
+  for (auto m : std::vector<M>{
+        {"half", "int4b_format",  "half", "m_i4h", 2, "half×int4b→half (W4A16)"},
+        {"half", "int4b_format",  "float","m_i4f", 4, "half×int4b→float"},
+        {"half", "uint4b_format", "half", "m_u4h", 2, "half×uint4b→half"}}) {
+    try {
+      double t = thm(m.ia, m.ib, m.acc, m.fn, m.ea);
+      out << "  " << m.lbl << " = " << t << " TFLOPS  ratio_vs_fp16 = " << (t / f16) << "\n";
+    } catch (const std::exception& e) {
+      out << "  " << m.lbl << " = FAIL(" << std::string(e.what()).substr(0, 120) << ")\n";
     }
   }
   out << "ENGAGEMENT/CORRECTNESS: instruction-level only (tensor-ARG binding "
