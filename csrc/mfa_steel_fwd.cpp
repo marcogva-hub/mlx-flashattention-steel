@@ -11,6 +11,8 @@
 #include "mfa_steel_fwd.hpp"
 #include "mfa_steel_fwd_v2.hpp"  // select_steel_v2_block_config for D=64/128 flash decode
 #include <sstream>
+#include <cstdlib>  // std::getenv (MFA_STEEL_MSL diagnostic, default off)
+#include <string>
 
 namespace mlx_mfa {
 
@@ -107,6 +109,27 @@ std::string generate_steel_forward_source(const ShaderCache::KernelKey& key) {
   const int arch_gen = is_m3_plus ? 15 : 13;
 
   std::ostringstream ss;
+
+  // DIAGNOSTIC (default OFF, byte-identical): the (long)p->NK STEEL sparse
+  // miscompile re-characterization needs to compile this kernel at a PROVEN
+  // Metal language version. ShaderCache maps `// MFA_REQUIRE_MSL41` → 4.1 and
+  // `// MFA_REQUIRE_MSL4` → 4.0; absent → the default 3.1. MFA_STEEL_MSL forces
+  // it for the 3.1-vs-4.0-vs-4.1 same-kernel comparison. Unset ⇒ 3.1 (shipping).
+  if (const char* _mv = std::getenv("MFA_STEEL_MSL")) {
+    // The #if guard PROVES the version: if the kernel compiles+runs, the stamped
+    // __METAL_VERSION__ was actually active (else #error aborts the compile).
+    if (std::string(_mv) == "41") {
+      ss << "// MFA_REQUIRE_MSL41\n"
+            "#if __METAL_VERSION__ < 410\n#error MFA_STEEL_MSL=41 but __METAL_VERSION__ < 410\n#endif\n";
+    } else if (std::string(_mv) == "4") {
+      ss << "// MFA_REQUIRE_MSL4\n"
+            "#if __METAL_VERSION__ < 400\n#error MFA_STEEL_MSL=4 but __METAL_VERSION__ < 400\n#endif\n";
+    } else if (std::string(_mv) == "PROVE") {
+      // Positive control: unconditional #error ⇒ a compile failure PROVES this
+      // injection reaches the compiled STEEL sparse binary (which-binary check).
+      ss << "#error STEEL_INJECTION_REACHED\n";
+    }
+  }
 
   // ── Preamble ────────────────────────────────────────────────────────────
   // STEEL_PRAGMA_UNROLL:
