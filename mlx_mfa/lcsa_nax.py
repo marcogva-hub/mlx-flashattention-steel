@@ -267,6 +267,34 @@ def sparse_attention_nax_with_lse(
 # preserve the V1 break-even semantics for M1/M3 STEEL paths.
 DEFAULT_DENSITY_THRESHOLD = 1.01
 
+# ── BT-aware NAX-sparse win window (sparse-NAX victory map, engagement-proven) ──
+# The native NAX sparse kernel (matmul2d cooperative tensors = Metal 4 / macOS
+# 26.0 — STABLE, NOT the macOS-27 beta track) beats dense SDPA only in a specific
+# BLOCK-TILE window; the dispatcher used to route on density alone and IGNORE the
+# tile, mis-routing BT=16 into a ~5.5× slowdown (footgun). These are the measured
+# boundaries; TILE VIABILITY is the PRIMARY gate so the default is safe regardless
+# of any hand-tuned density threshold.
+#
+# β3-INDICATIVE (macOS 27 β3 / metal 32023.918, M5 Max) — RE-VALIDATE on stable
+# macOS before tightening. Conservative: route ONLY the proven-viable window to
+# NAX; anything uncharacterized → SDPA.
+SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})    # BT=32 wins 0.30–0.96× vs dense SDPA; BT=16 is 2–17× SLOWER (non-viable); BT=64 uncharacterized → SDPA
+SPARSE_NAX_MIN_N = 2048                             # NAX beats dense SDPA at N≥2048 (below: SDPA)
+SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})  # measured-viable head dims
+SPARSE_NAX_DENSITY_CEILING = 1.0                    # NAX beats-or-ties dense SDPA across the measured density range at BT=32 (0.15→0.96×); re-validate on stable, tighten only if a loss regime appears
+
+
+def _nax_sparse_route_viable(Q, K, block_tile, density) -> bool:
+    """True iff (Q, K, block_tile, density) falls in the measured NAX-beats-dense-SDPA
+    window. TILE viability is primary — this is what makes the default safe and
+    removes the density-threshold footgun (BT≠32 / N<2048 / D∉{64,128} → SDPA
+    regardless of density)."""
+    return (block_tile in SPARSE_NAX_VIABLE_BLOCK_TILES
+            and Q.shape[2] >= SPARSE_NAX_MIN_N
+            and K.shape[2] >= SPARSE_NAX_MIN_N
+            and Q.shape[3] in SPARSE_NAX_VIABLE_HEAD_DIMS
+            and density <= SPARSE_NAX_DENSITY_CEILING)
+
 
 def _bool_mask_to_float_bias(block_mask, BT, qL, kL, target_dtype):
     """Expand bool block_mask to (..., qL, kL) float bias (0 / -inf)."""
@@ -367,7 +395,16 @@ def sparse_attention_dispatch(
     # f32 produces correct attention consistently. Previously f32 was
     # density-dependent (ran on SDPA, raised on the native route).
     _force_sdpa = Q.dtype not in (mx.float16, mx.bfloat16)
-    if (not _force_sdpa) and density < density_threshold:
+    # BT-AWARE routing (victory map): tile viability is the PRIMARY gate — only
+    # the proven-viable window (BT=32, N≥2048, D∈{64,128}, density≤ceiling) routes
+    # to native NAX; everything else (BT=16 = 2–17× slower, BT=64 uncharacterized,
+    # N<2048, D∉{64,128}) falls through to SDPA REGARDLESS of density_threshold.
+    # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
+    # depends on a caller hand-tuning the density threshold. density_threshold is
+    # retained as a secondary (further-restrict-only) tunable within the window.
+    if ((not _force_sdpa)
+            and _nax_sparse_route_viable(Q, K, block_tile, density)
+            and density < density_threshold):
         return sparse_attention_nax(
             Q, K, V, block_mask,
             block_tile=block_tile,

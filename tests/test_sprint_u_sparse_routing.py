@@ -156,7 +156,9 @@ def test_axis3_low_density_routes_to_nax():
     Verified by checking the dispatcher's routing decision via the density
     parameter on a very-sparse mask.
     """
-    B, H, qL, kL, D, BT = 1, 4, 4096, 4096, 128, 16
+    # BT-aware: NAX routing at low density holds at the VIABLE tile BT=32 (BT=16
+    # is now correctly SDPA-routed — non-viable per the victory map).
+    B, H, qL, kL, D, BT = 1, 4, 4096, 4096, 128, 32
     Q, K, V = _make_inputs(B, H, qL, kL, D, seed=40)
     mask = _bool_mask_2d(qL // BT, kL // BT, density=0.005, seed=41)
 

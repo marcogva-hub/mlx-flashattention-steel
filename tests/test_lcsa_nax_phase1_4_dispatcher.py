@@ -41,8 +41,10 @@ def _make_inputs(B, Hq, Hk, qL, kL, D, seed=0, mag=1.0):
 
 
 def test_dispatch_routes_very_sparse_to_nax():
-    """density 0.01 < 0.02 threshold -> Sprint B kernel chosen."""
-    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 16
+    """Viable tile (BT=32) + low density -> Sprint B NAX kernel chosen.
+    (BT-aware routing: BT=16 is now correctly SDPA-routed — non-viable per the
+    victory map; NAX routing is tested at the viable tile BT=32.)"""
+    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 32
     NQ, NK = qL // BT, kL // BT
     rng = np.random.default_rng(11)
     bm = (rng.random((NQ, NK)) < 0.01).astype(np.bool_)
@@ -84,8 +86,11 @@ def test_dispatch_routes_moderate_density_to_sdpa():
 
 
 def test_dispatch_threshold_override():
-    """Explicit density_threshold parameter overrides default."""
-    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 16
+    """Explicit density_threshold overrides default WITHIN the viable window.
+    (BT-aware: tile viability is primary — the threshold override only applies at
+    a viable tile; tested at BT=32. At BT=16 the tile gate routes SDPA regardless
+    of threshold — see test_sparse_bt_aware_routing.)"""
+    B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 32
     NQ, NK = qL // BT, kL // BT
     rng = np.random.default_rng(31)
     bm = (rng.random((NQ, NK)) < 0.03).astype(np.bool_)
