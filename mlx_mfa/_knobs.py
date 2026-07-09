@@ -42,6 +42,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     # not an env var), MFA_SUPPORTED_DTYPES + MFA_SUPPORTED_HDIMS (module
     # constants _MFA_SUPPORTED_*, never env-overridable). They no longer advertise
     # non-existent tuning DOF via validate_env(strict=True).
+    "MFA_CONV3D_PAD_RATIO_MAX",
     "MFA_CONV_NAX_NO_FAST_PATH",
     "MFA_CONV_NAX_USE_PYTHON_LEGACY",
     "MFA_DEBUG_SHADERS",
@@ -59,6 +60,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V34_BACKWARD",
     "MFA_DISABLE_V6_BACKWARD",
     "MFA_DISABLE_V6_DENSE",
+    "MFA_ENABLE_CONV3D_PAD_SLICE",  # opt-in conv3d pad-and-slice (NAX on channel-misaligned shapes; default off, β3-indicative)
     "MFA_ENABLE_MACOS27_ROUTING",  # opt-in experimental macOS-27 M5+ routing (default off)
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",

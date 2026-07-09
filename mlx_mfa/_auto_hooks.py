@@ -285,6 +285,111 @@ def _normalize_padding_to_6tuple(padding):
     return None
 
 
+# Pad-and-slice cost gate: skip (→ mx.conv_general) when padding the channels to
+# the MPP envelope inflates the work beyond this multiplier.  Default admits the
+# empirically-validated win envelope (measured wins up to pad_ratio 10.67 on M5:
+# RGB in/out convs 3↔128).  Env-tunable via MFA_CONV3D_PAD_RATIO_MAX.
+_CONV3D_PAD_RATIO_MAX_DEFAULT = 12.0
+
+
+def _roundup(x: int, m: int) -> int:
+    return ((x + m - 1) // m) * m
+
+
+def _restore_conv_out_dtype(result, orig_input_dtype, weight_dtype):
+    """Match mx.conv_general's dtype-promotion contract (mirrors the native-path
+    restore in _patched_conv_general): fp32-in/fp16-w → fp32-out, fp16+bf16 → fp32."""
+    if orig_input_dtype != weight_dtype and result.dtype != orig_input_dtype:
+        if orig_input_dtype == mx.float32:
+            return result.astype(mx.float32)
+        if (orig_input_dtype, weight_dtype) in {
+            (mx.float16, mx.bfloat16), (mx.bfloat16, mx.float16)
+        }:
+            return result.astype(mx.float32)
+        return result.astype(orig_input_dtype)
+    return result
+
+
+def _try_conv3d_pad_and_slice(input, weight, pad_6tuple):
+    """MLX-style pad-and-slice around the NAX conv datapath
+    (csrc/mfa_conv_nax.cpp MPP convolution2d), for Conv3D shapes whose ONLY
+    reason for MPP-ineligibility is channel alignment.  Returns the sliced
+    output (same shape + baseline dtype as mx.conv_general) or None → caller
+    falls back to mx.conv_general.
+
+    The documented NaN trap (conv_nax.py / III-5): the NAX K-loop needs
+    K = C_in*27 to be a multiple of the 32-wide K-tile.  We pad C_in UP TO A
+    MULTIPLE OF 32 (⇒ K a clean 32-tile multiple, side-stepping the partial-K
+    read entirely) and zero-fill BOTH input and weight so the padded channels
+    contribute EXACTLY zero (verified cos=1.0, no NaN for C_in ∈ {3,16,31,…}).
+    C_out padded to a multiple of 16 and sliced back.
+
+    MIT: pad-and-slice technique adapted from MLX's pad_and_slice_conv_3D_gpu
+    (ml-explore/mlx, backend/metal/conv.cpp) — applied here around the NAX
+    (matmul2d) datapath, which MLX itself has no equivalent for.
+
+    OPT-IN (default-off): the win is CONFIDENT + correct (cos=1.0, fp16+bf16) but
+    β3-indicative (macOS 27 beta).  Per the auto-default principle, a validated-
+    but-β3 optimization ships as an env opt-in; flip to default-on after stable-
+    macOS re-validation (+ the coordinated dispatch-map/lock update, since it
+    reroutes channel-misaligned conv3d off mx.conv_general).
+    """
+    if os.environ.get("MFA_ENABLE_CONV3D_PAD_SLICE") != "1":
+        return None
+    if (not hasattr(input, "shape") or len(input.shape) != 5
+            or not hasattr(weight, "shape") or len(weight.shape) != 5):
+        return None
+    B, _T, H, W, C_in = input.shape
+    C_out = weight.shape[0]
+    # Every NON-channel MPP constraint must already hold (mirror
+    # _conv3d_mpp_eligible); otherwise it is a structural fallback we do not touch.
+    if (weight.shape[1], weight.shape[2], weight.shape[3]) != (3, 3, 3):
+        return None
+    if B != 1 or pad_6tuple not in ((1, 1, 1, 1, 1, 1), (0, 0, 1, 1, 1, 1)):
+        return None
+    if H % 8 != 0 or W % 8 != 0:
+        return None
+    # The failing reason must be channel alignment (else the shape was already
+    # MPP-eligible and served by the native path upstream — never reaches here).
+    if C_in % 16 == 0 and C_in >= 32 and C_out % 16 == 0 and C_out >= 32:
+        return None
+    C_pad = max(32, _roundup(C_in, 32))   # K = C_pad*27 → clean 32-wide K-tile
+    O_pad = max(32, _roundup(C_out, 16))
+    pad_ratio = (C_pad / C_in) * (O_pad / C_out)
+    try:
+        thr = float(os.environ.get("MFA_CONV3D_PAD_RATIO_MAX",
+                                   _CONV3D_PAD_RATIO_MAX_DEFAULT))
+    except (TypeError, ValueError):
+        thr = _CONV3D_PAD_RATIO_MAX_DEFAULT
+    if pad_ratio > thr:
+        return None  # cost gate: pad overhead not worth it → mx.conv_general
+    try:
+        from mlx_mfa._ext import conv3d_nax_forward
+    except ImportError:
+        return None
+    try:
+        wdt = weight.dtype  # fp16/bf16 (guaranteed by _conv3d_nax_eligible upstream)
+        orig_dt = input.dtype
+        x = input.astype(wdt) if orig_dt != wdt else input
+        w = weight
+        if C_pad > C_in:
+            x = mx.concatenate(
+                [x, mx.zeros((B, _T, H, W, C_pad - C_in), wdt)], axis=-1)
+            w = mx.concatenate(
+                [w, mx.zeros((C_out, 3, 3, 3, C_pad - C_in), wdt)], axis=-1)
+        if O_pad > C_out:
+            w = mx.concatenate(
+                [w, mx.zeros((O_pad - C_out, 3, 3, 3, C_pad), wdt)], axis=0)
+        out = conv3d_nax_forward(x, w, stride=(1, 1, 1), padding=pad_6tuple,
+                                 dilation=(1, 1, 1), chunk_M=0)
+        out = out[..., :C_out]
+        out = _restore_conv_out_dtype(out, orig_dt, wdt)
+        _record_hook_execution("conv3d_nax_pad_slice")
+        return out
+    except Exception:
+        return None  # fail-safe: any error → caller falls back to conv_general
+
+
 def _patched_conv_general(input, weight, stride=1, padding=0,
                           kernel_dilation=1, input_dilation=1,
                           groups=1, flip=False, **kwargs):
@@ -348,6 +453,13 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     # NaN).  Previously only bf16 was gated, so small-channel fp16 reached
     # the broken legacy path and returned garbage.
     if not _conv3d_mpp_eligible(input, weight, pad_6tuple):
+        # MLX-style pad-and-slice: if the ONLY reason for MPP-ineligibility is
+        # channel alignment, pad C_in/C_out into the MPP envelope (K-tile-clean,
+        # zero-filled) and use the NAX datapath instead of forfeiting it.  Keeps
+        # mlx-mfa's hardware advantage on shapes MLX would run via STEEL im2col.
+        _ps = _try_conv3d_pad_and_slice(input, weight, pad_6tuple)
+        if _ps is not None:
+            return _ps
         _record_hook_fallback(
             "conv3d_nax_forward",
             "outside MPP gate (need C_in/C_out %16==0 & >=32, H/W %8==0, "
