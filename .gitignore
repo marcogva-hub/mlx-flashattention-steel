@@ -88,5 +88,9 @@ AUDIT_REPORT_*.md
 # Journal / probe-verdict scratch (archive-bound, never on the publish surface)
 devnotes/
 
+# CAMPAIGN.md — CC's internal campaign operating manual (methodology, not user-facing).
+# Kept LOCAL (untracked) like devnotes/: reread each campaign task, never shipped in the sdist.
+CAMPAIGN.md
+
 # stray journal-export zip (cruft — real archive is .doc-archive/); keep out of the sdist surface
 doc-archive.zip
