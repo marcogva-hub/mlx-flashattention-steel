@@ -75,7 +75,10 @@ def test_prefix_cache_determinism():
 
 
 # ── CX-R9-02: native-route engagement + f32 contract ────────────────────────────
-_HQ, _HK, _N, _D = 8, 2, 1024, 128   # large enough for native's 4096-byte mask floor
+# N=2048 is the BT-aware NAX-sparse min-N (SPARSE_NAX_MIN_N): the native route
+# engages only in the viable window (BT=32, N≥2048, D∈{64,128}); N<2048 is noisy
+# parity → conservatively SDPA-routed. (Was 1024, which now correctly routes SDPA.)
+_HQ, _HK, _N, _D = 8, 2, 2048, 128
 _SC = 1.0 / math.sqrt(_D)
 _BT = 32
 _NT = (_N + _BT - 1) // _BT

@@ -30,7 +30,9 @@ def _read(p: Path) -> str:
 # Host-independent count of skipif decorator sites whose condition gates on M5/NAX
 # hardware. Frozen so removing/adding an M5 lock changes the suite's M5 surface
 # visibly (the marker is attached regardless of whether it skips on this host).
-_EXPECTED_M5_SKIP_SITES = 69
+# 69 → 70: added tests/test_sparse_bt_aware_routing.py (BT-aware sparse dispatcher
+# routing lock; M5-gated — the NAX sparse kernel is M5+). M5 surface still covered.
+_EXPECTED_M5_SKIP_SITES = 70
 
 
 def _count_m5_skip_sites() -> int:
