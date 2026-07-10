@@ -528,6 +528,7 @@ const int kb_lim = cNK;
 // Sparse K-loop: iterate all K-blocks, skip masked.
 for (int kb = 0; kb < kb_lim; kb++) {
   if (!mask_qrow_base[kb]) continue;
+  CAUSAL_INTER_TILE_SKIP
 
   // Per-iteration K and V pointers — JUMP via kb (no incremental advance).
   device const T* K_kb = K_base + kb * V6NAX_SPARSE_BK * int(K_seq_stride);
@@ -813,15 +814,15 @@ std::string sparse_scalar_fallback_source(int B, int Hq, int Hk, int qL, int kL,
 //   - Per-SG Q-row partition with kU=16, BQ=BK=32, WM=2
 //
 // Eligibility (enforced in sparse_attention_forward before this is called):
-//   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false
-//   (causal deferred to follow-up — V6NAX sparse with within-tile triangular requires
-//    extra masking on diagonal block, tracked in §13.5).
+//   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}; causal is supported
+//   by a dense V6NAX within-tile mask port plus a causal K-block skip.
 //
 // Apple helpers (NAXFrag, NAXTile, operator structs) embedded via
 // V6NAX_SPARSE_APPLE_HELPERS_MSL; kernel body via
-// V6NAX_SPARSE_KERNEL_BODY_MSL with two placeholders substituted per call:
+// V6NAX_SPARSE_KERNEL_BODY_MSL with three placeholders substituted per call:
 //   MASK_OFFSET_EXPR      — per mask_ndim (2/3/4)
-//   CAUSAL_WITHIN_TILE_MASK — empty until causal V6NAX sparse support lands
+//   CAUSAL_INTER_TILE_SKIP — causal K-block skip before QK, empty when non-causal
+//   CAUSAL_WITHIN_TILE_MASK — dense V6NAX causal mask ported to sparse NAXTile layout
 // ---------------------------------------------------------------------------
 std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, int D,
                                         int BT, int NQ, int NK, float scale,
@@ -860,9 +861,60 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
                        "tidl.y * cNQ * cNK + qi * cNK";
   }
 
-  // Causal within-tile mask (deferred; eligibility rejects causal V6NAX sparse for now)
-  (void)causal;
-  std::string causal_block = "// causal=false (V6NAX sparse path requires causal=false)";
+  std::string causal_skip;
+  std::string causal_block;
+  if (causal) {
+    causal_skip = R"CAUSAL_SKIP(
+  {
+    // Dense V6NAX causal K-loop bound port: skip K-blocks whose first key
+    // column is beyond the last query row in this Q block.
+    const int causal_column_offset = int(cKL) - int(cQL);
+    const int causal_last_column_limit =
+        int(qi) * V6NAX_SPARSE_BQ + V6NAX_SPARSE_BQ - 1 + causal_column_offset;
+    if (kb * V6NAX_SPARSE_BK > causal_last_column_limit) continue;
+  }
+)CAUSAL_SKIP";
+    causal_block = R"CAUSAL_MASK(
+  // Dense V6NAX causal mask port (NAAttentionKernel.cpp NAXTile form):
+  // earlier tiles are fully below the diagonal, future tiles were skipped above,
+  // so only diagonal-overlapping tiles need per-element triangular masking.
+  {
+    const int causal_column_offset = int(cKL) - int(cQL);
+    const int causal_first_column_limit =
+        int(qi) * V6NAX_SPARSE_BQ + causal_column_offset;
+    if (kb * V6NAX_SPARSE_BK + V6NAX_SPARSE_BK - 1 > causal_first_column_limit) {
+      constexpr auto neg_inf = Limits<float>::finite_min;
+      const short2 sc_c = stile_t::NAXFrag_t::get_coord();
+      const short sn_c = sc_c.x;
+      const short sm_c = sc_c.y;
+      const int base_row = int(qi) * V6NAX_SPARSE_BQ + tm;
+      const int base_col = kb * V6NAX_SPARSE_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq_c = 0; iq_c < V6NAX_SPARSE_TQ; iq_c++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik_c = 0; ik_c < V6NAX_SPARSE_TK; ik_c++) {
+          thread auto& fg = Stile.frag_at(iq_c, ik_c);
+          STEEL_PRAGMA_UNROLL
+          for (short ii_c = 0; ii_c < stile_t::kFragThrRows; ii_c++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj_c = 0; jj_c < stile_t::kFragThrCols; jj_c++) {
+              const int row = base_row + iq_c * 16
+                            + ii_c * stile_t::kFragRowsJump + sm_c;
+              const int col = base_col + ik_c * 16 + jj_c + sn_c;
+              const int causal_column_limit = row + causal_column_offset;
+              const auto loc = ii_c * stile_t::kFragThrCols + jj_c;
+              fg[loc] = (col > causal_column_limit) ? neg_inf : fg[loc];
+            }
+          }
+        }
+      }
+    }
+  }
+)CAUSAL_MASK";
+  } else {
+    causal_skip = "";
+    causal_block = "// causal=false";
+  }
 
   std::ostringstream ss;
   // Per-shape #defines (compile-time constants for the kernel)
@@ -901,6 +953,7 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
     }
   };
   replace_all(body, "MASK_OFFSET_EXPR", mask_offset_expr);
+  replace_all(body, "CAUSAL_INTER_TILE_SKIP", causal_skip);
   replace_all(body, "CAUSAL_WITHIN_TILE_MASK", causal_block);
   ss << body;
 
@@ -1073,7 +1126,7 @@ mlx::core::array sparse_attention_forward(
   }
 
   // V6NAX sparse eligibility (per design §13 + DC3):
-  //   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false,
+  //   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16},
   //   mask_ndim ∈ {2,3,4}
   // bf16 enabled 2026-06-18: the V6NAX sparse cooperative-tensor `mma` is templated on the
   // input dtype with fp32 accumulation (CType=float), and the generator already
@@ -1084,8 +1137,7 @@ mlx::core::array sparse_attention_forward(
   bool v6nax_sparse_eligible = (path == SparseKernelPath::V6NAXSparse)
       && (D == 64 || D == 128)
       && (block_tile == 32)
-      && (is_f16 || is_bf16)
-      && !causal;
+      && (is_f16 || is_bf16);
   if (path == SparseKernelPath::V6NAXSparse && !v6nax_sparse_eligible) {
     // Silent fallback to scalar — keeps user code working when NAX sparse doesn't apply.
     path = SparseKernelPath::ScalarFallback;

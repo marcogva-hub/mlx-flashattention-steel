@@ -5,7 +5,7 @@ work-product threshold is RETIRED. Phase E measured the scalar fallback is
 never fastest (V6NAX sparse 19-59x faster than scalar; 1.5-3.9x faster than
 SDPA at low density), so routing is now by V6NAX-sparse capability (head_dim):
 D in {64,128} -> "v2" (legacy public alias for V6NAX sparse; the C++ falls
-v2->v1 internally when V6NAX sparse is ineligible: causal / block_tile!=32),
+v2->v1 internally when V6NAX sparse is ineligible, e.g. block_tile!=32),
 any other D -> "v1" (legacy public alias for scalar fallback).
 
 Per CLAUDE_V6_NAX.md §3.5 three-axis rule:

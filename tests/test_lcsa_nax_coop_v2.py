@@ -2,9 +2,10 @@
 
 Three-axis validation per CLAUDE_V6_NAX §7:
   1. Output sanity: V2 output matches V1 (the v2.34.0 SHIP-validated reference)
-     within FP16 noise floor on all 7 LCSA shapes + density sweep.
+     within FP16 noise floor on non-causal LCSA shapes + density sweep.
   2. Path entered: V2 actually dispatches when MFA_LCSA_KERNEL_VERSION=v2 and
-     eligibility conditions are met; falls back to V1 otherwise.
+     eligibility conditions are met; falls back to V1 for unsupported tile/head
+     shapes. Causal is supported by the V6NAX sparse path.
   3. Edges preserved: all-False mask row -> exact zero output (v2.34.0 contract);
      all-True mask -> dense SDPA-equivalent; correctness under random masks.
 """
@@ -138,8 +139,8 @@ def test_axis2_v2_falls_back_for_ineligible_BT():
         "V2 + BT=16 should silently fall back to V1 -> bit-exact output"
 
 
-def test_axis2_v2_falls_back_for_causal():
-    """V2 + causal=true -> silent V1 fallback (causal not yet supported in V2)."""
+def test_axis2_v2_supports_causal():
+    """V2 + causal=true runs the V6NAX sparse causal mask and matches SDPA+bias."""
     B, Hq, Hk, qL, kL, D, BT = 1, 4, 4, 4096, 4096, 128, 32
     Q, K, V = _make_inputs(B, Hq, Hk, qL, kL, D, seed=220)
     NQ = qL // BT
@@ -148,15 +149,23 @@ def test_axis2_v2_falls_back_for_causal():
         for k in range(min(q + 1, NQ)):
             bm[q, k] = True
     mask = mx.array(bm)
-    with env_version("v1"):
-        O_v1 = sparse_attention_nax(Q, K, V, mask, block_tile=BT, causal=True)
     with env_version("v2"):
         O_v2 = sparse_attention_nax(Q, K, V, mask, block_tile=BT, causal=True)
-    mx.async_eval(O_v1, O_v2); mx.synchronize()
-    err = np.abs(np.array(O_v1.astype(mx.float32)) -
-                 np.array(O_v2.astype(mx.float32)))
-    assert err.max() < 1e-7, \
-        "V2 + causal=true should silently fall back to V1 -> bit-exact output"
+    bias = _bool_mask_to_float_bias(mask, BT, qL, kL, mx.float16)
+    q_idx = mx.arange(qL).reshape(-1, 1)
+    k_idx = mx.arange(kL).reshape(1, -1)
+    causal_bias = mx.where(k_idx > q_idx,
+                           mx.array(-float("inf"), dtype=mx.float16),
+                           mx.array(0.0, dtype=mx.float16))
+    bias = bias + causal_bias
+    O_ref = mx.fast.scaled_dot_product_attention(
+        Q, K, V, scale=1.0 / math.sqrt(D), mask=bias)
+    mx.async_eval(O_v2, O_ref); mx.synchronize()
+    err = np.abs(np.array(O_v2.astype(mx.float32)) -
+                 np.array(O_ref.astype(mx.float32)))
+    rmse = float(np.sqrt((err ** 2).mean()))
+    assert rmse < 1e-3, f"V2 causal RMSE vs SDPA+bias: {rmse}"
+    assert np.isfinite(np.array(O_v2.astype(mx.float32))).all()
 
 
 # ===========================================================================

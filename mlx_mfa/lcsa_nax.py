@@ -309,18 +309,20 @@ DEFAULT_DENSITY_THRESHOLD = 1.01
 # NAX; anything uncharacterized → SDPA.
 SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})    # BT=32 wins 0.30–0.96× vs dense SDPA; BT=16 is 2–17× SLOWER (non-viable); BT=64 uncharacterized → SDPA
 SPARSE_NAX_MIN_N = 2048                             # NAX beats dense SDPA at N≥2048 (below: SDPA)
+SPARSE_NAX_CAUSAL_MIN_N = 2048                      # causal V6NAX sparse crossover, measured after within-tile mask port; keep small-N on SDPA
 SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})  # measured-viable head dims
 SPARSE_NAX_DENSITY_CEILING = 1.0                    # NAX beats-or-ties dense SDPA across the measured density range at BT=32 (0.15→0.96×); re-validate on stable, tighten only if a loss regime appears
 
 
-def _nax_sparse_route_viable(Q, K, block_tile, density) -> bool:
+def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool:
     """True iff (Q, K, block_tile, density) falls in the measured NAX-beats-dense-SDPA
     window. TILE viability is primary — this is what makes the default safe and
     removes the density-threshold footgun (BT≠32 / N<2048 / D∉{64,128} → SDPA
     regardless of density)."""
+    min_n = SPARSE_NAX_CAUSAL_MIN_N if causal else SPARSE_NAX_MIN_N
     return (block_tile in SPARSE_NAX_VIABLE_BLOCK_TILES
-            and Q.shape[2] >= SPARSE_NAX_MIN_N
-            and K.shape[2] >= SPARSE_NAX_MIN_N
+            and Q.shape[2] >= min_n
+            and K.shape[2] >= min_n
             and Q.shape[3] in SPARSE_NAX_VIABLE_HEAD_DIMS
             and density <= SPARSE_NAX_DENSITY_CEILING)
 
@@ -432,7 +434,7 @@ def sparse_attention_dispatch(
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
     if ((not _force_sdpa)
-            and _nax_sparse_route_viable(Q, K, block_tile, density)
+            and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal)
             and density < density_threshold):
         return sparse_attention_nax(
             Q, K, V, block_mask,
