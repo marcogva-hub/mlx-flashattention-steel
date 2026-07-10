@@ -692,7 +692,13 @@ static std::string dotProductScale(float rsqrtD, bool derivative) {
   }
 }
 
+std::string mlx_mfa_v6_nax_helpers_block();
+
 static std::string naxHelpersBlock() {
+  return mlx_mfa_v6_nax_helpers_block();
+}
+
+std::string mlx_mfa_v6_nax_helpers_block() {
   // Apple NAX cooperative-tensor primitives — verbatim from
   // ~/code/mlx-source/mlx/backend/metal/kernels/steel/{defines.h,
   // utils/type_traits.h, utils/integral_constant.h} + the
@@ -855,6 +861,31 @@ struct BaseNAXFrag {
     }
   }
 
+  template <typename T, typename SrcPtrType, typename StrX, typename StrY,
+            typename LimX, typename LimY, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void load_safe(
+      thread dtype_frag_t<T>& dst, SrcPtrType src,
+      StrX str_x, StrY str_y, LimX lim_x, LimY lim_y,
+      OffX off_x = {}, OffY off_y = {}) {
+    const short2 sc = get_coord();
+    src += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    auto ly = lim_y - sc.x;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kElemCols; j++) {
+        if (r < lx && (c + j) < ly) {
+          dst[i * kElemCols + j] = static_cast<T>(src[r * str_x + (c + j) * str_y]);
+        } else {
+          dst[i * kElemCols + j] = T(0);
+        }
+      }
+    }
+  }
+
   template <typename T, typename DstPtrType, typename StrX, typename StrY,
             typename OffX = Int<0>, typename OffY = Int<0>>
   METAL_FUNC static constexpr void store(
@@ -905,6 +936,30 @@ struct BaseNAXFrag {
           for (short j = 0; j < kElemCols; j++) {
             dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
           }
+        }
+      }
+    }
+  }
+
+  template <typename T, typename DstPtrType, typename StrX, typename StrY,
+            typename LimX, typename LimY, typename OffX = Int<0>, typename OffY = Int<0>>
+  METAL_FUNC static constexpr void store_safe(
+      const thread dtype_frag_t<T>& src, DstPtrType dst,
+      StrX str_x, StrY str_y, LimX lim_x, LimY lim_y,
+      OffX off_x = {}, OffY off_y = {}) {
+    using U = metal::pointer_element_t<DstPtrType>;
+    const short2 sc = get_coord();
+    dst += sc.y * str_x + sc.x * str_y;
+    auto lx = lim_x - sc.y;
+    auto ly = lim_y - sc.x;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kElemRows; i++) {
+      const auto r = off_x + i * kElemRowsJump;
+      const auto c = off_y;
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < kElemCols; j++) {
+        if (r < lx && (c + j) < ly) {
+          dst[r * str_x + (c + j) * str_y] = static_cast<U>(src[i * kElemCols + j]);
         }
       }
     }
@@ -1037,8 +1092,8 @@ struct NAXTile {
     }
   }
 
-  template <typename U>
-  METAL_FUNC void load(const device U* src, const int ld) {
+  template <typename SrcPtrType>
+  METAL_FUNC void load(SrcPtrType src, const int ld) {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::load(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
@@ -1057,12 +1112,23 @@ struct NAXTile {
     });
   }
 
-  template <typename U>
-  METAL_FUNC void load_rows(const device U* src, const int ld, const short n_rows) {
+  template <typename SrcPtrType>
+  METAL_FUNC void load_rows(SrcPtrType src, const int ld, const short n_rows) {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::load_rows(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
                              n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename SrcPtrType>
+  METAL_FUNC void load_safe(SrcPtrType src, const int ld, const short2 src_tile_dims) {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::load_safe(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
+                             src_tile_dims.y, src_tile_dims.x,
+                             idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
       });
     });
   }
@@ -1073,6 +1139,17 @@ struct NAXTile {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::store_rows(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
                               n_rows, idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
+      });
+    });
+  }
+
+  template <typename U>
+  METAL_FUNC void store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const {
+    const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
+      const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
+        NAXFrag_t::store_safe(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
+                              dst_tile_dims.y, dst_tile_dims.x,
+                              idx_row * Int<kFragRows>{}, idx_col * Int<kFragCols>{});
       });
     });
   }

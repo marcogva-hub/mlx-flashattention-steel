@@ -17,6 +17,11 @@
 
 class CodeWriter;
 
+// Shared self-contained MSL helper block for V6 NAX source generators.
+// Exposed for sibling mlx-mfa NAX kernels (for example quantized matmul) so
+// they do not duplicate the BaseNAXFrag/NAXTile definitions.
+std::string mlx_mfa_v6_nax_helpers_block();
+
 struct NAAttentionKernel {
   static constexpr uint16_t computeDThreads = 32;
   static constexpr uint16_t blockMaskThreads = 256;

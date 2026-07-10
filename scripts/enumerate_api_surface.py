@@ -122,6 +122,7 @@ AUDITED_RAW = {
     "conv3d_nax_forward",                   # R14 (verify-only)
     "v6_nax_backward_query",                # R16 (added dtype + lse/d_vec f32)
     "v6_nax_backward_kv",                   # R16
+    "v6_nax_quantized_matmul",              # Op-K qmm NAX expert surface
 }
 
 # CX-R10-01 (volet N): explicit review-set for HELPER exports that the property

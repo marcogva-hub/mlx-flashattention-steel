@@ -287,9 +287,15 @@ AND calls a compute entry (the computational-in-helper signature). Bite-proven
 spot-verified non-computational. Lock: `tests/test_hardening_m.py` (lock count;
 + corrected `tests/test_hardening_l.py`).
 
-## ✅ INVENTORY COMPLETE — OMITTED computational = 0 (TRUE as of volet M)
+## Op-K — expert V6 NAX quantized matmul (2026-07-10)
+
+| entry | correctness | accept-valid | reject-malformed | determinism |
+|---|---|---|---|---|
+| raw `v6_nax_quantized_matmul` | fp32 dequant-then-matmul oracle cos ≥ 0.999 ✓ | f16/bf16, bits {4,8}, group_size {32,64,128}, transpose=True packed W ✓ | bits outside {4,8} and unsupported geometry raise ✓ | N-A (single fused qmm dispatch; no staged global dequant) |
+
+## ✅ INVENTORY COMPLETE — OMITTED computational = 0 (TRUE as of Op-K)
 `scripts/enumerate_api_surface.py` reports **0 omitted** computational entries
-(**24 public** + 34 raw, all AUDITED) and is **assertion-guarded** by TWO
+(**24 public** + 35 raw, all AUDITED) and is **assertion-guarded** by TWO
 assertions (every export classified + no computational-in-helper). The full
 computational attention surface — public + raw — has a first-hand 4-axis matrix
 row, and the row-set definition is itself defended against the misclassification

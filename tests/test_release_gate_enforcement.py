@@ -31,8 +31,10 @@ def _read(p: Path) -> str:
 # hardware. Frozen so removing/adding an M5 lock changes the suite's M5 surface
 # visibly (the marker is attached regardless of whether it skips on this host).
 # 69 → 70: added tests/test_sparse_bt_aware_routing.py (BT-aware sparse dispatcher
-# routing lock; M5-gated — the NAX sparse kernel is M5+). M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 70
+# routing lock; M5-gated — the NAX sparse kernel is M5+). 70 → 72: added
+# tests/test_qmm_nax_lock.py (expert V6 NAX qmm correctness + reject locks).
+# M5 surface still covered.
+_EXPECTED_M5_SKIP_SITES = 72
 
 
 def _count_m5_skip_sites() -> int:
