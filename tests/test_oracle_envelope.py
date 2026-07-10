@@ -158,7 +158,10 @@ _CELLS += [("decode_D%d" % D, DT_NAME[dt], c, "decode_Nq1_S%d" % S, dt, "sdpa",
            for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
 
 
-# -- Sparse (symmetric causal block mask, D=128 N=2048 → real NAX) ------------
+# -- Sparse (symmetric causal block mask).  `make_causal_block_mask` is dense
+# triangular (~0.5 density), outside the CC causal V6NAX default-on window
+# (d≤0.3), so the documented public route is SDPA+mask.  Low-density causal
+# V6NAX engagement is locked in `test_sparse_v6nax_causal_lock.py`.
 def _sparse_runner(D, N):
     def run(dt, causal):
         scale = 1.0 / math.sqrt(D)
@@ -179,7 +182,7 @@ def _sparse_runner(D, N):
 
 # sparse is intrinsically causal here; register only causal=True cells
 _CELLS += [("sparse_D%d" % D, DT_NAME[dt], True, "square_causal_N2048", dt,
-            "real", _sparse_runner(D, 2048))
+            "sdpa", _sparse_runner(D, 2048))
            for D in (64, 128) for dt in (mx.float16, mx.bfloat16)]
 
 

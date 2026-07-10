@@ -1,11 +1,10 @@
 """BT-aware sparse_attention_dispatch routing (victory-map win window).
 
-Locks the dispatcher-correctness fix: TILE VIABILITY is the primary gate, so the
-proven-viable window (BT=32, N≥2048, D∈{64,128}, density≤ceiling) routes to native
-NAX and everything else — critically BT=16 (2–17× slower = the ~5.5× mis-route),
-BT=64 (uncharacterized), N<2048, D∉{64,128} — routes to SDPA REGARDLESS of the
-density threshold. This removes the footgun where routing correctness depended on
-a caller hand-tuning `density_threshold`.
+Locks the dispatcher-correctness fix: TILE VIABILITY is the primary gate. The
+non-causal proven-viable window (BT=32, N≥2048, D∈{64,128}, density≤ceiling)
+routes to native NAX. The causal CC-measured β3 window is stricter:
+BT=32, 2048≤N≤8192, D∈{64,128}, density≤0.3, B·H≤128. Everything else routes
+to SDPA regardless of density_threshold.
 
 β3-measured window; the constants are documented re-validate-on-stable. NAX kernel
 is Metal-4 / macOS-26 (stable track). M5-gated (the NAX kernel is M5+).
@@ -41,6 +40,10 @@ def _mask(N, BT, density, seed=0):
 def test_constants_documented_window():
     assert L.SPARSE_NAX_VIABLE_BLOCK_TILES == frozenset({32})
     assert L.SPARSE_NAX_MIN_N == 2048
+    assert L.SPARSE_NAX_CAUSAL_MIN_N == 2048
+    assert L.SPARSE_NAX_CAUSAL_MAX_N == 8192
+    assert L.SPARSE_NAX_CAUSAL_MAX_BH == 128
+    assert L.SPARSE_NAX_CAUSAL_DENSITY_CEILING == 0.30
     assert L.SPARSE_NAX_VIABLE_HEAD_DIMS == frozenset({64, 128})
     assert 0.0 < L.SPARSE_NAX_DENSITY_CEILING <= 1.0
 
@@ -50,7 +53,7 @@ def test_constants_documented_window():
 @pytest.mark.parametrize("D", [64, 128])
 @pytest.mark.parametrize("density", [0.05, 0.5])
 def test_routing_table_matches_win_window(monkeypatch, BT, N, D, density):
-    """Route to NAX iff (BT=32 AND N≥2048 AND D∈{64,128}); else SDPA."""
+    """Non-causal route to NAX iff (BT=32 AND N≥2048 AND D∈{64,128}); else SDPA."""
     called = {"nax": False}
     orig = L.sparse_attention_nax
     monkeypatch.setattr(L, "sparse_attention_nax",
@@ -59,6 +62,49 @@ def test_routing_table_matches_win_window(monkeypatch, BT, N, D, density):
     m = _mask(N, BT, density)
     L.sparse_attention_dispatch(q, kk, v, m, block_tile=BT, scale=1.0/math.sqrt(D), density=density)
     expect_nax = (BT == 32 and N >= L.SPARSE_NAX_MIN_N and D in L.SPARSE_NAX_VIABLE_HEAD_DIMS)
+    assert called["nax"] is expect_nax
+
+
+class _FakeArray:
+    def __init__(self, shape, dtype=mx.float16):
+        self.shape = shape
+        self.dtype = dtype
+
+
+@pytest.mark.parametrize(
+    "case,B,H,N,D,BT,density,dtype,expect",
+    [
+        ("d128_edge", 1, 128, 2048, 128, 32, 0.30, mx.float16, True),
+        ("d64_edge", 2, 64, 8192, 64, 32, 0.30, mx.bfloat16, True),
+        ("too_dense", 1, 4, 2048, 128, 32, 0.3001, mx.float16, False),
+        ("too_many_heads", 1, 129, 2048, 128, 32, 0.30, mx.float16, False),
+        ("too_short", 1, 4, 1024, 128, 32, 0.30, mx.float16, False),
+        ("too_long", 1, 4, 8193, 128, 32, 0.30, mx.float16, False),
+        ("bad_tile", 1, 4, 2048, 128, 16, 0.30, mx.float16, False),
+        ("bad_dim", 1, 4, 2048, 256, 32, 0.30, mx.float16, False),
+        ("bad_dtype", 1, 4, 2048, 128, 32, 0.30, mx.float32, False),
+    ],
+)
+def test_causal_route_viability_matches_cc_window(case, B, H, N, D, BT, density, dtype, expect):
+    """Pure gate lock: causal default-on is bounded to CC's measured β3 window."""
+    del case
+    q = _FakeArray((B, H, N, D), dtype)
+    k = _FakeArray((B, H, N, D), dtype)
+    assert L._nax_sparse_route_viable(q, k, BT, density, causal=True) is expect
+
+
+@pytest.mark.parametrize("density,expect_nax", [(0.30, True), (0.3001, False)])
+def test_causal_dispatch_density_gate(monkeypatch, density, expect_nax):
+    """The public dispatcher applies the causal density ceiling before calling NAX."""
+    called = {"nax": False}
+    orig = L.sparse_attention_nax
+    monkeypatch.setattr(L, "sparse_attention_nax",
+                        lambda *a, **k: (called.__setitem__("nax", True), orig(*a, **k))[1])
+    q, kk, v = _inputs(2048, 64, H=1)
+    m = _mask(2048, 32, 0.15)
+    L.sparse_attention_dispatch(
+        q, kk, v, m, block_tile=32, scale=1.0 / math.sqrt(64),
+        density=density, causal=True)
     assert called["nax"] is expect_nax
 
 

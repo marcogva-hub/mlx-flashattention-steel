@@ -306,12 +306,16 @@ DEFAULT_DENSITY_THRESHOLD = 1.01
 #
 # β3-INDICATIVE (macOS 27 β3 / metal 32023.918, M5 Max) — RE-VALIDATE on stable
 # macOS before tightening. Conservative: route ONLY the proven-viable window to
-# NAX; anything uncharacterized → SDPA.
+# NAX; anything uncharacterized → SDPA.  Causal has a stricter CC-measured
+# default-on sub-window because B·H>128 and density>0.3 were not characterized.
 SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})    # BT=32 wins 0.30–0.96× vs dense SDPA; BT=16 is 2–17× SLOWER (non-viable); BT=64 uncharacterized → SDPA
 SPARSE_NAX_MIN_N = 2048                             # NAX beats dense SDPA at N≥2048 (below: SDPA)
-SPARSE_NAX_CAUSAL_MIN_N = 2048                      # causal V6NAX sparse crossover, measured after within-tile mask port; keep small-N on SDPA
+SPARSE_NAX_CAUSAL_MIN_N = 2048                      # causal V6NAX sparse lower bound; keep small-N on SDPA
+SPARSE_NAX_CAUSAL_MAX_N = 8192                      # causal CC window upper bound; larger N uncharacterized
+SPARSE_NAX_CAUSAL_MAX_BH = 128                      # causal CC window: B·H≤128; do not extrapolate beyond
+SPARSE_NAX_CAUSAL_DENSITY_CEILING = 0.30            # causal CC window: d≤0.3 (β3-indicative)
 SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})  # measured-viable head dims
-SPARSE_NAX_DENSITY_CEILING = 1.0                    # NAX beats-or-ties dense SDPA across the measured density range at BT=32 (0.15→0.96×); re-validate on stable, tighten only if a loss regime appears
+SPARSE_NAX_DENSITY_CEILING = 1.0                    # non-causal NAX beats-or-ties dense SDPA across measured BT=32 range; re-validate stable
 
 
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool:
@@ -319,11 +323,23 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool
     window. TILE viability is primary — this is what makes the default safe and
     removes the density-threshold footgun (BT≠32 / N<2048 / D∉{64,128} → SDPA
     regardless of density)."""
-    min_n = SPARSE_NAX_CAUSAL_MIN_N if causal else SPARSE_NAX_MIN_N
-    return (block_tile in SPARSE_NAX_VIABLE_BLOCK_TILES
-            and Q.shape[2] >= min_n
-            and K.shape[2] >= min_n
-            and Q.shape[3] in SPARSE_NAX_VIABLE_HEAD_DIMS
+    if block_tile not in SPARSE_NAX_VIABLE_BLOCK_TILES:
+        return False
+    if Q.dtype not in (mx.float16, mx.bfloat16):
+        return False
+    if Q.shape[3] not in SPARSE_NAX_VIABLE_HEAD_DIMS:
+        return False
+    if causal:
+        bh = int(Q.shape[0]) * int(Q.shape[1])
+        return (Q.shape[2] == K.shape[2]
+                and Q.shape[2] >= SPARSE_NAX_CAUSAL_MIN_N
+                and K.shape[2] >= SPARSE_NAX_CAUSAL_MIN_N
+                and Q.shape[2] <= SPARSE_NAX_CAUSAL_MAX_N
+                and K.shape[2] <= SPARSE_NAX_CAUSAL_MAX_N
+                and bh <= SPARSE_NAX_CAUSAL_MAX_BH
+                and density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING)
+    return (Q.shape[2] >= SPARSE_NAX_MIN_N
+            and K.shape[2] >= SPARSE_NAX_MIN_N
             and density <= SPARSE_NAX_DENSITY_CEILING)
 
 
@@ -365,9 +381,10 @@ def sparse_attention_dispatch(
         Q, K, V, block_mask: same as sparse_attention_nax.
         block_tile: defaults to 16 (Phase 1.3 winner).
         scale: query scale; default 1/sqrt(D).
-        causal: only supported on the Sprint B path. If True and the dispatcher
-            chooses the SDPA path, an explicit causal bias is added to the
-            block_mask bias before SDPA dispatch.
+        causal: supported on the V6NAX sparse path inside the β3-measured
+            causal window. If True and the dispatcher chooses the SDPA path,
+            an explicit causal bias is added to the block_mask bias before
+            SDPA dispatch.
         density_threshold: route boundary. Default
             ``DEFAULT_DENSITY_THRESHOLD`` (1.01 since v2.50-Sprint1 — always
             route to NAX on M5+; pass 0.02 explicitly for the M1/M3 STEEL
@@ -427,9 +444,12 @@ def sparse_attention_dispatch(
     # density-dependent (ran on SDPA, raised on the native route).
     _force_sdpa = Q.dtype not in (mx.float16, mx.bfloat16)
     # BT-AWARE routing (victory map): tile viability is the PRIMARY gate — only
-    # the proven-viable window (BT=32, N≥2048, D∈{64,128}, density≤ceiling) routes
-    # to native NAX; everything else (BT=16 = 2–17× slower, BT=64 uncharacterized,
-    # N<2048, D∉{64,128}) falls through to SDPA REGARDLESS of density_threshold.
+    # the proven-viable non-causal window (BT=32, N≥2048, D∈{64,128},
+    # density≤ceiling) and the stricter β3-measured causal window
+    # (BT=32, 2048≤N≤8192, D∈{64,128}, density≤0.3, B·H≤128) route to
+    # native NAX. Everything else (BT=16, BT=64, N<2048, causal B·H>128,
+    # causal density>0.3, D∉{64,128}) falls through to SDPA regardless of
+    # density_threshold.
     # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.

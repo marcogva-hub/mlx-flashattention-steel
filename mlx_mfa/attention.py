@@ -3822,17 +3822,23 @@ def flash_attention_sparse(
                             return _v6nax_sparse_hybrid_vjp(
                                 q, k, v, block_mask, bt_q, scale, causal
                             )
-                        # Audit Phase F (2026-06-18): density gate. Symmetric
-                        # NAX-sparse only beats Apple SDPA below the crossover
-                        # (Phase E: ~d=0.78). Route near-dense masks to the
-                        # SDPA-bias fallback — correct, and faster when the mask
-                        # is ≳ ceiling. Density = active-tile fraction (the work
-                        # proxy: the kernel iterates active tiles). The .item()
-                        # syncs a tiny [NQ,NK] reduction; block_mask is an input,
-                        # so this does not break q/k/v grad.
+                        # Audit Phase F (2026-06-18) + CC causal-routing
+                        # follow-up (2026-07-10): density/shape gate.
+                        # Non-causal keeps the historical crossover ceiling.
+                        # Causal uses the stricter β3-measured V6NAX sparse
+                        # default-on window from `lcsa_nax`:
+                        # BT=32, 2048≤N≤8192, D∈{64,128}, density≤0.3,
+                        # B·H≤128.  B·H>128 and stable macOS remain
+                        # uncharacterized; keep those on SDPA.
                         _density = float(
                             mx.mean(block_mask.astype(mx.float32)).item())
-                        if _density >= _nax_sparse_density_ceiling():
+                        if causal:
+                            from mlx_mfa.lcsa_nax import _nax_sparse_route_viable
+                            _route_nax = _nax_sparse_route_viable(
+                                q, k, bt_q, _density, causal=True)
+                        else:
+                            _route_nax = _density < _nax_sparse_density_ceiling()
+                        if not _route_nax:
                             return _sparse_fallback_sdpa_perhead(
                                 q, k, v, block_mask, scale, causal
                             )
