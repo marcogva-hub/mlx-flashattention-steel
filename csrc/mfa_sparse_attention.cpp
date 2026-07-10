@@ -10,11 +10,10 @@
 ///   - causal: false + true (per-tile skip future + within-tile triangular)
 ///   - asymmetric qL != kL (cross-attention) supported
 ///
-/// NOTE (audit B1, 2026-06-17): the matmul2d inner-GEMM swap is DONE — it lives
-/// in `sparse_kernel_source_v2` (this file, the `BaseNAXFrag::mma` cooperative-
-/// tensor kernel), selected by `decide_auto_version` when qL*kL*D >= 2.147e9
-/// (lcsa_nax.py). This V1 generator is the per-thread SCALAR fallback for
-/// smaller work products (~40x slower than V2 — see the B1 spec). NOT "future".
+/// NOTE (audit B1, 2026-06-17; naming refactor 2026-07-10): the matmul2d
+/// inner-GEMM swap lives in `sparse_kernel_source_v6nax` (this file, the
+/// `BaseNAXFrag::mma` cooperative-tensor kernel).  The scalar generator is a
+/// per-thread-Q-row fallback, not the historical dense V1 lineage.
 
 #include "mfa_sparse_attention.hpp"
 
@@ -35,20 +34,20 @@ namespace mlx_mfa {
 
 namespace {
 
-const std::string SPARSE_HEADER = R"(
+const std::string SPARSE_SCALAR_HEADER = R"(
 #include <metal_stdlib>
 using namespace metal;
 )";
 
 // bfloat is provided directly by <metal_stdlib> on Apple Silicon Metal SDK;
 // no separate <metal_bf16> header. Kept as named alias for clarity.
-const std::string& SPARSE_HEADER_BF16 = SPARSE_HEADER;
+const std::string& SPARSE_SCALAR_HEADER_BF16 = SPARSE_SCALAR_HEADER;
 
 // ---------------------------------------------------------------------------
-// V2 SPARSE HEADER PREFIX — minimum #include set for Apple NAX helpers.
-// The full V2 header = V2_SPARSE_HEADER_PREFIX + V2_APPLE_HELPERS_MSL.
+// V6NAX sparse header prefix — minimum #include set for Apple NAX helpers.
+// The full header = prefix + V6NAX_SPARSE_APPLE_HELPERS_MSL.
 // ---------------------------------------------------------------------------
-const std::string V2_SPARSE_HEADER_PREFIX = R"(
+const std::string V6NAX_SPARSE_HEADER_PREFIX = R"(
 // MFA_REQUIRE_MSL4
 #include <metal_stdlib>
 #include <metal_simdgroup>
@@ -61,10 +60,11 @@ using namespace mpp::tensor_ops;
 
 
 // ---------------------------------------------------------------------------
-// V2 MSL: Apple helpers (NAXFrag, NAXTile, operator structs) - verbatim lift
+// V6NAX sparse MSL: Apple helpers (NAXFrag, NAXTile, operator structs) -
+// verbatim lift
 // from csrc/mfa/v6_nax/NAAttentionKernel.cpp:2336-2724 (389 LOC).
 // ---------------------------------------------------------------------------
-const std::string V2_APPLE_HELPERS_MSL = R"V2MSL_APPLE(
+const std::string V6NAX_SPARSE_APPLE_HELPERS_MSL = R"V6SPARSE_APPLE(
 // === defines.h ===
 #define STEEL_CONST static constant constexpr const
 #define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
@@ -443,30 +443,31 @@ struct ExpSubOp {
   METAL_FUNC static constexpr T apply(T x, T y) { return fast::exp2(x - y); }
 };
 
-)V2MSL_APPLE";
+)V6SPARSE_APPLE";
 
 // ---------------------------------------------------------------------------
-// V2 kernel body - adapted from V6NAX forward with sparse modifications:
+// V6NAX sparse kernel body - adapted from V6NAX forward with sparse modifications:
 //   - block_mask skip in outer loop (sparse iteration)
 //   - K/V base + per-iteration jump pointers (NOT linear advance)
-//   - is_last_q/is_last_k remainder branches dropped (V1 enforces div)
+//   - is_last_q/is_last_k remainder branches dropped (front-end enforces div)
 //   - all-False row -> zero output (v2.34.0 contract via rcp branch)
 // Placeholders replaced per-call:
 //   MASK_OFFSET_EXPR    - block_mask offset for (b, hq, qi) per mask_ndim
 //   CAUSAL_WITHIN_TILE_MASK - within-tile triangular mask when causal=true
 // ---------------------------------------------------------------------------
-const std::string V2_KERNEL_BODY_MSL = R"V2MSL_BODY(
+const std::string V6NAX_SPARSE_KERNEL_BODY_MSL = R"V6SPARSE_BODY(
 
-// V2 sparse kernel body — adapted from V6NAX forward (NAAttentionKernel.cpp:2767-2960).
+// V6NAX sparse kernel body — adapted from V6NAX forward (NAAttentionKernel.cpp:2767-2960).
 // Key sparse modifications:
 //   - block_mask scan in outer loop: skip kb when mask[qi, kb] == false
 //   - K/V base pointers saved; per-iteration jump via kb offset (no linear advance)
-//   - is_last_q/is_last_k remainder logic dropped (V1 enforces qL/kL % BT == 0)
+//   - is_last_q/is_last_k remainder logic dropped (front-end enforces qL/kL % BT == 0)
 //   - All-False row zero-output preservation (v2.34.0 contract)
 
 // Per-shape-emitted constants (constexpr at JIT time):
-//   cB, cHq, cHk, cQL, cKL, cD, cNQ, cNK, cGQA, V6NAX_BQ, V6NAX_BK, V6NAX_BD,
-//   V6NAX_WM, V6NAX_TQ, V6NAX_TD, V6NAX_TK, V6NAX_DOT_SCALE
+//   cB, cHq, cHk, cQL, cKL, cD, cNQ, cNK, cGQA, V6NAX_SPARSE_BQ, V6NAX_SPARSE_BK,
+//   V6NAX_SPARSE_BD, V6NAX_SPARSE_WM, V6NAX_SPARSE_TQ, V6NAX_SPARSE_TD,
+//   V6NAX_SPARSE_TK, V6NAX_SPARSE_DOT_SCALE
 
 ulong3 tidl{threadgroup_position_in_grid.x,
             threadgroup_position_in_grid.y,
@@ -488,13 +489,13 @@ const long O_batch_stride = cHq * cQL * cD;
 
 Q += tidl.z * Q_batch_stride
    + tidl.y * Q_head_stride
-   + tidl.x * V6NAX_BQ * Q_seq_stride;
+   + tidl.x * V6NAX_SPARSE_BQ * Q_seq_stride;
 ulong kv_head_idx = ulong(tidl.y) / ulong(cGQA);
 device const T* K_base = K + tidl.z * K_batch_stride + kv_head_idx * K_head_stride;
 device const T* V_base = V + tidl.z * V_batch_stride + kv_head_idx * V_head_stride;
 O += tidl.z * O_batch_stride
    + tidl.y * O_head_stride
-   + tidl.x * V6NAX_BQ * O_seq_stride;
+   + tidl.x * V6NAX_SPARSE_BQ * O_seq_stride;
 
 const uint qi = uint(tidl.x);
 
@@ -505,13 +506,13 @@ const uint qi = uint(tidl.x);
 //                                  + tidl.y * cNQ * cNK + qi * cNK
 device const bool* mask_qrow_base = block_mask + MASK_OFFSET_EXPR;
 
-const float scale2 = V6NAX_DOT_SCALE;
+const float scale2 = V6NAX_SPARSE_DOT_SCALE;
 
-using otile_t = NAXTile<float, V6NAX_TQ, V6NAX_TD>;
+using otile_t = NAXTile<float, V6NAX_SPARSE_TQ, V6NAX_SPARSE_TD>;
 otile_t Otile;
 Otile.clear();
 
-const short tm = 16 * V6NAX_TQ * simdgroup_index_in_threadgroup;
+const short tm = 16 * V6NAX_SPARSE_TQ * simdgroup_index_in_threadgroup;
 Q += tm * int(Q_seq_stride);
 
 constexpr short kRowsPT = otile_t::kRowsPerThread;
@@ -529,20 +530,20 @@ for (int kb = 0; kb < kb_lim; kb++) {
   if (!mask_qrow_base[kb]) continue;
 
   // Per-iteration K and V pointers — JUMP via kb (no incremental advance).
-  device const T* K_kb = K_base + kb * V6NAX_BK * int(K_seq_stride);
-  device const T* V_kb = V_base + kb * V6NAX_BK * int(V_seq_stride);
+  device const T* K_kb = K_base + kb * V6NAX_SPARSE_BK * int(K_seq_stride);
+  device const T* V_kb = V_base + kb * V6NAX_SPARSE_BK * int(V_seq_stride);
 
-  using stile_t = NAXTile<float, V6NAX_TQ, V6NAX_TK>;
+  using stile_t = NAXTile<float, V6NAX_SPARSE_TQ, V6NAX_SPARSE_TK>;
   stile_t Stile;
   Stile.clear();
 
   // QK matmul (Apple lines 206-246; remainder branches dropped)
   STEEL_PRAGMA_UNROLL
-  for (short iq = 0; iq < V6NAX_TQ; iq++) {
+  for (short iq = 0; iq < V6NAX_SPARSE_TQ; iq++) {
     STEEL_PRAGMA_UNROLL
-    for (short ik = 0; ik < V6NAX_TK; ik += 2) {
+    for (short ik = 0; ik < V6NAX_SPARSE_TK; ik += 2) {
       STEEL_PRAGMA_UNROLL
-      for (short id = 0; id < V6NAX_TD; id++) {
+      for (short id = 0; id < V6NAX_SPARSE_TD; id++) {
         NAXTile<T, 1, 1> Qtile;
         NAXTile<T, 2, 1> Ktile;
         const int Q_load_off = iq * 16 * int(Q_seq_stride) + id * 16;
@@ -592,16 +593,16 @@ for (int kb = 0; kb < kb_lim; kb++) {
 
   // PV matmul (Apple lines 417-452)
   STEEL_PRAGMA_UNROLL
-  for (short iq = 0; iq < V6NAX_TQ; iq++) {
+  for (short iq = 0; iq < V6NAX_SPARSE_TQ; iq++) {
     STEEL_PRAGMA_UNROLL
-    for (short id = 0; id < V6NAX_TD; id += 2) {
-      if (V6NAX_BD == 128) {
+    for (short id = 0; id < V6NAX_SPARSE_TD; id += 2) {
+      if (V6NAX_SPARSE_BD == 128) {
         if (id == 4) {
           threadgroup_barrier(mem_flags::mem_none);
         }
       }
       STEEL_PRAGMA_UNROLL
-      for (short ik = 0; ik < V6NAX_TK; ik++) {
+      for (short ik = 0; ik < V6NAX_SPARSE_TK; ik++) {
         NAXTile<T, 1, 2> Vtile;
         const int V_load_off = ik * 16 * int(V_seq_stride) + id * 16;
         Vtile.load(V_kb + V_load_off, int(V_seq_stride));
@@ -630,23 +631,25 @@ Otile.template row_bin_op<MulOp>(rcp);
 O += tm * int(O_seq_stride);
 Otile.store(O, int(O_seq_stride));
 
-)V2MSL_BODY";
+)V6SPARSE_BODY";
 
-// Full V2 header (prefix + Apple helpers, concatenated at static init).
-const std::string V2_SPARSE_HEADER = V2_SPARSE_HEADER_PREFIX + V2_APPLE_HELPERS_MSL;
+// Full V6NAX sparse header (prefix + Apple helpers, concatenated at static init).
+const std::string V6NAX_SPARSE_HEADER =
+    V6NAX_SPARSE_HEADER_PREFIX + V6NAX_SPARSE_APPLE_HELPERS_MSL;
 
 
-// JIT shader source. Per-thread Q-row processing inside a per-(b, hq, q_tile)
-// threadgroup. Online softmax. Block mask scanned at K-tile granularity.
+// Scalar fallback JIT shader source. Per-thread Q-row processing inside a
+// per-(b, hq, q_tile) threadgroup. Online softmax. Block mask scanned at
+// K-tile granularity.
 //
 // dtype_str: "half" or "bfloat" - Metal Shading Language scalar type
 // mask_ndim: 2 (NQ, NK), 3 (Hq, NQ, NK), 4 (B, Hq, NQ, NK)
 // causal: when true emit per-tile-skip + within-tile triangular mask
-std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
-                                  int BT, int NQ, int NK, float scale,
-                                  const std::string& dtype_str,
-                                  int mask_ndim, bool causal,
-                                  bool emit_lse = false) {
+std::string sparse_scalar_fallback_source(int B, int Hq, int Hk, int qL, int kL, int D,
+                                           int BT, int NQ, int NK, float scale,
+                                           const std::string& dtype_str,
+                                           int mask_ndim, bool causal,
+                                           bool emit_lse = false) {
   int gqa_factor = Hq / Hk;
   // Offset expression into block_mask for this (b, hq, q_tile).
   std::string mask_base_expr;
@@ -801,7 +804,7 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
 }
 
 // ---------------------------------------------------------------------------
-// V2 source-gen — single-kernel cooperative-tensor inner-GEMM.
+// V6NAX sparse source-gen — single-kernel cooperative-tensor inner-GEMM.
 //
 // Architecture per docs/lcsa-nax/lcsa-nax-design.md §13:
 //   - Single kernel iterates K-blocks 0..NK-1 and skips masked via
@@ -811,21 +814,21 @@ std::string sparse_kernel_source(int B, int Hq, int Hk, int qL, int kL, int D,
 //
 // Eligibility (enforced in sparse_attention_forward before this is called):
 //   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false
-//   (causal deferred to follow-up — V2 with within-tile triangular requires
+//   (causal deferred to follow-up — V6NAX sparse with within-tile triangular requires
 //    extra masking on diagonal block, tracked in §13.5).
 //
 // Apple helpers (NAXFrag, NAXTile, operator structs) embedded via
-// V2_APPLE_HELPERS_MSL; kernel body via V2_KERNEL_BODY_MSL with two placeholders
-// substituted per call:
+// V6NAX_SPARSE_APPLE_HELPERS_MSL; kernel body via
+// V6NAX_SPARSE_KERNEL_BODY_MSL with two placeholders substituted per call:
 //   MASK_OFFSET_EXPR      — per mask_ndim (2/3/4)
-//   CAUSAL_WITHIN_TILE_MASK — empty until causal V2 support lands
+//   CAUSAL_WITHIN_TILE_MASK — empty until causal V6NAX sparse support lands
 // ---------------------------------------------------------------------------
-std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D,
-                                     int BT, int NQ, int NK, float scale,
-                                     const std::string& dtype_str,
-                                     int mask_ndim, bool causal) {
-  (void)BT;  // V2 uses BQ=BK=32 internally; eligibility check ensures BT==32
-  // V2 tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
+std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, int D,
+                                        int BT, int NQ, int NK, float scale,
+                                        const std::string& dtype_str,
+                                        int mask_ndim, bool causal) {
+  (void)BT;  // V6NAX sparse uses BQ=BK=32 internally; eligibility ensures BT==32
+  // V6NAX sparse tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
   // STRUCTURALLY PINNED, not a tunable (sparse-NAX-autotune, M5 Max, 2026-06-18):
   //   * BQ=BK=32 is fixed by mask-block faithfulness — one 32-wide Q/K block
   //     maps to exactly one block_mask entry (eligibility forces BT==32).
@@ -835,14 +838,14 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
   //     density AND incorrect (err up to 3.0e-2 > the fp16 floor) — a silent
   //     Category-A wrong-but-finite result. So WM is not exposed as a knob.
   // See .doc-archive/docs/lcsa-nax/sparse-nax-autotune-results.md (journal).
-  const int V2_BQ = 32;
-  const int V2_BK = 32;
-  const int V2_BD = D;
-  const int V2_WM = 2;
+  const int V6NAX_SPARSE_BQ = 32;
+  const int V6NAX_SPARSE_BK = 32;
+  const int V6NAX_SPARSE_BD = D;
+  const int V6NAX_SPARSE_WM = 2;
   const int kU = 16;
-  const int V2_TQ = V2_BQ / (V2_WM * kU);  // = 1
-  const int V2_TD = V2_BD / kU;             // 4 for D=64, 8 for D=128
-  const int V2_TK = V2_BK / kU;             // = 2
+  const int V6NAX_SPARSE_TQ = V6NAX_SPARSE_BQ / (V6NAX_SPARSE_WM * kU);  // = 1
+  const int V6NAX_SPARSE_TD = V6NAX_SPARSE_BD / kU;  // 4 for D=64, 8 for D=128
+  const int V6NAX_SPARSE_TK = V6NAX_SPARSE_BK / kU;  // = 2
   const float dot_scale_log2e = scale * 1.4426950408889634f;
   const int gqa_factor = Hq / Hk;
 
@@ -857,23 +860,23 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
                        "tidl.y * cNQ * cNK + qi * cNK";
   }
 
-  // Causal within-tile mask (deferred; eligibility rejects causal V2 for now)
+  // Causal within-tile mask (deferred; eligibility rejects causal V6NAX sparse for now)
   (void)causal;
-  std::string causal_block = "// causal=false (V2 path requires causal=false)";
+  std::string causal_block = "// causal=false (V6NAX sparse path requires causal=false)";
 
   std::ostringstream ss;
   // Per-shape #defines (compile-time constants for the kernel)
   ss << "using T = " << dtype_str << ";\n";
   ss << "using namespace mlx::steel;\n";
   ss << "\n";
-  ss << "#define V6NAX_BQ " << V2_BQ << "\n";
-  ss << "#define V6NAX_BK " << V2_BK << "\n";
-  ss << "#define V6NAX_BD " << V2_BD << "\n";
-  ss << "#define V6NAX_WM " << V2_WM << "\n";
-  ss << "#define V6NAX_TQ " << V2_TQ << "\n";
-  ss << "#define V6NAX_TD " << V2_TD << "\n";
-  ss << "#define V6NAX_TK " << V2_TK << "\n";
-  ss << "#define V6NAX_DOT_SCALE " << dot_scale_log2e << "f\n";
+  ss << "#define V6NAX_SPARSE_BQ " << V6NAX_SPARSE_BQ << "\n";
+  ss << "#define V6NAX_SPARSE_BK " << V6NAX_SPARSE_BK << "\n";
+  ss << "#define V6NAX_SPARSE_BD " << V6NAX_SPARSE_BD << "\n";
+  ss << "#define V6NAX_SPARSE_WM " << V6NAX_SPARSE_WM << "\n";
+  ss << "#define V6NAX_SPARSE_TQ " << V6NAX_SPARSE_TQ << "\n";
+  ss << "#define V6NAX_SPARSE_TD " << V6NAX_SPARSE_TD << "\n";
+  ss << "#define V6NAX_SPARSE_TK " << V6NAX_SPARSE_TK << "\n";
+  ss << "#define V6NAX_SPARSE_DOT_SCALE " << dot_scale_log2e << "f\n";
   ss << "\n";
   ss << "constexpr int cB   = " << B << ";\n";
   ss << "constexpr int cHq  = " << Hq << ";\n";
@@ -886,8 +889,8 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
   ss << "constexpr int cGQA = " << gqa_factor << ";\n";
   ss << "\n";
 
-  // Substitute placeholders in V2_KERNEL_BODY_MSL
-  std::string body = V2_KERNEL_BODY_MSL;
+  // Substitute placeholders in V6NAX_SPARSE_KERNEL_BODY_MSL
+  std::string body = V6NAX_SPARSE_KERNEL_BODY_MSL;
   auto replace_all = [](std::string& s, const std::string& from,
                          const std::string& to) {
     if (from.empty()) return;
@@ -904,24 +907,57 @@ std::string sparse_kernel_source_v2(int B, int Hq, int Hk, int qL, int kL, int D
   return ss.str();
 }
 
-// Read MFA_LCSA_KERNEL_VERSION env var. Returns "v1" or "v2".
+enum class SparseKernelPath {
+  ScalarFallback,
+  V6NAXSparse,
+};
+
+bool parse_sparse_kernel_path(const std::string& value, SparseKernelPath& path) {
+  if (value == "v1" || value == "scalar_fallback" ||
+      value == "sparse_scalar_fallback") {
+    path = SparseKernelPath::ScalarFallback;
+    return true;
+  }
+  if (value == "v2" || value == "v6nax_sparse" ||
+      value == "v6_nax_sparse" || value == "v6-nax-sparse" ||
+      value == "v6nax") {
+    path = SparseKernelPath::V6NAXSparse;
+    return true;
+  }
+  return false;
+}
+
+const char* sparse_kernel_path_cache_suffix(SparseKernelPath path) {
+  switch (path) {
+    case SparseKernelPath::V6NAXSparse:
+      return "v6nax_sparse";
+    case SparseKernelPath::ScalarFallback:
+    default:
+      return "scalar_fallback";
+  }
+}
+
+// Read MFA_LCSA_KERNEL_VERSION env var. Legacy public aliases "v1"/"v2" remain
+// valid and map to scalar fallback / V6NAX sparse respectively.
 //
 // v2.35.0 SHIP_OPT_IN (Section D §4-validated verdict):
-//   - V2 wins vs SDPA+bias and vs V1 across ALL tested shapes + densities
-//     (2.22-11.57× vs SDPA, 8.54-63.59× vs V1).
+//   - The cooperative-tensor path wins vs SDPA+bias and vs scalar fallback
+//     across ALL tested shapes + densities (2.22-11.57× vs SDPA,
+//     8.54-63.59× vs scalar fallback).
 //   - Cross-session range > 10% on 5/7 shapes (3 HIGH, 2 BOUNDARY) due to
-//     A/B/A pattern's V1 middle round disturbing V2 cache state.
-//   - Strict criterion (range < 10% + V2/V1 ≥ 1.2×) yields wins=2/7 → OPT-IN.
-//   - V1 remains default; users opt into V2 via MFA_LCSA_KERNEL_VERSION=v2.
+//     A/B/A pattern's scalar middle round disturbing NAX cache state.
+//   - Strict criterion yields wins=2/7 → OPT-IN at the time.
+//   - Historical env values are preserved: v1=scalar_fallback, v2=v6nax_sparse.
 //
 // See docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md for full data.
-std::string read_kernel_version_env() {
+SparseKernelPath read_sparse_kernel_path_env() {
   const char* env = std::getenv("MFA_LCSA_KERNEL_VERSION");
-  if (env == nullptr) return "v1";  // SHIP_OPT_IN default
+  if (env == nullptr) return SparseKernelPath::ScalarFallback;  // SHIP_OPT_IN default
   std::string v(env);
-  if (v == "v1" || v == "v2") return v;
-  // "auto" or unrecognized: fall back to V1 default.
-  return "v1";
+  SparseKernelPath path;
+  if (parse_sparse_kernel_path(v, path)) return path;
+  // "auto" or unrecognized: fall back to scalar default.
+  return SparseKernelPath::ScalarFallback;
 }
 
 }  // namespace
@@ -1024,39 +1060,40 @@ mlx::core::array sparse_attention_forward(
 
   std::string dtype_str = is_f16 ? "half" : "bfloat";
 
-  // v2.36.1 dispatch resolution order:
+  // Dispatch resolution order:
   //   1. Explicit `kernel_version` param (Python-side shape-aware
   //      decide_auto_version() in mlx_mfa.lcsa_nax). Highest priority.
-  //   2. MFA_LCSA_KERNEL_VERSION env var (legacy v2.35.0 path).
-  //   3. Internal default ("v1") per read_kernel_version_env().
-  // DC5 cache discrimination via "_v1" / "_v2" suffix in kernel name.
-  std::string version;
-  if (kernel_version == "v1" || kernel_version == "v2") {
-    version = kernel_version;
+  //   2. MFA_LCSA_KERNEL_VERSION env var (legacy aliases v1/v2 preserved).
+  //   3. Internal default (scalar fallback) per read_sparse_kernel_path_env().
+  SparseKernelPath path;
+  if (!kernel_version.empty() && parse_sparse_kernel_path(kernel_version, path)) {
+    // explicit override parsed
   } else {
-    version = read_kernel_version_env();
+    path = read_sparse_kernel_path_env();
   }
 
-  // V2 eligibility (per design §13 + DC3):
+  // V6NAX sparse eligibility (per design §13 + DC3):
   //   D ∈ {64, 128}, BT == 32, dtype ∈ {float16, bfloat16}, causal = false,
   //   mask_ndim ∈ {2,3,4}
-  // bf16 enabled 2026-06-18: the V2 cooperative-tensor `mma` is templated on the
-  // input dtype with fp32 accumulation (CType=float), and the V2 generator already
+  // bf16 enabled 2026-06-18: the V6NAX sparse cooperative-tensor `mma` is templated on the
+  // input dtype with fp32 accumulation (CType=float), and the generator already
   // emits `using T = bfloat`, so bf16 is just T=bfloat — no kernel change needed.
   // The prior `is_f16`-only gate was a Phase-1.2 deferral that silently routed bf16
-  // to the V1 scalar kernel (up to ~50x slower than plain SDPA-with-mask).
-  // If V2 was requested but not eligible, transparently fall back to V1.
-  bool v2_eligible = (version == "v2")
+  // to the scalar fallback (up to ~50x slower than plain SDPA-with-mask).
+  // If V6NAX sparse was requested but not eligible, transparently fall back to scalar.
+  bool v6nax_sparse_eligible = (path == SparseKernelPath::V6NAXSparse)
       && (D == 64 || D == 128)
       && (block_tile == 32)
       && (is_f16 || is_bf16)
       && !causal;
-  if (version == "v2" && !v2_eligible) {
-    // Silent fallback to V1 — keeps user code working when V2 doesn't apply.
-    version = "v1";
+  if (path == SparseKernelPath::V6NAXSparse && !v6nax_sparse_eligible) {
+    // Silent fallback to scalar — keeps user code working when NAX sparse doesn't apply.
+    path = SparseKernelPath::ScalarFallback;
   }
 
-  std::string name = "sparse_attn_" + version + "_" + dtype_str + "_" +
+  const bool use_v6nax_sparse = (path == SparseKernelPath::V6NAXSparse);
+  std::string name = "sparse_attn_" + std::string(sparse_kernel_path_cache_suffix(path)) +
+      "_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
@@ -1064,19 +1101,19 @@ mlx::core::array sparse_attention_forward(
       (causal ? "_c" : "_nc");
 
   std::string source;
-  if (version == "v2") {
-    source = sparse_kernel_source_v2(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
-                                      scale, dtype_str, mask_ndim, causal);
+  if (use_v6nax_sparse) {
+    source = sparse_kernel_source_v6nax(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
+                                        scale, dtype_str, mask_ndim, causal);
   } else {
-    source = sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
-                                   scale, dtype_str, mask_ndim, causal);
+    source = sparse_scalar_fallback_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
+                                            scale, dtype_str, mask_ndim, causal);
   }
 
   std::string header;
-  if (version == "v2") {
-    header = V2_SPARSE_HEADER;
+  if (use_v6nax_sparse) {
+    header = V6NAX_SPARSE_HEADER;
   } else {
-    header = is_bf16 ? SPARSE_HEADER_BF16 : SPARSE_HEADER;
+    header = is_bf16 ? SPARSE_SCALAR_HEADER_BF16 : SPARSE_SCALAR_HEADER;
   }
 
   auto kernel = mlx::core::fast::metal_kernel(
@@ -1088,13 +1125,13 @@ mlx::core::array sparse_attention_forward(
       /*ensure_row_contiguous=*/true,
       /*atomic_outputs=*/false);
 
-  // Dispatch grid + threadgroup size differ between V1 and V2.
-  // V1: TG = (BT, 1, 1), grid = (BT, Hq, B*NQ) (per-thread-Q-row, one row per thread).
-  // V2: TG = (WM*32, 1, 1), grid = (NQ*WM*32, Hq, B) (one TG per Q-block, WM SGs per TG).
+  // Dispatch grid + threadgroup size differ between scalar fallback and V6NAX sparse.
+  // Scalar: TG = (BT, 1, 1), grid = (BT, Hq, B*NQ) (one Q row per thread).
+  // V6NAX: TG = (WM*32, 1, 1), grid = (NQ*WM*32, Hq, B) (one TG per Q-block).
   std::tuple<int, int, int> grid, tg;
-  if (version == "v2") {
-    const int V2_WM = 2;
-    const int tg_threads = V2_WM * 32;  // 64 threads per TG
+  if (use_v6nax_sparse) {
+    const int V6NAX_SPARSE_WM = 2;
+    const int tg_threads = V6NAX_SPARSE_WM * 32;  // 64 threads per TG
     grid = std::make_tuple(NQ * tg_threads, Hq, B);
     tg = std::make_tuple(tg_threads, 1, 1);
   } else {
@@ -1119,23 +1156,24 @@ mlx::core::array sparse_attention_forward(
 // =============================================================================
 // v2.50 Prompt 5c Section A.1 — sparse_attention_forward returning (O, L)
 //
-// V1 generator only (LSE not emitted by the V2 matmul2d kernel; production,
+// Scalar fallback generator only (LSE not emitted by the V6NAX sparse matmul2d kernel; production,
 // not PoC).  Mirrors sparse_attention_forward dispatch
 // with emit_lse=true forcing the source generator to also write per-row
 // natural-log LSE into the L output buffer.  L shape is (B, Hq, qL) FP32.
 // All-False rows write L = -INFINITY (sentinel; consumer must handle).
 //
-// V2 kernel doesn't yet support LSE return (uses cooperative-tensor inner
+// V6NAX sparse kernel doesn't yet support LSE return (uses cooperative-tensor inner
 // GEMM that requires more extensive lse-tracking restructure — Section A
-// v3 follow-up).  V2 path silently falls back to V1 here so the (O, L)
+// v3 follow-up).  The LSE path uses scalar fallback so the (O, L)
 // contract is honored.
 //
-// DTYPE-INDEPENDENT (verified bf16-sparse-v2, 2026-06-18): this V1-only LSE path
+// DTYPE-INDEPENDENT (verified bf16-sparse-v2, 2026-06-18): this scalar-only LSE path
 // applies EQUALLY to fp16 and bf16 — it is NOT a bf16-specific deferral. The
-// non-LSE forward routes both dtypes to V2 (see v2_eligible above); only the LSE
-// variant is V1, and only because V2 lacks LSE for ALL dtypes. Reached solely via
-// sparse backward (already dense/V1 by design — declined-on-perf, dispatch-map
-// gotcha 3), so the V1-LSE cost sits inside that known envelope.
+// non-LSE forward routes both dtypes to V6NAX sparse when eligible; only the LSE
+// variant is scalar, and only because V6NAX sparse lacks LSE for ALL dtypes.
+// Reached solely via sparse backward (already dense/scalar by design —
+// declined-on-perf, dispatch-map gotcha 3), so the scalar-LSE cost sits inside
+// that known envelope.
 // =============================================================================
 std::pair<mlx::core::array, mlx::core::array>
 sparse_attention_forward_with_lse(
@@ -1219,18 +1257,18 @@ sparse_attention_forward_with_lse(
 
   std::string dtype_str = is_f16 ? "half" : "bfloat";
 
-  std::string name = "sparse_attn_v1_lse_" + dtype_str + "_" +
+  std::string name = "sparse_attn_scalar_fallback_lse_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
       "_M" + std::to_string(mask_ndim) +
       (causal ? "_c" : "_nc");
 
-  std::string source = sparse_kernel_source(B, Hq, Hk, qL, kL, D, block_tile,
-                                             NQ, NK, scale, dtype_str,
-                                             mask_ndim, causal,
-                                             /*emit_lse=*/true);
-  std::string header = is_bf16 ? SPARSE_HEADER_BF16 : SPARSE_HEADER;
+  std::string source = sparse_scalar_fallback_source(B, Hq, Hk, qL, kL, D, block_tile,
+                                                      NQ, NK, scale, dtype_str,
+                                                      mask_ndim, causal,
+                                                      /*emit_lse=*/true);
+  std::string header = is_bf16 ? SPARSE_SCALAR_HEADER_BF16 : SPARSE_SCALAR_HEADER;
 
   auto kernel = mlx::core::fast::metal_kernel(
       name,

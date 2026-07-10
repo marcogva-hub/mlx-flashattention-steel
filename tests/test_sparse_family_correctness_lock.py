@@ -5,12 +5,13 @@ oracle (NOT SDPA, NOT another mlx-mfa kernel — strict lesson #11), across all
 edges, and locks them so a future kernel change that breaks any edge fails CI.
 
 Which-binary (env-toggle fingerprinted, see phase-B1 report):
-  - V2 matmul2d (`sparse_kernel_source_v2`, BaseNAXFrag::mma cooperative-tensor)
-    is `decide_auto_version`'s default for the V2-capable head_dims D in {64,128}
+  - V6NAX sparse (`sparse_kernel_source_v6nax`, BaseNAXFrag::mma cooperative-tensor)
+    is `decide_auto_version`'s default via legacy alias "v2" for head_dims D in {64,128}
     (audit Phase F retired the old qL*kL*D >= 2.147e9 work-product gate — Phase E
-    measured V1 is never fastest). The fast win.
-  - V1 scalar (`sparse_kernel_source`) is now only the genuine fallback (a head_dim
-    V2 can't handle, e.g. D=256) — kept correct, never the default. ~40x slower.
+    measured scalar fallback is never fastest). The fast win.
+  - Scalar fallback (`sparse_scalar_fallback_source`) is now only the genuine fallback
+    (a head_dim V6NAX sparse can't handle, e.g. D=256) — kept correct, never the
+    default. ~40x slower.
 Forced here via MFA_LCSA_KERNEL_VERSION to test each generator deterministically.
 
 M5+-gated (the routes under test are M5-specific).
@@ -101,14 +102,14 @@ def _band(NB, d):
     return mx.array(m)
 
 
-# ── V2 matmul2d (forced; D=128 N=4096 → work ≥ 2.147e9) ──────────────────────
+# ── V6NAX sparse via legacy "v2" alias ───────────────────────────────────────
 @pytest.fixture
 def _force_v2(monkeypatch):
     monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", "v2")
 
 
 @pytest.mark.usefixtures("_force_v2")
-class TestV2Matmul2dCorrectness:
+class TestV6NAXSparseCorrectness:
     B, H, N, D = 2, 8, 4096, 128
     SC = 1 / math.sqrt(128)
 
@@ -134,7 +135,7 @@ class TestV2Matmul2dCorrectness:
         # CC-17 (audit) — ROUTING-not-kernel cell: density=1.0 is ≥ the 0.78
         # ceiling, so this routes to SDPA (byteΔ=0), the intended dense route
         # (locked by test_fingerprint_discipline dense-symmetric→SDPA).  It
-        # asserts the dense route's correctness vs the fp32 oracle; the sparse V2
+        # asserts the dense route's correctness vs the fp32 oracle; the sparse V6NAX
         # kernel itself is engaged (byteΔ>0) by test_banded/_scattered/_density_min.
         q, k, v = self._qkv(); _assert_correct(q, k, v, _band(self.N // 32, 1.0), self.SC)
 
@@ -164,14 +165,14 @@ class TestV2Matmul2dCorrectness:
         _assert_correct(q, k, v, mx.broadcast_to(_band(NB, 0.25)[None, None], (self.B, self.H, NB, NB)), self.SC)
 
 
-# ── V1 scalar (forced; D=128 N=2048 → below threshold) ───────────────────────
+# ── Scalar fallback via legacy "v1" alias ────────────────────────────────────
 @pytest.fixture
 def _force_v1(monkeypatch):
     monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", "v1")
 
 
 @pytest.mark.usefixtures("_force_v1")
-class TestV1ScalarCorrectness:
+class TestScalarFallbackCorrectness:
     B, H, N, D = 2, 8, 2048, 128
     SC = 1 / math.sqrt(128)
 

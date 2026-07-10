@@ -1211,9 +1211,8 @@ NB_MODULE(_ext, m) {
       "chunk_M: 0 = auto from int32-byte-budget heuristic.");
 
   // ====================================================================
-  // Sprint B Phase 1.1 — Sparse Attention NAX free-function entry point.
-  // Block-skip dispatch via per-Q-tile threadgroups + per-thread Q-row
-  // FA-2. Phase 1.3 swaps inner GEMMs to mpp::tensor_ops::matmul2d.
+  // Sparse Attention NAX free-function entry point. Block-skip dispatch
+  // chooses between scalar fallback and V6NAX sparse matmul2d internals.
   // ====================================================================
   m.def("sparse_attention_forward",
       [](const mlx::core::array& Q,
@@ -1235,9 +1234,8 @@ NB_MODULE(_ext, m) {
       nb::arg("kernel_version") = std::string(""),
       "Sprint B block-sparse attention forward (NAX). "
       "Q/K/V: (B, H, L, D) f16. block_mask: (NQ, NK) bool. "
-      "Phase 1.1: D in {64, 128}, BT in {16, 32}, mask 2-D, causal=false. "
-      "v2.36.1: kernel_version param overrides MFA_LCSA_KERNEL_VERSION env "
-      "(thread-safe alternative for Python-side shape-aware decide_auto_version).");
+      "kernel_version param overrides MFA_LCSA_KERNEL_VERSION env "
+      "(aliases: v1=scalar_fallback, v2=v6nax_sparse).");
 
   // v2.50 Prompt 5c Section A.1 — sparse forward returning (O, L).
   m.def("sparse_attention_forward_with_lse",
@@ -1260,7 +1258,7 @@ NB_MODULE(_ext, m) {
       "Block-sparse attention forward returning (O, L).  L is per-row "
       "natural-log LSE over only the active blocks (sparse-LSE), required "
       "by V6NAX backward sparse kernels for LSE consistency.  All-False rows "
-      "write L = -INFINITY (sentinel).  V1 kernel only at PoC stage "
+      "write L = -INFINITY (sentinel).  Scalar fallback only at PoC stage "
       "(v2.50 Prompt 5c Section A.1).");
 
   // _ext.__version__ removed in v2.33.1 — single SoT in mlx_mfa.__version__

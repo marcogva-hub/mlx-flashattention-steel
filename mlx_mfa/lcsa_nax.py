@@ -39,67 +39,96 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# v2.36.1 — shape-aware V2 sparse default per canonical methodology
+# v2.36.1 — shape-aware sparse default per canonical methodology
 # (`docs/methodology/canonical-protocol.md`).
 #
 # Calibrated from 3-session canonical re-bench
 # (`docs/methodology/canonical-bench-results.md`):
-#   - 7/7 tested shapes graduate V2-eligible (6 CONFIDENT + 1 BOUNDARY,
+#   - 7/7 tested shapes graduate V6NAX-sparse eligible (6 CONFIDENT + 1 BOUNDARY,
 #     0 HIGH_VARIANCE)
 #   - Smallest tested work product: qL=4096, kL=4096, D=128 -> 2.15e9
 #   - Below this work product, no canonical-protocol data exists. To
 #     honor DC9 (empirical calibration, not extrapolation), we keep
-#     V1 default for shapes smaller than the smallest tested.
+#     scalar-fallback default for shapes smaller than the smallest tested.
 #
-# Users can override via `MFA_LCSA_KERNEL_VERSION=v1` or `=v2` env var.
+# Users can override via `MFA_LCSA_KERNEL_VERSION=v1` or `=v2` env var.  These
+# legacy public aliases are retained: v1=scalar_fallback, v2=v6nax_sparse.
 # ---------------------------------------------------------------------------
 _V2_DEFAULT_WORK_THRESHOLD = 2_147_483_648  # = 4096 * 4096 * 128
+
+SPARSE_KERNEL_SCALAR_FALLBACK = "scalar_fallback"
+SPARSE_KERNEL_V6NAX = "v6nax_sparse"
+
+_KERNEL_VERSION_ALIASES = {
+    "v1": "v1",
+    SPARSE_KERNEL_SCALAR_FALLBACK: "v1",
+    "sparse_scalar_fallback": "v1",
+    "v2": "v2",
+    SPARSE_KERNEL_V6NAX: "v2",
+    "v6_nax_sparse": "v2",
+    "v6-nax-sparse": "v2",
+    "v6nax": "v2",
+}
+
+
+def _normalize_kernel_version_alias(value: str) -> Optional[str]:
+    """Return the legacy public alias understood by the C++ binding.
+
+    `kernel_version` and `MFA_LCSA_KERNEL_VERSION` are public surfaces, so
+    "v1"/"v2" remain stable aliases even though the internal paths are now named
+    scalar_fallback / v6nax_sparse.
+    """
+    return _KERNEL_VERSION_ALIASES.get(value.strip().lower())
 
 
 def decide_auto_version(
     density: float, qL: int, kL: int, D: int = 128
 ) -> str:
-    """Capability-based V2 sparse attention default (audit Phase F).
+    """Capability-based V6NAX sparse attention default (audit Phase F).
 
-    Routes the V2-capable head dims (D in {64, 128}) to the V2 matmul2d kernel.
+    Routes the V6NAX-sparse-capable head dims (D in {64, 128}) to the V6NAX
+    matmul2d kernel. The public return value intentionally remains the legacy
+    alias "v2"; the C++ binding normalizes it to the V6NAX sparse path.
     The old v2.36.1 `qL*kL*D >= 2^31` work-product threshold is RETIRED — Phase E
-    measured the V1-scalar kernel is never fastest (V2 is 19-59x faster), so the
+    measured the scalar fallback is never fastest (V6NAX sparse is 19-59x faster), so the
     threshold only mis-routed D=64 (always < 2^31) and D=128 small-N to the slow
-    V1. The C++ sparse_attention_forward falls v2->v1 internally when V2 is
-    ineligible (causal / block_tile!=32 / bf16), so V1 remains the genuine
-    fallback — never the default for a V2-capable shape.
+    scalar fallback. The C++ sparse_attention_forward falls v2->v1 internally
+    when V6NAX sparse is ineligible (causal / block_tile!=32), so scalar remains
+    the genuine fallback — never the default for a V6NAX-capable shape.
 
     Decision order:
-      1. Env override: MFA_LCSA_KERNEL_VERSION=v1 or =v2 wins unconditionally
-      2. D in {64, 128} -> "v2"   (the V2-capable head dims)
-      3. Otherwise (e.g. D=256) -> "v1"   (the genuine fallback)
+      1. Env override: MFA_LCSA_KERNEL_VERSION=v1/v2 or canonical alias wins
+      2. D in {64, 128} -> "v2"   (legacy alias for V6NAX sparse)
+      3. Otherwise (e.g. D=256) -> "v1"   (legacy alias for scalar fallback)
 
     Args:
         density: block-mask density (currently unused in the threshold
             but accepted for future refinement per DC9 note).
         qL: query sequence length.
         kL: key sequence length.
-        D: per-head dimension. Default 128 (production V2 set).
+        D: per-head dimension. Default 128 (production V6NAX sparse set).
 
     Returns:
-        "v1" or "v2".
+        "v1" or "v2" for backward compatibility.
 
     See docs/methodology/canonical-bench-results.md for calibration data.
     """
     # Env override has highest priority (preserves v2.35.0 SHIP_OPT_IN
     # contract for users who already set the env var).
     env = os.environ.get("MFA_LCSA_KERNEL_VERSION", "").strip().lower()
-    if env in ("v1", "v2"):
-        return env
+    env_alias = _normalize_kernel_version_alias(env)
+    if env_alias is not None:
+        return env_alias
 
-    # Audit Phase F (2026-06-18): route by V2-CAPABILITY (head_dim), NOT the old
+    # Audit Phase F (2026-06-18): route by V6NAX-sparse capability (head_dim), NOT the old
     # `qL*kL*D >= _V2_DEFAULT_WORK_THRESHOLD (2^31)` work-product gate.  Phase E
-    # measured the V1-scalar kernel is NEVER fastest (V2 matmul2d is 19-59x faster
-    # than V1 and 1.5-3.9x faster than SDPA at low density); the 2^31 threshold
-    # mis-routed D=64 (work always < 2^31) and D=128 N<4096 to the slow V1.  The
-    # C++ `sparse_attention_forward` falls v2->v1 internally when V2 is ineligible
-    # (causal / block_tile!=32 / bf16), so returning "v2" for the V2 head-dims
-    # selects V2 wherever it can run and keeps V1 only as the genuine fallback.
+    # measured the scalar fallback is NEVER fastest (V6NAX sparse is 19-59x faster
+    # than scalar and 1.5-3.9x faster than SDPA at low density); the 2^31 threshold
+    # mis-routed D=64 (work always < 2^31) and D=128 N<4096 to the slow scalar
+    # path.  The C++ `sparse_attention_forward` falls v2->v1 internally when
+    # V6NAX sparse is ineligible (causal / block_tile!=32), so returning "v2" for
+    # the V6NAX-capable head-dims selects V6NAX wherever it can run and keeps
+    # scalar fallback only as the genuine fallback.
     # (Old threshold const retained above for provenance; no longer gates routing.)
     if D in (64, 128):
         return "v2"
@@ -149,8 +178,9 @@ def sparse_attention_nax(
         )
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])
-    # v2.36.1: shape-aware default routing via explicit kernel_version
-    # param.  Empty string falls back to MFA_LCSA_KERNEL_VERSION env var
+    # Shape-aware default routing via explicit kernel_version param.  The public
+    # legacy aliases remain "v1" / "v2"; C++ maps them to scalar_fallback /
+    # v6nax_sparse. Empty string falls back to MFA_LCSA_KERNEL_VERSION env var
     # (legacy v2.35.0 path).  Density is not part of the threshold yet
     # (DC9 note); pass 1.0 as a placeholder.
     kernel_version = decide_auto_version(
@@ -189,8 +219,8 @@ def sparse_attention_nax_with_lse(
     gradients; consistent sparse-LSE forward + sparse backward gives
     correct gradients).
 
-    Constraints (the with_lse path uses the V1 generator only — LSE not yet
-    emitted by the V2 matmul2d kernel; production, not PoC):
+    Constraints (the with_lse path uses the scalar fallback generator only —
+    LSE not yet emitted by the V6NAX sparse matmul2d kernel; production, not PoC):
       - 2-D mask (NQ, NK) bool — 3-D / 4-D fall back to dense
         sparse_attention_nax (no LSE return)
       - D in {64, 128}, BT in {16, 32, 64}, fp16/bf16
@@ -219,11 +249,10 @@ def sparse_attention_nax_with_lse(
 #   density < density_threshold:  sparse_attention_nax (NAX kernel, LCSA path)
 #   density >= density_threshold: SDPA + expanded float bias
 #
-# Default kernel is V1 (per-thread FA-2). V2 cooperative-tensor kernel is
-# opt-in via `MFA_LCSA_KERNEL_VERSION=v2` per v2.35.0 SHIP_OPT_IN verdict
-# (docs/lcsa-nax/lcsa-nax-coop-rewrite-results.md). V2 wins vs SDPA+bias
-# across all tested cells but cross-session range > 10% on 5/7 shapes →
-# conservative opt-in to let users explicitly test V2 in their environment.
+# Historical note: the original public aliases were V1 (per-thread FA-2) and V2
+# (cooperative-tensor).  They are now treated as scalar_fallback / v6nax_sparse
+# aliases at the C++ boundary; `MFA_LCSA_KERNEL_VERSION=v1` and `=v2` remain
+# supported.
 #
 # v2.50-Sprint1 empirical recalibration (M5+ NAX hardware):
 # The v2.50-NAX-coverage audit (docs/audits/v50-nax-coverage/) measured
@@ -255,7 +284,7 @@ def sparse_attention_nax_with_lse(
 # they invoke this dispatcher).
 #
 # Historical context: the 0.02 threshold was V1's break-even on older
-# hardware (Phase 1.4 sweep, M1/M3 V1 sparse STEEL kernel).  M5+ NAX V2
+# hardware (Phase 1.4 sweep, M1/M3 V1 sparse STEEL kernel).  M5+ V6NAX sparse
 # inverts the trade-off — per-tile dispatch overhead is fully amortized by
 # the cooperative-tensor MMA primitives, and tile-skip via block_mask is
 # nearly free.

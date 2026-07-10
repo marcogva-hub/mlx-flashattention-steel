@@ -46,10 +46,9 @@ mlx::core::array sparse_attention_forward(
     int block_tile,
     bool causal,
     float scale,
-    // v2.36.1: explicit kernel-version override. Empty string falls back
-    // to MFA_LCSA_KERNEL_VERSION env var (legacy v2.35.0 path).  When
-    // non-empty, takes precedence over env var (used by Python-side
-    // shape-aware decide_auto_version() in mlx_mfa.lcsa_nax).
+    // Explicit kernel-path override. Empty string falls back to
+    // MFA_LCSA_KERNEL_VERSION env var. Public legacy aliases remain
+    // "v1"=scalar_fallback and "v2"=v6nax_sparse.
     const std::string& kernel_version = "");
 
 /// v2.50 Prompt 5c Section A — sparse forward returning (O, L) with sparse-L.
@@ -61,9 +60,9 @@ mlx::core::array sparse_attention_forward(
 ///
 /// All-False rows produce L = -INFINITY (sentinel; consumer must handle).
 ///
-/// V1 kernel only at PoC stage (V2 kernel extension is Section A v3
-/// follow-up — V2 uses cooperative-tensor inner-GEMM that requires more
-/// extensive lse-tracking restructure).
+/// Scalar fallback only at PoC stage (V6NAX sparse LSE is Section A v3
+/// follow-up — it uses cooperative-tensor inner-GEMM that requires more
+/// extensive LSE-tracking restructure).
 std::pair<mlx::core::array, mlx::core::array> sparse_attention_forward_with_lse(
     const mlx::core::array& Q,
     const mlx::core::array& K,
