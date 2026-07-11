@@ -6,7 +6,6 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-import mlx_mfa
 from mlx_mfa import _ext
 from mlx_mfa import _auto_hooks as hooks
 
@@ -47,12 +46,8 @@ def test_lq_public_hook_stays_on_mlx():
     x, w = _inputs()
     real = _ext.conv3d_nax_forward
     with patch("mlx_mfa._ext.conv3d_nax_forward", wraps=real) as called:
-        mlx_mfa.enable()
-        try:
-            actual = mx.conv_general(x, w, stride=_STRIDE, padding=0)
-            mx.eval(actual)
-        finally:
-            mlx_mfa.disable()
+        actual = hooks._patched_conv_general(x, w, stride=_STRIDE, padding=0)
+        mx.eval(actual)
     assert called.call_count == 0
 
 
