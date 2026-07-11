@@ -60,7 +60,8 @@ std::string gna_nax_header(
     float scale,
     int BQ,
     int BK,
-    int WM) {
+    int WM,
+    bool precompute_range) {
   const int NQ = (N + BQ - 1) / BQ;
   const int NK = (N + BK - 1) / BK;
   const int TQ = BQ / (WM * 16);
@@ -105,6 +106,7 @@ std::string gna_nax_header(
   os << "#define GNA_STR1 " << stride1 << "\n";
   os << "#define GNA_STR2 " << stride2 << "\n";
   os << "#define GNA_LOG2_SCALE " << log2_scale << "f\n\n";
+  os << "#define GNA_PRECOMPUTE_RANGE " << (precompute_range ? 1 : 0) << "\n\n";
 
   os << R"MSL(
 inline bool gna_pair_active(int q_idx, int k_idx) {
@@ -197,6 +199,70 @@ inline bool gna_tile_active(int q_start, int q_end, int k_start, int k_end) {
          k_max1 >= win_lo1 && k_min1 <= win_hi1 &&
          k_max2 >= win_lo2 && k_min2 <= win_hi2;
 }
+
+struct GNAWindowBounds {
+  int lo0, hi0, lo1, hi1, lo2, hi2;
+  int kb_begin, kb_end;
+};
+
+inline GNAWindowBounds gna_window_bounds(int q_start, int q_end) {
+  q_end = min(q_end, GNA_N);
+  const int dim12 = GNA_DIM1 * GNA_DIM2;
+  const int q_first = q_start;
+  const int q_last = q_end - 1;
+  int q_min0 = q_first / dim12;
+  int q_max0 = q_last / dim12;
+  int q_min1 = (q_first / GNA_DIM2) % GNA_DIM1;
+  int q_max1 = (q_last / GNA_DIM2) % GNA_DIM1;
+  int q_min2 = q_first % GNA_DIM2;
+  int q_max2 = q_last % GNA_DIM2;
+  if (q_max0 > q_min0) {
+    q_min1 = 0; q_max1 = GNA_DIM1 - 1;
+    q_min2 = 0; q_max2 = GNA_DIM2 - 1;
+  } else if (q_max1 > q_min1) {
+    q_min2 = 0; q_max2 = GNA_DIM2 - 1;
+  }
+  const int lo0 = max(0, (q_min0 / GNA_STR0) * GNA_STR0 -
+                         (GNA_WIN0 - GNA_STR0) / 2);
+  const int hi0 = min(GNA_DIM0 - 1, ((q_max0 / GNA_STR0) + 1) * GNA_STR0 +
+                         (GNA_WIN0 - GNA_STR0 + 1) / 2 - 1);
+  const int lo1 = max(0, (q_min1 / GNA_STR1) * GNA_STR1 -
+                         (GNA_WIN1 - GNA_STR1) / 2);
+  const int hi1 = min(GNA_DIM1 - 1, ((q_max1 / GNA_STR1) + 1) * GNA_STR1 +
+                         (GNA_WIN1 - GNA_STR1 + 1) / 2 - 1);
+  const int lo2 = max(0, (q_min2 / GNA_STR2) * GNA_STR2 -
+                         (GNA_WIN2 - GNA_STR2) / 2);
+  const int hi2 = min(GNA_DIM2 - 1, ((q_max2 / GNA_STR2) + 1) * GNA_STR2 +
+                         (GNA_WIN2 - GNA_STR2 + 1) / 2 - 1);
+  const int first = lo0 * dim12 + lo1 * GNA_DIM2 + lo2;
+  const int last = hi0 * dim12 + hi1 * GNA_DIM2 + hi2;
+  return {lo0, hi0, lo1, hi1, lo2, hi2,
+          first / GNA_BK, min(GNA_NK, (last + 1 + GNA_BK - 1) / GNA_BK)};
+}
+
+inline bool gna_tile_active_bounds(
+    thread const GNAWindowBounds& window, int k_start, int k_end) {
+  k_end = min(k_end, GNA_N);
+  if (k_start >= k_end) return false;
+  const int dim12 = GNA_DIM1 * GNA_DIM2;
+  const int k_first = k_start;
+  const int k_last = k_end - 1;
+  int k_min0 = k_first / dim12;
+  int k_max0 = k_last / dim12;
+  int k_min1 = (k_first / GNA_DIM2) % GNA_DIM1;
+  int k_max1 = (k_last / GNA_DIM2) % GNA_DIM1;
+  int k_min2 = k_first % GNA_DIM2;
+  int k_max2 = k_last % GNA_DIM2;
+  if (k_max0 > k_min0) {
+    k_min1 = 0; k_max1 = GNA_DIM1 - 1;
+    k_min2 = 0; k_max2 = GNA_DIM2 - 1;
+  } else if (k_max1 > k_min1) {
+    k_min2 = 0; k_max2 = GNA_DIM2 - 1;
+  }
+  return k_max0 >= window.lo0 && k_min0 <= window.hi0 &&
+         k_max1 >= window.lo1 && k_min1 <= window.hi1 &&
+         k_max2 >= window.lo2 && k_min2 <= window.hi2;
+}
 )MSL";
   return os.str();
 }
@@ -239,9 +305,23 @@ std::string gna_nax_source() {
     max_score[i] = -INFINITY;
   }
 
-  for (int kb = 0; kb < GNA_NK; ++kb) {
+  #if GNA_PRECOMPUTE_RANGE
+  const GNAWindowBounds window_bounds = gna_window_bounds(
+      q_tile * GNA_BQ, (q_tile + 1) * GNA_BQ);
+  const int kb_begin = window_bounds.kb_begin;
+  const int kb_end = window_bounds.kb_end;
+  #else
+  const int kb_begin = 0;
+  const int kb_end = GNA_NK;
+  #endif
+
+  for (int kb = kb_begin; kb < kb_end; ++kb) {
+  #if GNA_PRECOMPUTE_RANGE
+    if (!gna_tile_active_bounds(window_bounds, kb * GNA_BK, (kb + 1) * GNA_BK)) {
+  #else
     if (!gna_tile_active(q_tile * GNA_BQ, (q_tile + 1) * GNA_BQ,
                          kb * GNA_BK, (kb + 1) * GNA_BK)) {
+  #endif
       continue;
     }
 
@@ -387,7 +467,8 @@ std::string kernel_name(
     float scale,
     int BQ,
     int BK,
-    int WM) {
+    int WM,
+    bool precompute_range) {
   std::ostringstream os;
   os << "mfa_gna_nax_"
      << (dtype == mlx::core::float16 ? "f16" : "bf16")
@@ -396,6 +477,7 @@ std::string kernel_name(
      << "_w" << window0 << "x" << window1 << "x" << window2
      << "_r" << stride0 << "x" << stride1 << "x" << stride2
      << "_bq" << BQ << "_bk" << BK << "_wm" << WM
+     << "_pr" << (precompute_range ? 1 : 0)
      << "_sc" << static_cast<int>(std::round(scale * 1000000.0f));
   return os.str();
 }
@@ -470,6 +552,8 @@ mlx::core::array mfa_gna_nax_forward(
   const int BQ = env_int_or_default("MFA_GNA_NAX_BQ", default_BQ);
   const int BK = env_int_or_default("MFA_GNA_NAX_BK", default_BK);
   const int WM = env_int_or_default("MFA_GNA_NAX_WM", default_WM);
+  const bool precompute_range =
+      env_int_or_default("MFA_GNA_NAX_PRECOMPUTE_RANGE", 0) != 0;
   if (BQ % (WM * 16) != 0) {
     throw std::invalid_argument("GNA NAX requires BQ to be divisible by WM*16");
   }
@@ -486,11 +570,11 @@ mlx::core::array mfa_gna_nax_forward(
 
   auto header = gna_nax_header(
       dtype, B, Hq, Hk, N, D, dim0, dim1, dim2, window0, window1, window2,
-      stride0, stride1, stride2, scale, BQ, BK, WM);
+      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range);
   auto source = gna_nax_source();
   auto name = kernel_name(
       q.dtype(), N, D, Hq, Hk, dim0, dim1, dim2, window0, window1, window2,
-      stride0, stride1, stride2, scale, BQ, BK, WM);
+      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range);
 
   auto kernel = mlx::core::fast::metal_kernel(
       name,
