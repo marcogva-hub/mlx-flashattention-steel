@@ -160,6 +160,13 @@ _attn_bias_native_warned: bool = False
 # III-4 D18 FIX: same once-per-session pattern for the native GNA kernel's
 # RuntimeError fallback (sparse mask path keeps the output correct).
 _gna_native_warned: bool = False
+_gna_nax_warned: bool = False
+
+# GNA V6 NAX public routing thresholds.  Beta-3 indicative measurements
+# (macOS 27 beta, M5) show D=128 wins from N>=2048 and D=64 from N>=4096.
+# Keep these conservative until the routing is revalidated on stable macOS.
+_GNA_NAX_D128_MIN_N = 2048
+_GNA_NAX_D64_MIN_N = 4096
 
 
 class DispatchPolicy:
@@ -4111,13 +4118,13 @@ def flash_attention_gna(
     .. note::
 
         Autograd (III-4 pass-2 LOW): on the native-kernel envelope
-        (D=128, 3-D window, f16/bf16) the forward dispatches
-        ``MFAGNAForward``, which is **forward-only** (no ``vjp``).
-        ``mx.grad`` on those shapes therefore raises rather than
-        silently returning wrong gradients.  To train through GNA,
-        route to the differentiable sparse path by setting
-        ``MFA_DISABLE_GNA_NATIVE=1`` (or use a non-native shape:
-        D != 128, or a 1-D/2-D window).
+        (3-D window, f16/bf16; D=128 for STEEL, and V6 NAX at
+        D=128/N>=2048 or D=64/N>=4096) the forward dispatches a
+        forward-only native kernel (no ``vjp``).  ``mx.grad`` on those
+        shapes therefore raises rather than silently returning wrong
+        gradients.  To train through GNA, route to the differentiable
+        sparse path by setting ``MFA_DISABLE_GNA_NATIVE=1`` (or use a
+        non-native shape such as a 1-D/2-D window).
 
     Example::
 
@@ -4183,12 +4190,50 @@ def flash_attention_gna(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    # Try native GNA kernel (D=128, f16/bf16, 3D only)
+    native_enabled = not os.environ.get("MFA_DISABLE_GNA_NATIVE")
+    native_dtype = q.dtype in (mx.float16, mx.bfloat16)
+    is_3d_gna = len(seq_shape) == 3
+    gna_nax_eligible = (
+        is_3d_gna
+        and native_dtype
+        and native_enabled
+        and (
+            (D == 128 and N >= _GNA_NAX_D128_MIN_N)
+            or (D == 64 and N >= _GNA_NAX_D64_MIN_N)
+        )
+    )
+
+    # Try GNA V6 NAX first for the beta-3 measured winning envelope.
+    if gna_nax_eligible:
+        try:
+            from mlx_mfa._ext import mfa_gna_nax_forward as _gna_nax_fwd
+            return _gna_nax_fwd(
+                q, k, v,
+                seq_shape[0], seq_shape[1], seq_shape[2],
+                window_size[0], window_size[1], window_size[2],
+                stride[0], stride[1], stride[2],
+                scale,
+            )  # CX-06: no stream param (ran on default stream regardless)
+        except ImportError:
+            pass  # Extension not built — try STEEL/sparse fallbacks below
+        except RuntimeError as e:
+            # Surface a lost NAX route once, then preserve correctness by
+            # continuing to the established STEEL/sparse fallbacks.
+            global _gna_nax_warned
+            if not _gna_nax_warned:
+                _gna_nax_warned = True
+                warnings.warn(
+                    f"GNA V6 NAX kernel failed, falling back to native/sparse "
+                    f"path: {e}",
+                    RuntimeWarning,
+                )
+
+    # Try native STEEL GNA kernel (D=128, f16/bf16, 3D only)
     if (
         D == 128
-        and len(seq_shape) == 3
-        and q.dtype in (mx.float16, mx.bfloat16)
-        and not os.environ.get("MFA_DISABLE_GNA_NATIVE")
+        and is_3d_gna
+        and native_dtype
+        and native_enabled
     ):
         try:
             from mlx_mfa._ext import mfa_gna_forward as _gna_fwd

@@ -1113,7 +1113,7 @@ NB_MODULE(_ext, m) {
         "\n"
         "Returns pool_out [num_blocks, block_size, H_kv, D] with scattered writes applied.");
 
-  // GNA native binding removed — flash_attention_gna() uses sparse path (Python-side)
+  // GNA native bindings are defined above; Python dispatch selects NAX/STEEL/sparse.
 
   // ── PagedVarlenForward (fused packed Q + paged KV) ──────────────────────
   m.def("mfa_paged_varlen_forward",
