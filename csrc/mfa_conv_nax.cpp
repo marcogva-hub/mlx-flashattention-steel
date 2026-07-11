@@ -341,9 +341,9 @@ mlx::core::array dispatch_pointwise_fast_path(
 // liuliu/example_matmul_metal4 finding (direct dest-tensor writes pass
 // on macOS but are incorrect on M5 iPad).
 //
-// Eligibility (checked by the caller branch): fp16, B==1, k=3x3x3,
-// stride 1, dilation 1, symmetric pad (1,1,1) ("same"/centered — the
-// primitive's native convention), H%TW==0, W%TH==0, C_in/C_out %16==0.
+// Eligibility (checked by the caller branch): the production 3x3x3/stride-1
+// envelope plus the direct expert FlashVSR probe 4x3x3/temporal-stride-2.
+// Both use spatial 3x3 stride/dilation 1 and C_in/C_out multiples of 16.
 // Weights must be pre-packed to [K_T][K_H][K_W][C_in][C_out].
 //
 // Sprint III-1 (KD-7): dtype-parameterized — `mtype` is the MSL scalar
@@ -353,12 +353,14 @@ mlx::core::array dispatch_pointwise_fast_path(
 // (single bf16 store rounding), 99.9-100% bit-identical to mx.conv3d
 // bf16 across the production forms.
 std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
-                              int TW, int TH, const std::string& mtype,
-                              int pT_left = 1) {
+                              int T_out, int H_out, int W_out,
+                              int K_T, int sT, int TW, int TH,
+                              const std::string& mtype,
+                              int pT_left, int pH, int pW) {
   std::ostringstream ss;
   ss << R"(
   uint3 tgid = threadgroup_position_in_grid;
-  const uint tiles_x = )" << (W / TW) << R"(;
+  const uint tiles_x = )" << (W_out / TW) << R"(;
   const uint tw = tgid.x % tiles_x;
   const uint th = tgid.x / tiles_x;
   const uint t  = tgid.y;
@@ -374,11 +376,11 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
       int2(1, 1), int2(1, 1), 1, false,
       convolution2d_descriptor::mode::multiply_accumulate);
   convolution2d<desc, metal::execution_simdgroups<4>> op;
-  op.set_offsets(int2(x0, y0));
+  op.set_offsets(int2(x0 + )" << (1 - pW) << ", y0 + " << (1 - pH) << R"());
 
-  device )" << mtype << R"(* Dframe = Out + (ulong)t * )" << ((int64_t)H * W * O) << R"(;
+  device )" << mtype << R"(* Dframe = Out + (ulong)t * )" << ((int64_t)H_out * W_out * O) << R"(;
   auto tD = tensor(Dframe, extents<int32_t, )"
-     << O << ", " << W << ", " << H << R"(, 1>());
+     << O << ", " << W_out << ", " << H_out << R"(, 1>());
   auto tDs = tD.slice(0, x0, y0, 0);
 
   auto tA0 = tensor(X, extents<int32_t, )"
@@ -395,8 +397,8 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
   for (ushort i = 0; i < cOut.get_capacity(); ++i)
     if (cOut.is_valid_element(i)) cOut[i] = 0.0f;
 
-  for (short kt = 0; kt < 3; ++kt) {
-    const int tf = (int)t + kt - )" << pT_left << R"(;
+  for (short kt = 0; kt < )" << K_T << R"(; ++kt) {
+    const int tf = (int)t * )" << sT << R"( + kt - )" << pT_left << R"(;
     if (tf < 0 || tf >= )" << T << R"() continue;   // zero temporal pad
     auto tA = tensor(X + (ulong)tf * )" << ((int64_t)H * W * C) << R"(,
                      extents<int32_t, )"
@@ -415,7 +417,7 @@ std::string conv3d_mpp_source(int T, int H, int W, int C, int O,
       const int oo = idx[0];
       const int xx = idx[1];
       const int yy = idx[2];
-      Dframe[((ulong)(y0 + yy) * )" << W << R"( + (ulong)(x0 + xx)) * )"
+      Dframe[((ulong)(y0 + yy) * )" << W_out << R"( + (ulong)(x0 + xx)) * )"
      << O << R"( + oo] = ()" << mtype << R"()cOut[i];
     }
   }
@@ -431,17 +433,13 @@ using namespace metal;
 using namespace mpp::tensor_ops;
 )";
 
-// w must be the PACKED weights [3,3,3,C_in,C_out] (caller transposes
+// w must be the PACKED weights [K_T,3,3,C_in,C_out] (caller transposes
 // the repo layout (C_out,3,3,3,C_in) via {1,2,3,4,0}).
 mlx::core::array conv3d_mpp_dispatch(
     const mlx::core::array& x, const mlx::core::array& w_packed,
-    int T, int H, int W, int C_in, int C_out, int TW, int TH,
-    int pT_left = 1, int T_out = -1) {
-  // T = INPUT frames (the OOB bound for the kt time-loop); T_out = OUTPUT
-  // frames.  Symmetric "same" temporal pad (pT_left=1) → T_out==T (default,
-  // bit-identical to the pre-asym path).  Causal time-pad=0 (pT_left=0,
-  // upstream already concatenated the causal frames) → T_out = T-2.
-  if (T_out < 0) T_out = T;  // default = symmetric "same"
+    int T, int H, int W, int C_in, int C_out,
+    int T_out, int H_out, int W_out, int K_T, int sT,
+    int TW, int TH, int pT_left, int pH, int pW) {
   // III-1: MSL scalar follows the input dtype; the dtype is part of the
   // kernel name (cache-key discipline — Sprint A class). pT_left + T_out are
   // baked into the source/grid → part of the cache key (asym-pad correctness).
@@ -451,16 +449,20 @@ mlx::core::array conv3d_mpp_dispatch(
       std::to_string(H) + "x" + std::to_string(W) + "_" +
       std::to_string(C_in) + "_" + std::to_string(C_out) + "_t" +
       std::to_string(TW) + "x" + std::to_string(TH) +
-      "_pTl" + std::to_string(pT_left) + "_To" + std::to_string(T_out);
+      "_kT" + std::to_string(K_T) + "_sT" + std::to_string(sT) +
+      "_p" + std::to_string(pT_left) + "x" + std::to_string(pH) + "x" +
+      std::to_string(pW) + "_out" + std::to_string(T_out) + "x" +
+      std::to_string(H_out) + "x" + std::to_string(W_out);
   auto kernel = mlx::core::fast::metal_kernel(
       name, {"X", "Wp"}, {"Out"},
-      conv3d_mpp_source(T, H, W, C_in, C_out, TW, TH, mtype, pT_left),
+      conv3d_mpp_source(T, H, W, C_in, C_out, T_out, H_out, W_out,
+                        K_T, sT, TW, TH, mtype, pT_left, pH, pW),
       CONV2D_MPP_HEADER,
       /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
-  int tiles = (W / TW) * (H / TH);
+  int tiles = (W_out / TW) * (H_out / TH);
   auto outs = kernel(
       {x, w_packed},
-      {mlx::core::Shape{1, T_out, H, W, C_out}},
+      {mlx::core::Shape{1, T_out, H_out, W_out, C_out}},
       {x.dtype()},
       // grid is expressed in THREADS (MLX metal_kernel convention):
       // (tiles * 128, T_out, 1) with 128-thread threadgroups.
@@ -553,8 +555,8 @@ mlx::core::array conv3d_nax_forward(
         (x.dtype() == mlx::core::float16 ||
          x.dtype() == mlx::core::bfloat16) &&
         B == 1 &&
-        K_T == 3 && K_H == 3 && K_W == 3 &&
-        sT == 1 && sH == 1 && sW == 1 &&
+        ((K_T == 3 && sT == 1) || (K_T == 4 && sT == 2)) &&
+        K_H == 3 && K_W == 3 && sH == 1 && sW == 1 &&
         dT == 1 && dH == 1 && dW == 1 &&
         // Per-axis "same"-style pad, symmetric WITHIN each axis. Temporal:
         // pad 1 ("same", T_out==T) OR pad 0 (causal — VAE pre-concats the
@@ -564,8 +566,9 @@ mlx::core::array conv3d_nax_forward(
         // asymmetric-within-axis (T_left!=T_right) or H/W!=1 → NOT MPP-eligible
         // (falls through; Rule 8 raise for bf16, legacy/SDPA for fp16).
         pad.T_left == pad.T_right && (pad.T_left == 0 || pad.T_left == 1) &&
-        pad.H_left == 1 && pad.H_right == 1 &&
-        pad.W_left == 1 && pad.W_right == 1 &&
+        pad.H_left == pad.H_right && pad.W_left == pad.W_right &&
+        ((K_T == 3 && pad.H_left == 1 && pad.W_left == 1) ||
+         (K_T == 4 && pad.H_left == 0 && pad.W_left == 0)) &&
         // C=16 measured WRONG through the primitive (err 0.17-0.31 vs
         // legacy; C>=32 exact) — undocumented MPP constraint; gate at 32.
         C_in % 16 == 0 && C_in >= 32 &&
@@ -575,17 +578,22 @@ mlx::core::array conv3d_nax_forward(
       // T8/32x32/C256 cell measured 0.85x — underoccupied on 40
       // cores).  Prefer 16x16 only when it yields >= 64 TGs.
       int TW = 0, TH = 0;
-      if (H % 16 == 0 && W % 16 == 0 &&
-          (int64_t)(W / 16) * (H / 16) * T >= 64) { TW = 16; TH = 16; }
-      else if (H % 8 == 0 && W % 8 == 0) { TW = 8; TH = 8; }
+      if (H_out % 16 == 0 && W_out % 16 == 0 &&
+          (int64_t)(W_out / 16) * (H_out / 16) * T_out >= 64) {
+        TW = 16; TH = 16;
+      } else if (H_out % 8 == 0 && W_out % 8 == 0) {
+        TW = 8; TH = 8;
+      }
       if (TW != 0) {
-        // Pack weights (C_out,3,3,3,C_in) -> [3][3][3][C_in][C_out].
+        // Pack weights (C_out,K_T,3,3,C_in) -> [K_T][3][3][C_in][C_out].
         // transpose is a lazy view; ensure_row_contiguous in the kernel
         // forces the contiguous copy.
         auto w_packed = mlx::core::transpose(w, {1, 2, 3, 4, 0});
         // T_out = eff_T + 1 (host-computed for any pad): pad 1 → T; pad 0 → T-2.
-        return conv3d_mpp_dispatch(x, w_packed, T, H, W, C_in, C_out,
-                                   TW, TH, pad.T_left, eff_T + 1);
+        return conv3d_mpp_dispatch(
+            x, w_packed, T, H, W, C_in, C_out,
+            T_out, H_out, W_out, K_T, sT, TW, TH,
+            pad.T_left, pad.H_left, pad.W_left);
       }
     }
   }
