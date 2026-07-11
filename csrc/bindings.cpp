@@ -138,6 +138,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
 #include "mfa_conv_nax.hpp"
 #include "mfa_sparse_attention.hpp"
 #include "mfa_qmm_nax.hpp"
+#include "mfa_gna_nax.hpp"
 
 #include <array>
 #include <stdexcept>
@@ -872,6 +873,29 @@ NB_MODULE(_ext, m) {
         "block_mask: uint8 [NQ_tiles, NK_tiles]. Only f16/bf16 supported.");
 
   // --- GNA (Generalized Neighborhood Attention) native forward ---
+  m.def("mfa_gna_nax_forward",
+        [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
+           int dim0, int dim1, int dim2,
+           int win0, int win1, int win2,
+           int str0, int str1, int str2,
+           float scale)
+            -> mlx::core::array {
+          return mlx_mfa::mfa_gna_nax_forward(
+              q, k, v,
+              dim0, dim1, dim2,
+              win0, win1, win2,
+              str0, str1, str2,
+              scale,
+              {});
+        },
+        nb::arg("q"), nb::arg("k"), nb::arg("v"),
+        nb::arg("dim0"), nb::arg("dim1"), nb::arg("dim2"),
+        nb::arg("win0"), nb::arg("win1"), nb::arg("win2"),
+        nb::arg("str0"), nb::arg("str1"), nb::arg("str2"),
+        nb::arg("scale") = 1.0f,
+        "GNA forward using V6 NAX cooperative tensors (expert-only).\n"
+        "Inline 3D window check, D=64/128, f16/bf16. Returns O [B, H, N, D].");
+
   m.def("mfa_gna_forward",
         [](mlx::core::array q, mlx::core::array k, mlx::core::array v,
            float scale,

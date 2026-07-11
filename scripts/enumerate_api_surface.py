@@ -116,6 +116,7 @@ AUDITED_RAW = {
     # volet K2 — remaining raw entries (4-axis + validation fixes):
     "mfa_forward_with_lse",                 # R2 (added f16/bf16-supported)
     "mfa_gna_forward",                      # R8 (added dtype + window/stride>0)
+    "mfa_gna_nax_forward",                  # Op-GNA NAX expert surface
     "sparse_attention_forward",             # R9 (verify-only — comprehensive)
     "mfa_quantize_per_block",               # R11 (verify-only)
     "mfa_smooth_quantize_k",                # R12 (verify-only)

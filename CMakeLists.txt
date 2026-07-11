@@ -150,6 +150,7 @@ set(MFA_SOURCES
   csrc/mfa_conv_nax.cpp
   csrc/mfa_sparse_attention.cpp
   csrc/mfa_qmm_nax.cpp
+  csrc/mfa_gna_nax.cpp
   csrc/mfa/v6_nax/NAAttentionKernelDescriptor.cpp
   csrc/mfa/v6_nax/NAAttentionKernel.cpp
   csrc/shader_cache.mm

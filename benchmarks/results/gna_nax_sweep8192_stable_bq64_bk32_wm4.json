@@ -1,0 +1,413 @@
+{
+  "mlx_version": "0.31.2",
+  "sessions": 5,
+  "iters": 50,
+  "warmup": 5,
+  "tile_env": {
+    "MFA_GNA_NAX_BQ": "64",
+    "MFA_GNA_NAX_BK": "32",
+    "MFA_GNA_NAX_WM": "4"
+  },
+  "results": [
+    {
+      "N": 8192,
+      "D": 64,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999991067415,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.29200250050053,
+      "mean_ms": 0.30115733249112964,
+      "min_ms": 0.2770008402876556,
+      "max_ms": 0.3643441607709974,
+      "samples_ms": [
+        0.3643441607709974,
+        0.29200250050053,
+        0.2925066603347659,
+        0.27993250056169927,
+        0.2770008402876556
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 64,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.9767108398955315,
+      "mean_ms": 0.9762621682602912,
+      "min_ms": 0.9610883402638137,
+      "max_ms": 0.9978799999225885,
+      "samples_ms": [
+        0.9767108398955315,
+        0.965365000301972,
+        0.9610883402638137,
+        0.9802666609175503,
+        0.9978799999225885
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 64,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999978780253,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.373174159321934,
+      "mean_ms": 0.3811228317208588,
+      "min_ms": 0.37068165955133736,
+      "max_ms": 0.41298499912954867,
+      "samples_ms": [
+        0.41298499912954867,
+        0.37775334087200463,
+        0.37068165955133736,
+        0.373174159321934,
+        0.3710199997294694
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 64,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.9762541600503027,
+      "mean_ms": 0.9766811598092318,
+      "min_ms": 0.9711549989879131,
+      "max_ms": 0.9830341604538262,
+      "samples_ms": [
+        0.9737983194645494,
+        0.9791641600895673,
+        0.9711549989879131,
+        0.9762541600503027,
+        0.9830341604538262
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999961567843,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.29095418052747846,
+      "mean_ms": 0.295554336393252,
+      "min_ms": 0.2762633399106562,
+      "max_ms": 0.3227216808591038,
+      "samples_ms": [
+        0.3227216808591038,
+        0.2907008200418204,
+        0.2971316606272012,
+        0.2762633399106562,
+        0.29095418052747846
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 0.9999999999999999,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 1.3876550004351884,
+      "mean_ms": 1.3877261641900986,
+      "min_ms": 1.3853641599416733,
+      "max_ms": 1.390267499955371,
+      "samples_ms": [
+        1.3864625000860542,
+        1.3888816605322063,
+        1.3853641599416733,
+        1.3876550004351884,
+        1.390267499955371
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.999999935547187,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.803802500013262,
+      "mean_ms": 0.7997053321450949,
+      "min_ms": 0.7864108204375952,
+      "max_ms": 0.8128716598730534,
+      "samples_ms": [
+        0.8128716598730534,
+        0.7913950004149228,
+        0.8040466799866408,
+        0.803802500013262,
+        0.7864108204375952
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999923984229,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 0.5069575004745275,
+      "mean_ms": 0.5104423321317881,
+      "min_ms": 0.4906458395998925,
+      "max_ms": 0.5328741599805653,
+      "samples_ms": [
+        0.4906458395998925,
+        0.5188350006937981,
+        0.5328741599805653,
+        0.5069575004745275,
+        0.5028991599101573
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0000000000000002,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 1.38992500025779,
+      "mean_ms": 1.392402504105121,
+      "min_ms": 1.3837141811382025,
+      "max_ms": 1.404415819561109,
+      "samples_ms": [
+        1.3857583398930728,
+        1.38992500025779,
+        1.3837141811382025,
+        1.39819917967543,
+        1.404415819561109
+      ]
+    },
+    {
+      "N": 8192,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        8,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.9999999256199572,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": "64",
+        "MFA_GNA_NAX_BK": "32",
+        "MFA_GNA_NAX_WM": "4"
+      },
+      "median_ms": 1.0888808406889439,
+      "mean_ms": 1.086353668011725,
+      "min_ms": 1.0791199991945177,
+      "max_ms": 1.093492500949651,
+      "samples_ms": [
+        1.0791199991945177,
+        1.0894075001124293,
+        1.0808674991130829,
+        1.0888808406889439,
+        1.093492500949651
+      ]
+    }
+  ]
+}
