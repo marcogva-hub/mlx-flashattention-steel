@@ -1,0 +1,83 @@
+{
+  "mlx": "0.31.2",
+  "mlx_mfa": "2.61.0",
+  "device": {
+    "device_name": "Apple M5 Max",
+    "gpu_family_gen": 17,
+    "is_m3_plus": true,
+    "is_m5_plus": true,
+    "chip_name": "M5",
+    "gpu_cores": 40,
+    "macos_major": 27,
+    "macos_minor": 0,
+    "extension_available": true
+  },
+  "workload": "FlashVSR block0 real weights, synthetic shape-faithful activations",
+  "dtypes": {
+    "block_input": "mlx.core.float16",
+    "ffn_input_before_cast": "mlx.core.float32",
+    "weight": "mlx.core.float16"
+  },
+  "correctness": {
+    "ffn_cos_fp32": 0.9999999669506173,
+    "block_cos_baseline": 0.9999999048939284
+  },
+  "which_binary": {
+    "linear": 2,
+    "sparse": 1
+  },
+  "ffn": {
+    "baseline": {
+      "median_ms": 2.764187497086823,
+      "min_ms": 2.7326625015120953,
+      "max_ms": 2.8062500001396984,
+      "samples_ms": [
+        2.773041697219014,
+        2.7536500012502074,
+        2.8062500001396984,
+        2.764187497086823,
+        2.7326625015120953
+      ]
+    },
+    "nax": {
+      "median_ms": 2.3675042029935867,
+      "min_ms": 2.360408299136907,
+      "max_ms": 2.422000002115965,
+      "samples_ms": [
+        2.4050666950643063,
+        2.361008303705603,
+        2.360408299136907,
+        2.3675042029935867,
+        2.422000002115965
+      ]
+    },
+    "baseline_over_nax": 1.1675533642523848
+  },
+  "block": {
+    "baseline": {
+      "median_ms": 9.020277997478843,
+      "min_ms": 8.83252767380327,
+      "max_ms": 9.818236324160049,
+      "samples_ms": [
+        9.818236324160049,
+        8.976375005052736,
+        9.268375016593685,
+        8.83252767380327,
+        9.020277997478843
+      ]
+    },
+    "nax": {
+      "median_ms": 7.657694649727394,
+      "min_ms": 7.555291658112158,
+      "max_ms": 8.082111327288052,
+      "samples_ms": [
+        7.555291658112158,
+        8.082111327288052,
+        7.657694649727394,
+        7.884541662254681,
+        7.633221995395918
+      ]
+    },
+    "baseline_over_nax": 1.1779364952610059
+  }
+}

@@ -138,6 +138,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_backward_fused_dkdv_raw(
 #include "mfa_conv_nax.hpp"
 #include "mfa_sparse_attention.hpp"
 #include "mfa_qmm_nax.hpp"
+#include "mfa_ffn_nax.hpp"
 #include "mfa_gna_nax.hpp"
 
 #include <array>
@@ -1255,6 +1256,20 @@ NB_MODULE(_ext, m) {
       "Expert-only V6 NAX quantized matmul for transpose=True MLX quantized "
       "weights. Supports f16/bf16 x, uint32 packed weights, bits in {4,8}, "
       "group_size in {32,64,128}. Default public routing is unchanged.");
+
+  m.def("v6_nax_linear",
+      [](const mlx::core::array& x,
+         const mlx::core::array& weight,
+         const mlx::core::array& bias,
+         bool gelu) {
+        return mlx_mfa::v6_nax_linear(
+            x, weight, bias, gelu,
+            mlx::core::default_stream(mlx::core::Device::gpu));
+      },
+      nb::arg("x"), nb::arg("weight"), nb::arg("bias"),
+      nb::arg("gelu") = false,
+      "Expert-only V6 NAX dense Linear. weight is [N,K]; optional tanh-GELU "
+      "is fused into the register epilogue. Public routing is unchanged.");
 
   // ====================================================================
   // Sparse Attention NAX free-function entry point. Block-skip dispatch
