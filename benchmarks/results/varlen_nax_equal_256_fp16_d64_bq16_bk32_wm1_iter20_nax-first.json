@@ -1,0 +1,92 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "equal-256",
+  "lengths": [
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256
+  ],
+  "total_tokens": 4096,
+  "num_segments": 16,
+  "dtype": "fp16",
+  "head_dim": 64,
+  "heads": 4,
+  "tile": {
+    "bq": 16,
+    "bk": 32,
+    "wm": 1
+  },
+  "order": "nax-steel-sdpa",
+  "iterations_per_sample": 20,
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999999403953552,
+    "global_cos_nax_steel": 0.9999999403953552,
+    "max_abs_nax_steel": 0.00048828125,
+    "max_abs_nax_sdpa": 0.000244140625,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "nax": {
+      "median_ms": 0.593929149908945,
+      "p95_ms": 0.6492900010198355,
+      "min_ms": 0.442924999515526,
+      "max_ms": 0.6528687517857179,
+      "samples_ms": [
+        0.442924999515526,
+        0.593929149908945,
+        0.4954917007125914,
+        0.6528687517857179,
+        0.6349749979563057
+      ]
+    },
+    "steel": {
+      "median_ms": 1.1028395994799212,
+      "p95_ms": 1.1635495902737603,
+      "min_ms": 0.8070999989286065,
+      "max_ms": 1.1684625002089888,
+      "samples_ms": [
+        1.1028395994799212,
+        1.1438979505328462,
+        0.8070999989286065,
+        0.9959958493709564,
+        1.1684625002089888
+      ]
+    },
+    "sdpa": {
+      "median_ms": 0.9444562514545396,
+      "p95_ms": 0.9875499992631376,
+      "min_ms": 0.6725729501340538,
+      "max_ms": 0.9919187490595505,
+      "samples_ms": [
+        0.6725729501340538,
+        0.970075000077486,
+        0.9919187490595505,
+        0.8467271021800116,
+        0.9444562514545396
+      ]
+    }
+  }
+}

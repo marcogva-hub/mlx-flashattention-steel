@@ -156,6 +156,11 @@ void v6nax_dispatch(
     void* pipeline_raw, void* enc_raw,
     int qL, int kL, int Hq, int Hk, int batchDimension, int head_dim,
     unsigned short BQ, unsigned short BK, uint16_t WM);
+void v6nax_dispatch_varlen(
+    void* pipeline_raw, void* enc_raw,
+    int total_q, int total_k, int num_seqs, int total_q_tiles,
+    int Hq, int Hk, int head_dim,
+    unsigned short BQ, unsigned short BK, uint16_t WM);
 
 namespace {
 
@@ -212,6 +217,8 @@ struct V6KeyHash {
 
 std::mutex v6_mtx;
 std::unordered_map<V6Key, void*, V6KeyHash> v6_pipelines;
+std::mutex v6_varlen_mtx;
+std::unordered_map<V6Key, void*, V6KeyHash> v6_varlen_pipelines;
 
 // Repo review 2026-05: race-safe pipeline cache insert.  The double-checked
 // pattern (probe under lock → compile WITHOUT lock → store under lock) lets
@@ -608,6 +615,114 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     }
   }
 
+  return source;
+}
+
+static size_t replace_all_count(std::string& source, const std::string& from,
+                                const std::string& to) {
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = source.find(from, pos)) != std::string::npos) {
+    source.replace(pos, from.size(), to);
+    pos += to.size();
+    ++count;
+  }
+  return count;
+}
+
+static void replace_required(std::string& source, const std::string& from,
+                             const std::string& to, const char* label) {
+  if (replace_all_count(source, from, to) == 0) {
+    throw std::runtime_error(std::string("V6NAX varlen source transform lost marker: ") +
+                             label);
+  }
+}
+
+// Packed-varlen is the dense V6 NAX datapath with the STEEL varlen scheduler:
+// each global Q tile is mapped to one packed segment, then all sequence lengths,
+// tails, and causal offsets are local to that segment. The tensor strides remain
+// global BHND strides, while q_start/k_start select the packed slice.
+std::string generate_v6_varlen_source(int head_dim, int Hq, int Hk,
+                                      int dtype_code, bool is_causal,
+                                      int total_q, float scale) {
+  std::string source = generate_v6_source(
+      head_dim, Hq, Hk, dtype_code, is_causal, /*bhnd=*/true, total_q,
+      /*use_v6nax_override=*/true, /*use_v6nax_explicit=*/true, scale);
+
+  replace_required(source, "void attention(", "void attention_varlen_nax(",
+                   "kernel name");
+  replace_required(
+      source, "  long L_strides[3];\n};",
+      "  long L_strides[3];\n"
+      "  int num_seqs;\n"
+      "};",
+      "params extension");
+  replace_required(
+      source,
+      "    device float* L [[buffer(5)]],\n"
+      "    uint simd_lane_id [[thread_index_in_simdgroup]],",
+      "    device float* L [[buffer(5)]],\n"
+      "    const device int* cu_q [[buffer(6)]],\n"
+      "    const device int* cu_k [[buffer(7)]],\n"
+      "    const device int* tile_offsets [[buffer(8)]],\n"
+      "    uint simd_lane_id [[thread_index_in_simdgroup]],",
+      "metadata buffers");
+
+  // The generated body is expressed in terms of tid.x and global params.
+  // Rebind those to the segment-local scheduler values before inserting the
+  // scheduler itself (so its global tid.x remains untouched).
+  replace_required(source, "tid.x", "q_tile", "Q tile references");
+  replace_required(source, "params.qL_off", "qL_off", "causal offset");
+  replace_required(source, "params.qL_rem", "qL_rem", "Q remainder");
+  replace_required(source, "params.kL_rem", "kL_rem", "K remainder");
+  replace_required(source, "params.qL", "qL", "Q length");
+  replace_required(source, "params.kL", "kL", "K length");
+  replace_all_count(source, "params.NQ", "NQ");
+  replace_required(source, "params.NK", "NK", "K tile count");
+
+  const std::string scheduler = R"MSL(
+  // STEEL packed-varlen scheduler, adapted to the V6 NAX tile width.
+  const int global_q_tile = int(tid.x);
+  int seq = 0;
+  while (seq + 1 < params.num_seqs &&
+         global_q_tile >= tile_offsets[seq + 1]) {
+    ++seq;
+  }
+  const int q_tile = global_q_tile - tile_offsets[seq];
+  const int q_start = cu_q[seq];
+  const int k_start = cu_k[seq];
+  const int qL = cu_q[seq + 1] - q_start;
+  const int kL = cu_k[seq + 1] - k_start;
+  const int NK = (kL + V6NAX_BK - 1) / V6NAX_BK;
+  const int qL_rem = qL % V6NAX_BQ;
+  const int kL_rem = kL % V6NAX_BK;
+  // Match STEEL/SDPA lower-right causal semantics when qL != kL.
+  const int qL_off = kL - qL;
+  (void)qL_off;
+)MSL";
+  replace_required(source, "  (void)simd_lane_id;  // pacify compiler\n",
+                   "  (void)simd_lane_id;  // pacify compiler\n" + scheduler,
+                   "scheduler insertion");
+  replace_required(source, "ulong3 tidl{q_tile, tid.y, tid.z};",
+                   "ulong3 tidl{ulong(q_tile), tid.y, tid.z};",
+                   "Q tile ulong cast");
+
+  // Packed tensors are [1,H,total,D]. The generated BHND head offsets use the
+  // global totals via params strides; these extra offsets select the segment.
+  replace_required(
+      source,
+      "  O += tidl.z * params.O_strides[0]\n"
+      "     + tidl.y * params.O_strides[1]\n"
+      "     + tidl.x * V6NAX_BQ * params.O_strides[2];",
+      "  O += tidl.z * params.O_strides[0]\n"
+      "     + tidl.y * params.O_strides[1]\n"
+      "     + tidl.x * V6NAX_BQ * params.O_strides[2];\n"
+      "  Q += q_start * params.Q_strides[2];\n"
+      "  K += k_start * params.K_strides[2];\n"
+      "  V += k_start * params.V_strides[2];\n"
+      "  O += q_start * params.O_strides[2];\n"
+      "  L += q_start * params.L_strides[2];",
+      "packed segment offsets");
   return source;
 }
 
@@ -1019,6 +1134,239 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   // Transpose O back: [B, N, H, D] -> [B, H, N, D]
   auto o_bhnd = mlx::core::transpose(outs[0], std::vector<int>{0, 2, 1, 3}, s);
   return {o_bhnd, outs[1]};
+}
+
+class MFAV6VarlenForward : public mlx::core::Primitive {
+ public:
+  struct Params {
+    bool causal;
+    float scale;
+  };
+
+  MFAV6VarlenForward(mlx::core::Stream stream, Params params)
+      : mlx::core::Primitive(stream), params_(params) {}
+
+  const char* name() const override { return "MFAV6VarlenForward"; }
+
+  void eval_cpu(const std::vector<mlx::core::array>&,
+                std::vector<mlx::core::array>&) override {
+    throw std::runtime_error("V6 NAX packed varlen is GPU only");
+  }
+
+  void eval_gpu(const std::vector<mlx::core::array>& inputs,
+                std::vector<mlx::core::array>& outputs) override {
+    const auto& q = inputs[0];
+    const auto& k = inputs[1];
+    const auto& v = inputs[2];
+    const auto& cu_q = inputs[3];
+    const auto& cu_k = inputs[4];
+    const auto& tile_offsets = inputs[5];
+    auto& out = outputs[0];
+    auto& lse = outputs[1];
+
+    const int total_q = q.shape(2);
+    const int total_k = k.shape(2);
+    const int Hq = q.shape(1);
+    const int Hk = k.shape(1);
+    const int D = q.shape(3);
+    const int num_seqs = static_cast<int>(cu_q.shape(0)) - 1;
+
+    int dtype_code = q.dtype() == mlx::core::bfloat16 ? 1 : 0;
+    unsigned short BQ = D == 64 ? 32 : 64;
+    unsigned short BK = 32;
+    uint16_t WM = D == 64 ? 2 : 4;
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
+      BQ = static_cast<unsigned short>(std::atoi(env));
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK"))
+      BK = static_cast<unsigned short>(std::atoi(env));
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM"))
+      WM = static_cast<uint16_t>(std::atoi(env));
+    if (BQ == 0 || WM == 0 || BQ % (WM * 16) != 0 || BK == 0 || BK % 32 != 0)
+      throw std::invalid_argument(
+          "v6_nax_varlen_forward: invalid NAX tile configuration; require "
+          "BQ>0, WM>0, BQ%(WM*16)==0, and BK a positive multiple of 32");
+    if (const char* env = std::getenv("MFA_V6_NAX_SINGLE_OTILE")) {
+      if (std::atoi(env) == 0)
+        throw std::invalid_argument(
+            "v6_nax_varlen_forward: MFA_V6_NAX_SINGLE_OTILE=0 is unsupported; "
+            "packed-varlen V6 NAX requires the single-Otile datapath");
+    }
+
+    out.set_data(mlx::core::allocator::malloc(out.nbytes()));
+    lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
+
+    int axis_flags = 0x20 | 0x40;  // BHND + single-Otile.
+    if (const char* env = std::getenv("MFA_V6_FORCE_DYNAMIC_K"))
+      if (std::atoi(env) != 0) axis_flags |= 0x01;
+    if (const char* env = std::getenv("MFA_V6_RELAXED_PRECISION"))
+      if (std::atoi(env) == 0) axis_flags |= 0x02;
+    if (const char* env = std::getenv("MFA_V6_UNROLL_MODE")) {
+      const std::string mode(env);
+      if (mode == "none") axis_flags |= 0x04;
+      else if (mode == "2") axis_flags |= 0x08;
+      else if (mode == "4") axis_flags |= 0x10;
+    }
+    if (const char* env = std::getenv("MFA_V6_MAX_THREADS")) {
+      const int value = std::atoi(env);
+      if (value > 0 && value <= 256) axis_flags |= 0x80;
+      else if (value > 256 && value <= 384) axis_flags |= 0x100;
+      else if (value > 384 && value <= 512) axis_flags |= 0x180;
+      else if (value > 512 && value <= 768) axis_flags |= 0x200;
+    }
+
+    const float resolved_scale = params_.scale > 0.0f
+        ? params_.scale : 1.0f / std::sqrt(static_cast<float>(D));
+    const int64_t qbs64 = (int64_t)Hq * total_q * D;
+    const int64_t kbs64 = (int64_t)Hk * total_k * D;
+    if (qbs64 > UINT32_MAX || kbs64 > UINT32_MAX)
+      throw std::invalid_argument(
+          "v6_nax_varlen_forward: packed BHND stride exceeds uint32 cache-key range");
+    const uint32_t qbs = static_cast<uint32_t>(qbs64);
+    const uint32_t kbs = static_cast<uint32_t>(kbs64);
+    V6Key key{D, Hq, Hk, dtype_code, params_.causal,
+              static_cast<uint32_t>(total_q), static_cast<uint32_t>(total_k),
+              qbs, kbs, kbs, qbs,
+              0, 0, 0, static_cast<uint16_t>(D),
+              static_cast<uint16_t>(axis_flags), true,
+              true, BQ, BK, WM, resolved_scale};
+
+    void* pipeline = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(v6_varlen_mtx);
+      auto it = v6_varlen_pipelines.find(key);
+      if (it != v6_varlen_pipelines.end()) pipeline = it->second;
+    }
+    if (!pipeline) {
+      std::string source = generate_v6_varlen_source(
+          D, Hq, Hk, dtype_code, params_.causal, total_q, resolved_scale);
+      auto& device = mlx::core::metal::device(stream().device);
+      pipeline = v6nax_compile(source, "attention_varlen_nax", device.mtl_device());
+      pipeline = cache_insert_or_release(
+          v6_varlen_pipelines, v6_varlen_mtx, key, pipeline);
+    }
+
+    const int total_q_tiles = [&]() {
+      mlx::core::eval(tile_offsets);
+      return tile_offsets.data<int32_t>()[num_seqs];
+    }();
+    auto& enc = mlx::core::metal::get_command_encoder(stream());
+    enc.set_input_array(q, 0);
+    enc.set_input_array(k, 1);
+    enc.set_input_array(v, 2);
+    enc.set_output_array(out, 3);
+    enc.set_output_array(lse, 5);
+    enc.set_input_array(cu_q, 6);
+    enc.set_input_array(cu_k, 7);
+    enc.set_input_array(tile_offsets, 8);
+    v6nax_dispatch_varlen(
+        pipeline, &enc, total_q, total_k, num_seqs, total_q_tiles,
+        Hq, Hk, D, BQ, BK, WM);
+  }
+
+  bool is_equivalent(const mlx::core::Primitive& other) const override {
+    auto p = dynamic_cast<const MFAV6VarlenForward*>(&other);
+    return p && p->params_.causal == params_.causal &&
+           p->params_.scale == params_.scale;
+  }
+
+  std::vector<mlx::core::Shape> output_shapes(
+      const std::vector<mlx::core::array>& inputs) override {
+    return {inputs[0].shape(),
+            mlx::core::Shape{inputs[0].shape(0), inputs[0].shape(1),
+                             inputs[0].shape(2)}};
+  }
+
+ private:
+  Params params_;
+};
+
+std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
+    const mlx::core::array& q, const mlx::core::array& k,
+    const mlx::core::array& v, const mlx::core::array& cu_q,
+    const mlx::core::array& cu_k, const mlx::core::array& tile_offsets,
+    float scale, bool causal) {
+  const char* entry = "v6_nax_varlen_forward";
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4 ||
+      q.shape(0) != 1 || k.shape(0) != 1 || v.shape(0) != 1)
+    throw std::invalid_argument(std::string(entry) +
+        ": q, k, v must be packed [1,H,total,D]");
+  const int D = q.shape(3);
+  if (D != 64 && D != 128)
+    throw std::invalid_argument(std::string(entry) + ": D must be 64 or 128");
+  if (q.dtype() != k.dtype() || q.dtype() != v.dtype() ||
+      (q.dtype() != mlx::core::float16 && q.dtype() != mlx::core::bfloat16))
+    throw std::invalid_argument(std::string(entry) +
+        ": q, k, v must share float16/bfloat16 dtype");
+  if (k.shape(1) != v.shape(1) || k.shape(2) != v.shape(2) ||
+      q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
+    throw std::invalid_argument(std::string(entry) +
+        ": k/v shape and q/k/v head_dim must agree");
+  if (q.shape(1) <= 0 || k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": Hq must be a positive multiple of Hk");
+  if (scale != -1.0f && (!std::isfinite(scale) || scale <= 0.0f))
+    throw std::invalid_argument(std::string(entry) +
+        ": scale must be finite and >0, or -1 for 1/sqrt(D)");
+  for (const auto* metadata : {&cu_q, &cu_k, &tile_offsets}) {
+    if (metadata->ndim() != 1 || metadata->dtype() != mlx::core::int32)
+      throw std::invalid_argument(std::string(entry) +
+          ": cu_seqlens and tile_offsets must be 1-D int32 arrays");
+  }
+  if (cu_q.shape(0) < 2 || cu_q.shape(0) != cu_k.shape(0) ||
+      cu_q.shape(0) != tile_offsets.shape(0))
+    throw std::invalid_argument(std::string(entry) +
+        ": metadata arrays must have equal num_seqs+1 length >=2");
+
+  auto stream = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto cu_qc = mlx::core::contiguous(cu_q, false, stream);
+  auto cu_kc = mlx::core::contiguous(cu_k, false, stream);
+  auto toc = mlx::core::contiguous(tile_offsets, false, stream);
+  mlx::core::eval({cu_qc, cu_kc, toc});
+  const int32_t* qmeta = cu_qc.data<int32_t>();
+  const int32_t* kmeta = cu_kc.data<int32_t>();
+  const int32_t* tometa = toc.data<int32_t>();
+  const int nmeta = static_cast<int>(cu_qc.shape(0));
+  if (qmeta[0] != 0 || kmeta[0] != 0 || tometa[0] != 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": all metadata arrays must start at 0");
+  if (qmeta[nmeta - 1] != q.shape(2) || kmeta[nmeta - 1] != k.shape(2))
+    throw std::invalid_argument(std::string(entry) +
+        ": final cu_seqlens values must equal packed Q/K totals");
+
+  int BQ = D == 64 ? 32 : 64;
+  if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
+    BQ = std::atoi(env);
+  if (BQ <= 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": MFA_V6_NAX_BQ must be a positive integer");
+  int expected_tiles = 0;
+  for (int i = 0; i < nmeta - 1; ++i) {
+    const int qlen = qmeta[i + 1] - qmeta[i];
+    const int klen = kmeta[i + 1] - kmeta[i];
+    if (qlen <= 0 || klen <= 0)
+      throw std::invalid_argument(std::string(entry) +
+          ": cu_seqlens must be strictly increasing (empty segments unsupported)");
+    if (causal && qlen > klen)
+      throw std::invalid_argument(std::string(entry) +
+          ": causal q_len > k_len is unsupported; the lower-right mask has "
+          "fully masked leading query rows. Use split-concat SDPA for this segment.");
+    expected_tiles += (qlen + BQ - 1) / BQ;
+    if (tometa[i + 1] != expected_tiles)
+      throw std::invalid_argument(std::string(entry) +
+          ": tile_offsets must equal cumulative ceil(q_len/BQ) for NAX BQ=" +
+          std::to_string(BQ));
+  }
+
+  auto qc = mlx::core::contiguous(q, false, stream);
+  auto kc = mlx::core::contiguous(k, false, stream);
+  auto vc = mlx::core::contiguous(v, false, stream);
+  auto outputs = mlx::core::array::make_arrays(
+      {qc.shape(), mlx::core::Shape{1, qc.shape(1), qc.shape(2)}},
+      {q.dtype(), mlx::core::float32},
+      std::make_shared<MFAV6VarlenForward>(
+          stream, MFAV6VarlenForward::Params{causal, scale}),
+      {qc, kc, vc, cu_qc, cu_kc, toc});
+  return {outputs[0], outputs[1]};
 }
 
 // =============================================================================

@@ -1,0 +1,95 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "seed-aligned",
+  "lengths": [
+    3226,
+    3226,
+    3226,
+    3226,
+    2434,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    850,
+    850,
+    850,
+    850,
+    652
+  ],
+  "total_tokens": 35018,
+  "num_segments": 20,
+  "dtype": "fp16",
+  "head_dim": 128,
+  "heads": 20,
+  "tile": {
+    "bq": 64,
+    "bk": 64,
+    "wm": 4
+  },
+  "order": "sdpa-steel-nax",
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999998807907104,
+    "global_cos_nax_steel": 1.0,
+    "max_abs_nax_steel": 0.000244140625,
+    "max_abs_nax_sdpa": 0.00048828125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 30.38675000425428,
+      "p95_ms": 32.81606602249667,
+      "min_ms": 20.406665978953242,
+      "max_ms": 32.96416602097452,
+      "samples_ms": [
+        20.406665978953242,
+        32.96416602097452,
+        32.223666028585285,
+        30.183875001966953,
+        30.38675000425428
+      ]
+    },
+    "steel": {
+      "median_ms": 77.7747500105761,
+      "p95_ms": 78.17963303532451,
+      "min_ms": 66.16404204396531,
+      "max_ms": 78.20320804603398,
+      "samples_ms": [
+        66.16404204396531,
+        78.20320804603398,
+        77.7747500105761,
+        75.27254201704636,
+        78.08533299248666
+      ]
+    },
+    "nax": {
+      "median_ms": 45.057916024234146,
+      "p95_ms": 47.17313339933753,
+      "min_ms": 36.9600830017589,
+      "max_ms": 47.53662500297651,
+      "samples_ms": [
+        36.9600830017589,
+        47.53662500297651,
+        44.86537497723475,
+        45.71916698478162,
+        45.057916024234146
+      ]
+    }
+  }
+}

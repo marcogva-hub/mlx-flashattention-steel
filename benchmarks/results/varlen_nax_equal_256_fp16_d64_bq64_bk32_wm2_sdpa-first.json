@@ -1,0 +1,91 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "equal-256",
+  "lengths": [
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256
+  ],
+  "total_tokens": 4096,
+  "num_segments": 16,
+  "dtype": "fp16",
+  "head_dim": 64,
+  "heads": 4,
+  "tile": {
+    "bq": 64,
+    "bk": 32,
+    "wm": 2
+  },
+  "order": "sdpa-steel-nax",
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999999403953552,
+    "global_cos_nax_steel": 0.9999999403953552,
+    "max_abs_nax_steel": 0.00048828125,
+    "max_abs_nax_sdpa": 0.000244140625,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 1.0185419814661145,
+      "p95_ms": 1.3716334127821028,
+      "min_ms": 0.4338749567978084,
+      "max_ms": 1.4338750042952597,
+      "samples_ms": [
+        0.4338749567978084,
+        1.0185419814661145,
+        0.6392499781213701,
+        1.4338750042952597,
+        1.1226670467294753
+      ]
+    },
+    "steel": {
+      "median_ms": 1.6708329785615206,
+      "p95_ms": 2.1295918035320938,
+      "min_ms": 1.0125830303877592,
+      "max_ms": 2.1373750059865415,
+      "samples_ms": [
+        1.0125830303877592,
+        2.1373750059865415,
+        1.3727499754168093,
+        1.6708329785615206,
+        2.098458993714303
+      ]
+    },
+    "nax": {
+      "median_ms": 0.9735000203363597,
+      "p95_ms": 1.1050085886381567,
+      "min_ms": 0.8686250075697899,
+      "max_ms": 1.1294169817119837,
+      "samples_ms": [
+        0.8686250075697899,
+        0.9735000203363597,
+        1.1294169817119837,
+        1.0073750163428485,
+        0.9215839672833681
+      ]
+    }
+  }
+}

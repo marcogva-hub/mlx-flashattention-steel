@@ -1,0 +1,95 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "seed-aligned",
+  "lengths": [
+    3226,
+    3226,
+    3226,
+    3226,
+    2434,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    850,
+    850,
+    850,
+    850,
+    652
+  ],
+  "total_tokens": 35018,
+  "num_segments": 20,
+  "dtype": "fp16",
+  "head_dim": 128,
+  "heads": 20,
+  "tile": {
+    "bq": 64,
+    "bk": 32,
+    "wm": 2
+  },
+  "order": "sdpa-steel-nax",
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999999403953552,
+    "global_cos_nax_steel": 1.0000001192092896,
+    "max_abs_nax_steel": 0.000244140625,
+    "max_abs_nax_sdpa": 0.00048828125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 29.428708949126303,
+      "p95_ms": 34.63879182236269,
+      "min_ms": 20.949666970409453,
+      "max_ms": 35.868292034137994,
+      "samples_ms": [
+        20.949666970409453,
+        28.970042010769248,
+        29.428708949126303,
+        29.72079097526148,
+        35.868292034137994
+      ]
+    },
+    "steel": {
+      "median_ms": 75.7914999849163,
+      "p95_ms": 78.17657499108464,
+      "min_ms": 65.49237499712035,
+      "max_ms": 78.37262499378994,
+      "samples_ms": [
+        65.49237499712035,
+        77.39237498026341,
+        75.63249999657273,
+        78.37262499378994,
+        75.7914999849163
+      ]
+    },
+    "nax": {
+      "median_ms": 79.44275002228096,
+      "p95_ms": 80.10272500105202,
+      "min_ms": 71.81900000432506,
+      "max_ms": 80.23987500928342,
+      "samples_ms": [
+        71.81900000432506,
+        79.23991599818692,
+        80.23987500928342,
+        79.44275002228096,
+        79.55412496812642
+      ]
+    }
+  }
+}

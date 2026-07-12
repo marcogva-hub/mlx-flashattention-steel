@@ -1,0 +1,84 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "heterogeneous",
+  "lengths": [
+    1,
+    17,
+    65,
+    129,
+    257,
+    513,
+    1025,
+    2049
+  ],
+  "total_tokens": 4056,
+  "num_segments": 8,
+  "dtype": "bf16",
+  "head_dim": 64,
+  "heads": 4,
+  "tile": {
+    "bq": 32,
+    "bk": 32,
+    "wm": 2
+  },
+  "order": "sdpa-steel-nax",
+  "iterations_per_sample": 20,
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999998211860657,
+    "global_cos_nax_steel": 0.9999992847442627,
+    "max_abs_nax_steel": 0.0078125,
+    "max_abs_nax_sdpa": 0.001953125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 1.1025354004232213,
+      "p95_ms": 1.356451248866506,
+      "min_ms": 0.8401687489822507,
+      "max_ms": 1.3647124986164272,
+      "samples_ms": [
+        0.8401687489822507,
+        1.1025354004232213,
+        0.9764479007571936,
+        1.3234062498668209,
+        1.3647124986164272
+      ]
+    },
+    "steel": {
+      "median_ms": 1.8341728980885819,
+      "p95_ms": 2.972862928872928,
+      "min_ms": 1.6639167006360367,
+      "max_ms": 3.055064598447643,
+      "samples_ms": [
+        1.6639167006360367,
+        3.055064598447643,
+        1.7923937499290332,
+        1.8341728980885819,
+        2.6440562505740672
+      ]
+    },
+    "nax": {
+      "median_ms": 1.1741624999558553,
+      "p95_ms": 1.2518571084365249,
+      "min_ms": 0.5081833485746756,
+      "max_ms": 1.2560666975332424,
+      "samples_ms": [
+        0.5081833485746756,
+        1.1741624999558553,
+        1.1590104491915554,
+        1.2560666975332424,
+        1.2350187520496547
+      ]
+    }
+  }
+}
