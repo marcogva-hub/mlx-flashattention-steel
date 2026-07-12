@@ -1325,6 +1325,9 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
   int BQ = D == 64 ? 32 : 64;
   if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
     BQ = std::atoi(env);
+  if (BQ <= 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": MFA_V6_NAX_BQ must be a positive integer");
   int expected_tiles = 0;
   for (int i = 0; i < nmeta - 1; ++i) {
     const int qlen = qmeta[i + 1] - qmeta[i];

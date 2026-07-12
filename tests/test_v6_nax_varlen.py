@@ -4,6 +4,7 @@ import mlx.core as mx
 import pytest
 
 from mlx_mfa import _ext
+from mlx_mfa.attention import flash_attention_varlen
 
 
 def _prefix(lengths):
@@ -131,3 +132,89 @@ def test_v6_nax_varlen_extreme_segment_count_and_length():
         _cos(out[:, :, prefix[i] : prefix[i + 1]], ref[:, :, prefix[i] : prefix[i + 1]])
         for i in range(len(lengths))
     ) >= 0.999
+
+
+def _small_inputs(dtype=mx.float16, d=64):
+    q = mx.zeros((1, 2, 8, d), dtype=dtype)
+    k = mx.zeros((1, 2, 8, d), dtype=dtype)
+    v = mx.zeros((1, 2, 8, d), dtype=dtype)
+    return q, k, v
+
+
+@pytest.mark.parametrize(
+    "cu_q,cu_k,tile,match",
+    [
+        ([1, 8], [0, 8], [0, 1], "start at 0"),
+        ([0, 5, 4, 8], [0, 4, 6, 8], [0, 1, 2, 3], "strictly increasing"),
+        ([0, 4, 7], [0, 4, 8], [0, 1, 2], "packed Q/K totals"),
+        ([0, 0, 8], [0, 4, 8], [0, 0, 1], "empty segments unsupported"),
+        ([0, 4, 8], [0, 4, 8], [0, 2, 3], "tile_offsets must equal"),
+    ],
+)
+def test_v6_nax_varlen_rejects_invalid_prefix_metadata(cu_q, cu_k, tile, match):
+    q, k, v = _small_inputs()
+    with pytest.raises(ValueError, match=match):
+        out, _ = _ext.v6_nax_varlen_forward(
+            q,
+            k,
+            v,
+            mx.array(cu_q, dtype=mx.int32),
+            mx.array(cu_k, dtype=mx.int32),
+            mx.array(tile, dtype=mx.int32),
+        )
+        mx.eval(out)
+
+
+def test_v6_nax_varlen_rejects_empty_or_mismatched_metadata():
+    q, k, v = _small_inputs()
+    cases = [
+        (mx.array([], dtype=mx.int32), mx.array([], dtype=mx.int32), mx.array([], dtype=mx.int32)),
+        (mx.array([0, 8], dtype=mx.int32), mx.array([0, 4, 8], dtype=mx.int32), mx.array([0, 1], dtype=mx.int32)),
+    ]
+    for cu_q, cu_k, tile in cases:
+        with pytest.raises(ValueError, match="metadata arrays"):
+            _ext.v6_nax_varlen_forward(q, k, v, cu_q, cu_k, tile)
+
+
+def test_v6_nax_varlen_rejects_metadata_dtype_and_unsupported_data():
+    q, k, v = _small_inputs()
+    good = mx.array([0, 8], dtype=mx.int32)
+    with pytest.raises(ValueError, match="1-D int32"):
+        _ext.v6_nax_varlen_forward(q, k, v, good.astype(mx.int64), good, mx.array([0, 1], dtype=mx.int32))
+    q32, k32, v32 = _small_inputs(mx.float32)
+    with pytest.raises(ValueError, match="float16/bfloat16"):
+        _ext.v6_nax_varlen_forward(q32, k32, v32, good, good, mx.array([0, 1], dtype=mx.int32))
+    qd, kd, vd = _small_inputs(mx.float16, 32)
+    with pytest.raises(ValueError, match="D must be 64 or 128"):
+        _ext.v6_nax_varlen_forward(qd, kd, vd, good, good, mx.array([0, 1], dtype=mx.int32))
+
+
+@pytest.mark.parametrize("dtype,d", [(mx.float32, 64), (mx.float16, 32)])
+def test_public_varlen_keeps_split_concat_for_nax_unsupported_cases(monkeypatch, dtype, d):
+    q, k, v = _small_inputs(dtype, d)
+    cu = mx.array([0, 8], dtype=mx.int32)
+
+    def forbidden_nax(*args, **kwargs):
+        raise AssertionError("public varlen unexpectedly selected expert NAX")
+
+    monkeypatch.setattr(_ext, "v6_nax_varlen_forward", forbidden_nax)
+    out = flash_attention_varlen(q, k, v, cu, cu, 8, 8)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=1 / math.sqrt(d))
+    mx.eval(out, ref)
+    assert float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)))) == 0.0
+
+
+def test_public_varlen_steel_path_is_preserved(monkeypatch):
+    q, k, v = _small_inputs()
+    cu = mx.array([0, 8], dtype=mx.int32)
+
+    def forbidden_nax(*args, **kwargs):
+        raise AssertionError("public varlen unexpectedly selected expert NAX")
+
+    monkeypatch.setattr(_ext, "v6_nax_varlen_forward", forbidden_nax)
+    out = flash_attention_varlen(q, k, v, cu, cu, 8, 8)
+    steel, _ = _ext.mfa_attention_varlen_forward(
+        q, k, v, cu, cu, mx.array([0, 1], dtype=mx.int32), 1 / math.sqrt(64), False
+    )
+    mx.eval(out, steel)
+    assert float(mx.max(mx.abs(out.astype(mx.float32) - steel.astype(mx.float32)))) == 0.0
