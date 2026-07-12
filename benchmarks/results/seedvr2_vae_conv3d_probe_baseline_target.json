@@ -1,0 +1,179 @@
+{
+  "schema": "mlx-mfa.seedvr2-vae-conv3d.probe.v1",
+  "stamp": {
+    "date": "2026-07-12 03:54:32 WEST",
+    "python": "3.11.14",
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "mlx": "0.31.2",
+    "mlx_mfa": "2.61.0",
+    "git_head": "069d96b50b5d66be1eebe20e18164d53d92b7f7c",
+    "device": {
+      "gpu_family_gen": 17,
+      "is_m3_plus": true,
+      "is_m5_plus": true,
+      "has_nax": true,
+      "device_name": "Apple M5 Max",
+      "gpu_cores": 40,
+      "macos_major": 27,
+      "macos_minor": 0
+    }
+  },
+  "methodology": {
+    "order": "baseline-target",
+    "sessions_per_arm": 5,
+    "warmup": 3,
+    "cooldown_s": 1.0,
+    "per_arm_sustained": true,
+    "baseline_pre_hook": true,
+    "probe_is_expert_only": true,
+    "public_gate_unchanged": true
+  },
+  "cases": {
+    "d512_t5_h108_w132": {
+      "input_shape": [
+        1,
+        5,
+        108,
+        132,
+        512
+      ],
+      "weight_shape": [
+        512,
+        3,
+        3,
+        3,
+        512
+      ],
+      "padded_spatial": [
+        112,
+        136
+      ],
+      "padding_work_ratio": 1.0684624017957352,
+      "correctness": {
+        "target_vs_fp32": {
+          "cosine": 0.9999999278416135,
+          "max_abs": 0.00011178851127624512
+        },
+        "baseline_vs_fp32": {
+          "cosine": 0.9999999278416135,
+          "max_abs": 0.00011178851127624512
+        },
+        "finite": true
+      },
+      "engagement": {
+        "baseline": "captured pre-hook mx.conv_general",
+        "baseline_native_calls": 0,
+        "target": "zero-pad -> direct _ext.conv3d_nax_forward -> slice",
+        "target_native_calls": 1,
+        "symbols_distinct": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 60.78462500590831,
+          "p95_ms": 63.63625020021573,
+          "mean_ms": 59.00763339595869,
+          "min_ms": 48.734167008660734,
+          "max_ms": 64.10566699923947,
+          "sample_count": 5,
+          "samples_ms": [
+            48.734167008660734,
+            60.78462500590831,
+            61.75858300412074,
+            59.6551249618642,
+            64.10566699923947
+          ]
+        },
+        "target": {
+          "median_ms": 25.02300002379343,
+          "p95_ms": 28.676341800019145,
+          "mean_ms": 24.47988340863958,
+          "min_ms": 17.565042013302445,
+          "max_ms": 29.4192919973284,
+          "sample_count": 5,
+          "samples_ms": [
+            17.565042013302445,
+            29.4192919973284,
+            24.687541997991502,
+            25.02300002379343,
+            25.704541010782123
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.429150179759042,
+      "target_wins": true
+    },
+    "d512_t4_h108_w132": {
+      "input_shape": [
+        1,
+        4,
+        108,
+        132,
+        512
+      ],
+      "weight_shape": [
+        512,
+        3,
+        3,
+        3,
+        512
+      ],
+      "padded_spatial": [
+        112,
+        136
+      ],
+      "padding_work_ratio": 1.0684624017957352,
+      "correctness": {
+        "target_vs_fp32": {
+          "cosine": 1.0000001080932555,
+          "max_abs": 9.515881538391113e-05
+        },
+        "baseline_vs_fp32": {
+          "cosine": 1.0,
+          "max_abs": 9.515881538391113e-05
+        },
+        "finite": true
+      },
+      "engagement": {
+        "baseline": "captured pre-hook mx.conv_general",
+        "baseline_native_calls": 0,
+        "target": "zero-pad -> direct _ext.conv3d_nax_forward -> slice",
+        "target_native_calls": 1,
+        "symbols_distinct": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 40.860500012058765,
+          "p95_ms": 44.61937458254397,
+          "mean_ms": 40.490316797513515,
+          "min_ms": 34.30954198120162,
+          "max_ms": 45.21991597721353,
+          "sample_count": 5,
+          "samples_ms": [
+            34.30954198120162,
+            45.21991597721353,
+            42.21720900386572,
+            39.84441701322794,
+            40.860500012058765
+          ]
+        },
+        "target": {
+          "median_ms": 22.67191599821672,
+          "p95_ms": 24.95391658740118,
+          "mean_ms": 21.186607994604856,
+          "min_ms": 13.142457988578826,
+          "max_ms": 25.342874985653907,
+          "sample_count": 5,
+          "samples_ms": [
+            13.142457988578826,
+            22.67191599821672,
+            23.39808299439028,
+            25.342874985653907,
+            21.377708006184548
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 1.8022517380212897,
+      "target_wins": true
+    }
+  }
+}

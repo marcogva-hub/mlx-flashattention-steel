@@ -1,0 +1,2719 @@
+{
+  "schema": "mlx-mfa.seedvr2-groupnorm-silu.grid.v2",
+  "stamp": {
+    "date": "2026-07-12 17:28:30 WEST",
+    "python": "3.11.14",
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "mlx": "0.31.2",
+    "mlx_mfa": "2.61.0",
+    "git_head": "d1bb9d18ec0a67be873d6881b82688be3724a0fc",
+    "device": {
+      "gpu_family_gen": 17,
+      "is_m3_plus": true,
+      "is_m5_plus": true,
+      "has_nax": true,
+      "device_name": "Apple M5 Max",
+      "gpu_cores": 40,
+      "macos_major": 27,
+      "macos_minor": 0
+    }
+  },
+  "seedvr2": {
+    "root": "/Users/marcomarcelino/code/ComfyUI-SeedVR2_VideoUpscaler-ORIGINAL",
+    "git_head": "ced265dc141a61eb0850d3aa6629b4acf4d0f866",
+    "video": "/Users/marcomarcelino/code/ComfyUI-SeedVR2_VideoUpscaler-ORIGINAL/example_workflows/example_inputs/Eyes_212x120.mp4",
+    "weight_count": 250,
+    "linear_1x1_replaced": 7
+  },
+  "methodology": {
+    "order": "baseline-target",
+    "sessions_per_arm": 5,
+    "warmup": 3,
+    "cooldown_s": 1.0,
+    "real_video_input": true,
+    "real_latent_from_production_vae": true,
+    "production_weights": true,
+    "eligible_norm_rule": "norm1/norm2/conv_norm_out; Attention3D excluded"
+  },
+  "validation": {
+    "eligible_module_count": 50,
+    "captured_calls": 79,
+    "family_count": 18,
+    "min_cosine_all_real_calls": 0.9999998075835184,
+    "max_abs_all_real_calls": 0.125,
+    "all_finite": true
+  },
+  "weighted_projection": {
+    "baseline_ms": 1230.2798778400756,
+    "target_ms": 540.3672077227384,
+    "speedup": 2.276747848976303
+  },
+  "families": [
+    {
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "calls_per_unit": 6,
+      "paths": [
+        "vae.decoder.conv_norm_out",
+        "vae.decoder.up_blocks[3].resnets[0].norm2",
+        "vae.decoder.up_blocks[3].resnets[1].norm1",
+        "vae.decoder.up_blocks[3].resnets[1].norm2",
+        "vae.decoder.up_blocks[3].resnets[2].norm1",
+        "vae.decoder.up_blocks[3].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -17840.0,
+        "max": 1055.0,
+        "max_rms": 35.451141357421875,
+        "min_cosine_all_calls": 0.9999998075835184,
+        "max_abs_all_calls": 0.125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0000000920070107,
+        "max_abs": 0.125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 45.862833969295025,
+          "p95_ms": 56.557491421699524,
+          "mean_ms": 43.56075000250712,
+          "min_ms": 21.73645800212398,
+          "max_ms": 59.14583301637322,
+          "sample_count": 5,
+          "samples_ms": [
+            21.73645800212398,
+            59.14583301637322,
+            44.85449998173863,
+            45.862833969295025,
+            46.20412504300475
+          ]
+        },
+        "target": {
+          "median_ms": 19.49874998535961,
+          "p95_ms": 25.224033615086228,
+          "mean_ms": 18.9760250155814,
+          "min_ms": 8.82595800794661,
+          "max_ms": 26.309792010579258,
+          "sample_count": 5,
+          "samples_ms": [
+            8.82595800794661,
+            20.881000033114105,
+            19.364625040907413,
+            19.49874998535961,
+            26.309792010579258
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.3520909803823606,
+      "baseline_weighted_ms": 275.17700381577015,
+      "target_weighted_ms": 116.99249991215765,
+      "candidate": true
+    },
+    {
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "calls_per_unit": 6,
+      "paths": [
+        "vae.decoder.conv_norm_out",
+        "vae.decoder.up_blocks[3].resnets[0].norm2",
+        "vae.decoder.up_blocks[3].resnets[1].norm1",
+        "vae.decoder.up_blocks[3].resnets[1].norm2",
+        "vae.decoder.up_blocks[3].resnets[2].norm1",
+        "vae.decoder.up_blocks[3].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -17872.0,
+        "max": 1043.0,
+        "max_rms": 35.442657470703125,
+        "min_cosine_all_calls": 0.9999998843521924,
+        "max_abs_all_calls": 0.125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 0.9999998843521924,
+        "max_abs": 0.0625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 32.31933299684897,
+          "p95_ms": 34.696799993980676,
+          "mean_ms": 28.217150003183633,
+          "min_ms": 17.164334014523774,
+          "max_ms": 34.71274999901652,
+          "sample_count": 5,
+          "samples_ms": [
+            17.164334014523774,
+            22.25633303169161,
+            34.632999973837286,
+            34.71274999901652,
+            32.31933299684897
+          ]
+        },
+        "target": {
+          "median_ms": 14.541124983225018,
+          "p95_ms": 18.92151702195406,
+          "mean_ms": 13.729383610188961,
+          "min_ms": 6.556625012308359,
+          "max_ms": 19.71329201478511,
+          "sample_count": 5,
+          "samples_ms": [
+            6.556625012308359,
+            14.541124983225018,
+            15.754417050629854,
+            12.081458989996463,
+            19.71329201478511
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.222615721557535,
+      "baseline_weighted_ms": 193.91599798109382,
+      "target_weighted_ms": 87.2467498993501,
+      "candidate": true
+    },
+    {
+      "family": "encode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "calls_per_unit": 4,
+      "paths": [
+        "vae.encoder.down_blocks[0].resnets[0].norm1",
+        "vae.encoder.down_blocks[0].resnets[0].norm2",
+        "vae.encoder.down_blocks[0].resnets[1].norm1",
+        "vae.encoder.down_blocks[0].resnets[1].norm2"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -73.5,
+        "max": 48.0625,
+        "max_rms": 3.2512733936309814,
+        "min_cosine_all_calls": 0.9999998949219012,
+        "max_abs_all_calls": 0.015625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 0.9999998949219012,
+        "max_abs": 0.0078125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 34.61570799117908,
+          "p95_ms": 41.24719122191891,
+          "mean_ms": 34.502300003077835,
+          "min_ms": 21.42462501069531,
+          "max_ms": 41.3852910278365,
+          "sample_count": 5,
+          "samples_ms": [
+            21.42462501069531,
+            41.3852910278365,
+            40.69479199824855,
+            34.39108398742974,
+            34.61570799117908
+          ]
+        },
+        "target": {
+          "median_ms": 21.039624989498407,
+          "p95_ms": 30.13619960984215,
+          "mean_ms": 20.025183213874698,
+          "min_ms": 6.410915986634791,
+          "max_ms": 32.22429100424051,
+          "sample_count": 5,
+          "samples_ms": [
+            6.410915986634791,
+            32.22429100424051,
+            21.039624989498407,
+            21.783834032248706,
+            18.667250056751072
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 1.6452625941981835,
+      "baseline_weighted_ms": 138.46283196471632,
+      "target_weighted_ms": 84.15849995799363,
+      "candidate": true
+    },
+    {
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "calls_per_unit": 5,
+      "paths": [
+        "vae.decoder.up_blocks[2].resnets[0].norm2",
+        "vae.decoder.up_blocks[2].resnets[1].norm1",
+        "vae.decoder.up_blocks[2].resnets[1].norm2",
+        "vae.decoder.up_blocks[2].resnets[2].norm1",
+        "vae.decoder.up_blocks[2].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -256.5,
+        "max": 514.0,
+        "max_rms": 4.286651134490967,
+        "min_cosine_all_calls": 0.9999998928430173,
+        "max_abs_all_calls": 0.03125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.03125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 22.49208401190117,
+          "p95_ms": 29.788491979707032,
+          "mean_ms": 21.015850396361202,
+          "min_ms": 10.753209004178643,
+          "max_ms": 31.02979197865352,
+          "sample_count": 5,
+          "samples_ms": [
+            10.753209004178643,
+            15.980875003151596,
+            24.82329198392108,
+            22.49208401190117,
+            31.02979197865352
+          ]
+        },
+        "target": {
+          "median_ms": 7.451500045135617,
+          "p95_ms": 7.895491411909461,
+          "mean_ms": 6.772691418882459,
+          "min_ms": 4.671457980293781,
+          "max_ms": 7.992208003997803,
+          "sample_count": 5,
+          "samples_ms": [
+            4.671457980293781,
+            7.992208003997803,
+            6.239666021429002,
+            7.451500045135617,
+            7.508625043556094
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 3.0184639167497735,
+      "baseline_weighted_ms": 112.46042005950585,
+      "target_weighted_ms": 37.257500225678086,
+      "candidate": true
+    },
+    {
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "calls_per_unit": 5,
+      "paths": [
+        "vae.decoder.up_blocks[2].resnets[0].norm2",
+        "vae.decoder.up_blocks[2].resnets[1].norm1",
+        "vae.decoder.up_blocks[2].resnets[1].norm2",
+        "vae.decoder.up_blocks[2].resnets[2].norm1",
+        "vae.decoder.up_blocks[2].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -239.5,
+        "max": 468.25,
+        "max_rms": 4.292019367218018,
+        "min_cosine_all_calls": 0.9999999029556601,
+        "max_abs_all_calls": 0.015625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.00390625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 15.160290990024805,
+          "p95_ms": 21.61088341381401,
+          "mean_ms": 15.552641591057181,
+          "min_ms": 8.503249962814152,
+          "max_ms": 22.117250016890466,
+          "sample_count": 5,
+          "samples_ms": [
+            8.503249962814152,
+            12.396999984048307,
+            15.160290990024805,
+            22.117250016890466,
+            19.585417001508176
+          ]
+        },
+        "target": {
+          "median_ms": 6.751917011570185,
+          "p95_ms": 7.031274808105081,
+          "mean_ms": 5.84596679545939,
+          "min_ms": 2.4369999882765114,
+          "max_ms": 7.088083017151803,
+          "sample_count": 5,
+          "samples_ms": [
+            2.4369999882765114,
+            6.751917011570185,
+            6.8040419719181955,
+            6.148791988380253,
+            7.088083017151803
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.2453313576049445,
+      "baseline_weighted_ms": 75.80145495012403,
+      "target_weighted_ms": 33.75958505785093,
+      "candidate": true
+    },
+    {
+      "family": "decode:5x432x528x256",
+      "shape": [
+        5,
+        432,
+        528,
+        256
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.decoder.up_blocks[3].resnets[0].norm1"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -751.5,
+        "max": 1194.0,
+        "max_rms": 10.91552734375,
+        "min_cosine_all_calls": 1.0000000886058935,
+        "max_abs_all_calls": 0.0625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0000000886058935,
+        "max_abs": 0.0625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 63.28100000973791,
+          "p95_ms": 67.60007498087361,
+          "mean_ms": 57.39493339788169,
+          "min_ms": 43.71345799881965,
+          "max_ms": 68.52899998193607,
+          "sample_count": 5,
+          "samples_ms": [
+            43.71345799881965,
+            47.566834022291005,
+            63.8843749766238,
+            68.52899998193607,
+            63.28100000973791
+          ]
+        },
+        "target": {
+          "median_ms": 27.884833049029112,
+          "p95_ms": 35.13946641469374,
+          "mean_ms": 25.71187501307577,
+          "min_ms": 9.477042010985315,
+          "max_ms": 35.28270800597966,
+          "sample_count": 5,
+          "samples_ms": [
+            9.477042010985315,
+            35.28270800597966,
+            34.566500049550086,
+            27.884833049029112,
+            21.348291949834675
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.26936987209042,
+      "baseline_weighted_ms": 63.28100000973791,
+      "target_weighted_ms": 27.884833049029112,
+      "candidate": true
+    },
+    {
+      "family": "encode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "calls_per_unit": 3,
+      "paths": [
+        "vae.encoder.down_blocks[1].resnets[0].norm2",
+        "vae.encoder.down_blocks[1].resnets[1].norm1",
+        "vae.encoder.down_blocks[1].resnets[1].norm2"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -48.34375,
+        "max": 67.9375,
+        "max_rms": 1.6768639087677002,
+        "min_cosine_all_calls": 1.0,
+        "max_abs_all_calls": 0.015625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.0078125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 19.19387502130121,
+          "p95_ms": 32.31470820028335,
+          "mean_ms": 19.809791608713567,
+          "min_ms": 10.950041993055493,
+          "max_ms": 35.461499996017665,
+          "sample_count": 5,
+          "samples_ms": [
+            10.950041993055493,
+            13.716000015847385,
+            19.727541017346084,
+            35.461499996017665,
+            19.19387502130121
+          ]
+        },
+        "target": {
+          "median_ms": 6.589709024410695,
+          "p95_ms": 9.985467209480703,
+          "mean_ms": 6.796408607624471,
+          "min_ms": 3.058917005546391,
+          "max_ms": 10.521084011998028,
+          "sample_count": 5,
+          "samples_ms": [
+            3.058917005546391,
+            10.521084011998028,
+            6.589709024410695,
+            5.969332996755838,
+            7.842999999411404
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.9127044836426115,
+      "baseline_weighted_ms": 57.58162506390363,
+      "target_weighted_ms": 19.769127073232085,
+      "candidate": true
+    },
+    {
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "calls_per_unit": 6,
+      "paths": [
+        "vae.decoder.up_blocks[1].resnets[0].norm1",
+        "vae.decoder.up_blocks[1].resnets[0].norm2",
+        "vae.decoder.up_blocks[1].resnets[1].norm1",
+        "vae.decoder.up_blocks[1].resnets[1].norm2",
+        "vae.decoder.up_blocks[1].resnets[2].norm1",
+        "vae.decoder.up_blocks[1].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -74.5625,
+        "max": 45.78125,
+        "max_rms": 3.380356788635254,
+        "min_cosine_all_calls": 0.9999999073664342,
+        "max_abs_all_calls": 0.0078125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.000000092967484,
+        "max_abs": 0.0078125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 8.57175001874566,
+          "p95_ms": 10.824883810710162,
+          "mean_ms": 7.867983391042799,
+          "min_ms": 3.075999964494258,
+          "max_ms": 11.312709015328437,
+          "sample_count": 5,
+          "samples_ms": [
+            3.075999964494258,
+            7.5058749644085765,
+            11.312709015328437,
+            8.57175001874566,
+            8.873582992237061
+          ]
+        },
+        "target": {
+          "median_ms": 2.9552080086432397,
+          "p95_ms": 3.2748751691542566,
+          "mean_ms": 2.863299986347556,
+          "min_ms": 2.1071669762022793,
+          "max_ms": 3.340541967190802,
+          "sample_count": 5,
+          "samples_ms": [
+            2.1071669762022793,
+            3.0122079770080745,
+            2.901375002693385,
+            3.340541967190802,
+            2.9552080086432397
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.900557251359447,
+      "baseline_weighted_ms": 51.430500112473965,
+      "target_weighted_ms": 17.73124805185944,
+      "candidate": true
+    },
+    {
+      "family": "decode:4x432x528x256",
+      "shape": [
+        4,
+        432,
+        528,
+        256
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.decoder.up_blocks[3].resnets[0].norm1"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -719.5,
+        "max": 1150.0,
+        "max_rms": 10.894877433776855,
+        "min_cosine_all_calls": 1.0,
+        "max_abs_all_calls": 0.03125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.03125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 50.65345799084753,
+          "p95_ms": 58.573541801888496,
+          "mean_ms": 46.99855839135125,
+          "min_ms": 33.841957978438586,
+          "max_ms": 60.080875002313405,
+          "sample_count": 5,
+          "samples_ms": [
+            33.841957978438586,
+            37.87229198496789,
+            60.080875002313405,
+            52.54420900018886,
+            50.65345799084753
+          ]
+        },
+        "target": {
+          "median_ms": 17.885500041302294,
+          "p95_ms": 20.584432780742645,
+          "mean_ms": 16.588433214928955,
+          "min_ms": 8.410625043325126,
+          "max_ms": 21.147165971342474,
+          "sample_count": 5,
+          "samples_ms": [
+            8.410625043325126,
+            21.147165971342474,
+            17.16537500033155,
+            18.33350001834333,
+            17.885500041302294
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.832096272056999,
+      "baseline_weighted_ms": 50.65345799084753,
+      "target_weighted_ms": 17.885500041302294,
+      "candidate": true
+    },
+    {
+      "family": "decode:5x216x264x512",
+      "shape": [
+        5,
+        216,
+        264,
+        512
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.decoder.up_blocks[2].resnets[0].norm1"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -58.09375,
+        "max": 132.25,
+        "max_rms": 6.600101947784424,
+        "min_cosine_all_calls": 1.0000000996011869,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0000000996011869,
+        "max_abs": 0.00390625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 39.715624996460974,
+          "p95_ms": 52.62772461865097,
+          "mean_ms": 37.97425839584321,
+          "min_ms": 21.677999990060925,
+          "max_ms": 55.38541602436453,
+          "sample_count": 5,
+          "samples_ms": [
+            21.677999990060925,
+            31.49529197253287,
+            39.715624996460974,
+            55.38541602436453,
+            41.59695899579674
+          ]
+        },
+        "target": {
+          "median_ms": 13.60012503573671,
+          "p95_ms": 19.13885783869773,
+          "mean_ms": 13.221549813169986,
+          "min_ms": 6.72199996188283,
+          "max_ms": 20.0365410419181,
+          "sample_count": 5,
+          "samples_ms": [
+            6.72199996188283,
+            10.20095800049603,
+            15.548125025816262,
+            13.60012503573671,
+            20.0365410419181
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.9202396957455328,
+      "baseline_weighted_ms": 39.715624996460974,
+      "target_weighted_ms": 13.60012503573671,
+      "candidate": true
+    },
+    {
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "calls_per_unit": 6,
+      "paths": [
+        "vae.decoder.up_blocks[1].resnets[0].norm1",
+        "vae.decoder.up_blocks[1].resnets[0].norm2",
+        "vae.decoder.up_blocks[1].resnets[1].norm1",
+        "vae.decoder.up_blocks[1].resnets[1].norm2",
+        "vae.decoder.up_blocks[1].resnets[2].norm1",
+        "vae.decoder.up_blocks[1].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -72.875,
+        "max": 41.5,
+        "max_rms": 2.9516093730926514,
+        "min_cosine_all_calls": 0.9999998910520029,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 0.9999999320017184,
+        "max_abs": 0.00390625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 4.857417021412402,
+          "p95_ms": 7.392174412962049,
+          "mean_ms": 4.951224790420383,
+          "min_ms": 1.9341249717399478,
+          "max_ms": 7.512041018344462,
+          "sample_count": 5,
+          "samples_ms": [
+            1.9341249717399478,
+            3.5398329491727054,
+            4.857417021412402,
+            6.912707991432399,
+            7.512041018344462
+          ]
+        },
+        "target": {
+          "median_ms": 3.214250027667731,
+          "p95_ms": 4.393716633785516,
+          "mean_ms": 3.183475020341575,
+          "min_ms": 1.9271670025773346,
+          "max_ms": 4.687125037889928,
+          "sample_count": 5,
+          "samples_ms": [
+            1.9271670025773346,
+            4.687125037889928,
+            2.868750016205013,
+            3.2200830173678696,
+            3.214250027667731
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 1.5112131849111183,
+      "baseline_weighted_ms": 29.144502128474414,
+      "target_weighted_ms": 19.285500166006386,
+      "candidate": true
+    },
+    {
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "calls_per_unit": 10,
+      "paths": [
+        "vae.decoder.mid_block.resnets[0].norm1",
+        "vae.decoder.mid_block.resnets[0].norm2",
+        "vae.decoder.mid_block.resnets[1].norm1",
+        "vae.decoder.mid_block.resnets[1].norm2",
+        "vae.decoder.up_blocks[0].resnets[0].norm1",
+        "vae.decoder.up_blocks[0].resnets[0].norm2",
+        "vae.decoder.up_blocks[0].resnets[1].norm1",
+        "vae.decoder.up_blocks[0].resnets[1].norm2",
+        "vae.decoder.up_blocks[0].resnets[2].norm1",
+        "vae.decoder.up_blocks[0].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -333.0,
+        "max": 38.53125,
+        "max_rms": 14.159080505371094,
+        "min_cosine_all_calls": 0.9999998725665142,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.001953125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 2.864625013899058,
+          "p95_ms": 3.922683175187558,
+          "mean_ms": 2.73144138045609,
+          "min_ms": 0.971832952927798,
+          "max_ms": 4.093999974429607,
+          "sample_count": 5,
+          "samples_ms": [
+            0.971832952927798,
+            2.864625013899058,
+            3.23741597821936,
+            2.4893329828046262,
+            4.093999974429607
+          ]
+        },
+        "target": {
+          "median_ms": 1.3242500135675073,
+          "p95_ms": 1.5956997638568282,
+          "mean_ms": 1.2681583990342915,
+          "min_ms": 0.9432919905520976,
+          "max_ms": 1.6600829549133778,
+          "sample_count": 5,
+          "samples_ms": [
+            0.9432919905520976,
+            1.3242500135675073,
+            1.6600829549133778,
+            1.075000036507845,
+            1.33816699963063
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.1632055764015488,
+      "baseline_weighted_ms": 28.64625013899058,
+      "target_weighted_ms": 13.242500135675073,
+      "candidate": true
+    },
+    {
+      "family": "decode:4x216x264x512",
+      "shape": [
+        4,
+        216,
+        264,
+        512
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.decoder.up_blocks[2].resnets[0].norm1"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -59.0,
+        "max": 127.3125,
+        "max_rms": 6.61128568649292,
+        "min_cosine_all_calls": 1.0000000621050238,
+        "max_abs_all_calls": 0.0078125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0000000621050238,
+        "max_abs": 0.0078125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 27.125167020130903,
+          "p95_ms": 30.612300022039562,
+          "mean_ms": 25.40023340843618,
+          "min_ms": 17.155292036477476,
+          "max_ms": 30.75725003145635,
+          "sample_count": 5,
+          "samples_ms": [
+            17.155292036477476,
+            21.93095796974376,
+            30.032499984372407,
+            30.75725003145635,
+            27.125167020130903
+          ]
+        },
+        "target": {
+          "median_ms": 10.043042013421655,
+          "p95_ms": 14.990925404708833,
+          "mean_ms": 10.5997754028067,
+          "min_ms": 4.124041995964944,
+          "max_ms": 15.355542011093348,
+          "sample_count": 5,
+          "samples_ms": [
+            4.124041995964944,
+            13.53245897917077,
+            15.355542011093348,
+            10.043042013421655,
+            9.94379201438278
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.700891521102916,
+      "baseline_weighted_ms": 27.125167020130903,
+      "target_weighted_ms": 10.043042013421655,
+      "candidate": true
+    },
+    {
+      "family": "encode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "calls_per_unit": 3,
+      "paths": [
+        "vae.encoder.down_blocks[2].resnets[0].norm2",
+        "vae.encoder.down_blocks[2].resnets[1].norm1",
+        "vae.encoder.down_blocks[2].resnets[1].norm2"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -83.6875,
+        "max": 65.5,
+        "max_rms": 4.244011402130127,
+        "min_cosine_all_calls": 1.0,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.00390625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 9.012750000692904,
+          "p95_ms": 9.504782792646438,
+          "mean_ms": 7.219758187420666,
+          "min_ms": 3.124041948467493,
+          "max_ms": 9.511540993116796,
+          "sample_count": 5,
+          "samples_ms": [
+            3.124041948467493,
+            4.972708004061133,
+            9.012750000692904,
+            9.511540993116796,
+            9.477749990765005
+          ]
+        },
+        "target": {
+          "median_ms": 2.939791011158377,
+          "p95_ms": 3.5616330220364034,
+          "mean_ms": 3.0757330008782446,
+          "min_ms": 2.637583005707711,
+          "max_ms": 3.6425830330699682,
+          "sample_count": 5,
+          "samples_ms": [
+            2.920874976553023,
+            2.939791011158377,
+            3.237832977902144,
+            2.637583005707711,
+            3.6425830330699682
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 3.065779154533021,
+      "baseline_weighted_ms": 27.038250002078712,
+      "target_weighted_ms": 8.81937303347513,
+      "candidate": true
+    },
+    {
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "calls_per_unit": 9,
+      "paths": [
+        "vae.encoder.conv_norm_out",
+        "vae.encoder.down_blocks[3].resnets[0].norm1",
+        "vae.encoder.down_blocks[3].resnets[0].norm2",
+        "vae.encoder.down_blocks[3].resnets[1].norm1",
+        "vae.encoder.down_blocks[3].resnets[1].norm2",
+        "vae.encoder.mid_block.resnets[0].norm1",
+        "vae.encoder.mid_block.resnets[0].norm2",
+        "vae.encoder.mid_block.resnets[1].norm1",
+        "vae.encoder.mid_block.resnets[1].norm2"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -6832.0,
+        "max": 2246.0,
+        "max_rms": 52.48798751831055,
+        "min_cosine_all_calls": 0.9999998860599733,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.00390625
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 2.6365420198999345,
+          "p95_ms": 4.668458574451506,
+          "mean_ms": 3.1434415839612484,
+          "min_ms": 2.5735829840414226,
+          "max_ms": 5.1535419770516455,
+          "sample_count": 5,
+          "samples_ms": [
+            2.6254159747622907,
+            2.6365420198999345,
+            5.1535419770516455,
+            2.5735829840414226,
+            2.7281249640509486
+          ]
+        },
+        "target": {
+          "median_ms": 1.426125003490597,
+          "p95_ms": 1.5255993930622935,
+          "mean_ms": 1.3140582013875246,
+          "min_ms": 0.9032500092871487,
+          "max_ms": 1.5344159910455346,
+          "sample_count": 5,
+          "samples_ms": [
+            0.9032500092871487,
+            1.4903330011293292,
+            1.426125003490597,
+            1.5344159910455346,
+            1.2161670019850135
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 1.8487453858860263,
+      "baseline_weighted_ms": 23.72887817909941,
+      "target_weighted_ms": 12.835125031415373,
+      "candidate": true
+    },
+    {
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "calls_per_unit": 10,
+      "paths": [
+        "vae.decoder.mid_block.resnets[0].norm1",
+        "vae.decoder.mid_block.resnets[0].norm2",
+        "vae.decoder.mid_block.resnets[1].norm1",
+        "vae.decoder.mid_block.resnets[1].norm2",
+        "vae.decoder.up_blocks[0].resnets[0].norm1",
+        "vae.decoder.up_blocks[0].resnets[0].norm2",
+        "vae.decoder.up_blocks[0].resnets[1].norm1",
+        "vae.decoder.up_blocks[0].resnets[1].norm2",
+        "vae.decoder.up_blocks[0].resnets[2].norm1",
+        "vae.decoder.up_blocks[0].resnets[2].norm2"
+      ],
+      "phases": [
+        "decode"
+      ],
+      "real_activation": {
+        "min": -281.5,
+        "max": 31.015625,
+        "max_rms": 12.701282501220703,
+        "min_cosine_all_calls": 0.9999999397721303,
+        "max_abs_all_calls": 0.00390625,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 0.9999999397721303,
+        "max_abs": 0.001953125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 1.839083037339151,
+          "p95_ms": 3.205983189400285,
+          "mean_ms": 1.9144249963574111,
+          "min_ms": 0.5884999991394579,
+          "max_ms": 3.49258299684152,
+          "sample_count": 5,
+          "samples_ms": [
+            0.5884999991394579,
+            1.5923749888315797,
+            3.49258299684152,
+            2.059583959635347,
+            1.839083037339151
+          ]
+        },
+        "target": {
+          "median_ms": 1.2658750056289136,
+          "p95_ms": 1.3033672235906124,
+          "mean_ms": 1.1948917992413044,
+          "min_ms": 0.9917079587467015,
+          "max_ms": 1.3084590318612754,
+          "sample_count": 5,
+          "samples_ms": [
+            0.9917079587467015,
+            1.2829999905079603,
+            1.2658750056289136,
+            1.1254170094616711,
+            1.3084590318612754
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 1.4528156643913317,
+      "baseline_weighted_ms": 18.39083037339151,
+      "target_weighted_ms": 12.658750056289136,
+      "candidate": true
+    },
+    {
+      "family": "encode:5x216x264x128",
+      "shape": [
+        5,
+        216,
+        264,
+        128
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.encoder.down_blocks[1].resnets[0].norm1"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -17.53125,
+        "max": 19.015625,
+        "max_rms": 2.3058862686157227,
+        "min_cosine_all_calls": 0.9999999107176737,
+        "max_abs_all_calls": 0.0078125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 0.9999999107176737,
+        "max_abs": 0.0078125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 13.66275001782924,
+          "p95_ms": 20.548283378593624,
+          "mean_ms": 13.428783393464983,
+          "min_ms": 4.937375022564083,
+          "max_ms": 21.21799997985363,
+          "sample_count": 5,
+          "samples_ms": [
+            4.937375022564083,
+            9.456374973524362,
+            13.66275001782924,
+            17.869416973553598,
+            21.21799997985363
+          ]
+        },
+        "target": {
+          "median_ms": 5.4275409784168005,
+          "p95_ms": 10.717842215672135,
+          "mean_ms": 6.120616593398154,
+          "min_ms": 1.5802080160938203,
+          "max_ms": 11.764709022827446,
+          "sample_count": 5,
+          "samples_ms": [
+            1.5802080160938203,
+            5.300249962601811,
+            6.530374987050891,
+            5.4275409784168005,
+            11.764709022827446
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.5173002050395623,
+      "baseline_weighted_ms": 13.66275001782924,
+      "target_weighted_ms": 5.4275409784168005,
+      "candidate": true
+    },
+    {
+      "family": "encode:3x108x132x256",
+      "shape": [
+        3,
+        108,
+        132,
+        256
+      ],
+      "calls_per_unit": 1,
+      "paths": [
+        "vae.encoder.down_blocks[2].resnets[0].norm1"
+      ],
+      "phases": [
+        "encode"
+      ],
+      "real_activation": {
+        "min": -59.78125,
+        "max": 71.8125,
+        "max_rms": 7.8253326416015625,
+        "min_cosine_all_calls": 1.0,
+        "max_abs_all_calls": 0.001953125,
+        "all_finite": true
+      },
+      "representative_correctness": {
+        "cosine": 1.0,
+        "max_abs": 0.001953125
+      },
+      "engagement": {
+        "baseline": "SeedVR2 fp32 cast + MLX GroupNorm + SiLU + fp16 cast",
+        "target": "direct mx.fast.metal_kernel fused GroupNorm+SiLU",
+        "target_direct_kernel_calls": 1,
+        "different_paths": true
+      },
+      "timings": {
+        "baseline": {
+          "median_ms": 4.063333035446703,
+          "p95_ms": 4.81079159071669,
+          "mean_ms": 3.7671498022973537,
+          "min_ms": 1.8258329946547747,
+          "max_ms": 4.90699999500066,
+          "sample_count": 5,
+          "samples_ms": [
+            1.8258329946547747,
+            3.6136250128038228,
+            4.90699999500066,
+            4.4259579735808074,
+            4.063333035446703
+          ]
+        },
+        "target": {
+          "median_ms": 1.7697080038487911,
+          "p95_ms": 1.951884024310857,
+          "mean_ms": 1.7112504225224257,
+          "min_ms": 1.3278340338729322,
+          "max_ms": 1.9923340296372771,
+          "sample_count": 5,
+          "samples_ms": [
+            1.3278340338729322,
+            1.676292042247951,
+            1.7900840030051768,
+            1.7697080038487911,
+            1.9923340296372771
+          ]
+        }
+      },
+      "speedup_baseline_over_target": 2.2960471595368825,
+      "baseline_weighted_ms": 4.063333035446703,
+      "target_weighted_ms": 1.7697080038487911,
+      "candidate": true
+    }
+  ],
+  "real_call_correctness": [
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[0].resnets[0].norm1",
+      "family": "encode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -4.51953125,
+      "input_max": 5.1328125,
+      "input_rms": 0.4480813145637512,
+      "cosine": 0.9999998949219012,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[0].resnets[0].norm2",
+      "family": "encode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -26.296875,
+      "input_max": 14.234375,
+      "input_rms": 3.2512733936309814,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[0].resnets[1].norm1",
+      "family": "encode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -15.1953125,
+      "input_max": 10.984375,
+      "input_rms": 1.1145412921905518,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[0].resnets[1].norm2",
+      "family": "encode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -73.5,
+      "input_max": 48.0625,
+      "input_rms": 1.4560859203338623,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[1].resnets[0].norm1",
+      "family": "encode:5x216x264x128",
+      "shape": [
+        5,
+        216,
+        264,
+        128
+      ],
+      "input_min": -17.53125,
+      "input_max": 19.015625,
+      "input_rms": 2.3058862686157227,
+      "cosine": 0.9999999107176737,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[1].resnets[0].norm2",
+      "family": "encode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -48.34375,
+      "input_max": 35.09375,
+      "input_rms": 1.0570625066757202,
+      "cosine": 1.0,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[1].resnets[1].norm1",
+      "family": "encode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -35.65625,
+      "input_max": 44.625,
+      "input_rms": 1.6768639087677002,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[1].resnets[1].norm2",
+      "family": "encode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -42.5625,
+      "input_max": 67.9375,
+      "input_rms": 1.441278338432312,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[2].resnets[0].norm1",
+      "family": "encode:3x108x132x256",
+      "shape": [
+        3,
+        108,
+        132,
+        256
+      ],
+      "input_min": -59.78125,
+      "input_max": 71.8125,
+      "input_rms": 7.8253326416015625,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[2].resnets[0].norm2",
+      "family": "encode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -41.1875,
+      "input_max": 11.3203125,
+      "input_rms": 1.3863184452056885,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[2].resnets[1].norm1",
+      "family": "encode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -83.6875,
+      "input_max": 65.5,
+      "input_rms": 4.244011402130127,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[2].resnets[1].norm2",
+      "family": "encode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -18.28125,
+      "input_max": 54.25,
+      "input_rms": 1.8247095346450806,
+      "cosine": 1.000000061403001,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[3].resnets[0].norm1",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -200.125,
+      "input_max": 241.625,
+      "input_rms": 18.820920944213867,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[3].resnets[0].norm2",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -57.09375,
+      "input_max": 46.96875,
+      "input_rms": 3.883768320083618,
+      "cosine": 1.000000066010117,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[3].resnets[1].norm1",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -823.0,
+      "input_max": 244.0,
+      "input_rms": 23.79100799560547,
+      "cosine": 1.0000000983313948,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.down_blocks[3].resnets[1].norm2",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -45.53125,
+      "input_max": 61.8125,
+      "input_rms": 2.159247875213623,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.mid_block.resnets[0].norm1",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -2294.0,
+      "input_max": 554.0,
+      "input_rms": 30.267507553100586,
+      "cosine": 0.999999930517369,
+      "max_abs": 0.0009765625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.mid_block.resnets[0].norm2",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -49.40625,
+      "input_max": 68.625,
+      "input_rms": 1.6022549867630005,
+      "cosine": 0.9999999277874009,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.mid_block.resnets[1].norm1",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -4060.0,
+      "input_max": 1292.0,
+      "input_rms": 38.82758712768555,
+      "cosine": 1.0,
+      "max_abs": 0.0009765625,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.mid_block.resnets[1].norm2",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -48.9375,
+      "input_max": 88.8125,
+      "input_rms": 2.4105384349823,
+      "cosine": 0.9999998860599733,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "encode",
+      "path": "vae.encoder.conv_norm_out",
+      "family": "encode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6832.0,
+      "input_max": 2246.0,
+      "input_rms": 52.48798751831055,
+      "cosine": 1.0,
+      "max_abs": 0.00048828125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[0].norm1",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -4.875,
+      "input_max": 4.65625,
+      "input_rms": 0.5888634920120239,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[0].norm2",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -194.625,
+      "input_max": 38.53125,
+      "input_rms": 12.912883758544922,
+      "cosine": 0.9999998868325995,
+      "max_abs": 0.00048828125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[1].norm1",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -5.58984375,
+      "input_max": 5.78125,
+      "input_rms": 0.5479702353477478,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[1].norm2",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -240.0,
+      "input_max": 11.734375,
+      "input_rms": 13.147171974182129,
+      "cosine": 1.0,
+      "max_abs": 0.000244140625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[0].norm1",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6.02734375,
+      "input_max": 6.62109375,
+      "input_rms": 0.5285632610321045,
+      "cosine": 0.99999992996937,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[0].norm2",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -285.75,
+      "input_max": 8.0390625,
+      "input_rms": 13.046460151672363,
+      "cosine": 1.0000000891044425,
+      "max_abs": 0.00048828125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[1].norm1",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6.29296875,
+      "input_max": 7.00390625,
+      "input_rms": 0.5296885371208191,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[1].norm2",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -299.0,
+      "input_max": 8.953125,
+      "input_rms": 12.685393333435059,
+      "cosine": 0.9999999348670747,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[2].norm1",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6.46484375,
+      "input_max": 7.32421875,
+      "input_rms": 0.5278128981590271,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[2].norm2",
+      "family": "decode:2x54x66x512",
+      "shape": [
+        2,
+        54,
+        66,
+        512
+      ],
+      "input_min": -333.0,
+      "input_max": 13.3359375,
+      "input_rms": 14.159080505371094,
+      "cosine": 0.9999998725665142,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[0].norm1",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -37.0625,
+      "input_max": 34.6875,
+      "input_rms": 1.6481513977050781,
+      "cosine": 1.000000092967484,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[0].norm2",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -53.0,
+      "input_max": 17.859375,
+      "input_rms": 2.499133825302124,
+      "cosine": 0.9999999281829135,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[1].norm1",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -39.6875,
+      "input_max": 34.28125,
+      "input_rms": 1.6639536619186401,
+      "cosine": 0.9999999289017764,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[1].norm2",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -73.375,
+      "input_max": 38.84375,
+      "input_rms": 1.7922271490097046,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[2].norm1",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -40.375,
+      "input_max": 34.8125,
+      "input_rms": 1.7225472927093506,
+      "cosine": 1.0000000659883679,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[2].norm2",
+      "family": "decode:3x108x132x512",
+      "shape": [
+        3,
+        108,
+        132,
+        512
+      ],
+      "input_min": -74.5625,
+      "input_max": 45.78125,
+      "input_rms": 3.380356788635254,
+      "cosine": 0.9999999073664342,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[0].norm1",
+      "family": "decode:5x216x264x512",
+      "shape": [
+        5,
+        216,
+        264,
+        512
+      ],
+      "input_min": -58.09375,
+      "input_max": 132.25,
+      "input_rms": 6.600101947784424,
+      "cosine": 1.0000000996011869,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[0].norm2",
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -118.8125,
+      "input_max": 514.0,
+      "input_rms": 2.3808720111846924,
+      "cosine": 1.0,
+      "max_abs": 0.03125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[1].norm1",
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -174.75,
+      "input_max": 91.125,
+      "input_rms": 4.286651134490967,
+      "cosine": 0.9999999242943687,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[1].norm2",
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -256.5,
+      "input_max": 55.46875,
+      "input_rms": 0.8900164365768433,
+      "cosine": 0.9999998928430173,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[2].norm1",
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -253.25,
+      "input_max": 102.5,
+      "input_rms": 4.2791428565979,
+      "cosine": 1.0,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[2].norm2",
+      "family": "decode:5x216x264x256",
+      "shape": [
+        5,
+        216,
+        264,
+        256
+      ],
+      "input_min": -19.671875,
+      "input_max": 40.6875,
+      "input_rms": 1.2359601259231567,
+      "cosine": 1.0,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[0].norm1",
+      "family": "decode:5x432x528x256",
+      "shape": [
+        5,
+        432,
+        528,
+        256
+      ],
+      "input_min": -751.5,
+      "input_max": 1194.0,
+      "input_rms": 10.91552734375,
+      "cosine": 1.0000000886058935,
+      "max_abs": 0.0625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[0].norm2",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -356.75,
+      "input_max": 604.5,
+      "input_rms": 2.386090040206909,
+      "cosine": 1.0000000920070107,
+      "max_abs": 0.125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[1].norm1",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -5532.0,
+      "input_max": 1055.0,
+      "input_rms": 15.167163848876953,
+      "cosine": 1.0,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[1].norm2",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -86.3125,
+      "input_max": 150.25,
+      "input_rms": 0.7477927803993225,
+      "cosine": 1.0,
+      "max_abs": 0.125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[2].norm1",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -15344.0,
+      "input_max": 977.0,
+      "input_rms": 30.38471031188965,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[2].norm2",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -58.53125,
+      "input_max": 52.84375,
+      "input_rms": 0.45428118109703064,
+      "cosine": 1.0000000733826089,
+      "max_abs": 0.125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.conv_norm_out",
+      "family": "decode:5x432x528x128",
+      "shape": [
+        5,
+        432,
+        528,
+        128
+      ],
+      "input_min": -17840.0,
+      "input_max": 179.0,
+      "input_rms": 35.451141357421875,
+      "cosine": 0.9999998075835184,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[0].norm1",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -4.77734375,
+      "input_max": 4.1953125,
+      "input_rms": 0.6192322373390198,
+      "cosine": 0.9999999397721303,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[0].norm2",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -168.0,
+      "input_max": 31.015625,
+      "input_rms": 12.343446731567383,
+      "cosine": 1.0,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[1].norm1",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -5.6953125,
+      "input_max": 4.78515625,
+      "input_rms": 0.5687857270240784,
+      "cosine": 1.0000000716646296,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.mid_block.resnets[1].norm2",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -217.625,
+      "input_max": 10.9453125,
+      "input_rms": 12.364729881286621,
+      "cosine": 1.0,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[0].norm1",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -5.86328125,
+      "input_max": 5.64453125,
+      "input_rms": 0.5489826202392578,
+      "cosine": 1.0,
+      "max_abs": 0.0009765625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[0].norm2",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -253.0,
+      "input_max": 7.53515625,
+      "input_rms": 11.993881225585938,
+      "cosine": 1.0,
+      "max_abs": 0.000244140625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[1].norm1",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6.03515625,
+      "input_max": 6.17578125,
+      "input_rms": 0.5526452660560608,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[1].norm2",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -255.75,
+      "input_max": 8.0859375,
+      "input_rms": 11.472599983215332,
+      "cosine": 1.0,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[2].norm1",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -6.18359375,
+      "input_max": 6.24609375,
+      "input_rms": 0.5500217080116272,
+      "cosine": 1.000000060460914,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[0].resnets[2].norm2",
+      "family": "decode:1x54x66x512",
+      "shape": [
+        1,
+        54,
+        66,
+        512
+      ],
+      "input_min": -281.5,
+      "input_max": 12.390625,
+      "input_rms": 12.701282501220703,
+      "cosine": 1.0,
+      "max_abs": 0.0001220703125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[0].norm1",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -37.5,
+      "input_max": 33.84375,
+      "input_rms": 1.6562249660491943,
+      "cosine": 0.9999999320017184,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[0].norm2",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -51.25,
+      "input_max": 19.828125,
+      "input_rms": 2.397665023803711,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[1].norm1",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -41.0625,
+      "input_max": 32.40625,
+      "input_rms": 1.6722356081008911,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[1].norm2",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -72.875,
+      "input_max": 35.8125,
+      "input_rms": 1.6877808570861816,
+      "cosine": 0.9999998910520029,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[2].norm1",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -42.25,
+      "input_max": 33.25,
+      "input_rms": 1.7502086162567139,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[1].resnets[2].norm2",
+      "family": "decode:2x108x132x512",
+      "shape": [
+        2,
+        108,
+        132,
+        512
+      ],
+      "input_min": -65.9375,
+      "input_max": 41.5,
+      "input_rms": 2.9516093730926514,
+      "cosine": 1.0000001172949393,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[0].norm1",
+      "family": "decode:4x216x264x512",
+      "shape": [
+        4,
+        216,
+        264,
+        512
+      ],
+      "input_min": -59.0,
+      "input_max": 127.3125,
+      "input_rms": 6.61128568649292,
+      "cosine": 1.0000000621050238,
+      "max_abs": 0.0078125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[0].norm2",
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "input_min": -111.8125,
+      "input_max": 468.25,
+      "input_rms": 2.342118263244629,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[1].norm1",
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "input_min": -164.125,
+      "input_max": 83.375,
+      "input_rms": 4.292019367218018,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[1].norm2",
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "input_min": -229.625,
+      "input_max": 49.6875,
+      "input_rms": 0.8845351338386536,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[2].norm1",
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "input_min": -239.5,
+      "input_max": 96.125,
+      "input_rms": 4.278918266296387,
+      "cosine": 1.0,
+      "max_abs": 0.00390625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[2].resnets[2].norm2",
+      "family": "decode:4x216x264x256",
+      "shape": [
+        4,
+        216,
+        264,
+        256
+      ],
+      "input_min": -17.671875,
+      "input_max": 38.15625,
+      "input_rms": 1.223135232925415,
+      "cosine": 0.9999999029556601,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[0].norm1",
+      "family": "decode:4x432x528x256",
+      "shape": [
+        4,
+        432,
+        528,
+        256
+      ],
+      "input_min": -719.5,
+      "input_max": 1150.0,
+      "input_rms": 10.894877433776855,
+      "cosine": 1.0,
+      "max_abs": 0.03125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[0].norm2",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -346.5,
+      "input_max": 588.0,
+      "input_rms": 2.3672759532928467,
+      "cosine": 0.9999998843521924,
+      "max_abs": 0.0625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[1].norm1",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -5480.0,
+      "input_max": 1043.0,
+      "input_rms": 15.107184410095215,
+      "cosine": 1.0000001065527262,
+      "max_abs": 0.015625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[1].norm2",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -84.9375,
+      "input_max": 152.375,
+      "input_rms": 0.7558446526527405,
+      "cosine": 1.0,
+      "max_abs": 0.125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[2].norm1",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -15352.0,
+      "input_max": 976.0,
+      "input_rms": 30.368274688720703,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.up_blocks[3].resnets[2].norm2",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -58.90625,
+      "input_max": 52.84375,
+      "input_rms": 0.4540954828262329,
+      "cosine": 1.0,
+      "max_abs": 0.0625,
+      "finite": true
+    },
+    {
+      "phase": "decode",
+      "path": "vae.decoder.conv_norm_out",
+      "family": "decode:4x432x528x128",
+      "shape": [
+        4,
+        432,
+        528,
+        128
+      ],
+      "input_min": -17872.0,
+      "input_max": 175.5,
+      "input_rms": 35.442657470703125,
+      "cosine": 1.0,
+      "max_abs": 0.001953125,
+      "finite": true
+    }
+  ]
+}

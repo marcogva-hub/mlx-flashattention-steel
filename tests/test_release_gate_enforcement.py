@@ -38,9 +38,10 @@ def _read(p: Path) -> str:
 # and malformed-input locks). 75 -> 77: added tests/test_conv3d_lq_nax_lock.py
 # (direct LQ-envelope correctness and public non-routing locks). 77 -> 78:
 # added tests/test_gna_range_precompute_lock.py (byte-identity lock for the
-# per-Q-tile range optimization).
+# per-Q-tile range optimization). 78 -> 79: added the SeedVR2 VAE spatial
+# pad-and-slice M5 correctness lock.
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 78
+_EXPECTED_M5_SKIP_SITES = 79
 
 
 def _count_m5_skip_sites() -> int:

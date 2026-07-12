@@ -1,0 +1,126 @@
+{
+  "schema": "mlx-mfa.seedvr2-groupnorm-silu.unit.v2",
+  "stamp": {
+    "date": "2026-07-12 17:36:07 WEST",
+    "python": "3.11.14",
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "mlx": "0.31.2",
+    "mlx_mfa": "2.61.0",
+    "git_head": "d1bb9d18ec0a67be873d6881b82688be3724a0fc",
+    "device": {
+      "gpu_family_gen": 17,
+      "is_m3_plus": true,
+      "is_m5_plus": true,
+      "has_nax": true,
+      "device_name": "Apple M5 Max",
+      "gpu_cores": 40,
+      "macos_major": 27,
+      "macos_minor": 0
+    }
+  },
+  "seedvr2": {
+    "root": "/Users/marcomarcelino/code/ComfyUI-SeedVR2_VideoUpscaler-ORIGINAL",
+    "git_head": "ced265dc141a61eb0850d3aa6629b4acf4d0f866",
+    "video": "/Users/marcomarcelino/code/ComfyUI-SeedVR2_VideoUpscaler-ORIGINAL/example_workflows/example_inputs/Eyes_212x120.mp4",
+    "weight_count": 250,
+    "linear_1x1_replaced": 7
+  },
+  "methodology": {
+    "order": "target-baseline",
+    "only_arm": "target",
+    "sessions_per_arm_phase": 5,
+    "warmup": 1,
+    "cooldown_s": 1.0,
+    "settle_s": 10.0,
+    "isolated_process_required": true,
+    "real_video_input": true,
+    "real_latent_from_production_vae": true,
+    "baseline_conv": "all",
+    "target_conv": "all",
+    "target_groupnorm": true
+  },
+  "correctness": {
+    "encode": {
+      "cosine": 0.9999997930268683,
+      "max_abs": 0.0048828125
+    },
+    "decode": {
+      "cosine": 1.0,
+      "max_abs": 0.00244140625
+    }
+  },
+  "engagement": {
+    "baseline": {
+      "hook_stats": {
+        "executed": {
+          "conv3d_nax_forward": 36,
+          "conv3d_nax_spatial_pad_slice": 17
+        },
+        "fallback": {
+          "conv3d_nax_forward": 38
+        },
+        "fallback_reasons": {
+          "conv3d_nax_forward": [
+            "outside MPP gate (need C_in/C_out %16==0 & >=32, H/W %8==0, B=1, pad=(1,1,1)); legacy NAX conv path is numerically unsafe",
+            "kernel/stride/dilation/groups/flip constraint failed"
+          ]
+        },
+        "mode": "summary"
+      },
+      "groupnorm_fused_calls": 0
+    },
+    "target": {
+      "hook_stats": {
+        "executed": {
+          "conv3d_nax_forward": 36,
+          "conv3d_nax_spatial_pad_slice": 17
+        },
+        "fallback": {
+          "conv3d_nax_forward": 38
+        },
+        "fallback_reasons": {
+          "conv3d_nax_forward": [
+            "outside MPP gate (need C_in/C_out %16==0 & >=32, H/W %8==0, B=1, pad=(1,1,1)); legacy NAX conv path is numerically unsafe",
+            "kernel/stride/dilation/groups/flip constraint failed"
+          ]
+        },
+        "mode": "summary"
+      },
+      "groupnorm_fused_calls": 79
+    }
+  },
+  "timings": {
+    "target": {
+      "encode": {
+        "median_ms": 446.23800000408664,
+        "p95_ms": 480.86482539074495,
+        "mean_ms": 453.7549585918896,
+        "min_ms": 443.08416696731,
+        "max_ms": 489.45691698463634,
+        "sample_count": 5,
+        "samples_ms": [
+          489.45691698463634,
+          446.23800000408664,
+          443.49924998823553,
+          446.4964590151794,
+          443.08416696731
+        ]
+      },
+      "decode": {
+        "median_ms": 1826.834042032715,
+        "p95_ms": 1985.8313000295311,
+        "mean_ms": 1871.472783619538,
+        "min_ms": 1808.754666999448,
+        "max_ms": 2007.5756250298582,
+        "sample_count": 5,
+        "samples_ms": [
+          2007.5756250298582,
+          1898.8540000282228,
+          1826.834042032715,
+          1815.3455840074457,
+          1808.754666999448
+        ]
+      }
+    }
+  }
+}
