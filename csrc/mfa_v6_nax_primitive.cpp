@@ -1185,6 +1185,12 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
       throw std::invalid_argument(
           "v6_nax_varlen_forward: invalid NAX tile configuration; require "
           "BQ>0, WM>0, BQ%(WM*16)==0, and BK a positive multiple of 32");
+    if (const char* env = std::getenv("MFA_V6_NAX_SINGLE_OTILE")) {
+      if (std::atoi(env) == 0)
+        throw std::invalid_argument(
+            "v6_nax_varlen_forward: MFA_V6_NAX_SINGLE_OTILE=0 is unsupported; "
+            "packed-varlen V6 NAX requires the single-Otile datapath");
+    }
 
     out.set_data(mlx::core::allocator::malloc(out.nbytes()));
     lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
@@ -1203,15 +1209,20 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
     if (const char* env = std::getenv("MFA_V6_MAX_THREADS")) {
       const int value = std::atoi(env);
       if (value > 0 && value <= 256) axis_flags |= 0x80;
-      else if (value <= 384) axis_flags |= 0x100;
-      else if (value <= 512) axis_flags |= 0x180;
-      else if (value <= 768) axis_flags |= 0x200;
+      else if (value > 256 && value <= 384) axis_flags |= 0x100;
+      else if (value > 384 && value <= 512) axis_flags |= 0x180;
+      else if (value > 512 && value <= 768) axis_flags |= 0x200;
     }
 
     const float resolved_scale = params_.scale > 0.0f
         ? params_.scale : 1.0f / std::sqrt(static_cast<float>(D));
-    const uint32_t qbs = static_cast<uint32_t>((int64_t)Hq * total_q * D);
-    const uint32_t kbs = static_cast<uint32_t>((int64_t)Hk * total_k * D);
+    const int64_t qbs64 = (int64_t)Hq * total_q * D;
+    const int64_t kbs64 = (int64_t)Hk * total_k * D;
+    if (qbs64 > UINT32_MAX || kbs64 > UINT32_MAX)
+      throw std::invalid_argument(
+          "v6_nax_varlen_forward: packed BHND stride exceeds uint32 cache-key range");
+    const uint32_t qbs = static_cast<uint32_t>(qbs64);
+    const uint32_t kbs = static_cast<uint32_t>(kbs64);
     V6Key key{D, Hq, Hk, dtype_code, params_.causal,
               static_cast<uint32_t>(total_q), static_cast<uint32_t>(total_k),
               qbs, kbs, kbs, qbs,
@@ -1290,7 +1301,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
       q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3))
     throw std::invalid_argument(std::string(entry) +
         ": k/v shape and q/k/v head_dim must agree");
-  if (k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
+  if (q.shape(1) <= 0 || k.shape(1) <= 0 || q.shape(1) % k.shape(1) != 0)
     throw std::invalid_argument(std::string(entry) +
         ": Hq must be a positive multiple of Hk");
   if (scale != -1.0f && (!std::isfinite(scale) || scale <= 0.0f))
@@ -1335,6 +1346,10 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
     if (qlen <= 0 || klen <= 0)
       throw std::invalid_argument(std::string(entry) +
           ": cu_seqlens must be strictly increasing (empty segments unsupported)");
+    if (causal && qlen > klen)
+      throw std::invalid_argument(std::string(entry) +
+          ": causal q_len > k_len is unsupported; the lower-right mask has "
+          "fully masked leading query rows. Use split-concat SDPA for this segment.");
     expected_tiles += (qlen + BQ - 1) / BQ;
     if (tometa[i + 1] != expected_tiles)
       throw std::invalid_argument(std::string(entry) +

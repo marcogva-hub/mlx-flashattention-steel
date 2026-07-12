@@ -189,6 +189,22 @@ def test_v6_nax_varlen_rejects_metadata_dtype_and_unsupported_data():
         _ext.v6_nax_varlen_forward(qd, kd, vd, good, good, mx.array([0, 1], dtype=mx.int32))
 
 
+def test_v6_nax_varlen_rejects_causal_q_longer_than_k():
+    q = mx.zeros((1, 2, 9, 64), dtype=mx.float16)
+    k = mx.zeros((1, 2, 5, 64), dtype=mx.float16)
+    v = mx.zeros((1, 2, 5, 64), dtype=mx.float16)
+    with pytest.raises(ValueError, match="causal q_len > k_len is unsupported"):
+        _ext.v6_nax_varlen_forward(
+            q,
+            k,
+            v,
+            mx.array([0, 9], dtype=mx.int32),
+            mx.array([0, 5], dtype=mx.int32),
+            mx.array([0, 1], dtype=mx.int32),
+            causal=True,
+        )
+
+
 @pytest.mark.parametrize("dtype,d", [(mx.float32, 64), (mx.float16, 32)])
 def test_public_varlen_keeps_split_concat_for_nax_unsupported_cases(monkeypatch, dtype, d):
     q, k, v = _small_inputs(dtype, d)
