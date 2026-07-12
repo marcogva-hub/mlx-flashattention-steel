@@ -1,0 +1,84 @@
+{
+  "mlx": "0.31.2",
+  "mlx_mfa": "2.61.0",
+  "device": {
+    "device_name": "Apple M5 Max",
+    "gpu_family_gen": 17,
+    "is_m3_plus": true,
+    "is_m5_plus": true,
+    "chip_name": "M5",
+    "gpu_cores": 40,
+    "macos_major": 27,
+    "macos_minor": 0,
+    "extension_available": true
+  },
+  "workload": "FlashVSR block0 real weights, synthetic shape-faithful activations",
+  "order": "nax-first",
+  "dtypes": {
+    "block_input": "mlx.core.float16",
+    "ffn_input_before_cast": "mlx.core.float32",
+    "weight": "mlx.core.float16"
+  },
+  "correctness": {
+    "ffn_cos_fp32": 0.9999999669506173,
+    "block_cos_baseline": 0.9999999048939284
+  },
+  "which_binary": {
+    "linear": 2,
+    "sparse": 1
+  },
+  "ffn": {
+    "baseline": {
+      "median_ms": 2.7348583040293306,
+      "min_ms": 2.7197415998671204,
+      "max_ms": 2.859870798420161,
+      "samples_ms": [
+        2.8146291035227478,
+        2.7348583040293306,
+        2.7321625035256147,
+        2.859870798420161,
+        2.7197415998671204
+      ]
+    },
+    "nax": {
+      "median_ms": 2.3939209000673145,
+      "min_ms": 2.3394125048071146,
+      "max_ms": 2.6074959023389965,
+      "samples_ms": [
+        2.6074959023389965,
+        2.3394125048071146,
+        2.3939209000673145,
+        2.3505541030317545,
+        2.424129197606817
+      ]
+    },
+    "baseline_over_nax": 1.1424179904826552
+  },
+  "block": {
+    "baseline": {
+      "median_ms": 9.13215265609324,
+      "min_ms": 8.96022234034414,
+      "max_ms": 9.639402676839381,
+      "samples_ms": [
+        9.13215265609324,
+        9.058958326932043,
+        8.96022234034414,
+        9.639402676839381,
+        9.249472001101822
+      ]
+    },
+    "nax": {
+      "median_ms": 7.528791669756174,
+      "min_ms": 7.3449166569237905,
+      "max_ms": 7.653069333173335,
+      "samples_ms": [
+        7.3449166569237905,
+        7.653069333173335,
+        7.543694324946652,
+        7.528791669756174,
+        7.496527667778234
+      ]
+    },
+    "baseline_over_nax": 1.2129639199312565
+  }
+}
