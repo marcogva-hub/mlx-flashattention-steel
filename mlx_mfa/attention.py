@@ -6563,15 +6563,39 @@ def _varlen_split_concat(
     causal: bool,
     block_mask,
     stream,
+    force_sdpa: bool = False,
 ) -> mx.array:
-    """Per-sequence split → flash_attention → concat.  Internal helper."""
+    """Per-sequence split → attention → concat.  Internal helper.
+
+    ``force_sdpa`` is reserved for causal packed segments with ``q_len >
+    k_len``. The STEEL varlen kernel is wrong in that asymmetric regime, so
+    this correction path bypasses mlx-mfa routing and calls MLX SDPA with the
+    explicit mlx-mfa causal convention ``qL_off=max(0, kL-qL)``.
+    """
     num_seqs = len(cu_q) - 1
     outputs = []
     for i in range(num_seqs):
         q_i = q[:, :, cu_q[i] : cu_q[i + 1], :]
         k_i = k[:, :, cu_k[i] : cu_k[i + 1], :]
         v_i = v[:, :, cu_k[i] : cu_k[i + 1], :]
-        if block_mask is not None:
+        if force_sdpa:
+            q_len, k_len = q_i.shape[2], k_i.shape[2]
+            q_rows = mx.arange(q_len, dtype=mx.int32)[:, None]
+            k_cols = mx.arange(k_len, dtype=mx.int32)[None, :]
+            qL_off = max(0, k_len - q_len)
+            causal_mask = mx.where(
+                k_cols > q_rows + qL_off,
+                mx.full((q_len, k_len), float("-inf"), dtype=q_i.dtype),
+                mx.zeros((q_len, k_len), dtype=q_i.dtype),
+            )
+            _dtrace.record(
+                "varlen_sdpa",
+                "causal q_len>k_len correction (explicit per-segment MLX SDPA mask)",
+            )
+            out_i = mx.fast.scaled_dot_product_attention(
+                q_i, k_i, v_i, scale=scale, mask=causal_mask
+            )
+        elif block_mask is not None:
             out_i = flash_attention_sparse(
                 q_i, k_i, v_i, block_mask, scale=scale, causal=causal, stream=stream
             )
@@ -6708,6 +6732,26 @@ def flash_attention_varlen(
         return q  # empty — return as-is
 
     D = q.shape[-1]
+
+    # The packed STEEL causal kernel is correct only when every segment has at
+    # least as many KV rows as Q rows. With q_len > k_len, the STEEL causal
+    # path is finite-but-wrong under the documented qL_off=max(0,kL-qL)
+    # convention. Route those segments through explicit-mask MLX SDPA instead.
+    # Keep block-mask behavior unchanged: its sparse per-segment path has a
+    # separate mask contract.
+    causal_q_longer_than_k = causal and any(
+        (cu_q[i + 1] - cu_q[i]) > (cu_k_list[i + 1] - cu_k_list[i])
+        for i in range(num_seqs)
+    )
+    if causal_q_longer_than_k and block_mask is None:
+        _dtrace.record(
+            "varlen_split_concat",
+            "causal q_len>k_len -> per-segment MLX SDPA correction",
+        )
+        return _varlen_split_concat(
+            q, k, v, cu_q, cu_k_list, scale, causal, None, stream,
+            force_sdpa=True,
+        )
 
     # ── block_mask: direct split-concat (no STEEL varlen for sparse) ─────────
     if block_mask is not None:
