@@ -3757,6 +3757,13 @@ def flash_attention_sparse(
                     for _dim in block_mask.shape:
                         mask_bytes *= int(_dim)
                     if mask_bytes >= 4096:
+                        if (bt_q == 64
+                                and os.environ.get("MFA_ENABLE_V6_BACKWARD") != "1"):
+                            from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
+                            block_mask, bt_q, _ = _expand_bt64_for_v6nax(
+                                q, k, block_mask, bt_q, causal=causal
+                            )
+                            bt_k = bt_q
                         # v2.50 Prompt 5c Section A.2 — V6NAX backward sparse
                         # HYBRID eligibility check.  When user has opted into
                         # V6NAX backward (MFA_ENABLE_V6_BACKWARD=1) AND shape
