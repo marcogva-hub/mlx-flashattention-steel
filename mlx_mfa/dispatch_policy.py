@@ -159,6 +159,16 @@ _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
     (512, False): _D512_CONSERVATIVE_MIN_N,
 }
 
+# β3-indicatif (macOS 27 beta, M5 Max, MLX 0.31.2; 2026-07-12): the
+# general MFA primitive beats MLX's vector/2-pass SDPA only in this exact
+# decode corner.  Revalidate on a stable macOS release before broadening or
+# treating this as a durable family-level policy.
+_M5_NAX_DECODE_EDGE_QUERY_LEN = 8
+_M5_NAX_DECODE_EDGE_HEAD_DIM = 64
+_M5_NAX_DECODE_EDGE_GQA_FACTOR = 8
+_M5_NAX_DECODE_EDGE_MIN_KV_LEN = 4096
+_M5_NAX_DECODE_EDGE_MAX_KV_LEN = 65536
+
 _verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
 
 # Native STEEL backward policy (targeted, benchmark-backed only).
@@ -194,6 +204,41 @@ def _dispatch_dtype_key(dtype) -> Optional[str]:
     if dtype_str in {"bfloat16", "mlx.core.bfloat16"}:
         return "bfloat16"
     return None
+
+
+def _m5_nax_decode_edge_carveout(
+    *,
+    head_dim: int,
+    seq_len: int,
+    kv_seq_len: int,
+    causal: bool,
+    dtype_key: Optional[str],
+    num_q_heads: Optional[int],
+    num_kv_heads: Optional[int],
+    has_nax: bool,
+) -> bool:
+    """Return whether the measured M5 qL=8 GQA decode edge uses MFA.
+
+    This is intentionally a finite envelope, not a general decode rule.  The
+    tested GQA 4/16, D=128, causal, and kL=2048 neighbours do not win.  qL=16
+    is a separately flagged measurement, not evidence for this qL=8 route.
+    Head counts are explicit because otherwise the dispatch cache could reuse
+    a GQA=8 decision for a non-winning GQA ratio.
+    """
+    if num_q_heads is None or num_kv_heads is None or num_kv_heads <= 0:
+        return False
+    return (
+        has_nax
+        and head_dim == _M5_NAX_DECODE_EDGE_HEAD_DIM
+        and seq_len == _M5_NAX_DECODE_EDGE_QUERY_LEN
+        and _M5_NAX_DECODE_EDGE_MIN_KV_LEN
+        <= kv_seq_len
+        <= _M5_NAX_DECODE_EDGE_MAX_KV_LEN
+        and not causal
+        and dtype_key in ("float16", "bfloat16")
+        and num_q_heads % num_kv_heads == 0
+        and num_q_heads // num_kv_heads == _M5_NAX_DECODE_EDGE_GQA_FACTOR
+    )
 
 
 def _d256_min_n(
@@ -472,6 +517,8 @@ def should_use_mfa(
     sparse: bool = False,
     backend: str = "auto",
     has_nax: bool = False,
+    num_q_heads: Optional[int] = None,
+    num_kv_heads: Optional[int] = None,
 ) -> bool:
     """Decide whether the MFA Metal kernel should be used for this config.
 
@@ -503,6 +550,9 @@ def should_use_mfa(
         True for block-sparse attention (always benefits from tile-skipping).
     backend : str
         ``"auto"`` (shape-aware), ``"mfa"`` (force MFA), ``"sdpa"`` (force SDPA).
+    num_q_heads, num_kv_heads : int, optional
+        Query and KV head counts.  Required only for GQA-specific narrow
+        carve-outs; omitted values retain the historical policy.
     """
     if backend == "mfa":
         if _verbose:
@@ -542,6 +592,26 @@ def should_use_mfa(
             print(f"[MFA dispatch] sparse -> MFA (tile-skip)")
         return True
 
+    _kv_len = kv_seq_len if kv_seq_len is not None else seq_len
+    dtype_key = _dispatch_dtype_key(dtype)
+    if _m5_nax_decode_edge_carveout(
+        head_dim=head_dim,
+        seq_len=seq_len,
+        kv_seq_len=_kv_len,
+        causal=causal,
+        dtype_key=dtype_key,
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        has_nax=has_nax,
+    ):
+        if _verbose:
+            print(
+                "[MFA dispatch] M5+ decode edge: "
+                f"qL={seq_len} kL={_kv_len} D={head_dim} "
+                f"GQA={num_q_heads // num_kv_heads} -> MFA"
+            )
+        return True
+
     forced_d256 = _forced_d256_auto_decision(head_dim, backend=backend)
     if forced_d256 is not None:
         if _verbose:
@@ -571,7 +641,6 @@ def should_use_mfa(
     # Conversely, when N_kv >> N_q (e.g. LTX-2 audio→video), MFA wins big
     # (8.59x) because flash attention processes Q rows in tiles while SDPA
     # materializes the full N_q × N_kv attention matrix.
-    _kv_len = kv_seq_len if kv_seq_len is not None else seq_len
     if _kv_len != seq_len:
         # Cross-attention: small N_kv with large N_q → SDPA
         if _kv_len <= 512 and seq_len > 8192:
@@ -640,8 +709,6 @@ def should_use_mfa(
         thresholds = _M3_THRESHOLDS
     else:
         thresholds = _DEFAULT_THRESHOLDS
-
-    dtype_key = _dispatch_dtype_key(dtype)
 
     d512_min_n = _d512_min_n(
         head_dim=head_dim,

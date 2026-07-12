@@ -136,8 +136,8 @@ def _nax_sparse_density_ceiling() -> float:
     except ValueError:
         return 0.78
 
-# CP1: dispatch decision cache — keyed by (head_dim, seq_len, causal, is_m3_plus,
-# dtype, window_size, sparse).  Eliminates should_use_mfa() call overhead on
+# CP1: dispatch decision cache — keyed by shape, head topology, causal/device,
+# dtype, window_size, sparse.  Eliminates should_use_mfa() call overhead on
 # repeated same-shape calls (e.g. decode loops that call flash_attention/token).
 # Capped at 512 entries to prevent unbounded growth during autoregressive decode
 # (seq_len increments by 1 each step, creating unique keys).
@@ -1110,14 +1110,18 @@ def flash_attention(
             # staleness (proven by tests/test_backward_routing_snapshot.py,
             # which toggles them on identical shapes within one process).
             # Adding them here would be dead weight.
-            _cache_key = (head_dim, q.shape[2], _kv_len, causal, _is_m3, _has_nax, q.dtype, window_size, False, _env_key)
+            _cache_key = (
+                head_dim, q.shape[2], _kv_len, q.shape[1], k.shape[1], causal,
+                _is_m3, _has_nax, q.dtype, window_size, False, _env_key,
+            )
             _cached = _dispatch_decision_cache.get(_cache_key)
             if _cached is None:
                 _cached = _should_use_mfa_fn(
                     head_dim, q.shape[2], causal, _is_m3,
                     dtype=q.dtype, kv_seq_len=_kv_len,
                     window_size=window_size, sparse=False, backend=backend,
-                    has_nax=_has_nax,
+                    has_nax=_has_nax, num_q_heads=q.shape[1],
+                    num_kv_heads=k.shape[1],
                 )
                 if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
                     _dispatch_decision_cache.clear()
