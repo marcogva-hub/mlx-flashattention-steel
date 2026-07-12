@@ -155,6 +155,7 @@ into the pipeline cache keys (live; Sprint A verified key completeness).
 | `MFA_V6BWDF_BQ` / `MFA_V6BWDF_BK` / `MFA_V6BWDF_WM` | int | auto | Fused dKdV kernel tile overrides. |
 | `MFA_V6_SENTINEL_FILL` | bool | unset | Debug: pre-fill V6 output/LSE buffers with sNaN before dispatch (dispatch-routing forensics). |
 | `MFA_V6_DUMP_SOURCE` / `MFA_V6BWD_DUMP_SOURCE` | bool | unset | Debug: dump generated V6NAX fwd/bwd Metal source to stderr on pipeline-cache miss. |
+| `MFA_V6_VARLEN_DUMP_PATH` | path | unset | **Debug only.** Dump packed-varlen V6 NAX generated MSL to a file for forensic source comparison. Never enable for routing or performance measurement. |
 | `MFA_V6BWDF_DUMP_SOURCE` / `MFA_V6BWDF_DUMP_PATH` | bool / path | unset | Debug: dump the generated fused-dKdV MSL source (to stderr, or to the file given by `MFA_V6BWDF_DUMP_PATH`). |
 
 Interaction notes (campaign 2026-06 Track 0):

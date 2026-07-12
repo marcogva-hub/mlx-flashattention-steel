@@ -142,6 +142,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_V6_BYPASS_TGP",
     "MFA_V6_DENSE_MIN_N",
     "MFA_V6_DUMP_SOURCE",
+    "MFA_V6_VARLEN_DUMP_PATH",  # debug-only generated MSL capture for packed-varlen forensic comparison
     "MFA_V6_EXEC_SG",
     "MFA_V6_FORCE_DYNAMIC_K",
     "MFA_V6_MAX_THREADS",
