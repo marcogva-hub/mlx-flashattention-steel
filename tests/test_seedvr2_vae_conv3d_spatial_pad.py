@@ -83,6 +83,33 @@ def test_seedvr2_spatial_pad_slice_is_default_off(monkeypatch):
     )
 
 
+@pytest.mark.skipif(not _ext.get_device_info()["is_m5_plus"], reason="requires M5+")
+def test_seedvr2_spatial_pad_slice_default_off_preserves_public_baseline(monkeypatch):
+    """The opt-in must not perturb the public mx.conv_general fallback."""
+    monkeypatch.delenv("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE", raising=False)
+    mx.random.seed(20260713)
+    x = (mx.random.normal(SHAPE) * 0.05).astype(mx.float16)
+    weight = (
+        mx.random.normal(WEIGHT_SHAPE) * (1.0 / math.sqrt(27 * 512))
+    ).astype(mx.float16)
+    baseline = hooks._ORIGINAL_CONV_GENERAL(
+        x, weight, stride=(1, 1, 1), padding=(0, 1, 1)
+    )
+    mlx_mfa.reset_hook_stats()
+    with patch("mlx_mfa._ext.conv3d_nax_forward") as native:
+        actual = mx.conv_general(
+            x, weight, stride=(1, 1, 1), padding=(0, 1, 1)
+        )
+        mx.eval(actual, baseline)
+    native.assert_not_called()
+    np.testing.assert_array_equal(
+        np.asarray(actual.astype(mx.float32)), np.asarray(baseline.astype(mx.float32))
+    )
+    assert mlx_mfa.get_hook_stats()["executed"].get(
+        "conv3d_nax_spatial_pad_slice", 0
+    ) == 0
+
+
 def test_seedvr2_spatial_pad_slice_rejects_unmeasured_bf16(monkeypatch):
     monkeypatch.setenv("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE", "1")
     x = mx.zeros(SHAPE, dtype=mx.bfloat16)

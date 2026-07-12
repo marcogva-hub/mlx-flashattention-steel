@@ -34,6 +34,7 @@ conv via `get_hook_stats()` executed/fallback counters.
 | `mx.grad(flash_attention_sparse)` | `MFA_ENABLE_V6_BACKWARD=1` + D∈{64,128} + N≥2048 + ndim==2 + bt≥64 | hybrid: **dV native** + dQ/dK SDPA-vjp | dQ Δ=0.0 (SDPA-vjp by design); dV native | declined-on-perf (opt-in; Pattern #6) |
 | `mx.grad(flash_attention_sparse)` | `MFA_V6_BWD_SPARSE_NATIVE=1` (+ above) | full-native sparse | — | declined-on-perf (opt-in; Pattern #6) |
 | `mx.conv_general` | Conv3D eligible (C%16==0 & ≥32, HW%8==0, B=1, pad=(1,1,1), f16) | **NAX conv kernel** (matmul2d) | `executed.conv3d_nax_forward++` | routed-as-intended (auto-hook) |
+| `mx.conv_general` | `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE=1`, fp16 `B=1`, `T∈{4,5}`, `108×132`, `C_in=C_out=512`, k=3³, stride 1, temporal pad 0/spatial pad 1 | **NAX MPP spatial-pad → slice** | `executed.conv3d_nax_spatial_pad_slice++` | opt-in β3; candidate default-on only after stable-macOS revalidation |
 | `mx.conv_general` | Conv3D ineligible | `mx.conv_general` | `fallback.conv3d_nax_forward++` | by-design fallback |
 
 ## Runtime guards (each runtime-confirmed)
