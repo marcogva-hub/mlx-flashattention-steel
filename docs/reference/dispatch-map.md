@@ -24,7 +24,7 @@ conv via `get_hook_stats()` executed/fallback counters.
 | `flash_attention_sparse` | **D=128**, asymmetric/custom mask (bt_q≠bt_k) OR mask_bytes<4096 | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | routed-as-intended (residual SDPA edges) |
 | `flash_attention_sparse` | **D=64**, default (symmetric) | **real V2 NAX sparse** (since **Phase F**: V2 always, not V1) | Δ=3.8e-6; sloped; ~9× vs old V1 | **routed-as-intended (gotcha 2 FIXED — Phase F)** |
 | `flash_attention_sparse` | **D∈{64,128}**, **bf16**, symmetric, BT=32 | **real V2 NAX sparse** (since the bf16 fix; was the V1 scalar fallback) | bf16 Δ=3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA | **routed-as-intended (gotcha 4 FIXED)** |
-| `flash_attention_gna` | D=128 3D f16 | **native GNA kernel** | Δ=7.3e-2 vs block-bias-SDPA (≠0 → not fallback) | routed-as-intended |
+| `flash_attention_gna` | D=128 3D f16/bf16, N≥2048; D=64 3D f16/bf16, N≥4096 | **GNA V6 NAX** (`gna_v6nax`) | public dispatch trace; Δ≠0 vs masked SDPA | β3 route; STEEL/sparse fallback outside measured envelope |
 | `flash_attention_topk` | — | own path (topk + SDPA) | Δ=1.9e-6 @ ratio=1.0 | routed-as-intended |
 | `sage_attention` | — | int8 sage kernel | Δ=1.1e-3 vs sdpa | routed-as-intended |
 | `flash_attention_kvcache` | decode N_q=1 | **Apple SDPA** (gather + SDPA) | Δ=0.0 vs sdpa | routed-as-intended (sync-floor regime) |

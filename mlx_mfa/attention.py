@@ -4208,6 +4208,7 @@ def flash_attention_gna(
         is_3d_gna
         and native_dtype
         and native_enabled
+        and has_nax()
         and (
             (D == 128 and N >= _GNA_NAX_D128_MIN_N)
             or (D == 64 and N >= _GNA_NAX_D64_MIN_N)
