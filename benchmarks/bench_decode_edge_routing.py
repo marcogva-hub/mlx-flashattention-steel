@@ -318,7 +318,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("edge", "boundaries"), default="edge")
     parser.add_argument("--arm-order", choices=("sdpa,mfa", "mfa,sdpa"), required=True)
-    parser.add_argument("--expect-auto", choices=("sdpa", "mfa_primitive"), default="sdpa")
+    parser.add_argument(
+        "--expect-auto", choices=("sdpa", "mfa_primitive"), default="mfa_primitive"
+    )
     parser.add_argument("--sessions", type=int, default=DEFAULT_SESSIONS)
     parser.add_argument("--warmup-samples", type=int, default=DEFAULT_WARMUP_SAMPLES)
     parser.add_argument("--samples-per-session", type=int, default=DEFAULT_SAMPLES_PER_SESSION)
