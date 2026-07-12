@@ -120,7 +120,7 @@ def test_bt16_routes_sdpa_regardless_of_threshold():
 
 
 def test_uncharacterized_tiles_route_sdpa(monkeypatch):
-    """BT=64 (uncharacterized) → SDPA (conservative)."""
+    """Viable BT=64 expands exactly to the native BT=32 NAX route."""
     called = {"nax": False}
     orig = L.sparse_attention_nax
     monkeypatch.setattr(L, "sparse_attention_nax",
@@ -128,7 +128,7 @@ def test_uncharacterized_tiles_route_sdpa(monkeypatch):
     q, k, v = _inputs(4096, 128)
     m = _mask(4096, 64, 0.15)
     L.sparse_attention_dispatch(q, k, v, m, block_tile=64, scale=1.0/math.sqrt(128), density=0.15)
-    assert called["nax"] is False
+    assert called["nax"] is True
 
 
 def test_viable_window_correct_vs_fp32(monkeypatch):

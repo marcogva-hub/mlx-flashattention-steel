@@ -189,6 +189,18 @@ def sparse_attention_nax(
         kL=K.shape[2],
         D=Q.shape[-1],
     )
+    if kernel_version == "v2":
+        block_mask, block_tile, _ = _expand_bt64_for_v6nax(
+            Q, K, block_mask, block_tile, causal=causal
+        )
+    from mlx_mfa import _dispatch_trace as _dtrace
+    if _dtrace.recording():
+        path = (SPARSE_KERNEL_V6NAX if kernel_version == "v2"
+                and block_tile == SPARSE_NAX_KERNEL_BLOCK_TILE
+                and Q.dtype in (mx.float16, mx.bfloat16)
+                and Q.shape[-1] in SPARSE_NAX_VIABLE_HEAD_DIMS
+                else SPARSE_KERNEL_SCALAR_FALLBACK)
+        _dtrace.record(path, f"sparse_attention_nax BT={block_tile}")
     return _ext.sparse_attention_forward(
         Q, K, V, block_mask,
         block_tile=block_tile,
@@ -316,6 +328,8 @@ SPARSE_NAX_CAUSAL_MAX_BH = 128                      # causal CC window: B·H≤1
 SPARSE_NAX_CAUSAL_DENSITY_CEILING = 0.30            # causal CC window: d≤0.3 (β3-indicative)
 SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})  # measured-viable head dims
 SPARSE_NAX_DENSITY_CEILING = 1.0                    # non-causal NAX beats-or-ties dense SDPA across measured BT=32 range; re-validate stable
+SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is structurally pinned at 32
+SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
 
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool:
@@ -341,6 +355,29 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool
     return (Q.shape[2] >= SPARSE_NAX_MIN_N
             and K.shape[2] >= SPARSE_NAX_MIN_N
             and density <= SPARSE_NAX_DENSITY_CEILING)
+
+
+def _expand_bt64_for_v6nax(Q, K, block_mask, block_tile, *, causal=False):
+    """Return a viable BT64 mask at the pinned BT32 V6NAX granularity.
+
+    Repeating each source block 2x2 preserves the token-level mask exactly.
+    The expanded representation is revalidated against the existing NAX gate;
+    malformed and out-of-window inputs retain their prior fallback path.
+    """
+    if block_tile != SPARSE_NAX_EXPANDABLE_BLOCK_TILE:
+        return block_mask, block_tile, False
+    q_len, k_len = int(Q.shape[2]), int(K.shape[2])
+    if q_len % block_tile or k_len % block_tile:
+        return block_mask, block_tile, False
+    if tuple(block_mask.shape[-2:]) != (q_len // block_tile, k_len // block_tile):
+        return block_mask, block_tile, False
+    expanded = mx.repeat(mx.repeat(block_mask, 2, axis=-2), 2, axis=-1)
+    density = float(mx.mean(expanded.astype(mx.float32)).item())
+    if not _nax_sparse_route_viable(
+        Q, K, SPARSE_NAX_KERNEL_BLOCK_TILE, density, causal=causal
+    ):
+        return block_mask, block_tile, False
+    return expanded, SPARSE_NAX_KERNEL_BLOCK_TILE, True
 
 
 def _bool_mask_to_float_bias(block_mask, BT, qL, kL, target_dtype):
@@ -443,6 +480,10 @@ def sparse_attention_dispatch(
     # f32 produces correct attention consistently. Previously f32 was
     # density-dependent (ran on SDPA, raised on the native route).
     _force_sdpa = Q.dtype not in (mx.float16, mx.bfloat16)
+    if not _force_sdpa:
+        block_mask, block_tile, _ = _expand_bt64_for_v6nax(
+            Q, K, block_mask, block_tile, causal=causal
+        )
     # BT-AWARE routing (victory map): tile viability is the PRIMARY gate — only
     # the proven-viable non-causal window (BT=32, N≥2048, D∈{64,128},
     # density≤ceiling) and the stricter β3-measured causal window
