@@ -42,6 +42,8 @@ DEFAULT_COOLDOWN_S = 1.0
 PROBE_CASES = {
     "d512_t5_h108_w132": (1, 5, 108, 132, 512),
     "d512_t4_h108_w132": (1, 4, 108, 132, 512),
+    "d512_t4_h54_w66": (1, 4, 54, 66, 512),
+    "d512_t3_h54_w66": (1, 3, 54, 66, 512),
 }
 
 
@@ -512,7 +514,12 @@ def probe(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("pre-hook mx.conv_general baseline is unavailable")
     original_native = _ext.conv3d_nax_forward
     case_results: dict[str, Any] = {}
-    for case_index, (name, shape) in enumerate(PROBE_CASES.items()):
+    selected_cases = {
+        name: shape
+        for name, shape in PROBE_CASES.items()
+        if args.probe_family == "all" or f"h{args.probe_family}" in name
+    }
+    for case_index, (name, shape) in enumerate(selected_cases.items()):
         mx.random.seed(20260712 + case_index)
         x = (mx.random.normal(shape) * 0.05).astype(mx.float16)
         weight = (
@@ -580,11 +587,15 @@ def probe(args: argparse.Namespace) -> dict[str, Any]:
                 cooldown_s=args.cooldown,
             )
         ratio = timings["baseline"]["median_ms"] / timings["target"]["median_ms"]
+        padded_height = ((int(shape[2]) + 7) // 8) * 8
+        padded_width = ((int(shape[3]) + 7) // 8) * 8
         case_results[name] = {
             "input_shape": list(shape),
             "weight_shape": list(weight.shape),
-            "padded_spatial": [112, 136],
-            "padding_work_ratio": (112 * 136) / (108 * 132),
+            "padded_spatial": [padded_height, padded_width],
+            "padding_work_ratio": (
+                (padded_height * padded_width) / (int(shape[2]) * int(shape[3]))
+            ),
             "correctness": {
                 "target_vs_fp32": {"cosine": cosine, "max_abs": max_abs},
                 "baseline_vs_fp32": {
@@ -802,6 +813,8 @@ def main() -> int:
     )
     parser.add_argument("--only-arm", choices=("baseline", "target"))
     parser.add_argument("--settle", type=float, default=0.0)
+    parser.add_argument("--probe-family", choices=("all", "108", "54"), default="all")
+    parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     mx.random.seed(20260712)
@@ -812,7 +825,8 @@ def main() -> int:
     else:
         result = unit(args)
     text = json.dumps(result, indent=2)
-    print(text)
+    if not args.quiet:
+        print(text)
     if args.mode == "inventory":
         default_name = "seedvr2_vae_conv3d_inventory.json"
     else:

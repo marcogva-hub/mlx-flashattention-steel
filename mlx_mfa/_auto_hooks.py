@@ -293,8 +293,8 @@ _CONV3D_PAD_RATIO_MAX_DEFAULT = 12.0
 
 # SeedVR2 VAE spatial-tail probe (macOS 27 beta, M5 Max, MLX 0.31.2).
 # Keep the envelope exact: only the measured dominant fallback family is
-# admitted. 54x66, stride-2, and channel-tail families remain on MLX until
-# independently measured.
+# admitted. 54x66 loses or is at parity at VAE-unit scope despite a micro win;
+# stride-2 and channel-tail families also remain on MLX.
 _CONV3D_SPATIAL_PAD_FAMILIES = {
     (4, 108, 132, 512, 512),
     (5, 108, 132, 512, 512),

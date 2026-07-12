@@ -55,6 +55,8 @@ def test_seedvr2_spatial_pad_slice_is_correct_and_engaged(monkeypatch):
     "shape",
     [
         (1, 3, 108, 132, 512),
+        (1, 3, 54, 66, 512),
+        (1, 4, 54, 66, 512),
         (1, 5, 54, 66, 512),
         (1, 5, 108, 132, 256),
     ],

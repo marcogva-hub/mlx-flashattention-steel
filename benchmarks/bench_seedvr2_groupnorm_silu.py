@@ -551,17 +551,27 @@ def _groupnorm_patch(vae: nn.Module, enabled: bool) -> Iterator[dict[str, int]]:
 def unit(args: argparse.Namespace) -> dict[str, Any]:
     root, vae, video5, latent3, weight_count, replaced = _prepare_real_unit(args)
     import mlx_mfa
+    from mlx_mfa import _auto_hooks as hooks
 
-    def set_conv(enabled: bool) -> None:
-        if enabled:
-            os.environ["MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE"] = "1"
-        else:
+    all_spatial_families = set(hooks._CONV3D_SPATIAL_PAD_FAMILIES)
+    spatial_108_families = {
+        family for family in all_spatial_families if family[1:3] == (108, 132)
+    }
+
+    def set_conv(mode: str) -> None:
+        if mode == "off":
             os.environ.pop("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE", None)
+            hooks._CONV3D_SPATIAL_PAD_FAMILIES = all_spatial_families
+        else:
+            os.environ["MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE"] = "1"
+            hooks._CONV3D_SPATIAL_PAD_FAMILIES = (
+                spatial_108_families if mode == "108" else all_spatial_families
+            )
 
     def run(arm: str, phase: str) -> tuple[mx.array, int]:
         is_target = arm == "target"
         conv_mode = args.target_conv if is_target else args.baseline_conv
-        set_conv(conv_mode == "all")
+        set_conv(conv_mode)
         with _groupnorm_patch(vae, enabled=is_target and args.target_groupnorm) as counter:
             value = vae.encode(video5) if phase == "encode" else vae.decode(latent3)
             _eval(value)
@@ -605,7 +615,7 @@ def unit(args: argparse.Namespace) -> dict[str, Any]:
                 args.sessions,
                 args.cooldown,
             )
-    set_conv(False)
+    set_conv("off")
     return {
         "schema": "mlx-mfa.seedvr2-groupnorm-silu.unit.v2",
         "stamp": _stamp(),
@@ -661,8 +671,8 @@ def main() -> int:
         default="baseline-target",
     )
     parser.add_argument("--only-arm", choices=("baseline", "target"))
-    parser.add_argument("--baseline-conv", choices=("off", "all"), default="all")
-    parser.add_argument("--target-conv", choices=("off", "all"), default="all")
+    parser.add_argument("--baseline-conv", choices=("off", "108", "all"), default="all")
+    parser.add_argument("--target-conv", choices=("off", "108", "all"), default="all")
     parser.add_argument(
         "--target-groupnorm", action=argparse.BooleanOptionalAction, default=True
     )
