@@ -1437,7 +1437,8 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
         ": MFA_V6_NAX_BQ must be a positive integer");
   if (BK <= 0 || BK % 32 != 0 || WM <= 0 || BQ % (WM * 16) != 0)
     throw std::invalid_argument(std::string(entry) +
-        ": invalid NAX tiles; require BQ%(WM*16)==0 and BK a positive multiple of 32");
+        ": invalid NAX tiles; BK must be a positive multiple of 32 (paired "
+        "MMA guard); require BQ%(WM*16)==0");
   int expected_tiles = 0;
   for (int i = 0; i < nmeta - 1; ++i) {
     const int qlen = qmeta[i + 1] - qmeta[i];

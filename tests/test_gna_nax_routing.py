@@ -5,6 +5,7 @@ import math
 import mlx.core as mx
 import pytest
 
+from mlx_mfa import _dispatch_trace as dtrace
 import mlx_mfa.attention as attention
 from mlx_mfa import _ext
 
@@ -44,10 +45,12 @@ def test_public_gna_d128_large_3d_routes_to_nax(monkeypatch, dtype):
     seq_shape = (2, 32, 32)  # N=2048
     q, k, v = _qkv(seq_shape, 128, dtype)
 
-    out = attention.flash_attention_gna(q, k, v, seq_shape, (1, 7, 7), (1, 1, 1))
+    with dtrace.capture() as events:
+        out = attention.flash_attention_gna(q, k, v, seq_shape, (1, 7, 7), (1, 1, 1))
 
     assert out.shape == q.shape
     assert calls == {"nax": 1, "steel": 0, "sparse": 0}
+    assert events == [("gna_v6nax", "opt-in beta-3 GNA V6 NAX (measured 3D envelope)")]
 
 
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
@@ -56,10 +59,12 @@ def test_public_gna_d64_large_3d_routes_to_nax(monkeypatch, dtype):
     seq_shape = (4, 32, 32)  # N=4096
     q, k, v = _qkv(seq_shape, 64, dtype)
 
-    out = attention.flash_attention_gna(q, k, v, seq_shape, (1, 7, 7), (1, 1, 1))
+    with dtrace.capture() as events:
+        out = attention.flash_attention_gna(q, k, v, seq_shape, (1, 7, 7), (1, 1, 1))
 
     assert out.shape == q.shape
     assert calls == {"nax": 1, "steel": 0, "sparse": 0}
+    assert events == [("gna_v6nax", "opt-in beta-3 GNA V6 NAX (measured 3D envelope)")]
 
 
 def test_public_gna_d64_small_3d_stays_sparse_fallback(monkeypatch):

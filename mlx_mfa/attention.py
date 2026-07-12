@@ -4218,13 +4218,17 @@ def flash_attention_gna(
     if gna_nax_eligible:
         try:
             from mlx_mfa._ext import mfa_gna_nax_forward as _gna_nax_fwd
-            return _gna_nax_fwd(
+            out = _gna_nax_fwd(
                 q, k, v,
                 seq_shape[0], seq_shape[1], seq_shape[2],
                 window_size[0], window_size[1], window_size[2],
                 stride[0], stride[1], stride[2],
                 scale,
             )  # CX-06: no stream param (ran on default stream regardless)
+            _dtrace.record(
+                "gna_v6nax", "opt-in beta-3 GNA V6 NAX (measured 3D envelope)"
+            )
+            return out
         except ImportError:
             pass  # Extension not built — try STEEL/sparse fallbacks below
         except RuntimeError as e:
@@ -4248,12 +4252,14 @@ def flash_attention_gna(
     ):
         try:
             from mlx_mfa._ext import mfa_gna_forward as _gna_fwd
-            return _gna_fwd(
+            out = _gna_fwd(
                 q, k, v, scale,
                 seq_shape[0], seq_shape[1], seq_shape[2],
                 window_size[0], window_size[1], window_size[2],
                 stride[0], stride[1], stride[2],
             )  # CX-06: no stream param (ran on default stream regardless)
+            _dtrace.record("gna_steel", "native STEEL GNA envelope")
+            return out
         except ImportError:
             pass  # Extension not built — sparse mask path below
         except RuntimeError as e:
