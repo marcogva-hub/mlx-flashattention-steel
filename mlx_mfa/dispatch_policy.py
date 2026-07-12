@@ -160,14 +160,17 @@ _M5_NAX_THRESHOLDS: dict[tuple[int, bool], int] = {
 }
 
 # β3-indicatif (macOS 27 beta, M5 Max, MLX 0.31.2; 2026-07-12): the
-# general MFA primitive beats MLX's vector/2-pass SDPA only in this exact
-# decode corner.  Revalidate on a stable macOS release before broadening or
+# general MFA primitive beats MLX's vector/2-pass SDPA only in these finite
+# decode corners. Revalidate on a stable macOS release before broadening or
 # treating this as a durable family-level policy.
-_M5_NAX_DECODE_EDGE_QUERY_LEN = 8
 _M5_NAX_DECODE_EDGE_HEAD_DIM = 64
-_M5_NAX_DECODE_EDGE_GQA_FACTOR = 8
-_M5_NAX_DECODE_EDGE_MIN_KV_LEN = 4096
 _M5_NAX_DECODE_EDGE_MAX_KV_LEN = 65536
+_M5_NAX_DECODE_EDGE_ENVELOPES: dict[int, tuple[int, frozenset[int]]] = {
+    # Original route: qL8/GQA8, measured from kL=4096 through kL=65536.
+    8: (4096, frozenset({8})),
+    # Consolidation remeasure: qL16/GQA4,8,16 is winning only from kL=16384.
+    16: (16384, frozenset({4, 8, 16})),
+}
 
 _verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
 
@@ -217,27 +220,27 @@ def _m5_nax_decode_edge_carveout(
     num_kv_heads: Optional[int],
     has_nax: bool,
 ) -> bool:
-    """Return whether the measured M5 qL=8 GQA decode edge uses MFA.
+    """Return whether a finite measured M5 GQA decode edge uses MFA.
 
-    This is intentionally a finite envelope, not a general decode rule.  The
-    tested GQA 4/16, D=128, causal, and kL=2048 neighbours do not win.  qL=16
-    is a separately flagged measurement, not evidence for this qL=8 route.
-    Head counts are explicit because otherwise the dispatch cache could reuse
-    a GQA=8 decision for a non-winning GQA ratio.
+    This is intentionally a finite envelope, not a general decode rule. The
+    qL8 and qL16 ranges have independent measured lower bounds, and every
+    other neighbour remains SDPA. Head counts are explicit because otherwise
+    the dispatch cache could reuse a winning GQA decision for a loser.
     """
     if num_q_heads is None or num_kv_heads is None or num_kv_heads <= 0:
         return False
+    envelope = _M5_NAX_DECODE_EDGE_ENVELOPES.get(seq_len)
+    if envelope is None:
+        return False
+    min_kv_len, gqa_factors = envelope
     return (
         has_nax
         and head_dim == _M5_NAX_DECODE_EDGE_HEAD_DIM
-        and seq_len == _M5_NAX_DECODE_EDGE_QUERY_LEN
-        and _M5_NAX_DECODE_EDGE_MIN_KV_LEN
-        <= kv_seq_len
-        <= _M5_NAX_DECODE_EDGE_MAX_KV_LEN
+        and min_kv_len <= kv_seq_len <= _M5_NAX_DECODE_EDGE_MAX_KV_LEN
         and not causal
         and dtype_key in ("float16", "bfloat16")
         and num_q_heads % num_kv_heads == 0
-        and num_q_heads // num_kv_heads == _M5_NAX_DECODE_EDGE_GQA_FACTOR
+        and num_q_heads // num_kv_heads in gqa_factors
     )
 
 

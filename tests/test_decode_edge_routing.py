@@ -1,4 +1,4 @@
-"""Public-route lock for the finite M5 qL=8 decode edge."""
+"""Public-route locks for the finite M5 qL=8/qL=16 decode edges."""
 from __future__ import annotations
 
 import math
@@ -80,10 +80,43 @@ def test_public_decode_edge_routes_to_real_mfa_primitive(kv_len, dtype):
 
 
 @pytest.mark.parametrize(
+    "kv_len,kv_heads,dtype",
+    [
+        (16384, 4, mx.float16),  # GQA = 4 at the lower measured boundary
+        (32768, 2, mx.bfloat16), # GQA = 8 in the interior
+        (65536, 1, mx.float16),  # GQA = 16 at the upper measured boundary
+    ],
+)
+def test_public_decode_ql16_edge_routes_to_real_mfa_primitive(
+    kv_len, kv_heads, dtype
+):
+    """β3 finite qL16/D64/non-causal edge proven by consolidation."""
+    _require_nax()
+    q, k, v = _qkv(16, kv_len, kv_heads, 64, dtype)
+    auto, auto_trace = _traced(q, k, v, causal=False, backend="auto")
+    forced, forced_trace = _traced(q, k, v, causal=False, backend="mfa")
+    sdpa, sdpa_trace = _traced(q, k, v, causal=False, backend="sdpa")
+    reference = mx.fast.scaled_dot_product_attention(
+        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
+        scale=1.0 / math.sqrt(64),
+    )
+    mx.eval(reference)
+
+    assert auto_trace[-1][0] == "mfa_primitive"
+    assert forced_trace[-1][0] == "mfa_primitive"
+    assert sdpa_trace[-1][0] == "sdpa"
+    assert _max_abs(auto, forced) == 0.0
+    assert _max_abs(auto, sdpa) > 0.0
+    assert _cosine(auto, reference) >= 0.999
+
+
+@pytest.mark.parametrize(
     "q_len,kv_len,kv_heads,head_dim,causal,dtype",
     [
         (4, 4096, 2, 64, False, mx.float16),   # qL != 8
-        (16, 4096, 2, 64, False, mx.bfloat16), # qL != 8; separately flagged for measurement
+        (16, 8192, 2, 64, False, mx.bfloat16), # qL16 below measured threshold
+        (16, 16384, 8, 64, False, mx.float16), # qL16 GQA = 2
+        (16, 16384, 2, 64, True, mx.bfloat16), # qL16 causal
         (8, 4096, 4, 64, False, mx.float16),   # GQA = 4
         (8, 4096, 1, 64, False, mx.bfloat16),  # GQA = 16
         (8, 4096, 2, 128, False, mx.float16),  # D = 128
