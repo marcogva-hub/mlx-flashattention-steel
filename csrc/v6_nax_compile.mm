@@ -262,64 +262,6 @@ void v6nax_dispatch(
   }
 }
 
-// Packed-varlen dispatcher. The device kernel maps each global Q tile to a
-// segment using tile_offsets, then reads segment-local lengths from cu_q/cu_k.
-// Buffer indices 6/7/8 are bound by MFAV6VarlenForward.
-struct V6NAXVarlenParamsHost {
-  int qL, kL;
-  int gqa_factor;
-  int NQ, NK;
-  int qL_rem, kL_rem;
-  int qL_off;
-  int64_t Q_strides[3], K_strides[3], V_strides[3], O_strides[3];
-  int64_t L_strides[3];
-  int num_seqs;
-};
-
-void v6nax_dispatch_varlen(
-    void* pipeline_raw,
-    void* enc_raw,
-    int total_q, int total_k, int num_seqs, int total_q_tiles,
-    int Hq, int Hk, int head_dim,
-    unsigned short BQ, unsigned short BK, uint16_t WM) {
-  @autoreleasepool {
-    auto& enc = *reinterpret_cast<mlx::core::metal::CommandEncoder*>(enc_raw);
-    enc.set_compute_pipeline_state(
-        reinterpret_cast<MTL::ComputePipelineState*>(pipeline_raw));
-
-    V6NAXVarlenParamsHost params{};
-    params.qL = total_q;
-    params.kL = total_k;
-    params.gqa_factor = Hq / Hk;
-    params.NQ = (total_q + BQ - 1) / BQ;
-    params.NK = (total_k + BK - 1) / BK;
-    params.qL_rem = total_q % BQ;
-    params.kL_rem = total_k % BK;
-    params.qL_off = 0;
-    params.Q_strides[0] = (int64_t)Hq * total_q * head_dim;
-    params.Q_strides[1] = (int64_t)total_q * head_dim;
-    params.Q_strides[2] = head_dim;
-    params.K_strides[0] = (int64_t)Hk * total_k * head_dim;
-    params.K_strides[1] = (int64_t)total_k * head_dim;
-    params.K_strides[2] = head_dim;
-    params.V_strides[0] = (int64_t)Hk * total_k * head_dim;
-    params.V_strides[1] = (int64_t)total_k * head_dim;
-    params.V_strides[2] = head_dim;
-    params.O_strides[0] = (int64_t)Hq * total_q * head_dim;
-    params.O_strides[1] = (int64_t)total_q * head_dim;
-    params.O_strides[2] = head_dim;
-    params.L_strides[0] = (int64_t)Hq * total_q;
-    params.L_strides[1] = total_q;
-    params.L_strides[2] = 1;
-    params.num_seqs = num_seqs;
-    enc.set_bytes(params, 4);
-
-    enc.dispatch_threadgroups(
-        MTL::Size::Make((size_t)total_q_tiles, (size_t)Hq, 1),
-        MTL::Size::Make((size_t)32 * (size_t)WM, 1, 1));
-  }
-}
-
 // =============================================================================
 // V6NAX backward dQ dispatcher (Phase 1 Section B of V6NAX backward Option β).
 // Mirrors v6nax_dispatch but with backward-specific param struct.

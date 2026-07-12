@@ -18,8 +18,7 @@ Public (`mlx_mfa/attention.py`): `flash_attention`, `flash_attention_sparse`,
 Raw (`csrc/bindings.cpp`): `mfa_paged_steel_forward`, `mfa_paged_varlen_forward`,
 `mfa_paged_varlen_tq_forward`, `mfa_paged_kv_gather`, backward family
 (`mfa_steel_backward[_sparse]`, `mfa_backward_{query,kv}_debug`,
-`v6_nax_backward_{query,kv,dk,dv,fused_dkdv}[_sparse]_raw`), and the expert-only
-packed-varlen coverage kernel `v6_nax_varlen_forward`.
+`v6_nax_backward_{query,kv,dk,dv,fused_dkdv}[_sparse]_raw`).
 
 ## Dense / sparse / sage / GNA
 
@@ -137,7 +136,6 @@ shared `validate_dense_qkv` C++ helper + per-entry residual.
 | entry (K0) | correctness | accept-valid | reject-malformed (was→now) | determinism |
 |---|---|---|---|---|
 | `v6_nax_forward` (R15) | fp64 oracle relerr <3e-3 ✓ | GQA runs ✓ | batch→NaN, k_seq/k_heads/q_D/dtype **all no-raise → all RAISE** | N-A (cooperative tensor, only P staged) |
-| `v6_nax_varlen_forward` | fp32 per-segment cos ≥0.999 (global + minimum segment) ✓ | D{64,128}, f16/bf16, GQA, causal, qL!=kL, tails ✓ | strict int32 prefixes + NAX-BQ-derived tile offsets; malformed/empty/unsupported raise ✓ | N-A (cooperative tensor, expert-only) |
 | `mfa_attention_varlen_forward` (R7) | — | valid runs ✓ | **NO validation + silent int32 cast → full Q/K/V + int32-reject (no cast)** | byteΔ=0 N≥512 (packed staging barrier, src-verified) |
 | `mfa_attention_rope_forward` (R5) | — | valid runs ✓ | all dense no-raise + no cos/sin checks **→ all RAISE + cos/sin f32/shape/width** | byteΔ=0 N≥512 (barrier X, src-verified) |
 | `mfa_attention_alibi_forward` (R3) | — | valid runs ✓ | all no-raise incl. invalid-GQA **→ all RAISE + slopes len Hq** | N-A (M5 direct reads) |
