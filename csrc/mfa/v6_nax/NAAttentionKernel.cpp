@@ -2797,7 +2797,12 @@ void NAAttentionKernel::loopForwardSingleTile(CodeWriter &source) const noexcept
 std::string NAAttentionKernel::createV6NAXSource() const noexcept {
   const int BQ = blockDimensions[0];
   const int BK = blockDimensions[1];
-  const int BD = headDimension;
+  // D-subtiling keeps one output fragment live at a time.  The QK contraction
+  // still walks the full head dimension; D=64/128 retain SUBTILES==1 and emit
+  // the prior source shape exactly apart from inert compile-time definitions.
+  const int BD = blockDimensions[2];
+  const int FULL_BD = headDimension;
+  const int SUBTILES = FULL_BD / BD;
   const int WM = executionSIMDGroups;
   const int kU = 16;
   const int TQ = BQ / (WM * kU);   // expected = 1 per Apple's static_assert
@@ -2832,6 +2837,8 @@ std::string NAAttentionKernel::createV6NAXSource() const noexcept {
   ss << "#define V6NAX_BQ " << BQ << "\n";
   ss << "#define V6NAX_BK " << BK << "\n";
   ss << "#define V6NAX_BD " << BD << "\n";
+  ss << "#define V6NAX_FULL_BD " << FULL_BD << "\n";
+  ss << "#define V6NAX_SUBTILES " << SUBTILES << "\n";
   ss << "#define V6NAX_WM " << WM << "\n";
   ss << "#define V6NAX_TQ " << TQ << "\n";
   ss << "#define V6NAX_TD " << TD << "\n";
@@ -2900,20 +2907,8 @@ void attention(
   const float scale2 = V6NAX_DOT_SCALE;  // scale * log2e (precomputed)
 
   // === MMA tiles + softmax state (Apple lines 127-166) ===
-  using otile_t = NAXTile<float, V6NAX_TQ, V6NAX_TD>;
-  otile_t Otile;
-  Otile.clear();
-
   const short tm = 16 * V6NAX_TQ * simd_group_id;
-  Q += tm * int(params.Q_strides[2]);
-
-  constexpr short kRowsPT = otile_t::kRowsPerThread;
-  metal::vec<float, kRowsPT> max_score;
-  metal::vec<float, kRowsPT> sum_score{0};
-  STEEL_PRAGMA_UNROLL
-  for (short i = 0; i < kRowsPT; ++i) {
-    max_score[i] = Limits<float>::finite_min;
-  }
+  const device T* Q_block = Q + tm * int(params.Q_strides[2]);
 
   // Last-block flags (Apple lines 189-194)
   const int NQ_aligned = params.qL / V6NAX_BQ;
@@ -2947,8 +2942,29 @@ void attention(
   // branch below is guarded by #if V6NAX_CAUSAL so the symbol is absent.
 #endif
 
-  // === K-loop (Apple lines 197-457) ===
-  for (int kb = 0; kb < kb_lim; kb++) {
+  // D-subtile replay: a full QK contraction is required for each independent
+  // V/O head slice.  This first prototype deliberately trades that duplicated
+  // score work for bounded O state; later tuning can replace replay with an S
+  // staging strategy only if this correct baseline crosses the performance gate.
+  STEEL_PRAGMA_UNROLL
+  for (short out_subtile = 0; out_subtile < V6NAX_SUBTILES; ++out_subtile) {
+    using otile_t = NAXTile<float, V6NAX_TQ, V6NAX_TD>;
+    otile_t Otile;
+    Otile.clear();
+
+    constexpr short kRowsPT = otile_t::kRowsPerThread;
+    metal::vec<float, kRowsPT> max_score;
+    metal::vec<float, kRowsPT> sum_score{0};
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; ++i) {
+      max_score[i] = Limits<float>::finite_min;
+    }
+
+    const device T* K_block = K;
+    const device T* V_block = V;
+
+    // === K-loop (Apple lines 197-457) ===
+    for (int kb = 0; kb < kb_lim; kb++) {
     const bool is_last_k = (kb == NK_aligned);
 
     using stile_t = NAXTile<float, V6NAX_TQ, V6NAX_TK>;
@@ -2965,29 +2981,34 @@ void attention(
           NAXTile<T, 1, 1> Qtile;
           NAXTile<T, 2, 1> Ktile;
 
-          const int Q_load_off = iq * 16 * int(params.Q_strides[2]) + id * 16;
-          const int K_load_off = ik * 16 * int(params.K_strides[2]) + id * 16;
+          STEEL_PRAGMA_UNROLL
+          for (short qk_subtile = 0; qk_subtile < V6NAX_SUBTILES; ++qk_subtile) {
+            const int Q_load_off = iq * 16 * int(params.Q_strides[2])
+                + qk_subtile * V6NAX_BD + id * 16;
+            const int K_load_off = ik * 16 * int(params.K_strides[2])
+                + qk_subtile * V6NAX_BD + id * 16;
 
-          if (is_last_q) {
-            Qtile.load_rows(Q + Q_load_off, int(params.Q_strides[2]), lim_rows_q - iq * 16);
-          } else {
-            Qtile.load(Q + Q_load_off, int(params.Q_strides[2]));
+            if (is_last_q) {
+              Qtile.load_rows(Q_block + Q_load_off, int(params.Q_strides[2]), lim_rows_q - iq * 16);
+            } else {
+              Qtile.load(Q_block + Q_load_off, int(params.Q_strides[2]));
+            }
+
+            if (is_last_k) {
+              Ktile.load_rows(K_block + K_load_off, int(params.K_strides[2]), lim_rows_k - ik * 16);
+            } else {
+              Ktile.load(K_block + K_load_off, int(params.K_strides[2]));
+            }
+
+            stile_t::NAXFrag_t::mma(
+                Stile.frag_at(iq, ik),
+                Stile.frag_at(iq, ik + 1),
+                Qtile.frag_at(0, 0),
+                metal::false_type{},
+                Ktile.frag_at(0, 0),
+                Ktile.frag_at(1, 0),
+                metal::true_type{});
           }
-
-          if (is_last_k) {
-            Ktile.load_rows(K + K_load_off, int(params.K_strides[2]), lim_rows_k - ik * 16);
-          } else {
-            Ktile.load(K + K_load_off, int(params.K_strides[2]));
-          }
-
-          stile_t::NAXFrag_t::mma(
-              Stile.frag_at(iq, ik),
-              Stile.frag_at(iq, ik + 1),
-              Qtile.frag_at(0, 0),
-              metal::false_type{},
-              Ktile.frag_at(0, 0),
-              Ktile.frag_at(1, 0),
-              metal::true_type{});
         }
       }
     }
@@ -3093,11 +3114,12 @@ void attention(
         STEEL_PRAGMA_UNROLL
         for (short ik = 0; ik < V6NAX_TK; ik++) {
           NAXTile<T, 1, 2> Vtile;
-          const int V_load_off = ik * 16 * int(params.V_strides[2]) + id * 16;
+          const int V_load_off = ik * 16 * int(params.V_strides[2])
+              + out_subtile * V6NAX_BD + id * 16;
           if (is_last_k) {
-            Vtile.load_rows(V + V_load_off, int(params.V_strides[2]), lim_rows_k - ik * 16);
+            Vtile.load_rows(V_block + V_load_off, int(params.V_strides[2]), lim_rows_k - ik * 16);
           } else {
-            Vtile.load(V + V_load_off, int(params.V_strides[2]));
+            Vtile.load(V_block + V_load_off, int(params.V_strides[2]));
           }
           otile_t::NAXFrag_t::mma(
               Otile.frag_at(iq, id),
@@ -3111,9 +3133,9 @@ void attention(
       }
     }
 
-    K += V6NAX_BK * int(params.K_strides[2]);
-    V += V6NAX_BK * int(params.V_strides[2]);
-  }
+      K_block += V6NAX_BK * int(params.K_strides[2]);
+      V_block += V6NAX_BK * int(params.V_strides[2]);
+    }
 
   // Normalize output (Apple lines 461-469)
   threadgroup_barrier(mem_flags::mem_none);
@@ -3152,7 +3174,7 @@ void attention(
   //   i  ∈ [0, kElemRows) — intra-frag row index
   // The base q-row pointer was advanced by tm rows above (see Q load);
   // we now advance L the same way.
-  {
+  if (out_subtile == 0) {
     const short2 sc_lse = otile_t::NAXFrag_t::get_coord();
     if (sc_lse.x == 0) {
       device float* L_row = L
@@ -3186,12 +3208,14 @@ void attention(
   }
 
   // Store O (Apple lines 471-481)
-  O += tm * int(params.O_strides[2]);
+  device T* O_block = O + tm * int(params.O_strides[2])
+      + out_subtile * V6NAX_BD;
   if (is_last_q) {
     if (lim_rows_q <= 0) return;
-    Otile.store_rows(O, int(params.O_strides[2]), lim_rows_q);
+    Otile.store_rows(O_block, int(params.O_strides[2]), lim_rows_q);
   } else {
-    Otile.store(O, int(params.O_strides[2]));
+    Otile.store(O_block, int(params.O_strides[2]));
+  }
   }
 }
 )MSL";

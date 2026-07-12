@@ -597,7 +597,8 @@ NB_MODULE(_ext, m) {
         nb::arg("causal") = false,
         nb::arg("force_v6nax") = false,
         nb::arg("scale") = -1.0f,
-        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; FP16/BF16. "
+        "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; "
+        "D=256 is an expert-only sub-tiling prototype requiring force_v6nax=True; FP16/BF16. "
         "v2.37.0: force_v6nax=True overrides default routing to ensure V6NAX forward "
         "path (used by V6NAX backward integration for natural-log lse). "
         "F-2 (Change 3): scale is the QK scale baked into the kernel; a custom scale "

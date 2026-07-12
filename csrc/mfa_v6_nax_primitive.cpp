@@ -331,10 +331,15 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // is the existing D=128 default. (Shader side — must match the eval_gpu dispatch.)
   unsigned short v6nax_BK = 32;
   uint16_t v6nax_WM = (head_dim == 64) ? 2 : 4;
+  // D>=256 uses an expert-only replayed head sub-tile.  Keeping the fragment
+  // width in the source/cache key is mandatory: it changes both the MSL and
+  // the cooperative-tensor register layout.
+  unsigned short v6nax_BD = (head_dim >= 256) ? 128 : (unsigned short)head_dim;
   if (use_v6nax) {
     if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
     if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
     if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+    if (const char* env_bd = std::getenv("MFA_V6_NAX_D_SUBTILE")) v6nax_BD = (unsigned short)std::atoi(env_bd);
     // Validate: BQ % (WM*16) == 0 AND head_dim % 16 == 0.  Rule 8 (loud failure):
     // F-3 removed the use_v6nax=false (simdgroup) branch, so falling back here would
     // emit the non-NAX source into v6nax_compile("attention") → an UNCATCHABLE Metal
@@ -361,10 +366,18 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
           "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
           std::to_string((int)v6nax_BK) + " (MFA_V6_NAX_BK).");
     }
+    if (v6nax_BD == 0 || v6nax_BD % 16 != 0 ||
+        head_dim % v6nax_BD != 0 ||
+        (head_dim < 256 && v6nax_BD != head_dim)) {
+      throw std::runtime_error(
+          "V6NAX forward: invalid D sub-tile — D must divide exactly into a "
+          "positive 16-aligned fragment; D=64/128 require the full head. Got D=" +
+          std::to_string(head_dim) + " subD=" + std::to_string(v6nax_BD) + ".");
+    }
   }
 
   simd::ushort3 blockDims = use_v6nax
-      ? simd::make_ushort3(v6nax_BQ, v6nax_BK, BD)
+      ? simd::make_ushort3(v6nax_BQ, v6nax_BK, v6nax_BD)
       : simd::make_ushort3(BQ, BK, BD);
   uint16_t exec_sg_for_desc = use_v6nax ? v6nax_WM : exec_sg;
 
@@ -786,9 +799,10 @@ public:
     // (every MFAV6Forward entry forces NAX — the F-2 dense route and the backward
     // recompute — and NAX-ineligible dense shapes route to the EXISTING dispatch:
     // D=64 dense → SDPA, F-2).  It is removed.  MFAV6Forward now serves ONLY NAX
-    // (D ∈ {64,128}, valid GQA); the only legacy escape (MFA_V6_USE_NAX=0 → broken
+    // (D ∈ {64,128}, plus the force-only D=256 sub-tiling prototype, valid GQA);
+    // the only legacy escape (MFA_V6_USE_NAX=0 → broken
     // simdgroup) is gone too (the env name is retained as a deprecated no-op alias).
-    bool use_v6nax = true;  // D is constrained to {64,128} by v6_nax_forward()
+    bool use_v6nax = true;  // v6_nax_forward() validates the expert D=256 opt-in.
     const bool valid_gqa = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
     if (!valid_gqa) {
       // NAX requires Hq % Hk == 0.  The removed simdgroup fallback was the only
@@ -807,10 +821,12 @@ public:
     // (Dispatch side — must match the generate_v6_source shader default above.)
     unsigned short v6nax_BK = 32;
     uint16_t v6nax_WM = (D == 64) ? 2 : 4;
+    unsigned short v6nax_BD = (D >= 256) ? 128 : (unsigned short)D;
     if (use_v6nax) {
       if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
       if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
       if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+      if (const char* env_bd = std::getenv("MFA_V6_NAX_D_SUBTILE")) v6nax_BD = (unsigned short)std::atoi(env_bd);
       // Rule 8: throw (do NOT use_v6nax=false — F-3 removed that branch; a
       // fallback here reaches v6nax_compile with the non-NAX source → uncatchable
       // Metal abort). Clean, recoverable error for an invalid env tile triple.
@@ -831,7 +847,18 @@ public:
             "16x32x16 MMA requires TK = BK/16 even). Got BK=" +
             std::to_string((int)v6nax_BK) + " (MFA_V6_NAX_BK).");
       }
+      if (v6nax_BD == 0 || v6nax_BD % 16 != 0 || D % v6nax_BD != 0 ||
+          (D < 256 && v6nax_BD != D)) {
+        throw std::runtime_error(
+            "V6NAX forward: invalid D sub-tile — D must divide exactly into a "
+            "positive 16-aligned fragment; D=64/128 require the full head. Got D=" +
+            std::to_string(D) + " subD=" + std::to_string(v6nax_BD) + ".");
+      }
     }
+
+    // cfg_BD participates in V6Key and now records the live NAX fragment.
+    // The legacy BLOCK_D knob is vestigial on the pure-NAX path.
+    BD = v6nax_BD;
 
     // Include all tile + flag params in cache key.
     // Repo review 2026-05: tile/config params moved from bit-packed high
@@ -927,7 +954,12 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     float scale) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
   int D = q.shape(3);
-  if (D != 64 && D != 128) throw std::runtime_error("V6: D must be 64 or 128");
+  if (D != 64 && D != 128 && D != 256)
+    throw std::runtime_error("V6: D must be 64, 128, or expert-only 256");
+  if (D == 256 && !force_v6nax)
+    throw std::runtime_error(
+        "V6: D=256 is an expert-only head-subtiling prototype; pass "
+        "force_v6nax=True. Public flash_attention routing remains SDPA.");
 
   // SCALE value-semantics (sweep iter-4/5 class-closure): the eval_gpu sentinel
   // `(scale > 0) ? scale : default` silently SWALLOWED a non-positive / non-finite
