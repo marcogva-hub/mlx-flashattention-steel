@@ -1,0 +1,92 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "equal-256",
+  "lengths": [
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256
+  ],
+  "total_tokens": 4096,
+  "num_segments": 16,
+  "dtype": "fp16",
+  "head_dim": 64,
+  "heads": 4,
+  "tile": {
+    "bq": 64,
+    "bk": 32,
+    "wm": 2
+  },
+  "order": "sdpa-steel-nax",
+  "iterations_per_sample": 20,
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999999403953552,
+    "global_cos_nax_steel": 0.9999999403953552,
+    "max_abs_nax_steel": 0.00048828125,
+    "max_abs_nax_sdpa": 0.000244140625,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 0.7293103990377858,
+      "p95_ms": 1.2444083619629964,
+      "min_ms": 0.589322901214473,
+      "max_ms": 1.2457979522878304,
+      "samples_ms": [
+        0.5931458494160324,
+        0.7293103990377858,
+        0.589322901214473,
+        1.2388500006636605,
+        1.2457979522878304
+      ]
+    },
+    "steel": {
+      "median_ms": 1.0451770504005253,
+      "p95_ms": 1.348995000589639,
+      "min_ms": 0.9397624991834164,
+      "max_ms": 1.373000000603497,
+      "samples_ms": [
+        1.0337958025047556,
+        1.2529750005342066,
+        1.0451770504005253,
+        1.373000000603497,
+        0.9397624991834164
+      ]
+    },
+    "nax": {
+      "median_ms": 0.6419333483790979,
+      "p95_ms": 0.7588224904611707,
+      "min_ms": 0.3814000025158748,
+      "max_ms": 0.7722854003077373,
+      "samples_ms": [
+        0.3814000025158748,
+        0.7722854003077373,
+        0.6349000002956018,
+        0.7049708510749042,
+        0.6419333483790979
+      ]
+    }
+  }
+}

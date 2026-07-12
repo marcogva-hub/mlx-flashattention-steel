@@ -1,0 +1,95 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "seed-aligned",
+  "lengths": [
+    3226,
+    3226,
+    3226,
+    3226,
+    2434,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    850,
+    850,
+    850,
+    850,
+    652
+  ],
+  "total_tokens": 35018,
+  "num_segments": 20,
+  "dtype": "bf16",
+  "head_dim": 128,
+  "heads": 20,
+  "tile": {
+    "bq": 64,
+    "bk": 32,
+    "wm": 4
+  },
+  "order": "nax-steel-sdpa",
+  "correctness": {
+    "global_cos_nax_sdpa": 0.9999998807907104,
+    "min_segment_cos_nax_sdpa": 0.9999998807907104,
+    "global_cos_nax_steel": 0.9999992251396179,
+    "max_abs_nax_steel": 0.001953125,
+    "max_abs_nax_sdpa": 0.001953125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "nax": {
+      "median_ms": 28.710625017993152,
+      "p95_ms": 35.77164981979877,
+      "min_ms": 17.895790981128812,
+      "max_ms": 37.4867080245167,
+      "samples_ms": [
+        17.895790981128812,
+        37.4867080245167,
+        28.91141700092703,
+        26.68116701534018,
+        28.710625017993152
+      ]
+    },
+    "steel": {
+      "median_ms": 81.5407499903813,
+      "p95_ms": 88.0629912018776,
+      "min_ms": 69.83504199888557,
+      "max_ms": 89.53254099469632,
+      "samples_ms": [
+        69.83504199888557,
+        82.1847920306027,
+        81.5407499903813,
+        89.53254099469632,
+        78.81708402419463
+      ]
+    },
+    "sdpa": {
+      "median_ms": 30.48033401137218,
+      "p95_ms": 42.7784416009672,
+      "min_ms": 22.3341669770889,
+      "max_ms": 45.19112501293421,
+      "samples_ms": [
+        22.3341669770889,
+        45.19112501293421,
+        33.12770795309916,
+        30.48033401137218,
+        29.583375027868897
+      ]
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "equal-256",
+  "lengths": [
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256,
+    256
+  ],
+  "total_tokens": 4096,
+  "num_segments": 16,
+  "dtype": "fp16",
+  "head_dim": 64,
+  "heads": 4,
+  "tile": {
+    "bq": 32,
+    "bk": 32,
+    "wm": 2
+  },
+  "order": "nax-steel-sdpa",
+  "iterations_per_sample": 20,
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999999403953552,
+    "global_cos_nax_steel": 0.9999999403953552,
+    "max_abs_nax_steel": 0.00048828125,
+    "max_abs_nax_sdpa": 0.000244140625,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "nax": {
+      "median_ms": 0.5643437500111759,
+      "p95_ms": 0.7521641894709319,
+      "min_ms": 0.44032080040778965,
+      "max_ms": 0.7814229495124891,
+      "samples_ms": [
+        0.44032080040778965,
+        0.6351291493047029,
+        0.541485397843644,
+        0.7814229495124891,
+        0.5643437500111759
+      ]
+    },
+    "steel": {
+      "median_ms": 1.2424104003002867,
+      "p95_ms": 1.3886079285293818,
+      "min_ms": 0.9817937505431473,
+      "max_ms": 1.3937083480414003,
+      "samples_ms": [
+        0.9817937505431473,
+        1.1358104005921632,
+        1.3682062504813075,
+        1.3937083480414003,
+        1.2424104003002867
+      ]
+    },
+    "sdpa": {
+      "median_ms": 0.9393375017680228,
+      "p95_ms": 0.9986649989150465,
+      "min_ms": 0.659218750661239,
+      "max_ms": 1.0090437484905124,
+      "samples_ms": [
+        0.659218750661239,
+        0.9393375017680228,
+        1.0090437484905124,
+        0.9011229005409405,
+        0.9571500006131828
+      ]
+    }
+  }
+}

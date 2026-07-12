@@ -1,0 +1,95 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "seed-aligned",
+  "lengths": [
+    3226,
+    3226,
+    3226,
+    3226,
+    2434,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    850,
+    850,
+    850,
+    850,
+    652
+  ],
+  "total_tokens": 35018,
+  "num_segments": 20,
+  "dtype": "bf16",
+  "head_dim": 128,
+  "heads": 20,
+  "tile": {
+    "bq": 64,
+    "bk": 32,
+    "wm": 4
+  },
+  "order": "sdpa-steel-nax",
+  "correctness": {
+    "global_cos_nax_sdpa": 0.9999998807907104,
+    "min_segment_cos_nax_sdpa": 0.9999998807907104,
+    "global_cos_nax_steel": 0.9999992251396179,
+    "max_abs_nax_steel": 0.001953125,
+    "max_abs_nax_sdpa": 0.001953125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "sdpa": {
+      "median_ms": 33.21720799431205,
+      "p95_ms": 36.77870797691867,
+      "min_ms": 22.234666044823825,
+      "max_ms": 37.61670796666294,
+      "samples_ms": [
+        22.234666044823825,
+        37.61670796666294,
+        33.426708017941564,
+        32.10354200564325,
+        33.21720799431205
+      ]
+    },
+    "steel": {
+      "median_ms": 79.68658301979303,
+      "p95_ms": 80.94569999957457,
+      "min_ms": 70.84574998589233,
+      "max_ms": 81.24012500047684,
+      "samples_ms": [
+        70.84574998589233,
+        79.68658301979303,
+        79.13941697916016,
+        81.24012500047684,
+        79.76799999596551
+      ]
+    },
+    "nax": {
+      "median_ms": 28.107374964747578,
+      "p95_ms": 28.32990020979196,
+      "min_ms": 17.247999960090965,
+      "max_ms": 28.363667021039873,
+      "samples_ms": [
+        17.247999960090965,
+        28.363667021039873,
+        25.456834002397954,
+        28.194832964800298,
+        28.107374964747578
+      ]
+    }
+  }
+}

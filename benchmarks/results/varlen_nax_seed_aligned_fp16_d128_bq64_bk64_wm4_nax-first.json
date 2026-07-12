@@ -1,0 +1,95 @@
+{
+  "schema": "mlx-mfa.varlen-packed-nax.v1",
+  "date": "2026-07-12",
+  "hardware": "arm64",
+  "macos": "27.0",
+  "mlx": "0.31.2",
+  "geometry": "seed-aligned",
+  "lengths": [
+    3226,
+    3226,
+    3226,
+    3226,
+    2434,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    1642,
+    1642,
+    1642,
+    1642,
+    1246,
+    850,
+    850,
+    850,
+    850,
+    652
+  ],
+  "total_tokens": 35018,
+  "num_segments": 20,
+  "dtype": "fp16",
+  "head_dim": 128,
+  "heads": 20,
+  "tile": {
+    "bq": 64,
+    "bk": 64,
+    "wm": 4
+  },
+  "order": "nax-steel-sdpa",
+  "correctness": {
+    "global_cos_nax_sdpa": 1.0,
+    "min_segment_cos_nax_sdpa": 0.9999998807907104,
+    "global_cos_nax_steel": 1.0,
+    "max_abs_nax_steel": 0.000244140625,
+    "max_abs_nax_sdpa": 0.00048828125,
+    "nax_has_nan": false
+  },
+  "engagement": {
+    "nax": "_ext.v6_nax_varlen_forward",
+    "steel": "_ext.mfa_attention_varlen_forward",
+    "sdpa": "mx.fast.scaled_dot_product_attention per segment"
+  },
+  "timings": {
+    "nax": {
+      "median_ms": 47.48204100178555,
+      "p95_ms": 50.93474176246673,
+      "min_ms": 37.3962500016205,
+      "max_ms": 51.74674995942041,
+      "samples_ms": [
+        37.3962500016205,
+        51.74674995942041,
+        46.08104197541252,
+        47.68670897465199,
+        47.48204100178555
+      ]
+    },
+    "steel": {
+      "median_ms": 76.62033301312476,
+      "p95_ms": 77.97985001234338,
+      "min_ms": 66.06791698141024,
+      "max_ms": 78.14300002064556,
+      "samples_ms": [
+        66.06791698141024,
+        77.32724997913465,
+        78.14300002064556,
+        76.62033301312476,
+        75.77100000344217
+      ]
+    },
+    "sdpa": {
+      "median_ms": 29.842708026990294,
+      "p95_ms": 33.10834178701043,
+      "min_ms": 22.569083026610315,
+      "max_ms": 33.86604198021814,
+      "samples_ms": [
+        22.569083026610315,
+        33.86604198021814,
+        30.077541014179587,
+        29.031708952970803,
+        29.842708026990294
+      ]
+    }
+  }
+}
