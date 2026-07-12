@@ -243,7 +243,10 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 bool isCausal, bool bhnd, int R = 0,
                                 bool use_v6nax_override = false,
                                 bool use_v6nax_explicit = false,
-                                float scale_override = -1.0f) {
+                                float scale_override = -1.0f,
+                                unsigned short nax_bq_override = 0,
+                                unsigned short nax_bk_override = 0,
+                                uint16_t nax_wm_override = 0) {
   // F-2 (Change 3): scale is BAKED into the source as `#define V6NAX_DOT_SCALE`
   // (NAAttentionKernel.cpp createV6NAXSource, via descriptor.scale).  A custom
   // scale therefore produces a DISTINCT kernel — the dispatch cache key (V6Key)
@@ -347,6 +350,12 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
     if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
     if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+    // Public shape-narrow routes must not rely on a process-global env value
+    // surviving MLX lazy evaluation. Explicit tiles flow through the same
+    // source/cache/dispatch contract as the expert path.
+    if (nax_bq_override != 0) v6nax_BQ = nax_bq_override;
+    if (nax_bk_override != 0) v6nax_BK = nax_bk_override;
+    if (nax_wm_override != 0) v6nax_WM = nax_wm_override;
     if (const char* env_bd = std::getenv("MFA_V6_NAX_D_SUBTILE")) v6nax_BD = (unsigned short)std::atoi(env_bd);
     // Validate: BQ % (WM*16) == 0 AND head_dim % 16 == 0.  Rule 8 (loud failure):
     // F-3 removed the use_v6nax=false (simdgroup) branch, so falling back here would
@@ -658,10 +667,14 @@ static void replace_required(std::string& source, const std::string& from,
 // global BHND strides, while q_start/k_start select the packed slice.
 std::string generate_v6_varlen_source(int head_dim, int Hq, int Hk,
                                       int dtype_code, bool is_causal,
-                                      int total_q, float scale) {
+                                      int total_q, float scale,
+                                      unsigned short nax_bq_override = 0,
+                                      unsigned short nax_bk_override = 0,
+                                      uint16_t nax_wm_override = 0) {
   std::string source = generate_v6_source(
       head_dim, Hq, Hk, dtype_code, is_causal, /*bhnd=*/true, total_q,
-      /*use_v6nax_override=*/true, /*use_v6nax_explicit=*/true, scale);
+      /*use_v6nax_override=*/true, /*use_v6nax_explicit=*/true, scale,
+      nax_bq_override, nax_bk_override, nax_wm_override);
 
   replace_required(source, "void attention(", "void attention_varlen_nax(",
                    "kernel name");
@@ -1174,6 +1187,11 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
   struct Params {
     bool causal;
     float scale;
+    // Zero preserves expert env-selected tiles. A nonzero triple is an
+    // atomic source-generation and dispatch contract for a public route.
+    unsigned short nax_bq = 0;
+    unsigned short nax_bk = 0;
+    uint16_t nax_wm = 0;
   };
 
   MFAV6VarlenForward(mlx::core::Stream stream, Params params)
@@ -1205,15 +1223,25 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
     const int num_seqs = static_cast<int>(cu_q.shape(0)) - 1;
 
     int dtype_code = q.dtype() == mlx::core::bfloat16 ? 1 : 0;
+    const bool explicit_tiles = params_.nax_bq || params_.nax_bk || params_.nax_wm;
+    if (explicit_tiles && (!params_.nax_bq || !params_.nax_bk || !params_.nax_wm))
+      throw std::invalid_argument(
+          "v6_nax_varlen_forward: explicit tiles require nonzero BQ, BK, and WM");
     unsigned short BQ = D == 64 ? 32 : 64;
     unsigned short BK = 32;
     uint16_t WM = D == 64 ? 2 : 4;
-    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
-      BQ = static_cast<unsigned short>(std::atoi(env));
-    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK"))
-      BK = static_cast<unsigned short>(std::atoi(env));
-    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM"))
-      WM = static_cast<uint16_t>(std::atoi(env));
+    if (explicit_tiles) {
+      BQ = params_.nax_bq;
+      BK = params_.nax_bk;
+      WM = params_.nax_wm;
+    } else {
+      if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
+        BQ = static_cast<unsigned short>(std::atoi(env));
+      if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK"))
+        BK = static_cast<unsigned short>(std::atoi(env));
+      if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM"))
+        WM = static_cast<uint16_t>(std::atoi(env));
+    }
     if (BQ == 0 || WM == 0 || BQ % (WM * 16) != 0 || BK == 0 || BK % 32 != 0)
       throw std::invalid_argument(
           "v6_nax_varlen_forward: invalid NAX tile configuration; require "
@@ -1271,7 +1299,9 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
     }
     if (!pipeline) {
       std::string source = generate_v6_varlen_source(
-          D, Hq, Hk, dtype_code, params_.causal, total_q, resolved_scale);
+          D, Hq, Hk, dtype_code, params_.causal, total_q, resolved_scale,
+          explicit_tiles ? BQ : 0, explicit_tiles ? BK : 0,
+          explicit_tiles ? WM : 0);
       if (const char* dump_path = std::getenv("MFA_V6_VARLEN_DUMP_PATH")) {
         std::ofstream dump(dump_path, std::ios::binary | std::ios::trunc);
         if (!dump) {
@@ -1313,7 +1343,10 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
   bool is_equivalent(const mlx::core::Primitive& other) const override {
     auto p = dynamic_cast<const MFAV6VarlenForward*>(&other);
     return p && p->params_.causal == params_.causal &&
-           p->params_.scale == params_.scale;
+           p->params_.scale == params_.scale &&
+           p->params_.nax_bq == params_.nax_bq &&
+           p->params_.nax_bk == params_.nax_bk &&
+           p->params_.nax_wm == params_.nax_wm;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1331,7 +1364,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& cu_q,
     const mlx::core::array& cu_k, const mlx::core::array& tile_offsets,
-    float scale, bool causal) {
+    float scale, bool causal, int tile_bq, int tile_bk, int tile_wm) {
   const char* entry = "v6_nax_varlen_forward";
   if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4 ||
       q.shape(0) != 1 || k.shape(0) != 1 || v.shape(0) != 1)
@@ -1380,12 +1413,31 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
     throw std::invalid_argument(std::string(entry) +
         ": final cu_seqlens values must equal packed Q/K totals");
 
+  const bool explicit_tiles = tile_bq != 0 || tile_bk != 0 || tile_wm != 0;
+  if (explicit_tiles && (tile_bq <= 0 || tile_bk <= 0 || tile_wm <= 0))
+    throw std::invalid_argument(std::string(entry) +
+        ": explicit tiles require positive BQ, BK, and WM");
   int BQ = D == 64 ? 32 : 64;
-  if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
-    BQ = std::atoi(env);
+  int BK = 32;
+  int WM = D == 64 ? 2 : 4;
+  if (explicit_tiles) {
+    BQ = tile_bq;
+    BK = tile_bk;
+    WM = tile_wm;
+  } else {
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ"))
+      BQ = std::atoi(env);
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK"))
+      BK = std::atoi(env);
+    if (const char* env = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM"))
+      WM = std::atoi(env);
+  }
   if (BQ <= 0)
     throw std::invalid_argument(std::string(entry) +
         ": MFA_V6_NAX_BQ must be a positive integer");
+  if (BK <= 0 || BK % 32 != 0 || WM <= 0 || BQ % (WM * 16) != 0)
+    throw std::invalid_argument(std::string(entry) +
+        ": invalid NAX tiles; require BQ%(WM*16)==0 and BK a positive multiple of 32");
   int expected_tiles = 0;
   for (int i = 0; i < nmeta - 1; ++i) {
     const int qlen = qmeta[i + 1] - qmeta[i];
@@ -1411,7 +1463,10 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
       {qc.shape(), mlx::core::Shape{1, qc.shape(1), qc.shape(2)}},
       {q.dtype(), mlx::core::float32},
       std::make_shared<MFAV6VarlenForward>(
-          stream, MFAV6VarlenForward::Params{causal, scale}),
+          stream, MFAV6VarlenForward::Params{
+              causal, scale, static_cast<unsigned short>(explicit_tiles ? BQ : 0),
+              static_cast<unsigned short>(explicit_tiles ? BK : 0),
+              static_cast<uint16_t>(explicit_tiles ? WM : 0)}),
       {qc, kc, vc, cu_qc, cu_kc, toc});
   return {outputs[0], outputs[1]};
 }

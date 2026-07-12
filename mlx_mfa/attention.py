@@ -6563,6 +6563,38 @@ def _mfa_rope_forward(
 #           Track EA — Differentiable varlen (mx.custom_function, v0.9.3)
 # ---------------------------------------------------------------------------
 
+_VARLEN_NAX_TILE_BQ = 32
+_VARLEN_NAX_TILE_BK = 32
+_VARLEN_NAX_TILE_WM = 2
+_VARLEN_NAX_TOTAL_MIN = 35018
+_VARLEN_NAX_TOTAL_MAX = 35250
+_VARLEN_NAX_SEGMENT_COUNTS = frozenset({20, 24})
+_VARLEN_NAX_GQA_FACTORS = frozenset({2, 4, 8})
+
+
+def _varlen_v6nax_eligible(
+    q: mx.array,
+    k: mx.array,
+    cu_q: list[int],
+    cu_k: list[int],
+    num_seqs: int,
+    block_mask,
+) -> bool:
+    """Conservative beta-3 public envelope for packed V6 NAX varlen."""
+    if os.environ.get("MFA_ENABLE_VARLEN_NAX") != "1":
+        return False
+    if block_mask is not None or not _ext_available() or not has_nax():
+        return False
+    if q.shape[0] != 1 or q.dtype not in (mx.float16, mx.bfloat16):
+        return False
+    if q.shape[-1] != 128 or num_seqs not in _VARLEN_NAX_SEGMENT_COUNTS:
+        return False
+    if not (_VARLEN_NAX_TOTAL_MIN <= q.shape[2] <= _VARLEN_NAX_TOTAL_MAX):
+        return False
+    if q.shape[2] != k.shape[2] or cu_q != cu_k:
+        return False
+    return (q.shape[1] // k.shape[1]) in _VARLEN_NAX_GQA_FACTORS
+
 
 def _varlen_split_concat(
     q: mx.array,
@@ -6771,6 +6803,18 @@ def flash_attention_varlen(
             q, k, v, cu_q, cu_k_list, scale, causal, block_mask, stream
         )
 
+    use_varlen_v6nax = _varlen_v6nax_eligible(
+        q, k, cu_q, cu_k_list, num_seqs, block_mask
+    )
+    if use_varlen_v6nax:
+        tile_off = [0]
+        for i in range(num_seqs):
+            qlen = cu_q[i + 1] - cu_q[i]
+            tile_off.append(
+                tile_off[-1] + (qlen + _VARLEN_NAX_TILE_BQ - 1) // _VARLEN_NAX_TILE_BQ
+            )
+        nax_tile_arr = mx.array(tile_off, dtype=mx.int32)
+
     # ── Differentiable STEEL varlen path ─────────────────────────────────────
     # Forward: STEEL single-dispatch varlen kernel when conditions are met.
     # Backward: split-concat per-sequence through flash_attention, which
@@ -6781,6 +6825,19 @@ def flash_attention_varlen(
 
     @mx.custom_function
     def _varlen_impl(q_, k_, v_):
+        if use_varlen_v6nax:
+            from mlx_mfa._ext import v6_nax_varlen_forward as _varlen_nax_fwd
+
+            O, _L = _varlen_nax_fwd(
+                q_, k_, v_, cu_seqlens_q, cu_seqlens_k, nax_tile_arr,
+                scale, causal, _VARLEN_NAX_TILE_BQ, _VARLEN_NAX_TILE_BK,
+                _VARLEN_NAX_TILE_WM,
+            )
+            _dtrace.record(
+                "varlen_v6nax",
+                "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)",
+            )
+            return O
         # _MFA_SUPPORTED_HDIMS includes 512, but the varlen STEEL kernel lacks
         # the d_split path that the main forward kernel uses for D=512 (TGP
         # would be 65 KB, exceeding the 32 KB threadgroup limit).  Cap at 256

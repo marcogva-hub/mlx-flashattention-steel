@@ -59,7 +59,8 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& cu_q,
     const mlx::core::array& cu_k, const mlx::core::array& tile_offsets,
-    float scale = -1.0f, bool causal = false);
+    float scale = -1.0f, bool causal = false, int tile_bq = 0,
+    int tile_bk = 0, int tile_wm = 0);
 // V6NAX backward dQ (V6NAX backward Option β Phase 1).  Returns dQ; consumes
 // O + lse from V6NAX forward.  Routing constraint per DC12: caller must
 // ensure V6NAX-forward-eligible shape (D=128 always; D=64 with Nk>8000).
@@ -617,16 +618,21 @@ NB_MODULE(_ext, m) {
            const mlx::core::array& v, const mlx::core::array& cu_q,
            const mlx::core::array& cu_k,
            const mlx::core::array& tile_offsets,
-           float scale, bool causal) {
+           float scale, bool causal, int tile_bq, int tile_bk, int tile_wm) {
           return mlx_mfa::v6_nax_varlen_forward(
-              q, k, v, cu_q, cu_k, tile_offsets, scale, causal);
+              q, k, v, cu_q, cu_k, tile_offsets, scale, causal,
+              tile_bq, tile_bk, tile_wm);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"), nb::arg("cu_seqlens_q"),
         nb::arg("cu_seqlens_k"), nb::arg("tile_offsets"),
         nb::arg("scale") = -1.0f, nb::arg("causal") = false,
+        nb::arg("tile_bq") = 0, nb::arg("tile_bk") = 0,
+        nb::arg("tile_wm") = 0,
         "Expert-only packed-varlen V6 NAX forward. Returns (O,L). M5+ only; "
         "B=1 packed BHND, D in {64,128}, FP16/BF16. tile_offsets must be the "
-        "canonical cumulative ceil(q_len/V6NAX_BQ). Not selected by public APIs.");
+        "canonical cumulative ceil(q_len/BQ). Optional tile_bq/tile_bk/tile_wm "
+        "override the env atomically for source generation and dispatch. Not "
+        "selected by public APIs.");
 
   m.def("v6_nax_backward_query",
         [](const mlx::core::array& q, const mlx::core::array& k,
