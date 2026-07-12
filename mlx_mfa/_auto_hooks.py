@@ -291,6 +291,15 @@ def _normalize_padding_to_6tuple(padding):
 # RGB in/out convs 3↔128).  Env-tunable via MFA_CONV3D_PAD_RATIO_MAX.
 _CONV3D_PAD_RATIO_MAX_DEFAULT = 12.0
 
+# SeedVR2 VAE spatial-tail probe (macOS 27 beta, M5 Max, MLX 0.31.2).
+# Keep the envelope exact: only the measured dominant fallback family is
+# admitted. 54x66, stride-2, and channel-tail families remain on MLX until
+# independently measured.
+_CONV3D_SPATIAL_PAD_FAMILIES = {
+    (4, 108, 132, 512, 512),
+    (5, 108, 132, 512, 512),
+}
+
 
 def _roundup(x: int, m: int) -> int:
     return ((x + m - 1) // m) * m
@@ -308,6 +317,67 @@ def _restore_conv_out_dtype(result, orig_input_dtype, weight_dtype):
             return result.astype(mx.float32)
         return result.astype(orig_input_dtype)
     return result
+
+
+def _try_conv3d_spatial_pad_and_slice(input, weight, pad_6tuple):
+    """Run the measured SeedVR2 spatial-tail family through the MPP path.
+
+    The MPP kernel requires H/W divisible by 8. Zero-padding only the bottom
+    and right edges preserves a pad=1 convolution exactly for the original
+    output extent; slicing removes outputs belonging to the padded domain.
+
+    Default-off because the measurements are beta3-indicative. The public gate
+    can be revalidated and promoted independently on stable macOS.
+    """
+    if os.environ.get("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE") != "1":
+        return None
+    if (not hasattr(input, "shape") or len(input.shape) != 5
+            or not hasattr(weight, "shape") or len(weight.shape) != 5):
+        return None
+    B, T, H, W, C_in = input.shape
+    C_out = weight.shape[0]
+    if input.dtype != mx.float16 or weight.dtype != mx.float16:
+        return None
+    family = (int(T), int(H), int(W), int(C_in), int(C_out))
+    if family not in _CONV3D_SPATIAL_PAD_FAMILIES:
+        return None
+    if B != 1 or tuple(weight.shape[1:4]) != (3, 3, 3):
+        return None
+    if pad_6tuple != (0, 0, 1, 1, 1, 1):
+        return None
+    H_pad = _roundup(int(H), 8)
+    W_pad = _roundup(int(W), 8)
+    if H_pad == H and W_pad == W:
+        return None
+    try:
+        from mlx_mfa._ext import conv3d_nax_forward
+    except ImportError:
+        return None
+    try:
+        weight_dtype = weight.dtype
+        orig_dtype = input.dtype
+        x = input.astype(weight_dtype) if orig_dtype != weight_dtype else input
+        x = mx.pad(
+            x,
+            ((0, 0), (0, 0), (0, H_pad - H), (0, W_pad - W), (0, 0)),
+        )
+        out = conv3d_nax_forward(
+            x,
+            weight,
+            stride=(1, 1, 1),
+            padding=pad_6tuple,
+            dilation=(1, 1, 1),
+            chunk_M=0,
+        )
+        out = _restore_conv_out_dtype(out[:, :, :H, :W, :], orig_dtype, weight_dtype)
+        _record_hook_execution("conv3d_nax_spatial_pad_slice")
+        return out
+    except Exception as exc:
+        _record_hook_fallback(
+            "conv3d_nax_spatial_pad_slice",
+            f"unexpected runtime error: {type(exc).__name__}: {exc}",
+        )
+        return None
 
 
 def _try_conv3d_pad_and_slice(input, weight, pad_6tuple):
@@ -453,6 +523,11 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
     # NaN).  Previously only bf16 was gated, so small-channel fp16 reached
     # the broken legacy path and returned garbage.
     if not _conv3d_mpp_eligible(input, weight, pad_6tuple):
+        # Exact, independently measured SeedVR2 VAE family. This is evaluated
+        # before channel pad-and-slice because its only failing axis is H/W.
+        _spatial_ps = _try_conv3d_spatial_pad_and_slice(input, weight, pad_6tuple)
+        if _spatial_ps is not None:
+            return _spatial_ps
         # MLX-style pad-and-slice: if the ONLY reason for MPP-ineligibility is
         # channel alignment, pad C_in/C_out into the MPP envelope (K-tile-clean,
         # zero-filled) and use the NAX datapath instead of forfeiting it.  Keeps

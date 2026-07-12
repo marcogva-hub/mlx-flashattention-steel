@@ -61,6 +61,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_DISABLE_V6_BACKWARD",
     "MFA_DISABLE_V6_DENSE",
     "MFA_ENABLE_CONV3D_PAD_SLICE",  # opt-in conv3d pad-and-slice (NAX on channel-misaligned shapes; default off, β3-indicative)
+    "MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE",  # exact SeedVR2 512ch 108x132 spatial-tail probe; default off, β3-indicative
     "MFA_ENABLE_MACOS27_ROUTING",  # opt-in experimental macOS-27 M5+ routing (default off)
     "MFA_ENABLE_V3",
     "MFA_ENABLE_V34_BACKWARD",

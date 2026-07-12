@@ -34,8 +34,9 @@ def _read(p: Path) -> str:
 # routing lock; M5-gated — the NAX sparse kernel is M5+). 70 → 72: added
 # tests/test_qmm_nax_lock.py (expert V6 NAX qmm correctness + reject locks).
 # 72 -> 73: added tests/test_gna_nax_lock.py (expert GNA V6 NAX locks).
+# 73 -> 74: added the SeedVR2 VAE spatial pad-and-slice M5 correctness lock.
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 73
+_EXPECTED_M5_SKIP_SITES = 74
 
 
 def _count_m5_skip_sites() -> int:
