@@ -1,0 +1,493 @@
+{
+  "mlx_version": "0.31.2",
+  "sessions": 5,
+  "iters": 100,
+  "warmup": 10,
+  "tile_env": {
+    "MFA_GNA_NAX_BQ": null,
+    "MFA_GNA_NAX_BK": null,
+    "MFA_GNA_NAX_WM": null
+  },
+  "results": [
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999962054508,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.4086762497900054,
+      "mean_ms": 0.3657144180033356,
+      "min_ms": 0.2628250000998378,
+      "max_ms": 0.4286633402807638,
+      "samples_ms": [
+        0.4286633402807638,
+        0.40921000007074326,
+        0.4086762497900054,
+        0.31919749977532774,
+        0.2628250000998378
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0000000000000002,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.6167354201897979,
+      "mean_ms": 0.618204664089717,
+      "min_ms": 0.5983779102098197,
+      "max_ms": 0.6431183300446719,
+      "samples_ms": [
+        0.6431183300446719,
+        0.6122045801021159,
+        0.5983779102098197,
+        0.6167354201897979,
+        0.6205870799021795
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.9999999349871702,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.3984758397564292,
+      "mean_ms": 0.3986567499814555,
+      "min_ms": 0.3905566700268537,
+      "max_ms": 0.40632541000377387,
+      "samples_ms": [
+        0.40632541000377387,
+        0.3984758397564292,
+        0.39555708004627377,
+        0.402368750073947,
+        0.3905566700268537
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999924151903,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.37253874994348735,
+      "mean_ms": 0.3723262521671131,
+      "min_ms": 0.35774667048826814,
+      "max_ms": 0.3830645902780816,
+      "samples_ms": [
+        0.35774667048826814,
+        0.3776145802112296,
+        0.3706666699144989,
+        0.37253874994348735,
+        0.3830645902780816
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0000000000000002,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.6041516596451402,
+      "mean_ms": 0.6051996659953147,
+      "min_ms": 0.602509580203332,
+      "max_ms": 0.6093025003792718,
+      "samples_ms": [
+        0.6093025003792718,
+        0.6073458399623632,
+        0.602509580203332,
+        0.6041516596451402,
+        0.6026887497864664
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "fp16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.9999999258498916,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.5519874999299645,
+      "mean_ms": 0.5495923320995644,
+      "min_ms": 0.5391537502873689,
+      "max_ms": 0.5585479101864621,
+      "samples_ms": [
+        0.5585479101864621,
+        0.5519874999299645,
+        0.5562650004867464,
+        0.5420074996072799,
+        0.5391537502873689
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999696760244,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.26047791994642466,
+      "mean_ms": 0.26046741800382733,
+      "min_ms": 0.2600341697689146,
+      "max_ms": 0.26095083041582257,
+      "samples_ms": [
+        0.2600341697689146,
+        0.2606254199054092,
+        0.26047791994642466,
+        0.26095083041582257,
+        0.26024874998256564
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0000000000000002,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.6096254097064957,
+      "mean_ms": 0.6097570818383247,
+      "min_ms": 0.605558329843916,
+      "max_ms": 0.6147249997593462,
+      "samples_ms": [
+        0.60748916992452,
+        0.605558329843916,
+        0.6113874999573454,
+        0.6147249997593462,
+        0.6096254097064957
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "small",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        1,
+        7,
+        7
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.9999994334310303,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.3964425000594929,
+      "mean_ms": 0.39638366794679314,
+      "min_ms": 0.3917954198550433,
+      "max_ms": 0.4016379202948883,
+      "samples_ms": [
+        0.3995462495367974,
+        0.4016379202948883,
+        0.3917954198550433,
+        0.3964425000594929,
+        0.3924962499877438
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_nax",
+      "cos_vs_sdpa": 0.9999999435013535,
+      "which_binary": "direct _ext.mfa_gna_nax_forward",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.3701274999184534,
+      "mean_ms": 0.37129091611132026,
+      "min_ms": 0.3672520804684609,
+      "max_ms": 0.37713541998527944,
+      "samples_ms": [
+        0.3672520804684609,
+        0.367743750102818,
+        0.3741958300815895,
+        0.37713541998527944,
+        0.3701274999184534
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "sdpa_masked",
+      "cos_vs_sdpa": 1.0000000000000002,
+      "which_binary": "sdpa_masked",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.6183933297870681,
+      "mean_ms": 0.6195063318591565,
+      "min_ms": 0.6150324997724965,
+      "max_ms": 0.6280620797770098,
+      "samples_ms": [
+        0.6195608299458399,
+        0.6164829200133681,
+        0.6280620797770098,
+        0.6150324997724965,
+        0.6183933297870681
+      ]
+    },
+    {
+      "N": 4096,
+      "D": 128,
+      "dtype": "bf16",
+      "window": "large",
+      "seq_shape": [
+        4,
+        32,
+        32
+      ],
+      "window_size": [
+        3,
+        11,
+        11
+      ],
+      "stride": [
+        1,
+        1,
+        1
+      ],
+      "arm": "gna_steel",
+      "cos_vs_sdpa": 0.9999992890404094,
+      "which_binary": "gna_steel",
+      "tile_env": {
+        "MFA_GNA_NAX_BQ": null,
+        "MFA_GNA_NAX_BK": null,
+        "MFA_GNA_NAX_WM": null
+      },
+      "median_ms": 0.5512908304808661,
+      "mean_ms": 0.5515522501664236,
+      "min_ms": 0.5457491602282971,
+      "max_ms": 0.5559166701277718,
+      "samples_ms": [
+        0.5457491602282971,
+        0.5501287500374019,
+        0.5546758399577811,
+        0.5512908304808661,
+        0.5559166701277718
+      ]
+    }
+  ]
+}

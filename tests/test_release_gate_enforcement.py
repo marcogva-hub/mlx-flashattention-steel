@@ -36,9 +36,11 @@ def _read(p: Path) -> str:
 # 72 -> 73: added tests/test_gna_nax_lock.py (expert GNA V6 NAX locks).
 # 73 -> 75: added tests/test_ffn_nax_lock.py (expert linear/GELU correctness
 # and malformed-input locks). 75 -> 77: added tests/test_conv3d_lq_nax_lock.py
-# (direct LQ-envelope correctness and public non-routing locks).
+# (direct LQ-envelope correctness and public non-routing locks). 77 -> 78:
+# added tests/test_gna_range_precompute_lock.py (byte-identity lock for the
+# per-Q-tile range optimization).
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 77
+_EXPECTED_M5_SKIP_SITES = 78
 
 
 def _count_m5_skip_sites() -> int:
