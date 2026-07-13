@@ -1835,34 +1835,6 @@ static inline void assert_varlen_segment_kv(const mlx::core::array& cu_q,
   }
 }
 
-// STEEL's causal varlen kernel does not implement the lower-right clamp for
-// segments where Q is longer than K. The public wrapper diverts this regime to
-// per-segment MLX SDPA; keep the raw expert binding from reaching the silent-
-// wrong kernel if called directly.
-static inline void assert_varlen_causal_q_not_longer(
-    const mlx::core::array& cu_q, const mlx::core::array& cu_k,
-    bool causal, const char* entry) {
-  if (!causal || cu_q.size() < 2 || cu_k.size() < 2) return;
-  mlx::core::array cq = mlx::core::contiguous(cu_q);
-  mlx::core::array ck = mlx::core::contiguous(cu_k);
-  mlx::core::eval(cq); mlx::core::eval(ck);
-  const int32_t* pq = cq.data<int32_t>();
-  const int32_t* pk = ck.data<int32_t>();
-  const int nseg = static_cast<int>(cq.shape(0)) - 1;
-  for (int j = 0; j < nseg; ++j) {
-    const int q_len = pq[j + 1] - pq[j];
-    const int k_len = pk[j + 1] - pk[j];
-    if (q_len > k_len) {
-      throw std::invalid_argument(
-          std::string(entry) + ": causal q_len>k_len is unsupported by the "
-          "STEEL varlen expert path (segment " + std::to_string(j) +
-          ", q_len=" + std::to_string(q_len) + ", k_len=" +
-          std::to_string(k_len) + "). Use flash_attention_varlen, which "
-          "routes this regime to per-segment MLX SDPA.");
-    }
-  }
-}
-
 // Variant for paged varlen/tq (cu_q prefix sum + seq_lens_kv per-segment counts):
 static inline void assert_paged_varlen_segment_kv(const mlx::core::array& cu_q,
                                                   const mlx::core::array& seq_lens_kv,
@@ -2850,8 +2822,6 @@ std::pair<mlx::core::array, mlx::core::array> mfa_attention_varlen_forward(
   check_prefix_sum_bounds(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
   check_prefix_sum_bounds(cu_k, -1, "cu_seqlens_k", "MFA varlen", (int)k.shape(2));
   assert_varlen_segment_kv(cu_q, cu_k, "MFA varlen");  // per-segment zero-KV (ungated)
-  assert_varlen_causal_q_not_longer(
-      cu_q, cu_k, causal, "MFA varlen");
   if (!varlen_trust_metadata()) {
     check_prefix_sum_values(cu_q, (int)q.shape(2), "cu_seqlens_q", "MFA varlen");
     // cu_k: empty trailing KV segment / over-allocated K is legal (cu_k[-1] <=

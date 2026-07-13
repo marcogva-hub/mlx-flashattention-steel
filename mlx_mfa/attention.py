@@ -6684,9 +6684,9 @@ def _varlen_split_concat(
     """Per-sequence split → attention → concat.  Internal helper.
 
     ``force_sdpa`` is reserved for causal packed segments with ``q_len >
-    k_len``. The STEEL varlen kernel is wrong in that asymmetric regime, so
-    this correction path bypasses mlx-mfa routing and calls MLX SDPA with the
-    explicit mlx-mfa causal convention ``qL_off=max(0, kL-qL)``.
+    k_len``. This path keeps the public result independent from the expert
+    STEEL implementation and calls MLX SDPA with the explicit mlx-mfa causal
+    convention ``qL_off=max(0, kL-qL)``.
     """
     num_seqs = len(cu_q) - 1
     outputs = []
@@ -6849,12 +6849,10 @@ def flash_attention_varlen(
 
     D = q.shape[-1]
 
-    # The packed STEEL causal kernel is correct only when every segment has at
-    # least as many KV rows as Q rows. With q_len > k_len, the STEEL causal
-    # path is finite-but-wrong under the documented qL_off=max(0,kL-qL)
-    # convention. Route those segments through explicit-mask MLX SDPA instead.
-    # Keep block-mask behavior unchanged: its sparse per-segment path has a
-    # separate mask contract.
+    # Keep q_len > k_len on the explicit per-segment SDPA path. The packed
+    # STEEL expert now implements the same clamped upper-left contract, but
+    # the public split-concat path is the measured winner for this asymmetric
+    # regime. Keep block-mask behavior unchanged: it has a separate contract.
     causal_q_longer_than_k = causal and any(
         (cu_q[i + 1] - cu_q[i]) > (cu_k_list[i + 1] - cu_k_list[i])
         for i in range(num_seqs)

@@ -2562,24 +2562,25 @@ struct MFASteelVarlenParams {
   ss << "      }\n";
   ss << "    }\n\n";
 
-  // Causal mask
+  // Causal mask.  The public packed-varlen contract is the clamped
+  // upper-left convention: key j is visible when
+  //   j <= row + max(0, kL_local - qL_local).
+  // Do not use the lower-right/fully-masked-leading-row convention here.
   if (causal) {
-    ss << "    // Causal mask (local positions within sequence) — lower-right.\n";
-    ss << "    // CX-01: mirror the paged-varlen/dense qL_off so a segment with\n";
-    ss << "    // qL_local < kL_local uses lower-right alignment (query row r attends\n";
-    ss << "    // keys 0..r+(kL_local-qL_local)), matching SDPA and the dense/paged\n";
-    ss << "    // siblings.  Previously this was upper-left (silent-wrong for N_q<N_k).\n";
+    ss << "    // Causal mask: clamped upper-left public contract.\n";
+    ss << "    // qL_off=max(0,kL_local-qL_local); key j is visible iff j <= row.\n";
     ss << "    {\n";
-    ss << "      const int qL_off = (qL_local < kL_local) ? (kL_local - qL_local) : 0;\n";
+    ss << "      const int qL_off = max(0, kL_local - qL_local);\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
-    ss << "        const int row = qL_off + local_tile_id * MFA_BQ + (int)tm + (int)sm + i * 8;\n";
+    ss << "        const int causal_row = qL_off + local_tile_id * MFA_BQ\n";
+    ss << "                         + (int)tm + (int)sm + i * 8;\n";
     ss << "        STEEL_PRAGMA_UNROLL\n";
     ss << "        for (short j = 0; j < MFA_TK; j++) {\n";
     ss << "          const int col = kb * MFA_BK + (int)sn + j * 8;\n";
     ss << "          STEEL_PRAGMA_UNROLL\n";
     ss << "          for (short jj = 0; jj < 2; jj++) {\n";
-    ss << "            if (row < (col + jj))\n";
+    ss << "            if (causal_row < (col + jj))\n";
     ss << "              Stile.frag_at(i,j)[jj] = -INFINITY;\n";
     ss << "          }\n";
     ss << "        }\n";
@@ -2595,18 +2596,26 @@ struct MFASteelVarlenParams {
   ss << "      loader_v.load_unsafe();\n";
   ss << "    }\n\n";
 
-  // Online softmax update
+  // Online softmax update.  Keep -inf rows finite through the exp reduction:
+  // the public contract normally guarantees at least one visible key, but
+  // this guard makes the kernel safe for any future mask that creates an
+  // empty row.  Such a row is normalized as zero and its LSE remains -inf.
   ss << "    // Online softmax\n";
   ss << "    AccT new_max[MFA_ROWS_PT], factor[MFA_ROWS_PT];\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) new_max[i] = max_score[i];\n";
   ss << "    Stile.template row_reduce<MFAMaxOp>(new_max);\n";
-  ss << "    Stile.template row_bin_op<MFAExpSubOp>(new_max);\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
   ss << "    for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
-  ss << "      factor[i] = fast::exp2(max_score[i] - new_max[i]);\n";
-  ss << "      max_score[i] = new_max[i];\n";
+  ss << "      if (new_max[i] > max_score[i]) {\n";
+  ss << "        factor[i] = fast::exp2(max_score[i] - new_max[i]);\n";
+  ss << "        max_score[i] = new_max[i];\n";
+  ss << "      } else {\n";
+  ss << "        factor[i] = 1.0f;\n";
+  ss << "        new_max[i] = metal::isinf(max_score[i]) ? (AccT)0.0f : max_score[i];\n";
+  ss << "      }\n";
   ss << "    }\n";
+  ss << "    Stile.template row_bin_op<MFAExpSubOp>(new_max);\n";
   ss << "    AccT sum_tmp[MFA_ROWS_PT] = {0};\n";
   ss << "    Stile.template row_reduce<MFASumOp>(sum_tmp);\n";
   ss << "    STEEL_PRAGMA_UNROLL\n";
@@ -2639,6 +2648,10 @@ struct MFASteelVarlenParams {
   ss << "  } // end kb loop\n\n";
 
   // Normalize + store O
+  ss << "  STEEL_PRAGMA_UNROLL\n";
+  ss << "  for (short i = 0; i < MFA_ROWS_PT; i++) {\n";
+  ss << "    if (sum_score[i] == 0.0f) sum_score[i] = 1.0f;\n";
+  ss << "  }\n";
   ss << "  Otile.template row_bin_op<MFADivOp>(sum_score);\n";
   ss << "  threadgroup_barrier(mem_flags::mem_none);\n\n";
   ss << "  O += (long)(tm + sm) * MFA_BD + sn;\n";
