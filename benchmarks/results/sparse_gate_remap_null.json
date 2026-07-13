@@ -1,0 +1,708 @@
+{
+  "schema": "mlx-mfa.sparse-gate-remap.null.v1",
+  "phase": "null",
+  "ratio_direction": "A_median_ms / A_median_ms",
+  "decision_floor": null,
+  "method": {
+    "process": "fresh process per arm/order",
+    "sessions_per_process": 5,
+    "dispatches_per_sample": 20,
+    "orders": 2
+  },
+  "results": [
+    {
+      "id": "sw128_nc_fp16_b1_h1_n2048_d128",
+      "requested": {
+        "mask_kind": "sliding",
+        "window": 128,
+        "density": 0.15,
+        "causal": false,
+        "B": 1,
+        "H": 1,
+        "D": 128,
+        "dtype": "fp16",
+        "N": 2048
+      },
+      "orders": [
+        {
+          "order": 1,
+          "ratio": 1.0753266709837221
+        },
+        {
+          "order": 2,
+          "ratio": 1.0035210965336678
+        }
+      ],
+      "ratio_median": 1.0394238837586949,
+      "artifacts": [
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.1357421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 2048,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 1.0,
+                "baseline_cos_vs_fp32": 1.0,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7956812507472932,
+              "p95_ms": 0.8074283198220655,
+              "samples_ms": [
+                0.7802708481904119,
+                0.780950000626035,
+                0.807654150412418,
+                0.8065249974606559,
+                0.7956812507472932
+              ],
+              "n": 5
+            }
+          },
+          "order": 1,
+          "position": 1
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.1357421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 2048,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 1.0,
+                "baseline_cos_vs_fp32": 1.0,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7399437512503937,
+              "p95_ms": 0.7634166488423944,
+              "samples_ms": [
+                0.7657291484065354,
+                0.7394771004328504,
+                0.7541666505858302,
+                0.7317187497392297,
+                0.7399437512503937
+              ],
+              "n": 5
+            }
+          },
+          "order": 1,
+          "position": 2
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.1357421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 2048,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 1.0,
+                "baseline_cos_vs_fp32": 1.0,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.771287499810569,
+              "p95_ms": 0.7812283298699185,
+              "samples_ms": [
+                0.7789166498696432,
+                0.771287499810569,
+                0.728268749662675,
+                0.7818062498699874,
+                0.7684145995881408
+              ],
+              "n": 5
+            }
+          },
+          "order": 2,
+          "position": 1
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.1357421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 2048,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 1.0,
+                "baseline_cos_vs_fp32": 1.0,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7685812510317191,
+              "p95_ms": 0.7876850018510595,
+              "samples_ms": [
+                0.7448062504408881,
+                0.768650000100024,
+                0.7685812510317191,
+                0.7924437522888184,
+                0.736360449809581
+              ],
+              "n": 5
+            }
+          },
+          "order": 2,
+          "position": 2
+        }
+      ]
+    },
+    {
+      "id": "sw128_nc_fp16_b1_h1_n8192_d128",
+      "requested": {
+        "mask_kind": "sliding",
+        "window": 128,
+        "density": 0.15,
+        "causal": false,
+        "B": 1,
+        "H": 1,
+        "D": 128,
+        "dtype": "fp16",
+        "N": 8192
+      },
+      "orders": [
+        {
+          "order": 1,
+          "ratio": 0.9934788987370462
+        },
+        {
+          "order": 2,
+          "ratio": 0.996304238668456
+        }
+      ],
+      "ratio_median": 0.9948915687027511,
+      "artifacts": [
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.03485107421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 8192,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 0.9999998807907104,
+                "baseline_cos_vs_fp32": 0.9999998807907104,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7760167005471885,
+              "p95_ms": 0.8056450186995789,
+              "samples_ms": [
+                0.780258301529102,
+                0.7591395493363962,
+                0.7649458508240059,
+                0.8119916979921982,
+                0.7760167005471885
+              ],
+              "n": 5
+            }
+          },
+          "order": 1,
+          "position": 1
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.03485107421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 8192,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 0.9999998807907104,
+                "baseline_cos_vs_fp32": 0.9999998807907104,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7811104005668312,
+              "p95_ms": 0.7922358199721202,
+              "samples_ms": [
+                0.7811104005668312,
+                0.7937104004668072,
+                0.780950000626035,
+                0.7526875007897615,
+                0.7863374979933724
+              ],
+              "n": 5
+            }
+          },
+          "order": 1,
+          "position": 2
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.03485107421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 8192,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 0.9999998807907104,
+                "baseline_cos_vs_fp32": 0.9999998807907104,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7935895526316017,
+              "p95_ms": 0.7971166993957013,
+              "samples_ms": [
+                0.7691208476899192,
+                0.7974229491082951,
+                0.7521978986915201,
+                0.7958917005453259,
+                0.7935895526316017
+              ],
+              "n": 5
+            }
+          },
+          "order": 2,
+          "position": 1
+        },
+        {
+          "schema": "mlx-mfa.sparse-gate-remap.arm.v1",
+          "commit": "849e513f5aec4e019c0c09050e3a99221ba61cd7",
+          "mlx": "0.31.2",
+          "platform": "macOS-27.0-arm64-arm-64bit",
+          "method": {
+            "sessions": 5,
+            "warmups": 2,
+            "dispatches_per_sample": 20,
+            "process_isolation": "one fresh process per arm/order"
+          },
+          "row": {
+            "cell": {
+              "mask_kind": "sliding",
+              "window": 128,
+              "requested_density": null,
+              "actual_block_density": 0.03485107421875,
+              "causal": false,
+              "B": 1,
+              "H": 1,
+              "BH": 1,
+              "N": 8192,
+              "D": 128,
+              "dtype": "fp16"
+            },
+            "arm": "public",
+            "which_binary": {
+              "input_dtype": "mlx.core.float16",
+              "mask_dtype": "mlx.core.bool",
+              "public": {
+                "trace": [
+                  [
+                    "v6nax_sparse",
+                    "sparse_attention_nax BT=32"
+                  ]
+                ],
+                "terminal": [
+                  "v6nax_sparse",
+                  "sparse_attention_nax BT=32"
+                ]
+              },
+              "baseline": {
+                "trace": [
+                  [
+                    "sdpa",
+                    "backend=sdpa forced (plain)"
+                  ]
+                ],
+                "terminal": [
+                  "sdpa",
+                  "backend=sdpa forced (plain)"
+                ],
+                "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+              },
+              "correction": {
+                "public_cos_vs_fp32": 0.9999998807907104,
+                "baseline_cos_vs_fp32": 0.9999998807907104,
+                "public_finite": true,
+                "baseline_finite": true,
+                "public_run_twice_max_abs": 0.0,
+                "public_vs_baseline_max_abs": 0.000244140625
+              }
+            },
+            "timing": {
+              "median_ms": 0.7965333497850224,
+              "p95_ms": 0.8025971107417718,
+              "samples_ms": [
+                0.778531251125969,
+                0.7979937508935109,
+                0.7942979485960677,
+                0.7965333497850224,
+                0.803747950703837
+              ],
+              "n": 5
+            }
+          },
+          "order": 2,
+          "position": 2
+        }
+      ]
+    }
+  ],
+  "null_deviations": [
+    0.07532667098372214,
+    0.0035210965336678335,
+    0.006521101262953799,
+    0.003695761331544034
+  ],
+  "recommended_floor": 0.07532667098372214,
+  "floor_rule": "conservative max abs(A/A-1) across both sentinels and both orders"
+}

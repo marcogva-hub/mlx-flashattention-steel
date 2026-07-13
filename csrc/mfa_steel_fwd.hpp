@@ -123,6 +123,9 @@ SteelBlockConfig select_steel_block_config(int head_dim, bool is_low_prec,
 /// The source defines the kernel function "mlx_mfa_attention".
 std::string generate_steel_forward_source(const ShaderCache::KernelKey& key);
 
+/// Snapshot the dev-only MFA_STEEL_MSL selector into the ShaderCache key.
+uint8_t steel_msl_mode_from_env();
+
 // ── Flash Decoding (Split-KV) ─────────────────────────────────────────────
 //
 // Flash Decoding improves GPU utilization during autoregressive decode (N_q<=4)

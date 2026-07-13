@@ -23,6 +23,7 @@
 #include <mlx/utils.h>
 
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
@@ -39,6 +40,13 @@ namespace {
 constexpr int kV6NAXSparseBQ = 32;
 constexpr int kV6NAXSparseBK = 32;
 constexpr int kV6NAXSparseWM = 2;
+
+std::string sparse_scale_cache_suffix(float scale) {
+  static_assert(sizeof(uint32_t) == sizeof(float));
+  uint32_t bits = 0;
+  std::memcpy(&bits, &scale, sizeof(bits));
+  return "_S" + std::to_string(bits);
+}
 
 const std::string SPARSE_SCALAR_HEADER = R"(
 #include <metal_stdlib>
@@ -1224,7 +1232,7 @@ mlx::core::array sparse_attention_forward(
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
       "_M" + std::to_string(mask_ndim) +
-      (causal ? "_c" : "_nc");
+      (causal ? "_c" : "_nc") + sparse_scale_cache_suffix(scale);
   if (structured_window_probe) {
     name += "_structured_window_W" + std::to_string(structured_window_size);
   }
@@ -1404,7 +1412,8 @@ sparse_attention_forward_with_lse(
         std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
         "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
         std::to_string(D) + "_BT" + std::to_string(block_tile) +
-        "_M" + std::to_string(mask_ndim) + (causal ? "_c" : "_nc");
+        "_M" + std::to_string(mask_ndim) + (causal ? "_c" : "_nc") +
+        sparse_scale_cache_suffix(scale);
 
     std::string source = sparse_kernel_source_v6nax(
         B, Hq, Hk, qL, kL, D, block_tile, NQ, NK, scale,
@@ -1439,7 +1448,7 @@ sparse_attention_forward_with_lse(
       "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
       "_M" + std::to_string(mask_ndim) +
-      (causal ? "_c" : "_nc");
+      (causal ? "_c" : "_nc") + sparse_scale_cache_suffix(scale);
 
   std::string source = sparse_scalar_fallback_source(B, Hq, Hk, qL, kL, D, block_tile,
                                                       NQ, NK, scale, dtype_str,

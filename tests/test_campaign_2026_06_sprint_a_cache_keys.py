@@ -161,6 +161,22 @@ class TestDispatchTableRuntimeOverride:
         finally:
             os.unlink(path)
 
+    def test_failed_table_retries_after_mtime_change(self, monkeypatch, tmp_path):
+        from mlx_mfa import dispatch_policy as dp
+
+        path = tmp_path / "dispatch.json"
+        path.write_text("{not-json")
+        monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(path))
+        assert dp._load_custom_table() is None
+
+        prior_mtime = path.stat().st_mtime_ns
+        path.write_text(json.dumps({"thresholds": [
+            {"D": 128, "causal": False, "min_N": 4096},
+        ]}))
+        os.utime(path, ns=(prior_mtime + 1_000_000, prior_mtime + 1_000_000))
+        table = dp._load_custom_table()
+        assert table is not None and table[(128, False)] == 4096
+
     def test_dispatch_cache_key_includes_table_path(self):
         import inspect
         import mlx_mfa.attention as attn

@@ -1043,6 +1043,7 @@ void MFAttention::eval_gpu(
     params_.window_left >= 0 || params_.window_right >= 0, // sliding window variant
     dtype_code
   };
+  key.steel_msl_mode = steel_msl_mode_from_env();
 
   void* raw_pipeline = ShaderCache::get().get_or_compile(key, d.mtl_device());
   auto* pipeline = reinterpret_cast<MTL::ComputePipelineState*>(raw_pipeline);

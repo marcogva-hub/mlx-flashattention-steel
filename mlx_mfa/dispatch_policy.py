@@ -193,9 +193,10 @@ _NATIVE_BWD_MIN_N: dict[tuple[int, str], int] = {
 #     decode regimes at N_cache=4096.
 # Auto-promotion is intentionally strict to avoid broad regressions.
 
-# Cached custom dispatch table (loaded once from MLX_MFA_DISPATCH_TABLE env var).
+# Cached custom dispatch table, invalidated by path or file-mtime changes.
 _custom_thresholds: Optional[dict[tuple[int, bool], int]] = None
 _custom_table_path_loaded: str = "\x00unloaded"  # sentinel != any real path incl. ''
+_custom_table_mtime_ns_loaded: Optional[int] = None
 
 
 def _dispatch_dtype_key(dtype) -> Optional[str]:
@@ -378,14 +379,22 @@ def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
     env var as a RUNTIME override, but a process-lifetime ``_custom_table_loaded``
     flag previously froze the first-read value forever — later changes to
     the env var were silently ignored.  The cache is now keyed on the
-    path value: changing (or clearing) MLX_MFA_DISPATCH_TABLE mid-process
-    reloads (or drops) the table, honoring the documented contract.
+    path and file mtime: changing/clearing the env var or repairing the same
+    file mid-process reloads (or drops) the table.
     """
-    global _custom_thresholds, _custom_table_path_loaded
+    global _custom_thresholds, _custom_table_path_loaded, _custom_table_mtime_ns_loaded
     path = os.environ.get("MLX_MFA_DISPATCH_TABLE", "")
-    if path == _custom_table_path_loaded:
+    mtime_ns: Optional[int] = None
+    if path:
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns
+        except OSError:
+            pass  # The open below emits the contextual warning.
+    if (path == _custom_table_path_loaded
+            and mtime_ns == _custom_table_mtime_ns_loaded):
         return _custom_thresholds  # includes the unset/"" disabled case
     _custom_table_path_loaded = path
+    _custom_table_mtime_ns_loaded = mtime_ns
     _custom_thresholds = None
     if not path:
         return None

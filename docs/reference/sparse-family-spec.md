@@ -35,6 +35,14 @@ mask-ndim 2/3/4; GQA `Hq%Hk==0`. V2 eligibility (C++ `sparse_attention_forward`)
 **bf16 now routes to V2** (the old `is_f16`-only gate was lifted — gotcha 4 fix; previously bf16 silently
 fell to the ~50× slower V1 scalar). [V — `csrc/mfa_sparse_attention.cpp:1046-1054`]
 
+**Mask dtype contract (path-dependent, documented current behavior):** callers should
+provide a boolean block mask. The direct V6NAX entries pass it to C++, where non-`bool`
+is rejected. The residual STEEL path converts accepted masks to contiguous `uint8`, and
+the SDPA fallback expands truth values into an additive bias; on those fallback paths
+zero means inactive and nonzero means active. Sparse-backward conversion also casts to
+`bool`. Numeric-mask acceptance by a fallback is therefore not a portable V6NAX
+contract. [V — `csrc/mfa_sparse_attention.cpp`, `mlx_mfa/attention.py`]
+
 ## 2. The mask machinery
 
 The built-in mask-makers derive their block size from `masks.py::_bq_bk(D)`, which since **Phase F**
