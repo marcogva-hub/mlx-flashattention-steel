@@ -94,7 +94,7 @@ on my work!
 The foreword above is the author's historical account. The remainder of this
 page describes the current code and its executable routing contracts.
 
-Current version: **2.61.0**
+Current version: **2.62.0**
 
 ## What the package provides
 

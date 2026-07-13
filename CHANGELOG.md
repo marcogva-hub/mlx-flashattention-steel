@@ -2,7 +2,7 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased]
+## [2.62.0] — 2026-07-13
 
 Version, tag and publication are reserved for the maintainer.
 
