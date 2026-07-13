@@ -124,6 +124,8 @@ AUDITED_RAW = {
     "v6_nax_backward_query",                # R16 (added dtype + lse/d_vec f32)
     "v6_nax_backward_kv",                   # R16
     "v6_nax_quantized_matmul",              # Op-K qmm NAX expert surface
+    "v6_nax_linear",                        # Op-FFN expert oracle + binary locks
+    "v6_nax_varlen_forward",                # packed-varlen oracle/error/tile locks
 }
 
 # CX-R10-01 (volet N): explicit review-set for HELPER exports that the property
