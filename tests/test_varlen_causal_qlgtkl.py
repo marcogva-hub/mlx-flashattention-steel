@@ -94,13 +94,53 @@ def test_causal_q_longer_than_k_forces_per_segment_sdpa(monkeypatch, dtype):
         "varlen_split_concat", "varlen_sdpa", "varlen_sdpa"
     ]
     assert _cos(out, ref) >= 0.999
-    # Compare the first q_len-k_len rows separately so a global cosine cannot
-    # hide the asymmetric causal edge that STEEL handled incorrectly.
+    # Compare the asymmetric leading rows separately so a global cosine cannot
+    # hide a contract mismatch at the qL>kL edge.
     for qs, qe, q_len, k_len in zip(
         q_prefix[:-1], q_prefix[1:], q_lengths, k_lengths
     ):
         leading = q_len - k_len
         assert leading > 0
+        actual = out[:, :, qs : qs + leading]
+        expected = ref[:, :, qs : qs + leading]
+        tolerance = 5e-3 if dtype == mx.float16 else 1e-2
+        assert float(mx.max(mx.abs(actual.astype(mx.float32) - expected))) < tolerance
+
+
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize(
+    "q_lengths,k_lengths,hq,hk,d",
+    [
+        ([7, 65], [3, 33], 4, 2, 64),
+        ([63, 64, 7], [1, 33, 3], 8, 1, 64),
+        ([1, 33, 65], [1, 7, 31], 4, 2, 128),
+    ],
+)
+def test_expert_steel_causal_q_longer_than_k_matches_public_contract(
+    dtype, q_lengths, k_lengths, hq, hk, d
+):
+    """The raw STEEL surface must implement clamped upper-left qL>kL."""
+    q_prefix = _prefix(q_lengths)
+    k_prefix = _prefix(k_lengths)
+    q, k, v = _inputs(
+        dtype, q_lengths, k_lengths, hq=hq, hk=hk, d=d
+    )
+    cu_q = mx.array(q_prefix, dtype=mx.int32)
+    cu_k = mx.array(k_prefix, dtype=mx.int32)
+    scale = 1.0 / math.sqrt(d)
+    out, lse = _ext.mfa_attention_varlen_forward(
+        q, k, v, cu_q, cu_k, _tile_offsets(q_lengths), scale, True
+    )
+    ref = _per_segment_fp32_oracle(q, k, v, q_prefix, k_prefix, scale)
+    mx.eval(out, lse, ref)
+
+    assert _cos(out, ref) >= 0.999
+    assert bool(mx.all(mx.isfinite(out)).item())
+    assert bool(mx.all(mx.isfinite(lse)).item())
+    for qs, qe, q_len, k_len in zip(
+        q_prefix[:-1], q_prefix[1:], q_lengths, k_lengths
+    ):
+        leading = min(q_len, max(1, q_len - k_len))
         actual = out[:, :, qs : qs + leading]
         expected = ref[:, :, qs : qs + leading]
         tolerance = 5e-3 if dtype == mx.float16 else 1e-2
