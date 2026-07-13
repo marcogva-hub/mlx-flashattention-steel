@@ -2005,7 +2005,10 @@ def get_supported_configs() -> dict:
         "dropout":              True,   # SDPA fallback only
         "return_lse":           True,
         # --- backward ---
-        "native_backward":      "ext",  # STEEL backward kernels active for f16/bf16 D≤512
+        # The extension contains legacy STEEL backward code for D<=512, but
+        # public auto D=256/D=512 remains SDPA-backed; this is not V6 NAX
+        # coverage.  D=512 requires an explicit legacy force path if used.
+        "native_backward":      "ext",
         "sparse_backward":      True,   # tiled FA-2 sparse backward
         # --- hardware routing ---
         "m3_routing":           True,   # M3+ block config (gen ≥ 15)

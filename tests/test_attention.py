@@ -444,7 +444,7 @@ class TestPublicAPI:
         assert features["causal"] is True
         assert features["gqa"] is True
         assert features["d512"] is True
-        assert features["native_backward"] == "ext"  # STEEL bwd active for f16/bf16 D≤512
+        assert features["native_backward"] == "ext"  # extension code exists; auto D512 stays SDPA
         # kernel_types
         ext = cfg["extension_available"]
         assert cfg["kernel_types"] == (16 if ext else 0), (
@@ -7412,8 +7412,13 @@ class TestPagedFlashDecode:
 # ============================================================================
 
 @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension required")
-class TestD512Forward:
-    """STEEL forward kernel with D=512 (d_split path: 4×BD_HALF=128 chunks)."""
+class TestD512DelegatesToSDPA:
+    """D=512 public correctness tests for the intentional SDPA delegation.
+
+    D=512 is outside the V6 NAX expert binding.  The legacy STEEL D-split
+    implementation is only reachable through an explicit force path; the
+    default public route is SDPA and every test below locks that fact.
+    """
 
     TOL = 2e-2  # f16/bf16 tolerance
 
@@ -7421,6 +7426,40 @@ class TestD512Forward:
         import mlx.core.fast as fast
         mask = "causal" if causal else None
         return fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    def _public_sdpa(self, q, k, v, scale, causal):
+        from mlx_mfa import _dispatch_trace as dtrace
+        with dtrace.capture() as trace:
+            out = flash_attention(q, k, v, scale=scale, causal=causal)
+            mx.eval(out)
+            mx.synchronize()
+        terminal = [item for item in trace if not item[1].startswith("[reentrant]")]
+        assert terminal and terminal[-1][0] == "sdpa", (
+            f"D=512 must delegate publicly to SDPA, got trace={trace}"
+        )
+        assert not any(item[0].startswith("mfa") or item[0].startswith("v6")
+                       for item in terminal), trace
+        return out
+
+    def test_expert_v6_nax_rejects_d512(self):
+        """The V6 NAX expert binding rejects unsupported D=512 explicitly."""
+        from mlx_mfa import _ext
+        q = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        k = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        v = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        scale = float(512 ** -0.5)
+        with pytest.raises(RuntimeError, match=r"V6: D must be 64, 128, or expert-only 256"):
+            _ext.v6_nax_forward(q, k, v, False, True, scale)
+
+    def test_expert_mfa_lse_rejects_d512(self):
+        """The legacy expert MFA binding also rejects D=512, without fallback."""
+        from mlx_mfa import _ext
+        q = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        k = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        v = mx.zeros((1, 1, 8, 512), dtype=mx.float16)
+        scale = float(512 ** -0.5)
+        with pytest.raises(ValueError, match=r"mfa_forward_with_lse: head_dim must be 64, 128, or 256"):
+            _ext.mfa_forward_with_lse(q, k, v, scale, False)
 
     @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
     def test_forward_causal(self, dtype):
@@ -7431,7 +7470,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H, N, D]).astype(dtype)
         v = mx.random.normal([B, H, N, D]).astype(dtype)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=True)
+        out = self._public_sdpa(q, k, v, scale, causal=True)
         ref = self._ref(q, k, v, scale, causal=True)
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
@@ -7446,7 +7485,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H, N, D]).astype(dtype)
         v = mx.random.normal([B, H, N, D]).astype(dtype)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._public_sdpa(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
@@ -7460,7 +7499,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H, N, D]).astype(mx.float16)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=True)
+        out = self._public_sdpa(q, k, v, scale, causal=True)
         ref = self._ref(q, k, v, scale, causal=True)
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
@@ -7474,7 +7513,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H, N, D]).astype(mx.float16)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=True)
+        out = self._public_sdpa(q, k, v, scale, causal=True)
         ref = self._ref(q, k, v, scale, causal=True)
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
@@ -7488,7 +7527,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=True)
+        out = self._public_sdpa(q, k, v, scale, causal=True)
         k_exp = mx.repeat(k, H_q // H_kv, axis=1)
         v_exp = mx.repeat(v, H_q // H_kv, axis=1)
         ref = self._ref(q, k_exp, v_exp, scale, causal=True)
@@ -7504,7 +7543,7 @@ class TestD512Forward:
         k = mx.random.normal([B, H, S, D]).astype(mx.float16)
         v = mx.random.normal([B, H, S, D]).astype(mx.float16)
         scale = float(D ** -0.5)
-        out = flash_attention(q, k, v, scale=scale, causal=False)
+        out = self._public_sdpa(q, k, v, scale, causal=False)
         ref = self._ref(q, k, v, scale, causal=False)
         mx.eval(out, ref)
         err = float(mx.max(mx.abs(out - ref)))
@@ -7517,7 +7556,7 @@ class TestD512Forward:
 
 @pytest.mark.skipif(not is_mfa_available(), reason="MFA extension required")
 class TestD512Backward:
-    """Gradient correctness for D=512 STEEL backward kernels."""
+    """Gradient correctness for the public D=512 SDPA delegation."""
 
     TOL_F16  = 5e-2
     TOL_BF16 = 1e-1
@@ -7538,11 +7577,19 @@ class TestD512Backward:
         _, grads = mx.vjp(fn, [q, k, v], [co])
         return grads
 
-    def _mfa_bwd(self, q, k, v, scale, causal):
-        co = mx.ones_like(flash_attention(q, k, v, scale=scale, causal=causal))
-        _, grads = mx.vjp(
-            lambda q, k, v: flash_attention(q, k, v, scale=scale, causal=causal),
-            [q, k, v], [co]
+    def _public_sdpa_bwd(self, q, k, v, scale, causal):
+        from mlx_mfa import _dispatch_trace as dtrace
+        with dtrace.capture() as trace:
+            co = mx.ones_like(flash_attention(q, k, v, scale=scale, causal=causal))
+            _, grads = mx.vjp(
+                lambda q, k, v: flash_attention(q, k, v, scale=scale, causal=causal),
+                [q, k, v], [co]
+            )
+            mx.eval(*grads)
+            mx.synchronize()
+        terminal = [item for item in trace if not item[1].startswith("[reentrant]")]
+        assert terminal and terminal[-1][0] == "sdpa", (
+            f"D=512 backward must delegate publicly to SDPA, got trace={trace}"
         )
         return grads
 
@@ -7555,7 +7602,7 @@ class TestD512Backward:
         q = mx.random.normal([B, H, N, D]).astype(dtype)
         k = mx.random.normal([B, H, N, D]).astype(dtype)
         v = mx.random.normal([B, H, N, D]).astype(dtype)
-        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=True)
+        dq_m, dk_m, dv_m = self._public_sdpa_bwd(q, k, v, scale, causal=True)
         dq_r, dk_r, dv_r = self._ref_bwd(q, k, v, scale, causal=True)
         mx.eval(dq_m, dk_m, dv_m, dq_r, dk_r, dv_r)
         tol = self.TOL_F16 if dtype == mx.float16 else self.TOL_BF16
@@ -7572,7 +7619,7 @@ class TestD512Backward:
         q = mx.random.normal([B, H, N, D]).astype(mx.float16)
         k = mx.random.normal([B, H, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H, N, D]).astype(mx.float16)
-        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=False)
+        dq_m, dk_m, dv_m = self._public_sdpa_bwd(q, k, v, scale, causal=False)
         dq_r, dk_r, dv_r = self._ref_bwd(q, k, v, scale, causal=False)
         mx.eval(dq_m, dk_m, dv_m, dq_r, dk_r, dv_r)
         def err(a, b): return float(mx.max(mx.abs(a.astype(mx.float32) - b.astype(mx.float32))))
@@ -7588,7 +7635,7 @@ class TestD512Backward:
         q = mx.random.normal([B, H_q, N, D]).astype(mx.float16)
         k = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H_kv, N, D]).astype(mx.float16)
-        dq_m, dk_m, dv_m = self._mfa_bwd(q, k, v, scale, causal=True)
+        dq_m, dk_m, dv_m = self._public_sdpa_bwd(q, k, v, scale, causal=True)
         mx.eval(dq_m, dk_m, dv_m)
         assert dq_m.shape == q.shape, f"dQ shape mismatch {dq_m.shape} vs {q.shape}"
         assert dk_m.shape == k.shape, f"dK shape mismatch {dk_m.shape} vs {k.shape}"
@@ -7599,6 +7646,7 @@ class TestD512Backward:
 
     def test_backward_value_and_grad(self):
         """D=512 value_and_grad works end-to-end."""
+        from mlx_mfa import _dispatch_trace as dtrace
         mx.random.seed(13)
         B, H, N, D = 1, 2, 64, 512
         scale = float(D ** -0.5)
@@ -7610,8 +7658,14 @@ class TestD512Backward:
             return mx.mean(flash_attention(q, k, v, scale=scale, causal=True))
 
         val_and_grad = mx.value_and_grad(loss)
-        loss_val, grads = val_and_grad(q, k, v)
-        mx.eval(loss_val, *grads)
+        with dtrace.capture() as trace:
+            loss_val, grads = val_and_grad(q, k, v)
+            mx.eval(loss_val, *grads)
+            mx.synchronize()
+        terminal = [item for item in trace if not item[1].startswith("[reentrant]")]
+        assert terminal and terminal[-1][0] == "sdpa", (
+            f"D=512 value_and_grad must delegate publicly to SDPA, got trace={trace}"
+        )
         assert mx.isfinite(loss_val).item(), "loss is not finite"
         assert all(mx.all(mx.isfinite(g)).item() for g in grads), "grads have non-finite values"
 
