@@ -1,8 +1,9 @@
 """Central env-knob registry (Lot-1 B1, additive — 2026, off master 7831544).
 
 The canonical enumeration of every ``MFA_*`` / ``MLX_MFA_*`` env var the library
-reads. This module is **additive and non-invasive**: it does NOT change how any
-knob is read or its default — it only provides a typo/ghost-knob check.
+reads. Boolean knobs use the strict parser in this module: only ``"0"`` and
+``"1"`` are accepted. This removes the former mix of presence-based,
+``== "1"``, and truthiness semantics across public routes.
 
 ``validate_env(strict=...)`` warns (never raises) on an ``MFA_*`` / ``MLX_MFA_*``
 var present in the environment but absent from ``KNOWN_KNOBS`` — a likely typo
@@ -10,8 +11,7 @@ var present in the environment but absent from ``KNOWN_KNOBS`` — a likely typo
 silently no-op. Gated behind ``MFA_KNOB_STRICT=1`` (OFF by default) so a knob
 missing from this list can never disrupt an existing setup.
 
-Full migration of every read through typed ``KnobDef`` (type/default validation)
-is a deliberate follow-up; the enumeration below is the foundation. The
+Non-boolean numeric/string knobs retain their existing typed readers. The
 C++-side knobs are listed for completeness (read in csrc/, not via this module).
 """
 from __future__ import annotations
@@ -173,6 +173,73 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MLX_MFA_VERBOSE_DISPATCH",
 })
 
+# Live expert/research knobs added after the original registry snapshot.
+KNOWN_KNOBS = KNOWN_KNOBS | frozenset({
+    "MFA_FFN_NAX_BK", "MFA_FFN_NAX_BM", "MFA_FFN_NAX_BN",
+    "MFA_FFN_NAX_WM", "MFA_FFN_NAX_WN",
+    "MFA_GNA_NAX_BK", "MFA_GNA_NAX_BQ", "MFA_GNA_NAX_PRECOMPUTE_RANGE",
+    "MFA_GNA_NAX_SWIZZLE_LOG", "MFA_GNA_NAX_WM", "MFA_GNA_NAX_DUMP_PATH",
+    "MFA_QMM_NAX_BK", "MFA_QMM_NAX_BM", "MFA_QMM_NAX_BN",
+    "MFA_QMM_NAX_WM", "MFA_QMM_NAX_WN",
+    "MFA_STEEL_MSL", "MFA_V6_NAX_D_SUBTILE",
+})
+
+# Canonical boolean schema. Deprecated V34 aliases are resolved by the alias
+# layer and validated under their canonical name.
+BOOL_KNOBS: frozenset[str] = frozenset({
+    "MFA_CONV_NAX_NO_FAST_PATH", "MFA_CONV_NAX_USE_PYTHON_LEGACY",
+    "MFA_DEBUG_SHADERS",
+    "MFA_DISABLE_ASYNC", "MFA_DISABLE_AUTO_HOOKS", "MFA_DISABLE_CONV3D_MPP",
+    "MFA_DISABLE_GNA_NATIVE", "MFA_DISABLE_ROPE_NAX", "MFA_DISABLE_SDPA_ROUTE",
+    "MFA_DISABLE_TOPK_BISECT", "MFA_DISABLE_TOPK_NAX",
+    "MFA_DISABLE_TQ_DECODE_SDPA", "MFA_DISABLE_V2", "MFA_DISABLE_V3",
+    "MFA_DISABLE_V6_BACKWARD", "MFA_DISABLE_V6_DENSE",
+    "MFA_ENABLE_CONV3D_PAD_SLICE", "MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE",
+    "MFA_ENABLE_MACOS27_ROUTING", "MFA_ENABLE_V3", "MFA_ENABLE_V6_BACKWARD",
+    "MFA_ENABLE_VARLEN_NAX", "MFA_FORCE_D256_PATH", "MFA_FORCE_D512_PATH",
+    "MFA_FORCE_SAGE_DECODE", "MFA_FORCE_SDPA_ROUTE", "MFA_FORCE_SPLITK",
+    "MFA_FORCE_V2", "MFA_GNA_NAX_PRECOMPUTE_RANGE", "MFA_HOOK_VERBOSE",
+    "MFA_IR_INVESTIGATE", "MFA_KNOB_STRICT", "MFA_NO_PADDING",
+    "MFA_PAGED_TRUST_INDICES", "MFA_REQUIRE_NAX", "MFA_SILENCE_NAX_WARNING",
+    "MFA_UNSAFE_D128_SPARSE", "MFA_V2_BQ64", "MFA_V6BWD_USE_FUSED",
+    "MFA_V6BWD_DUMP_SOURCE", "MFA_V6BWDF_DUMP_SOURCE",
+    "MFA_V6_BNHD_LEGACY", "MFA_V6_BWD_SPARSE_NATIVE", "MFA_V6_BYPASS_TGP",
+    "MFA_V6_DUMP_SOURCE",
+    "MFA_V6_FORCE_DYNAMIC_K", "MFA_V6_NAX_SINGLE_OTILE",
+    "MFA_V6_RELAXED_PRECISION", "MFA_V6_SENTINEL_FILL", "MFA_V6_USE_NAX",
+    "MFA_VARLEN_TRUST_METADATA", "MLX_MFA_VERBOSE_DISPATCH",
+})
+
+# Boolean members of ``_env_aliases.V6_ENV_ALIAS_MAP``. Keep this local set
+# dependency-free: _env_aliases imports parse_bool_value from this module.
+# Runtime alias reads already use the strict parser; validate_env must inspect
+# the deprecated spelling too so observability matches execution.
+DEPRECATED_BOOL_ALIASES: frozenset[str] = frozenset({
+    "MFA_DISABLE_V34_BACKWARD", "MFA_ENABLE_V34_BACKWARD",
+    "MFA_V34_BWD_SPARSE_NATIVE", "MFA_V34_DUMP_SOURCE",
+    "MFA_V34BWDF_DUMP_SOURCE", "MFA_V34BWD_DUMP_SOURCE",
+    "MFA_V34BWD_USE_FUSED", "MFA_V6_USE_V34",
+})
+
+
+def parse_bool_value(
+    name: str, raw: str | None, *, default: bool | None = False
+) -> bool | None:
+    """Parse one MFA boolean with the repository-wide ``0``/``1`` contract."""
+    if raw is None:
+        return default
+    if raw not in {"0", "1"}:
+        raise ValueError(
+            f"[mlx-mfa] boolean knob {name} must be '0' or '1'; got {raw!r}.")
+    return raw == "1"
+
+
+def get_bool_env(name: str, *, default: bool | None = False) -> bool | None:
+    """Read and strictly parse one registered boolean environment knob."""
+    if name not in BOOL_KNOBS:
+        raise KeyError(f"{name} is not registered as a boolean MFA knob")
+    return parse_bool_value(name, os.environ.get(name), default=default)
+
 # C++-side knobs (read in csrc/, documented here for completeness; not validated
 # by this module since they are read in the extension, not Python).
 CPP_KNOBS: frozenset[str] = frozenset({
@@ -227,16 +294,16 @@ PREFIX_KNOBS: tuple[str, ...] = (
 
 
 def validate_env(strict: bool | None = None) -> list[str]:
-    """Warn on environment ``MFA_*``/``MLX_MFA_*`` vars not in KNOWN_KNOBS.
+    """Warn on unknown/removed knobs and invalid known boolean values.
 
-    Returns the list of unrecognized names. No-op (returns []) unless
+    Returns the names that are unknown, removed, or invalid. No-op unless
     ``strict`` is True or ``MFA_KNOB_STRICT=1`` — so a knob missing from the
     registry never disrupts an existing setup. Never raises (RULE 8: loud but
     non-fatal for an observability helper). Runtime-templated families
     (``PREFIX_KNOBS``) are matched by prefix to avoid false positives.
     """
     if strict is None:
-        strict = os.environ.get("MFA_KNOB_STRICT") == "1"
+        strict = bool(get_bool_env("MFA_KNOB_STRICT"))
     if not strict:
         return []
     known = KNOWN_KNOBS | CPP_KNOBS
@@ -251,6 +318,10 @@ def validate_env(strict: bool | None = None) -> list[str]:
     # rather than reading it as a typo.
     removed = sorted(k for k in env_mfa if k in REMOVED_KNOBS)
     unknown = sorted(k for k in env_mfa if k not in REMOVED_KNOBS)
+    invalid_values = sorted(
+        k for k in BOOL_KNOBS | DEPRECATED_BOOL_ALIASES
+        if k in os.environ and os.environ[k] not in {"0", "1"}
+    )
     for k in removed:
         warnings.warn(
             f"[mlx-mfa] knob {k!r} was REMOVED — it has no effect "
@@ -259,4 +330,9 @@ def validate_env(strict: bool | None = None) -> list[str]:
         warnings.warn(
             f"[mlx-mfa] unrecognized knob {k!r} (not in the registry) — "
             f"possible typo; it will have no effect.", RuntimeWarning, stacklevel=2)
-    return removed + unknown
+    for k in invalid_values:
+        warnings.warn(
+            f"[mlx-mfa] boolean knob {k!r} has invalid value "
+            f"{os.environ[k]!r}; expected exactly '0' or '1'.",
+            RuntimeWarning, stacklevel=2)
+    return removed + unknown + invalid_values

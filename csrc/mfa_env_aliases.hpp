@@ -20,6 +20,7 @@
 /// New-takes-precedence makes a both-set state deterministic and quiet.
 
 #pragma once
+#include "mfa_bool_env.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -97,6 +98,12 @@ inline const char* getenv_aliased(const char* new_name) {
     }
   }
   return nullptr;
+}
+
+inline bool get_bool_env_aliased(const char* new_name,
+                                 bool default_value = false) {
+  const char* value = getenv_aliased(new_name);
+  return value ? parse_bool_env_value(new_name, value) : default_value;
 }
 
 }  // namespace mlx_mfa

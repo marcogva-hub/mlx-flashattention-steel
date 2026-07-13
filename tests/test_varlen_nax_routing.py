@@ -24,6 +24,32 @@ def _tiles(lengths, bq=32):
     return mx.array(values, dtype=mx.int32)
 
 
+def _fp32_segment_oracle(q, k, v, lengths, scale, causal):
+    outputs = []
+    offset = 0
+    for length in lengths:
+        stop = offset + length
+        out = mx.fast.scaled_dot_product_attention(
+            q[:, :, offset:stop].astype(mx.float32),
+            k[:, :, offset:stop].astype(mx.float32),
+            v[:, :, offset:stop].astype(mx.float32),
+            scale=scale,
+            mask="causal" if causal else None,
+        )
+        mx.eval(out)
+        outputs.append(out)
+        offset = stop
+    return mx.concatenate(outputs, axis=2)
+
+
+def _cosine(a, b):
+    af = a.astype(mx.float32).reshape(-1)
+    bf = b.astype(mx.float32).reshape(-1)
+    value = mx.sum(af * bf) / mx.sqrt(mx.sum(af * af) * mx.sum(bf * bf))
+    mx.eval(value)
+    return float(value.item())
+
+
 @pytest.mark.parametrize("causal", [False, True])
 def test_public_varlen_nax_engages_and_matches_expert(monkeypatch, tmp_path, causal):
     """The opt-in public route must select NAX and use one coherent tile triple."""
@@ -58,6 +84,16 @@ def test_public_varlen_nax_engages_and_matches_expert(monkeypatch, tmp_path, cau
         ("varlen_v6nax", "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)")
     ]
     assert float(mx.max(mx.abs(public.astype(mx.float32) - expert.astype(mx.float32)))) == 0.0
+
+    if causal:
+        oracle = _fp32_segment_oracle(q, k, v, lengths, scale, causal=True)
+        mx.eval(oracle)
+        assert _cosine(public, oracle) >= 0.999
+        offset = 0
+        for length in lengths:
+            stop = offset + length
+            assert _cosine(public[:, :, offset:stop], oracle[:, :, offset:stop]) >= 0.999
+            offset = stop
 
     source = dump_path.read_text()
     assert re.search(r"^#define V6NAX_BQ 32$", source, re.MULTILINE)

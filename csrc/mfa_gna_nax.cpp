@@ -1,4 +1,5 @@
 #include "mfa_gna_nax.hpp"
+#include "mfa_bool_env.hpp"
 
 #include "mfa/v6_nax/NAAttentionKernel.hpp"
 
@@ -8,6 +9,8 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -578,7 +581,7 @@ mlx::core::array mfa_gna_nax_forward(
   const int BK = env_int_or_default("MFA_GNA_NAX_BK", default_BK);
   const int WM = env_int_or_default("MFA_GNA_NAX_WM", default_WM);
   const bool precompute_range =
-      env_int_or_default("MFA_GNA_NAX_PRECOMPUTE_RANGE", 0) != 0;
+      get_bool_env("MFA_GNA_NAX_PRECOMPUTE_RANGE");
   const int swizzle_log =
       env_nonnegative_int_or_default("MFA_GNA_NAX_SWIZZLE_LOG", 0);
   if (BQ % (WM * 16) != 0) {
@@ -602,6 +605,18 @@ mlx::core::array mfa_gna_nax_forward(
   auto name = kernel_name(
       q.dtype(), N, D, Hq, Hk, dim0, dim1, dim2, window0, window1, window2,
       stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range, swizzle_log);
+
+  if (const char* dump_path = std::getenv("MFA_GNA_NAX_DUMP_PATH")) {
+    if (dump_path[0] == '\0') {
+      throw std::invalid_argument("MFA_GNA_NAX_DUMP_PATH must not be empty");
+    }
+    std::ofstream dump(dump_path, std::ios::out | std::ios::trunc);
+    if (!dump) {
+      throw std::runtime_error(
+          std::string("failed to open MFA_GNA_NAX_DUMP_PATH: ") + dump_path);
+    }
+    dump << "// kernel: " << name << "\n" << header << "\n" << source;
+  }
 
   auto kernel = mlx::core::fast::metal_kernel(
       name,

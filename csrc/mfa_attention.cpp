@@ -28,6 +28,7 @@
 #include "mfa_steel_paged_varlen_tq_fwd.hpp"
 #include "shader_cache.hpp"
 #include "mfa_env.hpp"
+#include "mfa_bool_env.hpp"
 
 #include <mlx/utils.h>
 #include <mlx/allocator.h>
@@ -2018,8 +2019,7 @@ static void validate_sparse_block_mask_shape(
 // with an opt-out `MFA_VARLEN_TRUST_METADATA=1` for callers who guarantee valid
 // metadata and want the sync gone.
 static bool varlen_trust_metadata() {
-  const char* v = std::getenv("MFA_VARLEN_TRUST_METADATA");
-  return v != nullptr && std::string(v) == "1";
+  return get_bool_env("MFA_VARLEN_TRUST_METADATA");
 }
 // METADATA-CONTIGUITY class (Codex NO-GO): a host-side value-validator that reads an
 // index/metadata array via .data<int32_t>() must read its TRUE LOGICAL values. A strided

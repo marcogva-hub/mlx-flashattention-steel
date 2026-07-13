@@ -34,6 +34,12 @@ namespace mlx_mfa {
 
 namespace {
 
+// One host/source truth for the routed V6NAX sparse tile.  The MSL generator
+// and both host dispatch sites below consume these constants.
+constexpr int kV6NAXSparseBQ = 32;
+constexpr int kV6NAXSparseBK = 32;
+constexpr int kV6NAXSparseWM = 2;
+
 const std::string SPARSE_SCALAR_HEADER = R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -842,10 +848,10 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
   //     density AND incorrect (err up to 3.0e-2 > the fp16 floor) — a silent
   //     Category-A wrong-but-finite result. So WM is not exposed as a knob.
   // See .doc-archive/docs/lcsa-nax/sparse-nax-autotune-results.md (journal).
-  const int V6NAX_SPARSE_BQ = 32;
-  const int V6NAX_SPARSE_BK = 32;
+  const int V6NAX_SPARSE_BQ = kV6NAXSparseBQ;
+  const int V6NAX_SPARSE_BK = kV6NAXSparseBK;
   const int V6NAX_SPARSE_BD = D;
-  const int V6NAX_SPARSE_WM = 2;
+  const int V6NAX_SPARSE_WM = kV6NAXSparseWM;
   const int kU = 16;
   const int V6NAX_SPARSE_TQ = V6NAX_SPARSE_BQ / (V6NAX_SPARSE_WM * kU);  // = 1
   const int V6NAX_SPARSE_TD = V6NAX_SPARSE_BD / kU;  // 4 for D=64, 8 for D=128
@@ -1256,8 +1262,7 @@ mlx::core::array sparse_attention_forward(
   // V6NAX: TG = (WM*32, 1, 1), grid = (NQ*WM*32, Hq, B) (one TG per Q-block).
   std::tuple<int, int, int> grid, tg;
   if (use_v6nax_sparse) {
-    const int V6NAX_SPARSE_WM = 2;
-    const int tg_threads = V6NAX_SPARSE_WM * 32;  // 64 threads per TG
+    const int tg_threads = kV6NAXSparseWM * 32;  // 64 threads per TG
     grid = std::make_tuple(NQ * tg_threads, Hq, B);
     tg = std::make_tuple(tg_threads, 1, 1);
   } else {
@@ -1413,8 +1418,7 @@ sparse_attention_forward_with_lse(
         /*ensure_row_contiguous=*/true,
         /*atomic_outputs=*/false);
 
-    constexpr int V6NAX_SPARSE_WM = 2;
-    constexpr int tg_threads = V6NAX_SPARSE_WM * 32;
+    constexpr int tg_threads = kV6NAXSparseWM * 32;
     std::tuple<int, int, int> grid = std::make_tuple(NQ * tg_threads, Hq, B);
     std::tuple<int, int, int> tg = std::make_tuple(tg_threads, 1, 1);
     auto outs = kernel(

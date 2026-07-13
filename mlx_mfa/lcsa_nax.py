@@ -93,7 +93,8 @@ def decide_auto_version(
     measured the scalar fallback is never fastest (V6NAX sparse is 19-59x faster), so the
     threshold only mis-routed D=64 (always < 2^31) and D=128 small-N to the slow
     scalar fallback. The C++ sparse_attention_forward falls v2->v1 internally
-    when V6NAX sparse is ineligible (causal / block_tile!=32), so scalar remains
+    when V6NAX sparse is ineligible (D outside {64,128}, block_tile!=32, or
+    dtype outside f16/bf16); causal is supported, so scalar remains
     the genuine fallback — never the default for a V6NAX-capable shape.
 
     Decision order:
@@ -126,7 +127,8 @@ def decide_auto_version(
     # than scalar and 1.5-3.9x faster than SDPA at low density); the 2^31 threshold
     # mis-routed D=64 (work always < 2^31) and D=128 N<4096 to the slow scalar
     # path.  The C++ `sparse_attention_forward` falls v2->v1 internally when
-    # V6NAX sparse is ineligible (causal / block_tile!=32), so returning "v2" for
+    # V6NAX sparse is ineligible (D outside {64,128}, BT!=32, or non-f16/bf16),
+    # while causal is eligible. Returning "v2" for
     # the V6NAX-capable head-dims selects V6NAX wherever it can run and keeps
     # scalar fallback only as the genuine fallback.
     # (Old threshold const retained above for provenance; no longer gates routing.)

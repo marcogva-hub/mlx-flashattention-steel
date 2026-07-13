@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 import warnings
 
+from ._knobs import parse_bool_value
+
 # new (canonical) -> old (deprecated alias). Single source of truth for the
 # Python side; mirrors csrc/mfa_env_aliases.hpp::v6_env_alias_map().
 V6_ENV_ALIAS_MAP: dict[str, str] = {
@@ -89,3 +91,11 @@ def getenv_aliased(new_name: str, default: str | None = None) -> str | None:
             _warn_once(old_name, new_name)
             return old_val
     return default
+
+
+def get_bool_env_aliased(
+    new_name: str, *, default: bool | None = False
+) -> bool | None:
+    """Resolve a canonical/deprecated alias and apply strict bool parsing."""
+    return parse_bool_value(
+        new_name, getenv_aliased(new_name), default=default)

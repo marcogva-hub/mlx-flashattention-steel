@@ -10764,10 +10764,10 @@ class TestSmartDispatch:
         assert not should_use_mfa(128, 512, causal=False, is_m3_plus=False, dtype=mx.float16)
 
     def test_d256_force_path_override_sdpa(self, monkeypatch):
-        """MFA_FORCE_D256_PATH=sdpa must force D=256 auto route to SDPA."""
+        """MFA_FORCE_D256_PATH=0 must force D=256 auto route to SDPA."""
         import mlx.core as mx
         from mlx_mfa.dispatch_policy import should_use_mfa
-        monkeypatch.setenv("MFA_FORCE_D256_PATH", "sdpa")
+        monkeypatch.setenv("MFA_FORCE_D256_PATH", "0")
         assert not should_use_mfa(256, 16384, causal=True, is_m3_plus=False, dtype=mx.float16)
 
     def test_d512_dense_stays_sdpa_by_default(self):
@@ -10787,10 +10787,10 @@ class TestSmartDispatch:
         assert not should_use_mfa(64, 512, causal=False, is_m3_plus=False, dtype=mx.float16)
 
     def test_d512_force_path_override_sdpa(self, monkeypatch):
-        """MFA_FORCE_D512_PATH=sdpa must force D=512 auto route to SDPA."""
+        """MFA_FORCE_D512_PATH=0 must force D=512 auto route to SDPA."""
         import mlx.core as mx
         from mlx_mfa.dispatch_policy import should_use_mfa
-        monkeypatch.setenv("MFA_FORCE_D512_PATH", "sdpa")
+        monkeypatch.setenv("MFA_FORCE_D512_PATH", "0")
         assert not should_use_mfa(512, 16384, causal=True, is_m3_plus=False, dtype=mx.float16)
 
     def test_noncausal_dispatch_policy(self):
@@ -10858,27 +10858,30 @@ class TestSmartDispatch:
             err_msg="auto-small-N output differs from sdpa backend",
         )
 
-    def test_auto_large_n_causal_d64_uses_mfa(self):
-        """flash_attention(auto, causal, D=64, large N) matches MFA backend."""
+    def test_auto_large_n_causal_d64_uses_sdpa_on_m5(self):
+        """M5 dense D64 forward delegates to SDPA; only backward uses V6."""
         import mlx.core as mx
-        from mlx_mfa import flash_attention, is_mfa_available
+        from mlx_mfa import flash_attention, get_device_info, is_mfa_available
+        from mlx_mfa import _dispatch_trace as dtrace
         if not is_mfa_available():
             pytest.skip("MFA extension not available")
+        if not bool(get_device_info().get("is_m5_plus", False)):
+            pytest.skip("M5/NAX dispatch-map lock")
         B, H, N, D = 1, 4, 4096, 64  # above 2048 threshold
         mx.random.seed(7)
         q = mx.random.normal([B, H, N, D]).astype(mx.float16)
         k = mx.random.normal([B, H, N, D]).astype(mx.float16)
         v = mx.random.normal([B, H, N, D]).astype(mx.float16)
-        out_auto = flash_attention(q, k, v, causal=True, backend="auto")
-        out_mfa  = flash_attention(q, k, v, causal=True, backend="mfa")
-        mx.eval(out_auto, out_mfa)
-        import numpy as np
-        np.testing.assert_allclose(
-            np.array(out_auto.astype(mx.float32)),
-            np.array(out_mfa.astype(mx.float32)),
-            atol=1e-2,
-            err_msg="auto large-N D=64 causal output differs from mfa backend",
-        )
+        with dtrace.capture() as trace:
+            out_auto = flash_attention(q, k, v, causal=True, backend="auto")
+            mx.eval(out_auto)
+        out_sdpa = flash_attention(q, k, v, causal=True, backend="sdpa")
+        mx.eval(out_sdpa)
+        terminal = [entry for entry in trace if not entry[1].startswith("[reentrant]")]
+        assert terminal[-1][0] == "apple_sdpa"
+        assert float(mx.max(mx.abs(
+            out_auto.astype(mx.float32) - out_sdpa.astype(mx.float32)
+        )).item()) == 0.0
 
     def test_mixed_dtype_routes_mfa(self):
         """Mixed-dtype (f32 Q + f16 K/V) always routes to MFA, not SDPA (NaN guard)."""

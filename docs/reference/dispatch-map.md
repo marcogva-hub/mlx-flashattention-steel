@@ -1,10 +1,11 @@
-# mlx-mfa Runtime Dispatch Map — M5 Max / macOS 26.6 (authoritative, test-locked)
+# mlx-mfa Runtime Dispatch Map — M5 Max / macOS 27 beta (2026-07-13, test-locked)
 
 **Status:** DURABLE current-state artifact. Every cell is established by RUNTIME FINGERPRINT
 (byte-identity vs a known reference; density signature; conv hook telemetry) — NOT source-tracing
 (the lesson of four which-binary inversions). Locked by `tests/test_dispatch_map_lock.py` (CI fails on
 unintentional drift). Provenance: audit Phase A (`.doc-archive/docs/v50/campaign-2026-06/audit/phase-A-dispatch-map-report.md`),
-extends the cartography (`runtime-dispatch-cartography-report.md`). Hardware: M5 Max, mlx 0.31.2.
+extends the cartography (`runtime-dispatch-cartography-report.md`). Hardware: M5 Max,
+macOS 27 beta, mlx 0.31.2. β3 thresholds require stable-macOS revalidation.
 
 **Fingerprint key:** byteΔ vs SDPA reference **== 0.0** ⇒ the path *is* that kernel (the SDPA fallback
 is literally `mx.fast.sdpa`); **~1e-6** ⇒ a different real kernel (same math, different rounding);
@@ -18,24 +19,33 @@ conv via `get_hook_stats()` executed/fallback counters.
 | `flash_attention` | `backend="auto"`, dense **D=128**, **N<2048** (Tier-2 #1 threshold) | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses small-N: N=512 16-36%, N=1024 3-17%; `MFA_V6_DENSE_MIN_N`) |
 | `flash_attention` | `backend="auto"`, dense **D=64** (non-causal, or causal with B·H<4 or N<`v3_min_N`) / cross-attn / windowed / `MFA_DISABLE_V6_DENSE=1` | **Apple SDPA** | Δ=0.0 vs sdpa | routed-as-intended (NAX loses at D=64) |
 | `flash_attention` | `backend="auto"`, dense **D=64**, **causal & B·H≥4 & N≥`v3_min_N`(=4096)** | **NAX tier (M5): Apple SDPA** — `should_use_mfa(D=64,causal,has_nax=True)` returns False, so the "MFA primitive" carve-out does NOT engage; that real-kernel path only exists on the M3/M4 tier where `has_nax=False`. Backward: **V6 split** (`v6_nax_backward`, default-on D=64 qL≥2048), NOT SDPA-vjp. | **NAX tier: Δ=0.0 vs sdpa** (byteΔ=0 → SDPA fallback; M3/M4 tier: byteΔ>0 real MFA primitive) | routed-as-intended (M2/H-02 label fix: M5/NAX forward = SDPA byteΔ=0, math correct; the byteΔ>0 MFA-primitive case is the M3/M4 tier only; D=64 backward = V6 split by default) |
+| `flash_attention` | dense **D=512**, any auto shape | **Apple SDPA delegation** | terminal trace `sdpa`; direct V6 expert rejects D512 | routed-as-intended; no D512 MFA kernel |
 | `flash_attention` | `backend="mfa"`, dense | **simdgroup STEEL** (V2 default / V3 cond-auto) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (expert; legacy-on-M5) |
-| `flash_attention_sparse` | **D=128**, built-in maker mask (causal/sliding/strided/lcsa → [N/32,N/32], symmetric since **Phase F**), density < 0.78 | **real NAX sparse** (wins 1.7–4.2×) | Δ=3.8e-6; sloped | **routed-as-intended (gotcha 1 FIXED — Phase F)** |
+| `flash_attention_sparse` | non-causal, **D∈{64,128}**, symmetric BT32, N≥2048, density < 0.78 on the public wrapper | **real V6 NAX sparse** | terminal trace `v6nax_sparse`; Δ≠0 vs masked SDPA | routed-as-intended |
+| `flash_attention_sparse` | causal, **D∈{64,128}**, symmetric BT32, qL=kL, **2048≤N≤8192**, density≤0.30, **B·H≤128** | **real V6 NAX causal-sparse** | terminal trace `v6nax_sparse`; fp32 masked oracle | β3 route; exact measured envelope |
+| `flash_attention_sparse` | causal outside the preceding N/density/B·H envelope | **dense Apple SDPA with mask** | terminal trace/fingerprint equals masked SDPA | conservative fallback |
+| `flash_attention_sparse` | eligible BT64 mask | expand each block 2×2 to BT32, then **V6 NAX sparse** under the same causal/non-causal gates | terminal `v6nax_sparse`; byte-identical to native BT32 representation | routed-as-intended; BT64 kernel is not a distinct binary |
 | `flash_attention_sparse` | **D=128**, symmetric mask, density ≥ 0.78 (ceiling) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended (NAX loses near-dense) |
 | `flash_attention_sparse` | **D=128**, asymmetric/custom mask (bt_q≠bt_k) OR mask_bytes<4096 | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | routed-as-intended (residual SDPA edges) |
 | `flash_attention_sparse` | **D=64**, default (symmetric) | **real V2 NAX sparse** (since **Phase F**: V2 always, not V1) | Δ=3.8e-6; sloped; ~9× vs old V1 | **routed-as-intended (gotcha 2 FIXED — Phase F)** |
 | `flash_attention_sparse` | **D∈{64,128}**, **bf16**, symmetric, BT=32 | **real V2 NAX sparse** (since the bf16 fix; was the V1 scalar fallback) | bf16 Δ=3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA | **routed-as-intended (gotcha 4 FIXED)** |
 | `flash_attention_gna` | D=128 3D f16/bf16, N≥2048; D=64 3D f16/bf16, N≥4096 | **GNA V6 NAX** (`gna_v6nax`) | public dispatch trace; Δ≠0 vs masked SDPA | β3 route; STEEL/sparse fallback outside measured envelope |
+| `flash_attention` decode | qL=8, D64, GQA=8, non-causal, f16/bf16, **4096≤kL≤65536** | **MFA primitive decode** | terminal trace `mfa_primitive`, distinct from `sdpa` | β3 finite carveout |
+| `flash_attention` decode | qL=16, D64, GQA∈{4,8,16}, non-causal, f16/bf16, **16384≤kL≤65536** | **MFA primitive decode** | terminal trace `mfa_primitive`, distinct from `sdpa` | β3 finite carveout |
+| `flash_attention` decode | outside the two finite carveouts | **Apple SDPA vector/2-pass selection** | terminal trace `sdpa` | conservative fallback |
 | `flash_attention_topk` | — | own path (topk + SDPA) | Δ=1.9e-6 @ ratio=1.0 | routed-as-intended |
 | `sage_attention` | — | int8 sage kernel | Δ=1.1e-3 vs sdpa | routed-as-intended |
 | `flash_attention_kvcache` | decode N_q=1 | **Apple SDPA** (gather + SDPA) | Δ=0.0 vs sdpa | routed-as-intended (sync-floor regime) |
-| `mx.grad(flash_attention)` | dense **D=64**, qL≥2048, fp16/bf16 (causal OR non-causal) | **V6 split** (`v6_nax_backward`, default-on; opt-out `MFA_DISABLE_V6_BACKWARD=1`) | native (≠ sdpa-vjp) | routed-as-intended (M2/H-02: D=64 backward default = V6 split, 2.16–3.05× vs SDPA-vjp) |
+| `mx.grad(flash_attention)` | dense **D=64**, qL≥2048, fp16/bf16 (causal OR non-causal) | **V6 split** (`v6_nax_backward`, default-on; opt-out `MFA_DISABLE_V6_BACKWARD=1`) | terminal `v6_split_backward` (≠ `sdpa`) | routed-as-intended; 2.05–2.84× vs SDPA-vjp on 2026-07-13 engagement harness |
 | `mx.grad(flash_attention)` | dense **D=128** / D=64 small-qL / opt-out | **SDPA-vjp** | dQ Δ=0.0 vs sdpa-vjp | routed-as-intended |
 | `mx.grad(flash_attention_sparse)` | default (no env) | **dense SDPA-vjp** | dQ Δ=0.0 vs sdpa-vjp+bias | **routed-but-suboptimal (gotcha 3): sparse fwd, DENSE bwd** |
 | `mx.grad(flash_attention_sparse)` | `MFA_ENABLE_V6_BACKWARD=1` + D∈{64,128} + N≥2048 + ndim==2 + bt≥64 | hybrid: **dV native** + dQ/dK SDPA-vjp | dQ Δ=0.0 (SDPA-vjp by design); dV native | declined-on-perf (opt-in; Pattern #6) |
 | `mx.grad(flash_attention_sparse)` | `MFA_V6_BWD_SPARSE_NATIVE=1` (+ above) | full-native sparse | — | declined-on-perf (opt-in; Pattern #6) |
-| `mx.conv_general` | Conv3D eligible (C%16==0 & ≥32, HW%8==0, B=1, pad=(1,1,1), f16) | **NAX conv kernel** (matmul2d) | `executed.conv3d_nax_forward++` | routed-as-intended (auto-hook) |
+| `mx.conv_general` | Conv3D eligible (C%16==0 & ≥32, HW%8==0, B=1, supported pad/kernel, **f16/bf16**) | **NAX conv kernel** (matmul2d) | `executed.conv3d_nax_forward++` | routed-as-intended (auto-hook) |
 | `mx.conv_general` | `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE=1`, fp16 `B=1`, `T∈{4,5}`, `108×132`, `C_in=C_out=512`, k=3³, stride 1, temporal pad 0/spatial pad 1 | **NAX MPP spatial-pad → slice** | `executed.conv3d_nax_spatial_pad_slice++` | opt-in β3; candidate default-on only after stable-macOS revalidation |
 | `flash_attention_varlen` | `MFA_ENABLE_VARLEN_NAX=1`, `B=1`, D128, f16/bf16, causal or non-causal, GQA 2/4/8, 20/24 equal-Q/K segments, `35018≤total≤35250` | **V6 NAX packed-varlen**, fixed BQ32/BK32/WM2 | dispatch trace `varlen_v6nax` | opt-in β3; fixed tiles are explicitly coherent across MSL generation and host dispatch |
+| `flash_attention_varlen` | causal segment with qL>kL | **split-concat Apple SDPA per segment** | terminal trace `varlen_split_concat`; expert V6 rejects this shape | public bottom-right-aligned, zero-clamped fallback |
+| `flash_attention_varlen` | D=512 | **split-concat Apple SDPA per segment** | terminal trace `varlen_split_concat`; no terminal MFA/STEEL/V6 symbol | intentional delegation |
 | `mx.conv_general` | Conv3D ineligible | `mx.conv_general` | `fallback.conv3d_nax_forward++` | by-design fallback |
 
 ## Runtime guards (each runtime-confirmed)
@@ -74,7 +84,7 @@ fp16.** Per-path fingerprint:
 | Dense fwd D=128 (auto) | NAX, Δ=1.5e-5 vs SDPA (≠0) | fast-path (= fp16) |
 | Dense fwd D=64 (force/recompute) | NAX, Δ=1.5e-5 (≠0) | fast-path |
 | Dense backward **D=128** | SDPA-vjp (default; native D=128 bwd opt-in + slower) | by-design floor; symmetric |
-| Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, byteΔ>0 vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (**2.16–3.05× vs SDPA-vjp at qL≥4096**, ~1.5–1.7× @qL2048; M5 Max / macOS 26.6 / MLX 0.31.2; dQ tile tuned `BK 64→32`, Tier-1 #2) |
+| Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, terminal `v6_split_backward` vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (**2.58–2.84× causal; 2.05–2.14× non-causal at qL4096**, 2026-07-13 public engagement harness; M5 Max / macOS 27 beta / MLX 0.31.2) |
 | Sparse fwd V2 | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 fix holds) |
 | Sparse backward hybrid (opt-in) | runs, finite grad | by-design SDPA-vjp; symmetric |
 | conv3d NAX (MPP-eligible) | `executed.conv3d_nax_forward++`, 0 fallback | fast-path (auto-hook) |

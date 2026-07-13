@@ -10,7 +10,10 @@ NAX-accelerated backward attention on M5+.
 V6NAX backward for **D=64 (causal + non-causal)** is **DEFAULT-ON since
 v2.51.0**: on M5-class hardware, fp16/bf16, qL ≥ 2048, it engages
 automatically — **2.16–3.05× faster than SDPA-vjp at qL≥4096** (~1.5–1.7×
-@qL2048; M5 Max / macOS 26.6 / MLX 0.31.2) — no env var needed.  Opt out
+@qL2048; M5 Max / macOS 26.6 / MLX 0.31.2) in the historical campaign.
+A fresh public-path engagement harness on 2026-07-13 measured **2.58–2.84×
+causal** and **2.05–2.14× non-causal** at qL=4096 (M5 Max / macOS 27 beta /
+MLX 0.31.2). No env var is needed. Opt out
 with `MFA_DISABLE_V6_BACKWARD=1`.
 
 **D=128 remains opt-in** via `MFA_ENABLE_V6_BACKWARD=1` (parity with
@@ -102,21 +105,19 @@ re-running forward.
 
 For D=64, qL ≥ 2048, causal or non-causal training (e.g., FlashVSR
 class, LTX2-style cross-attention), V6NAX backward is genuinely faster
-than SDPA-vjp **through the documented public API** at **1.7-2.7×**.
+than SDPA-vjp **through the documented public API**.
 Since v2.51.0 no env var or `backend` override is needed — just call
-`flash_attention(...)` normally.  Representative v2.37.x measurements:
+`flash_attention(...)` normally. Fresh-process measurements from the
+2026-07-13 engagement harness are:
 
-| qL=kL | V6NAX backward (AUTO) | SDPA-vjp | Speedup |
-|---|---:|---:|---:|
-| **4096** | **2.65 ms** | **4.83 ms** | **1.82× faster** |
-| **8192** | **9.78 ms** | **17.67 ms** | **1.81× faster** |
+| qL=kL | mode | V6NAX backward | SDPA-vjp | Speedup |
+|---|---|---:|---:|---:|
+| **4096** | causal | **2.236–2.612 ms** | **6.344–6.749 ms** | **2.58–2.84×** |
+| **4096** | non-causal | **2.490–2.600 ms** | **5.327–5.336 ms** | **2.05–2.14×** |
 
-These numbers are reproducible with the snippet in the Usage section
-above (M5 Max, B=1, H=4, fp16, canonical methodology §4.2)
-within a ~5% measurement-noise band — re-running the same bench
-yields values like 2.71 ms / 4.94 ms / 9.91 ms / 18.10 ms (same
-1.81-1.82× speedup ratio).  See
-`.doc-archive/docs/v6-nax/v2.37.x-perf-claim-audit.md` for the raw audit table.
+Both arms were process-isolated and fingerprinted (`v6_split_backward`
+versus SDPA-vjp); the ranges cover five sessions in both arm orders on
+M5 Max / macOS 27 beta / MLX 0.31.2. See `devnotes/batch_final_closure.md`.
 
 ### D=64 — small qL (research characterization, NOT user-facing)
 
@@ -168,8 +169,9 @@ keeps the default SDPA-vjp path, which is equally correct.
 
 - **D=64 training (qL ≥ 2048, causal or non-causal)**: no env var
   needed since v2.51.0 — V6NAX backward engages by default and delivers
-  **2.16–3.05× speedup over SDPA-vjp at qL≥4096** (~1.5–1.7× @qL2048;
-  M5 Max / macOS 26.6 / MLX 0.31.2).  Opt out with
+  **2.58–2.84× causal and 2.05–2.14× non-causal at qL=4096** in the
+  2026-07-13 public engagement harness (M5 Max / macOS 27 beta /
+  MLX 0.31.2). Opt out with
   `MFA_DISABLE_V6_BACKWARD=1` if needed.
 - **D=64 training with qL < 2048**: the shape gate keeps you on
   SDPA-vjp; nothing to configure.

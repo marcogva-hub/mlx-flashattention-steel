@@ -32,7 +32,8 @@ import mlx.core as mx
 from mlx_mfa import _dispatch_trace as _dtrace  # test-only dispatch telemetry (no prod cost)
 import numpy as np
 
-from ._env_aliases import getenv_aliased
+from ._env_aliases import getenv_aliased, get_bool_env_aliased
+from ._knobs import get_bool_env
 
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
@@ -314,10 +315,10 @@ def _warn_if_acceleration_unavailable() -> None:
     (non-target platform, or pre-M5 where STEEL still works). Suppress with
     MFA_SILENCE_NAX_WARNING=1. Strict opt-in (MFA_REQUIRE_NAX=1) RAISES instead."""
     global _warned_unexpected_fallback
-    if os.environ.get("MFA_REQUIRE_NAX") == "1" and not has_nax():
+    if get_bool_env("MFA_REQUIRE_NAX") and not has_nax():
         # Opt-in hard guarantee — raise with the precise reason (never default).
         has_nax(strict=True)
-    if _warned_unexpected_fallback or os.environ.get("MFA_SILENCE_NAX_WARNING") == "1":
+    if _warned_unexpected_fallback or get_bool_env("MFA_SILENCE_NAX_WARNING"):
         return
     if not _ext_available() and _is_apple_silicon():
         _warned_unexpected_fallback = True
@@ -424,10 +425,10 @@ def _macos27_routing_active() -> bool:
     a working 4.1 compiler (proven). Activating the path is byte-identical today
     (no 26↔27 behavioral divergence); the sparse fallback stays engaged regardless
     (see _macos27_sparse_native_ok)."""
-    ov = os.environ.get("MFA_ENABLE_MACOS27_ROUTING")
-    if ov == "1":
+    ov = get_bool_env("MFA_ENABLE_MACOS27_ROUTING", default=None)
+    if ov is True:
         return True   # force-on override (testing on a probe-rejected toolchain)
-    if ov == "0":
+    if ov is False:
         return False  # force-off override (pin the validated macOS-26 path)
     if _get_macos_major_cached() < 27:
         return False  # version pre-filter: gates OFF only; probe never runs on ≤26
@@ -533,7 +534,7 @@ def _select_dense_backend(
         and attn_bias is None
         and dropout_p == 0.0
         and not return_attn_weights
-        and _os.environ.get("MFA_DISABLE_V6_DENSE") != "1"
+        and not get_bool_env("MFA_DISABLE_V6_DENSE")
     ):
         return ("nax_dense", "auto D128 N>=v6_min_n")
     return ("sdpa", "fallback (not use_mfa)")
@@ -826,6 +827,9 @@ def flash_attention(
                 raise ValueError(
                     f"flash_attention: window_size {_side} must be >= -1 "
                     f"(-1 disables that side); got {_w}.")
+        # Cache keys require an immutable value.  Lists are part of the public
+        # contract, so normalize only after validating their two elements.
+        window_size = tuple(window_size)
 
     # CC-10 (audit): degenerate sequence lengths produced 0/0 = NaN silently.
     # Zero queries → a well-defined empty output; zero keys → undefined (cannot
@@ -1094,14 +1098,14 @@ def flash_attention(
             # the stale pre-mutation decision for any already-seen shape.
             # Five dict lookups (~0.3µs) are negligible vs the Metal dispatch.
             _env_key = (
-                os.environ.get("MFA_FORCE_SDPA_ROUTE"),
-                os.environ.get("MFA_DISABLE_SDPA_ROUTE"),
-                os.environ.get("MFA_FORCE_D256_PATH"),
-                os.environ.get("MFA_FORCE_D512_PATH"),
+                get_bool_env("MFA_FORCE_SDPA_ROUTE", default=None),
+                get_bool_env("MFA_DISABLE_SDPA_ROUTE", default=None),
+                get_bool_env("MFA_FORCE_D256_PATH", default=None),
+                get_bool_env("MFA_FORCE_D512_PATH", default=None),
                 # MFA_FORCE_SPLITK is consumed by the C++ split-K routing,
                 # not by should_use_mfa — kept in the key defensively so a
                 # future Python-side read cannot silently go stale.
-                os.environ.get("MFA_FORCE_SPLITK"),
+                get_bool_env("MFA_FORCE_SPLITK", default=None),
                 # Campaign 2026-06 Sprint A (A-5): the custom dispatch
                 # table is a DOCUMENTED runtime override; its path must
                 # invalidate cached decisions when it changes.
@@ -1762,7 +1766,7 @@ def flash_attention_rope_unified(
         # equivalent to base=10000 (cached probe compare); a mismatch
         # falls back to the STEEL fused-rope path, which uses the actual
         # tables.
-        _disable_rope_nax = os.environ.get("MFA_DISABLE_ROPE_NAX") == "1"
+        _disable_rope_nax = bool(get_bool_env("MFA_DISABLE_ROPE_NAX"))
         if (_get_has_nax_cached() and not _disable_rope_nax
                 and head_dim in (64, 128)
                 and q.dtype in (mx.float16, mx.bfloat16)
@@ -3094,7 +3098,7 @@ def flash_attention_kvcache(
             _D_rope = q.shape[3]
             _full_rope = (rotary_dim is None) or (rotary_dim == _D_rope)
             if (_get_has_nax_cached()
-                    and os.environ.get("MFA_DISABLE_ROPE_NAX") != "1"
+                    and not get_bool_env("MFA_DISABLE_ROPE_NAX")
                     and _D_rope in (64, 128)
                     and q.dtype in (mx.float16, mx.bfloat16)
                     and _full_rope):
@@ -3769,7 +3773,7 @@ def flash_attention_sparse(
     # per invocation — up to twice per flash_attention_sparse call).
     if _get_is_m5_plus_cached():
         import os as _os
-        _disable_auto = _os.environ.get("MFA_DISABLE_AUTO_HOOKS") == "1"
+        _disable_auto = bool(get_bool_env("MFA_DISABLE_AUTO_HOOKS"))
         if not _disable_auto and block_mask.ndim >= 2:
             nq = block_mask.shape[-2]
             nk = block_mask.shape[-1]
@@ -3790,7 +3794,7 @@ def flash_attention_sparse(
                         mask_bytes *= int(_dim)
                     if mask_bytes >= 4096:
                         if (bt_q == 64
-                                and os.environ.get("MFA_ENABLE_V6_BACKWARD") != "1"):
+                                and not get_bool_env_aliased("MFA_ENABLE_V6_BACKWARD")):
                             from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
                             block_mask, bt_q, _ = _expand_bt64_for_v6nax(
                                 q, k, block_mask, bt_q, causal=causal
@@ -3852,8 +3856,8 @@ def flash_attention_sparse(
                             # `MFA_V6_BWD_SPARSE_NATIVE=1` opt-in routes
                             # to full native (research/benchmark; usually
                             # slower than hybrid).
-                            _native_opt_in = os.environ.get(
-                                "MFA_V6_BWD_SPARSE_NATIVE") == "1"
+                            _native_opt_in = bool(get_bool_env_aliased(
+                                "MFA_V6_BWD_SPARSE_NATIVE"))
                             if _native_opt_in:
                                 return _v6nax_backward_vjp_sparse_full_native(
                                     q, k, v, block_mask, bt_q, scale, causal
@@ -4222,7 +4226,7 @@ def flash_attention_gna(
     if scale is None:
         scale = 1.0 / math.sqrt(D)
 
-    native_enabled = not os.environ.get("MFA_DISABLE_GNA_NATIVE")
+    native_enabled = not get_bool_env("MFA_DISABLE_GNA_NATIVE")
     native_dtype = q.dtype in (mx.float16, mx.bfloat16)
     is_3d_gna = len(seq_shape) == 3
     gna_nax_eligible = (
@@ -4495,8 +4499,8 @@ def flash_attention_topk(
     #                              (legacy; preserves exact mx.topk semantics)
     #   (deprecated) MFA_TOPK_BISECT=1: previously opt-in; now redundant
     #                              with the AUTO default — kept for back-compat
-    _disable_topk_nax = os.environ.get("MFA_DISABLE_TOPK_NAX") == "1"
-    _disable_bisect = os.environ.get("MFA_DISABLE_TOPK_BISECT") == "1"
+    _disable_topk_nax = bool(get_bool_env("MFA_DISABLE_TOPK_NAX"))
+    _disable_bisect = bool(get_bool_env("MFA_DISABLE_TOPK_BISECT"))
     # Bisection IS the default; opt-out requires explicit env.
     _bisect_opt_in = not _disable_bisect
     if (mask is None and not _disable_topk_nax
@@ -5858,9 +5862,9 @@ def _v6nax_eligible(head_dim: int, dtype, causal: bool,
     _default_on = (
         head_dim == 64
         and seq_len is not None and seq_len >= 2048
-        and getenv_aliased("MFA_DISABLE_V6_BACKWARD") != "1"
+        and not get_bool_env_aliased("MFA_DISABLE_V6_BACKWARD")
     )
-    if not _default_on and getenv_aliased("MFA_ENABLE_V6_BACKWARD") != "1":
+    if not _default_on and not get_bool_env_aliased("MFA_ENABLE_V6_BACKWARD"):
         return False
     # Repo review 2026-05: the V6NAX forward kernel (v6_nax_forward) does not
     # accept a scale parameter — it bakes 1/sqrt(D) into the Metal source.
@@ -5937,7 +5941,7 @@ def _v6nax_backward_vjp(q, k, v, O, L, dO, scale, causal=False):
         raise ValueError(
             f"MFA_V6_BWD_KERNEL={_kernel_mode!r} is not recognized; expected "
             f"one of {_valid_bwd_modes}.")
-    if getenv_aliased("MFA_V6BWD_USE_FUSED") == "1":
+    if get_bool_env_aliased("MFA_V6BWD_USE_FUSED"):
         _kernel_mode = "legacy_fused"
 
     head_dim = q.shape[3]
@@ -6654,7 +6658,7 @@ def _varlen_v6nax_eligible(
     block_mask,
 ) -> bool:
     """Conservative beta-3 public envelope for packed V6 NAX varlen."""
-    if os.environ.get("MFA_ENABLE_VARLEN_NAX") != "1":
+    if not get_bool_env("MFA_ENABLE_VARLEN_NAX"):
         return False
     if block_mask is not None or not _ext_available() or not has_nax():
         return False
@@ -8033,7 +8037,7 @@ def _validate_paged_block_table(
                 f"block index would run past the block_table columns."
             )
     # --- expensive per-element block_table index scan: flag-scoped (the opt-out) ---
-    if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and block_table.size:
+    if not get_bool_env("MFA_PAGED_TRUST_INDICES") and block_table.size:
         _bt = [_mx.min(block_table), _mx.max(block_table)]
         _mx.eval(*_bt)
         bmin, bmax = int(_bt[0].item()), int(_bt[1].item())

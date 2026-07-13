@@ -12,6 +12,7 @@
 /// mid-process toggle would otherwise return a stale-padding kernel (CX-07).
 
 #pragma once
+#include "mfa_bool_env.hpp"
 #include <cstdlib>
 #include <mutex>
 
@@ -76,15 +77,14 @@ struct MFAEnvConfig {
 
 private:
   static bool env_bool(const char* name) {
-    return std::getenv(name) != nullptr;
+    return get_bool_env(name);
   }
 
-  /// Tristate: -1 (unset), 0 ("0"), 1 ("1" or any other value).
+  /// Tristate: -1 (unset), 0 ("0"), 1 ("1").
   static int env_tristate(const char* name) {
     const char* v = std::getenv(name);
     if (!v) return -1;
-    if (v[0] == '0' && v[1] == '\0') return 0;
-    return 1;
+    return parse_bool_env_value(name, v) ? 1 : 0;
   }
 
   static int env_int(const char* name, int def = 0) {

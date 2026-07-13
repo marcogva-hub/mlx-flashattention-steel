@@ -16,6 +16,21 @@ Apple's own SDPA uses a *different* NAX form — raw `metal_simdgroup_matrix`
 (`steel_attention_nax.h` / `nax.h`), **not** `matmul2d`. See the cartography
 report for why that distinction matters for the dense-vs-sparse perf story.
 
+## Canonical asymmetric-causal convention
+
+The canonical name is **bottom-right-aligned, zero-clamped**. For segment-local
+query/key lengths `qL` and `kL`:
+
+```text
+qL_off = max(0, kL - qL)
+key column k_col is visible iff k_col <= qL_off + query row q_row
+```
+
+For `qL <= kL`, historical text called this “lower-right”. For `qL > kL`, the
+zero clamp yields top-left alignment and **does not create fully masked leading
+query rows**; historical text called that case “clamped upper-left”. Both names
+are aliases for the single convention above, not separate contracts.
+
 ## The V34→V6 rename (v2.57.0)
 
 `V34` was the internal generator/working name for the V6 NAX kernel during its

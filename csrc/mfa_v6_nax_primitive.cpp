@@ -7,6 +7,7 @@
 #include "shader_cache.hpp"
 #include "mfa_key_tie.hpp"
 #include "mfa_env_aliases.hpp"
+#include "mfa_bool_env.hpp"
 #include "mfa/v6_nax/NAAttentionKernel.hpp"
 
 #include <mlx/mlx.h>
@@ -307,9 +308,11 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
   if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
   if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) exec_sg = (uint16_t)std::atoi(env_sg);
-  if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
+  if (std::getenv("MFA_V6_BYPASS_TGP"))
+    bypass_tgp = get_bool_env("MFA_V6_BYPASS_TGP");
   // Explicit env override (set 0 or 1) wins over the auto-default above.
-  if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE")) single_otile = (std::atoi(env_so) != 0);
+  if (std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
+    single_otile = get_bool_env("MFA_V6_NAX_SINGLE_OTILE");
   if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
   // Sprint 3.3: single-Otile mode forces bypass on (the new path always uses cP).
   if (single_otile) bypass_tgp = true;
@@ -322,8 +325,8 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
     use_v6nax = use_v6nax_override;
   } else {
     use_v6nax = (head_dim == 128);  // source-gen-only default (without Nk info)
-    if (const char* env_v6nax = mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
-      use_v6nax = (std::atoi(env_v6nax) != 0);
+    if (mlx_mfa::getenv_aliased("MFA_V6_USE_NAX"))
+      use_v6nax = mlx_mfa::get_bool_env_aliased("MFA_V6_USE_NAX");
   }
   // v2.50 Prompt 4 Section B: lift `isCausal` constraint.  Prompt 2
   // Phase 4a added V6NAX forward causal kernel support but missed this
@@ -427,7 +430,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
 
   // Axe 4: force dynamic_length_v even when K%32==0 (paradox test).
   if (const char* env_dk = std::getenv("MFA_V6_FORCE_DYNAMIC_K")) {
-    if (std::atoi(env_dk) != 0) {
+    if (parse_bool_env_value("MFA_V6_FORCE_DYNAMIC_K", env_dk)) {
       // The static K values appear inside matmul2d_descriptor(R, C, K, ...).
       // We swap any static numeric K (28, 32, 48, 64, 80, 96, 128, ...) for
       // `dynamic_length_v<int>` only inside matmul2d_descriptor calls. Doing
@@ -462,7 +465,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
   // Axe 5: relaxed_precision toggle.
   // matmul2d_descriptor(R, C, K, leftT, rightT, /*relaxed*/ true, ...)
   if (const char* env_rp = std::getenv("MFA_V6_RELAXED_PRECISION")) {
-    if (std::atoi(env_rp) == 0) {
+    if (!parse_bool_env_value("MFA_V6_RELAXED_PRECISION", env_rp)) {
       // Find ", true, true, matmul2d_descriptor::mode" → ", true, false, ..."
       // and ", false, true, true, matmul2d_descriptor::mode" → ", false, true, false, ..."
       // and ", false, false, true, matmul2d_descriptor::mode" → ", false, false, false, ..."
@@ -853,7 +856,7 @@ public:
     //   FP16 0x7E00 = signaling NaN; mathematically impossible from
     //   correct softmax(QK^T)·V on finite inputs.
     //   FP32 LSE: 0x7FC00000 = FP32 quiet NaN.
-    if (std::getenv("MFA_V6_SENTINEL_FILL")) {
+    if (get_bool_env("MFA_V6_SENTINEL_FILL")) {
       const uint16_t fp16_sentinel = 0x7E00;
       uint16_t* o_ptr = out.data<uint16_t>();
       const size_t o_n = out.nbytes() / sizeof(uint16_t);
@@ -900,7 +903,8 @@ public:
     if (const char* env_r = std::getenv("MFA_V6_BLOCK_R")) BQ = (unsigned short)std::atoi(env_r);
     if (const char* env_c = std::getenv("MFA_V6_BLOCK_C")) BK = (unsigned short)std::atoi(env_c);
     if (const char* env_sg = std::getenv("MFA_V6_EXEC_SG")) executionSIMDGroups = (uint16_t)std::atoi(env_sg);
-    if (const char* env_b = std::getenv("MFA_V6_BYPASS_TGP")) bypass_tgp = (std::atoi(env_b) != 0);
+    if (std::getenv("MFA_V6_BYPASS_TGP"))
+      bypass_tgp = get_bool_env("MFA_V6_BYPASS_TGP");
     if (const char* env_d = std::getenv("MFA_V6_BLOCK_D")) BD = (unsigned short)std::atoi(env_d);
     // Loud-on-use (research/nax-autotune-m5): BLOCK_R/BLOCK_C/EXEC_SG are VESTIGIAL on
     // the NAX path (F-3 removed the simdgroup branch they steer) — a silently-no-op user
@@ -918,10 +922,10 @@ public:
       }
     }
     // Axes 4-6 affect the kernel source — fold them into a flag for cache.
-    if (const char* env_dk = std::getenv("MFA_V6_FORCE_DYNAMIC_K"))
-      if (std::atoi(env_dk) != 0) axis_flags |= 0x01;
+    if (get_bool_env("MFA_V6_FORCE_DYNAMIC_K")) axis_flags |= 0x01;
     if (const char* env_rp = std::getenv("MFA_V6_RELAXED_PRECISION"))
-      if (std::atoi(env_rp) == 0) axis_flags |= 0x02;
+      if (!parse_bool_env_value("MFA_V6_RELAXED_PRECISION", env_rp))
+        axis_flags |= 0x02;
     if (const char* env_un = std::getenv("MFA_V6_UNROLL_MODE")) {
       std::string m(env_un);
       if (m == "none") axis_flags |= 0x04;
@@ -936,8 +940,8 @@ public:
       // Sprint B (v2.30): single-Otile default mirrors the GQA-supporting
       // logic in the source-gen path. Both non-GQA and GQA-divisible.
       bool so_for_key = (Hq == Hk) || (Hk > 0 && Hq % Hk == 0);
-      if (const char* env_so = std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
-        so_for_key = (std::atoi(env_so) != 0);
+      if (std::getenv("MFA_V6_NAX_SINGLE_OTILE"))
+        so_for_key = get_bool_env("MFA_V6_NAX_SINGLE_OTILE");
       if (so_for_key) axis_flags |= 0x40;
     }
     // Sprint E (v2.30) — MFA_V6_MAX_THREADS env var changes pipeline state
@@ -1052,7 +1056,7 @@ public:
       // params via struct buffer).  The simdgroup `v6_nax_compile_with_constants`
       // fallback is removed (broken diverged duplicate; that compile helper is
       // retained only for the diagnostic probe in v6_nax_toolchain_probe.cpp).
-      if (mlx_mfa::getenv_aliased("MFA_V6_DUMP_SOURCE")) {
+      if (mlx_mfa::get_bool_env_aliased("MFA_V6_DUMP_SOURCE")) {
         fprintf(stderr, "=== V6NAX source for BQ=%d BK=%d BD=%d WM=%d ===\n",
                 (int)v6nax_BQ, (int)v6nax_BK, (int)D, (int)v6nax_WM);
         auto pos = src.find("// === lse write");
@@ -1169,7 +1173,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   //     non-GQA; LTX2-cross is non-GQA so this rarely triggers)
   const int Hq_from_input = q.shape(1);
   const int Hk_from_input = k.shape(1);
-  const bool legacy_opt_in = (std::getenv("MFA_V6_BNHD_LEGACY") != nullptr);
+  const bool legacy_opt_in = get_bool_env("MFA_V6_BNHD_LEGACY");
   // Sprint B (v2.30): BHND rewriter now handles GQA (Hq % Hk == 0).
   const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
                         (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
@@ -1282,7 +1286,7 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
           "v6_nax_varlen_forward: invalid NAX tile configuration; require "
           "BQ>0, WM>0, BQ%(WM*16)==0, and BK a positive multiple of 32");
     if (const char* env = std::getenv("MFA_V6_NAX_SINGLE_OTILE")) {
-      if (std::atoi(env) == 0)
+      if (!parse_bool_env_value("MFA_V6_NAX_SINGLE_OTILE", env))
         throw std::invalid_argument(
             "v6_nax_varlen_forward: MFA_V6_NAX_SINGLE_OTILE=0 is unsupported; "
             "packed-varlen V6 NAX requires the single-Otile datapath");
@@ -1292,10 +1296,10 @@ class MFAV6VarlenForward : public mlx::core::Primitive {
     lse.set_data(mlx::core::allocator::malloc(lse.nbytes()));
 
     int axis_flags = 0x20 | 0x40;  // BHND + single-Otile.
-    if (const char* env = std::getenv("MFA_V6_FORCE_DYNAMIC_K"))
-      if (std::atoi(env) != 0) axis_flags |= 0x01;
+    if (get_bool_env("MFA_V6_FORCE_DYNAMIC_K")) axis_flags |= 0x01;
     if (const char* env = std::getenv("MFA_V6_RELAXED_PRECISION"))
-      if (std::atoi(env) == 0) axis_flags |= 0x02;
+      if (!parse_bool_env_value("MFA_V6_RELAXED_PRECISION", env))
+        axis_flags |= 0x02;
     if (const char* env = std::getenv("MFA_V6_UNROLL_MODE")) {
       const std::string mode(env);
       if (mode == "none") axis_flags |= 0x04;
@@ -1483,8 +1487,8 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
           ": cu_seqlens must be strictly increasing (empty segments unsupported)");
     if (causal && qlen > klen)
       throw std::invalid_argument(std::string(entry) +
-          ": causal q_len > k_len is unsupported; the lower-right mask has "
-          "fully masked leading query rows. Use split-concat SDPA for this segment.");
+          ": causal q_len > k_len is unsupported by this kernel; "
+          "the public path handles it via split-concat SDPA.");
     expected_tiles += (qlen + BQ - 1) / BQ;
     if (tometa[i + 1] != expected_tiles)
       throw std::invalid_argument(std::string(entry) +
@@ -1611,7 +1615,7 @@ void* compile_v6nax_backward_pipeline(
   std::string src = source_gen_fn(ker);
 
   // Optional source-dump hook.
-  if (dump_env_var && mlx_mfa::getenv_aliased(dump_env_var)) {
+  if (dump_env_var && mlx_mfa::get_bool_env_aliased(dump_env_var)) {
     const char* path = dump_path_env_var ? mlx_mfa::getenv_aliased(dump_path_env_var) : nullptr;
     const char* label = dump_label ? dump_label : kernel_fn_name;
     if (path) {

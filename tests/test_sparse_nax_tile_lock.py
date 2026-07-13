@@ -46,13 +46,29 @@ def _gen_block() -> str:
 def test_sparse_v6nax_tile_is_pinned(const, expected):
     """Config-fingerprint: the V6NAX sparse generator bakes the pinned tile constants.
     A drift (e.g. WM back to a tunable, or BK away from 32) fails CI."""
-    block = _gen_block()
-    m = re.search(rf"const int {const}\s*=\s*(\d+);", block)
-    assert m, f"could not find `const int {const} = ...;` in sparse_kernel_source_v6nax"
+    text = _SRC.read_text()
+    shared = {
+        "V6NAX_SPARSE_BQ": "kV6NAXSparseBQ",
+        "V6NAX_SPARSE_BK": "kV6NAXSparseBK",
+        "V6NAX_SPARSE_WM": "kV6NAXSparseWM",
+    }[const]
+    m = re.search(rf"constexpr int {shared}\s*=\s*(\d+);", text)
+    assert m, f"could not find shared sparse tile constant {shared}"
     got = int(m.group(1))
     assert got == expected, (
         f"sparse V6NAX tile drifted: {const}={got}, expected {expected} "
         f"(tile is structurally pinned — re-run the sparse-NAX-autotune before changing)")
+    block = _gen_block()
+    assert re.search(rf"const int {const}\s*=\s*{shared};", block), (
+        f"MSL generator no longer consumes shared host/source constant {shared}")
+
+
+def test_sparse_v6nax_host_dispatch_uses_shared_wm():
+    """Both O-only and O+LSE host grids consume the same WM as generated MSL."""
+    text = _SRC.read_text()
+    assert text.count("kV6NAXSparseWM * 32") == 2
+    assert "const int V6NAX_SPARSE_WM = 2" not in text
+    assert "constexpr int V6NAX_SPARSE_WM = 2" not in text
 
 
 def test_sparse_v6nax_no_wm_override_knob():

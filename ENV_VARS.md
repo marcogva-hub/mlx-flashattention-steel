@@ -4,6 +4,10 @@ All `MFA_*` env vars controlling dispatch and kernel configuration.
 Source of truth: `csrc/mfa_env.hpp` (cached values) + live reads in `mfa_attention.cpp`.
 M5/V6NAX tuning knobs are documented in `.doc-archive/docs/v6-nax/env-vars.md`.
 
+Boolean knobs accept exactly `0` or `1`; absence selects the documented
+default. Any other explicit value, including an empty string, raises at first
+access. `validate_env(strict=True)` also reports invalid values of known knobs.
+
 ## Dispatch Gates
 
 | Variable | Type | Default | Kernel | Cached | Description |
@@ -78,18 +82,18 @@ no advantage (3.1–4.4× slower than the routed NAX/SDPA default).
 |----------|------|---------|-------------|
 | `MFA_FORCE_SDPA_ROUTE` | bool | unset | Force SDPA routing on M5+ NAX regardless of shape/dtype (debug/benchmark override). *(documented repo review 2026-05)* |
 | `MFA_DISABLE_SDPA_ROUTE` | bool | unset | Disable the M5+ SDPA route; dispatch falls through to M3+/M1-M2 thresholds. *(documented repo review 2026-05)* |
-| `MFA_FORCE_D256_PATH` | str | unset | Force D=256 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
-| `MFA_FORCE_D512_PATH` | str | unset | Force D=512 auto route: `1`/`mfa` → MFA, `0`/`sdpa` → SDPA |
+| `MFA_FORCE_D256_PATH` | bool | unset | Force D=256 auto route: `1` → MFA, `0` → SDPA. Boolean values are strictly `0` or `1`. |
+| `MFA_FORCE_D512_PATH` | bool | unset | Force D=512 auto route: `1` → MFA, `0` → SDPA. Boolean values are strictly `0` or `1`. |
 | ~~`MFA_FORCE_NATIVE_BWD`~~ | — | — | **REMOVED v2.56.0.** Deprecated v2.50.0 ("target removal v2.51+"); removed after the deprecation cycle completed (5 minor versions of `DeprecationWarning`) — forced STEEL backward was dominated at every cell (V6NAX at D=64, SDPA-vjp at D=128; sprint-C Track 2). The env var is now inert. The STEEL backward kernel itself is retained (keep-all-paths) and reachable via the direct `_ext.mfa_steel_backward` binding; routing follows the benchmark-backed policy table. |
 | `MFA_FORCE_SAGE_DECODE` | str | unset | Force sage decode routing: `1` → sage, `0` → standard FA |
 | `MFA_LCSA_KERNEL_VERSION` | str | unset (shape-aware) | Sparse attention kernel version override. **Phase F (M-07)**: when unset, `decide_auto_version()` routes **D∈{64,128} → V2 (matmul2d) always** — the old `qL × kL × D ≥ 2.15e9` work-product gate is **RETIRED** (V1-scalar was never fastest; V1 kept only as the genuine fallback for D∉{64,128}). `=v1` forces V1 universally; `=v2` forces V2 universally. Unrecognised values fall through to shape-aware default. |
 | `MFA_ENABLE_V6_BACKWARD` | bool | unset (off) | **v2.37.0** (updated v2.51.0): opt-in for **D=128 only** — D=64 (causal + non-causal) is **default-on since v2.51.0** and needs no env var. Enables V6NAX NAX-direct backward kernels via `flash_attention()` autograd on M5+ eligible shapes (FP16/BF16, qL ≥ 2048). Requires default scale (1/sqrt(D)) — custom scale falls back per repo-review 2026-05 gate. **Path-dependent effect (audit B3/C2, verified by per-gradient byteΔ vs SDPA-vjp): DENSE D=128 backward → FULL-native dQ/dK/dV; SPARSE hybrid backward → NATIVE-dV ONLY (dQ/dK stay SDPA-vjp); full-native sparse needs `MFA_V6_BWD_SPARSE_NATIVE=1` + `bt≥64`.** |
-| `MFA_DISABLE_V6_BACKWARD` | bool | unset | **Phase II-0 / v2.51.0 (range reconciled H-03/M5)**: opt-OUT of the default-on V6NAX backward D=64 (causal + non-causal) promotion — default = **split-V6, canonical 2.16–3.05× vs SDPA-vjp** (M5 / MLX 0.31.2; qL>=2048, fp16/bf16, M5+; incl. GQA/MQA post shape-fix; supersedes the earlier 1.7-2.7x sub-range).  Set =1 to restore SDPA-vjp at that cell. |
+| `MFA_DISABLE_V6_BACKWARD` | bool | unset | Opt out of the default-on V6NAX backward D=64 route. Fresh public-path engagement measurement (2026-07-13, M5 Max / macOS 27 beta / MLX 0.31.2, qL=4096): **2.58–2.84× causal** and **2.05–2.14× non-causal** vs SDPA-vjp. Set `=1` to restore SDPA-vjp. |
 | `MFA_V6BWD_USE_FUSED` | bool | unset (split) | **v2.37.0**: with V6NAX backward enabled, choose the fused WM=1 dK/dV kernel (single dispatch) instead of the WM=4 multi-SG split (two dispatches).  Default off (multi-SG split, 1.7-2× faster).  Set =1 for fallback / benchmarking. |
 | `MFA_V6BWD_WM` | int | 4 | **v2.37.0**: WM for the multi-SG dK + dV split kernels.  Default 4 (Q-row partition with each SG owning 16 Q-rows).  Override for autoresearch sweeps. |
 | `MFA_V6BWDV_BQ`, `MFA_V6BWDV_BK`, `MFA_V6BWDV_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dV kernel (v2.37.0).  Researchers. |
 | `MFA_V6BWDK_BQ`, `MFA_V6BWDK_BK`, `MFA_V6BWDK_WM` | int | 64, 32, 4 | Per-kernel tile overrides for dK kernel (v2.37.0).  Researchers. |
-| `MFA_V6_BWD_KERNEL` | str | `auto` | **v2.39.0/v2.40.0-internal (corrected H-03/M5)**: V6NAX backward kernel mode selection.  `auto` → **split for every D** (D∈{64,128}); fused is NO LONGER the D=64 default (the earlier fused-BK16 edge was withdrawn — fused is now only parity-with-split, see PERF_CLAIMS).  `fused` → forced fused (opt-in; D ∈ {64, 128}; D=128 may regress 3-7%; D=64 BK16 only parity).  `split` → forced split-dKdV (works for any D ∈ {64, 128}; this is what `auto` resolves to).  `legacy_fused` → WM=1 fused (escape hatch for one release).  Default `auto` = split, empirically optimal. D=64 backward default = **split-V6, 2.16–3.05× vs SDPA-vjp** (M5 / MLX 0.31.2). |
+| `MFA_V6_BWD_KERNEL` | str | `auto` | V6NAX backward kernel mode selection. `auto` → **split for every D** (D∈{64,128}); `fused` → forced fused; `split` → forced split-dKdV; `legacy_fused` → WM=1 escape hatch. Fresh D64 split measurement: **2.58–2.84× causal**, **2.05–2.14× non-causal** vs SDPA-vjp (2026-07-13, M5 Max / macOS 27 beta / MLX 0.31.2, qL=4096). |
 | `MFA_V6_BWD_SPARSE_NATIVE` | bool | unset | **v2.50 Prompt 5d**: opt-in to full-native V6NAX backward sparse kernels (4 sparse kernels: dQ + dV + dK split + fused dKdV) instead of Prompt 5c hybrid orchestrator.  Default off (hybrid is production per Pattern #6 empirical bench — V6NAX NAX backward slower than Apple SDPA NAX on M5+).  Set `=1` for research/benchmark access.  See `.doc-archive/docs/v50/section-a-v3-empirical-verification.md`. |
 | `MFA_TOPK_BISECT` | bool | unset | **GHOST (campaign 2026-06 Track 0)**: not read by ANY code path — setting it is a no-op.  Bisection is the AUTO default; the live opt-out is `MFA_DISABLE_TOPK_BISECT`.  Row retained for historical reference only. |
 | `MFA_DISABLE_TOPK_BISECT` | bool | unset | **v2.50 Prompt 5c**: opt-out of Top-K bisection kernel AUTO default; falls back to Phase 3a legacy `mx.topk` path.  Use for exact-mx.topk-semantics or debugging. |
@@ -142,6 +146,22 @@ These knobs were live-read in `mlx_mfa` but missing from the registry/doc until 
 | Variable pattern | Type | Description |
 |-----------------|------|-------------|
 | `MFA_SPLITK_MAX_N_D{D}_C{0\|1}_A{0\|1}_W{0\|1}` | int | Per-config max N for split-K dispatch |
+
+## Expert NAX tile and source probes
+
+These knobs are research-only and do not change public routing. Tile values are
+positive integers; boolean values follow the global strict `0|1` contract.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MFA_GNA_NAX_BQ` / `MFA_GNA_NAX_BK` / `MFA_GNA_NAX_WM` | int | shape default | Expert GNA NAX tile override. |
+| `MFA_GNA_NAX_PRECOMPUTE_RANGE` | bool | `0` | Select the default-off `_pr1` range-precompute GNA variant. |
+| `MFA_GNA_NAX_SWIZZLE_LOG` | int | `0` | Expert GNA dispatch swizzle probe. |
+| `MFA_GNA_NAX_DUMP_PATH` | path | unset | Dump the generated GNA MSL and selected kernel name; debug only. |
+| `MFA_FFN_NAX_BM` / `MFA_FFN_NAX_BN` / `MFA_FFN_NAX_BK` / `MFA_FFN_NAX_WM` / `MFA_FFN_NAX_WN` | int | shape default | Expert FFN NAX tile overrides. |
+| `MFA_QMM_NAX_BM` / `MFA_QMM_NAX_BN` / `MFA_QMM_NAX_BK` / `MFA_QMM_NAX_WM` / `MFA_QMM_NAX_WN` | int | shape default | Expert quantized-matmul NAX tile overrides. |
+| `MFA_V6_NAX_D_SUBTILE` | int | head dimension | Expert head-dimension sub-tile probe; not public routing. |
+| `MFA_STEEL_MSL` | enum | unset | Developer-only STEEL MSL source selector. |
 
 ## V6NAX backward tile overrides + diagnostics (documented campaign 2026-06 Track 0)
 

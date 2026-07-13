@@ -37,6 +37,7 @@ from typing import Optional
 
 import mlx.core as mx
 from mlx_mfa.kv_cache import adapt_kv_cache
+from mlx_mfa._knobs import get_bool_env
 
 
 # CC-09 (audit): an inference context constructed with an off-spec head_dim or
@@ -61,7 +62,7 @@ def _warn_offspec(D: int, dtype, where: str) -> None:
         f"{where}: off-spec config — {'; '.join(reasons)}. Attention will run via the "
         f"SDPA fallback (no MFA/NAX acceleration). Set MFA_REQUIRE_NAX=1 to raise instead."
     )
-    if os.environ.get("MFA_REQUIRE_NAX", "").strip().lower() in ("1", "true", "yes"):
+    if get_bool_env("MFA_REQUIRE_NAX"):
         raise ValueError(msg)
     key = (where, int(D), str(dtype))
     if key not in _offspec_warned:
@@ -1281,7 +1282,7 @@ class TurboQuantPagedInferenceContext:
         #     and leaves them concrete for any later fused read.
         # All non-decode paths (fused N_q>1 / opt-out) keep the eager eval.
         _decode_branch = (q.shape[2] == 1
-                          and os.environ.get("MFA_DISABLE_TQ_DECODE_SDPA") != "1")
+                          and not get_bool_env("MFA_DISABLE_TQ_DECODE_SDPA"))
         _defer_mat = _decode_branch
         self.append(k_new, v_new, seq_id=seq_id, defer_pool_materialize=_defer_mat)
 
@@ -1309,7 +1310,7 @@ class TurboQuantPagedInferenceContext:
         # (its causal-offset semantics).  V reads the fp16 pool (always
         # maintained) — faster AND more accurate than packed V.
         if (q.shape[2] == 1
-                and os.environ.get("MFA_DISABLE_TQ_DECODE_SDPA") != "1"):
+                and not get_bool_env("MFA_DISABLE_TQ_DECODE_SDPA")):
             from mlx_mfa.tq_decode import tq_decode_attend
             if self.wht_in_kernel:
                 # Fused path would rotate in-kernel; this path needs the
@@ -1331,7 +1332,7 @@ class TurboQuantPagedInferenceContext:
                 raise ValueError(
                     "TurboQuantPagedInferenceContext.step: block_table must be "
                     f"int32 (the kernel reads it as int32); got {_bt_row.dtype}.")
-            if os.environ.get("MFA_PAGED_TRUST_INDICES") != "1" and _bt_row.size:
+            if not get_bool_env("MFA_PAGED_TRUST_INDICES") and _bt_row.size:
                 _nb_phys = int(self._k_pool.shape[0])
                 _probe = mx.stack([mx.min(_bt_row), mx.max(_bt_row)])
                 mx.eval(_probe)                       # single sync

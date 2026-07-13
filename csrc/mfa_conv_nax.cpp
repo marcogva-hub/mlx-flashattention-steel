@@ -11,6 +11,7 @@
 /// (Phase 1.1 D14 reference-pattern priority lesson).
 
 #include "mfa_conv_nax.hpp"
+#include "mfa_bool_env.hpp"
 
 #include <mlx/mlx.h>
 #include <mlx/fast.h>
@@ -544,9 +545,7 @@ mlx::core::array conv3d_nax_forward(
   // Opt-out: MFA_DISABLE_CONV3D_MPP=1 (build-phase opt-in flag
   // MFA_CONV3D_MPP=1 retained as a force-enable for diagnostics).
   {
-    const char* mpp_dis = std::getenv("MFA_DISABLE_CONV3D_MPP");
-    bool mpp_enabled =
-        !(mpp_dis != nullptr && std::string(mpp_dis) == "1");
+    const bool mpp_enabled = !get_bool_env("MFA_DISABLE_CONV3D_MPP");
     // III-1 (KD-7): bf16 admitted after the II-2R-style runtime probe
     // (variant implemented; rel err <= 0.9%; bench 1.4-2.7x vs the
     // pre-lift public bf16 path — Apple mx.conv3d via hook fallback —
@@ -607,8 +606,7 @@ mlx::core::array conv3d_nax_forward(
        pad.H_left == 0 && pad.H_right == 0 &&
        pad.W_left == 0 && pad.W_right == 0 &&
        sT == 1 && sH == 1 && sW == 1);
-  const char* no_fast = std::getenv("MFA_CONV_NAX_NO_FAST_PATH");
-  bool fast_path_disabled = (no_fast != nullptr && std::string(no_fast) == "1");
+  const bool fast_path_disabled = get_bool_env("MFA_CONV_NAX_NO_FAST_PATH");
   if (is_pointwise && !fast_path_disabled) {
     return dispatch_pointwise_fast_path(x, w, B, T, H, W, C_in, C_out);
   }

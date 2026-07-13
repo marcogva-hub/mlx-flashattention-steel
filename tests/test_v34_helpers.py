@@ -101,14 +101,14 @@ class TestV6NAXEligible:
         assert _v6nax_eligible(64, mx.float16, causal=False) is False
 
     def test_env_set_to_zero_returns_false(self, monkeypatch):
-        """Only env == "1" enables.  Any other value (including "0",
-        "false", "yes") is treated as not-set."""
+        """The explicit false value disables the opt-in."""
         monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "0")
         assert _v6nax_eligible(64, mx.float16, causal=False) is False
 
-    def test_env_set_to_yes_returns_false(self, monkeypatch):
+    def test_env_set_to_yes_raises(self, monkeypatch):
         monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "yes")
-        assert _v6nax_eligible(64, mx.float16, causal=False) is False
+        with pytest.raises(ValueError, match="must be '0' or '1'"):
+            _v6nax_eligible(64, mx.float16, causal=False)
 
 
 # ---------------------------------------------------------------------------

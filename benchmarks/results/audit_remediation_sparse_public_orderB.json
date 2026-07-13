@@ -1,0 +1,85 @@
+{
+  "schema": "mlx-mfa.final-routed-spots.v2",
+  "commit": "847af5f04b3cdf0da6202473d633489411daa6a3",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "arm": "public",
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1,
+    "dispatches_per_sample": 20
+  },
+  "row": {
+    "label": "sparse_bt32_d128_n4096",
+    "kind": "sparse",
+    "shape": {
+      "N": 4096,
+      "D": 128
+    },
+    "arm": "public",
+    "which_binary": {
+      "input_dtype": "mlx.core.float16",
+      "public": {
+        "trace": [
+          [
+            "v6nax_sparse",
+            "sparse_attention_nax BT=32"
+          ]
+        ],
+        "terminal": [
+          "v6nax_sparse",
+          "sparse_attention_nax BT=32"
+        ],
+        "output_dtype": "mlx.core.float16"
+      },
+      "baseline": {
+        "trace": [
+          [
+            "sdpa",
+            "backend=sdpa forced (plain)"
+          ]
+        ],
+        "terminal": [
+          "sdpa",
+          "backend=sdpa forced (plain)"
+        ],
+        "output_dtype": "mlx.core.float16",
+        "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+      },
+      "public_vs_baseline_max_abs": 0.00048828125,
+      "correction": {
+        "public": {
+          "cos_vs_fp32_oracle": 0.9999998807907104,
+          "finite": true
+        },
+        "baseline": {
+          "cos_vs_fp32_oracle": 1.0,
+          "finite": true
+        }
+      }
+    },
+    "correction": {
+      "public": {
+        "cos_vs_fp32_oracle": 0.9999998807907104,
+        "finite": true
+      },
+      "baseline": {
+        "cos_vs_fp32_oracle": 1.0,
+        "finite": true
+      }
+    },
+    "timing": {
+      "median_ms": 0.7939333008835092,
+      "p95_ms": 0.7963175000622869,
+      "samples_ms": [
+        0.7939333008835092,
+        0.7965875003719702,
+        0.7923041499452665,
+        0.7952374988235533,
+        0.7928292005090043
+      ],
+      "n": 5
+    }
+  }
+}

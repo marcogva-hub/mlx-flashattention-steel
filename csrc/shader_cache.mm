@@ -23,6 +23,7 @@
 #include "mfa_gna_fwd.hpp"
 #include "mfa_steel_paged_varlen_fwd.hpp"
 #include "mfa_steel_paged_varlen_tq_fwd.hpp"
+#include "mfa_bool_env.hpp"
 
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
@@ -67,7 +68,7 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
 static void* try_async_pipeline(const ShaderCache::KernelKey& key,
                                 void* raw_device) {
   using KT = ShaderCache::KernelKey::KernelType;
-  const bool ir_debug = (std::getenv("MFA_IR_INVESTIGATE") != nullptr);
+  const bool ir_debug = get_bool_env("MFA_IR_INVESTIGATE");
 
   // Only D=64/128 SteelForwardV2, f16 only, no extra features
   if (key.type != KT::SteelForwardV2) return nullptr;
@@ -75,7 +76,7 @@ static void* try_async_pipeline(const ShaderCache::KernelKey& key,
   if (key.dtype != 0) return nullptr;  // f16 only
   if (key.sparse || key.has_rope || key.has_softcap ||
       key.has_alibi || key.has_attn_bias || key.has_window) return nullptr;
-  if (std::getenv("MFA_DISABLE_ASYNC")) {
+  if (get_bool_env("MFA_DISABLE_ASYNC")) {
     if (ir_debug) {
       NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: disabled by MFA_DISABLE_ASYNC");
     }
@@ -350,8 +351,7 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
   }
 
   // Debug: set MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr.
-  if (const char* dbg = getenv("MFA_DEBUG_SHADERS")) {
-    (void)dbg;
+  if (get_bool_env("MFA_DEBUG_SHADERS")) {
     const char* type_str = "forward";
     if (key.type == KT::AttentionBackwardDQ)  type_str = "backwardDQ";
     if (key.type == KT::AttentionBackwardDKV) type_str = "backwardDKV";

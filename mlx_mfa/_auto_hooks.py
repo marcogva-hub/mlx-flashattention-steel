@@ -36,6 +36,8 @@ from typing import Any, Callable, Optional
 
 import mlx.core as mx
 
+from ._knobs import get_bool_env
+
 
 _HOOKS_INSTALLED = False
 _ORIGINAL_CONV_GENERAL: Optional[Callable] = None
@@ -241,7 +243,7 @@ def _conv3d_mpp_eligible(input, weight, pad_6tuple) -> bool:
     _conv3d_nax_eligible.
     """
     import os as _os
-    if _os.environ.get("MFA_DISABLE_CONV3D_MPP") == "1":
+    if get_bool_env("MFA_DISABLE_CONV3D_MPP"):
         return False  # MPP off -> bf16 would hit the broken legacy path
     if not hasattr(input, "shape") or len(input.shape) != 5:
         return False
@@ -329,7 +331,7 @@ def _try_conv3d_spatial_pad_and_slice(input, weight, pad_6tuple):
     Default-off because the measurements are beta3-indicative. The public gate
     can be revalidated and promoted independently on stable macOS.
     """
-    if os.environ.get("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE") != "1":
+    if not get_bool_env("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE"):
         return None
     if (not hasattr(input, "shape") or len(input.shape) != 5
             or not hasattr(weight, "shape") or len(weight.shape) != 5):
@@ -404,7 +406,7 @@ def _try_conv3d_pad_and_slice(input, weight, pad_6tuple):
     macOS re-validation (+ the coordinated dispatch-map/lock update, since it
     reroutes channel-misaligned conv3d off mx.conv_general).
     """
-    if os.environ.get("MFA_ENABLE_CONV3D_PAD_SLICE") != "1":
+    if not get_bool_env("MFA_ENABLE_CONV3D_PAD_SLICE"):
         return None
     if (not hasattr(input, "shape") or len(input.shape) != 5
             or not hasattr(weight, "shape") or len(weight.shape) != 5):
@@ -615,7 +617,7 @@ def _patched_conv_general(input, weight, stride=1, padding=0,
                 f"MFA_HOOK_VERBOSE=1 for the full traceback. (warned once)",
                 RuntimeWarning, stacklevel=2)
         import os as _os
-        if _os.environ.get("MFA_HOOK_VERBOSE") == "1" and _kind == "unexpected":
+        if get_bool_env("MFA_HOOK_VERBOSE") and _kind == "unexpected":
             import traceback as _tb, sys as _sys
             print("[mlx-mfa] conv3d_nax_forward unexpected fallback — full traceback:", file=_sys.stderr)
             _tb.print_exc()
@@ -685,7 +687,7 @@ def install_hooks() -> bool:
     if _HOOKS_INSTALLED:
         return False
 
-    if os.environ.get("MFA_DISABLE_AUTO_HOOKS") == "1":
+    if get_bool_env("MFA_DISABLE_AUTO_HOOKS"):
         _INSTALL_LOG.append("Auto-hooks DISABLED via MFA_DISABLE_AUTO_HOOKS=1")
         return False
 
@@ -744,6 +746,6 @@ def hooks_status() -> dict:
         "log": list(_INSTALL_LOG),
         "m5_plus": _is_m5_plus(),
         "auto_hooks_disabled_env": (
-            os.environ.get("MFA_DISABLE_AUTO_HOOKS") == "1"
+            get_bool_env("MFA_DISABLE_AUTO_HOOKS")
         ),
     }

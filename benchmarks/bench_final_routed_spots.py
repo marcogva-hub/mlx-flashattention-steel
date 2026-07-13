@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Public routed-path spot checks for the final consolidation table."""
+"""Public routed-path spot checks with blocking two-arm fingerprints.
+
+The timed SDPA arm always receives the same q/k/v dtype as the routed arm.
+Float32 is used only for the untimed correctness oracle.  A timing sample is
+refused unless both public and baseline terminals are captured and validated.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from benchmarks.bench_gna_nax import make_gna_mask
 SESSIONS = 5
 WARMUPS = 2
 DISPATCHES_PER_SAMPLE = 20
+CORRECTION_COS_MIN = 0.999
 
 
 def evaluate(value):
@@ -43,6 +49,73 @@ def cosine(a, b):
     x = mx.sum(af * bf) / mx.sqrt(mx.sum(af * af) * mx.sum(bf * bf))
     mx.eval(x)
     return float(x.item())
+
+
+def _dtype_name(value):
+    return str(value.dtype)
+
+
+def _terminal(trace):
+    return [item for item in trace if not item[1].startswith("[reentrant]")]
+
+
+def _require_fingerprints(*, label, input_dtype, public_trace, baseline_trace,
+                          expected_public, public_output, baseline_output,
+                          oracle_output):
+    """Validate both arms before allowing the caller to report timing."""
+    public_terminal = _terminal(public_trace)
+    baseline_terminal = _terminal(baseline_trace)
+    failures = []
+    if not public_terminal or public_terminal[-1][0] != expected_public:
+        failures.append(
+            f"public terminal must be {expected_public!r}, got {public_trace!r}")
+    if not baseline_terminal or baseline_terminal[-1][0] != "sdpa":
+        failures.append(
+            f"baseline terminal must be 'sdpa', got {baseline_trace!r}")
+    if _dtype_name(public_output) != input_dtype:
+        failures.append(
+            f"public output dtype {_dtype_name(public_output)} != input {input_dtype}")
+    if _dtype_name(baseline_output) != input_dtype:
+        failures.append(
+            f"baseline output dtype {_dtype_name(baseline_output)} != input {input_dtype}")
+
+    checks = {}
+    for arm_name, output in (("public", public_output), ("baseline", baseline_output)):
+        check = {
+            "cos_vs_fp32_oracle": cosine(output, oracle_output),
+            "finite": bool(mx.all(mx.isfinite(output)).item()),
+        }
+        checks[arm_name] = check
+        if check["cos_vs_fp32_oracle"] < CORRECTION_COS_MIN or not check["finite"]:
+            failures.append(f"{arm_name} correction failed: {check}")
+
+    public_vs_baseline = float(mx.max(mx.abs(
+        public_output.astype(mx.float32) - baseline_output.astype(mx.float32)
+    )).item())
+    if public_vs_baseline == 0.0:
+        failures.append(
+            "public and baseline outputs are byte-identical; distinct-path "
+            "engagement is not corroborated")
+    if failures:
+        raise RuntimeError(
+            f"{label}: refusing benchmark ratio because fingerprint/correction "
+            f"is incomplete: {'; '.join(failures)}")
+    return {
+        "input_dtype": input_dtype,
+        "public": {
+            "trace": public_trace,
+            "terminal": public_terminal[-1],
+            "output_dtype": _dtype_name(public_output),
+        },
+        "baseline": {
+            "trace": baseline_trace,
+            "terminal": baseline_terminal[-1],
+            "output_dtype": _dtype_name(baseline_output),
+            "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention",
+        },
+        "public_vs_baseline_max_abs": public_vs_baseline,
+        "correction": checks,
+    }
 
 
 def time_arm(fn):
@@ -69,9 +142,10 @@ def run(kind, arm):
         def public():
             return flash_attention(q, k, v, scale=scale, causal=False)
         expected = "nax_dense"
-        reference = lambda: mx.fast.scaled_dot_product_attention(
-            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale
-        )
+        def baseline():
+            return flash_attention(q, k, v, scale=scale, causal=False, backend="sdpa")
+        oracle = lambda: mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale)
         label = "dense_d128_n4096"
     elif kind == "sparse":
         q = mx.random.normal((1, 1, n, d)).astype(dtype)
@@ -80,14 +154,18 @@ def run(kind, arm):
         block_mask = make_sliding_window_mask(n, 128, head_dim=d)
         block_mask = block_mask.astype(mx.bool_)
         expanded = mx.repeat(mx.repeat(block_mask.astype(mx.float32), 32, -2), 32, -1)
-        bias = mx.where(expanded, mx.array(0.0, mx.float32), mx.array(-1e30, mx.float32))
+        oracle_bias = mx.where(
+            expanded, mx.array(0.0, mx.float32), mx.array(-1e30, mx.float32))
+        bias = oracle_bias.astype(dtype)
         def public():
             return flash_attention_sparse(q, k, v, block_mask, scale=scale, causal=False)
         expected = "v6nax_sparse"
-        reference = lambda: mx.fast.scaled_dot_product_attention(
+        def baseline():
+            return flash_attention(
+                q, k, v, scale=scale, causal=False, attn_bias=bias, backend="sdpa")
+        oracle = lambda: mx.fast.scaled_dot_product_attention(
             q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
-            scale=scale, mask=bias
-        )
+            scale=scale, mask=oracle_bias)
         label = "sparse_bt32_d128_n4096"
     elif kind == "gna":
         seq_shape = (4, 32, 32)
@@ -95,47 +173,51 @@ def run(kind, arm):
         k = mx.random.normal((1, 1, n, d)).astype(dtype)
         v = mx.random.normal((1, 1, n, d)).astype(dtype)
         window, stride = (1, 7, 7), (1, 1, 1)
-        mask = make_gna_mask(seq_shape, window, stride).astype(mx.float32)
+        oracle_mask = make_gna_mask(seq_shape, window, stride).astype(mx.float32)
+        mask = oracle_mask.astype(dtype)
         def public():
             return flash_attention_gna(q, k, v, seq_shape, window, stride, scale=scale)
         expected = "gna_v6nax"
-        reference = lambda: mx.fast.scaled_dot_product_attention(
+        def baseline():
+            return flash_attention(
+                q, k, v, scale=scale, causal=False, attn_bias=mask, backend="sdpa")
+        oracle = lambda: mx.fast.scaled_dot_product_attention(
             q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
-            scale=scale, mask=mask
-        )
+            scale=scale, mask=oracle_mask)
         label = "gna_d128_3d_n4096"
     else:
         raise ValueError(kind)
 
-    def baseline():
-        return reference()
-
-    if arm == "public":
-        with dtrace.capture() as trace:
-            probe = public()
-            evaluate(probe)
-        terminal_trace = [item for item in trace if not item[1].startswith("[reentrant]")]
-    else:
-        probe = baseline()
-        evaluate(probe)
-        trace = []
-        terminal_trace = []
-    ref = reference()
-    evaluate((probe, ref))
-    correction = {"cos": cosine(probe, ref),
-                  "finite": bool(mx.all(mx.isfinite(probe)).item())}
-    delta = float(mx.max(mx.abs(probe.astype(mx.float32) - ref.astype(mx.float32))).item())
-    if arm == "public" and (not terminal_trace or terminal_trace[-1][0] != expected):
-        raise RuntimeError(f"which-binary failed for {label}: {trace}")
-    if correction["cos"] < 0.999 or not correction["finite"] or (arm == "public" and delta == 0.0):
-        raise RuntimeError(f"correction/engagement failed for {label}: {correction}, delta={delta}")
+    with dtrace.capture() as public_trace:
+        public_probe = public()
+        evaluate(public_probe)
+    with dtrace.capture() as baseline_trace:
+        baseline_probe = baseline()
+        evaluate(baseline_probe)
+    oracle_probe = oracle()
+    evaluate((public_probe, baseline_probe, oracle_probe))
+    fingerprint = _require_fingerprints(
+        label=label,
+        input_dtype=_dtype_name(q),
+        public_trace=list(public_trace),
+        baseline_trace=list(baseline_trace),
+        expected_public=expected,
+        public_output=public_probe,
+        baseline_output=baseline_probe,
+        oracle_output=oracle_probe,
+    )
 
     timing = time_arm(public if arm == "public" else baseline)
-    print(f"{label} arm={arm}: median={timing['median_ms']:.3f}ms trace={terminal_trace}", flush=True)
+    print(
+        f"{label} arm={arm}: median={timing['median_ms']:.3f}ms "
+        f"public={fingerprint['public']['terminal']} "
+        f"baseline={fingerprint['baseline']['terminal']} "
+        f"dtype={fingerprint['input_dtype']}",
+        flush=True,
+    )
     return {"label": label, "kind": kind, "shape": {"N": n, "D": d},
-            "arm": arm, "which_binary": {"public_trace": trace, "terminal_trace": terminal_trace, "expected": expected,
-                             "public_vs_reference_max_abs": delta},
-            "correction": correction, "timing": timing}
+            "arm": arm, "which_binary": fingerprint,
+            "correction": fingerprint["correction"], "timing": timing}
 
 
 def main():
@@ -145,7 +227,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     row = run(args.kind, args.arm)
-    payload = {"schema": "mlx-mfa.final-routed-spots.v1",
+    payload = {"schema": "mlx-mfa.final-routed-spots.v2",
                "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                "mlx": importlib.metadata.version("mlx"), "platform": platform.platform(),
                "arm": args.arm,

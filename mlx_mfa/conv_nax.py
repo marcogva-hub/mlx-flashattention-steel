@@ -43,6 +43,8 @@ from __future__ import annotations
 from typing import Tuple, Optional
 import mlx.core as mx
 
+from ._knobs import get_bool_env
+
 
 # ---------------------------------------------------------------------
 # Cache for compiled kernels (ConvKey -> (im2col_kernel, matmul_kernel)).
@@ -551,7 +553,7 @@ def _conv_disable_fast_path() -> bool:
     (sanity), and by callers who need to bypass the fast path for any
     diagnostic reason.
     """
-    return os.environ.get("MFA_CONV_NAX_NO_FAST_PATH", "") == "1"
+    return bool(get_bool_env("MFA_CONV_NAX_NO_FAST_PATH"))
 
 
 def _make_pointwise_matmul_kernel(m_chunk: int, K: int, N: int, dtype):
@@ -948,7 +950,7 @@ def conv3d_nax_forward(
         padding, K_T_for_causal=K_T, causal_pad_t=causal_pad_t)
 
     # Diagnostic escape hatch: route through Phase 1.x Python orchestrator.
-    if os.environ.get("MFA_CONV_NAX_USE_PYTHON_LEGACY", "") == "1":
+    if get_bool_env("MFA_CONV_NAX_USE_PYTHON_LEGACY"):
         # The legacy orchestrator accepts the same padding form, plus
         # causal_pad_t kwarg.
         return _conv3d_nax_forward_python_legacy(

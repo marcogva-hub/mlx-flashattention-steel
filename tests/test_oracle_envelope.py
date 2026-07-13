@@ -5,10 +5,10 @@ shape-regime is checked against an INDEPENDENT fp32/fp64 numpy oracle, with a
 byteΔ-vs-SDPA engagement fingerprint proving which binary actually ran.  This
 turns README's "every kernel has an fp32 oracle lock" into a biting fact and is
 the completeness guard that would have caught CX-01 (varlen causal N_q<N_k was
-silently upper-left instead of the documented lower-right convention).
+violated the documented bottom-right-aligned, zero-clamped convention).
 
 The `varlen × causal × N_q<N_k` cell is the CX-01 completeness oracle — it MUST
-appear here and be lower-right-correct.
+appear here and follow the bottom-right-aligned, zero-clamped contract.
 
 Run `MFA_ENVELOPE_DUMP=1 .venv/bin/python -m pytest tests/test_oracle_envelope.py -q`
 to (also) regenerate the markdown table at audit/round3_remediation/oracle_envelope.md.
@@ -46,8 +46,8 @@ def _f64(a):
 def _oracle_dense(q, k, v, scale, causal):
     """Independent fp64 attention oracle, [B,H,Nq,D] / [B,H,Nk,D].
 
-    Causal offset is the documented mlx-mfa convention ``qL_off = max(0, Nk-Nq)``
-    (lower-right when Nq<Nk; standard upper-left clamped to Nk when Nq>=Nk) —
+    Causal offset is the documented mlx-mfa bottom-right-aligned, zero-clamped
+    convention ``qL_off = max(0, Nk-Nq)`` —
     identical to the dense host (`qL_off=(N<S)?(S-N):0`) and the paged/varlen
     `(qL<kL)?(kL-qL):0` siblings.
     """

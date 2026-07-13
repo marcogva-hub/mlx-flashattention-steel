@@ -41,7 +41,8 @@ from typing import Optional
 
 import mlx.core as mx
 
-from ._env_aliases import getenv_aliased
+from ._env_aliases import getenv_aliased, get_bool_env_aliased
+from ._knobs import get_bool_env
 
 # M-02: one-time guard for the old-calibration-schema invalidation warning.
 _WARNED_CALIB_SCHEMA: bool = False
@@ -172,7 +173,7 @@ _M5_NAX_DECODE_EDGE_ENVELOPES: dict[int, tuple[int, frozenset[int]]] = {
     16: (16384, frozenset({4, 8, 16})),
 }
 
-_verbose: bool = os.environ.get("MLX_MFA_VERBOSE_DISPATCH", "0") == "1"
+_verbose: bool = bool(get_bool_env("MLX_MFA_VERBOSE_DISPATCH"))
 
 # Native STEEL backward policy (targeted, benchmark-backed only).
 # 2026-03-12 targeted pass on M1 Max found 0/16 winning configs for:
@@ -304,40 +305,30 @@ def _forced_d256_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]
     """Return forced D=256 auto-route override when explicitly requested.
 
     Env:
-      MFA_FORCE_D256_PATH=1|mfa   -> force MFA for D=256 in backend='auto'
-      MFA_FORCE_D256_PATH=0|sdpa  -> force SDPA for D=256 in backend='auto'
+      MFA_FORCE_D256_PATH=1 -> force MFA for D=256 in backend='auto'
+      MFA_FORCE_D256_PATH=0 -> force SDPA for D=256 in backend='auto'
     """
     if backend != "auto" or head_dim != 256:
         return None
-    raw = os.environ.get("MFA_FORCE_D256_PATH")
+    raw = get_bool_env("MFA_FORCE_D256_PATH", default=None)
     if raw is None:
         return None
-    raw = raw.strip().lower()
-    if raw in {"1", "mfa"}:
-        return True
-    if raw in {"0", "sdpa"}:
-        return False
-    return None
+    return raw
 
 
 def _forced_d512_auto_decision(head_dim: int, *, backend: str) -> Optional[bool]:
     """Return forced D=512 auto-route override when explicitly requested.
 
     Env:
-      MFA_FORCE_D512_PATH=1|mfa   -> force MFA for D=512 in backend='auto'
-      MFA_FORCE_D512_PATH=0|sdpa  -> force SDPA for D=512 in backend='auto'
+      MFA_FORCE_D512_PATH=1 -> force MFA for D=512 in backend='auto'
+      MFA_FORCE_D512_PATH=0 -> force SDPA for D=512 in backend='auto'
     """
     if backend != "auto" or head_dim != 512:
         return None
-    raw = os.environ.get("MFA_FORCE_D512_PATH")
+    raw = get_bool_env("MFA_FORCE_D512_PATH", default=None)
     if raw is None:
         return None
-    raw = raw.strip().lower()
-    if raw in {"1", "mfa"}:
-        return True
-    if raw in {"0", "sdpa"}:
-        return False
-    return None
+    return raw
 
 
 # M-02 FIX (audit, 2026-06-21): the split-K calibration key serialized the
@@ -495,14 +486,14 @@ def _v6nax_backward_carveout(
         head_dim == 64
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
-        and getenv_aliased("MFA_DISABLE_V6_BACKWARD") != "1"
+        and not get_bool_env_aliased("MFA_DISABLE_V6_BACKWARD")
     ):
         return True
     if (
         head_dim in (64, 128)
         and seq_len >= 2048
         and dtype_key in ("float16", "bfloat16")
-        and getenv_aliased("MFA_ENABLE_V6_BACKWARD") == "1"
+        and get_bool_env_aliased("MFA_ENABLE_V6_BACKWARD")
     ):
         return True
     return False
@@ -567,13 +558,13 @@ def should_use_mfa(
         return False
 
     # v2.32.0 — explicit SDPA-routing overrides (highest priority after backend=).
-    force_sdpa = os.environ.get("MFA_FORCE_SDPA_ROUTE")
-    if force_sdpa == "1":
+    force_sdpa = get_bool_env("MFA_FORCE_SDPA_ROUTE", default=None)
+    if force_sdpa is True:
         if _verbose:
             print(f"[MFA dispatch] MFA_FORCE_SDPA_ROUTE=1 -> SDPA")
         return False
-    disable_sdpa = os.environ.get("MFA_DISABLE_SDPA_ROUTE")
-    if disable_sdpa == "1":
+    disable_sdpa = get_bool_env("MFA_DISABLE_SDPA_ROUTE", default=None)
+    if disable_sdpa is True:
         # Disable the v2.32.0 strategic SDPA routing; fall through to
         # M3+/legacy thresholds. Mainly for benchmarking / regression checks.
         has_nax = False
@@ -765,10 +756,10 @@ def should_use_splitk(
     M-02: ``window_left``/``window_right`` (the sliding-window bounds; -1 = no
     window) are now part of the calibration key so distinct windows don't collide.
     """
-    force = os.environ.get("MFA_FORCE_SPLITK")
-    if force == "0":
+    force = get_bool_env("MFA_FORCE_SPLITK", default=None)
+    if force is False:
         return False
-    if force == "1":
+    if force is True:
         return True
 
     key = _splitk_env_key(
@@ -873,10 +864,10 @@ def should_use_sage_decode(
         and (head_dim in (64, 128))
     )
 
-    force = os.environ.get("MFA_FORCE_SAGE_DECODE")
-    if force == "0":
+    force = get_bool_env("MFA_FORCE_SAGE_DECODE", default=None)
+    if force is False:
         return False
-    if force == "1":
+    if force is True:
         return supported
 
     if not supported:
