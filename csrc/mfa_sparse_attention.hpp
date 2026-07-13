@@ -49,7 +49,11 @@ mlx::core::array sparse_attention_forward(
     // Explicit kernel-path override. Empty string falls back to
     // MFA_LCSA_KERNEL_VERSION env var. Public legacy aliases remain
     // "v1"=scalar_fallback and "v2"=v6nax_sparse.
-    const std::string& kernel_version = "");
+    const std::string& kernel_version = "",
+    // Probe-only: preserve the V6NAX sparse kernel and its block-mask input,
+    // but derive sliding-window tile eligibility arithmetically.
+    bool structured_window_probe = false,
+    int structured_window_size = 0);
 
 /// v2.50 Prompt 5c Section A — sparse forward returning (O, L) with sparse-L.
 ///

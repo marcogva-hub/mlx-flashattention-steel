@@ -1323,9 +1323,12 @@ NB_MODULE(_ext, m) {
          int block_tile,
          bool causal,
          float scale,
-         const std::string& kernel_version) {
+         const std::string& kernel_version,
+         bool structured_window_probe,
+         int structured_window_size) {
         return mlx_mfa::sparse_attention_forward(
-            Q, K, V, block_mask, block_tile, causal, scale, kernel_version);
+            Q, K, V, block_mask, block_tile, causal, scale, kernel_version,
+            structured_window_probe, structured_window_size);
       },
       nb::arg("Q"), nb::arg("K"), nb::arg("V"),
       nb::arg("block_mask"),
@@ -1333,6 +1336,8 @@ NB_MODULE(_ext, m) {
       nb::arg("causal") = false,
       nb::arg("scale") = 0.0f,
       nb::arg("kernel_version") = std::string(""),
+      nb::arg("structured_window_probe") = false,
+      nb::arg("structured_window_size") = 0,
       "Sprint B block-sparse attention forward (NAX). "
       "Q/K/V: (B, H, L, D) f16. block_mask: (NQ, NK) bool. "
       "kernel_version param overrides MFA_LCSA_KERNEL_VERSION env "
