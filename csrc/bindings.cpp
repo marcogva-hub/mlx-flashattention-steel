@@ -29,6 +29,7 @@ std::string v6_nax_probe_forward_compile(int head_dim, int dtype_code);
 std::string v6nax_probe_source();
 std::string v6nax_probe_compile_test(void* mtl_device_raw);
 std::string mpp_int8_microbench();  // Phase II-2 kill-gate
+std::string mpp_int8_rect_microbench(bool int8_first);  // ITEM 6 Stage 1 rectangular gate
 std::string mpp_fp8_microbench();   // Rigel-on-M5 fp8/fp4 matmul2d characterization
 #endif
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
@@ -575,6 +576,9 @@ NB_MODULE(_ext, m) {
   m.def("mpp_int8_microbench", []() -> std::string {
     return mlx_mfa::mpp_int8_microbench();
   }, "Phase II-2 kill-gate: MPP matmul2d int8 vs fp16 sustained throughput at attention tiles.");
+  m.def("mpp_int8_rect_microbench", [](bool int8_first) -> std::string {
+    return mlx_mfa::mpp_int8_rect_microbench(int8_first);
+  }, "ITEM 6 Stage 1 dev-only rectangular int8 vs fp16 MPP probe.");
   m.def("mpp_fp8_microbench", []() -> std::string {
     return mlx_mfa::mpp_fp8_microbench();
   }, "Rigel-on-M5: MPP matmul2d fp8(E4M3/E5M2)/fp4/int8 vs fp16 throughput (Signal 1) + "

@@ -53,6 +53,7 @@
 #include <sstream>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 
 namespace mlx_mfa {
 
@@ -274,6 +275,151 @@ static double run_bench(void* mtl_device_raw, const std::string& src,
   return flops / med / 1e12;  // TFLOPS (or TOPS for int8)
 }
 
+// Rectangular, operand-backed probe for the Stage 1 gate.  The original
+// microbench intentionally measures one 64x64x128 tile; this variant keeps
+// the same MPP device-tensor path but exercises the requested M/N rectangles
+// and walks K in 128-wide tiles.  It is dev-only and is never called by a
+// public mlx-mfa surface.
+static std::string bench_kernel_rect_src(const char* in_ty, const char* acc_ty,
+                                         const char* fn_name, int reps,
+                                         int M, int N, int K) {
+  std::ostringstream ss;
+  ss << R"MSL(// MFA_REQUIRE_MSL4
+#include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+kernel void )MSL" << fn_name << R"MSL((
+    device )MSL" << in_ty << R"MSL(* A_buf [[buffer(0)]],
+    device )MSL" << in_ty << R"MSL(* B_buf [[buffer(1)]],
+    device )MSL" << acc_ty << R"MSL(* C_buf [[buffer(2)]],
+    uint3 tgid [[threadgroup_position_in_grid]])
+{
+    // tensor_inline supplies the extents missing from a tensor argument.  The
+    // coordinate convention is (columns, rows): A=[K,M], B=[N,K], C=[N,M].
+    auto A = tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>, tensor_inline>(
+        A_buf, dextents<int32_t, 2>( )MSL" << K << R"MSL(, )MSL" << M << R"MSL());
+    auto B = tensor<device )MSL" << in_ty << R"MSL(, dextents<int32_t, 2>, tensor_inline>(
+        B_buf, dextents<int32_t, 2>( )MSL" << N << R"MSL(, )MSL" << K << R"MSL());
+    auto C = tensor<device )MSL" << acc_ty << R"MSL(, dextents<int32_t, 2>, tensor_inline>(
+        C_buf, dextents<int32_t, 2>( )MSL" << N << R"MSL(, )MSL" << M << R"MSL());
+    constexpr auto desc = matmul2d_descriptor(
+        64, 64, 128, false, false, true,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroups<1>> op;
+    // MPP 2-D slice coordinates are (column, row).
+    auto mC = C.slice((int)tgid.x * 64, (int)tgid.y * 64);
+    for (int r = 0; r < )MSL" << reps << R"MSL(; ++r) {
+      for (int kt = 0; kt < )MSL" << (K / 128) << R"MSL(; ++kt) {
+        auto mA = A.slice(kt * 128, (int)tgid.y * 64);
+        auto mB = B.slice((int)tgid.x * 64, kt * 128);
+        op.run(mA, mB, mC);
+      }
+    }
+}
+)MSL";
+  return ss.str();
+}
+
+static double run_rect_bench(void* mtl_device_raw, const std::string& src,
+                             const char* fn_name, size_t elem_in,
+                             size_t elem_acc, int M, int N, int K, int reps,
+                             int iters, bool int8_output) {
+  if (M % 64 != 0 || N % 64 != 0 || K % 128 != 0) {
+    throw std::invalid_argument("rect probe requires M/N multiple of 64 and K multiple of 128");
+  }
+  id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device_raw;
+  void* pso_raw = ShaderCache::get().compile_shader(src, fn_name, mtl_device_raw);
+  id<MTLComputePipelineState> pso = (__bridge id<MTLComputePipelineState>)pso_raw;
+  id<MTLBuffer> bufA = [device newBufferWithLength:(size_t)M * K * elem_in
+                                           options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufB = [device newBufferWithLength:(size_t)K * N * elem_in
+                                           options:MTLResourceStorageModeShared];
+  id<MTLBuffer> bufC = [device newBufferWithLength:(size_t)M * N * elem_acc
+                                           options:MTLResourceStorageModeShared];
+  memset([bufA contents], 0x3C, (size_t)M * K * elem_in);
+  memset([bufB contents], 0x3C, (size_t)K * N * elem_in);
+  memset([bufC contents], 0, (size_t)M * N * elem_acc);
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  std::vector<double> times;
+  const int tiles_x = N / 64, tiles_y = M / 64;
+  for (int it = 0; it < iters + 3; ++it) {
+    memset([bufC contents], 0, (size_t)M * N * elem_acc);
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:bufA offset:0 atIndex:0];
+    [enc setBuffer:bufB offset:0 atIndex:1];
+    [enc setBuffer:bufC offset:0 atIndex:2];
+    [enc dispatchThreadgroups:MTLSizeMake(tiles_x, tiles_y, 1)
+        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if ([cb error]) {
+      throw std::runtime_error(std::string("rect dispatch error: ") +
+          [[[cb error] localizedDescription] UTF8String]);
+    }
+    if (it >= 3) times.push_back([cb GPUEndTime] - [cb GPUStartTime]);
+  }
+  const auto* out = static_cast<const uint8_t*>([bufC contents]);
+  if (int8_output) {
+    int32_t got = 0;
+    std::memcpy(&got, out, sizeof(got));
+    const int64_t expected = 60LL * 60LL * K * reps;
+    if (got != expected) {
+      throw std::runtime_error("rect int8 output mismatch: got " +
+          std::to_string(got) + " expected " + std::to_string(expected));
+    }
+  } else {
+    uint16_t bits = 0;
+    std::memcpy(&bits, out, sizeof(bits));
+    __fp16 got = 0;
+    std::memcpy(&got, &bits, sizeof(got));
+    const __fp16 input = [] {
+      uint16_t raw = 0x3C3C;
+      __fp16 value = 0;
+      std::memcpy(&value, &raw, sizeof(value));
+      return value;
+    }();
+    const float expected = float(input) * float(input) * float(K * reps);
+    if (!std::isfinite(float(got)) ||
+        std::abs(float(got) - expected) > std::max(1.0f, expected * 0.02f)) {
+      throw std::runtime_error("rect fp16 output mismatch: got " +
+          std::to_string(float(got)) + " expected " + std::to_string(expected));
+    }
+  }
+  std::sort(times.begin(), times.end());
+  const double med = times[times.size() / 2];
+  const double flops = 2.0 * (double)M * N * K * (double)reps;
+  return flops / med / 1e12;
+}
+
+static std::string run_rect_pair(void* mtl_device, int M, int N, int K,
+                                 int reps, int iters, const char* label,
+                                 bool int8_first) {
+  std::ostringstream out;
+  out << label << " M=" << M << " N=" << N << " K=" << K;
+  double fp16 = 0.0, int8 = 0.0;
+  auto measure_fp16 = [&] {
+    fp16 = run_rect_bench(
+        mtl_device, bench_kernel_rect_src("half", "half", "rect_f16", reps, M, N, K),
+        "rect_f16", 2, 2, M, N, K, reps, iters, false);
+  };
+  auto measure_int8 = [&] {
+    int8 = run_rect_bench(
+        mtl_device, bench_kernel_rect_src("int8_t", "int32_t", "rect_i8", reps, M, N, K),
+        "rect_i8", 1, 4, M, N, K, reps, iters, true);
+  };
+  if (int8_first) { measure_int8(); measure_fp16(); }
+  else { measure_fp16(); measure_int8(); }
+  out << " fp16_tflops=" << fp16 << " int8_tops=" << int8
+      << " ratio=" << (int8 / fp16);
+  return out.str();
+}
+
 std::string mpp_int8_microbench() {
   auto s = mlx::core::default_stream(mlx::core::Device::gpu);
   auto& d = mlx::core::metal::device(s.device);
@@ -354,6 +500,21 @@ std::string mpp_int8_microbench() {
   } catch (const std::exception& e) {
     return std::string("FAIL fp16 baseline: ") + e.what();
   }
+  return out.str();
+}
+
+std::string mpp_int8_rect_microbench(bool int8_first) {
+  auto s = mlx::core::default_stream(mlx::core::Device::gpu);
+  auto& d = mlx::core::metal::device(s.device);
+  void* mtl_device = d.mtl_device();
+  std::ostringstream out;
+  // The Python harness repeats this single-process probe in both arm orders
+  // for the required five sustained sessions.
+  out << "order=" << (int8_first ? "int8-first" : "fp16-first") << "\n";
+  // Twenty repeated MPP operations make the attention rectangle measurable;
+  // twenty timestamped command-buffer dispatches per arm are retained below.
+  out << run_rect_pair(mtl_device, 2048, 2048, 128, 20, 20, "attention", int8_first) << "\n";
+  out << run_rect_pair(mtl_device, 2048, 8960, 1536, 20, 20, "ffn_up", int8_first) << "\n";
   return out.str();
 }
 
