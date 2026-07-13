@@ -21,14 +21,15 @@ conv via `get_hook_stats()` executed/fallback counters.
 | `flash_attention` | `backend="auto"`, dense **D=64**, **causal & B·H≥4 & N≥`v3_min_N`(=4096)** | **NAX tier (M5): Apple SDPA** — `should_use_mfa(D=64,causal,has_nax=True)` returns False, so the "MFA primitive" carve-out does NOT engage; that real-kernel path only exists on the M3/M4 tier where `has_nax=False`. Backward: **V6 split** (`v6_nax_backward`, default-on D=64 qL≥2048), NOT SDPA-vjp. | **NAX tier: Δ=0.0 vs sdpa** (byteΔ=0 → SDPA fallback; M3/M4 tier: byteΔ>0 real MFA primitive) | routed-as-intended (M2/H-02 label fix: M5/NAX forward = SDPA byteΔ=0, math correct; the byteΔ>0 MFA-primitive case is the M3/M4 tier only; D=64 backward = V6 split by default) |
 | `flash_attention` | dense **D=512**, any auto shape | **Apple SDPA delegation** | terminal trace `sdpa`; direct V6 expert rejects D512 | routed-as-intended; no D512 MFA kernel |
 | `flash_attention` | `backend="mfa"`, dense | **simdgroup STEEL** (V2 default / V3 cond-auto) | Δ=1.9e-6 vs sdpa (real) | routed-as-intended (expert; legacy-on-M5) |
-| `flash_attention_sparse` | non-causal, **D∈{64,128}**, symmetric BT32, N≥2048, density < 0.78 on the public wrapper | **real V6 NAX sparse** | terminal trace `v6nax_sparse`; Δ≠0 vs masked SDPA | routed-as-intended |
-| `flash_attention_sparse` | causal, **D∈{64,128}**, symmetric BT32, qL=kL, **2048≤N≤8192**, density≤0.30, **B·H≤128** | **real V6 NAX causal-sparse** | terminal trace `v6nax_sparse`; fp32 masked oracle | β3 route; exact measured envelope |
-| `flash_attention_sparse` | causal outside the preceding N/density/B·H envelope | **dense Apple SDPA with mask** | terminal trace/fingerprint equals masked SDPA | conservative fallback |
+| `flash_attention_sparse` | non-causal fp16, symmetric BT32: **N=8192, B·H∈{1,4,12}, D∈{64,128}, d≤0.30**; or **4096≤N≤8192** with `(B·H,D,d)` in `{(12,128,≤0.30),(12,64,≤0.25),(4,128,≤0.05)}` | **real V6 NAX sparse** | terminal trace `v6nax_sparse`; Δ≠0 vs masked SDPA | β3 route; B·H only at measured values, N=4096 is a conservative entry threshold |
+| `flash_attention_sparse` | non-causal bf16, symmetric BT32, **4096≤N≤8192, B·H=12, D=128, d≤0.30** | **real V6 NAX sparse** | terminal trace `v6nax_sparse`; fp32 masked oracle | β3 route; only measured bf16 winning region |
+| `flash_attention_sparse` | causal fp16, symmetric BT32, qL=kL: **N4096/D128/B·H4/d≤0.10**, **N4096/D128/B·H12/d≤0.30**, or **N8192/D{64,128}/B·H12/d≤0.30** | **real V6 NAX causal-sparse** | terminal trace `v6nax_sparse`; fp32 masked oracle | β3 route; exact measured cells (D128/N8192 dominance cell re-measured 2026-07-14) |
+| `flash_attention_sparse` | causal bf16, symmetric BT32, qL=kL, **N4096/D128/B·H4/d≤0.10** | **real V6 NAX causal-sparse** | terminal trace `v6nax_sparse`; fp32 masked oracle | β3 route; exact measured bf16 cell |
+| `flash_attention_sparse` | outside the preceding sparse envelopes, including **N=2048**, unmeasured B·H, dtype or causal cells | **dense Apple SDPA with mask** | terminal trace/fingerprint equals masked SDPA | conservative fallback |
 | `flash_attention_sparse` | eligible BT64 mask | expand each block 2×2 to BT32, then **V6 NAX sparse** under the same causal/non-causal gates | terminal `v6nax_sparse`; byte-identical to native BT32 representation | routed-as-intended; BT64 kernel is not a distinct binary |
-| `flash_attention_sparse` | **D=128**, symmetric mask, density ≥ 0.78 (ceiling) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended (NAX loses near-dense) |
+| `flash_attention_sparse` | symmetric mask above its region-specific density ceiling (0.05/0.10/0.25/0.30) | **dense Apple SDPA** (density gate) | Δ=0.0 vs sdpa+bias | routed-as-intended |
 | `flash_attention_sparse` | **D=128**, asymmetric/custom mask (bt_q≠bt_k) OR mask_bytes<4096 | **dense Apple SDPA** | Δ=0.0 vs sdpa+bias; flat | routed-as-intended (residual SDPA edges) |
-| `flash_attention_sparse` | **D=64**, default (symmetric) | **real V2 NAX sparse** (since **Phase F**: V2 always, not V1) | Δ=3.8e-6; sloped; ~9× vs old V1 | **routed-as-intended (gotcha 2 FIXED — Phase F)** |
-| `flash_attention_sparse` | **D∈{64,128}**, **bf16**, symmetric, BT=32 | **real V2 NAX sparse** (since the bf16 fix; was the V1 scalar fallback) | bf16 Δ=3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA | **routed-as-intended (gotcha 4 FIXED)** |
+| `flash_attention_sparse` | D64 or bf16 outside the exact winning envelopes above | **dense Apple SDPA with mask** | terminal `sdpa` | conservative fallback; the V6NAX binary remains available directly |
 | `flash_attention_gna` | D=128 3D f16/bf16, N≥2048; D=64 3D f16/bf16, N≥4096 | **GNA V6 NAX** (`gna_v6nax`) | public dispatch trace; Δ≠0 vs masked SDPA | β3 route; STEEL/sparse fallback outside measured envelope |
 | `flash_attention` decode | qL=8, D64, GQA=8, non-causal, f16/bf16, **4096≤kL≤65536** | **MFA primitive decode** | terminal trace `mfa_primitive`, distinct from `sdpa` | β3 finite carveout |
 | `flash_attention` decode | qL=16, D64, GQA∈{4,8,16}, non-causal, f16/bf16, **16384≤kL≤65536** | **MFA primitive decode** | terminal trace `mfa_primitive`, distinct from `sdpa` | β3 finite carveout |
@@ -57,7 +58,7 @@ conv via `get_hook_stats()` executed/fallback counters.
    threshold `MFA_V6_DENSE_MIN_N`=2048, =0 forces all-N NAX).  D=64 + cross-attn + windowed +
    opt-out stay SDPA (NAX loses 1.17–1.22× at D=64).  `backend="mfa"` overrides to simdgroup STEEL (legacy-on-M5:
    SDPA 2–4× faster).
-2. **Sparse maker masks → symmetric → NAX (Phase F)** — built-in D=128 makers emit symmetric 32×32 (`masks.py::_bq_bk(128)=(32,32)`); the auto-route (`attention.py`, `bt_q==bt_k`) sends them to the real NAX kernel. Density gate: ≥ `_nax_sparse_density_ceiling()` (0.78, env `MFA_NAX_SPARSE_DENSITY_CEILING`) → SDPA fallback (NAX loses near-dense).
+2. **Sparse maker masks → symmetric → measured gate** — built-in masks emit symmetric 32×32, then `lcsa_nax._nax_sparse_route_viable()` applies the exact rows above. `MFA_NAX_SPARSE_DENSITY_CEILING` defaults to 0.30 and can only further restrict the canonical gate; it cannot widen an unmeasured region.
 3. **Sparse asymmetric/custom or small (<4096 bytes) → SDPA fallback** — `_sparse_fallback_sdpa_perhead` on M5+ (asymmetric STEEL kernel disabled by the `(long)p->NK` miscompile, `.doc-archive/docs/v6-nax/sparse-bug-investigation.md`; small masks excluded by NAX device-pointer lowering). Validator accepts EITHER geometry then exact-tile-splits to kernel geometry.
 4. **Sparse V1/V2 selection (Phase F)** — `decide_auto_version` routes D∈{64,128} → V2 (matmul2d) always; the old `qL*kL*D≥2^31` work-product gate is RETIRED (V1-scalar was never fastest). V1 kept only as the genuine fallback (D∉{64,128}).
 5. **Sparse backward hybrid gate** — `MFA_ENABLE_V6_BACKWARD=1` AND D∈{64,128} AND N≥2048 AND ndim==2 AND **bt≥64** (III-4 D16 fix); else dense SDPA-vjp.
@@ -65,10 +66,10 @@ conv via `get_hook_stats()` executed/fallback counters.
 
 ## Gotchas — status after Phase F (2026-06-18)
 
-1. **D=128 sparse + built-in maker → silent dense SDPA** — **FIXED (Phase F):** makers now emit symmetric 32×32 → NAX (1.7–4.2× at d<0.78). Residual SDPA only for asymmetric/custom, small (<4096 bytes), or dense (≥0.78) masks — all intentional now.
-2. **D=64 sparse → slow** — **FIXED (Phase F):** `decide_auto_version` routes D=64 → V2 (was V1 via the 2^31 gate); ~9× faster.
+1. **D=128 sparse + built-in maker → silent dense SDPA** — **SHAPE-DEPENDENT:** symmetric masks reach V6NAX only inside the hardened β3 gate; measured-loss/unmeasured cells intentionally delegate to SDPA.
+2. **D=64 sparse → slow scalar** — **KERNEL FIX RETAINED:** direct eligible V6 calls still select V6NAX rather than scalar, while the public gate now delegates measured-loss regions to SDPA.
 3. **Sparse backward is dense by default** — UNCHANGED (declined-on-perf, Pattern #6): `mx.grad(flash_attention_sparse)` gets the sparse forward win but a dense SDPA-vjp backward unless the opt-in env + bt≥64 is set. Mild (correct, just not sparse-accelerated).
-4. **bf16 sparse → slow V1 scalar fallback** — **FIXED (bf16-sparse-v2, 2026-06-18):** V2 eligibility was `&& is_f16`, so bf16 silently fell to V1 (up to ~50× slower than plain SDPA-with-mask — strictly dominated). The V2 `mma` is dtype-templated with fp32 accumulation, so removing the gate routes bf16 → V2 (faithful 3.3e-5 vs fp32 oracle; 1.2–6.5× vs SDPA, parity with fp16). Note: gotcha 2's "D=64 sparse FIXED (Phase F)" was only true for fp16; this closes the bf16 case. Locked by `tests/test_sparse_bf16_v2_lock.py`.
+4. **bf16 sparse → slow V1 scalar fallback** — **KERNEL FIX RETAINED:** direct V6 eligibility remains dtype-correct; public bf16 routes V6NAX only in the measured D128/B·H12 non-causal and D128/B·H4 causal regions, otherwise SDPA.
 
 No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyond these: backward=SDPA-vjp (intended), GNA=native (intended), decode=SDPA (intended, sync-floor regime), conv=NAX-when-eligible (intended).
 
@@ -76,8 +77,8 @@ No NEW catastrophic silent-fallbacks found in backward / GNA / paged / conv beyo
 
 After the gotcha-4 sparse fix, a full **(path × dtype) routing audit** fingerprinted the dispatched
 binary for `{fp16, bf16}` on every NAX path (Lesson #14 — runtime fingerprint, not source-trust).
-**Verdict: the sparse forward was the ONLY silent bf16 downgrade; all other NAX paths route bf16 ==
-fp16.** Per-path fingerprint:
+**Historical verdict:** the sparse forward was the only silent bf16-to-scalar downgrade. The
+kernel fix remains; the hardened public sparse gate is now intentionally dtype-specific. Per-path fingerprint:
 
 | Path | bf16 fingerprint | classification |
 |---|---|---|
@@ -85,7 +86,7 @@ fp16.** Per-path fingerprint:
 | Dense fwd D=64 (force/recompute) | NAX, Δ=1.5e-5 (≠0) | fast-path |
 | Dense backward **D=128** | SDPA-vjp (default; native D=128 bwd opt-in + slower) | by-design floor; symmetric |
 | Dense backward **D=64** native (default-on, N≥2048) | NATIVE bwd, terminal `v6_split_backward` vs forced-SDPA-vjp (both dtypes, causal + non-causal) | fast-path (**2.58–2.84× causal; 2.05–2.14× non-causal at qL4096**, 2026-07-13 public engagement harness; M5 Max / macOS 27 beta / MLX 0.31.2) |
-| Sparse fwd V2 | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 fix holds) |
+| Sparse fwd V2 (direct / public eligible region) | NAX, Δ=6.1e-5 vs forced-V1 | fast-path (gotcha-4 kernel fix holds; public gate is narrower) |
 | Sparse backward hybrid (opt-in) | runs, finite grad | by-design SDPA-vjp; symmetric |
 | conv3d NAX (MPP-eligible) | `executed.conv3d_nax_forward++`, 0 fallback | fast-path (auto-hook) |
 | conv3d legacy im2col (raw C++ only) | **loud raise** (`mfa_conv_nax.cpp` bf16 guard) | by-design loud (Rule 8); not auto-routed |

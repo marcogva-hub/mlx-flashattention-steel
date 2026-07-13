@@ -187,10 +187,10 @@ def test_sparse_D128_asymmetric_is_silent_sdpa_fallback():
 
 def test_sparse_D128_symmetric_is_real_nax_sparse():
     """D=128 + symmetric mask → real NAX sparse kernel (the reachable win)."""
-    B, H, N, D = 1, 4, 2048, 128
+    B, H, N, D = 1, 4, 4096, 128
     q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
     NB = N // 32  # bt=32 symmetric
-    m = np.zeros((NB, NB), bool); m[:, :NB // 4] = True; m = mx.array(m)
+    m = np.zeros((NB, NB), bool); m[:, :max(1, int(NB * 0.04))] = True; m = mx.array(m)
     o = flash_attention_sparse(q, k, v, m, scale=sc, causal=False)
     ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_block_bias(m, N, N))
     d = _delta(o, ref)
@@ -198,8 +198,8 @@ def test_sparse_D128_symmetric_is_real_nax_sparse():
 
 
 def test_sparse_D64_is_real_sparse():
-    """D=64 default (symmetric) → real sparse kernel (slow, but real — see report)."""
-    B, H, N, D = 1, 4, 2048, 64
+    """D=64 measured BH12/N4096 region → real sparse kernel."""
+    B, H, N, D = 1, 12, 4096, 64
     q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
     NB = N // 32
     m = np.zeros((NB, NB), bool); m[:, :NB // 4] = True; m = mx.array(m)

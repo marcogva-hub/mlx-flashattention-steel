@@ -64,7 +64,7 @@ class TestKnownWrongBinaryLockedAsSDPA:
     the old silent-fallback bug, but deliberate routing:
       (a) ASYMMETRIC / custom masks (bt_q != bt_k) — skip the symmetric auto-route;
       (b) SMALL masks (mask_bytes < 4096) — NAX device-pointer lowering excludes them;
-      (c) DENSE symmetric masks (density >= the 0.78 ceiling) — NAX loses, gate → SDPA.
+      (c) DENSE symmetric masks (above the region ceiling) — NAX loses, gate → SDPA.
     Byte-identity (Δ==0.0 vs SDPA) is the fingerprint. A flip means a routing
     drift that must be re-examined."""
 
@@ -94,12 +94,12 @@ class TestKnownWrongBinaryLockedAsSDPA:
             "small (mask_bytes<4096) D=128 sparse rerouted off SDPA — update lock")
 
     def test_dense_symmetric_d128_is_sdpa_via_density_gate(self):
-        # (c) DENSE symmetric mask (density >= 0.78 ceiling): the Phase-F density
+        # (c) DENSE symmetric mask (above the region ceiling): the hardened
         # gate routes it to the SDPA fallback (NAX loses when near-dense).
         B, H, N, D = 1, 4, 2048, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
         NB = N // 32
-        dm = np.random.default_rng(0).random((NB, NB)) < 0.90  # d~0.90 >= 0.78
+        dm = np.random.default_rng(0).random((NB, NB)) < 0.90
         m = mx.array(dm)
         o = flash_attention_sparse(q, k, v, m, scale=sc)
         ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
@@ -114,10 +114,10 @@ class TestFingerprintDisciplineDemo:
         """The CORRECT way to test the sparse kernel at D=128: a symmetric mask.
         Asserts a real distinct kernel ran (byteΔ>0 vs SDPA). Drift to the SDPA
         fallback would make byteΔ→0 and FAIL this — green-on-wrong-binary caught."""
-        B, H, N, D = 1, 4, 2048, 128
+        B, H, N, D = 1, 4, 4096, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
         NB = N // 32  # symmetric bt=32 → engages the real V-selected sparse kernel
-        m = np.zeros((NB, NB), bool); m[:, :NB // 4] = True; m = mx.array(m)
+        m = np.zeros((NB, NB), bool); m[:, :max(1, int(NB * 0.04))] = True; m = mx.array(m)
         o = flash_attention_sparse(q, k, v, m, scale=sc)
         sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
         d = _delta(o, sdpa)
@@ -130,9 +130,9 @@ class TestFingerprintDisciplineDemo:
         symmetric 32x32, low density) now routes to the real NAX-sparse kernel
         — NOT the old silent SDPA fallback. byteΔ>0 vs SDPA proves the fix; a
         drift back to SDPA (byteΔ→0) re-opens the gotcha-1 loss and FAILS here."""
-        B, H, N, D = 1, 4, 2048, 128
+        B, H, N, D = 1, 1, 8192, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
-        m = make_sliding_window_mask(N, window_size=256, head_dim=D)  # symmetric 64x64, d~0.25
+        m = make_sliding_window_mask(N, window_size=256, head_dim=D)
         o = flash_attention_sparse(q, k, v, m, scale=sc)
         sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
         d = _delta(o, sdpa)

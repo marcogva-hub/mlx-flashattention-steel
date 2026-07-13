@@ -132,8 +132,8 @@ class TestV6NAXSparseCorrectness:
         _assert_correct(q, k, v, mx.array(m), self.SC)
 
     def test_density_full(self):
-        # CC-17 (audit) — ROUTING-not-kernel cell: density=1.0 is ≥ the 0.78
-        # ceiling, so this routes to SDPA (byteΔ=0), the intended dense route
+        # CC-17 (audit) — ROUTING-not-kernel cell: density=1.0 is above every
+        # hardened region ceiling, so this routes to SDPA (byteΔ=0)
         # (locked by test_fingerprint_discipline dense-symmetric→SDPA).  It
         # asserts the dense route's correctness vs the fp32 oracle; the sparse V6NAX
         # kernel itself is engaged (byteΔ>0) by test_banded/_scattered/_density_min.

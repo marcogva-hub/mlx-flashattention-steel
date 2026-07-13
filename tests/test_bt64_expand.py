@@ -21,14 +21,19 @@ def _require_nax():
         pytest.skip("BT64 expansion requires M5/NAX")
 
 
-def _inputs(N=4096, D=64, seed=7):
+def _inputs(N=4096, D=128, H=4, seed=7):
     mx.random.seed(seed)
-    q = mx.random.normal((1, 1, N, D)).astype(mx.float16)
-    k = mx.random.normal((1, 1, N, D)).astype(mx.float16)
-    v = mx.random.normal((1, 1, N, D)).astype(mx.float16)
+    q = mx.random.normal((1, H, N, D)).astype(mx.float16)
+    k = mx.random.normal((1, H, N, D)).astype(mx.float16)
+    v = mx.random.normal((1, H, N, D)).astype(mx.float16)
     rng = np.random.default_rng(seed)
-    mask = rng.random((N // 64, N // 64)) < 0.10
+    blocks = N // 64
+    mask = np.zeros((blocks, blocks), dtype=np.bool_)
     mask[:, 0] = True
+    target = max(int(np.floor(0.04 * blocks * blocks)), int(mask.sum()))
+    candidates = np.flatnonzero(~mask.reshape(-1))
+    rng.shuffle(candidates)
+    mask.reshape(-1)[candidates[:target - int(mask.sum())]] = True
     mask64 = mx.array(mask)
     mask32 = mx.repeat(mx.repeat(mask64, 2, axis=-2), 2, axis=-1)
     mx.eval(q, k, v, mask64, mask32)
@@ -83,7 +88,7 @@ def test_bt64_public_expansion_is_distinct_from_forced_scalar(monkeypatch):
 
 def test_bt64_outside_nax_window_keeps_scalar_direct_path():
     _require_nax()
-    q, k, v, _, _ = _inputs(N=4096)
+    q, k, v, _, _ = _inputs(N=4096, D=64, H=1)
     mask64 = mx.ones((4096 // 64, 4096 // 64), dtype=mx.bool_)
     scale = 1.0 / math.sqrt(q.shape[-1])
     with dtrace.capture() as trace:

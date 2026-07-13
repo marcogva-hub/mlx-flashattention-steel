@@ -71,8 +71,8 @@ from 32×16 (superset → denser → not faithful). See `dispatch-map.md` §Phas
   per-head block-expanded bias. byte-identical to `mx.fast.sdpa` (Δ=0.0). Reason: the asymmetric STEEL
   kernel is disabled by the `(long)p->NK` compiler miscompile (`.doc-archive/docs/v6-nax/sparse-bug-investigation.md`).
   [V] **Gotcha 1 status:** since Phase F the built-in D=128 makers emit symmetric 32×32 → NAX (they no
-  longer hit this fallback); the residual SDPA path now only applies to genuinely asymmetric/custom masks
-  or masks <4096 bytes, or near-dense masks (density ≥ ceiling 0.78) — all intentional. See `dispatch-map.md`.
+  longer hit this fallback when the hardened beta-3 gate accepts them); the residual SDPA path applies to
+  genuinely asymmetric/custom masks, masks <4096 bytes, and every cell outside that gate. See `dispatch-map.md`.
 - `_sparse_fallback_sdpa`: ndim-3/4 cross-head-union fallback. [V]
 
 ## 5. Sparse backward
@@ -85,11 +85,10 @@ from 32×16 (superset → denser → not faithful). See `dispatch-map.md` §Phas
 
 ## 6. Routing status (dispatch-map cells, after Phase F + bf16 fix)
 
-D=128 symmetric (incl. built-in makers) → V2 matmul2d (the 1.7–4.2× win, **gotcha 1 FIXED**); D=128
-asymmetric/custom or <4096-byte or density≥0.78 → SDPA fallback (intentional); D=64 → V2 always
-(**gotcha 2 FIXED** — `decide_auto_version` retired the 2³¹ gate, ~9× vs old V1); bf16 symmetric → V2
-(**gotcha 4 FIXED**, was the ~50× V1 scalar); backward → SDPA-vjp (gotcha 3, by design). V1 scalar is
-now only the genuine D∉{64,128} fallback. See `dispatch-map.md`.
+D=64/128 symmetric masks route V2 matmul2d only inside the hardened beta-3 gate; asymmetric/custom,
+<4096-byte, measured-loss, and unmeasured cells use SDPA. Direct eligible D64/bf16 calls retain the
+V6NAX kernel fixes rather than falling to the old scalar path. Backward defaults to SDPA-vjp (gotcha 3,
+by design). V1 scalar remains the genuine direct fallback outside V6NAX capability. See `dispatch-map.md`.
 
 ## 7. Comment sweep (B1, comment-only fixes)
 - `mfa_sparse_attention.cpp:13` "Phase 1.3 *will* swap … matmul2d" → corrected (the swap is DONE in V2).

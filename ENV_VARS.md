@@ -19,7 +19,7 @@ access. `validate_env(strict=True)` also reports invalid values of known knobs.
 | `MFA_FORCE_SPLITK` | tri | unset | V2-SK | No | -1=heuristic(unset), 0=disable, 1=force |
 | `MFA_DISABLE_V6_DENSE` | bool | unset | V6-NAX | No | Opt out of the M5 dense D=128 NAX matmul2d forward route (stay SDPA) |
 | `MFA_V6_DENSE_MIN_N` | int | 2048 | V6-NAX | No | Min N for the dense D=128 NAX forward route (0 = force all-N NAX) |
-| `MFA_NAX_SPARSE_DENSITY_CEILING` | float | 0.78 | Sparse | No | Mask-density at/above which sparse routes to SDPA instead of the V2 NAX-sparse kernel |
+| `MFA_NAX_SPARSE_DENSITY_CEILING` | float | 0.30 | Sparse | No | Further-restrict-only density cap inside the measured β3 V6NAX-sparse gate; it cannot widen the canonical shape/dtype envelope |
 | `MFA_PAGED_TRUST_INDICES` | bool | unset | Paged | No | Skip the host-side `block_table`/`seq_lens` value-range check on the paged decode hot path (eliminates a per-call device sync; the kernel still bounds-guards every physical block, so OOB stays memory-safe but no longer raises early). For high-frequency loops whose metadata is already valid. |
 | `MFA_VARLEN_TRUST_METADATA` | bool | unset | Varlen | No | Skip the host-side `cu_seqlens`/`tile_offsets` **value** validation (monotonic, `[0]==0`, final-sum) on the varlen forwards (eliminates a per-call device sync that reads the small metadata arrays). Mirrors `MFA_PAGED_TRUST_INDICES`; for callers whose varlen metadata is already valid. Default (unset) validates and raises on malformed metadata to prevent silent finite-wrong output. |
 | `MFA_HOOK_VERBOSE` | bool | unset | Auto-hooks | No | Verbose logging of the `mx.*` auto-hook install/dispatch (debug) |

@@ -125,17 +125,15 @@ _ext_avail_cached: Optional[bool] = None
 _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
-# Audit Phase F (2026-06-18): symmetric-bt NAX-sparse beats Apple SDPA only up to
-# a density crossover (Phase E measured ~d=0.78 on M5/26.6, D=128 N4096: NAX
-# 4.16x@d=0.06 → 1.17x@d=0.75 → 0.93x SLOWER @d=1.0). Above the ceiling the
-# symmetric-bt auto-route falls through to the SDPA-bias fallback (correct + faster
-# when the mask is near-dense). Env-overridable per Rule 3 (default = E's crossover).
+# Optional further restriction inside the canonical β3 sparse route. The env
+# cannot widen `_nax_sparse_route_viable`; default 0.30 is the largest density in
+# the hardened same-dtype map (2026-07-13, MLX 0.31.2, macOS 27 beta).
 def _nax_sparse_density_ceiling() -> float:
     import os as _os
     try:
-        return float(_os.environ.get("MFA_NAX_SPARSE_DENSITY_CEILING", "0.78"))
+        return float(_os.environ.get("MFA_NAX_SPARSE_DENSITY_CEILING", "0.30"))
     except ValueError:
-        return 0.78
+        return 0.30
 
 # CP1: dispatch decision cache — keyed by shape, head topology, causal/device,
 # dtype, window_size, sparse.  Eliminates should_use_mfa() call overhead on
@@ -3459,7 +3457,8 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
         if bt == 64:
             from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
             forward_mask, forward_bt, _ = _expand_bt64_for_v6nax(
-                q, k, block_mask, bt, causal=causal
+                q, k, block_mask, bt, causal=causal,
+                require_public_route=False,
             )
         O, L = sparse_attention_nax_with_lse(
             q, k, v, forward_mask,
@@ -3576,7 +3575,8 @@ def _make_v6nax_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
         if bt == 64:
             from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
             forward_mask, forward_bt, _ = _expand_bt64_for_v6nax(
-                q, k, block_mask, bt, causal=causal
+                q, k, block_mask, bt, causal=causal,
+                require_public_route=False,
             )
         O, L = sparse_attention_nax_with_lse(
             q, k, v, forward_mask,
@@ -3865,23 +3865,21 @@ def flash_attention_sparse(
                             return _v6nax_sparse_hybrid_vjp(
                                 q, k, v, block_mask, bt_q, scale, causal
                             )
-                        # Audit Phase F (2026-06-18) + CC causal-routing
-                        # follow-up (2026-07-10): density/shape gate.
-                        # Non-causal keeps the historical crossover ceiling.
-                        # Causal uses the stricter β3-measured V6NAX sparse
-                        # default-on window from `lcsa_nax`:
-                        # BT=32, 2048≤N≤8192, D∈{64,128}, density≤0.3,
-                        # B·H≤128.  B·H>128 and stable macOS remain
-                        # uncharacterized; keep those on SDPA.
+                        # Hardened same-dtype sparse map (2026-07-13): both
+                        # causal and non-causal use the canonical shape/dtype/
+                        # density gate. The env ceiling can only restrict it.
                         _density = float(
                             mx.mean(block_mask.astype(mx.float32)).item())
-                        if causal:
-                            from mlx_mfa.lcsa_nax import _nax_sparse_route_viable
-                            _route_nax = _nax_sparse_route_viable(
-                                q, k, bt_q, _density, causal=True)
-                        else:
-                            _route_nax = _density < _nax_sparse_density_ceiling()
+                        from mlx_mfa.lcsa_nax import _nax_sparse_route_viable
+                        _route_nax = (
+                            _nax_sparse_route_viable(
+                                q, k, bt_q, _density, causal=causal)
+                            and _density <= _nax_sparse_density_ceiling()
+                        )
                         if not _route_nax:
+                            _dtrace.record(
+                                "sdpa", "sparse outside hardened beta-3 gate"
+                            )
                             return _sparse_fallback_sdpa_perhead(
                                 q, k, v, block_mask, scale, causal
                             )

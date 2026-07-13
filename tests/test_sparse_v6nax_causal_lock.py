@@ -102,8 +102,8 @@ def test_v6nax_sparse_causal_matches_fp32_and_fingerprints(dtype, D, density):
     assert cos >= 0.999, f"causal V6NAX sparse cosine {cos:.6f} below 0.999"
 
 
-def test_flash_attention_sparse_causal_default_routes_v6nax_binary():
-    """Public default route: eligible causal sparse reaches V6NAX, not scalar/SDPA."""
+def test_flash_attention_sparse_causal_n2048_delegates_to_sdpa():
+    """Hardened map: the measured-loss N=2048 causal cell delegates to SDPA."""
     sparse_attention_forward = _require_m5_ext()
     mx.random.seed(777)
     B, H, L, D, BT = 1, 1, 2048, 64, 32
@@ -124,9 +124,9 @@ def test_flash_attention_sparse_causal_default_routes_v6nax_binary():
     mx.eval(out_public, out_v6, out_scalar, out_sdpa)
 
     public32 = out_public.astype(mx.float32)
+    sdpa_delta = float(mx.max(mx.abs(public32 - out_sdpa.astype(mx.float32))).item())
     v6_delta = float(mx.max(mx.abs(public32 - out_v6.astype(mx.float32))).item())
     scalar_delta = float(mx.max(mx.abs(public32 - out_scalar.astype(mx.float32))).item())
-    sdpa_delta = float(mx.max(mx.abs(public32 - out_sdpa.astype(mx.float32))).item())
-    assert v6_delta == 0.0, "public causal sparse route did not match direct V6NAX"
-    assert scalar_delta > 0.0, "public causal sparse route collapsed to scalar fallback"
-    assert sdpa_delta > 0.0, "public causal sparse route collapsed to SDPA+bias"
+    assert sdpa_delta == 0.0, "N=2048 causal sparse did not delegate to SDPA"
+    assert v6_delta > 0.0, "N=2048 causal sparse unexpectedly remained on V6NAX"
+    assert scalar_delta > 0.0, "N=2048 causal sparse collapsed to scalar fallback"

@@ -1618,10 +1618,9 @@ class TestSparseM5PlusFastFallback:
         """Sliding-window D=128 sparse output matches the SDPA+float-bias ref.
 
         Audit Phase F (2026-06-18): this sliding-window D=128 mask is now
-        SYMMETRIC 32x32 (was 32x16) and routes to the M5+ NAX-sparse kernel
-        (low density ~0.13 < the 0.78 density ceiling), NOT the SDPA fast-
-        fallback. NAX is a distinct kernel from SDPA, so the bar relaxes from
-        bit-exact to NAX-grade (rmse < 1e-3 vs the SDPA+bias reference). The
+        SYMMETRIC 32x32 (was 32x16). Routing now follows the hardened beta-3
+        shape/dtype/density gate. NAX is a distinct kernel from SDPA, so the bar
+        is NAX-grade (rmse < 1e-3 vs the SDPA+bias reference) when engaged. The
         cached-float-bias fast-fallback this test originally guarded is still
         exercised by DENSE / asymmetric masks (see the perf-guard test).
         """

@@ -22,6 +22,7 @@ import numpy as np
 import mlx.core as mx
 import pytest
 
+from mlx_mfa import _dispatch_trace as dtrace
 from mlx_mfa import flash_attention_sparse
 from mlx_mfa.attention import _get_is_m5_plus_cached
 
@@ -145,18 +146,25 @@ def test_lse_variant_reaches_v6nax_for_both_dtypes():
         assert trace and trace[-1][0] == "v6nax_sparse_lse", trace
 
 
-@pytest.mark.parametrize("D", [64, 128])
-def test_bf16_public_path_routes_to_real_sparse_kernel(D):
-    """End-to-end (the user path): flash_attention_sparse with a bf16 symmetric mask
-    runs a REAL distinct sparse kernel (byteΔ>0 vs SDPA), not the SDPA fallback."""
+@pytest.mark.parametrize(
+    "D,H,N,density,expected",
+    [
+        (64, 4, 2048, 0.25, "sdpa"),
+        (128, 12, 4096, 0.15, "v6nax_sparse"),
+    ],
+)
+def test_bf16_public_path_matches_hardened_gate(D, H, N, density, expected):
+    """Public bf16 routes only its measured winning region to V6NAX."""
     mx.random.seed(2)
-    B, H, N = 1, 4, 2048
+    B = 1
     sc = 1.0 / math.sqrt(D)
     f = lambda: (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(mx.bfloat16)
     q, k, v = f(), f(), f()
-    mask = _sym_mask(N, density=0.25)
+    mask = _sym_mask(N, density=density)
     mx.eval(q, k, v, mask)
-    o = flash_attention_sparse(q, k, v, mask, scale=sc)
+    with dtrace.capture() as trace:
+        o = flash_attention_sparse(q, k, v, mask, scale=sc)
+        mx.eval(o)
     ref = _fp32_oracle(q, k, v, mask, sc)
     d_oracle = _delta(o, ref)
     full = np.repeat(np.repeat(np.array(mask), N // mask.shape[0], 0), N // mask.shape[1], 1)
@@ -164,6 +172,9 @@ def test_bf16_public_path_routes_to_real_sparse_kernel(D):
     sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=bias)
     d_sdpa = _delta(o, sdpa)
     assert d_oracle < 5e-3, f"bf16 public-path sparse wrong vs fp32 oracle (Δ={d_oracle:.2e})"
-    assert d_sdpa > 0.0, (
-        "bf16 symmetric sparse is byte-identical to SDPA — it drifted to the SDPA "
-        "fallback instead of the real V2/NAX kernel (WRONG BINARY).")
+    terminal = [event for event in trace if not event[1].startswith("[reentrant]")]
+    assert terminal and terminal[-1][0] == expected, trace
+    if expected == "v6nax_sparse":
+        assert d_sdpa > 0.0, "eligible bf16 cell did not run a distinct V6NAX binary"
+    else:
+        assert d_sdpa == 0.0, "excluded bf16 cell did not delegate byte-identically"

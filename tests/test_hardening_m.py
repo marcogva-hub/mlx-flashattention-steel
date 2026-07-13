@@ -4,10 +4,10 @@
 
 Round-9: the classifier's `make_* → helper` name rule hid the 24th public
 computational entry (make_shared_prefix_cache, which calls flash_attention and
-returns attention). And L's "native-route" cells (threshold=1.0, all-true mask
-density=1.0, strict `density < threshold`) actually ran SDPA. The native sparse
-kernel is f16/bf16-only → f32 was density-dependent (SDPA ran, native raised);
-now f32 routes to SDPA regardless of density.
+returns attention). The sparse checks use a cell inside the hardened beta-3
+gate and prove the secondary density threshold genuinely changes the route.
+The native sparse kernel is f16/bf16-only; f32 routes to SDPA regardless of
+density.
 """
 import math
 import importlib.util
@@ -75,10 +75,8 @@ def test_prefix_cache_determinism():
 
 
 # ── CX-R9-02: native-route engagement + f32 contract ────────────────────────────
-# N=2048 is the BT-aware NAX-sparse min-N (SPARSE_NAX_MIN_N): the native route
-# engages only in the viable window (BT=32, N≥2048, D∈{64,128}); N<2048 is noisy
-# parity → conservatively SDPA-routed. (Was 1024, which now correctly routes SDPA.)
-_HQ, _HK, _N, _D = 8, 2, 2048, 128
+# Measured winning region: N4096, B·H4, D128, density<=0.05.
+_HQ, _HK, _N, _D = 4, 2, 4096, 128
 _SC = 1.0 / math.sqrt(_D)
 _BT = 32
 _NT = (_N + _BT - 1) // _BT
@@ -94,32 +92,33 @@ def _sq(dt=mx.float16):
 
 
 def _mask():
-    return mx.ones((_HQ, _NT, _NT), dtype=mx.bool_)
+    data = np.zeros((_HQ, _NT, _NT), dtype=np.bool_)
+    data[:, :, :max(1, int(_NT * 0.04))] = True
+    return mx.array(data)
 
 
 def test_native_route_actually_engages():
-    # all-true mask density = 1.0; threshold 1.01 selects native (strict <).
+    # The canonical gate accepts d~0.04; the legacy threshold can only narrow.
     q, k, v = _sq()
-    o_sdpa = sad(q, k, v, _mask(), block_tile=_BT, scale=_SC, density_threshold=1.0)
-    o_nat = sad(q, k, v, _mask(), block_tile=_BT, scale=_SC, density_threshold=1.01)
+    o_sdpa = sad(q, k, v, _mask(), block_tile=_BT, scale=_SC, density_threshold=0.03)
+    o_nat = sad(q, k, v, _mask(), block_tile=_BT, scale=_SC, density_threshold=0.05)
     mx.eval(o_sdpa, o_nat)
     delta = float(np.max(np.abs(_f64(o_sdpa) - _f64(o_nat))))
     assert delta > 0.0, "native route did not engage (byteΔ=0 ⇒ same path as SDPA)"
-    # native still oracle-correct
-    qf, kf, vf = _f64(q), _f64(k), _f64(v)
-    kk, vv = np.repeat(kf, _HQ // _HK, 1), np.repeat(vf, _HQ // _HK, 1)
-    s = np.einsum("bhnd,bhmd->bhnm", qf, kk) * _SC
-    s -= s.max(-1, keepdims=True)
-    p = np.exp(s); p /= p.sum(-1, keepdims=True)
-    ref = np.einsum("bhnm,bhmd->bhnd", p, vv)
-    rel = float(np.max(np.abs(_f64(o_nat) - ref)) / (np.max(np.abs(ref)) + 1e-9))
+    # Native remains correct against the same-dtype masked SDPA reference.
+    from mlx_mfa.lcsa_nax import _bool_mask_to_float_bias
+    bias = _bool_mask_to_float_bias(_mask(), _BT, _N, _N, q.dtype)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=_SC, mask=bias)
+    mx.eval(ref)
+    rel = float(np.max(np.abs(_f64(o_nat) - _f64(ref))) /
+                (np.max(np.abs(_f64(ref))) + 1e-9))
     assert rel < 5e-3, f"native relerr {rel:.3e}"
 
 
 def test_f32_contract_consistent_not_density_dependent():
     # f32 must route to SDPA in BOTH density regimes (was: SDPA ran, native raised).
-    o_a = sad(*_sq(mx.float32), _mask(), block_tile=_BT, scale=_SC, density_threshold=1.0)
-    o_b = sad(*_sq(mx.float32), _mask(), block_tile=_BT, scale=_SC, density_threshold=1.01)
+    o_a = sad(*_sq(mx.float32), _mask(), block_tile=_BT, scale=_SC, density_threshold=0.03)
+    o_b = sad(*_sq(mx.float32), _mask(), block_tile=_BT, scale=_SC, density_threshold=0.05)
     mx.eval(o_a, o_b)
     assert o_a.dtype == mx.float32 and o_b.dtype == mx.float32
     # same path (SDPA) both ways → byteΔ-identical
@@ -129,7 +128,7 @@ def test_f32_contract_consistent_not_density_dependent():
 def test_native_route_determinism():
     outs = []
     for _ in range(20):
-        o = sad(*_sq(), _mask(), block_tile=_BT, scale=_SC, density_threshold=1.01)
+        o = sad(*_sq(), _mask(), block_tile=_BT, scale=_SC, density_threshold=0.05)
         mx.eval(o)
         outs.append(np.array(o.astype(mx.float32)))
     assert max(float(np.max(np.abs(outs[0] - outs[i]))) for i in range(1, 20)) == 0.0

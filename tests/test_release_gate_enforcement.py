@@ -42,9 +42,10 @@ def _read(p: Path) -> str:
 # pad-and-slice M5 correctness lock. 79 -> 80: added the public default-off
 # byte-identity lock for that same opt-in hook.
 # 80 -> 81: added tests/test_gna_residency_swizzle_lock.py (default-vs-grid-
-# swizzle byte-identity lock for the opt-in GNA residency probe).
+# swizzle byte-identity lock for the opt-in GNA residency probe). 81 -> 82:
+# added the hardened sparse beta-3 gate boundary/which-binary lock.
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 81
+_EXPECTED_M5_SKIP_SITES = 82
 
 
 def _count_m5_skip_sites() -> int:

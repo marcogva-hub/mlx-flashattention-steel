@@ -108,9 +108,9 @@ def test_axis1_m5plus_auto_routed_output_correct():
 
 def test_axis2_m5plus_calls_sparse_attention_dispatch():
     """Path entered: confirm sparse_attention_dispatch is invoked on M5+."""
-    B, H, qL, kL, D, BT = 1, 4, 4096, 4096, 128, 16
+    B, H, qL, kL, D, BT = 1, 4, 4096, 4096, 128, 32
     Q, K, V = _make_inputs(B, H, qL, kL, D, seed=20)
-    mask = _bool_mask_2d(qL // BT, kL // BT, density=0.1, seed=21)
+    mask = _bool_mask_2d(qL // BT, kL // BT, density=0.04, seed=21)
 
     # Capture _real BEFORE patching so we don't pick up the mock as side_effect
     from mlx_mfa.lcsa_nax import sparse_attention_dispatch as _real

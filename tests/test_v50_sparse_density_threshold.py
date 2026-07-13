@@ -1,15 +1,11 @@
-"""Sprint 1 (v2.50) — sparse density threshold recalibration tests.
+"""Sparse density-threshold compatibility under the hardened β3 shape gate.
 
-Empirical foundation: docs/v50/sprint1-decisions.md §"Density sweep"
-shows LCSA NAX wins vs SDPA-with-bias and dense SDPA at every density
-level 0.016 → 1.0 on M5 Max.  The v2.50-Sprint1 fix raises
-`DEFAULT_DENSITY_THRESHOLD` from 0.02 to 1.01, effectively always
-routing M5+ sparse attention through the NAX path.
+`DEFAULT_DENSITY_THRESHOLD` remains a backwards-compatible secondary cap,
+but the canonical shape/dtype/density gate now decides the safe public route.
 
 These tests verify:
   - Existing density=0.02 (V1 break-even) callers still route NAX
-  - Mid-density (e.g., 0.5) now routes NAX (was: SDPA+bias)
-  - Very-dense (0.95) routes NAX
+  - Mid/high density outside the measured region routes SDPA
   - Bool-mask cache (already shipped v2.33.1) continues to work
 """
 import math
@@ -83,8 +79,8 @@ def test_v50_sprint1_low_density_routes_nax():
 
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")
-def test_v50_sprint1_mid_density_routes_nax():
-    """density=0.5 NOW routes through NAX (was: SDPA+bias pre-Sprint 1)."""
+def test_v50_sprint1_mid_density_routes_sdpa_under_hardened_gate():
+    """density=0.5 is outside the measured map and delegates to SDPA."""
     B, H, qL, D, BT = 1, 4, 4096, 128, 32
     NQ = NK = qL // BT
     q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
@@ -100,21 +96,19 @@ def test_v50_sprint1_mid_density_routes_nax():
     out_dispatch = sparse_attention_dispatch(
         q, k, v, block_mask, block_tile=BT, scale=D**-0.5
     )
-    out_direct_nax = sparse_attention_nax(
-        q, k, v, block_mask, block_tile=BT, scale=D**-0.5
+    out_forced_sdpa = sparse_attention_dispatch(
+        q, k, v, block_mask, block_tile=BT, scale=D**-0.5,
+        density_threshold=0.0,
     )
-    _flush(out_dispatch, out_direct_nax); mx.synchronize()
+    _flush(out_dispatch, out_forced_sdpa); mx.synchronize()
     max_diff = float(mx.max(mx.abs(
-        out_dispatch.astype(mx.float32) - out_direct_nax.astype(mx.float32))))
-    assert max_diff < 1e-6, (
-        f"dispatcher should route mid-density to NAX post-Sprint 1 "
-        f"(max_diff={max_diff})"
-    )
+        out_dispatch.astype(mx.float32) - out_forced_sdpa.astype(mx.float32))))
+    assert max_diff == 0.0
 
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")
-def test_v50_sprint1_high_density_routes_nax():
-    """density=0.95 routes through NAX (NAX still wins at high density on M5+)."""
+def test_v50_sprint1_high_density_routes_sdpa_under_hardened_gate():
+    """density=0.95 is outside the measured map and delegates to SDPA."""
     B, H, qL, D, BT = 1, 4, 4096, 128, 32
     NQ = NK = qL // BT
     q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
@@ -130,13 +124,14 @@ def test_v50_sprint1_high_density_routes_nax():
     out_dispatch = sparse_attention_dispatch(
         q, k, v, block_mask, block_tile=BT, scale=D**-0.5
     )
-    out_direct_nax = sparse_attention_nax(
-        q, k, v, block_mask, block_tile=BT, scale=D**-0.5
+    out_forced_sdpa = sparse_attention_dispatch(
+        q, k, v, block_mask, block_tile=BT, scale=D**-0.5,
+        density_threshold=0.0,
     )
-    _flush(out_dispatch, out_direct_nax); mx.synchronize()
+    _flush(out_dispatch, out_forced_sdpa); mx.synchronize()
     max_diff = float(mx.max(mx.abs(
-        out_dispatch.astype(mx.float32) - out_direct_nax.astype(mx.float32))))
-    assert max_diff < 1e-6
+        out_dispatch.astype(mx.float32) - out_forced_sdpa.astype(mx.float32))))
+    assert max_diff == 0.0
 
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")

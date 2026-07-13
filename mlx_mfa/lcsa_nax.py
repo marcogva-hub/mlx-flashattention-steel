@@ -304,23 +304,18 @@ def sparse_attention_nax_with_lse(
 #   0.9906  |   2.32   |     —          |   2.39          | YES (NAX/dense 0.97×)
 #   1.0000  |   2.33   |     —          |   2.40          | YES (NAX/dense 0.97×)
 #
-# LCSA NAX wins at EVERY density level on M5+.  The SDPA+bias path is
-# never optimal on M5+ NAX hardware.  Threshold raised from 0.02 to 1.01
-# to always route through NAX on M5+ (preserves dispatcher interface for
-# non-M5 callers; M1/M3 callers continue to use threshold=0.02 explicit if
-# they invoke this dispatcher).
+# Historical single-geometry result only. The hardened same-dtype remap dated
+# 2026-07-13 supersedes it for public routing: shape/load/mask regime matters,
+# and measured-loss or unmeasured cells now delegate to SDPA. The 1.01 argument
+# remains only as a backwards-compatible secondary ceiling.
 #
 # Historical context: the 0.02 threshold was V1's break-even on older
-# hardware (Phase 1.4 sweep, M1/M3 V1 sparse STEEL kernel).  M5+ V6NAX sparse
-# inverts the trade-off — per-tile dispatch overhead is fully amortized by
-# the cooperative-tensor MMA primitives, and tile-skip via block_mask is
-# nearly free.
+# hardware (Phase 1.4 sweep, M1/M3 V1 sparse STEEL kernel).
 # --------------------------------------------------------------------------
 
-# M5+ NAX optimal default: always route to NAX (1.01 > 1.0 means density
-# never exceeds the threshold).  v2.50-Sprint1 empirical recalibration.
-# Non-NAX callers should pass `density_threshold=0.02` explicitly to
-# preserve the V1 break-even semantics for M1/M3 STEEL paths.
+# Backwards-compatible secondary ceiling. The hardened shape/dtype gate below
+# is authoritative; 1.01 means this legacy argument does not narrow it unless
+# a caller explicitly supplies a lower value.
 DEFAULT_DENSITY_THRESHOLD = 1.01
 
 # ── BT-aware NAX-sparse win window (sparse-NAX victory map, engagement-proven) ──
@@ -331,53 +326,99 @@ DEFAULT_DENSITY_THRESHOLD = 1.01
 # boundaries; TILE VIABILITY is the PRIMARY gate so the default is safe regardless
 # of any hand-tuned density threshold.
 #
-# β3-INDICATIVE (macOS 27 β3 / metal 32023.918, M5 Max) — RE-VALIDATE on stable
-# macOS before tightening. Conservative: route ONLY the proven-viable window to
-# NAX; anything uncharacterized → SDPA.  Causal has a stricter CC-measured
-# default-on sub-window because B·H>128 and density>0.3 were not characterized.
-SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})    # BT=32 wins 0.30–0.96× vs dense SDPA; BT=16 is 2–17× SLOWER (non-viable); BT=64 uncharacterized → SDPA
-SPARSE_NAX_MIN_N = 2048                             # NAX beats dense SDPA at N≥2048 (below: SDPA)
-SPARSE_NAX_CAUSAL_MIN_N = 2048                      # causal V6NAX sparse lower bound; keep small-N on SDPA
-SPARSE_NAX_CAUSAL_MAX_N = 8192                      # causal CC window upper bound; larger N uncharacterized
-SPARSE_NAX_CAUSAL_MAX_BH = 128                      # causal CC window: B·H≤128; do not extrapolate beyond
-SPARSE_NAX_CAUSAL_DENSITY_CEILING = 0.30            # causal CC window: d≤0.3 (β3-indicative)
-SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})  # measured-viable head dims
-SPARSE_NAX_DENSITY_CEILING = 1.0                    # non-causal NAX beats-or-ties dense SDPA across measured BT=32 range; re-validate stable
+# β3-INDICATIVE (macOS 27 β3 / Metal 32023.918, M5 Max, MLX 0.31.2,
+# 2026-07-13) — RE-VALIDATE on stable macOS. The hardened same-dtype map routes
+# ONLY cells that won beyond the 7.53% null floor in both arm orders. B·H is
+# restricted to the measured values rather than interpolating the interval.
+SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})
+SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})
+SPARSE_NAX_MEASURED_BH = frozenset({1, 4, 12})
+SPARSE_NAX_MIN_N = 4096
+SPARSE_NAX_MAX_N = 8192
+SPARSE_NAX_DENSITY_CEILING = 0.30
+SPARSE_NAX_D64_BH12_DENSITY_CEILING = 0.25
+SPARSE_NAX_D128_BH4_DENSITY_CEILING = 0.05
+SPARSE_NAX_CAUSAL_MIN_N = 4096
+SPARSE_NAX_CAUSAL_MAX_N = 8192
+SPARSE_NAX_CAUSAL_MAX_BH = 12
+SPARSE_NAX_CAUSAL_DENSITY_CEILING = 0.30
+SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING = 0.10
 SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is structurally pinned at 32
 SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
 
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool:
-    """True iff (Q, K, block_tile, density) falls in the measured NAX-beats-dense-SDPA
-    window. TILE viability is primary — this is what makes the default safe and
-    removes the density-threshold footgun (BT≠32 / N<2048 / D∉{64,128} → SDPA
-    regardless of density)."""
+    """Return whether the exact β3-measured sparse region routes to V6NAX.
+
+    Unmeasured B·H values and causal cells are deliberately not interpolated.
+    For non-causal cells that won at N=4096, N is treated as a conservative
+    entry threshold through the measured maximum N=8192; the broad regions that
+    only won at N=8192 remain exact-N routes.
+    """
     if block_tile not in SPARSE_NAX_VIABLE_BLOCK_TILES:
         return False
     if Q.dtype not in (mx.float16, mx.bfloat16):
         return False
-    if Q.shape[3] not in SPARSE_NAX_VIABLE_HEAD_DIMS:
+    D = int(Q.shape[3])
+    if D not in SPARSE_NAX_VIABLE_HEAD_DIMS:
         return False
+    qL, kL = int(Q.shape[2]), int(K.shape[2])
+    if qL != kL or qL > SPARSE_NAX_MAX_N:
+        return False
+    bh = int(Q.shape[0]) * int(Q.shape[1])
+
     if causal:
-        bh = int(Q.shape[0]) * int(Q.shape[1])
-        return (Q.shape[2] == K.shape[2]
-                and Q.shape[2] >= SPARSE_NAX_CAUSAL_MIN_N
-                and K.shape[2] >= SPARSE_NAX_CAUSAL_MIN_N
-                and Q.shape[2] <= SPARSE_NAX_CAUSAL_MAX_N
-                and K.shape[2] <= SPARSE_NAX_CAUSAL_MAX_N
-                and bh <= SPARSE_NAX_CAUSAL_MAX_BH
-                and density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING)
-    return (Q.shape[2] >= SPARSE_NAX_MIN_N
-            and K.shape[2] >= SPARSE_NAX_MIN_N
-            and density <= SPARSE_NAX_DENSITY_CEILING)
+        # bf16 has one measured winning causal cell; keep it exact.
+        if Q.dtype == mx.bfloat16:
+            return (qL == 4096 and D == 128 and bh == 4
+                    and density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING)
+        if qL == 4096 and D == 128 and bh == 4:
+            return density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING
+        if qL == 4096 and D == 128 and bh == 12:
+            return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
+        if qL == 8192 and D in (64, 128) and bh == 12:
+            return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
+        return False
+
+    # The only bf16 non-causal winning region measured was D128/B·H12 at
+    # N=4096. Apply the same conservative N-entry threshold as its fp16 region.
+    if Q.dtype == mx.bfloat16:
+        return (SPARSE_NAX_MIN_N <= qL <= SPARSE_NAX_MAX_N
+                and D == 128 and bh == 12
+                and density <= SPARSE_NAX_DENSITY_CEILING)
+
+    # N=8192 won all 36 fp16 cells for measured B·H values and d<=0.30.
+    if (qL == SPARSE_NAX_MAX_N and bh in SPARSE_NAX_MEASURED_BH
+            and density <= SPARSE_NAX_DENSITY_CEILING):
+        return True
+    if not (SPARSE_NAX_MIN_N <= qL <= SPARSE_NAX_MAX_N):
+        return False
+    if bh == 12 and D == 128:
+        return density <= SPARSE_NAX_DENSITY_CEILING
+    if bh == 12 and D == 64:
+        return density <= SPARSE_NAX_D64_BH12_DENSITY_CEILING
+    if bh == 4 and D == 128:
+        return density <= SPARSE_NAX_D128_BH4_DENSITY_CEILING
+    return False
 
 
-def _expand_bt64_for_v6nax(Q, K, block_mask, block_tile, *, causal=False):
+def _expand_bt64_for_v6nax(
+    Q,
+    K,
+    block_mask,
+    block_tile,
+    *,
+    causal=False,
+    require_public_route=True,
+):
     """Return a viable BT64 mask at the pinned BT32 V6NAX granularity.
 
     Repeating each source block 2x2 preserves the token-level mask exactly.
-    The expanded representation is revalidated against the existing NAX gate;
-    malformed and out-of-window inputs retain their prior fallback path.
+    The expanded representation is normally revalidated against the public NAX
+    gate; malformed and out-of-window inputs retain their prior fallback path.
+    Internal opt-in backward orchestrators may set `require_public_route=False`:
+    they have a separate eligibility gate but still require the V6NAX LSE
+    forward rather than the scalar BT64 implementation.
     """
     if block_tile != SPARSE_NAX_EXPANDABLE_BLOCK_TILE:
         return block_mask, block_tile, False
@@ -388,7 +429,7 @@ def _expand_bt64_for_v6nax(Q, K, block_mask, block_tile, *, causal=False):
         return block_mask, block_tile, False
     expanded = mx.repeat(mx.repeat(block_mask, 2, axis=-2), 2, axis=-1)
     density = float(mx.mean(expanded.astype(mx.float32)).item())
-    if not _nax_sparse_route_viable(
+    if require_public_route and not _nax_sparse_route_viable(
         Q, K, SPARSE_NAX_KERNEL_BLOCK_TILE, density, causal=causal
     ):
         return block_mask, block_tile, False
@@ -423,11 +464,11 @@ def sparse_attention_dispatch(
     density=None,
     precomputed_bias=None,
 ):
-    """Density-thresholded sparse attention dispatcher.
+    """Shape-gated sparse attention dispatcher.
 
-    Routes to one of two implementations based on block_mask density:
-      - density < density_threshold: Sprint B NAX kernel (sparse_attention_nax)
-      - density >= density_threshold: MLX SDPA + expanded float bias
+    Routes to V6NAX only inside `_nax_sparse_route_viable`; all other cells use
+    MLX SDPA with an expanded float bias. `density_threshold` is retained as a
+    backwards-compatible, further-restrict-only ceiling inside that envelope.
 
     Args:
         Q, K, V, block_mask: same as sparse_attention_nax.
@@ -437,10 +478,9 @@ def sparse_attention_dispatch(
             causal window. If True and the dispatcher chooses the SDPA path,
             an explicit causal bias is added to the block_mask bias before
             SDPA dispatch.
-        density_threshold: route boundary. Default
-            ``DEFAULT_DENSITY_THRESHOLD`` (1.01 since v2.50-Sprint1 — always
-            route to NAX on M5+; pass 0.02 explicitly for the M1/M3 STEEL
-            V1 break-even semantics). (III-4 R10: was documented as 0.02.)
+        density_threshold: optional secondary route ceiling. Default
+            ``DEFAULT_DENSITY_THRESHOLD`` (1.01) leaves the canonical gate
+            unchanged; lower values may only narrow the V6NAX region.
         density: optional pre-computed density (avoids a reduction per call).
         precomputed_bias: optional pre-built (qL, kL) float bias - if the
             caller already has the float bias (cache-HIT pattern from v2.33.1),
@@ -499,13 +539,9 @@ def sparse_attention_dispatch(
         block_mask, block_tile, _ = _expand_bt64_for_v6nax(
             Q, K, block_mask, block_tile, causal=causal
         )
-    # BT-AWARE routing (victory map): tile viability is the PRIMARY gate — only
-    # the proven-viable non-causal window (BT=32, N≥2048, D∈{64,128},
-    # density≤ceiling) and the stricter β3-measured causal window
-    # (BT=32, 2048≤N≤8192, D∈{64,128}, density≤0.3, B·H≤128) route to
-    # native NAX. Everything else (BT=16, BT=64, N<2048, causal B·H>128,
-    # causal density>0.3, D∉{64,128}) falls through to SDPA regardless of
-    # density_threshold.
+    # Hardened same-dtype β3 map: route only the exact measured B·H/dtype/
+    # causal regions encoded in `_nax_sparse_route_viable`. N=2048 and every
+    # unmeasured region fall through to SDPA regardless of density_threshold.
     # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
@@ -519,6 +555,9 @@ def sparse_attention_dispatch(
             causal=causal,
         )
     # SDPA + float bias path.
+    from mlx_mfa import _dispatch_trace as _dtrace
+
+    _dtrace.record("sdpa", "sparse_attention_dispatch outside hardened gate")
     qL = Q.shape[2]
     kL = K.shape[2]
     if precomputed_bias is not None:
