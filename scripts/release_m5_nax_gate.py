@@ -34,6 +34,16 @@ import mlx.core as mx
 import mlx_mfa
 from mlx_mfa import flash_attention, flash_attention_sparse, get_device_info, make_causal_block_mask
 
+# Engagement-fingerprint shape — SINGLE SOURCE for the gate (2c below) AND the
+# anti-recurrence lock (tests/test_release_gate_engage_shape_lock.py).  The CENTER
+# of a proven non-causal NAX-sparse winning region (07-13 re-map): D=128, N=8192,
+# B·H=12, density~0.15 (density is the mid of the [0, 0.30] non-causal ceiling; N is
+# in the measured [4096, 8192]).  The lock asserts this shape satisfies
+# _nax_sparse_route_viable, so any future routing-narrowing fails the lock BEFORE a
+# Phase-3 gate run (with a message saying to re-choose inside the measured envelope).
+SPARSE_ENGAGE_SPEC = {"B": 1, "H": 12, "N": 8192, "D": 128, "BT": 32,
+                      "density": 0.15, "causal": False}
+
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -58,6 +68,15 @@ def _gen(B, H, N, D):
     q, k, v = f(H), f(H), f(H)
     mx.eval(q, k, v)
     return q, k, v
+
+
+def _masked_sdpa(q, k, v, block_mask, scale):
+    """Dense SDPA with a block_mask expanded to an element additive bias — the
+    reference the sparse fingerprints compare against (byteΔ 0 ⇒ same path = SDPA)."""
+    N = int(q.shape[2]); NQ, NK = block_mask.shape[-2], block_mask.shape[-1]
+    em = mx.repeat(mx.repeat(block_mask.astype(mx.float32), N // NQ, -2), N // NK, -1)
+    bias = mx.where(em > 0, mx.array(0.0), mx.array(-1e9, mx.float32)).astype(mx.float16)
+    return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=bias[None, None])
 
 
 def main() -> int:
@@ -92,18 +111,41 @@ def main() -> int:
     if d != 0.0:
         failures.append(("dense_D64_auto_sdpa", d, "expected SDPA byteΔ == 0"))
 
-    # 2c) sparse symmetric D=128 → real NAX sparse (byteΔ > 0 vs masked SDPA).
-    N, D = 2048, 128; sc = 1.0 / (D ** 0.5)
-    q, k, v = _gen(1, 4, N, D)
-    mask = make_causal_block_mask(N, head_dim=D)
-    NQ, NK = mask.shape[-2], mask.shape[-1]
-    em = mx.repeat(mx.repeat(mask.astype(mx.float32), N // NQ, -2), N // NK, -1)
-    bias = mx.where(em > 0, mx.array(0.0), mx.array(-1e9, mx.float32)).astype(mx.float16)
-    d = _delta(flash_attention_sparse(q, k, v, mask, scale=sc, causal=False),
-               mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=bias[None, None]))
-    fps["sparse_D128_sym_nax"] = d
-    if not (d > 1e-7):
-        failures.append(("sparse_D128_sym_nax", d, "expected real NAX-sparse byteΔ > 0 vs masked SDPA"))
+    # 2c) sparse D=128 ENGAGEMENT → real NAX sparse (byteΔ in the NAX window vs masked
+    # SDPA).  Shape = SPARSE_ENGAGE_SPEC (center of a proven non-causal winning region,
+    # 07-13 re-map: D=128, N=8192, B·H=12, density~0.15 ≤ 0.30 ceiling, N∈[4096,8192]).
+    # The old N=2048/density-0.51 cell was measured-losing → it is now the DELEGATION
+    # fingerprint (2d).  byteΔ==0 here would mean a silent SDPA fallback (the exact
+    # failure the 2.62.0 Phase-3 caught); the anti-recurrence lock guards the shape.
+    S = SPARSE_ENGAGE_SPEC
+    scE = 1.0 / (S["D"] ** 0.5); NBe = S["N"] // S["BT"]
+    q, k, v = _gen(S["B"], S["H"], S["N"], S["D"])
+    mx.random.seed(20260713)  # deterministic engagement mask (~0.15 density)
+    ii = mx.arange(NBe).reshape(NBe, 1); jj = mx.arange(NBe).reshape(1, NBe)
+    maskE = ((jj <= ii) & (mx.random.uniform(shape=(NBe, NBe)) < 0.30)) | (ii == jj)
+    densE = float(mx.mean(maskE.astype(mx.float32)).item())
+    d = _delta(flash_attention_sparse(q, k, v, maskE, scale=scE, causal=False),
+               _masked_sdpa(q, k, v, maskE, scE))
+    fps["sparse_D128_nc_engage_nax"] = d
+    if not (1e-7 < d < 3e-2):
+        failures.append(("sparse_D128_nc_engage_nax", d,
+                         f"expected NAX-sparse engagement byteΔ ∈ (1e-7, 3e-2) at density={densE:.3f} "
+                         f"(shape {S}); byteΔ==0 ⇒ silent SDPA fallback — re-check routing/window"))
+
+    # 2d) sparse D=128 DELEGATION → the measured-losing cell (N=2048, density~0.51,
+    # non-causal) MUST delegate to dense SDPA (byteΔ == 0.0).  07-13 re-map found this
+    # cell 0/36 winning (density 0.51 > every ceiling).  Recorded so the receipt PROVES
+    # the delegation — turning the Phase-3 incident into permanent coverage.
+    Nd, Dd = 2048, 128; scD = 1.0 / (Dd ** 0.5)
+    q, k, v = _gen(1, 4, Nd, Dd)
+    maskD = make_causal_block_mask(Nd, head_dim=Dd)
+    d = _delta(flash_attention_sparse(q, k, v, maskD, scale=scD, causal=False),
+               _masked_sdpa(q, k, v, maskD, scD))
+    fps["sparse_D128_nc_delegate_sdpa"] = d
+    if d != 0.0:
+        failures.append(("sparse_D128_nc_delegate_sdpa", d,
+                         "expected measured-losing sparse cell (N=2048/density~0.51) to DELEGATE to "
+                         "SDPA (byteΔ == 0.0); nonzero ⇒ it engaged a kernel it should not"))
 
     # 2d) V6-split backward engagement (D=64 default-on): grad differs from SDPA-vjp.
     qd, kd, vd = _gen(1, 4, 2048, 64); scd = 1.0 / (64 ** 0.5)
