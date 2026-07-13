@@ -31,6 +31,19 @@ int env_int_or_default(const char* name, int fallback) {
   return static_cast<int>(value);
 }
 
+int env_nonnegative_int_or_default(const char* name, int fallback) {
+  const char* raw = std::getenv(name);
+  if (!raw || raw[0] == '\0') {
+    return fallback;
+  }
+  char* end = nullptr;
+  long value = std::strtol(raw, &end, 10);
+  if (end == raw || *end != '\0' || value < 0 || value > 4) {
+    throw std::invalid_argument(std::string(name) + " must be an integer in [0,4]");
+  }
+  return static_cast<int>(value);
+}
+
 std::string dtype_name(mlx::core::Dtype dtype) {
   if (dtype == mlx::core::float16) {
     return "half";
@@ -61,7 +74,8 @@ std::string gna_nax_header(
     int BQ,
     int BK,
     int WM,
-    bool precompute_range) {
+    bool precompute_range,
+    int swizzle_log) {
   const int NQ = (N + BQ - 1) / BQ;
   const int NK = (N + BK - 1) / BK;
   const int TQ = BQ / (WM * 16);
@@ -107,6 +121,7 @@ std::string gna_nax_header(
   os << "#define GNA_STR2 " << stride2 << "\n";
   os << "#define GNA_LOG2_SCALE " << log2_scale << "f\n\n";
   os << "#define GNA_PRECOMPUTE_RANGE " << (precompute_range ? 1 : 0) << "\n\n";
+  os << "#define GNA_SWIZZLE_LOG " << swizzle_log << "\n\n";
 
   os << R"MSL(
 inline bool gna_pair_active(int q_idx, int k_idx) {
@@ -269,7 +284,15 @@ inline bool gna_tile_active_bounds(
 
 std::string gna_nax_source() {
   return R"MSL(
-  uint3 tid = threadgroup_position_in_grid;
+  uint3 raw_tid = threadgroup_position_in_grid;
+  uint3 tid = raw_tid;
+#if GNA_SWIZZLE_LOG > 0
+  // Adapted from MLX steel/gemm/transforms.h BlockSwizzle (MIT, Apple Inc.).
+  // This is an opt-in GNA probe; the default grid walk remains unchanged.
+  const int swizzle_mask = (1 << GNA_SWIZZLE_LOG) - 1;
+  tid.x = raw_tid.x >> GNA_SWIZZLE_LOG;
+  tid.y = (raw_tid.y << GNA_SWIZZLE_LOG) + (raw_tid.x & swizzle_mask);
+#endif
   uint simd_gid = simdgroup_index_in_threadgroup;
   if (tid.x >= GNA_NQ || tid.y >= GNA_HQ || tid.z >= GNA_B) {
     return;
@@ -468,7 +491,8 @@ std::string kernel_name(
     int BQ,
     int BK,
     int WM,
-    bool precompute_range) {
+    bool precompute_range,
+    int swizzle_log) {
   std::ostringstream os;
   os << "mfa_gna_nax_"
      << (dtype == mlx::core::float16 ? "f16" : "bf16")
@@ -478,6 +502,7 @@ std::string kernel_name(
      << "_r" << stride0 << "x" << stride1 << "x" << stride2
      << "_bq" << BQ << "_bk" << BK << "_wm" << WM
      << "_pr" << (precompute_range ? 1 : 0)
+     << "_swz" << swizzle_log
      << "_sc" << static_cast<int>(std::round(scale * 1000000.0f));
   return os.str();
 }
@@ -554,6 +579,8 @@ mlx::core::array mfa_gna_nax_forward(
   const int WM = env_int_or_default("MFA_GNA_NAX_WM", default_WM);
   const bool precompute_range =
       env_int_or_default("MFA_GNA_NAX_PRECOMPUTE_RANGE", 0) != 0;
+  const int swizzle_log =
+      env_nonnegative_int_or_default("MFA_GNA_NAX_SWIZZLE_LOG", 0);
   if (BQ % (WM * 16) != 0) {
     throw std::invalid_argument("GNA NAX requires BQ to be divisible by WM*16");
   }
@@ -570,11 +597,11 @@ mlx::core::array mfa_gna_nax_forward(
 
   auto header = gna_nax_header(
       dtype, B, Hq, Hk, N, D, dim0, dim1, dim2, window0, window1, window2,
-      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range);
+      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range, swizzle_log);
   auto source = gna_nax_source();
   auto name = kernel_name(
       q.dtype(), N, D, Hq, Hk, dim0, dim1, dim2, window0, window1, window2,
-      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range);
+      stride0, stride1, stride2, scale, BQ, BK, WM, precompute_range, swizzle_log);
 
   auto kernel = mlx::core::fast::metal_kernel(
       name,
@@ -589,8 +616,8 @@ mlx::core::array mfa_gna_nax_forward(
       {q_contig, k_contig, v_contig},
       {q.shape()},
       {q.dtype()},
-      {static_cast<uint32_t>((N + BQ - 1) / BQ * WM * 32),
-       static_cast<uint32_t>(Hq),
+      {static_cast<uint32_t>(((N + BQ - 1) / BQ * WM * 32) << swizzle_log),
+       static_cast<uint32_t>((Hq + (1 << swizzle_log) - 1) >> swizzle_log),
        static_cast<uint32_t>(B)},
       {static_cast<uint32_t>(WM * 32), 1, 1},
       {},
