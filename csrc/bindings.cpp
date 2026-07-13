@@ -31,6 +31,8 @@ std::string v6nax_probe_compile_test(void* mtl_device_raw);
 std::string mpp_int8_microbench();  // Phase II-2 kill-gate
 std::string mpp_int8_rect_microbench(bool int8_first);  // ITEM 6 Stage 1 rectangular gate
 std::string mpp_fp8_microbench();   // Rigel-on-M5 fp8/fp4 matmul2d characterization
+std::string v6_varlen_source_guard_probe(std::string source,
+                                         const std::string& marker);
 #endif
 // V6 NAX hardware detection (in csrc/v6_nax_detect.mm).
 bool device_has_neural_accelerators();
@@ -583,6 +585,12 @@ NB_MODULE(_ext, m) {
     return mlx_mfa::mpp_fp8_microbench();
   }, "Rigel-on-M5: MPP matmul2d fp8(E4M3/E5M2)/fp4/int8 vs fp16 throughput (Signal 1) + "
      "fp8 decode-ref correctness/engagement/determinism (metal4.1, probe-only).");
+  m.def("v6_varlen_source_guard_probe",
+        [](const std::string& source, const std::string& marker) {
+          return mlx_mfa::v6_varlen_source_guard_probe(source, marker);
+        },
+        nb::arg("source"), nb::arg("marker"),
+        "Dev-only exact-one-marker guard probe for V6 varlen source generation.");
   m.def("v6_nax_dt_generate_source",
         [](int head_dim, int Hq, int Hk, int dtype_code) -> std::string {
           return mlx_mfa::v6_nax_dt_generate_source(head_dim, Hq, Hk, dtype_code);

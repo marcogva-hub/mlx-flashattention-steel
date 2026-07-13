@@ -46,6 +46,11 @@ struct NAAttentionKernelDescriptor {
   // Requires BQ % (WM * 16) == 0 and BD % 16 == 0.
   bool useV6NAX = false;
 
+  // Varlen source generation uses unique placeholders for every Q-tile
+  // expression before the packed scheduler is inserted.  Dense generation
+  // resolves them to `tid.x`, preserving its emitted MSL byte-for-byte.
+  bool emitVarlenQTileMarkers = false;
+
   AttentionOperands<GEMMOperandPrecision> memoryPrecisions;
   AttentionKernelType type;
   float scale;

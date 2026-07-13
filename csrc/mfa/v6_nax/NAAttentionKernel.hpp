@@ -44,6 +44,7 @@ struct NAAttentionKernel {
   bool isCausal;
   bool masked;
   bool isVarlen;
+  bool emitVarlenQTileMarkers;
   // Sprint 3.3 — Apple-style single-Otile kernel variant.
   // When true, loopForward() dispatches to loopForwardSingleTile() which emits
   // a kernel with: single cS (no double-buffer), forced kBlocks=1, always-bypass

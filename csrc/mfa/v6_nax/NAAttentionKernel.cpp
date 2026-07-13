@@ -45,6 +45,7 @@ NAAttentionKernel::NAAttentionKernel(NAAttentionKernelDescriptor descriptor) {
   isCausal = descriptor.isCausal;
   masked = descriptor.masked;
   isVarlen = descriptor.isVarlen;
+  emitVarlenQTileMarkers = descriptor.emitVarlenQTileMarkers;
   singleOtileMode = descriptor.singleOtileMode;
   useV6NAX = descriptor.useV6NAX;
 
@@ -2815,6 +2816,10 @@ std::string NAAttentionKernel::createV6NAXSource() const noexcept {
   const char* dtype_str = is_bf16 ? "bfloat" : "half";
   const float dot_scale_log2e = scale * 1.4426950408889634f;
 
+  // These placeholders are resolved to `tid.x` for dense generation and are
+  // kept as distinct source markers for the packed-varlen transformer.  A
+  // single broad `tid.x` replacement is unsafe because the expression is
+  // intentionally used at several structural sites in this kernel.
   std::ostringstream ss;
   ss << "// MFA_REQUIRE_MSL4\n";
   ss << "#include <metal_stdlib>\n";
@@ -2893,7 +2898,7 @@ void attention(
   (void)simd_lane_id;  // pacify compiler
 
   // === Per-batch + per-head + per-Q-block ptr offsets (Apple lines 102-117) ===
-  ulong3 tidl{tid.x, tid.y, tid.z};
+  ulong3 tidl{MFA_VARLEN_Q_TILE_0, tid.y, tid.z};
   Q += tidl.z * params.Q_strides[0]
      + tidl.y * params.Q_strides[1]
      + tidl.x * V6NAX_BQ * params.Q_strides[2];
@@ -2911,33 +2916,33 @@ void attention(
   const device T* Q_block = Q + tm * int(params.Q_strides[2]);
 
   // Last-block flags (Apple lines 189-194)
-  const int NQ_aligned = params.qL / V6NAX_BQ;
-  const int NK_aligned = params.kL / V6NAX_BK;
-  const bool is_last_q = (int(tid.x) == NQ_aligned);
-  const short lim_rows_q = (params.qL_rem > 0 ? params.qL_rem : V6NAX_BQ) - tm;
-  const short lim_rows_k = (params.kL_rem > 0 ? params.kL_rem : V6NAX_BK);
+  const int NQ_aligned = MFA_VARLEN_Q_LEN_0 / V6NAX_BQ;
+  const int NK_aligned = MFA_VARLEN_K_LEN_0 / V6NAX_BK;
+  const bool is_last_q = (int(MFA_VARLEN_Q_TILE_1) == NQ_aligned);
+  const short lim_rows_q = (MFA_VARLEN_Q_REM_0 > 0 ? MFA_VARLEN_Q_REM_1 : V6NAX_BQ) - tm;
+  const short lim_rows_k = (MFA_VARLEN_K_REM_0 > 0 ? MFA_VARLEN_K_REM_1 : V6NAX_BK);
 
   // v2.50 Sprint 4 Phase 4a — causal K-loop bound + mask-start tile
   // (Apple steel_attention_nax.h:176-187).  For causal:
-  //   q_max = (tid.x+1)*BQ + qL_off   — last query row's absolute pos + 1
+  //   q_max = (MFA_VARLEN_Q_TILE_2+1)*BQ + qL_off   — last query row's absolute pos + 1
   //   kb_lim = ceil(q_max / BK)        — K-tiles past q_max are guaranteed masked
   //   kb_min_causal = q_min / BK       — first K-tile that overlaps the diagonal
-  //                                       q_min = tid.x*BQ + qL_off
+  //                                       q_min = MFA_VARLEN_Q_TILE_3*BQ + qL_off
   // For non-causal: defaults preserved (kb_lim=NK, kb_min_causal=NK so the
   // per-element causal mask branch is never taken).
 #if V6NAX_CAUSAL
   int kb_lim;
   int kb_min_causal;
   {
-    int q_max = (int(tid.x) + 1) * V6NAX_BQ + params.qL_off;
+    int q_max = (int(MFA_VARLEN_Q_TILE_4) + 1) * V6NAX_BQ + MFA_VARLEN_Q_OFF_0;
     kb_lim = (q_max + V6NAX_BK - 1) / V6NAX_BK;
-    kb_lim = metal::min(params.NK, kb_lim);
-    int q_min = int(tid.x) * V6NAX_BQ + params.qL_off;
+    kb_lim = metal::min(MFA_VARLEN_NK_0, kb_lim);
+    int q_min = int(MFA_VARLEN_Q_TILE_5) * V6NAX_BQ + MFA_VARLEN_Q_OFF_1;
     q_min = metal::max(0, q_min);
     kb_min_causal = q_min / V6NAX_BK;
   }
 #else
-  const int kb_lim = params.NK;
+  const int kb_lim = MFA_VARLEN_NK_1;
   // kb_min_causal not declared in non-causal path — the causal mask
   // branch below is guarded by #if V6NAX_CAUSAL so the symbol is absent.
 #endif
@@ -3053,7 +3058,7 @@ void attention(
       const short2 sc_c = stile_t::NAXFrag_t::get_coord();
       const short sn_c = sc_c.x;   // col base within fragment
       const short sm_c = sc_c.y;   // row base within fragment
-      const int base_row = int(tid.x) * V6NAX_BQ + params.qL_off + tm;
+      const int base_row = int(MFA_VARLEN_Q_TILE_6) * V6NAX_BQ + MFA_VARLEN_Q_OFF_2 + tm;
       const int base_col = kb * V6NAX_BK;
       STEEL_PRAGMA_UNROLL
       for (short iq = 0; iq < V6NAX_TQ; iq++) {
@@ -3220,7 +3225,35 @@ void attention(
 }
 )MSL";
 
-  return ss.str();
+  std::string result = ss.str();
+  if (!emitVarlenQTileMarkers) {
+    // Resolve the private markers back to the original dense expression.  The
+    // generated dense MSL therefore retains the pre-transform bytes.
+    const char* markers[] = {
+        "MFA_VARLEN_Q_TILE_0", "MFA_VARLEN_Q_TILE_1",
+        "MFA_VARLEN_Q_TILE_2", "MFA_VARLEN_Q_TILE_3",
+        "MFA_VARLEN_Q_TILE_4", "MFA_VARLEN_Q_TILE_5",
+        "MFA_VARLEN_Q_TILE_6", "MFA_VARLEN_Q_LEN_0",
+        "MFA_VARLEN_K_LEN_0", "MFA_VARLEN_Q_REM_0",
+        "MFA_VARLEN_Q_REM_1", "MFA_VARLEN_K_REM_0",
+        "MFA_VARLEN_K_REM_1", "MFA_VARLEN_Q_OFF_0",
+        "MFA_VARLEN_Q_OFF_1", "MFA_VARLEN_Q_OFF_2",
+        "MFA_VARLEN_NK_0", "MFA_VARLEN_NK_1"};
+    const char* dense_values[] = {
+        "tid.x", "tid.x", "tid.x", "tid.x", "tid.x", "tid.x", "tid.x",
+        "params.qL", "params.kL", "params.qL_rem", "params.qL_rem",
+        "params.kL_rem", "params.kL_rem", "params.qL_off", "params.qL_off",
+        "params.qL_off", "params.NK", "params.NK"};
+    constexpr size_t marker_count = sizeof(markers) / sizeof(markers[0]);
+    for (size_t i = 0; i < marker_count; ++i) {
+      const std::string marker(markers[i]);
+      const size_t pos = result.find(marker);
+      if (pos != std::string::npos) {
+        result.replace(pos, marker.size(), dense_values[i]);
+      }
+    }
+  }
+  return result;
 }
 
 void NAAttentionKernel::loopBackwardQuery(CodeWriter &source) const noexcept {

@@ -107,6 +107,26 @@ def test_causal_q_longer_than_k_forces_per_segment_sdpa(monkeypatch, dtype):
         assert float(mx.max(mx.abs(actual.astype(mx.float32) - expected))) < tolerance
 
 
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+def test_expert_steel_rejects_causal_q_longer_than_k(dtype):
+    """The raw STEEL binding must not expose its known-wrong asymmetric causal case."""
+    q_lengths = [7]
+    k_lengths = [3]
+    q, k, v = _inputs(dtype, q_lengths, k_lengths)
+    cu_q = mx.array(_prefix(q_lengths), dtype=mx.int32)
+    cu_k = mx.array(_prefix(k_lengths), dtype=mx.int32)
+    tile_offsets = _tile_offsets(q_lengths)
+
+    with pytest.raises(
+        (RuntimeError, ValueError),
+        match=r"causal q_len>k_len.*unsupported.*STEEL varlen",
+    ):
+        _ext.mfa_attention_varlen_forward(
+            q, k, v, cu_q, cu_k, tile_offsets,
+            1.0 / math.sqrt(q.shape[-1]), True,
+        )
+
+
 @pytest.mark.parametrize(
     "causal,q_lengths,k_lengths",
     [

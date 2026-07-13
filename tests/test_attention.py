@@ -25,6 +25,7 @@ from mlx_mfa import (
     make_causal_block_mask, make_sliding_window_mask,
     is_mfa_available, get_device_info, get_supported_configs,
 )
+from mlx_mfa import _dispatch_trace as dtrace
 from mlx_mfa.attention import _ext_available, _fallback_sdpa, _steel_block_config
 
 
@@ -2976,8 +2977,8 @@ class TestSteelVarlen:
         assert out.shape == (B, H_q, N, D)
         assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
 
-    def test_varlen_d512_steel_path(self):
-        """D=512 varlen should take the STEEL path, not fall back (Track 3)."""
+    def test_varlen_d512_delegates_to_sdpa(self):
+        """D=512 varlen truthfully locks the public split-concat SDPA path."""
         from mlx_mfa import flash_attention_varlen
         B, H, D = 1, 2, 512
         N1, N2 = 16, 32
@@ -2989,8 +2990,18 @@ class TestSteelVarlen:
         v = mx.random.normal((B, H, N, D)).astype(mx.float16)
         cu_q = mx.array([0, N1, N], dtype=mx.int32)
         cu_k = mx.array([0, N1, N], dtype=mx.int32)
-        out = flash_attention_varlen(q, k, v, cu_q, cu_k, N2, N2, scale=scale)
-        mx.eval(out)
+        with dtrace.capture() as trace:
+            out = flash_attention_varlen(
+                q, k, v, cu_q, cu_k, N2, N2, scale=scale
+            )
+            mx.eval(out)
+        terminal = [item for item in trace if not item[1].startswith("[reentrant]")]
+        assert terminal and terminal[0][0] == "varlen_split_concat", trace
+        assert all(item[0] == "sdpa" for item in terminal[1:]), trace
+        assert not any(
+            item[0].startswith(("mfa", "v6", "varlen_native", "steel"))
+            for item in terminal
+        ), trace
         assert out.shape == (B, H, N, D)
         assert not bool(mx.any(mx.isnan(out.astype(mx.float32))))
         # Compare to reference: individual SDPA per sequence

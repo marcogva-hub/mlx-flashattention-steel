@@ -18,6 +18,7 @@ bool NAAttentionKernelDescriptor::operator==(
       masked == rhs.masked &&
       isVarlen == rhs.isVarlen &&
       singleOtileMode == rhs.singleOtileMode &&
+      emitVarlenQTileMarkers == rhs.emitVarlenQTileMarkers &&
       type == rhs.type &&
       scale == rhs.scale;
 }
@@ -35,7 +36,8 @@ std::size_t std::hash<NAAttentionKernelDescriptor>::operator()(
   combine_32(seed, pack_32(simd::ushort2{
       (uint16_t)(hash.masked ? 1 : 0), (uint16_t)(hash.isVarlen ? 1 : 0)}));
   combine_32(seed, pack_32(simd::ushort2{
-      (uint16_t)(hash.singleOtileMode ? 1 : 0), 0}));
+      (uint16_t)(hash.singleOtileMode ? 1 : 0),
+      (uint16_t)(hash.emitVarlenQTileMarkers ? 1 : 0)}));
   return seed;
 }
 

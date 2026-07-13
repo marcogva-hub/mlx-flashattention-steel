@@ -246,7 +246,8 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
                                 float scale_override = -1.0f,
                                 unsigned short nax_bq_override = 0,
                                 unsigned short nax_bk_override = 0,
-                                uint16_t nax_wm_override = 0) {
+                                uint16_t nax_wm_override = 0,
+                                bool emit_varlen_q_tile_markers = false) {
   // F-2 (Change 3): scale is BAKED into the source as `#define V6NAX_DOT_SCALE`
   // (NAAttentionKernel.cpp createV6NAXSource, via descriptor.scale).  A custom
   // scale therefore produces a DISTINCT kernel — the dispatch cache key (V6Key)
@@ -407,6 +408,7 @@ std::string generate_v6_source(int head_dim, int Hq, int Hk, int dtype_code,
       /*isCausal=*/isCausal, /*masked=*/false);
   desc.singleOtileMode = single_otile;
   desc.useV6NAX = use_v6nax;
+  desc.emitVarlenQTileMarkers = emit_varlen_q_tile_markers;
 
   NAAttentionKernel kern(desc);
   std::string source = kern.source;
@@ -654,10 +656,12 @@ static size_t replace_all_count(std::string& source, const std::string& from,
 }
 
 static void replace_required(std::string& source, const std::string& from,
-                             const std::string& to, const char* label) {
-  if (replace_all_count(source, from, to) == 0) {
+                             const std::string& to, const std::string& label) {
+  const size_t count = replace_all_count(source, from, to);
+  if (count != 1) {
     throw std::runtime_error(std::string("V6NAX varlen source transform lost marker: ") +
-                             label);
+                             label + " (expected exactly one occurrence, got " +
+                             std::to_string(count) + ")");
   }
 }
 
@@ -674,7 +678,8 @@ std::string generate_v6_varlen_source(int head_dim, int Hq, int Hk,
   std::string source = generate_v6_source(
       head_dim, Hq, Hk, dtype_code, is_causal, /*bhnd=*/true, total_q,
       /*use_v6nax_override=*/true, /*use_v6nax_explicit=*/true, scale,
-      nax_bq_override, nax_bk_override, nax_wm_override);
+      nax_bq_override, nax_bk_override, nax_wm_override,
+      /*emit_varlen_q_tile_markers=*/true);
 
   replace_required(source, "void attention(", "void attention_varlen_nax(",
                    "kernel name");
@@ -695,17 +700,36 @@ std::string generate_v6_varlen_source(int head_dim, int Hq, int Hk,
       "    uint simd_lane_id [[thread_index_in_simdgroup]],",
       "metadata buffers");
 
-  // The generated body is expressed in terms of tid.x and global params.
-  // Rebind those to the segment-local scheduler values before inserting the
-  // scheduler itself (so its global tid.x remains untouched).
-  replace_required(source, "tid.x", "q_tile", "Q tile references");
-  replace_required(source, "params.qL_off", "qL_off", "causal offset");
-  replace_required(source, "params.qL_rem", "qL_rem", "Q remainder");
-  replace_required(source, "params.kL_rem", "kL_rem", "K remainder");
-  replace_required(source, "params.qL", "qL", "Q length");
-  replace_required(source, "params.kL", "kL", "K length");
-  replace_all_count(source, "params.NQ", "NQ");
-  replace_required(source, "params.NK", "NK", "K tile count");
+  // Rebind every structurally named marker to a segment-local scheduler
+  // value.  Every marker is exact-one; the dense source generator owns this
+  // inventory so future source edits fail loudly instead of retargeting an
+  // arbitrary repeated token.
+  const char* markers[] = {
+      "MFA_VARLEN_Q_TILE_0", "MFA_VARLEN_Q_TILE_1",
+      "MFA_VARLEN_Q_TILE_2", "MFA_VARLEN_Q_TILE_3",
+      "MFA_VARLEN_Q_TILE_4", "MFA_VARLEN_Q_TILE_5",
+      "MFA_VARLEN_Q_TILE_6", "MFA_VARLEN_Q_LEN_0",
+      "MFA_VARLEN_K_LEN_0", "MFA_VARLEN_Q_REM_0",
+      "MFA_VARLEN_Q_REM_1", "MFA_VARLEN_K_REM_0",
+      "MFA_VARLEN_K_REM_1", "MFA_VARLEN_Q_OFF_0",
+      "MFA_VARLEN_Q_OFF_1", "MFA_VARLEN_Q_OFF_2",
+      "MFA_VARLEN_NK_0", "MFA_VARLEN_NK_1"};
+  const char* values[] = {
+      "q_tile", "q_tile", "q_tile", "q_tile", "q_tile", "q_tile", "q_tile",
+      "qL", "kL", "qL_rem", "qL_rem", "kL_rem", "kL_rem",
+      "qL_off", "qL_off", "qL_off", "NK", "NK"};
+  const char* labels[] = {
+      "Q tile marker 0", "Q tile marker 1", "Q tile marker 2",
+      "Q tile marker 3", "Q tile marker 4", "Q tile marker 5",
+      "Q tile marker 6", "Q length marker", "K length marker",
+      "Q remainder marker 0", "Q remainder marker 1", "K remainder marker 0",
+      "K remainder marker 1", "causal offset marker 0",
+      "causal offset marker 1", "causal offset marker 2", "K tile marker 0",
+      "K tile marker 1"};
+  constexpr size_t marker_count = sizeof(markers) / sizeof(markers[0]);
+  for (size_t i = 0; i < marker_count; ++i) {
+    replace_required(source, markers[i], values[i], labels[i]);
+  }
 
   const std::string scheduler = R"MSL(
   // STEEL packed-varlen scheduler, adapted to the V6 NAX tile width.
@@ -754,6 +778,17 @@ std::string generate_v6_varlen_source(int head_dim, int Hq, int Hk,
 }
 
 }  // namespace
+
+#ifdef MFA_BUILD_PROBES
+// Dev-only contract probe for the exact-one-marker guard. Keeping this behind
+// MFA_BUILD_PROBES prevents test plumbing from becoming a production API.
+std::string v6_varlen_source_guard_probe(std::string source,
+                                         const std::string& marker) {
+  replace_required(source, marker, "__MFA_VARLEN_MARKER_REPLACED__",
+                   marker.c_str());
+  return source;
+}
+#endif
 
 // MFAV6Forward — Primitive for V6 NAX forward attention.
 class MFAV6Forward : public mlx::core::Primitive {
