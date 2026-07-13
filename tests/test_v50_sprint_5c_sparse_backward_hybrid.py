@@ -84,6 +84,32 @@ class TestSparseForwardLSE:
             f"last={float(L[0,0,-1]):.2f}"
         )
 
+    @_skipif_no_nax
+    @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+    @pytest.mark.parametrize("D", [64, 128])
+    def test_sparse_fwd_lse_all_false_rows_are_locked(self, dtype, D):
+        """All-False Q tiles retain the scalar contract: O=0 and L=-inf."""
+        from mlx_mfa import _dispatch_trace as dtrace
+        from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+
+        B, H, qL, BT = 1, 2, 2048, 32
+        NQ = NK = qL // BT
+        q, k, v, _ = _mk(B, H, qL, D, dtype, 62 + D)
+        mask_np = np.ones((NQ, NK), dtype=bool)
+        mask_np[0, :] = False
+        mask = mx.array(mask_np)
+        scale = 1.0 / math.sqrt(D)
+        with dtrace.capture() as trace:
+            O, L = sparse_attention_nax_with_lse(
+                q, k, v, mask, block_tile=BT, scale=scale, causal=False)
+            mx.eval(O, L)
+        assert trace and trace[-1][0] == "v6nax_sparse_lse", trace
+        O_np = np.array(O.astype(mx.float32))
+        L_np = np.array(L)
+        assert np.all(np.isneginf(L_np[:, :, :BT]))
+        assert np.max(np.abs(O_np[:, :, :BT])) == 0.0
+        assert np.isfinite(L_np[:, :, BT:]).all()
+
 
 class TestV6NAXSparseHybrid:
 

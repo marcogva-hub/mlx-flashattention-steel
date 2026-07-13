@@ -120,11 +120,8 @@ def test_fp32_does_not_reach_v2_bound():
         mx.eval(o)
 
 
-def test_lse_variant_is_v1_for_both_dtypes_by_design():
-    """Phase-0 LSE confirmation: the sparse (O,L) variant is V1-only for ALL dtypes
-    (V2 lacks LSE) — NOT a bf16-specific deferral. We assert bf16 and fp16 LSE
-    produce IDENTICAL routing (both V1): the bf16 (O,L) output matches an
-    independent fp32 oracle just as the fp16 one does (V1 is correct, just slow)."""
+def test_lse_variant_reaches_v6nax_for_both_dtypes():
+    """The BT32 D64/128 LSE surface must engage V6NAX for both dtypes."""
     try:
         from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
     except Exception:
@@ -137,11 +134,15 @@ def test_lse_variant_is_v1_for_both_dtypes_by_design():
         q, k, v = f(), f(), f()
         mask = _sym_mask(N)
         mx.eval(q, k, v, mask)
-        o, L = sparse_attention_nax_with_lse(q, k, v, mask, block_tile=32, scale=sc)
+        from mlx_mfa import _dispatch_trace as dtrace
+        with dtrace.capture() as trace:
+            o, L = sparse_attention_nax_with_lse(
+                q, k, v, mask, block_tile=32, scale=sc)
         ref = _fp32_oracle(q, k, v, mask, sc)
         mx.eval(o, L, ref)
         err = _delta(o, ref)
         assert err < 5e-3, f"{dt} LSE-variant O wrong vs fp32 oracle (Δ={err:.2e})"
+        assert trace and trace[-1][0] == "v6nax_sparse_lse", trace
 
 
 @pytest.mark.parametrize("D", [64, 128])

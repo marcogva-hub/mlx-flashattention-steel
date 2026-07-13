@@ -60,9 +60,9 @@ mlx::core::array sparse_attention_forward(
 ///
 /// All-False rows produce L = -INFINITY (sentinel; consumer must handle).
 ///
-/// Scalar fallback only at PoC stage (V6NAX sparse LSE is Section A v3
-/// follow-up — it uses cooperative-tensor inner-GEMM that requires more
-/// extensive LSE-tracking restructure).
+/// BT=32, D={64,128}, f16/bf16 uses the V6NAX sparse cooperative-tensor
+/// kernel with an optional LSE store. Other accepted block tiles retain the
+/// scalar LSE implementation.
 std::pair<mlx::core::array, mlx::core::array> sparse_attention_forward_with_lse(
     const mlx::core::array& Q,
     const mlx::core::array& K,

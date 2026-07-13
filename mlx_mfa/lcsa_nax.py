@@ -231,10 +231,12 @@ def sparse_attention_nax_with_lse(
     gradients; consistent sparse-LSE forward + sparse backward gives
     correct gradients).
 
-    Constraints (the with_lse path uses the scalar fallback generator only —
-    LSE not yet emitted by the V6NAX sparse matmul2d kernel; production, not PoC):
-      - 2-D mask (NQ, NK) bool — 3-D / 4-D fall back to dense
-        sparse_attention_nax (no LSE return)
+    Constraints:
+      - BT=32, D in {64, 128}, fp16/bf16 use the V6NAX sparse cooperative-
+        tensor kernel and emit LSE in the same launch. Other accepted BTs
+        retain the scalar LSE implementation.
+      - 2-D, 3-D, or 4-D bool masks are accepted with the corresponding
+        (NQ, NK), (Hq, NQ, NK), or (B, Hq, NQ, NK) layout.
       - D in {64, 128}, BT in {16, 32, 64}, fp16/bf16
       - mask total bytes >= 4096 (MLX inlines small buffers)
 
@@ -247,6 +249,17 @@ def sparse_attention_nax_with_lse(
         )
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])
+    from mlx_mfa import _dispatch_trace as _dtrace
+    if _dtrace.recording():
+        use_v6nax_lse = (
+            block_tile == SPARSE_NAX_KERNEL_BLOCK_TILE
+            and Q.dtype in (mx.float16, mx.bfloat16)
+            and Q.shape[-1] in SPARSE_NAX_VIABLE_HEAD_DIMS
+        )
+        _dtrace.record(
+            "v6nax_sparse_lse" if use_v6nax_lse else "scalar_fallback_lse",
+            f"sparse_attention_nax_with_lse BT={block_tile}",
+        )
     return _ext.sparse_attention_forward_with_lse(
         Q, K, V, block_mask,
         block_tile=block_tile,

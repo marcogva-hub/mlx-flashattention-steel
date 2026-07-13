@@ -827,7 +827,8 @@ std::string sparse_scalar_fallback_source(int B, int Hq, int Hk, int qL, int kL,
 std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, int D,
                                         int BT, int NQ, int NK, float scale,
                                         const std::string& dtype_str,
-                                        int mask_ndim, bool causal) {
+                                        int mask_ndim, bool causal,
+                                        bool emit_lse = false) {
   (void)BT;  // V6NAX sparse uses BQ=BK=32 internally; eligibility ensures BT==32
   // V6NAX sparse tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
   // STRUCTURALLY PINNED, not a tunable (sparse-NAX-autotune, M5 Max, 2026-06-18):
@@ -955,6 +956,39 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
   replace_all(body, "MASK_OFFSET_EXPR", mask_offset_expr);
   replace_all(body, "CAUSAL_INTER_TILE_SKIP", causal_skip);
   replace_all(body, "CAUSAL_WITHIN_TILE_MASK", causal_block);
+  if (emit_lse) {
+    const std::string store_marker = "Otile.store(O, int(O_seq_stride));";
+    const std::string lse_store = R"LSE(
+
+// Optional sparse LSE store.  The online softmax is in log2-domain; the
+// backward contract consumes natural-log LSE, so convert once at the store.
+{
+  const short2 lse_coord = otile_t::NAXFrag_t::get_coord();
+  if (lse_coord.x == 0) {
+    device float* L_base = L
+        + tidl.z * cHq * cQL
+        + tidl.y * cQL
+        + tidl.x * V6NAX_SPARSE_BQ;
+    const short lse_row_base = short(tm + lse_coord.y);
+    constexpr float ln2 = 0.69314718055994530942f;
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < kRowsPT; ++i) {
+      const short row = lse_row_base + i * 8;
+      L_base[row] = (sum_score[i] > 0.f)
+          ? (max_score[i] + metal::log2(sum_score[i])) * ln2
+          : -INFINITY;
+    }
+  }
+}
+)LSE";
+    const size_t marker_pos = body.find(store_marker);
+    if (marker_pos == std::string::npos ||
+        body.find(store_marker, marker_pos + store_marker.size()) != std::string::npos) {
+      throw std::runtime_error(
+          "V6NAX sparse source: LSE store marker must occur exactly once");
+    }
+    body.insert(marker_pos + store_marker.size(), lse_store);
+  }
   ss << body;
 
   return ss.str();
@@ -1208,24 +1242,10 @@ mlx::core::array sparse_attention_forward(
 // =============================================================================
 // v2.50 Prompt 5c Section A.1 — sparse_attention_forward returning (O, L)
 //
-// Scalar fallback generator only (LSE not emitted by the V6NAX sparse matmul2d kernel; production,
-// not PoC).  Mirrors sparse_attention_forward dispatch
-// with emit_lse=true forcing the source generator to also write per-row
-// natural-log LSE into the L output buffer.  L shape is (B, Hq, qL) FP32.
-// All-False rows write L = -INFINITY (sentinel; consumer must handle).
-//
-// V6NAX sparse kernel doesn't yet support LSE return (uses cooperative-tensor inner
-// GEMM that requires more extensive lse-tracking restructure — Section A
-// v3 follow-up).  The LSE path uses scalar fallback so the (O, L)
-// contract is honored.
-//
-// DTYPE-INDEPENDENT (verified bf16-sparse-v2, 2026-06-18): this scalar-only LSE path
-// applies EQUALLY to fp16 and bf16 — it is NOT a bf16-specific deferral. The
-// non-LSE forward routes both dtypes to V6NAX sparse when eligible; only the LSE
-// variant is scalar, and only because V6NAX sparse lacks LSE for ALL dtypes.
-// Reached solely via sparse backward (already dense/scalar by design —
-// declined-on-perf, dispatch-map gotcha 3), so the scalar-LSE cost sits inside
-// that known envelope.
+// Sparse forward returning (O, L).  BT=32, D={64,128}, f16/bf16 uses the
+// V6NAX cooperative-tensor kernel with an optional natural-log LSE store;
+// other accepted block tiles retain the scalar implementation.  L is
+// (B, Hq, qL) FP32 and all-False rows write -INFINITY.
 // =============================================================================
 std::pair<mlx::core::array, mlx::core::array>
 sparse_attention_forward_with_lse(
@@ -1297,6 +1317,25 @@ sparse_attention_forward_with_lse(
         static_cast<int>(block_mask.shape(1)) != NK) {
       throw std::runtime_error("sparse_attention: 2-D block_mask shape != (NQ, NK)");
     }
+  } else if (mask_ndim == 3) {
+    if (static_cast<int>(block_mask.shape(0)) != Hq ||
+        static_cast<int>(block_mask.shape(1)) != NQ ||
+        static_cast<int>(block_mask.shape(2)) != NK) {
+      throw std::runtime_error(
+          "sparse_attention: 3-D block_mask shape != (Hq, NQ, NK)");
+    }
+  } else {
+    if (static_cast<int>(block_mask.shape(0)) != B ||
+        static_cast<int>(block_mask.shape(1)) != Hq ||
+        static_cast<int>(block_mask.shape(2)) != NQ ||
+        static_cast<int>(block_mask.shape(3)) != NK) {
+      throw std::runtime_error(
+          "sparse_attention: 4-D block_mask shape != (B, Hq, NQ, NK)");
+    }
+  }
+  if (causal && qL != kL) {
+    throw std::runtime_error(
+        "sparse_attention: causal requires qL == kL");
   }
   long long mask_bytes = 1LL;
   for (int i = 0; i < mask_ndim; ++i)
@@ -1308,6 +1347,48 @@ sparse_attention_forward_with_lse(
   }
 
   std::string dtype_str = is_f16 ? "half" : "bfloat";
+
+  // V6NAX sparse LSE path: keep the same eligibility as the production
+  // forward (D={64,128}, BT=32, f16/bf16) and add only the optional L store.
+  // Non-LSE callers never enter this function, so their source and pipeline
+  // key remain unchanged.
+  const bool use_v6nax_lse =
+      block_tile == 32 && (D == 64 || D == 128) && (is_f16 || is_bf16);
+  if (use_v6nax_lse) {
+    std::string name = "sparse_attn_v6nax_sparse_lse_" + dtype_str + "_" +
+        std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
+        "_" + std::to_string(qL) + "_" + std::to_string(kL) + "_" +
+        std::to_string(D) + "_BT" + std::to_string(block_tile) +
+        "_M" + std::to_string(mask_ndim) + (causal ? "_c" : "_nc");
+
+    std::string source = sparse_kernel_source_v6nax(
+        B, Hq, Hk, qL, kL, D, block_tile, NQ, NK, scale,
+        dtype_str, mask_ndim, causal, /*emit_lse=*/true);
+    auto kernel = mlx::core::fast::metal_kernel(
+        name,
+        {"Q", "K", "V", "block_mask"},
+        {"O", "L"},
+        source,
+        V6NAX_SPARSE_HEADER,
+        /*ensure_row_contiguous=*/true,
+        /*atomic_outputs=*/false);
+
+    constexpr int V6NAX_SPARSE_WM = 2;
+    constexpr int tg_threads = V6NAX_SPARSE_WM * 32;
+    std::tuple<int, int, int> grid = std::make_tuple(NQ * tg_threads, Hq, B);
+    std::tuple<int, int, int> tg = std::make_tuple(tg_threads, 1, 1);
+    auto outs = kernel(
+        {Q, K, V, block_mask},
+        {mlx::core::Shape{B, Hq, qL, D}, mlx::core::Shape{B, Hq, qL}},
+        {Q.dtype(), mlx::core::float32},
+        grid,
+        tg,
+        {},
+        std::nullopt,
+        false,
+        mlx::core::default_stream(mlx::core::Device::gpu));
+    return {outs[0], outs[1]};
+  }
 
   std::string name = "sparse_attn_scalar_fallback_lse_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
