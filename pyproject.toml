@@ -1,9 +1,10 @@
 [build-system]
-# mlx>=0.31.2: the _ext extension links nanobind v2.12.0 (NB_INTERNALS v19) — see the
-# NB_INTERNALS_VERSION→MLX mapping in CMakeLists.txt. MLX 0.31.0/0.31.1 ship an older
-# nanobind (v17/v18); the capsule key embeds NB_INTERNALS_VERSION, so a 0.31.0/.1 user
-# would compile an incompatible _ext and hit a silent NB_DOMAIN "mlx" type-sharing
-# mismatch at import. 0.31.2 is the real floor (was an inaccurate >=0.31.0).
+# mlx>=0.31.2: _ext shares MLX's mlx::core::array via nanobind NB_DOMAIN "mlx", whose
+# capsule key embeds NB_INTERNALS_VERSION — so _ext must FetchContent the SAME nanobind
+# tag MLX was built with. CMakeLists.txt auto-derives that tag from the DETECTED MLX
+# version (0.31.2 -> nanobind v2.12.0 / NB_INTERNALS v19; 0.32.0 -> nanobind v2.13.0 /
+# NB_INTERNALS v20) and FAILS LOUD on any unmapped MLX (never guesses a tag). 0.31.2 is
+# the floor: MLX 0.31.0/0.31.1 ship older nanobind (v17/v18) and would type-share-break.
 requires = ["scikit-build-core>=0.9", "mlx>=0.31.2"]
 build-backend = "scikit_build_core.build"
 
@@ -31,7 +32,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.31.2", "numpy>=1.23"]  # 0.31.2 = nanobind 2.12.0 ABI floor (see [build-system]); numpy floored (L6 audit 2026-06-21)
+dependencies = ["mlx>=0.31.2", "numpy>=1.23"]  # 0.31.2 = nanobind-ABI floor; tag auto-derived per detected MLX (see [build-system] + CMakeLists.txt); numpy floored (L6 audit 2026-06-21)
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"
