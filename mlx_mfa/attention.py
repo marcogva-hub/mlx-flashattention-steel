@@ -3448,9 +3448,18 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
     @mx.custom_function
     def _impl(q, k, v, block_mask):
         from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        # The backward sparse kernels retain their BT=64 contract.  The
+        # forward V6NAX LSE kernel is pinned to BT=32, so expand only this
+        # forward input; the original mask remains in `block_mask` for VJP.
+        forward_mask, forward_bt = block_mask, bt
+        if bt == 64:
+            from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
+            forward_mask, forward_bt, _ = _expand_bt64_for_v6nax(
+                q, k, block_mask, bt, causal=causal
+            )
         O, L = sparse_attention_nax_with_lse(
-            q, k, v, block_mask,
-            block_tile=bt, scale=scale, causal=causal)
+            q, k, v, forward_mask,
+            block_tile=forward_bt, scale=scale, causal=causal)
         # Return both — L is consumed in vjp via outputs parameter.
         return O, L
 
@@ -3556,9 +3565,18 @@ def _make_v6nax_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
     @mx.custom_function
     def _impl(q, k, v, block_mask):
         from mlx_mfa.lcsa_nax import sparse_attention_nax_with_lse
+        # Keep the BT=64 mask for the native backward kernels, but use the
+        # semantically equivalent BT=32 representation for the V6NAX LSE
+        # forward.  This avoids reintroducing the scalar LSE bottleneck.
+        forward_mask, forward_bt = block_mask, bt
+        if bt == 64:
+            from mlx_mfa.lcsa_nax import _expand_bt64_for_v6nax
+            forward_mask, forward_bt, _ = _expand_bt64_for_v6nax(
+                q, k, block_mask, bt, causal=causal
+            )
         O, L = sparse_attention_nax_with_lse(
-            q, k, v, block_mask,
-            block_tile=bt, scale=scale, causal=causal)
+            q, k, v, forward_mask,
+            block_tile=forward_bt, scale=scale, causal=causal)
         return O, L
 
     @_impl.vjp

@@ -186,8 +186,11 @@ class TestV6NAXSparseFullNativeEndToEnd:
     @_skipif_no_nax
     def test_native_engages_via_public_api_d64(self, monkeypatch):
         monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1"); monkeypatch.setenv("MFA_V6_BWD_SPARSE_NATIVE", "1")
-        B, H, qL, D = 1, 4, 2048, 64
-        BT = 32
+        from mlx_mfa import _dispatch_trace as dtrace
+        B, H, qL, D = 1, 4, 4096, 64
+        # The public full-native gate requires BT=64 for its backward mask
+        # conversion. The forward LSE path expands this to BT=32 NAX.
+        BT = 64
         NQ = NK = qL // BT
         q, k, v, dO = _mk(B, H, qL, D, mx.float16, 302)
         scale = 1.0 / math.sqrt(D)
@@ -195,8 +198,10 @@ class TestV6NAXSparseFullNativeEndToEnd:
 
         def loss(qi, ki, vi):
             return (flash_attention_sparse(qi, ki, vi, mask, scale=scale) * dO).sum()
-        dQ, dK, dV = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
-        mx.eval(dQ, dK, dV); mx.synchronize()
+        with dtrace.capture() as trace:
+            dQ, dK, dV = mx.grad(loss, argnums=(0, 1, 2))(q, k, v)
+            mx.eval(dQ, dK, dV); mx.synchronize()
+        assert any(item[0] == "v6nax_sparse_lse" for item in trace), trace
         for g in (dQ, dK, dV):
             arr = np.array(g.astype(mx.float32))
             assert np.isfinite(arr).all()
