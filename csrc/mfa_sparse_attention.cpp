@@ -527,7 +527,7 @@ const int kb_lim = cNK;
 
 // Sparse K-loop: iterate all K-blocks, skip masked.
 for (int kb = 0; kb < kb_lim; kb++) {
-  if (!mask_qrow_base[kb]) continue;
+  if (!(MASK_ACTIVE_PREDICATE)) continue;
   CAUSAL_INTER_TILE_SKIP
 
   // Per-iteration K and V pointers — JUMP via kb (no incremental advance).
@@ -828,7 +828,9 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
                                         int BT, int NQ, int NK, float scale,
                                         const std::string& dtype_str,
                                         int mask_ndim, bool causal,
-                                        bool emit_lse = false) {
+                                        bool emit_lse = false,
+                                        bool structured_window_probe = false,
+                                        int structured_window_size = 0) {
   (void)BT;  // V6NAX sparse uses BQ=BK=32 internally; eligibility ensures BT==32
   // V6NAX sparse tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
   // STRUCTURALLY PINNED, not a tunable (sparse-NAX-autotune, M5 Max, 2026-06-18):
@@ -850,6 +852,25 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
   const int V6NAX_SPARSE_TK = V6NAX_SPARSE_BK / kU;  // = 2
   const float dot_scale_log2e = scale * 1.4426950408889634f;
   const int gqa_factor = Hq / Hk;
+
+  std::string mask_active_predicate = "mask_qrow_base[kb]";
+  if (structured_window_probe) {
+    // This is the same block predicate emitted by make_sliding_window_mask
+    // when BQ=BK=32. The bool input remains bound so this probe changes only
+    // eligibility computation, not the NAX tile body.
+    mask_active_predicate =
+        "((kb * V6NAX_SPARSE_BK + V6NAX_SPARSE_BK - 1) >= "
+        "(int(qi) * V6NAX_SPARSE_BQ + V6NAX_SPARSE_BQ / 2 - " +
+        std::to_string(structured_window_size) + ") && "
+        "(kb * V6NAX_SPARSE_BK <= "
+        "int(qi) * V6NAX_SPARSE_BQ + V6NAX_SPARSE_BQ / 2 + " +
+        std::to_string(structured_window_size) + "))";
+    if (causal) {
+      mask_active_predicate = "(" + mask_active_predicate +
+          " && kb * V6NAX_SPARSE_BK <= "
+          "(int(qi) + 1) * V6NAX_SPARSE_BQ - 1)";
+    }
+  }
 
   // Mask offset expression (DC2)
   std::string mask_offset_expr;
@@ -954,6 +975,7 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
     }
   };
   replace_all(body, "MASK_OFFSET_EXPR", mask_offset_expr);
+  replace_all(body, "MASK_ACTIVE_PREDICATE", mask_active_predicate);
   replace_all(body, "CAUSAL_INTER_TILE_SKIP", causal_skip);
   replace_all(body, "CAUSAL_WITHIN_TILE_MASK", causal_block);
   if (emit_lse) {
@@ -1057,7 +1079,9 @@ mlx::core::array sparse_attention_forward(
     int block_tile,
     bool causal,
     float scale,
-    const std::string& kernel_version) {
+    const std::string& kernel_version,
+    bool structured_window_probe,
+    int structured_window_size) {
   // Sanity asserts
   if (Q.ndim() != 4 || K.ndim() != 4 || V.ndim() != 4) {
     throw std::runtime_error("sparse_attention: Q, K, V must be 4-D (B, H, L, D)");
@@ -1104,6 +1128,16 @@ mlx::core::array sparse_attention_forward(
   }
   if (D != 64 && D != 128) {
     throw std::runtime_error("sparse_attention: head_dim must be 64 or 128");
+  }
+  if (structured_window_probe) {
+    if (block_tile != 32) {
+      throw std::runtime_error(
+          "sparse structured-window probe requires block_tile=32");
+    }
+    if (structured_window_size < 0) {
+      throw std::runtime_error(
+          "sparse structured-window probe requires window_size>=0");
+    }
   }
   int NQ = qL / block_tile;
   int NK = kL / block_tile;
@@ -1185,11 +1219,17 @@ mlx::core::array sparse_attention_forward(
       std::to_string(D) + "_BT" + std::to_string(block_tile) +
       "_M" + std::to_string(mask_ndim) +
       (causal ? "_c" : "_nc");
+  if (structured_window_probe) {
+    name += "_structured_window_W" + std::to_string(structured_window_size);
+  }
 
   std::string source;
   if (use_v6nax_sparse) {
     source = sparse_kernel_source_v6nax(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
-                                        scale, dtype_str, mask_ndim, causal);
+                                        scale, dtype_str, mask_ndim, causal,
+                                        /*emit_lse=*/false,
+                                        structured_window_probe,
+                                        structured_window_size);
   } else {
     source = sparse_scalar_fallback_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
                                             scale, dtype_str, mask_ndim, causal);
