@@ -2,32 +2,66 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — macOS 27 / Metal 4.1 functional capability gate
+## [Unreleased]
 
-> **Version pending Marco.** Suggested **2.62.0** (semver-minor: a feature-add — the functional
-> activation seam — that is **behaviorally byte-identical today** on macOS 26 AND on capable/incapable
-> macOS 27; not a bugfix, not breaking). Not finalized; not published.
+Version, tag and publication are reserved for the maintainer.
 
-- **macOS-27 / Metal-4.1 path auto-detects via a FUNCTIONAL capability probe** (no configuration
-  required). On macOS 27+ the library compiles **and verifies** a Metal-4.1 kernel on the installed
-  toolchain (via mlx-mfa's ShaderCache MSL41 path, `__METAL_VERSION__ = 410`, with a
-  `#if __METAL_VERSION__ < 410 → #error` guard **and** an output-correctness check) and self-enables
-  the macOS-27 routing path only if it passes. A version string alone can gate the path **OFF** but
-  never **ON** — "macOS 27" does not guarantee a working 4.1 compiler (proven: the sparse `(long)p->NK`
-  miscompile persists under 4.1; a CLT reinstall moved the compiler under the same OS). Fail-safe:
-  any compile error / wrong result / exception → transparently uses the validated macOS-26 path. The
-  probe is lazy (first-use, cached; ~50 ms one-time), never at import, never on macOS ≤26.
-- **`MFA_ENABLE_MACOS27_ROUTING` repurposed** from opt-in to an **optional override** (`=1` force-on
-  for testing, `=0` force-off to pin macOS-26); default activation is now the functional probe.
-- **Behaviorally byte-identical today** — the macOS-27 path carries no divergence yet (Axis A/B/C
-  characterization: sparse bug persists, dense NAX parity + thresholds hold). This ships the
-  **activation mechanism + seam**, ready for validated 4.1 features later; it is **not** faster now.
-- **Sparse fallback unchanged**: capability ≠ sparse-bug-fixed. `_sparse_fallback_sdpa_perhead` stays
-  engaged on capable macOS-27 (`_MACOS27_SPARSE_D128_FIXED = False`, proven under 4.1).
-- Diagnostic/characterization tooling (default-OFF / `-DMFA_BUILD_PROBES=ON`, shipping byte-identical):
-  `MFA_STEEL_MSL` (re-test the sparse miscompile at MSL 3.1/4.0/4.1), `MFA_UNSAFE_D128_SPARSE`
-  (diagnostic guard), fp8/int4/MXFP4 matmul2d microbenches. See `devnotes/macos27_functional_gate.md`,
-  `devnotes/sparse_nax_victory_map_m5.md`.
+### Correctness and robustness
+
+- Packed-varlen causal attention now uses one documented bottom-right-aligned,
+  zero-clamped convention across the public oracle and STEEL kernel. The
+  asymmetric `qL > kL` expert path is correct instead of rejected or silently
+  wrong.
+- Packed-varlen source transformation requires every marker exactly once. Tile
+  metadata is checked across generated MSL, cache identity and host dispatch.
+- D512 tests now state and prove the real behavior: public attention delegates
+  to MLX, while unsupported direct expert calls fail clearly.
+- List-valued `window_size` is normalized before cache lookup, eliminating the
+  unhashable-list failure.
+- Boolean environment controls share the strict `0`/`1` parser. Strict
+  validation checks both names and values.
+- STEEL source replacement, sparse baked scale and custom dispatch-table mtime
+  now participate in their respective cache identities.
+
+### Routing
+
+- The BT32 V6 NAX sparse gate is contracted to cells that survived the
+  same-dtype, two-terminal, fp32-oracle map. N2048 and every unlisted sparse
+  region now use the existing fallback instead of inheriting a broad density
+  rule.
+- BT64 masks retain semantic support by expansion to BT32 when the expanded
+  cell is inside that measured gate.
+- GNA V6 NAX is the public 3D route for D128 from N2048 and D64 from N4096;
+  STEEL/sparse remain available outside the envelope and through the escape.
+- Decode adds the measured qL16/D64/non-causal GQA carveout without widening
+  qL8 or causal bounds.
+- Packed-varlen V6 NAX is available through the default-off beta-3
+  `MFA_ENABLE_VARLEN_NAX=1` envelope. Fixed BQ32/BK32/WM2 values are passed as
+  one coherent configuration.
+
+### New native coverage and opt-ins
+
+- V6 NAX sparse forward can optionally emit natural-log LSE. Full-native sparse
+  backward consumes it without the former scalar-forward bottleneck and remains
+  opt-in through `MFA_V6_BWD_SPARSE_NATIVE=1`.
+- GNA V6 NAX, packed-varlen V6 NAX, quantized matmul V6 NAX and linear/GELU
+  probes remain available as native or expert coverage according to their
+  public gates.
+- The SeedVR2 Conv3D spatial pad/slice family is exposed through the default-off
+  `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE=1` route. Unmeasured shapes keep MLX.
+- GNA range precompute (`MFA_GNA_NAX_PRECOMPUTE_RANGE=1`) and structured-window
+  sparse remain default-off research variants.
+
+### Measurement and documentation
+
+- Comparative spot-checks refuse to emit a ratio without the dtype and terminal
+  fingerprint of both arms.
+- The sparse gate map records 122 cells against a measured A-vs-A noise floor;
+  current performance text cites only hardened, dated beta-OS evidence.
+- User documentation is regenerated from current code, bindings and executable
+  locks. Published changelog entries below remain unchanged historical records.
+- API enumeration covers all 24 public computational surfaces and all 38 raw
+  computational bindings.
 
 ## [2.61.0] — 2026-06-21 — maintainability + cross-audit remediation
 

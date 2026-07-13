@@ -111,34 +111,33 @@ def test_removed_knob_warns_removed_not_typo(monkeypatch):
 
 # ── Perf / routing claim reconciliation (CC-08/09/10/11, CX-09) ──────────────
 
-def test_conv3d_denominator_reconciled():
-    """CC-08/09: README must give the public conv3d win vs mx.conv_general
-    (1.64× SeedVR2) and must NOT attribute the 2.3-2.5× im2col number to
-    mx.conv_general."""
+def test_current_conv3d_claim_uses_hardened_vae_evidence():
+    """The current docs use the isolated-process VAE result, not the retired
+    denominator pairing from a pre-hardening microbenchmark."""
     r = _read("README.md")
-    assert "1.64×" in r and "conv_general" in r, "lost the provenanced 1.64× vs conv_general"
-    # the false denominator pairing "2.3–2.5×, bf16 1.4–2.7× vs `mx.conv_general`" must be gone
-    assert "1.4–2.7× vs\n`mx.conv_general`" not in r and \
-           "2.3–2.5×, bf16 1.4–2.7× vs `mx.conv_general`" not in r, \
-        "README still attributes the 2.3-2.5× im2col figure to mx.conv_general (CC-08)"
+    results = _read("RESULTS.md")
+    assert "1.4128x" in results and "1.4262x" in results
+    assert "macOS 27 beta" in r and "same dtype" in r
+    assert "2.3–2.5×, bf16 1.4–2.7× vs `mx.conv_general`" not in r
 
 
-def test_v6_backward_block_reconciled():
-    """CC-10: the stale '1.81-1.82× via MFA_ENABLE_V6_BACKWARD for D=64' block is
-    replaced by the default-on 2.16-3.05× truth."""
+def test_v6_backward_current_claim_is_fresh_and_engagement_stamped():
+    """Training docs carry the fresh engagement-harness range only."""
     r = _read("README.md")
-    assert "2.16–3.05×" in r, "lost the canonical default-on V6-backward number"
-    assert "1.81-1.82× faster end-to-end\nbackward" not in r, \
-        "README still presents the withdrawn 1.81-1.82× D=64-via-env figure (CC-10)"
+    training = _read("docs/reference/TRAINING_QUICKSTART.md")
+    assert "2.05–2.84x" in training and "v6_split_backward" in training
+    assert "1.81-1.82× faster end-to-end\nbackward" not in r
 
 
-def test_window_21x_provenanced():
-    """CC-11: the bare '~21×' is replaced by the measured 20.8×/18.4× cell."""
+def test_sparse_claim_uses_hardened_same_dtype_map():
+    """The sparse docs expose the hardened map and exclude the retired ~21x claim."""
     r = _read("README.md")
+    results = _read("RESULTS.md")
     fc = _read("docs/reference/FEATURE_COVERAGE.md")
-    assert "20.8×" in r and "18.4×" in r, "README sliding-window claim not stamped"
-    assert "up to ~**21x**" not in r, "bare unprovenanced ~21x remains in README"
-    assert "up to 21x speedup" not in fc, "bare unprovenanced 21x remains in FEATURE_COVERAGE"
+    assert "3.8833x" in results and "3.8485x" in results
+    assert "7.53%" in results and "dispatch-map" in r
+    assert "up to ~**21x**" not in r
+    assert "up to 21x speedup" not in fc
 
 
 def test_flash_attention_docstring_routing_matches_dispatch_map():

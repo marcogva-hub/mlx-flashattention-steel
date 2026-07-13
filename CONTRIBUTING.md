@@ -1,73 +1,85 @@
-# Contributing to mlx-mfa
+# Contributing
 
-## The `_ext` / Python contract (read this before benchmarking)
+Contributions must preserve correctness, fallback honesty and reproducible
+dispatch evidence. A faster result from an unintended binary is not a valid
+optimization.
 
-mlx-mfa's acceleration lives entirely in the compiled C++/Metal extension
-`mlx_mfa._ext`. **Every** kernel — STEEL (M1–M4), V6/NAX (M5+), sparse, paged,
-conv — is reached through it. If `_ext` does not import, the library is *correct
-but unaccelerated*: it silently routes to `mx.fast.scaled_dot_product_attention`
-(SDPA). Two hard rules follow.
+## Local setup
 
-### 1. `_ext` must be built for the SAME Python as the interpreter you run
-
-`_ext` is an ABI-specific native module: `_ext.cpython-3XY-darwin.so`. A build
-for CPython 3.11 **cannot** load under 3.12/3.13/3.14 — `import mlx_mfa._ext`
-raises `ModuleNotFoundError`, `has_nax()` returns `False`, and you get SDPA with
-no acceleration.
-
-It is also pinned to the **MLX ABI** it was compiled against
-(`mlx>=0.31.2` = nanobind 2.12.0 / NB_INTERNALS v19 — see `pyproject.toml` /
-`CMakeLists.txt`). Upgrading MLX after building can break the load at runtime;
-`mlx_mfa` warns on a major.minor mismatch (`_check_abi`).
-
-### 2. The path-insert-under-mismatched-Python trap (the multi-session footgun)
-
-The exact failure that produced phantom benchmarks across several sessions:
-
-> A bench script ran under a **3.14** venv but did `sys.path.insert(0, repo)`,
-> shadowing the 3.14-installed package with the repo checkout whose only built
-> `_ext` was for **3.11**. `import mlx_mfa._ext` failed → `has_nax()` False →
-> the V6 path never engaged → **both** arms of an A/B ran SDPA → `byteΔ == 0`,
-> which read as "V6 looks like SDPA / unverified / parity."
-
-**Symptom to recognize:** an A/B comparison whose two arms are bit-identical
-(`byteΔ == 0`), or a "speedup" of exactly 1.0×, or a kernel that "looks like
-SDPA." Before debugging the kernel, check whether `_ext` even loaded.
-
-### Always verify NAX is loaded before you bench
-
-```python
-import mlx_mfa
-assert mlx_mfa.has_nax(), mlx_mfa.has_nax(reason=True)   # raises if the fast path is off
-```
-
-`has_nax(reason=True)` returns `(False, code)` with `code` ∈
-`{"ext-load-failed", "unsupported-platform", "pre-m5-hardware"}` so you know
-*why*. The dev-only bench helper `benchmarks/bench_validity.measured_speedup`
-takes `require=lambda: mlx_mfa.has_nax()` and raises `FeatureUnavailable`
-(not a misleading "vacuous") when the feature can't engage — use it.
-
-### Building `_ext`
+Use an arm64 macOS environment with Python 3.10+, CMake 3.24+ and MLX 0.31.2+.
 
 ```bash
-# canonical dev env — .venv is the single source of truth (CLAUDE.md)
-CMAKE_ARGS="-DPython_EXECUTABLE=.venv/bin/python" \
+python -m venv .venv
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -e '.[dev]'
+CMAKE_ARGS="-DPython_EXECUTABLE=$PWD/.venv/bin/python" \
   .venv/bin/python -m pip install --no-build-isolation -e .
-.venv/bin/python -c "import mlx_mfa._ext; print('ext OK')"
-.venv/bin/python -c "import mlx_mfa; print('has_nax:', mlx_mfa.has_nax(reason=True))"
 ```
 
-To bench under a *different* Python (e.g. a 3.14 venv), build an `_ext` for
-**that** interpreter first — do not point a mismatched Python at a prebuilt
-`_ext`.
+The extension links against the installed MLX. Rebuild after changing C++,
+Objective-C++ or generated Metal source.
 
-## Tests
+## Validation ladder
+
+Run the narrowest relevant tests while developing, then the complete suite:
 
 ```bash
+.venv/bin/python -m pytest tests/test_attention.py -q
 .venv/bin/python -m pytest tests/ -q
 ```
 
-The contract above is locked by `tests/test_nax_availability.py` (warning on
-unexpected fallback, silence on expected, strict mode) and
-`tests/test_bench_validity_v6_regression.py` (the bench helper's
-`FeatureUnavailable` / engagement checks).
+Changes to routing or performance documentation also require:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_dispatch_map_lock.py \
+  tests/test_doc_accuracy_guards.py \
+  tests/test_publish_surface_guard.py \
+  tests/test_release_gate_enforcement.py -q
+```
+
+## Kernel and dispatch changes
+
+Before editing a kernel:
+
+1. Identify the public caller and every fallback.
+2. Establish an independent fp32 oracle.
+3. Add a terminal fingerprint that fails when another path runs.
+4. Lock malformed inputs and unsupported shapes.
+5. Preserve pre-M5 behavior unless the change explicitly targets it.
+
+Routing changes must update `docs/reference/dispatch-map.md` and its executable
+lock in the same commit. Expert-only symbols do not prove public engagement.
+
+## Performance evidence
+
+A comparative ratio is accepted only after correctness and engagement. Use
+same-dtype arms, absolute milliseconds, five process-isolated sessions in both
+orders, and 20 dispatches per sample for sub-millisecond kernels. Record the
+runtime versions and hardware. Fine gains require an A-vs-A noise floor.
+
+Do not add a user-facing speed claim unless its public path and expected
+terminal have an executable lock.
+
+## Environment variables
+
+Register every new `MFA_*` or `MLX_MFA_*` name in `mlx_mfa/_knobs.py`. Boolean
+controls use the shared strict `0`/`1` parser. Document the default, caching
+behavior and scope in `ENV_VARS.md`.
+
+## Documentation
+
+Current-state user documentation lives at the repository root and under
+`docs/reference/`. Investigation logs and design journals belong in ignored
+`devnotes/` or `.doc-archive/`; the publication guard rejects them from the
+tracked/published surface.
+
+Claims should cite code or executable tests. Historical changelog entries are
+immutable. New release text belongs under `Unreleased` until the maintainer
+performs the versioned release.
+
+## Scope and review
+
+Keep commits focused. Do not combine an optimization with unrelated cleanup.
+Call out unsupported hardware, beta-OS measurements and any test gap. The
+maintainer controls version bumps, tags and publication.

@@ -1,45 +1,44 @@
-# mlx-mfa Documentation Index
+# Documentation index
 
-The tracked tree carries **current-state documentation only**. The campaign journal
-(phase reports, sprint decisions, design docs, diagnostics, the audit ledger, devnotes)
-is retained off the tracked tree — see **Provenance** below.
+The current user documentation is split by contract, not by development phase.
 
-## Published (ships in the sdist — the published artifact on PyPI)
-- [`README.md`](../../README.md) — overview, install, quick start, current perf, known issues
-- [`CHANGELOG.md`](../../CHANGELOG.md) — version history
-- `LICENSE`, `LICENSE-DRAWTHINGS`, `THIRD_PARTY_LICENSES`
+## Start here
 
-## Root current-state / institutional
-- [`RESULTS.md`](../../RESULTS.md) — verified-M5 perf summary (full tables → `BENCHMARKS.md`)
-- [`ENV_VARS.md`](../../ENV_VARS.md) — environment-variable reference
-- [`NAMING.md`](../../NAMING.md) — V6/NAX nomenclature glossary
-- [`CLAUDE.md`](../../CLAUDE.md), [`CLAUDE_V6_NAX.md`](../../CLAUDE_V6_NAX.md) — agent/institutional rules
+- [`README.md`](../../README.md): installation, first use and current route model.
+- [`API_MANUAL.md`](API_MANUAL.md): public Python surface.
+- [`dispatch-map.md`](dispatch-map.md): exact terminal selected by public calls.
+- [`ENV_VARS.md`](../../ENV_VARS.md): runtime and expert controls.
 
-## Current-state reference (this directory, `docs/reference/`)
+## Runtime and operation guides
 
-### Verified runtime + per-kernel (audit-locked)
-- [`dispatch-map.md`](dispatch-map.md) — which kernel actually runs per entry × input (locked by `tests/test_dispatch_map_lock.py`)
-- [`sparse-family-spec.md`](sparse-family-spec.md), [`dense-steel-family-spec.md`](dense-steel-family-spec.md), [`backward-family-spec.md`](backward-family-spec.md), [`b4-family-spec.md`](b4-family-spec.md) — per-kernel specs (fp32/oracle-locked)
-- [`doc-claim-lock-map.md`](doc-claim-lock-map.md) — every load-bearing claim → its executable lock
+- [`TRAINING_QUICKSTART.md`](TRAINING_QUICKSTART.md)
+- [`SERVING_GUIDE.md`](SERVING_GUIDE.md)
+- [`HOOK_TELEMETRY.md`](HOOK_TELEMETRY.md)
+- [`HARDWARE_SUPPORT.md`](HARDWARE_SUPPORT.md)
+- [`RELEASE_PHILOSOPHY.md`](RELEASE_PHILOSOPHY.md)
 
-### Guides & references
-- [`API_MANUAL.md`](API_MANUAL.md) — public API
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system architecture
-- [`FEATURE_COVERAGE.md`](FEATURE_COVERAGE.md) — feature matrix
-- [`INVENTORY.md`](INVENTORY.md) — export inventory
-- [`SERVING_GUIDE.md`](SERVING_GUIDE.md) — serving/runtime
-- [`TRAINING_QUICKSTART.md`](TRAINING_QUICKSTART.md) — training quick start
-- [`HARDWARE_SUPPORT.md`](HARDWARE_SUPPORT.md) — M1–M5 support matrix
-- [`HOOK_TELEMETRY.md`](HOOK_TELEMETRY.md) — auto-hook telemetry
-- [`PERF_CLAIMS.md`](PERF_CLAIMS.md) — perf-claim registry (synced by `tests/test_perf_claims_doc_sync.py`)
-- [`RELEASE_PHILOSOPHY.md`](RELEASE_PHILOSOPHY.md) — auto-default principle
-- [`BENCHMARKS.md`](BENCHMARKS.md) — full benchmark tables
-- [`MIGRATION_v2.39.1_to_v2.50.0.md`](MIGRATION_v2.39.1_to_v2.50.0.md), [`MIGRATION_v2.50.0_to_v2.50.1.md`](MIGRATION_v2.50.0_to_v2.50.1.md) — upgrade notes
+## Kernel contracts
 
-## Provenance — the journal
-The full campaign journal is **retained but off the public tracked tree**: it lives in
-**git history** (every file at its prior path) and in the gitignored **`.doc-archive/`**
-snapshot. It is intentionally excluded from both the published sdist and the public repo
-surface — enforced by `tests/test_publish_surface_guard.py` (the built sdist's
-publication surface **and** the tracked-tree allowlist). Links throughout the current-state docs that point into `.doc-archive/...`
-are provenance pointers into that archive.
+- [`dense-steel-family-spec.md`](dense-steel-family-spec.md)
+- [`sparse-family-spec.md`](sparse-family-spec.md)
+- [`backward-family-spec.md`](backward-family-spec.md)
+- [`b4-family-spec.md`](b4-family-spec.md)
+
+## Verification and measurements
+
+- [`RESULTS.md`](../../RESULTS.md): hardened active measurements.
+- [`BENCHMARKS.md`](BENCHMARKS.md): comparison protocol and commands.
+- [`PERF_CLAIMS.md`](PERF_CLAIMS.md): active-claim registry.
+- [`doc-claim-lock-map.md`](doc-claim-lock-map.md): prose-to-test mapping.
+- [`FEATURE_COVERAGE.md`](FEATURE_COVERAGE.md): current capabilities.
+- [`INVENTORY.md`](INVENTORY.md): source and export inventory.
+
+## Compatibility records
+
+- [`MIGRATION_v2.39.1_to_v2.50.0.md`](MIGRATION_v2.39.1_to_v2.50.0.md)
+- [`MIGRATION_v2.50.0_to_v2.50.1.md`](MIGRATION_v2.50.0_to_v2.50.1.md)
+- [`CHANGELOG.md`](../../CHANGELOG.md): immutable published-version history.
+
+Investigation journals are not published. They remain in Git history and the
+local ignored archive; current claims must be supported by the files above or
+by executable code/tests.

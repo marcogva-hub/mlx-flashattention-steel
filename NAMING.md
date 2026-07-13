@@ -1,87 +1,84 @@
-# NAMING.md — kernel lineage glossary + V34→V6 rename provenance
+# Naming and semantic conventions
 
-This file is the single source of truth for mlx-mfa kernel nomenclature. It is
-the **only** living document that intentionally retains the historical `V34`
-token (the cartography report below is the second — it is a dated provenance
-record). A repo-wide `grep V34` should match only this file and that report.
+This glossary names paths by the datapath that executes them. Runtime trace
+terminals are preferred over historical version labels.
 
 ## Kernel lineage
 
-| Generation | MMA primitive | Notes |
-|---|---|---|
-| **V1–V5** | `simdgroup_matrix` (STEEL) | `mfa_steel_fwd*.cpp`; threadgroup-loaded MMA. **V4/V5 forward variants were retired from the build in v2.61.0** (compiled+routed STEEL forwards are now V1/V2/V3 + V6_NAX); the V4/V5 names are kept here only for lineage. |
-| **V6** | `mpp::tensor_ops::matmul2d` cooperative-tensor (**NAX**) | Apple Neural-Accelerator path; `csrc/mfa/v6_nax/`, `csrc/mfa_v6_nax_primitive.cpp`, `csrc/mfa_sparse_attention.cpp`. |
+| Name | Meaning in current source |
+|---|---|
+| STEEL V1 | Original simdgroup dense forward family in `mfa_steel_fwd.cpp`. |
+| STEEL V2 | Sequential K/V simdgroup family in `mfa_steel_fwd_v2.cpp`. |
+| STEEL V3 | Compiled conditional simdgroup family in `mfa_steel_fwd_v3.cpp`. |
+| V6 NAX | M5+ Metal-4 path using NAX/matmul2d primitives. |
+| V7 | Reserved for a future Metal-4.1 lineage; no production V7 kernel exists. |
+| V4 / V5 | Removed forward experiments; their sources and enable controls are not live. |
 
-Apple's own SDPA uses a *different* NAX form — raw `metal_simdgroup_matrix`
-(`steel_attention_nax.h` / `nax.h`), **not** `matmul2d`. See the cartography
-report for why that distinction matters for the dense-vs-sparse perf story.
+The old internal label `V34` is not a kernel generation. It was renamed to V6
+NAX. Deprecated V34 environment names remain aliases so existing scripts fail
+gradually rather than silently changing behavior.
 
-## Canonical asymmetric-causal convention
+## Runtime terminal names
 
-The canonical name is **bottom-right-aligned, zero-clamped**. For segment-local
-query/key lengths `qL` and `kL`:
+| Terminal | Executed path |
+|---|---|
+| `sdpa` | MLX scaled dot-product attention. |
+| `nax_dense` | Dense V6 NAX forward. |
+| `mfa_primitive` | STEEL-family primitive, including decode/window variants. |
+| `v6nax_sparse` | BT32 V6 NAX sparse forward. |
+| `scalar_fallback` | Per-query-row scalar sparse coverage kernel. |
+| `gna_v6nax` | V6 NAX grouped-neighborhood forward. |
+| `gna_native` | STEEL grouped-neighborhood forward. |
+| `varlen_v6nax` | Packed-varlen V6 NAX opt-in. |
+| `varlen_native` | Packed-varlen STEEL path. |
+| `varlen_split_concat` | Per-segment MLX fallback. |
+| `v6_split_backward` | V6 NAX split backward family. |
+
+Use these terminal labels in tests and performance evidence. A function name or
+requested backend is not proof that its kernel ran.
+
+## Sparse names
+
+`v6nax_sparse` is the canonical cooperative-tensor sparse path. The aliases
+`v2`, `v6_nax_sparse`, `v6-nax-sparse` and `v6nax` are accepted by the expert
+selector for compatibility.
+
+`scalar_fallback` names the pre-NAX per-thread-row implementation. The aliases
+`v1` and `sparse_scalar_fallback` remain accepted. They do not mean that the
+kernel belongs to the historical dense V1 lineage.
+
+## Asymmetric causal convention
+
+The canonical name is **bottom-right-aligned, zero-clamped causal masking**.
+For a query segment of length `qL` and key segment of length `kL`:
 
 ```text
 qL_off = max(0, kL - qL)
-key column k_col is visible iff k_col <= qL_off + query row q_row
+visible(q_row, k_col) = (k_col <= qL_off + q_row)
 ```
 
-For `qL <= kL`, historical text called this “lower-right”. For `qL > kL`, the
-zero clamp yields top-left alignment and **does not create fully masked leading
-query rows**; historical text called that case “clamped upper-left”. Both names
-are aliases for the single convention above, not separate contracts.
+Indices are segment-local. When `qL <= kL`, this is commonly called
+lower-right alignment. When `qL > kL`, the zero clamp makes it top-left
+aligned and does not create fully masked leading query rows. Those historical
+phrases are aliases for the formula above, not separate conventions.
 
-## The V34→V6 rename (v2.57.0)
+## Tensor and mask layouts
 
-`V34` was the internal generator/working name for the V6 NAX kernel during its
-development (forward + the 9 backward kernels). It was never a distinct kernel
-generation — it is the **same kernel** as V6 NAX. The dual name caused a
-documented analysis error (the "port STEEL→NAX" false premise; see the
-cartography report). v2.57.0 unifies the nomenclature to **V6**.
+- Dense attention tensors use BHND: `[batch, heads, sequence, dimension]`.
+- Packed-varlen tensors use B=1 BHND storage; cumulative sequence arrays delimit
+  independent segments.
+- GQA requires `Hq % Hkv == 0` where the selected path supports GQA.
+- Sparse block masks may be `[NQ,NK]`, `[H,NQ,NK]` or `[B,H,NQ,NK]`.
+- A mask block describes a rectangular query/key tile. The V6 NAX sparse tile
+  is BQ32/BK32; BT64 public support expands each source block to a 2x2 BT32
+  representation before entering an eligible V6 NAX cell.
 
-**Casing scheme (mechanical, uniform):**
+## Precision names
 
-| Old token | New token | Where |
-|---|---|---|
-| `V34` (any uppercase use: macros, camelCase symbols, prose) | `V6NAX` | MSL `#define`s (`V34_TQ`→`V6NAX_TQ`, `V34BWDF_TK`→`V6NAXBWDF_TK`), C++ symbols (`createV34Source`→`createV6NAXSource`, `MFAV34BwdDV`→`MFAV6NAXBwdDV`, `useV34`→`useV6NAX`) |
-| `v34` (lowercase) | `v6nax` | snake_case symbols (`v34_BK`→`v6nax_BK`, `compile_v34_backward_pipeline`→`compile_v6nax_backward_pipeline`, `force_v34`→`force_v6nax`) |
+Use `fp16`, `bf16` and `fp32` for user-facing dtype names. `f16` and `f32` are
+acceptable Metal/source abbreviations. A fallback accepting fp32 does not imply
+that the corresponding native kernel supports fp32.
 
-## Environment-variable migration (30 vars)
-
-The **new `MFA_V6*` name is canonical.** The **old `MFA_*V34*` name is a
-deprecated alias** — still honored (existing scripts keep working) but it emits
-a one-shot `DeprecationWarning` per process. **Aliases are removed in v3.0.0.**
-The alias is resolved by `csrc/mfa_env_aliases.hpp` (C++) and
-`mlx_mfa/_env_aliases.py` (Python) — those two files deliberately retain the old
-names as the deprecation table.
-
-Rename rule: `V34→V6`, EXCEPT where the name already contained `V6` (a
-collision), where `V34→NAX` keeps the new name unambiguous.
-
-| Old (deprecated) | New (canonical) |
-|---|---|
-| `MFA_ENABLE_V34_BACKWARD` | `MFA_ENABLE_V6_BACKWARD` |
-| `MFA_DISABLE_V34_BACKWARD` | `MFA_DISABLE_V6_BACKWARD` |
-| `MFA_ENABLE_V34_D128` | `MFA_ENABLE_V6_D128` |
-| `MFA_V34_BWD_KERNEL` | `MFA_V6_BWD_KERNEL` |
-| `MFA_V34_BWD_SPARSE_NATIVE` | `MFA_V6_BWD_SPARSE_NATIVE` |
-| `MFA_V34_DUMP_SOURCE` | `MFA_V6_DUMP_SOURCE` |
-| `MFA_V34BWD` | `MFA_V6BWD` |
-| `MFA_V34BWD_BK` / `_BQ` / `_WM` | `MFA_V6BWD_BK` / `_BQ` / `_WM` |
-| `MFA_V34BWD_USE_FUSED` | `MFA_V6BWD_USE_FUSED` |
-| `MFA_V34BWD_DUMP_SOURCE` | `MFA_V6BWD_DUMP_SOURCE` |
-| `MFA_V34BWDF_BK` / `_BQ` / `_WM` | `MFA_V6BWDF_BK` / `_BQ` / `_WM` |
-| `MFA_V34BWDF_DUMP_PATH` / `_DUMP_SOURCE` | `MFA_V6BWDF_DUMP_PATH` / `_DUMP_SOURCE` |
-| `MFA_V34BWDK_BK` / `_BQ` / `_WM` | `MFA_V6BWDK_BK` / `_BQ` / `_WM` |
-| `MFA_V34BWDV_BK` / `_BQ` / `_WM` | `MFA_V6BWDV_BK` / `_BQ` / `_WM` |
-| `MFA_V34BWDKV_BK` / `_BQ` / `_WM` | `MFA_V6BWDKV_BK` / `_BQ` / `_WM` |
-| `MFA_V6_USE_V34` *(collision → NAX)* | `MFA_V6_USE_NAX` |
-| `MFA_V6_V34_BK` / `_BQ` / `_WM` *(collision → NAX)* | `MFA_V6_NAX_BK` / `_BQ` / `_WM` |
-
-## Provenance
-
-The rename and the analysis that prompted it (the false "port STEEL→NAX"
-premise born of the V34/V6 confusion; the sparse forward is already NAX
-`matmul2d`) are recorded in
-[`.doc-archive/docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md`](.doc-archive/docs/v50/campaign-2026-06/v6-nax/nax-cartography-and-rename-report.md),
-which retains the `V34` token to preserve the meaning of that analysis.
+LSE means natural-log log-sum-exp unless a source explicitly states otherwise.
+The sparse V6 NAX optional LSE converts the online log2-domain state at store
+time; an all-masked row stores negative infinity.

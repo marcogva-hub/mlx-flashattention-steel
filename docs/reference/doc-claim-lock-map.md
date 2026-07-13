@@ -1,33 +1,25 @@
-# Doc-claim → executable-lock map (current-state reference)
+# Documentation Claim Lock Map
 
-Every load-bearing published/reference claim is coupled to an executable lock so the
-drift that caused the campaign's four which-binary inversions cannot silently recur.
-Extracted from the Phase-D rebuild (audit) + extended through Phase F and the E-addendum.
-Correctness claims are executable-locked; perf claims are Verified-at-date (timing is
-CI-flaky — re-measure is the anti-drift), labelled as such.
+This index connects published assertions to executable guards.
 
-| Published / reference claim | Lock |
+| Published assertion | Primary lock |
 |---|---|
-| routing: dense auto→SDPA, mfa→STEEL, decode→SDPA, conv eligibility | `tests/test_dispatch_map_lock.py` |
-| routing: full Python which-path equivalence (golden snapshot — catches a backend reroute even when output stays correct) | `tests/test_routing_equivalence_snapshot.py` |
-| routing (Phase F): D=128 built-in masks → symmetric 32×32 → NAX-sparse (d≲ceiling) / SDPA (d≳ceiling); D∈{64,128} sparse → V2 (never V1-scalar default) | `tests/test_dispatch_map_lock.py` + `tests/test_decide_auto_version_shape_aware.py` |
-| per-kernel correctness (sparse / dense-steel / backward / GNA / conv / topk / sage / paged) | `tests/test_{sparse_family,dense_steel_family,backward_family,b4_family}_*_lock.py` (42 cells) |
-| dense NAX forward `v6_nax_forward` is a faithful FA-2 forward (default scale) | `tests/test_v6_nax_forward_lock.py` (9 cells) |
-| green-on-wrong-binary is structurally caught (assert the BINARY — byteΔ vs SDPA — not just the MATH) | `tests/test_fingerprint_discipline.py` |
-| env: `MFA_ENABLE_V6_BACKWARD` dense→full-native vs sparse→dV-only | `tests/test_fingerprint_discipline.py` + `tests/test_backward_family_lock.py` |
-| publish surface excludes the journal (wheel MANIFEST **and** tracked repo tree) | `tests/test_publish_surface_guard.py` |
-| **perf (Verified-at-date, NOT locked):** symmetric-NAX-sparse beats SDPA D=128 to d≈0.78; V1-scalar never fastest; STEEL legacy-on-M5; v6_nax-dense parity-or-win at D=128 | RESULTS.md + `docs/reference/BENCHMARKS.md` (re-measure is the anti-drift) |
+| package version and API export count | `tests/test_doc_accuracy_guards.py` |
+| published-file allowlist and sdist contents | `tests/test_publish_surface_guard.py` |
+| runtime route table | `tests/test_dispatch_map_lock.py` |
+| performance claim identifiers | `tests/test_perf_claims_doc_sync.py` |
+| public claim reachability | `tests/test_release_notes_perf_claims.py` |
+| documentation examples do not leak environment state | `tests/test_doc_examples.py` |
+| strict knob names and values | `tests/test_knob_registry.py`, `tests/test_audit_remediation_r3.py` |
+| D=512 delegation | `tests/test_d512_test_surface.py`, varlen D512 delegation lock |
+| sparse NAX route boundaries | sparse gate patch and dispatch-map lock tests |
+| packed-varlen tile coherence | packed-varlen public routing locks |
+| causal varlen qL>kL | public split-concat and expert STEEL correctness locks |
+| GNA NAX route and escape | GNA routing and dispatch-map locks |
+| no-LSE sparse conservation | sparse LSE forward locks |
 
-## Maintainer reference set (this directory)
-- `dispatch-map.md` — runtime-verified which-kernel-runs map (locked by `test_dispatch_map_lock.py`).
-- `sparse-family-spec.md`, `dense-steel-family-spec.md`, `backward-family-spec.md`,
-  `b4-family-spec.md` — the four per-kernel specs (fp32/oracle-correctness-locked).
-- `API_MANUAL.md`, `ARCHITECTURE.md`, `FEATURE_COVERAGE.md`, `HARDWARE_SUPPORT.md`,
-  `INVENTORY.md`, `SERVING_GUIDE.md`, `TRAINING_QUICKSTART.md`, `PERF_CLAIMS.md`,
-  `RELEASE_PHILOSOPHY.md`, `HOOK_TELEMETRY.md`, `BENCHMARKS.md`, `INDEX.md` — current-state guides.
+## Lock semantics
 
-## Provenance / the journal
-The campaign journal (phase reports, sprint decisions, design docs, the audit ledger,
-devnotes, diagnostics) is RETAINED but OFF the public tracked tree — it lives in git
-history and the gitignored `.doc-archive/` snapshot. It is intentionally not published to
-either the wheel or the public repo surface (enforced by `test_publish_surface_guard.py`).
+A math-only comparison does not prove engagement. Route locks assert a terminal or compare against a known fallback fingerprint. Documentation that names a kernel must cite one of those locks.
+
+Performance prose is additionally constrained by the measurement contract in [BENCHMARKS.md](BENCHMARKS.md). The claim registry preserves executable identifiers but delegates current numerical results to [RESULTS.md](../../RESULTS.md).
