@@ -120,7 +120,11 @@ python -m pip install mlx-mfa
 
 The distribution is source-first: installation compiles `_ext` against the
 MLX present in that environment. Import performs a full-version ABI check and
-warns if the extension and runtime MLX versions differ.
+warns if the extension and runtime MLX versions differ. Note: pinning an older
+MLX under build isolation compiles `_ext` against the latest MLX, so it is built
+against a different MLX than the runtime — this yields a loud warning and a safe
+SDPA fallback (correct results, no acceleration); build with
+`--no-build-isolation` against the pinned MLX to avoid it.
 
 For a checkout:
 
