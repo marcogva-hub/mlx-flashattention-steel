@@ -1,11 +1,11 @@
 {
   "release_version": "2.62.0",
-  "git_sha": "2d29ec51d60bb1580b2d4d2bed0ee71a16cb9f4a",
-  "mlx_version": "0.31.2",
+  "git_sha": "a70859b015d2a6937088611891ce8015459aeb8e",
+  "mlx_version": "0.32.0",
   "device": "Apple M5 Max",
   "chip": "M5",
   "is_m5_plus": true,
-  "date_utc": "2026-07-13",
+  "date_utc": "2026-07-14",
   "has_nax": true,
   "nax_reason": "available",
   "fingerprints": {
