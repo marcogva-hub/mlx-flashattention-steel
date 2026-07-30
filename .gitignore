@@ -94,3 +94,7 @@ CAMPAIGN.md
 
 # stray journal-export zip (cruft — real archive is .doc-archive/); keep out of the sdist surface
 doc-archive.zip
+
+# Campaign scratch / telemetry + devnotes exports — never shipped (publication guard)
+debug/
+devnotes_*.zip

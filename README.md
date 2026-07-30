@@ -249,14 +249,22 @@ Apple M5 Max running macOS 27 beta. Both arms used the same dtype, both
 terminals were fingerprinted, outputs were checked against an fp32 oracle, and
 sub-millisecond cells used 20 dispatches per sample.
 
+They were revalidated on 2026-07-30 under a remediated fan curve (regulator-controlled),
+on MLX 0.31.2 and 0.32.0, with an under-load frequency gate. No routing classification
+flips: the sparse gate's engaging region stays 61/61 win on both MLX versions. See
+[RESULTS.md](RESULTS.md) for the per-row provenance, the day null floors, and the new
+longer-kL decode and N6144 evidence.
+
 - Sparse gate map: 122 cells, classified with a 7.53% same-path noise floor;
   61 won, 55 lost and 6 were unresolved. This map is why the sparse gate is
   cell-based instead of density-only.
 - Causal sparse D128, N8192, B*H=12, fp16, block density 0.30: masked SDPA took
   10.822-10.829 ms while `v6nax_sparse` took 2.787-2.814 ms, or
   **3.85-3.88x** in the direction SDPA/native.
-- GNA D128, N4096, fp16, 3D 1x7x7 window: MLX SDPA/native was
-  **1.18-1.24x** across the two process orders.
+- GNA D128, N4096, fp16, 3D 1x7x7 window: MLX SDPA/native was **2.39-2.44x**
+  across the two process orders when revalidated 2026-07-30. The 2026-07-13
+  value **1.18-1.24x** is retained as historical (throttle-compressed: this
+  sub-millisecond window was the one ratio the beta regulator compressed).
 - Decode qL=8, D64, GQA=8, non-causal, fp16, kL=4096: SDPA/MFA was
   **1.21-1.25x** across the two process orders.
 
