@@ -2,6 +2,41 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.62.1] — 2026-08-03
+
+Patch release. The **only code change** is one opt-in, default-off conv3d allowlist entry
+(inert unless `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE=1`) — no default routing path, no kernel, no
+ABI change, `_ext` binary unchanged. Semantic-versioning patch. The rest is documentation and
+evidence for the 2026-07-30 regulator-controlled revalidation.
+
+### Added
+- Conv3D spatial-pad **family #2** (SeedVR2 VAE 54×66, `512→512`) admitted to the opt-in
+  `_CONV3D_SPATIAL_PAD_FAMILIES` allowlist — input-geometry keys `(3,54,66,512,512)` and
+  `(4,54,66,512,512)` (census-authoritative, SeedVR2 `/debug/116`; input-T = output-T + 2, one
+  pyramid level deeper than 108×132 so `{3,4}` not `{4,5}`). Default-off. mfa-side isolated
+  microbench (fresh process × two orders, **with** pad/slice overhead,
+  `benchmarks/bench_conv3d_spatial_pad.py`): native/spatial-pad **1.06–1.37×** (input-T3 dominant)
+  and **2.15–2.49×** (input-T4 boundary); correctness cos ≈ 1.0 vs native. E2E confirmation
+  deferred to SeedVR2 `/debug/118` (~8 s predicted). Family #1 (108×132), shipped earlier, was
+  A/B-measured at **+38.78 s (9.3 % E2E)** under fp16 in SeedVR2 `/debug/117`.
+- **Routing inventory** `docs/reference/ROUTING.md`: one row per dispatch path — eligibility
+  predicate (cited `file:line`) → destination terminal → 2026-07-30 measured result (cited by
+  evidence JSON path).
+- README **top-10 measured wins** table (median both-order SDPA/native, extracted from the reval
+  JSONs, not memory) + a routing-inventory link.
+
+### Documentation & evidence
+- The full 2026-07-30 regulator-controlled revalidation evidence (396 `benchmarks/results/reval_*`
+  JSONs — measures A–E, null floors, transient census, the WM2-perdant verdict, macmon telemetry)
+  is now git-tracked (sdist-excluded, same convention as the July evidence). RESULTS.md / README
+  already carry the regulator-controlled annotations; every cited evidence path resolves.
+- `.gitignore`: campaign scratch (`debug/`, `devnotes_*.zip`) excluded to keep the publication
+  guard green.
+
+### Notes
+- Revalidation held on MLX 0.31.2 and 0.32.0; no routing classification flips (sparse gate 61/61
+  win). Beta-3 indicative — revalidate on stable macOS.
+
 ## [2.62.0] — 2026-07-13
 
 Version, tag and publication are reserved for the maintainer.
