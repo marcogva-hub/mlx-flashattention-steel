@@ -1,0 +1,86 @@
+{
+  "schema": "mlx-mfa.final-d64-backward.v1",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "mlx": "0.32.0",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "shape": {
+    "B": 1,
+    "H": 4,
+    "N": 4096,
+    "D": 64,
+    "causal": true
+  },
+  "arm": "sdpa",
+  "order_label": "A",
+  "which_binary": {
+    "trace": [
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "fallback (not use_mfa)"
+      ]
+    ],
+    "terminal": [
+      [
+        "sdpa",
+        "fallback (not use_mfa)"
+      ]
+    ],
+    "v6": "v6_split_backward",
+    "sdpa": "mx.grad(SDPA fallback)"
+  },
+  "correction": {
+    "cos_dq": 0.9999999403953552,
+    "cos_dk": 0.9999999403953552,
+    "cos_dv": 0.9999999403953552,
+    "finite": true
+  },
+  "timing": {
+    "median_ms": 6.149958000605693,
+    "p95_ms": 6.493158201919869,
+    "samples_ms": [
+      6.574458002432948,
+      6.167958999867551,
+      5.948000001808396,
+      6.149958000605693,
+      6.087625002692221
+    ],
+    "n": 5
+  },
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1
+  }
+}

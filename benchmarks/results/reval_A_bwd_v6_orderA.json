@@ -1,0 +1,94 @@
+{
+  "schema": "mlx-mfa.final-d64-backward.v1",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "shape": {
+    "B": 1,
+    "H": 4,
+    "N": 4096,
+    "D": 64,
+    "causal": true
+  },
+  "arm": "v6",
+  "order_label": "A",
+  "which_binary": {
+    "trace": [
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "apple_sdpa",
+        "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
+      ],
+      [
+        "v6_split_backward",
+        "V6NAX split dQ/dV/dK (eligible)"
+      ]
+    ],
+    "terminal": [
+      [
+        "apple_sdpa",
+        "v6nax-carveout forward (Apple SDPA; V6NAX backward)"
+      ],
+      [
+        "v6_split_backward",
+        "V6NAX split dQ/dV/dK (eligible)"
+      ]
+    ],
+    "v6": "v6_split_backward",
+    "sdpa": "mx.grad(SDPA fallback)"
+  },
+  "correction": {
+    "cos_dq": 0.9999998211860657,
+    "cos_dk": 0.9999999403953552,
+    "cos_dv": 1.0,
+    "finite": true
+  },
+  "timing": {
+    "median_ms": 2.4517080000805436,
+    "p95_ms": 3.2643667986121727,
+    "samples_ms": [
+      3.316499998618383,
+      3.0558339985873317,
+      2.4517080000805436,
+      2.259750001030625,
+      2.157790999262943
+    ],
+    "n": 5
+  },
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1
+  }
+}

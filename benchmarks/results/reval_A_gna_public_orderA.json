@@ -1,0 +1,85 @@
+{
+  "schema": "mlx-mfa.final-routed-spots.v2",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "arm": "public",
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1,
+    "dispatches_per_sample": 20
+  },
+  "row": {
+    "label": "gna_d128_3d_n4096",
+    "kind": "gna",
+    "shape": {
+      "N": 4096,
+      "D": 128
+    },
+    "arm": "public",
+    "which_binary": {
+      "input_dtype": "mlx.core.float16",
+      "public": {
+        "trace": [
+          [
+            "gna_v6nax",
+            "opt-in beta-3 GNA V6 NAX (measured 3D envelope)"
+          ]
+        ],
+        "terminal": [
+          "gna_v6nax",
+          "opt-in beta-3 GNA V6 NAX (measured 3D envelope)"
+        ],
+        "output_dtype": "mlx.core.float16"
+      },
+      "baseline": {
+        "trace": [
+          [
+            "sdpa",
+            "backend=sdpa forced (plain)"
+          ]
+        ],
+        "terminal": [
+          "sdpa",
+          "backend=sdpa forced (plain)"
+        ],
+        "output_dtype": "mlx.core.float16",
+        "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+      },
+      "public_vs_baseline_max_abs": 0.0009765625,
+      "correction": {
+        "public": {
+          "cos_vs_fp32_oracle": 1.0,
+          "finite": true
+        },
+        "baseline": {
+          "cos_vs_fp32_oracle": 0.9999999403953552,
+          "finite": true
+        }
+      }
+    },
+    "correction": {
+      "public": {
+        "cos_vs_fp32_oracle": 1.0,
+        "finite": true
+      },
+      "baseline": {
+        "cos_vs_fp32_oracle": 0.9999999403953552,
+        "finite": true
+      }
+    },
+    "timing": {
+      "median_ms": 0.26412295001136954,
+      "p95_ms": 0.27250914003161597,
+      "samples_ms": [
+        0.2693875000659318,
+        0.273289550023037,
+        0.25954169996111887,
+        0.258283350012789,
+        0.26412295001136954
+      ],
+      "n": 5
+    }
+  }
+}

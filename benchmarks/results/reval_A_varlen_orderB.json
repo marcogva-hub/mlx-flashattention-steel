@@ -1,0 +1,1236 @@
+{
+  "schema": "mlx-mfa.final-varlen-public-closure.v1",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "python": "/Users/marcomarcelino/code/mlx-mfa-v2/benchmarks/bench_final_varlen_closure.py",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "order": [
+    "sdpa",
+    "steel",
+    "public"
+  ],
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1,
+    "sampling_asymmetry": "none"
+  },
+  "rows": [
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 3.814697265625e-06,
+        "public_vs_sdpa_max_abs": 3.814697265625e-06,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 15.281207999578328,
+          "p95_ms": 15.81302520025929,
+          "samples_ms": [
+            15.350457999375067,
+            15.281207999578328,
+            15.928667000480345,
+            15.085458000612562,
+            15.244000000166125
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 47.976375000871485,
+          "p95_ms": 48.0585000004794,
+          "samples_ms": [
+            47.75741599951289,
+            48.07500000060827,
+            47.99249999996391,
+            47.806541000682046,
+            47.976375000871485
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.829375000161235,
+          "p95_ms": 11.909150000064983,
+          "samples_ms": [
+            11.785083001086605,
+            11.741291000362253,
+            11.877750001076492,
+            11.829375000161235,
+            11.916999999812106
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.2918018068892096,
+        "steel_over_public_nax": 4.055698208926301
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0001220703125,
+        "public_vs_sdpa_max_abs": 1.52587890625e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0000001192092896,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.96962499973597,
+          "p95_ms": 9.36732519949146,
+          "samples_ms": [
+            9.183957999994163,
+            8.807500000330037,
+            8.774333000474144,
+            8.96962499973597,
+            9.413166999365785
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 48.01733400017838,
+          "p95_ms": 48.132816800352884,
+          "samples_ms": [
+            47.939125000993954,
+            47.99454099884315,
+            48.01733400017838,
+            48.03191600149148,
+            48.158042000068235
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.494458000815939,
+          "p95_ms": 6.549491599798785,
+          "samples_ms": [
+            6.549457999426522,
+            6.494458000815939,
+            6.429500001104316,
+            6.54949999989185,
+            6.467625000368571
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3811198715287805,
+        "steel_over_public_nax": 7.39358603814909
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 3.0517578125e-05,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999987483024597,
+        "min_segment_cos": 0.9999985694885254,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 15.08862499940733,
+          "p95_ms": 16.27134199916327,
+          "samples_ms": [
+            16.40291699914087,
+            14.940749999368563,
+            15.08862499940733,
+            15.745041999252862,
+            14.817082999798004
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 50.23704199993517,
+          "p95_ms": 50.45744999952149,
+          "samples_ms": [
+            50.37625000113621,
+            50.144832999649225,
+            50.23704199993517,
+            50.477749999117805,
+            50.23220899965963
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.801874999946449,
+          "p95_ms": 12.02165859976958,
+          "samples_ms": [
+            11.801874999946449,
+            11.789999998654821,
+            11.792833000072278,
+            11.880625001140288,
+            12.056916999426903
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.2784938833427566,
+        "steel_over_public_nax": 4.256700058267278
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.00048828125,
+        "public_vs_sdpa_max_abs": 0.0001220703125,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999988079071045,
+        "min_segment_cos": 0.9999986886978149,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.84550000046147,
+          "p95_ms": 9.343042199907359,
+          "samples_ms": [
+            8.84550000046147,
+            8.683624999321182,
+            8.756207998885657,
+            9.395084000061615,
+            9.134874999290332
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 50.39675000080024,
+          "p95_ms": 50.52221619953343,
+          "samples_ms": [
+            50.39675000080024,
+            50.54641599963361,
+            50.22024999925634,
+            50.23187500046333,
+            50.42541699913272
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.56929099932313,
+          "p95_ms": 6.578899599116994,
+          "samples_ms": [
+            6.56929099932313,
+            6.580457999007194,
+            6.524165999508114,
+            6.572665999556193,
+            6.501875001049484
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3464923385754826,
+        "steel_over_public_nax": 7.6715660801131955
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 3.814697265625e-06,
+        "public_vs_sdpa_max_abs": 3.814697265625e-06,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0000001192092896,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 15.532708001046558,
+          "p95_ms": 15.947108000182197,
+          "samples_ms": [
+            15.840207999644917,
+            14.853500000754138,
+            14.781874999243882,
+            15.532708001046558,
+            15.973833000316517
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 47.340041999632376,
+          "p95_ms": 47.46212480022223,
+          "samples_ms": [
+            47.340041999632376,
+            47.20929199902457,
+            47.387292001076275,
+            47.170875001029344,
+            47.480833000008715
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.745833000532002,
+          "p95_ms": 12.340966999909142,
+          "samples_ms": [
+            11.745833000532002,
+            12.459042000045883,
+            11.599707999266684,
+            11.551166999197449,
+            11.868666999362176
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3224015700157696,
+        "steel_over_public_nax": 4.030369067693046
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0001220703125,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.608167001511902,
+          "p95_ms": 9.43354159971932,
+          "samples_ms": [
+            8.568458000809187,
+            8.58558299842116,
+            9.633499999836204,
+            8.633707999251783,
+            8.608167001511902
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 47.71170799904212,
+          "p95_ms": 48.64395820040954,
+          "samples_ms": [
+            48.86783300025854,
+            47.71170799904212,
+            47.74845900101354,
+            47.490666000157944,
+            47.59399999966263
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.366457999320119,
+          "p95_ms": 6.427158400401822,
+          "samples_ms": [
+            6.31233300009626,
+            6.4406250003230525,
+            6.373292000716901,
+            6.353249998937827,
+            6.366457999320119
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3521124308730503,
+        "steel_over_public_nax": 7.494231172833828
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 3.0517578125e-05,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999985694885254,
+        "min_segment_cos": 0.9999982714653015,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 15.607625000484404,
+          "p95_ms": 15.981466399898636,
+          "samples_ms": [
+            14.626332998886937,
+            14.935999999579508,
+            15.729500000816188,
+            15.607625000484404,
+            16.04445799966925
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 49.52150000099209,
+          "p95_ms": 50.27990019952995,
+          "samples_ms": [
+            50.44241699943086,
+            49.62983299992629,
+            49.52150000099209,
+            49.49079200014239,
+            49.40204100057599
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.628790998656768,
+          "p95_ms": 11.642774600477424,
+          "samples_ms": [
+            11.638541000138503,
+            11.628790998656768,
+            11.60770800015598,
+            11.643833000562154,
+            11.561208000784973
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.342153711618622,
+        "steel_over_public_nax": 4.258525241937212
+      }
+    },
+    {
+      "geometry": "seed_aligned",
+      "total_tokens": 35018,
+      "segments": 20,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0009765625,
+        "public_vs_sdpa_max_abs": 0.000244140625,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999988079071045,
+        "min_segment_cos": 0.9999986886978149,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.631791999505367,
+          "p95_ms": 8.718775400484446,
+          "samples_ms": [
+            8.734167000511661,
+            8.657209000375587,
+            8.576917000027606,
+            8.603750000474975,
+            8.631791999505367
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 49.776707999626524,
+          "p95_ms": 50.273766400277964,
+          "samples_ms": [
+            50.38020800020604,
+            49.687374999848544,
+            49.776707999626524,
+            49.84800000056566,
+            49.638583999694674
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.378000000040629,
+          "p95_ms": 6.45689980010502,
+          "samples_ms": [
+            6.378000000040629,
+            6.391167000401765,
+            6.473333000030834,
+            6.365208999341121,
+            6.323790999886114
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3533697082863565,
+        "steel_over_public_nax": 7.804438381829639
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 7.62939453125e-06,
+        "public_vs_sdpa_max_abs": 7.62939453125e-06,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 14.737582998350263,
+          "p95_ms": 14.983558998937951,
+          "samples_ms": [
+            14.737582998350263,
+            14.553125000020373,
+            14.37462499961839,
+            15.021833998616785,
+            14.830459000222618
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 45.7038750009815,
+          "p95_ms": 45.89918299934652,
+          "samples_ms": [
+            45.94445799921232,
+            45.718082999883336,
+            45.70070799854875,
+            45.48925000017334,
+            45.7038750009815
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.366540999006247,
+          "p95_ms": 11.416983999879449,
+          "samples_ms": [
+            11.339165999743273,
+            11.366540999006247,
+            11.401583999031573,
+            11.315583999021328,
+            11.420834000091418
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.2965758887984251,
+        "steel_over_public_nax": 4.020913222850935
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0001220703125,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.737707999898703,
+          "p95_ms": 9.063741399586434,
+          "samples_ms": [
+            8.966375000454718,
+            8.737707999898703,
+            9.088082999369362,
+            8.604833999925177,
+            8.552000001145643
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 45.85445799966692,
+          "p95_ms": 45.927174399548676,
+          "samples_ms": [
+            45.931415999802994,
+            45.910207998531405,
+            45.73299999901792,
+            45.747083000605926,
+            45.85445799966692
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.202709000717732,
+          "p95_ms": 6.236725199778448,
+          "samples_ms": [
+            6.202709000717732,
+            6.23704200006614,
+            6.23545799862768,
+            6.199749999723281,
+            6.202667000252404
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.4086922341331245,
+        "steel_over_public_nax": 7.392650210474323
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 6.103515625e-05,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999986290931702,
+        "min_segment_cos": 0.9999983906745911,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 14.970709000408533,
+          "p95_ms": 15.626491399962106,
+          "samples_ms": [
+            14.591582999855746,
+            14.970709000408533,
+            15.709082999819657,
+            15.296125000531902,
+            14.873000000079628
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 47.82587500085356,
+          "p95_ms": 48.25270800029102,
+          "samples_ms": [
+            47.77424999883806,
+            48.32558300040546,
+            47.5213329991675,
+            47.82587500085356,
+            47.96120799983328
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.468041000625817,
+          "p95_ms": 11.598791600772529,
+          "samples_ms": [
+            11.468041000625817,
+            11.6135000007489,
+            11.434707999796956,
+            11.387374999685562,
+            11.539958000867045
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3054286254811587,
+        "steel_over_public_nax": 4.170361354501931
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 2,
+      "Hq": 16,
+      "Hkv": 8,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0009765625,
+        "public_vs_sdpa_max_abs": 6.103515625e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999988079071045,
+        "min_segment_cos": 0.9999986886978149,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.497333999912371,
+          "p95_ms": 8.60269219847396,
+          "samples_ms": [
+            8.610833998318412,
+            8.497333999912371,
+            8.373708000362967,
+            8.379958999285009,
+            8.570124999096151
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 48.1078749999142,
+          "p95_ms": 48.37127539976791,
+          "samples_ms": [
+            48.293709000063245,
+            48.390666999694076,
+            48.037791000751895,
+            48.01304099964909,
+            48.1078749999142
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.352209000397124,
+          "p95_ms": 6.695758200294222,
+          "samples_ms": [
+            6.352209000397124,
+            6.332749999273801,
+            6.23874999837426,
+            6.490958998256247,
+            6.7469580008037155
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3376974843524732,
+        "steel_over_public_nax": 7.573408714497054
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 7.62939453125e-06,
+        "public_vs_sdpa_max_abs": 7.62939453125e-06,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 1.0,
+        "min_segment_cos": 0.9999998807907104,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 16.38704200013308,
+          "p95_ms": 17.037533600159804,
+          "samples_ms": [
+            16.170209000847535,
+            16.38704200013308,
+            16.661999999996624,
+            16.258417001154157,
+            17.1314170002006
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 49.51299999993353,
+          "p95_ms": 50.33851699954539,
+          "samples_ms": [
+            50.26391699902888,
+            49.50845799976378,
+            49.51299999993353,
+            50.35716699967452,
+            49.38512499938952
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 12.747917000524467,
+          "p95_ms": 12.876775399490725,
+          "samples_ms": [
+            12.376999999105465,
+            12.570582999614999,
+            12.772709000273608,
+            12.747917000524467,
+            12.902791999295005
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.285468206253531,
+        "steel_over_public_nax": 3.884007088993166
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "fp16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.0001220703125,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999999403953552,
+        "min_segment_cos": 0.9999998211860657,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.982667000964284,
+          "p95_ms": 9.302749600101379,
+          "samples_ms": [
+            9.317291000115802,
+            8.982667000964284,
+            8.440958001301624,
+            9.244584000043687,
+            8.863290999215678
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 46.8375839991495,
+          "p95_ms": 47.34787560046243,
+          "samples_ms": [
+            46.69395899873052,
+            47.03004200018768,
+            47.42733400053112,
+            46.8375839991495,
+            45.41941699972085
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.246958000701852,
+          "p95_ms": 7.576175400390639,
+          "samples_ms": [
+            7.889917000284186,
+            6.246958000701852,
+            6.321209000816452,
+            6.144790999314864,
+            6.140957999377861
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.4379265876215388,
+        "steel_over_public_nax": 7.497662701411992
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": false,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 6.103515625e-05,
+        "public_vs_sdpa_max_abs": 3.0517578125e-05,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999986886978149,
+        "min_segment_cos": 0.9999983906745911,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 15.107042001545778,
+          "p95_ms": 15.621617000215338,
+          "samples_ms": [
+            14.38445799976762,
+            14.847750000626547,
+            15.107042001545778,
+            15.140917001190246,
+            15.74179199997161
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 48.53199999888602,
+          "p95_ms": 49.46147539885715,
+          "samples_ms": [
+            49.57754199858755,
+            48.99720899993554,
+            48.30670900082623,
+            48.53199999888602,
+            46.96462500032794
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 11.085957999966922,
+          "p95_ms": 11.451775400200859,
+          "samples_ms": [
+            11.051041999962763,
+            11.085957999966922,
+            11.155708998558111,
+            11.07179100108624,
+            11.525792000611546
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3627186754262333,
+        "steel_over_public_nax": 4.377790354160717
+      }
+    },
+    {
+      "geometry": "seed_shifted",
+      "total_tokens": 35250,
+      "segments": 24,
+      "gqa": 8,
+      "Hq": 16,
+      "Hkv": 2,
+      "D": 128,
+      "dtype": "bf16",
+      "causal": true,
+      "tile": {
+        "bq": 32,
+        "bk": 32,
+        "wm": 2
+      },
+      "which_binary": {
+        "public_trace": [
+          [
+            "varlen_v6nax",
+            "opt-in beta-3 packed V6 NAX (BQ32/BK32/WM2 explicit)"
+          ]
+        ],
+        "public_vs_steel_max_abs": 0.00048828125,
+        "public_vs_sdpa_max_abs": 0.0001220703125,
+        "public": "flash_attention_varlen -> v6_nax_varlen_forward",
+        "steel": "_ext.mfa_attention_varlen_forward",
+        "sdpa": "per-segment mx.fast.scaled_dot_product_attention"
+      },
+      "correction": {
+        "global_cos": 0.9999988079071045,
+        "min_segment_cos": 0.9999986290931702,
+        "finite": true
+      },
+      "timing": {
+        "sdpa": {
+          "median_ms": 8.625458998722024,
+          "p95_ms": 9.320457800640725,
+          "samples_ms": [
+            9.471916000620695,
+            8.550000000468572,
+            8.714625000720844,
+            8.625458998722024,
+            8.51899999906891
+          ],
+          "n": 5
+        },
+        "steel": {
+          "median_ms": 48.10229199938476,
+          "p95_ms": 48.478400200474425,
+          "samples_ms": [
+            48.10229199938476,
+            48.34633300015412,
+            48.5114170005545,
+            47.816708000027575,
+            47.316541998952744
+          ],
+          "n": 5
+        },
+        "public": {
+          "median_ms": 6.2800000014249235,
+          "p95_ms": 6.334916800551582,
+          "samples_ms": [
+            6.340792000628426,
+            6.311416000244208,
+            6.121542000983027,
+            6.2800000014249235,
+            6.1857079999754205
+          ],
+          "n": 5
+        }
+      },
+      "ratio": {
+        "sdpa_over_public_nax": 1.3734807319689362,
+        "steel_over_public_nax": 7.659600635106754
+      }
+    }
+  ]
+}

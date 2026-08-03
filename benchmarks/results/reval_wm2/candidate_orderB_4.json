@@ -1,0 +1,96 @@
+{
+  "schema": "mlx-mfa.dense-tile-defaults.v1",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "device": "Device(gpu, 0)",
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "dispatches_per_sample": 20,
+    "process_isolated": true,
+    "same_build_required": true
+  },
+  "arm": "candidate",
+  "requested_env": {
+    "MFA_V6_NAX_BQ": "64",
+    "MFA_V6_NAX_BK": "32",
+    "MFA_V6_NAX_WM": "2"
+  },
+  "shape": {
+    "B": 1,
+    "Hq": 8,
+    "Hkv": 8,
+    "BH": 8,
+    "N": 4096,
+    "D": 128,
+    "dtype": "fp16",
+    "causal": false
+  },
+  "which_binary": {
+    "trace": [
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "sdpa",
+        "[reentrant] fallback (not use_mfa)"
+      ],
+      [
+        "nax_dense",
+        "auto D128 N>=v6_min_n"
+      ]
+    ],
+    "terminal": [
+      [
+        "nax_dense",
+        "auto D128 N>=v6_min_n"
+      ]
+    ],
+    "expected": "nax_dense"
+  },
+  "correction": {
+    "cos": 0.9999999403953552,
+    "finite": true,
+    "max_abs_vs_fp32": 6.00665807723999e-05
+  },
+  "timing": {
+    "median_ms": 5.377616650002892,
+    "p95_ms": 5.385894180071773,
+    "min_ms": 5.371987499893294,
+    "max_ms": 5.387633350073884,
+    "samples_ms": [
+      5.377616650002892,
+      5.37893750006333,
+      5.371987499893294,
+      5.387633350073884,
+      5.376818750119128
+    ],
+    "n": 5
+  }
+}

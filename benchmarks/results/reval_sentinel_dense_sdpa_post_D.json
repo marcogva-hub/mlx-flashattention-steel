@@ -1,0 +1,117 @@
+{
+  "schema": "mlx-mfa.final-routed-spots.v2",
+  "commit": "558a19172e9a72e1845559fcc6fbc4212ffd481d",
+  "mlx": "0.31.2",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "arm": "sdpa",
+  "method": {
+    "sessions": 5,
+    "warmups": 2,
+    "samples_per_session": 1,
+    "dispatches_per_sample": 20
+  },
+  "row": {
+    "label": "dense_d128_n4096",
+    "kind": "dense",
+    "shape": {
+      "N": 4096,
+      "D": 128
+    },
+    "arm": "sdpa",
+    "which_binary": {
+      "input_dtype": "mlx.core.float16",
+      "public": {
+        "trace": [
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "sdpa",
+            "[reentrant] fallback (not use_mfa)"
+          ],
+          [
+            "nax_dense",
+            "auto D128 N>=v6_min_n"
+          ]
+        ],
+        "terminal": [
+          "nax_dense",
+          "auto D128 N>=v6_min_n"
+        ],
+        "output_dtype": "mlx.core.float16"
+      },
+      "baseline": {
+        "trace": [
+          [
+            "sdpa",
+            "backend=sdpa forced (plain)"
+          ]
+        ],
+        "terminal": [
+          "sdpa",
+          "backend=sdpa forced (plain)"
+        ],
+        "output_dtype": "mlx.core.float16",
+        "framework_path": "mlx-mfa backend=sdpa -> mx.fast.scaled_dot_product_attention"
+      },
+      "public_vs_baseline_max_abs": 6.103515625e-05,
+      "correction": {
+        "public": {
+          "cos_vs_fp32_oracle": 1.0,
+          "finite": true
+        },
+        "baseline": {
+          "cos_vs_fp32_oracle": 1.0,
+          "finite": true
+        }
+      }
+    },
+    "correction": {
+      "public": {
+        "cos_vs_fp32_oracle": 1.0,
+        "finite": true
+      },
+      "baseline": {
+        "cos_vs_fp32_oracle": 1.0,
+        "finite": true
+      }
+    },
+    "timing": {
+      "median_ms": 0.9865353999884974,
+      "p95_ms": 1.0029441699953168,
+      "samples_ms": [
+        1.003949999994802,
+        0.9989208499973756,
+        0.9865353999884974,
+        0.984943750063394,
+        0.9857562499746564
+      ],
+      "n": 5
+    }
+  }
+}
