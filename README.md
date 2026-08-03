@@ -266,7 +266,33 @@ longer-kL decode and N6144 evidence.
   value **1.18-1.24x** is retained as historical (throttle-compressed: this
   sub-millisecond window was the one ratio the beta regulator compressed).
 - Decode qL=8, D64, GQA=8, non-causal, fp16, kL=4096: SDPA/MFA was
-  **1.21-1.25x** across the two process orders.
+  **1.21-1.27x** across the two process orders (2026-07-13 1.21-1.25x; the
+  2026-07-30 revalidation re-measured 1.25-1.27x).
+
+### Biggest measured wins (top 10)
+
+Ranked by median `SDPA / native` ratio across both process orders
+(2026-07-30, regulator-controlled). Every row is a production-routed path — see the
+[routing inventory](docs/reference/ROUTING.md) for the eligibility predicate that reaches
+it. All ten are the sparse gate (`flash_attention_sparse` → `v6nax_sparse`), fp16, extracted
+from `benchmarks/results/reval_C_*` and `reval_B_causal_*` (not from memory).
+
+| # | Path | Mask | B·H | N | D | Ratio |
+|--:|---|---|--:|--:|--:|--:|
+| 1 | `flash_attention_sparse` → `v6nax_sparse` | sliding-window 128 | 12 | 8192 | 128 | **8.23x** |
+| 2 | ″ | sliding-window 256 | 12 | 8192 | 128 | 7.27x |
+| 3 | ″ | random d=0.05 | 12 | 8192 | 128 | 6.70x |
+| 4 | ″ | sliding-window 512 | 12 | 8192 | 128 | 5.85x |
+| 5 | ″ | sliding-window 128 | 12 | 8192 | 64 | 4.54x |
+| 6 | ″ | random d=0.15 | 12 | 8192 | 128 | 4.42x |
+| 7 | ″ | random d=0.05 | 12 | 8192 | 64 | 4.18x |
+| 8 | ″ | sliding-window 256 | 12 | 8192 | 64 | 4.14x |
+| 9 | ″ | sliding-window 128 | 4 | 8192 | 128 | 4.14x |
+| 10 | ″ | causal (D128) | 12 | 8192 | 128 | 3.85x |
+
+Best routed wins in the other families, for breadth: GNA 2.39-2.44x, D64 backward 2.50-2.77x,
+decode ~1.25-1.27x, packed varlen (opt-in) 1.33x, dense D128 parity 1.07x — the full per-path
+table is the [routing inventory](docs/reference/ROUTING.md).
 
 Historical ratios in the foreword and published changelog predate this
 measurement contract. They remain provenance, not current performance claims.
@@ -287,6 +313,7 @@ V6 NAX sparse forward and remains opt-in through
 
 - [API manual](docs/reference/API_MANUAL.md)
 - [Runtime dispatch map](docs/reference/dispatch-map.md)
+- [Routing inventory — "where does my shape go?"](docs/reference/ROUTING.md)
 - [Environment variables](ENV_VARS.md)
 - [Feature coverage](docs/reference/FEATURE_COVERAGE.md)
 - [Serving guide](docs/reference/SERVING_GUIDE.md)
