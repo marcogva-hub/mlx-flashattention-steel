@@ -117,7 +117,33 @@ Predicate: `mlx_mfa/attention.py:167-168` (`_GNA_NAX_D128_MIN_N = 2048`, `_GNA_N
 | D=128 below the NAX threshold | `gna_steel` | — |
 | native disabled / unsupported dim | sparse fallback | — |
 
-## 7. Knobs & opt-ins
+## 7. Conv3D spatial-pad (SeedVR2 VAE, opt-in — not an attention surface)
+
+The `mx.conv_general` hook (`mlx_mfa/_auto_hooks.py`) rescues specific 3-D VAE convs whose ONLY
+MPP-ineligibility axis is H/W % 8: it zero-pads H/W to the next multiple of 8, runs
+`conv3d_nax_forward`, and slices back (exact for the original output extent). Opt-in
+`MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE=1` (default-off).
+
+| Eligibility (`_auto_hooks.py:324-353`) | Terminal | Measured |
+|---|---|---|
+| fp16, B=1, 3×3×3, stride 1, pad (0,0,1,1,1,1), H/W not %8, input `(T,H,W,C_in,C_out)` ∈ allowlist | `conv3d_nax_spatial_pad_slice` | see below |
+| any other conv | native `mx.conv_general` | — |
+
+Allowlist `_CONV3D_SPATIAL_PAD_FAMILIES` (`_auto_hooks.py:300`), keyed on the conv **input**
+`(T,H,W,C_in,C_out)`:
+- **108×132** (family #1): `(4,108,132,512,512)`, `(5,108,132,512,512)` — SeedVR2 /debug/117 A/B
+  under fp16 measured **+38.78 s (9.3% E2E)**, engagement 2257, SSIM = fp16 class.
+- **54×66** (family #2, added 2.62.1): `(3,54,66,512,512)`, `(4,54,66,512,512)` — census-authoritative
+  input-T (SeedVR2 /debug/116; input-T = output-T + 2, one level deeper than 108×132 so {3,4} not
+  {4,5}). mfa-side isolated microbench (fresh process × two orders,
+  `benchmarks/bench_conv3d_spatial_pad.py` → `benchmarks/results/conv3d_spatial_pad_family2_order{A,B}.json`):
+  native/spatial-pad **1.06–1.37× (input-T3 dominant)**, **2.15–2.49× (input-T4 boundary)**, correctness
+  cos ≈ 1.0 vs native. E2E confirmation deferred to SeedVR2 /debug/118 (~8 s predicted).
+
+Not rescued (remain native `mx.conv_general`): stride-2 downsamples (no MPP-NAX for stride≠1),
+channel-tail convs (C_in/C_out < 32), bf16 (fp16-only gate — locked inert).
+
+## 8. Knobs & opt-ins
 
 Full registry: [`ENV_VARS.md`](../../ENV_VARS.md). Status of the routing knobs referenced above:
 `MFA_V6_DENSE_MIN_N` (default 2048), `MFA_DISABLE_V6_DENSE` (opt-out), `MFA_DISABLE_V6_BACKWARD`

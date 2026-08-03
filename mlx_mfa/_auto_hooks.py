@@ -293,13 +293,21 @@ def _normalize_padding_to_6tuple(padding):
 # RGB in/out convs 3↔128).  Env-tunable via MFA_CONV3D_PAD_RATIO_MAX.
 _CONV3D_PAD_RATIO_MAX_DEFAULT = 12.0
 
-# SeedVR2 VAE spatial-tail probe (macOS 27 beta, M5 Max, MLX 0.31.2).
-# Keep the envelope exact: only the measured dominant fallback family is
-# admitted. 54x66 loses or is at parity at VAE-unit scope despite a micro win;
-# stride-2 and channel-tail families also remain on MLX.
+# SeedVR2 VAE spatial-tail families (macOS 27 beta, M5 Max, MLX 0.31.2).
+# Exact measured fallback families whose ONLY MPP-ineligibility axis is H/W%8.
+#   108x132 (input T=4,5): family #1 — SeedVR2 /debug/117 A/B under fp16 measured
+#     +38.78 s (9.3% E2E), engagement 2257, SSIM = fp16 class (stacking ~0).
+#   54x66   (input T=3,4): family #2 — SeedVR2 /debug/116 census (authoritative input
+#     geometry in_shape=[1,3,54,66,512]); mfa-side isolated spatial-pad microbench
+#     see CHANGELOG 2.62.1. E2E confirmation deferred to SeedVR2 /debug/118 (~8 s predicted).
+# Input-T = output-T + 2 (stride-1, pad_T=0); 54x66 is one pyramid level deeper than
+# 108x132 so its input-T is {3,4}, NOT {4,5} (census fait foi). stride-2 and channel-tail
+# families remain on MLX (no MPP-NAX / different technique).
 _CONV3D_SPATIAL_PAD_FAMILIES = {
     (4, 108, 132, 512, 512),
     (5, 108, 132, 512, 512),
+    (3, 54, 66, 512, 512),
+    (4, 54, 66, 512, 512),
 }
 
 

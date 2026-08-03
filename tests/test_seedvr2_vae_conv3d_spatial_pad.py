@@ -22,13 +22,25 @@ def _cosine(a, b):
     return float(np.dot(af, bf) / (np.linalg.norm(af) * np.linalg.norm(bf)))
 
 
+# (input shape, expected sliced output). input-T = output-T + 2 (stride-1, pad_T=0).
+#   108x132 family #1 (input-T {4,5}); 54x66 family #2 (input-T {3,4}, added 2.62.1).
+_ENGAGED_FAMILIES = [
+    ((1, 4, 108, 132, 512), (1, 2, 108, 132, 512)),
+    ((1, 5, 108, 132, 512), (1, 3, 108, 132, 512)),
+    ((1, 3, 54, 66, 512), (1, 1, 54, 66, 512)),   # family #2 dominant (2.62.1)
+    ((1, 4, 54, 66, 512), (1, 2, 54, 66, 512)),   # family #2 boundary (2.62.1)
+]
+
+
 @pytest.mark.skipif(not _ext.get_device_info()["is_m5_plus"], reason="requires M5+")
-def test_seedvr2_spatial_pad_slice_is_correct_and_engaged(monkeypatch):
+@pytest.mark.parametrize("shape,out_shape", _ENGAGED_FAMILIES)
+def test_seedvr2_spatial_pad_slice_is_correct_and_engaged(monkeypatch, shape, out_shape):
     monkeypatch.setenv("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE", "1")
     mx.random.seed(20260712)
-    x = (mx.random.normal(SHAPE) * 0.05).astype(mx.float16)
+    C = shape[-1]
+    x = (mx.random.normal(shape) * 0.05).astype(mx.float16)
     weight = (
-        mx.random.normal(WEIGHT_SHAPE) * (1.0 / math.sqrt(27 * 512))
+        mx.random.normal((C, 3, 3, 3, C)) * (1.0 / math.sqrt(27 * C))
     ).astype(mx.float16)
     oracle = hooks._ORIGINAL_CONV_GENERAL(
         x.astype(mx.float32),
@@ -43,7 +55,7 @@ def test_seedvr2_spatial_pad_slice_is_correct_and_engaged(monkeypatch):
         )
         mx.eval(actual, oracle)
     assert native.call_count == 1
-    assert actual.shape == oracle.shape == (1, 3, 108, 132, 512)
+    assert actual.shape == oracle.shape == out_shape
     assert _cosine(actual, oracle) >= 0.999
     assert np.isfinite(np.asarray(actual.astype(mx.float32))).all()
     stats = mlx_mfa.get_hook_stats()
@@ -54,11 +66,11 @@ def test_seedvr2_spatial_pad_slice_is_correct_and_engaged(monkeypatch):
 @pytest.mark.parametrize(
     "shape",
     [
-        (1, 3, 108, 132, 512),
-        (1, 3, 54, 66, 512),
-        (1, 4, 54, 66, 512),
-        (1, 5, 54, 66, 512),
-        (1, 5, 108, 132, 256),
+        (1, 3, 108, 132, 512),   # T=3 outside the 108x132 family (input-T {4,5})
+        (1, 2, 54, 66, 512),     # T=2 outside the 54x66 family (input-T {3,4})
+        (1, 5, 54, 66, 512),     # T=5 outside the 54x66 family
+        (1, 5, 108, 132, 256),   # wrong C_out
+        (1, 3, 54, 66, 256),     # wrong channels
     ],
 )
 def test_seedvr2_spatial_pad_slice_rejects_unmeasured_families(monkeypatch, shape):
@@ -110,10 +122,13 @@ def test_seedvr2_spatial_pad_slice_default_off_preserves_public_baseline(monkeyp
     ) == 0
 
 
-def test_seedvr2_spatial_pad_slice_rejects_unmeasured_bf16(monkeypatch):
+@pytest.mark.parametrize("shape", [(1, 5, 108, 132, 512), (1, 3, 54, 66, 512)])
+def test_seedvr2_spatial_pad_slice_rejects_unmeasured_bf16(monkeypatch, shape):
+    """bf16 is inert for BOTH families (fp16-only gate); locked so a dtype-broadening
+    would trip CI."""
     monkeypatch.setenv("MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE", "1")
-    x = mx.zeros(SHAPE, dtype=mx.bfloat16)
-    weight = mx.zeros(WEIGHT_SHAPE, dtype=mx.bfloat16)
+    x = mx.zeros(shape, dtype=mx.bfloat16)
+    weight = mx.zeros((shape[-1], 3, 3, 3, shape[-1]), dtype=mx.bfloat16)
     assert (
         hooks._try_conv3d_spatial_pad_and_slice(
             x, weight, (0, 0, 1, 1, 1, 1)
