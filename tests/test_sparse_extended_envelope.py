@@ -243,6 +243,84 @@ def test_d_dense_cutoff_routes_dense(monkeypatch):
     assert d_nax > 0.0, f"below cutoff must take the NAX route (differ from dense); got {d_nax}"
 
 
+# ============================================ axis 1 — gold parity sample (gate 1)
+@m5only
+@pytest.mark.parametrize("D,dtype,causal,N", [
+    (128, mx.float16, False, 4096),
+    (128, mx.float16, True, 4096),
+    (64, mx.float16, False, 4096),
+    (128, mx.bfloat16, False, 4096),
+    (64, mx.bfloat16, True, 4096),
+    (128, mx.float16, False, 4100),          # non-aligned → auto_pad
+])
+def test_gold_parity_sample(monkeypatch, D, dtype, causal, N):
+    """Sampled v1 matrix (D × dtype × causal × N aligned/non-aligned) vs fp32 gold."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    B, H = 1, 8
+    q, k, v = _qkv(B, H, N, D, dt=dtype)
+    nq = (N + BT - 1) // BT
+    bm = _block_mask(nq, nq, 0.10)
+    mx.eval(bm)
+    scale = 1.0 / math.sqrt(D)
+    o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
+    mx.eval(o)
+    cos = _cos(o, _gold(q, k, v, bm, scale, causal, N, N))
+    assert cos >= 0.999, f"D{D} {dtype} causal={causal} N={N}: cos={cos:.6f}"
+
+
+# ============================================ axis 2 — engagement probe (gate 2)
+@m5only
+def test_engagement_v6nax_vs_scalar():
+    """The kernel that serves the extended route is genuinely v6nax_sparse
+    (byteΔ vs the scalar_fallback binary > 0), and it is correct vs gold."""
+    from mlx_mfa import _ext
+    B, H, N, D = 1, 8, 4096, 128
+    q, k, v = _qkv(B, H, N, D)
+    bm = _block_mask(N // BT, N // BT, 0.10)
+    mx.eval(bm)
+    scale = 1.0 / math.sqrt(D)
+    o_nax = _ext.sparse_attention_forward(q, k, v, bm, BT, False, scale, "v6nax_sparse", False, 0)
+    o_sca = _ext.sparse_attention_forward(q, k, v, bm, BT, False, scale, "scalar_fallback", False, 0)
+    mx.eval(o_nax, o_sca)
+    delta = float(np.abs(np.asarray(o_nax.astype(mx.float32))
+                         - np.asarray(o_sca.astype(mx.float32))).max())
+    assert delta > 0.0, "v6nax must be a distinct binary from scalar_fallback (engagement)"
+    assert _cos(o_nax, _gold(q, k, v, bm, scale, False, N, N)) >= 0.999
+
+
+# ============================================ axis 3 — edge cases
+@m5only
+def test_edge_all_false_mask(monkeypatch):
+    """All-False mask → exact zero output (kernel v2.34.0 contract)."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    B, H, N, D = 1, 8, 4096, 128
+    q, k, v = _qkv(B, H, N, D)
+    bm = mx.zeros((N // BT, N // BT), dtype=mx.bool_)
+    mx.eval(bm)
+    o = flash_attention_sparse(q, k, v, bm, scale=1.0 / math.sqrt(D))
+    mx.eval(o)
+    m = float(np.abs(np.asarray(o.astype(mx.float32))).max())
+    assert m == 0.0, f"all-False mask must give zero output; max={m}"
+
+
+@m5only
+def test_edge_all_active_mask(monkeypatch):
+    """All-True mask via the NAX path == dense attention."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    monkeypatch.setenv("MFA_SPARSE_D_DENSE_CUTOFF", "1.01")   # force NAX even at d=1.0
+    B, H, N, D = 1, 8, 2048, 128
+    q, k, v = _qkv(B, H, N, D)
+    bm = mx.ones((N // BT, N // BT), dtype=mx.bool_)
+    mx.eval(bm)
+    scale = 1.0 / math.sqrt(D)
+    o = flash_attention_sparse(q, k, v, bm, scale=scale)
+    ref = mx.fast.scaled_dot_product_attention(
+        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale)
+    mx.eval(o, ref)
+    cos = _cos(o, np.asarray(ref).ravel().astype(np.float64))
+    assert cos >= 0.999, f"all-active mask must equal dense attention; cos={cos:.6f}"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "-s"]))
