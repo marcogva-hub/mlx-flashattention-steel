@@ -160,6 +160,60 @@ def test_offpath_byte_identical(monkeypatch):
     assert delta == 0.0, f"opt-in must not perturb in-envelope routing; maxabs={delta}"
 
 
+# ============================================ loud refusals (§1/§3, gate 5)
+def test_refusal_pre_m5_extended(monkeypatch):
+    """Chip < M5 under the opt-in → RuntimeError (never silent SDPA)."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: False)
+    q, k, v = _qkv(1, 4, 4096, 128)
+    bm = _block_mask(4096 // BT, 4096 // BT, 0.05)
+    with pytest.raises(RuntimeError, match="requires M5"):
+        flash_attention_sparse(q, k, v, bm)
+
+
+def test_refusal_D256_extended(monkeypatch):
+    """D=256 under the opt-in → ValueError (out of v1 matrix)."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: True)
+    q, k, v = _qkv(1, 4, 4096, 256)
+    bm = _block_mask(4096 // BT, 4096 // BT, 0.05)
+    with pytest.raises(ValueError, match="head_dim must be 64 or 128"):
+        flash_attention_sparse(q, k, v, bm)
+
+
+def test_refusal_bt_not_32_extended(monkeypatch):
+    """Mask implying BT != 32 under the opt-in → ValueError."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: True)
+    N, D = 4096, 128
+    q, k, v = _qkv(1, 4, N, D)
+    bm16 = _block_mask(N // 16, N // 16, 0.05)          # BT=16 granularity
+    with pytest.raises(ValueError, match="block tile must be 32"):
+        flash_attention_sparse(q, k, v, bm16)
+
+
+def test_refusal_fp32_entry(monkeypatch):
+    """fp32 is refused at entry for ALL sparse calls (spec §1 relies on this)."""
+    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+    q, k, v = _qkv(1, 4, 256, 128, dt=mx.float32)
+    bm = _block_mask(256 // BT, 256 // BT, 0.1)
+    with pytest.raises(ValueError, match="float16 or bfloat16"):
+        flash_attention_sparse(q, k, v, bm)
+
+
+@m5only
+def test_refusals_are_extended_only(monkeypatch):
+    """Lock: the BT!=32 refusal fires ONLY under the opt-in; off-path routes,
+    no raise from the extended guard."""
+    N, D = 4096, 128
+    q, k, v = _qkv(1, 4, N, D)
+    bm16 = _block_mask(N // 16, N // 16, 0.05)          # BT=16 granularity
+    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+    o = flash_attention_sparse(q, k, v, bm16)           # must NOT raise
+    mx.eval(o)
+    assert o.shape == (1, 4, N, D)
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "-s"]))

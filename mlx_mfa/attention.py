@@ -3880,6 +3880,31 @@ def flash_attention_sparse(
             return _out_padded[..., :N, :]
         # already xBT-aligned -> fall through, byte-identical to auto_pad=False
 
+    # ── loud refusals on the extended path (Volet A Phase 1, spec §1/§3) ──────
+    # The P1 silent-downgrade-to-scalar is FORBIDDEN under the opt-in: a caller
+    # who set MFA_SPARSE_NAX_EXTENDED=1 for a config outside the v1 capacity
+    # matrix gets a raise, never a quiet fallback. (fp32 is already refused at
+    # entry for ALL sparse calls; qL!=kL is supported-but-deferred and routes
+    # gracefully to dense, so it is not a refusal case.)
+    from mlx_mfa.lcsa_nax import _sparse_extended_enabled as _sx_enabled
+    if _sx_enabled():
+        if not _get_is_m5_plus_cached():
+            raise RuntimeError(
+                "MFA_SPARSE_NAX_EXTENDED=1 requires M5+ (NAX) hardware; this chip "
+                "is pre-M5 where STEEL sparse is backlog (spec §1/§5). Unset the "
+                "env for the default routing (graceful SDPA fallback).")
+        if D not in (64, 128):
+            raise ValueError(
+                f"MFA_SPARSE_NAX_EXTENDED=1: head_dim must be 64 or 128 (spec §1 "
+                f"v1 matrix); got D={D} (D=256/512 are outside the extended "
+                f"envelope).")
+        _nq = int(block_mask.shape[-2])
+        if _nq > 0 and N % _nq == 0 and (N // _nq) != 32:
+            raise ValueError(
+                f"MFA_SPARSE_NAX_EXTENDED=1: block tile must be 32 (spec §1, "
+                f"structural); the mask implies BT={N // _nq}. Rebuild the mask "
+                f"at 32-block granularity.")
+
     # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
     # BQ/BK validator. If the mask is symmetric (BT-block), we route through
     # sparse_attention_dispatch which has its own validator. Otherwise we
