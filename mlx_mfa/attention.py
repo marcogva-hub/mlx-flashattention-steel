@@ -3754,6 +3754,7 @@ def flash_attention_sparse(
     causal: bool = False,
     stream: Optional[mx.Stream] = None,
     backward: str = "sdpa",
+    auto_pad: bool = False,
 ) -> mx.array:
     """Block-sparse Flash Attention.
 
@@ -3778,6 +3779,13 @@ def flash_attention_sparse(
         scale:      Attention scale (default: 1/sqrt(D)).
         causal:     Additional causal masking within the active blocks.
         stream:     Optional MLX stream.
+        auto_pad:   When True, pad Q/K/V (zeros) to a multiple of the 32-block
+                    tile so the V6NAX block-skip route is reachable for
+                    non-aligned seq lengths (real Wan token counts), then slice
+                    the output back. Pad tokens carry V=0 so padded keys do not
+                    affect the output direction (correctness validated by cosine
+                    vs a gold element-mask reference). Default False leaves the
+                    routing byte-identical.
 
     Returns:
         Output [B, H, N, D].
@@ -3838,6 +3846,39 @@ def flash_attention_sparse(
             f"flash_attention_sparse: backward must be one of "
             f"'sdpa', 'sdpa_sparse', 'steel_sparse'; got {backward!r}"
         )
+
+    # ── auto_pad (Volet A Phase 1, spec §2) ──────────────────────────────────
+    # Pad Q/K/V to a xBT multiple so the V6NAX block-skip route becomes reachable
+    # for real Wan token counts (62 730 -> 62 752, 144 279 -> 144 288). The kernel
+    # RAISES on qL/kL % 32 != 0 and the M5+ auto-route below gates on N % nq == 0,
+    # so non-aligned N never reaches the skip without this pad.
+    # Correctness: pad tokens carry V=0, so padded KEYS add nothing to the softmax
+    # NUMERATOR — the output DIRECTION is exact; only boundary queries whose active
+    # window touches the partial final block see a hair of magnitude scaling (why
+    # spec §2 / gate 4 validates via COSINE). For causal, pad keys sit at the tail
+    # (pos >= N) so causality excludes them outright. Pad-query rows are computed
+    # then sliced off. The block mask is already at ceil(N/BT) granularity, so a
+    # < BT pad never adds a whole new block -> no mask extension for the minimal
+    # pad. auto_pad=False (default) leaves this path untouched -> byte-identical
+    # routing (spec §3 off-path contract; gate 3).
+    if auto_pad:
+        from mlx_mfa.lcsa_nax import SPARSE_NAX_KERNEL_BLOCK_TILE as _BT_PAD
+        _Npad = ((N + _BT_PAD - 1) // _BT_PAD) * _BT_PAD
+        _Spad = ((S + _BT_PAD - 1) // _BT_PAD) * _BT_PAD
+        if _Npad != N or _Spad != S:
+            def _pad_seq(_x, _tgt):
+                if _x.shape[2] == _tgt:
+                    return _x
+                _w = [(0, 0)] * _x.ndim
+                _w[2] = (0, _tgt - _x.shape[2])
+                return mx.pad(_x, _w)
+            _out_padded = flash_attention_sparse(
+                _pad_seq(q, _Npad), _pad_seq(k, _Spad), _pad_seq(v, _Spad),
+                block_mask, scale=scale, causal=causal, stream=stream,
+                backward=backward, auto_pad=False,
+            )
+            return _out_padded[..., :N, :]
+        # already xBT-aligned -> fall through, byte-identical to auto_pad=False
 
     # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
     # BQ/BK validator. If the mask is symmetric (BT-block), we route through
