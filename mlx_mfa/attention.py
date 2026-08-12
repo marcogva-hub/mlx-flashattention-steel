@@ -4003,11 +4003,17 @@ def flash_attention_sparse(
                         # density gate. The env ceiling can only restrict it.
                         _density = float(
                             mx.mean(block_mask.astype(mx.float32)).item())
-                        from mlx_mfa.lcsa_nax import _nax_sparse_route_viable
+                        from mlx_mfa.lcsa_nax import (
+                            _nax_sparse_route_viable, _sparse_extended_enabled)
+                        _extended = _sparse_extended_enabled()
                         _route_nax = (
                             _nax_sparse_route_viable(
                                 q, k, bt_q, _density, causal=causal, V=v)
-                            and _density <= _nax_sparse_density_ceiling()
+                            # spec §3: the extended opt-in bypasses this extra
+                            # density ceiling too (density is diverted to the
+                            # dense route upstream by the D_DENSE_CUTOFF dispatch).
+                            and (_extended
+                                 or _density <= _nax_sparse_density_ceiling())
                         )
                         if not _route_nax:
                             _dtrace.record(

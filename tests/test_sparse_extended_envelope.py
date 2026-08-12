@@ -95,6 +95,71 @@ def test_autopad_nonaligned_cos_gold(causal):
     assert cos >= 0.999, f"auto_pad(N={N},causal={causal}) cos vs gold = {cos:.6f} < 0.999"
 
 
+# ============================================ MFA_SPARSE_NAX_EXTENDED (§3)
+from mlx_mfa.lcsa_nax import _nax_sparse_route_viable, _sparse_extended_enabled
+
+
+def _shape_arr(B, H, N, D, dt=mx.float16):
+    return mx.zeros((B, H, N, D), dtype=dt)
+
+
+def test_extended_gate_bypasses_policy_not_capacity(monkeypatch):
+    """Gate 3 (unit): extended bypasses POLICY bounds (B·H/N) but NEVER capacity."""
+    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+    # Out-of-policy shape (B·H=40, tiny N): default gate rejects.
+    q = _shape_arr(1, 40, 256, 128); k = q
+    assert _nax_sparse_route_viable(q, k, 32, 0.5) is False
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    assert _sparse_extended_enabled() is True
+    assert _nax_sparse_route_viable(q, k, 32, 0.5) is True          # policy bypassed
+    # Capacity constraints are NEVER bypassed, even with the env on:
+    assert _nax_sparse_route_viable(_shape_arr(1, 4, 256, 256), _shape_arr(1, 4, 256, 256), 32, 0.1) is False  # D=256
+    assert _nax_sparse_route_viable(_shape_arr(1, 4, 4096, 128), _shape_arr(1, 4, 2048, 128), 32, 0.1) is False  # qL≠kL
+    assert _nax_sparse_route_viable(q, k, 64, 0.1) is False          # block_tile≠32
+    assert _nax_sparse_route_viable(_shape_arr(1, 4, 256, 128, mx.float32),
+                                    _shape_arr(1, 4, 256, 128, mx.float32), 32, 0.1) is False  # fp32
+
+
+@m5only
+def test_extended_route_correct_bh40(monkeypatch):
+    """B·H=40 (outside default gate) routes correct under the opt-in (cos vs gold)."""
+    B, H, N, D = 1, 40, 4096, 128
+    q, k, v = _qkv(B, H, N, D)
+    nq = N // BT
+    bm = _block_mask(nq, nq, 0.20)
+    mx.eval(bm)
+    scale = 1.0 / math.sqrt(D)
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    o = flash_attention_sparse(q, k, v, bm, scale=scale)
+    mx.eval(o)
+    cos = _cos(o, _gold(q, k, v, bm, scale, False, N, N))
+    assert cos >= 0.999, f"extended B·H40 cos vs gold = {cos:.6f}"
+
+
+@m5only
+def test_offpath_byte_identical(monkeypatch):
+    """Gate 3 (lock): the opt-in never perturbs an IN-envelope shape's output.
+
+    Density is kept low enough that the SYMMETRIZED mask stays under the 0.30
+    ceiling, so env-off already routes NAX; env-on must then be byte-identical.
+    """
+    B, H, N, D = 1, 12, 4096, 128          # in the default β3 gate
+    q, k, v = _qkv(B, H, N, D)
+    bm = _block_mask(N // BT, N // BT, 0.05)
+    mx.eval(bm)
+    _actual = float(mx.mean(bm.astype(mx.float32)).item())
+    assert _actual <= 0.30, f"test premise: in-gate density, got {_actual:.3f}"
+    scale = 1.0 / math.sqrt(D)
+    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+    o_off = flash_attention_sparse(q, k, v, bm, scale=scale)
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    o_on = flash_attention_sparse(q, k, v, bm, scale=scale)
+    mx.eval(o_off, o_on)
+    delta = float(np.abs(np.asarray(o_off.astype(mx.float32))
+                         - np.asarray(o_on.astype(mx.float32))).max())
+    assert delta == 0.0, f"opt-in must not perturb in-envelope routing; maxabs={delta}"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "-s"]))

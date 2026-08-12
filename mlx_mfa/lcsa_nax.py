@@ -347,6 +347,16 @@ SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is stru
 SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
 
+def _sparse_extended_enabled() -> bool:
+    """spec §3 opt-in — ``MFA_SPARSE_NAX_EXTENDED=1`` bypasses the measured
+    POLICY bounds of the NAX-sparse routing gate (MEASURED_BH / MIN_N / MAX_N /
+    DENSITY_CEILING), NEVER the §1 capacity constraints (block_tile==32,
+    fp16/bf16, D in {64,128}, qL==kL). Off (default) → routing strictly
+    unchanged / byte-identical (spec §3 off-path contract)."""
+    return os.environ.get("MFA_SPARSE_NAX_EXTENDED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None) -> bool:
     """Return whether the exact β3-measured sparse region routes to V6NAX.
 
@@ -354,6 +364,11 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
     For non-causal cells that won at N=4096, N is treated as a conservative
     entry threshold through the measured maximum N=8192; the broad regions that
     only won at N=8192 remain exact-N routes.
+
+    With ``MFA_SPARSE_NAX_EXTENDED=1`` (spec §3) the measured-envelope logic is
+    skipped once the §1 capacity gate passes: the extended path routes on
+    CAPABILITY, with high density diverted to the dense route upstream by the
+    D_DENSE_CUTOFF dispatch (so density is not re-gated here).
     """
     if block_tile not in SPARSE_NAX_VIABLE_BLOCK_TILES:
         return False
@@ -370,7 +385,12 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
                           or int(V.shape[2]) != int(K.shape[2])):
         return False
     qL, kL = int(Q.shape[2]), int(K.shape[2])
-    if qL != kL or qL > SPARSE_NAX_MAX_N:
+    if qL != kL:                       # square-only in v1 (capacity-adjacent)
+        return False
+    # spec §3 — capacity gate above holds → bypass the POLICY envelope.
+    if _sparse_extended_enabled():
+        return True
+    if qL > SPARSE_NAX_MAX_N:           # default: measured-envelope MAX_N bound
         return False
     bh = int(Q.shape[0]) * int(Q.shape[1])
 
