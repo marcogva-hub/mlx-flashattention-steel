@@ -4029,17 +4029,25 @@ def flash_attention_sparse(
                         _density = float(
                             mx.mean(block_mask.astype(mx.float32)).item())
                         from mlx_mfa.lcsa_nax import (
-                            _nax_sparse_route_viable, _sparse_extended_enabled)
+                            _nax_sparse_route_viable, _sparse_extended_enabled,
+                            _d_dense_cutoff)
                         _extended = _sparse_extended_enabled()
                         _route_nax = (
                             _nax_sparse_route_viable(
                                 q, k, bt_q, _density, causal=causal, V=v)
                             # spec §3: the extended opt-in bypasses this extra
                             # density ceiling too (density is diverted to the
-                            # dense route upstream by the D_DENSE_CUTOFF dispatch).
+                            # dense route by the D_DENSE_CUTOFF dispatch below).
                             and (_extended
                                  or _density <= _nax_sparse_density_ceiling())
                         )
+                        # spec §1 item 4: near-dense → dense masked route (the
+                        # block-skip's per-block overhead buys nothing here; this
+                        # dispatch is what caps the wrapper overhead at ~zero
+                        # sparsity, gate 7). No-op on the default path, where the
+                        # 0.30 density ceiling already excludes near-dense NAX.
+                        if _density >= _d_dense_cutoff():
+                            _route_nax = False
                         if not _route_nax:
                             _dtrace.record(
                                 "sdpa", "sparse outside hardened beta-3 gate"

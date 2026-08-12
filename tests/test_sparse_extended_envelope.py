@@ -214,6 +214,35 @@ def test_refusals_are_extended_only(monkeypatch):
     assert o.shape == (1, 4, N, D)
 
 
+# ============================================ D_DENSE_CUTOFF (§1 item 4, gate 7)
+@m5only
+def test_d_dense_cutoff_routes_dense(monkeypatch):
+    """d ≥ cutoff → dense masked route (byte-identical to the dense fallback);
+    below the cutoff → NAX route (differs from dense)."""
+    B, H, N, D = 1, 40, 4096, 128
+    q, k, v = _qkv(B, H, N, D)
+    bm = _block_mask(N // BT, N // BT, 0.9)          # symmetrized → ~0.99 ≥ 0.85
+    mx.eval(bm)
+    dens = float(mx.mean(bm.astype(mx.float32)).item())
+    assert dens >= 0.85, f"test premise: near-dense mask, got {dens:.3f}"
+    scale = 1.0 / math.sqrt(D)
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    o_dense = A._sparse_fallback_sdpa_perhead(q, k, v, bm, scale, False)
+    # default cutoff 0.85 → near-dense diverts to the dense route
+    o_cut = flash_attention_sparse(q, k, v, bm, scale=scale)
+    mx.eval(o_cut, o_dense)
+    d_dense = float(np.abs(np.asarray(o_cut.astype(mx.float32))
+                           - np.asarray(o_dense.astype(mx.float32))).max())
+    assert d_dense == 0.0, f"d≥cutoff must take the dense route; maxabs vs dense={d_dense}"
+    # raise the cutoff above the density → NAX route → differs from dense
+    monkeypatch.setenv("MFA_SPARSE_D_DENSE_CUTOFF", "1.01")
+    o_nax = flash_attention_sparse(q, k, v, bm, scale=scale)
+    mx.eval(o_nax)
+    d_nax = float(np.abs(np.asarray(o_nax.astype(mx.float32))
+                         - np.asarray(o_dense.astype(mx.float32))).max())
+    assert d_nax > 0.0, f"below cutoff must take the NAX route (differ from dense); got {d_nax}"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "-s"]))

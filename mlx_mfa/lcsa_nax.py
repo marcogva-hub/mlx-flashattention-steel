@@ -346,6 +346,24 @@ SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING = 0.10
 SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is structurally pinned at 32
 SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
+# Volet A Phase 1 (spec §1, item 4): at/above this block density the skip's
+# per-block loop-control overhead outweighs its shrinking skip benefit, so the
+# wrapper diverts to the dense masked route. This dispatch — NOT anything in the
+# kernel — is what buys the "<=5% overhead at ~zero sparsity" gate (gate 7).
+# Initial 0.85, to be calibrated by the d=0.95 measurement cell; override via
+# MFA_SPARSE_D_DENSE_CUTOFF.
+SPARSE_NAX_D_DENSE_CUTOFF = 0.85
+
+
+def _d_dense_cutoff() -> float:
+    """spec §1 item 4 — block density at/above which sparse routing diverts to
+    the dense masked path (env override: MFA_SPARSE_D_DENSE_CUTOFF)."""
+    try:
+        return float(os.environ.get(
+            "MFA_SPARSE_D_DENSE_CUTOFF", str(SPARSE_NAX_D_DENSE_CUTOFF)))
+    except ValueError:
+        return SPARSE_NAX_D_DENSE_CUTOFF
+
 
 def _sparse_extended_enabled() -> bool:
     """spec §3 opt-in — ``MFA_SPARSE_NAX_EXTENDED=1`` bypasses the measured
