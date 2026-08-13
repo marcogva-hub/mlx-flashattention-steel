@@ -38,6 +38,8 @@ load-time-only.
 | `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE` | bool, `0` | Enable the measured SeedVR2 108x132 spatial pad/slice route. |
 | `MFA_GNA_NAX_PRECOMPUTE_RANGE` | bool, `0` | Select the default-off `_pr1` GNA range-precompute variant. |
 | `MFA_NAX_SPARSE_DENSITY_CEILING` | float, `0.30` | Further restrict the measured sparse route. It cannot add an unmeasured cell. |
+| `MFA_SPARSE_NAX_EXTENDED` | bool, `0` | **Opt-in (M5+).** Route the V6NAX sparse kernel across its full measured-capability envelope (B·H free, N ≤ 144 288 after `auto_pad`, density free) instead of only the β3-measured policy region. Bypasses policy bounds only (B·H allowlist / N range / density ceiling), never capacity (BT=32, fp16/bf16, D∈{64,128}). Off = routing byte-identical; outside the v1 matrix it raises (no silent downgrade). |
+| `MFA_SPARSE_D_DENSE_CUTOFF` | float, `0.85` | On the extended path, block density at/above which routing diverts to the dense masked route (the block-skip wins nothing near-dense; caps wrapper overhead at ~zero sparsity, measured +0.9% at d≈1.0). |
 | `MFA_REQUIRE_NAX` | bool, `0` | Raise when NAX was expected but the extension is unavailable. |
 | `MFA_SILENCE_NAX_WARNING` | bool, `0` | Suppress the one-time acceleration-unavailable warning. |
 | `MFA_PAGED_TRUST_INDICES` | bool, `0` | Skip host value validation for paged metadata; kernel bounds checks remain. |

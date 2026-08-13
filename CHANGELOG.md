@@ -2,6 +2,36 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [Unreleased] — targeting 2.63.0
+
+Block-sparse extended envelope (Volet A Phase 1). All additions are **opt-in / default-off**;
+default routing is byte-identical (`test_sparse_extended_envelope.py`; existing sparse suite
+unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
+
+### Added
+- `flash_attention_sparse(..., auto_pad=True)` — pad Q/K/V to a 32-block multiple (zeros) so the
+  V6NAX block-skip is reachable for non-aligned sequence lengths (real Wan token counts, e.g.
+  62 730→62 752, 144 279→144 288), then slice the output. Pad tokens carry V=0 so padded keys do
+  not affect the output direction; correctness gold-verified via cosine (N=62 730 → cos 0.999999 vs
+  the fp32 element-mask gold at 62 730). Default `auto_pad=False` is byte-identical.
+- `MFA_SPARSE_NAX_EXTENDED=1` (opt-in) — route the V6NAX sparse kernel across its full measured
+  capability envelope (B·H free, N ≤ 144 288 after padding, density free) rather than only the
+  β3-measured policy region. Bypasses POLICY bounds only (B·H allowlist / N range / density ceiling),
+  never capacity (BT=32, fp16/bf16, D∈{64,128}, M5+). Off = routing byte-identical. Promotion to
+  default is a later decision on hardened evidence (N6144/B·H16 precedent).
+- Loud refusals on the opt-in path (no silent scalar downgrade): pre-M5 → RuntimeError; D=256/512 or
+  BT≠32 → ValueError. fp32 stays refused at entry.
+- `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) — at/above this block density the opt-in routes to the
+  dense masked path (the block-skip wins nothing near-dense); caps wrapper overhead at ~zero sparsity
+  (measured +0.9% at d≈1.0). No-op on the default path.
+
+### Measured (shipped public path, solo-proc, gold-fp32-correct, engagement-proven)
+- Sliding d0.10: **8.2–9.3×** vs dense SDPA across N=16 384–144 288 (B·H=40, D128).
+- Sliding d0.50: **1.6–2.0×** — ≥1.6× at every N including 144 288 (1.61×).
+- Real LCSA masks (spatial_radius=9, topk_ratio=2.0): **10.2× (16k) → 34.9× (144k)** as density falls.
+- bf16 8.4–10.3×; causal (N=32 768) 8.4×. These ratios are the block-skip realizing the model's
+  trained sparsity (≈1/density), not a faster-dense-kernel claim.
+
 ## [2.62.3] — 2026-09-28
 
 Patch release. **Upgrade if you run mlx-mfa 2.62.2 on an M5 under macOS 27 with MLX 0.32.1

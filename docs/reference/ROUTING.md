@@ -35,6 +35,19 @@ Authoritative predicate: `mlx_mfa/lcsa_nax.py:350-402` (`_nax_sparse_route_viabl
 causal cells are deliberately **not** interpolated). Common gates (`:355-366`): `block_tile ∈ {32}`,
 dtype f16/bf16, D ∈ {64,128}, `qL == kL`, `qL ≤ 8192`. `bh = B·H`.
 
+**Extended envelope (opt-in, `MFA_SPARSE_NAX_EXTENDED=1`, M5+ only — Volet A Phase 1).** Predicate:
+`_sparse_extended_enabled()` short-circuits `_nax_sparse_route_viable` once the CAPACITY gate passes
+(`block_tile==32`, f16/bf16, D∈{64,128}, `qL==kL`), bypassing the POLICY bounds only (B·H allowlist,
+`MIN_N`/`MAX_N`, density ceiling) — never capacity. Reach: **B·H free, N ≤ 144 288 after `auto_pad`,
+density free**, with `flash_attention_sparse(auto_pad=True)` padding non-aligned N to a ×32 multiple
+(zeros; pad-V=0 keeps the output direction exact) and slicing back. Near-dense (`density ≥
+MFA_SPARSE_D_DENSE_CUTOFF`, default 0.85) diverts to the dense masked route (block-skip wins nothing
+there; wrapper overhead +0.9% @ d≈1.0). Outside the v1 matrix the opt-in **raises** (pre-M5,
+D=256/512, BT≠32) — no silent scalar downgrade. Off (default) → routing byte-identical. Evidence:
+hardened public-path measurement (M5 Max, macOS 27, MLX 0.31.2) — sliding d0.10 **8.2–9.3×** vs dense
+across N=16 384–144 288, d0.50 **1.6–2.0×** (≥1.6× every N), real LCSA **10.2–34.9×**; all engaged +
+gold-fp32-correct (`test_sparse_extended_envelope.py`).
+
 ### Non-causal (`lcsa_nax.py:385-402`)
 | N | B·H | D | density ≤ | source |
 |---:|---:|---:|---:|---|
@@ -148,5 +161,7 @@ channel-tail convs (C_in/C_out < 32), bf16 (fp16-only gate — locked inert).
 Full registry: [`ENV_VARS.md`](../../ENV_VARS.md). Status of the routing knobs referenced above:
 `MFA_V6_DENSE_MIN_N` (default 2048), `MFA_DISABLE_V6_DENSE` (opt-out), `MFA_DISABLE_V6_BACKWARD`
 (opt-out; D64 bwd default-on), `MFA_ENABLE_VARLEN_NAX` (opt-in, default-off), `MFA_ENABLE_CONV3D_*`
-(conv opt-ins, default-off). The sparse gate has no env override — it is the `_nax_sparse_route_viable`
-predicate alone.
+(conv opt-ins, default-off). The sparse gate's DEFAULT is the `_nax_sparse_route_viable`
+predicate alone; `MFA_SPARSE_NAX_EXTENDED=1` (opt-in, default-off, M5+) widens it to the full
+measured-capability envelope, and `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) diverts near-dense to
+the dense route — see §2 (Extended envelope).

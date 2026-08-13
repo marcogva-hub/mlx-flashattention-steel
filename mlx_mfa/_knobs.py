@@ -76,6 +76,10 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_HOOK_VERBOSE",
     "MFA_LCSA_KERNEL_VERSION",
     "MFA_NAX_SPARSE_DENSITY_CEILING",
+    "MFA_SPARSE_NAX_EXTENDED",  # Volet A opt-in (M5+): extend the sparse route past
+    #   the measured policy region (B·H/N/density); capacity still enforced. Default-off.
+    "MFA_SPARSE_D_DENSE_CUTOFF",  # Volet A: block density at/above which the extended
+    #   opt-in routes dense (default 0.85; caps wrapper overhead at ~zero sparsity).
     "MFA_NO_PADDING",  # real C++ shader-generator knob (env_bool, csrc/mfa_env.hpp)
     "MFA_PAGED_TRUST_INDICES",  # perf opt-out: skip the host block_table/seq_lens
     #   value-range sync on the paged decode hot path (kernel still bounds-guards)
