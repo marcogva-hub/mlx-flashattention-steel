@@ -91,6 +91,10 @@ devnotes/
 # Kept LOCAL (untracked) like devnotes/: reread each campaign task, never shipped in the sdist.
 CAMPAIGN.md
 
+# NA-autoresearch campaign scratch (runner/plan/census) — local only, never shipped.
+# Pre-existing untracked cruft that the sdist build was sweeping in (publication guard).
+research/
+
 # stray journal-export zip (cruft — real archive is .doc-archive/); keep out of the sdist surface
 doc-archive.zip
 
