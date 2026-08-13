@@ -24,6 +24,13 @@ unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
 - `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) — at/above this block density the opt-in routes to the
   dense masked path (the block-skip wins nothing near-dense); caps wrapper overhead at ~zero sparsity
   (measured +0.9% at d≈1.0). No-op on the default path.
+- `mlx_mfa.sla.sla_attention(...)` (Volet B) — Sparse-Linear Attention composition, a faithful MLX port
+  of the thu-ml/TurboDiffusion SLA semantics (`o = o_sparse + proj_l(o_linear)`: top-k block selection at
+  BLKQ=128/BLKK=64 → sparse-softmax over the Volet A extended path + softmax-feature-map linear attention
+  over all keys + learned `proj_l`). Non-causal MHA + GQA; opt-in (nothing changes for non-callers).
+  Parity: full output cos ≥ 0.999 and EXACT selection block-set vs a torch-CPU fp32 reference derived
+  line-by-line from the SOT (`tests/test_sla.py`). Composition net op-ratio 5.9–6.4× vs dense SDPA at the
+  Wan shapes (N=62 752/144 288, topk 0.1) — the composition preserves ~80–90% of the bare-skip advantage.
 
 ### Measured (shipped public path, solo-proc, gold-fp32-correct, engagement-proven)
 - Sliding d0.10: **8.2–9.3×** vs dense SDPA across N=16 384–144 288 (B·H=40, D128).
