@@ -13,11 +13,8 @@ Heirs of (b), confirmed by test: `flash_attention_speculative_verify` and
 Oracle = fp32 math with the bottom-right causal mask (key j visible to row i iff
 j <= i + (S - N)), i.e. SDPA's convention for N <= S. Which-binary = dispatch trace.
 
-N > S (causal) is OUT of scope here: the library's canonical convention for it
-(NAMING.md "bottom-right-aligned, zero-clamped" = top-left when N>S) conflicts with
-the default route's SDPA behaviour — escalated for decision (R1'/CRIT-01). The
-`TestNgtSBehaviourPreserved` class locks that every route keeps its CURRENT N>S
-behaviour until that decision.
+N > S (causal): decided 2026-09 — every route follows NAMING.md's canonical
+zero-clamp (TestNgtSZeroClamp below; full matrix in test_causal_zero_clamp_convention.py).
 """
 from __future__ import annotations
 
@@ -198,21 +195,17 @@ def test_raw_forward_with_lse_fp32_outside_domain_still_allowed(N, S, causal):
     assert _err(O, Oref) < 1e-2
 
 
-class TestNgtSBehaviourPreserved:
-    """R1'/CRIT-01 — N>S causal convention PENDING DECISION (review 2026-09 escalation).
-
-    These cells lock the CURRENT per-route behaviour so the R1 fix (N<=S) provably does
-    not pre-empt the decision. They are expected to be rewritten when the convention is
-    decided — do NOT treat them as the desired end state.
-    """
+class TestNgtSZeroClamp:
+    """R1'/CRIT-01 — DECIDED 2026-09 (Marco): N>S causal follows NAMING.md's canonical
+    zero-clamp on every route (full matrix: tests/test_causal_zero_clamp_convention.py)."""
 
     N, S, D = 256, 128, 64
 
-    def test_f16_no_lse_is_mlx_sdpa_causal(self):
+    def test_f16_no_lse_is_zero_clamp(self):
         q, k, v = _qkv(self.N, self.S, self.D, mx.float16, mx.float16, seed=11)
         out = flash_attention(q, k, v, causal=True)
-        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.D ** -0.5, mask="causal")
-        assert _err(out, ref) == 0.0
+        O, _ = _oracle(q, k, v, causal=True, zero_clamp=True)
+        assert _err(out, O) < 1e-2
 
     def test_f16_return_lse_is_zero_clamp(self):
         q, k, v = _qkv(self.N, self.S, self.D, mx.float16, mx.float16, seed=11)
@@ -224,4 +217,4 @@ class TestNgtSBehaviourPreserved:
         q, k, v = _qkv(self.N, self.S, self.D, seed=11)
         out, lse = flash_attention(q, k, v, causal=True, return_lse=True)
         O, L = _oracle(q, k, v, causal=True, zero_clamp=True)
-        assert _err(out, O) < 1e-2 and _err(lse, L) < 1e-2, (_err(out, O), _err(lse, L))
+        assert _err(out, O) < FP32_GPU_TOL and _err(lse, L) < FP32_GPU_TOL, (_err(out, O), _err(lse, L))

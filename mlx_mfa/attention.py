@@ -38,6 +38,27 @@ from ._knobs import get_bool_env
 _MFA_SUPPORTED_HDIMS = {64, 128, 256, 512}
 _MFA_SUPPORTED_DTYPES = {mx.float16, mx.bfloat16, mx.float32}
 
+
+# ── Causal convention (single source of truth) ───────────────────────────────
+# NAMING.md canonical "bottom-right-aligned, zero-clamped" causal masking: key j is
+# visible to query row i iff  j <= i + max(0, S - N).  For N <= S this is MLX's
+# bottom-right "causal"; for N > S the zero clamp makes it top-left and leaves NO
+# fully-masked leading rows — a DELIBERATE divergence from mx.fast.
+# scaled_dot_product_attention(mask="causal"), whose N > S leading rows are
+# implementation-defined.  Decision 2026-09 (Marco): every flash_attention route
+# (default, return_lse, backend="sdpa", fallbacks, backward legs) and the sparse
+# fallbacks follow it — locked by tests/test_causal_zero_clamp_convention.py.
+def _causal_bias(N: int, S: int, dtype) -> mx.array:
+    """Additive [N, S] causal mask in the canonical (zero-clamped) convention."""
+    return mx.triu(mx.full((N, S), float("-inf"), dtype=dtype), k=max(0, S - N) + 1)
+
+
+def _sdpa_causal_mask(N: int, S: int, dtype):
+    """``mask=`` for mx.fast.scaled_dot_product_attention in the canonical convention:
+    the fast "causal" string where it already means it (N <= S), else the explicit
+    zero-clamp mask (N > S)."""
+    return "causal" if N <= S else _causal_bias(N, S, dtype)
+
 # Tier-2 #1 (research/nax-routing-threshold-m5, M5 Max, 2026-06-18): the dense
 # D=128 forward auto-routes to the NAX matmul2d kernel (F-2), but at small N the
 # Apple SDPA kernel is faster — a localized regression.  Measured crossover
@@ -572,7 +593,18 @@ def flash_attention(
         k: Key tensor of shape ``[batch, heads, kv_len, head_dim]``.
         v: Value tensor of shape ``[batch, heads, kv_len, head_dim]``.
         scale: Attention scale factor. Defaults to ``1 / sqrt(head_dim)``.
-        causal: Whether to apply causal (autoregressive) masking.
+        causal: Whether to apply causal (autoregressive) masking, in the library's
+            canonical **bottom-right-aligned, zero-clamped** convention (NAMING.md):
+            query row ``i`` attends keys ``0 .. i + max(0, S - N)``.  For ``N <= S``
+            (prefill, chunked prefill, decode) this is exactly SDPA's bottom-right
+            ``mask="causal"``.  For ``N > S`` the offset clamps to 0 (top-left): row
+            ``i`` attends keys ``0 .. min(i, S - 1)`` and no row is fully masked.  This
+            **deliberately diverges** from ``mx.fast.scaled_dot_product_attention(
+            mask="causal")``, whose leading rows for ``N > S`` have no visible key and
+            an implementation-defined output.  Every route (default, ``return_lse``,
+            ``backend="sdpa"``/``"mfa"``, fallbacks, gradients) and
+            ``flash_attention_varlen`` / ``flash_attention_rope`` / the paged and
+            sparse entries share this convention.
         softcap: Tanh softcapping factor (Gemma 2 / Grok style). When > 0,
             scores are capped via ``tanh(S / softcap) * softcap`` before
             softmax. Set to 0.0 (default) to disable.
@@ -761,16 +793,14 @@ def flash_attention(
         if attn_bias is None:
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=_scale,
-                mask=("causal" if causal else None),
+                mask=(_sdpa_causal_mask(q.shape[2], k.shape[2], q.dtype) if causal else None),
             )
         # When attn_bias is supplied, must materialize a combined mask (the
         # string-form mask doesn't compose with additive bias).
         mask = attn_bias
         if causal:
             N, S = q.shape[2], k.shape[2]
-            causal_mask = mx.triu(
-                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-            )
+            causal_mask = _causal_bias(N, S, q.dtype)
             mask = causal_mask + mask
         return mx.fast.scaled_dot_product_attention(
             q, k, v, scale=_scale, mask=mask,
@@ -1005,9 +1035,7 @@ def flash_attention(
         mask = attn_bias if attn_bias.dtype == q.dtype else attn_bias.astype(q.dtype)
         if causal:
             N, S = q.shape[2], k.shape[2]
-            causal_mask = mx.triu(
-                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-            )
+            causal_mask = _causal_bias(N, S, q.dtype)
             mask = causal_mask + mask
         _dtrace.record("sdpa", "attn_bias mode 0/3 or mfa-unavailable")
         return mx.fast.scaled_dot_product_attention(
@@ -1298,11 +1326,8 @@ def flash_attention(
                 raise ValueError(
                     "flash_attention(return_lse=True) does not support softcap "
                     "(the LSE paths would silently drop it). Compute LSE separately.")
-            # zero_clamp=True keeps this route's N>S semantics unchanged (the ccv
-            # kernel was top-left = NAMING.md zero-clamp there); N>S convention is
-            # pending decision R1'/CRIT-01 — N<=S is plain bottom-right (SDPA).
             _dtrace.record("sdpa", "fp32/D512 return_lse -> exact SDPA+LSE (never the primitive)")
-            return _fallback_sdpa_with_lse(q, k, v, scale, causal, zero_clamp=True)
+            return _fallback_sdpa_with_lse(q, k, v, scale, causal)
         if softcap != 0.0:
             _dtrace.record("sdpa", "fp32 softcap -> SDPA softcap reference")
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
@@ -3295,9 +3320,7 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
             tile_q=_tq, tile_k=_tk,
         )
         if causal:
-            causal_m = mx.triu(
-                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-            )
+            causal_m = _causal_bias(N, S, q.dtype)
             float_bias = float_bias + causal_m
         # R5/NEPB-03: empty rows -> finite bias + zero output (forward contract).
         float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
@@ -3577,8 +3600,7 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
             tile_q=_tq, tile_k=_tk,
         ).astype(q.dtype)
         if causal:
-            causal_m = mx.triu(
-                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1)
+            causal_m = _causal_bias(N, S, q.dtype)
             float_bias = float_bias + causal_m
         # R5/NEPB-03 (hybrid dQ/dK leg): same empty-row sanitization.
         float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
@@ -4169,9 +4191,7 @@ def _make_mfa_sparse_custom(
         )
         if causal:
             N, S = q.shape[2], k.shape[2]
-            causal_m = mx.triu(
-                mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-            )
+            causal_m = _causal_bias(N, S, q.dtype)
             float_mask = float_mask + causal_m
         # R5 sibling (review 2026-09): the STEEL sparse forward writes 0 for an
         # empty row; an unsanitized all -inf bias row made this SDPA-vjp leg NaN
@@ -5126,9 +5146,7 @@ def _sparse_fallback_sdpa(
     float_bias = _block_mask_to_float_bias_nd(
         block_mask, N, S, q.dtype, tile_q=_tq, tile_k=_tk)
     if causal:
-        causal_m = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-        )
+        causal_m = _causal_bias(N, S, q.dtype)
         float_bias = float_bias + causal_m
     # III-4 pass-4 (F1/F2 class closure): the M5+ perhead path sanitizes
     # empty rows (II-6 `_get_sanitized_bias`); this no-ext fallback did
@@ -5406,9 +5424,7 @@ def _sparse_fallback_sdpa_perhead(
         block_mask, B, H, N, S, q.dtype, head_dim_d7=q.shape[3])
 
     if causal:
-        causal_m = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
-        )
+        causal_m = _causal_bias(N, S, q.dtype)
         # Broadcast causal mask over [B, H]; SDPA broadcasts itself but be explicit.
         float_bias = float_bias + causal_m
 
@@ -5692,7 +5708,7 @@ def _sdpa_with_weights(
     if causal and not _window_causal_done:
         idx_i = mx.arange(N, dtype=mx.int32)[:, None]
         idx_j = mx.arange(S, dtype=mx.int32)[None, :]
-        causal_mask = (idx_j > idx_i + (S - N))[None, None, :, :]
+        causal_mask = (idx_j > idx_i + max(0, S - N))[None, None, :, :]  # canonical zero-clamp
         scores = mx.where(causal_mask, float("-inf"), scores)
 
     probs = mx.softmax(scores.astype(mx.float32), axis=-1)   # [B,H,N,S] f32
@@ -5744,7 +5760,7 @@ def _dropout_sdpa(
         # Upper-triangular -inf mask (use mx.where to avoid 0.0 * -inf = NaN).
         idx_i = mx.arange(N, dtype=mx.int32)[:, None]
         idx_j = mx.arange(S, dtype=mx.int32)[None, :]
-        causal_mask = (idx_j > idx_i + (S - N))[None, None, :, :]
+        causal_mask = (idx_j > idx_i + max(0, S - N))[None, None, :, :]  # canonical zero-clamp
         scores = mx.where(causal_mask, float("-inf"), scores)
 
     # Softmax over key dimension
@@ -5799,10 +5815,7 @@ def _softcap_sdpa_ref(
             S = mx.tanh(S / _cap) * _cap
             if _causal:
                 _N, _Sk = q_.shape[2], k_.shape[2]
-                mask = mx.triu(
-                    mx.full((_N, _Sk), float("-inf"), dtype=q_.dtype),
-                    k=_Sk - _N + 1,
-                )
+                mask = _causal_bias(_N, _Sk, q_.dtype)
                 S = S + mask
             A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q_.dtype)
             return mx.matmul(A, v_)
@@ -5850,10 +5863,7 @@ def _alibi_sdpa_ref(
             bias = mx.expand_dims(sl[:, None, None] * pos_diff[None, :, :], axis=0)
             S = S + bias.astype(q_.dtype)
             if _causal:
-                mask = mx.triu(
-                    mx.full((_N, _Sk), float("-inf"), dtype=q_.dtype),
-                    k=_Sk - _N + 1,
-                )
+                mask = _causal_bias(_N, _Sk, q_.dtype)
                 S = S + mask
             A = mx.softmax(S.astype(mx.float32), axis=-1).astype(q_.dtype)
             return mx.matmul(A, v_)
@@ -6190,7 +6200,7 @@ def _make_mfa_custom_lse(scale: float, causal: bool):
         def _sdpa(q_, k_, v_):
             return mx.fast.scaled_dot_product_attention(
                 q_, k_, v_, scale=scale,
-                mask=("causal" if causal else None))
+                mask=(_sdpa_causal_mask(q_.shape[2], k_.shape[2], q_.dtype) if causal else None))
 
         _, (dQ, dK, dV) = mx.vjp(_sdpa, [q, k, v], [dO])
         return dQ, dK, dV
@@ -6229,7 +6239,7 @@ def _make_v6nax_dense_custom(scale: float, causal: bool):
         def _sdpa(q_, k_, v_):
             return mx.fast.scaled_dot_product_attention(
                 q_, k_, v_, scale=scale,
-                mask=("causal" if causal else None))
+                mask=(_sdpa_causal_mask(q_.shape[2], k_.shape[2], q_.dtype) if causal else None))
 
         _, (dQ, dK, dV) = mx.vjp(_sdpa, [q, k, v], [dO])
         return dQ, dK, dV
@@ -6313,7 +6323,7 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
                 # same predicate).
                 O = mx.fast.scaled_dot_product_attention(
                     q, k, v, scale=scale,
-                    mask="causal" if causal else None)
+                    mask=_sdpa_causal_mask(q.shape[2], k.shape[2], q.dtype) if causal else None)
                 # 1-element sentinel (NOT [B, H, N]): the full-size zeros
                 # fill cost ~0.04-0.09 ms per forward call at these
                 # shapes — measurable against a 0.33 ms SDPA.  The VJP's
@@ -6476,7 +6486,7 @@ def _fallback_sdpa(
     and runs ~2× slower (was the prior behavior; v2.32.0 fix).
     """
     return mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=("causal" if causal else None),
+        q, k, v, scale=scale, mask=(_sdpa_causal_mask(q.shape[2], k.shape[2], q.dtype) if causal else None),
     )
 
 
@@ -6486,7 +6496,6 @@ def _fallback_sdpa_with_lse(
     v: mx.array,
     scale: float,
     causal: bool,
-    zero_clamp: bool = False,
 ) -> tuple:
     """Compute SDPA + logsumexp via pure-MLX ops.
 
@@ -6516,16 +6525,9 @@ def _fallback_sdpa_with_lse(
     sdpa_mask = None
     if causal:
         N, S = q.shape[2], k.shape[2]
-        # Build causal mask once in float32; reuse (cast) for SDPA.  Offset S-N
-        # (bottom-right).  `zero_clamp` (R1, review 2026-09) uses NAMING.md's
-        # max(0, S-N) instead — identical for N<=S; for N>S it keeps the fp32
-        # return_lse route's pre-existing top-left semantics (N>S convention is
-        # pending decision R1'/CRIT-01, so no route changes it here).
-        _off = max(0, S - N) if zero_clamp else S - N
-        cmask_f32 = mx.triu(
-            mx.full((N, S), float("-inf"), dtype=mx.float32),
-            k=_off + 1,
-        )
+        # Build causal mask once in float32; reuse (cast) for SDPA — canonical
+        # zero-clamped convention (see _causal_bias).
+        cmask_f32 = _causal_bias(N, S, mx.float32)
         scores = scores + cmask_f32
         sdpa_mask = cmask_f32.astype(q.dtype)
 
@@ -8530,8 +8532,10 @@ def flash_attention_paged(
             # grads for heterogeneous seq_lens with N_q > 1.  Build per-row
             # q positions and broadcast into the [B, 1, N_q, S] mask
             # alongside the pad mask.
+            # Canonical zero-clamped convention (decision 2026-09): offset
+            # max(0, kv_len - N_q), matching the forward's flash_attention.
             q_pos = (
-                kv_lens_arr[:, None] - N_q
+                mx.maximum(kv_lens_arr[:, None] - N_q, 0)
                 + mx.arange(N_q, dtype=mx.int32)[None, :]
             )  # [B, N_q]
             k_idx = mx.arange(S, dtype=mx.int32)  # [S]

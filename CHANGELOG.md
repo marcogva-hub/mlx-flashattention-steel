@@ -259,7 +259,9 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       log2 domain; the README correctness-coverage sentence references the volet-G oracle envelope
       (`tests/test_oracle_envelope.py`); a dead cross-link to a gitignored journal file was removed; and
       the `flash_attention` causal docstring documents the `qL_off = max(0, N_k-N_q)` convention (top-left
-      clamped for `N_q > N_k`, which diverges from SDPA's bottom-right).
+      clamped for `N_q > N_k`, which diverges from SDPA's bottom-right). **[Correction 2.62.2: this was
+      not true — the docstring did not document it, and `flash_attention` itself only followed the
+      convention on some routes (its default route used SDPA's N>S behaviour). Both fixed in 2.62.2.]**
     - **Hygiene:** three orphaned tracked sources (`csrc/async_v2_noasm.metal`,
       `csrc/kernels/attention_forward.metal`, `csrc/mfa/DeviceProperties.hpp`) removed (verified 0
       build/source/test/CMake refs). The volet-G oracle-envelope table now lives at
@@ -320,7 +322,8 @@ correct/loud). **Version stays 2.61.0** (maintainer decision: bug-fixes, not a m
       causal (slower)** — `HARDWARE_SUPPORT.md` "parity / no speedup" was stale (CC-01); README
       disentangles the three mechanisms (forced `backend="mfa"` 2.2-2.4× vs opt-in
       `MFA_ENABLE_V6_BACKWARD=1` 0.54×/0.57× vs AUTO-default SDPA-vjp) (CC-04); the `N_q>N_k` causal
-      `qL_off=max(0,N_k-N_q)` convention is now in `API_MANUAL.md` (CC-03); touched claims carry the
+      `qL_off=max(0,N_k-N_q)` convention is now in `API_MANUAL.md` (CC-03) **[correction 2.62.2: it was not;
+      added in 2.62.2]**; touched claims carry the
       MLX-version stamp (CC-05/06).
     - **Internal docs off the PyPI surface (CC-07, maintainer signoff):** `CLAUDE.md` and
       `CLAUDE_V6_NAX.md` (agent-process / sprint engineering docs) are now excluded from the published

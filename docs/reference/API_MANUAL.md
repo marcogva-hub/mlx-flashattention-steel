@@ -20,6 +20,15 @@ Q/K/V are BHND arrays. Q and K share their head dimension and K/V share their
 sequence/head counts. A V dimension different from Q/K is accepted through the
 fallback path. `backend` is `auto`, `mfa` or `sdpa`.
 
+`causal=True` uses the library's canonical **bottom-right-aligned, zero-clamped**
+convention (see `NAMING.md`): query row `i` attends keys `0 .. i + max(0, S - N)`.
+For `N <= S` this equals SDPA's bottom-right `mask="causal"`. For `N > S` the
+offset clamps to 0 (top-left, no fully masked row) — a deliberate divergence from
+`mx.fast.scaled_dot_product_attention(mask="causal")`, whose leading rows are then
+implementation-defined. Every route, `return_lse`, gradients and the varlen / RoPE /
+paged / sparse entries share it (`flash_attention` with one segment equals
+`flash_attention_varlen`).
+
 RoPE wrappers are `flash_attention_rope` and
 `flash_attention_rope_unified`. Packed dense wrappers are
 `flash_attention_qkv_packed` and `flash_attention_kv_packed`.

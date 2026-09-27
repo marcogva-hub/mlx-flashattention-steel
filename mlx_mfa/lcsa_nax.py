@@ -578,7 +578,10 @@ def sparse_attention_dispatch(
     if causal:
         # Combine with causal mask. MLX 0.31 SDPA mask='causal' and float bias
         # are mutually exclusive; emit a manual causal bias and sum.
-        q_idx = mx.arange(qL).reshape(-1, 1)
+        # Canonical zero-clamped convention (NAMING.md; decision 2026-09): row i
+        # sees keys j <= i + max(0, kL - qL).  Was top-left (k_idx > q_idx) for
+        # every shape -> wrong for qL < kL (review DSP-12).
+        q_idx = mx.arange(qL).reshape(-1, 1) + max(0, kL - qL)
         k_idx = mx.arange(kL).reshape(1, -1)
         causal_bias = mx.where(k_idx > q_idx,
                                 mx.array(-float("inf"), dtype=Q.dtype),
