@@ -367,10 +367,12 @@ struct MFASageParams {
   ss << "    }\n";
   ss << "\n";
 
-  // Causal mask (only last few K-tiles need masking)
+  // Causal mask: every K-tile the Q-tile's diagonal crosses, from (qb*BQ+qL_off)/BK
+  // (R7, review 2026-09: the old "last few K-tiles" gate leaked future keys when
+  // qL_off % BK != 0 — the v2.14.1 / RC-A fix had never been ported to Sage).
   if (causal) {
     ss << "    // Causal mask: position k > position q → mask -∞\n";
-    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << mfa_causal_mask_zone_gate("qb");  // R7: exact qL_off-aware zone (was last-tiles heuristic)
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
     ss << "        const int row = qb * MFA_BQ + p->qL_off\n";

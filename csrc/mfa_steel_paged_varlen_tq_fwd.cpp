@@ -467,7 +467,7 @@ struct MFAPagedVarlenTQParams {
 
     // ── Causal mask ──────────────────────────────────────────────────────────
     if (causal) {
-        ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+        ss << mfa_causal_mask_zone_gate("local_tile_id", "qL_off");  // R7 sibling: per-seq exact zone
         ss << "      STEEL_PRAGMA_UNROLL\n";
         ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
         ss << "        const int row = qL_off + local_tile_id * MFA_BQ + tm + sm + i * 8;\n";

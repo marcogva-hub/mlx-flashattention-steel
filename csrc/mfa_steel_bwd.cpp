@@ -580,7 +580,7 @@ std::string generate_steel_backward_dq_source(
 
   // Causal mask — same for both paths
   if (causal) {
-    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << mfa_causal_mask_zone_gate("(int)tid.x");  // R7 sibling: exact zone (qL_off=0 here -> bit-identical)
     ss << "      const int q_row = (int)tid.x * MFA_BQ + p->qL_off + tm + sm;\n";
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short j = 0; j < MFA_TK; j++) {\n";

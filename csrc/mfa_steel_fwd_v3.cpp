@@ -460,7 +460,7 @@ struct MFASteelParams {
 
   // Causal mask
   if (causal) {
-    ss << "    if (kb >= (kb_lim - (MFA_BQ + MFA_BK - 1) / MFA_BK)) {\n";
+    ss << mfa_causal_mask_zone_gate("qb");  // R7 sibling: exact qL_off-aware zone (RC-A never reached V3)
     ss << "      STEEL_PRAGMA_UNROLL\n";
     ss << "      for (short i = 0; i < MFA_TQ; i++) {\n";
     ss << "        const int row = qb * MFA_BQ + p->qL_off + tm + sm + i * 8;\n";

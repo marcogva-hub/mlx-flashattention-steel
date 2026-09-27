@@ -37,9 +37,18 @@ namespace mlx_mfa {
 /// mfa_steel_fwd_v2.cpp (V2 single-pass + split-K + D-split).  `tile_idx_var`
 /// is the kernel's Q-tile loop variable ("qb" or "(int)q_tile_id"); the kernels
 /// expose `p->qL_off` and the `MFA_BQ`/`MFA_BK` tile constants.
-inline std::string mfa_causal_mask_zone_gate(const char* tile_idx_var) {
+///
+/// R7 sibling audit (review 2026-09): the RC-A fix reached only V1/V2.  STEEL V3,
+/// Sage, paged-varlen, paged-varlen-TQ and the STEEL backward still emitted the
+/// old heuristic — V3 / paged-varlen / paged-varlen-TQ / Sage were silently wrong
+/// (future-key leak) for qL_off % BK != 0.  Every live causal zone now goes
+/// through this helper; `qloff_expr` names the kernel's qL_off (the paged-varlen
+/// kernels use a per-sequence local `qL_off`).  Locked by
+/// tests/test_r7_causal_zone_siblings.py.
+inline std::string mfa_causal_mask_zone_gate(const char* tile_idx_var,
+                                             const char* qloff_expr = "p->qL_off") {
     return std::string("    if (kb >= ((") + tile_idx_var
-         + " * MFA_BQ + p->qL_off) / MFA_BK)) {\n";
+         + " * MFA_BQ + " + qloff_expr + ") / MFA_BK)) {\n";
 }
 
 /// Parameters passed from C++ to the Metal kernel.
