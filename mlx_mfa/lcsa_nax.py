@@ -347,7 +347,7 @@ SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is stru
 SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
 
-def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool:
+def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None) -> bool:
     """Return whether the exact β3-measured sparse region routes to V6NAX.
 
     Unmeasured B·H values and causal cells are deliberately not interpolated.
@@ -361,6 +361,13 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False) -> bool
         return False
     D = int(Q.shape[3])
     if D not in SPARSE_NAX_VIABLE_HEAD_DIMS:
+        return False
+    # API-04 (review 2026-09): the NAX kernel requires V to share Q/K's head_dim,
+    # dtype and K's length (C++ raises "head_dim mismatch" otherwise).  A V the
+    # kernel cannot serve (e.g. documented-valid asymmetric D_v) takes the SDPA
+    # route instead of crashing.  V=None keeps the historical Q/K-only decision.
+    if V is not None and (int(V.shape[3]) != D or V.dtype != Q.dtype
+                          or int(V.shape[2]) != int(K.shape[2])):
         return False
     qL, kL = int(Q.shape[2]), int(K.shape[2])
     if qL != kL or qL > SPARSE_NAX_MAX_N:
@@ -546,7 +553,7 @@ def sparse_attention_dispatch(
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
     if ((not _force_sdpa)
-            and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal)
+            and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
             and density < density_threshold):
         return sparse_attention_nax(
             Q, K, V, block_mask,

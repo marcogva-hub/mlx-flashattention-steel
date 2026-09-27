@@ -3933,7 +3933,7 @@ def flash_attention_sparse(
                         from mlx_mfa.lcsa_nax import _nax_sparse_route_viable
                         _route_nax = (
                             _nax_sparse_route_viable(
-                                q, k, bt_q, _density, causal=causal)
+                                q, k, bt_q, _density, causal=causal, V=v)
                             and _density <= _nax_sparse_density_ceiling()
                         )
                         if not _route_nax:
