@@ -1062,8 +1062,8 @@ def flash_attention(
     # failures).  The old comment claiming "MFA handles the cast internally"
     # was wrong.  Cast K/V to q.dtype BEFORE any dispatch so every downstream
     # path (MFA kernel, SDPA fallback — which also NaNs on mixed dtypes) sees
-    # uniform dtypes.  Detection happens first so the documented mixed-dtype
-    # MFA routing below is preserved.
+    # uniform dtypes.  (R1, review 2026-09: after the cast a mixed call is
+    # routed exactly like the uniform-dtype call — no forced MFA routing.)
     _mixed_dtype = (k.dtype != q.dtype or v.dtype != q.dtype)
     if _mixed_dtype:
         k = k.astype(q.dtype)
@@ -1078,64 +1078,64 @@ def flash_attention(
         if _should_use_mfa_fn is None:
             from mlx_mfa.dispatch_policy import should_use_mfa as _fn
             _should_use_mfa_fn = _fn
-        # Mixed-dtype inputs (q f32 + k/v f16) bypass smart dispatch and route
-        # to MFA (documented behavior).  K/V were already cast to q.dtype
-        # above (III-4 PASS1-REGRESSION FIX) — the kernel now sees uniform
-        # dtypes; this branch only preserves the historical routing decision.
-        if _mixed_dtype:
-            use_mfa = True
-        else:
-            _is_m3 = _get_is_m3_plus_cached()
-            _has_nax = _get_has_nax_cached()
-            _kv_len = k.shape[2]
-            # Repo review 2026-05: `should_use_mfa` reads dispatch-steering
-            # env vars at call time (MFA_FORCE_SDPA_ROUTE, MFA_DISABLE_SDPA_ROUTE,
-            # MFA_FORCE_D256_PATH, MFA_FORCE_D512_PATH, MFA_FORCE_SPLITK).
-            # They MUST participate in the cache key or a mid-process env
-            # mutation (ubiquitous in tests; possible in user scripts) returns
-            # the stale pre-mutation decision for any already-seen shape.
-            # Five dict lookups (~0.3µs) are negligible vs the Metal dispatch.
-            _env_key = (
-                get_bool_env("MFA_FORCE_SDPA_ROUTE", default=None),
-                get_bool_env("MFA_DISABLE_SDPA_ROUTE", default=None),
-                get_bool_env("MFA_FORCE_D256_PATH", default=None),
-                get_bool_env("MFA_FORCE_D512_PATH", default=None),
-                # MFA_FORCE_SPLITK is consumed by the C++ split-K routing,
-                # not by should_use_mfa — kept in the key defensively so a
-                # future Python-side read cannot silently go stale.
-                get_bool_env("MFA_FORCE_SPLITK", default=None),
-                # Campaign 2026-06 Sprint A (A-5): the custom dispatch
-                # table is a DOCUMENTED runtime override; its path must
-                # invalidate cached decisions when it changes.
-                os.environ.get("MLX_MFA_DISPATCH_TABLE"),
+        # R1/DSP-09 (review 2026-09): mixed-dtype inputs used to bypass smart
+        # dispatch here (`use_mfa = True`), which sent q-fp32 calls to the legacy
+        # fp32 primitive (top-left causal: silently wrong for causal N<S, incl.
+        # N=1 decode) and mixed f16/bf16 calls to STEEL instead of SDPA/NAX.  K/V
+        # are already cast to q.dtype above, so a mixed call now routes EXACTLY
+        # like the same call with uniform dtype (locked by
+        # tests/test_r1_fp32_mixed_legacy_primitive.py).
+        _is_m3 = _get_is_m3_plus_cached()
+        _has_nax = _get_has_nax_cached()
+        _kv_len = k.shape[2]
+        # Repo review 2026-05: `should_use_mfa` reads dispatch-steering
+        # env vars at call time (MFA_FORCE_SDPA_ROUTE, MFA_DISABLE_SDPA_ROUTE,
+        # MFA_FORCE_D256_PATH, MFA_FORCE_D512_PATH, MFA_FORCE_SPLITK).
+        # They MUST participate in the cache key or a mid-process env
+        # mutation (ubiquitous in tests; possible in user scripts) returns
+        # the stale pre-mutation decision for any already-seen shape.
+        # Five dict lookups (~0.3µs) are negligible vs the Metal dispatch.
+        _env_key = (
+            get_bool_env("MFA_FORCE_SDPA_ROUTE", default=None),
+            get_bool_env("MFA_DISABLE_SDPA_ROUTE", default=None),
+            get_bool_env("MFA_FORCE_D256_PATH", default=None),
+            get_bool_env("MFA_FORCE_D512_PATH", default=None),
+            # MFA_FORCE_SPLITK is consumed by the C++ split-K routing,
+            # not by should_use_mfa — kept in the key defensively so a
+            # future Python-side read cannot silently go stale.
+            get_bool_env("MFA_FORCE_SPLITK", default=None),
+            # Campaign 2026-06 Sprint A (A-5): the custom dispatch
+            # table is a DOCUMENTED runtime override; its path must
+            # invalidate cached decisions when it changes.
+            os.environ.get("MLX_MFA_DISPATCH_TABLE"),
+        )
+        # NOT in the key (verified 2026-06-20, by design — not a bug):
+        # MFA_DISABLE/ENABLE_V6_BACKWARD. `should_use_mfa` reads NO env
+        # (it is env-pure given its args), so those knobs cannot change
+        # the value cached here. They are read LIVE downstream — by the
+        # (uncached) `_v6nax_backward_carveout` in the `if not use_mfa`
+        # branch below, and by `_v6nax_eligible` inside the backward vjp —
+        # so toggling them mid-process flips the backward path with no
+        # staleness (proven by tests/test_backward_routing_snapshot.py,
+        # which toggles them on identical shapes within one process).
+        # Adding them here would be dead weight.
+        _cache_key = (
+            head_dim, q.shape[2], _kv_len, q.shape[1], k.shape[1], causal,
+            _is_m3, _has_nax, q.dtype, window_size, False, _env_key,
+        )
+        _cached = _dispatch_decision_cache.get(_cache_key)
+        if _cached is None:
+            _cached = _should_use_mfa_fn(
+                head_dim, q.shape[2], causal, _is_m3,
+                dtype=q.dtype, kv_seq_len=_kv_len,
+                window_size=window_size, sparse=False, backend=backend,
+                has_nax=_has_nax, num_q_heads=q.shape[1],
+                num_kv_heads=k.shape[1],
             )
-            # NOT in the key (verified 2026-06-20, by design — not a bug):
-            # MFA_DISABLE/ENABLE_V6_BACKWARD. `should_use_mfa` reads NO env
-            # (it is env-pure given its args), so those knobs cannot change
-            # the value cached here. They are read LIVE downstream — by the
-            # (uncached) `_v6nax_backward_carveout` in the `if not use_mfa`
-            # branch below, and by `_v6nax_eligible` inside the backward vjp —
-            # so toggling them mid-process flips the backward path with no
-            # staleness (proven by tests/test_backward_routing_snapshot.py,
-            # which toggles them on identical shapes within one process).
-            # Adding them here would be dead weight.
-            _cache_key = (
-                head_dim, q.shape[2], _kv_len, q.shape[1], k.shape[1], causal,
-                _is_m3, _has_nax, q.dtype, window_size, False, _env_key,
-            )
-            _cached = _dispatch_decision_cache.get(_cache_key)
-            if _cached is None:
-                _cached = _should_use_mfa_fn(
-                    head_dim, q.shape[2], causal, _is_m3,
-                    dtype=q.dtype, kv_seq_len=_kv_len,
-                    window_size=window_size, sparse=False, backend=backend,
-                    has_nax=_has_nax, num_q_heads=q.shape[1],
-                    num_kv_heads=k.shape[1],
-                )
-                if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
-                    _dispatch_decision_cache.clear()
-                _dispatch_decision_cache[_cache_key] = _cached
-            use_mfa = _cached
+            if len(_dispatch_decision_cache) >= _DISPATCH_CACHE_MAX:
+                _dispatch_decision_cache.clear()
+            _dispatch_decision_cache[_cache_key] = _cached
+        use_mfa = _cached
     elif backend == "sdpa":
         # v2.32.0 fix: backend="sdpa" must force use_mfa=False (was previously
         # routing to MFA for D∈{64,128,256,512} because `use_mfa = _mfa_capable`
@@ -1271,6 +1271,30 @@ def flash_attention(
             _dtrace.record("sdpa", "window f32 masked-sdpa fallback")
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=scale, mask=mask)
+
+    # R1 / CRIT-02 (review 2026-09, P0): fp32 NEVER reaches the MFA primitive.
+    # The primitive's fp32 path is the legacy ccv kernel (csrc/mfa_attention.cpp
+    # dtype_code==2): no causal qL_off (top-left -> silently wrong for causal N<S),
+    # no softcap, ~2.6e-3 precision.  fp32 can still arrive here with use_mfa=True
+    # (return_lse on an "MFA-capable" shape, legacy thresholds under
+    # MFA_DISABLE_SDPA_ROUTE, forced-D256/D512 knobs) — alibi and window already
+    # took their own fp32 SDPA-class fallbacks above.  Serve the rest exactly:
+    if q.dtype == mx.float32:
+        if return_lse:
+            if softcap != 0.0:
+                raise ValueError(
+                    "flash_attention(return_lse=True) does not support softcap "
+                    "(the LSE paths would silently drop it). Compute LSE separately.")
+            # zero_clamp=True keeps this route's N>S semantics unchanged (the ccv
+            # kernel was top-left = NAMING.md zero-clamp there); N>S convention is
+            # pending decision R1'/CRIT-01 — N<=S is plain bottom-right (SDPA).
+            _dtrace.record("sdpa", "fp32 return_lse -> exact fp32 SDPA+LSE (never the legacy primitive)")
+            return _fallback_sdpa_with_lse(q, k, v, scale, causal, zero_clamp=True)
+        if softcap != 0.0:
+            _dtrace.record("sdpa", "fp32 softcap -> SDPA softcap reference")
+            return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
+        _dtrace.record("sdpa", "fp32 -> SDPA (never the legacy primitive)")
+        return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # Track FX-1: return_lse — use mfa_forward_with_lse to get L for free.
     # D.5: contiguity is now enforced inside mfa_forward_with_lse C++ binding.
@@ -6340,6 +6364,7 @@ def _fallback_sdpa_with_lse(
     v: mx.array,
     scale: float,
     causal: bool,
+    zero_clamp: bool = False,
 ) -> tuple:
     """Compute SDPA + logsumexp via pure-MLX ops.
 
@@ -6369,10 +6394,15 @@ def _fallback_sdpa_with_lse(
     sdpa_mask = None
     if causal:
         N, S = q.shape[2], k.shape[2]
-        # Build causal mask once in float32; reuse (cast) for SDPA
+        # Build causal mask once in float32; reuse (cast) for SDPA.  Offset S-N
+        # (bottom-right).  `zero_clamp` (R1, review 2026-09) uses NAMING.md's
+        # max(0, S-N) instead — identical for N<=S; for N>S it keeps the fp32
+        # return_lse route's pre-existing top-left semantics (N>S convention is
+        # pending decision R1'/CRIT-01, so no route changes it here).
+        _off = max(0, S - N) if zero_clamp else S - N
         cmask_f32 = mx.triu(
             mx.full((N, S), float("-inf"), dtype=mx.float32),
-            k=S - N + 1,
+            k=_off + 1,
         )
         scores = scores + cmask_f32
         sdpa_mask = cmask_f32.astype(q.dtype)

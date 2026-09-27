@@ -10883,7 +10883,11 @@ class TestSmartDispatch:
         )).item()) == 0.0
 
     def test_mixed_dtype_routes_mfa(self):
-        """Mixed-dtype (f32 Q + f16 K/V) always routes to MFA, not SDPA (NaN guard)."""
+        """Mixed-dtype (f32 Q + f16 K/V) is correct and finite (NaN guard).
+
+        R1 (review 2026-09): it no longer force-routes to MFA — after the k/v cast
+        it routes exactly like the uniform-dtype call (fp32 -> SDPA); see
+        tests/test_r1_fp32_mixed_legacy_primitive.py for the routing locks."""
         import mlx.core as mx
         from mlx_mfa import flash_attention, is_mfa_available
         if not is_mfa_available():

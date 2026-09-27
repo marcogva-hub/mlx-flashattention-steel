@@ -278,10 +278,20 @@ NB_MODULE(_ext, m) {
           throw std::invalid_argument("mfa_forward_with_lse: head_dim must be 64, 128, or 256");
         if (q.dtype() != k.dtype() || q.dtype() != v.dtype())
           throw std::invalid_argument("mfa_forward_with_lse: q, k, v must share dtype");
-        // volet K2 (R2): NO f16/bf16-only check — the dense MFAttention primitive
-        // supports float32 (the return_lse path upcasts mixed dtypes to f32 and
-        // calls this entry). R2 is verify-only; "f32 no-raise" was correct, not a
-        // gap. (HARD GUARD: enumerate the valid space — f32 IS valid here.)
+        // volet K2 (R2): NO blanket f16/bf16-only check — float32 stays valid on
+        // this raw expert entry EXCEPT in the domain below.
+        // R1/CRIT-02 (review 2026-09, P0): the float32 path is the legacy ccv kernel
+        // (mfa_attention.cpp dtype_code==2), whose MFAParams carry NO causal qL_off:
+        // causal N<S is top-left aligned = silently wrong (err ~3). The public
+        // flash_attention no longer routes fp32 here; refuse the domain at the
+        // source so no raw caller can reach it either (Rule 8).
+        if (q.dtype() == mlx::core::float32 && causal && q.shape(2) < k.shape(2))
+          throw std::invalid_argument(
+              "mfa_forward_with_lse: float32 with causal=True and N_q < N_k is not "
+              "supported — the float32 (legacy) kernel has no causal offset (top-left "
+              "alignment), which is silently wrong for N_q < N_k. Use "
+              "flash_attention(..., backend='auto', return_lse=True) (exact fp32 SDPA "
+              "+ LSE) or cast q/k/v to float16/bfloat16.");
         auto s = mlx::core::default_stream(mlx::core::Device::gpu);
         // D.5: enforce row-major layout; no-op when already contiguous.
         auto qc = mlx::core::contiguous(q, false, s);
