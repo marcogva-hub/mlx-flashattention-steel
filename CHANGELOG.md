@@ -2,6 +2,104 @@
 
 All notable changes to mlx-mfa are documented here.
 
+## [2.62.2] — 2026-09-28
+
+Correctness patch release from the 2026-09 code review. **Upgrade recommended for every
+2.x user.** It fixes six published P0 root causes (silently wrong output or gradients),
+plus three more P0 kernel sites found by auditing the siblings of one of them. No new
+feature and no public signature change. There is one deliberate behaviour change: the
+causal convention for N_q > N_kv, under *Changed*. The native build now declares
+`mlx>=0.31.2,<=0.32.2`.
+
+### Advisory — published P0 root causes
+"Introduced" means the first release containing the defective site, found with `git log -S`
+on that site. Entries marked "reachable since" also depended on a later routing change.
+
+| Root | Affected entries | Condition | Symptom | Introduced |
+|---|---|---|---|---|
+| R1 | `flash_attention` (auto); inherited by `flash_attention_speculative_verify` and `flash_attention_paged(return_lse=True)` | causal, N<S (incl. decode N=1), with fp32 Q and f16/bf16 K/V, or fp32 with `return_lse=True` | the legacy fp32 MFA primitive ran with top-left causal alignment; output wrong (max err 2.8–3.4) | 2.0.0 (`return_lse`), 2.5.2 (mixed dtype) |
+| R2 | `flash_attention(attn_bias=...)` | decode route (N≤4, S≥256); STEEL V3 route (causal D=64 N≥4096 B·H≥4, M5; D=128 N≥2048 on M1/M2) | bias silently ignored, unbiased attention returned | 2.27.0 (native `attn_bias`); the 2.50 fix covered only the V1 route |
+| R4 | `flash_attention_sparse`, D=128, masks from the library makers | N not a multiple of 32 (N ≲ 1000), no `auto_pad` | key tile mis-sized at expansion, so the mask covered the wrong keys (err 1.8) | reachable since 2.58.0 (32×32 D=128 tiles) |
+| R5 | `mx.grad` through `flash_attention_sparse` (M5 NAX route, default and V6 hybrid) | a block-mask row that is entirely False | dK/dV entirely NaN (the forward was finite) | reachable since 2.58.0 |
+| R6 | `flash_attention_sparse` | block mask mutated in place between two calls | the stale cached mask was reused | 2.33.1 |
+| R7 | `sage_attention` causal 1<N<S; **STEEL V3** (`backend="mfa"`, auto on M1–M4); **`flash_attention_paged_varlen`** (default route, heterogeneous `q_lens`); **`flash_attention_paged_varlen_turboquant`** | causal with a query offset not aligned to the K tile | queries saw up to BK−1 future keys (err 0.1–1.6 vs oracle; TurboQuant: output moved up to 7.8 when only future keys changed) | the exact causal-zone fix of 2.14.1 reached STEEL V1/V2/paged only: Sage since 1.2.0, V3 since 2.7.0 (auto M1/M2 since 2.20.0), paged-varlen fused since 2.14.1, TurboQuant paged-varlen since 2.22.0 |
+
+Every live kernel now applies the exact causal zone: the shared helper `mfa_causal_mask_zone_gate`
+is used by V1, V2, flash-decode, Sage, V3, the backward, paged-varlen and TurboQuant, and the
+paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by a test that fails on 2.62.1: `tests/test_r1_*`, `test_r2_*`,
+`test_phase3_iii4_d7_mask_tiling.py`, `test_r5_*`, `test_r6_*`, `test_r7_*`.
+
+### Changed
+- **Causal attention with N_q > N_kv — one convention everywhere** (CRIT-01, maintainer
+  decision). Every entry now uses the canonical `NAMING.md` rule, *bottom-right-aligned,
+  zero-clamped*: key j is visible to row i iff `j <= i + max(0, S - N)`.
+  - For N ≤ S this is identical to SDPA `mask="causal"`.
+  - For N > S every row sees at least one key. This **deliberately differs** from
+    `mx.fast.scaled_dot_product_attention(mask="causal")`.
+  - Before 2.62.2, the default route of `flash_attention` followed SDPA, while
+    `return_lse=True`, `backend="mfa"`, varlen and paged clamped. As a result,
+    `return_lse=True` changed the output (by about 2.7), and several backward legs used
+    SDPA's rule even when the forward clamped.
+  - Now `flash_attention` equals `flash_attention_varlen` with one segment, forward and
+    backward. The `sparse_attention_dispatch` SDPA route (causal, Q shorter than K) and
+    the paged backward (N_q > kv_len) follow the same rule.
+- **Sliding window with N ≠ S** (R3): the window anchor no longer depends on dtype. The
+  fp32 fallback and `return_attn_weights=True` now match the f16/bf16 kernels.
+- **AOT metallib cache** (`~/.mlx_mfa/metallib`, R8): file names are content-addressed,
+  from the geometry, the package version and an FNV-1a-64 hash of the generated source.
+  A stale file from an older release can no longer be served in place of the current
+  kernel.
+
+### Fixed
+- **MLX 0.32.1 / 0.32.2 builds** (BLD-01/BLD-10): MLX 0.32.2 maps to nanobind v2.15.0.
+  pip's build isolation resolves the newest MLX, so `mlx` is capped at `<=0.32.2`, and an
+  unmapped MLX version is now a configure-time error.
+- **fp32 and mixed dtypes** never reach the legacy MFA primitive (R1). `mfa_forward_with_lse`
+  refuses fp32 causal N<S at the source.
+- `attn_bias` is no longer dropped when `MFA_DISABLE_V2=1` routes to V1 (MSL-06).
+- `patch_mlx_lm` and `flash_attention(D=512, window_size=... | return_lse=True)` no longer
+  crash (CRIT-04).
+- `flash_attention_sparse` with an asymmetric value head dim (D_v ≠ D) takes the SDPA route
+  instead of crashing on the NAX kernel (API-04).
+- `mx.grad` through `flash_attention_sparse` / `sparse_attention_dispatch` with a block mask
+  computed from the differentiated inputs no longer raises "[async_eval] Not allowed inside
+  a graph transformation" (NEPB-05).
+- The sparse bias caches are keyed by mask content (CRC32, about 0.4 ms for a 20 MB mask)
+  and head_dim, not by `id(mask)` (R6, DOC-06).
+- The opt-in V6 hybrid sparse backward (`MFA_ENABLE_V6_BACKWARD=1`) states its 2-D
+  block-mask contract explicitly. Its unreachable cross-head `.any()` union was removed;
+  per-head masks keep taking the default wrapper and get per-head gradients.
+- CI: the no-extension and sdist jobs are green again. `_ext`-dependent modules are no
+  longer collected without the extension, the installed package (not the checkout) is
+  imported, and a fresh-venv install with default build isolation was added.
+
+### Removed
+- The precompiled `async_v2.metallib` and its loader, and the `MFA_DISABLE_ASYNC` and
+  `MFA_IR_INVESTIGATE` knobs. The async path was byte-identical to the synchronous one
+  (BLD-04/BLD-08). The historical source stays in the repository.
+- The test classes of the STEEL V4/V5 kernels that were already removed from the build:
+  47 cells that could only ever be skipped.
+
+### Packaging
+- The published artifacts (sdist and the wheel built from it) no longer ship dev-only
+  files; they stay in the repository:
+  - the historical async_v2 source;
+  - the `MFA_BUILD_PROBES` probe sources and their probe-only test;
+  - three campaign scripts;
+  - `mlx_mfa/gqa_decode_cider.py` and `mlx_mfa/topk_stream.py` with their tests. No
+    routing path ever used either module.
+- The publication guard checks the built sdist **per file** against the tracked tree, and
+  inspects a real wheel.
+
+### Known issues (found during remediation, not fixed in 2.62.2)
+- `flash_attention_paged`: with **non-contiguous** page pools (for example a transposed
+  view), the forward is correct but the gradients are wrong. Pass contiguous pools
+  (`mx.contiguous(pool)`).
+- Sliding windows that contain no key return NaN (MSL-05).
+- Numerical floor: MLX fp32 on the M5 GPU is about 2–2.5e-3 away from a CPU fp32 oracle,
+  and plain SDPA shows the same gap. fp32 correctness tests therefore compare against a
+  CPU oracle.
+
 ## [2.62.1] — 2026-08-03
 
 Patch release. The **only code change** is one opt-in, default-off conv3d allowlist entry
