@@ -533,7 +533,11 @@ def sparse_attention_dispatch(
 
     if density is None:
         d_arr = mx.mean(block_mask.astype(mx.float32))
-        mx.async_eval(d_arr); mx.synchronize()
+        # NEPB-05 (review 2026-09): async_eval is forbidden inside a graph
+        # transformation (mask derived from differentiated inputs); the synchronous
+        # read below is allowed there.
+        from mlx_mfa.attention import _try_materialize
+        _try_materialize(d_arr)
         density = float(d_arr)
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])

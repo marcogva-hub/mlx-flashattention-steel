@@ -5143,6 +5143,24 @@ def _sparse_fallback_sdpa(
     return mx.where(row_active, out, mx.zeros_like(out))
 
 
+def _try_materialize(*arrays: mx.array) -> bool:
+    """NEPB-05 (review 2026-09): eagerly materialize arrays that are about to be
+    CACHED — unless we are inside an MLX graph transformation (mx.grad / vjp / vmap /
+    compile), where ``mx.async_eval`` is forbidden and caching a traced array would
+    also leak the tracer into a global cache.  Returns True when materialized, False
+    inside a transformation (the caller must then skip its cache).  Only that exact
+    MLX error is handled; anything else propagates (Rule 8).
+    """
+    try:
+        mx.async_eval(*arrays)
+    except ValueError as e:
+        if "graph transformation" in str(e):
+            return False
+        raise
+    mx.synchronize()
+    return True
+
+
 def _mask_content_key(block_mask: mx.array) -> int:
     """R6/NEPB-04 (review 2026-09): content component of the sparse-cache keys.
 
@@ -5234,8 +5252,11 @@ def _get_or_build_expanded_float_bias(
     neg_inf = mx.array(float("-inf"), dtype=target_dtype)
     zero = mx.array(0.0, dtype=target_dtype)
     float_bias = mx.where(expanded, zero, neg_inf)
-    # Materialize so subsequent cache hits pay zero compute.
-    mx.async_eval(float_bias); mx.synchronize()
+    # Materialize so subsequent cache hits pay zero compute.  Inside a graph
+    # transformation (mask derived from differentiated inputs) skip the cache and
+    # return the graph-safe array (NEPB-05).
+    if not _try_materialize(float_bias):
+        return float_bias
 
     # LRU-bounded eviction (insertion-order dict).
     if len(_SPARSE_BIAS_CACHE) >= _SPARSE_BIAS_CACHE_MAX:
@@ -5338,7 +5359,8 @@ def _get_sanitized_bias(
         return cached[1]
     sanitized = mx.where(
         row_active, float_bias, mx.array(0.0, dtype=float_bias.dtype))
-    mx.async_eval(sanitized); mx.synchronize()
+    if not _try_materialize(sanitized):   # NEPB-05: no caching under a transformation
+        return sanitized
     if len(_SPARSE_SANITIZED_BIAS_CACHE) >= _SPARSE_SANITIZED_BIAS_CACHE_MAX:
         _SPARSE_SANITIZED_BIAS_CACHE.pop(next(iter(_SPARSE_SANITIZED_BIAS_CACHE)))
     _SPARSE_SANITIZED_BIAS_CACHE[cache_key] = (block_mask, sanitized)
