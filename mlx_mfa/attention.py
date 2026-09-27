@@ -3202,6 +3202,25 @@ def flash_attention_kvcache(
 # ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=64)
+def _sanitize_empty_rows_graph(float_bias: mx.array):
+    """R5/NEPB-03 (review 2026-09): graph-safe empty-row sanitization for the
+    SDPA-vjp backward legs of the sparse NAX routes.
+
+    A query row whose bias is -inf everywhere (all-False block-mask row, possibly
+    combined with causal) makes softmax NaN; through P^T that NaN poisons every
+    column of dK/dV.  The NAX forward writes 0 for such a row (II-6 contract), so
+    the matching backward is: finite bias on the row (any value; 0 here) AND the
+    row's output forced to 0 — its cotangent is then 0 and contributes nothing.
+    Uses graph ops only (no eval / async_eval): safe inside mx.vjp, unlike
+    `_get_sparse_row_active` / `_get_sanitized_bias` (host-side, cached).
+
+    Returns ``(sanitized_bias, row_active)`` with ``row_active`` shaped
+    ``[..., N, 1]`` (broadcasts against ``[B, H, N, D]``).
+    """
+    row_active = mx.any(float_bias > float("-inf"), axis=-1, keepdims=True)
+    return mx.where(row_active, float_bias, mx.zeros_like(float_bias)), row_active
+
+
 def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
     """v2.50 Prompt 5a Section C: cached custom_function wrapping
     M5+ symmetric-bt sparse forward (NAX kernel, Sprint 1 win) with
@@ -3262,10 +3281,13 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
             )
             float_bias = float_bias + causal_m
+        # R5/NEPB-03: empty rows -> finite bias + zero output (forward contract).
+        float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
 
         def _sdpa_ref(q_, k_, v_):
-            return mx.fast.scaled_dot_product_attention(
+            o_ = mx.fast.scaled_dot_product_attention(
                 q_, k_, v_, scale=scale, mask=float_bias)
+            return mx.where(row_active, o_, mx.zeros_like(o_))
 
         _, (dQ, dK, dV) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
         # The vjp signature must return one cotangent per primal; block_mask
@@ -3540,10 +3562,13 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
             causal_m = mx.triu(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1)
             float_bias = float_bias + causal_m
+        # R5/NEPB-03 (hybrid dQ/dK leg): same empty-row sanitization.
+        float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
 
         def _sdpa_ref(q_, k_, v_):
-            return mx.fast.scaled_dot_product_attention(
+            o_ = mx.fast.scaled_dot_product_attention(
                 q_, k_, v_, scale=scale, mask=float_bias)
+            return mx.where(row_active, o_, mx.zeros_like(o_))
 
         _, (dQ_sdpa, dK_sdpa, _dV_sdpa) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
 
@@ -4130,13 +4155,17 @@ def _make_mfa_sparse_custom(
                 mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
             )
             float_mask = float_mask + causal_m
-        _, (dQ, dK, dV) = mx.vjp(
-            lambda q, k, v: mx.fast.scaled_dot_product_attention(
-                q, k, v, scale=scale, mask=float_mask
-            ),
-            [q, k, v],
-            [dO],
-        )
+        # R5 sibling (review 2026-09): the STEEL sparse forward writes 0 for an
+        # empty row; an unsanitized all -inf bias row made this SDPA-vjp leg NaN
+        # and poisoned every dK/dV column. Same fix as the NAX legs.
+        float_mask, row_active = _sanitize_empty_rows_graph(float_mask)
+
+        def _sdpa_rows(q_, k_, v_):
+            o_ = mx.fast.scaled_dot_product_attention(
+                q_, k_, v_, scale=scale, mask=float_mask)
+            return mx.where(row_active, o_, mx.zeros_like(o_))
+
+        _, (dQ, dK, dV) = mx.vjp(_sdpa_rows, [q, k, v], [dO])
         return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
 
     return _impl
@@ -5083,14 +5112,16 @@ def _sparse_fallback_sdpa(
             mx.full((N, S), float("-inf"), dtype=q.dtype), k=S - N + 1
         )
         float_bias = float_bias + causal_m
-    out = mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=float_bias
-    )
     # III-4 pass-4 (F1/F2 class closure): the M5+ perhead path sanitizes
     # empty rows (II-6 `_get_sanitized_bias`); this no-ext fallback did
     # not.  Zero fully-masked rows so all sparse forward paths share the
-    # empty-row -> zeros contract.
-    row_active = (mx.max(float_bias, axis=-1, keepdims=True) >= 0)
+    # empty-row -> zeros contract.  R5 sibling (review 2026-09): the bias row
+    # itself must be finite too — zeroing only the OUTPUT left SDPA's backward
+    # recomputing P = NaN on that row (0 * NaN = NaN), poisoning dK/dV.
+    float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
+    out = mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=scale, mask=float_bias
+    )
     return mx.where(row_active, out, mx.zeros_like(out))
 
 
