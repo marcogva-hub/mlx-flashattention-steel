@@ -198,10 +198,13 @@ jobs:
           SDIST=$(ls dist/*.tar.gz)
           echo "Checking: $SDIST"
 
-          # Must contain the Metal kernel source
-          tar tzf "$SDIST" | grep "async_v2_kernel.metal" \
-            && echo "✅ async_v2_kernel.metal found" \
-            || echo "❌ async_v2_kernel.metal MISSING"
+          # 2.62.2 (A10): dev-only files are kept in the repo but never published
+          # (full per-file lock: tests/test_publish_surface_guard.py).
+          for member in async_v2_kernel.metal v6_nax_toolchain_probe.cpp gqa_decode_cider.py topk_stream.py; do
+            if tar tzf "$SDIST" | grep -q "/$member$"; then
+              echo "FATAL: dev-only $member shipped in the sdist"; exit 1
+            fi
+          done
 
           # Must contain C++ sources
           tar tzf "$SDIST" | grep "mfa_steel_fwd_v2.cpp" \

@@ -208,10 +208,21 @@ def test_coverage_completeness_surface_counts():
 
 # ── CC final-cert: close the matrix blind spot (the axes that hid M1/M2/M3) ───────
 # These cell-classes were COUNTED but not malformation-probed before the cert.
-import mlx_mfa.gqa_decode_cider as _gc
 from mlx_mfa.tq_decode import tq_decode_attend as _tqa, _packed_d as _pd
-from mlx_mfa.topk_stream import topk_stream_indices as _tki
 from mlx_mfa.runtime import create_decode_runtime as _cdr
+
+# 2.62.2 (A10): gqa_decode_cider / topk_stream are source-checkout-only (excluded
+# from the published package) — their cells run in a checkout, skip elsewhere.
+_CHECKOUT_ONLY = "source-checkout-only module (excluded from the published package)"
+
+
+def _site_counts(m):
+    """(published, dev-only) metal_kernel sites; dev-only must be all-or-nothing."""
+    sites = m.metal_kernel_sites()
+    n_dev = sum(1 for rel, _, _ in sites if rel in m.DEV_ONLY_MODULES)
+    pkg_root = pathlib.Path(mlx_mfa.__file__).parent.parent
+    present = all((pkg_root / p).exists() for p in m.DEV_ONLY_MODULES)
+    return len(sites) - n_dev, n_dev, (3 if present else 0)
 
 
 def _qd(h, n, d, dt=F16):
@@ -220,6 +231,7 @@ def _qd(h, n, d, dt=F16):
 
 # (1) JIT-kernel subset-derive malformation (the class that hid M1-CRITICAL).
 def test_jit_gqa_decode_cider_cross_check():
+    _gc = pytest.importorskip("mlx_mfa.gqa_decode_cider", reason=_CHECKOUT_ONLY)
     _gc.gqa_decode_cider(_qd(8, 1, 64), _qd(2, 256, 64), _qd(2, 256, 64), 0.125)  # valid runs
     with pytest.raises(ValueError):
         _gc.gqa_decode_cider(_qd(8, 1, 128), _qd(2, 256, 128), _qd(2, 256, 64), 0.125)  # q.D!=v.D
@@ -241,6 +253,7 @@ def test_jit_tq_decode_attend_cross_check():
 
 
 def test_jit_topk_stream_cross_check():
+    _tki = pytest.importorskip("mlx_mfa.topk_stream", reason=_CHECKOUT_ONLY).topk_stream_indices
     _tki(_qd(2, 32, 128), _qd(2, 256, 128), 0.1, 32)  # valid runs
     with pytest.raises(ValueError):
         _tki(_qd(2, 32, 128), _qd(2, 256, 64), 0.1, 32)   # k.D != q.D
@@ -318,7 +331,9 @@ def test_decoderuntime_paged_batch_atomic():
 def test_coverage_jit_kernels_malformation_probed():
     m = _load_enum()
     assert len(m.METAL_KERNELS) == 7            # logical registry
-    assert len(m.metal_kernel_sites()) == 9     # AST call-sites (conv = 3)
+    # AST call-sites (conv = 3): 6 published + 3 in the checkout-only modules
+    n_pub, n_dev, n_dev_expected = _site_counts(m)
+    assert (n_pub, n_dev) == (6, n_dev_expected), (n_pub, n_dev, n_dev_expected)
     assert len(m.metal_kernel_offenders()) == 0
     # the attention JIT kernels with a subset-derive risk MUST have a malformation cell
     probed = {"gqa_decode_cider", "tq_decode_attend", "topk_stream_indices"}

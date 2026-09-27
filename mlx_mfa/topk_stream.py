@@ -1,6 +1,7 @@
 """Approach-5 streaming top-K (campaign 2026-06 Sprint II-3) — **DECLINED**.
 
-INTERNAL module — not part of the public API (absent from ``mlx_mfa.__all__``);
+INTERNAL, SOURCE-CHECKOUT-ONLY module — not part of the public API (absent from
+``mlx_mfa.__all__``) and excluded from the published package since 2.62.2;
 retained for the record only. Do not import directly from user code.
 
 SPRINT II-3 VERDICT (2026-06-12, measured): the pre-registered kill

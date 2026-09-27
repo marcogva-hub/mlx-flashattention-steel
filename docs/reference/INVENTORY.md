@@ -27,7 +27,8 @@ quantized, Conv3D and backward primitives are compiled into one arm64 module.
 Metal source is mostly generated at runtime and cached by `ShaderCache`.
 
 Build-time probes are excluded unless CMake receives
-`-DMFA_BUILD_PROBES=ON`.
+`-DMFA_BUILD_PROBES=ON`, which needs a source checkout (the probe sources
+are not shipped in the sdist since 2.62.2).
 
 ## Tests and guards
 

@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 import tarfile
-import tempfile
+import zipfile
 from pathlib import Path
 import pytest
 
@@ -47,7 +47,8 @@ def _skip_or_fail(reason: str) -> None:
 # internal agent-process / sprint engineering docs, NOT user-facing — excluded from
 # the sdist (see pyproject [tool.scikit-build.sdist].exclude). Removed from this
 # allowlist so a future re-introduction would be flagged as a leak.
-_ALLOWED_ROOT_DOCS = {
+# (TST-15, review 2026-09: renamed — the tree guard below used to rebind the same name.)
+_ALLOWED_SDIST_ROOT_DOCS = {
     "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
     "CONTRIBUTING.md",
     "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",
@@ -55,7 +56,26 @@ _ALLOWED_ROOT_DOCS = {
 # Permitted top-level directories in the sdist (code + tests + scripts).
 _ALLOWED_TOP_DIRS = {"csrc", "mlx_mfa", "examples", "tests", "scripts"}
 # Permitted root files = the docs + build/metadata files sdist always emits.
-_ALLOWED_ROOT_FILES = _ALLOWED_ROOT_DOCS | {"CMakeLists.txt", "pyproject.toml", "PKG-INFO"}
+_ALLOWED_ROOT_FILES = _ALLOWED_SDIST_ROOT_DOCS | {"CMakeLists.txt", "pyproject.toml", "PKG-INFO"}
+# Files the sdist GENERATES (never tracked).
+_SDIST_GENERATED = {"PKG-INFO"}
+
+# 2.62.2 (review 2026-09, A10 — maintainer decision): per-FILE dev-only set — kept in
+# the repository, never published (sdist nor wheel).  Mirror of the per-file entries of
+# pyproject [tool.scikit-build.sdist].exclude (cross-checked below).
+_DEV_ONLY_FILES = (
+    # historical, not loaded (async_v2 retired in 2.62.2)
+    "csrc/async_v2_kernel.metal", "scripts/build_async_metallib.sh",
+    # compiled / runnable only with -DMFA_BUILD_PROBES=ON (BLD-14)
+    "csrc/mpp_int8_bench.mm", "csrc/v6_nax_primitives_probe.cpp",
+    "csrc/v6_nax_toolchain_probe.cpp", "tests/test_varlen_source_generation_guards.py",
+    # campaign / dev scripts (no shipped test imports them)
+    "scripts/audit_dispatch_grouping_k0.py", "scripts/audit_dit_dispatch.py",
+    "scripts/build_metallibs.sh",
+    # own kernels kept for the record, never wired into dispatch, + their tests
+    "mlx_mfa/gqa_decode_cider.py", "mlx_mfa/topk_stream.py",
+    "tests/test_phase2_ii11_gqa_decode_cider.py", "tests/test_phase2_ii3_topk_stream.py",
+)
 
 
 def _strip_prefix(name: str) -> str:
@@ -74,6 +94,9 @@ def _disallowed_members(members):
         rel = _strip_prefix(raw)
         if not rel or rel.endswith("/"):
             continue
+        if rel in _DEV_ONLY_FILES:
+            bad.append(rel)
+            continue
         parts = rel.split("/")
         top = parts[0]
         if top in _ALLOWED_TOP_DIRS:
@@ -90,23 +113,28 @@ def _disallowed_members(members):
 
 
 @pytest.fixture(scope="module")
-def _built_sdist_members():
-    """Build the real sdist into a temp dir (Rule 12 cleanup) and return its members."""
+def _built_sdist(tmp_path_factory):
+    """Build the real sdist into a module temp dir; return (tarball path, members)."""
     try:
         import build  # noqa: F401
     except Exception:
         _skip_or_fail("`build` not installed — cannot assert against the built sdist")
-    with tempfile.TemporaryDirectory() as td:
-        r = subprocess.run(
-            [sys.executable, "-m", "build", "--sdist", "-o", td],
-            cwd=_ROOT, capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            _skip_or_fail(f"sdist build failed (network/offline?):\n{r.stderr[-800:]}")
-        tars = list(Path(td).glob("*.tar.gz"))
-        assert tars, "no sdist tarball produced"
-        with tarfile.open(tars[0]) as t:
-            return t.getnames()
+    td = tmp_path_factory.mktemp("sdist")
+    r = subprocess.run(
+        [sys.executable, "-m", "build", "--sdist", "-o", str(td)],
+        cwd=_ROOT, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        _skip_or_fail(f"sdist build failed (network/offline?):\n{r.stderr[-800:]}")
+    tars = list(Path(td).glob("*.tar.gz"))
+    assert tars, "no sdist tarball produced"
+    with tarfile.open(tars[0]) as t:
+        return tars[0], t.getnames()
+
+
+@pytest.fixture(scope="module")
+def _built_sdist_members(_built_sdist):
+    return _built_sdist[1]
 
 
 def test_built_sdist_only_publication_surface(_built_sdist_members):
@@ -150,12 +178,97 @@ def test_sdist_guard_catches_a_synthetic_stray():
         "examples/y.py", "scripts/check_venv.sh", "docs/reference/INDEX.md",
     )]
     assert _disallowed_members(clean) == [], "sdist guard false-positived a clean member set"
+    assert _disallowed_members([pfx + f for f in _DEV_ONLY_FILES]) == list(_DEV_ONLY_FILES)
 
 
-def test_wheel_ships_only_the_package():
-    """The wheel must ship only the mlx_mfa package (no docs/devnotes in the wheel)."""
+# ── BLD-13 (review 2026-09): the sdist is checked PER FILE, not per directory ─────
+# The directory allowlist above let untracked scratch INSIDE csrc/ mlx_mfa/ tests/
+# scripts/ examples/ ship unflagged (scikit-build-core packs untracked, non-ignored
+# files).  Per file: every sdist member must be a tracked, publishable, non-dev-only
+# file (or sdist-generated), and every such tracked file must be in the sdist.
+def _per_file_diff(sdist_rels, tracked):
+    """-> (leaked, missing): sdist members not justified by the tracked tree, and
+    publishable tracked files absent from the sdist."""
+    expected = {p for p in tracked if not _disallowed_members(["x/" + p])}
+    actual = set(sdist_rels) - _SDIST_GENERATED
+    return sorted(actual - expected), sorted(expected - actual)
+
+
+def test_built_sdist_matches_tracked_tree_per_file(_built_sdist_members):
+    tracked = [p for p in _tracked_files() if (_ROOT / p).is_file()]
+    rels = [r for r in (_strip_prefix(m) for m in _built_sdist_members)
+            if r and not r.endswith("/")]
+    leaked, missing = _per_file_diff(rels, tracked)
+    assert not leaked, (
+        "the sdist ships files that are untracked or dev-only (git add/gitignore them, "
+        f"or exclude them in pyproject): {leaked[:25]}")
+    assert not missing, f"publishable tracked files missing from the sdist: {missing[:25]}"
+
+
+def test_dev_only_files_kept_in_repo_excluded_from_sdist(_built_sdist_members):
+    tracked = set(_tracked_files())
+    rels = {_strip_prefix(m) for m in _built_sdist_members}
+    text = _PYPROJECT.read_text(encoding="utf-8")
+    for f in _DEV_ONLY_FILES:
+        assert f in tracked, f"dev-only file must stay in the repository: {f}"
+        assert f not in rels, f"dev-only file shipped in the sdist: {f}"
+        assert f'"{f}"' in text, f"dev-only file not listed in pyproject sdist.exclude: {f}"
+
+
+def test_per_file_guard_catches_untracked_scratch():
+    """Self-test: untracked scratch inside an allowed dir and a dev-only file are
+    leaks; a tracked publishable file missing from the sdist is reported."""
+    tracked = ["csrc/a.cpp", "mlx_mfa/b.py", "README.md", "CLAUDE.md",
+               "mlx_mfa/topk_stream.py", "devnotes/x.md"]
+    sdist = ["csrc/a.cpp", "csrc/scratch_tmp.cpp", "mlx_mfa/topk_stream.py", "PKG-INFO"]
+    leaked, missing = _per_file_diff(sdist, tracked)
+    assert leaked == ["csrc/scratch_tmp.cpp", "mlx_mfa/topk_stream.py"], leaked
+    assert missing == ["README.md", "mlx_mfa/b.py"], missing
+
+
+def test_pyproject_wheel_packages_is_mlx_mfa_only():
+    """Static pre-check (the artifact itself is checked below)."""
     text = _PYPROJECT.read_text(encoding="utf-8")
     assert 'wheel.packages = ["mlx_mfa"]' in text, "wheel.packages changed — re-verify no journal in the wheel"
+
+
+# ── TST-15 (review 2026-09): inspect a REAL wheel, not a pyproject string ─────────
+# The release model is sdist-only: users get the wheel pip builds FROM the sdist, so
+# that is the wheel checked.  MFA_WHEEL_PATH=<wheel> inspects a given artifact; under
+# MFA_RELEASE_GATE the guard builds it from the built sdist itself; otherwise it skips
+# (compiling _ext takes minutes — too slow for the ordinary suite).
+@pytest.fixture(scope="module")
+def _real_wheel_members(request, tmp_path_factory):
+    path = os.environ.get("MFA_WHEEL_PATH")
+    if not path:
+        if os.environ.get("MFA_RELEASE_GATE") in (None, "", "0"):
+            pytest.skip("real-wheel check: set MFA_WHEEL_PATH=<wheel built from the sdist> "
+                        "(the release gate builds it itself)")
+        sdist_path = request.getfixturevalue("_built_sdist")[0]
+        td = tmp_path_factory.mktemp("wheel")
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+             "-w", str(td), str(sdist_path)], capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.fail(f"wheel build from the sdist failed:\n{r.stderr[-1500:]}")
+        wheels = list(Path(td).glob("*.whl"))
+        assert len(wheels) == 1, wheels
+        path = str(wheels[0])
+    with zipfile.ZipFile(path) as z:
+        return z.namelist()
+
+
+def test_real_wheel_ships_only_the_package(_real_wheel_members):
+    names = _real_wheel_members
+    dist_info = {n.split("/", 1)[0] for n in names if ".dist-info/" in n}
+    assert len(dist_info) == 1, dist_info
+    stray = [n for n in names if not (n.startswith("mlx_mfa/") or n.split("/", 1)[0] in dist_info)]
+    assert not stray, f"the wheel ships files outside the mlx_mfa package: {stray[:25]}"
+    dev = [f for f in _DEV_ONLY_FILES if f in names]
+    assert not dev, f"dev-only files shipped in the wheel: {dev}"
+    assert any(re.fullmatch(r"mlx_mfa/_ext\..*\.so", n) for n in names), "no compiled _ext in the wheel"
+    for required in ("mlx_mfa/__init__.py", "mlx_mfa/attention.py"):
+        assert required in names, f"package module missing from the wheel: {required}"
 
 
 # ── D-addendum: extend the guard from the WHEEL surface to the TRACKED REPO TREE ──
@@ -168,8 +281,9 @@ def test_wheel_ships_only_the_package():
 
 # A tracked DOC path is permitted only if it is a root current-state doc or lives
 # under docs/reference/.  Journal doc trees (devnotes/, docs/<anything-but-reference>)
-# are forbidden on the tracked tree.
-_ALLOWED_ROOT_DOCS = {
+# are forbidden on the tracked tree.  (Documentary: CLAUDE*.md are tracked but
+# sdist-excluded — contrast _ALLOWED_SDIST_ROOT_DOCS.)
+_ALLOWED_TREE_ROOT_DOCS = {
     "README.md", "CHANGELOG.md", "RESULTS.md", "ENV_VARS.md", "NAMING.md",
     "CLAUDE.md", "CLAUDE_V6_NAX.md", "CONTRIBUTING.md",
     "LICENSE", "LICENSE-DRAWTHINGS", "THIRD_PARTY_LICENSES",

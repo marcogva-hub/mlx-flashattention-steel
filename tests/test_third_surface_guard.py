@@ -29,7 +29,14 @@ def test_clean_state_no_offenders_and_counts():
     # Adapter.put surfaced by the P4 name-independent state-write detector.
     assert n_cm == 37, f"expected 37 computational class-methods, got {n_cm}"
     assert m.metal_kernel_offenders() == []
-    assert len(m.metal_kernel_sites()) == 9
+    # 6 published sites + 3 in the source-checkout-only modules (2.62.2, A10)
+    sites = m.metal_kernel_sites()
+    n_dev = sum(1 for rel, _, _ in sites if rel in m.DEV_ONLY_MODULES)
+    import mlx_mfa
+    from pathlib import Path
+    pkg_root = Path(mlx_mfa.__file__).parent.parent
+    present = all((pkg_root / p).exists() for p in m.DEV_ONLY_MODULES)
+    assert (len(sites) - n_dev, n_dev) == (6, 3 if present else 0), (len(sites), n_dev)
 
 
 def test_promotion_rule_property_complete():

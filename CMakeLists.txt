@@ -181,6 +181,11 @@ set(MFA_SOURCES
 # -DMFA_BUILD_PROBES=ON (default OFF), with the MFA_BUILD_PROBES macro defined so
 # the matching bindings in bindings.cpp compile in lockstep.
 if(MFA_BUILD_PROBES)
+  # 2.62.2: the probe sources are dev-only (excluded from the published sdist).
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/csrc/v6_nax_toolchain_probe.cpp")
+    message(FATAL_ERROR "MFA_BUILD_PROBES=ON needs a source checkout: the probe "
+                        "sources are not shipped in the sdist.")
+  endif()
   list(APPEND MFA_SOURCES
     csrc/v6_nax_toolchain_probe.cpp    # was v6_nax_probe.cpp (L4 rename): MSL4+MPP toolchain bring-up + DT-port compile
     csrc/v6_nax_primitives_probe.cpp   # was v6nax_probe.cpp  (L4 rename): NAX-direct (nax.h-inline) source-gen

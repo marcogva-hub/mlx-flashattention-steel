@@ -1,7 +1,10 @@
 """GQA-decode attention kernel ported from Mininglamp-AI/cider (Sprint II-11).
 
-INTERNAL module — not part of the public API (absent from ``mlx_mfa.__all__``).
-Use via the high-level decode/serving entry points, not by direct import.
+INTERNAL, SOURCE-CHECKOUT-ONLY module — not part of the public API (absent from
+``mlx_mfa.__all__``) and excluded from the published package since 2.62.2.  No
+decode/serving entry point routes to it: it is reachable only by direct import
+from a repository checkout.  Kept as the measured Op-H artifact (parity with
+MLX's ``sdpa_vector_2pass``, of which this kernel is effectively a port).
 
 Port of cider's v9 ``cider_sdpa_vector_2pass`` kernels (MIT License,
 Copyright (c) 2026 Mininglamp contributors — https://github.com/Mininglamp-AI/cider),

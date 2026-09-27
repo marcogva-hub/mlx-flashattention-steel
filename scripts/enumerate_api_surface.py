@@ -472,6 +472,11 @@ def class_method_offenders():
 # whose builder references `block_table` (a page-indexed load) MUST have
 # page_bounds == "guarded" (or "reviewed"); a NEW page-indexed kernel with no
 # record → fail. Seeded with the P0 six (+ conv excluded with reason).
+# 2.62.2 (A10): these package modules stay in the repository but are EXCLUDED from
+# the published package (pyproject sdist.exclude, per-file lock in
+# tests/test_publish_surface_guard.py) — their kernel sites exist only in a checkout.
+DEV_ONLY_MODULES = ("mlx_mfa/gqa_decode_cider.py", "mlx_mfa/topk_stream.py")
+
 METAL_KERNELS = {
     "mlx_mfa/tq_decode.py:_get_k_dequant_kernel": dict(
         category="decode", page_indexed=True, page_bounds="guarded",

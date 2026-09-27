@@ -163,4 +163,5 @@ variables are retained only in the removed-name validator.
 
 `MFA_BUILD_PROBES` is a CMake option, not an env var read by the
 runtime. It defaults to `OFF`. Enabling it adds V6 bring-up and int8/fp8
-microbenchmark symbols to `_ext`; production builds do not expose them.
+microbenchmark symbols to `_ext`; production builds do not expose them. It needs a
+source checkout: since 2.62.2 the probe sources are not shipped in the sdist.

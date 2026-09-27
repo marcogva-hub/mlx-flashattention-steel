@@ -62,11 +62,28 @@ wheel.packages = ["mlx_mfa"]
 # kernels/attention_forward.metal (JIT-era placeholder), and mfa/DeviceProperties.hpp
 # (unused struct) are now REMOVED from the tracked tree (verified 0 build/source/
 # test/CMake/script refs) — no longer excluded here because they no longer exist.
-# csrc/mpp_int8_bench.mm is KEPT (referenced by CMakeLists under MFA_BUILD_PROBES).
 # CC-07 (volet E3, maintainer signoff 2026-06-23): CLAUDE.md / CLAUDE_V6_NAX.md are
 # internal engineering docs — excluded from the published sdist (user-facing only).
+# 2.62.2 (review 2026-09, A10, maintainer decision): per-FILE dev-only exclusions —
+# kept in the repository, not published. scikit-build-core also applies this list to
+# the wheel's package files. Mirrored by _DEV_ONLY_FILES in
+# tests/test_publish_surface_guard.py (per-file lock, both artifacts).
+#   historical, not loaded (async_v2 retired in 2.62.2):
+#     csrc/async_v2_kernel.metal, scripts/build_async_metallib.sh
+#   compiled/runnable only with -DMFA_BUILD_PROBES=ON (no workflow sets it):
+#     the 3 probe sources + tests/test_varlen_source_generation_guards.py
+#   campaign/dev scripts no shipped test imports:
+#     audit_dispatch_grouping_k0.py, audit_dit_dispatch.py, build_metallibs.sh
+#   own kernels kept for the record, never wired into dispatch (+ their tests):
+#     mlx_mfa/gqa_decode_cider.py (Op-H, parity), mlx_mfa/topk_stream.py (declined)
 exclude = ["bench", "benchmarks", "devnotes", "release-gate", "audit", ".claude", ".github", ".gitignore", "*.log", "**/__pycache__",
-           "CLAUDE.md", "CLAUDE_V6_NAX.md"]
+           "CLAUDE.md", "CLAUDE_V6_NAX.md",
+           "csrc/async_v2_kernel.metal", "scripts/build_async_metallib.sh",
+           "csrc/mpp_int8_bench.mm", "csrc/v6_nax_primitives_probe.cpp", "csrc/v6_nax_toolchain_probe.cpp",
+           "tests/test_varlen_source_generation_guards.py",
+           "scripts/audit_dispatch_grouping_k0.py", "scripts/audit_dit_dispatch.py", "scripts/build_metallibs.sh",
+           "mlx_mfa/gqa_decode_cider.py", "mlx_mfa/topk_stream.py",
+           "tests/test_phase2_ii11_gqa_decode_cider.py", "tests/test_phase2_ii3_topk_stream.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
