@@ -5,8 +5,10 @@ All notable changes to mlx-mfa are documented here.
 ## [2.62.2] — 2026-09-28
 
 Correctness patch release from the 2026-09 code review. **Upgrade recommended for every
-2.x user.** It fixes six published P0 root causes (silently wrong output or gradients),
-plus three more P0 kernel sites found by auditing the siblings of one of them. No new
+2.x user.** It fixes seven published P0 root causes (silently wrong output or gradients),
+plus three more P0 kernel sites found by auditing the siblings of one of them. It also
+retires a precompiled kernel that could serve stale code on macOS 14/15 (deduced from
+source). No new
 feature and no public signature change. There is one deliberate behaviour change: the
 causal convention for N_q > N_kv, under *Changed*. The native build now declares
 `mlx>=0.31.2,<=0.32.2`.
@@ -23,11 +25,16 @@ on that site. Entries marked "reachable since" also depended on a later routing 
 | R5 | `mx.grad` through `flash_attention_sparse` (M5 NAX route, default and V6 hybrid) | a block-mask row that is entirely False | dK/dV entirely NaN (the forward was finite) | reachable since 2.58.0 |
 | R6 | `flash_attention_sparse` | block mask mutated in place between two calls | the stale cached mask was reused | 2.33.1 |
 | R7 | `sage_attention` causal 1<N<S; **STEEL V3** (`backend="mfa"`, auto on M1–M4); **`flash_attention_paged_varlen`** (default route, heterogeneous `q_lens`); **`flash_attention_paged_varlen_turboquant`** | causal with a query offset not aligned to the K tile | queries saw up to BK−1 future keys (err 0.1–1.6 vs oracle; TurboQuant: output moved up to 7.8 when only future keys changed) | the exact causal-zone fix of 2.14.1 reached STEEL V1/V2/paged only: Sage since 1.2.0, V3 since 2.7.0 (auto M1/M2 since 2.20.0), paged-varlen fused since 2.14.1, TurboQuant paged-varlen since 2.22.0 |
+| V6 backward | `mx.grad` / `mx.vjp` of `flash_attention` (default route and `backend="mfa"`) | causal, N<S, D=64 f16/bf16, N≥2048 (the default-on V6NAX backward); D=128 with `MFA_ENABLE_V6_BACKWARD=1` | the V6NAX backward kernels mask top-left (`qL_off=0`); gradients 20–80× off in relative terms, while the forward was correct | 2.51.0 (default-on; opt-in since 2.50) |
+| async_v2 (deduced) | STEEL V2 f16, D=64/128, no extra features, on **macOS 14/15** (auto route on M1–M4, `backend="mfa"`) | the precompiled `async_v2.metallib` was tried before the JIT | the frozen kernel bounded the K loop like causal even for non-causal calls, and kept the causal zone from before 2.14.1. **Deduced from source; not reproducible on the maintainer's macOS 26+ hardware, where the loader was skipped.** If the metallib failed to load on those systems, there was no impact. | 2.5.4 |
 
 Every live kernel now applies the exact causal zone: the shared helper `mfa_causal_mask_zone_gate`
 is used by V1, V2, flash-decode, Sage, V3, the backward, paged-varlen and TurboQuant, and the
 paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by a test that fails on 2.62.1: `tests/test_r1_*`, `test_r2_*`,
-`test_phase3_iii4_d7_mask_tiling.py`, `test_r5_*`, `test_r6_*`, `test_r7_*`.
+`test_phase3_iii4_d7_mask_tiling.py`, `test_r5_*`, `test_r6_*`, `test_r7_*` and, for the V6
+backward, `test_causal_zero_clamp_convention.py`. The async_v2 row cannot be tested on
+macOS 26+; its artifacts and loader are gone and `tests/test_r8_aot_metallib_cache.py` keeps
+them from returning.
 
 ### Changed
 - **Causal attention with N_q > N_kv — one convention everywhere** (CRIT-01, maintainer
@@ -42,7 +49,8 @@ paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by 
     SDPA's rule even when the forward clamped.
   - Now `flash_attention` equals `flash_attention_varlen` with one segment, forward and
     backward. The `sparse_attention_dispatch` SDPA route (causal, Q shorter than K) and
-    the paged backward (N_q > kv_len) follow the same rule.
+    the paged backward (N_q > kv_len) follow the same rule, and so does the
+    `flash_attention_sparse` per-head route's empty-row fix-up.
 - **Sliding window with N ≠ S** (R3): the window anchor no longer depends on dtype. The
   fp32 fallback and `return_attn_weights=True` now match the f16/bf16 kernels.
 - **AOT metallib cache** (`~/.mlx_mfa/metallib`, R8): file names are content-addressed,
@@ -60,7 +68,7 @@ paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by 
 - `patch_mlx_lm` and `flash_attention(D=512, window_size=... | return_lse=True)` no longer
   crash (CRIT-04).
 - `flash_attention_sparse` with an asymmetric value head dim (D_v ≠ D) takes the SDPA route
-  instead of crashing on the NAX kernel (API-04).
+  instead of crashing on the NAX kernel (API-04), including the opt-in V6 hybrid route.
 - `mx.grad` through `flash_attention_sparse` / `sparse_attention_dispatch` with a block mask
   computed from the differentiated inputs no longer raises "[async_eval] Not allowed inside
   a graph transformation" (NEPB-05).
@@ -75,8 +83,10 @@ paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by 
 
 ### Removed
 - The precompiled `async_v2.metallib` and its loader, and the `MFA_DISABLE_ASYNC` and
-  `MFA_IR_INVESTIGATE` knobs. The async path was byte-identical to the synchronous one
-  (BLD-04/BLD-08). The historical source stays in the repository.
+  `MFA_IR_INVESTIGATE` knobs (BLD-04, see the advisory row). The async-vs-sync tests had
+  compared one path with itself on macOS 26+ (BLD-08). Both knobs are now listed as removed:
+  strict validation reports "removed", not "unrecognized". The historical source stays in
+  the repository.
 - The test classes of the STEEL V4/V5 kernels that were already removed from the build:
   47 cells that could only ever be skipped.
 
@@ -92,6 +102,10 @@ paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by 
   inspects a real wheel.
 
 ### Known issues (found during remediation, not fixed in 2.62.2)
+- `mx.grad` through `flash_attention(attn_bias=...)`: the native bias route has no
+  custom vjp, so gradients come from the STEEL backward, which ignores the bias and is
+  top-left. They are NaN or wrong even for an all-zero bias. For training, apply the
+  bias through `mx.fast.scaled_dot_product_attention` until this is fixed.
 - `flash_attention_paged`: with **non-contiguous** page pools (for example a transposed
   view), the forward is correct but the gradients are wrong. Pass contiguous pools
   (`mx.contiguous(pool)`).
