@@ -90,3 +90,20 @@ def test_same_mask_different_head_dim_gets_distinct_entries():
         fresh = att._get_or_build_expanded_float_bias(m, 1, 2, N, N, mx.float16, head_dim_d7=hd)
         assert mx.array_equal(fresh, b).item()   # biases hold -inf: compare, not subtract
     del r64, r128
+
+
+@pytest.mark.parametrize("mdt", [mx.bfloat16, mx.float16, mx.uint8],
+                         ids=["bf16", "f16", "u8"])
+def test_non_bool_block_masks_still_accepted(mdt):
+    """Pre-merge review 2026-09-28 (N1): the content key hashed the mask in its OWN
+    dtype, so a bf16 mask crashed in numpy ("PEP 3118 item size") — before R6 it was
+    converted to bool first.  Non-bool masks must keep working and match bool."""
+    N, D = 512, 64
+    mx.random.seed(51)
+    q, k, v = (mx.random.normal((1, 1, N, D)).astype(mx.float16) for _ in range(3))
+    nb = N // 32
+    mb = mx.eye(nb, dtype=mx.bool_) | (mx.random.uniform(shape=(nb, nb)) < 0.3)
+    ref = flash_attention_sparse(q, k, v, mb)
+    out = flash_attention_sparse(q, k, v, mb.astype(mdt))
+    mx.eval(ref, out)
+    assert float(mx.max(mx.abs(out.astype(mx.float32) - ref.astype(mx.float32)))) == 0.0

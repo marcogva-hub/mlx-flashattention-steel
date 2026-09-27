@@ -69,3 +69,23 @@ def test_sparse_attention_dispatch_asym_dv_in_nax_envelope():
     mx.eval(o)
     assert o.shape == (B, H, N, DV)
     assert _err(o, _reference(q, k, v, bm)) < 1e-2
+
+
+def test_opt_in_v6_hybrid_gate_asym_dv(monkeypatch):
+    """Pre-merge review 2026-09-28 (N3): the opt-in V6 hybrid gate
+    (MFA_ENABLE_V6_BACKWARD=1, bt >= 64) never looked at V — D_v != D reached the
+    NAX sparse forward and raised "head_dim mismatch"."""
+    monkeypatch.setenv("MFA_ENABLE_V6_BACKWARD", "1")
+    mx.random.seed(3)
+    q = (mx.random.normal((1, 2, N, D)) * 0.1).astype(mx.float16)
+    k = (mx.random.normal((1, 2, N, D)) * 0.1).astype(mx.float16)
+    v = (mx.random.normal((1, 2, N, DV)) * 0.1).astype(mx.float16)
+    nb = N // 64
+    bm = (mx.random.uniform(shape=(nb, nb)) < 0.1) | mx.eye(nb, dtype=mx.bool_)
+    o = flash_attention_sparse(q, k, v, bm)
+    mx.eval(o)
+    em = mx.repeat(mx.repeat(bm, 64, axis=0), 64, axis=1)
+    ref = mx.fast.scaled_dot_product_attention(
+        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
+        scale=D ** -0.5, mask=mx.where(em, 0.0, float("-inf")).astype(mx.float32))
+    assert o.shape == (1, 2, N, DV) and _err(o, ref) < 1e-2

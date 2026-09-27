@@ -173,3 +173,55 @@ def test_paged_backward_q_longer_than_kv():
     mx.eval(dq)
     ref_dq = _oracle_grads(q, k, v, g)[0]
     assert _err(dq, ref_dq) < 3e-2
+
+
+# ── Pre-merge review of 1997d34 (2026-09-28): siblings the helper mutation missed ──
+from mlx_mfa import _dispatch_trace as _dt  # noqa: E402
+from mlx_mfa import flash_attention_sparse  # noqa: E402
+
+
+def _v6_backward_ran(cap) -> bool:
+    return any(r[0] == "v6_split_backward" for r in cap)
+
+
+@pytest.mark.parametrize("route", ["default", "backend_mfa"])
+def test_v6nax_backward_causal_q_shorter_than_k(route):
+    """The V6NAX backward kernels are top-left only (qL_off = 0): at the default-on
+    envelope (D=64, N >= 2048) causal N < S took them and returned gradients 20-80x
+    off (published since 2.62.0's default-on at least).  Causal N < S must use the
+    canonical SDPA-vjp backward."""
+    N, S, D = 2048, 4096, 64
+    q, k, v = _qkv(N, S, D, mx.float16, H=1, seed=31)
+    mx.random.seed(32)
+    g = mx.random.normal((1, 1, N, D)).astype(mx.float32)
+    kw = {"backend": "mfa"} if route == "backend_mfa" else {}
+    with _dt.capture() as cap:
+        grads = mx.grad(lambda a, b, c: (flash_attention(a, b, c, causal=True, **kw)
+                                         .astype(mx.float32) * g).sum(),
+                        argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+    assert not _v6_backward_ran(cap), "causal N<S reached the top-left V6NAX backward"
+    for name, x, y in zip(("dQ", "dK", "dV"), grads, _oracle_grads(q, k, v, g)):
+        rel = _err(x, y) / max(float(mx.max(mx.abs(y))), 1e-6)
+        assert rel < 1e-2, (name, rel)
+
+
+def test_v6nax_backward_still_engaged_for_causal_n_eq_s():
+    """Control: the N == S default-on V6NAX backward (D=64 perf path) is untouched."""
+    q, k, v = _qkv(2048, 2048, 64, mx.float16, H=1, seed=33)
+    with _dt.capture() as cap:
+        mx.eval(*mx.grad(lambda a, b, c: flash_attention(a, b, c, causal=True)
+                         .astype(mx.float32).sum(), argnums=(0, 1, 2))(q, k, v))
+    assert _v6_backward_ran(cap)
+
+
+@pytest.mark.parametrize("N,S", [(256, 128), (64, 128)])     # N>S and an N<S control
+def test_sparse_causal_follows_the_convention(N, S):
+    """`_get_sparse_row_active` used the unclamped S - N: for N > S it declared the
+    first rows empty and zeroed them (err 2.4 on 128 rows) on the per-head route."""
+    D = 64
+    q, k, v = _qkv(N, S, D, mx.float16, seed=34)
+    bm = mx.ones((N // 32, S // 32), dtype=mx.bool_)
+    o = flash_attention_sparse(q, k, v, bm, causal=True)
+    ref, _ = _oracle(q, k, v)
+    assert _err(o, ref) < 1e-2, _err(o, ref)

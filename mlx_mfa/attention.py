@@ -1373,7 +1373,8 @@ def flash_attention(
     if (backend != "mfa"
             and _dtrace.recording()
             and _v6nax_eligible(head_dim, q.dtype, causal,
-                                scale=scale, seq_len=q.shape[2])):
+                                scale=scale, seq_len=q.shape[2],
+                                kv_len=k.shape[2])):
         _dtrace.record("apple_sdpa",
                        "v6nax-carveout forward (Apple SDPA; V6NAX backward)")
     else:
@@ -3244,7 +3245,6 @@ def flash_attention_kvcache(
 # Block-sparse forward
 # ---------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=64)
 def _sanitize_empty_rows_graph(float_bias: mx.array):
     """R5/NEPB-03 (review 2026-09): graph-safe empty-row sanitization for the
     SDPA-vjp backward legs of the sparse NAX routes.
@@ -3264,6 +3264,7 @@ def _sanitize_empty_rows_graph(float_bias: mx.array):
     return mx.where(row_active, float_bias, mx.zeros_like(float_bias)), row_active
 
 
+@functools.lru_cache(maxsize=64)
 def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
     """v2.50 Prompt 5a Section C: cached custom_function wrapping
     M5+ symmetric-bt sparse forward (NAX kernel, Sprint 1 win) with
@@ -3927,6 +3928,9 @@ def flash_attention_sparse(
                             and q.dtype in (mx.float16, mx.bfloat16)
                             and block_mask.ndim == 2  # PoC scope
                             and bt_q >= 64
+                            # API-04 sibling (pre-merge review N3): the NAX
+                            # sparse forward serves D_v == D only.
+                            and v.shape[-1] == D and v.dtype == q.dtype
                         )
                         if _v6nax_hybrid_eligible:
                             # v2.50 Prompt 5d Section B v3 verification:
@@ -5168,8 +5172,9 @@ def _sparse_fallback_sdpa(
 
 def _try_materialize(*arrays: mx.array) -> bool:
     """NEPB-05 (review 2026-09): eagerly materialize arrays that are about to be
-    CACHED — unless we are inside an MLX graph transformation (mx.grad / vjp / vmap /
-    compile), where ``mx.async_eval`` is forbidden and caching a traced array would
+    CACHED — unless they are traced by an MLX graph transformation (mx.grad / vjp;
+    under mx.compile the host-side mask read already raises loudly), where
+    ``mx.async_eval`` is forbidden and caching a traced array would
     also leak the tracer into a global cache.  Returns True when materialized, False
     inside a transformation (the caller must then skip its cache).  Only that exact
     MLX error is handled; anything else propagates (Rule 8).
@@ -5184,6 +5189,17 @@ def _try_materialize(*arrays: mx.array) -> bool:
     return True
 
 
+def _is_traced(arr: mx.array) -> bool:
+    """True when ``arr`` is traced by an enclosing graph transformation.
+
+    ``_try_materialize(arr)`` cannot tell once ``arr`` itself was materialized
+    (e.g. host-side by ``_mask_content_key``): MLX then skips it silently.  A FRESH
+    1-element view of a traced array still raises, a constant's does not
+    (pre-merge review N2).
+    """
+    return not _try_materialize(arr.reshape(-1)[:1])
+
+
 def _mask_content_key(block_mask: mx.array) -> int:
     """R6/NEPB-04 (review 2026-09): content component of the sparse-cache keys.
 
@@ -5192,11 +5208,12 @@ def _mask_content_key(block_mask: mx.array) -> int:
     of the mask bytes (zero-copy host view on unified memory) — measured 0.43 ms at
     NQ=NK=4509 (20.3 MB; blake2b 13.7 ms, GPU weighted-sum 0.85 ms), linear in mask
     bytes; MLX exposes no array version counter.  Collision needs 2^-32 per mutation
-    of the SAME object (id stays in the key).
+    of the SAME object (id stays in the key).  Hashes the BOOL view: the bias depends
+    only on mask truthiness, and numpy cannot view bfloat16 (pre-merge review N1).
     """
     import zlib
     import numpy as _np
-    return zlib.crc32(_np.ascontiguousarray(_np.asarray(block_mask)))
+    return zlib.crc32(_np.ascontiguousarray(_np.asarray(block_mask.astype(mx.bool_))))
 
 
 # v2.33.1 — fast-fallback: bounded LRU cache for expanded float-bias masks.
@@ -5335,10 +5352,12 @@ def _get_sparse_row_active(
     mask_np = np.asarray(block_mask.astype(mx.bool_))
 
     if causal:
-        # Block (r, c) causally reachable iff c*BK <= (r+1)*BQ - 1 + (S - N).
+        # Block (r, c) causally reachable iff c*BK <= (r+1)*BQ - 1 + max(0, S - N).
         r_idx = np.arange(NQ)[:, None]
         c_idx = np.arange(NK)[None, :]
-        reachable = (c_idx * BK_actual) <= ((r_idx + 1) * BQ_actual - 1 + (S - N))
+        # Canonical zero-clamped offset (decision 2026-09, R1'); the unclamped
+        # S - N declared the first rows of a causal N > S call empty.
+        reachable = (c_idx * BK_actual) <= ((r_idx + 1) * BQ_actual - 1 + max(0, S - N))
         mask_np = np.logical_and(mask_np, reachable)
 
     block_row_active = mask_np.any(axis=-1)  # [..., NQ]
@@ -5351,6 +5370,10 @@ def _get_sparse_row_active(
             expanded = expanded[None]
         result = mx.array(expanded[..., None])
 
+    # NEPB-05 (pre-merge review N2): inside mx.grad/vjp the mask may be a traced
+    # array — never pin it in a global cache (same rule as the two bias caches).
+    if _is_traced(block_mask):
+        return result
     if len(_SPARSE_ROWFIX_CACHE) >= _SPARSE_ROWFIX_CACHE_MAX:
         _SPARSE_ROWFIX_CACHE.pop(next(iter(_SPARSE_ROWFIX_CACHE)))
     # Strong mask ref prevents the id()-ABA hazard (same pattern as
@@ -5956,7 +5979,8 @@ def _mfa_alibi_forward(
 
 def _v6nax_eligible(head_dim: int, dtype, causal: bool,
                   scale: "float | None" = None,
-                  seq_len: "int | None" = None) -> bool:
+                  seq_len: "int | None" = None,
+                  kv_len: "int | None" = None) -> bool:
     """V6NAX NAX-direct backward eligibility predicate.
 
     Extracted from `_make_mfa_custom` per Sprint v2.38.0 DP2-HIGH-01
@@ -6007,6 +6031,12 @@ def _v6nax_eligible(head_dim: int, dtype, causal: bool,
     if head_dim not in (64, 128):
         return False
     if dtype not in (mx.float16, mx.bfloat16):
+        return False
+    # Pre-merge review 2026-09-28: the V6NAX backward kernels mask causally with
+    # qL_off = 0 (top-left). That equals the canonical zero-clamped convention only
+    # when N >= S; for causal N < S it returned gradients 20-80x off while the forward
+    # (SDPA, canonical mask) was right. Those shapes take the SDPA-vjp backward.
+    if causal and seq_len is not None and kv_len is not None and seq_len < kv_len:
         return False
     # Phase II-0 (campaign 2026-06, Marco-approved): D=64 CAUSAL DEFAULT-ON
     # (2.2-2.6x vs SDPA-vjp, Phase-I Track 2).  Requires the caller to pass
@@ -6299,7 +6329,8 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Sprint v2.38.0 DP2-HIGH-01 compound (was duplicated with
             # the backward-side check below pre-refactor).
             if (_v6nax_eligible(q.shape[3], q.dtype, causal,
-                              scale=scale, seq_len=q.shape[2])
+                              scale=scale, seq_len=q.shape[2],
+                              kv_len=k.shape[2])
                     and not force_kernel):
                 # III-4 D8 FIX: `force_kernel` (backend="mfa") must run
                 # the actual MFA Metal forward, not SDPA — otherwise every
@@ -6400,7 +6431,8 @@ def _make_mfa_custom(scale: float, causal: bool, softcap: float = 0.0,
             # Eligibility predicate + 3-kernel dispatch extracted to
             # `_v6nax_eligible()` and `_v6nax_backward_vjp()` per Sprint
             # v2.38.0 DP2-HIGH-01 compound (audit M4-MEDIUM-01).
-            if _v6nax_eligible(q.shape[3], q.dtype, causal, scale=scale, seq_len=q.shape[2]):
+            if _v6nax_eligible(q.shape[3], q.dtype, causal, scale=scale,
+                               seq_len=q.shape[2], kv_len=k.shape[2]):
                 # v2.50 Phase 4b-complete: pass causal through so V6NAX backward
                 # kernels compile with V6NAXBWD*_CAUSAL=1 macro.
                 #

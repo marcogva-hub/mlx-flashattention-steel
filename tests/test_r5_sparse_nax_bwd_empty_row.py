@@ -133,3 +133,62 @@ def test_steel_sparse_custom_sdpa_backward_leg_is_finite():
     assert all(_finite(x) for x in g)
     for x, y in zip(g, _small_reference(q, k, v, m, dO, sc)):
         assert _err(x, y) < GRAD_TOL
+
+
+# ── Pre-merge review 2026-09-28 (B1): 397144e inserted _sanitize_empty_rows_graph
+# BETWEEN `@functools.lru_cache` and _make_sparse_nax_with_sdpa_vjp — the maker lost
+# its cache (a new custom_function per call) and the sanitizer cached arrays by
+# identity: every backward pinned ~268 MB (N=8192) for the last 64 calls.
+import ast as _ast  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+import mlx_mfa.attention as _att  # noqa: E402
+
+
+def test_lru_cache_is_on_the_maker_not_the_sanitizer():
+    assert hasattr(_att._make_sparse_nax_with_sdpa_vjp, "cache_info")
+    assert not hasattr(_att._sanitize_empty_rows_graph, "cache_info")
+
+
+def test_no_lru_cache_over_array_arguments():
+    """Class lock: a functools cache keyed by an mx.array pins device memory (and
+    goes stale on in-place mutation).  Every cached function in the package must
+    take hashable config only — its parameters must not be annotated mx.array."""
+    pkg = _pathlib.Path(_att.__file__).parent
+    offenders = []
+    for path in sorted(pkg.glob("*.py")):
+        for fn in _ast.walk(_ast.parse(path.read_text())):
+            if not isinstance(fn, _ast.FunctionDef):
+                continue
+            cached = any("lru_cache" in _ast.unparse(d) or _ast.unparse(d).endswith("cache")
+                         for d in fn.decorator_list)
+            if cached and any(a.annotation is not None and "array" in _ast.unparse(a.annotation)
+                              for a in fn.args.args + fn.args.kwonlyargs):
+                offenders.append(f"{path.name}:{fn.lineno}:{fn.name}")
+    assert not offenders, offenders
+
+
+def test_sparse_nax_backward_memory_is_flat():
+    """Measured: +268 MB kept per backward call at this shape before the fix."""
+    if not _att._get_has_nax_cached():
+        pytest.skip("NAX sparse route is M5+ only")
+    N, D = 8192, 64
+    mx.random.seed(41)
+    q, k, v = (mx.random.normal((1, 1, N, D)).astype(mx.float16) for _ in range(3))
+    nb = N // 32
+    bm = mx.eye(nb, dtype=mx.bool_) | (mx.random.uniform(shape=(nb, nb)) < 0.1)
+    mx.eval(q, k, v, bm)
+
+    def step():
+        g = mx.grad(lambda a, b, c: _att.flash_attention_sparse(a, b, c, bm)
+                    .astype(mx.float32).sum(), argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*g)
+        del g
+        mx.clear_cache()
+        return mx.get_active_memory()
+
+    step()
+    base = step()
+    for _ in range(3):
+        last = step()
+    assert last - base < 64 * 2 ** 20, f"active memory grew {(last - base) / 2**20:.0f} MB over 3 calls"
