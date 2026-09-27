@@ -35,7 +35,10 @@ from typing import Optional
 import mlx.core as mx
 
 from mlx_mfa import get_supported_configs, is_mfa_available
-from mlx_mfa.attention import _mfa_forward as _steel_dispatch
+# CRIT-04 (review 2026-09): the patched SDPA goes through the PUBLIC flash_attention
+# (it delegates D=512 to SDPA and applies the measured per-shape routing); calling
+# _mfa_forward directly crashed every D=512 call ("head_dim must be 64, 128, or 256").
+from mlx_mfa.attention import flash_attention as _flash_attention
 
 # The original mlx_lm SDPA function, saved at patch time.
 _original_sdpa = None
@@ -217,11 +220,12 @@ def _steel_sdpa(
                   f"D={D} {dtype} "
                   f"{'GQA ' if _is_gqa else ''}"
                   f"{'window=' + str(_window_left) if _window_left >= 0 else ''}")
-        # D.4: call _mfa_forward directly — skips flash_attention() wrapper overhead
-        # (backend validation, GQA expansion check, window tuple unpacking, etc.)
-        return _steel_dispatch(
-            queries, keys, values, scale, _is_causal,
-            window_left=_window_left, window_right=_window_right,
+        # CRIT-04: via the public flash_attention (was a direct _mfa_forward call,
+        # which bypassed the D=512 -> SDPA delegation and crashed).
+        _win = ((_window_left, _window_right)
+                if (_window_left >= 0 or _window_right >= 0) else None)
+        return _flash_attention(
+            queries, keys, values, scale=scale, causal=_is_causal, window_size=_win,
         )
 
     # mask is an array (boolean, padding, etc.): fall back.

@@ -1246,17 +1246,24 @@ def flash_attention(
     # f32 falls back to masked SDPA (no native kernel support for f32).
     window_left = -1
     window_right = -1
+    # CRIT-04 sibling (review 2026-09): the dense MFA primitive serves only
+    # head_dim in {64, 128, 256} (C++ refuses 512) although _can_use_mfa marks 512
+    # capable — window / return_lse at D=512 crashed on the public path. Such
+    # heads take the exact SDPA-class fallbacks below.
+    # backend='mfa' is excluded: a FORCED backend must run the kernel or refuse
+    # loudly (the C++ entry raises for 512), never silently downgrade to SDPA.
+    _dense_primitive_hdim = head_dim in (64, 128, 256) or backend == "mfa"
     if window_size is not None:
         wl = window_size[0]
         wr = window_size[1] if len(window_size) > 1 else -1
-        if q.dtype != mx.float32 and (wl >= 0 or wr >= 0):
+        if q.dtype != mx.float32 and _dense_primitive_hdim and (wl >= 0 or wr >= 0):
             # Native STEEL kernel path: both sides supported.
             if wl >= 0:
                 window_left = wl
             if wr >= 0:
                 window_right = wr
         else:
-            # f32 or both disabled: windowed SDPA fallback.
+            # f32, D=512, or both disabled: windowed SDPA fallback.
             N, S = q.shape[2], k.shape[2]
             wl_eff = max(wl, 0) if wl >= 0 else S
             wr_eff = max(wr, 0) if wr >= 0 else S
@@ -1285,7 +1292,7 @@ def flash_attention(
     # (return_lse on an "MFA-capable" shape, legacy thresholds under
     # MFA_DISABLE_SDPA_ROUTE, forced-D256/D512 knobs) — alibi and window already
     # took their own fp32 SDPA-class fallbacks above.  Serve the rest exactly:
-    if q.dtype == mx.float32:
+    if q.dtype == mx.float32 or not _dense_primitive_hdim:
         if return_lse:
             if softcap != 0.0:
                 raise ValueError(
@@ -1294,12 +1301,12 @@ def flash_attention(
             # zero_clamp=True keeps this route's N>S semantics unchanged (the ccv
             # kernel was top-left = NAMING.md zero-clamp there); N>S convention is
             # pending decision R1'/CRIT-01 — N<=S is plain bottom-right (SDPA).
-            _dtrace.record("sdpa", "fp32 return_lse -> exact fp32 SDPA+LSE (never the legacy primitive)")
+            _dtrace.record("sdpa", "fp32/D512 return_lse -> exact SDPA+LSE (never the primitive)")
             return _fallback_sdpa_with_lse(q, k, v, scale, causal, zero_clamp=True)
         if softcap != 0.0:
             _dtrace.record("sdpa", "fp32 softcap -> SDPA softcap reference")
             return _softcap_sdpa_ref(q, k, v, scale, causal, softcap)
-        _dtrace.record("sdpa", "fp32 -> SDPA (never the legacy primitive)")
+        _dtrace.record("sdpa", "fp32/D512 -> SDPA (never the primitive)")
         return _fallback_sdpa(q, k, v, scale, causal, stream)
 
     # Track FX-1: return_lse — use mfa_forward_with_lse to get L for free.
