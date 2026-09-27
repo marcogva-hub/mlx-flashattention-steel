@@ -3938,13 +3938,25 @@ def flash_attention_sparse(
     # Normalize to the STEEL kernel geometry via EXACT tile-splitting (each
     # coarse tile -> identical finer subtiles; NOT an OR-merge, so the pattern
     # is preserved bit-for-bit). No-op when the mask already matches.
+    # R4/DOC-05/NEPF-03 (review 2026-09, P0): split by the TILE ratio
+    # (maker tile / kernel tile, e.g. 32/16 = 2 at D=128), then truncate to the
+    # kernel tile COUNT.  The previous COUNT ratio ceil(N/16)//ceil(N/32) floors
+    # to 1 for non-32-aligned N (7//4), leaving the mask unsplit -> the
+    # expansion re-tiled keys to 25/30/31-token tiles (silent-wrong).  Kernel
+    # tile t covers keys [t*BK, t*BK+BK) = maker tile floor(t*BK/BK_m), which
+    # repeat(r)[:NK_expected] reproduces exactly for any N.
     if _got != (NQ_expected, NK_expected):
-        _rf = NQ_expected // block_mask.shape[-2]
-        _cf = NK_expected // block_mask.shape[-1]
+        if BQ_m % BQ or BK_m % BK:
+            raise ValueError(
+                f"block_mask maker geometry {BQ_m}x{BK_m} is not an integer "
+                f"multiple of the kernel geometry {BQ}x{BK} (head_dim={D}); "
+                "cannot split it exactly.")
+        _rf, _cf = BQ_m // BQ, BK_m // BK
         if _rf > 1:
             block_mask = mx.repeat(block_mask, _rf, axis=-2)
         if _cf > 1:
             block_mask = mx.repeat(block_mask, _cf, axis=-1)
+        block_mask = block_mask[..., :NQ_expected, :NK_expected]
     if block_mask.ndim == 3 and block_mask.shape[0] != H:
         raise ValueError(
             f"3-D block_mask shape[0]={block_mask.shape[0]} must equal H={H}"
@@ -4949,15 +4961,25 @@ def _expansion_tile(seq: int, n_tiles: int, kernel_tile) -> int:
     if exact is not None and exact in (16, 32, 64):
         # Unambiguous NAX bt mask (bt set is {16, 32, 64}).
         return exact
-    if kernel_tile is not None and n_tiles > 0 \
-            and (seq + int(kernel_tile) - 1) // int(kernel_tile) == n_tiles:
-        # Mask tile count matches the kernel-validated geometry — use the
-        # kernel tile (the exact-divide value, e.g. 25 at N=100/NQ=4, is
-        # NOT a legal tiling; the validator accepted ceil(N/32)=4 tiles).
-        return int(kernel_tile)
-    if exact is not None:
-        return exact
-    return (seq + n_tiles - 1) // n_tiles
+    if kernel_tile is None:
+        # Legacy callers that cannot supply the kernel tile.
+        if exact is not None:
+            return exact
+        return (seq + n_tiles - 1) // n_tiles
+    # R4 (review 2026-09): pick among LEGAL tiles only — the kernel tile first,
+    # then the NAX bt / mask-maker tiles (16/32/64; _bq_bk emits 32 or 16) —
+    # the one whose ceil-count equals the mask's.  Never derive a tile from
+    # seq / n_tiles (the silent re-tile D7 forbids: that is how D=128 maker
+    # masks at N=100 became 25-token key tiles).  Two legal candidates share a
+    # count only when n_tiles == 1, where every tile >= seq expands identically.
+    if n_tiles > 0:
+        for t in (int(kernel_tile), 16, 32, 64):
+            if (seq + t - 1) // t == n_tiles:
+                return t
+    raise ValueError(
+        f"block-mask expansion: {n_tiles} tiles over seq={seq} match no legal tile "
+        f"(kernel {int(kernel_tile)}, NAX/maker 16/32/64); refusing to re-tile the "
+        "mask silently.")
 
 
 def _block_mask_to_float_bias(
