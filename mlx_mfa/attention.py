@@ -3588,12 +3588,8 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
         # produces correct gradients for ALL three (dQ, dK, dV) under the
         # bias-mask interpretation of sparse attention.  We discard the
         # dV from this path and use the native sparse dV instead.
-        if block_mask.ndim == 4:
-            mask_2d = block_mask.any(axis=(0, 1))
-        elif block_mask.ndim == 3:
-            mask_2d = block_mask.any(axis=0)
-        else:
-            mask_2d = block_mask
+        # 2-D only (entry contract above) — no cross-head .any() union.
+        mask_2d = block_mask
         _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
         float_bias = _block_mask_to_float_bias(
             mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
@@ -3634,6 +3630,15 @@ def _v6nax_sparse_hybrid_vjp(q, k, v, block_mask, bt, scale, causal):
     research/benchmark (typically slower than hybrid on M5+ per Pattern
     #6).
     """
+    # Contract (2026-09, decision Marco): 2-D block masks only.  The public gate
+    # (_v6nax_hybrid_eligible) already routes only ndim == 2 here and the native
+    # dV kernel refuses anything else; the dQ/dK leg used to collapse 3-D/4-D
+    # masks with .any() (a cross-head UNION -> wrong per-head gradients) — dead
+    # code, removed; refuse explicitly so a relaxed gate can never reach it.
+    if block_mask.ndim != 2:
+        raise ValueError(
+            "V6NAX sparse hybrid backward supports 2-D block masks only (got "
+            f"{block_mask.ndim}-D); per-head masks take the default sparse wrapper.")
     impl = _make_v6nax_sparse_hybrid_vjp(float(scale), bool(causal), int(bt))
     # impl now returns (O, L); the entry function exposes only O (L is the
     # backward's internal saved tensor per KD-2 fix).
