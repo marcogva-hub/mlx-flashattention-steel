@@ -240,9 +240,15 @@ void MFAttention::eval_gpu(
   // mfa_attention_rope_forward, never reaching here with has_rope=true —
   // but any future routing change would silently drop rotary embeddings.
   // RoPE decode falls through to split-K / V2 / V1 which implement it.
+  // R2/MSL-01 (review 2026-09, P0): `!params_.has_attn_bias` added. The partial
+  // kernel key hardcodes has_attn_bias=false and never binds buffer 10, so a biased
+  // decode (N<=4, S>=256) returned UNBIASED attention with no error. Biased decode
+  // now falls through to V2 single-pass / D-split, which implement the bias
+  // (split-K V2 already excludes it). Locked by tests/test_r2_attn_bias_subroutes.py.
   const bool use_flash_decode = (N <= 4 && S >= 256 && dtype_code != 2
                                  && !params_.has_block_mask
-                                 && !params_.has_rope);
+                                 && !params_.has_rope
+                                 && !params_.has_attn_bias);
   if (use_flash_decode) {
     int num_splits = compute_num_splits(S, BK_fd);
     int BQ_s = BQ_fd, BK_s = BK_fd, WM_s = WM_fd, WN_s = WN_fd;
@@ -652,7 +658,11 @@ void MFAttention::eval_gpu(
         (v3_shape_ok || v3_force) &&
         (dtype_code != 2) &&
         v3_tgp_eligible(D, is_m3_plus_steel) &&
-        !params_.has_block_mask;
+        !params_.has_block_mask &&
+        // R2/MSL-02 (review 2026-09, P0): V3 has no bias code (key3 hardcodes
+        // has_attn_bias=false) and runs BEFORE the V2 bias exception below —
+        // causal+bias at V3 shapes silently dropped the bias. Route to V2.
+        !params_.has_attn_bias;
 
     if (v3_eligible) {
       auto cfg3 = select_steel_v3_block_config(D, is_m3_plus_steel);
@@ -751,7 +761,11 @@ void MFAttention::eval_gpu(
   // D=256 excluded: routes to V1 (BQ=32, BK=16, WM=4, TGP=128).
   // Sparse (block_mask) excluded: mask is sized for V1 BK (BK_v1 != BK_v2).
   // Set MFA_DISABLE_V2=1 to bypass (forces V1 path, useful for benchmarking).
-  if (!MFAEnvConfig::disable_v2()) {
+  // R2/MSL-06 (review 2026-09): V1 has NO attn_bias code, so a biased call ignores
+  // the knob here (the raw bias entry refuses MFA_DISABLE_V2 at graph build; this
+  // covers the lazy-eval window where the knob is set after the graph is built —
+  // MFAEnvConfig::disable_v2() is read live).
+  if (!MFAEnvConfig::disable_v2() || params_.has_attn_bias) {
     // M3+ (gen>=15): V1 double-buffer is 1.5-3.7x faster than V2 at D<=128 causal.
     // V2's shared KV_smem requires 3-4 barriers/tile vs V1's 2 barriers/tile.
     // On M3+ hardware, reduced TGP bandwidth makes barriers more expensive.
@@ -888,8 +902,8 @@ void MFAttention::eval_gpu(
   // D=128 BK calibration override (MFA_V2_FORCE_BK) does not affect D-split.
   // No RoPE (GPT-NeoX pairs cross BD_HALF boundary).
   // Sparse excluded (block_mask sized for V1 BK).
-  // Set MFA_DISABLE_V2=1 to bypass.
-  if (!MFAEnvConfig::disable_v2()) {
+  // Set MFA_DISABLE_V2=1 to bypass (a biased call ignores it: V1 has no bias code, R2).
+  if (!MFAEnvConfig::disable_v2() || params_.has_attn_bias) {
     const bool v2_dsplit_eligible =
         (dtype_code != 2) &&
         is_v2_dsplit_family(D) &&
@@ -2600,6 +2614,14 @@ mlx::core::array mfa_attention_bias_forward(
 
   validate_dense_qkv(q, k, v, "MFA bias");  // volet K1: full Q/K/V contract
   assert_scale_finite(scale, "MFA bias");
+  // R2/MSL-06 (review 2026-09): the documented debug knob MFA_DISABLE_V2=1 forces the
+  // STEEL V1 path, which has no attn_bias code -> the bias would be silently dropped.
+  // Refuse loudly (Rule 8); the public flash_attention catches this and serves the
+  // biased call through its SDPA fallback (correct) with a one-time warning.
+  if (MFAEnvConfig::disable_v2())
+    throw std::invalid_argument(
+        "MFA bias: MFA_DISABLE_V2=1 routes to STEEL V1, which has no attn_bias code "
+        "(the bias would be silently dropped). Unset MFA_DISABLE_V2 or use the SDPA path.");
 
   if (attn_bias_mode < 1 || attn_bias_mode > 2)
     throw std::invalid_argument(
