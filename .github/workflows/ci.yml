@@ -77,6 +77,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Job 2: Full test suite — builds the C++ extension on Apple Silicon
   #
+  # HARDWARE COVERAGE (A12, review 2026-09 — stated, not promised): hosted
+  # `macos-14` runners are Apple M1 only. M2, M3 and M4 have NO CI coverage and
+  # none is planned until a hardware runner exists; M5/NAX is covered only by the
+  # maintainer-run gate below.
   # ⚠ M5/NAX COVERAGE GAP (audit H-05 / CC-14). GitHub-hosted `macos-14` is M1,
   # so the M5+/NAX paths (V6 NAX dense forward, V6 split backward, NAX sparse, the
   # which-binary byteΔ fingerprints) SKIP here and are NEVER exercised in CI.
@@ -231,13 +235,45 @@ jobs:
           pip install mlx numpy scikit-build-core cmake
           SDIST=$(ls dist/*.tar.gz)
           pip install "$SDIST" -v
+          # A12 (review 2026-09): import the INSTALLED package, never the checkout
+          # (from the workspace, `import mlx_mfa` resolved to the source tree, which
+          # has no built _ext -> ext-load-failed: the job was red since 2026-06).
+          cd "$RUNNER_TEMP"
           python -c "
-          import mlx_mfa
-          print('import OK — mlx_mfa', mlx_mfa.__version__, 'on py${{ matrix.python-version }}')
+          import mlx_mfa, os
+          assert os.environ['GITHUB_WORKSPACE'] not in mlx_mfa.__file__, mlx_mfa.__file__
+          print('import OK — mlx_mfa', mlx_mfa.__version__, 'from', mlx_mfa.__file__, 'on py${{ matrix.python-version }}')
           ok, reason = mlx_mfa.has_nax(reason=True)
           # macos-14 is M1 → NAX never engages; the contract is a CLEAN reason
           # (pre-m5-hardware), NOT an ext-load failure (which would mean the
           # source build/ABI broke on this interpreter).
           assert reason != 'ext-load-failed', f'_ext failed to load on py${{ matrix.python-version }}: {reason}'
           print('has_nax()', ok, '/ reason', reason, '(clean source build + import)')
+          "
+
+      # BLD-01 class (review 2026-09): `pip install mlx-mfa` with DEFAULT build
+      # isolation in a FRESH venv — exactly what a user runs. pip resolves the capped
+      # mlx specifier for both the isolated build env and the runtime env; the build
+      # must succeed and the INSTALLED package must import with a loadable _ext and
+      # run one attention call. An unmapped MLX release that the specifier admits
+      # (the 2.62.1 incident) fails here, not on users.
+      - name: Fresh venv, default build isolation, install sdist, import installed package
+        run: |
+          SDIST=$(ls "$GITHUB_WORKSPACE"/dist/*.tar.gz)
+          python -m venv "$RUNNER_TEMP/fresh"
+          "$RUNNER_TEMP/fresh/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/fresh/bin/python" -m pip install "$SDIST" -v
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/fresh/bin/python" -c "
+          import os, mlx.core as mx, mlx_mfa
+          assert os.path.join('fresh', 'lib') in mlx_mfa.__file__, mlx_mfa.__file__
+          import mlx_mfa._ext as e
+          print('mlx', mx.__version__, '| _ext built against', e._mlx_build_version(), '| from', mlx_mfa.__file__)
+          ok, reason = mlx_mfa.has_nax(reason=True)
+          assert reason != 'ext-load-failed', reason
+          q = mx.random.normal((1, 2, 64, 64)).astype(mx.float16)
+          o = mlx_mfa.flash_attention(q, q, q, causal=True)
+          mx.eval(o)
+          assert o.shape == q.shape and bool(mx.all(mx.isfinite(o)).item())
+          print('fresh-venv isolated install OK; has_nax', ok, reason)
           "

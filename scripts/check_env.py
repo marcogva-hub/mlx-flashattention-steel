@@ -15,6 +15,24 @@ def check(name, fn):
         return False
 
 
+def info(name, fn):
+    """Informational line: printed, never part of the pass/fail verdict."""
+    try:
+        print(f"  [INFO] {name}: {fn()}")
+    except Exception as e:
+        print(f"  [INFO] {name}: {e}")
+
+
+def _verified_mlx_nanobind_table():
+    """{mlx_version: nanobind_tag} from csrc/cmake/MlxNanobindAbi.cmake (the build's SoT)."""
+    import os
+    import re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                        "csrc", "cmake", "MlxNanobindAbi.cmake")
+    with open(path) as f:
+        return dict(re.findall(r'"([0-9]+\.[0-9]+\.[0-9]+)=(v[0-9.]+)=[0-9]+"', f.read()))
+
+
 def main():
     print("mlx-mfa environment check")
     print("=" * 50)
@@ -29,24 +47,19 @@ def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         print("  [WARN] mlx-mfa requires macOS on Apple Silicon (arm64)")
 
-    # MLX (version lives on mlx.core since ≥0.19)
-    # CC-21 (volet E): advisory floor parity with the real floor (pip enforces it
-    # via pyproject `mlx>=0.31.2` — the nanobind v2.12.0 / NB_INTERNALS v19 ABI).
-    # This is informational only; pip remains the authoritative gate.
-    _MLX_FLOOR = "0.31.2"
+    # MLX (version lives on mlx.core since ≥0.19).  BLD-01/A12 (review 2026-09): the
+    # build maps each VERIFIED MLX release to its nanobind tag and FAILS on anything
+    # else (csrc/cmake/MlxNanobindAbi.cmake) — check the same table here so an
+    # unbuildable MLX is reported BEFORE the build, not as a CMake FATAL.
     def check_mlx():
         import mlx.core
         v = mlx.core.__version__
-        try:
-            from packaging.version import Version
-            below = Version(v.split("+")[0]) < Version(_MLX_FLOOR)
-        except Exception:
-            below = tuple(int(p) for p in v.split("+")[0].split(".")[:3]) \
-                < tuple(int(p) for p in _MLX_FLOOR.split("."))
-        if below:
-            print(f"  [WARN] MLX {v} < floor {_MLX_FLOOR} — pip enforces this at install "
-                  f"(nanobind ABI); building _ext against an older MLX is unsupported.")
-        return v
+        table = _verified_mlx_nanobind_table()
+        if v not in table:
+            raise RuntimeError(
+                f"MLX {v} is not in the verified nanobind-ABI table {sorted(table)} — "
+                "the build will refuse it (install one of those MLX releases)")
+        return f"{v} -> nanobind {table[v]} (verified table)"
     ok &= check("MLX", check_mlx)
 
     # MLX include path (mlx is a namespace pkg; use mlx.__path__)
@@ -67,32 +80,16 @@ def main():
         return libs[0]
     ok &= check("MLX library", check_mlx_lib)
 
-    # nanobind — CC-25 (audit): the build does NOT use the pip nanobind; it
-    # FetchContent-pins nanobind v2.12.0 (NB_INTERNALS v19, matching MLX>=0.31.2)
-    # in CMakeLists.txt.  Report the pip version as informational and flag a floor
-    # mismatch so this line isn't read as "the ABI nanobind is OK".
-    _NB_BUILD_PIN = "2.12.0"
-
+    # nanobind — NOT a requirement (A12, review 2026-09: this line failed CI since
+    # 2026-06): the build FetchContents the nanobind tag ABI-matched to the detected
+    # MLX (csrc/cmake/MlxNanobindAbi.cmake) and never uses a pip nanobind.
     def check_nanobind():
-        ver = __import__("nanobind").__version__
-        note = f"{ver} (informational; build FetchContent-pins v{_NB_BUILD_PIN})"
         try:
-            vt = tuple(int(x) for x in ver.split(".")[:2])
-            if vt < (2, 12):
-                note += "  [note: pip nanobind < build pin — irrelevant to _ext ABI, build uses its own]"
-        except Exception:
-            pass
-        return note
-    ok &= check("nanobind", check_nanobind)
-
-    # nanobind cmake dir
-    def check_nb_cmake():
-        r = subprocess.run(
-            [sys.executable, "-m", "nanobind", "--cmake_dir"],
-            capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        return r.stdout.strip()
-    ok &= check("nanobind cmake", check_nb_cmake)
+            ver = __import__("nanobind").__version__
+        except ImportError:
+            return "pip nanobind not installed — not needed (CMake fetches the ABI-matched tag)"
+        return f"pip nanobind {ver} present — unused by the build (CMake fetches the ABI-matched tag)"
+    info("nanobind", check_nanobind)
 
     # CMake
     def check_cmake():

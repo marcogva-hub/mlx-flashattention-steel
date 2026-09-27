@@ -33,3 +33,42 @@ def _mlx_pool_fence():
     # Teardown: free unused cached GPU buffers so the next test starts
     # from a clean pool (Rule 13: mx.clear_cache, not mx.metal.clear_cache).
     mx.clear_cache()
+
+
+# ── No-extension environments (CI "Fallback tests" job, BLD-06 / A12) ──────────
+# Test modules that import `mlx_mfa._ext` unconditionally at MODULE level cannot
+# even be collected when the extension is absent (ImportError at collection made
+# the whole fallback job red since 2026-06).  Such modules exercise the native
+# kernels by construction, so they are not collected there — LOUDLY: the terminal
+# summary lists every module left out and why.  Inert whenever _ext imports.
+import importlib.util as _ilu
+import re as _re
+
+_EXT_IMPORT_RE = _re.compile(
+    r"^(from mlx_mfa import [^\n]*\b_ext\b|from mlx_mfa\._ext import|import mlx_mfa\._ext)",
+    _re.M)
+_EXT_AVAILABLE = _ilu.find_spec("mlx_mfa._ext") is not None
+_NOT_COLLECTED_NO_EXT: list = []
+
+
+def pytest_ignore_collect(collection_path, config):
+    if _EXT_AVAILABLE or collection_path.suffix != ".py" \
+            or not collection_path.name.startswith("test_"):
+        return None
+    try:
+        src = collection_path.read_text()
+    except OSError:
+        return None
+    if _EXT_IMPORT_RE.search(src):
+        _NOT_COLLECTED_NO_EXT.append(collection_path.name)
+        return True
+    return None
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    if _NOT_COLLECTED_NO_EXT:
+        terminalreporter.write_sep(
+            "=", f"{len(_NOT_COLLECTED_NO_EXT)} module(s) NOT collected: they import "
+                 "mlx_mfa._ext at module level and the extension is absent")
+        for name in sorted(_NOT_COLLECTED_NO_EXT):
+            terminalreporter.write_line(f"  {name}")

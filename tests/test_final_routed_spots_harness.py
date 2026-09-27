@@ -5,7 +5,12 @@ from __future__ import annotations
 import mlx.core as mx
 import pytest
 
-from benchmarks.bench_final_routed_spots import _require_fingerprints
+# The harness module imports mlx_mfa._ext at module level (indirect import the
+# conftest no-extension rule cannot see): skip explicitly when the extension is
+# absent (CI "Fallback tests" job, A12).
+pytest.importorskip("mlx_mfa._ext", reason="harness needs the native extension")
+
+from benchmarks.bench_final_routed_spots import _require_fingerprints  # noqa: E402
 
 
 def _arrays(dtype=mx.float16):

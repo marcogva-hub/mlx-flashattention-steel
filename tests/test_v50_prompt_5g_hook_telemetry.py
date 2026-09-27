@@ -122,9 +122,13 @@ def test_hook_fallback_counter_increments_on_ineligible():
     mx.eval(y); mx.synchronize()
     stats = mlx_mfa.get_hook_stats()
     assert stats["fallback"]["conv3d_nax_forward"] >= 1
-    # Reason names the MPP-gate constraint that was violated.
     reasons = stats["fallback_reasons"]["conv3d_nax_forward"]
-    assert any("MPP gate" in r for r in reasons), reasons
+    assert reasons and all(r.strip() for r in reasons), reasons   # counted WITH a reason
+    # With NAX available the reason names the violated MPP-gate constraint; without it
+    # (no-extension CI job, M1 runner) the recorded reason is the hardware gate
+    # (A12, review 2026-09: this cell failed the whole fallback CI job).
+    if mlx_mfa.has_nax():
+        assert any("MPP gate" in r for r in reasons), reasons
 
 
 def test_fallback_reasons_capped_at_10():
