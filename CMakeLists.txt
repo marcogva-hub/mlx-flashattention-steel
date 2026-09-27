@@ -211,11 +211,21 @@ target_link_libraries(_ext PRIVATE
 
 # MLX_RUNTIME_VERSION is queried once, above (it drives the nanobind ABI mapping),
 # and reused here for the _check_abi runtime version compare.
+# R8 (review 2026-09): the mlx-mfa version joins the AOT metallib filename
+# (csrc/shader_cache.mm aot_metallib_filename) so a metallib from another release is
+# never loaded. scikit-build-core sets SKBUILD_PROJECT_VERSION; a plain CMake
+# configure (no scikit-build) falls back to an explicit non-release token.
+if(DEFINED SKBUILD_PROJECT_VERSION AND NOT SKBUILD_PROJECT_VERSION STREQUAL "")
+  set(MFA_AOT_VERSION "${SKBUILD_PROJECT_VERSION}")
+else()
+  set(MFA_AOT_VERSION "unversioned")
+endif()
 target_compile_definitions(_ext PRIVATE
   # CC-20 (volet E): MLX_MFA_METAL_PATH removed — it baked the build machine's
   # absolute csrc/kernels path into _ext with ZERO consumers (real kernels are
   # JIT-generated). MLX_BUILD_VERSION is live (the _check_abi version compare).
   MLX_BUILD_VERSION="${MLX_RUNTIME_VERSION}"
+  MLX_MFA_VERSION="${MFA_AOT_VERSION}"
 )
 # M6: define MFA_BUILD_PROBES so bindings.cpp registers the probe defs only when
 # their sources are actually compiled in.

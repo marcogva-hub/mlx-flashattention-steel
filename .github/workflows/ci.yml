@@ -194,11 +194,6 @@ jobs:
           SDIST=$(ls dist/*.tar.gz)
           echo "Checking: $SDIST"
 
-          # Must contain the metallib
-          tar tzf "$SDIST" | grep "async_v2.metallib" \
-            && echo "✅ async_v2.metallib found in sdist" \
-            || echo "❌ async_v2.metallib MISSING from sdist"
-
           # Must contain the Metal kernel source
           tar tzf "$SDIST" | grep "async_v2_kernel.metal" \
             && echo "✅ async_v2_kernel.metal found" \
@@ -216,17 +211,16 @@ jobs:
           # CX-05 (audit): the "Must contain" greps above are advisory — their
           # `|| echo MISSING` branch exits 0, so a missing .metal/.cpp source did
           # NOT fail the job.  Gate every mandatory source member FATALLY.
-          # CC-19 (volet E): async_v2.metallib is TARGET-DEAD on macOS ≥26 / M5
-          # (shader_cache.mm returns nullptr there → JIT path) but still used on
-          # macOS 14/15, so it remains shipped — its presence is ADVISORY (a
-          # warning), NOT fatal, so an M5 release is never blocked by a
-          # target-dead artifact. The compile-critical sources stay FATAL.
-          for member in async_v2_kernel.metal mfa_steel_fwd_v2.cpp; do
+          # 2.62.2 (review 2026-09, BLD-04): the precompiled async_v2.metallib and its
+          # loader are RETIRED — it must NOT ship any more (fatal if it reappears).
+          # The compile-critical sources stay FATAL.
+          for member in mfa_steel_fwd_v2.cpp shader_cache.mm; do
             tar tzf "$SDIST" | grep -q "$member" \
               || { echo "FATAL: $member not in sdist"; exit 1; }
           done
-          tar tzf "$SDIST" | grep -q "async_v2.metallib" \
-            || echo "::warning::async_v2.metallib absent from sdist — macOS 14/15 lose the precompiled async path (target-dead on M5/≥26, so not fatal)."
+          if tar tzf "$SDIST" | grep -q "\.metallib$"; then
+            echo "FATAL: a precompiled .metallib is back in the sdist (retired in 2.62.2)"; exit 1
+          fi
 
       # CX-10 (volet D): the release model is SOURCE-BUILD-ONLY, so "the sdist
       # compiles _ext and imports" is the per-interpreter release contract — test

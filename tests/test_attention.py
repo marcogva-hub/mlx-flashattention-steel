@@ -11531,10 +11531,13 @@ class TestCompileMetallib:
 
 
 class TestAsyncV2Metallib:
-    """Tests for CP4 async V2 metallib (simdgroup_async_copy hardware DMA).
+    """CP4 async V2 metallib (simdgroup_async_copy hardware DMA) — HISTORICAL.
 
-    These tests cover the build script, shader_cache fallback chain, and
-    numerical correctness when async_v2.metallib is present.
+    Retired in 2.62.2 (review 2026-09, BLD-04): the precompiled async_v2.metallib,
+    its loader and MFA_DISABLE_ASYNC are gone; the byte-vacuous async-vs-sync
+    comparisons (BLD-08) were removed with them.  Only the historical source and
+    build script are kept (checked below); tests/test_r8_aot_metallib_cache.py
+    locks the retirement.
     """
 
     def test_async_kernel_source_exists(self):
@@ -11575,76 +11578,6 @@ class TestAsyncV2Metallib:
         assert os.path.exists(script), f"build_async_metallib.sh not found at {script}"
         assert os.access(script, os.X_OK), "build_async_metallib.sh must be executable"
 
-    @pytest.mark.skipif(
-        not pytest.importorskip("mlx_mfa", reason="mlx_mfa not installed")
-        or not __import__("mlx_mfa").is_mfa_available(),
-        reason="MFA C++ extension not available",
-    )
-    def test_async_fallback_to_sync(self):
-        """With MFA_DISABLE_ASYNC=1, execution must fall back to sync path
-        and produce numerically identical results."""
-        import os, mlx.core as mx, mlx_mfa
-
-        B, H, N, D = 1, 2, 256, 64
-        key = mx.random.normal([B, H, N, D], dtype=mx.float16)
-        q, k, v = key, key, key
-        scale = D ** -0.5
-
-        # Reference: async disabled → sync path
-        with __import__("unittest.mock", fromlist=["patch"]).patch.dict(
-            os.environ, {"MFA_DISABLE_ASYNC": "1"}
-        ):
-            out_sync = mlx_mfa.flash_attention(q, k, v, scale=scale, causal=True,
-                                               backend="mfa")
-            mx.eval(out_sync)
-
-        # Default: async path (or falls back if metallib absent)
-        out_default = mlx_mfa.flash_attention(q, k, v, scale=scale, causal=True,
-                                              backend="mfa")
-        mx.eval(out_default)
-
-        # Both paths should agree numerically
-        err = mx.max(mx.abs(out_sync.astype(mx.float32) -
-                            out_default.astype(mx.float32))).item()
-        assert err < 1e-2, f"sync vs default mismatch: max_err={err:.4e}"
-
-    @pytest.mark.skipif(
-        not __import__("os").path.exists(
-            __import__("os").path.join(
-                __import__("os").path.dirname(
-                    __import__("importlib.util", fromlist=["find_spec"])
-                    .find_spec("mlx_mfa").origin),
-                "precompiled", "async_v2.metallib")),
-        reason="async_v2.metallib not present (macOS 26 expected — xcrun rejects __asm)",
-    )
-    def test_async_v2_matches_sync(self):
-        """When async_v2.metallib is present, output must match sync V2 within f16 tolerance."""
-        import os, mlx.core as mx, mlx_mfa
-        from unittest.mock import patch
-
-        for D, N in [(64, 512), (128, 512)]:
-            B, H = 1, 2
-            key = mx.random.normal([B, H, N, D], dtype=mx.float16)
-            q, k, v = key, key, key
-            scale = D ** -0.5
-
-            # Async path (default — async metallib loaded if present)
-            with patch.dict(os.environ, {"MFA_DISABLE_ASYNC": "0"}, clear=False):
-                out_async = mlx_mfa.flash_attention(q, k, v, scale=scale,
-                                                    causal=True, backend="mfa")
-                mx.eval(out_async)
-
-            # Sync path (async disabled)
-            with patch.dict(os.environ, {"MFA_DISABLE_ASYNC": "1"}):
-                out_sync = mlx_mfa.flash_attention(q, k, v, scale=scale,
-                                                   causal=True, backend="mfa")
-                mx.eval(out_sync)
-
-            err = mx.max(mx.abs(out_async.astype(mx.float32) -
-                                out_sync.astype(mx.float32))).item()
-            assert err < 1e-2, (
-                f"D={D} N={N}: async vs sync max_err={err:.4e} (expected < 1e-2)"
-            )
 
 
 @requires_ext

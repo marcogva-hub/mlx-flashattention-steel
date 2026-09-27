@@ -29,7 +29,6 @@ venv.deprecated.*
 
 # Metal
 *.metallib
-!mlx_mfa/precompiled/async_v2.metallib
 *.air
 *.metal-ar
 

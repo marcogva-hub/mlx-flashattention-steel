@@ -4,8 +4,8 @@
 /// Meyers' static singleton). Replaces per-dispatch std::getenv()
 /// calls in the hot path (eval_gpu and block config selection).
 ///
-/// Shader-generator env vars (MFA_NO_PADDING, MFA_IR_INVESTIGATE,
-/// MFA_DISABLE_ASYNC) are not in the dispatch-cache struct.  MFA_NO_PADDING in
+/// Shader-generator env vars (MFA_NO_PADDING) are not in the dispatch-cache struct
+/// (MFA_DISABLE_ASYNC / MFA_IR_INVESTIGATE were retired with async_v2 in 2.62.2).  MFA_NO_PADDING in
 /// particular is FROZEN at first read (function-local static, see no_padding()):
 /// it is load-time-only and is NOT reset by invalidate()/_invalidate_env_config()
 /// — deliberately, because it is absent from the shader-cache KernelKey and a

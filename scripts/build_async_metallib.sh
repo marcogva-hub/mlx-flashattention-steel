@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HISTORICAL — abandoned async-copy experiment (March 2026: the macOS 26 driver
+# serialises simdgroup_async_copy, -13 %). The metallib it produces is NOT shipped
+# and NOT loaded since 2.62.2 (review 2026-09, BLD-04). Kept for reference only.
+#
 # build_async_metallib.sh — Compile async_v2_kernel.metal to async_v2.metallib.
 #
 # Usage:

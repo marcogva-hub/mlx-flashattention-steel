@@ -28,10 +28,15 @@ Compiled configs cover (V2 D-split):
   - D=256 BK=32/64 f16/bf16  causal/noncausal  (M1/M2 or M3+)
   - D=512 BK=32/64 f16/bf16  causal/noncausal  (M1/M2 or M3+)
 
-Filename scheme (matches C++ ShaderCache lookup)::
+Filename scheme (R8, review 2026-09 — content-addressed; the C++ ShaderCache is the
+single source of truth and prints it as ``aot=<name>`` in the MFA_DEBUG_SHADERS header)::
 
-    v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib       (standard V2)
-    v2_dsplit_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib (D-split V2)
+    v2[_dsplit]_D{D}_BQ{BQ}_BK{BK}_BD{BD}_W{warps}_M{m3}_dtype{dt}_causal{0|1}
+        _msl{steel_msl_mode}_v{mlx-mfa version}_h{FNV-1a-64 of the MSL source}.metallib
+
+A metallib built by another mlx-mfa version, from another kernel source, or for
+another geometry (e.g. MFA_V2_BQ64) is never matched, so it can never be served
+for the wrong kernel.  Files from the pre-2.62.2 scheme are simply ignored.
 """
 from __future__ import annotations
 
@@ -107,7 +112,6 @@ def compile_metallib(
     except Exception:
         is_m3_plus = False
 
-    m3 = 1 if is_m3_plus else 0
 
     # V2 block sizes (must match select_steel_v2_block_config in C++)
     bk_d64 = 64                           # D=64: BK=64 all gens
@@ -128,29 +132,9 @@ def compile_metallib(
     results: dict = {}
 
     for D, BK, dtype_code, causal, dtype_name in configs:
-        filename = f"v2_D{D}_BK{BK}_M{m3}_dtype{dtype_code}_causal{int(causal)}.metallib"
-        metallib_path = os.path.join(output_dir, filename)
-
-        if os.path.exists(metallib_path) and not force:
-            if verbose:
-                print(f"[compile_metallib] Already compiled: {filename}")
-            results[filename] = True
-            continue
-
-        if verbose:
-            print(f"[compile_metallib] Compiling: {filename} ...", end=" ", flush=True)
-
-        source = _capture_shader_source(D, BK, dtype_name, causal, is_m3_plus)
-        if source is None:
-            if verbose:
-                print("FAILED (source generation)")
-            results[filename] = False
-            continue
-
-        ok = _compile_source_to_metallib(source, metallib_path)
-        results[filename] = ok
-        if verbose:
-            print("ok" if ok else "FAILED (xcrun)")
+        label = f"v2_D{D}_BK{BK}_dtype{dtype_code}_causal{int(causal)}"
+        captured = _capture_shader_source(D, BK, dtype_name, causal, is_m3_plus)
+        _compile_one(captured, label, output_dir, force, verbose, results)
 
     # ── V2 D-split configs (D=256/512) ─────────────────────────────────────
     # BK from select_steel_v2_block_config(128, is_m3_plus) — same as D=128.
@@ -168,29 +152,9 @@ def compile_metallib(
     ]
 
     for D, BK, dtype_code, causal, dtype_name in dsplit_configs:
-        filename = f"v2_dsplit_D{D}_BK{BK}_M{m3}_dtype{dtype_code}_causal{int(causal)}.metallib"
-        metallib_path = os.path.join(output_dir, filename)
-
-        if os.path.exists(metallib_path) and not force:
-            if verbose:
-                print(f"[compile_metallib] Already compiled: {filename}")
-            results[filename] = True
-            continue
-
-        if verbose:
-            print(f"[compile_metallib] Compiling: {filename} ...", end=" ", flush=True)
-
-        source = _capture_dsplit_shader_source(D, BK, dtype_name, causal, is_m3_plus)
-        if source is None:
-            if verbose:
-                print("FAILED (source generation)")
-            results[filename] = False
-            continue
-
-        ok = _compile_source_to_metallib(source, metallib_path)
-        results[filename] = ok
-        if verbose:
-            print("ok" if ok else "FAILED (xcrun)")
+        label = f"v2_dsplit_D{D}_BK{BK}_dtype{dtype_code}_causal{int(causal)}"
+        captured = _capture_dsplit_shader_source(D, BK, dtype_name, causal, is_m3_plus)
+        _compile_one(captured, label, output_dir, force, verbose, results)
 
     if verbose:
         n_ok = sum(1 for v in results.values() if v)
@@ -202,6 +166,62 @@ def compile_metallib(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_HEADER_AOT = re.compile(r"aot=(\S+?)\]")
+
+
+def _compile_one(captured, label, output_dir, force, verbose, results) -> None:
+    """Compile one captured (source, aot_name) pair into ``output_dir/aot_name``."""
+    # Failures have no canonical (source-hashed) name: key them as an explicitly
+    # UNRESOLVED filename (ok=False, no file) to keep the documented
+    # {filename: bool} contract without inventing a loadable name.
+    if captured is None:
+        # e.g. causal D<=128 on M3+ runs STEEL V1 (m3_prefers_v1) — no V2 kernel.
+        if verbose:
+            print(f"[compile_metallib] {label}: FAILED (no V2 kernel captured)")
+        results[f"unresolved_{label}.metallib"] = False
+        return
+    source, filename = captured
+    if not filename or filename == "-":
+        # The C++ loader declared this key not AOT-eligible: nothing to precompile.
+        if verbose:
+            print(f"[compile_metallib] {label}: FAILED (key not AOT-eligible)")
+        results[f"unresolved_{label}.metallib"] = False
+        return
+    metallib_path = os.path.join(output_dir, filename)
+    if os.path.exists(metallib_path) and not force:
+        if verbose:
+            print(f"[compile_metallib] Already compiled: {filename}")
+        results[filename] = True
+        return
+    if verbose:
+        print(f"[compile_metallib] Compiling: {filename} ...", end=" ", flush=True)
+    ok = _compile_source_to_metallib(source, metallib_path)
+    results[filename] = ok
+    if verbose:
+        print("ok" if ok else "FAILED (xcrun)")
+
+
+def _capture_env() -> dict:
+    """Env for the capture subprocess: debug-shader dump ON, and NSHomeDirectory()
+    redirected to an EMPTY dir so an existing AOT file can never short-circuit the
+    JIT (the header — source + canonical aot name — is only printed on JIT)."""
+    env = dict(os.environ)
+    env["MFA_DEBUG_SHADERS"] = "1"
+    env.pop("MFA_DISABLE_V2", None)
+    env["CFFIXED_USER_HOME"] = tempfile.mkdtemp(prefix="mlx_mfa_aot_capture_")
+    return env
+
+
+def _parse_capture(stderr: str, label_regex: str):
+    """-> (source, aot_name) from the MFA_DEBUG_SHADERS dump, or None."""
+    m = re.search(
+        rf"=== MFA Shader \[({label_regex}[^\]]*)\] ===\n(.*?)=== END MFA Shader ===",
+        stderr, re.DOTALL)
+    if not m:
+        return None
+    a = _HEADER_AOT.search("[" + m.group(1) + "]")
+    return m.group(2).strip(), (a.group(1) if a else None)
 
 def _xcrun_metal_available() -> bool:
     """Return True if xcrun metal can be invoked without error."""
@@ -221,9 +241,9 @@ def _capture_shader_source(
     dtype_name: str,
     causal: bool,
     is_m3_plus: bool,
-) -> Optional[str]:
+) -> Optional[tuple]:
     """Launch a subprocess that calls flash_attention with MFA_DEBUG_SHADERS=1
-    and extract the V2 kernel source from stderr."""
+    and extract (V2 kernel source, canonical AOT filename) from stderr."""
     N = 4096
     scale = 1.0 / (D ** 0.5)
 
@@ -239,9 +259,7 @@ def _capture_shader_source(
     ]
     script = "\n".join(lines)
 
-    env = dict(os.environ)
-    env["MFA_DEBUG_SHADERS"] = "1"
-    env.pop("MFA_DISABLE_V2", None)
+    env = _capture_env()
     if D == 128:
         env["MFA_V2_FORCE_BK"] = str(BK)
 
@@ -253,17 +271,8 @@ def _capture_shader_source(
     except Exception:
         return None
 
-    stderr = result.stderr
-    # Parse: "=== MFA Shader [steel_fwd_v2 ...] ===\n<source>\n=== END MFA Shader ==="
-    pattern = (
-        r"=== MFA Shader \[steel_fwd_v2[^\]]*\] ===\n"
-        r"(.*?)"
-        r"=== END MFA Shader ==="
-    )
-    m = re.search(pattern, stderr, re.DOTALL)
-    if not m:
-        return None
-    return m.group(1).strip()
+    # "=== MFA Shader [steel_fwd_v2 ... aot=<name>] ===\n<source>\n=== END MFA Shader ==="
+    return _parse_capture(result.stderr, "steel_fwd_v2")
 
 
 def _capture_dsplit_shader_source(
@@ -272,7 +281,7 @@ def _capture_dsplit_shader_source(
     dtype_name: str,
     causal: bool,
     is_m3_plus: bool,
-) -> Optional[str]:
+) -> Optional[tuple]:
     """Like _capture_shader_source but for the V2 D-split kernel (D=256/512)."""
     N = 256  # short sequence — just triggers one JIT compile
     scale = 1.0 / (D ** 0.5)
@@ -289,9 +298,7 @@ def _capture_dsplit_shader_source(
     ]
     script = "\n".join(lines)
 
-    env = dict(os.environ)
-    env["MFA_DEBUG_SHADERS"] = "1"
-    env.pop("MFA_DISABLE_V2", None)
+    env = _capture_env()
 
     try:
         result = subprocess.run(
@@ -301,16 +308,7 @@ def _capture_dsplit_shader_source(
     except Exception:
         return None
 
-    stderr = result.stderr
-    pattern = (
-        rf"=== MFA Shader \[{re.escape(label)}[^\]]*\] ===\n"
-        r"(.*?)"
-        r"=== END MFA Shader ==="
-    )
-    m = re.search(pattern, stderr, re.DOTALL)
-    if not m:
-        return None
-    return m.group(1).strip()
+    return _parse_capture(result.stderr, re.escape(label))
 
 
 def _compile_source_to_metallib(source: str, output_path: str) -> bool:

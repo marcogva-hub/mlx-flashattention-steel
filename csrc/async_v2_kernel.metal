@@ -1,3 +1,9 @@
+// HISTORICAL — abandoned async-copy experiment (March 2026: the macOS 26 driver
+// serialises simdgroup_async_copy, -13 %). NOT shipped, NOT loaded since 2.62.2
+// (review 2026-09, BLD-04: the precompiled async_v2.metallib built from this file
+// was tried BEFORE the JIT on macOS 14/15 while its source stayed frozen, pre-RC-A).
+// Kept for reference only.
+//
 // async_v2_kernel.metal — STEEL V2 with simdgroup_async_copy hardware DMA.
 //
 // Uses Apple's simdgroup_event API (__asm("air.simdgroup_async_copy_2d.p3i8.p1i8"))

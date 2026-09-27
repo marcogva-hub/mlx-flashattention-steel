@@ -30,7 +30,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <dlfcn.h>
 #include <mutex>
 #include <stdexcept>
 
@@ -56,198 +55,82 @@ size_t ShaderCache::KernelKeyHash::operator()(const KernelKey& k) const {
 }
 
 // ---------------------------------------------------------------------------
-// CP4c: Async metallib fast path (ships with package in mlx_mfa/precompiled/)
+// CP9 / R8: precompiled (AOT) metallib cache — content-addressed
 // ---------------------------------------------------------------------------
+// The CP4c async_v2.metallib fast path (simdgroup_async_copy, tried BEFORE the JIT
+// on macOS 14/15) was RETIRED in 2.62.2 (review 2026-09, BLD-04, decision Marco):
+// its source had been frozen since 2026-03-11 (pre-RC-A causal zone, ungated
+// non-causal K-loop limit) so every later kernel fix bypassed it on that floor.
+// csrc/async_v2_kernel.metal is kept as a historical reference only.
 
-/// Try to load the async V2 metallib (uses simdgroup_async_copy hardware DMA).
-/// Checks mlx_mfa/precompiled/async_v2.metallib relative to the installed
-/// package dylib.  Uses MTLFunctionConstantValues for FC_CAUSAL and
-/// FC_GQA_FACTOR so one metallib serves all flag combinations.
-/// Set MFA_DISABLE_ASYNC=1 to skip this path entirely.
-/// Returns a retained id<MTLComputePipelineState> (as void*) or nullptr.
-static void* try_async_pipeline(const ShaderCache::KernelKey& key,
-                                void* raw_device) {
-  using KT = ShaderCache::KernelKey::KernelType;
-  const bool ir_debug = get_bool_env("MFA_IR_INVESTIGATE");
+#ifndef MLX_MFA_VERSION
+#define MLX_MFA_VERSION "unversioned"
+#endif
 
-  // Only D=64/128 SteelForwardV2, f16 only, no extra features
-  if (key.type != KT::SteelForwardV2) return nullptr;
-  if (key.head_dim != 64 && key.head_dim != 128) return nullptr;
-  if (key.dtype != 0) return nullptr;  // f16 only
-  if (key.sparse || key.has_rope || key.has_softcap ||
-      key.has_alibi || key.has_attn_bias || key.has_window) return nullptr;
-  if (get_bool_env("MFA_DISABLE_ASYNC")) {
-    if (ir_debug) {
-      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: disabled by MFA_DISABLE_ASYNC");
-    }
-    return nullptr;
-  }
-  // v2.52.2 (III-8e root cause): the async_v2.metallib uses
-  // `simdgroup_async_copy` (hardware DMA), which Apple REMOVED from the AIR
-  // runtime in macOS 26 (confirmed by liuliu; see CLAUDE.md "simdgroup_async_
-  // copy — Definitive Status").  On macOS 26+ the precompiled async metallib
-  // then loads only PARTIAL K tiles → wrong non-causal output (it attends
-  // ~(qb+1)*BQ keys; causal coincidentally survives because its mask zeroes
-  // the unloaded keys anyway).  This silently shipped because the default
-  // dispatch routes non-causal dense → SDPA and causal V2 happens to align
-  // with the truncation.  The JIT path (generate_steel_v2_source,
-  // preferAsyncCache=true per-lane device reads) is CORRECT on macOS 26 —
-  // verified bit-exact vs fp32 SDPA across D∈{64,128}, N, causal/non-causal.
-  // Skip the async fast path on macOS 26+ so all V2 dispatch uses the correct
-  // JIT path.
-  if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion >= 26) {
-    if (ir_debug) {
-      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: skipped (macOS 26+ — "
-            @"simdgroup_async_copy broken; using JIT path)");
-    }
-    return nullptr;
-  }
-
-  @autoreleasepool {
-    // Resolve precompiled dir relative to our shared library's location.
-    // The dylib lives at mlx_mfa/_ext.cpython-*.so and the metallib is at
-    // mlx_mfa/precompiled/async_v2.metallib — same parent directory.
-    Dl_info dl_info;
-    if (dladdr((void*)&ShaderCache::get, &dl_info) == 0) {
-      if (ir_debug) {
-        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: dladdr failed");
-      }
-      return nullptr;
-    }
-    NSString* dylib_path = [NSString stringWithUTF8String:dl_info.dli_fname];
-    NSString* pkg_dir    = [dylib_path stringByDeletingLastPathComponent];
-    NSURL* metallib_url  = [NSURL fileURLWithPath:
-        [[pkg_dir stringByAppendingPathComponent:@"precompiled"]
-                  stringByAppendingPathComponent:@"async_v2.metallib"]];
-
-    if (ir_debug) {
-      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: loading %@", [metallib_url path]);
-    }
-    if (![[NSFileManager defaultManager] fileExistsAtPath:[metallib_url path]]) {
-      if (ir_debug) {
-        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED (metallib missing)");
-      }
-      return nullptr;
-    }
-
-    id<MTLDevice> device = (__bridge id<MTLDevice>)raw_device;
-    NSError* error = nil;
-
-    id<MTLLibrary> library = [device newLibraryWithURL:metallib_url error:&error];
-    if (!library) {
-      if (ir_debug) {
-        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED library load (%@)",
-              error ? [error localizedDescription] : @"unknown");
-      }
-      return nullptr;
-    }
-
-    NSString* fn_name = (key.head_dim == 64)
-        ? @"mlx_mfa_v2_async_attention"
-        : @"mlx_mfa_v2_async_attention_d128";
-
-    // Set function constants: index 0 = FC_CAUSAL (bool), index 1 = FC_GQA_FACTOR (ushort)
-    MTLFunctionConstantValues* constants = [[MTLFunctionConstantValues alloc] init];
-    bool   causal_val = key.causal;
-    ushort gqa_val    = (ushort)key.gqa_factor;
-    [constants setConstantValue:&causal_val type:MTLDataTypeBool   atIndex:0];
-    [constants setConstantValue:&gqa_val    type:MTLDataTypeUShort atIndex:1];
-
-    id<MTLFunction> function = [library newFunctionWithName:fn_name
-                                            constantValues:constants
-                                                     error:&error];
-    if (!function) {
-      if (ir_debug) {
-        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED function load (%@)",
-              error ? [error localizedDescription] : @"unknown");
-      }
-      return nullptr;
-    }
-
-    id<MTLComputePipelineState> pipeline =
-        [device newComputePipelineStateWithFunction:function error:&error];
-    if (!pipeline) {
-      if (ir_debug) {
-        NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: FAILED pipeline creation (%@)",
-              error ? [error localizedDescription] : @"unknown");
-      }
-      return nullptr;
-    }
-    if (ir_debug) {
-      NSLog(@"[MFA-IR-INVESTIGATE] Async pipeline: SUCCESS (%@)", fn_name);
-    }
-
-    return (void*)CFBridgingRetain(pipeline);
-  }
+/// FNV-1a 64-bit of the generated MSL source, hex.  A content hash, not security.
+static std::string fnv1a64_hex(const std::string& s) {
+  uint64_t h = 1469598103934665603ULL;
+  for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+  return std::string(buf);
 }
 
-// ---------------------------------------------------------------------------
-// CP9: Precompiled metallib fast path
-// ---------------------------------------------------------------------------
-
-/// Try to load a precompiled .metallib for SteelForwardV2 or V2 D-split keys.
-/// Returns a retained id<MTLComputePipelineState> (as void*) on success,
-/// or nullptr when no matching file exists (caller falls through to JIT).
-///
-/// Filename schemes (must match mlx_mfa/compile_metallib.py):
-///   Standard V2:  v2_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
-///   D-split V2:   v2_dsplit_D{D}_BK{BK}_M{is_m3_plus}_dtype{dtype_code}_causal{0|1}.metallib
-/// Located in: ~/.mlx_mfa/metallib/
-static void* try_precompiled_pipeline(const ShaderCache::KernelKey& key,
-                                      void* raw_device) {
+/// R8 (review 2026-09): canonical AOT filename for an AOT-eligible key, "" otherwise.
+/// The old name (D, BK, is_m3_plus, dtype, causal) omitted block_q / n_warps /
+/// steel_msl_mode, the mlx-mfa version and the source, while the loaded pipeline was
+/// cached under the FULL KernelKey: a BQ32 build served BQ64 host geometry
+/// (MFA_V2_BQ64=1, err 0.95) and metallibs built before a kernel fix kept loading
+/// after an upgrade.  Now: full geometry + version + FNV-1a-64(source) — a metallib
+/// compiled from any other source / version / geometry is never matched (no user
+/// file is deleted).  compile_metallib.py reads this exact name from the
+/// MFA_DEBUG_SHADERS header: one source of truth.
+static std::string aot_metallib_filename(const ShaderCache::KernelKey& key,
+                                         const std::string& source) {
   using KT = ShaderCache::KernelKey::KernelType;
+  const bool is_std_v2 = (key.type == KT::SteelForwardV2);
+  const bool is_dsplit = (key.type == KT::SteelV2DSplit256 ||
+                          key.type == KT::SteelV2DSplit512);
+  if (!is_std_v2 && !is_dsplit) return "";
+  // Only standard single-head MHA without extra features is precompiled.
+  if (key.sparse || key.has_rope || key.has_softcap || key.has_alibi ||
+      key.has_attn_bias || key.has_window || key.gqa_factor != 1) return "";
+  char buf[320];
+  snprintf(buf, sizeof(buf),
+           "%s_D%d_BQ%d_BK%d_BD%d_W%d_M%d_dtype%d_causal%d_msl%d_v%s_h%s.metallib",
+           is_std_v2 ? "v2" : "v2_dsplit", key.head_dim, key.block_q,
+           key.block_k, key.block_d, key.n_warps, (int)key.is_m3_plus,
+           (int)key.dtype, (int)key.causal, (int)key.steel_msl_mode,
+           MLX_MFA_VERSION, fnv1a64_hex(source).c_str());
+  return std::string(buf);
+}
 
-  const bool is_std_v2    = (key.type == KT::SteelForwardV2);
-  const bool is_dsplit256 = (key.type == KT::SteelV2DSplit256);
-  const bool is_dsplit512 = (key.type == KT::SteelV2DSplit512);
-
-  if (!is_std_v2 && !is_dsplit256 && !is_dsplit512) return nullptr;
-
-  // Only precompile standard single-head MHA without extra features.
-  if (key.sparse || key.has_rope || key.has_softcap ||
-      key.has_alibi || key.has_attn_bias || key.has_window ||
-      key.gqa_factor != 1) return nullptr;
-
+/// Load ~/.mlx_mfa/metallib/<aot_name> when it exists.  Returns a retained
+/// id<MTLComputePipelineState> (as void*) or nullptr (caller JIT-compiles).
+static void* try_precompiled_pipeline(const std::string& aot_name,
+                                      const std::string& fn_name,
+                                      void* raw_device) {
+  if (aot_name.empty()) return nullptr;
   @autoreleasepool {
-    NSString* fname;
-    NSString* fn_name;
-    if (is_std_v2) {
-      fname   = [NSString stringWithFormat:
-          @"v2_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
-          key.head_dim, key.block_k,
-          (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
-      fn_name = @"mlx_mfa_v2_attention";
-    } else {
-      fname   = [NSString stringWithFormat:
-          @"v2_dsplit_D%d_BK%d_M%d_dtype%d_causal%d.metallib",
-          key.head_dim, key.block_k,
-          (int)key.is_m3_plus, (int)key.dtype, (int)key.causal];
-      fn_name = @"mlx_mfa_v2_dsplit_attention";
-    }
-
     NSString* home = NSHomeDirectory();
     NSURL* dir_url  = [NSURL fileURLWithPath:
         [home stringByAppendingPathComponent:@".mlx_mfa/metallib"]];
-    NSURL* file_url = [dir_url URLByAppendingPathComponent:fname];
-
+    NSURL* file_url = [dir_url URLByAppendingPathComponent:
+        [NSString stringWithUTF8String:aot_name.c_str()]];
     // Bail out quickly when the file is absent (no Metal exception thrown).
     if (![[NSFileManager defaultManager] fileExistsAtPath:[file_url path]]) {
       return nullptr;
     }
-
     id<MTLDevice> device = (__bridge id<MTLDevice>)raw_device;
     NSError* error = nil;
-
     id<MTLLibrary> library = [device newLibraryWithURL:file_url error:&error];
     if (!library) return nullptr;  // fall through to JIT
-
-    id<MTLFunction> function = [library newFunctionWithName:fn_name];
+    id<MTLFunction> function = [library newFunctionWithName:
+        [NSString stringWithUTF8String:fn_name.c_str()]];
     if (!function) return nullptr;
-
     id<MTLComputePipelineState> pipeline =
         [device newComputePipelineStateWithFunction:function error:&error];
     if (!pipeline) return nullptr;
-
     return (void*)CFBridgingRetain(pipeline);
   }
 }
@@ -263,20 +146,6 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (it != cache_.end()) {
       return it->second;
     }
-  }
-
-  // CP4c: async metallib (hardware DMA, ships with package) — best throughput.
-  if (void* async = try_async_pipeline(key, device)) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    cache_.emplace(key, async);
-    return async;
-  }
-
-  // CP9: try to load a precompiled metallib — skips ~50ms JIT compilation.
-  if (void* pre = try_precompiled_pipeline(key, device)) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    cache_.emplace(key, pre);
-    return pre;
   }
 
   std::string fn_name;
@@ -350,7 +219,17 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     source  = generate_attention_source(key);
   }
 
-  // Debug: set MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr.
+  // CP9 / R8: content-addressed AOT metallib (skips ~50 ms of JIT).  Looked up
+  // AFTER source generation because the filename embeds the source hash.
+  const std::string aot_name = aot_metallib_filename(key, source);
+  if (void* pre = try_precompiled_pipeline(aot_name, fn_name, device)) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    cache_.emplace(key, pre);
+    return pre;
+  }
+
+  // Debug: set MFA_DEBUG_SHADERS=1 to dump generated Metal source to stderr
+  // (JIT path only; `aot=` is the canonical precompiled filename, or "-").
   if (get_bool_env("MFA_DEBUG_SHADERS")) {
     const char* type_str = "forward";
     if (key.type == KT::AttentionBackwardDQ)  type_str = "backwardDQ";
@@ -375,10 +254,11 @@ void* ShaderCache::get_or_compile(const KernelKey& key, void* device) {
     if (key.type == KT::SteelForwardV3)         type_str = "steel_fwd_v3";
     if (key.type == KT::GNAForward)             type_str = "gna_fwd";
     fprintf(stderr,
-            "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d] ===\n"
+            "\n=== MFA Shader [%s D=%d bq=%d bk=%d bd=%d m3=%d dtype=%d aot=%s] ===\n"
             "%s\n=== END MFA Shader ===\n",
             type_str, key.head_dim, key.block_q, key.block_k, key.block_d,
             (int)key.is_m3_plus, (int)key.dtype,
+            aot_name.empty() ? "-" : aot_name.c_str(),
             source.c_str());
     fflush(stderr);
   }
