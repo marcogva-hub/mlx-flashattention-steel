@@ -1453,6 +1453,11 @@ def make_rope_3d_tables(
 # (id(cos), id(sin), shape, head_dim, interleaved, dtype) and holds a
 # strong ref to the tables so the id() cannot be recycled (same
 # id-ABA discipline as the sparse-bias caches).
+# R6 sibling (review 2026-09), deliberately NOT content-keyed: RoPE position
+# tables are constants by construction and this check sits on the decode hot
+# path, where a per-call content hash (O(table bytes): ~0.2-0.7 ms at 8-32 MB)
+# would dominate the step.  Contract: do not mutate cos/sin tables in place —
+# build new arrays (the verdict would otherwise be stale).
 _ROPE_NAX_TABLE_VERDICT: dict = {}
 
 
@@ -5125,6 +5130,21 @@ def _sparse_fallback_sdpa(
     return mx.where(row_active, out, mx.zeros_like(out))
 
 
+def _mask_content_key(block_mask: mx.array) -> int:
+    """R6/NEPB-04 (review 2026-09): content component of the sparse-cache keys.
+
+    MLX arrays mutate IN PLACE with an unchanged Python id (``m[...] = x``), so an
+    id()-only key served the OLD mask's bias after a mutation (silent-wrong).  CRC32
+    of the mask bytes (zero-copy host view on unified memory) — measured 0.43 ms at
+    NQ=NK=4509 (20.3 MB; blake2b 13.7 ms, GPU weighted-sum 0.85 ms), linear in mask
+    bytes; MLX exposes no array version counter.  Collision needs 2^-32 per mutation
+    of the SAME object (id stays in the key).
+    """
+    import zlib
+    import numpy as _np
+    return zlib.crc32(_np.ascontiguousarray(_np.asarray(block_mask)))
+
+
 # v2.33.1 — fast-fallback: bounded LRU cache for expanded float-bias masks.
 # Keyed by `(id(block_mask), block_mask.shape, block_mask.dtype, B, H, N, S,
 # target_dtype)`. Cache HIT when the user reuses the same `block_mask` Python
@@ -5157,6 +5177,9 @@ def _get_or_build_expanded_float_bias(
     cache_key = (
         id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
         B, H, N, S, str(target_dtype),
+        # R6/DOC-06 (review 2026-09): content + head_dim (the expansion tile
+        # depends on it) — an id()-only key went stale on in-place mutation.
+        _mask_content_key(block_mask), int(head_dim_d7),
     )
     # Repo review 2026-05: entries store (mask_ref, bias).  Holding a strong
     # reference to the keyed mask prevents the id()-ABA hazard: a GC'd mask's
@@ -5233,6 +5256,7 @@ def _get_sparse_row_active(
     cache_key = (
         id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
         B, H, N, S, bool(causal),
+        _mask_content_key(block_mask), int(head_dim_d7),  # R6/DOC-06
     )
     cached = _SPARSE_ROWFIX_CACHE.get(cache_key)
     if cached is not None:
@@ -5284,7 +5308,7 @@ _SPARSE_SANITIZED_BIAS_CACHE_MAX = 8
 
 def _get_sanitized_bias(
     block_mask: mx.array, float_bias: mx.array, row_active: mx.array,
-    B: int, H: int, N: int, S: int, causal: bool,
+    B: int, H: int, N: int, S: int, causal: bool, head_dim_d7: int = 64,
 ) -> mx.array:
     """Cached bias with all-inactive query rows set to 0 instead of -inf.
 
@@ -5294,6 +5318,7 @@ def _get_sanitized_bias(
     cache_key = (
         id(block_mask), tuple(block_mask.shape),
         B, H, N, S, bool(causal), str(float_bias.dtype),
+        _mask_content_key(block_mask), int(head_dim_d7),  # R6/DOC-06
     )
     cached = _SPARSE_SANITIZED_BIAS_CACHE.get(cache_key)
     if cached is not None:
@@ -5373,7 +5398,8 @@ def _sparse_fallback_sdpa_perhead(
         block_mask, B, H, N, S, causal, head_dim_d7=q.shape[3])
     if row_active is not None:
         float_bias = _get_sanitized_bias(
-            block_mask, float_bias, row_active, B, H, N, S, causal)
+            block_mask, float_bias, row_active, B, H, N, S, causal,
+            head_dim_d7=q.shape[3])
 
     out = mx.fast.scaled_dot_product_attention(
         q, k, v, scale=scale, mask=float_bias
