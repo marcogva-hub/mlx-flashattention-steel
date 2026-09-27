@@ -111,7 +111,8 @@ matters.
 
 ## Install
 
-Requirements are Python 3.10 or newer, MLX 0.31.2 or newer, macOS on arm64,
+Requirements are Python 3.10 or newer, MLX 0.31.2 through 0.32.2 (the releases whose
+nanobind ABI is verified; newer MLX is refused until mapped), macOS on arm64,
 CMake 3.24 or newer, and a working Apple Metal toolchain.
 
 ```bash

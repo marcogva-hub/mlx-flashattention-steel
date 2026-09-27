@@ -114,42 +114,15 @@ endif()
 message(STATUS "MLX build version: ${MLX_RUNTIME_VERSION}")
 
 # -- nanobind via FetchContent, ABI-matched to the DETECTED MLX (D: auto-derive) --
-# _ext shares MLX's mlx::core::array type via nanobind NB_DOMAIN "mlx". The capsule
-# key embeds NB_INTERNALS_VERSION (nanobind src/nb_abi.h), so _ext MUST FetchContent
-# the SAME nanobind tag MLX itself was built with. A mismatch silently breaks
-# cross-extension type sharing: mlx::core::array passed from Python becomes
-# "incompatible" to nanobind's type matcher and EVERY array-taking _ext function
-# raises TypeError at runtime (the 2.62.0 / MLX-0.32.0 consumer-install incident —
-# see devnotes/release_2_62_0_STOP.md).
-#
-# VERIFIED mapping (MLX version -> nanobind GIT_TAG -> NB_INTERNALS), each derived
-# from that MLX tag's own CMakeLists FetchContent(nanobind) + nanobind src/nb_abi.h:
-#   MLX 0.31.2 -> nanobind v2.12.0 (NB_INTERNALS v19)
-#   MLX 0.32.0 -> nanobind v2.13.0 (NB_INTERNALS v20)   # v19->v20 = the 2.12->2.13 bump
-# Declared support is mlx>=0.31.2; 0.31.2 and 0.32.0 are the ONLY releases that
-# currently exist at/above that floor, so exactly those two are mapped. Any other
-# MLX version FAILS LOUD below — we never guess a tag (a wrong guess reintroduces
-# the silent break). To add a new MLX X: read the nanobind GIT_TAG in MLX's
-# CMakeLists.txt at its vX tag, confirm its NB_INTERNALS in nanobind src/nb_abi.h,
-# add an entry here, then re-run the consumer compile-install + M5/NAX gate on X.
-if(MLX_RUNTIME_VERSION VERSION_EQUAL "0.31.2")
-  set(NANOBIND_GIT_TAG "v2.12.0")   # NB_INTERNALS v19
-elseif(MLX_RUNTIME_VERSION VERSION_EQUAL "0.32.0")
-  set(NANOBIND_GIT_TAG "v2.13.0")   # NB_INTERNALS v20
-else()
-  message(FATAL_ERROR
-    "mlx-mfa: MLX ${MLX_RUNTIME_VERSION} is not in the nanobind-ABI mapping "
-    "(known: 0.31.2 -> nanobind v2.12.0 [NB_INTERNALS v19]; "
-    "0.32.0 -> nanobind v2.13.0 [NB_INTERNALS v20]).\n"
-    "  Refusing to guess a nanobind tag: a mismatched NB_INTERNALS silently breaks "
-    "mlx::core::array type-sharing so every native _ext call raises TypeError at "
-    "runtime.\n"
-    "  To support MLX ${MLX_RUNTIME_VERSION}: (1) read the nanobind GIT_TAG in MLX's "
-    "CMakeLists.txt at its v${MLX_RUNTIME_VERSION} tag, (2) confirm its NB_INTERNALS "
-    "in nanobind src/nb_abi.h, (3) add an entry to this mapping in CMakeLists.txt, "
-    "(4) re-run the consumer compile-install + M5/NAX gate on that MLX. "
-    "See devnotes/release_2_62_0_STOP.md.")
-endif()
+# _ext shares MLX's mlx::core::array type via nanobind NB_DOMAIN "mlx"; the capsule key
+# embeds NB_INTERNALS_VERSION, so _ext MUST FetchContent the SAME nanobind tag MLX was
+# built with (a mismatch => every array-taking _ext call raises TypeError at runtime —
+# the 2.62.0 / MLX-0.32.0 incident). The VERIFIED table + the strict resolver live in
+# csrc/cmake/MlxNanobindAbi.cmake: exact X.Y.Z string match only; unmapped, dev, rc or
+# malformed MLX versions FAIL LOUD (never guess a tag). Keep pyproject's mlx cap equal
+# to the top of that table (BLD-01) — locked by tests/test_mlx_nanobind_abi_mapping.py.
+include("${CMAKE_CURRENT_SOURCE_DIR}/csrc/cmake/MlxNanobindAbi.cmake")
+mfa_resolve_nanobind_tag("${MLX_RUNTIME_VERSION}" NANOBIND_GIT_TAG)
 message(STATUS "nanobind ABI: MLX ${MLX_RUNTIME_VERSION} -> nanobind ${NANOBIND_GIT_TAG}")
 
 include(FetchContent)

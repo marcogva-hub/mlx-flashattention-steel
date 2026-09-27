@@ -1,11 +1,14 @@
 [build-system]
-# mlx>=0.31.2: _ext shares MLX's mlx::core::array via nanobind NB_DOMAIN "mlx", whose
-# capsule key embeds NB_INTERNALS_VERSION — so _ext must FetchContent the SAME nanobind
-# tag MLX was built with. CMakeLists.txt auto-derives that tag from the DETECTED MLX
-# version (0.31.2 -> nanobind v2.12.0 / NB_INTERNALS v19; 0.32.0 -> nanobind v2.13.0 /
-# NB_INTERNALS v20) and FAILS LOUD on any unmapped MLX (never guesses a tag). 0.31.2 is
-# the floor: MLX 0.31.0/0.31.1 ship older nanobind (v17/v18) and would type-share-break.
-requires = ["scikit-build-core>=0.9", "mlx>=0.31.2"]
+# mlx>=0.31.2,<=0.32.2: _ext shares MLX's mlx::core::array via nanobind NB_DOMAIN "mlx",
+# whose capsule key embeds NB_INTERNALS_VERSION — so _ext must FetchContent the SAME
+# nanobind tag MLX was built with. csrc/cmake/MlxNanobindAbi.cmake maps each VERIFIED MLX
+# release (0.31.2 -> v2.12.0; 0.32.0/0.32.1 -> v2.13.0; 0.32.2 -> v2.15.0) and FAILS LOUD
+# on anything else. The CAP is mandatory (BLD-01, 2.62.1): pip's build isolation resolves
+# the LATEST allowed MLX, so an uncapped floor broke `pip install mlx-mfa` the day MLX
+# shipped an unmapped release. Raise the cap only together with a new verified table entry
+# (tests/test_mlx_nanobind_abi_mapping.py locks cap == top of table, in BOTH lists).
+# 0.31.2 is the floor: MLX 0.31.0/0.31.1 ship older nanobind (v17/v18).
+requires = ["scikit-build-core>=0.9", "mlx>=0.31.2,<=0.32.2"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -32,7 +35,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.31.2", "numpy>=1.23"]  # 0.31.2 = nanobind-ABI floor; tag auto-derived per detected MLX (see [build-system] + CMakeLists.txt); numpy floored (L6 audit 2026-06-21)
+dependencies = ["mlx>=0.31.2,<=0.32.2", "numpy>=1.23"]  # MUST equal the [build-system] mlx specifier (floor = nanobind-ABI floor, cap = top of csrc/cmake/MlxNanobindAbi.cmake); numpy floored (L6 audit 2026-06-21)
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"
