@@ -1260,7 +1260,13 @@ def flash_attention(
             N, S = q.shape[2], k.shape[2]
             wl_eff = max(wl, 0) if wl >= 0 else S
             wr_eff = max(wr, 0) if wr >= 0 else S
-            q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
+            # R3/MSL-03 (review 2026-09): the NATIVE f16/bf16 kernels' anchor
+            # (csrc qL_off = (causal && N<S) ? S-N : 0; same as the windowed
+            # backward oracle).  This fp32 fallback anchored at S-N
+            # unconditionally -> same call, different math per dtype, and
+            # causal N>S rows at negative positions -> spurious all-NaN rows.
+            q_off = (S - N) if (causal and N < S) else 0
+            q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]
             k_idx = mx.arange(S, dtype=mx.int32)[None, :]
             in_win = (k_idx >= q_idx - wl_eff) & (k_idx <= q_idx + wr_eff)
             if causal:
@@ -5636,17 +5642,25 @@ def _sdpa_with_weights(
 
     # Sliding-window additive −inf mask outside (left, right); composes with
     # causal (matches the production window-fallback builder).
+    _window_causal_done = False
     if window_size is not None:
         wl = window_size[0]
         wr = window_size[1] if len(window_size) > 1 else -1
         wl_eff = max(wl, 0) if wl >= 0 else S
         wr_eff = max(wr, 0) if wr >= 0 else S
-        q_idx = mx.arange(S - N, S, dtype=mx.int32)[:, None]
+        # R3/MSL-03 (review 2026-09): native-kernel window anchor (see the fp32
+        # window fallback in flash_attention) — weights path == production.
+        q_off = (S - N) if (causal and N < S) else 0
+        q_idx = mx.arange(q_off, q_off + N, dtype=mx.int32)[:, None]
         k_idx = mx.arange(S, dtype=mx.int32)[None, :]
         in_win = (k_idx >= q_idx - wl_eff) & (k_idx <= q_idx + wr_eff)
+        if causal:
+            # With a window, causality follows the same anchor (kernel + oracle).
+            in_win = in_win & (k_idx <= q_idx)
+            _window_causal_done = True
         scores = mx.where(in_win[None, None, :, :], scores, float("-inf"))
 
-    if causal:
+    if causal and not _window_causal_done:
         idx_i = mx.arange(N, dtype=mx.int32)[:, None]
         idx_j = mx.arange(S, dtype=mx.int32)[None, :]
         causal_mask = (idx_j > idx_i + (S - N))[None, None, :, :]
