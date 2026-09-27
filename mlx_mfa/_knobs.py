@@ -279,6 +279,10 @@ REMOVED_KNOBS: frozenset[str] = frozenset({
     "MFA_ENABLE_V6_D128",
     "MFA_ENABLE_V34_D128",
     "MFA_V34BWD",
+    # 2.62.2 (review 2026-09, BLD-04): the precompiled async_v2 loader was retired;
+    # these were read only by it. Real env vars -> "removed", not "typo" (CC-13).
+    "MFA_DISABLE_ASYNC",
+    "MFA_IR_INVESTIGATE",
 })
 
 

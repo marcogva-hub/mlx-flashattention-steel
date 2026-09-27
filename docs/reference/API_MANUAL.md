@@ -30,7 +30,10 @@ paged / sparse entries share it (`flash_attention` with one segment equals
 `flash_attention_varlen`).
 
 RoPE wrappers are `flash_attention_rope` and
-`flash_attention_rope_unified`. Packed dense wrappers are
+`flash_attention_rope_unified`. `make_rope_3d_tables(grid_h, grid_w, num_frames,
+d_h=None, d_w=None, d_t=None, head_dim=128, theta=10000.0)` builds the float32
+`(cos, sin)` tables, each `[N, D/2]`, for `flash_attention_rope(..., rope_3d=...)`.
+Packed dense wrappers are
 `flash_attention_qkv_packed` and `flash_attention_kv_packed`.
 
 ## Sparse and neighborhood attention

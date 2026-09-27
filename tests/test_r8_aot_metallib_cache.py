@@ -146,9 +146,26 @@ def test_async_v2_metallib_retired():
     sc = (ROOT / "csrc" / "shader_cache.mm").read_text()
     assert "try_async_pipeline" not in sc and '@"async_v2.metallib"' not in sc
     assert not (ROOT / ".github" / "workflows" / "build-metallib.yml").exists()
+
+
+
+@pytest.mark.parametrize("knob", ["MFA_DISABLE_ASYNC", "MFA_IR_INVESTIGATE"])
+def test_retired_async_knobs_follow_the_removed_knob_convention(knob, monkeypatch):
+    """They were real env vars: strict validation must say "REMOVED — no effect", not
+    "possible typo" (CC-13 convention), and ENV_VARS.md names them only as removed."""
+    import warnings
     from mlx_mfa import _knobs
-    assert "MFA_DISABLE_ASYNC" not in _knobs.KNOWN_KNOBS
-    assert "MFA_DISABLE_ASYNC" not in (ROOT / "ENV_VARS.md").read_text()
+    assert knob not in _knobs.KNOWN_KNOBS and knob not in _knobs.CPP_KNOBS
+    assert knob in _knobs.REMOVED_KNOBS
+    env = (ROOT / "ENV_VARS.md").read_text()
+    removed_section = env.split("## Removed names", 1)[1].split("\n## ", 1)[0]
+    assert f"`{knob}`" in removed_section
+    assert env.count(knob) == 1, "documented outside the Removed names section"
+    monkeypatch.setenv(knob, "1")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _knobs.validate_env(strict=True)
+    assert any("was REMOVED" in str(x.message) and knob in str(x.message) for x in w)
 
 
 @needs_ext
