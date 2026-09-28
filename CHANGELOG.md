@@ -6,7 +6,8 @@ All notable changes to mlx-mfa are documented here.
 
 Minor release: the block-sparse extended envelope (opt-in), Sparse-Linear Attention
 (`sla_attention`), and the hardening from the 2026-09 review of both. The dispatch-table update
-waits for NIGHT-3 and moves to 2.64.
+waits for NIGHT-3 and moves to 2.64. Built on 2.62.3, so the MLX 0.32.1 / macOS 27 NAX fix and the
+`metal_kernel` × MLX-version release gate are included.
 
 Block-sparse extended envelope (Volet A Phase 1). All additions are **opt-in / default-off**:
 with `MFA_SPARSE_NAX_EXTENDED` and `MFA_SPARSE_D_DENSE_CUTOFF` unset, routing is byte-identical to
@@ -67,6 +68,21 @@ Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
   random data at that scale the U1 dilution is only about n_pad/n_active (~0.4 %), under the gate.
   The before/after discrimination comes from the unit locks (`tests/test_u1_auto_pad.py`) and the
   review's 12 repros.
+
+### Fixed (on top of 2.62.3)
+- **bf16 1×1×1 `conv3d_nax_forward`.** This was the known issue in 2.62.3: it did not compile on
+  any MLX version. It was reachable through `patch_seedvr2_vae` on bf16 models.
+  - The conv `matmul2d` source now follows the input dtype (`half` / `bfloat`), and the kernel
+    name carries that dtype, so fp16 and bf16 calls of the same shape never share a library.
+  - Checked against a CPU fp32 oracle in both dtype orders (`tests/test_conv3d_pointwise_bf16.py`,
+    which failed before this fix). The matrix cell `conv_pointwise/bf16` now passes; it is no longer
+    a known failure.
+- **Python 3.10.** `tests/test_mlx_nanobind_abi_mapping.py` failed to collect on 3.10 because it
+  imported `tomllib`, which is 3.11+ only. `tomllib` is now optional, with a fallback parser
+  cross-checked against it. `tests/test_py310_compat.py` locks every shipped `.py` to 3.10 syntax
+  and forbids unguarded 3.11-only imports. Real 3.10.19: the module now runs.
+- The release matrix also sweeps the new sparse variant axis: `kv_valid_len` explicitly, and the
+  public `auto_pad` route with its dispatch trace checked.
 
 ### Hardened before release (RC review, maintainer decisions D1–D6)
 - `sla_attention(extended=None)` (the new default) uses the extended path on M5+ only; it used to raise on
