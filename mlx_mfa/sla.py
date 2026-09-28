@@ -17,14 +17,17 @@ BLKQ/BLKK, RAW pooled QK^T (no softmax/scale), top-k PER Q-block-row. Production
 Scope: NON-CAUSAL MHA (the thu-ml semantics — video DiT is bidirectional); GQA via
 KV-repeat. `causal=True` raises (causal linear attention needs a chunked scan, not
 the O(N)-parallel form thu-ml uses — deferred, no SOT reference). Off-path intact:
-nothing here runs unless `sla_attention` is called. fp16/bf16 inputs; selection in
-fp32 for an exact, deterministic block set; the linear-term reductions in fp32 (API-05).
+nothing here runs unless `sla_attention` is called. fp16/bf16 inputs; the block
+selection is computed in fp32 and is deterministic for a given device, but NOT bit-exact
+against other implementations: the GPU fp32 matmul is close to TF32 precision, so
+near-tied top-k scores can resolve differently from a CPU/fp64 reference (measured:
+0.006 % of blocks at L=73 899 on unit-variance inputs; 0 at the tested 128/64 shapes).
+The linear-term reductions run in fp32 (API-05).
 Differentiable w.r.t. q/k/v (review 2026-09, NEPB-05): the top-k selection is
 piecewise constant, so gradients flow through the sparse and linear terms only.
 """
 from __future__ import annotations
 
-import os
 from typing import Callable, Optional
 
 import mlx.core as mx
@@ -112,26 +115,6 @@ def _repeat_kv(x: mx.array, n_rep: int) -> mx.array:
     return mx.broadcast_to(x[:, :, None], (B, Hk, n_rep, L, D)).reshape(B, Hk * n_rep, L, D)
 
 
-class _EnvOverride:
-    """Set env vars for the duration of a call (routing is decided synchronously
-    inside flash_attention_sparse, so save/restore around the call is graph-safe)."""
-    def __init__(self, **kv):
-        self._kv = {k: str(v) for k, v in kv.items()}
-        self._old = {}
-
-    def __enter__(self):
-        for k, v in self._kv.items():
-            self._old[k] = os.environ.get(k)
-            os.environ[k] = v
-
-    def __exit__(self, *a):
-        for k, old in self._old.items():
-            if old is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = old
-
-
 # --------------------------------------------------------------------------- public API
 def sla_attention(
     q: mx.array,
@@ -145,7 +128,7 @@ def sla_attention(
     proj_l: Optional[Callable[[mx.array], mx.array]] = None,
     scale: Optional[float] = None,
     causal: bool = False,
-    extended: bool = True,
+    extended: Optional[bool] = None,
 ) -> mx.array:
     """Sparse-Linear Attention (thu-ml SLA semantics) over the Volet A sparse path.
 
@@ -160,8 +143,11 @@ def sla_attention(
                 Linear(D,D)); None → identity (untrained/test).
         scale: sparse-term softmax scale (default 1/sqrt(D)).
         causal: NOT supported (thu-ml SLA is non-causal); raises.
-        extended: run the sparse term under MFA_SPARSE_NAX_EXTENDED (Volet A) so the
-                  block-skip is reachable at B·H/N beyond the default gate.
+        extended: run the sparse term on the Volet A extended path, so the block-skip
+                  is reachable at B·H/N beyond the default gate.  None (default) = on
+                  M5+ only (the extended path refuses pre-M5 chips); True forces it on
+                  (raises pre-M5); False forces it off, even if MFA_SPARSE_NAX_EXTENDED=1.
+                  The choice is context-local (no os.environ mutation).
 
     Returns:
         (B, H, L, D) = o_sparse + proj_l(o_linear).
@@ -188,7 +174,10 @@ def sla_attention(
     bm32 = _expand_to_bt32(sparse_map, blkq, blkk, nq32, nq32)
 
     # 3. sparse term — the Volet A extended path (block-skip, auto_pad).
-    with _EnvOverride(**({"MFA_SPARSE_NAX_EXTENDED": "1"} if extended else {})):
+    from mlx_mfa.attention import _get_is_m5_plus_cached
+    from mlx_mfa.lcsa_nax import _extended_override
+    use_extended = _get_is_m5_plus_cached() if extended is None else bool(extended)
+    with _extended_override(use_extended):
         o_s = flash_attention_sparse(q, kf, vf, bm32, scale=scale, causal=False, auto_pad=True)
 
     # 4-5. linear term over ALL keys + learned projection.

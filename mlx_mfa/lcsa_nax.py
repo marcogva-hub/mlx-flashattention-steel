@@ -25,6 +25,8 @@ Sprint B's envelope.
 from __future__ import annotations
 
 import math
+import contextlib
+import contextvars
 import os
 from typing import Optional
 
@@ -357,12 +359,41 @@ SPARSE_NAX_D_DENSE_CUTOFF = 0.85
 
 def _d_dense_cutoff() -> float:
     """spec §1 item 4 — block density at/above which sparse routing diverts to
-    the dense masked path (env override: MFA_SPARSE_D_DENSE_CUTOFF)."""
-    try:
-        return float(os.environ.get(
-            "MFA_SPARSE_D_DENSE_CUTOFF", str(SPARSE_NAX_D_DENSE_CUTOFF)))
-    except ValueError:
+    the dense masked path (env override: MFA_SPARSE_D_DENSE_CUTOFF).
+
+    RC 2.63.0 (decision D2): an invalid value is REFUSED (it silently fell back to
+    0.85, and accepted nan — disabling the cutoff — or a negative value — sending
+    everything dense).  Valid: a finite number > 0; > 1 disables the diversion.
+    """
+    raw = os.environ.get("MFA_SPARSE_D_DENSE_CUTOFF")
+    if raw is None:
         return SPARSE_NAX_D_DENSE_CUTOFF
+    try:
+        val = float(raw)
+    except ValueError:
+        val = float("nan")
+    if not math.isfinite(val) or val <= 0.0:
+        raise ValueError(
+            f"[mlx-mfa] MFA_SPARSE_D_DENSE_CUTOFF must be a finite block density > 0 "
+            f"(> 1 disables the dense diversion); got {raw!r}.")
+    return val
+
+
+# RC 2.63.0 (decision D4): a CONTEXT-LOCAL override of the opt-in, so callers such as
+# sla_attention never mutate the process-wide os.environ (not thread-safe; a
+# concurrent C++ getenv during setenv is undefined behaviour) and can force it OFF.
+_EXTENDED_OVERRIDE: "contextvars.ContextVar[bool | None]" = contextvars.ContextVar(
+    "mlx_mfa_sparse_extended", default=None)
+
+
+@contextlib.contextmanager
+def _extended_override(value: bool):
+    """Force the extended opt-in ON/OFF for the current context (thread / task)."""
+    token = _EXTENDED_OVERRIDE.set(bool(value))
+    try:
+        yield
+    finally:
+        _EXTENDED_OVERRIDE.reset(token)
 
 
 def _sparse_extended_enabled() -> bool:
@@ -370,9 +401,62 @@ def _sparse_extended_enabled() -> bool:
     POLICY bounds of the NAX-sparse routing gate (MEASURED_BH / MIN_N / MAX_N /
     DENSITY_CEILING), NEVER the §1 capacity constraints (block_tile==32,
     fp16/bf16, D in {64,128}, qL==kL). Off (default) → routing strictly
-    unchanged / byte-identical (spec §3 off-path contract)."""
-    return os.environ.get("MFA_SPARSE_NAX_EXTENDED", "").strip().lower() in (
-        "1", "true", "yes", "on")
+    unchanged / byte-identical (spec §3 off-path contract).
+
+    RC 2.63.0: a context-local ``_extended_override`` wins (D4); the env var uses
+    the repository's strict 0/1 boolean parser (D2: "true"/"yes"/"on" used to
+    enable it and "2" silently disabled it — both now raise)."""
+    override = _EXTENDED_OVERRIDE.get()
+    if override is not None:
+        return override
+    from mlx_mfa._knobs import get_bool_env
+    return bool(get_bool_env("MFA_SPARSE_NAX_EXTENDED"))
+
+
+# The V6NAX sparse kernel refuses block masks smaller than this (C++ sparse_attention:
+# "mask total bytes < 4096").
+SPARSE_NAX_MIN_MASK_BYTES = 4096
+
+
+def _mask_bytes(block_mask) -> int:
+    n = 1
+    for dim in block_mask.shape:
+        n *= int(dim)
+    return n
+
+
+def _extended_prepare(D: int, block_mask, N: int, S: int):
+    """RC 2.63.0 (decisions D3/D5): the opt-in rules shared by flash_attention_sparse
+    and sparse_attention_dispatch.  Loud refusals (spec §1: no silent downgrade) —
+    pre-M5, D outside {64, 128}, a mask that is not at 32-block granularity — after
+    expanding a 64-block mask EXACTLY to 32 blocks (each block -> 2x2).  Returns the
+    (possibly expanded) mask."""
+    from mlx_mfa.attention import _get_is_m5_plus_cached
+    if not _get_is_m5_plus_cached():
+        raise RuntimeError(
+            "MFA_SPARSE_NAX_EXTENDED=1 requires M5+ (NAX) hardware; this chip "
+            "is pre-M5 where STEEL sparse is backlog (spec §1/§5). Unset the "
+            "env for the default routing (graceful SDPA fallback).")
+    if D not in (64, 128):
+        raise ValueError(
+            f"MFA_SPARSE_NAX_EXTENDED=1: head_dim must be 64 or 128 (spec §1 "
+            f"v1 matrix); got D={D} (D=256/512 are outside the extended "
+            f"envelope).")
+    nq32, nk32 = -(-N // 32), -(-S // 32)
+    shape = tuple(block_mask.shape[-2:])
+    if shape != (nq32, nk32) and shape == (-(-N // 64), -(-S // 64)):
+        block_mask = mx.repeat(mx.repeat(block_mask, 2, axis=-2), 2, axis=-1)[
+            ..., :nq32, :nk32]
+        shape = (nq32, nk32)
+    if shape != (nq32, nk32):
+        raise ValueError(
+            f"MFA_SPARSE_NAX_EXTENDED=1: block tile must be 32 (spec §1, "
+            f"structural); a [{shape[0]}, {shape[1]}] mask is not at 32-block (or "
+            f"64-block) granularity for N={N}, S={S} (expected [{nq32}, {nk32}]). "
+            f"Either rebuild the mask at 32-block granularity, or use the default "
+            f"path (MFA_SPARSE_NAX_EXTENDED=0 / sla_attention(extended=False)), which "
+            f"accepts other geometries such as the 32x16 STEEL masks.")
+    return block_mask
 
 
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None) -> bool:
@@ -584,6 +668,18 @@ def sparse_attention_dispatch(
     # f32 produces correct attention consistently. Previously f32 was
     # density-dependent (ran on SDPA, raised on the native route).
     _force_sdpa = Q.dtype not in (mx.float16, mx.bfloat16)
+    _small_mask = False
+    if not _force_sdpa and _sparse_extended_enabled():
+        # RC 2.63.0 (D5): the opt-in rules shared with flash_attention_sparse — loud
+        # refusals, exact 64 -> 32 block expansion, masks below the kernel's 4096-byte
+        # minimum to the dense route (the kernel would raise on them).
+        _expanded = _extended_prepare(Q.shape[3], block_mask, Q.shape[2], K.shape[2])
+        if _expanded is not block_mask:
+            block_mask, block_tile = _expanded, SPARSE_NAX_KERNEL_BLOCK_TILE
+            density = float(mx.mean(block_mask.astype(mx.float32)).item())
+        elif tuple(block_mask.shape[-2:]) == (-(-Q.shape[2] // 32), -(-K.shape[2] // 32)):
+            block_tile = SPARSE_NAX_KERNEL_BLOCK_TILE
+        _small_mask = _mask_bytes(block_mask) < SPARSE_NAX_MIN_MASK_BYTES
     if not _force_sdpa:
         block_mask, block_tile, _ = _expand_bt64_for_v6nax(
             Q, K, block_mask, block_tile, causal=causal
@@ -594,9 +690,12 @@ def sparse_attention_dispatch(
     # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
-    if ((not _force_sdpa)
+    if ((not _force_sdpa) and not _small_mask
             and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
-            and density < density_threshold):
+            and density < density_threshold
+            # RC 2.63.0 (D5): the dense cutoff applies here as in flash_attention_sparse
+            # (a no-op on the default path, whose ceilings are <= 0.30).
+            and density < _d_dense_cutoff()):
         return sparse_attention_nax(
             Q, K, V, block_mask,
             block_tile=block_tile,
@@ -606,7 +705,8 @@ def sparse_attention_dispatch(
     # SDPA + float bias path.
     from mlx_mfa import _dispatch_trace as _dtrace
 
-    _dtrace.record("sdpa", "sparse_attention_dispatch outside hardened gate")
+    _dtrace.record("sdpa", "extended: mask < 4096 B (below the V6NAX minimum) -> dense"
+                   if _small_mask else "sparse_attention_dispatch outside hardened gate")
     qL = Q.shape[2]
     kL = K.shape[2]
     if precomputed_bias is not None:

@@ -61,6 +61,38 @@ Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
   The before/after discrimination comes from the unit locks (`tests/test_u1_auto_pad.py`) and the
   review's 12 repros.
 
+### Hardened before release (RC review, maintainer decisions D1–D6)
+- `sla_attention(extended=None)` (the new default) uses the extended path on M5+ only; it used to raise on
+  pre-M5 chips with default arguments. `extended=False` now forces the opt-in off, even when
+  `MFA_SPARSE_NAX_EXTENDED=1`, and the choice is context-local instead of a process-wide `os.environ`
+  change (which was not thread-safe).
+- `MFA_SPARSE_NAX_EXTENDED` uses the strict `0`/`1` parser: "true", "yes" and "on" used to enable it,
+  and "2" silently disabled it. An invalid `MFA_SPARSE_D_DENSE_CUTOFF` raises instead of silently
+  becoming 0.85 (nan disabled the cutoff; a negative value sent everything dense).
+- `flash_attention_sparse` and `sparse_attention_dispatch` share the opt-in rules:
+  - the same refusals; a non-32-block mask is refused with a pointer to the default path, which
+    accepts e.g. the 32×16 STEEL geometry;
+  - 64-block masks are expanded exactly to 32 blocks;
+  - masks below the kernel's 4096-byte minimum take the dense masked route (traced; the dispatcher
+    used to raise in C++);
+  - the dense cutoff applies to both (under the opt-in, the dispatcher used to send even density-1.0
+    masks to the block-skip).
+- The SLA docstring no longer claims a bit-exact block set: the GPU fp32 matmul is close to TF32, so
+  near-tied top-k scores can resolve differently from a CPU reference (0.006 % of blocks measured).
+
+### Known limitations
+- `mx.compile` over `sla_attention` / `flash_attention_sparse` raises ("eval during function
+  transformations"). The sparse router reads the mask density with `.item()`; this is inherited
+  from 2.62.x.
+- The extended envelope is measured up to N = 144 288 but not enforced.
+- `sla_attention` does not validate that K/V have the same L as Q, or that H is a multiple of Hk;
+  such calls fail with a misleading error.
+- The LSE-returning sparse kernel variant has no `kv_valid_len`. No `auto_pad` route uses it today;
+  a future native sparse backward for padded calls would need it.
+- Under the opt-in, 64-block masks are expanded to 32 blocks, so the opt-in V6 hybrid backward
+  (`MFA_ENABLE_V6_BACKWARD`, which needs 64-blocks) is not reachable there. Gradients use the SDPA-vjp
+  backward.
+
 ### Measured (shipped public path, solo-proc, engagement-proven; correctness re-proven 2026-09-28 with per-row gates)
 - Sliding d0.10: **8.2–9.3×** vs dense SDPA across N=16 384–144 288 (B·H=40, D128).
 - Sliding d0.50: **1.6–2.0×** — ≥1.6× at every N including 144 288 (1.61×).

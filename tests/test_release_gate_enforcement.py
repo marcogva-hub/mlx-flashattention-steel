@@ -46,8 +46,10 @@ def _read(p: Path) -> str:
 # added the hardened sparse beta-3 gate boundary/which-binary lock.
 # 82 -> 83: added tests/test_u1_auto_pad.py (2.63.0 review U1/U2: auto_pad pad-key
 # masking + causal N != S + router/predicate anti-drift locks; M5+ V6NAX sparse).
+# 83 -> 84: added tests/test_sparse_extended_hardening.py (RC 2.63.0 decisions D1-D5:
+# SLA M5-only default, strict opt-in knobs, shared opt-in rules on both entry points).
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 83
+_EXPECTED_M5_SKIP_SITES = 84
 
 
 def _count_m5_skip_sites() -> int:

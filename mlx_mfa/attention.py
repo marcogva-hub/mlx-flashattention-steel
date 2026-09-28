@@ -3920,6 +3920,23 @@ def flash_attention_sparse(
             f"'sdpa', 'sdpa_sparse', 'steel_sparse'; got {backward!r}"
         )
 
+    # ── extended opt-in rules (Volet A spec §1/§3; RC 2.63.0 decisions D3/D5) ──
+    # Shared with sparse_attention_dispatch (lcsa_nax._extended_prepare): loud
+    # refusals outside the v1 matrix (no silent downgrade), 64-block masks expanded
+    # exactly to 32 blocks (before auto_pad, so they can be padded too), and masks
+    # below the kernel's 4096-byte minimum take the dense masked route — explicitly,
+    # traced.  fp32 is refused at entry for ALL sparse calls; qL != kL routes
+    # gracefully to dense below.
+    from mlx_mfa.lcsa_nax import (
+        SPARSE_NAX_MIN_MASK_BYTES as _SX_MIN_BYTES, _extended_prepare, _mask_bytes,
+        _sparse_extended_enabled as _sx_enabled)
+    if _sx_enabled():
+        block_mask = _extended_prepare(D, block_mask, N, S)
+        if _mask_bytes(block_mask) < _SX_MIN_BYTES:
+            _dtrace.record("sdpa", "extended: mask < 4096 B (below the V6NAX minimum)"
+                                   " -> dense masked route")
+            return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
+
     # ── auto_pad (Volet A Phase 1, spec §2; corrected 2.63.0, review U1/U2) ──
     # Pads Q/K/V to a 32 multiple ONLY to reach the V6NAX block-skip kernel for
     # non-aligned sequence lengths (real Wan token counts), with the pad KEYS masked
@@ -3937,36 +3954,6 @@ def flash_attention_sparse(
             return _make_sparse_nax_padded_vjp(float(scale), bool(causal))(
                 q, k, v, block_mask)
         # otherwise: fall through (byte-identical to auto_pad=False)
-
-    # ── loud refusals on the extended path (Volet A Phase 1, spec §1/§3) ──────
-    # The P1 silent-downgrade-to-scalar is FORBIDDEN under the opt-in: a caller
-    # who set MFA_SPARSE_NAX_EXTENDED=1 for a config outside the v1 capacity
-    # matrix gets a raise, never a quiet fallback. (fp32 is already refused at
-    # entry for ALL sparse calls; qL!=kL is supported-but-deferred and routes
-    # gracefully to dense, so it is not a refusal case.)
-    from mlx_mfa.lcsa_nax import _sparse_extended_enabled as _sx_enabled
-    if _sx_enabled():
-        if not _get_is_m5_plus_cached():
-            raise RuntimeError(
-                "MFA_SPARSE_NAX_EXTENDED=1 requires M5+ (NAX) hardware; this chip "
-                "is pre-M5 where STEEL sparse is backlog (spec §1/§5). Unset the "
-                "env for the default routing (graceful SDPA fallback).")
-        if D not in (64, 128):
-            raise ValueError(
-                f"MFA_SPARSE_NAX_EXTENDED=1: head_dim must be 64 or 128 (spec §1 "
-                f"v1 matrix); got D={D} (D=256/512 are outside the extended "
-                f"envelope).")
-        # The block tile a mask implies is read from its CEIL counts (NQ = ceil(N/BT)):
-        # the former `N // NQ` misread a valid 32-block mask whenever NQ divided N
-        # (N=90 -> NQ=3 -> "BT=30", review 2026-09 sibling of API-02) and never
-        # checked the key axis.
-        _nq, _nk = int(block_mask.shape[-2]), int(block_mask.shape[-1])
-        if (_nq, _nk) != (-(-N // 32), -(-S // 32)):
-            raise ValueError(
-                f"MFA_SPARSE_NAX_EXTENDED=1: block tile must be 32 (spec §1, "
-                f"structural); a [{_nq}, {_nk}] mask is not at 32-block granularity "
-                f"for N={N}, S={S} (expected [{-(-N // 32)}, {-(-S // 32)}]). Rebuild "
-                f"the mask at 32-block granularity.")
 
     # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
     # BQ/BK validator. If the mask is symmetric (BT-block), we route through
