@@ -1,7 +1,7 @@
 /// MFAConv3DForward — implementation.
 ///
 /// Source generators (port of mlx_mfa/conv_nax.py f-strings):
-///   - matmul2d_source(M, K, N): MPP matmul2d wrapper kernel
+///   - matmul2d_source(M, K, N, mtype): MPP matmul2d wrapper kernel (half | bfloat)
 ///   - im2col3d_source(...): channels-last im2col with per-chunk m_offset
 ///
 /// Dispatch: mlx::core::fast::metal_kernel + chunk loop with per-chunk
@@ -91,7 +91,10 @@ mlx::core::array pad_contraction_k(const mlx::core::array& a, int K, int k_pad,
       /*pad_value=*/mlx::core::array(0, a.dtype()), /*mode=*/"constant", s);
 }
 
-std::string matmul2d_source(int M, int K, int N) {
+std::string matmul2d_source(int M, int K, int N, const std::string& mtype) {
+  // mtype: MSL scalar of A/B/C ("half" | "bfloat"), part of every caller's kernel
+  // name (cache-key discipline, as conv3d_mpp).  Accumulation is always float.
+  // (2.63.0: was hard-coded `half` — bf16 1x1x1 convs could not build.)
   // Conv3D matmul: C(M,N) = A(M,K) @ B(N,K)^T via rightT=true.
   // A is im2col buffer (M, K); B is flattened weight (N, K); both
   // row-major. matmul2d's rightT=true transposes B internally.
@@ -115,10 +118,10 @@ std::string matmul2d_source(int M, int K, int N) {
   os << "    constexpr uint M_FULL = " << M << ";\n"
      << "    constexpr uint K_FULL = " << K << ";\n"
      << "    constexpr uint N_FULL = " << N << ";\n\n"
-     << "    auto tA = tensor<device half, dextents<int32_t, 2>, tensor_inline>(\n"
-     << "        (device half*)A, dextents<int32_t, 2>(K_FULL, M_FULL));\n"
-     << "    auto tB = tensor<device half, dextents<int32_t, 2>, tensor_inline>(\n"
-     << "        (device half*)B, dextents<int32_t, 2>(K_FULL, N_FULL));\n\n"
+     << "    auto tA = tensor<device " << mtype << ", dextents<int32_t, 2>, tensor_inline>(\n"
+     << "        (device " << mtype << "*)A, dextents<int32_t, 2>(K_FULL, M_FULL));\n"
+     << "    auto tB = tensor<device " << mtype << ", dextents<int32_t, 2>, tensor_inline>(\n"
+     << "        (device " << mtype << "*)B, dextents<int32_t, 2>(K_FULL, N_FULL));\n\n"
      << "    const uint m_origin = threadgroup_position_in_grid.y * " << M_TILE << ";\n"
      << "    const uint n_origin = threadgroup_position_in_grid.x * " << N_TILE << ";\n\n"
      << "    constexpr auto desc = matmul2d_descriptor(\n"
@@ -146,7 +149,7 @@ std::string matmul2d_source(int M, int K, int N) {
      << "            uint m_global = m_origin + idx[1];\n"
      << "            uint n_global = n_origin + idx[0];\n"
      << "            if (m_global < M_FULL && n_global < N_FULL) {\n"
-     << "                C[m_global * N_FULL + n_global] = (half)cC[k];\n"
+     << "                C[m_global * N_FULL + n_global] = (" << mtype << ")cC[k];\n"
      << "            }\n"
      << "        }\n"
      << "    }\n";
@@ -277,6 +280,10 @@ mlx::core::array dispatch_pointwise_fast_path(
   // channels-last invariant).
   auto x_flat = mlx::core::reshape(x, {M, C_in});
   auto w_flat = mlx::core::reshape(w, {C_out, C_in});
+  // The MSL scalar follows the input dtype and is part of the kernel name
+  // (fp16 and bf16 of the same shape must never share a library).
+  const std::string mtype =
+      (x.dtype() == mlx::core::bfloat16) ? "bfloat" : "half";
 
   // Chunk plan on the smaller K = C_in.
   int dtype_bytes = dtype_bytes_for(x.dtype());
@@ -298,11 +305,11 @@ mlx::core::array dispatch_pointwise_fast_path(
                                 {m_offset + m_chunk, C_in}, {1, 1})
             : x_flat;
     auto x_chunk_pad = pad_contraction_k(x_chunk, C_in, k_pad, stream_pw);
-    std::string name = "conv3d_1x1x1_mm_" + std::to_string(m_chunk) + "_" +
+    std::string name = "conv3d_1x1x1_mm_" + mtype + "_" + std::to_string(m_chunk) + "_" +
                        std::to_string(k_pad) + "_" + std::to_string(C_out);
     auto kernel = mlx::core::fast::metal_kernel(
         name, {"A", "B"}, {"C"},
-        matmul2d_source(m_chunk, k_pad, C_out), MATMUL_HEADER,
+        matmul2d_source(m_chunk, k_pad, C_out, mtype), MATMUL_HEADER,
         /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
     int n_tg_x = (C_out + N_TILE - 1) / N_TILE;
     int n_tg_y = (m_chunk + M_TILE - 1) / M_TILE;
@@ -707,7 +714,7 @@ mlx::core::array conv3d_nax_forward(
         std::to_string(N);
     auto mm_kernel = mlx::core::fast::metal_kernel(
         mm_name, {"A", "B"}, {"C"},
-        matmul2d_source(m_chunk, k_pad, N), MATMUL_HEADER,
+        matmul2d_source(m_chunk, k_pad, N, "half"), MATMUL_HEADER,   // bf16 refused above
         /*ensure_row_contiguous=*/true, /*atomic_outputs=*/false);
     int n_tg_x = (N + N_TILE - 1) / N_TILE;
     int n_tg_y = (m_chunk + M_TILE - 1) / M_TILE;
