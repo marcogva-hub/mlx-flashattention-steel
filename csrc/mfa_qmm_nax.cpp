@@ -157,7 +157,7 @@ struct QMMQuantizedBlockLoader {
       int src_ld_,
       threadgroup T* dst_,
       uint simd_group_id,
-      uint simd_lane_id)
+      uint simd_lane_id) thread
       : src_ld(src_ld_),
         tile_stride(BCOLS_PACKED * bytes_per_pack),
         group_step_cnt(0),
@@ -171,7 +171,7 @@ struct QMMQuantizedBlockLoader {
         biases(biases_ + bi * src_ld / QMM_GROUP_SIZE + (QMM_GROUP_SIZE == 32 ? group_id : 0)) {}
 
   METAL_FUNC void dequantize_one(const device uint8_t* src_i, T scale, T bias,
-                                 threadgroup T* dst_i) const {
+                                 threadgroup T* dst_i) const thread {
 #if QMM_BITS == 4
     qmm_dequantize_bits4<T>(src_i, scale, bias, dst_i);
 #else
@@ -179,14 +179,14 @@ struct QMMQuantizedBlockLoader {
 #endif
   }
 
-  METAL_FUNC void zero_local() const {
+  METAL_FUNC void zero_local() const thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < n_reads * pack_factor; ++i) {
       dst[i] = T(0);
     }
   }
 
-  METAL_FUNC void load_safe(short2 src_tile_dim) const {
+  METAL_FUNC void load_safe(short2 src_tile_dim) const thread {
     if (BCOLS_PACKED * BROWS < QMM_TGP_SIZE && bi >= BROWS) {
       return;
     }
@@ -202,7 +202,7 @@ struct QMMQuantizedBlockLoader {
     }
   }
 
-  METAL_FUNC void load_unsafe() const {
+  METAL_FUNC void load_unsafe() const thread {
     if (BCOLS_PACKED * BROWS < QMM_TGP_SIZE && bi >= BROWS) {
       return;
     }
@@ -214,7 +214,7 @@ struct QMMQuantizedBlockLoader {
     }
   }
 
-  METAL_FUNC void next() {
+  METAL_FUNC void next() thread {
     src += tile_stride;
     if (QMM_GROUP_SIZE == 32) {
       scales += n_groups;

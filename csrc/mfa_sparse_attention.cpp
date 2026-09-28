@@ -77,10 +77,14 @@ using namespace mpp::tensor_ops;
 // V6NAX sparse MSL: Apple helpers (NAXFrag, NAXTile, operator structs) -
 // verbatim lift
 // from csrc/mfa/v6_nax/NAAttentionKernel.cpp:2336-2724 (389 LOC).
-// 2.62.3: resynced to the MLX 0.32.1 address-space forms (`thread` / `const
-// thread` NAXTile members, `remove_addrspace_t` in integral_constant and mma).
-// Built by MLX's metal_kernel, which compiles with MLX's own headers/flags:
-// without them the library fails to build on MLX >= 0.32.1.  Locked by
+// 2.62.3: address-space resync.  MLX >= 0.32.1 compiles metal_kernel sources as
+// MSL 4.1 (generic address space: `decltype(local)` carries `thread`, unqualified
+// members cannot bind members to `thread&`); the unqualified copy failed to build.
+// NAXTile members are `thread` / `const thread` (as MLX 0.32.1 steel/attn/nax.h);
+// integral_constant / mma take their types from prvalue decltypes, which are never
+// address-space qualified and compile under MSL 4.0 and 4.1 alike (MLX 0.32.1's
+// metal::remove_addrspace_t is deliberately NOT used: absent from older MLX headers
+// and unverified on older OS Metal compilers).  Locked by
 // tests/test_nax_helpers_address_space.py; runtime-proven per MLX version by
 // scripts/metal_kernel_matrix_smoke.py.  Keep in sync with the shared block.
 // ---------------------------------------------------------------------------
@@ -120,8 +124,7 @@ template <int val> using Int = integral_constant<int, val>;
   METAL_FUNC constexpr auto __operator__(                   \
       integral_constant<T, tv>, integral_constant<U, uv>) { \
     constexpr auto res = tv __op__ uv;                      \
-    using res_t = metal::remove_addrspace_t<decltype(res)>; \
-    return integral_constant<res_t, res>{};                 \
+    return integral_constant<decltype(tv __op__ uv), res>{}; \
   }
 integral_const_binop(+, operator+);
 integral_const_binop(-, operator-);
@@ -315,9 +318,14 @@ struct BaseNAXFrag {
         16, 32, 16, transpose_a, transpose_b, true,
         mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
     mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+    // prvalue decltype: never address-space qualified (MSL 4.1 puts `thread` on
+    // decltype(local)); avoids metal::remove_addrspace_t, absent from pre-0.32.1 MLX
+    // headers and unverified on older OS Metal compilers (dense V6 compiles at runtime).
+    using ct_a_t = decltype(gemm_op.template get_left_input_cooperative_tensor<AType, BType, CType>());
+    using ct_b_t = decltype(gemm_op.template get_right_input_cooperative_tensor<AType, BType, CType>());
     auto ct_a = gemm_op.template get_left_input_cooperative_tensor<AType, BType, CType>();
     auto ct_b = gemm_op.template get_right_input_cooperative_tensor<AType, BType, CType>();
-    auto ct_c = gemm_op.template get_destination_cooperative_tensor<metal::remove_addrspace_t<decltype(ct_a)>, metal::remove_addrspace_t<decltype(ct_b)>, CType>();
+    auto ct_c = gemm_op.template get_destination_cooperative_tensor<ct_a_t, ct_b_t, CType>();
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kElemsPerFrag; i++) ct_a[i] = A[i];
     STEEL_PRAGMA_UNROLL
