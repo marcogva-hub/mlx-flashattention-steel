@@ -217,7 +217,7 @@ MLX ≥ 0.32.1 selects **MSL 4.1 on macOS 27+** (generic address space). Under 4
 embedded MSL structs are `thread` / `const thread`; types fed to templates come from **prvalue**
 `decltype`s (not `metal::remove_addrspace_t`: the shared NAX helpers are also compiled at runtime by
 our ShaderCache on the user's OS); a kernel's name carries every source-specialising parameter
-(dtype included). Release gate: `scripts/metal_kernel_matrix_smoke.py` (every shipped
+(dtype included whenever the kernel accepts more than one). Release gate: `scripts/metal_kernel_matrix_smoke.py` (every shipped
 `metal_kernel` family × its variant axes × every ABI-table MLX version, isolated installs) →
 receipt checked by `scripts/check_metal_kernel_matrix.py` (release audit Check 10, publish GATE 6).
 A new `metal_kernel` call site fails `tests/test_metal_kernel_matrix_tool.py` until it has a probe.

@@ -27,38 +27,65 @@ def _shipped_py():
                 yield f
 
 
-def _guarded(node, parents) -> bool:
-    for p in parents:
-        if isinstance(p, ast.Try) and any(
-                isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "ModuleNotFoundError")
-                or isinstance(h.type, ast.Tuple) and any(
-                    isinstance(e, ast.Name) and e.id in ("ImportError", "ModuleNotFoundError")
-                    for e in h.type.elts)
-                for h in p.handlers):
-            return True
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    names = {"ImportError", "ModuleNotFoundError"}
+    tp = handler.type
+    if isinstance(tp, ast.Name):
+        return tp.id in names
+    if isinstance(tp, ast.Tuple):
+        return any(isinstance(e, ast.Name) and e.id in names for e in tp.elts)
     return False
 
 
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+
+
 def _unguarded_311_imports(tree: ast.Module):
+    """Module-level imports of 3.11-only stdlib modules that would run on 3.10.  Guarded =
+    inside the ``try`` BODY of a try whose handlers catch ImportError/ModuleNotFoundError
+    (not its except/else/finally); ``if TYPE_CHECKING:`` blocks never run; function bodies
+    only run when called."""
     bad = []
 
-    def visit(node, parents):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                continue                     # function-local imports only run when called
-            if isinstance(child, ast.Import):
-                names = [a.name for a in child.names]
-            elif isinstance(child, ast.ImportFrom):
-                names = [child.module or ""]
-            else:
-                names = []
-            for n in names:
-                if n in _PY311_ONLY_STDLIB and not _guarded(child, parents + [node]):
-                    bad.append((child.lineno, n))
-            visit(child, parents + [node])
+    def visit(stmts, guarded):
+        for st in stmts:
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if isinstance(st, ast.ClassDef):
+                    visit(st.body, guarded)          # class bodies run at import
+                continue
+            if isinstance(st, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in st.names] if isinstance(st, ast.Import) else [st.module or ""]
+                bad.extend((st.lineno, n) for n in names if n in _PY311_ONLY_STDLIB and not guarded)
+            elif isinstance(st, ast.Try):
+                catches = any(_catches_import_error(h) for h in st.handlers)
+                visit(st.body, guarded or catches)
+                for h in st.handlers:
+                    visit(h.body, guarded)
+                visit(st.orelse, guarded)
+                visit(st.finalbody, guarded)
+            elif isinstance(st, ast.If):
+                if not _is_type_checking(st.test):
+                    visit(st.body, guarded)
+                visit(st.orelse, guarded)
+            elif isinstance(st, (ast.With, ast.For, ast.While)):
+                visit(st.body, guarded)
+                visit(getattr(st, "orelse", []), guarded)
 
-    visit(tree, [])
+    visit(tree.body, False)
     return bad
+
+
+def test_lock_semantics_on_synthetic_sources():
+    f = lambda src: _unguarded_311_imports(ast.parse(src))
+    assert f("import tomllib\n") == [(1, "tomllib")]
+    assert f("from tomllib import loads\n") == [(1, "tomllib")]
+    assert f("try:\n    import tomllib\nexcept ModuleNotFoundError:\n    tomllib = None\n") == []
+    assert f("try:\n    import x\nexcept ImportError:\n    import tomllib\n") == [(4, "tomllib")]
+    assert f("try:\n    import tomllib\nexcept ValueError:\n    pass\n") == [(2, "tomllib")]
+    assert f("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import tomllib\n") == []
+    assert f("def g():\n    import tomllib\n") == []
 
 
 @pytest.mark.parametrize("f", list(_shipped_py()), ids=lambda f: str(f.relative_to(ROOT)))
