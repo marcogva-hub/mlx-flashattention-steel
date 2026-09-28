@@ -714,6 +714,15 @@ std::string mlx_mfa_v6_nax_helpers_block() {
   //
   // The content is byte-identical to the prior inline blocks (verified
   // pre-refactor via sed-extract + pairwise diff; all empty).
+  //
+  // 2.62.3: resynced to the MLX 0.32.1 address-space forms (`thread` /
+  // `const thread` NAXTile members, `remove_addrspace_t` in integral_constant
+  // and mma).  GNA/FFN/QMM NAX embed this block in metal_kernel sources that
+  // MLX compiles with its own headers/flags — without the resync they fail to
+  // build on MLX >= 0.32.1.  Dense V6 (our ShaderCache) output is byte-identical
+  // before/after on MLX 0.31.2 and 0.32.0.  Locked by
+  // tests/test_nax_helpers_address_space.py; runtime-proven per MLX version by
+  // scripts/metal_kernel_matrix_smoke.py.
   return R"NAX_HELPERS(
 // === defines.h ===
 #define STEEL_CONST static constant constexpr const
@@ -739,7 +748,7 @@ template <typename T, T v> struct integral_constant {
   static constexpr constant T value = v;
   using value_type = T;
   using type = integral_constant;
-  METAL_FUNC constexpr operator value_type() const noexcept { return value; }
+  METAL_FUNC constexpr operator value_type() const thread noexcept { return value; }
 };
 template <bool B> using bool_constant = integral_constant<bool, B>;
 using true_type = bool_constant<true>;
@@ -750,7 +759,8 @@ template <int val> using Int = integral_constant<int, val>;
   METAL_FUNC constexpr auto __operator__(                   \
       integral_constant<T, tv>, integral_constant<U, uv>) { \
     constexpr auto res = tv __op__ uv;                      \
-    return integral_constant<decltype(res), res>{};         \
+    using res_t = metal::remove_addrspace_t<decltype(res)>; \
+    return integral_constant<res_t, res>{};                 \
   }
 integral_const_binop(+, operator+);
 integral_const_binop(-, operator-);
@@ -1007,7 +1017,7 @@ struct BaseNAXFrag {
     mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
     auto ct_a = gemm_op.template get_left_input_cooperative_tensor<AType, BType, CType>();
     auto ct_b = gemm_op.template get_right_input_cooperative_tensor<AType, BType, CType>();
-    auto ct_c = gemm_op.template get_destination_cooperative_tensor<decltype(ct_a), decltype(ct_b), CType>();
+    auto ct_c = gemm_op.template get_destination_cooperative_tensor<metal::remove_addrspace_t<decltype(ct_a)>, metal::remove_addrspace_t<decltype(ct_b)>, CType>();
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kElemsPerFrag; i++) ct_a[i] = A[i];
     STEEL_PRAGMA_UNROLL
@@ -1053,24 +1063,24 @@ struct NAXTile {
 
   METAL_FUNC NAXTile() thread {}
 
-  METAL_FUNC constexpr void clear() {
+  METAL_FUNC constexpr void clear() thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kNumFrags; ++i) val_frags[i] = frag_type(0);
   }
 
-  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) {
+  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) thread {
     return val_frags[i * kTileCols + j];
   }
-  METAL_FUNC constexpr const thread frag_type& frag_at(const short i, const short j) const {
+  METAL_FUNC constexpr const thread frag_type& frag_at(const short i, const short j) const thread {
     return val_frags[i * kTileCols + j];
   }
 
-  METAL_FUNC thread elem_type* elems() {
+  METAL_FUNC thread elem_type* elems() thread {
     return reinterpret_cast<thread elem_type*>(val_frags);
   }
 
   template <typename Op>
-  METAL_FUNC void row_reduce(thread metal::vec<T, kRowsPerThread>& vals) const {
+  METAL_FUNC void row_reduce(thread metal::vec<T, kRowsPerThread>& vals) const thread {
     auto vptr = (thread T*)(&vals);
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
@@ -1082,7 +1092,7 @@ struct NAXTile {
   }
 
   template <typename Op>
-  METAL_FUNC void row_bin_op(thread metal::vec<T, kRowsPerThread>& vals) {
+  METAL_FUNC void row_bin_op(thread metal::vec<T, kRowsPerThread>& vals) thread {
     auto vptr = (thread T*)(&vals);
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
@@ -1094,7 +1104,7 @@ struct NAXTile {
   }
 
   template <typename SrcPtrType>
-  METAL_FUNC void load(SrcPtrType src, const int ld) {
+  METAL_FUNC void load(SrcPtrType src, const int ld) thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::load(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
@@ -1104,7 +1114,7 @@ struct NAXTile {
   }
 
   template <typename U>
-  METAL_FUNC void store(device U* dst, const int ld) const {
+  METAL_FUNC void store(device U* dst, const int ld) const thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::store(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
@@ -1114,7 +1124,7 @@ struct NAXTile {
   }
 
   template <typename SrcPtrType>
-  METAL_FUNC void load_rows(SrcPtrType src, const int ld, const short n_rows) {
+  METAL_FUNC void load_rows(SrcPtrType src, const int ld, const short n_rows) thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::load_rows(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
@@ -1124,7 +1134,7 @@ struct NAXTile {
   }
 
   template <typename SrcPtrType>
-  METAL_FUNC void load_safe(SrcPtrType src, const int ld, const short2 src_tile_dims) {
+  METAL_FUNC void load_safe(SrcPtrType src, const int ld, const short2 src_tile_dims) thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::load_safe(frag_at(idx_row.value, idx_col.value), src, ld, Int<1>{},
@@ -1135,7 +1145,7 @@ struct NAXTile {
   }
 
   template <typename U>
-  METAL_FUNC void store_rows(device U* dst, const int ld, const short n_rows) const {
+  METAL_FUNC void store_rows(device U* dst, const int ld, const short n_rows) const thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::store_rows(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
@@ -1145,7 +1155,7 @@ struct NAXTile {
   }
 
   template <typename U>
-  METAL_FUNC void store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const {
+  METAL_FUNC void store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const thread {
     const_for_loop<0, kTileRows, 1>([&](auto idx_row) {
       const_for_loop<0, kTileCols, 1>([&](auto idx_col) {
         NAXFrag_t::store_safe(frag_at(idx_row.value, idx_col.value), dst, ld, Int<1>{},
