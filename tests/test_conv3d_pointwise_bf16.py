@@ -77,3 +77,26 @@ def test_patch_seedvr2_vae_bf16_pointwise_matches_unpatched():
     mx.eval(out)
     assert out.dtype == mx.bfloat16
     assert _rel(out, ref) < 1e-2
+
+
+@pytest.mark.parametrize("c_in", [40, 17])
+def test_pointwise_bf16_non_aligned_channels(c_in):
+    """C_in not a multiple of K_TILE: the contraction is zero-padded (III-6) — bf16 too."""
+    from mlx_mfa import _ext
+    mx.random.seed(13)
+    x = (mx.random.normal((1, 4, 16, 16, c_in)) * 0.5).astype(mx.bfloat16)
+    w = (mx.random.normal((64, 1, 1, 1, c_in)) * 0.1).astype(mx.bfloat16)
+    out = _ext.conv3d_nax_forward(x, w)
+    mx.eval(out)
+    assert out.dtype == mx.bfloat16
+    assert _rel(out, _ref(x, w)) < 1e-2
+
+
+def test_bf16_im2col_refusal_message_names_both_supported_paths():
+    """A bf16 shape outside MPP and pointwise still refuses loudly (KD-7), and the message
+    now names the pointwise path too."""
+    from mlx_mfa import _ext
+    x = mx.zeros((1, 4, 10, 10, 32), dtype=mx.bfloat16)           # H/W % 8 != 0: not MPP
+    w = mx.zeros((32, 3, 3, 3, 32), dtype=mx.bfloat16)
+    with pytest.raises(RuntimeError, match="pointwise"):
+        mx.eval(_ext.conv3d_nax_forward(x, w, padding=(1, 1, 1, 1, 1, 1)))

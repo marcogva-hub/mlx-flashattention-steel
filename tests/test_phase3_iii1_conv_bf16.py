@@ -114,7 +114,8 @@ class TestBF16FallbackGating:
         # k=3x3x3 but H=W=20 (not %8) -> MPP branch declines -> legacy
         # path -> must raise the KD-7 message at CALL time.
         x, w = _mk(4, 20, 20, 32, 32)
-        with pytest.raises(Exception, match="bf16 is only supported via the MPP"):
+        # 2.63.0: the message also names the 1x1x1 pointwise path (bf16 now works there).
+        with pytest.raises(Exception, match=r"bf16 is supported via the MPP.*pointwise.*KD-7"):
             out = conv3d_nax_forward(
                 x, w, stride=(1, 1, 1), padding=(1, 1, 1, 1, 1, 1),
                 dilation=(1, 1, 1), chunk_M=0)

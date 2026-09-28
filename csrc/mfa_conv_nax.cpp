@@ -627,11 +627,13 @@ mlx::core::array conv3d_nax_forward(
   // C++ API users.
   if (x.dtype() == mlx::core::bfloat16) {
     throw std::runtime_error(
-        "conv_nax: bf16 is only supported via the MPP convolution2d path "
+        "conv_nax: bf16 is supported via the MPP convolution2d path "
         "(B=1, k=3x3x3, stride 1, dilation 1, pad (1,1,1), H/W % 8 == 0, "
-        "C_in/C_out >= 32 and % 16 == 0, MFA_DISABLE_CONV3D_MPP unset). "
-        "The legacy im2col path is fp16-only (KD-7: upstream MLX bf16 "
-        "im2col bug). Use fp16 or an MPP-eligible shape.");
+        "C_in/C_out >= 32 and % 16 == 0, MFA_DISABLE_CONV3D_MPP unset) and "
+        "the 1x1x1 pointwise fast path (stride 1, no padding, "
+        "MFA_CONV_NAX_NO_FAST_PATH unset). The legacy im2col path is "
+        "fp16-only (KD-7: upstream MLX bf16 im2col bug). Use fp16 or one "
+        "of those shapes.");
   }
 
   // Flatten weight (C_out, K_T*K_H*K_W*C_in) row-major.
