@@ -79,7 +79,8 @@ def _ref_sla(q, k, v, topk_ratio, blkq, blkk, feature_map, Wl, bl, scale):  # co
 # ------------------------------------------------------------------------- utilities
 def _mk(B, H, L, D, dt=mx.float16, seed=0):
     mx.random.seed(seed)
-    f = lambda: (mx.random.normal((B, H, L, D)) * 0.1).astype(dt)
+    # unit variance: at 0.1 scale attention is near-uniform and wrong outputs pass (review B)
+    f = lambda: mx.random.normal((B, H, L, D)).astype(dt)
     q, k, v = f(), f(), f()
     mx.eval(q, k, v)
     return q, k, v
@@ -178,10 +179,10 @@ def test_causal_raises():
     (2, 4, 4, 2048, 128, 4),      # batch 2
 ])
 def test_parity_mlx_vs_cpu_ref(B, Hq, Hk, L, D, seed):
-    """Full SLA parity: per-component cos + block-set exactness vs the fp32 ref."""
+    """Full SLA parity: per-row magnitude gates + block-set exactness vs the fp32 ref."""
     q, k, v = _mk(B, Hq, L, D, seed=seed)
-    kk = (mx.random.normal((B, Hk, L, D)) * 0.1).astype(mx.float16)
-    vv = (mx.random.normal((B, Hk, L, D)) * 0.1).astype(mx.float16)
+    kk = mx.random.normal((B, Hk, L, D)).astype(mx.float16)
+    vv = mx.random.normal((B, Hk, L, D)).astype(mx.float16)
     mx.eval(kk, vv)
     k, v = kk, vv
     scale = 1.0 / math.sqrt(D)
@@ -228,10 +229,16 @@ def test_sla_nonaligned_L_sampled_rows(L, ratio):
     q, k, v = _mk(B, H, L, D, seed=L)
     scale = 1.0 / math.sqrt(D)
     # ratio >= 1/NK so at least one key block is selected (L=130: 3 key blocks)
-    o = S.sla_attention(q, k, v, topk_ratio=ratio, proj_l=lambda x: x * 0.0, scale=scale)
-    mx.eval(o)
+    with dt.capture() as cap:
+        o = S.sla_attention(q, k, v, topk_ratio=ratio, proj_l=lambda x: x * 0.0, scale=scale)
+        mx.eval(o)
+    padded = any(r[0] == "v6nax_sparse" and "kv_valid" in r[1] for r in cap)
+    assert padded == (L >= 4096), [r[:2] for r in cap]   # L=130: mask < 4096 B -> unpadded route
     qt, kt, vt = _to_t(q), _to_t(k), _to_t(v)
-    sm = _ref_block_map(qt, kt, ratio, 128, 64)
+    # The SPARSE TERM is checked for the selection sla_attention made: at unit variance
+    # the GPU top-k scores resolve near-ties differently from the CPU reference (L=73899:
+    # 78 of 1.3M blocks, 0.006%).  Selection exactness has its own test.
+    sm = torch.from_numpy(np.asarray(S._sla_block_map(q, k, ratio, 128, 64)).astype(bool))
     assert bool(sm.any()), "degenerate selection (no key block)"                         # [B, H, NQ, NK]
     rng = np.random.default_rng(L)
     rows = sorted(set(range(max(0, L - 128), L)) | set(range(min(32, L)))

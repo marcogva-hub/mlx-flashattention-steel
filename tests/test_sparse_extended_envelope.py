@@ -27,7 +27,8 @@ m5only = pytest.mark.skipif(not _M5, reason="extended sparse path is M5+/NAX onl
 # ----------------------------------------------------------------------- helpers
 def _qkv(B, H, N, D, dt=mx.float16, seed=0):
     mx.random.seed(seed)
-    f = lambda: (mx.random.normal((B, H, N, D)) * 0.1).astype(dt)
+    # unit variance: at 0.1 scale attention is near-uniform and wrong outputs pass (review B)
+    f = lambda: mx.random.normal((B, H, N, D)).astype(dt)
     q, k, v = f(), f(), f()
     mx.eval(q, k, v)
     return q, k, v
@@ -59,9 +60,9 @@ def _gold(q, k, v, block_mask, scale, causal, N, S):
 # Review 2026-09 (DSP-14 / TST-04, remediation B1): every correctness gate below was a
 # GLOBAL cosine >= 0.999 — blind to the U1 row scaling (x0.026 on tail rows, cos still
 # >= 0.999).  They are per-row magnitude gates now (tests/sparse_gates.py); the cosine
-# stays as a complement.  The historical "7/7 PASS" of Volet A is void (re-proof in
-# devnotes/remediation_2026_09.md, Phase B4).
-_G16 = dict(max_abs=1e-2, norm_tol=1e-2, cos_min=0.999)
+# stays as a complement.  The historical "7/7 PASS" of Volet A is void (at-scale re-proof:
+# benchmarks/blocksparse_reproof_b4.py).
+_G16 = dict(max_abs=1e-2, norm_tol=5e-3, cos_min=0.999)
 _GBF16 = dict(max_abs=3e-2, norm_tol=2e-2, cos_min=0.999)
 
 
@@ -85,16 +86,22 @@ def test_autopad_aligned_byte_identical():
 
 @m5only
 @pytest.mark.parametrize("causal", [False, True])
-def test_autopad_nonaligned_gold(causal):
-    """Gate 4b / §2(b): non-aligned N via auto_pad vs fp32 SDPA+element-mask, per-row gates."""
+def test_autopad_nonaligned_gold(monkeypatch, causal):
+    """Gate 4b / §2(b): non-aligned N via auto_pad vs fp32 SDPA+element-mask, per-row gates.
+    The extended opt-in makes the padded kv_valid_len route run (asserted): at this mask
+    density (0.37 > the 0.30 default ceiling) the default policy takes the unpadded route."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
     B, H, N, D = 1, 12, 4100, 128           # 4100 % 32 = 4  → pad to 4128
     q, k, v = _qkv(B, H, N, D)
     nq = (N + BT - 1) // BT                  # ceil → 129
     bm = _block_mask(nq, nq, 0.20)
     mx.eval(bm)
     scale = 1.0 / math.sqrt(D)
-    o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
-    mx.eval(o)
+    from mlx_mfa import _dispatch_trace as dt
+    with dt.capture() as cap:
+        o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
+        mx.eval(o)
+    assert any("kv_valid" in r[1] for r in cap), [r[:2] for r in cap]
     assert o.shape == (B, H, N, D), f"output must be sliced to original N; got {o.shape}"
     assert_row_gates(o, _gold(q, k, v, bm, scale, causal, N, N), **_G16,
                      label=f"auto_pad(N={N},causal={causal})")

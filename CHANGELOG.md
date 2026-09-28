@@ -38,20 +38,28 @@ unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
 ### Fixed before release (code review 2026-09, remediation Phase B)
 The first Volet A/B evidence was gated on a global cosine, which cannot see a per-row scale error.
 Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
-- **U1** — `auto_pad` let the zero-padded keys into the softmax denominator. Rows touching the
-  ragged final block were scaled down (×0.026 at N=4 100, D=128) while the global cosine stayed
-  ≥ 0.999. The sparse kernel now masks keys ≥ `kv_valid_len`.
+- **U1** — `auto_pad` let the zero-padded keys into the softmax denominator, so rows touching the
+  ragged final block were scaled down while the global cosine stayed ≥ 0.999. The size is
+  data-dependent: 2–20 % on random inputs at N≈4 100, and down to ×0.026 of the correct magnitude in
+  the review's repro TST-01. The sparse kernel now masks keys ≥ `kv_valid_len`.
 - **U2** — `auto_pad` + causal + N ≠ S shifted the causal diagonal (S−N → Spad−Npad), so queries saw
   future keys. N ≠ S is no longer padded.
-- **API-02** — a valid 32×16 D=128 mask raised under `auto_pad`. The extended path's block-tile check
-  misread 32-block masks whose block count divides N (N=90 → "BT=30"); it now reads ceil counts.
+- **API-02** — a valid 32×16 D=128 mask raised under `auto_pad`, because padding changed
+  ceil(S/16). Such a mask is not 32-granular, so it is no longer padded.
+- The extended opt-in's block-tile check misread 32-block masks whose block count divides N
+  (N=90 → "BT=30"), and never checked the key axis. It now reads the ceil counts on both axes. As a
+  result, the opt-in also refuses the 32×16 STEEL-geometry masks (spec §1: no silent downgrade).
 - **API-05** — fp16 `sla_attention` returned inf (linear-term overflow). **NEPB-05** — `mx.grad`
   through `sla_attention` raised: the sparse custom vjps returned a (1,)-shaped cotangent for a mask
   derived from q/k.
 - Gates: `tests/test_u1_auto_pad.py`; the Volet A/B tests use per-row magnitude gates; the SLA `topk=1`
   lock no longer compares SDPA with SDPA (TST-10). The at-scale re-proof is in
-  `benchmarks/blocksparse_reproof_b4.py`: 7/7 cells PASS at B·H=40 D128 N 4 100–144 279, fp16/bf16,
-  causal, densities 0.1/0.44; worst per-row norm deviation 9.1e-4. No timings were taken.
+  `benchmarks/blocksparse_reproof_b4.py`: 7/7 cells PASS at B·H=40 (D128 N 16 384–144 279, and D64
+  N=4 100), fp16/bf16, causal, densities 0.1/0.44; worst per-row norm deviation 9.1e-4. No timings
+  were taken. These cells prove correctness after the fix; they do not reproduce the defect. On
+  random data at that scale the U1 dilution is only about n_pad/n_active (~0.4 %), under the gate.
+  The before/after discrimination comes from the unit locks (`tests/test_u1_auto_pad.py`) and the
+  review's 12 repros.
 
 ### Measured (shipped public path, solo-proc, engagement-proven; correctness re-proven 2026-09-28 with per-row gates)
 - Sliding d0.10: **8.2–9.3×** vs dense SDPA across N=16 384–144 288 (B·H=40, D128).
@@ -60,7 +68,8 @@ Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
 - bf16 8.4–10.3×; causal (N=32 768) 8.4×. These ratios are the block-skip realizing the model's
   trained sparsity (≈1/density), not a faster-dense-kernel claim. They were measured before the
   U1/U2 fixes and not re-timed. The fix only masks the final K-tile of padded calls; the aligned
-  path is unchanged.
+  path is unchanged. Raw data: `benchmarks/results/blocksparse_voletA/campaign_20260812.jsonl`,
+  `benchmarks/results/blocksparse_voletB/microcost_20260813.jsonl`.
 
 ## [2.62.3] — 2026-09-28
 

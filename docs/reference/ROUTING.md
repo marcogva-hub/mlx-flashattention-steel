@@ -48,8 +48,9 @@ D=256/512, BT≠32) — no silent scalar downgrade. Off (default) → routing by
 hardened public-path measurement (M5 Max, macOS 27, MLX 0.31.2) — sliding d0.10 **8.2–9.3×** vs dense
 across N=16 384–144 288, d0.50 **1.6–2.0×** (≥1.6× every N), real LCSA **10.2–34.9×**; all engaged.
 Correctness re-proven 2026-09-28 with per-row magnitude gates (`test_sparse_extended_envelope.py`,
-`test_u1_auto_pad.py`, `benchmarks/blocksparse_reproof_b4.py` at N 4 100–144 279) — the first,
-cosine-gated evidence missed U1.
+`test_u1_auto_pad.py`; `benchmarks/blocksparse_reproof_b4.py` at N 4 100–144 279 proves correctness
+at scale, while the unit locks prove the before/after difference). The first, cosine-gated evidence
+missed U1. Ratio data: `benchmarks/results/blocksparse_voletA/campaign_20260812.jsonl`.
 
 ### Non-causal (`lcsa_nax.py:385-402`)
 | N | B·H | D | density ≤ | source |

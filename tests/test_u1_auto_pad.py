@@ -1,8 +1,10 @@
 """U1 / U2 (review 2026-09, P0 unreleased) — `flash_attention_sparse(auto_pad=True)`.
 
 U1: zero-padded KEYS (k = 0 -> score 0) entered the softmax denominator: every row whose
-    active blocks include the ragged final block was scaled down (x0.026 at N=4100,
-    D=128) while the global cosine stayed >= 0.999 — the Volet A gates were blind.
+    active blocks include the ragged final block was scaled down (2-20 % on these random
+    inputs; x0.026 in the review's TST-01 repro) while the global cosine stayed >= 0.999 —
+    the Volet A gates were blind.  Causal cells do not discriminate (causality already
+    hid the pads); the non-causal cells fail on the pre-fix route (checked by emulation).
 U2: causal N != S padded Q and K separately, shifting the causal diagonal
     S-N -> Spad-Npad (queries saw future keys).
 
@@ -27,7 +29,7 @@ pytestmark = pytest.mark.skipif(
     not (is_mfa_available() and att._get_is_m5_plus_cached()),
     reason="MFA extension + M5+ required (the V6NAX sparse kernel is M5+ only)")
 
-F16_GATES = dict(max_abs=1e-2, norm_tol=1e-2, cos_min=0.9999)
+F16_GATES = dict(max_abs=1e-2, norm_tol=5e-3, cos_min=0.9999)   # observed row-norm dev ~4e-4
 
 
 def _inputs(N, S, D, H, density, seed, dtype=mx.float16):
@@ -64,7 +66,7 @@ def _padded_route_ran(cap) -> bool:
 
 # ── U1: extended opt-in (the path sla_attention and the Wan integration use) ──────────
 @pytest.mark.parametrize("N,D,H", [(4100, 128, 8), (4100, 128, 4), (4010, 64, 4),
-                                   (4127, 128, 2), (2050, 128, 4)])
+                                   (4097, 128, 2), (2050, 128, 4)])   # 4097: 31 pad keys
 @pytest.mark.parametrize("causal", [False, True])
 def test_u1_extended_pad_keys_out_of_denominator(monkeypatch, N, D, H, causal):
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
@@ -140,10 +142,10 @@ def test_u2_causal_n_ne_s_sees_no_future_key(monkeypatch, N, S, extended):
     # none) — so perturb per row block instead: keys beyond row 0's horizon change only
     # rows that must not see them.
     off = max(0, S - N)
-    horizon = off + N // 2                         # keys > horizon are future for rows < N//2
-    v2 = mx.concatenate([v[:, :, :horizon + 1], v[:, :, horizon + 1:] + 7.0], axis=2)
+    rows = N // 2                                  # rows 0..N//2-1 see keys <= i + off
+    horizon = off + rows                           # = the FIRST future key of the last row
+    v2 = mx.concatenate([v[:, :, :horizon], v[:, :, horizon:] + 7.0], axis=2)
     o2 = flash_attention_sparse(q, k, v2, bm, causal=True, auto_pad=True)
-    rows = N // 2                                  # rows 0..N//2-1 see keys <= i + off < horizon
     assert mx.array_equal(o[:, :, :rows], o2[:, :, :rows]), "a row saw a future key"
 
 
@@ -155,13 +157,25 @@ def test_u2_causal_n_ne_s_sees_no_future_key(monkeypatch, N, S, extended):
     (6144, 128, 16, 0.10, False, False), (6144, 128, 16, 0.10, False, True),
     (2048, 64, 4, 0.10, False, True), (4096, 128, 12, 0.95, False, True),
     (4096, 128, 12, 0.10, False, "v1"), (4096, 128, 12, 0.10, False, "scalar_fallback"),
+    (4096, 128, 12, 0.35, False, False),           # density ceiling (0.30) as the reason
+    (4096, 128, 1, 0.10, True, False),             # causal, rejected by policy
+    (1024, 64, 4, 0.10, False, True),              # mask < 4096 B -> never NAX
+    (4096, 128, 12, 0.10, False, "bf16"), (4096, 128, 12, 0.10, False, "no_hooks"),
+    (4096, 64, 4, 0.10, False, "mask4d"),
 ])
 def test_predicate_matches_router_on_aligned_shapes(monkeypatch, N, D, H, density, causal, extended):
+    dtype = mx.float16
     if extended is True:
         monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
-    elif isinstance(extended, str):          # kernel override honoured by the router (review B #1)
+    elif extended in ("v1", "scalar_fallback"):  # kernel override honoured by the router
         monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", extended)
-    q, k, v, bm = _inputs(N, N, D, H, density, seed=N + H)
+    elif extended == "no_hooks":
+        monkeypatch.setenv("MFA_DISABLE_AUTO_HOOKS", "1")
+    elif extended == "bf16":
+        dtype = mx.bfloat16
+    q, k, v, bm = _inputs(N, N, D, H, density, seed=N + H, dtype=dtype)
+    if extended == "mask4d":
+        bm = mx.broadcast_to(bm, (1, H) + bm.shape)
     with dt.capture() as cap:
         mx.eval(flash_attention_sparse(q, k, v, bm, causal=causal))
     router_nax = any(r[0] == "v6nax_sparse" for r in cap)
