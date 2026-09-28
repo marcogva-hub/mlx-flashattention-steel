@@ -3294,43 +3294,109 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
         q, k, v, block_mask = primals
         dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
 
-        # Backward: use SDPA-vjp via the expanded-float-bias mechanism.
-        # Mathematically equivalent: O = softmax(QK^T + bias) @ V where
-        # bias = 0 for active blocks, -inf for masked blocks.  Backward
-        # gradients match the sparse forward exactly (under softmax).
-        #
-        # NOTE: avoid `_get_or_build_expanded_float_bias` (uses mx.async_eval
-        # which is disallowed inside a graph transformation).  Build bias
-        # inline using only graph-friendly ops.
-        #
-        # Repo review 2026-05: 3-D/4-D masks were previously collapsed to 2-D
-        # via `.any()` (cross-head UNION) — the forward used the full per-head
-        # mask, so backward gradients were computed against a denser mask than
-        # the forward (wrong gradients for per-head masks).  The nd helper
-        # preserves head/batch dims; SDPA broadcasts [H,N,S] / [B,H,N,S] masks.
-        N, S = q.shape[2], k.shape[2]
-        _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
-        float_bias = _block_mask_to_float_bias_nd(
-            block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
-            tile_q=_tq, tile_k=_tk,
-        )
-        if causal:
-            causal_m = _causal_bias(N, S, q.dtype)
-            float_bias = float_bias + causal_m
-        # R5/NEPB-03: empty rows -> finite bias + zero output (forward contract).
-        float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
-
-        def _sdpa_ref(q_, k_, v_):
-            o_ = mx.fast.scaled_dot_product_attention(
-                q_, k_, v_, scale=scale, mask=float_bias)
-            return mx.where(row_active, o_, mx.zeros_like(o_))
-
-        _, (dQ, dK, dV) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
+        dQ, dK, dV = _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale, causal)
         # The vjp signature must return one cotangent per primal; block_mask
         # has no gradient (integer/bool, not differentiable).
         return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
 
     return _impl
+
+
+def _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale: float, causal: bool):
+    """Shared backward of the NAX sparse wrappers (default and auto_pad).
+
+    SDPA-vjp against the element-level operator the forward computes: the block
+    mask expanded at its own tile granularity (``_expansion_tile``, III-4 D7 / R4),
+    the canonical causal mask, empty rows -> zero output (R5).  Graph ops only
+    (no eval / async_eval): safe inside ``mx.vjp``.  3-D/4-D masks keep their
+    head/batch dims (no cross-head ``.any()`` union, review 2026-05).
+    """
+    N, S = q.shape[2], k.shape[2]
+    _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
+    float_bias = _block_mask_to_float_bias_nd(
+        block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
+        tile_q=_tq, tile_k=_tk,
+    )
+    if causal:
+        float_bias = float_bias + _causal_bias(N, S, q.dtype)
+    # R5/NEPB-03: empty rows -> finite bias + zero output (forward contract).
+    float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
+
+    def _sdpa_ref(q_, k_, v_):
+        o_ = mx.fast.scaled_dot_product_attention(q_, k_, v_, scale=scale, mask=float_bias)
+        return mx.where(row_active, o_, mx.zeros_like(o_))
+
+    _, (dQ, dK, dV) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
+    return dQ, dK, dV
+
+
+@functools.lru_cache(maxsize=64)
+def _make_sparse_nax_padded_vjp(scale: float, causal: bool):
+    """``auto_pad`` route (2.63.0, review 2026-09 U1): the V6NAX sparse kernel on
+    Q/K/V zero-padded to a 32 multiple, with the pad KEYS masked element-wise inside
+    the kernel (``kv_valid_len``) so they never enter the softmax denominator.
+
+    Primals are the UNPADDED tensors: padding and slicing happen inside the forward,
+    and the backward is ``_sparse_sdpa_vjp_grads`` on the unpadded problem — the same
+    operator as ``auto_pad=False``, so the gradients cannot see the padding either.
+    Requires N == S (the kernel is square-only) and a 32-granularity block mask.
+    """
+    from mlx_mfa import _ext
+
+    @mx.custom_function
+    def _impl(q, k, v, block_mask):
+        N = q.shape[2]
+        P = -(-N // 32) * 32
+        w = [(0, 0), (0, 0), (0, P - N), (0, 0)]
+        o = _ext.sparse_attention_forward(
+            mx.pad(q, w), mx.pad(k, w), mx.pad(v, w), block_mask.astype(mx.bool_),
+            block_tile=32, causal=causal, scale=scale,
+            kernel_version="v6nax_sparse", kv_valid_len=N,
+        )
+        return o[..., :N, :]
+
+    @_impl.vjp
+    def _backward(primals, cotangents, outputs):
+        q, k, v, block_mask = primals
+        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
+        dQ, dK, dV = _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale, causal)
+        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+
+    return _impl
+
+
+def _auto_pad_nax_route(q, k, v, block_mask, causal: bool) -> bool:
+    """True iff the zero-padded call would take the DEFAULT V6NAX sparse route of
+    ``flash_attention_sparse`` — the only route that honours ``kv_valid_len``.
+
+    Mirrors that router's conditions for the padded shape (M5+, auto hooks on,
+    32-block mask, mask >= 4096 bytes, ``_nax_sparse_route_viable``, the density
+    ceiling unless ``MFA_SPARSE_NAX_EXTENDED``, the dense cutoff; the opt-in
+    hybrid needs bt >= 64 so it never applies to 32-block masks).  Locked against
+    the router itself by ``tests/test_u1_auto_pad.py`` (aligned-shape trace parity).
+    """
+    if not _get_is_m5_plus_cached() or get_bool_env("MFA_DISABLE_AUTO_HOOKS"):
+        return False
+    if block_mask.ndim < 2 or q.shape[2] != k.shape[2]:
+        return False
+    N = q.shape[2]
+    P = -(-N // 32) * 32
+    if block_mask.shape[-2] != P // 32 or block_mask.shape[-1] != P // 32:
+        return False
+    mask_bytes = 1
+    for _dim in block_mask.shape:
+        mask_bytes *= int(_dim)
+    if mask_bytes < 4096:
+        return False
+    from mlx_mfa.lcsa_nax import (
+        _d_dense_cutoff, _nax_sparse_route_viable, _sparse_extended_enabled)
+    density = float(mx.mean(block_mask.astype(mx.float32)).item())
+    w = [(0, 0), (0, 0), (0, P - N), (0, 0)]
+    qp, kp, vp = (mx.pad(x, w) for x in (q, k, v))       # lazy: shapes/dtypes only
+    route = (_nax_sparse_route_viable(qp, kp, 32, density, causal=causal, V=vp)
+             and (_sparse_extended_enabled()
+                  or density <= _nax_sparse_density_ceiling()))
+    return bool(route and density < _d_dense_cutoff())
 
 
 def _sparse_nax_with_sdpa_vjp(q, k, v, block_mask, bt, scale, causal):
@@ -3779,13 +3845,13 @@ def flash_attention_sparse(
         scale:      Attention scale (default: 1/sqrt(D)).
         causal:     Additional causal masking within the active blocks.
         stream:     Optional MLX stream.
-        auto_pad:   When True, pad Q/K/V (zeros) to a multiple of the 32-block
-                    tile so the V6NAX block-skip route is reachable for
-                    non-aligned seq lengths (real Wan token counts), then slice
-                    the output back. Pad tokens carry V=0 so padded keys do not
-                    affect the output direction (correctness validated by cosine
-                    vs a gold element-mask reference). Default False leaves the
-                    routing byte-identical.
+        auto_pad:   When True and N == S is not a multiple of 32, zero-pad
+                    Q/K/V to the next multiple so the V6NAX block-skip kernel is
+                    reachable (real Wan token counts), with the pad keys masked
+                    element-wise inside the kernel — the result equals
+                    ``auto_pad=False`` (the block mask is at 32-block granularity,
+                    ``ceil(N/32)`` blocks).  When that kernel would not run, or
+                    N != S, the call is exactly ``auto_pad=False``.  Default False.
 
     Returns:
         Output [B, H, N, D].
@@ -3847,38 +3913,22 @@ def flash_attention_sparse(
             f"'sdpa', 'sdpa_sparse', 'steel_sparse'; got {backward!r}"
         )
 
-    # ── auto_pad (Volet A Phase 1, spec §2) ──────────────────────────────────
-    # Pad Q/K/V to a xBT multiple so the V6NAX block-skip route becomes reachable
-    # for real Wan token counts (62 730 -> 62 752, 144 279 -> 144 288). The kernel
-    # RAISES on qL/kL % 32 != 0 and the M5+ auto-route below gates on N % nq == 0,
-    # so non-aligned N never reaches the skip without this pad.
-    # Correctness: pad tokens carry V=0, so padded KEYS add nothing to the softmax
-    # NUMERATOR — the output DIRECTION is exact; only boundary queries whose active
-    # window touches the partial final block see a hair of magnitude scaling (why
-    # spec §2 / gate 4 validates via COSINE). For causal, pad keys sit at the tail
-    # (pos >= N) so causality excludes them outright. Pad-query rows are computed
-    # then sliced off. The block mask is already at ceil(N/BT) granularity, so a
-    # < BT pad never adds a whole new block -> no mask extension for the minimal
-    # pad. auto_pad=False (default) leaves this path untouched -> byte-identical
-    # routing (spec §3 off-path contract; gate 3).
+    # ── auto_pad (Volet A Phase 1, spec §2; corrected 2.63.0, review U1/U2) ──
+    # Pads Q/K/V to a 32 multiple ONLY to reach the V6NAX block-skip kernel for
+    # non-aligned sequence lengths (real Wan token counts), with the pad KEYS masked
+    # element-wise in the kernel (kv_valid_len) so they never enter the softmax
+    # denominator (U1: they did — rows touching the tail block were scaled down).
+    # The kernel is square-only, so N != S is never padded (U2: padding Q and K
+    # separately shifted the causal diagonal S-N -> Spad-Npad).  Every other case
+    # takes the unpadded route below, which is exact for non-aligned N — auto_pad
+    # changes speed, never the result.
     if auto_pad:
-        from mlx_mfa.lcsa_nax import SPARSE_NAX_KERNEL_BLOCK_TILE as _BT_PAD
-        _Npad = ((N + _BT_PAD - 1) // _BT_PAD) * _BT_PAD
-        _Spad = ((S + _BT_PAD - 1) // _BT_PAD) * _BT_PAD
-        if _Npad != N or _Spad != S:
-            def _pad_seq(_x, _tgt):
-                if _x.shape[2] == _tgt:
-                    return _x
-                _w = [(0, 0)] * _x.ndim
-                _w[2] = (0, _tgt - _x.shape[2])
-                return mx.pad(_x, _w)
-            _out_padded = flash_attention_sparse(
-                _pad_seq(q, _Npad), _pad_seq(k, _Spad), _pad_seq(v, _Spad),
-                block_mask, scale=scale, causal=causal, stream=stream,
-                backward=backward, auto_pad=False,
-            )
-            return _out_padded[..., :N, :]
-        # already xBT-aligned -> fall through, byte-identical to auto_pad=False
+        _P = -(-N // 32) * 32
+        if N == S and _P != N and _auto_pad_nax_route(q, k, v, block_mask, causal):
+            _dtrace.record("v6nax_sparse", "auto_pad (kv_valid_len)")
+            return _make_sparse_nax_padded_vjp(float(scale), bool(causal))(
+                q, k, v, block_mask)
+        # otherwise: fall through (byte-identical to auto_pad=False)
 
     # ── loud refusals on the extended path (Volet A Phase 1, spec §1/§3) ──────
     # The P1 silent-downgrade-to-scalar is FORBIDDEN under the opt-in: a caller
@@ -3898,12 +3948,17 @@ def flash_attention_sparse(
                 f"MFA_SPARSE_NAX_EXTENDED=1: head_dim must be 64 or 128 (spec §1 "
                 f"v1 matrix); got D={D} (D=256/512 are outside the extended "
                 f"envelope).")
-        _nq = int(block_mask.shape[-2])
-        if _nq > 0 and N % _nq == 0 and (N // _nq) != 32:
+        # The block tile a mask implies is read from its CEIL counts (NQ = ceil(N/BT)):
+        # the former `N // NQ` misread a valid 32-block mask whenever NQ divided N
+        # (N=90 -> NQ=3 -> "BT=30", review 2026-09 sibling of API-02) and never
+        # checked the key axis.
+        _nq, _nk = int(block_mask.shape[-2]), int(block_mask.shape[-1])
+        if (_nq, _nk) != (-(-N // 32), -(-S // 32)):
             raise ValueError(
                 f"MFA_SPARSE_NAX_EXTENDED=1: block tile must be 32 (spec §1, "
-                f"structural); the mask implies BT={N // _nq}. Rebuild the mask "
-                f"at 32-block granularity.")
+                f"structural); a [{_nq}, {_nk}] mask is not at 32-block granularity "
+                f"for N={N}, S={S} (expected [{-(-N // 32)}, {-(-S // 32)}]). Rebuild "
+                f"the mask at 32-block granularity.")
 
     # Sprint U (v2.36.0): M5+ auto-route check BEFORE STEEL's asymmetric
     # BQ/BK validator. If the mask is symmetric (BT-block), we route through

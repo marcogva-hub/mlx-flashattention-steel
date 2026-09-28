@@ -859,7 +859,8 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
                                         int mask_ndim, bool causal,
                                         bool emit_lse = false,
                                         bool structured_window_probe = false,
-                                        int structured_window_size = 0) {
+                                        int structured_window_size = 0,
+                                        int kv_valid_len = -1) {
   (void)BT;  // V6NAX sparse uses BQ=BK=32 internally; eligibility ensures BT==32
   // V6NAX sparse tile shape (DC3) — BQ=BK=32, WM=2 for both D=64 and D=128. This tile is
   // STRUCTURALLY PINNED, not a tunable (sparse-NAX-autotune, M5 Max, 2026-06-18):
@@ -965,6 +966,40 @@ std::string sparse_kernel_source_v6nax(int B, int Hq, int Hk, int qL, int kL, in
   } else {
     causal_skip = "";
     causal_block = "// causal=false";
+  }
+  // U1 (review 2026-09): element-level key validity for zero-padded K/V (auto_pad).
+  // Only the final K-tile can hold columns >= kv_valid_len; they get -inf AFTER
+  // scaling, exactly like the causal mask above, so pad keys add nothing to the
+  // softmax denominator.  A real query row always keeps >= 1 valid column in that
+  // tile (kv_valid_len % BK != 0 whenever padding exists), so no row becomes empty.
+  if (kv_valid_len >= 0 && kv_valid_len < kL) {
+    causal_block += R"KV_VALID(
+  {
+    constexpr int kv_valid_len = )KV_VALID" + std::to_string(kv_valid_len) + R"KV_VALID(;
+    if (kb * V6NAX_SPARSE_BK + V6NAX_SPARSE_BK > kv_valid_len) {
+      constexpr auto neg_inf_v = Limits<float>::finite_min;
+      const short2 sc_v = stile_t::NAXFrag_t::get_coord();
+      const short sn_v = sc_v.x;
+      const int base_col_v = kb * V6NAX_SPARSE_BK;
+      STEEL_PRAGMA_UNROLL
+      for (short iq_v = 0; iq_v < V6NAX_SPARSE_TQ; iq_v++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ik_v = 0; ik_v < V6NAX_SPARSE_TK; ik_v++) {
+          thread auto& fg = Stile.frag_at(iq_v, ik_v);
+          STEEL_PRAGMA_UNROLL
+          for (short ii_v = 0; ii_v < stile_t::kFragThrRows; ii_v++) {
+            STEEL_PRAGMA_UNROLL
+            for (short jj_v = 0; jj_v < stile_t::kFragThrCols; jj_v++) {
+              const int col = base_col_v + ik_v * 16 + jj_v + sn_v;
+              const auto loc = ii_v * stile_t::kFragThrCols + jj_v;
+              fg[loc] = (col >= kv_valid_len) ? neg_inf_v : fg[loc];
+            }
+          }
+        }
+      }
+    }
+  }
+)KV_VALID";
   }
 
   std::ostringstream ss;
@@ -1110,7 +1145,8 @@ mlx::core::array sparse_attention_forward(
     float scale,
     const std::string& kernel_version,
     bool structured_window_probe,
-    int structured_window_size) {
+    int structured_window_size,
+    int kv_valid_len) {
   // Sanity asserts
   if (Q.ndim() != 4 || K.ndim() != 4 || V.ndim() != 4) {
     throw std::runtime_error("sparse_attention: Q, K, V must be 4-D (B, H, L, D)");
@@ -1241,6 +1277,18 @@ mlx::core::array sparse_attention_forward(
   }
 
   const bool use_v6nax_sparse = (path == SparseKernelPath::V6NAXSparse);
+  // U1: key validity is implemented in the V6NAX kernel only — a request that
+  // cannot reach it must fail loudly, never silently include the padded keys.
+  const bool kv_masked = (kv_valid_len >= 0 && kv_valid_len < kL);
+  if (kv_masked && (!use_v6nax_sparse || structured_window_probe)) {
+    throw std::runtime_error(
+        "sparse_attention: kv_valid_len requires the V6NAX sparse kernel "
+        "(D in {64,128}, block_tile 32, f16/bf16, kernel_version v6nax_sparse)");
+  }
+  if (kv_valid_len > kL || (kv_masked && kv_valid_len <= kL - block_tile)) {
+    throw std::runtime_error(
+        "sparse_attention: kv_valid_len must satisfy kL - block_tile < kv_valid_len <= kL");
+  }
   std::string name = "sparse_attn_" + std::string(sparse_kernel_path_cache_suffix(path)) +
       "_" + dtype_str + "_" +
       std::to_string(B) + "_" + std::to_string(Hq) + "_" + std::to_string(Hk) +
@@ -1251,6 +1299,9 @@ mlx::core::array sparse_attention_forward(
   if (structured_window_probe) {
     name += "_structured_window_W" + std::to_string(structured_window_size);
   }
+  if (kv_masked) {
+    name += "_kv" + std::to_string(kv_valid_len);
+  }
 
   std::string source;
   if (use_v6nax_sparse) {
@@ -1258,7 +1309,8 @@ mlx::core::array sparse_attention_forward(
                                         scale, dtype_str, mask_ndim, causal,
                                         /*emit_lse=*/false,
                                         structured_window_probe,
-                                        structured_window_size);
+                                        structured_window_size,
+                                        kv_masked ? kv_valid_len : -1);
   } else {
     source = sparse_scalar_fallback_source(B, Hq, Hk, qL, kL, D, block_tile, NQ, NK,
                                             scale, dtype_str, mask_ndim, causal);

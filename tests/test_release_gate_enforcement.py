@@ -44,8 +44,10 @@ def _read(p: Path) -> str:
 # 80 -> 81: added tests/test_gna_residency_swizzle_lock.py (default-vs-grid-
 # swizzle byte-identity lock for the opt-in GNA residency probe). 81 -> 82:
 # added the hardened sparse beta-3 gate boundary/which-binary lock.
+# 82 -> 83: added tests/test_u1_auto_pad.py (2.63.0 review U1/U2: auto_pad pad-key
+# masking + causal N != S + router/predicate anti-drift locks; M5+ V6NAX sparse).
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 82
+_EXPECTED_M5_SKIP_SITES = 83
 
 
 def _count_m5_skip_sites() -> int:

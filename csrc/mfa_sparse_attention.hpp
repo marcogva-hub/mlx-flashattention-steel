@@ -53,7 +53,12 @@ mlx::core::array sparse_attention_forward(
     // Probe-only: preserve the V6NAX sparse kernel and its block-mask input,
     // but derive sliding-window tile eligibility arithmetically.
     bool structured_window_probe = false,
-    int structured_window_size = 0);
+    int structured_window_size = 0,
+    // 2.63.0 (review 2026-09, U1): number of REAL keys when K/V were zero-padded
+    // to a BT multiple (auto_pad).  Keys at positions >= kv_valid_len get a -inf
+    // score (element level, final K-tile only), so padding never enters the
+    // softmax denominator.  -1 (default) or kL = no masking.  V6NAX path only.
+    int kv_valid_len = -1);
 
 /// v2.50 Prompt 5c Section A — sparse forward returning (O, L) with sparse-L.
 ///
