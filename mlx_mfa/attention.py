@@ -3389,8 +3389,13 @@ def _auto_pad_nax_route(q, k, v, block_mask, causal: bool) -> bool:
     if mask_bytes < 4096:
         return False
     from mlx_mfa.lcsa_nax import (
-        _d_dense_cutoff, _nax_sparse_route_viable, _sparse_extended_enabled)
+        _d_dense_cutoff, _nax_sparse_route_viable, _sparse_extended_enabled,
+        decide_auto_version)
     density = float(mx.mean(block_mask.astype(mx.float32)).item())
+    # The router's kernel choice honours MFA_LCSA_KERNEL_VERSION (v1 = scalar); the
+    # padded route forces V6NAX, so it must not run when the router would not.
+    if decide_auto_version(density=density, qL=P, kL=P, D=q.shape[3]) != "v2":
+        return False
     w = [(0, 0), (0, 0), (0, P - N), (0, 0)]
     qp, kp, vp = (mx.pad(x, w) for x in (q, k, v))       # lazy: shapes/dtypes only
     route = (_nax_sparse_route_viable(qp, kp, 32, density, causal=causal, V=vp)
@@ -3851,7 +3856,9 @@ def flash_attention_sparse(
                     element-wise inside the kernel — the result equals
                     ``auto_pad=False`` (the block mask is at 32-block granularity,
                     ``ceil(N/32)`` blocks).  When that kernel would not run, or
-                    N != S, the call is exactly ``auto_pad=False``.  Default False.
+                    N != S, the call is exactly ``auto_pad=False``.  The valid
+                    length is baked into the kernel: one JIT compile per distinct
+                    non-aligned N (fine for fixed token counts).  Default False.
 
     Returns:
         Output [B, H, N, D].
@@ -3924,7 +3931,8 @@ def flash_attention_sparse(
     # changes speed, never the result.
     if auto_pad:
         _P = -(-N // 32) * 32
-        if N == S and _P != N and _auto_pad_nax_route(q, k, v, block_mask, causal):
+        if (N == S and _P != N and 0 < scale < math.inf     # the kernel refuses other scales
+                and _auto_pad_nax_route(q, k, v, block_mask, causal)):
             _dtrace.record("v6nax_sparse", "auto_pad (kv_valid_len)")
             return _make_sparse_nax_padded_vjp(float(scale), bool(causal))(
                 q, k, v, block_mask)

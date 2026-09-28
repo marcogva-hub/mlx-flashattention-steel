@@ -154,10 +154,13 @@ def test_u2_causal_n_ne_s_sees_no_future_key(monkeypatch, N, S, extended):
     (4096, 128, 12, 0.50, False, False), (4096, 128, 4, 0.05, True, False),
     (6144, 128, 16, 0.10, False, False), (6144, 128, 16, 0.10, False, True),
     (2048, 64, 4, 0.10, False, True), (4096, 128, 12, 0.95, False, True),
+    (4096, 128, 12, 0.10, False, "v1"), (4096, 128, 12, 0.10, False, "scalar_fallback"),
 ])
 def test_predicate_matches_router_on_aligned_shapes(monkeypatch, N, D, H, density, causal, extended):
-    if extended:
+    if extended is True:
         monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    elif isinstance(extended, str):          # kernel override honoured by the router (review B #1)
+        monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", extended)
     q, k, v, bm = _inputs(N, N, D, H, density, seed=N + H)
     with dt.capture() as cap:
         mx.eval(flash_attention_sparse(q, k, v, bm, causal=causal))
@@ -194,3 +197,88 @@ def test_extended_refusal_reads_ceil_counts(monkeypatch, N, S):
     bm16 = mx.ones((-(-N // 16), -(-S // 16)), dtype=mx.bool_)
     with pytest.raises(ValueError, match="block tile must be 32"):
         flash_attention_sparse(q, k, v, bm16)
+
+
+
+# ── pre-checkpoint review (Phase B) ────────────────────────────────────────────────────
+def test_auto_pad_honours_scalar_kernel_override(monkeypatch):
+    """MFA_LCSA_KERNEL_VERSION=v1 makes the router use the scalar kernel; the padded
+    route used to force v6nax_sparse anyway.  It is not padded now."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", "v1")
+    q, k, v, bm = _inputs(4100, 4100, 128, 4, 0.1, seed=12)
+    with dt.capture() as cap:
+        o = flash_attention_sparse(q, k, v, bm, auto_pad=True)
+        mx.eval(o)
+    assert not _padded_route_ran(cap), [r[:2] for r in cap]
+    assert_row_gates(o, _oracle(q, k, v, bm, False), **F16_GATES)
+
+
+@pytest.mark.parametrize("scale", [-0.1, float("inf")])
+def test_auto_pad_never_changes_the_contract_for_odd_scales(monkeypatch, scale):
+    """auto_pad=True raised where auto_pad=False computed (the kernel refuses a
+    non-positive / non-finite scale): such calls are never padded."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    q, k, v, bm = _inputs(4100, 4100, 64, 2, 0.1, seed=13)
+    try:
+        b = flash_attention_sparse(q, k, v, bm, scale=scale, auto_pad=False)
+        mx.eval(b)
+    except Exception as e:                     # the unpadded route's own contract
+        with pytest.raises(type(e)):
+            mx.eval(flash_attention_sparse(q, k, v, bm, scale=scale, auto_pad=True))
+        return
+    a = flash_attention_sparse(q, k, v, bm, scale=scale, auto_pad=True)
+    mx.eval(a)
+    assert mx.array_equal(mx.isnan(a), mx.isnan(b))
+    assert mx.array_equal(mx.where(mx.isnan(a), 0, a), mx.where(mx.isnan(b), 0, b))
+
+
+def test_raw_kv_valid_len_rejects_negative_values():
+    from mlx_mfa import _ext
+    q, k, v, bm = _inputs(4128, 4128, 64, 2, 0.1, seed=14)
+    with pytest.raises(RuntimeError, match="kv_valid_len"):
+        _ext.sparse_attention_forward(q, k, v, bm, block_tile=32, scale=0.125,
+                                      kernel_version="v6nax_sparse", kv_valid_len=-5)
+
+
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16], ids=["f16", "bf16"])
+def test_u1_gqa_per_head_mask_forward_and_grad(monkeypatch, causal, dtype):
+    """Coverage the review added by hand: GQA 8/2 with a 3-D per-head mask, forward
+    and gradients, on the auto_pad kv_valid_len route."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    N, D, Hq, Hk = 4097, 64, 8, 2
+    mx.random.seed(15)
+    q = mx.random.normal((1, Hq, N, D)).astype(dtype)
+    k = mx.random.normal((1, Hk, N, D)).astype(dtype)
+    v = mx.random.normal((1, Hk, N, D)).astype(dtype)
+    nb = -(-N // 32)
+    bm = (mx.random.uniform(shape=(Hq, nb, nb)) < 0.1) | mx.eye(nb, dtype=mx.bool_)
+    mx.eval(q, k, v, bm)
+    kr, vr = mx.repeat(k, Hq // Hk, axis=1), mx.repeat(v, Hq // Hk, axis=1)
+    with dt.capture() as cap:
+        o = flash_attention_sparse(q, k, v, bm, causal=causal, auto_pad=True)
+        mx.eval(o)
+    assert _padded_route_ran(cap)
+    tol = F16_GATES if dtype == mx.float16 else dict(max_abs=3e-2, norm_tol=2e-2, cos_min=0.999)
+    assert_row_gates(o, _oracle(q, kr, vr, bm, causal), **tol, label=f"GQA 3-D {dtype} causal={causal}")
+    if dtype == mx.float16:
+        mx.random.seed(16)
+        g = mx.random.normal(q.shape).astype(mx.float32)
+        grads = mx.grad(lambda a, b, c: (flash_attention_sparse(a, b, c, bm, causal=causal, auto_pad=True)
+                                         .astype(mx.float32) * g).sum(), argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        with mx.stream(mx.cpu):
+            tok = mx.repeat(mx.repeat(bm, 32, axis=-2), 32, axis=-1)[..., :N, :N]
+            if causal:
+                tok = tok & (mx.arange(N)[None] <= mx.arange(N)[:, None])
+
+            def f(a, b, c):
+                b, c = mx.repeat(b, Hq // Hk, axis=1), mx.repeat(c, Hq // Hk, axis=1)
+                s = mx.where(tok, (a @ mx.swapaxes(b, -1, -2)) * D ** -0.5, float("-inf"))
+                return ((mx.softmax(s, axis=-1) @ c) * g).sum()
+            ref = mx.grad(f, argnums=(0, 1, 2))(*(x.astype(mx.float32) for x in (q, k, v)))
+            mx.eval(*ref)
+        for name, x, y in zip(("dQ", "dK", "dV"), grads, ref):
+            rel = float(mx.max(mx.abs(x.astype(mx.float32) - y))) / float(mx.max(mx.abs(y)))
+            assert rel < 1e-2, (name, rel)

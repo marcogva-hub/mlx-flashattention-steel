@@ -1285,9 +1285,11 @@ mlx::core::array sparse_attention_forward(
         "sparse_attention: kv_valid_len requires the V6NAX sparse kernel "
         "(D in {64,128}, block_tile 32, f16/bf16, kernel_version v6nax_sparse)");
   }
-  if (kv_valid_len > kL || (kv_masked && kv_valid_len <= kL - block_tile)) {
+  if (kv_valid_len < -1 || kv_valid_len > kL ||
+      (kv_masked && kv_valid_len <= kL - block_tile)) {
     throw std::runtime_error(
-        "sparse_attention: kv_valid_len must satisfy kL - block_tile < kv_valid_len <= kL");
+        "sparse_attention: kv_valid_len must be -1 (no masking) or satisfy "
+        "kL - block_tile < kv_valid_len <= kL");
   }
   std::string name = "sparse_attn_" + std::string(sparse_kernel_path_cache_suffix(path)) +
       "_" + dtype_str + "_" +
