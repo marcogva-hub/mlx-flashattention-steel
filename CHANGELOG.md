@@ -5,7 +5,7 @@ All notable changes to mlx-mfa are documented here.
 ## [2.62.2] — 2026-09-28
 
 Correctness patch release from the 2026-09 code review. **Upgrade recommended for every
-2.x user.** It fixes seven published P0 root causes (silently wrong output or gradients),
+2.x user.** It fixes eight published P0 root causes (silently wrong output or gradients),
 plus three more P0 kernel sites found by auditing the siblings of one of them. It also
 retires a precompiled kernel that could serve stale code on macOS 14/15 (deduced from
 source). No new
@@ -25,14 +25,15 @@ on that site. Entries marked "reachable since" also depended on a later routing 
 | R5 | `mx.grad` through `flash_attention_sparse` (M5 NAX route, default and V6 hybrid) | a block-mask row that is entirely False | dK/dV entirely NaN (the forward was finite) | reachable since 2.58.0 |
 | R6 | `flash_attention_sparse` | block mask mutated in place between two calls | the stale cached mask was reused | 2.33.1 |
 | R7 | `sage_attention` causal 1<N<S; **STEEL V3** (`backend="mfa"`, auto on M1–M4); **`flash_attention_paged_varlen`** (default route, heterogeneous `q_lens`); **`flash_attention_paged_varlen_turboquant`** | causal with a query offset not aligned to the K tile | queries saw up to BK−1 future keys (err 0.1–1.6 vs oracle; TurboQuant: output moved up to 7.8 when only future keys changed) | the exact causal-zone fix of 2.14.1 reached STEEL V1/V2/paged only: Sage since 1.2.0, V3 since 2.7.0 (auto M1/M2 since 2.20.0), paged-varlen fused since 2.14.1, TurboQuant paged-varlen since 2.22.0 |
+| attn_bias backward | `mx.grad` / `mx.vjp` of `flash_attention(attn_bias=...)`, native bias modes 1/2 (per-key `[1,1,1,S]` / `[B,H,1,S]`) | any (causal or not, including an all-zero bias) | the native route had no custom vjp; autograd used the MFA primitive's STEEL backward, which ignores the bias and masks top-left. dQ/dK/dV were NaN or wrong, and differentiating the bias itself crashed the process (segfault) | 2.27.0 (native `attn_bias`) |
 | V6 backward | `mx.grad` / `mx.vjp` of `flash_attention` (default route and `backend="mfa"`) | causal, N<S, D=64 f16/bf16, N≥2048 (the default-on V6NAX backward); D=128 with `MFA_ENABLE_V6_BACKWARD=1` | the V6NAX backward kernels mask top-left (`qL_off=0`); gradients 20–80× off in relative terms, while the forward was correct | 2.51.0 (default-on; opt-in since 2.50) |
 | async_v2 (deduced) | STEEL V2 f16, D=64/128, no extra features, on **macOS 14/15** (auto route on M1–M4, `backend="mfa"`) | the precompiled `async_v2.metallib` was tried before the JIT | the frozen kernel bounded the K loop like causal even for non-causal calls, and kept the causal zone from before 2.14.1. **Deduced from source; not reproducible on the maintainer's macOS 26+ hardware, where the loader was skipped.** If the metallib failed to load on those systems, there was no impact. | 2.5.4 |
 
 Every live kernel now applies the exact causal zone: the shared helper `mfa_causal_mask_zone_gate`
 is used by V1, V2, flash-decode, Sage, V3, the backward, paged-varlen and TurboQuant, and the
 paged kernel keeps its equivalent 2.14.1 form. Each of these roots is locked by a test that fails on 2.62.1: `tests/test_r1_*`, `test_r2_*`,
-`test_phase3_iii4_d7_mask_tiling.py`, `test_r5_*`, `test_r6_*`, `test_r7_*` and, for the V6
-backward, `test_causal_zero_clamp_convention.py`. The async_v2 row cannot be tested on
+`test_phase3_iii4_d7_mask_tiling.py`, `test_r5_*`, `test_r6_*`, `test_r7_*`,
+`test_attn_bias_backward.py` and, for the V6 backward, `test_causal_zero_clamp_convention.py`. The async_v2 row cannot be tested on
 macOS 26+; its artifacts and loader are gone and `tests/test_r8_aot_metallib_cache.py` keeps
 them from returning.
 
@@ -62,6 +63,9 @@ them from returning.
 - **MLX 0.32.1 / 0.32.2 builds** (BLD-01/BLD-10): MLX 0.32.2 maps to nanobind v2.15.0.
   pip's build isolation resolves the newest MLX, so `mlx` is capped at `<=0.32.2`, and an
   unmapped MLX version is now a configure-time error.
+- **`attn_bias` gradients**: the native bias route now has a custom vjp (the ALiBi pattern)
+  whose backward is the SDPA form of the same attention. Gradients w.r.t. the bias itself
+  are returned, not zero, so trainable biases work.
 - **fp32 and mixed dtypes** never reach the legacy MFA primitive (R1). `mfa_forward_with_lse`
   refuses fp32 causal N<S at the source.
 - `attn_bias` is no longer dropped when `MFA_DISABLE_V2=1` routes to V1 (MSL-06).
@@ -87,8 +91,8 @@ them from returning.
   compared one path with itself on macOS 26+ (BLD-08). Both knobs are now listed as removed:
   strict validation reports "removed", not "unrecognized". The historical source stays in
   the repository.
-- The test classes of the STEEL V4/V5 kernels that were already removed from the build:
-  47 cells that could only ever be skipped.
+- The tests of the STEEL V4/V5 kernels that were already removed from the build: 67 cells
+  that could only ever be skipped.
 
 ### Packaging
 - The published artifacts (sdist and the wheel built from it) no longer ship dev-only
@@ -102,13 +106,11 @@ them from returning.
   inspects a real wheel.
 
 ### Known issues (found during remediation, not fixed in 2.62.2)
-- `mx.grad` through `flash_attention(attn_bias=...)`: the native bias route has no
-  custom vjp, so gradients come from the STEEL backward, which ignores the bias and is
-  top-left. They are NaN or wrong even for an all-zero bias. For training, apply the
-  bias through `mx.fast.scaled_dot_product_attention` until this is fixed.
 - `flash_attention_paged`: with **non-contiguous** page pools (for example a transposed
   view), the forward is correct but the gradients are wrong. Pass contiguous pools
-  (`mx.contiguous(pool)`).
+  (`mx.contiguous(pool)`). The repro is tracked as a strict xfail
+  (`tests/test_known_issue_paged_noncontig_grad.py`); the fix is planned for the next
+  release.
 - Sliding windows that contain no key return NaN (MSL-05).
 - Numerical floor: MLX fp32 on the M5 GPU is about 2–2.5e-3 away from a CPU fp32 oracle,
   and plain SDPA shows the same gap. fp32 correctness tests therefore compare against a
