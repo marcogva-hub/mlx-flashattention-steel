@@ -207,6 +207,21 @@ allowlist) — a `git add` of any journal path fails CI.  When writing new journ
 put them under `docs/`/`devnotes/` (gitignored-archive-bound) — do NOT expect them on
 the tracked tree; current-state reference goes in `docs/reference/`.
 
+## `metal_kernel` sources follow MLX's MSL version (2.62.3)
+
+Kernels built with `mx.fast.metal_kernel` / `mlx::core::fast::metal_kernel` (sparse V6NAX/scalar,
+GNA/FFN/QMM NAX, conv, top-k, TQ decode) are compiled with **MLX's** language version, not ours:
+MLX ≥ 0.32.1 selects **MSL 4.1 on macOS 27+** (generic address space). Under 4.1,
+`decltype(local)` carries `thread` and an unqualified member function cannot bind a member to a
+`thread&` — 2.62.2 shipped every NAX `metal_kernel` kernel broken there. Rules: member functions of
+embedded MSL structs are `thread` / `const thread`; types fed to templates come from **prvalue**
+`decltype`s (not `metal::remove_addrspace_t`: the shared NAX helpers are also compiled at runtime by
+our ShaderCache on the user's OS); a kernel's name carries every source-specialising parameter
+(dtype included). Release gate: `scripts/metal_kernel_matrix_smoke.py` (every shipped
+`metal_kernel` family × its variant axes × every ABI-table MLX version, isolated installs) →
+receipt checked by `scripts/check_metal_kernel_matrix.py` (release audit Check 10, publish GATE 6).
+A new `metal_kernel` call site fails `tests/test_metal_kernel_matrix_tool.py` until it has a probe.
+
 ## Canonical Python environment (2026-05-13)
 
 Always use `.venv/bin/python` for all mlx-mfa work.  **`.venv/` is the
@@ -380,7 +395,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.61.0 (held/unpublished — PyPI latest is 2.60.1) — 2118 tests pass (see CHANGELOG.md for the current feature matrix; the track table below is a historical v0–v2.27 record). Phase IV complete: TQ-decode eval-collapse gains (IV-D1/D2), whole-repo correctness review (no CRITICAL; A3-1 latent int64-overflow fix), incremental optimization closed-at-floor. `MFA_FORCE_NATIVE_BWD` removed (kernel retained); V3 conditionally-auto-routed (M5-validated).
+v2.63.0 (release candidate, not published — PyPI latest is 2.62.3, 2026-09-28). The RC adds, on top of 2.62.3: the block-sparse extended envelope (`auto_pad` with in-kernel pad-key masking via `kv_valid_len`, `MFA_SPARSE_NAX_EXTENDED`, `MFA_SPARSE_D_DENSE_CUTOFF`; all opt-in), `sla_attention` (differentiable, fp32 linear term), the bf16 1×1×1 conv3d fix and Python 3.10 test compatibility; the sparse dispatch table waits for NIGHT-3 (→ 2.64). Releases are sdist-only and gated by two M5 receipts in `release-gate/` (M5/NAX fingerprints + the `metal_kernel` × MLX-version matrix). See CHANGELOG.md for the feature matrix; the track table below is a historical v0–v2.27 record. This line is locked to the pyproject version by `tests/test_claude_md_current.py`.
 
 | Track | Description | Status |
 |-------|-------------|--------|
