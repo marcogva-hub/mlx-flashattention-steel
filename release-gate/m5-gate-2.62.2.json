@@ -1,11 +1,11 @@
 {
   "release_version": "2.62.2",
-  "git_sha": "8dc90ded5c13a4a749978f5977b5ff606ec436dc",
+  "git_sha": "c503aa8b42a780ffc2b6f38b08ef3129cbdf620d",
   "mlx_version": "0.31.2",
   "device": "Apple M5 Max",
   "chip": "M5",
   "is_m5_plus": true,
-  "date_utc": "2026-09-27",
+  "date_utc": "2026-09-28",
   "has_nax": true,
   "nax_reason": "available",
   "fingerprints": {
