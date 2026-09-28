@@ -94,6 +94,14 @@ jobs:
         # on an M5 host and commit release-gate/m5-gate-<version>.json first.
         run: python scripts/check_m5_gate_fingerprint.py
 
+      - name: GATE 6 — metal_kernel x MLX-version matrix receipt (FATAL — 2.62.3)
+        # Blocks the publish unless release-gate/metal-kernel-matrix-<version>.json
+        # proves every shipped metal_kernel family on every MLX version of the
+        # nanobind ABI table (isolated installs, M5, all pass, fresh). 2.62.2 shipped
+        # NAX kernels that did not build on MLX 0.32.1/0.32.2 (dense-only smoke).
+        # Produce it with scripts/metal_kernel_matrix_smoke.py on an M5 host.
+        run: python scripts/check_metal_kernel_matrix.py
+
   build:
     name: Build release artifacts
     needs: gates

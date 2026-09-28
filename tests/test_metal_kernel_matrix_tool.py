@@ -18,7 +18,6 @@ import hashlib
 import importlib.util
 import json
 import re
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -51,8 +50,11 @@ _SITE_COUNTS = {
 
 
 def _sdist_excludes() -> set[str]:
-    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return set(cfg["tool"]["scikit-build"]["sdist"]["exclude"])
+    # Regex, not tomllib: requires-python >= 3.10 and tomllib is 3.11+.
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    section = text[text.index("[tool.scikit-build.sdist]"):]
+    block = re.search(r"^exclude\s*=\s*\[(.*?)\]", section, re.M | re.S).group(1)
+    return set(re.findall(r'"([^"]+)"', block))
 
 
 def _shipped_metal_kernel_files() -> dict[str, int]:
