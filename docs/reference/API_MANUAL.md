@@ -1,6 +1,6 @@
 # API manual
 
-Version: **2.62.3**
+Version: **2.63.0**
 Public exports: **103**
 
 The definitive export list is `mlx_mfa.__all__`. Signatures below describe the

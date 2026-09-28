@@ -357,6 +357,37 @@ PERF_CLAIMS = [
             "baseline."
         ),
     },
+    # --- 2.63.0 block-sparse extended envelope (Volet A) + SLA (Volet B).  The
+    # ratios are the block-skip realizing the trained sparsity, measured on the
+    # public path (campaign 2026-08-12, M5 Max, MLX 0.31.2; raw data tracked under
+    # benchmarks/results/blocksparse_voletA|B).  §Z engagement: the V6NAX sparse
+    # kernel runs through the PUBLIC entry at a shape the default policy rejects
+    # (B·H=16) only when the documented opt-in is set, and changes the output.
+    {
+        "id": "v2.63.0_sparse_extended_nax_opt_in",
+        "env": {"MFA_SPARSE_NAX_EXTENDED": "1"},
+        "shape": (1, 16, 6144, 6144, 128),
+        "dtype": mx.float16,
+        "expected": "sparse_extended_nax",
+        "documented_in": ["CHANGELOG.md", "docs/reference/ROUTING.md"],
+        "documented_perf_claim": (
+            "2.63.0: MFA_SPARSE_NAX_EXTENDED=1 — sliding d0.10 8.2-9.3x vs dense "
+            "SDPA across N=16384-144288 (B·H=40, D128); d0.50 1.6-2.0x; real LCSA "
+            "10.2-34.9x"
+        ),
+    },
+    {
+        "id": "v2.63.0_sla_attention_default_m5",
+        "env": {},
+        "shape": (1, 2, 2048, 2048, 64),
+        "dtype": mx.float16,
+        "expected": "sla_extended",
+        "documented_in": ["CHANGELOG.md"],
+        "documented_perf_claim": (
+            "2.63.0: sla_attention composition net op-ratio 5.9-6.4x vs dense "
+            "SDPA at the Wan shapes (N=62752/144288, topk 0.1)"
+        ),
+    },
 ]
 
 
@@ -456,6 +487,42 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
             f"conv3d MPP engaged but output deviates from the original op "
             f"beyond the dtype floor (max abs {max_abs:.4f} >= {abs_bar})"
         )
+        return
+
+    # --- 2.63.0 sparse extended opt-in / SLA: engagement via the dispatch trace
+    # through the public entry + differential output (opt-in vs default route).
+    if claim["expected"] in ("sparse_extended_nax", "sla_extended"):
+        from mlx_mfa import _dispatch_trace as _dt
+        from mlx_mfa.attention import _get_is_m5_plus_cached
+        if not _get_is_m5_plus_cached():
+            pytest.skip("the V6NAX sparse kernel is M5+ only")
+        monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+        B, H, qL, kL, D = claim["shape"]
+        mx.random.seed(7)
+        q, k, v = (mx.random.normal((B, H, qL, D)).astype(claim["dtype"]) for _ in range(3))
+        if claim["expected"] == "sla_extended":
+            from mlx_mfa.sla import sla_attention
+            run = lambda: sla_attention(q, k, v, topk_ratio=0.1)           # defaults
+            run_off = lambda: sla_attention(q, k, v, topk_ratio=0.1, extended=False)
+        else:
+            nb = qL // 32
+            bm = (mx.random.uniform(shape=(nb, nb)) < 0.1) | mx.eye(nb, dtype=mx.bool_)
+            run = run_off = lambda: mlx_mfa.flash_attention_sparse(q, k, v, bm)
+        with _dt.capture() as off_cap:
+            o_off = run_off(); mx.eval(o_off)
+        for kk, vv in claim["env"].items():
+            monkeypatch.setenv(kk, vv)
+        with _dt.capture() as cap:
+            o_on = run(); mx.eval(o_on)
+        assert any(r[0] == "v6nax_sparse" for r in cap), (
+            f"Perf claim '{claim['id']}' is UNREACHABLE via the public path: "
+            f"{[r[:2] for r in cap]} — per CLAUDE_V6_NAX.md §Z fix the routing or "
+            f"correct the claim ({claim['documented_perf_claim']}).")
+        assert not any(r[0] == "v6nax_sparse" for r in off_cap), (
+            "the default route already engages the kernel — the opt-in claim is vacuous")
+        delta = float(mx.max(mx.abs(o_on.astype(mx.float32) - o_off.astype(mx.float32))))
+        assert delta > 0.0, "opt-in and default outputs are byte-identical (same path)"
+        assert bool(mx.all(mx.isfinite(o_on)).item())
         return
 
     # --- TQ paged decode claim (III-2): engagement via the tq_decode

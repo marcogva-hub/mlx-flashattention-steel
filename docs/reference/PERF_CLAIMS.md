@@ -22,6 +22,8 @@ The identifiers below are executable reachability locks retained for compatibili
 | `ii9_conv3d_t16_64x64_c128_fp16_mpp_default` | registered fp16 Conv3D hook case |
 | `iii1_conv3d_t16_64x64_c128_bf16_mpp_default` | registered bf16 Conv3D hook case |
 | `iii2_tq_paged_decode_step_default` | registered TurboQuant decode case |
+| `v2.63.0_sparse_extended_nax_opt_in` | 2.63.0: `MFA_SPARSE_NAX_EXTENDED=1` engages the V6NAX sparse kernel through `flash_attention_sparse` at a shape the default policy rejects (differential vs the default route) |
+| `v2.63.0_sla_attention_default_m5` | 2.63.0: `sla_attention` with default arguments engages the V6NAX sparse kernel on M5+ (differential vs `extended=False`) |
 
 ## Current measured claims
 

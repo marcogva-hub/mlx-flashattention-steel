@@ -2,7 +2,11 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [Unreleased] — targeting 2.63.0
+## [2.63.0] — release candidate (not published)
+
+Minor release: the block-sparse extended envelope (opt-in), Sparse-Linear Attention
+(`sla_attention`), and the hardening from the 2026-09 review of both. The dispatch-table update
+waits for NIGHT-3 and moves to 2.64.
 
 Block-sparse extended envelope (Volet A Phase 1). All additions are **opt-in / default-off**:
 with `MFA_SPARSE_NAX_EXTENDED` and `MFA_SPARSE_D_DENSE_CUTOFF` unset, routing is byte-identical to
@@ -113,7 +117,18 @@ Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
   trained sparsity (≈1/density), not a faster-dense-kernel claim. They were measured before the
   U1/U2 fixes and not re-timed. The fix only masks the final K-tile of padded calls; the aligned
   path is unchanged. Raw data: `benchmarks/results/blocksparse_voletA/campaign_20260812.jsonl`,
-  `benchmarks/results/blocksparse_voletB/microcost_20260813.jsonl`.
+  `benchmarks/results/blocksparse_voletB/microcost_20260813.jsonl`. Public-path engagement is locked
+  by `tests/test_release_notes_perf_claims.py` (`v2.63.0_*`).
+- Reproduce (M5+):
+  ```bash
+  .venv/bin/python benchmarks/results/blocksparse_voletA/voletA_bench.py parent voletA.jsonl
+  .venv/bin/python benchmarks/results/blocksparse_voletB/voletB_microcost.py run voletB.jsonl
+  ```
+  Both scripts set `MFA_SPARSE_NAX_EXTENDED=1` themselves. The Volet A campaign runs one arm per
+  fresh process and takes hours; `voletA_bench.py single '<cell>' <arm>` times a single cell.
+  The public call is `flash_attention_sparse(q, k, v, block_mask, auto_pad=True)` with
+  `MFA_SPARSE_NAX_EXTENDED=1`, or `mlx_mfa.sla.sla_attention(q, k, v, topk_ratio=0.1)`, compared
+  with `mx.fast.scaled_dot_product_attention` using the equivalent element mask.
 
 ## [2.62.3] — 2026-09-28
 
