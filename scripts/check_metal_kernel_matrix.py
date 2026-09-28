@@ -150,7 +150,10 @@ def main() -> int:
     for cell, why in sorted(tool.KNOWN_FAILURES.items()):
         print(f"⚠ known pre-existing failure (expected, strict — not a pass): {cell}: {why}")
     vers = ", ".join(tool.abi_table_versions())
-    print(f"✓ metal_kernel matrix verified for v{version}: {len(tool.PROBES)} kernels x MLX "
+    cells = sum(int(m.group(2)) for row in r["matrix"].values() for x in row["results"].values()
+                for m in [re.match(r"(\d+)/(\d+) cells ok", x.get("detail", ""))] if m)
+    print(f"✓ metal_kernel matrix verified for v{version}: {len(tool.PROBES)} probes "
+          f"({cells // max(len(r['matrix']), 1)} variant cells) x MLX "
           f"{{{vers}}} all pass (isolated installs, M5 {r.get('device', '?')}), sha "
           f"{sha[:12]} == released source, dated {r.get('date_utc')}.")
     return 0
