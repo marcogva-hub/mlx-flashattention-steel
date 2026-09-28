@@ -19,3 +19,23 @@ but **sdist-excluded** (it never ships to users).
 
 > A missing receipt is the correct default for a held/unreleased version — it
 > means "the M5 gate has not certified this exact source for release yet."
+
+## metal_kernel x MLX-version matrix receipt (since 2.62.3)
+
+`metal-kernel-matrix-<version>.json` is written by `scripts/metal_kernel_matrix_smoke.py`
+(M5, from a clean committed tree): the release sdist is installed in isolation against
+**every MLX version of the nanobind ABI table** and every shipped `metal_kernel` kernel is
+swept over its variant axes against independent references. `publish.yml` GATE 6 and the
+release audit (Check 10) run `scripts/check_metal_kernel_matrix.py`, which BLOCKS unless
+the receipt covers every ABI-table version and probe, passes (strict known failures are
+reported, never hidden), is bound to the HEAD tree (sdist build inputs == git), and is
+fresh (no `csrc/`, `mlx_mfa/`, `CMakeLists.txt` or `pyproject.toml` change since).
+
+Why: 2.62.2 opened MLX 0.32.1/0.32.2 while its install smoke exercised dense kernels only;
+every NAX `metal_kernel` kernel failed to build there (MSL 4.1 on macOS 27) and shipped.
+
+```bash
+.venv/bin/python -m build --sdist
+.venv/bin/python scripts/metal_kernel_matrix_smoke.py --sdist dist/mlx_mfa-<version>.tar.gz
+git add release-gate/metal-kernel-matrix-<version>.json
+```
