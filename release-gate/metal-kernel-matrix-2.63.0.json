@@ -1,0 +1,343 @@
+{
+ "release_version": "2.63.0",
+ "sdist_sha256": "311aaa5d37d3d9d9ee58bb5e40fffda6bfe307ae0f87d26fce38f8e76583e42b",
+ "git_sha": "855b11cc6d1c0d514ff9befaf3c62ec59aaa5ad5",
+ "date_utc": "2026-09-28",
+ "device": "Apple M5 Max",
+ "abi_table_versions": [
+  "0.31.2",
+  "0.32.0",
+  "0.32.1",
+  "0.32.2"
+ ],
+ "probes": [
+  "sparse_v6nax",
+  "sparse_variants",
+  "sparse_lse_variants",
+  "sparse_lse_fingerprint",
+  "gna_nax",
+  "ffn_nax",
+  "qmm_nax",
+  "conv_pointwise",
+  "conv_mpp",
+  "conv_im2col",
+  "conv_py_im2col",
+  "conv_py_pointwise",
+  "topk_bisect",
+  "tq_decode",
+  "dense_v6nax_fwd",
+  "dense_v6nax_bwd"
+ ],
+ "known_failures": {},
+ "git_dirty": false,
+ "sdist_matches_head": true,
+ "sdist_mismatch": [],
+ "matrix": {
+  "0.31.2": {
+   "mlx": "0.31.2",
+   "mlx_mfa": "2.63.0",
+   "build_mlx": "0.31.2",
+   "has_nax": true,
+   "mfa_env": [],
+   "cells_dumped": 107,
+   "seed": 0,
+   "results": {
+    "sparse_v6nax": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(pub,nax)=0.0e+00 byteD(nax,scalar)=4.9e-04"
+    },
+    "sparse_variants": {
+     "ok": true,
+     "detail": "18/18 cells ok"
+    },
+    "sparse_lse_variants": {
+     "ok": true,
+     "detail": "13/13 cells ok"
+    },
+    "sparse_lse_fingerprint": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(nax_lse,scalar_lse)=4.9e-04"
+    },
+    "gna_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "ffn_nax": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "qmm_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "conv_mpp": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "conv_pointwise": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_im2col": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_py_im2col": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "conv_py_pointwise": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "topk_bisect": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "tq_decode": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "dense_v6nax_fwd": {
+     "ok": true,
+     "detail": "9/9 cells ok"
+    },
+    "dense_v6nax_bwd": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    }
+   },
+   "seconds": 16.2
+  },
+  "0.32.0": {
+   "mlx": "0.32.0",
+   "mlx_mfa": "2.63.0",
+   "build_mlx": "0.32.0",
+   "has_nax": true,
+   "mfa_env": [],
+   "cells_dumped": 107,
+   "seed": 0,
+   "results": {
+    "sparse_v6nax": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(pub,nax)=0.0e+00 byteD(nax,scalar)=4.9e-04"
+    },
+    "sparse_variants": {
+     "ok": true,
+     "detail": "18/18 cells ok"
+    },
+    "sparse_lse_variants": {
+     "ok": true,
+     "detail": "13/13 cells ok"
+    },
+    "sparse_lse_fingerprint": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(nax_lse,scalar_lse)=4.9e-04"
+    },
+    "gna_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "ffn_nax": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "qmm_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "conv_mpp": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "conv_pointwise": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_im2col": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_py_im2col": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "conv_py_pointwise": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "topk_bisect": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "tq_decode": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "dense_v6nax_fwd": {
+     "ok": true,
+     "detail": "9/9 cells ok"
+    },
+    "dense_v6nax_bwd": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    }
+   },
+   "seconds": 17.8
+  },
+  "0.32.1": {
+   "mlx": "0.32.1",
+   "mlx_mfa": "2.63.0",
+   "build_mlx": "0.32.1",
+   "has_nax": true,
+   "mfa_env": [],
+   "cells_dumped": 107,
+   "seed": 0,
+   "results": {
+    "sparse_v6nax": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(pub,nax)=0.0e+00 byteD(nax,scalar)=4.9e-04"
+    },
+    "sparse_variants": {
+     "ok": true,
+     "detail": "18/18 cells ok"
+    },
+    "sparse_lse_variants": {
+     "ok": true,
+     "detail": "13/13 cells ok"
+    },
+    "sparse_lse_fingerprint": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(nax_lse,scalar_lse)=4.9e-04"
+    },
+    "gna_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "ffn_nax": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "qmm_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "conv_mpp": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "conv_pointwise": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_im2col": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_py_im2col": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "conv_py_pointwise": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "topk_bisect": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "tq_decode": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "dense_v6nax_fwd": {
+     "ok": true,
+     "detail": "9/9 cells ok"
+    },
+    "dense_v6nax_bwd": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    }
+   },
+   "seconds": 17.3
+  },
+  "0.32.2": {
+   "mlx": "0.32.2",
+   "mlx_mfa": "2.63.0",
+   "build_mlx": "0.32.2",
+   "has_nax": true,
+   "mfa_env": [],
+   "cells_dumped": 107,
+   "seed": 0,
+   "results": {
+    "sparse_v6nax": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(pub,nax)=0.0e+00 byteD(nax,scalar)=4.9e-04"
+    },
+    "sparse_variants": {
+     "ok": true,
+     "detail": "18/18 cells ok"
+    },
+    "sparse_lse_variants": {
+     "ok": true,
+     "detail": "13/13 cells ok"
+    },
+    "sparse_lse_fingerprint": {
+     "ok": true,
+     "detail": "rel=4.6e-04 byteD(nax_lse,scalar_lse)=4.9e-04"
+    },
+    "gna_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "ffn_nax": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "qmm_nax": {
+     "ok": true,
+     "detail": "8/8 cells ok"
+    },
+    "conv_mpp": {
+     "ok": true,
+     "detail": "5/5 cells ok"
+    },
+    "conv_pointwise": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_im2col": {
+     "ok": true,
+     "detail": "2/2 cells ok"
+    },
+    "conv_py_im2col": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "conv_py_pointwise": {
+     "ok": true,
+     "detail": "1/1 cells ok"
+    },
+    "topk_bisect": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "tq_decode": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    },
+    "dense_v6nax_fwd": {
+     "ok": true,
+     "detail": "9/9 cells ok"
+    },
+    "dense_v6nax_bwd": {
+     "ok": true,
+     "detail": "4/4 cells ok"
+    }
+   },
+   "seconds": 16.7
+  }
+ },
+ "matrix_sha256": "98ee018001a4f4a81270d3ee01c1cea5ec62d78666df941191e3433f2e72210a",
+ "all_pass": true
+}
