@@ -9,11 +9,12 @@ default routing is byte-identical (`test_sparse_extended_envelope.py`; existing 
 unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
 
 ### Added
-- `flash_attention_sparse(..., auto_pad=True)` — pad Q/K/V to a 32-block multiple (zeros) so the
-  V6NAX block-skip is reachable for non-aligned sequence lengths (real Wan token counts, e.g.
-  62 730→62 752, 144 279→144 288), then slice the output. Pad tokens carry V=0 so padded keys do
-  not affect the output direction; correctness gold-verified via cosine (N=62 730 → cos 0.999999 vs
-  the fp32 element-mask gold at 62 730). Default `auto_pad=False` is byte-identical.
+- `flash_attention_sparse(..., auto_pad=True)` — for a non-aligned N == S, zero-pad Q/K/V to a
+  32-block multiple so the V6NAX block-skip is reachable (real Wan token counts, e.g.
+  62 730→62 752, 144 279→144 288), with the pad KEYS masked element-wise inside the kernel
+  (`kv_valid_len`), then slice the output. The result equals `auto_pad=False`: pad keys never enter
+  the softmax denominator, N ≠ S is never padded, and any call the V6NAX kernel would not serve takes
+  the exact unpadded route. Default `auto_pad=False` is byte-identical.
 - `MFA_SPARSE_NAX_EXTENDED=1` (opt-in) — route the V6NAX sparse kernel across its full measured
   capability envelope (B·H free, N ≤ 144 288 after padding, density free) rather than only the
   β3-measured policy region. Bypasses POLICY bounds only (B·H allowlist / N range / density ceiling),
@@ -28,16 +29,38 @@ unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
   of the thu-ml/TurboDiffusion SLA semantics (`o = o_sparse + proj_l(o_linear)`: top-k block selection at
   BLKQ=128/BLKK=64 → sparse-softmax over the Volet A extended path + softmax-feature-map linear attention
   over all keys + learned `proj_l`). Non-causal MHA + GQA; opt-in (nothing changes for non-callers).
-  Parity: full output cos ≥ 0.999 and EXACT selection block-set vs a torch-CPU fp32 reference derived
-  line-by-line from the SOT (`tests/test_sla.py`). Composition net op-ratio 5.9–6.4× vs dense SDPA at the
+  Parity: per-row magnitude gates (max-abs, per-row norm ratio) and an EXACT selection block-set vs a
+  torch-CPU fp32 reference derived line-by-line from the SOT (`tests/test_sla.py`), including
+  non-aligned L (130, 4 099, 73 899). Differentiable w.r.t. q/k/v; the linear-term reductions run in
+  fp32 (fp16 inputs no longer overflow). Composition net op-ratio 5.9–6.4× vs dense SDPA at the
   Wan shapes (N=62 752/144 288, topk 0.1) — the composition preserves ~80–90% of the bare-skip advantage.
 
-### Measured (shipped public path, solo-proc, gold-fp32-correct, engagement-proven)
+### Fixed before release (code review 2026-09, remediation Phase B)
+The first Volet A/B evidence was gated on a global cosine, which cannot see a per-row scale error.
+Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
+- **U1** — `auto_pad` let the zero-padded keys into the softmax denominator. Rows touching the
+  ragged final block were scaled down (×0.026 at N=4 100, D=128) while the global cosine stayed
+  ≥ 0.999. The sparse kernel now masks keys ≥ `kv_valid_len`.
+- **U2** — `auto_pad` + causal + N ≠ S shifted the causal diagonal (S−N → Spad−Npad), so queries saw
+  future keys. N ≠ S is no longer padded.
+- **API-02** — a valid 32×16 D=128 mask raised under `auto_pad`. The extended path's block-tile check
+  misread 32-block masks whose block count divides N (N=90 → "BT=30"); it now reads ceil counts.
+- **API-05** — fp16 `sla_attention` returned inf (linear-term overflow). **NEPB-05** — `mx.grad`
+  through `sla_attention` raised: the sparse custom vjps returned a (1,)-shaped cotangent for a mask
+  derived from q/k.
+- Gates: `tests/test_u1_auto_pad.py`; the Volet A/B tests use per-row magnitude gates; the SLA `topk=1`
+  lock no longer compares SDPA with SDPA (TST-10). The at-scale re-proof is in
+  `benchmarks/blocksparse_reproof_b4.py`: 7/7 cells PASS at B·H=40 D128 N 4 100–144 279, fp16/bf16,
+  causal, densities 0.1/0.44; worst per-row norm deviation 9.1e-4. No timings were taken.
+
+### Measured (shipped public path, solo-proc, engagement-proven; correctness re-proven 2026-09-28 with per-row gates)
 - Sliding d0.10: **8.2–9.3×** vs dense SDPA across N=16 384–144 288 (B·H=40, D128).
 - Sliding d0.50: **1.6–2.0×** — ≥1.6× at every N including 144 288 (1.61×).
 - Real LCSA masks (spatial_radius=9, topk_ratio=2.0): **10.2× (16k) → 34.9× (144k)** as density falls.
 - bf16 8.4–10.3×; causal (N=32 768) 8.4×. These ratios are the block-skip realizing the model's
-  trained sparsity (≈1/density), not a faster-dense-kernel claim.
+  trained sparsity (≈1/density), not a faster-dense-kernel claim. They were measured before the
+  U1/U2 fixes and not re-timed. The fix only masks the final K-tile of padded calls; the aligned
+  path is unchanged.
 
 ## [2.62.3] — 2026-09-28
 

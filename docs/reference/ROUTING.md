@@ -39,14 +39,17 @@ dtype f16/bf16, D ∈ {64,128}, `qL == kL`, `qL ≤ 8192`. `bh = B·H`.
 `_sparse_extended_enabled()` short-circuits `_nax_sparse_route_viable` once the CAPACITY gate passes
 (`block_tile==32`, f16/bf16, D∈{64,128}, `qL==kL`), bypassing the POLICY bounds only (B·H allowlist,
 `MIN_N`/`MAX_N`, density ceiling) — never capacity. Reach: **B·H free, N ≤ 144 288 after `auto_pad`,
-density free**, with `flash_attention_sparse(auto_pad=True)` padding non-aligned N to a ×32 multiple
-(zeros; pad-V=0 keeps the output direction exact) and slicing back. Near-dense (`density ≥
+density free**, with `flash_attention_sparse(auto_pad=True)` padding a non-aligned N == S to a ×32
+multiple, masking the pad keys in-kernel (`kv_valid_len`) and slicing back; the result equals
+`auto_pad=False`, and N ≠ S is never padded (review 2026-09 U1/U2). Near-dense (`density ≥
 MFA_SPARSE_D_DENSE_CUTOFF`, default 0.85) diverts to the dense masked route (block-skip wins nothing
 there; wrapper overhead +0.9% @ d≈1.0). Outside the v1 matrix the opt-in **raises** (pre-M5,
 D=256/512, BT≠32) — no silent scalar downgrade. Off (default) → routing byte-identical. Evidence:
 hardened public-path measurement (M5 Max, macOS 27, MLX 0.31.2) — sliding d0.10 **8.2–9.3×** vs dense
-across N=16 384–144 288, d0.50 **1.6–2.0×** (≥1.6× every N), real LCSA **10.2–34.9×**; all engaged +
-gold-fp32-correct (`test_sparse_extended_envelope.py`).
+across N=16 384–144 288, d0.50 **1.6–2.0×** (≥1.6× every N), real LCSA **10.2–34.9×**; all engaged.
+Correctness re-proven 2026-09-28 with per-row magnitude gates (`test_sparse_extended_envelope.py`,
+`test_u1_auto_pad.py`, `benchmarks/blocksparse_reproof_b4.py` at N 4 100–144 279) — the first,
+cosine-gated evidence missed U1.
 
 ### Non-causal (`lcsa_nax.py:385-402`)
 | N | B·H | D | density ≤ | source |
