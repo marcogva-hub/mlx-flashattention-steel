@@ -11,6 +11,7 @@ import mlx.core as mx
 
 from mlx_mfa import attention as A
 from mlx_mfa.attention import flash_attention_sparse
+from tests.sparse_gates import assert_row_gates
 
 try:
     from mlx_mfa import _ext  # noqa: F401
@@ -47,16 +48,21 @@ def _gold(q, k, v, block_mask, scale, causal, N, S):
         idx_k = mx.arange(S)[None, :]
         em = em & (idx_k <= idx_q)
     bias = mx.where(em, mx.array(0.0, mx.float32), mx.array(float("-inf"), mx.float32))
-    o = mx.fast.scaled_dot_product_attention(
-        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
-        scale=scale, mask=bias)
-    mx.eval(o)
-    return np.asarray(o).ravel().astype(np.float64)
+    with mx.stream(mx.cpu):                    # fp32 oracle on CPU (M5 GPU fp32 ~2e-3)
+        o = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
+            scale=scale, mask=bias)
+        mx.eval(o)
+    return o
 
 
-def _cos(a_arr, b_flat):
-    a = np.asarray(a_arr.astype(mx.float32)).ravel().astype(np.float64)
-    return float(np.dot(a, b_flat) / (np.linalg.norm(a) * np.linalg.norm(b_flat) + 1e-30))
+# Review 2026-09 (DSP-14 / TST-04, remediation B1): every correctness gate below was a
+# GLOBAL cosine >= 0.999 — blind to the U1 row scaling (x0.026 on tail rows, cos still
+# >= 0.999).  They are per-row magnitude gates now (tests/sparse_gates.py); the cosine
+# stays as a complement.  The historical "7/7 PASS" of Volet A is void (re-proof in
+# devnotes/remediation_2026_09.md, Phase B4).
+_G16 = dict(max_abs=1e-2, norm_tol=1e-2, cos_min=0.999)
+_GBF16 = dict(max_abs=3e-2, norm_tol=2e-2, cos_min=0.999)
 
 
 # =============================================================== auto_pad (§2)
@@ -79,8 +85,8 @@ def test_autopad_aligned_byte_identical():
 
 @m5only
 @pytest.mark.parametrize("causal", [False, True])
-def test_autopad_nonaligned_cos_gold(causal):
-    """Gate 4b / §2(b): non-aligned N via auto_pad → cos gold vs SDPA+element-mask ≥ 0.999."""
+def test_autopad_nonaligned_gold(causal):
+    """Gate 4b / §2(b): non-aligned N via auto_pad vs fp32 SDPA+element-mask, per-row gates."""
     B, H, N, D = 1, 12, 4100, 128           # 4100 % 32 = 4  → pad to 4128
     q, k, v = _qkv(B, H, N, D)
     nq = (N + BT - 1) // BT                  # ceil → 129
@@ -90,9 +96,8 @@ def test_autopad_nonaligned_cos_gold(causal):
     o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
     mx.eval(o)
     assert o.shape == (B, H, N, D), f"output must be sliced to original N; got {o.shape}"
-    gold = _gold(q, k, v, bm, scale, causal, N, N)
-    cos = _cos(o, gold)
-    assert cos >= 0.999, f"auto_pad(N={N},causal={causal}) cos vs gold = {cos:.6f} < 0.999"
+    assert_row_gates(o, _gold(q, k, v, bm, scale, causal, N, N), **_G16,
+                     label=f"auto_pad(N={N},causal={causal})")
 
 
 # ============================================ MFA_SPARSE_NAX_EXTENDED (§3)
@@ -122,7 +127,7 @@ def test_extended_gate_bypasses_policy_not_capacity(monkeypatch):
 
 @m5only
 def test_extended_route_correct_bh40(monkeypatch):
-    """B·H=40 (outside default gate) routes correct under the opt-in (cos vs gold)."""
+    """B·H=40 (outside default gate) routes correct under the opt-in (per-row gates)."""
     B, H, N, D = 1, 40, 4096, 128
     q, k, v = _qkv(B, H, N, D)
     nq = N // BT
@@ -132,8 +137,7 @@ def test_extended_route_correct_bh40(monkeypatch):
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
     o = flash_attention_sparse(q, k, v, bm, scale=scale)
     mx.eval(o)
-    cos = _cos(o, _gold(q, k, v, bm, scale, False, N, N))
-    assert cos >= 0.999, f"extended B·H40 cos vs gold = {cos:.6f}"
+    assert_row_gates(o, _gold(q, k, v, bm, scale, False, N, N), **_G16, label="extended B·H40")
 
 
 @m5only
@@ -264,8 +268,9 @@ def test_gold_parity_sample(monkeypatch, D, dtype, causal, N):
     scale = 1.0 / math.sqrt(D)
     o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
     mx.eval(o)
-    cos = _cos(o, _gold(q, k, v, bm, scale, causal, N, N))
-    assert cos >= 0.999, f"D{D} {dtype} causal={causal} N={N}: cos={cos:.6f}"
+    assert_row_gates(o, _gold(q, k, v, bm, scale, causal, N, N),
+                     **(_G16 if dtype == mx.float16 else _GBF16),
+                     label=f"D{D} {dtype} causal={causal} N={N}")
 
 
 # ============================================ axis 2 — engagement probe (gate 2)
@@ -285,7 +290,7 @@ def test_engagement_v6nax_vs_scalar():
     delta = float(np.abs(np.asarray(o_nax.astype(mx.float32))
                          - np.asarray(o_sca.astype(mx.float32))).max())
     assert delta > 0.0, "v6nax must be a distinct binary from scalar_fallback (engagement)"
-    assert _cos(o_nax, _gold(q, k, v, bm, scale, False, N, N)) >= 0.999
+    assert_row_gates(o_nax, _gold(q, k, v, bm, scale, False, N, N), **_G16, label="v6nax raw")
 
 
 # ============================================ axis 3 — edge cases
@@ -314,11 +319,11 @@ def test_edge_all_active_mask(monkeypatch):
     mx.eval(bm)
     scale = 1.0 / math.sqrt(D)
     o = flash_attention_sparse(q, k, v, bm, scale=scale)
-    ref = mx.fast.scaled_dot_product_attention(
-        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale)
-    mx.eval(o, ref)
-    cos = _cos(o, np.asarray(ref).ravel().astype(np.float64))
-    assert cos >= 0.999, f"all-active mask must equal dense attention; cos={cos:.6f}"
+    with mx.stream(mx.cpu):
+        ref = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale)
+        mx.eval(ref)
+    assert_row_gates(o, ref, **_G16, label="all-active mask == dense attention")
 
 
 if __name__ == "__main__":
