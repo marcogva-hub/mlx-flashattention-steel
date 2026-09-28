@@ -454,8 +454,15 @@ Fix: `first_causal_kb = (qb * BQ + qL_off) / BK` — start causal masking from
 the K-tile where the first query's causal boundary falls.
 
 The bug was invisible for N_q=1 decode (K-boundary mask coincides with causal)
-and for kv_len aligned to block_size. Exposed by the PagedVarlenForward fused
-kernel which was a clean implementation that didn't inherit the bug.
+and for kv_len aligned to block_size.
+
+**Correction (2.62.2, review 2026-09):** the PagedVarlenForward fused kernel did NOT
+escape it — it (and the paged-varlen TurboQuant kernel, STEEL V3 and Sage) kept the
+"last K-tiles" heuristic until 2.62.2 (`84ea4f7`), silently wrong for heterogeneous
+q_lens on the DEFAULT `flash_attention_paged_varlen` route. Every live kernel now uses
+the shared exact gate `mfa_causal_mask_zone_gate()` (`csrc/mfa_steel_fwd.hpp`); the
+plain paged kernel keeps its equivalent `first_causal_kb` form. Multi-gate lesson
+(§AA.5.x): a causal-zone fix must enumerate every kernel emitting a causal mask.
 
 Lesson: always test against SDPA (ground truth), not against other internal paths.
 
@@ -504,7 +511,11 @@ If MLX passes non-contiguous arrays, they must be made contiguous before dispatc
 - Forward D=128 N=4096: >= 20% faster than MLX SDPA
 - Forward D=256 N=8192: >= 30% faster
 - ALU utilization >= 70%
-- Max abs error < 1e-5 (f32), < 1e-2 (f16)
+- Max abs error < 1e-2 (f16) vs an fp32 oracle.  fp32: MLX's own fp32 on the M5 GPU is
+  ≈2–2.5e-3 from a CPU fp32 oracle (plain `mx.fast.scaled_dot_product_attention`
+  included — measured 2026-09, MLX 0.31.2, M5 Max), so the former "< 1e-5 (f32)" target
+  is not reachable by MLX itself on this GPU.  Correctness oracles run on `mx.cpu`
+  (`with mx.stream(mx.cpu):`) with an evidence-based fp32 tolerance (5e-3 on M5).
 
 ## Testing
 
