@@ -19,14 +19,19 @@ Invariants locked here (offline; no network, no build):
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.version import Version
+
+try:  # stdlib from Python 3.11; requires-python is >= 3.10 (tests/test_py310_compat.py)
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULE = ROOT / "csrc" / "cmake" / "MlxNanobindAbi.cmake"
@@ -60,11 +65,33 @@ def _mlx_requirement(reqs: list[str]) -> Requirement:
     return found[0]
 
 
+def _toml_string_array(text: str, table: str, key: str) -> list[str]:
+    """Python 3.10 fallback: the string array ``key = [...]`` of ``[table]`` (enough for the
+    two requirement lists; cross-checked against tomllib where available)."""
+    body = re.search(rf"^\[{re.escape(table)}\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S).group(1)
+    arr = re.search(rf"^{re.escape(key)}\s*=\s*\[(.*?)\]", body, re.M | re.S).group(1)
+    return re.findall(r'"([^"]+)"', "\n".join(l.split("#")[0] for l in arr.splitlines()))
+
+
+def _requirement_lists(use_tomllib: bool = True):
+    text = (ROOT / "pyproject.toml").read_text()
+    if use_tomllib and tomllib is not None:
+        data = tomllib.loads(text)
+        return data["build-system"]["requires"], data["project"]["dependencies"]
+    return (_toml_string_array(text, "build-system", "requires"),
+            _toml_string_array(text, "project", "dependencies"))
+
+
 def _pyproject_specifiers():
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    build = _mlx_requirement(data["build-system"]["requires"]).specifier
-    runtime = _mlx_requirement(data["project"]["dependencies"]).specifier
+    build_reqs, runtime_reqs = _requirement_lists()
+    build = _mlx_requirement(build_reqs).specifier
+    runtime = _mlx_requirement(runtime_reqs).specifier
     return build, runtime
+
+
+@pytest.mark.skipif(tomllib is None, reason="cross-check needs tomllib (Python >= 3.11)")
+def test_py310_fallback_parser_agrees_with_tomllib():
+    assert _requirement_lists(use_tomllib=False) == _requirement_lists(use_tomllib=True)
 
 
 def test_mapping_module_exists_and_is_used_by_cmakelists():
