@@ -1007,15 +1007,16 @@ def flash_attention(
             # (extension not built) stays silent; any other failure warns
             # once per session — output remains correct via SDPA fallback.
             try:
-                from mlx_mfa._ext import mfa_attention_bias_forward
+                from mlx_mfa._ext import mfa_attention_bias_forward  # noqa: F401 (availability probe)
             except ImportError:
                 pass  # extension not built — SDPA fallback below
             else:
                 try:
                     _dtrace.record("mfa_bias_native", "attn_bias mode 1/2")
-                    return mfa_attention_bias_forward(
-                        q, k, v, attn_bias, bias_mode, scale, causal,
-                    )
+                    # 2.62.2: custom vjp — the raw primitive's backward ignored the
+                    # bias (NaN/wrong grads, crash when the bias is differentiated).
+                    return _make_mfa_bias_custom(float(scale), bool(causal), int(bias_mode))(
+                        q, k, v, attn_bias)
                 except Exception as e:
                     global _attn_bias_native_warned
                     if not _attn_bias_native_warned:
@@ -1032,15 +1033,8 @@ def flash_attention(
         # must promote to output type" for an fp32 bias against an fp16 q.
         # Cast the bias to q's dtype so the full-bias path matches the
         # native path's tolerance (loud crash -> works).
-        mask = attn_bias if attn_bias.dtype == q.dtype else attn_bias.astype(q.dtype)
-        if causal:
-            N, S = q.shape[2], k.shape[2]
-            causal_mask = _causal_bias(N, S, q.dtype)
-            mask = causal_mask + mask
         _dtrace.record("sdpa", "attn_bias mode 0/3 or mfa-unavailable")
-        return mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=scale, mask=mask,
-        )
+        return _attn_bias_sdpa(q, k, v, attn_bias, scale, causal)
 
     # CP8: backend='sage' — route through sage_attention() (int8 Q/K inference).
     # Sage is inference-only: no autograd.  Falls back to MFA STEEL when the
@@ -5926,6 +5920,45 @@ def _ext_available() -> bool:
 
 
 # _sever_lazy_graph was removed in v2.20.0 (dead code — never called).
+
+
+def _attn_bias_sdpa(q, k, v, attn_bias, scale: float, causal: bool):
+    """The SDPA form of attention with an additive ``attn_bias`` — the forward of bias
+    modes 0/3 and the backward oracle of the native modes 1/2 (one source for both).
+
+    The bias is cast to q's dtype (SDPA requires the mask to promote to the output
+    type; III-4 pass-6) and combined with the canonical causal mask.
+    """
+    mask = attn_bias if attn_bias.dtype == q.dtype else attn_bias.astype(q.dtype)
+    if causal:
+        mask = _causal_bias(q.shape[2], k.shape[2], q.dtype) + mask
+    return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+
+@functools.lru_cache(maxsize=32)
+def _make_mfa_bias_custom(scale: float, causal: bool, bias_mode: int):
+    """Custom-vjp native ``attn_bias`` forward (bias modes 1/2) — 2.62.2.
+
+    Same pattern as ``_make_mfa_alibi_custom``: native Metal forward, backward =
+    ``mx.vjp`` of ``_attn_bias_sdpa``.  Unlike ALiBi slopes, an additive bias may be
+    TRAINED (relative-position biases), so its cotangent is returned too (MLX's SDPA
+    reduces it to the bias shape).  Without this wrapper autograd used
+    ``MFAttention::vjp``, which never sees the bias and masks top-left.
+    """
+    from mlx_mfa._ext import mfa_attention_bias_forward
+
+    @mx.custom_function
+    def _impl(q, k, v, attn_bias):
+        return mfa_attention_bias_forward(q, k, v, attn_bias, bias_mode, scale, causal)
+
+    @_impl.vjp
+    def _backward(primals, cotangent, output):
+        _, grads = mx.vjp(
+            lambda q, k, v, b: _attn_bias_sdpa(q, k, v, b, scale, causal),
+            list(primals), [cotangent])
+        return tuple(grads)
+
+    return _impl
 
 
 @functools.lru_cache(maxsize=32)
