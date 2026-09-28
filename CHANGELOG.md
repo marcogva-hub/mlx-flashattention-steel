@@ -4,61 +4,98 @@ All notable changes to mlx-mfa are documented here.
 
 ## [2.62.3] — 2026-09-28
 
-Patch release. **Upgrade if you run mlx-mfa 2.62.2 on an M5 with MLX 0.32.1 or 0.32.2.**
-On those MLX versions every kernel that mlx-mfa builds through MLX's `metal_kernel` JIT
-with the NAX (Metal 4 tensor) helpers failed to compile, so the calls below raised
+Patch release. **Upgrade if you run mlx-mfa 2.62.2 on an M5 under macOS 27 with MLX 0.32.1
+or 0.32.2.** In that configuration, every kernel mlx-mfa builds through MLX's `metal_kernel`
+JIT with the NAX (Metal 4 tensor) helpers failed to compile. The calls below raised
 `RuntimeError: [metal::Device] Unable to build metal library from source`. No output was
-silently wrong: the affected calls raised. No public signature or routing change.
+silently wrong, because the affected calls raised. No public signature or routing change.
 
 ### Advisory — published since 2.62.2
 
-2.62.2 was the first release installable against MLX 0.32.1 / 0.32.2 (the nanobind ABI
-table in 2.62.1 stopped at 0.32.0). Affected only on NAX hardware (M5+), MLX 0.32.1 / 0.32.2.
-MLX 0.31.2 / 0.32.0 and M1–M4 were not affected.
+2.62.2 was the first release installable against MLX 0.32.1 / 0.32.2; the nanobind ABI table
+in 2.62.1 stopped at 0.32.0. The failure needs all three of the following:
+- NAX hardware (M5+);
+- macOS 27+, the only OS where MLX 0.32.1 compiles `metal_kernel` sources as MSL 4.1
+  (`get_metal_version`);
+- MLX 0.32.1 / 0.32.2.
+
+Not affected: macOS 26 (MSL 4.0), MLX 0.31.2 / 0.32.0 (MSL 4.0 on every OS), and M1–M4.
 
 | Entry | Condition (default routes) | Symptom |
 |---|---|---|
-| `flash_attention_sparse` (forward) | calls routed to the M5 NAX sparse kernel (trace `v6nax_sparse`: the measured envelope of `_nax_sparse_route_viable`, f16/bf16, D ∈ {64, 128}; calls routed to SDPA were unaffected, and so were gradients) | raises at evaluation |
-| `flash_attention_gna` | 3-D `seq_shape`, f16/bf16, D=128 with N ≥ 2048 or D=64 with N ≥ 4096 (trace `gna_v6nax`) | raises at evaluation. The NAX call's fallback guard only covers the lazy call, not the evaluation. |
+| `flash_attention_sparse` and `sparse_attention_dispatch` (forward) | calls routed to the M5 NAX sparse kernel (dispatch-trace terminal `v6nax_sparse`: the measured envelope of `_nax_sparse_route_viable`, f16/bf16, D ∈ {64, 128}). Calls routed to SDPA were unaffected. | raises at evaluation |
+| `patch_flashvsr_lcsa`-patched models | same, through `sparse_attention_dispatch` | raises at evaluation |
+| gradients of the above | `mx.grad` was unaffected in the configurations tested (default env and `MFA_ENABLE_V6_BACKWARD=1`), because it does not evaluate the forward kernel. `mx.value_and_grad` evaluates the forward and raised. | `value_and_grad` raises |
+| `flash_attention_gna` | 3-D `seq_shape`, f16/bf16, D=128 with N ≥ 2048 or D=64 with N ≥ 4096 (terminal `gna_v6nax`) | raises at evaluation. The NAX call's fallback guard only covers the lazy call, not the evaluation. |
 | expert `_ext` entries | `sparse_attention_forward(kernel_version="v6nax_sparse")`, `sparse_attention_forward_with_lse` (block_tile 32, D ∈ {64, 128}), `mfa_gna_nax_forward`, `v6_nax_linear`, `v6_nax_quantized_matmul` | raise |
 
 ### Fixed
-- **Cause.** mlx-mfa embeds a copy of Apple's NAX tile helpers (`integral_constant`,
-  `BaseNAXFrag`, `NAXTile`), lifted from an older MLX `steel/`. There are two copies: one in
-  the sparse kernel and one shared by the GNA, FFN and QMM NAX kernels and by dense V6.
-  `metal_kernel` compiles these sources with MLX's own headers and flags. From MLX 0.32.1,
-  MLX's headers carry explicit `thread` / `const thread` address-space qualifiers on member
-  functions and strip address spaces (`remove_addrspace_t`) in the integral-constant and
-  cooperative-tensor type plumbing. Our unqualified copies no longer compiled:
-  `NAXTile::frag_at` could not bind a `thread` reference, and `integral_constant<const thread int, …>`
-  was rejected. Both copies are now resynced to the MLX 0.32.1 forms (`csrc/mfa_sparse_attention.cpp`, `csrc/mfa/v6_nax/NAAttentionKernel.cpp`).
-- **No behaviour change where it already worked.** On MLX 0.31.2 and 0.32.0, all 18
-  probed outputs are byte-identical before and after the resync. Those outputs cover every
-  `metal_kernel` family plus the dense V6 forward (D=128) and backward (D=64), which use the
-  shared helpers through mlx-mfa's own shader cache. On MLX 0.32.1 / 0.32.2 the resynced NAX
+- **Cause** [verified on M5 Max, macOS 27.2]. `metal_kernel` compiles our sources with MLX's
+  flags. From MLX 0.32.1 on macOS 27 that means MSL 4.1 with the generic address space
+  (`__METAL_VERSION__` 410; MLX 0.31.2 / 0.32.0 compile at 400). Under MSL 4.1,
+  `decltype(local)` carries `thread`, and an unqualified member function cannot bind a member
+  to a `thread&`.
+  mlx-mfa embeds copies of Apple's NAX helpers (`integral_constant`, `BaseNAXFrag`,
+  `NAXTile`), lifted from an older MLX `steel/`. One copy is in the sparse kernel; the other is
+  shared by the GNA, FFN and QMM NAX kernels and by dense V6. In those copies,
+  `NAXTile::frag_at` could not bind its reference and `integral_constant<const thread int, …>`
+  was rejected.
+- **Resync.** `NAXTile` members are `thread` / `const thread`, as in MLX 0.32.1 `steel/attn/nax.h`,
+  and so is the QMM loader adapted from `quantized_nax.h`. `integral_constant` and
+  `BaseNAXFrag::mma` now take their types from prvalue `decltype`s, which are never
+  address-space qualified and compile under MSL 4.0 and 4.1. MLX 0.32.1's `remove_addrspace_t`
+  is deliberately not used: the shared block is also compiled at runtime by mlx-mfa's shader
+  cache for the default dense V6 route, and that trait is not attested on older OS Metal
+  compilers. Files: `csrc/mfa_sparse_attention.cpp`, `csrc/mfa/v6_nax/NAAttentionKernel.cpp`,
+  `csrc/mfa_qmm_nax.cpp`.
+- **No behaviour change where it already worked.** On MLX 0.31.2 and 0.32.0, all 103 probed
+  outputs are byte-identical before and after. They cover every kernel variant below, plus
+  the dense V6 forward and backward that use the shared helpers. On MLX 0.32.1 / 0.32.2 the NAX
   kernels produce the same bytes as on 0.31.2.
-- Locked by `tests/test_nax_helpers_address_space.py` (static, fails on 2.62.2).
+- Locked by `tests/test_nax_helpers_address_space.py` (static; fails on 2.62.2).
+
+### Known issue (pre-existing, not fixed here)
+- `conv3d_nax_forward` with **bf16** and a 1×1×1 kernel does not compile ("Unable to build
+  metal library") on every MLX version. The pointwise fast path reaches the fp16-only
+  `matmul2d` conv source without rejecting bf16. This is reachable through
+  `patch_seedvr2_vae` on bf16 models; fp16 and the `mx.conv_general` auto-hook are
+  unaffected. It is loud, not silent. It is tracked by the release matrix as a strict known
+  failure.
 
 ### Release process — the smoke gap
 2.62.2's install smoke exercised the dense kernels only, and its M5 release gate ran on MLX
-0.31.2. The `metal_kernel` sparse / GNA / FFN / QMM kernels were never built against the
-newly opened MLX versions before publishing. New release gate:
+0.31.2. The `metal_kernel` sparse / GNA / FFN / QMM kernels were never built against the newly
+opened MLX versions before publishing. New release gate:
 - `scripts/metal_kernel_matrix_smoke.py` installs the release sdist in isolation against
   **every MLX version of the nanobind ABI table**. The build MLX is read back from the
-  extension. It then runs **every shipped `metal_kernel` family**: sparse V6NAX / scalar and
-  both LSE kernels, GNA / FFN / QMM NAX, conv pointwise / MPP / im2col and the legacy Python
-  conv, top-k bisection and TurboQuant decode. It also runs the dense V6 consumers of the
-  shared helpers. Each result is checked against an independent reference, with a runtime
-  which-binary check where one exists. The result is written to a git-bound receipt,
-  `release-gate/metal-kernel-matrix-<version>.json`.
-- `scripts/check_metal_kernel_matrix.py` blocks the release if that receipt is absent,
-  incomplete (a version or a probe missing), failing, tampered with, produced from a dirty
-  tree, or stale. It runs in the release audit (Check 10) and as publish.yml **GATE 6**.
-  `tests/test_metal_kernel_matrix_tool.py` maps every shipped `metal_kernel` call site to a
+  extension, and `MFA_*` knobs are stripped from the environment.
+- It sweeps **every shipped `metal_kernel` family over the variant axes its source is
+  specialised on**: dtype, head dim, causal, mask rank, tile, GQA and flags. It also runs
+  the dense V6 consumers of the shared helpers. 83 cells in total:
+  - sparse V6NAX / scalar forward and both LSE kernels;
+  - GNA / FFN / QMM NAX;
+  - conv MPP / pointwise / im2col and the legacy Python conv;
+  - top-k bisection;
+  - TurboQuant decode.
+  Each cell is checked against an independent reference: CPU fp32 attention, the exact GNA
+  window, and a Python TurboQuant dequant. A runtime which-binary check is used where one
+  exists.
+- The run writes a receipt, `release-gate/metal-kernel-matrix-<version>.json`. The receipt is
+  bound to `git HEAD`: the sdist's build inputs must equal the committed tree.
+- `scripts/check_metal_kernel_matrix.py` blocks the release if the receipt:
+  - is absent;
+  - is incomplete (a version or probe missing);
+  - is failing;
+  - was tampered with;
+  - came from a dirty tree or an unbound sdist;
+  - is stale (a `csrc/`, `mlx_mfa/`, `CMakeLists.txt` or `pyproject.toml` change since).
+  It runs in the release audit (Check 10) and as publish.yml **GATE 6**.
+- `tests/test_metal_kernel_matrix_tool.py` maps every shipped `metal_kernel` call site to a
   probe, so a new site fails the suite until it is covered.
-- Test-first record (M5 Max, macOS 27.2, 2026-09-28). The 2.62.2 source passes 16/16 kernel
-  probes on MLX 0.31.2 / 0.32.0 and fails 5 families (sparse V6NAX, V6NAX LSE, GNA, FFN, QMM
-  NAX) on 0.32.1 / 0.32.2. 2.62.3 passes 16/16 on all four.
+- Test-first record (M5 Max, macOS 27.2, 2026-09-28). The 2.62.2 source passes 82/83 cells on
+  MLX 0.31.2 / 0.32.0 and 35/83 on 0.32.1 / 0.32.2, where 7 probes fail: sparse forward, LSE,
+  GNA, FFN and QMM NAX. 2.62.3 passes 82/83 on all four. The one remaining cell is the known
+  bf16 1×1×1 conv issue above, which fails on every version.
 
 ## [2.62.2] — 2026-09-28
 
