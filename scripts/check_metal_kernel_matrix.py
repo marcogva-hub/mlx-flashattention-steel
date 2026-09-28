@@ -32,7 +32,8 @@ import subprocess
 import sys
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SOURCE_DIRS = ["csrc", "mlx_mfa"]  # a change in either => the receipt is stale
+# A change in any of these (sources + the build definition) => the receipt is stale.
+_SOURCE_DIRS = ["csrc", "mlx_mfa", "CMakeLists.txt", "pyproject.toml"]
 
 
 def _tool():
@@ -68,6 +69,9 @@ def validate_receipt(r: dict, version: str, abi_versions: list[str], probes) -> 
         return f"receipt release_version {r.get('release_version')!r} != {version!r}."
     if r.get("git_dirty"):
         return "receipt was produced from a working tree with uncommitted csrc/mlx_mfa changes."
+    if r.get("sdist_matches_head") is not True:
+        return ("the tested sdist's build inputs were not the git HEAD tree: "
+                f"{(r.get('sdist_mismatch') or ['unrecorded'])[:3]}")
     matrix = r.get("matrix") or {}
     expect = hashlib.sha256(json.dumps(matrix, sort_keys=True).encode()).hexdigest()
     if r.get("matrix_sha256") != expect:
@@ -84,6 +88,10 @@ def validate_receipt(r: dict, version: str, abi_versions: list[str], probes) -> 
                     f"{row.get('mlx')!r} — not an isolated {ver} install.")
         if not row.get("has_nax"):
             return f"MLX {ver}: NAX not live — the matrix must run on an M5+ host."
+        if row.get("mlx_mfa") != version:
+            return f"MLX {ver}: installed mlx-mfa {row.get('mlx_mfa')!r} != {version!r}."
+        if row.get("mfa_env"):
+            return f"MLX {ver}: MFA_* knobs leaked into the probe env: {row['mfa_env']}."
         results = row.get("results") or {}
         missing_p = [p for p in probes if p not in results]
         if missing_p:
@@ -131,6 +139,7 @@ def main() -> int:
     if _git("merge-base", "--is-ancestor", sha, "HEAD").returncode != 0:
         return _fail(f"receipt git_sha {sha[:12]} is not an ancestor of HEAD.")
     diff = _git("diff", "--name-only", sha, "HEAD", "--", *_SOURCE_DIRS).stdout.strip()
+    # (an uncommitted change is caught at production time: the tool refuses a dirty tree)
     if diff:
         changed = diff.splitlines()
         return _fail(
@@ -138,6 +147,8 @@ def main() -> int:
             f"it ran at {sha[:12]} (e.g. {changed[0]}). Re-run the matrix on the current "
             f"source and re-commit the receipt.")
 
+    for cell, why in sorted(tool.KNOWN_FAILURES.items()):
+        print(f"⚠ known pre-existing failure (expected, strict — not a pass): {cell}: {why}")
     vers = ", ".join(tool.abi_table_versions())
     print(f"✓ metal_kernel matrix verified for v{version}: {len(tool.PROBES)} kernels x MLX "
           f"{{{vers}}} all pass (isolated installs, M5 {r.get('device', '?')}), sha "

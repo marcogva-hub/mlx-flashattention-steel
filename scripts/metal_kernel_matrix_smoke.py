@@ -44,8 +44,9 @@ _ABI_TABLE = os.path.join(_REPO, "csrc", "cmake", "MlxNanobindAbi.cmake")
 # tests/test_metal_kernel_matrix_tool.py against the source (a new site without a probe
 # fails the suite).  Dev-only modules excluded from the package are not listed.
 SITES = {
-    "csrc/mfa_sparse_attention.cpp:sparse_attention_forward": ("sparse_v6nax", "sparse_scalar"),
-    "csrc/mfa_sparse_attention.cpp:sparse_attention_forward_with_lse": ("sparse_v6nax_lse", "sparse_scalar_lse"),
+    "csrc/mfa_sparse_attention.cpp:sparse_attention_forward": ("sparse_v6nax", "sparse_variants"),
+    "csrc/mfa_sparse_attention.cpp:sparse_attention_forward_with_lse": ("sparse_lse_variants",
+                                                                        "sparse_lse_fingerprint"),
     "csrc/mfa_gna_nax.cpp": ("gna_nax",),
     "csrc/mfa_ffn_nax.cpp": ("ffn_nax",),
     "csrc/mfa_qmm_nax.cpp": ("qmm_nax",),
@@ -58,13 +59,24 @@ SITES = {
 }
 # Kernels built by OUR ShaderCache (not metal_kernel) that embed the same shared NAX
 # helpers block (csrc/mfa/v6_nax/NAAttentionKernel.cpp) — probed too, so a helpers resync
-# can never silently change the dense default route.
+# can never silently change the dense routes (not MLX-version-sensitive; bit-identity).
 SHARED_HELPER_CONSUMERS = {
     "csrc/mfa/v6_nax/NAAttentionKernel.cpp:forward": ("dense_v6nax_fwd",),
     "csrc/mfa/v6_nax/NAAttentionKernel.cpp:backward": ("dense_v6nax_bwd",),
 }
 PROBES = tuple(dict.fromkeys(p for ps in (*SITES.values(), *SHARED_HELPER_CONSUMERS.values())
                              for p in ps))
+
+# Pre-existing defects the matrix must keep SEEING (strict: the cell must still fail; if it
+# passes the probe FAILS until the entry is removed).  Every entry is reported in the
+# receipt and by the checker.  Adding one needs a maintainer decision.
+KNOWN_FAILURES = {
+    "conv_pointwise/bf16": (
+        "pre-existing on every MLX version (not an MLX 0.32.1 regression): the C++ conv "
+        "matmul2d source is fp16-only and the 1x1x1 pointwise fast path does not reject "
+        "bf16 -> 'Unable to build metal library'; reachable via conv3d_nax_forward and "
+        "patch_seedvr2_vae on bf16 models (flagged for maintainer decision, 2.62.3)"),
+}
 
 
 def abi_table_versions() -> list[str]:
@@ -74,43 +86,65 @@ def abi_table_versions() -> list[str]:
 
 # ─────────────────────────────────────────────────────────────────────── probe (in venv)
 def _probe() -> dict:
+    """Runs inside the per-version venv.  Every probe is a SWEEP over the variant axes the
+    kernel source is specialised on (metal_kernel compiles one library per dtype / D /
+    causal / mask rank / tile / flag — a construct behind a branch only builds when that
+    variant is instantiated), each cell checked against an independent reference."""
+    import math
+
+    # Knobs that would turn probes into vacuous passes must not leak in (the driver strips
+    # them; recorded so the checker can refuse a receipt produced with any set).  Read
+    # BEFORE importing mlx_mfa, which seeds its own MFA_* tuning defaults on import.
+    leaked_env = sorted(k for k in os.environ if k.startswith("MFA_") and k != "MFA_MATRIX_DUMP")
+
     import mlx.core as mx
     import numpy as np
     import mlx_mfa
     from mlx_mfa import _ext
 
-    def rel(a, b):
-        a = np.asarray(mx.array(a).astype(mx.float32)); b = np.asarray(mx.array(b).astype(mx.float32))
-        return float(np.abs(a - b).max() / max(np.abs(b).max(), 1e-6))
-
-    dump = {}
-    current = [None]
+    dump, current, res = {}, [None], {}
+    f32 = lambda a: mx.array(a).astype(mx.float32)
 
     def keep(out):
-        # First output of each probe is kept for --dump (bit-identity across builds).
         key = current[0] if current[0] not in dump else f"{current[0]}#{len(dump)}"
-        dump[key] = np.asarray(mx.array(out).astype(mx.float32))
+        dump[key] = np.asarray(f32(out))
 
-    def ok_close(out, ref, tol):
+    def check(out, ref, tol):
+        """(ok, detail): finite and max|out-ref| / max|ref| < tol; output kept for --dump."""
         mx.eval(out, ref)
         keep(out)
-        finite = bool(mx.all(mx.isfinite(mx.array(out).astype(mx.float32))).item())
-        r = rel(out, ref)
-        return finite and r < tol, f"rel={r:.2e} finite={finite}"
+        finite = bool(mx.all(mx.isfinite(f32(out))).item())
+        r = float(mx.abs(f32(out) - f32(ref)).max().item()) / max(float(mx.abs(f32(ref)).max().item()), 1e-6)
+        return finite and r < tol, f"rel={r:.1e}{'' if finite else ' NONFINITE'}"
 
-    def sparse_ref(q, k, v, bm, bt, scale):
-        N, S = q.shape[2], k.shape[2]
-        with mx.stream(mx.cpu):
-            tok = mx.repeat(mx.repeat(bm, bt, axis=-2), bt, axis=-1)[..., :N, :S]
-            s = mx.where(tok, (q.astype(mx.float32) @ mx.swapaxes(k.astype(mx.float32), -1, -2)) * scale,
-                         float("-inf"))
-            o = mx.softmax(s, axis=-1) @ v.astype(mx.float32)
-            o = mx.where(mx.any(tok, axis=-1, keepdims=True), o, 0.0)
-            mx.eval(o)
-        return o
+    def bytediff(a, b):
+        mx.eval(a, b)
+        return float(mx.abs(f32(a) - f32(b)).max().item())
 
-    mx.random.seed(0)
-    res = {}
+    def sweep(cells):
+        """cells: [(label, thunk -> (ok, detail))].  Every exception is a FAILED cell.  A
+        cell listed in KNOWN_FAILURES must still fail (strict): if it passes, the marker is
+        stale and the cell FAILS; its expected failure is reported, never hidden."""
+        bad, known, n = [], [], 0
+        for label, thunk in cells:
+            name = current[0].split("/")[0]
+            current[0] = f"{name}/{label}"
+            try:
+                ok, d = thunk()
+            except Exception as e:  # recorded, never swallowed: the cell FAILS
+                ok, d = False, f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
+            n += 1
+            if current[0] in KNOWN_FAILURES:
+                if ok:
+                    bad.append(f"{label}: KNOWN FAILURE NOW PASSES — remove it from KNOWN_FAILURES")
+                else:
+                    known.append(f"{label}: {d}")
+            elif not ok:
+                bad.append(f"{label}: {d}")
+            current[0] = name
+        return not bad, (f"{n - len(bad) - len(known)}/{n} cells ok"
+                         + (f"; KNOWN-FAIL (expected) {' | '.join(known)}" if known else "")
+                         + ("; FAILED " + " | ".join(bad) if bad else ""))
 
     def run(name, fn):
         current[0] = name
@@ -120,207 +154,368 @@ def _probe() -> dict:
         except Exception as e:  # recorded, never swallowed: the matrix FAILS on it
             res[name] = {"ok": False, "detail": f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"}
 
-    N, D, H = 4096, 128, 12
-    q, k, v = (mx.random.normal((1, H, N, D)).astype(mx.float16) for _ in range(3))
-    nb = N // 32
-    bm = (mx.random.uniform(shape=(nb, nb)) < 0.1) | mx.eye(nb, dtype=mx.bool_)
-    sc = D ** -0.5
-    ref32 = None
+    def with_env(pairs, fn):
+        prev = {k: os.environ.get(k) for k in pairs}
+        os.environ.update(pairs)
+        try:
+            out = fn()
+            mx.eval(out)
+            return out
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
-    def p_sparse_v6nax():
-        # Public default route; which-binary by RUNTIME fingerprint: byte-identical to the
-        # explicit v6nax_sparse kernel and different from the scalar kernel.
-        nonlocal ref32
-        ref32 = sparse_ref(q, k, v, bm, 32, sc)
+    def rnd(shape, dt=mx.float16, s=1.0):
+        return (mx.random.normal(shape) * s).astype(dt)
+
+    mx.random.seed(0)
+
+    # ─────────────────────────────── block-sparse (V6NAX / scalar, forward / LSE)
+    def sparse_ref(q, k, v, bm, bt, scale, causal=False, lse=False):
+        N, S = q.shape[2], k.shape[2]
+        with mx.stream(mx.cpu):
+            tok = mx.repeat(mx.repeat(bm, bt, axis=-2), bt, axis=-1)[..., :N, :S]
+            if q.shape[1] != k.shape[1]:                               # GQA
+                rep = q.shape[1] // k.shape[1]
+                k, v = mx.repeat(k, rep, axis=1), mx.repeat(v, rep, axis=1)
+            if causal:
+                tok = tok & (mx.arange(S)[None, :] <= mx.arange(N)[:, None])
+            s = mx.where(tok, (f32(q) @ mx.swapaxes(f32(k), -1, -2)) * scale, float("-inf"))
+            o = mx.softmax(s, axis=-1) @ f32(v)
+            o = mx.where(mx.any(tok, axis=-1, keepdims=True), o, 0.0)
+            L = mx.logsumexp(s, axis=-1)
+            mx.eval(o, L)
+        return (o, L) if lse else o
+
+    def mask(nq, nk, density=0.15, lead=()):
+        m = mx.random.uniform(shape=(*lead, nq, nk)) < density
+        return m | mx.eye(nq, nk, dtype=mx.bool_)
+
+    # Public default route (M5 NAX) + which-binary: byte-identical to the explicit V6NAX
+    # kernel and different from the scalar kernel.
+    N, D, H = 4096, 128, 12
+    q, k, v = rnd((1, H, N, D)), rnd((1, H, N, D)), rnd((1, H, N, D))
+    bm = mask(N // 32, N // 32, 0.1)
+    sc = D ** -0.5
+
+    def p_sparse_public():
+        ref = sparse_ref(q, k, v, bm, 32, sc)
         o = mlx_mfa.flash_attention_sparse(q, k, v, bm, scale=sc)
         o_nax = _ext.sparse_attention_forward(q, k, v, bm, block_tile=32, scale=sc,
                                               kernel_version="v6nax_sparse")
         o_sc = _ext.sparse_attention_forward(q, k, v, bm, block_tile=32, scale=sc,
                                              kernel_version="scalar_fallback")
-        mx.eval(o, o_nax, o_sc)
-        d_nax = float(mx.abs(o.astype(mx.float32) - o_nax.astype(mx.float32)).max().item())
-        d_sc = float(mx.abs(o_nax.astype(mx.float32) - o_sc.astype(mx.float32)).max().item())
-        engaged = d_nax == 0.0 and d_sc > 0.0
-        ok, d = ok_close(o, ref32, 1e-2)
-        return ok and engaged, f"{d} byteD(pub,nax)={d_nax:.1e} byteD(nax,scalar)={d_sc:.1e}"
-    run("sparse_v6nax", p_sparse_v6nax)
+        d_nax, d_sc = bytediff(o, o_nax), bytediff(o_nax, o_sc)
+        ok, d = check(o, ref, 1e-2)
+        return ok and d_nax == 0.0 and d_sc > 0.0, \
+            f"{d} byteD(pub,nax)={d_nax:.1e} byteD(nax,scalar)={d_sc:.1e}"
+    run("sparse_v6nax", p_sparse_public)
 
-    def p_sparse_scalar():
-        o = _ext.sparse_attention_forward(q, k, v, bm, block_tile=32, scale=sc,
-                                          kernel_version="scalar_fallback")
-        return ok_close(o, ref32 if ref32 is not None else sparse_ref(q, k, v, bm, 32, sc), 1e-2)
-    run("sparse_scalar", p_sparse_scalar)
+    def sparse_cell(dt, Dh, causal, ndim, Hq=2, Hk=2, window=None):
+        """V6NAX and scalar forward for one variant; which-binary: they differ (byteD>0)."""
+        Ns = 2048                                                  # 2-D mask = 4096 B (min)
+        qs, ks, vs = rnd((1, Hq, Ns, Dh), dt), rnd((1, Hk, Ns, Dh), dt), rnd((1, Hk, Ns, Dh), dt)
+        nb = Ns // 32
+        lead = {2: (), 3: (Hq,), 4: (1, Hq)}[ndim]
+        m = mask(nb, nb, 0.15, lead)
+        scale = Dh ** -0.5
+        kw = dict(block_tile=32, causal=causal, scale=scale)
+        if window is not None:
+            qi, kb = mx.arange(nb)[:, None], mx.arange(nb)[None, :]
+            m = ((kb * 32 + 31) >= (qi * 32 + 16 - window)) & ((kb * 32) <= (qi * 32 + 16 + window))
+            if causal:
+                m = m & ((kb * 32) <= ((qi + 1) * 32 - 1))
+            kw.update(structured_window_probe=True, structured_window_size=window)
+        ref = sparse_ref(qs, ks, vs, m, 32, scale, causal)
+        o_nax = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="v6nax_sparse", **kw)
+        ok, d = check(o_nax, ref, 2e-2)
+        if window is not None:
+            return ok, d
+        o_sc = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="scalar_fallback",
+                                             block_tile=32, causal=causal, scale=scale)
+        ok2, d2 = check(o_sc, ref, 2e-2)
+        bd = bytediff(o_nax, o_sc)
+        return ok and ok2 and bd > 0.0, f"nax {d} scalar {d2} byteD={bd:.1e}"
 
-    bm16 = mx.repeat(mx.repeat(bm, 2, axis=-2), 2, axis=-1)              # same token mask, BT16
+    cells = [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D{Dh}_{'c' if c else 'nc'}_M2",
+              (lambda dt=dt, Dh=Dh, c=c: sparse_cell(dt, Dh, c, 2)))
+             for dt in (mx.float16, mx.bfloat16) for Dh in (64, 128) for c in (False, True)]
+    cells += [(f"f16_D128_{'c' if c else 'nc'}_M{nd}", (lambda c=c, nd=nd: sparse_cell(mx.float16, 128, c, nd)))
+              for nd in (3, 4) for c in (False, True)]
+    cells += [("f16_D64_nc_GQA4:2", lambda: sparse_cell(mx.float16, 64, False, 2, Hq=4, Hk=2)),
+              ("f16_D128_nc_window", lambda: sparse_cell(mx.float16, 128, False, 2, window=96)),
+              ("bf16_D64_c_window", lambda: sparse_cell(mx.bfloat16, 64, True, 2, window=96))]
+    run("sparse_variants", lambda: sweep(cells))
 
-    def p_sparse_v6nax_lse():
-        # BT32 D128 fp16 -> the V6NAX LSE source; which-binary: differs (byteD > 0) from the
-        # scalar LSE kernel (BT16) on the same token mask.
-        o, _l = _ext.sparse_attention_forward_with_lse(q, k, v, bm, block_tile=32, scale=sc)
+    def lse_cell(dt, Dh, causal, bt, ndim=2):
+        """BT32 -> V6NAX LSE source, BT16 -> scalar LSE source; O and natural-log L checked."""
+        Ns = 2048
+        qs, ks, vs = rnd((1, 2, Ns, Dh), dt), rnd((1, 2, Ns, Dh), dt), rnd((1, 2, Ns, Dh), dt)
+        nb = Ns // bt
+        m = mask(nb, nb, 0.15, {2: (), 3: (2,)}[ndim])
+        scale = Dh ** -0.5
+        o, L = _ext.sparse_attention_forward_with_lse(qs, ks, vs, m, block_tile=bt,
+                                                       causal=causal, scale=scale)
+        ref_o, ref_L = sparse_ref(qs, ks, vs, m, bt, scale, causal, lse=True)
+        ok, d = check(o, ref_o, 2e-2)
+        mx.eval(L)
+        dl = float(mx.abs(f32(L).reshape(ref_L.shape) - ref_L).max().item())
+        return ok and dl < 2e-2, f"{d} L_absdiff={dl:.1e}"
+
+    cells = [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D{Dh}_{'c' if c else 'nc'}_BT32",
+              (lambda dt=dt, Dh=Dh, c=c: lse_cell(dt, Dh, c, 32)))
+             for dt in (mx.float16, mx.bfloat16) for Dh in (64, 128) for c in (False, True)]
+    cells += [("f16_D128_nc_BT32_M3", lambda: lse_cell(mx.float16, 128, False, 32, 3))]
+    cells += [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D64_{'c' if c else 'nc'}_BT16",
+               (lambda dt=dt, c=c: lse_cell(dt, 64, c, 16)))
+              for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+    run("sparse_lse_variants", lambda: sweep(cells))
+
+    def p_lse_fingerprint():
+        # which-binary for the LSE pair: BT32 (V6NAX LSE) != BT16 (scalar LSE), same tokens.
+        bm16 = mx.repeat(mx.repeat(bm, 2, axis=-2), 2, axis=-1)
+        o, _ = _ext.sparse_attention_forward_with_lse(q, k, v, bm, block_tile=32, scale=sc)
         o_sc, _ = _ext.sparse_attention_forward_with_lse(q, k, v, bm16, block_tile=16, scale=sc)
-        mx.eval(o, o_sc)
-        bd = float(mx.abs(o.astype(mx.float32) - o_sc.astype(mx.float32)).max().item())
-        ok, d = ok_close(o, ref32 if ref32 is not None else sparse_ref(q, k, v, bm, 32, sc), 1e-2)
+        bd = bytediff(o, o_sc)
+        ok, d = check(o, sparse_ref(q, k, v, bm, 32, sc), 1e-2)
         return ok and bd > 0.0, f"{d} byteD(nax_lse,scalar_lse)={bd:.1e}"
-    run("sparse_v6nax_lse", p_sparse_v6nax_lse)
+    run("sparse_lse_fingerprint", p_lse_fingerprint)
 
-    def p_sparse_scalar_lse():
-        o, _l = _ext.sparse_attention_forward_with_lse(q, k, v, bm16, block_tile=16, scale=sc)
-        return ok_close(o, ref32 if ref32 is not None else sparse_ref(q, k, v, bm, 32, sc), 1e-2)
-    run("sparse_scalar_lse", p_sparse_scalar_lse)
+    # ─────────────────────────────── GNA NAX (exact per-element window oracle)
+    def gna_mask(seq, win, st):
+        Ng = int(np.prod(seq))
+        coords = np.array(np.unravel_index(np.arange(Ng), seq)).T
+        M = np.ones((Ng, Ng), bool)
+        for d in range(len(seq)):
+            pos = coords[:, d]
+            gb = (pos // st[d]) * st[d]
+            lo = np.maximum(gb - (win[d] - st[d]) // 2, 0)
+            hi = np.minimum(gb + st[d] + (win[d] - st[d] + 1) // 2, seq[d])
+            M &= (pos[None, :] >= lo[:, None]) & (pos[None, :] < hi[:, None])
+        return M
 
-    def p_gna_nax():
-        seq, win, st = (2, 8, 16), (1, 3, 5), (1, 1, 2)
-        Ng = seq[0] * seq[1] * seq[2]
-        g = [mx.random.normal((1, 1, Ng, 128)).astype(mx.float16) for _ in range(3)]
-        nax = _ext.mfa_gna_nax_forward(*g, *seq, *win, *st, 128 ** -0.5)
-        steel = _ext.mfa_gna_forward(*g, 128 ** -0.5, *seq, *win, *st)
-        return ok_close(nax, steel, 2e-2)
-    run("gna_nax", p_gna_nax)
-
-    def p_ffn_nax():
-        x = (mx.random.normal((2, 32, 256)) * 0.05).astype(mx.float16)
-        w = (mx.random.normal((128, 256)) * 0.02).astype(mx.float16)
-        b = (mx.random.normal((128,)) * 0.01).astype(mx.float16)
-        y = _ext.v6_nax_linear(x, w, b, False)
-        ref = x.astype(mx.float32) @ w.astype(mx.float32).T + b.astype(mx.float32)
-        return ok_close(y, ref, 2e-2)
-    run("ffn_nax", p_ffn_nax)
-
-    def p_qmm_nax():
-        x = mx.random.normal((128, 512)).astype(mx.float16)
-        w = mx.random.normal((128, 512)).astype(mx.float16)
-        wq, s, bi = mx.quantize(w, group_size=64, bits=4)
-        y = _ext.v6_nax_quantized_matmul(x, wq, s, bi, 64, 4)
-        ref = mx.quantized_matmul(x, wq, s, bi, transpose=True, group_size=64, bits=4)
-        return ok_close(y, ref, 2e-2)
-    run("qmm_nax", p_qmm_nax)
-
-    def conv_ref(x, w, pad):
+    def gna_cell(dt, Dh, env=None, Hq=2, Hk=2, seq=(2, 8, 16), win=(1, 3, 5), st=(1, 1, 2)):
+        Ng = int(np.prod(seq))
+        qg, kg, vg = rnd((1, Hq, Ng, Dh), dt), rnd((1, Hk, Ng, Dh), dt), rnd((1, Hk, Ng, Dh), dt)
+        scale = Dh ** -0.5
+        call = lambda: _ext.mfa_gna_nax_forward(qg, kg, vg, *seq, *win, *st, scale)
+        out = with_env(env, call) if env else call()
         with mx.stream(mx.cpu):
-            r = mx.conv_general(x.astype(mx.float32), w.astype(mx.float32), stride=1, padding=pad)
+            kk, vv = kg, vg
+            if Hq != Hk:
+                kk, vv = mx.repeat(kg, Hq // Hk, axis=1), mx.repeat(vg, Hq // Hk, axis=1)
+            s = (f32(qg) @ mx.swapaxes(f32(kk), -1, -2)) * scale
+            s = mx.where(mx.array(gna_mask(seq, win, st))[None, None], s, float("-inf"))
+            ref = mx.softmax(s, axis=-1) @ f32(vv)
+            mx.eval(ref)
+        return check(out, ref, 2e-2)
+
+    cells = [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D{Dh}", (lambda dt=dt, Dh=Dh: gna_cell(dt, Dh)))
+             for dt in (mx.float16, mx.bfloat16) for Dh in (64, 128)]
+    cells += [("f16_D128_BQ32WM2(N>=8192 tile)",
+               lambda: gna_cell(mx.float16, 128, {"MFA_GNA_NAX_BQ": "32", "MFA_GNA_NAX_WM": "2"})),
+              ("f16_D128_precompute_range", lambda: gna_cell(mx.float16, 128, {"MFA_GNA_NAX_PRECOMPUTE_RANGE": "1"})),
+              ("f16_D128_swizzle1", lambda: gna_cell(mx.float16, 128, {"MFA_GNA_NAX_SWIZZLE_LOG": "1"})),
+              ("f16_D64_GQA4:2", lambda: gna_cell(mx.float16, 64, Hq=4, Hk=2))]
+    run("gna_nax", lambda: sweep(cells))
+
+    # ─────────────────────────────── FFN / QMM NAX
+    def ffn_cell(dt, gelu, M=64):
+        x, w, b = rnd((2, M, 256), dt, 0.5), rnd((128, 256), dt, 0.05), rnd((128,), dt, 0.1)
+        y = _ext.v6_nax_linear(x, w, b, gelu)
+        with mx.stream(mx.cpu):
+            ref = f32(x) @ f32(w).T + f32(b)
+            if gelu:
+                ref = 0.5 * ref * (1 + mx.tanh(math.sqrt(2 / math.pi) * (ref + 0.044715 * ref ** 3)))
+            mx.eval(ref)
+        return check(y, ref, 2e-2)
+
+    cells = [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_gelu{int(g)}", (lambda dt=dt, g=g: ffn_cell(dt, g)))
+             for dt in (mx.float16, mx.bfloat16) for g in (False, True)]
+    cells += [("f16_M40(partial tile)", lambda: ffn_cell(mx.float16, False, M=40))]
+    run("ffn_nax", lambda: sweep(cells))
+
+    def qmm_cell(dt, bits, gs):
+        x, w = rnd((128, 512), dt), rnd((128, 512), dt)
+        wq, s, bi = mx.quantize(w, group_size=gs, bits=bits)
+        y = _ext.v6_nax_quantized_matmul(x, wq, s, bi, gs, bits)
+        with mx.stream(mx.cpu):
+            ref = f32(x) @ f32(mx.dequantize(wq, s, bi, group_size=gs, bits=bits)).T
+            mx.eval(ref)
+        return check(y, ref, 2e-2)
+
+    cells = [(f"f16_b{b}_g{g}", (lambda b=b, g=g: qmm_cell(mx.float16, b, g)))
+             for b in (4, 8) for g in (32, 64, 128)]
+    cells += [("bf16_b4_g64", lambda: qmm_cell(mx.bfloat16, 4, 64)),
+              ("bf16_b8_g128", lambda: qmm_cell(mx.bfloat16, 8, 128))]
+    run("qmm_nax", lambda: sweep(cells))
+
+    # ─────────────────────────────── conv3d NAX (C++ and legacy Python)
+    def conv_ref(x, w, stride, pad6):
+        with mx.stream(mx.cpu):
+            xp = mx.pad(f32(x), [(0, 0), (pad6[0], pad6[1]), (pad6[2], pad6[3]), (pad6[4], pad6[5]), (0, 0)])
+            r = mx.conv_general(xp, f32(w), stride=stride)
             mx.eval(r)
         return r
 
-    xc = (mx.random.normal((1, 8, 32, 32, 128)) * 0.5).astype(mx.float16)
-    w3 = (mx.random.normal((128, 3, 3, 3, 128)) * 0.1).astype(mx.float16)
-    w1 = (mx.random.normal((128, 1, 1, 1, 128)) * 0.1).astype(mx.float16)
-    xo = (mx.random.normal((1, 6, 30, 30, 64)) * 0.5).astype(mx.float16)   # H_out % 8 != 0
-    w3o = (mx.random.normal((64, 3, 3, 3, 64)) * 0.1).astype(mx.float16)
-    kw = dict(stride=(1, 1, 1), dilation=(1, 1, 1))
-    p1, p0 = (1, 1, 1, 1, 1, 1), (0, 0, 0, 0, 0, 0)
+    def conv_cell(xs, ws, dt, pad6=(1, 1, 1, 1, 1, 1), stride=(1, 1, 1), python=False):
+        # Sub-path selection is a deterministic function of the shape (the cells sit inside
+        # each sub-path's envelope, csrc/mfa_conv_nax.cpp) and no C++ kernel site catches, so
+        # a kernel that fails to build RAISES here.  (MPP / pointwise / im2col are
+        # bit-identical at fp16 for these shapes, so byteD cannot prove the sub-path.)
+        x, w = rnd(xs, dt, 0.5), rnd(ws, dt, 0.1)
+        if python:
+            from mlx_mfa.conv_nax import conv3d_nax_forward as fwd
+            sym = (pad6[0], pad6[2], pad6[4])                       # legacy: symmetric 3-tuple
+            assert pad6 == (sym[0], sym[0], sym[1], sym[1], sym[2], sym[2]), pad6
+            out = with_env({"MFA_CONV_NAX_USE_PYTHON_LEGACY": "1"},
+                           lambda: fwd(x, w, stride=stride, padding=sym))
+        else:
+            out = _ext.conv3d_nax_forward(x, w, stride=stride, padding=pad6, dilation=(1, 1, 1))
+        return check(out, conv_ref(x, w, stride, pad6), 2e-2)
 
-    def with_env(name, fn):
-        os.environ[name] = "1"
-        try:
-            out = fn(); mx.eval(out)
-            return out
-        finally:
-            del os.environ[name]
+    F16, BF16 = mx.float16, mx.bfloat16
+    run("conv_mpp", lambda: sweep([
+        ("f16_KT3_tile8", lambda: conv_cell((1, 8, 32, 32, 128), (128, 3, 3, 3, 128), F16)),
+        ("bf16_KT3_tile8", lambda: conv_cell((1, 8, 32, 32, 128), (128, 3, 3, 3, 128), BF16)),
+        ("f16_KT3_tile16", lambda: conv_cell((1, 8, 64, 64, 64), (64, 3, 3, 3, 64), F16)),
+        ("f16_KT3_padT0", lambda: conv_cell((1, 8, 32, 32, 64), (64, 3, 3, 3, 64), F16, (0, 0, 1, 1, 1, 1))),
+        ("f16_KT4_sT2", lambda: conv_cell((1, 9, 34, 34, 64), (64, 4, 3, 3, 64), F16, (0, 0, 0, 0, 0, 0), (2, 1, 1))),
+    ]))
+    run("conv_pointwise", lambda: sweep([
+        ("f16", lambda: conv_cell((1, 8, 32, 32, 128), (128, 1, 1, 1, 128), F16, (0,) * 6)),
+        ("bf16", lambda: conv_cell((1, 8, 32, 32, 128), (128, 1, 1, 1, 128), BF16, (0,) * 6)),
+    ]))
+    run("conv_im2col", lambda: sweep([          # fp16 only: bf16 raises there by design
+        ("f16_HW30(not MPP)", lambda: conv_cell((1, 6, 30, 30, 64), (64, 3, 3, 3, 64), F16)),
+        ("f16_K133", lambda: conv_cell((1, 4, 16, 16, 64), (64, 1, 3, 3, 64), F16, (0, 0, 1, 1, 1, 1))),
+    ]))
+    # Legacy Python orchestrator (MFA_CONV_NAX_USE_PYTHON_LEGACY=1): fp16-only by design.
+    run("conv_py_im2col", lambda: sweep([
+        ("f16", lambda: conv_cell((1, 6, 30, 30, 64), (64, 3, 3, 3, 64), F16, python=True)),
+    ]))
+    run("conv_py_pointwise", lambda: sweep([
+        ("f16", lambda: conv_cell((1, 8, 32, 32, 128), (128, 1, 1, 1, 128), F16, (0,) * 6, python=True)),
+    ]))
 
-    def p_conv_sub(x, w, pad, ref_pad, opt_out):
-        # Conv sub-path selection is a deterministic function of the shape (the probe
-        # shapes sit inside each sub-path's eligibility envelope, csrc/mfa_conv_nax.cpp),
-        # and no conv/kernel C++ site catches (locked by the tool's test), so a kernel
-        # that fails to build RAISES here.  byteD vs the opt-out arm is informational only:
-        # MPP / pointwise / im2col are bit-identical at fp16 for these shapes (measured on
-        # M5 / MLX 0.31.2: byteD 0.0 with a 1.74 vs 2.51 ms path split), so it cannot prove
-        # engagement.
-        out = _ext.conv3d_nax_forward(x, w, padding=pad, **kw); mx.eval(out)
-        ok, d = ok_close(out, conv_ref(x, w, ref_pad), 2e-2)
-        if opt_out is None:
-            return ok, d
-        alt = with_env(opt_out, lambda: _ext.conv3d_nax_forward(x, w, padding=pad, **kw))
-        ok2, _ = ok_close(alt, conv_ref(x, w, ref_pad), 2e-2)
-        bd = float(mx.abs(out.astype(mx.float32) - alt.astype(mx.float32)).max().item())
-        return ok and ok2, f"{d} byteD(vs {opt_out})={bd:.1e} (info)"
-    run("conv_mpp", lambda: p_conv_sub(xc, w3, p1, 1, "MFA_DISABLE_CONV3D_MPP"))
-    run("conv_pointwise", lambda: p_conv_sub(xc, w1, p0, 0, "MFA_CONV_NAX_NO_FAST_PATH"))
-    run("conv_im2col", lambda: p_conv_sub(xo, w3o, p1, 1, None))   # H_out % 8 != 0: not MPP
-
-    def p_conv_py(w, x, pad):
-        os.environ["MFA_CONV_NAX_USE_PYTHON_LEGACY"] = "1"
-        try:
-            from mlx_mfa.conv_nax import conv3d_nax_forward
-            out = conv3d_nax_forward(x, w, stride=(1, 1, 1), padding=(pad, pad, pad))
-            return ok_close(out, conv_ref(x, w, pad), 2e-2)
-        finally:
-            del os.environ["MFA_CONV_NAX_USE_PYTHON_LEGACY"]
-    run("conv_py_im2col", lambda: p_conv_py(w3o, xo, 1))
-    run("conv_py_pointwise", lambda: p_conv_py(w1, xc, 0))
-
-    def p_topk():
-        # Bisection kernel (default) vs the mx.topk path: both are top-k approximations that
-        # may pick different boundary elements on fp16 score ties (documented), so the gate
-        # is per-row: >= 99% of rows agree to 2e-2 and everything is finite.
-        qt, kt, vt = (mx.random.normal((1, 4, 1024, 64)).astype(mx.float16) for _ in range(3))
+    # ─────────────────────────────── top-k bisection threshold kernel
+    def topk_cell(dt, Dh):
+        # Bisection (default) vs the mx.topk path: both are top-k approximations that may
+        # pick different boundary elements on fp16 score ties (documented), so the gate is
+        # per-row: >= 99% of rows agree to 2e-2 and everything is finite.
+        qt, kt, vt = rnd((1, 4, 1024, Dh), dt), rnd((1, 4, 1024, Dh), dt), rnd((1, 4, 1024, Dh), dt)
         o = mlx_mfa.flash_attention_topk(qt, kt, vt, topk_ratio=0.1)
-        ref = with_env("MFA_DISABLE_TOPK_BISECT",
+        mx.eval(o)
+        keep(o)
+        ref = with_env({"MFA_DISABLE_TOPK_BISECT": "1"},
                        lambda: mlx_mfa.flash_attention_topk(qt, kt, vt, topk_ratio=0.1))
-        mx.eval(o)
-        finite = bool(mx.all(mx.isfinite(o.astype(mx.float32))).item())
-        row = mx.abs(o.astype(mx.float32) - ref.astype(mx.float32)).max(axis=-1)
-        agree = float(mx.mean(row < 2e-2).item())
-        return finite and agree >= 0.99, f"rows_agree={agree:.4f} finite={finite}"
-    run("topk_bisect", p_topk)
+        finite = bool(mx.all(mx.isfinite(f32(o))).item())
+        agree = float(mx.mean(mx.abs(f32(o) - f32(ref)).max(axis=-1) < 2e-2).item())
+        return finite and agree >= 0.99, f"rows_agree={agree:.4f}{'' if finite else ' NONFINITE'}"
 
-    def p_tq():
-        from mlx_mfa.tq_decode import tq_decode_attend, _packed_d
-        nbk, bs, Hkv, Dt, bits = 4, 16, 2, 64, 4
-        qd = mx.random.normal((1, 4, 1, Dt)).astype(mx.float16)
-        ktq = mx.random.randint(0, 255, (nbk, bs, Hkv, _packed_d(Dt, bits))).astype(mx.uint8)
-        vp = mx.random.normal((nbk, bs, Hkv, Dt)).astype(mx.float16)
-        ks = mx.ones((nbk, bs, Hkv), mx.float32)
-        cent = mx.linspace(-1, 1, 2 ** bits).astype(mx.float16)
-        bt = mx.array([0, 1, 2], mx.int32)
-        o = tq_decode_attend(qd, ktq, vp, ks, cent, bt, 40, block_size=bs, tq_bits=bits)
-        mx.eval(o)
-        finite = bool(mx.all(mx.isfinite(o.astype(mx.float32))).item())
-        return finite and o.shape == (1, 4, 1, Dt), f"finite={finite} shape={tuple(o.shape)}"
-    run("tq_decode", p_tq)
+    run("topk_bisect", lambda: sweep([
+        (f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D{Dh}", (lambda dt=dt, Dh=Dh: topk_cell(dt, Dh)))
+        for dt in (mx.float16, mx.bfloat16) for Dh in (64, 128)]))
 
-    def p_dense_fwd():
-        # Default public dense route on M5: D=128 -> v6_nax_forward (dispatch-map lock);
-        # engagement by the dispatch trace terminal, correctness vs a CPU fp32 oracle.
+    # ─────────────────────────────── TurboQuant paged decode (Python ground truth)
+    def tq_cell(bits, Dh, Hq=8, Hkv=2, S0=256, BS=64):
+        from mlx_mfa.inference import TurboQuantPagedInferenceContext
+        from mlx_mfa.tq_decode import tq_decode_attend
+        from mlx_mfa.turboquant import (apply_rotation, unpack_indices, unpack_3bit_optimal,
+                                        dequantize_from_indices, _compute_packed_d)
+        ctx = TurboQuantPagedInferenceContext(num_blocks=S0 // BS + 4, block_size=BS, H_kv=Hkv,
+                                              D=Dh, tq_bits=bits)
+        k0, v0, q0 = rnd((1, Hkv, S0, Dh)), rnd((1, Hkv, S0, Dh)), rnd((1, Hq, S0, Dh))
+        mx.eval(ctx.prefill(q0, k0, v0))
+        qr = apply_rotation(f32(rnd((1, Hq, 1, Dh))), "wht").astype(mx.float16)
+        S = ctx.seq_length(0)
+        tbl = ctx.get_block_table([0])[0][:(S + BS - 1) // BS]
+        scale = Dh ** -0.5
+        out = tq_decode_attend(qr, ctx._k_pool, ctx._v_pool_fp16, ctx._k_scales, ctx._k_centroids,
+                               tbl, S, scale=scale, block_size=BS, tq_bits=bits)
+        p, s = ctx._k_pool[tbl], ctx._k_scales[tbl]
+        nbk = p.shape[0]
+        if bits == 3:
+            idx = unpack_3bit_optimal(p.reshape(nbk * BS * Hkv, _compute_packed_d(Dh, 3)), Dh)
+        else:
+            idx = unpack_indices(p.reshape(-1), nbk * BS * Hkv * Dh, bits).reshape(nbk * BS * Hkv, Dh)
+        Kd = (dequantize_from_indices(idx, bits) * s.reshape(-1)[:, None]).reshape(nbk * BS, Hkv, Dh)[:S]
+        K = mx.transpose(Kd, (1, 0, 2))[None].astype(mx.float16)
+        V = mx.transpose(ctx._v_pool_fp16[tbl].reshape(-1, Hkv, Dh)[:S], (1, 0, 2))[None]
+        with mx.stream(mx.cpu):
+            rep = Hq // Hkv
+            K32, V32 = mx.repeat(f32(K), rep, axis=1), mx.repeat(f32(V), rep, axis=1)
+            ref = mx.softmax((f32(qr) @ mx.swapaxes(K32, -1, -2)) * scale, axis=-1) @ V32
+            mx.eval(ref)
+        return check(out, ref, 2e-2)
+
+    run("tq_decode", lambda: sweep([(f"b{b}_D128", (lambda b=b: tq_cell(b, 128))) for b in (2, 3, 4)]
+                                   + [("b4_D64", lambda: tq_cell(4, 64))]))
+
+    # ─────────────────────────────── dense V6 (ShaderCache consumers of the shared helpers)
+    def dense_ref(qd, kd, vd, causal, scale):
+        with mx.stream(mx.cpu):
+            r = mx.fast.scaled_dot_product_attention(f32(qd), f32(kd), f32(vd), scale=scale,
+                                                     mask="causal" if causal else None)
+            mx.eval(r)
+        return r
+
+    def dense_fwd_public():
         from mlx_mfa import _dispatch_trace as dt
         with dt.capture() as cap:
             o = mlx_mfa.flash_attention(q, k, v, scale=sc)
             mx.eval(o)
-        with mx.stream(mx.cpu):
-            ref = mx.fast.scaled_dot_product_attention(
-                q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=sc)
-            mx.eval(ref)
-        ok, d = ok_close(o, ref, 1e-2)
+        ok, d = check(o, dense_ref(q, k, v, False, sc), 1e-2)
         term = cap[-1][0] if cap else None
         return ok and term == "nax_dense", f"{d} terminal={term}"
-    run("dense_v6nax_fwd", p_dense_fwd)
 
-    def p_dense_bwd():
-        # Default D=64 backward on M5 (qL >= 2048, docs/reference/dispatch-map.md):
-        # V6NAX split dQ/dV/dK — engagement by the trace terminal.
-        from mlx_mfa import _dispatch_trace as dt
-        qb, kb, vb = (mx.random.normal((1, 4, 2048, 64)).astype(mx.float16) for _ in range(3))
-        g = mx.random.normal((1, 4, 2048, 64)).astype(mx.float16)
-        f = lambda a, b, c: (mlx_mfa.flash_attention(a, b, c) * g).sum()
-        with dt.capture() as cap:
-            grads = mx.grad(f, argnums=(0, 1, 2))(qb, kb, vb)
+    def dense_fwd_cell(dt, Dh, causal):
+        qd, kd, vd = rnd((1, 4, 1024, Dh), dt), rnd((1, 4, 1024, Dh), dt), rnd((1, 4, 1024, Dh), dt)
+        o, _L = _ext.v6_nax_forward(qd, kd, vd, causal, True, -1.0)
+        return check(o, dense_ref(qd, kd, vd, causal, Dh ** -0.5), 2e-2)
+
+    cells = [("public_D128_f16(nax_dense)", dense_fwd_public)]
+    cells += [(f"{'bf16' if dt == mx.bfloat16 else 'f16'}_D{Dh}_{'c' if c else 'nc'}",
+               (lambda dt=dt, Dh=Dh, c=c: dense_fwd_cell(dt, Dh, c)))
+              for dt in (mx.float16, mx.bfloat16) for Dh in (64, 128) for c in (False, True)]
+    run("dense_v6nax_fwd", lambda: sweep(cells))
+
+    def dense_bwd_cell(dt, Dh, causal, env=None):
+        # D=64, qL >= 2048: default V6NAX split backward (docs/reference/dispatch-map.md);
+        # D=128 needs MFA_ENABLE_V6_BACKWARD=1.  Engagement by the trace terminal.
+        from mlx_mfa import _dispatch_trace as dtr
+        qb, kb, vb = rnd((1, 2, 2048, Dh), dt), rnd((1, 2, 2048, Dh), dt), rnd((1, 2, 2048, Dh), dt)
+        g = rnd((1, 2, 2048, Dh), dt)
+        f = lambda a, b, c: (mlx_mfa.flash_attention(a, b, c, causal=causal) * g).sum()
+        with dtr.capture() as cap:
+            grads = with_env(env, lambda: mx.grad(f, argnums=(0, 1, 2))(qb, kb, vb)) if env \
+                else mx.grad(f, argnums=(0, 1, 2))(qb, kb, vb)
             mx.eval(grads)
         with mx.stream(mx.cpu):
             r = lambda a, b, c: (mx.fast.scaled_dot_product_attention(
-                a, b, c, scale=64 ** -0.5) * g.astype(mx.float32)).sum()
-            refs = mx.grad(r, argnums=(0, 1, 2))(*(x.astype(mx.float32) for x in (qb, kb, vb)))
+                a, b, c, scale=Dh ** -0.5, mask="causal" if causal else None) * f32(g)).sum()
+            refs = mx.grad(r, argnums=(0, 1, 2))(f32(qb), f32(kb), f32(vb))
             mx.eval(refs)
-        oks = [ok_close(a, b, 2e-2) for a, b in zip(grads, refs)]
+        oks = [check(a, b, 3e-2) for a, b in zip(grads, refs)]
         engaged = any(b == "v6_split_backward" for b, _ in cap)
         return all(o for o, _ in oks) and engaged, \
             " ".join(d for _, d in oks) + f" v6_split_backward={engaged}"
-    run("dense_v6nax_bwd", p_dense_bwd)
+
+    run("dense_v6nax_bwd", lambda: sweep([
+        ("f16_D64_nc", lambda: dense_bwd_cell(mx.float16, 64, False)),
+        ("bf16_D64_nc", lambda: dense_bwd_cell(mx.bfloat16, 64, False)),
+        ("f16_D64_c", lambda: dense_bwd_cell(mx.float16, 64, True)),
+        ("f16_D128_nc_optin", lambda: dense_bwd_cell(mx.float16, 128, False, {"MFA_ENABLE_V6_BACKWARD": "1"})),
+    ]))
 
     if os.environ.get("MFA_MATRIX_DUMP"):
         np.savez(os.environ["MFA_MATRIX_DUMP"], **dump)
     return {"mlx": mx.__version__, "mlx_mfa": mlx_mfa.__version__,
             "build_mlx": _ext._mlx_build_version(), "has_nax": bool(mlx_mfa.has_nax()),
-            "results": res}
+            "mfa_env": leaked_env, "cells_dumped": len(dump), "results": res}
 
 
 # ─────────────────────────────────────────────────────────────────────── driver
@@ -328,23 +523,65 @@ def _sh(cmd, env=None, cwd=None):
     return subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True)
 
 
+def _clean_env(**extra) -> dict:
+    """Caller env minus PYTHONPATH and every MFA_* knob (an inherited opt-out would turn a
+    probe into a vacuous pass), plus ``extra``."""
+    env = {k: v for k, v in os.environ.items()
+           if k != "PYTHONPATH" and not k.startswith("MFA_")}
+    env.update(extra)
+    return env
+
+
+# Source members of the sdist that must equal the git HEAD tree (what the receipt binds to).
+_BOUND_PREFIXES = ("csrc/", "mlx_mfa/")
+_BOUND_FILES = ("CMakeLists.txt", "pyproject.toml")
+
+
+def _sdist_vs_head(sdist: str) -> list[str]:
+    """Mismatches between the sdist's build inputs and ``git HEAD`` ([] = bound)."""
+    import tarfile
+    out = []
+    with tarfile.open(sdist) as tf:
+        members = {}
+        for m in tf.getmembers():
+            if not m.isfile():
+                continue
+            rel = m.name.split("/", 1)[1] if "/" in m.name else m.name
+            if rel.startswith(_BOUND_PREFIXES) or rel in _BOUND_FILES:
+                members[rel] = tf.extractfile(m).read()
+    for rel, data in sorted(members.items()):
+        head = subprocess.run(["git", "-C", _REPO, "show", f"HEAD:{rel}"], capture_output=True)
+        if head.returncode != 0:
+            out.append(f"{rel}: not tracked at HEAD")
+        elif head.stdout != data:
+            out.append(f"{rel}: differs from HEAD")
+    tracked = _sh(["git", "-C", _REPO, "ls-tree", "-r", "--name-only", "HEAD", "--",
+                   "csrc", "mlx_mfa", *_BOUND_FILES]).stdout.split()
+    text = open(os.path.join(_REPO, "pyproject.toml"), encoding="utf-8").read()
+    section = text[text.index("[tool.scikit-build.sdist]"):]
+    excluded = set(re.findall(r'"([^"]+)"', re.search(r"^exclude\s*=\s*\[(.*?)\]",
+                                                        section, re.M | re.S).group(1)))
+    out += [f"{rel}: tracked at HEAD, missing from sdist" for rel in tracked
+            if rel not in members and rel not in excluded and "__pycache__" not in rel]
+    return out
+
+
 def _run_version(ver: str, sdist: str, work: str, base_python: str,
                  dump_dir: str | None = None) -> dict:
     venv = os.path.join(work, f"venv-{ver}")
     t0 = time.time()
-    r = _sh([base_python, "-m", "venv", venv])
+    r = _sh([base_python, "-m", "venv", "--clear", venv])
     if r.returncode:
         return {"error": f"venv: {r.stderr[-400:]}"}
     py = os.path.join(venv, "bin", "python")
     cons = os.path.join(work, f"constraints-{ver}.txt")
     with open(cons, "w") as f:
         f.write(f"mlx=={ver}\n")
-    env = dict(os.environ, PIP_CONSTRAINT=cons, PIP_DISABLE_PIP_VERSION_CHECK="1")
-    env.pop("PYTHONPATH", None)
+    env = _clean_env(PIP_CONSTRAINT=cons, PIP_DISABLE_PIP_VERSION_CHECK="1")
     r = _sh([py, "-m", "pip", "install", "-q", "--no-cache-dir", sdist], env=env)
     if r.returncode:
         return {"error": f"install (isolated, mlx=={ver}): {r.stderr[-800:]}"}
-    penv = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    penv = _clean_env()
     if dump_dir:
         os.makedirs(dump_dir, exist_ok=True)
         penv["MFA_MATRIX_DUMP"] = os.path.join(os.path.abspath(dump_dir), f"mlx-{ver}.npz")
@@ -395,11 +632,13 @@ def main() -> int:
               f"({res.get('seconds')} s)", flush=True)
     all_pass = all(
         "error" not in r and r.get("build_mlx") == v and r.get("mlx") == v
+        and r.get("mlx_mfa") == pkg_version and not r.get("mfa_env")
         and set(r["results"]) >= set(PROBES) and all(x["ok"] for x in r["results"].values())
         for v, r in matrix.items())
+    sdist_mismatch = _sdist_vs_head(sdist)
     git_sha = _sh(["git", "-C", _REPO, "rev-parse", "HEAD"]).stdout.strip() or "UNKNOWN"
     git_dirty = bool(_sh(["git", "-C", _REPO, "status", "--porcelain", "--",
-                          "csrc", "mlx_mfa"]).stdout.strip())
+                          "csrc", "mlx_mfa", *_BOUND_FILES]).stdout.strip())
     try:
         import mlx_mfa
         device = mlx_mfa.get_device_info().get("device_name", "?")
@@ -413,15 +652,21 @@ def main() -> int:
         "device": device,
         "abi_table_versions": abi_table_versions(),
         "probes": list(PROBES),
+        "known_failures": KNOWN_FAILURES,
         "git_dirty": git_dirty,
+        "sdist_matches_head": not sdist_mismatch,
+        "sdist_mismatch": sdist_mismatch[:20],
         "matrix": matrix,
         "matrix_sha256": hashlib.sha256(json.dumps(matrix, sort_keys=True).encode()).hexdigest(),
         "all_pass": bool(all_pass and set(versions) >= set(abi_table_versions())),
     }
-    if args.receipt is None and git_dirty:
-        # A release receipt binds to git_sha: refuse to write one for uncommitted source.
-        print("[matrix] csrc/ or mlx_mfa/ has uncommitted changes — commit first, or pass "
-              "--receipt <scratch path> for a non-release run.", file=sys.stderr)
+    if args.receipt is None and (git_dirty or sdist_mismatch):
+        # A release receipt binds to git_sha: refuse to write one for uncommitted source or
+        # for an sdist whose build inputs are not the HEAD tree.
+        print("[matrix] refusing to write a release receipt: "
+              + ("uncommitted csrc/mlx_mfa/build-file changes; " if git_dirty else "")
+              + (f"sdist != HEAD ({sdist_mismatch[:3]}); " if sdist_mismatch else "")
+              + "commit + rebuild the sdist, or pass --receipt <scratch path>.", file=sys.stderr)
         return 2
     path = args.receipt or os.path.join(_REPO, "release-gate",
                                         f"metal-kernel-matrix-{pkg_version}.json")

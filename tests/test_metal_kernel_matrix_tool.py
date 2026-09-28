@@ -45,7 +45,7 @@ _SITE_COUNTS = {
     "csrc/mfa_conv_nax.cpp": 4,           # pointwise, MPP, im2col, mm
     "mlx_mfa/conv_nax.py": 3,             # legacy im2col, mm, pointwise
     "mlx_mfa/attention.py": 1,            # top-k bisection threshold
-    "mlx_mfa/tq_decode.py": 2,            # K dequant, attend
+    "mlx_mfa/tq_decode.py": 2,            # K dequant, V gather
 }
 
 
@@ -113,10 +113,11 @@ def test_cpp_kernel_sites_do_not_catch(f):
 # ───────────────────────────────────────────────────────── receipt validator
 def _good_receipt(version="9.9.9"):
     versions = tool.abi_table_versions()
-    row = lambda v: {"mlx": v, "build_mlx": v, "has_nax": True, "mlx_mfa": version,
+    row = lambda v: {"mlx": v, "build_mlx": v, "has_nax": True, "mlx_mfa": version, "mfa_env": [],
                      "results": {p: {"ok": True, "detail": "rel=1e-4"} for p in tool.PROBES}}
     matrix = {v: row(v) for v in versions}
-    return {"release_version": version, "git_dirty": False, "matrix": matrix,
+    return {"release_version": version, "git_dirty": False, "sdist_matches_head": True,
+            "matrix": matrix,
             "matrix_sha256": hashlib.sha256(json.dumps(matrix, sort_keys=True).encode()).hexdigest(),
             "all_pass": True}
 
@@ -169,3 +170,33 @@ def test_validator_rejects_tampering_and_dirty_tree():
     assert "tampered" in _validate(r)                       # edited without rehash
     r2 = copy.deepcopy(_good_receipt()); r2["git_dirty"] = True
     assert "uncommitted" in _validate(r2)
+
+
+def test_validator_rejects_unbound_sdist_wrong_package_and_leaked_env():
+    r = _good_receipt(); r["sdist_matches_head"] = False; r["sdist_mismatch"] = ["csrc/x.cpp: differs"]
+    assert "HEAD" in _validate(r)
+    v = tool.abi_table_versions()[0]
+    r = _good_receipt(); r["matrix"][v]["mlx_mfa"] = "0.0.1"; _rehash(r)
+    assert "installed mlx-mfa" in _validate(r)
+    r = _good_receipt(); r["matrix"][v]["mfa_env"] = ["MFA_DISABLE_CONV3D_MPP"]; _rehash(r)
+    assert "leaked" in _validate(r)
+
+
+def test_staleness_scope_includes_build_definition():
+    assert {"csrc", "mlx_mfa", "CMakeLists.txt", "pyproject.toml"} <= set(checker._SOURCE_DIRS)
+
+
+def test_probe_env_is_stripped_of_mfa_knobs(monkeypatch):
+    monkeypatch.setenv("MFA_DISABLE_CONV3D_MPP", "1")
+    monkeypatch.setenv("PYTHONPATH", "/x")
+    env = tool._clean_env(FOO="1")
+    assert "MFA_DISABLE_CONV3D_MPP" not in env and "PYTHONPATH" not in env and env["FOO"] == "1"
+
+
+def test_known_failures_name_real_probe_cells():
+    body = (ROOT / "scripts" / "metal_kernel_matrix_smoke.py").read_text(encoding="utf-8")
+    for key, why in tool.KNOWN_FAILURES.items():
+        probe, label = key.split("/", 1)
+        assert probe in tool.PROBES, key
+        assert f'("{label}"' in body, key           # the cell label exists in the sweep
+        assert len(why) > 40, key                   # a real reason, not a placeholder
