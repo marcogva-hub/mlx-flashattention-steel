@@ -3816,6 +3816,24 @@ def _v6nax_backward_vjp_sparse_full_native(q, k, v, block_mask, bt, scale, causa
     return O
 
 
+def _check_block_mask_heads(block_mask, B: int, H: int) -> None:
+    """Leading dims of a 3-D [H, NQ, NK] / 4-D [B, H, NQ, NK] block mask must match
+    (no silent broadcast of a per-head mask)."""
+    if block_mask.ndim == 3 and block_mask.shape[0] != H:
+        raise ValueError(
+            f"3-D block_mask shape[0]={block_mask.shape[0]} must equal H={H}"
+        )
+    if block_mask.ndim == 4:
+        if block_mask.shape[0] != B:
+            raise ValueError(
+                f"4-D block_mask shape[0]={block_mask.shape[0]} must equal B={B}"
+            )
+        if block_mask.shape[1] != H:
+            raise ValueError(
+                f"4-D block_mask shape[1]={block_mask.shape[1]} must equal H={H}"
+            )
+
+
 def flash_attention_sparse(
     q: mx.array,
     k: mx.array,
@@ -3933,6 +3951,7 @@ def flash_attention_sparse(
     if _sx_enabled():
         block_mask = _extended_prepare(D, block_mask, N, S)
         if _mask_bytes(block_mask) < _SX_MIN_BYTES:
+            _check_block_mask_heads(block_mask, B, H)   # same checks as the default path
             _dtrace.record("sdpa", "extended: mask < 4096 B (below the V6NAX minimum)"
                                    " -> dense masked route")
             return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
@@ -4155,19 +4174,7 @@ def flash_attention_sparse(
         if _cf > 1:
             block_mask = mx.repeat(block_mask, _cf, axis=-1)
         block_mask = block_mask[..., :NQ_expected, :NK_expected]
-    if block_mask.ndim == 3 and block_mask.shape[0] != H:
-        raise ValueError(
-            f"3-D block_mask shape[0]={block_mask.shape[0]} must equal H={H}"
-        )
-    if block_mask.ndim == 4:
-        if block_mask.shape[0] != B:
-            raise ValueError(
-                f"4-D block_mask shape[0]={block_mask.shape[0]} must equal B={B}"
-            )
-        if block_mask.shape[1] != H:
-            raise ValueError(
-                f"4-D block_mask shape[1]={block_mask.shape[1]} must equal H={H}"
-            )
+    _check_block_mask_heads(block_mask, B, H)
 
     # Repo review 2026-05: the no-extension fallback previously collapsed
     # 3-D/4-D masks to 2-D via `.any()` (cross-head union) — per-head masks

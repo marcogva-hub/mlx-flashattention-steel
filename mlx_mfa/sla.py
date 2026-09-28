@@ -177,8 +177,16 @@ def sla_attention(
     from mlx_mfa.attention import _get_is_m5_plus_cached
     from mlx_mfa.lcsa_nax import _extended_override
     use_extended = _get_is_m5_plus_cached() if extended is None else bool(extended)
-    with _extended_override(use_extended):
-        o_s = flash_attention_sparse(q, kf, vf, bm32, scale=scale, causal=False, auto_pad=True)
+    n_blocks_k = -(-L // blkk)
+    if min(n_blocks_k, int(topk_ratio * n_blocks_k)) <= 0:
+        # top-k selects NO block: the sparse term is exactly 0 (the reference's
+        # nan_to_num contract).  Never sent to a sparse kernel — on the pre-M5 route
+        # (opened by extended=None) all-empty rows came back NaN (RC review, D1).
+        o_s = mx.zeros(q.shape[:-1] + (vf.shape[-1],), dtype=q.dtype)
+    else:
+        with _extended_override(use_extended):
+            o_s = flash_attention_sparse(q, kf, vf, bm32, scale=scale, causal=False,
+                                         auto_pad=True)
 
     # 4-5. linear term over ALL keys + learned projection.
     o_l = _linear_term(q, kf, vf, feature_map)

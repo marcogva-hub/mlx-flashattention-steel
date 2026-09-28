@@ -694,7 +694,8 @@ def sparse_attention_dispatch(
             and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
             and density < density_threshold
             # RC 2.63.0 (D5): the dense cutoff applies here as in flash_attention_sparse
-            # (a no-op on the default path, whose ceilings are <= 0.30).
+            # (on the default path, whose ceilings are <= 0.30, it only matters for
+            # values <= 0.30 — a no-op at its default 0.85).
             and density < _d_dense_cutoff()):
         return sparse_attention_nax(
             Q, K, V, block_mask,

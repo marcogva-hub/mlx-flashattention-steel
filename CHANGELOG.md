@@ -4,9 +4,9 @@ All notable changes to mlx-mfa are documented here.
 
 ## [Unreleased] — targeting 2.63.0
 
-Block-sparse extended envelope (Volet A Phase 1). All additions are **opt-in / default-off**;
-default routing is byte-identical (`test_sparse_extended_envelope.py`; existing sparse suite
-unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
+Block-sparse extended envelope (Volet A Phase 1). All additions are **opt-in / default-off**:
+with `MFA_SPARSE_NAX_EXTENDED` and `MFA_SPARSE_D_DENSE_CUTOFF` unset, routing is byte-identical to
+2.62 (`test_sparse_extended_envelope.py`; the existing sparse suite is unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
 
 ### Added
 - `flash_attention_sparse(..., auto_pad=True)` — for a non-aligned N == S, zero-pad Q/K/V to a
@@ -18,7 +18,7 @@ unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
 - `MFA_SPARSE_NAX_EXTENDED=1` (opt-in) — route the V6NAX sparse kernel across its full measured
   capability envelope (B·H free, N ≤ 144 288 after padding, density free) rather than only the
   β3-measured policy region. Bypasses POLICY bounds only (B·H allowlist / N range / density ceiling),
-  never capacity (BT=32, fp16/bf16, D∈{64,128}, M5+). Off = routing byte-identical. Promotion to
+  never capacity (BT=32, fp16/bf16, D∈{64,128}, M5+). Off (with the cutoff unset) = routing byte-identical. Promotion to
   default is a later decision on hardened evidence (N6144/B·H16 precedent).
 - Loud refusals on the opt-in path (no silent scalar downgrade): pre-M5 → RuntimeError; D=256/512 or
   BT≠32 → ValueError. fp32 stays refused at entry.
@@ -29,9 +29,12 @@ unchanged). M5+ (NAX) only. Measured M5 Max · macOS 27 · MLX 0.31.2.
   of the thu-ml/TurboDiffusion SLA semantics (`o = o_sparse + proj_l(o_linear)`: top-k block selection at
   BLKQ=128/BLKK=64 → sparse-softmax over the Volet A extended path + softmax-feature-map linear attention
   over all keys + learned `proj_l`). Non-causal MHA + GQA; opt-in (nothing changes for non-callers).
-  Parity: per-row magnitude gates (max-abs, per-row norm ratio) and an EXACT selection block-set vs a
-  torch-CPU fp32 reference derived line-by-line from the SOT (`tests/test_sla.py`), including
-  non-aligned L (130, 4 099, 73 899). Differentiable w.r.t. q/k/v; the linear-term reductions run in
+  Parity with a torch-CPU fp32 reference derived line by line from the SOT (`tests/test_sla.py`):
+  - per-row magnitude gates on the output;
+  - an exact selection block-set at the tested shapes;
+  - the sparse term at non-aligned L (130, 4 099, 73 899) checked for the selection `sla_attention`
+    makes. The GPU top-k can resolve near-ties differently from the CPU (0.006 % of blocks at
+    L = 73 899). Differentiable w.r.t. q/k/v; the linear-term reductions run in
   fp32 (fp16 inputs no longer overflow). Composition net op-ratio 5.9–6.4× vs dense SDPA at the
   Wan shapes (N=62 752/144 288, topk 0.1) — the composition preserves ~80–90% of the bare-skip advantage.
 
@@ -73,20 +76,29 @@ Its "7/7 PASS" is void; correctness was re-proven with per-row magnitude gates.
   - the same refusals; a non-32-block mask is refused with a pointer to the default path, which
     accepts e.g. the 32×16 STEEL geometry;
   - 64-block masks are expanded exactly to 32 blocks;
-  - masks below the kernel's 4096-byte minimum take the dense masked route (traced; the dispatcher
-    used to raise in C++);
-  - the dense cutoff applies to both (under the opt-in, the dispatcher used to send even density-1.0
-    masks to the block-skip).
+  - masks below the kernel's 4096-byte minimum take the dense masked route, traced, with the same
+    mask-shape checks as the default path (the dispatcher used to raise in C++; like before, it
+    requires N and S to be multiples of its block tile);
+  - the dense cutoff applies to both. Under the opt-in, the dispatcher used to send even
+    density-1.0 masks to the block-skip. On the default path the cutoff only matters for values
+    ≤ 0.30 (the default-path density ceiling), so at its default 0.85 it is a no-op there.
+  - The FlashVSR integration's 16-block masks are scoped out of a process-wide opt-in: they used to
+    fall back to SDPA and must not become refusals.
+- `sla_attention` with a top-k that selects no block (`topk_ratio × N_blocks < 1`) returns a sparse
+  term of exactly 0 without calling a sparse kernel. On the pre-M5 route that `extended=None` opens,
+  empty rows came back NaN in simulation.
 - The SLA docstring no longer claims a bit-exact block set: the GPU fp32 matmul is close to TF32, so
   near-tied top-k scores can resolve differently from a CPU reference (0.006 % of blocks measured).
 
 ### Known limitations
-- `mx.compile` over `sla_attention` / `flash_attention_sparse` raises ("eval during function
-  transformations"). The sparse router reads the mask density with `.item()`; this is inherited
-  from 2.62.x.
+- `mx.compile` raises ("eval during function transformations") when the block mask is a traced
+  input: the sparse router reads the mask density with `.item()` (inherited from 2.62.x).
+  `sla_attention` always derives its mask from the inputs, so it cannot be compiled.
+  `flash_attention_sparse` compiles with a captured constant mask.
 - The extended envelope is measured up to N = 144 288 but not enforced.
-- `sla_attention` does not validate that K/V have the same L as Q, or that H is a multiple of Hk;
-  such calls fail with a misleading error.
+- `sla_attention` does not validate that K/V have the same L as Q, or that H is a multiple of Hk.
+  Some such calls raise a misleading error ("block tile must be 32"). Others silently compute a
+  cross-attention whose SLA semantics nobody has checked.
 - The LSE-returning sparse kernel variant has no `kv_valid_len`. No `auto_pad` route uses it today;
   a future native sparse backward for padded calls would need it.
 - Under the opt-in, 64-block masks are expanded to 32 blocks, so the opt-in V6 hybrid backward

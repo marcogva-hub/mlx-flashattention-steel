@@ -112,16 +112,43 @@ def test_override_is_context_local_and_forces_off(monkeypatch):
 
 # ── D1 / D4 through sla_attention ──────────────────────────────────────────────────────
 @m5only
-def test_sla_default_is_extended_on_m5_only(monkeypatch):
+def test_sla_default_is_extended_on_m5(monkeypatch):
     q, k, v = _qkv(2048, 64, H=2)                                # B·H=2: outside the policy
     with dt.capture() as cap:
         mx.eval(S.sla_attention(q, k, v, topk_ratio=0.1))
     assert any(r[0] == "v6nax_sparse" for r in cap)              # extended route on M5
+
+
+def _sla_reference(q, k, v, ratio, blkq=128, blkk=64):
+    """CPU fp32 SLA (proj_l = identity) with the selection sla_attention itself makes —
+    independent of the attention kernels."""
+    L, D = q.shape[2], q.shape[3]
+    sm = S._sla_block_map(q, k, ratio, blkq, blkk)
+    with mx.stream(mx.cpu):
+        q32, k32, v32 = (x.astype(mx.float32) for x in (q, k, v))
+        tok = mx.repeat(mx.repeat(sm, blkq, axis=-2), blkk, axis=-1)[..., :L, :L]
+        s_ = mx.where(tok, (q32 @ mx.swapaxes(k32, -1, -2)) * D ** -0.5, float("-inf"))
+        o_s = mx.where(mx.any(tok, axis=-1, keepdims=True), mx.softmax(s_, axis=-1) @ v32, 0.0)
+        fq, fk = mx.softmax(q32, axis=-1), mx.softmax(k32, axis=-1)
+        o_l = (fq @ (mx.swapaxes(fk, -1, -2) @ v32)) / (
+            mx.sum(fq * mx.sum(fk, axis=2, keepdims=True), axis=-1, keepdims=True) + 1e-5)
+        o = o_s + o_l
+        mx.eval(o)
+    return o
+
+
+@pytest.mark.skipif(not is_mfa_available(), reason="MFA extension required")
+@pytest.mark.parametrize("L,ratio", [(2048, 0.1), (2000, 0.1), (256, 0.5), (2048, 0.001)])
+def test_sla_default_on_pre_m5(monkeypatch, L, ratio):
+    """D1 on pre-M5 — runs on ANY chip (a genuine pre-M5 run on M1-M4 CI; simulated on
+    M5): the default must not raise and must match a CPU fp32 SLA reference.  ratio 0.001
+    selects NO block (topk = 0): the sparse term is exactly 0, as in the reference
+    (it went through the pre-M5 sparse kernel, whose empty rows gave NaN in simulation)."""
     monkeypatch.setattr(att, "_get_is_m5_plus_cached", lambda: False)
-    o = S.sla_attention(q, k, v, topk_ratio=0.1)                 # "pre-M5": must not raise
-    ref = S.sla_attention(q, k, v, topk_ratio=0.1, extended=False)
-    mx.eval(o, ref)
-    assert mx.array_equal(o, ref)
+    q, k, v = _qkv(L, 64, H=2, seed=L)
+    o = S.sla_attention(q, k, v, topk_ratio=ratio)
+    mx.eval(o)
+    assert_row_gates(o, _sla_reference(q, k, v, ratio), **G16, label=f"pre-M5 sla L={L}")
 
 
 @m5only
@@ -213,3 +240,50 @@ def test_dispatcher_refusals_under_extended(monkeypatch, bad):
         match = "block tile must be 32"
     with pytest.raises(ValueError, match=match):
         sparse_attention_dispatch(q, k, v, bm, block_tile=bt)
+
+
+# ── pre-RC review of dbd81f2 (siblings of D5) ─────────────────────────────────────────
+@m5only
+def test_flashvsr_bt16_unaffected_by_global_opt_in(monkeypatch):
+    """The FlashVSR integration uses 16-block masks by design; with the opt-in set
+    process-wide its dispatcher calls used to fall back to SDPA and, after D5, raised.
+    16/non-32/64-block integration calls are scoped out of the opt-in (D4 override)."""
+    import mlx.nn as nn
+    from mlx_mfa.integrations.flashvsr_lcsa import patch_flashvsr_lcsa
+
+    class _Attn(nn.Module):
+        def __call__(self, Q, K, V):
+            return mx.fast.scaled_dot_product_attention(Q, K, V, scale=Q.shape[-1] ** -0.5)
+
+    class _Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = _Attn()
+
+    N, D = 4096, 128
+    q, k, v = _qkv(N, D, H=4, seed=6)
+    bm16 = _mask(N // 16, N // 16, 0.02)
+    model = _Model()
+    model.attn.lcsa_block_mask = bm16
+    model.attn.lcsa_block_tile = 16
+    patch_flashvsr_lcsa(model, verbose=False)
+    ref = model.attn(q, k, v)
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    out = model.attn(q, k, v)
+    mx.eval(ref, out)
+    assert mx.array_equal(out, ref)
+
+
+@m5only
+def test_small_mask_route_keeps_mask_shape_validation(monkeypatch):
+    """The extended small-mask dense route returned before the 3-D/4-D head/batch
+    checks: a [1, NQ, NK] mask with H=2 was silently broadcast (the default path
+    raises).  Both paths now raise."""
+    N, D = 1024, 64
+    q, k, v = _qkv(N, D, H=2, seed=7)
+    bm = _mask(N // 32, N // 32, 0.2)[None]                     # 3-D, shape[0]=1 != H=2
+    with pytest.raises(ValueError, match="must equal H"):
+        flash_attention_sparse(q, k, v, bm)
+    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    with pytest.raises(ValueError, match="must equal H"):
+        flash_attention_sparse(q, k, v, bm)

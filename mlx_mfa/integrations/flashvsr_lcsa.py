@@ -129,15 +129,22 @@ def _make_patched_class(orig_class):
             density = getattr(self, LCSA_DENSITY_ATTR, None)
             precomp_bias = getattr(self, LCSA_BIAS_ATTR, None)
             scale = kwargs.get("scale", None)
-            return sparse_attention_dispatch(
-                Q, K, V, mask,
-                block_tile=BT,
-                scale=scale,
-                causal=causal,
-                density_threshold=threshold,
-                density=density,
-                precomputed_bias=precomp_bias,
-            )
+            # RC 2.63.0: FlashVSR masks are 16-block by default, which the extended
+            # opt-in (32/64-block only) refuses; a process-wide MFA_SPARSE_NAX_EXTENDED=1
+            # must not turn these calls into errors — scope the opt-in out for them.
+            from contextlib import nullcontext
+            from mlx_mfa.lcsa_nax import _extended_override
+            scope = nullcontext() if BT in (32, 64) else _extended_override(False)
+            with scope:
+                return sparse_attention_dispatch(
+                    Q, K, V, mask,
+                    block_tile=BT,
+                    scale=scale,
+                    causal=causal,
+                    density_threshold=threshold,
+                    density=density,
+                    precomputed_bias=precomp_bias,
+                )
         # Pattern (a) or anything else: fall through to original.
         return orig_call(self, *args, **kwargs)
 
