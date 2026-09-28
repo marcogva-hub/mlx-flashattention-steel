@@ -70,13 +70,7 @@ PROBES = tuple(dict.fromkeys(p for ps in (*SITES.values(), *SHARED_HELPER_CONSUM
 # Pre-existing defects the matrix must keep SEEING (strict: the cell must still fail; if it
 # passes the probe FAILS until the entry is removed).  Every entry is reported in the
 # receipt and by the checker.  Adding one needs a maintainer decision.
-KNOWN_FAILURES = {
-    "conv_pointwise/bf16": (
-        "pre-existing on every MLX version (not an MLX 0.32.1 regression): the C++ conv "
-        "matmul2d source is fp16-only and the 1x1x1 pointwise fast path does not reject "
-        "bf16 -> 'Unable to build metal library'; reachable via conv3d_nax_forward and "
-        "patch_seedvr2_vae on bf16 models (flagged for maintainer decision, 2.62.3)"),
-}
+KNOWN_FAILURES: dict = {}   # (2.63.0: conv_pointwise/bf16 fixed — the matmul2d source follows the dtype)
 
 
 def abi_table_versions() -> list[str]:
@@ -214,8 +208,10 @@ def _probe() -> dict:
             f"{d} byteD(pub,nax)={d_nax:.1e} byteD(nax,scalar)={d_sc:.1e}"
     run("sparse_v6nax", p_sparse_public)
 
-    def sparse_cell(dt, Dh, causal, ndim, Hq=2, Hk=2, window=None):
-        """V6NAX and scalar forward for one variant; which-binary: they differ (byteD>0)."""
+    def sparse_cell(dt, Dh, causal, ndim, Hq=2, Hk=2, window=None, kv_valid=None):
+        """V6NAX and scalar forward for one variant; which-binary: they differ (byteD>0).
+        ``kv_valid`` (2.63.0): the in-kernel pad-key mask variant (kL-32 < kv_valid < kL);
+        V6NAX-only, so it is checked against the reference alone."""
         Ns = 2048                                                  # 2-D mask = 4096 B (min)
         qs, ks, vs = rnd((1, Hq, Ns, Dh), dt), rnd((1, Hk, Ns, Dh), dt), rnd((1, Hk, Ns, Dh), dt)
         nb = Ns // 32
@@ -229,10 +225,16 @@ def _probe() -> dict:
             if causal:
                 m = m & ((kb * 32) <= ((qi + 1) * 32 - 1))
             kw.update(structured_window_probe=True, structured_window_size=window)
-        ref = sparse_ref(qs, ks, vs, m, 32, scale, causal)
+        if kv_valid is not None:
+            kw.update(kv_valid_len=kv_valid)
+            with mx.stream(mx.cpu):                               # keys >= kv_valid do not exist
+                ks_ref, vs_ref = ks[:, :, :kv_valid], vs[:, :, :kv_valid]
+            ref = sparse_ref(qs, ks_ref, vs_ref, m, 32, scale, causal)
+        else:
+            ref = sparse_ref(qs, ks, vs, m, 32, scale, causal)
         o_nax = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="v6nax_sparse", **kw)
         ok, d = check(o_nax, ref, 2e-2)
-        if window is not None:
+        if window is not None or kv_valid is not None:
             return ok, d
         o_sc = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="scalar_fallback",
                                              block_tile=32, causal=causal, scale=scale)
@@ -247,7 +249,24 @@ def _probe() -> dict:
               for nd in (3, 4) for c in (False, True)]
     cells += [("f16_D64_nc_GQA4:2", lambda: sparse_cell(mx.float16, 64, False, 2, Hq=4, Hk=2)),
               ("f16_D128_nc_window", lambda: sparse_cell(mx.float16, 128, False, 2, window=96)),
-              ("bf16_D64_c_window", lambda: sparse_cell(mx.bfloat16, 64, True, 2, window=96))]
+              ("bf16_D64_c_window", lambda: sparse_cell(mx.bfloat16, 64, True, 2, window=96)),
+              ("f16_D128_nc_kvvalid2041", lambda: sparse_cell(mx.float16, 128, False, 2, kv_valid=2041)),
+              ("bf16_D64_c_kvvalid2030", lambda: sparse_cell(mx.bfloat16, 64, True, 2, kv_valid=2030))]
+
+    def sparse_auto_pad_public():
+        # 2.63.0 public auto_pad route: non-aligned N=4090 is padded to 4096 and the pad keys
+        # masked in-kernel (kv_valid_len); engagement by the dispatch-trace terminal.
+        from mlx_mfa import _dispatch_trace as dtr
+        Na = 4090
+        qa, ka, va = q[:, :, :Na], k[:, :, :Na], v[:, :, :Na]
+        bma = bm[: (Na + 31) // 32, : (Na + 31) // 32]
+        with dtr.capture() as cap:
+            o = mlx_mfa.flash_attention_sparse(qa, ka, va, bma, scale=sc, auto_pad=True)
+            mx.eval(o)
+        ok, d = check(o, sparse_ref(qa, ka, va, bma, 32, sc), 1e-2)
+        engaged = any(b == "v6nax_sparse" for b, _ in cap)
+        return ok and engaged and o.shape[2] == Na, f"{d} v6nax_sparse={engaged}"
+    cells += [("public_auto_pad_N4090", sparse_auto_pad_public)]
     run("sparse_variants", lambda: sweep(cells))
 
     def lse_cell(dt, Dh, causal, bt, ndim=2):
@@ -577,7 +596,10 @@ def _run_version(ver: str, sdist: str, work: str, base_python: str,
     cons = os.path.join(work, f"constraints-{ver}.txt")
     with open(cons, "w") as f:
         f.write(f"mlx=={ver}\n")
-    env = _clean_env(PIP_CONSTRAINT=cons, PIP_DISABLE_PIP_VERSION_CHECK="1")
+    # PIP_CONSTRAINT stops applying to isolated build envs at pip 26.2; PIP_BUILD_CONSTRAINT
+    # is the forward form (the build_mlx == runtime check still catches any mismatch).
+    env = _clean_env(PIP_CONSTRAINT=cons, PIP_BUILD_CONSTRAINT=cons,
+                     PIP_DISABLE_PIP_VERSION_CHECK="1")
     r = _sh([py, "-m", "pip", "install", "-q", "--no-cache-dir", sdist], env=env)
     if r.returncode:
         return {"error": f"install (isolated, mlx=={ver}): {r.stderr[-800:]}"}
