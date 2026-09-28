@@ -111,6 +111,34 @@ def _probe() -> dict:
         r = float(mx.abs(f32(out) - f32(ref)).max().item()) / max(float(mx.abs(f32(ref)).max().item()), 1e-6)
         return finite and r < tol, f"rel={r:.1e}{'' if finite else ' NONFINITE'}"
 
+    def tail_eye_mask(n):
+        """Eye + sparse extras, but the LAST block row is eye-only: its queries see exactly one
+        key block — the one holding the pad keys — so leaked pad keys move whole rows."""
+        extra = (mx.random.uniform(shape=(n, n)) < 0.02) & (mx.arange(n)[:, None] < n - 1)
+        return mx.eye(n, dtype=mx.bool_) | extra
+
+    def row_err(out, ref):
+        """Worst-row relative L2 over rows with a live reference (magnitude-aware: a global
+        max-abs / cosine gate is blind to a few diluted rows)."""
+        mx.eval(out, ref)
+        o, r = f32(out), f32(ref)
+        rn = mx.sqrt(mx.sum(r * r, axis=-1))
+        e = mx.sqrt(mx.sum((o - r) * (o - r), axis=-1)) / mx.maximum(rn, 1e-6)
+        return float(mx.max(mx.where(rn > 1e-3, e, 0.0)).item())
+
+    def check_rows(out, ref, tol, control=None):
+        """check() + worst-row gate; ``control`` (the same call WITHOUT the feature under test)
+        must FAIL the row gate by >= 5x tol — proof that the cell can see the regression."""
+        ok, d = check(out, ref, tol)
+        re_ = row_err(out, ref)
+        ok = ok and re_ < tol
+        d += f" row={re_:.1e}"
+        if control is not None:
+            rc = row_err(control, ref)
+            ok = ok and rc >= 5 * tol
+            d += f" control_row={rc:.1e}(must be >= {5 * tol:.0e})"
+        return ok, d
+
     def bytediff(a, b):
         mx.eval(a, b)
         return float(mx.abs(f32(a) - f32(b)).max().item())
@@ -119,7 +147,7 @@ def _probe() -> dict:
         """cells: [(label, thunk -> (ok, detail))].  Every exception is a FAILED cell.  A
         cell listed in KNOWN_FAILURES must still fail (strict): if it passes, the marker is
         stale and the cell FAILS; its expected failure is reported, never hidden."""
-        bad, known, n = [], [], 0
+        bad, known, n, verbose = [], [], 0, {}
         for label, thunk in cells:
             name = current[0].split("/")[0]
             current[0] = f"{name}/{label}"
@@ -128,6 +156,7 @@ def _probe() -> dict:
             except Exception as e:  # recorded, never swallowed: the cell FAILS
                 ok, d = False, f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
             n += 1
+            verbose[label] = d
             if current[0] in KNOWN_FAILURES:
                 if ok:
                     bad.append(f"{label}: KNOWN FAILURE NOW PASSES — remove it from KNOWN_FAILURES")
@@ -136,11 +165,17 @@ def _probe() -> dict:
             elif not ok:
                 bad.append(f"{label}: {d}")
             current[0] = name
+        if os.environ.get("MATRIX_PROBE_VERBOSE"):                            # dev only
+            print(json.dumps({"sweep": current[0], "cells": verbose}), file=sys.stderr)
         return not bad, (f"{n - len(bad) - len(known)}/{n} cells ok"
                          + (f"; KNOWN-FAIL (expected) {' | '.join(known)}" if known else "")
                          + ("; FAILED " + " | ".join(bad) if bad else ""))
 
+    only = {s for s in os.environ.get("MATRIX_PROBE_ONLY", "").split(",") if s}   # dev only
+
     def run(name, fn):
+        if only and name not in only:
+            return                           # a release receipt without every probe is refused
         current[0] = name
         try:
             ok, detail = fn()
@@ -165,7 +200,8 @@ def _probe() -> dict:
     def rnd(shape, dt=mx.float16, s=1.0):
         return (mx.random.normal(shape) * s).astype(dt)
 
-    mx.random.seed(0)
+    seed = int(os.environ.get("MATRIX_PROBE_SEED", "0"))                      # dev only
+    mx.random.seed(seed)
 
     # ─────────────────────────────── block-sparse (V6NAX / scalar, forward / LSE)
     def sparse_ref(q, k, v, bm, bt, scale, causal=False, lse=False):
@@ -226,15 +262,21 @@ def _probe() -> dict:
                 m = m & ((kb * 32) <= ((qi + 1) * 32 - 1))
             kw.update(structured_window_probe=True, structured_window_size=window)
         if kv_valid is not None:
-            kw.update(kv_valid_len=kv_valid)
+            # Eye-dominant mask: rows touching the last key block see few keys, so pad keys
+            # leaking into the softmax move whole rows (the U1 regression) — gated per row,
+            # with the unmasked kernel as a control arm that must fail the gate.
+            m = tail_eye_mask(nb)
             with mx.stream(mx.cpu):                               # keys >= kv_valid do not exist
                 ks_ref, vs_ref = ks[:, :, :kv_valid], vs[:, :, :kv_valid]
             ref = sparse_ref(qs, ks_ref, vs_ref, m, 32, scale, causal)
-        else:
-            ref = sparse_ref(qs, ks, vs, m, 32, scale, causal)
+            o_nax = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="v6nax_sparse",
+                                                  kv_valid_len=kv_valid, **kw)
+            o_ctl = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="v6nax_sparse", **kw)
+            return check_rows(o_nax, ref, 2e-2, control=o_ctl)
+        ref = sparse_ref(qs, ks, vs, m, 32, scale, causal)
         o_nax = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="v6nax_sparse", **kw)
         ok, d = check(o_nax, ref, 2e-2)
-        if window is not None or kv_valid is not None:
+        if window is not None:
             return ok, d
         o_sc = _ext.sparse_attention_forward(qs, ks, vs, m, kernel_version="scalar_fallback",
                                              block_tile=32, causal=causal, scale=scale)
@@ -257,13 +299,18 @@ def _probe() -> dict:
         # 2.63.0 public auto_pad route: non-aligned N=4090 is padded to 4096 and the pad keys
         # masked in-kernel (kv_valid_len); engagement by the dispatch-trace terminal.
         from mlx_mfa import _dispatch_trace as dtr
-        Na = 4090
+        Na, nba = 4090, 128
         qa, ka, va = q[:, :, :Na], k[:, :, :Na], v[:, :, :Na]
-        bma = bm[: (Na + 31) // 32, : (Na + 31) // 32]
+        bma = tail_eye_mask(nba)
         with dtr.capture() as cap:
             o = mlx_mfa.flash_attention_sparse(qa, ka, va, bma, scale=sc, auto_pad=True)
             mx.eval(o)
-        ok, d = check(o, sparse_ref(qa, ka, va, bma, 32, sc), 1e-2)
+        # Control arm = the U1 regression: zero-pad to 4096 WITHOUT masking the pad keys.
+        padw = [(0, 0), (0, 0), (0, 4096 - Na), (0, 0)]
+        ctl = _ext.sparse_attention_forward(mx.pad(qa, padw), mx.pad(ka, padw), mx.pad(va, padw),
+                                            bma, block_tile=32, scale=sc,
+                                            kernel_version="v6nax_sparse")[:, :, :Na]
+        ok, d = check_rows(o, sparse_ref(qa, ka, va, bma, 32, sc), 1e-2, control=ctl)
         engaged = any(b == "v6nax_sparse" for b, _ in cap)
         return ok and engaged and o.shape[2] == Na, f"{d} v6nax_sparse={engaged}"
     cells += [("public_auto_pad_N4090", sparse_auto_pad_public)]
@@ -534,7 +581,7 @@ def _probe() -> dict:
         np.savez(os.environ["MFA_MATRIX_DUMP"], **dump)
     return {"mlx": mx.__version__, "mlx_mfa": mlx_mfa.__version__,
             "build_mlx": _ext._mlx_build_version(), "has_nax": bool(mlx_mfa.has_nax()),
-            "mfa_env": leaked_env, "cells_dumped": len(dump), "results": res}
+            "mfa_env": leaked_env, "cells_dumped": len(dump), "seed": seed, "results": res}
 
 
 # ─────────────────────────────────────────────────────────────────────── driver
