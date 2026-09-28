@@ -140,6 +140,7 @@ def test_steel_sparse_custom_sdpa_backward_leg_is_finite():
 # its cache (a new custom_function per call) and the sanitizer cached arrays by
 # identity: every backward pinned ~268 MB (N=8192) for the last 64 calls.
 import ast as _ast  # noqa: E402
+import gc  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
 import mlx_mfa.attention as _att  # noqa: E402
@@ -184,6 +185,12 @@ def test_sparse_nax_backward_memory_is_flat():
                     .astype(mx.float32).sum(), argnums=(0, 1, 2))(q, k, v)
         mx.eval(*g)
         del g
+        # Deterministic reading: without gc + a GPU sync, buffers of the last
+        # command buffer are freed asynchronously and the reading swings by
+        # +-1 bias (131/256 MB, both signs; flaked ~25%).  Synced: 0 MB 15/15,
+        # and the simulated B1 bug still reads +768 MB (3 x 256 MB).
+        gc.collect()
+        mx.synchronize()
         mx.clear_cache()
         return mx.get_active_memory()
 
