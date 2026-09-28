@@ -3297,7 +3297,7 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
         dQ, dK, dV = _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale, causal)
         # The vjp signature must return one cotangent per primal; block_mask
         # has no gradient (integer/bool, not differentiable).
-        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+        return dQ, dK, dV, mx.zeros_like(block_mask)
 
     return _impl
 
@@ -3360,7 +3360,7 @@ def _make_sparse_nax_padded_vjp(scale: float, causal: bool):
         q, k, v, block_mask = primals
         dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
         dQ, dK, dV = _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale, causal)
-        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+        return dQ, dK, dV, mx.zeros_like(block_mask)
 
     return _impl
 
@@ -3670,7 +3670,7 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
         _, (dQ_sdpa, dK_sdpa, _dV_sdpa) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
 
         # Return: native dV, SDPA-vjp dQ + dK
-        return dQ_sdpa, dK_sdpa, dV_native, mx.zeros((1,), dtype=block_mask.dtype)
+        return dQ_sdpa, dK_sdpa, dV_native, mx.zeros_like(block_mask)
 
     return _impl
 
@@ -3793,7 +3793,7 @@ def _make_v6nax_sparse_full_native_vjp(scale: float, causal: bool, bt: int):
                 f"should have prevented this. See KD-3 in known-debt-v2.50.md."
             )
 
-        return dQ, dK, dV, mx.zeros((1,), dtype=block_mask.dtype)
+        return dQ, dK, dV, mx.zeros_like(block_mask)
 
     return _impl
 
@@ -4293,7 +4293,7 @@ def _make_mfa_sparse_custom(
             dO2 = mx.contiguous(dO)
             mu2 = mx.contiguous(mask_bwd)
             dQ, dK, dV = _sbwd(q2, k2, v2, O2, L2, dO2, mu2, scale, causal)
-            return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
+            return dQ, dK, dV, mx.zeros_like(mask_uint8)  # mask-shaped (NEPB-05 SLA: a (1,) cotangent broke derived masks)
 
         if backward == "sdpa_sparse":
             # C.3: Deprecate in favour of steel_sparse now that C.4 (numpy
@@ -4317,7 +4317,7 @@ def _make_mfa_sparse_custom(
             dQ, dK, dV = _sparse_backward_tiled(
                 q, k, v, O, L, dO, block_mask_np, bq, bk, scale, causal
             )
-            return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
+            return dQ, dK, dV, mx.zeros_like(mask_uint8)  # mask-shaped (NEPB-05 SLA: a (1,) cotangent broke derived masks)
 
         # Dense SDPA backward (correct, no sparsity speedup).
         # Repo review 2026-05: nd helper preserves per-head/per-batch mask
@@ -4342,7 +4342,7 @@ def _make_mfa_sparse_custom(
             return mx.where(row_active, o_, mx.zeros_like(o_))
 
         _, (dQ, dK, dV) = mx.vjp(_sdpa_rows, [q, k, v], [dO])
-        return dQ, dK, dV, mx.zeros((1,), dtype=mask_uint8.dtype)  # G.2: scalar zero
+        return dQ, dK, dV, mx.zeros_like(mask_uint8)  # mask-shaped (NEPB-05 SLA: a (1,) cotangent broke derived masks)
 
     return _impl
 

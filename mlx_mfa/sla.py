@@ -17,8 +17,10 @@ BLKQ/BLKK, RAW pooled QK^T (no softmax/scale), top-k PER Q-block-row. Production
 Scope: NON-CAUSAL MHA (the thu-ml semantics — video DiT is bidirectional); GQA via
 KV-repeat. `causal=True` raises (causal linear attention needs a chunked scan, not
 the O(N)-parallel form thu-ml uses — deferred, no SOT reference). Off-path intact:
-nothing here runs unless `sla_attention` is called. fp16/bf16 compute; selection in
-fp32 for an exact, deterministic block set.
+nothing here runs unless `sla_attention` is called. fp16/bf16 inputs; selection in
+fp32 for an exact, deterministic block set; the linear-term reductions in fp32 (API-05).
+Differentiable w.r.t. q/k/v (review 2026-09, NEPB-05): the top-k selection is
+piecewise constant, so gradients flow through the sparse and linear terms only.
 """
 from __future__ import annotations
 
@@ -85,15 +87,22 @@ _FEATURE_MAPS = {
 
 
 def _linear_term(q: mx.array, k: mx.array, v: mx.array, feature_map: str) -> mx.array:
-    """Linear attention over ALL keys (core.py:104-110), softmax feature map (tied q/k)."""
+    """Linear attention over ALL keys (core.py:104-110), softmax feature map (tied q/k).
+
+    API-05 (review 2026-09): the L-reductions (kv = phi(k)^T v, ksum) ran in the INPUT
+    dtype and overflowed fp16 (inf, no error; threshold ~1/L — at Wan L=144288 a value
+    mean ~0.46 suffices).  They run in fp32 now (the thu-ml SOT uses bf16); the result
+    is returned in the input dtype, so ``proj_l`` sees the same dtype as before.
+    """
     fm = _FEATURE_MAPS[feature_map]
-    fq = fm(q)
-    fk = fm(k)
-    kv = fk.swapaxes(-1, -2) @ v                                # (B,H,D,Dv), contract L
+    q32, k32, v32 = (x.astype(mx.float32) for x in (q, k, v))
+    fq = fm(q32)
+    fk = fm(k32)
+    kv = fk.swapaxes(-1, -2) @ v32                              # (B,H,D,Dv), contract L
     ksum = mx.sum(fk, axis=2, keepdims=True)                    # (B,H,1,D)
     num = fq @ kv                                               # (B,H,L,Dv)
     den = mx.sum(fq * ksum, axis=-1, keepdims=True) + 1e-5      # (B,H,L,1)
-    return num / den
+    return (num / den).astype(q.dtype)
 
 
 def _repeat_kv(x: mx.array, n_rep: int) -> mx.array:

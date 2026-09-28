@@ -245,3 +245,63 @@ def test_sla_nonaligned_L_sampled_rows(L, ratio):
     ref = mx.array(torch.stack(ref_rows, dim=2).numpy())               # [B, H, R, D]
     got = o[:, :, mx.array(rows), :]
     assert_row_gates(got, ref, **_G, label=f"sla L={L} ({len(rows)} rows)")
+
+
+# ===================================================================== API-05 (review 2026-09)
+@pytest.mark.parametrize("dt_", [mx.float16, mx.bfloat16], ids=["f16", "bf16"])
+def test_linear_term_no_fp16_overflow(dt_):
+    """The linear term reduced over L in the INPUT dtype: fp16 overflowed (inf, no error)
+    on an outlier key channel + value mean 5 at L=16384 (threshold ~1/L: Wan L=144288
+    needs only a value mean ~0.46).  Reductions now run in fp32 (the thu-ml SOT uses
+    bf16); the result must be finite and match the fp32 reference."""
+    B, H, L, D = 1, 1, 16384, 64
+    mx.random.seed(7)
+    q = mx.random.normal((B, H, L, D)) * 0.3
+    k = mx.random.normal((B, H, L, D)) * 0.3 + (mx.arange(D) == 0).astype(mx.float32) * 8.0
+    v = mx.random.normal((B, H, L, D)) * 0.3 + 5.0
+    o_l = S._linear_term(q.astype(dt_), k.astype(dt_), v.astype(dt_), "softmax")
+    mx.eval(o_l)
+    ref = _ref_linear(_to_t(q.astype(dt_)), _to_t(k.astype(dt_)), _to_t(v.astype(dt_)), "softmax")
+    tol = dict(max_abs=5e-2, norm_tol=1e-2) if dt_ == mx.float16 else dict(max_abs=1e-1, norm_tol=2e-2)
+    assert_row_gates(o_l, _mx(ref), **tol, label=f"linear term {dt_}")
+
+
+# ===================================================================== NEPB-05 SLA side (review 2026-09)
+@m5only
+@pytest.mark.parametrize("L", [2048, 2050])
+def test_sla_is_differentiable(L):
+    """mx.grad through sla_attention raised "[reshape] Cannot reshape array of size 1":
+    the sparse custom vjps returned a (1,)-shaped cotangent for the block mask, and the
+    SLA mask is DERIVED from q/k (top-k selection), so autograd pushed that malformed
+    cotangent through the selection ops.  Gradients now match an MLX-autograd CPU fp32
+    reference with the (piecewise-constant) selection held fixed."""
+    B, H, D, ratio = 1, 2, 64, 0.25
+    q, k, v = _mk(B, H, L, D, seed=L)
+    mx.random.seed(L + 1)
+    g = mx.random.normal((B, H, L, D)).astype(mx.float32)
+    with dt.capture() as cap:
+        grads = mx.grad(lambda a, b, c: (S.sla_attention(a, b, c, topk_ratio=ratio)
+                                         .astype(mx.float32) * g).sum(), argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+    # which-binary: the default V6NAX wrapper (aligned) / the auto_pad wrapper (L=2050)
+    want = "sparse_attention_nax" if L % 32 == 0 else "auto_pad"
+    assert any(r[0] == "v6nax_sparse" and want in r[1] for r in cap), [r[:2] for r in cap]
+    sm = S._sla_block_map(q, k, ratio, 128, 64)
+    mx.eval(sm)
+    with mx.stream(mx.cpu):
+        tok = mx.repeat(mx.repeat(sm, 128, axis=-2), 64, axis=-1)[..., :L, :L]
+
+        def ref(a, b, c):
+            s = mx.where(tok, (a @ mx.swapaxes(b, -1, -2)) * D ** -0.5, float("-inf"))
+            p = mx.softmax(s, axis=-1)
+            o_s = mx.where(mx.any(tok, axis=-1, keepdims=True), p @ c, 0.0)
+            fa, fb = mx.softmax(a, axis=-1), mx.softmax(b, axis=-1)
+            o_l = (fa @ (mx.swapaxes(fb, -1, -2) @ c)) / (
+                mx.sum(fa * mx.sum(fb, axis=2, keepdims=True), axis=-1, keepdims=True) + 1e-5)
+            return ((o_s + o_l) * g).sum()
+        rg = mx.grad(ref, argnums=(0, 1, 2))(*(x.astype(mx.float32) for x in (q, k, v)))
+        mx.eval(*rg)
+    for name, x, y in zip(("dQ", "dK", "dV"), grads, rg):
+        assert bool(mx.all(mx.isfinite(x)).item()), name
+        rel = float(mx.max(mx.abs(x.astype(mx.float32) - y))) / float(mx.max(mx.abs(y)))
+        assert rel < 2e-2, (name, rel)
