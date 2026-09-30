@@ -361,6 +361,114 @@ def _load_calibrated_tiles() -> tuple:
     return rows
 
 
+def perm_floor(samples) -> float:
+    """The contract's noise floor F_perm (devnotes/dispatch_table_design.md): the 95th
+    percentile of |median(A)/median(B) - 1| over every 5+5 split of 10 same-arm samples."""
+    import itertools
+    import statistics
+    xs = list(samples)
+    if len(xs) != 10:
+        raise ValueError(f"perm_floor needs exactly 10 same-arm samples, got {len(xs)}")
+    ms = []
+    for a in itertools.combinations(range(10), 5):
+        A = [xs[i] for i in a]
+        Bs = [xs[i] for i in range(10) if i not in a]
+        ms.append(abs(statistics.median(A) / statistics.median(Bs) - 1.0))
+    ms.sort()
+    return ms[int(math.ceil(0.95 * len(ms))) - 1]
+
+
+def decide_prior_row(prior: DenseTileRow, points: dict,
+                     factor: float = DENSE_TILE_GUARD_FACTOR) -> Optional[DenseTileRow]:
+    """A3 promotion rule, pure (no device): ``points`` maps N -> (sdpa_samples,
+    tile_samples), 10 samples each, measured on THIS device.  The row floor is the
+    largest per-point F_perm (conservative); a point passes when its margin
+    median(sdpa)/median(tile) - 1 >= factor*floor; the row is the longest contiguous
+    run of passing points (ties -> the lower N), so its edges are measured and every
+    in-band point passes — `dense_tile_row_passes_guard` holds by construction."""
+    import statistics
+    ns = sorted(points)
+    floor = max(perm_floor(points[n][0]) for n in ns)
+    margins = {n: statistics.median(points[n][0]) / statistics.median(points[n][1]) - 1.0
+               for n in ns}
+    best, run = [], []
+    for n in ns:
+        run = run + [n] if margins[n] >= factor * floor else []
+        if len(run) > len(best):
+            best = run
+    if not best:
+        return None
+    row = DenseTileRow(prior.D, prior.dtype, prior.bh, best[0], best[-1], prior.tile,
+                       round(floor, 6),
+                       tuple((n, round(margins[n], 6)) for n in ns),
+                       "calibrate_dispatch (on-device, solo-in-process, 10/arm)")
+    return row if dense_tile_row_passes_guard(row, factor) else None
+
+
+def _prior_points(prior: DenseTileRow, step: int = 1024) -> list:
+    """Edges + interior multiples of ``step`` (the measured points of a prior band)."""
+    pts = {prior.n_lo, prior.n_hi}
+    n = (prior.n_lo // step + 1) * step
+    while n < prior.n_hi:
+        pts.add(n)
+        n += step * max(1, (prior.n_hi - prior.n_lo) // (4 * step))
+    return sorted(pts)
+
+
+def calibrate_dense_tile_priors(priors=None, *, samples: int = 10,
+                                target_ms: float = 40.0, verbose: bool = True) -> list:
+    """Measure each DENSE_TILE_PRIORS entry against SDPA on this device and return the
+    promoted rows (dicts for ``dense_nax_tiles``).  Arms interleaved per round, order
+    alternating; each sample loops the call to >= ``target_ms``.  M5+ NAX only."""
+    import time
+    from mlx_mfa import _ext
+    from mlx_mfa.attention import _get_has_nax_cached
+    if not _get_has_nax_cached():
+        return []
+    if samples != 10:
+        raise ValueError("the contract's floor (F_perm) is defined on 10 samples per arm")
+    priors = DENSE_TILE_PRIORS if priors is None else priors
+    dts = {"float16": mx.float16, "bfloat16": mx.bfloat16}
+
+    def _timed(fn, reps):
+        mx.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            mx.eval(fn())
+        mx.synchronize()
+        return (time.perf_counter() - t0) * 1e3 / reps
+
+    out = []
+    for p in priors:
+        pts = {}
+        for N in _prior_points(p):
+            mx.random.seed(0)
+            q, k, v = (mx.random.normal((1, p.bh, N, p.D)).astype(dts[p.dtype])
+                       for _ in range(3))
+            mx.eval(q, k, v)
+            sc = 1.0 / math.sqrt(p.D)
+            arms = {
+                "sdpa": lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=sc),
+                "tile": lambda: _ext.v6_nax_forward(q, k, v, False, True, sc, *p.tile)[0],
+            }
+            for f in arms.values():
+                mx.eval(f())
+            reps = max(1, math.ceil(target_ms / max(_timed(arms["sdpa"], 1), 1e-3)))
+            got = {"sdpa": [], "tile": []}
+            for i in range(samples):
+                for a in (("sdpa", "tile") if i % 2 == 0 else ("tile", "sdpa")):
+                    got[a].append(_timed(arms[a], reps))
+            pts[N] = (got["sdpa"], got["tile"])
+        row = decide_prior_row(p, pts)
+        if verbose:
+            print(f"  prior {p.row_id}: " + ("PROMOTED " + row.row_id if row else "not promoted"))
+        if row is not None:
+            out.append({"D": row.D, "dtype": row.dtype, "bh": row.bh, "n_lo": row.n_lo,
+                        "n_hi": row.n_hi, "tile": list(row.tile), "floor": row.floor,
+                        "evidence": [list(e) for e in row.evidence], "source": row.source})
+    return out
+
+
 def dense_nax_tile_row(D: int, dtype, B: int, H: int, N: int,
                        causal: bool) -> Optional[DenseTileRow]:
     """The static (then calibrated) tile row covering this dense call, else None.
@@ -1073,6 +1181,7 @@ def calibrate_dispatch(
     n_iters: int = 20,
     calibrate_kernel_configs: bool = True,
     calibrate_splitk: bool = True,
+    calibrate_dense_tiles: bool = True,
 ) -> dict[tuple[int, bool], int]:
     """Run micro-benchmarks to find optimal MFA/SDPA crossover points.
 
@@ -1096,6 +1205,11 @@ def calibrate_dispatch(
         the optimal BK to ``kernel_configs.d128_optimal_bk`` in the JSON.
         BK=64 is chosen only if it wins at BOTH N=4096 and N=8192 (i.e.,
         BK=64 time < 0.95 × BK=32 time at both points).
+    calibrate_dense_tiles : bool
+        2.64 A3.  When True (default) on M5+ NAX, measure each
+        ``DENSE_TILE_PRIORS`` entry (dense NAX tile vs SDPA) on this device and save
+        the rows that pass the 2x-floor guard to ``dense_nax_tiles``; activated by
+        ``MLX_MFA_DISPATCH_TABLE``.  Priors are never defaults.
     calibrate_splitk : bool
         When True (default), benchmark V2 split-K on/off for representative
         production families (D=64/128, causal dense, causal+ALiBi,
@@ -1311,6 +1425,12 @@ def calibrate_dispatch(
                     f"W={int(has_window)}: {max_n}"
                 )
 
+    # ── 2.64 A3: dense NAX tile priors (on-device, 2x-floor guard) ────────────
+    dense_tiles: list = []
+    if calibrate_dense_tiles:
+        print("Calibrating dense NAX tile priors (vs SDPA, 2x-floor guard)...")
+        dense_tiles = calibrate_dense_tile_priors()
+
     # ── Save ─────────────────────────────────────────────────────────────────
     if save_path is None:
         save_path = os.path.expanduser("~/.mlx_mfa/dispatch_table.json")
@@ -1324,6 +1444,8 @@ def calibrate_dispatch(
         payload["kernel_configs"] = kernel_configs
     if splitk_thresholds:
         payload["splitk_thresholds"] = splitk_thresholds
+    if dense_tiles:
+        payload["dense_nax_tiles"] = dense_tiles
     with open(save_path, "w") as fh:
         json.dump(payload, fh, indent=2)
     print(f"\nSaved dispatch table -> {save_path}")
