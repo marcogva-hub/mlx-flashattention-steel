@@ -1,15 +1,16 @@
-"""Dense D=128 NAX routing-threshold lock (research/nax-routing-threshold-m5, M5 Max, 2026-06-18).
+"""Dense D=128 NAX routing-threshold lock (research/nax-routing-threshold-m5, M5 Max, 2026-06-18;
+re-scoped 2.64 D1, 2026-10-01).
 
-Tier-2 #1: the dense D=128 forward auto-routes to the NAX matmul2d kernel (F-2), but at small
-N Apple's SDPA is faster — a localized regression.  Measured crossover (3-session §AA.4, absolute
-ms): N<2048 SDPA robustly wins (N=512: 16-36%; N=1024: 3-17%); N>=2048 parity-to-NAX-win.  The
-crossover is governed by N (sequence length) alone (equal N*B*H → opposite winners), so the gate
-is `q.shape[2] >= _V6_DENSE_MIN_N_DEFAULT` (=2048).
+2.64 D1: dense D=128 `auto` DELEGATES to SDPA by default (production evidence: the NAX route ran
+on 10/10 production D=128 shapes, 5-11 % slower on 5/10 — devnotes/production_shapes_2026-10.md).
+The 2.63 NAX route stays reachable behind the explicit knob `MFA_ENABLE_V6_DENSE=1`, and the
+measured crossover `_V6_DENSE_MIN_N_DEFAULT` (=2048: N<2048 SDPA robustly wins) is now the
+threshold OF THAT KNOB.  Measured tile-table rows (dispatch_policy.DENSE_TILE_TABLE) are locked by
+tests/test_264_dense_delegation.py; the shapes here (B*H=8) have no table row.
 
 These locks assert the BINARY that runs (Lesson #14 — fingerprint, not flaky ms): byteΔ vs the
-forced-SDPA path is 0.0 when SDPA runs and ~1e-6 when the NAX kernel runs.  A drift that reroutes
-small-N back to NAX (re-introducing the regression) or large-N to SDPA (losing the win) FAILS here.
-keep-all-paths: `MFA_V6_DENSE_MIN_N=0` forces NAX at all N (the pre-threshold path) and is locked.
+forced-SDPA path is 0.0 when SDPA runs and ~1e-6 when the NAX kernel runs.
+keep-all-paths: `MFA_ENABLE_V6_DENSE=1 MFA_V6_DENSE_MIN_N=0` forces NAX at all N and is locked.
 """
 from __future__ import annotations
 import os
@@ -48,32 +49,47 @@ def test_threshold_constant_is_2048():
     assert _V6_DENSE_MIN_N_DEFAULT == 2048
 
 
+@pytest.fixture(autouse=True)
+def _clean_dense_env():
+    for k in ("MFA_V6_DENSE_MIN_N", "MFA_ENABLE_V6_DENSE", "MFA_DISABLE_V6_DENSE"):
+        os.environ.pop(k, None)
+    yield
+    for k in ("MFA_V6_DENSE_MIN_N", "MFA_ENABLE_V6_DENSE", "MFA_DISABLE_V6_DENSE"):
+        os.environ.pop(k, None)
+
+
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
+@pytest.mark.parametrize("N", [512, 1024, 2048, 4096])
+def test_default_routes_sdpa(N, dtype):
+    """2.64 D1: without the knob, D=128 dense auto is SDPA at every N (no table row at B*H=8)."""
+    route, _ = _routed_kernel(N, dtype)
+    assert route == "SDPA", f"N={N} {dtype} routed {route}; expected SDPA (2.64 default delegation)"
+
+
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize("N", [512, 1024])
-def test_small_N_routes_sdpa(N, dtype):
-    """N<2048: regression zone → must route SDPA (NOT the NAX kernel)."""
-    os.environ.pop("MFA_V6_DENSE_MIN_N", None)
+def test_knob_small_N_routes_sdpa(N, dtype):
+    """MFA_ENABLE_V6_DENSE=1, N<2048: the measured regression zone stays SDPA under the knob."""
+    os.environ["MFA_ENABLE_V6_DENSE"] = "1"
     route, _ = _routed_kernel(N, dtype)
-    assert route == "SDPA", f"N={N} {dtype} routed {route}; expected SDPA (small-N regression zone)"
+    assert route == "SDPA", f"N={N} {dtype} routed {route}; expected SDPA below the knob threshold"
 
 
 @pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
 @pytest.mark.parametrize("N", [2048, 4096])
-def test_large_N_routes_nax(N, dtype):
-    """N>=2048: NAX is parity-to-win → must keep routing the NAX kernel (win preserved)."""
-    os.environ.pop("MFA_V6_DENSE_MIN_N", None)
+def test_knob_large_N_routes_nax(N, dtype):
+    """MFA_ENABLE_V6_DENSE=1, N>=2048: the explicit NAX dense route (the 2.63 behaviour)."""
+    os.environ["MFA_ENABLE_V6_DENSE"] = "1"
     route, _ = _routed_kernel(N, dtype)
-    assert route == "NAX", f"N={N} {dtype} routed {route}; expected NAX (win zone)"
+    assert route == "NAX", f"N={N} {dtype} routed {route}; expected NAX under MFA_ENABLE_V6_DENSE=1"
 
 
 def test_force_env_keeps_nax_reachable_below_threshold():
-    """keep-all-paths: MFA_V6_DENSE_MIN_N=0 forces NAX at all N (pre-threshold path stays reachable)."""
+    """keep-all-paths: MFA_ENABLE_V6_DENSE=1 + MFA_V6_DENSE_MIN_N=0 forces NAX at all N."""
+    os.environ["MFA_ENABLE_V6_DENSE"] = "1"
     os.environ["MFA_V6_DENSE_MIN_N"] = "0"
-    try:
-        route, _ = _routed_kernel(1024)
-        assert route == "NAX", "MFA_V6_DENSE_MIN_N=0 did not force NAX at N=1024 (keep-all-paths broken)"
-    finally:
-        os.environ.pop("MFA_V6_DENSE_MIN_N", None)
+    route, _ = _routed_kernel(1024)
+    assert route == "NAX", "MFA_ENABLE_V6_DENSE=1 MFA_V6_DENSE_MIN_N=0 did not force NAX at N=1024"
 
 
 @pytest.mark.parametrize("N", [1024, 2048])

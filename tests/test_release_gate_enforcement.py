@@ -49,7 +49,9 @@ def _read(p: Path) -> str:
 # 83 -> 84: added tests/test_sparse_extended_hardening.py (RC 2.63.0 decisions D1-D5:
 # SLA M5-only default, strict opt-in knobs, shared opt-in rules on both entry points).
 # M5 surface still covered.
-_EXPECTED_M5_SKIP_SITES = 84
+# 84 -> 85: added tests/test_264_dense_delegation.py (2.64 D1/A2/A4: dense D=128 auto
+# delegates to SDPA byte-identically, measured tile table, truthful terminal log).
+_EXPECTED_M5_SKIP_SITES = 85
 
 
 def _count_m5_skip_sites() -> int:

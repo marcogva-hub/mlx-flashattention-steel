@@ -57,7 +57,8 @@ std::string v6_nax_dt_compile(int head_dim, int Hq, int Hk, int dtype_code);
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, bool causal, bool force_v6nax = false,
-    float scale = -1.0f);
+    float scale = -1.0f, unsigned short nax_bq = 0, unsigned short nax_bk = 0,
+    uint16_t nax_wm = 0);
 std::pair<mlx::core::array, mlx::core::array> v6_nax_varlen_forward(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, const mlx::core::array& cu_q,
@@ -618,13 +619,16 @@ NB_MODULE(_ext, m) {
   m.def("v6_nax_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,
            const mlx::core::array& v, bool causal, bool force_v6nax,
-           float scale) {
-          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v6nax, scale);
+           float scale, unsigned short nax_bq, unsigned short nax_bk,
+           uint16_t nax_wm) {
+          return mlx_mfa::v6_nax_forward(q, k, v, causal, force_v6nax, scale,
+                                         nax_bq, nax_bk, nax_wm);
         },
         nb::arg("q"), nb::arg("k"), nb::arg("v"),
         nb::arg("causal") = false,
         nb::arg("force_v6nax") = false,
         nb::arg("scale") = -1.0f,
+        nb::arg("nax_bq") = 0, nb::arg("nax_bk") = 0, nb::arg("nax_wm") = 0,
         "V6 NAX forward attention. Returns (O, L). M5+ only; D in {64,128}; "
         "D=256 is an expert-only sub-tiling prototype requiring force_v6nax=True; FP16/BF16. "
         "v2.37.0: force_v6nax=True overrides default routing to ensure V6NAX forward "
@@ -633,7 +637,10 @@ NB_MODULE(_ext, m) {
         "produces a distinct cached pipeline. scale=-1.0 (the default) is the 'use "
         "1/sqrt(D)' sentinel; any OTHER non-positive or non-finite scale RAISES "
         "(value-semantics fix — a non-positive scale was silently defaulting). Pass a "
-        "finite positive scale, or -1.0 / omit for the default.");
+        "finite positive scale, or -1.0 / omit for the default. "
+        "2.64: nax_bq/nax_bk/nax_wm (all 0 = default/expert-env tiles) select an "
+        "explicit NAX tile triple per call — atomic (all nonzero or all zero), keyed "
+        "into the pipeline cache; used by the dense dispatch table.");
 
   m.def("v6_nax_varlen_forward",
         [](const mlx::core::array& q, const mlx::core::array& k,

@@ -29,7 +29,8 @@ load-time-only.
 | `MFA_DISABLE_AUTO_HOOKS` | bool, `0` | Do not install transparent MLX hooks during import. |
 | `MFA_DISABLE_GNA_NATIVE` | bool, `0` | Send public GNA calls to the non-native fallback path. |
 | `MFA_DISABLE_ROPE_NAX` | bool, `0` | Disable the fused RoPE NAX experiment. |
-| `MFA_DISABLE_V6_DENSE` | bool, `0` | Disable automatic dense V6 NAX forward selection. |
+| `MFA_DISABLE_V6_DENSE` | bool, `0` | Never select the dense V6 NAX forward: D=128 dense `auto` is SDPA everywhere, tile-table rows included. Wins over `MFA_ENABLE_V6_DENSE`. |
+| `MFA_ENABLE_V6_DENSE` | bool, `0` | **2.64:** explicit dense D=128 V6 NAX forward (the 2.63 `auto` route, default tile) at N >= `MFA_V6_DENSE_MIN_N` (2048). Off, D=128 dense `auto` delegates to SDPA byte-identically except the measured tile-table rows (`dispatch_policy.DENSE_TILE_TABLE`). |
 | `MFA_DISABLE_V6_BACKWARD` | bool, `0` | Disable default D64 V6 backward selection. |
 | `MFA_ENABLE_V6_BACKWARD` | bool, `0` | Allow the D128 V6 backward research envelope. |
 | `MFA_V6_BWD_SPARSE_NATIVE` | bool, `0` | Request the full-native sparse backward orchestration. |

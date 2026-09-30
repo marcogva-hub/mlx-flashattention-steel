@@ -37,6 +37,7 @@ import json
 import math
 import os
 import warnings
+from dataclasses import dataclass
 from typing import Optional
 
 import mlx.core as mx
@@ -174,6 +175,15 @@ _M5_NAX_DECODE_EDGE_ENVELOPES: dict[int, tuple[int, frozenset[int]]] = {
 }
 
 _verbose: bool = bool(get_bool_env("MLX_MFA_VERBOSE_DISPATCH"))
+from mlx_mfa import _dispatch_trace as _dtrace_mod  # noqa: E402  (imports nothing back)
+_dtrace_mod.set_print_terminals(_verbose)
+
+
+def _set_verbose(flag: bool) -> None:
+    """Toggle verbose dispatch logging at runtime (policy lines + terminal lines)."""
+    global _verbose
+    _verbose = bool(flag)
+    _dtrace_mod.set_print_terminals(_verbose)
 
 # Native STEEL backward policy (targeted, benchmark-backed only).
 # 2026-03-12 targeted pass on M1 Max found 0/16 winning configs for:
@@ -208,6 +218,161 @@ def _dispatch_dtype_key(dtype) -> Optional[str]:
         return "float16"
     if dtype_str in {"bfloat16", "mlx.core.bfloat16"}:
         return "bfloat16"
+    return None
+
+
+# ── 2.64 A2/A3: dense D=128 NAX tile exceptions to the SDPA default ──────────────
+# 2.64 D1: dense D=128 `auto` delegates to SDPA (byte-identical).  A row below is the
+# ONLY way auto keeps the NAX dense kernel, with an explicit tile.  Rule (Marco
+# 2026-10-01, the written contract in devnotes/dispatch_table_design.md): a row enters
+# only if its margin against the NEW default (SDPA) is >= 2x the class noise floor at
+# EVERY measured point inside its band; the band is closed [n_lo, n_hi] with both
+# edges measured, placed on the conservative side (an ambiguous N belongs to the
+# default); keys are exact (no interpolation across dtype or B*H).  The guard is
+# applied numerically when the table is built — a candidate whose own evidence fails
+# it is visible here and rejected, not silently dropped.
+# Evidence: DAY-3 Block 2 bands (runs A+B) re-measured vs SDPA, solo contract (fresh
+# process per arm, 5/arm, interleaved, cold start), M5 Max, macOS 27.2, MLX 0.31.2,
+# mlx-mfa 2.63.0 kernels, 2026-10-01 (benchmarks/results/production_shapes_20261001/
+# tile_vs_sdpa/; research/production-shapes@02c42fb).  Floors = DAY-3 run-B F_perm.
+# NB: BQ/WM regroup query rows only — per-row arithmetic is unchanged, so a table
+# tile is byte-identical to the default NAX tile; it changes occupancy, i.e. speed.
+@dataclass(frozen=True)
+class DenseTileRow:
+    """One (D, dtype, B*H, N-band) -> NAX tile exception to the SDPA default."""
+    D: int
+    dtype: str                 # "float16" | "bfloat16"
+    bh: int                    # B*H, exact
+    n_lo: int                  # closed band; both edges are measured points
+    n_hi: int
+    tile: tuple                # (BQ, BK, WM)
+    floor: float               # class noise floor (fraction)
+    evidence: tuple            # ((N, margin vs SDPA), ...); margin = t_sdpa / t_tile - 1
+    source: str
+
+    @property
+    def row_id(self) -> str:
+        bq, bk, wm = self.tile
+        return (f"{bq}.{bk}.{wm} D{self.D} {self.dtype} BH{self.bh} "
+                f"N[{self.n_lo},{self.n_hi}]")
+
+
+DENSE_TILE_GUARD_FACTOR = 2.0
+
+
+def dense_tile_row_passes_guard(row: DenseTileRow,
+                                factor: float = DENSE_TILE_GUARD_FACTOR) -> bool:
+    """The 2x-floor guard: both band edges measured, every in-band point >= factor*floor."""
+    measured = {n for n, _ in row.evidence}
+    inband = [m for n, m in row.evidence if row.n_lo <= n <= row.n_hi]
+    return (row.n_lo in measured and row.n_hi in measured and bool(inband)
+            and all(m >= factor * row.floor for m in inband))
+
+
+_TVS = "tile_vs_sdpa 2026-10-01 (DAY-3 band re-measured vs SDPA, solo, 5/arm)"
+_F_BH16, _F_BH12, _F_BH4 = 0.0049, 0.0019, 0.0114     # DAY-3 run-B F_perm, D128 classes
+DENSE_TILE_CANDIDATES: tuple = (
+    DenseTileRow(128, "float16", 16, 2048, 4096, (32, 32, 2), _F_BH16,
+                 ((2048, 0.0159), (3072, 0.0994), (4096, 0.0752)), _TVS),
+    DenseTileRow(128, "float16", 12, 2048, 4096, (32, 32, 2), _F_BH12,
+                 ((2048, 0.0384), (3072, 0.0875), (4096, 0.1090)), _TVS),
+    # fp16 B1H4: N2048 wins (+8.9 %) but N3072 LOSES (-16.7 %) -> the band is the
+    # contiguous win containing the N4096 anchor, i.e. N4096 alone.
+    DenseTileRow(128, "float16", 4, 4096, 4096, (32, 32, 2), _F_BH4,
+                 ((2048, 0.0885), (3072, -0.1670), (4096, 0.1064)), _TVS),
+    DenseTileRow(128, "bfloat16", 16, 2048, 4096, (32, 32, 2), _F_BH16,
+                 ((2048, 0.0173), (3072, 0.0933), (4096, 0.0726)), _TVS),
+    DenseTileRow(128, "bfloat16", 12, 2048, 4096, (32, 32, 2), _F_BH12,
+                 ((2048, 0.0392), (3072, 0.0816), (4096, 0.1113)), _TVS),
+    DenseTileRow(128, "bfloat16", 4, 4096, 4608, (32, 32, 2), _F_BH4,
+                 ((4096, 0.1065), (4608, 0.1226)), _TVS),
+    # 128.32.8 fp16 B2H8: +1.1..+1.7 % over the OLD default (NAX tile 64.32.4, DAY-3),
+    # but it LOSES to the new default (SDPA) -> rejected by the guard ("le chiffre décide").
+    DenseTileRow(128, "float16", 16, 24576, 32768, (128, 32, 8), _F_BH16,
+                 ((24576, -0.0545), (32768, -0.0419)), _TVS),
+)
+DENSE_TILE_TABLE: tuple = tuple(r for r in DENSE_TILE_CANDIDATES
+                                if dense_tile_row_passes_guard(r))
+
+# A3: on-device calibration PRIORS — never defaults.  `calibrate_dispatch` measures
+# each prior against SDPA on the user's machine and writes a row into
+# ``dense_nax_tiles`` of ~/.mlx_mfa/dispatch_table.json ONLY when it passes the same
+# 2x-floor guard; `MLX_MFA_DISPATCH_TABLE` then activates it.  A calibrated row must
+# lie inside a prior (same D, dtype, B*H, tile; band within the prior band).
+# Sources: DAY-3 A-vs-B (devnotes/day3_20260930_AvsB.md) — the second 32.32.2 zone
+# (recurring islands N6144-8192), 128.32.8 B1H12 (run B only), 64.32.4 D64 (run B only).
+DENSE_TILE_PRIORS: tuple = (
+    *(DenseTileRow(128, dt_, bh, 6144, 8192, (32, 32, 2), 0.0, (), "DAY-3 second zone")
+      for dt_ in ("float16", "bfloat16") for bh in (4, 12, 16)),
+    DenseTileRow(128, "float16", 12, 24064, 32768, (128, 32, 8), 0.0, (), "DAY-3 run B"),
+    DenseTileRow(64, "bfloat16", 12, 13312, 17408, (64, 32, 4), 0.0, (), "DAY-3 run B"),
+    DenseTileRow(64, "float16", 12, 11776, 16384, (64, 32, 4), 0.0, (), "DAY-3 run B"),
+)
+
+_calibrated_tiles: tuple = ()
+_calibrated_tiles_key: tuple = ("", None)
+
+
+def _row_from_json(e: dict) -> DenseTileRow:
+    return DenseTileRow(int(e["D"]), str(e["dtype"]), int(e["bh"]), int(e["n_lo"]),
+                        int(e["n_hi"]), tuple(int(x) for x in e["tile"]),
+                        float(e["floor"]),
+                        tuple((int(n), float(m)) for n, m in e["evidence"]),
+                        str(e.get("source", "calibrate_dispatch")))
+
+
+def _inside_prior(row: DenseTileRow) -> bool:
+    return any(p.D == row.D and p.dtype == row.dtype and p.bh == row.bh
+               and p.tile == row.tile and p.n_lo <= row.n_lo <= row.n_hi <= p.n_hi
+               for p in DENSE_TILE_PRIORS)
+
+
+def _load_calibrated_tiles() -> tuple:
+    """``dense_nax_tiles`` rows of the MLX_MFA_DISPATCH_TABLE file (path+mtime cached).
+
+    Rule 8: a row outside every prior, or one whose own evidence fails the 2x-floor
+    guard, is a corrupted / hand-edited table — refused loudly, never applied."""
+    global _calibrated_tiles, _calibrated_tiles_key
+    path = os.environ.get("MLX_MFA_DISPATCH_TABLE", "")
+    mtime = None
+    if path:
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime = None
+    if (path, mtime) == _calibrated_tiles_key:
+        return _calibrated_tiles
+    rows: tuple = ()
+    if path and mtime is not None:
+        with open(path) as fh:
+            data = json.load(fh)
+        parsed = tuple(_row_from_json(e) for e in data.get("dense_nax_tiles", []))
+        for r in parsed:
+            if not _inside_prior(r):
+                raise ValueError(
+                    f"{path}: dense_nax_tiles row {r.row_id} lies outside every "
+                    f"DENSE_TILE_PRIORS entry — only calibrated priors may be promoted")
+            if not dense_tile_row_passes_guard(r):
+                raise ValueError(
+                    f"{path}: dense_nax_tiles row {r.row_id} fails the "
+                    f"{DENSE_TILE_GUARD_FACTOR:g}x-floor guard on its own evidence")
+        rows = parsed
+    _calibrated_tiles, _calibrated_tiles_key = rows, (path, mtime)
+    return rows
+
+
+def dense_nax_tile_row(D: int, dtype, B: int, H: int, N: int,
+                       causal: bool) -> Optional[DenseTileRow]:
+    """The static (then calibrated) tile row covering this dense call, else None.
+
+    Non-causal only (every measured band is non-causal)."""
+    if causal:
+        return None
+    key = _dispatch_dtype_key(dtype)
+    bh = int(B) * int(H)
+    for r in DENSE_TILE_TABLE + _load_calibrated_tiles():
+        if r.D == D and r.dtype == key and r.bh == bh and r.n_lo <= N <= r.n_hi:
+            return r
     return None
 
 
@@ -407,9 +572,9 @@ def _load_custom_table() -> Optional[dict[tuple[int, bool], int]]:
             table[key] = int(entry["min_N"])
         _custom_thresholds = table
         if _verbose:
-            print(f"[MFA dispatch] loaded custom table: {path}")
+            print(f"[MFA dispatch] policy: loaded custom table: {path}")
     except Exception as exc:  # noqa: BLE001
-        print(f"[MFA dispatch] WARNING: failed to load {path!r}: {exc}")
+        print(f"[MFA dispatch] policy: WARNING: failed to load {path!r}: {exc}")
     return _custom_thresholds
 
 
@@ -559,18 +724,18 @@ def should_use_mfa(
     """
     if backend == "mfa":
         if _verbose:
-            print(f"[MFA dispatch] backend=mfa forced -> MFA")
+            print(f"[MFA dispatch] policy: backend=mfa forced -> MFA")
         return True
     if backend == "sdpa":
         if _verbose:
-            print(f"[MFA dispatch] backend=sdpa forced -> SDPA")
+            print(f"[MFA dispatch] policy: backend=sdpa forced -> SDPA")
         return False
 
     # v2.32.0 — explicit SDPA-routing overrides (highest priority after backend=).
     force_sdpa = get_bool_env("MFA_FORCE_SDPA_ROUTE", default=None)
     if force_sdpa is True:
         if _verbose:
-            print(f"[MFA dispatch] MFA_FORCE_SDPA_ROUTE=1 -> SDPA")
+            print(f"[MFA dispatch] policy: MFA_FORCE_SDPA_ROUTE=1 -> SDPA")
         return False
     disable_sdpa = get_bool_env("MFA_DISABLE_SDPA_ROUTE", default=None)
     if disable_sdpa is True:
@@ -578,7 +743,7 @@ def should_use_mfa(
         # M3+/legacy thresholds. Mainly for benchmarking / regression checks.
         has_nax = False
         if _verbose:
-            print(f"[MFA dispatch] MFA_DISABLE_SDPA_ROUTE=1 -> falling through to legacy thresholds")
+            print(f"[MFA dispatch] policy: MFA_DISABLE_SDPA_ROUTE=1 -> falling through to legacy thresholds")
 
     # Sliding-window and block-sparse ALWAYS use MFA: tile-skip guarantees speedup.
     # window_size=(left, right): MFA when either dimension is set (>=0).
@@ -588,11 +753,11 @@ def should_use_mfa(
         right = window_size[1] if len(window_size) > 1 else -1
         if left >= 0 or right >= 0:
             if _verbose:
-                print(f"[MFA dispatch] window={window_size} -> MFA (windowed)")
+                print(f"[MFA dispatch] policy: window={window_size} -> MFA (windowed)")
             return True
     if sparse:
         if _verbose:
-            print(f"[MFA dispatch] sparse -> MFA (tile-skip)")
+            print(f"[MFA dispatch] policy: sparse -> MFA (tile-skip)")
         return True
 
     _kv_len = kv_seq_len if kv_seq_len is not None else seq_len
@@ -609,7 +774,7 @@ def should_use_mfa(
     ):
         if _verbose:
             print(
-                "[MFA dispatch] M5+ decode edge: "
+                "[MFA dispatch] policy: M5+ decode edge: "
                 f"qL={seq_len} kL={_kv_len} D={head_dim} "
                 f"GQA={num_q_heads // num_kv_heads} -> MFA"
             )
@@ -619,7 +784,7 @@ def should_use_mfa(
     if forced_d256 is not None:
         if _verbose:
             print(
-                f"[MFA dispatch] D=256 force override MFA_FORCE_D256_PATH "
+                f"[MFA dispatch] policy: D=256 force override MFA_FORCE_D256_PATH "
                 f"-> {'MFA' if forced_d256 else 'SDPA'}"
             )
         return forced_d256
@@ -628,7 +793,7 @@ def should_use_mfa(
     if forced_d512 is not None:
         if _verbose:
             print(
-                f"[MFA dispatch] D=512 force override MFA_FORCE_D512_PATH "
+                f"[MFA dispatch] policy: D=512 force override MFA_FORCE_D512_PATH "
                 f"-> {'MFA' if forced_d512 else 'SDPA'}"
             )
         return forced_d512
@@ -649,7 +814,7 @@ def should_use_mfa(
         if _kv_len <= 512 and seq_len > 8192:
             if _verbose:
                 print(
-                    f"[MFA dispatch] cross-attn small KV: N_q={seq_len} "
+                    f"[MFA dispatch] policy: cross-attn small KV: N_q={seq_len} "
                     f"N_kv={_kv_len} -> SDPA (few K-tiles, tile overhead dominates)"
                 )
             return False
@@ -664,14 +829,14 @@ def should_use_mfa(
             if has_nax and seq_len <= 16:
                 if _verbose:
                     print(
-                        f"[MFA dispatch] M5+ NAX decode pattern: N_q={seq_len} "
+                        f"[MFA dispatch] policy: M5+ NAX decode pattern: N_q={seq_len} "
                         f"N_kv={_kv_len} -> falling through to NAX SDPA route"
                     )
                 # Fall through to the has_nax block below.
             else:
                 if _verbose:
                     print(
-                        f"[MFA dispatch] cross-attn large KV: N_q={seq_len} "
+                        f"[MFA dispatch] policy: cross-attn large KV: N_q={seq_len} "
                         f"N_kv={_kv_len} -> MFA (few Q-tiles, flash attention wins)"
                     )
                 return True
@@ -698,7 +863,7 @@ def should_use_mfa(
         # call it here.
         if head_dim in (64, 128):
             if _verbose:
-                print(f"[MFA dispatch] M5+ NAX canonical D={head_dim} N={seq_len} causal={causal} -> SDPA (Apple's steel_attention_nax.h is optimal)")
+                print(f"[MFA dispatch] policy: M5+ NAX canonical D={head_dim} N={seq_len} causal={causal} -> SDPA (Apple's steel_attention_nax.h is optimal)")
             return False
         # D=256/512 not covered by SDPA NAX — fall through to standard table.
 
@@ -738,7 +903,7 @@ def should_use_mfa(
     if _verbose:
         src = "custom" if custom else ("M3+" if is_m3_plus else "M1")
         print(
-            f"[MFA dispatch] D={head_dim} N={seq_len} causal={causal} "
+            f"[MFA dispatch] policy: D={head_dim} N={seq_len} causal={causal} "
             f"m3+={is_m3_plus} dtype={dtype_key or 'unknown'} "
             f"threshold={min_n} ({src}) "
             f"-> {'MFA' if use_mfa else 'SDPA'}"
@@ -1203,7 +1368,7 @@ def _load_calibrated_kernel_config() -> None:
             os.environ.setdefault("MFA_V2_FORCE_BK", str(bk))
             _invalidate_cached_env()
             if _verbose:
-                print(f"[MFA dispatch] loaded calibrated BK={bk} from {table_path}")
+                print(f"[MFA dispatch] policy: loaded calibrated BK={bk} from {table_path}")
 
         # M-02 migration: old (schema < 2) windowed entries serialized the window
         # as a single bit, so the 256/512 collision already DESTROYED one window's
@@ -1230,7 +1395,7 @@ def _load_calibrated_kernel_config() -> None:
                                       window_left=int(wl), window_right=int(wr))
             os.environ.setdefault(env_key, str(max_n))
             if _verbose:
-                print(f"[MFA dispatch] loaded {env_key}={max_n} from {table_path}")
+                print(f"[MFA dispatch] policy: loaded {env_key}={max_n} from {table_path}")
         if pruned_windowed:
             # Loud but graceful (Rule 8), once per process.
             global _WARNED_CALIB_SCHEMA
@@ -1249,6 +1414,6 @@ def _load_calibrated_kernel_config() -> None:
         # III-4 D18 FIX: calibration is advisory, but a malformed table must
         # not vanish silently (Rule 8) — warn like _load_custom_table does.
         print(
-            f"[MFA dispatch] WARNING: failed to load calibrated kernel "
+            f"[MFA dispatch] policy: WARNING: failed to load calibrated kernel "
             f"config {table_path!r}: {exc}"
         )

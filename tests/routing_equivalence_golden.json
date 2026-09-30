@@ -3,59 +3,59 @@
   "python_routing": {
     "d128_N1024_caus_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N1024_ncaus_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2047_caus_bf16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2047_caus_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2047_ncaus_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2048_caus_bf16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2048_caus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2048_ncaus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2049_caus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N2049_ncaus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N4096_caus_bf16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N4096_caus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N4096_caus_f16_BH3": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N4096_caus_f16_BH4": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N4096_caus_f16_win256": [
       "mfa_primitive",
@@ -70,16 +70,16 @@
       "window f32 masked-sdpa fallback"
     ],
     "d128_N4096_ncaus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N8192_caus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d128_N8192_ncaus_f16": [
-      "nax_dense",
-      "auto D128 N>=v6_min_n"
+      "sdpa",
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "d256_N4096_caus_f16": [
       "sdpa",
@@ -139,11 +139,11 @@
     ],
     "decode_qL8_d128_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "decode_qL9_d128_f16": [
       "sdpa",
-      "fallback (not use_mfa)"
+      "D128 dense -> SDPA (2.64 default delegation)"
     ],
     "forced_mfa_d128_N1024": [
       "mfa_primitive",

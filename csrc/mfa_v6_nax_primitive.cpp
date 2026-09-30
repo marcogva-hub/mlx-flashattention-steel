@@ -807,6 +807,14 @@ public:
     // means "use the default 1/sqrt(D)". Plumbed from the binding so the dense NAX
     // forward works at ALL scales (no custom-scale footgun).
     float scale = -1.0f;
+    // 2.64 A2: per-call NAX tile triple for the public dense table route (all 0 =
+    // the default / expert env tiles).  A nonzero triple is atomic: it drives the
+    // generated source, the pipeline key and the dispatch grid together — never a
+    // process-global env value read at lazy-eval time (same contract as
+    // MFAV6VarlenForward::Params).
+    unsigned short nax_bq = 0;
+    unsigned short nax_bk = 0;
+    uint16_t nax_wm = 0;
   };
 
   MFAV6Forward(mlx::core::Stream stream, Params params)
@@ -994,6 +1002,17 @@ public:
       if (const char* env_bq = mlx_mfa::getenv_aliased("MFA_V6_NAX_BQ")) v6nax_BQ = (unsigned short)std::atoi(env_bq);
       if (const char* env_bk = mlx_mfa::getenv_aliased("MFA_V6_NAX_BK")) v6nax_BK = (unsigned short)std::atoi(env_bk);
       if (const char* env_wm = mlx_mfa::getenv_aliased("MFA_V6_NAX_WM")) v6nax_WM = (uint16_t)std::atoi(env_wm);
+      // 2.64 A2: an explicit per-call triple wins over env (atomic; the same
+      // override order as generate_v6_source, which receives the same triple).
+      const bool explicit_tiles = params_.nax_bq || params_.nax_bk || params_.nax_wm;
+      if (explicit_tiles && (!params_.nax_bq || !params_.nax_bk || !params_.nax_wm))
+        throw std::invalid_argument(
+            "v6_nax_forward: explicit tiles require nonzero BQ, BK, and WM");
+      if (explicit_tiles) {
+        v6nax_BQ = params_.nax_bq;
+        v6nax_BK = params_.nax_bk;
+        v6nax_WM = params_.nax_wm;
+      }
       if (const char* env_bd = std::getenv("MFA_V6_NAX_D_SUBTILE")) v6nax_BD = (unsigned short)std::atoi(env_bd);
       // Rule 8: throw (do NOT use_v6nax=false — F-3 removed that branch; a
       // fallback here reaches v6nax_compile with the non-NAX source → uncatchable
@@ -1051,7 +1070,9 @@ public:
       std::string src = generate_v6_source(
           D, Hq, Hk, dtype_code, params_.causal, params_.bhnd, (int)R,
           /*use_v6nax_override=*/use_v6nax, /*use_v6nax_explicit=*/true,
-          /*scale_override=*/resolved_scale);
+          /*scale_override=*/resolved_scale,
+          /*nax_bq_override=*/params_.nax_bq, /*nax_bk_override=*/params_.nax_bk,
+          /*nax_wm_override=*/params_.nax_wm);
       // F-3: V6 forward is PURE NAX — always the matmul2d kernel (no FCs;
       // params via struct buffer).  The simdgroup `v6_nax_compile_with_constants`
       // fallback is removed (broken diverged duplicate; that compile helper is
@@ -1097,7 +1118,11 @@ public:
              && p->params_.bhnd == params_.bhnd
              && p->params_.force_v6nax == params_.force_v6nax
              // F-2: distinct scale → distinct kernel; must not graph-dedup.
-             && p->params_.scale == params_.scale;
+             && p->params_.scale == params_.scale
+             // 2.64 A2: distinct explicit tile → distinct kernel.
+             && p->params_.nax_bq == params_.nax_bq
+             && p->params_.nax_bk == params_.nax_bk
+             && p->params_.nax_wm == params_.nax_wm;
   }
 
   std::vector<mlx::core::Shape> output_shapes(
@@ -1119,7 +1144,8 @@ private:
 std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     const mlx::core::array& q, const mlx::core::array& k,
     const mlx::core::array& v, bool causal, bool force_v6nax,
-    float scale) {
+    float scale, unsigned short nax_bq, unsigned short nax_bk,
+    uint16_t nax_wm) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
   int D = q.shape(3);
   if (D != 64 && D != 128 && D != 256)
@@ -1178,7 +1204,7 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
   const bool can_bhnd = (Hq_from_input == Hk_from_input) ||
                         (Hk_from_input > 0 && Hq_from_input % Hk_from_input == 0);
   const bool bhnd = !legacy_opt_in && can_bhnd;
-  MFAV6Forward::Params params{causal, bhnd, force_v6nax, scale};
+  MFAV6Forward::Params params{causal, bhnd, force_v6nax, scale, nax_bq, nax_bk, nax_wm};
 
   if (bhnd) {
     // Pass Q/K/V directly in MLX-native [B, H, N, D] layout.

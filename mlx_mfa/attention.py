@@ -519,31 +519,28 @@ def _select_dense_backend(
     attn_bias,
     dropout_p: float,
     return_attn_weights: bool,
-) -> tuple[str, str]:
+    causal: bool = False,
+) -> tuple:
     """Pure dense-forward backend decision (the snapshot-covered core of the
     routing cascade).  Given resolved shape/dtype/feature/device state, return
-    ``(backend, reason)`` ∈ {``("nax_dense", …)``, ``("sdpa", …)``} for the
-    ``not use_mfa`` dense path.  **No side effects** beyond reading env config
-    (``MFA_V6_DENSE_MIN_N`` / ``MFA_DISABLE_V6_DENSE`` = config inputs) and the
-    cached ``_get_has_nax_cached()`` device probe — both idempotent.
+    ``(backend, reason, tile)`` with backend ∈ {``"nax_dense"``, ``"sdpa"``} for the
+    ``not use_mfa`` dense path; ``tile`` is the explicit NAX ``(BQ, BK, WM)`` of a
+    table row, else None (default tile).  **No side effects** beyond reading env
+    config and the cached ``_get_has_nax_cached()`` device probe.
 
-    P-H1 EXTRACTION (zero routing change): the gate conditions + their EXACT
-    short-circuit order + the returned ``reason`` strings are moved verbatim
-    from the former inline cascade (Audit F-2 Change 3 / Tier-2 #1 threshold).
-    The feature pre-empts (softcap / alibi / return_lse / bias / sage / dropout
-    / return_attn_weights) are handled by the caller's guards UPSTREAM and are
-    deliberately NOT folded in here — several are execution-dependent (bias
-    native try/fallback) or not covered by the routing snapshot, so moving their
-    decision would be unverifiable by the gate (RULE 16 #3).  The reason strings
-    are asserted by ``tests/routing_equivalence_golden.json``.
+    2.64 D1 (Marco 2026-10-01): dense D=128 ``auto`` DELEGATES to SDPA (the terminal
+    is ``_fallback_sdpa`` = ``mx.fast.scaled_dot_product_attention``, byte-identical).
+    NAX dense stays only (a) in a measured tile row of
+    ``dispatch_policy.DENSE_TILE_TABLE`` (or a calibrated prior row via
+    ``MLX_MFA_DISPATCH_TABLE``), and (b) under the explicit ``MFA_ENABLE_V6_DENSE=1``
+    knob (the 2.63 behaviour: default tile at N >= ``MFA_V6_DENSE_MIN_N``).
+    ``MFA_DISABLE_V6_DENSE=1`` wins over both.  Feature pre-empts (softcap / alibi /
+    return_lse / bias / sage / dropout / return_attn_weights) stay UPSTREAM.
     """
     import os as _os
-    # Tier-2 #1: NAX wins only at N>=threshold; below, SDPA is faster.
-    _v6_min_n = int(_os.environ.get("MFA_V6_DENSE_MIN_N", _V6_DENSE_MIN_N_DEFAULT))
-    if (
+    eligible = (
         backend == "auto"
         and head_dim == 128
-        and q_shape[2] >= _v6_min_n
         and _get_has_nax_cached()
         and q_dtype in (mx.float16, mx.bfloat16)
         and k_dtype == q_dtype and v_dtype == q_dtype
@@ -553,10 +550,21 @@ def _select_dense_backend(
         and attn_bias is None
         and dropout_p == 0.0
         and not return_attn_weights
-        and not get_bool_env("MFA_DISABLE_V6_DENSE")
-    ):
-        return ("nax_dense", "auto D128 N>=v6_min_n")
-    return ("sdpa", "fallback (not use_mfa)")
+    )
+    if not eligible:
+        return ("sdpa", "fallback (not use_mfa)", None)
+    if get_bool_env("MFA_DISABLE_V6_DENSE"):
+        return ("sdpa", "D128 dense -> SDPA (MFA_DISABLE_V6_DENSE=1)", None)
+    if get_bool_env("MFA_ENABLE_V6_DENSE"):
+        _v6_min_n = int(_os.environ.get("MFA_V6_DENSE_MIN_N", _V6_DENSE_MIN_N_DEFAULT))
+        if q_shape[2] >= _v6_min_n:
+            return ("nax_dense", "MFA_ENABLE_V6_DENSE=1 N>=v6_min_n (default tile)", None)
+        return ("sdpa", "D128 dense -> SDPA (MFA_ENABLE_V6_DENSE=1, N<v6_min_n)", None)
+    from mlx_mfa.dispatch_policy import dense_nax_tile_row
+    row = dense_nax_tile_row(head_dim, q_dtype, q_shape[0], q_shape[1], q_shape[2], causal)
+    if row is not None:
+        return ("nax_dense", f"table {row.row_id}", tuple(row.tile))
+    return ("sdpa", "D128 dense -> SDPA (2.64 default delegation)", None)
 
 
 def flash_attention(
@@ -1232,12 +1240,13 @@ def flash_attention(
             # (Tier-2 #1 threshold).  Extracted to the pure `_select_dense_backend`
             # (P-H1) — decision there, dispatch + telemetry here.  Decision is
             # verbatim; reasons asserted by the routing snapshot.
-            _be, _reason = _select_dense_backend(
+            _be, _reason, _tile = _select_dense_backend(
                 backend=backend, head_dim=head_dim,
                 q_shape=q.shape, k_shape=k.shape, v_shape=v.shape,
                 q_dtype=q.dtype, k_dtype=k.dtype, v_dtype=v.dtype,
                 window_size=window_size, attn_bias=attn_bias,
                 dropout_p=dropout_p, return_attn_weights=return_attn_weights,
+                causal=causal,
             )
             if _be == "nax_dense":
                 _sc = scale if scale is not None else 1.0 / math.sqrt(head_dim)
@@ -1249,7 +1258,7 @@ def flash_attention(
                 # honors it exactly — matches the drop-in SDPA contract + D=64 path.
                 if _sc > 0:
                     _dtrace.record("nax_dense", _reason)
-                    return _make_v6nax_dense_custom(_sc, causal)(q, k, v)
+                    return _make_v6nax_dense_custom(_sc, causal, _tile or (0, 0, 0))(q, k, v)
                 _dtrace.record("sdpa", "scale<=0 (v6 >0 sentinel would drop) -> SDPA")
                 return _fallback_sdpa(q, k, v, scale, causal, stream)
             _dtrace.record(_be, _reason)
@@ -1365,7 +1374,7 @@ def flash_attention(
     # re-eval is gated on recording() → zero production overhead (record() is a
     # no-op without an open capture(), so the label is irrelevant there).
     if (backend != "mfa"
-            and _dtrace.recording()
+            and (_dtrace.recording() or _dtrace.printing())
             and _v6nax_eligible(head_dim, q.dtype, causal,
                                 scale=scale, seq_len=q.shape[2],
                                 kv_len=k.shape[2])):
@@ -6414,7 +6423,7 @@ def _make_mfa_custom_lse(scale: float, causal: bool):
 
 
 @functools.lru_cache(maxsize=64)
-def _make_v6nax_dense_custom(scale: float, causal: bool):
+def _make_v6nax_dense_custom(scale: float, causal: bool, tile: tuple = (0, 0, 0)):
     """Audit F-2 (Change 3): custom_function for the routed dense NAX matmul2d
     forward (`v6_nax_forward`).
 
@@ -6425,15 +6434,19 @@ def _make_v6nax_dense_custom(scale: float, causal: bool):
     forward=NAX / backward=SDPA-vjp pattern as `_make_mfa_custom_lse` and the sparse
     `_sparse_nax_with_sdpa_vjp`.  `scale` is the resolved QK scale (the binding bakes
     it into the kernel + cache-keys on it; F-2 scale plumbing) — works at ALL scales.
-    Cached by (scale, causal).
+    Cached by (scale, causal, tile).  ``tile`` = explicit NAX (BQ, BK, WM) of a
+    2.64 dense-table row (all 0 = default tile); it is passed THROUGH the binding
+    into the primitive (source + pipeline key + grid), never via a process-global
+    env value that lazy evaluation would read at the wrong time.
     """
     from mlx_mfa._ext import v6_nax_forward as _v6_fwd
+    _bq, _bk, _wm = (int(x) for x in tile)
 
     @mx.custom_function
     def _impl(q, k, v):
         # force_v6nax=True selects the NAX-direct kernel; drop the LSE (L carries
         # no training signal and is recomputed by the backward when needed).
-        O, _L = _v6_fwd(q, k, v, causal, True, scale)
+        O, _L = _v6_fwd(q, k, v, causal, True, scale, _bq, _bk, _wm)
         return O
 
     @_impl.vjp

@@ -99,19 +99,30 @@ def _block_bias(bm, qL, kL):
 
 
 # ── dense ──────────────────────────────────────────────────────────────────
-def test_dense_auto_D128_is_nax_not_sdpa():
-    """Audit F-2 (Change 3): flash_attention(backend=auto) dense D=128 → the NAX
-    matmul2d forward (`v6_nax_forward`), NOT Apple SDPA.  Δ vs SDPA must be a small
-    real-kernel difference (~1e-6), NOT 0.0.  Drift-back to SDPA (Δ==0) fails CI —
-    the parity-to-modest-win D=128 dense route would have silently regressed."""
+def test_dense_auto_D128_delegates_sdpa():
+    """2.64 D1 (supersedes audit F-2 Change 3): flash_attention(backend=auto) dense
+    D=128 DELEGATES to Apple SDPA — byte-identical (Δ == 0.0).  Production evidence
+    (devnotes/production_shapes_2026-10.md §1): the F-2 NAX route ran on 10/10
+    production D=128 shapes, never byte-identical, 5-11 % slower on 5/10.  Drift back
+    to a real kernel (Δ > 0) outside the measured tile table fails CI."""
     B, H, N, D = 1, 4, 2048, 128
     q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
     o = flash_attention(q, k, v, scale=sc, causal=False)
     ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+    assert _delta(o, ref) == 0.0, (
+        "D=128 dense auto is NOT SDPA outside the tile table — the 2.64 delegation "
+        "regressed (a real-kernel Δ means auto != SDPA again: the H3 bug class)")
+
+
+def test_dense_auto_D128_table_cell_is_nax():
+    """2.64 A2: inside a measured tile row (32.32.2 D128 fp16 B*H=16 N∈[2048,4096])
+    auto keeps the NAX dense kernel (real-kernel Δ vs SDPA, 1e-7 < Δ < 3e-2)."""
+    B, H, N, D = 2, 8, 4096, 128
+    q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+    o = flash_attention(q, k, v, scale=sc, causal=False)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
     d = _delta(o, ref)
-    assert 1e-7 < d < 3e-2, (
-        f"D=128 dense auto is not the NAX kernel (Δ={d}: 0.0 ⇒ drifted back to "
-        f"SDPA — the F-2 dense-NAX route regressed; large ⇒ wrong kernel)")
+    assert 1e-7 < d < 3e-2, f"table cell is not the NAX kernel (Δ={d})"
 
 
 def test_dense_auto_D64_is_sdpa():

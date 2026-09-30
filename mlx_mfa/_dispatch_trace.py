@@ -28,6 +28,12 @@ from typing import Optional
 
 # OFF by default.  Library code never sets this True — only ``capture()`` (tests) does.
 _RECORDING: bool = False
+# 2.64 A4: verbose TERMINAL logging.  ``MLX_MFA_VERBOSE_DISPATCH=1`` makes every
+# routing terminal print the backend that actually runs — the single source of the
+# dispatch log, so the log can never name a route other than the terminal (the H3
+# "-> SDPA optimal" line printed by a policy predicate before `nax_dense` ran).
+# Set by ``dispatch_policy`` at import (this module imports nothing from mlx_mfa).
+_PRINT_TERMINALS: bool = False
 _TRACE: list[tuple[str, str]] = []
 # Re-entrancy depth.  > 0 while an internal, non-caller dispatch is running
 # (background JIT warmup, nested routing).  Records emitted at depth > 0 are
@@ -38,6 +44,17 @@ _REENTRANT_DEPTH: int = 0
 # Prefix stamped onto the reason of any record emitted during re-entrant
 # internal routing.  Exposed so tests can filter without string-guessing.
 REENTRANT_PREFIX: str = "[reentrant] "
+
+
+def set_print_terminals(flag: bool) -> None:
+    """Enable / disable verbose terminal logging (driven by MLX_MFA_VERBOSE_DISPATCH)."""
+    global _PRINT_TERMINALS
+    _PRINT_TERMINALS = bool(flag)
+
+
+def printing() -> bool:
+    """True iff terminals are being logged (verbose dispatch)."""
+    return _PRINT_TERMINALS
 
 
 def recording() -> bool:
@@ -55,18 +72,21 @@ def record(backend: str, reason: str) -> None:
     """Append ``(backend, reason)`` to the active trace — no-op unless recording.
 
     Called at each routing terminal in ``flash_attention``.  The hot-path cost when
-    not recording is a single global read + early return.
+    neither recording nor printing is two global reads + early return.
 
     Records emitted while ``reentrant()`` is active (background warmup / nested
     dispatch) get a ``[reentrant]`` reason prefix — they remain observable but
     are unmistakable for the caller's real terminal (which is recorded OUTSIDE
     the re-entrant scope, so ``tr[-1]`` is unaffected).
     """
-    if not _RECORDING:
+    if not _RECORDING and not _PRINT_TERMINALS:
         return
     if _REENTRANT_DEPTH > 0:
         reason = REENTRANT_PREFIX + reason
-    _TRACE.append((backend, reason))
+    elif _PRINT_TERMINALS:
+        print(f"[MFA dispatch] terminal={backend} reason={reason}")
+    if _RECORDING:
+        _TRACE.append((backend, reason))
 
 
 @contextmanager
