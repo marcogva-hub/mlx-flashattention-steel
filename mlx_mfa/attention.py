@@ -561,7 +561,9 @@ def _select_dense_backend(
             return ("nax_dense", "MFA_ENABLE_V6_DENSE=1 N>=v6_min_n (default tile)", None)
         return ("sdpa", "D128 dense -> SDPA (MFA_ENABLE_V6_DENSE=1, N<v6_min_n)", None)
     from mlx_mfa.dispatch_policy import dense_nax_tile_row
-    row = dense_nax_tile_row(head_dim, q_dtype, q_shape[0], q_shape[1], q_shape[2], causal)
+    # Table rows were measured with Hq == Hk: a GQA call never borrows them.
+    row = (dense_nax_tile_row(head_dim, q_dtype, q_shape[0], q_shape[1], q_shape[2], causal)
+           if k_shape[1] == q_shape[1] else None)
     if row is not None:
         return ("nax_dense", f"table {row.row_id}", tuple(row.tile))
     return ("sdpa", "D128 dense -> SDPA (2.64 default delegation)", None)

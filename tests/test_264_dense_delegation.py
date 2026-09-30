@@ -222,3 +222,16 @@ def test_verbose_log_names_the_terminal(monkeypatch, capsys, case):
     # every other dispatch line is a POLICY line, never a route claim (the H3 lie)
     for l in lines:
         assert "terminal=" in l or "] policy:" in l, f"unlabelled route claim: {l}"
+
+
+def test_gqa_never_borrows_a_table_row(monkeypatch):
+    """Sibling audit (A1): every table row was measured with Hq == Hk.  A GQA call in
+    a row's (dtype, B*H, N) key must NOT borrow that evidence — it delegates."""
+    _clear_dense_env(monkeypatch)
+    mx.random.seed(0)
+    q = mx.random.normal((2, 8, 4096, 128)).astype(mx.float16)
+    k = mx.random.normal((2, 2, 4096, 128)).astype(mx.float16)
+    v = mx.random.normal((2, 2, 4096, 128)).astype(mx.float16)
+    o, term = _auto(q, k, v)
+    assert term[0] == "sdpa", term
+    assert bool(mx.array_equal(o, _sdpa(q, k, v)))
