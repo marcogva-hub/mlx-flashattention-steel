@@ -557,12 +557,25 @@ def _expand_bt64_for_v6nax(
     if tuple(block_mask.shape[-2:]) != (q_len // block_tile, k_len // block_tile):
         return block_mask, block_tile, False
     expanded = mx.repeat(mx.repeat(block_mask, 2, axis=-2), 2, axis=-1)
-    density = float(mx.mean(expanded.astype(mx.float32)).item())
+    density = mask_density(expanded)                       # 2.64 B3: no fp32 copy
     if require_public_route and not _nax_sparse_route_viable(
         Q, K, SPARSE_NAX_KERNEL_BLOCK_TILE, density, causal=causal
     ):
         return block_mask, block_tile, False
     return expanded, SPARSE_NAX_KERNEL_BLOCK_TILE, True
+
+
+def mask_density(block_mask) -> float:
+    """Exact block density (fraction of True / non-zero entries) WITHOUT an fp32 copy.
+
+    2.64 B3: the routers used ``mx.mean(mask.astype(mx.float32))`` — a transient fp32
+    copy of the whole per-head mask (4x its bytes: 3.6 GB at N=168,960 x H32 x BT32),
+    the bulk of the Phase-2 2-5x peak-memory excess.  Row counts are reduced first
+    (int, [..., NQ] — no full-size intermediate), then summed in int64 (no int32
+    overflow above 2^31 entries).  Exact: count / size."""
+    m = block_mask if block_mask.dtype == mx.bool_ else (block_mask != 0)
+    total = mx.sum(mx.sum(m, axis=-1).astype(mx.int64))
+    return int(total.item()) / max(int(m.size), 1)
 
 
 def _bool_mask_to_float_bias(block_mask, BT, qL, kL, target_dtype):
@@ -654,13 +667,9 @@ def sparse_attention_dispatch(
             "sparse_attention_dispatch: Q, K, V must share dtype")
 
     if density is None:
-        d_arr = mx.mean(block_mask.astype(mx.float32))
-        # NEPB-05 (review 2026-09): async_eval is forbidden inside a graph
-        # transformation (mask derived from differentiated inputs); the synchronous
-        # read below is allowed there.
-        from mlx_mfa.attention import _try_materialize
-        _try_materialize(d_arr)
-        density = float(d_arr)
+        # 2.64 B3: exact count, no fp32 copy.  NEPB-05: the synchronous read is
+        # allowed inside a graph transformation (async_eval is not).
+        density = mask_density(block_mask)
     if scale is None:
         scale = 1.0 / math.sqrt(Q.shape[-1])
     # CX-R9-02 (volet M): the native sparse kernel is f16/bf16-only — route any
@@ -676,7 +685,7 @@ def sparse_attention_dispatch(
         _expanded = _extended_prepare(Q.shape[3], block_mask, Q.shape[2], K.shape[2])
         if _expanded is not block_mask:
             block_mask, block_tile = _expanded, SPARSE_NAX_KERNEL_BLOCK_TILE
-            density = float(mx.mean(block_mask.astype(mx.float32)).item())
+            density = mask_density(block_mask)                # 2.64 B3
         elif tuple(block_mask.shape[-2:]) == (-(-Q.shape[2] // 32), -(-K.shape[2] // 32)):
             block_tile = SPARSE_NAX_KERNEL_BLOCK_TILE
         _small_mask = _mask_bytes(block_mask) < SPARSE_NAX_MIN_MASK_BYTES
@@ -703,7 +712,11 @@ def sparse_attention_dispatch(
             scale=scale,
             causal=causal,
         )
-    # SDPA + float bias path.
+    # SDPA fallback.  2.64 B2 (D4): a BOOL keep-mask built from the block mask — the
+    # float bias survives only for a caller-supplied real additive bias
+    # (``precomputed_bias``).  Empty rows -> zeros (II-6; the NAX branch above emits
+    # zeros), decided per element row; the causal rule is the canonical zero-clamped
+    # one (NAMING.md; review DSP-12).
     from mlx_mfa import _dispatch_trace as _dtrace
 
     _dtrace.record("sdpa", "extended: mask < 4096 B (below the V6NAX minimum) -> dense"
@@ -712,35 +725,23 @@ def sparse_attention_dispatch(
     kL = K.shape[2]
     if precomputed_bias is not None:
         bias = precomputed_bias
-    else:
-        bias = _bool_mask_to_float_bias(block_mask, block_tile, qL, kL, Q.dtype)
-    if causal:
-        # Combine with causal mask. MLX 0.31 SDPA mask='causal' and float bias
-        # are mutually exclusive; emit a manual causal bias and sum.
-        # Canonical zero-clamped convention (NAMING.md; decision 2026-09): row i
-        # sees keys j <= i + max(0, kL - qL).  Was top-left (k_idx > q_idx) for
-        # every shape -> wrong for qL < kL (review DSP-12).
-        q_idx = mx.arange(qL).reshape(-1, 1) + max(0, kL - qL)
-        k_idx = mx.arange(kL).reshape(1, -1)
-        causal_bias = mx.where(k_idx > q_idx,
-                                mx.array(-float("inf"), dtype=Q.dtype),
-                                mx.array(0.0, dtype=Q.dtype))
-        if bias.ndim > 2:
-            for _ in range(bias.ndim - 2):
-                causal_bias = mx.expand_dims(causal_bias, 0)
-        bias = bias + causal_bias
-    out = mx.fast.scaled_dot_product_attention(
-        Q, K, V, scale=scale, mask=bias)
-    # III-4 pass-3 F2: a fully-masked query row makes the bias row all
-    # -inf; mx.fast.scaled_dot_product_attention returns NaN there.  The
-    # NAX kernel branch (above) emits ZEROS for empty rows; match it (the
-    # II-6 empty-row contract) so the two dispatch branches agree.  A row
-    # is active iff it has at least one unmasked (bias == 0) key.  The
-    # [..., qL, 1] activity mask broadcasts over the value dim of
-    # out [..., qL, D].
-    row_active = (mx.max(bias, axis=-1, keepdims=True) >= 0)
-    out = mx.where(row_active, out, mx.zeros_like(out))
-    return out
+        if causal:
+            q_idx = mx.arange(qL).reshape(-1, 1) + max(0, kL - qL)
+            k_idx = mx.arange(kL).reshape(1, -1)
+            causal_bias = mx.where(k_idx > q_idx,
+                                    mx.array(-float("inf"), dtype=Q.dtype),
+                                    mx.array(0.0, dtype=Q.dtype))
+            bias = bias + causal_bias
+        out = mx.fast.scaled_dot_product_attention(Q, K, V, scale=scale, mask=bias)
+        row_active = (mx.max(bias, axis=-1, keepdims=True) >= 0)   # unchanged 2.63 rule
+        return mx.where(row_active, out, mx.zeros_like(out))
+    from mlx_mfa.attention import _sparse_keep_mask, _sparse_sdpa_rows
+    # Same geometry as the former _bool_mask_to_float_bias: block_tile on both axes,
+    # no trimming (a non-aligned length raises in SDPA exactly as before).
+    keep, row_active = _sparse_keep_mask(
+        block_mask, block_mask.shape[-2] * block_tile, block_mask.shape[-1] * block_tile,
+        block_tile, block_tile, causal, where="sparse_attention_dispatch (SDPA fallback)")
+    return _sparse_sdpa_rows(Q, K, V, scale, keep, row_active)
 
 
 __all__ = [

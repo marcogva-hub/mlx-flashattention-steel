@@ -68,8 +68,8 @@ def test_grad_with_input_dependent_mask(N, stop_grad):
 def test_no_cache_insertion_under_transformation():
     N, D = 512, 64
     q, k, v = _inputs(N, D)
-    caches = (att._SPARSE_BIAS_CACHE, att._SPARSE_SANITIZED_BIAS_CACHE,
-              att._SPARSE_ROWFIX_CACHE)      # the third: pre-merge review N2
+    caches = (att._SPARSE_MASK_CACHE, att._SPARSE_SANITIZED_BIAS_CACHE,
+              att._SPARSE_ROWFIX_CACHE)      # the third: pre-merge review N2 (2.64: bool mask cache)
     for c in caches:
         c.clear()
     mx.eval(*mx.grad(lambda q, k, v: flash_attention_sparse(
@@ -79,7 +79,7 @@ def test_no_cache_insertion_under_transformation():
     m = _dyn_mask(q, k, N // 32, D)
     mx.eval(m)
     mx.eval(flash_attention_sparse(q, k, v, m))        # plain call: caching still works
-    assert len(att._SPARSE_BIAS_CACHE) == 1
+    assert len(att._SPARSE_MASK_CACHE) == 1
 
 
 def test_dispatcher_grad_with_input_dependent_mask():

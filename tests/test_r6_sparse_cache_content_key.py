@@ -30,7 +30,9 @@ def _f32(x):
 
 
 def _clear_caches():
-    att._SPARSE_BIAS_CACHE.clear()
+    # 2.64 B2: the per-head fallback caches a BOOL keep-mask (was a float bias); the
+    # block-level row-fix / sanitized-bias caches are no longer on its path.
+    att._SPARSE_MASK_CACHE.clear()
     att._SPARSE_ROWFIX_CACHE.clear()
     att._SPARSE_SANITIZED_BIAS_CACHE.clear()
 
@@ -68,9 +70,9 @@ def test_unmutated_mask_still_hits_the_cache():
     """The content key must not defeat caching: a repeat call returns the SAME entry."""
     _clear_caches()
     _, _, _, m = _inputs()
-    b1 = att._get_or_build_expanded_float_bias(m, 1, 2, 2048, 2048, mx.float16, head_dim_d7=128)
-    b2 = att._get_or_build_expanded_float_bias(m, 1, 2, 2048, 2048, mx.float16, head_dim_d7=128)
-    assert b1 is b2 and len(att._SPARSE_BIAS_CACHE) == 1
+    b1 = att._get_or_build_expanded_bool_mask(m, 2048, 2048, head_dim_d7=128)
+    b2 = att._get_or_build_expanded_bool_mask(m, 2048, 2048, head_dim_d7=128)
+    assert b1 is b2 and len(att._SPARSE_MASK_CACHE) == 1
 
 
 def test_same_mask_different_head_dim_gets_distinct_entries():
@@ -79,17 +81,14 @@ def test_same_mask_different_head_dim_gets_distinct_entries():
     N = 100
     m = mx.eye(4).astype(mx.bool_) | mx.array([[False, True, False, False]] * 4)
     mx.eval(m)
-    b64 = att._get_or_build_expanded_float_bias(m, 1, 2, N, N, mx.float16, head_dim_d7=64)
-    b128 = att._get_or_build_expanded_float_bias(m, 1, 2, N, N, mx.float16, head_dim_d7=128)
-    r64 = att._get_sparse_row_active(m, 1, 2, N, N, False, head_dim_d7=64)
-    r128 = att._get_sparse_row_active(m, 1, 2, N, N, False, head_dim_d7=128)
-    assert len(att._SPARSE_BIAS_CACHE) == 2 and len(att._SPARSE_ROWFIX_CACHE) == 2
+    b64 = att._get_or_build_expanded_bool_mask(m, N, N, head_dim_d7=64)
+    b128 = att._get_or_build_expanded_bool_mask(m, N, N, head_dim_d7=128)
+    assert len(att._SPARSE_MASK_CACHE) == 2
     # each cached entry equals its own uncached computation
     for hd, b in ((64, b64), (128, b128)):
         _clear_caches()
-        fresh = att._get_or_build_expanded_float_bias(m, 1, 2, N, N, mx.float16, head_dim_d7=hd)
-        assert mx.array_equal(fresh, b).item()   # biases hold -inf: compare, not subtract
-    del r64, r128
+        fresh = att._get_or_build_expanded_bool_mask(m, N, N, head_dim_d7=hd)
+        assert mx.array_equal(fresh, b).item()
 
 
 @pytest.mark.parametrize("mdt", [mx.bfloat16, mx.float16, mx.uint8],

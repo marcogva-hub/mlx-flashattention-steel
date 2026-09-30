@@ -3313,6 +3313,31 @@ def _make_sparse_nax_with_sdpa_vjp(scale: float, causal: bool, bt: int):
     return _impl
 
 
+@functools.lru_cache(maxsize=64)
+def _make_sparse_nax_direct_vjp(scale: float, causal: bool):
+    """2.64: the V6NAX sparse kernel called DIRECTLY (32-token blocks, aligned lengths,
+    non-causal rectangular allowed — csrc/mfa_sparse_attention.cpp:11), with the shared
+    SDPA-vjp backward.  Used when ``flash_attention_sparse`` has already decided the NAX
+    route on grounds the dispatcher's own gate does not re-derive (B1 size-guard rescue,
+    B5 rectangular, B6 quasi-dense): the decision is made once, at the router."""
+    from mlx_mfa import _ext
+
+    @mx.custom_function
+    def _impl(q, k, v, block_mask):
+        return _ext.sparse_attention_forward(
+            q, k, v, block_mask.astype(mx.bool_), block_tile=32, causal=causal,
+            scale=scale, kernel_version="v6nax_sparse")
+
+    @_impl.vjp
+    def _backward(primals, cotangents, outputs):
+        q, k, v, block_mask = primals
+        dO = cotangents[0] if isinstance(cotangents, (list, tuple)) else cotangents
+        dQ, dK, dV = _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale, causal)
+        return dQ, dK, dV, mx.zeros_like(block_mask)
+
+    return _impl
+
+
 def _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale: float, causal: bool):
     """Shared backward of the NAX sparse wrappers (default and auto_pad).
 
@@ -3324,18 +3349,12 @@ def _sparse_sdpa_vjp_grads(q, k, v, block_mask, dO, scale: float, causal: bool):
     """
     N, S = q.shape[2], k.shape[2]
     _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
-    float_bias = _block_mask_to_float_bias_nd(
-        block_mask.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
-        tile_q=_tq, tile_k=_tk,
-    )
-    if causal:
-        float_bias = float_bias + _causal_bias(N, S, q.dtype)
-    # R5/NEPB-03: empty rows -> finite bias + zero output (forward contract).
-    float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
+    # 2.64 B2: bool keep-mask; R5/NEPB-03 empty rows -> zero output (forward contract).
+    keep, row_active = _sparse_keep_mask(
+        block_mask, N, S, _tq, _tk, causal, where="sparse NAX backward (SDPA-vjp)")
 
     def _sdpa_ref(q_, k_, v_):
-        o_ = mx.fast.scaled_dot_product_attention(q_, k_, v_, scale=scale, mask=float_bias)
-        return mx.where(row_active, o_, mx.zeros_like(o_))
+        return _sparse_sdpa_rows(q_, k_, v_, scale, keep, row_active)
 
     _, (dQ, dK, dV) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
     return dQ, dK, dV
@@ -3402,7 +3421,8 @@ def _auto_pad_nax_route(q, k, v, block_mask, causal: bool) -> bool:
     from mlx_mfa.lcsa_nax import (
         _d_dense_cutoff, _nax_sparse_route_viable, _sparse_extended_enabled,
         decide_auto_version)
-    density = float(mx.mean(block_mask.astype(mx.float32)).item())
+    from mlx_mfa.lcsa_nax import mask_density
+    density = mask_density(block_mask)                     # 2.64 B3: no fp32 copy
     # The router's kernel choice honours MFA_LCSA_KERNEL_VERSION (v1 = scalar); the
     # padded route forces V6NAX, so it must not run when the router would not.
     if decide_auto_version(density=density, qL=P, kL=P, D=q.shape[3]) != "v2":
@@ -3668,20 +3688,12 @@ def _make_v6nax_sparse_hybrid_vjp(scale: float, causal: bool, bt: int):
         # 2-D only (entry contract above) — no cross-head .any() union.
         mask_2d = block_mask
         _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
-        float_bias = _block_mask_to_float_bias(
-            mask_2d.astype(mx.bool_), N, S, scale_q_dtype=q.dtype,
-            tile_q=_tq, tile_k=_tk,
-        ).astype(q.dtype)
-        if causal:
-            causal_m = _causal_bias(N, S, q.dtype)
-            float_bias = float_bias + causal_m
-        # R5/NEPB-03 (hybrid dQ/dK leg): same empty-row sanitization.
-        float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
+        # 2.64 B2: bool keep-mask; R5/NEPB-03 same empty-row contract.
+        keep, row_active = _sparse_keep_mask(
+            mask_2d, N, S, _tq, _tk, causal, where="sparse hybrid backward (dQ/dK leg)")
 
         def _sdpa_ref(q_, k_, v_):
-            o_ = mx.fast.scaled_dot_product_attention(
-                q_, k_, v_, scale=scale, mask=float_bias)
-            return mx.where(row_active, o_, mx.zeros_like(o_))
+            return _sparse_sdpa_rows(q_, k_, v_, scale, keep, row_active)
 
         _, (dQ_sdpa, dK_sdpa, _dV_sdpa) = mx.vjp(_sdpa_ref, [q, k, v], [dO])
 
@@ -4106,8 +4118,8 @@ def flash_attention_sparse(
                         # Hardened same-dtype sparse map (2026-07-13): both
                         # causal and non-causal use the canonical shape/dtype/
                         # density gate. The env ceiling can only restrict it.
-                        _density = float(
-                            mx.mean(block_mask.astype(mx.float32)).item())
+                        from mlx_mfa.lcsa_nax import mask_density
+                        _density = mask_density(block_mask)   # 2.64 B3: no fp32 copy
                         from mlx_mfa.lcsa_nax import (
                             _nax_sparse_route_viable, _sparse_extended_enabled,
                             _d_dense_cutoff)
@@ -4336,23 +4348,14 @@ def _make_mfa_sparse_custom(
         # Repo review 2026-05: nd helper preserves per-head/per-batch mask
         # dims (previously collapsed to a cross-head union — wrong grads).
         _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
-        float_mask = _block_mask_to_float_bias_nd(
-            mask_uint8.astype(mx.bool_), q.shape[2], k.shape[2],
-            scale_q_dtype=q.dtype, tile_q=_tq, tile_k=_tk,
-        )
-        if causal:
-            N, S = q.shape[2], k.shape[2]
-            causal_m = _causal_bias(N, S, q.dtype)
-            float_mask = float_mask + causal_m
-        # R5 sibling (review 2026-09): the STEEL sparse forward writes 0 for an
-        # empty row; an unsanitized all -inf bias row made this SDPA-vjp leg NaN
-        # and poisoned every dK/dV column. Same fix as the NAX legs.
-        float_mask, row_active = _sanitize_empty_rows_graph(float_mask)
+        # 2.64 B2: bool keep-mask.  R5 sibling (review 2026-09): the STEEL sparse
+        # forward writes 0 for an empty row — same empty-row contract as the NAX legs.
+        keep, row_active = _sparse_keep_mask(
+            mask_uint8, q.shape[2], k.shape[2], _tq, _tk, causal,
+            where="STEEL sparse backward (SDPA-vjp)")
 
         def _sdpa_rows(q_, k_, v_):
-            o_ = mx.fast.scaled_dot_product_attention(
-                q_, k_, v_, scale=scale, mask=float_mask)
-            return mx.where(row_active, o_, mx.zeros_like(o_))
+            return _sparse_sdpa_rows(q_, k_, v_, scale, keep, row_active)
 
         _, (dQ, dK, dV) = mx.vjp(_sdpa_rows, [q, k, v], [dO])
         return dQ, dK, dV, mx.zeros_like(mask_uint8)  # mask-shaped (NEPB-05 SLA: a (1,) cotangent broke derived masks)
@@ -5277,6 +5280,129 @@ def _block_mask_to_float_bias_nd(
     return fb.astype(scale_q_dtype)
 
 
+# ── 2.64 B1/B2: bool keep-masks for every sparse SDPA leg + the fallback size guard ──
+# D4 (Marco 2026-10-01): the sparse SDPA legs (forward fallbacks AND the SDPA-vjp
+# backward legs) take a BOOL keep-mask, never a float bias: MLX SDPA with a bool mask is
+# byte-identical to the 0/-inf bias on every row with at least one visible key, costs 1
+# byte/element instead of 2-4, and never cycles -inf buffers through the pool.  A real
+# additive bias (`attn_bias`, `precomputed_bias`) stays float.
+# Empty rows (no visible key after the block mask AND causal) are decided PER ELEMENT
+# ROW (graph ops) and produce zeros — the II-6 contract, as the backward legs always
+# did.  The 2.63 per-head forward decided emptiness per BLOCK row and returned NaN on
+# element rows that were empty inside a causally-reachable block (release_2640.md §B2).
+# B1: the fallback never materialises a mask above MFA_SPARSE_FALLBACK_MAX_BYTES
+# (default 4 GiB): it is routed to the V6NAX sparse kernel when the kernel can serve the
+# call, else refused loudly before any allocation (Rule 8).
+_SPARSE_FALLBACK_MAX_BYTES_DEFAULT = 4 * 2**30
+
+
+def _sparse_fallback_max_bytes() -> int:
+    raw = os.environ.get("MFA_SPARSE_FALLBACK_MAX_BYTES")
+    if raw is None or raw.strip() == "":
+        return _SPARSE_FALLBACK_MAX_BYTES_DEFAULT
+    try:
+        val = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"MFA_SPARSE_FALLBACK_MAX_BYTES must be a positive integer byte count; got {raw!r}"
+        ) from exc
+    if val <= 0:
+        raise ValueError(f"MFA_SPARSE_FALLBACK_MAX_BYTES must be > 0; got {val}")
+    return val
+
+
+def _sparse_fallback_mask_bytes(mask_shape, seq_q: int, seq_k: int) -> int:
+    """Bytes of the bool [lead..., N, S] keep-mask a sparse SDPA leg would materialise
+    (1 byte/element; the block mask's leading dims are kept, never broadcast to B, H).
+    Pure arithmetic — nothing is allocated."""
+    lead = 1
+    for d in tuple(mask_shape)[:-2]:
+        lead *= int(d)
+    return lead * int(seq_q) * int(seq_k)
+
+
+def _check_sparse_fallback_size(mask_shape, seq_q: int, seq_k: int, where: str) -> None:
+    need = _sparse_fallback_mask_bytes(mask_shape, seq_q, seq_k)
+    limit = _sparse_fallback_max_bytes()
+    if need > limit:
+        raise RuntimeError(
+            f"{where}: the SDPA fallback would materialise a {need / 2**30:.2f} GiB "
+            f"[..., {seq_q}, {seq_k}] keep-mask, above MFA_SPARSE_FALLBACK_MAX_BYTES "
+            f"({limit / 2**30:.2f} GiB) — refused, nothing was allocated.  Use a symmetric "
+            f"32-token block mask the V6NAX sparse kernel can serve (M5+, fp16/bf16, "
+            f"D in {{64, 128}}, 32-aligned lengths), shrink the problem, or raise the limit.")
+
+
+def _causal_keep(N: int, S: int) -> mx.array:
+    """Canonical zero-clamped causal keep-mask [N, S] (NAMING.md): key j is visible to
+    row i iff j <= i + max(0, S - N) — the bool twin of `_causal_bias`."""
+    return mx.arange(S)[None, :] <= (mx.arange(N)[:, None] + max(0, S - N))
+
+
+def _block_mask_to_bool_nd(
+    block_mask: mx.array, seq_q: int, seq_k: int,
+    tile_q: Optional[int] = None, tile_k: Optional[int] = None,
+    *, where: str = "sparse SDPA leg",
+) -> mx.array:
+    """Expand a block mask [..., NQ, NK] to a bool keep-mask [..., N, S] at the same
+    tile granularity as `_block_mask_to_float_bias_nd` (III-4 D7 `_expansion_tile`),
+    keeping leading dims.  Size-guarded BEFORE any allocation (B1)."""
+    _check_sparse_fallback_size(block_mask.shape, seq_q, seq_k, where)
+    NQ, NK = int(block_mask.shape[-2]), int(block_mask.shape[-1])
+    tq = _expansion_tile(seq_q, NQ, tile_q)
+    tk = _expansion_tile(seq_k, NK, tile_k)
+    lead = tuple(block_mask.shape[:-2])
+    m = block_mask.astype(mx.bool_).reshape(*lead, NQ, 1, NK, 1)
+    m = mx.broadcast_to(m, (*lead, NQ, tq, NK, tk))
+    return m.reshape(*lead, NQ * tq, NK * tk)[..., :seq_q, :seq_k]
+
+
+def _sparse_keep_mask(
+    block_mask: mx.array, seq_q: int, seq_k: int, tile_q: Optional[int],
+    tile_k: Optional[int], causal: bool, *, where: str = "sparse SDPA leg",
+    expanded: Optional[mx.array] = None,
+):
+    """The element-level operator every sparse kernel computes, as SDPA inputs.
+
+    Returns ``(keep, row_active)``: ``keep`` = block mask AND canonical causal, with
+    empty rows opened to all-True so SDPA never sees an all-masked row;
+    ``row_active`` [..., N, 1] marks rows with at least one visible key — the caller
+    zeroes the others (II-6).  Graph ops only: safe inside ``mx.vjp``."""
+    m = expanded if expanded is not None else _block_mask_to_bool_nd(
+        block_mask, seq_q, seq_k, tile_q, tile_k, where=where)
+    if causal:
+        m = mx.logical_and(m, _causal_keep(seq_q, seq_k))
+    row_active = mx.any(m, axis=-1, keepdims=True)
+    return mx.logical_or(m, mx.logical_not(row_active)), row_active
+
+
+def _sparse_sdpa_rows(q, k, v, scale, keep, row_active):
+    """SDPA on the keep-mask, empty rows -> 0 (the II-6 contract)."""
+    o = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=keep)
+    return mx.where(row_active, o, mx.zeros_like(o))
+
+
+def _nax_sparse_capacity_ok(q, k, v, block_mask, causal: bool) -> bool:
+    """Can the V6NAX sparse kernel serve this call as-is (capacity, not policy)?"""
+    if not _get_is_m5_plus_cached() or get_bool_env("MFA_DISABLE_AUTO_HOOKS"):
+        return False
+    N, S, D = int(q.shape[2]), int(k.shape[2]), int(q.shape[3])
+    if q.dtype not in (mx.float16, mx.bfloat16) or k.dtype != q.dtype or v.dtype != q.dtype:
+        return False
+    if D not in (64, 128) or int(v.shape[3]) != D or int(v.shape[2]) != S:
+        return False
+    if int(k.shape[1]) <= 0 or int(q.shape[1]) % int(k.shape[1]) != 0:
+        return False
+    if N % 32 or S % 32 or tuple(block_mask.shape[-2:]) != (N // 32, S // 32):
+        return False
+    if causal and N != S:
+        return False
+    if block_mask.ndim not in (2, 3):
+        return False
+    from mlx_mfa.lcsa_nax import SPARSE_NAX_MIN_MASK_BYTES, _mask_bytes
+    return _mask_bytes(block_mask) >= SPARSE_NAX_MIN_MASK_BYTES
+
+
 def _sparse_fallback_sdpa(
     q: mx.array,
     k: mx.array,
@@ -5294,22 +5420,11 @@ def _sparse_fallback_sdpa(
     """
     N, S = q.shape[2], k.shape[2]
     _tq, _tk = _steel_block_config(q.shape[3])  # III-4 D7
-    float_bias = _block_mask_to_float_bias_nd(
-        block_mask, N, S, q.dtype, tile_q=_tq, tile_k=_tk)
-    if causal:
-        causal_m = _causal_bias(N, S, q.dtype)
-        float_bias = float_bias + causal_m
-    # III-4 pass-4 (F1/F2 class closure): the M5+ perhead path sanitizes
-    # empty rows (II-6 `_get_sanitized_bias`); this no-ext fallback did
-    # not.  Zero fully-masked rows so all sparse forward paths share the
-    # empty-row -> zeros contract.  R5 sibling (review 2026-09): the bias row
-    # itself must be finite too — zeroing only the OUTPUT left SDPA's backward
-    # recomputing P = NaN on that row (0 * NaN = NaN), poisoning dK/dV.
-    float_bias, row_active = _sanitize_empty_rows_graph(float_bias)
-    out = mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=float_bias
-    )
-    return mx.where(row_active, out, mx.zeros_like(out))
+    # 2.64 B2: bool keep-mask (empty rows -> zeros, II-6; finite mask rows so SDPA's
+    # backward never recomputes a NaN row — the R5 invariant holds by construction).
+    keep, row_active = _sparse_keep_mask(
+        block_mask, N, S, _tq, _tk, causal, where="flash_attention_sparse (no _ext)")
+    return _sparse_sdpa_rows(q, k, v, scale, keep, row_active)
 
 
 def _try_materialize(*arrays: mx.array) -> bool:
@@ -5358,94 +5473,43 @@ def _mask_content_key(block_mask: mx.array) -> int:
     return zlib.crc32(_np.ascontiguousarray(_np.asarray(block_mask.astype(mx.bool_))))
 
 
-# v2.33.1 — fast-fallback: bounded LRU cache for expanded float-bias masks.
-# Keyed by `(id(block_mask), block_mask.shape, block_mask.dtype, B, H, N, S,
-# target_dtype)`. Cache HIT when the user reuses the same `block_mask` Python
-# object across multiple `flash_attention_sparse` calls (common pattern:
-# build mask once per forward pass, call attention many times). Cache MISS
-# falls back to the full expansion — no slower than v2.33.0, just no faster.
-#
-# Float bias is cached (NOT a bool mask) to preserve the v2.33.0 semantic
-# that an all-False Q-row produces NaN softmax (test_all_false_mask_row_gives_nan_or_zero).
-# MLX SDPA with a bool mask treats all-False rows as "no attention" → finite
-# garbage, not NaN — would break callers relying on the NaN signal.
-#
-# See `docs/sparse-fallback-audit.md` for the audit + perf breakdown.
-_SPARSE_BIAS_CACHE: "dict[tuple, tuple[mx.array, mx.array]]" = {}  # key -> (mask_ref, bias)
-_SPARSE_BIAS_CACHE_MAX = 8
+# v2.33.1 — fast-fallback: bounded LRU cache for expanded sparse masks (2.64 B2: BOOL
+# keep-masks, 1 byte/element — was a float bias).  Keyed by `(id(block_mask), shape,
+# dtype, N, S, content CRC, head_dim)`: a HIT when the caller reuses the same mask object
+# across calls (build once per forward pass, attend many times); a MISS pays the
+# expansion.  The bool mask carries no -inf, so nothing -inf-laden cycles through the
+# Metal buffer pool whether cached or not.  See `docs/sparse-fallback-audit.md`.
+_SPARSE_MASK_CACHE: "dict[tuple, tuple[mx.array, mx.array]]" = {}  # key -> (mask_ref, keep)
+_SPARSE_MASK_CACHE_MAX = 8
 
 
-def _get_or_build_expanded_float_bias(
-    block_mask: mx.array, B: int, H: int, N: int, S: int,
-    target_dtype: "mx.Dtype", head_dim_d7: int = 64,
+def _get_or_build_expanded_bool_mask(
+    block_mask: mx.array, N: int, S: int, head_dim_d7: int = 64,
 ) -> mx.array:
-    """Return the [B, H, N, S] float bias expanded from a block-level mask.
-
-    Cached by `id(block_mask) + shape + dtype` so repeated calls with the
-    same Python object hit the cache. See `docs/sparse-fallback-audit.md`.
-
-    Float bias semantics: True → 0.0, False → -inf. Preserved exactly from
-    v2.33.0 to keep all-False-row → NaN behavior intact.
-    """
+    """Return the bool keep-mask [lead..., N, S] expanded from a block mask (leading
+    dims kept), cached by mask identity + content.  Size-guarded (B1) on a miss."""
     cache_key = (
-        id(block_mask), tuple(block_mask.shape), str(block_mask.dtype),
-        B, H, N, S, str(target_dtype),
+        id(block_mask), tuple(block_mask.shape), str(block_mask.dtype), N, S,
         # R6/DOC-06 (review 2026-09): content + head_dim (the expansion tile
         # depends on it) — an id()-only key went stale on in-place mutation.
         _mask_content_key(block_mask), int(head_dim_d7),
     )
-    # Repo review 2026-05: entries store (mask_ref, bias).  Holding a strong
-    # reference to the keyed mask prevents the id()-ABA hazard: a GC'd mask's
-    # address could be reused by a NEW same-shape mask, and the id()-keyed
-    # entry would return the OLD mask's bias.  While the entry lives, the
-    # mask object lives, so its id() cannot be recycled.
-    cached = _SPARSE_BIAS_CACHE.get(cache_key)
+    # Entries store (mask_ref, keep): holding the keyed mask prevents the id()-ABA
+    # hazard (a GC'd mask's address reused by a new same-shape mask).
+    cached = _SPARSE_MASK_CACHE.get(cache_key)
     if cached is not None:
         return cached[1]
-
-    NQ = block_mask.shape[-2]
-    NK = block_mask.shape[-1]
-    # III-4 D7 FIX: exact-divide else KERNEL tile (see _expansion_tile).
-    _tq, _tk = _steel_block_config(head_dim_d7)
-    BQ_actual = _expansion_tile(N, NQ, _tq)
-    BK_actual = _expansion_tile(S, NK, _tk)
-
-    # Expand bool mask to [B, H, NQ, NK] regardless of input shape.
-    if block_mask.ndim == 2:
-        full_mask = mx.broadcast_to(block_mask[None, None, :, :], (B, H, NQ, NK))
-    elif block_mask.ndim == 3:
-        full_mask = mx.broadcast_to(block_mask[None, :, :, :], (B, H, NQ, NK))
-    elif block_mask.ndim == 4:
-        full_mask = block_mask
-    else:
-        raise ValueError(f"unsupported mask ndim {block_mask.ndim}")
-
-    # Repeat-expand each block to BQ_actual rows and BK_actual cols.
-    # [B, H, NQ, NK] → [B, H, NQ, BQ, NK, BK] → [B, H, NQ*BQ, NK*BK]
-    expanded = full_mask[:, :, :, None, :, None]
-    expanded = mx.broadcast_to(
-        expanded, (B, H, NQ, BQ_actual, NK, BK_actual)
-    )
-    expanded = expanded.reshape(B, H, NQ * BQ_actual, NK * BK_actual)
-    # Trim to actual [N, S] in case BQ/BK don't divide evenly.
-    expanded = expanded[:, :, :N, :S]
-
-    # bool → float (True=0, False=-inf) — preserves all-False-row → NaN behavior.
-    neg_inf = mx.array(float("-inf"), dtype=target_dtype)
-    zero = mx.array(0.0, dtype=target_dtype)
-    float_bias = mx.where(expanded, zero, neg_inf)
-    # Materialize so subsequent cache hits pay zero compute.  Inside a graph
-    # transformation (mask derived from differentiated inputs) skip the cache and
-    # return the graph-safe array (NEPB-05).
-    if not _try_materialize(float_bias):
-        return float_bias
-
-    # LRU-bounded eviction (insertion-order dict).
-    if len(_SPARSE_BIAS_CACHE) >= _SPARSE_BIAS_CACHE_MAX:
-        _SPARSE_BIAS_CACHE.pop(next(iter(_SPARSE_BIAS_CACHE)))
-    # Store the mask alongside the bias — see ABA note at the cache probe.
-    _SPARSE_BIAS_CACHE[cache_key] = (block_mask, float_bias)
-    return float_bias
+    _tq, _tk = _steel_block_config(head_dim_d7)      # III-4 D7: exact-divide else kernel tile
+    keep = _block_mask_to_bool_nd(block_mask, N, S, _tq, _tk,
+                                  where="flash_attention_sparse (SDPA fallback)")
+    # Inside a graph transformation (mask derived from differentiated inputs) skip the
+    # cache and return the graph-safe array (NEPB-05).
+    if not _try_materialize(keep):
+        return keep
+    if len(_SPARSE_MASK_CACHE) >= _SPARSE_MASK_CACHE_MAX:
+        _SPARSE_MASK_CACHE.pop(next(iter(_SPARSE_MASK_CACHE)))
+    _SPARSE_MASK_CACHE[cache_key] = (block_mask, keep)
+    return keep
 
 
 _SPARSE_ROWFIX_CACHE: "dict[tuple, tuple[mx.array, object]]" = {}  # key -> (mask_ref, row_active or None)
@@ -5519,7 +5583,7 @@ def _get_sparse_row_active(
     if len(_SPARSE_ROWFIX_CACHE) >= _SPARSE_ROWFIX_CACHE_MAX:
         _SPARSE_ROWFIX_CACHE.pop(next(iter(_SPARSE_ROWFIX_CACHE)))
     # Strong mask ref prevents the id()-ABA hazard (same pattern as
-    # _SPARSE_BIAS_CACHE).
+    # _SPARSE_MASK_CACHE).
     _SPARSE_ROWFIX_CACHE[cache_key] = (block_mask, result)
     return result
 
@@ -5588,45 +5652,27 @@ def _sparse_fallback_sdpa_perhead(
     B, H, N, _ = q.shape
     S = k.shape[2]
 
-    # Cache-hit fast path: skip the expansion + float conversion when
-    # the same block_mask object has been seen before at this shape.
-    float_bias = _get_or_build_expanded_float_bias(
-        block_mask, B, H, N, S, q.dtype, head_dim_d7=q.shape[3])
+    # 2.64 B1: never materialise an oversize keep-mask.  Above the limit the call goes
+    # to the V6NAX sparse kernel when it can serve the call as-is (its backward is the
+    # SDPA-vjp leg, which re-checks the same guard and refuses loudly), else refused
+    # before any allocation.
+    need = _sparse_fallback_mask_bytes(block_mask.shape, N, S)
+    if need > _sparse_fallback_max_bytes():
+        if _nax_sparse_capacity_ok(q, k, v, block_mask, causal):
+            _dtrace.record(
+                "v6nax_sparse",
+                f"size guard: fallback mask {need / 2**30:.2f} GiB > "
+                f"MFA_SPARSE_FALLBACK_MAX_BYTES -> V6NAX sparse")
+            return _make_sparse_nax_direct_vjp(float(scale), bool(causal))(q, k, v, block_mask)
+        _check_sparse_fallback_size(block_mask.shape, N, S, "flash_attention_sparse")
 
-    if causal:
-        causal_m = _causal_bias(N, S, q.dtype)
-        # Broadcast causal mask over [B, H]; SDPA broadcasts itself but be explicit.
-        float_bias = float_bias + causal_m
-
-    # Phase II-6 (campaign 2026-06): honor the native sparse-kernel
-    # contract for all-False rows.  The STEEL/V6NAX sparse kernels write
-    # ZEROS for a query row with no active blocks (locked by the Track-B
-    # "all-false row" test); SDPA with an all--inf bias row produces NaN
-    # (softmax 0/0).  The v2.50 Sprint-1 dispatch migration silently
-    # swapped most M5 sparse shapes onto this path, changing the public
-    # semantics from zeros to NaN.  Fixup (rare path, cached decision):
-    # 1. swap in a SANITIZED bias (inactive rows 0 instead of -inf) so
-    #    SDPA never computes the NaN rows.  The sanitized bias is built
-    #    once and CACHED ALIVE — building it per call would release an
-    #    -inf-laden temporary into the Metal buffer pool on every call,
-    #    which flaked 3 unrelated finite-value kernel tests in the
-    #    suite (stale-buffer sensitivity; same class as the
-    #    mx.clear_cache() notes in MEMORY.md).  NaN-output-then-mask
-    #    has the same pool-poisoning problem with NaN buffers.
-    # 2. zero those output rows to restore the kernel contract (the
-    #    sanitized rows otherwise attend uniformly).
-    row_active = _get_sparse_row_active(
-        block_mask, B, H, N, S, causal, head_dim_d7=q.shape[3])
-    if row_active is not None:
-        float_bias = _get_sanitized_bias(
-            block_mask, float_bias, row_active, B, H, N, S, causal,
-            head_dim_d7=q.shape[3])
-
-    out = mx.fast.scaled_dot_product_attention(
-        q, k, v, scale=scale, mask=float_bias
-    )
-    if row_active is not None:
-        out = mx.where(row_active, out, mx.array(0.0, dtype=out.dtype))
+    # 2.64 B2: bool keep-mask (cached by mask identity + content, the v2.33.1 fast
+    # fallback), causal AND-ed and empty rows decided PER ELEMENT ROW -> zeros (II-6).
+    expanded = _get_or_build_expanded_bool_mask(
+        block_mask, N, S, head_dim_d7=q.shape[3])
+    keep, row_active = _sparse_keep_mask(
+        block_mask, N, S, None, None, causal, expanded=expanded)
+    out = _sparse_sdpa_rows(q, k, v, scale, keep, row_active)
     return out
 
 

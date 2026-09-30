@@ -77,6 +77,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_HOOK_VERBOSE",
     "MFA_LCSA_KERNEL_VERSION",
     "MFA_NAX_SPARSE_DENSITY_CEILING",
+    "MFA_SPARSE_FALLBACK_MAX_BYTES",  # 2.64 B1: max bool keep-mask the sparse SDPA fallback may build (4 GiB)
     "MFA_SPARSE_NAX_EXTENDED",  # Volet A opt-in (M5+): extend the sparse route past
     #   the measured policy region (B·H/N/density); capacity still enforced. Default-off.
     "MFA_SPARSE_D_DENSE_CUTOFF",  # Volet A: block density at/above which the extended

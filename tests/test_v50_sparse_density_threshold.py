@@ -213,10 +213,10 @@ def test_v50_sprint1_flash_attention_sparse_engages_nax_at_mid_density():
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")
 def test_v50_sprint1_float_bias_cache_repeat_call(monkeypatch):
-    """Force V1 threshold (=0.02) to hit the SDPA+bias path and exercise the
-    pre-existing v2.33.1 cache.  Cache hit-rate verified via attention.py
-    _SPARSE_BIAS_CACHE inspection."""
-    from mlx_mfa.attention import _SPARSE_BIAS_CACHE, _sparse_fallback_sdpa_perhead
+    """Force V1 threshold (=0.02) to hit the SDPA fallback and exercise the
+    pre-existing v2.33.1 cache (2.64 B2: it caches the BOOL keep-mask).  Cache
+    hit-rate verified via attention.py _SPARSE_MASK_CACHE inspection."""
+    from mlx_mfa.attention import _SPARSE_MASK_CACHE as _SPARSE_BIAS_CACHE, _sparse_fallback_sdpa_perhead
 
     B, H, qL, D, BT = 1, 4, 4096, 128, 32
     NQ = NK = qL // BT
